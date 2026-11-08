@@ -3196,6 +3196,39 @@ async fn a_backlog_is_drained_without_waiting_for_the_next_poll() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn the_loop_keeps_draining_a_backlog_without_waiting_for_the_poll() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    // 1 回の pass が 1 インストールに送るのは最大 32 件。それを超える分も、poll（1 時間）を待たずに進む。
+    post_messages(&f, 40).await;
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let dispatcher = tokio::spawn(apps::delivery::http_loop_with(
+        f.state.db.clone(),
+        shutdown,
+        wake,
+        std::time::Duration::from_secs(3600),
+    ));
+    // interval の最初の tick で 1 回目の pass が走る。残りは「取れたので続けて回す」で進まなければならない。
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let attempts = message_delivery_attempts(&f).await?;
+        if attempts.len() >= 40 && attempts.iter().all(|a| *a >= 1) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the backlog stalled after one pass: {attempts:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    stop.send(true)?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), dispatcher).await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn websocket_deliveries_do_not_wake_the_http_dispatcher() -> anyhow::Result<()> {
     let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
     // 既定の fixture は WebSocket。HTTP の配信先が無い INSERT では通知しない。
