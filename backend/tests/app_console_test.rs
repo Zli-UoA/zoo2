@@ -349,7 +349,7 @@ async fn app_metrics_summarize_one_apps_deliveries_for_its_developer_and_admins(
     assert_eq!(empty["window_hours"], 24);
     assert_eq!(empty["totals"]["delivered"], 0);
     assert_eq!(empty["totals"]["success_rate"], Value::Null);
-    assert_eq!(empty["hourly"].as_array().unwrap().len(), 25, "{empty}");
+    assert_eq!(empty["hourly"].as_array().unwrap().len(), 24, "{empty}");
 
     let config = Config::from_env();
     let db = init_db(&config.database_url).await?;
@@ -392,6 +392,8 @@ async fn app_metrics_summarize_one_apps_deliveries_for_its_developer_and_admins(
         ("p", "5 minutes", None, "1 day", "message.created"),
         ("p", "5 minutes", None, "1 day", "message.created"),
         ("o", "3 days", Some("2 seconds"), "1 day", "message.created"),
+        // 窓より前に作られたが、手動再送などで期限内のまま残っている滞留。
+        ("q", "30 hours", None, "1 hour", "message.created"),
         ("r", "5 minutes", None, "1 day", "app.rate_limited"),
     ] {
         let acked_sql = acked
@@ -410,14 +412,28 @@ async fn app_metrics_summarize_one_apps_deliveries_for_its_developer_and_admins(
     let totals = &body["totals"];
     assert_eq!(totals["delivered"], 3, "{body}");
     assert_eq!(totals["failed"], 1, "{body}");
-    assert_eq!(totals["pending"], 2, "{body}");
+    // 滞留は窓と無関係に数える（窓の外で作られた 1 件を含む）。
+    assert_eq!(totals["pending"], 3, "{body}");
     assert_eq!(totals["success_rate"], 0.75, "{body}");
     assert!((totals["p50_seconds"].as_f64().unwrap() - 2.0).abs() < 0.01);
     assert!((totals["p95_seconds"].as_f64().unwrap() - 2.0).abs() < 0.01);
-    assert!(totals["oldest_pending_seconds"].as_f64().unwrap() >= 290.0);
+    assert!(totals["oldest_pending_seconds"].as_f64().unwrap() >= 30.0 * 3600.0 - 10.0);
     let hourly = body["hourly"].as_array().unwrap();
     let sum = |key: &str| -> u64 { hourly.iter().map(|h| h[key].as_u64().unwrap()).sum() };
     assert_eq!((sum("delivered"), sum("failed"), sum("pending")), (3, 1, 2));
+
+    // 窓を 1 時間に絞っても、滞留（pending・最古）は変わらない。時間ごとの内訳は窓の中だけ。
+    let (_, narrow) = req(
+        &app,
+        "GET",
+        &format!("{metrics}?hours=1"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(narrow["totals"]["pending"], 3, "{narrow}");
+    assert!(narrow["totals"]["oldest_pending_seconds"].as_f64().unwrap() >= 30.0 * 3600.0 - 10.0);
+    assert_eq!(narrow["hourly"].as_array().unwrap().len(), 1, "{narrow}");
 
     // 窓を広げると窓の外だった 1 件も入る。
     let (_, wide) = req(

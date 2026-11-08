@@ -457,25 +457,35 @@ async fn app_metrics(
             "Only the developer or an administrator can view this app's metrics".into(),
         ));
     }
+    // 集計が長引いても DB を占有しないよう、この読み取りには時間制限を付ける。
+    toasty::sql::statement("SET LOCAL statement_timeout = '5s'")
+        .exec(&mut tx)
+        .await?;
     // delivered=ACK 済み、failed=ACK されないまま期限切れ、pending=未 ACK で期限内。
+    // pending と oldest_pending_seconds は窓と無関係に、いま滞留している全件（GET /api/apps/metrics と同じ）。
+    // 窓は現在の時間を含む `hours` 個の時間（先頭は時の頭から）で、hourly は必ず `hours` 要素。
     // 成功率は完了したもの（delivered + failed）に対する割合で、保留中は含めない。
     let v=one(&mut tx,r#"WITH d AS (
  SELECT created_at,acked_at,expires_at,attempts,extract(epoch from acked_at-created_at) AS latency
  FROM app_deliveries
  WHERE installation_id IN(SELECT id FROM app_installations WHERE app_id=$1)
  AND event_type<>'app.rate_limited'
- AND created_at>=now()-make_interval(hours=>$2::int)
+ AND created_at>=date_trunc('hour',now())-make_interval(hours=>$2::int-1)
+), backlog AS (
+ SELECT count(*) AS pending,
+  COALESCE(extract(epoch from now()-min(created_at)),0) AS oldest
+ FROM app_deliveries
+ WHERE installation_id IN(SELECT id FROM app_installations WHERE app_id=$1)
+ AND event_type<>'app.rate_limited' AND acked_at IS NULL AND expires_at>now()
 ), totals AS (
  SELECT count(*) FILTER(WHERE acked_at IS NOT NULL) AS delivered,
   count(*) FILTER(WHERE acked_at IS NULL AND expires_at<=now()) AS failed,
-  count(*) FILTER(WHERE acked_at IS NULL AND expires_at>now()) AS pending,
   count(*) FILTER(WHERE attempts>1) AS retried,
-  COALESCE(extract(epoch from now()-min(created_at) FILTER(WHERE acked_at IS NULL AND expires_at>now())),0) AS oldest,
   percentile_cont(0.5) WITHIN GROUP(ORDER BY latency) FILTER(WHERE acked_at IS NOT NULL) AS p50,
   percentile_cont(0.95) WITHIN GROUP(ORDER BY latency) FILTER(WHERE acked_at IS NOT NULL) AS p95
  FROM d
 ), hours AS (
- SELECT h FROM generate_series(date_trunc('hour',now()-make_interval(hours=>$2::int)),date_trunc('hour',now()),interval '1 hour') h
+ SELECT h FROM generate_series(date_trunc('hour',now())-make_interval(hours=>$2::int-1),date_trunc('hour',now()),interval '1 hour') h
 ), hourly AS (
  SELECT hours.h,
   count(d.*) FILTER(WHERE d.acked_at IS NOT NULL) AS delivered,
@@ -486,9 +496,9 @@ async fn app_metrics(
 )
 SELECT json_build_object(
  'window_hours',$2::int,
- 'totals',(SELECT json_build_object('delivered',delivered,'failed',failed,'pending',pending,'retried',retried,
+ 'totals',(SELECT json_build_object('delivered',delivered,'failed',failed,'pending',(SELECT pending FROM backlog),'retried',retried,
    'success_rate',CASE WHEN delivered+failed>0 THEN delivered::float8/(delivered+failed) END,
-   'oldest_pending_seconds',oldest,'p50_seconds',p50,'p95_seconds',p95) FROM totals),
+   'oldest_pending_seconds',(SELECT oldest FROM backlog),'p50_seconds',p50,'p95_seconds',p95) FROM totals),
  'hourly',(SELECT COALESCE(json_agg(json_build_object('hour',to_char(h AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:00:00"Z"'),'delivered',delivered,'failed',failed,'pending',pending,'p95_seconds',p95) ORDER BY h),'[]'::json) FROM hourly)
 )::text"#,&[id.as_str(),hours.as_str()]).await?;
     Ok(Json(v))
