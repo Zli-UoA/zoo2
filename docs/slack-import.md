@@ -121,7 +121,19 @@ Preview で使うときは、名前空間・Secret 名・`S3_ENDPOINT` の値が
 
 Slack の配布アプリ（Marketplace の審査を通っていないもの）は `conversations.history` などのレート制限が厳しいため、ワークスペースごとに社内アプリ（internal app）を作ります（`conversations.history` は差分同期 Zli-UoA/zoo2#292 で使います。いまの版は呼びません）。
 
-1. 「Zoo設定」→「Slack 連携」を開き、「Slack アプリの manifest」をコピーします。この欄は管理者にだけ表示されます。初回は `SLACK_OAUTH_REDIRECT_URL` がまだ設定されていないので、manifest の `redirect_urls` は `https://<zoo-backend>/api/slack/oauth/callback` という仮の値です。貼り付ける前に、`<zoo-backend>` を実際のバックエンドの公開 URL に書き換えてください（Client ID と Client Secret は、アプリを作った後でないと分からないので、環境変数は手順 4 でまとめて設定します）。
+1. 管理者のアクセストークンで `GET /api/admin/slack/manifest` を呼び、レスポンスの `manifest` をコピーします（設定画面には、manifest の欄はありません）。アクセストークンは、管理者でログインしているブラウザーのタブの開発者ツールのコンソールで、次を実行すると取り出せます（OIDC を使う構成の場合。トークンは `sessionStorage` の `zoo.oidc.session` に入っています。有効期限が短いので、取り出したらすぐ使い、どこにも貼らないでください）。
+
+   ```js
+   JSON.parse(sessionStorage.getItem("zoo.oidc.session")).tokens.accessToken
+   ```
+
+   取り出したトークンで、次のように呼びます。トークンを端末の履歴に残さないよう、`read -rs` で入力します。
+
+   ```bash
+   read -rs TOKEN && curl -sf -H "Authorization: Bearer $TOKEN" https://<zoo-backend>/api/admin/slack/manifest | jq .manifest
+   ```
+
+   初回は `SLACK_OAUTH_REDIRECT_URL` がまだ設定されていないので、manifest の `redirect_urls` は `https://<zoo-backend>/api/slack/oauth/callback` という仮の値です。貼り付ける前に、`<zoo-backend>` を実際のバックエンドの公開 URL に書き換えてください（Client ID と Client Secret は、アプリを作った後でないと分からないので、環境変数は手順 4 でまとめて設定します）。
 2. <https://api.slack.com/apps> で「Create New App」→「From an app manifest」を選び、ワークスペースを選んで manifest を貼り付けます。
 3. アプリをワークスペースにインストールし、「Basic Information」の Client ID と Client Secret を控えます。
 4. バックエンドに次の環境変数を設定して再起動します。

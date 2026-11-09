@@ -813,13 +813,6 @@
       "linked_other_account": "You are already linked to a different Slack account. Unlink it first to switch accounts.",
       "failed": "Couldn't link with Slack."
     },
-    "manifestTitle": "Slack app manifest",
-    "manifestDescription": "Paste this into Slack's “Create New App” → “From an app manifest”, then install the app to your workspace. Set the issued Client ID and Client Secret on the server.",
-    "manifestNotConfigured": "No Slack app is configured on the server yet. The redirect URL becomes correct once SLACK_OAUTH_REDIRECT_URL is set.",
-    "manifestError": "Couldn't load the manifest.",
-    "copyManifest": "Copy manifest",
-    "manifestCopied": "Manifest copied.",
-    "manifestCopyFailed": "Couldn't copy.",
     "importTitle": "Import from Slack",
     "importDescription": "Import the history of the Slack channels you created from the Slack export saved by an admin. Import each into a channel with the same name that you have joined, or into a new channel.",
     "importLoading": "Loading the channels you can import",

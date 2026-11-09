@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CopyIcon, LinkIcon, UnlinkIcon } from "lucide-react";
+import { LinkIcon, UnlinkIcon } from "lucide-react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import {
   completeSlackLink,
   getSlackLink,
-  getSlackManifest,
   readSlackLinkResult,
   slackLinkErrorReason,
   startSlackLink,
@@ -27,7 +25,6 @@ import { Button } from "../ui/button";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { SettingsSection } from "../ui/control-panel";
 import { Spinner } from "../ui/spinner";
-import { Textarea } from "../ui/textarea";
 import { MappingForm, SlackImportRunStatus, describeImportError } from "./SlackImportPanel";
 
 const LINK_ERRORS = {
@@ -43,7 +40,6 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
   const { t } = useTranslation();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const { isAdmin } = useCurrentUser();
   const navigate = useNavigate();
   const search = useRouterState({
     select: (state) => state.location.search as Record<string, unknown>,
@@ -190,7 +186,6 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
       {state?.link && state.link.team_allowed !== false ? (
         <OwnImportSection client={client} />
       ) : null}
-      {isAdmin ? <SlackManifestSection client={client} /> : null}
       <ConfirmActionDialog
         open={confirmUnlink}
         onOpenChange={setConfirmUnlink}
@@ -300,69 +295,6 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
         <p role="alert" className="text-sm text-destructive">
           {loadError}
         </p>
-      ) : null}
-      {error ? (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      ) : null}
-    </SettingsSection>
-  );
-}
-
-function SlackManifestSection({
-  client,
-}: {
-  client: ReturnType<typeof createConfiguredApiClient>;
-}) {
-  const { t } = useTranslation();
-  const [manifest, setManifest] = useState("");
-  const [configured, setConfigured] = useState(true);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    getSlackManifest(client, controller.signal)
-      .then((value) => {
-        if (controller.signal.aborted) return;
-        setManifest(JSON.stringify(value.manifest, null, 2));
-        setConfigured(value.configured);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setError(t("slackLink.manifestError"));
-      });
-    return () => controller.abort();
-  }, [client, t]);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(manifest);
-      toast.success(t("slackLink.manifestCopied"));
-    } catch {
-      toast.error(t("slackLink.manifestCopyFailed"));
-    }
-  }
-
-  return (
-    <SettingsSection
-      title={t("slackLink.manifestTitle")}
-      description={t("slackLink.manifestDescription")}
-    >
-      {!configured ? (
-        <p className="text-sm text-muted-foreground">{t("slackLink.manifestNotConfigured")}</p>
-      ) : null}
-      {manifest ? (
-        <>
-          <Textarea
-            readOnly
-            aria-label={t("slackLink.manifestTitle")}
-            className="h-48 font-mono text-xs"
-            value={manifest}
-          />
-          <Button variant="outline" onClick={() => void copy()}>
-            <CopyIcon />
-            {t("slackLink.copyManifest")}
-          </Button>
-        </>
       ) : null}
       {error ? (
         <p role="alert" className="text-sm text-destructive">

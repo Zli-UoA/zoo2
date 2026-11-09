@@ -813,13 +813,6 @@
       "linked_other_account": "이미 다른 Slack 계정과 연동하고 있습니다. 바꾸려면 먼저 연동을 해제하십시오.",
       "failed": "Slack과의 연동에 실패했습니다."
     },
-    "manifestTitle": "Slack 응용프로그램의 manifest",
-    "manifestDescription": "Slack의 《Create New App》→《From an app manifest》에 붙여넣어 응용프로그램을 만들고 작업공간에 설치합니다. 발급된 Client ID와 Client Secret을 봉사기에 설정하십시오.",
-    "manifestNotConfigured": "봉사기에 Slack 응용프로그램이 아직 설정되지 않았습니다. 방향바꾸기 URL은 SLACK_OAUTH_REDIRECT_URL을 설정하면 올바른 값으로 됩니다.",
-    "manifestError": "manifest를 불러오지 못했습니다.",
-    "copyManifest": "manifest 복사",
-    "manifestCopied": "manifest를 복사했습니다.",
-    "manifestCopyFailed": "복사하지 못했습니다.",
     "importTitle": "Slack에서 들여오기",
     "importDescription": "Slack에서 당신이 만든 통로의 지난 기록을 관리자가 저장한 Slack 내보내기자료에서 들여올수 있습니다. 들여올 곳은 참가하고 있는 같은 이름의 통로나 새로 만드는 통로중에서 선택할수 있습니다.",
     "importLoading": "들여올수 있는 통로를 불러오는 중",

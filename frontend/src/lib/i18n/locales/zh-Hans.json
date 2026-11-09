@@ -813,13 +813,6 @@
       "linked_other_account": "你已关联了另一个 Slack 账号。要切换账号，请先解除关联。",
       "failed": "无法与 Slack 关联。"
     },
-    "manifestTitle": "Slack 应用 manifest",
-    "manifestDescription": "将它粘贴到 Slack 的“Create New App”→“From an app manifest”创建应用，并安装到工作区。再将获得的 Client ID 和 Client Secret 设置到服务器。",
-    "manifestNotConfigured": "服务器尚未设置 Slack 应用。设置 SLACK_OAUTH_REDIRECT_URL 后，重定向网址才会正确。",
-    "manifestError": "无法加载 manifest。",
-    "copyManifest": "复制 manifest",
-    "manifestCopied": "已复制 manifest。",
-    "manifestCopyFailed": "无法复制。",
     "importTitle": "从 Slack 导入",
     "importDescription": "可以从管理员保存的 Slack 导出中，导入你在 Slack 创建的频道的历史记录。导入位置可以选择你已加入的同名频道，或新建频道。",
     "importLoading": "正在加载可导入的频道",

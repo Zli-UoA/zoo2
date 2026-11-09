@@ -32,15 +32,6 @@ export function unlinkSlack(client: ApiClient): Promise<SlackLinkState> {
   return client.request<SlackLinkState>("/api/slack/link", { method: "DELETE" });
 }
 
-export interface SlackManifest {
-  configured: boolean;
-  manifest: Record<string, unknown>;
-}
-
-export function getSlackManifest(client: ApiClient, signal?: AbortSignal): Promise<SlackManifest> {
-  return client.get<SlackManifest>("/api/admin/slack/manifest", { signal });
-}
-
 /** ログイン中のユーザーとして連携を完了する。state を作ったユーザー本人でなければ拒否される。 */
 export function completeSlackLink(
   client: ApiClient,
