@@ -17,7 +17,7 @@ Zoo はホーム画面へのインストールと Web Push に対応する。左
 
 ## サーバー設定
 
-最初に `push_subscriptions` の migration を適用する（通常の `make migrate` またはデプロイ時の migrate サービス）。バックエンドに次の環境変数を設定する。`infra/compose.stg.yaml` はこれらを引き継ぐ。
+最初に `push_subscriptions` の migration を適用する（通常の `make migrate` またはデプロイ時の migrate サービス）。バックエンドに次の環境変数を設定する。`infra/compose.stack.yaml` はこれらを引き継ぐ。
 
 | 変数 | 値 |
 | --- | --- |

@@ -8,8 +8,8 @@ PR ごとの k3s 検証環境は [Preview Environment の手順](../docs/preview
 
 ```text
 infra/
-├── compose.stg.yaml         # ステージング構成
-├── compose.stg.local.yaml   # 既存のローカル起動コマンド用 override
+├── compose.stack.yaml         # フロント・バックエンド・DB・Electric・プロキシの全体構成 (CI とローカルで使う)
+├── compose.stack.local.yaml   # 既存のローカル起動コマンド用 override
 ├── Dockerfile-migrate-deploy # ステージング用 Atlas migration コンテナ
 ├── frontend-nginx.conf      # フロントの静的配信 (nginx) の設定
 ├── proxy/                   # Traefik のルーティングと検証
@@ -156,7 +156,7 @@ CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要
 
 ## ステージング
 
-DBサービスは `extends` や `!reset` を使わず、`compose.stg.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
+DBサービスは `extends` や `!reset` を使わず、`compose.stack.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
 
 リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` は必須です。
 
@@ -164,17 +164,17 @@ Rust の本番起動には `OIDC_ISSUER` と `OIDC_AUDIENCE`（未設定なら `
 
 ```bash
 POSTGRES_PASSWORD=staging-test-password \
-  docker compose --project-directory . -f infra/compose.stg.yaml \
+  docker compose --project-directory . -f infra/compose.stack.yaml \
   up -d --build --wait
 ```
 
-公開入口は Traefik の `proxy` サービスで、コンテナ内の `8080` をホストの `127.0.0.1:18080` にマッピングします。ホスト側は `PROXY_PORT` で変更できます。フロント・Rust・DB・Electric のホストポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。既存の `compose.stg.local.yaml` を重ねた起動コマンドも、同じマッピングで引き続き利用できます。
+公開入口は Traefik の `proxy` サービスで、コンテナ内の `8080` をホストの `127.0.0.1:18080` にマッピングします。ホスト側は `PROXY_PORT` で変更できます。フロント・Rust・DB・Electric のホストポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。既存の `compose.stack.local.yaml` を重ねた起動コマンドも、同じマッピングで引き続き利用できます。
 
 起動時は `postgres` が healthy になったあと、`migrate` コンテナ（`arigaio/atlas`、単一インスタンス前提）が `infra/db/migrations` を自動適用（`atlas migrate apply`）して終了し、その完了を待ってから `electric` と `backend` が起動します（このコンテナには Docker ソケットを持たせないため、`dev` DB を使う `migrate diff` / `validate` はローカルまたは CI で実行します）。
 
 - **初期状態の DB**: `atlas_schema_revisions` が無い空の DB に対しては、初回の `migrate` 起動で全マイグレーションが順番に適用されます。
 - **Atlas を介さず手動作成された既存 DB（baseline）**: もし `atlas_schema_revisions` が無いまま手動でテーブルだけ作成されている場合は、そのままでは初回マイグレーションが既存テーブルと衝突して停止します。一度だけ `--baseline <適用済みバージョン>`（例: `20261015110156`）を付けて `atlas migrate apply` を実行するか、ステージングで不要なデータであればボリュームを初期化してから再起動してください。
-- **失敗時の確認・復旧**: マイグレーションが途中で失敗すると、後続の `electric` / `backend` は起動せず（fail-closed）、該当バージョンが dirty 状態になることがあります。その場合は `docker compose --project-directory . -f infra/compose.stg.yaml run --rm migrate migrate status --config file:///db/atlas.hcl --env local` で状態を確認し、原因解消後に再実行してください。
+- **失敗時の確認・復旧**: マイグレーションが途中で失敗すると、後続の `electric` / `backend` は起動せず（fail-closed）、該当バージョンが dirty 状態になることがあります。その場合は `docker compose --project-directory . -f infra/compose.stack.yaml run --rm migrate migrate status --config file:///db/atlas.hcl --env local` で状態を確認し、原因解消後に再実行してください。
 
 フロントは TanStack Start の SPA モードでビルドした静的ファイル（`dist/client`）を `nginxinc/nginx-unprivileged:1.30.6-alpine` で配信します。コンテナ内は非 root ユーザーで `3000` 番ポートを待ち受けます。設定は `infra/frontend-nginx.conf` です。未知のパスは `/index.html` にフォールバックしますが、`/assets/` 配下の存在しないファイルは 404 を返します（デプロイ後に古いタブが削除済みの chunk を読み込んだとき、HTML を返さないため）。`/assets/` のハッシュ付きファイルは `immutable` で長期キャッシュし、`index.html` は `no-cache` で毎回再検証させます。あわせて `X-Content-Type-Options: nosniff`・`Referrer-Policy: strict-origin-when-cross-origin`・`X-Frame-Options: DENY` と `Content-Security-Policy` を付与します。CSP は `infra/frontend-nginx.conf` をテンプレートとして起動時に envsubst し、ビルド成果物の `index.html` に含まれるインライン script の SHA-256（`infra/csp-hashes.mjs` がビルド時に生成）を `script-src` に、`connect-src` には同一オリジンと `CSP_CONNECT_SRC` を設定します（詳細は下記「CSP」）。フロント・プロキシ・マイグレーションのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE`・`MIGRATE_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
 
@@ -188,7 +188,7 @@ Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、受�
 
 #### フロントの OIDC PKCE ログイン
 
-SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（既定 `${origin}/auth/callback`）・`VITE_OIDC_SCOPE`（既定 `openid profile`）・`VITE_OIDC_RESOURCE`（任意）・`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` をビルド時に埋め込み、Authorization Code + PKCE (S256) でログインします。未設定（空）なら従来どおり dev の `X-Dev-User` で動きます。値は `infra/compose.stg.yaml` の frontend の build args に渡します。AuthZ では `VITE_OIDC_RESOURCE` を resource identifier に設定しないと opaque token が発行されるため、バックエンドの JWT 検証が通りません。`state` / `nonce` / `code_verifier` は `sessionStorage` に一時保存し、コールバックで使い切りにします。access tokenとid tokenは同じタブの `sessionStorage` に保持し、再読み込み時に復元します。認証設定が変わった場合やログアウト時には破棄します。
+SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（既定 `${origin}/auth/callback`）・`VITE_OIDC_SCOPE`（既定 `openid profile`）・`VITE_OIDC_RESOURCE`（任意）・`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` をビルド時に埋め込み、Authorization Code + PKCE (S256) でログインします。未設定（空）なら従来どおり dev の `X-Dev-User` で動きます。値は `infra/compose.stack.yaml` の frontend の build args に渡します。AuthZ では `VITE_OIDC_RESOURCE` を resource identifier に設定しないと opaque token が発行されるため、バックエンドの JWT 検証が通りません。`state` / `nonce` / `code_verifier` は `sessionStorage` に一時保存し、コールバックで使い切りにします。access tokenとid tokenは同じタブの `sessionStorage` に保持し、再読み込み時に復元します。認証設定が変わった場合やログアウト時には破棄します。
 
 `VITE_OIDC_*` は **ビルド時に静的ファイルへ埋め込まれる**ため、変更したら `frontend` イメージを再ビルドしてください（コンテナの再起動だけでは反映されません）。
 
@@ -275,9 +275,9 @@ cloudflared を `network_mode: host` で動かし、ホストの loopback ポー
 
 ```bash
 POSTGRES_PASSWORD=staging-test-password \
-  docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait frontend
+  docker compose --project-directory . -f infra/compose.stack.yaml up -d --build --wait frontend
 POSTGRES_PASSWORD=staging-test-password \
-  docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
+  docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
   wget -q -O /dev/null http://127.0.0.1:3000/channels/test
 ```
 
@@ -287,11 +287,11 @@ POSTGRES_PASSWORD=staging-test-password \
 
 ```bash
 export POSTGRES_PASSWORD=proxy-test PROXY_PORT=18080
-docker compose --project-directory . -f infra/compose.stg.yaml build proxy
-docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml \
+docker compose --project-directory . -f infra/compose.stack.yaml build proxy
+docker compose --project-directory . -f infra/compose.stack.yaml -f infra/proxy/test/compose.yaml \
   up -d --no-build --no-deps --wait frontend backend proxy
 nix develop --command node infra/proxy/test/check.mjs
-docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
+docker compose --project-directory . -f infra/compose.stack.yaml -f infra/proxy/test/compose.yaml down
 ```
 
 CSP を変更すると、アプリはネットワークから取得した CSP の SHA-256 を `/sw.js?v=<hash>` の登録 URL に反映します。Service Worker もこの値をキャッシュ名に含め、新版の activate 時に旧キャッシュを削除します。Worker レスポンスの CSP はキャッシュでも保持します。
@@ -337,4 +337,4 @@ Worker のファイル名が同じまま CSP が変わる場合、SW の Cache A
 
 ### 共通絵文字サービス
 
-`compose.stg.yaml` は `EMOJI_SERVICE_URL` と任意の `EMOJI_CACHE_FILE` をbackendへ渡す。`EMOJI_SERVICE_URL=https://emoji.zli.works` で共有サービスへ切り替える。画像の表示にはfrontendの `CSP_APP_IMAGE_SRC=https://emoji.zli.works https://emoji.zliusercontent.com` を設定する。既存添付画像の `CSP_STORAGE_SRC` は変更しない。ディスクキャッシュを使う場合は `EMOJI_CACHE_FILE` の保存先へ書き込み可能な永続ボリュームを別途マウントする。未設定・空のキャッシュパスは無効扱いとする。
+`compose.stack.yaml` は `EMOJI_SERVICE_URL` と任意の `EMOJI_CACHE_FILE` をbackendへ渡す。`EMOJI_SERVICE_URL=https://emoji.zli.works` で共有サービスへ切り替える。画像の表示にはfrontendの `CSP_APP_IMAGE_SRC=https://emoji.zli.works https://emoji.zliusercontent.com` を設定する。既存添付画像の `CSP_STORAGE_SRC` は変更しない。ディスクキャッシュを使う場合は `EMOJI_CACHE_FILE` の保存先へ書き込み可能な永続ボリュームを別途マウントする。未設定・空のキャッシュパスは無効扱いとする。

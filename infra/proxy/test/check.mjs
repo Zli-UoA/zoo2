@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 const config = JSON.parse(execFileSync('docker', ['compose', '--project-directory', '.',
-  '-f', 'infra/compose.stg.yaml', 'config', '--format', 'json'], { encoding: 'utf8' }));
+  '-f', 'infra/compose.stack.yaml', 'config', '--format', 'json'], { encoding: 'utf8' }));
 for (const [name, service] of Object.entries(config.services)) {
   if (name !== 'proxy') assert.equal(service.ports, undefined, `${name} must not publish ports`);
 }
