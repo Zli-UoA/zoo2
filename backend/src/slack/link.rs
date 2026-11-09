@@ -40,13 +40,42 @@ const QUERY_VALUE: &AsciiSet = &NON_ALPHANUMERIC
 const AUTHORIZE_URL: &str = "https://slack.com/oauth/v2/authorize";
 const STATE_TTL_SECS: i64 = 600;
 
-/// アカウント連携で求めるユーザースコープ。いまは連携時の表示名の取得 (`users.info`) にだけ使う。
-/// 差分同期 (#292) とブリッジ (#293) で必要なスコープは、その機能を入れるときに足し、
-/// 各ユーザーに連携し直してもらう (`slack_user_links.scopes` で、まだの人を判別できる)。
-pub const USER_SCOPES: &[&str] = &["users:read"];
-/// manifest の bot_user に付けるスコープ。このアプリの Bot Token を `SLACK_IMPORT_BOT_TOKEN` に
-/// 使う場合のために `files:read` だけ求める (bot_user を宣言するので空にはしない)。
-pub const BOT_SCOPES: &[&str] = &["files:read"];
+/// アカウント連携で求めるユーザースコープ。連携時の表示名の取得 (`users.info`) のほか、差分同期 (#292)、
+/// ブリッジ Slack → Zoo (#293)、ブリッジ Zoo → Slack (#294) で使うものを、再連携の手間を 1 回で済ませるため、
+/// あらかじめまとめて求める (スコープを足すたびに、連携済みの全ユーザーに連携し直してもらう必要がある。
+/// `slack_user_links.scopes` で、まだの人を判別できる)。
+///
+/// - `users:read`: 連携時の表示名の取得 (`users.info`)
+/// - `channels:history`・`groups:history`・`im:history`・`mpim:history`: `conversations.history` /
+///   `conversations.replies` (#292)。#293 の `message.*` イベントの購読にも使う
+/// - `channels:read`・`groups:read`・`im:read`・`mpim:read`: 参加しているチャンネルの列挙 (`conversations.list`・
+///   `users.conversations`) (#292)
+/// - `reactions:read`: `reaction_added` / `reaction_removed` (#293)
+/// - `reactions:write`: Zoo のリアクションを本人として Slack に反映する (#294)
+/// - `chat:write`: Zoo の投稿・編集・削除を本人として Slack に反映する (#294)
+pub const USER_SCOPES: &[&str] = &[
+    "users:read",
+    "channels:history",
+    "groups:history",
+    "im:history",
+    "mpim:history",
+    "channels:read",
+    "groups:read",
+    "im:read",
+    "mpim:read",
+    "reactions:read",
+    "reactions:write",
+    "chat:write",
+];
+/// manifest の bot_user に付けるスコープ。
+///
+/// - `files:read`: このアプリの Bot Token を `SLACK_IMPORT_BOT_TOKEN` に使い、取り込みの添付ファイルを取得する
+/// - `chat:write`・`chat:write.customize`: Slack と連携していないユーザーの投稿を、Bot が `username` /
+///   `icon_url` を付けて代理で Slack に投稿する (#294)
+///
+/// Bot は、いまはチャンネルに参加しない。#293 で Bot の購読 (`bot_events`) を使う場合は、Bot の履歴スコープと
+/// チャンネルへの参加 (`channels:join`) が別に必要になる。
+pub const BOT_SCOPES: &[&str] = &["files:read", "chat:write", "chat:write.customize"];
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -1054,5 +1083,33 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn manifest_scopes_cover_the_sync_and_bridge_features() {
+        // #292 の `conversations.history` / `replies` は、会話の種類ごとの履歴スコープが要る
+        for scope in [
+            "channels:history",
+            "groups:history",
+            "im:history",
+            "mpim:history",
+            "channels:read",
+            "groups:read",
+            "im:read",
+            "mpim:read",
+            "reactions:read",
+            "reactions:write",
+            "chat:write",
+            "users:read",
+        ] {
+            assert!(USER_SCOPES.contains(&scope), "missing user scope {scope}");
+        }
+        // #294 の未連携ユーザーの代理投稿
+        for scope in ["files:read", "chat:write", "chat:write.customize"] {
+            assert!(BOT_SCOPES.contains(&scope), "missing bot scope {scope}");
+        }
+        // 重複しない (認可 URL の `user_scope` に同じスコープを 2 回書かない)
+        let unique: HashSet<_> = USER_SCOPES.iter().collect();
+        assert_eq!(unique.len(), USER_SCOPES.len());
     }
 }
