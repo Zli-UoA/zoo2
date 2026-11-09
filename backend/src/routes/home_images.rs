@@ -37,7 +37,10 @@ pub(crate) fn valid_image(mime: &str, bytes: &[u8]) -> bool {
     decode_image(mime, bytes).is_some()
 }
 
-fn decode_image(mime: &str, bytes: &[u8]) -> Option<image::DynamicImage> {
+fn decode_image(
+    mime: &str,
+    bytes: &[u8],
+) -> Option<(image::DynamicImage, image::metadata::Orientation)> {
     use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
     let format = match mime {
         "image/png" => ImageFormat::Png,
@@ -69,9 +72,8 @@ fn decode_image(mime: &str, bytes: &[u8]) -> Option<image::DynamicImage> {
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
-    let mut image = image::DynamicImage::from_decoder(decoder).ok()?;
-    image.apply_orientation(orientation);
-    Some(image)
+    let image = image::DynamicImage::from_decoder(decoder).ok()?;
+    Some((image, orientation))
 }
 
 #[derive(serde::Serialize)]
@@ -82,11 +84,22 @@ pub(crate) struct ImageMetadata {
 }
 
 pub(crate) fn image_metadata(mime: &str, bytes: &[u8]) -> Option<ImageMetadata> {
-    let image = decode_image(mime, bytes)?;
-    let preview = image.thumbnail(64, 64).to_rgba8();
+    use image::metadata::Orientation;
+    let (image, orientation) = decode_image(mime, bytes)?;
+    let (width, height) = match orientation {
+        Orientation::Rotate90
+        | Orientation::Rotate270
+        | Orientation::Rotate90FlipH
+        | Orientation::Rotate270FlipH => (image.height(), image.width()),
+        _ => (image.width(), image.height()),
+    };
+    // Only transform the tiny preview; rotating the full raster duplicates up to 80 MB.
+    let mut preview = image.thumbnail(64, 64);
+    preview.apply_orientation(orientation);
+    let preview = preview.to_rgba8();
     Some(ImageMetadata {
-        width: image.width(),
-        height: image.height(),
+        width,
+        height,
         blurhash: blurhash::encode(4, 3, preview.width(), preview.height(), preview.as_raw())
             .ok()?,
     })
@@ -330,19 +343,38 @@ pub async fn worker(state: AppState) {
 mod tests {
     use super::*;
     #[test]
-    fn metadata_matches_exif_oriented_display_dimensions() {
+    fn metadata_matches_exif_orientation_and_preview_colors() {
+        let raster = image::RgbImage::from_fn(80, 40, |x, _| {
+            if x < 40 {
+                image::Rgb([255, 0, 0])
+            } else {
+                image::Rgb([0, 0, 255])
+            }
+        });
         let mut jpeg = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(3, 2)
+        image::DynamicImage::ImageRgb8(raster)
             .write_to(&mut jpeg, image::ImageFormat::Jpeg)
             .unwrap();
-        let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
-        let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1];
-        bytes.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
-        bytes.extend_from_slice(exif);
-        bytes.extend_from_slice(&jpeg.get_ref()[2..]);
-        let metadata = image_metadata("image/jpeg", &bytes).unwrap();
-        assert_eq!((metadata.width, metadata.height), (2, 3));
-        assert!(blurhash::decode(&metadata.blurhash, 2, 2, 1.0).is_ok());
+        // 6 places the red half above blue; 8 places blue above red.
+        for (orientation, red_on_top) in [(6_u8, true), (8, false)] {
+            let mut exif =
+                b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0"
+                    .to_vec();
+            exif[24] = orientation;
+            let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1];
+            bytes.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+            bytes.extend_from_slice(&exif);
+            bytes.extend_from_slice(&jpeg.get_ref()[2..]);
+            let (decoded, _) = decode_image("image/jpeg", &bytes).unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (80, 40));
+            let metadata = image_metadata("image/jpeg", &bytes).unwrap();
+            assert_eq!((metadata.width, metadata.height), (40, 80));
+            let pixels = blurhash::decode(&metadata.blurhash, 8, 16, 1.0).unwrap();
+            let top = (2 * 8 + 4) * 4;
+            let bottom = (13 * 8 + 4) * 4;
+            assert_eq!(pixels[top] > pixels[top + 2], red_on_top);
+            assert_eq!(pixels[bottom] > pixels[bottom + 2], !red_on_top);
+        }
     }
 
     #[test]

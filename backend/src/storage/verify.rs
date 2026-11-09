@@ -55,6 +55,9 @@ pub async fn verify_uploaded_object(
     Ok(())
 }
 
+// Keep compressed buffers bounded without occupying the Home decoder slots during S3 I/O.
+static IMAGE_DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
 /// Read bounded image bytes before entering the message transaction. Other files keep HEAD-only validation.
 pub(crate) async fn uploaded_image_metadata(
     client: &Client,
@@ -78,36 +81,57 @@ pub(crate) async fn uploaded_image_metadata(
     {
         return Ok(None);
     }
-    let permit = crate::routes::home_images::DECODERS
+    let download_permit = IMAGE_DOWNLOADS
         .acquire()
         .await
         .map_err(|_| AppError::RateLimited)?;
-    let object = client
-        .get_object()
-        .bucket(bucket)
-        .key(key)
-        .send()
-        .await
-        .map_err(|_| AppError::BadRequest("Attachment image unavailable".into()))?;
+    let object = match client.get_object().bucket(bucket).key(key).send().await {
+        Ok(object) => object,
+        Err(error) => {
+            tracing::warn!(%error, key, "Skipping optional image metadata: S3 GET failed");
+            return Ok(None);
+        }
+    };
+    if object
+        .content_length()
+        .is_some_and(|length| length != expected_size)
+    {
+        return Err(AppError::BadGateway("Attachment image size changed".into()));
+    }
     let mut body = object.body;
     let mut bytes = Vec::new();
-    while let Some(chunk) = body
-        .try_next()
-        .await
-        .map_err(|_| AppError::BadRequest("Attachment image transfer failed".into()))?
-    {
+    loop {
+        let chunk = match body.try_next().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => {
+                tracing::warn!(%error, key, "Skipping optional image metadata: transfer failed");
+                return Ok(None);
+            }
+        };
         if bytes.len() + chunk.len() > expected_size as usize {
-            return Err(AppError::BadRequest("Attachment image size changed".into()));
+            return Err(AppError::BadGateway("Attachment image size changed".into()));
         }
         bytes.extend_from_slice(&chunk);
     }
     if bytes.len() != expected_size as usize {
-        return Err(AppError::BadRequest("Attachment image size changed".into()));
+        return Err(AppError::BadGateway("Attachment image size changed".into()));
     }
-    tokio::task::spawn_blocking(move || {
+    let permit = crate::routes::home_images::DECODERS
+        .acquire()
+        .await
+        .map_err(|_| AppError::RateLimited)?;
+    match tokio::task::spawn_blocking(move || {
+        let _download_permit = download_permit;
         let _permit = permit;
         crate::routes::home_images::image_metadata(&mime, &bytes)
     })
     .await
-    .map_err(|e| AppError::Internal(e.into()))
+    {
+        Ok(metadata) => Ok(metadata),
+        Err(error) => {
+            tracing::warn!(%error, key, "Skipping optional image metadata: decoder task failed");
+            Ok(None)
+        }
+    }
 }

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.asImageBitmap
 import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -42,6 +43,11 @@ internal class AndroidPlatform(
     private fun hash(value: String) =
         MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") {
             "%02x".format(it)
+        }
+
+    override fun imageFrames(bytes: ByteArray): kotlinx.coroutines.flow.Flow<androidx.compose.ui.graphics.ImageBitmap> =
+        kotlinx.coroutines.flow.flow {
+            emit(withContext(Dispatchers.Default) { decodeOrientedBitmap(bytes).asImageBitmap() })
         }
 
     override suspend fun headers() = auth.headers()
