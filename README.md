@@ -24,6 +24,8 @@ GitHub のコメント・状態変更を Zoo に通知する外部 Bot は [GitH
 
 Home・チャンネル連携と ActivityPub の対応範囲・設定は [Home / ActivityPub](docs/activitypub.md) を参照してください。
 
+エンドツーエンド暗号化の鍵の設計、脅威モデル、失効と復旧の手順は [E2EE](docs/e2ee.md) を参照してください。
+
 Compose Multiplatform を使う [Android 版](docs/android.md) のビルド・認証設定も参照してください。
 
 ## 共通カスタム絵文字サービス
