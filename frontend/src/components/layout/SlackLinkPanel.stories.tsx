@@ -75,43 +75,6 @@ const run = {
   finished_at: null,
   source_id: "import-1",
 };
-const admin = http.get("*/api/users/me", () =>
-  HttpResponse.json({
-    id: "user-alice",
-    user_name: "alice",
-    display_name: "Alice",
-    is_admin: true,
-  }),
-);
-const manifest = http.get("*/api/admin/slack/manifest", () =>
-  HttpResponse.json({
-    configured: true,
-    manifest: {
-      display_information: { name: "Zoo" },
-      oauth_config: {
-        redirect_urls: ["https://zoo.example/api/slack/oauth/callback"],
-        scopes: {
-          user: [
-            "users:read",
-            "channels:history",
-            "groups:history",
-            "im:history",
-            "mpim:history",
-            "channels:read",
-            "groups:read",
-            "im:read",
-            "mpim:read",
-            "reactions:read",
-            "reactions:write",
-            "chat:write",
-          ],
-          bot: ["files:read", "chat:write", "chat:write.customize"],
-        },
-      },
-    },
-  }),
-);
-
 const meta = {
   title: "Features/Workspace/SlackLink",
   component: SlackLinkPanel,
@@ -213,16 +176,6 @@ export const LoadError: Story = {
   },
   play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toBeVisible();
-  }),
-};
-
-export const AdminManifest: Story = {
-  parameters: { msw: { handlers: [admin, notLinked, manifest] } },
-  play: playForImplementation(async () => {
-    const manifest = await screen.findByRole<HTMLTextAreaElement>("textbox", {
-      name: "Slack アプリの manifest",
-    });
-    await waitFor(() => expect(manifest.value).toContain("/api/slack/oauth/callback"));
   }),
 };
 

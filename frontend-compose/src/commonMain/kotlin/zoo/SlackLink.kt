@@ -277,7 +277,6 @@ fun SlackLinkPanel(
             }
         }
         if (link != null && slackLinkTeamAllowed(link)) SlackOwnImportSection(app)
-        if (app.config.isAdmin) SlackManifestSection(app)
     }
     if (confirmUnlink)
         ConfirmationPanel(
@@ -469,58 +468,3 @@ private fun SlackOwnImportSection(app: Session) {
         }
     }
 }
-
-/** 管理者向け: ワークスペースで作る Slack アプリの App Manifest */
-@Composable
-private fun SlackManifestSection(app: Session) {
-    var manifest by remember { mutableStateOf("") }
-    var configured by remember { mutableStateOf(true) }
-    var failed by remember { mutableStateOf(false) }
-    LaunchedEffect(app) {
-        try {
-            val value = app.api.request("/api/admin/slack/manifest").jsonObject
-            manifest = prettyJson.encodeToString(JsonElement.serializer(), value.nested("manifest"))
-            configured = value.flag("configured")
-        } catch (cause: CancellationException) {
-            throw cause
-        } catch (_: Exception) {
-            failed = true
-        }
-    }
-    SettingsSection(app.t("slackLink.manifestTitle"), app.t("slackLink.manifestDescription")) {
-        if (!configured) Text(app.t("slackLink.manifestNotConfigured"), small = true, muted = true)
-        if (manifest.isNotEmpty()) {
-            Field(
-                manifest,
-                app.t("slackLink.manifestTitle"),
-                Modifier.fillMaxWidth(),
-                singleLine = false,
-                readOnly = true,
-                showLabel = false,
-                minimumHeight = 192.dp,
-                maximumHeight = 192.dp,
-            ) {}
-            Button(app.t("slackLink.copyManifest"), variant = "outline", icon = "copy") {
-                app.scope.launch {
-                    try {
-                        app.platform.invoke("copy", manifest)
-                        app.showToast(app.t("slackLink.manifestCopied"), ToastKind.Success)
-                    } catch (cause: CancellationException) {
-                        throw cause
-                    } catch (_: Exception) {
-                        app.showToast(app.t("slackLink.manifestCopyFailed"), ToastKind.Error)
-                    }
-                }
-            }
-        }
-        if (failed)
-            Text(
-                app.t("slackLink.manifestError"),
-                Modifier.then(webControlModifier("alert")),
-                small = true,
-                color = MaterialTheme.colorScheme.error,
-            )
-    }
-}
-
-private val prettyJson = Json { prettyPrint = true }

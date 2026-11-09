@@ -813,13 +813,6 @@
       "linked_other_account": "你已經連結咗另一個 Slack 帳戶。想轉帳戶，請先解除連結。",
       "failed": "同 Slack 連結唔到。"
     },
-    "manifestTitle": "Slack 應用程式 manifest",
-    "manifestDescription": "將佢貼去 Slack 嘅「Create New App」→「From an app manifest」建立應用程式，再安裝去工作區。之後將攞到嘅 Client ID 同 Client Secret 設定落伺服器。",
-    "manifestNotConfigured": "伺服器未設定 Slack 應用程式。設定咗 SLACK_OAUTH_REDIRECT_URL 之後，重新導向網址先會啱。",
-    "manifestError": "載入唔到 manifest。",
-    "copyManifest": "複製 manifest",
-    "manifestCopied": "複製咗 manifest。",
-    "manifestCopyFailed": "複製唔到。",
     "importTitle": "由 Slack 匯入",
     "importDescription": "可以由管理員保存嘅 Slack 匯出入面，匯入你喺 Slack 開嘅頻道嘅歷史紀錄。匯入位置可以揀你已經加入咗嘅同名頻道，或者開新頻道。",
     "importLoading": "載入緊可以匯入嘅頻道",
