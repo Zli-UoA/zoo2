@@ -1,5 +1,6 @@
 //! `zoo2-client-core::mfm` の解析結果を `ratatui` の `Line` / `Span` に変換する。
 
+pub use core_mfm::set_emoji_catalog;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},

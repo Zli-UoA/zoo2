@@ -2366,6 +2366,81 @@
         }
       }
     },
+    "/api/apps/{id}/metrics": {
+      "get": {
+        "operationId": "get_api_apps_id_metrics",
+        "summary": "GET /api/apps/{id}/metrics",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "hours",
+            "in": "query",
+            "required": false,
+            "description": "Window in hours (1-720, default 24).",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 720,
+              "default": 24
+            }
+          }
+        ]
+      }
+    },
     "/api/apps/{id}/deliveries/{delivery}/retry": {
       "post": {
         "operationId": "post_api_apps_id_deliveries_delivery_retry",

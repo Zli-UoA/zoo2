@@ -3315,6 +3315,19 @@ async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_creden
     // パスワードは短時間で失効させる（テストが途中で落ちても、既知のパスワードのログインが残らない）。
     let login = format!("zoo_dispatcher_t_{}", Uuid::new_v4().simple());
     let mut admin = f.state.db.clone();
+    // 以前のテストが途中で落ちて残した使い捨てロール（パスワードは失効済み）を先に掃除する。
+    let mut tx = admin.transaction().await?;
+    let stale = apps::query(&mut tx,"SELECT json_build_object('name',rolname)::text FROM pg_roles WHERE rolname LIKE 'zoo\\_dispatcher\\_t\\_%' AND rolvaliduntil < now()",&[]).await?;
+    tx.commit().await?;
+    for role in stale {
+        let name = role["name"].as_str().unwrap();
+        let mut tx = admin.transaction().await?;
+        // ほかのテストが使っていて消せない場合は無視する。
+        let _ = toasty::sql::statement(format!("DROP ROLE IF EXISTS {name}"))
+            .exec(&mut tx)
+            .await;
+        let _ = tx.commit().await;
+    }
     let mut tx = admin.transaction().await?;
     let valid_until = jiff::Timestamp::now()
         .checked_add(jiff::SignedDuration::from_secs(600))?

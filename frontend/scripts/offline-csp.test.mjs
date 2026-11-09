@@ -33,23 +33,45 @@ const oldPolicy = policies[0]
   .replace(" 'wasm-unsafe-eval'", "")
   .replace("connect-src 'self' data:", "connect-src 'self'");
 let policy = policies[0];
-const html =
+const originalHtml =
   '<!doctype html><title>SQLite CSP test</title><script type="module" src="/assets/index-fixture.js"></script>';
+let html = originalHtml;
+let servedWorkerName = workerName;
+let failEntryPrecache = false;
 const server = http.createServer((request, response) => {
   response.setHeader("Content-Security-Policy", policy);
-  const path = new URL(request.url, "http://localhost").pathname;
+  const requestURL = new URL(request.url, "http://localhost");
+  const path = requestURL.pathname;
+  if (
+    failEntryPrecache &&
+    path === "/assets/index-failed.js" &&
+    requestURL.searchParams.has("__zoo_policy")
+  ) {
+    response.writeHead(503).end("precache unavailable");
+    return;
+  }
   response.setHeader(
     "Content-Type",
-    path === "/" || path === "/index.html" ? "text/html" : "text/javascript",
+    path === "/" || path === "/index.html" || path.startsWith("/channels/")
+      ? "text/html"
+      : "text/javascript",
   );
   response.setHeader(
     "Cache-Control",
-    path === `/assets/${workerName}` ? "public, max-age=31536000, immutable" : "no-store",
+    path === `/assets/${servedWorkerName}` ? "public, max-age=31536000, immutable" : "no-store",
   );
-  if (path === "/" || path === "/index.html") response.end(html);
+  if (path === "/" || path === "/index.html" || path.startsWith("/channels/")) response.end(html);
+  else if (path === "/pwa-assets.json")
+    response.end(
+      JSON.stringify({
+        entry: html.match(/\/assets\/index-[^"'?#]+\.js/)[0],
+        assets: [html.match(/\/assets\/index-[^"'?#]+\.js/)[0], `/assets/${servedWorkerName}`],
+      }),
+    );
   else if (path === "/sw.js") response.end(swSource);
   else if (path === "/assets/registration.js") response.end(registrationSource);
-  else if (path === `/assets/${workerName}`) response.end(workerSource);
+  else if (path === `/assets/${servedWorkerName}`) response.end(workerSource);
+  else if (path === `/assets/${workerName}`) response.writeHead(404).end();
   else response.end("");
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -96,13 +118,21 @@ const sqliteProbe = async (workerName) => {
         };
         worker.onerror = (event) => {
           clearTimeout(timeout);
+          worker.terminate();
           reject(new Error(event.message));
         };
         worker.postMessage({ params: [], ...payload, requestId });
       });
     }
-    await request({ type: "init", databaseName: "csp-test.sqlite", vfsName: "opfs" });
-    return { worker, request };
+    try {
+      await request({ type: "init", databaseName: "csp-test.sqlite", vfsName: "opfs" });
+      return { worker, request };
+    } catch (error) {
+      // The warm-cache test deliberately starts a CSP-blocked worker. It must
+      // not survive that rejected probe and interfere with the upgraded page.
+      worker.terminate();
+      throw error;
+    }
   }
   const first = await connect();
   await first.request({ type: "execute", sql: "CREATE TABLE messages (content TEXT)" });
@@ -123,12 +153,25 @@ const sqliteProbe = async (workerName) => {
 };
 try {
   const cases = [firefox, chromium].flatMap((engine) =>
-    (warm ? ["legacy", "versioned", "same-policy-update"] : ["cold"]).map((mode) => ({
+    (warm
+      ? [
+          "legacy",
+          "versioned",
+          "same-policy-update",
+          "lazy-assets-update",
+          "reload-assets-update",
+          "reload-cache-failure",
+        ]
+      : ["cold"]
+    ).map((mode) => ({
       engine,
       mode,
     })),
   );
   for (const { engine, mode } of cases) {
+    html = originalHtml;
+    servedWorkerName = workerName;
+    failEntryPrecache = false;
     console.log(`${engine.name()}: starting ${mode} CSP check`);
     const legacy = mode === "legacy";
     swSource = mode === "same-policy-update" ? previousSW : sw;
@@ -174,19 +217,106 @@ try {
         // The previous PR updates the SW/CSP, yet immutable HTTP responses still carry old CSP.
         await assert.rejects(page.evaluate(sqliteProbe, workerName), /Aborted|blocked by CSP/);
         const previousURL = await page.evaluate(() => navigator.serviceWorker.controller.scriptURL);
+        html = originalHtml.replace("index-fixture.js", "index-updated.js");
+        servedWorkerName = "opfs-worker-updated.js";
         swSource = sw;
-        await page.reload();
+        await page.goto(`${origin}/channels/updated`);
         const updatedURL = await registerAndControl(page);
         assert.equal(updatedURL, previousURL, "SW code updates must work without a CSP change");
-        await page.reload();
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-fixture.js",
+        );
+        const reloading = page.waitForNavigation({ waitUntil: "domcontentloaded" });
+        await page
+          .evaluate(async () => {
+            const { reloadIfShellUpdated } = await import("/assets/registration.js");
+            await reloadIfShellUpdated();
+          })
+          .catch((error) => {
+            if (!error.message.includes("Execution context was destroyed")) throw error;
+          });
+        await reloading;
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-updated.js",
+        );
         await registerAndControl(page);
       }
-      const rows = await page.evaluate(sqliteProbe, workerName);
+      if (mode === "lazy-assets-update") {
+        // Same SW, new build: the running old page never requests the new lazy worker.
+        html = originalHtml.replace("index-fixture.js", "index-lazy.js");
+        servedWorkerName = "opfs-worker-lazy.js";
+        await page.goto(`${origin}/channels/lazy`);
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-fixture.js",
+        );
+        await page.waitForFunction(async () => {
+          const index = await caches.match("/index.html");
+          return index && (await index.text()).includes("index-lazy.js");
+        });
+        await context.setOffline(true);
+        await page.reload();
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-lazy.js",
+        );
+      }
+      if (mode === "reload-assets-update") {
+        html = originalHtml.replace("index-fixture.js", "index-reloaded.js");
+        servedWorkerName = "opfs-worker-reloaded.js";
+        await page.reload();
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-reloaded.js",
+        );
+        await context.setOffline(true);
+        await page.reload();
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-reloaded.js",
+        );
+      }
+      if (mode === "reload-cache-failure") {
+        html = originalHtml.replace("index-fixture.js", "index-failed.js");
+        failEntryPrecache = true;
+        await page.reload();
+        await registerAndControl(page);
+        const reloading = page.waitForNavigation({ waitUntil: "domcontentloaded" });
+        await page
+          .evaluate(async () => {
+            const { reloadIfShellUpdated } = await import("/assets/registration.js");
+            await reloadIfShellUpdated();
+          })
+          .catch((error) => {
+            if (!error.message.includes("Execution context was destroyed")) throw error;
+          });
+        await reloading;
+        await registerAndControl(page);
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-failed.js",
+        );
+        assert.equal(
+          await page.evaluate(async () => {
+            const { reloadIfShellUpdated } = await import("/assets/registration.js");
+            return reloadIfShellUpdated();
+          }),
+          false,
+          "A failed precache must not loop reloading the network document",
+        );
+        assert.match(
+          await page.evaluate(async () => (await caches.match("/index.html")).text()),
+          /index-fixture/,
+        );
+      }
+      const rows = await page.evaluate(sqliteProbe, servedWorkerName);
       assert.deepEqual(rows, [{ content: "保存確認" }]);
       if (warm) {
         const cachedPolicy = await page.evaluate(
           async (path) => (await caches.match(path))?.headers.get("content-security-policy"),
-          `/assets/${workerName}`,
+          `/assets/${servedWorkerName}`,
         );
         assert.equal(cachedPolicy, policies[0], "Cached Worker must retain the new CSP");
         await context.setOffline(true);
