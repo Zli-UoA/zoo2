@@ -1866,6 +1866,121 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     Ok(())
 }
 
+/// 同じファイル名の添付が複数あり、片方だけ取得できたときは、取得できなかった側の名前を本文に残す。
+#[tokio::test]
+async fn test_slack_import_same_name_files_keep_the_unfetched_name() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let files = MockServer::start().await;
+    for (dir, size) in [("a", 8usize), ("b", 64usize)] {
+        Mock::given(method("GET"))
+            .and(path(format!("/files/{dir}/image.png")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "image/png")
+                    .set_body_bytes(vec![b'x'; size]),
+            )
+            .mount(&files)
+            .await;
+    }
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    config.slack.files_base_url = format!("{}/files/", files.uri());
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_samename").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let file = |dir: &str| {
+        json!({"id": format!("F-{dir}"), "name": "image.png", "mimetype": "image/png",
+               "url_private_download": format!("{}/files/{dir}/image.png", files.uri())})
+    };
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C1","name":format!("samename-{suffix}"),"members":["U1"]}]),
+        ),
+        (
+            format!("samename-{suffix}/2024-01-01.json"),
+            json!([
+                {"ts":"1704070000.000100","user":"U1","text":"","files":[file("a"), file("b")]}
+            ]),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"create","name":format!("samename-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let run = run["id"].as_str().unwrap().to_string();
+    drive(&state, &app, &admin, &run, "completed").await;
+    let message = backend::slack::message_id(&team, "C1", "1704070000.000100");
+    let body = |state: AppState| {
+        let message = message.clone();
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+                &[&message],
+            )
+            .await
+            .unwrap()[0]["content"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    // トークンがないので、2 件とも保留のまま、同じ名前が 2 行入る
+    assert_eq!(body(state.clone()).await, "image.png\nimage.png");
+    // トークンを設定し、上限を小さくして取得すると、a (8 バイト) は取得でき、b (64 バイト) は上限でスキップされる
+    let mut small = config.clone();
+    small.slack.import_bot_token = Some("xoxb-test".into());
+    small.s3.max_file_size = 16;
+    let small_state = AppState::new(db.clone(), small);
+    let app_small = create_router(small_state.clone());
+    let (status, fetched) = request(
+        &app_small,
+        "POST",
+        &format!("/api/admin/slack-imports/{run}/fetch-files"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{fetched}");
+    drive(&small_state, &app_small, &admin, &run, "completed").await;
+    assert_eq!(
+        body(small_state.clone()).await,
+        "image.png",
+        "one image.png fetched and one skipped leaves one name in the body"
+    );
+    let attachments = sql(
+        &small_state,
+        "SELECT json_build_object('n',count(*))::text FROM attachments WHERE message_id=$1",
+        &[&message],
+    )
+    .await?;
+    assert_eq!(attachments[0]["n"], 1);
+    Ok(())
+}
+
 /// Slack の `url_private_download` が 302 を返しても、許可した URL なら追従して取得する。
 /// Authorization は同じオリジンにだけ付け、許可していない URL へのリダイレクトは追従しない。
 #[tokio::test]

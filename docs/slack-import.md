@@ -80,14 +80,14 @@ ZIP はブラウザから署名付き URL に直接 PUT するので、フロン
 
 Cloudflare の本文上限を超える ZIP は、ブラウザーではなく、バックエンドが使っているストレージのエンドポイント（`S3_ENDPOINT`。Cloudflare のプロキシを通らない）へ、`kubectl` で認証情報を取り出して直接置きます。
 
-1. 設定画面の「Slack インポート」で、その ZIP を選んでジョブを作ります。ブラウザーからのアップロードは失敗しますが、ジョブは「アップロード中」のまま残ります。`GET /api/admin/slack-imports` で、そのジョブの `id` を確かめます（管理者の Bearer トークンが必要です）。
+1. 設定画面の「Slack 取り込み」タブで、その ZIP を選んでジョブを作ります。ブラウザーからのアップロードは失敗しますが、ジョブは「アップロード中」のまま残ります。アップロード中のジョブは 24 時間で取り消されるので、手順 4 までを、ジョブを作ってから 24 時間以内に終えてください。`GET /api/admin/slack-imports` で、そのジョブの `id` を確かめます（管理者の Bearer トークンが必要です）。
 2. バックエンドの Pod から、ストレージの設定を取り出します。名前空間と Deployment 名は環境に合わせてください。
 
    ```bash
-   kubectl -n zoo2 exec deploy/backend -- printenv S3_ENDPOINT S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+   kubectl -n zoo2 exec deploy/backend -- printenv S3_ENDPOINT S3_BUCKET S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY
    ```
 
-3. 取り出した値を手元の環境変数に入れ、`slack-imports/<ジョブの id>/export.zip` というキーに置きます。`aws s3 cp` は、必要に応じてマルチパートで送ります。
+3. 取り出した `S3_ACCESS_KEY_ID`・`S3_SECRET_ACCESS_KEY` を、AWS CLI 用に `AWS_ACCESS_KEY_ID`・`AWS_SECRET_ACCESS_KEY` へ入れ、`S3_ENDPOINT`・`S3_BUCKET` とあわせて手元の環境変数にします。そのうえで、`slack-imports/<ジョブの id>/export.zip` というキーに置きます。`aws s3 cp` は、必要に応じてマルチパートで送ります。
 
    ```bash
    AWS_REGION=auto aws s3 cp ./export.zip "s3://$S3_BUCKET/slack-imports/<ジョブの id>/export.zip" --endpoint-url "$S3_ENDPOINT"

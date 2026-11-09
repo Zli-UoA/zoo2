@@ -1405,11 +1405,15 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 }
                 if status == "done" {
                     // 取り込み時に補ったファイル名 (トークンなし・サイズ・URL など) は、後から取得できたら添付と
-                    // 二重に出ないよう本文から外す
+                    // 二重に出ないよう本文から外す。同名の添付が複数あっても、外すのは 1 行だけにする
+                    // (取得できなかった側の名前を本文に残す)
                     suppress_app_events(&mut tx).await?;
                     exec(
                         &mut tx,
-                        "UPDATE messages m SET content=array_to_string(array_remove(string_to_array(m.content,E'\\n'),f.name),E'\\n'),\
+                        "UPDATE messages m SET content=COALESCE((SELECT array_to_string(array_agg(t.l ORDER BY t.n),E'\\n') \
+                         FROM unnest(string_to_array(m.content,E'\\n')) WITH ORDINALITY AS t(l,n) \
+                         WHERE t.n<>COALESCE((SELECT min(u.n) FROM unnest(string_to_array(m.content,E'\\n')) WITH ORDINALITY AS u(l,n) \
+                         WHERE u.l=f.name),0)),''),\
                          updated_at=m.updated_at FROM slack_files f \
                          WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND f.in_content AND m.id=$2",
                         &[&file.team_id, &file.message_id, &file.slack_file_id],
