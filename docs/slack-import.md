@@ -74,6 +74,28 @@ Slack のエクスポート ZIP には、添付ファイルの実体が入って
 
 ZIP は添付ファイルと同じバケット（`S3_*`）の `slack-imports/` の下に置きます（削除されるまで残るので、その分のストレージを使います）。ブラウザから直接 PUT するため、バケットの CORS で PUT を許可しておく必要があります（`infra/terraform/r2.tf` で設定済みです）。ワーカーは解析と取り込みのために ZIP を `SLACK_IMPORT_TMP_DIR` へダウンロードするので、書き込みができて ZIP と同じ程度の空き容量があるディレクトリが必要です。Kubernetes でルートファイルシステムを読み取り専用にしている場合は、`emptyDir`（`sizeLimit` を ZIP の上限以上にする）をマウントして指定してください。書き込めないと、解析と取り込みは `SLACK_IMPORT_TMP_DIR` を含むエラーで失敗します。zli.chat の本番と Preview では Zli-UoA/zoo2-infra#122（マージ済み）で、`emptyDir`・`SLACK_IMPORT_TMP_DIR`・`fsGroup` を設定します。この PR を配備する前に、本番と Preview の backend にその設定が反映されていることを確認してください。ワーカーは使っている間 ZIP にロックをかけておき、起動時に、どのプロセスもロックしていない `zoo-slack-import-*.zip` を消します。取り込みの途中でコンテナが再起動しても（`emptyDir` はコンテナの再起動では消えません）、前のプロセスが残した ZIP で容量の上限を超えることはありません。
 
+ZIP はブラウザから署名付き URL に直接 PUT するので、フロントエンドの CSP の `connect-src` に、ストレージの公開オリジン（`CSP_STORAGE_SRC`。添付ファイルと同じ設定）が必要です。公開オリジンが Cloudflare のプロキシ配下だと、プランごとのリクエスト本文の上限（Free・Pro は 100 MB、Business は 200 MB）を超える ZIP はブラウザーから PUT できません。そのような大きな ZIP は、ブラウザーを使わず、管理者が手動でストレージへ直接アップロードします（「大きな ZIP を手動でアップロードする」）。プレースホルダのアイコンは Slack のプロフィール画像の URL（`https://avatars.slack-edge.com/…` など）を使うので、表示するには、その配信元を `CSP_APP_IMAGE_SRC`（`img-src`）に追加します。追加しない場合は、既定のアイコンを表示します。`SLACK_IMPORT_BOT_TOKEN` で添付ファイルを取得する場合は、バックエンドから `files.slack.com`（`SLACK_FILES_BASE_URL` のホスト）へ HTTPS で接続できる必要があります。NetworkPolicy などで外向きの通信を絞っている場合は、許可してください。
+
+### 大きな ZIP を手動でアップロードする
+
+Cloudflare の本文上限を超える ZIP は、ブラウザーではなく、バックエンドが使っているストレージのエンドポイント（`S3_ENDPOINT`。Cloudflare のプロキシを通らない）へ、`kubectl` で認証情報を取り出して直接置きます。
+
+1. 設定画面の「Slack インポート」で、その ZIP を選んでジョブを作ります。ブラウザーからのアップロードは失敗しますが、ジョブは「アップロード中」のまま残ります。`GET /api/admin/slack-imports` で、そのジョブの `id` を確かめます（管理者の Bearer トークンが必要です）。
+2. バックエンドの Pod から、ストレージの設定を取り出します。名前空間と Deployment 名は環境に合わせてください。
+
+   ```bash
+   kubectl -n zoo2 exec deploy/backend -- printenv S3_ENDPOINT S3_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+   ```
+
+3. 取り出した値を手元の環境変数に入れ、`slack-imports/<ジョブの id>/export.zip` というキーに置きます。`aws s3 cp` は、必要に応じてマルチパートで送ります。
+
+   ```bash
+   AWS_REGION=auto aws s3 cp ./export.zip "s3://$S3_BUCKET/slack-imports/<ジョブの id>/export.zip" --endpoint-url "$S3_ENDPOINT"
+   ```
+
+4. `POST /api/admin/slack-imports/<ジョブの id>/uploaded` を呼びます。ストレージ上のサイズが、ジョブ作成時に送ったサイズと同じか確かめたうえで、解析が始まります。以降はブラウザーからの場合と同じです。
+
+キーとサイズが違うと、4 の確認で失敗します。置いた ZIP はジョブを削除したときに、通常の ZIP と同じように消えます。
 ZIP はブラウザから署名付き URL に直接 PUT するので、フロントエンドの CSP の `connect-src` に、ストレージの公開オリジン（`CSP_STORAGE_SRC`。添付ファイルと同じ設定）が必要です。公開オリジンが Cloudflare のプロキシ配下だと、プランごとのリクエスト本文の上限（Free・Pro は 100 MB、Business は 200 MB）を超える ZIP はブラウザーから PUT できません。そのような大きな ZIP は、ブラウザーを使わず、管理者が手動でクラスターへ直接アップロードします。プレースホルダのアイコンは Slack のプロフィール画像の URL（`https://avatars.slack-edge.com/…` など）を使うので、表示するには、その配信元を `CSP_APP_IMAGE_SRC`（`img-src`）に追加します。追加しない場合は、既定のアイコンを表示します。`SLACK_IMPORT_BOT_TOKEN` で添付ファイルを取得する場合は、バックエンドから `files.slack.com`（`SLACK_FILES_BASE_URL` のホスト）へ HTTPS で接続できる必要があります。NetworkPolicy などで外向きの通信を絞っている場合は、許可してください。
 
 ## Slack アカウントの連携
