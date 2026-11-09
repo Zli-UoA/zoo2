@@ -1180,9 +1180,9 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 
 【決定】複数のチャンネルの `membership_epoch` を一度に増やす処理（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）は、最初に `SELECT id FROM channels WHERE encrypted AND deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1) ORDER BY id FOR NO KEY UPDATE` でそのユーザーの暗号化チャンネルをまとめて `id` の昇順にロックしてから、同じ条件で `UPDATE` する。削除済みのチャンネルは増やさない。単独のチャンネルの変更（参加、退出、キック、送信）はこの対象ではない。同じユーザーの別の処理（端末の削除と、クロス署名鍵の変更）も、このロックで直列になる。
 
-【決定】`membership_epoch` を増やすのは、実際にメンバーが変わったときだけ（`channel_user` の行を `INSERT ... RETURNING` で入れた、または `DELETE ... RETURNING` で消した行数が 1 以上のとき）。すでにメンバーの `join` や `/users`、何もしない `leave` は、今までどおり既存の行を返して終わり、epoch は変えない。
+【決定】メンバーの参加、追加、退出、キック（`join`、`/users`、`leave`、`DELETE /users/{user_id}`、DM の再参加）で `membership_epoch` を増やすのは、`channel_user` の行が実際に変わったときだけ（`INSERT ... RETURNING` で入れた、または `DELETE ... RETURNING` で消した行数が 1 以上のとき）。すでにメンバーの `join` や `/users`、何もしない `leave` は、今までどおり既存の行を返して終わり、epoch は変えない。端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成での増加は、この条件に関係なく、下の表のとおり増やす。
 
-【決定】`channels` の行に `membership_epoch` を足すと、既存のトリガー（`sync_channel_notification_display`、`app_channel_events_v2`、`channels_home_live`）が、チャンネルの更新のたびに通知の表示や App のイベント、Home の同期を作り直してしまう。#357 で、これらのトリガーが `membership_epoch` だけの変更を無視するようにする（`(to_jsonb(OLD) - 'membership_epoch') IS NOT DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch')` を条件にする）。`notification_display` は `to_jsonb(c)` で行全体を埋め込むので、列を明示して `membership_epoch` を含めない。
+【決定】`channels` の行に `membership_epoch` を足すと、既存のトリガー（`sync_channel_notification_display`、`app_channel_events_v2`、`channels_home_live`）が、チャンネルの更新のたびに通知の表示や App のイベント、Home の同期を作り直してしまう。#357 で、これらのトリガーが `membership_epoch` だけの変更を無視するようにする。行レベルの `sync_channel_notification_display` と `app_channel_events_v2` は、`(to_jsonb(OLD) - 'membership_epoch') IS NOT DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch')` のときは何もしない条件を入れる。`channels_home_live` は文レベル（`FOR EACH STATEMENT`）で `OLD` と `NEW` を参照できないので、行レベルに変えて `WHEN (OLD IS DISTINCT FROM NEW AND (to_jsonb(OLD) - 'membership_epoch') IS DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch'))` を付けるか、遷移テーブル（`REFERENCING OLD TABLE AS o NEW TABLE AS n`）で `membership_epoch` 以外の変更があるかを判定する。`notification_display` は `to_jsonb(c)` で行全体を埋め込むので、列を明示して `membership_epoch` を含めない。
 
 サーバーが `membership_epoch` を 1 増やすとき（同じトランザクションで）：
 
