@@ -402,12 +402,12 @@ function refreshAvatar(url) {
   return work;
 }
 
-async function handleAvatar(request, event) {
+async function handleAvatar(request, keepAlive) {
   const url = avatarURL(request.url);
   const cache = await caches.open(AVATAR_CACHE);
   const previous = await cache.match(url);
   const update = refreshAvatar(url).catch(() => null);
-  event.waitUntil(update);
+  keepAlive(update);
   if (previous) return previous;
   const response = await update;
   if (response) return response;
@@ -505,11 +505,12 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET") return;
   if (event.request.destination === "image" && avatarURL(url.href)) {
-    event.respondWith(
-      handleAvatar(event.request, event).catch(() =>
-        fetch(event.request).catch(() => Response.error()),
-      ),
-    );
+    let updating = Promise.resolve();
+    const response = handleAvatar(event.request, (work) => {
+      updating = work;
+    }).catch(() => fetch(event.request).catch(() => Response.error()));
+    event.respondWith(response);
+    event.waitUntil(response.then(() => updating));
     return;
   }
   if (url.origin !== self.location.origin) return;

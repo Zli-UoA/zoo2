@@ -929,3 +929,23 @@ test("avatar cache storage failures preserve native image loading", async () => 
   });
   assert.equal(await (await fetchThrough(instance.handlers, avatarRequest())).text(), "native");
 });
+
+test("avatar background work extends the fetch event during dispatch", async () => {
+  const instance = avatarWorker(async () => avatarResponse());
+  const responses = [],
+    background = [];
+  instance.handlers.get("fetch")({
+    request: avatarRequest(),
+    respondWith(work) {
+      responses.push(work);
+    },
+    waitUntil(work) {
+      background.push(work);
+    },
+  });
+  assert.ok(background.length > 0);
+  assert.equal(responses.length, 1);
+  const [response] = await Promise.all(responses);
+  assert.equal(await response.text(), "first");
+  await Promise.all(background);
+});
