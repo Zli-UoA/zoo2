@@ -505,7 +505,11 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET") return;
   if (event.request.destination === "image" && avatarURL(url.href)) {
-    event.respondWith(handleAvatar(event.request, event));
+    event.respondWith(
+      handleAvatar(event.request, event).catch(() =>
+        fetch(event.request).catch(() => Response.error()),
+      ),
+    );
     return;
   }
   if (url.origin !== self.location.origin) return;

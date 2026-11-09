@@ -915,3 +915,17 @@ test("avatar caching only handles public avatar images and validates refresh URL
   });
   assert.equal(requests, 0);
 });
+
+test("avatar cache storage failures preserve native image loading", async () => {
+  const cacheContext = memoryCaches();
+  const open = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    if (name === "zoo-avatars-v1") throw new Error("Storage unavailable");
+    return open(name);
+  };
+  const instance = worker({
+    caches: cacheContext.api,
+    fetch: async () => avatarResponse("native"),
+  });
+  assert.equal(await (await fetchThrough(instance.handlers, avatarRequest())).text(), "native");
+});
