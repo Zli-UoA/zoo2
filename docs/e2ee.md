@@ -636,7 +636,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 | HTTP | `code` | 条件 | 追加のフィールド |
 | --- | --- | --- | --- |
-| 409 | `E2EE_STALE_EPOCH` | 送信や編集の `epoch` が今の `membership_epoch` より小さい | `current_epoch` |
+| 409 | `E2EE_STALE_EPOCH` | 送信や編集の `epoch` が今の `membership_epoch` より小さい。または、`recipients` の続きのページの `epoch` が今の `membership_epoch` と違う | `current_epoch` |
 | 409 | `E2EE_ENCRYPTED_IMMUTABLE` | チャンネルの `encrypted` を変えようとした（false から true も、true から false も）、または暗号化チャンネルを公開にしようとした | |
 | 409 | `E2EE_ENCRYPTED_MISMATCH` | 暗号化 DM の行が `encrypted = false` だった（不整合） | |
 | 409 | `E2EE_WRONG_BACKUP_VERSION` | 鍵バックアップの書き込み先が今の版ではない。版の作成で `expected_current_version` が今の版と違う | `current_version` |
@@ -868,7 +868,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 【決定】Megolm セッション鍵の配布先は、epoch と結び付いた 1 つのスナップショットから計算します（[鍵の配布先の判定](#鍵の配布先の判定)）。Electric の Shape はそれぞれ別のストリームで、同じトランザクションまで届いている保証がないので、Channels Shape の epoch と Channel Users Shape のメンバーを組み合わせると、退出したメンバーに鍵を配ってしまうことがあるためです。この API は [#357](https://github.com/Zli-UoA/zoo2/issues/357) で作ります。
 
-- `GET /api/e2ee/channels/{channel_id}/recipients`：削除済みのチャンネルは 404。応答は `keys/query` と同じ形に、`channel_id`、`membership_epoch`、`user_ids` を足したもの。【決定】応答は `user_id` の昇順に、1 ページ最大 50 人（`limit`。応答の上限は 50 × 20 台 × 8 KiB で約 8 MiB）で返す。続きは、前のページの `next_after`（最後の `user_id`。最後のページは `null`）を `after` に、最初のページの `membership_epoch` を `epoch` に入れて取る。各ページは 1 つの `REPEATABLE READ READ ONLY` のトランザクションで作り、`epoch` が今の `membership_epoch` と違うときは、ページを返さず 409 `E2EE_STALE_EPOCH`（`current_epoch` 付き）にする。メンバーの変更、端末の削除と失効、クロス署名鍵の変更は epoch を増やす（[membership_epoch と送信の順序](#membership_epoch-と送信の順序)）ので、同じ `epoch` で取れたページは、メンバーと削除済みの端末が同じになる。端末の追加は epoch を増やさないので、取得中に追加された端末は一部のページにだけ入ることがあるが、退出したメンバーや削除した端末に鍵を配ることにはならず、追加された端末には、端末が増えたときの手順（今のセッションを今のインデックスから配る）で別に配る。クライアントは 409 を受けたら、最初のページから取り直す。Channel Users Shape や `keys/query` の 50 人ずつの組み立てでは配布先を作らない（Shape が遅れていると、退出したメンバーに鍵を配ってしまう）。暗号化チャンネルのメンバー数の上限は、#357 で決める【提案】。
+- `GET /api/e2ee/channels/{channel_id}/recipients`：削除済みのチャンネルは 404。応答は `keys/query` と同じ形に、`channel_id`、`membership_epoch`、`user_ids` を足したもの。【決定】応答は `user_id` の昇順に、1 ページ最大 50 人（`limit`）で返す。1 ページの応答は 4 MiB までにし、それを超えるときは、入る人数で切って `next_after` を返す（1 人分は、20 台の端末鍵 8 KiB ずつとクロス署名鍵、署名、ピンを入れても 1 MiB を超えないので、少なくとも 1 人は入る）。8 MiB の上限（`E2EE_LIMIT_EXCEEDED`）は `keys/query` だけに適用する。続きは、前のページの `next_after`（最後の `user_id`。最後のページは `null`）を `after` に、最初のページの `membership_epoch` を `epoch` に入れて取る。各ページは 1 つの `REPEATABLE READ READ ONLY` のトランザクションで作り、`epoch` が今の `membership_epoch` と違うときは、ページを返さず 409 `E2EE_STALE_EPOCH`（`current_epoch` 付き）にする。メンバーの変更、端末の削除と失効、クロス署名鍵の変更は epoch を増やす（[membership_epoch と送信の順序](#membership_epoch-と送信の順序)）ので、同じ `epoch` で取れたページは、メンバーと削除済みの端末が同じになる。端末の追加は epoch を増やさないので、取得中に追加された端末は一部のページにだけ入ることがあるが、退出したメンバーや削除した端末に鍵を配ることにはならず、追加された端末には、端末が増えたときの手順（今のセッションを今のインデックスから配る）で別に配る。クライアントは 409 を受けたら、最初のページから取り直す。Channel Users Shape や `keys/query` の 50 人ずつの組み立てでは配布先を作らない（Shape が遅れていると、退出したメンバーに鍵を配ってしまう）。暗号化チャンネルのメンバー数の上限は、#357 で決める【提案】。
 
   ```json
   {
@@ -1313,7 +1313,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 マスター鍵を残してよいのは、端末を失っただけの場合に限ります。端末はマスター鍵の秘密鍵も SSSS 鍵も保存しないので、端末からはマスター鍵は漏れません。一方、鍵スロットを開けられた時点で、SSSS 鍵と、SSSS に入っているマスター鍵の秘密鍵も漏れています。古いマスター鍵を持つ攻撃者は、作り直した自己署名鍵とは別の自己署名鍵を自分で作り、自分の端末に署名できます。他のユーザーのピンは古いマスター鍵のままなので、その端末に鍵が配られてしまいます。
 
-【決定】失効の手順のどれを行うときも、AuthZ で、失った端末のセッション（アクセストークンとリフレッシュトークン）を失効する。乗っ取りの疑いがあるときは、すべてのセッションを失効する。`DELETE /api/e2ee/devices/{device_id}` で消えるのは E2EE の端末だけで、AuthZ のトークンは残るので、トークンを持つ者が、平文チャンネルの閲覧と送信、端末の登録と削除を続けられるため。AuthZ がパスキーの削除でセッションも失効するかは【未検証】で、AuthZ 側で確認し、失効しないなら AuthZ の機能として別に頼む（#362、AuthZ の issue）。
+【決定】失効とリセットのどちらを行うときも、AuthZ で、すべてのセッション（リフレッシュトークン）を失効し、再ログインしてもらう。AuthZ のセッション（`/list-sessions`、`/revoke-session` のセッション ID）と E2EE の `device_id` は対応づけないので、失った端末のセッションだけを選んで失効することはしない。他人が作った SSSS が登録されていたときのリセットも、同じく、すべてのセッションを失効する（無効化は要らない）。zoo2 の backend は JWT の署名とクレームだけを検証し、AuthZ のセッションを照会しないので、発行済みのアクセストークンは期限（300 秒）まで使える。つまり、失効してから最大 5 分は、そのトークンで API を使われる。即時に止めたいとき（乗っ取りの疑いが強いとき）は、無効化も併用する（無効化は DB の `is_deactivated` で、次の要求から 403 にする）。`DELETE /api/e2ee/devices/{device_id}` で消えるのは E2EE の端末だけで、AuthZ のトークンは残るので、トークンを持つ者が、平文チャンネルの閲覧と送信、端末の登録と削除を続けられるため。AuthZ がパスキーの削除でセッションも失効するかは【未検証】で、AuthZ 側で確認し、失効しないなら AuthZ の機能として別に頼む（#362、AuthZ の issue）。
 
 【決定】始める前に、次のことを行います。
 
@@ -1419,7 +1419,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - そのユーザーの E2EE の端末をすべて削除する（論理削除）。端末の削除 API と同じく、ワンタイム鍵、フォールバック鍵、その端末あての未受信の to-device メッセージも消す。【決定】削除する端末ごとの端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`）を、`device_id` の昇順で取ってから行う（`DELETE /api/e2ee/devices/{device_id}` と同じキー。to-device の送信がロックのあとに `deleted_at` を読み直すので、無効化された端末宛てのメッセージが残らない）。担当は #354（結合テストは #354 と #355）。
 - そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす。担当は #357（#354 の処理に足す）。
 - `is_deactivated` は `guest_kind` から `app_guest_rules` トリガーで決まり、App の API（`backend/src/apps/resources.rs`）などの経路で変わる。【提案】経路によらず同じトランザクションで行うよう、`users` の `AFTER UPDATE OF guest_kind` のトリガーで行う。
-- クロス署名鍵、SSSS、鍵バックアップは消さない。無効化を解いたユーザーは新しい端末を登録し、パスキーかリカバリーキーで解錠し直す。【決定】無効化は認証情報を失効しない。アカウントの乗っ取りに対応して無効化するときは、無効化に加えて、AuthZ で攻撃者のパスキーを削除し、AuthZ のすべてのセッション（リフレッシュトークンを含む）を失効し、E2EE のリセット（[失効の手順](#失効の手順)）を行う。無効化を解いたあとに、残ったリフレッシュトークンで API を使われないようにするため。どちらもしないと、攻撃者がパスキーかリカバリーキーを持っていれば、無効化を解いたあとに新しい端末を登録して SSSS を開けられる。
+- クロス署名鍵、SSSS、鍵バックアップは消さない。無効化を解いたユーザーは新しい端末を登録し、パスキーかリカバリーキーで解錠し直す。【決定】無効化は認証情報を失効しない。アカウントの乗っ取りに対応して無効化するときは、無効化に加えて、AuthZ で攻撃者のパスキーを削除し、AuthZ のすべてのセッション（リフレッシュトークンを含む）を失効し、E2EE のリセット（[失効の手順](#失効の手順)）を行う。無効化を解いたあとに、残ったリフレッシュトークンで API を使われないようにするため。パスキーの削除と E2EE のリセットのどちらかをしないと、攻撃者がパスキーかリカバリーキーを持っていれば、無効化を解いたあとに新しい端末を登録して SSSS を開けられる。
 - 【決定】無効化されたユーザーは E2EE の API を使えない。E2EE の API は既存の API と同じく `AuthUser` で呼び出したユーザーを決め、`AuthUser` は無効化されたユーザーを 403 で拒否するため（`backend/src/auth.rs` の `FromRequestParts` が `apps::events::active_user` を呼ぶ）。このため、無効化されたユーザーが端末を登録し直して自己署名し、配布先に戻ることはできない。
 - 【決定】`AuthUser` の確認はハンドラーとは別のトランザクションで行うので、確認を通ったあとで無効化がコミットされることがある。この競合を防ぐため、端末の登録（`POST /api/e2ee/devices`）、鍵のアップロード（`POST /api/e2ee/keys/upload`）、クロス署名の鍵（`POST /api/e2ee/cross_signing/keys`）と署名（`POST /api/e2ee/cross_signing/signatures`）の書き込み、SSSS の鍵（`POST /api/e2ee/secret_storage/keys`）、秘密（`POST /api/e2ee/secret_storage/secrets`）、スロットの追加（`POST /api/e2ee/secret_storage/slots`）、鍵バックアップの版の作成（`POST /api/e2ee/key_backup/versions`）は、書き込みと同じトランザクションで、最初に `SELECT 1 FROM users WHERE id = $1 AND NOT is_deactivated FOR SHARE` で自分の行を読む。行が返らなければ 403 にする。
   - 書き込みが先に行を読んだ場合、無効化の `UPDATE` はこの行ロックが外れるのを待つ。そのあとで行う無効化の端末の削除は、先にコミットされた端末も削除する。
