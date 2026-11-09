@@ -1,6 +1,6 @@
 name: zoo2-stg
 
-# Coolify は `extends` や `!reset` などを正しく扱えないため、DB 定義はこのファイルに展開している。
+# DB 定義は `extends` や `!reset` を使わず、このファイルに展開している。
 # ローカル用の infra/db/compose.yml と内容を合わせること (ホスト側ポート公開は行わない)。
 services:
   proxy:
@@ -21,8 +21,7 @@ services:
       - --entrypoints.health.address=:8082
       - --ping.entrypoint=health
       - --providers.file.filename=/etc/traefik/routes.yaml
-    # Coolify Single Resource Tunnel (cloudflared uses host networking).
-    # Avoid Coolify's own 8080; expose only the ingress on host loopback.
+    # Cloudflare Tunnel (cloudflared uses host networking); expose only the ingress on host loopback.
     ports:
       - "127.0.0.1:${PROXY_PORT:-18080}:8080"
     networks:
