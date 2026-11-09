@@ -104,6 +104,8 @@ jobs:
             printf "%s" "$headers" | grep -q "img-src 'self' data: blob: https://www.gstatic.com https://storage.example"
             images=$(printf "%s" "$headers" | sed -n 's/.*img-src \([^;]*\).*/\1/p')
             printf '%s\n' "$images" | tr ' ' '\n' | grep -Fxq 'https://avatars.example'
+            connections=$(printf "%s" "$headers" | sed -n 's/.*connect-src \([^;]*\).*/\1/p')
+            printf '%s\n' "$connections" | tr ' ' '\n' | grep -Fxq 'https://avatars.example'
             case "$images" in *avater.zliusercontent.com*) echo "Avatar CSP override was ignored" >&2; exit 1 ;; esac
           done
 
@@ -127,6 +129,8 @@ jobs:
             headers=$(docker exec "$default_csp_container" wget -Y off -S -O - "http://127.0.0.1:3000${path}" 2>&1)
             images=$(printf "%s" "$headers" | sed -n 's/.*img-src \([^;]*\).*/\1/p')
             printf '%s\n' "$images" | tr ' ' '\n' | grep -Fxq 'https://avater.zliusercontent.com'
+            connections=$(printf "%s" "$headers" | sed -n 's/.*connect-src \([^;]*\).*/\1/p')
+            printf '%s\n' "$connections" | tr ' ' '\n' | grep -Fxq 'https://avater.zliusercontent.com'
           done
 
       - name: Check Emoji Kitchen catalog compression and caching
@@ -267,7 +271,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: unit test
-        run: pnpm test
+        run: |
+          pnpm test
+          pnpm test:pwa
 
   browser-test:
     needs: runner
@@ -304,6 +310,9 @@ jobs:
       # The self-hosted runner image already has the system libraries.
       - name: Install Playwright Firefox and Chromium
         run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} firefox chromium
+
+      - name: Avatar cache Service Worker browser test
+        run: node scripts/avatar-cache.test.mjs
 
       - name: SQLite CSP cold and warm cache tests
         run: |

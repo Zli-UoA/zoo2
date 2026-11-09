@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Avatar as AvatarPrimitive } from "@base-ui/react/avatar";
 import { cn } from "cn";
+import { avatarSource, subscribeAvatar } from "../../lib/pwa/avatar-cache";
 
 function Avatar({
   className,
@@ -24,9 +25,14 @@ function Avatar({
   );
 }
 
-function AvatarImage({ className, ...props }: AvatarPrimitive.Image.Props) {
+function AvatarImage({ className, src, ...props }: AvatarPrimitive.Image.Props) {
+  const subscribe = React.useCallback((notify: () => void) => subscribeAvatar(src, notify), [src]);
+  const snapshot = React.useCallback(() => avatarSource(src), [src]);
+  const source = React.useSyncExternalStore(subscribe, snapshot, () => src);
   return (
     <AvatarPrimitive.Image
+      key={source}
+      src={source}
       data-slot="avatar-image"
       className={cn("aspect-square size-full rounded-full object-cover", className)}
       {...props}

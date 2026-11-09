@@ -875,7 +875,8 @@
     },
     {
       "file": "src/components/ui/avatar.tsx",
-      "story": "src/components/ui/avatar.stories.tsx"
+      "story": "src/components/ui/avatar.stories.tsx",
+      "reason": "形状はAvatar Story、画像と取得失敗はHome/PublicProfile Story、SWによる画像更新とオフライン表示はscripts/avatar-cache.test.mjsで確認する。"
     },
     {
       "file": "src/components/ui/button.tsx",

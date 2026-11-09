@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { webcrypto } from "node:crypto";
 
 const ORIGIN = "https://zoo.example";
 const source = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
@@ -39,6 +40,12 @@ function memoryCaches(entries = []) {
         async match(request) {
           return store.get(requestKey(request))?.clone();
         },
+        async keys() {
+          return [...store.keys()].map((url) => new Request(url));
+        },
+        async delete(request) {
+          return store.delete(requestKey(request));
+        },
         async addAll(requests) {
           for (const request of requests) {
             store.set(requestKey(request), basicResponse(`asset:${requestKey(request)}`));
@@ -73,6 +80,8 @@ function worker(overrides = {}) {
     return basicResponse(`network:${key}`);
   };
   const context = {
+    crypto: webcrypto,
+    AbortSignal,
     URL,
     Response,
     Headers,
@@ -721,4 +730,188 @@ test("unversioned assets still revalidate the HTTP cache", async () => {
   const url = `${ORIGIN}/assets/unversioned.js`;
   await fetchThrough(handlers, new Request(url));
   assert.deepEqual(requests, [{ url, cache: "reload" }]);
+});
+
+const avatarOrigin = "https://avater.zliusercontent.com";
+const avatarRequest = (path = "/avatar.png") => ({
+  url: `${avatarOrigin}${path}`,
+  destination: "image",
+  method: "GET",
+  mode: "no-cors",
+});
+const avatarResponse = (body = "first", init = {}) =>
+  new Response(body, { ...init, headers: { "content-type": "image/png", ...init.headers } });
+function avatarWorker(fetch) {
+  let time = 1_000_000;
+  const result = worker({
+    fetch,
+    Date: class extends Date {
+      static now() {
+        return time;
+      }
+    },
+  });
+  return {
+    ...result,
+    advance: () => {
+      time += 5 * 60 * 1000 + 1;
+    },
+  };
+}
+
+test("avatar cache serves a stored public image offline and across SW restarts", async () => {
+  let requests = 0;
+  const first = avatarWorker(async (_url, options) => {
+    requests++;
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.mode, "cors");
+    assert.equal(options.referrerPolicy, "no-referrer");
+    return avatarResponse();
+  });
+  assert.equal(await (await fetchThrough(first.handlers, avatarRequest())).text(), "first");
+  const restarted = worker({
+    caches: first.cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const background = [];
+  assert.equal(
+    await (await fetchThrough(restarted.handlers, avatarRequest(), background)).text(),
+    "first",
+  );
+  await Promise.all(background);
+  assert.equal(requests, 1);
+});
+
+test("stale avatars display immediately, share a refresh, and notify changes without refetch loops", async () => {
+  let requests = 0,
+    finish;
+  const instance = avatarWorker(async () => {
+    requests++;
+    if (requests === 1) return avatarResponse();
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  });
+  const messages = [];
+  instance.context.self.clients.matchAll = async () => [
+    { postMessage: (data) => messages.push(data) },
+  ];
+  await fetchThrough(instance.handlers, avatarRequest());
+  instance.advance();
+  const background = [];
+  const images = await Promise.all(
+    Array.from({ length: 8 }, () => fetchThrough(instance.handlers, avatarRequest(), background)),
+  );
+  for (const image of images) assert.equal(await image.text(), "first");
+  assert.equal(requests, 2);
+  finish(avatarResponse("changed"));
+  await Promise.all(background);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "AVATAR_UPDATED");
+  assert.equal(messages[0].url, avatarRequest().url);
+  assert.match(messages[0].revision, /^[a-f0-9]{64}$/);
+  const revised = avatarRequest(`/avatar.png?__zoo_avatar=${messages[0].revision}`);
+  assert.equal(await (await fetchThrough(instance.handlers, revised)).text(), "changed");
+  assert.equal(requests, 2);
+  assert.equal(instance.cacheContext.storeFor("zoo-avatars-v1").size, 1);
+});
+
+test("unchanged avatars refresh the timestamp without notifying the page", async () => {
+  let requests = 0;
+  const instance = avatarWorker(async () => {
+    requests++;
+    return avatarResponse();
+  });
+  instance.context.self.clients.matchAll = async () => {
+    throw new Error("unchanged bytes should not notify");
+  };
+  await fetchThrough(instance.handlers, avatarRequest());
+  instance.advance();
+  await dispatch(instance.handlers, "message", {
+    data: { type: "REFRESH_AVATARS", urls: [avatarRequest().url] },
+  });
+  await fetchThrough(instance.handlers, avatarRequest());
+  assert.equal(requests, 2);
+});
+
+test("failed, non-image and oversized avatar refreshes keep the last good image", async () => {
+  let response = avatarResponse();
+  const instance = avatarWorker(async () => response.clone());
+  await fetchThrough(instance.handlers, avatarRequest());
+  for (const bad of [
+    avatarResponse("missing", { status: 404 }),
+    new Response("html"),
+    avatarResponse("x".repeat(2 * 1024 * 1024 + 1)),
+  ]) {
+    response = bad;
+    instance.advance();
+    const background = [];
+    assert.equal(
+      await (await fetchThrough(instance.handlers, avatarRequest(), background)).text(),
+      "first",
+    );
+    await Promise.all(background);
+    assert.equal(
+      await instance.cacheContext
+        .storeFor("zoo-avatars-v1")
+        .get(avatarRequest().url)
+        .clone()
+        .text(),
+      "first",
+    );
+  }
+});
+
+test("unconfigured CORS preserves native loading without caching an opaque response", async () => {
+  let requests = 0;
+  const instance = avatarWorker(async (request) => {
+    requests++;
+    if (typeof request === "string") throw new TypeError("CORS");
+    return avatarResponse("native");
+  });
+  assert.equal(await (await fetchThrough(instance.handlers, avatarRequest())).text(), "native");
+  assert.equal(requests, 2);
+  assert.equal(instance.cacheContext.storeFor("zoo-avatars-v1").size, 0);
+});
+
+test("avatar storage is bounded and survives app shell upgrades", async () => {
+  const instance = avatarWorker(async () => avatarResponse());
+  for (let index = 0; index < 66; index++)
+    await fetchThrough(instance.handlers, avatarRequest(`/image-${index}.png`));
+  const cache = instance.cacheContext.storeFor("zoo-avatars-v1");
+  assert.equal(cache.size, 64);
+  assert.ok(!cache.has(`${avatarOrigin}/image-0.png`));
+  assert.ok(cache.has(`${avatarOrigin}/image-65.png`));
+  await instance.cacheContext.api.open("zoo-avatars-v0");
+  await dispatch(instance.handlers, "activate");
+  assert.ok(instance.cacheContext.stores.has("zoo-avatars-v1"));
+  assert.ok(!instance.cacheContext.stores.has("zoo-avatars-v0"));
+});
+
+test("avatar caching only handles public avatar images and validates refresh URLs", async () => {
+  let requests = 0;
+  const instance = avatarWorker(async () => {
+    requests++;
+    return avatarResponse();
+  });
+  for (const request of [
+    { ...avatarRequest(), destination: "empty" },
+    { ...avatarRequest(), method: "POST" },
+    { ...avatarRequest(), url: "https://other.example/photo.png" },
+    { ...avatarRequest(), url: `${ORIGIN}/api/users/me` },
+  ])
+    assert.equal(await fetchThrough(instance.handlers, request), undefined);
+  await dispatch(instance.handlers, "message", {
+    data: {
+      type: "REFRESH_AVATARS",
+      urls: [
+        "https://other.example/image.png",
+        `${ORIGIN}/api/users/me`,
+        `https://user:pass@avater.zliusercontent.com/x`,
+      ],
+    },
+  });
+  assert.equal(requests, 0);
 });
