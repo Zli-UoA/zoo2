@@ -46,11 +46,21 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
 `public/sw.js` を v2 に更新した。
 
 - install で `/`、`/index.html`、`/offline.html`、manifest、アイコンを precache する。
-- ナビゲーションは network-first。失敗時は保存済みの `/index.html`、なければ `/offline.html`。
+- 通常のSPAルートへのナビゲーションでは、保存済みの app shell を即座に返し、ネットワークでの更新は裏で行う。
+  明示的な再読み込み（`no-cache` / `reload`）はネットワークを優先し、デプロイ後のチャンク取得エラーから復旧できるようにする。
+  ライセンスなどの静的ファイルへの直接遷移もネットワークを優先する。
+  保存済みの画面がなければネットワークから取得し、失敗時は `/offline.html` に戻す。
+  更新したHTMLは、参照するentry assetsの保存が完了してから既存キャッシュへ反映する。
   `content-type: text/html` の応答だけを `/index.html` として保存し、アイコンや JSON への
   直接遷移で app shell を上書きしない。
 - `/assets/`、`/icons/`、`/emojibase-data/` は runtime cache（cache-first）。
 - `/api/`、`/auth/`、`/sw.js`、cross-origin、GET 以外はキャッシュしない。
+- 背景更新ではビルド時に生成する `pwa-assets.json` とHTMLのentryを照合し、遅延ロードする
+  JS・SQLite Worker・フォントも保存してから新しいHTMLを公開する。一部でも取得できなければ旧画面を維持する。
+- Service Worker更新で画面と保存済みentryが食い違う場合は、OPFSを開く前に新しい画面へ再読み込みする。
+  同じentryの不一致による再読み込みはセッション内で1回に制限し、キャッシュの保存失敗が続いてもループさせない。
+  静的HTMLはアプリ用の `/index.html` を更新しない。保存済み画面がある場合は、明示的な再読み込みでも全アセットを保存してからHTMLを更新する。
+- 起動時のService Worker準備はユーザー確認と並行して進める。OPFSを開く前には準備完了を待ち、CSP更新の順序を維持する。
 - キャッシュ名はビルドごとの entry hash を含む `zoo-shell-<build>`。install 時に index.html から
   決定し、activate で古い `zoo-shell-*` / `zoo-offline-*` キャッシュを削除する。
   Service Worker は数十秒で停止され再起動すると global 変数を失うため、名前は変数に保持せず、
@@ -58,6 +68,11 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
   ビルド別キャッシュを見つけられる。
 - `fetch()` が返す body は展開済みなのに `content-encoding` ヘッダーが残ると module script の読み込みが
   `ERR_FAILED` になるため、キャッシュ前に encoding・validator・`cache-control` を落として `no-store` を付ける。
+- install時はentry assetsのみを先に保存する。画面を開かずにSWだけが更新され、その後すぐオフラインにした場合は、
+  遅延アセットがまだ未保存のことがある。初回オンライン起動・背景更新で全アセットが保存された後はオフラインで利用できる。
+- 全アセットは現ビルドで約7 MiB。SWのactivateまでは表示中の旧画面に必要なアセットも保持するため、
+  SWを更新しないデプロイが続くと増える。容量不足で保存に失敗した場合は新HTMLを公開せず旧画面を維持し、
+  次のSWのactivateで旧キャッシュを破棄する。利用中の旧画面のファイルを容量確保のために削除することはしない。
 - 初回ロード時点で Service Worker が制御していない assets（フォントや OPFS worker）は、
   ページから `CACHE_ASSETS` メッセージで後追いキャッシュする。
 
