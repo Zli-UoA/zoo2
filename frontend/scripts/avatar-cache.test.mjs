@@ -14,13 +14,18 @@ const pictures = [
   await readFile(new URL("../public/icons/badge-96.png", import.meta.url)),
 ];
 let version = 0;
+let recoveryReady = false;
 const imageRequests = [];
 const imageServer = http.createServer((request, response) => {
   imageRequests.push({ url: request.url, cookie: request.headers.cookie });
   response.setHeader("Content-Type", "image/png");
   response.setHeader("Cache-Control", "public, max-age=31536000, immutable");
   if (!request.url.startsWith("/no-cors")) response.setHeader("Access-Control-Allow-Origin", "*");
-  response.end(pictures[version]);
+  if (request.url.startsWith("/recover.png") && !recoveryReady) {
+    response.setHeader("Content-Type", "text/plain");
+    response.writeHead(404);
+    response.end("not ready");
+  } else response.end(pictures[version]);
 });
 await new Promise((resolve) => imageServer.listen(0, "127.0.0.1", resolve));
 const imageOrigin = `http://127.0.0.1:${imageServer.address().port}`;
@@ -37,6 +42,7 @@ if (!navigator.serviceWorker.controller) await new Promise(resolve => navigator.
 window.avatar = document.createElement('img');
 avatar.width = avatar.height = 32;
 avatar.dataset.slot = 'avatar-image';
+avatar.dataset.zooAvatarSrc = ${JSON.stringify(imageURL)};
 avatar.referrerPolicy = 'no-referrer';
 subscribeAvatar(${JSON.stringify(imageURL)}, () => { avatar.src = avatarSource(${JSON.stringify(imageURL)}); });
 avatar.src = avatarSource(${JSON.stringify(imageURL)});
@@ -162,9 +168,26 @@ try {
     ),
     false,
   );
+  await page.evaluate(async (url) => {
+    const { subscribeAvatar, avatarSource } = await import("/avatar-cache.js");
+    const image = new Image();
+    image.id = "recovery-probe";
+    image.width = image.height = 32;
+    image.dataset.zooAvatarSrc = url;
+    subscribeAvatar(url, () => {
+      image.src = avatarSource(url);
+    });
+    image.src = avatarSource(url);
+    document.body.append(image);
+  }, `${imageOrigin}/recover.png`);
+  await page.waitForFunction(() => document.getElementById("recovery-probe").complete);
+  assert.equal(await page.locator("#recovery-probe").evaluate((image) => image.naturalWidth), 0);
+  recoveryReady = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForFunction(() => document.getElementById("recovery-probe").naturalWidth === 96);
   assert.deepEqual(errors, []);
   console.log(
-    "Avatar SW: CORS, cookie omission, stale refresh, DOM update, offline SW upgrade and CORS rollout fallback passed.",
+    "Avatar SW: CORS, cookie omission, stale refresh, DOM update, offline SW upgrade and CORS rollout fallback and failed-image recovery passed.",
   );
 } finally {
   await browser.close();

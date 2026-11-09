@@ -30,13 +30,17 @@ function AvatarImage({ className, src, ...props }: AvatarPrimitive.Image.Props) 
   const snapshot = React.useCallback(() => avatarSource(src), [src]);
   const source = React.useSyncExternalStore(subscribe, snapshot, () => src);
   return (
-    <AvatarPrimitive.Image
-      key={source}
-      src={source}
-      data-slot="avatar-image"
-      className={cn("aspect-square size-full rounded-full object-cover", className)}
-      {...props}
-    />
+    <>
+      {/* Keep the source available while initials are displayed after a failed load. */}
+      {src ? <span hidden aria-hidden="true" data-zoo-avatar-src={src} /> : null}
+      <AvatarPrimitive.Image
+        key={source}
+        src={source}
+        data-slot="avatar-image"
+        className={cn("aspect-square size-full rounded-full object-cover", className)}
+        {...props}
+      />
+    </>
   );
 }
 

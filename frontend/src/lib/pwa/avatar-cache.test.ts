@@ -17,7 +17,10 @@ async function setup() {
       src: url,
       complete: true,
       naturalWidth: 32,
-      getBoundingClientRect: () => ({ top: 0, bottom: 32, left: 0, right: 32 }),
+      getAttribute() {
+        return this.src;
+      },
+      parentElement: { getBoundingClientRect: () => ({ top: 0, bottom: 32, left: 0, right: 32 }) },
     },
   ];
   const document = Object.assign(new EventTarget(), {
@@ -74,7 +77,7 @@ it("updates the matching image source only for a valid message from the controll
   expect(alice).toHaveBeenCalledTimes(1);
 });
 
-it("refreshes loaded visible images on focus, reconnection and the shared interval", async () => {
+it("refreshes visible images including failed loads on focus, reconnection and the shared interval", async () => {
   const app = await setup();
   stops.push(app.subscribeAvatar(url, vi.fn()));
   app.images.push(
@@ -82,7 +85,9 @@ it("refreshes loaded visible images on focus, reconnection and the shared interv
     { ...app.images[0], naturalWidth: 0 },
     {
       ...app.images[0],
-      getBoundingClientRect: () => ({ top: 900, bottom: 932, left: 0, right: 32 }),
+      parentElement: {
+        getBoundingClientRect: () => ({ top: 900, bottom: 932, left: 0, right: 32 }),
+      },
     },
   );
   await vi.advanceTimersByTimeAsync(5 * 60 * 1000);

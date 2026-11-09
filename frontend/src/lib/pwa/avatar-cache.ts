@@ -54,19 +54,17 @@ function startListening(): (() => void) | undefined {
   const refresh = () => {
     if (!workers.controller || document.visibilityState === "hidden" || !navigator.onLine) return;
     const urls = new Set<string>();
-    for (const image of document.querySelectorAll<HTMLImageElement>(
-      'img[data-slot="avatar-image"]',
-    )) {
-      if (!image.complete || image.naturalWidth === 0) continue;
-      const rect = image.getBoundingClientRect();
+    for (const source of document.querySelectorAll<HTMLElement>("[data-zoo-avatar-src]")) {
+      const rect = source.parentElement?.getBoundingClientRect();
       if (
+        !rect ||
         rect.bottom <= 0 ||
         rect.top >= window.innerHeight ||
         rect.right <= 0 ||
         rect.left >= window.innerWidth
       )
         continue;
-      const url = avatarURL(image.src);
+      const url = avatarURL(source.getAttribute("data-zoo-avatar-src") ?? undefined);
       if (url && listeners.has(url)) urls.add(url);
     }
     const values = [...urls];
