@@ -78,25 +78,38 @@ ZIP はブラウザから署名付き URL に直接 PUT するので、フロン
 
 ### 大きな ZIP を手動でアップロードする
 
-Cloudflare の本文上限を超える ZIP は、ブラウザーではなく、バックエンドが使っているストレージのエンドポイント（`S3_ENDPOINT`。Cloudflare のプロキシを通らない）へ、`kubectl` で認証情報を取り出して直接置きます。
+Cloudflare の本文上限を超える ZIP は、ブラウザーではなく、バックエンドが使っているストレージのエンドポイント（`S3_ENDPOINT`。Cloudflare のプロキシを通らない）へ、`kubectl` で Secret から認証情報を読んで直接置きます。
 
 1. 設定画面の「Slack 取り込み」タブで、その ZIP を選んでジョブを作ります。ブラウザーからのアップロードは失敗しますが、ジョブは「アップロード中」のまま残ります。アップロード中のジョブは 24 時間で取り消されるので、手順 4 までを、ジョブを作ってから 24 時間以内に終えてください。`GET /api/admin/slack-imports` で、そのジョブの `id` を確かめます（管理者の Bearer トークンが必要です）。
-2. バックエンドの Pod から、ストレージの設定を取り出します。名前空間と Deployment 名は環境に合わせてください。
+2. バックエンドが使うストレージの設定を、そのシェルの環境変数に入れます。バックエンドのイメージは distroless で、`kubectl exec` で `sh` や `printenv` を実行できないので、Deployment と Secret から読みます。値は画面に出さず、端末の履歴にも残しません。名前空間・Deployment 名・Secret 名は、環境に合わせてください。
+
+   まず、Deployment の環境変数の定義を確かめます。`S3_ENDPOINT`・`S3_BUCKET` の値と、`S3_ACCESS_KEY_ID`・`S3_SECRET_ACCESS_KEY` が参照する Secret の名前とキーが分かります。Secret の値は出ません。
 
    ```bash
-   kubectl -n zoo2 exec deploy/backend -- printenv S3_ENDPOINT S3_BUCKET S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY
+   kubectl -n zoo2 get deploy backend -o jsonpath='{.spec.template.spec.containers[0].env}'
    ```
 
-3. 取り出した `S3_ACCESS_KEY_ID`・`S3_SECRET_ACCESS_KEY` を、AWS CLI 用に `AWS_ACCESS_KEY_ID`・`AWS_SECRET_ACCESS_KEY` へ入れ、`S3_ENDPOINT`・`S3_BUCKET` とあわせて手元の環境変数にします。そのうえで、`slack-imports/<ジョブの id>/export.zip` というキーに置きます。`aws s3 cp` は、必要に応じてマルチパートで送ります。
+   次に、バックエンドの名前 `S3_ACCESS_KEY_ID`・`S3_SECRET_ACCESS_KEY` を、AWS CLI の名前 `AWS_ACCESS_KEY_ID`・`AWS_SECRET_ACCESS_KEY` に読み替えて入れます。`<Secret 名>` と `<キー名>` は、上で確かめた値です。
 
    ```bash
-   AWS_REGION=auto aws s3 cp ./export.zip "s3://$S3_BUCKET/slack-imports/<ジョブの id>/export.zip" --endpoint-url "$S3_ENDPOINT"
+   export S3_ENDPOINT='<S3_ENDPOINT の値>' S3_BUCKET='<S3_BUCKET の値>'
+   export AWS_ACCESS_KEY_ID="$(kubectl -n zoo2 get secret <Secret 名> -o jsonpath='{.data.<S3_ACCESS_KEY_ID のキー名>}' | base64 -d)"
+   export AWS_SECRET_ACCESS_KEY="$(kubectl -n zoo2 get secret <Secret 名> -o jsonpath='{.data.<S3_SECRET_ACCESS_KEY のキー名>}' | base64 -d)"
+   ```
+
+3. `slack-imports/<ジョブの id>/export.zip` というキーに置きます。`aws s3 cp` は、必要に応じてマルチパートで送ります。`Content-Type` は `application/zip` にします（手順 4 で照合します）。
+
+   ```bash
+   AWS_REGION=auto aws s3 cp ./export.zip "s3://$S3_BUCKET/slack-imports/<ジョブの id>/export.zip" --endpoint-url "$S3_ENDPOINT" --content-type application/zip
    ```
 
 4. `POST /api/admin/slack-imports/<ジョブの id>/uploaded` を呼びます。ストレージ上のサイズが、ジョブ作成時に送ったサイズと同じか確かめたうえで、解析が始まります。以降はブラウザーからの場合と同じです。
 
-キーとサイズが違うと、4 の確認で失敗します。置いた ZIP はジョブを削除したときに、通常の ZIP と同じように消えます。
-ZIP はブラウザから署名付き URL に直接 PUT するので、フロントエンドの CSP の `connect-src` に、ストレージの公開オリジン（`CSP_STORAGE_SRC`。添付ファイルと同じ設定）が必要です。公開オリジンが Cloudflare のプロキシ配下だと、プランごとのリクエスト本文の上限（Free・Pro は 100 MB、Business は 200 MB）を超える ZIP はブラウザーから PUT できません。そのような大きな ZIP は、ブラウザーを使わず、管理者が手動でクラスターへ直接アップロードします。プレースホルダのアイコンは Slack のプロフィール画像の URL（`https://avatars.slack-edge.com/…` など）を使うので、表示するには、その配信元を `CSP_APP_IMAGE_SRC`（`img-src`）に追加します。追加しない場合は、既定のアイコンを表示します。`SLACK_IMPORT_BOT_TOKEN` で添付ファイルを取得する場合は、バックエンドから `files.slack.com`（`SLACK_FILES_BASE_URL` のホスト）へ HTTPS で接続できる必要があります。NetworkPolicy などで外向きの通信を絞っている場合は、許可してください。
+キーやサイズ、`Content-Type` が違うと、4 の確認で失敗します。置いた ZIP はジョブを削除したときに、通常の ZIP と同じように消えます。
+
+この鍵はバケット全体（添付ファイルを含む）の読み書きに使うもので、Secret を読める人は取り出せます。画面共有や録画の中では実行せず、終わったらそのシェルを閉じて、環境変数を残さないでください。鍵を取り出したくない場合は、手元の CLI などで署名付き PUT URL を作って送る方法もあります。
+
+Preview で使うときは、名前空間・Secret 名・`S3_ENDPOINT` の値が本番と同じとは限らないので、確かめてから読み替えてください。
 
 ## Slack アカウントの連携
 
