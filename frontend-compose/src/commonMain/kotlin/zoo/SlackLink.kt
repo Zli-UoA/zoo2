@@ -424,10 +424,10 @@ private fun SlackOwnImportSection(app: Session) {
                 SlackImportMappingForm(
                     app,
                     channels,
-                    app.t(
+                    app.tCount(
                         "slackLink.importSummary",
+                        channels.size,
                         "name" to export.text("file_name"),
-                        "count" to channels.size.toString(),
                     ),
                     state.pending || state.running,
                     targetsFor = { channel ->

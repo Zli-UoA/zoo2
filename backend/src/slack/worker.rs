@@ -1035,22 +1035,6 @@ async fn create_channel(
 ) -> Result<((String, String), bool), AppError> {
     validate_channel_name(name)?;
     let id = super::channel_id(team, &channel.id);
-    // 決定的な ID のチャンネルがすでにあるのに、この Slack チャンネルの取り込み先として記録されていなければ、
-    // 取り込みで作ったものではない (`POST /api/channels` は任意の ID を受け付ける)。他人のチャンネルを再利用して
-    // 履歴を流し込まないよう、名前を出さずに断る
-    let foreign = one(
-        tx,
-        "SELECT json_build_object('foreign',EXISTS(SELECT 1 FROM channels WHERE id=$1) \
-         AND NOT EXISTS(SELECT 1 FROM slack_channels WHERE team_id=$2 AND slack_channel_id=$3 AND channel_id=$1))::text",
-        &[&id, team, &channel.id],
-    )
-    .await?;
-    if foreign["foreign"] == true {
-        return Err(AppError::BadRequest(format!(
-            "Slack channel {} cannot be imported into a new channel because a channel with the same ID already exists",
-            channel.id
-        )));
-    }
     let description: String = channel
         .purpose
         .value
@@ -1068,12 +1052,12 @@ async fn create_channel(
             "Channel name '{name}' is already taken"
         )));
     }
-    exec(
+    let inserted = query(
         tx,
         "INSERT INTO channels(id,channel_name,description,created_user_id,is_private,created_at) \
          VALUES($1,$2,NULLIF($3,''),$4,$5::boolean,\
          CASE WHEN $6::bigint>0 THEN (to_timestamp($6::bigint) AT TIME ZONE 'UTC')::timestamp(3) ELSE CURRENT_TIMESTAMP END) \
-         ON CONFLICT (id) DO NOTHING",
+         ON CONFLICT (id) DO NOTHING RETURNING json_build_object('id',id)::text",
         &[
             &id,
             name,
@@ -1084,6 +1068,25 @@ async fn create_channel(
         ],
     )
     .await?;
+    // 決定的な ID のチャンネルがすでにあるのに、この Slack チャンネルの取り込み先として記録されていなければ、
+    // 取り込みで作ったものではない (`POST /api/channels` は任意の ID を受け付ける)。他人のチャンネルを再利用して
+    // 履歴を流し込まないよう、名前を出さずに断る。存在の確認と INSERT を別の文にすると、その間に作られた
+    // チャンネルを見逃すので、INSERT 自身の結果 (実際に作れたか) で判定する
+    if inserted.is_empty()
+        && query(
+            tx,
+            "SELECT json_build_object('ok',true)::text FROM slack_channels \
+             WHERE team_id=$1 AND slack_channel_id=$2 AND channel_id=$3",
+            &[team, &channel.id, &id],
+        )
+        .await?
+        .is_empty()
+    {
+        return Err(AppError::BadRequest(format!(
+            "Slack channel {} cannot be imported into a new channel because a channel with the same ID already exists",
+            channel.id
+        )));
+    }
     // 作成した管理者もメンバーに入れる (zoo でチャンネルを作ったときと同じ)
     exec(
         tx,

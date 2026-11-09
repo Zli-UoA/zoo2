@@ -116,7 +116,7 @@ internal fun SlackImportRunStatus(app: Session, job: Row) {
         }
         "completed" ->
             Text(
-                app.t("slackImport.completed", "count" to job.text("processed_messages")),
+                app.tCount("slackImport.completed", job.text("processed_messages").toIntOrNull() ?: 0),
                 small = true,
             )
         "failed" ->
@@ -310,7 +310,7 @@ internal fun SlackImportMappingForm(
             }
         }
         Button(
-            app.t("slackImport.start", "count" to selected.toString()),
+            app.tCount("slackImport.start", selected),
             primary = true,
             enabled = !pending && selected > 0,
         ) {

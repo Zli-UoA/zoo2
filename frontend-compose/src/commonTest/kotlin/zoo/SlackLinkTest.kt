@@ -227,4 +227,11 @@ class SlackLinkTest {
         assertEquals(linked, state.state)
         state.close()
     }
+
+    @Test
+    fun pluralKeysFollowTheCount() {
+        assertEquals("slackLink.importSummary_one", pluralKey("slackLink.importSummary", 1))
+        assertEquals("slackLink.importSummary_other", pluralKey("slackLink.importSummary", 0))
+        assertEquals("slackLink.importSummary_other", pluralKey("slackLink.importSummary", 3))
+    }
 }

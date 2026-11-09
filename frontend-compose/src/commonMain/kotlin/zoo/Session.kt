@@ -144,6 +144,13 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         return platform.translate(key, args.toMap())
     }
 
+    /**
+     * 件数で言い回しが変わる文言 (`key_one` / `key_other`)。辞書は複数形ごとにキーを持ち、`translate` は
+     * 完全一致で探すので、件数から選んだキーを渡す。`count` は補間にも渡す
+     */
+    fun tCount(key: String, count: Int, vararg args: Pair<String, String>): String =
+        t(pluralKey(key, count), *args, "count" to count.toString())
+
     fun dayLabel(timestamp: String): String {
         val value = platform.day(timestamp)
         val now = platform.now()
@@ -425,3 +432,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 }
 
 fun String.decodeURLPart(): String = decodeURLQueryComponent()
+
+/** 件数に合う複数形のキー (`key_one` / `key_other`) */
+fun pluralKey(key: String, count: Int): String = "${key}_${if (count == 1) "one" else "other"}"
