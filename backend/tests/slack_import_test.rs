@@ -1645,7 +1645,14 @@ async fn test_slack_import_names_files_skipped_while_fetching() -> anyhow::Resul
                 .to_string()
         }
     };
-    assert_eq!(content("1704070000.000100").await, "big1.bin\nbig2.bin");
+    // 取得の順で足すので、行の順には依らない
+    let mut lines: Vec<String> = content("1704070000.000100")
+        .await
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines.sort();
+    assert_eq!(lines, vec!["big1.bin", "big2.bin"]);
     assert_eq!(content("1704070000.000200").await, "");
     assert_eq!(content("1704070000.000300").await, "keep");
     Ok(())
@@ -1659,7 +1666,7 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
     let files = MockServer::start().await;
-    for name in ["late.txt", "big.bin", "zeta.txt", "alpha.txt"] {
+    for name in ["late.txt", "big.bin", "zeta.txt", "alpha.txt", "report.pdf"] {
         Mock::given(method("GET"))
             .and(path(format!("/files/{name}")))
             .respond_with(
@@ -1706,7 +1713,9 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
                 {"ts":"1704070000.000100","user":"U1","text":"","files":[file("late.txt")]},
                 {"ts":"1704070000.000200","user":"U1","text":"","files":[file("big.bin")]},
                 // 複数のファイル。Slack の files の順が名前の順と違っても、取得できたら本文から外す
-                {"ts":"1704070000.000300","user":"U1","text":"","files":[file("zeta.txt"), file("alpha.txt")]}
+                {"ts":"1704070000.000300","user":"U1","text":"","files":[file("zeta.txt"), file("alpha.txt")]},
+                // 投稿者が書いた本文が、添付のファイル名と同じ。取得できても、本文は消さない
+                {"ts":"1704070000.000400","user":"U1","text":"report.pdf","files":[file("report.pdf")]}
             ]),
         ),
     ]);
@@ -1775,7 +1784,7 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
         None,
     )
     .await?;
-    assert_eq!(job["skipped_files"], 4, "{job}");
+    assert_eq!(job["skipped_files"], 5, "{job}");
     // 再取得できるスキップが残るジョブは、新しい履歴が増えても一覧から押し出されない
     {
         let mut db = db.clone();
@@ -1827,6 +1836,11 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     assert_eq!(content(big_state.clone(), "1704070000.000100").await, "");
     assert_eq!(content(big_state.clone(), "1704070000.000200").await, "");
     assert_eq!(content(big_state.clone(), "1704070000.000300").await, "");
+    assert_eq!(
+        content(big_state.clone(), "1704070000.000400").await,
+        "report.pdf",
+        "the poster's own text stays even when it equals the file name"
+    );
     let attachments = sql(
         &big_state,
         "SELECT json_build_object('n',count(*))::text FROM attachments WHERE message_id IN ($1,$2)",
@@ -1837,5 +1851,183 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     )
     .await?;
     assert_eq!(attachments[0]["n"], 3);
+    Ok(())
+}
+
+/// Slack の `url_private_download` が 302 を返しても、許可した URL なら追従して取得する。
+/// Authorization は同じオリジンにだけ付け、許可していない URL へのリダイレクトは追従しない。
+#[tokio::test]
+async fn test_slack_import_follows_allowed_redirects_only() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let files = MockServer::start().await;
+    let other = MockServer::start().await;
+    // 同じオリジンの 302 → 許可した URL。トークンは両方に付く
+    Mock::given(method("GET"))
+        .and(path("/files/hop.txt"))
+        .and(header("authorization", "Bearer xoxb-test"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/files/real.txt"))
+        .mount(&files)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/real.txt"))
+        .and(header("authorization", "Bearer xoxb-test"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/plain")
+                .set_body_bytes(b"followed".to_vec()),
+        )
+        .mount(&files)
+        .await;
+    // 許可していない別のオリジンへの 302 は追従しない (トークンも送らない)
+    Mock::given(method("GET"))
+        .and(path("/files/away.txt"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/steal.txt", other.uri())),
+        )
+        .mount(&files)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/steal.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"leaked".to_vec()))
+        .expect(0)
+        .mount(&other)
+        .await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = Some("xoxb-test".into());
+    config.slack.files_base_url = format!("{}/files/", files.uri());
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_redirect").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let file = |name: &str| {
+        json!({"id": format!("F-{name}"), "name": name, "mimetype": "text/plain", "size": 8,
+               "url_private_download": format!("{}/files/{name}", files.uri())})
+    };
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C1","name":format!("redir-{suffix}"),"members":["U1"]}]),
+        ),
+        (
+            format!("redir-{suffix}/2024-01-01.json"),
+            json!([
+                {"ts":"1704070000.000100","user":"U1","text":"a","files":[file("hop.txt")]},
+                {"ts":"1704070000.000200","user":"U1","text":"b","files":[file("away.txt")]}
+            ]),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"create","name":format!("redir-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let status_of = |ts: &'static str| {
+        let (state, team) = (state.clone(), team.clone());
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('s',f.status) ::text FROM slack_files f WHERE f.message_id=$1",
+                &[&backend::slack::message_id(&team, "C1", ts)],
+            )
+            .await
+            .unwrap()[0]["s"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    assert_eq!(status_of("1704070000.000100").await, "done");
+    // 許可していない URL へのリダイレクトは追従しない (取得できず、別のオリジンへはトークンも送らない)
+    assert_ne!(status_of("1704070000.000200").await, "done");
+    Ok(())
+}
+
+/// 予約語や既存の名前と重なるときの `slack-` 付きの候補が、すでに使われていれば、別の名前を候補にする
+#[tokio::test]
+async fn test_slack_import_suggested_name_avoids_a_taken_prefixed_name() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_suggest").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+    // `general-{suffix}` と `slack-general-{suffix}` が、どちらも Zoo にある
+    for name in [
+        format!("general-{suffix}"),
+        format!("slack-general-{suffix}"),
+    ] {
+        let (status, _) = request(
+            &app,
+            "POST",
+            "/api/channels",
+            &admin,
+            Some(json!({"id": uuid::Uuid::new_v4().to_string(), "channel_name": name, "is_private": false})),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C1","name":format!("general-{suffix}"),"members":["U1"]}]),
+        ),
+        (
+            format!("general-{suffix}/2024-01-01.json"),
+            json!([{"ts":"1704070000.000100","user":"U1","text":"hi"}]),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let suggested = export["analysis"]["channels"][0]["suggested_name"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert_ne!(suggested, format!("slack-general-{suffix}"), "{export}");
+    assert!(suggested.starts_with("slack-general-"), "{suggested}");
+    assert!(suggested.chars().count() <= 80, "{suggested}");
     Ok(())
 }

@@ -1778,6 +1778,7 @@ CREATE TABLE slack_files (
   attachment_id text,
   error text,
   attempts integer NOT NULL DEFAULT 0,
+  in_content boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (team_id, slack_file_id, message_id),

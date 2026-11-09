@@ -195,6 +195,11 @@ fn prefixed_name(name: &str) -> String {
     if prefixed.chars().count() <= MAX_CHANNEL_NAME_LENGTH {
         return prefixed;
     }
+    hashed_name(name)
+}
+
+/// `slack-` を付けた候補がすでに使われているときの名前。元の名前のハッシュを付けて、上限に収める。
+fn hashed_name(name: &str) -> String {
     let hash: String = super::stable_id("slack-channel-name", &[name])
         .chars()
         .filter(char::is_ascii_hexdigit)
@@ -228,6 +233,28 @@ pub(crate) async fn annotate_channels(
         &[team, &channels.to_string()],
     )
     .await?;
+    // `slack-` を付けた候補も、すでに使われていれば、ハッシュを付けた名前にする (画面の初期値のまま開始して 409 にならないように)
+    let candidates: Vec<String> = rows
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap_or_default())
+        .filter(|name| validate_channel_name(name).is_err())
+        .chain(
+            rows.iter()
+                .filter(|entry| entry["name_taken"] == true)
+                .map(|entry| entry["name"].as_str().unwrap_or_default()),
+        )
+        .map(prefixed_name)
+        .collect();
+    let taken: HashSet<String> = query(
+        tx,
+        "SELECT json_build_object('n',channel_name)::text FROM channels \
+         WHERE channel_name IN (SELECT jsonb_array_elements_text($1::jsonb))",
+        &[&serde_json::to_string(&candidates).unwrap_or_else(|_| "[]".into())],
+    )
+    .await?
+    .into_iter()
+    .filter_map(|row| row["n"].as_str().map(str::to_string))
+    .collect();
     Ok(rows
         .into_iter()
         .map(|mut entry| {
@@ -235,7 +262,12 @@ pub(crate) async fn annotate_channels(
             let suggested = if validate_channel_name(&name).is_ok() && entry["name_taken"] != true {
                 name
             } else {
-                prefixed_name(&name)
+                let prefixed = prefixed_name(&name);
+                if taken.contains(&prefixed) {
+                    hashed_name(&name)
+                } else {
+                    prefixed
+                }
             };
             entry["suggested_name"] = json!(suggested);
             entry
@@ -578,14 +610,15 @@ async fn fetch_files(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    // トークンが設定されているかを、管理者でない人に推測させないよう、管理者の確認を先にする
+    require_admin(&mut tx, &s, &user).await?;
     if s.config.slack.import_bot_token.is_none() {
         return Err(AppError::BadRequest(
             "SLACK_IMPORT_BOT_TOKEN is not configured".into(),
         ));
     }
-    let mut db = s.db.clone();
-    let mut tx = db.transaction().await?;
-    require_admin(&mut tx, &s, &user).await?;
     let job = load_job(&mut tx, &id).await?;
     let retryable = job["pending_files"].as_i64().unwrap_or(0)
         + job["failed_files"].as_i64().unwrap_or(0)

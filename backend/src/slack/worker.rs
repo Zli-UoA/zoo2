@@ -1060,10 +1060,13 @@ async fn insert_message(
     // 本文のないファイルだけの投稿は、添付として取得しないファイルの名前を本文に残す。取り込めないファイル
     // (外部サービスの共有・削除済みなど) や、取得をスキップ (サイズ・形式) または保留 (トークンなし) する
     // ファイルだけの投稿が空にならないようにする。取得する添付は添付として表示するので、名前は入れない
+    // 補った名前の行は `slack_files.in_content` に覚える (投稿者が書いた本文と区別して、後から更新するため)
+    let mut filled = false;
     if content.trim().is_empty() {
         content = super::convert::truncate_content(
             message.files_text(|file| !ctx.files.will_fetch(file)),
         );
+        filled = !content.trim().is_empty();
     }
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(
@@ -1152,8 +1155,8 @@ async fn insert_message(
         exec(
             tx,
             "INSERT INTO slack_files(team_id,slack_file_id,job_id,message_id,channel_id,uploader_id,\
-             name,mimetype,size,url_private_download) \
-             SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::bigint,$10 WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) \
+             name,mimetype,size,url_private_download,in_content) \
+             SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::bigint,$10,$11::boolean WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) \
              ON CONFLICT (team_id,slack_file_id,message_id) DO UPDATE SET job_id=EXCLUDED.job_id,\
              status='pending',attempts=0,error=NULL,updated_at=now() \
              WHERE slack_files.status IN ('pending','failed')",
@@ -1168,6 +1171,11 @@ async fn insert_message(
                 mimetype,
                 &file.size.unwrap_or(0).max(0).to_string(),
                 url,
+                if filled && !ctx.files.will_fetch(file) {
+                    "true"
+                } else {
+                    "false"
+                },
             ],
         )
         .await?;
@@ -1259,37 +1267,47 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     tx.commit().await?;
                     continue;
                 }
+                // 本文のファイル名は、取り込み時に補った行だけを `slack_files.in_content` で覚えて更新する。
+                // 投稿者が書いた本文 (ファイル名と同じ文字列でも) には触れない。取り込み本体と同じく、過去ログの更新を
+                // App へ配信しない
                 if status == "skipped" {
-                    // 実際のサイズが上限を超えたなど、取得してからスキップした添付だけの投稿が空にならないよう、
-                    // 本文が空 (またはスキップした他の添付の名前だけ) なら、スキップした添付の名前を本文にする。
-                    // 取り込み本体と同じく、過去ログの更新を App へ配信しない
+                    // 実際のサイズが上限を超えたなど、取得してからスキップした添付は、本文が空 (または補った名前だけ)
+                    // の投稿に限り、その名前を本文に足す。添付だけの投稿が空にならないようにする
                     suppress_app_events(&mut tx).await?;
-                    exec(
+                    let added = query(
                         &mut tx,
-                        // 本文と照合するときは、行を並べ替えて比べる (取り込み時は Slack の files の順、ここは ID 順)
-                        "UPDATE messages m SET content=s.names,updated_at=m.updated_at FROM (\
-                         SELECT string_agg(name,E'\\n' ORDER BY slack_file_id) AS names,\
-                         COALESCE(array_agg(name ORDER BY name) FILTER (WHERE slack_file_id<>$3),'{}') AS previous \
-                         FROM slack_files WHERE team_id=$1 AND message_id=$2 AND status='skipped') s \
-                         WHERE m.id=$2 AND s.names IS NOT NULL AND (m.content='' OR \
-                         (SELECT COALESCE(array_agg(x ORDER BY x),'{}') FROM unnest(string_to_array(m.content,E'\\n')) x)=s.previous)",
+                        "UPDATE messages m SET content=CASE WHEN m.content='' THEN f.name ELSE m.content||E'\\n'||f.name END,\
+                         updated_at=m.updated_at FROM slack_files f \
+                         WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND NOT f.in_content AND m.id=$2 \
+                         AND (m.content='' OR EXISTS(SELECT 1 FROM slack_files o WHERE o.team_id=$1 AND o.message_id=$2 AND o.in_content)) \
+                         RETURNING json_build_object('ok',true)::text",
                         &[&file.team_id, &file.message_id, &file.slack_file_id],
                     )
                     .await?;
+                    if !added.is_empty() {
+                        exec(
+                            &mut tx,
+                            "UPDATE slack_files SET in_content=true WHERE team_id=$1 AND slack_file_id=$3 AND message_id=$2",
+                            &[&file.team_id, &file.message_id, &file.slack_file_id],
+                        )
+                        .await?;
+                    }
                 }
                 if status == "done" {
-                    // 取り込み時に取得対象外だったため本文に入れたファイル名 (トークンなし・サイズ・URL など) は、
-                    // 後から取得できたら添付と二重に出ないよう本文から外す。本文がファイル名だけのときに限る
+                    // 取り込み時に補ったファイル名 (トークンなし・サイズ・URL など) は、後から取得できたら添付と
+                    // 二重に出ないよう本文から外す
                     suppress_app_events(&mut tx).await?;
                     exec(
                         &mut tx,
-                        "UPDATE messages m SET content=r.remaining,updated_at=m.updated_at FROM (\
-                         SELECT COALESCE(string_agg(name,E'\\n' ORDER BY slack_file_id) FILTER (WHERE status<>'done'),'') AS remaining,\
-                         COALESCE(array_agg(name ORDER BY name) FILTER (WHERE status<>'done' OR slack_file_id=$3),'{}') AS with_this,\
-                         COALESCE(array_agg(name ORDER BY name) FILTER (WHERE status<>'done'),'{}') AS remaining_sorted \
-                         FROM slack_files WHERE team_id=$1 AND message_id=$2) r \
-                         WHERE m.id=$2 AND r.with_this<>r.remaining_sorted AND \
-                         (SELECT COALESCE(array_agg(x ORDER BY x),'{}') FROM unnest(string_to_array(m.content,E'\\n')) x)=r.with_this",
+                        "UPDATE messages m SET content=array_to_string(array_remove(string_to_array(m.content,E'\\n'),f.name),E'\\n'),\
+                         updated_at=m.updated_at FROM slack_files f \
+                         WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND f.in_content AND m.id=$2",
+                        &[&file.team_id, &file.message_id, &file.slack_file_id],
+                    )
+                    .await?;
+                    exec(
+                        &mut tx,
+                        "UPDATE slack_files SET in_content=false WHERE team_id=$1 AND slack_file_id=$3 AND message_id=$2",
                         &[&file.team_id, &file.message_id, &file.slack_file_id],
                     )
                     .await?;
@@ -1316,6 +1334,42 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// 取得を許可した URL (`SLACK_FILES_BASE_URL` の下) へのリダイレクトだけを、最大 3 回まで追従して取得する。
+/// `Authorization` (Bot トークン) は、最初の URL と同じオリジン (scheme・ホスト・ポート) にだけ付ける。
+/// クライアントは自動の追従をしない (`Policy::none`) ので、ここで 1 回ずつ確かめる
+async fn get_following_redirects(
+    client: &reqwest::Client,
+    url: &str,
+    token: &str,
+    base: &str,
+) -> Result<reqwest::Response, AppError> {
+    let failed =
+        |detail: String| AppError::BadGateway(format!("Slack file download failed: {detail}"));
+    let origin = reqwest::Url::parse(url).map_err(|e| failed(e.to_string()))?;
+    let mut current = origin.clone();
+    for _ in 0..=3 {
+        let mut request = client.get(current.clone());
+        if current.origin() == origin.origin() {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.map_err(|e| failed(e.to_string()))?;
+        if !response.status().is_redirection() {
+            return Ok(response);
+        }
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| failed("a redirect without a location".into()))?;
+        let next = current.join(location).map_err(|e| failed(e.to_string()))?;
+        if !allowed_file_url(next.as_str(), base) {
+            return Err(failed("redirected to a URL that is not allowed".into()));
+        }
+        current = next;
+    }
+    Err(failed("too many redirects".into()))
 }
 
 /// 本文を `max` バイトまで読む。累計が上限を超えたら、残りを読まずに `None` を返す
@@ -1377,12 +1431,8 @@ async fn fetch_one(
         return Ok(FileOutcome::Skipped("Unsupported content type".into()));
     }
 
-    let response = client
-        .get(url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| AppError::BadGateway(format!("Slack file download failed: {e}")))?;
+    let response =
+        get_following_redirects(client, url, token, &s.config.slack.files_base_url).await?;
     if !response.status().is_success() {
         return Err(AppError::BadGateway(format!(
             "Slack file download returned {}",
