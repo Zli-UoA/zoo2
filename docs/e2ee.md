@@ -657,8 +657,8 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 400 | `E2EE_INVALID_EPOCH` | `epoch` が今の値より大きい | |
 | 400 | `E2EE_PUBLIC_FORBIDDEN` | 公開チャンネルを `encrypted: true` で作ろうとした | |
 | 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加と、App からの暗号化チャンネルと DM の作成。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む） | |
-| 403 | `E2EE_ADD_FORBIDDEN` | 暗号化チャンネルで、メンバーでないワークスペースの管理者が `POST /api/channels/{id}/users` でメンバーを足そうとした | |
-| 403 | `E2EE_DISABLED` | 暗号化チャンネルの作成が、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` で無効（#358 の拒否が入るまで） | |
+| 403 | `E2EE_ADD_FORBIDDEN` | 暗号化チャンネルで、メンバーでないワークスペースの管理者と、退出した作成者が `POST /api/channels/{id}/users` でメンバーを足そうとした（`channel_user` の実際の行で判定する） | |
+| 403 | `E2EE_DISABLED` | 暗号化チャンネルの作成が、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` で無効（#358 の拒否が入るまでと、運用で false に戻したあと） | |
 | 403 | `E2EE_REAUTH_REQUIRED` | `X-Zoo-Reauth` の ID トークンがない、検証できない、または `authenticated_at`（AuthZ が直前に認証した時刻の claim）がないか 5 分より前。対象は、クロス署名鍵の登録と差し替え（初回設定を含む）、SSSS 鍵の作成と作り直し（初回設定を含む）、既存の秘密とスロットの置き換え、スロットの削除、`replace: true` のピンと、ユーザー署名鍵によるマスター鍵への署名、最初の版でない鍵バックアップの版の作成、今の版の削除で、直前の再認証がない | |
 | 403 | `E2EE_WEBHOOKS_FORBIDDEN` | 暗号化チャンネルへの Incoming Webhook の作成 | |
 | 404 | （既存と同じ） | 他人の端末やスロットなど。存在を推測されないよう 403 ではなく 404 | |
@@ -1602,7 +1602,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#354](https://github.com/Zli-UoA/zoo2/issues/354) | 端末と鍵の API（端末、ワンタイム鍵、端末の Shape）、端末の Shape の where が使う `channels.encrypted` と CHECK `channels_encrypted_private`（[DB](#db)）、アカウントの無効化での端末の削除と、無効化と競合しないための `FOR SHARE` | #347 |
 | [#355](https://github.com/Zli-UoA/zoo2/issues/355) | to-device メッセージ | #354 |
 | [#356](https://github.com/Zli-UoA/zoo2/issues/356) | クロス署名（TOFU のピンと `GET /api/e2ee/tofu_pins` を含む）、クロス署名鍵と署名の Shape、Secret Storage、鍵バックアップの保存 API | #354、AuthZ#97（再認証の正常系の結合テスト） |
-| [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` の読み取りと 403 `E2EE_DISABLED` の判定、App からの作成の拒否（403 `E2EE_APPS_FORBIDDEN`）、メンバーでない管理者の追加の拒否（403 `E2EE_ADD_FORBIDDEN`）、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えでの epoch の増加、配布先のスナップショット | #354、#356 |
+| [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` の読み取りと 403 `E2EE_DISABLED` の判定、App からの作成の拒否（403 `E2EE_APPS_FORBIDDEN`）、メンバーでない管理者と退出した作成者の追加の拒否（403 `E2EE_ADD_FORBIDDEN`）、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えでの epoch の増加、配布先のスナップショット | #354、#356 |
 | [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否。#358 の拒否が入ってから、`E2EE_ENCRYPTED_CHANNELS_ENABLED` を true にする（#361 の前に行う。zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読むので、`zoo2-oidc` に足して各拠点で、既存のキーを残す `kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge -p '{"data":{"<キー>":"<値>"}}'` で足す（`create ... --dry-run=client -o yaml \| apply` は、zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるので使わない）。そのあと `kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend` で backend を再起動する。戻すときは false にして、同じく再起動する。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルの作成だけが 403 になる。`ciphertext` を扱えない旧イメージにはロールバックしない（旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる）【提案】） | #357 |
 | [#359](https://github.com/Zli-UoA/zoo2/issues/359) | 暗号ストアと端末の登録（React、Compose Android、TUI） | #352、#353、#354、#355 |
 | [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー）。各クライアントの再認証（Web は `max_age=0`、Android は Custom Tabs と App Links、TUI はループバック）と、zli.chat の `assetlinks.json` もここで作る | #359、#356、AuthZ#94、AuthZ#96、AuthZ#97 |
