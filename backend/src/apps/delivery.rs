@@ -137,7 +137,7 @@ async fn claim_filtered(
     Ok(value)
 }
 /// ACK を記録し、成功時はイベント作成から ACK までの秒数を返す。
-async fn ack(
+pub async fn ack(
     db: &toasty::Db,
     installation: &str,
     id: &str,

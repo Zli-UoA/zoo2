@@ -1,4 +1,4 @@
-.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev backend-build test test-unit test-e2e frontend-install frontend-dev frontend-build frontend-check frontend-test frontend-e2e
+.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev dispatcher-dev backend-build test test-unit test-e2e frontend-install frontend-dev frontend-build frontend-check frontend-test frontend-e2e
 
 test: test-unit test-e2e
 
@@ -14,6 +14,11 @@ test-e2e:
 
 backend-dev:
 	cd backend && DEV_AUTH_ENABLED=true cargo run
+
+# HTTP 配信を backend から分離して動かす（zoo-dispatcher）。backend 側は
+# `APP_HTTP_DELIVERY_WORKER=false make backend-dev` で自分の配信を止める。
+dispatcher-dev:
+	cd backend && cargo run --bin zoo_dispatcher
 
 backend-build:
 	cd backend && cargo build --release
