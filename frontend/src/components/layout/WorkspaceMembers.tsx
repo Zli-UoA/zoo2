@@ -53,7 +53,7 @@ export function WorkspaceMembers() {
   const users = useMemo(
     () =>
       sortUsersByLabel(
-        (usersQuery.data ?? []).filter((user) => !user.is_bot),
+        (usersQuery.data ?? []).filter((user) => !user.is_bot && !user.is_deactivated),
         locale,
       ).filter((user) =>
         `${userLabel(user)} ${user.user_name}`.toLowerCase().includes(query.trim().toLowerCase()),

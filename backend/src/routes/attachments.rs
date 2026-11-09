@@ -47,7 +47,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// 危険な実行ファイル・スクリプトなどのアップロードを拒否する
-fn validate_upload_mime(content_type: &str) -> Result<(), AppError> {
+pub(crate) fn validate_upload_mime(content_type: &str) -> Result<(), AppError> {
     if content_type.is_empty() {
         return Err(AppError::BadRequest("content_type cannot be empty".into()));
     }

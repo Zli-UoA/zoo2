@@ -300,6 +300,22 @@
       "states": ["Default", "Mobile"]
     },
     {
+      "file": "src/components/layout/SlackImportPanel.stories.tsx",
+      "states": [
+        "Empty",
+        "Loading",
+        "LoadError",
+        "Mapping",
+        "StartError",
+        "Analyzing",
+        "Importing",
+        "CompletedWithPendingFiles",
+        "HistoryWithFailedFiles",
+        "Failed",
+        "Mobile"
+      ]
+    },
+    {
       "file": "src/components/layout/WorkspaceMembers.stories.tsx",
       "states": [
         "ReadOnly",
@@ -329,6 +345,7 @@
         "ActivityPubLoading",
         "ActivityPubError",
         "ActivityPubSaveError",
+        "SlackImport",
         "CustomEmojis",
         "CustomEmojisMobile",
         "CustomEmojisEmpty",
@@ -779,6 +796,10 @@
     {
       "file": "src/components/layout/ShellSkeleton.tsx",
       "story": "src/components/layout/ShellSkeleton.stories.tsx"
+    },
+    {
+      "file": "src/components/layout/SlackImportPanel.tsx",
+      "story": "src/components/layout/SlackImportPanel.stories.tsx"
     },
     {
       "file": "src/components/layout/WorkspaceMembers.tsx",

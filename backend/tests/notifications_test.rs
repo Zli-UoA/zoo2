@@ -581,3 +581,132 @@ async fn test_notifications_p2_p3_fixes() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+async fn send(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    user: &str,
+    body: Value,
+) -> anyhow::Result<StatusCode> {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("X-Dev-User", user)
+        .body(Body::from(serde_json::to_vec(&body)?))?;
+    Ok(app.clone().oneshot(req).await?.status())
+}
+
+/// 無効化済みのユーザー (Slack から取り込んだ未連携のプレースホルダなど) には、@here とリアクションの通知を作らない
+#[tokio::test]
+async fn test_notifications_skip_deactivated_users() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let app = create_router(state);
+
+    let (alice, bob, placeholder) = (
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    );
+    for (id, name) in [(&alice, "alice"), (&bob, "bob"), (&placeholder, "slack")] {
+        let status = send(
+            &app,
+            "POST",
+            "/api/users",
+            id,
+            json!({"id": id, "user_name": format!("{name}_{}", uuid::Uuid::new_v4().simple()), "display_name": name}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    let status = send(
+        &app,
+        "POST",
+        "/api/channels",
+        &alice,
+        json!({"id": channel, "channel_name": format!("ch-{}", uuid::Uuid::new_v4().simple()), "is_private": false}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    for uid in [&bob, &placeholder] {
+        let status = send(
+            &app,
+            "POST",
+            &format!("/api/channels/{channel}/users"),
+            &alice,
+            json!({"user_id": uid}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+    }
+    // プレースホルダの投稿 (取り込みと同じく、無効化する前に入れておく)
+    let placeholder_message = uuid::Uuid::new_v4().to_string();
+    let status = send(
+        &app,
+        "POST",
+        "/api/messages",
+        &placeholder,
+        json!({"id": placeholder_message, "channel_id": channel, "content": "from slack"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("UPDATE users SET guest_kind='deactivated' WHERE id=$1")
+            .bind(placeholder.as_str())
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await?;
+    }
+
+    let here = uuid::Uuid::new_v4().to_string();
+    let status = send(
+        &app,
+        "POST",
+        "/api/messages",
+        &alice,
+        json!({"id": here, "channel_id": channel, "content": "@here hi"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let status = send(
+        &app,
+        "POST",
+        &format!("/api/messages/{placeholder_message}/reactions"),
+        &alice,
+        json!({"emoji": "👍"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let check = db.clone();
+    let count = |user: String, message: String| {
+        let mut check = check.clone();
+        async move {
+            Notification::filter(
+                Notification::fields()
+                    .user_id()
+                    .eq(user.as_str())
+                    .and(Notification::fields().message_id().eq(message.as_str())),
+            )
+            .exec(&mut check)
+            .await
+            .map(|n| n.len())
+        }
+    };
+    assert_eq!(count(bob.clone(), here.clone()).await?, 1);
+    assert_eq!(count(placeholder.clone(), here.clone()).await?, 0);
+    assert_eq!(
+        count(placeholder.clone(), placeholder_message.clone()).await?,
+        0
+    );
+    Ok(())
+}
