@@ -704,9 +704,6 @@ fn rewrite_text_card(card: &str, names: &MentionNames) -> Option<String> {
     Some(value.to_string())
 }
 
-/// `content` の `@name` のうち `names` にあるものを置き換える。変わらなければ `None`。
-/// `notifications::extract_mentions` と同じく、名前は英数字と `.`・`-`・`_` で、末尾の `.` は句読点とみなす。
-/// `@` の直前は `notifications::is_mention_boundary` と同じ区切りを求める (メールアドレスや URL の途中は対象外)。
 /// 書き換えるプレースホルダの名前 → 本人の名前の対応表
 struct MentionNames {
     map: HashMap<String, String>,
@@ -735,6 +732,9 @@ impl MentionNames {
     }
 }
 
+/// `content` の `@name` のうち `names` にあるものを置き換える。変わらなければ `None`。
+/// `notifications::extract_mentions` と同じく、名前は英数字と `.`・`-`・`_` で、末尾の `.` は句読点とみなす。
+/// `@` の直前は `notifications::is_mention_boundary` と同じ区切りを求める (メールアドレスや URL の途中は対象外)。
 fn replace_mentions(content: &str, names: &MentionNames) -> Option<String> {
     let is_name = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
     let chars: Vec<char> = content.chars().collect();

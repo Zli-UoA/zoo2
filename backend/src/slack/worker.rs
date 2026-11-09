@@ -1057,7 +1057,7 @@ async fn create_channel(
         "INSERT INTO channels(id,channel_name,description,created_user_id,is_private,created_at) \
          VALUES($1,$2,NULLIF($3,''),$4,$5::boolean,\
          CASE WHEN $6::bigint>0 THEN (to_timestamp($6::bigint) AT TIME ZONE 'UTC')::timestamp(3) ELSE CURRENT_TIMESTAMP END) \
-         ON CONFLICT (id) DO NOTHING RETURNING json_build_object('id',id)::text",
+         ON CONFLICT DO NOTHING RETURNING json_build_object('id',id)::text",
         &[
             &id,
             name,
@@ -1082,6 +1082,20 @@ async fn create_channel(
         .await?
         .is_empty()
     {
+        // 上の名前の確認のあと、INSERT までの間に同じ名前のチャンネルが作られた (名前の UNIQUE との競合)。
+        // DB のエラーでジョブを失敗させず、名前が使われていることを伝える
+        if !query(
+            tx,
+            "SELECT json_build_object('id',id)::text FROM channels WHERE channel_name=$1 AND id<>$2",
+            &[name, &id],
+        )
+        .await?
+        .is_empty()
+        {
+            return Err(AppError::BadRequest(format!(
+                "Channel name '{name}' is already taken"
+            )));
+        }
         return Err(AppError::BadRequest(format!(
             "Slack channel {} cannot be imported into a new channel because a channel with the same ID already exists",
             channel.id

@@ -256,4 +256,33 @@ class SlackLinkTest {
         assertFalse(state.pending)
         state.close()
     }
+
+    @Test
+    fun resumingDoesNotCancelTheCompletionOfAnAuthorizedLink() = runTest {
+        val complete = CompletableDeferred<JsonElement>()
+        val state =
+            SlackLinkController(backgroundScope) { path, method, _ ->
+                when {
+                    path == "/api/slack/oauth/start" ->
+                        obj("authorize_url" to "https://slack.com/oauth/v2/authorize?state=x")
+                    path == "/api/slack/oauth/complete" -> complete.await()
+                    method == "GET" -> notLinked
+                    else -> error("unexpected $method $path")
+                }
+            }
+        state.link { }
+        runCurrent()
+        // 認可の結果がアプリに渡り、連携の完了を待っている間は、アプリに戻っても待ちを解除しない
+        state.handle(SlackLinkResult.Authorized("code", "state"))
+        runCurrent()
+        assertTrue(state.pending)
+        state.resume()
+        runCurrent()
+        assertTrue(state.pending)
+        complete.complete(linked)
+        runCurrent()
+        assertFalse(state.pending)
+        assertEquals(linked, state.state)
+        state.close()
+    }
 }

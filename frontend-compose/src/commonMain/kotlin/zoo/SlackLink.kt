@@ -120,11 +120,17 @@ class SlackLinkController(
     fun handle(result: SlackLinkResult) {
         if (!lifetime.isActive) return
         when (result) {
-            is SlackLinkResult.Failed ->
+            is SlackLinkResult.Failed -> {
+                // アプリに戻って結果が渡ったので、外部ブラウザーの待ちは終わっている
+                awaitingBrowser = false
                 error =
                     "slackLink.errors." +
                         (result.reason.takeIf { it in slackLinkErrors } ?: "failed")
+            }
             is SlackLinkResult.Authorized -> {
+                // 結果が渡ったので、外部ブラウザーの待ちは終わっている。これを残すと、完了の処理中に `resume` が
+                // `pending` を解除してしまう
+                awaitingBrowser = false
                 pending = true
                 revision++
                 scope.launch {
