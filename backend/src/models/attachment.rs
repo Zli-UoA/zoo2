@@ -13,5 +13,8 @@ pub struct Attachment {
     pub file_size: i64,
     pub content_type: String,
     pub storage_key: String,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub blurhash: Option<String>,
     pub created_at: jiff::civil::DateTime,
 }

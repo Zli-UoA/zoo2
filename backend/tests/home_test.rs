@@ -575,7 +575,7 @@ async fn home_returns_attachment_metadata_for_visible_posts_and_reply_previews()
     assert_eq!(post["attachments"].as_array().unwrap().len(), 1);
     assert_eq!(
         post["attachments"][0],
-        json!({"id":attachment_ids[0],"file_name":"photo.png","file_size":1024,"content_type":"image/png"})
+        json!({"id":attachment_ids[0],"file_name":"photo.png","file_size":1024,"content_type":"image/png","width":null,"height":null,"blurhash":null})
     );
     let (status, reply) = request(
         &app,

@@ -38,6 +38,9 @@ pub struct AttachmentUrlResponse {
     pub file_name: String,
     pub file_size: i64,
     pub content_type: String,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub blurhash: Option<String>,
 }
 
 pub fn router() -> Router<AppState> {
@@ -270,6 +273,9 @@ async fn presign_attachment(
         file_size: payload.file_size,
         content_type: payload.content_type,
         storage_key: storage_key.clone(),
+        width: None,
+        height: None,
+        blurhash: None,
         created_at: now,
     })
     .exec(&mut db)
@@ -384,6 +390,9 @@ async fn get_attachment_url(
             file_name: attachment.file_name,
             file_size: attachment.file_size,
             content_type: attachment.content_type,
+            width: attachment.width,
+            height: attachment.height,
+            blurhash: attachment.blurhash,
         },
         None,
     )))

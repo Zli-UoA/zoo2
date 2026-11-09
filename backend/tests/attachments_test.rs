@@ -1023,3 +1023,113 @@ async fn test_attachments_presign_and_get_with_public_endpoint() -> anyhow::Resu
 
     Ok(())
 }
+
+#[tokio::test]
+async fn channel_image_metadata_is_generated_and_returned_to_home() -> anyhow::Result<()> {
+    let mut image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(12, 8).write_to(&mut image, image::ImageFormat::Png)?;
+    let bytes = image.into_inner();
+    let storage = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .insert_header("content-length", bytes.len().to_string()),
+        )
+        .mount(&storage)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(bytes.clone()))
+        .mount(&storage)
+        .await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.s3.endpoint = storage.uri();
+    config.s3.force_path_style = true;
+    config.s3.access_key_id = "test".into();
+    config.s3.secret_access_key = "test".into();
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    let channel = uuid::Uuid::new_v4().to_string();
+    let attachment = uuid::Uuid::new_v4().to_string();
+    let message = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,false)",
+    )
+    .bind(channel.as_str())
+    .bind(user.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+    )
+    .bind(user.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement("INSERT INTO attachments(id,uploader_id,channel_id,file_name,file_size,content_type,storage_key) VALUES($1,$2,$3,'photo.png',$4::bigint,'image/png','photo')")
+        .bind(attachment.as_str()).bind(user.as_str()).bind(channel.as_str()).bind(bytes.len().to_string()).exec(&mut db).await?;
+    let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
+        .header("content-type","application/json").header("X-Dev-User", &user)
+        .body(Body::from(json!({"id":message,"channel_id":channel,"content":"photo","attachment_ids":[attachment]}).to_string()))?).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = Attachment::get_by_id(&mut db, attachment.as_str()).await?;
+    assert_eq!(saved.width, Some(12));
+    assert_eq!(saved.height, Some(8));
+    assert!(blurhash::decode(saved.blurhash.as_deref().unwrap(), 2, 2, 1.0).is_ok());
+    toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,channel_id) VALUES($1,$2,'photo',$3) ON CONFLICT DO NOTHING")
+        .bind(message.as_str()).bind(user.as_str()).bind(channel.as_str()).exec(&mut db).await?;
+    assert_eq!(
+        storage
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method.as_str() == "GET")
+            .count(),
+        1
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/home/{message}"))
+                .header("X-Dev-User", &user)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let post: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await?)?;
+    assert_eq!(post["attachments"][0]["width"], 12);
+    assert_eq!(post["attachments"][0]["height"], 8);
+    assert_eq!(post["media"][0]["blurhash"], saved.blurhash.unwrap());
+    toasty::sql::statement("DELETE FROM attachments WHERE id=$1")
+        .bind(attachment.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("DELETE FROM home_posts WHERE id=$1")
+        .bind(message.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("DELETE FROM messages WHERE id=$1")
+        .bind(message.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("DELETE FROM channels WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("DELETE FROM users WHERE id=$1")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    Ok(())
+}

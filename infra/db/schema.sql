@@ -2458,3 +2458,5 @@ END $$;
 CREATE TRIGGER users_apub_avatar_update AFTER UPDATE OF avatar_url ON users
   FOR EACH ROW WHEN (OLD.avatar_url IS DISTINCT FROM NEW.avatar_url)
   EXECUTE FUNCTION enqueue_apub_avatar_update();
+
+ALTER TABLE attachments ADD COLUMN width integer, ADD COLUMN height integer, ADD COLUMN blurhash text;

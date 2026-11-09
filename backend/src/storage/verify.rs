@@ -54,3 +54,60 @@ pub async fn verify_uploaded_object(
 
     Ok(())
 }
+
+/// Read bounded image bytes before entering the message transaction. Other files keep HEAD-only validation.
+pub(crate) async fn uploaded_image_metadata(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    expected_size: i64,
+    content_type: &str,
+) -> Result<Option<crate::routes::home_images::ImageMetadata>, AppError> {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    const MAX_BYTES: usize = 50 * 1024 * 1024;
+    if !matches!(
+        mime.as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    ) || expected_size <= 0
+        || expected_size > MAX_BYTES as i64
+    {
+        return Ok(None);
+    }
+    let permit = crate::routes::home_images::DECODERS
+        .acquire()
+        .await
+        .map_err(|_| AppError::RateLimited)?;
+    let object = client
+        .get_object()
+        .bucket(bucket)
+        .key(key)
+        .send()
+        .await
+        .map_err(|_| AppError::BadRequest("Attachment image unavailable".into()))?;
+    let mut body = object.body;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = body
+        .try_next()
+        .await
+        .map_err(|_| AppError::BadRequest("Attachment image transfer failed".into()))?
+    {
+        if bytes.len() + chunk.len() > expected_size as usize {
+            return Err(AppError::BadRequest("Attachment image size changed".into()));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.len() != expected_size as usize {
+        return Err(AppError::BadRequest("Attachment image size changed".into()));
+    }
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        crate::routes::home_images::image_metadata(&mime, &bytes)
+    })
+    .await
+    .map_err(|e| AppError::Internal(e.into()))
+}

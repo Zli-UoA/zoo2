@@ -38,7 +38,7 @@ pub(crate) fn valid_image(mime: &str, bytes: &[u8]) -> bool {
 }
 
 fn decode_image(mime: &str, bytes: &[u8]) -> Option<image::DynamicImage> {
-    use image::{ImageFormat, ImageReader, Limits};
+    use image::{ImageDecoder, ImageFormat, ImageReader, Limits};
     let format = match mime {
         "image/png" => ImageFormat::Png,
         "image/jpeg" => ImageFormat::Jpeg,
@@ -65,7 +65,31 @@ fn decode_image(mime: &str, bytes: &[u8]) -> Option<image::DynamicImage> {
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(128 * 1024 * 1024);
     reader.limits(limits);
-    reader.decode().ok()
+    let mut decoder = reader.into_decoder().ok()?;
+    let orientation = decoder
+        .orientation()
+        .unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut image = image::DynamicImage::from_decoder(decoder).ok()?;
+    image.apply_orientation(orientation);
+    Some(image)
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct ImageMetadata {
+    pub width: u32,
+    pub height: u32,
+    pub blurhash: String,
+}
+
+pub(crate) fn image_metadata(mime: &str, bytes: &[u8]) -> Option<ImageMetadata> {
+    let image = decode_image(mime, bytes)?;
+    let preview = image.thumbnail(64, 64).to_rgba8();
+    Some(ImageMetadata {
+        width: image.width(),
+        height: image.height(),
+        blurhash: blurhash::encode(4, 3, preview.width(), preview.height(), preview.as_raw())
+            .ok()?,
+    })
 }
 
 async fn upload(
@@ -95,14 +119,8 @@ async fn upload(
     let mime = body.content_type.clone();
     let (bytes, width, height, blurhash) = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        if let Some(image) = decode_image(&mime, &bytes) {
-            let (width, height) = (image.width(), image.height());
-            let preview = image.thumbnail(64, 64).to_rgba8();
-            let hash = blurhash::encode(4, 3, preview.width(), preview.height(), preview.as_raw())
-                .map_err(|e| {
-                    AppError::Internal(anyhow::anyhow!("BlurHash encoding failed: {e}"))
-                })?;
-            Ok((bytes, width, height, hash))
+        if let Some(metadata) = image_metadata(&mime, &bytes) {
+            Ok((bytes, metadata.width, metadata.height, metadata.blurhash))
         } else {
             Err(AppError::BadRequest(
                 "Invalid image format, dimensions or pixel count".into(),
@@ -199,7 +217,7 @@ pub(crate) async fn decorate(
     if ids.is_empty() {
         return Ok(());
     }
-    let rows = query(tx, "SELECT json_build_object('id',p.id,'media',(SELECT COALESCE(jsonb_agg(jsonb_build_object('url','/api/home/images/' || a.id,'name',a.file_name,'media_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM (SELECT a.id,a.file_name,a.content_type,a.created_at,h.width,h.height,h.blurhash FROM attachments a LEFT JOIN home_images h ON a.storage_key='home-images/' || h.id WHERE a.message_id=p.id AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp') ORDER BY a.created_at,a.id LIMIT 10) a))::text FROM home_posts p JOIN channels c ON c.id=p.channel_id WHERE p.id IN (SELECT jsonb_array_elements_text($1::jsonb)) AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL", &[&json!(ids).to_string()]).await?;
+    let rows = query(tx, "SELECT json_build_object('id',p.id,'media',(SELECT COALESCE(jsonb_agg(jsonb_build_object('url','/api/home/images/' || a.id,'name',a.file_name,'media_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM (SELECT a.id,a.file_name,a.content_type,a.created_at,a.width,a.height,a.blurhash FROM attachments a WHERE a.message_id=p.id AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp') ORDER BY a.created_at,a.id LIMIT 10) a))::text FROM home_posts p JOIN channels c ON c.id=p.channel_id WHERE p.id IN (SELECT jsonb_array_elements_text($1::jsonb)) AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL", &[&json!(ids).to_string()]).await?;
     let media = rows
         .into_iter()
         .filter_map(|row| Some((row["id"].as_str()?.to_owned(), row["media"].clone())))
@@ -311,6 +329,22 @@ pub async fn worker(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn metadata_matches_exif_oriented_display_dimensions() {
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(3, 2)
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1];
+        bytes.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        bytes.extend_from_slice(exif);
+        bytes.extend_from_slice(&jpeg.get_ref()[2..]);
+        let metadata = image_metadata("image/jpeg", &bytes).unwrap();
+        assert_eq!((metadata.width, metadata.height), (2, 3));
+        assert!(blurhash::decode(&metadata.blurhash, 2, 2, 1.0).is_ok());
+    }
+
     #[test]
     fn images_require_valid_pixels_and_matching_mime() {
         let mut bytes = std::io::Cursor::new(Vec::new());

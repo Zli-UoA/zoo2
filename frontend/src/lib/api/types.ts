@@ -98,13 +98,13 @@ export interface PresignAttachmentResponse {
   storage_key: string;
 }
 
-export interface AttachmentUrlResponse {
+export type AttachmentUrlResponse = import("../imageMetadata").ImageMetadata & {
   id: string;
   download_url: string;
   file_name: string;
   file_size: number;
   content_type: string;
-}
+};
 
 export interface UpdateMessageRequest {
   content: string;

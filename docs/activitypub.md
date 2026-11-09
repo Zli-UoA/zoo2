@@ -224,8 +224,8 @@ TLでは日時の隣に、チャンネルと共通の公開範囲アイコンを
 
 ### 投稿画像のメタデータ
 
-Home画像のアップロード時に、サーバーが復号した画像からピクセル単位の `width`・`height` と `blurhash` を生成し、`home_images` および投稿の `media` に保存します。BlurHashは最大64×64ピクセルの縮小画像から4×3成分で生成します。アニメーションの元ファイルは維持し、先頭フレームを使います。アップロード応答にも3項目を返します。
+Home画像のアップロード時に、サーバーが復号した画像からピクセル単位の `width`・`height` と `blurhash` を生成し、`home_images` および投稿の `media` に保存します。BlurHashは最大64×64ピクセルの縮小画像から4×3成分で生成します。アニメーションの元ファイルは維持し、先頭フレームを使います。JPEG等のEXIF回転は表示に合わせて寸法・BlurHashに反映します。アップロード応答にも3項目を返します。
 
-連合では添付Documentの `width`・`height`（ActivityStreams）と `blurhash`（[MastodonのActivityPub拡張](https://docs.joinmastodon.org/spec/activitypub/#blurhash)、`http://joinmastodon.org/ns#blurhash`）として送受信します。寸法はMisskeyのDocument形式と共通です。受信値は正の整数寸法と正しいBase83文字・成分数・長さを持つBlurHashだけ保持します。不正な任意メタデータは無視し、画像自体は取り込みます。受信値は相手の申告値です。既存のアップロードは未設定を許容し、自動再計算しません。Homeからチャンネルに共有した画像も保存済みメタデータを参照できます。チャンネルの通常の添付アップロードはこの生成処理の対象外です。
+連合では添付Documentの `width`・`height`（ActivityStreams）と `blurhash`（[MastodonのActivityPub拡張](https://docs.joinmastodon.org/spec/activitypub/#blurhash)、`http://joinmastodon.org/ns#blurhash`）として送受信します。寸法はMisskeyのDocument形式と共通です。受信値は正の整数寸法と正しいBase83文字・成分数・長さを持つBlurHashだけ保持します。不正な任意メタデータは無視し、画像自体は取り込みます。受信値は相手の申告値です。既存のアップロードは未設定を許容し、自動再計算しません。Homeからチャンネルに共有した画像も保存済みメタデータを参照できます。通常のチャンネル画像も投稿確定時にS3から実データを読み、同じ処理で生成して `attachments` に保存します。圧縮データは最大50 MiB、復号はHomeと共通の寸法・画素数・割り当て制限を適用します。復号できない画像は従来のファイル添付として保持し、メタデータは未設定になります。
 
-AndroidとWebは同じ `media` JSONを受け取るため、既存の読み取り処理を維持します。今回の変更はメタデータの保存・配信までで、BlurHashによるプレースホルダー描画は追加しません。TUIにはHome／ActivityPubの投稿画像を読み取る機能がないため、TUI実装と配布バージョンの変更はありません。
+WebとAndroidはHome・チャンネルの両方で、保存済み寸法から表示領域を確保し、読み込み中はBlurHashのプレースホルダーを描画します。Webは共通の `ImagePreview`、Androidは共通のデコーダー・Canvas描画を使います。欠損・不正なメタデータは既定の領域と背景へフォールバックします。TUIには画像添付を描画・購読する機能がないため、TUI実装と配布バージョンの変更はありません。

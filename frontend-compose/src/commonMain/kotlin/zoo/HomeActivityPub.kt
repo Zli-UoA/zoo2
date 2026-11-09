@@ -1,5 +1,6 @@
 package zoo
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
@@ -226,11 +227,15 @@ private fun HomeMediaImage(item: Row, modifier: Modifier) {
         } catch (_: Exception) { failed = true }
     }
     val frame = bitmap
-    val ratio = frame?.let { it.width.toFloat() / it.height } ?: 1f
+    val ratio = imageAspectRatio(item, 1f)
     Box(modifier.heightIn(max = 320.dp).aspectRatio(ratio)
         .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+        .background(MaterialTheme.colorScheme.surfaceVariant)
         .clickable(role = Role.Button) { app.platform.action("open:$url") }) {
         if (frame != null) Image(frame, label, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
-        else if (failed) Text(label)
+        else {
+            BlurhashPlaceholder(item.text("blurhash"), Modifier.fillMaxSize())
+            if (failed) Text(label)
+        }
     }
 }
