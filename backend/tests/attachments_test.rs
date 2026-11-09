@@ -1123,12 +1123,10 @@ async fn channel_image_metadata_is_generated_and_returned_to_home() -> anyhow::R
         .bind(channel.as_str())
         .exec(&mut db)
         .await?;
-    toasty::sql::statement("DELETE FROM channels WHERE id=$1")
+    // App deliveries retain references to this channel and its creator. Use the
+    // production soft-delete lifecycle rather than erasing delivery history.
+    toasty::sql::statement("UPDATE channels SET deleted_at=now() AT TIME ZONE 'UTC' WHERE id=$1")
         .bind(channel.as_str())
-        .exec(&mut db)
-        .await?;
-    toasty::sql::statement("DELETE FROM users WHERE id=$1")
-        .bind(user.as_str())
         .exec(&mut db)
         .await?;
     Ok(())
