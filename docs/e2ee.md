@@ -655,6 +655,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 400 | `E2EE_INVALID_EPOCH` | `epoch` が今の値より大きい | |
 | 400 | `E2EE_PUBLIC_FORBIDDEN` | 公開チャンネルを `encrypted: true` で作ろうとした | |
 | 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加と、App からの暗号化チャンネルと DM の作成。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む） | |
+| 403 | `E2EE_ADD_FORBIDDEN` | 暗号化チャンネルで、メンバーでないワークスペースの管理者が `POST /api/channels/{id}/users` でメンバーを足そうとした | |
 | 403 | `E2EE_DISABLED` | 暗号化チャンネルの作成が、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` で無効（#358 の拒否が入るまで） | |
 | 403 | `E2EE_REAUTH_REQUIRED` | `X-Zoo-Reauth` の ID トークンがない、検証できない、または `authenticated_at`（AuthZ が直前に認証した時刻の claim）がないか 5 分より前。対象は、クロス署名鍵の登録と差し替え（初回設定を含む）、SSSS 鍵の作成と作り直し（初回設定を含む）、既存の秘密とスロットの置き換え、スロットの削除、`replace: true` のピンと、ユーザー署名鍵によるマスター鍵への署名、最初の版でない鍵バックアップの版の作成、今の版の削除で、直前の再認証がない | |
 | 403 | `E2EE_WEBHOOKS_FORBIDDEN` | 暗号化チャンネルへの Incoming Webhook の作成 | |
@@ -675,10 +676,10 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
   `device_keys.user_id` は呼び出したユーザーと一致していなければならない。応答は端末の行と `one_time_key_counts`。同じ `device_id` で同じ `device_keys` を送り直した場合は、削除されていなければ成功として扱い（冪等）、削除済みなら 409 `E2EE_DEVICE_EXISTS`（削除済みの `device_id` は再利用できない）、内容が違えば 409 `E2EE_DEVICE_EXISTS`。
 - 【決定】`last_seen_at` は、`POST /api/e2ee/keys/upload` と `POST /api/e2ee/to_device/ack`（どちらも `device_id` を持つ）に加え、暗号化チャンネルへのメッセージの送信（`ciphertext` を送るときの `device_id`。#357）で更新する。設定画面の「最後に使った日時」と、20 台に達したときの `stale_devices`（30 日以上使っていない端末の候補）が、実際の利用と合うようにするため。登録時に `last_seen_at` に `now()` を入れる（NULL にしない。登録直後でまだ鍵のアップロードも ack もしていない端末を、`stale_devices` に入れないため）。更新は 1 端末につき 5 分に 1 回までにして、書き込みを増やしすぎない。ベアラートークンはユーザー単位で、`GET /api/e2ee/secret_storage` と `POST /api/e2ee/key_backup/keys` からは端末を特定できないので、これらでは更新しない。
-  - 【決定】メッセージの送信による `last_seen_at` の更新は、送信のトランザクションの外（コミットのあとの別の文。失敗してもよい）で行う。送信は `channels` の行を `FOR SHARE` で持つので、送信のトランザクションの中で `e2ee_devices` の行を書くと、端末の削除（`e2ee_devices` の行を持ってから `channels` を更新する）と行き詰まるため。
+  - 【決定】メッセージの送信による `last_seen_at` の更新は、送信のトランザクションの外（コミットのあとの別の文。失敗してもよい）で行う。ロックの順は全体で「端末単位のロック、`channels` の行、`e2ee_devices` の行」にそろえてあり（端末の削除も同じ順）、行き詰まりにはならないが、送信が `channels` の行を `FOR SHARE` で持ったまま `e2ee_devices` の行の更新を待つと、端末の削除（`channels` の行の更新を待つ）を長く止めるため。
 - `GET /api/e2ee/devices`：自分の端末の一覧（削除済みを除く）。`display_name` と `last_seen_at` を返すのはこの API だけで、他のユーザーには見せない。
 - `PATCH /api/e2ee/devices/{device_id}`：`{"display_name": "..."}`。自分の端末だけ。
-- `DELETE /api/e2ee/devices/{device_id}`：自分の端末を削除する（論理削除）。同じトランザクションで、その端末に付いた自己署名（`e2ee_key_signatures` の `target_key_id` がその `device_id` の行）も消す（登録のたびに行が増え続け、Shape と `keys/query` が大きくならないようにするため。無効化の端末の削除と、30 日のバッチで残った行の削除も同じ）。【決定】削除は、その端末の端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`）を取ってから行う。`to-device` の送信も同じロックを取ったあとに `deleted_at` を読み直し、削除済みなら（範囲外や存在しない端末と同じく）通知せずに捨てる。取らないと、送信が `deleted_at IS NULL` を確かめたあとに削除がコミットし、その後で送信が挿入して、削除済みの端末宛てのメッセージが残る。同じトランザクションで、その端末のワンタイム鍵、フォールバック鍵、未受信の to-device メッセージを消し、ユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（`membership_epoch` の列は #357 で足すので、この増加は #357 で足す）。削除した `device_id` は再利用できない（30 日後は `e2ee_deleted_device_ids` に残る）。【決定】`DELETE` は冪等にする。すでに削除済みの `device_id`（墓標を含む）への `DELETE` は 200 を返し、`membership_epoch` は増やさない（ログアウトの削除の再試行や、応答をなくした再送が失敗しないようにするため）。【決定】端末の削除は失効ではない。削除された端末は、暗号ストアにバックアップ鍵、自己署名鍵、ユーザー署名鍵の秘密鍵を持ったままなので、削除しただけでは、その端末が今の鍵バックアップを取得して新しいセッションを復号したり、今の自己署名鍵で新しい端末に署名したり、今のユーザー署名鍵でピンや署名を作ったりできる。端末を失った、または見覚えのない端末があるときは、削除に加えて[失効の手順](#失効の手順)（1、3、4。漏れたものに応じて 1〜5）が必須。
+- `DELETE /api/e2ee/devices/{device_id}`：自分の端末を削除する（論理削除）。同じトランザクションで、その端末に付いた自己署名（`e2ee_key_signatures` の `target_key_id` がその `device_id` の行）も消す（登録のたびに行が増え続け、Shape と `keys/query` が大きくならないようにするため。無効化の端末の削除と、30 日のバッチで残った行の削除も同じ）。【決定】削除は、その端末の端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`）を取ってから行う。`to-device` の送信も同じロックを取ったあとに `deleted_at` を読み直し、削除済みなら（範囲外や存在しない端末と同じく）通知せずに捨てる。取らないと、送信が `deleted_at IS NULL` を確かめたあとに削除がコミットし、その後で送信が挿入して、削除済みの端末宛てのメッセージが残る。同じトランザクションで、端末単位のロックのあと、ユーザーが参加しているすべての暗号化チャンネルの行を `ORDER BY id FOR NO KEY UPDATE` でまとめてロックし（全体のロックの順）、そのあとで `e2ee_devices` の行の論理削除と、その端末のワンタイム鍵、フォールバック鍵、未受信の to-device メッセージの削除を行い、それらのチャンネルの `membership_epoch` を増やす（`membership_epoch` の列は #357 で足すので、この増加は #357 で足す）。削除した `device_id` は再利用できない（30 日後は `e2ee_deleted_device_ids` に残る）。【決定】`DELETE` は冪等にする。すでに削除済みの `device_id`（墓標を含む）への `DELETE` は 200 を返し、`membership_epoch` は増やさない（ログアウトの削除の再試行や、応答をなくした再送が失敗しないようにするため）。【決定】端末の削除は失効ではない。削除された端末は、暗号ストアにバックアップ鍵、自己署名鍵、ユーザー署名鍵の秘密鍵を持ったままなので、削除しただけでは、その端末が今の鍵バックアップを取得して新しいセッションを復号したり、今の自己署名鍵で新しい端末に署名したり、今のユーザー署名鍵でピンや署名を作ったりできる。端末を失った、または見覚えのない端末があるときは、削除に加えて[失効の手順](#失効の手順)（1、3、4。漏れたものに応じて 1〜5）が必須。
 - `POST /api/e2ee/keys/upload`：`{"device_id", "one_time_keys", "fallback_keys"}`。【決定】端末単位のロックを取ったあとに、その端末の `deleted_at` を読み直し、削除済みなら 404 にする（削除のあとに鍵が入り直らないため）。応答は `{"one_time_key_counts": {"signed_curve25519": 50}, "unused_fallback_key_types": ["signed_curve25519"]}`。
 - `POST /api/e2ee/keys/query`：`{"user_ids": [...]}`（最大 100 人）。応答は次の形。
 
@@ -858,7 +859,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - 【決定】`channels.membership_epoch` と `messages.epoch` は `bigint` のままにするが、Electric は `int8` を文字列で配る（`frontend/src/lib/electric/schema.ts` の `int8` は数値型に入らない）ので、クライアントは、比較の前に正準な整数（`BigInt` など）に変えてから比べる。`ChannelRow` と `MessageRow` の型に、この列を文字列として足す。
 - `PATCH /api/channels/{id}`：`encrypted` を変えようとしたとき（平文チャンネルを true にする場合も、暗号化チャンネルを false にする場合も。同じ値なら何もしない）と、暗号化チャンネルで `is_private: false` にしようとしたときは 409 `E2EE_ENCRYPTED_IMMUTABLE`。平文の非公開チャンネルを公開にすることは、今までどおりできる。
 - チャンネルの応答（`ChannelResponse`）に `encrypted` と `membership_epoch` を足す。
-- 【決定】暗号化チャンネルでは、メンバーの追加（`POST /api/channels/{id}/users`）ができるのを、現在のメンバーだけにする。既存の規則では、ワークスペースの管理者がメンバーでなくても非公開チャンネルにメンバーを足せる（`backend/src/routes/channels.rs` の `add_channel_user` と `can_add_member`）ので、管理者が自分自身を足して、それ以降のセッションを受け取れてしまう。暗号化チャンネルでは、メンバーでない管理者の追加は 403 にする（キックは今までどおり）。
+- 【決定】暗号化チャンネルでは、メンバーの追加（`POST /api/channels/{id}/users`）ができるのを、現在のメンバーだけにする。既存の規則では、ワークスペースの管理者がメンバーでなくても非公開チャンネルにメンバーを足せる（`backend/src/routes/channels.rs` の `add_channel_user` と `can_add_member`）ので、管理者が自分自身を足して、それ以降のセッションを受け取れてしまう。暗号化チャンネルでは、メンバーでない管理者の追加は 403 `E2EE_ADD_FORBIDDEN` にする（キックは今までどおり）。
 - `POST /api/channels/{id}/join`、`/leave`、`/users`、`DELETE /api/channels/{id}/users/{user_id}` と DM の再参加は、暗号化チャンネルなら同じトランザクションで `membership_epoch` を増やす。ただし、増やすのは `channel_user` の行が実際に変わったとき（入った、または消えた行が 1 以上）だけで、すでにメンバーの `join` や `/users`、何もしない `leave` は増やさない（[membership_epoch と送信の順序](#membership_epoch-と送信の順序)）。端末の削除などほかの処理での増加は、その節の表のとおり。
 
 ### 配布先のスナップショット
@@ -1178,9 +1179,9 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 
 【決定】複数のチャンネルの `membership_epoch` を一度に増やす処理（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）は、最初に `SELECT id FROM channels WHERE encrypted AND deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1) ORDER BY id FOR NO KEY UPDATE` でそのユーザーの暗号化チャンネルをまとめて `id` の昇順にロックしてから、同じ条件で `UPDATE` する。削除済みのチャンネルは増やさない。単独のチャンネルの変更（参加、退出、キック、送信）はこの対象ではない。同じユーザーの別の処理（端末の削除と、クロス署名鍵の変更）も、このロックで直列になる。
 
-【決定】メンバーの参加、追加、退出、キック（`join`、`/users`、`leave`、`DELETE /users/{user_id}`、DM の再参加）で `membership_epoch` を増やすのは、`channel_user` の行が実際に変わったときだけ（`INSERT ... RETURNING` で入れた、または `DELETE ... RETURNING` で消した行数が 1 以上のとき）。すでにメンバーの `join` や `/users`、何もしない `leave` は、今までどおり既存の行を返して終わり、epoch は変えない。端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成での増加は、この条件に関係なく、下の表のとおり増やす。
+【決定】メンバーの参加、追加、退出、キック（`join`、`/users`、`leave`、`DELETE /users/{user_id}`、DM の再参加）で `membership_epoch` を増やすのは、`channel_user` の行が実際に変わったときだけ（`INSERT ... RETURNING` で入れた、または `DELETE ... RETURNING` で消した行数が 1 以上のとき）。すでにメンバーの `join` や `/users`、何もしない `leave` は、今までどおり既存の行を返して終わり、epoch は変えない。端末の削除（削除済みの端末への `DELETE` の再送は、冪等に 200 を返すだけで増やさない）、アカウントの無効化、クロス署名鍵（マスター鍵、自己署名鍵、ユーザー署名鍵）の変更、鍵バックアップの版の作成での増加は、この条件に関係なく、下の表のとおり増やす。
 
-【決定】`channels` の行に `membership_epoch` を足すと、既存のトリガー（`sync_channel_notification_display`、`app_channel_events_v2`、`channels_home_live`）が、チャンネルの更新のたびに通知の表示や App のイベント、Home の同期を作り直してしまう。#357 で、これらのトリガーが `membership_epoch` だけの変更を無視するようにする。行レベルの `sync_channel_notification_display` と `app_channel_events_v2` は、`(to_jsonb(OLD) - 'membership_epoch') IS NOT DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch')` のときは何もしない条件を入れる。`channels_home_live` は `AFTER INSERT OR UPDATE OR DELETE ON channels FOR EACH STATEMENT` の 1 つのトリガーで、`OLD` と `NEW` を参照できない。このイベント構成のまま行レベルにして `WHEN` で `OLD` を使うと、PostgreSQL は `INSERT trigger's WHEN condition cannot reference OLD values` で、遷移テーブル（`REFERENCING OLD TABLE AS o NEW TABLE AS n`）を使うと `transition tables cannot be specified for triggers with more than one event` で拒否する。そのため、トリガーをイベントごとに分ける：`INSERT` と `DELETE` は従来の文レベルの通知を残し、`UPDATE` は別のトリガーにして、行レベルで `WHEN ((to_jsonb(OLD) - 'membership_epoch') IS DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch'))` を付ける（遷移テーブルを使う場合も、`UPDATE` 専用のトリガーにする）。`notification_display` は `to_jsonb(c)` で行全体を埋め込むので、列を明示して `membership_epoch` を含めない。
+【決定】`channels` の行に `membership_epoch` を足すと、既存のトリガー（`sync_channel_notification_display`、`app_channel_events_v2`、`channels_home_live`）が、チャンネルの更新のたびに通知の表示や App のイベント、Home の同期を作り直してしまう。#357 で、これらのトリガーが `membership_epoch` だけの変更を無視するようにする。行レベルの `sync_channel_notification_display` と `app_channel_events_v2` は、`(to_jsonb(OLD) - 'membership_epoch') IS NOT DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch')` のときは何もしない条件を入れる。`channels_home_live` は `AFTER INSERT OR UPDATE OR DELETE ON channels FOR EACH STATEMENT` の 1 つのトリガーで、`OLD` と `NEW` を参照できない。このイベント構成のまま行レベルにして `WHEN` で `OLD` を使うと、PostgreSQL は `INSERT trigger's WHEN condition cannot reference OLD values` で、遷移テーブル（`REFERENCING OLD TABLE AS o NEW TABLE AS n`）を使うと `transition tables cannot be specified for triggers with more than one event` で拒否する。そのため、既存の `channels_home_live` を `DROP TRIGGER` し、イベントごとに作り直す：`AFTER INSERT OR DELETE ... FOR EACH STATEMENT` で従来の文レベルの通知を残し、`UPDATE` は別のトリガー（`AFTER UPDATE ... FOR EACH ROW`）にして、行レベルで `WHEN ((to_jsonb(OLD) - 'membership_epoch') IS DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch'))` を付ける（遷移テーブルを使う場合も、`UPDATE` 専用のトリガーにする）。`notification_display` は `to_jsonb(c)` で行全体を埋め込むので、列を明示して `membership_epoch` を含めない。
 
 サーバーが `membership_epoch` を 1 増やすとき（同じトランザクションで）：
 
@@ -1189,7 +1190,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 | メンバーの参加、追加、DM への再参加 | そのチャンネル | #357 |
 | メンバーの退出、キック | そのチャンネル | #357 |
 | 端末の削除、失効 | その端末の持ち主が参加しているすべての暗号化チャンネル | #357（#354 の削除 API に足す） |
-| マスター鍵か自己署名鍵の変更 | その持ち主が参加しているすべての暗号化チャンネル | #357（#356 のクロス署名 API に足す） |
+| マスター鍵、自己署名鍵、ユーザー署名鍵の変更 | その持ち主が参加しているすべての暗号化チャンネル | #357（#356 のクロス署名 API に足す） |
 | 鍵バックアップの版の作成（そのユーザーの最初の版を除く） | その持ち主が参加しているすべての暗号化チャンネル | #357（#356 の鍵バックアップ API に足す） |
 | アカウントの無効化（`users.is_deactivated` が true になる） | そのユーザーが参加しているすべての暗号化チャンネル | #357（#354 の端末の削除に足す。[アカウントの無効化](#アカウントの無効化)） |
 
@@ -1201,7 +1202,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 2. 送る直前に、Channels Shape で見えている `membership_epoch` と、送信用セッションを作ったときの epoch を比べる。違えば、[配布先のスナップショット](#配布先のスナップショット)を取り直し、その `membership_epoch` で新しいセッションを作り、そのスナップショットから計算した配布先に配る。セッションの epoch は、Channels Shape の値ではなく、配布先を計算したスナップショットの `membership_epoch` にする。
 3. 平文の `epoch` と、暗号化するペイロードの `epoch` に、セッションの epoch を入れて送る。
 4. サーバーは、`epoch` が今の値より古ければ 409 `E2EE_STALE_EPOCH`（`current_epoch` 付き）を返す。
-5. 409 を受けたクライアントは、`membership_epoch` が `current_epoch` 以上のスナップショットを取り直し、その epoch で新しいセッションを作って配り、3 から送り直す。Channels Shape が追いつくのを待つ必要はない。`message_id` は同じものを使う。3 回続けて 409 になったら送信待ちに戻し、ユーザーに表示する。
+5. 409 を受けたクライアントは、`membership_epoch` が `current_epoch` 以上のスナップショットを取り直し、その epoch で新しいセッションを作って配り、3 から送り直す。Channels Shape が追いつくのを待つ必要はない。`message_id` は同じものを使う。3 回続けて `E2EE_STALE_EPOCH` になったら送信待ちに戻し、ユーザーに表示する。
 
 これで、退出したメンバーの端末は、退出後のメッセージを復号できません。退出を知らずにオフラインだった端末から送った場合も、サーバーが古い epoch を拒否するので同じです。配布先は epoch と同じスナップショットのメンバーなので、epoch N+1 のセッションが、epoch N+1 の時点でメンバーでないユーザーに配られることもありません。
 
@@ -1498,6 +1499,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   | TUI | 設定ディレクトリーのファイル（0600） | OS のキーリング。使えなければ 0600 のファイル |
 
 - 【決定】複数のタブが同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。【提案】他のタブは BroadcastChannel でそのタブに処理を頼む。詳細は #359 で決める。
+- 【決定】暗号ストアには、自分のユーザー署名鍵の公開鍵の履歴（初めて見たとき、保存したとき、置き換わりを検出したときに足す）と、相手ごとの `confirmed_usk` も入れる。古いユーザー署名鍵への巻き戻しの検出（[クロス署名](#クロス署名)の、ユーザー署名鍵の変更の検出手順）に使う。履歴を持たない新しい端末は気付けない（[脅威モデル](#脅威モデル)）。
 - ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。
 - pickle key による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
 
@@ -1570,7 +1572,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#354](https://github.com/Zli-UoA/zoo2/issues/354) | 端末と鍵の API（端末、ワンタイム鍵、端末の Shape）、端末の Shape の where が使う `channels.encrypted` と CHECK `channels_encrypted_private`（[DB](#db)）、アカウントの無効化での端末の削除と、無効化と競合しないための `FOR SHARE` | #347 |
 | [#355](https://github.com/Zli-UoA/zoo2/issues/355) | to-device メッセージ | #354 |
 | [#356](https://github.com/Zli-UoA/zoo2/issues/356) | クロス署名（TOFU のピンと `GET /api/e2ee/tofu_pins` を含む）、クロス署名鍵と署名の Shape、Secret Storage、鍵バックアップの保存 API | #354、AuthZ#97（再認証の正常系の結合テスト） |
-| [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えでの epoch の増加、配布先のスナップショット | #354、#356 |
+| [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` の読み取りと 403 `E2EE_DISABLED` の判定、App からの作成の拒否（403 `E2EE_APPS_FORBIDDEN`）、メンバーでない管理者の追加の拒否（403 `E2EE_ADD_FORBIDDEN`）、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えでの epoch の増加、配布先のスナップショット | #354、#356 |
 | [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否。#358 の拒否が入ってから、`E2EE_ENCRYPTED_CHANNELS_ENABLED` を true にする（#361 の前に行う。zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読むので、`zoo2-oidc` に足して各拠点で（`kubectl -n zoo2 create configmap zoo2-oidc --from-literal=... --dry-run=client -o yaml \| kubectl apply -f -`）更新し、`kubectl -n zoo2 rollout restart deployment/backend` で backend を再起動する。戻すときは false にして、同じく再起動する） | #357 |
 | [#359](https://github.com/Zli-UoA/zoo2/issues/359) | 暗号ストアと端末の登録（React、Compose Android、TUI） | #352、#353、#354、#355 |
 | [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー）。各クライアントの再認証（Web は `max_age=0`、Android は Custom Tabs と App Links、TUI はループバック）と、zli.chat の `assetlinks.json` もここで作る | #359、#356、AuthZ#94、AuthZ#96、AuthZ#97 |
@@ -1602,6 +1604,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | Android の再認証で、AuthZ からの 302 のリダイレクトを Custom Tabs が App Links としてアプリに渡すか | 【未検証】 | #360、#369 |
 | デスクトップ版を E2EE の対象にするか | 【決定】最初の範囲では対象外（後続の issue は未作成） | 後続 |
 | 一度置き換わった自己署名鍵に戻ったことをクライアントで検出する | 【提案】 | #362 |
+| 一度置き換わったユーザー署名鍵に戻ったことを、暗号ストアの履歴と `confirmed_usk` で検出する（自己署名鍵以外のクロス署名鍵の履歴） | 【提案】 | #359、#362 |
 | AuthZ でパスキーの credential ID の一覧を取れるようにし、削除済みのパスキーの鍵スロットを表示する | 【提案】（AuthZ の issue が要る） | #362 |
 | 自分の端末どうしで鍵を要求し合う仕組み（Matrix の `m.room_key_request`）。初期版は鍵バックアップで代える | 未決 | 後続 |
 | 許可オリジンを外したときに、パスキーのスロットの作り直しを求める仕組み | 【提案】 | #362 |
