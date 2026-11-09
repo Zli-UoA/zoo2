@@ -19,12 +19,11 @@ import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import { getOidcClient } from "../../lib/oidc/session";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
-import { Avatar, AvatarFallback } from "../ui/avatar";
+import { AppAvatar } from "../chat/AppIdentity";
 import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
 import { AppDialogs } from "../chat/AppsDialog";
 import { NotificationsButton } from "../chat/NotificationsButton";
-import { initials } from "../chat/format";
 import { PaneHeader } from "./PaneHeader";
 
 function RailLink({
@@ -120,9 +119,7 @@ export function LeftRail() {
           <SettingsIcon className="size-5" aria-hidden="true" />
         </Link>
         <Separator className="w-6" />
-        <Avatar size="sm" title={meLabel}>
-          <AvatarFallback>{initials(meLabel)}</AvatarFallback>
-        </Avatar>
+        <AppAvatar label={meLabel} src={me?.avatar_url} size="sm" title={meLabel} />
         {config.oidc ? (
           <Button
             variant="ghost"

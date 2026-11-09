@@ -23,12 +23,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
-import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
 import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
-import { initials } from "./format";
 import { AppAvatar, openApp } from "./AppIdentity";
 import { PaneHeader } from "../layout/PaneHeader";
 import {
@@ -429,9 +427,7 @@ export function MembersPanel({
                             onMouseEnter={() => setActiveIndex(index)}
                             onClick={() => void addMember(user)}
                           >
-                            <Avatar size="sm">
-                              <AvatarFallback>{initials(label)}</AvatarFallback>
-                            </Avatar>
+                            <AppAvatar label={label} src={user.avatar_url} size="sm" />
                             <span className="min-w-0 flex-1 truncate">{label}</span>
                             {label !== user.user_name ? (
                               // ユーザー名が長い場合でも表示名を潰さないよう、

@@ -1,3 +1,4 @@
+import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import { useState } from "react";
 import { Button } from "../ui/button";
@@ -1974,5 +1975,128 @@ export const ImageUploadError: Story = {
     await expect(await form.findByRole("alert")).toHaveTextContent("8MiB");
     await expect(form.getAllByRole("alert")).toHaveLength(1);
     await expect(form.getByRole("button", { name: /^投稿$/ })).toBeDisabled();
+  }),
+};
+
+export const UserAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: { handlers: [userAvatarHandler, ...homeHandlers] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(async () => {
+      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      await expect(image?.naturalWidth).toBeGreaterThan(0);
+    });
+  }),
+};
+
+export const LocalProfileAvatar: Story = {
+  args: { actorId: "user-alice" },
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: {
+      handlers: [
+        userAvatarHandler,
+        ...homeHandlers,
+        http.get("*/api/activitypub/accounts", () =>
+          HttpResponse.json({ ...avatarUsers[0], remote: false }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const profile = await within(canvasElement).findByRole("heading", { name: "Alice" });
+    await waitFor(
+      async () =>
+        await expect(
+          profile.closest("section")?.querySelector("img")?.naturalWidth,
+        ).toBeGreaterThan(0),
+    );
+  }),
+};
+
+export const LocalSearchAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: {
+      handlers: [
+        userAvatarHandler,
+        ...homeHandlers,
+        http.get("*/api/activitypub/search", () =>
+          HttpResponse.json([{ ...avatarUsers[1], remote: false }]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "ユーザーを検索" }),
+    );
+    const dialog = await visibleDialog("ユーザーを検索");
+    await userEvent.type(dialog.getByRole("textbox", { name: "ユーザーを検索" }), "bob");
+    await userEvent.click(dialog.getByRole("button", { name: "検索" }));
+    const account = await dialog.findByRole("article", { name: "ユーザー詳細" });
+    await waitFor(
+      async () =>
+        await expect(account.querySelector("img")).toHaveAttribute(
+          "src",
+          avatarUsers[1].avatar_url,
+        ),
+    );
+    await waitFor(
+      async () => await expect(account.querySelector("img")?.naturalWidth).toBeGreaterThan(0),
+    );
+  }),
+};
+
+export const LocalProfileAvatarWithoutUserShape: Story = {
+  ...LocalProfileAvatar,
+  parameters: {
+    ...LocalProfileAvatar.parameters,
+    collections: { ...storyCollections, users: [] },
+  },
+};
+export const LocalSearchAvatarWithoutUserShape: Story = {
+  ...LocalSearchAvatar,
+  parameters: {
+    ...LocalSearchAvatar.parameters,
+    collections: { ...storyCollections, users: [] },
+  },
+};
+export const LocalPostAvatarWithoutUserShape: Story = {
+  ...UserAvatar,
+  parameters: {
+    collections: { ...storyCollections, users: [] },
+    msw: {
+      handlers: [
+        userAvatarHandler,
+        http.get("*/api/home", () =>
+          HttpResponse.json([{ ...posts[0], avatar_url: userAvatarUrl }]),
+        ),
+      ],
+    },
+  },
+};
+export const LocalAvatarFallback: Story = {
+  parameters: {
+    collections: {
+      ...storyCollections,
+      users: avatarUsers.map((user) => ({
+        ...user,
+        avatar_url: `${user.avatar_url}?missing-home`,
+      })),
+    },
+    msw: {
+      handlers: [
+        http.get(userAvatarUrl, () => new HttpResponse(null, { status: 404 })),
+        ...homeHandlers,
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const avatar = await within(canvasElement).findByRole("img", { name: "Alice" });
+    await waitFor(async () => await expect(avatar).toHaveTextContent("A"));
+    await expect(avatar.querySelector("img")).toBeNull();
   }),
 };

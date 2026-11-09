@@ -9,21 +9,21 @@ export interface RemoteAvatar {
 export function ActivityPubAvatar({
   avatar,
   name,
+  avatarUrl,
 }: {
   avatar?: RemoteAvatar | null;
   name: string;
+  avatarUrl?: string | null;
 }) {
   const { config } = useCollections();
+  const src = avatarUrl?.startsWith("https://")
+    ? avatarUrl
+    : avatar && /^[a-f0-9]{64}$/.test(avatar.image_id)
+      ? joinUrl(config.apiBaseUrl, `/api/activitypub/emoji-images/${avatar.image_id}`)
+      : undefined;
   return (
     <Avatar role="img" aria-label={name}>
-      {avatar && /^[a-f0-9]{64}$/.test(avatar.image_id) ? (
-        <AvatarImage
-          src={joinUrl(config.apiBaseUrl, `/api/activitypub/emoji-images/${avatar.image_id}`)}
-          alt=""
-          loading="lazy"
-          referrerPolicy="no-referrer"
-        />
-      ) : null}
+      {src ? <AvatarImage src={src} alt="" loading="lazy" referrerPolicy="no-referrer" /> : null}
       <AvatarFallback aria-hidden="true">{initials(name)}</AvatarFallback>
     </Avatar>
   );

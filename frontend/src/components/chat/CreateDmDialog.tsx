@@ -22,7 +22,7 @@ import { useCollections } from "../../lib/electric/collections-context";
 import type { UserRow } from "../../lib/electric/types";
 import { useLocale } from "../i18n/LocaleProvider";
 import { useShell } from "../layout/shell-context";
-import { Avatar, AvatarFallback } from "../ui/avatar";
+import { AppAvatar } from "./AppIdentity";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -35,7 +35,6 @@ import {
 import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import { DM_MAX_MEMBERS, DM_MAX_TARGETS, filterDmCandidates, waitForDmAvailability } from "./dm";
-import { initials } from "./format";
 import { sortUsersByLabel, userLabel } from "./memberCandidates";
 
 export function CreateDmDialog({
@@ -288,9 +287,7 @@ export function CreateDmDialog({
                         disabled={inputBusy}
                         onClick={() => removeUser(id)}
                       >
-                        <Avatar size="sm" aria-hidden="true">
-                          <AvatarFallback>{initials(label)}</AvatarFallback>
-                        </Avatar>
+                        <AppAvatar label={label} src={user?.avatar_url} size="sm" aria-hidden />
                         <span className="max-w-40 truncate">{label}</span>
                         <XIcon
                           className="size-3.5 shrink-0 text-muted-foreground"
@@ -351,9 +348,7 @@ export function CreateDmDialog({
                         onMouseEnter={() => setActiveIndex(index)}
                         onClick={() => addUser(user)}
                       >
-                        <Avatar size="sm" aria-hidden="true">
-                          <AvatarFallback>{initials(label)}</AvatarFallback>
-                        </Avatar>
+                        <AppAvatar label={label} src={user?.avatar_url} size="sm" aria-hidden />
                         <span className="min-w-0 flex-1 truncate">{label}</span>
                         {label !== user.user_name ? (
                           <span className="max-w-[40%] shrink-0 truncate text-xs text-muted-foreground">

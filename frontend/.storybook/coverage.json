@@ -83,15 +83,24 @@
     },
     {
       "file": "src/components/chat/CreateDmDialog.stories.tsx",
-      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile"]
+      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile", "UserAvatar"]
     },
     {
       "file": "src/components/chat/DmListItem.stories.tsx",
-      "states": ["Default", "Active", "Unread", "LongName"]
+      "states": ["Default", "Active", "Unread", "LongName", "UserAvatar", "UserAvatarFallback"]
     },
     {
       "file": "src/components/chat/DmSection.stories.tsx",
-      "states": ["Default", "Empty", "Loading", "LoadError", "UsersError", "Unread", "Group"]
+      "states": [
+        "Default",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "UsersError",
+        "Unread",
+        "Group",
+        "UserAvatar"
+      ]
     },
     {
       "file": "src/components/chat/MembersScreen.stories.tsx",
@@ -99,7 +108,7 @@
     },
     {
       "file": "src/components/chat/MembersPanel.stories.tsx",
-      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined"]
+      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined", "UserAvatar"]
     },
     {
       "file": "src/components/chat/NotificationsButton.stories.tsx",
@@ -293,7 +302,7 @@
     },
     {
       "file": "src/components/layout/LeftRail.stories.tsx",
-      "states": ["Default", "Mobile"]
+      "states": ["Default", "Mobile", "UserAvatar"]
     },
     {
       "file": "src/components/layout/ShellSkeleton.stories.tsx",
@@ -341,7 +350,8 @@
         "SearchEmpty",
         "Mobile",
         "ProtectedAdmin",
-        "LastAdmin"
+        "LastAdmin",
+        "UserAvatar"
       ]
     },
     {
@@ -555,7 +565,14 @@
         "MfmSinglePost",
         "MfmUserProfile",
         "VisibilityBadges",
-        "VisibilityBadgesMobile"
+        "VisibilityBadgesMobile",
+        "UserAvatar",
+        "LocalProfileAvatar",
+        "LocalSearchAvatar",
+        "LocalProfileAvatarWithoutUserShape",
+        "LocalSearchAvatarWithoutUserShape",
+        "LocalPostAvatarWithoutUserShape",
+        "LocalAvatarFallback"
       ]
     },
     {
@@ -569,7 +586,9 @@
         "NotFound",
         "LongContent",
         "Mobile",
-        "Pagination"
+        "Pagination",
+        "UserAvatar",
+        "UserAvatarFallback"
       ]
     }
   ],
@@ -856,7 +875,8 @@
     },
     {
       "file": "src/components/ui/avatar.tsx",
-      "story": "src/components/ui/avatar.stories.tsx"
+      "story": "src/components/ui/avatar.stories.tsx",
+      "reason": "形状はAvatar Story、画像と取得失敗はHome/PublicProfile Story、SWによる画像更新とオフライン表示はscripts/avatar-cache.test.mjsで確認する。"
     },
     {
       "file": "src/components/ui/button.tsx",

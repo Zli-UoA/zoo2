@@ -1,3 +1,5 @@
+import { storyCollections } from "../../../.storybook/fixtures";
+import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse, delay } from "msw";
 import { expect, userEvent, within, waitFor } from "storybook/test";
@@ -146,5 +148,49 @@ export const WithImages: Story = {
       await waitFor(() => expect((image as HTMLImageElement).naturalWidth).toBeGreaterThan(0));
     }
     await expect(canvas.getByText("公開プロフィールの画像投稿です。")).toBeVisible();
+  }),
+};
+
+export const UserAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: {
+      handlers: [
+        userAvatarHandler,
+        http.get(endpoint, () =>
+          HttpResponse.json({
+            ...publicProfile,
+            account: { ...publicProfile.account, avatar_url: userAvatarUrl },
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(async () => {
+      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      await expect(image?.naturalWidth).toBeGreaterThan(0);
+    });
+  }),
+};
+
+export const UserAvatarFallback: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get(userAvatarUrl, () => new HttpResponse(null, { status: 404 })),
+        http.get(endpoint, () =>
+          HttpResponse.json({
+            ...publicProfile,
+            account: { ...publicProfile.account, avatar_url: `${userAvatarUrl}?missing-public` },
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const avatar = await within(canvasElement).findByRole("img", { name: "Alice / アリス" });
+    await waitFor(async () => await expect(avatar).toHaveTextContent("A/"));
+    await expect(avatar.querySelector("img")).toBeNull();
   }),
 };

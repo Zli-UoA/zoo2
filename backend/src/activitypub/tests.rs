@@ -209,6 +209,23 @@ async fn protocol_signed_interaction_wire_roundtrip() -> anyhow::Result<()> {
     let custom = json!({"@context":[CONTEXT,{"Emoji":"http://joinmastodon.org/ns#Emoji","_misskey_reaction":"https://misskey-hub.net/ns#_misskey_reaction"}],"id":format!("{local}/custom-like/1"),"type":"Like","actor":local,"object":"https://peer.example/notes/1","content":":blobcat:","_misskey_reaction":":blobcat:","tag":[{"type":"Emoji","id":"https://peer.example/emojis/blobcat","name":":blobcat:","icon":{"type":"Image","url":"https://cdn.peer.example/blobcat.png"}}],"to":[remote]});
     activities.push(custom.clone());
     activities.push(json!({"@context":CONTEXT,"id":format!("{local}/custom-undo/1"),"type":"Undo","actor":local,"object":custom,"to":[remote]}));
+    for (version, avatar) in [
+        (
+            "added",
+            json!("https://avater.zliusercontent.com/avatars/current.png"),
+        ),
+        ("removed", Value::Null),
+    ] {
+        let account =
+            json!({"user_name":"alice","display_name":"Alice","summary":"Bio","avatar_url":avatar});
+        let object = routes::actor_value(&account, &key, &local);
+        if version == "added" {
+            assert_eq!(object["icon"]["url"], account["avatar_url"]);
+        } else {
+            assert!(object.get("icon").unwrap().is_null());
+        }
+        activities.push(json!({"@context":CONTEXT,"id":format!("{local}/profile/{version}"),"type":"Update","actor":local,"object":object,"to":[format!("{local}/followers")]}));
+    }
     let server = MockServer::start().await;
     let verifier = json!({"key_id":format!("{local}#main-key"),"public_key":key["public_key"]});
     let expected = activities.clone();
@@ -225,7 +242,7 @@ async fn protocol_signed_interaction_wire_roundtrip() -> anyhow::Result<()> {
             );
             ResponseTemplate::new(202)
         })
-        .expect(6)
+        .expect(8)
         .mount(&server)
         .await;
     let url = reqwest::Url::parse(&format!("{}/inbox", server.uri()))?;

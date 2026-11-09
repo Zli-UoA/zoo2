@@ -54,7 +54,8 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
   `content-type: text/html` の応答だけを `/index.html` として保存し、アイコンや JSON への
   直接遷移で app shell を上書きしない。
 - `/assets/`、`/icons/`、`/emojibase-data/` は runtime cache（cache-first）。
-- `/api/`、`/auth/`、`/sw.js`、cross-origin、GET 以外はキャッシュしない。
+- 公開ユーザーアイコンは専用キャッシュに直近64件を保持し、5分ごとの再確認とSWからの更新通知で反映する。詳細は `docs/oidc-avatar.md`。
+- SWのHTTPキャッシュは静的資産と公開ユーザー画像を対象とし、チャットデータはOPFS、認証は既存のOIDCセッションを利用する。
 - 背景更新ではビルド時に生成する `pwa-assets.json` とHTMLのentryを照合し、遅延ロードする
   JS・SQLite Worker・フォントも保存してから新しいHTMLを公開する。一部でも取得できなければ旧画面を維持する。
 - Service Worker更新で画面と保存済みentryが食い違う場合は、OPFSを開く前に新しい画面へ再読み込みする。

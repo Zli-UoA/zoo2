@@ -303,6 +303,122 @@ async function handleAsset(request) {
   }
 }
 
+// Public AuthZ avatars have their own bounded cache, retained across shell upgrades.
+const AVATAR_ORIGIN = "https://avater.zliusercontent.com";
+const AVATAR_CACHE = "zoo-avatars-v1";
+const AVATAR_REFRESH_MS = 5 * 60 * 1000;
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const AVATAR_MAX_ENTRIES = 64;
+const avatarRequests = new Map();
+
+function avatarURL(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.origin !== AVATAR_ORIGIN || url.username || url.password) return null;
+    url.searchParams.delete("__zoo_avatar");
+    url.hash = "";
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+async function avatarBytes(response) {
+  if (Number(response.headers.get("content-length")) > AVATAR_MAX_BYTES) return null;
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > AVATAR_MAX_BYTES) {
+      void reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+function refreshAvatar(url) {
+  if (avatarRequests.has(url)) return avatarRequests.get(url);
+  const work = (async () => {
+    const cache = await caches.open(AVATAR_CACHE);
+    const previous = await cache.match(url);
+    if (
+      previous &&
+      Date.now() - Number(previous.headers.get("x-zoo-checked-at")) < AVATAR_REFRESH_MS
+    )
+      return previous;
+    // Version the network key for the R2 CORS rollout.
+    const networkURL = new URL(url);
+    networkURL.searchParams.set("__zoo_avatar_cache", "1");
+    const response = await fetch(networkURL.href, {
+      signal: AbortSignal.timeout(10_000),
+      mode: "cors",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      cache: "no-cache",
+      redirect: "error",
+    }).catch(() => null);
+    if (
+      !response?.ok ||
+      !/^image\/(png|jpeg|webp|gif|avif)(;|$)/i.test(response.headers.get("content-type") || "")
+    )
+      return previous ?? null;
+    const bytes = await avatarBytes(response).catch(() => null);
+    if (!bytes?.byteLength) return previous ?? null;
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const revision = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    const cached = new Response(bytes, {
+      headers: {
+        "content-type": response.headers.get("content-type"),
+        "cache-control": "no-store",
+        "x-zoo-checked-at": String(Date.now()),
+        "x-zoo-avatar-revision": revision,
+      },
+    });
+    await cache.put(url, cached.clone());
+    const keys = await cache.keys();
+    for (const key of keys.slice(0, Math.max(0, keys.length - AVATAR_MAX_ENTRIES)))
+      await cache.delete(key);
+    if (previous && previous.headers.get("x-zoo-avatar-revision") !== revision) {
+      const clients = await self.clients.matchAll({ type: "window" });
+      for (const client of clients) client.postMessage({ type: "AVATAR_UPDATED", url, revision });
+    }
+    return cached;
+  })().finally(() => avatarRequests.delete(url));
+  avatarRequests.set(url, work);
+  return work;
+}
+
+async function handleAvatar(request, keepAlive) {
+  const url = avatarURL(request.url);
+  const cache = await caches.open(AVATAR_CACHE);
+  const previous = await cache.match(url);
+  const update = refreshAvatar(url).catch(() => null);
+  keepAlive(update);
+  if (previous) return previous;
+  const response = await update;
+  if (response) return response;
+  // R2 CORS can roll out separately. Native image loading remains available.
+  try {
+    return await fetch(request);
+  } catch {
+    return Response.error();
+  }
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(precacheShell().then(() => self.skipWaiting()));
 });
@@ -313,7 +429,11 @@ self.addEventListener("activate", (event) => {
       const active = await findActiveShellCache();
       for (const name of await caches.keys()) {
         const managed = name.startsWith(CACHE_PREFIX) || name.startsWith("zoo-offline-");
-        if (managed && name !== active) await caches.delete(name);
+        if (
+          (managed && name !== active) ||
+          (name.startsWith("zoo-avatars-") && name !== AVATAR_CACHE)
+        )
+          await caches.delete(name);
       }
       await self.clients.claim();
     })(),
@@ -322,6 +442,31 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("message", (event) => {
   const data = event.data;
+  if (data?.type === "REFRESH_AVATARS" && Array.isArray(data.urls)) {
+    const urls = [
+      ...new Set(
+        data.urls
+          .filter((url) => typeof url === "string")
+          .map(avatarURL)
+          .filter(Boolean),
+      ),
+    ].slice(0, AVATAR_MAX_ENTRIES);
+    event.waitUntil(
+      (async () => {
+        const results = await Promise.allSettled(urls.map(refreshAvatar));
+        for (let index = 0; index < results.length; index++) {
+          const result = results[index];
+          const revision =
+            result.status === "fulfilled"
+              ? result.value?.headers.get("x-zoo-avatar-revision")
+              : null;
+          if (revision)
+            event.source?.postMessage({ type: "AVATAR_UPDATED", url: urls[index], revision });
+        }
+      })(),
+    );
+    return;
+  }
   if (data?.type === "SHELL_ENTRY") {
     event.waitUntil(
       (async () => {
@@ -358,7 +503,17 @@ self.addEventListener("message", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin || event.request.method !== "GET") return;
+  if (event.request.method !== "GET") return;
+  if (event.request.destination === "image" && avatarURL(url.href)) {
+    let updating = Promise.resolve();
+    const response = handleAvatar(event.request, (work) => {
+      updating = work;
+    }).catch(() => fetch(event.request).catch(() => Response.error()));
+    event.respondWith(response);
+    event.waitUntil(response.then(() => updating));
+    return;
+  }
+  if (url.origin !== self.location.origin) return;
   if (isPrivatePath(url.pathname) || url.pathname === "/sw.js") return;
 
   if (event.request.mode === "navigate") {

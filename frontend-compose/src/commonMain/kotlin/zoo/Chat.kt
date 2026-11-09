@@ -46,23 +46,22 @@ fun Avatar(
                 .border(1.dp, colors.outline, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            val url = user?.text("avatar_url").orEmpty()
-            if (url.isNotEmpty()) RemoteImage(url, name, Modifier.fillMaxSize())
-            else if (user?.flag("is_bot") == true) Icon("bot", modifier = Modifier.size(16.dp))
-            else
-                Text(
+            val fallbackContent: @Composable () -> Unit = {
+                if (user?.flag("is_bot") == true) Icon("bot", modifier = Modifier.size(16.dp))
+                else Text(
                     fallback
-                        ?: name
-                            .trim()
-                            .split(Regex("\\s+"))
-                            .take(2)
-                            .joinToString("") { it.take(1) }
-                            .uppercase(),
+                        ?: name.trim().split(Regex("\\s+")).take(2)
+                            .joinToString("") { it.take(1) }.uppercase(),
                     small = true,
                     size = if (maxWidth > 24.dp) 14.sp else 12.sp,
                     lineHeight = if (maxWidth > 24.dp) 20.sp else 16.sp,
                     color = colors.onSurfaceVariant,
                 )
+            }
+            val url = user?.text("avatar_url").orEmpty()
+            if (url.isNotEmpty())
+                RemoteImage(url, name, Modifier.fillMaxSize(), fallback = fallbackContent)
+            else fallbackContent()
         }
         if (badge)
             Box(
@@ -86,6 +85,7 @@ fun RemoteImage(
     modifier: Modifier = Modifier,
     onLoaded: (() -> Unit)? = null,
     onError: (() -> Unit)? = null,
+    fallback: (@Composable () -> Unit)? = null,
 ) {
     val app = LocalApp.current
     var bitmap by remember(url) { mutableStateOf<ImageBitmap?>(null) }
@@ -110,7 +110,7 @@ fun RemoteImage(
             modifier.background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
-            Text(label, small = true, maxLines = 1)
+            if (fallback != null) fallback() else Text(label, small = true, maxLines = 1)
         }
 }
 
