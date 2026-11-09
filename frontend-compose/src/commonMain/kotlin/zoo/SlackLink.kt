@@ -121,8 +121,10 @@ class SlackLinkController(
         if (!lifetime.isActive) return
         when (result) {
             is SlackLinkResult.Failed -> {
-                // アプリに戻って結果が渡ったので、外部ブラウザーの待ちは終わっている
+                // アプリに戻って結果が渡ったので、外部ブラウザーの待ちは終わっている。`resume` はもう待ちを
+                // 解除しないので (`handle` が先に呼ばれた場合)、ここで `pending` を下ろして連携をやり直せるようにする
                 awaitingBrowser = false
+                pending = false
                 error =
                     "slackLink.errors." +
                         (result.reason.takeIf { it in slackLinkErrors } ?: "failed")

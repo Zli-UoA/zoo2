@@ -285,4 +285,29 @@ class SlackLinkTest {
         assertEquals(linked, state.state)
         state.close()
     }
+
+    @Test
+    fun aFailedResultThatArrivesBeforeResumeStillAllowsLinkingAgain() = runTest {
+        val state =
+            SlackLinkController(backgroundScope) { path, method, _ ->
+                when {
+                    path == "/api/slack/oauth/start" ->
+                        obj("authorize_url" to "https://slack.com/oauth/v2/authorize?state=x")
+                    method == "GET" -> notLinked
+                    else -> error("unexpected $method $path")
+                }
+            }
+        state.link { }
+        runCurrent()
+        assertTrue(state.pending)
+        // 結果 (失敗) が先に渡り、そのあとにアプリが前面に戻っても、連携のボタンが無効のままにならない
+        state.handle(SlackLinkResult.Failed("access_denied"))
+        runCurrent()
+        assertFalse(state.pending)
+        state.resume()
+        runCurrent()
+        assertFalse(state.pending)
+        assertTrue(state.error != null)
+        state.close()
+    }
 }

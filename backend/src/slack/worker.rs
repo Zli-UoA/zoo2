@@ -1083,7 +1083,9 @@ async fn create_channel(
         .is_empty()
     {
         // 上の名前の確認のあと、INSERT までの間に同じ名前のチャンネルが作られた (名前の UNIQUE との競合)。
-        // DB のエラーでジョブを失敗させず、名前が使われていることを伝える
+        // DB のエラーでジョブを失敗させず、名前が使われていることを伝える。ジョブの中では、名前の確認と同じく
+        // `BadRequest` にする (API の事前確認 `import.rs` は 409 を返すが、ジョブでは `BadRequest` だけが
+        // 再試行しない恒久的な失敗になる。`Conflict` はリースの喪失にも使うので避ける)
         if !query(
             tx,
             "SELECT json_build_object('id',id)::text FROM channels WHERE channel_name=$1 AND id<>$2",
