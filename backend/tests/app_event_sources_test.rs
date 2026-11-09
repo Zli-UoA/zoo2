@@ -3353,7 +3353,10 @@ async fn delivery_role_checks(f: &Fixture, login: &str) -> anyhow::Result<()> {
         }
     }
     let attempts_now = message_delivery_attempts(f).await?;
-    assert!(attempts_now.iter().all(|a| *a >= 1), "attempts: {attempts_now:?}");
+    assert!(
+        attempts_now.iter().all(|a| *a >= 1),
+        "attempts: {attempts_now:?}"
+    );
     apps::delivery::cleanup_deliveries(&db).await?;
     // 権限の確認が目的。滞留が多い DB では 3 秒の時間制限に当たりうるので、それは許す。
     if let Err(e) = apps::delivery::refresh_queue_metrics(&db).await {
