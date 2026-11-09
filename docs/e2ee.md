@@ -513,19 +513,21 @@ AuthZ 側（[AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94)）の要件�
 ```js
 // RP ID の決め方の節のとおり、issuer のホスト名（本番は "account.zli.works"）
 const rpId = new URL(config.oidc.issuer).hostname;
+// slots は GET /api/e2ee/secret_storage の応答。リカバリーキーのスロットは credential_id と prf_salt を持たないので除く
+const passkeySlots = slots.filter((slot) => slot.kind === "passkey");
 const credential = await navigator.credentials.get({
   publicKey: {
     rpId,
     challenge: crypto.getRandomValues(new Uint8Array(32)),
     userVerification: "required",
-    allowCredentials: slots.map((slot) => ({
+    allowCredentials: passkeySlots.map((slot) => ({
       type: "public-key",
       id: base64urlDecode(slot.credential_id),
     })),
     extensions: {
       prf: {
         evalByCredential: Object.fromEntries(
-          slots.map((slot) => [slot.credential_id, { first: base64Decode(slot.prf_salt) }]),
+          passkeySlots.map((slot) => [slot.credential_id, { first: base64Decode(slot.prf_salt) }]),
         ),
       },
     },
@@ -575,7 +577,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 4. SSSS 鍵を作り、4 つの秘密（クロス署名の 3 つの秘密鍵とバックアップ鍵）を暗号化する。
 5. パスキーのスロットを作る（PRF を使える場合）。
 6. リカバリーキーを作ってスロットを作り、ユーザーに表示して控えてもらう。
-7. SSSS（鍵、4 つの秘密、スロット）を `POST /api/e2ee/secret_storage/keys` で 1 回で保存する。次にクロス署名鍵、端末への署名、バックアップの版の順に保存する。SSSS を先に保存するのは、途中で失敗しても秘密鍵を失わず、SSSS から取り出して続きを保存し直せるようにするため。SSSS とクロス署名鍵の保存には直前の再認証が要る（[クロス署名の API](#クロス署名356)）。【決定】再認証は、利用者がリカバリーキーを控え終えたあと、7 の保存の直前に、今の画面を離れずに行う。Web は別のウィンドウで `max_age=0` の認可リクエストを開き、リダイレクト先のページから `postMessage` で認可コードを元のページに返す。Android は Custom Tabs、TUI はループバックのリダイレクトで受け取る。どれもアプリやページが残るので、メモリーにある鍵とリカバリーキーは消えない。ID トークンの有効期限（AuthZ は 300 秒）がリカバリーキーを控える時間に食われないようにするため。保存が 403 になったら、もう一度再認証して同じ鍵で保存し直す。別のウィンドウを開けない（ポップアップを止められたなど）ときは、利用者に操作を求めて開き直す。`postMessage` の送信先の `targetOrigin` は元のページのオリジン（`https://zli.chat`）に固定し、受け取る側はオリジンと `state` を確かめる。PKCE の code verifier は元のページのメモリーにだけ置き、別ウィンドウには渡さない（リダイレクト先のページは認可コードと `state` だけを返す）。その他の細部は #360 で決める。SSSS を保存したあとで端末やページが閉じられたら、下の初回設定の再開で、再認証してから SSSS を開け直して続ける。
+7. SSSS（鍵、4 つの秘密、スロット）を `POST /api/e2ee/secret_storage/keys` で 1 回で保存する。次にクロス署名鍵、端末への署名、バックアップの版の順に保存する。SSSS を先に保存するのは、途中で失敗しても秘密鍵を失わず、SSSS から取り出して続きを保存し直せるようにするため。SSSS とクロス署名鍵の保存には直前の再認証が要る（[クロス署名の API](#クロス署名356)）。【決定】再認証は、利用者がリカバリーキーを控え終えたあと、7 の保存の直前に、今の画面を離れずに行う。Web は別のウィンドウで `max_age=0` の認可リクエストを開き、リダイレクト先のページから `postMessage` で認可コードを元のページに返す。Android は Custom Tabs、TUI はループバックのリダイレクトで受け取る。どれもアプリやページが残るので、メモリーにある鍵とリカバリーキーは消えない。ID トークンの有効期限（AuthZ は 300 秒）がリカバリーキーを控える時間に食われないようにするため。保存が 403 になったら、もう一度再認証して同じ鍵で保存し直す。別のウィンドウを開けない（ポップアップを止められたなど）ときは、利用者に操作を求めて開き直す。`postMessage` の送信先の `targetOrigin` は元のページの実際のオリジン（`window.location.origin`。本番は `https://zli.chat`、開発は `http://localhost:5173`、Preview は `https://zoo2-pr-<番号>.zli.chat` など、環境ごとに違う）に固定し、受け取る側はオリジンと `state` を確かめる。PKCE の code verifier は元のページのメモリーにだけ置き、別ウィンドウには渡さない（リダイレクト先のページは認可コードと `state` だけを返す）。その他の細部は #360 で決める。SSSS を保存したあとで端末やページが閉じられたら、下の初回設定の再開で、再認証してから SSSS を開け直して続ける。
 
 【決定】初回設定の再開：
 
@@ -645,7 +647,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_DEVICE_EXISTS` | 同じ `device_id` の端末が削除済み（墓標を含む。登録は `e2ee_devices` と `e2ee_deleted_device_ids` を 1 つの文で確かめる）、または同じ `device_id` で `device_keys` の内容が違う（削除されていない同じ内容の再送は 200） | |
 | 400 | `E2EE_SLOTS_REQUIRED` | `POST /api/e2ee/secret_storage/keys` の `slots` が空、または最後のスロットを削除しようとした | |
 | 429 | `E2EE_RATE_LIMITED` | 端末の登録が 1 ユーザーにつき 1 時間に 30 回を超えた【提案】 | `retry_after`（秒） |
-| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）が上限を超えた。すべて同じコードで返す | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
+| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、`keys/query` と `recipients` の応答の合計サイズ（8 MiB）が上限を超えた。すべて同じコードで返す | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
 | 409 | `E2EE_KEY_EXISTS` | 同じ鍵 ID で内容が違うワンタイム鍵をアップロードした | |
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない（暗号化チャンネルで必須。平文チャンネルでは、送ったときだけ） | `current_revision` |
 | 409 | `E2EE_PIN_CONFLICT` | `replace: false` で、同じ相手に、違うマスター鍵の TOFU のピンがすでにあり、そのピンを今のユーザー署名鍵で検証できる | `pin` |
@@ -683,7 +685,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - `PATCH /api/e2ee/devices/{device_id}`：`{"display_name": "..."}`。自分の端末だけ。
 - `DELETE /api/e2ee/devices/{device_id}`：自分の端末を削除する（論理削除）。同じトランザクションで、その端末に付いた自己署名（`e2ee_key_signatures` のうち `signer_user_id` と `target_user_id` が持ち主で、`target_key_id` がその `device_id` の行だけ。`device_id` は `(user_id, device_id)` の組でしか一意でないので、別のユーザーの同じ `device_id` の署名は消さない）も消す（登録のたびに行が増え続け、Shape と `keys/query` が大きくならないようにするため。無効化の端末の削除と、30 日のバッチで残った行の削除も同じ）。【決定】削除は、その端末の端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`）を取ってから行う。`to-device` の送信も同じロックを取ったあとに `deleted_at` を読み直し、削除済みなら（範囲外や存在しない端末と同じく）通知せずに捨てる。取らないと、送信が `deleted_at IS NULL` を確かめたあとに削除がコミットし、その後で送信が挿入して、削除済みの端末宛てのメッセージが残る。同じトランザクションで、端末単位のロックのあと、ユーザーが参加しているすべての暗号化チャンネルの行（削除済みのチャンネルを除く。[membership_epoch と送信の順序](#membership_epoch-と送信の順序) の一括更新の `SELECT` と同じ条件）を `ORDER BY id FOR NO KEY UPDATE` でまとめてロックし、そのあとで `e2ee_devices` の行の論理削除と、その端末のワンタイム鍵、フォールバック鍵、未受信の to-device メッセージの削除を行い、それらのチャンネルの `membership_epoch` を増やす（`membership_epoch` の列は #357 で足すので、この増加は #357 で足す）。削除した `device_id` は再利用できない（30 日後は `e2ee_deleted_device_ids` に残る）。【決定】`DELETE` は冪等にする。すでに削除済みの `device_id`（墓標を含む）への `DELETE` は 200 を返し、`membership_epoch` は増やさない（ログアウトの削除の再試行や、応答をなくした再送が失敗しないようにするため）。【決定】端末の削除は失効ではない。削除された端末は、暗号ストアにバックアップ鍵、自己署名鍵、ユーザー署名鍵の秘密鍵を持ったままなので、削除しただけでは、その端末が今の鍵バックアップを取得して新しいセッションを復号したり、今の自己署名鍵で新しい端末に署名したり、今のユーザー署名鍵でピンや署名を作ったりできる。端末を失った、または見覚えのない端末があるときは、削除に加えて[失効の手順](#失効の手順)（1、3、4。漏れたものに応じて 1〜5）が必須。
 - `POST /api/e2ee/keys/upload`：`{"device_id", "one_time_keys", "fallback_keys"}`。【決定】端末単位のロックを取ったあとに、その端末の `deleted_at` を読み直し、削除済みなら 404 にする（削除のあとに鍵が入り直らないため）。応答は `{"one_time_key_counts": {"signed_curve25519": 50}, "unused_fallback_key_types": ["signed_curve25519"]}`。
-- `POST /api/e2ee/keys/query`：`{"user_ids": [...]}`（最大 100 人）。応答は次の形。
+- `POST /api/e2ee/keys/query`：`{"user_ids": [...]}`（最大 100 人）。【決定】応答の大きさの上限は、1 端末の鍵 JSON が 8 KiB、1 人 20 台までなので、最大でも約 16 MiB（100 × 20 × 8 KiB）で、実際は 1〜数台なのでずっと小さい。クライアントは、一度に問い合わせるのを 50 人までにして、残りは別のリクエストに分ける。サーバーは、応答の合計が 8 MiB を超えるときは 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `response_size`）で拒否する。応答は次の形。
 
   ```json
   {
@@ -868,7 +870,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 【決定】Megolm セッション鍵の配布先は、epoch と結び付いた 1 つのスナップショットから計算します（[鍵の配布先の判定](#鍵の配布先の判定)）。Electric の Shape はそれぞれ別のストリームで、同じトランザクションまで届いている保証がないので、Channels Shape の epoch と Channel Users Shape のメンバーを組み合わせると、退出したメンバーに鍵を配ってしまうことがあるためです。この API は [#357](https://github.com/Zli-UoA/zoo2/issues/357) で作ります。
 
-- `GET /api/e2ee/channels/{channel_id}/recipients`：削除済みのチャンネルは 404。応答は `keys/query` と同じ形に、`channel_id`、`membership_epoch`、`user_ids` を足したもの。
+- `GET /api/e2ee/channels/{channel_id}/recipients`：削除済みのチャンネルは 404。応答は `keys/query` と同じ形に、`channel_id`、`membership_epoch`、`user_ids` を足したもの。【決定】`keys/query` と同じく、応答の合計が 8 MiB を超えるときは 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `response_size`）で拒否する。このとき、送信者は `keys/query` を 50 人ずつに分けて、配布先を組み立てる（メンバーの一覧は `channel_user` の Shape にある）。暗号化チャンネルのメンバー数の上限は、#357 で決める【提案】。
 
   ```json
   {
@@ -1177,7 +1179,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 
 【決定】オフラインだった端末が変化に気付かず、古いセッションで送ることを防ぐ仕組みです。
 
-【決定】ロックの順は、本書のすべての書き込みで次にそろえる：`users` の行（`FOR SHARE`、無効化は `FOR UPDATE`）、ユーザー単位の advisory lock `(1, …)`、端末単位の advisory lock `(2, …)`（`(user_id, device_id)` の昇順）、`channels` の行（`id` の昇順）、`e2ee_devices` の行。逆の順で取る経路を作らない（行き詰まりを避けるため）。
+【決定】ロックの順は、本書のすべての書き込みで次にそろえる：`users` の行（`FOR SHARE`、無効化は `FOR NO KEY UPDATE`。無効化はキー列を変えないので、to-device の `sender_user_id` や `keys/claim` の `claimer_user_id` の外部キーが取る `FOR KEY SHARE` とは衝突せず、登録系の `FOR SHARE` とは直列になる。`FOR UPDATE` にすると、無効化が `users` を持ったまま端末単位のロックを待ち、端末単位のロックを持つ to-device や `keys/claim` が外部キーで `users` を待つ循環になる）、ユーザー単位の advisory lock `(1, …)`、端末単位の advisory lock `(2, …)`（`(user_id, device_id)` の昇順）、`channels` の行（`id` の昇順）、`e2ee_devices` の行。逆の順で取る経路を作らない（行き詰まりを避けるため）。
 
 【決定】複数のチャンネルの `membership_epoch` を一度に増やす処理（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）は、最初に `SELECT id FROM channels WHERE encrypted AND deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1) ORDER BY id FOR NO KEY UPDATE` でそのユーザーの暗号化チャンネルをまとめて `id` の昇順にロックしてから、同じ条件で `UPDATE` する。削除済みのチャンネルは増やさない。単独のチャンネルの変更（参加、退出、キック、送信）はこの対象ではない。同じユーザーの別の処理（端末の削除と、クロス署名鍵の変更）も、このロックで直列になる。
 
