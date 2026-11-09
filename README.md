@@ -12,7 +12,7 @@ PWA のインストールとプッシュ通知の設定・動作は [PWA とプ�
 
 本番の配備結果と履歴は [Flux の通知](docs/flux-status.md) を参照してください。
 
-Slack のエクスポートを取り込む手順は [Slack からの取り込み](docs/slack-import.md) を参照してください。
+Slack のエクスポートの取り込みとアカウント連携は [Slack からの取り込みとアカウント連携](docs/slack-import.md) を参照してください。
 
 App・Botの開発、認証、イベント配信、既存Webhookの移行は [App・Bot基盤](docs/apps.md) を参照してください。
 

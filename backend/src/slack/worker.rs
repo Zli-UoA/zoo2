@@ -716,6 +716,17 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         files: FilePolicy::new(s),
     };
     let mut db = s.db.clone();
+    let admin = {
+        let mut tx = db.transaction().await?;
+        let admin = crate::auth::rbac::is_workspace_admin(
+            &mut tx,
+            &job.created_by,
+            s.config.dev_auth_enabled,
+        )
+        .await?;
+        tx.commit().await?;
+        admin
+    };
 
     // プレースホルダは、選んだチャンネルのメンバー・投稿者・リアクション・メンションに出る人だけを作る
     // (users.json の全員を作ると、大きいワークスペースで users の同期量が増えるため)
@@ -766,7 +777,45 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             // 開始後に別のジョブが同じチャンネルを取り込んだ場合も、取り込み先はずらさない
             super::import::ensure_same_target(&mut tx, &team, mapping)
                 .await
-                .map_err(|e| AppError::BadRequest(e.to_string()))?;
+                .map_err(|e| {
+                    if admin {
+                        AppError::BadRequest(e.to_string())
+                    } else {
+                        // 管理者以外の取り込みは、ジョブの失敗理由が本人に見える。参加していない非公開チャンネルの
+                        // 名前が入らないよう、以前の取り込み先の名前を出さない
+                        AppError::BadRequest(format!(
+                            "Slack channel {} was already imported into another channel; import it into the same channel or skip it",
+                            mapping.slack_channel_id
+                        ))
+                    }
+                })?;
+            // 以前の取り込みで作ったチャンネルや既存のチャンネルに入れるなら、開始後に外されていないか確かめる
+            let reused = match &mapping.action {
+                MappingAction::Skip => continue,
+                MappingAction::Existing { channel_id } => Some(channel_id.clone()),
+                MappingAction::Create { .. } => {
+                    let own = super::channel_id(&team, &channel.id);
+                    let exists = !query(
+                        &mut tx,
+                        "SELECT json_build_object('id',id)::text FROM channels WHERE id=$1",
+                        &[&own],
+                    )
+                    .await?
+                    .is_empty();
+                    exists.then_some(own)
+                }
+            };
+            if let Some(channel_id) = &reused {
+                ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
+            } else if matches!(mapping.action, MappingAction::Create { .. })
+                && crate::apps::events::guest(&mut tx, &job.created_by).await?
+            {
+                // 開始した後でゲストになった場合も、通常のチャンネル作成と同じく新しいチャンネルは作らない
+                return Err(AppError::BadRequest(format!(
+                    "Guests cannot create channels by importing from Slack ({})",
+                    channel.id
+                )));
+            }
             let (target, private) = match &mapping.action {
                 MappingAction::Skip => continue,
                 MappingAction::Create { name, is_private } => {
@@ -819,16 +868,22 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     }
 
     let mut processed = 0u64;
-    for (channel, channel_id, created) in &targets {
+    for (channel, channel_id, _) in &targets {
         lease.check()?;
         {
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
+            // メンバーを足す直前にも、実行者がまだ取り込み先にメンバーを足せるか確かめる
+            ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
             for member in &channel.members {
                 let user = ctx.user(&mut tx, member, None).await?;
+                // 連携したゲストは、管理者が決めたチャンネルにだけ参加する (取り込みでは足さない)。
+                // 未連携のプレースホルダ (guest_kind='deactivated' で is_guest も立つ) は、連携時に
+                // 本人へ移せるよう参加情報を残す。
                 exec(
                     &mut tx,
-                    "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP) \
+                    "INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT $1,$2,CURRENT_TIMESTAMP \
+                     WHERE NOT EXISTS(SELECT 1 FROM users WHERE id=$1 AND guest_kind IN ('single','multi')) \
                      ON CONFLICT DO NOTHING",
                     &[&user.id, channel_id],
                 )
@@ -888,16 +943,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             &[channel_id, &team, &channel.id],
         )
         .await?;
-        if *created && channel.is_archived {
-            exec(
-                &mut tx,
-                "UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1 AND archive_at IS NULL",
-                &[channel_id],
-            )
-            .await?;
-        }
         tx.commit().await?;
     }
+
+    // 取り込み中に連携した人の分も含め、連携済みの人の投稿をプレースホルダから本人へ移す
+    let mut tx = db.transaction().await?;
+    super::link::reconcile_team(&mut tx, &team).await?;
+    tx.commit().await?;
 
     // 添付の取得へ進む。トークンがなければ保留のまま完了にする。
     let mut tx = db.transaction().await?;
@@ -914,6 +966,18 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     } else {
         "completed"
     };
+    // Slack でアーカイブ済みのチャンネルは、作った取り込み先も最後にまとめてアーカイブする。
+    // 途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
+    for (channel, channel_id, created) in &targets {
+        if *created && channel.is_archived {
+            exec(
+                &mut tx,
+                "UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1 AND archive_at IS NULL",
+                &[channel_id],
+            )
+            .await?;
+        }
+    }
     exec(
         &mut tx,
         "UPDATE slack_import_jobs SET status=$3,processed_messages=$4::bigint,total_files=$5::bigint,\
@@ -932,6 +996,33 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     tx.commit().await?;
     // ZIP はエクスポートとして残し、管理者が消すか新しい ZIP に置き換わるまで使う
     Ok(())
+}
+
+/// セルフサービスの取り込み (実行者が管理者でないジョブ) では、開始時と同じく取り込み先に参加していて
+/// メンバーを足せることを実行時にも求める。開始後にチャンネルから外された人が、取り込みで戻らないようにする。
+async fn ensure_can_import(
+    tx: &mut toasty::Transaction<'_>,
+    job: &Job,
+    admin: bool,
+    channel_id: &str,
+    channel: &SlackChannel,
+) -> Result<(), AppError> {
+    if admin
+        || super::self_import::can_import_into(
+            tx,
+            channel_id,
+            &job.created_by,
+            false,
+            channel.is_private,
+        )
+        .await?
+    {
+        return Ok(());
+    }
+    Err(AppError::BadRequest(format!(
+        "You can no longer import Slack channel {} into this channel",
+        channel.id
+    )))
 }
 
 async fn create_channel(
@@ -961,12 +1052,12 @@ async fn create_channel(
             "Channel name '{name}' is already taken"
         )));
     }
-    exec(
+    let inserted = query(
         tx,
         "INSERT INTO channels(id,channel_name,description,created_user_id,is_private,created_at) \
          VALUES($1,$2,NULLIF($3,''),$4,$5::boolean,\
          CASE WHEN $6::bigint>0 THEN (to_timestamp($6::bigint) AT TIME ZONE 'UTC')::timestamp(3) ELSE CURRENT_TIMESTAMP END) \
-         ON CONFLICT (id) DO NOTHING",
+         ON CONFLICT DO NOTHING RETURNING json_build_object('id',id)::text",
         &[
             &id,
             name,
@@ -977,6 +1068,41 @@ async fn create_channel(
         ],
     )
     .await?;
+    // 決定的な ID のチャンネルがすでにあるのに、この Slack チャンネルの取り込み先として記録されていなければ、
+    // 取り込みで作ったものではない (`POST /api/channels` は任意の ID を受け付ける)。他人のチャンネルを再利用して
+    // 履歴を流し込まないよう、名前を出さずに断る。存在の確認と INSERT を別の文にすると、その間に作られた
+    // チャンネルを見逃すので、INSERT 自身の結果 (実際に作れたか) で判定する
+    if inserted.is_empty()
+        && query(
+            tx,
+            "SELECT json_build_object('ok',true)::text FROM slack_channels \
+             WHERE team_id=$1 AND slack_channel_id=$2 AND channel_id=$3",
+            &[team, &channel.id, &id],
+        )
+        .await?
+        .is_empty()
+    {
+        // 上の名前の確認のあと、INSERT までの間に同じ名前のチャンネルが作られた (名前の UNIQUE との競合)。
+        // DB のエラーでジョブを失敗させず、名前が使われていることを伝える。ジョブの中では、名前の確認と同じく
+        // `BadRequest` にする (API の事前確認 `import.rs` は 409 を返すが、ジョブでは `BadRequest` だけが
+        // 再試行しない恒久的な失敗になる。`Conflict` はリースの喪失にも使うので避ける)
+        if !query(
+            tx,
+            "SELECT json_build_object('id',id)::text FROM channels WHERE channel_name=$1 AND id<>$2",
+            &[name, &id],
+        )
+        .await?
+        .is_empty()
+        {
+            return Err(AppError::BadRequest(format!(
+                "Channel name '{name}' is already taken"
+            )));
+        }
+        return Err(AppError::BadRequest(format!(
+            "Slack channel {} cannot be imported into a new channel because a channel with the same ID already exists",
+            channel.id
+        )));
+    }
     // 作成した管理者もメンバーに入れる (zoo でチャンネルを作ったときと同じ)
     exec(
         tx,
@@ -1327,6 +1453,12 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 tx.commit().await?;
             }
         }
+    }
+    // 取得中に連携した人の添付も本人へ移す
+    if let Some(team) = job.team_id.as_deref() {
+        let mut tx = db.transaction().await?;
+        super::link::reconcile_team(&mut tx, team).await?;
+        tx.commit().await?;
     }
     let mut tx = db.transaction().await?;
     exec(

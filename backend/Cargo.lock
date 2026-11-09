@@ -600,6 +600,7 @@ dependencies = [
 name = "backend"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "aws-credential-types",
  "aws-sdk-s3",

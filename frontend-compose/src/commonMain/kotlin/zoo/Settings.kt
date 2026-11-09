@@ -39,8 +39,6 @@ fun searchUrl(engine: String, query: String): String {
 
 @Composable
 fun ZooSettings(app: Session, users: List<Row>) {
-    val tab =
-        app.query["tab"].takeIf { it in listOf("apps", "members", "activitypub", "emojis") } ?: "general"
     val tabs =
         listOf(
             "general" to "settings.general",
@@ -48,8 +46,10 @@ fun ZooSettings(app: Session, users: List<Row>) {
             "emojis" to "home.customEmojis",
             "apps" to "apps.title",
             "members" to "members.title",
+            "slack" to "slackLink.tab",
         )
-    val tabFocus = remember { List(tabs.size) { FocusRequester() } }
+    val tab = app.query["tab"].takeIf { value -> tabs.any { it.first == value } } ?: "general"
+    val tabFocus = remember(tabs.size) { List(tabs.size) { FocusRequester() } }
     fun selectTab(value: String) {
         val builder =
             io.ktor.http.URLBuilder("https://zoo.invalid${app.env.path}").apply {
@@ -144,6 +144,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     "apps" -> Apps(app, embedded = true)
                     "members" -> WorkspaceMembers(app, users)
                     "activitypub" -> ActivityPubSettingsTab(app)
+                    "slack" -> SlackLinkPanel(app)
                     else -> GeneralSettings(app)
                 }
             }
