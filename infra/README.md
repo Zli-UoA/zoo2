@@ -156,11 +156,11 @@ CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要
 
 ## ステージング
 
-DBサービスは Coolify が `extends` や `!reset` を扱えないため、`compose.stg.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
+DBサービスは `extends` や `!reset` を使わず、`compose.stg.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
 
 リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` は必須です。
 
-Rust の本番起動には `OIDC_ISSUER` と `OIDC_AUDIENCE`（未設定なら `OIDC_CLIENT_ID`）も必要です。IdP に合わせて Coolify の環境変数に設定してください。Kanidm では `OIDC_AUDIENCE` を client ID に、AuthZ では resource identifier（`VITE_OIDC_RESOURCE`）に一致させます。`OIDC_JWKS_URL` は任意で、未設定なら Discovery を使います。OIDC 設定を省略すると Rust は起動を拒否します。フロント単体とモックを使ったプロキシテストには不要です。
+Rust の本番起動には `OIDC_ISSUER` と `OIDC_AUDIENCE`（未設定なら `OIDC_CLIENT_ID`）も必要です。IdP に合わせて環境変数に設定してください。Kanidm では `OIDC_AUDIENCE` を client ID に、AuthZ では resource identifier（`VITE_OIDC_RESOURCE`）に一致させます。`OIDC_JWKS_URL` は任意で、未設定なら Discovery を使います。OIDC 設定を省略すると Rust は起動を拒否します。フロント単体とモックを使ったプロキシテストには不要です。
 
 ```bash
 POSTGRES_PASSWORD=staging-test-password \
@@ -168,7 +168,7 @@ POSTGRES_PASSWORD=staging-test-password \
   up -d --build --wait
 ```
 
-公開入口は Traefik の `proxy` サービスで、コンテナ内の `8080` をホストの `127.0.0.1:18080` にマッピングします。ホスト側は `PROXY_PORT` で変更できます。Coolify 自身が使う `8080` とは分けています。フロント・Rust・DB・Electric のホストポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。既存の `compose.stg.local.yaml` を重ねた起動コマンドも、同じマッピングで引き続き利用できます。
+公開入口は Traefik の `proxy` サービスで、コンテナ内の `8080` をホストの `127.0.0.1:18080` にマッピングします。ホスト側は `PROXY_PORT` で変更できます。フロント・Rust・DB・Electric のホストポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。既存の `compose.stg.local.yaml` を重ねた起動コマンドも、同じマッピングで引き続き利用できます。
 
 起動時は `postgres` が healthy になったあと、`migrate` コンテナ（`arigaio/atlas`、単一インスタンス前提）が `infra/db/migrations` を自動適用（`atlas migrate apply`）して終了し、その完了を待ってから `electric` と `backend` が起動します（このコンテナには Docker ソケットを持たせないため、`dev` DB を使う `migrate diff` / `validate` はローカルまたは CI で実行します）。
 
@@ -182,7 +182,7 @@ POSTGRES_PASSWORD=staging-test-password \
 
 ブラウザ（SPA）は Kanidm から取得した JWT を `Authorization: Bearer <token>` ヘッダに付与して API を呼び出します。Compose のフロントビルドでは `VITE_API_BASE_URL` を空文字に固定し、`/api/*`（Shape を含む）をプロキシから Rust へ直接転送します。それ以外のパスはフロントの静的配信コンテナへ転送します。
 
-`/api/*` の転送ではクライアントの `Authorization` ヘッダをそのまま Rust へ通し、開発用の `X-Dev-User` ヘッダはプロキシで除去します。API の応答には `Cache-Control: private, no-cache` を付与します。Shape の `electric-*`・`Vary` ヘッダは維持し、レスポンスを即時フラッシュします。プロキシと Rust 間の応答待ち時間（応答ヘッダが返るまで）は 120 秒です。Electric の long-poll 設定を延長する場合は、この設定と外側の Coolify プロキシも合わせて見直してください。応答を書き終えるまでの期限（entrypoint の `writeTimeout`）は設けていないので、SSE など長く続くストリームも切れません。
+`/api/*` の転送ではクライアントの `Authorization` ヘッダをそのまま Rust へ通し、開発用の `X-Dev-User` ヘッダはプロキシで除去します。API の応答には `Cache-Control: private, no-cache` を付与します。Shape の `electric-*`・`Vary` ヘッダは維持し、レスポンスを即時フラッシュします。プロキシと Rust 間の応答待ち時間（応答ヘッダが返るまで）は 120 秒です。Electric の long-poll 設定を延長する場合は、この設定と外側のプロキシも合わせて見直してください。応答を書き終えるまでの期限（entrypoint の `writeTimeout`）は設けていないので、SSE など長く続くストリームも切れません。
 
 Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、受け取った Bearer トークンを JWKS で検証します。また、Shape の初回同期では複数リクエストが重なるため、Traefik にパス一律の `rateLimit` は設けていません。レート制限は前段の Cloudflare 等で扱います。
 
@@ -257,12 +257,11 @@ curl -fsSI https://<公開ホスト>/ | grep -i content-security-policy
 
 > **メモ:** 現在ユーザー（内部 `users.id`）は SPA が起動時に `GET /api/users/me`（Bearer）で解決し、自分の投稿判定・参加状態・メンバー表示・退出の本人確認に使います（#49）。解決できるまでは参加状態や作成・退出の操作を出さず、解決に失敗した場合は再読み込みまたは画面遷移で再試行します。`VITE_OIDC_*` を有効にする際は、この解決と Shape / REST の Bearer がバックエンドで通ることをステージングで確認してください（#50）。
 
-### Coolify
+### Cloudflare Tunnel
 
-[Single Resource Tunnel の手順](https://coolify.io/docs/integrations/networking/cloudflare/tunnels/single-resource)を使います。Coolify の cloudflared テンプレートは `network_mode: host` なので、ホストの loopback ポートへ接続できます。
+cloudflared を `network_mode: host` で動かし、ホストの loopback ポートへ接続します。
 
-- Coolify のサービスの Domains は空にします。Tunnel が直接アプリのプロキシへ接続するため、Coolify 標準プロキシのドメインルーティングは使いません。
-- Compose の `proxy` のポートマッピングは `127.0.0.1:18080:8080` です。Compose が定義しているため、Coolify 側で同じマッピングを重複追加する必要はありません。
+- Compose の `proxy` のポートマッピングは `127.0.0.1:18080:8080` です。
 - Cloudflare の公開ホスト名には利用するドメインを設定し、Path は空、Service は **HTTP / `127.0.0.1:18080`** にします。`PROXY_PORT` を変更した場合は接続先も合わせます。
 - リクエストは Tunnel → `127.0.0.1:18080` → Traefik の順で入ります。`/api` と `/api/*` は priority 100 の `api` ルーターで Rust へ、それ以外はフロントへ流れます。Cloudflare のレート制限は `/api/*` を含む公開ホスト全体に適用し、Tunnel 以外の公開経路を作らないでください。
 - この接続先は HTTP なので Origin Server Name は不要です。ルーティングはパスで行い、HTTP Host Header の上書きも不要です。ブラウザからの公開 URL は HTTPS を使います。
@@ -284,7 +283,7 @@ POSTGRES_PASSWORD=staging-test-password \
 
 ### プロキシの自動検証
 
-実際の Traefik とモックのフロント・Rust を使い、`Authorization` ヘッダの透過転送、`X-Dev-User` の除去、本文転送、Shape のストリーミングを確認します。テスト用の override は Coolify では使いません。
+実際の Traefik とモックのフロント・Rust を使い、`Authorization` ヘッダの透過転送、`X-Dev-User` の除去、本文転送、Shape のストリーミングを確認します。
 
 ```bash
 export POSTGRES_PASSWORD=proxy-test PROXY_PORT=18080

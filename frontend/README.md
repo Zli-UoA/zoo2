@@ -42,7 +42,7 @@ pnpm generate-routes  # ルートツリーを再生成
 
 開発サーバは Electric（ポート 3000）と衝突しないよう **5173** で起動します。
 
-本番ビルドは TanStack Start の SPA モード（`spa: { enabled: true }`）を使い、プリレンダリングされた SPA シェル（`dist/client/index.html`）とクライアントアセットを `dist/client/` に出力します。コンテナでの静的配信と Coolify の設定は [インフラの README](../infra/README.md#ステージング) を参照してください。
+本番ビルドは TanStack Start の SPA モード（`spa: { enabled: true }`）を使い、プリレンダリングされた SPA シェル（`dist/client/index.html`）とクライアントアセットを `dist/client/` に出力します。コンテナでの静的配信は [インフラの README](../infra/README.md#ステージング) を参照してください。
 
 ## 構成
 
