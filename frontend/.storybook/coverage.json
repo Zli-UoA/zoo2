@@ -306,7 +306,6 @@
         "Linked",
         "NotConfigured",
         "LoadError",
-        "AdminManifest",
         "ReturnedWithError",
         "ReturnedFromSlack",
         "ReturnedFromSlackFailed",
