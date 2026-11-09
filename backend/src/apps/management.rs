@@ -238,7 +238,7 @@ async fn action(
  },
  "verify-endpoint"=>{
   let connection=one(&mut tx,"SELECT json_build_object('url',manifest::jsonb->>'event_url','signing',signing_secret)::text FROM app_installations WHERE app_id=$1 AND active AND manifest::jsonb->>'transport'='http'",&[&id]).await?;
-  super::delivery::verify_endpoint(connection["url"].as_str().unwrap_or(""),connection["signing"].as_str().unwrap()).await?;
+  super::dispatcher_api::verify_endpoint(connection["url"].as_str().unwrap_or(""),connection["signing"].as_str().unwrap()).await?;
   one(&mut tx,"UPDATE app_installations SET endpoint_verified_at=now() WHERE app_id=$1 RETURNING json_build_object('verified_at',endpoint_verified_at)::text",&[&id]).await?
  },
  "connection"=>{

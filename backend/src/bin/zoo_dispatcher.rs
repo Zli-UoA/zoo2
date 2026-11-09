@@ -5,7 +5,8 @@
 //! 同時稼働は `FOR UPDATE SKIP LOCKED` とインストール単位の advisory lock で安全。
 //!
 //! 環境変数: `DATABASE_URL`（または `POSTGRES_*`）、`DISPATCHER_PORT`（既定 8081）、
-//! `DISPATCHER_HOST`（既定 0.0.0.0）。
+//! `DISPATCHER_HOST`（既定 0.0.0.0）、`DISPATCHER_TOKEN`（backend からの内部 API の共有トークン。
+//! 未設定なら内部 API は無効）。
 //!
 //! `DATABASE_URL` は直接接続にすること。LISTEN（#378 以降）はトランザクションプールのプーラー
 //! （PgBouncer のトランザクションモードなど）を経由すると動かない（配信はポーリングで続く）。
@@ -87,6 +88,11 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // backend からの内部 API（challenge 検証）。DISPATCHER_TOKEN が無ければ公開しない。
+    let token = std::env::var("DISPATCHER_TOKEN").unwrap_or_default();
+    if token.is_empty() {
+        tracing::warn!("DISPATCHER_TOKEN is not set; the internal API is disabled");
+    }
     let app = Router::new()
         .route(
             "/healthz",
@@ -104,7 +110,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }),
         )
-        .route("/metrics", get(metrics));
+        .route("/metrics", get(metrics))
+        .merge(backend::apps::dispatcher_api::router(&token));
     tracing::info!(addr=%listener.local_addr()?, "zoo-dispatcher listening");
     // 停止信号を受けたらすぐ新しいリースを取らなくし（HTTP サーバーの終了を待たない）、
     // 送信中の分を待つ。

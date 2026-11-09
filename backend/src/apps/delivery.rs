@@ -672,13 +672,31 @@ pub async fn http_pass_until(
     stop: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<bool, AppError> {
     let installs = http_candidates(db).await?;
+    let budget = HostBudget::default();
+    let budget = &budget;
+    // 予算が尽きて見送ったインストール。次の pass で先に回すため、巡回済みの印を戻す。
+    let skipped = std::sync::Mutex::new(std::collections::HashSet::<String>::new());
+    let skipped = &skipped;
     // 1 件でも claim できたときだけ true。候補が上限（100）に達しても、配信上限などで 1 件も取れない
     // なら false にして、次の通知か poll まで待つ（取れないのに即時に回し続けない）。
     let mut more = false;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
-            let sends = futures_util::stream::iter(0..32)
-                .map(|_| http_install(db, i.clone(), stop))
+            // 宛先ホストが落ちている間は配信を取らず（試行回数を消費せず）、開放時刻まで先送りする。
+            let fan_out = match super::circuit::global()
+                .check(&super::circuit::host_of(i["url"].as_str().unwrap_or("")))
+            {
+                // 1 インストールが 1 ホストの枠（16）を独り占めしないよう、同時に出すのは枠と同じ数。
+                // 同じホストの別インストールにも、同じ pass の中で順番が回る。
+                super::circuit::Decision::Closed => super::circuit::HOST_CONCURRENCY,
+                super::circuit::Decision::Probe => 1,
+                super::circuit::Decision::Open(wait) => {
+                    defer_install(db, i["id"].as_str().unwrap(), wait).await?;
+                    return Ok(false);
+                }
+            };
+            let sends = futures_util::stream::iter(0..fan_out)
+                .map(|_| http_install(db, i.clone(), stop, budget, skipped))
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
                 .await;
@@ -694,21 +712,153 @@ pub async fn http_pass_until(
     for result in results {
         more |= result?;
     }
+    release_skipped(db, skipped).await?;
 
     Ok(more)
+}
+
+/// 予算が尽きて見送ったインストールを、次の `http_candidates` で先頭に来るようにする
+/// （`last_http_dispatch_at` を NULL に戻す）。巡回済み扱いのままだと、同じホストで先頭の
+/// インストールが毎回予算を使い切り、後ろのインストールに順番が回らない。
+async fn release_skipped(
+    db: &toasty::Db,
+    skipped: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> Result<(), AppError> {
+    let ids: Vec<String> = skipped.lock().unwrap().iter().cloned().collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut db = db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement(
+        "UPDATE app_installations SET last_http_dispatch_at=NULL WHERE id IN(SELECT jsonb_array_elements_text($1::text::jsonb))",
+    )
+    .bind(serde_json::to_string(&ids).unwrap())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// サーキットが開いている宛先の配信を、`wait` だけ先送りする。`attempts` は増やさない。
+/// 一度に大量の行を更新しないよう 1000 行ずつ・最大 10 回に分ける（残りは次の pass が続ける）。
+pub async fn defer_install(
+    db: &toasty::Db,
+    installation: &str,
+    wait: Duration,
+) -> Result<(), AppError> {
+    let secs = wait.as_secs_f64().ceil().to_string();
+    for _ in 0..10 {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        let moved = one(
+            &mut tx,
+            "WITH batch AS(SELECT id FROM app_deliveries WHERE installation_id=$1 AND acked_at IS NULL AND expires_at>now() AND available_at<=clock_timestamp() ORDER BY available_at,id LIMIT 1000 FOR UPDATE SKIP LOCKED),moved AS(UPDATE app_deliveries d SET available_at=clock_timestamp()+make_interval(secs=>$2::text::float8) FROM batch WHERE d.id=batch.id RETURNING d.id) SELECT json_build_object('count',count(*))::text FROM moved",
+            &[installation, secs.as_str()],
+        )
+        .await?;
+        tx.commit().await?;
+        if moved["count"].as_u64().unwrap_or(0) < 1000 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    Ok(())
+}
+
+/// 送信結果が宛先ホストの健康状態を表すか。応答があれば（4xx でも）生きているとみなす。
+fn breaker_outcome(result: &Result<(), AppError>) -> super::circuit::Outcome {
+    use super::circuit::Outcome;
+    match result {
+        Ok(()) => Outcome::Success,
+        Err(e) => match status_class(e) {
+            "dns" | "timeout" | "network" | "5xx" => Outcome::Failure,
+            "3xx" | "4xx" => Outcome::Success,
+            _ => Outcome::Ignore,
+        },
+    }
+}
+
+/// 1 回の pass で 1 ホストに送る件数の予約。上限の判定と予約を同じロックで行うので、
+/// claim を待っている複数の処理が同時に「上限未満」と判定して超えることはない。
+#[derive(Default)]
+struct HostBudget(std::sync::Mutex<std::collections::HashMap<String, usize>>);
+impl HostBudget {
+    /// 枠 16 件の 2 波ぶん（最悪でも 1 ホストあたり約 6 秒）。
+    const PER_PASS: usize = super::circuit::HOST_CONCURRENCY * 2;
+    /// 上限未満なら 1 件ぶん予約して true。
+    fn reserve(&self, host: &str) -> bool {
+        let mut map = self.0.lock().unwrap();
+        let used = map.entry(host.to_owned()).or_default();
+        if *used >= Self::PER_PASS {
+            return false;
+        }
+        *used += 1;
+        true
+    }
+    /// claim できなかった（送るものが無かった）ときに予約を戻す。
+    fn release(&self, host: &str) {
+        if let Some(used) = self.0.lock().unwrap().get_mut(host) {
+            *used = used.saturating_sub(1);
+        }
+    }
 }
 
 async fn http_install(
     db: &toasty::Db,
     i: Value,
     stop: &tokio::sync::watch::Receiver<bool>,
+    budget: &HostBudget,
+    skipped: &std::sync::Mutex<std::collections::HashSet<String>>,
 ) -> Result<bool, AppError> {
     let id = i["id"].as_str().unwrap();
     if *stop.borrow() {
         return Ok(false);
     }
-    if let Some(event) = claim_http(db, id, stop).await? {
-        match tokio::time::timeout(
+    let host = super::circuit::host_of(i["url"].as_str().unwrap_or(""));
+    // 同じホストへの同時送信を絞る。待つのは claim の前なので、リースは消費しない。
+    let breakers = super::circuit::global();
+    // 公開 IP でないアドレス直書きは送信前に弾かれる（外へ出ない）ので枠を使わない。
+    let sends_outside = host
+        .parse::<IpAddr>()
+        .map(public_ip)
+        .unwrap_or(!host.is_empty());
+    let _permit = if sends_outside {
+        Some(
+            breakers
+                .semaphore(&host)
+                .acquire_owned()
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?,
+        )
+    } else {
+        None
+    };
+    // 枠を待っている間に回路が開いたら、claim せずに戻す（試行回数を消費しない）。
+    // 先送りは次の http_pass が行う。
+    if breakers.is_open(&host) {
+        return Ok(false);
+    }
+    // 枠を待っている間に停止通知が来た場合も、claim せずに戻す。
+    if *stop.borrow() {
+        return Ok(false);
+    }
+    // 1 回の pass でこのホストに送る件数の上限（枠待ちの波が続いて pass が長引かないように）。
+    // 外に出ない宛先（公開 IP でないアドレス直書き）は数えない。
+    let counted = sends_outside;
+    if counted && !budget.reserve(&host) {
+        skipped.lock().unwrap().insert(id.to_owned());
+        return Ok(false);
+    }
+    let claimed = claim_http(db, id, stop).await;
+    let Some(event) = claimed? else {
+        if counted {
+            budget.release(&host);
+        }
+        return Ok(false);
+    };
+    {
+        let result = tokio::time::timeout(
             Duration::from_secs(3),
             deliver(
                 i["url"].as_str().unwrap_or(""),
@@ -717,8 +867,9 @@ async fn http_install(
             ),
         )
         .await
-        .unwrap_or_else(|_| Err(AppError::BadGateway(MSG_TIMEOUT.into())))
-        {
+        .unwrap_or_else(|_| Err(AppError::BadGateway(MSG_TIMEOUT.into())));
+        breakers.record(&host, breaker_outcome(&result));
+        match result {
             Ok(()) => {
                 let m = super::dispatch_metrics::global();
                 m.record_attempt(true, "2xx");
@@ -748,10 +899,8 @@ async fn http_install(
                 tx.commit().await?;
             }
         }
-        return Ok(true);
     }
-
-    Ok(false)
+    Ok(true)
 }
 
 /// API 側の期限切れ行の削除と、配信履歴の 30 日保持の両方。
@@ -830,6 +979,23 @@ async fn presence_allowed(s: &AppState, installation: &str) -> Result<bool, AppE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_budget_reserves_atomically_and_releases_unused_slots() {
+        let b = HostBudget::default();
+        for _ in 0..HostBudget::PER_PASS {
+            assert!(b.reserve("slow.example"));
+        }
+        assert!(
+            !b.reserve("slow.example"),
+            "the reservation must not exceed the cap"
+        );
+        assert!(b.reserve("other.example"));
+        // claim できなかった分は戻す。
+        b.release("slow.example");
+        assert!(b.reserve("slow.example"));
+        assert!(!b.reserve("slow.example"));
+    }
     #[test]
     fn classifies_delivery_errors_without_leaking_details() {
         let bad = |m: &str| AppError::BadGateway(m.into());

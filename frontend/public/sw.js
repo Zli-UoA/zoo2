@@ -136,22 +136,59 @@ async function precacheIndexAssets(cache, response) {
   try {
     html = await response.clone().text();
   } catch {
-    return;
+    return false;
   }
   const assets = new Set();
   for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)) {
     if (match[1]) assets.add(match[1]);
   }
-  await Promise.all(
-    [...assets].map(async (path) => {
+  return precacheAssets(cache, [...assets]);
+}
+
+async function precacheAssets(cache, assets) {
+  return Promise.all(
+    assets.map(async (path) => {
       try {
+        if (await cache.match(path)) return true;
         const asset = await fetchStaticAsset(path);
-        if (asset.ok) await cacheResponse(cache, path, asset);
+        if (!asset.ok) return false;
+        await cacheResponse(cache, path, asset);
+        return true;
       } catch {
-        /* A later navigation can retry the asset. */
+        return false;
       }
     }),
-  );
+  ).then((results) => results.every(Boolean));
+}
+
+// A new document can reference lazy workers/chunks that the currently running
+// build will never request. Cache the complete build before publishing that HTML.
+async function precacheBuildAssets(cache, response) {
+  try {
+    const html = await response.clone().text();
+    const entry = html.match(/\/assets\/index-[^"'?#]+\.js/)?.[0];
+    if (!entry) return false;
+    const manifest = await fetch(`/pwa-assets.json?entry=${encodeURIComponent(entry)}`, {
+      cache: "reload",
+    });
+    if (!manifest.ok) return false;
+    const build = await manifest.json();
+    if (
+      build.entry !== entry ||
+      !Array.isArray(build.assets) ||
+      !build.assets.includes(entry) ||
+      !build.assets.every(
+        (path) =>
+          typeof path === "string" &&
+          /^\/assets\/[^?#]+$/.test(path) &&
+          new URL(path, self.location.origin).pathname === path,
+      )
+    )
+      return false;
+    return await precacheAssets(cache, build.assets);
+  } catch {
+    return false;
+  }
 }
 
 async function fetchShellIndex() {
@@ -178,10 +215,12 @@ async function precacheShell() {
   }
   const name = cacheNameForIndex(html);
   const cache = await caches.open(name);
+  if (!(await precacheIndexAssets(cache, index))) {
+    throw new Error("Cannot install an app shell without its entry assets");
+  }
   const cached = await cacheResponse(cache, "/index.html", index);
   // Navigation fallbacks check /index.html first, but keep / for old clients.
   await cache.put("/", cached.clone());
-  await precacheIndexAssets(cache, cached.clone());
   // Fetch each entry separately: one missing icon must not fail the install.
   await Promise.all(
     SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
@@ -197,7 +236,7 @@ async function precacheShell() {
   await cache.put(META_PATH, new Response(String(Date.now())));
 }
 
-async function handleNavigation(request) {
+async function refreshNavigation(request, background = false) {
   try {
     const response = await fetch(request);
     const contentType = response.headers.get("content-type") || "";
@@ -206,7 +245,13 @@ async function handleNavigation(request) {
       // can fall back to it, regardless of the deep link that was open.
       // Direct navigations to icons or JSON must not overwrite the shell.
       const cache = await caches.open(await findActiveShellCache());
-      return await cacheResponse(cache, "/index.html", response);
+      // A background deployment must include lazy assets before the next offline launch.
+      const ready = background
+        ? await precacheBuildAssets(cache, response)
+        : await precacheIndexAssets(cache, response);
+      if (ready) {
+        return await cacheResponse(cache, "/index.html", response);
+      }
     }
     return response;
   } catch {
@@ -218,6 +263,29 @@ async function handleNavigation(request) {
       Response.error()
     );
   }
+}
+
+async function handleNavigation(request, event) {
+  const url = new URL(request.url);
+  const spaRoute =
+    url.pathname === "/" ||
+    url.pathname === "/index.html" ||
+    /^\/(?:channels|home|settings|notifications|bubble|apps|apps-authorize|realtime|public\/users)(?:\/|$)/.test(
+      url.pathname,
+    );
+  const cache = await caches.open(await findActiveShellCache());
+  // Static HTML (for example the Compose catalog) must never replace the SPA.
+  if (!spaRoute) {
+    return fetch(request).catch(async () => (await cache.match(request)) || Response.error());
+  }
+  const cached = (await cache.match("/index.html")) || (await cache.match("/"));
+  // Explicit reloads reach the deployed document so vite:preloadError can recover.
+  if (request.cache === "default" && cached) {
+    event.waitUntil(refreshNavigation(request, true).catch(() => {}));
+    return cached;
+  }
+  // Even an explicit reload must keep the next offline launch complete.
+  return refreshNavigation(request, Boolean(cached));
 }
 
 async function handleAsset(request) {
@@ -254,6 +322,18 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("message", (event) => {
   const data = event.data;
+  if (data?.type === "SHELL_ENTRY") {
+    event.waitUntil(
+      (async () => {
+        const cache = await caches.open(await findActiveShellCache());
+        const index = await cache.match("/index.html");
+        const html = index ? await index.text() : "";
+        const entry = html.match(/\/assets\/index-[^"'?#]+\.js/)?.[0] ?? null;
+        event.ports?.[0]?.postMessage({ entry });
+      })().catch(() => event.ports?.[0]?.postMessage({ entry: null })),
+    );
+    return;
+  }
   if (!data || data.type !== "CACHE_ASSETS" || !Array.isArray(data.urls)) return;
   const urls = data.urls
     .filter((url) => typeof url === "string" && url.startsWith("/assets/"))
@@ -282,7 +362,7 @@ self.addEventListener("fetch", (event) => {
   if (isPrivatePath(url.pathname) || url.pathname === "/sw.js") return;
 
   if (event.request.mode === "navigate") {
-    event.respondWith(handleNavigation(event.request));
+    event.respondWith(handleNavigation(event.request, event));
   } else if (isCacheableAsset(url)) {
     event.respondWith(handleAsset(event.request));
   }

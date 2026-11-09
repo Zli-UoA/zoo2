@@ -1,5 +1,5 @@
 //! zoo-dispatcher の Prometheus 形式メトリクス。依存を増やさないため手書きの小さな実装にしている。
-//! ホスト名などカーディナリティの高いラベルは持たない（サーキットブレーカーの上位ホストは後続 PR）。
+//! ホスト名などカーディナリティの高いラベルは、開放中のサーキットの上位数件だけに限る。
 use std::{
     collections::BTreeMap,
     sync::{Mutex, OnceLock},
@@ -89,6 +89,17 @@ impl Metrics {
         let (depth, oldest) = *self.queue.lock().unwrap();
         out.push_str(&format!(
             "# HELP zoo_dispatch_queue_depth Undelivered, unexpired deliveries (cluster-wide, every replica reports the same value; aggregate with max or avg, not sum).\n# TYPE zoo_dispatch_queue_depth gauge\nzoo_dispatch_queue_depth {depth}\n# HELP zoo_dispatch_oldest_pending_seconds Age of the oldest undelivered, unexpired delivery (cluster-wide; aggregate with max).\n# TYPE zoo_dispatch_oldest_pending_seconds gauge\nzoo_dispatch_oldest_pending_seconds {oldest}\n"
+        ));
+        let (open_total, open_hosts) = super::circuit::global().open_hosts();
+        out.push_str("# HELP zoo_dispatch_circuit_open Destination hosts whose circuit is open (top hosts only).\n# TYPE zoo_dispatch_circuit_open gauge\n");
+        for host in open_hosts {
+            out.push_str(&format!(
+                "zoo_dispatch_circuit_open{{host=\"{}\"}} 1\n",
+                host.replace('\\', "\\\\").replace('"', "\\\"")
+            ));
+        }
+        out.push_str(&format!(
+            "# HELP zoo_dispatch_circuit_open_hosts Number of destination hosts whose circuit is open.\n# TYPE zoo_dispatch_circuit_open_hosts gauge\nzoo_dispatch_circuit_open_hosts {open_total}\n"
         ));
         out
     }

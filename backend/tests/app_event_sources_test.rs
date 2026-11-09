@@ -3130,6 +3130,42 @@ async fn a_notification_wakes_the_dispatcher_without_waiting_for_the_poll() -> a
 }
 
 #[tokio::test]
+async fn open_circuit_defers_deliveries_without_consuming_attempts() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    let host = format!("down-{}.example.com", Uuid::new_v4().simple());
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":format!("https://{host}/events")})).await?;
+    post_messages(&f, 3).await;
+    apps::circuit::global().force_open(&host, std::time::Duration::from_secs(120));
+    assert!(
+        apps::dispatch_metrics::global()
+            .render()
+            .contains(&format!("zoo_dispatch_circuit_open{{host=\"{host}\"}} 1"))
+    );
+    apps::delivery::http_pass(&f.state.db).await?;
+    // 取っていない（attempts は 0 のまま）。配信は開放時刻まで先送りされ、候補から外れる。
+    assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a == 0));
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = apps::query(&mut tx, "SELECT json_build_object('wait',extract(epoch from available_at-now()))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created'", &[&f.installation]).await?;
+    tx.commit().await?;
+    assert_eq!(rows.len(), 3);
+    assert!(
+        rows.iter().all(|r| r["wait"].as_f64().unwrap() > 60.0),
+        "{rows:?}"
+    );
+    let candidates = apps::delivery::http_candidates(&f.state.db).await?;
+    assert!(
+        !candidates
+            .iter()
+            .any(|c| c["id"] == f.installation.as_str()),
+        "deferred deliveries must not be candidates"
+    );
+    apps::circuit::global().reset(&host);
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_pass_started_after_the_stop_signal_takes_no_new_leases() -> anyhow::Result<()> {
     let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
     let f = fixture().await?;
@@ -3179,7 +3215,7 @@ async fn the_loop_keeps_draining_a_backlog_without_waiting_for_the_poll() -> any
         std::time::Duration::from_secs(3600),
     ));
     // interval の最初の tick で 1 回目の pass が走る。残りは「取れたので続けて回す」で進まなければならない。
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(240);
     loop {
         let attempts = message_delivery_attempts(&f).await?;
         if attempts.len() >= 40 && attempts.iter().all(|a| *a >= 1) {
@@ -3216,6 +3252,28 @@ async fn websocket_deliveries_do_not_wake_the_http_dispatcher() -> anyhow::Resul
         next_notification(&mut listener, std::time::Duration::from_secs(5)).await,
         "an HTTP delivery must NOTIFY"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn deferring_a_large_backlog_is_batched_and_keeps_attempts() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,available_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now()-interval '1 minute' FROM generate_series(1,2500)").bind(f.installation.as_str()).exec(&mut tx).await?;
+    tx.commit().await?;
+    apps::delivery::defer_install(
+        &f.state.db,
+        &f.installation,
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+    let mut tx = db.transaction().await?;
+    let row = apps::one(&mut tx,"SELECT json_build_object('due',count(*) FILTER(WHERE available_at<=now()),'deferred',count(*) FILTER(WHERE available_at>now()+interval '60 seconds'),'attempted',count(*) FILTER(WHERE attempts>0))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' AND acked_at IS NULL",&[&f.installation]).await?;
+    assert_eq!(row["due"], 0, "{row}");
+    assert!(row["deferred"].as_u64().unwrap() >= 2500, "{row}");
+    assert_eq!(row["attempted"], 0, "{row}");
     Ok(())
 }
 
