@@ -100,6 +100,39 @@ App の投稿には `POST /api/apps/v1/messages/{id}/blocks` で `{"type":"card"
 
 通知専用Appの管理権限は従来のチャンネルWebhook権限を維持し、会話の読み取りやDMの権限を与えません。会話機能への拡張には管理者の承認が必要です。GitHub 専用の受信口と環境変数設定は削除しました。GitHub 連携は Bot アプリとして実装します。共通 Webhook の仕様は [Webhook設定](webhooks.md) を参照してください。
 
+## 配信プロセス（zoo-dispatcher）
+
+HTTP App へのイベント送信は、backend から独立した `zoo-dispatcher`（`zoo_dispatcher` バイナリ。backend と同じイメージに入っています）に分けて動かせます。外向きの HTTP 送信を 1 か所に集め、API と配信の障害・スケールを切り離すためです。
+
+| 環境変数 | 対象 | 内容 |
+|---|---|---|
+| `DATABASE_URL` / `POSTGRES_*` | dispatcher | 接続先。LISTEN を使うため、トランザクションプールのプーラーを経由しない直接接続にする（経由しても配信は 3 秒ポーリングで動く） |
+| `DB_MAX_POOL_SIZE` | dispatcher・backend | DB 接続プールの上限（未設定ならドライバの既定: 論理 CPU 数 × 2。CPU の limit が無い Pod ではノードの CPU 数で決まる）。不正な値は警告を出して既定値になる。`http_pass` は最大 8 インストール × 16 件の claim を同時に出すので、Postgres の `max_connections` が小さい環境では絞る。LISTEN 用の接続（1 本）はこのプールの外 |
+| `DISPATCHER_PORT` / `DISPATCHER_HOST` | dispatcher | `/healthz`・`/metrics` の待ち受け（既定 8081 / 0.0.0.0）。配信ループが終わると `/healthz` は 503 を返す。不正な値・`0`・解決できないホスト・使用中のポートは、配信を始める前に起動エラーになる。Kubernetes で Service 名を `dispatcher` にすると `DISPATCHER_PORT=tcp://…` が注入されて起動エラーになるので、Deployment に `enableServiceLinks: false` を付ける |
+| `DISPATCHER_TOKEN` | dispatcher・backend | 内部 API の共有トークン。dispatcher 側が未設定なら内部 API は無効 |
+| `DISPATCHER_URL` | backend | challenge 検証を委譲する dispatcher の URL。未設定なら backend が自分で送る |
+| `APP_HTTP_DELIVERY_WORKER` | backend | `false` で backend の HTTP 配信と配信履歴の削除を止める（API 側の期限切れ削除は止まらない） |
+
+**ローカルで動かす**: `make db-up && make migrate` のあと、別々のターミナルで `APP_HTTP_DELIVERY_WORKER=false make backend-dev` と `make dispatcher-dev` を実行します。challenge 検証も dispatcher 経由にするには、**両方に同じトークン**を渡します（dispatcher 側が未設定だと内部 API が無効のままで、検証は 503 になります）。例: `DISPATCHER_TOKEN=dev-token make dispatcher-dev` と、`DISPATCHER_URL=http://127.0.0.1:8081 DISPATCHER_TOKEN=dev-token APP_HTTP_DELIVERY_WORKER=false make backend-dev`。分離しない場合は従来どおり `make backend-dev` だけで配信まで動きます。
+
+**本番の移行順**:
+
+1. インフラ側で DB ロール `zoo_dispatcher`（`LOGIN`、パスワード付き）を先に作る（アプリ用ロールにはロールを作る権限がないため。下の「DB ロール」の節を参照）。
+2. マイグレーションを適用する（NOTIFY トリガーと配信用ロールの権限。どちらも追加のみで、旧 backend のまま動く）。
+3. dispatcher を起動して確認する。(a) `/healthz` が 200 を返す。(b) テスト用の App に、複数件（たとえば 10 件以上）のイベントを続けて流し、dispatcher の `zoo_dispatch_attempts_total` が増える、または dispatcher のログに `App event claimed` が出る（この間は backend のワーカーも配信しているので、1 件だけだと backend が先に配信して dispatcher の値が増えないことがある。配信が無い時間帯も増えない）。`zoo_dispatch_queue_depth` は、backend のワーカーも配信している間は滞留がもともと少ないので、確認には向かない。この間、backend のワーカーと dispatcher が同時に動くが、`FOR UPDATE SKIP LOCKED` とインストール単位の advisory lock により同じ配信を二重に取らない。
+4. backend に `APP_HTTP_DELIVERY_WORKER=false` を設定して再起動する。
+5. （任意）`DISPATCHER_URL` と `DISPATCHER_TOKEN` を設定し、challenge 検証を dispatcher に移す（トークンを持つ dispatcher を先に出し、そのあとに backend へ設定する。逆だとその間 challenge 検証が 503 になる）。
+6. （任意）インフラ側で backend の外向き通信を絞る。**5 を済ませ、dispatcher 経由で検証できることを確かめてから行う**（5 が無いと challenge 検証は backend が自分で送ろうとして失敗する。`DISPATCHER_URL` と `DISPATCHER_TOKEN` は片方だけだと設定なし扱いで backend が送る）。ただし backend は App の配信先以外にも外へ出る（ActivityPub の配送・取得、Web Push、S3、OIDC）ので、「dispatcher だけが外へ出る」状態にはできません。NetworkPolicy は宛先の用途（App の配信先か、ActivityPub か）を区別できないので、塞ぐなら、backend に必要な宛先（ActivityPub の連合先、Web Push のサービス、S3、OIDC）を許可リスト（FQDN ポリシーが使える CNI なら FQDN、そうでなければ egress プロキシ）で持つ形になります。連合先は事前に決まらないため、実質的には App の配信先だけを選んで塞ぐことはできず、この手順は連合を使わない構成向けです。
+
+**戻し方と障害時**: backend の `APP_HTTP_DELIVERY_WORKER` は起動時に読むので、外して**再起動**すれば backend が配信を再開します。手順 5 まで進めた環境では `DISPATCHER_URL`（と `DISPATCHER_TOKEN`）も外してください（そうしないと challenge 検証は dispatcher に委譲されたままで、dispatcher が 0 台の間は 503 になります）。手順 6 まで進めた環境では、さらに外向きの許可も元に戻してください（そうしないと backend の配信は外へ出られず失敗し、`attempts` と `available_at` を消費します）。dispatcher が 0 台でも API は動き、配信はキューに溜まり、dispatcher が戻れば送られます。例外が 2 つあります。
+
+- 手順 5 のあとに dispatcher が 0 台だと、`actions/verify-endpoint` は 503 を返します（backend 自身には切り替えません）。
+- 配信には有効期限（作成から 24 時間）があり、それを過ぎた配信は取り直されず、`zoo_dispatch_queue_depth` にも数えられません。24 時間を超えて dispatcher を止めないでください（配信履歴の削除も止まります。API 側の期限切れ行の削除は backend が続けます）。期限切れの配信は、App の開発者・管理者が `POST /api/apps/{id}/deliveries/{delivery}/retry`（期限を 24 時間延ばして送り直す）で再送でき、`/api/apps/metrics` では `failed` に数えられます。
+
+配信は at-least-once で順序保証なし、署名は従来どおり `v1:<timestamp>:<raw body>` の HMAC-SHA256 です。dispatcher は SIGTERM を受けると、新しいリースを取らなくなり（実行中のバッチも、送信枠の待ちの後も claim の前に打ち切ります）、取得済みの送信を最大 8 秒待ちます（Pod の `terminationGracePeriodSeconds` はこれより長くしてください）。待ちきれなかった配信は HTTP のリース（5 秒。送信の 3 秒タイムアウトに ACK の余裕を足したもの）が切れますが、再送は失敗時のバックオフ（試行回数に応じて 2 秒から最大 1 時間）が明けてからです。
+
+**監視**: `/metrics` に `zoo_dispatch_attempts_total{result,status_class}`、`zoo_dispatch_latency_seconds`（作成から ACK まで）、`zoo_dispatch_queue_depth`、`zoo_dispatch_oldest_pending_seconds`、`zoo_dispatch_circuit_open{host}`（開放中の上位 20 件）、`zoo_dispatch_circuit_open_hosts`（開放中のホスト数）があります。ブレーカーの状態はプロセスごとなので、`zoo_dispatch_circuit_open` と `zoo_dispatch_circuit_open_hosts` を複数レプリカで集計するときは `sum` にせず `max` にしてください（同じホストを複数のレプリカが数えて過大になります）。`zoo_dispatch_queue_depth` と `zoo_dispatch_oldest_pending_seconds` は DB 全体の値で、各レプリカが同じクエリで 15 秒ごとに計測するので、複数台の集計は `sum` にせず、`zoo_dispatch_queue_depth` は `max`（または `avg`）、`zoo_dispatch_oldest_pending_seconds` は `max` にしてください（計測に失敗したレプリカは警告 `Queue metrics refresh failed` を出して前回の値のままです）。`zoo_dispatch_latency_seconds` のバケットは配信の有効期限（24 時間）に合わせて 24 時間まであります。手動で再送した配信は作成時刻から数えるので、24 時間を超えて `+Inf` にだけ入ることがあります（`zoo_dispatch_oldest_pending_seconds` も同様）。8081 番は `/metrics` と内部 API（`/internal/verify-endpoint`）を兼ねるので、NetworkPolicy では Prometheus と backend だけに届くようにしてください（内部 API はトークンで守られます）。
+
 ## 運用・検証
 
 APIの失敗はHTTPステータスと `error` を返します。Appルートは `private, no-store` を返し、本番プロキシでも保持します。`/api/apps/metrics` は管理者に配信待ち・失敗・再送・最古の待ち時間を返します。`GET /api/apps/{id}/metrics?hours=24` は開発者（と管理者）に、その App の直近 `hours` 時間（1〜720、既定 24）の配信を返します。窓は現在の時間を含む `hours` 個の時間（先頭は時の頭から、末尾は集計途中）で、`hourly` は必ず `hours` 要素です。`totals` は `delivered`（ACK 済み）・`failed`（ACK されないまま期限切れ）・`pending`（窓と無関係に、いま滞留している配信。`app.rate_limited` は除く）・`retried`・`success_rate`（`delivered / (delivered + failed)`、完了分が無ければ `null`）・`oldest_pending_seconds`（`pending` の最古。同じく窓と無関係）・`p50_seconds` / `p95_seconds`（作成から ACK まで）で、`hourly` は 1 時間ごとの `delivered`・`failed`・`pending`・`p95_seconds` です。HTTP と WebSocket の両方を含み、配信上限の通知 `app.rate_limited` は集計に含めません（管理者向けの `GET /api/apps/metrics` は含めるので、滞留に `app.rate_limited` があると `pending` の値がその分だけ違います）。配信履歴から直接集計するため `zoo-dispatcher` が停止していても取得できます（集計には 5 秒の時間制限があり、超えると 503 を返します。`hours` を小さくしても改善しないときは、受信先の停止などで未 ACK の配信が大量に溜まっています（`pending` の走査は `hours` と無関係に全件を読みます）。手元の計測では、窓に 30,000 行ある App で `hours=24` が約 0.1 秒、`hours=720` が約 1 秒でした。行数にほぼ比例するので、窓に十数万行を超える App の長い窓は制限に当たります）。ログはevent IDとdelivery IDで追跡でき、本文やSecretを記録しません。
@@ -164,6 +197,12 @@ HTTP App は `POST /api/apps/{id}/actions/verify-endpoint` で署名付き `{"ty
 `DISPATCHER_URL` と `DISPATCHER_TOKEN` を backend に設定すると、この検証は `zoo-dispatcher` の内部 API（`POST /internal/verify-endpoint`、`Authorization: Bearer`）に委譲され、backend は外向き HTTP を行いません。dispatcher 側にも同じ `DISPATCHER_TOKEN` を設定します（未設定なら内部 API は無効）。どちらかが未設定なら backend が自分で送ります（移行中・ローカル開発用）。dispatcher に届かないときは 503 を返し、backend には切り替えません。内部 API は署名鍵とトークンを平文の JSON で運ぶので、`DISPATCHER_URL` は信頼できるネットワーク内（クラスタ内通信、または TLS で終端する経路）の宛先にし、dispatcher のポートは backend と監視からだけ届くよう NetworkPolicy などで絞ってください。
 
 配信ワーカーは宛先ホストごとにサーキットブレーカーを持ちます（プロセス内の状態）。タイムアウト・接続失敗・名前解決失敗・5xx が連続 5 回で開き、開いている間は配信を取らず（`attempts` を消費せず）そのホストの配信を開放時刻まで先送りします。30 秒で 1 件だけ試し（試し送りが戻るまで、同じホストの他のインストールの配信は最大 10 秒先送りされます）、成功で閉じ、失敗なら期間を倍（最大 5 分）にして開き直します。4xx など応答があれば生きているとみなします。同じホストへの同時送信は 16 件までで、ポートは区別せず、同じホストの別ポートは同じ枠・ブレーカーを共有します。1 つのインストールが 1 回の巡回（`http_pass`）で同時に出すのは 16 件までで、1 回の巡回で 1 ホストに claim して送るのは 32 件までです（遅いが成功するホストで巡回が長引かないように、また同じホストの別のインストールにも順番が回るように。残りは次の巡回が続けます。予算が尽きて見送ったインストールは、次の巡回で先に回ります）。先送りは 1000 行ずつに分けて行います。ホストが共有されている場合、一方の App の URL が 5xx を返すと、そのホスト全体の回路が開き、同じホストの別の App の配信も 30 秒から 5 分遅れます（開いている間の成功では閉じません）。ブレーカーの状態はプロセスごとです。先送りは DB に書くので 1 つのプロセスが開ければ全プロセスの配信が遅れますが、まだ開いていない別のプロセスは、開放時刻の後に最初の数件を試すため、その分の `attempts` を消費します。`/metrics` の `zoo_dispatch_circuit_open{host}` は開放中のホスト（上位 20 件）、`zoo_dispatch_circuit_open_hosts` は総数です。
+
+### DB ロール
+
+`zoo-dispatcher` は専用の DB ロール `zoo_dispatcher` で接続できます（マイグレーション `20261109010000_app_delivery_role`）。本番のアプリ用ロールにはロールを作る権限がないので、`zoo_dispatcher`（`LOGIN`、パスワード付き）はインフラ側（CNPG の managed role など）で**マイグレーションより先に**作ってください。マイグレーションは、ロールがあれば権限を付け、無くて作る権限があれば（ローカル・CI）`NOLOGIN` で作り、作れなければ `NOTICE` を出して権限の付与だけ飛ばします（失敗はしません）。飛ばしたときは、ロールを作ったあとにそのマイグレーションのファイルを DB のオーナーで `psql -f` してください（何度流しても同じです）。持つ権限は、配信キュー（`app_deliveries` の SELECT/INSERT/DELETE と進行用の列の UPDATE）、`app_installations`（SELECT と `last_http_dispatch_at` の UPDATE）、配信可否の判定に要る表の必要な列の SELECT だけです。API 側の期限切れ行の削除は backend が行うので、その表の権限はありません。`messages`（本文の表）、ユーザー名・チャンネル名、トークンのハッシュは読めず、`last_http_dispatch_at` 以外の `app_installations` の列も書けません。一方、送信に必要なので、配信キューの `payload`（イベントの中身。メッセージ本文を含みうる）と全アプリの署名鍵は読めます。このロールの接続情報が漏れると、キュー内のイベントと署名鍵が漏れ、署名付き配信を偽造されうるため、アプリの署名鍵と同等に扱ってください。配信関数が `SECURITY DEFINER` でないため、関数が触る表の権限もこのロールが持つ必要があります（`tests/app_event_sources_test.rs` の `delivery_role_*` が、このロールで `http_pass`・`cleanup_deliveries`・ACK・`app_emit` を実行して確認します）。配信に使う表や関数を変えたら、このテストが落ちるので権限を足してください。
+
+**dispatcher をやめるとき**: `zoo_dispatcher` は配信キューの `payload` と全アプリの署名鍵を読めるので、dispatcher を使わなくなったあとも接続情報を有効なままにしないでください。次の操作のうち、ロールの接続の切断（`pg_terminate_backend`）と `DROP OWNED BY` / `DROP ROLE` は、アプリ用ロール（`zoo2`。superuser ではない）では実行できないので、`kubectl cnpg psql <クラスタ名>`（`postgres` として接続）など、必要な権限を持つ接続で実行してください。まず dispatcher を 0 台にして、既存の接続を `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'zoo_dispatcher'` で切ります（`ALTER ROLE zoo_dispatcher NOLOGIN` は新しいログインを止めるだけで、パスワードは残り、既存の接続も切れません）。ロールを CNPG の `spec.managed.roles` で作っている場合、spec に残したままでは operator がロールを作り直すので、次のどちらかの順にします。一時的に止めるだけなら、spec の `login: false` にするかパスワードの Secret を差し替える（再開は spec を戻す）。恒久的にやめるなら、権限を付けた**各 DB で** `DROP OWNED BY zoo_dispatcher`（付与済みの権限を剥がす。所有物は無い。現在の DB の分だけなので、同じクラスタの複数の DB にこのマイグレーションを適用していれば、それぞれで実行する）を行い、spec の該当ロールを `ensure: absent` にして operator に消させる（operator を使わない環境では `DROP ROLE zoo_dispatcher`）。再開するときは、spec にロールを戻し、そのマイグレーションのファイルを `psql -f` で流せば権限が戻ります。
 
 通常イベントの配信はインストールごと毎時30,000件までとし、再送は同じイベントとして扱います。`app.uninstalled`・`tokens.revoked`・`app.deleted` と上限通知は、記録・初回配信の両方でこの上限の対象外です。超過すると `app.rate_limited` を1時間に1件配信します。発火側でも不要なキューの増大を抑止し、並行トランザクションの境界で作られた余剰分は配信側で上限を適用します。イベント ID はトランザクションと内容から決定し、同一操作による重複通知を避けます。
 
