@@ -1,4 +1,4 @@
-name: zoo2-stg
+name: zoo2-stack
 
 # DB 定義は `extends` や `!reset` を使わず、このファイルに展開している。
 # ローカル用の infra/db/compose.yml と内容を合わせること (ホスト側ポート公開は行わない)。
