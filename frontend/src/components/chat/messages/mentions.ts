@@ -27,6 +27,8 @@ export function mentionOptions(
       .filter(
         (user) =>
           memberIds.has(user.id) &&
+          // Slack から取り込んだ未連携のプレースホルダなど、無効化済みのユーザーは選ばせない
+          !user.is_deactivated &&
           /^[a-zA-Z0-9._-]+$/.test(user.user_name) &&
           !["channel", "here"].includes(user.user_name.toLowerCase()),
       )

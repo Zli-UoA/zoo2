@@ -233,9 +233,11 @@ pub async fn create_message_notifications(
     }
 
     // Apps receive events rather than human inbox notifications.
+    // 無効化済みのユーザー (Slack から取り込んだ未連携のプレースホルダなど) にも通知しない。
+    // 取り込んだチャンネルの @here・@channel で、メンバーの数だけ通知と配信の問い合わせを作らないため
     if !targets_to_notify.is_empty() {
         let ids = serde_json::json!(targets_to_notify.keys().collect::<Vec<_>>()).to_string();
-        let bots = crate::apps::query(tx, "SELECT json_build_object('id',id)::text FROM users WHERE is_bot AND id IN (SELECT jsonb_array_elements_text($1::jsonb))", &[&ids]).await?;
+        let bots = crate::apps::query(tx, "SELECT json_build_object('id',id)::text FROM users WHERE (is_bot OR is_deactivated) AND id IN (SELECT jsonb_array_elements_text($1::jsonb))", &[&ids]).await?;
         for bot in bots {
             if let Some(id) = bot["id"].as_str() {
                 targets_to_notify.remove(id);
@@ -273,7 +275,14 @@ pub async fn create_reaction_notification(
     message: &Message,
     actor_id: &str,
 ) -> Result<Option<Notification>, AppError> {
-    if message.user_id == actor_id || User::get_by_id(tx, message.user_id.as_str()).await?.is_bot {
+    // bot と無効化済みのユーザー (Slack から取り込んだ未連携のプレースホルダなど) には通知しない
+    let skip = crate::apps::one(
+        tx,
+        "SELECT json_build_object('skip',is_bot OR is_deactivated)::text FROM users WHERE id=$1",
+        &[&message.user_id],
+    )
+    .await?;
+    if message.user_id == actor_id || skip["skip"] == true {
         return Ok(None);
     }
 

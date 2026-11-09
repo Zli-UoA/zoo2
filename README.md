@@ -12,6 +12,8 @@ PWA のインストールとプッシュ通知の設定・動作は [PWA とプ�
 
 本番の配備結果と履歴は [Flux の通知](docs/flux-status.md) を参照してください。
 
+Slack のエクスポートを取り込む手順は [Slack からの取り込み](docs/slack-import.md) を参照してください。
+
 App・Botの開発、認証、イベント配信、既存Webhookの移行は [App・Bot基盤](docs/apps.md) を参照してください。
 
 投稿URLのカード展開と画像プロクシの設定は [URLカード](docs/link-previews.md) を参照してください。
