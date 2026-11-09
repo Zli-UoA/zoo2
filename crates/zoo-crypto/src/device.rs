@@ -47,6 +47,10 @@ pub struct DeviceAccount {
 impl DeviceAccount {
     /// 新しい識別鍵（Curve25519 と Ed25519）を作る。
     ///
+    /// # Panics
+    ///
+    /// OS やブラウザーの暗号用乱数を取れないとき（vodozemac の鍵の生成と同じ）。
+    ///
     /// `user_id` と `device_id` は小文字でハイフン区切りの UUID でなければならない。
     /// `device_id` はクライアントが UUID v4 で作る（サーバーへの登録前に署名に入るため）ので、
     /// version が 4 で variant が RFC 4122 のものだけを受け付ける。nil UUID と v1 などは
@@ -119,11 +123,19 @@ impl DeviceAccount {
     /// [`one_time_keys`](Self::one_time_keys) に現れる。
     ///
     /// vodozemac が持てる数を超えると、古い鍵から捨てられる。
+    ///
+    /// # Panics
+    ///
+    /// OS やブラウザーの暗号用乱数を取れないとき（vodozemac の鍵の生成と同じ）。
     pub fn generate_one_time_keys(&mut self, count: usize) {
         self.account.generate_one_time_keys(count);
     }
 
     /// 新しいフォールバック鍵を作る。1 つ前のフォールバック鍵は、遅れて届くメッセージのために残す。
+    ///
+    /// # Panics
+    ///
+    /// OS やブラウザーの暗号用乱数を取れないとき（vodozemac の鍵の生成と同じ）。
     pub fn generate_fallback_key(&mut self) {
         self.account.generate_fallback_key();
     }
