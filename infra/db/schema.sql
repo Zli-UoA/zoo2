@@ -1797,6 +1797,7 @@ CREATE TABLE slack_files (
 );
 
 CREATE INDEX idx_slack_files_job_status ON slack_files (job_id, status);
+CREATE INDEX idx_slack_files_message ON slack_files (team_id, message_id);
 
 -- 過去ログの一括取り込みでアプリへイベントを大量配送しないよう、
 -- トランザクション内で zoo.suppress_app_events=on のときは app_emit を素通りさせる。
