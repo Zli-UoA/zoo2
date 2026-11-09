@@ -647,7 +647,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_DEVICE_EXISTS` | 同じ `device_id` の端末が削除済み（墓標を含む。登録は `e2ee_devices` と `e2ee_deleted_device_ids` を 1 つの文で確かめる）、または同じ `device_id` で `device_keys` の内容が違う（削除されていない同じ内容の再送は 200） | |
 | 400 | `E2EE_SLOTS_REQUIRED` | `POST /api/e2ee/secret_storage/keys` の `slots` が空、または最後のスロットを削除しようとした | |
 | 429 | `E2EE_RATE_LIMITED` | 端末の登録が 1 ユーザーにつき 1 時間に 30 回を超えた【提案】 | `retry_after`（秒） |
-| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、`keys/query` と `recipients` の応答の合計サイズ（8 MiB）が上限を超えた。すべて同じコードで返す | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
+| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、`keys/query` の応答の合計サイズ（8 MiB）が上限を超えた。すべて同じコードで返す | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
 | 409 | `E2EE_KEY_EXISTS` | 同じ鍵 ID で内容が違うワンタイム鍵をアップロードした | |
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない（暗号化チャンネルで必須。平文チャンネルでは、送ったときだけ） | `current_revision` |
 | 409 | `E2EE_PIN_CONFLICT` | `replace: false` で、同じ相手に、違うマスター鍵の TOFU のピンがすでにあり、そのピンを今のユーザー署名鍵で検証できる | `pin` |
@@ -870,7 +870,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 【決定】Megolm セッション鍵の配布先は、epoch と結び付いた 1 つのスナップショットから計算します（[鍵の配布先の判定](#鍵の配布先の判定)）。Electric の Shape はそれぞれ別のストリームで、同じトランザクションまで届いている保証がないので、Channels Shape の epoch と Channel Users Shape のメンバーを組み合わせると、退出したメンバーに鍵を配ってしまうことがあるためです。この API は [#357](https://github.com/Zli-UoA/zoo2/issues/357) で作ります。
 
-- `GET /api/e2ee/channels/{channel_id}/recipients`：削除済みのチャンネルは 404。応答は `keys/query` と同じ形に、`channel_id`、`membership_epoch`、`user_ids` を足したもの。【決定】`keys/query` と同じく、応答の合計が 8 MiB を超えるときは 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `response_size`）で拒否する。このとき、送信者は `keys/query` を 50 人ずつに分けて、配布先を組み立てる（メンバーの一覧は `channel_user` の Shape にある）。暗号化チャンネルのメンバー数の上限は、#357 で決める【提案】。
+- `GET /api/e2ee/channels/{channel_id}/recipients`：削除済みのチャンネルは 404。応答は `keys/query` と同じ形に、`channel_id`、`membership_epoch`、`user_ids` を足したもの。【決定】応答は `user_id` の昇順に、1 ページ最大 50 人（`limit`。応答の上限は 50 × 20 台 × 8 KiB で約 8 MiB）で返す。続きは、前のページの `next_after`（最後の `user_id`。最後のページは `null`）を `after` に、最初のページの `membership_epoch` を `epoch` に入れて取る。各ページは 1 つの `REPEATABLE READ READ ONLY` のトランザクションで作り、`epoch` が今の `membership_epoch` と違うときは、ページを返さず 409 `E2EE_STALE_EPOCH`（`current_epoch` 付き）にする。メンバー、端末、クロス署名鍵の変更はすべて epoch を増やす（[membership_epoch と送信の順序](#membership_epoch-と送信の順序)）ので、同じ `epoch` で取れたページは、すべて同じスナップショットのものになる。クライアントは 409 を受けたら、最初のページから取り直す。Channel Users Shape や `keys/query` の 50 人ずつの組み立てでは配布先を作らない（Shape が遅れていると、退出したメンバーに鍵を配ってしまう）。暗号化チャンネルのメンバー数の上限は、#357 で決める【提案】。
 
   ```json
   {
