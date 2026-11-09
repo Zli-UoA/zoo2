@@ -55,6 +55,9 @@ class SlackLinkController(
     var error by mutableStateOf<String?>(null)
         private set
 
+    /** 認可のために外部のブラウザーへ移動している間は true (`resume` が解除する) */
+    private var awaitingBrowser = false
+
     var pending by mutableStateOf(false)
         private set
 
@@ -90,6 +93,8 @@ class SlackLinkController(
                 navigate(
                     request("/api/slack/oauth/start", "POST", null).jsonObject.text("authorize_url")
                 )
+                // 外部のブラウザーへ移動した。戻ってきたとき (`resume`) に、この待ちだけを解除する
+                awaitingBrowser = true
             } catch (cause: CancellationException) {
                 throw cause
             } catch (_: Exception) {
@@ -104,7 +109,9 @@ class SlackLinkController(
      * 連携の状態を読み直し、待ち状態を解除して、キャンセルしたときも続けて連携をやり直せるようにする
      */
     fun resume() {
-        if (!lifetime.isActive) return
+        // 連携の解除など、ほかの操作の待ちは解除しない
+        if (!lifetime.isActive || !awaitingBrowser) return
+        awaitingBrowser = false
         pending = false
         load()
     }

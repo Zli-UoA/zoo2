@@ -617,7 +617,22 @@ async fn rewrite_mentions(
     .into_iter()
     .filter_map(|row| row["name"].as_str().map(str::to_string))
     .collect();
-    let names = MentionNames { map, taken };
+    // 置き換え後の名前に末尾の `.` を足した名前のユーザー (`bob` に対する `bob.`)。`@slack-bob.` を `@bob.` に
+    // 書き換えると、句読点の `.` が名前の一部に見え、通知が `bob.` へ向かうので、句読点が続くときは書き換えない
+    let values = serde_json::to_string(&map.values().collect::<Vec<_>>())
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let dotted = query(
+        tx,
+        "SELECT json_build_object('name',rtrim(user_name,'.'))::text FROM users \
+         WHERE user_name<>rtrim(user_name,'.') \
+         AND rtrim(user_name,'.') IN (SELECT jsonb_array_elements_text($1::jsonb))",
+        &[&values],
+    )
+    .await?
+    .into_iter()
+    .filter_map(|row| row["name"].as_str().map(str::to_string))
+    .collect();
+    let names = MentionNames { map, taken, dotted };
     // プレースホルダの名前は slack- で始まるので、まずそれで絞る (安い前段の判定)
     let needle = if names.map.keys().all(|name| name.starts_with("slack-")) {
         "@slack-"
@@ -697,6 +712,8 @@ struct MentionNames {
     map: HashMap<String, String>,
     /// 書き換える名前に末尾の `.` を足した、別のユーザーの名前
     taken: HashSet<String>,
+    /// 置き換え後の名前のうち、末尾の `.` を足した名前のユーザーがいるもの
+    dotted: HashSet<String>,
 }
 
 impl MentionNames {
@@ -710,7 +727,11 @@ impl MentionNames {
             return None;
         }
         let trimmed = token.trim_end_matches('.');
-        self.map.get(trimmed).map(|to| (trimmed.len(), to.as_str()))
+        self.map
+            .get(trimmed)
+            // 句読点の `.` が続く書き換えで、置き換え後の名前に `.` を足した名前のユーザーがいると、通知がそちらへ向かう
+            .filter(|to| !self.dotted.contains(to.as_str()))
+            .map(|to| (trimmed.len(), to.as_str()))
     }
 }
 
@@ -953,6 +974,7 @@ mod tests {
                 .map(|(f, t)| (f.to_string(), t.to_string()))
                 .collect(),
             taken: taken.iter().map(|n| n.to_string()).collect(),
+            dotted: HashSet::new(),
         }
     }
 
@@ -976,6 +998,25 @@ mod tests {
         assert_eq!(
             replace_mentions("@slack-bob. @slack-bob", &both).as_deref(),
             Some("@carol @bob")
+        );
+    }
+
+    #[test]
+    fn replace_mentions_skips_when_the_dotted_name_is_another_user() {
+        // `bob.` というユーザーがいると、`@slack-bob.` → `@bob.` は別のユーザーへのメンションに見える
+        let mut with_dotted = names(&[("slack-bob", "bob")], &[]);
+        with_dotted.dotted.insert("bob".to_string());
+        assert_eq!(replace_mentions("hi @slack-bob. ok", &with_dotted), None);
+        // 句読点が続かなければ書き換える
+        assert_eq!(
+            replace_mentions("hi @slack-bob ok", &with_dotted).as_deref(),
+            Some("hi @bob ok")
+        );
+        // そのユーザーがいなければ、従来どおり句読点として扱う
+        let plain = names(&[("slack-bob", "bob")], &[]);
+        assert_eq!(
+            replace_mentions("hi @slack-bob. ok", &plain).as_deref(),
+            Some("hi @bob. ok")
         );
     }
 

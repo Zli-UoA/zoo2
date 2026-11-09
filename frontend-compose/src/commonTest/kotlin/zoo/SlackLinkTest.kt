@@ -234,4 +234,26 @@ class SlackLinkTest {
         assertEquals("slackLink.importSummary_other", pluralKey("slackLink.importSummary", 0))
         assertEquals("slackLink.importSummary_other", pluralKey("slackLink.importSummary", 3))
     }
+
+    @Test
+    fun resumingDoesNotCancelAnUnlinkThatIsStillRunning() = runTest {
+        val unlink = CompletableDeferred<JsonElement>()
+        val state =
+            SlackLinkController(backgroundScope) { _, method, _ ->
+                if (method == "DELETE") unlink.await() else linked
+            }
+        state.load()
+        runCurrent()
+        state.unlink { }
+        runCurrent()
+        assertTrue(state.pending)
+        // 連携のためのブラウザー移動ではないので、戻ってきても解除の待ちは消さない
+        state.resume()
+        runCurrent()
+        assertTrue(state.pending)
+        unlink.complete(notLinked)
+        runCurrent()
+        assertFalse(state.pending)
+        state.close()
+    }
 }
