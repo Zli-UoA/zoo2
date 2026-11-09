@@ -358,8 +358,11 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     assert!(url.starts_with("https://slack.com/oauth/v2/authorize?"));
     assert_eq!(query_param(url, "client_id"), "cid");
     assert_eq!(query_param(url, "team"), team);
-    // いま使うのは連携時の表示名の取得だけなので、users:read だけを求める
-    assert_eq!(query_param(url, "user_scope"), "users:read");
+    // 差分同期 (#292) とブリッジ (#293・#294) で使うスコープも、再連携を 1 回で済ませるため、先にまとめて求める
+    assert_eq!(
+        query_param(url, "user_scope"),
+        "users:read,channels:history,groups:history,im:history,mpim:history,channels:read,groups:read,im:read,mpim:read,reactions:read,reactions:write,chat:write"
+    );
     let state_param = query_param(url, "state");
 
     // Slack からの戻りはトークンを交換せず、フロントへ渡すだけ
@@ -809,11 +812,24 @@ async fn test_slack_link_requires_configuration_and_admin_manifest() -> anyhow::
     assert_eq!(manifest["configured"], false);
     assert_eq!(
         manifest["manifest"]["oauth_config"]["scopes"]["user"],
-        json!(["users:read"])
+        json!([
+            "users:read",
+            "channels:history",
+            "groups:history",
+            "im:history",
+            "mpim:history",
+            "channels:read",
+            "groups:read",
+            "im:read",
+            "mpim:read",
+            "reactions:read",
+            "reactions:write",
+            "chat:write"
+        ])
     );
     assert_eq!(
         manifest["manifest"]["oauth_config"]["scopes"]["bot"],
-        json!(["files:read"])
+        json!(["files:read", "chat:write", "chat:write.customize"])
     );
     Ok(())
 }
