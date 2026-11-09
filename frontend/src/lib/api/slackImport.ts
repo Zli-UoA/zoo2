@@ -30,6 +30,12 @@ export interface SlackChannelSummary {
   name_taken: boolean;
   /** 以前の取り込みで対応付けた zoo チャンネル */
   existing_channel: { id: string; name: string; is_private?: boolean } | null;
+  /**
+   * 以前の取り込み先が、見えないチャンネル (参加していない非公開チャンネル。ゲストには公開チャンネルも)。
+   * 名前と ID は返さない。
+   * 取り込めるのはそこだけなので、新しく作ることもできない (各ユーザーによる取り込み)
+   */
+  existing_hidden?: boolean;
   /** Slack と同じ名前の zoo チャンネル */
   same_name_channel?: { id: string; name: string; is_private: boolean } | null;
   /** 以前の取り込み先が削除済みならその名前。過去ログが残っているため取り込み直せない */
@@ -257,4 +263,35 @@ export function mappingFor(
   if (action === "existing")
     return { ...base, action, channel_id: channel.existing_channel?.id ?? targets[0]?.id ?? "" };
   return { ...base, action, name: channel.suggested_name, is_private: channel.is_private };
+}
+
+/** 連携したユーザーが作った Slack チャンネル。`targets` は取り込み先に選べる既存チャンネル */
+export interface OwnSlackChannel extends SlackChannelSummary {
+  targets: { id: string; name: string; is_private: boolean }[];
+}
+
+/** 連携したユーザーが、保存済みの ZIP から自分のチャンネルを取り込むための情報 */
+export interface OwnSlackImports {
+  /** 取り込みに使う ZIP。管理者がまだ保存していなければ null */
+  export: { id: string; file_name: string; created_at: string } | null;
+  channels: OwnSlackChannel[];
+  /** 自分が始めた取り込み (新しい順) */
+  imports: SlackImport[];
+}
+
+export function getOwnSlackImports(
+  client: ApiClient,
+  signal?: AbortSignal,
+): Promise<OwnSlackImports> {
+  return client.get<OwnSlackImports>("/api/slack/imports", { signal });
+}
+
+export function startOwnSlackImport(
+  client: ApiClient,
+  mappings: SlackChannelMapping[],
+): Promise<SlackImport> {
+  return client.request<SlackImport>("/api/slack/imports", {
+    method: "POST",
+    body: { mappings },
+  });
 }
