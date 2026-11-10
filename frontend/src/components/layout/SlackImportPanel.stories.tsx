@@ -177,9 +177,10 @@ export const Mapping: Story = {
 export const BulkSelection: Story = {
   parameters: { msw: { handlers: [list(base)] } },
   play: playForImplementation(async () => {
-    // 一括で「新しいチャンネル」にする。以前取り込んだ #random と、取り込み先が削除済みの #design は変えない
+    // 一括で「新しいチャンネル」にする (#general と非公開のチャンネル)。以前取り込んだ #random と、
+    // 取り込み先が削除済みの #design は変えない
     await userEvent.click(await screen.findByRole("button", { name: "すべて新しいチャンネル" }));
-    await expect(screen.getByRole("button", { name: "1 チャンネルを取り込む" })).toBeEnabled();
+    await expect(screen.getByRole("button", { name: "2 チャンネルを取り込む" })).toBeEnabled();
     await expect(screen.getByRole("combobox", { name: "#random の取り込み方" })).toHaveValue(
       "skip",
     );

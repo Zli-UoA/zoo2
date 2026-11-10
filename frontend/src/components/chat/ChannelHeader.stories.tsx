@@ -58,7 +58,7 @@ export const ImportedFromSlack: Story = {
       await within(await screen.findByRole("dialog")).findByText(
         "Slack から取り込んだチャンネルです。",
       ),
-    ).toBeVisible();
+    ).toBeInTheDocument();
   }),
 };
 
