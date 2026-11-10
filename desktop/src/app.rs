@@ -177,6 +177,7 @@ pub struct MentionAutocompleteState {
 /// チャンネル作成モーダル状態。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CreateChannelModal {
+    pub request_id: u64,
     pub channel_name: String,
     pub description: String,
     pub is_private: bool,
@@ -255,9 +256,13 @@ pub enum AppEvent {
         error: String,
     },
     ChannelCreated {
+        request_id: u64,
         channel_id: String,
     },
-    ChannelCreateFailed(String),
+    ChannelCreateFailed {
+        request_id: u64,
+        error: String,
+    },
     AttachmentUrlResolved {
         attachment_id: String,
         download_url: String,
@@ -333,6 +338,7 @@ pub struct AppState {
     /// 現在送信リクエスト実行中の下書き (`(submission_id, FailedDraft)`)。
     pub in_flight_submissions: Vec<(u64, FailedDraft)>,
     pub next_submission_id: u64,
+    pub next_channel_create_id: u64,
     /// 認証切れ (`Unauthorized`) でログイン画面に戻った際に、同じユーザーの再ログイン時だけ復元する下書き。
     pub preserved_unauthorized_drafts: Option<(String, Vec<FailedDraft>)>,
 
@@ -475,6 +481,7 @@ impl AppState {
             failed_drafts: Vec::new(),
             in_flight_submissions: Vec::new(),
             next_submission_id: 0,
+            next_channel_create_id: 0,
             preserved_unauthorized_drafts: None,
             channel_creators_by_key: HashMap::new(),
             channel_posting_policies_by_key: HashMap::new(),
@@ -1792,19 +1799,34 @@ impl AppState {
                 self.notify(format!("ファイルのアップロードに失敗しました: {error}"));
                 true
             }
-            AppEvent::ChannelCreated { channel_id } => {
-                self.create_channel_modal = None;
-                self.pending_focus_composer = true;
-                self.open_channel(channel_id);
-                self.notify("チャンネルを作成しました");
+            AppEvent::ChannelCreated {
+                request_id,
+                channel_id,
+            } => {
+                let matches_current = self
+                    .create_channel_modal
+                    .as_ref()
+                    .is_some_and(|m| m.request_id == request_id);
+                if matches_current {
+                    self.create_channel_modal = None;
+                    self.pending_focus_composer = true;
+                    self.open_channel(channel_id);
+                    self.notify("チャンネルを作成しました");
+                }
                 true
             }
-            AppEvent::ChannelCreateFailed(err) => {
-                if let Some(modal) = &mut self.create_channel_modal {
-                    modal.in_flight = false;
-                    modal.error = Some(err.clone());
+            AppEvent::ChannelCreateFailed { request_id, error } => {
+                let matches_current = self
+                    .create_channel_modal
+                    .as_ref()
+                    .is_some_and(|m| m.request_id == request_id);
+                if matches_current {
+                    if let Some(modal) = &mut self.create_channel_modal {
+                        modal.in_flight = false;
+                        modal.error = Some(error.clone());
+                    }
+                    self.notify(format!("チャンネル作成に失敗しました: {error}"));
                 }
-                self.notify(format!("チャンネル作成に失敗しました: {err}"));
                 true
             }
             AppEvent::AttachmentUrlResolved {
@@ -2060,6 +2082,9 @@ impl AppState {
             return;
         }
         let non_empty = !text.trim().is_empty();
+        if self.composer_draft != text {
+            self.pending_composer_message_id = None;
+        }
         self.composer_draft = text;
         if non_empty {
             self.touch_typing();
@@ -3155,6 +3180,7 @@ impl AppState {
         }
         let content_type = guess_content_type(&file_name).to_string();
 
+        self.pending_composer_message_id = None;
         self.pending_attachments.push(PendingAttachment {
             local_id: local_id.clone(),
             channel_id: channel_id.clone(),
@@ -3261,6 +3287,7 @@ impl AppState {
         };
         let local_id = uuid::Uuid::new_v4().to_string();
         let file_size = bytes.len() as i64;
+        self.pending_composer_message_id = None;
         self.pending_attachments.push(PendingAttachment {
             local_id: local_id.clone(),
             channel_id: channel_id.clone(),
@@ -3321,6 +3348,7 @@ impl AppState {
     /// アップロード待ち・完了済みの添付ファイルを削除する。
     pub fn remove_pending_attachment(&mut self, local_id: &str) {
         self.pending_attachments.retain(|a| a.local_id != local_id);
+        self.pending_composer_message_id = None;
     }
 
     // --- メンション補完 ---
@@ -3500,6 +3528,9 @@ impl AppState {
             Some(modal.description.trim().to_string())
         };
         let is_private = modal.is_private;
+        self.next_channel_create_id = self.next_channel_create_id.wrapping_add(1);
+        let request_id = self.next_channel_create_id;
+        modal.request_id = request_id;
         modal.in_flight = true;
         modal.error = None;
 
@@ -3516,6 +3547,7 @@ impl AppState {
                     let _ = tx.send(DesktopEvent::App {
                         session_gen,
                         event: AppEvent::ChannelCreated {
+                            request_id,
                             channel_id: channel.id,
                         },
                     });
@@ -3523,7 +3555,10 @@ impl AppState {
                 Err(err) => {
                     let _ = tx.send(DesktopEvent::App {
                         session_gen,
-                        event: AppEvent::ChannelCreateFailed(err.to_string()),
+                        event: AppEvent::ChannelCreateFailed {
+                            request_id,
+                            error: err.to_string(),
+                        },
                     });
                 }
             }
@@ -4882,6 +4917,52 @@ mod tests {
 
         state.close_create_channel_modal();
         assert!(state.create_channel_modal.is_none());
+
+        // チャンネル作成試行 A
+        state.open_create_channel_modal();
+        state.create_channel_modal.as_mut().unwrap().channel_name = "channel-a".into();
+        state.submit_create_channel();
+        let req_id_a = state.create_channel_modal.as_ref().unwrap().request_id;
+        assert!(req_id_a > 0);
+
+        // 作成中にモーダルを閉じて、別のチャンネル B の入力を開始する
+        state.close_create_channel_modal();
+        state.open_create_channel_modal();
+        state.create_channel_modal.as_mut().unwrap().channel_name = "channel-b".into();
+
+        // 過去の試行 A の失敗イベントが届いても、モーダル B にエラーが混入しないこと
+        state.on_app_event(AppEvent::ChannelCreateFailed {
+            request_id: req_id_a,
+            error: "Failed A".into(),
+        });
+        assert_eq!(
+            state.create_channel_modal.as_ref().unwrap().channel_name,
+            "channel-b"
+        );
+        assert!(state.create_channel_modal.as_ref().unwrap().error.is_none());
+
+        // 過去の試行 A の作成完了イベントが届いても、モーダル B は閉じられず入力内容が保護されること
+        state.on_app_event(AppEvent::ChannelCreated {
+            request_id: req_id_a,
+            channel_id: "c_new_a".into(),
+        });
+        assert!(state.create_channel_modal.is_some());
+        assert_eq!(
+            state.create_channel_modal.as_ref().unwrap().channel_name,
+            "channel-b"
+        );
+
+        // チャンネル B を送信し、試行 B の作成完了イベントを受け取るとモーダルが閉じて遷移すること
+        state.submit_create_channel();
+        let req_id_b = state.create_channel_modal.as_ref().unwrap().request_id;
+        assert_ne!(req_id_a, req_id_b);
+
+        state.on_app_event(AppEvent::ChannelCreated {
+            request_id: req_id_b,
+            channel_id: "c_new_b".into(),
+        });
+        assert!(state.create_channel_modal.is_none());
+        assert_eq!(state.current_channel.as_deref(), Some("c_new_b"));
     }
 
     #[test]
@@ -5439,6 +5520,33 @@ mod tests {
         });
         assert!(state.in_flight_submissions.is_empty());
         assert!(state.composer_draft.is_empty());
+        assert!(state.pending_composer_message_id.is_none());
+
+        // 復元後に本文を変更した場合、再送用 ID がリセットされて新規採番されること
+        state.on_app_event(AppEvent::RestoreDraft {
+            submission_id: 999,
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "本文そのまま".into(),
+        });
+        state.pending_composer_message_id = Some("same-id".into());
+        // 本文を編集
+        state.on_composer_changed("本文を書き換えた".into());
+        assert!(state.pending_composer_message_id.is_none());
+        assert!(state.submit_message("本文を書き換えた".into()));
+        let edited_submission_msg_id = state.in_flight_submissions[0].1.message_id.clone().unwrap();
+        assert_ne!(edited_submission_msg_id, "same-id");
+        state.in_flight_submissions.clear();
+
+        // 復元後に添付を追加した場合も、再送用 ID がリセットされること
+        state.pending_composer_message_id = Some("same-id".into());
+        state.add_attachment_from_bytes("sample.png".into(), "image/png".into(), vec![1, 2]);
+        assert!(state.pending_composer_message_id.is_none());
+
+        // 復元後に添付を削除した場合も、再送用 ID がリセットされること
+        let local_id = state.pending_attachments[0].local_id.clone();
+        state.pending_composer_message_id = Some("same-id".into());
+        state.remove_pending_attachment(&local_id);
         assert!(state.pending_composer_message_id.is_none());
     }
 }

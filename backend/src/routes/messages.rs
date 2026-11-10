@@ -176,18 +176,30 @@ pub(crate) async fn create_message_impl(
 
     let mut db = state.db.clone();
 
-    // クライアント指定の ID が既に存在する場合、同一属性の再送であれば既存メッセージを返して成功とする (冪等性)
+    // クライアント指定の ID が既に存在する場合、同一属性（本文・チャンネル・親・添付ファイル）の再送であれば既存メッセージを返して成功とする (冪等性)
     if supplied_id.is_some() {
         let existing = Message::filter(Message::fields().id().eq(id.as_str()))
             .first()
             .exec(&mut db)
             .await?;
         if let Some(existing_msg) = existing {
+            let mut req_att_ids = attachment_ids.clone();
+            req_att_ids.sort();
+
+            let existing_atts =
+                Attachment::filter(Attachment::fields().message_id().eq(id.as_str()))
+                    .exec(&mut db)
+                    .await?;
+            let mut existing_att_ids: Vec<String> =
+                existing_atts.into_iter().map(|a| a.id).collect();
+            existing_att_ids.sort();
+
             if existing_msg.user_id == auth_user.id
                 && existing_msg.channel_id == payload.channel_id
                 && existing_msg.content == payload.content
                 && existing_msg.parent_id == payload.parent_id
                 && existing_msg.deleted_at.is_none()
+                && req_att_ids == existing_att_ids
             {
                 return Ok(Json(ApiResponse::new(
                     MessageResponse::from(existing_msg),

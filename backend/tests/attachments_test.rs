@@ -510,6 +510,7 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
         "id": message_id,
         "channel_id": channel_id,
         "content": "Different content with same id",
+        "attachment_ids": [attachment_id]
     });
     let req = Request::builder()
         .method("POST")
@@ -517,6 +518,23 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
         .header("content-type", "application/json")
         .header("X-Dev-User", &alice_id)
         .body(Body::from(serde_json::to_vec(&msg_payload_conflict)?))?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // 5c2. Alice が同じ message_id かつ同一本文でも、添付ファイルを変更（空や別ファイル）して POST した場合、409 Conflict になること
+    let msg_payload_diff_att = json!({
+        "id": message_id,
+        "channel_id": channel_id,
+        "content": "Valid message with attachment",
+        "attachment_ids": []
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_diff_att)?))?;
 
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
