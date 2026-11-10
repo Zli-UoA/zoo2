@@ -108,5 +108,11 @@ export function useMessageReadState(
         inFlight.current = false;
       });
   }, [client, path, messages, pending, writePending, lastRead, t, savedVersion]);
-  return { firstUnreadId, markRead, isLoading: enabled && lastRead === null && !isError, isError };
+  return {
+    firstUnreadId,
+    lastRead,
+    markRead,
+    isLoading: enabled && lastRead === null && !isError,
+    isError,
+  };
 }

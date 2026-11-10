@@ -31,7 +31,6 @@ export interface ThreadPaneProps {
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
   replies: FeedMessage[];
-  replyCounts?: Map<string, number>;
   onOpenThread?: (messageId: string) => void;
   isLoading: boolean;
   isError: boolean;
@@ -59,6 +58,10 @@ export interface ThreadPaneProps {
   ) => Promise<boolean>;
   /** 上端付近で古い返信を読み足す。 */
   onLoadOlder?: () => void;
+  /** 端末より古い返信が、まだあるか。 */
+  hasOlder?: boolean;
+  /** 古いページを取っている最中か。 */
+  isLoadingOlder?: boolean;
   /** 取得失敗時の再試行。 */
   onRetry?: () => void;
   onClose: () => void;
@@ -83,7 +86,6 @@ export function ThreadPane({
   onTyping,
   root,
   replies,
-  replyCounts,
   onOpenThread,
   isLoading,
   isError,
@@ -106,6 +108,8 @@ export function ThreadPane({
   onUploadAttachment,
   onSendReply,
   onLoadOlder,
+  hasOlder = true,
+  isLoadingOlder = false,
   onRetry,
   onClose,
 }: ThreadPaneProps) {
@@ -216,7 +220,7 @@ export function ThreadPane({
             element.scrollHeight,
             element.clientHeight,
           );
-          if (element.scrollTop <= 48) {
+          if (element.scrollTop <= 48 && hasOlder && !isLoadingOlder) {
             onLoadOlder?.();
           }
         }}
@@ -269,9 +273,7 @@ export function ThreadPane({
                   onCancelEdit={onCancelEdit}
                   onSaveEdit={onSaveEdit}
                   onRequestDelete={() => onRequestDelete(item.message.id)}
-                  replyCount={
-                    item.message.display_data?.reply_count ?? replyCounts?.get(item.message.id) ?? 0
-                  }
+                  replyCount={item.message.display_data?.reply_count ?? 0}
                   onOpenThread={onOpenThread ? () => onOpenThread(item.message.id) : undefined}
                   reactions={
                     item.message.display_data

@@ -1,11 +1,12 @@
 import { useOptimisticDisplay } from "./useOptimisticDisplay";
 import { useFederatedReactions } from "./useFederatedReactions";
-import { eq, isNull, useLiveQuery } from "@tanstack/react-db";
+import { eq, isNull, useLiveInfiniteQuery, useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useState } from "react";
 
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 import { messageFeedQuery } from "../lib/electric/messageFeed";
+import { MESSAGE_PAGE_SIZE } from "../lib/electric/messageOrder";
 import type { ChannelRow, ChannelUserRow } from "../lib/electric/types";
 import { canAddChannelMember, canManageChannel } from "./channelPermissions";
 import { useCurrentUser } from "./useCurrentUser";
@@ -41,30 +42,33 @@ export function useActiveChannels() {
 export interface MessageFeedOptions {
   /** スレッドの返信を購読する場合のルート ID。未指定はチャンネル直下。 */
   parentId?: string | null;
-  /** この時刻以降だけを表示する（30日窓）。 */
-  since?: string;
 }
 
 /**
  * 指定チャンネルのルートメッセージ（`parent_id IS NULL`）を投稿者名（users）と
  * 結合して購読する。返信は同じ messages コレクションを `parent_id` で絞る。
- * `channelId` が無いときは購読しない。
+ *
+ * 端末に同期するのは、画面に出す範囲 (新しい方から `MESSAGE_PAGE_SIZE` 件ずつ) だけ。`loadOlder()` で、
+ * 1 ページ分、古い方へ範囲を広げる (Electric の subset snapshot で、そのページだけを取る)。`data` は古い順。
  */
-export function useMessageFeed(channelId: string | null, options: MessageFeedOptions = {}) {
+export function useMessageFeed(channelId: string, options: MessageFeedOptions = {}) {
   const { messages, users } = useCollections();
   const parentId = options.parentId ?? null;
-  const since = options.since;
-  const query = useLiveQuery((q) =>
-    channelId
-      ? messageFeedQuery(q, { messages: messages(channelId), users }, { parentId, since })
-      : undefined,
+  const query = useLiveInfiniteQuery(
+    (q) => messageFeedQuery(q, { messages: messages(channelId), users }, { parentId }),
+    { pageSize: MESSAGE_PAGE_SIZE },
   );
-  const data = useOptimisticDisplay(channelId, query.data);
+  // クエリは新しい順。画面は古い順に並べる。
+  const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
+  const data = useOptimisticDisplay(channelId, oldestFirst);
   return {
     ...query,
     data,
     isInitialSyncLoading: query.isLoading,
     isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
+    loadOlder: query.fetchNextPage,
+    hasOlder: query.hasNextPage,
+    isLoadingOlder: query.isFetchingNextPage,
   };
 }
 

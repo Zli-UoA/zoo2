@@ -1,28 +1,38 @@
-# オフライン閲覧とメッセージ窓
+# オフライン閲覧とメッセージの範囲（on-demand 同期）
 
 ## 目的
 
-- 直近30日のメッセージを初期表示し、上スクロールで過去へ広げる。
-- 一度同期したチャンネル・メッセージを端末（OPFS）に保存し、オフラインでも表示する。
+- チャンネルを開いたとき、新しい方から 50 件だけを初期表示し、上スクロールで古い方へ 1 ページずつ広げる。
+- **端末に同期するのは、いま見ている範囲だけ**にする（全件を同期しない）。Slack から取り込んだ数万件の履歴があるチャンネルでも、初回の同期は 1 ページ（約 30 KB）で済む。
+- 一度同期したチャンネル・メッセージを端末（OPFS）に保存し、オフラインでも表示する（下の「オフライン」の注意を参照）。
 - Service Worker で静的 app shell を配信し、オフラインでリロードしてもアプリを起動する。
 
 書き込みのオフライン対応（outbox）は、バックエンドの冪等性が不足しているため今回は実装しない（後述）。
 
-## 読み込み分割（since 窓）
+## 読み込み（on-demand の subset snapshot）
 
-`messageFeedQuery` に `since` を追加し、`created_at >= since` で絞る。`limit` は使わない。
-新着で最古行が窓から落ちる、offset がずれるといった問題を避けるため。
+メッセージの Electric コレクション（`messages:${channelId}`）は `syncMode: "on-demand"`（ログは `changes_only`）にする。
+画面の live query（`messageFeedQuery`）が `orderBy(created_at, 新しい順).limit(N)` を持つと、TanStack DB が、必要な範囲だけを
+Electric の subset snapshot（`subset__where` / `subset__order_by` / `subset__limit`。プロキシは `subset__*` を転送する）で取る。
 
-- 初期値は `現在 - 30日`。
-- 仮想リストの上端付近（64px 以内）に来たら、表示中の最古の `created_at - 1ms` へ `since` を広げる。
-- 30日窓が空で、コレクションに古い行がある場合は自動で最古まで広げる。
-- スレッドも同じ `messages` コレクションを `parent_id = root` で絞り、同じ方式で広げる。
-- 通知から開いたメッセージが窓外なら、その行（とスレッドのルート）を含む位置まで広げる。
-- 古い行を先頭に足すときは、既存の `prepend` スクロール補正で読んでいる位置を維持する。
-- 時間バケット（日・週単位の区切り読み込み）は今回のスコープ外。since 窓で完成させる。
+- 一覧は `useLiveInfiniteQuery`（`pageSize = MESSAGE_PAGE_SIZE`）で、上端付近に来たら `loadOlder()`（= `fetchNextPage`）が、
+  次の 1 ページだけを取る。ページは行数で区切るので、1 日に数万件の密な履歴でも、1 回の取得は 1 ページ分になる。
+- 新着・編集・削除は、同期している範囲について、通常どおり live（SSE）で届く。窓の外の行への更新は無視される
+  （窓の外の行を編集・削除しても、確認（txid）は解決する）。
+- スレッドの返信も同じ方式（`parent_id = <root>` の範囲を 1 ページずつ）。スレッドの親、通知・リンクの対象は、
+  `id = <id>` の subset で、その行だけを取る（メイン一覧の範囲とは関係なく）。通知・リンクの対象が一覧の範囲より古い
+  ときは、対象を含むまで、1 ページずつ古い方へ広げる（回数に上限あり）。
+- 返信数・リアクション・添付は、サーバーの表示用 VIEW（`display_data`）の値を使う。クライアントで全返信を数えない。
+- 未読の区切りは、既読位置を含むまで古い方へ読み足してから置く（回数に上限あり）。
 
-Electric の Shape 自体は従来どおりチャンネル単位で購読する。Shape の where に since を足すには
-バックエンドの Shape プロキシ変更が必要になるため、今回はクライアント側の live query で窓を適用する。
+**実装で守ること**（破ると、チャンネルの全行を取るフォールバックに、黙って切り替わる）:
+
+- `created_at` は文字列なので、`orderBy` は `stringSort: "lexical"`、`messages` コレクションの `created_at` のインデックスは、
+  同じ比較の設定にそろえる（`lib/electric/messageOrder.ts`）。`messageFeed.ondemand.test.ts` が、ページ単位の取得になっていることを確かめる。
+- `from(messages)` だけの live query や、全返信を購読する live query を作らない（on-demand では、全行を取る要求になる）。
+  再描画のきっかけだけが要るときは、`subscribeChanges(…, { includeInitialState: false })` を使う（`useOptimisticDisplay`）。
+
+メモリ: 窓を縮めても、読み込んだ行は、コレクションを破棄する（チャンネルを離れて GC される）まで残る。
 
 ## 永続化（TanStack DB + OPFS）
 
@@ -34,9 +44,13 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
   別ユーザーの DB は物理的に別ファイルなので、同じ端末でも前のユーザーのメッセージは読めない。
 - 永続化するコレクション: `channels` / `users` / `channel_user` / `notifications` / `messages`（チャンネル単位）。
   リアクションは今回永続化しない（オフラインでは非表示）。
-- `schemaVersion = 1`。スキーマ不一致は `sync-present-reset` で古いキャッシュを破棄し、Electric から取り直す。
-- `initialRender: { strategy: "network-first", networkTimeoutMs: 2000 }` で、ネットワークより先に
-  復元済みの行を描画できるようにする。
+- `schemaVersion` は `OFFLINE_SCHEMA_VERSION`（`lib/offline/schema.ts`）。スキーマ不一致は `sync-present-reset` で古いキャッシュを破棄し、Electric から取り直す。
+- `channels` / `users` / `channel_user` / `notifications` は eager の同期で、`initialRender: { strategy: "network-first", networkTimeoutMs: 2000 }` により、
+  ネットワークより先に復元済みの行を描画できる。**`messages` は on-demand の同期で、`initialRender` は使えない**
+  （永続化の設定がエラーにする）。on-demand の永続化は、管理されたキャッシュ（managed target）で、保存済みの行は、
+  同じ範囲の subset の読み込みに使われる。**ネットワークが使えないときに、保存済みのメッセージが出るかは、ブラウザーでの確認が必要**
+  （`e2e/offline.spec.ts` の「offline reload restores the app shell and persisted messages」が確かめる）。
+  ユニットテストの偽のアダプターでは、managed target を再現できない。
 - OPFS 非対応・初期化失敗・quota 超過時はメモリのみにフォールバックし、アプリは動かす。
 - ログアウト時は該当ユーザーの DB（`-journal` / `-wal` を含む）を削除する。削除に失敗しても
   ログアウトは続行する（DB はユーザー単位で分離済み）。

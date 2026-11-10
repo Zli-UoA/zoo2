@@ -13,18 +13,15 @@ import {
   useMessageFeed,
   useMessageReactions,
 } from "../../../hooks/useRealtime";
-import { useReplyCounts, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
+import { useMessageById, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
-import { expandWindowSince, messageWindowStart } from "../../../lib/electric/messageWindow";
-import type { MessageRow } from "../../../lib/electric/types";
 import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
 import { groupReactions, reactionUserLabel } from "../../../lib/emoji/reactions";
 import { useOfflineStatus } from "../../../lib/offline/offline-context";
 import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
-import { parseUtcTimestamp } from "../../../lib/timestamps";
 import { useShell } from "../../layout/shell-context";
 import { Button } from "../../ui/button";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
@@ -35,23 +32,8 @@ import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
 
-function oldestRowTimestamp(
-  rows: Iterable<MessageRow>,
-  predicate: (row: MessageRow) => boolean,
-): string | null {
-  let oldest: { at: string; ms: number } | null = null;
-  for (const row of rows) {
-    if (row.deleted_at || !predicate(row)) {
-      continue;
-    }
-    const ms = parseUtcTimestamp(row.created_at).getTime();
-    if (!Number.isFinite(ms) || (oldest && ms >= oldest.ms)) {
-      continue;
-    }
-    oldest = { at: row.created_at, ms };
-  }
-  return oldest?.at ?? null;
-}
+/** 通知・リンクの対象を含むまで、古い方へ広げるページ数の上限 (1 ページは `MESSAGE_PAGE_SIZE` 件)。 */
+const MAX_REVEAL_PAGES = 100;
 
 function JoinToPostPrompt({
   onJoin,
@@ -114,10 +96,8 @@ export function MessagePane({
   );
   const messagesCollection = messages(channelId);
   const reactionsCollection = reactions(channelId);
-  // 直近30日を初期表示し、上端付近で `since` を過去へ広げる。`limit` は
-  // 新着で最古行が落ちるため使わない。
-  const [since, setSince] = useState(messageWindowStart);
-  const messagesQuery = useMessageFeed(channelId, { since });
+  // 新しい方から `MESSAGE_PAGE_SIZE` 件だけを同期し、上端付近で `loadOlder()` が古い方へ 1 ページずつ広げる。
+  const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
   const attachmentsQuery = useMessageAttachments(channelId);
@@ -192,11 +172,8 @@ export function MessagePane({
     [currentUserId, messagesCollection, reactionsCollection, run],
   );
 
-  const replyCounts = useReplyCounts(channelId);
-
   const { threadRootId, openThread, closeThread } = useShell();
-  const [threadSince, setThreadSince] = useState(messageWindowStart);
-  const threadQuery = useThreadFeed(channelId, threadRootId, threadSince);
+  const threadQuery = useThreadFeed(channelId, threadRootId);
   const threadReplies = threadQuery.data ?? [];
   const threadTyping = useTyping(
     channelId,
@@ -204,103 +181,67 @@ export function MessagePane({
     !readOnly && isMember && !!currentUserId && !!threadRootId,
   );
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
-  const threadRoot = threadRootQuery.data?.[0] ?? null;
+  const threadRootRow = threadRootQuery.data?.[0] ?? null;
+  const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
 
-  useEffect(() => {
-    if (!threadRootId) {
-      setThreadSince(messageWindowStart());
-      return;
-    }
-    // 通知から開いた返信が30日窓の外なら、その返信を含む位置から始める。
-    const target = targetMessageId ? messagesCollection.get(targetMessageId) : undefined;
-    const anchor = target?.parent_id === threadRootId ? target.created_at : null;
-    setThreadSince(anchor ? expandWindowSince(messageWindowStart(), anchor) : messageWindowStart());
-  }, [messagesCollection, targetMessageId, threadRootId]);
+  // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。
+  const targetQuery = useMessageById(channelId, targetMessageId ?? null);
+  const target = targetQuery.data?.[0];
 
-  // 30日窓が空でも、コレクションに古いメッセージがあれば自動で広げる。
+  // 対象が返信なら、そのスレッドを開く。
   useEffect(() => {
-    if (messagesQuery.isLoading || feed.length > 0) {
-      return;
-    }
-    const oldest = oldestRowTimestamp(messagesCollection.values(), (row) => row.parent_id === null);
-    if (oldest) {
-      setSince((current) => expandWindowSince(current, oldest));
-    }
-  }, [feed.length, messagesCollection, messagesQuery.isLoading]);
-
-  // 通知から開いたメッセージが30日窓の外でも、その行まで含める。
-  useEffect(() => {
-    if (!targetMessageId) {
-      return;
-    }
-    const target = messagesCollection.get(targetMessageId);
-    if (!target || target.deleted_at) {
-      return;
-    }
-    if (target.parent_id) {
-      setThreadSince((current) => expandWindowSince(current, target.created_at));
-    } else {
-      setSince((current) => expandWindowSince(current, target.created_at));
-    }
-  }, [messagesCollection, targetMessageId, messagesQuery.isInitialSyncLoading]);
-
-  // スレッドのルートが窓の外でも、返信と一緒に表示できるよう広げる。
-  useEffect(() => {
-    if (!threadRootId) {
-      return;
-    }
-    const root = messagesCollection.get(threadRootId);
-    if (root) {
-      setSince((current) => expandWindowSince(current, root.created_at));
-    }
-  }, [messagesCollection, threadRootId, messagesQuery.isInitialSyncLoading]);
-
-  // 返信が30日窓で空なら、コレクション内の最も古い返信まで広げる。
-  useEffect(() => {
-    if (!threadRootId || threadQuery.isLoading || threadReplies.length > 0) {
-      return;
-    }
-    const oldest = oldestRowTimestamp(
-      messagesCollection.values(),
-      (row) => row.parent_id === threadRootId,
-    );
-    if (oldest) {
-      setThreadSince((current) => expandWindowSince(current, oldest));
-    }
-  }, [messagesCollection, threadReplies.length, threadQuery.isLoading, threadRootId]);
-
-  useEffect(() => {
-    if (!targetMessageId || messagesQuery.isInitialSyncLoading) return;
-    const target = messagesCollection.get(targetMessageId);
     if (target?.parent_id && !target.deleted_at) openThread(target.parent_id);
-  }, [targetMessageId, messagesQuery.isInitialSyncLoading, messagesCollection, openThread]);
+  }, [target?.id, target?.parent_id, target?.deleted_at, openThread]);
 
-  // ルートが（他ユーザーの操作などで）見えなくなったらスレッドも閉じる。
-  // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。
+  // 対象がトップレベルで、いま読み込んでいる範囲より古いときは、含まれるまで 1 ページずつ古い方へ広げる
+  // (連続した範囲になるので、間のメッセージが欠けない)。広げる回数には上限がある。
+  const revealedPages = useRef({ id: "", pages: 0 });
+  const { hasOlder, isLoadingOlder, loadOlder } = messagesQuery;
   useEffect(() => {
-    if (!threadRootId || messagesQuery.isInitialSyncLoading || threadRoot) {
+    if (!target || target.deleted_at || target.parent_id) return;
+    if (revealedPages.current.id !== target.id) revealedPages.current = { id: target.id, pages: 0 };
+    if (feed.some((row) => row.id === target.id)) return;
+    if (!hasOlder || isLoadingOlder || revealedPages.current.pages >= MAX_REVEAL_PAGES) return;
+    revealedPages.current.pages += 1;
+    void loadOlder();
+  }, [target, feed, hasOlder, isLoadingOlder, loadOlder]);
+
+  // 対象がスレッドの返信なら、スレッドの範囲も、含まれるまで広げる。
+  const revealedThreadPages = useRef({ id: "", pages: 0 });
+  const { hasOlder: threadHasOlder, isLoadingOlder: threadLoadingOlder } = threadQuery;
+  const loadOlderReplies = threadQuery.loadOlder;
+  useEffect(() => {
+    if (!target || target.deleted_at || !target.parent_id || target.parent_id !== threadRootId) {
       return;
     }
-    const rootRow = messagesCollection.get(threadRootId);
-    // The root may exist outside the current feed window; let setSince above load it.
-    if (rootRow && !rootRow.deleted_at) return;
+    if (revealedThreadPages.current.id !== target.id) {
+      revealedThreadPages.current = { id: target.id, pages: 0 };
+    }
+    if (threadReplies.some((row) => row.id === target.id)) return;
+    if (!threadHasOlder || threadLoadingOlder) return;
+    if (revealedThreadPages.current.pages >= MAX_REVEAL_PAGES) return;
+    revealedThreadPages.current.pages += 1;
+    void loadOlderReplies();
+  }, [target, threadRootId, threadReplies, threadHasOlder, threadLoadingOlder, loadOlderReplies]);
+
+  // スレッドの親が (他ユーザーの操作などで) 見えなくなったらスレッドも閉じる。
+  // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。親は、メイン一覧の範囲とは関係なく、
+  // ID で取る。取得が終わるまでは判断しない。
+  useEffect(() => {
+    if (!threadRootId || threadRootQuery.isLoading) {
+      return;
+    }
+    if (threadRootRow && !threadRootRow.deleted_at) return;
     closeThread();
-    if (rootRow?.deleted_at) {
+    if (threadRootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
     }
-  }, [
-    threadRootId,
-    threadRoot,
-    messagesQuery.isInitialSyncLoading,
-    messagesCollection,
-    closeThread,
-    t,
-  ]);
+  }, [threadRootId, threadRootRow, threadRootQuery.isLoading, closeThread, t]);
 
   // 書き込み失敗は sonner で通知する（既存の `useWriteRunner` の error を監視）。
   useEffect(() => {
@@ -537,13 +478,12 @@ export function MessagePane({
           }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}
-          replyCounts={replyCounts}
           onOpenThread={openThread}
           canCompose={isMember}
           isOffline={!isOnline}
-          onLoadOlder={(oldest) => {
-            setSince((current) => expandWindowSince(current, oldest));
-          }}
+          hasOlder={messagesQuery.hasOlder}
+          isLoadingOlder={messagesQuery.isLoadingOlder}
+          onLoadOlder={() => void messagesQuery.loadOlder()}
           onRetry={() => window.location.reload()}
         />
 
@@ -587,7 +527,6 @@ export function MessagePane({
           onTyping={threadTyping.onTyping}
           root={threadRoot}
           replies={threadReplies}
-          replyCounts={replyCounts}
           onOpenThread={openThread}
           isLoading={threadQuery.isLoading}
           isError={threadQuery.isError}
@@ -610,12 +549,9 @@ export function MessagePane({
           onSaveEdit={handleSaveEdit}
           onRequestDelete={setPendingDeleteId}
           onSendReply={handleSendReply}
-          onLoadOlder={() => {
-            const oldest = threadReplies[0];
-            if (oldest) {
-              setThreadSince((current) => expandWindowSince(current, oldest.created_at));
-            }
-          }}
+          hasOlder={threadQuery.hasOlder}
+          isLoadingOlder={threadQuery.isLoadingOlder}
+          onLoadOlder={() => void threadQuery.loadOlder()}
           onRetry={() => window.location.reload()}
           onClose={closeThread}
         />
