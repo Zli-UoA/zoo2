@@ -113,10 +113,12 @@ jobs:
               core.warning(`Runner status unavailable (${error.status || 'network error'})`);
               return use(KUBECAMP, hostedRunsOn, SCALE_SET, `runner status unavailable; ${minutes}`);
             }
-            const idle = label => runners.filter(r => r.status === 'online' && !r.busy &&
-              (r.labels || []).some(l => l.name === label));
-            const kubecamp = idle(KUBECAMP);
-            // minRunners keeps one idle zli-k8s runner, so the scale set looks free until both are busy.
-            const arc = idle(SCALE_SET);
+            const idle = match => runners.filter(r => r.status === 'online' && !r.busy && match(r));
+            const hasLabel = label => r => (r.labels || []).some(l => l.name === label);
+            const kubecamp = idle(hasLabel(KUBECAMP));
+            // ARC registers each runner by name (`<scale set>-...`) and may not report the scale
+            // set as a label, so match either. minRunners keeps one idle runner, so the scale
+            // set looks free until both are busy.
+            const arc = idle(r => hasLabel(SCALE_SET)(r) || String(r.name).startsWith(`${SCALE_SET}-`));
             return use(kubecamp.length > 0 ? KUBECAMP : hostedRunsOn, hostedRunsOn, arc.length > 0 ? SCALE_SET : hostedRunsOn,
               `${kubecamp.length} idle kubecamp, ${arc.length} idle zli-k8s; ${minutes}`);

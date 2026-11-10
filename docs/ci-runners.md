@@ -11,7 +11,7 @@ zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料で
 1. onlineかつidleのkubecamp Runnerがあれば、自動選択対象のDocker不要ジョブを割り当てます。
 2. kubecampが不在または全台busyなら、GitHub-hostedを選びます。大容量ジョブは常にここから選びます。
 3. GitHub-hostedを使えないと判断した場合だけ、大容量ジョブはzli-k8sを選び、zli-k8sのキューで順番を待ちます。
-4. Docker必須ジョブは、1〜3より先に、onlineかつidleのzli-k8s runnerがあればzli-k8sを選びます。2台ともbusyならGitHub-hostedを、GitHub-hostedを使えない場合はzli-k8sのキューを選びます。zli-k8sは待機の1台を常に置いているので、同時に走るジョブが1つならidleのrunnerがあります。
+4. Docker必須ジョブは、1〜3より先に、onlineかつidleのzli-k8s runnerがあればzli-k8sを選びます。ARCのrunnerは、ラベルが `zli-k8s` か、名前が `zli-k8s-` で始まるもので判定します（ARCは個々のrunnerを名前で登録し、scale set名をラベルとして返さないことがあります）。2台ともbusyならGitHub-hostedを、GitHub-hostedを使えない場合はzli-k8sのキューを選びます。zli-k8sは待機の1台を常に置いているので、同時に走るジョブが1つならidleのrunnerがあります。
 
 GitHub-hostedを使えるかは、リポジトリの公開範囲で決めます。publicなら常に使えます。privateか公開範囲が分からない場合は、Billing API（`GET /organizations/{org}/settings/billing/usage`）で当月のActionsの実行料金（Linux以外のOSも含みます。ストレージは除きます）を合計し、Linuxの単価で割ってLinux換算の分数にします。WindowsやmacOSも料金に応じて同じ無料枠を消費するためです。合計の対象はorgのprivateリポジトリの分だけです。合計が1,900分（無料枠2,000分から、使用量の反映遅れの分を引いた値）未満ならGitHub-hostedを、それ以上ならzli-k8sを選びます。無料枠を使い切ると、privateリポジトリのGitHub-hostedのジョブは開始できなくなるためです。
 
