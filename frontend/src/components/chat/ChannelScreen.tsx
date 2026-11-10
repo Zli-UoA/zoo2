@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { ArchiveIcon, ArrowLeftIcon } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useActiveChannels, useChannelAccess, useUsers } from "../../hooks/useRealtime";
@@ -47,6 +47,7 @@ export function ChannelScreen({
   const shell = useShell();
   const { locale } = useLocale();
   const { currentUserId } = useCurrentUser();
+  const [acceptedNsfw, setAcceptedNsfw] = useState<string | null>(null);
   const channelsQuery = useActiveChannels();
   const usersQuery = useUsers();
   const channels = channelsQuery.data ?? [];
@@ -128,6 +129,11 @@ export function ChannelScreen({
         {access.isMembershipPending ? (
           <div className="flex flex-1 items-center justify-center">
             <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+          </div>
+        ) : access.canRead && channel.is_nsfw && acceptedNsfw !== channelId ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6">
+            <p className="text-sm text-muted-foreground">{t("channels.nsfwWarning")}</p>
+            <Button onClick={() => setAcceptedNsfw(channelId)}>{t("channels.showNsfw")}</Button>
           </div>
         ) : access.canRead ? (
           <>

@@ -374,3 +374,16 @@ export const ActivityPubGrouped: Story = {
     },
   },
 };
+
+export const SensitiveAttachments: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { attachments: [{ ...storyAttachments[0], is_sensitive: true }] },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("img", { name: "screenshot.png" })).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "画像を表示" }));
+    await waitFor(() => expect(canvas.getByRole("img", { name: "screenshot.png" })).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: "画像を隠す" }));
+    await expect(canvas.queryByRole("img", { name: "screenshot.png" })).not.toBeInTheDocument();
+  }),
+};

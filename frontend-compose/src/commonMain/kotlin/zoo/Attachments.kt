@@ -545,6 +545,11 @@ private fun AttachmentItem(
     multiple: Boolean = false,
 ) {
     val id = file.text("id")
+    var revealed by remember(id, file.flag("is_sensitive")) { mutableStateOf(false) }
+    if (image && file.flag("is_sensitive") && !revealed) {
+        Button(app.t("attachments.showSensitive")) { revealed = true }
+        return
+    }
     var attempt by remember(id) { mutableStateOf(0) }
     var url by remember(id) { mutableStateOf<String?>(null) }
     var bitmap by remember(id) { mutableStateOf<ImageBitmap?>(null) }

@@ -14,6 +14,7 @@ export interface ChannelResponse {
   description: string | null;
   created_user_id: string;
   is_private: boolean;
+  is_nsfw: boolean;
   is_dm: boolean;
   created_at: TimestampString;
   updated_at: TimestampString | null;
@@ -59,6 +60,7 @@ export interface CreateChannelRequest {
   channel_name: string;
   description?: string | null;
   is_private?: boolean;
+  is_nsfw?: boolean;
 }
 
 export interface CreateDmRequest {
@@ -70,6 +72,7 @@ export interface UpdateChannelRequest {
   channel_name?: string;
   description?: string | null;
   is_private?: boolean;
+  is_nsfw?: boolean;
 }
 
 export interface AddChannelUserRequest {
@@ -83,6 +86,7 @@ export interface CreateMessageRequest {
   /** 返信先のルートメッセージ。通常メッセージでは省略する。 */
   parent_id?: string;
   attachment_ids?: string[];
+  sensitive?: boolean;
 }
 
 export interface PresignAttachmentRequest {

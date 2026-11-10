@@ -5,6 +5,7 @@ import { storyCommands } from "../../../.storybook/app-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { StoryShell } from "../../../.storybook/shell";
+import { storyCollections } from "../../../.storybook/fixtures";
 import { ChannelScreen } from "./ChannelScreen";
 
 const meta = {
@@ -103,5 +104,31 @@ export const CommandCompletion: Story = {
     );
     await expect(commandLookup).toHaveBeenCalledWith("channel-general");
     await expect(input).toHaveValue("");
+  }),
+};
+
+export const Nsfw: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    collections: {
+      ...storyCollections,
+      channels: storyCollections.channels.map((channel) => ({
+        ...channel,
+        is_nsfw: channel.id === "channel-general",
+      })),
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByText("このチャンネルにはセンシティブな内容が含まれる場合があります。"),
+    ).toBeVisible();
+    await expect(canvas.queryByRole("textbox", { name: "メッセージ" })).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "チャンネルを表示" }));
+    await waitFor(() =>
+      expect(
+        canvas.queryByText("このチャンネルにはセンシティブな内容が含まれる場合があります。"),
+      ).not.toBeInTheDocument(),
+    );
   }),
 };

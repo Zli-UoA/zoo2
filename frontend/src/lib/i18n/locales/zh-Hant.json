@@ -41,7 +41,10 @@
     "descriptionTooLong": "說明不能超過{{max}}個字元（目前{{length}}個）。",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "建立中…",
-    "create": "建立頻道"
+    "create": "建立頻道",
+    "nsfw": "NSFW 頻道",
+    "nsfwWarning": "此頻道可能包含敏感內容。",
+    "showNsfw": "顯示頻道"
   },
   "sync": {
     "title": "同步狀態",
@@ -221,7 +224,11 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
-    "retry": "重試"
+    "retry": "重試",
+    "sensitive": "敏感圖片",
+    "markSensitive": "將圖片標記為敏感內容",
+    "showSensitive": "顯示圖片",
+    "hideSensitive": "隱藏圖片"
   },
   "threads": {
     "title": "子討論",

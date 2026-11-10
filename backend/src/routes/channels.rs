@@ -28,6 +28,7 @@ pub struct CreateChannelRequest {
     pub channel_name: String,
     pub description: Option<String>,
     pub is_private: Option<bool>,
+    pub is_nsfw: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +36,7 @@ pub struct UpdateChannelRequest {
     pub channel_name: Option<String>,
     pub description: Option<String>,
     pub is_private: Option<bool>,
+    pub is_nsfw: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +51,7 @@ pub struct ChannelResponse {
     pub description: Option<String>,
     pub created_user_id: String,
     pub is_private: bool,
+    pub is_nsfw: bool,
     pub is_dm: bool,
     pub created_at: String,
     pub updated_at: Option<String>,
@@ -64,6 +67,7 @@ impl From<Channel> for ChannelResponse {
             description: c.description,
             created_user_id: c.created_user_id,
             is_private: c.is_private,
+            is_nsfw: c.is_nsfw,
             is_dm: c.is_dm,
             created_at: c.created_at.to_string(),
             updated_at: c.updated_at.map(|t| t.to_string()),
@@ -151,6 +155,7 @@ pub(crate) async fn create_channel(
                 if existing.channel_name == payload.channel_name
                     && existing.description == payload.description
                     && existing.is_private == payload.is_private.unwrap_or(false)
+                    && existing.is_nsfw == payload.is_nsfw.unwrap_or(false)
                     && existing.deleted_at.is_none()
                 {
                     let _ = tx.rollback().await;
@@ -176,6 +181,7 @@ pub(crate) async fn create_channel(
         description: payload.description.clone(),
         created_user_id: auth_user.id.as_str(),
         is_private: payload.is_private.unwrap_or(false),
+        is_nsfw: payload.is_nsfw.unwrap_or(false),
         is_dm: false,
         created_at: now,
         updated_at: None,
@@ -201,6 +207,7 @@ pub(crate) async fn create_channel(
                         && existing.channel_name == payload.channel_name
                         && existing.description == payload.description
                         && existing.is_private == payload.is_private.unwrap_or(false)
+                        && existing.is_nsfw == payload.is_nsfw.unwrap_or(false)
                         && existing.deleted_at.is_none()
                     {
                         return Ok(Json(ApiResponse::new(
@@ -329,7 +336,18 @@ pub(crate) async fn update_channel(
         update_stmt = update_stmt.is_private(is_private);
     }
 
+    if let Some(is_nsfw) = payload.is_nsfw {
+        update_stmt = update_stmt.is_nsfw(is_nsfw);
+    }
     update_stmt.exec(&mut tx).await?;
+    if payload.is_nsfw == Some(true) {
+        toasty::sql::statement(
+            "UPDATE attachments SET is_sensitive=true WHERE channel_id=$1 AND NOT is_sensitive",
+        )
+        .bind(id.as_str())
+        .exec(&mut tx)
+        .await?;
+    }
 
     let updated_channel = Channel::get_by_id(&mut tx, id.as_str()).await?;
     let txid = get_current_txid(&mut tx).await?;

@@ -1,3 +1,4 @@
+import { Input } from "../../ui/input";
 import { Textarea } from "../../ui/textarea";
 import { ComposerField, composerTextareaClassName } from "./ComposerField";
 import { useAutosizeTextarea } from "../../../hooks/useAutosizeTextarea";
@@ -127,7 +128,12 @@ interface ComposerProps {
   mentionMemberIds?: ReadonlySet<string>;
   /** 送信を実行し、成功したかを返す。false なら下書きを復元する。 */
   onTyping?: (active: boolean) => void;
-  onSend: (content: string, commandAppId?: string, attachmentIds?: string[]) => Promise<boolean>;
+  onSend: (
+    content: string,
+    commandAppId?: string,
+    attachmentIds?: string[],
+    sensitive?: boolean,
+  ) => Promise<boolean>;
   /** ファイルをアップロードして添付 ID を返す。未指定なら添付 UI を出さない。 */
   onUploadAttachment?: (file: File) => Promise<UploadedAttachment>;
   disabled?: boolean;
@@ -160,6 +166,7 @@ export function Composer({
   const [activeOption, setActiveOption] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const [drafts, setDrafts] = useState<ComposerAttachmentDraft[]>([]);
+  const [sensitive, setSensitive] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const draftsRef = useRef<ComposerAttachmentDraft[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -411,7 +418,9 @@ export function Composer({
     try {
       sent =
         attachmentIds.length > 0
-          ? await onSend(content, undefined, attachmentIds)
+          ? sensitive
+            ? await onSend(content, undefined, attachmentIds, true)
+            : await onSend(content, undefined, attachmentIds)
           : commandAppId
             ? await onSend(content, commandAppId)
             : await onSend(content);
@@ -500,6 +509,17 @@ export function Composer({
             );
           })}
         </ul>
+      ) : null}
+      {drafts.some((draft) => isInlineImage(draft.content_type)) ? (
+        <label className="mb-2 flex items-center gap-2 text-sm">
+          <Input
+            type="checkbox"
+            checked={sensitive}
+            disabled={disabled}
+            onChange={(event) => setSensitive(event.target.checked)}
+          />
+          {t("attachments.markSensitive")}
+        </label>
       ) : null}
       {attachmentError ? (
         <p role="alert" className="mb-2 px-1 text-xs text-destructive">

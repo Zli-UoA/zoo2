@@ -65,7 +65,15 @@
     },
     {
       "file": "src/components/chat/ChannelScreen.stories.tsx",
-      "states": ["Default", "PrivateChannel", "Archived", "NotFound", "Mobile", "CommandCompletion"]
+      "states": [
+        "Default",
+        "PrivateChannel",
+        "Archived",
+        "NotFound",
+        "Mobile",
+        "CommandCompletion",
+        "Nsfw"
+      ]
     },
     {
       "file": "src/components/chat/ChannelSidebar.stories.tsx",
@@ -229,7 +237,8 @@
         "ActivityPubPublic",
         "ActivityPubUnlisted",
         "ActivityPubGrouped",
-        "Grouped"
+        "Grouped",
+        "SensitiveAttachments"
       ]
     },
     {
@@ -606,6 +615,10 @@
         "UserAvatar",
         "UserAvatarFallback"
       ]
+    },
+    {
+      "file": "src/components/ui/sensitive-media.stories.tsx",
+      "states": ["Hidden", "RevealAndHide", "ActivityPub"]
     }
   ],
   "modules": [
@@ -1100,6 +1113,10 @@
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
         "src/components/apps/console/model.test.ts"
       ]
+    },
+    {
+      "file": "src/components/ui/sensitive-media.tsx",
+      "story": "src/components/ui/sensitive-media.stories.tsx"
     }
   ]
 }

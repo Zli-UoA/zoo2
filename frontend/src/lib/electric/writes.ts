@@ -93,6 +93,7 @@ function readChannelUserMetadata(metadata: unknown): ChannelUserWriteMetadata {
 
 export interface MessageWriteMetadata {
   attachment_ids?: string[];
+  sensitive?: boolean;
 }
 
 function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
@@ -104,6 +105,7 @@ function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
     return {};
   }
   return {
+    ...((metadata as MessageWriteMetadata).sensitive ? { sensitive: true } : {}),
     attachment_ids: value.filter((id): id is string => typeof id === "string"),
   };
 }
@@ -132,6 +134,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       const attachmentIds = readMessageMetadata(mutation.metadata).attachment_ids;
       if (attachmentIds?.length) {
         body.attachment_ids = attachmentIds;
+        if (readMessageMetadata(mutation.metadata).sensitive) body.sensitive = true;
       }
       const { txid } = await client.post<MessageRow>("/api/messages", body);
       await syncTxid({
@@ -206,6 +209,7 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
         channel_name: row.channel_name,
         description: row.description,
         is_private: row.is_private,
+        ...(row.is_nsfw !== undefined ? { is_nsfw: row.is_nsfw } : {}),
       };
       const { txid } = await client.post<ChannelRow>("/api/channels", body);
       await syncTxid({
@@ -227,6 +231,9 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
       }
       if ("description" in changes) {
         body.description = changes.description ?? null;
+      }
+      if ("is_nsfw" in changes) {
+        body.is_nsfw = changes.is_nsfw;
       }
       if ("is_private" in changes) {
         body.is_private = changes.is_private;

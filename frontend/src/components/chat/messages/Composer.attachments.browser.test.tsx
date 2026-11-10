@@ -50,6 +50,26 @@ describe("Composer attachments", () => {
     expect(screen.queryByRole("button", { name: "screenshot.pngを削除" })).toBeNull();
   });
 
+  it("sends the sensitive label with a selected image", async () => {
+    const upload = vi.fn(async () => ({
+      id: "sensitive-1",
+      file_name: "screenshot.png",
+      file_size: 4,
+      content_type: "image/png",
+    }));
+    const send = vi.fn(async () => true);
+    render(
+      <LocaleProvider>
+        <Composer onSend={send} onUploadAttachment={upload} />
+      </LocaleProvider>,
+    );
+    paste(screen.getByRole("textbox"), imageFile());
+    await waitFor(() => expect(screen.getByRole("button", { name: "送信" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("checkbox", { name: "画像をセンシティブとして投稿" }));
+    await userEvent.click(screen.getByRole("button", { name: "送信" }));
+    await waitFor(() => expect(send).toHaveBeenCalledWith("", undefined, ["sensitive-1"], true));
+  });
+
   it("uploads a pasted non-image file and sends its attachment id", async () => {
     const upload = vi.fn(async () => ({
       id: "attachment-2",

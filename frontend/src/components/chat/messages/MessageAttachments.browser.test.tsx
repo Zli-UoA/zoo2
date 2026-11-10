@@ -1,12 +1,17 @@
 import "../../../styles.css";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MessageAttachments } from "./MessageAttachments";
 import type { AttachmentUrlState } from "../../../hooks/useAttachments";
 
-const link = vi.hoisted(() => ({ state: {} as AttachmentUrlState }));
-vi.mock("../../../hooks/useAttachments", () => ({ useAttachmentUrl: () => link.state }));
+const link = vi.hoisted(() => ({ state: {} as AttachmentUrlState, load: vi.fn() }));
+vi.mock("../../../hooks/useAttachments", () => ({
+  useAttachmentUrl: () => {
+    link.load();
+    return link.state;
+  },
+}));
 
 it.each([160, 640])(
   "keeps attachment geometry through signed URL loading, wide image decode and failure at %ipx",
@@ -56,3 +61,33 @@ it.each([160, 640])(
     expect(screen.getByTestId("following").getBoundingClientRect().top).toBe(top);
   },
 );
+
+it("does not request a URL or mount image previews until a sensitive image is revealed", async () => {
+  link.load.mockClear();
+  link.state = {
+    url: "/sensitive.png",
+    status: "ready",
+    expiresAt: null,
+    reload: vi.fn(),
+    getFreshUrl: vi.fn(),
+  };
+  const attachment = {
+    id: "sensitive",
+    file_name: "private.png",
+    file_size: 100,
+    content_type: "image/png",
+    is_sensitive: true,
+  };
+  render(
+    <LocaleProvider>
+      <MessageAttachments attachments={[attachment]} />
+    </LocaleProvider>,
+  );
+  expect(link.load).not.toHaveBeenCalled();
+  expect(screen.queryByRole("img")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "画像を表示" }));
+  expect(await screen.findByRole("img", { name: "private.png" })).toBeTruthy();
+  expect(link.load).toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "画像を隠す" }));
+  expect(screen.queryByRole("img")).toBeNull();
+});

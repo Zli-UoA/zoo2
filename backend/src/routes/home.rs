@@ -30,6 +30,8 @@ struct NewPost {
     #[serde(default)]
     image_ids: Vec<String>,
     #[serde(default)]
+    sensitive: bool,
+    #[serde(default)]
     apub: bool,
     #[serde(default = "local_visibility")]
     visibility: String,
@@ -169,14 +171,31 @@ async fn create(
         crate::apps::events::posting(&mut tx, &user.id, channel, state.config.dev_auth_enabled)
             .await?;
     }
-    let media = super::home_images::resolve(&mut tx, &user.id, &body.image_ids).await?;
+    let mut media = super::home_images::resolve(&mut tx, &user.id, &body.image_ids).await?;
+    let nsfw = if let Some(channel) = &body.channel_id {
+        one(
+            &mut tx,
+            "SELECT json_build_object('is_nsfw',is_nsfw)::text FROM channels WHERE id=$1",
+            &[channel],
+        )
+        .await?["is_nsfw"]
+            == true
+    } else {
+        false
+    };
+    let sensitive = body.sensitive || nsfw;
+    if let Some(images) = media.as_array_mut() {
+        for image in images {
+            image["is_sensitive"] = json!(sensitive);
+        }
+    }
     let id = uuid::Uuid::new_v4().to_string();
     toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,apub,visibility,channel_id,parent_id,parent_uri,reply_actor,reply_user_id,media) VALUES($1,$2,$3,$4::boolean,$5,NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),NULLIF($10,''),$11::jsonb)")
         .bind(id.as_str()).bind(user.id.as_str()).bind(body.content).bind(body.apub.to_string()).bind(body.visibility).bind(body.channel_id.as_deref().unwrap_or("")).bind(body.in_reply_to.as_deref().unwrap_or("")).bind(parent_uri.as_deref().unwrap_or("")).bind(reply_actor.as_deref().unwrap_or("")).bind(reply_user.unwrap_or("")).bind(media.to_string()).exec(&mut tx).await?;
     if let Some(channel) = &body.channel_id {
         // The Home trigger has already created the channel message in this transaction.
-        toasty::sql::statement("INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at,width,height,blurhash) SELECT gen_random_uuid()::text,$1,$2,$3,h.name,h.file_size,h.content_type,'home-images/' || h.id,date_trunc('milliseconds',statement_timestamp()) + (selected.ordinality-1)*interval '1 millisecond',h.width,h.height,h.blurhash FROM jsonb_array_elements_text($4::jsonb) WITH ORDINALITY AS selected(id,ordinality) JOIN home_images h ON h.id=selected.id WHERE h.uploader_id=$2 ORDER BY selected.ordinality")
-            .bind(id.as_str()).bind(user.id.as_str()).bind(channel.as_str()).bind(json!(body.image_ids).to_string()).exec(&mut tx).await?;
+        toasty::sql::statement("INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at,width,height,blurhash,is_sensitive) SELECT gen_random_uuid()::text,$1,$2,$3,h.name,h.file_size,h.content_type,'home-images/' || h.id,date_trunc('milliseconds',statement_timestamp()) + (selected.ordinality-1)*interval '1 millisecond',h.width,h.height,h.blurhash,$5::boolean FROM jsonb_array_elements_text($4::jsonb) WITH ORDINALITY AS selected(id,ordinality) JOIN home_images h ON h.id=selected.id WHERE h.uploader_id=$2 ORDER BY selected.ordinality")
+            .bind(id.as_str()).bind(user.id.as_str()).bind(channel.as_str()).bind(json!(body.image_ids).to_string()).bind(sensitive.to_string()).exec(&mut tx).await?;
     }
     if let Some(recipient) = reply_user
         && recipient != user.id
@@ -348,8 +367,8 @@ async fn list(
       SELECT b.parent_id,count(*) AS n FROM base b WHERE b.original_visible AND b.parent_id IN (SELECT id FROM page) GROUP BY b.parent_id
     ) SELECT (f.post - 'own' - 'original_visible' || jsonb_build_object(
       'entry_id',f.entry_id,
-      'attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=f.id AND a.channel_id=f.post->>'channel_id' AND attachment_message.channel_id=f.post->>'channel_id' AND attachment_message.deleted_at IS NULL),
-      'parent',(SELECT (row_to_json(parent)::jsonb || CASE WHEN parent.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(parent.content)) e),'[]'::jsonb)) END) - 'own' - 'original_visible' || jsonb_build_object('attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=parent.id AND a.channel_id=parent.channel_id AND attachment_message.channel_id=parent.channel_id AND attachment_message.deleted_at IS NULL)) FROM page_parents parent WHERE parent.id=f.post->>'parent_id'),
+      'attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=f.id AND a.channel_id=f.post->>'channel_id' AND attachment_message.channel_id=f.post->>'channel_id' AND attachment_message.deleted_at IS NULL),
+      'parent',(SELECT (row_to_json(parent)::jsonb || CASE WHEN parent.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(parent.content)) e),'[]'::jsonb)) END) - 'own' - 'original_visible' || jsonb_build_object('attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=parent.id AND a.channel_id=parent.channel_id AND attachment_message.channel_id=parent.channel_id AND attachment_message.deleted_at IS NULL)) FROM page_parents parent WHERE parent.id=f.post->>'parent_id'),
       'tree_depth',CASE WHEN $8::boolean THEN (SELECT max(depth) FROM ancestors) + COALESCE((SELECT -depth FROM ancestors WHERE id=f.id),(SELECT depth FROM descendants WHERE id=f.id),0) ELSE 0 END,
       'sort_key',(extract(epoch FROM f.sort_at)*1000000)::bigint::text,
       'likes',(SELECT count(*) FROM shared_reactions WHERE post_id=f.id),

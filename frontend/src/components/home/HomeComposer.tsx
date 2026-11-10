@@ -25,6 +25,7 @@ import { useActiveChannels, useMyChannelMemberships } from "../../hooks/useRealt
 import { useVisualViewport } from "../layout/useVisualViewport";
 import { useMediaQuery } from "../layout/useMediaQuery";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Select } from "../ui/select";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../ui/dialog";
@@ -42,6 +43,7 @@ import { createConfiguredApiClient } from "../../lib/api/client";
 
 export interface HomePostInput {
   image_ids?: string[];
+  sensitive?: boolean;
   content: string;
   apub: boolean;
   visibility: HomePostSettings["visibility"];
@@ -87,6 +89,7 @@ export function HomeComposer({
   imagesRef.current = images;
   const [uploading, setUploading] = useState(false);
   const uploadLock = useRef(false);
+  const [sensitive, setSensitive] = useState(false);
   const [imageError, setImageError] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadController = useRef<AbortController | null>(null);
@@ -233,7 +236,12 @@ export function HomeComposer({
       };
       await onPost({
         content,
-        ...(images.length ? { image_ids: images.map((image) => image.id!) } : {}),
+        ...(images.length
+          ? {
+              image_ids: images.map((image) => image.id!),
+              ...(sensitive ? { sensitive: true } : {}),
+            }
+          : {}),
         ...settings,
         ...(replyTo ? { in_reply_to: replyTo.id, channel_id: null } : {}),
       });
@@ -246,6 +254,7 @@ export function HomeComposer({
       setImages([]);
       imagesRef.current = [];
       setImageError(false);
+      setSensitive(false);
       setOpen(false);
     } catch {
       setFailed(true);
@@ -547,6 +556,17 @@ export function HomeComposer({
                     </li>
                   ))}
                 </ul>
+              ) : null}
+              {images.length ? (
+                <label className="flex items-center gap-2 text-sm">
+                  <Input
+                    type="checkbox"
+                    checked={sensitive}
+                    disabled={sending}
+                    onChange={(event) => setSensitive(event.target.checked)}
+                  />
+                  {t("attachments.markSensitive")}
+                </label>
               ) : null}
               {uploading ? <p role="status">{t("attachments.uploading")}</p> : null}
               {imageError ? (
