@@ -2175,16 +2175,23 @@ async fn test_slack_import_info_backfill_ignores_the_final_job_status() -> anyho
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    // (ジョブの状態, 指定, 取り込み先が「新しいチャンネル」の決定的な ID か, 期待する種類)
     let cases = [
-        ("completed", "create", "created"),
-        ("failed", "create", "created"),
-        ("cancelled", "create", "created"),
-        ("completed", "existing", "existing"),
+        ("completed", "create", true, "created"),
+        ("failed", "create", true, "created"),
+        ("cancelled", "create", true, "created"),
+        ("completed", "existing", false, "existing"),
+        // 作成の指定のジョブがチャンネルを作る前に失敗し、あとで既存のチャンネルに取り込んだ
+        ("failed", "create", false, "existing"),
     ];
     let mut channel_ids = Vec::new();
-    for (index, (status, action, _)) in cases.iter().enumerate() {
-        let channel_id = uuid::Uuid::new_v4().to_string();
+    for (index, (status, action, deterministic, _)) in cases.iter().enumerate() {
         let slack_channel = format!("C{index}");
+        let channel_id = if *deterministic {
+            backend::slack::channel_id(&team, &slack_channel)
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
         query(
             &mut tx,
             "INSERT INTO channels(id,channel_name,created_user_id,is_private,imported_from_slack) \
@@ -2212,7 +2219,7 @@ async fn test_slack_import_info_backfill_ignores_the_final_job_status() -> anyho
         channel_ids.push(channel_id);
     }
     toasty::sql::statement(backfill).exec(&mut tx).await?;
-    for ((status, action, expected), channel_id) in cases.iter().zip(&channel_ids) {
+    for ((status, action, _, expected), channel_id) in cases.iter().zip(&channel_ids) {
         let rows = query(
             &mut tx,
             "SELECT json_build_object('kind',slack_import_kind,'at',slack_imported_at IS NOT NULL)::text \
