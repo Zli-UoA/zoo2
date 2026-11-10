@@ -2195,17 +2195,18 @@ async fn test_slack_import_info_backfill_ignores_the_final_job_status() -> anyho
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    // (ジョブの状態, 指定, 取り込み先が「新しいチャンネル」の決定的な ID か, 期待する種類)
+    // (ジョブの状態, 指定, 取り込み先が「新しいチャンネル」の決定的な ID か, 期待する種類, 取り込みの日時が入るか)
     let cases = [
-        ("completed", "create", true, "created"),
-        ("failed", "create", true, "created"),
-        ("cancelled", "create", true, "created"),
-        ("completed", "existing", false, "existing"),
+        ("completed", "create", true, "created", true),
+        ("fetching_files", "create", true, "created", true),
+        ("failed", "create", true, "created", false),
+        ("cancelled", "create", true, "created", false),
+        ("completed", "existing", false, "existing", true),
         // 作成の指定のジョブがチャンネルを作る前に失敗し、あとで既存のチャンネルに取り込んだ
-        ("failed", "create", false, "existing"),
+        ("failed", "create", false, "existing", false),
     ];
     let mut channel_ids = Vec::new();
-    for (index, (status, action, deterministic, _)) in cases.iter().enumerate() {
+    for (index, (status, action, deterministic, _, _)) in cases.iter().enumerate() {
         let slack_channel = format!("C{index}");
         let channel_id = if *deterministic {
             backend::slack::channel_id(&team, &slack_channel)
@@ -2239,7 +2240,7 @@ async fn test_slack_import_info_backfill_ignores_the_final_job_status() -> anyho
         channel_ids.push(channel_id);
     }
     toasty::sql::statement(backfill).exec(&mut tx).await?;
-    for ((status, action, _, expected), channel_id) in cases.iter().zip(&channel_ids) {
+    for ((status, action, _, expected, imported), channel_id) in cases.iter().zip(&channel_ids) {
         let rows = query(
             &mut tx,
             "SELECT json_build_object('kind',slack_import_kind,'at',slack_imported_at IS NOT NULL)::text \
@@ -2248,7 +2249,10 @@ async fn test_slack_import_info_backfill_ignores_the_final_job_status() -> anyho
         )
         .await?;
         assert_eq!(rows[0]["kind"], *expected, "{action} job in {status}");
-        assert_eq!(rows[0]["at"], true);
+        assert_eq!(
+            rows[0]["at"], *imported,
+            "{action} job in {status}: the import time comes only from a job that finished importing"
+        );
     }
     // コミットしない (ロールバックされる)
     drop(tx);
