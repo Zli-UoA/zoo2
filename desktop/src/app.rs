@@ -139,6 +139,7 @@ pub struct FailedDraft {
     pub target: Target,
     pub content: String,
     pub attachments: Vec<PendingAttachment>,
+    pub message_id: Option<String>,
 }
 
 /// 送信待ちの添付ファイル。
@@ -322,8 +323,12 @@ pub struct AppState {
     pub composer_draft: String,
     /// `(チャンネル ID, 送信先)` ごとの書きかけ下書き。
     pub saved_drafts: HashMap<(String, Target), String>,
+    /// `(チャンネル ID, 送信先)` ごとの再送用メッセージ ID。
+    pub saved_draft_message_ids: HashMap<(String, Target), String>,
     /// `AppState` 側から入力欄 (`TextInput`) へ反映すべき文字列とキャレット位置。
     pub pending_composer_text: Option<(String, Option<usize>)>,
+    /// 復元された下書きの再送用メッセージ ID。
+    pub pending_composer_message_id: Option<String>,
     pub failed_drafts: Vec<FailedDraft>,
     /// 現在送信リクエスト実行中の下書き (`(submission_id, FailedDraft)`)。
     pub in_flight_submissions: Vec<(u64, FailedDraft)>,
@@ -464,7 +469,9 @@ impl AppState {
             pending_search_text: None,
             composer_draft: String::new(),
             saved_drafts: HashMap::new(),
+            saved_draft_message_ids: HashMap::new(),
             pending_composer_text: None,
+            pending_composer_message_id: None,
             failed_drafts: Vec::new(),
             in_flight_submissions: Vec::new(),
             next_submission_id: 0,
@@ -782,6 +789,10 @@ impl AppState {
                     target: target.clone(),
                     content: content.clone(),
                     attachments: Vec::new(),
+                    message_id: self
+                        .saved_draft_message_ids
+                        .get(&(ch_id.clone(), target.clone()))
+                        .cloned(),
                 });
             }
         }
@@ -804,6 +815,7 @@ impl AppState {
                 target: self.target.clone(),
                 content: self.composer_draft.clone(),
                 attachments: current_atts,
+                message_id: self.pending_composer_message_id.clone(),
             });
         }
         if drafts.len() > FAILED_DRAFT_LIMIT {
@@ -836,7 +848,9 @@ impl AppState {
         self.pending_search_text = Some(String::new());
         self.composer_draft.clear();
         self.saved_drafts.clear();
+        self.saved_draft_message_ids.clear();
         self.pending_composer_text = Some((String::new(), None));
+        self.pending_composer_message_id = None;
         self.failed_drafts.clear();
         self.in_flight_submissions.clear();
         self.channel_creators_by_key.clear();
@@ -1421,9 +1435,15 @@ impl AppState {
                 target: target.clone(),
                 content: content.clone(),
                 attachments: Vec::new(),
+                message_id: self
+                    .saved_draft_message_ids
+                    .get(&(ch.clone(), target.clone()))
+                    .cloned(),
             })
             .collect();
         self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
+        self.saved_draft_message_ids
+            .retain(|(ch, _), _| ch != channel_id);
         for draft in evicted_saved {
             self.push_failed_draft(draft);
         }
@@ -1441,6 +1461,7 @@ impl AppState {
                     target: self.target.clone(),
                     content: self.composer_draft.clone(),
                     attachments: Vec::new(),
+                    message_id: self.pending_composer_message_id.take(),
                 };
                 self.push_failed_draft(draft);
             }
@@ -1476,9 +1497,15 @@ impl AppState {
                 target: target.clone(),
                 content: content.clone(),
                 attachments: Vec::new(),
+                message_id: self
+                    .saved_draft_message_ids
+                    .get(&(ch.clone(), target.clone()))
+                    .cloned(),
             })
             .collect();
         self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
+        self.saved_draft_message_ids
+            .retain(|(ch, _), _| ch != channel_id);
         for draft in evicted_saved {
             self.push_failed_draft(draft);
         }
@@ -1494,6 +1521,7 @@ impl AppState {
                     target: self.target.clone(),
                     content: std::mem::take(&mut self.composer_draft),
                     attachments: Vec::new(),
+                    message_id: self.pending_composer_message_id.take(),
                 };
                 self.push_failed_draft(draft);
             } else {
@@ -1518,6 +1546,7 @@ impl AppState {
                     target: self.target.clone(),
                     content: std::mem::take(&mut self.composer_draft),
                     attachments: Vec::new(),
+                    message_id: self.pending_composer_message_id.take(),
                 };
                 self.push_failed_draft(draft);
                 self.pending_composer_text = Some((String::new(), None));
@@ -1559,11 +1588,15 @@ impl AppState {
                         .remove(&(channel_id.to_string(), Target::Channel))
                         && !saved_ch_draft.trim().is_empty()
                     {
+                        let saved_msg_id = self
+                            .saved_draft_message_ids
+                            .remove(&(channel_id.to_string(), Target::Channel));
                         self.push_failed_draft(FailedDraft {
                             channel_id: channel_id.to_string(),
                             target: Target::Channel,
                             content: saved_ch_draft,
                             attachments: Vec::new(),
+                            message_id: saved_msg_id,
                         });
                     }
                 }
@@ -1643,6 +1676,7 @@ impl AppState {
                     self.composer_draft = content.clone();
                     self.pending_composer_text = Some((content, None));
                     if let Some(draft) = in_flight {
+                        self.pending_composer_message_id = draft.message_id;
                         for mut att in draft.attachments {
                             att.session_gen = self.session_gen;
                             self.pending_attachments.push(att);
@@ -1657,6 +1691,7 @@ impl AppState {
                             target,
                             content,
                             attachments: Vec::new(),
+                            message_id: None,
                         });
                     }
                     self.notify(
@@ -2030,6 +2065,7 @@ impl AppState {
             self.touch_typing();
         } else {
             self.stop_typing();
+            self.pending_composer_message_id = None;
         }
     }
 
@@ -2280,19 +2316,36 @@ impl AppState {
             && !matches!(self.target, Target::Edit(_))
         {
             if self.composer_draft.trim().is_empty() {
-                self.saved_drafts.remove(&(ch, self.target.clone()));
+                self.saved_drafts.remove(&(ch.clone(), self.target.clone()));
+                self.saved_draft_message_ids
+                    .remove(&(ch, self.target.clone()));
             } else {
-                self.saved_drafts
-                    .insert((ch, self.target.clone()), self.composer_draft.clone());
+                self.saved_drafts.insert(
+                    (ch.clone(), self.target.clone()),
+                    self.composer_draft.clone(),
+                );
+                if let Some(msg_id) = self.pending_composer_message_id.take() {
+                    self.saved_draft_message_ids
+                        .insert((ch, self.target.clone()), msg_id);
+                } else {
+                    self.saved_draft_message_ids
+                        .remove(&(ch, self.target.clone()));
+                }
             }
         }
         self.target = next_target.clone();
         let next_draft = match next_channel {
             Some(ch) if !matches!(next_target, Target::Edit(_)) => self
                 .saved_drafts
-                .remove(&(ch.to_string(), next_target))
+                .remove(&(ch.to_string(), next_target.clone()))
                 .unwrap_or_default(),
             _ => String::new(),
+        };
+        self.pending_composer_message_id = match next_channel {
+            Some(ch) if !matches!(next_target, Target::Edit(_)) => self
+                .saved_draft_message_ids
+                .remove(&(ch.to_string(), next_target)),
+            _ => None,
         };
         if self.composer_draft != next_draft || self.pending_composer_text.is_some() {
             self.composer_draft = next_draft.clone();
@@ -2702,6 +2755,7 @@ impl AppState {
                     target: self.target.clone(),
                     content: std::mem::take(&mut self.composer_draft),
                     attachments: current_atts,
+                    message_id: self.pending_composer_message_id.take(),
                 };
                 self.push_failed_draft(displaced);
             }
@@ -2711,6 +2765,7 @@ impl AppState {
                 .retain(|a| !(a.channel_id == d_ch && a.session_gen == s_gen));
             self.composer_draft = draft.content.clone();
             self.pending_composer_text = Some((draft.content, None));
+            self.pending_composer_message_id = draft.message_id.clone();
             for mut att in draft.attachments {
                 att.channel_id = draft.channel_id.clone();
                 att.session_gen = self.session_gen;
@@ -2739,6 +2794,7 @@ impl AppState {
                         target: Target::Channel,
                         content: std::mem::take(&mut self.composer_draft),
                         attachments: current_atts,
+                        message_id: self.pending_composer_message_id.take(),
                     };
                     self.push_failed_draft(displaced);
                 }
@@ -2748,6 +2804,7 @@ impl AppState {
                     .retain(|a| !(a.channel_id == c_ch && a.session_gen == s_gen));
                 self.composer_draft = draft.content.clone();
                 self.pending_composer_text = Some((draft.content, None));
+                self.pending_composer_message_id = draft.message_id;
                 // 添付ファイルは元チャンネルと異なるため引き継がない（DB 整合性維持のため）
                 if !draft.attachments.is_empty() {
                     self.notify(
@@ -2820,6 +2877,8 @@ impl AppState {
         self.composer_draft.clear();
         self.saved_drafts
             .remove(&(channel_id.clone(), target.clone()));
+        self.saved_draft_message_ids
+            .remove(&(channel_id.clone(), target.clone()));
         self.stop_typing();
 
         let (sent_attachments, remaining_attachments): (Vec<_>, Vec<_>) =
@@ -2854,6 +2913,14 @@ impl AppState {
             self.switch_composer_context(Some(&channel_id), next_target);
         }
 
+        let message_id = match &target {
+            Target::Edit(_) => uuid::Uuid::new_v4().to_string(),
+            _ => self
+                .pending_composer_message_id
+                .take()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        };
+
         self.next_submission_id = self.next_submission_id.wrapping_add(1);
         let submission_id = self.next_submission_id;
         self.in_flight_submissions.push((
@@ -2863,13 +2930,14 @@ impl AppState {
                 target: target.clone(),
                 content: content.clone(),
                 attachments: sent_attachments,
+                message_id: Some(message_id.clone()),
             },
         ));
 
         let sent_attachment_ids = attachment_ids_opt.clone().unwrap_or_default();
         let session_gen = self.session_gen;
         self.spawn_session_task(async move {
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = message_id;
             let send_future = async {
                 match &target {
                     Target::Channel => {
@@ -2895,10 +2963,13 @@ impl AppState {
                     Target::Edit(message_id) => api.edit_message(message_id, &content).await,
                 }
             };
-            let result =
+            let (result, is_timeout) =
                 match tokio::time::timeout(std::time::Duration::from_secs(30), send_future).await {
-                    Ok(res) => res,
-                    Err(_) => Err(anyhow::anyhow!("送信がタイムアウトしました (30秒)")),
+                    Ok(res) => (res, false),
+                    Err(_) => (
+                        Err(anyhow::anyhow!("送信がタイムアウトしました (30秒)")),
+                        true,
+                    ),
                 };
             match result {
                 Ok(_) => {
@@ -2928,6 +2999,13 @@ impl AppState {
                         let _ = tx.send(DesktopEvent::App {
                             session_gen,
                             event: AppEvent::Unauthorized,
+                        });
+                    } else if is_timeout {
+                        let _ = tx.send(DesktopEvent::App {
+                            session_gen,
+                            event: AppEvent::Notice(
+                                "送信がタイムアウトしました (30秒)。サーバーで作成済みの可能性があるため、タイムラインを確認してください".to_string(),
+                            ),
                         });
                     } else {
                         let _ = tx.send(DesktopEvent::App {
@@ -3019,20 +3097,18 @@ impl AppState {
 
     /// 添付ファイル URL を開くか、取得中であれば解決完了時に開くキューへ登録する。
     pub fn open_or_queue_attachment(&mut self, attachment_id: &str) -> Option<String> {
-        let needs_refresh = self.attachment_url_needs_refresh(attachment_id);
-        if needs_refresh {
-            self.ensure_attachment_url(attachment_id.to_string());
-        }
         // 有効期限が 30 秒以上残っている場合のみ即座に開く
         if let Some(c) = self.attachment_download_urls.get(attachment_id)
             && c.fetched_at.elapsed().as_secs() + 30 < c.ttl_secs
         {
-            Some(c.url.clone())
-        } else {
-            self.pending_open_attachments
-                .insert(attachment_id.to_string());
-            None
+            return Some(c.url.clone());
         }
+        // 明示的なクリック操作のため、失敗バックオフを解除して再取得を開始する
+        self.failed_attachment_urls.remove(attachment_id);
+        self.ensure_attachment_url(attachment_id.to_string());
+        self.pending_open_attachments
+            .insert(attachment_id.to_string());
+        None
     }
 
     // --- 添付ファイル ---
@@ -3883,6 +3959,7 @@ mod tests {
             target: Target::Channel,
             content: "失敗分".into(),
             attachments: Vec::new(),
+            message_id: None,
         });
 
         state.on_shape(ShapeEvent::Failed(
@@ -4349,6 +4426,7 @@ mod tests {
                 target: Target::Channel,
                 content: "送信途中のメッセージ".into(),
                 attachments: Vec::new(),
+                message_id: None,
             },
         ));
         let old_gen = state.session_gen;
@@ -5013,6 +5091,7 @@ mod tests {
                 target: Target::Channel,
                 content: "送信メッセージ".into(),
                 attachments: Vec::new(),
+                message_id: None,
             },
         ));
 
@@ -5222,6 +5301,7 @@ mod tests {
                 is_uploading: false,
                 error: None,
             }],
+            message_id: None,
         });
 
         // 復元を実行
@@ -5277,6 +5357,13 @@ mod tests {
             attachment_id: "att_fail".into(),
         });
         assert!(!state.attachment_url_needs_refresh("att_fail"));
+
+        // バックオフ中であっても、非画像ピルのクリック (open_or_queue_attachment) でバックオフが解除され
+        // 再取得が開始されてキューに登録される
+        let open_res = state.open_or_queue_attachment("att_fail");
+        assert!(open_res.is_none());
+        assert!(!state.failed_attachment_urls.contains_key("att_fail"));
+        assert!(state.pending_open_attachments.contains("att_fail"));
     }
 
     #[test]
@@ -5301,5 +5388,46 @@ mod tests {
         // 2回目重複送信 -> 拒否され「メッセージを送信中です」と通知される
         assert!(!state.submit_message("Hello 2".into()));
         assert_eq!(state.notice.as_ref().unwrap().0, "メッセージを送信中です");
+    }
+
+    #[test]
+    fn preserves_message_id_across_failed_draft_restore_and_resend() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 初回送信
+        assert!(state.submit_message("初回送信メッセージ".into()));
+        assert_eq!(state.in_flight_submissions.len(), 1);
+        let first_submission_id = state.in_flight_submissions[0].0;
+        let first_msg_id = state.in_flight_submissions[0]
+            .1
+            .message_id
+            .clone()
+            .expect("初回送信時に message_id が採番されていること");
+
+        // 送信失敗 / タイムアウトによる RestoreDraft イベントを受信
+        state.on_app_event(AppEvent::RestoreDraft {
+            submission_id: first_submission_id,
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "初回送信メッセージ".into(),
+        });
+
+        // 下書き本文とともに message_id が復元されていること
+        assert_eq!(state.composer_draft, "初回送信メッセージ");
+        assert_eq!(
+            state.pending_composer_message_id.as_deref(),
+            Some(first_msg_id.as_str())
+        );
+
+        // 2回目の再送時、新しい UUID ではなく初回と同じ message_id が再利用されること
+        assert!(state.submit_message("初回送信メッセージ".into()));
+        assert_eq!(state.in_flight_submissions.len(), 1);
+        let resend_msg_id = state.in_flight_submissions[0]
+            .1
+            .message_id
+            .clone()
+            .expect("再送時にも message_id が保持されていること");
+        assert_eq!(resend_msg_id, first_msg_id);
     }
 }
