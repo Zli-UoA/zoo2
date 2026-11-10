@@ -136,11 +136,7 @@ describe("ChannelHeader", () => {
     // ヘッダーには出さない
     expect(screen.queryByText("Slack から取り込み")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
-    expect(
-      await screen.findByText(
-        /Slack から取り込んで作ったチャンネルです。最後に取り込んだ日: 2026\/.+/,
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Slack から取り込み・新規作成 2026\/.+/)).toBeInTheDocument();
 
     // 既存のチャンネルへの取り込み
     rerender(
@@ -148,11 +144,7 @@ describe("ChannelHeader", () => {
         <ChannelHeader channel={{ ...imported, slack_import_kind: "existing" }} memberCount={3} />
       </LocaleProvider>,
     );
-    expect(
-      await screen.findByText(
-        /既存のチャンネルに Slack から取り込みました。最後に取り込んだ日: 2026\/.+/,
-      ),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Slack から取り込み・既存 2026\/.+/)).toBeInTheDocument();
 
     // 取り込んでいないチャンネルの設定には出さない
     rerender(

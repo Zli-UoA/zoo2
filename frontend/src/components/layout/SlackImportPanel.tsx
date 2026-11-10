@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { LockIcon, UploadIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import { parseUtcTimestamp } from "../../lib/timestamps";
 import { useActiveChannels } from "../../hooks/useRealtime";
 import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import {
@@ -364,7 +365,7 @@ export function MappingForm({
   /** 管理者の取り込み: 一括指定と、取り込み後のアーカイブの指定を出す */
   admin?: boolean;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const zooChannels = useActiveChannels();
   const targets: MappingTarget[] = (zooChannels.data ?? []).filter((channel) => !channel.is_dm);
   const [mappings, setMappings] = useState(() => defaultMappings(channels));
@@ -441,7 +442,7 @@ export function MappingForm({
                 </p>
                 {channel.existing_channel ? (
                   <p className="text-xs text-muted-foreground">
-                    {t("slackImport.importedTo", { name: channel.existing_channel.name })}
+                    {importedToLabel(channel.existing_channel, t, i18n.language)}
                   </p>
                 ) : null}
                 {channel.existing_hidden ? (
@@ -605,4 +606,22 @@ export function describeImportError(cause: unknown, t: TFunction, admin = true):
     }
   }
   return t("slackImport.failed");
+}
+
+/** 以前の取り込み先。取り込みの種類 (最初の取り込み) と最後に取り込んだ日付がわかるときは、それも出す */
+function importedToLabel(
+  target: NonNullable<SlackChannelSummary["existing_channel"]>,
+  t: TFunction,
+  language: string,
+): string {
+  if (target.import_kind && target.imported_at) {
+    const date = parseUtcTimestamp(target.imported_at).toLocaleDateString(language);
+    return t(
+      target.import_kind === "created"
+        ? "slackImport.importedToCreated"
+        : "slackImport.importedToExisting",
+      { name: target.name, date },
+    );
+  }
+  return t("slackImport.importedTo", { name: target.name });
 }

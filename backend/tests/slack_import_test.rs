@@ -2148,6 +2148,26 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
     );
     let again = row(format!("flag-keep-{suffix}")).await;
     assert_eq!(again[0]["kind"], "created", "the first kind is kept");
+    // 管理者の取り込み画面に、以前の取り込み先の種類と最後に取り込んだ日時を返す
+    let (status, saved) = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/admin/slack-imports/{}",
+            export["id"].as_str().unwrap()
+        ),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let channels = saved["analysis"]["channels"].as_array().unwrap();
+    let c1 = channels
+        .iter()
+        .find(|channel| channel["slack_channel_id"] == "C1")
+        .unwrap();
+    assert_eq!(c1["existing_channel"]["import_kind"], "created");
+    assert!(c1["existing_channel"]["imported_at"].is_string());
     Ok(())
 }
 

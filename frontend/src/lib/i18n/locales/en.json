@@ -21,9 +21,8 @@
     "searchEmpty": "No channels match your search.",
     "browseEmpty": "No public channels are available to join.",
     "slackImported": "Imported from Slack",
-    "slackImportedDescription": "This channel was imported from Slack.",
-    "slackImportedCreated": "Created by importing from Slack. Last imported: {{date}}",
-    "slackImportedExisting": "Imported from Slack into an existing channel. Last imported: {{date}}",
+    "slackImportedCreated": "Imported from Slack · new {{date}}",
+    "slackImportedExisting": "Imported from Slack · existing {{date}}",
     "noJoined": "You haven't joined any channels yet.",
     "join": "Join",
     "joining": "Joining…",
@@ -796,6 +795,8 @@
     "dismiss": "Move to history",
     "runTitle": "Import from {{name}}",
     "importedTo": "Imported into #{{name}}",
+    "importedToCreated": "Imported into #{{name}} (new channel · last imported {{date}})",
+    "importedToExisting": "Imported into #{{name}} (existing channel · last imported {{date}})",
     "importedToHidden": "This was imported into a channel you haven't joined. It can only be imported there."
   },
   "slackLink": {

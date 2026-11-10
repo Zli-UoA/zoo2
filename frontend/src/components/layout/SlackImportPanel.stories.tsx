@@ -37,7 +37,12 @@ const base: SlackImport = {
         message_count: 860,
         suggested_name: "random",
         name_taken: false,
-        existing_channel: { id: "channel-random", name: "random" },
+        existing_channel: {
+          id: "channel-random",
+          name: "random",
+          import_kind: "existing",
+          imported_at: "2026-11-10T12:00:00",
+        },
       },
       {
         slack_channel_id: "G1",
@@ -165,7 +170,9 @@ export const Mapping: Story = {
     // 取り込み先が削除済みの #design は取り込まない
     await expect(screen.getByText(/#slack-design が削除されている/)).toBeVisible();
     // 以前取り込んだ #random は同じ取り込み先に固定する
-    await expect(screen.getByText("取り込み先: #random")).toBeVisible();
+    await expect(
+      screen.getByText(/取り込み先: #random（既存・最後の取り込み 2026\/.+）/),
+    ).toBeVisible();
     await userEvent.selectOptions(
       screen.getByRole("combobox", { name: "#random の取り込み方" }),
       "existing",

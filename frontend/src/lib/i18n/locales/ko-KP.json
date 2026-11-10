@@ -21,9 +21,8 @@
     "searchEmpty": "일치하는 통로가 없습니다.",
     "browseEmpty": "참가할수 있는 공개 통로가 없습니다.",
     "slackImported": "Slack에서 가져옴",
-    "slackImportedDescription": "Slack에서 가져온 채널입니다.",
-    "slackImportedCreated": "Slack에서 가져와 만든 채널입니다. 마지막으로 가져온 날: {{date}}",
-    "slackImportedExisting": "Slack에서 기존 채널로 가져왔습니다. 마지막으로 가져온 날: {{date}}",
+    "slackImportedCreated": "Slack에서 가져옴·새 채널 {{date}}",
+    "slackImportedExisting": "Slack에서 가져옴·기존 채널 {{date}}",
     "noJoined": "참가하고 있는 통로가 없습니다.",
     "join": "참가",
     "joining": "참가하는 중…",
@@ -796,6 +795,8 @@
     "dismiss": "리력으로 옮기기",
     "runTitle": "{{name}}에서 들여오기",
     "importedTo": "들여온 통로: #{{name}}",
+    "importedToCreated": "가져온 위치: #{{name}} (새 채널·마지막 가져옴 {{date}})",
+    "importedToExisting": "가져온 위치: #{{name}} (기존 채널·마지막 가져옴 {{date}})",
     "importedToHidden": "이전에 참가하지 않은 통로에 들여왔습니다. 그 통로에만 들여올수 있습니다."
   },
   "slackLink": {

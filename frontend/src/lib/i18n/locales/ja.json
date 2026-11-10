@@ -21,9 +21,8 @@
     "searchEmpty": "一致するチャンネルがありません。",
     "browseEmpty": "参加できる公開チャンネルはありません。",
     "slackImported": "Slack から取り込み",
-    "slackImportedDescription": "Slack から取り込んだチャンネルです。",
-    "slackImportedCreated": "Slack から取り込んで作ったチャンネルです。最後に取り込んだ日: {{date}}",
-    "slackImportedExisting": "既存のチャンネルに Slack から取り込みました。最後に取り込んだ日: {{date}}",
+    "slackImportedCreated": "Slack から取り込み・新規作成 {{date}}",
+    "slackImportedExisting": "Slack から取り込み・既存 {{date}}",
     "noJoined": "参加中のチャンネルはありません。",
     "join": "参加する",
     "joining": "参加中…",
@@ -796,6 +795,8 @@
     "dismiss": "履歴に移す",
     "runTitle": "{{name}} からの取り込み",
     "importedTo": "取り込み先: #{{name}}",
+    "importedToCreated": "取り込み先: #{{name}}（新規作成・最後の取り込み {{date}}）",
+    "importedToExisting": "取り込み先: #{{name}}（既存・最後の取り込み {{date}}）",
     "importedToHidden": "以前、参加していないチャンネルに取り込みました。取り込めるのはそのチャンネルだけです。"
   },
   "slackLink": {

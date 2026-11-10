@@ -21,9 +21,8 @@
     "searchEmpty": "冇頻道符合你嘅搜尋。",
     "browseEmpty": "冇公開頻道可以加入。",
     "slackImported": "由 Slack 匯入",
-    "slackImportedDescription": "呢個頻道係由 Slack 匯入嘅。",
-    "slackImportedCreated": "由 Slack 匯入而建立嘅頻道。最後匯入日期：{{date}}",
-    "slackImportedExisting": "已經由 Slack 匯入到現有頻道。最後匯入日期：{{date}}",
+    "slackImportedCreated": "由 Slack 匯入·新建 {{date}}",
+    "slackImportedExisting": "由 Slack 匯入·現有 {{date}}",
     "noJoined": "你仲未加入任何頻道。",
     "join": "加入",
     "joining": "加入緊…",
@@ -796,6 +795,8 @@
     "dismiss": "移去歷史紀錄",
     "runTitle": "由 {{name}} 匯入",
     "importedTo": "已經匯入到 #{{name}}",
+    "importedToCreated": "匯入到 #{{name}}（新頻道·最後匯入 {{date}}）",
+    "importedToExisting": "匯入到 #{{name}}（現有頻道·最後匯入 {{date}}）",
     "importedToHidden": "之前已經匯入到你未加入嘅頻道，只可以匯入到嗰個頻道。"
   },
   "slackLink": {

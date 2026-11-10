@@ -261,10 +261,17 @@ export function ChannelHeader({
 
       <Dialog open={settingsOpen && canManage} onOpenChange={setSettingsOpen}>
         <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader className="pr-8">
-            <DialogTitle>{t("settings.channelTitle")}</DialogTitle>
-            <DialogDescription>{displayTitle}</DialogDescription>
-          </DialogHeader>
+          <div className="flex items-start justify-between gap-2 pr-8">
+            <DialogHeader className="min-w-0 flex-1">
+              <DialogTitle>{t("settings.channelTitle")}</DialogTitle>
+              <DialogDescription>{displayTitle}</DialogDescription>
+            </DialogHeader>
+            {channel.imported_from_slack ? (
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                {slackImportBadge(channel, t, i18n.language)}
+              </span>
+            ) : null}
+          </div>
           <div className="divide-y rounded-lg border">
             <SettingRow label={t("channels.editTitle")} description={displaySubtitle}>
               <Button
@@ -279,14 +286,6 @@ export function ChannelHeader({
                 {t("messages.edit")}
               </Button>
             </SettingRow>
-            {channel.imported_from_slack ? (
-              <SettingRow
-                label={t("channels.slackImported")}
-                description={slackImportDescription(channel, t, i18n.language)}
-              >
-                {null}
-              </SettingRow>
-            ) : null}
             <SettingRow label={t("webhooks.title")}>
               <Button
                 variant="outline"
@@ -414,8 +413,8 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
   );
 }
 
-/** チャンネル設定の「Slack から取り込み」の説明。取り込みの種類と日付がわかるときは、それを出す */
-function slackImportDescription(channel: ChannelRow, t: TFunction, language: string): string {
+/** チャンネル設定の右上に出す小さな印。取り込みの種類 (最初の取り込み) と最後に取り込んだ日付がわかるときは、それも出す */
+function slackImportBadge(channel: ChannelRow, t: TFunction, language: string): string {
   if (channel.slack_import_kind && channel.slack_imported_at) {
     const date = parseUtcTimestamp(channel.slack_imported_at).toLocaleDateString(language);
     return t(
@@ -425,5 +424,5 @@ function slackImportDescription(channel: ChannelRow, t: TFunction, language: str
       { date },
     );
   }
-  return t("channels.slackImportedDescription");
+  return t("channels.slackImported");
 }
