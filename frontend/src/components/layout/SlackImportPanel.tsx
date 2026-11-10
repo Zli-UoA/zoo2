@@ -7,6 +7,8 @@ import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import {
   SLACK_IMPORT_RUNNING,
   cancelSlackImport,
+  applyBulkAction,
+  applyBulkArchive,
   defaultMappings,
   fetchSlackImportFiles,
   isSlackExport,
@@ -244,6 +246,7 @@ function ImportCard({
       {exported && job.status === "ready" && job.analysis ? (
         <MappingForm
           key={form}
+          admin
           channels={job.analysis.channels}
           summary={t("slackImport.summary", {
             channels: job.analysis.channels.length,
@@ -351,12 +354,15 @@ export function MappingForm({
   pending,
   onSubmit,
   targetsFor,
+  admin = false,
 }: {
   channels: SlackChannelSummary[];
   summary: string;
   pending: boolean;
   onSubmit: (mappings: SlackChannelMapping[]) => void | Promise<void>;
   targetsFor?: (channel: SlackChannelSummary) => MappingTarget[];
+  /** 管理者の取り込み: 一括指定と、取り込み後のアーカイブの指定を出す */
+  admin?: boolean;
 }) {
   const { t } = useTranslation();
   const zooChannels = useActiveChannels();
@@ -365,6 +371,8 @@ export function MappingForm({
   const update = (index: number, mapping: SlackChannelMapping) =>
     setMappings((current) => current.map((item, i) => (i === index ? mapping : item)));
   const selected = mappings.filter((mapping) => mapping.action !== "skip").length;
+  const creating = mappings.filter((mapping) => mapping.action === "create");
+  const allArchive = creating.length > 0 && creating.every((mapping) => mapping.archive === true);
 
   return (
     <form
@@ -375,6 +383,39 @@ export function MappingForm({
       }}
     >
       <p className="text-sm text-muted-foreground">{summary}</p>
+      {admin ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={pending}
+            onClick={() => setMappings((current) => applyBulkAction(channels, current, "create"))}
+          >
+            {t("slackImport.bulkCreate")}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={pending}
+            onClick={() => setMappings((current) => applyBulkAction(channels, current, "skip"))}
+          >
+            {t("slackImport.bulkSkip")}
+          </Button>
+          <label className="flex items-center gap-2 text-sm">
+            <Input
+              type="checkbox"
+              checked={allArchive}
+              disabled={pending || creating.length === 0}
+              onChange={(event) =>
+                setMappings((current) => applyBulkArchive(current, event.target.checked))
+              }
+            />
+            {t("slackImport.bulkArchive")}
+          </label>
+        </div>
+      ) : null}
       <ul className="divide-y rounded-md border">
         {channels.map((channel, index) => {
           const mapping = mappings[index];
@@ -449,6 +490,20 @@ export function MappingForm({
                   disabled={pending}
                   onChange={(event) => update(index, { ...mapping, name: event.target.value })}
                 />
+              ) : null}
+              {admin && mapping.action === "create" ? (
+                <label className="flex items-center gap-2 text-sm">
+                  <Input
+                    type="checkbox"
+                    aria-label={t("slackImport.archiveFor", { name: channel.name })}
+                    checked={mapping.archive === true}
+                    disabled={pending}
+                    onChange={(event) =>
+                      update(index, { ...mapping, archive: event.target.checked })
+                    }
+                  />
+                  {t("slackImport.archive")}
+                </label>
               ) : null}
               {mapping.action === "existing" ? (
                 <Select

@@ -1981,6 +1981,129 @@ async fn test_slack_import_same_name_files_keep_the_unfetched_name() -> anyhow::
     Ok(())
 }
 
+/// 取り込み先は、新しく作ったチャンネルも既存のチャンネルも「Slack から取り込んだ」印が付く。
+/// 新しく作るチャンネルは、指定があれば取り込みの完了時にアーカイブされる (既存のチャンネルはアーカイブしない)。
+#[tokio::test]
+async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_flag").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let existing_id = uuid::Uuid::new_v4().to_string();
+    let existing_name = format!("flag-existing-{suffix}");
+    sql(
+        &state,
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$2,$3,false) RETURNING json_build_object('ok',true)::text",
+        &[&existing_id, &existing_name, &admin],
+    )
+    .await?;
+    let day = |ts: &str| json!([{"ts": ts, "user": "U1", "text": "hello"}]);
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([
+                {"id":"C1","name":format!("flag-keep-{suffix}"),"members":["U1"]},
+                {"id":"C2","name":format!("flag-archive-{suffix}"),"members":["U1"]},
+                {"id":"C3","name":format!("flag-into-{suffix}"),"members":["U1"]},
+                {"id":"C4","name":format!("flag-skip-{suffix}"),"members":["U1"]}
+            ]),
+        ),
+        (
+            format!("flag-keep-{suffix}/2024-01-01.json"),
+            day("1704070000.000100"),
+        ),
+        (
+            format!("flag-archive-{suffix}/2024-01-01.json"),
+            day("1704070000.000100"),
+        ),
+        (
+            format!("flag-into-{suffix}/2024-01-01.json"),
+            day("1704070000.000100"),
+        ),
+        (
+            format!("flag-skip-{suffix}/2024-01-01.json"),
+            day("1704070000.000100"),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([
+            {"slack_channel_id":"C1","action":"create","name":format!("flag-keep-{suffix}")},
+            {"slack_channel_id":"C2","action":"create","name":format!("flag-archive-{suffix}"),"archive":true},
+            {"slack_channel_id":"C3","action":"existing","channel_id":existing_id},
+            {"slack_channel_id":"C4","action":"skip"}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let row = |name: String| {
+        let state = state.clone();
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('flag',imported_from_slack,'archived',archive_at IS NOT NULL)::text \
+                 FROM channels WHERE channel_name=$1",
+                &[&name],
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let keep = row(format!("flag-keep-{suffix}")).await;
+    assert_eq!(
+        (&keep[0]["flag"], &keep[0]["archived"]),
+        (&json!(true), &json!(false))
+    );
+    let archived = row(format!("flag-archive-{suffix}")).await;
+    assert_eq!(
+        (&archived[0]["flag"], &archived[0]["archived"]),
+        (&json!(true), &json!(true)),
+        "a new channel asked to be archived is archived once the import completes"
+    );
+    let existing = row(existing_name).await;
+    assert_eq!(
+        (&existing[0]["flag"], &existing[0]["archived"]),
+        (&json!(true), &json!(false)),
+        "an existing target is flagged but never archived"
+    );
+    assert!(
+        row(format!("flag-skip-{suffix}")).await.is_empty(),
+        "skipped channels are not created"
+    );
+    Ok(())
+}
+
 /// Slack の `url_private_download` が 302 を返しても、許可した URL なら追従して取得する。
 /// Authorization は同じオリジンにだけ付け、許可していない URL へのリダイレクトは追従しない。
 #[tokio::test]

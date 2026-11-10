@@ -199,6 +199,13 @@ internal fun AppDialogs(
                                 app.dialog = "rename"
                             }
                         }
+                        if (channel.flag("imported_from_slack")) {
+                            HorizontalDivider()
+                            SettingRow(
+                                app.t("channels.slackImported"),
+                                app.t("channels.slackImportedDescription"),
+                            ) {}
+                        }
                         HorizontalDivider()
                         SettingRow(app.t("webhooks.title")) {
                             Button(app.t("common.open"), variant = "outline", icon = "webhook") {
@@ -630,6 +637,8 @@ internal fun Header(
                 )
                 if (channel.present("archive_at") && !channel.flag("is_dm"))
                     ChannelArchiveBadge(app)
+                if (channel.flag("imported_from_slack") && !channel.flag("is_dm"))
+                    ChannelBadge(app.t("channels.slackImported"))
             }
             Text(
                 presentation.text("subtitle").ifEmpty {

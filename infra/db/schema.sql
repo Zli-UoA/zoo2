@@ -19,6 +19,7 @@ CREATE TABLE channels (
   updated_at timestamp(3),
   archive_at timestamp(3),
   deleted_at timestamp(3),
+  imported_from_slack boolean NOT NULL DEFAULT false,
   CONSTRAINT "Channel_pkey" PRIMARY KEY (id),
   CONSTRAINT channels_channel_name_key UNIQUE (channel_name),
   CONSTRAINT channels_created_user_id_fkey

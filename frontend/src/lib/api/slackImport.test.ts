@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { ApiClient } from "./client";
 import {
+  applyBulkAction,
+  applyBulkArchive,
   defaultMappings,
   mappingFor,
   targetChoices,
@@ -58,6 +60,71 @@ describe("mappingFor", () => {
     expect(mappingFor(channel({}), "existing", targets)).toMatchObject({
       channel_id: "channel-random",
     });
+  });
+});
+
+describe("applyBulkAction", () => {
+  const channels = [
+    channel({ slack_channel_id: "C1", name: "general", suggested_name: "slack-general" }),
+    channel({
+      slack_channel_id: "C2",
+      name: "random",
+      existing_channel: { id: "z-random", name: "random" },
+    }),
+    channel({ slack_channel_id: "C3", name: "design", deleted_channel: "slack-design" }),
+    channel({ slack_channel_id: "C4", name: "dev", is_private: true, suggested_name: "slack-dev" }),
+  ];
+
+  it("creates every channel that can be created and leaves fixed targets alone", () => {
+    const next = applyBulkAction(channels, defaultMappings(channels), "create");
+    expect(next).toEqual([
+      { slack_channel_id: "C1", action: "create", name: "slack-general", is_private: false },
+      { slack_channel_id: "C2", action: "skip" },
+      { slack_channel_id: "C3", action: "skip" },
+      { slack_channel_id: "C4", action: "create", name: "slack-dev", is_private: true },
+    ]);
+  });
+
+  it("keeps the edited name and the archive choice of a channel that is already a new channel", () => {
+    const edited = defaultMappings(channels).map((mapping) =>
+      mapping.slack_channel_id === "C1"
+        ? ({
+            ...mapping,
+            action: "create",
+            name: "mine",
+            is_private: false,
+            archive: true,
+          } as const)
+        : mapping,
+    );
+    const next = applyBulkAction(channels, edited, "create");
+    expect(next[0]).toEqual({
+      slack_channel_id: "C1",
+      action: "create",
+      name: "mine",
+      is_private: false,
+      archive: true,
+    });
+  });
+
+  it("skips everything at once", () => {
+    const created = applyBulkAction(channels, defaultMappings(channels), "create");
+    expect(applyBulkAction(channels, created, "skip")).toEqual(defaultMappings(channels));
+  });
+});
+
+describe("applyBulkArchive", () => {
+  it("sets the archive choice only on new channels", () => {
+    const mappings = [
+      { slack_channel_id: "C1", action: "create", name: "a", is_private: false },
+      { slack_channel_id: "C2", action: "existing", channel_id: "x" },
+      { slack_channel_id: "C3", action: "skip" },
+    ] as const;
+    const on = applyBulkArchive([...mappings], true);
+    expect(on[0]).toMatchObject({ action: "create", archive: true });
+    expect(on[1]).toEqual(mappings[1]);
+    expect(on[2]).toEqual(mappings[2]);
+    expect(applyBulkArchive(on, false)[0]).toMatchObject({ archive: false });
   });
 });
 

@@ -47,6 +47,21 @@ export const ControlPanelOpen: Story = {
   }),
 };
 
+export const ImportedFromSlack: Story = {
+  args: {
+    channel: { ...general, imported_from_slack: true },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText("Slack から取り込み")).toBeVisible();
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    await expect(
+      await within(await screen.findByRole("dialog")).findByText(
+        "Slack から取り込んだチャンネルです。",
+      ),
+    ).toBeInTheDocument();
+  }),
+};
+
 export const Private: Story = {
   args: {
     channel: secret,

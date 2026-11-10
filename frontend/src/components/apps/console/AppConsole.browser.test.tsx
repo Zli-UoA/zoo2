@@ -43,6 +43,7 @@ vi.mock("../../../hooks/useRealtime", async (original) => ({
         created_user_id: "me",
         is_dm: false,
         archive_at: null,
+        imported_from_slack: false,
       },
       {
         id: "theirs",
@@ -50,6 +51,7 @@ vi.mock("../../../hooks/useRealtime", async (original) => ({
         created_user_id: "other",
         is_dm: false,
         archive_at: null,
+        imported_from_slack: false,
       },
     ],
   }),

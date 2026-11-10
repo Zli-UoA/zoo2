@@ -59,6 +59,9 @@ pub enum MappingAction {
         name: String,
         #[serde(default)]
         is_private: Option<bool>,
+        /// 取り込みが終わった時点で、作ったチャンネルをアーカイブする (新しく作るチャンネルだけ)
+        #[serde(default)]
+        archive: bool,
     },
     Existing {
         channel_id: String,
@@ -500,7 +503,9 @@ pub(crate) async fn validate_mappings(
         }
         ensure_same_target(tx, &team, mapping).await?;
         match &mapping.action {
-            MappingAction::Create { name, is_private } => {
+            MappingAction::Create {
+                name, is_private, ..
+            } => {
                 // 非公開チャンネルの履歴を、メンバー以外も読める公開チャンネルに出さない
                 if slack_private && *is_private == Some(false) {
                     return Err(AppError::BadRequest(format!(

@@ -74,6 +74,7 @@ const channel: ChannelRow = {
   created_at: now,
   updated_at: null,
   archive_at: null,
+  imported_from_slack: false,
   deleted_at: null,
 };
 const rows: NotificationRow[] = ["alice", "bob"].map((id) => ({

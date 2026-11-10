@@ -66,7 +66,14 @@ export interface SlackImport {
 }
 
 export type SlackChannelMapping =
-  | { slack_channel_id: string; action: "create"; name: string; is_private: boolean }
+  | {
+      slack_channel_id: string;
+      action: "create";
+      name: string;
+      is_private: boolean;
+      /** 取り込みが終わったら、作ったチャンネルをアーカイブする (管理者の取り込みだけ) */
+      archive?: boolean;
+    }
   | { slack_channel_id: string; action: "existing"; channel_id: string }
   | { slack_channel_id: string; action: "skip" };
 
@@ -263,6 +270,39 @@ export function mappingFor(
   if (action === "existing")
     return { ...base, action, channel_id: channel.existing_channel?.id ?? targets[0]?.id ?? "" };
   return { ...base, action, name: channel.suggested_name, is_private: channel.is_private };
+}
+
+/** 以前に取り込んだ (または取り込み先が削除された) チャンネルは、取り込み方を変えられない */
+function isFixedTarget(channel: SlackChannelSummary): boolean {
+  return !!channel.existing_channel || !!channel.existing_hidden || !!channel.deleted_channel;
+}
+
+/**
+ * 一括で「新しいチャンネル」か「取り込まない」にする。以前に取り込んだチャンネルは同じ取り込み先に固定なので、
+ * 「新しいチャンネル」への一括変更では今の指定のまま変えない。すでに「新しいチャンネル」の指定は、
+ * 編集した名前や設定を残す。
+ */
+export function applyBulkAction(
+  channels: SlackChannelSummary[],
+  mappings: SlackChannelMapping[],
+  action: "create" | "skip",
+): SlackChannelMapping[] {
+  return mappings.map((current, index) => {
+    const channel = channels[index];
+    if (action === "skip") return { slack_channel_id: current.slack_channel_id, action: "skip" };
+    if (isFixedTarget(channel) || current.action === "create") return current;
+    return mappingFor(channel, "create", []);
+  });
+}
+
+/** 「新しいチャンネル」の指定すべてに、取り込み後のアーカイブを指定する (外す) */
+export function applyBulkArchive(
+  mappings: SlackChannelMapping[],
+  archive: boolean,
+): SlackChannelMapping[] {
+  return mappings.map((mapping) =>
+    mapping.action === "create" ? { ...mapping, archive } : mapping,
+  );
 }
 
 /** 連携したユーザーが作った Slack チャンネル。`targets` は取り込み先に選べる既存チャンネル */

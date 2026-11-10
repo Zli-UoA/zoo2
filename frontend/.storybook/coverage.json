@@ -51,6 +51,7 @@
       "states": [
         "Default",
         "ControlPanelOpen",
+        "ImportedFromSlack",
         "Private",
         "Archived",
         "LoadingMemberCount",
@@ -333,6 +334,7 @@
         "Loading",
         "LoadError",
         "Mapping",
+        "BulkSelection",
         "StartError",
         "Analyzing",
         "Importing",
