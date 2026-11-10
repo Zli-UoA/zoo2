@@ -29,7 +29,7 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。privateリポジトリで無料枠を判定するには、さらにOrganization permissionsのAdministration: Read-only（Billing API用。発行者はorg ownerかbilling manager）と、Repository accessのAll repositories（privateリポジトリ一覧の取得用）が必要です。判定ジョブ以外には渡しません。
 
-トークン不足・API障害でRunnerの状態を確認できない場合、Docker不要ジョブはkubecampで待機し、Docker必須ジョブはzli-k8sのキューで待機します。大容量ジョブは、publicリポジトリなら通常どおりGitHub-hostedで実行します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
+トークン不足・API障害でRunnerの状態を確認できない場合、Docker不要ジョブはkubecampで待機します。Docker必須ジョブは、ARCが止まっていてもキューに並ばないように、GitHub-hostedを使えると分かっていればGitHub-hostedを選びます。大容量ジョブは、publicリポジトリなら通常どおりGitHub-hostedで実行します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
 
 判定の失敗は、どこで失敗したかで扱いが変わります。
 

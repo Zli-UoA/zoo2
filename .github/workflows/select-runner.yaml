@@ -101,17 +101,18 @@ jobs:
             };
             const [hostedAvailable, minutes] = await checkHosted();
             const hostedRunsOn = hostedAvailable ? HOSTED : SCALE_SET;
-            // Unknown runner availability keeps the first eligible pool: kubecamp for
-            // Docker-free jobs, zli-k8s for Docker jobs.
+            // Unknown runner availability keeps kubecamp for Docker-free jobs. Docker jobs
+            // do not wait on an ARC that may be down: they use hosted when it is known to be
+            // available, and queue on zli-k8s only when hosted is not.
             if (!hasToken) {
-              return use(KUBECAMP, hostedRunsOn, SCALE_SET, `RUNNER_STATUS_TOKEN is not set; ${minutes}`);
+              return use(KUBECAMP, hostedRunsOn, hostedRunsOn, `RUNNER_STATUS_TOKEN is not set; ${minutes}`);
             }
             let runners;
             try {
               runners = await github.paginate(github.rest.actions.listSelfHostedRunnersForOrg, {org, per_page: 100, request});
             } catch (error) {
               core.warning(`Runner status unavailable (${error.status || 'network error'})`);
-              return use(KUBECAMP, hostedRunsOn, SCALE_SET, `runner status unavailable; ${minutes}`);
+              return use(KUBECAMP, hostedRunsOn, hostedRunsOn, `runner status unavailable; ${minutes}`);
             }
             const idle = match => runners.filter(r => r.status === 'online' && !r.busy && match(r));
             const hasLabel = label => r => (r.labels || []).some(l => l.name === label);
