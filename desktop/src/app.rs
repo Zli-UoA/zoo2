@@ -109,8 +109,14 @@ pub fn guess_content_type(file_name: &str) -> &'static str {
 
 /// 画像 MIME タイプかどうかを判定する。
 pub fn is_image_content_type(content_type: &str) -> bool {
+    let base = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     matches!(
-        content_type,
+        base.as_str(),
         "image/png" | "image/jpeg" | "image/gif" | "image/webp"
     )
 }
@@ -1845,6 +1851,9 @@ impl AppState {
                     self.pending_focus_composer = true;
                     self.open_channel(channel_id);
                     self.notify("チャンネルを作成しました");
+                } else if self.create_channel_modal.is_none() {
+                    self.open_channel(channel_id);
+                    self.notify("チャンネルを作成しました");
                 }
                 true
             }
@@ -1858,6 +1867,8 @@ impl AppState {
                         modal.in_flight = false;
                         modal.error = Some(error.clone());
                     }
+                    self.notify(format!("チャンネル作成に失敗しました: {error}"));
+                } else if self.create_channel_modal.is_none() {
                     self.notify(format!("チャンネル作成に失敗しました: {error}"));
                 }
                 true
@@ -3289,6 +3300,10 @@ impl AppState {
                     }
                 }
                 Err(err) => {
+                    let is_unauthorized = matches!(
+                        err.downcast_ref::<HttpError>(),
+                        Some(HttpError::Unauthorized)
+                    );
                     let _ = tx.send(DesktopEvent::App {
                         session_gen,
                         event: AppEvent::AttachmentUploadFailed {
@@ -3296,6 +3311,12 @@ impl AppState {
                             error: err.to_string(),
                         },
                     });
+                    if is_unauthorized {
+                        let _ = tx.send(DesktopEvent::App {
+                            session_gen,
+                            event: AppEvent::Unauthorized,
+                        });
+                    }
                 }
             }
         });
@@ -3379,6 +3400,10 @@ impl AppState {
                     }
                 }
                 Err(err) => {
+                    let is_unauthorized = matches!(
+                        err.downcast_ref::<HttpError>(),
+                        Some(HttpError::Unauthorized)
+                    );
                     let _ = tx.send(DesktopEvent::App {
                         session_gen,
                         event: AppEvent::AttachmentUploadFailed {
@@ -3386,6 +3411,12 @@ impl AppState {
                             error: err.to_string(),
                         },
                     });
+                    if is_unauthorized {
+                        let _ = tx.send(DesktopEvent::App {
+                            session_gen,
+                            event: AppEvent::Unauthorized,
+                        });
+                    }
                 }
             }
         });
@@ -5011,6 +5042,28 @@ mod tests {
         });
         assert!(state.create_channel_modal.is_none());
         assert_eq!(state.current_channel.as_deref(), Some("c_new_b"));
+
+        // モーダルを閉じた後に成功イベントが届いた場合、チャンネル遷移と通知が行われること
+        state.open_channel("c1".into());
+        state.on_app_event(AppEvent::ChannelCreated {
+            request_id: 999,
+            channel_id: "c_new_c".into(),
+        });
+        assert_eq!(state.current_channel.as_deref(), Some("c_new_c"));
+        assert_eq!(
+            state.notice.as_ref().map(|(m, _)| m.as_str()),
+            Some("チャンネルを作成しました")
+        );
+
+        // モーダルを閉じた後に失敗イベントが届いた場合、Notice 通知が行われること
+        state.on_app_event(AppEvent::ChannelCreateFailed {
+            request_id: 999,
+            error: "Failed closed modal".into(),
+        });
+        assert_eq!(
+            state.notice.as_ref().map(|(m, _)| m.as_str()),
+            Some("チャンネル作成に失敗しました: Failed closed modal")
+        );
     }
 
     #[test]
@@ -5618,5 +5671,18 @@ mod tests {
             state.notice.as_ref().unwrap().0,
             "空のファイルは添付できません"
         );
+    }
+
+    #[test]
+    fn normalizes_image_content_types() {
+        assert!(is_image_content_type("image/png"));
+        assert!(is_image_content_type("image/jpeg"));
+        assert!(is_image_content_type("image/gif"));
+        assert!(is_image_content_type("image/webp"));
+        assert!(is_image_content_type("Image/PNG"));
+        assert!(is_image_content_type("image/png; charset=binary"));
+        assert!(is_image_content_type(" IMAGE/JPEG ; foo=bar "));
+        assert!(!is_image_content_type("application/pdf"));
+        assert!(!is_image_content_type("text/plain"));
     }
 }

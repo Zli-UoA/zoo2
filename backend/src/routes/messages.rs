@@ -194,13 +194,7 @@ pub(crate) async fn create_message_impl(
         )));
     }
 
-    if channel.archive_at.is_some() {
-        return Err(AppError::BadRequest(
-            "Cannot post message to an archived channel".into(),
-        ));
-    }
-
-    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
+    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽（アーカイブ確認より前に検証）
     if channel.is_private {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
@@ -220,6 +214,12 @@ pub(crate) async fn create_message_impl(
         }
     }
 
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot post message to an archived channel".into(),
+        ));
+    }
+
     // クライアント指定の ID が既に存在する場合、同一属性（本文・チャンネル・親・添付ファイル）の再送であれば既存メッセージを返して成功とする (冪等性)
     if supplied_id.is_some() {
         let existing = Message::filter(Message::fields().id().eq(id.as_str()))
@@ -227,6 +227,14 @@ pub(crate) async fn create_message_impl(
             .exec(&mut db)
             .await?;
         if let Some(existing_msg) = existing {
+            // 他チャンネルのメッセージ UUID を探る攻撃を防ぐため、channel_id が異なる場合は 404 を返す
+            if existing_msg.channel_id != payload.channel_id {
+                return Err(AppError::NotFound(format!(
+                    "Channel not found: {}",
+                    payload.channel_id
+                )));
+            }
+
             let mut req_att_ids = attachment_ids.clone();
             req_att_ids.sort();
 
@@ -346,13 +354,7 @@ pub(crate) async fn create_message_impl(
         )));
     }
 
-    if channel.archive_at.is_some() {
-        return Err(AppError::BadRequest(
-            "Cannot post message to an archived channel".into(),
-        ));
-    }
-
-    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
+    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽（アーカイブ確認より前に検証）
     if channel.is_private || bot_actor || crate::apps::events::guest(&mut tx, &auth_user.id).await?
     {
         let membership = ChannelUser::filter(
@@ -371,6 +373,12 @@ pub(crate) async fn create_message_impl(
                 payload.channel_id
             )));
         }
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot post message to an archived channel".into(),
+        ));
     }
 
     crate::apps::events::posting(

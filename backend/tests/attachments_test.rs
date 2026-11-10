@@ -550,6 +550,73 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 
+    // 5e. 別チャンネルの message_id を指定して POST した場合、他チャンネルのメッセージ存在漏洩を防ぐため 404 Not Found になること
+    let other_channel_id = uuid::Uuid::new_v4().to_string();
+    let channel_payload2 = json!({
+        "id": other_channel_id,
+        "name": "other-channel",
+        "is_private": false
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&channel_payload2)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let msg_payload_diff_channel = json!({
+        "id": message_id,
+        "channel_id": other_channel_id,
+        "content": "Message probing another channel's id",
+        "attachment_ids": []
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_diff_channel)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 5f. アーカイブ済みプライベートチャンネルへの非メンバー投稿が 400 ではなく 404 Not Found になること
+    let private_channel_id = uuid::Uuid::new_v4().to_string();
+    let private_channel_payload = json!({
+        "id": private_channel_id,
+        "name": "private-archived-channel",
+        "is_private": true
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&private_channel_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{private_channel_id}/archive"))
+        .header("X-Dev-User", &alice_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &bob_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "channel_id": private_channel_id,
+            "content": "Secret probe"
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
     // 6. DB 上で attachments.message_id が設定されていることを検証
     let mut db_conn = db.clone();
     let att_record = Attachment::get_by_id(&mut db_conn, &attachment_id).await?;

@@ -416,11 +416,21 @@ impl WorkspaceView {
     }
 
     fn open_create_channel_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.read(cx).create_channel_modal.is_some() {
+            window.focus(&self.create_channel_name_input.focus_handle(cx));
+            return;
+        }
         self.create_channel_name_input
             .update(cx, |input, cx| input.clear(cx));
         self.create_channel_desc_input
             .update(cx, |input, cx| input.clear(cx));
         self.state.update(cx, |s, cx| {
+            if s.quick_switcher.is_some() {
+                s.close_quick_switcher();
+            }
+            if s.emoji_picker_open {
+                s.close_emoji_picker();
+            }
             s.open_create_channel_modal();
             cx.notify();
         });
@@ -428,19 +438,49 @@ impl WorkspaceView {
     }
 
     fn open_quick_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.read(cx).quick_switcher.is_some() {
+            window.focus(&self.quick_switcher_input.focus_handle(cx));
+            return;
+        }
         self.quick_switcher_input
             .update(cx, |input, cx| input.clear(cx));
         self.state.update(cx, |s, cx| {
+            if s.create_channel_modal.is_some() {
+                s.close_create_channel_modal();
+            }
+            if s.emoji_picker_open {
+                s.close_emoji_picker();
+            }
             s.open_quick_switcher();
             cx.notify();
         });
         window.focus(&self.quick_switcher_input.focus_handle(cx));
     }
 
+    fn toggle_message_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let is_open = self.state.read(cx).message_search.is_some();
+        if is_open {
+            self.message_search_input
+                .update(cx, |input, cx| input.clear(cx));
+            self.state.update(cx, |s, cx| {
+                s.close_message_search();
+                cx.notify();
+            });
+        } else {
+            self.open_message_search(window, cx);
+        }
+    }
+
     fn open_message_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.message_search_input
             .update(cx, |input, cx| input.clear(cx));
         self.state.update(cx, |s, cx| {
+            if s.quick_switcher.is_some() {
+                s.close_quick_switcher();
+            }
+            if s.emoji_picker_open {
+                s.close_emoji_picker();
+            }
             s.open_message_search();
             cx.notify();
         });
@@ -1538,18 +1578,7 @@ impl WorkspaceView {
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                                            let is_open =
-                                                this.state.read(cx).message_search.is_some();
-                                            if is_open {
-                                                this.message_search_input
-                                                    .update(cx, |input, cx| input.clear(cx));
-                                                this.state.update(cx, |s, cx| {
-                                                    s.close_message_search();
-                                                    cx.notify();
-                                                });
-                                            } else {
-                                                this.open_message_search(window, cx);
-                                            }
+                                            this.toggle_message_search(window, cx);
                                         }),
                                     ),
                             ),
@@ -3488,7 +3517,7 @@ impl Render for WorkspaceView {
                     return;
                 }
                 if cmd_or_ctrl && key == "f" {
-                    this.open_message_search(window, cx);
+                    this.toggle_message_search(window, cx);
                     return;
                 }
                 if key == "escape" {
