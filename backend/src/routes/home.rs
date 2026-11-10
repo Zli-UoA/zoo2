@@ -286,6 +286,12 @@ async fn list(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let guest = crate::apps::events::guest(&mut tx, &user.id).await?;
+    // The planner's cost for this query passes the JIT thresholds, and compiling it
+    // takes longer than running it (production standby, 2026-11-11: thread view
+    // 6.4s with JIT, 0.33s without). display_views.sql turns JIT off the same way.
+    toasty::sql::statement("SET LOCAL jit = off")
+        .exec(&mut tx)
+        .await?;
     // `base` covers every visible post, so keep it narrow: local content emojis and the
     // row JSON are built only for the page chosen in `picked`. `page_parents` and
     // `page_replies` read `base` once for the whole page instead of once per row.
