@@ -93,6 +93,8 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     archive_at: "timestamp",
     deleted_at: "timestamp",
     imported_from_slack: "bool",
+    slack_import_kind: "text",
+    slack_imported_at: "timestamp",
   },
 };
 

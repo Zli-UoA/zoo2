@@ -52,6 +52,8 @@
         "Default",
         "ControlPanelOpen",
         "ImportedFromSlack",
+        "ImportedFromSlackCreated",
+        "ImportedFromSlackMobile",
         "Private",
         "Archived",
         "LoadingMemberCount",
