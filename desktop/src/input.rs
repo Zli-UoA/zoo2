@@ -35,6 +35,7 @@ actions!(
         Submit,
         Newline,
         Cancel,
+        Tab,
     ]
 );
 
@@ -45,6 +46,8 @@ pub enum InputEvent {
     Changed(String),
     /// `Enter` で確定・送信された。
     Submit(String),
+    /// `Tab` キーが押下された。
+    Tab,
     /// `Esc` でキャンセルされた。
     Cancel,
     /// `↑` キーが押下された。
@@ -68,6 +71,7 @@ pub fn bind_input_keys(cx: &mut App) {
         KeyBinding::new("home", Home, ctx),
         KeyBinding::new("end", End, ctx),
         KeyBinding::new("enter", Submit, ctx),
+        KeyBinding::new("tab", Tab, ctx),
         KeyBinding::new("shift-enter", Newline, ctx),
         KeyBinding::new("alt-enter", Newline, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -111,6 +115,7 @@ pub struct TextInput {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     pub intercept_vertical_arrows: bool,
+    pub intercept_tab: bool,
     pub theme: theme::Theme,
 }
 
@@ -147,6 +152,7 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             intercept_vertical_arrows: false,
+            intercept_tab: false,
             theme: theme::Theme::dark(),
         }
     }
@@ -157,6 +163,10 @@ impl TextInput {
 
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
+    }
+
+    pub fn selected_range(&self) -> Range<usize> {
+        self.selected_range.clone()
     }
 
     pub fn set_placeholder(
@@ -362,6 +372,12 @@ impl TextInput {
 
     fn submit(&mut self, _: &Submit, _window: &mut Window, cx: &mut Context<Self>) {
         self.request_submit(cx);
+    }
+
+    fn tab(&mut self, _: &Tab, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_tab {
+            cx.emit(InputEvent::Tab);
+        }
     }
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
@@ -918,6 +934,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::tab))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::cancel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))

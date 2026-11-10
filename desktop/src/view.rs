@@ -95,7 +95,7 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Up | InputEvent::Down => {}
+                InputEvent::Up | InputEvent::Down | InputEvent::Tab => {}
             },
         )
         .detach();
@@ -136,6 +136,20 @@ impl WorkspaceView {
                         }
                     });
                     if handled {
+                        cx.notify();
+                    }
+                }
+                InputEvent::Tab => {
+                    let mention_handled = this.state.update(cx, |state, cx| {
+                        if state.mention_autocomplete.is_some() {
+                            state.mention_confirm();
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if mention_handled {
                         cx.notify();
                     }
                 }
@@ -199,7 +213,7 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Up | InputEvent::Down => {}
+                InputEvent::Up | InputEvent::Down | InputEvent::Tab => {}
             },
         )
         .detach();
@@ -228,7 +242,7 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Up | InputEvent::Down => {}
+                InputEvent::Up | InputEvent::Down | InputEvent::Tab => {}
             },
         )
         .detach();
@@ -256,7 +270,7 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Up | InputEvent::Down => {}
+                InputEvent::Up | InputEvent::Down | InputEvent::Tab => {}
             },
         )
         .detach();
@@ -297,6 +311,7 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
+                InputEvent::Tab => {}
             },
         )
         .detach();
@@ -328,16 +343,18 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
+                InputEvent::Tab => {}
             },
         )
         .detach();
 
         cx.observe(&state, |this, state, cx| {
-            let (pending_composer, pending_search, is_mention_active, theme) =
+            let (pending_composer, pending_search, pending_open_url, is_mention_active, theme) =
                 state.update(cx, |s, _| {
                     (
                         s.pending_composer_text.take(),
                         s.pending_search_text.take(),
+                        s.pending_open_url.take(),
                         s.mention_autocomplete.is_some(),
                         s.theme(),
                     )
@@ -355,8 +372,12 @@ impl WorkspaceView {
                 this.search_input
                     .update(cx, |input, cx| input.set_text(text, cx));
             }
+            if let Some(url) = pending_open_url {
+                cx.open_url(&url);
+            }
             this.composer_input.update(cx, |input, _| {
                 input.intercept_vertical_arrows = is_mention_active;
+                input.intercept_tab = is_mention_active;
             });
             this.search_input.update(cx, |i, _| i.theme = theme);
             this.composer_input.update(cx, |i, _| i.theme = theme);
@@ -1210,7 +1231,11 @@ impl WorkspaceView {
             )
     }
 
-    fn render_timeline_view(&self, cx: &mut Context<Self>) -> Div {
+    fn render_timeline_view(
+        &self,
+        pending_scroll_id: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> (Div, Option<usize>) {
         let (
             channel_id,
             me_id,
@@ -1236,25 +1261,28 @@ impl WorkspaceView {
             let state = self.state.read(cx);
             let theme = state.theme();
             let Some(channel_id) = state.current_channel.clone() else {
-                return div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .h_full()
-                    .justify_center()
-                    .items_center()
-                    .p_6()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.text_primary)
-                            .child("チャンネルを選択してください"),
-                    )
-                    .child(div().text_sm().text_color(theme.text_muted).child(
-                        "左のサイドバーからチャンネルまたはダイレクトメッセージを開けます。",
-                    ));
+                return (
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .h_full()
+                        .justify_center()
+                        .items_center()
+                        .p_6()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.text_primary)
+                                .child("チャンネルを選択してください"),
+                        )
+                        .child(div().text_sm().text_color(theme.text_muted).child(
+                            "左のサイドバーからチャンネルまたはダイレクトメッセージを開けます。",
+                        )),
+                    None,
+                );
             };
 
             let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
@@ -1343,6 +1371,7 @@ impl WorkspaceView {
                 ),
             );
         }
+        let mut target_scroll_item_index = None;
         let mut last_date = None;
         for msg in visible_roots {
             let date = local_zoned(msg.created_at).map(|z| z.date());
@@ -1351,6 +1380,9 @@ impl WorkspaceView {
                     timeline_items.push(render_date_separator(&d.to_string(), &theme));
                 }
                 last_date = date;
+            }
+            if pending_scroll_id == Some(msg.id.as_str()) {
+                target_scroll_item_index = Some(timeline_items.len());
             }
             let reply_count = reply_counts.get(&msg.id).copied().unwrap_or(0);
             let reactions = reactions_by_msg.get(&msg.id).cloned().unwrap_or_default();
@@ -1369,7 +1401,7 @@ impl WorkspaceView {
         let ch_id_for_join = channel_id.clone();
         let theme = self.state.read(cx).theme();
 
-        div()
+        let timeline_view = div()
             .flex()
             .flex_col()
             .flex_1()
@@ -1668,7 +1700,9 @@ impl WorkspaceView {
                 )
             })
             // 下部入力欄
-            .child(self.render_composer_view(cx))
+            .child(self.render_composer_view(cx));
+
+        (timeline_view, target_scroll_item_index)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1822,18 +1856,23 @@ impl WorkspaceView {
         let attachments_with_urls: Vec<(
             zoo2_client_core::electric::rows::Attachment,
             Option<String>,
+            bool,
         )> = state
             .store
             .attachments_for_message(&message.channel_id, &message.id)
             .into_iter()
             .map(|att| {
                 let url = state.attachment_download_url(&att.id);
-                (att.clone(), url)
+                let is_fetching = state.fetching_attachment_urls.contains(&att.id)
+                    || state.pending_open_attachments.contains(&att.id);
+                (att.clone(), url, is_fetching)
             })
             .collect();
         let attachment_views: Vec<Div> = attachments_with_urls
             .into_iter()
-            .map(|(att, url)| render_attachment_item(&att, url, &theme, cx))
+            .map(|(att, url, is_fetching)| {
+                render_attachment_item(&att, url, is_fetching, &theme, cx)
+            })
             .collect();
 
         let ogp_cards = message
@@ -2294,43 +2333,45 @@ impl WorkspaceView {
                             .flex_row()
                             .items_end()
                             .gap_2()
-                            .child(
-                                div()
-                                    .id("btn-attach-file")
-                                    .px_2p5()
-                                    .py_2()
-                                    .rounded_md()
-                                    .bg(theme.bg_surface)
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                                    .text_sm()
-                                    .child("📎")
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|_, _: &MouseUpEvent, _, cx| {
-                                            let prompt = cx.prompt_for_paths(PathPromptOptions {
-                                                files: true,
-                                                directories: false,
-                                                multiple: true,
-                                                prompt: None,
-                                            });
-                                            cx.spawn(async move |this, cx| {
-                                                if let Ok(Ok(Some(paths))) = prompt.await {
-                                                    let _ = this.update(cx, |this, cx| {
-                                                        this.state.update(cx, |s, cx| {
-                                                            for p in paths {
-                                                                s.add_attachment_from_path(p);
-                                                            }
-                                                            cx.notify();
+                            .when(!is_editing, |d| {
+                                d.child(
+                                    div()
+                                        .id("btn-attach-file")
+                                        .px_2p5()
+                                        .py_2()
+                                        .rounded_md()
+                                        .bg(theme.bg_surface)
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
+                                        .text_sm()
+                                        .child("📎")
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(|_, _: &MouseUpEvent, _, cx| {
+                                                let prompt = cx.prompt_for_paths(PathPromptOptions {
+                                                    files: true,
+                                                    directories: false,
+                                                    multiple: true,
+                                                    prompt: None,
+                                                });
+                                                cx.spawn(async move |this, cx| {
+                                                    if let Ok(Ok(Some(paths))) = prompt.await {
+                                                        let _ = this.update(cx, |this, cx| {
+                                                            this.state.update(cx, |s, cx| {
+                                                                for p in paths {
+                                                                    s.add_attachment_from_path(p);
+                                                                }
+                                                                cx.notify();
+                                                            });
                                                         });
-                                                    });
-                                                }
-                                            })
-                                            .detach();
-                                        }),
-                                    ),
-                            )
+                                                    }
+                                                })
+                                                .detach();
+                                            }),
+                                        ),
+                                )
+                            })
                             .child(
                                 div()
                                     .id("btn-open-emoji-picker")
@@ -2420,11 +2461,16 @@ impl WorkspaceView {
             )
     }
 
-    fn render_thread_view(&self, root_id: &str, cx: &mut Context<Self>) -> Div {
+    fn render_thread_view(
+        &self,
+        root_id: &str,
+        pending_scroll_id: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> (Div, Option<usize>) {
         let state = self.state.read(cx);
         let theme = state.theme();
         let Some(channel_id) = state.current_channel.clone() else {
-            return div();
+            return (div(), None);
         };
         let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
         let me_user_name = state
@@ -2443,6 +2489,7 @@ impl WorkspaceView {
         let root_message = state.channel_cache.thread_root_message.clone();
         let replies = state.channel_cache.thread_replies.clone();
 
+        let mut target_scroll_index = None;
         let mut cards = Vec::new();
         if let Some(root) = &root_message {
             let root_reactions = reactions_by_msg.get(&root.id).cloned().unwrap_or_default();
@@ -2466,6 +2513,9 @@ impl WorkspaceView {
                     .child(format!("返信 ({} 件)", replies.len())),
             );
             for reply in replies.iter() {
+                if pending_scroll_id == Some(reply.id.as_str()) {
+                    target_scroll_index = Some(cards.len());
+                }
                 let r_reactions = reactions_by_msg.get(&reply.id).cloned().unwrap_or_default();
                 cards.push(self.render_message_card(
                     reply,
@@ -2489,7 +2539,7 @@ impl WorkspaceView {
 
         let root_for_focus = root_id.to_string();
 
-        div()
+        let thread_view = div()
             .flex()
             .flex_col()
             .w(px(380.0))
@@ -2601,7 +2651,9 @@ impl WorkspaceView {
                         .text_color(theme.accent)
                         .child(t),
                 )
-            })
+            });
+
+        (thread_view, target_scroll_index)
     }
 
     fn render_pending_attachments_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -2817,9 +2869,9 @@ impl WorkspaceView {
                     MouseButton::Left,
                     cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                         let em = emoji_str.clone();
-                        let cursor = this.composer_input.read(cx).cursor_offset();
+                        let range = this.composer_input.read(cx).selected_range();
                         this.state.update(cx, |s, cx| {
-                            s.insert_emoji(&em, cursor);
+                            s.insert_emoji(&em, range);
                             cx.notify();
                         });
                     }),
@@ -3369,11 +3421,38 @@ impl Render for WorkspaceView {
             .as_ref()
             .map(|t| t.root_id.clone());
 
+        let pending_scroll_id = self
+            .state
+            .update(cx, |s, _| s.pending_scroll_to_message_id.take());
+
+        let (timeline_div, timeline_scroll_target) =
+            self.render_timeline_view(pending_scroll_id.as_deref(), cx);
+        if let Some(target_idx) = timeline_scroll_target {
+            self.timeline_scroll.scroll_to_item(target_idx);
+        }
+
+        let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
+            let (div, target) = self.render_thread_view(root_id, pending_scroll_id.as_deref(), cx);
+            (Some(div), target)
+        } else {
+            (None, None)
+        };
+        if let Some(target_idx) = thread_scroll_target {
+            self.thread_scroll.scroll_to_item(target_idx);
+        }
+
         let state_ref = self.state.read(cx);
         let has_create_modal = state_ref.create_channel_modal.is_some();
         let has_quick_switcher = state_ref.quick_switcher.is_some();
         let has_emoji_picker = state_ref.emoji_picker_open;
         let theme = state_ref.theme();
+
+        let should_focus_composer = self
+            .state
+            .update(cx, |s, _| std::mem::take(&mut s.pending_focus_composer));
+        if should_focus_composer && !has_create_modal && !has_quick_switcher && !has_emoji_picker {
+            window.focus(&self.composer_input.focus_handle(cx));
+        }
 
         let main_view = div()
             .flex()
@@ -3463,31 +3542,35 @@ impl Render for WorkspaceView {
                         }
                         cx.notify();
                     });
+                    window.focus(&this.composer_input.focus_handle(cx));
                 }
             }))
             .child(self.render_sidebar_view(cx))
-            .child(self.render_timeline_view(cx))
-            .when_some(thread_root, |d, root_id| {
-                d.child(self.render_thread_view(&root_id, cx))
-            });
+            .child(timeline_div)
+            .when_some(thread_div, |d, v| d.child(v));
 
         if has_create_modal || has_quick_switcher || has_emoji_picker {
-            div().size_full().relative().child(main_view).child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(rgba(0x00000077))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(has_create_modal, |d| {
-                        d.child(self.render_create_channel_modal(cx))
-                    })
-                    .when(has_quick_switcher, |d| {
-                        d.child(self.render_quick_switcher_modal(cx))
-                    })
-                    .when(has_emoji_picker, |d| d.child(self.render_emoji_picker(cx))),
-            )
+            div()
+                .size_full()
+                .relative()
+                .track_focus(&self.focus_handle(cx))
+                .child(main_view)
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(rgba(0x00000077))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(has_create_modal, |d| {
+                            d.child(self.render_create_channel_modal(cx))
+                        })
+                        .when(has_quick_switcher, |d| {
+                            d.child(self.render_quick_switcher_modal(cx))
+                        })
+                        .when(has_emoji_picker, |d| d.child(self.render_emoji_picker(cx))),
+                )
         } else {
             div().size_full().child(main_view)
         }
@@ -3566,7 +3649,9 @@ pub fn render_ogp_card(
         String::new()
     };
 
-    let open_target = url.clone();
+    let open_target = crate::login::validate_http_url(&card.url)
+        .map(|u| u.to_string())
+        .unwrap_or_default();
 
     div()
         .mt_1p5()
@@ -3622,6 +3707,7 @@ pub fn render_ogp_card(
 pub fn render_attachment_item(
     att: &zoo2_client_core::electric::rows::Attachment,
     download_url: Option<String>,
+    is_fetching: bool,
     theme: &theme::Theme,
     cx: &mut Context<WorkspaceView>,
 ) -> Div {
@@ -3654,6 +3740,18 @@ pub fn render_attachment_item(
                         .rounded_md(),
                 )
         } else {
+            // 描画時に未解決かつ取得中でなければ自動で取得を開始する
+            if !is_fetching {
+                let id = att_id.clone();
+                let view = cx.entity().clone();
+                cx.defer(move |cx| {
+                    view.update(cx, |this, cx| {
+                        this.state.update(cx, |s, _| {
+                            s.ensure_attachment_url(id);
+                        });
+                    });
+                });
+            }
             let att_id_retry = att_id.clone();
             div()
                 .mt_1p5()
@@ -3688,6 +3786,11 @@ pub fn render_attachment_item(
     } else {
         let att_id_open = att_id;
         let fallback_url = download_url;
+        let sub_label = if is_fetching {
+            format!("{size_label} (URL取得中…)")
+        } else {
+            size_label
+        };
         div()
             .mt_1p5()
             .px_3()
@@ -3702,7 +3805,7 @@ pub fn render_attachment_item(
                 cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                     let id = att_id_open.clone();
                     let url_opt = this.state.update(cx, |s, cx| {
-                        let res = s.get_or_fetch_attachment_url(&id);
+                        let res = s.open_or_queue_attachment(&id);
                         cx.notify();
                         res
                     });
@@ -3731,7 +3834,7 @@ pub fn render_attachment_item(
                         div()
                             .text_xs()
                             .text_color(theme.text_muted)
-                            .child(size_label),
+                            .child(sub_label),
                     ),
             )
     }

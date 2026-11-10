@@ -138,6 +138,7 @@ pub struct FailedDraft {
     pub channel_id: String,
     pub target: Target,
     pub content: String,
+    pub attachments: Vec<PendingAttachment>,
 }
 
 /// 送信待ちの添付ファイル。
@@ -263,6 +264,7 @@ pub enum AppEvent {
     AttachmentUrlFailed {
         attachment_id: String,
     },
+    RefreshAttachmentUrls,
 }
 
 /// Tokio タスク群から GPUI の `Entity<AppState>` へ橋渡しする統合イベント。
@@ -393,6 +395,14 @@ pub struct AppState {
     pub theme_mode: crate::theme::ThemeMode,
     /// OS 通知有効フラグ。
     pub notifications_enabled: bool,
+    /// 検索移動時などに指定位置までスクロールするためのメッセージ ID。
+    pub pending_scroll_to_message_id: Option<String>,
+    /// モーダルや検索バーを閉じた後に composer へフォーカスを復帰させるフラグ。
+    pub pending_focus_composer: bool,
+    /// URL 取得完了時に自動でブラウザで開く添付ファイル ID 一覧。
+    pub pending_open_attachments: HashSet<String>,
+    /// `view` 側でブラウザを開くための保留中 URL。
+    pub pending_open_url: Option<String>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -494,6 +504,10 @@ impl AppState {
             quick_switcher: None,
             theme_mode: crate::theme::ThemeMode::Dark,
             notifications_enabled: true,
+            pending_scroll_to_message_id: None,
+            pending_focus_composer: false,
+            pending_open_attachments: HashSet::new(),
+            pending_open_url: None,
         }
     }
 
@@ -729,7 +743,7 @@ impl AppState {
     }
 
     fn push_failed_draft(&mut self, draft: FailedDraft) {
-        if draft.content.trim().is_empty() {
+        if draft.content.trim().is_empty() && draft.attachments.is_empty() {
             return;
         }
         if self.failed_drafts.iter().any(|d| d == &draft) {
@@ -748,7 +762,9 @@ impl AppState {
         };
         let mut drafts = self.failed_drafts.clone();
         for (_, in_flight) in &self.in_flight_submissions {
-            if !in_flight.content.trim().is_empty() && !drafts.iter().any(|d| d == in_flight) {
+            if (!in_flight.content.trim().is_empty() || !in_flight.attachments.is_empty())
+                && !drafts.iter().any(|d| d == in_flight)
+            {
                 drafts.push(in_flight.clone());
             }
         }
@@ -762,6 +778,7 @@ impl AppState {
                     channel_id: ch_id.clone(),
                     target: target.clone(),
                     content: content.clone(),
+                    attachments: Vec::new(),
                 });
             }
         }
@@ -775,6 +792,11 @@ impl AppState {
                 channel_id: ch_id,
                 target: self.target.clone(),
                 content: self.composer_draft.clone(),
+                attachments: self
+                    .current_channel_attachments()
+                    .into_iter()
+                    .cloned()
+                    .collect(),
             });
         }
         if drafts.len() > FAILED_DRAFT_LIMIT {
@@ -1011,6 +1033,26 @@ impl AppState {
                 loop {
                     interval.tick().await;
                     if tx.send(DesktopEvent::Tick { session_gen }).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        // 添付ファイル URL の定期リフレッシュ (期限切れ間近の URL を再取得)
+        {
+            let tx = self.event_tx.clone();
+            self.spawn_session_task(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    if tx
+                        .send(DesktopEvent::App {
+                            session_gen,
+                            event: AppEvent::RefreshAttachmentUrls,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -1366,6 +1408,7 @@ impl AppState {
                 channel_id: ch.clone(),
                 target: target.clone(),
                 content: content.clone(),
+                attachments: Vec::new(),
             })
             .collect();
         self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
@@ -1385,6 +1428,7 @@ impl AppState {
                     channel_id: channel_id.to_string(),
                     target: self.target.clone(),
                     content: self.composer_draft.clone(),
+                    attachments: Vec::new(),
                 };
                 self.push_failed_draft(draft);
             }
@@ -1419,6 +1463,7 @@ impl AppState {
                 channel_id: ch.clone(),
                 target: target.clone(),
                 content: content.clone(),
+                attachments: Vec::new(),
             })
             .collect();
         self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
@@ -1436,6 +1481,7 @@ impl AppState {
                     channel_id: channel_id.to_string(),
                     target: self.target.clone(),
                     content: std::mem::take(&mut self.composer_draft),
+                    attachments: Vec::new(),
                 };
                 self.push_failed_draft(draft);
             } else {
@@ -1459,6 +1505,7 @@ impl AppState {
                     channel_id: channel_id.to_string(),
                     target: self.target.clone(),
                     content: std::mem::take(&mut self.composer_draft),
+                    attachments: Vec::new(),
                 };
                 self.push_failed_draft(draft);
                 self.pending_composer_text = Some((String::new(), None));
@@ -1504,6 +1551,7 @@ impl AppState {
                             channel_id: channel_id.to_string(),
                             target: Target::Channel,
                             content: saved_ch_draft,
+                            attachments: Vec::new(),
                         });
                     }
                 }
@@ -1558,8 +1606,11 @@ impl AppState {
                 target,
                 content,
             } => {
-                self.in_flight_submissions
-                    .retain(|(id, _)| *id != submission_id);
+                let in_flight = self
+                    .in_flight_submissions
+                    .iter()
+                    .position(|(id, _)| *id == submission_id)
+                    .map(|idx| self.in_flight_submissions.remove(idx).1);
                 let is_archived = self
                     .store
                     .channel(&channel_id)
@@ -1579,12 +1630,23 @@ impl AppState {
                     }
                     self.composer_draft = content.clone();
                     self.pending_composer_text = Some((content, None));
+                    if let Some(draft) = in_flight {
+                        for mut att in draft.attachments {
+                            att.session_gen = self.session_gen;
+                            self.pending_attachments.push(att);
+                        }
+                    }
                 } else {
-                    self.push_failed_draft(FailedDraft {
-                        channel_id,
-                        target,
-                        content,
-                    });
+                    if let Some(draft) = in_flight {
+                        self.push_failed_draft(draft);
+                    } else {
+                        self.push_failed_draft(FailedDraft {
+                            channel_id,
+                            target,
+                            content,
+                            attachments: Vec::new(),
+                        });
+                    }
                     self.notify(
                         "送信に失敗した本文を保存しました。「下書きを復元」で入力欄に戻せます",
                     );
@@ -1685,6 +1747,7 @@ impl AppState {
             }
             AppEvent::ChannelCreated { channel_id } => {
                 self.create_channel_modal = None;
+                self.pending_focus_composer = true;
                 self.open_channel(channel_id);
                 self.notify("チャンネルを作成しました");
                 true
@@ -1702,6 +1765,9 @@ impl AppState {
                 download_url,
             } => {
                 self.fetching_attachment_urls.remove(&attachment_id);
+                if self.pending_open_attachments.remove(&attachment_id) {
+                    self.pending_open_url = Some(download_url.clone());
+                }
                 let ttl_secs = parse_url_expiry_secs(&download_url);
                 self.attachment_download_urls.insert(
                     attachment_id,
@@ -1715,7 +1781,28 @@ impl AppState {
             }
             AppEvent::AttachmentUrlFailed { attachment_id } => {
                 self.fetching_attachment_urls.remove(&attachment_id);
+                self.pending_open_attachments.remove(&attachment_id);
                 true
+            }
+            AppEvent::RefreshAttachmentUrls => {
+                if let Some(ch) = self.current_channel.clone() {
+                    let att_ids: Vec<String> = self
+                        .store
+                        .channel_attachments(&ch)
+                        .into_iter()
+                        .map(|a| a.id.clone())
+                        .collect();
+                    for id in att_ids {
+                        if let Some(cached) = self.attachment_download_urls.get(&id) {
+                            if cached.fetched_at.elapsed().as_secs() + 60 >= cached.ttl_secs {
+                                self.ensure_attachment_url(id);
+                            }
+                        } else {
+                            self.ensure_attachment_url(id);
+                        }
+                    }
+                }
+                false
             }
         }
     }
@@ -2222,6 +2309,8 @@ impl AppState {
             self.thread = None;
             self.active_reaction_message = None;
             self.confirm_delete_message = None;
+            self.close_message_search();
+            self.mention_autocomplete = None;
             self.switch_composer_context(Some(&channel_id), Target::Channel);
             // 別のチャンネルへ切り替えるときは前のチャンネルの Messages / Reactions 購読とキャッシュを破棄し、
             // バックグラウンドタスクとメモリがチャンネル数に応じて増え続けるのを防ぐ。
@@ -2229,6 +2318,8 @@ impl AppState {
             self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
             self.timeline_anchor_first_id = None;
         } else if self.current_channel.is_none() {
+            self.close_message_search();
+            self.mention_autocomplete = None;
             self.switch_composer_context(Some(&channel_id), Target::Channel);
             self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
             self.timeline_anchor_first_id = None;
@@ -2587,11 +2678,17 @@ impl AppState {
                     channel_id: draft.channel_id.clone(),
                     target: self.target.clone(),
                     content: std::mem::take(&mut self.composer_draft),
+                    attachments: Vec::new(),
                 };
                 self.push_failed_draft(displaced);
             }
             self.composer_draft = draft.content.clone();
             self.pending_composer_text = Some((draft.content, None));
+            for mut att in draft.attachments {
+                att.channel_id = draft.channel_id.clone();
+                att.session_gen = self.session_gen;
+                self.pending_attachments.push(att);
+            }
             self.ensure_channel_cache();
         } else {
             let current_ch = self
@@ -2605,14 +2702,20 @@ impl AppState {
                 }
                 if !self.composer_draft.trim().is_empty() {
                     let displaced = FailedDraft {
-                        channel_id: current_ch,
+                        channel_id: current_ch.clone(),
                         target: Target::Channel,
                         content: std::mem::take(&mut self.composer_draft),
+                        attachments: Vec::new(),
                     };
                     self.push_failed_draft(displaced);
                 }
                 self.composer_draft = draft.content.clone();
                 self.pending_composer_text = Some((draft.content, None));
+                for mut att in draft.attachments {
+                    att.channel_id = current_ch.clone();
+                    att.session_gen = self.session_gen;
+                    self.pending_attachments.push(att);
+                }
                 self.notify(
                     "元のチャンネルにアクセスできないため、現在のチャンネルの入力欄に下書きを復元しました",
                 );
@@ -2630,6 +2733,14 @@ impl AppState {
             self.notify("先にチャンネルを開いてください");
             return false;
         };
+        // 送信中の同一ターゲットへの重複送信を防止する
+        if self
+            .in_flight_submissions
+            .iter()
+            .any(|(_, d)| d.channel_id == channel_id && d.target == self.target)
+        {
+            return false;
+        }
         let cur_attachments: Vec<&PendingAttachment> = self
             .pending_attachments
             .iter()
@@ -2671,15 +2782,22 @@ impl AppState {
             .remove(&(channel_id.clone(), target.clone()));
         self.stop_typing();
 
-        let attachment_ids: Vec<String> = if !matches!(target, Target::Edit(_)) {
-            self.pending_attachments
-                .iter()
-                .filter(|a| a.channel_id == channel_id && a.session_gen == self.session_gen)
-                .filter_map(|a| a.attachment_id.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let (sent_attachments, remaining_attachments): (Vec<_>, Vec<_>) =
+            if !matches!(target, Target::Edit(_)) {
+                let s_gen = self.session_gen;
+                let ch = channel_id.clone();
+                self.pending_attachments
+                    .drain(..)
+                    .partition(|a| a.channel_id == ch && a.session_gen == s_gen)
+            } else {
+                (Vec::new(), std::mem::take(&mut self.pending_attachments))
+            };
+        self.pending_attachments = remaining_attachments;
+
+        let attachment_ids: Vec<String> = sent_attachments
+            .iter()
+            .filter_map(|a| a.attachment_id.clone())
+            .collect();
         let attachment_ids_opt = if attachment_ids.is_empty() {
             None
         } else {
@@ -2704,6 +2822,7 @@ impl AppState {
                 channel_id: channel_id.clone(),
                 target: target.clone(),
                 content: content.clone(),
+                attachments: sent_attachments,
             },
         ));
 
@@ -2841,10 +2960,25 @@ impl AppState {
         self.attachment_download_url(attachment_id)
     }
 
+    /// 添付ファイル URL を開くか、取得中であれば解決完了時に開くキューへ登録する。
+    pub fn open_or_queue_attachment(&mut self, attachment_id: &str) -> Option<String> {
+        if let Some(url) = self.get_or_fetch_attachment_url(attachment_id) {
+            Some(url)
+        } else {
+            self.pending_open_attachments
+                .insert(attachment_id.to_string());
+            None
+        }
+    }
+
     // --- 添付ファイル ---
 
     /// ローカルファイルパスから添付ファイルを追加する。
     pub fn add_attachment_from_path(&mut self, path: std::path::PathBuf) {
+        if matches!(self.target, Target::Edit(_)) {
+            self.notify("メッセージの編集中はファイルを添付できません");
+            return;
+        }
         if self.current_channel_attachments().len() >= 10 {
             self.notify("添付できるファイルは最大10件までです");
             return;
@@ -3169,12 +3303,19 @@ impl AppState {
     pub fn close_emoji_picker(&mut self) {
         self.emoji_picker_open = false;
         self.emoji_picker_query.clear();
+        self.pending_focus_composer = true;
     }
 
-    pub fn insert_emoji(&mut self, emoji: &str, cursor: usize) {
-        let cursor = cursor.min(self.composer_draft.len());
-        let before = &self.composer_draft[..cursor];
-        let after = &self.composer_draft[cursor..];
+    pub fn insert_emoji(&mut self, emoji: &str, range: std::ops::Range<usize>) {
+        let start = range.start.min(self.composer_draft.len());
+        let end = range.end.min(self.composer_draft.len());
+        let (start, end) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let before = &self.composer_draft[..start];
+        let after = &self.composer_draft[end..];
         let new_text = format!("{before}{emoji}{after}");
         let new_caret = before.len() + emoji.len();
         self.composer_draft = new_text.clone();
@@ -3190,6 +3331,7 @@ impl AppState {
 
     pub fn close_create_channel_modal(&mut self) {
         self.create_channel_modal = None;
+        self.pending_focus_composer = true;
     }
 
     pub fn submit_create_channel(&mut self) {
@@ -3252,6 +3394,7 @@ impl AppState {
 
     pub fn close_message_search(&mut self) {
         self.message_search = None;
+        self.pending_focus_composer = true;
     }
 
     pub fn update_message_search_query(&mut self, query: String) {
@@ -3308,14 +3451,15 @@ impl AppState {
             if let Some(parent_id) = msg.parent_id {
                 self.open_thread(parent_id.clone());
                 if let Some(thread) = &mut self.thread {
-                    thread.selected = Some(matched_id);
+                    thread.selected = Some(matched_id.clone());
                 }
                 self.timeline_anchor_first_id = Some(parent_id);
             } else {
-                self.timeline_anchor_first_id = Some(matched_id);
+                self.timeline_anchor_first_id = Some(matched_id.clone());
             }
             self.timeline_at_bottom = false;
             self.timeline_render_limit = MAX_TIMELINE_RENDER_LIMIT;
+            self.pending_scroll_to_message_id = Some(matched_id);
             self.ensure_channel_cache();
         }
     }
@@ -3328,6 +3472,7 @@ impl AppState {
 
     pub fn close_quick_switcher(&mut self) {
         self.quick_switcher = None;
+        self.pending_focus_composer = true;
     }
 
     pub fn update_quick_switcher_query(&mut self, query: String) {
@@ -3650,6 +3795,7 @@ mod tests {
             channel_id: "c1".into(),
             target: Target::Channel,
             content: "失敗分".into(),
+            attachments: Vec::new(),
         });
 
         state.on_shape(ShapeEvent::Failed(
@@ -4115,6 +4261,7 @@ mod tests {
                 channel_id: "c1".into(),
                 target: Target::Channel,
                 content: "送信途中のメッセージ".into(),
+                attachments: Vec::new(),
             },
         ));
         let old_gen = state.session_gen;
@@ -4644,13 +4791,19 @@ mod tests {
         let mut state = connected_state();
         state.open_channel("c1".into());
         state.on_composer_changed("Hello world".into());
-        // "Hello " の後ろ (cursor = 6) に "😀" を挿入
-        state.insert_emoji("😀", 6);
+        // "Hello " の後ろ (cursor = 6) に "😀" を挿入 (選択範囲なし)
+        state.insert_emoji("😀", 6..6);
         assert_eq!(
             state.pending_composer_text,
             Some(("Hello 😀world".to_string(), Some(6 + "😀".len())))
         );
         assert_eq!(state.composer_draft, "Hello 😀world");
+
+        // 選択範囲 ("world") を置換して "🎉" を挿入
+        let world_start = 6 + "😀".len();
+        let world_end = world_start + "world".len();
+        state.insert_emoji("🎉", world_start..world_end);
+        assert_eq!(state.composer_draft, "Hello 😀🎉");
     }
 
     #[test]
@@ -4753,6 +4906,7 @@ mod tests {
                 channel_id: "c1".into(),
                 target: Target::Channel,
                 content: "送信メッセージ".into(),
+                attachments: Vec::new(),
             },
         ));
 
@@ -4789,5 +4943,102 @@ mod tests {
         state.quick_switcher_select_prev();
         state.quick_switcher_confirm();
         assert!(state.quick_switcher.is_none());
+    }
+
+    #[test]
+    fn prevents_duplicate_submission_and_preserves_attachments() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_1".into(),
+            channel_id: "c1".into(),
+            session_gen: state.session_gen,
+            file_name: "test.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_1".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        // 1回目の送信 (in_flight に入る)
+        assert!(state.submit_message("Hello".into()));
+        assert_eq!(state.in_flight_submissions.len(), 1);
+        // pending_attachments から送信中添付が取り出されている
+        assert!(state.pending_attachments.is_empty());
+
+        // 送信中に2回目の送信を試行しても拒否される
+        assert!(!state.submit_message("Hello again".into()));
+
+        // 送信失敗時の RestoreDraft で下書き本文と添付ファイルが復元される
+        let sub_id = state.in_flight_submissions[0].0;
+        state.on_app_event(AppEvent::RestoreDraft {
+            submission_id: sub_id,
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "Hello".into(),
+        });
+        assert_eq!(state.composer_draft, "Hello");
+        assert_eq!(state.pending_attachments.len(), 1);
+        assert_eq!(state.pending_attachments[0].local_id, "loc_1");
+    }
+
+    #[test]
+    fn rejects_attachment_while_editing_and_resets_search_on_channel_switch() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 編集中はファイル添付が拒否される
+        state.target = Target::Edit("m1".into());
+        let temp_dir = std::env::temp_dir();
+        let dummy_file = temp_dir.join("zoo2_test_dummy.txt");
+        let _ = std::fs::write(&dummy_file, "hello");
+        state.add_attachment_from_path(dummy_file.clone());
+        let _ = std::fs::remove_file(&dummy_file);
+        assert!(state.pending_attachments.is_empty());
+        assert_eq!(
+            state.notice.as_ref().map(|(msg, _)| msg.as_str()),
+            Some("メッセージの編集中はファイルを添付できません")
+        );
+
+        // 検索とメンション補完を開いた状態で別チャンネルへ移動
+        state.target = Target::Channel;
+        state.open_message_search();
+        state.update_message_search_query("test".into());
+        assert!(state.message_search.is_some());
+        state.mention_autocomplete = Some(MentionAutocompleteState {
+            query: "alice".into(),
+            start_byte: 0,
+            end_byte: 6,
+            candidates: vec![],
+            selected_index: 0,
+        });
+
+        // チャンネル切り替えで検索とメンション補完がリセットされる
+        state.open_channel("c2".into());
+        assert!(state.message_search.is_none());
+        assert!(state.mention_autocomplete.is_none());
+    }
+
+    #[test]
+    fn queues_attachment_open_and_resolves_url() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 未解決の添付ファイルをクリック
+        let res = state.open_or_queue_attachment("att_99");
+        assert!(res.is_none());
+        assert!(state.pending_open_attachments.contains("att_99"));
+
+        // URL 解決イベントで pending_open_url に格納される
+        state.on_app_event(AppEvent::AttachmentUrlResolved {
+            attachment_id: "att_99".into(),
+            download_url: "https://example.com/download/att_99?X-Amz-Expires=300".into(),
+        });
+        assert!(!state.pending_open_attachments.contains("att_99"));
+        assert_eq!(
+            state.pending_open_url,
+            Some("https://example.com/download/att_99?X-Amz-Expires=300".into())
+        );
     }
 }
