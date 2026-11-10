@@ -554,7 +554,7 @@ impl WorkspaceView {
                                 .text_center()
                                 .text_sm()
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(theme.text_primary)
+                                .text_color(theme.text_on_accent)
                                 .child("ブラウザでログイン (Enter)")
                                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                                     if is_activate_key(&ev.keystroke.key) {
@@ -633,7 +633,7 @@ impl WorkspaceView {
                             .text_center()
                             .text_sm()
                             .font_weight(FontWeight::BOLD)
-                            .text_color(theme.text_primary)
+                            .text_color(theme.text_on_accent)
                             .child("再接続する (Enter)")
                             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                                 if is_activate_key(&ev.keystroke.key) {
@@ -735,7 +735,7 @@ impl WorkspaceView {
                                     .text_center()
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(theme.text_primary)
+                                    .text_color(theme.text_on_accent)
                                     .child("ブラウザを開く")
                                     .on_key_down(cx.listener(move |_, ev: &KeyDownEvent, _, _| {
                                         if is_activate_key(&ev.keystroke.key) {
@@ -1224,7 +1224,7 @@ impl WorkspaceView {
                                         .text_center()
                                         .text_xs()
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(theme.text_primary)
+                                        .text_color(theme.text_on_accent)
                                         .child("再同期する")
                                         .on_mouse_up(
                                             MouseButton::Left,
@@ -1711,7 +1711,7 @@ impl WorkspaceView {
                                 .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                                 .text_xs()
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(theme.text_primary)
+                                .text_color(theme.text_on_accent)
                                 .child(if hidden_after > 0 {
                                     format!("↓ 最新メッセージへ移動 (新着ほか {hidden_after} 件)")
                                 } else {
@@ -2441,7 +2441,7 @@ impl WorkspaceView {
                                     .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(theme.text_primary)
+                                    .text_color(theme.text_on_accent)
                                     .child(if is_editing { "保存" } else { "送信" })
                                     .on_mouse_up(
                                         MouseButton::Left,
@@ -2614,7 +2614,7 @@ impl WorkspaceView {
                                         .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                                         .text_xs()
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(theme.text_primary)
+                                        .text_color(theme.text_on_accent)
                                         .child("返信を書く")
                                         .on_mouse_up(
                                             MouseButton::Left,
@@ -3156,7 +3156,7 @@ impl WorkspaceView {
                             .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                             .text_xs()
                             .font_weight(FontWeight::BOLD)
-                            .text_color(theme.text_primary)
+                            .text_color(theme.text_on_accent)
                             .child(if in_flight { "作成中…" } else { "作成" })
                             .on_mouse_up(
                                 MouseButton::Left,

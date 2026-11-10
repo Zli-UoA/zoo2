@@ -148,11 +148,68 @@ pub struct FailedDraft {
     pub message_id: Option<String>,
 }
 
+const MENTION_PUNCTUATION: &[char] = &['.', ',', '!', '?', ':', ';', '。', '、', '！', '？'];
+
+fn is_mention_boundary_char(prev: char) -> bool {
+    prev.is_whitespace()
+        || matches!(
+            prev,
+            '(' | '[' | '{' | '<' | '（' | '「' | '『' | '"' | '\'' | '。' | '、'
+        )
+}
+
+/// 本文が指定ユーザー宛てメンションまたは `@channel` / `@here` を含むかを判定する。
+/// `backend/src/notifications.rs` の境界判定・末尾句読点トリム規則と整合させ、メールアドレスやURLの誤検知を防ぐ。
+pub fn has_mention_for(content: &str, me_user_name: &str) -> bool {
+    let chars: Vec<char> = content.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == '@' {
+            let is_boundary = i == 0 || is_mention_boundary_char(chars[i - 1]);
+            if is_boundary {
+                let start = i + 1;
+                let mut end = start;
+                while end < len {
+                    let c = chars[end];
+                    if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                        end += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                if end > start {
+                    let token: String = chars[start..end].iter().collect();
+                    let trimmed_token = token.trim_end_matches(MENTION_PUNCTUATION);
+
+                    if trimmed_token.eq_ignore_ascii_case("channel")
+                        || trimmed_token.eq_ignore_ascii_case("here")
+                    {
+                        return true;
+                    }
+                    if !me_user_name.is_empty()
+                        && (token == me_user_name || trimmed_token == me_user_name)
+                    {
+                        return true;
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// 送信待ちの添付ファイル。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingAttachment {
     pub local_id: String,
     pub channel_id: String,
+    pub target: Target,
     pub session_gen: u64,
     pub file_name: String,
     pub file_size: i64,
@@ -1275,10 +1332,7 @@ impl AppState {
                                         .map(|m| m.user_name.as_str())
                                         .unwrap_or("");
                                     let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                    let has_mention = (!me_user_name.is_empty()
-                                        && msg.content.contains(&format!("@{me_user_name}")))
-                                        || msg.content.contains("@channel")
-                                        || msg.content.contains("@here");
+                                    let has_mention = has_mention_for(&msg.content, me_user_name);
                                     if is_dm || has_mention {
                                         pending_notifications.push((
                                             ch.clone(),
@@ -1721,7 +1775,7 @@ impl AppState {
                         .contains_key(&(channel_id.clone(), target.clone()))
                 {
                     if self.target != target {
-                        self.switch_composer_context(Some(&channel_id), target);
+                        self.switch_composer_context(Some(&channel_id), target.clone());
                     }
                     self.composer_draft = content.clone();
                     self.pending_composer_text = Some((content, None));
@@ -1729,6 +1783,7 @@ impl AppState {
                         self.pending_composer_message_id = draft.message_id;
                         for mut att in draft.attachments {
                             att.session_gen = self.session_gen;
+                            att.target = target.clone();
                             self.pending_attachments.push(att);
                         }
                     }
@@ -3103,7 +3158,9 @@ impl AppState {
         };
         self.pending_attachments
             .iter()
-            .filter(|a| a.channel_id == *ch && a.session_gen == self.session_gen)
+            .filter(|a| {
+                a.channel_id == *ch && a.target == self.target && a.session_gen == self.session_gen
+            })
             .collect()
     }
 
@@ -3241,6 +3298,7 @@ impl AppState {
         self.pending_attachments.push(PendingAttachment {
             local_id: local_id.clone(),
             channel_id: channel_id.clone(),
+            target: self.target.clone(),
             session_gen: self.session_gen,
             file_name: file_name.clone(),
             file_size,
@@ -3366,6 +3424,7 @@ impl AppState {
         self.pending_attachments.push(PendingAttachment {
             local_id: local_id.clone(),
             channel_id: channel_id.clone(),
+            target: self.target.clone(),
             session_gen: self.session_gen,
             file_name: file_name.clone(),
             file_size,
@@ -5214,6 +5273,7 @@ mod tests {
         state.pending_attachments.push(PendingAttachment {
             local_id: "local_1".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "test.png".into(),
             file_size: 1024,
@@ -5279,6 +5339,7 @@ mod tests {
         state.pending_attachments.push(PendingAttachment {
             local_id: "loc_1".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "sent.png".into(),
             file_size: 100,
@@ -5291,6 +5352,7 @@ mod tests {
         state.pending_attachments.push(PendingAttachment {
             local_id: "loc_2".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "next.png".into(),
             file_size: 200,
@@ -5354,6 +5416,7 @@ mod tests {
         state.pending_attachments.push(PendingAttachment {
             local_id: "loc_1".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "test.png".into(),
             file_size: 100,
@@ -5454,6 +5517,7 @@ mod tests {
         state.pending_attachments.push(PendingAttachment {
             local_id: "loc_ready".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "ready.png".into(),
             file_size: 100,
@@ -5466,6 +5530,7 @@ mod tests {
         state.pending_attachments.push(PendingAttachment {
             local_id: "loc_uploading".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "uploading.png".into(),
             file_size: 200,
@@ -5478,6 +5543,7 @@ mod tests {
         state.pending_attachments.push(PendingAttachment {
             local_id: "loc_error".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "error.png".into(),
             file_size: 300,
@@ -5510,6 +5576,7 @@ mod tests {
             attachments: vec![PendingAttachment {
                 local_id: "loc_1".into(),
                 channel_id: "c_deleted".into(),
+                target: Target::Channel,
                 session_gen: state.session_gen,
                 file_name: "att.png".into(),
                 file_size: 500,
@@ -5730,6 +5797,7 @@ mod tests {
         let att1 = PendingAttachment {
             local_id: "local_1".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "file1.png".into(),
             file_size: 100,
@@ -5753,6 +5821,7 @@ mod tests {
         let att2 = PendingAttachment {
             local_id: "local_2".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "file2.png".into(),
             file_size: 200,
@@ -5793,6 +5862,7 @@ mod tests {
         let att1 = PendingAttachment {
             local_id: "local_1".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "file1.png".into(),
             file_size: 100,
@@ -5817,6 +5887,7 @@ mod tests {
         let att2 = PendingAttachment {
             local_id: "local_2".into(),
             channel_id: "c1".into(),
+            target: Target::Channel,
             session_gen: state.session_gen,
             file_name: "file2.png".into(),
             file_size: 200,
@@ -5836,5 +5907,59 @@ mod tests {
         assert_eq!(preserved.1.len(), 2);
         assert_eq!(preserved.1[0].attachments[0].local_id, "local_1");
         assert_eq!(preserved.1[1].attachments[0].local_id, "local_2");
+    }
+
+    #[test]
+    fn validates_mention_notification_tokens() {
+        assert!(has_mention_for("@here", "alice"));
+        assert!(has_mention_for("@HERE", "alice"));
+        assert!(has_mention_for("Hey @channel all", "alice"));
+        assert!(has_mention_for("@alice hello", "alice"));
+        assert!(has_mention_for("Thanks @alice.", "alice"));
+        assert!(has_mention_for("Thanks @alice!", "alice"));
+        assert!(has_mention_for("(@alice)", "alice"));
+
+        // 境界文字のないメールアドレスやURL、単語の一部はメンションと判定されないこと
+        assert!(!has_mention_for("foo@alice.example", "alice"));
+        assert!(!has_mention_for("https://example.com/@here", "alice"));
+        assert!(!has_mention_for("@channel_inside", "alice"));
+        assert!(!has_mention_for("@bob", "alice"));
+    }
+
+    #[test]
+    fn isolates_attachments_by_target_and_restores_on_switch() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 通常投稿に添付 1 を追加
+        state.add_attachment_from_bytes("chan.png".into(), "image/png".into(), vec![1, 2]);
+        assert_eq!(state.current_channel_attachments().len(), 1);
+        assert_eq!(state.current_channel_attachments()[0].file_name, "chan.png");
+
+        // スレッド返信に切り替えると、返信欄の添付は空になること
+        state.focus_thread_reply("root_1".into());
+        assert!(matches!(state.target, Target::Reply(_)));
+        assert_eq!(state.current_channel_attachments().len(), 0);
+
+        // スレッド返信に添付 2 を追加
+        state.add_attachment_from_bytes("reply.png".into(), "image/png".into(), vec![3, 4]);
+        assert_eq!(state.current_channel_attachments().len(), 1);
+        assert_eq!(
+            state.current_channel_attachments()[0].file_name,
+            "reply.png"
+        );
+
+        // 通常投稿に戻ると、添付 1 が復元され、添付 2 は混ざらないこと
+        state.switch_composer_context(Some("c1"), Target::Channel);
+        assert_eq!(state.current_channel_attachments().len(), 1);
+        assert_eq!(state.current_channel_attachments()[0].file_name, "chan.png");
+
+        // 再度スレッド返信に戻ると、添付 2 が復元されること
+        state.switch_composer_context(Some("c1"), Target::Reply("root_1".into()));
+        assert_eq!(state.current_channel_attachments().len(), 1);
+        assert_eq!(
+            state.current_channel_attachments()[0].file_name,
+            "reply.png"
+        );
     }
 }
