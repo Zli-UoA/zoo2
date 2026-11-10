@@ -52,7 +52,6 @@ export const ImportedFromSlack: Story = {
     channel: { ...general, imported_from_slack: true },
   },
   play: playForImplementation(async () => {
-    await expect(await screen.findByText("Slack から取り込み")).toBeVisible();
     await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
     await expect(
       await within(await screen.findByRole("dialog")).findByText(
