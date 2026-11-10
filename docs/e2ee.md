@@ -116,6 +116,8 @@ SSSS 鍵 → zoo.megolm_backup.previous   → 古い版のバックアップ鍵 
 - バイト列は、特に書かない限り**パディングなしの標準 base64**（[Unpadded Base64](https://spec.matrix.org/latest/appendices/#unpadded-base64)）で表す。受け取る側はパディング付きも受け付ける。WebAuthn の credential ID だけは、WebAuthn の慣習に合わせて base64url（パディングなし）にする。
 - 署名は [Signing JSON](https://spec.matrix.org/latest/appendices/#signing-json) と同じにする。`signatures` と `unsigned` を除いた JSON を [Canonical JSON](https://spec.matrix.org/latest/appendices/#canonical-json) にして Ed25519 で署名し、`signatures.<user_id>.<鍵 ID>` に入れる。鍵 ID は `ed25519:<device_id>`（端末の署名鍵）か `ed25519:<公開鍵>`（クロス署名の鍵）。
 - 次の ID は UUID の文字列にする：`user_id`、`channel_id`、`message_id`（既存の `users.id`、`channels.id`、`messages.id` と同じ）、`device_id`、SSSS の `key_id`、鍵スロットの `slot_id`、to-device の `txn_id`。`device_id` はクライアントが UUID v4 で作る。署名する JSON に `device_id` が入るので、サーバーに登録する前に決まっている必要があるため。
+- 【提案】上の UUID の ID はすべて、小文字のハイフン区切り（PostgreSQL の `uuid` 型が返す表記）で書く。`user_id` は署名する JSON に、`device_id` は署名する JSON と鍵 ID（`ed25519:<device_id>`、`curve25519:<device_id>`）に、SSSS の `key_id` と `slot_id` は鍵スロットの AAD に入り、`txn_id` は再送をまとめるときに文字列のまま比べる。表記がずれると、署名や AAD の検証、サーバーが返す ID との突き合わせに失敗するため。
+  - `zoo-crypto` が今（#348）この表記を検証するのは `user_id` と `device_id` だけで、他の表記は受け付けない。残りの ID の検証はそれを扱う issue（鍵スロットや to-device）で足す。
 - ワンタイム鍵とフォールバック鍵の `key_id`（`signed_curve25519:<key_id>`）は UUID ではない。vodozemac の `KeyId`（u64）をパディングなし base64 にした文字列をそのまま使う。DB の `e2ee_one_time_keys.key_id` と `e2ee_fallback_keys.key_id` も同じ値で、サーバーは UUID として検証しない。
 - Megolm の `session_id` と、鍵バックアップの `version`（10 進の文字列）も UUID ではない。
 
@@ -1483,21 +1485,49 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | TUI（`tui/`） | ネイティブの Rust クレートとして直接使う | リカバリーキー | #359、#360 |
 | デスクトップ版（`desktop/`） | 最初の範囲では対象にしない。暗号化チャンネルは表示できないと示す（[クロス署名の API](#クロス署名356)の【決定】）。この表示は、暗号化チャンネルを作れるようになる #361 に入れる | なし | #361 |
 
-【提案】バインディングは `crates/zoo-crypto-wasm` と `crates/zoo-crypto-ffi` のように別クレートに分け、コアにプラットフォームの依存を入れません。
+【提案】バインディングは `crates/zoo-crypto-wasm` と `crates/zoo-crypto-ffi` のように別クレートに分け、コアにプラットフォームの依存を入れません。例外は `wasm32-unknown-unknown` で乱数のバックエンドを選ぶ設定（vodozemac の `wasm_js` feature、[乱数](#乱数)）の 1 つだけです。
+
+- 【決定】`wasm_js` feature はバインディングのクレートではなくコアの `crates/zoo-crypto/Cargo.toml` で、`[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]` に書いて有効にする（#348）。理由は次の 3 つ。
+  - getrandom 0.4 には `wasm32-unknown-unknown` の既定のバックエンドがなく、バックエンドを選ばないと `compile_error!` でビルドが止まる。
+  - CI Crypto（`.github/workflows/ci-crypto.yaml`）と `make crypto-check` は、バインディングのクレートなしで、コアだけを `wasm32-unknown-unknown` 向けにビルドする。コアで有効にしないと、このビルドが通らない。
+  - target を限った依存なので、ネイティブ、Android、TUI のビルドには入らない。この target のときだけ、getrandom が `wasm-bindgen` に依存する（`atomics` を有効にしたときは `js-sys` にも。既定では出ない）。`cargo tree --target wasm32-unknown-unknown` で確かめられる。`Cargo.lock` は target を記録しないので根拠にならない。
+- この target で動かすのは、JS の上で動く React だけ（Compose for Web は実験を中止し、`frontend-compose/` には Android 向けの共有コードだけが残る）なので、`crypto.getRandomValues` を前提にしてよい。JS のない環境で `wasm32-unknown-unknown` を使うことになったら、この例外を見直す。
 
 ### 乱数
 
 - 【決定】乱数は OS かブラウザーの暗号用乱数（Web では `crypto.getRandomValues`）だけを使う。
 - 【決定】vodozemac 0.11.2 は `getrandom ^0.4.3` に依存し、`wasm_js = ["getrandom/wasm_js"]` の feature を持つ。`wasm32-unknown-unknown` では vodozemac の `wasm_js` を有効にする。getrandom は 0.3.4（2025-10-14）以降と 0.4 系で、`wasm_js` feature を有効にするだけで wasm_js バックエンドを使うので、cfg フラグ（`--cfg getrandom_backend="wasm_js"`）は付けない（getrandom の CHANGELOG の 0.3.4 の項）。
+  - `crates/zoo-crypto` は、`wasm32-unknown-unknown` のときだけ vodozemac の `wasm_js` を有効にする（#348）。この設定をコアに置く理由は、[共有の暗号コア](#共有の暗号コア)に書いた。
+  - #348 のビルドで確かめたこと：cfg フラグなしで `cargo build --target wasm32-unknown-unknown` が通る。`wasm_js` feature を外すと、getrandom の `compile_error!` でビルドが止まる。今の依存（`Cargo.lock`）に入る getrandom は 0.4 だけ。
+  - 【未検証】ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドしか確かめていない）は、#352 で確かめる。
 - 【決定】他の依存が getrandom 0.3 を使うなら 0.3.4 以降に上げ、`wasm_js` feature を有効にする（0.3.0〜0.3.3 は feature だけではビルドできない）。0.2 系なら `js` feature にする。`custom` バックエンドは使わない。
 
 ### 暗号ストア
 
 - 【決定】暗号ストアは、オフライン DB（`zoo-offline-*`）とは別に置く。`OFFLINE_SCHEMA_VERSION` を変えてオフライン DB を作り直しても、暗号ストアは消えない（消えると端末の鍵を失うため）。
-- 【決定】Olm と Megolm の状態は、vodozemac の pickle を 32 バイトの pickle key で暗号化して保存する（#348）。
-- 【提案】保存先と pickle key の置き場所：
+- 【決定】Olm と Megolm の状態は、vodozemac の pickle を暗号化して保存する（#348）。暗号化に使う pickle key は保存のたびに変える。
+  - 呼び出し側は 32 バイトの**保存鍵**を長く持ち、vodozemac には直接渡さない。保存するたびに新しい 32 バイトの salt を作り、`HKDF-SHA256(ikm = 保存鍵, salt, info)` で、その保存だけに使う pickle key を導く。salt は保存形式に平文で入れる。`info` は保存するものごとに分ける（端末アカウントは `zoo e2ee device pickle key v1`）。
+  - pickle key を保存のたびに変えるのは、vodozemac の pickle が pickle key から AES 鍵と IV を決まった方法で導くため。同じ pickle key を使い回すと、保存のたびに同じ鍵と IV で AES-CBC を使うことになる。そうなると、先頭から同じ平文が続く範囲は同じ暗号文ブロックになるので、複数の版やバックアップを手に入れた攻撃者は、暗号文を比べて pickle のどこが変わったかを知ることができる。[鍵バックアップ](#鍵バックアップ)で暗号化のたびに一時鍵を作り直すのも、同じ理由による。状態が変わっていなくても、保存のたびに出力は変わる。
+- 【提案】端末アカウントの保存形式（`DeviceAccount::pickle`）は、次の JSON にする。
 
-  | クライアント | 保存先 | pickle key |
+  ```json
+  {"version": 2, "user_id": "...", "device_id": "...", "salt": "<32 バイト>", "account": "<vodozemac の暗号化した pickle>", "binding": "<署名>"}
+  ```
+
+  `salt` は上の pickle key を導く salt で、パディングなしの base64 で書く。`version` の 1 は salt のない形式だった。#348 のクレートは公開前で、1 の形式で保存したデータはないので、1 の読み込みには対応せず、移行もしない。
+
+  `user_id` と `device_id` は平文で持つ。書き換えに気付けるように、`binding` に `LP("zoo e2ee device pickle v1")‖LP(user_id)‖LP(device_id)` への端末の署名鍵の署名を入れる（`LP` は[鍵スロット](#鍵スロット)の AAD と同じ）。署名する対象を JSON ではなく長さ付きのバイト列にして、この署名がサーバーに送る署名付き JSON の署名と取り違えられないようにする。
+
+  `DeviceAccount::from_pickle` は、保存した文字列と保存鍵に加えて、今ログインしているユーザーの `user_id` と、そのユーザーで登録した端末の `device_id` を受け取る。戻すときは次の順に確かめる。
+  1. `user_id` と `device_id` が `DeviceAccount::new` と同じ条件（`device_id` は UUID v4）を満たす。満たさなければ `CryptoError::InvalidPickle` になる。
+  2. 保存鍵と `salt` から導いた pickle key で復号できる。保存鍵が違えば `CryptoError::Pickle` になる。
+  3. `binding` が正しい。正しくなければ `CryptoError::InvalidPickle` になる。
+  4. 保存した `user_id` と `device_id` が引数の値と一致する。一致しなければ `CryptoError::PickleOwnerMismatch` になる。
+
+  4 で照合するのは、`binding` をその pickle 自身の署名鍵で検証するため。同じ保存鍵で保存した別のユーザーや端末の pickle を丸ごと差し替えられても、3 までは通る。保存鍵をユーザーや端末ごとに分けるかは各クライアント（#359）で決めるので、分けていない場合でも別のユーザーや端末の鍵で動かないように、zoo-crypto の側で照合する。
+- 【提案】保存先と保存鍵の置き場所。表の鍵は長く使う保存鍵で、vodozemac の pickle key は上のとおり保存のたびにここから導く。
+
+  | クライアント | 保存先 | 保存鍵 |
   | --- | --- | --- |
   | React | OPFS の別 DB（`zoo-crypto-<ユーザーのハッシュ>.sqlite`。名前は `lib/offline/identity.ts` と同じ作り方） | 抽出できない WebCrypto の鍵（IndexedDB に保存）で包み、起動時に Worker のメモリーに展開する |
   | Android | アプリの内部ストレージ | Android Keystore で包む |
@@ -1506,7 +1536,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - 【決定】複数のタブが同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。【提案】他のタブは BroadcastChannel でそのタブに処理を頼む。詳細は #359 で決める。
 - 【決定】暗号ストアには、自分のユーザー署名鍵の公開鍵の履歴（初めて見たとき、保存したとき、置き換わりを検出したときに足す）と、相手ごとの `confirmed_usk` も入れる。古いユーザー署名鍵への巻き戻しの検出（[クロス署名](#クロス署名)の、ユーザー署名鍵の変更の検出手順）に使う。履歴を持たない新しい端末は気付けない（[脅威モデル](#脅威モデル)）。
 - ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。
-- pickle key による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
+- 保存鍵による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
 
 ## 脅威モデル
 
@@ -1600,6 +1630,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 既存のパスキー（`prf: {}` なしで登録したプラットフォーム認証器）で PRF を使えるか。AuthZ#95 より前に登録したセキュリティキーは、登録し直すまで使えない | 【未検証】 | AuthZ#94、#369 |
 | Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` は AuthZ#96 で配信する | 【未検証】 | #360（前に AuthZ#96） |
 | `getrandom` の wasm のバックエンドの設定。cfg フラグは付けず、`wasm_js` feature だけにする（getrandom 0.3.4 以降と 0.4） | 【決定】 | #348 |
+| `getrandom` の wasm_js バックエンドで、ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドだけ確認） | 【未検証】 | #352 |
 | 3 段のサブクエリの Shape で move-in と move-out が届くか | 【未検証】 | #354 |
 | `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【提案】 | #358 |
 | エラー応答に `code` を足す方法 | 【提案】 | #354 か #357 |

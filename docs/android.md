@@ -96,14 +96,17 @@ IdP 全体のブラウザーセッションや他端末の認証は失効させ�
 端末の再起動などで Shizuku が停止した場合は、再び起動してください。
 自動更新の有効化だけで Shizuku の権限を自動取得することはありません。
 
-- main の各コミットでテスト・lint 後に固定鍵で署名した release APK をビルドし、
-  GitHub Releases の開発版 `android-main` へ配布します。初回配布は main の CI Android を
+- main に Android に関係する変更（`frontend-compose/**`、文言、アイコンなど。CI Android の
+  `push` の `paths` と同じ）が入るたびに、テスト・lint 後に固定鍵で署名した release APK を
+  ビルドし、GitHub Releases の開発版 `android-main` へ配布します。TUI など Android に関係しない
+  変更では、ビルドも配布も動きません。初回配布は main の CI Android を
   `workflow_dispatch` で手動実行しても作成できます。
 - APK は `zoo-android-main-<commit SHA>.apk`、更新情報は `update.json` です。
   更新情報には実際のビルドのコミット・バージョン・サイズ・SHA-256 が入ります。
   `android-main` タグ自体は初回作成時のコミットを指す固定の配布チャンネルです。
 - バージョンコードは main の first-parent コミット数です。完全な Git 履歴を取得して採番し、
-  新しい main が存在する古い実行結果は配布しません。過去のバージョンへ自動で戻しません。
+  新しい main のコミットに Android に関係する変更が含まれる古い実行結果は配布しません。関係しない
+  変更だけが後から入ったときは、同じ内容のビルドとして配布します。過去のバージョンへ自動で戻しません。
 - WorkManager が6時間ごとに、従量制ではないネットワークと十分なバッテリーがあるときに確認します。
   OS のバックグラウンド制限によって実行時刻は遅れることがあります。
   「今すぐ更新を確認・適用」は接続中のネットワークで実行します。

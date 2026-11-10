@@ -119,21 +119,23 @@ describe("ChannelHeader", () => {
     expect(screen.queryByText("メッセージ管理")).toBeNull();
   });
 
-  it("marks a channel imported from Slack in the header and the settings only", async () => {
+  it("shows that a channel was imported from Slack in the settings only", async () => {
     const { rerender } = render(
-      <LocaleProvider>
-        <ChannelHeader channel={channel} memberCount={3} />
-      </LocaleProvider>,
-    );
-    expect(screen.queryByText("Slack から取り込み")).toBeNull();
-
-    rerender(
       <LocaleProvider>
         <ChannelHeader channel={{ ...channel, imported_from_slack: true }} memberCount={3} />
       </LocaleProvider>,
     );
-    expect(screen.getByText("Slack から取り込み")).toBeVisible();
+    // ヘッダーには出さない
+    expect(screen.queryByText("Slack から取り込み")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
-    expect(await screen.findByText("Slack から取り込んだチャンネルです。")).toBeVisible();
+    expect(await screen.findByText("Slack から取り込んだチャンネルです。")).toBeInTheDocument();
+
+    // 取り込んでいないチャンネルの設定には出さない
+    rerender(
+      <LocaleProvider>
+        <ChannelHeader channel={channel} memberCount={3} />
+      </LocaleProvider>,
+    );
+    expect(screen.queryByText("Slack から取り込んだチャンネルです。")).toBeNull();
   });
 });

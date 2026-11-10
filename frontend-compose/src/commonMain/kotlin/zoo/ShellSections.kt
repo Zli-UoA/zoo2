@@ -173,13 +173,9 @@ internal fun DmSidebar(
 }
 
 @Composable
-internal fun ChannelArchiveBadge(app: Session) = ChannelBadge(app.t("moderation.archived"))
-
-/** チャンネルの名前の横に出す、小さな印 (アーカイブ済み・Slack から取り込み) */
-@Composable
-internal fun ChannelBadge(label: String) {
+internal fun ChannelArchiveBadge(app: Session) {
     Text(
-        label,
+        app.t("moderation.archived"),
         Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
             .padding(horizontal = 6.dp, vertical = 2.dp),
         small = true,

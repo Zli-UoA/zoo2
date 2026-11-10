@@ -197,9 +197,6 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     {
         title.push(Span::styled(format!(" — {description}"), DIM));
     }
-    if channel.is_some_and(|c| c.imported_from_slack && !c.is_dm) {
-        title.push(Span::styled(" [Slack から取り込み]", DIM));
-    }
     title.push(Span::raw(" "));
     let block = pane(Line::from(title), app.focus == Focus::Messages);
     let inner = block.inner(area);
