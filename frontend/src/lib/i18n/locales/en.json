@@ -235,7 +235,13 @@
     "loadError": "Failed to load replies.",
     "empty": "No replies yet. Send the first reply.",
     "compose": "Write a reply",
-    "rootDeleted": "The original message was deleted"
+    "rootDeleted": "The original message was deleted",
+    "sidebarOpen": "Open thread: {{title}} ({{count}} replies)",
+    "archivedCount_one": "{{count}} archived thread",
+    "archivedCount_other": "{{count}} archived threads",
+    "unarchive": "Reopen thread",
+    "unarchiveError": "Could not reopen the thread.",
+    "untitled": "Untitled thread"
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",

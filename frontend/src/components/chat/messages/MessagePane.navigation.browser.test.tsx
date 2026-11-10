@@ -13,6 +13,7 @@ const fixture = vi.hoisted(() => {
     created_at: "2020-01-01T00:00:00.000Z",
     updated_at: null,
     deleted_at: null as string | null,
+    thread_archive_at: null as string | null,
     user_name: "alice",
     display_name: "Alice",
   };
@@ -21,6 +22,7 @@ const fixture = vi.hoisted(() => {
     exists: true,
     syncLoading: false,
     rows: [root],
+    replies: [] as (typeof root)[],
     empty: [],
     users: [] as { id: string; display_name: string; user_name: string }[],
     reactions: [] as {
@@ -32,12 +34,12 @@ const fixture = vi.hoisted(() => {
     }[],
     closeThread: vi.fn(),
     openThread: vi.fn(),
-    api: { request: vi.fn() },
+    api: { request: vi.fn(), post: vi.fn().mockResolvedValue({}) },
   };
 });
 const collection = {
   get: () => (fixture.exists ? fixture.root : undefined),
-  values: () => (fixture.exists ? fixture.rows : fixture.empty).values(),
+  values: () => (fixture.exists ? [...fixture.rows, ...fixture.replies] : fixture.empty).values(),
 };
 vi.mock("../../../lib/electric/collections-context", () => ({
   useCollections: () => ({
@@ -84,7 +86,11 @@ vi.mock("../../../hooks/useThread", () => ({
   useThreadRoot: () => ({
     data: fixture.exists && !fixture.root.deleted_at ? fixture.rows : fixture.empty,
   }),
-  useThreadFeed: () => ({ data: fixture.empty, isLoading: false, isError: false }),
+  useThreadFeed: (_channel: string, _root: string, since: string) => ({
+    data: fixture.replies.filter((reply) => reply.created_at >= since),
+    isLoading: false,
+    isError: false,
+  }),
 }));
 vi.mock("../../../hooks/useTyping", () => ({
   useTyping: () => ({ users: fixture.empty, onTyping: () => {} }),
@@ -110,7 +116,23 @@ vi.mock("./MessageList", () => ({
   }) => <div>{reactions.get("old-root")?.[0]?.userNames?.alice}</div>,
 }));
 vi.mock("./ThreadPane", () => ({
-  ThreadPane: ({ root }: { root: { content: string } }) => <div>{root.content}</div>,
+  ThreadPane: ({
+    root,
+    replies,
+    onUnarchive,
+  }: {
+    root: { content: string };
+    replies: { id: string; content: string }[];
+    onUnarchive?: () => void;
+  }) => (
+    <div>
+      {root.content}
+      {replies.map((reply) => (
+        <p key={reply.id}>{reply.content}</p>
+      ))}
+      <button onClick={onUnarchive}>Reopen thread</button>
+    </div>
+  ),
 }));
 vi.mock("./ReactionPicker", () => ({ ReactionPicker: () => null }));
 
@@ -119,12 +141,42 @@ beforeEach(() => {
   fixture.syncLoading = false;
   fixture.root.deleted_at = null;
   fixture.root.parent_id = null;
+  fixture.root.thread_archive_at = null;
+  fixture.replies = [];
   fixture.users = [];
   fixture.reactions = [];
   fixture.closeThread.mockClear();
   fixture.openThread.mockClear();
 });
 describe("thread URLs outside the initial message window", () => {
+  it("keeps older replies visible after an archived thread is reopened", async () => {
+    fixture.root.thread_archive_at = new Date().toISOString();
+    fixture.replies = [40, 10].map((days) => ({
+      ...fixture.root,
+      id: `reply-${days}`,
+      content: `Reply ${days} days ago`,
+      parent_id: fixture.root.id,
+      created_at: new Date(Date.now() - days * 86400000).toISOString(),
+      thread_archive_at: null,
+    }));
+    const view = () => (
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember />
+      </LocaleProvider>
+    );
+    const { rerender } = render(view());
+    await screen.findByText("Reply 40 days ago");
+    screen.getByRole("button", { name: "Reopen thread" }).click();
+    await waitFor(() =>
+      expect(fixture.api.post).toHaveBeenCalledWith("/api/threads/old-root/unarchive", {}),
+    );
+    fixture.root.thread_archive_at = null;
+    rerender(view());
+    await waitFor(() => {
+      expect(screen.getByText("Reply 40 days ago")).toBeTruthy();
+      expect(screen.getByText("Reply 10 days ago")).toBeTruthy();
+    });
+  });
   it("waits for an uncached linked reply and opens its thread after initial sync", async () => {
     fixture.exists = false;
     fixture.syncLoading = true;

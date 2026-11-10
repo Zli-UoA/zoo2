@@ -14,6 +14,7 @@ pub mod push;
 pub mod read_states;
 pub mod response;
 pub mod shapes;
+pub mod threads;
 pub mod typing;
 pub mod users;
 pub mod webhooks;
@@ -79,6 +80,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(channels::router())
         .merge(dms::router())
         .merge(messages::router())
+        .merge(threads::router())
         .merge(attachments::router())
         .merge(crate::slack::import::router())
         .merge(crate::slack::link::router())

@@ -235,7 +235,13 @@
     "loadError": "載入唔到回覆。",
     "empty": "仲未有回覆。傳送第一則回覆啦。",
     "compose": "輸入回覆",
-    "rootDeleted": "原本嘅訊息已經刪除咗"
+    "rootDeleted": "原本嘅訊息已經刪除咗",
+    "sidebarOpen": "開子討論：{{title}}（{{count}} 則回覆）",
+    "archivedCount_one": "{{count}} 個封存咗嘅子討論",
+    "archivedCount_other": "{{count}} 個封存咗嘅子討論",
+    "unarchive": "重新開返子討論",
+    "unarchiveError": "開唔返子討論。",
+    "untitled": "未命名子討論"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應嘅用戶",

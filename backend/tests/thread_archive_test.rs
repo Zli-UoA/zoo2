@@ -1,0 +1,306 @@
+//! Requires the migrated PostgreSQL test database.
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
+use backend::{
+    config::Config,
+    db::init_db,
+    routes::{create_router, threads::archive_idle_threads},
+    state::AppState,
+};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+async fn response(
+    app: &Router,
+    method: &str,
+    user: &str,
+    path: &str,
+    body: Value,
+) -> anyhow::Result<(StatusCode, Value)> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("X-Dev-User", user)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))?,
+        )
+        .await?;
+    let status = response.status();
+    if path.starts_with("/api/threads") {
+        assert_eq!(response.headers()["cache-control"], "no-store");
+    }
+    let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+    Ok((status, serde_json::from_slice(&bytes)?))
+}
+
+async fn request(
+    app: &Router,
+    method: &str,
+    user: &str,
+    path: &str,
+    body: Value,
+) -> anyhow::Result<Value> {
+    let (status, result) = response(app, method, user, path, body).await?;
+    assert!(status.is_success(), "{status}: {result}");
+    Ok(result)
+}
+
+#[tokio::test]
+async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    let channel = uuid::Uuid::new_v4().to_string();
+    request(
+        &app,
+        "POST",
+        &user,
+        "/api/users",
+        json!({"id":user,"user_name":user,"display_name":"Thread tester"}),
+    )
+    .await?;
+    request(
+        &app,
+        "POST",
+        &user,
+        "/api/channels",
+        json!({"id":channel,"channel_name":channel,"is_private":false}),
+    )
+    .await?;
+    // Start from Home so this test does not depend on the workspace's LTL pattern.
+    let root = request(
+        &app,
+        "POST",
+        &user,
+        "/api/home",
+        json!({"channel_id":channel,"content":"Root"}),
+    )
+    .await?;
+    let root_id = root["id"].as_str().unwrap();
+    let child = request(
+        &app,
+        "POST",
+        &user,
+        "/api/messages",
+        json!({"channel_id":channel,"content":"Child","parent_id":root_id}),
+    )
+    .await?;
+    let child_id = child["data"]["id"].as_str().unwrap();
+    request(
+        &app,
+        "POST",
+        &user,
+        "/api/messages",
+        json!({"channel_id":channel,"content":"Grandchild","parent_id":child_id}),
+    )
+    .await?;
+    toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '8 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-interval '8 days' WHERE channel_id=$1")
+        .bind(channel.as_str()).exec(&mut db).await?;
+    archive_idle_threads(&db).await?;
+    let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
+    for id in [root_id, child_id] {
+        let entry = threads
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == id)
+            .unwrap();
+        assert!(
+            entry["thread_archive_at"].is_string(),
+            "nested threads must also archive"
+        );
+    }
+    let reopened = request(
+        &app,
+        "POST",
+        &user,
+        &format!("/api/threads/{child_id}/unarchive"),
+        json!({}),
+    )
+    .await?;
+    assert!(reopened["data"]["thread_archive_at"].is_null());
+    let unchanged = request(
+        &app,
+        "POST",
+        &user,
+        &format!("/api/threads/{child_id}/unarchive"),
+        json!({}),
+    )
+    .await?;
+    assert!(
+        unchanged["txid"].is_null(),
+        "an unchanged thread must not allocate a replication txid"
+    );
+
+    archive_idle_threads(&db).await?;
+    // Reopening counts as activity even if the replies are old.
+    let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
+    assert!(
+        threads
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == child_id)
+            .unwrap()["thread_archive_at"]
+            .is_null()
+    );
+    // Home writes through its own synchronization trigger, bypassing create_message_impl.
+    request(
+        &app,
+        "POST",
+        &user,
+        "/api/home",
+        json!({"content":"Home reply","in_reply_to":root_id}),
+    )
+    .await?;
+    let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
+    assert!(
+        threads
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == root_id)
+            .unwrap()["thread_archive_at"]
+            .is_null()
+    );
+
+    // A normal reply can be timestamped before a concurrent archive and inserted after it.
+    let mut pending_db = db.clone();
+    let mut pending = pending_db.transaction().await?;
+    let started = backend::apps::one(
+        &mut pending,
+        "SELECT json_build_object('at',date_trunc('milliseconds',now() AT TIME ZONE 'UTC'))::text",
+        &[],
+    )
+    .await?;
+    let started = started["at"].as_str().unwrap();
+    toasty::sql::statement("UPDATE messages SET thread_archive_at=GREATEST(now() AT TIME ZONE 'UTC',$2::timestamp+interval '1 millisecond') WHERE id=$1")
+        .bind(root_id).bind(started).exec(&mut db).await?;
+    toasty::sql::statement("INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) VALUES($1,$2,$3,'Concurrent reply',$4,$5::timestamp)")
+        .bind(uuid::Uuid::new_v4().to_string()).bind(user.as_str()).bind(channel.as_str()).bind(root_id).bind(started).exec(&mut pending).await?;
+    pending.commit().await?;
+    let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
+    assert!(
+        threads
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == root_id)
+            .unwrap()["thread_archive_at"]
+            .is_null()
+    );
+
+    // A historical import must not reopen an archived thread.
+    toasty::sql::statement(
+        "UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1",
+    )
+    .bind(root_id)
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement("INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) VALUES($1,$2,$3,'Historical import',$4,(now() AT TIME ZONE 'UTC')-interval '30 days')")
+        .bind(uuid::Uuid::new_v4().to_string()).bind(user.as_str()).bind(channel.as_str()).bind(root_id).exec(&mut db).await?;
+    let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
+    assert!(
+        threads
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == root_id)
+            .unwrap()["thread_archive_at"]
+            .is_string()
+    );
+
+    // The same endpoint must not disclose private threads to nonmembers.
+    toasty::sql::statement("UPDATE channels SET is_private=true WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    let outsider = uuid::Uuid::new_v4().to_string();
+    request(
+        &app,
+        "POST",
+        &outsider,
+        "/api/users",
+        json!({"id":outsider,"user_name":outsider,"display_name":"Outsider"}),
+    )
+    .await?;
+    let threads = request(&app, "GET", &outsider, "/api/threads", Value::Null).await?;
+    assert!(
+        !threads
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["channel_id"] == channel)
+    );
+    let path = format!("/api/threads/{root_id}/unarchive");
+    assert_eq!(
+        response(&app, "POST", &outsider, &path, json!({})).await?.0,
+        StatusCode::NOT_FOUND
+    );
+    toasty::sql::statement(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+    )
+    .bind(outsider.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement("UPDATE channels SET posting_policy='managers' WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        response(&app, "POST", &outsider, &path, json!({})).await?.0,
+        StatusCode::FORBIDDEN
+    );
+    toasty::sql::statement("UPDATE channels SET archive_at=now() AT TIME ZONE 'UTC' WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        response(&app, "POST", &user, &path, json!({})).await?.0,
+        StatusCode::NOT_FOUND
+    );
+    toasty::sql::statement("UPDATE channels SET archive_at=NULL WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        response(
+            &app,
+            "POST",
+            &user,
+            "/api/threads/not-an-id/unarchive",
+            json!({})
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    // Deleting all replies must not strand an already archived parent in read-only mode.
+    toasty::sql::statement(
+        "UPDATE messages SET deleted_at=now() AT TIME ZONE 'UTC' WHERE parent_id=$1",
+    )
+    .bind(root_id)
+    .exec(&mut db)
+    .await?;
+    let reopened = request(
+        &app,
+        "POST",
+        &user,
+        &format!("/api/threads/{root_id}/unarchive"),
+        json!({}),
+    )
+    .await?;
+    assert!(reopened["data"]["thread_archive_at"].is_null());
+    Ok(())
+}

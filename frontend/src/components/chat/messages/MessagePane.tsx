@@ -14,6 +14,7 @@ import {
   useMessageReactions,
 } from "../../../hooks/useRealtime";
 import { useReplyCounts, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
+import { THREADS_CHANGED } from "../../../hooks/useThreadIndex";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
@@ -205,6 +206,23 @@ export function MessagePane({
   );
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRoot = threadRootQuery.data?.[0] ?? null;
+  const [reopenedThreadId, setReopenedThreadId] = useState<string | null>(null);
+  const threadIsArchived = !!threadRoot?.thread_archive_at && reopenedThreadId !== threadRoot.id;
+  useEffect(() => {
+    if (threadRoot && !threadRoot.thread_archive_at && reopenedThreadId === threadRoot.id) {
+      setReopenedThreadId(null);
+    }
+  }, [reopenedThreadId, threadRoot]);
+  const handleUnarchiveThread = useCallback(async () => {
+    if (!threadRoot) return;
+    try {
+      await appClient.post(`/api/threads/${encodeURIComponent(threadRoot.id)}/unarchive`, {});
+      setReopenedThreadId(threadRoot.id);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
+    } catch {
+      toast.error(t("threads.unarchiveError"));
+    }
+  }, [appClient, t, threadRoot]);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
@@ -221,6 +239,13 @@ export function MessagePane({
     const anchor = target?.parent_id === threadRootId ? target.created_at : null;
     setThreadSince(anchor ? expandWindowSince(messageWindowStart(), anchor) : messageWindowStart());
   }, [messagesCollection, targetMessageId, threadRootId]);
+
+  // アーカイブ履歴は全件を読み込む。再開しても、表示済みの履歴の範囲は狭めない。
+  useEffect(() => {
+    if (threadRoot?.id === threadRootId && threadRoot?.thread_archive_at) {
+      setThreadSince((current) => expandWindowSince(current, threadRoot.created_at));
+    }
+  }, [threadRootId, threadRoot?.id, threadRoot?.created_at, threadRoot?.thread_archive_at]);
 
   // 30日窓が空でも、コレクションに古いメッセージがあれば自動で広げる。
   useEffect(() => {
@@ -580,8 +605,10 @@ export function MessagePane({
           mentionUsers={mentionUsers}
           mentionMemberIds={mentionMemberIds}
           key={threadRoot.id}
-          readOnly={readOnly}
-          isMember={!readOnly && isMember}
+          readOnly={readOnly || threadIsArchived}
+          isArchived={threadIsArchived}
+          onUnarchive={!readOnly && isMember ? () => void handleUnarchiveThread() : undefined}
+          isMember={!readOnly && !threadIsArchived && isMember}
           isOffline={!isOnline}
           typingUsers={threadTyping.users}
           onTyping={threadTyping.onTyping}
@@ -591,14 +618,18 @@ export function MessagePane({
           onOpenThread={openThread}
           isLoading={threadQuery.isLoading}
           isError={threadQuery.isError}
-          currentUserId={readOnly ? null : currentUserId}
-          canModerate={canModerate}
+          currentUserId={readOnly || threadIsArchived ? null : currentUserId}
+          canModerate={canModerate && !threadIsArchived}
           reactions={reactionGroups}
           attachments={attachmentsByMessage}
           onUploadAttachment={uploadAttachment}
           kitchenCatalog={catalog}
           canReact={
-            !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
+            !readOnly &&
+            !threadIsArchived &&
+            !!currentUserId &&
+            !reactionsQuery.isLoading &&
+            !reactionsQuery.isError
           }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}

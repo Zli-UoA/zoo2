@@ -1,10 +1,15 @@
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
-import { expect, screen, userEvent, within } from "storybook/test";
+import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
-import { storyChannelUsers, storyChannels, storyCollections } from "../../../.storybook/fixtures";
+import {
+  storyChannelUsers,
+  storyChannels,
+  storyCollections,
+  storyMessages,
+} from "../../../.storybook/fixtures";
 import { ChannelSidebar } from "./ChannelSidebar";
 
 const meta = {
@@ -94,6 +99,57 @@ export const UnreadAndArchived: Story = {
     await expect(screen.getByRole("img", { name: "アーカイブ済み" })).toBeInTheDocument();
   }),
 };
+
+const threadRoot = storyMessages.find((message) => message.id === "message-thread-root")!;
+const threadEntry = {
+  id: threadRoot.id,
+  channel_id: threadRoot.channel_id,
+  content: threadRoot.content,
+  thread_archive_at: null as string | null,
+  reply_count: storyMessages.filter((message) => message.parent_id === threadRoot.id).length,
+};
+
+export const Threads: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    msw: { handlers: [http.get("*/api/threads", () => HttpResponse.json([threadEntry]))] },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
+  }),
+};
+
+let archivedEntry = { ...threadEntry };
+export const ArchivedThreads: Story = {
+  beforeEach: () => {
+    archivedEntry = { ...threadEntry, thread_archive_at: "2026-01-10T09:05:00.000Z" };
+  },
+  parameters: {
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        http.get("*/api/threads", () => HttpResponse.json([archivedEntry])),
+        http.post("*/api/threads/:id/unarchive", () => {
+          archivedEntry = { ...archivedEntry, thread_archive_at: null };
+          return HttpResponse.json({ data: archivedEntry, txid: "42" });
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: /アーカイブ済みスレッド/ }));
+    await expect(await screen.findByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: /スレッドを再開/ }));
+    await waitFor(async () => {
+      await expect(
+        screen.queryByRole("button", { name: /アーカイブ済みスレッド/ }),
+      ).not.toBeInTheDocument();
+      await expect(screen.getByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
+    });
+  }),
+};
+
+export const MobileThreads: Story = { ...Threads, globals: { viewport: { value: "mobile" } } };
 
 const dm = {
   ...storyChannels[0],

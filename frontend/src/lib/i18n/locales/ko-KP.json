@@ -235,7 +235,13 @@
     "loadError": "회답을 얻지 못했습니다.",
     "empty": "회답이 아직 없습니다. 첫 회답을 보내 보십시오.",
     "compose": "회답 보내기",
-    "rootDeleted": "원래 통보문은 삭제되였습니다"
+    "rootDeleted": "원래 통보문은 삭제되였습니다",
+    "sidebarOpen": "타래 열기: {{title}} (회답 {{count}}건)",
+    "archivedCount_one": "보관된 타래 {{count}}건",
+    "archivedCount_other": "보관된 타래 {{count}}건",
+    "unarchive": "타래 다시 열기",
+    "unarchiveError": "타래를 다시 열지 못했습니다.",
+    "untitled": "제목 없는 타래"
   },
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",

@@ -235,7 +235,13 @@
     "loadError": "返信の取得に失敗しました。",
     "empty": "返信はまだありません。最初の返信を送ってみましょう。",
     "compose": "返信を送信",
-    "rootDeleted": "元のメッセージは削除されました"
+    "rootDeleted": "元のメッセージは削除されました",
+    "sidebarOpen": "スレッドを開く: {{title}}（{{count}} 件の返信）",
+    "archivedCount_one": "アーカイブ済みスレッド {{count}} 件",
+    "archivedCount_other": "アーカイブ済みスレッド {{count}} 件",
+    "unarchive": "スレッドを再開",
+    "unarchiveError": "スレッドを再開できませんでした。",
+    "untitled": "タイトルなし"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",

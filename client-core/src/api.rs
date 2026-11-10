@@ -1,5 +1,5 @@
 //! backend の REST API。読み取りは Electric のシェイプで行うため、ここは書き込みと
-//! シェイプにない情報 (自分、既読、入力中) だけを扱う。
+//! シェイプにない情報 (自分、既読、入力中、スレッド一覧) だけを扱う。
 
 use anyhow::Result;
 use reqwest::Method;
@@ -28,6 +28,16 @@ pub struct Me {
 pub struct ReadState {
     pub channel_id: String,
     pub has_unread: bool,
+}
+
+/// 閲覧権限で絞り込まれた `GET /api/threads` の1件。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ThreadSummary {
+    pub id: String,
+    pub channel_id: String,
+    pub content: String,
+    pub thread_archive_at: Option<String>,
+    pub reply_count: u64,
 }
 
 /// `GET /api/channels/{id}/typing`
@@ -125,6 +135,15 @@ impl ApiClient {
     }
     pub async fn me(&self) -> Result<Me> {
         self.get("/api/users/me").await
+    }
+
+    pub async fn threads(&self) -> Result<Vec<ThreadSummary>> {
+        self.get("/api/threads").await
+    }
+
+    pub async fn unarchive_thread(&self, id: &str) -> Result<Option<String>> {
+        let path = format!("/api/threads/{}/unarchive", segment(id));
+        self.write(Method::POST, &path, None).await
     }
 
     /// `id` はクライアントで採番する (frontend と同じく、送信直後の行と突き合わせるため)。
@@ -311,6 +330,36 @@ mod tests {
 
         let txid = client(&server).remove_reaction("m1", "👍").await.unwrap();
         assert_eq!(txid, None);
+    }
+
+    #[tokio::test]
+    async fn lists_threads_and_reopens_with_the_authenticated_api() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/threads"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"id":"reply1","channel_id":"c1","content":"Nested thread","reply_count":2,"thread_archive_at":"2026-11-10T00:00:00"}
+            ]))).expect(1).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/threads/reply1/unarchive"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"data":{"id":"reply1","thread_archive_at":null},"txid":"43"}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        let threads = api.threads().await.unwrap();
+        assert_eq!(threads[0].reply_count, 2);
+        assert!(threads[0].thread_archive_at.is_some());
+        assert_eq!(
+            api.unarchive_thread(&threads[0].id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("43")
+        );
     }
 
     #[tokio::test]

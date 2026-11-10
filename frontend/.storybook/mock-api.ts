@@ -82,6 +82,10 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get("*/api/threads", () => HttpResponse.json([])),
+  http.post("*/api/threads/:id/unarchive", ({ params }) =>
+    HttpResponse.json({ data: { id: params.id, thread_archive_at: null }, txid: "42" }),
+  ),
   http.get("*/api/emoji-shortcodes", () => HttpResponse.json({ shortcodes: {} })),
   http.get("*/api/emoji-service", () => HttpResponse.json({ url: null })),
   http.get("*/api/channels/:id/federated-reactions", () => HttpResponse.json([])),

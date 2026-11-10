@@ -235,7 +235,13 @@
     "loadError": "无法加载回复。",
     "empty": "暂无回复。发送第一条回复吧。",
     "compose": "输入回复",
-    "rootDeleted": "原消息已被删除"
+    "rootDeleted": "原消息已被删除",
+    "sidebarOpen": "打开子线程：{{title}}（{{count}} 条回复）",
+    "archivedCount_one": "{{count}} 个已归档子线程",
+    "archivedCount_other": "{{count}} 个已归档子线程",
+    "unarchive": "重新开启子线程",
+    "unarchiveError": "无法重新开启子线程。",
+    "untitled": "未命名子线程"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回应的用户",

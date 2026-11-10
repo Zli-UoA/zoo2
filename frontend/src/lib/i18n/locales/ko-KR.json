@@ -235,7 +235,13 @@
     "loadError": "답글을 불러오지 못했습니다.",
     "empty": "아직 답글이 없습니다. 첫 번째 답글을 보내 보세요.",
     "compose": "답글 보내기",
-    "rootDeleted": "원본 메시지가 삭제되었습니다"
+    "rootDeleted": "원본 메시지가 삭제되었습니다",
+    "sidebarOpen": "스레드 열기: {{title}} (답글 {{count}}개)",
+    "archivedCount_one": "보관된 스레드 {{count}}개",
+    "archivedCount_other": "보관된 스레드 {{count}}개",
+    "unarchive": "스레드 다시 열기",
+    "unarchiveError": "스레드를 다시 열지 못했습니다.",
+    "untitled": "제목 없는 스레드"
   },
   "reactions": {
     "showUsers": "{{emoji}} 반응을 남긴 사용자 보기",

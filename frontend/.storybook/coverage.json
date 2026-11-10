@@ -74,6 +74,9 @@
         "LoadError",
         "Mobile",
         "UnreadAndArchived",
+        "Threads",
+        "ArchivedThreads",
+        "MobileThreads",
         "Sections",
         "MobileSections"
       ]
@@ -694,6 +697,12 @@
         "src/lib/electric/collections.persistence.test.ts",
         "src/components/chat/ChannelSidebar.browser.test.tsx"
       ]
+    },
+    {
+      "file": "src/components/chat/ChannelThreadItems.tsx",
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "composed": true,
+      "reason": "チャンネル配下の表示とアーカイブ履歴の操作を親の Threads・ArchivedThreads Story で確認する。"
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",
