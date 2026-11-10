@@ -17,7 +17,11 @@ import { useReplyCounts, useThreadFeed, useThreadRoot } from "../../../hooks/use
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
-import { expandWindowSince, messageWindowStart } from "../../../lib/electric/messageWindow";
+import {
+  expandWindowSince,
+  messageWindowStart,
+  olderWindowSince,
+} from "../../../lib/electric/messageWindow";
 import type { MessageRow } from "../../../lib/electric/types";
 import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
 import { groupReactions, reactionUserLabel } from "../../../lib/emoji/reactions";
@@ -51,6 +55,18 @@ function oldestRowTimestamp(
     oldest = { at: row.created_at, ms };
   }
   return oldest?.at ?? null;
+}
+
+/** 端末にある (削除されていない) 行のうち、`predicate` に合うものの時刻 */
+function* rowTimestamps(
+  rows: Iterable<MessageRow>,
+  predicate: (row: MessageRow) => boolean,
+): Generator<string> {
+  for (const row of rows) {
+    if (!row.deleted_at && predicate(row)) {
+      yield row.created_at;
+    }
+  }
 }
 
 function JoinToPostPrompt({
@@ -541,8 +557,14 @@ export function MessagePane({
           onOpenThread={openThread}
           canCompose={isMember}
           isOffline={!isOnline}
-          onLoadOlder={(oldest) => {
-            setSince((current) => expandWindowSince(current, oldest));
+          onLoadOlder={() => {
+            // 表示中の最古の行は窓の中なので、そこへ広げても変わらない。端末にある、窓より古い行へ 1 ページ広げる
+            setSince((current) =>
+              olderWindowSince(
+                current,
+                rowTimestamps(messagesCollection.values(), (row) => row.parent_id === null),
+              ),
+            );
           }}
           onRetry={() => window.location.reload()}
         />
@@ -611,10 +633,13 @@ export function MessagePane({
           onRequestDelete={setPendingDeleteId}
           onSendReply={handleSendReply}
           onLoadOlder={() => {
-            const oldest = threadReplies[0];
-            if (oldest) {
-              setThreadSince((current) => expandWindowSince(current, oldest.created_at));
-            }
+            if (!threadRootId) return;
+            setThreadSince((current) =>
+              olderWindowSince(
+                current,
+                rowTimestamps(messagesCollection.values(), (row) => row.parent_id === threadRootId),
+              ),
+            );
           }}
           onRetry={() => window.location.reload()}
           onClose={closeThread}

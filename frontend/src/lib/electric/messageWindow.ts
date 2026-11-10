@@ -38,3 +38,34 @@ export function expandWindowSince(
   }
   return formatWindowTimestamp(oldestMs - 1);
 }
+
+/** 上端に来たときに、窓を過去へ広げる行数 */
+export const MESSAGE_PAGE_SIZE = 100;
+
+/**
+ * 端末にある行の時刻 (`timestamps`) をもとに、`since` を過去へ 1 ページ分広げる。
+ *
+ * 表示中の行はすべて `since` 以降なので、表示中の最古の行の時刻を `expandWindowSince` に渡しても窓は
+ * 広がらない。そこで、`since` より前にある行のうち新しい方から `pageSize` 件目の時刻まで広げる
+ * (それより少なければ、いちばん古い行まで)。`since` より前の行がなければ、同じ値を返す。
+ */
+export function olderWindowSince(
+  since: TimestampString,
+  timestamps: Iterable<TimestampString>,
+  pageSize: number = MESSAGE_PAGE_SIZE,
+): TimestampString {
+  const sinceMs = parseUtcTimestamp(since).getTime();
+  const older: number[] = [];
+  for (const timestamp of timestamps) {
+    const ms = parseUtcTimestamp(timestamp).getTime();
+    if (Number.isFinite(ms) && (!Number.isFinite(sinceMs) || ms < sinceMs)) {
+      older.push(ms);
+    }
+  }
+  if (older.length === 0) {
+    return since;
+  }
+  older.sort((a, b) => b - a);
+  const target = older[Math.min(Math.max(pageSize, 1), older.length) - 1]!;
+  return formatWindowTimestamp(target - 1);
+}
