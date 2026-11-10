@@ -22,7 +22,6 @@
     "browseEmpty": "참가할수 있는 공개 통로가 없습니다.",
     "slackImported": "Slack에서 가져옴",
     "slackImportedDescription": "Slack에서 가져온 채널입니다.",
-    "browseSlackOnly": "Slack에서 가져온 채널만",
     "noJoined": "참가하고 있는 통로가 없습니다.",
     "join": "참가",
     "joining": "참가하는 중…",

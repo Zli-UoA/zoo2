@@ -10,7 +10,7 @@ import {
 function channel(
   id: string,
   channel_name: string,
-  options: { isPrivate?: boolean; archived?: boolean; slack?: boolean } = {},
+  options: { isPrivate?: boolean; archived?: boolean } = {},
 ): ChannelRow {
   return {
     id,
@@ -23,7 +23,7 @@ function channel(
     updated_at: null,
     archive_at: options.archived ? "2026-01-03 00:00:00.000" : null,
     deleted_at: null,
-    imported_from_slack: options.slack ?? false,
+    imported_from_slack: false,
   };
 }
 
@@ -67,26 +67,6 @@ describe("isChannelJoinable", () => {
 });
 
 describe("filterDiscoverableChannels", () => {
-  it("keeps only channels imported from Slack when asked", () => {
-    const withSlack = [
-      channel("c1", "general"),
-      channel("c2", "random", { slack: true }),
-      channel("c3", "secret", { slack: true, isPrivate: true }),
-      channel("c4", "old", { slack: true, archived: true }),
-    ];
-    expect(
-      filterDiscoverableChannels(withSlack, new Set(), "", true).map((entry) => entry.id),
-    ).toEqual(["c2", "c4"]);
-    // 絞り込みを外せば、取り込んでいないチャンネルも出る
-    expect(
-      filterDiscoverableChannels(withSlack, new Set(), "", false).map((entry) => entry.id),
-    ).toEqual(["c1", "c2", "c4"]);
-    // 名前の検索と組み合わせられる
-    expect(
-      filterDiscoverableChannels(withSlack, new Set(), "ran", true).map((entry) => entry.id),
-    ).toEqual(["c2"]);
-  });
-
   it("excludes joined and private channels", () => {
     expect(
       filterDiscoverableChannels(channels, new Set(["c1", "c5"]), "").map((entry) => entry.id),

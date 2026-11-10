@@ -44,7 +44,7 @@
     },
     {
       "file": "src/components/chat/ChannelBrowserDialog.stories.tsx",
-      "states": ["Default", "SearchEmpty", "SlackOnly", "Closed"]
+      "states": ["Default", "SearchEmpty", "Closed"]
     },
     {
       "file": "src/components/chat/ChannelHeader.stories.tsx",

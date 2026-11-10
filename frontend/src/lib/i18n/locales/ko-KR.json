@@ -22,7 +22,6 @@
     "browseEmpty": "참여할 수 있는 공개 채널이 없습니다.",
     "slackImported": "Slack에서 가져옴",
     "slackImportedDescription": "Slack에서 가져온 채널입니다.",
-    "browseSlackOnly": "Slack에서 가져온 채널만",
     "noJoined": "참여 중인 채널이 없습니다.",
     "join": "참여하기",
     "joining": "참여 중…",

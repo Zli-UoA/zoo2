@@ -26,16 +26,14 @@ export function ChannelBrowserDialog({
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
-  const [slackOnly, setSlackOnly] = useState(false);
   const discoverableChannels = useMemo(
-    () => filterDiscoverableChannels(channels, joinedChannelIds, query, slackOnly),
-    [channels, joinedChannelIds, query, slackOnly],
+    () => filterDiscoverableChannels(channels, joinedChannelIds, query),
+    [channels, joinedChannelIds, query],
   );
 
   function handleOpenChange(next: boolean) {
     if (!next) {
       setQuery("");
-      setSlackOnly(false);
     }
     onOpenChange(next);
   }
@@ -88,15 +86,6 @@ export function ChannelBrowserDialog({
             </Button>
           ) : null}
         </div>
-
-        <label className="flex items-center gap-2 text-sm">
-          <Input
-            type="checkbox"
-            checked={slackOnly}
-            onChange={(event) => setSlackOnly(event.target.checked)}
-          />
-          {t("channels.browseSlackOnly")}
-        </label>
 
         <div className="h-80 min-h-0 min-w-0">
           {discoverableChannels.length === 0 ? (

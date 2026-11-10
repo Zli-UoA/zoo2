@@ -22,7 +22,6 @@
     "browseEmpty": "No public channels are available to join.",
     "slackImported": "Imported from Slack",
     "slackImportedDescription": "This channel was imported from Slack.",
-    "browseSlackOnly": "Only channels imported from Slack",
     "noJoined": "You haven't joined any channels yet.",
     "join": "Join",
     "joining": "Joining…",

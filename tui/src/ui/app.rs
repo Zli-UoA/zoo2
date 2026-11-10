@@ -635,21 +635,17 @@ impl App {
     }
 
     /// 一覧の表示名に `query` を含むチャンネルの添字 (大文字小文字を区別しない)。
-    /// `slack:` で始めると、Slack から取り込んだチャンネルだけに絞り込む (`slack:dev` は名前に dev を含むもの)。
     pub fn search_matches(&self, query: &str) -> Vec<usize> {
-        let (slack_only, needle) = split_slack_filter(query);
-        let needle = needle.to_lowercase();
+        let query = query.to_lowercase();
         self.store
             .channels()
             .iter()
             .enumerate()
             .filter(|(_, channel)| {
-                (!slack_only || channel.imported_from_slack)
-                    && self
-                        .store
-                        .channel_label(channel, &self.me.id)
-                        .to_lowercase()
-                        .contains(&needle)
+                self.store
+                    .channel_label(channel, &self.me.id)
+                    .to_lowercase()
+                    .contains(&query)
             })
             .map(|(index, _)| index)
             .collect()
@@ -1032,28 +1028,5 @@ mod tests {
         let ids = vec!["a".to_string(), "b".to_string()];
         assert_eq!(move_id(&ids, Some("a"), 1).as_deref(), Some("b"));
         assert_eq!(move_id(&ids, Some("gone"), -1).as_deref(), Some("b"));
-    }
-}
-
-/// 検索の入力の先頭の `slack:` (大文字小文字を区別しない) を外し、Slack から取り込んだチャンネルだけに絞るかを返す。
-fn split_slack_filter(query: &str) -> (bool, &str) {
-    const PREFIX: &str = "slack:";
-    match query.get(..PREFIX.len()) {
-        Some(head) if head.eq_ignore_ascii_case(PREFIX) => (true, &query[PREFIX.len()..]),
-        _ => (false, query),
-    }
-}
-
-#[cfg(test)]
-mod slack_filter_tests {
-    use super::split_slack_filter;
-
-    #[test]
-    fn slack_prefix_narrows_the_search_to_imported_channels() {
-        assert_eq!(split_slack_filter("slack:dev"), (true, "dev"));
-        assert_eq!(split_slack_filter("SLACK:"), (true, ""));
-        assert_eq!(split_slack_filter("dev"), (false, "dev"));
-        assert_eq!(split_slack_filter("slack"), (false, "slack"));
-        assert_eq!(split_slack_filter("日本語"), (false, "日本語"));
     }
 }
