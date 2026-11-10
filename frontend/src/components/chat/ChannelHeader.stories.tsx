@@ -47,15 +47,43 @@ export const ControlPanelOpen: Story = {
   }),
 };
 
+const importedAt = "2026-11-10 12:00:00.000";
+
+/** 既存のチャンネルに、Slack から取り込んだ */
 export const ImportedFromSlack: Story = {
   args: {
-    channel: { ...general, imported_from_slack: true },
+    channel: {
+      ...general,
+      imported_from_slack: true,
+      slack_import_kind: "existing",
+      slack_imported_at: importedAt,
+    },
   },
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
     await expect(
       await within(await screen.findByRole("dialog")).findByText(
-        "Slack から取り込んだチャンネルです。",
+        /Slack から既存のチャンネルに取り込みました（2026\/.+）。/,
+      ),
+    ).toBeInTheDocument();
+  }),
+};
+
+/** Slack から取り込んで、新しくチャンネルを作った */
+export const ImportedFromSlackCreated: Story = {
+  args: {
+    channel: {
+      ...general,
+      imported_from_slack: true,
+      slack_import_kind: "created",
+      slack_imported_at: importedAt,
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    await expect(
+      await within(await screen.findByRole("dialog")).findByText(
+        /Slack から新しいチャンネルとして取り込みました（2026\/.+）。/,
       ),
     ).toBeInTheDocument();
   }),

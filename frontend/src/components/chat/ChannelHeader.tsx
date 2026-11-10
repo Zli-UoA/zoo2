@@ -1,5 +1,6 @@
 import { ChannelWebhooksDialog } from "./ChannelWebhooksDialog";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useNavigate } from "@tanstack/react-router";
 import { cn } from "cn";
 import {
@@ -24,6 +25,7 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
+import { parseUtcTimestamp } from "../../lib/timestamps";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
 import { localizeApiError } from "../../lib/i18n/apiError";
 import { useShell } from "../layout/shell-context";
@@ -64,7 +66,7 @@ export function ChannelHeader({
   title?: string;
   subtitle?: string;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const shell = useShell();
   const admin = useChannelAdmin(channel);
   const isDm = channel.is_dm;
@@ -280,7 +282,7 @@ export function ChannelHeader({
             {channel.imported_from_slack ? (
               <SettingRow
                 label={t("channels.slackImported")}
-                description={t("channels.slackImportedDescription")}
+                description={slackImportDescription(channel, t, i18n.language)}
               >
                 {null}
               </SettingRow>
@@ -410,4 +412,18 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
       </AlertDialog>
     </>
   );
+}
+
+/** チャンネル設定の「Slack から取り込み」の説明。取り込みの種類と日付がわかるときは、それを出す */
+function slackImportDescription(channel: ChannelRow, t: TFunction, language: string): string {
+  if (channel.slack_import_kind && channel.slack_imported_at) {
+    const date = parseUtcTimestamp(channel.slack_imported_at).toLocaleDateString(language);
+    return t(
+      channel.slack_import_kind === "created"
+        ? "channels.slackImportedCreated"
+        : "channels.slackImportedExisting",
+      { date },
+    );
+  }
+  return t("channels.slackImportedDescription");
 }

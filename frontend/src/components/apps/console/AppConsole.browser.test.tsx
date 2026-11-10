@@ -44,6 +44,8 @@ vi.mock("../../../hooks/useRealtime", async (original) => ({
         is_dm: false,
         archive_at: null,
         imported_from_slack: false,
+        slack_import_kind: null,
+        slack_imported_at: null,
       },
       {
         id: "theirs",
@@ -52,6 +54,8 @@ vi.mock("../../../hooks/useRealtime", async (original) => ({
         is_dm: false,
         archive_at: null,
         imported_from_slack: false,
+        slack_import_kind: null,
+        slack_imported_at: null,
       },
     ],
   }),

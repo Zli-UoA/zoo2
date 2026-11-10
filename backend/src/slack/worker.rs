@@ -863,14 +863,17 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 ctx.channel_names
                     .insert(channel.id.clone(), target.1.clone());
             }
-            // 取り込み先 (新しく作ったチャンネルも、既存のチャンネルも) に、Slack から取り込んだ印を付ける
+            let create = matches!(mapping.action, MappingAction::Create { .. });
+            // 取り込み先 (新しく作ったチャンネルも、既存のチャンネルも) に、Slack から取り込んだ印と、取り込みの種類、
+            // 日時を付ける。種類は最初の取り込みのものを残し (以前の取り込みで作ったチャンネルへの再取り込みは created のまま)、
+            // 日時は取り込むたびに更新する
             exec(
                 &mut tx,
-                "UPDATE channels SET imported_from_slack=true WHERE id=$1 AND NOT imported_from_slack",
-                &[&target.0],
+                "UPDATE channels SET imported_from_slack=true,\
+                 slack_import_kind=COALESCE(slack_import_kind,$2),slack_imported_at=CURRENT_TIMESTAMP WHERE id=$1",
+                &[&target.0, if create { "created" } else { "existing" }],
             )
             .await?;
-            let create = matches!(mapping.action, MappingAction::Create { .. });
             // 取り込みが終わったあとにアーカイブするか (Slack でアーカイブ済みのチャンネルか、管理者の指定)
             let archive = create
                 && (channel.is_archived

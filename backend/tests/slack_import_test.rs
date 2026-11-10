@@ -2072,7 +2072,8 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
         async move {
             sql(
                 &state,
-                "SELECT json_build_object('flag',imported_from_slack,'archived',archive_at IS NOT NULL)::text \
+                "SELECT json_build_object('flag',imported_from_slack,'archived',archive_at IS NOT NULL,\
+                 'kind',slack_import_kind,'at',slack_imported_at IS NOT NULL)::text \
                  FROM channels WHERE channel_name=$1",
                 &[&name],
             )
@@ -2101,6 +2102,52 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
         row(format!("flag-skip-{suffix}")).await.is_empty(),
         "skipped channels are not created"
     );
+    // 取り込みの種類 (新しく作った / 既存のチャンネルへの追加) と、取り込んだ日時が付く
+    for (channel, kind) in [
+        (&keep, "created"),
+        (&archived, "created"),
+        (&existing, "existing"),
+    ] {
+        assert_eq!(channel[0]["kind"], kind);
+        assert_eq!(channel[0]["at"], true);
+    }
+    // 取り込み先に固定された再取り込みでは、種類は最初のまま (created) で、日時だけが更新される
+    let stamp = |name: String| {
+        let state = state.clone();
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('id',id,'at',slack_imported_at::text)::text FROM channels WHERE channel_name=$1",
+                &[&name],
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let before = stamp(format!("flag-keep-{suffix}")).await;
+    let (status, rerun) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":before[0]["id"]}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rerun}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        rerun["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let after = stamp(format!("flag-keep-{suffix}")).await;
+    assert_ne!(
+        before[0]["at"], after[0]["at"],
+        "the import time is updated"
+    );
+    let again = row(format!("flag-keep-{suffix}")).await;
+    assert_eq!(again[0]["kind"], "created", "the first kind is kept");
     Ok(())
 }
 

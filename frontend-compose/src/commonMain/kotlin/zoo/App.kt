@@ -201,9 +201,18 @@ internal fun AppDialogs(
                         }
                         if (channel.flag("imported_from_slack")) {
                             HorizontalDivider()
+                            // 取り込みの種類と日付がわかるときは、それを出す
+                            val importKind = channel.text("slack_import_kind")
+                            val importedAt = channel.text("slack_imported_at")
                             SettingRow(
                                 app.t("channels.slackImported"),
-                                app.t("channels.slackImportedDescription"),
+                                if (importKind.isNotEmpty() && importedAt.isNotEmpty())
+                                    app.t(
+                                        if (importKind == "created") "channels.slackImportedCreated"
+                                        else "channels.slackImportedExisting",
+                                        "date" to app.platform.day(importedAt),
+                                    )
+                                else app.t("channels.slackImportedDescription"),
                             ) {}
                         }
                         HorizontalDivider()

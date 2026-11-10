@@ -22,6 +22,8 @@
     "browseEmpty": "参加できる公開チャンネルはありません。",
     "slackImported": "Slack から取り込み",
     "slackImportedDescription": "Slack から取り込んだチャンネルです。",
+    "slackImportedCreated": "Slack から新しいチャンネルとして取り込みました（{{date}}）。",
+    "slackImportedExisting": "Slack から既存のチャンネルに取り込みました（{{date}}）。",
     "noJoined": "参加中のチャンネルはありません。",
     "join": "参加する",
     "joining": "参加中…",

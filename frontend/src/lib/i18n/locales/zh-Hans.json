@@ -22,6 +22,8 @@
     "browseEmpty": "没有可加入的公开频道。",
     "slackImported": "来自 Slack 的导入",
     "slackImportedDescription": "此频道是从 Slack 导入的。",
+    "slackImportedCreated": "已从 Slack 作为新频道导入（{{date}}）。",
+    "slackImportedExisting": "已从 Slack 导入到现有频道（{{date}}）。",
     "noJoined": "还没有加入任何频道。",
     "join": "加入",
     "joining": "加入中…",
