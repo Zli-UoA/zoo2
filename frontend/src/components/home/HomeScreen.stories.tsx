@@ -1943,8 +1943,13 @@ export const ReplyToMediaOnly: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("img", { name: "景色.png" })).toBeVisible();
-    await expect(await canvas.findByRole("img", { name: "remote.png" })).toBeVisible();
+    for (const name of ["景色.png", "remote.png"]) {
+      const image = await canvas.findByRole("img", { name });
+      await waitFor(async () => {
+        await expect((image as HTMLImageElement).naturalWidth).toBeGreaterThan(0);
+        await expect(image).toBeVisible();
+      });
+    }
     await expect(canvas.getByText("ローカル画像への返信")).toBeVisible();
     await expect(canvas.getByText("リモート画像への返信")).toBeVisible();
   }),

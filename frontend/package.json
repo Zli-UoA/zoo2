@@ -47,6 +47,7 @@
     "@tanstack/react-router-devtools": "1.167.2",
     "@tanstack/react-start": "1.169.2",
     "@tanstack/react-virtual": "^3.14.20",
+    "blurhash": "^2.0.5",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
     "frimousse": "^0.4.0",

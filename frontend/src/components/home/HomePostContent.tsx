@@ -1,3 +1,5 @@
+import { ImagePreview } from "../ui/image-preview";
+import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
 import { MessageAttachments } from "../chat/messages/MessageAttachments";
 import type { AttachmentMetadata } from "../../lib/attachments";
 import { useOptionalCollections } from "../../lib/electric/collections-context";
@@ -6,7 +8,7 @@ import { ExternalLink } from "../ui/external-link";
 import { useTranslation } from "react-i18next";
 import { ActivityPubContent, type CustomEmoji } from "./ActivityPubEmoji";
 
-export interface HomeMedia {
+export interface HomeMedia extends ImageMetadata {
   url: string;
   name: string;
   media_type: string;
@@ -45,12 +47,12 @@ export function HomePostContent({
             const url = joinUrl(apiBaseUrl, path);
             return (
               <ExternalLink key={index} href={url} className="block min-w-0">
-                <img
+                <ImagePreview
+                  {...image}
                   src={url}
                   alt={image.name || t("home.image")}
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
-                  className="max-h-80 w-full rounded-lg object-contain"
+                  className="max-h-80 w-full"
+                  style={{ aspectRatio: imageAspectRatio(image) }}
                 />
               </ExternalLink>
             );

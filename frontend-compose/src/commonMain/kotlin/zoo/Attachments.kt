@@ -525,7 +525,7 @@ fun MessageAttachments(app: Session, values: List<Row>) {
                             app,
                             it,
                             if (images.size > 1) Modifier.size(square)
-                            else Modifier.width(minOf(256.dp, availableWidth)).aspectRatio(4f / 3f),
+                            else Modifier.width(minOf(256.dp, availableWidth)).heightIn(min = 80.dp, max = 384.dp).aspectRatio(imageAspectRatio(it)),
                             true,
                             images.size > 1,
                         )
@@ -602,9 +602,9 @@ private fun AttachmentItem(
     else if (image && loading)
         Box(
             modifier
-                .defaultMinSize(minWidth = 128.dp, minHeight = 128.dp)
                 .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
         ) {
+            BlurhashPlaceholder(file.text("blurhash"), Modifier.fillMaxSize())
             Text(app.t("attachments.loading"), Modifier.align(Alignment.Center), small = true)
         }
     else

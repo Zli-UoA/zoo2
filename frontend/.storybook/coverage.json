@@ -2,6 +2,10 @@
   "$comment": "Required visible states, not a percentage of visual correctness. Composed coverage is explained; controller exclusions are counted separately.",
   "stories": [
     {
+      "file": "src/components/ui/image-preview.stories.tsx",
+      "states": ["Loading", "WithoutMetadata", "InvalidHash", "Loaded"]
+    },
+    {
       "file": "src/components/SyncStatus.stories.tsx",
       "states": ["Proxy", "Direct", "Oidc"]
     },
@@ -752,6 +756,11 @@
     {
       "file": "src/components/chat/messages/MessageCard.tsx",
       "story": "src/components/chat/messages/MessageCard.stories.tsx"
+    },
+    {
+      "file": "src/components/ui/image-preview.tsx",
+      "story": "src/components/ui/image-preview.stories.tsx",
+      "checks": ["src/components/ui/image-preview.browser.test.tsx"]
     },
     {
       "file": "src/components/chat/messages/MessageAttachments.tsx",

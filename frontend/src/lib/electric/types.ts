@@ -110,7 +110,7 @@ export type NotificationDisplayData = {
   channel?: ChannelRow;
 };
 
-export type AttachmentRow = {
+export type AttachmentRow = import("../imageMetadata").ImageMetadata & {
   id: string;
   message_id: string | null;
   uploader_id: string;

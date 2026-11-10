@@ -1958,7 +1958,10 @@ CREATE TABLE home_images (
   uploader_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   file_size bigint NOT NULL DEFAULT 0,
   content_type text NOT NULL,
-  name text NOT NULL
+  name text NOT NULL,
+  width integer,
+  height integer,
+  blurhash text
 );
 ALTER TABLE home_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE apub_remote_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -2455,3 +2458,5 @@ END $$;
 CREATE TRIGGER users_apub_avatar_update AFTER UPDATE OF avatar_url ON users
   FOR EACH ROW WHEN (OLD.avatar_url IS DISTINCT FROM NEW.avatar_url)
   EXECUTE FUNCTION enqueue_apub_avatar_update();
+
+ALTER TABLE attachments ADD COLUMN width integer, ADD COLUMN height integer, ADD COLUMN blurhash text;

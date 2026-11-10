@@ -144,8 +144,10 @@ export const WithImages: Story = {
     const canvas = within(canvasElement);
     for (const name of ["profile-photo.png", "image-only.png"]) {
       const image = await canvas.findByRole("img", { name });
-      await expect(image).toBeVisible();
-      await waitFor(() => expect((image as HTMLImageElement).naturalWidth).toBeGreaterThan(0));
+      await waitFor(async () => {
+        await expect((image as HTMLImageElement).naturalWidth).toBeGreaterThan(0);
+        await expect(image).toBeVisible();
+      });
     }
     await expect(canvas.getByText("公開プロフィールの画像投稿です。")).toBeVisible();
   }),

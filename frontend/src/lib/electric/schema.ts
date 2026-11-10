@@ -164,6 +164,9 @@ export const ATTACHMENT_SCHEMA: ShapeSchema<AttachmentRow> = {
     file_size: "int8",
     content_type: "text",
     storage_key: "text",
+    width: "int4",
+    height: "int4",
+    blurhash: "text",
     created_at: "timestamp",
   },
 };
