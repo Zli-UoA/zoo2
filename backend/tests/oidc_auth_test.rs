@@ -143,18 +143,44 @@ fn encode_token(
     let exp = (now + exp_offset_sec) as u64;
     let nbf = nbf_offset_sec.map(|off| (now + off) as u64);
 
-    let claims = json!({
+    let mut claims = json!({
         "iss": iss,
         "aud": aud,
         "sub": sub,
         "exp": exp,
-        "nbf": nbf,
         "preferred_username": preferred_username,
         "name": name,
         "scope": scope,
     });
 
+    if let Some(nbf) = nbf {
+        claims["nbf"] = json!(nbf);
+    }
+
     encode(&header, &claims, encoding_key).unwrap()
+}
+
+#[test]
+fn generated_token_without_nbf_passes_strict_validation() {
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        "https://issuer.example",
+        "zoo-client-test",
+        "test-user",
+        None,
+        None,
+        None,
+        3600,
+    );
+    let jwk = serde_json::from_value(key1_jwk()).unwrap();
+    let key = jsonwebtoken::DecodingKey::from_jwk(&jwk).unwrap();
+    let mut validation = jsonwebtoken::Validation::new(Algorithm::RS256);
+    validation.set_issuer(&["https://issuer.example"]);
+    validation.set_audience(&["zoo-client-test"]);
+    validation.validate_nbf = true;
+    let decoded = jsonwebtoken::decode::<Value>(&token, &key, &validation).unwrap();
+    assert!(decoded.claims.get("nbf").is_none());
 }
 
 #[allow(clippy::too_many_arguments)]
