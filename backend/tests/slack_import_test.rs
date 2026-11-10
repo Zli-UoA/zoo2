@@ -2259,6 +2259,148 @@ async fn test_slack_import_info_backfill_ignores_the_final_job_status() -> anyho
     Ok(())
 }
 
+/// 編集・削除の履歴を含むエクスポートの記録 (`message_changed` / `message_deleted`) は、投稿として取り込まず、
+/// 以前の取り込みで入れてしまった分 (編集した日時の重複した投稿、削除された元の投稿) は、再取り込みで論理削除する。
+#[tokio::test]
+async fn test_slack_import_skips_history_events_and_removes_stale_rows() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_history").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let name = format!("history-{suffix}");
+    let (a, edit, b, delete, c) = (
+        "1704070000.000100",
+        "1704070100.000000",
+        "1704070200.000100",
+        "1704070250.000000",
+        "1704070300.000100",
+    );
+    let zip = |messages: Value| {
+        build_zip(&[
+            (
+                "users.json".into(),
+                json!([{"id":"U1","team_id":team,"name":"alice"}]),
+            ),
+            (
+                "channels.json".into(),
+                json!([{"id":"C1","name":name,"members":["U1"]}]),
+            ),
+            (format!("{name}/2024-01-01.json"), messages),
+        ])
+    };
+    // 以前の版の取り込み: 編集の記録を投稿として入れ (編集した日時の重複した投稿)、削除される前の投稿も入れていた
+    let before = zip(json!([
+        {"ts": a, "user": "U1", "text": "A"},
+        {"ts": edit, "user": "U1", "text": "A edited"},
+        {"ts": b, "user": "U1", "text": "B before it was deleted"},
+        {"ts": c, "user": "U1", "text": "C"}
+    ]));
+    let export = upload(&state, &app, &admin, &before).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"create","name":name}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let deleted = |ts: &'static str| {
+        let state = state.clone();
+        let id = backend::slack::message_id(&team, "C1", ts);
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('deleted',deleted_at IS NOT NULL)::text FROM messages WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        deleted(edit).await[0]["deleted"],
+        false,
+        "the old version imported it"
+    );
+
+    // 編集・削除の履歴を含むエクスポート: 元の投稿 (A, C) と、編集・削除の記録 (B の元の記録は残らない)
+    let after = zip(json!([
+        {"ts": a, "user": "U1", "text": "A edited"},
+        {"type":"message","subtype":"message_changed","ts": edit, "user": "U1", "text": "A edited",
+         "edited_by": "U1", "original": {"user": "U1", "type": "message", "ts": a, "text": "A"}},
+        {"type":"message","subtype":"message_deleted","ts": delete, "user": "U1", "text": "",
+         "deleted_by": "U1", "original": {"user": "U1", "type": "message", "ts": b, "text": "B before it was deleted"}},
+        {"ts": c, "user": "U1", "text": "C"}
+    ]));
+    let export = upload(&state, &app, &admin, &after).await;
+    // 解析のメッセージ数に、編集・削除の記録を含めない
+    assert_eq!(
+        export["analysis"]["channels"][0]["message_count"], 2,
+        "{export}"
+    );
+    let target = backend::slack::channel_id(&team, "C1");
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":target}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    assert_eq!(
+        deleted(a).await[0]["deleted"],
+        false,
+        "the original post stays"
+    );
+    assert_eq!(deleted(c).await[0]["deleted"], false, "other posts stay");
+    assert_eq!(
+        deleted(edit).await[0]["deleted"],
+        true,
+        "the duplicate post made from the edit record is removed"
+    );
+    assert_eq!(
+        deleted(b).await[0]["deleted"],
+        true,
+        "the post that was deleted in Slack is removed"
+    );
+    assert!(
+        deleted(delete).await.is_empty(),
+        "the delete record itself is never imported"
+    );
+    Ok(())
+}
+
 /// Slack の `url_private_download` が 302 を返しても、許可した URL なら追従して取得する。
 /// Authorization は同じオリジンにだけ付け、許可していない URL へのリダイレクトは追従しない。
 #[tokio::test]

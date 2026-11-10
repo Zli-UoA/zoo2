@@ -918,6 +918,28 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             archive = returned;
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
+            // 編集・削除の履歴を含むエクスポートの記録 (`message_changed` / `message_deleted`) は、投稿として取り込まない。
+            // 以前の取り込みで、これらを投稿として入れてしまった分 (編集した日時の重複した投稿、編集してから削除した
+            // 投稿の本文) と、削除された元の投稿 (記録はエクスポートに残らない) は、ここで論理削除する。
+            // 保存済みの ZIP から再取り込みするだけで片づく (存在しなければ何もしない)
+            let mut stale: Vec<String> = Vec::new();
+            for event in messages.iter().filter(|m| m.is_history_event()) {
+                if crate::slack::is_valid_ts(&event.ts) {
+                    stale.push(super::message_id(&team, &channel.id, &event.ts));
+                }
+                if let Some(original) = event.deleted_original_ts() {
+                    stale.push(super::message_id(&team, &channel.id, original));
+                }
+            }
+            if !stale.is_empty() {
+                exec(
+                    &mut tx,
+                    "UPDATE messages SET deleted_at=CURRENT_TIMESTAMP \
+                     WHERE channel_id=$2 AND deleted_at IS NULL AND id IN (SELECT jsonb_array_elements_text($1::jsonb))",
+                    &[&serde_json::json!(stale).to_string(), channel_id],
+                )
+                .await?;
+            }
             let mut last_ts = None;
             for message in messages.iter().filter(|m| m.is_importable()) {
                 insert_message(&mut tx, &mut ctx, &channel.id, channel_id, job, message).await?;
