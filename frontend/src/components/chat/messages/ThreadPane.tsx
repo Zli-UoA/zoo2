@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { ArchiveIcon, ArrowLeftIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
@@ -38,7 +38,6 @@ export interface ThreadPaneProps {
   currentUserId: string | null;
   canModerate?: boolean;
   isArchived?: boolean;
-  onUnarchive?: () => void;
   readOnly?: boolean;
   reactions: Map<string, ReactionGroup[]>;
   attachments?: Map<string, AttachmentRow[]>;
@@ -92,7 +91,6 @@ export function ThreadPane({
   currentUserId,
   canModerate = false,
   isArchived = false,
-  onUnarchive,
   readOnly = false,
   reactions,
   attachments,
@@ -174,11 +172,8 @@ export function ThreadPane({
             {isLoading ? t("threads.loading") : t("threads.replyCount", { count: replies.length })}
           </p>
         </div>
-        {isArchived && onUnarchive ? (
-          <Button variant="outline" size="sm" onClick={onUnarchive} disabled={isOffline}>
-            <ArchiveIcon />
-            {t("threads.unarchive")}
-          </Button>
+        {isArchived ? (
+          <span className="text-xs text-muted-foreground">{t("moderation.archived")}</span>
         ) : null}
         <Button
           variant="ghost"

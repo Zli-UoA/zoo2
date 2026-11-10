@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
+import { THREADS_CHANGED } from "../../lib/electric/threads";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { ScreenHeader } from "../layout/PaneHeader";
 import { ActivityPubAvatar, type RemoteAvatar } from "./ActivityPubAvatar";
@@ -969,6 +970,7 @@ function HomeScreenContent({
         federationEnabled={federation.enabled}
         onPost={async (post) => {
           await client.request("/api/home", { method: "POST", body: post });
+          if (post.in_reply_to) window.dispatchEvent(new Event(THREADS_CHANGED));
           void refresh();
         }}
       />

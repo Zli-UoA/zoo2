@@ -1,3 +1,5 @@
+export const THREADS_CHANGED = "zoo-threads-changed";
+
 /** 返信数の集計に必要な最小限の行。 */
 export interface ReplyParentRow {
   parent_id: string | null;

@@ -304,3 +304,73 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     assert!(reopened["data"]["thread_archive_at"].is_null());
     Ok(())
 }
+
+#[tokio::test]
+async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    let channel = uuid::Uuid::new_v4().to_string();
+    request(
+        &app,
+        "POST",
+        &user,
+        "/api/users",
+        json!({"id":user,"user_name":user,"display_name":"Thread order tester"}),
+    )
+    .await?;
+    request(
+        &app,
+        "POST",
+        &user,
+        "/api/channels",
+        json!({"id":channel,"channel_name":channel,"is_private":false}),
+    )
+    .await?;
+    let mut roots = Vec::new();
+    for days in [1, 2] {
+        let root = request(
+            &app,
+            "POST",
+            &user,
+            "/api/home",
+            json!({"channel_id":channel,"content":format!("Thread {days}")}),
+        )
+        .await?;
+        let root_id = root["id"].as_str().unwrap().to_owned();
+        let reply = request(
+            &app,
+            "POST",
+            &user,
+            "/api/messages",
+            json!({"channel_id":channel,"content":"Existing reply","parent_id":root_id}),
+        )
+        .await?;
+        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 day') WHERE id=$1")
+            .bind(reply["data"]["id"].as_str().unwrap()).bind(days.to_string()).exec(&mut db).await?;
+        // Existing threads have no saved activity until the first reply after migration.
+        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '30 days',thread_activity_at=NULL WHERE id=$1")
+            .bind(root_id.as_str()).exec(&mut db).await?;
+        roots.push(root_id);
+    }
+    for imported in [false, true] {
+        if imported {
+            toasty::sql::statement("INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) VALUES($1,$2,$3,'Historical reply',$4,(now() AT TIME ZONE 'UTC')-interval '300 days')")
+                .bind(uuid::Uuid::new_v4().to_string()).bind(user.as_str()).bind(channel.as_str()).bind(roots[0].as_str()).exec(&mut db).await?;
+        }
+        let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
+        let order: Vec<_> = threads
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["channel_id"] == channel)
+            .map(|entry| entry["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(order, roots, "imported: {imported}");
+    }
+    Ok(())
+}

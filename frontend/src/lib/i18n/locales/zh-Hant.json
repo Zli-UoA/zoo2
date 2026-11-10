@@ -239,8 +239,6 @@
     "sidebarOpen": "開啟子討論：{{title}}（{{count}} 則回覆）",
     "archivedCount_one": "{{count}} 個已封存子討論",
     "archivedCount_other": "{{count}} 個已封存子討論",
-    "unarchive": "重新開啟子討論",
-    "unarchiveError": "無法重新開啟子討論。",
     "untitled": "未命名子討論"
   },
   "reactions": {

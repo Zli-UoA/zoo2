@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
+import { THREADS_CHANGED } from "../lib/electric/threads";
 
 export interface ThreadSummary {
   id: string;
@@ -11,7 +12,6 @@ export interface ThreadSummary {
   reply_count: number;
 }
 
-export const THREADS_CHANGED = "zoo-threads-changed";
 const EMPTY_THREADS: ThreadSummary[] = [];
 
 /** 未表示のチャンネルも、messages の購読を増やさず一覧を取得する。 */
@@ -48,7 +48,7 @@ export function useThreadIndex(userId: string | null) {
       }
     };
     const invalidate = () => {
-      // 再開前に始まった取得結果で、再開後の一覧を上書きしない。
+      // 返信の保存前に始まった取得結果で、保存後の一覧を上書きしない。
       generation += 1;
       void refresh();
     };
@@ -68,23 +68,5 @@ export function useThreadIndex(userId: string | null) {
     };
   }, [client, userId]);
 
-  const unarchive = useCallback(
-    async (id: string) => {
-      await client.post(`/api/threads/${encodeURIComponent(id)}/unarchive`, {});
-      setResult((current) =>
-        current?.userId === userId
-          ? {
-              ...current,
-              threads: current.threads.map((thread) =>
-                thread.id === id ? { ...thread, thread_archive_at: null } : thread,
-              ),
-            }
-          : current,
-      );
-      window.dispatchEvent(new Event(THREADS_CHANGED));
-    },
-    [client, userId],
-  );
-
-  return { threads: result?.userId === userId ? result.threads : EMPTY_THREADS, unarchive };
+  return result?.userId === userId ? result.threads : EMPTY_THREADS;
 }

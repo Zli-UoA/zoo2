@@ -35,9 +35,11 @@ const fixture = vi.hoisted(() => {
     closeThread: vi.fn(),
     openThread: vi.fn(),
     api: { request: vi.fn(), post: vi.fn().mockResolvedValue({}) },
+    insert: vi.fn(),
   };
 });
 const collection = {
+  insert: fixture.insert,
   get: () => (fixture.exists ? fixture.root : undefined),
   values: () => (fixture.exists ? [...fixture.rows, ...fixture.replies] : fixture.empty).values(),
 };
@@ -96,7 +98,12 @@ vi.mock("../../../hooks/useTyping", () => ({
   useTyping: () => ({ users: fixture.empty, onTyping: () => {} }),
 }));
 vi.mock("../../../hooks/useWriteRunner", () => ({
-  useWriteRunner: () => ({ error: null, setError: () => {}, run: vi.fn(), isPending: false }),
+  useWriteRunner: () => ({
+    error: null,
+    setError: () => {},
+    run: async (action: () => unknown) => action(),
+    isPending: false,
+  }),
 }));
 vi.mock("../../../lib/offline/offline-context", () => ({
   useOfflineStatus: () => ({ isOnline: true }),
@@ -119,18 +126,26 @@ vi.mock("./ThreadPane", () => ({
   ThreadPane: ({
     root,
     replies,
-    onUnarchive,
+    readOnly,
+    isMember,
+    onSendReply,
   }: {
     root: { content: string };
     replies: { id: string; content: string }[];
-    onUnarchive?: () => void;
+    readOnly?: boolean;
+    isMember?: boolean;
+    onSendReply: (content: string) => Promise<boolean>;
   }) => (
     <div>
       {root.content}
       {replies.map((reply) => (
         <p key={reply.id}>{reply.content}</p>
       ))}
-      <button onClick={onUnarchive}>Reopen thread</button>
+      {!readOnly ? (
+        <button disabled={!isMember} onClick={() => void onSendReply("Continued reply")}>
+          Reply to thread
+        </button>
+      ) : null}
     </div>
   ),
 }));
@@ -147,6 +162,8 @@ beforeEach(() => {
   fixture.reactions = [];
   fixture.closeThread.mockClear();
   fixture.openThread.mockClear();
+  fixture.insert.mockClear();
+  fixture.api.post.mockClear();
 });
 describe("thread URLs outside the initial message window", () => {
   it("keeps older replies visible after an archived thread is reopened", async () => {
@@ -166,10 +183,15 @@ describe("thread URLs outside the initial message window", () => {
     );
     const { rerender } = render(view());
     await screen.findByText("Reply 40 days ago");
-    screen.getByRole("button", { name: "Reopen thread" }).click();
+    screen.getByRole("button", { name: "Reply to thread" }).click();
     await waitFor(() =>
-      expect(fixture.api.post).toHaveBeenCalledWith("/api/threads/old-root/unarchive", {}),
+      expect(fixture.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ parent_id: fixture.root.id, content: "Continued reply" }),
+        undefined,
+      ),
     );
+    expect(fixture.api.post).not.toHaveBeenCalled();
+    // 返信の保存後に Electric から再開状態が届く。
     fixture.root.thread_archive_at = null;
     rerender(view());
     await waitFor(() => {

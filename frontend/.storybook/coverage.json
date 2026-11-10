@@ -258,7 +258,19 @@
     },
     {
       "file": "src/components/chat/messages/ThreadPane.stories.tsx",
-      "states": ["Empty", "WithReplies", "Loading", "Error", "Mobile", "Completions", "AppCard"]
+      "states": [
+        "Empty",
+        "WithReplies",
+        "Archived",
+        "ArchivedReadOnly",
+        "ArchivedNotJoined",
+        "MobileArchived",
+        "Loading",
+        "Error",
+        "Mobile",
+        "Completions",
+        "AppCard"
+      ]
     },
     {
       "file": "src/components/chat/messages/TypingIndicator.stories.tsx",

@@ -239,8 +239,6 @@
     "sidebarOpen": "打开子线程：{{title}}（{{count}} 条回复）",
     "archivedCount_one": "{{count}} 个已归档子线程",
     "archivedCount_other": "{{count}} 个已归档子线程",
-    "unarchive": "重新开启子线程",
-    "unarchiveError": "无法重新开启子线程。",
     "untitled": "未命名子线程"
   },
   "reactions": {

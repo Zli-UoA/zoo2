@@ -239,8 +239,6 @@
     "sidebarOpen": "スレッドを開く: {{title}}（{{count}} 件の返信）",
     "archivedCount_one": "アーカイブ済みスレッド {{count}} 件",
     "archivedCount_other": "アーカイブ済みスレッド {{count}} 件",
-    "unarchive": "スレッドを再開",
-    "unarchiveError": "スレッドを再開できませんでした。",
     "untitled": "タイトルなし"
   },
   "reactions": {

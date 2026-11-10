@@ -239,8 +239,6 @@
     "sidebarOpen": "Open thread: {{title}} ({{count}} replies)",
     "archivedCount_one": "{{count}} archived thread",
     "archivedCount_other": "{{count}} archived threads",
-    "unarchive": "Reopen thread",
-    "unarchiveError": "Could not reopen the thread.",
     "untitled": "Untitled thread"
   },
   "reactions": {

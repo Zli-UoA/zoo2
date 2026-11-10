@@ -239,8 +239,6 @@
     "sidebarOpen": "스레드 열기: {{title}} (답글 {{count}}개)",
     "archivedCount_one": "보관된 스레드 {{count}}개",
     "archivedCount_other": "보관된 스레드 {{count}}개",
-    "unarchive": "스레드 다시 열기",
-    "unarchiveError": "스레드를 다시 열지 못했습니다.",
     "untitled": "제목 없는 스레드"
   },
   "reactions": {

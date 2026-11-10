@@ -50,7 +50,8 @@ async fn list_threads(
          WHERE root.deleted_at IS NULL AND c.deleted_at IS NULL AND NOT c.is_dm \
            AND EXISTS(SELECT 1 FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL) \
            AND ((NOT c.is_private AND NOT $2::boolean) OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=$1)) \
-         ORDER BY COALESCE(root.thread_activity_at,(SELECT max(reply.created_at) FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL),root.created_at) DESC",
+         ORDER BY GREATEST(COALESCE(root.thread_activity_at,root.created_at), \
+           COALESCE((SELECT max(reply.created_at) FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL),root.created_at)) DESC",
         &[auth_user.id.as_str(), if guest { "true" } else { "false" }],
     )
     .await?;

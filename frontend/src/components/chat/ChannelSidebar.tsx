@@ -57,7 +57,7 @@ export function ChannelSidebar({
   const [createOpen, setCreateOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [dmOpen, setDmOpen] = useState(false);
-  const { threads: threadEntries, unarchive: unarchiveThread } = useThreadIndex(currentUserId);
+  const threadEntries = useThreadIndex(currentUserId);
 
   // 一覧の各チャンネルについて現在ユーザーの参加状態を出す。`channel_user` の
   // 購読は `getCollections()` が 1 本だけ持つため、ここで直接 live query を張っても
@@ -208,11 +208,7 @@ export function ChannelSidebar({
                       ) : null}
                     </Link>
                     {!channel.is_dm ? (
-                      <ChannelThreadItems
-                        channel={channel}
-                        threads={threadEntries}
-                        onUnarchive={unarchiveThread}
-                      />
+                      <ChannelThreadItems channel={channel} threads={threadEntries} />
                     ) : null}
                   </div>
                 );

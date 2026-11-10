@@ -14,7 +14,6 @@ import {
   useMessageReactions,
 } from "../../../hooks/useRealtime";
 import { useReplyCounts, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
-import { THREADS_CHANGED } from "../../../hooks/useThreadIndex";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
@@ -206,23 +205,7 @@ export function MessagePane({
   );
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRoot = threadRootQuery.data?.[0] ?? null;
-  const [reopenedThreadId, setReopenedThreadId] = useState<string | null>(null);
-  const threadIsArchived = !!threadRoot?.thread_archive_at && reopenedThreadId !== threadRoot.id;
-  useEffect(() => {
-    if (threadRoot && !threadRoot.thread_archive_at && reopenedThreadId === threadRoot.id) {
-      setReopenedThreadId(null);
-    }
-  }, [reopenedThreadId, threadRoot]);
-  const handleUnarchiveThread = useCallback(async () => {
-    if (!threadRoot) return;
-    try {
-      await appClient.post(`/api/threads/${encodeURIComponent(threadRoot.id)}/unarchive`, {});
-      setReopenedThreadId(threadRoot.id);
-      window.dispatchEvent(new Event(THREADS_CHANGED));
-    } catch {
-      toast.error(t("threads.unarchiveError"));
-    }
-  }, [appClient, t, threadRoot]);
+  const threadIsArchived = !!threadRoot?.thread_archive_at;
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
@@ -605,10 +588,9 @@ export function MessagePane({
           mentionUsers={mentionUsers}
           mentionMemberIds={mentionMemberIds}
           key={threadRoot.id}
-          readOnly={readOnly || threadIsArchived}
+          readOnly={readOnly}
           isArchived={threadIsArchived}
-          onUnarchive={!readOnly && isMember ? () => void handleUnarchiveThread() : undefined}
-          isMember={!readOnly && !threadIsArchived && isMember}
+          isMember={!readOnly && isMember}
           isOffline={!isOnline}
           typingUsers={threadTyping.users}
           onTyping={threadTyping.onTyping}

@@ -1,7 +1,7 @@
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
-import { expect, screen, userEvent, waitFor, within } from "storybook/test";
+import { expect, screen, userEvent, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import {
@@ -119,33 +119,21 @@ export const Threads: Story = {
   }),
 };
 
-let archivedEntry = { ...threadEntry };
 export const ArchivedThreads: Story = {
-  beforeEach: () => {
-    archivedEntry = { ...threadEntry, thread_archive_at: "2026-01-10T09:05:00.000Z" };
-  },
   parameters: {
     a11y: { test: "error" },
     msw: {
       handlers: [
-        http.get("*/api/threads", () => HttpResponse.json([archivedEntry])),
-        http.post("*/api/threads/:id/unarchive", () => {
-          archivedEntry = { ...archivedEntry, thread_archive_at: null };
-          return HttpResponse.json({ data: archivedEntry, txid: "42" });
-        }),
+        http.get("*/api/threads", () =>
+          HttpResponse.json([{ ...threadEntry, thread_archive_at: "2026-01-10T09:05:00.000Z" }]),
+        ),
       ],
     },
   },
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: /アーカイブ済みスレッド/ }));
     await expect(await screen.findByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: /スレッドを再開/ }));
-    await waitFor(async () => {
-      await expect(
-        screen.queryByRole("button", { name: /アーカイブ済みスレッド/ }),
-      ).not.toBeInTheDocument();
-      await expect(screen.getByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
-    });
+    await expect(screen.queryByRole("button", { name: /スレッドを再開/ })).not.toBeInTheDocument();
   }),
 };
 
