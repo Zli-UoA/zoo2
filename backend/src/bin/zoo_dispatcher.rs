@@ -10,7 +10,7 @@
 //!
 //! `DATABASE_URL` は直接接続にすること。LISTEN（#378 以降）はトランザクションプールのプーラー
 //! （PgBouncer のトランザクションモードなど）を経由すると動かない（配信はポーリングで続く）。
-//! DB プールの上限は `DB_MAX_POOL_SIZE`（未設定ならドライバの既定: 論理 CPU 数 × 2）。
+//! DB プールの上限は `DB_MAX_POOL_SIZE`（未設定なら 10。`db::DEFAULT_MAX_POOL_SIZE`）。
 use axum::{Router, http::header, response::IntoResponse, routing::get};
 use std::{net::SocketAddr, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};

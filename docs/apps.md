@@ -107,7 +107,7 @@ HTTP App へのイベント送信は、backend から独立した `zoo-dispatche
 | 環境変数 | 対象 | 内容 |
 |---|---|---|
 | `DATABASE_URL` / `POSTGRES_*` | dispatcher | 接続先。LISTEN を使うため、トランザクションプールのプーラーを経由しない直接接続にする（経由しても配信は 3 秒ポーリングで動く） |
-| `DB_MAX_POOL_SIZE` | dispatcher・backend | DB 接続プールの上限（未設定ならドライバの既定: 論理 CPU 数 × 2。CPU の limit が無い Pod ではノードの CPU 数で決まる）。不正な値は警告を出して既定値になる。`http_pass` は最大 8 インストール × 16 件の claim を同時に出すので、Postgres の `max_connections` が小さい環境では絞る。LISTEN 用の接続（1 本）はこのプールの外 |
+| `DB_MAX_POOL_SIZE` | dispatcher・backend | DB 接続プールの上限（未設定なら 10）。以前はドライバの既定（論理 CPU 数 × 2）で、CPU の limit が無い Pod ではノードの CPU 数で決まっていた。不正な値は警告を出して既定値になる。`http_pass` は最大 8 インストール × 16 件の claim を同時に出すので、Postgres の `max_connections` が小さい環境では絞る。LISTEN 用の接続はこのプールの外で、dispatcher は 1 本（`app_delivery`）、backend は有効な機能に応じて複数（`app_delivery`、`zoo_call_events`、ホーム通知を購読しているときの `home_timeline`。`home_timeline` は backend ごとに共有され、購読者の数では増えない）。プールの上限は DB の総接続数ではない |
 | `DISPATCHER_PORT` / `DISPATCHER_HOST` | dispatcher | `/healthz`・`/metrics` の待ち受け（既定 8081 / 0.0.0.0）。配信ループが終わると `/healthz` は 503 を返す。不正な値・`0`・解決できないホスト・使用中のポートは、配信を始める前に起動エラーになる。Kubernetes で Service 名を `dispatcher` にすると `DISPATCHER_PORT=tcp://…` が注入されて起動エラーになるので、Deployment に `enableServiceLinks: false` を付ける |
 | `DISPATCHER_TOKEN` | dispatcher・backend | 内部 API の共有トークン。dispatcher 側が未設定なら内部 API は無効 |
 | `DISPATCHER_URL` | backend | challenge 検証を委譲する dispatcher の URL。未設定なら backend が自分で送る |

@@ -21,28 +21,37 @@ pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
         UserRole,
         Attachment
     ));
-    // 接続数を絞りたい環境（dispatcher を複数台動かす・max_connections が小さい）向け。
-    // 未設定ならドライバの既定（論理 CPU 数 × 2）。
-    match std::env::var("DB_MAX_POOL_SIZE")
-        .ok()
-        .map(|v| v.trim().to_owned())
-    {
-        Some(v) if !v.is_empty() => match v.parse::<usize>() {
-            Ok(n) if n > 0 => {
-                builder.max_pool_size(n);
-            }
-            // 書き間違いを黙って既定値にしない。
-            _ => tracing::warn!(
-                value = v,
-                "Invalid DB_MAX_POOL_SIZE; using the driver default"
-            ),
-        },
-        _ => {}
-    }
+    builder.max_pool_size(max_pool_size(std::env::var("DB_MAX_POOL_SIZE").ok()));
     let db = builder.connect(database_url).await?;
 
     tracing::info!("Successfully connected to PostgreSQL database");
     Ok(db)
+}
+
+/// DB 接続プールの上限の既定値。
+///
+/// ドライバの既定は「論理 CPU 数 × 2」で、CPU の limit が無い Pod ではノードの CPU 数で決まる。
+/// CPU の多いノードでは、必要以上の接続を開いたままにして DB のメモリを圧迫する。
+/// 接続数は DB 側の大きさで決まるべき値なので、固定にする。
+pub const DEFAULT_MAX_POOL_SIZE: usize = 10;
+
+/// `DB_MAX_POOL_SIZE` の値からプールの上限を決める。未設定・空なら既定値、不正な値は警告を出して既定値。
+fn max_pool_size(value: Option<String>) -> usize {
+    match value.map(|v| v.trim().to_owned()) {
+        Some(v) if !v.is_empty() => match v.parse::<usize>() {
+            Ok(n) if n > 0 => n,
+            // 書き間違いを黙って既定値にしない。
+            _ => {
+                tracing::warn!(
+                    value = v,
+                    default = DEFAULT_MAX_POOL_SIZE,
+                    "Invalid DB_MAX_POOL_SIZE; using the default"
+                );
+                DEFAULT_MAX_POOL_SIZE
+            }
+        },
+        _ => DEFAULT_MAX_POOL_SIZE,
+    }
 }
 
 /// 同一トランザクション内で pg_current_xact_id()::xid::text を実行し、txid を取得する
@@ -271,6 +280,25 @@ mod tests {
         assert_eq!(
             cfg_default.get_ssl_mode(),
             tokio_postgres::config::SslMode::Prefer
+        );
+    }
+
+    #[test]
+    fn max_pool_size_defaults_to_a_fixed_value() {
+        assert_eq!(super::max_pool_size(None), super::DEFAULT_MAX_POOL_SIZE);
+        assert_eq!(
+            super::max_pool_size(Some(String::new())),
+            super::DEFAULT_MAX_POOL_SIZE
+        );
+        assert_eq!(super::max_pool_size(Some(" 6 ".into())), 6);
+        // 不正な値は既定値にする（ドライバの CPU 数 × 2 には戻さない）。
+        assert_eq!(
+            super::max_pool_size(Some("0".into())),
+            super::DEFAULT_MAX_POOL_SIZE
+        );
+        assert_eq!(
+            super::max_pool_size(Some("abc".into())),
+            super::DEFAULT_MAX_POOL_SIZE
         );
     }
 }
