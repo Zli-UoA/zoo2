@@ -89,6 +89,22 @@ export const ImportedFromSlackCreated: Story = {
   }),
 };
 
+/** 狭い画面でも、設定の見出しが 1 文字ずつ縦に並ばず、印は見出しの下へ折り返す */
+export const ImportedFromSlackMobile: Story = {
+  ...ImportedFromSlackCreated,
+  globals: { viewport: { value: "mobile" } },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    const dialog = await screen.findByRole("dialog");
+    const title = await within(dialog).findByText("チャンネル設定");
+    await expect(title.getBoundingClientRect().width).toBeGreaterThan(100);
+    const badge = await within(dialog).findByText(/Slack から取り込み・新規作成/);
+    await expect(badge.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      title.getBoundingClientRect().bottom,
+    );
+  }),
+};
+
 export const Private: Story = {
   args: {
     channel: secret,

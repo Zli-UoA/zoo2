@@ -261,8 +261,9 @@ export function ChannelHeader({
 
       <Dialog open={settingsOpen && canManage} onOpenChange={setSettingsOpen}>
         <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
-          <div className="flex items-start justify-between gap-2 pr-8">
-            <DialogHeader className="min-w-0 flex-1">
+          {/* 狭い画面では、印が見出しの下へ折り返す (見出しの幅を 10rem は確保する) */}
+          <div className="flex flex-wrap items-start justify-between gap-2 pr-8">
+            <DialogHeader className="min-w-40 flex-1">
               <DialogTitle>{t("settings.channelTitle")}</DialogTitle>
               <DialogDescription>{displayTitle}</DialogDescription>
             </DialogHeader>
