@@ -6,7 +6,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-use crate::http::{Credentials, error_for_status};
+use crate::http::{Credentials, TokenPersistenceReport, error_for_status};
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -155,6 +155,14 @@ impl ApiClient {
     }
     pub async fn me(&self) -> Result<Me> {
         self.get("/api/users/me").await
+    }
+
+    pub async fn finish_token_tasks(&self) -> TokenPersistenceReport {
+        self.credentials.finish_token_tasks().await
+    }
+
+    pub async fn token_persistence_report(&self) -> TokenPersistenceReport {
+        self.credentials.persistence_report().await
     }
 
     /// `id` はクライアントで採番する (frontend と同じく、送信直後の行と突き合わせるため)。
