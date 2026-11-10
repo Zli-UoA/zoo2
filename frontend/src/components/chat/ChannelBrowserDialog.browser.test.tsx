@@ -24,6 +24,7 @@ const base: ChannelRow = {
   created_at: "2026-01-01 00:00:00.000",
   updated_at: null,
   archive_at: null,
+  imported_from_slack: false,
   deleted_at: null,
 };
 it("opens public channel messages without joining and keeps private channels out of discovery", async () => {

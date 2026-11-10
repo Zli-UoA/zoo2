@@ -59,6 +59,7 @@ fun ChannelDialog(
             )
         }
     var search by remember(kind) { mutableStateOf(initial.text("search")) }
+    var slackOnly by remember(kind) { mutableStateOf(false) }
     var selected by
         remember(kind) {
             mutableStateOf<Set<String>>(
@@ -330,6 +331,7 @@ fun ChannelDialog(
                 ) {
                     search = it
                 }
+                Check(app.t("channels.browseSlackOnly"), slackOnly) { slackOnly = it }
                 Box(Modifier.fillMaxWidth().height(320.dp)) {
                     val filtered =
                         channels
@@ -343,6 +345,7 @@ fun ChannelDialog(
                                                 v.jsonPrimitive.content
                                             }
                                     else isMember(members, it.text("id"), app.config.userId)) &&
+                                    (!slackOnly || it.flag("imported_from_slack")) &&
                                     it.text("channel_name").contains(search.trim(), true)
                             }
                     if (filtered.isEmpty())

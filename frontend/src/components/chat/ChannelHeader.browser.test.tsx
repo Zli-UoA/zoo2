@@ -16,6 +16,7 @@ const channel: ChannelRow = {
   created_at: "2026-01-01 00:00:00.000",
   updated_at: null,
   archive_at: null,
+  imported_from_slack: false,
   deleted_at: null,
 };
 
@@ -116,5 +117,23 @@ describe("ChannelHeader", () => {
     expect(screen.getByText("Webhook設定")).toBeVisible();
     expect(screen.getByRole("button", { name: "アーカイブ" })).toBeVisible();
     expect(screen.queryByText("メッセージ管理")).toBeNull();
+  });
+
+  it("marks a channel imported from Slack in the header and the settings only", async () => {
+    const { rerender } = render(
+      <LocaleProvider>
+        <ChannelHeader channel={channel} memberCount={3} />
+      </LocaleProvider>,
+    );
+    expect(screen.queryByText("Slack から取り込み")).toBeNull();
+
+    rerender(
+      <LocaleProvider>
+        <ChannelHeader channel={{ ...channel, imported_from_slack: true }} memberCount={3} />
+      </LocaleProvider>,
+    );
+    expect(screen.getByText("Slack から取り込み")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
+    expect(await screen.findByText("Slack から取り込んだチャンネルです。")).toBeVisible();
   });
 });

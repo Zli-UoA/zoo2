@@ -69,6 +69,7 @@ export function CreateChannelDialog({
         created_at: new Date().toISOString(),
         updated_at: null,
         archive_at: null,
+        imported_from_slack: false,
         deleted_at: null,
       });
       await transaction.when("settled");

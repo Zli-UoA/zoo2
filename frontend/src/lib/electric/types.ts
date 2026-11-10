@@ -34,6 +34,8 @@ export type ChannelRow = {
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
   deleted_at: TimestampString | null;
+  /** Slack から取り込んだチャンネル (取り込み先の新規作成も既存のチャンネルも) */
+  imported_from_slack: boolean;
 };
 
 export type MessageRow = {

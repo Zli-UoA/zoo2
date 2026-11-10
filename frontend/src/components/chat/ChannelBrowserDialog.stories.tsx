@@ -48,6 +48,24 @@ export const SearchEmpty: Story = {
   }),
 };
 
+export const SlackOnly: Story = {
+  args: {
+    channels: storyChannels.map((channel) =>
+      channel.id === "channel-random" ? { ...channel, imported_from_slack: true } : channel,
+    ),
+  },
+  play: playForImplementation(async () => {
+    await expect(
+      await screen.findByRole("link", { name: /old-announcements/ }),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      await screen.findByRole("checkbox", { name: "Slack から取り込んだチャンネルだけ" }),
+    );
+    await expect(screen.getByRole("link", { name: /random/ })).toBeInTheDocument();
+    await expect(screen.queryByRole("link", { name: /old-announcements/ })).not.toBeInTheDocument();
+  }),
+};
+
 export const Closed: Story = {
   args: {
     open: false,

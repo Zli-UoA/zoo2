@@ -249,6 +249,7 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
     deleted_at: null,
   },
   {
@@ -261,6 +262,7 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
     deleted_at: null,
   },
   {
@@ -273,6 +275,7 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
     deleted_at: null,
   },
   {
@@ -285,6 +288,7 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
     deleted_at: null,
   },
   {
@@ -297,6 +301,7 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: timestamp(1, 1),
+    imported_from_slack: false,
     deleted_at: null,
   },
 ];

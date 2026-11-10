@@ -19,16 +19,21 @@ export function isChannelJoinable(channel: ChannelRow): boolean {
  * - 参加済みと非公開チャンネルは出さない。
  * - チャンネル名の部分一致（大文字小文字と前後の空白を無視）。
  * - アーカイブ済みも閲覧できるため一覧には残す。
+ * - `slackOnly` が true なら、Slack から取り込んだチャンネルだけを残す。
  * - 並び順は変えない。
  */
 export function filterDiscoverableChannels(
   channels: ChannelRow[],
   joinedChannelIds: ReadonlySet<string>,
   query: string,
+  slackOnly = false,
 ): ChannelRow[] {
   const needle = query.trim().toLowerCase();
   return channels.filter((channel) => {
     if (channel.is_private || joinedChannelIds.has(channel.id)) {
+      return false;
+    }
+    if (slackOnly && !channel.imported_from_slack) {
       return false;
     }
     return needle.length === 0 || channel.channel_name.toLowerCase().includes(needle);

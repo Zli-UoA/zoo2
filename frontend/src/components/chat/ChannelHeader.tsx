@@ -134,6 +134,11 @@ export function ChannelHeader({
               {t("moderation.archived")}
             </span>
           ) : null}
+          {channel.imported_from_slack && !isDm ? (
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+              {t("channels.slackImported")}
+            </span>
+          ) : null}
         </div>
         <p className="truncate text-xs text-muted-foreground">{displaySubtitle}</p>
       </div>
@@ -277,6 +282,14 @@ export function ChannelHeader({
                 {t("messages.edit")}
               </Button>
             </SettingRow>
+            {channel.imported_from_slack ? (
+              <SettingRow
+                label={t("channels.slackImported")}
+                description={t("channels.slackImportedDescription")}
+              >
+                {null}
+              </SettingRow>
+            ) : null}
             <SettingRow label={t("webhooks.title")}>
               <Button
                 variant="outline"

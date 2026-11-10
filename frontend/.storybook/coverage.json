@@ -44,13 +44,14 @@
     },
     {
       "file": "src/components/chat/ChannelBrowserDialog.stories.tsx",
-      "states": ["Default", "SearchEmpty", "Closed"]
+      "states": ["Default", "SearchEmpty", "SlackOnly", "Closed"]
     },
     {
       "file": "src/components/chat/ChannelHeader.stories.tsx",
       "states": [
         "Default",
         "ControlPanelOpen",
+        "ImportedFromSlack",
         "Private",
         "Archived",
         "LoadingMemberCount",
@@ -333,6 +334,7 @@
         "Loading",
         "LoadError",
         "Mapping",
+        "BulkSelection",
         "StartError",
         "Analyzing",
         "Importing",

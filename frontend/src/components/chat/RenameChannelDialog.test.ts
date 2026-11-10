@@ -23,6 +23,7 @@ const channel: ChannelRow = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: null,
   archive_at: null,
+  imported_from_slack: false,
   deleted_at: null,
 };
 

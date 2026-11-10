@@ -92,6 +92,7 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     updated_at: "timestamp",
     archive_at: "timestamp",
     deleted_at: "timestamp",
+    imported_from_slack: "bool",
   },
 };
 
