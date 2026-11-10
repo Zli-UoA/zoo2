@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -33,8 +34,8 @@ import {
   removeOfflineDatabase,
   retryPendingOfflineDeletion,
 } from "../../lib/offline/persistence";
-import { prepareOfflineWorker } from "../../lib/pwa/worker-registration";
-import { clearComposeUserStorage } from "../../lib/compose/storage";
+import { prepareOfflineWorker, reloadIfShellUpdated } from "../../lib/pwa/worker-registration";
+import { clearLegacyFrontendStorage } from "../../lib/offline/legacy-storage";
 import { startAssetCaching } from "../../lib/pwa/cache-assets";
 import { Button } from "../ui/button";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
@@ -88,10 +89,17 @@ export function OfflineProvider({
   const userUnavailable = Boolean(config.oidc && isOnline && !currentUserLoading && !currentUserId);
   const [retryToken, setRetryToken] = useState(0);
   const [ready, setReady] = useState<ReadyState | null>(null);
+  const preparingWorker = useRef<Promise<void> | null>(null);
+  const startupShellCheck = useRef<Promise<boolean> | null>(null);
+
+  // 静的アセットの準備はユーザー確認と並行する。DBを開く前には完了を待つ。
+  useEffect(() => {
+    preparingWorker.current = prepareOfflineWorker().catch(() => {});
+  }, [retryToken]);
 
   useEffect(() => {
     void userStore.ensureLoaded();
-  }, [userStore]);
+  }, [userStore, isOnline]);
 
   // 初回ロード時に Service Worker が制御していなかった assets（フォントや
   // 動的 import の OPFS worker など）も、後から SW のキャッシュへ送る。
@@ -132,12 +140,11 @@ export function OfflineProvider({
       await retryPendingOfflineDeletion();
       // The Worker response may still be cached with the previous deployment's CSP.
       // Upgrade the controlling SW before the first SQLite open, not after rendering the shell.
-      try {
-        await prepareOfflineWorker();
-      } catch {
-        // SW setup is optional: OPFS may still work directly, including offline.
-      }
+      await preparingWorker.current;
       if (cancelled) return;
+      // Check once per startup; a later retry/user change must not reload an active form.
+      startupShellCheck.current ??= reloadIfShellUpdated();
+      if ((await startupShellCheck.current) || cancelled) return;
       try {
         const handle = await openOfflinePersistence(namespace);
         if (cancelled) return;
@@ -163,7 +170,7 @@ export function OfflineProvider({
   const clearUserData = useCallback(async () => {
     // 削除に失敗しても、次のオフライン起動が前のユーザーの DB を選ばないよう
     // 先に lastUser を消す。未完了の削除は次の起動で再試行する。
-    clearComposeUserStorage(config.devUserId || currentUserId || readLastOfflineUserId());
+    clearLegacyFrontendStorage(config.devUserId || currentUserId || readLastOfflineUserId());
     forgetOfflineUserId(currentUserId);
     markOfflineDeletionPending(namespace);
     await removeOfflineDatabase(namespace);

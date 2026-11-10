@@ -2,7 +2,6 @@ import type { Preview } from "@storybook/react-vite";
 import { configure } from "storybook/test";
 
 import "../src/styles.css";
-import { withImplementation } from "./implementation";
 import { startStorybookWorker, withCollections, withMsw, withProviders } from "./decorators";
 
 // アプリの Service Worker が MSW の worker を上書きしないよう、Storybook では
@@ -58,17 +57,6 @@ const preview: Preview = {
     },
   },
   globalTypes: {
-    implementation: {
-      description: "UI implementation",
-      toolbar: {
-        icon: "component",
-        items: [
-          { value: "react", title: "React" },
-          { value: "kotlin", title: "Kotlin (Compose)" },
-        ],
-        dynamicTitle: true,
-      },
-    },
     theme: {
       description: "Theme",
       toolbar: {
@@ -90,18 +78,19 @@ const preview: Preview = {
           { value: "zh-Hans", title: "简体中文" },
           { value: "zh-Hant", title: "繁體中文" },
           { value: "yue", title: "粵語" },
+          { value: "ko-KR", title: "한국어" },
+          { value: "ko-KP", title: "조선말 (문화어)" },
         ],
         dynamicTitle: true,
       },
     },
   },
   initialGlobals: {
-    implementation: "react",
     theme: "light",
     locale: "ja",
     viewport: { value: "desktop" },
   },
-  decorators: [withImplementation, withProviders, withCollections, withMsw],
+  decorators: [withProviders, withCollections, withMsw],
 };
 
 export default preview;

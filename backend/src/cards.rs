@@ -131,17 +131,7 @@ pub fn parse_webhook_cards(body: &[u8]) -> Result<Vec<MessageCard>, AppError> {
     }
     let mut cards = Vec::new();
     if !message.text.trim().is_empty() {
-        cards.push(MessageCard {
-            title: "Webhook".into(),
-            description: message.text,
-            url: String::new(),
-            source: String::new(),
-            context: String::new(),
-            author: String::new(),
-            badge: String::new(),
-            color: String::new(),
-            fields: Vec::new(),
-        });
+        cards.push(text_card(message.text));
     }
     for attachment in message.attachments {
         if attachment.fields.len() > 100 {
@@ -193,6 +183,58 @@ pub fn parse_webhook_cards(body: &[u8]) -> Result<Vec<MessageCard>, AppError> {
         card.encode()?;
     }
     Ok(cards)
+}
+
+/// Slack 形式の投稿のトップレベル本文を表すカード。カードのある投稿では本文 (`content`) を
+/// 表示しないので、本文はこのカードとして先頭に置く。
+pub fn text_card(text: String) -> MessageCard {
+    MessageCard {
+        title: "Webhook".into(),
+        description: text,
+        url: String::new(),
+        source: String::new(),
+        context: String::new(),
+        author: String::new(),
+        badge: String::new(),
+        color: String::new(),
+        fields: Vec::new(),
+    }
+}
+
+/// カードを `messages.card` の形にする (1 枚ならそのまま、複数なら `{"cards":[...]}`)。カードがなければ None。
+pub fn encode_cards(cards: &[MessageCard]) -> Result<Option<String>, AppError> {
+    let mut encoded = Vec::new();
+    for card in cards {
+        encoded.push(
+            serde_json::from_str::<serde_json::Value>(&card.encode()?)
+                .map_err(|e| AppError::Internal(e.into()))?,
+        );
+    }
+    Ok(match encoded.len() {
+        0 => None,
+        1 => Some(encoded.remove(0).to_string()),
+        _ => Some(serde_json::json!({ "cards": encoded }).to_string()),
+    })
+}
+
+/// Keep the notification readable in announcements, admin lists and older clients.
+pub fn cards_content(cards: &[MessageCard]) -> String {
+    cards
+        .iter()
+        .flat_map(|card| {
+            let title = if card.title == "Webhook" && !card.description.is_empty() {
+                ""
+            } else {
+                &card.title
+            };
+            [title, card.description.as_str()]
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .chars()
+        .take(crate::validation::MAX_MESSAGE_CONTENT_LENGTH)
+        .collect()
 }
 
 #[cfg(test)]

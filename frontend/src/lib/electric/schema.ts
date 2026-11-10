@@ -70,6 +70,7 @@ export const USER_SCHEMA: ShapeSchema<UserRow> = {
     user_name: "text",
     display_name: "varchar",
     is_bot: "bool",
+    is_deactivated: "bool",
     app_id: "text",
     avatar_url: "text",
     bot_mentionable: "bool",
@@ -163,6 +164,9 @@ export const ATTACHMENT_SCHEMA: ShapeSchema<AttachmentRow> = {
     file_size: "int8",
     content_type: "text",
     storage_key: "text",
+    width: "int4",
+    height: "int4",
+    blurhash: "text",
     created_at: "timestamp",
   },
 };

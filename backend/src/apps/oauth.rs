@@ -100,7 +100,7 @@ async fn token(
   let challenge=URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
   one(&mut tx,"UPDATE app_oauth_codes c SET used_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE c.installation_id=i.id AND c.code_hash=$1 AND c.redirect_uri=$2 AND c.code_challenge=$3 AND c.used_at IS NULL AND c.expires_at>now() AND i.active AND a.status='installed' AND c.scopes::jsonb <@ i.scopes::jsonb RETURNING json_build_object('installation',c.installation_id,'user',c.user_id,'scopes',c.scopes::jsonb)::text",&[&hash(&code),&redirect_uri,&challenge]).await
  },
- TokenRequest::RefreshToken{refresh_token}=>one(&mut tx,"UPDATE app_credentials t SET revoked_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE t.installation_id=i.id AND t.refresh_hash=$1 AND t.revoked_at IS NULL AND t.created_at>now()-interval '30 days' AND i.active AND a.status='installed' AND t.scopes::jsonb <@ i.scopes::jsonb RETURNING json_build_object('installation',t.installation_id,'user',t.user_id,'scopes',t.scopes::jsonb)::text",&[&hash(&refresh_token)]).await
+ TokenRequest::RefreshToken{refresh_token}=>one(&mut tx,&format!("UPDATE app_credentials t SET revoked_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE t.installation_id=i.id AND t.refresh_hash=$1 AND t.revoked_at IS NULL AND t.created_at>now()-interval '{REFRESH_TOKEN_TTL}' AND i.active AND a.status='installed' AND t.scopes::jsonb <@ i.scopes::jsonb RETURNING json_build_object('installation',t.installation_id,'user',t.user_id,'scopes',t.scopes::jsonb)::text"),&[&hash(&refresh_token)]).await
  }.map_err(|e|match e{AppError::NotFound(_)=>AppError::Unauthorized("Invalid or consumed OAuth grant".into()),other=>other})?;
     let value = mint(
         &mut tx,

@@ -65,7 +65,7 @@ export const Management: Story = {
   play: playForImplementation(async (context) => {
     await Apps.play?.(context);
     await userEvent.click(screen.getByRole("tab", { name: "管理・開発" }));
-    await expect(screen.getByRole("button", { name: "トークンを発行" })).toBeVisible();
+    await expect(screen.getByRole("button", { name: "App 管理画面を開く" })).toBeVisible();
   }),
 };
 
@@ -297,6 +297,31 @@ export const ActivityPubSaveError: Story = {
   }),
 };
 
+export const SlackImport: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/users/me", () =>
+          HttpResponse.json({
+            id: "user-alice",
+            user_name: "alice",
+            display_name: "Alice",
+            is_admin: true,
+          }),
+        ),
+        http.get("*/api/admin/slack-imports", () => HttpResponse.json({ imports: [] })),
+        ...appHandlers,
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "Slack 取り込み" }));
+    await expect(
+      await screen.findByRole("button", { name: "ZIP を選んでアップロード" }),
+    ).toBeVisible();
+  }),
+};
+
 export const CustomEmojis: Story = {
   beforeEach: () => {
     savedEmoji = { ...customEmojiFixture };
@@ -358,4 +383,39 @@ export const CustomEmojisError: Story = {
     await expect(await screen.findByRole("alert")).toBeVisible();
     await expect(screen.getByRole("button", { name: "更新" })).toBeVisible();
   }),
+};
+
+export const SharedEmojiService: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/emoji-service", () =>
+          HttpResponse.json({ url: "https://emoji.example.test" }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "カスタム絵文字" }));
+    await expect(
+      await screen.findByRole("link", { name: "絵文字管理サービスを開く" }),
+    ).toHaveAttribute("href", "https://emoji.example.test");
+    await expect(screen.queryByRole("textbox", { name: "名前" })).not.toBeInTheDocument();
+  }),
+};
+export const SharedEmojiServiceError: Story = {
+  parameters: {
+    msw: {
+      handlers: [http.get("*/api/emoji-service", () => new HttpResponse(null, { status: 500 }))],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "カスタム絵文字" }));
+    await expect(await screen.findByRole("alert")).toBeVisible();
+  }),
+};
+
+export const SharedEmojiServiceMobile: Story = {
+  ...SharedEmojiService,
+  globals: { viewport: { value: "mobile" } },
 };

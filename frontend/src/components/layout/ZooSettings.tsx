@@ -1,10 +1,18 @@
+import { ExternalLink } from "../ui/external-link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { Textarea } from "../ui/textarea";
 import { Input } from "../ui/input";
 import { SettingsSection } from "../ui/control-panel";
-import { ArrowLeftIcon, BellIcon, LanguagesIcon, PaletteIcon, SearchIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  BellIcon,
+  LanguagesIcon,
+  PaletteIcon,
+  SearchIcon,
+  Volume2Icon,
+} from "lucide-react";
 import { Tabs } from "@base-ui/react/tabs";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
@@ -13,7 +21,13 @@ import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
 import { AppsPanel } from "../chat/AppsDialog";
+import { CallSettingsDevices } from "../call/CallSettingsDevices";
+import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
 import { WorkspaceMembers } from "./WorkspaceMembers";
+import { SlackImportPanel } from "./SlackImportPanel";
+import { SlackLinkPanel } from "./SlackLinkPanel";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
+import type { SettingsTab } from "../../routes/_shell.settings";
 import { Button } from "../ui/button";
 import { SettingRow, panelTabClassName } from "../ui/control-panel";
 import { useShell } from "./shell-context";
@@ -21,20 +35,19 @@ import { joinUrl } from "../../lib/config";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { PaneHeader } from "./PaneHeader";
 
+const ADMIN_TABS: readonly SettingsTab[] = ["slack-import"];
+
 export function ZooSettings() {
   const { t } = useTranslation();
   const shell = useShell();
   const navigate = useNavigate();
   const search = useRouterState({
-    select: (state) => state.location.search as { tab?: string; channel?: string },
+    select: (state) => state.location.search as { tab?: SettingsTab; channel?: string },
   });
-  const tab =
-    search.tab === "apps" ||
-    search.tab === "members" ||
-    search.tab === "activitypub" ||
-    search.tab === "emojis"
-      ? search.tab
-      : "general";
+  const { isAdmin } = useCurrentUser();
+  // 管理者向けのタブは、権限がなければ一般タブに戻す
+  const tab: SettingsTab =
+    search.tab && (isAdmin || !ADMIN_TABS.includes(search.tab)) ? search.tab : "general";
   return (
     <section className="flex h-full min-h-0 flex-col" aria-labelledby="zoo-settings-title">
       <PaneHeader>
@@ -57,10 +70,7 @@ export function ZooSettings() {
           onValueChange={(value) =>
             void navigate({
               to: "/settings",
-              search: {
-                ...search,
-                tab: value as "general" | "apps" | "members" | "activitypub" | "emojis",
-              },
+              search: { ...search, tab: value as SettingsTab },
               replace: true,
             })
           }
@@ -72,6 +82,9 @@ export function ZooSettings() {
           >
             <Tabs.Tab value="general" className={panelTabClassName}>
               {t("settings.general")}
+            </Tabs.Tab>
+            <Tabs.Tab value="call" className={panelTabClassName}>
+              {t("call.settingsTab")}
             </Tabs.Tab>
             <Tabs.Tab value="activitypub" className={panelTabClassName}>
               ActivityPub
@@ -85,6 +98,14 @@ export function ZooSettings() {
             <Tabs.Tab value="members" className={panelTabClassName}>
               {t("members.title")}
             </Tabs.Tab>
+            <Tabs.Tab value="slack" className={panelTabClassName}>
+              {t("slackLink.tab")}
+            </Tabs.Tab>
+            {isAdmin ? (
+              <Tabs.Tab value="slack-import" className={panelTabClassName}>
+                {t("slackImport.tab")}
+              </Tabs.Tab>
+            ) : null}
           </Tabs.List>
           <Tabs.Panel value="general" keepMounted className="min-h-0 data-[hidden]:hidden">
             <h2 className="sr-only">{t("settings.general")}</h2>
@@ -103,6 +124,22 @@ export function ZooSettings() {
               </SettingRow>
             </div>
           </Tabs.Panel>
+          <Tabs.Panel value="call" className="min-h-0">
+            <h2 className="sr-only">{t("call.settingsTab")}</h2>
+            <div className="divide-y rounded-lg border">
+              <SettingRow
+                icon={<Volume2Icon />}
+                label={t("call.soundsLabel")}
+                description={t("call.soundsDescription")}
+              >
+                <CallSoundsSwitch label={t("call.soundsLabel")} />
+              </SettingRow>
+            </div>
+            <div className="mt-4 rounded-lg border p-4">
+              <p className="mb-3 text-xs text-muted-foreground">{t("call.defaultsDescription")}</p>
+              <CallSettingsDevices />
+            </div>
+          </Tabs.Panel>
           <Tabs.Panel value="activitypub" className="min-h-0">
             <h2 className="sr-only">ActivityPub</h2>
             <ActivityPubSettings />
@@ -118,6 +155,16 @@ export function ZooSettings() {
           <Tabs.Panel value="members" className="min-h-0">
             <WorkspaceMembers />
           </Tabs.Panel>
+          <Tabs.Panel value="slack" className="min-h-0">
+            <h2 className="sr-only">{t("slackLink.tab")}</h2>
+            <SlackLinkPanel />
+          </Tabs.Panel>
+          {isAdmin ? (
+            <Tabs.Panel value="slack-import" className="min-h-0">
+              <h2 className="sr-only">{t("slackImport.tab")}</h2>
+              <SlackImportPanel />
+            </Tabs.Panel>
+          ) : null}
         </Tabs.Root>
       </div>
     </section>
@@ -321,6 +368,42 @@ function ActivityPubSettings() {
 }
 
 function CustomEmojiSettings() {
+  const { t } = useTranslation();
+  const { config } = useCollections();
+  const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  const [service, setService] = useState<{ url: string | null } | null>(null);
+  const [failed, setFailed] = useState(false);
+  const load = useCallback(async () => {
+    setFailed(false);
+    try {
+      setService(await client.get<{ url: string | null }>("/api/emoji-service"));
+    } catch {
+      setFailed(true);
+    }
+  }, [client]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  if (service?.url === null) return <LocalCustomEmojiSettings />;
+  return (
+    <SettingsSection title={t("home.customEmojis")} description={t("customEmoji.serviceHint")}>
+      {service?.url && /^https?:\/\//.test(service.url) ? (
+        <ExternalLink href={service.url}>{t("customEmoji.manageService")}</ExternalLink>
+      ) : null}
+      {!service && !failed ? <p role="status">{t("home.loading")}</p> : null}
+      {failed ? (
+        <p role="alert">
+          {t("home.controlsError")}{" "}
+          <Button variant="link" onClick={() => void load()}>
+            {t("home.refresh")}
+          </Button>
+        </p>
+      ) : null}
+    </SettingsSection>
+  );
+}
+
+function LocalCustomEmojiSettings() {
   const { t } = useTranslation();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);

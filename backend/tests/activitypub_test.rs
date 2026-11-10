@@ -2311,6 +2311,31 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
         None,
     )
     .await?;
+    assert!(public_data["account"]["avatar_url"].is_null());
+    let avatar_url = "https://avater.zliusercontent.com/test-avatar.png";
+    toasty::sql::statement("UPDATE users SET avatar_url=$2 WHERE id=$1")
+        .bind(alice.as_str())
+        .bind(avatar_url)
+        .exec(&mut db)
+        .await?;
+    let (_, updated_profile) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{alice}/profile"),
+        None,
+    )
+    .await?;
+    assert_eq!(updated_profile["account"]["avatar_url"], avatar_url);
+    let (_, local_account) = request(
+        &app,
+        "GET",
+        Some(&alice),
+        &format!("/api/activitypub/accounts?actor={alice}"),
+        None,
+    )
+    .await?;
+    assert_eq!(local_account["avatar_url"], avatar_url);
     assert_eq!(public_data["account"]["display_name"], "Federation name");
     assert_eq!(public_data["account"]["summary"], "Bio <safe>\nnext line");
     let missing = app
@@ -2343,9 +2368,12 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
             )
     );
     assert_eq!(profile["summary"], "Bio <safe>\nnext line");
+    let state = AppState::new(db.clone(), cfg.clone());
+    while backend::activitypub::queue_next_actor_update(&state).await? {}
     let delivery = value(&mut db,"SELECT payload::jsonb::text FROM apub_deliveries WHERE user_id=$1 AND actor_id=$2 ORDER BY created_at DESC LIMIT 1",&[&alice,&remote]).await?;
     assert_eq!(delivery["type"], "Update");
     assert_eq!(delivery["object"]["name"], "Federation name");
+    assert_eq!(delivery["object"]["icon"]["url"], avatar_url);
     assert_eq!(delivery["object"]["summary"], actor["summary"]);
     assert_eq!(delivery["object"]["id"], actor["id"]);
     assert_eq!(delivery["object"]["publicKey"], actor["publicKey"]);
@@ -2365,6 +2393,7 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
     let detail = request(&app, "GET", Some(&bob), &format!("/api/home/{id}"), None).await?;
     assert_eq!(detail.0, StatusCode::OK);
     assert_eq!(detail.1["display_name"], "Federation name");
+    assert_eq!(detail.1["avatar_url"], avatar_url);
     let own = request(
         &app,
         "GET",
@@ -3049,6 +3078,196 @@ async fn notification_batch_reads_only_selected_owned_ids_and_preserves_cursor_o
         .0,
         StatusCode::BAD_REQUEST
     );
+    finish_protocol(&mut f).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn avatar_changes_queue_current_actor_for_accepted_followers_atomically() -> anyhow::Result<()>
+{
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let cfg = Config::from_env();
+    let mut db = init_db(&cfg.database_url).await?;
+    let state = AppState::new(db.clone(), cfg);
+    let user = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1,$1,'Chat name')",
+    )
+    .bind(user.as_str())
+    .exec(&mut db)
+    .await?;
+    let mut recipients = Vec::new();
+    for (kind, direction, accepted, blocked) in [
+        ("accepted", "incoming", true, false),
+        ("second", "incoming", true, false),
+        ("pending", "incoming", false, false),
+        ("outgoing", "outgoing", true, false),
+        ("blocked", "incoming", true, true),
+    ] {
+        let remote = format!("https://peer.example/{kind}/{user}");
+        toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,blocked) VALUES($1,$1,$1,$1,$1,$1,'test',$2)")
+            .bind(remote.as_str()).bind(blocked).exec(&mut db).await?;
+        toasty::sql::statement(
+            "INSERT INTO apub_follows(user_id,actor_id,direction,accepted,activity_id) VALUES($1,$2,$3,$4,$2)",
+        )
+        .bind(user.as_str())
+        .bind(remote.as_str())
+        .bind(direction)
+        .bind(accepted)
+        .exec(&mut db)
+        .await?;
+        if accepted && direction == "incoming" && !blocked {
+            recipients.push(remote);
+        }
+    }
+    let first = "https://avater.zliusercontent.com/avatars/first.png";
+    let latest = "https://avater.zliusercontent.com/avatars/latest.png";
+    // Rolled-back avatar changes also roll back their durable update intent.
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("UPDATE users SET avatar_url=$2 WHERE id=$1")
+        .bind(user.as_str())
+        .bind(first)
+        .exec(&mut tx)
+        .await?;
+    tx.rollback().await?;
+    assert_eq!(value(&mut db,"SELECT json_build_object('count',count(*))::text FROM apub_actor_updates WHERE user_id=$1",&[&user]).await?["count"],0);
+    for url in [first, latest] {
+        toasty::sql::statement("UPDATE users SET avatar_url=$2 WHERE id=$1")
+            .bind(user.as_str())
+            .bind(url)
+            .exec(&mut db)
+            .await?;
+    }
+    assert_eq!(value(&mut db,"SELECT json_build_object('count',count(*))::text FROM apub_actor_updates WHERE user_id=$1",&[&user]).await?["count"],1);
+    // The same pending row also coalesces a concurrent name/bio change.
+    toasty::sql::statement("INSERT INTO apub_profiles(user_id,display_name,summary) VALUES($1,'Federation name','Current bio')").bind(user.as_str()).exec(&mut db).await?;
+    while backend::activitypub::queue_next_actor_update(&state).await? {}
+    let deliveries = toasty::sql::query(
+        "SELECT actor_id,payload FROM apub_deliveries WHERE user_id=$1 ORDER BY sequence",
+    )
+    .bind(user.as_str())
+    .exec(&mut db)
+    .await?;
+    assert_eq!(deliveries.len(), 2);
+    let mut activity_id = None;
+    for row in deliveries {
+        let toasty::stmt::Value::Record(row) = row else {
+            panic!("expected record")
+        };
+        let toasty::stmt::Value::String(actor) = &row.fields[0] else {
+            panic!("expected actor")
+        };
+        assert!(recipients.contains(actor));
+        let toasty::stmt::Value::String(payload) = &row.fields[1] else {
+            panic!("expected payload")
+        };
+        let payload: Value = serde_json::from_str(payload)?;
+        assert_eq!(payload["type"], "Update");
+        assert_eq!(payload["object"]["type"], "Person");
+        assert_eq!(payload["object"]["name"], "Federation name");
+        assert_eq!(payload["object"]["summary"], "Current bio");
+        assert_eq!(
+            payload["object"]["icon"],
+            json!({"type":"Image","url":latest})
+        );
+        assert_eq!(payload["actor"], payload["object"]["id"]);
+        assert_eq!(
+            payload["to"],
+            json!([format!("{}/followers", payload["actor"].as_str().unwrap())])
+        );
+        if let Some(id) = &activity_id {
+            assert_eq!(&payload["id"], id);
+        }
+        activity_id = Some(payload["id"].clone());
+    }
+    // The same URL produces no second Update. Removal explicitly clears the remote icon.
+    toasty::sql::statement("UPDATE users SET avatar_url=$2 WHERE id=$1")
+        .bind(user.as_str())
+        .bind(latest)
+        .exec(&mut db)
+        .await?;
+    assert_eq!(value(&mut db,"SELECT json_build_object('count',count(*))::text FROM apub_actor_updates WHERE user_id=$1",&[&user]).await?["count"],0);
+    toasty::sql::statement("UPDATE users SET avatar_url=NULL WHERE id=$1")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    while backend::activitypub::queue_next_actor_update(&state).await? {}
+    let removal = value(&mut db,"SELECT payload::jsonb::text FROM apub_deliveries WHERE user_id=$1 ORDER BY sequence DESC LIMIT 1",&[&user]).await?;
+    assert!(removal["object"].get("icon").unwrap().is_null());
+    toasty::sql::statement("UPDATE users SET avatar_url=$2 WHERE id=$1")
+        .bind(user.as_str())
+        .bind(first)
+        .exec(&mut db)
+        .await?;
+    let (left, right) = tokio::join!(
+        backend::activitypub::queue_next_actor_update(&state),
+        backend::activitypub::queue_next_actor_update(&state)
+    );
+    left?;
+    right?;
+    assert_eq!(value(&mut db,"SELECT json_build_object('count',count(*))::text FROM apub_deliveries WHERE user_id=$1",&[&user]).await?["count"],6);
+    toasty::sql::statement("UPDATE users SET avatar_url=NULL WHERE id=$1")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    while backend::activitypub::queue_next_actor_update(&state).await? {}
+    let actor = request(
+        &create_router(state),
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{user}"),
+        None,
+    )
+    .await?
+    .1;
+    assert!(actor.get("icon").unwrap().is_null());
+    toasty::sql::statement("DELETE FROM users WHERE id=$1")
+        .bind(user)
+        .exec(&mut db)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn federated_image_metadata_survives_create_and_update() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let id = format!("{}/notes/image-metadata", f.remote);
+    let hash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+    let mut note = json!({"id":id,"type":"Note","attributedTo":f.remote,
+        "content":"<p>photo</p>","published":"2026-01-01T00:00:00Z",
+        "to":["https://www.w3.org/ns/activitystreams#Public"],
+        "attachment":[{"type":"Document","mediaType":"image/png","url":"https://peer.example/photo.png",
+            "width":640,"height":480,"blurhash":hash}]});
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note.clone())).await?,
+        StatusCode::ACCEPTED
+    );
+    let path = format!(
+        "/api/home/{}",
+        percent_encoding::utf8_percent_encode(&id, percent_encoding::NON_ALPHANUMERIC)
+    );
+    let (status, post) = request(&f.app, "GET", Some(&f.user), &path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(post["media"][0]["width"], 640);
+    assert_eq!(post["media"][0]["height"], 480);
+    assert_eq!(post["media"][0]["blurhash"], hash);
+    note["updated"] = json!("2026-01-02T00:00:00Z");
+    note["attachment"][0]["width"] = json!(1280);
+    note["attachment"][0]["height"] = json!(960);
+    note["attachment"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("blurhash");
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Update", note)).await?,
+        StatusCode::ACCEPTED
+    );
+    let (_, post) = request(&f.app, "GET", Some(&f.user), &path, None).await?;
+    assert_eq!(post["media"][0]["width"], 1280);
+    assert_eq!(post["media"][0]["height"], 960);
+    assert!(post["media"][0]["blurhash"].is_null());
     finish_protocol(&mut f).await?;
     Ok(())
 }

@@ -1,6 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+import { startMockServer } from "../../test/browser-setup";
 
 import type { CallParticipant } from "../../lib/call/types";
 import type { ChannelRow } from "../../lib/electric/types";
@@ -17,7 +19,12 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 const mockUsers = [
-  { id: "user-alice", user_name: "alice", display_name: "Alice" },
+  {
+    id: "user-alice",
+    user_name: "alice",
+    display_name: "Alice",
+    avatar_url: undefined as string | undefined,
+  },
   { id: "user-bob", user_name: "bob", display_name: "Bob" },
   { id: "user-charlie", user_name: "charlie", display_name: "Charlie" },
 ];
@@ -108,6 +115,7 @@ function renderCallBar(customChannels: ChannelRow[] = channels) {
 
 describe("CallBar browser tests", () => {
   beforeEach(() => {
+    mockUsers[0].avatar_url = undefined;
     localStorage.clear();
     localStorage.setItem("zoo-locale", "ja");
     mockCallState = {
@@ -153,6 +161,15 @@ describe("CallBar browser tests", () => {
     expect(screen.getByText("1人が参加中")).toBeDefined();
     // アリスの頭文字 'A' のアバターが表示されていること
     expect(screen.getByText("A")).toBeDefined();
+  });
+
+  it("参加者IDに対応するユーザー画像を表示する", async () => {
+    await startMockServer();
+    mockUsers[0].avatar_url = "https://www.gstatic.com/avatar.png";
+    renderCallBar();
+    const avatar = screen.getByTitle("Alice");
+    await waitFor(() => expect(avatar.querySelector("img")?.naturalWidth).toBeGreaterThan(0));
+    expect(avatar.querySelector("img")).toHaveAttribute("src", mockUsers[0].avatar_url);
   });
 
   it("DM 通話時に内部チャンネル名ではなく相手の表示名が解決されて表示されること", () => {

@@ -1,6 +1,9 @@
 //! External applications. Private platform tables never enter Electric shapes.
 pub mod api;
+pub mod circuit;
 pub mod delivery;
+pub mod dispatch_metrics;
+pub mod dispatcher_api;
 pub mod events;
 pub mod files;
 pub mod management;
@@ -316,6 +319,9 @@ pub async fn query(
         })
         .collect()
 }
+/// How long a refresh token stays usable after its credential row is created. The OAuth refresh
+/// check and the console's credential records both read it so their answers cannot drift apart.
+pub const REFRESH_TOKEN_TTL: &str = "30 days";
 pub async fn one(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,

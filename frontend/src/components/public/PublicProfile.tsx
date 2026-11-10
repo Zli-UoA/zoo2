@@ -2,14 +2,18 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ActivityPubProfileDetails, type ProfileDetails } from "../home/ActivityPubProfileDetails";
 import { HomePostContent } from "../home/HomePostContent";
-import { Avatar, AvatarFallback } from "../ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button, buttonVariants } from "../ui/button";
 import { Input } from "../ui/input";
 import { initials } from "../chat/format";
 import { joinUrl, resolvePublicConfig } from "../../lib/config";
 
 export interface PublicProfileData {
-  account: Omit<ProfileDetails, "remote"> & { actor_id: string; url: string };
+  account: Omit<ProfileDetails, "remote"> & {
+    actor_id: string;
+    url: string;
+    avatar_url?: string | null;
+  };
   posts: {
     id: string;
     content: string;
@@ -89,6 +93,9 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
                 account={{ ...account, id: account.actor_id, remote: true }}
                 avatar={
                   <Avatar role="img" aria-label={name}>
+                    {account.avatar_url?.startsWith("https://") ? (
+                      <AvatarImage src={account.avatar_url} alt="" referrerPolicy="no-referrer" />
+                    ) : null}
                     <AvatarFallback aria-hidden="true">{initials(name)}</AvatarFallback>
                   </Avatar>
                 }

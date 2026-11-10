@@ -586,7 +586,7 @@ async fn mutations_produce_authorized_events_and_private_state_requires_consent(
         json!({"content":"remember","due_at":"2020-01-01T00:00:00Z","channel_id":c}),
     )
     .await;
-    apps::events::maintain(&f.state).await?;
+    apps::events::maintain(&f.state.db).await?;
     let session = ok(
         a,
         "POST",
@@ -1391,12 +1391,12 @@ async fn dispatcher_enforces_quota_without_charging_retries() -> anyhow::Result<
     let mut tx = db.transaction().await?;
     toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,first_delivered_at,acked_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now()+interval '1 hour',now() FROM generate_series(1,30000)").bind(f.installation.as_str()).exec(&mut tx).await?;
     tx.commit().await?;
-    let warning = apps::delivery::claim(&f.state, &f.installation)
+    let warning = apps::delivery::claim(&f.state.db, &f.installation)
         .await?
         .unwrap();
     assert_eq!(warning["event"]["type"], "app.rate_limited");
     assert!(
-        apps::delivery::claim(&f.state, &f.installation)
+        apps::delivery::claim(&f.state.db, &f.installation)
             .await?
             .is_none()
     );
@@ -1405,7 +1405,7 @@ async fn dispatcher_enforces_quota_without_charging_retries() -> anyhow::Result<
     tx.commit().await?;
     let mut found = false;
     for _ in 0..1000 {
-        let Some(delivery) = apps::delivery::claim(&f.state, &f.installation).await? else {
+        let Some(delivery) = apps::delivery::claim(&f.state.db, &f.installation).await? else {
             break;
         };
         if delivery["event"]["data"]["content"] == "queued before the boundary" {
@@ -2080,7 +2080,7 @@ async fn retention_uses_bounded_batches_and_keeps_fresh_deliveries() -> anyhow::
     toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,created_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now()-interval '31 days' FROM generate_series(1,2100)").bind(f.installation.as_str()).exec(&mut tx).await?;
     tx.commit().await?;
     let before = event_types(&f).await?.len();
-    apps::delivery::cleanup(&f.state).await?;
+    apps::delivery::cleanup(&f.state.db).await?;
     let mut tx = db.transaction().await?;
     let count=apps::one(&mut tx,"SELECT json_build_object('old',count(*) FILTER(WHERE created_at<now()-interval '30 days'),'fresh',count(*) FILTER(WHERE created_at>=now()-interval '30 days'))::text FROM app_deliveries WHERE installation_id=$1",&[&f.installation]).await?;
     assert_eq!(count["old"], 0);
@@ -2110,7 +2110,7 @@ async fn http_dispatch_batches_messages_and_keeps_revocation_only_apps_eligible(
     // detects a one-event-per-tick regression without relying on CI finishing in 2s.
     tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        apps::delivery::http_pass(&f.state),
+        apps::delivery::http_pass(&f.state.db),
     )
     .await??;
     let mut db = f.state.db.clone();
@@ -2128,7 +2128,7 @@ async fn http_dispatch_batches_messages_and_keeps_revocation_only_apps_eligible(
     .await;
     tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        apps::delivery::http_pass(&f.state),
+        apps::delivery::http_pass(&f.state.db),
     )
     .await??;
     let mut tx = db.transaction().await?;
@@ -2358,10 +2358,10 @@ async fn terminal_events_survive_source_and_http_dispatch_quotas() -> anyhow::Re
     for event in ["app.uninstalled", "tokens.revoked"] {
         assert!(types.iter().any(|t| t == event), "Missing {event} at quota");
     }
-    let candidates = apps::delivery::http_candidates(&f.state).await?;
+    let candidates = apps::delivery::http_candidates(&f.state.db).await?;
     assert!(candidates.iter().any(|i| i["id"] == f.installation));
     let mut delivered = Vec::new();
-    while let Some(event) = apps::delivery::claim(&f.state, &f.installation).await? {
+    while let Some(event) = apps::delivery::claim(&f.state.db, &f.installation).await? {
         delivered.push(event["event"]["type"].as_str().unwrap().to_owned());
     }
     for event in ["app.uninstalled", "tokens.revoked"] {
@@ -2371,7 +2371,7 @@ async fn terminal_events_survive_source_and_http_dispatch_quotas() -> anyhow::Re
         );
     }
     assert!(!delivered.iter().any(|t| t == "message.created"));
-    let deletion = apps::delivery::claim(&observer.state, &observer.installation)
+    let deletion = apps::delivery::claim(&observer.state.db, &observer.installation)
         .await?
         .expect("Workspace deletion event must survive the observer quota");
     assert_eq!(deletion["event"]["type"], "app.deleted");
@@ -2407,7 +2407,7 @@ async fn http_selection_skips_inaccessible_events_and_rotates_beyond_one_page() 
     apps::one(&mut tx,"UPDATE app_deliveries SET lease_until=now()+interval '1 hour' WHERE installation_id=$1 RETURNING '{}'::text",&[&format!("{leased}1")]).await?;
     tx.commit().await?;
     for _ in 0..2 {
-        let page = apps::delivery::http_candidates(&f.state).await?;
+        let page = apps::delivery::http_candidates(&f.state.db).await?;
         assert!(page.len() <= 100);
         assert!(
             page.iter()
@@ -2841,5 +2841,604 @@ async fn emoji_backfill_commits_successes_before_the_startup_deadline() -> anyho
     .exec(&mut tx)
     .await?;
     tx.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn disabled_http_worker_leaves_deliveries_queued_until_another_worker_runs()
+-> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    for _ in 0..3 {
+        ok(
+            &f.app,
+            "POST",
+            "/api/messages",
+            &f.owner,
+            json!({"channel_id":f.channel,"content":"queued while disabled"}),
+        )
+        .await;
+    }
+    // HTTP 配信を無効にしたプロセスのワーカーは、ポーリング間隔を十分超えて待っても送らない。
+    let worker = tokio::spawn(apps::delivery::worker_with(f.state.clone(), false));
+    tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
+    let count = |f: &Fixture| {
+        let mut db = f.state.db.clone();
+        let installation = f.installation.clone();
+        async move {
+            let mut tx = db.transaction().await?;
+            let row = apps::one(&mut tx, "SELECT json_build_object('queued',count(*),'attempted',count(*) FILTER(WHERE attempts>0),'acked',count(*) FILTER(WHERE acked_at IS NOT NULL))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created'", &[&installation]).await?;
+            anyhow::Ok(row)
+        }
+    };
+    let row = count(&f).await?;
+    assert!(row["queued"].as_u64().unwrap() >= 3);
+    assert_eq!(
+        row["attempted"], 0,
+        "disabled worker must not attempt delivery"
+    );
+    assert_eq!(row["acked"], 0);
+    // 別のワーカー（dispatcher 相当）が動けば、溜まっていた配信が失われず再開する。
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        apps::delivery::http_pass(&f.state.db),
+    )
+    .await??;
+    let row = count(&f).await?;
+    assert_eq!(row["attempted"], row["queued"], "queued deliveries resume");
+    worker.abort();
+    Ok(())
+}
+
+async fn message_delivery_attempts(f: &Fixture) -> anyhow::Result<Vec<u64>> {
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = apps::query(&mut tx, "SELECT json_build_object('attempts',attempts)::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' ORDER BY id", &[&f.installation]).await?;
+    Ok(rows
+        .iter()
+        .map(|r| r["attempts"].as_u64().unwrap())
+        .collect())
+}
+
+async fn post_messages(f: &Fixture, n: usize) {
+    for _ in 0..n {
+        ok(
+            &f.app,
+            "POST",
+            "/api/messages",
+            &f.owner,
+            json!({"channel_id":f.channel,"content":"concurrent worker check"}),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn concurrent_workers_never_claim_or_send_a_delivery_twice() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 24).await;
+    // 別プロセス（backend のワーカーと dispatcher）が同じ行を取り合う状況を、claim の並行実行で作る。
+    let claimers: Vec<_> = (0..8)
+        .map(|_| {
+            let db = f.state.db.clone();
+            let installation = f.installation.clone();
+            tokio::spawn(async move {
+                let mut ids = Vec::new();
+                while let Some(event) = apps::delivery::claim(&db, &installation).await? {
+                    ids.push(event["delivery_id"].as_str().unwrap().to_string());
+                }
+                anyhow::Ok(ids)
+            })
+        })
+        .collect();
+    let mut all = Vec::new();
+    for claimer in claimers {
+        all.extend(claimer.await??);
+    }
+    let unique: std::collections::HashSet<_> = all.iter().collect();
+    assert_eq!(unique.len(), all.len(), "a delivery was leased twice");
+    assert!(all.len() >= 24);
+    // 配信パスそのものを複数同時に回しても、リース中の行は再送されない。
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 24).await;
+    let started = std::time::Instant::now();
+    let passes: Vec<_> = (0..6)
+        .map(|_| {
+            let db = f.state.db.clone();
+            tokio::spawn(async move { apps::delivery::http_pass(&db).await })
+        })
+        .collect();
+    for pass in passes {
+        tokio::time::timeout(std::time::Duration::from_secs(120), pass).await???;
+    }
+    // 失敗した配信はリース（HTTP は 5 秒）が切れるまで再取得されない。したがって試行回数は、
+    // 経過時間から許される回数（最初の 1 回 + 5 秒ごとに 1 回）を超えない。
+    // 同時に回した 6 本が同じ行を取り合って重複送信していれば、この上限を超える。
+    let allowed = 1 + (started.elapsed().as_secs() / 5);
+    let attempts = message_delivery_attempts(&f).await?;
+    assert!(attempts.len() >= 24);
+    assert!(
+        attempts.iter().all(|a| (1..=allowed).contains(a)),
+        "a delivery was sent more often than its lease allows ({allowed} max): {attempts:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_loop_resumes_queued_deliveries_and_stops_on_shutdown() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    // dispatcher が居ない間に溜まった配信。
+    post_messages(&f, 5).await;
+    assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a == 0));
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let dispatcher = tokio::spawn(apps::delivery::http_loop(f.state.db.clone(), shutdown));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        if message_delivery_attempts(&f).await?.iter().all(|a| *a >= 1) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "queued deliveries were not resumed"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    stop.send(true)?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), dispatcher).await??;
+    // 停止後に届いた配信は取らない（溜まるだけ）。
+    post_messages(&f, 2).await;
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let attempts = message_delivery_attempts(&f).await?;
+    assert_eq!(attempts.iter().filter(|a| **a == 0).count(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn lease_is_measured_from_the_claim_not_from_the_start_of_a_blocked_transaction()
+-> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 1).await;
+    // 別の配信プロセスが advisory lock を持っている間、claim はロック待ちで止まる。
+    let mut holder_db = f.state.db.clone();
+    let mut holder = holder_db.transaction().await?;
+    apps::one(&mut holder,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{}",f.installation)]).await?;
+    let db = f.state.db.clone();
+    let installation = f.installation.clone();
+    let (_keep, never_stops) = tokio::sync::watch::channel(false);
+    let claim =
+        tokio::spawn(
+            async move { apps::delivery::claim_http(&db, &installation, &never_stops).await },
+        );
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    holder.commit().await?;
+    let claimed = claim.await??.expect("a delivery is claimable");
+    // now()（トランザクション開始）を起点にすると、残りは約 2.5 秒しかなくなり、送信中に再取得される。
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let row = apps::one(&mut tx,"SELECT json_build_object('left',extract(epoch from lease_until-clock_timestamp()))::text FROM app_deliveries WHERE id=$1",&[claimed["delivery_id"].as_str().unwrap()]).await?;
+    let left = row["left"].as_f64().unwrap();
+    assert!(
+        left > 4.0,
+        "the lease must last ~5s after the claim, got {left}s"
+    );
+    Ok(())
+}
+
+async fn listen_app_delivery() -> anyhow::Result<backend::db::PgNotificationListener> {
+    let listener =
+        backend::db::connect_raw_listener(&backend::config::database_url_from_env()).await?;
+    listener.client.batch_execute("LISTEN app_delivery").await?;
+    Ok(listener)
+}
+
+async fn next_notification(
+    listener: &mut backend::db::PgNotificationListener,
+    wait: std::time::Duration,
+) -> bool {
+    matches!(
+        tokio::time::timeout(wait, listener.notifications.recv()).await,
+        Ok(Some(n)) if n.channel() == "app_delivery"
+    )
+}
+
+#[tokio::test]
+async fn new_deliveries_and_manual_retries_notify_the_dispatcher() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    let mut listener = listen_app_delivery().await?;
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    post_messages(&f, 1).await;
+    assert!(
+        next_notification(&mut listener, std::time::Duration::from_secs(5)).await,
+        "an INSERT into app_deliveries must NOTIFY app_delivery"
+    );
+    // 手動再送は UPDATE なので、トリガーではなく再送ハンドラの pg_notify で起こす。
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let row = apps::one(&mut tx, "SELECT json_build_object('id',id)::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' AND acked_at IS NULL LIMIT 1", &[&f.installation]).await?;
+    drop(tx);
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    ok(
+        &f.app,
+        "POST",
+        &format!(
+            "/api/apps/{}/deliveries/{}/retry",
+            f.id,
+            row["id"].as_str().unwrap()
+        ),
+        &f.owner,
+        Value::Null,
+    )
+    .await;
+    assert!(
+        next_notification(&mut listener, std::time::Duration::from_secs(5)).await,
+        "a manual retry must NOTIFY app_delivery"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_notification_wakes_the_dispatcher_without_waiting_for_the_poll() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let ready = std::sync::Arc::new(tokio::sync::Notify::new());
+    let listener = apps::delivery::listen_for_deliveries_with(
+        backend::config::database_url_from_env(),
+        wake.clone(),
+        Some(ready.clone()),
+    );
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    // ポーリングは 1 時間後なので、配信されるなら通知で起きたとき以外にない。
+    let dispatcher = tokio::spawn(apps::delivery::http_loop_with(
+        f.state.db.clone(),
+        shutdown,
+        wake,
+        std::time::Duration::from_secs(3600),
+    ));
+    // LISTEN が成立するまで待つ。成立直後の「接続したので 1 回起こす」pass が終わってから投稿し、
+    // 配信が始まるのが通知の転送によるものだけになるようにする。
+    tokio::time::timeout(std::time::Duration::from_secs(30), ready.notified()).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    post_messages(&f, 3).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let attempts = message_delivery_attempts(&f).await?;
+        if attempts.len() >= 3 && attempts.iter().all(|a| *a >= 1) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dispatcher was not woken by NOTIFY: {attempts:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    stop.send(true)?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), dispatcher).await??;
+    listener.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_circuit_defers_deliveries_without_consuming_attempts() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    let host = format!("down-{}.example.com", Uuid::new_v4().simple());
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":format!("https://{host}/events")})).await?;
+    post_messages(&f, 3).await;
+    apps::circuit::global().force_open(&host, std::time::Duration::from_secs(120));
+    assert!(
+        apps::dispatch_metrics::global()
+            .render()
+            .contains(&format!("zoo_dispatch_circuit_open{{host=\"{host}\"}} 1"))
+    );
+    apps::delivery::http_pass(&f.state.db).await?;
+    // 取っていない（attempts は 0 のまま）。配信は開放時刻まで先送りされ、候補から外れる。
+    assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a == 0));
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = apps::query(&mut tx, "SELECT json_build_object('wait',extract(epoch from available_at-now()))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created'", &[&f.installation]).await?;
+    tx.commit().await?;
+    assert_eq!(rows.len(), 3);
+    assert!(
+        rows.iter().all(|r| r["wait"].as_f64().unwrap() > 60.0),
+        "{rows:?}"
+    );
+    let candidates = apps::delivery::http_candidates(&f.state.db).await?;
+    assert!(
+        !candidates
+            .iter()
+            .any(|c| c["id"] == f.installation.as_str()),
+        "deferred deliveries must not be candidates"
+    );
+    apps::circuit::global().reset(&host);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_pass_started_after_the_stop_signal_takes_no_new_leases() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 3).await;
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    stop.send(true)?;
+    apps::delivery::http_pass_until(&f.state.db, &stopped).await?;
+    assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a == 0));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_backlog_is_drained_without_waiting_for_the_next_poll() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 3).await;
+    let (_stop, stopped) = tokio::sync::watch::channel(false);
+    // 取れた分があれば true（続けて pass を回す合図）。取れなければ false。
+    assert!(apps::delivery::http_pass_until(&f.state.db, &stopped).await?);
+    // 取った配信はバックオフ中なので、すぐ次の pass では取るものがない。
+    let mut more = true;
+    for _ in 0..20 {
+        more = apps::delivery::http_pass_until(&f.state.db, &stopped).await?;
+        if !more {
+            break;
+        }
+    }
+    assert!(!more, "a pass with nothing left to claim must report false");
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_loop_keeps_draining_a_backlog_without_waiting_for_the_poll() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    // 1 回の pass が 1 インストールに送るのは最大 32 件。それを超える分も、poll（1 時間）を待たずに進む。
+    post_messages(&f, 40).await;
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    let dispatcher = tokio::spawn(apps::delivery::http_loop_with(
+        f.state.db.clone(),
+        shutdown,
+        wake,
+        std::time::Duration::from_secs(3600),
+    ));
+    // interval の最初の tick で 1 回目の pass が走る。残りは「取れたので続けて回す」で進まなければならない。
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(240);
+    loop {
+        let attempts = message_delivery_attempts(&f).await?;
+        if attempts.len() >= 40 && attempts.iter().all(|a| *a >= 1) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the backlog stalled after one pass: {attempts:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    stop.send(true)?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), dispatcher).await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn websocket_deliveries_do_not_wake_the_http_dispatcher() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    // 既定の fixture は WebSocket。HTTP の配信先が無い INSERT では通知しない。
+    let f = fixture().await?;
+    let mut listener = listen_app_delivery().await?;
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    post_messages(&f, 1).await;
+    assert!(
+        !next_notification(&mut listener, std::time::Duration::from_millis(1500)).await,
+        "a WebSocket-only delivery must not NOTIFY the HTTP dispatcher"
+    );
+    // 同じ App を HTTP にすると通知される。
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    post_messages(&f, 1).await;
+    assert!(
+        next_notification(&mut listener, std::time::Duration::from_secs(5)).await,
+        "an HTTP delivery must NOTIFY"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn deferring_a_large_backlog_is_batched_and_keeps_attempts() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,available_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now()-interval '1 minute' FROM generate_series(1,2500)").bind(f.installation.as_str()).exec(&mut tx).await?;
+    tx.commit().await?;
+    apps::delivery::defer_install(
+        &f.state.db,
+        &f.installation,
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+    let mut tx = db.transaction().await?;
+    let row = apps::one(&mut tx,"SELECT json_build_object('due',count(*) FILTER(WHERE available_at<=now()),'deferred',count(*) FILTER(WHERE available_at>now()+interval '60 seconds'),'attempted',count(*) FILTER(WHERE attempts>0))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' AND acked_at IS NULL",&[&f.installation]).await?;
+    assert_eq!(row["due"], 0, "{row}");
+    assert!(row["deferred"].as_u64().unwrap() >= 2500, "{row}");
+    assert_eq!(row["attempted"], 0, "{row}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_claim_waiting_for_the_lock_takes_no_lease_after_the_stop_signal() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 2).await;
+    // 別の配信プロセスが advisory lock を持っている間、claim はロック待ちで止まる。
+    let mut holder_db = f.state.db.clone();
+    let mut holder = holder_db.transaction().await?;
+    apps::one(&mut holder,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{}",f.installation)]).await?;
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let db = f.state.db.clone();
+    let installation = f.installation.clone();
+    let claim =
+        tokio::spawn(async move { apps::delivery::claim_http(&db, &installation, &stopped).await });
+    // 待っている間に停止通知。そのあとロックが空く。
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    stop.send(true)?;
+    holder.commit().await?;
+    assert!(
+        claim.await??.is_none(),
+        "a claim that started before the stop signal must not lease after it"
+    );
+    assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a == 0));
+    Ok(())
+}
+
+#[tokio::test]
+async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_credentials()
+-> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created","app.rate_limited"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 3).await;
+    // zoo_dispatcher 自体は NOLOGIN のまま。接続のため、そのロールのメンバーである使い捨てのロールを作る。
+    // パスワードは短時間で失効させる（テストが途中で落ちても、既知のパスワードのログインが残らない）。
+    let login = format!("zoo_dispatcher_t_{}", Uuid::new_v4().simple());
+    let mut admin = f.state.db.clone();
+    // 以前のテストが途中で落ちて残した使い捨てロール（パスワードは失効済み）を先に掃除する。
+    let mut tx = admin.transaction().await?;
+    let stale = apps::query(&mut tx,"SELECT json_build_object('name',rolname)::text FROM pg_roles WHERE rolname LIKE 'zoo\\_dispatcher\\_t\\_%' AND rolvaliduntil < now()",&[]).await?;
+    tx.commit().await?;
+    for role in stale {
+        let name = role["name"].as_str().unwrap();
+        let mut tx = admin.transaction().await?;
+        // ほかのテストが使っていて消せない場合は無視する。
+        let _ = toasty::sql::statement(format!("DROP ROLE IF EXISTS {name}"))
+            .exec(&mut tx)
+            .await;
+        let _ = tx.commit().await;
+    }
+    let mut tx = admin.transaction().await?;
+    let valid_until = jiff::Timestamp::now()
+        .checked_add(jiff::SignedDuration::from_secs(600))?
+        .to_string();
+    toasty::sql::statement(format!("CREATE ROLE {login} LOGIN PASSWORD 'dispatcher-test' VALID UNTIL '{valid_until}' IN ROLE zoo_dispatcher"))
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
+    let result = delivery_role_checks(&f, &login).await;
+    let mut tx = admin.transaction().await?;
+    if let Err(e) = toasty::sql::statement(format!("DROP ROLE IF EXISTS {login}"))
+        .exec(&mut tx)
+        .await
+    {
+        eprintln!("could not drop the temporary role {login}: {e}");
+    }
+    if let Err(e) = tx.commit().await {
+        eprintln!("could not commit dropping {login}: {e}");
+    }
+    result
+}
+
+async fn delivery_role_checks(f: &Fixture, login: &str) -> anyhow::Result<()> {
+    let mut url = reqwest::Url::parse(&Config::from_env().database_url)?;
+    url.set_username(login).unwrap();
+    url.set_password(Some("dispatcher-test")).unwrap();
+    let db = init_db(url.as_str()).await?;
+
+    // 配信パス一式: 候補取得 → claim → 送信失敗の記録、掃除、メトリクス。
+    // 共有 DB には同じホスト（127.0.0.1）宛ての他のテストの滞留があり、1 回の pass の予算（1 ホスト 32 件）
+    // を使い切ることがある。見送られたインストールは次の pass で先に回るので、数回回して確かめる。
+    for _ in 0..30 {
+        apps::delivery::http_pass(&db).await?;
+        if message_delivery_attempts(f).await?.iter().all(|a| *a >= 1) {
+            break;
+        }
+    }
+    let attempts_now = message_delivery_attempts(f).await?;
+    assert!(
+        attempts_now.iter().all(|a| *a >= 1),
+        "attempts: {attempts_now:?}"
+    );
+    apps::delivery::cleanup_deliveries(&db).await?;
+    // 権限の確認が目的。滞留が多い DB では 3 秒の時間制限に当たりうるので、それは許す。
+    if let Err(e) = apps::delivery::refresh_queue_metrics(&db).await {
+        assert!(
+            e.to_string().contains("statement timeout"),
+            "unexpected error: {e}"
+        );
+    }
+    // ACK（新しい配信を取って確定する）。
+    post_messages(f, 1).await;
+    let event = apps::delivery::claim(&db, &f.installation)
+        .await?
+        .expect("a fresh delivery is claimable");
+    assert!(
+        apps::delivery::ack(
+            &db,
+            &f.installation,
+            event["delivery_id"].as_str().unwrap(),
+            event["ack_token"].as_str().unwrap()
+        )
+        .await?
+        .is_some()
+    );
+    // 配信上限の通知（claim から呼ばれる app_emit）。購読済みなので app_deliveries への INSERT まで届く。
+    let rate_limited_rows = |f: &Fixture| {
+        let mut db = f.state.db.clone();
+        let installation = f.installation.clone();
+        async move {
+            let mut tx = db.transaction().await?;
+            let row = apps::one(&mut tx,"SELECT json_build_object('n',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='app.rate_limited'",&[&installation]).await?;
+            anyhow::Ok(row["n"].as_u64().unwrap())
+        }
+    };
+    let before = rate_limited_rows(f).await?;
+    let mut role_db = db.clone();
+    let mut tx = role_db.transaction().await?;
+    apps::one(&mut tx,"SELECT json_build_object('ok',app_emit('app.rate_limited','{}'::jsonb,NULL,NULL,NULL,$1) IS NULL)::text",&[&f.installation]).await?;
+    tx.commit().await?;
+    assert_eq!(
+        rate_limited_rows(f).await?,
+        before + 1,
+        "app_emit must INSERT into app_deliveries as the delivery role"
+    );
+
+    // 配信に要らないものは読み書きできない。存在しない列などで失敗していないことも確かめる。
+    for sql in [
+        "SELECT content FROM messages LIMIT 1",
+        "SELECT token_hash FROM app_credentials LIMIT 1",
+        "SELECT user_name FROM users LIMIT 1",
+        "SELECT display_name FROM users LIMIT 1",
+        "SELECT channel_name FROM channels LIMIT 1",
+        "UPDATE users SET is_bot=true WHERE false",
+        "UPDATE app_installations SET signing_secret='x' WHERE false",
+        "UPDATE app_deliveries SET payload='x' WHERE false",
+        "DELETE FROM app_installations WHERE false",
+        "DELETE FROM app_rate_limits WHERE false",
+        "DELETE FROM app_oauth_codes WHERE false",
+    ] {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        let err = toasty::sql::statement(sql)
+            .exec(&mut tx)
+            .await
+            .expect_err(sql);
+        assert!(
+            err.to_string().contains("permission denied")
+                || format!("{err:?}").contains("permission denied"),
+            "the delivery role must be denied (not fail for another reason): {sql}: {err:?}"
+        );
+    }
     Ok(())
 }

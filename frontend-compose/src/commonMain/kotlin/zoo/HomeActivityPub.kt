@@ -1,5 +1,6 @@
 package zoo
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
@@ -154,7 +155,7 @@ internal fun Row.homeRows(key: String): List<Row> =
 
 /** Remote images always use the server cache; malformed IDs keep the ordinary initials. */
 @Composable
-fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier) {
+fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier, size: Dp = 32.dp) {
     val app = LocalApp.current
     val id = avatar?.text("image_id").orEmpty()
     val valid = Regex("^[a-f0-9]{64}$").matches(id)
@@ -177,7 +178,7 @@ fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier)
     }
     Box(
         modifier
-            .size(32.dp)
+            .size(size)
             .clip(androidx.compose.foundation.shape.CircleShape)
             .then(
                 webControlModifier("img", busy = loading, attributes = mapOf("aria-label" to name))
@@ -190,7 +191,7 @@ fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier)
                 Modifier.fillMaxSize(),
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
             )
-        else Avatar(obj("display_name" to name), size = 32.dp)
+        else Avatar(obj("display_name" to name), size = size)
     }
 }
 
@@ -226,11 +227,15 @@ private fun HomeMediaImage(item: Row, modifier: Modifier) {
         } catch (_: Exception) { failed = true }
     }
     val frame = bitmap
-    val ratio = frame?.let { it.width.toFloat() / it.height } ?: 1f
+    val ratio = imageAspectRatio(item, 1f)
     Box(modifier.heightIn(max = 320.dp).aspectRatio(ratio)
         .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+        .background(MaterialTheme.colorScheme.surfaceVariant)
         .clickable(role = Role.Button) { app.platform.action("open:$url") }) {
         if (frame != null) Image(frame, label, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
-        else if (failed) Text(label)
+        else {
+            BlurhashPlaceholder(item.text("blurhash"), Modifier.fillMaxSize())
+            if (failed) Text(label)
+        }
     }
 }

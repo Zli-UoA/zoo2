@@ -43,6 +43,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("com.caverock:androidsvg-aar:1.4")
     implementation("androidx.activity:activity-compose:1.10.1")
+    implementation("androidx.exifinterface:exifinterface:1.4.1")
     implementation("org.jetbrains.compose.material3:material3:1.9.0")
     implementation("io.ktor:ktor-client-okhttp:3.1.3")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
@@ -61,6 +62,7 @@ tasks.named("preBuild") { dependsOn(translations) }
 
 dependencies {
     testImplementation(kotlin("test-junit"))
+    testImplementation("org.robolectric:robolectric:4.16.1")
     testImplementation("io.ktor:ktor-client-mock:3.1.3")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }

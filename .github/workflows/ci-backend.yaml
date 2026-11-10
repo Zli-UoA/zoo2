@@ -10,7 +10,7 @@ on:
       - "infra/db/**"
       - "infra/Dockerfile-backend-deploy*"
       - "infra/Dockerfile-migrate-deploy*"
-      - "infra/compose.stg*.yaml"
+      - "infra/compose.stack*.yaml"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-backend.yaml"
       - ".github/workflows/select-runner.yaml"
@@ -21,7 +21,7 @@ on:
       - "infra/db/**"
       - "infra/Dockerfile-backend-deploy*"
       - "infra/Dockerfile-migrate-deploy*"
-      - "infra/compose.stg*.yaml"
+      - "infra/compose.stack*.yaml"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-backend.yaml"
       - ".github/workflows/select-runner.yaml"
@@ -114,7 +114,7 @@ jobs:
 
       - name: Build production backend image
         run: |
-          docker compose --project-directory . -f infra/compose.stg.yaml \
+          docker compose --project-directory . -f infra/compose.stack.yaml \
             build --builder "${{ steps.buildx.outputs.name }}" backend
 
       # compose の backend サービスは ENVIRONMENT=production なので、
@@ -122,7 +122,7 @@ jobs:
       - name: Reject production startup without OIDC configuration
         run: |
           set +e
-          output=$(docker compose --project-directory . -f infra/compose.stg.yaml run -T --rm --no-deps backend 2>&1)
+          output=$(docker compose --project-directory . -f infra/compose.stack.yaml run -T --rm --no-deps backend 2>&1)
           rc=$?
           set -e
           printf '%s\n' "$output"
@@ -137,7 +137,7 @@ jobs:
           OIDC_JWKS_URL: ""
         run: |
           set +e
-          output=$(docker compose --project-directory . -f infra/compose.stg.yaml run -T --rm --no-deps backend 2>&1)
+          output=$(docker compose --project-directory . -f infra/compose.stack.yaml run -T --rm --no-deps backend 2>&1)
           rc=$?
           set -e
           printf '%s\n' "$output"
@@ -151,7 +151,7 @@ jobs:
           OIDC_JWKS_URL: https://id.example/jwks
         run: |
           set +e
-          output=$(docker compose --project-directory . -f infra/compose.stg.yaml run -T --rm --no-deps backend 2>&1)
+          output=$(docker compose --project-directory . -f infra/compose.stack.yaml run -T --rm --no-deps backend 2>&1)
           rc=$?
           set -e
           printf '%s\n' "$output"
@@ -168,7 +168,7 @@ jobs:
           S3_ACCESS_KEY_ID: dummy-prod-access-key
           S3_SECRET_ACCESS_KEY: dummy-prod-secret-key
         run: |
-          compose=(docker compose --project-directory . -f infra/compose.stg.yaml)
+          compose=(docker compose --project-directory . -f infra/compose.stack.yaml)
           "${compose[@]}" build migrate
           "${compose[@]}" up -d --wait postgres
           "${compose[@]}" run -T --rm migrate
@@ -193,11 +193,11 @@ jobs:
 
       - name: Show container logs
         if: failure()
-        run: docker compose --project-directory . -f infra/compose.stg.yaml logs backend postgres migrate electric
+        run: docker compose --project-directory . -f infra/compose.stack.yaml logs backend postgres migrate electric
 
       - name: Stop containers
         if: always()
-        run: docker compose --project-directory . -f infra/compose.stg.yaml down -v --remove-orphans
+        run: docker compose --project-directory . -f infra/compose.stack.yaml down -v --remove-orphans
 
   e2e:
     env:
@@ -317,3 +317,39 @@ jobs:
         working-directory: .
         run: docker compose -f infra/db/compose.yml down -v
 
+
+  shared-emoji-projection:
+    needs: runner
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: emoji-local-test
+          POSTGRES_DB: emoji_projection_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U root -d emoji_projection_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      EMOJI_TEST_DATABASE_URL: postgres://root:emoji-local-test@127.0.0.1:5432/emoji_projection_test
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          shared-key: backend-check
+      - name: Apply disposable database schema
+        run: psql "$EMOJI_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/db/schema.sql
+      - name: Check shared emoji display projection
+        working-directory: backend
+        run: cargo test --test emoji_service_test --locked -- --include-ignored

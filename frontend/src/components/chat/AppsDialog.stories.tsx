@@ -60,7 +60,7 @@ export const OwnerManagement: Story = {
   play: playForImplementation(async (context) => {
     await Details.play?.(context);
     await userEvent.click(screen.getByRole("tab", { name: "管理・開発" }));
-    await expect(screen.getByRole("button", { name: "トークンを発行" })).toBeVisible();
+    await expect(screen.getByRole("button", { name: "App 管理画面を開く" })).toBeVisible();
   }),
 };
 export const OtherOwner: Story = {

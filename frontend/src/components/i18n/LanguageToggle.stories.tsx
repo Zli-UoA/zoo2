@@ -1,8 +1,9 @@
-import { preferenceSurfaces } from "../../../.storybook/preference-stories";
+import { preferenceSurfaces } from "../../../.storybook/preference-surfaces";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent } from "storybook/test";
 
+import { LOCALES } from "../../lib/i18n/locale";
 import { LanguageToggle } from "./LanguageToggle";
 
 const meta = {
@@ -35,7 +36,7 @@ export const SelectControl: Story = {
   args: { presentation: "select" },
   play: playForImplementation(async () => {
     const select = await screen.findByRole("combobox", { name: "言語" });
-    await expect(screen.getAllByRole("option")).toHaveLength(5);
+    await expect(screen.getAllByRole("option")).toHaveLength(LOCALES.length);
     await userEvent.selectOptions(select, "en");
     await expect(await screen.findByRole("combobox", { name: "Language" })).toHaveValue("en");
     await userEvent.selectOptions(select, "ja");

@@ -10,11 +10,16 @@ const mocks = vi.hoisted(() => ({
   state: { currentUserId: null, isLoading: true, isAdmin: false, error: null } as CurrentUserState,
   listeners: new Set<() => void>(),
   online: true,
+  ensureLoaded: vi.fn(async () => {}),
   prepare: vi.fn(async () => {}),
+  reload: vi.fn(async () => false),
   open: vi.fn(async () => ({ persistence: {} })),
   remove: vi.fn(async () => {}),
 }));
-vi.mock("../../lib/pwa/worker-registration", () => ({ prepareOfflineWorker: mocks.prepare }));
+vi.mock("../../lib/pwa/worker-registration", () => ({
+  prepareOfflineWorker: mocks.prepare,
+  reloadIfShellUpdated: mocks.reload,
+}));
 vi.mock("../../lib/offline/online", () => ({ useOnlineStatus: () => mocks.online }));
 vi.mock("../../lib/currentUser", () => ({
   getCurrentUserStore: () => ({
@@ -23,7 +28,7 @@ vi.mock("../../lib/currentUser", () => ({
       mocks.listeners.add(listener);
       return () => mocks.listeners.delete(listener);
     },
-    ensureLoaded: async () => {},
+    ensureLoaded: mocks.ensureLoaded,
   }),
 }));
 vi.mock("../../lib/electric/collections", () => ({ getCollections: () => ({}) }));
@@ -38,11 +43,83 @@ vi.mock("../layout/ShellSkeleton", () => ({ ShellSkeleton: () => <p>Loading</p> 
 beforeEach(() => {
   mocks.state = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
   mocks.online = true;
+  mocks.ensureLoaded.mockReset();
+  mocks.ensureLoaded.mockResolvedValue(undefined);
   mocks.open.mockClear();
   mocks.remove.mockReset();
   mocks.remove.mockResolvedValue(undefined);
   mocks.prepare.mockReset();
   mocks.prepare.mockResolvedValue(undefined);
+  mocks.reload.mockReset();
+  mocks.reload.mockResolvedValue(false);
+});
+
+it("waits for the updated document instead of opening SQLite from a stale shell", async () => {
+  mocks.reload.mockResolvedValue(true);
+  render(
+    <OfflineProvider config={{ devUserId: "dev", oidc: null } as AppConfig}>
+      <button>App</button>
+    </OfflineProvider>,
+  );
+  await act(async () => {});
+  expect(mocks.reload).toHaveBeenCalled();
+  expect(mocks.open).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "App" })).toBeNull();
+});
+
+it("does not reload after a background deployment when retrying or changing namespace", async () => {
+  function Retry() {
+    const { retryPersistence } = useOfflineStatus();
+    return <button onClick={retryPersistence}>Retry storage</button>;
+  }
+  const { rerender } = render(
+    <OfflineProvider config={{ devUserId: "first", oidc: null } as AppConfig}>
+      <Retry />
+    </OfflineProvider>,
+  );
+  const retry = await screen.findByRole("button", { name: "Retry storage" });
+  expect(mocks.reload).toHaveBeenCalledOnce();
+  // A newer shell is now cached, but the current page is already in use.
+  mocks.reload.mockResolvedValue(true);
+  await act(async () => retry.click());
+  await screen.findByRole("button", { name: "Retry storage" });
+  expect(mocks.open).toHaveBeenCalledTimes(2);
+  rerender(
+    <OfflineProvider config={{ devUserId: "second", oidc: null } as AppConfig}>
+      <Retry />
+    </OfflineProvider>,
+  );
+  await screen.findByRole("button", { name: "Retry storage" });
+  expect(mocks.open).toHaveBeenCalledTimes(3);
+  expect(mocks.reload).toHaveBeenCalledOnce();
+});
+
+it("resolves the current user again after reconnecting from an offline startup", async () => {
+  localStorage.setItem("zoo.offline.lastUser", "user-a");
+  mocks.online = false;
+  mocks.state = { currentUserId: null, isLoading: false, isAdmin: false, error: "Offline" };
+  const config = { devUserId: null, oidc: {} } as AppConfig;
+  const view = (
+    <OfflineProvider config={config}>
+      <button>Cached channel</button>
+    </OfflineProvider>
+  );
+  const { rerender } = render(view);
+  await screen.findByRole("button", { name: "Cached channel" });
+  mocks.ensureLoaded.mockClear();
+  mocks.ensureLoaded.mockImplementation(async () => {
+    mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
+    for (const listener of mocks.listeners) listener();
+  });
+  mocks.online = true;
+  rerender(
+    <OfflineProvider config={config}>
+      <button>Cached channel</button>
+    </OfflineProvider>,
+  );
+  await screen.findByRole("button", { name: "Cached channel" });
+  expect(mocks.ensureLoaded).toHaveBeenCalled();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 it("waits for user resolution before opening storage and mounting interactive children", async () => {
@@ -54,6 +131,7 @@ it("waits for user resolution before opening storage and mounting interactive ch
   await act(async () => {});
   expect(screen.queryByRole("button")).toBeNull();
   expect(mocks.open).not.toHaveBeenCalled();
+  expect(mocks.prepare).toHaveBeenCalledOnce();
 
   await act(async () => {
     mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };

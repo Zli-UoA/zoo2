@@ -575,7 +575,7 @@ async fn home_returns_attachment_metadata_for_visible_posts_and_reply_previews()
     assert_eq!(post["attachments"].as_array().unwrap().len(), 1);
     assert_eq!(
         post["attachments"][0],
-        json!({"id":attachment_ids[0],"file_name":"photo.png","file_size":1024,"content_type":"image/png"})
+        json!({"id":attachment_ids[0],"file_name":"photo.png","file_size":1024,"content_type":"image/png","width":null,"height":null,"blurhash":null})
     );
     let (status, reply) = request(
         &app,
@@ -868,11 +868,15 @@ async fn home_images_are_owned_and_survive_image_only_posts() -> anyhow::Result<
         "POST",
         Some(&owner),
         "/api/home/images",
-        Some(json!({"name":"photo.png","content_type":"image/png","data":test_home_png(2,2)})),
+        Some(json!({"name":"photo.png","content_type":"image/png","data":test_home_png(2,3)})),
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
     let image = uploaded["id"].as_str().unwrap().to_owned();
+    assert_eq!(uploaded["width"], 2);
+    assert_eq!(uploaded["height"], 3);
+    let hash = uploaded["blurhash"].as_str().unwrap();
+    assert!(blurhash::decode(hash, 2, 2, 1.0).is_ok());
     assert_eq!(
         request(
             &app,
@@ -918,6 +922,9 @@ async fn home_images_are_owned_and_survive_image_only_posts() -> anyhow::Result<
     assert_eq!(status, StatusCode::OK);
     assert_eq!(post["content"], "");
     assert_eq!(post["media"][0]["name"], "photo.png");
+    assert_eq!(post["media"][0]["width"], 2);
+    assert_eq!(post["media"][0]["height"], 3);
+    assert_eq!(post["media"][0]["blurhash"], hash);
     assert_eq!(post["media"][0]["url"], format!("/api/home/images/{image}"));
     let (status, _) = request(
         &app,
@@ -978,6 +985,9 @@ async fn home_images_are_owned_and_survive_image_only_posts() -> anyhow::Result<
     )
     .await?;
     assert_eq!(restored["media"][0]["name"], "photo.png");
+    assert_eq!(restored["media"][0]["width"], 2);
+    assert_eq!(restored["media"][0]["height"], 3);
+    assert_eq!(restored["media"][0]["blurhash"], hash);
     let existing_image_url = format!("/api/home/images/{}", attachments[0].id);
     assert_eq!(restored["media"][0]["url"], existing_image_url);
     assert_eq!(
@@ -1037,6 +1047,13 @@ async fn home_images_are_owned_and_survive_image_only_posts() -> anyhow::Result<
         )
     );
     assert_eq!(note["attachment"][0]["mediaType"], "image/png");
+    assert_eq!(note["attachment"][0]["width"], 2);
+    assert_eq!(note["attachment"][0]["height"], 3);
+    assert_eq!(note["attachment"][0]["blurhash"], hash);
+    assert_eq!(
+        note["@context"][1]["blurhash"],
+        "http://joinmastodon.org/ns#blurhash"
+    );
     Ok(())
 }
 

@@ -15,15 +15,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cargo clean --locked --release --package backend && \
-    cargo build --locked --release --bin zoo_backend && \
-    cp /app/target/release/zoo_backend /zoo_backend
+    cargo build --locked --release --bin zoo_backend --bin zoo_dispatcher && \
+    cp /app/target/release/zoo_backend /zoo_backend && \
+    cp /app/target/release/zoo_dispatcher /zoo_dispatcher
 
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 USER nonroot
 
-COPY --chown=nonroot:nonroot --from=build-env /zoo_backend /home/nonroot/
+COPY --chown=nonroot:nonroot --from=build-env /zoo_backend /zoo_dispatcher /home/nonroot/
 
+# 同じイメージで 2 つのバイナリを持つ。zoo-dispatcher の Deployment は command で
+# /home/nonroot/zoo_dispatcher を指定する。
 CMD ["/home/nonroot/zoo_backend"]
 

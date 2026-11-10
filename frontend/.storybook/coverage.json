@@ -2,6 +2,10 @@
   "$comment": "Required visible states, not a percentage of visual correctness. Composed coverage is explained; controller exclusions are counted separately.",
   "stories": [
     {
+      "file": "src/components/ui/image-preview.stories.tsx",
+      "states": ["Loading", "WithoutMetadata", "InvalidHash", "Loaded"]
+    },
+    {
       "file": "src/components/SyncStatus.stories.tsx",
       "states": ["Proxy", "Direct", "Oidc"]
     },
@@ -83,15 +87,24 @@
     },
     {
       "file": "src/components/chat/CreateDmDialog.stories.tsx",
-      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile"]
+      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile", "UserAvatar"]
     },
     {
       "file": "src/components/chat/DmListItem.stories.tsx",
-      "states": ["Default", "Active", "Unread", "LongName"]
+      "states": ["Default", "Active", "Unread", "LongName", "UserAvatar", "UserAvatarFallback"]
     },
     {
       "file": "src/components/chat/DmSection.stories.tsx",
-      "states": ["Default", "Empty", "Loading", "LoadError", "UsersError", "Unread", "Group"]
+      "states": [
+        "Default",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "UsersError",
+        "Unread",
+        "Group",
+        "UserAvatar"
+      ]
     },
     {
       "file": "src/components/chat/MembersScreen.stories.tsx",
@@ -99,7 +112,7 @@
     },
     {
       "file": "src/components/chat/MembersPanel.stories.tsx",
-      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined"]
+      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined", "UserAvatar"]
     },
     {
       "file": "src/components/chat/NotificationsButton.stories.tsx",
@@ -227,7 +240,8 @@
         "JoinedEmoji",
         "Formatting",
         "CodeAndMathDark",
-        "Headings"
+        "Headings",
+        "SharedShortcodes"
       ]
     },
     {
@@ -292,11 +306,41 @@
     },
     {
       "file": "src/components/layout/LeftRail.stories.tsx",
-      "states": ["Default", "Mobile"]
+      "states": ["Default", "Mobile", "UserAvatar"]
     },
     {
       "file": "src/components/layout/ShellSkeleton.stories.tsx",
       "states": ["Default", "Mobile"]
+    },
+    {
+      "file": "src/components/layout/SlackLinkPanel.stories.tsx",
+      "states": [
+        "NotLinked",
+        "Linked",
+        "NotConfigured",
+        "LoadError",
+        "ReturnedWithError",
+        "ReturnedFromSlack",
+        "ReturnedFromSlackFailed",
+        "UnlinkError",
+        "Mobile"
+      ]
+    },
+    {
+      "file": "src/components/layout/SlackImportPanel.stories.tsx",
+      "states": [
+        "Empty",
+        "Loading",
+        "LoadError",
+        "Mapping",
+        "StartError",
+        "Analyzing",
+        "Importing",
+        "CompletedWithPendingFiles",
+        "HistoryWithFailedFiles",
+        "Failed",
+        "Mobile"
+      ]
     },
     {
       "file": "src/components/layout/WorkspaceMembers.stories.tsx",
@@ -309,7 +353,8 @@
         "SearchEmpty",
         "Mobile",
         "ProtectedAdmin",
-        "LastAdmin"
+        "LastAdmin",
+        "UserAvatar"
       ]
     },
     {
@@ -328,10 +373,14 @@
         "ActivityPubLoading",
         "ActivityPubError",
         "ActivityPubSaveError",
+        "SlackImport",
         "CustomEmojis",
         "CustomEmojisMobile",
         "CustomEmojisEmpty",
-        "CustomEmojisError"
+        "CustomEmojisError",
+        "SharedEmojiService",
+        "SharedEmojiServiceError",
+        "SharedEmojiServiceMobile"
       ]
     },
     {
@@ -519,7 +568,14 @@
         "MfmSinglePost",
         "MfmUserProfile",
         "VisibilityBadges",
-        "VisibilityBadgesMobile"
+        "VisibilityBadgesMobile",
+        "UserAvatar",
+        "LocalProfileAvatar",
+        "LocalSearchAvatar",
+        "LocalProfileAvatarWithoutUserShape",
+        "LocalSearchAvatarWithoutUserShape",
+        "LocalPostAvatarWithoutUserShape",
+        "LocalAvatarFallback"
       ]
     },
     {
@@ -533,7 +589,9 @@
         "NotFound",
         "LongContent",
         "Mobile",
-        "Pagination"
+        "Pagination",
+        "UserAvatar",
+        "UserAvatarFallback"
       ]
     }
   ],
@@ -545,7 +603,7 @@
     {
       "file": "src/components/auth/AuthGate.tsx",
       "reason": "OIDC設定と外部リダイレクトに依存する認証境界。ログイン・期限切れ・再認証は専用IdPのE2Eで確認する。",
-      "checks": ["e2e/oidc.spec.ts"]
+      "checks": ["e2e/oidc.spec.ts", "src/components/auth/AuthGate.browser.test.tsx"]
     },
     {
       "file": "src/components/auth/PreviewUserSwitcher.tsx",
@@ -574,7 +632,7 @@
       "file": "src/components/chat/AppSettingsSections.tsx",
       "story": "src/components/chat/AppsDialog.stories.tsx",
       "composed": true,
-      "reason": "App権限・資格情報はCatalogのOwnerManagementで実際の管理パネルとして表示する。"
+      "reason": "App権限はCatalogのOwnerManagementで管理パネルとして表示する。資格情報の表示はApp管理画面（AppConsole.browser.test.tsx）で確認する。"
     },
     {
       "file": "src/components/chat/AppSurfaceHost.tsx",
@@ -584,6 +642,26 @@
     {
       "file": "src/components/chat/AppsDialog.tsx",
       "story": "src/components/chat/AppsDialog.stories.tsx"
+    },
+    {
+      "file": "src/components/call/CallDeviceSelects.tsx",
+      "reason": "通話バーと設定の通話タブで共用するマイク/スピーカー選択。一覧の整形と選択値の保存は call-devices.test.ts で検証する。",
+      "checks": ["src/lib/call/call-devices.test.ts"]
+    },
+    {
+      "file": "src/components/call/CallSettingsDevices.tsx",
+      "reason": "設定の通話タブで CallDeviceSelects を通話コンテキストへ接続する薄い層。選択値の保存は call-devices.test.ts で検証する。",
+      "checks": ["src/lib/call/call-devices.test.ts"]
+    },
+    {
+      "file": "src/components/call/CallStatusPanel.tsx",
+      "reason": "通話バーの通信状況パネル。getStats の集計・品質判定・整形は call-diagnostics.test.ts で検証し、通話状態の取得は call-context.tsx の getCallDiagnostics が担う。",
+      "checks": ["src/lib/call/call-diagnostics.test.ts", "src/lib/call/call-context.tsx"]
+    },
+    {
+      "file": "src/components/call/CallSoundsSwitch.tsx",
+      "reason": "設定の通話タブにある効果音のオン/オフスイッチ。保存と既定値は call-sounds.test.ts で検証する。",
+      "checks": ["src/lib/call/call-sounds.test.ts"]
     },
     {
       "file": "src/components/chat/CallBar.tsx",
@@ -604,11 +682,16 @@
     },
     {
       "file": "src/components/chat/ChannelScreen.tsx",
-      "story": "src/components/chat/ChannelScreen.stories.tsx"
+      "story": "src/components/chat/ChannelScreen.stories.tsx",
+      "checks": ["src/components/chat/ChannelScreen.browser.test.tsx"]
     },
     {
       "file": "src/components/chat/ChannelSidebar.tsx",
-      "story": "src/components/chat/ChannelSidebar.stories.tsx"
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "checks": [
+        "src/lib/electric/collections.persistence.test.ts",
+        "src/components/chat/ChannelSidebar.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",
@@ -675,6 +758,11 @@
       "story": "src/components/chat/messages/MessageCard.stories.tsx"
     },
     {
+      "file": "src/components/ui/image-preview.tsx",
+      "story": "src/components/ui/image-preview.stories.tsx",
+      "checks": ["src/components/ui/image-preview.browser.test.tsx"]
+    },
+    {
       "file": "src/components/chat/messages/MessageAttachments.tsx",
       "story": "src/components/chat/messages/MessageRow.stories.tsx",
       "composed": true,
@@ -686,7 +774,8 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.tsx",
-      "story": "src/components/chat/messages/MessagePane.stories.tsx"
+      "story": "src/components/chat/messages/MessagePane.stories.tsx",
+      "checks": ["src/components/chat/messages/MessagePane.navigation.browser.test.tsx"]
     },
     {
       "file": "src/components/chat/messages/MessageRow.tsx",
@@ -738,7 +827,7 @@
     {
       "file": "src/components/layout/LeftRail.tsx",
       "story": "src/components/layout/LeftRail.stories.tsx",
-      "reason": "DefaultとMobileで、環境変数に依存せずCompose切り替えボタンが表示されることを確認する。"
+      "reason": "DefaultとMobileで、削除済みの実験版切り替えボタンが表示されないことを確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",
@@ -749,6 +838,14 @@
     {
       "file": "src/components/layout/ShellSkeleton.tsx",
       "story": "src/components/layout/ShellSkeleton.stories.tsx"
+    },
+    {
+      "file": "src/components/layout/SlackLinkPanel.tsx",
+      "story": "src/components/layout/SlackLinkPanel.stories.tsx"
+    },
+    {
+      "file": "src/components/layout/SlackImportPanel.tsx",
+      "story": "src/components/layout/SlackImportPanel.stories.tsx"
     },
     {
       "file": "src/components/layout/WorkspaceMembers.tsx",
@@ -786,7 +883,8 @@
     },
     {
       "file": "src/components/ui/avatar.tsx",
-      "story": "src/components/ui/avatar.stories.tsx"
+      "story": "src/components/ui/avatar.stories.tsx",
+      "reason": "形状はAvatar Story、画像と取得失敗はHome/PublicProfile Story、SWによる画像更新とオフライン表示はscripts/avatar-cache.test.mjsで確認する。"
     },
     {
       "file": "src/components/ui/button.tsx",
@@ -902,6 +1000,7 @@
     {
       "file": "src/components/home/HomeComposer.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
+      "checks": ["src/components/home/HomeComposer.browser.test.tsx"],
       "composed": true,
       "reason": "WithImages/MobileImagesで画像表示、ImageOnlyPostで貼り付け・削除・画像のみ送信・再送を確認する。Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
     },
@@ -909,7 +1008,7 @@
       "file": "src/components/home/ActivityPubNotifications.tsx",
       "story": "src/components/chat/NotificationsScreen.stories.tsx",
       "composed": true,
-      "reason": "UnifiedTimeline/Mobileで混在時刻順と枠・実リアクション、UnifiedAutoReadで可視通知の選択既読、CustomReactionBadgeでカスタム絵文字のバッジを確認する。FollowRequests/ApproveFollow/RejectFollowで承認・拒否も維持する。"
+      "reason": "UnifiedTimeline/Mobileで混在時刻順と枠・実リアクション、共通アバター寸法と右寄せ日時、UnifiedAutoReadで可視通知の選択既読、CustomReactionBadgeでカスタム絵文字のバッジを確認する。FollowRequests/ApproveFollow/RejectFollowで承認・拒否も維持する。"
     },
     {
       "file": "src/components/home/ActivityPubEmoji.tsx",
@@ -936,11 +1035,6 @@
       "reason": "UserProfile/MobileUserProfile/UserProfileErrorでユーザー情報とフォロー申請・取得失敗を確認する。"
     },
     {
-      "file": "src/components/experimental/ComposeFrontend.tsx",
-      "reason": "認証・OPFS・ルーターとKotlin/Wasmを接続する制御層。カタログで覆えない起動・ユーザー別保存・失敗復帰・CSPを専用E2Eで検証する。",
-      "checks": ["e2e/compose.spec.ts", "e2e/compose-production.spec.ts"]
-    },
-    {
       "file": "src/components/public/PublicProfile.tsx",
       "story": "src/components/public/PublicProfile.stories.tsx",
       "composed": true,
@@ -957,6 +1051,42 @@
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
       "reason": "MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
+    },
+    {
+      "file": "src/components/apps/console/AppConsole.tsx",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/apps/console/AppConsoleList.tsx",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/apps/console/ConfigSections.tsx",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/apps/console/OperationSections.tsx",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
     }
   ]
 }

@@ -1,7 +1,8 @@
 # Android 版
 
 Android 8.0（API 26）以降を対象にした Compose Multiplatform クライアントです。
-Web 版の `frontend-compose/src/commonMain` にある `ZooApp`、画面・部品、
+Compose for Web の実験は終了しましたが、Android 版の開発・検証・配布は継続します。
+共通 Kotlin の `frontend-compose/src/commonMain` にある `ZooApp`、画面・部品、
 `Session`、`Repository`、REST API、Electric4k の同期処理をそのまま使います。
 Android 用に別のチャット画面や同期クライアントは持ちません。
 
@@ -19,8 +20,8 @@ cd frontend-compose
 adb install -r androidApp/build/outputs/apk/debug/androidApp-debug.apk
 ```
 
-Android ターゲットは明示的に有効にします。既存の Web ビルドには Android SDK は不要です。
-フォントは Web と同じチェックサム固定の生成処理を使い、翻訳辞書は
+Android ターゲットは `zoo.android=true` で明示的に有効にします。
+フォントはチェックサムを固定して取得・生成し、翻訳辞書は
 `frontend/src/lib/i18n/locales` からビルド時に APK の assets へ取り込みます。
 CI Android はビルド・テスト・lint を実行し、debug APK を artifact に保存します。
 
@@ -83,8 +84,10 @@ IdP 全体のブラウザーセッションや他端末の認証は失効させ�
   外部 URL からのアプリ内 deep link、Android の共有受信には未対応です。
 - ファイル選択による添付には対応します。Web 固有のドラッグ＆ドロップとクリップボード画像貼り付け、
   Bubble Chat のタブ離脱通知、アニメーション画像の複数フレーム再生は未対応です。
+- 管理者の Slack 取り込み画面（「Zoo設定」の「Slack 取り込み」タブ）は Web 版だけにあり、Android にはありません
+  （[Slack からの取り込み](slack-import.md)）。
 
-Web と Android の画面実装は共通ですが、タッチ操作・IME・権限別の全画面の実機検証は別途必要です。
+過去の Web 実験と Android の画面実装は共通ですが、タッチ操作・IME・権限別の全画面の実機検証は別途必要です。
 
 ## Shizuku による main の自動更新
 
@@ -137,3 +140,7 @@ Shizuku を使用するインストールは、実際に Shizuku が稼働する
 認証エラー表示・更新・復元・暗号文の改ざん検出・ログアウトと競合する応答を含む
 Androidアプリの単体テスト33件、共通Kotlinテスト、debug APKビルド、Android lintを実行しています。
 Android Keystoreを用いた実機／エミュレーターでの起動復帰と、実IdPでのログインは未検証です。
+
+## 共有絵文字サービス
+
+EMOJI_SERVICE_URLを設定したバックエンドからカスタム一覧とgemoji標準辞書を取得し、管理は独立サービスへのリンクへ切り替える。共通KotlinのSessionでカタログ取得を60秒間共有し、明示的な再読み込み・登録/削除後・失敗後の再試行では即時取得する。WorkspaceEmojisTestで並列20呼び出し、登録/削除後の更新、失敗後の再試行を検証する。標準辞書は取得できない間、同梱データへフォールバックする。Web専用ビルド・パリティ資料・Kotlin Storybook登録は復活させない。Reactの管理リンクと辞書は既存Storybook/MSWの実コンポーネントで確認する。

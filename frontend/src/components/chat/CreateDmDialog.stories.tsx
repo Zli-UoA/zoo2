@@ -1,3 +1,4 @@
+import { avatarUsers, userAvatarHandler } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent, waitFor } from "storybook/test";
@@ -38,3 +39,24 @@ export const SearchEmpty: Story = {
 };
 export const Empty: Story = { parameters: { collections: { ...storyCollections, users: [] } } };
 export const Mobile: Story = { globals: { viewport: { value: "mobile" } } };
+
+export const UserAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: { handlers: [userAvatarHandler] },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.type(await screen.findByRole("combobox"), "Bob");
+    await waitFor(async () => {
+      const image = screen.getByRole("option", { name: /Bob/ }).querySelector("img");
+      await expect(image?.naturalWidth).toBeGreaterThan(0);
+      await expect(image).toHaveAttribute("src", avatarUsers[1].avatar_url);
+    });
+    await userEvent.click(await screen.findByRole("option", { name: /Bob/ }));
+    const selected = await screen.findByRole("button", { name: /Bob.*削除|Bob.*外す/ });
+    await expect(selected.querySelector("img")).toHaveAttribute("src", avatarUsers[1].avatar_url);
+    await waitFor(
+      async () => await expect(selected.querySelector("img")?.naturalWidth).toBeGreaterThan(0),
+    );
+  }),
+};

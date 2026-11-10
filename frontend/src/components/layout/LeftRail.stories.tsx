@@ -1,6 +1,8 @@
+import { storyCollections } from "../../../.storybook/fixtures";
+import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
+import { expect, within, waitFor } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { LeftRail } from "./LeftRail";
@@ -26,15 +28,27 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
-    await expect(
-      await within(canvasElement).findByRole("button", {
-        name: "Compose版を使う（実験・開発中）",
-      }),
-    ).toBeVisible();
+    const toggle = within(canvasElement).queryByRole("button", {
+      name: "Compose版を使う（実験・開発中）",
+    });
+    await expect(toggle).not.toBeInTheDocument();
   }),
 };
 
 export const Mobile: Story = {
   ...Default,
   globals: { viewport: { value: "mobile" } },
+};
+
+export const UserAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: { handlers: [userAvatarHandler] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(async () => {
+      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      await expect(image?.naturalWidth).toBeGreaterThan(0);
+    });
+  }),
 };

@@ -1,5 +1,5 @@
+import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
-import { nativeHomeChecks } from "../../../.storybook/home-native-checks";
 import { useState } from "react";
 import { Button } from "../ui/button";
 import { DEFAULT_CONFIG } from "../../lib/config";
@@ -29,15 +29,6 @@ import {
 
 const postSettingsKey = homePostSettingsKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
 const timelineSettingsKey = homeTimelineKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
-// Native catalog requests use the preview origin; React fixtures use DEFAULT_CONFIG.
-function nativePreferenceFixtureKey(key: string) {
-  const prefix = [HOME_POST_SETTINGS_PREFIX, HOME_TIMELINE_PREFIX].find((value) =>
-    key.startsWith(value),
-  );
-  if (!prefix) throw new Error("Unexpected Home preference key");
-  const [, userId] = JSON.parse(key.slice(prefix.length)) as [string, string];
-  return prefix + JSON.stringify([DEFAULT_CONFIG.apiBaseUrl, userId]);
-}
 function clearHomePreferences() {
   for (let index = localStorage.length - 1; index >= 0; index--) {
     const key = localStorage.key(index)!;
@@ -64,60 +55,6 @@ const meta = {
   },
   parameters: {
     a11y: { test: "error" },
-    fixtureControls: {
-      ...nativeHomeChecks,
-      homeStorageRead: (key: string) => localStorage.getItem(nativePreferenceFixtureKey(key)) ?? "",
-      homeStorageWrite: ({ key, value }: { key: string; value: string }) => {
-        localStorage.setItem(nativePreferenceFixtureKey(key), value);
-        return "";
-      },
-      homeRememberedPost: () =>
-        expect(JSON.parse(localStorage.getItem(postSettingsKey)!)).toEqual({
-          visibility: "public",
-          apub: false,
-          channel_id: "channel-general",
-        }),
-      homeSavedTimeline: (value: string) =>
-        waitFor(() => expect(localStorage.getItem(timelineSettingsKey)).toBe(value)),
-      homeRememberedTimeline: () => expect(localStorage.getItem(timelineSettingsKey)).toBe("home"),
-      homeUnavailableChannel: () => expect(rememberedPost).toMatchObject({ channel_id: null }),
-      homeNoSavedIdentity: async () => {
-        await expect(postedWithoutIdentity).toBe(true);
-        await expect(localStorage.getItem(postSettingsKey)).toBeNull();
-      },
-      homeLiveReady: () => waitFor(() => expect(liveAuthenticated).toBe(true)),
-      homeLiveAdd: () => {
-        livePosts = [
-          { ...posts[0], id: "live-post", content: "別端末から届いた新しい投稿" },
-          ...posts,
-        ];
-        live.broadcast("refresh");
-      },
-      homeLiveEdit: () => {
-        livePosts = [
-          { ...posts[0], id: "live-post", content: "編集がリアルタイムで反映されます" },
-          posts[1],
-        ];
-        live.broadcast("refresh");
-      },
-      homeLiveReconnect: () => {
-        livePosts = [{ ...posts[0], id: "reconnected", content: "再接続後の最新投稿" }];
-        for (const client of live.clients) client.close(1000);
-      },
-      homePullFinish: () => {
-        pullRefreshed = true;
-        nativeHomeChecks.homePullFinish();
-      },
-      homeOlderLiveReady: () => waitFor(() => expect(olderLiveConnected).toBe(true)),
-      homeOlderRefresh: async () => {
-        await waitFor(() => expect(olderPageStarted).toBe(true));
-        olderLive.broadcast("refresh");
-        await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2));
-        if (!releaseOlderPage) throw new Error("Older page request did not start");
-        releaseOlderPage();
-      },
-      homeOlderRetained: () => waitFor(() => expect(retainedReloads).toBeGreaterThan(0)),
-    },
     msw: { handlers: homeHandlers },
   },
   decorators: [
@@ -1849,9 +1786,6 @@ export const ChannelReplyAudience: Story = {
     );
   },
   parameters: {
-    fixtureControls: {
-      homeChannelReplyPosted: () => waitFor(() => expect(channelReplySent).toBe(true)),
-    },
     msw: {
       handlers: [
         http.get("*/api/home", () =>
@@ -1912,11 +1846,6 @@ export const ImageOnlyPost: Story = {
     homeImageDiscards = 0;
   },
   parameters: {
-    fixtureControls: {
-      homeImageDiscarded: () => waitFor(() => expect(homeImageDiscards).toBe(1)),
-      homeImagePosted: () =>
-        expect(homeImagePayload).toMatchObject({ content: "", image_ids: [homeImageId] }),
-    },
     msw: {
       handlers: [
         ...homeHandlers,
@@ -2014,8 +1943,13 @@ export const ReplyToMediaOnly: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(await canvas.findByRole("img", { name: "景色.png" })).toBeVisible();
-    await expect(await canvas.findByRole("img", { name: "remote.png" })).toBeVisible();
+    for (const name of ["景色.png", "remote.png"]) {
+      const image = await canvas.findByRole("img", { name });
+      await waitFor(async () => {
+        await expect((image as HTMLImageElement).naturalWidth).toBeGreaterThan(0);
+        await expect(image).toBeVisible();
+      });
+    }
     await expect(canvas.getByText("ローカル画像への返信")).toBeVisible();
     await expect(canvas.getByText("リモート画像への返信")).toBeVisible();
   }),
@@ -2046,5 +1980,128 @@ export const ImageUploadError: Story = {
     await expect(await form.findByRole("alert")).toHaveTextContent("8MiB");
     await expect(form.getAllByRole("alert")).toHaveLength(1);
     await expect(form.getByRole("button", { name: /^投稿$/ })).toBeDisabled();
+  }),
+};
+
+export const UserAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: { handlers: [userAvatarHandler, ...homeHandlers] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(async () => {
+      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      await expect(image?.naturalWidth).toBeGreaterThan(0);
+    });
+  }),
+};
+
+export const LocalProfileAvatar: Story = {
+  args: { actorId: "user-alice" },
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: {
+      handlers: [
+        userAvatarHandler,
+        ...homeHandlers,
+        http.get("*/api/activitypub/accounts", () =>
+          HttpResponse.json({ ...avatarUsers[0], remote: false }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const profile = await within(canvasElement).findByRole("heading", { name: "Alice" });
+    await waitFor(
+      async () =>
+        await expect(
+          profile.closest("section")?.querySelector("img")?.naturalWidth,
+        ).toBeGreaterThan(0),
+    );
+  }),
+};
+
+export const LocalSearchAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: {
+      handlers: [
+        userAvatarHandler,
+        ...homeHandlers,
+        http.get("*/api/activitypub/search", () =>
+          HttpResponse.json([{ ...avatarUsers[1], remote: false }]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "ユーザーを検索" }),
+    );
+    const dialog = await visibleDialog("ユーザーを検索");
+    await userEvent.type(dialog.getByRole("textbox", { name: "ユーザーを検索" }), "bob");
+    await userEvent.click(dialog.getByRole("button", { name: "検索" }));
+    const account = await dialog.findByRole("article", { name: "ユーザー詳細" });
+    await waitFor(
+      async () =>
+        await expect(account.querySelector("img")).toHaveAttribute(
+          "src",
+          avatarUsers[1].avatar_url,
+        ),
+    );
+    await waitFor(
+      async () => await expect(account.querySelector("img")?.naturalWidth).toBeGreaterThan(0),
+    );
+  }),
+};
+
+export const LocalProfileAvatarWithoutUserShape: Story = {
+  ...LocalProfileAvatar,
+  parameters: {
+    ...LocalProfileAvatar.parameters,
+    collections: { ...storyCollections, users: [] },
+  },
+};
+export const LocalSearchAvatarWithoutUserShape: Story = {
+  ...LocalSearchAvatar,
+  parameters: {
+    ...LocalSearchAvatar.parameters,
+    collections: { ...storyCollections, users: [] },
+  },
+};
+export const LocalPostAvatarWithoutUserShape: Story = {
+  ...UserAvatar,
+  parameters: {
+    collections: { ...storyCollections, users: [] },
+    msw: {
+      handlers: [
+        userAvatarHandler,
+        http.get("*/api/home", () =>
+          HttpResponse.json([{ ...posts[0], avatar_url: userAvatarUrl }]),
+        ),
+      ],
+    },
+  },
+};
+export const LocalAvatarFallback: Story = {
+  parameters: {
+    collections: {
+      ...storyCollections,
+      users: avatarUsers.map((user) => ({
+        ...user,
+        avatar_url: `${user.avatar_url}?missing-home`,
+      })),
+    },
+    msw: {
+      handlers: [
+        http.get(userAvatarUrl, () => new HttpResponse(null, { status: 404 })),
+        ...homeHandlers,
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const avatar = await within(canvasElement).findByRole("img", { name: "Alice" });
+    await waitFor(async () => await expect(avatar).toHaveTextContent("A"));
+    await expect(avatar.querySelector("img")).toBeNull();
   }),
 };

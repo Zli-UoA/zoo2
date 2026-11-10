@@ -87,8 +87,19 @@ describe("OIDC login against a mock IdP", () => {
     const result = await client.handleCallback();
     expect(result.returnTo).toBe("/channels/abc");
 
-    const accessToken = await client.getAccessToken();
+    // ページの再読み込みと同様、メモリ内のクライアントを作り直す。
+    browser.setHref("https://app.example/channels/abc");
+    browser.assigned.length = 0;
+    const restoredClient = new OidcClient({
+      issuer: idp.issuer,
+      clientId: idp.clientId,
+      environment: browser.env,
+    });
+    expect(restoredClient.hasSession).toBe(true);
+
+    const accessToken = await restoredClient.getAccessToken();
     expect(accessToken).toBeTruthy();
+    expect(browser.assigned).toEqual([]);
 
     const verified = idp.verifyAccessToken(accessToken!);
     expect(verified.valid).toBe(true);

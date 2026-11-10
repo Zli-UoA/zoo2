@@ -228,7 +228,15 @@ pub(crate) async fn create_message_impl(
             )
             .await?;
 
-            verified_attachments.push(att.id);
+            let metadata = crate::storage::verify::uploaded_image_metadata(
+                &state.s3_client,
+                &state.config.s3.bucket,
+                &att.storage_key,
+                att.file_size,
+                &att.content_type,
+            )
+            .await?;
+            verified_attachments.push((att.id, metadata));
         }
     }
 
@@ -350,9 +358,9 @@ pub(crate) async fn create_message_impl(
     .await?;
 
     // 添付ファイルの紐付け (条件付き原子的 UPDATE)
-    for att_id in &verified_attachments {
+    for (att_id, metadata) in &verified_attachments {
         let rows = toasty::sql::query(
-            "UPDATE attachments SET message_id = $1
+            "UPDATE attachments SET message_id = $1, width = NULLIF($5,'')::integer, height = NULLIF($6,'')::integer, blurhash = NULLIF($7,'')
              WHERE id = $2 AND uploader_id = $3 AND channel_id = $4
                AND message_id IS NULL
                AND created_at > (now() AT TIME ZONE 'UTC') - INTERVAL '23 hours'
@@ -362,6 +370,9 @@ pub(crate) async fn create_message_impl(
         .bind(att_id)
         .bind(&auth_user.id)
         .bind(&payload.channel_id)
+        .bind(metadata.as_ref().map(|m| m.width.to_string()).unwrap_or_default())
+        .bind(metadata.as_ref().map(|m| m.height.to_string()).unwrap_or_default())
+        .bind(metadata.as_ref().map(|m| m.blurhash.as_str()).unwrap_or_default())
         .exec(&mut tx)
         .await?;
 

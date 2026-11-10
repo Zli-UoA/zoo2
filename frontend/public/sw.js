@@ -29,7 +29,7 @@ const SHELL = [
   "/icons/icon-192.png",
   "/icons/icon-512.png",
 ];
-const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/", "/compose/"];
+const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
 
 function isPrivatePath(pathname) {
   return pathname.startsWith("/api/") || pathname.startsWith("/auth/");
@@ -136,22 +136,59 @@ async function precacheIndexAssets(cache, response) {
   try {
     html = await response.clone().text();
   } catch {
-    return;
+    return false;
   }
   const assets = new Set();
   for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)) {
     if (match[1]) assets.add(match[1]);
   }
-  await Promise.all(
-    [...assets].map(async (path) => {
+  return precacheAssets(cache, [...assets]);
+}
+
+async function precacheAssets(cache, assets) {
+  return Promise.all(
+    assets.map(async (path) => {
       try {
+        if (await cache.match(path)) return true;
         const asset = await fetchStaticAsset(path);
-        if (asset.ok) await cacheResponse(cache, path, asset);
+        if (!asset.ok) return false;
+        await cacheResponse(cache, path, asset);
+        return true;
       } catch {
-        /* A later navigation can retry the asset. */
+        return false;
       }
     }),
-  );
+  ).then((results) => results.every(Boolean));
+}
+
+// A new document can reference lazy workers/chunks that the currently running
+// build will never request. Cache the complete build before publishing that HTML.
+async function precacheBuildAssets(cache, response) {
+  try {
+    const html = await response.clone().text();
+    const entry = html.match(/\/assets\/index-[^"'?#]+\.js/)?.[0];
+    if (!entry) return false;
+    const manifest = await fetch(`/pwa-assets.json?entry=${encodeURIComponent(entry)}`, {
+      cache: "reload",
+    });
+    if (!manifest.ok) return false;
+    const build = await manifest.json();
+    if (
+      build.entry !== entry ||
+      !Array.isArray(build.assets) ||
+      !build.assets.includes(entry) ||
+      !build.assets.every(
+        (path) =>
+          typeof path === "string" &&
+          /^\/assets\/[^?#]+$/.test(path) &&
+          new URL(path, self.location.origin).pathname === path,
+      )
+    )
+      return false;
+    return await precacheAssets(cache, build.assets);
+  } catch {
+    return false;
+  }
 }
 
 async function fetchShellIndex() {
@@ -178,10 +215,12 @@ async function precacheShell() {
   }
   const name = cacheNameForIndex(html);
   const cache = await caches.open(name);
+  if (!(await precacheIndexAssets(cache, index))) {
+    throw new Error("Cannot install an app shell without its entry assets");
+  }
   const cached = await cacheResponse(cache, "/index.html", index);
   // Navigation fallbacks check /index.html first, but keep / for old clients.
   await cache.put("/", cached.clone());
-  await precacheIndexAssets(cache, cached.clone());
   // Fetch each entry separately: one missing icon must not fail the install.
   await Promise.all(
     SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
@@ -197,7 +236,7 @@ async function precacheShell() {
   await cache.put(META_PATH, new Response(String(Date.now())));
 }
 
-async function handleNavigation(request) {
+async function refreshNavigation(request, background = false) {
   try {
     const response = await fetch(request);
     const contentType = response.headers.get("content-type") || "";
@@ -206,7 +245,13 @@ async function handleNavigation(request) {
       // can fall back to it, regardless of the deep link that was open.
       // Direct navigations to icons or JSON must not overwrite the shell.
       const cache = await caches.open(await findActiveShellCache());
-      return await cacheResponse(cache, "/index.html", response);
+      // A background deployment must include lazy assets before the next offline launch.
+      const ready = background
+        ? await precacheBuildAssets(cache, response)
+        : await precacheIndexAssets(cache, response);
+      if (ready) {
+        return await cacheResponse(cache, "/index.html", response);
+      }
     }
     return response;
   } catch {
@@ -218,6 +263,29 @@ async function handleNavigation(request) {
       Response.error()
     );
   }
+}
+
+async function handleNavigation(request, event) {
+  const url = new URL(request.url);
+  const spaRoute =
+    url.pathname === "/" ||
+    url.pathname === "/index.html" ||
+    /^\/(?:channels|home|settings|notifications|bubble|apps|apps-authorize|realtime|public\/users)(?:\/|$)/.test(
+      url.pathname,
+    );
+  const cache = await caches.open(await findActiveShellCache());
+  // Static HTML (for example the Compose catalog) must never replace the SPA.
+  if (!spaRoute) {
+    return fetch(request).catch(async () => (await cache.match(request)) || Response.error());
+  }
+  const cached = (await cache.match("/index.html")) || (await cache.match("/"));
+  // Explicit reloads reach the deployed document so vite:preloadError can recover.
+  if (request.cache === "default" && cached) {
+    event.waitUntil(refreshNavigation(request, true).catch(() => {}));
+    return cached;
+  }
+  // Even an explicit reload must keep the next offline launch complete.
+  return refreshNavigation(request, Boolean(cached));
 }
 
 async function handleAsset(request) {
@@ -235,28 +303,119 @@ async function handleAsset(request) {
   }
 }
 
-// The Compose entry and resource names are stable across builds. Revalidate them
-// online so a warmed service worker cannot pin an older Kotlin implementation.
-async function handleComposeAsset(request) {
-  const cache = await caches.open(await findActiveShellCache());
-  const cached = await cache.match(request);
-  const headers = new Headers(request.headers);
-  const etag = cached?.headers.get("x-zoo-etag");
-  const modified = cached?.headers.get("x-zoo-last-modified");
-  if (etag) headers.set("If-None-Match", etag);
-  else if (modified) headers.set("If-Modified-Since", modified);
+// Public AuthZ avatars have their own bounded cache, retained across shell upgrades.
+const AVATAR_ORIGIN = "https://avater.zliusercontent.com";
+const AVATAR_CACHE = "zoo-avatars-v1";
+const AVATAR_REFRESH_MS = 5 * 60 * 1000;
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const AVATAR_MAX_ENTRIES = 64;
+const avatarRequests = new Map();
+
+function avatarURL(raw) {
   try {
-    // Cache API is the sole persistent copy. Validate explicitly, without also
-    // keeping large fonts/Wasm in the HTTP cache or rewriting unchanged bodies.
-    const response = await fetch(new Request(request, { headers }), { cache: "no-store" });
-    if (cached && response.status === 304) return cached;
-    if (response.ok && response.type === "basic") {
-      if (cached && etag && response.headers.get("etag") === etag) return response;
-      return await cacheResponse(cache, request, response, true);
-    }
-    return response;
+    const url = new URL(raw);
+    if (url.origin !== AVATAR_ORIGIN || url.username || url.password) return null;
+    url.searchParams.delete("__zoo_avatar");
+    url.hash = "";
+    return url.href;
   } catch {
-    return cached || Response.error();
+    return null;
+  }
+}
+
+async function avatarBytes(response) {
+  if (Number(response.headers.get("content-length")) > AVATAR_MAX_BYTES) return null;
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > AVATAR_MAX_BYTES) {
+      void reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+function refreshAvatar(url) {
+  if (avatarRequests.has(url)) return avatarRequests.get(url);
+  const work = (async () => {
+    const cache = await caches.open(AVATAR_CACHE);
+    const previous = await cache.match(url);
+    if (
+      previous &&
+      Date.now() - Number(previous.headers.get("x-zoo-checked-at")) < AVATAR_REFRESH_MS
+    )
+      return previous;
+    // Version the network key for the R2 CORS rollout.
+    const networkURL = new URL(url);
+    networkURL.searchParams.set("__zoo_avatar_cache", "1");
+    const response = await fetch(networkURL.href, {
+      signal: AbortSignal.timeout(10_000),
+      mode: "cors",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      cache: "no-cache",
+      redirect: "error",
+    }).catch(() => null);
+    if (
+      !response?.ok ||
+      !/^image\/(png|jpeg|webp|gif|avif)(;|$)/i.test(response.headers.get("content-type") || "")
+    )
+      return previous ?? null;
+    const bytes = await avatarBytes(response).catch(() => null);
+    if (!bytes?.byteLength) return previous ?? null;
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    const revision = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    const cached = new Response(bytes, {
+      headers: {
+        "content-type": response.headers.get("content-type"),
+        "cache-control": "no-store",
+        "x-zoo-checked-at": String(Date.now()),
+        "x-zoo-avatar-revision": revision,
+      },
+    });
+    await cache.put(url, cached.clone());
+    const keys = await cache.keys();
+    for (const key of keys.slice(0, Math.max(0, keys.length - AVATAR_MAX_ENTRIES)))
+      await cache.delete(key);
+    if (previous && previous.headers.get("x-zoo-avatar-revision") !== revision) {
+      const clients = await self.clients.matchAll({ type: "window" });
+      for (const client of clients) client.postMessage({ type: "AVATAR_UPDATED", url, revision });
+    }
+    return cached;
+  })().finally(() => avatarRequests.delete(url));
+  avatarRequests.set(url, work);
+  return work;
+}
+
+async function handleAvatar(request, keepAlive) {
+  const url = avatarURL(request.url);
+  const cache = await caches.open(AVATAR_CACHE);
+  const previous = await cache.match(url);
+  const update = refreshAvatar(url).catch(() => null);
+  keepAlive(update);
+  if (previous) return previous;
+  const response = await update;
+  if (response) return response;
+  // R2 CORS can roll out separately. Native image loading remains available.
+  try {
+    return await fetch(request);
+  } catch {
+    return Response.error();
   }
 }
 
@@ -270,7 +429,11 @@ self.addEventListener("activate", (event) => {
       const active = await findActiveShellCache();
       for (const name of await caches.keys()) {
         const managed = name.startsWith(CACHE_PREFIX) || name.startsWith("zoo-offline-");
-        if (managed && name !== active) await caches.delete(name);
+        if (
+          (managed && name !== active) ||
+          (name.startsWith("zoo-avatars-") && name !== AVATAR_CACHE)
+        )
+          await caches.delete(name);
       }
       await self.clients.claim();
     })(),
@@ -279,12 +442,46 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("message", (event) => {
   const data = event.data;
+  if (data?.type === "REFRESH_AVATARS" && Array.isArray(data.urls)) {
+    const urls = [
+      ...new Set(
+        data.urls
+          .filter((url) => typeof url === "string")
+          .map(avatarURL)
+          .filter(Boolean),
+      ),
+    ].slice(0, AVATAR_MAX_ENTRIES);
+    event.waitUntil(
+      (async () => {
+        const results = await Promise.allSettled(urls.map(refreshAvatar));
+        for (let index = 0; index < results.length; index++) {
+          const result = results[index];
+          const revision =
+            result.status === "fulfilled"
+              ? result.value?.headers.get("x-zoo-avatar-revision")
+              : null;
+          if (revision)
+            event.source?.postMessage({ type: "AVATAR_UPDATED", url: urls[index], revision });
+        }
+      })(),
+    );
+    return;
+  }
+  if (data?.type === "SHELL_ENTRY") {
+    event.waitUntil(
+      (async () => {
+        const cache = await caches.open(await findActiveShellCache());
+        const index = await cache.match("/index.html");
+        const html = index ? await index.text() : "";
+        const entry = html.match(/\/assets\/index-[^"'?#]+\.js/)?.[0] ?? null;
+        event.ports?.[0]?.postMessage({ entry });
+      })().catch(() => event.ports?.[0]?.postMessage({ entry: null })),
+    );
+    return;
+  }
   if (!data || data.type !== "CACHE_ASSETS" || !Array.isArray(data.urls)) return;
   const urls = data.urls
-    .filter(
-      (url) =>
-        typeof url === "string" && (url.startsWith("/assets/") || url.startsWith("/compose/")),
-    )
+    .filter((url) => typeof url === "string" && url.startsWith("/assets/"))
     .slice(0, 200);
   event.waitUntil(
     (async () => {
@@ -306,13 +503,21 @@ self.addEventListener("message", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin || event.request.method !== "GET") return;
+  if (event.request.method !== "GET") return;
+  if (event.request.destination === "image" && avatarURL(url.href)) {
+    let updating = Promise.resolve();
+    const response = handleAvatar(event.request, (work) => {
+      updating = work;
+    }).catch(() => fetch(event.request).catch(() => Response.error()));
+    event.respondWith(response);
+    event.waitUntil(response.then(() => updating));
+    return;
+  }
+  if (url.origin !== self.location.origin) return;
   if (isPrivatePath(url.pathname) || url.pathname === "/sw.js") return;
 
   if (event.request.mode === "navigate") {
-    event.respondWith(handleNavigation(event.request));
-  } else if (url.pathname.startsWith("/compose/")) {
-    event.respondWith(handleComposeAsset(event.request));
+    event.respondWith(handleNavigation(event.request, event));
   } else if (isCacheableAsset(url)) {
     event.respondWith(handleAsset(event.request));
   }

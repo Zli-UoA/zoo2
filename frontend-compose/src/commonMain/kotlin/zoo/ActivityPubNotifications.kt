@@ -178,16 +178,20 @@ fun ActivityPubNotificationCard(
     val profile = "/home/users/${item.text("actor_id").removePrefix("local:").encodeURLParameter()}"
     val destination = item.text("post_id").takeIf { it.isNotEmpty() }?.let { "/home/posts/${it.encodeURLParameter()}" }
     val label = "${item.text("display_name")} ${app.t("home.notificationKinds.${item.text("kind")}")}"
-    Column(
-        Modifier.notificationSurface(item.flag("is_read"))
-            .then(webControlModifier("listitem", attributes = mapOf("aria-label" to label)))
-            .then(if (destination != null) Modifier.nativeNavigation(destination, role = null) else Modifier)
-            .padding(12.dp),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box {
-                NativeLink(profile) { ActivityPubAvatar(item["avatar"] as? Row, item.text("display_name")) }
-                Box(Modifier.align(Alignment.BottomEnd).offset(4.dp, 4.dp).size(20.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape).border(2.dp, MaterialTheme.colorScheme.background, CircleShape), contentAlignment = Alignment.Center) {
+    BoxWithConstraints {
+        val mobile = maxWidth < 640.dp
+        val avatarSize = if (mobile) 40.dp else 36.dp
+        Column(
+            Modifier.notificationSurface(item.flag("is_read"))
+                .then(webControlModifier("listitem", attributes = mapOf("aria-label" to label)))
+                .then(if (destination != null) Modifier.nativeNavigation(destination, role = null) else Modifier)
+                .padding(12.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                NotificationAvatar(
+                    size = avatarSize,
+                    avatar = { size -> NativeLink(profile) { ActivityPubAvatar(item["avatar"] as? Row, item.text("display_name"), size = size) } },
+                ) {
                     if (item.text("kind") == "like") {
                         val emoji = item["emoji"] as? Row
                         val reaction = emoji?.text("name") ?: item.text("reaction").ifEmpty { "❤️" }
@@ -196,22 +200,22 @@ fun ActivityPubNotificationCard(
                         }
                     } else Icon(when(item.text("kind")) { "reply" -> "message-circle"; "repost" -> "repeat-2"; "follow_request" -> "user-plus"; "follow_accepted" -> "user-check"; else -> "at-sign" }, modifier = Modifier.size(12.dp))
                 }
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    NativeLink(profile, Modifier.weight(1f)) { ActivityPubText(item.text("display_name"), item.homeRows("actor_emojis"), textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold)) }
-                    Text(app.platform.notificationTime(item.text("created_at")), size = 11.sp, muted = true, maxLines = 1)
-                    NotificationReadStatus(app, item.flag("is_read"))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (mobile) 8.dp else 4.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        NativeLink(profile, Modifier.weight(1f)) { ActivityPubText(item.text("display_name"), item.homeRows("actor_emojis"), textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold)) }
+                        NotificationTimestamp(app, item.text("created_at"))
+                        NotificationReadStatus(app, item.flag("is_read"))
+                    }
+                    if (item.text("content").isNotEmpty()) ActivityPubContent(item.text("content"), item.homeRows("content_emojis"), maxLines = 3)
+                    if (destination != null) NativeLink(destination, attributes = mapOf("aria-label" to "${app.t("home.title")} · ${app.t("activitypubSettings.post")} — $label")) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) { Icon("home", modifier = Modifier.size(16.dp)); Text(app.t("home.title"), size = 12.sp, muted = true) }
+                    }
+                    if (item.text("kind") == "follow_request" && item.flag("pending")) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(app.t("home.approve"), size = "sm", enabled = !pending) { respond(true) }
+                        Button(app.t("home.reject"), variant = "outline", size = "sm", enabled = !pending) { respond(false) }
+                    }
+                    if (failed) Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")), color = MaterialTheme.colorScheme.error, size = 14.sp)
                 }
-                if (item.text("content").isNotEmpty()) ActivityPubContent(item.text("content"), item.homeRows("content_emojis"), maxLines = 3)
-                if (destination != null) NativeLink(destination, attributes = mapOf("aria-label" to "${app.t("home.title")} · ${app.t("activitypubSettings.post")} — $label")) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) { Icon("home", modifier = Modifier.size(16.dp)); Text(app.t("home.title"), size = 12.sp, muted = true) }
-                }
-                if (item.text("kind") == "follow_request" && item.flag("pending")) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(app.t("home.approve"), size = "sm", enabled = !pending) { respond(true) }
-                    Button(app.t("home.reject"), variant = "outline", size = "sm", enabled = !pending) { respond(false) }
-                }
-                if (failed) Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")), color = MaterialTheme.colorScheme.error, size = 14.sp)
             }
         }
     }

@@ -263,6 +263,7 @@ AuthZ には、デバイスコードと refresh_token のグラントを許可�
 ## 困ったとき
 
 - **「ログインしていません」と出る**: `zoo2-tui login` を実行してください。refresh_token が失効したときも同じです。
+- **「認証が切れました。再ログインしてください」と出る**: アクセストークンと refresh_token の両方が使えなくなっています。`zoo2-tui login` を実行してログインし直してください。
 - **「dev モードではログインできません」と出る**: 環境変数 `ZOO_DEV_USER` か、`config.toml` の `dev_user` が残っています。外してください。
 - **ログインで `invalid_client` や `unauthorized_client` が出る**: `oidc_client_id` が違うか、そのクライアントにデバイスコードのグラントが許可されていません。管理者に確かめてください。
 - **401 で画面が開かない**: `oidc_resource` が backend の `OIDC_AUDIENCE` と一致しているか確かめてください。
@@ -305,15 +306,18 @@ make tui-check
 
 ### 構成
 
-- `src/config.rs`: 設定の読み込み
-- `src/http.rs`: 認証ヘッダーとエラー応答
-- `src/api.rs`: REST API
-- `src/electric/`: Electric のシェイプ購読と、行の型変換
-- `src/store.rs`: 行の保持と、画面用の派生ビュー
-- `src/mfm.rs`: MFM の簡易レンダラ
-- `src/auth/`: デバイスコードログインとトークンの保存・更新
+通信・認証・状態管理・MFM 構文解析はデスクトップ版と共有するため `../client-core/` に置いています。
+
+- `../client-core/src/config.rs`: 設定の読み込み
+- `../client-core/src/http.rs`: 認証ヘッダーとエラー応答
+- `../client-core/src/api.rs`: REST API
+- `../client-core/src/electric/`: Electric のシェイプ購読と、行の型変換
+- `../client-core/src/store.rs`: 行の保持と、画面用の派生ビュー
+- `../client-core/src/mfm.rs`: MFM の構文解析
+- `../client-core/src/auth/`: デバイスコードログインとトークンの保存・更新
+- `../client-core/src/update.rs`: GitHub Releases の新しい版の確認
+- `src/mfm.rs`: MFM 解析結果の ratatui スタイル変換
 - `src/ui/`: 画面の状態、キー操作、描画
-- `src/update.rs`: GitHub Releases の新しい版の確認
 
 ### リリース
 
@@ -324,3 +328,7 @@ make tui-check
 ## ライセンス
 
 zoo2 TUI (`tui/` 配下) は [MIT License](LICENSE) で配布します。
+
+カスタム絵文字のリアクションには `:custom_name:` を入力できる。存在確認とエイリアスの解決はバックエンドが行う。画像の登録・編集は共通絵文字サービスの管理画面で行う。
+
+基盤設定時は `/api/emoji-shortcodes` のgemoji辞書を取得し、本文の表示とリアクション入力に使います。カスタム名・別名を先に解決し、取得失敗時は前回の一覧、成功履歴がなければ同梱辞書を使います。

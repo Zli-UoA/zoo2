@@ -215,8 +215,8 @@ pub fn text(value: &str, max: usize) -> Result<(), AppError> {
 }
 
 /// Clock-driven state changes are ordinary transactional mutations with the same outbox guarantees.
-pub async fn maintain(state: &AppState) -> Result<(), AppError> {
-    let mut db = state.db.clone();
+pub async fn maintain(db: &toasty::Db) -> Result<(), AppError> {
+    let mut db = db.clone();
     let mut tx = db.transaction().await?;
     for sql in [
         "UPDATE user_event_settings SET presence='away' WHERE presence='active' AND active_until<=now()",

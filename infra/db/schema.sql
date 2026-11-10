@@ -1107,6 +1107,14 @@ CREATE INDEX app_deliveries_dispatch_count ON app_deliveries(installation_id,fir
 -- Harden event delivery and bound transport/retention work without rewriting deployed migrations.
 CREATE INDEX app_deliveries_retention ON app_deliveries(created_at,id);
 CREATE INDEX app_deliveries_ready ON app_deliveries(installation_id,available_at,created_at,id) WHERE acked_at IS NULL;
+CREATE FUNCTION app_delivery_notify() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF EXISTS (SELECT 1 FROM new_rows n JOIN app_installations i ON i.id=n.installation_id WHERE i.manifest::jsonb->>'transport'='http') THEN
+  PERFORM pg_notify('app_delivery','');
+ END IF;
+ RETURN NULL;
+END $$;
+CREATE TRIGGER app_deliveries_notify AFTER INSERT ON app_deliveries REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION app_delivery_notify();
 CREATE TABLE app_socket_sessions(id text PRIMARY KEY,installation_id text NOT NULL REFERENCES app_installations(id),expires_at timestamptz NOT NULL);
 CREATE INDEX app_socket_sessions_active ON app_socket_sessions(installation_id,expires_at);
 CREATE TABLE app_socket_presence_limits(installation_id text NOT NULL REFERENCES app_installations(id),window_start timestamptz NOT NULL,requests integer NOT NULL,PRIMARY KEY(installation_id,window_start));
@@ -1675,6 +1683,168 @@ CREATE TABLE apub_profiles (
 ALTER TABLE apub_actors ADD COLUMN avatar jsonb, ADD COLUMN summary text NOT NULL DEFAULT '';
 CREATE TRIGGER apub_profiles_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_profiles FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 
+-- Slack エクスポート ZIP の取り込み (#295)
+-- 取り込み状態・Slack ID との対応表はすべてサーバー専用。Electric の Shape には載せない。
+
+CREATE TABLE slack_import_jobs (
+  id text NOT NULL,
+  created_by text NOT NULL,
+  status text NOT NULL DEFAULT 'uploading',
+  file_name text NOT NULL,
+  file_size bigint NOT NULL,
+  storage_key text NOT NULL,
+  team_id text,
+  analysis text,
+  mappings text,
+  total_messages bigint NOT NULL DEFAULT 0,
+  processed_messages bigint NOT NULL DEFAULT 0,
+  total_files bigint NOT NULL DEFAULT 0,
+  processed_files bigint NOT NULL DEFAULT 0,
+  error text,
+  attempts integer NOT NULL DEFAULT 0,
+  lease_until timestamptz,
+  lease_token text,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz,
+  -- 取り込みのジョブなら、ZIP を読むエクスポート (NULL ならエクスポート自身)
+  source_id text,
+  PRIMARY KEY (id),
+  CONSTRAINT slack_import_jobs_status_check CHECK (status IN (
+    'uploading', 'analyzing', 'ready', 'importing',
+    'fetching_files', 'completed', 'failed', 'cancelled'
+  )),
+  CONSTRAINT slack_import_jobs_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT slack_import_jobs_source_id_fkey
+    FOREIGN KEY (source_id) REFERENCES slack_import_jobs (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+);
+
+CREATE INDEX idx_slack_import_jobs_runnable ON slack_import_jobs (available_at)
+  WHERE status IN ('analyzing', 'importing', 'fetching_files');
+CREATE INDEX idx_slack_import_jobs_source_id ON slack_import_jobs (source_id);
+
+-- Slack ユーザーと zoo ユーザーの対応。linked=false はプレースホルダ。
+CREATE TABLE slack_users (
+  team_id text NOT NULL,
+  slack_user_id text NOT NULL,
+  user_id text NOT NULL,
+  linked boolean NOT NULL DEFAULT false,
+  name text NOT NULL DEFAULT '',
+  real_name text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (team_id, slack_user_id),
+  CONSTRAINT slack_users_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE INDEX idx_slack_users_user_id ON slack_users (user_id);
+
+-- Slack チャンネルと zoo チャンネルの対応と同期カーソル (最後に取り込んだ ts)。
+CREATE TABLE slack_channels (
+  team_id text NOT NULL,
+  slack_channel_id text NOT NULL,
+  channel_id text NOT NULL,
+  last_ts text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (team_id, slack_channel_id),
+  CONSTRAINT slack_channels_channel_id_fkey
+    FOREIGN KEY (channel_id) REFERENCES channels (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE INDEX idx_slack_channels_channel_id ON slack_channels (channel_id);
+
+-- エクスポートに実体が含まれない添付ファイル。トークンで取得して attachments に移す。
+-- 同じファイルが複数のメッセージに共有されることがあるため、メッセージごとに 1 行持つ。
+CREATE TABLE slack_files (
+  team_id text NOT NULL,
+  slack_file_id text NOT NULL,
+  job_id text,
+  message_id text NOT NULL,
+  channel_id text NOT NULL,
+  uploader_id text NOT NULL,
+  name text NOT NULL,
+  mimetype text NOT NULL,
+  size bigint NOT NULL DEFAULT 0,
+  url_private_download text,
+  status text NOT NULL DEFAULT 'pending',
+  attachment_id text,
+  error text,
+  attempts integer NOT NULL DEFAULT 0,
+  in_content boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (team_id, slack_file_id, message_id),
+  CONSTRAINT slack_files_status_check CHECK (status IN ('pending', 'done', 'skipped', 'failed')),
+  CONSTRAINT slack_files_job_id_fkey
+    FOREIGN KEY (job_id) REFERENCES slack_import_jobs (id)
+    ON UPDATE CASCADE ON DELETE SET NULL,
+  CONSTRAINT slack_files_message_id_fkey
+    FOREIGN KEY (message_id) REFERENCES messages (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT slack_files_channel_id_fkey
+    FOREIGN KEY (channel_id) REFERENCES channels (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT slack_files_uploader_id_fkey
+    FOREIGN KEY (uploader_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+);
+
+CREATE INDEX idx_slack_files_job_status ON slack_files (job_id, status);
+CREATE INDEX idx_slack_files_message ON slack_files (team_id, message_id);
+
+-- 過去ログの一括取り込みでアプリへイベントを大量配送しないよう、
+-- トランザクション内で zoo.suppress_app_events=on のときは app_emit を素通りさせる。
+CREATE OR REPLACE FUNCTION app_emit(event_name text,event_data jsonb,actor text,channel text DEFAULT NULL,subject text DEFAULT NULL,target_installation text DEFAULT NULL,departed text DEFAULT NULL) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE definition app_event_types; installation record; identity text; effective_subject text; event_uuid text:=md5(CASE WHEN event_name='app.rate_limited' THEN date_trunc('hour',now())::text||COALESCE(target_installation,'') ELSE pg_current_xact_id()::text||event_data::text||COALESCE(actor,'')||COALESCE(channel,'')||COALESCE(subject,'') END||event_name)::uuid::text; count_now bigint; terminal boolean; envelope jsonb;
+BEGIN
+ IF COALESCE(current_setting('zoo.suppress_app_events',true),'')='on' THEN RETURN; END IF;
+ SELECT * INTO STRICT definition FROM app_event_types WHERE name=event_name;
+ terminal:=event_name IN('app.uninstalled','app.deleted','tokens.revoked','channel.deleted');
+ FOR installation IN SELECT i.*,a.bot_user_id FROM app_installations i JOIN apps a ON a.id=i.app_id
+ WHERE (target_installation IS NULL OR i.id=target_installation)
+ AND (definition.audience NOT IN('app','control') OR target_installation IS NOT NULL)
+ AND (app_event_matches(i.manifest,event_name,channel,actor,app_event_access(i.id,definition.required_scope,channel,subject,departed,terminal))
+ OR event_name IN('member.joined','member.left') AND app_event_access(i.id,definition.required_scope,channel,actor,departed,terminal)=actor AND app_event_matches(i.manifest,event_name,channel,actor,actor))
+ LOOP
+  identity:=app_event_access(installation.id,definition.required_scope,channel,subject,departed,terminal);
+  effective_subject:=subject;
+  IF NOT app_event_matches(installation.manifest,event_name,channel,actor,identity) THEN
+   effective_subject:=actor;
+   identity:=app_event_access(installation.id,definition.required_scope,channel,effective_subject,departed,terminal);
+  END IF;
+  IF identity IS NULL THEN CONTINUE; END IF;
+  -- Suppression applies only to bot-authored message/typing loops, never channel or bot lifecycle changes.
+  IF (event_name LIKE 'message.%' OR event_name IN('app.mentioned','user.typing'))
+   AND EXISTS(SELECT 1 FROM users WHERE id=actor AND is_bot)
+   AND NOT COALESCE((installation.manifest::jsonb->>'include_bot_events')::boolean,false)
+   AND NOT COALESCE(installation.manifest::jsonb->'events' ? 'message.bot_message',false) THEN CONTINUE; END IF;
+  IF EXISTS(SELECT 1 FROM app_deliveries WHERE installation_id=installation.id AND event_id=event_uuid) THEN CONTINUE; END IF;
+  IF NOT app_event_quota_exempt(event_name) THEN
+   -- Append-only accounting avoids taking installation locks in source transactions.
+   SELECT COALESCE((SELECT events FROM app_event_limits WHERE installation_id=installation.id AND window_start=date_trunc('hour',now())),0)+count(*)+1 INTO count_now
+    FROM app_deliveries WHERE installation_id=installation.id AND created_at>=date_trunc('hour',now()) AND event_type<>'app.rate_limited' AND NOT app_event_quota_exempt(event_type);
+   IF count_now>30000 THEN
+    IF app_event_matches(installation.manifest,'app.rate_limited',NULL,NULL) THEN
+     PERFORM app_emit('app.rate_limited',jsonb_build_object('installation_id',installation.id,'window_start',date_trunc('hour',now()),'limit',30000),NULL,NULL,NULL,installation.id);
+    END IF;
+    CONTINUE;
+   END IF;
+  END IF;
+  envelope:=jsonb_build_object('id',event_uuid,'version',1,'type',event_name,'occurred_at',now(),'actor_id',actor,'channel_id',channel,'subject_user_id',effective_subject,'data',event_data);
+  envelope:=app_filter_payload(envelope,installation.manifest,installation.scopes);
+  INSERT INTO app_deliveries(id,event_id,installation_id,channel_id,event_type,payload,required_scope,subject_user_id,access_user_id,allow_departed)
+   VALUES(gen_random_uuid()::text,event_uuid,installation.id,channel,event_name,envelope::text,definition.required_scope,effective_subject,identity,COALESCE(identity=departed,false)) ON CONFLICT(installation_id,event_id) DO NOTHING;
+ END LOOP;
+END $$;
+
 -- Keep legacy local Home reactions available in the channel during rolling upgrades.
 CREATE FUNCTION sync_linked_post_reaction() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -1788,7 +1958,10 @@ CREATE TABLE home_images (
   uploader_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   file_size bigint NOT NULL DEFAULT 0,
   content_type text NOT NULL,
-  name text NOT NULL
+  name text NOT NULL,
+  width integer,
+  height integer,
+  blurhash text
 );
 ALTER TABLE home_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE apub_remote_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -1819,6 +1992,44 @@ CREATE INDEX attachments_storage_key ON attachments(storage_key);
 CREATE INDEX home_images_created ON home_images(created_at);
 CREATE INDEX home_image_deletions_uploader ON home_image_deletions(uploader_id);
 CREATE INDEX home_image_deletions_created ON home_image_deletions(created_at);
+-- Shared service read projection; management and ownership remain in the emoji service.
+CREATE TABLE shared_emoji_source(id text PRIMARY KEY CHECK (id='workspace'),url text);
+CREATE TABLE shared_emojis(
+  name text PRIMARY KEY,url text NOT NULL,category text NOT NULL DEFAULT '',
+  aliases jsonb NOT NULL DEFAULT '[]'::jsonb,width integer,height integer,image_id text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE VIEW display_workspace_emojis AS
+SELECT width,height,image_id,name,url,''::text AS created_by,updated_at,category,aliases FROM shared_emojis
+WHERE EXISTS(SELECT 1 FROM shared_emoji_source WHERE id='workspace' AND url IS NOT NULL)
+UNION ALL
+SELECT width,height,image_id,name,url,created_by,updated_at,category,aliases FROM workspace_emojis
+WHERE NOT EXISTS(SELECT 1 FROM shared_emoji_source WHERE id='workspace' AND url IS NOT NULL);
+
+-- 各ユーザーによる Slack アカウントの連携 (#291)
+-- ユーザートークンは AES-256-GCM で暗号化して保存する。Electric の Shape には載せない。
+CREATE TABLE slack_user_links (
+  user_id text NOT NULL,
+  team_id text NOT NULL,
+  team_name text NOT NULL DEFAULT '',
+  slack_user_id text NOT NULL,
+  slack_user_name text NOT NULL DEFAULT '',
+  access_token_enc text NOT NULL,
+  scopes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id),
+  CONSTRAINT slack_user_links_slack_user_key UNIQUE (team_id, slack_user_id),
+  CONSTRAINT slack_user_links_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+-- Slack アカウント連携の付け替え (slack::link::move_content) は、プレースホルダの投稿・添付を
+-- 投稿者で引き、Home の返信先も付け替える。連携済みユーザーごとに投稿テーブルを全件走査しないよう、インデックスを足す。
+CREATE INDEX idx_messages_user_id ON messages (user_id);
+CREATE INDEX idx_slack_files_uploader_id ON slack_files (uploader_id);
+CREATE INDEX idx_home_posts_reply_user_id ON home_posts (reply_user_id) WHERE reply_user_id IS NOT NULL;
 -- Display read models, atomically cached for Electric replication.
 CREATE VIEW message_display_reactions AS
 SELECT r.id,r.message_id,r.user_id,r.emoji,r.created_at,u.user_name,u.display_name,NULL::jsonb AS custom_emoji
@@ -1826,7 +2037,7 @@ FROM message_reactions r JOIN users u ON u.id=r.user_id
 UNION ALL
 SELECT r.activity_id,p.id,r.actor_id,
   CASE WHEN jsonb_typeof(r.emoji)='object' THEN COALESCE(
-    (SELECT ':'||e.name||':' FROM workspace_emojis e WHERE e.image_id=r.emoji->>'image_id' ORDER BY e.name LIMIT 1),
+    (SELECT ':'||e.name||':' FROM display_workspace_emojis e WHERE e.image_id=r.emoji->>'image_id' ORDER BY e.name LIMIT 1),
     'apub:'||(r.emoji->>'image_id')||':'||(r.emoji->>'name')) ELSE r.reaction END,
   r.created_at AT TIME ZONE 'UTC',a.user_name||'@'||split_part(a.id,'/',3),a.display_name,r.emoji
 FROM apub_reactions r JOIN home_posts p ON p.id=r.post_id JOIN messages m ON m.id=p.id
@@ -1836,7 +2047,7 @@ WHERE p.channel_id IS NOT NULL AND p.deleted_at IS NULL AND m.deleted_at IS NULL
 
 CREATE FUNCTION message_content_emojis(content text) RETURNS jsonb LANGUAGE sql STABLE AS $$
   SELECT COALESCE(jsonb_object_agg(names.name,jsonb_build_object('url',e.url,'width',e.width,'height',e.height,'image_id',e.image_id)), '{}'::jsonb)
-  FROM workspace_emojis e CROSS JOIN LATERAL (
+  FROM display_workspace_emojis e CROSS JOIN LATERAL (
     SELECT e.name UNION SELECT jsonb_array_elements_text(e.aliases)
   ) names WHERE strpos(content,':'||names.name||':')>0;
 $$;
@@ -1847,7 +2058,7 @@ SELECT m.id, jsonb_build_object(
     'display_name',u.display_name,'avatar_url',u.avatar_url,'is_bot',u.is_bot,'app_id',u.app_id)
     FROM users u WHERE u.id=m.user_id),
   'emojis', COALESCE((SELECT jsonb_object_agg(names.name,jsonb_build_object('url',e.url,'width',e.width,'height',e.height,'image_id',e.image_id))
-    FROM workspace_emojis e CROSS JOIN LATERAL (
+    FROM display_workspace_emojis e CROSS JOIN LATERAL (
       SELECT e.name UNION SELECT jsonb_array_elements_text(e.aliases)
     ) names WHERE strpos(m.content,':'||names.name||':')>0 OR EXISTS (
       SELECT 1 FROM message_display_reactions r WHERE r.message_id=m.id AND r.emoji=':'||names.name||':'
@@ -2172,3 +2383,80 @@ BEGIN
   RETURN true;
 END;
 $$;
+
+CREATE TRIGGER shared_emojis_display_update AFTER UPDATE ON shared_emojis REFERENCING OLD TABLE AS old_emojis NEW TABLE AS new_emojis FOR EACH STATEMENT EXECUTE FUNCTION sync_emoji_display();
+CREATE TRIGGER shared_emojis_display_insert AFTER INSERT ON shared_emojis REFERENCING NEW TABLE AS new_emojis FOR EACH STATEMENT EXECUTE FUNCTION sync_emoji_insert_display();
+CREATE TRIGGER shared_emojis_display_delete AFTER DELETE ON shared_emojis REFERENCING OLD TABLE AS old_emojis FOR EACH STATEMENT EXECUTE FUNCTION sync_emoji_delete_display();
+CREATE FUNCTION sync_shared_emoji_source_display() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP='UPDATE' AND OLD.url IS NOT DISTINCT FROM NEW.url THEN RETURN NULL; END IF;
+  PERFORM enqueue_emoji_display_scopes(COALESCE((SELECT jsonb_agg(to_jsonb(e)) FROM (
+    SELECT name,aliases,image_id FROM workspace_emojis UNION ALL SELECT name,aliases,image_id FROM shared_emojis
+  ) e),'[]'::jsonb));
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER shared_emoji_source_display AFTER INSERT OR UPDATE ON shared_emoji_source FOR EACH ROW EXECUTE FUNCTION sync_shared_emoji_source_display();
+
+-- zoo-dispatcher 専用の DB ロール `zoo_dispatcher` の権限。
+-- ロールはクラスタ共通で、本番ではアプリのロール（superuser でも CREATEROLE でもない）には作れない。
+-- そのためインフラ側（CNPG の managed role など）で先に作る。ここでは、
+--   * ロールが無く、作る権限があるときだけ NOLOGIN で作る（ローカル・CI・preview）
+--   * ロールが無く作れないときは NOTICE を出して権限の付与を飛ばす（マイグレーションは失敗させない）
+--   * ロールがあれば権限を付ける
+-- 権限の付与を飛ばした場合は、ロールを作ったあとにこのファイルを同じ DB のオーナーで
+-- `psql -f` すれば付与できる（何度流しても同じ結果になる）。
+-- 配信関数（app_emit / app_event_access など）は SECURITY DEFINER ではないため、
+-- 配信に必要な表の権限をこのロール自身が持つ。
+-- 読めないもの: messages（本文の表）、トークンのハッシュ、ユーザー名・チャンネル名、API 側の表。
+-- 読めるもの（送信に必要）: 配信キューの payload（イベント本文を含む）と、全アプリの署名鍵。
+-- このロールの接続情報が漏れると、キュー内のイベントの中身と署名鍵が漏れる。
+DO $$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='zoo_dispatcher') THEN
+  BEGIN
+   CREATE ROLE zoo_dispatcher NOLOGIN;
+  EXCEPTION WHEN insufficient_privilege THEN
+   RAISE NOTICE 'role zoo_dispatcher does not exist and cannot be created here; create it first, then run this file again to grant privileges';
+  END;
+ END IF;
+ IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='zoo_dispatcher') THEN
+  GRANT USAGE ON SCHEMA public TO zoo_dispatcher;
+  -- 配信キュー。UPDATE は配信の進行に使う列だけ。
+  GRANT SELECT, INSERT, DELETE ON app_deliveries TO zoo_dispatcher;
+  GRANT UPDATE (attempts, first_delivered_at, lease_until, lease_token, available_at, acked_at, last_error) ON app_deliveries TO zoo_dispatcher;
+  GRANT SELECT ON app_installations TO zoo_dispatcher;
+  GRANT UPDATE (last_http_dispatch_at) ON app_installations TO zoo_dispatcher;
+  -- 配信可否の判定（app_event_access / app_event_matches / app_emit）が読む表。
+  GRANT SELECT ON app_event_types, app_event_aliases TO zoo_dispatcher;
+  GRANT SELECT (id, bot_user_id, status, deleted_at) ON apps TO zoo_dispatcher;
+  GRANT SELECT (installation_id, user_id, scopes, revoked_at, expires_at) ON app_credentials TO zoo_dispatcher;
+  GRANT SELECT (id, is_bot, is_guest, is_deactivated) ON users TO zoo_dispatcher;
+  GRANT SELECT (id, is_private, is_dm, deleted_at) ON channels TO zoo_dispatcher;
+  GRANT SELECT (channel_id, user_id) ON channel_user TO zoo_dispatcher;
+  -- 配信履歴の 30 日保持は app_deliveries の DELETE だけで足りる。API 側の期限切れ削除は backend が行う。
+ END IF;
+END $$;
+-- Coalesce local Actor updates durably before expanding them into signed deliveries.
+CREATE TABLE apub_actor_updates (
+  user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  queued_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX apub_actor_updates_queued_at ON apub_actor_updates(queued_at, user_id);
+CREATE FUNCTION enqueue_apub_actor_update(target_user text) RETURNS void LANGUAGE sql AS $$
+  INSERT INTO apub_actor_updates(user_id)
+    SELECT u.id FROM users u WHERE u.id=target_user AND NOT u.is_bot
+      AND EXISTS(SELECT 1 FROM apub_follows f JOIN apub_actors a ON a.id=f.actor_id
+        WHERE f.user_id=u.id AND f.direction='incoming' AND f.accepted AND NOT a.blocked)
+    ON CONFLICT(user_id) DO UPDATE SET queued_at=EXCLUDED.queued_at;
+$$;
+CREATE FUNCTION enqueue_apub_avatar_update() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM enqueue_apub_actor_update(NEW.id);
+  RETURN NULL;
+END $$;
+CREATE TRIGGER users_apub_avatar_update AFTER UPDATE OF avatar_url ON users
+  FOR EACH ROW WHEN (OLD.avatar_url IS DISTINCT FROM NEW.avatar_url)
+  EXECUTE FUNCTION enqueue_apub_avatar_update();
+
+ALTER TABLE attachments ADD COLUMN width integer, ADD COLUMN height integer, ADD COLUMN blurhash text;

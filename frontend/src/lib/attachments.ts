@@ -4,7 +4,7 @@ import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "./i18n/locale";
 /** Public metadata needed to render an attachment; storage keys stay on the server. */
 export type AttachmentMetadata = Pick<
   AttachmentRow,
-  "id" | "file_name" | "file_size" | "content_type"
+  "id" | "file_name" | "file_size" | "content_type" | "width" | "height" | "blurhash"
 >;
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;

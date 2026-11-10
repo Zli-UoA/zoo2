@@ -1,6 +1,7 @@
+import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen, userEvent } from "storybook/test";
+import { expect, screen, userEvent, waitFor } from "storybook/test";
 
 import { storyChannels, storyCollections, storyChannelUsers } from "../../../.storybook/fixtures";
 import { MembersPanel } from "./MembersPanel";
@@ -57,4 +58,17 @@ export const PrivateNotJoined: Story = {
       ),
     },
   },
+};
+
+export const UserAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: { handlers: [userAvatarHandler] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(async () => {
+      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      await expect(image?.naturalWidth).toBeGreaterThan(0);
+    });
+  }),
 };

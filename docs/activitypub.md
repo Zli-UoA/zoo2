@@ -153,7 +153,7 @@ Homeの投稿下のリアクションボタンから絵文字を選択できま�
 
 Misskeyの形式は [ApRendererService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApRendererService.ts)、[ApInboxService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApInboxService.ts)、[emojis API](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/server/api/endpoints/emojis.ts) の公開実装と照合しています。実際のMisskeyサーバーとの相互接続試験は未実施です。
 
-絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、絵文字・アバター用の `emoji-images` は従来どおり最大2 MiB、投稿写真用の `media-images` は最大8 MiBに分けます。写真にはアップロードと同じ寸法・画素数・復号制限も適用します。同時取得は両方合わせて8件で、取得中の圧縮データは最大64 MiBとなり、これに復号用メモリーが加わります。復号はアップロードと共有の同時2件枠で行い、各処理の割り当て上限は128 MiBです。サーバー側では成功した画像を5分、取得失敗を30秒キャッシュし、最大128件・合計32 MiBまで保持します。キャッシュにない画像の取得は接続元IPごとに毎分240件、プロセス全体で毎分960件までです。Cloudflare Tunnel用の隔離されたオリジンでは `ACTIVITYPUB_CLOUDFLARE_TUNNEL=true` とし、プライベートIP・loopbackのプロキシ接続から届く `CF-Connecting-IP` を利用者ごとの制限に使います。`compose.stg.yaml` はこの構成を既定で有効にします。CloudflareのPseudo IPv4による上書き時には `CF-Connecting-IPv6` の実IPv6を使用します。公開IPからの直結、または設定が無効な場合は転送ヘッダーを信頼せずTCP接続元を使います。Tunnel設定でヘッダーや接続元が不明な場合は400とし、プロキシ全体の共有枠には戻しません。429には `Retry-After: 60` と `Cache-Control: no-store` を返します。画像登録は未使用30日で削除し、認証済みのTL・通知の閲覧時に使用中の登録を更新します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
+絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、絵文字・アバター用の `emoji-images` は従来どおり最大2 MiB、投稿写真用の `media-images` は最大8 MiBに分けます。写真にはアップロードと同じ寸法・画素数・復号制限も適用します。同時取得は両方合わせて8件で、取得中の圧縮データは最大64 MiBとなり、これに復号用メモリーが加わります。復号はアップロードと共有の同時2件枠で行い、各処理の割り当て上限は128 MiBです。サーバー側では成功した画像を5分、取得失敗を30秒キャッシュし、最大128件・合計32 MiBまで保持します。キャッシュにない画像の取得は接続元IPごとに毎分240件、プロセス全体で毎分960件までです。Cloudflare Tunnel用の隔離されたオリジンでは `ACTIVITYPUB_CLOUDFLARE_TUNNEL=true` とし、プライベートIP・loopbackのプロキシ接続から届く `CF-Connecting-IP` を利用者ごとの制限に使います。`compose.stack.yaml` はこの構成を既定で有効にします。CloudflareのPseudo IPv4による上書き時には `CF-Connecting-IPv6` の実IPv6を使用します。公開IPからの直結、または設定が無効な場合は転送ヘッダーを信頼せずTCP接続元を使います。Tunnel設定でヘッダーや接続元が不明な場合は400とし、プロキシ全体の共有枠には戻しません。429には `Retry-After: 60` と `Cache-Control: no-store` を返します。画像登録は未使用30日で削除し、認証済みのTL・通知の閲覧時に使用中の登録を更新します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
 
 APIの追加・拡張：
 
@@ -221,3 +221,13 @@ TLでは日時の隣に、チャンネルと共通の公開範囲アイコンを
 通知の保存・既読管理はチャンネルと共通の `notification_events` を使います。既存APIは共通テーブルのビューと既読処理へ接続します。移行と旧アプリ互換は [通知の保存と管理](notifications.md) を参照してください。
 
 `20261102150000_repair_reply_links.sql` は、過去のHome返信とチャンネルの返信先を揃え、LTL対象外のチャンネルでHomeに反映されていなかった返信・孫返信を補完します。編集時に初めてスレッドへ移動する状態を、移行時に解消します。会話の500件制限は応答上限で、探索自体は最大100段の子孫を対象にします。
+
+### 投稿画像のメタデータ
+
+Home画像のアップロード時に、サーバーが復号した画像からピクセル単位の `width`・`height` と `blurhash` を生成し、`home_images` および投稿の `media` に保存します。BlurHashは最大64×64ピクセルの縮小画像から4×3成分で生成します。アニメーションの元ファイルは維持し、先頭フレームを使います。JPEG等のEXIF回転は表示に合わせて寸法・BlurHashに反映します。寸法は回転に応じて入れ替え、回転処理は縮小プレビューにだけ適用するため、フルサイズ画像の回転複製は作りません。アップロード応答にも3項目を返します。
+
+連合では添付Documentの `width`・`height`（ActivityStreams）と `blurhash`（[MastodonのActivityPub拡張](https://docs.joinmastodon.org/spec/activitypub/#blurhash)、`http://joinmastodon.org/ns#blurhash`）として送受信します。寸法はMisskeyのDocument形式と共通です。受信値は正の整数寸法と正しいBase83文字・成分数・長さを持つBlurHashだけ保持します。不正な任意メタデータは無視し、画像自体は取り込みます。受信値は相手の申告値です。既存のアップロードは未設定を許容し、自動再計算しません。Homeからチャンネルに共有した画像も保存済みメタデータを参照できます。通常のチャンネル画像も投稿確定時にS3から実データを読み、同じ処理で生成して `attachments` に保存します。圧縮データは最大50 MiB、復号はHomeと共通の寸法・画素数・割り当て制限を適用します。復号できない画像、およびS3のGET・本文転送に失敗した画像はメタデータを未設定にして投稿を継続します。HEAD検証は引き続き必須で、GETのサイズ不一致は502で拒否します。取得は専用の同時2件枠で制限し、共有の復号枠は取得完了後に取ります。
+
+WebとAndroidはHome・チャンネルの両方で、保存済み寸法から表示領域を確保し、読み込み中はBlurHashのプレースホルダーを描画します。Webは共通の `ImagePreview`、Androidは共通のデコーダー・Canvas描画を使います。欠損・不正なメタデータは既定の領域と背景へフォールバックします。TUIには画像添付を描画・購読する機能がないため、TUI実装と配布バージョンの変更はありません。
+
+Androidの投稿画像はAPI 26以降で共通のExifInterface処理を使い、実画像にもEXIFの回転・反転を適用します。

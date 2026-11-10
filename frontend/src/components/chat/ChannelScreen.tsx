@@ -10,6 +10,7 @@ import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
 import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "./dm";
+import { withoutDeactivatedMembers } from "./memberCandidates";
 import { MessagePane } from "./messages/MessagePane";
 import { PaneHeader } from "../layout/PaneHeader";
 
@@ -73,7 +74,7 @@ export function ChannelScreen({
   }, [access.members, channel, currentUserId, locale, t, usersQuery.data]);
 
   if (!channel) {
-    if (channelsQuery.isLoading) {
+    if (channelsQuery.isInitialSyncLoading) {
       return (
         <div className="flex h-full min-h-0 flex-col">
           <ChannelLoading />
@@ -119,7 +120,7 @@ export function ChannelScreen({
             : access.canRead
               ? access.isLoading
                 ? null
-                : access.members.length
+                : withoutDeactivatedMembers(access.members, usersQuery.data ?? []).length
               : undefined
         }
       />

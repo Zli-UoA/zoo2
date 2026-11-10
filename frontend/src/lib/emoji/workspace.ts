@@ -48,8 +48,10 @@ export function useWorkspaceEmojis(enabled = true) {
         if (!controller.signal.aborted) setLoading(false);
       });
     const refresh = () => retry();
+    const timer = window.setInterval(refresh, 60_000);
     window.addEventListener("workspace-emojis-changed", refresh);
     return () => {
+      window.clearInterval(timer);
       controller.abort();
       window.removeEventListener("workspace-emojis-changed", refresh);
     };

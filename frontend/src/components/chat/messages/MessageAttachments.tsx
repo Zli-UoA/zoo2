@@ -1,3 +1,5 @@
+import { ImagePreview } from "../../ui/image-preview";
+import { imageAspectRatio } from "../../../lib/imageMetadata";
 import { useTranslation } from "react-i18next";
 import { DownloadIcon, LoaderCircleIcon, PaperclipIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -79,15 +81,9 @@ function AttachmentImage({
     broken || status === "error" ? (
       <AttachmentFileCard attachment={attachment} state={state} />
     ) : status === "loading" || !url ? (
-      <div
-        className={
-          multiple
-            ? "aspect-square w-full animate-pulse rounded-lg border bg-muted"
-            : "size-full animate-pulse rounded-lg border bg-muted"
-        }
-        aria-label={t("attachments.loading")}
-        aria-busy="true"
-      />
+      <div className="size-full" aria-label={t("attachments.loading")} aria-busy="true">
+        <ImagePreview {...attachment} alt={attachment.file_name} className="size-full" />
+      </div>
     ) : (
       <button
         type="button"
@@ -106,15 +102,15 @@ function AttachmentImage({
           setOpen(true);
         }}
       >
-        <img
+        <ImagePreview
+          {...attachment}
           src={url}
           alt={attachment.file_name}
-          loading="lazy"
-          decoding="async"
-          className={
+          className="size-full"
+          imageClassName={
             multiple
-              ? "size-full object-cover transition-opacity hover:opacity-90"
-              : "size-full object-contain transition-opacity hover:opacity-90"
+              ? "object-cover transition-opacity hover:opacity-90"
+              : "object-contain transition-opacity hover:opacity-90"
           }
           onLoad={() => {
             retried.current = false;
@@ -137,7 +133,12 @@ function AttachmentImage({
         className={
           multiple
             ? "aspect-square w-full overflow-hidden"
-            : "aspect-[4/3] w-64 max-w-full overflow-hidden rounded-lg border bg-muted"
+            : "w-64 max-w-full overflow-hidden rounded-lg border bg-muted"
+        }
+        style={
+          !multiple
+            ? { aspectRatio: imageAspectRatio(attachment), minHeight: 80, maxHeight: 384 }
+            : undefined
         }
       >
         {thumbnail}
@@ -231,7 +232,7 @@ function AttachmentFileCard({
       <PaperclipIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{attachment.file_name}</p>
-        <p className="text-xs text-muted-foreground">
+        <p className="truncate text-xs text-muted-foreground">
           {formatAttachmentSize(attachment.file_size, locale)}
           {label ? ` · ${label}` : null}
         </p>

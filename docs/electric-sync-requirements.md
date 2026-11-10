@@ -41,7 +41,7 @@ Electric クライアントが送信する以下のプロトコル用・ペー�
 ### `WHERE` 句のサブクエリに関する注意点
 プライベートチャンネルの認可などで `WHERE` 句内のサブクエリ（例: `id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)`）を使います。
 
-以前は、プレースホルダ（`$1` 等）をサブクエリ内に置くと Electric 側でエラーになる既知の挙動（`electric#3143`）があったため、サーバ側で検証済みの値をリテラルとして埋め込む回避策が必要とされていました。Phase 5（#17）で Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` 付きで動かして再確認したところ、`params[1]` 付きのサブクエリがそのまま通り、依存 Shape によりチャンネル参加/退出が move-in / move-out として配信されることを実測しました（`infra/db/compose.yml` / `infra/compose.stg.yaml` で `allow_subqueries` を設定済み）。そのため現状はリテラルを埋め込む回避策を入れておらず、バックエンドの `routes/shapes.rs` もプレースホルダのままで実装しています。`allow_subqueries` を無効化する構成へ変える場合は、この前提を再確認してください。
+以前は、プレースホルダ（`$1` 等）をサブクエリ内に置くと Electric 側でエラーになる既知の挙動（`electric#3143`）があったため、サーバ側で検証済みの値をリテラルとして埋め込む回避策が必要とされていました。Phase 5（#17）で Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` 付きで動かして再確認したところ、`params[1]` 付きのサブクエリがそのまま通り、依存 Shape によりチャンネル参加/退出が move-in / move-out として配信されることを実測しました（`infra/db/compose.yml` / `infra/compose.stack.yaml` で `allow_subqueries` を設定済み）。そのため現状はリテラルを埋め込む回避策を入れておらず、バックエンドの `routes/shapes.rs` もプレースホルダのままで実装しています。`allow_subqueries` を無効化する構成へ変える場合は、この前提を再確認してください。
 
 なお、現行スキーマの主キーは `text` 型であり、UUID ではありません。主キーの型（`text` のままか UUID にするか）は「7. 要検討事項」とします。`allow_subqueries` が使える前提では値はプレースホルダで渡すため、リテラル埋め込み時のインジェクション検証は不要です。
 

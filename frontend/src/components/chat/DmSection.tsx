@@ -7,7 +7,7 @@ import { useLocale } from "../i18n/LocaleProvider";
 import { Button } from "../ui/button";
 import { CollapsibleSection } from "../ui/collapsible-section";
 import { Skeleton } from "../ui/skeleton";
-import { formatDmDisplayName, resolveDmDisplayName } from "./dm";
+import { formatDmDisplayName, parseOneToOneDmIds, resolveDmDisplayName } from "./dm";
 import { DmListItem } from "./DmListItem";
 
 const SKELETON_ROWS = [0, 1, 2];
@@ -109,16 +109,25 @@ export function DmSection({
             <p className="text-sm text-muted-foreground">{t("dms.empty")}</p>
           </div>
         ) : (
-          channels.map((channel) => (
-            <DmListItem
-              key={channel.id}
-              channel={channel}
-              label={labels.get(channel.id) ?? t("dms.untitled")}
-              active={activeChannelId === channel.id}
-              unread={unreadChannelIds.has(channel.id)}
-              onOpen={onOpen}
-            />
-          ))
+          channels.map((channel) => {
+            const ids = parseOneToOneDmIds(channel.channel_name);
+            const peerId =
+              currentUserId && ids?.includes(currentUserId)
+                ? ids.find((id) => id !== currentUserId)
+                : undefined;
+            const peer = users.find((user) => user.id === peerId);
+            return (
+              <DmListItem
+                key={channel.id}
+                channel={channel}
+                label={labels.get(channel.id) ?? t("dms.untitled")}
+                avatarUrl={peer?.avatar_url}
+                active={activeChannelId === channel.id}
+                unread={unreadChannelIds.has(channel.id)}
+                onOpen={onOpen}
+              />
+            );
+          })
         )}
       </div>
     </CollapsibleSection>

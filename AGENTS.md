@@ -17,16 +17,19 @@
 - フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。
 - mainの取り込みでフロントエンドを調整するときも、既存の共通UI・機能部品・処理を優先し、新機能と既存の表示・操作方針を両立させる。
 
-# ReactとCompose Webの追従
+# Compose の開発方針
 
-- React版・Compose Web版の機能、UI、API、状態管理を変更する場合、およびmainを取り込む場合は `.agents/skills/compose-react-parity/SKILL.md` に従う。
-- Reactの変更はCompose Webへの反映と両実装の検証を同じPRに含めて完了する。実験版であることを追従の省略理由にしない。
+- Compose for Web は、動作が重く実用に耐えないため実験を中止する。Web の開発は React で継続する。
+- React の変更や main の取り込みで、Compose Web への機能・UI追従、Kotlin/Wasm のビルド・ブラウザーテスト、Storybook の Kotlin 登録を必須にしない。
+- Compose for Android は継続する。`frontend-compose/` の `commonMain`、`androidMain`、`androidApp`、Electric4k、翻訳・フォント・アイコン生成など Android が利用する資源を維持する。
+- 共通 Kotlin・API・認証・同期を変更するときは Android への影響を確認し、必要な修正と Android の検証を同じ PR に含める。Android の開発・検証・署名付き配布を Web 実験と一緒に停止しない。
+- Web 専用コード・テストは削除済み。Android が利用する共有資源を削除しない。詳細は `docs/android.md` を参照する。
 
 # TUI版の追従
 
 - フロントエンド・バックエンドの機能、UI、API、Electricのshape、認証を変更する場合、およびmainを取り込む場合は、TUI版（`tui/`）も修正する。
 - TUI版の修正と検証（`make tui-check`）は同じPRに含めて完了する。TUI版に反映しない場合は、その理由をPRの本文に書く。
-- `tui/` の利用者に影響する変更（機能、修正、既定値、依存の更新）を含むPRでは、`tui/Cargo.toml` の `version` を上げ、`tui/Cargo.lock` の `zoo2-tui` の版も合わせる。mainに入ると、新しい版のときだけ `tui-v<version>` のリリースが作られる。版が同じままだと、変更は配布されない。
+- `tui/` または `client-core/` の変更で TUI の利用者に影響する変更（機能、修正、既定値、依存の更新）を含むPRでは、`tui/Cargo.toml` の `version` を上げ、`tui/Cargo.lock` の `zoo2-tui` の版も合わせる。mainに入ると、新しい版のときだけ `tui-v<version>` のリリースが作られる。版が同じままだと、変更は配布されない。
 - 版は、修正ならパッチ（`0.1.0` → `0.1.1`）、機能の追加や互換性のない変更なら中間の桁（`0.1.1` → `0.2.0`）を上げる。READMEやテストだけの変更など、配布物が変わらないPRでは上げなくてよい。
 
 # 開発環境 (flake.nix)
@@ -45,3 +48,15 @@
 - main にある適用済みのマイグレーションファイルは編集・削除しない。直すときは新しいファイルを追加する。
 - main を取り込んで `atlas.sum` が衝突したら、自分のマイグレーションのファイル名のタイムスタンプを main の最新より後に付け直し、`atlas migrate hash --dir file://infra/db/migrations` で `atlas.sum` を作り直す。本番に適用済みのものより古いタイムスタンプのファイルは、Atlas が適用を拒否する。
 - main へはマージキューから入れる。PRをmainの最新に追従させる必要はない。キューがmainと合わせた状態でCIを実行し、通ったものだけをmainに入れる。
+
+# Secret
+
+- 新しく追加するアプリの Kubernetes Secret（API キー、トークン、パスワード、暗号化キーなど）は、sops（age）で暗号化した `*.sops.yaml` として、`Zli-UoA/zoo2-infra` に置いて入れる。置き場所と書き方は、zoo2-infra の既存の `*.sops.yaml`、`.sops.yaml`、`docs/secrets.md` に合わせる。
+- 次のものは、sops で zoo2-infra に置かない。それぞれの手順に従う。
+  - sops に移していない既存の Secret: zoo2-infra の `docs/operations.md`「秘密情報」の表に従う。
+  - CNPG などが生成するもの（`zoo2-db-app` など）と、復号鍵そのもの（`sops-age`。Git に置けない）。
+  - GitHub Actions で使うもの（`TF_STATE_PASSPHRASE` など）: GitHub の Secrets に置く。
+  - OpenTofu の state 暗号化の passphrase: `infra/terraform/state-passphrase.sops.yaml` のように、暗号化したものをこのリポジトリに置く。更新手順は `infra/terraform/README.md` と `.sops.yaml` に従う。
+- 例外を除き、このリポジトリには Secret の値を置かない（暗号化していない値は、どこにも置かない）。新しい環境変数の Secret が必要になる変更では、変数名・必須かどうか・未設定のときの挙動を docs と PR 本文に書き、zoo2-infra で入れる Secret の名前とキーを示す。
+- 平文の Secret を、コード・docs・PR 本文・コメント・コミットメッセージ・ログに書かない。値の例が必要なら、空の値かダミーにする。
+- 必須の Secret を後から足すと、入れ忘れた環境でバックエンドが起動しなくなる。段階的に有効にするものは、未設定でも起動して、その機能だけ無効になるようにする。互いに依存する複数の値は、すべて未設定なら無効にし、一部だけ設定されているときは、設定ミスとして起動時に明確なエラーにする（`SLACK_CLIENT_ID`・`SLACK_CLIENT_SECRET`・`SLACK_OAUTH_REDIRECT_URL`・`SLACK_TOKEN_ENCRYPTION_KEY` の 4 つなど）。

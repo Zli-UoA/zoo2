@@ -14,6 +14,7 @@ export function AppAvatar({
   size,
   className,
   title,
+  "aria-hidden": ariaHidden,
 }: {
   label: string;
   isBot?: boolean;
@@ -21,9 +22,10 @@ export function AppAvatar({
   size?: "sm" | "default";
   className?: string;
   title?: string;
+  "aria-hidden"?: boolean;
 }) {
   return (
-    <Avatar size={size} className={className} title={title}>
+    <Avatar size={size} className={className} title={title} aria-hidden={ariaHidden}>
       {src?.startsWith("https://") ? (
         <AvatarImage src={src} alt="" referrerPolicy="no-referrer" />
       ) : null}

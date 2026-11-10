@@ -1,9 +1,4 @@
-pub mod api;
-pub mod auth;
-pub mod config;
-pub mod electric;
-pub mod http;
+pub use zoo2_client_core::{api, auth, config, electric, http, store, update};
+
 pub mod mfm;
-pub mod store;
 pub mod ui;
-pub mod update;

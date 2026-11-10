@@ -189,10 +189,17 @@ fun RichText(
         }
         return
     }
+    val app = LocalApp.current
     val segments = remember(content) { richSegments(content) }
-    var shortcodes by remember { mutableStateOf<JsonObject>(JsonObject(emptyMap())) }
-    LaunchedEffect(Unit) { shortcodes = loadShortcodes() }
-
+    var fallbackShortcodes by remember { mutableStateOf<JsonObject>(JsonObject(emptyMap())) }
+    LaunchedEffect(app) {
+        fallbackShortcodes = loadShortcodes()
+        while (true) {
+            try { app.loadShortcodes() } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+            delay(3_600_000)
+        }
+    }
+    val shortcodes = app.standardShortcodes ?: fallbackShortcodes
     RichSelection(selection) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             val inline = mutableListOf<Pair<String, Boolean>>()
@@ -746,6 +753,8 @@ fun EmojiPicker(
             val locale =
                 when (app.env.locale) {
                     "ja" -> "ja"
+                    "ko-KR",
+                    "ko-KP" -> "ko"
                     "zh-Hant",
                     "zh-Hans",
                     "yue" -> "zh-hant"

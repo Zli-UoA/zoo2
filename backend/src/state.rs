@@ -1,10 +1,10 @@
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 
 use crate::{
     auth::{AuthUser, oidc::JwksVerifier},
@@ -13,6 +13,8 @@ use crate::{
 };
 
 type UserCacheMap = HashMap<(String, String), (AuthUser, Instant)>;
+type ResolutionFailures = HashMap<(String, String), Instant>;
+type ResolutionFlights = HashMap<(String, String), Weak<Mutex<()>>>;
 type ProfileRepairAttemptMap = HashMap<String, Instant>;
 
 /// UserInfo が名前を返さないユーザーへの補正試行を抑止する期間
@@ -22,12 +24,48 @@ const PROFILE_REPAIR_RETRY_INTERVAL: Duration = Duration::from_secs(3600);
 #[derive(Clone, Default)]
 pub struct UserResolutionCache {
     entries: Arc<RwLock<UserCacheMap>>,
+    flights: Arc<RwLock<ResolutionFlights>>,
+    resolution_failures: Arc<RwLock<ResolutionFailures>>,
     profile_repair_attempts: Arc<RwLock<ProfileRepairAttemptMap>>,
 }
 
 impl UserResolutionCache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub async fn profile_retry_limited(&self, iss: &str, sub: &str) -> bool {
+        self.resolution_failures
+            .read()
+            .await
+            .get(&(iss.to_owned(), sub.to_owned()))
+            .is_some_and(|until| Instant::now() < *until)
+    }
+
+    pub async fn mark_profile_unavailable(&self, iss: &str, sub: &str) {
+        let mut failures = self.resolution_failures.write().await;
+        failures.retain(|_, until| Instant::now() < *until);
+        failures.insert(
+            (iss.to_owned(), sub.to_owned()),
+            Instant::now() + Duration::from_secs(5),
+        );
+    }
+
+    pub async fn lock_resolution(&self, iss: &str, sub: &str) -> OwnedMutexGuard<()> {
+        let mutex = {
+            let mut flights = self.flights.write().await;
+            flights.retain(|_, mutex| mutex.strong_count() > 0);
+            let entry = flights.entry((iss.to_owned(), sub.to_owned())).or_default();
+            match entry.upgrade() {
+                Some(mutex) => mutex,
+                None => {
+                    let mutex = Arc::new(Mutex::new(()));
+                    *entry = Arc::downgrade(&mutex);
+                    mutex
+                }
+            }
+        };
+        mutex.lock_owned().await
     }
 
     pub async fn get(&self, iss: &str, sub: &str) -> Option<AuthUser> {

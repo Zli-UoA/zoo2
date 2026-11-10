@@ -1,0 +1,553 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { LockIcon, UploadIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
+import { useActiveChannels } from "../../hooks/useRealtime";
+import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
+import {
+  SLACK_IMPORT_RUNNING,
+  cancelSlackImport,
+  defaultMappings,
+  fetchSlackImportFiles,
+  isSlackExport,
+  listSlackImports,
+  mappingFor,
+  splitSlackImports,
+  retryableFiles,
+  slackImportsSnapshot,
+  startSlackImport,
+  targetChoices,
+  uploadSlackExport,
+  type PutWithProgress,
+  type SlackChannelMapping,
+  type SlackChannelSummary,
+  type SlackImport,
+} from "../../lib/api/slackImport";
+import { useCollections } from "../../lib/electric/collections-context";
+import { Button } from "../ui/button";
+import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
+import { SettingsSection } from "../ui/control-panel";
+import { Input } from "../ui/input";
+import { Select } from "../ui/select";
+import { Spinner } from "../ui/spinner";
+
+const POLL_INTERVAL_MS = 2_000;
+
+export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
+  const { t } = useTranslation();
+  const { config } = useCollections();
+  const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  const [imports, setImports] = useState<SlackImport[] | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [error, setError] = useState("");
+  // 一覧を取れなかったときのエラー。取れたら消す (操作のエラーとは分ける)
+  const [loadError, setLoadError] = useState("");
+  const [upload, setUpload] = useState<number | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  // アップロード中のジョブ。そのジョブを取り消したら、ブラウザからの PUT も止める
+  const uploading = useRef<{ id: string | null; controller: AbortController } | null>(null);
+  // 操作のエラーを出したときに取り直した一覧 (ジョブの ID と状態)。ジョブが増減したり状態が変わったりしたら、
+  // エラーは古いので消す。進み具合の件数だけの変化では消さない
+  const errorSnapshot = useRef<string | null>(null);
+
+  const running = imports?.some((job) => SLACK_IMPORT_RUNNING.includes(job.status)) ?? false;
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = () =>
+      listSlackImports(client, controller.signal)
+        .then((value) => {
+          if (controller.signal.aborted) return;
+          setImports(value);
+          setLoadError("");
+          const snapshot = slackImportsSnapshot(value);
+          if (errorSnapshot.current === "") errorSnapshot.current = snapshot;
+          else if (errorSnapshot.current !== null && errorSnapshot.current !== snapshot) {
+            errorSnapshot.current = null;
+            setError("");
+          }
+        })
+        .catch((cause) => {
+          if (!controller.signal.aborted) setLoadError(describeImportError(cause, t));
+        });
+    void load();
+    const timer = running ? window.setInterval(load, POLL_INTERVAL_MS) : undefined;
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [client, revision, running, t]);
+
+  const reload = () => setRevision((value) => value + 1);
+  // 失敗の多くは別のタブ・管理者が先に状態を変えたため (409) なので、一覧を取り直して今の状態を見せる
+  const fail = (cause: unknown) => {
+    setError(describeImportError(cause, t));
+    // 次に取り直した一覧を基準にする
+    errorSnapshot.current = "";
+    reload();
+  };
+  const replace = (job: SlackImport) => {
+    // アップロード中の ZIP を取り消したら、あとから PUT が終わって ZIP が残らないよう止める
+    if (job.status === "cancelled" && uploading.current?.id === job.id) {
+      uploading.current.controller.abort();
+    }
+    setImports((current) => [job, ...(current ?? []).filter((item) => item.id !== job.id)]);
+  };
+
+  async function onFile(file: File | undefined) {
+    if (!file || upload !== null) return;
+    setError("");
+    errorSnapshot.current = null;
+    setUpload(0);
+    const controller = new AbortController();
+    uploading.current = { id: null, controller };
+    try {
+      replace(
+        await uploadSlackExport(client, file, setUpload, put, controller.signal, (job) => {
+          if (uploading.current?.controller === controller) uploading.current.id = job.id;
+          replace(job);
+        }),
+      );
+    } catch (cause) {
+      // 取り消したアップロードはエラーにしない
+      if (!controller.signal.aborted) {
+        setError(describeImportError(cause, t));
+        errorSnapshot.current = "";
+      }
+      reload();
+    } finally {
+      if (uploading.current?.controller === controller) uploading.current = null;
+      setUpload(null);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
+
+  const { cards, history } = splitSlackImports(imports ?? []);
+  // 解析が終わるまでは次の ZIP を受け付けない (解析が終わると古い ZIP を置き換える)
+  const busy = cards.some(
+    (job) => isSlackExport(job) && (job.status === "uploading" || job.status === "analyzing"),
+  );
+
+  return (
+    <div className="space-y-4">
+      <SettingsSection title={t("slackImport.title")} description={t("slackImport.description")}>
+        <input
+          ref={fileInput}
+          type="file"
+          accept=".zip,application/zip"
+          className="sr-only"
+          aria-label={t("slackImport.chooseFile")}
+          onChange={(event) => void onFile(event.target.files?.[0])}
+        />
+        <Button
+          variant="outline"
+          disabled={upload !== null || !!busy}
+          onClick={() => fileInput.current?.click()}
+        >
+          <UploadIcon />
+          {t("slackImport.chooseFile")}
+        </Button>
+        {upload !== null ? <Progress label={t("slackImport.uploading")} value={upload} /> : null}
+        {error ? (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        ) : null}
+        {loadError ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <p role="alert" className="text-sm text-destructive">
+              {loadError}
+            </p>
+            <Button variant="outline" size="sm" onClick={reload}>
+              {t("slackImport.retry")}
+            </Button>
+          </div>
+        ) : null}
+      </SettingsSection>
+
+      {imports === null && !loadError ? <Spinner label={t("slackImport.loading")} /> : null}
+      {cards.map((job) => (
+        <ImportCard
+          key={job.id}
+          job={job}
+          onChange={replace}
+          onStarted={(started) => {
+            replace(started);
+            // 以前の取り込み先などの表示を新しくする
+            reload();
+          }}
+          onError={fail}
+          client={client}
+        />
+      ))}
+      {history.length > 0 ? (
+        <SettingsSection title={t("slackImport.history")}>
+          <ul className="divide-y text-sm">
+            {history.map((job) => (
+              <li key={job.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <span className="min-w-0 break-all">{jobTitle(job, t)}</span>
+                <span className="text-muted-foreground">
+                  {t(`slackImport.status.${job.status}`)} ·{" "}
+                  {new Date(job.created_at).toLocaleString()}
+                </span>
+                {retryableFiles(job) > 0 ? (
+                  <FileSummary job={job} client={client} onChange={replace} onError={fail} />
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </SettingsSection>
+      ) : null}
+    </div>
+  );
+}
+
+function ImportCard({
+  job,
+  client,
+  onChange,
+  onStarted,
+  onError,
+}: {
+  job: SlackImport;
+  client: ReturnType<typeof createConfiguredApiClient>;
+  onChange: (job: SlackImport) => void;
+  onStarted: (job: SlackImport) => void;
+  onError: (cause: unknown) => void;
+}) {
+  const { t } = useTranslation();
+  const [pending, setPending] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  // 取り込みを始めたら選択を戻し、続けて別のチャンネルを選べるようにする
+  const [form, setForm] = useState(0);
+
+  async function run(action: () => Promise<SlackImport>) {
+    if (pending) return;
+    setPending(true);
+    try {
+      onChange(await action());
+    } catch (cause) {
+      onError(cause);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const exported = isSlackExport(job);
+  const cancellable = exported
+    ? ["uploading", "ready", "failed"].includes(job.status)
+    : job.status === "failed";
+  return (
+    <SettingsSection title={jobTitle(job, t)} description={t(`slackImport.status.${job.status}`)}>
+      {job.status === "analyzing" || job.status === "uploading" ? (
+        <Spinner label={t("slackImport.status.analyzing")} className="justify-start" />
+      ) : null}
+      {exported && job.status === "ready" && job.analysis ? (
+        <MappingForm
+          key={form}
+          channels={job.analysis.channels}
+          summary={t("slackImport.summary", {
+            channels: job.analysis.channels.length,
+            users: job.analysis.user_count,
+          })}
+          pending={pending}
+          onSubmit={async (mappings) => {
+            if (pending) return;
+            setPending(true);
+            try {
+              onStarted(await startSlackImport(client, job.id, mappings));
+              setForm((value) => value + 1);
+            } catch (cause) {
+              onError(cause);
+            } finally {
+              setPending(false);
+            }
+          }}
+        />
+      ) : null}
+      <SlackImportRunStatus job={job} />
+      {job.status === "completed" && retryableFiles(job) > 0 ? (
+        <FileSummary job={job} client={client} onChange={onChange} onError={onError} />
+      ) : null}
+      {cancellable && exported ? (
+        <Button variant="ghost" disabled={pending} onClick={() => setConfirmCancel(true)}>
+          {t("slackImport.cancel")}
+        </Button>
+      ) : null}
+      {cancellable && !exported ? (
+        <Button
+          variant="ghost"
+          disabled={pending}
+          onClick={() => void run(() => cancelSlackImport(client, job.id))}
+        >
+          {t("slackImport.dismiss")}
+        </Button>
+      ) : null}
+      <ConfirmActionDialog
+        open={confirmCancel}
+        onOpenChange={setConfirmCancel}
+        title={t("slackImport.cancelTitle")}
+        description={t("slackImport.cancelDescription")}
+        confirmLabel={t("slackImport.cancel")}
+        pending={pending}
+        onConfirm={async () => {
+          await run(() => cancelSlackImport(client, job.id));
+          setConfirmCancel(false);
+        }}
+      />
+    </SettingsSection>
+  );
+}
+
+/** 未取得・取得失敗の添付の件数と、取得し直す操作。履歴の取り込みからも使う。 */
+function FileSummary({
+  job,
+  client,
+  onChange,
+  onError,
+}: {
+  job: SlackImport;
+  client: ReturnType<typeof createConfiguredApiClient>;
+  onChange: (job: SlackImport) => void;
+  onError: (cause: unknown) => void;
+}) {
+  const { t } = useTranslation();
+  const [pending, setPending] = useState(false);
+  return (
+    <div className="w-full space-y-2 text-sm">
+      {job.pending_files > 0 ? (
+        <p className="text-muted-foreground">
+          {t("slackImport.pendingFiles", { count: job.pending_files })}
+        </p>
+      ) : null}
+      {job.failed_files > 0 ? (
+        <p className="text-destructive">
+          {t("slackImport.failedFiles", { count: job.failed_files })}
+        </p>
+      ) : null}
+      <Button
+        variant="outline"
+        disabled={pending}
+        aria-label={t("slackImport.fetchFilesFor", { name: job.file_name })}
+        onClick={() => {
+          setPending(true);
+          fetchSlackImportFiles(client, job.id)
+            .then(onChange, onError)
+            .finally(() => setPending(false));
+        }}
+      >
+        {t("slackImport.fetchFiles")}
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * チャンネルごとの取り込み方を選ぶフォーム。管理者はすべての既存チャンネルを取り込み先に選べる。
+ * `targetsFor` を渡すと、チャンネルごとに選べる既存チャンネルを絞る (各ユーザーによる取り込み)。
+ */
+export function MappingForm({
+  channels,
+  summary,
+  pending,
+  onSubmit,
+  targetsFor,
+}: {
+  channels: SlackChannelSummary[];
+  summary: string;
+  pending: boolean;
+  onSubmit: (mappings: SlackChannelMapping[]) => void | Promise<void>;
+  targetsFor?: (channel: SlackChannelSummary) => MappingTarget[];
+}) {
+  const { t } = useTranslation();
+  const zooChannels = useActiveChannels();
+  const targets: MappingTarget[] = (zooChannels.data ?? []).filter((channel) => !channel.is_dm);
+  const [mappings, setMappings] = useState(() => defaultMappings(channels));
+  const update = (index: number, mapping: SlackChannelMapping) =>
+    setMappings((current) => current.map((item, i) => (i === index ? mapping : item)));
+  const selected = mappings.filter((mapping) => mapping.action !== "skip").length;
+
+  return (
+    <form
+      className="space-y-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void onSubmit(mappings);
+      }}
+    >
+      <p className="text-sm text-muted-foreground">{summary}</p>
+      <ul className="divide-y rounded-md border">
+        {channels.map((channel, index) => {
+          const mapping = mappings[index];
+          // セルフ取り込みでは、サーバーが返す取り込み先だけを選べる
+          const choices = targetsFor ? targetsFor(channel) : targetChoices(channel, targets);
+          const id = `slack-import-${channel.slack_channel_id}`;
+          // 以前取り込んだチャンネルは同じ取り込み先にしか入れられない (メッセージ ID が変わらないため)
+          const imported = !!channel.existing_channel || !!channel.existing_hidden;
+          return (
+            <li key={channel.slack_channel_id} className="flex flex-wrap items-center gap-2 p-3">
+              <div className="min-w-0 flex-1 basis-40">
+                <p className="flex items-center gap-1 text-sm font-medium break-all">
+                  {channel.is_private ? (
+                    <LockIcon className="size-3.5 shrink-0" aria-label={t("slackImport.private")} />
+                  ) : null}
+                  #{channel.name}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {t("slackImport.channelStats", {
+                    messages: channel.message_count,
+                    members: channel.members,
+                  })}
+                </p>
+                {channel.existing_channel ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t("slackImport.importedTo", { name: channel.existing_channel.name })}
+                  </p>
+                ) : null}
+                {channel.existing_hidden ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t("slackImport.importedToHidden")}
+                  </p>
+                ) : null}
+                {channel.deleted_channel ? (
+                  <p className="text-xs text-destructive">
+                    {t("slackImport.deletedTarget", { name: channel.deleted_channel })}
+                  </p>
+                ) : null}
+              </div>
+              <Select
+                aria-label={t("slackImport.actionFor", { name: channel.name })}
+                value={mapping.action}
+                disabled={pending}
+                onChange={(event) =>
+                  update(
+                    index,
+                    mappingFor(
+                      channel,
+                      event.target.value as SlackChannelMapping["action"],
+                      choices,
+                    ),
+                  )
+                }
+              >
+                <option value="create" disabled={imported || !!channel.deleted_channel}>
+                  {t("slackImport.actionCreate")}
+                </option>
+                <option
+                  value="existing"
+                  disabled={choices.length === 0 || !!channel.deleted_channel}
+                >
+                  {t("slackImport.actionExisting")}
+                </option>
+                <option value="skip">{t("slackImport.actionSkip")}</option>
+              </Select>
+              {mapping.action === "create" ? (
+                <Input
+                  id={id}
+                  aria-label={t("slackImport.channelName", { name: channel.name })}
+                  className="w-48 max-w-full"
+                  value={mapping.name}
+                  disabled={pending}
+                  onChange={(event) => update(index, { ...mapping, name: event.target.value })}
+                />
+              ) : null}
+              {mapping.action === "existing" ? (
+                <Select
+                  aria-label={t("slackImport.targetChannel", { name: channel.name })}
+                  className="w-48"
+                  value={mapping.channel_id}
+                  disabled={pending || imported}
+                  onChange={(event) =>
+                    update(index, { ...mapping, channel_id: event.target.value })
+                  }
+                >
+                  {choices.map((target) => (
+                    <option key={target.id} value={target.id}>
+                      #{target.channel_name}
+                    </option>
+                  ))}
+                </Select>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+      <Button type="submit" disabled={pending || selected === 0}>
+        {t("slackImport.start", { count: selected })}
+      </Button>
+    </form>
+  );
+}
+
+/** 取り込みのジョブの進み具合・結果・失敗の理由 */
+export function SlackImportRunStatus({ job }: { job: SlackImport }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {job.status === "importing" ? (
+        <Progress
+          label={t("slackImport.progressMessages", {
+            done: job.processed_messages,
+            total: job.total_messages,
+          })}
+          value={job.total_messages > 0 ? job.processed_messages / job.total_messages : 0}
+        />
+      ) : null}
+      {job.status === "fetching_files" ? (
+        <Progress
+          label={t("slackImport.progressFiles", {
+            done: job.processed_files,
+            total: job.total_files,
+          })}
+          value={job.total_files > 0 ? job.processed_files / job.total_files : 0}
+        />
+      ) : null}
+      {job.status === "completed" ? (
+        <p className="text-sm">{t("slackImport.completed", { count: job.processed_messages })}</p>
+      ) : null}
+      {job.status === "failed" && job.error ? (
+        <p role="alert" className="break-words text-sm text-destructive">
+          {job.error}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+type MappingTarget = { id: string; channel_name: string; is_private: boolean };
+
+function Progress({ label, value }: { label: string; value: number }) {
+  const percent = Math.round(Math.min(1, Math.max(0, value)) * 100);
+  return (
+    <div className="space-y-1">
+      <p className="text-sm text-muted-foreground">{label}</p>
+      <div
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        className="h-2 overflow-hidden rounded-full bg-muted"
+      >
+        <div className="h-full bg-primary transition-[width]" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+/** 取り込みのジョブは、どの ZIP からの取り込みかを名前に出す */
+function jobTitle(job: SlackImport, t: TFunction): string {
+  return isSlackExport(job) ? job.file_name : t("slackImport.runTitle", { name: job.file_name });
+}
+
+/** 失敗の理由。`admin` なら 403 は「管理者だけ」と出し、各ユーザーの取り込みではサーバーの理由を出す */
+export function describeImportError(cause: unknown, t: TFunction, admin = true): string {
+  if (cause instanceof ApiError) {
+    if (admin && cause.status === 403) return t("slackImport.forbidden");
+    const body = cause.body;
+    if (body && typeof body === "object" && "error" in body) {
+      const message = (body as { error: unknown }).error;
+      if (typeof message === "string" && message) return message;
+    }
+  }
+  return t("slackImport.failed");
+}

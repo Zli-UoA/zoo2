@@ -1,4 +1,4 @@
-.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev backend-build test test-unit test-e2e frontend-install frontend-dev frontend-build frontend-check frontend-test frontend-e2e
+.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev dispatcher-dev backend-build test test-unit test-e2e frontend-install frontend-dev frontend-build frontend-check frontend-test frontend-e2e
 
 test: test-unit test-e2e
 
@@ -14,6 +14,11 @@ test-e2e:
 
 backend-dev:
 	cd backend && DEV_AUTH_ENABLED=true cargo run
+
+# HTTP 配信を backend から分離して動かす（zoo-dispatcher）。backend 側は
+# `APP_HTTP_DELIVERY_WORKER=false make backend-dev` で自分の配信を止める。
+dispatcher-dev:
+	cd backend && cargo run --bin zoo_dispatcher
 
 backend-build:
 	cd backend && cargo build --release
@@ -73,7 +78,7 @@ sdk-test:
 	node --experimental-strip-types --test sdk/src/index.test.ts
 
 # TUI クライアント。tui-dev は backend の dev モード (make backend-dev) に X-Dev-User で接続する。
-.PHONY: tui-dev tui-build tui-check
+.PHONY: tui-dev tui-build tui-check desktop-dev desktop-build desktop-check
 tui-dev:
 	cd tui && ZOO_API_BASE_URL=$${ZOO_API_BASE_URL:-http://localhost:8000} ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run -- run
 
@@ -81,9 +86,21 @@ tui-build:
 	cd tui && cargo build --release
 
 tui-check:
+	cd client-core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 	cd tui && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
 # E2EE の暗号コア（docs/e2ee.md）。CI Crypto と同じく、Web 向けの wasm32 でもビルドする。
 .PHONY: crypto-check
 crypto-check:
 	cd crates/zoo-crypto && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && cargo build --locked --target wasm32-unknown-unknown
+
+# デスクトップクライアント (GPUI)。desktop-dev は backend の dev モードに X-Dev-User で接続する。
+desktop-dev:
+	cd desktop && ZOO_API_BASE_URL=$${ZOO_API_BASE_URL:-http://localhost:8000} ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run
+
+desktop-build:
+	cd desktop && cargo build --release
+
+desktop-check:
+	cd client-core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+	cd desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test

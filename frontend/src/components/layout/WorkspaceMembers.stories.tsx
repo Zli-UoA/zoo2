@@ -1,4 +1,5 @@
-import { preferenceSurfaces } from "../../../.storybook/preference-stories";
+import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
+import { preferenceSurfaces } from "../../../.storybook/preference-surfaces";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
@@ -122,5 +123,18 @@ export const LastAdmin: Story = {
       expect(within(other).getByRole("button", { name: "管理者にする" })).toBeEnabled(),
     );
     await expect(within(alice).getByRole("button", { name: "管理者を外す" })).toBeDisabled();
+  }),
+};
+
+export const UserAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: { handlers: [userAvatarHandler] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(async () => {
+      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      await expect(image?.naturalWidth).toBeGreaterThan(0);
+    });
   }),
 };

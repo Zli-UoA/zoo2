@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { webcrypto } from "node:crypto";
 
 const ORIGIN = "https://zoo.example";
 const source = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
@@ -39,6 +40,12 @@ function memoryCaches(entries = []) {
         async match(request) {
           return store.get(requestKey(request))?.clone();
         },
+        async keys() {
+          return [...store.keys()].map((url) => new Request(url));
+        },
+        async delete(request) {
+          return store.delete(requestKey(request));
+        },
         async addAll(requests) {
           for (const request of requests) {
             store.set(requestKey(request), basicResponse(`asset:${requestKey(request)}`));
@@ -73,6 +80,8 @@ function worker(overrides = {}) {
     return basicResponse(`network:${key}`);
   };
   const context = {
+    crypto: webcrypto,
+    AbortSignal,
     URL,
     Response,
     Headers,
@@ -111,10 +120,13 @@ function dispatch(handlers, type, event = {}) {
   return Promise.resolve(work);
 }
 
-async function fetchThrough(handlers, request) {
+async function fetchThrough(handlers, request, background = []) {
   let response;
   handlers.get("fetch")({
     request,
+    waitUntil: (promise) => {
+      background.push(promise);
+    },
     respondWith: (value) => {
       response = value;
     },
@@ -122,8 +134,8 @@ async function fetchThrough(handlers, request) {
   return response === undefined ? undefined : await Promise.resolve(response);
 }
 
-function navigation(url) {
-  return { url, method: "GET", mode: "navigate" };
+function navigation(url, cache = "default") {
+  return { url, method: "GET", mode: "navigate", cache };
 }
 
 test("legacy empty Web Push still displays a generic alert", async () => {
@@ -172,6 +184,28 @@ test("install precaches the hashed assets referenced by the app shell", async ()
   const shell = cacheContext.storeFor("zoo-shell-v2");
   assert.ok(shell.has(`${ORIGIN}/assets/app.css`));
   assert.ok(shell.has(`${ORIGIN}/assets/app.js`));
+});
+
+test("failed install entry assets preserve the previous shell and omit the new marker", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-old", `${ORIGIN}/index.html`, basicResponse("working-shell")],
+  ]);
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (request) => {
+      if (requestKey(request).includes("/assets/"))
+        return new Response("unavailable", { status: 503 });
+      return basicResponse('<script src="/assets/index-new.js"></script>');
+    },
+  });
+  await assert.rejects(dispatch(handlers, "install"), /without its entry assets/);
+  const failed = cacheContext.storeFor("zoo-shell-new");
+  assert.equal(failed.has(`${ORIGIN}/__zoo_shell_meta__`), false);
+  assert.equal(failed.has(`${ORIGIN}/index.html`), false);
+  assert.equal(
+    await cacheContext.storeFor("zoo-shell-old").get(`${ORIGIN}/index.html`).text(),
+    "working-shell",
+  );
 });
 
 test("cached responses are stored without transport encoding or validators", async () => {
@@ -272,6 +306,190 @@ test("online navigation stores the static shell for later deep-link reloads", as
   assert.match(await response.text(), /html:/);
   const shell = cacheContext.storeFor("zoo-shell-v2");
   assert.ok(shell.has(`${ORIGIN}/index.html`));
+});
+
+test(
+  "a cached PWA starts before a slow navigation refresh finishes",
+  { timeout: 1000 },
+  async () => {
+    const cacheContext = memoryCaches([
+      ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+    ]);
+    let release;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    const { handlers } = worker({
+      caches: cacheContext.api,
+      fetch: async (request) => {
+        if (requestKey(request).includes("/pwa-assets.json"))
+          return Response.json({
+            entry: "/assets/index-new.js",
+            assets: ["/assets/index-new.js", "/assets/opfs-new.js"],
+          });
+        if (requestKey(request).includes("/assets/")) return basicResponse("updated-code");
+        await pending;
+        return basicResponse('<script src="/assets/index-new.js"></script>updated-shell', {
+          headers: { "content-type": "text/html" },
+        });
+      },
+    });
+    const background = [];
+    const response = await fetchThrough(
+      handlers,
+      navigation(`${ORIGIN}/channels/general`),
+      background,
+    );
+    assert.equal(await response.text(), "saved-shell");
+    release();
+    await Promise.all(background);
+    const cache = cacheContext.storeFor("zoo-shell-v2");
+    assert.match(await cache.get(`${ORIGIN}/index.html`).text(), /updated-shell/);
+    assert.ok(cache.has(`${ORIGIN}/assets/index-new.js`));
+    assert.ok(cache.has(`${ORIGIN}/assets/opfs-new.js`));
+  },
+);
+
+for (const cache of ["no-cache", "reload"]) {
+  test(`explicit ${cache} navigation fetches the deployed shell and still works offline`, async () => {
+    const cacheContext = memoryCaches([
+      ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+    ]);
+    let offline = false;
+    const { handlers } = worker({
+      caches: cacheContext.api,
+      fetch: async (request) => {
+        if (offline) throw new Error("offline");
+        if (requestKey(request).includes("/pwa-assets.json"))
+          return Response.json({
+            entry: "/assets/index-reloaded.js",
+            assets: ["/assets/index-reloaded.js", "/assets/lazy-reloaded.js"],
+          });
+        if (requestKey(request).includes("/assets/")) return basicResponse("code");
+        return basicResponse('<script src="/assets/index-reloaded.js"></script>deployed-shell', {
+          headers: { "content-type": "text/html" },
+        });
+      },
+    });
+    const background = [];
+    const request = navigation(`${ORIGIN}/channels/general`, cache);
+    assert.match(
+      await (await fetchThrough(handlers, request, background)).text(),
+      /deployed-shell/,
+    );
+    assert.equal(background.length, 0);
+    offline = true;
+    assert.match(await (await fetchThrough(handlers, request)).text(), /deployed-shell/);
+    assert.ok(cacheContext.storeFor("zoo-shell-v2").has(`${ORIGIN}/assets/lazy-reloaded.js`));
+  });
+}
+
+for (const path of [
+  "/licenses/README.txt",
+  "/licenses/misskey-emoji-data/LICENSE",
+  "/pwa-assets.json",
+  "/mfm-emojis.json",
+  "/compose-catalog.html",
+]) {
+  test(`direct navigation to ${path} keeps the static response`, async () => {
+    const cacheContext = memoryCaches([
+      ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+    ]);
+    const { handlers } = worker({
+      caches: cacheContext.api,
+      fetch: async () => basicResponse("static-file", { headers: { "content-type": "text/html" } }),
+    });
+    assert.equal(
+      await (await fetchThrough(handlers, navigation(`${ORIGIN}${path}`))).text(),
+      "static-file",
+    );
+    assert.equal(
+      await cacheContext.storeFor("zoo-shell-v2").get(`${ORIGIN}/index.html`).text(),
+      "saved-shell",
+    );
+  });
+}
+
+test("a failed entry asset refresh keeps the working offline shell", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+  ]);
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (request) => {
+      if (requestKey(request).includes("/assets/")) throw new Error("asset unavailable");
+      return basicResponse('<script src="/assets/missing.js"></script>new-shell', {
+        headers: { "content-type": "text/html" },
+      });
+    },
+  });
+  const background = [];
+  assert.equal(
+    await (
+      await fetchThrough(handlers, navigation(`${ORIGIN}/channels/general`), background)
+    ).text(),
+    "saved-shell",
+  );
+  await Promise.all(background);
+  assert.equal(
+    await cacheContext.storeFor("zoo-shell-v2").get(`${ORIGIN}/index.html`).text(),
+    "saved-shell",
+  );
+});
+
+for (const failure of ["lazy-asset", "mismatched-build"]) {
+  test(`a ${failure} failure keeps the previous complete shell`, async () => {
+    const cacheContext = memoryCaches([
+      ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+    ]);
+    const { handlers } = worker({
+      caches: cacheContext.api,
+      fetch: async (request) => {
+        const path = new URL(requestKey(request)).pathname;
+        if (path === "/pwa-assets.json")
+          return Response.json({
+            entry:
+              failure === "mismatched-build" ? "/assets/index-other.js" : "/assets/index-new.js",
+            assets: ["/assets/index-new.js", "/assets/opfs-new.js"],
+          });
+        if (path === "/assets/opfs-new.js") throw new Error("missing lazy worker");
+        if (path.startsWith("/assets/")) return basicResponse("code");
+        return basicResponse('<script src="/assets/index-new.js"></script>', {
+          headers: { "content-type": "text/html" },
+        });
+      },
+    });
+    const background = [];
+    await fetchThrough(handlers, navigation(`${ORIGIN}/`), background);
+    await Promise.all(background);
+    assert.equal(
+      await cacheContext.storeFor("zoo-shell-v2").get(`${ORIGIN}/index.html`).text(),
+      "saved-shell",
+    );
+  });
+}
+
+test("the active worker reports the entry used by its installed shell", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/index.html`,
+      basicResponse('<script src="/assets/index-updated.js"></script>'),
+    ],
+  ]);
+  const { handlers } = worker({ caches: cacheContext.api });
+  let reply;
+  await dispatch(handlers, "message", {
+    data: { type: "SHELL_ENTRY" },
+    ports: [
+      {
+        postMessage: (value) => {
+          reply = value;
+        },
+      },
+    ],
+  });
+  assert.equal(reply.entry, "/assets/index-updated.js");
 });
 
 test("direct navigation to a non-HTML asset does not overwrite the app shell", async () => {
@@ -514,34 +732,220 @@ test("unversioned assets still revalidate the HTTP cache", async () => {
   assert.deepEqual(requests, [{ url, cache: "reload" }]);
 });
 
-test("Compose assets validate against the Cache API without rewriting unchanged bodies", async () => {
-  let mode = "first";
-  let requestHeaders;
-  const w = worker({
-    fetch: async (request, options) => {
-      assert.equal(options.cache, "no-store");
-      requestHeaders = request.headers;
-      if (mode === "offline") throw new TypeError("offline");
-      if (mode === "304") return new Response(null, { status: 304 });
-      return basicResponse(mode === "changed" ? "new-font" : "font", {
-        headers: { etag: mode === "changed" ? '"v2"' : '"v1"' },
-      });
+const avatarOrigin = "https://avater.zliusercontent.com";
+const avatarRequest = (path = "/avatar.png") => ({
+  url: `${avatarOrigin}${path}`,
+  destination: "image",
+  method: "GET",
+  mode: "no-cors",
+});
+const avatarResponse = (body = "first", init = {}) =>
+  new Response(body, { ...init, headers: { "content-type": "image/png", ...init.headers } });
+function avatarWorker(fetch) {
+  let time = 1_000_000;
+  const result = worker({
+    fetch,
+    Date: class extends Date {
+      static now() {
+        return time;
+      }
     },
   });
-  const request = new Request(`${ORIGIN}/compose/font.ttf`);
-  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "font");
-  const stored = () =>
-    [...w.cacheContext.stores.values()].map((store) => store.get(request.url)).find(Boolean);
-  const original = stored();
-  mode = "304";
-  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "font");
-  assert.equal(requestHeaders.get("if-none-match"), '"v1"');
-  assert.equal(stored(), original);
-  mode = "first";
-  await fetchThrough(w.handlers, request);
-  assert.equal(stored(), original);
-  mode = "changed";
-  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "new-font");
-  mode = "offline";
-  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "new-font");
+  return {
+    ...result,
+    advance: () => {
+      time += 5 * 60 * 1000 + 1;
+    },
+  };
+}
+
+test("avatar cache serves a stored public image offline and across SW restarts", async () => {
+  let requests = 0;
+  const first = avatarWorker(async (_url, options) => {
+    requests++;
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.mode, "cors");
+    assert.equal(options.referrerPolicy, "no-referrer");
+    return avatarResponse();
+  });
+  assert.equal(await (await fetchThrough(first.handlers, avatarRequest())).text(), "first");
+  const restarted = worker({
+    caches: first.cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const background = [];
+  assert.equal(
+    await (await fetchThrough(restarted.handlers, avatarRequest(), background)).text(),
+    "first",
+  );
+  await Promise.all(background);
+  assert.equal(requests, 1);
+});
+
+test("stale avatars display immediately, share a refresh, and notify changes without refetch loops", async () => {
+  let requests = 0,
+    finish;
+  const instance = avatarWorker(async () => {
+    requests++;
+    if (requests === 1) return avatarResponse();
+    return new Promise((resolve) => {
+      finish = resolve;
+    });
+  });
+  const messages = [];
+  instance.context.self.clients.matchAll = async () => [
+    { postMessage: (data) => messages.push(data) },
+  ];
+  await fetchThrough(instance.handlers, avatarRequest());
+  instance.advance();
+  const background = [];
+  const images = await Promise.all(
+    Array.from({ length: 8 }, () => fetchThrough(instance.handlers, avatarRequest(), background)),
+  );
+  for (const image of images) assert.equal(await image.text(), "first");
+  assert.equal(requests, 2);
+  finish(avatarResponse("changed"));
+  await Promise.all(background);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, "AVATAR_UPDATED");
+  assert.equal(messages[0].url, avatarRequest().url);
+  assert.match(messages[0].revision, /^[a-f0-9]{64}$/);
+  const revised = avatarRequest(`/avatar.png?__zoo_avatar=${messages[0].revision}`);
+  assert.equal(await (await fetchThrough(instance.handlers, revised)).text(), "changed");
+  assert.equal(requests, 2);
+  assert.equal(instance.cacheContext.storeFor("zoo-avatars-v1").size, 1);
+});
+
+test("unchanged avatars refresh the timestamp without notifying the page", async () => {
+  let requests = 0;
+  const instance = avatarWorker(async () => {
+    requests++;
+    return avatarResponse();
+  });
+  instance.context.self.clients.matchAll = async () => {
+    throw new Error("unchanged bytes should not notify");
+  };
+  await fetchThrough(instance.handlers, avatarRequest());
+  instance.advance();
+  await dispatch(instance.handlers, "message", {
+    data: { type: "REFRESH_AVATARS", urls: [avatarRequest().url] },
+  });
+  await fetchThrough(instance.handlers, avatarRequest());
+  assert.equal(requests, 2);
+});
+
+test("failed, non-image and oversized avatar refreshes keep the last good image", async () => {
+  let response = avatarResponse();
+  const instance = avatarWorker(async () => response.clone());
+  await fetchThrough(instance.handlers, avatarRequest());
+  for (const bad of [
+    avatarResponse("missing", { status: 404 }),
+    new Response("html"),
+    avatarResponse("x".repeat(2 * 1024 * 1024 + 1)),
+  ]) {
+    response = bad;
+    instance.advance();
+    const background = [];
+    assert.equal(
+      await (await fetchThrough(instance.handlers, avatarRequest(), background)).text(),
+      "first",
+    );
+    await Promise.all(background);
+    assert.equal(
+      await instance.cacheContext
+        .storeFor("zoo-avatars-v1")
+        .get(avatarRequest().url)
+        .clone()
+        .text(),
+      "first",
+    );
+  }
+});
+
+test("unconfigured CORS preserves native loading without caching an opaque response", async () => {
+  let requests = 0;
+  const instance = avatarWorker(async (request) => {
+    requests++;
+    if (typeof request === "string") throw new TypeError("CORS");
+    return avatarResponse("native");
+  });
+  assert.equal(await (await fetchThrough(instance.handlers, avatarRequest())).text(), "native");
+  assert.equal(requests, 2);
+  assert.equal(instance.cacheContext.storeFor("zoo-avatars-v1").size, 0);
+});
+
+test("avatar storage is bounded and survives app shell upgrades", async () => {
+  const instance = avatarWorker(async () => avatarResponse());
+  for (let index = 0; index < 66; index++)
+    await fetchThrough(instance.handlers, avatarRequest(`/image-${index}.png`));
+  const cache = instance.cacheContext.storeFor("zoo-avatars-v1");
+  assert.equal(cache.size, 64);
+  assert.ok(!cache.has(`${avatarOrigin}/image-0.png`));
+  assert.ok(cache.has(`${avatarOrigin}/image-65.png`));
+  await instance.cacheContext.api.open("zoo-avatars-v0");
+  await dispatch(instance.handlers, "activate");
+  assert.ok(instance.cacheContext.stores.has("zoo-avatars-v1"));
+  assert.ok(!instance.cacheContext.stores.has("zoo-avatars-v0"));
+});
+
+test("avatar caching only handles public avatar images and validates refresh URLs", async () => {
+  let requests = 0;
+  const instance = avatarWorker(async () => {
+    requests++;
+    return avatarResponse();
+  });
+  for (const request of [
+    { ...avatarRequest(), destination: "empty" },
+    { ...avatarRequest(), method: "POST" },
+    { ...avatarRequest(), url: "https://other.example/photo.png" },
+    { ...avatarRequest(), url: `${ORIGIN}/api/users/me` },
+  ])
+    assert.equal(await fetchThrough(instance.handlers, request), undefined);
+  await dispatch(instance.handlers, "message", {
+    data: {
+      type: "REFRESH_AVATARS",
+      urls: [
+        "https://other.example/image.png",
+        `${ORIGIN}/api/users/me`,
+        `https://user:pass@avater.zliusercontent.com/x`,
+      ],
+    },
+  });
+  assert.equal(requests, 0);
+});
+
+test("avatar cache storage failures preserve native image loading", async () => {
+  const cacheContext = memoryCaches();
+  const open = cacheContext.api.open.bind(cacheContext.api);
+  cacheContext.api.open = async (name) => {
+    if (name === "zoo-avatars-v1") throw new Error("Storage unavailable");
+    return open(name);
+  };
+  const instance = worker({
+    caches: cacheContext.api,
+    fetch: async () => avatarResponse("native"),
+  });
+  assert.equal(await (await fetchThrough(instance.handlers, avatarRequest())).text(), "native");
+});
+
+test("avatar background work extends the fetch event during dispatch", async () => {
+  const instance = avatarWorker(async () => avatarResponse());
+  const responses = [],
+    background = [];
+  instance.handlers.get("fetch")({
+    request: avatarRequest(),
+    respondWith(work) {
+      responses.push(work);
+    },
+    waitUntil(work) {
+      background.push(work);
+    },
+  });
+  assert.ok(background.length > 0);
+  assert.equal(responses.length, 1);
+  const [response] = await Promise.all(responses);
+  assert.equal(await response.text(), "first");
+  await Promise.all(background);
 });

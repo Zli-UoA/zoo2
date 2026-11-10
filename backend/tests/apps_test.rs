@@ -165,16 +165,9 @@ async fn app_approval_auth_channel_events_and_revocation() -> anyhow::Result<()>
     .await?;
     let installation = installs[0]["id"].as_str().unwrap();
     drop(tx);
-    let event = backend::apps::delivery::claim(
-        &AppState::new(db.clone(), {
-            let mut c = Config::from_env();
-            c.dev_auth_enabled = true;
-            c
-        }),
-        installation,
-    )
-    .await?
-    .unwrap();
+    let event = backend::apps::delivery::claim(&db, installation)
+        .await?
+        .unwrap();
     assert_eq!(event["event"]["type"], "message.created");
     assert_eq!(event["event"]["actor_id"], owner);
     let (status, users) = req(&app, "GET", "/api/users", &owner, Value::Null).await;
@@ -768,7 +761,7 @@ async fn reapproval_invalidates_old_codes_tokens_and_queued_events() -> anyhow::
     .await?;
     drop(tx);
     assert!(
-        backend::apps::delivery::claim(&state, row["id"].as_str().unwrap())
+        backend::apps::delivery::claim(&state.db, row["id"].as_str().unwrap())
             .await?
             .is_none()
     );

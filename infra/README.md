@@ -8,8 +8,8 @@ PR ごとの k3s 検証環境は [Preview Environment の手順](../docs/preview
 
 ```text
 infra/
-├── compose.stg.yaml         # ステージング構成
-├── compose.stg.local.yaml   # 既存のローカル起動コマンド用 override
+├── compose.stack.yaml         # フロント・バックエンド・DB・Electric・プロキシの全体構成 (CI とローカルで使う)
+├── compose.stack.local.yaml   # 既存のローカル起動コマンド用 override
 ├── Dockerfile-migrate-deploy # ステージング用 Atlas migration コンテナ
 ├── frontend-nginx.conf      # フロントの静的配信 (nginx) の設定
 ├── proxy/                   # Traefik のルーティングと検証
@@ -156,25 +156,25 @@ CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要
 
 ## ステージング
 
-DBサービスは Coolify が `extends` や `!reset` を扱えないため、`compose.stg.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
+DBサービスは `extends` や `!reset` を使わず、`compose.stack.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
 
 リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` は必須です。
 
-Rust の本番起動には `OIDC_ISSUER` と `OIDC_AUDIENCE`（未設定なら `OIDC_CLIENT_ID`）も必要です。IdP に合わせて Coolify の環境変数に設定してください。Kanidm では `OIDC_AUDIENCE` を client ID に、AuthZ では resource identifier（`VITE_OIDC_RESOURCE`）に一致させます。`OIDC_JWKS_URL` は任意で、未設定なら Discovery を使います。OIDC 設定を省略すると Rust は起動を拒否します。フロント単体とモックを使ったプロキシテストには不要です。
+Rust の本番起動には `OIDC_ISSUER` と `OIDC_AUDIENCE`（未設定なら `OIDC_CLIENT_ID`）も必要です。IdP に合わせて環境変数に設定してください。Kanidm では `OIDC_AUDIENCE` を client ID に、AuthZ では resource identifier（`VITE_OIDC_RESOURCE`）に一致させます。`OIDC_JWKS_URL` は任意で、未設定なら Discovery を使います。OIDC 設定を省略すると Rust は起動を拒否します。フロント単体とモックを使ったプロキシテストには不要です。
 
 ```bash
 POSTGRES_PASSWORD=staging-test-password \
-  docker compose --project-directory . -f infra/compose.stg.yaml \
+  docker compose --project-directory . -f infra/compose.stack.yaml \
   up -d --build --wait
 ```
 
-公開入口は Traefik の `proxy` サービスで、コンテナ内の `8080` をホストの `127.0.0.1:18080` にマッピングします。ホスト側は `PROXY_PORT` で変更できます。Coolify 自身が使う `8080` とは分けています。フロント・Rust・DB・Electric のホストポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。既存の `compose.stg.local.yaml` を重ねた起動コマンドも、同じマッピングで引き続き利用できます。
+公開入口は Traefik の `proxy` サービスで、コンテナ内の `8080` をホストの `127.0.0.1:18080` にマッピングします。ホスト側は `PROXY_PORT` で変更できます。フロント・Rust・DB・Electric のホストポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。既存の `compose.stack.local.yaml` を重ねた起動コマンドも、同じマッピングで引き続き利用できます。
 
 起動時は `postgres` が healthy になったあと、`migrate` コンテナ（`arigaio/atlas`、単一インスタンス前提）が `infra/db/migrations` を自動適用（`atlas migrate apply`）して終了し、その完了を待ってから `electric` と `backend` が起動します（このコンテナには Docker ソケットを持たせないため、`dev` DB を使う `migrate diff` / `validate` はローカルまたは CI で実行します）。
 
 - **初期状態の DB**: `atlas_schema_revisions` が無い空の DB に対しては、初回の `migrate` 起動で全マイグレーションが順番に適用されます。
 - **Atlas を介さず手動作成された既存 DB（baseline）**: もし `atlas_schema_revisions` が無いまま手動でテーブルだけ作成されている場合は、そのままでは初回マイグレーションが既存テーブルと衝突して停止します。一度だけ `--baseline <適用済みバージョン>`（例: `20261015110156`）を付けて `atlas migrate apply` を実行するか、ステージングで不要なデータであればボリュームを初期化してから再起動してください。
-- **失敗時の確認・復旧**: マイグレーションが途中で失敗すると、後続の `electric` / `backend` は起動せず（fail-closed）、該当バージョンが dirty 状態になることがあります。その場合は `docker compose --project-directory . -f infra/compose.stg.yaml run --rm migrate migrate status --config file:///db/atlas.hcl --env local` で状態を確認し、原因解消後に再実行してください。
+- **失敗時の確認・復旧**: マイグレーションが途中で失敗すると、後続の `electric` / `backend` は起動せず（fail-closed）、該当バージョンが dirty 状態になることがあります。その場合は `docker compose --project-directory . -f infra/compose.stack.yaml run --rm migrate migrate status --config file:///db/atlas.hcl --env local` で状態を確認し、原因解消後に再実行してください。
 
 フロントは TanStack Start の SPA モードでビルドした静的ファイル（`dist/client`）を `nginxinc/nginx-unprivileged:1.30.6-alpine` で配信します。コンテナ内は非 root ユーザーで `3000` 番ポートを待ち受けます。設定は `infra/frontend-nginx.conf` です。未知のパスは `/index.html` にフォールバックしますが、`/assets/` 配下の存在しないファイルは 404 を返します（デプロイ後に古いタブが削除済みの chunk を読み込んだとき、HTML を返さないため）。`/assets/` のハッシュ付きファイルは `immutable` で長期キャッシュし、`index.html` は `no-cache` で毎回再検証させます。あわせて `X-Content-Type-Options: nosniff`・`Referrer-Policy: strict-origin-when-cross-origin`・`X-Frame-Options: DENY` と `Content-Security-Policy` を付与します。CSP は `infra/frontend-nginx.conf` をテンプレートとして起動時に envsubst し、ビルド成果物の `index.html` に含まれるインライン script の SHA-256（`infra/csp-hashes.mjs` がビルド時に生成）を `script-src` に、`connect-src` には同一オリジンと `CSP_CONNECT_SRC` を設定します（詳細は下記「CSP」）。フロント・プロキシ・マイグレーションのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE`・`MIGRATE_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
 
@@ -182,13 +182,13 @@ POSTGRES_PASSWORD=staging-test-password \
 
 ブラウザ（SPA）は Kanidm から取得した JWT を `Authorization: Bearer <token>` ヘッダに付与して API を呼び出します。Compose のフロントビルドでは `VITE_API_BASE_URL` を空文字に固定し、`/api/*`（Shape を含む）をプロキシから Rust へ直接転送します。それ以外のパスはフロントの静的配信コンテナへ転送します。
 
-`/api/*` の転送ではクライアントの `Authorization` ヘッダをそのまま Rust へ通し、開発用の `X-Dev-User` ヘッダはプロキシで除去します。API の応答には `Cache-Control: private, no-cache` を付与します。Shape の `electric-*`・`Vary` ヘッダは維持し、レスポンスを即時フラッシュします。プロキシと Rust 間の応答待ち時間（応答ヘッダが返るまで）は 120 秒です。Electric の long-poll 設定を延長する場合は、この設定と外側の Coolify プロキシも合わせて見直してください。応答を書き終えるまでの期限（entrypoint の `writeTimeout`）は設けていないので、SSE など長く続くストリームも切れません。
+`/api/*` の転送ではクライアントの `Authorization` ヘッダをそのまま Rust へ通し、開発用の `X-Dev-User` ヘッダはプロキシで除去します。API の応答には `Cache-Control: private, no-cache` を付与します。Shape の `electric-*`・`Vary` ヘッダは維持し、レスポンスを即時フラッシュします。プロキシと Rust 間の応答待ち時間（応答ヘッダが返るまで）は 120 秒です。Electric の long-poll 設定を延長する場合は、この設定と外側のプロキシも合わせて見直してください。応答を書き終えるまでの期限（entrypoint の `writeTimeout`）は設けていないので、SSE など長く続くストリームも切れません。
 
 Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、受け取った Bearer トークンを JWKS で検証します。また、Shape の初回同期では複数リクエストが重なるため、Traefik にパス一律の `rateLimit` は設けていません。レート制限は前段の Cloudflare 等で扱います。
 
 #### フロントの OIDC PKCE ログイン
 
-SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（既定 `${origin}/auth/callback`）・`VITE_OIDC_SCOPE`（既定 `openid profile`）・`VITE_OIDC_RESOURCE`（任意）・`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` をビルド時に埋め込み、Authorization Code + PKCE (S256) でログインします。未設定（空）なら従来どおり dev の `X-Dev-User` で動きます。値は `infra/compose.stg.yaml` の frontend の build args に渡します。AuthZ では `VITE_OIDC_RESOURCE` を resource identifier に設定しないと opaque token が発行されるため、バックエンドの JWT 検証が通りません。`state` / `nonce` / `code_verifier` は `sessionStorage` に一時保存し、コールバックで使い切りにします。トークン本体はメモリのみに置きます。
+SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（既定 `${origin}/auth/callback`）・`VITE_OIDC_SCOPE`（既定 `openid profile`）・`VITE_OIDC_RESOURCE`（任意）・`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` をビルド時に埋め込み、Authorization Code + PKCE (S256) でログインします。未設定（空）なら従来どおり dev の `X-Dev-User` で動きます。値は `infra/compose.stack.yaml` の frontend の build args に渡します。AuthZ では `VITE_OIDC_RESOURCE` を resource identifier に設定しないと opaque token が発行されるため、バックエンドの JWT 検証が通りません。`state` / `nonce` / `code_verifier` は `sessionStorage` に一時保存し、コールバックで使い切りにします。access tokenとid tokenは同じタブの `sessionStorage` に保持し、再読み込み時に復元します。認証設定が変わった場合やログアウト時には破棄します。
 
 `VITE_OIDC_*` は **ビルド時に静的ファイルへ埋め込まれる**ため、変更したら `frontend` イメージを再ビルドしてください（コンテナの再起動だけでは反映されません）。
 
@@ -210,7 +210,7 @@ SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（
 
 バックエンドは初回ログイン (JIT プロビジョニング) 時に Discovery の `userinfo_endpoint` をアクセストークン付きで呼び出し、`preferred_username` / `name` からユーザー名と表示名を設定します。UserInfo の取得に失敗した場合は `user` にフォールバックしてログインを継続します。既存ユーザーは、表示名が旧フォールバック値 `user` のままで本人が未編集の場合に限り、再ログイン時に一度だけ UserInfo から補正します。
 
-リロード後は IdP セッションを使って authorize へ再リダイレクトし（サイレント再ログイン）、期限前には refresh_token で更新します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。AuthZ は refresh token を発行しないため、access token の期限切れ後は再ログインになります。ログアウトはメモリのトークン破棄までで、Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
+リロード後はタブ内のセッションを復元し、再認可が必要になるまでは authorize への往復を省きます。期限前にはメモリ内の refresh_token があれば更新します。refresh_token はタブ複製時の再利用を防ぐため保存せず、再読み込み後は期限が近づくと再認可します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。AuthZ は refresh token を発行しないため、access token の期限切れ後は再ログインになります。ログアウトではメモリと `sessionStorage` のトークンを破棄します。Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
 
 SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。CSP の `connect-src` には `CSP_CONNECT_SRC` で IdP のオリジンを追加します。
 
@@ -224,10 +224,11 @@ SPA は IdP の Discovery / token エンドポイントをブラウザから直�
 | `CSP_CONNECT_SRC` | frontend の実行時環境変数 | `connect-src` に追加するオリジン（空白区切り）。既定は空で `'self'` のみ |
 | `CSP_STORAGE_SRC` | frontend の実行時環境変数 | 添付ファイル用ストレージ（Cloudflare R2 等）のオリジン（空白区切り）。Presigned URL への送受信と画像表示のため `connect-src` と `img-src` の両方に追加される |
 | `CSP_APP_IMAGE_SRC` | frontend の実行時環境変数 | App アイコンの HTTPS 配信元オリジン（空白区切り、`img-src` に追加） |
+| `CSP_AVATAR_SRC` | frontend の実行時環境変数 | OIDCユーザーアイコンの配信元。既定は `https://avater.zliusercontent.com`。別のIdPではその画像配信元のHTTPSオリジンを指定する |
 
 `CSP_CONNECT_SRC` には IdP の **issuer と token エンドポイントのオリジン**を指定します（例: `https://idm.example.com`）。Kanidm では通常どちらも同じオリジンです。JWKS は Rust が取得するためブラウザの CSP には不要ですが、リバースプロキシ等で別オリジンに置いている場合でも Rust 側の到達性だけを確認してください。`VITE_API_BASE_URL` を空以外にして API を別オリジンへ向ける構成にした場合は、そのオリジンも `CSP_CONNECT_SRC` に追加してください（Compose のステージング構成では `/api/*` を同一オリジンで Traefik から Rust へ転送するため不要です）。
 
-`img-src` は既定で `'self' data: blob: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC` と `CSP_APP_IMAGE_SRC` を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`）を `CSP_STORAGE_SRC` に指定してください。カスタムドメインやリバースプロキシ（`S3_PUBLIC_ENDPOINT`）を経由する場合は、R2 のオリジンではなくその公開オリジン（例: `https://attachments.zliusercontent.com`）を指定します。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
+`img-src` は既定で `'self' data: blob: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC`・`CSP_APP_IMAGE_SRC`・`CSP_AVATAR_SRC`を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`）を `CSP_STORAGE_SRC` に指定してください。カスタムドメインやリバースプロキシ（`S3_PUBLIC_ENDPOINT`）を経由する場合は、R2 のオリジンではなくその公開オリジン（例: `https://attachments.zliusercontent.com`）を指定します。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
 
 `script-src` は `'unsafe-inline'` を使わず、ビルド時のハッシュで許可します。 SQLite Worker の WebAssembly 実行には `'wasm-unsafe-eval'`、ビルド時に埋め込まれる WASM の `data:` URL の読み込みには `connect-src` の `data:` を許可しています。JavaScript の `'unsafe-eval'` は許可しません。ハッシュは `infra/csp-hashes.mjs` が `pnpm build` 後の `index.html` から生成し、`infra/frontend-entrypoint.sh` が起動時に `CSP_SCRIPT_SRC` として渡します。`index.html` やテーマ初期化 script を変更した場合は、必ずイメージを再ビルドしてください。`style-src` の `'unsafe-inline'` は React の style 属性に必要なため残しています。
 
@@ -256,12 +257,11 @@ curl -fsSI https://<公開ホスト>/ | grep -i content-security-policy
 
 > **メモ:** 現在ユーザー（内部 `users.id`）は SPA が起動時に `GET /api/users/me`（Bearer）で解決し、自分の投稿判定・参加状態・メンバー表示・退出の本人確認に使います（#49）。解決できるまでは参加状態や作成・退出の操作を出さず、解決に失敗した場合は再読み込みまたは画面遷移で再試行します。`VITE_OIDC_*` を有効にする際は、この解決と Shape / REST の Bearer がバックエンドで通ることをステージングで確認してください（#50）。
 
-### Coolify
+### Cloudflare Tunnel
 
-[Single Resource Tunnel の手順](https://coolify.io/docs/integrations/networking/cloudflare/tunnels/single-resource)を使います。Coolify の cloudflared テンプレートは `network_mode: host` なので、ホストの loopback ポートへ接続できます。
+cloudflared を `network_mode: host` で動かし、ホストの loopback ポートへ接続します。
 
-- Coolify のサービスの Domains は空にします。Tunnel が直接アプリのプロキシへ接続するため、Coolify 標準プロキシのドメインルーティングは使いません。
-- Compose の `proxy` のポートマッピングは `127.0.0.1:18080:8080` です。Compose が定義しているため、Coolify 側で同じマッピングを重複追加する必要はありません。
+- Compose の `proxy` のポートマッピングは `127.0.0.1:18080:8080` です。
 - Cloudflare の公開ホスト名には利用するドメインを設定し、Path は空、Service は **HTTP / `127.0.0.1:18080`** にします。`PROXY_PORT` を変更した場合は接続先も合わせます。
 - リクエストは Tunnel → `127.0.0.1:18080` → Traefik の順で入ります。`/api` と `/api/*` は priority 100 の `api` ルーターで Rust へ、それ以外はフロントへ流れます。Cloudflare のレート制限は `/api/*` を含む公開ホスト全体に適用し、Tunnel 以外の公開経路を作らないでください。
 - この接続先は HTTP なので Origin Server Name は不要です。ルーティングはパスで行い、HTTP Host Header の上書きも不要です。ブラウザからの公開 URL は HTTPS を使います。
@@ -275,23 +275,23 @@ curl -fsSI https://<公開ホスト>/ | grep -i content-security-policy
 
 ```bash
 POSTGRES_PASSWORD=staging-test-password \
-  docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait frontend
+  docker compose --project-directory . -f infra/compose.stack.yaml up -d --build --wait frontend
 POSTGRES_PASSWORD=staging-test-password \
-  docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
+  docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
   wget -q -O /dev/null http://127.0.0.1:3000/channels/test
 ```
 
 ### プロキシの自動検証
 
-実際の Traefik とモックのフロント・Rust を使い、`Authorization` ヘッダの透過転送、`X-Dev-User` の除去、本文転送、Shape のストリーミングを確認します。テスト用の override は Coolify では使いません。
+実際の Traefik とモックのフロント・Rust を使い、`Authorization` ヘッダの透過転送、`X-Dev-User` の除去、本文転送、Shape のストリーミングを確認します。
 
 ```bash
 export POSTGRES_PASSWORD=proxy-test PROXY_PORT=18080
-docker compose --project-directory . -f infra/compose.stg.yaml build proxy
-docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml \
+docker compose --project-directory . -f infra/compose.stack.yaml build proxy
+docker compose --project-directory . -f infra/compose.stack.yaml -f infra/proxy/test/compose.yaml \
   up -d --no-build --no-deps --wait frontend backend proxy
 nix develop --command node infra/proxy/test/check.mjs
-docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
+docker compose --project-directory . -f infra/compose.stack.yaml -f infra/proxy/test/compose.yaml down
 ```
 
 CSP を変更すると、アプリはネットワークから取得した CSP の SHA-256 を `/sw.js?v=<hash>` の登録 URL に反映します。Service Worker もこの値をキャッシュ名に含め、新版の activate 時に旧キャッシュを削除します。Worker レスポンスの CSP はキャッシュでも保持します。
@@ -334,3 +334,7 @@ Worker のファイル名が同じまま CSP が変わる場合、SW の Cache A
    `S3_PUBLIC_ENDPOINT` にパス接頭辞（例: `https://attachments.zliusercontent.com/storage`）を設定した場合、プロキシ側で接頭辞を除去して R2 のルートへ転送する必要があります。
 4. **フロントエンド CSP への登録**:
    ブラウザが直接 PUT / GET 通信する先が公開ドメインになるため、フロントエンドの環境変数 `CSP_STORAGE_SRC` にその公開オリジン（例: `https://attachments.zliusercontent.com`）を指定してください。
+
+### 共通絵文字サービス
+
+`compose.stack.yaml` は `EMOJI_SERVICE_URL` と任意の `EMOJI_CACHE_FILE` をbackendへ渡す。`EMOJI_SERVICE_URL=https://emoji.zli.works` で共有サービスへ切り替える。画像の表示にはfrontendの `CSP_APP_IMAGE_SRC=https://emoji.zli.works https://emoji.zliusercontent.com` を設定する。既存添付画像の `CSP_STORAGE_SRC` は変更しない。ディスクキャッシュを使う場合は `EMOJI_CACHE_FILE` の保存先へ書き込み可能な永続ボリュームを別途マウントする。未設定・空のキャッシュパスは無効扱いとする。

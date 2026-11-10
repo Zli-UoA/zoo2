@@ -19,27 +19,45 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     val config
         get() = repo.config
 
+    var standardShortcodes by mutableStateOf<Row?>(null)
+        private set
+    private var standardChecked = 0L
+    private val standardMutex = kotlinx.coroutines.sync.Mutex()
+    suspend fun loadShortcodes() {
+        standardMutex.lock()
+        try {
+            val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+            if (standardChecked != 0L && now - standardChecked < 3_600_000) return
+            val rows = api.request("/api/emoji-shortcodes").jsonObject["shortcodes"]?.jsonObject
+            if (rows != null && rows.isNotEmpty()) standardShortcodes = rows
+            standardChecked = now
+        } finally { standardMutex.unlock() }
+    }
     var workspaceEmojis by mutableStateOf<List<Row>>(emptyList())
         private set
     var workspaceEmojiLoading by mutableStateOf(false)
         private set
     var workspaceEmojiError by mutableStateOf(false)
         private set
-    private var workspaceEmojisLoaded = false
+    private var workspaceEmojiChecked = 0L
     private val workspaceEmojiMutex = kotlinx.coroutines.sync.Mutex()
     suspend fun loadWorkspaceEmojis(force: Boolean = false) {
         workspaceEmojiMutex.lock()
         try {
-            if ((!workspaceEmojisLoaded && !workspaceEmojiError) || force) {
-                workspaceEmojiLoading = true
-                workspaceEmojiError = false
-                try {
-                    workspaceEmojis = api.request("/api/emojis").rows()
-                    workspaceEmojisLoaded = true
-                } catch (e: CancellationException) { throw e }
-                catch (e: Exception) { workspaceEmojiError = true; throw e }
-                finally { workspaceEmojiLoading = false }
-            }
+            val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+            if (!force && workspaceEmojiChecked != 0L && now - workspaceEmojiChecked < 60_000) return
+            workspaceEmojiChecked = now
+            workspaceEmojiLoading = true
+            workspaceEmojiError = false
+            try {
+                workspaceEmojis = api.request("/api/emojis").rows()
+            } catch (e: CancellationException) {
+                workspaceEmojiChecked = 0L
+                throw e
+            } catch (e: Exception) {
+                workspaceEmojiError = true
+                throw e
+            } finally { workspaceEmojiLoading = false }
         } finally { workspaceEmojiMutex.unlock() }
     }
     var env by mutableStateOf(initial)
@@ -125,6 +143,13 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         env.locale
         return platform.translate(key, args.toMap())
     }
+
+    /**
+     * 件数で言い回しが変わる文言 (`key_one` / `key_other`)。辞書は複数形ごとにキーを持ち、`translate` は
+     * 完全一致で探すので、件数から選んだキーを渡す。`count` は補間にも渡す
+     */
+    fun tCount(key: String, count: Int, vararg args: Pair<String, String>): String =
+        t(pluralKey(key, count), *args, "count" to count.toString())
 
     fun dayLabel(timestamp: String): String {
         val value = platform.day(timestamp)
@@ -407,3 +432,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 }
 
 fun String.decodeURLPart(): String = decodeURLQueryComponent()
+
+/** 件数に合う複数形のキー (`key_one` / `key_other`) */
+fun pluralKey(key: String, count: Int): String = "${key}_${if (count == 1) "one" else "other"}"

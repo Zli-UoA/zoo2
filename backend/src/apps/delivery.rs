@@ -74,18 +74,38 @@ pub(crate) async fn active(s: &AppState, credential: &str) -> Result<bool, AppEr
     let mut tx = db.transaction().await?;
     Ok(one(&mut tx,"SELECT json_build_object('ok',EXISTS(SELECT 1 FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.id=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed' AND t.scopes::jsonb <@ i.scopes::jsonb AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id=COALESCE(t.user_id,a.bot_user_id) AND u.is_deactivated)))::text",&[credential]).await?["ok"]==true)
 }
-pub async fn claim(s: &AppState, installation: &str) -> Result<Option<Value>, AppError> {
-    claim_filtered(s, installation, false).await
+/// WebSocket 向け。リースは 3 秒。
+pub async fn claim(db: &toasty::Db, installation: &str) -> Result<Option<Value>, AppError> {
+    claim_filtered(db, installation, false, 3, None).await
 }
+/// HTTP 配信向け。送信のタイムアウト（3 秒）に ACK を書く余裕を足して、リースは 5 秒。
+/// 送信が遅くても、ACK 前にリースが切れて別のワーカーに取り直される窓を作らない。
+///
+/// `stop` が true になった後は、advisory lock を待っていた claim も、ロックを取った後・リースを
+/// 更新する前に None で戻る（停止通知より前に始まった claim が、停止後にリースを取らない）。
+pub async fn claim_http(
+    db: &toasty::Db,
+    installation: &str,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) -> Result<Option<Value>, AppError> {
+    claim_filtered(db, installation, false, HTTP_LEASE_SECS, Some(stop)).await
+}
+const HTTP_LEASE_SECS: u32 = 5;
 async fn claim_filtered(
-    s: &AppState,
+    db: &toasty::Db,
     installation: &str,
     terminal_only: bool,
+    lease_secs: u32,
+    stop: Option<&tokio::sync::watch::Receiver<bool>>,
 ) -> Result<Option<Value>, AppError> {
-    let mut db = s.db.clone();
+    let mut db = db.clone();
     let mut tx = db.transaction().await?;
     // Serialize only dispatchers for this installation, never source transactions.
     one(&mut tx,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{installation}")]).await?;
+    // ロック待ちの間に停止通知が来ていたら、何も更新せず（トランザクションは破棄）戻る。
+    if stop.is_some_and(|s| *s.borrow()) {
+        return Ok(None);
+    }
     let usage=one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND first_delivered_at>=date_trunc('hour',now()) AND event_type<>'app.rate_limited' AND NOT app_event_quota_exempt(event_type)",&[installation]).await?;
     let limited = usage["count"].as_u64().unwrap_or(0) >= 30000;
     if limited {
@@ -100,8 +120,10 @@ async fn claim_filtered(
         )
         .await?;
     }
+    // リースの起点は now()（トランザクション開始）ではなく clock_timestamp()。advisory lock の
+    // 待ちで開始から時間が経つと、リースが実質的に短くなり送信中に再取得されるため。
     let lease = uuid::Uuid::new_v4().to_string();
-    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d WHERE d.installation_id=$1 AND app_delivery_allowed(d) AND (NOT $4::boolean OR d.event_type IN('app.uninstalled','tokens.revoked','app.deleted')) AND (NOT $3::boolean OR d.first_delivered_at IS NOT NULL OR app_event_quota_exempt(d.event_type)) AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY CASE WHEN d.event_type='app.uninstalled' THEN 0 ELSE 1 END,d.created_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,first_delivered_at=COALESCE(first_delivered_at,now()),lease_until=now()+interval '3 seconds',lease_token=$2,available_at=now()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',app_delivery_payload(d),'attempt',d.attempts)::text",&[installation,&lease,if limited {"true"}else{"false"},if terminal_only {"true"}else{"false"}]).await?;
+    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d WHERE d.installation_id=$1 AND app_delivery_allowed(d) AND (NOT $4::boolean OR d.event_type IN('app.uninstalled','tokens.revoked','app.deleted')) AND (NOT $3::boolean OR d.first_delivered_at IS NOT NULL OR app_event_quota_exempt(d.event_type)) AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY CASE WHEN d.event_type='app.uninstalled' THEN 0 ELSE 1 END,d.created_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,first_delivered_at=COALESCE(first_delivered_at,now()),lease_until=clock_timestamp()+make_interval(secs=>$5::text::int),lease_token=$2,available_at=clock_timestamp()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',app_delivery_payload(d),'attempt',d.attempts)::text",&[installation,&lease,if limited {"true"}else{"false"},if terminal_only {"true"}else{"false"},&lease_secs.to_string()]).await?;
     tx.commit().await?;
     let value = rows.into_iter().next();
     if let Some(event) = &value {
@@ -114,12 +136,18 @@ async fn claim_filtered(
     }
     Ok(value)
 }
-async fn ack(s: &AppState, installation: &str, id: &str, lease: &str) -> Result<(), AppError> {
-    let mut db = s.db.clone();
+/// ACK を記録し、成功時はイベント作成から ACK までの秒数を返す。
+pub async fn ack(
+    db: &toasty::Db,
+    installation: &str,
+    id: &str,
+    lease: &str,
+) -> Result<Option<f64>, AppError> {
+    let mut db = db.clone();
     let mut tx = db.transaction().await?;
-    toasty::sql::statement("UPDATE app_deliveries SET acked_at=now(),lease_until=NULL,last_error=NULL WHERE id=$1 AND installation_id=$2 AND lease_token=$3 AND acked_at IS NULL").bind(id).bind(installation).bind(lease).exec(&mut tx).await?;
+    let rows=query(&mut tx,"UPDATE app_deliveries SET acked_at=now(),lease_until=NULL,last_error=NULL WHERE id=$1 AND installation_id=$2 AND lease_token=$3 AND acked_at IS NULL RETURNING json_build_object('latency',extract(epoch from now()-created_at))::text",&[id,installation,lease]).await?;
     tx.commit().await?;
-    Ok(())
+    Ok(rows.first().and_then(|v| v["latency"].as_f64()))
 }
 async fn run_socket(
     s: AppState,
@@ -172,7 +200,7 @@ async fn run_socket_inner(
            Ok(snapshot)=>{if snapshot!=previous_presence {previous_presence=snapshot.clone();if ws.send(Message::Text(json!({"type":"presence_snapshot","users":snapshot}).to_string().into())).await.is_err(){break;}}},Err(_)=>break
           }
          }
-         for _ in 0..16 {match claim(s,installation).await{
+         for _ in 0..16 {match claim(&s.db,installation).await{
           Ok(Some(event))=>{
            if ws.send(Message::Text(event.to_string().into())).await.is_err(){break;}
           },Ok(None)=>break,Err(_)=>return
@@ -190,7 +218,7 @@ async fn run_socket_inner(
             if ws.send(Message::Text(json!({"type":"presence_snapshot","request_id":v["id"],"users":snapshot}).to_string().into())).await.is_err(){break;}},Err(_)=>{if ws.send(Message::Text(json!({"type":"error","request_id":v["id"],"error":"Presence request denied or invalid"}).to_string().into())).await.is_err(){break;}}}
             continue;
            }
-          if let Ok(v)=serde_json::from_str::<Value>(&text)&& let(Some(id),Some(token))=(v["ack"].as_str(),v["ack_token"].as_str())&& ack(s,installation,id,token).await.is_err(){break;}
+          if let Ok(v)=serde_json::from_str::<Value>(&text)&& let(Some(id),Some(token))=(v["ack"].as_str(),v["ack_token"].as_str())&& ack(&s.db,installation,id,token).await.is_err(){break;}
          },Some(Ok(Message::Ping(data)))=>{if ws.send(Message::Pong(data)).await.is_err(){break;}},Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,_=>{}
         }}
         }
@@ -232,7 +260,7 @@ async fn terminal_socket(s: &AppState, ws: &mut WebSocket, installation: &str) {
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        if let Ok(Some(event)) = claim_filtered(s, installation, true).await {
+        if let Ok(Some(event)) = claim_filtered(&s.db, installation, true, 3, None).await {
             if ws
                 .send(Message::Text(event.to_string().into()))
                 .await
@@ -247,7 +275,7 @@ async fn terminal_socket(s: &AppState, ws: &mut WebSocket, installation: &str) {
                 && v["ack_token"] == event["ack_token"]
             {
                 let _ = ack(
-                    s,
+                    &s.db,
                     installation,
                     event["delivery_id"].as_str().unwrap(),
                     event["ack_token"].as_str().unwrap(),
@@ -287,6 +315,36 @@ pub(crate) fn public_ip(ip: IpAddr) -> bool {
         }
     }
 }
+const MSG_LOOKUP: &str = "Event host lookup failed";
+const MSG_NOT_PUBLIC: &str = "Event endpoint must resolve to public addresses";
+const MSG_SEND: &str = "Event delivery failed";
+const MSG_TIMEOUT: &str = "Event delivery timed out";
+const MSG_STATUS_PREFIX: &str = "Event endpoint returned ";
+
+/// メトリクスのラベル用に配信エラーを分類する（ホスト名や本文は含めない）。
+fn status_class(e: &AppError) -> &'static str {
+    let (AppError::BadGateway(m) | AppError::BadRequest(m)) = e else {
+        return "other";
+    };
+    if m == MSG_LOOKUP {
+        "dns"
+    } else if m == MSG_NOT_PUBLIC {
+        "blocked"
+    } else if m == MSG_TIMEOUT {
+        "timeout"
+    } else if m == MSG_SEND {
+        "network"
+    } else if let Some(code) = m.strip_prefix(MSG_STATUS_PREFIX) {
+        match code.chars().next() {
+            Some('3') => "3xx",
+            Some('4') => "4xx",
+            Some('5') => "5xx",
+            _ => "other",
+        }
+    } else {
+        "other"
+    }
+}
 async fn signed_post(
     url: &str,
     signing: &str,
@@ -298,12 +356,10 @@ async fn signed_post(
     let port = url.port_or_known_default().unwrap();
     let addresses: Vec<_> = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|_| AppError::BadGateway("Event host lookup failed".into()))?
+        .map_err(|_| AppError::BadGateway(MSG_LOOKUP.into()))?
         .collect();
     if addresses.is_empty() || addresses.iter().any(|a| !public_ip(a.ip())) {
-        return Err(AppError::BadRequest(
-            "Event endpoint must resolve to public addresses".into(),
-        ));
+        return Err(AppError::BadRequest(MSG_NOT_PUBLIC.into()));
     }
     // Pin DNS and disable redirects/proxies to prevent validation-to-request rebinding.
     let client = reqwest::Client::builder()
@@ -331,10 +387,19 @@ async fn signed_post(
         .body(body)
         .send()
         .await
-        .map_err(|_| AppError::BadGateway("Event delivery failed or timed out".into()))?;
+        .map_err(|e| {
+            AppError::BadGateway(
+                if e.is_timeout() {
+                    MSG_TIMEOUT
+                } else {
+                    MSG_SEND
+                }
+                .into(),
+            )
+        })?;
     if !response.status().is_success() {
         return Err(AppError::BadGateway(format!(
-            "Event endpoint returned {}",
+            "{MSG_STATUS_PREFIX}{}",
             response.status().as_u16()
         )));
     }
@@ -384,37 +449,199 @@ fn valid_challenge_response(bytes: &[u8], challenge: &str) -> bool {
         .is_some_and(|v| v["challenge"] == challenge)
         || bytes == challenge.as_bytes()
 }
+/// `APP_HTTP_DELIVERY_WORKER` が `false`/`0`/`off`/`disabled`/`no` のとき、この
+/// プロセスでは HTTP 配信と配信履歴（30 日保持）の削除を行わない（`zoo-dispatcher` に任せる）。
+/// API 側の期限切れ行の削除と `events::maintain` は、この設定にかかわらず動く。
+/// 未設定・空・その他の値は有効（従来どおり）。
+pub fn http_delivery_enabled_from(raw: Option<&str>) -> bool {
+    !matches!(
+        raw.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("false" | "0" | "off" | "disabled" | "no")
+    )
+}
+
+pub fn http_delivery_enabled() -> bool {
+    let raw = std::env::var("APP_HTTP_DELIVERY_WORKER").ok();
+    let enabled = http_delivery_enabled_from(raw.as_deref());
+    // 書き間違い（`flase` など）は有効扱いになる。外向き通信を塞いだ環境で気づけるよう警告する。
+    if let Some(value) = raw.as_deref().map(str::trim)
+        && enabled
+        && !value.is_empty()
+        && !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "true" | "1" | "on" | "enabled" | "yes"
+        )
+    {
+        tracing::warn!(
+            value,
+            "Unrecognized APP_HTTP_DELIVERY_WORKER; HTTP delivery stays enabled"
+        );
+    }
+    enabled
+}
+
 pub async fn worker(s: AppState) {
-    let maintenance = async {
-        let mut ticks = tokio::time::interval(Duration::from_secs(1));
-        let mut passes = 0u32;
-        loop {
-            ticks.tick().await;
-            passes = passes.wrapping_add(1);
-            if let Err(e) = super::events::maintain(&s).await {
-                tracing::warn!(error=%e,"Event maintenance failed");
-            }
-            if passes.is_multiple_of(60)
-                && let Err(e) = cleanup(&s).await
-            {
-                tracing::warn!(error=%e,"App cleanup failed");
-            }
-        }
-    };
+    worker_with(s, http_delivery_enabled()).await
+}
+
+/// `http` が false でも `events::maintain`（在席・ステータス期限・リマインダー）は動かす。
+/// これは配信ではなく API 側の機能で、dispatcher が 0 台でも止めないため。
+pub async fn worker_with(s: AppState, http: bool) {
+    if !http {
+        tracing::info!("HTTP app delivery is disabled in this process (APP_HTTP_DELIVERY_WORKER)");
+    }
+    let maintenance = maintenance_loop(s.db.clone());
     let dispatch = async {
-        let mut ticks = tokio::time::interval(Duration::from_millis(500));
-        loop {
-            ticks.tick().await;
-            if let Err(e) = http_pass(&s).await {
-                tracing::warn!(error=%e,"App delivery failed");
-            }
+        if !http {
+            return std::future::pending::<()>().await;
         }
+        // 停止信号を送る側がいないので、このループは終了しない。
+        let (_keep_alive, shutdown) = tokio::sync::watch::channel(false);
+        http_loop(s.db.clone(), shutdown).await
     };
     tokio::join!(maintenance, dispatch);
 }
+
+/// 在席・ステータス期限・リマインダー、API 側の期限切れ行の削除。配信と無関係なので、
+/// HTTP 配信を止めていても（dispatcher が 0 台でも）動かし続ける。
+pub async fn maintenance_loop(db: toasty::Db) {
+    let maintain = async {
+        let mut ticks = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            ticks.tick().await;
+            if let Err(e) = super::events::maintain(&db).await {
+                tracing::warn!(error=%e,"Event maintenance failed");
+            }
+        }
+    };
+    // 遅い削除が maintain の tick を止めないよう、別の周期で回す。
+    let expiry = async {
+        let mut ticks = tokio::time::interval(Duration::from_secs(60));
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticks.tick().await;
+            if let Err(e) = cleanup_expired(&db).await {
+                tracing::warn!(error=%e,"App expiry cleanup failed");
+            }
+        }
+    };
+    tokio::join!(maintain, expiry);
+}
+
+/// HTTP 配信と配信履歴（30 日保持）の削除のループ。`shutdown` が true になると新しい配信（リース）を取らず、
+/// 実行中の 1 回分を終えてから戻る。
+pub async fn http_loop(db: toasty::Db, shutdown: tokio::sync::watch::Receiver<bool>) {
+    http_loop_with(
+        db,
+        shutdown,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        Duration::from_millis(500),
+    )
+    .await
+}
+
+/// `wake` が通知されるとすぐ 1 回分を配信する。通知が無くても `poll` ごとに回る
+/// （バックオフ明け・リース切れ・通知の取りこぼしのため。新規の配信と手動再送は NOTIFY で起こす）。
+pub async fn http_loop_with(
+    db: toasty::Db,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    poll: Duration,
+) {
+    // 履歴削除は配信と別タスクで回す。遅い削除が配信の tick を止めないため。
+    let cleanup_task = tokio::spawn({
+        let db = db.clone();
+        async move {
+            let mut ticks = tokio::time::interval(Duration::from_secs(60));
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticks.tick().await;
+                if let Err(e) = cleanup_deliveries(&db).await {
+                    tracing::warn!(error=%e,"App delivery retention failed");
+                }
+            }
+        }
+    });
+    let mut ticks = tokio::time::interval(poll);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            _ = async { tokio::select! { _ = ticks.tick() => {}, _ = wake.notified() => {} } } => {
+                match http_pass_until(&db, &shutdown).await {
+                    // 溜まっている分は、次の通知や poll を待たずに続けて消化する。
+                    Ok(true) => wake.notify_one(),
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!(error=%e,"App delivery failed"),
+                }
+            }
+        }
+    }
+    cleanup_task.abort();
+}
+
+/// `app_delivery` チャンネルを LISTEN し、通知（と再接続）のたびに `wake` を起こす。
+/// 切断中の通知は失われるので、接続し直したら必ず 1 回起こす。
+pub fn listen_for_deliveries(
+    database_url: String,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+) -> tokio::task::JoinHandle<()> {
+    listen_for_deliveries_with(database_url, wake, None)
+}
+
+/// `listen_for_deliveries`。`ready` があれば、LISTEN が成立するたびに通知する（テスト用）。
+pub fn listen_for_deliveries_with(
+    database_url: String,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    ready: Option<std::sync::Arc<tokio::sync::Notify>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match crate::db::connect_raw_listener(&database_url).await {
+                Ok(mut listener) => {
+                    if let Err(e) = listener.client.batch_execute("LISTEN app_delivery").await {
+                        tracing::warn!(error=%e,"LISTEN app_delivery failed");
+                    } else {
+                        tracing::info!("Subscribed to PostgreSQL channel app_delivery");
+                        if let Some(ready) = &ready {
+                            ready.notify_one();
+                        }
+                        wake.notify_one();
+                        while let Some(n) = listener.notifications.recv().await {
+                            if n.channel() == "app_delivery" {
+                                wake.notify_one();
+                            }
+                        }
+                        tracing::warn!("app_delivery notification stream ended");
+                    }
+                }
+                Err(e) => tracing::warn!(error=%e,"Could not connect for LISTEN app_delivery"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    })
+}
+
+/// 滞留状況のゲージを更新する。管理 API と同じ定義（未 ACK かつ期限内）。
+pub async fn refresh_queue_metrics(db: &toasty::Db) -> Result<(), AppError> {
+    let mut db = db.clone();
+    let mut tx = db.transaction().await?;
+    // 未 ACK 行が多いときに配信（claim・ACK）と同じ DB を圧迫しないよう、時間を制限する。
+    toasty::sql::statement("SET LOCAL statement_timeout = '3s'")
+        .exec(&mut tx)
+        .await?;
+    let row=one(&mut tx,"SELECT json_build_object('depth',count(*),'oldest',COALESCE(extract(epoch from now()-min(created_at)),0))::text FROM app_deliveries WHERE acked_at IS NULL AND expires_at>now()",&[]).await?;
+    drop(tx);
+    super::dispatch_metrics::global().set_queue(
+        row["depth"].as_u64().unwrap_or(0),
+        row["oldest"].as_f64().unwrap_or(0.0),
+    );
+    Ok(())
+}
 /// Reserve a fair page across workers; inaccessible and currently leased events cannot occupy it.
-pub async fn http_candidates(s: &AppState) -> Result<Vec<Value>, AppError> {
-    let mut db = s.db.clone();
+pub async fn http_candidates(db: &toasty::Db) -> Result<Vec<Value>, AppError> {
+    let mut db = db.clone();
     let mut tx = db.transaction().await?;
     let installs=query(&mut tx,r#"WITH candidates AS (
  SELECT i.id FROM app_installations i JOIN apps a ON a.id=i.app_id
@@ -432,34 +659,206 @@ pub async fn http_candidates(s: &AppState) -> Result<Vec<Value>, AppError> {
 }
 
 /// Run one bounded dispatch batch, also used by the periodic worker.
-pub async fn http_pass(s: &AppState) -> Result<(), AppError> {
-    let installs = http_candidates(s).await?;
+pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
+    let (_keep, never_stops) = tokio::sync::watch::channel(false);
+    http_pass_until(db, &never_stops).await.map(|_| ())
+}
+
+/// `http_pass`。`stop` が true になった後は、バッチの途中でも新しいリースを取らない
+/// （取得済みの送信と ACK だけ終える）。1 件でも claim できたら true を返し、呼び出し側は
+/// 待たずに次の pass を回す。
+pub async fn http_pass_until(
+    db: &toasty::Db,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) -> Result<bool, AppError> {
+    let installs = http_candidates(db).await?;
+    let budget = HostBudget::default();
+    let budget = &budget;
+    // 予算が尽きて見送ったインストール。次の pass で先に回すため、巡回済みの印を戻す。
+    let skipped = std::sync::Mutex::new(std::collections::HashSet::<String>::new());
+    let skipped = &skipped;
+    // 1 件でも claim できたときだけ true。候補が上限（100）に達しても、配信上限などで 1 件も取れない
+    // なら false にして、次の通知か poll まで待つ（取れないのに即時に回し続けない）。
+    let mut more = false;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
-            let sends = futures_util::stream::iter(0..32)
-                .map(|_| http_install(s, i.clone()))
+            // 宛先ホストが落ちている間は配信を取らず（試行回数を消費せず）、開放時刻まで先送りする。
+            let fan_out = match super::circuit::global()
+                .check(&super::circuit::host_of(i["url"].as_str().unwrap_or("")))
+            {
+                // 1 インストールが 1 ホストの枠（16）を独り占めしないよう、同時に出すのは枠と同じ数。
+                // 同じホストの別インストールにも、同じ pass の中で順番が回る。
+                super::circuit::Decision::Closed => super::circuit::HOST_CONCURRENCY,
+                super::circuit::Decision::Probe => 1,
+                super::circuit::Decision::Open(wait) => {
+                    defer_install(db, i["id"].as_str().unwrap(), wait).await?;
+                    return Ok(false);
+                }
+            };
+            let sends = futures_util::stream::iter(0..fan_out)
+                .map(|_| http_install(db, i.clone(), stop, budget, skipped))
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
                 .await;
+            let mut claimed = false;
             for result in sends {
-                result?;
+                claimed |= result?;
             }
-            Ok::<(), AppError>(())
+            Ok::<bool, AppError>(claimed)
         })
         .buffer_unordered(8)
         .collect::<Vec<_>>()
         .await;
     for result in results {
-        result?;
+        more |= result?;
     }
+    release_skipped(db, skipped).await?;
 
+    Ok(more)
+}
+
+/// 予算が尽きて見送ったインストールを、次の `http_candidates` で先頭に来るようにする
+/// （`last_http_dispatch_at` を NULL に戻す）。巡回済み扱いのままだと、同じホストで先頭の
+/// インストールが毎回予算を使い切り、後ろのインストールに順番が回らない。
+async fn release_skipped(
+    db: &toasty::Db,
+    skipped: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> Result<(), AppError> {
+    let ids: Vec<String> = skipped.lock().unwrap().iter().cloned().collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut db = db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement(
+        "UPDATE app_installations SET last_http_dispatch_at=NULL WHERE id IN(SELECT jsonb_array_elements_text($1::text::jsonb))",
+    )
+    .bind(serde_json::to_string(&ids).unwrap())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
-async fn http_install(s: &AppState, i: Value) -> Result<(), AppError> {
+/// サーキットが開いている宛先の配信を、`wait` だけ先送りする。`attempts` は増やさない。
+/// 一度に大量の行を更新しないよう 1000 行ずつ・最大 10 回に分ける（残りは次の pass が続ける）。
+pub async fn defer_install(
+    db: &toasty::Db,
+    installation: &str,
+    wait: Duration,
+) -> Result<(), AppError> {
+    let secs = wait.as_secs_f64().ceil().to_string();
+    for _ in 0..10 {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        let moved = one(
+            &mut tx,
+            "WITH batch AS(SELECT id FROM app_deliveries WHERE installation_id=$1 AND acked_at IS NULL AND expires_at>now() AND available_at<=clock_timestamp() ORDER BY available_at,id LIMIT 1000 FOR UPDATE SKIP LOCKED),moved AS(UPDATE app_deliveries d SET available_at=clock_timestamp()+make_interval(secs=>$2::text::float8) FROM batch WHERE d.id=batch.id RETURNING d.id) SELECT json_build_object('count',count(*))::text FROM moved",
+            &[installation, secs.as_str()],
+        )
+        .await?;
+        tx.commit().await?;
+        if moved["count"].as_u64().unwrap_or(0) < 1000 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    Ok(())
+}
+
+/// 送信結果が宛先ホストの健康状態を表すか。応答があれば（4xx でも）生きているとみなす。
+fn breaker_outcome(result: &Result<(), AppError>) -> super::circuit::Outcome {
+    use super::circuit::Outcome;
+    match result {
+        Ok(()) => Outcome::Success,
+        Err(e) => match status_class(e) {
+            "dns" | "timeout" | "network" | "5xx" => Outcome::Failure,
+            "3xx" | "4xx" => Outcome::Success,
+            _ => Outcome::Ignore,
+        },
+    }
+}
+
+/// 1 回の pass で 1 ホストに送る件数の予約。上限の判定と予約を同じロックで行うので、
+/// claim を待っている複数の処理が同時に「上限未満」と判定して超えることはない。
+#[derive(Default)]
+struct HostBudget(std::sync::Mutex<std::collections::HashMap<String, usize>>);
+impl HostBudget {
+    /// 枠 16 件の 2 波ぶん（最悪でも 1 ホストあたり約 6 秒）。
+    const PER_PASS: usize = super::circuit::HOST_CONCURRENCY * 2;
+    /// 上限未満なら 1 件ぶん予約して true。
+    fn reserve(&self, host: &str) -> bool {
+        let mut map = self.0.lock().unwrap();
+        let used = map.entry(host.to_owned()).or_default();
+        if *used >= Self::PER_PASS {
+            return false;
+        }
+        *used += 1;
+        true
+    }
+    /// claim できなかった（送るものが無かった）ときに予約を戻す。
+    fn release(&self, host: &str) {
+        if let Some(used) = self.0.lock().unwrap().get_mut(host) {
+            *used = used.saturating_sub(1);
+        }
+    }
+}
+
+async fn http_install(
+    db: &toasty::Db,
+    i: Value,
+    stop: &tokio::sync::watch::Receiver<bool>,
+    budget: &HostBudget,
+    skipped: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> Result<bool, AppError> {
     let id = i["id"].as_str().unwrap();
-    if let Some(event) = claim(s, id).await? {
-        match tokio::time::timeout(
+    if *stop.borrow() {
+        return Ok(false);
+    }
+    let host = super::circuit::host_of(i["url"].as_str().unwrap_or(""));
+    // 同じホストへの同時送信を絞る。待つのは claim の前なので、リースは消費しない。
+    let breakers = super::circuit::global();
+    // 公開 IP でないアドレス直書きは送信前に弾かれる（外へ出ない）ので枠を使わない。
+    let sends_outside = host
+        .parse::<IpAddr>()
+        .map(public_ip)
+        .unwrap_or(!host.is_empty());
+    let _permit = if sends_outside {
+        Some(
+            breakers
+                .semaphore(&host)
+                .acquire_owned()
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?,
+        )
+    } else {
+        None
+    };
+    // 枠を待っている間に回路が開いたら、claim せずに戻す（試行回数を消費しない）。
+    // 先送りは次の http_pass が行う。
+    if breakers.is_open(&host) {
+        return Ok(false);
+    }
+    // 枠を待っている間に停止通知が来た場合も、claim せずに戻す。
+    if *stop.borrow() {
+        return Ok(false);
+    }
+    // 1 回の pass でこのホストに送る件数の上限（枠待ちの波が続いて pass が長引かないように）。
+    // 外に出ない宛先（公開 IP でないアドレス直書き）は数えない。
+    let counted = sends_outside;
+    if counted && !budget.reserve(&host) {
+        skipped.lock().unwrap().insert(id.to_owned());
+        return Ok(false);
+    }
+    let claimed = claim_http(db, id, stop).await;
+    let Some(event) = claimed? else {
+        if counted {
+            budget.release(&host);
+        }
+        return Ok(false);
+    };
+    {
+        let result = tokio::time::timeout(
             Duration::from_secs(3),
             deliver(
                 i["url"].as_str().unwrap_or(""),
@@ -468,19 +867,26 @@ async fn http_install(s: &AppState, i: Value) -> Result<(), AppError> {
             ),
         )
         .await
-        .unwrap_or_else(|_| Err(AppError::BadGateway("Event delivery timed out".into())))
-        {
+        .unwrap_or_else(|_| Err(AppError::BadGateway(MSG_TIMEOUT.into())));
+        breakers.record(&host, breaker_outcome(&result));
+        match result {
             Ok(()) => {
-                ack(
-                    s,
+                let m = super::dispatch_metrics::global();
+                m.record_attempt(true, "2xx");
+                if let Some(latency) = ack(
+                    db,
                     id,
                     event["delivery_id"].as_str().unwrap(),
                     event["ack_token"].as_str().unwrap(),
                 )
                 .await?
+                {
+                    m.observe_latency(latency);
+                }
             }
             Err(e) => {
-                let mut db = s.db.clone();
+                super::dispatch_metrics::global().record_attempt(false, status_class(&e));
+                let mut db = db.clone();
                 let mut tx = db.transaction().await?;
                 toasty::sql::statement(
                     "UPDATE app_deliveries SET last_error=$2 WHERE id=$1 AND lease_token=$3",
@@ -494,12 +900,18 @@ async fn http_install(s: &AppState, i: Value) -> Result<(), AppError> {
             }
         }
     }
-
-    Ok(())
+    Ok(true)
 }
 
-pub async fn cleanup(s: &AppState) -> Result<(), AppError> {
-    let mut db = s.db.clone();
+/// API 側の期限切れ行の削除と、配信履歴の 30 日保持の両方。
+pub async fn cleanup(db: &toasty::Db) -> Result<(), AppError> {
+    cleanup_expired(db).await?;
+    cleanup_deliveries(db).await
+}
+
+/// WebSocket・OAuth・UI・レート制限など、API 側の表の期限切れ行を消す。
+pub async fn cleanup_expired(db: &toasty::Db) -> Result<(), AppError> {
+    let mut db = db.clone();
     let mut tx = db.transaction().await?;
     for sql in [
         "DELETE FROM app_rate_limits WHERE window_start<now()-interval '1 hour'",
@@ -513,6 +925,12 @@ pub async fn cleanup(s: &AppState) -> Result<(), AppError> {
         toasty::sql::statement(sql).exec(&mut tx).await?;
     }
     tx.commit().await?;
+    Ok(())
+}
+
+/// 作成から 30 日を過ぎた配信履歴を消す。
+pub async fn cleanup_deliveries(db: &toasty::Db) -> Result<(), AppError> {
+    let mut db = db.clone();
     // Bounded transactions use the retention index; this worker never locks an entire backlog.
     for _ in 0..10 {
         let mut tx = db.transaction().await?;
@@ -561,6 +979,56 @@ async fn presence_allowed(s: &AppState, installation: &str) -> Result<bool, AppE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_budget_reserves_atomically_and_releases_unused_slots() {
+        let b = HostBudget::default();
+        for _ in 0..HostBudget::PER_PASS {
+            assert!(b.reserve("slow.example"));
+        }
+        assert!(
+            !b.reserve("slow.example"),
+            "the reservation must not exceed the cap"
+        );
+        assert!(b.reserve("other.example"));
+        // claim できなかった分は戻す。
+        b.release("slow.example");
+        assert!(b.reserve("slow.example"));
+        assert!(!b.reserve("slow.example"));
+    }
+    #[test]
+    fn classifies_delivery_errors_without_leaking_details() {
+        let bad = |m: &str| AppError::BadGateway(m.into());
+        assert_eq!(
+            status_class(&bad(&format!("{MSG_STATUS_PREFIX}503"))),
+            "5xx"
+        );
+        assert_eq!(
+            status_class(&bad(&format!("{MSG_STATUS_PREFIX}404"))),
+            "4xx"
+        );
+        assert_eq!(
+            status_class(&bad(&format!("{MSG_STATUS_PREFIX}302"))),
+            "3xx"
+        );
+        assert_eq!(status_class(&bad(MSG_SEND)), "network");
+        assert_eq!(status_class(&bad(MSG_TIMEOUT)), "timeout");
+        assert_eq!(status_class(&bad(MSG_LOOKUP)), "dns");
+        assert_eq!(
+            status_class(&AppError::BadRequest(MSG_NOT_PUBLIC.into())),
+            "blocked"
+        );
+        assert_eq!(status_class(&bad("something else")), "other");
+    }
+    #[test]
+    fn http_delivery_switch_defaults_to_enabled() {
+        assert!(http_delivery_enabled_from(None));
+        assert!(http_delivery_enabled_from(Some("")));
+        assert!(http_delivery_enabled_from(Some("true")));
+        for off in ["false", "0", "OFF", " disabled ", "no"] {
+            assert!(!http_delivery_enabled_from(Some(off)), "{off}");
+        }
+    }
     #[test]
     fn verifies_exact_challenge_responses() {
         assert!(valid_challenge_response(b"abc", "abc"));

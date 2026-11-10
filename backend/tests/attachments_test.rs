@@ -1023,3 +1023,231 @@ async fn test_attachments_presign_and_get_with_public_endpoint() -> anyhow::Resu
 
     Ok(())
 }
+
+#[tokio::test]
+async fn channel_image_metadata_is_generated_and_returned_to_home() -> anyhow::Result<()> {
+    channel_image_metadata_case("valid").await
+}
+
+#[tokio::test]
+async fn optional_image_metadata_failures_preserve_posting_and_reject_changed_sizes()
+-> anyhow::Result<()> {
+    for case in [
+        "get_unavailable",
+        "get_forbidden",
+        "broken_transfer",
+        "larger",
+        "smaller",
+        "too_large",
+        "invalid",
+    ] {
+        channel_image_metadata_case(case).await?;
+    }
+    Ok(())
+}
+
+async fn channel_image_metadata_case(case: &str) -> anyhow::Result<()> {
+    let mut image = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(12, 8).write_to(&mut image, image::ImageFormat::Png)?;
+    let bytes = if case == "invalid" {
+        b"not an image".to_vec()
+    } else {
+        image.into_inner()
+    };
+    let expected_size = if case == "too_large" {
+        50 * 1024 * 1024 + 1
+    } else {
+        bytes.len()
+    };
+    let storage = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .insert_header("content-length", expected_size.to_string()),
+        )
+        .mount(&storage)
+        .await;
+    let get_response =
+        match case {
+            "get_unavailable" => wiremock::ResponseTemplate::new(503),
+            "get_forbidden" => wiremock::ResponseTemplate::new(403),
+            "larger" => wiremock::ResponseTemplate::new(200)
+                .set_body_bytes([bytes.clone(), vec![0]].concat()),
+            "smaller" => wiremock::ResponseTemplate::new(200)
+                .set_body_bytes(bytes[..bytes.len() - 1].to_vec()),
+            _ => wiremock::ResponseTemplate::new(200).set_body_bytes(bytes.clone()),
+        };
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .respond_with(get_response)
+        .mount(&storage)
+        .await;
+    let transfers = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut transfer_server = None;
+    let endpoint = if case == "broken_transfer" {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let partial = bytes[..bytes.len() / 2].to_vec();
+        let transfers = transfers.clone();
+        transfer_server = Some(tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = Vec::new();
+                let mut chunk = [0; 1024];
+                while !request.windows(4).any(|v| v == b"\r\n\r\n") && request.len() < 16384 {
+                    let Ok(n) = socket.read(&mut chunk).await else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..n]);
+                }
+                let get = request.starts_with(b"GET ");
+                let headers = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {expected_size}\r\nConnection: close\r\n\r\n"
+                );
+                if socket.write_all(headers.as_bytes()).await.is_err() {
+                    continue;
+                }
+                if get {
+                    transfers.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let _ = socket.write_all(&partial).await;
+                }
+                let _ = socket.shutdown().await;
+            }
+        }));
+        endpoint
+    } else {
+        storage.uri()
+    };
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.s3.endpoint = endpoint;
+    if case == "too_large" {
+        config.s3.max_file_size = expected_size as u64;
+    }
+    config.s3.force_path_style = true;
+    config.s3.access_key_id = "test".into();
+    config.s3.secret_access_key = "test".into();
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    let channel = uuid::Uuid::new_v4().to_string();
+    let attachment = uuid::Uuid::new_v4().to_string();
+    let message = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,false)",
+    )
+    .bind(channel.as_str())
+    .bind(user.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+    )
+    .bind(user.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement("INSERT INTO attachments(id,uploader_id,channel_id,file_name,file_size,content_type,storage_key) VALUES($1,$2,$3,'photo.png',$4::bigint,'image/png','photo')")
+        .bind(attachment.as_str()).bind(user.as_str()).bind(channel.as_str()).bind(expected_size.to_string()).exec(&mut db).await?;
+    let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
+        .header("content-type","application/json").header("X-Dev-User", &user)
+        .body(Body::from(json!({"id":message,"channel_id":channel,"content":"photo","attachment_ids":[attachment]}).to_string()))?).await?;
+    let expected_status = if matches!(case, "larger" | "smaller") {
+        StatusCode::BAD_GATEWAY
+    } else {
+        StatusCode::OK
+    };
+    assert_eq!(response.status(), expected_status, "case: {case}");
+    let saved = Attachment::get_by_id(&mut db, attachment.as_str()).await?;
+    if expected_status != StatusCode::OK {
+        assert!(saved.message_id.is_none());
+        assert!(
+            backend::models::Message::filter(
+                backend::models::Message::fields().id().eq(message.as_str())
+            )
+            .first()
+            .exec(&mut db)
+            .await?
+            .is_none()
+        );
+        cleanup_metadata_case(&mut db, &attachment, &message, &channel).await?;
+        return Ok(());
+    }
+    assert_eq!(saved.width, (case == "valid").then_some(12));
+    assert_eq!(saved.height, (case == "valid").then_some(8));
+    assert_eq!(saved.blurhash.is_some(), case == "valid");
+    if let Some(hash) = &saved.blurhash {
+        assert!(blurhash::decode(hash, 2, 2, 1.0).is_ok());
+    }
+    toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,channel_id) VALUES($1,$2,'photo',$3) ON CONFLICT DO NOTHING")
+        .bind(message.as_str()).bind(user.as_str()).bind(channel.as_str()).exec(&mut db).await?;
+    let gets = storage
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "GET")
+        .count();
+    if case == "too_large" {
+        assert_eq!(gets, 0);
+    } else if case == "broken_transfer" {
+        assert!(transfers.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    } else {
+        assert!(gets > 0);
+    }
+    if let Some(server) = transfer_server {
+        server.abort();
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/home/{message}"))
+                .header("X-Dev-User", &user)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let post: Value = serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await?)?;
+    assert_eq!(post["attachments"][0]["width"], json!(saved.width));
+    assert_eq!(post["attachments"][0]["height"], json!(saved.height));
+    assert_eq!(post["media"][0]["blurhash"], json!(saved.blurhash));
+    cleanup_metadata_case(&mut db, &attachment, &message, &channel).await
+}
+
+async fn cleanup_metadata_case(
+    db: &mut toasty::Db,
+    attachment: &str,
+    message: &str,
+    channel: &str,
+) -> anyhow::Result<()> {
+    toasty::sql::statement("DELETE FROM attachments WHERE id=$1")
+        .bind(attachment)
+        .exec(&mut *db)
+        .await?;
+    toasty::sql::statement("DELETE FROM home_posts WHERE id=$1")
+        .bind(message)
+        .exec(&mut *db)
+        .await?;
+    toasty::sql::statement("DELETE FROM messages WHERE id=$1")
+        .bind(message)
+        .exec(&mut *db)
+        .await?;
+    toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1")
+        .bind(channel)
+        .exec(&mut *db)
+        .await?;
+    // App deliveries retain references to this channel and its creator. Use the
+    // production soft-delete lifecycle rather than erasing delivery history.
+    toasty::sql::statement("UPDATE channels SET deleted_at=now() AT TIME ZONE 'UTC' WHERE id=$1")
+        .bind(channel)
+        .exec(&mut *db)
+        .await?;
+    Ok(())
+}
