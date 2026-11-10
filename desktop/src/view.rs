@@ -1857,6 +1857,7 @@ impl WorkspaceView {
             zoo2_client_core::electric::rows::Attachment,
             Option<String>,
             bool,
+            bool,
         )> = state
             .store
             .attachments_for_message(&message.channel_id, &message.id)
@@ -1865,13 +1866,14 @@ impl WorkspaceView {
                 let url = state.attachment_download_url(&att.id);
                 let is_fetching = state.fetching_attachment_urls.contains(&att.id)
                     || state.pending_open_attachments.contains(&att.id);
-                (att.clone(), url, is_fetching)
+                let needs_refresh = state.attachment_url_needs_refresh(&att.id);
+                (att.clone(), url, is_fetching, needs_refresh)
             })
             .collect();
         let attachment_views: Vec<Div> = attachments_with_urls
             .into_iter()
-            .map(|(att, url, is_fetching)| {
-                render_attachment_item(&att, url, is_fetching, &theme, cx)
+            .map(|(att, url, is_fetching, needs_refresh)| {
+                render_attachment_item(&att, url, is_fetching, needs_refresh, &theme, cx)
             })
             .collect();
 
@@ -3390,29 +3392,6 @@ impl Render for WorkspaceView {
                 std::mem::take(&mut s.pending_thread_scroll_to_bottom),
             )
         });
-        if scroll_to_bottom {
-            self.timeline_scroll.scroll_to_bottom();
-            self.state
-                .update(cx, |s, _| s.update_timeline_view_state(window_active, true));
-        } else {
-            let max_y = self.timeline_scroll.max_offset().height;
-            let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));
-            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
-            self.state.update(cx, |s, _| {
-                s.update_timeline_view_state(window_active, at_bottom)
-            });
-        }
-        if thread_scroll_to_bottom {
-            self.thread_scroll.scroll_to_bottom();
-            self.state
-                .update(cx, |s, _| s.update_thread_scroll_state(true));
-        } else {
-            let max_y = self.thread_scroll.max_offset().height;
-            let cur_y = (-self.thread_scroll.offset().y).max(px(0.0));
-            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
-            self.state
-                .update(cx, |s, _| s.update_thread_scroll_state(at_bottom));
-        }
 
         let thread_root = self
             .state
@@ -3429,6 +3408,20 @@ impl Render for WorkspaceView {
             self.render_timeline_view(pending_scroll_id.as_deref(), cx);
         if let Some(target_idx) = timeline_scroll_target {
             self.timeline_scroll.scroll_to_item(target_idx);
+            self.state.update(cx, |s, _| {
+                s.update_timeline_view_state(window_active, false);
+            });
+        } else if scroll_to_bottom {
+            self.timeline_scroll.scroll_to_bottom();
+            self.state
+                .update(cx, |s, _| s.update_timeline_view_state(window_active, true));
+        } else {
+            let max_y = self.timeline_scroll.max_offset().height;
+            let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));
+            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
+            self.state.update(cx, |s, _| {
+                s.update_timeline_view_state(window_active, at_bottom)
+            });
         }
 
         let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
@@ -3439,6 +3432,18 @@ impl Render for WorkspaceView {
         };
         if let Some(target_idx) = thread_scroll_target {
             self.thread_scroll.scroll_to_item(target_idx);
+            self.state
+                .update(cx, |s, _| s.update_thread_scroll_state(false));
+        } else if thread_scroll_to_bottom {
+            self.thread_scroll.scroll_to_bottom();
+            self.state
+                .update(cx, |s, _| s.update_thread_scroll_state(true));
+        } else {
+            let max_y = self.thread_scroll.max_offset().height;
+            let cur_y = (-self.thread_scroll.offset().y).max(px(0.0));
+            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
+            self.state
+                .update(cx, |s, _| s.update_thread_scroll_state(at_bottom));
         }
 
         let state_ref = self.state.read(cx);
@@ -3708,6 +3713,7 @@ pub fn render_attachment_item(
     att: &zoo2_client_core::electric::rows::Attachment,
     download_url: Option<String>,
     is_fetching: bool,
+    needs_refresh: bool,
     theme: &theme::Theme,
     cx: &mut Context<WorkspaceView>,
 ) -> Div {
@@ -3715,6 +3721,19 @@ pub fn render_attachment_item(
     let size_label = format_file_size(att.file_size);
     let file_name = att.file_name.clone();
     let att_id = att.id.clone();
+
+    // 描画時に未解決または期限切れ間近で取得中でなければ自動で取得を開始する
+    if needs_refresh && !is_fetching {
+        let id = att_id.clone();
+        let view = cx.entity().clone();
+        cx.defer(move |cx| {
+            view.update(cx, |this, cx| {
+                this.state.update(cx, |s, _| {
+                    s.ensure_attachment_url(id);
+                });
+            });
+        });
+    }
 
     if is_img {
         if let Some(url) = download_url {
@@ -3740,18 +3759,6 @@ pub fn render_attachment_item(
                         .rounded_md(),
                 )
         } else {
-            // 描画時に未解決かつ取得中でなければ自動で取得を開始する
-            if !is_fetching {
-                let id = att_id.clone();
-                let view = cx.entity().clone();
-                cx.defer(move |cx| {
-                    view.update(cx, |this, cx| {
-                        this.state.update(cx, |s, _| {
-                            s.ensure_attachment_url(id);
-                        });
-                    });
-                });
-            }
             let att_id_retry = att_id.clone();
             div()
                 .mt_1p5()
@@ -3771,6 +3778,7 @@ pub fn render_attachment_item(
                     cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                         let id = att_id_retry.clone();
                         this.state.update(cx, |s, cx| {
+                            s.failed_attachment_urls.remove(&id);
                             s.ensure_attachment_url(id);
                             cx.notify();
                         });
@@ -3785,7 +3793,6 @@ pub fn render_attachment_item(
         }
     } else {
         let att_id_open = att_id;
-        let fallback_url = download_url;
         let sub_label = if is_fetching {
             format!("{size_label} (URL取得中…)")
         } else {
@@ -3809,7 +3816,7 @@ pub fn render_attachment_item(
                         cx.notify();
                         res
                     });
-                    if let Some(url) = url_opt.or_else(|| fallback_url.clone()) {
+                    if let Some(url) = url_opt {
                         cx.open_url(&url);
                     }
                 }),
