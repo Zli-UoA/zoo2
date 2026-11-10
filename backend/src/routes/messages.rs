@@ -169,11 +169,34 @@ pub(crate) async fn create_message_impl(
         ))
     })?;
 
+    let supplied_id = payload.id.clone();
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
+
+    // クライアント指定の ID が既に存在する場合、同一属性の再送であれば既存メッセージを返して成功とする (冪等性)
+    if supplied_id.is_some() {
+        let existing = Message::filter(Message::fields().id().eq(id.as_str()))
+            .first()
+            .exec(&mut db)
+            .await?;
+        if let Some(existing_msg) = existing {
+            if existing_msg.user_id == auth_user.id
+                && existing_msg.channel_id == payload.channel_id
+                && existing_msg.content == payload.content
+                && existing_msg.parent_id == payload.parent_id
+                && existing_msg.deleted_at.is_none()
+            {
+                return Ok(Json(ApiResponse::new(
+                    MessageResponse::from(existing_msg),
+                    None,
+                )));
+            }
+            return Err(AppError::Conflict("Idempotency key already used".into()));
+        }
+    }
 
     // 添付ファイルの検証 (外部ストレージへの HeadObject 検証はトランザクション外で実行)
     let mut verified_attachments = Vec::new();

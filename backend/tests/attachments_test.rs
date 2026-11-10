@@ -490,6 +490,48 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
+    // 5b. Alice が同じ message_id かつ同一内容（同一添付）で再度 POST した場合、
+    //     重複エラーや添付二重紐付けエラーにならず、200 OK で既存メッセージが返ること（冪等性）
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_valid)?))?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let res: Value = serde_json::from_slice(&body)?;
+    assert_eq!(res["data"]["id"].as_str().unwrap(), message_id);
+
+    // 5c. Alice が同じ message_id で異なる内容を POST した場合、409 Conflict になること
+    let msg_payload_conflict = json!({
+        "id": message_id,
+        "channel_id": channel_id,
+        "content": "Different content with same id",
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_conflict)?))?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // 5d. Bob が Alice の message_id で POST した場合、409 Conflict になること
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &bob_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_valid)?))?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
     // 6. DB 上で attachments.message_id が設定されていることを検証
     let mut db_conn = db.clone();
     let att_record = Attachment::get_by_id(&mut db_conn, &attachment_id).await?;

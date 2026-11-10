@@ -5363,6 +5363,7 @@ mod tests {
         let open_res = state.open_or_queue_attachment("att_fail");
         assert!(open_res.is_none());
         assert!(!state.failed_attachment_urls.contains_key("att_fail"));
+        assert!(state.fetching_attachment_urls.contains("att_fail"));
         assert!(state.pending_open_attachments.contains("att_fail"));
     }
 
@@ -5423,11 +5424,21 @@ mod tests {
         // 2回目の再送時、新しい UUID ではなく初回と同じ message_id が再利用されること
         assert!(state.submit_message("初回送信メッセージ".into()));
         assert_eq!(state.in_flight_submissions.len(), 1);
+        let resend_submission_id = state.in_flight_submissions[0].0;
         let resend_msg_id = state.in_flight_submissions[0]
             .1
             .message_id
             .clone()
             .expect("再送時にも message_id が保持されていること");
         assert_eq!(resend_msg_id, first_msg_id);
+
+        // サーバー側で重複 ID の再送が受理され、成功イベントを受信した場合
+        state.on_app_event(AppEvent::SubmissionSucceeded {
+            submission_id: resend_submission_id,
+            sent_attachment_ids: Vec::new(),
+        });
+        assert!(state.in_flight_submissions.is_empty());
+        assert!(state.composer_draft.is_empty());
+        assert!(state.pending_composer_message_id.is_none());
     }
 }
