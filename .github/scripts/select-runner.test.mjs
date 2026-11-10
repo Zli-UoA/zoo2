@@ -22,15 +22,15 @@ const privateRepo = {repository: {private: true}};
 const privateRepos = [{name: 'AuthZ'}, {name: 'repo'}];
 
 const cases = [
-  ['kubecamp first', {runners: [camp(), arc()]}, K, H],
-  ['busy kubecamp falls back to hosted before ARC', {runners: [camp({busy: true}), arc()]}, H, H],
-  ['offline kubecamp is ignored', {runners: [camp({status: 'offline'}), arc()]}, H, H],
+  ['kubecamp first', {runners: [camp(), arc()]}, K, H, A],
+  ['busy kubecamp falls back to hosted before ARC', {runners: [camp({busy: true}), arc()]}, H, H, A],
+  ['offline kubecamp is ignored', {runners: [camp({status: 'offline'}), arc()]}, H, H, A],
   ['no runners', {runners: []}, H, H],
   ['kubecamp name needs its routing label', {runners: [camp({labels: []})]}, H, H],
   ['kubecamp label matches another name', {runners: [camp({name: 'another'})]}, K, H],
   ['missing labels are safe', {runners: [camp({labels: undefined})]}, H, H],
-  ['API error keeps kubecamp', {error: true}, K, H],
-  ['missing token keeps kubecamp', {token: false}, K, H],
+  ['API error keeps kubecamp and ARC', {error: true}, K, H, A],
+  ['missing token keeps kubecamp and ARC', {token: false}, K, H, A],
   ['fork PR is hosted', {event: 'pull_request', payload: pull('someone/repo')}, H, H],
   ['same-repo PR prefers kubecamp', {event: 'pull_request', payload: {...pull('Zli-UoA/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
   ['trusted pull_request_target can use kubecamp', {event: 'pull_request_target', payload: {...pull('someone/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
@@ -45,8 +45,18 @@ const cases = [
     warning: 'Hosted minutes unavailable: GET /organizations/{org}/settings/billing/usage (403; accepted permissions: administration=read)'}, A, A],
   ['repository list error names the call', {payload: privateRepo, reposError: true, warning: 'Hosted minutes unavailable: GET /orgs/{org}/repos (403)'}, A, A],
   ['private without token uses ARC', {payload: privateRepo, token: false}, K, A],
+  ['idle ARC is preferred over hosted for Docker only', {runners: [arc()]}, H, H, A],
+  ['busy ARC falls back to hosted for Docker', {runners: [arc('a', {busy: true})]}, H, H],
+  ['offline ARC is ignored', {runners: [arc('a', {status: 'offline'})]}, H, H],
+  ['one idle ARC runner among busy ones is enough', {runners: [arc('a', {busy: true}), arc('b')]}, H, H, A],
+  ['ARC runner needs its scale set label', {runners: [arc('a', {labels: []})]}, H, H],
+  ['missing ARC labels are safe', {runners: [arc('a', {labels: undefined})]}, H, H],
+  ['idle ARC while private repository is out of minutes', {payload: privateRepo, runners: [arc()], usage: [usage('AuthZ', 1900)]}, A, A],
+  ['busy ARC and no minutes queues on ARC', {payload: privateRepo, runners: [arc('a', {busy: true})], usage: [usage('AuthZ', 1900)]}, A, A],
+  ['kubecamp and ARC are chosen independently', {runners: [camp({busy: true}), arc('a', {busy: true})]}, H, H],
+  ['fork PR stays hosted even with an idle ARC', {event: 'pull_request', payload: pull('someone/repo'), runners: [arc()]}, H, H],
 ];
-for (const [name, input, expected, hostedExpected] of cases) {
+for (const [name, input, expected, hostedExpected, dockerExpected = hostedExpected] of cases) {
   test(`select-runner: ${name}`, async () => {
     const outputs = {};
     const calls = {runners: 0, repos: 0, billing: 0};
@@ -78,7 +88,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
         if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403, response: {headers: {'x-accepted-github-permissions': 'administration=read'}}});
         return {data: {usageItems: input.usage || []}};
       }});
-    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': hostedExpected});
+    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': dockerExpected, 'large-runs-on': hostedExpected});
     const checksMinutes = !fork && input.token !== false && payload.repository?.private !== false;
     assert.deepEqual(calls, {
       runners: fork || input.token === false ? 0 : 1,

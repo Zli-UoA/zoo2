@@ -3,6 +3,9 @@ name: Select runner
 # Workload priority: kubecamp -> hosted -> zli-k8s. Docker and large jobs skip
 # kubecamp. Hosted is free for this public repository; zli-k8s is the fallback
 # only when the private-repository included minutes run out.
+# Docker jobs (docker-runs-on) try zli-k8s first, on the ARC runners of zoo07/zoo08,
+# while it has an idle runner, then hosted, then zli-k8s again once hosted is unavailable.
+# Large jobs (large-runs-on) keep the hosted -> zli-k8s order.
 # CI_RUNNER now only chooses the selector host, not the workload destination.
 on:
   workflow_call:
@@ -53,16 +56,16 @@ jobs:
             const LINUX_MINUTE_PRICE = 0.006;
             const org = context.repo.owner;
             const request = {timeout: 10000};
-            const use = (runsOn, hostedRunsOn, reason) => {
+            const use = (runsOn, largeRunsOn, dockerRunsOn, reason) => {
               core.setOutput('runs-on', JSON.stringify(runsOn));
-              core.setOutput('docker-runs-on', JSON.stringify(hostedRunsOn));
-              core.setOutput('large-runs-on', JSON.stringify(hostedRunsOn));
-              core.info(`Docker-free: ${runsOn}; Docker/large: ${hostedRunsOn}: ${reason}`);
+              core.setOutput('docker-runs-on', JSON.stringify(dockerRunsOn));
+              core.setOutput('large-runs-on', JSON.stringify(largeRunsOn));
+              core.info(`Docker-free: ${runsOn}; Docker: ${dockerRunsOn}; large: ${largeRunsOn}: ${reason}`);
             };
             const pr = context.payload.pull_request;
             // Fork code uses hosted runners; pull_request_target never checks out PR code.
             if (context.eventName === 'pull_request' && pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
-              return use(HOSTED, HOSTED, 'fork pull request');
+              return use(HOSTED, HOSTED, HOSTED, 'fork pull request');
             }
             const hasToken = process.env.HAS_STATUS_TOKEN === 'true';
             // Hosted is free for public repositories. Private ones share the monthly
@@ -98,18 +101,22 @@ jobs:
             };
             const [hostedAvailable, minutes] = await checkHosted();
             const hostedRunsOn = hostedAvailable ? HOSTED : SCALE_SET;
-            // Unknown kubecamp availability keeps the first eligible pool.
+            // Unknown runner availability keeps the first eligible pool: kubecamp for
+            // Docker-free jobs, zli-k8s for Docker jobs.
             if (!hasToken) {
-              return use(KUBECAMP, hostedRunsOn, `RUNNER_STATUS_TOKEN is not set; ${minutes}`);
+              return use(KUBECAMP, hostedRunsOn, SCALE_SET, `RUNNER_STATUS_TOKEN is not set; ${minutes}`);
             }
             let runners;
             try {
               runners = await github.paginate(github.rest.actions.listSelfHostedRunnersForOrg, {org, per_page: 100, request});
             } catch (error) {
               core.warning(`Runner status unavailable (${error.status || 'network error'})`);
-              return use(KUBECAMP, hostedRunsOn, `runner status unavailable; ${minutes}`);
+              return use(KUBECAMP, hostedRunsOn, SCALE_SET, `runner status unavailable; ${minutes}`);
             }
-            const kubecamp = runners.filter(r => r.status === 'online' && !r.busy &&
-              (r.labels || []).some(l => l.name === KUBECAMP));
-            return use(kubecamp.length > 0 ? KUBECAMP : hostedRunsOn, hostedRunsOn,
-              `${kubecamp.length} idle kubecamp; ${minutes}`);
+            const idle = label => runners.filter(r => r.status === 'online' && !r.busy &&
+              (r.labels || []).some(l => l.name === label));
+            const kubecamp = idle(KUBECAMP);
+            // minRunners keeps one idle zli-k8s runner, so the scale set looks free until both are busy.
+            const arc = idle(SCALE_SET);
+            return use(kubecamp.length > 0 ? KUBECAMP : hostedRunsOn, hostedRunsOn, arc.length > 0 ? SCALE_SET : hostedRunsOn,
+              `${kubecamp.length} idle kubecamp, ${arc.length} idle zli-k8s; ${minutes}`);
