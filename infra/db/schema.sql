@@ -194,6 +194,21 @@ CREATE TABLE channel_webhooks (
 );
 CREATE INDEX idx_channel_webhooks_channel_id ON channel_webhooks (channel_id);
 
+CREATE TABLE channel_notes (
+  id text NOT NULL PRIMARY KEY,
+  channel_id text NOT NULL REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  title varchar(200) NOT NULL,
+  content text NOT NULL,
+  position integer NOT NULL DEFAULT 0,
+  deleted_at timestamp(3),
+  version integer NOT NULL DEFAULT 1 CHECK (version > 0),
+  created_user_id text NOT NULL REFERENCES users (id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_channel_notes_channel_updated ON channel_notes (channel_id, updated_at DESC, id);
+CREATE INDEX idx_channel_notes_channel_position ON channel_notes (channel_id, position) WHERE deleted_at IS NULL;
+CREATE INDEX idx_channel_notes_deleted_at ON channel_notes (channel_id, deleted_at) WHERE deleted_at IS NOT NULL;
 -- Structured integration cards are separate from user-controlled message content.
 ALTER TABLE messages ADD COLUMN card text;
 ALTER TABLE users ADD COLUMN is_bot boolean NOT NULL DEFAULT false;
@@ -1954,6 +1969,14 @@ CREATE INDEX notification_events_owner ON notification_events(user_id, created_a
 CREATE INDEX notification_events_unread ON notification_events(user_id) WHERE NOT is_read;
 CREATE INDEX notification_events_message ON notification_events(message_id) WHERE message_id IS NOT NULL;
 ALTER TABLE notification_events REPLICA IDENTITY FULL;
+-- Match the existing ElectricSQL identities established by earlier migrations.
+ALTER TABLE attachments REPLICA IDENTITY FULL;
+ALTER TABLE channel_user REPLICA IDENTITY FULL;
+ALTER TABLE channels REPLICA IDENTITY FULL;
+ALTER TABLE message_reactions REPLICA IDENTITY FULL;
+ALTER TABLE messages REPLICA IDENTITY FULL;
+ALTER TABLE notifications REPLICA IDENTITY FULL;
+ALTER TABLE users REPLICA IDENTITY FULL;
 
 -- Updatable, storage-free projections preserve the existing source-specific DTOs.
 CREATE VIEW channel_notifications AS
