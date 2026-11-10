@@ -29,7 +29,7 @@ tokio-postgres-rustls = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 futures-util = "0.3"
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 emojis = "0.6"
 imagesize = "0.14"
 blurhash = "0.2"
