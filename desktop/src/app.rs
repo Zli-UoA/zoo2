@@ -1488,6 +1488,76 @@ impl AppState {
         }
     }
 
+    /// チャンネルの下書き（saved_drafts, 現在の入力欄）および添付ファイルを送信先（Target）ごとに正しく紐付けて failed_drafts へ退避する。
+    /// 何らかの入力内容または添付ファイルが退避された場合は true を返す。
+    fn evict_channel_drafts(&mut self, channel_id: &str) -> bool {
+        let s_gen = self.session_gen;
+        let (ch_atts, rem_atts): (Vec<_>, Vec<_>) = self
+            .pending_attachments
+            .drain(..)
+            .partition(|a| a.channel_id == channel_id && a.session_gen == s_gen);
+        self.pending_attachments = rem_atts;
+
+        let mut atts_by_target: std::collections::HashMap<Target, Vec<PendingAttachment>> =
+            std::collections::HashMap::new();
+        for a in ch_atts {
+            if a.attachment_id.is_some() && !a.is_uploading && a.error.is_none() {
+                atts_by_target.entry(a.target.clone()).or_default().push(a);
+            }
+        }
+
+        let is_current = self.current_channel.as_deref() == Some(channel_id);
+
+        let mut targets_with_data: std::collections::HashSet<Target> =
+            std::collections::HashSet::new();
+        for (ch, target) in self.saved_drafts.keys() {
+            if ch == channel_id {
+                targets_with_data.insert(target.clone());
+            }
+        }
+        for target in atts_by_target.keys() {
+            targets_with_data.insert(target.clone());
+        }
+        if is_current {
+            targets_with_data.insert(self.target.clone());
+        }
+
+        let mut had_content = false;
+        for target in targets_with_data {
+            let (content, message_id) = if is_current && self.target == target {
+                (
+                    std::mem::take(&mut self.composer_draft),
+                    self.pending_composer_message_id.take(),
+                )
+            } else {
+                (
+                    self.saved_drafts
+                        .remove(&(channel_id.to_string(), target.clone()))
+                        .unwrap_or_default(),
+                    self.saved_draft_message_ids
+                        .remove(&(channel_id.to_string(), target.clone())),
+                )
+            };
+            let atts = atts_by_target.remove(&target).unwrap_or_default();
+            if !content.trim().is_empty() || !atts.is_empty() {
+                had_content = true;
+                self.push_failed_draft(FailedDraft {
+                    channel_id: channel_id.to_string(),
+                    target,
+                    content,
+                    attachments: atts,
+                    message_id,
+                });
+            }
+        }
+
+        self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
+        self.saved_draft_message_ids
+            .retain(|(ch, _), _| ch != channel_id);
+
+        had_content
+    }
+
     /// チャンネルの閲覧権限を失った、またはチャンネルが削除されたときに状態を片付ける。
     /// 入力中または退避済みだった下書きは失われないよう `failed_drafts` へ退避する。
     fn evict_channel(&mut self, channel_id: &str) {
@@ -1496,27 +1566,6 @@ impl AppState {
         self.last_read_marked.remove(channel_id);
         self.read_mark_in_flight.remove(channel_id);
         self.read_mark_backoff_until.remove(channel_id);
-        let evicted_saved: Vec<FailedDraft> = self
-            .saved_drafts
-            .iter()
-            .filter(|((ch, _), content)| ch == channel_id && !content.trim().is_empty())
-            .map(|((ch, target), content)| FailedDraft {
-                channel_id: ch.clone(),
-                target: target.clone(),
-                content: content.clone(),
-                attachments: Vec::new(),
-                message_id: self
-                    .saved_draft_message_ids
-                    .get(&(ch.clone(), target.clone()))
-                    .cloned(),
-            })
-            .collect();
-        self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
-        self.saved_draft_message_ids
-            .retain(|(ch, _), _| ch != channel_id);
-        for draft in evicted_saved {
-            self.push_failed_draft(draft);
-        }
         if self
             .newest_shown
             .as_ref()
@@ -1524,28 +1573,8 @@ impl AppState {
         {
             self.newest_shown = None;
         }
+        self.evict_channel_drafts(channel_id);
         if self.current_channel.as_deref() == Some(channel_id) {
-            let s_gen = self.session_gen;
-            let ch = channel_id.to_string();
-            let (current_atts, remaining_atts): (Vec<_>, Vec<_>) = self
-                .pending_attachments
-                .drain(..)
-                .partition(|a| a.channel_id == ch && a.session_gen == s_gen);
-            self.pending_attachments = remaining_atts;
-            let valid_atts: Vec<PendingAttachment> = current_atts
-                .into_iter()
-                .filter(|a| a.attachment_id.is_some() && !a.is_uploading && a.error.is_none())
-                .collect();
-            if !self.composer_draft.trim().is_empty() || !valid_atts.is_empty() {
-                let draft = FailedDraft {
-                    channel_id: channel_id.to_string(),
-                    target: self.target.clone(),
-                    content: self.composer_draft.clone(),
-                    attachments: valid_atts,
-                    message_id: self.pending_composer_message_id.take(),
-                };
-                self.push_failed_draft(draft);
-            }
             self.stop_typing();
             self.typing.clear();
             self.current_channel = None;
@@ -1569,56 +1598,14 @@ impl AppState {
     /// チャンネルがアーカイブまたは投稿制限状態になったときに、編集・入力中の下書きを `failed_drafts` へ退避し、
     /// 編集ロックや返信ターゲットを解除して別チャンネルへの切り替えや閲覧を妨げないようにする。
     fn reconcile_archived_or_restricted_channel(&mut self, channel_id: &str, is_archived: bool) {
-        let evicted_saved: Vec<FailedDraft> = self
-            .saved_drafts
-            .iter()
-            .filter(|((ch, _), content)| ch == channel_id && !content.trim().is_empty())
-            .map(|((ch, target), content)| FailedDraft {
-                channel_id: ch.clone(),
-                target: target.clone(),
-                content: content.clone(),
-                attachments: Vec::new(),
-                message_id: self
-                    .saved_draft_message_ids
-                    .get(&(ch.clone(), target.clone()))
-                    .cloned(),
-            })
-            .collect();
-        self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
-        self.saved_draft_message_ids
-            .retain(|(ch, _), _| ch != channel_id);
-        for draft in evicted_saved {
-            self.push_failed_draft(draft);
-        }
         if self.current_channel.as_deref() != Some(channel_id) {
+            self.evict_channel_drafts(channel_id);
             return;
         }
         if is_archived {
             let was_editing = matches!(self.target, Target::Edit(_));
-            let s_gen = self.session_gen;
-            let ch = channel_id.to_string();
-            let (current_atts, remaining_atts): (Vec<_>, Vec<_>) = self
-                .pending_attachments
-                .drain(..)
-                .partition(|a| a.channel_id == ch && a.session_gen == s_gen);
-            self.pending_attachments = remaining_atts;
-            let valid_atts: Vec<PendingAttachment> = current_atts
-                .into_iter()
-                .filter(|a| a.attachment_id.is_some() && !a.is_uploading && a.error.is_none())
-                .collect();
-            let had_content = !self.composer_draft.trim().is_empty() || !valid_atts.is_empty();
-            if had_content {
-                let draft = FailedDraft {
-                    channel_id: channel_id.to_string(),
-                    target: self.target.clone(),
-                    content: std::mem::take(&mut self.composer_draft),
-                    attachments: valid_atts,
-                    message_id: self.pending_composer_message_id.take(),
-                };
-                self.push_failed_draft(draft);
-            } else {
-                self.composer_draft.clear();
-            }
+            let had_content = self.evict_channel_drafts(channel_id);
+            self.composer_draft.clear();
             self.pending_composer_text = Some((String::new(), None));
             self.stop_typing();
             self.typing.clear();
@@ -1631,27 +1618,8 @@ impl AppState {
                 );
             }
         } else if !matches!(self.target, Target::Edit(_)) {
-            let s_gen = self.session_gen;
-            let ch = channel_id.to_string();
-            let (current_atts, remaining_atts): (Vec<_>, Vec<_>) = self
-                .pending_attachments
-                .drain(..)
-                .partition(|a| a.channel_id == ch && a.session_gen == s_gen);
-            self.pending_attachments = remaining_atts;
-            let valid_atts: Vec<PendingAttachment> = current_atts
-                .into_iter()
-                .filter(|a| a.attachment_id.is_some() && !a.is_uploading && a.error.is_none())
-                .collect();
-            let had_content = !self.composer_draft.trim().is_empty() || !valid_atts.is_empty();
+            let had_content = self.evict_channel_drafts(channel_id);
             if had_content {
-                let draft = FailedDraft {
-                    channel_id: channel_id.to_string(),
-                    target: self.target.clone(),
-                    content: std::mem::take(&mut self.composer_draft),
-                    attachments: valid_atts,
-                    message_id: self.pending_composer_message_id.take(),
-                };
-                self.push_failed_draft(draft);
                 self.pending_composer_text = Some((String::new(), None));
                 self.notify(
                     "このチャンネルの投稿権限が変更されたため、入力中の本文を下書きに退避しました",
@@ -1682,6 +1650,7 @@ impl AppState {
         {
             self.thread = None;
             if matches!(self.target, Target::Reply(_)) {
+                let old_target = self.target.clone();
                 if self.composer_draft.trim().is_empty() {
                     self.switch_composer_context(Some(channel_id), Target::Channel);
                 } else {
@@ -1701,6 +1670,11 @@ impl AppState {
                             attachments: Vec::new(),
                             message_id: saved_msg_id,
                         });
+                    }
+                }
+                for att in &mut self.pending_attachments {
+                    if att.channel_id == channel_id && att.target == old_target {
+                        att.target = Target::Channel;
                     }
                 }
                 self.notify(
@@ -2893,14 +2867,16 @@ impl AppState {
             }
             let s_gen = self.session_gen;
             let d_ch = draft.channel_id.clone();
+            let d_tgt = resolved_target.clone();
             self.pending_attachments
-                .retain(|a| !(a.channel_id == d_ch && a.session_gen == s_gen));
+                .retain(|a| !(a.channel_id == d_ch && a.target == d_tgt && a.session_gen == s_gen));
             self.composer_draft = draft.content.clone();
             self.pending_composer_text = Some((draft.content, None));
             self.pending_composer_message_id = draft.message_id.clone();
             for mut att in draft.attachments {
                 att.channel_id = draft.channel_id.clone();
                 att.session_gen = self.session_gen;
+                att.target = resolved_target.clone();
                 self.pending_attachments.push(att);
             }
             self.ensure_channel_cache();
@@ -2932,8 +2908,9 @@ impl AppState {
                 }
                 let s_gen = self.session_gen;
                 let c_ch = current_ch.clone();
-                self.pending_attachments
-                    .retain(|a| !(a.channel_id == c_ch && a.session_gen == s_gen));
+                self.pending_attachments.retain(|a| {
+                    !(a.channel_id == c_ch && a.target == Target::Channel && a.session_gen == s_gen)
+                });
                 self.composer_draft = draft.content.clone();
                 self.pending_composer_text = Some((draft.content, None));
                 // 送信先チャンネルが異なるため、元の送信 ID は引き継がず新規採番へリセットする
@@ -2971,11 +2948,7 @@ impl AppState {
             self.notify("メッセージを送信中です");
             return false;
         }
-        let cur_attachments: Vec<&PendingAttachment> = self
-            .pending_attachments
-            .iter()
-            .filter(|a| a.channel_id == channel_id && a.session_gen == self.session_gen)
-            .collect();
+        let cur_attachments = self.current_channel_attachments();
         if content.trim().is_empty() && cur_attachments.is_empty() {
             return false;
         }
@@ -3018,9 +2991,10 @@ impl AppState {
             if !matches!(target, Target::Edit(_)) {
                 let s_gen = self.session_gen;
                 let ch = channel_id.clone();
+                let t = target.clone();
                 self.pending_attachments
                     .drain(..)
-                    .partition(|a| a.channel_id == ch && a.session_gen == s_gen)
+                    .partition(|a| a.channel_id == ch && a.target == t && a.session_gen == s_gen)
             } else {
                 (Vec::new(), std::mem::take(&mut self.pending_attachments))
             };
@@ -5961,5 +5935,238 @@ mod tests {
             state.current_channel_attachments()[0].file_name,
             "reply.png"
         );
+    }
+
+    #[test]
+    fn submit_message_isolates_attachments_by_target_and_retains_others() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 通常投稿（Target::Channel）に完了済み添付とアップロード中添付を追加
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_chan".into(),
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            session_gen: state.session_gen,
+            file_name: "chan.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_chan".into()),
+            is_uploading: false,
+            error: None,
+        });
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_chan_uploading".into(),
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            session_gen: state.session_gen,
+            file_name: "chan_uploading.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: None,
+            is_uploading: true,
+            error: None,
+        });
+
+        // スレッド返信に切り替えて、返信欄に完了済み添付を追加
+        state.focus_thread_reply("root_1".into());
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_reply".into(),
+            channel_id: "c1".into(),
+            target: Target::Reply("root_1".into()),
+            session_gen: state.session_gen,
+            file_name: "reply.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_reply".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        // 通常投稿側の添付がアップロード中であっても、返信の送信はブロックされないこと
+        let sent = state.submit_message("返信本文".into());
+        assert!(sent, "スレッド返信の送信が成功すること");
+
+        // 送信中データ（in_flight_submissions）には返信の添付（att_reply）のみが含まれ、通常投稿の添付は含まれないこと
+        assert_eq!(state.in_flight_submissions.len(), 1);
+        let inflight = &state.in_flight_submissions[0].1;
+        assert_eq!(inflight.target, Target::Reply("root_1".into()));
+        assert_eq!(inflight.attachments.len(), 1);
+        assert_eq!(inflight.attachments[0].file_name, "reply.png");
+        assert_eq!(
+            inflight.attachments[0].attachment_id.as_deref(),
+            Some("att_reply")
+        );
+
+        // 送信後も通常投稿の添付2件は pending_attachments に保持されていること
+        assert_eq!(state.pending_attachments.len(), 2);
+        assert!(
+            state
+                .pending_attachments
+                .iter()
+                .all(|a| a.target == Target::Channel)
+        );
+
+        // 通常投稿に戻ると、current_channel_attachments() に通常投稿の添付が取得できること
+        state.switch_composer_context(Some("c1"), Target::Channel);
+        assert_eq!(state.current_channel_attachments().len(), 2);
+    }
+
+    #[test]
+    fn restore_failed_draft_retains_other_target_attachments_and_rewrites_fallback_target() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 1. スレッド返信に添付 reply.png がある状態で通常投稿の失敗下書きを復元する
+        state.focus_thread_reply("root_1".into());
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_reply".into(),
+            channel_id: "c1".into(),
+            target: Target::Reply("root_1".into()),
+            session_gen: state.session_gen,
+            file_name: "reply.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_reply".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        // 通常投稿の失敗下書き（添付 chan.png 付き）を追加
+        state.failed_drafts.push(FailedDraft {
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "通常投稿ドラフト".into(),
+            attachments: vec![PendingAttachment {
+                local_id: "loc_chan".into(),
+                channel_id: "c1".into(),
+                target: Target::Channel,
+                session_gen: state.session_gen,
+                file_name: "chan.png".into(),
+                file_size: 100,
+                content_type: "image/png".into(),
+                attachment_id: Some("att_chan".into()),
+                is_uploading: false,
+                error: None,
+            }],
+            message_id: None,
+        });
+
+        // 通常投稿の失敗下書きを復元
+        state.restore_failed_draft();
+        assert_eq!(state.target, Target::Channel);
+        assert_eq!(state.composer_draft, "通常投稿ドラフト");
+        assert_eq!(state.current_channel_attachments().len(), 1);
+        assert_eq!(state.current_channel_attachments()[0].file_name, "chan.png");
+
+        // 返信の添付 reply.png も削除されずに残っていること
+        state.switch_composer_context(Some("c1"), Target::Reply("root_1".into()));
+        assert_eq!(state.current_channel_attachments().len(), 1);
+        assert_eq!(
+            state.current_channel_attachments()[0].file_name,
+            "reply.png"
+        );
+
+        // 2. 親メッセージが削除された Reply の失敗下書きを復元した場合、Channel へフォールバックされ target が更新されること
+        state.switch_composer_context(Some("c1"), Target::Channel);
+        state.composer_draft.clear();
+        state
+            .pending_attachments
+            .retain(|a| a.target != Target::Channel);
+        state.failed_drafts.push(FailedDraft {
+            channel_id: "c1".into(),
+            target: Target::Reply("deleted_root".into()),
+            content: "孤立返信ドラフト".into(),
+            attachments: vec![PendingAttachment {
+                local_id: "loc_fallback".into(),
+                channel_id: "c1".into(),
+                target: Target::Reply("deleted_root".into()),
+                session_gen: state.session_gen,
+                file_name: "fallback.png".into(),
+                file_size: 100,
+                content_type: "image/png".into(),
+                attachment_id: Some("att_fallback".into()),
+                is_uploading: false,
+                error: None,
+            }],
+            message_id: None,
+        });
+
+        state.restore_failed_draft();
+        assert_eq!(state.target, Target::Channel);
+        assert_eq!(state.composer_draft, "孤立返信ドラフト");
+        // att.target が Target::Channel に付け替えられているため、current_channel_attachments() に表示されること
+        assert_eq!(state.current_channel_attachments().len(), 1);
+        assert_eq!(
+            state.current_channel_attachments()[0].file_name,
+            "fallback.png"
+        );
+        assert_eq!(
+            state.current_channel_attachments()[0].target,
+            Target::Channel
+        );
+    }
+
+    #[test]
+    fn evicts_channel_drafts_isolating_attachments_per_target() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 通常投稿に下書きと添付 A を設定
+        state.composer_draft = "通常投稿下書き".into();
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_chan".into(),
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            session_gen: state.session_gen,
+            file_name: "chan.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_chan".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        // スレッド返信に切り替えて下書きと添付 B を設定
+        state.focus_thread_reply("root_1".into());
+        state.composer_draft = "返信下書き".into();
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_reply".into(),
+            channel_id: "c1".into(),
+            target: Target::Reply("root_1".into()),
+            session_gen: state.session_gen,
+            file_name: "reply.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_reply".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        // チャンネルから evict される
+        state.evict_channel("c1");
+
+        // failed_drafts に通常投稿とスレッド返信それぞれのドラフトが分離して退避されていること
+        assert_eq!(state.failed_drafts.len(), 2);
+        let chan_draft = state
+            .failed_drafts
+            .iter()
+            .find(|d| d.target == Target::Channel)
+            .expect("Channel draft must be evicted");
+        assert_eq!(chan_draft.content, "通常投稿下書き");
+        assert_eq!(chan_draft.attachments.len(), 1);
+        assert_eq!(chan_draft.attachments[0].file_name, "chan.png");
+
+        let reply_draft = state
+            .failed_drafts
+            .iter()
+            .find(|d| d.target == Target::Reply("root_1".into()))
+            .expect("Reply draft must be evicted");
+        assert_eq!(reply_draft.content, "返信下書き");
+        assert_eq!(reply_draft.attachments.len(), 1);
+        assert_eq!(reply_draft.attachments[0].file_name, "reply.png");
+
+        // pending_attachments は空になっていること
+        assert!(state.pending_attachments.is_empty());
     }
 }

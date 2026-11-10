@@ -1542,10 +1542,21 @@ impl WorkspaceView {
                                         })
                                         .border_1()
                                         .border_color(theme.border)
-                                        .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
+                                        .hover(move |s| {
+                                            s.bg(if is_member {
+                                                theme.bg_hover
+                                            } else {
+                                                theme.accent_button_hover
+                                            })
+                                            .cursor_pointer()
+                                        })
                                         .text_xs()
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(theme.text_primary)
+                                        .text_color(if is_member {
+                                            theme.text_primary
+                                        } else {
+                                            theme.text_on_accent
+                                        })
                                         .child(if is_member {
                                             "退出する"
                                         } else {
@@ -3099,7 +3110,7 @@ impl WorkspaceView {
                             .items_center()
                             .justify_center()
                             .text_xs()
-                            .text_color(theme.text_primary)
+                            .text_color(theme.text_on_accent)
                             .child(if is_private { "✓" } else { "" }),
                     )
                     .child(

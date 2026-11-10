@@ -44,9 +44,9 @@ pub const TEXT_DIM: Rgba = hex_rgb(0x64748b);
 /// アクセント色 (Cyan)
 pub const ACCENT: Rgba = hex_rgb(0x22d3ee);
 /// ボタン用アクセント背景色
-pub const ACCENT_BUTTON: Rgba = hex_rgb(0x0891b2);
+pub const ACCENT_BUTTON: Rgba = hex_rgb(0x0e7490);
 /// ボタンホバー用アクセント背景色
-pub const ACCENT_BUTTON_HOVER: Rgba = hex_rgb(0x06b6d4);
+pub const ACCENT_BUTTON_HOVER: Rgba = hex_rgb(0x155e75);
 
 /// コード文字色 (Amber)
 pub const TEXT_CODE: Rgba = hex_rgb(0xfbbf24);
@@ -190,8 +190,8 @@ impl Theme {
             text_muted: hex_rgb(0x64748b),
             text_dim: hex_rgb(0x94a3b8),
             accent: hex_rgb(0x0284c7),
-            accent_button: hex_rgb(0x0284c7),
-            accent_button_hover: hex_rgb(0x0369a1),
+            accent_button: hex_rgb(0x0369a1),
+            accent_button_hover: hex_rgb(0x075985),
             text_on_accent: hex_rgb(0xffffff),
             text_code: hex_rgb(0xd97706),
             text_link: hex_rgb(0x0284c7),
@@ -200,5 +200,57 @@ impl Theme {
             danger: hex_rgb(0xdc2626),
             success: hex_rgb(0x16a34a),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn channel_luminance(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(color: Rgba) -> f32 {
+        let r = channel_luminance(color.r);
+        let g = channel_luminance(color.g);
+        let b = channel_luminance(color.b);
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
+    fn contrast_ratio(c1: Rgba, c2: Rgba) -> f32 {
+        let l1 = relative_luminance(c1);
+        let l2 = relative_luminance(c2);
+        let (lighter, darker) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn button_contrast_ratio_satisfies_wcag_aa_standard() {
+        let dark = Theme::dark();
+        let light = Theme::light();
+
+        // WCAG AA の通常テキスト基準は 4.5:1 以上
+        assert!(
+            contrast_ratio(dark.accent_button, dark.text_on_accent) >= 4.5,
+            "Dark theme accent_button contrast ratio must be >= 4.5"
+        );
+        assert!(
+            contrast_ratio(dark.accent_button_hover, dark.text_on_accent) >= 4.5,
+            "Dark theme accent_button_hover contrast ratio must be >= 4.5"
+        );
+
+        assert!(
+            contrast_ratio(light.accent_button, light.text_on_accent) >= 4.5,
+            "Light theme accent_button contrast ratio must be >= 4.5"
+        );
+        assert!(
+            contrast_ratio(light.accent_button_hover, light.text_on_accent) >= 4.5,
+            "Light theme accent_button_hover contrast ratio must be >= 4.5"
+        );
     }
 }
