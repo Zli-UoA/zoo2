@@ -1462,12 +1462,23 @@ impl AppState {
             self.newest_shown = None;
         }
         if self.current_channel.as_deref() == Some(channel_id) {
-            if !self.composer_draft.trim().is_empty() {
+            let s_gen = self.session_gen;
+            let ch = channel_id.to_string();
+            let (current_atts, remaining_atts): (Vec<_>, Vec<_>) = self
+                .pending_attachments
+                .drain(..)
+                .partition(|a| a.channel_id == ch && a.session_gen == s_gen);
+            self.pending_attachments = remaining_atts;
+            let valid_atts: Vec<PendingAttachment> = current_atts
+                .into_iter()
+                .filter(|a| a.attachment_id.is_some() && !a.is_uploading && a.error.is_none())
+                .collect();
+            if !self.composer_draft.trim().is_empty() || !valid_atts.is_empty() {
                 let draft = FailedDraft {
                     channel_id: channel_id.to_string(),
                     target: self.target.clone(),
                     content: self.composer_draft.clone(),
-                    attachments: Vec::new(),
+                    attachments: valid_atts,
                     message_id: self.pending_composer_message_id.take(),
                 };
                 self.push_failed_draft(draft);
@@ -1521,13 +1532,24 @@ impl AppState {
         }
         if is_archived {
             let was_editing = matches!(self.target, Target::Edit(_));
-            let had_draft = !self.composer_draft.trim().is_empty();
-            if had_draft {
+            let s_gen = self.session_gen;
+            let ch = channel_id.to_string();
+            let (current_atts, remaining_atts): (Vec<_>, Vec<_>) = self
+                .pending_attachments
+                .drain(..)
+                .partition(|a| a.channel_id == ch && a.session_gen == s_gen);
+            self.pending_attachments = remaining_atts;
+            let valid_atts: Vec<PendingAttachment> = current_atts
+                .into_iter()
+                .filter(|a| a.attachment_id.is_some() && !a.is_uploading && a.error.is_none())
+                .collect();
+            let had_content = !self.composer_draft.trim().is_empty() || !valid_atts.is_empty();
+            if had_content {
                 let draft = FailedDraft {
                     channel_id: channel_id.to_string(),
                     target: self.target.clone(),
                     content: std::mem::take(&mut self.composer_draft),
-                    attachments: Vec::new(),
+                    attachments: valid_atts,
                     message_id: self.pending_composer_message_id.take(),
                 };
                 self.push_failed_draft(draft);
@@ -1540,19 +1562,30 @@ impl AppState {
             self.active_reaction_message = None;
             self.confirm_delete_message = None;
             self.target = Target::Channel;
-            if was_editing || had_draft {
+            if was_editing || had_content {
                 self.notify(
                     "このチャンネルがアーカイブされたため、編集・入力中の本文を下書きに退避しました",
                 );
             }
         } else if !matches!(self.target, Target::Edit(_)) {
-            let had_draft = !self.composer_draft.trim().is_empty();
-            if had_draft {
+            let s_gen = self.session_gen;
+            let ch = channel_id.to_string();
+            let (current_atts, remaining_atts): (Vec<_>, Vec<_>) = self
+                .pending_attachments
+                .drain(..)
+                .partition(|a| a.channel_id == ch && a.session_gen == s_gen);
+            self.pending_attachments = remaining_atts;
+            let valid_atts: Vec<PendingAttachment> = current_atts
+                .into_iter()
+                .filter(|a| a.attachment_id.is_some() && !a.is_uploading && a.error.is_none())
+                .collect();
+            let had_content = !self.composer_draft.trim().is_empty() || !valid_atts.is_empty();
+            if had_content {
                 let draft = FailedDraft {
                     channel_id: channel_id.to_string(),
                     target: self.target.clone(),
                     content: std::mem::take(&mut self.composer_draft),
-                    attachments: Vec::new(),
+                    attachments: valid_atts,
                     message_id: self.pending_composer_message_id.take(),
                 };
                 self.push_failed_draft(draft);
@@ -2829,7 +2862,8 @@ impl AppState {
                     .retain(|a| !(a.channel_id == c_ch && a.session_gen == s_gen));
                 self.composer_draft = draft.content.clone();
                 self.pending_composer_text = Some((draft.content, None));
-                self.pending_composer_message_id = draft.message_id;
+                // 送信先チャンネルが異なるため、元の送信 ID は引き継がず新規採番へリセットする
+                self.pending_composer_message_id = None;
                 // 添付ファイルは元チャンネルと異なるため引き継がない（DB 整合性維持のため）
                 if !draft.attachments.is_empty() {
                     self.notify(
@@ -3157,6 +3191,10 @@ impl AppState {
             return;
         }
         let file_size = metadata.len() as i64;
+        if file_size == 0 {
+            self.notify("空のファイルは添付できません");
+            return;
+        }
         if file_size > 50 * 1024 * 1024 {
             self.notify("ファイルサイズが上限(50MB)を超えています");
             return;
@@ -3287,6 +3325,14 @@ impl AppState {
         };
         let local_id = uuid::Uuid::new_v4().to_string();
         let file_size = bytes.len() as i64;
+        if file_size == 0 {
+            self.notify("空のファイルは添付できません");
+            return;
+        }
+        if file_size > 50 * 1024 * 1024 {
+            self.notify("ファイルサイズが上限(50MB)を超えています");
+            return;
+        }
         self.pending_composer_message_id = None;
         self.pending_attachments.push(PendingAttachment {
             local_id: local_id.clone(),
@@ -3456,6 +3502,7 @@ impl AppState {
         };
         let new_text = format!("{before}{insert_text}{after}");
         let new_caret = before.len() + insert_text.len();
+        self.pending_composer_message_id = None;
         self.composer_draft = new_text.clone();
         self.pending_composer_text = Some((new_text.clone(), Some(new_caret)));
         Some((new_text, new_caret))
@@ -3490,6 +3537,7 @@ impl AppState {
         let after = &self.composer_draft[end..];
         let new_text = format!("{before}{emoji}{after}");
         let new_caret = before.len() + emoji.len();
+        self.pending_composer_message_id = None;
         self.composer_draft = new_text.clone();
         self.pending_composer_text = Some((new_text, Some(new_caret)));
         self.close_emoji_picker();
@@ -5382,7 +5430,7 @@ mod tests {
                 is_uploading: false,
                 error: None,
             }],
-            message_id: None,
+            message_id: Some("old_id".into()),
         });
 
         // 復元を実行
@@ -5392,6 +5440,8 @@ mod tests {
         assert_eq!(state.composer_draft, "下書き本文");
         // 別チャンネルのため添付は引き継がれず空になっていること
         assert!(state.pending_attachments.is_empty());
+        // 別チャンネルへの復元のため送信 ID は引き継がれずリセットされること
+        assert!(state.pending_composer_message_id.is_none());
         // 除外された旨の通知が出ていること
         assert!(
             state
@@ -5548,5 +5598,25 @@ mod tests {
         state.pending_composer_message_id = Some("same-id".into());
         state.remove_pending_attachment(&local_id);
         assert!(state.pending_composer_message_id.is_none());
+
+        // メンション確定でも再送用 ID がリセットされること
+        state.pending_composer_message_id = Some("same-id".into());
+        state.composer_draft = "Hello @".into();
+        state.update_mention_autocomplete("Hello @", 7);
+        state.mention_confirm();
+        assert!(state.pending_composer_message_id.is_none());
+
+        // 絵文字挿入でも再送用 ID がリセットされること
+        state.pending_composer_message_id = Some("same-id".into());
+        state.insert_emoji("🎉", 0..0);
+        assert!(state.pending_composer_message_id.is_none());
+
+        // 空ファイル (0バイト) の追加は拒否されること
+        state.add_attachment_from_bytes("empty.png".into(), "image/png".into(), vec![]);
+        assert!(state.pending_attachments.is_empty());
+        assert_eq!(
+            state.notice.as_ref().unwrap().0,
+            "空のファイルは添付できません"
+        );
     }
 }

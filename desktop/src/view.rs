@@ -3478,41 +3478,6 @@ impl Render for WorkspaceView {
                 let key = ev.keystroke.key.as_str();
                 let cmd_or_ctrl = ev.keystroke.modifiers.platform || ev.keystroke.modifiers.control;
 
-                // クイックスイッチャー時のキーボード操作
-                if this.state.read(cx).quick_switcher.is_some() {
-                    match key {
-                        "up" => {
-                            this.state.update(cx, |s, cx| {
-                                s.quick_switcher_select_prev();
-                                cx.notify();
-                            });
-                            return;
-                        }
-                        "down" => {
-                            this.state.update(cx, |s, cx| {
-                                s.quick_switcher_select_next();
-                                cx.notify();
-                            });
-                            return;
-                        }
-                        "enter" => {
-                            this.state.update(cx, |s, cx| {
-                                s.quick_switcher_confirm();
-                                cx.notify();
-                            });
-                            return;
-                        }
-                        "escape" => {
-                            this.state.update(cx, |s, cx| {
-                                s.close_quick_switcher();
-                                cx.notify();
-                            });
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-
                 // グローバルショートカット
                 if cmd_or_ctrl && key == "k" {
                     this.open_quick_switcher(window, cx);

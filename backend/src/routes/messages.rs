@@ -176,6 +176,50 @@ pub(crate) async fn create_message_impl(
 
     let mut db = state.db.clone();
 
+    // チャンネル存在確認・所属確認（他人のUUIDの存在漏洩防止のため冪等性チェックより前に検証）
+    let channel = Channel::get_by_id(&mut db, payload.channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found: {}", payload.channel_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {}",
+            payload.channel_id
+        )));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot post message to an archived channel".into(),
+        ));
+    }
+
+    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(payload.channel_id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut db)
+        .await?;
+
+        if membership.is_none() {
+            return Err(AppError::NotFound(format!(
+                "Channel not found: {}",
+                payload.channel_id
+            )));
+        }
+    }
+
     // クライアント指定の ID が既に存在する場合、同一属性（本文・チャンネル・親・添付ファイル）の再送であれば既存メッセージを返して成功とする (冪等性)
     if supplied_id.is_some() {
         let existing = Message::filter(Message::fields().id().eq(id.as_str()))
