@@ -89,6 +89,11 @@ tui-check:
 	cd client-core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 	cd tui && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 
+# E2EE の暗号コア（docs/e2ee.md）。CI Crypto と同じく、Web 向けの wasm32 でもビルドする。
+.PHONY: crypto-check
+crypto-check:
+	cd crates/zoo-crypto && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && cargo build --locked --target wasm32-unknown-unknown
+
 # デスクトップクライアント (GPUI)。desktop-dev は backend の dev モードに X-Dev-User で接続する。
 desktop-dev:
 	cd desktop && ZOO_API_BASE_URL=$${ZOO_API_BASE_URL:-http://localhost:8000} ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run
