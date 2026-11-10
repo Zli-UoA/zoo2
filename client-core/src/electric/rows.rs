@@ -20,8 +20,6 @@ pub struct Channel {
     pub is_dm: bool,
     pub archive_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
-    /// Slack から取り込んだチャンネル (取り込み先の新規作成も既存のチャンネルも)
-    pub imported_from_slack: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,8 +68,6 @@ impl FromRow for Channel {
             is_dm: opt_boolean(row, "is_dm")?.unwrap_or(false),
             archive_at: opt_time(row, "archive_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
-            // 古いスキーマには imported_from_slack がないため、無ければ取り込んだものではない扱いにする。
-            imported_from_slack: opt_boolean(row, "imported_from_slack")?.unwrap_or(false),
         })
     }
 }
@@ -184,12 +180,11 @@ mod tests {
         let channel = Channel::from_row(&row(json!({
             "id": "c1", "channel_name": "general", "description": null,
             "is_private": "f", "is_dm": "true", "archive_at": "2026-11-01 01:02:03.456",
-            "deleted_at": null, "imported_from_slack": "t"
+            "deleted_at": null
         })))
         .unwrap();
         assert!(!channel.is_private);
         assert!(channel.is_dm);
-        assert!(channel.imported_from_slack);
         assert_eq!(
             channel.archive_at.unwrap().to_string(),
             "2026-11-01T01:02:03.456"
@@ -211,7 +206,6 @@ mod tests {
         })))
         .unwrap();
         assert!(!channel.is_dm);
-        assert!(!channel.imported_from_slack);
     }
 
     #[test]

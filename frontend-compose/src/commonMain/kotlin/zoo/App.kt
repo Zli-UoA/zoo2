@@ -637,8 +637,6 @@ internal fun Header(
                 )
                 if (channel.present("archive_at") && !channel.flag("is_dm"))
                     ChannelArchiveBadge(app)
-                if (channel.flag("imported_from_slack") && !channel.flag("is_dm"))
-                    ChannelBadge(app.t("channels.slackImported"))
             }
             Text(
                 presentation.text("subtitle").ifEmpty {
