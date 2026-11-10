@@ -83,6 +83,13 @@ async fn create_message(
                 .exec(&mut db)
                 .await?;
         if let Some(message) = existing {
+            // 他チャンネルのメッセージ UUID を探る攻撃を防ぐため、channel_id が異なる場合は 404 を返す
+            if message.channel_id != body.channel_id {
+                return Err(AppError::NotFound(format!(
+                    "Channel not found: {}",
+                    body.channel_id
+                )));
+            }
             if message.user_id == p.user_id
                 && message.channel_id == body.channel_id
                 && message.content == body.content

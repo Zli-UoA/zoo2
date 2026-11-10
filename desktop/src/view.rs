@@ -482,6 +482,7 @@ impl WorkspaceView {
                 s.close_emoji_picker();
             }
             s.open_message_search();
+            s.pending_focus_composer = false;
             cx.notify();
         });
         window.focus(&self.message_search_input.focus_handle(cx));
@@ -3479,12 +3480,18 @@ impl Render for WorkspaceView {
         let has_create_modal = state_ref.create_channel_modal.is_some();
         let has_quick_switcher = state_ref.quick_switcher.is_some();
         let has_emoji_picker = state_ref.emoji_picker_open;
+        let has_message_search = state_ref.message_search.is_some();
         let theme = state_ref.theme();
 
         let should_focus_composer = self
             .state
             .update(cx, |s, _| std::mem::take(&mut s.pending_focus_composer));
-        if should_focus_composer && !has_create_modal && !has_quick_switcher && !has_emoji_picker {
+        if should_focus_composer
+            && !has_create_modal
+            && !has_quick_switcher
+            && !has_emoji_picker
+            && !has_message_search
+        {
             window.focus(&self.composer_input.focus_handle(cx));
         }
 

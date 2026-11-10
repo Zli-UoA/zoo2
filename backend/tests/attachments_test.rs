@@ -554,7 +554,7 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     let other_channel_id = uuid::Uuid::new_v4().to_string();
     let channel_payload2 = json!({
         "id": other_channel_id,
-        "name": "other-channel",
+        "channel_name": format!("other_chan_{}", uuid::Uuid::new_v4().simple()),
         "is_private": false
     });
     let req = Request::builder()
@@ -585,7 +585,7 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     let private_channel_id = uuid::Uuid::new_v4().to_string();
     let private_channel_payload = json!({
         "id": private_channel_id,
-        "name": "private-archived-channel",
+        "channel_name": format!("priv_arch_{}", uuid::Uuid::new_v4().simple()),
         "is_private": true
     });
     let req = Request::builder()

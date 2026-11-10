@@ -820,7 +820,10 @@ impl AppState {
         if (has_content || has_attachments)
             && let Some(ch_id) = self.current_channel.clone()
             && !drafts.iter().any(|d| {
-                d.channel_id == ch_id && d.target == self.target && d.content == self.composer_draft
+                d.channel_id == ch_id
+                    && d.target == self.target
+                    && d.content == self.composer_draft
+                    && d.attachments == current_atts
             })
         {
             drafts.push(FailedDraft {
@@ -1710,6 +1713,7 @@ impl AppState {
                     && (matches!(target, Target::Edit(_)) || self.can_post_in_channel(&channel_id));
                 if self.current_channel.as_deref() == Some(channel_id.as_str())
                     && self.composer_draft.is_empty()
+                    && self.current_channel_attachments().is_empty()
                     && !matches!(self.target, Target::Edit(_))
                     && can_accept_target
                     && !self
@@ -1851,7 +1855,9 @@ impl AppState {
                     self.pending_focus_composer = true;
                     self.open_channel(channel_id);
                     self.notify("チャンネルを作成しました");
-                } else if self.create_channel_modal.is_none() {
+                } else if self.create_channel_modal.is_none()
+                    && self.next_channel_create_id == request_id
+                {
                     self.open_channel(channel_id);
                     self.notify("チャンネルを作成しました");
                 }
@@ -1868,7 +1874,9 @@ impl AppState {
                         modal.error = Some(error.clone());
                     }
                     self.notify(format!("チャンネル作成に失敗しました: {error}"));
-                } else if self.create_channel_modal.is_none() {
+                } else if self.create_channel_modal.is_none()
+                    && self.next_channel_create_id == request_id
+                {
                     self.notify(format!("チャンネル作成に失敗しました: {error}"));
                 }
                 true
@@ -5035,6 +5043,7 @@ mod tests {
         state.submit_create_channel();
         let req_id_b = state.create_channel_modal.as_ref().unwrap().request_id;
         assert_ne!(req_id_a, req_id_b);
+        assert_eq!(state.next_channel_create_id, req_id_b);
 
         state.on_app_event(AppEvent::ChannelCreated {
             request_id: req_id_b,
@@ -5043,10 +5052,29 @@ mod tests {
         assert!(state.create_channel_modal.is_none());
         assert_eq!(state.current_channel.as_deref(), Some("c_new_b"));
 
-        // モーダルを閉じた後に成功イベントが届いた場合、チャンネル遷移と通知が行われること
-        state.open_channel("c1".into());
+        // 試行 B の成功後に、古い試行 A の完了・失敗イベントが届いても無視され、B の滞在と通知が維持されること
         state.on_app_event(AppEvent::ChannelCreated {
-            request_id: 999,
+            request_id: req_id_a,
+            channel_id: "c_new_a".into(),
+        });
+        assert_eq!(state.current_channel.as_deref(), Some("c_new_b"));
+        state.on_app_event(AppEvent::ChannelCreateFailed {
+            request_id: req_id_a,
+            error: "Failed A".into(),
+        });
+        assert_eq!(state.current_channel.as_deref(), Some("c_new_b"));
+
+        // チャンネル C を送信し、モーダルを閉じた後に最新試行 C の成功イベントが届いた場合、チャンネル遷移と通知が行われること
+        state.open_create_channel_modal();
+        state.create_channel_modal.as_mut().unwrap().channel_name = "channel-c".into();
+        state.submit_create_channel();
+        let req_id_c = state.create_channel_modal.as_ref().unwrap().request_id;
+        assert_eq!(state.next_channel_create_id, req_id_c);
+        state.close_create_channel_modal();
+        assert!(state.create_channel_modal.is_none());
+
+        state.on_app_event(AppEvent::ChannelCreated {
+            request_id: req_id_c,
             channel_id: "c_new_c".into(),
         });
         assert_eq!(state.current_channel.as_deref(), Some("c_new_c"));
@@ -5055,9 +5083,16 @@ mod tests {
             Some("チャンネルを作成しました")
         );
 
-        // モーダルを閉じた後に失敗イベントが届いた場合、Notice 通知が行われること
+        // チャンネル D を送信し、モーダルを閉じた後に最新試行 D の失敗イベントが届いた場合、Notice 通知が行われること
+        state.open_create_channel_modal();
+        state.create_channel_modal.as_mut().unwrap().channel_name = "channel-d".into();
+        state.submit_create_channel();
+        let req_id_d = state.create_channel_modal.as_ref().unwrap().request_id;
+        state.close_create_channel_modal();
+        assert!(state.create_channel_modal.is_none());
+
         state.on_app_event(AppEvent::ChannelCreateFailed {
-            request_id: 999,
+            request_id: req_id_d,
             error: "Failed closed modal".into(),
         });
         assert_eq!(
@@ -5684,5 +5719,122 @@ mod tests {
         assert!(is_image_content_type(" IMAGE/JPEG ; foo=bar "));
         assert!(!is_image_content_type("application/pdf"));
         assert!(!is_image_content_type("text/plain"));
+    }
+
+    #[test]
+    fn does_not_mix_failed_attachments_into_subsequent_attachment_only_draft() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 添付付き投稿 1 を送信中へセット
+        let att1 = PendingAttachment {
+            local_id: "local_1".into(),
+            channel_id: "c1".into(),
+            session_gen: state.session_gen,
+            file_name: "file1.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_1".into()),
+            is_uploading: false,
+            error: None,
+        };
+        state.in_flight_submissions.push((
+            1,
+            FailedDraft {
+                channel_id: "c1".into(),
+                target: Target::Channel,
+                content: "First post".into(),
+                attachments: vec![att1.clone()],
+                message_id: Some("msg_1".into()),
+            },
+        ));
+
+        // 次の投稿として、本文は空のまま別の添付 2 を追加中
+        let att2 = PendingAttachment {
+            local_id: "local_2".into(),
+            channel_id: "c1".into(),
+            session_gen: state.session_gen,
+            file_name: "file2.png".into(),
+            file_size: 200,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_2".into()),
+            is_uploading: false,
+            error: None,
+        };
+        state.pending_attachments.push(att2.clone());
+        assert_eq!(state.composer_draft, "");
+        assert_eq!(state.current_channel_attachments().len(), 1);
+
+        // 投稿 1 の送信が失敗して RestoreDraft が届く
+        state.on_app_event(AppEvent::RestoreDraft {
+            submission_id: 1,
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "First post".into(),
+        });
+
+        // 現在の入力欄（添付 2 のみ）に失敗した添付 1 や本文が混ざらないこと
+        assert_eq!(state.composer_draft, "");
+        assert_eq!(state.pending_attachments.len(), 1);
+        assert_eq!(state.pending_attachments[0].local_id, "local_2");
+
+        // 失敗した投稿 1 は独立した failed_drafts に退避されていること
+        assert_eq!(state.failed_drafts.len(), 1);
+        assert_eq!(state.failed_drafts[0].content, "First post");
+        assert_eq!(state.failed_drafts[0].attachments.len(), 1);
+        assert_eq!(state.failed_drafts[0].attachments[0].local_id, "local_1");
+    }
+
+    #[test]
+    fn preserves_different_attachments_with_same_content_on_unauthorized() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        let att1 = PendingAttachment {
+            local_id: "local_1".into(),
+            channel_id: "c1".into(),
+            session_gen: state.session_gen,
+            file_name: "file1.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_1".into()),
+            is_uploading: false,
+            error: None,
+        };
+        // 送信中の下書き
+        state.in_flight_submissions.push((
+            1,
+            FailedDraft {
+                channel_id: "c1".into(),
+                target: Target::Channel,
+                content: "Same message".into(),
+                attachments: vec![att1],
+                message_id: Some("msg_1".into()),
+            },
+        ));
+
+        // 同じ本文で別の添付 2 を入力欄にセット
+        let att2 = PendingAttachment {
+            local_id: "local_2".into(),
+            channel_id: "c1".into(),
+            session_gen: state.session_gen,
+            file_name: "file2.png".into(),
+            file_size: 200,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_2".into()),
+            is_uploading: false,
+            error: None,
+        };
+        state.composer_draft = "Same message".into();
+        state.pending_attachments.push(att2);
+
+        // 認証切れ発生
+        state.on_app_event(AppEvent::Unauthorized);
+
+        // preserved_unauthorized_drafts に両方の下書きが退避されていること
+        let preserved = state.preserved_unauthorized_drafts.as_ref().unwrap();
+        assert_eq!(preserved.1.len(), 2);
+        assert_eq!(preserved.1[0].attachments[0].local_id, "local_1");
+        assert_eq!(preserved.1[1].attachments[0].local_id, "local_2");
     }
 }
