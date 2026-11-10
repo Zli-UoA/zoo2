@@ -1705,10 +1705,12 @@ impl AppState {
                         a.channel_id == ch && a.target == Target::Channel && a.session_gen == s_gen
                     });
                 self.pending_attachments = rem_atts;
-                let valid_saved_atts: Vec<PendingAttachment> = saved_atts
-                    .into_iter()
-                    .filter(|a| a.attachment_id.is_some() && !a.is_uploading && a.error.is_none())
-                    .collect();
+                let mut valid_saved_atts = Vec::new();
+                for att in saved_atts {
+                    if att.is_uploading || (att.attachment_id.is_some() && att.error.is_none()) {
+                        valid_saved_atts.push(att);
+                    }
+                }
                 if !saved_ch_draft.trim().is_empty() || !valid_saved_atts.is_empty() {
                     self.push_failed_draft(FailedDraft {
                         channel_id: channel_id.to_string(),
@@ -1771,11 +1773,9 @@ impl AppState {
             self.pending_attachments = rem_atts;
             let mut valid_saved_atts = Vec::new();
             for mut att in saved_atts {
-                if att.is_uploading {
-                    // アップロード中の添付は捨てず、親が削除されたため通常投稿へ昇格させて pending_attachments に残す
+                if att.is_uploading || (att.attachment_id.is_some() && att.error.is_none()) {
+                    // 親が削除されたため通常投稿へ昇格させ、現在の下書きに混ざらないよう FailedDraft に退避する
                     att.target = Target::Channel;
-                    self.pending_attachments.push(att);
-                } else if att.attachment_id.is_some() && att.error.is_none() {
                     valid_saved_atts.push(att);
                 }
             }
@@ -1961,8 +1961,16 @@ impl AppState {
                     .iter_mut()
                     .find(|a| a.local_id == local_id)
                 {
-                    att.attachment_id = Some(attachment_id);
+                    att.attachment_id = Some(attachment_id.clone());
                     att.is_uploading = false;
+                }
+                for draft in &mut self.failed_drafts {
+                    for att in &mut draft.attachments {
+                        if att.local_id == local_id {
+                            att.attachment_id = Some(attachment_id.clone());
+                            att.is_uploading = false;
+                        }
+                    }
                 }
                 true
             }
@@ -1974,6 +1982,14 @@ impl AppState {
                 {
                     att.error = Some(error.clone());
                     att.is_uploading = false;
+                }
+                for draft in &mut self.failed_drafts {
+                    for att in &mut draft.attachments {
+                        if att.local_id == local_id {
+                            att.error = Some(error.clone());
+                            att.is_uploading = false;
+                        }
+                    }
                 }
                 self.notify(format!("ファイルのアップロードに失敗しました: {error}"));
                 true
@@ -6955,7 +6971,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_channel_targets_promotes_uploading_saved_reply_attachment() {
+    fn reconcile_channel_targets_evicts_uploading_saved_reply_attachment_to_failed_drafts() {
         let mut state = connected_state();
         state.open_channel("c1".into());
 
@@ -6996,6 +7012,9 @@ mod tests {
             Target::Reply("m1".into())
         );
 
+        // 通常投稿で下書き本文を入力（この入力欄に返信の添付が混入してはならない）
+        state.composer_draft = "通常投稿下書き".into();
+
         // 親メッセージ m1 を削除
         state.on_shape(ShapeEvent::Batch(
             ShapeId::Messages("c1".into()),
@@ -7006,11 +7025,103 @@ mod tests {
             },
         ));
 
-        // 親削除により、返信のアップロード中添付が Target::Channel に昇格して pending_attachments に残っていること
-        assert_eq!(state.pending_attachments.len(), 1);
-        assert_eq!(state.pending_attachments[0].target, Target::Channel);
-        assert_eq!(state.pending_attachments[0].file_name, "reply_up.png");
-        assert!(state.pending_attachments[0].is_uploading);
+        // 現在の通常投稿の pending_attachments / 入力欄には混入せず、空であること
+        assert_eq!(state.current_channel_attachments().len(), 0);
+        assert_eq!(state.pending_attachments.len(), 0);
+
+        // 返信のアップロード中添付は、下書き本文とともに failed_drafts に退避されていること
+        assert_eq!(state.failed_drafts.len(), 1);
+        assert_eq!(state.failed_drafts[0].content, "返信下書き");
+        assert_eq!(state.failed_drafts[0].attachments.len(), 1);
+        assert_eq!(
+            state.failed_drafts[0].attachments[0].file_name,
+            "reply_up.png"
+        );
+        assert!(state.failed_drafts[0].attachments[0].is_uploading);
+
+        // バックグラウンドでアップロードが完了すると、failed_drafts 内の添付も完了状態へ更新されること
+        state.on_app_event(AppEvent::AttachmentUploadFinished {
+            local_id: "loc_reply".into(),
+            attachment_id: "att_resolved_1".into(),
+        });
+        assert_eq!(
+            state.failed_drafts[0].attachments[0].attachment_id,
+            Some("att_resolved_1".into())
+        );
+        assert!(!state.failed_drafts[0].attachments[0].is_uploading);
+    }
+
+    #[test]
+    fn reconcile_channel_targets_preserves_uploading_channel_attachment_when_switching_from_deleted_reply()
+     {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 親メッセージ m1 を store に追加
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({
+                    "id": "m1", "user_id": "u1", "channel_id": "c1",
+                    "content": "親メッセージ", "created_at": "2026-11-01 00:00:00"
+                }),
+            )]),
+        ));
+
+        // 通常投稿でファイルをアップロード開始
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_chan_up".into(),
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            session_gen: state.session_gen,
+            file_name: "chan_up.png".into(),
+            content_type: "image/png".into(),
+            file_size: 2048,
+            attachment_id: None,
+            is_uploading: true,
+            error: None,
+        });
+        state.composer_draft = "通常投稿下書き".into();
+
+        // 返信モードへ切り替えて返信本文を入力
+        state.open_thread("m1".into());
+        state.composer_draft = "返信本文を書いた".into();
+
+        // 親メッセージ m1 を削除
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            Batch {
+                reset: false,
+                changes: vec![Change::Delete { key: "m1".into() }],
+                up_to_date: true,
+            },
+        ));
+
+        // 返信本文が通常投稿として入力欄に昇格し、
+        // 退避された以前の通常投稿の下書き（アップロード中添付 chan_up.png 含む）が failed_drafts に保持されていること
+        assert_eq!(state.target, Target::Channel);
+        assert_eq!(state.composer_draft, "返信本文を書いた");
+
+        assert_eq!(state.failed_drafts.len(), 1);
+        assert_eq!(state.failed_drafts[0].content, "通常投稿下書き");
+        assert_eq!(state.failed_drafts[0].attachments.len(), 1);
+        assert_eq!(
+            state.failed_drafts[0].attachments[0].file_name,
+            "chan_up.png"
+        );
+        assert!(state.failed_drafts[0].attachments[0].is_uploading);
+
+        // アップロード完了イベントで failed_drafts 内の添付が更新されること
+        state.on_app_event(AppEvent::AttachmentUploadFinished {
+            local_id: "loc_chan_up".into(),
+            attachment_id: "att_chan_1".into(),
+        });
+        assert_eq!(
+            state.failed_drafts[0].attachments[0].attachment_id,
+            Some("att_chan_1".into())
+        );
+        assert!(!state.failed_drafts[0].attachments[0].is_uploading);
     }
 
     #[test]

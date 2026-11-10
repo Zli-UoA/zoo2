@@ -3630,7 +3630,10 @@ impl Render for WorkspaceView {
                     div()
                         .absolute()
                         .inset_0()
+                        .occlude()
                         .bg(rgba(0x00000077))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .flex()
                         .items_center()
                         .justify_center()
@@ -3759,6 +3762,7 @@ pub fn render_ogp_card(
                     val_view = val_view.hover(|s| s.cursor_pointer()).on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                            cx.stop_propagation();
                             cx.open_url(&target);
                         }),
                     );
