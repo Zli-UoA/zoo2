@@ -246,12 +246,39 @@ pub(crate) async fn create_message_impl(
                 existing_atts.into_iter().map(|a| a.id).collect();
             existing_att_ids.sort();
 
+            let opt_rows = toasty::sql::query(
+                "SELECT json_build_object(
+                    'kind', COALESCE(message_kind, 'message'),
+                    'broadcast', COALESCE(broadcast, false),
+                    'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END
+                 )::text FROM messages WHERE id = $1",
+            )
+            .bind(&id)
+            .exec(&mut db)
+            .await?;
+
+            let mut options_match = false;
+            if let Some(toasty::stmt::Value::Record(r)) = opt_rows.into_iter().next()
+                && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
+                && let Ok(saved_opts) = serde_json::from_str::<serde_json::Value>(&s)
+            {
+                let saved_kind = saved_opts["kind"].as_str().unwrap_or("message");
+                let saved_broadcast = saved_opts["broadcast"].as_bool().unwrap_or(false);
+                let saved_metadata = saved_opts.get("metadata").filter(|v| !v.is_null()).cloned();
+                let req_metadata = payload.metadata.as_ref().filter(|v| !v.is_null()).cloned();
+
+                options_match = saved_kind == payload.kind
+                    && saved_broadcast == payload.broadcast
+                    && saved_metadata == req_metadata;
+            }
+
             if existing_msg.user_id == auth_user.id
                 && existing_msg.channel_id == payload.channel_id
                 && existing_msg.content == payload.content
                 && existing_msg.parent_id == payload.parent_id
                 && existing_msg.deleted_at.is_none()
                 && req_att_ids == existing_att_ids
+                && options_match
             {
                 return Ok(Json(ApiResponse::new(
                     MessageResponse::from(existing_msg),

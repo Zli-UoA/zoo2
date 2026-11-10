@@ -3899,6 +3899,12 @@ impl AppState {
         {
             let channel_msgs = self.store.channel_messages(ch);
             for msg in channel_msgs {
+                // 親メッセージが削除された返信はスレッド描画不能なため検索結果から除外
+                if let Some(parent_id) = &msg.parent_id
+                    && self.store.message(ch, parent_id).is_none()
+                {
+                    continue;
+                }
                 if msg.content.to_lowercase().contains(&query_lower) {
                     matches.push(msg.id.clone());
                 }
@@ -3926,6 +3932,12 @@ impl AppState {
         {
             let channel_msgs = self.store.channel_messages(ch);
             for msg in channel_msgs {
+                // 親メッセージが削除された返信はスレッド描画不能なため検索結果から除外
+                if let Some(parent_id) = &msg.parent_id
+                    && self.store.message(ch, parent_id).is_none()
+                {
+                    continue;
+                }
                 if msg.content.to_lowercase().contains(&query_lower) {
                     matches.push(msg.id.clone());
                 }
@@ -7107,6 +7119,52 @@ mod tests {
         assert_eq!(ms.matches.len(), 1);
         assert_eq!(ms.current_match_index, 0);
         assert_eq!(state.pending_scroll_to_message_id, Some("m1".into()));
+    }
+
+    #[test]
+    fn search_results_exclude_orphaned_replies_when_parent_is_deleted() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 親メッセージ m1 と返信 r1 を配置
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "m1",
+                    json!({
+                        "id": "m1", "user_id": "u1", "channel_id": "c1",
+                        "content": "親メッセージ", "created_at": "2026-11-01 00:00:00"
+                    }),
+                ),
+                (
+                    "r1",
+                    json!({
+                        "id": "r1", "user_id": "u1", "channel_id": "c1", "parent_id": "m1",
+                        "content": "返信キーワード", "created_at": "2026-11-01 00:01:00"
+                    }),
+                ),
+            ]),
+        ));
+
+        // 検索すると r1 がヒットする
+        state.update_message_search_query("返信キーワード".into());
+        let ms = state.message_search.as_ref().unwrap();
+        assert_eq!(ms.matches, vec!["r1".to_string()]);
+
+        // 親メッセージ m1 が削除される
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            Batch {
+                reset: false,
+                changes: vec![Change::Delete { key: "m1".into() }],
+                up_to_date: true,
+            },
+        ));
+
+        // 親が削除されたため孤児返信となり、検索結果から除外されること
+        let ms = state.message_search.as_ref().unwrap();
+        assert_eq!(ms.matches.len(), 0);
     }
 
     #[test]
