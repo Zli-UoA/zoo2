@@ -433,6 +433,7 @@ impl WorkspaceView {
         cx: &mut Context<Self>,
     ) -> Div {
         let state = self.state.read(cx);
+        let theme = state.theme();
         let api_url = state.api_base_url.clone();
         let auth_summary = state.auth_summary.clone();
         let is_oidc = matches!(state.config.auth, AuthConfig::Oidc(_));
@@ -449,7 +450,7 @@ impl WorkspaceView {
             LoginPhase::Checking => div().flex().flex_col().items_center().gap_3().child(
                 div()
                     .text_base()
-                    .text_color(theme::ACCENT)
+                    .text_color(theme.accent)
                     .child("接続とセッションを確認しています…"),
             ),
             LoginPhase::Ready { error } => {
@@ -460,11 +461,11 @@ impl WorkspaceView {
                             .w_full()
                             .p_3()
                             .rounded_md()
-                            .bg(theme::BG_SURFACE)
+                            .bg(theme.bg_surface)
                             .border_1()
-                            .border_color(theme::DANGER)
+                            .border_color(theme.danger)
                             .text_sm()
-                            .text_color(theme::WARNING)
+                            .text_color(theme.warning)
                             .child(err.clone()),
                     );
                 }
@@ -480,18 +481,18 @@ impl WorkspaceView {
                                 .py_2()
                                 .px_4()
                                 .rounded_md()
-                                .bg(theme::ACCENT_BUTTON)
+                                .bg(theme.accent_button)
                                 .border_1()
                                 .border_color(if primary_focused {
-                                    theme::TEXT_PRIMARY
+                                    theme.text_primary
                                 } else {
-                                    theme::ACCENT_BUTTON
+                                    theme.accent_button
                                 })
-                                .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
+                                .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                                 .text_center()
                                 .text_sm()
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(theme::TEXT_PRIMARY)
+                                .text_color(theme.text_primary)
                                 .child("ブラウザでログイン (Enter)")
                                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                                     if is_activate_key(&ev.keystroke.key) {
@@ -519,17 +520,17 @@ impl WorkspaceView {
                                 .py_2()
                                 .px_4()
                                 .rounded_md()
-                                .bg(theme::BG_SURFACE)
+                                .bg(theme.bg_surface)
                                 .border_1()
                                 .border_color(if secondary_focused {
-                                    theme::BORDER_ACCENT
+                                    theme.border_accent
                                 } else {
-                                    theme::BORDER
+                                    theme.border
                                 })
-                                .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                                 .text_center()
                                 .text_sm()
-                                .text_color(theme::TEXT_MUTED)
+                                .text_color(theme.text_muted)
                                 .child("保存済みトークンで再試行")
                                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                                     if is_activate_key(&ev.keystroke.key) {
@@ -559,18 +560,18 @@ impl WorkspaceView {
                             .py_2()
                             .px_4()
                             .rounded_md()
-                            .bg(theme::ACCENT_BUTTON)
+                            .bg(theme.accent_button)
                             .border_1()
                             .border_color(if primary_focused {
-                                theme::TEXT_PRIMARY
+                                theme.text_primary
                             } else {
-                                theme::ACCENT_BUTTON
+                                theme.accent_button
                             })
-                            .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
+                            .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                             .text_center()
                             .text_sm()
                             .font_weight(FontWeight::BOLD)
-                            .text_color(theme::TEXT_PRIMARY)
+                            .text_color(theme.text_primary)
                             .child("再接続する (Enter)")
                             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                                 if is_activate_key(&ev.keystroke.key) {
@@ -612,7 +613,7 @@ impl WorkspaceView {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(theme::TEXT_PRIMARY)
+                            .text_color(theme.text_primary)
                             .child("ブラウザで次のコードを確認し、ログインを承認してください。"),
                     )
                     .child(
@@ -620,9 +621,9 @@ impl WorkspaceView {
                             .w_full()
                             .p_4()
                             .rounded_md()
-                            .bg(theme::BG_PRIMARY)
+                            .bg(theme.bg_primary)
                             .border_1()
-                            .border_color(theme::BORDER_ACCENT)
+                            .border_color(theme.border_accent)
                             .flex()
                             .flex_col()
                             .items_center()
@@ -630,20 +631,20 @@ impl WorkspaceView {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(theme::TEXT_MUTED)
+                                    .text_color(theme.text_muted)
                                     .child("確認コード"),
                             )
                             .child(
                                 div()
                                     .text_2xl()
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(theme::ACCENT)
+                                    .text_color(theme.accent)
                                     .child(user_code.clone()),
                             )
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(theme::TEXT_MUTED)
+                                    .text_color(theme.text_muted)
                                     .child(verification_uri.clone()),
                             ),
                     )
@@ -661,18 +662,18 @@ impl WorkspaceView {
                                     .py_2()
                                     .px_3()
                                     .rounded_md()
-                                    .bg(theme::ACCENT_BUTTON)
+                                    .bg(theme.accent_button)
                                     .border_1()
                                     .border_color(if primary_focused {
-                                        theme::TEXT_PRIMARY
+                                        theme.text_primary
                                     } else {
-                                        theme::ACCENT_BUTTON
+                                        theme.accent_button
                                     })
-                                    .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
+                                    .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                                     .text_center()
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(theme::TEXT_PRIMARY)
+                                    .text_color(theme.text_primary)
                                     .child("ブラウザを開く")
                                     .on_key_down(cx.listener(move |_, ev: &KeyDownEvent, _, _| {
                                         if is_activate_key(&ev.keystroke.key) {
@@ -694,17 +695,17 @@ impl WorkspaceView {
                                     .py_2()
                                     .px_3()
                                     .rounded_md()
-                                    .bg(theme::BG_SURFACE)
+                                    .bg(theme.bg_surface)
                                     .border_1()
                                     .border_color(if secondary_focused {
-                                        theme::BORDER_ACCENT
+                                        theme.border_accent
                                     } else {
-                                        theme::BORDER
+                                        theme.border
                                     })
-                                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                    .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                                     .text_center()
                                     .text_sm()
-                                    .text_color(theme::TEXT_PRIMARY)
+                                    .text_color(theme.text_primary)
                                     .child("コードをコピー")
                                     .on_key_down(cx.listener(move |_, ev: &KeyDownEvent, _, cx| {
                                         if is_activate_key(&ev.keystroke.key) {
@@ -733,14 +734,14 @@ impl WorkspaceView {
                             .rounded_md()
                             .border_1()
                             .border_color(if cancel_focused {
-                                theme::BORDER_ACCENT
+                                theme.border_accent
                             } else {
-                                theme::BG_SECONDARY
+                                theme.bg_secondary
                             })
-                            .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                            .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                             .text_center()
                             .text_xs()
-                            .text_color(theme::TEXT_MUTED)
+                            .text_color(theme.text_muted)
                             .child("キャンセル (Esc)")
                             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                                 if is_activate_key(&ev.keystroke.key)
@@ -767,7 +768,6 @@ impl WorkspaceView {
 
         let is_awaiting = matches!(phase, LoginPhase::AwaitingApproval { .. });
         let is_ready_oidc = matches!(phase, LoginPhase::Ready { .. }) && is_oidc;
-        let theme = state.theme();
 
         div()
             .flex()
@@ -847,13 +847,13 @@ impl WorkspaceView {
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(theme::TEXT_MUTED)
+                                    .text_color(theme.text_muted)
                                     .child(format!("接続先: {api_url}")),
                             )
                             .child(
                                 div()
                                     .text_xs()
-                                    .text_color(theme::TEXT_MUTED)
+                                    .text_color(theme.text_muted)
                                     .child(format!("認証方式: {auth_summary}")),
                             ),
                     )
@@ -1144,27 +1144,25 @@ impl WorkspaceView {
                                 .my_1()
                                 .p_2()
                                 .rounded_md()
-                                .bg(theme::BG_SURFACE)
+                                .bg(theme.bg_surface)
                                 .border_1()
-                                .border_color(theme::DANGER)
+                                .border_color(theme.danger)
                                 .flex()
                                 .flex_col()
                                 .gap_1p5()
-                                .child(div().text_xs().text_color(theme::WARNING).child(err))
+                                .child(div().text_xs().text_color(theme.warning).child(err))
                                 .child(
                                     div()
                                         .id("btn-sidebar-retry-sync")
                                         .px_2()
                                         .py_1()
                                         .rounded_sm()
-                                        .bg(theme::ACCENT_BUTTON)
-                                        .hover(|s| {
-                                            s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer()
-                                        })
+                                        .bg(theme.accent_button)
+                                        .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                                         .text_center()
                                         .text_xs()
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(theme::TEXT_PRIMARY)
+                                        .text_color(theme.text_primary)
                                         .child("再同期する")
                                         .on_mouse_up(
                                             MouseButton::Left,
@@ -1186,11 +1184,11 @@ impl WorkspaceView {
                                     .my_1()
                                     .p_2()
                                     .rounded_md()
-                                    .bg(theme::BG_SURFACE)
+                                    .bg(theme.bg_surface)
                                     .border_1()
-                                    .border_color(theme::WARNING)
+                                    .border_color(theme.warning)
                                     .text_xs()
-                                    .text_color(theme::WARNING)
+                                    .text_color(theme.warning)
                                     .child(msg),
                             )
                         })
@@ -1204,7 +1202,7 @@ impl WorkspaceView {
                                 .py_1()
                                 .text_xs()
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(theme::TEXT_MUTED)
+                                .text_color(theme.text_muted)
                                 .child("ダイレクトメッセージ"),
                         )
                         .children(dm_rows)
@@ -1233,6 +1231,7 @@ impl WorkspaceView {
             is_searching,
             start_idx,
             end_idx,
+            theme,
         ) = {
             let state = self.state.read(cx);
             let theme = state.theme();
@@ -1308,6 +1307,7 @@ impl WorkspaceView {
                 is_searching,
                 start_idx,
                 end_idx,
+                theme,
             )
         };
 
@@ -1324,12 +1324,12 @@ impl WorkspaceView {
                         .px_3()
                         .py_1()
                         .rounded_md()
-                        .bg(theme::BG_SURFACE)
+                        .bg(theme.bg_surface)
                         .border_1()
-                        .border_color(theme::BORDER)
-                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                        .border_color(theme.border)
+                        .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                         .text_xs()
-                        .text_color(theme::ACCENT)
+                        .text_color(theme.accent)
                         .child(format!("過去のメッセージを表示 (残り {hidden_before} 件)"))
                         .on_mouse_up(
                             MouseButton::Left,
@@ -1348,7 +1348,7 @@ impl WorkspaceView {
             let date = local_zoned(msg.created_at).map(|z| z.date());
             if date.is_some() && date != last_date {
                 if let Some(d) = date {
-                    timeline_items.push(render_date_separator(&d.to_string()));
+                    timeline_items.push(render_date_separator(&d.to_string(), &theme));
                 }
                 last_date = date;
             }
@@ -1533,9 +1533,9 @@ impl WorkspaceView {
                     div()
                         .px_4()
                         .py_2()
-                        .bg(theme::BG_SECONDARY)
+                        .bg(theme.bg_secondary)
                         .border_b_1()
-                        .border_color(theme::DANGER)
+                        .border_color(theme.danger)
                         .flex()
                         .flex_row()
                         .justify_between()
@@ -1543,7 +1543,7 @@ impl WorkspaceView {
                         .child(
                             div()
                                 .text_sm()
-                                .text_color(theme::WARNING)
+                                .text_color(theme.warning)
                                 .child("選択したメッセージを削除しますか？"),
                         )
                         .child(
@@ -1557,11 +1557,11 @@ impl WorkspaceView {
                                         .px_3()
                                         .py_1()
                                         .rounded_md()
-                                        .bg(theme::DANGER)
+                                        .bg(theme.danger)
                                         .hover(|s| s.cursor_pointer())
                                         .text_xs()
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(theme::TEXT_PRIMARY)
+                                        .text_color(theme.text_primary)
                                         .child("削除する")
                                         .on_mouse_up(
                                             MouseButton::Left,
@@ -1579,12 +1579,12 @@ impl WorkspaceView {
                                         .px_3()
                                         .py_1()
                                         .rounded_md()
-                                        .bg(theme::BG_SURFACE)
+                                        .bg(theme.bg_surface)
                                         .border_1()
-                                        .border_color(theme::BORDER)
-                                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                        .border_color(theme.border)
+                                        .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                                         .text_xs()
-                                        .text_color(theme::TEXT_MUTED)
+                                        .text_color(theme.text_muted)
                                         .child("キャンセル")
                                         .on_mouse_up(
                                             MouseButton::Left,
@@ -1614,7 +1614,7 @@ impl WorkspaceView {
                         d.child(
                             div()
                                 .text_sm()
-                                .text_color(theme::TEXT_MUTED)
+                                .text_color(theme.text_muted)
                                 .child("メッセージを読み込み中…"),
                         )
                     })
@@ -1622,7 +1622,7 @@ impl WorkspaceView {
                         d.child(
                             div()
                                 .text_sm()
-                                .text_color(theme::TEXT_MUTED)
+                                .text_color(theme.text_muted)
                                 .child("まだメッセージがありません"),
                         )
                     })
@@ -1634,9 +1634,9 @@ impl WorkspaceView {
                     div()
                         .px_4()
                         .py_1p5()
-                        .bg(theme::BG_SURFACE)
+                        .bg(theme.bg_surface)
                         .border_t_1()
-                        .border_color(theme::BORDER)
+                        .border_color(theme.border)
                         .flex()
                         .justify_center()
                         .child(
@@ -1645,11 +1645,11 @@ impl WorkspaceView {
                                 .px_3()
                                 .py_1()
                                 .rounded_md()
-                                .bg(theme::ACCENT_BUTTON)
-                                .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
+                                .bg(theme.accent_button)
+                                .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                                 .text_xs()
                                 .font_weight(FontWeight::BOLD)
-                                .text_color(theme::TEXT_PRIMARY)
+                                .text_color(theme.text_primary)
                                 .child(if hidden_after > 0 {
                                     format!("↓ 最新メッセージへ移動 (新着ほか {hidden_after} 件)")
                                 } else {
@@ -1738,7 +1738,7 @@ impl WorkspaceView {
                 .text_color(pill_text)
                 .child(format!("{} {}", reaction_label(&group.emoji), group.count))
                 .when(!is_archived, |d| {
-                    d.hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                    d.hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                         .on_mouse_up(
                             MouseButton::Left,
                             cx.listener(move |this, _: &MouseUpEvent, _, cx| {
@@ -1767,10 +1767,10 @@ impl WorkspaceView {
                         .px_2()
                         .py_1()
                         .rounded_md()
-                        .bg(theme::BG_PRIMARY)
+                        .bg(theme.bg_primary)
                         .border_1()
-                        .border_color(theme::BORDER)
-                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                        .border_color(theme.border)
+                        .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                         .text_sm()
                         .child(emoji)
                         .on_mouse_up(
@@ -1798,12 +1798,22 @@ impl WorkspaceView {
             .message_search
             .as_ref()
             .is_some_and(|ms| ms.matches.contains(&msg_id));
-        let card_border_color = if is_search_matched {
+        let is_current_search_match = state
+            .message_search
+            .as_ref()
+            .and_then(|ms| ms.matches.get(ms.current_match_index))
+            == Some(&msg_id);
+
+        let card_border_color = if is_current_search_match {
+            theme.accent
+        } else if is_search_matched {
             theme.border_accent
         } else {
             theme.border
         };
-        let card_bg = if is_search_matched {
+        let card_bg = if is_current_search_match {
+            theme.bg_mention_mine
+        } else if is_search_matched {
             theme.bg_selected
         } else {
             theme.bg_surface
@@ -1823,7 +1833,7 @@ impl WorkspaceView {
             .collect();
         let attachment_views: Vec<Div> = attachments_with_urls
             .into_iter()
-            .map(|(att, url)| render_attachment_item(&att, url, cx))
+            .map(|(att, url)| render_attachment_item(&att, url, &theme, cx))
             .collect();
 
         let ogp_cards = message
@@ -1833,7 +1843,7 @@ impl WorkspaceView {
             .unwrap_or_default();
         let ogp_views: Vec<Div> = ogp_cards
             .iter()
-            .map(|card| render_ogp_card(card, cx))
+            .map(|card| render_ogp_card(card, &theme, cx))
             .collect();
 
         div()
@@ -1884,7 +1894,7 @@ impl WorkspaceView {
                                 d.child(
                                     div()
                                         .text_xs()
-                                        .text_color(theme::TEXT_DIM)
+                                        .text_color(theme.text_dim)
                                         .child("(編集済み)"),
                                 )
                             }),
@@ -1905,10 +1915,10 @@ impl WorkspaceView {
                                         .px_2()
                                         .py_0p5()
                                         .rounded_sm()
-                                        .bg(theme::BG_SECONDARY)
-                                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                        .bg(theme.bg_secondary)
+                                        .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                                         .text_xs()
-                                        .text_color(theme::TEXT_MUTED)
+                                        .text_color(theme.text_muted)
                                         .child("返信")
                                         .on_mouse_up(
                                             MouseButton::Left,
@@ -1934,10 +1944,10 @@ impl WorkspaceView {
                                         .px_2()
                                         .py_0p5()
                                         .rounded_sm()
-                                        .bg(theme::BG_SECONDARY)
-                                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                        .bg(theme.bg_secondary)
+                                        .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                                         .text_xs()
-                                        .text_color(theme::TEXT_MUTED)
+                                        .text_color(theme.text_muted)
                                         .child("+ リアクション")
                                         .on_mouse_up(
                                             MouseButton::Left,
@@ -2032,10 +2042,11 @@ impl WorkspaceView {
                     ),
             )
             // MFM 本文
-            .child(mfm_view::render_mfm(
+            .child(mfm_view::render_mfm_with_theme(
                 &format!("{pane_prefix}-{msg_id}"),
                 &message.content,
                 Some(me_user_name),
+                &theme,
             ))
             // 添付ファイル (画像・ファイル)
             .when(!attachment_views.is_empty(), |d| {
@@ -2169,9 +2180,9 @@ impl WorkspaceView {
         div()
             .w_full()
             .p_3()
-            .bg(theme::BG_SECONDARY)
+            .bg(theme.bg_secondary)
             .border_t_1()
-            .border_color(theme::BORDER)
+            .border_color(theme.border)
             .flex()
             .flex_col()
             .gap_2()
@@ -2183,11 +2194,11 @@ impl WorkspaceView {
                         .w_full()
                         .p_2p5()
                         .rounded_md()
-                        .bg(theme::BG_SURFACE)
+                        .bg(theme.bg_surface)
                         .border_1()
-                        .border_color(theme::BORDER)
+                        .border_color(theme.border)
                         .text_xs()
-                        .text_color(theme::TEXT_MUTED)
+                        .text_color(theme.text_muted)
                         .child(
                             "このチャンネルはアーカイブされているため、メッセージの投稿や編集はできません",
                         ),
@@ -2381,7 +2392,7 @@ impl WorkspaceView {
                             .text_xs()
                             .child(
                                 div()
-                                    .text_color(theme::WARNING)
+                                    .text_color(theme.warning)
                                     .child(notice.unwrap_or_default()),
                             )
                             .child(
@@ -2392,14 +2403,14 @@ impl WorkspaceView {
                                     .when(invalid_rows > 0, |d| {
                                         d.child(
                                             div()
-                                                .text_color(theme::DANGER)
+                                                .text_color(theme.danger)
                                                 .child(format!("読めない行: {invalid_rows}")),
                                         )
                                     })
                                     .when_some(update_available, |d, ver| {
                                         d.child(
                                             div()
-                                                .text_color(theme::SUCCESS)
+                                                .text_color(theme.success)
                                                 .child(format!("新しい版 v{ver} があります")),
                                         )
                                     }),
@@ -2517,13 +2528,11 @@ impl WorkspaceView {
                                         .px_2p5()
                                         .py_1()
                                         .rounded_md()
-                                        .bg(theme::ACCENT_BUTTON)
-                                        .hover(|s| {
-                                            s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer()
-                                        })
+                                        .bg(theme.accent_button)
+                                        .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
                                         .text_xs()
                                         .font_weight(FontWeight::BOLD)
-                                        .text_color(theme::TEXT_PRIMARY)
+                                        .text_color(theme.text_primary)
                                         .child("返信を書く")
                                         .on_mouse_up(
                                             MouseButton::Left,
@@ -2548,12 +2557,12 @@ impl WorkspaceView {
                                     .px_2p5()
                                     .py_1()
                                     .rounded_md()
-                                    .bg(theme::BG_SECONDARY)
+                                    .bg(theme.bg_secondary)
                                     .border_1()
-                                    .border_color(theme::BORDER)
-                                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                    .border_color(theme.border)
+                                    .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                                     .text_xs()
-                                    .text_color(theme::TEXT_MUTED)
+                                    .text_color(theme.text_muted)
                                     .child("× 閉じる")
                                     .on_mouse_up(
                                         MouseButton::Left,
@@ -2587,9 +2596,9 @@ impl WorkspaceView {
                         .px_4()
                         .py_2()
                         .border_t_1()
-                        .border_color(theme::BORDER)
+                        .border_color(theme.border)
                         .text_xs()
-                        .text_color(theme::ACCENT)
+                        .text_color(theme.accent)
                         .child(t),
                 )
             })
@@ -2597,10 +2606,15 @@ impl WorkspaceView {
 
     fn render_pending_attachments_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
         let state = self.state.read(cx);
-        if state.pending_attachments.is_empty() {
+        if matches!(state.target, Target::Edit(_)) {
             return None;
         }
-        let pills = state.pending_attachments.iter().map(|att| {
+        let attachments = state.current_channel_attachments();
+        if attachments.is_empty() {
+            return None;
+        }
+        let theme = state.theme();
+        let pills = attachments.into_iter().map(|att| {
             let local_id = att.local_id.clone();
             let name = att.file_name.clone();
             let size_str = format_file_size(att.file_size);
@@ -2612,29 +2626,29 @@ impl WorkspaceView {
                 ""
             };
             let text_color = if att.error.is_some() {
-                theme::DANGER
+                theme.danger
             } else if att.is_uploading {
-                theme::TEXT_MUTED
+                theme.text_muted
             } else {
-                theme::SUCCESS
+                theme.success
             };
 
             div()
                 .px_2p5()
                 .py_1()
                 .rounded_md()
-                .bg(theme::BG_SURFACE)
+                .bg(theme.bg_surface)
                 .border_1()
-                .border_color(theme::BORDER)
+                .border_color(theme.border)
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_2()
-                .child(div().text_xs().text_color(theme::ACCENT).child("📎"))
+                .child(div().text_xs().text_color(theme.accent).child("📎"))
                 .child(
                     div()
                         .text_xs()
-                        .text_color(theme::TEXT_PRIMARY)
+                        .text_color(theme.text_primary)
                         .child(format!("{name} ({size_str})")),
                 )
                 .child(div().text_xs().text_color(text_color).child(status_text))
@@ -2642,9 +2656,9 @@ impl WorkspaceView {
                     div()
                         .px_1()
                         .rounded_sm()
-                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                        .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                         .text_xs()
-                        .text_color(theme::DANGER)
+                        .text_color(theme.danger)
                         .child("✕")
                         .on_mouse_up(
                             MouseButton::Left,
@@ -2672,6 +2686,7 @@ impl WorkspaceView {
 
     fn render_mention_autocomplete(&self, cx: &mut Context<Self>) -> Option<Div> {
         let state = self.state.read(cx);
+        let theme = state.theme();
         let autocomplete = state.mention_autocomplete.as_ref()?;
         if autocomplete.candidates.is_empty() {
             return None;
@@ -2691,11 +2706,11 @@ impl WorkspaceView {
                     .py_1p5()
                     .rounded_sm()
                     .bg(if is_selected {
-                        theme::BG_SELECTED
+                        theme.bg_selected
                     } else {
-                        theme::BG_SURFACE
+                        theme.bg_surface
                     })
-                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                    .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                     .flex()
                     .flex_row()
                     .items_center()
@@ -2709,9 +2724,9 @@ impl WorkspaceView {
                                 FontWeight::NORMAL
                             })
                             .text_color(if candidate.is_special {
-                                theme::ACCENT
+                                theme.accent
                             } else {
-                                theme::TEXT_PRIMARY
+                                theme.text_primary
                             })
                             .child(display),
                     )
@@ -2734,9 +2749,9 @@ impl WorkspaceView {
                 .w_full()
                 .p_1p5()
                 .rounded_md()
-                .bg(theme::BG_SURFACE)
+                .bg(theme.bg_surface)
                 .border_1()
-                .border_color(theme::BORDER_ACCENT)
+                .border_color(theme.border_accent)
                 .child(
                     div()
                         .id("mention-autocomplete-list")
@@ -2753,6 +2768,7 @@ impl WorkspaceView {
 
     fn render_emoji_picker(&self, cx: &mut Context<Self>) -> Div {
         let state = self.state.read(cx);
+        let theme = state.theme();
         let query = state.emoji_picker_query.to_lowercase();
 
         let common_emojis = [
@@ -2794,7 +2810,7 @@ impl WorkspaceView {
                 .items_center()
                 .justify_center()
                 .rounded_sm()
-                .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                 .text_base()
                 .child(e)
                 .on_mouse_up(
@@ -2815,9 +2831,9 @@ impl WorkspaceView {
             .max_h(px(280.0))
             .p_3()
             .rounded_md()
-            .bg(theme::BG_SURFACE)
+            .bg(theme.bg_surface)
             .border_1()
-            .border_color(theme::BORDER_ACCENT)
+            .border_color(theme.border_accent)
             .flex()
             .flex_col()
             .gap_2()
@@ -2831,16 +2847,16 @@ impl WorkspaceView {
                         div()
                             .text_xs()
                             .font_weight(FontWeight::BOLD)
-                            .text_color(theme::TEXT_PRIMARY)
+                            .text_color(theme.text_primary)
                             .child("絵文字を選択"),
                     )
                     .child(
                         div()
                             .px_1p5()
                             .rounded_sm()
-                            .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                            .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                             .text_xs()
-                            .text_color(theme::TEXT_MUTED)
+                            .text_color(theme.text_muted)
                             .child("✕")
                             .on_mouse_up(
                                 MouseButton::Left,
@@ -2922,9 +2938,9 @@ impl WorkspaceView {
                     div()
                         .p_2()
                         .rounded_md()
-                        .bg(theme::BG_SURFACE)
+                        .bg(theme.bg_surface)
                         .text_xs()
-                        .text_color(theme::DANGER)
+                        .text_color(theme.danger)
                         .child(err),
                 )
             })
@@ -3378,47 +3394,6 @@ impl Render for WorkspaceView {
                 let key = ev.keystroke.key.as_str();
                 let cmd_or_ctrl = ev.keystroke.modifiers.platform || ev.keystroke.modifiers.control;
 
-                // メンション補完時のキーボード操作
-                if this.state.read(cx).mention_autocomplete.is_some() {
-                    match key {
-                        "up" => {
-                            this.state.update(cx, |s, cx| {
-                                s.mention_select_prev();
-                                cx.notify();
-                            });
-                            return;
-                        }
-                        "down" => {
-                            this.state.update(cx, |s, cx| {
-                                s.mention_select_next();
-                                cx.notify();
-                            });
-                            return;
-                        }
-                        "tab" | "enter" => {
-                            let confirmed = this.state.update(cx, |s, cx| {
-                                let res = s.mention_confirm();
-                                cx.notify();
-                                res
-                            });
-                            if let Some((text, caret)) = confirmed {
-                                this.composer_input.update(cx, |input, cx| {
-                                    input.set_text_and_cursor(text, caret, cx);
-                                });
-                            }
-                            return;
-                        }
-                        "escape" => {
-                            this.state.update(cx, |s, cx| {
-                                s.mention_autocomplete = None;
-                                cx.notify();
-                            });
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-
                 // クイックスイッチャー時のキーボード操作
                 if this.state.read(cx).quick_switcher.is_some() {
                     match key {
@@ -3519,7 +3494,7 @@ impl Render for WorkspaceView {
     }
 }
 
-fn render_date_separator(date_label: &str) -> Div {
+fn render_date_separator(date_label: &str, theme: &theme::Theme) -> Div {
     div()
         .w_full()
         .py_1()
@@ -3527,14 +3502,14 @@ fn render_date_separator(date_label: &str) -> Div {
         .flex_row()
         .items_center()
         .gap_3()
-        .child(div().flex_1().h(px(1.0)).bg(theme::BORDER))
+        .child(div().flex_1().h(px(1.0)).bg(theme.border))
         .child(
             div()
                 .text_xs()
-                .text_color(theme::TEXT_MUTED)
+                .text_color(theme.text_muted)
                 .child(date_label.to_string()),
         )
-        .child(div().flex_1().h(px(1.0)).bg(theme::BORDER))
+        .child(div().flex_1().h(px(1.0)).bg(theme.border))
 }
 
 /// UTC の naive 日時をローカルタイムゾーンへ変換する。
@@ -3564,16 +3539,20 @@ pub fn format_file_size(bytes: i64) -> String {
     }
 }
 
-pub fn render_ogp_card(card: &CardData, cx: &mut Context<WorkspaceView>) -> Div {
+pub fn render_ogp_card(
+    card: &CardData,
+    theme: &theme::Theme,
+    cx: &mut Context<WorkspaceView>,
+) -> Div {
     let border_color = if let Some(color_hex) = &card.color {
         let clean = color_hex.trim_start_matches('#');
         if let Ok(c) = u32::from_str_radix(clean, 16) {
             theme::hex_rgb(c)
         } else {
-            theme::BORDER_ACCENT
+            theme.border_accent
         }
     } else {
-        theme::BORDER_ACCENT
+        theme.border_accent
     };
 
     let title = card.title.clone();
@@ -3592,14 +3571,14 @@ pub fn render_ogp_card(card: &CardData, cx: &mut Context<WorkspaceView>) -> Div 
     div()
         .mt_1p5()
         .rounded_md()
-        .bg(theme::BG_SURFACE)
+        .bg(theme.bg_surface)
         .border_1()
-        .border_color(theme::BORDER)
+        .border_color(theme.border)
         .flex()
         .flex_row()
         .overflow_hidden()
         .when(!open_target.is_empty(), |d| {
-            d.hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+            d.hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(move |_, _: &MouseUpEvent, _, cx| {
@@ -3620,7 +3599,7 @@ pub fn render_ogp_card(card: &CardData, cx: &mut Context<WorkspaceView>) -> Div 
                         div()
                             .text_xs()
                             .font_weight(FontWeight::BOLD)
-                            .text_color(theme::TEXT_MUTED)
+                            .text_color(theme.text_muted)
                             .child(source),
                     )
                 })
@@ -3628,14 +3607,14 @@ pub fn render_ogp_card(card: &CardData, cx: &mut Context<WorkspaceView>) -> Div 
                     div()
                         .text_sm()
                         .font_weight(FontWeight::BOLD)
-                        .text_color(theme::TEXT_LINK)
+                        .text_color(theme.text_link)
                         .child(title),
                 )
                 .when(!desc.is_empty(), |d| {
-                    d.child(div().text_xs().text_color(theme::TEXT_MUTED).child(desc))
+                    d.child(div().text_xs().text_color(theme.text_muted).child(desc))
                 })
                 .when(!url.is_empty(), |d| {
-                    d.child(div().text_xs().text_color(theme::TEXT_DIM).child(url))
+                    d.child(div().text_xs().text_color(theme.text_dim).child(url))
                 }),
         )
 }
@@ -3643,11 +3622,13 @@ pub fn render_ogp_card(card: &CardData, cx: &mut Context<WorkspaceView>) -> Div 
 pub fn render_attachment_item(
     att: &zoo2_client_core::electric::rows::Attachment,
     download_url: Option<String>,
+    theme: &theme::Theme,
     cx: &mut Context<WorkspaceView>,
 ) -> Div {
     let is_img = is_image_content_type(&att.content_type);
     let size_label = format_file_size(att.file_size);
     let file_name = att.file_name.clone();
+    let att_id = att.id.clone();
 
     if is_img {
         if let Some(url) = download_url {
@@ -3657,8 +3638,8 @@ pub fn render_attachment_item(
                 .rounded_md()
                 .overflow_hidden()
                 .border_1()
-                .border_color(theme::BORDER)
-                .bg(theme::BG_SURFACE)
+                .border_color(theme.border)
+                .bg(theme.bg_surface)
                 .cursor_pointer()
                 .on_mouse_up(
                     MouseButton::Left,
@@ -3673,48 +3654,67 @@ pub fn render_attachment_item(
                         .rounded_md(),
                 )
         } else {
+            let att_id_retry = att_id.clone();
             div()
                 .mt_1p5()
                 .px_3()
                 .py_2()
                 .rounded_md()
                 .border_1()
-                .border_color(theme::BORDER)
-                .bg(theme::BG_SURFACE)
+                .border_color(theme.border)
+                .bg(theme.bg_surface)
+                .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap_2()
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                        let id = att_id_retry.clone();
+                        this.state.update(cx, |s, cx| {
+                            s.ensure_attachment_url(id);
+                            cx.notify();
+                        });
+                    }),
+                )
                 .child(
                     div()
                         .text_xs()
-                        .text_color(theme::TEXT_MUTED)
-                        .child("画像を読み込み中…"),
+                        .text_color(theme.text_muted)
+                        .child("画像を読み込み中… (クリックで再試行)"),
                 )
         }
     } else {
-        let open_url = download_url;
+        let att_id_open = att_id;
+        let fallback_url = download_url;
         div()
             .mt_1p5()
             .px_3()
             .py_2()
             .rounded_md()
-            .bg(theme::BG_SURFACE)
+            .bg(theme.bg_surface)
             .border_1()
-            .border_color(theme::BORDER)
+            .border_color(theme.border)
+            .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    let id = att_id_open.clone();
+                    let url_opt = this.state.update(cx, |s, cx| {
+                        let res = s.get_or_fetch_attachment_url(&id);
+                        cx.notify();
+                        res
+                    });
+                    if let Some(url) = url_opt.or_else(|| fallback_url.clone()) {
+                        cx.open_url(&url);
+                    }
+                }),
+            )
             .flex()
             .flex_row()
             .items_center()
             .gap_2()
-            .when_some(open_url, |d, url| {
-                d.hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
-                            cx.open_url(&url);
-                        }),
-                    )
-            })
             .child(div().text_base().child("📎"))
             .child(
                 div()
@@ -3724,13 +3724,13 @@ pub fn render_attachment_item(
                         div()
                             .text_xs()
                             .font_weight(FontWeight::BOLD)
-                            .text_color(theme::TEXT_PRIMARY)
+                            .text_color(theme.text_primary)
                             .child(file_name),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(theme::TEXT_MUTED)
+                            .text_color(theme.text_muted)
                             .child(size_label),
                     ),
             )

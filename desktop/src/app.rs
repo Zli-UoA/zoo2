@@ -40,6 +40,38 @@ const MAX_TIMELINE_RENDER_LIMIT: usize = 500;
 /// クイックリアクション候補。
 pub const QUICK_EMOJIS: &[&str] = &["👍", "🎉", "❤️", "👀", "😂", "🙏"];
 
+/// アップロードを拒否する危険な拡張子 (React 版の DISALLOWED_UPLOAD_EXTENSIONS と同一)。
+pub const DISALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
+    "exe", "com", "scr", "msi", "dll", "so", "dylib", "bat", "cmd", "sh",
+];
+
+/// ファイル名が危険な拡張子を持つかを判定する。
+pub fn is_disallowed_extension(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    let ext = lower.rsplit('.').next().unwrap_or("");
+    DISALLOWED_UPLOAD_EXTENSIONS.contains(&ext)
+}
+
+/// S3 署名付き URL の `X-Amz-Expires` から有効期限秒数を抽出する。
+pub fn parse_url_expiry_secs(url: &str) -> u64 {
+    if let Some(pos) = url.find("X-Amz-Expires=") {
+        let after = &url[pos + "X-Amz-Expires=".len()..];
+        let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(secs) = num_str.parse::<u64>() {
+            return secs.saturating_sub(30).max(60);
+        }
+    }
+    240
+}
+
+/// キャッシュされた添付ファイル URL と有効期限。
+#[derive(Debug, Clone)]
+pub struct CachedAttachmentUrl {
+    pub url: String,
+    pub fetched_at: Instant,
+    pub ttl_secs: u64,
+}
+
 /// OS ネイティブ通知を送信する。
 pub fn notify_desktop(title: &str, body: &str) {
     let _ = notify_rust::Notification::new()
@@ -188,6 +220,7 @@ pub enum AppEvent {
     Unauthorized,
     SubmissionSucceeded {
         submission_id: u64,
+        sent_attachment_ids: Vec<String>,
     },
     RestoreDraft {
         submission_id: u64,
@@ -226,6 +259,9 @@ pub enum AppEvent {
     AttachmentUrlResolved {
         attachment_id: String,
         download_url: String,
+    },
+    AttachmentUrlFailed {
+        attachment_id: String,
     },
 }
 
@@ -335,8 +371,8 @@ pub struct AppState {
 
     /// 送信待ち・アップロード中の添付ファイル一覧。
     pub pending_attachments: Vec<PendingAttachment>,
-    /// 添付ファイル ID -> (download_url, 取得日時) のキャッシュ。
-    pub attachment_download_urls: HashMap<String, (String, Instant)>,
+    /// 添付ファイル ID -> キャッシュ情報 (download_url, 取得日時, TTL) のキャッシュ。
+    pub attachment_download_urls: HashMap<String, CachedAttachmentUrl>,
     /// 取得中の添付ファイル ID 一覧。
     pub fetching_attachment_urls: HashSet<String>,
     /// ファイルドラッグオーバー中フラグ。
@@ -1502,16 +1538,17 @@ impl AppState {
                 ));
                 true
             }
-            AppEvent::SubmissionSucceeded { submission_id } => {
-                let submitted_channel = self
-                    .in_flight_submissions
-                    .iter()
-                    .find(|(id, _)| *id == submission_id)
-                    .map(|(_, draft)| draft.channel_id.clone());
+            AppEvent::SubmissionSucceeded {
+                submission_id,
+                sent_attachment_ids,
+            } => {
                 self.in_flight_submissions
                     .retain(|(id, _)| *id != submission_id);
-                if let Some(ch) = submitted_channel {
-                    self.pending_attachments.retain(|a| a.channel_id != ch);
+                if !sent_attachment_ids.is_empty() {
+                    self.pending_attachments.retain(|a| match &a.attachment_id {
+                        Some(att_id) => !sent_attachment_ids.contains(att_id),
+                        None => true,
+                    });
                 }
                 true
             }
@@ -1665,8 +1702,19 @@ impl AppState {
                 download_url,
             } => {
                 self.fetching_attachment_urls.remove(&attachment_id);
-                self.attachment_download_urls
-                    .insert(attachment_id, (download_url, Instant::now()));
+                let ttl_secs = parse_url_expiry_secs(&download_url);
+                self.attachment_download_urls.insert(
+                    attachment_id,
+                    CachedAttachmentUrl {
+                        url: download_url,
+                        fetched_at: Instant::now(),
+                        ttl_secs,
+                    },
+                );
+                true
+            }
+            AppEvent::AttachmentUrlFailed { attachment_id } => {
+                self.fetching_attachment_urls.remove(&attachment_id);
                 true
             }
         }
@@ -2659,6 +2707,7 @@ impl AppState {
             },
         ));
 
+        let sent_attachment_ids = attachment_ids_opt.clone().unwrap_or_default();
         let session_gen = self.session_gen;
         self.spawn_session_task(async move {
             let id = uuid::Uuid::new_v4().to_string();
@@ -2689,7 +2738,10 @@ impl AppState {
                 Ok(_) => {
                     let _ = tx.send(DesktopEvent::App {
                         session_gen,
-                        event: AppEvent::SubmissionSucceeded { submission_id },
+                        event: AppEvent::SubmissionSucceeded {
+                            submission_id,
+                            sent_attachment_ids,
+                        },
                     });
                 }
                 Err(err) => {
@@ -2736,8 +2788,8 @@ impl AppState {
     pub fn attachment_download_url(&self, attachment_id: &str) -> Option<String> {
         self.attachment_download_urls
             .get(attachment_id)
-            .filter(|(_, fetched_at)| fetched_at.elapsed().as_secs() < 3000)
-            .map(|(url, _)| url.clone())
+            .filter(|c| c.fetched_at.elapsed().as_secs() < c.ttl_secs)
+            .map(|c| c.url.clone())
     }
 
     pub fn ensure_attachment_url(&mut self, attachment_id: String) {
@@ -2767,9 +2819,26 @@ impl AppState {
                 }
                 Err(err) => {
                     eprintln!("添付ファイル URL の解決に失敗しました: {err:#}");
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::AttachmentUrlFailed {
+                            attachment_id: att_id,
+                        },
+                    });
                 }
             }
         });
+    }
+
+    /// 添付ファイル URL を取得する。未取得または期限切れ間近（残り30秒以内）の場合は再取得をトリガーする。
+    pub fn get_or_fetch_attachment_url(&mut self, attachment_id: &str) -> Option<String> {
+        if let Some(c) = self.attachment_download_urls.get(attachment_id)
+            && c.fetched_at.elapsed().as_secs() + 30 < c.ttl_secs
+        {
+            return Some(c.url.clone());
+        }
+        self.ensure_attachment_url(attachment_id.to_string());
+        self.attachment_download_url(attachment_id)
     }
 
     // --- 添付ファイル ---
@@ -2806,6 +2875,10 @@ impl AppState {
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
+        if is_disallowed_extension(&file_name) {
+            self.notify("セキュリティ上の理由により、このファイル形式はアップロードできません");
+            return;
+        }
         let content_type = guess_content_type(&file_name).to_string();
 
         self.pending_attachments.push(PendingAttachment {
@@ -3123,6 +3196,9 @@ impl AppState {
         let Some(modal) = &mut self.create_channel_modal else {
             return;
         };
+        if modal.in_flight {
+            return;
+        }
         let name = modal.channel_name.trim().to_string();
         if name.is_empty() {
             modal.error = Some("チャンネル名を入力してください".to_string());
@@ -3222,7 +3298,23 @@ impl AppState {
         let Some(ms) = &self.message_search else {
             return;
         };
-        if ms.matches.get(ms.current_match_index).is_some() {
+        let Some(matched_id) = ms.matches.get(ms.current_match_index).cloned() else {
+            return;
+        };
+        let Some(channel_id) = self.current_channel.clone() else {
+            return;
+        };
+        if let Some(msg) = self.store.message(&channel_id, &matched_id).cloned() {
+            if let Some(parent_id) = msg.parent_id {
+                self.open_thread(parent_id.clone());
+                if let Some(thread) = &mut self.thread {
+                    thread.selected = Some(matched_id);
+                }
+                self.timeline_anchor_first_id = Some(parent_id);
+            } else {
+                self.timeline_anchor_first_id = Some(matched_id);
+            }
+            self.timeline_at_bottom = false;
             self.timeline_render_limit = MAX_TIMELINE_RENDER_LIMIT;
             self.ensure_channel_cache();
         }
@@ -4589,6 +4681,90 @@ mod tests {
         // ログアウト / セッションリセットでクリアされる
         state.clear_session_state();
         assert_eq!(state.pending_attachments.len(), 0);
+    }
+
+    #[test]
+    fn validates_disallowed_extensions_and_url_expiry() {
+        assert!(is_disallowed_extension("program.exe"));
+        assert!(is_disallowed_extension("script.sh"));
+        assert!(is_disallowed_extension("batch.bat"));
+        assert!(is_disallowed_extension("library.dll"));
+        assert!(!is_disallowed_extension("image.png"));
+        assert!(!is_disallowed_extension("document.pdf"));
+
+        // X-Amz-Expires の解析
+        let url =
+            "https://s3.amazonaws.com/bucket/key?X-Amz-Date=20261108T000000Z&X-Amz-Expires=300";
+        assert_eq!(parse_url_expiry_secs(url), 270);
+
+        // クエリがない場合はデフォルト 240 秒
+        assert_eq!(
+            parse_url_expiry_secs("https://s3.amazonaws.com/bucket/key"),
+            240
+        );
+    }
+
+    #[test]
+    fn prevents_duplicate_channel_creation() {
+        let mut state = connected_state();
+        state.open_create_channel_modal();
+        assert!(state.create_channel_modal.is_some());
+        state.create_channel_modal.as_mut().unwrap().in_flight = true;
+        state.create_channel_modal.as_mut().unwrap().channel_name = "test-chan".into();
+
+        // in_flight の場合は送信をスキップ
+        state.submit_create_channel();
+        assert_eq!(state.background_tasks.len(), 0);
+    }
+
+    #[test]
+    fn retains_unrelated_attachments_on_submission_succeeded() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_1".into(),
+            channel_id: "c1".into(),
+            session_gen: state.session_gen,
+            file_name: "sent.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_sent".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_2".into(),
+            channel_id: "c1".into(),
+            session_gen: state.session_gen,
+            file_name: "next.png".into(),
+            file_size: 200,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_next".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        // 送信中 submission をシミュレート
+        state.in_flight_submissions.push((
+            1,
+            FailedDraft {
+                channel_id: "c1".into(),
+                target: Target::Channel,
+                content: "送信メッセージ".into(),
+            },
+        ));
+
+        // SubmissionSucceeded で att_sent のみを送信完了通知
+        state.on_app_event(AppEvent::SubmissionSucceeded {
+            submission_id: 1,
+            sent_attachment_ids: vec!["att_sent".into()],
+        });
+
+        // att_sent は削除され、後から追加された att_next は保持される
+        assert_eq!(state.pending_attachments.len(), 1);
+        assert_eq!(state.pending_attachments[0].local_id, "loc_2");
     }
 
     #[test]
