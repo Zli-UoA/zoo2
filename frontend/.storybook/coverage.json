@@ -251,7 +251,16 @@
     },
     {
       "file": "src/components/chat/messages/ReactionPicker.stories.tsx",
-      "states": ["Default", "Kitchen", "SearchEmpty", "Recents", "KitchenLoading", "Mobile"]
+      "states": [
+        "Default",
+        "Kitchen",
+        "SearchEmpty",
+        "Recents",
+        "KitchenLoading",
+        "Mobile",
+        "ManyCustomEmojis",
+        "ManyCustomEmojisMobile"
+      ]
     },
     {
       "file": "src/components/chat/messages/ThreadPane.stories.tsx",
@@ -749,7 +758,7 @@
       "file": "src/components/chat/messages/EmojiPicker.tsx",
       "story": "src/components/chat/messages/ReactionPicker.stories.tsx",
       "composed": true,
-      "reason": "DefaultとSearchEmptyが実際の絵文字ピッカーを開く。"
+      "reason": "DefaultとSearchEmptyが標準ピッカーを、ManyCustomEmojisとManyCustomEmojisMobileが大量のカスタム絵文字のスクロールと選択を確認する。"
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.tsx",

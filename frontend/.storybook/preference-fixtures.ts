@@ -46,3 +46,8 @@ export const customEmojiFixture = {
 
 export const customEmojiImageBase64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII=";
+
+export const manyCustomEmojiFixtures = Array.from({ length: 200 }, (_, index) => ({
+  ...customEmojiFixture,
+  name: `scroll_${String(index).padStart(3, "0")}`,
+}));
