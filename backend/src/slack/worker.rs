@@ -818,7 +818,9 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             }
             let (target, private) = match &mapping.action {
                 MappingAction::Skip => continue,
-                MappingAction::Create { name, is_private } => {
+                MappingAction::Create {
+                    name, is_private, ..
+                } => {
                     // 非公開チャンネルは常に非公開で作る (start で拒否済みだが、古いジョブにも備える)。
                     // 以前作ったチャンネルを使うときは、その実際の公開・非公開を返す
                     let private = channel.is_private || is_private.unwrap_or(false);
@@ -861,8 +863,19 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 ctx.channel_names
                     .insert(channel.id.clone(), target.1.clone());
             }
+            // 取り込み先 (新しく作ったチャンネルも、既存のチャンネルも) に、Slack から取り込んだ印を付ける
+            exec(
+                &mut tx,
+                "UPDATE channels SET imported_from_slack=true WHERE id=$1 AND NOT imported_from_slack",
+                &[&target.0],
+            )
+            .await?;
             let create = matches!(mapping.action, MappingAction::Create { .. });
-            targets.push((channel.clone(), target.0, create));
+            // 取り込みが終わったあとにアーカイブするか (Slack でアーカイブ済みのチャンネルか、管理者の指定)
+            let archive = create
+                && (channel.is_archived
+                    || matches!(mapping.action, MappingAction::Create { archive: true, .. }));
+            targets.push((channel.clone(), target.0, archive));
         }
         tx.commit().await?;
     }
@@ -966,10 +979,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     } else {
         "completed"
     };
-    // Slack でアーカイブ済みのチャンネルは、作った取り込み先も最後にまとめてアーカイブする。
-    // 途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
-    for (channel, channel_id, created) in &targets {
-        if *created && channel.is_archived {
+    // Slack でアーカイブ済みのチャンネルと、管理者がアーカイブを指定したチャンネルは、作った取り込み先も最後に
+    // まとめてアーカイブする。途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
+    for (_channel, channel_id, archive) in &targets {
+        if *archive {
             exec(
                 &mut tx,
                 "UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1 AND archive_at IS NULL",
