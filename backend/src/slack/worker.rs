@@ -864,13 +864,12 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                     .insert(channel.id.clone(), target.1.clone());
             }
             let create = matches!(mapping.action, MappingAction::Create { .. });
-            // 取り込み先 (新しく作ったチャンネルも、既存のチャンネルも) に、Slack から取り込んだ印と、取り込みの種類、
-            // 日時を付ける。種類は最初の取り込みのものを残し (以前の取り込みで作ったチャンネルへの再取り込みは created のまま)、
-            // 日時は取り込むたびに更新する
+            // 取り込み先 (新しく作ったチャンネルも、既存のチャンネルも) に、Slack から取り込んだ印と、取り込みの種類を付ける。
+            // 種類は最初の取り込みのものを残す (以前の取り込みで作ったチャンネルへの再取り込みは created のまま)。
+            // 最後に取り込んだ日時は、このチャンネルの取り込みが終わったときに更新する (下)
             exec(
                 &mut tx,
-                "UPDATE channels SET imported_from_slack=true,\
-                 slack_import_kind=COALESCE(slack_import_kind,$2),slack_imported_at=CURRENT_TIMESTAMP WHERE id=$1",
+                "UPDATE channels SET imported_from_slack=true,slack_import_kind=COALESCE(slack_import_kind,$2) WHERE id=$1",
                 &[&target.0, if create { "created" } else { "existing" }],
             )
             .await?;
@@ -957,6 +956,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
              ON CONFLICT (user_id,channel_id) DO UPDATE \
              SET last_read_at=GREATEST(channel_read_states.last_read_at,EXCLUDED.last_read_at)",
             &[channel_id, &team, &channel.id],
+        )
+        .await?;
+        // このチャンネルの取り込みが終わった日時 (UTC。`timestamp` の列はほかの列と同じく UTC で持つ)
+        exec(
+            &mut tx,
+            "UPDATE channels SET slack_imported_at=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC') WHERE id=$1",
+            &[channel_id],
         )
         .await?;
         tx.commit().await?;

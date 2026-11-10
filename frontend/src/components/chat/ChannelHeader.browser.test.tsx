@@ -137,7 +137,9 @@ describe("ChannelHeader", () => {
     expect(screen.queryByText("Slack から取り込み")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
     expect(
-      await screen.findByText(/Slack から新しいチャンネルとして取り込みました（2026\/.+）。/),
+      await screen.findByText(
+        /Slack から取り込んで作ったチャンネルです。最後に取り込んだ日: 2026\/.+/,
+      ),
     ).toBeInTheDocument();
 
     // 既存のチャンネルへの取り込み
@@ -147,7 +149,9 @@ describe("ChannelHeader", () => {
       </LocaleProvider>,
     );
     expect(
-      await screen.findByText(/Slack から既存のチャンネルに取り込みました（2026\/.+）。/),
+      await screen.findByText(
+        /既存のチャンネルに Slack から取り込みました。最後に取り込んだ日: 2026\/.+/,
+      ),
     ).toBeInTheDocument();
 
     // 取り込んでいないチャンネルの設定には出さない

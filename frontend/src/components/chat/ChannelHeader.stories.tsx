@@ -63,7 +63,7 @@ export const ImportedFromSlack: Story = {
     await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
     await expect(
       await within(await screen.findByRole("dialog")).findByText(
-        /Slack から既存のチャンネルに取り込みました（2026\/.+）。/,
+        /既存のチャンネルに Slack から取り込みました。最後に取り込んだ日: 2026\/.+/,
       ),
     ).toBeInTheDocument();
   }),
@@ -83,7 +83,7 @@ export const ImportedFromSlackCreated: Story = {
     await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
     await expect(
       await within(await screen.findByRole("dialog")).findByText(
-        /Slack から新しいチャンネルとして取り込みました（2026\/.+）。/,
+        /Slack から取り込んで作ったチャンネルです。最後に取り込んだ日: 2026\/.+/,
       ),
     ).toBeInTheDocument();
   }),
