@@ -144,8 +144,14 @@ impl WorkspaceView {
                     }
                 }
                 InputEvent::Tab => {
+                    let sel = this.composer_input.read(cx).selected_range();
                     let mention_handled = this.state.update(cx, |state, cx| {
                         if state.mention_autocomplete.is_some() {
+                            if !sel.is_empty() {
+                                state.close_mention_autocomplete();
+                                cx.notify();
+                                return false;
+                            }
                             state.mention_confirm();
                             cx.notify();
                             true
@@ -158,8 +164,14 @@ impl WorkspaceView {
                     }
                 }
                 InputEvent::Submit(text) => {
+                    let sel = this.composer_input.read(cx).selected_range();
                     let mention_handled = this.state.update(cx, |state, cx| {
                         if state.mention_autocomplete.is_some() {
+                            if !sel.is_empty() {
+                                state.close_mention_autocomplete();
+                                cx.notify();
+                                return false;
+                            }
                             state.mention_confirm();
                             cx.notify();
                             true
@@ -190,9 +202,10 @@ impl WorkspaceView {
                     });
                 }
                 InputEvent::CursorMoved(caret) => {
+                    let sel = this.composer_input.read(cx).selected_range();
                     this.state.update(cx, |state, cx| {
                         if let Some(ac) = &state.mention_autocomplete
-                            && *caret != ac.end_byte
+                            && (!sel.is_empty() || *caret != ac.end_byte)
                         {
                             state.close_mention_autocomplete();
                             cx.notify();

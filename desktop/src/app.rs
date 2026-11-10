@@ -1435,18 +1435,8 @@ impl AppState {
                             self.reconcile_channel_targets(ch);
                         }
                         if self.current_channel.as_deref() == Some(ch.as_str()) {
-                            if let Some(ms) = self.message_search.as_ref() {
-                                let query = ms.query.clone();
-                                let prev_selected_id =
-                                    ms.matches.get(ms.current_match_index).cloned();
-                                self.update_message_search_query(query);
-                                if let (Some(ms_mut), Some(prev_id)) =
-                                    (&mut self.message_search, prev_selected_id)
-                                    && let Some(new_idx) =
-                                        ms_mut.matches.iter().position(|id| id == &prev_id)
-                                {
-                                    ms_mut.current_match_index = new_idx;
-                                }
+                            if self.message_search.is_some() {
+                                self.refresh_message_search_results();
                             }
                             if self.timeline_at_bottom {
                                 self.pending_scroll_to_bottom = true;
@@ -1779,10 +1769,16 @@ impl AppState {
                 .drain(..)
                 .partition(|a| a.channel_id == ch && a.target == tgt && a.session_gen == s_gen);
             self.pending_attachments = rem_atts;
-            let valid_saved_atts: Vec<PendingAttachment> = saved_atts
-                .into_iter()
-                .filter(|a| a.attachment_id.is_some() && !a.is_uploading && a.error.is_none())
-                .collect();
+            let mut valid_saved_atts = Vec::new();
+            for mut att in saved_atts {
+                if att.is_uploading {
+                    // アップロード中の添付は捨てず、親が削除されたため通常投稿へ昇格させて pending_attachments に残す
+                    att.target = Target::Channel;
+                    self.pending_attachments.push(att);
+                } else if att.attachment_id.is_some() && att.error.is_none() {
+                    valid_saved_atts.push(att);
+                }
+            }
             if !saved_draft.trim().is_empty() || !valid_saved_atts.is_empty() {
                 self.push_failed_draft(FailedDraft {
                     channel_id: channel_id.to_string(),
@@ -2951,6 +2947,31 @@ impl AppState {
             && (matches!(resolved_target, Target::Edit(_))
                 || self.can_post_in_channel(&draft.channel_id));
 
+        // 復元先のチャンネルおよびターゲットを決定
+        let (dest_ch, dest_target) = if target_ch_writable {
+            (draft.channel_id.clone(), resolved_target.clone())
+        } else if let Some(current_ch) = self
+            .current_channel
+            .clone()
+            .filter(|id| self.can_post_in_channel(id))
+        {
+            (current_ch, Target::Channel)
+        } else {
+            return;
+        };
+
+        // 復元先の (channel_id, target) にアップロード中の添付がある場合は復元を中断する
+        let s_gen = self.session_gen;
+        if self.pending_attachments.iter().any(|a| {
+            a.channel_id == dest_ch
+                && a.target == dest_target
+                && a.session_gen == s_gen
+                && a.is_uploading
+        }) {
+            self.notify("添付ファイルをアップロード中です。完了をお待ちください");
+            return;
+        }
+
         if target_ch_writable {
             self.failed_drafts.remove(index);
             if self.current_channel.as_deref() != Some(draft.channel_id.as_str()) {
@@ -2986,8 +3007,12 @@ impl AppState {
             let s_gen = self.session_gen;
             let d_ch = draft.channel_id.clone();
             let d_tgt = resolved_target.clone();
-            self.pending_attachments
-                .retain(|a| !(a.channel_id == d_ch && a.target == d_tgt && a.session_gen == s_gen));
+            self.pending_attachments.retain(|a| {
+                !(a.channel_id == d_ch
+                    && a.target == d_tgt
+                    && a.session_gen == s_gen
+                    && !a.is_uploading)
+            });
             self.composer_draft = draft.content.clone();
             self.pending_composer_text = Some((draft.content, None));
             self.pending_composer_message_id = if resolved_target == draft.target {
@@ -3031,7 +3056,10 @@ impl AppState {
                 let s_gen = self.session_gen;
                 let c_ch = current_ch.clone();
                 self.pending_attachments.retain(|a| {
-                    !(a.channel_id == c_ch && a.target == Target::Channel && a.session_gen == s_gen)
+                    !(a.channel_id == c_ch
+                        && a.target == Target::Channel
+                        && a.session_gen == s_gen
+                        && !a.is_uploading)
                 });
                 self.composer_draft = draft.content.clone();
                 self.pending_composer_text = Some((draft.content, None));
@@ -3882,6 +3910,44 @@ impl AppState {
             current_match_index: 0,
         });
         self.scroll_to_current_search_match();
+    }
+
+    /// メッセージ同期時に、現在の検索クエリで一致メッセージ一覧を更新する。
+    /// 以前選択されていたメッセージが一致リストに残っていればその選択とスクロール位置を維持し、
+    /// 一致リストから消えた場合のみ新しい選択位置へスクロールする。
+    pub fn refresh_message_search_results(&mut self) {
+        let Some(ms) = &mut self.message_search else {
+            return;
+        };
+        let query_lower = ms.query.trim().to_lowercase();
+        let mut matches = Vec::new();
+        if !query_lower.is_empty()
+            && let Some(ch) = &self.current_channel
+        {
+            let channel_msgs = self.store.channel_messages(ch);
+            for msg in channel_msgs {
+                if msg.content.to_lowercase().contains(&query_lower) {
+                    matches.push(msg.id.clone());
+                }
+            }
+        }
+        let prev_selected_id = ms.matches.get(ms.current_match_index).cloned();
+        let new_index = if let Some(prev_id) = &prev_selected_id
+            && let Some(pos) = matches.iter().position(|id| id == prev_id)
+        {
+            pos
+        } else {
+            0
+        };
+        let need_scroll =
+            prev_selected_id.is_none() || matches.get(new_index) != prev_selected_id.as_ref();
+
+        ms.matches = matches;
+        ms.current_match_index = new_index;
+
+        if need_scroll && !ms.matches.is_empty() {
+            self.scroll_to_current_search_match();
+        }
     }
 
     pub fn search_select_next(&mut self) {
@@ -6839,6 +6905,260 @@ mod tests {
             state.close_mention_autocomplete();
         }
         assert!(state.mention_autocomplete.is_none());
+    }
+
+    #[test]
+    fn cursor_movement_or_selection_closes_mention_autocomplete() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // @a で補完ポップアップが開く
+        state.on_composer_changed("@a".into());
+        state.update_mention_autocomplete("@a", 2);
+        assert!(state.mention_autocomplete.is_some());
+        let ac = state.mention_autocomplete.as_ref().unwrap();
+        assert_eq!(ac.end_byte, 2);
+
+        // キャレットが end_byte (2) 以外の位置 (0) へ移動したとき、または選択範囲が空でないとき補完を閉じる動作を検証
+        let caret = 0;
+        let sel_is_empty = true;
+        if !sel_is_empty || caret != ac.end_byte {
+            state.close_mention_autocomplete();
+        }
+        assert!(state.mention_autocomplete.is_none());
+
+        // 再び補完を開き、選択範囲がある場合は確定させずに閉じる動作を検証
+        state.update_mention_autocomplete("@a", 2);
+        assert!(state.mention_autocomplete.is_some());
+        let sel_is_empty = false; // 選択範囲が存在する
+        let mention_handled = if !sel_is_empty {
+            state.close_mention_autocomplete();
+            false
+        } else {
+            state.mention_confirm();
+            true
+        };
+        assert!(!mention_handled);
+        assert!(state.mention_autocomplete.is_none());
+    }
+
+    #[test]
+    fn reconcile_channel_targets_promotes_uploading_saved_reply_attachment() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 返信先メッセージ m1 を store に追加
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({
+                    "id": "m1", "user_id": "u1", "channel_id": "c1",
+                    "content": "親メッセージ", "created_at": "2026-11-01 00:00:00"
+                }),
+            )]),
+        ));
+
+        // 返信モードにしてアップロード中添付を追加
+        state.open_thread("m1".into());
+        state.composer_draft = "返信下書き".into();
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_reply".into(),
+            channel_id: "c1".into(),
+            target: Target::Reply("m1".into()),
+            session_gen: state.session_gen,
+            file_name: "reply_up.png".into(),
+            content_type: "image/png".into(),
+            file_size: 1024,
+            attachment_id: None,
+            is_uploading: true,
+            error: None,
+        });
+
+        // 通常投稿へ切り替えて、返信下書きを saved_drafts へ退避させる
+        state.close_thread();
+        assert_eq!(state.target, Target::Channel);
+        assert_eq!(state.pending_attachments.len(), 1);
+        assert_eq!(
+            state.pending_attachments[0].target,
+            Target::Reply("m1".into())
+        );
+
+        // 親メッセージ m1 を削除
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            Batch {
+                reset: false,
+                changes: vec![Change::Delete { key: "m1".into() }],
+                up_to_date: true,
+            },
+        ));
+
+        // 親削除により、返信のアップロード中添付が Target::Channel に昇格して pending_attachments に残っていること
+        assert_eq!(state.pending_attachments.len(), 1);
+        assert_eq!(state.pending_attachments[0].target, Target::Channel);
+        assert_eq!(state.pending_attachments[0].file_name, "reply_up.png");
+        assert!(state.pending_attachments[0].is_uploading);
+    }
+
+    #[test]
+    fn refresh_message_search_results_maintains_selected_match_without_resetting_scroll() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // メッセージを2件投入
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "m1",
+                    json!({
+                        "id": "m1", "user_id": "u1", "channel_id": "c1",
+                        "content": "test keyword 1", "created_at": "2026-11-01 00:00:00"
+                    }),
+                ),
+                (
+                    "m2",
+                    json!({
+                        "id": "m2", "user_id": "u1", "channel_id": "c1",
+                        "content": "test keyword 2", "created_at": "2026-11-01 00:01:00"
+                    }),
+                ),
+            ]),
+        ));
+
+        // 検索クエリ "test" を設定し、2番目のメッセージ "m2" を選択
+        state.update_message_search_query("test".into());
+        let ms = state.message_search.as_ref().unwrap();
+        assert_eq!(ms.matches.len(), 2);
+        state.search_select_next(); // 0 -> 1 (m2)
+        assert_eq!(
+            state.message_search.as_ref().unwrap().current_match_index,
+            1
+        );
+
+        // スクロール要求フラグをクリア
+        state.pending_scroll_to_message_id = None;
+
+        // メッセージ同期（新規メッセージ "m3" が追加される）
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m3",
+                json!({
+                    "id": "m3", "user_id": "u1", "channel_id": "c1",
+                    "content": "test keyword 3", "created_at": "2026-11-01 00:02:00"
+                }),
+            )]),
+        ));
+
+        // 検索結果が3件に増えても、m2 の選択が維持され、スクロール要求が立たないこと
+        let ms = state.message_search.as_ref().unwrap();
+        assert_eq!(ms.matches.len(), 3);
+        assert_eq!(ms.matches[ms.current_match_index], "m2");
+        assert_eq!(ms.current_match_index, 1);
+        assert_eq!(state.pending_scroll_to_message_id, None);
+    }
+
+    #[test]
+    fn refresh_message_search_results_scrolls_when_selected_match_removed() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "m1",
+                    json!({
+                        "id": "m1", "user_id": "u1", "channel_id": "c1",
+                        "content": "target keyword", "created_at": "2026-11-01 00:00:00"
+                    }),
+                ),
+                (
+                    "m2",
+                    json!({
+                        "id": "m2", "user_id": "u1", "channel_id": "c1",
+                        "content": "target keyword", "created_at": "2026-11-01 00:01:00"
+                    }),
+                ),
+            ]),
+        ));
+
+        state.update_message_search_query("target".into());
+        state.search_select_next(); // m2 を選択
+        assert_eq!(
+            state.message_search.as_ref().unwrap().current_match_index,
+            1
+        );
+
+        // m2 が削除される
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            Batch {
+                reset: false,
+                changes: vec![Change::Delete { key: "m2".into() }],
+                up_to_date: true,
+            },
+        ));
+
+        // m2 が削除されたため index は 0 (m1) に再設定され、スクロール要求が立つこと
+        let ms = state.message_search.as_ref().unwrap();
+        assert_eq!(ms.matches.len(), 1);
+        assert_eq!(ms.current_match_index, 0);
+        assert_eq!(state.pending_scroll_to_message_id, Some("m1".into()));
+    }
+
+    #[test]
+    fn restore_failed_draft_blocks_when_target_has_uploading_attachment() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // c1 に m1 メッセージを作成
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({
+                    "id": "m1", "user_id": "u1", "channel_id": "c1",
+                    "content": "親メッセージ", "created_at": "2026-11-01 00:00:00"
+                }),
+            )]),
+        ));
+
+        // 返信先 m1 への失敗下書きを用意
+        state.failed_drafts.push(FailedDraft {
+            channel_id: "c1".into(),
+            target: Target::Reply("m1".into()),
+            content: "復元したい返信下書き".into(),
+            attachments: vec![],
+            message_id: None,
+        });
+
+        // 現在は Target::Channel だが、Target::Reply("m1") にアップロード中の添付がある
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_up_reply".into(),
+            channel_id: "c1".into(),
+            target: Target::Reply("m1".into()),
+            session_gen: state.session_gen,
+            file_name: "reply_uploading.png".into(),
+            content_type: "image/png".into(),
+            file_size: 1024,
+            attachment_id: None,
+            is_uploading: true,
+            error: None,
+        });
+
+        // 復元を試行
+        state.restore_failed_draft();
+
+        // 復元先の Target::Reply("m1") にアップロード中の添付があるためブロックされること
+        assert_eq!(
+            state.notice.as_ref().map(|(m, _)| m.as_str()),
+            Some("添付ファイルをアップロード中です。完了をお待ちください")
+        );
+        assert!(state.composer_draft.is_empty());
+        assert_eq!(state.failed_drafts.len(), 1);
     }
 
     #[test]

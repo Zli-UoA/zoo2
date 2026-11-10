@@ -240,6 +240,7 @@ impl TextInput {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
+        cx.emit(InputEvent::CursorMoved(offset));
         cx.notify();
     }
 
