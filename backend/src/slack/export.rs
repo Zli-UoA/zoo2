@@ -709,6 +709,17 @@ pub(crate) mod tests {
         assert!(deleted.is_history_event());
         assert!(!deleted.is_importable());
         assert_eq!(deleted.deleted_original_ts(), Some("1756918197.952539"));
+        // `original` がない、`ts` が不正な記録は、何も指さない
+        for original in [
+            serde_json::json!(null),
+            serde_json::json!({"ts": "17e9"}),
+            serde_json::json!({}),
+        ] {
+            let record = message(serde_json::json!({
+                "subtype": "message_deleted", "ts": "1756918202.000000", "user": "U1", "original": original
+            }));
+            assert_eq!(record.deleted_original_ts(), None);
+        }
         // 不正な `original` は、何も指さない
         let broken = message(serde_json::json!({
             "subtype": "message_deleted", "ts": "1756918202.000000", "user": "U1", "original": "oops"

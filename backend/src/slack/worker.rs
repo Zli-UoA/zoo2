@@ -922,14 +922,28 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             // 以前の取り込みで、これらを投稿として入れてしまった分 (編集した日時の重複した投稿、編集してから削除した
             // 投稿の本文) と、削除された元の投稿 (記録はエクスポートに残らない) は、ここで論理削除する。
             // 保存済みの ZIP から再取り込みするだけで片づく (存在しなければ何もしない)
+            //
+            // - 同じファイルに、削除された元の投稿の普通の記録 (`ts` が `original.ts` と同じ) があっても、取り込まない
+            //   (INSERT してから論理削除すると、初回は残り、再取り込みでだけ消える食い違いになる)。別の日付のファイルに
+            //   あるときは、先に INSERT されたあと、削除の記録のファイルで論理削除される。
+            // - イベントの `ts` と同じ `ts` の本物の投稿が同じファイルにあれば、その投稿は消さない (ID が同じになるため)。
+            let deleted_originals: std::collections::HashSet<&str> = messages
+                .iter()
+                .filter_map(|m| m.deleted_original_ts())
+                .collect();
+            let real_ts: std::collections::HashSet<&str> = messages
+                .iter()
+                .filter(|m| m.is_importable())
+                .map(|m| m.ts.as_str())
+                .collect();
             let mut stale: Vec<String> = Vec::new();
             for event in messages.iter().filter(|m| m.is_history_event()) {
-                if crate::slack::is_valid_ts(&event.ts) {
+                if crate::slack::is_valid_ts(&event.ts) && !real_ts.contains(event.ts.as_str()) {
                     stale.push(super::message_id(&team, &channel.id, &event.ts));
                 }
-                if let Some(original) = event.deleted_original_ts() {
-                    stale.push(super::message_id(&team, &channel.id, original));
-                }
+            }
+            for original in &deleted_originals {
+                stale.push(super::message_id(&team, &channel.id, original));
             }
             if !stale.is_empty() {
                 exec(
@@ -941,7 +955,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 .await?;
             }
             let mut last_ts = None;
-            for message in messages.iter().filter(|m| m.is_importable()) {
+            for message in messages
+                .iter()
+                .filter(|m| m.is_importable() && !deleted_originals.contains(m.ts.as_str()))
+            {
                 insert_message(&mut tx, &mut ctx, &channel.id, channel_id, job, message).await?;
                 last_ts = Some(message.ts.as_str());
                 processed += 1;

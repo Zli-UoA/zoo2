@@ -2398,6 +2398,157 @@ async fn test_slack_import_skips_history_events_and_removes_stale_rows() -> anyh
         deleted(delete).await.is_empty(),
         "the delete record itself is never imported"
     );
+    // 生きている投稿は、元の投稿 (A と C) だけ
+    let live = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1 AND deleted_at IS NULL",
+        &[&target],
+    )
+    .await?;
+    assert_eq!(live[0]["n"], 2);
+    Ok(())
+}
+
+/// 同じ日付ファイルに、削除された元の投稿の普通の記録と、削除の記録がある場合も、初回の取り込みから取り込まない。
+/// イベントの `ts` と同じ `ts` の本物の投稿があれば、その投稿は消さない。再取り込みしても、結果は変わらない。
+#[tokio::test]
+async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_history_same").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let (name, other) = (format!("same-{suffix}"), format!("other-{suffix}"));
+    let (a, b, x, delete) = (
+        "1704070000.000100",
+        "1704070200.000100",
+        "1704070100.000000",
+        "1704070250.000000",
+    );
+    // `x` は、本物の投稿の `ts` が、編集の記録の `ts` と同じ (秒ちょうど) になった場合
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([
+                {"id":"C1","name":name,"members":["U1"]},
+                {"id":"C2","name":other,"members":["U1"]}
+            ]),
+        ),
+        (
+            format!("{name}/2024-01-01.json"),
+            json!([
+                {"ts": a, "user": "U1", "text": "A"},
+                {"ts": x, "user": "U1", "text": "X is a real post"},
+                {"type":"message","subtype":"message_changed","ts": x, "user": "U1", "text": "edit",
+                 "original": {"user": "U1", "type": "message", "ts": a, "text": "A"}},
+                {"ts": b, "user": "U1", "text": "B was deleted"},
+                {"type":"message","subtype":"message_deleted","ts": delete, "user": "U1", "text": "",
+                 "original": {"user": "U1", "type": "message", "ts": b, "text": "B was deleted"}}
+            ]),
+        ),
+        // 別のチャンネルに、同じ `ts` の本物の投稿がある (削除の記録は C1 のものだけ)
+        (
+            format!("{other}/2024-01-01.json"),
+            json!([{"ts": b, "user": "U1", "text": "B in another channel"}]),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let mappings = json!([
+        {"slack_channel_id":"C1","action":"create","name":name},
+        {"slack_channel_id":"C2","action":"create","name":other}
+    ]);
+    let (status, run) = start(&app, &admin, export["id"].as_str().unwrap(), mappings).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let live = |channel: &'static str| {
+        let state = state.clone();
+        let channel_id = backend::slack::channel_id(&team, channel);
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1 AND deleted_at IS NULL",
+                &[&channel_id],
+            )
+            .await
+            .unwrap()[0]["n"]
+                .as_i64()
+                .unwrap()
+        }
+    };
+    let row = |channel: &'static str, ts: &'static str| {
+        let state = state.clone();
+        let id = backend::slack::message_id(&team, channel, ts);
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('deleted',deleted_at IS NOT NULL)::text FROM messages WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap()
+        }
+    };
+    // 初回の取り込みから、B は入らない。A と、同じ `ts` の本物の投稿 X は入る
+    assert_eq!(live("C1").await, 2);
+    assert!(
+        row("C1", b).await.is_empty(),
+        "the deleted post is not imported"
+    );
+    assert_eq!(row("C1", x).await[0]["deleted"], false);
+    assert_eq!(
+        row("C2", b).await[0]["deleted"],
+        false,
+        "another channel is untouched"
+    );
+
+    // 再取り込みしても、同じ (X は、イベントと同じ `ts` でも消えない)
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([
+            {"slack_channel_id":"C1","action":"existing","channel_id":backend::slack::channel_id(&team, "C1")},
+            {"slack_channel_id":"C2","action":"existing","channel_id":backend::slack::channel_id(&team, "C2")}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    assert_eq!(live("C1").await, 2, "re-importing changes nothing");
+    assert_eq!(row("C1", x).await[0]["deleted"], false);
+    assert_eq!(live("C2").await, 1);
     Ok(())
 }
 
