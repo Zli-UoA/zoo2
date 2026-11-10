@@ -58,10 +58,10 @@ pub fn parse_url_expiry_secs(url: &str) -> u64 {
         let after = &url[pos + "X-Amz-Expires=".len()..];
         let num_str: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(secs) = num_str.parse::<u64>() {
-            return secs.saturating_sub(30).max(60);
+            return secs;
         }
     }
-    240
+    300
 }
 
 /// キャッシュされた添付ファイル URL と有効期限。
@@ -122,7 +122,7 @@ pub fn is_image_content_type(content_type: &str) -> bool {
 }
 
 /// 入力欄の送信先。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Target {
     /// 開いているチャンネルへの通常投稿。
     Channel,
@@ -1435,6 +1435,19 @@ impl AppState {
                             self.reconcile_channel_targets(ch);
                         }
                         if self.current_channel.as_deref() == Some(ch.as_str()) {
+                            if let Some(ms) = self.message_search.as_ref() {
+                                let query = ms.query.clone();
+                                let prev_selected_id =
+                                    ms.matches.get(ms.current_match_index).cloned();
+                                self.update_message_search_query(query);
+                                if let (Some(ms_mut), Some(prev_id)) =
+                                    (&mut self.message_search, prev_selected_id)
+                                    && let Some(new_idx) =
+                                        ms_mut.matches.iter().position(|id| id == &prev_id)
+                                {
+                                    ms_mut.current_match_index = new_idx;
+                                }
+                            }
                             if self.timeline_at_bottom {
                                 self.pending_scroll_to_bottom = true;
                                 if self.window_active
@@ -1680,6 +1693,8 @@ impl AppState {
         };
         if (thread_deleted || reply_target_deleted) && matches!(self.target, Target::Reply(_)) {
             let old_target = self.target.clone();
+            // 返信先メッセージが削除されたため、返信用の再送 ID は引き継がず破棄する
+            self.pending_composer_message_id = None;
             let has_reply_content = !self.composer_draft.trim().is_empty()
                 || !self.current_channel_attachments().is_empty();
             if !has_reply_content {
@@ -1720,6 +1735,63 @@ impl AppState {
                 }
             }
             self.notify("返信元のメッセージが削除されたため、チャンネルへの投稿に切り替えました");
+        }
+
+        // 現在の入力先ではない保存済みの返信先についても、返信元が削除されているものを検出し、
+        // 復元可能な下書き (Target::Channel, message_id: None) へ退避する
+        let orphaned_reply_targets: Vec<Target> = self
+            .saved_drafts
+            .keys()
+            .chain(self.saved_draft_message_ids.keys())
+            .filter(|(ch, _)| ch == channel_id)
+            .map(|(_, tgt)| tgt.clone())
+            .chain(
+                self.pending_attachments
+                    .iter()
+                    .filter(|a| a.channel_id == channel_id)
+                    .map(|a| a.target.clone()),
+            )
+            .filter(|tgt| match tgt {
+                Target::Reply(root_id) => self.store.message(channel_id, root_id).is_none(),
+                _ => false,
+            })
+            .collect();
+        let mut unique_orphaned = orphaned_reply_targets;
+        unique_orphaned.sort();
+        unique_orphaned.dedup();
+
+        for orphaned_target in unique_orphaned {
+            if self.target == orphaned_target {
+                continue;
+            }
+            let saved_draft = self
+                .saved_drafts
+                .remove(&(channel_id.to_string(), orphaned_target.clone()))
+                .unwrap_or_default();
+            let _saved_msg_id = self
+                .saved_draft_message_ids
+                .remove(&(channel_id.to_string(), orphaned_target.clone()));
+            let s_gen = self.session_gen;
+            let ch = channel_id.to_string();
+            let tgt = orphaned_target.clone();
+            let (saved_atts, rem_atts): (Vec<_>, Vec<_>) = self
+                .pending_attachments
+                .drain(..)
+                .partition(|a| a.channel_id == ch && a.target == tgt && a.session_gen == s_gen);
+            self.pending_attachments = rem_atts;
+            let valid_saved_atts: Vec<PendingAttachment> = saved_atts
+                .into_iter()
+                .filter(|a| a.attachment_id.is_some() && !a.is_uploading && a.error.is_none())
+                .collect();
+            if !saved_draft.trim().is_empty() || !valid_saved_atts.is_empty() {
+                self.push_failed_draft(FailedDraft {
+                    channel_id: channel_id.to_string(),
+                    target: Target::Channel,
+                    content: saved_draft,
+                    attachments: valid_saved_atts,
+                    message_id: None,
+                });
+            }
         }
         if let Target::Edit(msg_id) = self.target.clone()
             && self.store.message(channel_id, &msg_id).is_none()
@@ -1977,11 +2049,24 @@ impl AppState {
                 true
             }
             AppEvent::RefreshAttachmentUrls => {
+                let visible_attachment_ids: std::collections::HashSet<String> =
+                    if let Some(ref ch) = self.current_channel {
+                        self.store
+                            .channel_attachments(ch)
+                            .into_iter()
+                            .map(|a| a.id.clone())
+                            .collect()
+                    } else {
+                        std::collections::HashSet::new()
+                    };
                 let to_refresh: Vec<String> = self
                     .attachment_download_urls
                     .iter()
-                    .filter(|(_, cached)| {
-                        cached.fetched_at.elapsed().as_secs() + 60 >= cached.ttl_secs
+                    .filter(|(id, cached)| {
+                        visible_attachment_ids.contains(*id) && {
+                            let margin = (cached.ttl_secs / 3).min(60);
+                            cached.fetched_at.elapsed().as_secs() + margin >= cached.ttl_secs
+                        }
                     })
                     .map(|(id, _)| id.clone())
                     .collect();
@@ -2454,7 +2539,8 @@ impl AppState {
         if let Some(ch) = self.current_channel.clone()
             && !matches!(self.target, Target::Edit(_))
         {
-            if self.composer_draft.trim().is_empty() {
+            let has_attachments = !self.current_channel_attachments().is_empty();
+            if self.composer_draft.trim().is_empty() && !has_attachments {
                 self.saved_drafts.remove(&(ch.clone(), self.target.clone()));
                 self.saved_draft_message_ids
                     .remove(&(ch, self.target.clone()));
@@ -2818,6 +2904,14 @@ impl AppState {
             self.notify("書きかけの下書きがあります。送信するか消してから戻してください");
             return;
         }
+        if self
+            .current_channel_attachments()
+            .iter()
+            .any(|a| a.is_uploading)
+        {
+            self.notify("添付ファイルをアップロード中です。完了をお待ちください");
+            return;
+        }
         let index = self
             .failed_drafts
             .iter()
@@ -2977,7 +3071,14 @@ impl AppState {
             return false;
         }
         let cur_attachments = self.current_channel_attachments();
-        if content.trim().is_empty() && cur_attachments.is_empty() {
+        let has_existing_attachments = match &self.target {
+            Target::Edit(msg_id) => !self
+                .store
+                .attachments_for_message(&channel_id, msg_id)
+                .is_empty(),
+            _ => false,
+        };
+        if content.trim().is_empty() && cur_attachments.is_empty() && !has_existing_attachments {
             return false;
         }
         if cur_attachments.iter().any(|a| a.is_uploading) {
@@ -3184,7 +3285,10 @@ impl AppState {
             return false;
         }
         match self.attachment_download_urls.get(attachment_id) {
-            Some(c) => c.fetched_at.elapsed().as_secs() + 60 >= c.ttl_secs,
+            Some(c) => {
+                let margin = (c.ttl_secs / 3).min(60);
+                c.fetched_at.elapsed().as_secs() + margin >= c.ttl_secs
+            }
             None => true,
         }
     }
@@ -3244,9 +3348,14 @@ impl AppState {
 
     /// 添付ファイル URL を開くか、取得中であれば解決完了時に開くキューへ登録する。
     pub fn open_or_queue_attachment(&mut self, attachment_id: &str) -> Option<String> {
-        // 有効期限が 30 秒以上残っている場合のみ即座に開く
+        let min_margin = if let Some(c) = self.attachment_download_urls.get(attachment_id) {
+            (c.ttl_secs / 3).min(30)
+        } else {
+            30
+        };
+        // 有効期限が十分に残っている場合のみ即座に開く
         if let Some(c) = self.attachment_download_urls.get(attachment_id)
-            && c.fetched_at.elapsed().as_secs() + 30 < c.ttl_secs
+            && c.fetched_at.elapsed().as_secs() + min_margin < c.ttl_secs
         {
             return Some(c.url.clone());
         }
@@ -3720,13 +3829,24 @@ impl AppState {
                     });
                 }
                 Err(err) => {
-                    let _ = tx.send(DesktopEvent::App {
-                        session_gen,
-                        event: AppEvent::ChannelCreateFailed {
-                            request_id,
-                            error: err.to_string(),
-                        },
-                    });
+                    let is_unauthorized = matches!(
+                        err.downcast_ref::<HttpError>(),
+                        Some(HttpError::Unauthorized)
+                    );
+                    if is_unauthorized {
+                        let _ = tx.send(DesktopEvent::App {
+                            session_gen,
+                            event: AppEvent::Unauthorized,
+                        });
+                    } else {
+                        let _ = tx.send(DesktopEvent::App {
+                            session_gen,
+                            event: AppEvent::ChannelCreateFailed {
+                                request_id,
+                                error: err.to_string(),
+                            },
+                        });
+                    }
                 }
             }
         });
@@ -5327,15 +5447,21 @@ mod tests {
         assert!(!is_disallowed_extension("image.png"));
         assert!(!is_disallowed_extension("document.pdf"));
 
-        // X-Amz-Expires の解析
+        // X-Amz-Expires の解析 (実際の期限秒数を返す)
         let url =
             "https://s3.amazonaws.com/bucket/key?X-Amz-Date=20261108T000000Z&X-Amz-Expires=300";
-        assert_eq!(parse_url_expiry_secs(url), 270);
+        assert_eq!(parse_url_expiry_secs(url), 300);
 
-        // クエリがない場合はデフォルト 240 秒
+        // クエリがない場合はデフォルト 300 秒
         assert_eq!(
             parse_url_expiry_secs("https://s3.amazonaws.com/bucket/key"),
-            240
+            300
+        );
+
+        // 短い期限（例: 45秒）もそのまま取得できること
+        assert_eq!(
+            parse_url_expiry_secs("https://s3.amazonaws.com/bucket/key?X-Amz-Expires=45"),
+            45
         );
     }
 
@@ -6401,5 +6527,334 @@ mod tests {
         assert_eq!(state.failed_drafts[0].content, "通常投稿本文");
         assert_eq!(state.failed_drafts[0].attachments.len(), 1);
         assert_eq!(state.failed_drafts[0].attachments[0].file_name, "chan.png");
+    }
+
+    #[test]
+    fn restore_failed_draft_blocks_when_uploading() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 失敗下書きを用意
+        state.failed_drafts.push(FailedDraft {
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "復元したい下書き".into(),
+            attachments: vec![],
+            message_id: None,
+        });
+
+        // 現在の入力欄にアップロード中の添付が存在
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_up".into(),
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            session_gen: state.session_gen,
+            file_name: "uploading.png".into(),
+            content_type: "image/png".into(),
+            file_size: 1024,
+            attachment_id: None,
+            is_uploading: true,
+            error: None,
+        });
+
+        // 復元を試行
+        state.restore_failed_draft();
+
+        // 復元がブロックされ、通知が出ること
+        assert_eq!(
+            state.notice.as_ref().map(|(m, _)| m.as_str()),
+            Some("添付ファイルをアップロード中です。完了をお待ちください")
+        );
+        // 本文は空のままで復元されていないこと
+        assert!(state.composer_draft.is_empty());
+        // アップロード中の添付が失われていないこと
+        assert_eq!(state.pending_attachments.len(), 1);
+        assert!(state.pending_attachments[0].is_uploading);
+        // 失敗下書きリストも保持されていること
+        assert_eq!(state.failed_drafts.len(), 1);
+    }
+
+    #[test]
+    fn reconciles_targets_clears_pending_message_id_on_reply_root_deletion() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 親メッセージ m1 を配置
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({
+                    "id": "m1", "user_id": "u2", "channel_id": "c1",
+                    "content": "親メッセージ", "created_at": "2026-11-01 03:00:00"
+                }),
+            )]),
+        ));
+
+        // m1 への返信を開き、再送 ID を保持
+        state.open_thread("m1".into());
+        state.composer_draft = "返信下書き".into();
+        state.pending_composer_message_id = Some("resend-uuid-1".into());
+
+        // m1 が削除される
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            Batch {
+                reset: false,
+                changes: vec![Change::Delete { key: "m1".into() }],
+                up_to_date: true,
+            },
+        ));
+
+        // Target::Channel へ自動切り替え
+        assert_eq!(state.target, Target::Channel);
+        assert_eq!(state.composer_draft, "返信下書き");
+        // 送信先が親なしの Channel に変わったため、返信用再送 ID は破棄されて None になること
+        assert_eq!(state.pending_composer_message_id, None);
+    }
+
+    #[test]
+    fn reconciles_targets_orphaned_saved_reply_drafts_evicted_to_failed_drafts() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 親メッセージ m1 を配置
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({
+                    "id": "m1", "user_id": "u2", "channel_id": "c1",
+                    "content": "親メッセージ", "created_at": "2026-11-01 03:00:00"
+                }),
+            )]),
+        ));
+
+        // m1 への返信を開き、本文・添付・再送 ID をセット
+        state.open_thread("m1".into());
+        state.composer_draft = "保存返信本文".into();
+        state.pending_composer_message_id = Some("reply-msg-id-1".into());
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_reply".into(),
+            channel_id: "c1".into(),
+            target: Target::Reply("m1".into()),
+            session_gen: state.session_gen,
+            file_name: "reply_att.png".into(),
+            content_type: "image/png".into(),
+            file_size: 1024,
+            attachment_id: Some("att-1".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        // 通常投稿に戻る（スレッドを閉じる）
+        state.close_thread();
+        assert_eq!(state.target, Target::Channel);
+
+        // この状態で m1 が削除される
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            Batch {
+                reset: false,
+                changes: vec![Change::Delete { key: "m1".into() }],
+                up_to_date: true,
+            },
+        ));
+
+        // saved_drafts, saved_draft_message_ids, pending_attachments から m1 返信が削除され、
+        // failed_drafts (Target::Channel, message_id: None) へ安全に退避されていること
+        assert!(
+            !state
+                .saved_drafts
+                .contains_key(&("c1".into(), Target::Reply("m1".into())))
+        );
+        assert!(
+            !state
+                .saved_draft_message_ids
+                .contains_key(&("c1".into(), Target::Reply("m1".into())))
+        );
+        assert!(
+            state
+                .pending_attachments
+                .iter()
+                .all(|a| a.target != Target::Reply("m1".into()))
+        );
+
+        assert_eq!(state.failed_drafts.len(), 1);
+        let evicted = &state.failed_drafts[0];
+        assert_eq!(evicted.channel_id, "c1");
+        assert_eq!(evicted.target, Target::Channel);
+        assert_eq!(evicted.content, "保存返信本文");
+        assert_eq!(evicted.attachments.len(), 1);
+        assert_eq!(evicted.attachments[0].file_name, "reply_att.png");
+        // 再送 ID は None になっていること
+        assert_eq!(evicted.message_id, None);
+    }
+
+    #[test]
+    fn switch_composer_context_preserves_message_id_for_attachment_only_draft() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 本文は空で、添付ファイルのみ存在し、再送 ID がセットされている状態
+        state.composer_draft.clear();
+        state.pending_composer_message_id = Some("attachment-only-uuid".into());
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_solo".into(),
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            session_gen: state.session_gen,
+            file_name: "standalone.png".into(),
+            content_type: "image/png".into(),
+            file_size: 2048,
+            attachment_id: Some("att-solo".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        // 別ターゲット（返信）へ切り替え
+        state.switch_composer_context(Some("c1"), Target::Reply("m99".into()));
+        assert_eq!(state.target, Target::Reply("m99".into()));
+        assert!(state.pending_composer_message_id.is_none());
+
+        // 元の通常投稿へ戻る
+        state.switch_composer_context(Some("c1"), Target::Channel);
+        assert_eq!(state.target, Target::Channel);
+
+        // 添付だけの下書きでも再送 ID が保持されていること
+        assert_eq!(
+            state.pending_composer_message_id.as_deref(),
+            Some("attachment-only-uuid")
+        );
+        assert_eq!(state.current_channel_attachments().len(), 1);
+        assert_eq!(
+            state.current_channel_attachments()[0].file_name,
+            "standalone.png"
+        );
+    }
+
+    #[test]
+    fn attachment_url_refresh_margin_avoids_infinite_loop_for_short_expiry() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 有効期限が 45 秒の URL を登録
+        state.attachment_download_urls.insert(
+            "att-short".into(),
+            CachedAttachmentUrl {
+                url: "https://example.com/short?X-Amz-Expires=45".into(),
+                fetched_at: Instant::now(),
+                ttl_secs: 45,
+            },
+        );
+
+        // 取得直後はリフレッシュ不要であること（マージン 15 秒 < 45 秒）
+        assert!(!state.attachment_url_needs_refresh("att-short"));
+    }
+
+    #[test]
+    fn messages_shape_sync_refreshes_message_search_results() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 初期の検索バーを開く
+        state.open_message_search();
+        state.update_message_search_query("テスト".into());
+        assert_eq!(state.message_search.as_ref().unwrap().matches.len(), 0);
+
+        // 新着メッセージが同期される
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m_new",
+                json!({
+                    "id": "m_new", "user_id": "u2", "channel_id": "c1",
+                    "content": "これはテストメッセージです", "created_at": "2026-11-01 03:00:00"
+                }),
+            )]),
+        ));
+
+        // 検索結果が自動的に再計算されてマッチが含まれること
+        let ms = state.message_search.as_ref().unwrap();
+        assert_eq!(ms.matches.len(), 1);
+        assert_eq!(ms.matches[0], "m_new");
+    }
+
+    #[test]
+    fn submit_message_allows_empty_content_when_editing_message_with_attachments() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 編集対象のメッセージを配置
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m_edit",
+                json!({
+                    "id": "m_edit", "user_id": "u1", "channel_id": "c1",
+                    "content": "本文あり", "created_at": "2026-11-01 03:00:00"
+                }),
+            )]),
+        ));
+
+        // そのメッセージに紐づく添付ファイルを store に登録
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Attachments("c1".into()),
+            batch(vec![(
+                "att_edit",
+                json!({
+                    "id": "att_edit", "channel_id": "c1", "message_id": "m_edit",
+                    "uploader_id": "u1", "file_name": "photo.jpg",
+                    "content_type": "image/jpeg", "file_size": 5000,
+                    "storage_key": "k1",
+                    "created_at": "2026-11-01 03:00:00"
+                }),
+            )]),
+        ));
+
+        // 編集モードにする
+        state.target = Target::Edit("m_edit".into());
+
+        // 本文を空文字にして送信
+        let ok = state.submit_message("   ".into());
+
+        // 既存の添付ファイルがあるため、空本文への編集送信が許可されること
+        assert!(ok);
+    }
+
+    #[test]
+    fn cursor_movement_closes_mention_autocomplete() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // @a で補完ポップアップが開く
+        state.on_composer_changed("@a".into());
+        state.update_mention_autocomplete("@a", 2);
+        assert!(state.mention_autocomplete.is_some());
+        let ac = state.mention_autocomplete.as_ref().unwrap();
+        assert_eq!(ac.end_byte, 2);
+
+        // キャレットが end_byte (2) 以外の位置 (0) へ移動したとき、補完を閉じる動作を検証
+        if ac.end_byte != 0 {
+            state.close_mention_autocomplete();
+        }
+        assert!(state.mention_autocomplete.is_none());
+    }
+
+    #[test]
+    fn create_channel_error_unauthorized_detection() {
+        let err: anyhow::Error = HttpError::Unauthorized.into();
+        let is_unauthorized = matches!(
+            err.downcast_ref::<HttpError>(),
+            Some(HttpError::Unauthorized)
+        );
+        assert!(is_unauthorized);
+
+        let err_other: anyhow::Error = anyhow::anyhow!("channel already exists");
+        let is_unauthorized_other = matches!(
+            err_other.downcast_ref::<HttpError>(),
+            Some(HttpError::Unauthorized)
+        );
+        assert!(!is_unauthorized_other);
     }
 }

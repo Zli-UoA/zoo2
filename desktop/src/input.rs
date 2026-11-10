@@ -54,6 +54,8 @@ pub enum InputEvent {
     Up,
     /// `↓` キーが押下された。
     Down,
+    /// キャレット位置が移動した。
+    CursorMoved(usize),
 }
 
 /// アプリ起動時に `TextInput` 用のキーバインドを登録する。
@@ -223,6 +225,7 @@ impl TextInput {
         let offset = offset.min(self.content.len());
         self.selected_range = offset..offset;
         self.selection_reversed = false;
+        cx.emit(InputEvent::CursorMoved(offset));
         cx.notify();
     }
 

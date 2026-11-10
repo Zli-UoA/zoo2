@@ -34,6 +34,7 @@ pub struct WorkspaceView {
     pub message_search_input: Entity<TextInput>,
     pub timeline_scroll: ScrollHandle,
     pub thread_scroll: ScrollHandle,
+    pub quick_switcher_scroll: ScrollHandle,
     focus_handle: FocusHandle,
     login_primary_focus: FocusHandle,
     login_secondary_focus: FocusHandle,
@@ -95,7 +96,10 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Up | InputEvent::Down | InputEvent::Tab => {}
+                InputEvent::Up
+                | InputEvent::Down
+                | InputEvent::Tab
+                | InputEvent::CursorMoved(_) => {}
             },
         )
         .detach();
@@ -185,6 +189,16 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
+                InputEvent::CursorMoved(caret) => {
+                    this.state.update(cx, |state, cx| {
+                        if let Some(ac) = &state.mention_autocomplete
+                            && *caret != ac.end_byte
+                        {
+                            state.close_mention_autocomplete();
+                            cx.notify();
+                        }
+                    });
+                }
             },
         )
         .detach();
@@ -213,7 +227,10 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Up | InputEvent::Down | InputEvent::Tab => {}
+                InputEvent::Up
+                | InputEvent::Down
+                | InputEvent::Tab
+                | InputEvent::CursorMoved(_) => {}
             },
         )
         .detach();
@@ -242,7 +259,10 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Up | InputEvent::Down | InputEvent::Tab => {}
+                InputEvent::Up
+                | InputEvent::Down
+                | InputEvent::Tab
+                | InputEvent::CursorMoved(_) => {}
             },
         )
         .detach();
@@ -270,7 +290,10 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Up | InputEvent::Down | InputEvent::Tab => {}
+                InputEvent::Up
+                | InputEvent::Down
+                | InputEvent::Tab
+                | InputEvent::CursorMoved(_) => {}
             },
         )
         .detach();
@@ -311,7 +334,7 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Tab => {}
+                InputEvent::Tab | InputEvent::CursorMoved(_) => {}
             },
         )
         .detach();
@@ -343,7 +366,7 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Tab => {}
+                InputEvent::Tab | InputEvent::CursorMoved(_) => {}
             },
         )
         .detach();
@@ -403,6 +426,7 @@ impl WorkspaceView {
             message_search_input,
             timeline_scroll: ScrollHandle::new(),
             thread_scroll: ScrollHandle::new(),
+            quick_switcher_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             login_primary_focus: cx.focus_handle(),
             login_secondary_focus: cx.focus_handle(),
@@ -3203,6 +3227,7 @@ impl WorkspaceView {
         let qs = state.quick_switcher.as_ref().unwrap();
         let candidates = state.quick_switcher_candidates();
         let selected_index = qs.selected_index;
+        self.quick_switcher_scroll.scroll_to_item(selected_index);
 
         let items = candidates.iter().enumerate().map(|(i, (ch, label))| {
             let is_selected = i == selected_index;
@@ -3298,6 +3323,7 @@ impl WorkspaceView {
                     .id("quick-switcher-list")
                     .w_full()
                     .max_h(px(280.0))
+                    .track_scroll(&self.quick_switcher_scroll)
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
@@ -3673,17 +3699,88 @@ pub fn render_ogp_card(
     let title = card.title.clone();
     let url = card.url.clone();
     let desc = card.description.clone();
-    let source = if !card.source.is_empty() {
-        card.source.clone()
-    } else if !card.badge.is_empty() {
-        card.badge.clone()
-    } else {
-        String::new()
-    };
+    let meta_parts: Vec<&str> = [card.source.as_str(), card.context.as_str()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+    let meta_text = meta_parts.join(" · ");
+    let badge_text = card.badge.clone();
+    let author = card.author.clone();
 
     let open_target = crate::login::validate_http_url(&card.url)
         .map(|u| u.to_string())
         .unwrap_or_default();
+
+    let fields_div = if let Some(fields) = &card.fields {
+        if !fields.is_empty() {
+            let field_items = fields.iter().map(|f| {
+                let f_title = f.title.clone();
+                let f_val = f.value.clone();
+                let is_code = f.code.unwrap_or(false);
+                let f_url = f
+                    .url
+                    .as_deref()
+                    .and_then(crate::login::validate_http_url)
+                    .map(|u| u.to_string());
+
+                let mut val_view = div()
+                    .text_xs()
+                    .text_color(if f_url.is_some() {
+                        theme.text_link
+                    } else {
+                        theme.text_primary
+                    })
+                    .child(f_val);
+
+                if is_code {
+                    val_view = val_view
+                        .px_1()
+                        .py_0p5()
+                        .rounded_sm()
+                        .bg(theme.bg_secondary)
+                        .border_1()
+                        .border_color(theme.border);
+                }
+
+                if let Some(target) = f_url {
+                    val_view = val_view.hover(|s| s.cursor_pointer()).on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                            cx.open_url(&target);
+                        }),
+                    );
+                }
+
+                div()
+                    .min_w(px(120.0))
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme.text_muted)
+                            .child(f_title),
+                    )
+                    .child(val_view)
+            });
+
+            Some(
+                div()
+                    .mt_1p5()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .children(field_items),
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     div()
         .mt_1p5()
@@ -3711,13 +3808,37 @@ pub fn render_ogp_card(
                 .flex()
                 .flex_col()
                 .gap_1()
-                .when(!source.is_empty(), |d| {
+                .when(!meta_text.is_empty() || !badge_text.is_empty(), |d| {
                     d.child(
                         div()
-                            .text_xs()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.text_muted)
-                            .child(source),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .when(!meta_text.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.text_muted)
+                                        .child(meta_text),
+                                )
+                            })
+                            .when(!badge_text.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .px_1p5()
+                                        .py_0p5()
+                                        .rounded_sm()
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .text_xs()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme.text_muted)
+                                        .child(badge_text),
+                                )
+                            }),
                     )
                 })
                 .child(
@@ -3729,6 +3850,16 @@ pub fn render_ogp_card(
                 )
                 .when(!desc.is_empty(), |d| {
                     d.child(div().text_xs().text_color(theme.text_muted).child(desc))
+                })
+                .when_some(fields_div, |d, f| d.child(f))
+                .when(!author.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .mt_1()
+                            .text_xs()
+                            .text_color(theme.text_dim)
+                            .child(author),
+                    )
                 })
                 .when(!url.is_empty(), |d| {
                     d.child(div().text_xs().text_color(theme.text_dim).child(url))
