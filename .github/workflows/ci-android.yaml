@@ -118,8 +118,21 @@ jobs:
           fi
           # 過去の実行の再実行などで、公開済みより古い版の更新情報に戻さない。端末は versionCode が
           # 現在より大きいときだけ更新するので、戻すと、後から入った変更を取り込めなくなる。
-          published=$(gh release download android-main --repo "$GITHUB_REPOSITORY" --pattern update.json --output - 2>/dev/null \
-            | python3 -c 'import json, sys; print(int(json.load(sys.stdin)["versionCode"]))' 2>/dev/null || echo 0)
+          # 公開済みの版を確かめられないとき (通信・権限・サーバーの障害、不正な JSON) は、公開を止める。
+          # 公開済みがないと分かる場合 (release か update.json がない初回) だけ、0 として公開する。
+          published=0
+          if release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/android-main" 2>"$RUNNER_TEMP/gh-release.err"); then
+            if [ "$(printf '%s' "$release" | jq '[.assets[] | select(.name == "update.json")] | length')" -gt 0 ]; then
+              manifest=$(gh release download android-main --repo "$GITHUB_REPOSITORY" --pattern update.json --output -)
+              published=$(printf '%s' "$manifest" | python3 -c 'import json, sys; print(int(json.load(sys.stdin)["versionCode"]))')
+            fi
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/gh-release.err"; then
+            echo "No android-main release yet."
+          else
+            cat "$RUNNER_TEMP/gh-release.err"
+            echo "::error::Could not read the published release; stop to avoid replacing a newer update.json."
+            exit 1
+          fi
           version_code=$(python3 -c 'import json, sys; print(int(json.load(open(sys.argv[1]))["versionCode"]))' "$RUNNER_TEMP/update.json")
           if [ "$published" -ge "$version_code" ]; then
             echo "Published versionCode $published is not older than $version_code; skip this build."
