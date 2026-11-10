@@ -2996,6 +2996,21 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .gap_3()
+            .on_action(cx.listener(|this, _: &crate::input::Tab, window, cx| {
+                if this
+                    .create_channel_name_input
+                    .focus_handle(cx)
+                    .is_focused(window)
+                {
+                    window.focus(&this.create_channel_desc_input.focus_handle(cx));
+                } else if this
+                    .create_channel_desc_input
+                    .focus_handle(cx)
+                    .is_focused(window)
+                {
+                    window.focus(&this.create_channel_name_input.focus_handle(cx));
+                }
+            }))
             .child(
                 div()
                     .flex()

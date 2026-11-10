@@ -269,9 +269,12 @@ impl TextInput {
             cx.emit(InputEvent::Up);
             return;
         }
-        let target = self.vertical_move_target(-1);
-        self.move_to(target, cx);
-        cx.emit(InputEvent::Up);
+        if self.multiline {
+            let target = self.vertical_move_target(-1);
+            self.move_to(target, cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
@@ -279,9 +282,12 @@ impl TextInput {
             cx.emit(InputEvent::Down);
             return;
         }
-        let target = self.vertical_move_target(1);
-        self.move_to(target, cx);
-        cx.emit(InputEvent::Down);
+        if self.multiline {
+            let target = self.vertical_move_target(1);
+            self.move_to(target, cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     fn vertical_move_target(&self, delta_rows: isize) -> usize {
@@ -377,6 +383,8 @@ impl TextInput {
     fn tab(&mut self, _: &Tab, _window: &mut Window, cx: &mut Context<Self>) {
         if self.intercept_tab {
             cx.emit(InputEvent::Tab);
+        } else {
+            cx.propagate();
         }
     }
 
@@ -934,7 +942,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
-            .on_action(cx.listener(Self::tab))
+            .when(self.intercept_tab, |d| d.on_action(cx.listener(Self::tab)))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::cancel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
