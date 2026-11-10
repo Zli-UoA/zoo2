@@ -116,6 +116,15 @@ jobs:
             fi
             echo "Newer main commits do not change Android; publish this build."
           fi
+          # 過去の実行の再実行などで、公開済みより古い版の更新情報に戻さない。端末は versionCode が
+          # 現在より大きいときだけ更新するので、戻すと、後から入った変更を取り込めなくなる。
+          published=$(gh release download android-main --repo "$GITHUB_REPOSITORY" --pattern update.json --output - 2>/dev/null \
+            | python3 -c 'import json, sys; print(int(json.load(sys.stdin)["versionCode"]))' 2>/dev/null || echo 0)
+          version_code=$(python3 -c 'import json, sys; print(int(json.load(open(sys.argv[1]))["versionCode"]))' "$RUNNER_TEMP/update.json")
+          if [ "$published" -ge "$version_code" ]; then
+            echo "Published versionCode $published is not older than $version_code; skip this build."
+            exit 0
+          fi
           if ! gh release view android-main --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create android-main --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title "Android main" --notes "main の署名付き Android ビルド。更新対象のコミットとバージョンは update.json を参照してください。"
           fi
