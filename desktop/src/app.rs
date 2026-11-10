@@ -902,21 +902,17 @@ impl AppState {
                 .remove(&(ch_id.clone(), target.clone()))
                 .unwrap_or_default();
 
-            if (!content.trim().is_empty() || !atts.is_empty())
-                && !drafts.iter().any(|d| {
-                    d.channel_id == ch_id
-                        && d.target == target
-                        && d.content == content
-                        && d.attachments == atts
-                })
+            let new_draft = FailedDraft {
+                channel_id: ch_id,
+                target,
+                content,
+                attachments: atts,
+                message_id,
+            };
+            if (!new_draft.content.trim().is_empty() || !new_draft.attachments.is_empty())
+                && !drafts.iter().any(|d| d == &new_draft)
             {
-                drafts.push(FailedDraft {
-                    channel_id: ch_id,
-                    target,
-                    content,
-                    attachments: atts,
-                    message_id,
-                });
+                drafts.push(new_draft);
             }
         }
         if drafts.len() > FAILED_DRAFT_LIMIT {
@@ -1523,7 +1519,7 @@ impl AppState {
         let mut atts_by_target: std::collections::HashMap<Target, Vec<PendingAttachment>> =
             std::collections::HashMap::new();
         for a in ch_atts {
-            if a.attachment_id.is_some() && !a.is_uploading && a.error.is_none() {
+            if (a.is_uploading || a.attachment_id.is_some()) && a.error.is_none() {
                 atts_by_target.entry(a.target.clone()).or_default().push(a);
             }
         }
@@ -2851,6 +2847,10 @@ impl AppState {
         if !self.composer_draft.trim().is_empty() {
             self.notify("書きかけの下書きがあります。送信するか消してから編集してください");
             return;
+        }
+        if let Some(msg_id) = self.pending_composer_message_id.take() {
+            self.saved_draft_message_ids
+                .insert((channel_id.clone(), self.target.clone()), msg_id);
         }
         let content = message.content.clone();
         self.composer_draft = content.clone();
@@ -7328,6 +7328,124 @@ mod tests {
         );
         assert!(state.composer_draft.is_empty());
         assert_eq!(state.failed_drafts.len(), 1);
+    }
+
+    #[test]
+    fn evict_channel_drafts_retains_uploading_attachments_in_failed_drafts() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 本文は空で、アップロード中の添付のみがある状態
+        state.composer_draft.clear();
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_up1".into(),
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            session_gen: state.session_gen,
+            file_name: "uploading.png".into(),
+            content_type: "image/png".into(),
+            file_size: 2048,
+            attachment_id: None,
+            is_uploading: true,
+            error: None,
+        });
+
+        // チャンネル退避を実行
+        assert!(state.evict_channel_drafts("c1"));
+
+        // failed_drafts にアップロード中添付を含む下書きが退避されていること
+        assert_eq!(state.failed_drafts.len(), 1);
+        let draft = &state.failed_drafts[0];
+        assert_eq!(draft.channel_id, "c1");
+        assert_eq!(draft.target, Target::Channel);
+        assert_eq!(draft.attachments.len(), 1);
+        assert_eq!(draft.attachments[0].local_id, "loc_up1");
+        assert!(draft.attachments[0].is_uploading);
+    }
+
+    #[test]
+    fn preserve_drafts_for_unauthorized_distinguishes_same_content_by_message_id() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 送信中の下書き（message_id あり）
+        let in_flight = FailedDraft {
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "同じ文面の下書き".into(),
+            attachments: vec![],
+            message_id: Some("inflight-uuid-123".into()),
+        };
+        state.in_flight_submissions.push((1, in_flight));
+
+        // 現在の入力欄に同じ送信先・同文の新規下書き（message_id は None）を入力
+        state.composer_draft = "同じ文面の下書き".into();
+        state.pending_composer_message_id = None;
+
+        // 認証切れによる退避を実行
+        state.preserve_drafts_for_unauthorized();
+
+        // 2件とも別々の下書きとして退避されていること
+        let preserved = state.preserved_unauthorized_drafts.as_ref().unwrap();
+        assert_eq!(preserved.1.len(), 2);
+        assert!(
+            preserved
+                .1
+                .iter()
+                .any(|d| d.message_id.as_deref() == Some("inflight-uuid-123"))
+        );
+        assert!(preserved.1.iter().any(|d| d.message_id.is_none()));
+    }
+
+    #[test]
+    fn start_edit_preserves_pending_composer_message_id_and_restores_on_cancel() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 自分のメッセージ m1 を用意
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({
+                    "id": "m1", "user_id": "u1", "channel_id": "c1",
+                    "content": "投稿済みメッセージ", "created_at": "2026-11-01 00:00:00"
+                }),
+            )]),
+        ));
+
+        // 本文は空、添付1件、再送 ID ありの通常投稿下書き
+        state.composer_draft.clear();
+        state.pending_composer_message_id = Some("resend-uuid-abc".into());
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_att1".into(),
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            session_gen: state.session_gen,
+            file_name: "attached.png".into(),
+            content_type: "image/png".into(),
+            file_size: 1024,
+            attachment_id: Some("att-uuid-1".into()),
+            is_uploading: false,
+            error: None,
+        });
+
+        // 編集を開始
+        state.start_edit("m1".into());
+        assert_eq!(state.target, Target::Edit("m1".into()));
+        assert_eq!(state.composer_draft, "投稿済みメッセージ");
+        // 編集対象には再送 ID が引き継がれないこと
+        assert_eq!(state.pending_composer_message_id, None);
+
+        // 編集をキャンセルして通常投稿に戻る
+        state.cancel_target();
+        assert_eq!(state.target, Target::Channel);
+        assert!(state.composer_draft.is_empty());
+        // 元の通常投稿の再送 ID が復元されていること
+        assert_eq!(
+            state.pending_composer_message_id.as_deref(),
+            Some("resend-uuid-abc")
+        );
     }
 
     #[test]

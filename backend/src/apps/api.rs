@@ -90,11 +90,54 @@ async fn create_message(
                     body.channel_id
                 )));
             }
+
+            let mut req_att_ids = body.attachment_ids.clone().unwrap_or_default();
+            req_att_ids.sort();
+
+            let existing_atts = crate::models::Attachment::filter(
+                crate::models::Attachment::fields()
+                    .message_id()
+                    .eq(id.as_str()),
+            )
+            .exec(&mut db)
+            .await?;
+            let mut existing_att_ids: Vec<String> =
+                existing_atts.into_iter().map(|a| a.id).collect();
+            existing_att_ids.sort();
+
+            let opt_rows = toasty::sql::query(
+                "SELECT json_build_object(
+                    'kind', COALESCE(message_kind, 'message'),
+                    'broadcast', COALESCE(broadcast, false),
+                    'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END
+                 )::text FROM messages WHERE id = $1",
+            )
+            .bind(id)
+            .exec(&mut db)
+            .await?;
+
+            let mut options_match = false;
+            if let Some(toasty::stmt::Value::Record(r)) = opt_rows.into_iter().next()
+                && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
+                && let Ok(saved_opts) = serde_json::from_str::<serde_json::Value>(&s)
+            {
+                let saved_kind = saved_opts["kind"].as_str().unwrap_or("message");
+                let saved_broadcast = saved_opts["broadcast"].as_bool().unwrap_or(false);
+                let saved_metadata = saved_opts.get("metadata").filter(|v| !v.is_null()).cloned();
+                let req_metadata = body.metadata.as_ref().filter(|v| !v.is_null()).cloned();
+
+                options_match = saved_kind == body.kind
+                    && saved_broadcast == body.broadcast
+                    && saved_metadata == req_metadata;
+            }
+
             if message.user_id == p.user_id
                 && message.channel_id == body.channel_id
                 && message.content == body.content
                 && message.parent_id == body.parent_id
                 && message.deleted_at.is_none()
+                && req_att_ids == existing_att_ids
+                && options_match
             {
                 return Ok(Json(crate::routes::response::ApiResponse::new(
                     message.into(),

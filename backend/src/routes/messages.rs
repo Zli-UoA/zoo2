@@ -194,8 +194,34 @@ pub(crate) async fn create_message_impl(
         )));
     }
 
-    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽（アーカイブ確認より前に検証）
-    if channel.is_private {
+    // ユーザー属性（bot, active, guest）を取得
+    let principal_rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'bot', EXISTS(SELECT 1 FROM users WHERE id = $1 AND is_bot),
+            'active', EXISTS(SELECT 1 FROM apps a JOIN app_installations i ON i.app_id = a.id WHERE a.bot_user_id = $1 AND a.status = 'installed' AND i.active),
+            'guest', EXISTS(SELECT 1 FROM users WHERE id = $1 AND is_guest)
+        )::text",
+    )
+    .bind(&auth_user.id)
+    .exec(&mut db)
+    .await?;
+
+    let mut bot_actor = false;
+    let mut guest_actor = false;
+    if let Some(toasty::stmt::Value::Record(r)) = principal_rows.into_iter().next()
+        && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
+    {
+        bot_actor = v["bot"] == true;
+        if bot_actor && v["active"] != true {
+            return Err(AppError::Forbidden("App is not installed".into()));
+        }
+        guest_actor = v["guest"] == true;
+    }
+
+    // プライベートチャンネル、Bot、またはゲストの場合、チャンネルに所属していなければ 404 で存在を隠蔽
+    // （他人の UUID の存在漏洩防止のため冪等性チェックおよびアーカイブ確認より前に検証）
+    if channel.is_private || bot_actor || guest_actor {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
