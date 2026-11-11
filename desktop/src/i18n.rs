@@ -172,33 +172,29 @@ fn resources() -> &'static HashMap<Locale, Flat> {
 }
 
 /// 複数形の区分 (`Intl.PluralRules` の結果)。
+/// 対応する 7 言語の規則が返すのは `One` と `Other` だけなので、ほかの区分は持たない。
+/// 言語を足すときに `few` や `many` が要るなら、ここに足す。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Plural {
-    Zero,
     One,
-    Two,
-    Few,
-    Many,
     Other,
 }
 
 impl Plural {
     pub const fn suffix(self) -> &'static str {
         match self {
-            Plural::Zero => "zero",
             Plural::One => "one",
-            Plural::Two => "two",
-            Plural::Few => "few",
-            Plural::Many => "many",
             Plural::Other => "other",
         }
     }
 }
 
-/// 対応する 7 言語の複数形の規則。en は 1 だけ one、ほかは (日本語・中国語・韓国語・広東語) 常に other。
+/// 対応する 7 言語の複数形の規則 (CLDR)。
+/// en は整数の 1 (`Intl.PluralRules` は符号を見ないので -1 も) だけ one、
+/// ほかは (日本語・中国語・韓国語・広東語) 常に other。
 pub fn plural_category(locale: Locale, count: i64) -> Plural {
     match locale {
-        Locale::En if count == 1 => Plural::One,
+        Locale::En if count.unsigned_abs() == 1 => Plural::One,
         _ => Plural::Other,
     }
 }
@@ -266,31 +262,34 @@ impl I18n {
         }
     }
 
-    /// `count` に合う複数形のキー (`key_one` など) を引き、`{{count}}` を埋める。
-    /// 区分のキーが無ければ `key_other`、さらに無ければ `key` を使う。
+    /// `count` に合う複数形のキーを引き、`{{count}}` を埋める。i18next と同じ順に探す。
+    /// 言語ごとに、`count` が 0 なら `key_zero`、次に区分のキー (`key_one` など)、最後に `key`。
+    /// 同じ言語の中では `key_other` に戻らない。どれも無ければ次の言語 (ja) へ進む。
+    /// `key_zero` は言語に関係なく `count == 0` で試される (i18next v26 の挙動)。
     pub fn t_count(&self, key: &str, count: i64, vars: &[(&str, &str)]) -> String {
         let count_text = count.to_string();
         let mut all: Vec<(&str, &str)> = vec![("count", count_text.as_str())];
         all.extend_from_slice(vars);
 
-        // 言語ごとに「区分 → other → 接尾辞なし」の順で試し、無ければ ja に戻る。
         let res = resources();
-        for locale in [self.locale, DEFAULT_LOCALE] {
-            let Some(map) = res.get(&locale) else {
-                continue;
-            };
-            let category = plural_category(locale, count);
-            let candidates = [
-                format!("{key}_{}", category.suffix()),
-                format!("{key}_other"),
-                key.to_string(),
-            ];
-            if let Some(template) = candidates.iter().find_map(|k| map.get(k)) {
-                return interpolate(template, &all);
-            }
+        let chain = [self.locale, DEFAULT_LOCALE].map(|l| (l, &res[&l]));
+        match resolve_plural(&chain, key, count) {
+            Some(template) => interpolate(template, &all),
+            None => key.to_string(),
         }
-        key.to_string()
     }
+}
+
+/// 言語の並び (本人、フォールバック) から、複数形のテンプレートを探す。
+fn resolve_plural<'a>(chain: &[(Locale, &'a Flat)], key: &str, count: i64) -> Option<&'a str> {
+    chain.iter().find_map(|(locale, map)| {
+        let zero = (count == 0).then(|| format!("{key}_zero"));
+        let category = format!("{key}_{}", plural_category(*locale, count).suffix());
+        zero.iter()
+            .chain([&category, &key.to_string()])
+            .find_map(|k| map.get(k))
+            .map(String::as_str)
+    })
 }
 
 #[cfg(test)]
@@ -363,6 +362,55 @@ mod tests {
                 &[("actor", "Ann"), ("count", "3")]
             )
         );
+    }
+
+    #[test]
+    fn plural_categories() {
+        assert_eq!(plural_category(Locale::En, 1), Plural::One);
+        assert_eq!(plural_category(Locale::En, -1), Plural::One);
+        assert_eq!(plural_category(Locale::En, 0), Plural::Other);
+        assert_eq!(plural_category(Locale::En, 2), Plural::Other);
+        for locale in Locale::ALL.into_iter().filter(|l| *l != Locale::En) {
+            assert_eq!(
+                plural_category(locale, 1),
+                Plural::Other,
+                "{}",
+                locale.code()
+            );
+        }
+    }
+
+    #[test]
+    fn plural_resolution_order_matches_i18next() {
+        let flat = |pairs: &[(&str, &str)]| -> Flat {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let ja = flat(&[
+            ("k_other", "ja other"),
+            ("k_one", "ja one"),
+            ("k", "ja plain"),
+        ]);
+        // en は `_other` だけを持つ。`_one` が要るとき、同じ言語の `_other` には戻らず ja へ進む。
+        // ja の区分は常に other なので "ja other" になる (en の "en other" ではない)。
+        let en = flat(&[("k_other", "en other")]);
+        let chain = [(Locale::En, &en), (Locale::Ja, &ja)];
+        assert_eq!(resolve_plural(&chain, "k", 1), Some("ja other"));
+        assert_eq!(resolve_plural(&chain, "k", 2), Some("en other"));
+        // 0 は `_zero` が先。無ければ区分のキー。
+        let en_zero = flat(&[("k_zero", "en zero"), ("k_other", "en other")]);
+        let chain = [(Locale::En, &en_zero), (Locale::Ja, &ja)];
+        assert_eq!(resolve_plural(&chain, "k", 0), Some("en zero"));
+        assert_eq!(resolve_plural(&chain, "k", 5), Some("en other"));
+        // ja 側の `_zero` は、en に区分のキーが無ければ使われる。ただし ja 内では `_zero` が `_other` より先。
+        let ja_zero = flat(&[("k_zero", "ja zero"), ("k_other", "ja other")]);
+        let en_plain = flat(&[("k", "en plain")]);
+        let chain = [(Locale::En, &en_plain), (Locale::Ja, &ja_zero)];
+        assert_eq!(resolve_plural(&chain, "k", 0), Some("en plain"));
+        // どの言語にも無ければ None。
+        assert_eq!(resolve_plural(&chain, "nope", 1), None);
     }
 
     #[test]
