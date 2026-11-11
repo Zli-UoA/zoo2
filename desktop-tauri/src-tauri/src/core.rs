@@ -64,8 +64,6 @@ struct Inner {
     /// ログインしてから、DND を 1 回は取りに行ったか。それまでは通知を出さない
     /// (DND の間に起動したとき、取れる前に届いた通知を出さないため)。
     dnd_checked: bool,
-    /// 通知の初回同期 (reset) を受け取った時刻。これより前に作られた通知は出さない。
-    notify_not_before: Option<DateTime>,
 }
 
 /// ログインしている間だけある状態。捨てるとすべてのタスクが止まる。
@@ -109,7 +107,6 @@ impl Core {
                 window_focused: true,
                 dnd_until: None,
                 dnd_checked: false,
-                notify_not_before: None,
             }),
         }
     }
@@ -289,7 +286,6 @@ impl Core {
         inner.session = Some(session);
         inner.dnd_until = None;
         inner.dnd_checked = false;
-        inner.notify_not_before = None;
         self.set_state(&mut inner, SessionState::Ready { me });
     }
 
@@ -355,10 +351,6 @@ impl Core {
                 .flatten();
             let dnd_until = inner.dnd_until;
             let dnd_checked = inner.dnd_checked;
-            if id == ShapeId::Notifications && batch.reset {
-                inner.notify_not_before = Some(now_utc());
-            }
-            let not_before = inner.notify_not_before;
             let Some(session) = inner.session.as_mut() else {
                 return;
             };
@@ -376,7 +368,6 @@ impl Core {
                     now: Some(now_utc()),
                     dnd_until,
                     focused_channel,
-                    not_before,
                 };
                 notify::notifications_to_show(&session.store, &batch, &ctx)
             } else {
@@ -521,7 +512,6 @@ impl Core {
         inner.focus = FocusState::default();
         inner.dnd_until = None;
         inner.dnd_checked = false;
-        inner.notify_not_before = None;
         if !matches!(
             self.config.as_ref().map(|c| &c.auth),
             Ok(AuthConfig::Oidc(_))
