@@ -262,6 +262,14 @@ impl DeviceAccount {
         })
     }
 
+    pub(crate) fn account(&self) -> &Account {
+        &self.account
+    }
+
+    pub(crate) fn account_mut(&mut self) -> &mut Account {
+        &mut self.account
+    }
+
     fn signed_keys(
         &self,
         keys: impl IntoIterator<Item = (KeyId, Curve25519PublicKey)>,
