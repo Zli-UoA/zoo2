@@ -8,7 +8,7 @@ const USAGE: &str = "\
 
 コマンド:
   run      デスクトップ画面を開く (省略時の既定)
-  gallery  デザイン部品 (色・フォント・アイコン) の確認画面を開く
+  gallery  デザイン部品の確認画面を開く。`gallery components [ページ]` で UI 部品の画面になる
   login    ブラウザでコードを承認してログインする
   logout   保存したトークンを消す
   help     このヘルプを表示する
@@ -60,7 +60,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         "gallery" => {
-            zoo2_desktop::gallery::run();
+            zoo2_desktop::gallery::run(&args[1..]);
             Ok(())
         }
         "login" => {
