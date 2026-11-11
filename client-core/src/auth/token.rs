@@ -143,9 +143,15 @@ impl TokenManager {
     }
 
     pub async fn access_token(&self) -> Result<String> {
+        Ok(self.access_token_with_expiry().await?.0)
+    }
+
+    /// アクセストークンと、その期限 (UNIX 秒)。期限が近ければ更新してから返す。
+    /// WebView にトークンを渡すときに、相手がキャッシュしてよい期間を伝えるために使う。
+    pub async fn access_token_with_expiry(&self) -> Result<(String, i64)> {
         let mut state = self.state.lock().await;
         if state.tokens.expires_at - REFRESH_SKEW_SECONDS > now() {
-            return Ok(state.tokens.access_token.clone());
+            return Ok((state.tokens.access_token.clone(), state.tokens.expires_at));
         }
         let Some(refresh_token) = state.tokens.refresh_token.clone() else {
             return Err(HttpError::Unauthorized.into());
@@ -179,7 +185,7 @@ impl TokenManager {
         // 保存の失敗は呼び出し側に伝えるが、次の呼び出しではトークンを交換し直さない。
         state.tokens = tokens;
         save(&self.path, &state.tokens)?;
-        Ok(state.tokens.access_token.clone())
+        Ok((state.tokens.access_token.clone(), state.tokens.expires_at))
     }
 }
 

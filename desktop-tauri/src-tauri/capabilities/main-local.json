@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-local",
+  "description": "同梱の Leptos の画面 ((a)) とログイン画面。トークンを受け取るコマンドは許さない。",
+  "windows": ["main"],
+  "local": true,
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-zoo-session",
+    "allow-zoo-start-login",
+    "allow-zoo-cancel-login",
+    "allow-zoo-logout",
+    "allow-zoo-set-focus",
+    "allow-zoo-open-channel",
+    "allow-zoo-resync",
+    "allow-zoo-send-message"
+  ]
+}
