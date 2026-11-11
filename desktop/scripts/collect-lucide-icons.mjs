@@ -1,22 +1,31 @@
 #!/usr/bin/env node
 // frontend が lucide-react から import しているアイコンを集め、
 // 同じ版の lucide-static から SVG を取って desktop/assets/icons/ に置く。
+// 集める対象は frontend/src の *.ts / *.tsx。*.stories.tsx、*.test.ts(x)、*.vrt.test.tsx、src/test/ は除く。
 // 使い方: node desktop/scripts/collect-lucide-icons.mjs
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const frontend = join(root, 'frontend');
 const outDir = join(root, 'desktop/assets/icons');
 
+// アプリ本体が使うアイコンだけを集める。stories、テスト、VRT、src/test/ は除く。
+const testDir = join(frontend, 'src/test');
+export function isScanned(path) {
+  if (!/\.(ts|tsx)$/.test(path)) return false;
+  if (/\.(stories|test|vrt\.test)\.tsx?$/.test(path)) return false;
+  return path !== testDir && !path.startsWith(testDir + sep);
+}
+
 function walk(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
     const p = join(dir, e.name);
-    if (e.isDirectory()) return e.name === 'node_modules' ? [] : walk(p);
-    return /\.(ts|tsx)$/.test(e.name) ? [p] : [];
+    if (e.isDirectory()) return e.name === 'node_modules' || p === testDir ? [] : walk(p);
+    return isScanned(p) ? [p] : [];
   });
 }
 
@@ -69,6 +78,13 @@ function main() {
       const f = join(src, `${k}.svg`);
       if (!existsSync(f)) { missing.push(k); continue; }
       writeFileSync(join(outDir, `${k}.svg`), readFileSync(f));
+    }
+    // 使わなくなったアイコンは消す。
+    for (const f of readdirSync(outDir)) {
+      if (f.endsWith('.svg') && !kebabs.includes(f.slice(0, -4))) {
+        rmSync(join(outDir, f));
+        console.log(`削除: ${f}`);
+      }
     }
     console.log(`lucide-static@${version}: ${kebabs.length - missing.length}/${kebabs.length} 個`);
     if (missing.length) {
