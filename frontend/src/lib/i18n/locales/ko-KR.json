@@ -237,8 +237,12 @@
     "compose": "답글 보내기",
     "rootDeleted": "원본 메시지가 삭제되었습니다",
     "sidebarOpen": "스레드 열기: {{title}} (답글 {{count}}개)",
-    "archivedCount_one": "보관된 스레드 {{count}}개",
-    "archivedCount_other": "보관된 스레드 {{count}}개",
+    "archived": "보관된 스레드",
+    "more": "더 보기",
+    "retry": "다시 시도",
+    "indexError": "스레드 목록을 불러오지 못했습니다.",
+    "emptyArchive": "보관된 스레드가 없습니다",
+    "archiveForChannel": "{{channel}}의 보관된 스레드",
     "untitled": "제목 없는 스레드"
   },
   "reactions": {

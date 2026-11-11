@@ -47,6 +47,12 @@ pub enum AppEvent {
     Threads {
         requested_at: Instant,
         threads: Vec<ThreadSummary>,
+        archived: bool,
+        append: bool,
+        next_cursor: Option<String>,
+    },
+    ThreadsChanged {
+        reopened: Option<String>,
     },
     /// GitHub Releases に新しい版がある。
     UpdateAvailable(String),
@@ -68,6 +74,7 @@ pub enum Focus {
 pub enum SidebarItem {
     Channel(String),
     Thread { channel_id: String, id: String },
+    MoreThreads { archived: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,7 +136,8 @@ pub struct App {
     pub sidebar_index: usize,
     pub threads: Vec<ThreadSummary>,
     /// 遅れた取得結果で、再開後の一覧を上書きしないための取得開始時刻。
-    threads_requested_at: Option<Instant>,
+    threads_requested_at: [Option<Instant>; 2],
+    pub thread_cursors: [Option<String>; 2],
     pub show_archived_threads: bool,
     pub current: Option<String>,
     /// 選択中のルートメッセージ。None なら最新を追う。
@@ -188,7 +196,8 @@ impl App {
             mode: Mode::Normal,
             sidebar_index: 0,
             threads: Vec::new(),
-            threads_requested_at: None,
+            threads_requested_at: [None, None],
+            thread_cursors: [None, None],
             show_archived_threads: false,
             current: None,
             selected: None,
@@ -278,17 +287,48 @@ impl App {
             AppEvent::Threads {
                 requested_at,
                 threads,
+                archived,
+                append,
+                next_cursor,
             } => {
-                if self
-                    .threads_requested_at
-                    .is_some_and(|last| requested_at < last)
-                {
+                let scope = usize::from(archived);
+                if self.threads_requested_at[scope].is_some_and(|last| requested_at < last) {
                     return;
                 }
-                let selected = self.sidebar_items().get(self.sidebar_index).cloned();
-                self.threads = threads;
-                self.threads_requested_at = Some(requested_at);
+                let mut selected = self.sidebar_items().get(self.sidebar_index).cloned();
+                if append
+                    && matches!(selected, Some(SidebarItem::MoreThreads { archived: scope }) if scope == archived)
+                    && let Some(first) = threads.first()
+                {
+                    selected = Some(SidebarItem::Thread {
+                        channel_id: first.channel_id.clone(),
+                        id: first.id.clone(),
+                    });
+                }
+                if !append {
+                    self.threads
+                        .retain(|entry| entry.thread_archive_at.is_some() != archived);
+                }
+                for thread in threads {
+                    self.threads.retain(|entry| entry.id != thread.id);
+                    self.threads.push(thread);
+                }
+                self.thread_cursors[scope] = next_cursor;
+                self.threads_requested_at[scope] = Some(requested_at);
                 self.restore_sidebar_selection(selected);
+            }
+            AppEvent::ThreadsChanged { reopened } => {
+                if let Some(id) = reopened {
+                    if let Some(thread) = self.threads.iter_mut().find(|entry| entry.id == id) {
+                        thread.thread_archive_at = None;
+                    }
+                    // 再開前の一覧で、確定済みの状態を上書きしない。
+                    self.threads_requested_at = [Some(Instant::now()); 2];
+                }
+                self.refresh_threads();
+                if self.show_archived_threads {
+                    self.fetch_thread_page(true, false);
+                }
             }
             AppEvent::EmojiCatalog { shortcodes, custom } => {
                 crate::mfm::set_emoji_catalog(shortcodes, custom)
@@ -389,14 +429,26 @@ impl App {
     }
 
     fn refresh_threads(&self) {
+        self.fetch_thread_page(false, false);
+    }
+
+    fn fetch_thread_page(&self, archived: bool, append: bool) {
         let api = self.api.clone();
         let tx = self.app_tx.clone();
+        let cursor = if append {
+            self.thread_cursors[usize::from(archived)].clone()
+        } else {
+            None
+        };
         tokio::spawn(async move {
             let requested_at = Instant::now();
-            if let Ok(threads) = api.threads().await {
+            if let Ok(page) = api.threads(archived, cursor.as_deref()).await {
                 let _ = tx.send(AppEvent::Threads {
                     requested_at,
-                    threads,
+                    threads: page.items,
+                    archived,
+                    append,
+                    next_cursor: page.next_cursor,
                 });
             }
         });
@@ -417,6 +469,13 @@ impl App {
                     channel_id: channel.id.clone(),
                     id: thread.id.clone(),
                 });
+            }
+        }
+        for archived in [false, true] {
+            if (!archived || self.show_archived_threads)
+                && self.thread_cursors[usize::from(archived)].is_some()
+            {
+                items.push(SidebarItem::MoreThreads { archived });
             }
         }
         items
@@ -443,12 +502,8 @@ impl App {
         let tx = self.app_tx.clone();
         self.spawn_api("スレッドの再開", async move {
             api.unarchive_thread(&id).await?;
-            let requested_at = Instant::now();
-            let threads = api.threads().await?;
-            let _ = tx.send(AppEvent::Threads {
-                requested_at,
-                threads,
-            });
+            // POST の成否だけを再開結果とし、一覧取得は画面側で再試行する。
+            let _ = tx.send(AppEvent::ThreadsChanged { reopened: Some(id) });
             Ok(())
         });
     }
@@ -583,7 +638,12 @@ impl App {
                         self.close_thread();
                     }
                     let api = self.api.clone();
-                    self.spawn_api("削除", async move { api.delete_message(&message_id).await });
+                    let tx = self.app_tx.clone();
+                    self.spawn_api("削除", async move {
+                        api.delete_message(&message_id).await?;
+                        let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
+                        Ok(())
+                    });
                 }
                 self.mode = Mode::Normal;
             }
@@ -632,7 +692,9 @@ impl App {
                 let selected = self.sidebar_items().get(self.sidebar_index).cloned();
                 self.show_archived_threads = !self.show_archived_threads;
                 self.restore_sidebar_selection(selected);
-                self.refresh_threads();
+                if self.show_archived_threads {
+                    self.fetch_thread_page(true, false);
+                }
             }
             KeyCode::Char('u') => self.reopen_thread(),
             _ => {}
@@ -753,6 +815,7 @@ impl App {
                         .channel(id)
                         .map(|channel| self.store.channel_label(channel, &self.me.id))
                         .unwrap_or_default(),
+                    SidebarItem::MoreThreads { .. } => return false,
                     SidebarItem::Thread { id, .. } => self
                         .threads
                         .iter()
@@ -872,6 +935,7 @@ impl App {
                 self.focus = Focus::Thread;
                 self.poll_typing();
             }
+            Some(SidebarItem::MoreThreads { archived }) => self.fetch_thread_page(archived, true),
             None => {}
         }
     }
@@ -1024,9 +1088,10 @@ impl App {
             Focus::Sidebar => self
                 .sidebar_items()
                 .get(self.sidebar_index)
-                .map(|item| match item {
-                    SidebarItem::Channel(id) => id.clone(),
-                    SidebarItem::Thread { channel_id, .. } => channel_id.clone(),
+                .and_then(|item| match item {
+                    SidebarItem::Channel(id) => Some(id.clone()),
+                    SidebarItem::Thread { channel_id, .. } => Some(channel_id.clone()),
+                    SidebarItem::MoreThreads { .. } => None,
                 }),
             _ => self.current.clone(),
         };
@@ -1077,13 +1142,7 @@ impl App {
                     content,
                 });
             } else {
-                let requested_at = Instant::now();
-                if let Ok(threads) = api.threads().await {
-                    let _ = tx.send(AppEvent::Threads {
-                        requested_at,
-                        threads,
-                    });
-                }
+                let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
             }
         });
     }
@@ -1131,6 +1190,132 @@ fn move_id(ids: &[String], current: Option<&str>, delta: isize) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn api_test_app(base: &str) -> (App, mpsc::UnboundedReceiver<AppEvent>) {
+        let http = reqwest::Client::new();
+        let credentials = Credentials::Dev("u1".into());
+        let api = ApiClient::new(http.clone(), base, credentials.clone());
+        let (shape_tx, _shape_rx) = mpsc::unbounded_channel();
+        let (app_tx, app_rx) = mpsc::unbounded_channel();
+        let app = App::new(
+            api,
+            http,
+            base.into(),
+            credentials,
+            Me {
+                id: "u1".into(),
+                user_name: "alice".into(),
+                display_name: "Alice".into(),
+            },
+            shape_tx,
+            app_tx,
+        );
+        (app, app_rx)
+    }
+
+    #[tokio::test]
+    async fn committed_reopen_stays_successful_when_the_index_is_unavailable() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/threads/root/unarchive"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"data":{},"txid":"42"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/threads"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        app.threads.push(ThreadSummary {
+            id: "root".into(),
+            channel_id: "c1".into(),
+            content: "Thread".into(),
+            thread_archive_at: Some("2026-11-10".into()),
+            reply_count: 1,
+        });
+        app.focus = Focus::Thread;
+        app.thread = Some(ThreadView {
+            root_id: "root".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        app.reopen_thread();
+        let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(&event, AppEvent::ThreadsChanged { reopened: Some(id) } if id == "root"));
+        app.on_app_event(event);
+        assert!(app.threads[0].thread_archive_at.is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .is_err()
+        );
+        assert!(app.notice.is_none());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_message_refreshes_the_thread_index() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/messages/root"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"data":{},"txid":"42"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/threads"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"items":[],"next_cursor":null})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        app.threads.push(ThreadSummary {
+            id: "root".into(),
+            channel_id: "c1".into(),
+            content: "Thread".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        });
+        app.mode = Mode::ConfirmDelete {
+            message_id: "root".into(),
+        };
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::NONE,
+        )));
+        for _ in 0..2 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(app.threads.is_empty());
+        assert!(app.notice.is_none());
+    }
 
     #[test]
     fn step_clamps_and_starts_from_latest() {

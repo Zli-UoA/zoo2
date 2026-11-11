@@ -156,6 +156,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
 
       if (isSoftDelete) {
         const { txid } = await client.delete<MessageRow>(`/api/messages/${row.id}`);
+        window.dispatchEvent(new Event(THREADS_CHANGED));
         await syncTxid({
           mode: txidMode,
           txid,
@@ -170,6 +171,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
 
       const body: UpdateMessageRequest = { content: row.content };
       const { txid } = await client.patch<MessageRow>(`/api/messages/${row.id}`, body);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await syncTxid({
         mode: txidMode,
         txid,
@@ -186,6 +188,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
     for (const mutation of transaction.mutations) {
       const row = mutation.original;
       const { txid } = await client.delete<MessageRow>(`/api/messages/${row.id}`);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await syncTxid({
         mode: txidMode,
         txid,

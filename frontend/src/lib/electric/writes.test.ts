@@ -162,6 +162,33 @@ describe("message writes", () => {
     }
   });
 
+  it("refreshes the index after edits and both logical delete paths, but not failed writes", async () => {
+    const { client, patch } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+    const changed = vi.fn();
+    window.addEventListener(THREADS_CHANGED, changed);
+    try {
+      await writes.onUpdate(params(collection, [updateMutation(message, { content: "Renamed" })]));
+      await writes.onUpdate(
+        params(collection, [updateMutation(message, { deleted_at: "2026-11-11" })]),
+      );
+      await writes.onDelete(params(collection, [deleteMutation(message)]));
+      expect(changed).toHaveBeenCalledTimes(3);
+      patch.mockRejectedValueOnce(new Error("Forbidden"));
+      await expect(
+        writes.onUpdate(params(collection, [updateMutation(message, { content: "Rejected" })])),
+      ).rejects.toThrow("Forbidden");
+      expect(changed).toHaveBeenCalledTimes(3);
+    } finally {
+      window.removeEventListener(THREADS_CHANGED, changed);
+    }
+  });
+
   it("PATCHes content edits", async () => {
     const { client, patch } = makeClient();
     const writes = createMessageWrites({

@@ -237,8 +237,12 @@
     "compose": "輸入回覆",
     "rootDeleted": "原訊息已被刪除",
     "sidebarOpen": "開啟子討論：{{title}}（{{count}} 則回覆）",
-    "archivedCount_one": "{{count}} 個已封存子討論",
-    "archivedCount_other": "{{count}} 個已封存子討論",
+    "archived": "已封存的討論串",
+    "more": "顯示更多",
+    "retry": "重試",
+    "indexError": "無法載入討論串清單。",
+    "emptyArchive": "沒有已封存的討論串",
+    "archiveForChannel": "{{channel}}的已封存討論串",
     "untitled": "未命名子討論"
   },
   "reactions": {

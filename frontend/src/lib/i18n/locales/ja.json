@@ -237,9 +237,13 @@
     "compose": "返信を送信",
     "rootDeleted": "元のメッセージは削除されました",
     "sidebarOpen": "スレッドを開く: {{title}}（{{count}} 件の返信）",
-    "archivedCount_one": "アーカイブ済みスレッド {{count}} 件",
-    "archivedCount_other": "アーカイブ済みスレッド {{count}} 件",
-    "untitled": "タイトルなし"
+    "archived": "アーカイブ済みスレッド",
+    "more": "さらに表示",
+    "retry": "再試行",
+    "indexError": "スレッド一覧を取得できませんでした。",
+    "emptyArchive": "アーカイブ済みスレッドはありません",
+    "archiveForChannel": "{{channel}}のアーカイブ済みスレッド",
+    "untitled": "無題のスレッド"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",

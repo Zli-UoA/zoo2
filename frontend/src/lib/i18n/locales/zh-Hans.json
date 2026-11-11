@@ -237,8 +237,12 @@
     "compose": "输入回复",
     "rootDeleted": "原消息已被删除",
     "sidebarOpen": "打开子线程：{{title}}（{{count}} 条回复）",
-    "archivedCount_one": "{{count}} 个已归档子线程",
-    "archivedCount_other": "{{count}} 个已归档子线程",
+    "archived": "已归档的讨论串",
+    "more": "显示更多",
+    "retry": "重试",
+    "indexError": "无法加载讨论串列表。",
+    "emptyArchive": "没有已归档的讨论串",
+    "archiveForChannel": "{{channel}}的已归档讨论串",
     "untitled": "未命名子线程"
   },
   "reactions": {

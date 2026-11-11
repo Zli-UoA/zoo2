@@ -112,7 +112,13 @@ const threadEntry = {
 export const Threads: Story = {
   parameters: {
     a11y: { test: "error" },
-    msw: { handlers: [http.get("*/api/threads", () => HttpResponse.json([threadEntry]))] },
+    msw: {
+      handlers: [
+        http.get("*/api/threads", () =>
+          HttpResponse.json({ items: [threadEntry], next_cursor: null }),
+        ),
+      ],
+    },
   },
   play: playForImplementation(async () => {
     await expect(await screen.findByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
@@ -124,16 +130,127 @@ export const ArchivedThreads: Story = {
     a11y: { test: "error" },
     msw: {
       handlers: [
+        http.get("*/api/threads", ({ request }) => {
+          const archived = new URL(request.url).searchParams.get("archived") === "true";
+          return HttpResponse.json({
+            items: archived
+              ? [{ ...threadEntry, thread_archive_at: "2026-01-10T09:05:00.000Z" }]
+              : [],
+            next_cursor: null,
+          });
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: /アーカイブ済みスレッド/ }))[0]!,
+    );
+    await expect(await screen.findByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
+    await expect(screen.queryByRole("button", { name: /スレッドを再開/ })).not.toBeInTheDocument();
+  }),
+};
+
+const olderRoot = storyMessages.find((message) => message.id === "message-hello")!;
+const olderReply = {
+  ...storyMessages.find((message) => message.parent_id === threadRoot.id)!,
+  id: "message-older-thread-reply",
+  parent_id: olderRoot.id,
+};
+const olderEntry = {
+  ...threadEntry,
+  id: olderRoot.id,
+  content: olderRoot.content,
+  reply_count: 1,
+  thread_archive_at: "2026-01-01T00:00:00Z",
+};
+
+export const ArchivePages: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    collections: { ...storyCollections, messages: [...storyMessages, olderReply] },
+    msw: {
+      handlers: [
+        http.get("*/api/threads", ({ request }) => {
+          const params = new URL(request.url).searchParams;
+          if (!params.has("archived")) return HttpResponse.json({ items: [], next_cursor: null });
+          return HttpResponse.json(
+            params.has("before")
+              ? { items: [olderEntry], next_cursor: null }
+              : {
+                  items: [{ ...threadEntry, thread_archive_at: "2026-01-10T00:00:00Z" }],
+                  next_cursor: "older",
+                },
+          );
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "アーカイブ済みスレッド" }))[0]!,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "さらに表示" }));
+    await expect(
+      await screen.findByRole("link", { name: (name) => name.includes(olderRoot.content) }),
+    ).toBeVisible();
+    await expect(screen.queryByRole("button", { name: "さらに表示" })).not.toBeInTheDocument();
+  }),
+};
+
+let archiveFailed = false;
+export const ArchiveRetry: Story = {
+  beforeEach: () => {
+    archiveFailed = false;
+  },
+  parameters: {
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        http.get("*/api/threads", ({ request }) => {
+          if (!new URL(request.url).searchParams.has("archived"))
+            return HttpResponse.json({ items: [], next_cursor: null });
+          if (!archiveFailed) {
+            archiveFailed = true;
+            return new HttpResponse(null, { status: 503 });
+          }
+          return HttpResponse.json({
+            items: [{ ...threadEntry, thread_archive_at: "2026-01-10T00:00:00Z" }],
+            next_cursor: null,
+          });
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(
+      (await screen.findAllByRole("button", { name: "アーカイブ済みスレッド" }))[0]!,
+    );
+    await expect(await screen.findByText("スレッド一覧を取得できませんでした。")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "再試行" }));
+    await expect(await screen.findByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
+  }),
+};
+
+export const EmptyThreadTitle: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    collections: {
+      ...storyCollections,
+      messages: storyMessages.map((message) =>
+        message.id === threadRoot.id ? { ...message, content: "" } : message,
+      ),
+    },
+    msw: {
+      handlers: [
         http.get("*/api/threads", () =>
-          HttpResponse.json([{ ...threadEntry, thread_archive_at: "2026-01-10T09:05:00.000Z" }]),
+          HttpResponse.json({ items: [{ ...threadEntry, content: "" }], next_cursor: null }),
         ),
       ],
     },
   },
   play: playForImplementation(async () => {
-    await userEvent.click(await screen.findByRole("button", { name: /アーカイブ済みスレッド/ }));
-    await expect(await screen.findByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
-    await expect(screen.queryByRole("button", { name: /スレッドを再開/ })).not.toBeInTheDocument();
+    await expect(await screen.findByRole("link", { name: /無題のスレッド/ })).toBeVisible();
   }),
 };
 

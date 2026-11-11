@@ -107,9 +107,16 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '8 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-interval '8 days' WHERE channel_id=$1")
         .bind(channel.as_str()).exec(&mut db).await?;
     archive_idle_threads(&db).await?;
-    let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
+    let threads = request(
+        &app,
+        "GET",
+        &user,
+        "/api/threads?archived=true",
+        Value::Null,
+    )
+    .await?;
     for id in [root_id, child_id] {
-        let entry = threads
+        let entry = threads["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -146,7 +153,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     // Reopening counts as activity even if the replies are old.
     let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
     assert!(
-        threads
+        threads["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -165,7 +172,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     .await?;
     let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
     assert!(
-        threads
+        threads["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -191,7 +198,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     pending.commit().await?;
     let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
     assert!(
-        threads
+        threads["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -209,9 +216,16 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     .await?;
     toasty::sql::statement("INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) VALUES($1,$2,$3,'Historical import',$4,(now() AT TIME ZONE 'UTC')-interval '30 days')")
         .bind(uuid::Uuid::new_v4().to_string()).bind(user.as_str()).bind(channel.as_str()).bind(root_id).exec(&mut db).await?;
-    let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
+    let threads = request(
+        &app,
+        "GET",
+        &user,
+        "/api/threads?archived=true",
+        Value::Null,
+    )
+    .await?;
     assert!(
-        threads
+        threads["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -236,7 +250,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     .await?;
     let threads = request(&app, "GET", &outsider, "/api/threads", Value::Null).await?;
     assert!(
-        !threads
+        !threads["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -363,7 +377,7 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
                 .bind(uuid::Uuid::new_v4().to_string()).bind(user.as_str()).bind(channel.as_str()).bind(roots[0].as_str()).exec(&mut db).await?;
         }
         let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
-        let order: Vec<_> = threads
+        let order: Vec<_> = threads["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -372,5 +386,103 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
             .collect();
         assert_eq!(order, roots, "imported: {imported}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_index_limits_membership_history_and_page_size() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    request(
+        &app,
+        "POST",
+        &user,
+        "/api/users",
+        json!({"id":user,"user_name":user,"display_name":"Paging tester"}),
+    )
+    .await?;
+    let mut channels = Vec::new();
+    for _ in 0..2 {
+        let channel = uuid::Uuid::new_v4().to_string();
+        request(
+            &app,
+            "POST",
+            &user,
+            "/api/channels",
+            json!({"id":channel,"channel_name":channel,"is_private":false}),
+        )
+        .await?;
+        toasty::sql::statement("WITH roots AS (INSERT INTO messages(id,user_id,channel_id,content,created_at) SELECT gen_random_uuid()::text,$1,$2,'Root '||n,(now() AT TIME ZONE 'UTC')-interval '1 day'+n*interval '1 second' FROM generate_series(1,105) n RETURNING id,user_id,channel_id,created_at) INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) SELECT gen_random_uuid()::text,user_id,channel_id,'Reply',id,created_at FROM roots")
+            .bind(user.as_str()).bind(channel.as_str()).exec(&mut db).await?;
+        channels.push(channel);
+    }
+    toasty::sql::statement("DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2")
+        .bind(user.as_str())
+        .bind(channels[1].as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("UPDATE messages SET thread_archive_at=now() AT TIME ZONE 'UTC' WHERE channel_id=$1 AND content='Root 1'")
+        .bind(channels[0].as_str()).exec(&mut db).await?;
+    let first = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
+    let items = first["items"].as_array().unwrap();
+    assert_eq!(items.len(), 100);
+    assert!(
+        items
+            .iter()
+            .all(|row| row["channel_id"] == channels[0] && row["thread_archive_at"].is_null())
+    );
+    // A cursor remains usable after the row at the page boundary is deleted.
+    toasty::sql::statement("UPDATE messages SET deleted_at=now() AT TIME ZONE 'UTC' WHERE id=$1")
+        .bind(items.last().unwrap()["id"].as_str().unwrap())
+        .exec(&mut db)
+        .await?;
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let query = format!(
+        "before={}",
+        percent_encoding::utf8_percent_encode(cursor, percent_encoding::NON_ALPHANUMERIC)
+    );
+    let second = request(
+        &app,
+        "GET",
+        &user,
+        &format!("/api/threads?{query}"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(second["items"].as_array().unwrap().len(), 4);
+    assert!(second["next_cursor"].is_null());
+    for row in second["items"].as_array().unwrap() {
+        assert!(!items.iter().any(|other| other["id"] == row["id"]));
+    }
+    let archive = request(
+        &app,
+        "GET",
+        &user,
+        &format!("/api/threads?archived=true&channel_id={}", channels[0]),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(archive["items"].as_array().unwrap().len(), 1);
+    let small = request(&app, "GET", &user, "/api/threads?limit=2", Value::Null).await?;
+    assert_eq!(small["items"].as_array().unwrap().len(), 2);
+    let capped = request(&app, "GET", &user, "/api/threads?limit=1000", Value::Null).await?;
+    assert_eq!(capped["items"].as_array().unwrap().len(), 100);
+    assert_eq!(
+        response(
+            &app,
+            "GET",
+            &user,
+            "/api/threads?before=invalid",
+            Value::Null
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
     Ok(())
 }

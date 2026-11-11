@@ -57,7 +57,7 @@ export function ChannelSidebar({
   const [createOpen, setCreateOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [dmOpen, setDmOpen] = useState(false);
-  const threadEntries = useThreadIndex(currentUserId);
+  const threadIndex = useThreadIndex(currentUserId);
 
   // 一覧の各チャンネルについて現在ユーザーの参加状態を出す。`channel_user` の
   // 購読は `getCollections()` が 1 本だけ持つため、ここで直接 live query を張っても
@@ -208,12 +208,29 @@ export function ChannelSidebar({
                       ) : null}
                     </Link>
                     {!channel.is_dm ? (
-                      <ChannelThreadItems channel={channel} threads={threadEntries} />
+                      <ChannelThreadItems
+                        channel={channel}
+                        threads={threadIndex.threads}
+                        currentUserId={currentUserId}
+                      />
                     ) : null}
                   </div>
                 );
               })
             )}
+            {threadIndex.isError ? (
+              <p className="p-2 text-xs text-destructive">{t("threads.indexError")}</p>
+            ) : null}
+            {threadIndex.hasMore || threadIndex.isError ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={threadIndex.isLoading}
+                onClick={threadIndex.loadMore}
+              >
+                {t(threadIndex.isError ? "threads.retry" : "threads.more")}
+              </Button>
+            ) : null}
           </div>
         </CollapsibleSection>
         <DmSection

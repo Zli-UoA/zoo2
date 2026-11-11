@@ -10,6 +10,8 @@ export function CollapsibleSection({
   children,
   className,
   defaultOpen = true,
+  onOpenChange,
+  ariaLabel,
 }: {
   title: string;
   icon: ReactNode;
@@ -18,19 +20,28 @@ export function CollapsibleSection({
   children: ReactNode;
   className?: string;
   defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  ariaLabel?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const headingId = useId();
   const contentId = useId();
   return (
-    <section className={className} aria-labelledby={headingId}>
+    <section
+      className={className}
+      aria-labelledby={ariaLabel ? undefined : headingId}
+      aria-label={ariaLabel}
+    >
       <div className="flex min-h-9 items-center gap-1 px-2">
         <h2 id={headingId} className="min-w-0 flex-1">
           <button
             type="button"
             aria-expanded={open}
             aria-controls={contentId}
-            onClick={() => setOpen((value) => !value)}
+            onClick={() => {
+              setOpen(!open);
+              onOpenChange?.(!open);
+            }}
             className="flex min-h-9 w-full min-w-0 items-center gap-1.5 rounded-md px-1 text-left text-xs font-semibold text-muted-foreground outline-none hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <ChevronRightIcon

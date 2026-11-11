@@ -56,7 +56,15 @@ vi.mock("../../lib/electric/collections-context", () => ({
   useCollections: () => ({ channelUsers: {}, config: fixture.config }),
 }));
 vi.mock("../../lib/api/client", () => ({
-  createConfiguredApiClient: () => ({ get: async () => fixture.threads, post: vi.fn() }),
+  createConfiguredApiClient: () => ({
+    get: async (path: string) => ({
+      items: fixture.threads.filter(
+        (thread) => !!thread.thread_archive_at === path.includes("archived=true"),
+      ),
+      next_cursor: null,
+    }),
+    post: vi.fn(),
+  }),
 }));
 vi.mock("../../lib/call/call-context", () => ({ useCall: () => ({ activeCalls: new Map() }) }));
 vi.mock("../layout/shell-context", () => ({
@@ -98,6 +106,7 @@ it("opens archived threads with the shared section and keyboard controls", async
   toggle.focus();
   await userEvent.keyboard("{Enter}");
   expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  await screen.findByRole("link", { name: /Nested history/ });
   await userEvent.tab();
   expect(document.activeElement).toBe(screen.getByRole("link", { name: /Nested history/ }));
   await userEvent.keyboard("{Enter}");

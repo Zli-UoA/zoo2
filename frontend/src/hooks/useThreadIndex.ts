@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
@@ -12,33 +12,84 @@ export interface ThreadSummary {
   reply_count: number;
 }
 
-const EMPTY_THREADS: ThreadSummary[] = [];
+export interface ThreadPage {
+  items: ThreadSummary[];
+  next_cursor: string | null;
+}
+const EMPTY_PAGE: ThreadPage = { items: [], next_cursor: null };
+type Result = ThreadPage & { key: string; isLoading: boolean; isError: boolean };
 
-/** 未表示のチャンネルも、messages の購読を増やさず一覧を取得する。 */
-export function useThreadIndex(userId: string | null) {
+/** アクティブな一覧は定期取得し、履歴は展開時にページ単位で取得する。 */
+export function useThreadIndex(
+  userId: string | null,
+  {
+    channelId,
+    archived = false,
+    enabled = true,
+  }: {
+    channelId?: string;
+    archived?: boolean;
+    enabled?: boolean;
+  } = {},
+) {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config, userId]);
-  const [result, setResult] = useState<{ userId: string; threads: ThreadSummary[] } | null>(null);
+  const key = JSON.stringify([userId, channelId, archived]);
+  const [result, setResult] = useState<Result | null>(null);
+  const requestMore = useRef<() => void>(() => {});
+  const loadMore = useCallback(() => requestMore.current(), []);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || !enabled) return;
     let active = true;
     let inFlight = false;
     let pending = false;
     let generation = 0;
-    const refresh = async () => {
+    let cursor: string | null = null;
+    const refresh = async (append = false) => {
       if (document.visibilityState === "hidden") return;
       if (inFlight) {
-        pending = true;
+        if (!append) pending = true;
         return;
       }
       inFlight = true;
       const started = generation;
+      const params = new URLSearchParams();
+      if (channelId) params.set("channel_id", channelId);
+      if (archived) params.set("archived", "true");
+      if (append && cursor) params.set("before", cursor);
+      const query = params.size ? `?${params}` : "";
+      setResult((current) => ({
+        ...(current?.key === key ? current : EMPTY_PAGE),
+        key,
+        isLoading: true,
+        isError: false,
+      }));
       try {
-        const threads = await client.get<ThreadSummary[]>("/api/threads");
-        if (active && started === generation) setResult({ userId, threads });
+        const page = await client.get<ThreadPage>(`/api/threads${query}`);
+        if (active && started === generation) {
+          cursor = page.next_cursor;
+          setResult((current) => ({
+            ...page,
+            items:
+              append && current?.key === key
+                ? [
+                    ...new Map(
+                      [...current.items, ...page.items].map((item) => [item.id, item]),
+                    ).values(),
+                  ]
+                : page.items,
+            key,
+            isLoading: false,
+            isError: false,
+          }));
+        }
       } catch {
-        // 一時的な取得失敗では直前の一覧を残し、次回の更新で再試行する。
+        // 一時的な取得失敗では直前の一覧を残し、再試行できるようにする。
+        if (active && started === generation)
+          setResult((current) =>
+            current?.key === key ? { ...current, isLoading: false, isError: true } : current,
+          );
       } finally {
         inFlight = false;
         if (active && pending) {
@@ -48,25 +99,35 @@ export function useThreadIndex(userId: string | null) {
       }
     };
     const invalidate = () => {
-      // 返信の保存前に始まった取得結果で、保存後の一覧を上書きしない。
+      // 更新前に始まった取得結果で、更新後の一覧を上書きしない。
       generation += 1;
       void refresh();
     };
+    const refreshFirst = () => void refresh();
+    requestMore.current = () => void refresh(cursor !== null);
     void refresh();
-    const interval = window.setInterval(() => void refresh(), 60_000);
-    window.addEventListener("focus", refresh);
-    window.addEventListener("online", refresh);
+    const interval = archived ? null : window.setInterval(refreshFirst, 60_000);
+    window.addEventListener("focus", refreshFirst);
+    window.addEventListener("online", refreshFirst);
     window.addEventListener(THREADS_CHANGED, invalidate);
-    document.addEventListener("visibilitychange", refresh);
+    document.addEventListener("visibilitychange", refreshFirst);
     return () => {
       active = false;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refresh);
-      window.removeEventListener("online", refresh);
+      requestMore.current = () => {};
+      if (interval !== null) window.clearInterval(interval);
+      window.removeEventListener("focus", refreshFirst);
+      window.removeEventListener("online", refreshFirst);
       window.removeEventListener(THREADS_CHANGED, invalidate);
-      document.removeEventListener("visibilitychange", refresh);
+      document.removeEventListener("visibilitychange", refreshFirst);
     };
-  }, [client, userId]);
+  }, [client, userId, channelId, archived, enabled, key]);
 
-  return result?.userId === userId ? result.threads : EMPTY_THREADS;
+  const current = result?.key === key ? result : null;
+  return {
+    threads: current?.items ?? EMPTY_PAGE.items,
+    hasMore: !!current?.next_cursor,
+    isLoading: current?.isLoading ?? false,
+    isError: current?.isError ?? false,
+    loadMore,
+  };
 }

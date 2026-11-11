@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { useThreadIndex, type ThreadSummary } from "./useThreadIndex";
+import { useThreadIndex, type ThreadSummary, type ThreadPage } from "./useThreadIndex";
 import { THREADS_CHANGED } from "../lib/electric/threads";
 import { createMessageWrites } from "../lib/electric/writes";
 import type { ApiClient } from "../lib/api/client";
@@ -22,8 +22,19 @@ const thread: ThreadSummary = {
 };
 let index: ReturnType<typeof useThreadIndex>;
 let root: ReturnType<typeof createRoot>;
-function Test({ userId }: { userId: string | null }) {
-  index = useThreadIndex(userId);
+function page(items: ThreadSummary[], next_cursor: string | null = null): ThreadPage {
+  return { items, next_cursor };
+}
+function Test({
+  userId,
+  ...options
+}: {
+  userId: string | null;
+  archived?: boolean;
+  enabled?: boolean;
+  channelId?: string;
+}) {
+  index = useThreadIndex(userId, options);
   return null;
 }
 beforeEach(() => {
@@ -40,12 +51,12 @@ afterEach(async () => {
 });
 
 it("waits for the user and clears the previous user's results while the next request is pending", async () => {
-  fixture.api.get.mockResolvedValue([thread]);
+  fixture.api.get.mockResolvedValue(page([thread]));
   await act(async () => root.render(createElement(Test, { userId: null })));
   expect(fixture.api.get).not.toHaveBeenCalled();
   await act(async () => root.render(createElement(Test, { userId: "alice" })));
-  expect(index).toEqual([thread]);
-  let resolve!: (threads: ThreadSummary[]) => void;
+  expect(index.threads).toEqual([thread]);
+  let resolve!: (threads: ThreadPage) => void;
   fixture.api.get.mockImplementationOnce(
     () =>
       new Promise((done) => {
@@ -53,13 +64,13 @@ it("waits for the user and clears the previous user's results while the next req
       }),
   );
   await act(async () => root.render(createElement(Test, { userId: "bob" })));
-  expect(index).toEqual([]);
-  await act(async () => resolve([]));
-  expect(index).toEqual([]);
+  expect(index.threads).toEqual([]);
+  await act(async () => resolve(page([])));
+  expect(index.threads).toEqual([]);
 });
 
 it("serializes refreshes and discards a response started before a reply was saved", async () => {
-  let resolve!: (threads: ThreadSummary[]) => void;
+  let resolve!: (threads: ThreadPage) => void;
   fixture.api.get
     .mockImplementationOnce(
       () =>
@@ -67,32 +78,32 @@ it("serializes refreshes and discards a response started before a reply was save
           resolve = done;
         }),
     )
-    .mockResolvedValue([{ ...thread, thread_archive_at: null }]);
+    .mockResolvedValue(page([{ ...thread, thread_archive_at: null }]));
   await act(async () => root.render(createElement(Test, { userId: "alice" })));
   await act(async () => {
     await vi.advanceTimersByTimeAsync(60_000);
   });
   expect(fixture.api.get).toHaveBeenCalledTimes(1);
   await act(async () => window.dispatchEvent(new Event(THREADS_CHANGED)));
-  await act(async () => resolve([thread]));
+  await act(async () => resolve(page([thread])));
   expect(fixture.api.get).toHaveBeenCalledTimes(2);
-  expect(index[0].thread_archive_at).toBeNull();
+  expect(index.threads[0].thread_archive_at).toBeNull();
 });
 
 it("keeps the previous list on failure and refreshes after online recovery or a saved reply", async () => {
   fixture.api.get
-    .mockResolvedValueOnce([thread])
+    .mockResolvedValueOnce(page([thread]))
     .mockRejectedValueOnce(new Error("offline"))
-    .mockResolvedValue([{ ...thread, thread_archive_at: null }]);
+    .mockResolvedValue(page([{ ...thread, thread_archive_at: null }]));
   await act(async () => root.render(createElement(Test, { userId: "alice" })));
   await act(async () => {
     window.dispatchEvent(new Event("focus"));
   });
-  expect(index).toEqual([thread]);
+  expect(index.threads).toEqual([thread]);
   await act(async () => {
     window.dispatchEvent(new Event("online"));
   });
-  expect(index[0].thread_archive_at).toBeNull();
+  expect(index.threads[0].thread_archive_at).toBeNull();
   await act(async () => {
     window.dispatchEvent(new Event(THREADS_CHANGED));
   });
@@ -101,9 +112,9 @@ it("keeps the previous list on failure and refreshes after online recovery or a 
 
 it("shows a new thread after its first reply is saved without waiting for polling or Electric", async () => {
   const activeThread = { ...thread, thread_archive_at: null, reply_count: 1 };
-  fixture.api.get.mockResolvedValueOnce([]).mockResolvedValue([activeThread]);
+  fixture.api.get.mockResolvedValueOnce(page([])).mockResolvedValue(page([activeThread]));
   await act(async () => root.render(createElement(Test, { userId: "alice" })));
-  expect(index).toEqual([]);
+  expect(index.threads).toEqual([]);
   let confirmSync!: (result: boolean) => void;
   const awaitTxId = vi.fn(
     () =>
@@ -134,11 +145,45 @@ it("shows a new thread after its first reply is saved without waiting for pollin
       collection: { utils: { awaitTxId } },
     } as never);
   });
-  expect(index).toEqual([activeThread]);
+  expect(index.threads).toEqual([activeThread]);
   expect(fixture.api.get).toHaveBeenCalledTimes(2);
   expect(awaitTxId).toHaveBeenCalled();
   await act(async () => {
     confirmSync(true);
     await saving;
   });
+});
+
+it("fetches archive pages only while expanded and does not poll history", async () => {
+  fixture.api.get
+    .mockResolvedValueOnce(page([thread], "older / cursor"))
+    .mockResolvedValue(page([{ ...thread, id: "older" }]));
+  const view = (enabled: boolean) =>
+    createElement(Test, { userId: "alice", channelId: "general", archived: true, enabled });
+  await act(async () => root.render(view(false)));
+  expect(fixture.api.get).not.toHaveBeenCalled();
+  await act(async () => root.render(view(true)));
+  expect(fixture.api.get).toHaveBeenCalledWith("/api/threads?channel_id=general&archived=true");
+  await act(async () => vi.advanceTimersByTimeAsync(120_000));
+  expect(fixture.api.get).toHaveBeenCalledTimes(1);
+  await act(async () => index.loadMore());
+  expect(fixture.api.get).toHaveBeenLastCalledWith(
+    "/api/threads?channel_id=general&archived=true&before=older+%2F+cursor",
+  );
+  expect(index.threads.map((entry) => entry.id)).toEqual([thread.id, "older"]);
+  expect(index.hasMore).toBe(false);
+});
+
+it("keeps a failed archive page retryable without losing loaded history", async () => {
+  fixture.api.get
+    .mockResolvedValueOnce(page([thread], "older"))
+    .mockRejectedValueOnce(new Error("Offline"))
+    .mockResolvedValue(page([{ ...thread, id: "older" }]));
+  await act(async () => root.render(createElement(Test, { userId: "alice", archived: true })));
+  await act(async () => index.loadMore());
+  expect(index.isError).toBe(true);
+  expect(index.threads).toEqual([thread]);
+  await act(async () => index.loadMore());
+  expect(index.isError).toBe(false);
+  expect(index.threads).toHaveLength(2);
 });

@@ -237,8 +237,12 @@
     "compose": "Write a reply",
     "rootDeleted": "The original message was deleted",
     "sidebarOpen": "Open thread: {{title}} ({{count}} replies)",
-    "archivedCount_one": "{{count}} archived thread",
-    "archivedCount_other": "{{count}} archived threads",
+    "archived": "Archived threads",
+    "more": "Show more",
+    "retry": "Retry",
+    "indexError": "Could not load threads.",
+    "emptyArchive": "No archived threads",
+    "archiveForChannel": "Archived threads in {{channel}}",
     "untitled": "Untitled thread"
   },
   "reactions": {

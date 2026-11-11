@@ -1,26 +1,35 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ArchiveIcon, MessageSquareIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 
-import type { ThreadSummary } from "../../hooks/useThreadIndex";
+import { useThreadIndex, type ThreadSummary } from "../../hooks/useThreadIndex";
 import type { ChannelRow } from "../../lib/electric/types";
 import { useShell } from "../layout/shell-context";
+import { Button } from "../ui/button";
 import { CollapsibleSection } from "../ui/collapsible-section";
 import { sidebarItemClassName } from "./sidebarStyles";
 
 export function ChannelThreadItems({
   channel,
   threads,
+  currentUserId,
 }: {
   channel: ChannelRow;
   threads: ThreadSummary[];
+  currentUserId: string | null;
 }) {
   const { t } = useTranslation();
   const shell = useShell();
   const channelThreads = threads.filter((thread) => thread.channel_id === channel.id);
   const active = channelThreads.filter((thread) => !thread.thread_archive_at);
-  const archived = channelThreads.filter((thread) => !!thread.thread_archive_at);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const history = useThreadIndex(currentUserId, {
+    channelId: channel.id,
+    archived: true,
+    enabled: historyOpen,
+  });
 
   const renderThread = (thread: ThreadSummary) => (
     <Link
@@ -42,21 +51,41 @@ export function ChannelThreadItems({
     </Link>
   );
 
-  if (!channelThreads.length) return null;
-
   return (
     <div className="ml-5 flex min-w-0 flex-col border-l pl-2">
       {active.map(renderThread)}
-      {archived.length ? (
-        <CollapsibleSection
-          title={t("threads.archivedCount", { count: archived.length })}
-          icon={<ArchiveIcon />}
-          defaultOpen={false}
-          className="-mx-2"
-        >
-          <div className="flex min-w-0 flex-col px-2">{archived.map(renderThread)}</div>
-        </CollapsibleSection>
-      ) : null}
+
+      <CollapsibleSection
+        title={t("threads.archived")}
+        ariaLabel={t("threads.archiveForChannel", { channel: channel.channel_name })}
+        icon={<ArchiveIcon />}
+        defaultOpen={false}
+        onOpenChange={setHistoryOpen}
+        className="-mx-2"
+      >
+        <div className="flex min-w-0 flex-col px-2">
+          {history.threads.map(renderThread)}
+          {historyOpen && !history.isLoading && !history.isError && !history.threads.length ? (
+            <p className="p-2 text-xs text-muted-foreground">{t("threads.emptyArchive")}</p>
+          ) : null}
+          {history.isError ? (
+            <p className="p-2 text-xs text-destructive">{t("threads.indexError")}</p>
+          ) : null}
+          {history.isLoading ? (
+            <p className="p-2 text-xs text-muted-foreground">{t("threads.loading")}</p>
+          ) : null}
+          {history.hasMore || history.isError ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={history.isLoading}
+              onClick={history.loadMore}
+            >
+              {t(history.isError ? "threads.retry" : "threads.more")}
+            </Button>
+          ) : null}
+        </div>
+      </CollapsibleSection>
     </div>
   );
 }

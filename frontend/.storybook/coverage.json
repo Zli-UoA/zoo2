@@ -76,6 +76,9 @@
         "UnreadAndArchived",
         "Threads",
         "ArchivedThreads",
+        "ArchivePages",
+        "ArchiveRetry",
+        "EmptyThreadTitle",
         "MobileThreads",
         "Sections",
         "MobileSections"

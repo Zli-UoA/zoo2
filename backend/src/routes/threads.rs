@@ -1,12 +1,13 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, header},
     middleware,
     response::Response,
     routing::{get, post},
 };
-use serde_json::Value;
+use serde::Deserialize;
+use serde_json::{Value, json};
 
 use crate::{
     auth::AuthUser,
@@ -33,30 +34,79 @@ pub fn router() -> Router<AppState> {
         ))
 }
 
+#[derive(Default, Deserialize)]
+struct ThreadQuery {
+    channel_id: Option<String>,
+    #[serde(default)]
+    archived: bool,
+    before: Option<String>,
+    limit: Option<usize>,
+}
+
 async fn list_threads(
     State(state): State<AppState>,
     auth_user: AuthUser,
-) -> Result<Json<Vec<Value>>, AppError> {
+    Query(page): Query<ThreadQuery>,
+) -> Result<Json<Value>, AppError> {
+    let limit = page.limit.unwrap_or(100).clamp(1, 100);
+    let cursor = page
+        .before
+        .as_deref()
+        .map(|before| {
+            let cursor: [String; 2] = serde_json::from_str(before)
+                .map_err(|_| AppError::BadRequest("Invalid thread cursor".into()))?;
+            cursor[0]
+                .parse::<jiff::Timestamp>()
+                .map_err(|_| AppError::BadRequest("Invalid thread cursor".into()))?;
+            Ok::<_, AppError>(cursor)
+        })
+        .transpose()?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
-    let guest = crate::apps::events::guest(&mut tx, &auth_user.id).await?;
-    let rows = crate::apps::query(
+    let mut rows = crate::apps::query(
         &mut tx,
-        "SELECT json_build_object('id',root.id,'channel_id',root.channel_id, \
-         'content',left(root.content,160),'thread_archive_at',root.thread_archive_at, \
-         'reply_count',(SELECT count(*) FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL))::text \
-         FROM messages root JOIN channels c ON c.id=root.channel_id \
-         WHERE root.deleted_at IS NULL AND c.deleted_at IS NULL AND NOT c.is_dm \
-           AND EXISTS(SELECT 1 FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL) \
-           AND ((NOT c.is_private AND NOT $2::boolean) OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=$1)) \
-         ORDER BY GREATEST(COALESCE(root.thread_activity_at,root.created_at), \
-           COALESCE((SELECT max(reply.created_at) FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL),root.created_at)) DESC",
-        &[auth_user.id.as_str(), if guest { "true" } else { "false" }],
-    )
-    .await?;
+        "WITH candidates AS ( \
+           SELECT root.id,root.channel_id,root.content,root.thread_archive_at, \
+             GREATEST(COALESCE(root.thread_activity_at,root.created_at), \
+               COALESCE((SELECT max(reply.created_at) FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL),root.created_at)) AS activity_at \
+           FROM messages root JOIN channels c ON c.id=root.channel_id \
+           JOIN channel_user cu ON cu.channel_id=c.id AND cu.user_id=$1 \
+           WHERE root.deleted_at IS NULL AND c.deleted_at IS NULL AND NOT c.is_dm \
+             AND (root.thread_archive_at IS NOT NULL)=$3::boolean \
+             AND ($2='' OR c.id=$2) \
+             AND EXISTS(SELECT 1 FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL) \
+         ) SELECT json_build_object('id',root.id,'channel_id',root.channel_id, \
+           'content',left(root.content,160),'thread_archive_at',root.thread_archive_at, \
+           '_activity_at',root.activity_at, \
+           'reply_count',(SELECT count(*) FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL))::text \
+         FROM candidates root \
+         WHERE ($4='' OR (root.activity_at,root.id)<((NULLIF($4,'')::timestamptz AT TIME ZONE 'UTC'),$5)) \
+         ORDER BY root.activity_at DESC,root.id DESC LIMIT $6::int",
+        &[
+            auth_user.id.as_str(), page.channel_id.as_deref().unwrap_or(""),
+            if page.archived { "true" } else { "false" },
+            cursor.as_ref().map(|v| v[0].as_str()).unwrap_or(""),
+            cursor.as_ref().map(|v| v[1].as_str()).unwrap_or(""),
+            &(limit + 1).to_string(),
+        ],
+    ).await?;
+    let more = rows.len() > limit;
+    rows.truncate(limit);
+    let next_cursor = if more {
+        rows.last()
+            .and_then(|row| row["_activity_at"].as_str().zip(row["id"].as_str()))
+            .map(|(at, id)| json!([format!("{at}Z"), id]).to_string())
+    } else {
+        None
+    };
+    for row in &mut rows {
+        if let Some(object) = row.as_object_mut() {
+            object.remove("_activity_at");
+        }
+    }
     tx.commit().await?;
-    Ok(Json(rows))
+    Ok(Json(json!({"items":rows,"next_cursor":next_cursor})))
 }
 
 async fn unarchive_thread(

@@ -40,6 +40,13 @@ pub struct ThreadSummary {
     pub reply_count: u64,
 }
 
+/// スレッド一覧の1ページ。次ページは `next_cursor` をそのまま渡す。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThreadPage {
+    pub items: Vec<ThreadSummary>,
+    pub next_cursor: Option<String>,
+}
+
 /// `GET /api/channels/{id}/typing`
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct TypingUser {
@@ -137,8 +144,12 @@ impl ApiClient {
         self.get("/api/users/me").await
     }
 
-    pub async fn threads(&self) -> Result<Vec<ThreadSummary>> {
-        self.get("/api/threads").await
+    pub async fn threads(&self, archived: bool, before: Option<&str>) -> Result<ThreadPage> {
+        let mut path = format!("/api/threads?archived={archived}");
+        if let Some(cursor) = before {
+            path.push_str(&format!("&before={}", segment(cursor)));
+        }
+        self.get(&path).await
     }
 
     pub async fn unarchive_thread(&self, id: &str) -> Result<Option<String>> {
@@ -335,11 +346,11 @@ mod tests {
     #[tokio::test]
     async fn lists_threads_and_reopens_with_the_authenticated_api() {
         let server = MockServer::start().await;
-        Mock::given(method("GET")).and(path("/api/threads"))
+        Mock::given(method("GET")).and(path("/api/threads")).and(wiremock::matchers::query_param("archived", "false"))
             .and(header("X-Dev-User", "u1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                {"id":"reply1","channel_id":"c1","content":"Nested thread","reply_count":2,"thread_archive_at":"2026-11-10T00:00:00"}
-            ]))).expect(1).mount(&server).await;
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items":[
+                {"id":"reply1","channel_id":"c1","content":"Nested thread","reply_count":2,"thread_archive_at":null}
+            ],"next_cursor":null}))).expect(1).mount(&server).await;
         Mock::given(method("POST"))
             .and(path("/api/threads/reply1/unarchive"))
             .and(header("X-Dev-User", "u1"))
@@ -349,12 +360,29 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
+        Mock::given(method("GET"))
+            .and(path("/api/threads"))
+            .and(wiremock::matchers::query_param("archived", "true"))
+            .and(wiremock::matchers::query_param("before", "cursor /"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"items":[],"next_cursor":null})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
         let api = client(&server);
-        let threads = api.threads().await.unwrap();
-        assert_eq!(threads[0].reply_count, 2);
-        assert!(threads[0].thread_archive_at.is_some());
+        assert!(
+            api.threads(true, Some("cursor /"))
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        let threads = api.threads(false, None).await.unwrap();
+        assert_eq!(threads.items[0].reply_count, 2);
+        assert!(threads.items[0].thread_archive_at.is_none());
         assert_eq!(
-            api.unarchive_thread(&threads[0].id)
+            api.unarchive_thread(&threads.items[0].id)
                 .await
                 .unwrap()
                 .as_deref(),

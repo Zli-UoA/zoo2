@@ -119,6 +119,13 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                     style,
                 )));
             }
+            if let SidebarItem::MoreThreads { archived } = item {
+                return Some(ListItem::new(if *archived {
+                    "  履歴をさらに表示"
+                } else {
+                    "  スレッドをさらに表示"
+                }));
+            }
             let SidebarItem::Channel(id) = item else {
                 return None;
             };
@@ -252,7 +259,11 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let archived = app
         .threads
         .iter()
-        .any(|entry| entry.id == thread.root_id && entry.thread_archive_at.is_some());
+        .any(|entry| entry.id == thread.root_id && entry.thread_archive_at.is_some())
+        || app
+            .store
+            .message(&channel_id, &thread.root_id)
+            .is_some_and(|root| root.thread_archive_at.is_some());
     let title = if archived {
         " スレッド (アーカイブ / u:再開) "
     } else {
@@ -588,6 +599,9 @@ mod tests {
     async fn sidebar_lists_nested_threads_and_opens_archived_history() {
         let mut app = app();
         app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            next_cursor: None,
             requested_at: std::time::Instant::now(),
             threads: vec![
                 ThreadSummary {
@@ -633,10 +647,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_open_thread_shows_archive_state_without_loading_history() {
+        let mut app = app();
+        app.open_channel("c1".into());
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "m1".into(),
+            selected: None,
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), batch(vec![(
+            "m1", serde_json::json!({"id":"m1", "user_id":"u1", "channel_id":"c1", "content":"Archived root", "created_at":"2026-11-01T00:00:00", "thread_archive_at":"2026-11-10T00:00:00"})
+        )])));
+        assert!(!app.show_archived_threads);
+        assert!(render(&mut app).contains("アーカイブ / u:再開"));
+    }
+
+    #[tokio::test]
     async fn sidebar_keeps_selection_when_threads_are_inserted_before_it() {
         let mut app = app();
         app.sidebar_index = 1;
         app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            next_cursor: None,
             requested_at: std::time::Instant::now(),
             threads: vec![ThreadSummary {
                 id: "m1".into(),
@@ -651,6 +685,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loading_another_thread_page_selects_the_first_added_thread() {
+        let mut app = app();
+        let first = ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "First page".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        };
+        app.on_app_event(AppEvent::Threads {
+            requested_at: std::time::Instant::now(),
+            threads: vec![first.clone()],
+            archived: false,
+            append: false,
+            next_cursor: Some("next".into()),
+        });
+        app.sidebar_index = app
+            .sidebar_items()
+            .iter()
+            .position(|item| matches!(item, SidebarItem::MoreThreads { archived: false }))
+            .unwrap();
+        app.on_app_event(AppEvent::Threads {
+            requested_at: std::time::Instant::now(),
+            threads: vec![ThreadSummary {
+                id: "older".into(),
+                content: "Older thread".into(),
+                ..first
+            }],
+            archived: false,
+            append: true,
+            next_cursor: None,
+        });
+        assert_eq!(
+            app.sidebar_items()[app.sidebar_index],
+            SidebarItem::Thread {
+                channel_id: "c1".into(),
+                id: "older".into()
+            }
+        );
+        assert!(render(&mut app).contains("Older thread"));
+    }
+
+    #[tokio::test]
     async fn late_thread_refresh_does_not_restore_an_archived_state() {
         let mut app = app();
         let requested_at = std::time::Instant::now();
@@ -662,10 +739,16 @@ mod tests {
             reply_count: 1,
         };
         app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            next_cursor: None,
             requested_at,
             threads: vec![active.clone()],
         });
         app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            next_cursor: None,
             requested_at: requested_at - std::time::Duration::from_secs(1),
             threads: vec![ThreadSummary {
                 thread_archive_at: Some("2026-11-10T00:00:00".into()),

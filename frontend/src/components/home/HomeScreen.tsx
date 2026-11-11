@@ -609,6 +609,7 @@ function HomeScreenContent({
                                 body: { content: editText },
                               })
                               .then(async () => {
+                                window.dispatchEvent(new Event(THREADS_CHANGED));
                                 setEditingId(null);
                                 await refresh();
                               })
@@ -990,6 +991,7 @@ function HomeScreenContent({
           setDeleteError(false);
           try {
             await client.request(`/api/home/${encodeURIComponent(deleteId)}`, { method: "DELETE" });
+            window.dispatchEvent(new Event(THREADS_CHANGED));
             setDeleteId(null);
             await refresh();
           } catch {
