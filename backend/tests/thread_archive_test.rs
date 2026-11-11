@@ -366,9 +366,9 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
         .await?;
         toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 day') WHERE id=$1")
             .bind(reply["data"]["id"].as_str().unwrap()).bind(days.to_string()).exec(&mut db).await?;
-        // Existing threads have no saved activity until the first reply after migration.
-        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '30 days',thread_activity_at=NULL WHERE id=$1")
-            .bind(root_id.as_str()).exec(&mut db).await?;
+        // The migration backfills the latest existing reply before indexed reads start.
+        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '30 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 day') WHERE id=$1")
+            .bind(root_id.as_str()).bind(days.to_string()).exec(&mut db).await?;
         roots.push(root_id);
     }
     for imported in [false, true] {
@@ -484,5 +484,81 @@ async fn thread_index_limits_membership_history_and_page_size() -> anyhow::Resul
         .0,
         StatusCode::BAD_REQUEST
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn activity_migration_preserves_existing_replies_and_reopens() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let config = Config::from_env();
+    let (mut client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    let driver = tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let schema = format!("thread_migration_{}", uuid::Uuid::new_v4().simple());
+    tx.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema},public;
+         CREATE TABLE messages (
+           id text PRIMARY KEY,channel_id text,created_at timestamp(3),parent_id text,
+           deleted_at timestamp(3),thread_activity_at timestamp(3),thread_archive_at timestamp(3)
+         );
+         INSERT INTO messages(id,channel_id,created_at,thread_activity_at,thread_archive_at) VALUES
+           ('a','c1','2026-01-01',NULL,'2026-11-11'),
+           ('b','c1','2026-01-01','2026-01-02',NULL),
+           ('reopened','c1','2026-01-01','2026-11-11',NULL),
+           ('empty','c1','2026-01-01',NULL,NULL);
+         INSERT INTO messages(id,channel_id,created_at,parent_id,deleted_at) VALUES
+           ('a-reply','c1','2026-11-10','a',NULL),
+           ('b-reply','c1','2026-11-09','b',NULL),
+           ('old-reply','c1','2026-11-08','reopened',NULL),
+           ('deleted-reply','c1','2026-11-12','b','2026-11-12'),
+           ('nested','c1','2026-11-11','a-reply',NULL);"
+    ))
+    .await?;
+    tx.batch_execute(include_str!(
+        "../../infra/db/migrations/20261112002000_thread_activity_index.sql"
+    ))
+    .await?;
+    for (id, expected) in [
+        ("a", "2026-11-10 00:00:00"),
+        ("b", "2026-11-09 00:00:00"),
+        ("reopened", "2026-11-11 00:00:00"),
+        ("a-reply", "2026-11-11 00:00:00"),
+    ] {
+        let row = tx
+            .query_one(
+                "SELECT thread_activity_at::text FROM messages WHERE id=$1",
+                &[&id],
+            )
+            .await?;
+        assert_eq!(row.get::<_, String>(0), expected, "{id}");
+    }
+    assert!(
+        tx.query_one(
+            "SELECT thread_activity_at IS NULL FROM messages WHERE id='empty'",
+            &[]
+        )
+        .await?
+        .get::<_, bool>(0)
+    );
+    tx.batch_execute(
+        "CREATE TRIGGER messages_thread_activity_insert AFTER INSERT ON messages
+           FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
+         INSERT INTO messages(id,channel_id,created_at,parent_id) VALUES
+           ('historical','c1','2026-01-02','a');",
+    )
+    .await?;
+    let row = tx
+        .query_one(
+            "SELECT thread_activity_at::text,thread_archive_at::text FROM messages WHERE id='a'",
+            &[],
+        )
+        .await?;
+    assert_eq!(row.get::<_, String>(0), "2026-11-10 00:00:00");
+    assert_eq!(row.get::<_, String>(1), "2026-11-11 00:00:00");
+    tx.rollback().await?;
+    drop(client);
+    driver.abort();
     Ok(())
 }

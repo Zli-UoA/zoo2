@@ -1099,10 +1099,19 @@ impl App {
             return;
         };
         let api = self.api.clone();
+        let tx = self.app_tx.clone();
         if join {
-            self.spawn_api("参加", async move { api.join_channel(&channel_id).await });
+            self.spawn_api("参加", async move {
+                api.join_channel(&channel_id).await?;
+                let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
+                Ok(())
+            });
         } else {
-            self.spawn_api("退出", async move { api.leave_channel(&channel_id).await });
+            self.spawn_api("退出", async move {
+                api.leave_channel(&channel_id).await?;
+                let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
+                Ok(())
+            });
         }
     }
 
@@ -1211,6 +1220,59 @@ mod tests {
             app_tx,
         );
         (app, app_rx)
+    }
+
+    #[tokio::test]
+    async fn membership_changes_refresh_the_thread_index() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        for join in [true, false] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(if join {
+                    "/api/channels/c1/join"
+                } else {
+                    "/api/channels/c1/leave"
+                }))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"data":{},"txid":"42"})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/threads"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"items":[],"next_cursor":null})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let (mut app, mut rx) = api_test_app(&server.uri());
+            app.focus = Focus::Messages;
+            app.current = Some("c1".into());
+            app.join_or_leave(join);
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                &event,
+                AppEvent::ThreadsChanged { reopened: None }
+            ));
+            app.on_app_event(event);
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(&event, AppEvent::Threads { .. }));
+            app.on_app_event(event);
+            assert!(app.notice.is_none());
+        }
     }
 
     #[tokio::test]

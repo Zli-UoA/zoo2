@@ -64,28 +64,36 @@ async fn list_threads(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
+    let archive_filter = if page.archived {
+        "IS NOT NULL"
+    } else {
+        "IS NULL"
+    };
     let mut rows = crate::apps::query(
         &mut tx,
-        "WITH candidates AS ( \
-           SELECT root.id,root.channel_id,root.content,root.thread_archive_at, \
-             GREATEST(COALESCE(root.thread_activity_at,root.created_at), \
-               COALESCE((SELECT max(reply.created_at) FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL),root.created_at)) AS activity_at \
-           FROM messages root JOIN channels c ON c.id=root.channel_id \
-           JOIN channel_user cu ON cu.channel_id=c.id AND cu.user_id=$1 \
-           WHERE root.deleted_at IS NULL AND c.deleted_at IS NULL AND NOT c.is_dm \
-             AND (root.thread_archive_at IS NOT NULL)=$3::boolean \
-             AND ($2='' OR c.id=$2) \
-             AND EXISTS(SELECT 1 FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL) \
+        &format!("WITH joined_channels AS MATERIALIZED ( \
+           SELECT c.id FROM channel_user cu JOIN channels c ON c.id=cu.channel_id \
+           WHERE cu.user_id=$1 AND c.deleted_at IS NULL AND NOT c.is_dm AND ($2='' OR c.id=$2) \
+         ), candidates AS ( \
+           SELECT root.* FROM joined_channels c \
+           CROSS JOIN LATERAL ( \
+             SELECT root.id,root.channel_id,root.content,root.thread_archive_at,root.thread_activity_at AS activity_at \
+             FROM messages root WHERE root.channel_id=c.id AND root.deleted_at IS NULL \
+               AND root.thread_activity_at IS NOT NULL \
+               AND root.thread_archive_at {archive_filter} \
+               AND (root.thread_activity_at,root.id)<((COALESCE(NULLIF($3,'')::timestamptz,'infinity'::timestamptz) AT TIME ZONE 'UTC'),$4) \
+               AND EXISTS(SELECT 1 FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL) \
+             ORDER BY root.thread_activity_at DESC,root.id DESC LIMIT $5::int \
+           ) root \
+         ), page AS ( \
+           SELECT * FROM candidates ORDER BY activity_at DESC,id DESC LIMIT $5::int \
          ) SELECT json_build_object('id',root.id,'channel_id',root.channel_id, \
            'content',left(root.content,160),'thread_archive_at',root.thread_archive_at, \
            '_activity_at',root.activity_at, \
            'reply_count',(SELECT count(*) FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL))::text \
-         FROM candidates root \
-         WHERE ($4='' OR (root.activity_at,root.id)<((NULLIF($4,'')::timestamptz AT TIME ZONE 'UTC'),$5)) \
-         ORDER BY root.activity_at DESC,root.id DESC LIMIT $6::int",
+         FROM page root ORDER BY root.activity_at DESC,root.id DESC"),
         &[
             auth_user.id.as_str(), page.channel_id.as_deref().unwrap_or(""),
-            if page.archived { "true" } else { "false" },
             cursor.as_ref().map(|v| v[0].as_str()).unwrap_or(""),
             cursor.as_ref().map(|v| v[1].as_str()).unwrap_or(""),
             &(limit + 1).to_string(),
@@ -188,10 +196,9 @@ pub async fn archive_idle_threads(db: &toasty::Db) -> Result<(), AppError> {
            WHERE root.deleted_at IS NULL \
              AND root.thread_archive_at IS NULL \
              AND EXISTS(SELECT 1 FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL) \
-             AND GREATEST(COALESCE(root.thread_activity_at,root.created_at), \
-                 COALESCE((SELECT max(reply.created_at) FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL),root.created_at)) \
-               < (now() AT TIME ZONE 'UTC') - ($1::int * interval '1 day') \
-           ORDER BY root.created_at LIMIT 1000 FOR UPDATE SKIP LOCKED \
+             AND root.thread_activity_at IS NOT NULL \
+             AND root.thread_activity_at < (now() AT TIME ZONE 'UTC') - ($1::int * interval '1 day') \
+           ORDER BY root.thread_activity_at,root.id LIMIT 1000 FOR UPDATE SKIP LOCKED \
          ) UPDATE messages root SET thread_archive_at=now() AT TIME ZONE 'UTC' FROM idle WHERE root.id=idle.id",
     )
     .bind(THREAD_IDLE_DAYS.to_string())

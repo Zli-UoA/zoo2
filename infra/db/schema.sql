@@ -122,6 +122,12 @@ CREATE TABLE message_reactions (
 
 CREATE INDEX idx_messages_channel_id ON messages (channel_id);
 CREATE INDEX idx_messages_parent_id ON messages (parent_id);
+CREATE INDEX idx_messages_thread_channel_active ON messages (channel_id, thread_activity_at DESC, id DESC)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NULL AND thread_activity_at IS NOT NULL;
+CREATE INDEX idx_messages_thread_channel_archived ON messages (channel_id, thread_activity_at DESC, id DESC)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NOT NULL AND thread_activity_at IS NOT NULL;
+CREATE INDEX idx_messages_thread_idle ON messages (thread_activity_at, id)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NULL AND thread_activity_at IS NOT NULL;
 CREATE INDEX idx_message_reactions_message_id ON message_reactions (message_id);
 CREATE INDEX idx_message_reactions_user_id ON message_reactions (user_id);
 
@@ -2474,7 +2480,7 @@ BEGIN
   IF NEW.parent_id IS NULL OR NEW.deleted_at IS NOT NULL THEN RETURN NULL; END IF;
   IF TG_OP='UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN RETURN NULL; END IF;
   UPDATE messages parent SET
-    thread_activity_at=GREATEST(parent.thread_activity_at,NEW.created_at),
+    thread_activity_at=GREATEST(parent.thread_activity_at,parent.created_at,NEW.created_at),
     -- INSERT 前にアーカイブされた通常の返信も再開し、過去の投稿の取り込みと区別する。
     thread_archive_at=CASE WHEN NEW.created_at >= parent.thread_archive_at
       OR NEW.created_at >= date_trunc('milliseconds',transaction_timestamp() AT TIME ZONE 'UTC')

@@ -284,11 +284,13 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
           `/api/channels/${row.channel_id}/users`,
           body,
         );
+        if (row.user_id === getCurrentUserId()) window.dispatchEvent(new Event(THREADS_CHANGED));
         await waitForChannelUserSync("insert", row, collection.utils, txid, txidMode);
         continue;
       }
 
       const { txid } = await client.post<ChannelUserRow>(`/api/channels/${row.channel_id}/join`);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await waitForChannelUserSync("insert", row, collection.utils, txid, txidMode);
     }
   }
@@ -303,6 +305,7 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
         );
       }
       const { txid } = await client.post<ChannelUserRow>(`/api/channels/${row.channel_id}/leave`);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await waitForChannelUserSync("delete", row, collection.utils, txid, txidMode);
     }
   }

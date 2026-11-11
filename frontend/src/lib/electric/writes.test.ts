@@ -348,6 +348,54 @@ describe("channel writes", () => {
 });
 
 describe("channel_user writes", () => {
+  it.each(["join", "add", "leave"])(
+    "refreshes threads after %s before Electric catches up",
+    async (action) => {
+      const { client } = makeClient();
+      const writes = createChannelUserWrites({
+        client,
+        txidMode: "awaitTxId",
+        getCurrentUserId: () => CURRENT_USER,
+      });
+      const { collection, awaitTxId } = makeCollection();
+      const dispatch = vi.spyOn(window, "dispatchEvent");
+      awaitTxId.mockImplementation(async () => {
+        expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: THREADS_CHANGED }));
+        return true;
+      });
+      try {
+        if (action === "leave")
+          await writes.onDelete(params(collection, [deleteMutation(membership)]));
+        else await writes.onInsert(params(collection, [insertMutation(membership, { action })]));
+      } finally {
+        dispatch.mockRestore();
+      }
+    },
+  );
+
+  it("does not refresh threads when joining fails or another member is added", async () => {
+    const { client, post } = makeClient();
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+    const dispatch = vi.spyOn(window, "dispatchEvent");
+    try {
+      post.mockRejectedValueOnce(new Error("unavailable"));
+      await expect(
+        writes.onInsert(params(collection, [insertMutation(membership)])),
+      ).rejects.toThrow("unavailable");
+      await writes.onInsert(
+        params(collection, [insertMutation({ ...membership, user_id: "u2" }, { action: "add" })]),
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally {
+      dispatch.mockRestore();
+    }
+  });
+
   it("POSTs /join by default", async () => {
     const { client, post } = makeClient();
     const writes = createChannelUserWrites({
