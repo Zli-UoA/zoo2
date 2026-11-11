@@ -7,6 +7,9 @@ on:
     paths:
       - "client-core/**"
       - "desktop/**"
+      # desktop のトークンと翻訳は frontend のファイルを include_str! で読む。
+      - "frontend/src/styles.css"
+      - "frontend/src/lib/i18n/locales/**"
       - "tui/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
@@ -16,6 +19,9 @@ on:
     paths:
       - "client-core/**"
       - "desktop/**"
+      # desktop のトークンと翻訳は frontend のファイルを include_str! で読む。
+      - "frontend/src/styles.css"
+      - "frontend/src/lib/i18n/locales/**"
       - "tui/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
