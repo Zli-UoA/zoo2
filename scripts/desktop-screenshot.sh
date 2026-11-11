@@ -34,6 +34,8 @@ for cmd in Xvfb openbox xwd magick; do
 done
 : "${ZOO_LVP_ICD:?ZOO_LVP_ICD が未設定です。nix develop の中で実行してください}"
 
+[ -f "$ZOO_LVP_ICD" ] || { echo "lavapipe の ICD が見つかりません: $ZOO_LVP_ICD (nix develop の mesa に含まれていない環境かもしれません)" >&2; exit 1; }
+
 tmp=$(mktemp -d)
 pids=()
 cleanup() {

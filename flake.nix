@@ -62,7 +62,6 @@
           xvfb
           openbox
           xwd
-          xwininfo
           imagemagick
         ];
         # ブラウザーテスト用の Chromium。CI と同じく
@@ -98,7 +97,7 @@
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           JAVA_HOME = "${pkgs.jdk21}";
           # lavapipe の Vulkan ICD。desktop-screenshot.sh が VK_ICD_FILENAMES に使う。
-          ZOO_LVP_ICD = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";
+          ZOO_LVP_ICD = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.uname.processor}.json";
           CHROME_BIN = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${zooChrome}/bin/zoo-chrome";
           LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (pkgs.lib.makeLibraryPath linuxDesktopLibs);
         };
