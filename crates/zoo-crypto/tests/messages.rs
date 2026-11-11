@@ -5,9 +5,10 @@ use vodozemac::Ed25519SecretKey;
 use vodozemac::megolm::{ExportedSessionKey, InboundGroupSession, SessionConfig, SessionKey};
 use zoo_crypto::{
     AddOutcome, BackupSession, CryptoError, DecryptedMessage, DeviceAccount, DeviceKeys,
-    EncryptedMessage, InboundSessionStore, ListedDevice, Mentions, MessageContent, OlmSession,
-    OutboundSession, OutgoingMessage, ROTATION_PERIOD_MESSAGES, ROTATION_PERIOD_MS, Rejection,
-    RevisionStatus, RoomKey, SenderTrust, SessionOrigin, signable_json, verify_device_keys,
+    EncryptedMessage, InboundSessionStore, ListedDevice, MAX_SAFE_INTEGER, Mentions,
+    MessageContent, OlmSession, OutboundSession, OutgoingMessage, ROTATION_PERIOD_MESSAGES,
+    ROTATION_PERIOD_MS, Rejection, RevisionStatus, RoomKey, SenderTrust, SessionOrigin,
+    signable_json, verify_device_keys,
 };
 
 const ALICE: &str = "00000000-0000-0000-0000-00000000000a";
@@ -729,4 +730,69 @@ fn rejects_invalid_outgoing_messages() {
         Err(CryptoError::InvalidPayload(_))
     ));
     assert_eq!(outbound.message_count(), 0);
+}
+
+#[test]
+fn accepts_epoch_and_revision_up_to_the_canonical_json_limit() {
+    let alice = Device::new(ALICE, ALICE_DEVICE);
+    let mut bob = Device::new(BOB, BOB_DEVICE);
+    let mut outbound = OutboundSession::new(CHANNEL, MAX_SAFE_INTEGER, NOW_MS);
+    share(&alice, &mut bob, &outbound.room_key());
+    let row = Row::new(&alice, &mut outbound, &message("m1", MAX_SAFE_INTEGER, "a"));
+    let decrypted = decrypt(&mut bob, &row).unwrap();
+    assert_eq!(decrypted.payload.epoch, MAX_SAFE_INTEGER);
+    assert_eq!(decrypted.payload.revision, MAX_SAFE_INTEGER);
+}
+
+#[test]
+fn rejects_epoch_and_revision_beyond_the_canonical_json_limit_when_sending() {
+    let alice = Device::new(ALICE, ALICE_DEVICE);
+    let mut outbound = OutboundSession::new(CHANNEL, EPOCH, NOW_MS);
+    assert!(matches!(
+        outbound.encrypt(&alice.account, &message("m1", MAX_SAFE_INTEGER + 1, "a")),
+        Err(CryptoError::InvalidPayload(_))
+    ));
+    let mut outbound = OutboundSession::new(CHANNEL, MAX_SAFE_INTEGER + 1, NOW_MS);
+    assert!(matches!(
+        outbound.encrypt(&alice.account, &message("m1", 0, "a")),
+        Err(CryptoError::InvalidPayload(_))
+    ));
+    assert_eq!(outbound.message_count(), 0);
+}
+
+#[test]
+fn rejects_room_keys_with_epoch_beyond_the_limit() {
+    let alice = Device::new(ALICE, ALICE_DEVICE);
+    let mut bob = Device::new(BOB, BOB_DEVICE);
+    let room_key = OutboundSession::new(CHANNEL, MAX_SAFE_INTEGER + 1, NOW_MS).room_key();
+    let mut session = olm_session(&alice, &mut bob);
+    let content = send_room_key(&alice, &mut session, &bob, &room_key);
+    let listed = alice.account.device_keys();
+    let result = bob
+        .account
+        .decrypt_to_device(&mut bob.olm_sessions, &content)
+        .unwrap()
+        .verify_room_key(&bob.account, ListedDevice::Listed(&listed), None);
+    assert!(matches!(result, Err(CryptoError::InvalidPayload(_))));
+}
+
+#[test]
+fn debug_output_does_not_contain_session_keys() {
+    let alice = Device::new(ALICE, ALICE_DEVICE);
+    let mut bob = Device::new(BOB, BOB_DEVICE);
+    let room_key = OutboundSession::new(CHANNEL, EPOCH, NOW_MS).room_key();
+    assert!(!format!("{room_key:?}").contains(&room_key.session_key));
+
+    let backup = backup(&room_key, &alice, 0);
+    assert!(!format!("{backup:?}").contains(&backup.session_key));
+
+    let mut session = olm_session(&alice, &mut bob);
+    let content = send_room_key(&alice, &mut session, &bob, &room_key);
+    let decrypted = bob
+        .account
+        .decrypt_to_device(&mut bob.olm_sessions, &content)
+        .unwrap();
+    let debug = format!("{decrypted:?}");
+    assert!(!debug.contains(&room_key.session_key));
+    assert!(debug.contains(ALICE));
 }

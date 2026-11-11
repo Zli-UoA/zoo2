@@ -19,6 +19,8 @@ pub const ROTATION_PERIOD_MESSAGES: u64 = 100;
 pub const ROTATION_PERIOD_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 /// `content.body` の上限（文字数）。平文チャンネルと同じ。
 pub const MAX_BODY_CHARS: usize = 40_000;
+/// `epoch` と `revision` の上限（2^53-1）。Canonical JSON で表せる整数の最大値と同じ。
+pub const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
 /// メッセージの本文（`content`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,13 +67,15 @@ pub struct MessagePayload {
 }
 
 impl MessagePayload {
-    /// 形式を確かめる（`type`、`content.format`、`content.kind`、本文の長さ）。
+    /// 形式を確かめる（`type`、`epoch` と `revision` の範囲、`content.format`、`content.kind`、本文の長さ）。
     pub(crate) fn validate(&self) -> Result<(), CryptoError> {
         if self.payload_type != MESSAGE_TYPE {
             return Err(CryptoError::InvalidPayload(format!(
                 "type が {MESSAGE_TYPE} ではありません"
             )));
         }
+        check_safe_integer("epoch", self.epoch)?;
+        check_safe_integer("revision", self.revision)?;
         if self.content.format != "mfm" {
             return Err(CryptoError::InvalidPayload(
                 "content.format が mfm ではありません".into(),
@@ -91,12 +95,24 @@ impl MessagePayload {
     }
 
     /// 同じ版かを比べるための Canonical JSON。
-    pub(crate) fn canonical(&self) -> String {
+    ///
+    /// [`validate`](Self::validate) を通ったものは必ず変換できるが、範囲外の整数などで
+    /// 失敗したときも panic せず [`CryptoError::CanonicalJson`] を返す。
+    pub(crate) fn canonical(&self) -> Result<String, CryptoError> {
         let value = serde_json::to_value(self)
-            .expect("文字列、整数、真偽値だけの構造体は必ず JSON にできる");
+            .map_err(|e| CryptoError::InvalidPayload(format!("平文を JSON にできません: {e}")))?;
         to_canonical_json(&value)
-            .expect("文字列、整数、真偽値だけの JSON は必ず Canonical JSON にできる")
     }
+}
+
+/// `epoch` や `revision` が [`MAX_SAFE_INTEGER`] 以下かを確かめる。
+pub(crate) fn check_safe_integer(field: &str, value: u64) -> Result<(), CryptoError> {
+    if value > MAX_SAFE_INTEGER {
+        return Err(CryptoError::InvalidPayload(format!(
+            "{field} が {MAX_SAFE_INTEGER} を超えています: {value}"
+        )));
+    }
+    Ok(())
 }
 
 /// 送るメッセージ。`channel_id` と `epoch` は送信用セッションのものを使う。

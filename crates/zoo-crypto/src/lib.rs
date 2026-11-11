@@ -37,8 +37,8 @@ pub use inbound::{
     RevisionStatus, SessionOrigin,
 };
 pub use megolm::{
-    MAX_BODY_CHARS, MESSAGE_TYPE, Mentions, MessageContent, MessagePayload, OutboundSession,
-    OutgoingMessage, ROTATION_PERIOD_MESSAGES, ROTATION_PERIOD_MS,
+    MAX_BODY_CHARS, MAX_SAFE_INTEGER, MESSAGE_TYPE, Mentions, MessageContent, MessagePayload,
+    OutboundSession, OutgoingMessage, ROTATION_PERIOD_MESSAGES, ROTATION_PERIOD_MS,
 };
 pub use olm::{
     ListedDevice, OlmDecrypted, OlmSession, ROOM_KEY_TYPE, ReceivedRoomKey, RoomKey, SenderTrust,

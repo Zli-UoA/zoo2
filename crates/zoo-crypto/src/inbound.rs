@@ -44,7 +44,9 @@ pub enum AddOutcome {
 ///
 /// `sender_key`、`sender_user_id`、`sender_device_id` は平文で、誰でも好きな値を入れられる。
 /// 保存のキーと照合にだけ使い、送信者が誰かの判定には使わない。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` は `session_key` を出さない。
+#[derive(Clone, PartialEq, Eq)]
 pub struct BackupSession {
     /// セッションを使うチャンネル。
     pub channel_id: String,
@@ -60,6 +62,19 @@ pub struct BackupSession {
     pub epoch: u64,
     /// vodozemac の `ExportedSessionKey` の base64。
     pub session_key: String,
+}
+
+impl std::fmt::Debug for BackupSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackupSession")
+            .field("channel_id", &self.channel_id)
+            .field("sender_key", &self.sender_key)
+            .field("session_id", &self.session_id)
+            .field("sender_user_id", &self.sender_user_id)
+            .field("sender_device_id", &self.sender_device_id)
+            .field("epoch", &self.epoch)
+            .finish_non_exhaustive()
+    }
 }
 
 /// 復号する `messages` の行。値はサーバーの行のものをそのまま入れる。
@@ -368,7 +383,7 @@ impl InboundSessionStore {
                 .insert(index_key, row.message_id.to_owned());
         }
 
-        let canonical = payload.canonical();
+        let canonical = payload.canonical()?;
         let revision = match self.revisions.get_mut(row.message_id) {
             Some((latest, _)) if *latest > payload.revision => {
                 RevisionStatus::Stale { latest: *latest }
@@ -520,6 +535,36 @@ mod tests {
         // 最初のメッセージの再取得と再復号は通る。
         store.decrypt(&row("m1", &first)).unwrap();
         store.decrypt(&row("m1", &first)).unwrap();
+    }
+
+    #[test]
+    fn rejects_out_of_range_integers_without_panicking() {
+        // 送信側の検査を通らない値でも、別の実装が暗号化したものを受け取りうる。
+        let alice = DeviceAccount::new(ALICE, ALICE_DEVICE).unwrap();
+        let mut session = GroupSession::new(SessionConfig::version_1());
+        let mut store = InboundSessionStore::new();
+        store.add_room_key(room_key(&alice, &session, ALICE));
+        let too_big = crate::MAX_SAFE_INTEGER + 1;
+
+        let mut big_revision = payload("m1");
+        big_revision.revision = too_big;
+        let encrypted = ciphertext(&alice, &mut session, &big_revision);
+        let mut message = row("m1", &encrypted);
+        message.revision = too_big;
+        assert!(matches!(
+            store.decrypt(&message),
+            Err(CryptoError::InvalidPayload(_))
+        ));
+
+        let mut big_epoch = payload("m2");
+        big_epoch.epoch = too_big;
+        let encrypted = ciphertext(&alice, &mut session, &big_epoch);
+        let mut message = row("m2", &encrypted);
+        message.epoch = too_big;
+        assert!(matches!(
+            store.decrypt(&message),
+            Err(CryptoError::InvalidPayload(_))
+        ));
     }
 
     #[test]

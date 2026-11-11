@@ -11,6 +11,7 @@ use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, base64_decode, base64_enc
 use crate::device::{
     DeviceAccount, DeviceKeys, MEGOLM_ALGORITHM, OLM_ALGORITHM, verify_device_keys,
 };
+use crate::megolm::check_safe_integer;
 use crate::{CryptoError, Rejection, verify_json_signature};
 
 /// Megolm セッション鍵の配布に使う、Olm で暗号化する平文の `type`。
@@ -47,7 +48,9 @@ impl std::fmt::Debug for OlmSession {
 }
 
 /// Megolm セッション鍵の配布（`zoo.room_key` の `content`）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` は `session_key` を出さない。
+#[derive(Clone, PartialEq, Eq)]
 pub struct RoomKey {
     /// セッションを使うチャンネル。
     pub channel_id: String,
@@ -57,6 +60,16 @@ pub struct RoomKey {
     pub session_id: String,
     /// Megolm のセッション鍵（vodozemac の `SessionKey` の base64）。
     pub session_key: String,
+}
+
+impl std::fmt::Debug for RoomKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoomKey")
+            .field("channel_id", &self.channel_id)
+            .field("epoch", &self.epoch)
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RoomKey {
@@ -258,10 +271,23 @@ impl DeviceAccount {
 }
 
 /// [`DeviceAccount::decrypt_to_device`] で復号した、まだ検証していない平文。
-#[derive(Debug, Clone)]
+///
+/// 平文はセッション鍵を含むので、`Debug` は `sender_key`、`type`、`sender`、`sender_device` だけを出す。
+#[derive(Clone)]
 pub struct OlmDecrypted {
     sender_key: Curve25519PublicKey,
     plaintext: Value,
+}
+
+impl std::fmt::Debug for OlmDecrypted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OlmDecrypted")
+            .field("sender_key", &self.sender_key)
+            .field("type", &self.plaintext.get("type").and_then(Value::as_str))
+            .field("sender", &self.sender())
+            .field("sender_device", &self.sender_device())
+            .finish_non_exhaustive()
+    }
 }
 
 /// 送信端末が、Shape（または `keys/query` の応答）にあるか。
@@ -521,12 +547,14 @@ fn parse_room_key(content: &Value) -> Result<RoomKey, CryptoError> {
             .map(str::to_owned)
             .ok_or_else(|| CryptoError::InvalidPayload(format!("content.{name} がありません")))
     };
+    let epoch = content
+        .get("epoch")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| CryptoError::InvalidPayload("content.epoch がありません".into()))?;
+    check_safe_integer("content.epoch", epoch)?;
     Ok(RoomKey {
         channel_id: str_field("channel_id")?,
-        epoch: content
-            .get("epoch")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| CryptoError::InvalidPayload("content.epoch がありません".into()))?,
+        epoch,
         session_id: str_field("session_id")?,
         session_key: str_field("session_key")?,
     })
