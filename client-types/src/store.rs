@@ -4,9 +4,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::electric::{
-    Batch, Change, ShapeId,
-    rows::{Attachment, Channel, ChannelUser, FromRow, Message, Reaction, User},
+use crate::{
+    rows::{Attachment, Channel, ChannelUser, FromRow, Message, Notification, Reaction, User},
+    shape::{Batch, Change, ShapeId},
 };
 
 #[derive(Debug, Default)]
@@ -20,6 +20,7 @@ pub struct Store {
     messages: HashMap<String, HashMap<String, Message>>,
     reactions: HashMap<String, HashMap<String, Reaction>>,
     attachments: HashMap<String, HashMap<String, Attachment>>,
+    notifications: HashMap<String, Notification>,
     synced: HashSet<ShapeId>,
     /// 型に変換できなかった行の数。スキーマのずれに気づけるよう画面に出す。
     pub invalid_rows: usize,
@@ -65,6 +66,12 @@ impl Store {
                 batch.changes,
                 &mut invalid,
             ),
+            ShapeId::Notifications => apply_rows(
+                &mut self.notifications,
+                batch.reset,
+                batch.changes,
+                &mut invalid,
+            ),
         }
         self.invalid_rows += invalid;
         match id {
@@ -83,6 +90,38 @@ impl Store {
     /// 初回同期が終わったか。終わるまでは「読み込み中」と表示する。
     pub fn is_synced(&self, id: &ShapeId) -> bool {
         self.synced.contains(id)
+    }
+
+    /// 購読をやめたチャンネルの行を捨てる。チャンネルを切り替えるときに使う。
+    pub fn forget(&mut self, id: &ShapeId) {
+        match id {
+            ShapeId::Messages(channel_id) => {
+                self.messages.remove(channel_id);
+            }
+            ShapeId::Reactions(channel_id) => {
+                self.reactions.remove(channel_id);
+            }
+            ShapeId::Attachments(channel_id) => {
+                self.attachments.remove(channel_id);
+            }
+            // チャンネル一覧などは購読をやめないので、捨てない。
+            _ => return,
+        }
+        self.synced.remove(id);
+    }
+
+    /// 通知を新しい順に返す。
+    pub fn notifications(&self) -> Vec<&Notification> {
+        let mut notifications: Vec<&Notification> = self.notifications.values().collect();
+        notifications.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
+        notifications
+    }
+
+    /// 通知を id で引く。通知の行のキーは id と同じではないため、値を走査する。
+    pub fn notification(&self, notification_id: &str) -> Option<&Notification> {
+        self.notifications
+            .values()
+            .find(|notification| notification.id == notification_id)
     }
 
     /// 削除されていないチャンネルを、通常のチャンネル (名前順)、DM の順に並べる。
@@ -371,7 +410,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::electric::Row;
+    use crate::shape::Row;
 
     fn upsert(key: &str, value: Value) -> Change {
         Change::Upsert {
