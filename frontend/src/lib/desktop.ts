@@ -82,8 +82,8 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
 let cachedToken: { token: string; expiresAtMs: number } | null = null;
 
 /**
- * `setTokenProvider` に渡す。ログインしていなければ null（呼び出し側は 401 として扱い、
- * ログアウトする）。IdP の一時的な障害などそれ以外の失敗では throw し、リクエストを
+ * `setTokenProvider` に渡す。ログインしていないときと、dev モードでトークンがないときは
+ * null（呼び出し側は Authorization を付けずに送る。401 ならログアウトする）。IdP の一時的な障害などそれ以外の失敗では throw し、リクエストを
  * 通信のエラーとして失敗させる（null にすると 401 からログアウトしてトークンを消してしまう）。
  */
 export async function desktopAccessToken(): Promise<string | null> {
@@ -96,13 +96,19 @@ export async function desktopAccessToken(): Promise<string | null> {
     return result.access_token;
   } catch (error) {
     cachedToken = null;
-    if (isNotLoggedIn(error)) return null;
+    if (hasNoToken(error)) return null;
     throw error instanceof Error ? error : new Error(errorMessage(error));
   }
 }
 
-function isNotLoggedIn(error: unknown): boolean {
-  return (error as { code?: unknown } | null)?.code === "not_logged_in";
+/**
+ * トークンがないと決まっているとき。ログインしていない (`not_logged_in`) か、Rust 側が
+ * dev モード (`ZOO_DEV_USER`) で動いていてトークンを持たない (`wrong_mode`) とき。
+ * dev モードでは `X-Dev-User` で送るので、トークンなしでリクエストを続ける。
+ */
+function hasNoToken(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "not_logged_in" || code === "wrong_mode";
 }
 
 function errorMessage(error: unknown): string {

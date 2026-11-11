@@ -84,6 +84,15 @@ describe("desktopAccessToken", () => {
     await expect(desktopAccessToken()).rejects.toThrow("IdP が応答しません");
   });
 
+  it("returns null in dev mode so requests go out with X-Dev-User", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw { code: "wrong_mode", message: "dev モードではトークンがありません" };
+    });
+    await detectDesktop();
+    await expect(desktopAccessToken()).resolves.toBeNull();
+  });
+
   it("returns null when the shell refuses", async () => {
     install((cmd) => {
       if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
