@@ -50,6 +50,8 @@ openssl = { version = "0.10", features = ["vendored"] }
 http-signature-normalization = "0.7.1"
 httpdate = "1"
 html-escape = "0.2"
+# E2EE の鍵の署名の検証（docs/e2ee.md の「方針」）。クライアントと同じ実装を使う。
+zoo-crypto = { path = "../crates/zoo-crypto" }
 
 [dev-dependencies]
 wiremock = "0.6"

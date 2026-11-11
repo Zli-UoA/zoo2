@@ -634,7 +634,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 ### エラー
 
-【提案】既存のエラー応答 `{"error": "..."}` に、機械判定用の `code` を足します（`backend/src/error.rs` に `code` と追加フィールドを持てる種類を足す）。
+【決定】既存のエラー応答 `{"error": "..."}` に、機械判定用の `code` を足します（#354 で `backend/src/error.rs` に `code` と追加フィールドを持てる `AppError::Coded` を足した）。
 
 | HTTP | `code` | 条件 | 追加のフィールド |
 | --- | --- | --- | --- |
@@ -646,8 +646,8 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_SSSS_CONFLICT` | SSSS の既定の鍵か `secrets_revision` が、クライアントが前提にした値から変わっていた（鍵バックアップへのアップロードを含む） | `default_key_id`、`secrets_revision` |
 | 409 | `E2EE_DEVICE_EXISTS` | 同じ `device_id` の端末が削除済み（墓標を含む。登録は `e2ee_devices` と `e2ee_deleted_device_ids` を 1 つの文で確かめる）、または同じ `device_id` で `device_keys` の内容が違う（削除されていない同じ内容の再送は 200） | |
 | 400 | `E2EE_SLOTS_REQUIRED` | `POST /api/e2ee/secret_storage/keys` の `slots` が空、または最後のスロットを削除しようとした | |
-| 429 | `E2EE_RATE_LIMITED` | 端末の登録が 1 ユーザーにつき 1 時間に 30 回を超えた【提案】 | `retry_after`（秒） |
-| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、`keys/query` の応答の合計サイズ（8 MiB）、`recipients` の 1 人分の応答（4 MiB）が上限を超えた。すべて同じコードで返す | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
+| 429 | `E2EE_RATE_LIMITED` | 端末の登録が 1 ユーザーにつき 1 時間に 30 回を超えた【決定】（#354） | `retry_after`（秒） |
+| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、`keys/query` の応答の合計サイズ（8 MiB）、`recipients` の 1 人分の応答（4 MiB）が上限を超えた。すべて同じコードで返す。【決定】#354 の `limit` の値は、端末の数が `devices`、ワンタイム鍵とフォールバック鍵の数が `one_time_keys`、署名の件数が `signatures`、鍵の JSON のサイズが `key_size`、`keys/query` のユーザー数が `query_users`、応答の合計サイズが `response_size`、`keys/claim` の宛先の数が `claim_devices` | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
 | 409 | `E2EE_KEY_EXISTS` | 同じ鍵 ID で内容が違うワンタイム鍵をアップロードした | |
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない（暗号化チャンネルで必須。平文チャンネルでは、送ったときだけ） | `current_revision` |
 | 409 | `E2EE_PIN_CONFLICT` | `replace: false` で、同じ相手に、違うマスター鍵の TOFU のピンがすでにあり、そのピンを今のユーザー署名鍵で検証できる | `pin` |
@@ -678,7 +678,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   }
   ```
 
-  `device_keys.user_id` は呼び出したユーザーと一致していなければならない。応答は端末の行と `one_time_key_counts`。同じ `device_id` で同じ `device_keys` を送り直した場合は、削除されていなければ成功として扱い（冪等）、削除済みなら 409 `E2EE_DEVICE_EXISTS`（削除済みの `device_id` は再利用できない）、内容が違えば 409 `E2EE_DEVICE_EXISTS`。
+  `device_keys.user_id` は呼び出したユーザーと一致していなければならない。応答は端末の行と `one_time_key_counts`。同じ `device_id` で同じ `device_keys` を送り直した場合は、削除されていなければ成功として扱い（冪等）、削除済みなら 409 `E2EE_DEVICE_EXISTS`（削除済みの `device_id` は再利用できない）、内容が違えば 409 `E2EE_DEVICE_EXISTS`。【決定】再送でも、端末単位のロックを取ったあとに `deleted_at` を読み直し、削除済みなら 409 `E2EE_DEVICE_EXISTS` にする（再送が既存の端末を読んだあとに削除がコミットすると、削除済みの端末に鍵が入り直るため。`keys/upload` と同じ）。【決定】応答の `txid` は端末の行を挿入したときだけ返し、既存の端末への再送（鍵の追加を含む）では `null` にする（端末の Shape に流れる変更がないので、待っても進まないため）。
 - 【決定】`last_seen_at` は、`POST /api/e2ee/keys/upload` と `POST /api/e2ee/to_device/ack`（どちらも `device_id` を持つ）に加え、暗号化チャンネルへのメッセージの送信（`ciphertext` を送るときの `device_id`。#357）で更新する。設定画面の「最後に使った日時」と、20 台に達したときの `stale_devices`（30 日以上使っていない端末の候補）が、実際の利用と合うようにするため。登録時に `last_seen_at` に `now()` を入れる（NULL にしない。登録直後でまだ鍵のアップロードも ack もしていない端末を、`stale_devices` に入れないため）。更新は 1 端末につき 5 分に 1 回までにして、書き込みを増やしすぎない。ベアラートークンはユーザー単位で、`GET /api/e2ee/secret_storage` と `POST /api/e2ee/key_backup/keys` からは端末を特定できないので、これらでは更新しない。
   - 【決定】メッセージの送信による `last_seen_at` の更新は、送信のトランザクションの外（コミットのあとの別の文。失敗してもよい）で行う。ロックの順は全体の順（`users` の行、ユーザー単位のロック、端末単位のロック、`channels` の行、`e2ee_devices` の行）にそろえてあり、端末の削除もこの順で、行き詰まりにはならないが、送信が `channels` の行を `FOR SHARE` で持ったまま `e2ee_devices` の行の更新を待つと、端末の削除（`channels` の行の更新を待つ）を長く止めるため。
 - `GET /api/e2ee/devices`：自分の端末の一覧（削除済みを除く）。`display_name` と `last_seen_at` を返すのはこの API だけで、他のユーザーには見せない。
@@ -700,10 +700,11 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
   端末鍵とクロス署名鍵は、アップロードされたときの署名付きの JSON をそのまま返す。`tofu_pins` には、問い合わせたユーザーに対する自分のピン（署名付き）を返す。`signatures` には、[Shape](#electric-の-shape) と同じ範囲の `e2ee_key_signatures` の行を返す。【決定】問い合わせできるのは、自分と、暗号化チャンネルを共有しているユーザー（削除されていない暗号化チャンネルだけ。`channels.deleted_at IS NULL`。チャンネルの削除（`channels.deleted_at`）は `channel_user` の行を消さないので、条件に入れないと、削除済みのチャンネルの元メンバーが共有相手に残る。応答の端末も `e2ee_devices.deleted_at IS NULL` のものだけ。`keys/claim`、to-device の宛先、`recipients` も同じ）（[端末の Shape](#electric-の-shape) と to-device の宛先と同じ where）。範囲外のユーザーは、存在を推測されないよう、エラーにせず応答から除く。Users Shape はゲスト以外では全ユーザーを返すので、それに合わせると、暗号化チャンネルを共有していない相手の端末鍵やクロス署名の関係まで取得できてしまうため。暗号化 DM を始めるときは、先に `POST /api/dms` で DM を作るので、その時点で暗号化チャンネルを共有する相手になる。全ユーザーの端末鍵は要らない。
   - 【決定】例外として、呼び出したユーザーがピンか署名（`e2ee_tofu_pins` か、自分を署名者とする `e2ee_key_signatures`）を持つ相手については、暗号化チャンネルを共有していなくても、マスター鍵だけを返す（端末鍵、自己署名鍵、ワンタイム鍵は返さない）。マスター鍵は公開鍵で、暗号化 DM を作れば誰でも共有相手になれる（上）ので、この例外で広がる情報は、署名やピンを作った相手のマスター鍵の公開鍵だけで、意図どおり。失効の手順 4 で、SAS（#368）や #362 の受け入れで署名した相手が、すでに暗号化チャンネルを抜けていても、その相手の今のマスター鍵で署名を検証して付け直せるようにするため。ユーザー署名鍵は本人にだけ返す。暗号化チャンネルを共有する相手の鍵は [Shape](#electric-の-shape) で受け取り、この API は初回と Shape が追いつかないときの補助に使う。ピンや署名だけの相手（共有していない相手）のマスター鍵は Shape に来ないので、失効の手順 4 の直前などに、この API で取る。
-- `POST /api/e2ee/keys/claim`：【決定】ワンタイム鍵の払い出しの回数（1 日の上限。20 個は【提案】）は、`INSERT INTO e2ee_one_time_key_claim_counts ... ON CONFLICT DO UPDATE SET claimed = claimed + 1 WHERE claimed < 20` のような原子的な更新で数え、更新できなければ（上限）フォールバック鍵を返す。同じ端末への `POST /api/e2ee/keys/upload`（1 端末 100 個）は、端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`。端末の削除と to-device の送信と同じキー。別のキーだと、アップロードと削除が直列にならず、削除後に鍵が入り直す）を取って、件数の確認と挿入を直列にする。`{"one_time_keys": {"<user_id>": {"<device_id>": "signed_curve25519"}}}`。端末ごとにワンタイム鍵を 1 つ払い出し、なければフォールバック鍵を返す。応答は `{"one_time_keys": {"<user_id>": {"<device_id>": {"signed_curve25519:<key_id>": {"key": "...", "signatures": {}}}}}}` で、鍵がない端末は含めない。ワンタイム鍵は 1 文の `DELETE ... RETURNING`（`FOR UPDATE SKIP LOCKED` で選ぶ）で払い出し、並行した claim でも同じ鍵を 2 回返さない。フォールバック鍵を返したら `used = true` にする。
+- `POST /api/e2ee/keys/claim`：【決定】ワンタイム鍵の払い出しの回数（1 日の上限。20 個は【決定】（#354））は、`INSERT INTO e2ee_one_time_key_claim_counts ... ON CONFLICT DO UPDATE SET claimed = claimed + 1 WHERE claimed < 20` のような原子的な更新で数え、更新できなければ（上限）フォールバック鍵を返す。同じ端末への `POST /api/e2ee/keys/upload`（1 端末 100 個）は、端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`。端末の削除と to-device の送信と同じキー。別のキーだと、アップロードと削除が直列にならず、削除後に鍵が入り直す）を取って、件数の確認と挿入を直列にする。`{"one_time_keys": {"<user_id>": {"<device_id>": "signed_curve25519"}}}`。端末ごとにワンタイム鍵を 1 つ払い出し、なければフォールバック鍵を返す。応答は `{"one_time_keys": {"<user_id>": {"<device_id>": {"signed_curve25519:<key_id>": {"key": "...", "signatures": {}}}}}}` で、鍵がない端末は含めない。【決定】ワンタイム鍵は、`SELECT ... ORDER BY created_at, key_id LIMIT 1 FOR UPDATE SKIP LOCKED` で 1 行をロックしてから、別の文で主キーを指定して `claimed_at = now()` に更新し、並行した claim でも同じ鍵を 2 回返さない（1 文の `UPDATE ... WHERE ... IN (SELECT ... FOR UPDATE SKIP LOCKED)` は、計画によって、残っている鍵があっても 0 行になることがあるため）。払い出した鍵の行は消さずに残し（`claimed_at` あり）、アップロードの応答をなくした再送は主キーの衝突（`ON CONFLICT DO NOTHING`）で入れ直さない（同じ `key_id` で内容が違えば 409 `E2EE_KEY_EXISTS`）。主キーで判定するので、払い出しがコミットする前に再送の `INSERT` が始まっても、衝突した行の確定を待ってから判定し、入り直らない（別の表に移す方法では、再送の文のスナップショットに移した行が見えず、入り直る）。払い出し済みの行は端末の行と一緒に消える（削除から 30 日のバッチ）。件数の上限（100 個）と応答の `one_time_key_counts` は、払い出していない鍵だけを数える。行の数は、その端末と作った Olm セッションの数と同じ程度。フォールバック鍵を返したら `used = true` にする。
+  - 【決定】フォールバック鍵は、今の鍵より新しい世代のときだけ置き換える。世代は `key_id`（vodozemac の `KeyId`。端末ごとに 1 ずつ増える u64 のビッグエンディアンの 8 バイトをパディングなし base64 にしたもの）で比べ、デコードできない `key_id` のフォールバック鍵は 400 にする。古い世代の鍵（遅れて届いた要求や、応答をなくした再送）は、エラーにせずに無視する。端末は今と 1 つ前のフォールバック鍵の秘密鍵しか持たないので、古い鍵に巻き戻すと、その鍵を払い出された送信者が作った Olm セッションを宛先が開けないため。同じ `key_id` で同じ内容は何もせず（`used` を戻さない）、内容が違えば 409 `E2EE_KEY_EXISTS`。
   - 払い出せるのは、`keys/query` で問い合わせできるのと同じ範囲（自分と、暗号化チャンネルを共有しているユーザー）の端末だけ。範囲外のユーザーと端末は、存在を推測されないよう、エラーにせず黙って応答から除く。
-  - 【決定】ゲストでないユーザーは、`POST /api/dms` で相手の同意なしに暗号化 DM を作れるので、誰でも任意の相手と「暗号化チャンネルを共有するユーザー」になれる。範囲を限るだけでは、端末鍵の取得やワンタイム鍵の枯渇を防げない。そこで、呼び出したユーザーと宛先の端末の組ごとに、ワンタイム鍵の払い出しを 1 日に 20 個までにする（数え方は【決定】。20 個は【提案】で、#354 で決めるが、1 ユーザーの端末の最大数（20 台）以上にする。送信側が端末をすべて使っても、1 台につき 1 個ずつ払い出せるように）。上限を超えた払い出しにはエラーを返さず、フォールバック鍵を返す。送信者は今までどおり Olm セッションを作れるので、宛先の端末を黙って飛ばすことはない。正規の送信者が必要とするのは、送信者の端末ごとに、宛先の端末と Olm セッションを作るときの 1 個ずつ（送信者の端末の数だけ。ログインし直すと新しい端末になる）なので、この上限で足りる。払い出しの要求の回数（宛先にワンタイム鍵がなくフォールバック鍵を返した要求も数える。判定を先に行うため）は、呼び出したユーザー、宛先の端末、日付の組で数える表（`e2ee_one_time_key_claim_counts`。`claimed` は要求の回数）に持つ（表は【決定】、数の列の意味もここで決める）。
-  - 1 回で払い出す端末は 1000 台まで【提案】。
+  - 【決定】ゲストでないユーザーは、`POST /api/dms` で相手の同意なしに暗号化 DM を作れるので、誰でも任意の相手と「暗号化チャンネルを共有するユーザー」になれる。範囲を限るだけでは、端末鍵の取得やワンタイム鍵の枯渇を防げない。そこで、呼び出したユーザーと宛先の端末の組ごとに、ワンタイム鍵の払い出しを 1 日に 20 個までにする（数え方は【決定】。20 個は #354 で【決定】。1 ユーザーの端末の最大数（20 台）以上にする。送信側が端末をすべて使っても、1 台につき 1 個ずつ払い出せるように）。上限を超えた払い出しにはエラーを返さず、フォールバック鍵を返す。送信者は今までどおり Olm セッションを作れるので、宛先の端末を黙って飛ばすことはない。正規の送信者が必要とするのは、送信者の端末ごとに、宛先の端末と Olm セッションを作るときの 1 個ずつ（送信者の端末の数だけ。ログインし直すと新しい端末になる）なので、この上限で足りる。払い出しの要求の回数（宛先にワンタイム鍵がなくフォールバック鍵を返した要求も数える。判定を先に行うため）は、呼び出したユーザー、宛先の端末、日付の組で数える表（`e2ee_one_time_key_claim_counts`。`claimed` は要求の回数）に持つ（表は【決定】、数の列の意味もここで決める）。
+  - 1 回で払い出す端末は 1000 台まで【決定】（#354）。
 
 ### to-device メッセージ（[#355](https://github.com/Zli-UoA/zoo2/issues/355)）
 
@@ -721,7 +722,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 応答は `{"undelivered": [...]}`（下のキューの上限で入れなかった宛先。なければ空）。
   - 同じ `(送信ユーザー, 送信端末, txn_id, 宛先)` の再送は 1 件にまとめる（冪等）。ack でメッセージ行を消すと冪等性が失われるので、送信の記録（`e2ee_to_device_txns`：送信ユーザー、送信端末、`txn_id`、宛先、作成日時）を 30 日残し、ack 後の再送は入れずに成功として扱う【提案】。送信の記録は、キューに入れた宛先にだけ書く（`undelivered` の宛先には書かない）ので、`undelivered` を同じ `txn_id` で送り直しても、入れられなかった宛先は通常どおり入る。重複した要求の応答の `undelivered` は、その時点で入れられなかった宛先を改めて返す（元の応答は覚えない）。
   - 【決定】1 件の `content` は 64 KiB まで。1 回の宛先は 100 端末までで、超える送信者は複数のリクエストに分ける（各リクエストに別の `txn_id`、冪等の単位は変わらない）。1 リクエストは最大 6.4 MiB で、Axum の既定のボディ上限（2 MB）を超えるので、このルートだけ 8 MiB に上げる。応答の `undelivered` は、リクエストごとに返す。
-  - 【決定】端末の数などの上限をサーバーで強制し、超えたら 400 `E2EE_LIMIT_EXCEEDED`（上限の名前を `limit` に入れる）で拒否する。数は【提案】で、#354 で決める：1 ユーザーの端末は削除済みを除いて 20 台まで。台数の確認と登録は、ユーザー単位の `pg_advisory_xact_lock`（下の直列化の規則と同じキー）を取ったトランザクションで行う。取らないと、並列の登録が READ COMMITTED で全員 20 台未満と読んで 20 台を超えてしまうため。【決定】20 台に達した登録は、古い端末を自動で削除せず、400 `E2EE_LIMIT_EXCEEDED` で拒否する。応答の `stale_devices`（最後に使ってから 30 日以上たった端末の `device_id`、`last_seen_at`）で、利用者に削除する端末を選んでもらう。端末の削除は失効ではなく、削除された端末はバックアップ鍵、自己署名鍵、ユーザー署名鍵の秘密鍵を持ったままなので（[取り消せないもの](#取り消せないもの)）、自動で削除すると、利用者が失効を選ばないまま、鍵を持つ端末が残ってしまうため。端末一覧は #362 で、それまでは `DELETE /api/e2ee/devices/{device_id}` を直接呼ぶ。ログインし直すたびに新しい端末になるので、古い端末が溜まって初回設定や失効ができなくなるのを、`stale_devices` で利用者に選んでもらって防ぐ。1 端末のワンタイム鍵とフォールバック鍵は合わせて 100 個まで。1 回のアップロードの署名は 1000 件まで。端末鍵と署名の JSON は 8 KiB まで。削除済みの端末の行は `device_id` の再利用を防ぐために残るが、登録と削除を繰り返して増やせる。削除済みの端末は、削除から 30 日たったら、定期のバッチ（#354。ユーザーごとにユーザー単位のロックを取り、墓標の挿入と `e2ee_devices` の行の削除を 1 つのトランザクションで行う）で、鍵や `device_keys` を持たない `(user_id, device_id)` だけの墓標（`e2ee_deleted_device_ids`。小さい行で、`device_id` の再利用を防ぐためだけに永久に残す）に移し、`e2ee_devices` の行を消す。`e2ee_devices` の削除済みの行は 30 日で減るので、登録が上限で詰まらない。墓標は件数を数えず、登録の回数制限（1 時間に 30 回）で増え方を抑える。端末をすべて失っても、パスキーかリカバリーキーがあれば、新しい `device_id` で登録できる。30 日のあいだに回数制限（1 時間に 30 回。【提案】で、この計算はそれに依存する）いっぱいまで登録と削除を繰り返すと、`e2ee_devices` の削除済みの行は約 21,600 行になる。1 行は `device_keys` を 8 KiB まで持てるので、最大で約 170 MB（21,600 × 8 KiB）になるが、1 ユーザーの最大で、実際の端末鍵の JSON は 1 KiB 前後なので約 20 MB で、30 日で回収されるため、上限は置かず許容する。登録は 1 ユーザーにつき 1 時間に 30 回までにし、超えたら 429 `E2EE_RATE_LIMITED`（`retry_after` 付き）にする【提案】。暗号化チャンネルを共有するだけの相手に大量の端末を登録され、送信側が各端末に鍵を送る負荷と、`keys/claim` の枯渇を防ぐため。
+  - 【決定】端末の数などの上限をサーバーで強制し、超えたら 400 `E2EE_LIMIT_EXCEEDED`（上限の名前を `limit` に入れる）で拒否する。数は #354 で【決定】：1 ユーザーの端末は削除済みを除いて 20 台まで。台数の確認と登録は、ユーザー単位の `pg_advisory_xact_lock`（下の直列化の規則と同じキー）を取ったトランザクションで行う。取らないと、並列の登録が READ COMMITTED で全員 20 台未満と読んで 20 台を超えてしまうため。【決定】20 台に達した登録は、古い端末を自動で削除せず、400 `E2EE_LIMIT_EXCEEDED` で拒否する。応答の `stale_devices`（最後に使ってから 30 日以上たった端末の `device_id`、`last_seen_at`）で、利用者に削除する端末を選んでもらう。端末の削除は失効ではなく、削除された端末はバックアップ鍵、自己署名鍵、ユーザー署名鍵の秘密鍵を持ったままなので（[取り消せないもの](#取り消せないもの)）、自動で削除すると、利用者が失効を選ばないまま、鍵を持つ端末が残ってしまうため。端末一覧は #362 で、それまでは `DELETE /api/e2ee/devices/{device_id}` を直接呼ぶ。ログインし直すたびに新しい端末になるので、古い端末が溜まって初回設定や失効ができなくなるのを、`stale_devices` で利用者に選んでもらって防ぐ。1 端末のワンタイム鍵とフォールバック鍵は合わせて 100 個まで。1 回のアップロードの署名は 1000 件まで。端末鍵と署名の JSON は 8 KiB まで。削除済みの端末の行は `device_id` の再利用を防ぐために残るが、登録と削除を繰り返して増やせる。削除済みの端末は、削除から 30 日たったら、定期のバッチ（#354。ユーザーごとにユーザー単位のロックを取り、墓標の挿入と `e2ee_devices` の行の削除を 1 つのトランザクションで行う）で、鍵や `device_keys` を持たない `(user_id, device_id)` だけの墓標（`e2ee_deleted_device_ids`。小さい行で、`device_id` の再利用を防ぐためだけに永久に残す）に移し、`e2ee_devices` の行を消す。`e2ee_devices` の削除済みの行は 30 日で減るので、登録が上限で詰まらない。墓標は件数を数えず、登録の回数制限（1 時間に 30 回）で増え方を抑える。端末をすべて失っても、パスキーかリカバリーキーがあれば、新しい `device_id` で登録できる。30 日のあいだに回数制限（1 時間に 30 回。#354 で【決定】）いっぱいまで登録と削除を繰り返すと、`e2ee_devices` の削除済みの行は約 21,600 行になる。1 行は `device_keys` を 8 KiB まで持てるので、最大で約 170 MB（21,600 × 8 KiB）になるが、1 ユーザーの最大で、実際の端末鍵の JSON は 1 KiB 前後なので約 20 MB で、30 日で回収されるため、上限は置かず許容する。登録は 1 ユーザーにつき 1 時間に 30 回までにし、超えたら 429 `E2EE_RATE_LIMITED`（`retry_after` 付き）にする【決定】（#354）。暗号化チャンネルを共有するだけの相手に大量の端末を登録され、送信側が各端末に鍵を送る負荷と、`keys/claim` の枯渇を防ぐため。
   - 初期版の `type` は `m.room.encrypted` だけ。宛先の端末が存在しない、または削除済みなら、その宛先は黙って捨てる（存在の推測を防ぐため）。
   - 【決定】宛先にできるのは、送信者自身の端末と、送信者と暗号化チャンネルを共有しているユーザーの端末だけ。範囲は[端末の Shape](#electric-の-shape) と同じ where（`$1` を送信者にしたもの）で決める。範囲外のユーザーと端末への宛先は、`keys/claim` と同じく、エラーにせずに捨てる。暗号化チャンネルを共有していないユーザーは、他人の端末のキューに書き込めない。応答は範囲外の宛先でも同じなので、応答の違いから端末が存在するかを推測することもできない。暗号化チャンネルを共有しているユーザーは、この規則では止まらない（下のキューの上限で量を抑える）。
   - 【決定】宛先の端末ごとに、受信確認されていないメッセージは 1000 件までにする。件数の確認と挿入は、宛先の端末ごとの `pg_advisory_xact_lock(2, hashtext(recipient_user_id || ':' || recipient_device_id))`（第 1 引数の 2 は端末単位。ユーザー単位の 1 と空間を分けて、無関係なキーが衝突して待たないようにする）を取って直列にする（READ COMMITTED で、同じ端末宛ての並行した要求が全員 999 件以下と読んで 1000 件を超えないようにするため）。複数の宛先は、デッドロックを避けるために `(user_id, device_id)` の昇順でロックを取る。上限に達した端末への宛先は入れず、応答の `undelivered`（`[{"user_id", "device_id"}]`）で返す。リクエストのほかの宛先は通常どおり入れる。範囲内の端末は送信者が端末の Shape でもともと見ているので、上限に達したことを知らせても、端末が存在するかは漏れない（範囲外の宛先と、存在しない端末への宛先は、これまでどおり知らせずに捨てる）。送信者は `undelivered` の宛先を暗号ストアの送信待ちに記録し、間隔をあけて送り直す。セッションを作り直したら、古いセッションの送り直しはやめる。
@@ -959,6 +960,7 @@ CREATE TABLE e2ee_one_time_keys (
   key_id text NOT NULL,
   key_json jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
+  claimed_at timestamptz,  -- 払い出した時刻（行は残し、再送が主キーで衝突して入り直らないようにする）
   PRIMARY KEY (user_id, device_id, algorithm, key_id),
   FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
 );
@@ -1003,7 +1005,7 @@ CREATE TABLE e2ee_to_device_txns (
 );
 CREATE INDEX e2ee_to_device_txns_created ON e2ee_to_device_txns (created_at);
 
--- keys/claim の払い出しの要求の回数（1 日分だけ持ち、古い行は回収する）
+-- keys/claim の払い出しの要求の回数（当日（UTC）の行だけ持ち、前日までの行は 1 時間ごとのバッチで回収する）
 CREATE TABLE e2ee_one_time_key_claim_counts (
   claimer_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   target_user_id text NOT NULL,
@@ -1169,7 +1171,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 【決定】`/api/shapes/e2ee_devices` は `columns` をサーバーで固定し、`user_id`、`device_id`、`curve25519_key`、`ed25519_key`、`device_keys`、`deleted_at` だけを配る。`display_name`（環境が分かる）と `last_seen_at`（活動の時刻が分かる）は他のユーザーに見せず、本人には `GET /api/e2ee/devices` で返す。
 - 【決定】担当は、端末の Shape が #354、クロス署名鍵と署名の Shape が #356、to-device の Shape が #355。端末、クロス署名鍵、署名の Shape の where が使う `channels.encrypted` は #354 で足す（[DB](#db)）ので、#356 は列を足さずに同じ where を使える。
 - 端末、クロス署名鍵、署名の Shape は、ユーザーごとに 1 本にする。「自分」と「自分と暗号化チャンネルを共有しているユーザー」の分を配る。チャンネルごとに Shape を開くと、暗号化チャンネルの数だけ SSE の接続が増えるため。
-- 【未検証】上の where は `allow_subqueries` で 3 段のサブクエリになる。Electric 1.8.1 で move-in と move-out が正しく届くかは #354 で確かめる。届かなければ、`?channel_id=` を付けたチャンネルごとの Shape（where は `user_id IN (SELECT user_id FROM channel_user WHERE channel_id = $2)`、サーバーで参加を確かめる）に替え、本書を直す。
+- 【決定】上の where は `allow_subqueries` で 3 段のサブクエリになる。Electric 1.8.1 で、メンバーの参加、退出、再参加とチャンネルの削除で move-in と move-out が届くことを #354 で確かめた。Electric の where は別名付きの列（`cu.user_id`）を受け付けない（400 `Expected a plain column reference`）ので、上の表のとおり別名を使わずに書く。
 - ユーザー署名鍵と、他人のマスター鍵へのユーザー署名鍵の署名は、本人にだけ配る。
 - 自己署名の追加も Shape で届くので、新しい端末を解錠して自己署名すると、他のメンバーは次の送信からその端末に鍵を配る。
 - 【決定】送信側は、この 3 つの Shape と Channels Shape、Channel Users Shape の変化を「配布先が変わったかもしれない」という知らせとしてだけ使い、[配布先のスナップショット](#配布先のスナップショット)を取り直す。Shape はそれぞれ別のストリームで、同じトランザクションまで届いている保証がないので、Shape の行を組み合わせて配布先を計算しない。Shape の行は、画面の表示（端末一覧、検証状態）と受信時の検証に使う。
@@ -1420,7 +1422,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 - そのユーザーの E2EE の端末をすべて削除する（論理削除）。端末の削除 API と同じく、ワンタイム鍵、フォールバック鍵、その端末あての未受信の to-device メッセージも消す。【決定】削除する端末ごとの端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`）を、`device_id` の昇順で取ってから行う（`DELETE /api/e2ee/devices/{device_id}` と同じキー。to-device の送信がロックのあとに `deleted_at` を読み直すので、無効化された端末宛てのメッセージが残らない）。担当は #354（結合テストは #354 と #355）。
 - そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす。担当は #357（#354 の処理に足す）。
-- `is_deactivated` は `guest_kind` から `app_guest_rules` トリガーで決まり、App の API（`backend/src/apps/resources.rs`）などの経路で変わる。【提案】経路によらず同じトランザクションで行うよう、`users` の `AFTER UPDATE OF guest_kind` のトリガーで行う。
+- `is_deactivated` は `guest_kind` から `app_guest_rules` トリガーで決まり、App の API（`backend/src/apps/resources.rs`）などの経路で変わる。【決定】経路によらず同じトランザクションで行うよう、`users` の `AFTER UPDATE OF is_deactivated, guest_kind` のトリガー（`users_e2ee_deactivate`。#354）で行う。
 - クロス署名鍵、SSSS、鍵バックアップは消さない。無効化を解いたユーザーは新しい端末を登録し、パスキーかリカバリーキーで解錠し直す。【決定】無効化は認証情報を失効しない。アカウントの乗っ取りに対応して無効化するときは、無効化に加えて、AuthZ で攻撃者のパスキーを削除し、AuthZ のセッションとトークン（[失効の手順](#失効の手順)のとおり、別々の操作）を失効し、E2EE のリセット（[失効の手順](#失効の手順)）を行う。無効化を解いたあとに、残ったリフレッシュトークンで API を使われないようにするため。パスキーの削除と E2EE のリセットのどちらかをしないと、攻撃者がパスキーかリカバリーキーを持っていれば、無効化を解いたあとに新しい端末を登録して SSSS を開けられる。
 - 【決定】無効化されたユーザーは E2EE の API を使えない。E2EE の API は既存の API と同じく `AuthUser` で呼び出したユーザーを決め、`AuthUser` は無効化されたユーザーを 403 で拒否するため（`backend/src/auth.rs` の `FromRequestParts` が `apps::events::active_user` を呼ぶ）。このため、無効化されたユーザーが端末を登録し直して自己署名し、配布先に戻ることはできない。
 - 【決定】`AuthUser` の確認はハンドラーとは別のトランザクションで行うので、確認を通ったあとで無効化がコミットされることがある。この競合を防ぐため、端末の登録（`POST /api/e2ee/devices`）、鍵のアップロード（`POST /api/e2ee/keys/upload`）、クロス署名の鍵（`POST /api/e2ee/cross_signing/keys`）と署名（`POST /api/e2ee/cross_signing/signatures`）の書き込み、SSSS の鍵（`POST /api/e2ee/secret_storage/keys`）、秘密（`POST /api/e2ee/secret_storage/secrets`）、スロットの追加（`POST /api/e2ee/secret_storage/slots`）、鍵バックアップの版の作成（`POST /api/e2ee/key_backup/versions`）は、書き込みと同じトランザクションで、最初に `SELECT 1 FROM users WHERE id = $1 AND NOT is_deactivated FOR SHARE` で自分の行を読む。行が返らなければ 403 にする。
@@ -1631,9 +1633,9 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` は AuthZ#96 で配信する | 【未検証】 | #360（前に AuthZ#96） |
 | `getrandom` の wasm のバックエンドの設定。cfg フラグは付けず、`wasm_js` feature だけにする（getrandom 0.3.4 以降と 0.4） | 【決定】 | #348 |
 | `getrandom` の wasm_js バックエンドで、ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドだけ確認） | 【未検証】 | #352 |
-| 3 段のサブクエリの Shape で move-in と move-out が届くか | 【未検証】 | #354 |
+| 3 段のサブクエリの Shape で move-in と move-out が届くか | 【決定】（Electric 1.8.1 で確かめた） | #354 |
 | `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【提案】 | #358 |
-| エラー応答に `code` を足す方法 | 【提案】 | #354 か #357 |
+| エラー応答に `code` を足す方法 | 【決定】 | #354 |
 | 暗号化チャンネルでの URL カードの扱い | 【提案】 | #361 |
 | 複数タブでの暗号ストアの共有（Web Locks と BroadcastChannel） | 【提案】 | #359 |
 | クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。`max_age=0` で取り直した ID トークンの `authenticated_at` で確かめる（[クロス署名の API](#クロス署名356)） | 【決定】（実際の AuthZ での動きは【未検証】） | #356 |
