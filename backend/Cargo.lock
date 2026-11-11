@@ -670,6 +670,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "vodozemac",
  "wiremock",
  "zip",
  "zoo-crypto",
