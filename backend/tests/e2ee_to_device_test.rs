@@ -318,7 +318,9 @@ async fn others_cannot_read_or_ack_messages_for_a_device() {
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0]["recipient_device_id"], alice_device.as_str());
     assert_eq!(rows[0]["sender_user_id"], bob.as_str());
-    assert_eq!(rows[0]["content"], olm_content());
+    // Electric は jsonb を文字列で配る。
+    let content: Value = serde_json::from_str(rows[0]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(content, olm_content());
 
     // carol は自分の端末を名乗って、alice 宛ての ID を ack しても消せない。再送も 200。
     for _ in 0..2 {
