@@ -18,7 +18,7 @@ async fn test_create_user_and_message_returns_txid() -> anyhow::Result<()> {
     let config = Config::from_env();
     let db = init_db(&config.database_url).await?;
     let state = AppState::new(db, config);
-    let app = create_router(state);
+    let app = create_router(state.clone());
 
     let user_id = uuid::Uuid::new_v4().to_string();
     let user_name = format!("test_user_{}", uuid::Uuid::new_v4().simple());
@@ -100,6 +100,55 @@ async fn test_create_user_and_message_returns_txid() -> anyhow::Result<()> {
         .body(Body::from(serde_json::to_vec(&conflict_payload)?))?;
     let resp_conflict = app.clone().oneshot(req_conflict).await?;
     assert_eq!(resp_conflict.status(), StatusCode::CONFLICT);
+
+    // 2d. ゲスト検証順序: ゲストがチャンネル作成を試みた場合、既存 ID でも新規 ID でも同じ 403 Forbidden になり、チャンネルの存在が漏洩しないこと
+    let guest_id = uuid::Uuid::new_v4().to_string();
+    let guest_name = format!("guest_{}", uuid::Uuid::new_v4().simple());
+    let guest_payload = json!({
+        "id": guest_id,
+        "user_name": guest_name,
+        "display_name": "Guest User",
+    });
+    let req_guest_user = Request::builder()
+        .method("POST")
+        .uri("/api/users")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&guest_payload)?))?;
+    let resp_guest_user = app.clone().oneshot(req_guest_user).await?;
+    assert_eq!(resp_guest_user.status(), StatusCode::OK);
+
+    let mut conn = state.db.clone();
+    toasty::sql::statement("UPDATE users SET guest_kind = 'multi' WHERE id = $1")
+        .bind(guest_id.as_str())
+        .exec(&mut conn)
+        .await?;
+
+    // 既存 ID を指定したゲストのリクエスト -> 403 (409 ではなく 403)
+    let req_guest_existing = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &guest_id)
+        .body(Body::from(serde_json::to_vec(&channel_payload)?))?;
+    let resp_guest_existing = app.clone().oneshot(req_guest_existing).await?;
+    assert_eq!(resp_guest_existing.status(), StatusCode::FORBIDDEN);
+
+    // 未使用の新規 ID を指定したゲストのリクエスト -> 403
+    let unused_channel_id = uuid::Uuid::new_v4().to_string();
+    let unused_payload = json!({
+        "id": unused_channel_id,
+        "channel_name": format!("guest-{}", uuid::Uuid::new_v4().simple()),
+        "description": "Guest Channel",
+        "is_private": false,
+    });
+    let req_guest_unused = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &guest_id)
+        .body(Body::from(serde_json::to_vec(&unused_payload)?))?;
+    let resp_guest_unused = app.clone().oneshot(req_guest_unused).await?;
+    assert_eq!(resp_guest_unused.status(), StatusCode::FORBIDDEN);
 
     // 3. メッセージ送信
     let message_id = uuid::Uuid::new_v4().to_string();

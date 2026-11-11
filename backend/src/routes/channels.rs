@@ -130,12 +130,20 @@ pub(crate) async fn create_channel(
         .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
+    if crate::apps::events::guest(&mut tx, &auth_user.id).await? {
+        return Err(AppError::Forbidden(
+            "Guests cannot create or join channels without an invitation".into(),
+        ));
+    }
 
     // クライアント指定の ID が既に存在する場合、同一属性の再送であれば作成済みチャンネルを返して成功とする (冪等性)
+    // ※ 他人のチャンネル UUID の存在漏洩を防ぐため、ゲスト検証の後に判定する
     if supplied_id.is_some() {
         if let Some(existing) = Channel::filter(Channel::fields().id().eq(id.as_str()))
             .first()
-            .exec(&mut db)
+            .exec(&mut tx)
             .await?
         {
             if existing.created_user_id == auth_user.id
@@ -144,6 +152,7 @@ pub(crate) async fn create_channel(
                 && existing.is_private == payload.is_private.unwrap_or(false)
                 && existing.deleted_at.is_none()
             {
+                let _ = tx.rollback().await;
                 return Ok(Json(ApiResponse::new(
                     ChannelResponse::from(existing),
                     None,
@@ -151,14 +160,6 @@ pub(crate) async fn create_channel(
             }
             return Err(AppError::Conflict("Channel id already exists".into()));
         }
-    }
-
-    let mut tx = db.transaction().await?;
-    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
-    if crate::apps::events::guest(&mut tx, &auth_user.id).await? {
-        return Err(AppError::Forbidden(
-            "Guests cannot create or join channels without an invitation".into(),
-        ));
     }
 
     let now = crate::models::now_utc_millis();

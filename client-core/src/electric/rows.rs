@@ -29,6 +29,8 @@ pub struct User {
     pub user_name: String,
     pub display_name: String,
     pub is_bot: bool,
+    pub bot_mentionable: bool,
+    pub is_guest: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +156,8 @@ impl FromRow for User {
             user_name: text(row, "user_name")?,
             display_name: opt_text(row, "display_name").unwrap_or_default(),
             is_bot: opt_boolean(row, "is_bot")?.unwrap_or(false),
+            bot_mentionable: opt_boolean(row, "bot_mentionable")?.unwrap_or(false),
+            is_guest: opt_boolean(row, "is_guest")?.unwrap_or(false),
         })
     }
 }

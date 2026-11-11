@@ -127,21 +127,62 @@ pub fn router() -> Router<AppState> {
         )
 }
 
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
+use tokio::sync::Notify;
+
+static TEST_SYNC_GATES: LazyLock<Mutex<HashMap<String, Arc<Notify>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn get_or_create_test_gate(key: &str) -> Arc<Notify> {
+    let mut map = TEST_SYNC_GATES.lock().unwrap();
+    map.entry(key.to_string())
+        .or_insert_with(|| Arc::new(Notify::new()))
+        .clone()
+}
+
 async fn create_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
     headers: HeaderMap,
     Json(payload): Json<CreateMessageRequest>,
-) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+) -> Result<(HeaderMap, Json<ApiResponse<MessageResponse>>), AppError> {
     let test_delay_ms = if state.config.dev_auth_enabled {
         headers
             .get("X-Test-Delay-Attachment-Verify")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok())
+            .map(|d| d.min(1000))
     } else {
         None
     };
-    create_message_impl(state, auth_user, payload, true, None, test_delay_ms).await
+    let test_gate_wait = if state.config.dev_auth_enabled {
+        headers
+            .get("X-Test-Gate-Wait")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    let test_gate_notify = if state.config.dev_auth_enabled {
+        headers
+            .get("X-Test-Gate-Notify")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    create_message_impl(
+        state,
+        auth_user,
+        payload,
+        true,
+        None,
+        test_delay_ms,
+        test_gate_wait,
+        test_gate_notify,
+    )
+    .await
 }
 
 pub(crate) async fn check_idempotent_existing_message(
@@ -225,7 +266,9 @@ pub(crate) async fn create_message_impl(
     notify: bool,
     card: Option<String>,
     test_delay_ms: Option<u64>,
-) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+    test_gate_wait: Option<String>,
+    test_gate_notify: Option<String>,
+) -> Result<(HeaderMap, Json<ApiResponse<MessageResponse>>), AppError> {
     let attachment_ids = payload.attachment_ids.unwrap_or_default();
     const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
     if attachment_ids.len() > MAX_ATTACHMENTS_PER_MESSAGE {
@@ -347,12 +390,18 @@ pub(crate) async fn create_message_impl(
         )
         .await?
         {
-            return Ok(Json(ApiResponse::new(msg_res, None)));
+            return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
         }
     }
 
+    if let Some(gate_key) = test_gate_wait {
+        let gate = get_or_create_test_gate(&gate_key);
+        let _ =
+            tokio::time::timeout(tokio::time::Duration::from_millis(1000), gate.notified()).await;
+    }
+
     if let Some(delay_ms) = test_delay_ms {
-        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms.min(1000))).await;
     }
 
     // 添付ファイルの検証 (外部ストレージへの HeadObject 検証はトランザクション外で実行)
@@ -408,7 +457,14 @@ pub(crate) async fn create_message_impl(
                     )
                     .await?
                     {
-                        return Ok(Json(ApiResponse::new(msg_res, None)));
+                        let mut resp_headers = HeaderMap::new();
+                        if state.config.dev_auth_enabled {
+                            resp_headers.insert(
+                                "X-Test-Fallback",
+                                "attachment-already-attached".parse().unwrap(),
+                            );
+                        }
+                        return Ok((resp_headers, Json(ApiResponse::new(msg_res, None))));
                     }
                 }
                 return Err(AppError::BadRequest(format!(
@@ -568,7 +624,7 @@ pub(crate) async fn create_message_impl(
                 )
                 .await?
                 {
-                    return Ok(Json(ApiResponse::new(msg_res, None)));
+                    return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
                 }
             }
             return Err(AppError::Conflict("Idempotency key already used".into()));
@@ -632,16 +688,23 @@ pub(crate) async fn create_message_impl(
                 )
                 .await?
                 {
-                    return Ok(Json(ApiResponse::new(msg_res, None)));
+                    return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
                 }
             }
             return Err(AppError::Conflict("Idempotency key already used".into()));
         }
         return Err(AppError::from(err));
     }
+    if let Some(gate_key) = test_gate_notify {
+        let gate = get_or_create_test_gate(&gate_key);
+        gate.notify_waiters();
+    }
     crate::push::dispatch(state.clone(), notifications);
 
-    Ok(Json(ApiResponse::new(MessageResponse::from(message), txid)))
+    Ok((
+        HeaderMap::new(),
+        Json(ApiResponse::new(MessageResponse::from(message), txid)),
+    ))
 }
 
 pub(crate) async fn update_message(

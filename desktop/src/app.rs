@@ -475,6 +475,8 @@ pub struct AppState {
     pub emoji_picker_open: bool,
     /// 絵文字ピッカーの検索クエリ。
     pub emoji_picker_query: String,
+    /// 絵文字ピッカーのキーボード選択中インデックス。
+    pub emoji_picker_selected: usize,
     /// メンション補完状態。
     pub mention_autocomplete: Option<MentionAutocompleteState>,
     /// チャンネル作成モーダル状態。
@@ -594,6 +596,7 @@ impl AppState {
             is_dragging_files: false,
             emoji_picker_open: false,
             emoji_picker_query: String::new(),
+            emoji_picker_selected: 0,
             mention_autocomplete: None,
             create_channel_modal: None,
             message_search: None,
@@ -2060,6 +2063,10 @@ impl AppState {
                     if let Some(modal) = &mut self.create_channel_modal {
                         modal.in_flight = false;
                         modal.error = Some(error.clone());
+                        // 409 Conflict 等で失敗した場合は次回の再試行に向けて新しい channel_id を再採番
+                        if error.contains("409") || error.contains("already exists") {
+                            modal.channel_id = Some(uuid::Uuid::new_v4().to_string());
+                        }
                     }
                     self.notify(format!("チャンネル作成に失敗しました: {error}"));
                 } else if self.create_channel_modal.is_none()
@@ -3767,6 +3774,10 @@ impl AppState {
         // チャンネルメンバー
         if let Some(ch) = &self.current_channel {
             for member in self.store.channel_members(ch) {
+                // 通常ユーザーまたはメンション可能な Bot のみを補完候補とする
+                if member.is_bot && !member.bot_mentionable {
+                    continue;
+                }
                 if member.user_name.to_lowercase().contains(&query_lower)
                     || member.display_name.to_lowercase().contains(&query_lower)
                 {
@@ -3845,15 +3856,86 @@ impl AppState {
 
     // --- 絵文字ピッカー ---
 
+    pub const COMMON_EMOJIS: &[&str] = &[
+        "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍",
+        "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🥳",
+        "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "😣", "😖", "😫", "😩", "🥺", "😢", "😭", "😤",
+        "😠", "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓", "🤗", "🤔", "🤭",
+        "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄", "😯", "😦", "😧", "😮", "😲", "🥱", "😴", "🤤",
+        "👍", "👎", "👏", "🙌", "👐", "🤲", "🤝", "🙏", "✌️", "🤞", "🤟", "🤘", "👌", "🤌", "🤏",
+        "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "❣️", "💕", "💞", "💓", "💗",
+        "💖", "💘", "💝", "✨", "🎉", "🎊", "🔥", "💯", "⭐", "🌟", "👀", "💡", "🚀", "☕", "🍺",
+    ];
+
     pub fn open_emoji_picker(&mut self) {
         self.emoji_picker_open = true;
         self.emoji_picker_query.clear();
+        self.emoji_picker_selected = 0;
     }
 
     pub fn close_emoji_picker(&mut self) {
         self.emoji_picker_open = false;
         self.emoji_picker_query.clear();
+        self.emoji_picker_selected = 0;
         self.pending_focus_composer = true;
+    }
+
+    pub fn filtered_emojis(&self) -> Vec<&'static str> {
+        let query = self.emoji_picker_query.to_lowercase();
+        if query.is_empty() {
+            Self::COMMON_EMOJIS.to_vec()
+        } else {
+            Self::COMMON_EMOJIS
+                .iter()
+                .copied()
+                .filter(|e| {
+                    if let Some(emoji_data) = emojis::get(e) {
+                        emoji_data.name().to_lowercase().contains(&query)
+                            || emoji_data
+                                .shortcode()
+                                .is_some_and(|s| s.to_lowercase().contains(&query))
+                    } else {
+                        false
+                    }
+                })
+                .collect()
+        }
+    }
+
+    pub fn selected_emoji(&self) -> Option<&'static str> {
+        let list = self.filtered_emojis();
+        if list.is_empty() {
+            None
+        } else {
+            let idx = self.emoji_picker_selected.min(list.len() - 1);
+            Some(list[idx])
+        }
+    }
+
+    pub fn emoji_picker_prev(&mut self) {
+        let len = self.filtered_emojis().len();
+        if len > 0 {
+            if self.emoji_picker_selected == 0 {
+                self.emoji_picker_selected = len - 1;
+            } else {
+                self.emoji_picker_selected -= 1;
+            }
+        }
+    }
+
+    pub fn emoji_picker_next(&mut self) {
+        let len = self.filtered_emojis().len();
+        if len > 0 {
+            self.emoji_picker_selected = (self.emoji_picker_selected + 1) % len;
+        }
+    }
+
+    pub fn insert_selected_emoji(&mut self, range: std::ops::Range<usize>) {
+        if let Some(emoji) = self.selected_emoji() {
+            self.insert_emoji(emoji, range);
+        } else {
+            self.close_emoji_picker();
+        }
     }
 
     pub fn insert_emoji(&mut self, emoji: &str, range: std::ops::Range<usize>) {
@@ -3875,9 +3957,21 @@ impl AppState {
         self.close_emoji_picker();
     }
 
+    // --- ゲスト判定 ---
+
+    pub fn is_current_user_guest(&self) -> bool {
+        let Some(me) = &self.me else {
+            return false;
+        };
+        self.store.user(&me.id).is_some_and(|u| u.is_guest)
+    }
+
     // --- チャンネル作成モーダル ---
 
     pub fn open_create_channel_modal(&mut self) {
+        if self.is_current_user_guest() {
+            return;
+        }
         self.create_channel_modal = Some(CreateChannelModal::default());
     }
 
@@ -3902,10 +3996,18 @@ impl AppState {
             modal.error = Some("チャンネル名は80文字以内で入力してください".to_string());
             return;
         }
-        let desc = if modal.description.trim().is_empty() {
+        let desc_trimmed = modal.description.trim().to_string();
+        let desc_len = desc_trimmed.chars().count();
+        if desc_len > 250 {
+            modal.error = Some(format!(
+                "説明は250文字以内で入力してください (現在 {desc_len} 文字)"
+            ));
+            return;
+        }
+        let desc = if desc_trimmed.is_empty() {
             None
         } else {
-            Some(modal.description.trim().to_string())
+            Some(desc_trimmed)
         };
         let is_private = modal.is_private;
         let channel_id = modal
@@ -7685,5 +7787,214 @@ mod tests {
             Some(HttpError::Unauthorized)
         );
         assert!(!is_unauthorized_other);
+    }
+
+    #[test]
+    fn mention_candidates_exclude_non_mentionable_bot() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 3人のユーザーを追加
+        // 1. 通常ユーザー bob
+        // 2. メンション可能な Bot bot_mentionable
+        // 3. メンション不可（通知専用）Bot bot_silent
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Users,
+            batch(vec![
+                (
+                    "u_bob",
+                    json!({
+                        "id": "u_bob",
+                        "user_name": "bob",
+                        "display_name": "Bob",
+                        "is_bot": "f",
+                        "bot_mentionable": "f",
+                        "is_guest": "f",
+                    }),
+                ),
+                (
+                    "u_bot_m",
+                    json!({
+                        "id": "u_bot_m",
+                        "user_name": "bot_m",
+                        "display_name": "Mentionable Bot",
+                        "is_bot": "t",
+                        "bot_mentionable": "t",
+                        "is_guest": "f",
+                    }),
+                ),
+                (
+                    "u_bot_s",
+                    json!({
+                        "id": "u_bot_s",
+                        "user_name": "bot_s",
+                        "display_name": "Silent Bot",
+                        "is_bot": "t",
+                        "bot_mentionable": "f",
+                        "is_guest": "f",
+                    }),
+                ),
+            ]),
+        ));
+
+        // 3人とも c1 に所属
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![
+                ("cu_bob", json!({ "user_id": "u_bob", "channel_id": "c1" })),
+                (
+                    "cu_bot_m",
+                    json!({ "user_id": "u_bot_m", "channel_id": "c1" }),
+                ),
+                (
+                    "cu_bot_s",
+                    json!({ "user_id": "u_bot_s", "channel_id": "c1" }),
+                ),
+            ]),
+        ));
+
+        // "@b" で補完検索
+        state.update_mention_autocomplete("@b", 2);
+        let ac = state
+            .mention_autocomplete
+            .as_ref()
+            .expect("autocomplete should be open");
+        let candidate_names: Vec<&str> = ac.candidates.iter().map(|c| c.name.as_str()).collect();
+
+        // 通常ユーザーとメンション可能 Bot は候補に含まれる
+        assert!(candidate_names.contains(&"bob"));
+        assert!(candidate_names.contains(&"bot_m"));
+        // メンション不可 Bot は候補に含まれないこと
+        assert!(!candidate_names.contains(&"bot_s"));
+    }
+
+    #[test]
+    fn guest_user_cannot_open_create_channel_modal() {
+        let mut state = connected_state();
+        assert!(!state.is_current_user_guest());
+        state.open_create_channel_modal();
+        assert!(state.create_channel_modal.is_some());
+        state.close_create_channel_modal();
+
+        // ログイン中のユーザー u1 (alice) をゲストに設定
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Users,
+            batch(vec![(
+                "u1",
+                json!({
+                    "id": "u1",
+                    "user_name": "alice",
+                    "display_name": "Alice",
+                    "is_bot": "f",
+                    "bot_mentionable": "f",
+                    "is_guest": "t",
+                }),
+            )]),
+        ));
+
+        assert!(state.is_current_user_guest());
+        state.open_create_channel_modal();
+        // ゲストの場合はモーダルが開かないこと
+        assert!(state.create_channel_modal.is_none());
+    }
+
+    #[test]
+    fn create_channel_description_length_limit() {
+        let mut state = connected_state();
+        state.open_create_channel_modal();
+        let modal = state.create_channel_modal.as_mut().unwrap();
+        modal.channel_name = "test-limit".into();
+
+        // 251文字の説明を設定
+        modal.description = "a".repeat(251);
+        state.submit_create_channel();
+
+        // 送信されず、モーダルにエラーが設定されていること
+        let modal = state.create_channel_modal.as_ref().unwrap();
+        assert!(modal.error.is_some());
+        assert!(
+            modal
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("説明は250文字以内で入力してください")
+        );
+        assert!(!modal.in_flight);
+
+        // 250文字以内の場合はエラーにならないこと (in_flight になる)
+        let modal = state.create_channel_modal.as_mut().unwrap();
+        modal.description = "a".repeat(250);
+        state.submit_create_channel();
+        let modal = state.create_channel_modal.as_ref().unwrap();
+        assert!(modal.error.is_none());
+        assert!(modal.in_flight);
+    }
+
+    #[test]
+    fn create_channel_reissues_id_on_mutation_and_keeps_on_retry() {
+        let mut state = connected_state();
+        state.open_create_channel_modal();
+        let initial_id = state
+            .create_channel_modal
+            .as_ref()
+            .unwrap()
+            .channel_id
+            .clone()
+            .expect("should have channel_id");
+
+        // 名前を変更すると新しい channel_id が採番されること
+        {
+            let modal = state.create_channel_modal.as_mut().unwrap();
+            modal.channel_name = "new-name".into();
+            modal.channel_id = Some(uuid::Uuid::new_v4().to_string());
+        }
+        let updated_id = state
+            .create_channel_modal
+            .as_ref()
+            .unwrap()
+            .channel_id
+            .clone()
+            .unwrap();
+        assert_ne!(initial_id, updated_id);
+
+        // 送信して失敗した（409 Conflict 等）場合でも、modal.channel_id が残っていれば再試行時は同じ ID が送られる
+        state.create_channel_modal.as_mut().unwrap().in_flight = false;
+        assert_eq!(
+            state
+                .create_channel_modal
+                .as_ref()
+                .unwrap()
+                .channel_id
+                .as_ref()
+                .unwrap(),
+            &updated_id
+        );
+    }
+
+    #[test]
+    fn emoji_picker_keyboard_selection_and_insert() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.composer_draft = "Hello ".into();
+
+        state.open_emoji_picker();
+        assert_eq!(state.emoji_picker_selected, 0);
+        let first = state.selected_emoji().unwrap();
+        assert_eq!(first, "😀");
+
+        // 次の絵文字へ移動
+        state.emoji_picker_next();
+        assert_eq!(state.emoji_picker_selected, 1);
+        let second = state.selected_emoji().unwrap();
+        assert_eq!(second, "😃");
+
+        // 前の絵文字へ戻る
+        state.emoji_picker_prev();
+        assert_eq!(state.emoji_picker_selected, 0);
+
+        // 確定して挿入
+        state.insert_selected_emoji(6..6);
+        assert!(!state.emoji_picker_open);
+        assert_eq!(state.composer_draft, "Hello 😀");
     }
 }

@@ -628,6 +628,7 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
         "attachment_ids": [conc_attachment_id]
     });
 
+    let gate_key = format!("gate_{}", uuid::Uuid::new_v4().simple());
     let (resp_att1, resp_att2) = tokio::join!(
         app.clone().oneshot(
             Request::builder()
@@ -635,6 +636,7 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
                 .uri("/api/messages")
                 .header("content-type", "application/json")
                 .header("X-Dev-User", &alice_id)
+                .header("X-Test-Gate-Notify", &gate_key)
                 .body(Body::from(serde_json::to_vec(&concurrent_att_payload)?))?
         ),
         app.clone().oneshot(
@@ -643,7 +645,7 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
                 .uri("/api/messages")
                 .header("content-type", "application/json")
                 .header("X-Dev-User", &alice_id)
-                .header("X-Test-Delay-Attachment-Verify", "100")
+                .header("X-Test-Gate-Wait", &gate_key)
                 .body(Body::from(serde_json::to_vec(&concurrent_att_payload)?))?
         )
     );
@@ -658,6 +660,15 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
         resp_att2.status(),
         StatusCode::OK,
         "second concurrent attachment request should succeed via idempotency fallback in attachment loop"
+    );
+    // 新設した att.message_id.is_some() の競合フォールバック分岐を確実に通過したことをレスポンスヘッダで検証
+    assert_eq!(
+        resp_att2
+            .headers()
+            .get("X-Test-Fallback")
+            .and_then(|v| v.to_str().ok()),
+        Some("attachment-already-attached"),
+        "second request must deterministicly hit attachment-already-attached fallback"
     );
     let body_att1: Value =
         serde_json::from_slice(&to_bytes(resp_att1.into_body(), usize::MAX).await?)?;

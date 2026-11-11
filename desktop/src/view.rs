@@ -165,6 +165,13 @@ impl WorkspaceView {
                 }
                 InputEvent::Submit(text) => {
                     let sel = this.composer_input.read(cx).selected_range();
+                    if this.state.read(cx).emoji_picker_open {
+                        this.state.update(cx, |state, cx| {
+                            state.insert_selected_emoji(sel);
+                            cx.notify();
+                        });
+                        return;
+                    }
                     let mention_handled = this.state.update(cx, |state, cx| {
                         if state.mention_autocomplete.is_some() {
                             if !sel.is_empty() {
@@ -253,8 +260,11 @@ impl WorkspaceView {
             |this: &mut Self, _, event: &InputEvent, cx| match event {
                 InputEvent::Changed(text) => {
                     this.state.update(cx, |state, cx| {
-                        if let Some(m) = &mut state.create_channel_modal {
+                        if let Some(m) = &mut state.create_channel_modal
+                            && m.channel_name != *text
+                        {
                             m.channel_name = text.clone();
+                            m.channel_id = Some(uuid::Uuid::new_v4().to_string());
                             m.error = None;
                         }
                         cx.notify();
@@ -285,8 +295,12 @@ impl WorkspaceView {
             |this: &mut Self, _, event: &InputEvent, cx| match event {
                 InputEvent::Changed(text) => {
                     this.state.update(cx, |state, cx| {
-                        if let Some(m) = &mut state.create_channel_modal {
+                        if let Some(m) = &mut state.create_channel_modal
+                            && m.description != *text
+                        {
                             m.description = text.clone();
+                            m.channel_id = Some(uuid::Uuid::new_v4().to_string());
+                            m.error = None;
                         }
                         cx.notify();
                     });
@@ -475,6 +489,9 @@ impl WorkspaceView {
     }
 
     fn open_create_channel_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.read(cx).is_current_user_guest() {
+            return;
+        }
         if self.state.read(cx).create_channel_modal.is_some() {
             window.focus(&self.create_channel_name_input.focus_handle(cx));
             return;
@@ -1121,28 +1138,32 @@ impl WorkspaceView {
                                     .flex_row()
                                     .items_center()
                                     .gap_1p5()
-                                    .child(
-                                        div()
-                                            .id("btn-open-create-channel")
-                                            .px_2()
-                                            .py_0p5()
-                                            .rounded_sm()
-                                            .bg(theme.bg_surface)
-                                            .border_1()
-                                            .border_color(theme.border)
-                                            .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                                            .text_xs()
-                                            .text_color(theme.text_primary)
-                                            .child("+ 作成")
-                                            .on_mouse_up(
-                                                MouseButton::Left,
-                                                cx.listener(
-                                                    |this, _: &MouseUpEvent, window, cx| {
-                                                        this.open_create_channel_modal(window, cx);
-                                                    },
+                                    .when(!state.is_current_user_guest(), |d| {
+                                        d.child(
+                                            div()
+                                                .id("btn-open-create-channel")
+                                                .px_2()
+                                                .py_0p5()
+                                                .rounded_sm()
+                                                .bg(theme.bg_surface)
+                                                .border_1()
+                                                .border_color(theme.border)
+                                                .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
+                                                .text_xs()
+                                                .text_color(theme.text_primary)
+                                                .child("+ 作成")
+                                                .on_mouse_up(
+                                                    MouseButton::Left,
+                                                    cx.listener(
+                                                        |this, _: &MouseUpEvent, window, cx| {
+                                                            this.open_create_channel_modal(
+                                                                window, cx,
+                                                            );
+                                                        },
+                                                    ),
                                                 ),
-                                            ),
-                                    )
+                                        )
+                                    })
                                     .child(
                                         div()
                                             .id("btn-toggle-theme")
@@ -1958,6 +1979,7 @@ impl WorkspaceView {
             Option<String>,
             bool,
             bool,
+            bool,
         )> = state
             .store
             .attachments_for_message(&message.channel_id, &message.id)
@@ -1967,13 +1989,14 @@ impl WorkspaceView {
                 let is_fetching = state.fetching_attachment_urls.contains(&att.id)
                     || state.pending_open_attachments.contains(&att.id);
                 let needs_refresh = state.attachment_url_needs_refresh(&att.id);
-                (att.clone(), url, is_fetching, needs_refresh)
+                let is_failed = state.failed_attachment_urls.contains_key(&att.id);
+                (att.clone(), url, is_fetching, needs_refresh, is_failed)
             })
             .collect();
         let attachment_views: Vec<Div> = attachments_with_urls
             .into_iter()
-            .map(|(att, url, is_fetching, needs_refresh)| {
-                render_attachment_item(&att, url, is_fetching, needs_refresh, &theme, cx)
+            .map(|(att, url, is_fetching, needs_refresh, is_failed)| {
+                render_attachment_item(&att, url, is_fetching, needs_refresh, is_failed, &theme, cx)
             })
             .collect();
 
@@ -2905,40 +2928,13 @@ impl WorkspaceView {
     fn render_emoji_picker(&self, cx: &mut Context<Self>) -> Div {
         let state = self.state.read(cx);
         let theme = state.theme();
-        let query = state.emoji_picker_query.to_lowercase();
+        let selected_idx = state.emoji_picker_selected;
 
-        let common_emojis = [
-            "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌",
-            "😍", "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓",
-            "😎", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "😣", "😖", "😫", "😩", "🥺",
-            "😢", "😭", "😤", "😠", "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥",
-            "😓", "🤗", "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄", "😯", "😦", "😧",
-            "😮", "😲", "🥱", "😴", "🤤", "👍", "👎", "👏", "🙌", "👐", "🤲", "🤝", "🙏", "✌️",
-            "🤞", "🤟", "🤘", "👌", "🤌", "🤏", "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
-            "🤎", "💔", "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝", "✨", "🎉", "🎊", "🔥",
-            "💯", "⭐", "🌟", "👀", "💡", "🚀", "☕", "🍺",
-        ];
+        let filtered = state.filtered_emojis();
 
-        let filtered: Vec<&str> = if query.is_empty() {
-            common_emojis.to_vec()
-        } else {
-            common_emojis
-                .into_iter()
-                .filter(|e| {
-                    if let Some(emoji_data) = emojis::get(e) {
-                        emoji_data.name().to_lowercase().contains(&query)
-                            || emoji_data
-                                .shortcode()
-                                .is_some_and(|s| s.to_lowercase().contains(&query))
-                    } else {
-                        false
-                    }
-                })
-                .collect()
-        };
-
-        let buttons = filtered.into_iter().map(|e| {
+        let buttons = filtered.into_iter().enumerate().map(|(idx, e)| {
             let emoji_str = e.to_string();
+            let is_selected = idx == selected_idx;
             div()
                 .w_7()
                 .h_7()
@@ -2946,7 +2942,14 @@ impl WorkspaceView {
                 .items_center()
                 .justify_center()
                 .rounded_sm()
-                .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
+                .when(is_selected, |d| {
+                    d.bg(theme.bg_selected)
+                        .border_1()
+                        .border_color(theme.accent)
+                })
+                .when(!is_selected, |d| {
+                    d.hover(|s| s.bg(theme.bg_hover).cursor_pointer())
+                })
                 .text_base()
                 .child(e)
                 .on_mouse_up(
@@ -3026,6 +3029,13 @@ impl WorkspaceView {
         let in_flight = modal.in_flight;
         let error = modal.error.clone();
         let is_private = modal.is_private;
+        let desc_count = modal.description.trim().chars().count();
+        let desc_too_long = desc_count > 250;
+        let counter_color = if desc_too_long {
+            theme.danger
+        } else {
+            theme.text_muted
+        };
 
         div()
             .w(px(400.0))
@@ -3124,9 +3134,22 @@ impl WorkspaceView {
                     .gap_1()
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child("説明 (任意)"),
+                            .flex()
+                            .flex_row()
+                            .justify_between()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.text_muted)
+                                    .child("説明 (任意)"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(counter_color)
+                                    .child(format!("{desc_count}/250")),
+                            ),
                     )
                     .child(
                         div()
@@ -3135,7 +3158,11 @@ impl WorkspaceView {
                             .rounded_md()
                             .bg(theme.bg_surface)
                             .border_1()
-                            .border_color(theme.border)
+                            .border_color(if desc_too_long {
+                                theme.danger
+                            } else {
+                                theme.border
+                            })
                             .child(self.create_channel_desc_input.clone()),
                     ),
             )
@@ -3181,6 +3208,7 @@ impl WorkspaceView {
                             this.state.update(cx, |s, cx| {
                                 if let Some(m) = &mut s.create_channel_modal {
                                     m.is_private = !m.is_private;
+                                    m.channel_id = Some(uuid::Uuid::new_v4().to_string());
                                 }
                                 cx.notify();
                             });
@@ -3589,6 +3617,9 @@ impl Render for WorkspaceView {
                     return;
                 }
                 if cmd_or_ctrl && key == "n" {
+                    if this.state.read(cx).is_current_user_guest() {
+                        return;
+                    }
                     this.open_create_channel_modal(window, cx);
                     return;
                 }
@@ -3597,6 +3628,9 @@ impl Render for WorkspaceView {
                     return;
                 }
                 if cmd_or_ctrl && key == "u" {
+                    if matches!(this.state.read(cx).target, Target::Edit(_)) {
+                        return;
+                    }
                     this.prompt_and_add_attachments(cx);
                     return;
                 }
@@ -3611,16 +3645,30 @@ impl Render for WorkspaceView {
                     });
                     return;
                 }
-                if this.state.read(cx).emoji_picker_open && (key == "enter" || key == " ") {
-                    let first_emoji = "😀";
-                    let range = this.composer_input.read(cx).selected_range();
-                    this.state.update(cx, |s, cx| {
-                        s.insert_emoji(first_emoji, range);
-                        s.close_emoji_picker();
-                        cx.notify();
-                    });
-                    window.focus(&this.composer_input.focus_handle(cx));
-                    return;
+                if this.state.read(cx).emoji_picker_open {
+                    if is_activate_key(key) {
+                        let range = this.composer_input.read(cx).selected_range();
+                        this.state.update(cx, |s, cx| {
+                            s.insert_selected_emoji(range);
+                            cx.notify();
+                        });
+                        window.focus(&this.composer_input.focus_handle(cx));
+                        return;
+                    }
+                    if key == "arrow_left" || key == "arrow_up" {
+                        this.state.update(cx, |s, cx| {
+                            s.emoji_picker_prev();
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    if key == "arrow_right" || key == "arrow_down" || key == "tab" {
+                        this.state.update(cx, |s, cx| {
+                            s.emoji_picker_next();
+                            cx.notify();
+                        });
+                        return;
+                    }
                 }
                 if key == "escape" {
                     this.create_channel_name_input
@@ -3919,6 +3967,7 @@ pub fn render_attachment_item(
     download_url: Option<String>,
     is_fetching: bool,
     needs_refresh: bool,
+    is_failed: bool,
     theme: &theme::Theme,
     cx: &mut Context<WorkspaceView>,
 ) -> Div {
@@ -3965,13 +4014,22 @@ pub fn render_attachment_item(
                 )
         } else {
             let att_id_retry = att_id.clone();
+            let label = if is_failed {
+                "画像の読み込みに失敗しました (クリックで再試行)"
+            } else {
+                "画像を読み込み中…"
+            };
             div()
                 .mt_1p5()
                 .px_3()
                 .py_2()
                 .rounded_md()
                 .border_1()
-                .border_color(theme.border)
+                .border_color(if is_failed {
+                    theme.danger
+                } else {
+                    theme.border
+                })
                 .bg(theme.bg_surface)
                 .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                 .flex()
@@ -3992,14 +4050,20 @@ pub fn render_attachment_item(
                 .child(
                     div()
                         .text_xs()
-                        .text_color(theme.text_muted)
-                        .child("画像を読み込み中… (クリックで再試行)"),
+                        .text_color(if is_failed {
+                            theme.danger
+                        } else {
+                            theme.text_muted
+                        })
+                        .child(label),
                 )
         }
     } else {
         let att_id_open = att_id;
         let sub_label = if is_fetching {
             format!("{size_label} (URL取得中…)")
+        } else if is_failed {
+            format!("{size_label} (取得失敗 - クリックで再試行)")
         } else {
             size_label
         };
