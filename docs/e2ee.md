@@ -175,7 +175,7 @@ Olm で暗号化する平文は Matrix と同じ形にします。
 }
 ```
 
-- `sender_device_keys` は送信端末の署名付き端末鍵（[MSC4147](https://github.com/matrix-org/matrix-spec-proposals/pull/4147) と同じ）です。【提案】受信側の Shape が送信端末の登録に追いついていなくても検証できるように入れます。受信側が使う前に確かめることは[受信時の検証](#受信時の検証)の手順 1 と 4 に書きます。
+- `sender_device_keys` は送信端末の署名付き端末鍵（[MSC4147](https://github.com/matrix-org/matrix-spec-proposals/pull/4147) と同じ）です。【決定】（#349）受信側の Shape が送信端末の登録に追いついていなくても検証できるように入れます。受信側が使う前に確かめることは[受信時の検証](#受信時の検証)の手順 1 と 4 に書きます。
 - 内側の `type` は、初期版では `zoo.room_key` だけを受け付けます。SAS（#368）などを足すときは、ここに型を足します。
 
 Megolm セッション鍵の配布（`zoo.room_key`）の `content` は次の形です。Matrix の [`m.room_key`](https://spec.matrix.org/latest/client-server-api/#mroom_key) の `room_id` を `channel_id` に替え、`epoch` を足しました。
