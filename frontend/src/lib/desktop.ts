@@ -4,7 +4,8 @@
  * - OIDC の代わりに、Rust 側が持つトークンを `zoo_access_token` で受け取る。
  * - OS の通知は Rust 側が出すので、通知のコレクションの変化を `zoo_notifications_observed` で渡す。
  * - 判定は `window.__TAURI_INTERNALS__` があり、`zoo_session` の `protocol` が一致して
- *   `ui` が `remote` のときだけ。合わなければ通常の Web として動く（Web は Tauri 版と別にデプロイされるため）。
+ *   `ui` が `remote` のときだけ。Web は Tauri 版と別にデプロイされるので、合わないことがある。
+ *   そのときは OIDC へ進まず、アプリの更新を案内する（`AuthGate.tsx` の `DesktopAuthGate`）。
  *
  * 型と名前は `client-types/src/ipc.rs` と同じ。互換を崩すときは両方の PROTOCOL_VERSION を上げる。
  */

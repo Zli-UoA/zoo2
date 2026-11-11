@@ -47,7 +47,7 @@ function currentReturnTo(): string {
 
 /**
  * 認証の入口。デスクトップ版（Tauri）の中では Rust 側のトークンを使い、
- * それ以外では OIDC（`WebAuthGate`）を使う。
+ * それ以外では OIDC（`WebAuthGate`）を使う。Tauri の中では OIDC へは進まない。
  */
 export function AuthGate({ children }: { children: ReactNode }) {
   if (hasDesktopBridge()) return <DesktopAuthGate>{children}</DesktopAuthGate>;
@@ -57,10 +57,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
 /**
  * デスクトップ版の (b)。ログインは Rust 側（同梱のログイン画面）で済んでいるので、
  * トークンを IPC で受け取るだけにする。401 になったら Rust 側でログアウトし、
- * Rust 側がウィンドウをログイン画面へ戻す。プロトコルが合わなければ通常の Web として動く。
+ * Rust 側がウィンドウをログイン画面へ戻す。
+ *
+ * Tauri の中では OIDC のログインを完了できない（AuthZ への移動は `on_navigation` が止めて
+ * 既定のブラウザーで開くため）。プロトコルが合わないときや `zoo_session` が失敗したときは
+ * `WebAuthGate` へ進まず、アプリの更新を案内する。
  */
 function DesktopAuthGate({ children }: { children: ReactNode }) {
-  const [mode, setMode] = useState<"checking" | "desktop" | "web">("checking");
+  const { t } = useTranslation();
+  const [mode, setMode] = useState<"checking" | "desktop" | "unsupported">("checking");
   useEffect(() => {
     let cancelled = false;
     void detectDesktop().then((desktop) => {
@@ -71,7 +76,7 @@ function DesktopAuthGate({ children }: { children: ReactNode }) {
           void desktopLogout();
         });
       }
-      setMode(desktop ? "desktop" : "web");
+      setMode(desktop ? "desktop" : "unsupported");
     });
     return () => {
       cancelled = true;
@@ -79,8 +84,17 @@ function DesktopAuthGate({ children }: { children: ReactNode }) {
     };
   }, []);
   if (mode === "checking") return <ShellSkeleton />;
-  if (mode === "web") return <WebAuthGate>{children}</WebAuthGate>;
-  return <>{children}</>;
+  if (mode === "desktop") return <>{children}</>;
+  return (
+    <div className="flex h-dvh w-full items-center justify-center bg-background p-6 text-foreground">
+      <div className="flex max-w-md flex-col items-center gap-4 text-center">
+        <LanguageToggle />
+        <h1 className="text-lg font-semibold">{t("auth.desktopOutdated")}</h1>
+        <p className="text-sm text-muted-foreground">{t("auth.desktopOutdatedHelp")}</p>
+        <Button onClick={() => window.location.reload()}>{t("auth.reload")}</Button>
+      </div>
+    </div>
+  );
 }
 
 /**
