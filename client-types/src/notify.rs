@@ -38,6 +38,10 @@ pub struct NotifyContext {
     pub dnd_until: Option<DateTime>,
     /// ウィンドウが前面にあるときに表示しているチャンネル。前面にないときは None。
     pub focused_channel: Option<String>,
+    /// これより前に作られた通知は出さない。初回同期 (reset) を受け取った時刻を入れる。
+    /// (b) の WebView は、永続化したキャッシュで初回同期を済ませたことにする場合があり、
+    /// アプリを閉じていた間の通知がその後の差分として届いても出さないため。
+    pub not_before: Option<DateTime>,
 }
 
 impl NotifyContext {
@@ -92,6 +96,9 @@ pub fn notifications_to_show(store: &Store, batch: &Batch, ctx: &NotifyContext) 
                     continue;
                 }
                 let show = !notification.is_read
+                    && ctx
+                        .not_before
+                        .is_none_or(|not_before| notification.created_at >= not_before)
                     && notification.actor_id != ctx.me
                     && ctx.focused_channel.as_deref() != Some(notification.channel_id.as_str());
                 by_key.insert(key, show.then_some(notification));
@@ -210,6 +217,7 @@ mod tests {
             now: Some("2026-11-11T00:00:00".parse().unwrap()),
             dnd_until: None,
             focused_channel: None,
+            not_before: None,
         }
     }
 
@@ -306,6 +314,18 @@ mod tests {
         let mut disabled = ctx();
         disabled.enabled = false;
         assert!(notifications_to_show(&store, &incoming, &disabled).is_empty());
+    }
+
+    #[test]
+    fn skips_notifications_created_before_the_initial_sync() {
+        let store = synced_store(vec![]);
+        // `row` の通知は 2026-11-11 00:00:00 に作られている。
+        let incoming = batch(false, vec![row("n1", "alice", "c1", false)]);
+        let mut late = ctx();
+        late.not_before = Some("2026-11-11T00:00:01".parse().unwrap());
+        assert!(notifications_to_show(&store, &incoming, &late).is_empty());
+        late.not_before = Some("2026-11-11T00:00:00".parse().unwrap());
+        assert_eq!(notifications_to_show(&store, &incoming, &late).len(), 1);
     }
 
     #[test]
