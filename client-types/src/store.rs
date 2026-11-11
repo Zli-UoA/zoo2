@@ -21,6 +21,7 @@ pub struct Store {
     reactions: HashMap<String, HashMap<String, Reaction>>,
     attachments: HashMap<String, HashMap<String, Attachment>>,
     notifications: HashMap<String, Notification>,
+    notification_keys: HashMap<String, String>,
     synced: HashSet<ShapeId>,
     /// 型に変換できなかった行の数。スキーマのずれに気づけるよう画面に出す。
     pub invalid_rows: usize,
@@ -77,6 +78,9 @@ impl Store {
         match id {
             ShapeId::Channels => self.channel_keys = index(&self.channels, |c| &c.id),
             ShapeId::Users => self.user_keys = index(&self.users, |u| &u.id),
+            ShapeId::Notifications => {
+                self.notification_keys = index(&self.notifications, |n| &n.id)
+            }
             _ => {}
         }
         if batch.reset {
@@ -117,11 +121,10 @@ impl Store {
         notifications
     }
 
-    /// 通知を id で引く。通知の行のキーは id と同じではないため、値を走査する。
+    /// 通知を id で引く。通知の行のキーは id と同じではないため、索引を通す。
     pub fn notification(&self, notification_id: &str) -> Option<&Notification> {
         self.notifications
-            .values()
-            .find(|notification| notification.id == notification_id)
+            .get(self.notification_keys.get(notification_id)?)
     }
 
     /// 削除されていないチャンネルを、通常のチャンネル (名前順)、DM の順に並べる。
@@ -628,5 +631,33 @@ mod tests {
         assert_eq!(by_message.len(), 1);
         assert_eq!(by_message["m1"], store.reaction_groups("c1", "m1", "u1"));
         assert_eq!(store.invalid_rows, 1);
+    }
+    #[test]
+    fn looks_up_notifications_by_id_through_the_index() {
+        let notification = |id: &str| {
+            upsert(
+                &format!("\"public\".\"notification_events\"/\"{id}\""),
+                json!({
+                    "id": id, "user_id": "me", "actor_id": "alice", "channel_id": "c1",
+                    "message_id": "m1", "notification_type": "mention", "is_read": "false",
+                    "created_at": "2026-11-11 00:00:00",
+                }),
+            )
+        };
+        let mut store = Store::default();
+        store.apply(
+            &ShapeId::Notifications,
+            batch(vec![notification("n1"), notification("n2")]),
+        );
+        assert_eq!(store.notification("n1").map(|n| n.id.as_str()), Some("n1"));
+
+        store.apply(
+            &ShapeId::Notifications,
+            batch(vec![Change::Delete {
+                key: "\"public\".\"notification_events\"/\"n1\"".into(),
+            }]),
+        );
+        assert!(store.notification("n1").is_none());
+        assert!(store.notification("n2").is_some());
     }
 }
