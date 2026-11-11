@@ -37,6 +37,7 @@ pub struct WorkspaceView {
     pub quick_switcher_scroll: ScrollHandle,
     pub emoji_picker_scroll: ScrollHandle,
     pub create_channel_private_focus: FocusHandle,
+    pub expanded_cards: std::collections::HashSet<String>,
     focus_handle: FocusHandle,
     login_primary_focus: FocusHandle,
     login_secondary_focus: FocusHandle,
@@ -219,6 +220,8 @@ impl WorkspaceView {
                     this.state.update(cx, |state, cx| {
                         if state.mention_autocomplete.is_some() {
                             state.close_mention_autocomplete();
+                        } else if state.emoji_picker_open {
+                            state.close_emoji_picker();
                         } else {
                             state.cancel_target();
                         }
@@ -480,6 +483,7 @@ impl WorkspaceView {
             quick_switcher_scroll: ScrollHandle::new(),
             emoji_picker_scroll: ScrollHandle::new(),
             create_channel_private_focus: cx.focus_handle(),
+            expanded_cards: std::collections::HashSet::new(),
             focus_handle: cx.focus_handle(),
             login_primary_focus: cx.focus_handle(),
             login_secondary_focus: cx.focus_handle(),
@@ -2033,7 +2037,12 @@ impl WorkspaceView {
             .unwrap_or_default();
         let ogp_views: Vec<Div> = ogp_cards
             .iter()
-            .map(|card| render_ogp_card(card, &theme, cx))
+            .enumerate()
+            .map(|(idx, card)| {
+                let card_key = format!("{}:{idx}", message.id);
+                let is_expanded = self.expanded_cards.contains(&card_key);
+                render_ogp_card(card, &card_key, is_expanded, &theme, cx)
+            })
             .collect();
 
         div()
@@ -2952,12 +2961,15 @@ impl WorkspaceView {
     }
 
     fn render_emoji_picker(&self, cx: &mut Context<Self>) -> Div {
-        let state = self.state.read(cx);
-        let theme = state.theme();
-        let selected_idx = state.emoji_picker_selected;
-        self.emoji_picker_scroll.scroll_to_item(selected_idx);
+        let (selected_idx, should_scroll, theme) = self.state.update(cx, |s, _| {
+            let scroll = s.take_pending_emoji_picker_scroll();
+            (s.emoji_picker_selected, scroll, s.theme())
+        });
+        if should_scroll {
+            self.emoji_picker_scroll.scroll_to_item(selected_idx);
+        }
 
-        let filtered = state.filtered_emojis();
+        let filtered = self.state.read(cx).filtered_emojis();
 
         let buttons = filtered.into_iter().enumerate().map(|(idx, e)| {
             let emoji_str = e.to_string();
@@ -3256,8 +3268,14 @@ impl WorkspaceView {
                             this.toggle_create_channel_is_private(cx);
                         }),
                     )
-                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
-                        if is_activate_key(&ev.keystroke.key) {
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                        if ev.keystroke.key == "tab" {
+                            if ev.keystroke.modifiers.shift {
+                                window.focus(&this.create_channel_desc_input.focus_handle(cx));
+                            } else {
+                                window.focus(&this.create_channel_name_input.focus_handle(cx));
+                            }
+                        } else if is_activate_key(&ev.keystroke.key) {
                             this.toggle_create_channel_is_private(cx);
                         }
                     })),
@@ -3835,8 +3853,34 @@ pub fn format_file_size(bytes: i64) -> String {
     }
 }
 
+pub const CARD_DESC_MAX_CHARS: usize = 300;
+pub const CARD_DESC_MAX_LINES: usize = 8;
+
+pub fn is_ogp_description_long(desc: &str) -> bool {
+    desc.lines().count() > CARD_DESC_MAX_LINES || desc.chars().count() > CARD_DESC_MAX_CHARS
+}
+
+pub fn truncate_ogp_description(desc: &str) -> String {
+    let mut truncated = String::new();
+    for (i, line) in desc.lines().enumerate() {
+        if i >= CARD_DESC_MAX_LINES {
+            break;
+        }
+        if !truncated.is_empty() {
+            truncated.push('\n');
+        }
+        truncated.push_str(line);
+    }
+    if truncated.chars().count() > CARD_DESC_MAX_CHARS {
+        truncated = truncated.chars().take(CARD_DESC_MAX_CHARS).collect();
+    }
+    format!("{}...", truncated.trim_end())
+}
+
 pub fn render_ogp_card(
     card: &CardData,
+    card_key: &str,
+    is_expanded: bool,
     theme: &theme::Theme,
     cx: &mut Context<WorkspaceView>,
 ) -> Div {
@@ -3938,6 +3982,79 @@ pub fn render_ogp_card(
         None
     };
 
+    let desc_element = if !desc.is_empty() {
+        if is_ogp_description_long(&desc) {
+            let key = card_key.to_string();
+            let view = cx.entity().clone();
+            let toggle_btn = if is_expanded {
+                let key = key.clone();
+                let view = view.clone();
+                div()
+                    .text_xs()
+                    .text_color(theme.text_link)
+                    .hover(|s| s.cursor_pointer())
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                            cx.stop_propagation();
+                            view.update(cx, |this, cx| {
+                                this.expanded_cards.remove(&key);
+                                cx.notify();
+                            });
+                        }),
+                    )
+                    .child("折りたたむ")
+            } else {
+                let key = key.clone();
+                let view = view.clone();
+                div()
+                    .text_xs()
+                    .text_color(theme.text_link)
+                    .hover(|s| s.cursor_pointer())
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                            cx.stop_propagation();
+                            view.update(cx, |this, cx| {
+                                this.expanded_cards.insert(key.clone());
+                                cx.notify();
+                            });
+                        }),
+                    )
+                    .child("さらに表示")
+            };
+
+            let display_text = if is_expanded {
+                desc.clone()
+            } else {
+                truncate_ogp_description(&desc)
+            };
+
+            Some(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.text_muted)
+                            .child(display_text),
+                    )
+                    .child(toggle_btn),
+            )
+        } else {
+            Some(
+                div()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child(desc.clone()),
+            )
+        }
+    } else {
+        None
+    };
+
     div()
         .mt_1p5()
         .rounded_md()
@@ -4004,9 +4121,7 @@ pub fn render_ogp_card(
                         .text_color(theme.text_link)
                         .child(title),
                 )
-                .when(!desc.is_empty(), |d| {
-                    d.child(div().text_xs().text_color(theme.text_muted).child(desc))
-                })
+                .when_some(desc_element, |d, el| d.child(el))
                 .when_some(fields_div, |d, f| d.child(f))
                 .when(!author.is_empty(), |d| {
                     d.child(
@@ -4052,7 +4167,7 @@ pub fn render_attachment_item(
 
     if is_img {
         if let Some(url) = download_url {
-            let open_img = url.clone();
+            let att_id_open = att_id.clone();
             div()
                 .mt_1p5()
                 .rounded_md()
@@ -4063,8 +4178,16 @@ pub fn render_attachment_item(
                 .cursor_pointer()
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(move |_, _: &MouseUpEvent, _, cx| {
-                        cx.open_url(&open_img);
+                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                        let id = att_id_open.clone();
+                        let url_opt = this.state.update(cx, |s, cx| {
+                            let res = s.open_or_queue_attachment(&id);
+                            cx.notify();
+                            res
+                        });
+                        if let Some(url) = url_opt {
+                            cx.open_url(&url);
+                        }
                     }),
                 )
                 .child(
@@ -4198,5 +4321,28 @@ mod tests {
         assert!(c.g.abs() < 0.01);
         assert!(c.b.abs() < 0.01);
         assert!((c.a - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn ogp_description_length_and_truncation() {
+        let short = "短い説明文です。";
+        assert!(!is_ogp_description_long(short));
+
+        // 301文字
+        let long_chars = "あ".repeat(301);
+        assert!(is_ogp_description_long(&long_chars));
+        let truncated_chars = truncate_ogp_description(&long_chars);
+        assert_eq!(truncated_chars.chars().count(), 303); // 300文字 + "..."
+        assert!(truncated_chars.ends_with("..."));
+
+        // 9行
+        let long_lines = (1..=9)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(is_ogp_description_long(&long_lines));
+        let truncated_lines = truncate_ogp_description(&long_lines);
+        assert_eq!(truncated_lines.lines().count(), 8);
+        assert!(truncated_lines.ends_with("..."));
     }
 }

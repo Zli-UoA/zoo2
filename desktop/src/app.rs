@@ -477,6 +477,8 @@ pub struct AppState {
     pub emoji_picker_query: String,
     /// 絵文字ピッカーのキーボード選択中インデックス。
     pub emoji_picker_selected: usize,
+    /// 絵文字ピッカーのスクロールをキーボード選択位置へ追従させる要求フラグ。
+    pub pending_emoji_picker_scroll: bool,
     /// メンション補完状態。
     pub mention_autocomplete: Option<MentionAutocompleteState>,
     /// チャンネル作成モーダル状態。
@@ -619,6 +621,7 @@ impl AppState {
             emoji_picker_open: false,
             emoji_picker_query: String::new(),
             emoji_picker_selected: 0,
+            pending_emoji_picker_scroll: false,
             mention_autocomplete: None,
             create_channel_modal: None,
             message_search: None,
@@ -3901,13 +3904,19 @@ impl AppState {
         self.emoji_picker_open = true;
         self.emoji_picker_query.clear();
         self.emoji_picker_selected = 0;
+        self.pending_emoji_picker_scroll = true;
     }
 
     pub fn close_emoji_picker(&mut self) {
         self.emoji_picker_open = false;
         self.emoji_picker_query.clear();
         self.emoji_picker_selected = 0;
+        self.pending_emoji_picker_scroll = false;
         self.pending_focus_composer = true;
+    }
+
+    pub fn take_pending_emoji_picker_scroll(&mut self) -> bool {
+        std::mem::take(&mut self.pending_emoji_picker_scroll)
     }
 
     pub fn filtered_emojis(&self) -> Vec<&'static str> {
@@ -3950,6 +3959,7 @@ impl AppState {
             } else {
                 self.emoji_picker_selected -= 1;
             }
+            self.pending_emoji_picker_scroll = true;
         }
     }
 
@@ -3957,6 +3967,7 @@ impl AppState {
         let len = self.filtered_emojis().len();
         if len > 0 {
             self.emoji_picker_selected = (self.emoji_picker_selected + 1) % len;
+            self.pending_emoji_picker_scroll = true;
         }
     }
 
@@ -3971,6 +3982,7 @@ impl AppState {
                 let target = last_row_start + rem;
                 self.emoji_picker_selected = if target < len { target } else { len - 1 };
             }
+            self.pending_emoji_picker_scroll = true;
         }
     }
 
@@ -3983,6 +3995,7 @@ impl AppState {
             } else {
                 self.emoji_picker_selected %= 8;
             }
+            self.pending_emoji_picker_scroll = true;
         }
     }
 
@@ -8199,5 +8212,66 @@ mod tests {
         state.insert_selected_emoji(6..6);
         assert!(!state.emoji_picker_open);
         assert_eq!(state.composer_draft, "Hello 😀");
+    }
+
+    #[test]
+    fn emoji_picker_keyboard_navigation_sets_pending_scroll() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.open_emoji_picker();
+        assert!(state.take_pending_emoji_picker_scroll());
+        assert!(!state.take_pending_emoji_picker_scroll());
+
+        // 次へ移動
+        state.emoji_picker_next();
+        assert!(state.take_pending_emoji_picker_scroll());
+        assert!(!state.take_pending_emoji_picker_scroll());
+
+        // 前へ移動
+        state.emoji_picker_prev();
+        assert!(state.take_pending_emoji_picker_scroll());
+        assert!(!state.take_pending_emoji_picker_scroll());
+
+        // 行移動
+        state.emoji_picker_next_row();
+        assert!(state.take_pending_emoji_picker_scroll());
+        assert!(!state.take_pending_emoji_picker_scroll());
+
+        state.emoji_picker_prev_row();
+        assert!(state.take_pending_emoji_picker_scroll());
+        assert!(!state.take_pending_emoji_picker_scroll());
+    }
+
+    #[test]
+    fn cancel_input_with_emoji_picker_open_preserves_editing_target() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.target = Target::Edit("m1".into());
+        assert_eq!(state.target, Target::Edit("m1".into()));
+
+        state.open_emoji_picker();
+        assert!(state.emoji_picker_open);
+
+        // view.rs 内の InputEvent::Cancel ハンドラ挙動の検証
+        if state.mention_autocomplete.is_some() {
+            state.close_mention_autocomplete();
+        } else if state.emoji_picker_open {
+            state.close_emoji_picker();
+        } else {
+            state.cancel_target();
+        }
+
+        assert!(!state.emoji_picker_open);
+        assert_eq!(state.target, Target::Edit("m1".into()));
+
+        // 再度 Cancel が来たら cancel_target される
+        if state.mention_autocomplete.is_some() {
+            state.close_mention_autocomplete();
+        } else if state.emoji_picker_open {
+            state.close_emoji_picker();
+        } else {
+            state.cancel_target();
+        }
+        assert_eq!(state.target, Target::Channel);
     }
 }
