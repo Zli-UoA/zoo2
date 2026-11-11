@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, XIcon } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -132,6 +132,24 @@ export function ThreadPane({
     });
   }, [items.length, root.id]);
 
+  // 古い返信のページが先頭に足されたときは、読んでいた位置が動かないよう、増えた高さの分だけ補正する。
+  const scrollSnapshot = useRef({ firstId: "", lastId: "", height: 0 });
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    const previous = scrollSnapshot.current;
+    const firstId = replies[0]?.id ?? "";
+    const lastId = replies[replies.length - 1]?.id ?? "";
+    if (element) {
+      const prepended =
+        previous.firstId !== "" &&
+        firstId !== previous.firstId &&
+        lastId === previous.lastId &&
+        !atBottomRef.current;
+      if (prepended) element.scrollTop += element.scrollHeight - previous.height;
+      scrollSnapshot.current = { firstId, lastId, height: element.scrollHeight };
+    }
+  }, [replies]);
+
   const scrolledTarget = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!targetMessageId) {
@@ -171,7 +189,11 @@ export function ThreadPane({
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold">{t("threads.title")}</h2>
           <p className="text-xs tabular-nums text-muted-foreground">
-            {isLoading ? t("threads.loading") : t("threads.replyCount", { count: replies.length })}
+            {isLoading
+              ? t("threads.loading")
+              : t("threads.replyCount", {
+                  count: root.display_data?.reply_count ?? replies.length,
+                })}
           </p>
         </div>
         <Button
@@ -215,6 +237,7 @@ export function ThreadPane({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
         onScroll={(event) => {
           const element = event.currentTarget;
+          scrollSnapshot.current.height = element.scrollHeight;
           atBottomRef.current = isNearBottom(
             element.scrollTop,
             element.scrollHeight,

@@ -236,7 +236,8 @@
     "loadError": "답글을 불러오지 못했습니다.",
     "empty": "아직 답글이 없습니다. 첫 번째 답글을 보내 보세요.",
     "compose": "답글 보내기",
-    "rootDeleted": "원본 메시지가 삭제되었습니다"
+    "rootDeleted": "원본 메시지가 삭제되었습니다",
+    "targetTooOld": "이 메시지는 너무 오래되어 여기서 불러올 수 없습니다"
   },
   "reactions": {
     "showUsers": "{{emoji}} 반응을 남긴 사용자 보기",

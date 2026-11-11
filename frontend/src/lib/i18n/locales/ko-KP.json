@@ -236,7 +236,8 @@
     "loadError": "회답을 얻지 못했습니다.",
     "empty": "회답이 아직 없습니다. 첫 회답을 보내 보십시오.",
     "compose": "회답 보내기",
-    "rootDeleted": "원래 통보문은 삭제되였습니다"
+    "rootDeleted": "원래 통보문은 삭제되였습니다",
+    "targetTooOld": "이 통보문은 너무 오래되여 여기서 불러올수 없습니다"
   },
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",

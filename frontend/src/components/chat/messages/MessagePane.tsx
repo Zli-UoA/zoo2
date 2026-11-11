@@ -33,7 +33,7 @@ import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
 
 /** 通知・リンクの対象を含むまで、古い方へ広げるページ数の上限 (1 ページは `MESSAGE_PAGE_SIZE` 件)。 */
-const MAX_REVEAL_PAGES = 100;
+const MAX_REVEAL_PAGES = 200;
 
 function JoinToPostPrompt({
   onJoin,
@@ -206,10 +206,14 @@ export function MessagePane({
     if (!target || target.deleted_at || target.parent_id) return;
     if (revealedPages.current.id !== target.id) revealedPages.current = { id: target.id, pages: 0 };
     if (feed.some((row) => row.id === target.id)) return;
-    if (!hasOlder || isLoadingOlder || revealedPages.current.pages >= MAX_REVEAL_PAGES) return;
+    if (!hasOlder || isLoadingOlder) return;
+    if (revealedPages.current.pages >= MAX_REVEAL_PAGES) {
+      toast.info(t("threads.targetTooOld"), { id: "target-too-old" });
+      return;
+    }
     revealedPages.current.pages += 1;
     void loadOlder();
-  }, [target, feed, hasOlder, isLoadingOlder, loadOlder]);
+  }, [target, feed, hasOlder, isLoadingOlder, loadOlder, t]);
 
   // 対象がスレッドの返信なら、スレッドの範囲も、含まれるまで広げる。
   const revealedThreadPages = useRef({ id: "", pages: 0 });
@@ -224,10 +228,21 @@ export function MessagePane({
     }
     if (threadReplies.some((row) => row.id === target.id)) return;
     if (!threadHasOlder || threadLoadingOlder) return;
-    if (revealedThreadPages.current.pages >= MAX_REVEAL_PAGES) return;
+    if (revealedThreadPages.current.pages >= MAX_REVEAL_PAGES) {
+      toast.info(t("threads.targetTooOld"), { id: "target-too-old" });
+      return;
+    }
     revealedThreadPages.current.pages += 1;
     void loadOlderReplies();
-  }, [target, threadRootId, threadReplies, threadHasOlder, threadLoadingOlder, loadOlderReplies]);
+  }, [
+    target,
+    threadRootId,
+    threadReplies,
+    threadHasOlder,
+    threadLoadingOlder,
+    loadOlderReplies,
+    t,
+  ]);
 
   // スレッドの親が (他ユーザーの操作などで) 見えなくなったらスレッドも閉じる。
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。親は、メイン一覧の範囲とは関係なく、

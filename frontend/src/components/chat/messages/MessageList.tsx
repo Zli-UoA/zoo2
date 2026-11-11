@@ -260,6 +260,9 @@ export function MessageList({
     }
   }, [captureScrollAnchor, editingId, markRead, messages.length, loadOlder]);
 
+  // 既読位置が、最初に読み込んだ範囲より古いとき、読み足しが終わるまで未読の先頭へ移動するのを待つ。
+  const unreadPagesRef = useRef(0);
+  const pendingUnreadJumpRef = useRef(false);
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element) {
@@ -269,8 +272,20 @@ export function MessageList({
     const next = snapshot(ids);
     const change = classifyScrollChange(snapshotRef.current, next, new Set(ids));
 
+    // 件数の上限で、新着の分だけ最古の行が外れたとき (先頭が変わる append)。最下部にいなければ、
+    // 読んでいる行の位置を保つ。
+    const slid = change === "append" && snapshotRef.current.firstId !== next.firstId;
     let stopRestoring: (() => void) | undefined;
-    if (change === "prepend") {
+    const oldest = messages[0] ? parseUtcTimestamp(messages[0].created_at).getTime() : NaN;
+    const unreadCovered =
+      lastRead === null ||
+      lastRead <= 0 ||
+      !Number.isFinite(oldest) ||
+      oldest <= lastRead ||
+      !hasOlder ||
+      unreadPagesRef.current >= MAX_UNREAD_PAGES;
+    const awaitingUnread = pendingUnreadJumpRef.current && change === "prepend";
+    if (!awaitingUnread && (change === "prepend" || (slid && !atBottomRef.current))) {
       // Estimates for unmounted rows must not decide which message the reader sees.
       const anchor = scrollAnchorRef.current;
       const index = anchor ? items.findIndex((item) => item.message.id === anchor.id) : -1;
@@ -328,10 +343,14 @@ export function MessageList({
         };
         restore();
       }
+      if (slid) setHasNewBelow(true);
     } else if (change === "initial" && firstUnreadId) {
       const index = items.findIndex((item) => item.message.id === firstUnreadId);
       atBottomRef.current = false;
+      pendingUnreadJumpRef.current = !unreadCovered;
       requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "start" }));
+    } else if (awaitingUnread) {
+      // 読み足しの途中: 位置は動かさない (終わったら、下で未読の先頭へ合わせる)。
     } else if (shouldStickToBottom(change, atBottomRef.current)) {
       requestAnimationFrame(() => scrollToBottom());
     } else if (change === "append") {
@@ -347,9 +366,32 @@ export function MessageList({
       }
     }
 
+    if (pendingUnreadJumpRef.current && change !== "initial" && unreadCovered && !isLoadingOlder) {
+      pendingUnreadJumpRef.current = false;
+      const index = firstUnreadId
+        ? items.findIndex((item) => item.message.id === firstUnreadId)
+        : -1;
+      if (index >= 0) {
+        atBottomRef.current = false;
+        requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "start" }));
+      }
+    }
+
     snapshotRef.current = next;
     return () => stopRestoring?.();
-  }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer, captureScrollAnchor]);
+  }, [
+    items,
+    messages,
+    lastRead,
+    hasOlder,
+    isLoadingOlder,
+    currentUserId,
+    scrollToBottom,
+    t,
+    firstUnreadId,
+    virtualizer,
+    captureScrollAnchor,
+  ]);
 
   // Decide the initial unread position before following resized rows.
   useLayoutEffect(() => {
@@ -377,7 +419,6 @@ export function MessageList({
 
   // 既読位置が、いま読み込んでいる範囲より古いときは、既読位置を含むまで読み足す (未読の区切りを置くため)。
   // 未読が多すぎるときのために、読み足す回数には上限がある。
-  const unreadPagesRef = useRef(0);
   useEffect(() => {
     if (lastRead === null || lastRead <= 0 || messages.length === 0) return;
     const oldest = parseUtcTimestamp(messages[0]!.created_at).getTime();

@@ -236,7 +236,8 @@
     "loadError": "無法載入回覆。",
     "empty": "尚無回覆。傳送第一則回覆吧。",
     "compose": "輸入回覆",
-    "rootDeleted": "原訊息已被刪除"
+    "rootDeleted": "原訊息已被刪除",
+    "targetTooOld": "這則訊息太久遠，無法在此載入"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",
