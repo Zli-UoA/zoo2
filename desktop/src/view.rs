@@ -37,6 +37,7 @@ pub struct WorkspaceView {
     pub quick_switcher_scroll: ScrollHandle,
     pub emoji_picker_scroll: ScrollHandle,
     pub create_channel_private_focus: FocusHandle,
+    pub theme_toggle_focus: FocusHandle,
     pub expanded_cards: std::collections::HashSet<String>,
     pub card_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     focus_handle: FocusHandle,
@@ -527,6 +528,7 @@ impl WorkspaceView {
             quick_switcher_scroll: ScrollHandle::new(),
             emoji_picker_scroll: ScrollHandle::new(),
             create_channel_private_focus: cx.focus_handle(),
+            theme_toggle_focus: cx.focus_handle(),
             expanded_cards: std::collections::HashSet::new(),
             card_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             focus_handle: cx.focus_handle(),
@@ -1242,6 +1244,7 @@ impl WorkspaceView {
                                     .child(
                                         div()
                                             .id("btn-toggle-theme")
+                                            .track_focus(&self.theme_toggle_focus)
                                             .px_1p5()
                                             .py_0p5()
                                             .rounded_sm()
@@ -1263,7 +1266,18 @@ impl WorkspaceView {
                                                         cx.notify();
                                                     });
                                                 }),
-                                            ),
+                                            )
+                                            .on_key_down(cx.listener(
+                                                |this, ev: &KeyDownEvent, _, cx| {
+                                                    if is_activate_key(&ev.keystroke.key) {
+                                                        cx.stop_propagation();
+                                                        this.state.update(cx, |s, cx| {
+                                                            s.toggle_theme();
+                                                            cx.notify();
+                                                        });
+                                                    }
+                                                },
+                                            )),
                                     )
                                     .when(is_oidc, |d| {
                                         d.child(
@@ -3757,6 +3771,13 @@ impl Render for WorkspaceView {
                         } else {
                             s.open_emoji_picker();
                         }
+                        cx.notify();
+                    });
+                    return;
+                }
+                if cmd_or_ctrl && (key == "t" || key == "T") {
+                    this.state.update(cx, |s, cx| {
+                        s.toggle_theme();
                         cx.notify();
                     });
                     return;
