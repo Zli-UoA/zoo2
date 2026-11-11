@@ -12,6 +12,22 @@ import { offlineDatabaseName } from "./identity";
 const STORE = "feeds";
 const VERSION = 1;
 
+/**
+ * ログアウトで消した名前空間。画面が残っていて、予約済みの保存が後から走っても、
+ * 消した DB を作り直さないようにする (本文が端末に残るため)。名前空間が有効になったら外す。
+ */
+const blocked = new Set<string>();
+
+/** ログアウトの削除に入る前に呼ぶ。以後、その名前空間への保存を拒否する。 */
+export function blockFeedCache(namespace: string): void {
+  blocked.add(namespace);
+}
+
+/** 名前空間が (ログイン済みで) 使われ始めたら呼ぶ。保存を再開する。 */
+export function enableFeedCache(namespace: string): void {
+  blocked.delete(namespace);
+}
+
 export interface FeedCacheEntry<Row> {
   channelId: string;
   savedAt: number;
@@ -48,10 +64,12 @@ export async function saveFeedCache<Row>(
   rows: readonly Row[],
   limit: number,
 ): Promise<void> {
-  if (typeof indexedDB === "undefined" || rows.length === 0) return;
+  if (typeof indexedDB === "undefined" || rows.length === 0 || blocked.has(namespace)) return;
   try {
     const db = await open(namespace);
     try {
+      // 開いている間にログアウトの削除が始まった場合は、書かない。
+      if (blocked.has(namespace)) return;
       // 構造化複製に載らない値 (関数など) が混ざらないよう、JSON を経由する。
       const entry: FeedCacheEntry<Row> = {
         channelId,

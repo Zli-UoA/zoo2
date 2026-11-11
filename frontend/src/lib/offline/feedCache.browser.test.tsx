@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { clearFeedCache, deleteFeedCache, loadFeedCache, saveFeedCache } from "./feedCache";
+import {
+  blockFeedCache,
+  clearFeedCache,
+  deleteFeedCache,
+  enableFeedCache,
+  loadFeedCache,
+  saveFeedCache,
+} from "./feedCache";
 
 const NAMESPACE = "user-feed-cache-test";
 const OTHER = "user-feed-cache-other";
@@ -32,6 +39,16 @@ describe("feed cache", () => {
     await clearFeedCache(NAMESPACE, "general");
     expect(await loadFeedCache(NAMESPACE, "general")).toBeNull();
     expect((await loadFeedCache<{ id: string }>(NAMESPACE, "random"))?.rows).toEqual([{ id: "b" }]);
+  });
+
+  it("does not recreate a deleted cache when a pending save runs after logout", async () => {
+    blockFeedCache(NAMESPACE);
+    await deleteFeedCache(NAMESPACE);
+    await saveFeedCache(NAMESPACE, "general", [{ id: "late" }], 50);
+    expect(await loadFeedCache(NAMESPACE, "general")).toBeNull();
+    enableFeedCache(NAMESPACE);
+    await saveFeedCache(NAMESPACE, "general", [{ id: "again" }], 50);
+    expect(await loadFeedCache(NAMESPACE, "general")).not.toBeNull();
   });
 
   it("does not store an empty page", async () => {
