@@ -212,15 +212,19 @@ impl ApiClient {
     /// チャンネルを作成する。
     pub async fn create_channel(
         &self,
+        id: Option<&str>,
         channel_name: &str,
         description: Option<&str>,
         is_private: bool,
     ) -> Result<(CreatedChannel, Option<String>)> {
-        let body = json!({
+        let mut body = json!({
             "channel_name": channel_name,
             "description": description,
             "is_private": is_private,
         });
+        if let Some(id_val) = id {
+            body["id"] = json!(id_val);
+        }
         let envelope: Envelope<CreatedChannel> = self
             .send(Method::POST, "/api/channels", Some(body))
             .await?
@@ -561,7 +565,7 @@ mod tests {
         assert_eq!(url_info.download_url, "https://s3.example.com/download");
 
         let (created, txid) = api
-            .create_channel("dev", Some("Dev channel"), false)
+            .create_channel(None, "dev", Some("Dev channel"), false)
             .await
             .unwrap();
         assert_eq!(created.id, "c_new");

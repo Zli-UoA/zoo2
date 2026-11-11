@@ -97,7 +97,7 @@ async fn create_message(
             )));
         }
     }
-    m::create_message_impl(state, p.actor(), body, true, None).await
+    m::create_message_impl(state, p.actor(), body, true, None, None).await
 }
 async fn update_message(
     State(s): State<AppState>,

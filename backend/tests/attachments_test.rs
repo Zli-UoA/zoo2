@@ -583,9 +583,51 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     assert_eq!(body1["data"]["id"].as_str().unwrap(), concurrent_id);
     assert_eq!(body2["data"]["id"].as_str().unwrap(), concurrent_id);
 
-    // 5b3. Alice が添付ファイル付きで同じ message_id のリクエストを同時に送信した場合、
-    //      先行リクエストが添付紐付けをコミットして後続リクエストが添付検証時点で already attached に遭遇しても、
-    //      紐付け先が要求 ID と一致するため冪等フォールバックにより両方とも 200 OK で同一メッセージを返すこと
+    // 5b3. Alice が添付ファイル付きで新しい message_id のリクエストを同時に送信した場合、
+    //      先行リクエストが INSERT と添付紐付けをコミットし、後続リクエストが事前照会をすり抜けた後に
+    //      添付検証時点で already attached に遭遇しても、紐付け先が要求 ID と一致するため
+    //      新設の冪等フォールバックにより両方とも 200 OK で同一メッセージを返すこと。
+    //      ※ 後続リクエストには X-Test-Delay-Attachment-Verify ヘッダを付与し、
+    //         事前照会（messages 存在確認）後から添付取得までの間に先行 commit を確実に挟み込む。
+    let concurrent_att_msg_id = uuid::Uuid::new_v4().to_string();
+
+    let conc_file_content = b"concurrent test png content";
+    let presign_conc_payload = json!({
+        "channel_id": channel_id,
+        "file_name": "concurrent_photo.png",
+        "file_size": conc_file_content.len() as i64,
+        "content_type": "image/png"
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/attachments/presign")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&presign_conc_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let res: Value = serde_json::from_slice(&body)?;
+    let conc_attachment_id = res["data"]["attachment_id"].as_str().unwrap().to_string();
+    let conc_storage_key = res["data"]["storage_key"].as_str().unwrap().to_string();
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&config.s3.bucket)
+        .key(&conc_storage_key)
+        .content_type("image/png")
+        .body(conc_file_content.to_vec().into())
+        .send()
+        .await?;
+
+    let concurrent_att_payload = json!({
+        "id": concurrent_att_msg_id,
+        "channel_id": channel_id,
+        "content": "Concurrent message with attachment",
+        "attachment_ids": [conc_attachment_id]
+    });
+
     let (resp_att1, resp_att2) = tokio::join!(
         app.clone().oneshot(
             Request::builder()
@@ -593,7 +635,7 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
                 .uri("/api/messages")
                 .header("content-type", "application/json")
                 .header("X-Dev-User", &alice_id)
-                .body(Body::from(serde_json::to_vec(&msg_payload_valid)?))?
+                .body(Body::from(serde_json::to_vec(&concurrent_att_payload)?))?
         ),
         app.clone().oneshot(
             Request::builder()
@@ -601,7 +643,8 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
                 .uri("/api/messages")
                 .header("content-type", "application/json")
                 .header("X-Dev-User", &alice_id)
-                .body(Body::from(serde_json::to_vec(&msg_payload_valid)?))?
+                .header("X-Test-Delay-Attachment-Verify", "100")
+                .body(Body::from(serde_json::to_vec(&concurrent_att_payload)?))?
         )
     );
 
@@ -614,14 +657,20 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     assert_eq!(
         resp_att2.status(),
         StatusCode::OK,
-        "second concurrent attachment request should succeed via idempotency fallback"
+        "second concurrent attachment request should succeed via idempotency fallback in attachment loop"
     );
     let body_att1: Value =
         serde_json::from_slice(&to_bytes(resp_att1.into_body(), usize::MAX).await?)?;
     let body_att2: Value =
         serde_json::from_slice(&to_bytes(resp_att2.into_body(), usize::MAX).await?)?;
-    assert_eq!(body_att1["data"]["id"].as_str().unwrap(), message_id);
-    assert_eq!(body_att2["data"]["id"].as_str().unwrap(), message_id);
+    assert_eq!(
+        body_att1["data"]["id"].as_str().unwrap(),
+        concurrent_att_msg_id
+    );
+    assert_eq!(
+        body_att2["data"]["id"].as_str().unwrap(),
+        concurrent_att_msg_id
+    );
 
     // 5c. Alice が同じ message_id で異なる内容を POST した場合、409 Conflict になること
     let msg_payload_conflict = json!({

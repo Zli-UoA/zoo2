@@ -72,6 +72,35 @@ async fn test_create_user_and_message_returns_txid() -> anyhow::Result<()> {
     assert!(!ch_txid.is_empty());
     println!("Created channel with txid: {ch_txid}");
 
+    // 2b. チャンネル作成の冪等性: 同一 channel_id かつ同一内容で再度 POST した場合、200 OK で作成済みチャンネルが返ること
+    let req_resend = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &user_id)
+        .body(Body::from(serde_json::to_vec(&channel_payload)?))?;
+    let resp_resend = app.clone().oneshot(req_resend).await?;
+    assert_eq!(resp_resend.status(), StatusCode::OK);
+    let body_resend = to_bytes(resp_resend.into_body(), usize::MAX).await?;
+    let json_resend: Value = serde_json::from_slice(&body_resend)?;
+    assert_eq!(json_resend["data"]["id"], channel_id);
+
+    // 2c. チャンネル作成で同じ ID だが異なる内容の場合、409 Conflict になること
+    let conflict_payload = json!({
+        "id": channel_id,
+        "channel_name": format!("diff-{}", uuid::Uuid::new_v4().simple()),
+        "description": "Test Channel",
+        "is_private": false,
+    });
+    let req_conflict = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &user_id)
+        .body(Body::from(serde_json::to_vec(&conflict_payload)?))?;
+    let resp_conflict = app.clone().oneshot(req_conflict).await?;
+    assert_eq!(resp_conflict.status(), StatusCode::CONFLICT);
+
     // 3. メッセージ送信
     let message_id = uuid::Uuid::new_v4().to_string();
     let message_payload = json!({

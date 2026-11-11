@@ -452,6 +452,28 @@ impl WorkspaceView {
             .update(cx, |input, cx| input.request_submit(cx));
     }
 
+    fn prompt_and_add_attachments(&mut self, cx: &mut Context<Self>) {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: None,
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = prompt.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.state.update(cx, |s, cx| {
+                        for p in paths {
+                            s.add_attachment_from_path(p);
+                        }
+                        cx.notify();
+                    });
+                });
+            }
+        })
+        .detach();
+    }
+
     fn open_create_channel_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.read(cx).create_channel_modal.is_some() {
             window.focus(&self.create_channel_name_input.focus_handle(cx));
@@ -2428,26 +2450,8 @@ impl WorkspaceView {
                                         .child("📎")
                                         .on_mouse_up(
                                             MouseButton::Left,
-                                            cx.listener(|_, _: &MouseUpEvent, _, cx| {
-                                                let prompt = cx.prompt_for_paths(PathPromptOptions {
-                                                    files: true,
-                                                    directories: false,
-                                                    multiple: true,
-                                                    prompt: None,
-                                                });
-                                                cx.spawn(async move |this, cx| {
-                                                    if let Ok(Ok(Some(paths))) = prompt.await {
-                                                        let _ = this.update(cx, |this, cx| {
-                                                            this.state.update(cx, |s, cx| {
-                                                                for p in paths {
-                                                                    s.add_attachment_from_path(p);
-                                                                }
-                                                                cx.notify();
-                                                            });
-                                                        });
-                                                    }
-                                                })
-                                                .detach();
+                                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                                this.prompt_and_add_attachments(cx);
                                             }),
                                         ),
                                 )
@@ -3590,6 +3594,32 @@ impl Render for WorkspaceView {
                 }
                 if cmd_or_ctrl && key == "f" {
                     this.toggle_message_search(window, cx);
+                    return;
+                }
+                if cmd_or_ctrl && key == "u" {
+                    this.prompt_and_add_attachments(cx);
+                    return;
+                }
+                if cmd_or_ctrl && key == "e" {
+                    this.state.update(cx, |s, cx| {
+                        if s.emoji_picker_open {
+                            s.close_emoji_picker();
+                        } else {
+                            s.open_emoji_picker();
+                        }
+                        cx.notify();
+                    });
+                    return;
+                }
+                if this.state.read(cx).emoji_picker_open && (key == "enter" || key == " ") {
+                    let first_emoji = "😀";
+                    let range = this.composer_input.read(cx).selected_range();
+                    this.state.update(cx, |s, cx| {
+                        s.insert_emoji(first_emoji, range);
+                        s.close_emoji_picker();
+                        cx.notify();
+                    });
+                    window.focus(&this.composer_input.focus_handle(cx));
                     return;
                 }
                 if key == "escape" {

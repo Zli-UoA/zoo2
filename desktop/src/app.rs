@@ -239,14 +239,29 @@ pub struct MentionAutocompleteState {
 }
 
 /// チャンネル作成モーダル状態。
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateChannelModal {
     pub request_id: u64,
+    pub channel_id: Option<String>,
     pub channel_name: String,
     pub description: String,
     pub is_private: bool,
     pub error: Option<String>,
     pub in_flight: bool,
+}
+
+impl Default for CreateChannelModal {
+    fn default() -> Self {
+        Self {
+            request_id: 0,
+            channel_id: Some(uuid::Uuid::new_v4().to_string()),
+            channel_name: String::new(),
+            description: String::new(),
+            is_private: false,
+            error: None,
+            in_flight: false,
+        }
+    }
 }
 
 /// チャンネル内メッセージ検索状態。
@@ -1311,7 +1326,7 @@ impl AppState {
     /// - 現在アクティブ表示中のチャンネルでないこと（フォアグラウンドかつ同じチャンネル）
     /// - 既にローカル store に存在するメッセージや削除済みメッセージでないこと
     /// - 自分自身のメッセージでないこと
-    /// - (DM または自分への @メンション) かつ そのチャンネルのメンバーであること（未参加の公開チャンネルでのメンションを除外）
+    /// - (DM または自分への @メンション) かつ そのチャンネルのメンバーであること（未参加の公開チャンネルでのメンションを除外。ChannelUsers 未同期時は保留＝許可）
     pub fn should_notify_message(&self, ch: &str, msg: &Message) -> bool {
         if !self.notifications_enabled {
             return false;
@@ -1330,7 +1345,8 @@ impl AppState {
             return false;
         }
         let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-        let is_member = self.store.is_member(ch, &me.id);
+        let is_member =
+            !self.store.is_synced(&ShapeId::ChannelUsers) || self.store.is_member(ch, &me.id);
         let has_mention = has_mention_for(&msg.content, &me.user_name);
         (is_dm || has_mention) && is_member
     }
@@ -1407,7 +1423,9 @@ impl AppState {
                     } else {
                         format!("{sender_name} (#{channel_name})")
                     };
-                    let body = if content.chars().count() > 80 {
+                    let body = if content.trim().is_empty() {
+                        "ファイルが送信されました".to_string()
+                    } else if content.chars().count() > 80 {
                         let truncated: String = content.chars().take(80).collect();
                         format!("{truncated}...")
                     } else {
@@ -2075,7 +2093,9 @@ impl AppState {
                 self.fetching_attachment_urls.remove(&attachment_id);
                 self.failed_attachment_urls
                     .insert(attachment_id.clone(), Instant::now());
-                self.pending_open_attachments.remove(&attachment_id);
+                if self.pending_open_attachments.remove(&attachment_id) {
+                    self.notify("ファイルの取得に失敗しました");
+                }
                 true
             }
             AppEvent::RefreshAttachmentUrls => {
@@ -3153,7 +3173,7 @@ impl AppState {
         }
         if cur_attachments.iter().any(|a| a.error.is_some()) {
             self.notify(
-                "アップロードに失敗した添付ファイルがあります。削除するか再試行してください",
+                "アップロードに失敗した添付ファイルがあります。削除してからファイルを再度添付してください",
             );
             return false;
         }
@@ -3469,7 +3489,9 @@ impl AppState {
         let Some(me) = self.me.as_ref() else {
             return;
         };
-        if !self.store.is_member(&channel_id, &me.id) {
+        if self.store.is_synced(&ShapeId::ChannelUsers)
+            && !self.store.is_member(&channel_id, &me.id)
+        {
             self.notify("チャンネルに参加してからファイルを添付してください");
             return;
         }
@@ -3604,7 +3626,9 @@ impl AppState {
         let Some(me) = self.me.as_ref() else {
             return;
         };
-        if !self.store.is_member(&channel_id, &me.id) {
+        if self.store.is_synced(&ShapeId::ChannelUsers)
+            && !self.store.is_member(&channel_id, &me.id)
+        {
             self.notify("チャンネルに参加してからファイルを添付してください");
             return;
         }
@@ -3884,6 +3908,10 @@ impl AppState {
             Some(modal.description.trim().to_string())
         };
         let is_private = modal.is_private;
+        let channel_id = modal
+            .channel_id
+            .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
+            .clone();
         self.next_channel_create_id = self.next_channel_create_id.wrapping_add(1);
         let request_id = self.next_channel_create_id;
         modal.request_id = request_id;
@@ -3897,7 +3925,9 @@ impl AppState {
         let session_gen = self.session_gen;
 
         self.spawn_session_task(async move {
-            let res = api.create_channel(&name, desc.as_deref(), is_private).await;
+            let res = api
+                .create_channel(Some(&channel_id), &name, desc.as_deref(), is_private)
+                .await;
             match res {
                 Ok((channel, _)) => {
                     let _ = tx.send(DesktopEvent::App {
@@ -5784,6 +5814,19 @@ mod tests {
             state.pending_open_url,
             Some("https://example.com/download/att_99?X-Amz-Expires=300".into())
         );
+
+        // 未解決の添付ファイルをクリック後、URL 取得が失敗した場合はトースト通知が出る
+        let res2 = state.open_or_queue_attachment("att_fail");
+        assert!(res2.is_none());
+        assert!(state.pending_open_attachments.contains("att_fail"));
+        state.on_app_event(AppEvent::AttachmentUrlFailed {
+            attachment_id: "att_fail".into(),
+        });
+        assert!(!state.pending_open_attachments.contains("att_fail"));
+        assert_eq!(
+            state.notice.as_ref().map(|(msg, _)| msg.as_str()),
+            Some("ファイルの取得に失敗しました")
+        );
     }
 
     #[test]
@@ -7531,6 +7574,17 @@ mod tests {
         // 未参加の公開チャンネルのため、メンションがあっても通知対象にならないこと
         assert!(!state.should_notify_message("c_pub", &msg));
 
+        // ChannelUsers が未同期（同期中）の間は、所属確認を保留して通知を許可すること
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            Batch {
+                reset: true,
+                changes: vec![],
+                up_to_date: false,
+            },
+        ));
+        assert!(state.should_notify_message("c_pub", &msg));
+
         // チャンネルに参加した後は、メンション通知の対象になること
         state.on_shape(ShapeEvent::Batch(
             ShapeId::ChannelUsers,
@@ -7557,7 +7611,28 @@ mod tests {
 
         state.open_channel("c_pub".into());
 
-        // 未参加のチャンネルで添付ファイルの追加を試行
+        // ChannelUsers が未同期の間は、所属確認を保留して添付アップロードを許可すること
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            Batch {
+                reset: true,
+                changes: vec![],
+                up_to_date: false,
+            },
+        ));
+        state.add_attachment_from_bytes("unsynced.png".into(), "image/png".into(), vec![1, 2, 3]);
+        assert_eq!(state.pending_attachments.len(), 1);
+        state.pending_attachments.clear();
+
+        // ChannelUsers が同期済みになると、未参加のチャンネルでは添付ファイルの追加が拒否されること
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            Batch {
+                reset: false,
+                changes: vec![],
+                up_to_date: true,
+            },
+        ));
         state.add_attachment_from_bytes("test.png".into(), "image/png".into(), vec![1, 2, 3]);
 
         // 添付は追加されず、参加を促す通知が表示されること
@@ -7565,6 +7640,33 @@ mod tests {
         assert_eq!(
             state.notice.as_ref().map(|(m, _)| m.as_str()),
             Some("チャンネルに参加してからファイルを添付してください")
+        );
+    }
+
+    #[test]
+    fn submit_message_with_failed_attachment_shows_correct_notice() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.composer_draft = "Hello".into();
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "loc_fail".into(),
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            session_gen: state.session_gen,
+            file_name: "fail.png".into(),
+            file_size: 100,
+            content_type: "image/png".into(),
+            attachment_id: None,
+            is_uploading: false,
+            error: Some("upload failed".into()),
+        });
+
+        assert!(!state.submit_message("Hello".into()));
+        assert_eq!(
+            state.notice.as_ref().map(|(m, _)| m.as_str()),
+            Some(
+                "アップロードに失敗した添付ファイルがあります。削除してからファイルを再度添付してください"
+            )
         );
     }
 

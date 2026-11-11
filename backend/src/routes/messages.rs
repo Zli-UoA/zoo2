@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::HeaderMap,
     routing::{patch, post},
 };
 use serde::{Deserialize, Serialize};
@@ -129,9 +130,18 @@ pub fn router() -> Router<AppState> {
 async fn create_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    headers: HeaderMap,
     Json(payload): Json<CreateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
-    create_message_impl(state, auth_user, payload, true, None).await
+    let test_delay_ms = if state.config.dev_auth_enabled {
+        headers
+            .get("X-Test-Delay-Attachment-Verify")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+    } else {
+        None
+    };
+    create_message_impl(state, auth_user, payload, true, None, test_delay_ms).await
 }
 
 pub(crate) async fn check_idempotent_existing_message(
@@ -214,6 +224,7 @@ pub(crate) async fn create_message_impl(
     payload: CreateMessageRequest,
     notify: bool,
     card: Option<String>,
+    test_delay_ms: Option<u64>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
     let attachment_ids = payload.attachment_ids.unwrap_or_default();
     const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
@@ -338,6 +349,10 @@ pub(crate) async fn create_message_impl(
         {
             return Ok(Json(ApiResponse::new(msg_res, None)));
         }
+    }
+
+    if let Some(delay_ms) = test_delay_ms {
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
     }
 
     // 添付ファイルの検証 (外部ストレージへの HeadObject 検証はトランザクション外で実行)
