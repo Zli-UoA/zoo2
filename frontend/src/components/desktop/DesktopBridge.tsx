@@ -47,9 +47,8 @@ function DesktopBridgeInner({ channelId }: { channelId: string | null }) {
     let unsubscribe: (() => void) | null = null;
     // 初回の読み込みが済んでから、その時点の全行を reset 付きで送る。
     // Rust 側は reset のバッチでは通知を出さないので、起動時に過去の通知は出ない。
-    // stateWhenReady は永続化したキャッシュだけで解決することがあり、その後サーバーとの
-    // 同期で届いた古い通知は reset なしの差分になる。Rust 側は reset を受け取った時刻より
-    // 前に作られた通知を出さないので、これも出ない。
+    // stateWhenReady は preload (サーバーとの初回同期) を待つ。永続化したキャッシュを
+    // 先に表示する initialRender の準備完了とは別なので、キャッシュだけでは解決しない。
     // 行が 0 件でも送る（Rust 側が「初回の同期が済んだ」と分かるように）。
     // 全行の取得と購読の開始の間に await を挟まないので、その間の変化を取りこぼさない。
     void collection.stateWhenReady().then((state) => {
