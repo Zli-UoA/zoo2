@@ -10,6 +10,7 @@ import { resolveConfig, type AppConfig } from "../config";
 import { getCurrentUserStore } from "../currentUser";
 import { OFFLINE_SCHEMA_VERSION } from "../offline/schema";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
+import { MESSAGE_INDEX_COMPARE_OPTIONS } from "./messageOrder";
 import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
 import type {
@@ -77,6 +78,8 @@ function withPersistence<
   options: TOptions,
   persistence: PersistedCollectionPersistence | null | undefined,
   getKey: (row: T) => TKey,
+  /** 初回の描画で、ネットワークより先に復元済みの行を出すか。on-demand の同期では使えない。 */
+  networkFirst = true,
 ): TOptions {
   if (!persistence) {
     return options;
@@ -88,7 +91,10 @@ function withPersistence<
     getKey,
     persistence,
     schemaVersion: OFFLINE_SCHEMA_VERSION,
-    initialRender: { strategy: "network-first", networkTimeoutMs: 2_000 },
+    // `initialRender` は eager の同期でだけ使える (on-demand では、永続化の設定がエラーにする)。
+    ...(networkFirst
+      ? { initialRender: { strategy: "network-first", networkTimeoutMs: 2_000 } }
+      : {}),
   } as unknown as Parameters<typeof persistedCollectionOptions>[0]) as unknown as TOptions;
 }
 
@@ -182,6 +188,10 @@ function messagesCollection(
         id: `messages:${channelId}`,
         getKey: (row) => row.id,
         defaultIndexType: BasicIndex,
+        // 全件を同期せず、画面の live query が要求した範囲だけを Electric の subset snapshot で取る
+        // (`messageFeedQuery` の `orderBy(created_at desc).limit(N)`)。新着・編集・削除は、同期している
+        // 範囲について live で届く。詳細は docs/offline-windowed-messages.md。
+        syncMode: "on-demand",
         shapeOptions: shapeOptions("messages", config, { channelId }),
         onInsert: writes.onInsert,
         onUpdate: writes.onUpdate,
@@ -189,9 +199,16 @@ function messagesCollection(
       }),
       persistence,
       (row: MessageRow) => row.id,
+      false,
     ),
   );
   collection.createIndex((row) => row.id);
+  // 並びの `created_at` は文字列なので、`lexical` の比較に合わせたインデックスが要る。ないと、TanStack DB は
+  // ページ単位の取得をやめて、チャンネルの全行を取るフォールバックに黙って切り替わる。
+  collection.createIndex((row) => row.created_at, {
+    indexType: BasicIndex,
+    options: { compareOptions: MESSAGE_INDEX_COMPARE_OPTIONS },
+  });
   return collection;
 }
 

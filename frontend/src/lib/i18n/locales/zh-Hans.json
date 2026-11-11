@@ -236,7 +236,9 @@
     "loadError": "无法加载回复。",
     "empty": "暂无回复。发送第一条回复吧。",
     "compose": "输入回复",
-    "rootDeleted": "原消息已被删除"
+    "rootDeleted": "原消息已被删除",
+    "targetTooOld": "这条消息太久远，无法在此加载",
+    "unreadTooOld": "更早的未读消息未加载"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回应的用户",

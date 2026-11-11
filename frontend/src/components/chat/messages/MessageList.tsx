@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDownIcon } from "lucide-react";
 import {
@@ -20,6 +21,7 @@ import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
 import { MessageRow } from "./MessageRow";
+import { parseUtcTimestamp } from "../../../lib/timestamps";
 import { useMessageReadState } from "./useMessageReadState";
 import {
   classifyScrollChange,
@@ -33,6 +35,8 @@ const ESTIMATED_ROW_HEIGHT = 64;
 const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
 /** 上端からこの距離まで来たら、過去のメッセージを読み足す。 */
 const LOAD_OLDER_THRESHOLD = 64;
+/** 未読の区切りを置くために、既読位置まで読み足すページ数の上限。 */
+const MAX_UNREAD_PAGES = 20;
 /** Shape が無言で止まったときにスケルトン無限表示を避けるための上限。 */
 const LOADING_TIMEOUT_MS = 8_000;
 
@@ -57,7 +61,6 @@ interface MessageListProps {
   canReact: boolean;
   onReaction: (messageId: string, emoji: string) => void;
   onPickReaction: (messageId: string) => void;
-  replyCounts: Map<string, number>;
   attachments?: Map<string, AttachmentRow[]>;
   onOpenThread: (messageId: string) => void;
   /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
@@ -65,7 +68,11 @@ interface MessageListProps {
   /** オフラインか。スケルトンの代わりに保存済みがない旨を出す。 */
   isOffline?: boolean;
   /** 上端付近で過去のメッセージを読み足す。 */
-  onLoadOlder?: (oldestCreatedAt: string) => void;
+  onLoadOlder?: () => void;
+  /** 端末より古いメッセージが、まだあるか (ページ単位で取る)。 */
+  hasOlder?: boolean;
+  /** 古いページを取っている最中か。 */
+  isLoadingOlder?: boolean;
   /** 取得失敗・停止時の再試行。 */
   onRetry?: () => void;
 }
@@ -149,21 +156,27 @@ export function MessageList({
   canReact,
   onReaction,
   onPickReaction,
-  replyCounts,
   attachments,
   onOpenThread,
   canCompose = true,
   isOffline = false,
   onLoadOlder,
+  hasOlder = true,
+  isLoadingOlder = false,
   onRetry,
 }: MessageListProps) {
   const { t } = useTranslation();
   const {
     firstUnreadId,
+    lastRead,
     markRead,
     isLoading: readStateLoading,
     isError: readStateError,
   } = useMessageReadState(channelId, currentUserId, messages, isLoading || isError, isWritePending);
+  // 古いページを取っている最中や、古いメッセージがないときは、要求しない (同じ要求を重ねない)。
+  const loadOlder = useCallback(() => {
+    if (hasOlder && !isLoadingOlder) onLoadOlder?.();
+  }, [hasOlder, isLoadingOlder, onLoadOlder]);
   // 既読位置の取得に失敗しても、保存済みのメッセージは隠さない。
   // 未読区切りだけを出さずに描画する（オフライン時に空になるのを防ぐ）。
   const items = useMemo(
@@ -243,14 +256,14 @@ export function MessageList({
       setHasNewBelow(false);
       markRead();
     }
-    if (element.scrollTop <= LOAD_OLDER_THRESHOLD) {
-      const oldest = messages[0];
-      if (oldest) {
-        onLoadOlder?.(oldest.created_at);
-      }
+    if (element.scrollTop <= LOAD_OLDER_THRESHOLD && messages.length > 0) {
+      loadOlder();
     }
-  }, [captureScrollAnchor, editingId, markRead, messages, onLoadOlder]);
+  }, [captureScrollAnchor, editingId, markRead, messages.length, loadOlder]);
 
+  // 既読位置が、最初に読み込んだ範囲より古いとき、読み足しが終わるまで未読の先頭へ移動するのを待つ。
+  const unreadPagesRef = useRef(0);
+  const pendingUnreadJumpRef = useRef(false);
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element) {
@@ -260,8 +273,25 @@ export function MessageList({
     const next = snapshot(ids);
     const change = classifyScrollChange(snapshotRef.current, next, new Set(ids));
 
+    // 件数の上限で、新着の分だけ最古の行が外れたとき (先頭が変わる append)。最下部にいなければ、
+    // 読んでいる行の位置を保つ。
+    const lastItem = items[items.length - 1];
+    const slid =
+      change === "append" &&
+      snapshotRef.current.firstId !== next.firstId &&
+      // 自分の送信は、上にスクロールしていても最下部へ追従する (下の append の処理)。
+      lastItem?.message.user_id !== currentUserId;
     let stopRestoring: (() => void) | undefined;
-    if (change === "prepend") {
+    const oldest = messages[0] ? parseUtcTimestamp(messages[0].created_at).getTime() : NaN;
+    const unreadCovered =
+      lastRead === null ||
+      lastRead <= 0 ||
+      !Number.isFinite(oldest) ||
+      oldest <= lastRead ||
+      !hasOlder ||
+      unreadPagesRef.current >= MAX_UNREAD_PAGES;
+    const awaitingUnread = pendingUnreadJumpRef.current && change === "prepend";
+    if (!awaitingUnread && (change === "prepend" || (slid && !atBottomRef.current))) {
       // Estimates for unmounted rows must not decide which message the reader sees.
       const anchor = scrollAnchorRef.current;
       const index = anchor ? items.findIndex((item) => item.message.id === anchor.id) : -1;
@@ -319,10 +349,17 @@ export function MessageList({
         };
         restore();
       }
+      if (slid) {
+        setHasNewBelow(true);
+        if (lastItem) setLiveAnnouncement(newMessageAnnouncement(lastItem.message, t));
+      }
     } else if (change === "initial" && firstUnreadId) {
       const index = items.findIndex((item) => item.message.id === firstUnreadId);
       atBottomRef.current = false;
+      pendingUnreadJumpRef.current = !unreadCovered && !targetMessageId;
       requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "start" }));
+    } else if (awaitingUnread) {
+      // 読み足しの途中: 位置は動かさない (終わったら、下で未読の先頭へ合わせる)。
     } else if (shouldStickToBottom(change, atBottomRef.current)) {
       requestAnimationFrame(() => scrollToBottom());
     } else if (change === "append") {
@@ -338,9 +375,32 @@ export function MessageList({
       }
     }
 
+    if (pendingUnreadJumpRef.current && change !== "initial" && unreadCovered && !isLoadingOlder) {
+      pendingUnreadJumpRef.current = false;
+      const index = firstUnreadId
+        ? items.findIndex((item) => item.message.id === firstUnreadId)
+        : -1;
+      if (index >= 0) {
+        atBottomRef.current = false;
+        requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "start" }));
+      }
+    }
+
     snapshotRef.current = next;
     return () => stopRestoring?.();
-  }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer, captureScrollAnchor]);
+  }, [
+    items,
+    messages,
+    lastRead,
+    hasOlder,
+    isLoadingOlder,
+    currentUserId,
+    scrollToBottom,
+    t,
+    firstUnreadId,
+    virtualizer,
+    captureScrollAnchor,
+  ]);
 
   // Decide the initial unread position before following resized rows.
   useLayoutEffect(() => {
@@ -355,16 +415,32 @@ export function MessageList({
   });
 
   // 一覧がスクロールできないほど短い場合でも、上端スクロール相当の操作が
-  // できないため、古いメッセージがあれば自動で窓を広げる。
+  // できないため、古いメッセージがあれば自動で 1 ページずつ読み足す。
   useEffect(() => {
     const element = scrollRef.current;
-    if (!element || messages.length === 0 || !onLoadOlder) {
+    if (!element || messages.length === 0) {
       return;
     }
     if (element.scrollHeight <= element.clientHeight + LOAD_OLDER_THRESHOLD) {
-      onLoadOlder(messages[0]!.created_at);
+      loadOlder();
     }
-  }, [messages, onLoadOlder]);
+  }, [messages, loadOlder]);
+
+  // 既読位置が、いま読み込んでいる範囲より古いときは、既読位置を含むまで読み足す (未読の区切りを置くため)。
+  // 未読が多すぎるときのために、読み足す回数には上限がある。
+  useEffect(() => {
+    if (lastRead === null || lastRead <= 0 || messages.length === 0) return;
+    const oldest = parseUtcTimestamp(messages[0]!.created_at).getTime();
+    if (!Number.isFinite(oldest) || oldest <= lastRead) return;
+    if (!hasOlder || isLoadingOlder || !onLoadOlder) return;
+    if (unreadPagesRef.current >= MAX_UNREAD_PAGES) {
+      // 上限までに、既読位置まで届かなかった。未読の先頭は、読み込んでいない範囲にある。
+      toast.info(t("threads.unreadTooOld"), { id: "unread-too-old" });
+      return;
+    }
+    unreadPagesRef.current += 1;
+    onLoadOlder();
+  }, [lastRead, messages, hasOlder, isLoadingOlder, onLoadOlder, t]);
 
   useEffect(() => {
     const update = () => {
@@ -397,6 +473,8 @@ export function MessageList({
       atBottomRef.current = false;
       virtualizer.scrollToIndex(index, { align: "center" });
       scrolledTarget.current = targetMessageId;
+      // 通知・リンクの対象へ移動したら、未読の先頭への保留中の移動は取り消す。
+      pendingUnreadJumpRef.current = false;
     });
     return () => cancelAnimationFrame(frame);
   }, [targetMessageId, items, virtualizer]);
@@ -513,11 +591,7 @@ export function MessageList({
                     onCancelEdit={onCancelEdit}
                     onSaveEdit={onSaveEdit}
                     onRequestDelete={() => onRequestDelete(item.message.id)}
-                    replyCount={
-                      item.message.display_data?.reply_count ??
-                      replyCounts.get(item.message.id) ??
-                      0
-                    }
+                    replyCount={item.message.display_data?.reply_count ?? 0}
                     onOpenThread={() => onOpenThread(item.message.id)}
                     attachments={
                       item.message.display_data?.attachments ??
