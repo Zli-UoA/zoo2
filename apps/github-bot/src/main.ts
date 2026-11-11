@@ -84,6 +84,7 @@ async function main() {
     )
       throw new Error("This database belongs to another Zoo App; use a separate database");
     store.set("zoo-identity", identity);
+    store.remove("zoo-disabled");
     const github = new GitHub(config, store);
     bot = new GitHubBot(config, store, github, zoo);
     http = server(config, store);
