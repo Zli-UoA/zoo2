@@ -241,6 +241,8 @@
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",
     "usersTitle": "{{emoji}}에 반응한 사용자",
+    "showAllUsers": "반응한 사용자 표시",
+    "allUsersTitle": "반응한 사용자",
     "usersLoading": "사용자를 불러오는 중",
     "userUnavailable": "사용자를 표시할수 없습니다",
     "usersEmpty": "반응이 없습니다",
