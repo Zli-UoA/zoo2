@@ -92,6 +92,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
 
 const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["apply", "plan", "validate"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"]};
 const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
+const largeJobs = {"ci-backend.yaml": ["check"], "ci-frontend.yaml": ["browser-test"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
 const hostedJobs = {"ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
   // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
@@ -128,7 +129,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         continue;
       }
       const docker = (dockerJobs[file] || []).includes(id);
-      const large = file === 'ci-frontend.yaml' && id === 'browser-test';
+      const large = (largeJobs[file] || []).includes(id);
       const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);
       if (hosted) {
