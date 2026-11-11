@@ -16,7 +16,15 @@ pub fn show(app: &AppHandle, title: &str, body: &str, target: OpenTarget) {
         // "default" はクリックしたときの action (freedesktop の仕様)。
         notification.action("default", "開く");
         let app = app.clone();
+        let body = body.to_string();
         std::thread::spawn(move || {
+            // 本文をマークアップとして読む通知サーバーでは、投稿の `<` や `&` がタグとして
+            // 扱われないようにエスケープする。
+            let markup = notify_rust::get_capabilities()
+                .is_ok_and(|caps| caps.iter().any(|cap| cap == "body-markup"));
+            if markup {
+                notification.body(&escape_markup(&body));
+            }
             let Ok(handle) = notification.show() else {
                 return;
             };
@@ -32,5 +40,24 @@ pub fn show(app: &AppHandle, title: &str, body: &str, target: OpenTarget) {
     {
         let _ = (app, target);
         let _ = notification.show();
+    }
+}
+
+/// freedesktop の通知の本文 (簡単な XML のマークアップ) で、文字として表示させる。
+#[cfg(all(unix, not(target_os = "macos")))]
+fn escape_markup(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+#[cfg(all(test, unix, not(target_os = "macos")))]
+mod tests {
+    #[test]
+    fn escapes_markup() {
+        assert_eq!(
+            super::escape_markup("a < b && <img src=x>"),
+            "a &lt; b &amp;&amp; &lt;img src=x&gt;"
+        );
     }
 }

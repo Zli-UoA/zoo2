@@ -106,13 +106,14 @@ fn App() -> impl IntoView {
     provide_context(ctx);
 
     spawn_local(async move {
-        tauri::listen(event::SESSION, move |info: SessionInfo| {
-            ctx.set_session(info)
-        })
-        .await;
+        // SHAPE を先に購読する。SESSION の Ready で呼ぶ `zoo_resync` の行を取りこぼさないため。
         tauri::listen(event::SHAPE, move |batch: ShapeBatch| {
             ctx.store
                 .update(|store| store.apply(&batch.shape, batch.batch));
+        })
+        .await;
+        tauri::listen(event::SESSION, move |info: SessionInfo| {
+            ctx.set_session(info)
         })
         .await;
         tauri::listen(event::SHAPE_FAILED, move |failed: ShapeFailed| {
@@ -246,9 +247,16 @@ fn ChannelList() -> impl IntoView {
                         let id = id.clone();
                         move || ctx.channel.get().as_deref() == Some(id.as_str())
                     };
+                    let current = selected.clone();
                     view! {
-                        <li class:selected=selected on:click=move |_| ctx.open_channel(id.clone())>
-                            {label}
+                        <li>
+                            <button
+                                class:selected=selected
+                                aria-current=move || current().then_some("page")
+                                on:click=move |_| ctx.open_channel(id.clone())
+                            >
+                                {label}
+                            </button>
                         </li>
                     }
                 }
@@ -273,10 +281,13 @@ fn Timeline(channel_id: String) -> impl IntoView {
         })
     };
     let list = NodeRef::<html::Div>::new();
-    // 新しい行が届いたら一番下まで送る。
-    Effect::new(move |_| {
+    // 新しい行が届いたときだけ一番下まで送る。ほかの Shape の更新でもこの Effect は
+    // 走るので、件数が増えていなければスクロールの位置を変えない。
+    Effect::new(move |previous: Option<usize>| {
         let count = messages.with(Vec::len);
-        if let Some(list) = list.get() {
+        if previous.is_none_or(|previous| count > previous)
+            && let Some(list) = list.get()
+        {
             list.set_scroll_top(list.scroll_height());
         }
         count
@@ -322,11 +333,12 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
                         }
                     }
                     match style.tone {
-                        Tone::Link => {
-                            let href = span.content.clone();
-                            view! { <a class=class href=href>{span.content}</a> }
-                        }
-                        .into_any(),
+                        Tone::Link => match span.href {
+                            Some(href) => {
+                                view! { <a class=class href=href>{span.content}</a> }.into_any()
+                            }
+                            None => view! { <span class=class>{span.content}</span> }.into_any(),
+                        },
                         tone => {
                             class.push_str(match tone {
                                 Tone::Code => "code",
@@ -390,6 +402,7 @@ fn Composer(channel_id: String) -> impl IntoView {
         }
         sending.set(true);
         spawn_local(async move {
+            let sent = content.clone();
             let message = SendMessage {
                 id: uuid::Uuid::new_v4().to_string(),
                 channel_id,
@@ -402,7 +415,9 @@ fn Composer(channel_id: String) -> impl IntoView {
             )
             .await
             {
-                Ok(_) => textarea.set_value(""),
+                // 送信を待つ間に書き足された分 (変換中の文字も含む) は消さない。
+                Ok(_) if textarea.value() == sent => textarea.set_value(""),
+                Ok(_) => {}
                 Err(err) => ctx.error.set(Some(err.message)),
             }
             sending.set(false);
