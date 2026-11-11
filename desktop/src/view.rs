@@ -547,6 +547,13 @@ impl WorkspaceView {
     }
 
     fn prompt_and_add_attachments(&mut self, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let Some(channel_id) = state.current_channel.as_deref() else {
+            return;
+        };
+        if !state.can_post_in_channel(channel_id) {
+            return;
+        }
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -1257,6 +1264,10 @@ impl WorkspaceView {
                                         div()
                                             .id("btn-toggle-theme")
                                             .track_focus(&self.theme_toggle_focus)
+                                            .focus(|s| {
+                                                s.border_color(theme.border_accent)
+                                                    .bg(theme.bg_hover)
+                                            })
                                             .px_1p5()
                                             .py_0p5()
                                             .rounded_sm()
@@ -2914,6 +2925,14 @@ impl WorkspaceView {
                 theme.success
             };
 
+            let del_focus = self
+                .attachment_focus_handles
+                .borrow_mut()
+                .entry(format!("pending_del:{}", att.local_id))
+                .or_insert_with(|| cx.focus_handle().tab_stop(true))
+                .clone();
+            let lid_kd = local_id.clone();
+
             div()
                 .px_2p5()
                 .py_1()
@@ -2935,6 +2954,8 @@ impl WorkspaceView {
                 .child(div().text_xs().text_color(text_color).child(status_text))
                 .child(
                     div()
+                        .track_focus(&del_focus)
+                        .focus(|s| s.border_1().border_color(theme.danger).bg(theme.bg_hover))
                         .px_1()
                         .rounded_sm()
                         .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
@@ -2950,7 +2971,17 @@ impl WorkspaceView {
                                     cx.notify();
                                 });
                             }),
-                        ),
+                        )
+                        .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                            if is_activate_key(&ev.keystroke.key) {
+                                cx.stop_propagation();
+                                let lid = lid_kd.clone();
+                                this.state.update(cx, |s, cx| {
+                                    s.remove_pending_attachment(&lid);
+                                    cx.notify();
+                                });
+                            }
+                        })),
                 )
         });
 

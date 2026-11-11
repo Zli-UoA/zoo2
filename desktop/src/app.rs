@@ -3570,6 +3570,18 @@ impl AppState {
             self.notify("チャンネルに参加してからファイルを添付してください");
             return;
         }
+        if self
+            .store
+            .channel(&channel_id)
+            .is_some_and(|c| c.archive_at.is_some())
+        {
+            self.notify("アーカイブされたチャンネルにはファイルを添付できません");
+            return;
+        }
+        if !self.can_post_in_channel(&channel_id) {
+            self.notify("このチャンネルには投稿権限がありません");
+            return;
+        }
         let Some(api) = self.api.clone() else {
             return;
         };
@@ -3705,6 +3717,18 @@ impl AppState {
             && !self.store.is_member(&channel_id, &me.id)
         {
             self.notify("チャンネルに参加してからファイルを添付してください");
+            return;
+        }
+        if self
+            .store
+            .channel(&channel_id)
+            .is_some_and(|c| c.archive_at.is_some())
+        {
+            self.notify("アーカイブされたチャンネルにはファイルを添付できません");
+            return;
+        }
+        if !self.can_post_in_channel(&channel_id) {
+            self.notify("このチャンネルには投稿権限がありません");
             return;
         }
         let Some(api) = self.api.clone() else {
@@ -7855,6 +7879,72 @@ mod tests {
         assert_eq!(
             state.notice.as_ref().map(|(m, _)| m.as_str()),
             Some("チャンネルに参加してからファイルを添付してください")
+        );
+    }
+
+    #[test]
+    fn restricted_channel_blocks_attachment_upload() {
+        let mut state = connected_state();
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c_mgr",
+                json!({
+                    "id": "c_mgr",
+                    "channel_name": "announcements",
+                    "is_private": "f",
+                    "created_user_id": "u2",
+                    "posting_policy": "managers",
+                }),
+            )]),
+        ));
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![(
+                "cu_mgr",
+                json!({ "user_id": "u1", "channel_id": "c_mgr" }),
+            )]),
+        ));
+        state.open_channel("c_mgr".into());
+        assert!(!state.can_post_in_channel("c_mgr"));
+
+        state.add_attachment_from_bytes("test.png".into(), "image/png".into(), vec![1, 2, 3]);
+        assert!(state.pending_attachments.is_empty());
+        assert_eq!(
+            state.notice.as_ref().map(|(m, _)| m.as_str()),
+            Some("このチャンネルには投稿権限がありません")
+        );
+    }
+
+    #[test]
+    fn archived_channel_blocks_attachment_upload() {
+        let mut state = connected_state();
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c_archived",
+                json!({
+                    "id": "c_archived",
+                    "channel_name": "old-project",
+                    "is_private": "f",
+                    "archive_at": "2026-01-01 00:00:00",
+                }),
+            )]),
+        ));
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![(
+                "cu_arch",
+                json!({ "user_id": "u1", "channel_id": "c_archived" }),
+            )]),
+        ));
+        state.open_channel("c_archived".into());
+
+        state.add_attachment_from_bytes("test.png".into(), "image/png".into(), vec![1, 2, 3]);
+        assert!(state.pending_attachments.is_empty());
+        assert_eq!(
+            state.notice.as_ref().map(|(m, _)| m.as_str()),
+            Some("アーカイブされたチャンネルにはファイルを添付できません")
         );
     }
 
