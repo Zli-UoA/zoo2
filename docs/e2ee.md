@@ -700,7 +700,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
   端末鍵とクロス署名鍵は、アップロードされたときの署名付きの JSON をそのまま返す。`tofu_pins` には、問い合わせたユーザーに対する自分のピン（署名付き）を返す。`signatures` には、[Shape](#electric-の-shape) と同じ範囲の `e2ee_key_signatures` の行を返す。【決定】問い合わせできるのは、自分と、暗号化チャンネルを共有しているユーザー（削除されていない暗号化チャンネルだけ。`channels.deleted_at IS NULL`。チャンネルの削除（`channels.deleted_at`）は `channel_user` の行を消さないので、条件に入れないと、削除済みのチャンネルの元メンバーが共有相手に残る。応答の端末も `e2ee_devices.deleted_at IS NULL` のものだけ。`keys/claim`、to-device の宛先、`recipients` も同じ）（[端末の Shape](#electric-の-shape) と to-device の宛先と同じ where）。範囲外のユーザーは、存在を推測されないよう、エラーにせず応答から除く。Users Shape はゲスト以外では全ユーザーを返すので、それに合わせると、暗号化チャンネルを共有していない相手の端末鍵やクロス署名の関係まで取得できてしまうため。暗号化 DM を始めるときは、先に `POST /api/dms` で DM を作るので、その時点で暗号化チャンネルを共有する相手になる。全ユーザーの端末鍵は要らない。
   - 【決定】例外として、呼び出したユーザーがピンか署名（`e2ee_tofu_pins` か、自分を署名者とする `e2ee_key_signatures`）を持つ相手については、暗号化チャンネルを共有していなくても、マスター鍵だけを返す（端末鍵、自己署名鍵、ワンタイム鍵は返さない）。マスター鍵は公開鍵で、暗号化 DM を作れば誰でも共有相手になれる（上）ので、この例外で広がる情報は、署名やピンを作った相手のマスター鍵の公開鍵だけで、意図どおり。失効の手順 4 で、SAS（#368）や #362 の受け入れで署名した相手が、すでに暗号化チャンネルを抜けていても、その相手の今のマスター鍵で署名を検証して付け直せるようにするため。ユーザー署名鍵は本人にだけ返す。暗号化チャンネルを共有する相手の鍵は [Shape](#electric-の-shape) で受け取り、この API は初回と Shape が追いつかないときの補助に使う。ピンや署名だけの相手（共有していない相手）のマスター鍵は Shape に来ないので、失効の手順 4 の直前などに、この API で取る。
-- `POST /api/e2ee/keys/claim`：【決定】ワンタイム鍵の払い出しの回数（1 日の上限。20 個は【決定】（#354））は、`INSERT INTO e2ee_one_time_key_claim_counts ... ON CONFLICT DO UPDATE SET claimed = claimed + 1 WHERE claimed < 20` のような原子的な更新で数え、更新できなければ（上限）フォールバック鍵を返す。同じ端末への `POST /api/e2ee/keys/upload`（1 端末 100 個）は、端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`。端末の削除と to-device の送信と同じキー。別のキーだと、アップロードと削除が直列にならず、削除後に鍵が入り直す）を取って、件数の確認と挿入を直列にする。`{"one_time_keys": {"<user_id>": {"<device_id>": "signed_curve25519"}}}`。端末ごとにワンタイム鍵を 1 つ払い出し、なければフォールバック鍵を返す。応答は `{"one_time_keys": {"<user_id>": {"<device_id>": {"signed_curve25519:<key_id>": {"key": "...", "signatures": {}}}}}}` で、鍵がない端末は含めない。【決定】ワンタイム鍵は、`SELECT ... ORDER BY created_at, key_id LIMIT 1 FOR UPDATE SKIP LOCKED` で 1 行をロックしてから、別の文で主キーを指定して `DELETE` し、並行した claim でも同じ鍵を 2 回返さない（1 文の `DELETE ... WHERE ... IN (SELECT ... FOR UPDATE SKIP LOCKED)` は、計画によって、残っている鍵があっても 0 行になることがあるため）。払い出した鍵は、同じ文で `e2ee_claimed_one_time_keys` に移し、アップロードの応答をなくした再送でも入れ直さない（同じ `key_id` で同じ内容は無視、内容が違えば 409 `E2EE_KEY_EXISTS`）。この表の行は端末の行と一緒に消える（削除から 30 日のバッチ）。行の数は、その端末と作った Olm セッションの数と同じ程度。フォールバック鍵を返したら `used = true` にする。
+- `POST /api/e2ee/keys/claim`：【決定】ワンタイム鍵の払い出しの回数（1 日の上限。20 個は【決定】（#354））は、`INSERT INTO e2ee_one_time_key_claim_counts ... ON CONFLICT DO UPDATE SET claimed = claimed + 1 WHERE claimed < 20` のような原子的な更新で数え、更新できなければ（上限）フォールバック鍵を返す。同じ端末への `POST /api/e2ee/keys/upload`（1 端末 100 個）は、端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`。端末の削除と to-device の送信と同じキー。別のキーだと、アップロードと削除が直列にならず、削除後に鍵が入り直す）を取って、件数の確認と挿入を直列にする。`{"one_time_keys": {"<user_id>": {"<device_id>": "signed_curve25519"}}}`。端末ごとにワンタイム鍵を 1 つ払い出し、なければフォールバック鍵を返す。応答は `{"one_time_keys": {"<user_id>": {"<device_id>": {"signed_curve25519:<key_id>": {"key": "...", "signatures": {}}}}}}` で、鍵がない端末は含めない。【決定】ワンタイム鍵は、`SELECT ... ORDER BY created_at, key_id LIMIT 1 FOR UPDATE SKIP LOCKED` で 1 行をロックしてから、別の文で主キーを指定して `claimed_at = now()` に更新し、並行した claim でも同じ鍵を 2 回返さない（1 文の `UPDATE ... WHERE ... IN (SELECT ... FOR UPDATE SKIP LOCKED)` は、計画によって、残っている鍵があっても 0 行になることがあるため）。払い出した鍵の行は消さずに残し（`claimed_at` あり）、アップロードの応答をなくした再送は主キーの衝突（`ON CONFLICT DO NOTHING`）で入れ直さない（同じ `key_id` で内容が違えば 409 `E2EE_KEY_EXISTS`）。主キーで判定するので、払い出しがコミットする前に再送の `INSERT` が始まっても、衝突した行の確定を待ってから判定し、入り直らない（別の表に移す方法では、再送の文のスナップショットに移した行が見えず、入り直る）。払い出し済みの行は端末の行と一緒に消える（削除から 30 日のバッチ）。件数の上限（100 個）と応答の `one_time_key_counts` は、払い出していない鍵だけを数える。行の数は、その端末と作った Olm セッションの数と同じ程度。フォールバック鍵を返したら `used = true` にする。
   - 【決定】フォールバック鍵は、今の鍵より新しい世代のときだけ置き換える。世代は `key_id`（vodozemac の `KeyId`。端末ごとに 1 ずつ増える u64 のビッグエンディアンの 8 バイトをパディングなし base64 にしたもの）で比べ、デコードできない `key_id` のフォールバック鍵は 400 にする。古い世代の鍵（遅れて届いた要求や、応答をなくした再送）は、エラーにせずに無視する。端末は今と 1 つ前のフォールバック鍵の秘密鍵しか持たないので、古い鍵に巻き戻すと、その鍵を払い出された送信者が作った Olm セッションを宛先が開けないため。同じ `key_id` で同じ内容は何もせず（`used` を戻さない）、内容が違えば 409 `E2EE_KEY_EXISTS`。
   - 払い出せるのは、`keys/query` で問い合わせできるのと同じ範囲（自分と、暗号化チャンネルを共有しているユーザー）の端末だけ。範囲外のユーザーと端末は、存在を推測されないよう、エラーにせず黙って応答から除く。
   - 【決定】ゲストでないユーザーは、`POST /api/dms` で相手の同意なしに暗号化 DM を作れるので、誰でも任意の相手と「暗号化チャンネルを共有するユーザー」になれる。範囲を限るだけでは、端末鍵の取得やワンタイム鍵の枯渇を防げない。そこで、呼び出したユーザーと宛先の端末の組ごとに、ワンタイム鍵の払い出しを 1 日に 20 個までにする（数え方は【決定】。20 個は #354 で【決定】。1 ユーザーの端末の最大数（20 台）以上にする。送信側が端末をすべて使っても、1 台につき 1 個ずつ払い出せるように）。上限を超えた払い出しにはエラーを返さず、フォールバック鍵を返す。送信者は今までどおり Olm セッションを作れるので、宛先の端末を黙って飛ばすことはない。正規の送信者が必要とするのは、送信者の端末ごとに、宛先の端末と Olm セッションを作るときの 1 個ずつ（送信者の端末の数だけ。ログインし直すと新しい端末になる）なので、この上限で足りる。払い出しの要求の回数（宛先にワンタイム鍵がなくフォールバック鍵を返した要求も数える。判定を先に行うため）は、呼び出したユーザー、宛先の端末、日付の組で数える表（`e2ee_one_time_key_claim_counts`。`claimed` は要求の回数）に持つ（表は【決定】、数の列の意味もここで決める）。
@@ -960,6 +960,7 @@ CREATE TABLE e2ee_one_time_keys (
   key_id text NOT NULL,
   key_json jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
+  claimed_at timestamptz,  -- 払い出した時刻（行は残し、再送が主キーで衝突して入り直らないようにする）
   PRIMARY KEY (user_id, device_id, algorithm, key_id),
   FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
 );
@@ -973,17 +974,6 @@ CREATE TABLE e2ee_fallback_keys (
   used boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, device_id, algorithm),
-  FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
-);
-
--- 払い出したワンタイム鍵の key_id（再送で入れ直さないため。端末の行と一緒に消える）
-CREATE TABLE e2ee_claimed_one_time_keys (
-  user_id text NOT NULL,
-  device_id text NOT NULL,
-  key_id text NOT NULL,
-  key_json jsonb NOT NULL,
-  claimed_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, device_id, key_id),
   FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
 );
 

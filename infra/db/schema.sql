@@ -2504,9 +2504,15 @@ CREATE TABLE e2ee_one_time_keys (
   key_id text NOT NULL,
   key_json jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
+  -- 払い出した時刻。払い出した鍵も行を消さずに残し、アップロードの応答をなくした再送が、主キーの
+  -- 衝突で入り直らないようにする（並行した払い出しのコミット前に再送が始まっても）。端末の行と一緒に消える。
+  claimed_at timestamptz,
   PRIMARY KEY (user_id, device_id, algorithm, key_id),
   FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
 );
+-- 払い出しと件数の確認は、まだ払い出していない鍵だけを読む。
+CREATE INDEX e2ee_one_time_keys_unclaimed ON e2ee_one_time_keys (user_id, device_id, created_at, key_id)
+  WHERE claimed_at IS NULL;
 
 CREATE TABLE e2ee_fallback_keys (
   user_id text NOT NULL,
@@ -2517,18 +2523,6 @@ CREATE TABLE e2ee_fallback_keys (
   used boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, device_id, algorithm),
-  FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
-);
-
--- 払い出したワンタイム鍵の key_id。アップロードの応答をなくした再送で、払い出し済みの鍵が入り直って
--- 2 回払い出されないようにする。端末の行と一緒に消える（削除から 30 日のバッチ）。
-CREATE TABLE e2ee_claimed_one_time_keys (
-  user_id text NOT NULL,
-  device_id text NOT NULL,
-  key_id text NOT NULL,
-  key_json jsonb NOT NULL,
-  claimed_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, device_id, key_id),
   FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
 );
 

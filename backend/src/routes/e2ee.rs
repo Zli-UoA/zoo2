@@ -384,7 +384,8 @@ async fn key_counts(
         tx,
         "SELECT json_build_object(
            'one_time_key_counts', json_build_object('signed_curve25519',
-             (SELECT count(*) FROM e2ee_one_time_keys WHERE user_id = $1 AND device_id = $2)),
+             (SELECT count(*) FROM e2ee_one_time_keys
+                WHERE user_id = $1 AND device_id = $2 AND claimed_at IS NULL)),
            'unused_fallback_key_types', COALESCE((SELECT json_agg(algorithm ORDER BY algorithm)
              FROM e2ee_fallback_keys WHERE user_id = $1 AND device_id = $2 AND NOT used), '[]'::json)
          )::text",
@@ -397,7 +398,7 @@ async fn key_counts(
 /// 端末単位のロックを取ったあとで、ワンタイム鍵とフォールバック鍵を入れる。
 ///
 /// 同じ `key_id` で同じ内容の再送は無視し、内容が違えば 409 `E2EE_KEY_EXISTS`。
-/// 払い出し済みのワンタイム鍵（`e2ee_claimed_one_time_keys`）も同じに扱い、入れ直さない。
+/// 払い出し済みのワンタイム鍵（`claimed_at` あり）も行が残るので、主キーの衝突で入れ直さない。
 /// フォールバック鍵は、今の鍵より新しい世代（`key_id`）のときだけ置き換える。
 /// 入れたあとのワンタイム鍵とフォールバック鍵の合計が上限を超えるなら 400 `E2EE_LIMIT_EXCEEDED`。
 async fn store_keys(
@@ -422,17 +423,15 @@ async fn store_keys(
     let check = first(
         tx,
         "WITH n AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS n(key_id text, key_json jsonb)),
-         -- 置いてある鍵か、払い出し済みの鍵と同じ key_id の鍵。
+         -- 置いてある鍵（払い出し済みを含む）と同じ key_id の鍵。
          seen AS (
            SELECT k.key_id, k.key_json FROM e2ee_one_time_keys k
-             WHERE k.user_id = $1 AND k.device_id = $2 AND k.algorithm = 'signed_curve25519'
-           UNION ALL
-           SELECT c.key_id, c.key_json FROM e2ee_claimed_one_time_keys c
-             WHERE c.user_id = $1 AND c.device_id = $2)
+             WHERE k.user_id = $1 AND k.device_id = $2 AND k.algorithm = 'signed_curve25519')
          SELECT json_build_object(
            'conflict', EXISTS (SELECT 1 FROM n JOIN seen ON seen.key_id = n.key_id
              WHERE seen.key_json <> n.key_json),
-           'total', (SELECT count(*) FROM e2ee_one_time_keys k WHERE k.user_id = $1 AND k.device_id = $2)
+           'total', (SELECT count(*) FROM e2ee_one_time_keys k
+               WHERE k.user_id = $1 AND k.device_id = $2 AND k.claimed_at IS NULL)
              + (SELECT count(*) FROM n WHERE NOT EXISTS (SELECT 1 FROM seen WHERE seen.key_id = n.key_id))
              + CASE WHEN $4::boolean OR EXISTS (SELECT 1 FROM e2ee_fallback_keys f
                  WHERE f.user_id = $1 AND f.device_id = $2) THEN 1 ELSE 0 END,
@@ -478,14 +477,13 @@ async fn store_keys(
         }
     };
     if !one_time_keys.is_empty() {
-        // 払い出し済みの鍵は、応答をなくした再送でも入れ直さない（同じ鍵を 2 回払い出さない）。
+        // 払い出し済みの鍵も行が残るので、応答をなくした再送は主キーの衝突で入らない（同じ鍵を 2 回払い出さない）。
+        // 払い出しがコミットする前でも、衝突した行の確定を待ってから判定するので、入り直らない。
         exec(
             tx,
             "INSERT INTO e2ee_one_time_keys (user_id, device_id, algorithm, key_id, key_json)
              SELECT $1, $2, 'signed_curve25519', n.key_id, n.key_json
              FROM jsonb_to_recordset($3::jsonb) AS n(key_id text, key_json jsonb)
-             WHERE NOT EXISTS (SELECT 1 FROM e2ee_claimed_one_time_keys c
-               WHERE c.user_id = $1 AND c.device_id = $2 AND c.key_id = n.key_id)
              ON CONFLICT DO NOTHING",
             &[user_id, device_id, &new_keys],
         )
@@ -1028,28 +1026,24 @@ async fn claim_keys(
         let mut key = None;
         if counted {
             // 並行した claim でも同じ鍵を 2 回払い出さない。ほかの claim がロックしている鍵は飛ばして、
-            // 次の鍵を取る（DELETE ... IN (SELECT ... SKIP LOCKED) の 1 文にすると、計画によっては
-            // 残っている鍵があっても 0 行になるので、ロックと削除を分ける）。
+            // 次の鍵を取る（UPDATE ... IN (SELECT ... SKIP LOCKED) の 1 文にすると、計画によっては
+            // 残っている鍵があっても 0 行になるので、ロックと更新を分ける）。
             key = first(
                 &mut tx,
                 "SELECT json_build_object('key_id', key_id, 'key', key_json)::text
                  FROM e2ee_one_time_keys
                  WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519'
+                   AND claimed_at IS NULL
                  ORDER BY created_at, key_id LIMIT 1 FOR UPDATE SKIP LOCKED",
                 &[user, device],
             )
             .await?;
             if let Some(key_id) = key.as_ref().and_then(|k| k["key_id"].as_str()) {
-                // 払い出した key_id を残す。アップロードの再送で同じ鍵が入り直らないように。
+                // 行は消さずに払い出し済みにする。アップロードの再送が主キーで衝突し、入り直らないように。
                 exec(
                     &mut tx,
-                    "WITH claimed AS (
-                       DELETE FROM e2ee_one_time_keys
-                       WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519' AND key_id = $3
-                       RETURNING user_id, device_id, key_id, key_json)
-                     INSERT INTO e2ee_claimed_one_time_keys (user_id, device_id, key_id, key_json)
-                     SELECT user_id, device_id, key_id, key_json FROM claimed
-                     ON CONFLICT DO NOTHING",
+                    "UPDATE e2ee_one_time_keys SET claimed_at = now()
+                     WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519' AND key_id = $3",
                     &[user, device, key_id],
                 )
                 .await?;

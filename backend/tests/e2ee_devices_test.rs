@@ -860,7 +860,7 @@ async fn claims_never_hand_out_a_key_twice_and_fall_back_after_the_daily_limit()
     assert_eq!(one_time.len(), 30);
     assert_eq!(
         env.count(
-            "SELECT 1 FROM e2ee_one_time_keys WHERE user_id = $1",
+            "SELECT 1 FROM e2ee_one_time_keys WHERE user_id = $1 AND claimed_at IS NULL",
             &[&bob]
         )
         .await,
@@ -904,7 +904,7 @@ async fn claims_never_hand_out_a_key_twice_and_fall_back_after_the_daily_limit()
     }
     assert_eq!(
         env.count(
-            "SELECT 1 FROM e2ee_one_time_keys WHERE user_id = $1",
+            "SELECT 1 FROM e2ee_one_time_keys WHERE user_id = $1 AND claimed_at IS NULL",
             &[&erin]
         )
         .await,
@@ -984,7 +984,7 @@ async fn concurrent_uploads_and_claims_stay_within_the_key_limit() {
     }
     let stored = env
         .count(
-            "SELECT 1 FROM e2ee_one_time_keys WHERE user_id = $1",
+            "SELECT 1 FROM e2ee_one_time_keys WHERE user_id = $1 AND claimed_at IS NULL",
             &[&alice],
         )
         .await
@@ -1122,6 +1122,68 @@ async fn resent_uploads_never_resurrect_claimed_one_time_keys() {
 }
 
 /// 遅れて届いた古いフォールバック鍵で、今の鍵を巻き戻さない（A → B → C のあとの A は無視する）。
+/// 払い出しがコミットする前に同じ鍵の再送が始まっても、コミットのあとで鍵が入り直らない。
+#[tokio::test]
+async fn resend_racing_an_uncommitted_claim_never_resurrects_the_key() {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    env.encrypted_channel(&[&alice, &bob]).await;
+    let mut account = env.device(&alice, 0).await;
+    account.generate_one_time_keys(1);
+    let device = account.device_id().to_owned();
+    let upload = json!({"device_id": device, "one_time_keys": account.one_time_keys()});
+    let (status, body) = request(
+        &env.app,
+        "POST",
+        "/api/e2ee/keys/upload",
+        &alice,
+        upload.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (name, original) = account.one_time_keys().into_iter().next().unwrap();
+    let key_id = name.strip_prefix("signed_curve25519:").unwrap().to_owned();
+
+    // keys/claim と同じ文で払い出し、コミットせずに持つ。
+    let mut db = env.db.clone();
+    let mut tx = db.transaction().await.unwrap();
+    for sql in [
+        "SELECT '{}'::text FROM e2ee_one_time_keys
+         WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519' AND key_id = $3
+           AND claimed_at IS NULL
+         ORDER BY created_at, key_id LIMIT 1 FOR UPDATE SKIP LOCKED",
+        "WITH c AS (UPDATE e2ee_one_time_keys SET claimed_at = now()
+           WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519' AND key_id = $3
+           RETURNING 1) SELECT '{}'::text FROM c",
+    ] {
+        let rows = backend::apps::query(&mut tx, sql, &[&alice, &device, &key_id])
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+    let resend = {
+        let (app, alice) = (env.app.clone(), alice.clone());
+        tokio::spawn(
+            async move { request(&app, "POST", "/api/e2ee/keys/upload", &alice, upload).await },
+        )
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    tx.commit().await.unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), resend)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["one_time_key_counts"]["signed_curve25519"], 0);
+    // 次の払い出しは同じ鍵ではなく、フォールバック鍵になる。
+    let result = env.claim(&bob, &[(&alice, &device)]).await;
+    // フォールバック鍵とワンタイム鍵の key_id は別の数え方なので、名前ではなく鍵で比べる。
+    let (_, key) = claimed_key(&result, &alice, &device).unwrap();
+    assert_ne!(key["key"], original["key"]);
+    assert_eq!(key["fallback"], true, "{key}");
+}
+
 #[tokio::test]
 async fn stale_fallback_keys_never_replace_newer_ones() {
     let env = env().await;
