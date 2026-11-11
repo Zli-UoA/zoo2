@@ -516,7 +516,7 @@ fn alert_variants_stage(p: &Palette) -> Div {
                 .variant(ButtonVariant::Outline)
                 .label("キャンセル"),
         )
-        .footer(Button::new("sm-ok", p).label("ログアウト"));
+        .footer(Button::new("sm-ok", p).label("ログアウト").w_full());
     staged(
         p,
         "AlertDialog size=sm + media",

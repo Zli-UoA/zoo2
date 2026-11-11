@@ -71,6 +71,7 @@ impl AlertDialog {
         self
     }
 
+    /// `Sm` のフッターは 2 列の格子なので、ボタンには `w_full()` を付けて列いっぱいに広げる。
     /// 幕とあわせて、親いっぱいに中央寄せで出す。
     pub fn into_overlay(self) -> gpui::Div {
         overlay(self)
@@ -136,11 +137,7 @@ impl RenderOnce for AlertDialog {
                 let footer = footer_frame(&self.p);
                 let footer = if centered {
                     // `group-data-[size=sm]:grid grid-cols-2`
-                    footer.children(
-                        self.footer
-                            .into_iter()
-                            .map(|c| div().flex_1().flex().child(c).into_any_element()),
-                    )
+                    footer.grid().grid_cols(2).children(self.footer)
                 } else {
                     footer.children(self.footer)
                 };

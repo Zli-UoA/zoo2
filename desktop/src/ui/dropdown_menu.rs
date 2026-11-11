@@ -184,9 +184,8 @@ impl RenderOnce for MenuItem {
             .child(self.label)
             .when_some(self.shortcut, |d, text| {
                 // `ml-auto text-xs tracking-widest text-muted-foreground`
-                d.child(
+                d.child(div().flex_1().min_w_0()).child(
                     div()
-                        .ml_auto()
                         .text_size(TextSpec::XS.size())
                         .line_height(TextSpec::XS.line())
                         .text_color(if self.highlighted {
@@ -211,11 +210,11 @@ impl RenderOnce for MenuItem {
                 )
             })
             .when(self.indicator == Indicator::Submenu, |d| {
-                d.child(
-                    div()
-                        .ml_auto()
-                        .child(icon_colored(Icon::ChevronRight, 16.0, c.icon)),
-                )
+                d.child(div().flex_1().min_w_0()).child(icon_colored(
+                    Icon::ChevronRight,
+                    16.0,
+                    c.icon,
+                ))
             });
         if let Some(h) = self.on_click
             && !self.disabled
