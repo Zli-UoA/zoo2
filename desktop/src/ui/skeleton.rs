@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use gpui::{Animation, AnimationExt as _, App, ElementId, StyleRefinement, Window, div, prelude::*};
+use gpui::{
+    Animation, AnimationExt as _, App, ElementId, StyleRefinement, Window, div, prelude::*,
+};
 
 use super::Palette;
 use crate::tokens::radius;

@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use super::button::{Button, ButtonSize, ButtonVariant};
-use super::{Palette, TextSpec, alpha, black, ring};
+use super::{ClickHandler, Palette, TextSpec, alpha, black, ring};
 use crate::fonts;
 use crate::icons::Icon;
 use crate::tokens::radius;
@@ -93,7 +93,7 @@ pub struct Dialog {
     description: Option<SharedString>,
     show_close_button: bool,
     close_hovered: bool,
-    on_close: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_close: Option<ClickHandler>,
     body: Vec<AnyElement>,
     footer: Vec<AnyElement>,
     style: StyleRefinement,

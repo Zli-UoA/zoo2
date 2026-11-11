@@ -38,7 +38,7 @@ pub fn blur_image(hash: &str) -> Option<Arc<RenderImage>> {
 fn decode(hash: &str) -> Option<Arc<RenderImage>> {
     let mut pixels = blurhash::decode(hash, BLUR_SIZE, BLUR_SIZE, 1.0).ok()?;
     // GPUI の画像は BGRA。
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     let buffer = RgbaImage::from_raw(BLUR_SIZE, BLUR_SIZE, pixels)?;
@@ -97,18 +97,14 @@ impl RenderOnce for ImagePreview {
             .rounded(radius::LG)
             .bg(self.p.t.muted);
         root.style().refine(&self.style);
-        let blur = self
-            .blurhash
-            .as_deref()
-            .and_then(blur_image)
-            .map(|image| {
-                div().absolute().top_0().left_0().size_full().child(
-                    img(ImageSource::Render(image))
-                        .size_full()
-                        .rounded(radius::LG)
-                        .object_fit(ObjectFit::Fill),
-                )
-            });
+        let blur = self.blurhash.as_deref().and_then(blur_image).map(|image| {
+            div().absolute().top_0().left_0().size_full().child(
+                img(ImageSource::Render(image))
+                    .size_full()
+                    .rounded(radius::LG)
+                    .object_fit(ObjectFit::Fill),
+            )
+        });
         let photo = self.src.map(|src| {
             div().absolute().top_0().left_0().size_full().child(
                 img(src)

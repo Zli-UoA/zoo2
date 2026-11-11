@@ -223,48 +223,50 @@ pub fn run(args: &[String]) {
         ),
         _ => None,
     };
-    Application::new().with_assets(Assets).run(move |cx: &mut App| {
-        if let Err(err) = fonts::register(cx) {
-            eprintln!("フォントを登録できませんでした: {err:#}");
-        }
-        cx.on_action(|_: &crate::Quit, cx| cx.quit());
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", crate::Quit, None),
-            KeyBinding::new("ctrl-q", crate::Quit, None),
-        ]);
-        // ウィンドウは 1 つだけなので、閉じたらアプリも終える。
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
+    Application::new()
+        .with_assets(Assets)
+        .run(move |cx: &mut App| {
+            if let Err(err) = fonts::register(cx) {
+                eprintln!("フォントを登録できませんでした: {err:#}");
             }
-        })
-        .detach();
-        let mode = initial_mode();
-        let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            ..Default::default()
-        };
-        let opened = match components_page {
-            Some(page) => cx
-                .open_window(options, move |_, cx| {
-                    cx.new(|_| ComponentsGallery::new(page, mode))
-                })
-                .map(|_| ()),
-            None => cx
-                .open_window(options, move |_, cx| {
-                    cx.new(|_| Gallery {
-                        mode,
-                        tokens: mode.tokens(),
-                        i18n: I18n::detect(),
+            cx.on_action(|_: &crate::Quit, cx| cx.quit());
+            cx.bind_keys([
+                KeyBinding::new("cmd-q", crate::Quit, None),
+                KeyBinding::new("ctrl-q", crate::Quit, None),
+            ]);
+            // ウィンドウは 1 つだけなので、閉じたらアプリも終える。
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            let mode = initial_mode();
+            let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                ..Default::default()
+            };
+            let opened = match components_page {
+                Some(page) => cx
+                    .open_window(options, move |_, cx| {
+                        cx.new(|_| ComponentsGallery::new(page, mode))
                     })
-                })
-                .map(|_| ()),
-        };
-        if let Err(err) = opened {
-            eprintln!("ウィンドウを開けませんでした: {err:#}");
-            std::process::exit(1);
-        }
-        cx.activate(true);
-    });
+                    .map(|_| ()),
+                None => cx
+                    .open_window(options, move |_, cx| {
+                        cx.new(|_| Gallery {
+                            mode,
+                            tokens: mode.tokens(),
+                            i18n: I18n::detect(),
+                        })
+                    })
+                    .map(|_| ()),
+            };
+            if let Err(err) = opened {
+                eprintln!("ウィンドウを開けませんでした: {err:#}");
+                std::process::exit(1);
+            }
+            cx.activate(true);
+        });
 }

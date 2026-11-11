@@ -1,8 +1,6 @@
 //! `external-link.tsx`。リンク色の文字で、押すと外部のブラウザで開く。
 
-use gpui::{
-    App, ElementId, SharedString, StyleRefinement, Window, div, prelude::*,
-};
+use gpui::{App, ElementId, SharedString, StyleRefinement, Window, div, prelude::*};
 
 use super::{Palette, alpha, ring};
 use crate::tokens::radius;

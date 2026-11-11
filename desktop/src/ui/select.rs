@@ -109,10 +109,14 @@ impl RenderOnce for SelectPopup {
             .into_iter()
             .enumerate()
             .map(|(i, (label, selected))| {
-                MenuItem::new(SharedString::from(format!("select-option-{i}")), &self.p, label)
-                    .indicator(super::dropdown_menu::Indicator::Radio(selected))
-                    .highlighted(self.highlighted == Some(i))
-                    .into_any_element()
+                MenuItem::new(
+                    SharedString::from(format!("select-option-{i}")),
+                    &self.p,
+                    label,
+                )
+                .indicator(super::dropdown_menu::Indicator::Radio(selected))
+                .highlighted(self.highlighted == Some(i))
+                .into_any_element()
             })
             .collect();
         popup_frame(&self.p).w(px(WIDTH)).children(items)

@@ -1,11 +1,11 @@
 //! UI 部品の確認画面 (`zoo2-desktop gallery components [ページ]`)。
 //! Web 版の `*.stories.tsx` と同じ状態を並べ、見比べられるようにする。
-//! 1 は Button など、2 は入力欄、3 はダイアログとメニュー、4 は Avatar などの表示部品、5 は通知と画像。
+//! 1 は Button など、2 は入力欄、3 はダイアログとメニュー、4 は Avatar などの表示部品、5 は通知と画像、6 は AlertDialog の sm とメニューの種類。
 
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Context, Div, ImageSource, IntoElement, RenderImage, Render, SharedString, Window,
+    AnyElement, Context, Div, ImageSource, IntoElement, Render, RenderImage, SharedString, Window,
     div, prelude::*, px,
 };
 use image::{Frame, RgbaImage};
@@ -38,7 +38,7 @@ use crate::ui::textarea::Textarea;
 use crate::ui::tooltip::{Side, Tooltip};
 
 /// ページ数。
-pub const PAGES: usize = 5;
+pub const PAGES: usize = 6;
 
 pub struct ComponentsGallery {
     page: usize,
@@ -100,30 +100,6 @@ fn labeled(p: &Palette, label: &str, content: impl IntoElement) -> Div {
 }
 
 /// ダイアログなどを出す舞台 (`relative`)。ストーリーの `min-h-96 bg-background p-6` に当たる。
-fn stage(p: &Palette, title: &str, width: f32, height: f32) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(4.0))
-        .w(px(width))
-        .child(caption(p, title.to_string()))
-        .child(
-            div()
-                .relative()
-                .overflow_hidden()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(width))
-                .h(px(height))
-                .rounded(radius::LG)
-                .border_1()
-                .border_color(p.t.border)
-                .bg(p.t.background),
-        )
-}
-
-/// `stage()` の枠の中身を差し替える。
 fn staged(p: &Palette, title: &str, width: f32, height: f32, inner: impl IntoElement) -> Div {
     div()
         .flex()
@@ -215,19 +191,36 @@ fn buttons(p: &Palette) -> AnyElement {
                 .icon_start(Icon::Plus)
                 .label("sm"),
         )
-        .child(Button::new("expanded", p).variant(ButtonVariant::Outline).expanded(true).label("expanded"))
-        .child(Button::new("expanded-g", p).variant(ButtonVariant::Ghost).expanded(true).label("expanded"));
+        .child(
+            Button::new("expanded", p)
+                .variant(ButtonVariant::Outline)
+                .expanded(true)
+                .label("expanded"),
+        )
+        .child(
+            Button::new("expanded-g", p)
+                .variant(ButtonVariant::Ghost)
+                .expanded(true)
+                .label("expanded"),
+        );
     let focus = make("focus", &|b| b.focused(true));
     let invalid = make("invalid", &|b| b.invalid(true));
-    section(p, "Button  (variants / hover / disabled / focus-visible / aria-invalid / sizes)")
-        .child(labeled(p, "variants", make("v", &|b| b)))
-        .child(labeled(p, "hover", make("h", &|b| b.hovered(true))))
-        .child(labeled(p, "disabled", make("d", &|b| b.disabled(true))))
-        .child(labeled(p, "focus-visible", focus))
-        .child(labeled(p, "aria-invalid", invalid))
-        .child(labeled(p, "sizes xs sm default lg icon icon-xs icon-sm icon-lg", sizes))
-        .child(labeled(p, "icons / aria-expanded", icons))
-        .into_any_element()
+    section(
+        p,
+        "Button  (variants / hover / disabled / focus-visible / aria-invalid / sizes)",
+    )
+    .child(labeled(p, "variants", make("v", &|b| b)))
+    .child(labeled(p, "hover", make("h", &|b| b.hovered(true))))
+    .child(labeled(p, "disabled", make("d", &|b| b.disabled(true))))
+    .child(labeled(p, "focus-visible", focus))
+    .child(labeled(p, "aria-invalid", invalid))
+    .child(labeled(
+        p,
+        "sizes xs sm default lg icon icon-xs icon-sm icon-lg",
+        sizes,
+    ))
+    .child(labeled(p, "icons / aria-expanded", icons))
+    .into_any_element()
 }
 
 fn button_group(p: &Palette) -> AnyElement {
@@ -244,10 +237,23 @@ fn button_group(p: &Palette) -> AnyElement {
 fn inputs(p: &Palette) -> AnyElement {
     let w = px(209.0);
     let grid = div().flex().flex_wrap().gap(px(12.0));
-    let grid = grid.child(labeled(p, "default", Input::new(p).placeholder("general").w(w)))
+    let grid = grid
+        .child(labeled(
+            p,
+            "default",
+            Input::new(p).placeholder("general").w(w),
+        ))
         .child(labeled(p, "value", Input::new(p).value("general").w(w)))
-        .child(labeled(p, "focus-visible", Input::new(p).value("general").focused(true).w(w)))
-        .child(labeled(p, "disabled", Input::new(p).value("general").disabled(true).w(w)))
+        .child(labeled(
+            p,
+            "focus-visible",
+            Input::new(p).value("general").focused(true).w(w),
+        ))
+        .child(labeled(
+            p,
+            "disabled",
+            Input::new(p).value("general").disabled(true).w(w),
+        ))
         .child(labeled(
             p,
             "aria-invalid (見た目は変わらない)",
@@ -256,7 +262,9 @@ fn inputs(p: &Palette) -> AnyElement {
         .child(labeled(
             p,
             "long value",
-            Input::new(p).value("very-long-channel-name-".repeat(8)).w(w),
+            Input::new(p)
+                .value("very-long-channel-name-".repeat(8))
+                .w(w),
         ));
     section(p, "Input  (w-[209px])")
         .child(grid)
@@ -270,12 +278,45 @@ fn textareas(p: &Palette) -> AnyElement {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    section(p, "Textarea  (max-w-xl)").w(px(576.0))
+    section(p, "Textarea  (max-w-xl)")
+        .w(px(576.0))
         .child(labeled(p, "default", Textarea::new(p).placeholder("メッセージ")).w(px(552.0)))
-        .child(labeled(p, "value", Textarea::new(p).value("今日のリリースは 18:00 です。")).w(px(552.0)))
-        .child(labeled(p, "focus-visible", Textarea::new(p).value("今日のリリースは 18:00 です。").focused(true)).w(px(552.0)))
-        .child(labeled(p, "disabled", Textarea::new(p).value("編集できません").disabled(true)).w(px(552.0)))
-        .child(labeled(p, "aria-invalid", Textarea::new(p).value("入力内容を確認してください").invalid(true)).w(px(552.0)))
+        .child(
+            labeled(
+                p,
+                "value",
+                Textarea::new(p).value("今日のリリースは 18:00 です。"),
+            )
+            .w(px(552.0)),
+        )
+        .child(
+            labeled(
+                p,
+                "focus-visible",
+                Textarea::new(p)
+                    .value("今日のリリースは 18:00 です。")
+                    .focused(true),
+            )
+            .w(px(552.0)),
+        )
+        .child(
+            labeled(
+                p,
+                "disabled",
+                Textarea::new(p).value("編集できません").disabled(true),
+            )
+            .w(px(552.0)),
+        )
+        .child(
+            labeled(
+                p,
+                "aria-invalid",
+                Textarea::new(p)
+                    .value("入力内容を確認してください")
+                    .invalid(true),
+            )
+            .w(px(552.0)),
+        )
         .child(labeled(p, "long text", Textarea::new(p).value(long)).w(px(552.0)))
         .into_any_element()
 }
@@ -293,8 +334,16 @@ fn selects(p: &Palette) -> AnyElement {
                 .items_start()
                 .gap(px(16.0))
                 .child(labeled(p, "default", Select::new(p, "システム")))
-                .child(labeled(p, "disabled", Select::new(p, "システム").disabled(true)))
-                .child(labeled(p, "focus-visible", Select::new(p, "システム").focused(true)))
+                .child(labeled(
+                    p,
+                    "disabled",
+                    Select::new(p, "システム").disabled(true),
+                ))
+                .child(labeled(
+                    p,
+                    "focus-visible",
+                    Select::new(p, "システム").focused(true),
+                ))
                 .child(labeled(
                     p,
                     "long label",
@@ -331,7 +380,12 @@ fn misc_basic(p: &Palette) -> AnyElement {
             "skeleton text (h-4 w-64) / avatar (size-10 rounded-full)",
             row()
                 .gap(px(16.0))
-                .child(Skeleton::new("sk-text", p).animate(false).h(px(16.0)).w(px(256.0)))
+                .child(
+                    Skeleton::new("sk-text", p)
+                        .animate(false)
+                        .h(px(16.0))
+                        .w(px(256.0)),
+                )
                 .child(
                     Skeleton::new("sk-avatar", p)
                         .animate(false)
@@ -351,7 +405,15 @@ fn page_buttons(p: &Palette) -> Div {
     div()
         .flex()
         .gap(px(12.0))
-        .child(div().flex().flex_col().gap(px(12.0)).w(px(700.0)).child(buttons(p)).child(button_group(p)))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(12.0))
+                .w(px(700.0))
+                .child(buttons(p))
+                .child(button_group(p)),
+        )
         .child(
             div()
                 .flex()
@@ -376,7 +438,14 @@ fn page_fields(p: &Palette) -> Div {
                 .child(inputs(p))
                 .child(selects(p)),
         )
-        .child(div().flex().flex_col().flex_1().gap(px(12.0)).child(textareas(p)))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .gap(px(12.0))
+                .child(textareas(p)),
+        )
 }
 
 // ---- ページ 3: ダイアログ、メニュー ----
@@ -384,8 +453,16 @@ fn page_fields(p: &Palette) -> Div {
 fn dialog_stage(p: &Palette) -> Div {
     let dialog = Dialog::new(p, "チャンネルを削除しますか？")
         .description("この操作は取り消せません。チャンネルの履歴もすべて削除されます。")
-        .footer(Button::new("dlg-cancel", p).variant(ButtonVariant::Outline).label("キャンセル"))
-        .footer(Button::new("dlg-ok", p).variant(ButtonVariant::Destructive).label("削除する"));
+        .footer(
+            Button::new("dlg-cancel", p)
+                .variant(ButtonVariant::Outline)
+                .label("キャンセル"),
+        )
+        .footer(
+            Button::new("dlg-ok", p)
+                .variant(ButtonVariant::Destructive)
+                .label("削除する"),
+        );
     staged(
         p,
         "Dialog (open)",
@@ -396,7 +473,11 @@ fn dialog_stage(p: &Palette) -> Div {
             .flex()
             .items_center()
             .justify_center()
-            .child(Button::new("dlg-trigger", p).variant(ButtonVariant::Outline).label("ダイアログを開く"))
+            .child(
+                Button::new("dlg-trigger", p)
+                    .variant(ButtonVariant::Outline)
+                    .label("ダイアログを開く"),
+            )
             .child(overlay(dialog)),
     )
 }
@@ -416,7 +497,11 @@ fn alert_stage(p: &Palette) -> Div {
             .flex()
             .items_center()
             .justify_center()
-            .child(Button::new("al-trigger", p).variant(ButtonVariant::Outline).label("メッセージを削除"))
+            .child(
+                Button::new("al-trigger", p)
+                    .variant(ButtonVariant::Outline)
+                    .label("メッセージを削除"),
+            )
             .child(overlay(dialog)),
     )
 }
@@ -426,9 +511,19 @@ fn alert_variants_stage(p: &Palette) -> Div {
         .size(AlertDialogSize::Sm)
         .media(Icon::LogOut)
         .description("この端末の保存済みトークンを削除します。")
-        .footer(Button::new("sm-cancel", p).variant(ButtonVariant::Outline).label("キャンセル"))
+        .footer(
+            Button::new("sm-cancel", p)
+                .variant(ButtonVariant::Outline)
+                .label("キャンセル"),
+        )
         .footer(Button::new("sm-ok", p).label("ログアウト"));
-    staged(p, "AlertDialog size=sm + media", 456.0, 384.0, overlay(dialog))
+    staged(
+        p,
+        "AlertDialog size=sm + media",
+        456.0,
+        384.0,
+        overlay(dialog),
+    )
 }
 
 fn confirm_stage(p: &Palette, i18n: &I18n, title: &str, pending: bool, error: Option<&str>) -> Div {
@@ -450,11 +545,19 @@ fn confirm_stage(p: &Palette, i18n: &I18n, title: &str, pending: bool, error: Op
 fn dropdown_stage(p: &Palette) -> Div {
     // `flex min-h-72 items-start justify-center p-12`: トリガーは上から 48px、メニューは 4px 下。
     let menu = DropdownMenuContent::new(p)
-        .item(MenuItem::new("dd-1", p, "名前を変更").icon(Icon::Pencil).highlighted(true))
+        .item(
+            MenuItem::new("dd-1", p, "名前を変更")
+                .icon(Icon::Pencil)
+                .highlighted(true),
+        )
         .item(MenuItem::new("dd-2", p, "アーカイブ").icon(Icon::Archive))
-        .item(MenuItem::new("dd-3", p, "チャンネル設定").icon(Icon::ShieldAlert))
+        .item(MenuItem::new("dd-3", p, "チャンネル設定").icon(Icon::Settings))
         .separator()
-        .item(MenuItem::new("dd-4", p, "削除").icon(Icon::Trash2).destructive());
+        .item(
+            MenuItem::new("dd-4", p, "削除")
+                .icon(Icon::Trash2)
+                .destructive(),
+        );
     let trigger = div()
         .relative()
         .child(
@@ -478,7 +581,12 @@ fn dropdown_stage(p: &Palette) -> Div {
         "DropdownMenu (open, align=center)",
         456.0,
         384.0,
-        div().size_full().flex().justify_center().pt(px(48.0)).child(trigger),
+        div()
+            .size_full()
+            .flex()
+            .justify_center()
+            .pt(px(48.0))
+            .child(trigger),
     )
 }
 
@@ -491,10 +599,24 @@ fn menu_kinds_stage(p: &Palette) -> Div {
         .item(MenuItem::new("mk-3", p, "新しい順").indicator(Indicator::Radio(true)))
         .item(MenuItem::new("mk-4", p, "古い順").indicator(Indicator::Radio(false)))
         .separator()
-        .item(MenuItem::new("mk-5", p, "コピー").icon(Icon::Copy).shortcut("⌘C"))
-        .item(MenuItem::new("mk-6", p, "移動").icon(Icon::ArrowUpRight).indicator(Indicator::Submenu))
+        .item(
+            MenuItem::new("mk-5", p, "コピー")
+                .icon(Icon::Copy)
+                .shortcut("⌘C"),
+        )
+        .item(
+            MenuItem::new("mk-6", p, "移動")
+                .icon(Icon::ArrowUpRight)
+                .indicator(Indicator::Submenu),
+        )
         .item(MenuItem::new("mk-7", p, "無効な項目").disabled(true));
-    staged(p, "DropdownMenu (label / checkbox / radio / shortcut / sub / disabled)", 456.0, 384.0, menu)
+    staged(
+        p,
+        "DropdownMenu (label / checkbox / radio / shortcut / sub / disabled)",
+        456.0,
+        384.0,
+        menu,
+    )
 }
 
 fn page_dialogs(p: &Palette, i18n: &I18n) -> Div {
@@ -508,13 +630,25 @@ fn page_dialogs(p: &Palette, i18n: &I18n) -> Div {
                 .gap(px(12.0))
                 .child(dialog_stage(p))
                 .child(alert_stage(p))
-                .child(confirm_stage(p, i18n, "ConfirmActionDialog (Default)", false, None)),
+                .child(confirm_stage(
+                    p,
+                    i18n,
+                    "ConfirmActionDialog (Default)",
+                    false,
+                    None,
+                )),
         )
         .child(
             div()
                 .flex()
                 .gap(px(12.0))
-                .child(confirm_stage(p, i18n, "ConfirmActionDialog (Pending)", true, None))
+                .child(confirm_stage(
+                    p,
+                    i18n,
+                    "ConfirmActionDialog (Pending)",
+                    true,
+                    None,
+                ))
                 .child(confirm_stage(
                     p,
                     i18n,
@@ -547,9 +681,19 @@ fn avatars(p: &Palette) -> AnyElement {
             row()
                 .gap(px(12.0))
                 .child(Avatar::new(p).initials("BO").badge(true))
-                .child(Avatar::new(p).size(AvatarSize::Lg).initials("AL").badge(true))
+                .child(
+                    Avatar::new(p)
+                        .size(AvatarSize::Lg)
+                        .initials("AL")
+                        .badge(true),
+                )
                 .child(Avatar::new(p).initials("AL").image(sample_image(64, 64)))
-                .child(Avatar::new(p).size(AvatarSize::Lg).initials("AL").image(sample_image(64, 64)))
+                .child(
+                    Avatar::new(p)
+                        .size(AvatarSize::Lg)
+                        .initials("AL")
+                        .image(sample_image(64, 64)),
+                )
                 .child(Avatar::new(p).initials("AL").image("missing-avatar.png")),
         ))
         .child(labeled(
@@ -595,17 +739,30 @@ fn sonner_stage(p: &Palette) -> Div {
         div()
             .size_full()
             .p(px(16.0))
-            .child(div().flex().child(Button::new("toast-trigger", p).label("保存")))
+            .child(
+                div()
+                    .flex()
+                    .child(Button::new("toast-trigger", p).label("保存")),
+            )
             .child(toaster),
     )
 }
 
 fn sonner_stack_stage(p: &Palette) -> Div {
     let toaster = Toaster::new(p)
-        .toast(Toast::new(ToastKind::Error, "送信に失敗しました").description("ネットワークを確認してください"))
+        .toast(
+            Toast::new(ToastKind::Error, "送信に失敗しました")
+                .description("ネットワークを確認してください"),
+        )
         .toast(Toast::new(ToastKind::Info, "新しいバージョンがあります"))
         .toast(Toast::new(ToastKind::Normal, "コピーしました"));
-    staged(p, "Toaster (stack, collapsed)", 420.0, 200.0, div().size_full().child(toaster))
+    staged(
+        p,
+        "Toaster (stack, collapsed)",
+        420.0,
+        200.0,
+        div().size_full().child(toaster),
+    )
 }
 
 fn collapsibles(p: &Palette) -> Div {
@@ -624,13 +781,20 @@ fn collapsibles(p: &Palette) -> Div {
                     .icon(Icon::Plus),
             );
         }
-        div().w(px(288.0)).bg(p.t.sidebar).text_size(font_size::SM).child(s)
+        div()
+            .w(px(288.0))
+            .bg(p.t.sidebar)
+            .text_size(font_size::SM)
+            .child(s)
     };
     div()
         .flex()
         .flex_col()
         .gap(px(4.0))
-        .child(caption(p, "CollapsibleSection (w-72 bg-sidebar)  Default / Closed / WithActions / hover"))
+        .child(caption(
+            p,
+            "CollapsibleSection (w-72 bg-sidebar)  Default / Closed / WithActions / hover",
+        ))
         .child(
             div()
                 .flex()
@@ -675,13 +839,29 @@ fn image_previews(p: &Palette) -> AnyElement {
             row()
                 .gap(px(12.0))
                 .w(px(780.0))
-                .child(labeled(p, "loading (blurhash)", tile(ImagePreview::new(p).blurhash(Some(hash)))))
-                .child(labeled(p, "without metadata", tile(ImagePreview::new(p).blurhash(None))))
-                .child(labeled(p, "invalid hash", tile(ImagePreview::new(p).blurhash(Some("invalid")))))
+                .child(labeled(
+                    p,
+                    "loading (blurhash)",
+                    tile(ImagePreview::new(p).blurhash(Some(hash))),
+                ))
+                .child(labeled(
+                    p,
+                    "without metadata",
+                    tile(ImagePreview::new(p).blurhash(None)),
+                ))
+                .child(labeled(
+                    p,
+                    "invalid hash",
+                    tile(ImagePreview::new(p).blurhash(Some("invalid"))),
+                ))
                 .child(labeled(
                     p,
                     "loaded",
-                    tile(ImagePreview::new(p).blurhash(Some(hash)).src(sample_image(128, 96))),
+                    tile(
+                        ImagePreview::new(p)
+                            .blurhash(Some(hash))
+                            .src(sample_image(128, 96)),
+                    ),
                 )),
         )
         .into_any_element()
@@ -694,15 +874,20 @@ fn control_panel(p: &Palette) -> AnyElement {
         .flex_col()
         .gap(px(4.0))
         .w(px(576.0))
-        .child(caption(p, "ControlPanel (max-w-xl)  Default / LongDescription"))
+        .child(caption(
+            p,
+            "ControlPanel (max-w-xl)  Default / LongDescription",
+        ))
         .child(
             SettingsSection::new(p)
                 .title("メンバー")
                 .description("メンバーと権限を管理します。")
                 .child(
-                    SettingRow::new(p, "Alice")
-                        .description("管理者")
-                        .control(Button::new("cp-1", p).variant(ButtonVariant::Outline).label("権限を変更")),
+                    SettingRow::new(p, "Alice").description("管理者").control(
+                        Button::new("cp-1", p)
+                            .variant(ButtonVariant::Outline)
+                            .label("権限を変更"),
+                    ),
                 ),
         )
         .child(
@@ -710,7 +895,11 @@ fn control_panel(p: &Palette) -> AnyElement {
                 SettingRow::new(p, "長い表示名のメンバー")
                     .icon(Icon::Bell)
                     .description(long)
-                    .control(Button::new("cp-2", p).variant(ButtonVariant::Outline).label("変更")),
+                    .control(
+                        Button::new("cp-2", p)
+                            .variant(ButtonVariant::Outline)
+                            .label("変更"),
+                    ),
             ),
         )
         .child(
@@ -734,8 +923,15 @@ fn links_and_headers(p: &Palette) -> AnyElement {
             "external link / focus-visible",
             row()
                 .gap(px(16.0))
-                .child(ExternalLink::new("link-1", p, "https://github.com/Zli-UoA/zoo2", "https://github.com/Zli-UoA/zoo2"))
-                .child(ExternalLink::new("link-2", p, "利用規約", "https://example.com").focused(true)),
+                .child(ExternalLink::new(
+                    "link-1",
+                    p,
+                    "https://github.com/Zli-UoA/zoo2",
+                    "https://github.com/Zli-UoA/zoo2",
+                ))
+                .child(
+                    ExternalLink::new("link-2", p, "利用規約", "https://example.com").focused(true),
+                ),
         ))
         .child(labeled(
             p,
@@ -743,7 +939,12 @@ fn links_and_headers(p: &Palette) -> AnyElement {
             div().w(px(560.0)).child(
                 PaneHeader::new(p)
                     .child(div().flex_1().child("PaneHeader"))
-                    .child(Button::new("ph-1", p).variant(ButtonVariant::Ghost).size(ButtonSize::IconSm).icon(Icon::Settings)),
+                    .child(
+                        Button::new("ph-1", p)
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::IconSm)
+                            .icon(Icon::Settings),
+                    ),
             ),
         ))
         .child(labeled(
@@ -752,10 +953,23 @@ fn links_and_headers(p: &Palette) -> AnyElement {
             div().w(px(560.0)).child(
                 ScreenHeader::new(p, Icon::Bell, "通知")
                     .description("メンションとリアクション")
-                    .action(Button::new("sh-1", p).variant(ButtonVariant::Outline).size(ButtonSize::Sm).label("すべて既読")),
+                    .action(
+                        Button::new("sh-1", p)
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
+                            .label("すべて既読"),
+                    ),
             ),
         ))
         .into_any_element()
+}
+
+fn page_variants(p: &Palette) -> Div {
+    div()
+        .flex()
+        .gap(px(12.0))
+        .child(alert_variants_stage(p))
+        .child(menu_kinds_stage(p))
 }
 
 fn page_display(p: &Palette) -> Div {
@@ -771,7 +985,14 @@ fn page_display(p: &Palette) -> Div {
                 .child(avatars(p))
                 .child(scroll_area(p)),
         )
-        .child(div().flex().flex_col().flex_1().gap(px(12.0)).child(collapsibles(p)))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .gap(px(12.0))
+                .child(collapsibles(p)),
+        )
 }
 
 fn page_feedback(p: &Palette) -> Div {
@@ -805,7 +1026,8 @@ impl Render for ComponentsGallery {
             2 => page_fields(&p),
             3 => page_dialogs(&p, &self.i18n),
             4 => page_display(&p),
-            _ => page_feedback(&p),
+            5 => page_feedback(&p),
+            _ => page_variants(&p),
         };
         div()
             .size_full()

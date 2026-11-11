@@ -33,6 +33,9 @@ pub mod spinner;
 pub mod textarea;
 pub mod tooltip;
 
+/// クリックの受け口。
+pub type ClickHandler = Box<dyn Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static>;
+
 /// 色トークンと配色モード。`dark:` の指定がある部品はモードも見る。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
@@ -104,12 +107,18 @@ fn drop_shadow(y: f32, blur: f32, spread: f32, a: f32) -> BoxShadow {
 
 /// `shadow-sm`: `0 1px 3px 0 / 0 1px 2px -1px` (黒 10%)。
 pub fn shadow_sm() -> Vec<BoxShadow> {
-    vec![drop_shadow(1.0, 3.0, 0.0, 0.1), drop_shadow(1.0, 2.0, -1.0, 0.1)]
+    vec![
+        drop_shadow(1.0, 3.0, 0.0, 0.1),
+        drop_shadow(1.0, 2.0, -1.0, 0.1),
+    ]
 }
 
 /// `shadow-md`: `0 4px 6px -1px / 0 2px 4px -2px` (黒 10%)。
 pub fn shadow_md() -> Vec<BoxShadow> {
-    vec![drop_shadow(4.0, 6.0, -1.0, 0.1), drop_shadow(2.0, 4.0, -2.0, 0.1)]
+    vec![
+        drop_shadow(4.0, 6.0, -1.0, 0.1),
+        drop_shadow(2.0, 4.0, -2.0, 0.1),
+    ]
 }
 
 /// `shadow-lg`: `0 10px 15px -3px / 0 4px 6px -4px` (黒 10%)。
@@ -138,9 +147,18 @@ pub struct TextSpec {
 }
 
 impl TextSpec {
-    pub const XS: Self = Self { size: 12.0, line: 16.0 };
-    pub const SM: Self = Self { size: 14.0, line: 20.0 };
-    pub const BASE: Self = Self { size: 16.0, line: 24.0 };
+    pub const XS: Self = Self {
+        size: 12.0,
+        line: 16.0,
+    };
+    pub const SM: Self = Self {
+        size: 14.0,
+        line: 20.0,
+    };
+    pub const BASE: Self = Self {
+        size: 16.0,
+        line: 24.0,
+    };
 
     pub fn size(self) -> Pixels {
         px(self.size)

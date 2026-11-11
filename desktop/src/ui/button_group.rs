@@ -1,11 +1,9 @@
 //! `button-group.tsx`。トグルボタンを枠に並べる。
 
-use gpui::{
-    AnyElement, App, ClickEvent, ElementId, StyleRefinement, Window, div, prelude::*, px,
-};
+use gpui::{AnyElement, App, ClickEvent, ElementId, StyleRefinement, Window, div, prelude::*, px};
 
 use super::button::{Button, ButtonSize, ButtonVariant};
-use super::{Palette, alpha, shadow_sm};
+use super::{ClickHandler, Palette, alpha, shadow_sm};
 use crate::icons::Icon;
 use crate::tokens::radius;
 
@@ -68,7 +66,7 @@ pub struct ButtonGroupItem {
     icon: Icon,
     pressed: bool,
     hovered: bool,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<ClickHandler>,
 }
 
 impl ButtonGroupItem {

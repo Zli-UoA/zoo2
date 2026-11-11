@@ -5,7 +5,6 @@ use gpui::{
     div, prelude::*, px,
 };
 
-
 use super::color::mix_oklch;
 use super::{Palette, TRANSPARENT, TextSpec, alpha, icon_colored, ring};
 use crate::fonts;
@@ -491,9 +490,7 @@ impl RenderOnce for Button {
                     if hover.underline { s.underline() } else { s }
                 })
             })
-            .when(!self.state.disabled, |d| {
-                d.active(|s| s.top(px(1.0)))
-            })
+            .when(!self.state.disabled, |d| d.active(|s| s.top(px(1.0))))
             .when_some(self.focus_handle.as_ref(), |d, handle| {
                 d.track_focus(handle).focus(move |s| {
                     let s = s.border_color(focus_state.border);
@@ -504,10 +501,14 @@ impl RenderOnce for Button {
                 })
             })
             .child(layer)
-            .when_some(self.icon_start, |d, ic| d.child(icon_colored(ic, sp.icon, normal.fg)))
+            .when_some(self.icon_start, |d, ic| {
+                d.child(icon_colored(ic, sp.icon, normal.fg))
+            })
             .when_some(self.label, |d, label| d.child(label))
             .children(self.children)
-            .when_some(self.icon_end, |d, ic| d.child(icon_colored(ic, sp.icon, normal.fg)));
+            .when_some(self.icon_end, |d, ic| {
+                d.child(icon_colored(ic, sp.icon, normal.fg))
+            });
 
         if let Some(on_click) = self.on_click
             && !self.state.disabled

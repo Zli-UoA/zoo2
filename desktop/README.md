@@ -155,6 +155,8 @@ THEME=dark make desktop-gallery   # 暗い配色
 
 `zoo2-desktop gallery --theme light|dark` と同じです。`--theme` は環境変数 `ZOO_DESKTOP_THEME` でも指定できます。
 
+`zoo2-desktop gallery components [1-6] --theme light|dark` は、`src/ui/` の UI 部品 (frontend の `components/ui/` の移植) を、`*.stories.tsx` と同じ状態で並べます。ページは 1 が Button など、2 が入力欄、3 がダイアログとメニュー、4 が Avatar など、5 が通知と画像、6 が AlertDialog の sm とメニューの種類です。
+
 ### 画面の撮影 (Linux)
 
 仮想ディスプレイ (Xvfb) と openbox の上で動かし、root ウィンドウを PNG にします。`nix develop` の中で実行してください。

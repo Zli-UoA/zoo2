@@ -2,11 +2,11 @@
 //! または `relative` な親の中の `absolute`) で行う。
 
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, SharedString, StyleRefinement, Window, div,
-    prelude::*, px,
+    AnyElement, App, ClickEvent, ElementId, SharedString, StyleRefinement, Window, div, prelude::*,
+    px,
 };
 
-use super::{Palette, TextSpec, alpha, icon_colored, ring, shadow_md};
+use super::{ClickHandler, Palette, TextSpec, alpha, icon_colored, ring, shadow_md};
 use crate::fonts;
 use crate::icons::Icon;
 use crate::tokens::radius;
@@ -78,7 +78,7 @@ pub struct MenuItem {
     highlighted: bool,
     disabled: bool,
     inset: bool,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
+    on_click: Option<ClickHandler>,
 }
 
 impl MenuItem {
@@ -177,10 +177,10 @@ impl RenderOnce for MenuItem {
             .text_color(c.fg)
             .bg(c.bg)
             .opacity(if self.disabled { 0.5 } else { 1.0 })
-            .when(live, |d| d.hover(move |s| s.bg(hover.bg).text_color(hover.fg)))
-            .when_some(self.icon, |d, ic| {
-                d.child(icon_colored(ic, 16.0, c.icon))
+            .when(live, |d| {
+                d.hover(move |s| s.bg(hover.bg).text_color(hover.fg))
             })
+            .when_some(self.icon, |d, ic| d.child(icon_colored(ic, 16.0, c.icon)))
             .child(self.label)
             .when_some(self.shortcut, |d, text| {
                 // `ml-auto text-xs tracking-widest text-muted-foreground`
@@ -241,11 +241,7 @@ pub fn menu_label(p: &Palette, text: impl Into<SharedString>, inset: bool) -> im
 
 /// `DropdownMenuSeparator`: `-mx-1 my-1 h-px bg-border`
 pub fn menu_separator(p: &Palette) -> impl IntoElement {
-    div()
-        .mx(px(-4.0))
-        .my(px(4.0))
-        .h(px(1.0))
-        .bg(p.t.border)
+    div().mx(px(-4.0)).my(px(4.0)).h(px(1.0)).bg(p.t.border)
 }
 
 /// メニューの箱。`min-w-44 rounded-lg bg-popover p-1 shadow-md ring-1 ring-foreground/10`
