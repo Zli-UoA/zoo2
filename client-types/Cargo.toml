@@ -1,0 +1,17 @@
+[package]
+name = "zoo2-client-types"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "zoo2 のクライアントで共有する型と純粋関数。wasm32 でもビルドできる"
+homepage = "https://github.com/Zli-UoA/zoo2"
+repository = "https://github.com/Zli-UoA/zoo2"
+
+# ネイティブ専用の依存 (tokio、reqwest、ファイル) は入れない。
+# デスクトップの WebView 側 (Leptos、wasm32-unknown-unknown) からも使うため。
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
+emojis = "0.6"

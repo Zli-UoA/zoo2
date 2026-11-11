@@ -1112,6 +1112,11 @@ CREATE INDEX app_deliveries_dispatch_count ON app_deliveries(installation_id,fir
 -- Harden event delivery and bound transport/retention work without rewriting deployed migrations.
 CREATE INDEX app_deliveries_retention ON app_deliveries(created_at,id);
 CREATE INDEX app_deliveries_ready ON app_deliveries(installation_id,available_at,created_at,id) WHERE acked_at IS NULL;
+-- 滞留（未 ACK・期限内）の集計用。期限切れの未 ACK が溜まっても、行ごとにヒープを読まずに済む。
+-- app_deliveries_backlog: GET /api/apps/{id}/metrics の滞留（インストールごと）。
+-- app_deliveries_queue: zoo-dispatcher の zoo_dispatch_queue_depth・oldest_pending_seconds（全体）。
+CREATE INDEX app_deliveries_backlog ON app_deliveries(installation_id,expires_at) INCLUDE (created_at,event_type) WHERE acked_at IS NULL;
+CREATE INDEX app_deliveries_queue ON app_deliveries(expires_at) INCLUDE (created_at) WHERE acked_at IS NULL;
 CREATE FUNCTION app_delivery_notify() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF EXISTS (SELECT 1 FROM new_rows n JOIN app_installations i ON i.id=n.installation_id WHERE i.manifest::jsonb->>'transport'='http') THEN
