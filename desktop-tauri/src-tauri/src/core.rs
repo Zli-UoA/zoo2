@@ -61,6 +61,9 @@ struct Inner {
     /// ウィンドウが前面にあるか (Tauri のウィンドウのイベントで知る)。
     window_focused: bool,
     dnd_until: Option<DateTime>,
+    /// ログインしてから、DND を 1 回は取りに行ったか。それまでは通知を出さない
+    /// (DND の間に起動したとき、取れる前に届いた通知を出さないため)。
+    dnd_checked: bool,
 }
 
 /// ログインしている間だけある状態。捨てるとすべてのタスクが止まる。
@@ -103,6 +106,7 @@ impl Core {
                 focus: FocusState::default(),
                 window_focused: true,
                 dnd_until: None,
+                dnd_checked: false,
             }),
         }
     }
@@ -280,6 +284,8 @@ impl Core {
             .push(self.spawn_event_loop(generation, receiver));
         session.tasks.push(self.spawn_dnd_refresh(generation, api));
         inner.session = Some(session);
+        inner.dnd_until = None;
+        inner.dnd_checked = false;
         self.set_state(&mut inner, SessionState::Ready { me });
     }
 
@@ -293,6 +299,11 @@ impl Core {
             while let Some(event) = receiver.recv().await {
                 match event {
                     ShapeEvent::Batch(id, batch) => core.handle_batch(generation, id, batch).await,
+                    // 401 は、トークンが切れて更新もできない。ログイン画面に戻す。
+                    ShapeEvent::Failed(_, message) if is_unauthorized_message(&message) => {
+                        core.expire_session(generation).await;
+                        return;
+                    }
                     ShapeEvent::Failed(id, message) => {
                         let _ = core
                             .app
@@ -307,17 +318,21 @@ impl Core {
         let core = self.clone();
         tokio::spawn(async move {
             loop {
-                // 取れなかったときは前の値のままにする。
-                if let Ok(profile) = api.my_profile().await {
-                    let mut inner = core.inner.lock().await;
-                    if inner.generation != generation {
-                        return;
-                    }
+                let profile = api.my_profile().await;
+                let mut inner = core.inner.lock().await;
+                if inner.generation != generation {
+                    return;
+                }
+                // 取れなかったときは前の値のままにする。初回に取れなかったときは、
+                // 通知を止め続けないよう、DND なしとして通知を出し始める。
+                if let Ok(profile) = profile {
                     inner.dnd_until = profile
                         .dnd_until
                         .as_deref()
                         .and_then(notify::parse_dnd_until);
                 }
+                inner.dnd_checked = true;
+                drop(inner);
                 tokio::time::sleep(DND_REFRESH).await;
             }
         })
@@ -335,6 +350,7 @@ impl Core {
                 .then(|| inner.focus.channel_id.clone())
                 .flatten();
             let dnd_until = inner.dnd_until;
+            let dnd_checked = inner.dnd_checked;
             let Some(session) = inner.session.as_mut() else {
                 return;
             };
@@ -348,7 +364,7 @@ impl Core {
             let toasts = if id == ShapeId::Notifications {
                 let ctx = NotifyContext {
                     me: session.me.id.clone(),
-                    enabled: true,
+                    enabled: dnd_checked,
                     now: Some(now_utc()),
                     dnd_until,
                     focused_channel,
@@ -468,20 +484,42 @@ impl Core {
 
     pub async fn logout(&self) -> Result<(), IpcError> {
         let mut inner = self.inner.lock().await;
+        let result = self.end_session(&mut inner);
+        self.set_state(&mut inner, SessionState::LoggedOut);
+        result.map_err(to_ipc)
+    }
+
+    /// 購読が 401 で止まったとき。その世代のセッションのままなら、ログアウトする。
+    async fn expire_session(&self, generation: u64) {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return;
+        }
+        let _ = self.end_session(&mut inner);
+        self.set_state(&mut inner, SessionState::LoggedOut);
+    }
+
+    /// セッションを捨て、保存したトークンを消す。セッションの `TokenManager` を
+    /// `sign_out` するので、コマンドが持っている `ApiClient` で進行中だった更新が
+    /// 後から終わっても、`token.json` は作り直されない。
+    fn end_session(&self, inner: &mut Inner) -> Result<()> {
         inner.generation += 1;
         if let Some(task) = inner.login_task.take() {
             task.abort();
         }
-        inner.session = None;
+        let session = inner.session.take();
         inner.dnd_until = None;
-        if matches!(
+        inner.dnd_checked = false;
+        if !matches!(
             self.config.as_ref().map(|c| &c.auth),
             Ok(AuthConfig::Oidc(_))
         ) {
-            let path = self.token_path().map_err(to_ipc)?;
-            token::delete(&path).map_err(to_ipc)?;
+            return Ok(());
         }
-        self.set_state(&mut inner, SessionState::LoggedOut);
+        match session.and_then(|session| session.tokens.clone()) {
+            Some(tokens) => tokens.sign_out()?,
+            None => token::delete(&self.token_path()?)?,
+        };
         Ok(())
     }
 
@@ -557,6 +595,11 @@ fn now_utc() -> DateTime {
 
 fn not_logged_in() -> IpcError {
     IpcError::new(ErrorCode::NotLoggedIn, "ログインしていません")
+}
+
+/// `electric::spawn` は 401 を `HttpError::Unauthorized` の文言で `Failed` に入れる。
+fn is_unauthorized_message(message: &str) -> bool {
+    message == HttpError::Unauthorized.to_string()
 }
 
 fn is_unauthorized(err: &anyhow::Error) -> bool {

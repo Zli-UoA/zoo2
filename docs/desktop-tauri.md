@@ -78,7 +78,7 @@ ShapeEvent ─▶ 1 本のループ
   - 通知のコレクション：初回の読み込みが終わった時点で、全行を `reset: true, up_to_date: true` のバッチで `zoo_notifications_observed` に渡す。それ以降は、変化ごとに `reset: false` のバッチで渡す。Rust 側はこれを (a) の通知の Shape と同じ流れで扱う。
   - 表示中のチャンネルとフォーカスを `zoo_set_focus` で、`zoo://open` を受けたらその画面へ移る。
 - Tauri の中で動いているかは `window.__TAURI_INTERNALS__` の有無で見分ける。さらに `zoo_session` の `protocol` が `PROTOCOL_VERSION` と一致する場合だけ IPC を使う。一致しなければ通常の Web として動く（Web は Tauri 版と別にデプロイされるため）。
-- capabilities：コマンドは `build.rs` の `AppManifest::commands` で 1 つずつ宣言する。宣言しないと許可の識別子が作られず、全ウィンドウから呼べてしまう。
+- capabilities：コマンドは `build.rs` の `AppManifest::commands` で 1 つずつ宣言する。宣言すると `allow-<名前>` の許可が作られ、capabilities でウィンドウごとに許せる。app の manifest があると、Tauri（2.12）は宣言のないコマンドを ACL がないものとして、ハンドラーに渡す前に拒否する。
   - `main-remote`：リモートの URL（`remote.urls`）は `Config.api_base_url` のオリジンだけにする。stg と `http://localhost:5173` は debug ビルドのときだけ足す。呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_access_token`、`zoo_notifications_observed` と、`zoo://session` と `zoo://open` を受け取るための `core:event:allow-listen`、`core:event:allow-unlisten` に限る。
   - コマンドの中でも、呼び出し元のウィンドウの `UiMode` と URL のオリジンを確かめ、合わなければ `ErrorCode::WrongMode` を返す。
   - 許可したオリジン以外への移動は `on_navigation` で止め、既定のブラウザーで開く。

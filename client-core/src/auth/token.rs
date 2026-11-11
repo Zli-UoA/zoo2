@@ -122,6 +122,9 @@ pub struct TokenManager {
     oidc: OidcConfig,
     path: PathBuf,
     state: Mutex<State>,
+    /// false にした後は、トークンを保存も更新もしない。ログアウトの後に、進行中だった
+    /// 更新が `token.json` を作り直さないようにするため。保存と削除はこのロックの下で行う。
+    persist: std::sync::Mutex<bool>,
 }
 
 impl TokenManager {
@@ -139,7 +142,21 @@ impl TokenManager {
                 tokens,
                 discovery: None,
             }),
+            persist: std::sync::Mutex::new(true),
         }
+    }
+
+    /// ログアウトする。以後このマネージャーはトークンを返さず、保存もしない。
+    /// 保存と同じロックの下で `token.json` を消すので、進行中の更新が後から
+    /// 終わっても、ファイルは作り直されない。
+    pub fn sign_out(&self) -> Result<bool> {
+        let mut persist = self.persist.lock().unwrap_or_else(|e| e.into_inner());
+        *persist = false;
+        delete(&self.path)
+    }
+
+    fn signed_out(&self) -> bool {
+        !*self.persist.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub async fn access_token(&self) -> Result<String> {
@@ -149,6 +166,9 @@ impl TokenManager {
     /// アクセストークンと、その期限 (UNIX 秒)。期限が近ければ更新してから返す。
     /// WebView にトークンを渡すときに、相手がキャッシュしてよい期間を伝えるために使う。
     pub async fn access_token_with_expiry(&self) -> Result<(String, i64)> {
+        if self.signed_out() {
+            return Err(HttpError::Unauthorized.into());
+        }
         let mut state = self.state.lock().await;
         if state.tokens.expires_at - REFRESH_SKEW_SECONDS > now() {
             return Ok((state.tokens.access_token.clone(), state.tokens.expires_at));
@@ -184,7 +204,13 @@ impl TokenManager {
         // 交換済みの refresh_token は IdP 側で失効しているので、保存に失敗しても新しい方を使い続ける。
         // 保存の失敗は呼び出し側に伝えるが、次の呼び出しではトークンを交換し直さない。
         state.tokens = tokens;
-        save(&self.path, &state.tokens)?;
+        {
+            let persist = self.persist.lock().unwrap_or_else(|e| e.into_inner());
+            if !*persist {
+                return Err(HttpError::Unauthorized.into());
+            }
+            save(&self.path, &state.tokens)?;
+        }
         Ok((state.tokens.access_token.clone(), state.tokens.expires_at))
     }
 }
@@ -395,5 +421,41 @@ mod tests {
         );
         let err = manager.access_token().await.unwrap_err();
         assert!(err.downcast_ref::<HttpError>().is_none(), "{err}");
+    }
+
+    #[tokio::test]
+    async fn refresh_finishing_after_sign_out_does_not_recreate_the_file() {
+        let server = MockServer::start().await;
+        let config = oidc(&issuer(&server).await);
+        Mock::given(method("POST"))
+            .and(path("/api/auth/oauth2/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "access_token": "new", "expires_in": 300 }))
+                    .set_delay(std::time::Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+
+        let path = temp_path("sign-out");
+        save(&path, &tokens(&config, now() + 30, Some("rt"))).unwrap();
+        let manager = std::sync::Arc::new(TokenManager::new(
+            reqwest::Client::new(),
+            config.clone(),
+            path.clone(),
+            tokens(&config, now() + 30, Some("rt")),
+        ));
+        let refreshing = tokio::spawn({
+            let manager = manager.clone();
+            async move { manager.access_token().await }
+        });
+        // 更新の要求が IdP に届くのを待ってからログアウトする。
+        while server.received_requests().await.unwrap_or_default().len() < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(manager.sign_out().unwrap());
+        assert!(refreshing.await.unwrap().is_err());
+        assert!(load(&path, &config, Some(API)).unwrap().is_none());
+        assert!(manager.access_token().await.is_err());
     }
 }
