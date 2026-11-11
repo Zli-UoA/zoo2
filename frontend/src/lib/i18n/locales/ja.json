@@ -42,9 +42,7 @@
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "作成中…",
     "create": "チャンネル作成",
-    "nsfw": "NSFWチャンネル",
-    "nsfwWarning": "このチャンネルにはセンシティブな内容が含まれる場合があります。",
-    "showNsfw": "チャンネルを表示"
+    "nsfw": "NSFWチャンネル"
   },
   "sync": {
     "title": "同期の状態",
@@ -228,7 +226,8 @@
     "sensitive": "センシティブな画像",
     "markSensitive": "画像をセンシティブとして投稿",
     "showSensitive": "画像を表示",
-    "hideSensitive": "画像を隠す"
+    "hideSensitive": "画像を隠す",
+    "sensitiveShort": "センシティブ"
   },
   "threads": {
     "title": "スレッド",

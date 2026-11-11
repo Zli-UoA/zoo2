@@ -45,9 +45,6 @@ class HomeComposerState(internal val settingsKey: String? = null) {
     var replyTarget by mutableStateOf<Row?>(null)
         internal set
 
-    var sensitive by mutableStateOf(false)
-        internal set
-
     var sending by mutableStateOf(false)
         internal set
 
@@ -294,7 +291,7 @@ fun HomeComposer(
                             val payload = buildJsonObject {
                                 put("content", state.content)
                                 if (images.items.isNotEmpty()) put("image_ids", JsonArray(images.items.map { JsonPrimitive(it.uploaded!!.text("id")) }))
-                                if (images.items.isNotEmpty()) put("sensitive", state.sensitive)
+                                if (images.items.any { it.sensitive }) put("sensitive_image_ids", JsonArray(images.items.filter { it.sensitive }.map { JsonPrimitive(it.uploaded!!.text("id")) }))
                                 put("apub", federated)
                                 put("visibility", state.visibility)
                                 put(
@@ -315,7 +312,6 @@ fun HomeComposer(
                                     images.items.clear()
                                     images.error = null
                                     state.content = ""
-                                    state.sensitive = false
                                     state.opened = false
                                 } catch (cancelled: CancellationException) {
                                     throw cancelled
@@ -413,7 +409,6 @@ fun HomeComposer(
                     ) {
                         state.content = it
                     }
-                    if (images.items.isNotEmpty()) Check(app.t("attachments.markSensitive"), state.sensitive, !state.sending) { state.sensitive = it }
                     DraftAttachments(app, images, errorMessage = images.error?.let { app.t("home.imageError") })
                     IconButton("image-plus", app.t("attachments.add"), !state.sending && images.items.size < MAX_ATTACHMENTS) { images.pick() }
                     HomeComposerFooter(app, state, available, length)

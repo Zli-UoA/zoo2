@@ -181,7 +181,8 @@
         "WithAttachments",
         "WithFileAttachment",
         "AttachmentUploadError",
-        "SendError"
+        "SendError",
+        "MixedSensitivity"
       ]
     },
     {
@@ -618,7 +619,7 @@
     },
     {
       "file": "src/components/ui/sensitive-media.stories.tsx",
-      "states": ["Hidden", "RevealAndHide", "ActivityPub"]
+      "states": ["Hidden", "RevealAndHide", "ActivityPub", "WithoutMetadata", "InvalidHash"]
     }
   ],
   "modules": [

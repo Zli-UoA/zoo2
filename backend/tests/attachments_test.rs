@@ -1463,7 +1463,7 @@ async fn channel_image_metadata_case(case: &str) -> anyhow::Result<()> {
         .bind(attachment.as_str()).bind(user.as_str()).bind(channel.as_str()).bind(expected_size.to_string()).exec(&mut db).await?;
     let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
         .header("content-type","application/json").header("X-Dev-User", &user)
-        .body(Body::from(json!({"id":message,"channel_id":channel,"content":"photo","attachment_ids":[attachment],"sensitive":true}).to_string()))?).await?;
+        .body(Body::from(json!({"id":message,"channel_id":channel,"content":"photo","attachment_ids":[attachment],"sensitive_attachment_ids":[attachment]}).to_string()))?).await?;
     let expected_status = if matches!(case, "larger" | "smaller") {
         StatusCode::BAD_GATEWAY
     } else {

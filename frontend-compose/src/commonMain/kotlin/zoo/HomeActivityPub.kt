@@ -213,7 +213,7 @@ private fun HomeMediaImage(item: Row, modifier: Modifier) {
     val app = LocalApp.current
     var revealed by remember(item.text("url"), item.flag("is_sensitive")) { mutableStateOf(false) }
     if (item.flag("is_sensitive") && !revealed) {
-        Button(app.t("attachments.showSensitive")) { revealed = true }
+        SensitiveImagePlaceholder(app, item, modifier.heightIn(min = 80.dp, max = 320.dp).aspectRatio(imageAspectRatio(item, 1f))) { revealed = true }
         return
     }
     val id = item.text("image_id")

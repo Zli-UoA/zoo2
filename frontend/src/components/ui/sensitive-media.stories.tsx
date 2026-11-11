@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { HomePostContent } from "../home/HomePostContent";
 import { SensitiveMedia } from "./sensitive-media";
 
@@ -7,11 +7,25 @@ const meta = {
   title: "Components/Media/SensitiveMedia",
   component: SensitiveMedia,
   parameters: { a11y: { test: "error" } },
-  args: { sensitive: true, children: <p>Image content</p> },
+  args: {
+    sensitive: true,
+    className: "w-64 max-w-full",
+    preview: { width: 640, height: 480, blurhash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj" },
+    children: <p>Image content</p>,
+  },
 } satisfies Meta<typeof SensitiveMedia>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-export const Hidden: Story = {};
+export const Hidden: Story = {
+  play: async ({ canvasElement }) => {
+    const preview = canvasElement.querySelector("canvas")!;
+    await waitFor(() =>
+      expect(preview.getContext("2d")!.getImageData(0, 0, 1, 1).data[3]).toBe(255),
+    );
+  },
+};
+export const WithoutMetadata: Story = { args: { preview: {} } };
+export const InvalidHash: Story = { args: { preview: { blurhash: "invalid" } } };
 export const RevealAndHide: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);

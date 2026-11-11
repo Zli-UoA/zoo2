@@ -347,6 +347,27 @@ pub(crate) async fn update_channel(
         .bind(id.as_str())
         .exec(&mut tx)
         .await?;
+        let posts = crate::apps::query(
+            &mut tx,
+            "UPDATE home_posts SET media=(SELECT jsonb_agg(image || '{\"is_sensitive\":true}'::jsonb ORDER BY position) FROM jsonb_array_elements(media) WITH ORDINALITY AS images(image,position)), updated_at=statement_timestamp()
+             WHERE channel_id=$1 AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM jsonb_array_elements(media) image WHERE image->'is_sensitive' IS DISTINCT FROM 'true'::jsonb)
+             RETURNING row_to_json(home_posts)::text",
+            &[id.as_str()],
+        ).await?;
+        for post in posts {
+            if post["apub"] == true {
+                let payload = serde_json::json!({"zoo_post":post,"type":"Update","activity_id":Uuid::new_v4().to_string()});
+                toasty::sql::statement(
+                    "INSERT INTO apub_deliveries(id,user_id,actor_id,payload)
+                     SELECT gen_random_uuid()::text,$1,a.id,$2 FROM apub_actors a
+                     WHERE NOT a.blocked AND (a.id=NULLIF($3,'') OR EXISTS(SELECT 1 FROM apub_follows f WHERE f.actor_id=a.id AND f.user_id=$1 AND f.direction='incoming' AND f.accepted))",
+                )
+                .bind(post["user_id"].as_str().unwrap())
+                .bind(payload.to_string())
+                .bind(post["reply_actor"].as_str().unwrap_or_default())
+                .exec(&mut tx).await?;
+            }
+        }
     }
 
     let updated_channel = Channel::get_by_id(&mut tx, id.as_str()).await?;

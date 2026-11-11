@@ -87,6 +87,7 @@ export interface CreateMessageRequest {
   parent_id?: string;
   attachment_ids?: string[];
   sensitive?: boolean;
+  sensitive_attachment_ids?: string[];
 }
 
 export interface PresignAttachmentRequest {

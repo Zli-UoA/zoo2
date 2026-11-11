@@ -42,9 +42,7 @@
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "만드는 중…",
     "create": "통로 만들기",
-    "nsfw": "NSFW 통로",
-    "nsfwWarning": "이 통로에는 민감한 내용이 포함될 수 있습니다.",
-    "showNsfw": "통로 표시"
+    "nsfw": "NSFW 통로"
   },
   "sync": {
     "title": "동기화 상태",
@@ -228,7 +226,8 @@
     "sensitive": "민감한 화상",
     "markSensitive": "화상을 민감한 내용으로 표시",
     "showSensitive": "화상 표시",
-    "hideSensitive": "화상 숨기기"
+    "hideSensitive": "화상 숨기기",
+    "sensitiveShort": "민감한 화상"
   },
   "threads": {
     "title": "타래",

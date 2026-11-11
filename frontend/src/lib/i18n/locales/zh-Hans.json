@@ -42,9 +42,7 @@
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "创建中…",
     "create": "创建频道",
-    "nsfw": "NSFW 频道",
-    "nsfwWarning": "此频道可能包含敏感内容。",
-    "showNsfw": "显示频道"
+    "nsfw": "NSFW 频道"
   },
   "sync": {
     "title": "同步状态",
@@ -228,7 +226,8 @@
     "sensitive": "敏感图片",
     "markSensitive": "将图片标记为敏感内容",
     "showSensitive": "显示图片",
-    "hideSensitive": "隐藏图片"
+    "hideSensitive": "隐藏图片",
+    "sensitiveShort": "敏感图片"
   },
   "threads": {
     "title": "子线程",

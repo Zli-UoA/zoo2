@@ -119,6 +119,7 @@ interface ComposerAttachmentDraft {
   preview_url: string | null;
   status: "uploading" | "ready";
   attachment_id?: string;
+  is_sensitive?: boolean;
 }
 
 interface ComposerProps {
@@ -132,7 +133,7 @@ interface ComposerProps {
     content: string,
     commandAppId?: string,
     attachmentIds?: string[],
-    sensitive?: boolean,
+    sensitiveAttachmentIds?: string[],
   ) => Promise<boolean>;
   /** ファイルをアップロードして添付 ID を返す。未指定なら添付 UI を出さない。 */
   onUploadAttachment?: (file: File) => Promise<UploadedAttachment>;
@@ -166,7 +167,6 @@ export function Composer({
   const [activeOption, setActiveOption] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const [drafts, setDrafts] = useState<ComposerAttachmentDraft[]>([]);
-  const [sensitive, setSensitive] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const draftsRef = useRef<ComposerAttachmentDraft[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -403,6 +403,9 @@ export function Composer({
     }
     const version = draftVersion.current;
     const restoreDrafts = draftsRef.current;
+    const sensitiveAttachmentIds = ready
+      .filter((draft) => draft.is_sensitive)
+      .map((draft) => draft.attachment_id!);
     const attachmentIds = ready.map((draft) => draft.attachment_id!);
     const commandAppId =
       selectedCommand &&
@@ -418,8 +421,8 @@ export function Composer({
     try {
       sent =
         attachmentIds.length > 0
-          ? sensitive
-            ? await onSend(content, undefined, attachmentIds, true)
+          ? sensitiveAttachmentIds.length > 0
+            ? await onSend(content, undefined, attachmentIds, sensitiveAttachmentIds)
             : await onSend(content, undefined, attachmentIds)
           : commandAppId
             ? await onSend(content, commandAppId)
@@ -466,7 +469,7 @@ export function Composer({
                 key={draft.key}
                 className={
                   isImage
-                    ? "relative size-20 overflow-hidden rounded-lg border bg-muted"
+                    ? "relative flex w-32 flex-col gap-1"
                     : "relative flex h-20 w-56 items-center gap-2 overflow-hidden rounded-lg border bg-muted/30 p-2 pr-9"
                 }
               >
@@ -474,7 +477,7 @@ export function Composer({
                   <img
                     src={draft.preview_url!}
                     alt={draft.file_name}
-                    className="size-full object-cover"
+                    className="h-20 w-full rounded-lg border bg-muted object-cover"
                   />
                 ) : (
                   <>
@@ -490,6 +493,27 @@ export function Composer({
                     </div>
                   </>
                 )}
+                {isImage ? (
+                  <label className="flex items-center gap-1 text-xs">
+                    <Input
+                      type="checkbox"
+                      checked={draft.is_sensitive ?? false}
+                      disabled={disabled}
+                      aria-label={`${draft.file_name}: ${t("attachments.sensitiveShort")}`}
+                      title={t("attachments.markSensitive")}
+                      onChange={(event) =>
+                        updateDrafts(
+                          draftsRef.current.map((item) =>
+                            item.key === draft.key
+                              ? { ...item, is_sensitive: event.target.checked }
+                              : item,
+                          ),
+                        )
+                      }
+                    />
+                    {t("attachments.sensitiveShort")}
+                  </label>
+                ) : null}
                 {draft.status === "uploading" ? (
                   <Spinner
                     label={t("attachments.uploading")}
@@ -509,17 +533,6 @@ export function Composer({
             );
           })}
         </ul>
-      ) : null}
-      {drafts.some((draft) => isInlineImage(draft.content_type)) ? (
-        <label className="mb-2 flex items-center gap-2 text-sm">
-          <Input
-            type="checkbox"
-            checked={sensitive}
-            disabled={disabled}
-            onChange={(event) => setSensitive(event.target.checked)}
-          />
-          {t("attachments.markSensitive")}
-        </label>
       ) : null}
       {attachmentError ? (
         <p role="alert" className="mb-2 px-1 text-xs text-destructive">

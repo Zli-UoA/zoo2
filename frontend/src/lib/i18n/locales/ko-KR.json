@@ -42,9 +42,7 @@
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "만드는 중…",
     "create": "채널 만들기",
-    "nsfw": "NSFW 채널",
-    "nsfwWarning": "이 채널에는 민감한 콘텐츠가 포함될 수 있습니다.",
-    "showNsfw": "채널 표시"
+    "nsfw": "NSFW 채널"
   },
   "sync": {
     "title": "동기화 상태",
@@ -228,7 +226,8 @@
     "sensitive": "민감한 이미지",
     "markSensitive": "이미지를 민감한 콘텐츠로 표시",
     "showSensitive": "이미지 표시",
-    "hideSensitive": "이미지 숨기기"
+    "hideSensitive": "이미지 숨기기",
+    "sensitiveShort": "민감한 이미지"
   },
   "threads": {
     "title": "스레드",

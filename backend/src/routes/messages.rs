@@ -29,6 +29,8 @@ pub struct CreateMessageRequest {
     pub attachment_ids: Option<Vec<String>>,
     #[serde(default)]
     pub sensitive: bool,
+    #[serde(default)]
+    pub sensitive_attachment_ids: Vec<String>,
     #[serde(default = "default_message_kind")]
     pub kind: String,
     #[serde(default)]
@@ -280,6 +282,15 @@ pub(crate) async fn create_message_impl(
         )));
     }
 
+    if payload
+        .sensitive_attachment_ids
+        .iter()
+        .any(|id| !attachment_ids.contains(id))
+    {
+        return Err(AppError::BadRequest(
+            "Sensitive attachment IDs must belong to this message".into(),
+        ));
+    }
     validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
     if !matches!(payload.kind.as_str(), "message" | "emote")
         || payload.broadcast && payload.parent_id.is_none()
@@ -658,7 +669,7 @@ pub(crate) async fn create_message_impl(
         .bind(metadata.as_ref().map(|m| m.width.to_string()).unwrap_or_default())
         .bind(metadata.as_ref().map(|m| m.height.to_string()).unwrap_or_default())
         .bind(metadata.as_ref().map(|m| m.blurhash.as_str()).unwrap_or_default())
-        .bind(payload.sensitive.to_string())
+        .bind((payload.sensitive || payload.sensitive_attachment_ids.contains(att_id)).to_string())
         .exec(&mut tx)
         .await?;
 

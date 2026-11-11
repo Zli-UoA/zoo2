@@ -51,6 +51,7 @@ export function HomePostContent({
               <SensitiveMedia
                 key={`${url}:${Boolean(image.is_sensitive)}:${index}`}
                 sensitive={image.is_sensitive}
+                preview={image}
               >
                 <ExternalLink href={url} className="block min-w-0">
                   <ImagePreview

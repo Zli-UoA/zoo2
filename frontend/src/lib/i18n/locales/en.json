@@ -42,9 +42,7 @@
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "Creating…",
     "create": "Create channel",
-    "nsfw": "NSFW channel",
-    "nsfwWarning": "This channel may contain sensitive content.",
-    "showNsfw": "Show channel"
+    "nsfw": "NSFW channel"
   },
   "sync": {
     "title": "Sync status",
@@ -228,7 +226,8 @@
     "sensitive": "Sensitive image",
     "markSensitive": "Mark images as sensitive",
     "showSensitive": "Show image",
-    "hideSensitive": "Hide image"
+    "hideSensitive": "Hide image",
+    "sensitiveShort": "Sensitive"
   },
   "threads": {
     "title": "Thread",

@@ -320,7 +320,7 @@ export function MessagePane({
       content: string,
       commandAppId?: string,
       attachmentIds: string[] = [],
-      sensitive = false,
+      sensitiveAttachmentIds: string[] = [],
     ): Promise<boolean> => {
       if (attachmentIds.length === 0) {
         const commandResult = await runCommand(content, commandAppId);
@@ -329,7 +329,12 @@ export function MessagePane({
       const id = crypto.randomUUID();
       const metadata =
         attachmentIds.length > 0
-          ? { attachment_ids: attachmentIds, ...(sensitive ? { sensitive: true } : {}) }
+          ? {
+              attachment_ids: attachmentIds,
+              ...(sensitiveAttachmentIds.length
+                ? { sensitive_attachment_ids: sensitiveAttachmentIds }
+                : {}),
+            }
           : undefined;
       await run(() =>
         messagesCollection.insert(
@@ -358,7 +363,7 @@ export function MessagePane({
       content: string,
       commandAppId?: string,
       attachmentIds: string[] = [],
-      sensitive = false,
+      sensitiveAttachmentIds: string[] = [],
     ): Promise<boolean> => {
       if (readOnly || !isMember) {
         toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
@@ -375,7 +380,12 @@ export function MessagePane({
       const id = crypto.randomUUID();
       const metadata =
         attachmentIds.length > 0
-          ? { attachment_ids: attachmentIds, ...(sensitive ? { sensitive: true } : {}) }
+          ? {
+              attachment_ids: attachmentIds,
+              ...(sensitiveAttachmentIds.length
+                ? { sensitive_attachment_ids: sensitiveAttachmentIds }
+                : {}),
+            }
           : undefined;
       await run(() =>
         messagesCollection.insert(

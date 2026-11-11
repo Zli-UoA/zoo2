@@ -344,11 +344,12 @@ mod tests {
     fn parses_electric_text_values() {
         let channel = Channel::from_row(&row(json!({
             "id": "c1", "channel_name": "general", "description": null,
-            "is_private": "f", "is_dm": "true", "archive_at": "2026-11-01 01:02:03.456",
+            "is_private": "f", "is_nsfw": "t", "is_dm": "true", "archive_at": "2026-11-01 01:02:03.456",
             "deleted_at": null
         })))
         .unwrap();
         assert!(!channel.is_private);
+        assert!(channel.is_nsfw);
         assert!(channel.is_dm);
         assert_eq!(
             channel.archive_at.unwrap().to_string(),
@@ -371,6 +372,7 @@ mod tests {
         })))
         .unwrap();
         assert!(!channel.is_dm);
+        assert!(!channel.is_nsfw);
     }
 
     #[test]
@@ -401,10 +403,12 @@ mod tests {
             "file_size": 12345,
             "content_type": "image/png",
             "storage_key": "keys/photo.png",
+            "is_sensitive": "t",
             "created_at": "2026-11-01 12:00:00"
         })))
         .unwrap();
         assert_eq!(attachment.id, "att1");
+        assert!(attachment.is_sensitive);
         assert_eq!(attachment.file_size, 12345);
         assert_eq!(attachment.content_type, "image/png");
 

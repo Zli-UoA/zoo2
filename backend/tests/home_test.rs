@@ -1836,18 +1836,40 @@ async fn nsfw_channel_requires_management_and_protects_existing_home_images() ->
     )
     .await?;
     assert_eq!(created["data"]["is_nsfw"], false);
-    let (_, post) = request(
-        &app,
-        "POST",
-        Some(&owner),
-        "/api/home",
-        Some(json!({"content":"photo","channel_id":channel})),
-    )
-    .await?;
+    let image = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,file_size,content_type,name) VALUES($1,$2,10,'image/png','photo.png')")
+        .bind(image.as_str()).bind(owner.as_str()).exec(&mut db).await?;
+    let (status, post) = request(
+        &app, "POST", Some(&owner), "/api/home",
+        Some(json!({"content":"photo","channel_id":channel,"image_ids":[image],"apub":true,"visibility":"public"})),
+    ).await?;
+    assert_eq!(status, StatusCode::CREATED);
     let post_id = post["id"].as_str().unwrap();
-    let attachment = uuid::Uuid::new_v4().to_string();
-    toasty::sql::statement("INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key) VALUES($1,$2,$3,$4,'photo.png',10,'image/png','photo')")
-        .bind(attachment.as_str()).bind(post_id).bind(owner.as_str()).bind(channel.as_str()).exec(&mut db).await?;
+    let attachment = backend::models::Attachment::filter(
+        backend::models::Attachment::fields()
+            .message_id()
+            .eq(post_id),
+    )
+    .first()
+    .exec(&mut db)
+    .await?
+    .unwrap()
+    .id;
+    // A follower receives the warning update; a blocked actor and an unrelated follower do not.
+    let actors = [
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    ];
+    for (index, actor) in actors.iter().enumerate() {
+        toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,blocked) VALUES($1,$1,$1,'peer','Peer',$1,'test',$2::boolean)")
+            .bind(actor.as_str()).bind((index==1).to_string()).exec(&mut db).await?;
+        toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,accepted) VALUES($1,$2,'incoming',$3,true)")
+            .bind(if index==2 {other.as_str()} else {owner.as_str()}).bind(actor.as_str()).bind(uuid::Uuid::new_v4().to_string()).exec(&mut db).await?;
+    }
+    let profile_path = format!("/api/activitypub/users/{owner}/profile");
+    let (_, profile) = request(&app, "GET", None, &profile_path, None).await?;
+    assert_eq!(profile["posts"][0]["media"][0]["is_sensitive"], false);
     let path = format!("/api/channels/{channel}");
     assert_eq!(
         request(
@@ -1883,6 +1905,8 @@ async fn nsfw_channel_requires_management_and_protects_existing_home_images() ->
     .await?;
     assert_eq!(detail["attachments"][0]["is_sensitive"], true);
     assert_eq!(detail["media"][0]["is_sensitive"], true);
+    let (_, profile) = request(&app, "GET", None, &profile_path, None).await?;
+    assert_eq!(profile["posts"][0]["media"][0]["is_sensitive"], true);
     request(
         &app,
         "PATCH",
@@ -1896,5 +1920,131 @@ async fn nsfw_channel_requires_management_and_protects_existing_home_images() ->
             .await?
             .is_sensitive
     );
+    // Re-read all public representations after disabling NSFW; labels stay persisted.
+    let (_, detail) = request(
+        &app,
+        "GET",
+        Some(&owner),
+        &format!("/api/home/{post_id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(detail["media"][0]["is_sensitive"], true);
+    let (_, profile) = request(&app, "GET", None, &profile_path, None).await?;
+    assert_eq!(profile["posts"][0]["media"][0]["is_sensitive"], true);
+    let (_, note) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{post_id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(note["sensitive"], true);
+    assert_eq!(note["attachment"][0]["sensitive"], true);
+    let (_, outbox) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{owner}/outbox?page=true"),
+        None,
+    )
+    .await?;
+    assert_eq!(outbox["orderedItems"][0]["object"]["sensitive"], true);
+    assert_eq!(
+        outbox["orderedItems"][0]["object"]["attachment"][0]["sensitive"],
+        true
+    );
+    let deliveries = backend::apps::query(&mut db.transaction().await?, "SELECT json_build_object('actor_id',actor_id,'user_id',user_id,'payload',payload::jsonb)::text FROM apub_deliveries WHERE payload::jsonb->'zoo_post'->>'id'=$1 AND payload::jsonb->>'type'='Update'", &[post_id]).await?;
+    assert_eq!(deliveries.len(), 1);
+    assert_eq!(deliveries[0]["actor_id"], actors[0]);
+    assert_eq!(deliveries[0]["user_id"], owner);
+    assert_eq!(
+        deliveries[0]["payload"]["zoo_post"]["media"][0]["is_sensitive"],
+        true
+    );
+    // Reapplying the flag must not enqueue a second Update for unchanged labels.
+    request(
+        &app,
+        "PATCH",
+        Some(&owner),
+        &path,
+        Some(json!({"is_nsfw":true})),
+    )
+    .await?;
+    let deliveries = backend::apps::query(&mut db.transaction().await?, "SELECT json_build_object('id',id)::text FROM apub_deliveries WHERE payload::jsonb->'zoo_post'->>'id'=$1 AND payload::jsonb->>'type'='Update'", &[post_id]).await?;
+    assert_eq!(deliveries.len(), 1);
+    for actor in &actors {
+        toasty::sql::statement("DELETE FROM apub_deliveries WHERE actor_id=$1")
+            .bind(actor.as_str())
+            .exec(&mut db)
+            .await?;
+        toasty::sql::statement("DELETE FROM apub_follows WHERE actor_id=$1")
+            .bind(actor.as_str())
+            .exec(&mut db)
+            .await?;
+        toasty::sql::statement("DELETE FROM apub_actors WHERE id=$1")
+            .bind(actor.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn individual_image_labels_are_preserved_and_nsfw_channels_override_them()
+-> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(owner.as_str())
+        .exec(&mut db)
+        .await?;
+    let images = [
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    ];
+    for image in &images {
+        toasty::sql::statement("INSERT INTO home_images(id,uploader_id,file_size,content_type,name) VALUES($1,$2,10,'image/png','photo.png')").bind(image.as_str()).bind(owner.as_str()).exec(&mut db).await?;
+    }
+    for nsfw in [false, true] {
+        let channel = uuid::Uuid::new_v4().to_string();
+        let (status, _) = request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/channels",
+            Some(json!({"id":channel,"channel_name":channel,"is_nsfw":nsfw})),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, post) = request(&app, "POST", Some(&owner), "/api/home", Some(json!({"content":"mixed images","image_ids":images,"sensitive_image_ids":[images[1]],"channel_id":channel,"apub":true,"visibility":"public"}))).await?;
+        assert_eq!(status, StatusCode::CREATED);
+        let id = post["id"].as_str().unwrap();
+        let (_, detail) =
+            request(&app, "GET", Some(&owner), &format!("/api/home/{id}"), None).await?;
+        for key in ["media", "attachments"] {
+            assert_eq!(detail[key][0]["is_sensitive"], nsfw);
+            assert_eq!(detail[key][1]["is_sensitive"], true);
+        }
+        let (_, note) = request(
+            &app,
+            "GET",
+            None,
+            &format!("/api/activitypub/notes/{id}"),
+            None,
+        )
+        .await?;
+        assert_eq!(note["sensitive"], true);
+        assert_eq!(note["attachment"][0]["sensitive"], nsfw);
+        assert_eq!(note["attachment"][1]["sensitive"], true);
+    }
+    let (status, _) = request(&app, "POST", Some(&owner), "/api/home", Some(json!({"content":"invalid selection","image_ids":[images[0]],"sensitive_image_ids":[images[1]]}))).await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = request(&app, "POST", Some(&owner), "/api/messages", Some(json!({"content":"invalid selection","channel_id":uuid::Uuid::new_v4().to_string(),"sensitive_attachment_ids":[images[0]]}))).await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     Ok(())
 }

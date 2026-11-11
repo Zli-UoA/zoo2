@@ -5,6 +5,7 @@ import { storyCommands } from "../../../.storybook/app-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { StoryShell } from "../../../.storybook/shell";
+import { storyAttachments } from "../../../.storybook/attachment-fixtures";
 import { storyCollections } from "../../../.storybook/fixtures";
 import { ChannelScreen } from "./ChannelScreen";
 
@@ -112,6 +113,7 @@ export const Nsfw: Story = {
     a11y: { test: "error" },
     collections: {
       ...storyCollections,
+      attachments: [{ ...storyAttachments[0], message_id: "message-hello", is_sensitive: true }],
       channels: storyCollections.channels.map((channel) => ({
         ...channel,
         is_nsfw: channel.id === "channel-general",
@@ -120,15 +122,10 @@ export const Nsfw: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(
-      await canvas.findByText("このチャンネルにはセンシティブな内容が含まれる場合があります。"),
-    ).toBeVisible();
-    await expect(canvas.queryByRole("textbox", { name: "メッセージ" })).not.toBeInTheDocument();
-    await userEvent.click(canvas.getByRole("button", { name: "チャンネルを表示" }));
-    await waitFor(() =>
-      expect(
-        canvas.queryByText("このチャンネルにはセンシティブな内容が含まれる場合があります。"),
-      ).not.toBeInTheDocument(),
-    );
+    const reveal = await canvas.findByRole("button", { name: "画像を表示" });
+    await expect(reveal.querySelector("canvas")).not.toBeNull();
+    await expect(canvas.queryByRole("img", { name: "screenshot.png" })).not.toBeInTheDocument();
+    await userEvent.click(reveal);
+    await waitFor(() => expect(canvas.getByRole("img", { name: "screenshot.png" })).toBeVisible());
   }),
 };

@@ -37,6 +37,8 @@ export function MessageAttachments({ attachments }: { attachments: AttachmentMet
             <SensitiveMedia
               key={`${attachment.id}:${Boolean(attachment.is_sensitive)}`}
               sensitive={attachment.is_sensitive}
+              preview={attachment}
+              className={images.length === 1 ? "w-64 max-w-full" : "w-full"}
             >
               <AttachmentImage attachment={attachment} multiple={images.length > 1} />
             </SensitiveMedia>

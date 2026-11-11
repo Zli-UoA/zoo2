@@ -62,7 +62,7 @@ it.each([160, 640])(
   },
 );
 
-it("does not request a URL or mount image previews until a sensitive image is revealed", async () => {
+it("shows BlurHash without requesting the original image until a sensitive image is tapped", async () => {
   link.load.mockClear();
   link.state = {
     url: "/sensitive.png",
@@ -73,6 +73,9 @@ it("does not request a URL or mount image previews until a sensitive image is re
   };
   const attachment = {
     id: "sensitive",
+    width: 640,
+    height: 480,
+    blurhash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
     file_name: "private.png",
     file_size: 100,
     content_type: "image/png",
@@ -85,6 +88,8 @@ it("does not request a URL or mount image previews until a sensitive image is re
   );
   expect(link.load).not.toHaveBeenCalled();
   expect(screen.queryByRole("img")).toBeNull();
+  const preview = screen.getByRole("button", { name: "画像を表示" }).querySelector("canvas")!;
+  await waitFor(() => expect(preview.getContext("2d")!.getImageData(0, 0, 1, 1).data[3]).toBe(255));
   fireEvent.click(screen.getByRole("button", { name: "画像を表示" }));
   expect(await screen.findByRole("img", { name: "private.png" })).toBeTruthy();
   expect(link.load).toHaveBeenCalled();

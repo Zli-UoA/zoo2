@@ -125,14 +125,6 @@ fun Chat(
     membershipOverride: Boolean? = null,
 ) {
     val id = channel.text("id")
-    var acceptedNsfw by remember(id, channel.flag("is_nsfw")) { mutableStateOf(false) }
-    if (channel.flag("is_nsfw") && !acceptedNsfw) {
-        Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
-            Text(app.t("channels.nsfwWarning"))
-            Button(app.t("channels.showNsfw")) { acceptedNsfw = true }
-        }
-        return
-    }
     val table = remember(id) { app.repo.messages(id) }
     DisposableEffect(id) { onDispose { app.repo.releaseChannel(id) } }
     val all by table.rows.collectAsState()
@@ -1223,7 +1215,6 @@ internal fun Composer(
     val channels by app.repo.channels.rows.collectAsState()
     var commands by remember(channel) { mutableStateOf<List<Row>>(emptyList()) }
     val attachments = rememberAttachmentDrafts(app, channel, key, enabled, uploadAttachment)
-    var sensitive by remember(key) { mutableStateOf(false) }
     attachments.acceptFiles = allowAttachments
     val density = LocalDensity.current.density
     var sendError by remember(key) { mutableStateOf<String?>(null) }
@@ -1353,6 +1344,7 @@ internal fun Composer(
             updateTyping(false)
             val drafts = attachments.items.toList()
             val attachmentIds = drafts.mapNotNull { it.uploaded?.text("id") }
+            val sensitiveAttachmentIds = drafts.filter { it.sensitive }.mapNotNull { it.uploaded?.text("id") }
             attachments.items.clear()
             attachments.error = null
             sendError = null
@@ -1362,7 +1354,7 @@ internal fun Composer(
                 val successful =
                     try {
                         sendMessage?.invoke(sent.trim(), commandAppId, attachmentIds)
-                            ?: app.send(channel, sent.trim(), parent, commandAppId, attachmentIds, sensitive)
+                            ?: app.send(channel, sent.trim(), parent, commandAppId, attachmentIds, sensitiveAttachmentIds)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
@@ -1418,7 +1410,6 @@ internal fun Composer(
                 IconButton("x", app.t("common.close"), size = 24.dp) { sendError = null }
             }
         }
-        if (attachments.items.any { it.type in imageTypes }) Check(app.t("attachments.markSensitive"), sensitive, enabled) { sensitive = it }
         DraftAttachments(app, attachments)
         if (options.isNotEmpty())
             Column(

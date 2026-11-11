@@ -44,6 +44,7 @@ import { createConfiguredApiClient } from "../../lib/api/client";
 export interface HomePostInput {
   image_ids?: string[];
   sensitive?: boolean;
+  sensitive_image_ids?: string[];
   content: string;
   apub: boolean;
   visibility: HomePostSettings["visibility"];
@@ -84,12 +85,13 @@ export function HomeComposer({
       .request(`/api/home/images/${encodeURIComponent(id)}`, { method: "DELETE" })
       .catch(() => {});
   };
-  const [images, setImages] = useState<{ file: File; preview: string; id?: string }[]>([]);
+  const [images, setImages] = useState<
+    { file: File; preview: string; id?: string; is_sensitive?: boolean }[]
+  >([]);
   const imagesRef = useRef(images);
   imagesRef.current = images;
   const [uploading, setUploading] = useState(false);
   const uploadLock = useRef(false);
-  const [sensitive, setSensitive] = useState(false);
   const [imageError, setImageError] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadController = useRef<AbortController | null>(null);
@@ -149,12 +151,12 @@ export function HomeComposer({
             return;
           }
           imagesRef.current = imagesRef.current.map((image) =>
-            image === draft ? { ...image, id: result.id } : image,
+            image.preview === draft.preview ? { ...image, id: result.id } : image,
           );
           setImages(imagesRef.current);
         } catch {
           URL.revokeObjectURL(draft.preview);
-          imagesRef.current = imagesRef.current.filter((image) => image !== draft);
+          imagesRef.current = imagesRef.current.filter((image) => image.preview !== draft.preview);
           setImages(imagesRef.current);
           setImageError(true);
         }
@@ -239,7 +241,9 @@ export function HomeComposer({
         ...(images.length
           ? {
               image_ids: images.map((image) => image.id!),
-              ...(sensitive ? { sensitive: true } : {}),
+              sensitive_image_ids: images
+                .filter((image) => image.is_sensitive)
+                .map((image) => image.id!),
             }
           : {}),
         ...settings,
@@ -254,7 +258,6 @@ export function HomeComposer({
       setImages([]);
       imagesRef.current = [];
       setImageError(false);
-      setSensitive(false);
       setOpen(false);
     } catch {
       setFailed(true);
@@ -532,12 +535,31 @@ export function HomeComposer({
               {images.length ? (
                 <ul aria-label={t("attachments.selected")} className="flex flex-wrap gap-2">
                   {images.map((image) => (
-                    <li key={image.preview} className="relative">
+                    <li key={image.preview} className="relative flex w-24 flex-col gap-1">
                       <img
                         src={image.preview}
                         alt={image.file.name}
                         className="size-24 rounded object-cover"
                       />
+                      <label className="flex items-center gap-1 text-[11px]">
+                        <Input
+                          type="checkbox"
+                          checked={image.is_sensitive ?? false}
+                          disabled={sending}
+                          aria-label={`${image.file.name}: ${t("attachments.sensitiveShort")}`}
+                          title={t("attachments.markSensitive")}
+                          onChange={(event) =>
+                            setImages((current) =>
+                              current.map((item) =>
+                                item.preview === image.preview
+                                  ? { ...item, is_sensitive: event.target.checked }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        {t("attachments.sensitiveShort")}
+                      </label>
                       <Button
                         type="button"
                         variant="secondary"
@@ -556,17 +578,6 @@ export function HomeComposer({
                     </li>
                   ))}
                 </ul>
-              ) : null}
-              {images.length ? (
-                <label className="flex items-center gap-2 text-sm">
-                  <Input
-                    type="checkbox"
-                    checked={sensitive}
-                    disabled={sending}
-                    onChange={(event) => setSensitive(event.target.checked)}
-                  />
-                  {t("attachments.markSensitive")}
-                </label>
               ) : null}
               {uploading ? <p role="status">{t("attachments.uploading")}</p> : null}
               {imageError ? (
