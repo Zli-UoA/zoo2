@@ -10,28 +10,28 @@ use crate::icons::Icon;
 
 use crate::tokens::{ThemeMode, Tokens};
 
-// pub mod alert_dialog;
-// pub mod avatar;
+pub mod alert_dialog;
+pub mod avatar;
 pub mod button;
-// pub mod button_group;
-// pub mod collapsible_section;
+pub mod button_group;
+pub mod collapsible_section;
 pub mod color;
-// pub mod confirm_action_dialog;
-// pub mod control_panel;
-// pub mod dialog;
-// pub mod dropdown_menu;
-// pub mod external_link;
-// pub mod image_preview;
-// pub mod input;
-// pub mod pane_header;
-// pub mod scroll_area;
-// pub mod select;
-// pub mod separator;
-// pub mod skeleton;
-// pub mod sonner;
-// pub mod spinner;
-// pub mod textarea;
-// pub mod tooltip;
+pub mod confirm_action_dialog;
+pub mod control_panel;
+pub mod dialog;
+pub mod dropdown_menu;
+pub mod external_link;
+pub mod image_preview;
+pub mod input;
+pub mod pane_header;
+pub mod scroll_area;
+pub mod select;
+pub mod separator;
+pub mod skeleton;
+pub mod sonner;
+pub mod spinner;
+pub mod textarea;
+pub mod tooltip;
 
 /// 色トークンと配色モード。`dark:` の指定がある部品はモードも見る。
 #[derive(Clone, Copy, Debug, PartialEq)]

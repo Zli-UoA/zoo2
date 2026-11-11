@@ -658,6 +658,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "blurhash"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e79769241dcd44edf79a732545e8b5cec84c247ac060f5252cd51885d093a8fc"
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7585,9 +7591,11 @@ name = "zoo2-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blurhash",
  "emojis",
  "futures",
  "gpui",
+ "image",
  "jiff",
  "notify-rust",
  "regex",

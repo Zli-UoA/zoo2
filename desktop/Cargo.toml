@@ -14,9 +14,11 @@ strip = true
 [dependencies]
 zoo2-client-core = { path = "../client-core" }
 anyhow = "1"
+blurhash = { version = "0.2", default-features = false }
 emojis = "0.6"
 futures = "0.3"
 gpui = "0.2.2"
+image = { version = "0.25", default-features = false }
 jiff = "0.2"
 notify-rust = "4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
