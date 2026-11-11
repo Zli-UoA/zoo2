@@ -85,6 +85,23 @@ pub enum CryptoError {
         message_index: Option<u32>,
     },
 
+    /// クロス署名鍵の JSON が正しくない（`user_id` や `usage` が違う、`keys` が 1 つの Ed25519 鍵でない）、
+    /// または鍵を用途の違う操作に使った（自己署名鍵で他のユーザーのマスター鍵に署名するなど）。
+    #[error("クロス署名鍵が正しくありません: {0}")]
+    InvalidCrossSigningKey(String),
+
+    /// 配布先の判定の記録（[`TrustStore`](crate::TrustStore)）の保存形式が正しくない、または別のユーザーのもの。
+    #[error("配布先の判定の記録が正しくありません: {0}")]
+    InvalidTrustStore(String),
+
+    /// 一度置き換わった自分のユーザー署名鍵に戻ろうとした（巻き戻し）。
+    #[error("一度置き換わったユーザー署名鍵です: {0}")]
+    UserSigningKeyRollback(String),
+
+    /// 渡したユーザー署名鍵が、記録にある今のユーザー署名鍵と違う。
+    #[error("今のユーザー署名鍵ではありません: {0}")]
+    StaleUserSigningKey(String),
+
     /// 受信時の検証に失敗した。呼び出し側は破棄する。
     #[error("受信時の検証に失敗しました: {0}")]
     Rejected(Rejection),

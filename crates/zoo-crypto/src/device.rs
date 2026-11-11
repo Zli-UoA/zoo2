@@ -419,7 +419,7 @@ fn validate_ids(user_id: &str, device_id: &str) -> Result<(), CryptoError> {
 /// `v4` なら、version が 4 で variant が RFC 4122（`10xx`）であることも確かめる。
 ///
 /// 署名する JSON に入るので、PostgreSQL の `uuid` 型が返す表記とそろえておく必要がある。
-fn validate_uuid(field: &'static str, value: &str, v4: bool) -> Result<(), CryptoError> {
+pub(crate) fn validate_uuid(field: &'static str, value: &str, v4: bool) -> Result<(), CryptoError> {
     let bytes = value.as_bytes();
     let valid = bytes.len() == 36
         && bytes.iter().enumerate().all(|(i, &b)| match i {
