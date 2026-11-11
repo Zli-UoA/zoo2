@@ -65,6 +65,9 @@ pub fn parse_url_expiry_secs(url: &str) -> u64 {
     300
 }
 
+/// OS 通知のテスト用シンク型。
+pub type NotificationSink = std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
 /// キャッシュされた添付ファイル URL と有効期限。
 #[derive(Debug, Clone)]
 pub struct CachedAttachmentUrl {
@@ -491,6 +494,8 @@ pub struct AppState {
     pub theme_mode: crate::theme::ThemeMode,
     /// OS 通知有効フラグ。
     pub notifications_enabled: bool,
+    /// OS 通知送信ハンドラ（テストでの通知検証用やモック用）。
+    pub notification_sink: Option<NotificationSink>,
     /// 検索移動時などに指定位置までスクロールするためのメッセージ ID。
     pub pending_scroll_to_message_id: Option<String>,
     /// モーダルや検索バーを閉じた後に composer へフォーカスを復帰させるフラグ。
@@ -499,6 +504,8 @@ pub struct AppState {
     pub pending_open_attachments: HashSet<String>,
     /// `view` 側でブラウザを開くための保留中 URL。
     pub pending_open_url: Option<String>,
+    /// クイックスイッチャーのスクロールをキーボード選択位置へ追従させる要求フラグ。
+    pub pending_quick_switcher_scroll: bool,
 }
 
 impl std::fmt::Debug for AppState {
@@ -628,10 +635,12 @@ impl AppState {
             quick_switcher: None,
             theme_mode: crate::theme::ThemeMode::Dark,
             notifications_enabled: true,
+            notification_sink: None,
             pending_scroll_to_message_id: None,
             pending_focus_composer: false,
             pending_open_attachments: HashSet::new(),
             pending_open_url: None,
+            pending_quick_switcher_scroll: false,
         }
     }
 
@@ -1489,9 +1498,13 @@ impl AppState {
                     } else {
                         content
                     };
-                    std::thread::spawn(move || {
-                        notify_desktop(&title, &body);
-                    });
+                    if let Some(sink) = &self.notification_sink {
+                        sink.lock().unwrap().push((title, body));
+                    } else {
+                        std::thread::spawn(move || {
+                            notify_desktop(&title, &body);
+                        });
+                    }
                 }
                 if self.store.is_synced(&id) {
                     self.sync_errors.remove(&id);
@@ -4306,10 +4319,12 @@ impl AppState {
 
     pub fn open_quick_switcher(&mut self) {
         self.quick_switcher = Some(QuickSwitcherState::default());
+        self.pending_quick_switcher_scroll = true;
     }
 
     pub fn close_quick_switcher(&mut self) {
         self.quick_switcher = None;
+        self.pending_quick_switcher_scroll = false;
         self.pending_focus_composer = true;
     }
 
@@ -4317,6 +4332,7 @@ impl AppState {
         if let Some(qs) = &mut self.quick_switcher {
             qs.query = query;
             qs.selected_index = 0;
+            self.pending_quick_switcher_scroll = true;
         }
     }
 
@@ -4326,6 +4342,7 @@ impl AppState {
             && count > 0
         {
             qs.selected_index = (qs.selected_index + 1) % count;
+            self.pending_quick_switcher_scroll = true;
         }
     }
 
@@ -4335,7 +4352,12 @@ impl AppState {
             && count > 0
         {
             qs.selected_index = (qs.selected_index + count - 1) % count;
+            self.pending_quick_switcher_scroll = true;
         }
+    }
+
+    pub fn take_pending_quick_switcher_scroll(&mut self) -> bool {
+        std::mem::take(&mut self.pending_quick_switcher_scroll)
     }
 
     pub fn quick_switcher_candidates(&self) -> Vec<(&Channel, String)> {
@@ -8202,6 +8224,8 @@ mod tests {
         let mut state = connected_state();
         state.notifications_enabled = true;
         state.window_active = false;
+        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        state.notification_sink = Some(sink.clone());
 
         // 同一メッセージ m_del に対する insert と deleted_at 付き update を同一バッチで受信
         let batch_data = batch(vec![
@@ -8233,6 +8257,11 @@ mod tests {
             batch_data,
         ));
         assert!(state.store.message("c1", "m_del").is_none());
+        assert_eq!(
+            sink.lock().unwrap().len(),
+            0,
+            "削除されたメッセージの通知候補は取り消され、通知は送信されないこと"
+        );
     }
 
     #[test]
@@ -8240,6 +8269,8 @@ mod tests {
         let mut state = connected_state();
         state.notifications_enabled = true;
         state.window_active = false;
+        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        state.notification_sink = Some(sink.clone());
 
         // 同一バッチ内で @alice 付き投稿を受信後、メンションを除去した更新を受信
         let batch_data = batch(vec![
@@ -8272,6 +8303,73 @@ mod tests {
         ));
         let stored = state.store.message("c1", "m_mention_removed").unwrap();
         assert_eq!(stored.content, "こんにちは 皆さん (メンション削除)");
+        assert_eq!(
+            sink.lock().unwrap().len(),
+            0,
+            "メンション削除されたメッセージの通知候補は取り消され、通知は送信されないこと"
+        );
+    }
+
+    #[test]
+    fn batch_notification_sent_for_valid_mention() {
+        let mut state = connected_state();
+        state.notifications_enabled = true;
+        state.window_active = false;
+        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        state.notification_sink = Some(sink.clone());
+
+        // 有効なメンション付き新規メッセージを受信
+        let batch_data = batch(vec![(
+            "m_valid",
+            json!({
+                "id": "m_valid",
+                "channel_id": "c1",
+                "user_id": "u2",
+                "content": "こんにちは @alice さん",
+                "created_at": "2026-11-11 00:00:00",
+            }),
+        )]);
+
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch_data,
+        ));
+        let notifications = sink.lock().unwrap();
+        assert_eq!(
+            notifications.len(),
+            1,
+            "有効なメンション宛て通知が1件送信されること"
+        );
+        assert!(notifications[0].1.contains("こんにちは @alice さん"));
+    }
+
+    #[test]
+    fn quick_switcher_keyboard_navigation_sets_pending_scroll() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        state.open_quick_switcher();
+        assert!(state.take_pending_quick_switcher_scroll());
+        assert!(!state.take_pending_quick_switcher_scroll());
+
+        // 次の候補へ選択移動
+        state.quick_switcher_select_next();
+        assert!(state.take_pending_quick_switcher_scroll());
+        assert!(!state.take_pending_quick_switcher_scroll());
+
+        // 前の候補へ選択移動
+        state.quick_switcher_select_prev();
+        assert!(state.take_pending_quick_switcher_scroll());
+        assert!(!state.take_pending_quick_switcher_scroll());
+
+        // クエリ更新
+        state.update_quick_switcher_query("gen".to_string());
+        assert!(state.take_pending_quick_switcher_scroll());
+        assert!(!state.take_pending_quick_switcher_scroll());
+
+        // クローズ時はフラグが false
+        state.close_quick_switcher();
+        assert!(!state.take_pending_quick_switcher_scroll());
     }
 
     #[test]

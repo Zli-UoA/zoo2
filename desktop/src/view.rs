@@ -40,6 +40,8 @@ pub struct WorkspaceView {
     pub theme_toggle_focus: FocusHandle,
     pub expanded_cards: std::collections::HashSet<String>,
     pub card_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
+    pub attachment_focus_handles:
+        std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     focus_handle: FocusHandle,
     login_primary_focus: FocusHandle,
     login_secondary_focus: FocusHandle,
@@ -527,10 +529,11 @@ impl WorkspaceView {
             thread_scroll: ScrollHandle::new(),
             quick_switcher_scroll: ScrollHandle::new(),
             emoji_picker_scroll: ScrollHandle::new(),
-            create_channel_private_focus: cx.focus_handle(),
-            theme_toggle_focus: cx.focus_handle(),
+            create_channel_private_focus: cx.focus_handle().tab_stop(true),
+            theme_toggle_focus: cx.focus_handle().tab_stop(true),
             expanded_cards: std::collections::HashSet::new(),
             card_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
+            attachment_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             focus_handle: cx.focus_handle(),
             login_primary_focus: cx.focus_handle(),
             login_secondary_focus: cx.focus_handle(),
@@ -591,6 +594,9 @@ impl WorkspaceView {
     }
 
     fn open_quick_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.read(cx).create_channel_modal.is_some() {
+            return;
+        }
         if self.state.read(cx).quick_switcher.is_some() {
             window.focus(&self.quick_switcher_input.focus_handle(cx));
             return;
@@ -611,6 +617,9 @@ impl WorkspaceView {
     }
 
     fn toggle_message_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.read(cx).create_channel_modal.is_some() {
+            return;
+        }
         let is_open = self.state.read(cx).message_search.is_some();
         if is_open {
             self.message_search_input
@@ -625,6 +634,9 @@ impl WorkspaceView {
     }
 
     fn open_message_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.read(cx).create_channel_modal.is_some() {
+            return;
+        }
         self.message_search_input
             .update(cx, |input, cx| input.clear(cx));
         self.state.update(cx, |s, cx| {
@@ -2085,7 +2097,16 @@ impl WorkspaceView {
         let attachment_views: Vec<Div> = attachments_with_urls
             .into_iter()
             .map(|(att, url, is_fetching, needs_refresh, is_failed)| {
-                render_attachment_item(&att, url, is_fetching, needs_refresh, is_failed, &theme, cx)
+                render_attachment_item(
+                    &att,
+                    url,
+                    is_fetching,
+                    needs_refresh,
+                    is_failed,
+                    &theme,
+                    &self.attachment_focus_handles,
+                    cx,
+                )
             })
             .collect();
 
@@ -3181,6 +3202,23 @@ impl WorkspaceView {
                     window.focus(&this.create_channel_name_input.focus_handle(cx));
                 }
             }))
+            .on_action(cx.listener(|this, _: &crate::input::TabPrev, window, cx| {
+                if this
+                    .create_channel_name_input
+                    .focus_handle(cx)
+                    .is_focused(window)
+                {
+                    window.focus(&this.create_channel_private_focus);
+                } else if this
+                    .create_channel_desc_input
+                    .focus_handle(cx)
+                    .is_focused(window)
+                {
+                    window.focus(&this.create_channel_name_input.focus_handle(cx));
+                } else if this.create_channel_private_focus.is_focused(window) {
+                    window.focus(&this.create_channel_desc_input.focus_handle(cx));
+                }
+            }))
             .child(
                 div()
                     .flex()
@@ -3398,12 +3436,17 @@ impl WorkspaceView {
     }
 
     fn render_quick_switcher_modal(&self, cx: &mut Context<Self>) -> Div {
+        let should_scroll = self
+            .state
+            .update(cx, |s, _| s.take_pending_quick_switcher_scroll());
         let state = self.state.read(cx);
         let theme = state.theme();
         let qs = state.quick_switcher.as_ref().unwrap();
         let candidates = state.quick_switcher_candidates();
         let selected_index = qs.selected_index;
-        self.quick_switcher_scroll.scroll_to_item(selected_index);
+        if should_scroll {
+            self.quick_switcher_scroll.scroll_to_item(selected_index);
+        }
 
         let items = candidates.iter().enumerate().map(|(i, (ch, label))| {
             let is_selected = i == selected_index;
@@ -3741,6 +3784,23 @@ impl Render for WorkspaceView {
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 let key = ev.keystroke.key.as_str();
                 let cmd_or_ctrl = ev.keystroke.modifiers.platform || ev.keystroke.modifiers.control;
+                let is_modal_open = this.state.read(cx).create_channel_modal.is_some();
+
+                // チャンネル作成モーダル表示中は背面の検索・スイッチャー等のショートカットを無効化
+                if is_modal_open {
+                    if key == "escape" {
+                        this.create_channel_name_input
+                            .update(cx, |i, cx| i.clear(cx));
+                        this.create_channel_desc_input
+                            .update(cx, |i, cx| i.clear(cx));
+                        this.state.update(cx, |s, cx| {
+                            s.close_create_channel_modal();
+                            cx.notify();
+                        });
+                        window.focus(&this.composer_input.focus_handle(cx));
+                    }
+                    return;
+                }
 
                 // グローバルショートカット
                 if cmd_or_ctrl && key == "k" {
@@ -4028,7 +4088,7 @@ pub fn render_ogp_card(
                     let field_focus = card_focus_handles
                         .borrow_mut()
                         .entry(format!("{card_key}:field:{idx}"))
-                        .or_insert_with(|| cx.focus_handle())
+                        .or_insert_with(|| cx.focus_handle().tab_stop(true))
                         .clone();
                     let target_for_key = target.clone();
                     val_view = val_view
@@ -4093,7 +4153,7 @@ pub fn render_ogp_card(
             let toggle_focus = card_focus_handles
                 .borrow_mut()
                 .entry(format!("{card_key}:toggle"))
-                .or_insert_with(|| cx.focus_handle())
+                .or_insert_with(|| cx.focus_handle().tab_stop(true))
                 .clone();
             let toggle_btn = if is_expanded {
                 div()
@@ -4178,7 +4238,7 @@ pub fn render_ogp_card(
     let card_link_focus = card_focus_handles
         .borrow_mut()
         .entry(format!("{card_key}:card"))
-        .or_insert_with(|| cx.focus_handle())
+        .or_insert_with(|| cx.focus_handle().tab_stop(true))
         .clone();
     let target_for_card_key = open_target.clone();
 
@@ -4273,6 +4333,7 @@ pub fn render_ogp_card(
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_attachment_item(
     att: &zoo2_client_core::electric::rows::Attachment,
     download_url: Option<String>,
@@ -4280,6 +4341,7 @@ pub fn render_attachment_item(
     needs_refresh: bool,
     is_failed: bool,
     theme: &theme::Theme,
+    attachment_focus_handles: &std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     cx: &mut Context<WorkspaceView>,
 ) -> Div {
     let is_img = is_image_content_type(&att.content_type);
@@ -4303,8 +4365,16 @@ pub fn render_attachment_item(
     if is_img {
         if let Some(url) = download_url {
             let att_id_open = att_id.clone();
+            let att_id_key = att_id.clone();
+            let img_focus = attachment_focus_handles
+                .borrow_mut()
+                .entry(format!("{att_id}:img"))
+                .or_insert_with(|| cx.focus_handle().tab_stop(true))
+                .clone();
             div()
                 .mt_1p5()
+                .track_focus(&img_focus)
+                .focus(|s| s.border_color(theme.border_accent))
                 .rounded_md()
                 .overflow_hidden()
                 .border_1()
@@ -4325,6 +4395,20 @@ pub fn render_attachment_item(
                         }
                     }),
                 )
+                .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                    if is_activate_key(&ev.keystroke.key) {
+                        cx.stop_propagation();
+                        let id = att_id_key.clone();
+                        let url_opt = this.state.update(cx, |s, cx| {
+                            let res = s.open_or_queue_attachment(&id);
+                            cx.notify();
+                            res
+                        });
+                        if let Some(url) = url_opt {
+                            cx.open_url(&url);
+                        }
+                    }
+                }))
                 .child(
                     gpui::img(url)
                         .max_w(px(380.0))
@@ -4333,6 +4417,12 @@ pub fn render_attachment_item(
                 )
         } else {
             let att_id_retry = att_id.clone();
+            let att_id_retry_key = att_id.clone();
+            let retry_focus = attachment_focus_handles
+                .borrow_mut()
+                .entry(format!("{att_id}:retry"))
+                .or_insert_with(|| cx.focus_handle().tab_stop(true))
+                .clone();
             let label = if is_failed {
                 "画像の読み込みに失敗しました (クリックで再試行)"
             } else {
@@ -4340,6 +4430,8 @@ pub fn render_attachment_item(
             };
             div()
                 .mt_1p5()
+                .track_focus(&retry_focus)
+                .focus(|s| s.border_color(theme.border_accent).bg(theme.bg_hover))
                 .px_3()
                 .py_2()
                 .rounded_md()
@@ -4366,6 +4458,17 @@ pub fn render_attachment_item(
                         });
                     }),
                 )
+                .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                    if is_activate_key(&ev.keystroke.key) {
+                        cx.stop_propagation();
+                        let id = att_id_retry_key.clone();
+                        this.state.update(cx, |s, cx| {
+                            s.failed_attachment_urls.remove(&id);
+                            s.ensure_attachment_url(id);
+                            cx.notify();
+                        });
+                    }
+                }))
                 .child(
                     div()
                         .text_xs()
@@ -4378,7 +4481,13 @@ pub fn render_attachment_item(
                 )
         }
     } else {
-        let att_id_open = att_id;
+        let att_id_open = att_id.clone();
+        let att_id_key = att_id.clone();
+        let att_focus = attachment_focus_handles
+            .borrow_mut()
+            .entry(att_id)
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
         let sub_label = if is_fetching {
             format!("{size_label} (URL取得中…)")
         } else if is_failed {
@@ -4388,6 +4497,8 @@ pub fn render_attachment_item(
         };
         div()
             .mt_1p5()
+            .track_focus(&att_focus)
+            .focus(|s| s.border_color(theme.border_accent).bg(theme.bg_hover))
             .px_3()
             .py_2()
             .rounded_md()
@@ -4409,6 +4520,20 @@ pub fn render_attachment_item(
                     }
                 }),
             )
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                if is_activate_key(&ev.keystroke.key) {
+                    cx.stop_propagation();
+                    let id = att_id_key.clone();
+                    let url_opt = this.state.update(cx, |s, cx| {
+                        let res = s.open_or_queue_attachment(&id);
+                        cx.notify();
+                        res
+                    });
+                    if let Some(url) = url_opt {
+                        cx.open_url(&url);
+                    }
+                }
+            }))
             .flex()
             .flex_row()
             .items_center()

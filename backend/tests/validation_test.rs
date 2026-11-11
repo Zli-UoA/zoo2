@@ -263,6 +263,12 @@ async fn test_messages_simple_list() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 他人の既存チャンネル ID と衝突した場合の暫定的な衝突回避処理（200 OK で別 UUID を発行して作成）。
+///
+/// 注意: 本処理により 409 Conflict ステータスによる存在漏洩は回避されますが、
+/// 要求した ID と応答された `data.id` が不一致になることで存在判別が依然として可能です。
+/// 完全な存在オラクル解消（作成者スコープの冪等性キー分離や API 仕様の改修など）は
+/// デスクトップ版 Phase 3 のスコープ外とし、別 Issue にて対応予定です。
 #[tokio::test]
 async fn test_create_channel_conflicting_id_with_other_user_generates_new_id()
 -> Result<(), Box<dyn std::error::Error>> {

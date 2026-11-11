@@ -400,18 +400,16 @@ impl TextInput {
         self.request_submit(cx);
     }
 
-    fn tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
+    fn tab(&mut self, _: &Tab, _window: &mut Window, cx: &mut Context<Self>) {
         if self.intercept_tab {
             cx.emit(InputEvent::Tab);
         } else {
-            window.focus_next();
-            cx.notify();
+            cx.propagate();
         }
     }
 
-    fn tab_prev(&mut self, _: &TabPrev, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_prev();
-        cx.notify();
+    fn tab_prev(&mut self, _: &TabPrev, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.propagate();
     }
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
