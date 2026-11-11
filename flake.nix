@@ -56,6 +56,15 @@
           vulkan-loader
           wayland
         ];
+        # デスクトップの画面撮影 (scripts/desktop-screenshot.sh) 用。
+        # 仮想ディスプレイ (Xvfb) と WM (openbox) の上で GPUI を lavapipe (CPU の Vulkan) で描く。
+        desktopScreenshotTools = with pkgs; [
+          xvfb
+          openbox
+          xwd
+          xwininfo
+          imagemagick
+        ];
         # ブラウザーテスト用の Chromium。CI と同じく
         # サンドボックスを外したラッパーを CHROME_BIN に渡す。Nix の chromium は Linux のみ。
         zooChrome = pkgs.writeShellScriptBin "zoo-chrome" ''
@@ -85,9 +94,11 @@
             opentofu
             sops
             age
-          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs);
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs ++ desktopScreenshotTools);
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           JAVA_HOME = "${pkgs.jdk21}";
+          # lavapipe の Vulkan ICD。desktop-screenshot.sh が VK_ICD_FILENAMES に使う。
+          ZOO_LVP_ICD = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";
           CHROME_BIN = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${zooChrome}/bin/zoo-chrome";
           LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (pkgs.lib.makeLibraryPath linuxDesktopLibs);
         };
