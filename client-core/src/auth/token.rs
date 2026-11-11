@@ -328,6 +328,35 @@ pub fn save(path: &Path, tokens: &StoredTokens) -> Result<()> {
     save_unlocked(path, tokens)
 }
 
+/// Execute a guarded save after acquiring the cross-process lock. The caller can
+/// acquire its in-process session lock inside `operation`, avoiding lock inversion.
+pub fn with_locked_save<T>(
+    path: &Path,
+    operation: impl FnOnce(&dyn Fn(&StoredTokens) -> Result<()>) -> Result<T>,
+) -> Result<T> {
+    let Some(_lock) = token_file_lock(path, true)? else {
+        return Err(anyhow!("{} の保存先を用意できません", path.display()));
+    };
+    cleanup_stale_token_temps_unlocked(path)?;
+    operation(&|tokens| save_unlocked(path, tokens))
+}
+
+/// Await the cross-process lock before inspecting and updating a stored session.
+pub async fn with_locked_save_async<T>(
+    path: &Path,
+    operation: impl FnOnce(Option<StoredTokens>, &dyn Fn(&StoredTokens) -> Result<()>) -> Result<T>,
+) -> Result<T> {
+    let Some(lock) = token_file_lock_async(path, true).await? else {
+        return Err(anyhow!("{} の保存先を用意できません", path.display()));
+    };
+    let (_lock, cleanup_error) = cleanup_stale_token_temps_async(path, lock).await?;
+    if let Some(error) = cleanup_error {
+        return Err(error);
+    }
+    let current = read_tokens_unlocked(path)?;
+    operation(current, &|tokens| save_unlocked(path, tokens))
+}
+
 /// Async counterpart used by Tokio entry points for cancellable lock waiting.
 pub async fn save_async(path: &Path, tokens: &StoredTokens) -> Result<()> {
     let Some(lock) = token_file_lock_async(path, true).await? else {
@@ -764,6 +793,24 @@ fn delete_current_session_unlocked(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(DeleteOutcome::Missing),
         Err(error) => Err(error).with_context(|| format!("{} を消せません", path.display())),
     }
+}
+
+/// Delete only the same login session, including a newer token rotation.
+pub fn delete_if_same_session(
+    path: &Path,
+    oidc: &OidcConfig,
+    expected: &StoredTokens,
+) -> Result<(DeleteOutcome, Option<StoredTokens>)> {
+    let Some(_lock) = token_file_lock(path, false)? else {
+        return Ok((DeleteOutcome::Missing, None));
+    };
+    cleanup_stale_token_temps_unlocked(path)?;
+    let current = read_tokens_unlocked(path)?;
+    let outcome = delete_current_session_unlocked(path, oidc, expected)?;
+    Ok((
+        outcome,
+        current.filter(|_| outcome == DeleteOutcome::Deleted),
+    ))
 }
 
 /// Delete the token file only if it still contains the snapshot observed before
