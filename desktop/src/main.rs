@@ -14,7 +14,7 @@ const USAGE: &str = "\
   help     このヘルプを表示する
 
 オプション:
-  --theme light|dark   配色を選ぶ (環境変数 ZOO_DESKTOP_THEME でも指定できる。既定は light)
+  --theme light|dark   gallery の配色を選ぶ (gallery だけに効く。環境変数 ZOO_DESKTOP_THEME でも指定できる。既定は light)
 
 設定は ~/.config/zoo2-desktop/config.toml (OS ごとの設定ディレクトリ) と環境変数 ZOO_* から読み込みます。";
 
@@ -23,7 +23,11 @@ fn take_theme(args: &mut Vec<String>) -> Option<ThemeMode> {
     let mut value = None;
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--theme" && i + 1 < args.len() {
+        if args[i] == "--theme" {
+            if i + 1 >= args.len() {
+                eprintln!("--theme には light か dark を指定してください\n\n{USAGE}");
+                std::process::exit(2);
+            }
             value = Some(args.remove(i + 1));
             args.remove(i);
         } else if let Some(v) = args[i].strip_prefix("--theme=") {
