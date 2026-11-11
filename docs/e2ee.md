@@ -1540,10 +1540,11 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   - 【決定】保存形式（#350）は、`zoo-crypto` の `TrustStore::to_json` が返す次の JSON にする。各クライアント（#359）は、これを暗号ストアに、端末アカウントと同じ保存鍵で暗号化して置く。
 
     ```json
-    {"version": 1, "user_id": "<自分>", "own_master_key": "<自分のマスター鍵>|null", "user_signing_key_history": ["<古い順。最後が今の基準>"], "records": {"<相手の user_id>": {"master_key": "<信頼したマスター鍵>", "confirmed_usk": "<ユーザー署名鍵>|null"}}}
+    {"version": 1, "user_id": "<自分>", "own_master_key": "<自分のマスター鍵>|null", "user_signing_key_history": ["<古い順。最後が今の基準>"], "records": {"<相手の user_id>": {"master_key": "<信頼したマスター鍵>", "confirmed_usk": "<ユーザー署名鍵>|null", "pin_pending": false}}}
     ```
 
     鍵はすべてパディングなしの base64 の公開鍵。`own_master_key` は初回設定で作ったとき、または SSSS から取り出した秘密鍵で確かめたときだけ設定する。`TrustStore::from_json` は、`version` が 1 でない、`user_id` が今のユーザーでない、鍵や ID の形式が正しくないものを `CryptoError::InvalidTrustStore` で拒否する。配布先の判定（`TrustStore::evaluate`）は TOFU の記録、`confirmed_usk`、履歴を書き換えるので、呼び出し側は判定のたびに保存し直す。
+  - 【決定】規則 4 の TOFU の記録は、ピンをサーバーに置けるまで `pin_pending: true` にし、その相手には配らない。判定のたびに同じピンを返し直すので、ピンを置く前に保存して終了しても、登録と別の端末のピンとの競合の確認を経ずに配ることはない。ピンの登録が成功したら `TrustStore::confirm_tofu_pin` で外し、409 `E2EE_PIN_CONFLICT` なら `TrustStore::discard_tofu_pin` で記録を戻して、返ったピンで判定し直す。スナップショットに同じマスター鍵のピンが見えたら（登録は成功していたが、外す前に終了した）外し、違うマスター鍵のピンが見えたら記録を戻して共有ピンとして採用する。
 - ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。
 - 保存鍵による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
 

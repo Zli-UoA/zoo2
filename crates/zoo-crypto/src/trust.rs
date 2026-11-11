@@ -32,6 +32,11 @@ pub struct TrustRecord {
     /// このマスター鍵を、どのユーザー署名鍵の公開鍵のもとで確認したか。
     /// `None` は、共有ピンを採用したがマスター鍵が今のものと違った記録で、再検証か SAS でだけ設定する。
     pub confirmed_usk: Option<String>,
+    /// TOFU（規則 4）で作ったピンを、まだサーバーに置けていない。登録待ちの相手には配らず、
+    /// 判定のたびにピンを [`Distribution::new_pins`] に返し直す。登録できたら
+    /// [`TrustStore::confirm_tofu_pin`] で外す（スナップショットに同じピンが見えたときも外す）。
+    #[serde(default)]
+    pub pin_pending: bool,
 }
 
 /// 配布先の判定に使う、暗号ストアの記録。
@@ -108,9 +113,11 @@ pub struct Distribution {
     pub devices: Vec<DeviceKeys>,
     /// ユーザーごとの判定。送信画面の表示（#361）に使う。
     pub users: BTreeMap<String, UserTrust>,
-    /// TOFU（規則 4）で作ったピン。`POST /api/e2ee/tofu_pins`（`replace: false`）で、
-    /// **鍵を配る前に**サーバーに置く。409 `E2EE_PIN_CONFLICT` になったら、
-    /// [`TrustStore::discard_tofu_pin`] で記録を戻し、返ったピンを入れたスナップショットで判定し直す。
+    /// TOFU（規則 4）で作った、登録待ちのピン。`POST /api/e2ee/tofu_pins`（`replace: false`）で
+    /// サーバーに置く。成功したら [`TrustStore::confirm_tofu_pin`]、409 `E2EE_PIN_CONFLICT` なら
+    /// [`TrustStore::discard_tofu_pin`] を呼び、判定し直す（409 では返ったピンをスナップショットに入れる）。
+    /// 登録待ちの相手の端末は、登録できるまで [`devices`](Self::devices) に入らない。登録待ちは記録に
+    /// 残るので、ピンを置く前に終了しても、次の判定で同じピンをここに返し直す。
     pub new_pins: Vec<NewTofuPin>,
     /// 利用者に出す警告。
     pub warnings: Vec<TrustWarning>,
@@ -149,6 +156,9 @@ pub enum UserState {
     NeedsReverification(ReverificationReason),
     /// 初めて見た相手だが、TOFU のピンを作るユーザー署名鍵の秘密鍵がない（解錠前）。配らない。
     NeedsUnlock,
+    /// 初めて見た相手（規則 4）で、TOFU のピンをまだサーバーに置けていない。
+    /// [`Distribution::new_pins`] のピンを置き、[`TrustStore::confirm_tofu_pin`] を呼んでから判定し直す。
+    PinPending,
     /// 自分のマスター鍵かユーザー署名鍵を確かめられないので配らない。理由は [`Distribution::warnings`]。
     Blocked,
 }
@@ -160,8 +170,6 @@ pub enum TrustBasis {
     Own,
     /// 自分のユーザー署名鍵による署名（規則 3）。
     UserSigningSignature,
-    /// 初めて見たので TOFU で信頼した（規則 4）。
-    Tofu,
     /// 自分の別の端末が作ったピンを採用した。
     SharedPin,
     /// 暗号ストアの記録と一致した。
@@ -283,6 +291,7 @@ impl TrustStore {
                 TrustRecord {
                     master_key: normalize(&record.master_key)?,
                     confirmed_usk: record.confirmed_usk.as_deref().map(normalize).transpose()?,
+                    pin_pending: record.pin_pending,
                 },
             );
         }
@@ -359,18 +368,32 @@ impl TrustStore {
             TrustRecord {
                 master_key: master.to_base64(),
                 confirmed_usk: Some(usk),
+                pin_pending: false,
             },
         );
         Ok(AcceptedMasterKey { pin, signature })
     }
 
-    /// TOFU で作ったピンの登録が 409 `E2EE_PIN_CONFLICT` になったときに、その TOFU で作った記録を戻す。
+    /// TOFU で作ったピンの登録（`POST /api/e2ee/tofu_pins`）が成功したときに、記録の登録待ちを外す。
+    /// そのあと判定し直すと、その相手の端末を配布先に入れる。
+    pub fn confirm_tofu_pin(&mut self, pin: &NewTofuPin) {
+        if let Some(record) = self
+            .records
+            .get_mut(&pin.target_user_id)
+            .filter(|r| r.pin_pending && r.master_key == pin.master_key)
+        {
+            record.pin_pending = false;
+        }
+    }
+
+    /// TOFU で作ったピンの登録が 409 `E2EE_PIN_CONFLICT` になったときに、登録待ちの記録を戻す。
     /// そのあと、返ったピンを [`KeySnapshot::tofu_pins`] に入れて判定し直す（共有ピンの採用）。
+    /// 登録待ちでない記録は消さない。
     pub fn discard_tofu_pin(&mut self, pin: &NewTofuPin) {
         if self
             .records
             .get(&pin.target_user_id)
-            .is_some_and(|r| r.master_key == pin.master_key)
+            .is_some_and(|r| r.pin_pending && r.master_key == pin.master_key)
         {
             self.records.remove(&pin.target_user_id);
         }
@@ -385,7 +408,8 @@ impl TrustStore {
     ///   初めて見た相手のピンを作れないので、その相手には配らない。
     ///
     /// 記録（TOFU の記録、`confirmed_usk`、ユーザー署名鍵の履歴）を更新するので、呼んだあとは保存する。
-    /// [`Distribution::new_pins`] があれば、鍵を配る前にサーバーに置く。
+    /// 初めて見た相手は登録待ち（[`UserState::PinPending`]）になり、[`Distribution::new_pins`] の
+    /// ピンをサーバーに置いて [`confirm_tofu_pin`](Self::confirm_tofu_pin) を呼ぶまで配らない。
     pub fn evaluate(
         &mut self,
         snapshot: &KeySnapshot,
@@ -467,6 +491,7 @@ impl TrustStore {
                 TrustRecord {
                     master_key: master_b64,
                     confirmed_usk: Some(usk_b64),
+                    pin_pending: false,
                 },
             );
             return self.trusted_devices(
@@ -485,6 +510,46 @@ impl TrustStore {
             .get(user_id)
             .and_then(|pin| verified_pin(pin, &me, user_id, &usk));
 
+        // 登録待ちの TOFU の記録。
+        if let Some(record) = self.records.get(user_id).filter(|r| r.pin_pending).cloned() {
+            match &pin {
+                // サーバーに同じマスター鍵のピンがある：登録できていたので、ふつうの記録として扱う。
+                Some(pinned) if *pinned == record.master_key => {
+                    if let Some(r) = self.records.get_mut(user_id) {
+                        r.pin_pending = false;
+                    }
+                }
+                // 別の端末が違うマスター鍵のピンを先に作っていた（409 と同じ）：記録を戻し、
+                // そのピンを共有ピンとして採用する（下の記録がない場合）。
+                Some(_) => {
+                    self.records.remove(user_id);
+                }
+                // まだ登録できていない：同じピンを作り直して返し、配らない。
+                None => {
+                    if record.master_key != master_b64 {
+                        return untrusted(UserState::NeedsReverification(
+                            ReverificationReason::MasterKeyChanged,
+                        ));
+                    }
+                    if record.confirmed_usk.as_deref() != Some(usk_b64.as_str()) {
+                        return untrusted(UserState::NeedsReverification(
+                            ReverificationReason::UserSigningKeyChanged,
+                        ));
+                    }
+                    let Some(Ok(pin)) = usk_secret.map(|k| k.sign_tofu_pin(user_id, &master))
+                    else {
+                        return untrusted(UserState::NeedsUnlock);
+                    };
+                    out.new_pins.push(NewTofuPin {
+                        target_user_id: user_id.to_owned(),
+                        master_key: master_b64,
+                        pin,
+                    });
+                    return untrusted(UserState::PinPending);
+                }
+            }
+        }
+
         let basis = match self.records.get(user_id).cloned() {
             None => match pin {
                 // 共有ピンの採用。マスター鍵が今のものと一致するときだけ confirmed_usk を設定する。
@@ -495,6 +560,7 @@ impl TrustStore {
                         TrustRecord {
                             master_key: pinned,
                             confirmed_usk: matches.then_some(usk_b64),
+                            pin_pending: false,
                         },
                     );
                     if !matches {
@@ -504,7 +570,8 @@ impl TrustStore {
                     }
                     TrustBasis::SharedPin
                 }
-                // 規則 4：初めて見た。TOFU でピンと記録を作る。
+                // 規則 4：初めて見た。TOFU でピンと登録待ちの記録を作る。ピンをサーバーに置けて
+                // （別の端末のピンとの競合がないと確かめて）から信頼する。
                 None => {
                     let Some(secret) = usk_secret else {
                         return untrusted(UserState::NeedsUnlock);
@@ -523,9 +590,10 @@ impl TrustStore {
                         TrustRecord {
                             master_key: master_b64,
                             confirmed_usk: Some(usk_b64),
+                            pin_pending: true,
                         },
                     );
-                    TrustBasis::Tofu
+                    return untrusted(UserState::PinPending);
                 }
             },
             // 規則 5：記録かピンのマスター鍵が違う、confirmed_usk がない、
@@ -554,6 +622,7 @@ impl TrustStore {
                         TrustRecord {
                             master_key: record.master_key,
                             confirmed_usk: Some(usk_b64),
+                            pin_pending: false,
                         },
                     );
                 }

@@ -159,6 +159,17 @@ fn evaluate(store: &mut TrustStore, me: &User, snapshot: &Snapshot) -> Distribut
     store.evaluate(&snapshot.get(), &me.device(0), Some(&me.keys.user_signing))
 }
 
+/// 判定し、TOFU のピンの登録が成功したものとして登録待ちを外し、判定し直す。
+fn evaluate_registered(store: &mut TrustStore, me: &User, snapshot: &Snapshot) -> Distribution {
+    let first = evaluate(store, me, snapshot);
+    for pin in &first.new_pins {
+        store.confirm_tofu_pin(pin);
+    }
+    let result = evaluate(store, me, snapshot);
+    assert!(result.new_pins.is_empty());
+    result
+}
+
 fn distributed(result: &Distribution) -> Vec<(String, String)> {
     result
         .devices
@@ -371,7 +382,7 @@ fn signs_other_users_master_keys_with_the_user_signing_key_only() {
 
 // ---- 配布先の判定 ----
 
-/// 規則 4：初めて見た相手を TOFU で信頼し、ピンを作る。直後でも未署名の端末には配らない。
+/// 規則 4：初めて見た相手のピンを作る。ピンを置けるまでは配らず、置けた直後も未署名の端末には配らない。
 #[test]
 fn tofu_trusts_first_seen_master_key_but_not_unsigned_devices() {
     let (alice, bob) = alice_and_bob();
@@ -380,8 +391,11 @@ fn tofu_trusts_first_seen_master_key_but_not_unsigned_devices() {
     let result = evaluate(&mut store, &alice, &snapshot);
 
     assert_eq!(state(&result, ALICE), UserState::Trusted(TrustBasis::Own));
-    assert_eq!(state(&result, BOB), UserState::Trusted(TrustBasis::Tofu));
-    assert_only_signed_bob_devices(&result, &alice, &bob);
+    assert_eq!(state(&result, BOB), UserState::PinPending);
+    assert_eq!(
+        distributed(&result),
+        vec![(ALICE.to_owned(), alice.device(1))]
+    );
     assert!(result.warnings.is_empty());
 
     assert_eq!(result.new_pins.len(), 1);
@@ -394,6 +408,74 @@ fn tofu_trusts_first_seen_master_key_but_not_unsigned_devices() {
     let record = store.record(BOB).unwrap();
     assert_eq!(record.master_key, pin.master_key);
     assert_eq!(record.confirmed_usk, Some(usk.to_base64()));
+    assert!(record.pin_pending);
+
+    // 登録が成功したら、署名済みの端末にだけ配る。
+    store.confirm_tofu_pin(pin);
+    assert!(!store.record(BOB).unwrap().pin_pending);
+    let result = evaluate(&mut store, &alice, &snapshot);
+    assert_eq!(state(&result, BOB), UserState::Trusted(TrustBasis::Record));
+    assert!(result.new_pins.is_empty());
+    assert_only_signed_bob_devices(&result, &alice, &bob);
+}
+
+/// ピンを置く前に保存して終了しても、復元後は登録待ちのままで、同じピンを返し直して配らない。
+#[test]
+fn pending_tofu_pin_survives_restart_and_is_resent() {
+    let (alice, bob) = alice_and_bob();
+    let mut store = unlocked_store(&alice);
+    let mut snapshot = Snapshot::new(&alice, &[&alice, &bob]);
+    let first = evaluate(&mut store, &alice, &snapshot);
+    assert_eq!(first.new_pins.len(), 1);
+
+    let mut restored = TrustStore::from_json(&store.to_json(), ALICE).unwrap();
+    let result = evaluate(&mut restored, &alice, &snapshot);
+    assert_eq!(state(&result, BOB), UserState::PinPending);
+    assert!(!distributed(&result).iter().any(|(u, _)| u == BOB));
+    assert_eq!(result.new_pins.len(), 1);
+    assert_eq!(result.new_pins[0].target_user_id, BOB);
+    assert_eq!(result.new_pins[0].master_key, first.new_pins[0].master_key);
+
+    // 秘密鍵がなければピンを作り直せないので、解錠を待つ。
+    let result = restored.evaluate(&snapshot.get(), &alice.device(0), None);
+    assert_eq!(state(&result, BOB), UserState::NeedsUnlock);
+    assert!(result.devices.iter().all(|d| d.user_id != BOB));
+
+    // 登録は成功していたが、confirm を保存する前に終了した：サーバーのピンで登録済みと分かる。
+    snapshot.pin(BOB, first.new_pins[0].pin.clone());
+    let result = evaluate(&mut restored, &alice, &snapshot);
+    assert_eq!(state(&result, BOB), UserState::Trusted(TrustBasis::Record));
+    assert!(result.new_pins.is_empty());
+    assert!(!restored.record(BOB).unwrap().pin_pending);
+    assert_only_signed_bob_devices(&result, &alice, &bob);
+}
+
+/// 登録待ちの間に、別の端末が違うマスター鍵のピンを置いていたら、それを採用して再検証にする。
+#[test]
+fn pending_tofu_pin_yields_to_conflicting_pin_on_server() {
+    let (alice, bob) = alice_and_bob();
+    let mut store = unlocked_store(&alice);
+    let mut snapshot = Snapshot::new(&alice, &[&alice, &bob]);
+    evaluate(&mut store, &alice, &snapshot);
+    let other_master = Ed25519SecretKey::new().public_key();
+    snapshot.pin(
+        BOB,
+        alice
+            .keys
+            .user_signing
+            .sign_tofu_pin(BOB, &other_master)
+            .unwrap(),
+    );
+    let result = evaluate(&mut store, &alice, &snapshot);
+    assert_eq!(
+        state(&result, BOB),
+        UserState::NeedsReverification(ReverificationReason::MasterKeyChanged)
+    );
+    assert!(result.new_pins.is_empty());
+    let record = store.record(BOB).unwrap();
+    assert_eq!(record.master_key, other_master.to_base64());
+    assert_eq!(record.confirmed_usk, None);
+    assert!(!record.pin_pending);
 }
 
 /// 記録と一致した場合も、未署名、壊れた署名、削除済み（スナップショットにない）の端末には配らない。
@@ -452,8 +534,8 @@ fn forged_user_signing_signature_is_ignored() {
     let (alice, mut bob) = alice_and_bob();
     let mut store = unlocked_store(&alice);
     let snapshot = Snapshot::new(&alice, &[&alice, &bob]);
-    let first = evaluate(&mut store, &alice, &snapshot);
-    assert_eq!(state(&first, BOB), UserState::Trusted(TrustBasis::Tofu));
+    let first = evaluate_registered(&mut store, &alice, &snapshot);
+    assert_eq!(state(&first, BOB), UserState::Trusted(TrustBasis::Record));
 
     // Bob のマスター鍵を差し替え、ユーザー署名鍵の鍵 ID で偽の署名を付ける。
     bob.replace_master_key();
@@ -573,8 +655,8 @@ fn self_signing_key_not_signed_by_master_excludes_all_devices() {
     snapshot.value["device_keys"][BOB][bob.device(0)]["signatures"][BOB][&upload.signer_key_id] =
         json!(upload.signature);
 
-    let result = evaluate(&mut store, &alice, &snapshot);
-    assert_eq!(state(&result, BOB), UserState::Trusted(TrustBasis::Tofu));
+    let result = evaluate_registered(&mut store, &alice, &snapshot);
+    assert_eq!(state(&result, BOB), UserState::Trusted(TrustBasis::Record));
     assert!(!distributed(&result).iter().any(|(u, _)| u == BOB));
     assert!(
         excluded(&result, BOB)
@@ -642,7 +724,7 @@ fn user_signing_key_change_requires_resigned_pin() {
     let carol = User::new(CAROL, &[Sig::Embedded]);
     let mut store = unlocked_store(&alice);
     let snapshot = Snapshot::new(&alice, &[&alice, &bob, &carol]);
-    evaluate(&mut store, &alice, &snapshot);
+    evaluate_registered(&mut store, &alice, &snapshot);
 
     // 失効の手順 4：ユーザー署名鍵を作り直し、Carol のピンだけを署名し直す。
     alice.keys.user_signing = CrossSigningKeyPair::generate(ALICE, KeyUsage::UserSigning).unwrap();
@@ -782,7 +864,7 @@ fn conflicting_pin_from_another_device_stops_distribution() {
     let (alice, bob) = alice_and_bob();
     let mut store = unlocked_store(&alice);
     let mut snapshot = Snapshot::new(&alice, &[&alice, &bob]);
-    evaluate(&mut store, &alice, &snapshot);
+    evaluate_registered(&mut store, &alice, &snapshot);
     let other_master = Ed25519SecretKey::new().public_key();
     snapshot.pin(
         BOB,
@@ -824,11 +906,7 @@ fn ignores_pins_that_do_not_verify() {
         let mut snapshot = Snapshot::new(&alice, &[&alice, &bob]);
         snapshot.pin(BOB, pin.clone());
         let result = evaluate(&mut store, &alice, &snapshot);
-        assert_eq!(
-            state(&result, BOB),
-            UserState::Trusted(TrustBasis::Tofu),
-            "{pin}"
-        );
+        assert_eq!(state(&result, BOB), UserState::PinPending, "{pin}");
         assert_eq!(
             store.record(BOB).unwrap().master_key,
             bob.keys.master.public_key().to_base64()
@@ -933,6 +1011,7 @@ fn trust_store_round_trips_and_checks_owner() {
     let (alice, bob) = alice_and_bob();
     let mut store = unlocked_store(&alice);
     evaluate(&mut store, &alice, &Snapshot::new(&alice, &[&alice, &bob]));
+    assert!(store.record(BOB).unwrap().pin_pending);
     let json = store.to_json();
     let parsed: Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["version"], 1);
@@ -942,6 +1021,7 @@ fn trust_store_round_trips_and_checks_owner() {
         1
     );
     assert!(parsed["records"][BOB]["confirmed_usk"].is_string());
+    assert_eq!(parsed["records"][BOB]["pin_pending"], true);
 
     assert_eq!(TrustStore::from_json(&json, ALICE).unwrap(), store);
     assert!(matches!(
@@ -974,6 +1054,8 @@ fn snapshot_pages_can_be_merged() {
     let mut second = Snapshot::new(&alice, &[&bob]);
     second.value["user_signing_keys"] = json!({});
     first.extend(second.get());
+    let pending = store.evaluate(&first, &alice.device(0), Some(&alice.keys.user_signing));
+    store.confirm_tofu_pin(&pending.new_pins[0]);
     let result = store.evaluate(&first, &alice.device(0), Some(&alice.keys.user_signing));
     assert_only_signed_bob_devices(&result, &alice, &bob);
     assert!(KeySnapshot::from_json(&json!({ "signatures": [{ "signer_user_id": 1 }] })).is_err());
