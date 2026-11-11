@@ -5,6 +5,7 @@ import {
   type PersistedCollectionPersistence,
 } from "@tanstack/browser-db-sqlite-persistence";
 
+import { deleteFeedCache } from "./feedCache";
 import {
   clearPendingOfflineDeletion,
   offlineDatabaseName,
@@ -100,6 +101,8 @@ export async function retryPendingOfflineDeletion(): Promise<void> {
 
 /** ログアウト時に、そのユーザーの DB と関連ファイルを削除する。 */
 export async function removeOfflineDatabase(namespace: string): Promise<void> {
+  // 最新ページの控え (IndexedDB) も、同じ名前空間で消す。
+  await deleteFeedCache(namespace);
   const databaseName = offlineDatabaseName(namespace);
   const opening = handles.get(databaseName);
   handles.delete(databaseName);

@@ -918,11 +918,51 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             archive = returned;
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
+            // 編集・削除の履歴を含むエクスポートの記録 (`message_changed` / `message_deleted`) は、投稿として取り込まない。
+            // 以前の取り込みで、これらを投稿として入れてしまった分 (編集した日時の重複した投稿、編集してから削除した
+            // 投稿の本文) と、削除された元の投稿 (記録はエクスポートに残らない) は、ここで論理削除する。
+            // 保存済みの ZIP から再取り込みするだけで片づく (存在しなければ何もしない)
+            //
+            // - 削除された元の投稿の普通の記録 (`ts` が `original.ts` / `original_ts` と同じ) が同じファイルにあれば、
+            //   先に INSERT してから、最後に論理削除する。初回の取り込みと再取り込みで結果が同じになり、その投稿への
+            //   返信は、削除された親のスレッドに残る (取り込まないと、返信の親が見つからず、チャンネル直下に出てしまう)。
+            // - イベントの `ts` と同じ `ts` の本物の投稿が同じファイルにあれば、その投稿は消さない (ID が同じになるため)。
+            let deleted_originals: std::collections::HashSet<&str> = messages
+                .iter()
+                .filter_map(|m| m.deleted_original_ts())
+                .collect();
+            let real_ts: std::collections::HashSet<&str> = messages
+                .iter()
+                .filter(|m| m.is_importable())
+                .map(|m| m.ts.as_str())
+                .collect();
             let mut last_ts = None;
             for message in messages.iter().filter(|m| m.is_importable()) {
                 insert_message(&mut tx, &mut ctx, &channel.id, channel_id, job, message).await?;
                 last_ts = Some(message.ts.as_str());
                 processed += 1;
+            }
+            let mut stale: Vec<String> = Vec::new();
+            for event in messages.iter().filter(|m| m.is_history_event()) {
+                // `ts` が元の投稿の `ts` と同じ形式の記録は、本物の投稿の ID と同じになるので消さない
+                if crate::slack::is_valid_ts(&event.ts)
+                    && !real_ts.contains(event.ts.as_str())
+                    && event.original_message_ts() != Some(event.ts.as_str())
+                {
+                    stale.push(super::message_id(&team, &channel.id, &event.ts));
+                }
+            }
+            for original in &deleted_originals {
+                stale.push(super::message_id(&team, &channel.id, original));
+            }
+            if !stale.is_empty() {
+                exec(
+                    &mut tx,
+                    "UPDATE messages SET deleted_at=CURRENT_TIMESTAMP \
+                     WHERE channel_id=$2 AND deleted_at IS NULL AND id IN (SELECT jsonb_array_elements_text($1::jsonb))",
+                    &[&serde_json::json!(stale).to_string(), channel_id],
+                )
+                .await?;
             }
             if let Some(ts) = last_ts {
                 exec(

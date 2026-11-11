@@ -23,6 +23,7 @@ import {
   resolveOfflineNamespace,
 } from "../../lib/offline/identity";
 import { useOnlineStatus } from "../../lib/offline/online";
+import { blockFeedCache, enableFeedCache } from "../../lib/offline/feedCache";
 import {
   OfflineContext,
   type OfflineContextValue,
@@ -127,6 +128,9 @@ export function OfflineProvider({
       ? "anonymous"
       : resolveOfflineNamespace({ devUserId: config.devUserId, currentUserId });
   const key = `${namespace}:${retryToken}`;
+  useEffect(() => {
+    enableFeedCache(namespace);
+  }, [namespace]);
 
   useEffect(() => {
     let cancelled = false;
@@ -173,6 +177,8 @@ export function OfflineProvider({
     clearLegacyFrontendStorage(config.devUserId || currentUserId || readLastOfflineUserId());
     forgetOfflineUserId(currentUserId);
     markOfflineDeletionPending(namespace);
+    // 画面が残っていても、予約済みの控えの保存が、消した DB を作り直さないようにする。
+    blockFeedCache(namespace);
     await removeOfflineDatabase(namespace);
     clearPendingOfflineDeletion();
   }, [config.devUserId, currentUserId, namespace]);
