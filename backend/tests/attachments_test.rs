@@ -583,6 +583,46 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     assert_eq!(body1["data"]["id"].as_str().unwrap(), concurrent_id);
     assert_eq!(body2["data"]["id"].as_str().unwrap(), concurrent_id);
 
+    // 5b3. Alice が添付ファイル付きで同じ message_id のリクエストを同時に送信した場合、
+    //      先行リクエストが添付紐付けをコミットして後続リクエストが添付検証時点で already attached に遭遇しても、
+    //      紐付け先が要求 ID と一致するため冪等フォールバックにより両方とも 200 OK で同一メッセージを返すこと
+    let (resp_att1, resp_att2) = tokio::join!(
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/messages")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &alice_id)
+                .body(Body::from(serde_json::to_vec(&msg_payload_valid)?))?
+        ),
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/messages")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &alice_id)
+                .body(Body::from(serde_json::to_vec(&msg_payload_valid)?))?
+        )
+    );
+
+    let (resp_att1, resp_att2) = (resp_att1?, resp_att2?);
+    assert_eq!(
+        resp_att1.status(),
+        StatusCode::OK,
+        "first concurrent attachment request should succeed"
+    );
+    assert_eq!(
+        resp_att2.status(),
+        StatusCode::OK,
+        "second concurrent attachment request should succeed via idempotency fallback"
+    );
+    let body_att1: Value =
+        serde_json::from_slice(&to_bytes(resp_att1.into_body(), usize::MAX).await?)?;
+    let body_att2: Value =
+        serde_json::from_slice(&to_bytes(resp_att2.into_body(), usize::MAX).await?)?;
+    assert_eq!(body_att1["data"]["id"].as_str().unwrap(), message_id);
+    assert_eq!(body_att2["data"]["id"].as_str().unwrap(), message_id);
+
     // 5c. Alice が同じ message_id で異なる内容を POST した場合、409 Conflict になること
     let msg_payload_conflict = json!({
         "id": message_id,

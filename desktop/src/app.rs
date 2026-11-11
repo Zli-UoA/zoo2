@@ -856,15 +856,26 @@ impl AppState {
             Vec<PendingAttachment>,
         > = std::collections::HashMap::new();
         for a in &self.pending_attachments {
-            if a.session_gen == s_gen
-                && a.attachment_id.is_some()
-                && !a.is_uploading
-                && a.error.is_none()
-            {
-                atts_by_channel_target
-                    .entry((a.channel_id.clone(), a.target.clone()))
-                    .or_default()
-                    .push(a.clone());
+            if a.session_gen == s_gen {
+                if a.attachment_id.is_some() && !a.is_uploading && a.error.is_none() {
+                    atts_by_channel_target
+                        .entry((a.channel_id.clone(), a.target.clone()))
+                        .or_default()
+                        .push(a.clone());
+                } else if a.is_uploading || a.error.is_some() {
+                    // アップロード未完了またはエラーの添付も、再添付が必要な状態として保持し、
+                    // 認証復帰後にユーザーが選択していたファイル名が黙って消えるのを防ぐ
+                    let mut preserved_att = a.clone();
+                    preserved_att.is_uploading = false;
+                    preserved_att.attachment_id = None;
+                    if preserved_att.error.is_none() {
+                        preserved_att.error = Some("再添付してください".into());
+                    }
+                    atts_by_channel_target
+                        .entry((a.channel_id.clone(), a.target.clone()))
+                        .or_default()
+                        .push(preserved_att);
+                }
             }
         }
 
@@ -1295,6 +1306,35 @@ impl AppState {
         }
     }
 
+    /// 受信したメッセージがデスクトップ OS 通知の対象かを判定する。
+    /// - 通知設定が有効であること
+    /// - 現在アクティブ表示中のチャンネルでないこと（フォアグラウンドかつ同じチャンネル）
+    /// - 既にローカル store に存在するメッセージや削除済みメッセージでないこと
+    /// - 自分自身のメッセージでないこと
+    /// - (DM または自分への @メンション) かつ そのチャンネルのメンバーであること（未参加の公開チャンネルでのメンションを除外）
+    pub fn should_notify_message(&self, ch: &str, msg: &Message) -> bool {
+        if !self.notifications_enabled {
+            return false;
+        }
+        let is_active_view = self.window_active && self.current_channel.as_deref() == Some(ch);
+        if is_active_view {
+            return false;
+        }
+        if self.store.message(ch, &msg.id).is_some() || msg.deleted_at.is_some() {
+            return false;
+        }
+        let Some(me) = self.me.as_ref() else {
+            return false;
+        };
+        if me.id == msg.user_id {
+            return false;
+        }
+        let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
+        let is_member = self.store.is_member(ch, &me.id);
+        let has_mention = has_mention_for(&msg.content, &me.user_name);
+        (is_dm || has_mention) && is_member
+    }
+
     pub fn on_shape(&mut self, event: ShapeEvent) {
         match event {
             ShapeEvent::Batch(id, batch) => {
@@ -1337,37 +1377,18 @@ impl AppState {
                     && self.store.is_synced(&id)
                     && !batch.reset
                 {
-                    let is_active_view =
-                        self.window_active && self.current_channel.as_deref() == Some(ch.as_str());
-                    if !is_active_view {
-                        for change in &batch.changes {
-                            if let electric::Change::Upsert { row, .. } = change
-                                && let Ok(msg) = Message::from_row(row)
-                            {
-                                if self.store.message(ch, &msg.id).is_some()
-                                    || msg.deleted_at.is_some()
-                                {
-                                    continue;
-                                }
-                                let is_mine = self.me.as_ref().is_some_and(|m| m.id == msg.user_id);
-                                if !is_mine {
-                                    let me_user_name = self
-                                        .me
-                                        .as_ref()
-                                        .map(|m| m.user_name.as_str())
-                                        .unwrap_or("");
-                                    let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                    let has_mention = has_mention_for(&msg.content, me_user_name);
-                                    if is_dm || has_mention {
-                                        pending_notifications.push((
-                                            ch.clone(),
-                                            msg.user_id,
-                                            msg.content,
-                                            is_dm,
-                                        ));
-                                    }
-                                }
-                            }
+                    for change in &batch.changes {
+                        if let electric::Change::Upsert { row, .. } = change
+                            && let Ok(msg) = Message::from_row(row)
+                            && self.should_notify_message(ch, &msg)
+                        {
+                            let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
+                            pending_notifications.push((
+                                ch.clone(),
+                                msg.user_id,
+                                msg.content,
+                                is_dm,
+                            ));
                         }
                     }
                 }
@@ -3445,6 +3466,13 @@ impl AppState {
             self.notify("チャンネルを開いてからファイルを添付してください");
             return;
         };
+        let Some(me) = self.me.as_ref() else {
+            return;
+        };
+        if !self.store.is_member(&channel_id, &me.id) {
+            self.notify("チャンネルに参加してからファイルを添付してください");
+            return;
+        }
         let Some(api) = self.api.clone() else {
             return;
         };
@@ -3573,6 +3601,13 @@ impl AppState {
             self.notify("チャンネルを開いてからファイルを添付してください");
             return;
         };
+        let Some(me) = self.me.as_ref() else {
+            return;
+        };
+        if !self.store.is_member(&channel_id, &me.id) {
+            self.notify("チャンネルに参加してからファイルを添付してください");
+            return;
+        }
         let Some(api) = self.api.clone() else {
             return;
         };
@@ -5752,7 +5787,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_draft_with_only_attachments_on_unauthorized_and_excludes_uploading() {
+    fn preserves_draft_with_attachments_on_unauthorized_retaining_uploading_as_retryable() {
         let mut state = connected_state();
         state.open_channel("c1".into());
         // 本文は空
@@ -5803,9 +5838,26 @@ mod tests {
         let preserved = state.preserved_unauthorized_drafts.as_ref().unwrap();
         assert_eq!(preserved.1.len(), 1);
         let draft = &preserved.1[0];
-        // 完了済みの添付 1 件だけが退避され、アップロード中とエラーは除外されていること
-        assert_eq!(draft.attachments.len(), 1);
+        // 完了済みの添付に加え、アップロード中・エラーの添付もファイル名と再添付状態を保持して退避されること
+        assert_eq!(draft.attachments.len(), 3);
         assert_eq!(draft.attachments[0].local_id, "loc_ready");
+        assert_eq!(
+            draft.attachments[0].attachment_id.as_deref(),
+            Some("att_ready")
+        );
+        assert!(!draft.attachments[0].is_uploading);
+
+        assert_eq!(draft.attachments[1].local_id, "loc_uploading");
+        assert_eq!(draft.attachments[1].file_name, "uploading.png");
+        assert!(!draft.attachments[1].is_uploading);
+        assert!(draft.attachments[1].attachment_id.is_none());
+        assert_eq!(
+            draft.attachments[1].error.as_deref(),
+            Some("再添付してください")
+        );
+
+        assert_eq!(draft.attachments[2].local_id, "loc_error");
+        assert_eq!(draft.attachments[2].error.as_deref(), Some("fail"));
     }
 
     #[test]
@@ -7448,6 +7500,71 @@ mod tests {
         assert_eq!(
             state.pending_composer_message_id.as_deref(),
             Some("resend-uuid-abc")
+        );
+    }
+
+    #[test]
+    fn unjoined_public_channel_does_not_trigger_mention_notification() {
+        let mut state = connected_state();
+        state.notifications_enabled = true;
+        state.window_active = false;
+
+        // 公開チャンネル c_pub を追加（alice は未参加）
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c_pub",
+                json!({ "id": "c_pub", "channel_name": "public-general", "is_private": "f" }),
+            )]),
+        ));
+
+        let row_val = serde_json::from_value(json!({
+            "id": "m_unjoined",
+            "user_id": "u2",
+            "channel_id": "c_pub",
+            "content": "@alice 未参加チャンネルでのメンション",
+            "created_at": "2026-11-01 04:00:00",
+        }))
+        .unwrap();
+        let msg = Message::from_row(&row_val).unwrap();
+
+        // 未参加の公開チャンネルのため、メンションがあっても通知対象にならないこと
+        assert!(!state.should_notify_message("c_pub", &msg));
+
+        // チャンネルに参加した後は、メンション通知の対象になること
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![(
+                "cu1",
+                json!({ "channel_id": "c_pub", "user_id": "u1" }),
+            )]),
+        ));
+        assert!(state.should_notify_message("c_pub", &msg));
+    }
+
+    #[test]
+    fn unjoined_public_channel_blocks_attachment_upload() {
+        let mut state = connected_state();
+
+        // 公開チャンネル c_pub を追加（alice は未参加）
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c_pub",
+                json!({ "id": "c_pub", "channel_name": "public-general", "is_private": "f" }),
+            )]),
+        ));
+
+        state.open_channel("c_pub".into());
+
+        // 未参加のチャンネルで添付ファイルの追加を試行
+        state.add_attachment_from_bytes("test.png".into(), "image/png".into(), vec![1, 2, 3]);
+
+        // 添付は追加されず、参加を促す通知が表示されること
+        assert!(state.pending_attachments.is_empty());
+        assert_eq!(
+            state.notice.as_ref().map(|(m, _)| m.as_str()),
+            Some("チャンネルに参加してからファイルを添付してください")
         );
     }
 

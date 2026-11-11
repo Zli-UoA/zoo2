@@ -378,6 +378,24 @@ pub(crate) async fn create_message_impl(
             }
 
             if att.message_id.is_some() {
+                if supplied_id.is_some() && att.message_id.as_deref() == Some(id.as_str()) {
+                    if let Some(msg_res) = check_idempotent_existing_message(
+                        &mut db,
+                        &id,
+                        &auth_user.id,
+                        &payload.channel_id,
+                        &payload.content,
+                        payload.parent_id.as_deref(),
+                        &payload.kind,
+                        payload.broadcast,
+                        payload.metadata.as_ref(),
+                        &attachment_ids,
+                    )
+                    .await?
+                    {
+                        return Ok(Json(ApiResponse::new(msg_res, None)));
+                    }
+                }
                 return Err(AppError::BadRequest(format!(
                     "Attachment {att_id} is already attached to a message"
                 )));
