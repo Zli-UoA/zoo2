@@ -1434,14 +1434,15 @@ impl AppState {
                                             pending_notifications[idx] = None;
                                         }
                                     } else if let Some(&idx) = notified_indices.get(&msg.id) {
-                                        // 同一バッチ内の同一メッセージ更新を集約し、通知を1回のみに維持しつつ最新内容を反映
-                                        if let Some(entry) = &mut pending_notifications[idx] {
-                                            entry.2 = msg.content;
-                                        } else if self.should_notify_message(ch, &msg) {
+                                        // 同一バッチ内の同一メッセージ更新を集約し、最新内容に基づいて通知可否を再評価
+                                        if self.should_notify_message(ch, &msg) {
                                             let is_dm =
                                                 self.store.channel(ch).is_some_and(|c| c.is_dm);
                                             pending_notifications[idx] =
                                                 Some((ch.clone(), msg.user_id, msg.content, is_dm));
+                                        } else {
+                                            // メンション削除等により通知対象外となった場合は候補を取り消す
+                                            pending_notifications[idx] = None;
                                         }
                                     } else if self.should_notify_message(ch, &msg) {
                                         let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
@@ -8232,6 +8233,45 @@ mod tests {
             batch_data,
         ));
         assert!(state.store.message("c1", "m_del").is_none());
+    }
+
+    #[test]
+    fn batch_notifications_canceled_when_mention_removed_in_subsequent_update() {
+        let mut state = connected_state();
+        state.notifications_enabled = true;
+        state.window_active = false;
+
+        // 同一バッチ内で @alice 付き投稿を受信後、メンションを除去した更新を受信
+        let batch_data = batch(vec![
+            (
+                "m_mention_removed",
+                json!({
+                    "id": "m_mention_removed",
+                    "channel_id": "c1",
+                    "user_id": "u2",
+                    "content": "こんにちは @alice さん",
+                    "created_at": "2026-11-11 00:00:00",
+                }),
+            ),
+            (
+                "m_mention_removed",
+                json!({
+                    "id": "m_mention_removed",
+                    "channel_id": "c1",
+                    "user_id": "u2",
+                    "content": "こんにちは 皆さん (メンション削除)",
+                    "created_at": "2026-11-11 00:00:00",
+                    "updated_at": "2026-11-11 00:01:00",
+                }),
+            ),
+        ]);
+
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch_data,
+        ));
+        let stored = state.store.message("c1", "m_mention_removed").unwrap();
+        assert_eq!(stored.content, "こんにちは 皆さん (メンション削除)");
     }
 
     #[test]

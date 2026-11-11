@@ -36,6 +36,7 @@ actions!(
         Newline,
         Cancel,
         Tab,
+        TabPrev,
     ]
 );
 
@@ -78,6 +79,7 @@ pub fn bind_input_keys(cx: &mut App) {
         KeyBinding::new("end", End, ctx),
         KeyBinding::new("enter", Submit, ctx),
         KeyBinding::new("tab", Tab, ctx),
+        KeyBinding::new("shift-tab", TabPrev, ctx),
         KeyBinding::new("shift-enter", Newline, ctx),
         KeyBinding::new("alt-enter", Newline, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -398,12 +400,18 @@ impl TextInput {
         self.request_submit(cx);
     }
 
-    fn tab(&mut self, _: &Tab, _window: &mut Window, cx: &mut Context<Self>) {
+    fn tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
         if self.intercept_tab {
             cx.emit(InputEvent::Tab);
         } else {
-            cx.propagate();
+            window.focus_next();
+            cx.notify();
         }
+    }
+
+    fn tab_prev(&mut self, _: &TabPrev, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus_prev();
+        cx.notify();
     }
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
@@ -960,7 +968,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
-            .when(self.intercept_tab, |d| d.on_action(cx.listener(Self::tab)))
+            .on_action(cx.listener(Self::tab))
+            .on_action(cx.listener(Self::tab_prev))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::cancel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))

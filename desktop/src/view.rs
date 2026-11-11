@@ -2100,13 +2100,14 @@ impl WorkspaceView {
             .map(|(idx, card)| {
                 let card_key = format!("{}:{idx}", message.id);
                 let is_expanded = self.expanded_cards.contains(&card_key);
-                let focus_handle = self
-                    .card_focus_handles
-                    .borrow_mut()
-                    .entry(card_key.clone())
-                    .or_insert_with(|| cx.focus_handle())
-                    .clone();
-                render_ogp_card(card, &card_key, is_expanded, &focus_handle, &theme, cx)
+                render_ogp_card(
+                    card,
+                    &card_key,
+                    is_expanded,
+                    &self.card_focus_handles,
+                    &theme,
+                    cx,
+                )
             })
             .collect();
 
@@ -3821,6 +3822,15 @@ impl Render for WorkspaceView {
                         return;
                     }
                 }
+                if key == "tab" {
+                    if ev.keystroke.modifiers.shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                    cx.notify();
+                    return;
+                }
                 if key == "escape" {
                     this.create_channel_name_input
                         .update(cx, |i, cx| i.clear(cx));
@@ -3953,7 +3963,7 @@ pub fn render_ogp_card(
     card: &CardData,
     card_key: &str,
     is_expanded: bool,
-    focus_handle: &FocusHandle,
+    card_focus_handles: &std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     theme: &theme::Theme,
     cx: &mut Context<WorkspaceView>,
 ) -> Div {
@@ -3985,7 +3995,7 @@ pub fn render_ogp_card(
 
     let fields_div = if let Some(fields) = &card.fields {
         if !fields.is_empty() {
-            let field_items = fields.iter().map(|f| {
+            let field_items = fields.iter().enumerate().map(|(idx, f)| {
                 let f_title = f.title.clone();
                 let f_val = f.value.clone();
                 let is_code = f.code.unwrap_or(false);
@@ -4015,13 +4025,29 @@ pub fn render_ogp_card(
                 }
 
                 if let Some(target) = f_url {
-                    val_view = val_view.hover(|s| s.cursor_pointer()).on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
-                            cx.stop_propagation();
-                            cx.open_url(&target);
-                        }),
-                    );
+                    let field_focus = card_focus_handles
+                        .borrow_mut()
+                        .entry(format!("{card_key}:field:{idx}"))
+                        .or_insert_with(|| cx.focus_handle())
+                        .clone();
+                    let target_for_key = target.clone();
+                    val_view = val_view
+                        .track_focus(&field_focus)
+                        .focus(|s| s.bg(theme.bg_hover))
+                        .hover(|s| s.cursor_pointer())
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                                cx.stop_propagation();
+                                cx.open_url(&target);
+                            }),
+                        )
+                        .on_key_down(cx.listener(move |_, ev: &KeyDownEvent, _, cx| {
+                            if is_activate_key(&ev.keystroke.key) {
+                                cx.stop_propagation();
+                                cx.open_url(&target_for_key);
+                            }
+                        }));
                 }
 
                 let is_short = f.short != Some(false);
@@ -4064,9 +4090,15 @@ pub fn render_ogp_card(
         if is_ogp_description_long(&desc) {
             let key = card_key.to_string();
             let key_kd = key.clone();
+            let toggle_focus = card_focus_handles
+                .borrow_mut()
+                .entry(format!("{card_key}:toggle"))
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
             let toggle_btn = if is_expanded {
                 div()
-                    .track_focus(focus_handle)
+                    .track_focus(&toggle_focus)
+                    .focus(|s| s.bg(theme.bg_hover))
                     .text_xs()
                     .text_color(theme.text_link)
                     .hover(|s| s.cursor_pointer())
@@ -4088,7 +4120,8 @@ pub fn render_ogp_card(
                     .child("折りたたむ")
             } else {
                 div()
-                    .track_focus(focus_handle)
+                    .track_focus(&toggle_focus)
+                    .focus(|s| s.bg(theme.bg_hover))
                     .text_xs()
                     .text_color(theme.text_link)
                     .hover(|s| s.cursor_pointer())
@@ -4141,6 +4174,14 @@ pub fn render_ogp_card(
         None
     };
 
+    let is_clickable = !open_target.is_empty();
+    let card_link_focus = card_focus_handles
+        .borrow_mut()
+        .entry(format!("{card_key}:card"))
+        .or_insert_with(|| cx.focus_handle())
+        .clone();
+    let target_for_card_key = open_target.clone();
+
     div()
         .mt_1p5()
         .rounded_md()
@@ -4150,14 +4191,22 @@ pub fn render_ogp_card(
         .flex()
         .flex_row()
         .overflow_hidden()
-        .when(!open_target.is_empty(), |d| {
-            d.hover(|s| s.bg(theme.bg_hover).cursor_pointer())
+        .when(is_clickable, |d| {
+            d.track_focus(&card_link_focus)
+                .focus(|s| s.border_color(theme.border_accent))
+                .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
                 .on_mouse_up(
                     MouseButton::Left,
                     cx.listener(move |_, _: &MouseUpEvent, _, cx| {
                         cx.open_url(&open_target);
                     }),
                 )
+                .on_key_down(cx.listener(move |_, ev: &KeyDownEvent, _, cx| {
+                    if is_activate_key(&ev.keystroke.key) {
+                        cx.stop_propagation();
+                        cx.open_url(&target_for_card_key);
+                    }
+                }))
         })
         .child(div().w(px(4.0)).bg(border_color))
         .child(

@@ -264,8 +264,8 @@ async fn test_messages_simple_list() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn test_create_channel_conflicting_id_with_other_user_generates_new_id(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn test_create_channel_conflicting_id_with_other_user_generates_new_id()
+-> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
     unsafe {
