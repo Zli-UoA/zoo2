@@ -683,7 +683,9 @@ mod tests {
     fn test_e2ee_devices_shape_where() {
         let (clause, params) = e2ee_devices_shape_where("user-123");
         assert!(clause.starts_with("deleted_at IS NULL AND (user_id = $1 OR user_id IN ("));
-        assert!(clause.contains("c.encrypted AND c.deleted_at IS NULL"));
+        assert!(clause.contains("WHERE encrypted AND deleted_at IS NULL"));
+        // Electric は別名付きの列を受け付けない。
+        assert!(!clause.contains("cu.") && !clause.contains("c.id"));
         assert_eq!(params, vec![("params[1]", "user-123")]);
         assert!(!E2EE_DEVICES_SHAPE_COLUMNS.contains("display_name"));
         assert!(!E2EE_DEVICES_SHAPE_COLUMNS.contains("last_seen_at"));

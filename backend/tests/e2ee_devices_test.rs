@@ -371,19 +371,23 @@ async fn upload_enforces_limits_and_conflicts() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["limit"], "key_size");
 
-    // 1 回のアップロードの署名が 1000 件を超えると 400。
-    let mut signed = fresh.device_keys();
-    let mut many = Map::new();
-    for i in 0..1001 {
-        many.insert(format!("ed25519:k{i}"), json!("AAAA"));
+    // 1 回のアップロードの署名が 1000 件を超えると 400（1 つの鍵は 8 KiB までなので、50 個の鍵に分けて載せる）。
+    let mut signer = DeviceAccount::new(&alice, &Uuid::new_v4().to_string()).unwrap();
+    signer.generate_one_time_keys(50);
+    let mut keys = signer.one_time_keys();
+    for value in keys.values_mut() {
+        let mut extra = Map::new();
+        for i in 0..21 {
+            extra.insert(format!("ed25519:k{i}"), json!("AAAA"));
+        }
+        value["signatures"][Uuid::new_v4().to_string()] = Value::Object(extra);
     }
-    signed["signatures"][Uuid::new_v4().to_string()] = Value::Object(many);
     let (status, body) = request(
         &env.app,
         "POST",
         "/api/e2ee/devices",
         &alice,
-        json!({"device_keys": signed}),
+        json!({"device_keys": signer.device_keys(), "one_time_keys": keys}),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -807,7 +811,7 @@ async fn claims_never_hand_out_a_key_twice_and_fall_back_after_the_daily_limit()
     let bob_device = env.device(&bob, 30).await;
     let device = bob_device.device_id().to_owned();
     env.encrypted_channel(&[&alice, &bob]).await;
-    let fallback_name = bob_device_fallback_name(&env, &bob, &device).await;
+    let fallback_name = fallback_key_name(&env, &bob, &device).await;
 
     // Alice と Carol（別の claimer）から並行に払い出す。
     let carol = env.user().await;
@@ -831,16 +835,20 @@ async fn claims_never_hand_out_a_key_twice_and_fall_back_after_the_daily_limit()
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{body}");
-            claimed_key(&body["data"]["one_time_keys"], &bob, &device)
-                .unwrap()
-                .0
+            let (name, key) = claimed_key(&body["data"]["one_time_keys"], &bob, &device).unwrap();
+            (name, key["fallback"] == true)
         }));
     }
     let mut ids = Vec::new();
     for task in tasks {
         ids.push(task.await.unwrap());
     }
-    let one_time: Vec<_> = ids.iter().filter(|id| **id != fallback_name).collect();
+    // ワンタイム鍵とフォールバック鍵の key_id は別に採番されるので、名前ではなく fallback で見分ける。
+    let one_time: Vec<_> = ids
+        .iter()
+        .filter(|(_, fallback)| !fallback)
+        .map(|(id, _)| id)
+        .collect();
     let unique: std::collections::BTreeSet<_> = one_time.iter().collect();
     assert_eq!(
         unique.len(),
@@ -860,10 +868,9 @@ async fn claims_never_hand_out_a_key_twice_and_fall_back_after_the_daily_limit()
 
     // 鍵がなくなったらフォールバック鍵を返し、used にする。
     let claimed = env.claim(&alice, &[(&bob, &device)]).await;
-    assert_eq!(
-        claimed_key(&claimed, &bob, &device).unwrap().0,
-        fallback_name
-    );
+    let (name, key) = claimed_key(&claimed, &bob, &device).unwrap();
+    assert_eq!(name, fallback_name);
+    assert_eq!(key["fallback"], true);
     let (_, body) = request(
         &env.app,
         "POST",
@@ -889,15 +896,10 @@ async fn claims_never_hand_out_a_key_twice_and_fall_back_after_the_daily_limit()
     .await;
     assert_eq!(status, StatusCode::OK);
     env.encrypted_channel(&[&dave, &erin]).await;
-    let erin_fallback = bob_device_fallback_name(&env, &erin, erin_device.device_id()).await;
     for i in 0..22 {
         let claimed = env.claim(&dave, &[(&erin, erin_device.device_id())]).await;
-        let (name, _) = claimed_key(&claimed, &erin, erin_device.device_id()).unwrap();
-        if i < 20 {
-            assert_ne!(name, erin_fallback);
-        } else {
-            assert_eq!(name, erin_fallback);
-        }
+        let (_, key) = claimed_key(&claimed, &erin, erin_device.device_id()).unwrap();
+        assert_eq!(key["fallback"] == true, i >= 20, "claim {i}");
     }
     assert_eq!(
         env.count(
@@ -925,7 +927,7 @@ async fn claims_never_hand_out_a_key_twice_and_fall_back_after_the_daily_limit()
     assert_eq!(body["limit"], "claim_devices");
 }
 
-async fn bob_device_fallback_name(env: &Env, user: &str, device: &str) -> String {
+async fn fallback_key_name(env: &Env, user: &str, device: &str) -> String {
     let rows = env
         .query(
             "SELECT to_json('signed_curve25519:' || key_id)::text FROM e2ee_fallback_keys WHERE user_id = $1 AND device_id = $2",
@@ -1365,4 +1367,51 @@ async fn query_rejects_responses_over_eight_mebibytes() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["limit"], "query_users");
+}
+
+/// 端末の Shape（Electric を通す）。自分の端末と、暗号化チャンネルを共有する相手の端末だけを、
+/// 決めた列だけで配る。
+#[tokio::test]
+async fn devices_shape_serves_shared_devices_without_private_columns() {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    let carol = env.user().await;
+    let own = env.device(&alice, 0).await;
+    let shared = env.device(&bob, 0).await;
+    let other = env.device(&carol, 0).await;
+    env.encrypted_channel(&[&alice, &bob]).await;
+    let response = env
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/shapes/e2ee_devices?offset=-1")
+                .header("X-Dev-User", &alice)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "private, no-cache");
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let rows: Vec<&Value> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m.get("value"))
+        .collect();
+    let ids: std::collections::BTreeSet<&str> = rows
+        .iter()
+        .filter_map(|r| r["device_id"].as_str())
+        .collect();
+    assert!(ids.contains(own.device_id()));
+    assert!(ids.contains(shared.device_id()));
+    assert!(!ids.contains(other.device_id()));
+    for row in rows {
+        assert!(row.get("display_name").is_none());
+        assert!(row.get("last_seen_at").is_none());
+    }
 }

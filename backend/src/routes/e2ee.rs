@@ -51,7 +51,10 @@ const MAX_DISPLAY_NAME_CHARS: usize = 255;
 
 /// 自分と暗号化チャンネルを共有しているユーザー（`$1` は自分）。削除済みのチャンネルは含めない。
 /// 端末の Shape、`keys/query`、`keys/claim` で同じ範囲を使う。
-pub(crate) const SHARED_USERS_SQL: &str = "SELECT cu.user_id FROM channel_user cu WHERE cu.channel_id IN (SELECT c.id FROM channels c WHERE c.encrypted AND c.deleted_at IS NULL AND c.id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
+///
+/// Electric の where は別名付きの列（`cu.user_id`）を受け付けないので、別名を使わない。
+/// 列名はいちばん内側の表から解決されるので、外側の表（`e2ee_devices` など）の列と取り違えない。
+pub(crate) const SHARED_USERS_SQL: &str = "SELECT user_id FROM channel_user WHERE channel_id IN (SELECT id FROM channels WHERE encrypted AND deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -952,18 +955,27 @@ async fn claim_keys(
         .is_some();
         let mut key = None;
         if counted {
-            // 並行した claim でも同じ鍵を 2 回払い出さない。
+            // 並行した claim でも同じ鍵を 2 回払い出さない。ほかの claim がロックしている鍵は飛ばして、
+            // 次の鍵を取る（DELETE ... IN (SELECT ... SKIP LOCKED) の 1 文にすると、計画によっては
+            // 残っている鍵があっても 0 行になるので、ロックと削除を分ける）。
             key = first(
                 &mut tx,
-                "DELETE FROM e2ee_one_time_keys
-                 WHERE (user_id, device_id, algorithm, key_id) IN (
-                   SELECT user_id, device_id, algorithm, key_id FROM e2ee_one_time_keys
-                   WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519'
-                   ORDER BY created_at, key_id LIMIT 1 FOR UPDATE SKIP LOCKED)
-                 RETURNING json_build_object('key_id', key_id, 'key', key_json)::text",
+                "SELECT json_build_object('key_id', key_id, 'key', key_json)::text
+                 FROM e2ee_one_time_keys
+                 WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519'
+                 ORDER BY created_at, key_id LIMIT 1 FOR UPDATE SKIP LOCKED",
                 &[user, device],
             )
             .await?;
+            if let Some(key_id) = key.as_ref().and_then(|k| k["key_id"].as_str()) {
+                exec(
+                    &mut tx,
+                    "DELETE FROM e2ee_one_time_keys
+                     WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519' AND key_id = $3",
+                    &[user, device, key_id],
+                )
+                .await?;
+            }
         }
         if key.is_none() {
             key = first(
