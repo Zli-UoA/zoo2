@@ -4,5 +4,10 @@
 backend/target
 backend/.env*
 
+!crates/
+!crates/zoo-crypto/
+!crates/zoo-crypto/**
+crates/zoo-crypto/target
+
 !docs/
 !docs/slack-event-coverage.json
