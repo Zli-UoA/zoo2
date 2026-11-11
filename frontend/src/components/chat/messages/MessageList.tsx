@@ -347,7 +347,7 @@ export function MessageList({
     } else if (change === "initial" && firstUnreadId) {
       const index = items.findIndex((item) => item.message.id === firstUnreadId);
       atBottomRef.current = false;
-      pendingUnreadJumpRef.current = !unreadCovered;
+      pendingUnreadJumpRef.current = !unreadCovered && !targetMessageId;
       requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "start" }));
     } else if (awaitingUnread) {
       // 読み足しの途中: 位置は動かさない (終わったら、下で未読の先頭へ合わせる)。
@@ -460,6 +460,8 @@ export function MessageList({
       atBottomRef.current = false;
       virtualizer.scrollToIndex(index, { align: "center" });
       scrolledTarget.current = targetMessageId;
+      // 通知・リンクの対象へ移動したら、未読の先頭への保留中の移動は取り消す。
+      pendingUnreadJumpRef.current = false;
     });
     return () => cancelAnimationFrame(frame);
   }, [targetMessageId, items, virtualizer]);
