@@ -40,7 +40,8 @@ jobs:
   # restored once; on kubecamp the restore takes longer than the build itself.
   check:
     needs: runner
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    # Rust のバイナリビルドは、メモリ上限 2GiB の kubecamp に載せない。
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./backend
