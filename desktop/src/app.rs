@@ -47,7 +47,8 @@ pub const DISALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
 
 /// ファイル名が危険な拡張子を持つかを判定する。
 pub fn is_disallowed_extension(file_name: &str) -> bool {
-    let lower = file_name.to_ascii_lowercase();
+    let trimmed = file_name.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    let lower = trimmed.to_ascii_lowercase();
     let ext = lower.rsplit('.').next().unwrap_or("");
     DISALLOWED_UPLOAD_EXTENSIONS.contains(&ext)
 }
@@ -3699,7 +3700,7 @@ impl AppState {
         if "here".starts_with(&query_lower) {
             candidates.push(MentionCandidate {
                 name: "here".into(),
-                display_name: "@here (オンライン中全員)".into(),
+                display_name: "@here (全員へ通知)".into(),
                 is_special: true,
             });
         }
@@ -5535,6 +5536,8 @@ mod tests {
     #[test]
     fn validates_disallowed_extensions_and_url_expiry() {
         assert!(is_disallowed_extension("program.exe"));
+        assert!(is_disallowed_extension("program.exe."));
+        assert!(is_disallowed_extension("program.exe. "));
         assert!(is_disallowed_extension("script.sh"));
         assert!(is_disallowed_extension("batch.bat"));
         assert!(is_disallowed_extension("library.dll"));

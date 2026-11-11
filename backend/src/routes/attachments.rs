@@ -144,7 +144,8 @@ const DISALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
 ];
 
 pub fn is_disallowed_extension(file_name: &str) -> bool {
-    let lower = file_name.to_ascii_lowercase();
+    let trimmed = file_name.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    let lower = trimmed.to_ascii_lowercase();
     let ext = lower.rsplit('.').next().unwrap_or("");
     DISALLOWED_UPLOAD_EXTENSIONS.contains(&ext)
 }
@@ -175,6 +176,11 @@ async fn presign_attachment(
     if file_name.chars().count() > 255 {
         return Err(AppError::BadRequest(
             "file_name exceeds 255 characters".into(),
+        ));
+    }
+    if file_name.ends_with('.') {
+        return Err(AppError::BadRequest(
+            "file_name cannot end with a period".into(),
         ));
     }
     if is_disallowed_extension(file_name) {
@@ -445,6 +451,10 @@ mod tests {
         assert!(is_disallowed_extension("screen.scr"));
         assert!(is_disallowed_extension("command.com"));
         assert!(is_disallowed_extension("TEST.EXE"));
+        assert!(is_disallowed_extension("malware.exe."));
+        assert!(is_disallowed_extension("malware.exe. "));
+        assert!(is_disallowed_extension("malware.exe.."));
+        assert!(is_disallowed_extension("script.bat. . "));
 
         assert!(!is_disallowed_extension("document.pdf"));
         assert!(!is_disallowed_extension("photo.png"));

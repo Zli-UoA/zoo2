@@ -172,6 +172,39 @@ async fn test_attachments_presign_and_validation() -> anyhow::Result<()> {
         );
     }
 
+    // 4b. 危険な拡張子（および末尾ピリオド・空白による迂回）は 400 Bad Request
+    for bad_ext_name in [
+        "malicious.exe",
+        "malicious.exe.",
+        "malicious.exe. ",
+        "malicious.bat",
+        "malicious.sh",
+        "test.cmd",
+        "danger.scr",
+        "test_ending_period.",
+    ] {
+        let bad_ext_payload = json!({
+            "channel_id": channel_id,
+            "file_name": bad_ext_name,
+            "file_size": 1024,
+            "content_type": "application/octet-stream"
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/attachments/presign")
+            .header("content-type", "application/json")
+            .header("X-Dev-User", &alice_id)
+            .body(Body::from(serde_json::to_vec(&bad_ext_payload)?))?;
+
+        let resp = app.clone().oneshot(req).await?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "dangerous file extension or ending period must be rejected: {bad_ext_name:?}"
+        );
+    }
+
     // 4c. 認可検証: 公開チャンネルでも未参加のユーザー (Bob) は 403 Forbidden
     let req = Request::builder()
         .method("POST")
@@ -504,6 +537,51 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     let body = to_bytes(resp.into_body(), usize::MAX).await?;
     let res: Value = serde_json::from_slice(&body)?;
     assert_eq!(res["data"]["id"].as_str().unwrap(), message_id);
+
+    // 5b2. Alice が同じ message_id かつ同一内容で同時に2つの POST を送信した場合（競合状態）、
+    //      片方が INSERT され、もう片方は一意制約違反から同一性比較フォールバックにより、両方とも 200 OK で同一メッセージを返すこと
+    let concurrent_id = uuid::Uuid::new_v4().to_string();
+    let concurrent_payload = json!({
+        "id": concurrent_id,
+        "channel_id": channel_id,
+        "content": "Concurrent message",
+        "attachment_ids": []
+    });
+
+    let (resp1, resp2) = tokio::join!(
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/messages")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &alice_id)
+                .body(Body::from(serde_json::to_vec(&concurrent_payload)?))?
+        ),
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/messages")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &alice_id)
+                .body(Body::from(serde_json::to_vec(&concurrent_payload)?))?
+        )
+    );
+
+    let (resp1, resp2) = (resp1?, resp2?);
+    assert_eq!(
+        resp1.status(),
+        StatusCode::OK,
+        "first concurrent request should succeed"
+    );
+    assert_eq!(
+        resp2.status(),
+        StatusCode::OK,
+        "second concurrent request should succeed via idempotency fallback"
+    );
+    let body1: Value = serde_json::from_slice(&to_bytes(resp1.into_body(), usize::MAX).await?)?;
+    let body2: Value = serde_json::from_slice(&to_bytes(resp2.into_body(), usize::MAX).await?)?;
+    assert_eq!(body1["data"]["id"].as_str().unwrap(), concurrent_id);
+    assert_eq!(body2["data"]["id"].as_str().unwrap(), concurrent_id);
 
     // 5c. Alice が同じ message_id で異なる内容を POST した場合、409 Conflict になること
     let msg_payload_conflict = json!({

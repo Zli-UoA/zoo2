@@ -134,6 +134,80 @@ async fn create_message(
     create_message_impl(state, auth_user, payload, true, None).await
 }
 
+pub(crate) async fn check_idempotent_existing_message(
+    db: &mut toasty::Db,
+    id: &str,
+    auth_user_id: &str,
+    channel_id: &str,
+    content: &str,
+    parent_id: Option<&str>,
+    kind: &str,
+    broadcast: bool,
+    metadata: Option<&serde_json::Value>,
+    attachment_ids: &[String],
+) -> Result<Option<MessageResponse>, AppError> {
+    let existing = Message::filter(Message::fields().id().eq(id))
+        .first()
+        .exec(db)
+        .await?;
+    let Some(existing_msg) = existing else {
+        return Ok(None);
+    };
+
+    // 他チャンネルのメッセージ UUID を探る攻撃を防ぐため、channel_id が異なる場合は 404 を返す
+    if existing_msg.channel_id != channel_id {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {channel_id}"
+        )));
+    }
+
+    let mut req_att_ids = attachment_ids.to_vec();
+    req_att_ids.sort();
+
+    let existing_atts = Attachment::filter(Attachment::fields().message_id().eq(id))
+        .exec(db)
+        .await?;
+    let mut existing_att_ids: Vec<String> = existing_atts.into_iter().map(|a| a.id).collect();
+    existing_att_ids.sort();
+
+    let opt_rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'kind', COALESCE(message_kind, 'message'),
+            'broadcast', COALESCE(broadcast, false),
+            'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END
+         )::text FROM messages WHERE id = $1",
+    )
+    .bind(id)
+    .exec(db)
+    .await?;
+
+    let mut options_match = false;
+    if let Some(toasty::stmt::Value::Record(r)) = opt_rows.into_iter().next()
+        && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
+        && let Ok(saved_opts) = serde_json::from_str::<serde_json::Value>(&s)
+    {
+        let saved_kind = saved_opts["kind"].as_str().unwrap_or("message");
+        let saved_broadcast = saved_opts["broadcast"].as_bool().unwrap_or(false);
+        let saved_metadata = saved_opts.get("metadata").filter(|v| !v.is_null()).cloned();
+        let req_metadata = metadata.filter(|v| !v.is_null()).cloned();
+
+        options_match =
+            saved_kind == kind && saved_broadcast == broadcast && saved_metadata == req_metadata;
+    }
+
+    if existing_msg.user_id == auth_user_id
+        && existing_msg.channel_id == channel_id
+        && existing_msg.content == content
+        && existing_msg.parent_id.as_deref() == parent_id
+        && existing_msg.deleted_at.is_none()
+        && req_att_ids == existing_att_ids
+        && options_match
+    {
+        return Ok(Some(MessageResponse::from(existing_msg)));
+    }
+    Err(AppError::Conflict("Idempotency key already used".into()))
+}
+
 pub(crate) async fn create_message_impl(
     state: AppState,
     auth_user: AuthUser,
@@ -248,70 +322,21 @@ pub(crate) async fn create_message_impl(
 
     // クライアント指定の ID が既に存在する場合、同一属性（本文・チャンネル・親・添付ファイル）の再送であれば既存メッセージを返して成功とする (冪等性)
     if supplied_id.is_some() {
-        let existing = Message::filter(Message::fields().id().eq(id.as_str()))
-            .first()
-            .exec(&mut db)
-            .await?;
-        if let Some(existing_msg) = existing {
-            // 他チャンネルのメッセージ UUID を探る攻撃を防ぐため、channel_id が異なる場合は 404 を返す
-            if existing_msg.channel_id != payload.channel_id {
-                return Err(AppError::NotFound(format!(
-                    "Channel not found: {}",
-                    payload.channel_id
-                )));
-            }
-
-            let mut req_att_ids = attachment_ids.clone();
-            req_att_ids.sort();
-
-            let existing_atts =
-                Attachment::filter(Attachment::fields().message_id().eq(id.as_str()))
-                    .exec(&mut db)
-                    .await?;
-            let mut existing_att_ids: Vec<String> =
-                existing_atts.into_iter().map(|a| a.id).collect();
-            existing_att_ids.sort();
-
-            let opt_rows = toasty::sql::query(
-                "SELECT json_build_object(
-                    'kind', COALESCE(message_kind, 'message'),
-                    'broadcast', COALESCE(broadcast, false),
-                    'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END
-                 )::text FROM messages WHERE id = $1",
-            )
-            .bind(&id)
-            .exec(&mut db)
-            .await?;
-
-            let mut options_match = false;
-            if let Some(toasty::stmt::Value::Record(r)) = opt_rows.into_iter().next()
-                && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
-                && let Ok(saved_opts) = serde_json::from_str::<serde_json::Value>(&s)
-            {
-                let saved_kind = saved_opts["kind"].as_str().unwrap_or("message");
-                let saved_broadcast = saved_opts["broadcast"].as_bool().unwrap_or(false);
-                let saved_metadata = saved_opts.get("metadata").filter(|v| !v.is_null()).cloned();
-                let req_metadata = payload.metadata.as_ref().filter(|v| !v.is_null()).cloned();
-
-                options_match = saved_kind == payload.kind
-                    && saved_broadcast == payload.broadcast
-                    && saved_metadata == req_metadata;
-            }
-
-            if existing_msg.user_id == auth_user.id
-                && existing_msg.channel_id == payload.channel_id
-                && existing_msg.content == payload.content
-                && existing_msg.parent_id == payload.parent_id
-                && existing_msg.deleted_at.is_none()
-                && req_att_ids == existing_att_ids
-                && options_match
-            {
-                return Ok(Json(ApiResponse::new(
-                    MessageResponse::from(existing_msg),
-                    None,
-                )));
-            }
-            return Err(AppError::Conflict("Idempotency key already used".into()));
+        if let Some(msg_res) = check_idempotent_existing_message(
+            &mut db,
+            &id,
+            &auth_user.id,
+            &payload.channel_id,
+            &payload.content,
+            payload.parent_id.as_deref(),
+            &payload.kind,
+            payload.broadcast,
+            payload.metadata.as_ref(),
+            &attachment_ids,
+        )
+        .await?
+        {
+            return Ok(Json(ApiResponse::new(msg_res, None)));
         }
     }
 
@@ -473,7 +498,7 @@ pub(crate) async fn create_message_impl(
     let now = crate::models::now_utc_millis();
 
     // 投稿者は必ず認証済みユーザー (auth_user.id) を強制
-    let message = toasty::create!(Message {
+    let create_result = toasty::create!(Message {
         id: id.as_str(),
         user_id: auth_user.id.as_str(),
         channel_id: payload.channel_id.as_str(),
@@ -484,10 +509,39 @@ pub(crate) async fn create_message_impl(
         created_at: now,
         updated_at: None,
         deleted_at: None,
-        parent_id: payload.parent_id,
+        parent_id: payload.parent_id.clone(),
     })
     .exec(&mut tx)
-    .await?;
+    .await;
+
+    let message = match create_result {
+        Ok(msg) => msg,
+        Err(err) if supplied_id.is_some() && AppError::is_unique_violation(&err, None) => {
+            let _ = tx.rollback().await;
+            let mut retry_db = state.db.clone();
+            for _ in 0..10 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                if let Some(msg_res) = check_idempotent_existing_message(
+                    &mut retry_db,
+                    &id,
+                    &auth_user.id,
+                    &payload.channel_id,
+                    &payload.content,
+                    payload.parent_id.as_deref(),
+                    &payload.kind,
+                    payload.broadcast,
+                    payload.metadata.as_ref(),
+                    &attachment_ids,
+                )
+                .await?
+                {
+                    return Ok(Json(ApiResponse::new(msg_res, None)));
+                }
+            }
+            return Err(AppError::Conflict("Idempotency key already used".into()));
+        }
+        Err(err) => return Err(AppError::from(err)),
+    };
 
     // 添付ファイルの紐付け (条件付き原子的 UPDATE)
     for att_id in &verified_attachments {
@@ -526,7 +580,32 @@ pub(crate) async fn create_message_impl(
     };
 
     let txid = get_current_txid(&mut tx).await?;
-    tx.commit().await?;
+    if let Err(err) = tx.commit().await {
+        if supplied_id.is_some() && AppError::is_unique_violation(&err, None) {
+            let mut retry_db = state.db.clone();
+            for _ in 0..10 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                if let Some(msg_res) = check_idempotent_existing_message(
+                    &mut retry_db,
+                    &id,
+                    &auth_user.id,
+                    &payload.channel_id,
+                    &payload.content,
+                    payload.parent_id.as_deref(),
+                    &payload.kind,
+                    payload.broadcast,
+                    payload.metadata.as_ref(),
+                    &attachment_ids,
+                )
+                .await?
+                {
+                    return Ok(Json(ApiResponse::new(msg_res, None)));
+                }
+            }
+            return Err(AppError::Conflict("Idempotency key already used".into()));
+        }
+        return Err(AppError::from(err));
+    }
     crate::push::dispatch(state.clone(), notifications);
 
     Ok(Json(ApiResponse::new(MessageResponse::from(message), txid)))

@@ -77,74 +77,24 @@ async fn create_message(
     // A supplied UUID is the idempotency key; never return another author's write.
     if let Some(id) = &body.id {
         let mut db = state.db.clone();
-        let existing =
-            crate::models::Message::filter(crate::models::Message::fields().id().eq(id.as_str()))
-                .first()
-                .exec(&mut db)
-                .await?;
-        if let Some(message) = existing {
-            // 他チャンネルのメッセージ UUID を探る攻撃を防ぐため、channel_id が異なる場合は 404 を返す
-            if message.channel_id != body.channel_id {
-                return Err(AppError::NotFound(format!(
-                    "Channel not found: {}",
-                    body.channel_id
-                )));
-            }
-
-            let mut req_att_ids = body.attachment_ids.clone().unwrap_or_default();
-            req_att_ids.sort();
-
-            let existing_atts = crate::models::Attachment::filter(
-                crate::models::Attachment::fields()
-                    .message_id()
-                    .eq(id.as_str()),
-            )
-            .exec(&mut db)
-            .await?;
-            let mut existing_att_ids: Vec<String> =
-                existing_atts.into_iter().map(|a| a.id).collect();
-            existing_att_ids.sort();
-
-            let opt_rows = toasty::sql::query(
-                "SELECT json_build_object(
-                    'kind', COALESCE(message_kind, 'message'),
-                    'broadcast', COALESCE(broadcast, false),
-                    'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END
-                 )::text FROM messages WHERE id = $1",
-            )
-            .bind(id)
-            .exec(&mut db)
-            .await?;
-
-            let mut options_match = false;
-            if let Some(toasty::stmt::Value::Record(r)) = opt_rows.into_iter().next()
-                && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
-                && let Ok(saved_opts) = serde_json::from_str::<serde_json::Value>(&s)
-            {
-                let saved_kind = saved_opts["kind"].as_str().unwrap_or("message");
-                let saved_broadcast = saved_opts["broadcast"].as_bool().unwrap_or(false);
-                let saved_metadata = saved_opts.get("metadata").filter(|v| !v.is_null()).cloned();
-                let req_metadata = body.metadata.as_ref().filter(|v| !v.is_null()).cloned();
-
-                options_match = saved_kind == body.kind
-                    && saved_broadcast == body.broadcast
-                    && saved_metadata == req_metadata;
-            }
-
-            if message.user_id == p.user_id
-                && message.channel_id == body.channel_id
-                && message.content == body.content
-                && message.parent_id == body.parent_id
-                && message.deleted_at.is_none()
-                && req_att_ids == existing_att_ids
-                && options_match
-            {
-                return Ok(Json(crate::routes::response::ApiResponse::new(
-                    message.into(),
-                    None,
-                )));
-            }
-            return Err(AppError::Conflict("Idempotency key already used".into()));
+        let att_ids = body.attachment_ids.clone().unwrap_or_default();
+        if let Some(msg_res) = m::check_idempotent_existing_message(
+            &mut db,
+            id,
+            &p.user_id,
+            &body.channel_id,
+            &body.content,
+            body.parent_id.as_deref(),
+            &body.kind,
+            body.broadcast,
+            body.metadata.as_ref(),
+            &att_ids,
+        )
+        .await?
+        {
+            return Ok(Json(crate::routes::response::ApiResponse::new(
+                msg_res, None,
+            )));
         }
     }
     m::create_message_impl(state, p.actor(), body, true, None).await
