@@ -136,6 +136,18 @@ describe("MessageRow", () => {
     expect(dialog.getByText("Bob")).toBeTruthy();
     expect(dialog.getByText("Carol")).toBeTruthy();
   });
+  it("wraps a missing custom emoji name without duplicating it", async () => {
+    await page.viewport(280, 844);
+    const emoji = `:${"a".repeat(64)}:`;
+    renderRow(buildItem(), false, {
+      reactions: [{ emoji, count: 1, ownId: null, userIds: [], userNames: {} }],
+    });
+    await userEvent.click(screen.getByRole("button", { name: "リアクションしたユーザーを表示" }));
+    const heading = screen.getByRole("heading", { name: emoji });
+    expect(heading.innerText).toBe(emoji);
+    expect(heading.scrollWidth).toBeLessThanOrEqual(heading.clientWidth);
+    await page.viewport(390, 844);
+  });
   it("keeps the mobile participant button rightmost after wrapping and the add button", async () => {
     await page.viewport(280, 844);
     renderRow(buildItem(), false, {

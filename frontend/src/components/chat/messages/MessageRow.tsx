@@ -634,16 +634,18 @@ export function MessageRow({
                     className="mb-2 flex items-center gap-2 text-sm font-semibold"
                     aria-label={kitchenLabel(reaction.emoji)}
                   >
-                    <span aria-hidden="true">
-                      <ReactionEmoji
-                        emoji={reaction.emoji}
-                        catalog={kitchenCatalog}
-                        emojis={message.display_data?.emojis}
-                      />
+                    <span aria-hidden="true" className="min-w-0 [overflow-wrap:anywhere]">
+                      {reaction.emoji.startsWith(":") || reaction.emoji.startsWith("apub:") ? (
+                        kitchenLabel(reaction.emoji)
+                      ) : (
+                        <ReactionEmoji
+                          emoji={reaction.emoji}
+                          catalog={kitchenCatalog}
+                          emojis={message.display_data?.emojis}
+                        />
+                      )}
                     </span>
-                    {kitchenParts(reaction.emoji) ||
-                    reaction.emoji.startsWith(":") ||
-                    reaction.emoji.startsWith("apub:") ? (
+                    {kitchenParts(reaction.emoji) ? (
                       <span aria-hidden="true">{kitchenLabel(reaction.emoji)}</span>
                     ) : null}
                   </h3>
