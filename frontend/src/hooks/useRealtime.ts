@@ -71,7 +71,10 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   const live = oldestFirst as FeedRow[];
   const liveReady = !query.isLoading && live.length > 0;
   const [cached, setCached] = useState<{ channelId: string; rows: FeedRow[] | null } | null>(null);
-  const wantCache = cacheable && !isOnline && live.length === 0;
+  // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフラインのときだけでなく、
+  // ライブの行が届くまで (読み込み中・失敗) は、控えを表示しておく。
+  const wantCache =
+    cacheable && live.length === 0 && (!isOnline || query.isLoading || query.isError);
   useEffect(() => {
     if (!wantCache) return;
     let cancelled = false;
@@ -109,8 +112,12 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   return {
     ...query,
     data,
-    isInitialSyncLoading: query.isLoading && !fromCache,
-    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length) && !fromCache,
+    isInitialSyncLoading: query.isLoading && !(fromCache && !isOnline),
+    // オンラインで控えを出している間は、読み込み中のまま (最初のページが届くまで、書き込みを待たせる)。
+    isLoading:
+      query.isLoading &&
+      !(query.isPersistedReady && query.data?.length) &&
+      !(fromCache && !isOnline),
     loadOlder: query.fetchNextPage,
     // 控えには、古いページがない。
     hasOlder: fromCache ? false : query.hasNextPage,

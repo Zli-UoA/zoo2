@@ -50,8 +50,9 @@ Electric の subset snapshot（`subset__where` / `subset__order_by` / `subset__l
   （永続化の設定がエラーにする）。on-demand では、永続化した行は「未認定」として隔離され、新しい subset snapshot でしか
   使われない（`@tanstack/electric-db-collection` の仕様）。そのため、**オフラインで再読み込みしても、永続化した `messages` は表示に使えない**。
 - 代わりに、**チャンネルの最新ページ（最大 50 件）の控え**を、ユーザーの名前空間ごとの IndexedDB（`<OPFS の DB 名>.feed`、
-  `lib/offline/feedCache.ts`）に持つ。オンラインでメインの一覧を読み込めたら、1 秒間引いて控える。オフラインで、
-  ライブの行がまだ空のとき（`useMessageFeed`）に、控えを表示する。控えには古いページがないので `hasOlder` は偽で、
+  `lib/offline/feedCache.ts`）に持つ。オンラインでメインの一覧を読み込めたら、1 秒間引いて控える。オフラインのとき、
+  およびオンラインでもライブの行が届くまで（読み込み中・失敗。`navigator.onLine` は、サーバーに届かない状態でも真になる）、
+  ライブの行がまだ空なら（`useMessageFeed`）、控えを表示する。控えには古いページがないので `hasOlder` は偽で、
   オンラインに戻ると、ライブの行に切り替わる。スレッドの返信は、控えの対象外（オフラインでは出ない）。
   ログアウト時は、OPFS の DB と一緒に消す（`removeOfflineDatabase`）。
 - OPFS 非対応・初期化失敗・quota 超過時はメモリのみにフォールバックし、アプリは動かす。
