@@ -15,13 +15,7 @@ pub struct ApiClient {
     credentials: Credentials,
 }
 
-/// `GET /api/users/me`
-#[derive(Debug, Clone, Deserialize)]
-pub struct Me {
-    pub id: String,
-    pub user_name: String,
-    pub display_name: String,
-}
+pub use zoo2_client_types::api::Me;
 
 /// `GET /api/channel-read-states` の1件。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

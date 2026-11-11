@@ -10,7 +10,7 @@ const fixture = vi.hoisted(() => {
     user_id: "alice",
     content: "Old thread",
     parent_id: null as string | null,
-    created_at: "2020-01-01T00:00:00.000Z",
+    created_at: "2020-01-01 00:00:00.000",
     updated_at: null,
     deleted_at: null as string | null,
     user_name: "alice",
@@ -18,9 +18,17 @@ const fixture = vi.hoisted(() => {
   };
   return {
     root,
-    exists: true,
-    syncLoading: false,
-    rows: [root],
+    /** `useThreadRoot` が返す行 (取得が終わるまでは、空)。 */
+    rootRows: [root] as (typeof root)[],
+    rootLoading: false,
+    /** 通知・リンクの対象 (`?message=`) として返す行。 */
+    targetRows: [] as (typeof root)[],
+    /** メイン一覧の行と、古いページの有無。 */
+    feed: [] as (typeof root)[],
+    feedLoading: false,
+    hasOlder: false,
+    isLoadingOlder: false,
+    loadOlder: vi.fn(),
     empty: [],
     users: [] as { id: string; display_name: string; user_name: string }[],
     reactions: [] as {
@@ -35,10 +43,7 @@ const fixture = vi.hoisted(() => {
     api: { request: vi.fn() },
   };
 });
-const collection = {
-  get: () => (fixture.exists ? fixture.root : undefined),
-  values: () => (fixture.exists ? fixture.rows : fixture.empty).values(),
-};
+const collection = { get: () => undefined, values: () => fixture.empty.values() };
 vi.mock("../../../lib/electric/collections-context", () => ({
   useCollections: () => ({
     messages: () => collection,
@@ -62,17 +67,14 @@ vi.mock("../../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: fixture.users, isLoading: false }),
   useChannelMembers: () => ({ data: fixture.empty }),
   useMessageReactions: () => ({ data: fixture.reactions, isLoading: false, isError: false }),
-  useMessageFeed: (_channel: string, { since }: { since: string }) => ({
-    data:
-      fixture.exists &&
-      !fixture.root.deleted_at &&
-      !fixture.root.parent_id &&
-      since <= fixture.root.created_at
-        ? fixture.rows
-        : fixture.empty,
-    isLoading: false,
-    isInitialSyncLoading: fixture.syncLoading,
+  useMessageFeed: () => ({
+    data: fixture.feed,
+    isLoading: fixture.feedLoading,
+    isInitialSyncLoading: false,
     isError: false,
+    hasOlder: fixture.hasOlder,
+    isLoadingOlder: fixture.isLoadingOlder,
+    loadOlder: fixture.loadOlder,
   }),
 }));
 vi.mock("../../../hooks/useAttachments", () => ({
@@ -80,11 +82,16 @@ vi.mock("../../../hooks/useAttachments", () => ({
   useAttachmentUpload: () => vi.fn(),
 }));
 vi.mock("../../../hooks/useThread", () => ({
-  useReplyCounts: () => new Map(),
-  useThreadRoot: () => ({
-    data: fixture.exists && !fixture.root.deleted_at ? fixture.rows : fixture.empty,
+  useMessageById: () => ({ data: fixture.targetRows, isLoading: false }),
+  useThreadRoot: () => ({ data: fixture.rootRows, isLoading: fixture.rootLoading }),
+  useThreadFeed: () => ({
+    data: fixture.empty,
+    isLoading: false,
+    isError: false,
+    hasOlder: false,
+    isLoadingOlder: false,
+    loadOlder: vi.fn(),
   }),
-  useThreadFeed: () => ({ data: fixture.empty, isLoading: false, isError: false }),
 }));
 vi.mock("../../../hooks/useTyping", () => ({
   useTyping: () => ({ users: fixture.empty, onTyping: () => {} }),
@@ -114,54 +121,98 @@ vi.mock("./ThreadPane", () => ({
 }));
 vi.mock("./ReactionPicker", () => ({ ReactionPicker: () => null }));
 
+const pane = (targetMessageId?: string) => (
+  <LocaleProvider>
+    <MessagePane channelId="general" isMember={false} targetMessageId={targetMessageId} />
+  </LocaleProvider>
+);
+
 beforeEach(() => {
-  fixture.exists = true;
-  fixture.syncLoading = false;
   fixture.root.deleted_at = null;
   fixture.root.parent_id = null;
+  fixture.rootRows = [fixture.root];
+  fixture.rootLoading = false;
+  fixture.targetRows = [];
+  fixture.feed = [];
+  fixture.feedLoading = false;
+  fixture.hasOlder = false;
+  fixture.isLoadingOlder = false;
   fixture.users = [];
   fixture.reactions = [];
   fixture.closeThread.mockClear();
   fixture.openThread.mockClear();
+  fixture.loadOlder.mockClear();
 });
-describe("thread URLs outside the initial message window", () => {
-  it("waits for an uncached linked reply and opens its thread after initial sync", async () => {
-    fixture.exists = false;
-    fixture.syncLoading = true;
-    fixture.root.parent_id = "ancestor";
-    const view = (target: string) => (
-      <LocaleProvider>
-        <MessagePane channelId="general" isMember={false} targetMessageId={target} />
-      </LocaleProvider>
-    );
-    const { rerender } = render(view(fixture.root.id));
+
+describe("links and threads whose rows are older than the loaded range", () => {
+  it("opens the thread of a linked reply once the reply row is loaded", async () => {
+    const reply = { ...fixture.root, id: "old-reply", parent_id: "old-root" };
+    const { rerender } = render(pane("old-reply"));
     expect(fixture.openThread).not.toHaveBeenCalled();
-    expect(fixture.closeThread).not.toHaveBeenCalled();
-    fixture.exists = true;
-    fixture.syncLoading = false;
-    rerender(view(fixture.root.id));
-    await waitFor(() => expect(fixture.openThread).toHaveBeenCalledWith("ancestor"));
+    fixture.targetRows = [reply];
+    rerender(pane("old-reply"));
+    await waitFor(() => expect(fixture.openThread).toHaveBeenCalledWith("old-root"));
     expect(fixture.closeThread).not.toHaveBeenCalled();
   });
 
-  it("does not close an uncached thread root before initial sync finishes", async () => {
-    fixture.exists = false;
-    fixture.syncLoading = true;
-    const view = (
-      <LocaleProvider>
-        <MessagePane channelId="general" isMember={false} />
-      </LocaleProvider>
-    );
-    const { rerender } = render(view);
+  it("does not close a thread whose root is still being fetched", async () => {
+    fixture.rootRows = [];
+    fixture.rootLoading = true;
+    const { rerender } = render(pane());
     expect(fixture.closeThread).not.toHaveBeenCalled();
-    fixture.syncLoading = false;
-    rerender(
-      <LocaleProvider>
-        <MessagePane channelId="general" isMember={false} />
-      </LocaleProvider>,
-    );
+    // 取得が終わっても、その行がなければ、(存在しないので) 閉じる
+    fixture.rootLoading = false;
+    rerender(pane());
     await waitFor(() => expect(fixture.closeThread).toHaveBeenCalled());
   });
+
+  it("keeps an old root visible even though it is not in the main feed", async () => {
+    render(pane());
+    await screen.findByText("Old thread");
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reply visible when it becomes the root of a child thread", async () => {
+    fixture.root.parent_id = "ancestor";
+    render(pane());
+    await screen.findByText("Old thread");
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+  });
+
+  it("closes the thread when its root was deleted", async () => {
+    fixture.root.deleted_at = "2020-01-02 00:00:00.000";
+    render(pane());
+    await waitFor(() => expect(fixture.closeThread).toHaveBeenCalled());
+  });
+
+  it("loads older pages until a linked top-level message is in the feed", async () => {
+    const target = { ...fixture.root, id: "old-top", created_at: "2019-01-01 00:00:00.000" };
+    fixture.targetRows = [target];
+    fixture.hasOlder = true;
+    const { rerender } = render(pane("old-top"));
+    await waitFor(() => expect(fixture.loadOlder).toHaveBeenCalledTimes(1));
+    // 取得中は重ねて要求しない
+    fixture.isLoadingOlder = true;
+    rerender(pane("old-top"));
+    expect(fixture.loadOlder).toHaveBeenCalledTimes(1);
+    // 1 ページ目に入っていなければ、次のページを要求する
+    fixture.isLoadingOlder = false;
+    fixture.feed = [{ ...fixture.root, id: "newer" }];
+    rerender(pane("old-top"));
+    await waitFor(() => expect(fixture.loadOlder).toHaveBeenCalledTimes(2));
+    // 対象が入ったら、止まる
+    fixture.feed = [target];
+    rerender(pane("old-top"));
+    expect(fixture.loadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops loading when there are no older messages", async () => {
+    fixture.targetRows = [{ ...fixture.root, id: "old-top" }];
+    fixture.hasOlder = false;
+    render(pane("old-top"));
+    expect(fixture.loadOlder).not.toHaveBeenCalled();
+  });
+
   it("passes resolved reaction user names to the message list", async () => {
     fixture.users = [{ id: "alice", display_name: "Alice", user_name: "alice" }];
     fixture.reactions = [
@@ -173,40 +224,7 @@ describe("thread URLs outside the initial message window", () => {
         created_at: "2020-01-01T00:00:00Z",
       },
     ];
-    render(
-      <LocaleProvider>
-        <MessagePane channelId="general" isMember={false} />
-      </LocaleProvider>,
-    );
+    render(pane());
     expect(await screen.findByText("Alice (@alice)")).toBeTruthy();
-  });
-  it("waits for an existing older root instead of closing its thread", async () => {
-    render(
-      <LocaleProvider>
-        <MessagePane channelId="general" isMember={false} />
-      </LocaleProvider>,
-    );
-    await screen.findByText("Old thread");
-    expect(fixture.closeThread).not.toHaveBeenCalled();
-  });
-  it("keeps a reply visible when it becomes the root of a child thread", async () => {
-    fixture.root.parent_id = "ancestor";
-    render(
-      <LocaleProvider>
-        <MessagePane channelId="general" isMember={false} />
-      </LocaleProvider>,
-    );
-    await screen.findByText("Old thread");
-    expect(fixture.closeThread).not.toHaveBeenCalled();
-  });
-  it.each(["missing", "deleted"])("still closes a thread when its root is %s", async (kind) => {
-    fixture.exists = kind !== "missing";
-    if (kind === "deleted") fixture.root.deleted_at = "2020-01-02T00:00:00.000Z";
-    render(
-      <LocaleProvider>
-        <MessagePane channelId="general" isMember={false} />
-      </LocaleProvider>,
-    );
-    await waitFor(() => expect(fixture.closeThread).toHaveBeenCalled());
   });
 });

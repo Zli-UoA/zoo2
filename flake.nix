@@ -29,6 +29,7 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./client-core
+              ./client-types
               ./tui
             ];
           };

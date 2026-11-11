@@ -20,7 +20,7 @@ import {
 afterEach(() => vi.unstubAllGlobals());
 
 it.each([true, false])(
-  "restores cached history before network sync (cached: %s)",
+  "restores cached channels and members before network sync (cached: %s)",
   async (cached) => {
     const message = {
       id: "cached-message",
@@ -88,16 +88,18 @@ it.each([true, false])(
       },
     );
     try {
+      // メッセージは on-demand (画面の範囲だけを subset snapshot で取る) で、`initialRender` は使えない。
+      // 永続化された行の再描画は、on-demand では、管理されたキャッシュ (managed target) 経由になり、このテストの
+      // 偽のアダプターでは再現できない。ブラウザーのテストで確認する (docs/offline-windowed-messages.md)。
+      expect(messages.config.syncMode).toBe("on-demand");
       await waitFor(
         () => {
-          for (const query of Object.values(result.current)) {
+          for (const [name, query] of Object.entries(result.current)) {
+            if (name === "feed") continue;
             expect(query.isPersistedReady).toBe(true);
             expect(query.isLoading).toBe(!cached);
           }
           expect(result.current.channels.isInitialSyncLoading).toBe(true);
-          expect(result.current.feed.data?.map((row) => row.content)).toEqual(
-            cached ? ["Saved history"] : [],
-          );
         },
         { timeout: 1_000 },
       );
