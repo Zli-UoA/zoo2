@@ -1,11 +1,13 @@
 name: Select runner
 
-# Workload priority: kubecamp -> hosted -> zli-k8s. Docker and large jobs skip
-# kubecamp. Hosted is free for this public repository; zli-k8s is the fallback
-# only when the private-repository included minutes run out.
-# Docker jobs (docker-runs-on) try zli-k8s first, on the ARC runners of zoo07/zoo08,
-# while it has an idle runner, then hosted, then zli-k8s again once hosted is unavailable.
-# Large jobs (large-runs-on) keep the hosted -> zli-k8s order.
+# Priority per kind of job:
+#   Docker-free (runs-on):  kubecamp -> hosted -> zli-k8s.
+#   Docker (docker-runs-on): zli-k8s while it has an idle runner (ARC on zoo07/zoo08)
+#                            -> hosted -> zli-k8s again once hosted is unavailable.
+#   Large (large-runs-on):   hosted -> zli-k8s; these jobs skip kubecamp (2 GiB) and do not need Docker.
+# Hosted is free for this public repository; for private ones it is used only while the
+# included minutes last. If the runner status cannot be read, Docker jobs use hosted when it
+# is available instead of queueing on an ARC that may be down.
 # CI_RUNNER now only chooses the selector host, not the workload destination.
 on:
   workflow_call:
@@ -118,8 +120,9 @@ jobs:
             const hasLabel = label => r => (r.labels || []).some(l => l.name === label);
             const kubecamp = idle(hasLabel(KUBECAMP));
             // ARC registers each runner by name (`<scale set>-...`) and may not report the scale
-            // set as a label, so match either. minRunners keeps one idle runner, so the scale
-            // set looks free until both are busy.
+            // set as a label, so match either. "No idle runner" also covers both busy, offline,
+            // and the gap while an ephemeral runner re-registers after a job; one result is
+            // shared by every job of the calling workflow.
             const arc = idle(r => hasLabel(SCALE_SET)(r) || String(r.name).startsWith(`${SCALE_SET}-`));
             return use(kubecamp.length > 0 ? KUBECAMP : hostedRunsOn, hostedRunsOn, arc.length > 0 ? SCALE_SET : hostedRunsOn,
               `${kubecamp.length} idle kubecamp, ${arc.length} idle zli-k8s; ${minutes}`);

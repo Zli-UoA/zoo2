@@ -10,7 +10,8 @@ const select = new AsyncFunction('core', 'context', 'github', script);
 const K = 'zli-kubecamp-no-docker';
 const A = 'zli-k8s';
 const H = 'ubuntu-latest';
-const arc = (name = 'a', state = {}) => ({name: `zli-k8s-${name}`, status: 'online', busy: false, labels: [{name: A}], ...state});
+// ARC reports its runners by name; the scale set name is not one of their labels.
+const arc = (name = 'a', state = {}) => ({name: `zli-k8s-${name}`, status: 'online', busy: false, labels: [{name: 'self-hosted'}, {name: 'Linux'}, {name: 'X64'}], ...state});
 const camp = (state = {}) => ({name: 'kubecamp-runner-no-docker-1', status: 'online', busy: false, labels: [{name: K}], ...state});
 const pull = repo => ({pull_request: {head: {repo: {full_name: repo}}}});
 const PRICES = {'Actions Linux': 0.006, 'Actions Windows': 0.01, 'Actions storage': 0.00033602};
@@ -52,7 +53,7 @@ const cases = [
   ['one idle ARC runner among busy ones is enough', {runners: [arc('a', {busy: true}), arc('b')]}, H, H, A],
   ['ARC runner without labels is identified by its scale set name', {runners: [arc('a', {labels: []})]}, H, H, A],
   ['missing ARC labels fall back to the name', {runners: [arc('a', {labels: undefined})]}, H, H, A],
-  ['ARC runner with the label is found under another name', {runners: [arc('a', {name: 'other-1'})]}, H, H, A],
+  ['ARC runner with the label is found under another name', {runners: [arc('a', {name: 'other-1', labels: [{name: A}]})]}, H, H, A],
   ['runner with neither the name nor the label is not ARC', {runners: [arc('a', {name: 'other-1', labels: []})]}, H, H],
   ['kubecamp runners are not ARC', {runners: [camp()]}, K, H],
   ['busy unlabeled ARC runner is not idle', {runners: [arc('a', {labels: [], busy: true})]}, H, H],

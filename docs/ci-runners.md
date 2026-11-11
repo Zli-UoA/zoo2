@@ -1,17 +1,23 @@
 # CI のRunner選択
 
-軽量ジョブはkubecamp固定です。空き状況による切り替えを残すDocker不要ジョブは、**kubecamp → GitHub-hosted → zli-k8s** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブは、kubecampを飛ばして **zli-k8s（idleのrunnerがあるとき）→ GitHub-hosted → zli-k8s** の順に選びます。kubecampのメモリに収まらないジョブ（Dockerは不要）は、**GitHub-hosted → zli-k8s** の順のままです。kubecampはPodSecurityでprivilegedを許可しないため、DinDを置けません。
+軽量ジョブはkubecamp固定です。空き状況による切り替えを残すDocker不要ジョブは、**kubecamp → GitHub-hosted → zli-k8s** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker` です。zoo2 ARCは、`zli-k8s` が scale set の名前で、ARCのrunnerは名前が `zli-k8s-` で始まります。ラベルとして `zli-k8s` を返すとは限らないので、名前でも判定します。Docker daemonが必要なジョブは、kubecampを飛ばして **zli-k8s（idleのrunnerがあるとき）→ GitHub-hosted → zli-k8s** の順に選びます。kubecampのメモリに収まらないジョブ（Dockerは不要）は、**GitHub-hosted → zli-k8s** の順のままです。kubecampはPodSecurityでprivilegedを許可しないため、DinDを置けません。
 
-zli-k8sのDinDは、以前はzoo2クラスタのetcdと同じディスクに書き込み、API停止の原因になっていました。そのため、zoo2-infraではzli-k8sのrunnerを、etcdを別ディスクに置くzoo07と、etcdを持たないzoo08にだけ置きます（[Zli-UoA/zoo2-infra#135](https://github.com/Zli-UoA/zoo2-infra/pull/135)）。このPRは、その配置が反映されてから使います。
+zli-k8sのDinDは、以前はzoo2クラスタのetcdと同じディスクに書き込み、API停止の原因になっていました。そのため、zoo2-infraではzli-k8sのrunnerを、etcdを別ディスクに置くzoo07と、etcdを持たないzoo08にだけ置きます（[Zli-UoA/zoo2-infra#135](https://github.com/Zli-UoA/zoo2-infra/pull/135)）。この変更は、その配置が反映されてから使います。
 
-zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料で、分数の上限もありません。zli-k8sへ進むのは、privateリポジトリでGitHub Freeの無料枠（月2,000分）を使い切りそうな場合だけです。AuthZとzoo2-infraも同じ判定を使います。
+zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料で、分数の上限もありません。zli-k8sへ進む場合は、ジョブの種類で変わります。
+
+- **Docker不要のジョブ:** kubecamp → GitHub-hosted → zli-k8s。zli-k8sへ進むのは、privateリポジトリでGitHub Freeの無料枠（月2,000分）を使い切りそうな場合だけです。
+- **Docker必須のジョブ:** idleのzli-k8s → GitHub-hosted → zli-k8s。**publicリポジトリでも、idleのzli-k8sがあれば先にzli-k8sを選びます。**
+- **大容量のジョブ:** GitHub-hosted → zli-k8s。Docker不要でkubecampの2GiBを超えるので、kubecampは飛ばします。
+
+AuthZとzoo2-infraも、同じ順序に揃えます（追従PRがマージされるまでは、Docker必須のジョブもHosted優先のままです）。
 
 自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用、`large-runs-on` はkubecampの2GiBを超えるジョブ用です。`docker-runs-on` と `large-runs-on` は別の値を返すことがあります。次の条件で選びます。
 
 1. onlineかつidleのkubecamp Runnerがあれば、自動選択対象のDocker不要ジョブを割り当てます。
 2. kubecampが不在または全台busyなら、GitHub-hostedを選びます。大容量ジョブは常にここから選びます。
 3. GitHub-hostedを使えないと判断した場合だけ、大容量ジョブはzli-k8sを選び、zli-k8sのキューで順番を待ちます。
-4. Docker必須ジョブは、1〜3より先に、onlineかつidleのzli-k8s runnerがあればzli-k8sを選びます。ARCのrunnerは、ラベルが `zli-k8s` か、名前が `zli-k8s-` で始まるもので判定します（ARCは個々のrunnerを名前で登録し、scale set名をラベルとして返さないことがあります）。2台ともbusyならGitHub-hostedを、GitHub-hostedを使えない場合はzli-k8sのキューを選びます。zli-k8sは待機の1台を常に置いているので、同時に走るジョブが1つならidleのrunnerがあります。
+4. Docker必須ジョブは、1〜3より先に、onlineかつidleのzli-k8s runnerがあればzli-k8sを選びます。ARCのrunnerは、ラベルが `zli-k8s` か、名前が `zli-k8s-` で始まるもので判定します（ARCは個々のrunnerを名前で登録し、scale set名をラベルとして返さないことがあります）。2台ともbusyならGitHub-hostedを、GitHub-hostedを使えない場合はzli-k8sのキューを選びます。zli-k8sは待機の1台を常に置いていますが、idleのrunnerが0台に見える場合があります（次の「idleが0台になる場合」）。
 
 GitHub-hostedを使えるかは、リポジトリの公開範囲で決めます。publicなら常に使えます。privateか公開範囲が分からない場合は、Billing API（`GET /organizations/{org}/settings/billing/usage`）で当月のActionsの実行料金（Linux以外のOSも含みます。ストレージは除きます）を合計し、Linuxの単価で割ってLinux換算の分数にします。WindowsやmacOSも料金に応じて同じ無料枠を消費するためです。合計の対象はorgのprivateリポジトリの分だけです。合計が1,900分（無料枠2,000分から、使用量の反映遅れの分を引いた値）未満ならGitHub-hostedを、それ以上ならzli-k8sを選びます。無料枠を使い切ると、privateリポジトリのGitHub-hostedのジョブは開始できなくなるためです。
 
@@ -29,6 +35,8 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。privateリポジトリで無料枠を判定するには、さらにOrganization permissionsのAdministration: Read-only（Billing API用。発行者はorg ownerかbilling manager）と、Repository accessのAll repositories（privateリポジトリ一覧の取得用）が必要です。判定ジョブ以外には渡しません。
 
+`RUNNER_STATUS_TOKEN` はfine-grained PATなので、期限切れや権限の変更でも、次の「状態を確認できない」経路に入ります。更新は、期限の前にPATを再発行して、Repository Secretを置き換えます。期限が切れたあいだは、次のfallbackで動きます。
+
 トークン不足・API障害でRunnerの状態を確認できない場合、Docker不要ジョブはkubecampで待機します。Docker必須ジョブは、ARCが止まっていてもキューに並ばないように、GitHub-hostedを使えると分かっていればGitHub-hostedを選びます。大容量ジョブは、publicリポジトリなら通常どおりGitHub-hostedで実行します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
 
 判定の失敗は、どこで失敗したかで扱いが変わります。
@@ -36,6 +44,24 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 - selector内の `select` ジョブが失敗した場合: `continue-on-error` で成功扱いになり、出力が空になります。各ジョブの `runs-on` のfallbackが使われます。Docker不要ジョブはkubecamp、Docker必須ジョブはGitHub-hosted、大容量ジョブはzli-k8sです。
 - 呼び出し側の `runner` ジョブ自体がfailure・skipped・cancelledになった場合: 後続ジョブは `needs` の成功条件を満たさずskipされます。`runs-on` のfallbackには到達しません。Re-run all jobsで選び直してください。
 - 判定ジョブがキュー待ちの間は、後続ジョブも待ちます。
+
+## idleが0台になる場合
+
+Docker必須のジョブがGitHub-hostedへ進むのは、onlineかつ `busy=false` のzli-k8s runnerが0台のときです。「2台ともbusy」のほかに、次の場合も0台になります。
+
+- 片方がofflineで、もう片方がbusyのとき。
+- ephemeral runnerがジョブを終えて、次の待機Podが登録されるまでの間。
+- runnerの名前もラベルも合わないとき。
+
+逆に、1回の選択結果は、同じworkflowの複数のDockerジョブが共有します。idleが1台でも、`ci-backend` の3つのジョブがすべてzli-k8sに並ぶことがあり、2台を超えた分はキューで待ちます。zoo2-infraの `nix` ジョブも `zli-k8s` 固定で同じrunnerを使うので、`nix` が2台を占有している間、Dockerジョブは選択時点でidleがなければHostedへ進みます。
+
+## 反映前の確認（zoo2-infra#135 の条件）
+
+zoo2のDockerジョブをzli-k8sへ送る前に、次を確認します。
+
+- **zoo07の物理ストレージ。** zoo07のetcd用ディスクと、dindが書くディスクが、物理的に別のストレージであること（[zoo2-infra#135](https://github.com/Zli-UoA/zoo2-infra/pull/135) の `docs/arc.md`「runner を置くディスクの確認」に、確認表と、満たさない場合の切り替え先があります）。同じ物理ストレージだった場合、以前のetcdとdindのディスク競合によるAPI停止が再発するおそれがあります。その場合は、zoo08だけで動かす、`maxRunners: 1` にする、zoo07のetcdをSSDに移してから使う、のどれかに切り替えます。
+- **CPUとメモリ。** zoo07はetcdのメンバーです。Dockerビルド中のCPU・メモリの逼迫が、etcdの遅延に出ないことを、反映後24時間確認します（受け入れ条件は #135 の同じ文書にあります）。
+- **メモリ上限。** ARCのrunnerとdindは、limit 6GiBずつです。`deploy-image`（Rustのrelease build）、`e2e`、`oidc-e2e`、`ci-github-bot` のtestは、これまでGitHub-hostedの16GiBで動いていました。マージ前に一度、ARC上でcold buildとComposeの検証を実行して、OOMが出ないことを確認します。出る場合は、これらのジョブだけHostedに固定する出力を追加します。
 
 ## 選択のタイミングと検証
 
