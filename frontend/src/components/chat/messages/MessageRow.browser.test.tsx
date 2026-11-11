@@ -128,8 +128,8 @@ describe("MessageRow", () => {
 
     const dialog = within(screen.getByRole("dialog"));
     expect(
-      [...screen.getByRole("dialog").querySelectorAll("h3")].map((heading) => heading.textContent),
-    ).toEqual(["👍👍", "🎉🎉"]);
+      [...screen.getByRole("dialog").querySelectorAll("h3")].map((heading) => heading.innerText),
+    ).toEqual(["👍", "🎉"]);
     expect(screen.getByRole("heading", { name: "👍" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "🎉" })).toBeTruthy();
     expect(dialog.getByText("Alice")).toBeTruthy();

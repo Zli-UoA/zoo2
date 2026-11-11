@@ -20,7 +20,7 @@ import { LinkPreviews } from "./LinkPreviews.tsx";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
-import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
+import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
@@ -630,7 +630,10 @@ export function MessageRow({
             <div className="max-h-[min(60vh,32rem)] space-y-4 overflow-y-auto" aria-live="polite">
               {reactions.map((reaction) => (
                 <section key={reactionKey(reaction.emoji)}>
-                  <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                  <h3
+                    className="mb-2 flex items-center gap-2 text-sm font-semibold"
+                    aria-label={kitchenLabel(reaction.emoji)}
+                  >
                     <span aria-hidden="true">
                       <ReactionEmoji
                         emoji={reaction.emoji}
@@ -638,7 +641,11 @@ export function MessageRow({
                         emojis={message.display_data?.emojis}
                       />
                     </span>
-                    <span>{kitchenLabel(reaction.emoji)}</span>
+                    {kitchenParts(reaction.emoji) ||
+                    reaction.emoji.startsWith(":") ||
+                    reaction.emoji.startsWith("apub:") ? (
+                      <span aria-hidden="true">{kitchenLabel(reaction.emoji)}</span>
+                    ) : null}
                   </h3>
                   <ul className="space-y-2">
                     {reactionUserLabels(reaction).map((label, index) => (
