@@ -144,31 +144,78 @@ const resourceRows = (name, channelId) => {
   return rows;
 };
 
-// A tiny evaluator for the subset predicates TanStack DB sends: terms joined by AND, each one of
-// `"col" IS NULL`, `"col" IS NOT NULL`, `"col" <op> $n`, or `true = true`.
+// A tiny evaluator for the subset predicates TanStack DB sends: terms joined by AND / OR, with
+// parentheses and NOT, each term one of `"col" IS NULL`, `"col" IS NOT NULL`, `"col" <op> $n`, or
+// `true = true`.
+const splitTop = (expr, word) => {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  const re = new RegExp(`^\\s${word}\\s`, "i");
+  for (let i = 0; i < expr.length; i++) {
+    const c = expr[i];
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (depth === 0) {
+      const m = re.exec(expr.slice(i - 1));
+      if (i > 0 && m) {
+        parts.push(expr.slice(start, i));
+        start = i - 1 + m[0].length;
+        i = start - 1;
+      }
+    }
+  }
+  parts.push(expr.slice(start));
+  return parts;
+};
+const unwrap = (expr) => {
+  let e = expr.trim();
+  while (e.startsWith("(") && e.endsWith(")")) {
+    let depth = 0;
+    let wraps = true;
+    for (let i = 0; i < e.length - 1; i++) {
+      if (e[i] === "(") depth++;
+      else if (e[i] === ")") depth--;
+      if (depth === 0) {
+        wraps = false;
+        break;
+      }
+    }
+    if (!wraps) break;
+    e = e.slice(1, -1).trim();
+  }
+  return e;
+};
+function evalPredicate(expr, row, values) {
+  const e = unwrap(expr);
+  const ors = splitTop(e, "OR");
+  if (ors.length > 1) return ors.some((part) => evalPredicate(part, row, values));
+  const ands = splitTop(e, "AND");
+  if (ands.length > 1) return ands.every((part) => evalPredicate(part, row, values));
+  const not = /^NOT\s+(.*)$/is.exec(e);
+  if (not) return !evalPredicate(not[1], row, values);
+  if (/^true\s*=\s*true$/i.test(e)) return true;
+  let m = /^"?(\w+)"?\s+IS\s+NULL$/i.exec(e);
+  if (m) return row[m[1]] === null || row[m[1]] === undefined;
+  m = /^"?(\w+)"?\s+IS\s+NOT\s+NULL$/i.exec(e);
+  if (m) return row[m[1]] !== null && row[m[1]] !== undefined;
+  m = /^"?(\w+)"?\s*(=|<=|>=|<>|<|>)\s*\$(\d+)$/.exec(e);
+  if (m) {
+    const left = row[m[1]];
+    const right = values[m[3]];
+    if (m[2] === "=") return left === right;
+    if (m[2] === "<>") return left !== right;
+    if (m[2] === "<") return left < right;
+    if (m[2] === "<=") return left <= right;
+    if (m[2] === ">") return left > right;
+    return left >= right;
+  }
+  throw new Error(`unsupported subset predicate in the e2e mock: ${e}`);
+}
 function subsetRows(rows, params) {
   const where = params.get("subset__where") ?? "true = true";
   const values = JSON.parse(params.get("subset__params") ?? "{}");
-  const terms = where.split(/\s+AND\s+/i).map((term) => term.trim());
-  const test = (row) =>
-    terms.every((term) => {
-      if (/^true\s*=\s*true$/i.test(term)) return true;
-      let m = /^"?(\w+)"?\s+IS\s+NULL$/i.exec(term);
-      if (m) return row[m[1]] === null || row[m[1]] === undefined;
-      m = /^"?(\w+)"?\s+IS\s+NOT\s+NULL$/i.exec(term);
-      if (m) return row[m[1]] !== null && row[m[1]] !== undefined;
-      m = /^"?(\w+)"?\s*(=|<=|>=|<|>)\s*\$(\d+)$/.exec(term);
-      if (m) {
-        const left = row[m[1]];
-        const right = values[m[3]];
-        if (m[2] === "=") return left === right;
-        if (m[2] === "<") return left < right;
-        if (m[2] === "<=") return left <= right;
-        if (m[2] === ">") return left > right;
-        return left >= right;
-      }
-      throw new Error(`unsupported subset predicate in the e2e mock: ${term}`);
-    });
+  const test = (row) => evalPredicate(where, row, values);
   let out = rows.filter(test);
   const order = /^"?(\w+)"?\s+(ASC|DESC)/i.exec(params.get("subset__order_by") ?? "");
   if (order) {

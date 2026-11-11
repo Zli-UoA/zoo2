@@ -25,6 +25,7 @@ const fixture = vi.hoisted(() => {
     targetRows: [] as (typeof root)[],
     /** メイン一覧の行と、古いページの有無。 */
     feed: [] as (typeof root)[],
+    feedLoading: false,
     hasOlder: false,
     isLoadingOlder: false,
     loadOlder: vi.fn(),
@@ -68,7 +69,7 @@ vi.mock("../../../hooks/useRealtime", () => ({
   useMessageReactions: () => ({ data: fixture.reactions, isLoading: false, isError: false }),
   useMessageFeed: () => ({
     data: fixture.feed,
-    isLoading: false,
+    isLoading: fixture.feedLoading,
     isInitialSyncLoading: false,
     isError: false,
     hasOlder: fixture.hasOlder,
@@ -133,6 +134,7 @@ beforeEach(() => {
   fixture.rootLoading = false;
   fixture.targetRows = [];
   fixture.feed = [];
+  fixture.feedLoading = false;
   fixture.hasOlder = false;
   fixture.isLoadingOlder = false;
   fixture.users = [];

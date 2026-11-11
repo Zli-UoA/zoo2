@@ -6,8 +6,12 @@ import { messageFeedQuery } from "../lib/electric/messageFeed";
 import { MESSAGE_PAGE_SIZE } from "../lib/electric/messageOrder";
 import { useOptimisticDisplay } from "./useOptimisticDisplay";
 
-/** スレッドが開いていないときの、何にも一致しない親の ID (空の範囲を要求するだけで、取得は 1 回で済む)。 */
-const NO_THREAD = "\u0000no-thread";
+/**
+ * スレッドが開いていないときの、何にも一致しない親の ID (空の範囲を要求するだけで、取得は 1 回で済む)。
+ * parent_id は text なので、NUL を含まない固定の文字列にする (PostgreSQL の text は NUL を受け付けない)。
+ */
+const NO_THREAD = "no-thread:none";
+const NO_ROWS: never[] = [];
 
 /**
  * 指定ルートへの返信を、メイン一覧と同じ messages コレクションの live query で購読する。
@@ -26,7 +30,7 @@ export function useThreadFeed(channelId: string, rootId: string | null) {
     { pageSize: MESSAGE_PAGE_SIZE },
   );
   const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
-  const data = useOptimisticDisplay(channelId, rootId ? oldestFirst : []);
+  const data = useOptimisticDisplay(channelId, rootId ? oldestFirst : NO_ROWS);
   return {
     ...query,
     data,

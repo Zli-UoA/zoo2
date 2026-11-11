@@ -499,7 +499,9 @@ export function MessagePane({
               onSend={handleSend}
               onUploadAttachment={uploadAttachment}
               onTyping={typing.onTyping}
-              disabled={readOnly || !isOnline}
+              // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
+              // 最初のページの取得を止めるため、互いに待ち合って失敗する。
+              disabled={readOnly || !isOnline || messagesQuery.isLoading}
               placeholder={isOnline ? undefined : t("offline.composeDisabled")}
             />
           </>
