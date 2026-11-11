@@ -4,7 +4,7 @@
 
 - チャンネルを開いたとき、新しい方から 50 件だけを初期表示し、上スクロールで古い方へ 1 ページずつ広げる。
 - **端末に同期するのは、いま見ている範囲だけ**にする（全件を同期しない）。Slack から取り込んだ数万件の履歴があるチャンネルでも、初回の同期は 1 ページ（約 30 KB）で済む。
-- 一度同期したチャンネル・メッセージを端末（OPFS）に保存し、オフラインでも表示する（下の「オフライン」の注意を参照）。
+- 一度同期したチャンネル・メッセージを端末（OPFS）に保存し、オフラインでも表示する。メッセージは、各チャンネルの最新ページの控え（IndexedDB）で表示する（下の「永続化」を参照）。
 - Service Worker で静的 app shell を配信し、オフラインでリロードしてもアプリを起動する。
 
 書き込みのオフライン対応（outbox）は、バックエンドの冪等性が不足しているため今回は実装しない（後述）。
@@ -47,10 +47,13 @@ Electric の subset snapshot（`subset__where` / `subset__order_by` / `subset__l
 - `schemaVersion` は `OFFLINE_SCHEMA_VERSION`（`lib/offline/schema.ts`）。スキーマ不一致は `sync-present-reset` で古いキャッシュを破棄し、Electric から取り直す。
 - `channels` / `users` / `channel_user` / `notifications` は eager の同期で、`initialRender: { strategy: "network-first", networkTimeoutMs: 2000 }` により、
   ネットワークより先に復元済みの行を描画できる。**`messages` は on-demand の同期で、`initialRender` は使えない**
-  （永続化の設定がエラーにする）。on-demand の永続化は、管理されたキャッシュ（managed target）で、保存済みの行は、
-  同じ範囲の subset の読み込みに使われる。**ネットワークが使えないときに、保存済みのメッセージが出るかは、ブラウザーでの確認が必要**
-  （`e2e/offline.spec.ts` の「offline reload restores the app shell and persisted messages」が確かめる）。
-  ユニットテストの偽のアダプターでは、managed target を再現できない。
+  （永続化の設定がエラーにする）。on-demand では、永続化した行は「未認定」として隔離され、新しい subset snapshot でしか
+  使われない（`@tanstack/electric-db-collection` の仕様）。そのため、**オフラインで再読み込みしても、永続化した `messages` は表示に使えない**。
+- 代わりに、**チャンネルの最新ページ（最大 50 件）の控え**を、ユーザーの名前空間ごとの IndexedDB（`<OPFS の DB 名>.feed`、
+  `lib/offline/feedCache.ts`）に持つ。オンラインでメインの一覧を読み込めたら、1 秒間引いて控える。オフラインで、
+  ライブの行がまだ空のとき（`useMessageFeed`）に、控えを表示する。控えには古いページがないので `hasOlder` は偽で、
+  オンラインに戻ると、ライブの行に切り替わる。スレッドの返信は、控えの対象外（オフラインでは出ない）。
+  ログアウト時は、OPFS の DB と一緒に消す（`removeOfflineDatabase`）。
 - OPFS 非対応・初期化失敗・quota 超過時はメモリのみにフォールバックし、アプリは動かす。
 - ログアウト時は該当ユーザーの DB（`-journal` / `-wal` を含む）を削除する。削除に失敗しても
   ログアウトは続行する（DB はユーザー単位で分離済み）。

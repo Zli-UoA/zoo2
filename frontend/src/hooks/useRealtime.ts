@@ -1,13 +1,16 @@
 import { useOptimisticDisplay } from "./useOptimisticDisplay";
 import { useFederatedReactions } from "./useFederatedReactions";
 import { eq, isNull, useLiveInfiniteQuery, useLiveQuery } from "@tanstack/react-db";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 import { messageFeedQuery } from "../lib/electric/messageFeed";
 import { MESSAGE_PAGE_SIZE } from "../lib/electric/messageOrder";
 import type { ChannelRow, ChannelUserRow } from "../lib/electric/types";
+import { loadFeedCache, saveFeedCache } from "../lib/offline/feedCache";
+import { useOfflineStatus } from "../lib/offline/offline-context";
+import type { FeedMessage as FeedRow } from "../components/chat/messages/messageFormat";
 import { canAddChannelMember, canManageChannel } from "./channelPermissions";
 import { useCurrentUser } from "./useCurrentUser";
 
@@ -53,6 +56,7 @@ export interface MessageFeedOptions {
  */
 export function useMessageFeed(channelId: string, options: MessageFeedOptions = {}) {
   const { messages, users } = useCollections();
+  const { isOnline, namespace } = useOfflineStatus();
   const parentId = options.parentId ?? null;
   const query = useLiveInfiniteQuery(
     (q) => messageFeedQuery(q, { messages: messages(channelId), users }, { parentId }),
@@ -60,14 +64,48 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   );
   // クエリは新しい順。画面は古い順に並べる。
   const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
-  const data = useOptimisticDisplay(channelId, oldestFirst);
+
+  // オフラインで再読み込みすると、on-demand のコレクションは保存済みの行を使えない。
+  // 最新ページの控え (IndexedDB) を、読み込めた間だけ、代わりに表示する。
+  const cacheable = parentId === null;
+  const live = oldestFirst as FeedRow[];
+  const liveReady = !query.isLoading && live.length > 0;
+  const [cached, setCached] = useState<{ channelId: string; rows: FeedRow[] | null } | null>(null);
+  const wantCache = cacheable && !isOnline && live.length === 0;
+  useEffect(() => {
+    if (!wantCache) return;
+    let cancelled = false;
+    void loadFeedCache<FeedRow>(namespace, channelId).then((entry) => {
+      if (!cancelled) setCached({ channelId, rows: entry?.rows ?? null });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [wantCache, namespace, channelId]);
+  const cachedRows = wantCache && cached?.channelId === channelId ? cached.rows : null;
+
+  // オンラインで読み込めたら、最新ページを控える (書き込みが続くときのために、間引く)。
+  const latest = useRef(live);
+  latest.current = live;
+  useEffect(() => {
+    if (!cacheable || !isOnline || !liveReady) return;
+    const timer = setTimeout(
+      () => void saveFeedCache(namespace, channelId, latest.current, MESSAGE_PAGE_SIZE),
+      1_000,
+    );
+    return () => clearTimeout(timer);
+  }, [cacheable, isOnline, liveReady, namespace, channelId, query.data]);
+
+  const data = useOptimisticDisplay(channelId, cachedRows ?? oldestFirst);
+  const fromCache = cachedRows !== null;
   return {
     ...query,
     data,
-    isInitialSyncLoading: query.isLoading,
-    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
+    isInitialSyncLoading: query.isLoading && !fromCache,
+    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length) && !fromCache,
     loadOlder: query.fetchNextPage,
-    hasOlder: query.hasNextPage,
+    // 控えには、古いページがない。
+    hasOlder: fromCache ? false : query.hasNextPage,
     isLoadingOlder: query.isFetchingNextPage,
   };
 }
