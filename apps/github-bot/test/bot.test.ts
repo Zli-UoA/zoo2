@@ -663,3 +663,20 @@ test("paused delivery checks authentication at most once a minute and rejects a 
   assert.equal(checks, 3);
   assert.equal(f.store.get("zoo-disabled"), undefined);
 });
+
+test("a burst of Checks refreshes the canonical PR card once without replaying each update", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  for (let i = 0; i < 100; i++) {
+    const event = job("check_run", {
+      action: "completed",
+      check_run: { head_sha: "a".repeat(40), pull_requests: [{ number: 8 }], conclusion: "success" },
+    });
+    f.store.enqueue(event.id, "github", event.event, event.payload);
+  }
+  await f.bot.tick();
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM jobs WHERE status='done'").get()!.n, 100);
+  assert.equal(f.zoo.messages.size, 1);
+  assert.match(JSON.stringify([...f.zoo.messages.values()][0].blocks), /CI: success/);
+  assert.ok(f.remote.readRequests.length < 10, `Unexpected API request count: ${f.remote.readRequests.length}`);
+});

@@ -11,6 +11,23 @@ export interface Job {
   attempts: number;
   created: number;
 }
+// Checks only refresh canonical state; unlike comments/workflows they create no history replies.
+function checkKey(event: string, payload: Json): string | null {
+  if (!["check_run", "check_suite", "status"].includes(event)) return null;
+  const check = payload.check_run ?? payload.check_suite ?? payload;
+  const sha = check.head_sha ?? check.sha ?? payload.sha;
+  if (
+    typeof sha !== "string" || !/^[a-f0-9]{40,64}$/i.test(sha) ||
+    !payload.repository?.full_name || !payload.installation?.id
+  ) return null;
+  const pulls = (check.pull_requests ?? []).map((pr: Json) => String(pr.number)).sort();
+  return JSON.stringify([
+    payload.installation.id,
+    String(payload.repository.full_name).toLowerCase(),
+    sha.toLowerCase(),
+    pulls,
+  ]);
+}
 export class Store {
   readonly db: DatabaseSync;
   private readonly key: Buffer;
@@ -21,11 +38,14 @@ export class Store {
     if (path !== ":memory:") chmodSync(path, 0o600);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,source TEXT,event TEXT,payload TEXT,fingerprint TEXT,status TEXT DEFAULT 'queued',attempts INTEGER DEFAULT 0,available INTEGER,created INTEGER,error TEXT);
+      CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,source TEXT,event TEXT,payload TEXT,fingerprint TEXT,status TEXT DEFAULT 'queued',attempts INTEGER DEFAULT 0,available INTEGER,created INTEGER,error TEXT,coalesce_key TEXT);
       CREATE INDEX IF NOT EXISTS jobs_ready ON jobs(status,available,created);
       CREATE TABLE IF NOT EXISTS subscriptions(channel TEXT,repo TEXT,value TEXT,PRIMARY KEY(channel,repo));
       CREATE TABLE IF NOT EXISTS threads(channel TEXT,repo TEXT,kind TEXT,number TEXT,message TEXT UNIQUE,snapshot TEXT,PRIMARY KEY(channel,repo,kind,number));
       CREATE TABLE IF NOT EXISTS worker(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT,expires INTEGER);`);
+    if (!this.db.prepare("PRAGMA table_info(jobs)").all().some((c) => c.name === "coalesce_key"))
+      this.db.exec("ALTER TABLE jobs ADD COLUMN coalesce_key TEXT");
+    this.db.exec("CREATE INDEX IF NOT EXISTS jobs_checks ON jobs(coalesce_key,status)");
   }
   acquireWorker(): string {
     const owner = randomUUID();
@@ -39,7 +59,14 @@ export class Store {
           "INSERT INTO worker VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,expires=excluded.expires",
         )
         .run(owner, Date.now() + 30000);
-      this.db.exec("UPDATE jobs SET status='queued' WHERE status='working'; COMMIT");
+      this.db.exec("UPDATE jobs SET status='queued' WHERE status='working'");
+      // Backfill an existing backlog without loading its large payloads into memory.
+      const update = this.db.prepare("UPDATE jobs SET coalesce_key=? WHERE id=?");
+      for (const row of this.db.prepare(
+        "SELECT id,event,payload FROM jobs WHERE status='queued' AND source='github' AND event IN('check_run','check_suite','status') AND coalesce_key IS NULL",
+      ).iterate())
+        update.run(checkKey(String(row.event), JSON.parse(String(row.payload))), String(row.id));
+      this.db.exec("COMMIT");
       return owner;
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -125,9 +152,12 @@ export class Store {
         throw new BotError("queue_full", true);
       this.db
         .prepare(
-          "INSERT INTO jobs(id,source,event,payload,fingerprint,available,created) VALUES(?,?,?,?,?,?,?)",
+          "INSERT INTO jobs(id,source,event,payload,fingerprint,available,created,coalesce_key) VALUES(?,?,?,?,?,?,?,?)",
         )
-        .run(id, source, event, body, fingerprint, Date.now(), Date.now());
+        .run(
+          id, source, event, body, fingerprint, Date.now(), Date.now(),
+          source === "github" ? checkKey(event, payload) : null,
+        );
       this.db.exec("COMMIT");
       return true;
     } catch (e) {
@@ -138,7 +168,7 @@ export class Store {
   next(): Job | undefined {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const r = this.db
+      let r = this.db
         .prepare(
           "SELECT * FROM jobs WHERE status='queued' AND available<=? ORDER BY created,id LIMIT 1",
         )
@@ -147,6 +177,10 @@ export class Store {
         this.db.exec("COMMIT");
         return;
       }
+      if (r.coalesce_key)
+        r = this.db.prepare(
+          "SELECT * FROM jobs WHERE coalesce_key=? AND status='queued' AND available<=? ORDER BY rowid DESC LIMIT 1",
+        ).get(r.coalesce_key, Date.now())!;
       this.db
         .prepare("UPDATE jobs SET status='working',attempts=attempts+1 WHERE id=?")
         .run(String(r.id));
@@ -165,7 +199,12 @@ export class Store {
     }
   }
   done(job: Job) {
-    this.db.prepare("UPDATE jobs SET status='done',error=NULL WHERE id=?").run(job.id);
+    // Only a successful refresh covers earlier queued updates. Keep their delivery IDs
+    // for deduplication, and leave any events received during the request queued.
+    this.db.prepare(`UPDATE jobs SET status='done',error=NULL WHERE id=? OR (
+      status='queued' AND coalesce_key IS NOT NULL
+      AND coalesce_key=(SELECT coalesce_key FROM jobs WHERE id=?)
+      AND rowid<=(SELECT rowid FROM jobs WHERE id=?))`).run(job.id, job.id, job.id);
   }
   fail(job: Job, code: string, retryable: boolean, retryAfter = 0) {
     this.db
