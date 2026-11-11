@@ -507,6 +507,8 @@ impl Core {
             task.abort();
         }
         let session = inner.session.take();
+        // 画面はチャンネル未選択に戻るので、前のチャンネルの通知を抑え続けないよう消す。
+        inner.focus = FocusState::default();
         inner.dnd_until = None;
         inner.dnd_checked = false;
         if !matches!(

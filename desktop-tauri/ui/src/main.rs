@@ -367,22 +367,20 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
     }
 }
 
-/// UTC の作成時刻を、WebView のタイムゾーンの `MM/DD HH:MM` にする。
+/// UTC の作成時刻を、WebView のタイムゾーンの `MM/DD HH:MM` にする。夏時間で今と
+/// オフセットが違う時期の投稿もずれないよう、投稿の時刻から JS の Date を作って変換する。
 fn local_time(message: &Message) -> String {
-    let offset = -js_sys::Date::new_0().get_timezone_offset() as i64;
-    let local = message
-        .created_at
-        .checked_add(jiff::Span::new().minutes(offset));
-    match local {
-        Ok(t) => format!(
-            "{:02}/{:02} {:02}:{:02}",
-            t.month(),
-            t.day(),
-            t.hour(),
-            t.minute()
-        ),
-        Err(_) => String::new(),
-    }
+    let Ok(zoned) = message.created_at.to_zoned(jiff::tz::TimeZone::UTC) else {
+        return String::new();
+    };
+    let date = js_sys::Date::new(&(zoned.timestamp().as_millisecond() as f64).into());
+    format!(
+        "{:02}/{:02} {:02}:{:02}",
+        date.get_month() + 1,
+        date.get_date(),
+        date.get_hours(),
+        date.get_minutes()
+    )
 }
 
 /// 入力欄。日本語の変換中 (`isComposing`) の Enter では送らない。値は DOM が持ち、
