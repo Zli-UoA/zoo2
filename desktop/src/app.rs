@@ -18,7 +18,7 @@ use zoo2_client_core::{
     config::{AuthConfig, Config},
     electric::{
         self, Change, ShapeEvent, ShapeId,
-        rows::{Channel, FromRow, Message},
+        rows::{Attachment, Channel, FromRow, Message},
     },
     http::{Credentials, HttpError},
     store::{ReactionGroup, Store},
@@ -283,7 +283,7 @@ pub struct QuickSwitcherState {
 }
 
 /// 現在開いているチャンネルの描画用キャッシュ。
-/// `ShapeId::Messages` / `ShapeId::Reactions` の更新時またはチャンネル・スレッド切替時のみ再計算する。
+/// `ShapeId::Messages` / `ShapeId::Reactions` / `ShapeId::Attachments` の更新時またはチャンネル・スレッド切替時のみ再計算する。
 #[derive(Debug, Default, Clone)]
 pub struct ChannelViewCache {
     pub channel_id: Option<String>,
@@ -291,11 +291,13 @@ pub struct ChannelViewCache {
     pub root_messages: Arc<Vec<Message>>,
     pub reply_counts: Arc<HashMap<String, usize>>,
     pub reactions_by_message: Arc<HashMap<String, Vec<ReactionGroup>>>,
+    pub attachments_by_message: Arc<HashMap<String, Vec<Attachment>>>,
     pub thread_root_id: Option<String>,
     pub thread_root_message: Option<Message>,
     pub thread_replies: Arc<Vec<Message>>,
     pub messages_dirty: bool,
     pub reactions_dirty: bool,
+    pub attachments_dirty: bool,
 }
 
 /// バックグラウンドタスクから `AppState` へ届くイベント。
@@ -1566,7 +1568,7 @@ impl AppState {
                     ShapeId::Attachments(ch)
                         if self.current_channel.as_deref() == Some(ch.as_str()) =>
                     {
-                        self.channel_cache.messages_dirty = true;
+                        self.channel_cache.attachments_dirty = true;
                     }
                     _ => {}
                 }
@@ -2600,6 +2602,7 @@ impl AppState {
             self.channel_cache.channel_id = Some(channel_id.clone());
             self.channel_cache.messages_dirty = true;
             self.channel_cache.reactions_dirty = true;
+            self.channel_cache.attachments_dirty = true;
         }
         if self.channel_cache.me_id != me_id {
             self.channel_cache.me_id = me_id.clone();
@@ -2638,6 +2641,11 @@ impl AppState {
             self.channel_cache.reactions_by_message =
                 Arc::new(self.store.reaction_groups_by_message(&channel_id, &me_id));
             self.channel_cache.reactions_dirty = false;
+        }
+        if self.channel_cache.attachments_dirty {
+            self.channel_cache.attachments_by_message =
+                Arc::new(self.store.attachments_by_message(&channel_id));
+            self.channel_cache.attachments_dirty = false;
         }
     }
 
@@ -4203,25 +4211,37 @@ impl AppState {
         self.pending_focus_composer = true;
     }
 
-    pub fn update_message_search_query(&mut self, query: String) {
-        let query_lower = query.trim().to_lowercase();
+    /// チャンネル内で検索クエリに一致するメッセージ ID 一覧を収集する。
+    /// 返信メッセージの親メッセージ存在確認は、チャンネル内の可視メッセージ ID を一度集合にまとめることで
+    /// 二重走査（O(N^2)）を避けて O(N) で行う。
+    fn collect_search_matches(&self, ch: &str, query_lower: &str) -> Vec<String> {
+        if query_lower.is_empty() {
+            return Vec::new();
+        }
+        let channel_msgs = self.store.channel_messages(ch);
+        let existing_ids: HashSet<&str> = channel_msgs.iter().map(|m| m.id.as_str()).collect();
         let mut matches = Vec::new();
-        if !query_lower.is_empty()
-            && let Some(ch) = &self.current_channel
-        {
-            let channel_msgs = self.store.channel_messages(ch);
-            for msg in channel_msgs {
-                // 親メッセージが削除された返信はスレッド描画不能なため検索結果から除外
-                if let Some(parent_id) = &msg.parent_id
-                    && self.store.message(ch, parent_id).is_none()
-                {
-                    continue;
-                }
-                if msg.content.to_lowercase().contains(&query_lower) {
-                    matches.push(msg.id.clone());
-                }
+        for msg in channel_msgs {
+            // 親メッセージが削除された（または不可視な）返信はスレッド描画不能なため検索結果から除外
+            if let Some(parent_id) = &msg.parent_id
+                && !existing_ids.contains(parent_id.as_str())
+            {
+                continue;
+            }
+            if msg.content.to_lowercase().contains(query_lower) {
+                matches.push(msg.id.clone());
             }
         }
+        matches
+    }
+
+    pub fn update_message_search_query(&mut self, query: String) {
+        let query_lower = query.trim().to_lowercase();
+        let matches = if let Some(ch) = &self.current_channel {
+            self.collect_search_matches(ch, &query_lower)
+        } else {
+            Vec::new()
+        };
         self.message_search = Some(MessageSearchState {
             query,
             matches,
@@ -4234,27 +4254,18 @@ impl AppState {
     /// 以前選択されていたメッセージが一致リストに残っていればその選択とスクロール位置を維持し、
     /// 一致リストから消えた場合のみ新しい選択位置へスクロールする。
     pub fn refresh_message_search_results(&mut self) {
+        let query_lower = match &self.message_search {
+            Some(ms) => ms.query.trim().to_lowercase(),
+            None => return,
+        };
+        let matches = if let Some(ch) = &self.current_channel {
+            self.collect_search_matches(ch, &query_lower)
+        } else {
+            Vec::new()
+        };
         let Some(ms) = &mut self.message_search else {
             return;
         };
-        let query_lower = ms.query.trim().to_lowercase();
-        let mut matches = Vec::new();
-        if !query_lower.is_empty()
-            && let Some(ch) = &self.current_channel
-        {
-            let channel_msgs = self.store.channel_messages(ch);
-            for msg in channel_msgs {
-                // 親メッセージが削除された返信はスレッド描画不能なため検索結果から除外
-                if let Some(parent_id) = &msg.parent_id
-                    && self.store.message(ch, parent_id).is_none()
-                {
-                    continue;
-                }
-                if msg.content.to_lowercase().contains(&query_lower) {
-                    matches.push(msg.id.clone());
-                }
-            }
-        }
         let prev_selected_id = ms.matches.get(ms.current_match_index).cloned();
         let new_index = if let Some(prev_id) = &prev_selected_id
             && let Some(pos) = matches.iter().position(|id| id == prev_id)
@@ -8564,5 +8575,127 @@ mod tests {
             state.cancel_target();
         }
         assert_eq!(state.target, Target::Channel);
+    }
+
+    #[test]
+    fn search_matches_parent_resolution_and_orphan_filtering() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // c1 に親メッセージ m1, m2 と、返信 r1(親m1), r2(親m2), r3(親m3: 不存在) を登録
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "m1",
+                    json!({
+                        "id": "m1", "user_id": "u1", "channel_id": "c1",
+                        "content": "親メッセージ1", "created_at": "2026-11-01 00:00:00"
+                    }),
+                ),
+                (
+                    "m2",
+                    json!({
+                        "id": "m2", "user_id": "u1", "channel_id": "c1",
+                        "content": "親メッセージ2", "created_at": "2026-11-01 00:01:00"
+                    }),
+                ),
+                (
+                    "r1",
+                    json!({
+                        "id": "r1", "user_id": "u1", "channel_id": "c1", "parent_id": "m1",
+                        "content": "共通キーワード返信1", "created_at": "2026-11-01 00:02:00"
+                    }),
+                ),
+                (
+                    "r2",
+                    json!({
+                        "id": "r2", "user_id": "u1", "channel_id": "c1", "parent_id": "m2",
+                        "content": "共通キーワード返信2", "created_at": "2026-11-01 00:03:00"
+                    }),
+                ),
+                (
+                    "r3",
+                    json!({
+                        "id": "r3", "user_id": "u1", "channel_id": "c1", "parent_id": "m3",
+                        "content": "共通キーワード返信3(孤児)", "created_at": "2026-11-01 00:04:00"
+                    }),
+                ),
+            ]),
+        ));
+
+        state.update_message_search_query("共通キーワード".into());
+        let ms = state.message_search.as_ref().unwrap();
+        // 存在する親を持つ r1, r2 は一致し、存在しない親を持つ r3 は除外されること
+        assert_eq!(ms.matches, vec!["r1".to_string(), "r2".to_string()]);
+    }
+
+    #[test]
+    fn channel_cache_attachments_by_message_updates_on_shape_and_cache_sync() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // c1 に m1, m2 を作成
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "m1",
+                    json!({
+                        "id": "m1", "user_id": "u1", "channel_id": "c1",
+                        "content": "メッセージ1", "created_at": "2026-11-01 00:00:00"
+                    }),
+                ),
+                (
+                    "m2",
+                    json!({
+                        "id": "m2", "user_id": "u1", "channel_id": "c1",
+                        "content": "メッセージ2", "created_at": "2026-11-01 00:01:00"
+                    }),
+                ),
+            ]),
+        ));
+
+        // c1 に m1 紐づきの添付 2 件と m2 紐づきの添付 1 件を同期
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Attachments("c1".into()),
+            batch(vec![
+                (
+                    "att1",
+                    json!({
+                        "id": "att1", "message_id": "m1", "uploader_id": "u1",
+                        "channel_id": "c1", "file_name": "file1.png", "file_size": 100,
+                        "content_type": "image/png", "storage_key": "k1",
+                        "created_at": "2026-11-01 00:00:05"
+                    }),
+                ),
+                (
+                    "att2",
+                    json!({
+                        "id": "att2", "message_id": "m1", "uploader_id": "u1",
+                        "channel_id": "c1", "file_name": "file2.pdf", "file_size": 200,
+                        "content_type": "application/pdf", "storage_key": "k2",
+                        "created_at": "2026-11-01 00:00:10"
+                    }),
+                ),
+                (
+                    "att3",
+                    json!({
+                        "id": "att3", "message_id": "m2", "uploader_id": "u1",
+                        "channel_id": "c1", "file_name": "file3.jpg", "file_size": 300,
+                        "content_type": "image/jpeg", "storage_key": "k3",
+                        "created_at": "2026-11-01 00:01:05"
+                    }),
+                ),
+            ]),
+        ));
+
+        state.ensure_channel_cache();
+        let atts_by_msg = &state.channel_cache.attachments_by_message;
+        assert_eq!(atts_by_msg.get("m1").unwrap().len(), 2);
+        assert_eq!(atts_by_msg.get("m1").unwrap()[0].file_name, "file1.png");
+        assert_eq!(atts_by_msg.get("m1").unwrap()[1].file_name, "file2.pdf");
+        assert_eq!(atts_by_msg.get("m2").unwrap().len(), 1);
+        assert_eq!(atts_by_msg.get("m2").unwrap()[0].file_name, "file3.jpg");
     }
 }

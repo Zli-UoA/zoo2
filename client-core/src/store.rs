@@ -157,6 +157,27 @@ impl Store {
         result
     }
 
+    /// チャンネル内の全添付ファイルを、メッセージ ID ごとに1回でまとめる。
+    /// 描画のたびにメッセージごとに全添付を走査しないためのもの。
+    pub fn attachments_by_message(&self, channel_id: &str) -> HashMap<String, Vec<Attachment>> {
+        let Some(map) = self.attachments.get(channel_id) else {
+            return HashMap::new();
+        };
+        let mut by_message: HashMap<String, Vec<Attachment>> = HashMap::new();
+        for att in map.values() {
+            if let Some(msg_id) = &att.message_id {
+                by_message
+                    .entry(msg_id.clone())
+                    .or_default()
+                    .push(att.clone());
+            }
+        }
+        for list in by_message.values_mut() {
+            list.sort_by_key(|att| att.created_at);
+        }
+        by_message
+    }
+
     /// 特定の添付ファイルを取得する。
     pub fn attachment(&self, channel_id: &str, attachment_id: &str) -> Option<&Attachment> {
         let map = self.attachments.get(channel_id)?;
@@ -524,6 +545,11 @@ mod tests {
         assert_eq!(atts[0].file_name, "pic.png");
         assert_eq!(store.attachment("c1", "att1").unwrap().file_name, "pic.png");
         assert!(store.attachments_for_message("c1", "m2").is_empty());
+
+        let by_msg = store.attachments_by_message("c1");
+        assert_eq!(by_msg.get("m1").unwrap().len(), 1);
+        assert_eq!(by_msg.get("m1").unwrap()[0].file_name, "pic.png");
+        assert!(!by_msg.contains_key("m2"));
     }
 
     #[test]

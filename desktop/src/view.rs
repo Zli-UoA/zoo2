@@ -11,7 +11,7 @@ use zoo2_client_core::{
     config::AuthConfig,
     electric::{
         ShapeId,
-        rows::{CardData, Message, parse_message_cards},
+        rows::{Attachment, CardData, Message, parse_message_cards},
     },
     store::ReactionGroup,
 };
@@ -1486,6 +1486,7 @@ impl WorkspaceView {
             all_root_messages,
             reply_counts,
             reactions_by_msg,
+            attachments_by_msg,
             is_searching,
             start_idx,
             end_idx,
@@ -1546,6 +1547,7 @@ impl WorkspaceView {
             let (start_idx, end_idx) = state.visible_timeline_bounds(&all_root_messages);
             let reply_counts = state.channel_cache.reply_counts.clone();
             let reactions_by_msg = state.channel_cache.reactions_by_message.clone();
+            let attachments_by_msg = state.channel_cache.attachments_by_message.clone();
             let is_searching = state.message_search.is_some();
 
             (
@@ -1565,6 +1567,7 @@ impl WorkspaceView {
                 all_root_messages,
                 reply_counts,
                 reactions_by_msg,
+                attachments_by_msg,
                 is_searching,
                 start_idx,
                 end_idx,
@@ -1619,12 +1622,17 @@ impl WorkspaceView {
             }
             let reply_count = reply_counts.get(&msg.id).copied().unwrap_or(0);
             let reactions = reactions_by_msg.get(&msg.id).cloned().unwrap_or_default();
+            let attachments = attachments_by_msg
+                .get(&msg.id)
+                .map(|v| v.as_slice())
+                .unwrap_or_default();
             timeline_items.push(self.render_message_card(
                 msg,
                 &me_id,
                 &me_user_name,
                 is_archived,
                 reactions,
+                attachments,
                 Some(reply_count),
                 "timeline",
                 cx,
@@ -1946,6 +1954,7 @@ impl WorkspaceView {
         me_user_name: &str,
         is_archived: bool,
         reactions: Vec<ReactionGroup>,
+        attachments: &[Attachment],
         reply_count: Option<usize>,
         pane_prefix: &str,
         cx: &mut Context<Self>,
@@ -2086,25 +2095,18 @@ impl WorkspaceView {
             theme.bg_surface
         };
 
-        let attachments_with_urls: Vec<(
-            zoo2_client_core::electric::rows::Attachment,
-            Option<String>,
-            bool,
-            bool,
-            bool,
-        )> = state
-            .store
-            .attachments_for_message(&message.channel_id, &message.id)
-            .into_iter()
-            .map(|att| {
-                let url = state.attachment_download_url(&att.id);
-                let is_fetching = state.fetching_attachment_urls.contains(&att.id)
-                    || state.pending_open_attachments.contains(&att.id);
-                let needs_refresh = state.attachment_url_needs_refresh(&att.id);
-                let is_failed = state.failed_attachment_urls.contains_key(&att.id);
-                (att.clone(), url, is_fetching, needs_refresh, is_failed)
-            })
-            .collect();
+        let attachments_with_urls: Vec<(Attachment, Option<String>, bool, bool, bool)> =
+            attachments
+                .iter()
+                .map(|att| {
+                    let url = state.attachment_download_url(&att.id);
+                    let is_fetching = state.fetching_attachment_urls.contains(&att.id)
+                        || state.pending_open_attachments.contains(&att.id);
+                    let needs_refresh = state.attachment_url_needs_refresh(&att.id);
+                    let is_failed = state.failed_attachment_urls.contains_key(&att.id);
+                    (att.clone(), url, is_fetching, needs_refresh, is_failed)
+                })
+                .collect();
         let attachment_views: Vec<Div> = attachments_with_urls
             .into_iter()
             .map(|(att, url, is_fetching, needs_refresh, is_failed)| {
@@ -2725,6 +2727,7 @@ impl WorkspaceView {
             .is_some_and(|c| c.archive_at.is_some());
         let can_post = state.can_post_in_channel(&channel_id);
         let reactions_by_msg = state.channel_cache.reactions_by_message.clone();
+        let attachments_by_msg = state.channel_cache.attachments_by_message.clone();
         let thread_typing = state.typing_text(&Some(root_id.to_string()));
         let root_message = state.channel_cache.thread_root_message.clone();
         let replies = state.channel_cache.thread_replies.clone();
@@ -2733,12 +2736,17 @@ impl WorkspaceView {
         let mut cards = Vec::new();
         if let Some(root) = &root_message {
             let root_reactions = reactions_by_msg.get(&root.id).cloned().unwrap_or_default();
+            let root_attachments = attachments_by_msg
+                .get(&root.id)
+                .map(|v| v.as_slice())
+                .unwrap_or_default();
             cards.push(self.render_message_card(
                 root,
                 &me_id,
                 &me_user_name,
                 is_archived,
                 root_reactions,
+                root_attachments,
                 None,
                 "thread",
                 cx,
@@ -2757,12 +2765,17 @@ impl WorkspaceView {
                     target_scroll_index = Some(cards.len());
                 }
                 let r_reactions = reactions_by_msg.get(&reply.id).cloned().unwrap_or_default();
+                let r_attachments = attachments_by_msg
+                    .get(&reply.id)
+                    .map(|v| v.as_slice())
+                    .unwrap_or_default();
                 cards.push(self.render_message_card(
                     reply,
                     &me_id,
                     &me_user_name,
                     is_archived,
                     r_reactions,
+                    r_attachments,
                     None,
                     "thread",
                     cx,
