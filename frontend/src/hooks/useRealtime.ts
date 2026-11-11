@@ -1,12 +1,16 @@
 import { useOptimisticDisplay } from "./useOptimisticDisplay";
 import { useFederatedReactions } from "./useFederatedReactions";
-import { eq, isNull, useLiveQuery } from "@tanstack/react-db";
-import { useEffect, useMemo, useState } from "react";
+import { eq, isNull, useLiveInfiniteQuery, useLiveQuery } from "@tanstack/react-db";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 import { messageFeedQuery } from "../lib/electric/messageFeed";
+import { MESSAGE_PAGE_SIZE } from "../lib/electric/messageOrder";
 import type { ChannelRow, ChannelUserRow } from "../lib/electric/types";
+import { clearFeedCache, loadFeedCache, saveFeedCache } from "../lib/offline/feedCache";
+import { useOfflineStatus } from "../lib/offline/offline-context";
+import type { FeedMessage as FeedRow } from "../components/chat/messages/messageFormat";
 import { canAddChannelMember, canManageChannel } from "./channelPermissions";
 import { useCurrentUser } from "./useCurrentUser";
 
@@ -41,30 +45,83 @@ export function useActiveChannels() {
 export interface MessageFeedOptions {
   /** スレッドの返信を購読する場合のルート ID。未指定はチャンネル直下。 */
   parentId?: string | null;
-  /** この時刻以降だけを表示する（30日窓）。 */
-  since?: string;
 }
 
 /**
  * 指定チャンネルのルートメッセージ（`parent_id IS NULL`）を投稿者名（users）と
  * 結合して購読する。返信は同じ messages コレクションを `parent_id` で絞る。
- * `channelId` が無いときは購読しない。
+ *
+ * 端末に同期するのは、画面に出す範囲 (新しい方から `MESSAGE_PAGE_SIZE` 件ずつ) だけ。`loadOlder()` で、
+ * 1 ページ分、古い方へ範囲を広げる (Electric の subset snapshot で、そのページだけを取る)。`data` は古い順。
  */
-export function useMessageFeed(channelId: string | null, options: MessageFeedOptions = {}) {
+export function useMessageFeed(channelId: string, options: MessageFeedOptions = {}) {
   const { messages, users } = useCollections();
+  const { isOnline, namespace } = useOfflineStatus();
   const parentId = options.parentId ?? null;
-  const since = options.since;
-  const query = useLiveQuery((q) =>
-    channelId
-      ? messageFeedQuery(q, { messages: messages(channelId), users }, { parentId, since })
-      : undefined,
+  const query = useLiveInfiniteQuery(
+    (q) => messageFeedQuery(q, { messages: messages(channelId), users }, { parentId }),
+    { pageSize: MESSAGE_PAGE_SIZE },
   );
-  const data = useOptimisticDisplay(channelId, query.data);
+  // クエリは新しい順。画面は古い順に並べる。
+  const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
+
+  // オフラインで再読み込みすると、on-demand のコレクションは保存済みの行を使えない。
+  // 最新ページの控え (IndexedDB) を、読み込めた間だけ、代わりに表示する。
+  const cacheable = parentId === null;
+  const live = oldestFirst as FeedRow[];
+  const liveReady = !query.isLoading && live.length > 0;
+  const [cached, setCached] = useState<{ channelId: string; rows: FeedRow[] | null } | null>(null);
+  // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフラインのときだけでなく、
+  // ライブの行が届くまで (読み込み中・失敗) は、控えを表示しておく。
+  const wantCache =
+    cacheable && live.length === 0 && (!isOnline || query.isLoading || query.isError);
+  useEffect(() => {
+    if (!wantCache) return;
+    let cancelled = false;
+    void loadFeedCache<FeedRow>(namespace, channelId).then((entry) => {
+      if (!cancelled) setCached({ channelId, rows: entry?.rows ?? null });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [wantCache, namespace, channelId]);
+  const cachedRows = wantCache && cached?.channelId === channelId ? cached.rows : null;
+
+  // オンラインで読み込めたら、最新ページを控える (書き込みが続くときのために、間引く)。
+  const latest = useRef(live);
+  latest.current = live;
+  useEffect(() => {
+    if (!cacheable || !isOnline || !liveReady) return;
+    const timer = setTimeout(
+      () => void saveFeedCache(namespace, channelId, latest.current, MESSAGE_PAGE_SIZE),
+      1_000,
+    );
+    return () => clearTimeout(timer);
+  }, [cacheable, isOnline, liveReady, namespace, channelId, query.data]);
+
+  // 正常に取得できた結果が空 (全件が削除された) なら、控えも消す。読み込み中の空とは区別する。
+  const loadedEmpty = query.isReady && !query.isLoading && live.length === 0;
+  useEffect(() => {
+    if (!cacheable || !isOnline || !loadedEmpty) return;
+    const timer = setTimeout(() => void clearFeedCache(namespace, channelId), 1_000);
+    return () => clearTimeout(timer);
+  }, [cacheable, isOnline, loadedEmpty, namespace, channelId]);
+
+  const data = useOptimisticDisplay(channelId, cachedRows ?? oldestFirst);
+  const fromCache = cachedRows !== null;
   return {
     ...query,
     data,
-    isInitialSyncLoading: query.isLoading,
-    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
+    isInitialSyncLoading: query.isLoading && !(fromCache && !isOnline),
+    // オンラインで控えを出している間は、読み込み中のまま (最初のページが届くまで、書き込みを待たせる)。
+    isLoading:
+      query.isLoading &&
+      !(query.isPersistedReady && query.data?.length) &&
+      !(fromCache && !isOnline),
+    loadOlder: query.fetchNextPage,
+    // 控えには、古いページがない。
+    hasOlder: fromCache ? false : query.hasNextPage,
+    isLoadingOlder: query.isFetchingNextPage,
   };
 }
 

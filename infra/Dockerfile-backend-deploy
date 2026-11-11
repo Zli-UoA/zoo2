@@ -7,6 +7,8 @@ ARG DATABASE_URL="postgresql://postgres:postgres@localhost:5432/db?schema=public
 WORKDIR /app
 
 COPY backend/ /app
+# backend は E2EE の署名の検証に crates/zoo-crypto を path で依存する（../crates/zoo-crypto）。
+COPY crates/zoo-crypto/ /crates/zoo-crypto
 # events.rs embeds this public contract at compile time.
 COPY docs/slack-event-coverage.json /docs/slack-event-coverage.json
 
