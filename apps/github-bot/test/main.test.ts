@@ -6,6 +6,8 @@ import { once } from "node:events";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Store } from "../src/store.ts";
+import { createHash } from "node:crypto";
 import { pair } from "./helpers.ts";
 import { loadConfig } from "../src/config.ts";
 
@@ -47,6 +49,13 @@ test("the production entrypoint starts, preserves credentials, exposes health, a
     HOST: "127.0.0.1",
     PORT: String(port),
   };
+  // Reproduce a restart with unchanged bootstrap credentials and a persisted pause.
+  const store = new Store(env.BOT_DATABASE, Buffer.from(env.BOT_ENCRYPTION_KEY, "base64"));
+  store.saveSecret("zoo", { access_token: "zoo-access", refresh_token: "zoo-refresh" });
+  store.set("bootstrap-credential", createHash("sha256").update("zoo-access").digest("hex"));
+  store.set("zoo-identity", { app_id: "app" });
+  store.set("zoo-disabled", true);
+  store.close();
   const child = spawn(
     process.execPath,
     ["--experimental-strip-types", new URL("../src/main.ts", import.meta.url).pathname],

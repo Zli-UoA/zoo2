@@ -8,7 +8,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use crate::http::{Credentials, HttpError};
 pub use shape::{Batch, Change, Row, ShapeStream};
 
-/// backend のシェイププロキシ (`/api/shapes/*`) のうち、TUI が購読するもの。
+/// backend のシェイププロキシ (`/api/shapes/*`) のうち、クライアントが購読するもの。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ShapeId {
     Channels,
@@ -16,6 +16,7 @@ pub enum ShapeId {
     ChannelUsers,
     Messages(String),
     Reactions(String),
+    Attachments(String),
 }
 
 impl ShapeId {
@@ -27,6 +28,7 @@ impl ShapeId {
             ShapeId::ChannelUsers => ("channel_users", Vec::new()),
             ShapeId::Messages(id) => ("messages", channel(id)),
             ShapeId::Reactions(id) => ("message_reactions", channel(id)),
+            ShapeId::Attachments(id) => ("attachments", channel(id)),
         }
     }
 }

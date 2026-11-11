@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - "backend/**"
+      - "crates/zoo-crypto/**"
       - "docs/slack-event-coverage.json"
       - "infra/db/**"
       - "infra/Dockerfile-backend-deploy*"
@@ -17,6 +18,7 @@ on:
   pull_request:
     paths:
       - "backend/**"
+      - "crates/zoo-crypto/**"
       - "docs/slack-event-coverage.json"
       - "infra/db/**"
       - "infra/Dockerfile-backend-deploy*"

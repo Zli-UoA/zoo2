@@ -96,7 +96,6 @@ function Layout() {
         canReact={false}
         onReaction={noop}
         onPickReaction={noop}
-        replyCounts={new Map()}
         onOpenThread={noop}
       />
       <Composer onSend={async () => true} />

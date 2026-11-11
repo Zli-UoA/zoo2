@@ -35,6 +35,8 @@ actions!(
         Submit,
         Newline,
         Cancel,
+        Tab,
+        TabPrev,
     ]
 );
 
@@ -45,8 +47,20 @@ pub enum InputEvent {
     Changed(String),
     /// `Enter` で確定・送信された。
     Submit(String),
+    /// `Tab` キーが押下された。
+    Tab,
     /// `Esc` でキャンセルされた。
     Cancel,
+    /// `↑` キーが押下された。
+    Up,
+    /// `↓` キーが押下された。
+    Down,
+    /// `←` キーが押下された。
+    Left,
+    /// `→` キーが押下された。
+    Right,
+    /// キャレット位置が移動した。
+    CursorMoved(usize),
 }
 
 /// アプリ起動時に `TextInput` 用のキーバインドを登録する。
@@ -64,6 +78,8 @@ pub fn bind_input_keys(cx: &mut App) {
         KeyBinding::new("home", Home, ctx),
         KeyBinding::new("end", End, ctx),
         KeyBinding::new("enter", Submit, ctx),
+        KeyBinding::new("tab", Tab, ctx),
+        KeyBinding::new("shift-tab", TabPrev, ctx),
         KeyBinding::new("shift-enter", Newline, ctx),
         KeyBinding::new("alt-enter", Newline, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -106,6 +122,10 @@ pub struct TextInput {
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    pub intercept_vertical_arrows: bool,
+    pub intercept_horizontal_arrows: bool,
+    pub intercept_tab: bool,
+    pub theme: theme::Theme,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -140,6 +160,10 @@ impl TextInput {
             last_line_height: px(20.0),
             last_bounds: None,
             is_selecting: false,
+            intercept_vertical_arrows: false,
+            intercept_horizontal_arrows: false,
+            intercept_tab: false,
+            theme: theme::Theme::dark(),
         }
     }
 
@@ -149,6 +173,10 @@ impl TextInput {
 
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
+    }
+
+    pub fn selected_range(&self) -> Range<usize> {
+        self.selected_range.clone()
     }
 
     pub fn set_placeholder(
@@ -184,7 +212,7 @@ impl TextInput {
         cx.notify();
     }
 
-    fn cursor_offset(&self) -> usize {
+    pub fn cursor_offset(&self) -> usize {
         if self.selection_reversed {
             self.selected_range.start
         } else {
@@ -192,10 +220,20 @@ impl TextInput {
         }
     }
 
+    pub fn set_text_and_cursor(&mut self, text: String, cursor: usize, cx: &mut Context<Self>) {
+        self.content = text;
+        let cursor = cursor.min(self.content.len());
+        self.selected_range = cursor..cursor;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.notify();
+    }
+
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         let offset = offset.min(self.content.len());
         self.selected_range = offset..offset;
         self.selection_reversed = false;
+        cx.emit(InputEvent::CursorMoved(offset));
         cx.notify();
     }
 
@@ -210,6 +248,7 @@ impl TextInput {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
+        cx.emit(InputEvent::CursorMoved(offset));
         cx.notify();
     }
 
@@ -222,6 +261,10 @@ impl TextInput {
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_horizontal_arrows {
+            cx.emit(InputEvent::Left);
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
         } else {
@@ -230,6 +273,10 @@ impl TextInput {
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_horizontal_arrows {
+            cx.emit(InputEvent::Right);
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.selected_range.end), cx);
         } else {
@@ -238,13 +285,29 @@ impl TextInput {
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        let target = self.vertical_move_target(-1);
-        self.move_to(target, cx);
+        if self.intercept_vertical_arrows {
+            cx.emit(InputEvent::Up);
+            return;
+        }
+        if self.multiline {
+            let target = self.vertical_move_target(-1);
+            self.move_to(target, cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        let target = self.vertical_move_target(1);
-        self.move_to(target, cx);
+        if self.intercept_vertical_arrows {
+            cx.emit(InputEvent::Down);
+            return;
+        }
+        if self.multiline {
+            let target = self.vertical_move_target(1);
+            self.move_to(target, cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     fn vertical_move_target(&self, delta_rows: isize) -> usize {
@@ -335,6 +398,18 @@ impl TextInput {
 
     fn submit(&mut self, _: &Submit, _window: &mut Window, cx: &mut Context<Self>) {
         self.request_submit(cx);
+    }
+
+    fn tab(&mut self, _: &Tab, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_tab {
+            cx.emit(InputEvent::Tab);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn tab_prev(&mut self, _: &TabPrev, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.propagate();
     }
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {
@@ -666,7 +741,7 @@ impl Element for TextElement {
             let run = TextRun {
                 len: placeholder.len(),
                 font: style.font(),
-                color: theme::placeholder_color(),
+                color: input.theme.placeholder_color(),
                 background_color: None,
                 underline: None,
                 strikethrough: None,
@@ -776,7 +851,7 @@ impl Element for TextElement {
                 let y = bounds.top() + line_height * (vis_idx as f32);
                 cursor_quad = Some(fill(
                     Bounds::new(point(x, y), size(px(2.0), line_height)),
-                    theme::ACCENT,
+                    input.theme.accent,
                 ));
             }
         } else {
@@ -789,7 +864,7 @@ impl Element for TextElement {
                     let y = bounds.top() + line_height * (vis_idx as f32);
                     selections.push(fill(
                         Bounds::from_corners(point(x1, y), point(x2, y + line_height)),
-                        theme::selection_bg(),
+                        input.theme.selection_bg(),
                     ));
                 }
             }
@@ -864,9 +939,9 @@ impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
         let border_color = if focused {
-            theme::BORDER_ACCENT
+            self.theme.border_accent
         } else {
-            theme::BORDER
+            self.theme.border
         };
 
         div()
@@ -891,13 +966,15 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::tab))
+            .on_action(cx.listener(Self::tab_prev))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::cancel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .bg(theme::BG_SURFACE)
+            .bg(self.theme.bg_surface)
             .border_1()
             .border_color(border_color)
             .rounded_md()
@@ -905,7 +982,7 @@ impl Render for TextInput {
             .py_2()
             .text_sm()
             .line_height(px(20.0))
-            .text_color(theme::TEXT_PRIMARY)
+            .text_color(self.theme.text_primary)
             .child(TextElement { input: cx.entity() })
     }
 }

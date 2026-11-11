@@ -2,7 +2,7 @@
 
 use gpui::{Hsla, Rgba, hsla, rgba};
 
-const fn hex_rgb(hex: u32) -> Rgba {
+pub const fn hex_rgb(hex: u32) -> Rgba {
     let [_, r, g, b] = hex.to_be_bytes();
     Rgba {
         r: (r as f32) / 255.0,
@@ -44,9 +44,9 @@ pub const TEXT_DIM: Rgba = hex_rgb(0x64748b);
 /// アクセント色 (Cyan)
 pub const ACCENT: Rgba = hex_rgb(0x22d3ee);
 /// ボタン用アクセント背景色
-pub const ACCENT_BUTTON: Rgba = hex_rgb(0x0891b2);
+pub const ACCENT_BUTTON: Rgba = hex_rgb(0x0e7490);
 /// ボタンホバー用アクセント背景色
-pub const ACCENT_BUTTON_HOVER: Rgba = hex_rgb(0x06b6d4);
+pub const ACCENT_BUTTON_HOVER: Rgba = hex_rgb(0x155e75);
 
 /// コード文字色 (Amber)
 pub const TEXT_CODE: Rgba = hex_rgb(0xfbbf24);
@@ -69,4 +69,188 @@ pub fn selection_bg() -> Hsla {
 /// プレースホルダー文字色
 pub fn placeholder_color() -> Hsla {
     hsla(215.0 / 360.0, 0.20, 0.55, 0.7)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeMode {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl ThemeMode {
+    pub fn toggle(self) -> Self {
+        match self {
+            ThemeMode::Dark => ThemeMode::Light,
+            ThemeMode::Light => ThemeMode::Dark,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeMode::Dark => "ダーク",
+            ThemeMode::Light => "ライト",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Theme {
+    pub mode: ThemeMode,
+    pub bg_primary: Rgba,
+    pub bg_secondary: Rgba,
+    pub bg_surface: Rgba,
+    pub bg_selected: Rgba,
+    pub bg_hover: Rgba,
+    pub bg_code: Rgba,
+    pub bg_mention_mine: Rgba,
+    pub bg_reaction_mine: Rgba,
+    pub border: Rgba,
+    pub border_accent: Rgba,
+    pub text_primary: Rgba,
+    pub text_muted: Rgba,
+    pub text_dim: Rgba,
+    pub accent: Rgba,
+    pub accent_button: Rgba,
+    pub accent_button_hover: Rgba,
+    pub text_on_accent: Rgba,
+    pub text_code: Rgba,
+    pub text_link: Rgba,
+    pub text_math: Rgba,
+    pub warning: Rgba,
+    pub danger: Rgba,
+    pub success: Rgba,
+}
+
+impl Theme {
+    pub fn selection_bg(&self) -> Hsla {
+        match self.mode {
+            ThemeMode::Dark => rgba(0x22d3ee44).into(),
+            ThemeMode::Light => rgba(0x0284c744).into(),
+        }
+    }
+
+    pub fn placeholder_color(&self) -> Hsla {
+        match self.mode {
+            ThemeMode::Dark => hsla(215.0 / 360.0, 0.20, 0.55, 0.7),
+            ThemeMode::Light => hsla(215.0 / 360.0, 0.20, 0.45, 0.7),
+        }
+    }
+
+    pub fn from_mode(mode: ThemeMode) -> Self {
+        match mode {
+            ThemeMode::Dark => Self::dark(),
+            ThemeMode::Light => Self::light(),
+        }
+    }
+
+    pub const fn dark() -> Self {
+        Self {
+            mode: ThemeMode::Dark,
+            bg_primary: BG_PRIMARY,
+            bg_secondary: BG_SECONDARY,
+            bg_surface: BG_SURFACE,
+            bg_selected: BG_SELECTED,
+            bg_hover: BG_HOVER,
+            bg_code: BG_CODE,
+            bg_mention_mine: BG_MENTION_MINE,
+            bg_reaction_mine: BG_REACTION_MINE,
+            border: BORDER,
+            border_accent: BORDER_ACCENT,
+            text_primary: TEXT_PRIMARY,
+            text_muted: TEXT_MUTED,
+            text_dim: TEXT_DIM,
+            accent: ACCENT,
+            accent_button: ACCENT_BUTTON,
+            accent_button_hover: ACCENT_BUTTON_HOVER,
+            text_on_accent: hex_rgb(0xffffff),
+            text_code: TEXT_CODE,
+            text_link: TEXT_LINK,
+            text_math: TEXT_MATH,
+            warning: WARNING,
+            danger: DANGER,
+            success: SUCCESS,
+        }
+    }
+
+    pub const fn light() -> Self {
+        Self {
+            mode: ThemeMode::Light,
+            bg_primary: hex_rgb(0xffffff),
+            bg_secondary: hex_rgb(0xf1f5f9),
+            bg_surface: hex_rgb(0xf8fafc),
+            bg_selected: hex_rgb(0xe2e8f0),
+            bg_hover: hex_rgb(0xf1f5f9),
+            bg_code: hex_rgb(0xe2e8f0),
+            bg_mention_mine: hex_rgb(0xe0f2fe),
+            bg_reaction_mine: hex_rgb(0xbae6fd),
+            border: hex_rgb(0xcbd5e1),
+            border_accent: hex_rgb(0x0284c7),
+            text_primary: hex_rgb(0x0f172a),
+            text_muted: hex_rgb(0x64748b),
+            text_dim: hex_rgb(0x94a3b8),
+            accent: hex_rgb(0x0284c7),
+            accent_button: hex_rgb(0x0369a1),
+            accent_button_hover: hex_rgb(0x075985),
+            text_on_accent: hex_rgb(0xffffff),
+            text_code: hex_rgb(0xd97706),
+            text_link: hex_rgb(0x0284c7),
+            text_math: hex_rgb(0x059669),
+            warning: hex_rgb(0xd97706),
+            danger: hex_rgb(0xdc2626),
+            success: hex_rgb(0x16a34a),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn channel_luminance(c: f32) -> f32 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(color: Rgba) -> f32 {
+        let r = channel_luminance(color.r);
+        let g = channel_luminance(color.g);
+        let b = channel_luminance(color.b);
+        0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
+    fn contrast_ratio(c1: Rgba, c2: Rgba) -> f32 {
+        let l1 = relative_luminance(c1);
+        let l2 = relative_luminance(c2);
+        let (lighter, darker) = if l1 >= l2 { (l1, l2) } else { (l2, l1) };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn button_contrast_ratio_satisfies_wcag_aa_standard() {
+        let dark = Theme::dark();
+        let light = Theme::light();
+
+        // WCAG AA の通常テキスト基準は 4.5:1 以上
+        assert!(
+            contrast_ratio(dark.accent_button, dark.text_on_accent) >= 4.5,
+            "Dark theme accent_button contrast ratio must be >= 4.5"
+        );
+        assert!(
+            contrast_ratio(dark.accent_button_hover, dark.text_on_accent) >= 4.5,
+            "Dark theme accent_button_hover contrast ratio must be >= 4.5"
+        );
+
+        assert!(
+            contrast_ratio(light.accent_button, light.text_on_accent) >= 4.5,
+            "Light theme accent_button contrast ratio must be >= 4.5"
+        );
+        assert!(
+            contrast_ratio(light.accent_button_hover, light.text_on_accent) >= 4.5,
+            "Light theme accent_button_hover contrast ratio must be >= 4.5"
+        );
+    }
 }
