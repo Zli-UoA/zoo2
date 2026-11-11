@@ -2,6 +2,8 @@
 
 macOS と Linux 向けのデスクトップ版を Tauri v2 で作る。画面は 2 案を作って比べる検証の段階にある。
 
+利用者向けの説明（インストール、ログイン、更新、困ったとき）は [desktop-tauri/README.md](../desktop-tauri/README.md) にある。
+
 - (a) Leptos（CSR）で書いた画面を同梱する
 - (b) `https://zli.chat` の React をリモートで読み込む
 
