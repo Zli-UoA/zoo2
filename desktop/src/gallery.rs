@@ -3,7 +3,7 @@
 //! 画面の撮影は `scripts/desktop-screenshot.sh` で行う。
 
 use gpui::{
-    App, Application, Bounds, Context, Div, IntoElement, Render, SharedString, Window,
+    App, Application, Bounds, Context, Div, IntoElement, KeyBinding, Render, SharedString, Window,
     WindowBounds, WindowOptions, div, prelude::*, px, size,
 };
 
@@ -218,6 +218,17 @@ pub fn run() {
             eprintln!("フォントを登録できませんでした: {err:#}");
         }
         cx.on_action(|_: &crate::Quit, cx| cx.quit());
+        cx.bind_keys([
+            KeyBinding::new("cmd-q", crate::Quit, None),
+            KeyBinding::new("ctrl-q", crate::Quit, None),
+        ]);
+        // ウィンドウは 1 つだけなので、閉じたらアプリも終える。
+        cx.on_window_closed(|cx| {
+            if cx.windows().is_empty() {
+                cx.quit();
+            }
+        })
+        .detach();
         let mode = initial_mode();
         let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
         if let Err(err) = cx.open_window(
