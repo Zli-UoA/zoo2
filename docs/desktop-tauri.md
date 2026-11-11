@@ -45,7 +45,7 @@ Electric の Shape を購読する側は、(a) と (b) で異なる。**どち�
 | 書き込み（REST） | `zoo_send_message` で Rust 側が呼ぶ | WebView 側が直接呼ぶ |
 | アクセストークン | Rust 側だけが持つ | `zoo_access_token` で WebView に渡す |
 | 通知の Shape | Rust 側が購読する | React が購読している（通知の画面で使う）。React は変化を `zoo_notifications_observed` で Rust 側に渡す |
-| 通知の判定と表示 | Rust 側（`client_types::notify`、`tauri-plugin-notification`） | 同じ |
+| 通知の判定と表示 | Rust 側（`client_types::notify`、`notify-rust`） | 同じ |
 | ログイン画面 | Leptos | Leptos の同じ画面（下記） |
 
 ### (a) Leptos
@@ -78,7 +78,11 @@ ShapeEvent ─▶ 1 本のループ
   - 通知のコレクション：初回の読み込みが終わった時点で、全行を `reset: true, up_to_date: true` のバッチで `zoo_notifications_observed` に渡す。それ以降は、変化ごとに `reset: false` のバッチで渡す。Rust 側はこれを (a) の通知の Shape と同じ流れで扱う。
   - 表示中のチャンネルとフォーカスを `zoo_set_focus` で、`zoo://open` を受けたらその画面へ移る。
 - Tauri の中で動いているかは `window.__TAURI_INTERNALS__` の有無で見分ける。さらに `zoo_session` の `protocol` が `PROTOCOL_VERSION` と一致する場合だけ IPC を使う。一致しなければ通常の Web として動く（Web は Tauri 版と別にデプロイされるため）。
-- capabilities：リモートの URL（`remote.urls`）は `https://zli.chat/*`（検証では stg も）だけにする。そこから呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_access_token`、`zoo_notifications_observed` に限る。
+- capabilities：コマンドは `build.rs` の `AppManifest::commands` で 1 つずつ宣言する。宣言しないと許可の識別子が作られず、全ウィンドウから呼べてしまう。
+  - `main-remote`：リモートの URL（`remote.urls`）は `Config.api_base_url` のオリジンだけにする。stg と `http://localhost:5173` は debug ビルドのときだけ足す。呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_access_token`、`zoo_notifications_observed` と、`zoo://session` と `zoo://open` を受け取るための `core:event:allow-listen`、`core:event:allow-unlisten` に限る。
+  - コマンドの中でも、呼び出し元のウィンドウの `UiMode` と URL のオリジンを確かめ、合わなければ `ErrorCode::WrongMode` を返す。
+  - 許可したオリジン以外への移動は `on_navigation` で止め、既定のブラウザーで開く。
+- Tauri の中では、Service Worker の登録と Web Push を止める。止めないと、Rust 側の通知と二重に出る。
 - (a) の同梱の画面からは、`zoo_access_token` と `zoo_notifications_observed` を呼べなくする。トークンを WebView に出さないため。
 
 ## 通知
@@ -89,12 +93,15 @@ ShapeEvent ─▶ 1 本のループ
 - 自分が起こしたもの、ウィンドウが前面にあって表示中のチャンネルのものは出さない。
 - DND（`GET /api/users/me/profile` の `dnd_until` が今より後）の間は出さない。止めた分を後でまとめて出すこともしない。backend の Web Push（`backend/src/push.rs`）と同じ扱い。`dnd_until` は起動時と 5 分ごとに取り直す。
 - 届くのは、アプリが動いている間（トレイに常駐している間を含む）だけ。アプリを終了している間の通知（APNs や UnifiedPush）は範囲外とする。
-- 通知をクリックしたら、ウィンドウを前に出して `zoo://open` を送る。
+- 表示は `notify-rust` で行う。`tauri-plugin-notification` はデスクトップでクリックを受け取れないため使わない。
+- Linux では通知に action を付け、専用のスレッドで `wait_for_action` を待つ。クリックされたら、ウィンドウを前に出して `zoo://open` を送る。
+- macOS では通知を出すだけで、クリックには対応しない（後続の項目）。
 
-## 常駐、単一インスタンス、ディープリンク
+## 常駐、単一インスタンス
 
 - ウィンドウを閉じたら隠し、トレイ（`tauri` の tray）に残す。トレイのメニューは「開く」と「終了」にする。
-- 2 つ目の起動は `tauri-plugin-single-instance` で 1 つ目に渡し、ウィンドウを前に出す。ディープリンク（`tauri-plugin-deep-link`）の URL も同じ経路で受け取る。
+- 2 つ目の起動は `tauri-plugin-single-instance` で 1 つ目に渡し、ウィンドウを表示する。Wayland では前面に出ないことがある。
+- ディープリンク（`tauri-plugin-deep-link`）は後続の項目にする。scheme が決まっておらず、Linux ではインストールした後でないと動かないため。
 - 常駐と単一インスタンスは同じ段階で入れる。どちらかが動かない環境では、常駐をやめて「閉じたら終了」にする。
 
 ## 未確定・確認が要るもの
