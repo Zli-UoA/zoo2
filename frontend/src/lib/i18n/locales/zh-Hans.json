@@ -21,7 +21,8 @@
     "searchEmpty": "没有匹配的频道。",
     "browseEmpty": "没有可加入的公开频道。",
     "slackImported": "来自 Slack 的导入",
-    "slackImportedDescription": "此频道是从 Slack 导入的。",
+    "slackImportedCreated": "来自 Slack 的导入·新建（最后导入 {{date}}）",
+    "slackImportedExisting": "来自 Slack 的导入·现有（最后导入 {{date}}）",
     "noJoined": "还没有加入任何频道。",
     "join": "加入",
     "joining": "加入中…",
@@ -802,6 +803,8 @@
     "dismiss": "移到历史记录",
     "runTitle": "从 {{name}} 导入",
     "importedTo": "已导入到 #{{name}}",
+    "importedToCreated": "导入到 #{{name}}（新建频道·最后导入 {{date}}）",
+    "importedToExisting": "导入到 #{{name}}（现有频道·最后导入 {{date}}）",
     "importedToHidden": "之前已导入到你未加入的频道，只能导入到该频道。"
   },
   "slackLink": {

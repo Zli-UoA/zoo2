@@ -1,5 +1,6 @@
 import { ChannelWebhooksDialog } from "./ChannelWebhooksDialog";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { useNavigate } from "@tanstack/react-router";
 import { cn } from "cn";
 import {
@@ -24,6 +25,7 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
+import { parseUtcTimestamp } from "../../lib/timestamps";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
 import { localizeApiError } from "../../lib/i18n/apiError";
 import { useShell } from "../layout/shell-context";
@@ -64,7 +66,7 @@ export function ChannelHeader({
   title?: string;
   subtitle?: string;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const shell = useShell();
   const admin = useChannelAdmin(channel);
   const isDm = channel.is_dm;
@@ -259,10 +261,18 @@ export function ChannelHeader({
 
       <Dialog open={settingsOpen && canManage} onOpenChange={setSettingsOpen}>
         <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader className="pr-8">
-            <DialogTitle>{t("settings.channelTitle")}</DialogTitle>
-            <DialogDescription>{displayTitle}</DialogDescription>
-          </DialogHeader>
+          {/* 狭い画面では、印が見出しの下へ折り返す (見出しの幅を 10rem は確保する) */}
+          <div className="flex flex-wrap items-start justify-between gap-2 pr-8">
+            <DialogHeader className="min-w-40 flex-1">
+              <DialogTitle>{t("settings.channelTitle")}</DialogTitle>
+              <DialogDescription>{displayTitle}</DialogDescription>
+            </DialogHeader>
+            {channel.imported_from_slack ? (
+              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                {slackImportBadge(channel, t, i18n.language)}
+              </span>
+            ) : null}
+          </div>
           <div className="divide-y rounded-lg border">
             <SettingRow label={t("channels.editTitle")} description={displaySubtitle}>
               <Button
@@ -277,14 +287,6 @@ export function ChannelHeader({
                 {t("messages.edit")}
               </Button>
             </SettingRow>
-            {channel.imported_from_slack ? (
-              <SettingRow
-                label={t("channels.slackImported")}
-                description={t("channels.slackImportedDescription")}
-              >
-                {null}
-              </SettingRow>
-            ) : null}
             <SettingRow label={t("webhooks.title")}>
               <Button
                 variant="outline"
@@ -410,4 +412,18 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
       </AlertDialog>
     </>
   );
+}
+
+/** チャンネル設定の右上に出す小さな印。取り込みの種類 (最初の取り込み) と最後に取り込んだ日付がわかるときは、それも出す */
+function slackImportBadge(channel: ChannelRow, t: TFunction, language: string): string {
+  if (channel.slack_import_kind && channel.slack_imported_at) {
+    const date = parseUtcTimestamp(channel.slack_imported_at).toLocaleDateString(language);
+    return t(
+      channel.slack_import_kind === "created"
+        ? "channels.slackImportedCreated"
+        : "channels.slackImportedExisting",
+      { date },
+    );
+  }
+  return t("channels.slackImported");
 }

@@ -20,8 +20,12 @@ CREATE TABLE channels (
   archive_at timestamp(3),
   deleted_at timestamp(3),
   imported_from_slack boolean NOT NULL DEFAULT false,
+  slack_import_kind text,
+  slack_imported_at timestamp(3),
   CONSTRAINT "Channel_pkey" PRIMARY KEY (id),
   CONSTRAINT channels_channel_name_key UNIQUE (channel_name),
+  CONSTRAINT channels_slack_import_kind_check
+    CHECK (slack_import_kind IS NULL OR slack_import_kind IN ('created', 'existing')),
   CONSTRAINT channels_created_user_id_fkey
     FOREIGN KEY (created_user_id) REFERENCES users (id)
     ON UPDATE CASCADE ON DELETE RESTRICT

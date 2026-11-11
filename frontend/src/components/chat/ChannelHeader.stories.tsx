@@ -47,17 +47,61 @@ export const ControlPanelOpen: Story = {
   }),
 };
 
+const importedAt = "2026-11-10 12:00:00.000";
+
+/** 既存のチャンネルに、Slack から取り込んだ */
 export const ImportedFromSlack: Story = {
   args: {
-    channel: { ...general, imported_from_slack: true },
+    channel: {
+      ...general,
+      imported_from_slack: true,
+      slack_import_kind: "existing",
+      slack_imported_at: importedAt,
+    },
   },
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
     await expect(
       await within(await screen.findByRole("dialog")).findByText(
-        "Slack から取り込んだチャンネルです。",
+        /Slack から取り込み・既存（最後の取り込み 2026\/.+）/,
       ),
     ).toBeInTheDocument();
+  }),
+};
+
+/** Slack から取り込んで、新しくチャンネルを作った */
+export const ImportedFromSlackCreated: Story = {
+  args: {
+    channel: {
+      ...general,
+      imported_from_slack: true,
+      slack_import_kind: "created",
+      slack_imported_at: importedAt,
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    await expect(
+      await within(await screen.findByRole("dialog")).findByText(
+        /Slack から取り込み・新規作成（最後の取り込み 2026\/.+）/,
+      ),
+    ).toBeInTheDocument();
+  }),
+};
+
+/** 狭い画面でも、設定の見出しが 1 文字ずつ縦に並ばず、印は見出しの下へ折り返す */
+export const ImportedFromSlackMobile: Story = {
+  ...ImportedFromSlackCreated,
+  globals: { viewport: { value: "mobile" } },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    const dialog = await screen.findByRole("dialog");
+    const title = await within(dialog).findByText("チャンネル設定");
+    await expect(title.getBoundingClientRect().width).toBeGreaterThan(100);
+    const badge = await within(dialog).findByText(/Slack から取り込み・新規作成/);
+    await expect(badge.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      title.getBoundingClientRect().bottom,
+    );
   }),
 };
 

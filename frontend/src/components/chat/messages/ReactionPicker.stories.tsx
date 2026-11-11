@@ -4,6 +4,8 @@ import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { useState } from "react";
 
+import { manyCustomEmojiFixtures } from "../../../../.storybook/preference-fixtures";
+
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import { Button } from "../../ui/button";
 import { ReactionPicker } from "./ReactionPicker";
@@ -105,5 +107,36 @@ export const KitchenLoading: Story = {
 };
 
 export const Mobile: Story = {
+  globals: { viewport: { value: "mobile" } },
+};
+
+export const ManyCustomEmojis: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    msw: { handlers: [http.get("*/api/emojis", () => HttpResponse.json(manyCustomEmojiFixtures))] },
+  },
+  play: playForImplementation(async ({ args }) => {
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("tab", { name: "カスタム絵文字" }));
+    const last = await within(dialog).findByRole("button", { name: ":scroll_199:" });
+    const viewport = within(dialog).getByRole("region", { name: "カスタム絵文字" });
+    await expect(viewport.clientHeight).toBeGreaterThan(0);
+    await expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight);
+    await expect(viewport.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      dialog.getBoundingClientRect().bottom,
+    );
+    viewport.scrollTo({ top: viewport.scrollHeight });
+    await waitFor(() => expect(viewport.scrollTop).toBeGreaterThan(0));
+    await expect(last.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      viewport.getBoundingClientRect().bottom,
+    );
+    await expect(within(dialog).getByRole("textbox", { name: "絵文字を検索" })).toBeVisible();
+    await userEvent.click(last);
+    await expect(args.onSelect).toHaveBeenCalledWith(":scroll_199:");
+  }),
+};
+
+export const ManyCustomEmojisMobile: Story = {
+  ...ManyCustomEmojis,
   globals: { viewport: { value: "mobile" } },
 };

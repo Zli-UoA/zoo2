@@ -29,7 +29,14 @@ export interface SlackChannelSummary {
   suggested_name: string;
   name_taken: boolean;
   /** 以前の取り込みで対応付けた zoo チャンネル */
-  existing_channel: { id: string; name: string; is_private?: boolean } | null;
+  existing_channel: {
+    id: string;
+    name: string;
+    is_private?: boolean;
+    /** 最初の取り込みの種類 (新しく作った / 既存のチャンネルに追加) と、最後に取り込んだ日時 */
+    import_kind?: "created" | "existing" | null;
+    imported_at?: string | null;
+  } | null;
   /**
    * 以前の取り込み先が、見えないチャンネル (参加していない非公開チャンネル。ゲストには公開チャンネルも)。
    * 名前と ID は返さない。

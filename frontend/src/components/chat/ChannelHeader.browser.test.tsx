@@ -17,6 +17,8 @@ const channel: ChannelRow = {
   updated_at: null,
   archive_at: null,
   imported_from_slack: false,
+  slack_import_kind: null,
+  slack_imported_at: null,
   deleted_at: null,
 };
 
@@ -119,16 +121,34 @@ describe("ChannelHeader", () => {
     expect(screen.queryByText("メッセージ管理")).toBeNull();
   });
 
-  it("shows that a channel was imported from Slack in the settings only", async () => {
+  it("shows how and when a channel was imported from Slack in the settings only", async () => {
+    const imported: ChannelRow = {
+      ...channel,
+      imported_from_slack: true,
+      slack_import_kind: "created",
+      slack_imported_at: "2026-11-10 12:00:00.000",
+    };
     const { rerender } = render(
       <LocaleProvider>
-        <ChannelHeader channel={{ ...channel, imported_from_slack: true }} memberCount={3} />
+        <ChannelHeader channel={imported} memberCount={3} />
       </LocaleProvider>,
     );
     // ヘッダーには出さない
     expect(screen.queryByText("Slack から取り込み")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
-    expect(await screen.findByText("Slack から取り込んだチャンネルです。")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Slack から取り込み・新規作成（最後の取り込み 2026\/.+）/),
+    ).toBeInTheDocument();
+
+    // 既存のチャンネルへの取り込み
+    rerender(
+      <LocaleProvider>
+        <ChannelHeader channel={{ ...imported, slack_import_kind: "existing" }} memberCount={3} />
+      </LocaleProvider>,
+    );
+    expect(
+      await screen.findByText(/Slack から取り込み・既存（最後の取り込み 2026\/.+）/),
+    ).toBeInTheDocument();
 
     // 取り込んでいないチャンネルの設定には出さない
     rerender(
@@ -136,6 +156,6 @@ describe("ChannelHeader", () => {
         <ChannelHeader channel={channel} memberCount={3} />
       </LocaleProvider>,
     );
-    expect(screen.queryByText("Slack から取り込んだチャンネルです。")).toBeNull();
+    expect(screen.queryByText(/Slack から/)).toBeNull();
   });
 });

@@ -58,6 +58,8 @@ const channel = (id, name, extra = {}) => ({
   archive_at: null,
   deleted_at: null,
   imported_from_slack: false,
+  slack_import_kind: null,
+  slack_imported_at: null,
   ...extra,
 });
 const message = (id, content, extra = {}) => ({

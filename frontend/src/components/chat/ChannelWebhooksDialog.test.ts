@@ -33,6 +33,8 @@ const channel = {
   updated_at: null,
   archive_at: null,
   imported_from_slack: false,
+  slack_import_kind: null,
+  slack_imported_at: null,
   deleted_at: null,
 };
 let root: Root;

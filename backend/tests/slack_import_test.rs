@@ -2072,7 +2072,8 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
         async move {
             sql(
                 &state,
-                "SELECT json_build_object('flag',imported_from_slack,'archived',archive_at IS NOT NULL)::text \
+                "SELECT json_build_object('flag',imported_from_slack,'archived',archive_at IS NOT NULL,\
+                 'kind',slack_import_kind,'at',slack_imported_at IS NOT NULL)::text \
                  FROM channels WHERE channel_name=$1",
                 &[&name],
             )
@@ -2101,6 +2102,160 @@ async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() 
         row(format!("flag-skip-{suffix}")).await.is_empty(),
         "skipped channels are not created"
     );
+    // 取り込みの種類 (新しく作った / 既存のチャンネルへの追加) と、取り込んだ日時が付く
+    for (channel, kind) in [
+        (&keep, "created"),
+        (&archived, "created"),
+        (&existing, "existing"),
+    ] {
+        assert_eq!(channel[0]["kind"], kind);
+        assert_eq!(channel[0]["at"], true);
+    }
+    // 取り込み先に固定された再取り込みでは、種類は最初のまま (created) で、日時だけが更新される
+    let stamp = |name: String| {
+        let state = state.clone();
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('id',id,'at',slack_imported_at::text)::text FROM channels WHERE channel_name=$1",
+                &[&name],
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let before = stamp(format!("flag-keep-{suffix}")).await;
+    let (status, rerun) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":before[0]["id"]}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rerun}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        rerun["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let after = stamp(format!("flag-keep-{suffix}")).await;
+    assert_ne!(
+        before[0]["at"], after[0]["at"],
+        "the import time is updated"
+    );
+    let again = row(format!("flag-keep-{suffix}")).await;
+    assert_eq!(again[0]["kind"], "created", "the first kind is kept");
+    // 管理者の取り込み画面に、以前の取り込み先の種類と最後に取り込んだ日時を返す
+    let (status, saved) = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/admin/slack-imports/{}",
+            export["id"].as_str().unwrap()
+        ),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let channels = saved["analysis"]["channels"].as_array().unwrap();
+    let c1 = channels
+        .iter()
+        .find(|channel| channel["slack_channel_id"] == "C1")
+        .unwrap();
+    assert_eq!(c1["existing_channel"]["import_kind"], "created");
+    assert!(c1["existing_channel"]["imported_at"].is_string());
+    Ok(())
+}
+
+/// マイグレーションの補完 (取り込みの種類) は、ジョブの最終状態に関わらず、「新しいチャンネル」の指定があれば
+/// created にする。ジョブが途中で失敗・取り消しになっても、作ったチャンネルと対応表は先にコミットされて残る。
+/// ロールバックするトランザクションの中で、実際のマイグレーションの補完の文を実行して確かめる。
+#[tokio::test]
+async fn test_slack_import_info_backfill_ignores_the_final_job_status() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_backfill").await?;
+    let migration =
+        include_str!("../../infra/db/migrations/20261112000000_channels_slack_import_info.sql");
+    let backfill = &migration[migration
+        .find("UPDATE \"channels\"")
+        .expect("the backfill statement")..];
+
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    // (ジョブの状態, 指定, 取り込み先が「新しいチャンネル」の決定的な ID か, 期待する種類, 取り込みの日時が入るか)
+    let cases = [
+        ("completed", "create", true, "created", true),
+        ("fetching_files", "create", true, "created", true),
+        ("failed", "create", true, "created", false),
+        ("cancelled", "create", true, "created", false),
+        ("completed", "existing", false, "existing", true),
+        // 作成の指定のジョブがチャンネルを作る前に失敗し、あとで既存のチャンネルに取り込んだ
+        ("failed", "create", false, "existing", false),
+    ];
+    let mut channel_ids = Vec::new();
+    for (index, (status, action, deterministic, _, _)) in cases.iter().enumerate() {
+        let slack_channel = format!("C{index}");
+        let channel_id = if *deterministic {
+            backend::slack::channel_id(&team, &slack_channel)
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
+        query(
+            &mut tx,
+            "INSERT INTO channels(id,channel_name,created_user_id,is_private,imported_from_slack) \
+             VALUES($1,$2,$3,false,true) RETURNING json_build_object('ok',true)::text",
+            &[&channel_id, &format!("backfill-{index}-{suffix}"), &admin],
+        )
+        .await?;
+        query(
+            &mut tx,
+            "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES($1,$2,$3) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&team, &slack_channel, &channel_id],
+        )
+        .await?;
+        let mappings = json!([{"slack_channel_id": slack_channel, "action": action,
+            "name": format!("backfill-{index}-{suffix}"), "channel_id": channel_id}])
+        .to_string();
+        query(
+            &mut tx,
+            "INSERT INTO slack_import_jobs(id,created_by,status,file_name,file_size,storage_key,team_id,mappings) \
+             VALUES($1,$2,$3,'export.zip',1,'k',$4,$5) RETURNING json_build_object('ok',true)::text",
+            &[&format!("backfill-job-{index}-{suffix}"), &admin, status, &team, &mappings],
+        )
+        .await?;
+        channel_ids.push(channel_id);
+    }
+    toasty::sql::statement(backfill).exec(&mut tx).await?;
+    for ((status, action, _, expected, imported), channel_id) in cases.iter().zip(&channel_ids) {
+        let rows = query(
+            &mut tx,
+            "SELECT json_build_object('kind',slack_import_kind,'at',slack_imported_at IS NOT NULL)::text \
+             FROM channels WHERE id=$1",
+            &[channel_id],
+        )
+        .await?;
+        assert_eq!(rows[0]["kind"], *expected, "{action} job in {status}");
+        assert_eq!(
+            rows[0]["at"], *imported,
+            "{action} job in {status}: the import time comes only from a job that finished importing"
+        );
+    }
+    // コミットしない (ロールバックされる)
+    drop(tx);
     Ok(())
 }
 
