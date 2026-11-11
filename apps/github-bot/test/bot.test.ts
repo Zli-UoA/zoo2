@@ -603,3 +603,63 @@ test("removed wildcard permissions do not block reminders for other allowed chan
   assert.equal([...f.zoo.messages.values()][0].channel_id, "channel");
   assert.ok(f.remote.readRequests.every((r) => !String(r.url).includes("removed")));
 });
+
+test("temporary revocation verification failures retry without disabling delivery", async () => {
+  for (const error of [new TypeError("network unavailable"), new ZooError(503, "unavailable")]) {
+    const f = fixture();
+    try {
+      const request = f.zoo.request.bind(f.zoo);
+      f.zoo.request = async () => {
+        throw error;
+      };
+      const event = { ...command(""), type: "tokens.revoked", data: {} };
+      f.store.enqueue(`zoo:${event.id}`, "zoo", event.type, event);
+      await f.bot.tick();
+      assert.equal(f.store.get("zoo-disabled"), undefined);
+      assert.deepEqual(
+        { ...f.store.db.prepare("SELECT status,attempts FROM jobs").get() },
+        { status: "queued", attempts: 1 },
+      );
+      f.zoo.request = request;
+      f.store.db.exec("UPDATE jobs SET available=0");
+      await f.bot.tick();
+      assert.equal(f.store.db.prepare("SELECT status FROM jobs").get()!.status, "done");
+    } finally {
+      f.store.close();
+    }
+  }
+});
+
+test("paused delivery checks authentication at most once a minute and rejects a different App", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  const now = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now });
+  f.store.set("zoo-disabled", true);
+  f.store.set("zoo-identity", { app_id: "app" });
+  let checks = 0;
+  f.zoo.request = async () => {
+    checks++;
+    throw new ZooError(401, "revoked");
+  };
+  await f.bot.tick();
+  await f.bot.tick();
+  assert.equal(checks, 1);
+  assert.equal(f.store.get("zoo-disabled"), true);
+  t.mock.timers.setTime(now + 60000);
+  f.zoo.request = async <T>() => {
+    checks++;
+    return { app_id: "other" } as T;
+  };
+  await f.bot.tick();
+  assert.equal(checks, 2);
+  assert.equal(f.store.get("zoo-disabled"), true);
+  t.mock.timers.setTime(now + 120000);
+  f.zoo.request = async <T>() => {
+    checks++;
+    return { app_id: "app" } as T;
+  };
+  await f.bot.tick();
+  assert.equal(checks, 3);
+  assert.equal(f.store.get("zoo-disabled"), undefined);
+});
