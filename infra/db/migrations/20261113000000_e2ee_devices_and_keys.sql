@@ -53,7 +53,19 @@ CREATE TABLE e2ee_fallback_keys (
   FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
 );
 
--- keys/claim の払い出しの要求の回数（1 日分だけ持ち、古い行はバッチで回収する）。
+-- 払い出したワンタイム鍵の key_id。アップロードの応答をなくした再送で、払い出し済みの鍵が入り直って
+-- 2 回払い出されないようにする。端末の行と一緒に消える（削除から 30 日のバッチ）。
+CREATE TABLE e2ee_claimed_one_time_keys (
+  user_id text NOT NULL,
+  device_id text NOT NULL,
+  key_id text NOT NULL,
+  key_json jsonb NOT NULL,
+  claimed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, device_id, key_id),
+  FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
+);
+
+-- keys/claim の払い出しの要求の回数（当日（UTC）の行だけ持ち、前日までの行はバッチで回収する）。
 CREATE TABLE e2ee_one_time_key_claim_counts (
   claimer_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   target_user_id text NOT NULL,

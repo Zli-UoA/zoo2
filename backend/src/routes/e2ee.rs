@@ -164,6 +164,20 @@ fn valid_key_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_'))
 }
 
+/// フォールバック鍵の `key_id` の世代。vodozemac の `KeyId` は端末ごとに 1 ずつ増える u64 で、
+/// `key_id` はそのビッグエンディアンの 8 バイトをパディングなし base64 にしたもの。
+fn key_generation(key_id: &str) -> Result<u64, AppError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(key_id)
+        .ok()
+        .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+        .map(u64::from_be_bytes)
+        .ok_or_else(|| {
+            AppError::BadRequest("fallback key_id must be an unpadded base64 64-bit counter".into())
+        })
+}
+
 fn json_size(value: &Value) -> usize {
     serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
 }
@@ -211,6 +225,10 @@ fn parse_keys(keys: &Map<String, Value>, fallback: bool) -> Result<Vec<SignedKey
             .and_then(|rest| rest.strip_prefix(':'))
             .filter(|id| valid_key_id(id))
             .ok_or_else(|| AppError::BadRequest(format!("Invalid key name: {name}")))?;
+        if fallback {
+            // 古いフォールバック鍵で巻き戻さないよう、世代を比べられる key_id だけを受け付ける。
+            key_generation(key_id)?;
+        }
         check_key_size(value)?;
         let key = value
             .get("key")
@@ -379,6 +397,8 @@ async fn key_counts(
 /// 端末単位のロックを取ったあとで、ワンタイム鍵とフォールバック鍵を入れる。
 ///
 /// 同じ `key_id` で同じ内容の再送は無視し、内容が違えば 409 `E2EE_KEY_EXISTS`。
+/// 払い出し済みのワンタイム鍵（`e2ee_claimed_one_time_keys`）も同じに扱い、入れ直さない。
+/// フォールバック鍵は、今の鍵より新しい世代（`key_id`）のときだけ置き換える。
 /// 入れたあとのワンタイム鍵とフォールバック鍵の合計が上限を超えるなら 400 `E2EE_LIMIT_EXCEEDED`。
 async fn store_keys(
     tx: &mut toasty::Transaction<'_>,
@@ -401,18 +421,34 @@ async fn store_keys(
     };
     let check = first(
         tx,
-        "WITH n AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS n(key_id text, key_json jsonb))
+        "WITH n AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS n(key_id text, key_json jsonb)),
+         -- 置いてある鍵か、払い出し済みの鍵と同じ key_id の鍵。
+         seen AS (
+           SELECT k.key_id, k.key_json FROM e2ee_one_time_keys k
+             WHERE k.user_id = $1 AND k.device_id = $2 AND k.algorithm = 'signed_curve25519'
+           UNION ALL
+           SELECT c.key_id, c.key_json FROM e2ee_claimed_one_time_keys c
+             WHERE c.user_id = $1 AND c.device_id = $2)
          SELECT json_build_object(
-           'conflict', EXISTS (SELECT 1 FROM n JOIN e2ee_one_time_keys k
-             ON k.user_id = $1 AND k.device_id = $2 AND k.algorithm = 'signed_curve25519' AND k.key_id = n.key_id
-             WHERE k.key_json <> n.key_json),
+           'conflict', EXISTS (SELECT 1 FROM n JOIN seen ON seen.key_id = n.key_id
+             WHERE seen.key_json <> n.key_json),
            'total', (SELECT count(*) FROM e2ee_one_time_keys k WHERE k.user_id = $1 AND k.device_id = $2)
-             + (SELECT count(*) FROM n WHERE NOT EXISTS (SELECT 1 FROM e2ee_one_time_keys k
-                 WHERE k.user_id = $1 AND k.device_id = $2 AND k.algorithm = 'signed_curve25519' AND k.key_id = n.key_id))
+             + (SELECT count(*) FROM n WHERE NOT EXISTS (SELECT 1 FROM seen WHERE seen.key_id = n.key_id))
              + CASE WHEN $4::boolean OR EXISTS (SELECT 1 FROM e2ee_fallback_keys f
-                 WHERE f.user_id = $1 AND f.device_id = $2) THEN 1 ELSE 0 END
+                 WHERE f.user_id = $1 AND f.device_id = $2) THEN 1 ELSE 0 END,
+           'fallback', (SELECT json_build_object('key_id', f.key_id, 'same', f.key_json = $5::jsonb)
+             FROM e2ee_fallback_keys f
+             WHERE f.user_id = $1 AND f.device_id = $2 AND f.algorithm = 'signed_curve25519')
          )::text",
-        &[user_id, device_id, &new_keys, has_fallback],
+        &[
+            user_id,
+            device_id,
+            &new_keys,
+            has_fallback,
+            &fallback_key
+                .map(|k| k.json.to_string())
+                .unwrap_or_else(|| "null".into()),
+        ],
     )
     .await?
     .unwrap_or_default();
@@ -422,27 +458,46 @@ async fn store_keys(
     if check["total"].as_i64().unwrap_or(0) > MAX_KEYS_PER_DEVICE {
         return Err(limit_exceeded("one_time_keys"));
     }
+    // 新しいフォールバック鍵に置き換えるか。端末単位のロックを持っているので、読んでから書くまでに変わらない。
+    let replace_fallback = match (fallback_key, check["fallback"].as_object()) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(key), Some(current)) => {
+            let current_id = current["key_id"].as_str().unwrap_or_default();
+            if current_id == key.key_id {
+                // 同じ鍵の再送は何もしない（used を戻さない）。同じ key_id で内容が違うのは 409。
+                if current["same"] != true {
+                    return Err(key_exists());
+                }
+                false
+            } else {
+                // 遅れて届いた古い鍵で、今の鍵を巻き戻さない。端末は今と 1 つ前の秘密鍵しか持たないので、
+                // 古い鍵を払い出すと、宛先がセッションを開けない。
+                key_generation(&key.key_id)? > key_generation(current_id)?
+            }
+        }
+    };
     if !one_time_keys.is_empty() {
+        // 払い出し済みの鍵は、応答をなくした再送でも入れ直さない（同じ鍵を 2 回払い出さない）。
         exec(
             tx,
             "INSERT INTO e2ee_one_time_keys (user_id, device_id, algorithm, key_id, key_json)
              SELECT $1, $2, 'signed_curve25519', n.key_id, n.key_json
              FROM jsonb_to_recordset($3::jsonb) AS n(key_id text, key_json jsonb)
+             WHERE NOT EXISTS (SELECT 1 FROM e2ee_claimed_one_time_keys c
+               WHERE c.user_id = $1 AND c.device_id = $2 AND c.key_id = n.key_id)
              ON CONFLICT DO NOTHING",
             &[user_id, device_id, &new_keys],
         )
         .await?;
     }
-    if let Some(key) = fallback_key {
-        // 同じ鍵の再送では used を戻さない。新しい鍵なら未使用として置き換える。
+    if let Some(key) = fallback_key.filter(|_| replace_fallback) {
         exec(
             tx,
             "INSERT INTO e2ee_fallback_keys (user_id, device_id, algorithm, key_id, key_json)
              VALUES ($1, $2, 'signed_curve25519', $3, $4::jsonb)
              ON CONFLICT (user_id, device_id, algorithm) DO UPDATE
-             SET key_id = EXCLUDED.key_id, key_json = EXCLUDED.key_json, used = false, created_at = now()
-             WHERE e2ee_fallback_keys.key_id IS DISTINCT FROM EXCLUDED.key_id
-                OR e2ee_fallback_keys.key_json IS DISTINCT FROM EXCLUDED.key_json",
+             SET key_id = EXCLUDED.key_id, key_json = EXCLUDED.key_json, used = false, created_at = now()",
             &[user_id, device_id, &key.key_id, &key.json.to_string()],
         )
         .await?;
@@ -516,6 +571,7 @@ async fn register_device(
         &[&actor.id, &device_id, &device_keys],
     )
     .await?;
+    let inserted = existing.is_none();
     match existing {
         // 削除済み（墓標を含む）の device_id は再利用できない。内容が違う再送も拒否する。
         Some(row) if row["deleted"] == true || row["same"] != true => {
@@ -582,7 +638,17 @@ async fn register_device(
         }
     }
 
+    // 端末の削除と同じロックのあとで deleted_at を読み直す。再送が既存の端末を読んだあとに削除が
+    // コミットしていたら、削除済みの端末に鍵を入れずに 409 にする（keys/upload と同じ）。
     lock_device(&mut tx, &actor.id, &device_id).await?;
+    first(
+        &mut tx,
+        "SELECT '{}'::text FROM e2ee_devices
+         WHERE user_id = $1 AND device_id = $2 AND deleted_at IS NULL",
+        &[&actor.id, &device_id],
+    )
+    .await?
+    .ok_or_else(device_exists)?;
     store_keys(
         &mut tx,
         &actor.id,
@@ -606,7 +672,13 @@ async fn register_device(
     ) {
         device.extend(counts);
     }
-    let txid = get_current_txid(&mut tx).await?;
+    // 端末の行を入れたときだけ txid を返す。既存の端末への再送（鍵の追加を含む）は Shape に流れる
+    // 変更がないので、待っても進まない txid を返さない。
+    let txid = if inserted {
+        Some(get_current_txid(&mut tx).await?)
+    } else {
+        None
+    };
     tx.commit().await?;
     Ok(Json(ApiResponse::new(device, txid)))
 }
@@ -968,10 +1040,16 @@ async fn claim_keys(
             )
             .await?;
             if let Some(key_id) = key.as_ref().and_then(|k| k["key_id"].as_str()) {
+                // 払い出した key_id を残す。アップロードの再送で同じ鍵が入り直らないように。
                 exec(
                     &mut tx,
-                    "DELETE FROM e2ee_one_time_keys
-                     WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519' AND key_id = $3",
+                    "WITH claimed AS (
+                       DELETE FROM e2ee_one_time_keys
+                       WHERE user_id = $1 AND device_id = $2 AND algorithm = 'signed_curve25519' AND key_id = $3
+                       RETURNING user_id, device_id, key_id, key_json)
+                     INSERT INTO e2ee_claimed_one_time_keys (user_id, device_id, key_id, key_json)
+                     SELECT user_id, device_id, key_id, key_json FROM claimed
+                     ON CONFLICT DO NOTHING",
                     &[user, device, key_id],
                 )
                 .await?;
@@ -1009,7 +1087,7 @@ async fn claim_keys(
 // 回収のバッチ
 
 /// 削除から 30 日たった端末の行を墓標（`e2ee_deleted_device_ids`）に移して消し、
-/// 前日より古い払い出しの回数の行を消す。移した端末の数を返す。
+/// 当日（UTC）より前の払い出しの回数の行を消す。移した端末の数を返す。
 ///
 /// ユーザーごとにユーザー単位のロックを取り、墓標の挿入と行の削除を 1 つのトランザクションで行う
 /// （登録は両方の表を 1 つの文で確かめるので、移している途中の device_id も再利用されない）。
@@ -1051,7 +1129,7 @@ pub async fn sweep_deleted_devices(db: &toasty::Db) -> Result<u64, AppError> {
     let mut tx = db.transaction().await?;
     exec(
         &mut tx,
-        "DELETE FROM e2ee_one_time_key_claim_counts WHERE day < (now() AT TIME ZONE 'UTC')::date - 1",
+        "DELETE FROM e2ee_one_time_key_claim_counts WHERE day < (now() AT TIME ZONE 'UTC')::date",
         &[],
     )
     .await?;

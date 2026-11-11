@@ -213,10 +213,11 @@ async fn registration_is_idempotent_and_rejects_bad_signatures_and_reuse() {
     assert!(body["data"]["last_seen_at"].is_string());
     assert!(body["txid"].is_string());
 
-    // 削除されていない同じ内容の再送は 200。鍵も増えない。
+    // 削除されていない同じ内容の再送は 200。鍵も増えない。端末の行は変わらないので txid は null。
     let (status, body) = env.register(&alice, &account).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["one_time_key_counts"]["signed_curve25519"], 5);
+    assert!(body["txid"].is_null(), "{body}");
 
     // 同じ device_id で内容が違えば 409。
     let other = DeviceAccount::new(&alice, account.device_id()).unwrap();
@@ -996,6 +997,227 @@ async fn concurrent_uploads_and_claims_stay_within_the_key_limit() {
     assert!(stored <= 100, "{stored} keys stored");
 }
 
+/// 登録の再送が既存の端末を読んだあとに削除がコミットしても、削除済みの端末に鍵を入れない。
+#[tokio::test]
+async fn registration_retry_racing_a_delete_never_reinserts_keys() {
+    let env = env().await;
+    let alice = env.user().await;
+    let mut account = env.device(&alice, 0).await;
+    account.generate_one_time_keys(5);
+    let device = account.device_id().to_owned();
+    // 削除と同じく、端末単位のロックを持ったまま論理削除する（コミットはあと）。
+    let mut db = env.db.clone();
+    let mut tx = db.transaction().await.unwrap();
+    for sql in [
+        "SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(2, hashtext($1 || ':' || $2))) l",
+        "WITH d AS (UPDATE e2ee_devices SET deleted_at = now() WHERE user_id = $1 AND device_id = $2
+           RETURNING 1) SELECT '{}'::text FROM d",
+    ] {
+        backend::apps::query(&mut tx, sql, &[&alice, &device])
+            .await
+            .unwrap();
+    }
+    let register = {
+        let (app, alice, body) = (env.app.clone(), alice.clone(), register_body(&account));
+        tokio::spawn(async move { request(&app, "POST", "/api/e2ee/devices", &alice, body).await })
+    };
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !register.is_finished(),
+        "registration must wait for the device lock"
+    );
+    tx.commit().await.unwrap();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), register)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "E2EE_DEVICE_EXISTS");
+    assert_eq!(
+        env.count(
+            "SELECT 1 FROM e2ee_one_time_keys WHERE user_id = $1 AND device_id = $2",
+            &[&alice, &device]
+        )
+        .await,
+        0
+    );
+}
+
+/// 払い出したワンタイム鍵は、登録やアップロードの再送（応答をなくした場合）でも入り直らない。
+#[tokio::test]
+async fn resent_uploads_never_resurrect_claimed_one_time_keys() {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    env.encrypted_channel(&[&alice, &bob]).await;
+    let mut account = DeviceAccount::new(&alice, &Uuid::new_v4().to_string()).unwrap();
+    account.generate_one_time_keys(2);
+    account.generate_fallback_key();
+    let registration = register_body(&account);
+    let (status, body) = env.register(&alice, &account).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    account.mark_keys_as_published();
+    account.generate_one_time_keys(2);
+    let upload =
+        json!({"device_id": account.device_id(), "one_time_keys": account.one_time_keys()});
+    let (status, body) = request(
+        &env.app,
+        "POST",
+        "/api/e2ee/keys/upload",
+        &alice,
+        upload.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let device = account.device_id().to_owned();
+
+    // 4 個すべてを払い出す。
+    let mut claimed = std::collections::BTreeSet::new();
+    for _ in 0..4 {
+        let result = env.claim(&bob, &[(&alice, &device)]).await;
+        let (name, key) = claimed_key(&result, &alice, &device).unwrap();
+        assert!(key.get("fallback").is_none(), "{key}");
+        assert!(claimed.insert(name));
+    }
+    // 登録とアップロードを同じ内容で送り直しても、払い出した鍵は戻らない。
+    let (status, body) = request(&env.app, "POST", "/api/e2ee/devices", &alice, registration).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["one_time_key_counts"]["signed_curve25519"], 0);
+    let (status, body) = request(
+        &env.app,
+        "POST",
+        "/api/e2ee/keys/upload",
+        &alice,
+        upload.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["one_time_key_counts"]["signed_curve25519"], 0);
+    // 次の払い出しはフォールバック鍵になる。
+    let result = env.claim(&bob, &[(&alice, &device)]).await;
+    let (_, key) = claimed_key(&result, &alice, &device).unwrap();
+    assert_eq!(key["fallback"], true, "{key}");
+
+    // 払い出した key_id で内容の違う鍵は 409。
+    let mut other = DeviceAccount::new(&alice, &device).unwrap();
+    other.generate_one_time_keys(1);
+    let name = claimed
+        .iter()
+        .find(|name| upload["one_time_keys"].get(name.as_str()).is_some())
+        .unwrap()
+        .clone();
+    let mut forged = upload["one_time_keys"][&name].clone();
+    forged["key"] = other.one_time_keys().values().next().unwrap()["key"].clone();
+    account.sign_json(&mut forged).unwrap();
+    let (status, body) = request(
+        &env.app,
+        "POST",
+        "/api/e2ee/keys/upload",
+        &alice,
+        json!({"device_id": device, "one_time_keys": {name: forged}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "E2EE_KEY_EXISTS");
+}
+
+/// 遅れて届いた古いフォールバック鍵で、今の鍵を巻き戻さない（A → B → C のあとの A は無視する）。
+#[tokio::test]
+async fn stale_fallback_keys_never_replace_newer_ones() {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    env.encrypted_channel(&[&alice, &bob]).await;
+    let mut account = DeviceAccount::new(&alice, &Uuid::new_v4().to_string()).unwrap();
+    account.generate_fallback_key();
+    let registration = register_body(&account);
+    let a = account.fallback_keys();
+    let (status, body) = env.register(&alice, &account).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    account.mark_keys_as_published();
+    let device = account.device_id().to_owned();
+    let upload = |keys: &Map<String, Value>| json!({"device_id": device, "fallback_keys": keys});
+    let mut current = a.clone();
+    for _ in 0..2 {
+        account.generate_fallback_key();
+        current = account.fallback_keys();
+        let (status, body) = request(
+            &env.app,
+            "POST",
+            "/api/e2ee/keys/upload",
+            &alice,
+            upload(&current),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        account.mark_keys_as_published();
+    }
+    let current_name = current.keys().next().unwrap().clone();
+    assert_eq!(fallback_key_name(&env, &alice, &device).await, current_name);
+
+    // A の遅れたアップロードと登録の再送は成功するが、C のまま。
+    let (status, body) = request(
+        &env.app,
+        "POST",
+        "/api/e2ee/keys/upload",
+        &alice,
+        upload(&a),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = request(&env.app, "POST", "/api/e2ee/devices", &alice, registration).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(fallback_key_name(&env, &alice, &device).await, current_name);
+    // 払い出されるのも、端末が秘密鍵を持つ C。
+    let result = env.claim(&bob, &[(&alice, &device)]).await;
+    let (name, key) = claimed_key(&result, &alice, &device).unwrap();
+    assert_eq!(name, current_name);
+    assert_eq!(key, current[&current_name]);
+
+    // C の再送は used を戻さない。同じ key_id で内容の違う鍵は 409。
+    let (status, body) = request(
+        &env.app,
+        "POST",
+        "/api/e2ee/keys/upload",
+        &alice,
+        upload(&current),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["unused_fallback_key_types"], json!([]));
+    let mut forged = current[&current_name].clone();
+    forged["key"] = a.values().next().unwrap()["key"].clone();
+    account.sign_json(&mut forged).unwrap();
+    let mut keys = Map::new();
+    keys.insert(current_name.clone(), forged);
+    let (status, body) = request(
+        &env.app,
+        "POST",
+        "/api/e2ee/keys/upload",
+        &alice,
+        upload(&keys),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "E2EE_KEY_EXISTS");
+
+    // 世代を比べられない key_id のフォールバック鍵は 400。
+    let mut keys = Map::new();
+    keys.insert(
+        "signed_curve25519:not-a-counter".into(),
+        current[&current_name].clone(),
+    );
+    let (status, _) = request(
+        &env.app,
+        "POST",
+        "/api/e2ee/keys/upload",
+        &alice,
+        upload(&keys),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
 #[tokio::test]
 async fn concurrent_delete_and_upload_never_reinsert_keys() {
     let env = env().await;
@@ -1414,4 +1636,112 @@ async fn devices_shape_serves_shared_devices_without_private_columns() {
         assert!(row.get("display_name").is_none());
         assert!(row.get("last_seen_at").is_none());
     }
+}
+
+/// 端末の Shape の 1 回分の応答（Electric を通す）。`(handle, offset, メッセージ)` を返す。
+async fn shape_page(env: &Env, actor: &str, query: &str) -> (String, String, Vec<Value>) {
+    let response = env
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/shapes/e2ee_devices?{query}"))
+                .header("X-Dev-User", actor)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let header = |name: &str| response.headers()[name].to_str().unwrap().to_owned();
+    let (handle, offset) = (header("electric-handle"), header("electric-offset"));
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    (handle, offset, body.as_array().cloned().unwrap_or_default())
+}
+
+/// `up-to-date` か、`until` を満たすメッセージが来るまで Shape を読み進め、読んだメッセージを返す。
+async fn shape_until(
+    env: &Env,
+    actor: &str,
+    handle: &mut String,
+    offset: &mut String,
+    live: bool,
+    until: impl Fn(&[Value]) -> bool,
+) -> Vec<Value> {
+    let mut seen = Vec::new();
+    for _ in 0..20 {
+        let query = format!(
+            "handle={handle}&offset={offset}{}",
+            if live { "&live=true" } else { "" }
+        );
+        let (h, o, messages) = shape_page(env, actor, &query).await;
+        (*handle, *offset) = (h, o);
+        seen.extend(messages);
+        if until(&seen) {
+            return seen;
+        }
+    }
+    panic!("shape did not reach the expected state: {seen:?}");
+}
+
+fn has_event(messages: &[Value], event: &str) -> bool {
+    messages.iter().any(|m| m["headers"]["event"] == event)
+}
+
+fn inserted(messages: &[Value], device: &str) -> bool {
+    messages
+        .iter()
+        .any(|m| m["headers"]["operation"] == "insert" && m["value"]["device_id"] == device)
+}
+
+/// 端末の Shape の move-in と move-out（Electric を通す）。共有する暗号化チャンネルへの参加で相手の端末が入り、
+/// 退出とチャンネルの削除で出る。
+#[tokio::test]
+async fn devices_shape_moves_devices_in_and_out_with_channel_membership() {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    env.device(&alice, 0).await;
+    let device = env.device(&bob, 0).await.device_id().to_owned();
+    let channel = env.encrypted_channel(&[&alice]).await;
+    let (mut handle, mut offset, first) = shape_page(&env, &alice, "offset=-1").await;
+    assert!(!inserted(&first, &device));
+    shape_until(&env, &alice, &mut handle, &mut offset, false, |m| {
+        m.iter().any(|m| m["headers"]["control"] == "up-to-date")
+    })
+    .await;
+
+    let join = "INSERT INTO channel_user (user_id, channel_id, joined_at) VALUES ($1, $2, now())";
+    env.exec(join, &[&bob, &channel]).await;
+    shape_until(&env, &alice, &mut handle, &mut offset, true, |m| {
+        has_event(m, "move-in") && inserted(m, &device)
+    })
+    .await;
+
+    env.exec(
+        "DELETE FROM channel_user WHERE user_id = $1 AND channel_id = $2",
+        &[&bob, &channel],
+    )
+    .await;
+    shape_until(&env, &alice, &mut handle, &mut offset, true, |m| {
+        has_event(m, "move-out")
+    })
+    .await;
+
+    env.exec(join, &[&bob, &channel]).await;
+    shape_until(&env, &alice, &mut handle, &mut offset, true, |m| {
+        has_event(m, "move-in") && inserted(m, &device)
+    })
+    .await;
+
+    env.exec(
+        "UPDATE channels SET deleted_at = now() WHERE id = $1",
+        &[&channel],
+    )
+    .await;
+    shape_until(&env, &alice, &mut handle, &mut offset, true, |m| {
+        has_event(m, "move-out")
+    })
+    .await;
 }
