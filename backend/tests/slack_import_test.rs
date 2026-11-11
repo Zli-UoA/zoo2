@@ -2409,8 +2409,9 @@ async fn test_slack_import_skips_history_events_and_removes_stale_rows() -> anyh
     Ok(())
 }
 
-/// 同じ日付ファイルに、削除された元の投稿の普通の記録と、削除の記録がある場合も、初回の取り込みから取り込まない。
-/// イベントの `ts` と同じ `ts` の本物の投稿があれば、その投稿は消さない。再取り込みしても、結果は変わらない。
+/// 同じ日付ファイルに、削除された元の投稿の普通の記録と、削除の記録がある場合は、取り込んでから論理削除する
+/// (初回と再取り込みで結果が同じ。その投稿への返信は、削除された親のスレッドに残る)。
+/// 公開されている形式 (`original_ts`) の削除の記録も扱う。イベントの `ts` と同じ `ts` の本物の投稿は消さない。
 #[tokio::test]
 async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<()> {
     let _serial = SERIAL.lock().await;
