@@ -57,6 +57,13 @@ mod tests {
     fn loads_embedded_files() {
         assert!(Assets.load(Assets::LOGO).unwrap().is_some());
         assert!(Assets.load("nope.svg").unwrap().is_none());
-        assert_eq!(Assets.list("fonts").unwrap().len(), 5);
+        let fonts = Assets.list("fonts").unwrap();
+        for name in ["Regular", "Medium", "SemiBold", "Bold"] {
+            let path = format!("fonts/Geist-{name}.ttf");
+            assert!(
+                fonts.iter().any(|f| f.as_ref() == path),
+                "{path} が埋め込まれていません"
+            );
+        }
     }
 }
