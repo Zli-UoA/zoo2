@@ -75,6 +75,15 @@ describe("desktopAccessToken", () => {
     expect(internals.invoke).toHaveBeenCalledTimes(3);
   });
 
+  it("throws on a transient failure so the request is retried instead of logging out", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw { code: "network", message: "IdP が応答しません" };
+    });
+    await detectDesktop();
+    await expect(desktopAccessToken()).rejects.toThrow("IdP が応答しません");
+  });
+
   it("returns null when the shell refuses", async () => {
     install((cmd) => {
       if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");

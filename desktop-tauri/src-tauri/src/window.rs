@@ -96,7 +96,9 @@ pub fn add_remote_capability(app: &App, core: &Core) -> tauri::Result<()> {
     if core.ui() != UiMode::Remote {
         return Ok(());
     }
+    // `CapabilityBuilder::new` は `local: true` なので、外して同梱の画面には効かせない。
     let mut capability = CapabilityBuilder::new("main-remote")
+        .local(false)
         .window(MAIN)
         .permission("core:event:allow-listen")
         .permission("core:event:allow-unlisten");

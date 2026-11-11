@@ -81,7 +81,11 @@ function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
 
 let cachedToken: { token: string; expiresAtMs: number } | null = null;
 
-/** `setTokenProvider` に渡す。取れなければ null（呼び出し側は 401 として扱う）。 */
+/**
+ * `setTokenProvider` に渡す。ログインしていなければ null（呼び出し側は 401 として扱い、
+ * ログアウトする）。IdP の一時的な障害などそれ以外の失敗では throw し、リクエストを
+ * 通信のエラーとして失敗させる（null にすると 401 からログアウトしてトークンを消してしまう）。
+ */
 export async function desktopAccessToken(): Promise<string | null> {
   if (cachedToken && cachedToken.expiresAtMs - TOKEN_SKEW_MS > Date.now()) {
     return cachedToken.token;
@@ -90,10 +94,20 @@ export async function desktopAccessToken(): Promise<string | null> {
     const result = await invoke<DesktopAccessToken>("zoo_access_token");
     cachedToken = { token: result.access_token, expiresAtMs: result.expires_at * 1000 };
     return result.access_token;
-  } catch {
+  } catch (error) {
     cachedToken = null;
-    return null;
+    if (isNotLoggedIn(error)) return null;
+    throw error instanceof Error ? error : new Error(errorMessage(error));
   }
+}
+
+function isNotLoggedIn(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "not_logged_in";
+}
+
+function errorMessage(error: unknown): string {
+  const message = (error as { message?: unknown } | null)?.message;
+  return typeof message === "string" ? message : "デスクトップ版からトークンを取れませんでした";
 }
 
 /** Rust 側でトークンを消す。Rust 側がウィンドウを同梱のログイン画面へ戻す。 */

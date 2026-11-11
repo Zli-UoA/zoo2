@@ -869,6 +869,11 @@
       "story": "src/components/layout/ZooSettings.stories.tsx"
     },
     {
+      "file": "src/components/desktop/DesktopBridge.tsx",
+      "reason": "デスクトップ版（Tauri）の中だけで、通知・フォーカス・通知のクリックを Rust 側と受け渡す表示のない制御層。通常の Web と Storybook では何も描画しない。IPC の判定とトークンの扱いは desktop.test.ts で確認する。",
+      "checks": ["src/lib/desktop.test.ts"]
+    },
+    {
       "file": "src/components/offline/OfflineBanner.tsx",
       "story": "src/components/offline/OfflineBanner.stories.tsx"
     },
