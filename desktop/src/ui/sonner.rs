@@ -1,7 +1,7 @@
-//! `sonner.tsx`。トースト (sonner) の積み重ね。
+//! `sonner.tsx`。トースト (sonner 2.0.8) の積み重ね。
 //! 色は `--normal-bg: popover`、`--normal-text: popover-foreground`、`--normal-border: border`。
-//! 寸法は sonner のスタイル (幅 356px、padding 16px、角丸 8px、文字 13px、影 `0 4px 12px`)。
-//! 手元に sonner の CSS が無いため、値は記憶によるもので、実物との突き合わせはできていない。
+//! 寸法は `node_modules/sonner/dist/styles.css` と `index.mjs` から読んだ値
+//! (幅 356px、padding 16px、角丸 8px、文字 13px、影 `0 4px 12px`、gap 6px、積み重ねの gap 14px)。
 
 use gpui::{AnyElement, App, SharedString, Window, div, prelude::*, px};
 
@@ -48,12 +48,27 @@ impl Toast {
     }
 }
 
-/// 折りたたんだときの、後ろの n 枚目の幅の倍率 (`scale(1 - n * 0.05)`)。
+/// 画面に出る最大枚数 (`VISIBLE_TOASTS_AMOUNT`)。
+pub const VISIBLE: usize = 3;
+
+/// 手前のトーストの高さの見積もり。
+/// 枠 1px×2 + padding 16px×2 + 行 (題 `13*1.5`、説明 `13*1.4` と間 2px)。
+pub fn toast_height(toast: &Toast) -> f32 {
+    let title = TEXT_SIZE * 1.5;
+    let body = match toast.description {
+        Some(_) => title + 2.0 + TEXT_SIZE * 1.4,
+        None => title,
+    };
+    // アイコンは 20px で、題だけのときは行より高い。
+    34.0 + body.max(20.0)
+}
+
+/// 折りたたんだときの、後ろの n 枚目の倍率。CSS は `scale(calc(-1 * var(--toasts-before) * 0.05 + 1))`、つまり `1 - n * 0.05`。
 pub fn stack_scale(index: usize) -> f32 {
     1.0 - index as f32 * 0.05
 }
 
-/// 折りたたんだときの、後ろの n 枚目が上にはみ出す量。
+/// 折りたたんだときの、後ろの n 枚目を上へ上げる量 (`--lift-amount * n`)。
 pub fn stack_peek(index: usize) -> f32 {
     index as f32 * GAP
 }
@@ -177,27 +192,43 @@ impl RenderOnce for Toaster {
                 list = list.child(toast_view(&self.p, toast));
             }
         } else {
-            // 重ねた状態。後ろの紙は、手前と同じ高さで、幅が縮み、上に GAP ずつ見える。
+            // 重ねた状態。後ろの紙は、手前と同じ高さを `scale(1 - n * 0.05)` で中心から縮め、
+            // `translateY(-14px * n)` で上へ上げる。
             let front = &self.toasts[0];
-            let mut stack = div().relative().w(px(WIDTH));
-            for (i, _) in self.toasts.iter().enumerate().skip(1).rev().take(2) {
-                let width = WIDTH * stack_scale(i);
+            let h = toast_height(front);
+            let shown = self.toasts.len().min(VISIBLE);
+            let mut extra = 0.0f32;
+            let mut backs = Vec::new();
+            for i in (1..shown).rev() {
+                let sc = stack_scale(i);
+                let bottom = stack_peek(i) + h * (1.0 - sc) / 2.0;
+                extra = extra.max(bottom + h * sc - h);
+                backs.push((i, sc, bottom));
+            }
+            let mut stack = div().relative().w(px(WIDTH)).h(px(h + extra));
+            for (_, sc, bottom) in backs {
+                let width = WIDTH * sc;
                 stack = stack.child(
                     div()
                         .absolute()
-                        .bottom(px(0.0))
+                        .bottom(px(bottom))
                         .left(px((WIDTH - width) / 2.0))
                         .w(px(width))
-                        .h_full()
-                        .mb(px(stack_peek(i)))
+                        .h(px(h * sc))
                         .rounded(px(8.0))
                         .border_1()
                         .border_color(self.p.t.border)
                         .bg(self.p.t.popover),
                 );
             }
-            stack = stack.child(toast_view(&self.p, front));
-            list = list.child(stack.mt(px(stack_peek(self.toasts.len().min(3) - 1))));
+            stack = stack.child(
+                div()
+                    .absolute()
+                    .bottom(px(0.0))
+                    .left_0()
+                    .child(toast_view(&self.p, front)),
+            );
+            list = list.child(stack);
         }
         div()
             .absolute()
