@@ -103,6 +103,7 @@ chmod +x zoo2_0.1.0_amd64.AppImage
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | `zoo2-desktop-tauri` | AuthZ に登録したデスクトップ版の public client の ID |
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
+| なし | `ZOO_DESKTOP_UI` | `leptos` | 画面の種類。`remote` にすると zli.chat の Web 版の画面を読み込む (試験中) |
 
 ログインで得たトークンは、そのときの接続先 (`api_base_url`) にだけ送ります。接続先や OIDC の設定を変えたら、ログインし直してください。
 
@@ -115,7 +116,10 @@ chmod +x zoo2_0.1.0_amd64.AppImage
 | deb | 新しい `.deb` で `sudo apt install ./zoo2_<版>_amd64.deb` |
 | AppImage | 新しい `.AppImage` で置き換える |
 
-画面もアプリに入っているので、画面の修正もアプリの更新で届きます。
+画面の種類によって、更新が要る範囲が違います。
+
+- **既定の画面 (`leptos`)**: 画面もアプリに入っているので、画面の修正もアプリの更新で届きます。
+- **Web 版の画面 (`remote`)**: 画面は zli.chat から読み込むので、Web 版がデプロイされると、次の起動 (または再読み込み) で新しくなります。ログインや通知など、アプリ側の部分の修正だけがアプリの更新で届きます。アプリと Web 版のやり取りの形 (プロトコルの版) が合わなくなったときは、アプリの更新が必要です。
 
 GitHub Releases での配布と、アプリの中からの自動更新は準備中です (「[いまの制限](#いまの制限)」)。
 
