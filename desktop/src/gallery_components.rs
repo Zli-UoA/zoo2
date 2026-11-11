@@ -270,13 +270,13 @@ fn textareas(p: &Palette) -> AnyElement {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    section(p, "Textarea  (max-w-xl)").w(px(576.0)).items_stretch()
-        .child(labeled(p, "default", Textarea::new(p).placeholder("メッセージ")))
-        .child(labeled(p, "value", Textarea::new(p).value("今日のリリースは 18:00 です。")))
-        .child(labeled(p, "focus-visible", Textarea::new(p).value("今日のリリースは 18:00 です。").focused(true)))
-        .child(labeled(p, "disabled", Textarea::new(p).value("編集できません").disabled(true)))
-        .child(labeled(p, "aria-invalid", Textarea::new(p).value("入力内容を確認してください").invalid(true)))
-        .child(labeled(p, "long text", Textarea::new(p).value(long)))
+    section(p, "Textarea  (max-w-xl)").w(px(576.0))
+        .child(labeled(p, "default", Textarea::new(p).placeholder("メッセージ")).w(px(552.0)))
+        .child(labeled(p, "value", Textarea::new(p).value("今日のリリースは 18:00 です。")).w(px(552.0)))
+        .child(labeled(p, "focus-visible", Textarea::new(p).value("今日のリリースは 18:00 です。").focused(true)).w(px(552.0)))
+        .child(labeled(p, "disabled", Textarea::new(p).value("編集できません").disabled(true)).w(px(552.0)))
+        .child(labeled(p, "aria-invalid", Textarea::new(p).value("入力内容を確認してください").invalid(true)).w(px(552.0)))
+        .child(labeled(p, "long text", Textarea::new(p).value(long)).w(px(552.0)))
         .into_any_element()
 }
 
