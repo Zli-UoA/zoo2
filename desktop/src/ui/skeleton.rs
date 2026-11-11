@@ -3,10 +3,11 @@
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt as _, App, ElementId, StyleRefinement, Window, div, prelude::*,
+    Animation, AnimationExt as _, App, Context, ElementId, Render, StyleRefinement, Window, div,
+    prelude::*,
 };
 
-use super::Palette;
+use super::{Palette, keyed_entity, palette};
 use crate::tokens::radius;
 
 /// `animate-pulse` の不透明度。0% と 100% が 1、50% が 0.5。
@@ -17,16 +18,14 @@ pub fn pulse_opacity(delta: f32) -> f32 {
 #[derive(IntoElement)]
 pub struct Skeleton {
     id: ElementId,
-    p: Palette,
     animate: bool,
     style: StyleRefinement,
 }
 
 impl Skeleton {
-    pub fn new(id: impl Into<ElementId>, p: &Palette) -> Self {
+    pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
-            p: *p,
             animate: true,
             style: StyleRefinement::default(),
         }
@@ -45,20 +44,39 @@ impl Styled for Skeleton {
     }
 }
 
+/// 脈打つ部分だけを持つビュー。毎フレームの通知は、親ではなくこのビューにだけ届く。
+struct SkeletonView {
+    style: StyleRefinement,
+}
+
+fn bar(p: &Palette, style: &StyleRefinement) -> gpui::Div {
+    let mut bar = div().rounded(radius::MD).bg(p.t.muted);
+    bar.style().refine(style);
+    bar
+}
+
+impl Render for SkeletonView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = palette(cx);
+        bar(&p, &self.style).with_animation(
+            "pulse",
+            Animation::new(Duration::from_secs(2)).repeat(),
+            |bar, delta| bar.opacity(pulse_opacity(delta)),
+        )
+    }
+}
+
 impl RenderOnce for Skeleton {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let mut bar = div().rounded(radius::MD).bg(self.p.t.muted);
-        bar.style().refine(&self.style);
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         if self.animate {
-            bar.with_animation(
-                self.id,
-                Animation::new(Duration::from_secs(2)).repeat(),
-                |bar, delta| bar.opacity(pulse_opacity(delta)),
-            )
-            .into_any_element()
-        } else {
-            bar.into_any_element()
+            let style = self.style.clone();
+            let view = keyed_entity(self.id, window, cx, || SkeletonView {
+                style: style.clone(),
+            });
+            view.update(cx, |v, _| v.style = style);
+            return view.into_any_element();
         }
+        bar(&palette(cx), &self.style).into_any_element()
     }
 }
 

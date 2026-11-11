@@ -4,7 +4,7 @@ use gpui::{
     AnyElement, App, FocusHandle, SharedString, StyleRefinement, Window, div, prelude::*, px,
 };
 
-use super::{Palette, TextSpec, alpha, ring};
+use super::{Palette, TextSpec, alpha, palette, ring};
 use crate::fonts;
 use crate::tokens::radius;
 
@@ -48,7 +48,6 @@ pub fn colors(p: &Palette, focused: bool, disabled: bool, invalid: bool) -> Text
 
 #[derive(IntoElement)]
 pub struct Textarea {
-    p: Palette,
     value: Option<SharedString>,
     placeholder: Option<SharedString>,
     focused: bool,
@@ -60,9 +59,8 @@ pub struct Textarea {
 }
 
 impl Textarea {
-    pub fn new(p: &Palette) -> Self {
+    pub fn new() -> Self {
         Self {
-            p: *p,
             value: None,
             placeholder: None,
             focused: false,
@@ -119,9 +117,10 @@ impl Styled for Textarea {
 }
 
 impl RenderOnce for Textarea {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
-        let c = colors(&self.p, self.focused, self.disabled, self.invalid);
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
+        let c = colors(&p, self.focused, self.disabled, self.invalid);
         let shown = match (&self.value, &self.placeholder) {
             (Some(v), _) if !v.is_empty() => Some(div().child(v.clone())),
             (_, Some(ph)) => Some(div().text_color(t.muted_foreground).child(ph.clone())),

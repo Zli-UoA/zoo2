@@ -4,14 +4,13 @@ use gpui::{
     AnyElement, App, ElementId, SharedString, StyleRefinement, Window, div, prelude::*, px,
 };
 
-use super::{Palette, TextSpec, alpha, icon_colored, ring, shadow_sm};
+use super::{TextSpec, alpha, icon_colored, palette, ring, shadow_sm};
 use crate::fonts;
 use crate::icons::Icon;
 use crate::tokens::radius;
 
 #[derive(IntoElement)]
 pub struct SettingsSection {
-    p: Palette,
     title: Option<SharedString>,
     description: Option<SharedString>,
     children: Vec<AnyElement>,
@@ -19,9 +18,8 @@ pub struct SettingsSection {
 }
 
 impl SettingsSection {
-    pub fn new(p: &Palette) -> Self {
+    pub fn new() -> Self {
         Self {
-            p: *p,
             title: None,
             description: None,
             children: Vec::new(),
@@ -53,8 +51,9 @@ impl Styled for SettingsSection {
 }
 
 impl RenderOnce for SettingsSection {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let (sm, xs) = (TextSpec::SM, TextSpec::XS);
         // `space-y-3 rounded-lg border p-4`
         let mut section = div()
@@ -93,7 +92,6 @@ impl RenderOnce for SettingsSection {
 
 #[derive(IntoElement)]
 pub struct SettingRow {
-    p: Palette,
     icon: Option<Icon>,
     label: SharedString,
     description: Option<SharedString>,
@@ -101,9 +99,8 @@ pub struct SettingRow {
 }
 
 impl SettingRow {
-    pub fn new(p: &Palette, label: impl Into<SharedString>) -> Self {
+    pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
-            p: *p,
             icon: None,
             label: label.into(),
             description: None,
@@ -129,8 +126,9 @@ impl SettingRow {
 }
 
 impl RenderOnce for SettingRow {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let (sm, xs) = (TextSpec::SM, TextSpec::XS);
         // `flex min-h-16 items-start justify-between gap-4 p-4`
         div()
@@ -187,7 +185,6 @@ impl RenderOnce for SettingRow {
 #[derive(IntoElement)]
 pub struct PanelTab {
     id: ElementId,
-    p: Palette,
     label: SharedString,
     active: bool,
     hovered: bool,
@@ -195,10 +192,9 @@ pub struct PanelTab {
 }
 
 impl PanelTab {
-    pub fn new(id: impl Into<ElementId>, p: &Palette, label: impl Into<SharedString>) -> Self {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
-            p: *p,
             label: label.into(),
             active: false,
             hovered: false,
@@ -223,8 +219,9 @@ impl PanelTab {
 }
 
 impl RenderOnce for PanelTab {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let sm = TextSpec::SM;
         let color = if self.active || self.hovered {
             t.foreground

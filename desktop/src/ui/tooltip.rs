@@ -5,7 +5,7 @@ use gpui::{
     canvas, div, point, prelude::*, px,
 };
 
-use super::{Palette, TextSpec};
+use super::{TextSpec, palette};
 use crate::fonts;
 use crate::tokens::radius;
 
@@ -25,16 +25,14 @@ pub const ARROW_HALF: f32 = 5.07;
 
 #[derive(IntoElement)]
 pub struct Tooltip {
-    p: Palette,
     text: SharedString,
     side: Side,
     arrow: bool,
 }
 
 impl Tooltip {
-    pub fn new(p: &Palette, text: impl Into<SharedString>) -> Self {
+    pub fn new(text: impl Into<SharedString>) -> Self {
         Self {
-            p: *p,
             text: text.into(),
             side: Side::Top,
             arrow: true,
@@ -82,8 +80,9 @@ fn arrow_canvas(color: gpui::Rgba, side: Side) -> impl IntoElement {
 }
 
 impl RenderOnce for Tooltip {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let xs = TextSpec::XS;
         // `inline-flex w-fit max-w-xs items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-xs text-background`
         let bubble = div()
@@ -110,26 +109,24 @@ impl RenderOnce for Tooltip {
     }
 }
 
-/// 実際のホバーで出すツールチップ。`div().tooltip(tooltip_view(p, "..."))` のように使う。
+/// 実際のホバーで出すツールチップ。`div().tooltip(tooltip_view("..."))` のように使う。配色は描画のたびに読むので、テーマを切り替えても古くならない。
 pub fn tooltip_view(
-    p: Palette,
     text: impl Into<SharedString>,
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text: SharedString = text.into();
     move |_, cx| {
         let text = text.clone();
-        cx.new(|_| TooltipView { p, text }).into()
+        cx.new(|_| TooltipView { text }).into()
     }
 }
 
 struct TooltipView {
-    p: Palette,
     text: SharedString,
 }
 
 impl Render for TooltipView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         // 矢印は付けず、対象との間は GPUI が空ける。
-        Tooltip::new(&self.p, self.text.clone()).arrow(false)
+        Tooltip::new(self.text.clone()).arrow(false)
     }
 }

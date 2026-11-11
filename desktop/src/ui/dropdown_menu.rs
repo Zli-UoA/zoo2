@@ -2,11 +2,10 @@
 //! または `relative` な親の中の `absolute`) で行う。
 
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, SharedString, StyleRefinement, Window, div, prelude::*,
-    px,
+    AnyElement, App, ElementId, SharedString, StyleRefinement, Window, div, prelude::*, px,
 };
 
-use super::{ClickHandler, Palette, TextSpec, alpha, icon_colored, ring, shadow_md};
+use super::{ClickHandler, Palette, TextSpec, alpha, icon_colored, palette, ring, shadow_md};
 use crate::fonts;
 use crate::icons::Icon;
 use crate::tokens::radius;
@@ -69,7 +68,6 @@ pub enum Indicator {
 #[derive(IntoElement)]
 pub struct MenuItem {
     id: ElementId,
-    p: Palette,
     label: SharedString,
     icon: Option<Icon>,
     shortcut: Option<SharedString>,
@@ -82,10 +80,9 @@ pub struct MenuItem {
 }
 
 impl MenuItem {
-    pub fn new(id: impl Into<ElementId>, p: &Palette, label: impl Into<SharedString>) -> Self {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
         Self {
             id: id.into(),
-            p: *p,
             label: label.into(),
             icon: None,
             shortcut: None,
@@ -137,7 +134,7 @@ impl MenuItem {
 
     pub fn on_click(
         mut self,
-        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_click = Some(Box::new(handler));
         self
@@ -145,11 +142,12 @@ impl MenuItem {
 }
 
 impl RenderOnce for MenuItem {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let sm = TextSpec::SM;
-        let c = item_colors(&self.p, self.variant, self.highlighted);
-        let hover = item_colors(&self.p, self.variant, true);
+        let c = item_colors(&p, self.variant, self.highlighted);
+        let hover = item_colors(&p, self.variant, true);
         let has_indicator = matches!(self.indicator, Indicator::Checkbox(_) | Indicator::Radio(_));
         // 通常は `px-1.5`、チェック・ラジオは `pr-8 pl-1.5`、inset は `pl-7`。
         let pl = if self.inset { 28.0 } else { 6.0 };
@@ -159,9 +157,18 @@ impl RenderOnce for MenuItem {
             Indicator::Checkbox(true) | Indicator::Radio(true)
         );
         let live = !self.disabled && !self.highlighted;
+        // 子のアイコンと略称は、項目の hover に合わせて色を変える。
+        let group: SharedString = format!("menu-item-{}", self.id).into();
+        let hover_icon = hover.icon;
+        let hover_shortcut = if self.variant == ItemVariant::Default {
+            t.accent_foreground
+        } else {
+            t.muted_foreground
+        };
         // `relative flex items-center gap-1.5 rounded-md px-1.5 py-1 text-sm whitespace-nowrap`
         let mut item = div()
             .id(self.id)
+            .group(group.clone())
             .relative()
             .flex()
             .items_center()
@@ -180,7 +187,11 @@ impl RenderOnce for MenuItem {
             .when(live, |d| {
                 d.hover(move |s| s.bg(hover.bg).text_color(hover.fg))
             })
-            .when_some(self.icon, |d, ic| d.child(icon_colored(ic, 16.0, c.icon)))
+            .when_some(self.icon, |d, ic| {
+                d.child(icon_colored(ic, 16.0, c.icon).when(live, |s| {
+                    s.group_hover(group.clone(), move |s| s.text_color(hover_icon))
+                }))
+            })
             .child(self.label)
             .when_some(self.shortcut, |d, text| {
                 // `ml-auto text-xs tracking-widest text-muted-foreground`
@@ -192,6 +203,9 @@ impl RenderOnce for MenuItem {
                             t.accent_foreground
                         } else {
                             t.muted_foreground
+                        })
+                        .when(live, |s| {
+                            s.group_hover(group.clone(), move |s| s.text_color(hover_shortcut))
                         })
                         .child(text),
                 )
@@ -226,35 +240,65 @@ impl RenderOnce for MenuItem {
 }
 
 /// `DropdownMenuLabel`: `px-1.5 py-1 text-xs font-medium text-muted-foreground`
-pub fn menu_label(p: &Palette, text: impl Into<SharedString>, inset: bool) -> impl IntoElement {
-    div()
-        .pl(px(if inset { 28.0 } else { 6.0 }))
-        .pr(px(6.0))
-        .py(px(4.0))
-        .text_size(TextSpec::XS.size())
-        .line_height(TextSpec::XS.line())
-        .font(fonts::sans(500.0))
-        .text_color(p.t.muted_foreground)
-        .child(text.into())
+#[derive(IntoElement)]
+pub struct MenuLabel {
+    text: SharedString,
+    inset: bool,
+}
+
+impl MenuLabel {
+    pub fn new(text: impl Into<SharedString>) -> Self {
+        Self {
+            text: text.into(),
+            inset: false,
+        }
+    }
+
+    pub fn inset(mut self, inset: bool) -> Self {
+        self.inset = inset;
+        self
+    }
+}
+
+impl RenderOnce for MenuLabel {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        div()
+            .pl(px(if self.inset { 28.0 } else { 6.0 }))
+            .pr(px(6.0))
+            .py(px(4.0))
+            .text_size(TextSpec::XS.size())
+            .line_height(TextSpec::XS.line())
+            .font(fonts::sans(500.0))
+            .text_color(p.t.muted_foreground)
+            .child(self.text)
+    }
 }
 
 /// `DropdownMenuSeparator`: `-mx-1 my-1 h-px bg-border`
-pub fn menu_separator(p: &Palette) -> impl IntoElement {
-    div().mx(px(-4.0)).my(px(4.0)).h(px(1.0)).bg(p.t.border)
+#[derive(IntoElement)]
+pub struct MenuSeparator;
+
+impl RenderOnce for MenuSeparator {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .mx(px(-4.0))
+            .my(px(4.0))
+            .h(px(1.0))
+            .bg(palette(cx).t.border)
+    }
 }
 
 /// メニューの箱。`min-w-44 rounded-lg bg-popover p-1 shadow-md ring-1 ring-foreground/10`
 #[derive(IntoElement)]
 pub struct DropdownMenuContent {
-    p: Palette,
     children: Vec<AnyElement>,
     style: StyleRefinement,
 }
 
 impl DropdownMenuContent {
-    pub fn new(p: &Palette) -> Self {
+    pub fn new() -> Self {
         Self {
-            p: *p,
             children: Vec::new(),
             style: StyleRefinement::default(),
         }
@@ -266,14 +310,12 @@ impl DropdownMenuContent {
     }
 
     pub fn label(mut self, text: impl Into<SharedString>) -> Self {
-        let el = menu_label(&self.p, text, false).into_any_element();
-        self.children.push(el);
+        self.children.push(MenuLabel::new(text).into_any_element());
         self
     }
 
     pub fn separator(mut self) -> Self {
-        let el = menu_separator(&self.p).into_any_element();
-        self.children.push(el);
+        self.children.push(MenuSeparator.into_any_element());
         self
     }
 }
@@ -307,8 +349,9 @@ pub fn popup_frame(p: &Palette) -> gpui::Div {
 }
 
 impl RenderOnce for DropdownMenuContent {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let mut menu = popup_frame(&self.p).children(self.children);
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let mut menu = popup_frame(&p).children(self.children);
         menu.style().refine(&self.style);
         menu
     }

@@ -3,7 +3,7 @@
 use gpui::{AnyElement, App, ClickEvent, ElementId, StyleRefinement, Window, div, prelude::*, px};
 
 use super::button::{Button, ButtonSize, ButtonVariant};
-use super::{ClickHandler, Palette, alpha, shadow_sm};
+use super::{ClickHandler, alpha, palette, shadow_sm};
 use crate::icons::Icon;
 use crate::tokens::radius;
 
@@ -12,15 +12,13 @@ pub const ITEM_SIZE: f32 = 40.0;
 
 #[derive(IntoElement)]
 pub struct ButtonGroup {
-    p: Palette,
     children: Vec<AnyElement>,
     style: StyleRefinement,
 }
 
 impl ButtonGroup {
-    pub fn new(p: &Palette) -> Self {
+    pub fn new() -> Self {
         Self {
-            p: *p,
             children: Vec::new(),
             style: StyleRefinement::default(),
         }
@@ -40,7 +38,8 @@ impl Styled for ButtonGroup {
 }
 
 impl RenderOnce for ButtonGroup {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         // `inline-flex shrink-0 items-center gap-0.5 rounded-lg border bg-muted/40 p-0.5`
         let mut group = div()
             .flex()
@@ -50,8 +49,8 @@ impl RenderOnce for ButtonGroup {
             .p(px(2.0))
             .rounded(radius::LG)
             .border_1()
-            .border_color(self.p.t.border)
-            .bg(alpha(self.p.t.muted, 0.4))
+            .border_color(p.t.border)
+            .bg(alpha(p.t.muted, 0.4))
             .children(self.children);
         group.style().refine(&self.style);
         group
@@ -62,7 +61,6 @@ impl RenderOnce for ButtonGroup {
 #[derive(IntoElement)]
 pub struct ButtonGroupItem {
     id: ElementId,
-    p: Palette,
     icon: Icon,
     pressed: bool,
     hovered: bool,
@@ -70,10 +68,9 @@ pub struct ButtonGroupItem {
 }
 
 impl ButtonGroupItem {
-    pub fn new(id: impl Into<ElementId>, p: &Palette, icon: Icon) -> Self {
+    pub fn new(id: impl Into<ElementId>, icon: Icon) -> Self {
         Self {
             id: id.into(),
-            p: *p,
             icon,
             pressed: false,
             hovered: false,
@@ -107,10 +104,10 @@ impl RenderOnce for ButtonGroupItem {
         } else {
             ButtonVariant::Ghost
         };
-        let mut button = Button::new(self.id, &self.p)
+        let mut button = Button::new(self.id)
             .variant(variant)
             .size(ButtonSize::Icon)
-            .icon(self.icon)
+            .icon_start(self.icon)
             .square_px(ITEM_SIZE)
             .rounded_px(f32::from(radius::MD))
             .hovered(self.hovered && !self.pressed);

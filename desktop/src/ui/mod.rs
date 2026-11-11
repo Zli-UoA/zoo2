@@ -1,13 +1,25 @@
 //! Web 版 `frontend/src/components/ui/` に合わせた UI 部品。
 //!
 //! Tailwind のクラスを px に直して移してある (1 単位 = 4px、`text-sm` = 14px/20px)。
-//! 部品は `RenderOnce` のビルダーで、色は `Palette` (トークンとモード) から読む。
+//! 部品は `RenderOnce` のビルダーで、色は gpui の `Global` に置いた `Palette` (トークンとモード) を
+//! 描画のたびに `cx.global::<Palette>()` で読む。起動時に `set_theme` で入れ、切り替えも同じ関数で行う。
 //! 入力欄は見た目だけを持ち、IME などの入力処理は既存の `input.rs` に任せる。
+//!
+//! 使うときの注意:
+//! - Web 版の `inline-flex` (Button、ButtonGroup、Tooltip など) は、GPUI では幅が親いっぱいに広がる
+//!   ブロックの `flex` になる。これらは `h_flex()` / `v_flex()` などの flex の親の中に置き、
+//!   ブロックの親に直接入れない (ボタンが横に伸びる)。
+//! - gpui 0.2.2 には `:focus-visible` が無く、`.focus()` だけがある。フォーカスの輪は、
+//!   キーボードだけでなくクリックでも出る。見た目の確認用に `.focused(true)` で強制もできる。
 
-use gpui::{BoxShadow, Hsla, Pixels, Rgba, Svg, point, prelude::*, px, svg};
+#![allow(clippy::new_without_default)]
+
+use gpui::{
+    App, BoxShadow, Div, ElementId, Entity, Global, Hsla, Pixels, Rgba, Svg, Window, div, point,
+    prelude::*, px, svg,
+};
 
 use crate::icons::Icon;
-
 use crate::tokens::{ThemeMode, Tokens};
 
 pub mod alert_dialog;
@@ -41,6 +53,46 @@ pub type ClickHandler = Box<dyn Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gp
 pub struct Palette {
     pub t: Tokens,
     pub mode: ThemeMode,
+}
+
+impl Global for Palette {}
+
+/// 現在の配色を入れ、開いている画面を描き直す。起動時と、テーマの切り替えで使う。
+pub fn set_theme(cx: &mut App, mode: ThemeMode) {
+    cx.set_global(Palette::new(mode));
+    cx.refresh_windows();
+}
+
+/// 描画中に現在の配色を読む。`set_theme` を先に呼んでおくこと。
+pub fn palette(cx: &App) -> Palette {
+    *cx.global::<Palette>()
+}
+
+/// 横並びの flex (`flex`)。
+pub fn h_flex() -> Div {
+    div().flex().items_center()
+}
+
+/// 縦並びの flex (`flex flex-col`)。
+pub fn v_flex() -> Div {
+    div().flex().flex_col()
+}
+
+/// 要素の ID で見つかる `Entity` を、描画をまたいで 1 つだけ持つ。
+/// 毎フレーム通知する部品 (アニメーション) は、これで自分だけのビューに入れる。
+/// そうすると通知が親のビューに届かない。
+pub fn keyed_entity<V: 'static>(
+    id: ElementId,
+    window: &mut Window,
+    cx: &mut App,
+    init: impl FnOnce() -> V,
+) -> Entity<V> {
+    window.with_global_id(id, |global_id, window| {
+        window.with_element_state(global_id, |state: Option<Entity<V>>, _| {
+            let entity = state.unwrap_or_else(|| cx.new(|_| init()));
+            (entity.clone(), entity)
+        })
+    })
 }
 
 impl Palette {

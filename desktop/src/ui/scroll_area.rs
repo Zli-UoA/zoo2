@@ -6,7 +6,7 @@ use gpui::{
     relative,
 };
 
-use super::Palette;
+use super::palette;
 
 /// スクロールバーの幅 (`w-2.5`)。
 pub const BAR_WIDTH: f32 = 10.0;
@@ -42,7 +42,6 @@ impl Thumb {
 #[derive(IntoElement)]
 pub struct ScrollArea {
     id: ElementId,
-    p: Palette,
     handle: Option<ScrollHandle>,
     thumb: Option<Thumb>,
     children: Vec<AnyElement>,
@@ -50,10 +49,9 @@ pub struct ScrollArea {
 }
 
 impl ScrollArea {
-    pub fn new(id: impl Into<ElementId>, p: &Palette) -> Self {
+    pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
-            p: *p,
             handle: None,
             thumb: None,
             children: Vec::new(),
@@ -87,7 +85,8 @@ impl Styled for ScrollArea {
 }
 
 impl RenderOnce for ScrollArea {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         let thumb = self.thumb.or_else(|| {
             let h = self.handle.as_ref()?;
             let viewport = f32::from(h.bounds().size.height);
@@ -129,7 +128,7 @@ impl RenderOnce for ScrollArea {
                                     .top(relative(thumb.top()))
                                     .h(relative(thumb.ratio))
                                     .rounded_full()
-                                    .bg(self.p.t.border),
+                                    .bg(p.t.border),
                             ),
                     ),
             );

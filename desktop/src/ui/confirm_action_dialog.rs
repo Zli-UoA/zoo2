@@ -6,13 +6,13 @@ use gpui::{App, SharedString, Window, div, prelude::*};
 
 use super::alert_dialog::AlertDialog;
 use super::button::{Button, ButtonVariant};
-use super::{Palette, TextSpec};
+use super::{TextSpec, palette};
 
 type Handler = Rc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 #[derive(IntoElement)]
 pub struct ConfirmActionDialog {
-    p: Palette,
+    id: SharedString,
     title: SharedString,
     description: SharedString,
     confirm_label: SharedString,
@@ -25,9 +25,10 @@ pub struct ConfirmActionDialog {
 }
 
 impl ConfirmActionDialog {
+    /// `id` はボタンの ID の元になる (`{id}-cancel`、`{id}-ok`)。
     /// 文言は呼び出し側が i18n から引いて渡す (`common.cancel`、`moderation.executing`)。
     pub fn new(
-        p: &Palette,
+        id: impl Into<SharedString>,
         title: impl Into<SharedString>,
         description: impl Into<SharedString>,
         confirm_label: impl Into<SharedString>,
@@ -35,7 +36,7 @@ impl ConfirmActionDialog {
         executing_label: impl Into<SharedString>,
     ) -> Self {
         Self {
-            p: *p,
+            id: id.into(),
             title: title.into(),
             description: description.into(),
             confirm_label: confirm_label.into(),
@@ -79,24 +80,25 @@ pub fn confirm_text<'a>(
 }
 
 impl RenderOnce for ConfirmActionDialog {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         let label = confirm_text(self.pending, &self.confirm_label, &self.executing_label).clone();
-        let mut cancel = Button::new("confirm-cancel", &self.p)
+        let mut cancel = Button::new(SharedString::from(format!("{}-cancel", self.id)))
             .variant(ButtonVariant::Outline)
             .label(self.cancel_label)
             .disabled(self.pending);
         if let Some(h) = self.on_cancel {
             cancel = cancel.on_click(move |_, w, cx| h(w, cx));
         }
-        let mut confirm = Button::new("confirm-ok", &self.p)
+        let mut confirm = Button::new(SharedString::from(format!("{}-ok", self.id)))
             .variant(ButtonVariant::Destructive)
             .label(label)
             .disabled(self.pending);
         if let Some(h) = self.on_confirm {
             confirm = confirm.on_click(move |_, w, cx| h(w, cx));
         }
-        let destructive = self.p.t.destructive;
-        let mut dialog = AlertDialog::new(&self.p, self.title).description(self.description);
+        let destructive = p.t.destructive;
+        let mut dialog = AlertDialog::new(self.title).description(self.description);
         if let Some(error) = self.error {
             // `<p role="alert" class="text-sm text-destructive">`
             dialog = dialog.child(

@@ -5,7 +5,7 @@ use gpui::{
     prelude::*, px,
 };
 
-use super::{Palette, TextSpec, ring};
+use super::{Palette, TextSpec, palette, ring};
 use crate::fonts;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +47,6 @@ impl AvatarSize {
 
 #[derive(IntoElement)]
 pub struct Avatar {
-    p: Palette,
     size: AvatarSize,
     initials: Option<SharedString>,
     image: Option<ImageSource>,
@@ -57,9 +56,8 @@ pub struct Avatar {
 }
 
 impl Avatar {
-    pub fn new(p: &Palette) -> Self {
+    pub fn new() -> Self {
         Self {
-            p: *p,
             size: AvatarSize::Default,
             initials: None,
             image: None,
@@ -114,13 +112,13 @@ fn fallback(p: &Palette, size: AvatarSize, initials: Option<SharedString>) -> An
 }
 
 impl RenderOnce for Avatar {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let side = self.size.px();
         let size = self.size;
         let content: AnyElement = match self.image {
             Some(source) => {
-                let p = self.p;
                 let initials = self.initials.clone();
                 img(source)
                     .size_full()
@@ -129,7 +127,7 @@ impl RenderOnce for Avatar {
                     .with_fallback(move || fallback(&p, size, initials.clone()))
                     .into_any_element()
             }
-            None => fallback(&self.p, size, self.initials),
+            None => fallback(&p, size, self.initials),
         };
         // `relative flex size-8 shrink-0 rounded-full`。
         // `after:border-border` の枠は画像の上に重ねる (`mix-blend` は GPUI に無い)。
@@ -171,7 +169,7 @@ impl RenderOnce for Avatar {
 #[derive(IntoElement)]
 pub struct AvatarGroup {
     items: Vec<Avatar>,
-    count: Option<(Palette, AvatarSize, SharedString)>,
+    count: Option<(AvatarSize, SharedString)>,
 }
 
 impl AvatarGroup {
@@ -188,8 +186,8 @@ impl AvatarGroup {
     }
 
     /// 末尾の「+5」。大きさは群のサイズにそろえる。
-    pub fn count(mut self, p: &Palette, size: AvatarSize, label: impl Into<SharedString>) -> Self {
-        self.count = Some((*p, size, label.into()));
+    pub fn count(mut self, size: AvatarSize, label: impl Into<SharedString>) -> Self {
+        self.count = Some((size, label.into()));
         self
     }
 }
@@ -201,7 +199,8 @@ impl Default for AvatarGroup {
 }
 
 impl RenderOnce for AvatarGroup {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         let mut group = div().flex();
         let mut first = true;
         for item in self.items {
@@ -209,7 +208,7 @@ impl RenderOnce for AvatarGroup {
             group = group.child(div().when(!first, |d| d.ml(px(-8.0))).child(item));
             first = false;
         }
-        if let Some((p, size, label)) = self.count {
+        if let Some((size, label)) = self.count {
             let text = size.text();
             // `size-8 rounded-full bg-muted text-sm text-muted-foreground ring-2 ring-background`
             group = group.child(

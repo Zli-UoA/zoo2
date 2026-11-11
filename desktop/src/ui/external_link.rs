@@ -2,13 +2,12 @@
 
 use gpui::{App, ElementId, SharedString, StyleRefinement, Window, div, prelude::*};
 
-use super::{Palette, alpha, ring};
+use super::{alpha, palette, ring};
 use crate::tokens::radius;
 
 #[derive(IntoElement)]
 pub struct ExternalLink {
     id: ElementId,
-    p: Palette,
     label: SharedString,
     url: SharedString,
     focused: bool,
@@ -18,13 +17,11 @@ pub struct ExternalLink {
 impl ExternalLink {
     pub fn new(
         id: impl Into<ElementId>,
-        p: &Palette,
         label: impl Into<SharedString>,
         url: impl Into<SharedString>,
     ) -> Self {
         Self {
             id: id.into(),
-            p: *p,
             label: label.into(),
             url: url.into(),
             focused: false,
@@ -46,16 +43,17 @@ impl Styled for ExternalLink {
 }
 
 impl RenderOnce for ExternalLink {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         let url = self.url.clone();
         // Tailwind の preflight は `a` の下線を消す。`underline-offset-2` は下線を引くときだけ効く。
         let mut link = div()
             .id(self.id)
             .rounded(radius::SM)
-            .text_color(self.p.t.link)
+            .text_color(p.t.link)
             .cursor_pointer()
             .when(self.focused, |d| {
-                d.shadow(vec![ring(alpha(self.p.t.ring, 0.5), 2.0)])
+                d.shadow(vec![ring(alpha(p.t.ring, 0.5), 2.0)])
             })
             .on_click(move |_, _, cx| cx.open_url(&url))
             .child(self.label);

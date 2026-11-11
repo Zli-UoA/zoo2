@@ -2,7 +2,7 @@
 
 use gpui::{App, StyleRefinement, Window, div, prelude::*, px};
 
-use super::Palette;
+use super::palette;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Orientation {
@@ -12,15 +12,13 @@ pub enum Orientation {
 
 #[derive(IntoElement)]
 pub struct Separator {
-    p: Palette,
     orientation: Orientation,
     style: StyleRefinement,
 }
 
 impl Separator {
-    pub fn new(p: &Palette) -> Self {
+    pub fn new() -> Self {
         Self {
-            p: *p,
             orientation: Orientation::Horizontal,
             style: StyleRefinement::default(),
         }
@@ -39,9 +37,10 @@ impl Styled for Separator {
 }
 
 impl RenderOnce for Separator {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         // `shrink-0 bg-border`、横は `h-px w-full`、縦は `w-px self-stretch` (高さは親に合わせて h_full)。
-        let mut line = div().flex_none().bg(self.p.t.border);
+        let mut line = div().flex_none().bg(p.t.border);
         line = match self.orientation {
             Orientation::Horizontal => line.h(px(1.0)).w_full(),
             Orientation::Vertical => line.w(px(1.0)).h_full(),

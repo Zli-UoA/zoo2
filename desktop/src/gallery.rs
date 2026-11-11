@@ -242,6 +242,7 @@ pub fn run(args: &[String]) {
             })
             .detach();
             let mode = initial_mode();
+            crate::ui::set_theme(cx, mode);
             let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -250,7 +251,7 @@ pub fn run(args: &[String]) {
             let opened = match components_page {
                 Some(page) => cx
                     .open_window(options, move |_, cx| {
-                        cx.new(|_| ComponentsGallery::new(page, mode))
+                        cx.new(|_| ComponentsGallery::new(page))
                     })
                     .map(|_| ()),
                 None => cx

@@ -5,7 +5,7 @@ use gpui::{AnyElement, App, SharedString, StyleRefinement, Window, div, prelude:
 
 use super::dropdown_menu::{MenuItem, popup_frame};
 use super::input::{FieldState, disabled_text, input_frame};
-use super::{Palette, icon_colored};
+use super::{icon_colored, palette};
 use crate::icons::Icon;
 
 /// `w-40`
@@ -13,16 +13,14 @@ pub const WIDTH: f32 = 160.0;
 
 #[derive(IntoElement)]
 pub struct Select {
-    p: Palette,
     value: SharedString,
     state: FieldState,
     style: StyleRefinement,
 }
 
 impl Select {
-    pub fn new(p: &Palette, value: impl Into<SharedString>) -> Self {
+    pub fn new(value: impl Into<SharedString>) -> Self {
         Self {
-            p: *p,
             value: value.into(),
             state: FieldState::default(),
             style: StyleRefinement::default(),
@@ -47,15 +45,16 @@ impl Styled for Select {
 }
 
 impl RenderOnce for Select {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let arrow = if self.state.disabled {
-            disabled_text(&self.p)
+            disabled_text(&p)
         } else {
             t.foreground
         };
         // `w-40 max-w-full disabled:cursor-not-allowed disabled:opacity-60`
-        let mut select = input_frame(&self.p, self.state)
+        let mut select = input_frame(&p, self.state)
             .w(px(WIDTH))
             .max_w_full()
             .justify_between()
@@ -65,7 +64,9 @@ impl RenderOnce for Select {
                 div()
                     .flex_1()
                     .min_w_0()
+                    .overflow_hidden()
                     .whitespace_nowrap()
+                    .text_ellipsis()
                     .child(self.value),
             )
             .child(icon_colored(Icon::ChevronDown, 12.0, arrow));
@@ -75,17 +76,21 @@ impl RenderOnce for Select {
 }
 
 /// 開いた一覧。選ばれている項目には Check が付く。
+///
+/// Web 版には対応する部品が無い (ネイティブの `<select>` は OS が一覧を描く)。
+/// デスクトップでは一覧を自分で描く必要があるので、メニューと同じ見た目で足したもの。
 #[derive(IntoElement)]
 pub struct SelectPopup {
-    p: Palette,
+    id: SharedString,
     options: Vec<(SharedString, bool)>,
     highlighted: Option<usize>,
 }
 
 impl SelectPopup {
-    pub fn new(p: &Palette) -> Self {
+    /// `id` は項目の ID の元になる。
+    pub fn new(id: impl Into<SharedString>) -> Self {
         Self {
-            p: *p,
+            id: id.into(),
             options: Vec::new(),
             highlighted: None,
         }
@@ -103,22 +108,19 @@ impl SelectPopup {
 }
 
 impl RenderOnce for SelectPopup {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         let items: Vec<AnyElement> = self
             .options
             .into_iter()
             .enumerate()
             .map(|(i, (label, selected))| {
-                MenuItem::new(
-                    SharedString::from(format!("select-option-{i}")),
-                    &self.p,
-                    label,
-                )
-                .indicator(super::dropdown_menu::Indicator::Radio(selected))
-                .highlighted(self.highlighted == Some(i))
-                .into_any_element()
+                MenuItem::new(SharedString::from(format!("{}-{i}", self.id)), label)
+                    .indicator(super::dropdown_menu::Indicator::Radio(selected))
+                    .highlighted(self.highlighted == Some(i))
+                    .into_any_element()
             })
             .collect();
-        popup_frame(&self.p).w(px(WIDTH)).children(items)
+        popup_frame(&p).w(px(WIDTH)).children(items)
     }
 }

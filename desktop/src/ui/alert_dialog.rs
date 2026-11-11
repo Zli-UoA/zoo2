@@ -3,7 +3,7 @@
 use gpui::{AnyElement, App, SharedString, StyleRefinement, Window, div, prelude::*, px};
 
 use super::dialog::{body, description_text, footer_frame, overlay, panel_frame, title_text};
-use super::{Palette, icon_colored};
+use super::{icon_colored, palette};
 use crate::icons::Icon;
 use crate::tokens::radius;
 
@@ -26,7 +26,6 @@ impl AlertDialogSize {
 
 #[derive(IntoElement)]
 pub struct AlertDialog {
-    p: Palette,
     size: AlertDialogSize,
     media: Option<Icon>,
     title: SharedString,
@@ -37,9 +36,8 @@ pub struct AlertDialog {
 }
 
 impl AlertDialog {
-    pub fn new(p: &Palette, title: impl Into<SharedString>) -> Self {
+    pub fn new(title: impl Into<SharedString>) -> Self {
         Self {
-            p: *p,
             size: AlertDialogSize::Default,
             media: None,
             title: title.into(),
@@ -91,8 +89,9 @@ impl Styled for AlertDialog {
 }
 
 impl RenderOnce for AlertDialog {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let centered = self.size == AlertDialogSize::Sm;
         // 本文: タイトルは `text-base font-medium` (行の高さ 24px)、説明は `text-sm`。gap は `gap-1.5`。
         let text = div()
@@ -103,7 +102,7 @@ impl RenderOnce for AlertDialog {
             .gap(px(6.0))
             .when(centered, |d| d.items_center().text_center())
             .child(title_text(self.title, 24.0))
-            .children(self.description.map(|d| description_text(&self.p, d)));
+            .children(self.description.map(|d| description_text(&p, d)));
         let media = self.media.map(|icon| {
             // `inline-flex size-10 items-center justify-center rounded-md bg-muted`
             div()
@@ -129,12 +128,12 @@ impl RenderOnce for AlertDialog {
             div().flex().gap(px(16.0)).children(media).child(text)
         };
         let has_footer = !self.footer.is_empty();
-        let mut panel = panel_frame(&self.p, self.size.width())
+        let mut panel = panel_frame(&p, self.size.width())
             .when(!has_footer, |d| d.pb(px(16.0)))
             .child(body([header.into_any_element()]))
             .children(self.body.into_iter().map(|c| body([c])))
             .when(has_footer, |d| {
-                let footer = footer_frame(&self.p);
+                let footer = footer_frame(&p);
                 let footer = if centered {
                     // `group-data-[size=sm]:grid grid-cols-2`
                     footer.grid().grid_cols(2).children(self.footer)

@@ -7,7 +7,7 @@ use gpui::{
 };
 
 use super::button::{Button, ButtonSize, ButtonVariant};
-use super::{ClickHandler, Palette, TextSpec, alpha, black, ring};
+use super::{ClickHandler, Palette, TextSpec, alpha, black, palette, ring, v_flex};
 use crate::fonts;
 use crate::icons::Icon;
 use crate::tokens::radius;
@@ -52,7 +52,7 @@ pub fn panel_frame(p: &Palette, width: f32) -> gpui::Div {
 
 /// 本文の左右の余白 (`p-4`)。
 pub fn body(children: impl IntoIterator<Item = AnyElement>) -> gpui::Div {
-    div().px(px(16.0)).children(children)
+    v_flex().px(px(16.0)).children(children)
 }
 
 /// `DialogFooter`: `-mx-4 -mb-4 flex gap-2 rounded-b-xl border-t bg-muted/50 p-4 justify-end`
@@ -88,7 +88,7 @@ pub fn description_text(p: &Palette, text: impl Into<SharedString>) -> gpui::Div
 
 #[derive(IntoElement)]
 pub struct Dialog {
-    p: Palette,
+    id: SharedString,
     title: SharedString,
     description: Option<SharedString>,
     show_close_button: bool,
@@ -100,9 +100,10 @@ pub struct Dialog {
 }
 
 impl Dialog {
-    pub fn new(p: &Palette, title: impl Into<SharedString>) -> Self {
+    /// `id` は閉じるボタンの ID の元になる。同じ画面に複数あるときは、別の値にする。
+    pub fn new(id: impl Into<SharedString>, title: impl Into<SharedString>) -> Self {
         Self {
-            p: *p,
+            id: id.into(),
             title: title.into(),
             description: None,
             show_close_button: true,
@@ -157,9 +158,10 @@ impl Styled for Dialog {
 }
 
 impl RenderOnce for Dialog {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         let has_footer = !self.footer.is_empty();
-        let mut panel = panel_frame(&self.p, WIDTH)
+        let mut panel = panel_frame(&p, WIDTH)
             .when(!has_footer, |d| d.pb(px(16.0)))
             .child(
                 // `DialogHeader`: `flex flex-col gap-2`
@@ -168,19 +170,19 @@ impl RenderOnce for Dialog {
                     .flex_col()
                     .gap(px(8.0))
                     .child(title_text(self.title, 16.0))
-                    .children(self.description.map(|d| description_text(&self.p, d)))
+                    .children(self.description.map(|d| description_text(&p, d)))
                     .into_any_element()]),
             )
             .children(self.body.into_iter().map(|c| body([c])))
             .when(has_footer, |d| {
-                d.child(footer_frame(&self.p).children(self.footer))
+                d.child(footer_frame(&p).children(self.footer))
             });
         if self.show_close_button {
             // `absolute top-2 right-2`、ghost の icon-sm。
-            let mut close = Button::new("dialog-close", &self.p)
+            let mut close = Button::new(SharedString::from(format!("{}-close", self.id)))
                 .variant(ButtonVariant::Ghost)
                 .size(ButtonSize::IconSm)
-                .icon(Icon::X)
+                .icon_start(Icon::X)
                 .hovered(self.close_hovered)
                 .absolute()
                 .top(px(8.0))

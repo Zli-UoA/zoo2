@@ -5,7 +5,7 @@ use gpui::{
     AnyElement, App, FocusHandle, SharedString, StyleRefinement, Window, div, prelude::*, px,
 };
 
-use super::{Palette, TextSpec, alpha, ring};
+use super::{Palette, TextSpec, alpha, palette, ring};
 use crate::fonts;
 use crate::tokens::radius;
 
@@ -21,20 +21,28 @@ pub struct FieldState {
 pub struct InputFrame {
     pub height: f32,
     pub padding_x: f32,
-    pub radius: f32,
     pub text: TextSpec,
 }
 
 pub const INPUT_FRAME: InputFrame = InputFrame {
     height: 32.0,
     padding_x: 8.0,
-    radius: 10.0,
     text: TextSpec::SM,
 };
 
 /// Chromium の無効な `<input>` / `<select>` の文字色 (`-internal-light-dark`)。
 pub fn disabled_text(p: &Palette) -> gpui::Rgba {
     p.pick(crate::tokens::hex(0x545454), crate::tokens::hex(0xaaaaaa))
+}
+
+/// 入力欄の中の 1 行の文字。長いときは右の余白に食い込まず、省略記号で切る。
+fn value_cell() -> gpui::Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_ellipsis()
 }
 
 /// 入力欄の枠 (子は呼び出し側で足す)。`Input` と `Select` が共有する。
@@ -66,7 +74,6 @@ pub fn input_frame(p: &Palette, state: FieldState) -> gpui::Div {
 
 #[derive(IntoElement)]
 pub struct Input {
-    p: Palette,
     value: Option<SharedString>,
     placeholder: Option<SharedString>,
     state: FieldState,
@@ -76,9 +83,8 @@ pub struct Input {
 }
 
 impl Input {
-    pub fn new(p: &Palette) -> Self {
+    pub fn new() -> Self {
         Self {
-            p: *p,
             value: None,
             placeholder: None,
             state: FieldState::default(),
@@ -129,20 +135,20 @@ impl Styled for Input {
 }
 
 impl RenderOnce for Input {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let shown = match (&self.value, &self.placeholder) {
-            (Some(v), _) if !v.is_empty() => Some(div().whitespace_nowrap().child(v.clone())),
+            (Some(v), _) if !v.is_empty() => Some(value_cell().child(v.clone())),
             // Tailwind v4 の placeholder は `currentcolor` の 50%。
             (_, Some(ph)) => Some(
-                div()
-                    .whitespace_nowrap()
+                value_cell()
                     .text_color(alpha(t.foreground, 0.5))
                     .child(ph.clone()),
             ),
             _ => None,
         };
-        let mut frame = input_frame(&self.p, self.state)
+        let mut frame = input_frame(&p, self.state)
             .children(shown)
             .children(self.children);
         if let Some(handle) = self.focus_handle.as_ref() {
@@ -165,7 +171,6 @@ mod tests {
         // h-8 px-2 rounded-lg text-sm
         assert_eq!(INPUT_FRAME.height, 32.0);
         assert_eq!(INPUT_FRAME.padding_x, 8.0);
-        assert_eq!(INPUT_FRAME.radius, f32::from(radius::LG));
         assert_eq!(INPUT_FRAME.text, TextSpec::SM);
     }
 

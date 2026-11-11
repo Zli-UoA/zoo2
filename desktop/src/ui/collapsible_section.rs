@@ -7,7 +7,7 @@ use gpui::{
     percentage, prelude::*, px,
 };
 
-use super::{Palette, TextSpec, alpha, icon_colored, ring};
+use super::{TextSpec, alpha, icon_colored, palette, ring};
 use crate::fonts;
 use crate::icons::Icon;
 use crate::tokens::radius;
@@ -17,7 +17,6 @@ type ToggleHandler = Rc<dyn Fn(bool, &mut Window, &mut App) + 'static>;
 #[derive(IntoElement)]
 pub struct CollapsibleSection {
     id: ElementId,
-    p: Palette,
     title: SharedString,
     icon: Icon,
     count: Option<SharedString>,
@@ -30,15 +29,9 @@ pub struct CollapsibleSection {
 }
 
 impl CollapsibleSection {
-    pub fn new(
-        id: impl Into<ElementId>,
-        p: &Palette,
-        title: impl Into<SharedString>,
-        icon: Icon,
-    ) -> Self {
+    pub fn new(id: impl Into<ElementId>, title: impl Into<SharedString>, icon: Icon) -> Self {
         Self {
             id: id.into(),
-            p: *p,
             title: title.into(),
             icon,
             count: None,
@@ -92,8 +85,9 @@ impl Styled for CollapsibleSection {
 }
 
 impl RenderOnce for CollapsibleSection {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let xs = TextSpec::XS;
         let open = self.open;
         let hover_bg = t.sidebar_accent;

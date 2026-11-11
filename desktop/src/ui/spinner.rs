@@ -3,11 +3,11 @@
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt as _, App, ElementId, StyleRefinement, Transformation, Window, div,
-    percentage, prelude::*,
+    Animation, AnimationExt as _, App, Context, ElementId, Render, StyleRefinement, Transformation,
+    Window, div, percentage, prelude::*,
 };
 
-use super::{Palette, icon_colored};
+use super::{icon_colored, keyed_entity, palette};
 use crate::icons::Icon;
 
 pub const SIZE: f32 = 28.0;
@@ -15,16 +15,14 @@ pub const SIZE: f32 = 28.0;
 #[derive(IntoElement)]
 pub struct Spinner {
     id: ElementId,
-    p: Palette,
     animate: bool,
     style: StyleRefinement,
 }
 
 impl Spinner {
-    pub fn new(id: impl Into<ElementId>, p: &Palette) -> Self {
+    pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
-            p: *p,
             animate: true,
             style: StyleRefinement::default(),
         }
@@ -43,22 +41,42 @@ impl Styled for Spinner {
     }
 }
 
-impl RenderOnce for Spinner {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let glyph = icon_colored(Icon::LoaderCircle, SIZE, self.p.t.muted_foreground);
-        let glyph = if self.animate {
-            glyph
-                .with_animation(
-                    self.id,
-                    Animation::new(Duration::from_secs(1)).repeat(),
-                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
-                )
-                .into_any_element()
-        } else {
-            glyph.into_any_element()
-        };
+/// 回る部分だけを持つビュー。毎フレームの通知は、親ではなくこのビューにだけ届く。
+struct SpinnerView {
+    style: StyleRefinement,
+}
+
+impl Render for SpinnerView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = palette(cx);
+        let glyph = icon_colored(Icon::LoaderCircle, SIZE, p.t.muted_foreground).with_animation(
+            "spin",
+            Animation::new(Duration::from_secs(1)).repeat(),
+            |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+        );
         let mut root = div().flex().items_center().justify_center().child(glyph);
         root.style().refine(&self.style);
         root
+    }
+}
+
+impl RenderOnce for Spinner {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if self.animate {
+            let style = self.style.clone();
+            let view = keyed_entity(self.id, window, cx, || SpinnerView {
+                style: style.clone(),
+            });
+            view.update(cx, |v, _| v.style = style);
+            return view.into_any_element();
+        }
+        let p = palette(cx);
+        let mut root = div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(icon_colored(Icon::LoaderCircle, SIZE, p.t.muted_foreground));
+        root.style().refine(&self.style);
+        root.into_any_element()
     }
 }

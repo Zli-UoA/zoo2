@@ -2,7 +2,7 @@
 
 use gpui::{AnyElement, App, SharedString, StyleRefinement, Window, div, prelude::*, px};
 
-use super::{Palette, TextSpec, alpha, icon_colored};
+use super::{TextSpec, alpha, icon_colored, palette};
 use crate::fonts;
 use crate::icons::Icon;
 use crate::tokens::radius;
@@ -11,15 +11,13 @@ pub const HEIGHT: f32 = 61.0;
 
 #[derive(IntoElement)]
 pub struct PaneHeader {
-    p: Palette,
     children: Vec<AnyElement>,
     style: StyleRefinement,
 }
 
 impl PaneHeader {
-    pub fn new(p: &Palette) -> Self {
+    pub fn new() -> Self {
         Self {
-            p: *p,
             children: Vec::new(),
             style: StyleRefinement::default(),
         }
@@ -39,7 +37,8 @@ impl Styled for PaneHeader {
 }
 
 impl RenderOnce for PaneHeader {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         // `flex h-[61px] shrink-0 items-center gap-3 border-b px-4`
         let mut header = div()
             .flex()
@@ -49,7 +48,7 @@ impl RenderOnce for PaneHeader {
             .h(px(HEIGHT))
             .px(px(16.0))
             .border_b_1()
-            .border_color(self.p.t.border)
+            .border_color(p.t.border)
             .children(self.children);
         header.style().refine(&self.style);
         header
@@ -59,7 +58,6 @@ impl RenderOnce for PaneHeader {
 /// `ScreenHeader`。アイコンの枠、タイトル、説明、右側の操作を並べる。
 #[derive(IntoElement)]
 pub struct ScreenHeader {
-    p: Palette,
     icon: Icon,
     title: SharedString,
     description: Option<SharedString>,
@@ -67,9 +65,8 @@ pub struct ScreenHeader {
 }
 
 impl ScreenHeader {
-    pub fn new(p: &Palette, icon: Icon, title: impl Into<SharedString>) -> Self {
+    pub fn new(icon: Icon, title: impl Into<SharedString>) -> Self {
         Self {
-            p: *p,
             icon,
             title: title.into(),
             description: None,
@@ -89,11 +86,12 @@ impl ScreenHeader {
 }
 
 impl RenderOnce for ScreenHeader {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let t = self.p.t;
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
+        let t = p.t;
         let sm = TextSpec::SM;
         let xs = TextSpec::XS;
-        PaneHeader::new(&self.p)
+        PaneHeader::new()
             // `bg-background/80`。`backdrop-blur` は GPUI に無い。
             .bg(alpha(t.background, 0.8))
             .child(

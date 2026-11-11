@@ -1,12 +1,12 @@
 //! `button.tsx` (cva) の移植。
 
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, FocusHandle, SharedString, StyleRefinement, Window,
-    div, prelude::*, px,
+    AnyElement, App, ElementId, FocusHandle, SharedString, StyleRefinement, Window, div,
+    prelude::*, px,
 };
 
 use super::color::mix_oklch;
-use super::{Palette, TRANSPARENT, TextSpec, alpha, icon_colored, ring};
+use super::{ClickHandler, Palette, TRANSPARENT, TextSpec, alpha, icon_colored, palette, ring};
 use crate::fonts;
 use crate::icons::Icon;
 use crate::tokens::{Tokens, radius};
@@ -198,7 +198,6 @@ pub struct Resolved {
 
 pub fn resolve(variant: ButtonVariant, p: &Palette, s: ButtonState) -> Resolved {
     let t: &Tokens = &p.t;
-    let dark = p.is_dark();
     let hovered = s.hovered && !s.disabled;
     let expanded = s.expanded;
     let (mut bg, mut fg, mut border) = match variant {
@@ -217,10 +216,6 @@ pub fn resolve(variant: ButtonVariant, p: &Palette, s: ButtonState) -> Resolved 
         ),
         ButtonVariant::Link => (TRANSPARENT, t.link, TRANSPARENT),
     };
-    // 文字色の既定は、outline と ghost だけ「foreground」で、hover でも変わらない。
-    if variant == ButtonVariant::Outline || variant == ButtonVariant::Ghost {
-        fg = t.foreground;
-    }
     let mut underline = false;
     if hovered {
         match variant {
@@ -263,7 +258,6 @@ pub fn resolve(variant: ButtonVariant, p: &Palette, s: ButtonState) -> Resolved 
         }
         underline = false;
     }
-    let _ = dark;
     Resolved {
         bg,
         fg,
@@ -274,12 +268,9 @@ pub fn resolve(variant: ButtonVariant, p: &Palette, s: ButtonState) -> Resolved 
     }
 }
 
-type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
-
 #[derive(IntoElement)]
 pub struct Button {
     id: ElementId,
-    p: Palette,
     variant: ButtonVariant,
     size: ButtonSize,
     label: Option<SharedString>,
@@ -295,10 +286,9 @@ pub struct Button {
 }
 
 impl Button {
-    pub fn new(id: impl Into<ElementId>, p: &Palette) -> Self {
+    pub fn new(id: impl Into<ElementId>) -> Self {
         Self {
             id: id.into(),
-            p: *p,
             variant: ButtonVariant::Default,
             size: ButtonSize::Default,
             label: None,
@@ -329,12 +319,7 @@ impl Button {
         self
     }
 
-    /// アイコンだけのボタン。サイズも `icon` 系にそろえること。
-    pub fn icon(mut self, icon: Icon) -> Self {
-        self.icon_start = Some(icon);
-        self
-    }
-
+    /// 文字の前のアイコン。アイコンだけのボタンは、サイズも `icon` 系にそろえること。
     pub fn icon_start(mut self, icon: Icon) -> Self {
         self.icon_start = Some(icon);
         self
@@ -388,7 +373,7 @@ impl Button {
 
     pub fn on_click(
         mut self,
-        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+        handler: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_click = Some(Box::new(handler));
         self
@@ -414,7 +399,8 @@ impl Styled for Button {
 }
 
 impl RenderOnce for Button {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let p = palette(cx);
         let mut sp = size_spec(self.size);
         if let Some(r) = self.radius {
             sp.radius = r;
@@ -423,10 +409,10 @@ impl RenderOnce for Button {
             sp.height = side;
             sp.width = Some(side);
         }
-        let normal = resolve(self.variant, &self.p, self.state);
+        let normal = resolve(self.variant, &p, self.state);
         let hover = resolve(
             self.variant,
-            &self.p,
+            &p,
             ButtonState {
                 hovered: true,
                 ..self.state
@@ -435,7 +421,7 @@ impl RenderOnce for Button {
         let live_hover = !self.state.disabled && !self.state.hovered;
         let focus_state = resolve(
             self.variant,
-            &self.p,
+            &p,
             ButtonState {
                 focused: true,
                 ..self.state
@@ -461,36 +447,25 @@ impl RenderOnce for Button {
                 d.group_hover(group.clone(), |s| s.bg(hover.bg))
             });
 
-        let mut root = div()
-            .id(self.id)
-            .group(group)
+        // 見た目 (枠、輪、背景、中身) は内側の殻に持たせる。
+        // 押したときの 1px のずれ (`active:translate-y-px`) は殻だけに掛け、
+        // 外側の要素の位置 (`absolute` などで呼び出し側が決めたもの) は動かさない。
+        let shell = div()
+            .id(SharedString::from(format!("{group}-shell")))
             .relative()
             .flex()
-            .flex_none()
             .items_center()
             .justify_center()
             .gap(px(sp.gap))
-            .h(px(sp.height))
-            .when_some(sp.width, |d, w| d.w(px(w)))
+            .size_full()
             .when(sp.width.is_none(), |d| d.pl(px(pl)).pr(px(pr)))
             .rounded(px(sp.radius))
             .border_1()
             .border_color(normal.border)
-            .text_size(sp.text.size())
-            .line_height(sp.text.line())
-            .font(fonts::sans(500.0))
-            .text_color(normal.fg)
-            .whitespace_nowrap()
-            .opacity(normal.opacity)
-            .when(normal.underline, |d| d.underline())
             .when_some(normal.ring, |d, (c, w)| d.shadow(vec![ring(c, w)]))
-            .when(live_hover, |d| {
-                d.hover(|s| {
-                    let s = s.text_color(hover.fg);
-                    if hover.underline { s.underline() } else { s }
-                })
+            .when(!self.state.disabled, |d| {
+                d.group_active(group.clone(), |s| s.top(px(1.0)))
             })
-            .when(!self.state.disabled, |d| d.active(|s| s.top(px(1.0))))
             .when_some(self.focus_handle.as_ref(), |d, handle| {
                 d.track_focus(handle).focus(move |s| {
                     let s = s.border_color(focus_state.border);
@@ -509,6 +484,27 @@ impl RenderOnce for Button {
             .when_some(self.icon_end, |d, ic| {
                 d.child(icon_colored(ic, sp.icon, normal.fg))
             });
+
+        let mut root = div()
+            .id(self.id)
+            .group(group)
+            .flex_none()
+            .h(px(sp.height))
+            .when_some(sp.width, |d, w| d.w(px(w)))
+            .text_size(sp.text.size())
+            .line_height(sp.text.line())
+            .font(fonts::sans(500.0))
+            .text_color(normal.fg)
+            .whitespace_nowrap()
+            .opacity(normal.opacity)
+            .when(normal.underline, |d| d.underline())
+            .when(live_hover, |d| {
+                d.hover(|s| {
+                    let s = s.text_color(hover.fg);
+                    if hover.underline { s.underline() } else { s }
+                })
+            })
+            .child(shell);
 
         if let Some(on_click) = self.on_click
             && !self.state.disabled
