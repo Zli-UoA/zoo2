@@ -7,6 +7,8 @@ zoo2 のネイティブデスクトップクライアントです。Rust と [GP
 - 書き込み、既読、入力中は REST API を使います。未読インジケーターと、入力中のユーザーも表示します。
 - ログインは AuthZ のデバイスコード方式 (RFC 8628) です。GUI のログイン画面または `zoo2-desktop login` コマンドからブラウザを開いて承認できます。
 
+この crate は `frontend/` のトークン・翻訳を埋め込むので、リポジトリの中でしかビルドできません (crates.io には公開しません)。
+
 ## 目次
 
 - [初期設定](#初期設定)
@@ -163,3 +165,5 @@ cd .. && scripts/desktop-screenshot.sh /tmp/gallery-dark.png -- desktop/target/d
 ```
 
 `-w 秒` で待ち時間、`-s 幅x高さ` で画面の大きさを変えられます (既定は 6 秒、1440x900)。openbox が無いと GPUI のウィンドウは黒く描かれます。描画は lavapipe (CPU の Vulkan) で、devShell の `ZOO_LVP_ICD` を使います。
+
+スクリプトは自分で起動したプロセスの PID だけを止めます。`cargo run` で起動すると、アプリは cargo の子プロセスになって残ることがあるので、ビルドしたあとに `desktop/target/debug/zoo2-desktop` を直接渡してください。
