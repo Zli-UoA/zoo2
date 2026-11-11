@@ -9,7 +9,7 @@ use leptos::{ev, html, prelude::*, task::spawn_local};
 use zoo2_client_types::{
     ipc::{
         DeviceLogin, FocusState, IpcError, OpenChannel, OpenTarget, SendMessage, SendResult,
-        SessionInfo, SessionState, ShapeBatch, ShapeFailed, command, event,
+        SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, command, event,
     },
     mfm::{self, Tone},
     rows::Message,
@@ -143,9 +143,13 @@ fn App() -> impl IntoView {
                 {move || ctx.error.get().unwrap_or_default()}
             </div>
         </Show>
-        {move || match ctx.session.get().map(|s| s.state) {
-            Some(SessionState::Ready { .. }) => view! { <Main /> }.into_any(),
-            state => view! { <Login state=state /> }.into_any(),
+        {move || match ctx.session.get().map(|s| (s.ui, s.state)) {
+            Some((UiMode::Leptos, SessionState::Ready { .. })) => view! { <Main /> }.into_any(),
+            // (b) ではログインしたら Rust 側がウィンドウをリモートの画面へ移す。
+            Some((UiMode::Remote, SessionState::Ready { .. })) => {
+                view! { <Login state=Some(SessionState::Starting) /> }.into_any()
+            }
+            session => view! { <Login state=session.map(|(_, state)| state) /> }.into_any(),
         }}
     }
 }

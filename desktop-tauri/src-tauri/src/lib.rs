@@ -53,6 +53,7 @@ pub fn run() {
             let config = Config::load_for(APP_NAME);
             let core = Arc::new(core::Core::new(app.handle().clone(), ui, config));
             app.manage(core.clone());
+            window::add_remote_capability(app, &core)?;
             window::create_main(app, &core)?;
             window::create_tray(app)?;
             core.start();

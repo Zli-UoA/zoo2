@@ -3,6 +3,12 @@ import { useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { setAuthorizedHandler, setTokenProvider, setUnauthorizedHandler } from "../../lib/auth";
+import {
+  desktopAccessToken,
+  desktopLogout,
+  detectDesktop,
+  hasDesktopBridge,
+} from "../../lib/desktop";
 import { resolveConfig, type AppConfig } from "../../lib/config";
 import { OidcClient } from "../../lib/oidc/client";
 import {
@@ -40,12 +46,50 @@ function currentReturnTo(): string {
 }
 
 /**
- * 認証の入口。OIDC 未設定（dev の X-Dev-User）なら素通しし、設定済みなら
+ * 認証の入口。デスクトップ版（Tauri）の中では Rust 側のトークンを使い、
+ * それ以外では OIDC（`WebAuthGate`）を使う。
+ */
+export function AuthGate({ children }: { children: ReactNode }) {
+  if (hasDesktopBridge()) return <DesktopAuthGate>{children}</DesktopAuthGate>;
+  return <WebAuthGate>{children}</WebAuthGate>;
+}
+
+/**
+ * デスクトップ版の (b)。ログインは Rust 側（同梱のログイン画面）で済んでいるので、
+ * トークンを IPC で受け取るだけにする。401 になったら Rust 側でログアウトし、
+ * Rust 側がウィンドウをログイン画面へ戻す。プロトコルが合わなければ通常の Web として動く。
+ */
+function DesktopAuthGate({ children }: { children: ReactNode }) {
+  const [mode, setMode] = useState<"checking" | "desktop" | "web">("checking");
+  useEffect(() => {
+    let cancelled = false;
+    void detectDesktop().then((desktop) => {
+      if (cancelled) return;
+      if (desktop) {
+        setTokenProvider(desktopAccessToken);
+        setUnauthorizedHandler(() => {
+          void desktopLogout();
+        });
+      }
+      setMode(desktop ? "desktop" : "web");
+    });
+    return () => {
+      cancelled = true;
+      setUnauthorizedHandler(null);
+    };
+  }, []);
+  if (mode === "checking") return <ShellSkeleton />;
+  if (mode === "web") return <WebAuthGate>{children}</WebAuthGate>;
+  return <>{children}</>;
+}
+
+/**
+ * OIDC 未設定（dev の X-Dev-User）なら素通しし、設定済みなら
  * authorize リダイレクト / コールバック処理 / 401 時の再ログインを担う。
  *
  * 同じタブの再読み込みではセッションを復元し、IdP への往復を省く。
  */
-export function AuthGate({ children }: { children: ReactNode }) {
+function WebAuthGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const router = useRouter();
   const [phase, setPhase] = useState<AuthPhase>("checking");
