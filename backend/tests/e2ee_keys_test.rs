@@ -706,9 +706,11 @@ async fn signatures_are_verified_idempotent_and_need_reauth_for_other_users() {
         "signer_key_id": format!("ed25519:{}", pk(&alice.ssk)),
         "signature": signature_of(&device.device_keys(), &alice.ssk),
     }]});
-    for _ in 0..2 {
+    for attempt in 0..2 {
         let (status, res) = env.post(path, &user, false, device_sig.clone()).await;
         assert_eq!(status, StatusCode::OK, "{res}");
+        // 書いたときだけ txid を返し、同じ署名の再送（Shape に流れる変更がない）では null。
+        assert_eq!(res["txid"].is_null(), attempt == 1, "{res}");
     }
     assert_eq!(
         env.count(

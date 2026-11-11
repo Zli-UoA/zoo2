@@ -497,19 +497,29 @@ async fn upload_signatures(
     )
     .to_string();
     // 同じ署名の再送は何もしない（200）。違う署名なら置き換える。
-    exec(
+    let written = first(
         &mut tx,
-        "INSERT INTO e2ee_key_signatures (signer_user_id, signer_key_id, target_user_id, target_key_id, signature)
+        "WITH written AS (
+         INSERT INTO e2ee_key_signatures (signer_user_id, signer_key_id, target_user_id, target_key_id, signature)
          SELECT $1, s.signer_key_id, s.target_user_id, s.target_key_id, s.signature
          FROM jsonb_to_recordset($2::jsonb)
            AS s(signer_key_id text, target_user_id text, target_key_id text, signature text)
          ON CONFLICT (signer_user_id, signer_key_id, target_user_id, target_key_id) DO UPDATE
          SET signature = EXCLUDED.signature, created_at = now()
-         WHERE e2ee_key_signatures.signature <> EXCLUDED.signature",
+         WHERE e2ee_key_signatures.signature <> EXCLUDED.signature
+         RETURNING 1)
+         SELECT count(*)::text FROM written",
         &[&actor.id, &items],
     )
-    .await?;
-    let txid = get_current_txid(&mut tx).await?;
+    .await?
+    .and_then(|c| c.as_u64())
+    .unwrap_or(0);
+    // 行を書いたときだけ txid を返す。すべて同じ署名の再送なら、Shape に流れる変更がないので null。
+    let txid = if written > 0 {
+        Some(get_current_txid(&mut tx).await?)
+    } else {
+        None
+    };
     tx.commit().await?;
     Ok(Json(ApiResponse::new(
         json!({"count": req.signatures.len()}),
