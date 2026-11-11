@@ -263,8 +263,14 @@ jobs:
 
           # atlas schema diff は未ログインだと関数を含む schema.sql を読めないため、
           # マイグレーションと schema.sql をそれぞれ空のDBに適用し、pg_dump の結果を比較します。
+          # `-- atlas:txmode none` のファイル（CREATE INDEX CONCURRENTLY など）は、Atlas と同じく
+          # トランザクションの外で実行します。それ以外は 1 ファイル 1 トランザクションです。
           for f in infra/db/migrations/*.sql; do
-            psql_exec -d from_migrations -1 < "$f" > /dev/null
+            if grep -q '^-- atlas:txmode none' "$f"; then
+              psql_exec -d from_migrations < "$f" > /dev/null
+            else
+              psql_exec -d from_migrations -1 < "$f" > /dev/null
+            fi
           done
           psql_exec -d from_schema -1 < infra/db/schema.sql > /dev/null
 
