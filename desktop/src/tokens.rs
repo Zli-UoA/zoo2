@@ -74,12 +74,13 @@ pub fn oklch_to_srgb(l: f32, c: f32, h_deg: f32) -> Rgba {
 
     fn gamma(x: f64) -> f32 {
         let x = x.clamp(0.0, 1.0);
+        // x は 0〜1 に収めてあり、変換は単調で 0 と 1 を保つので、結果も 0〜1 に収まる。
         let v = if x <= 0.003_130_8 {
             12.92 * x
         } else {
             1.055 * x.powf(1.0 / 2.4) - 0.055
         };
-        v.clamp(0.0, 1.0) as f32
+        v as f32
     }
 
     Rgba {
@@ -443,9 +444,21 @@ mod tests {
 
     /// `selector {` から対応する `}` までの `--name: value;` を順に返す。
     fn parse_block(css: &str, selector: &str) -> Vec<(String, String)> {
-        let start = css
+        // 先頭の桁から始まる行だけを最上位のセレクターとみなす。
+        let header = format!("{selector} {{");
+        let starts: Vec<usize> = css
             .lines()
-            .position(|line| line.trim_end() == format!("{selector} {{"))
+            .enumerate()
+            .filter(|(_, line)| line.trim_end() == header)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            starts.len() <= 1,
+            "{selector} のブロックが styles.css の最上位に {} 回出ています。1 つにまとめてください",
+            starts.len()
+        );
+        let start = *starts
+            .first()
             .unwrap_or_else(|| panic!("{selector} のブロックが styles.css に見つかりません"));
         let mut vars = Vec::new();
         for line in css.lines().skip(start + 1) {
