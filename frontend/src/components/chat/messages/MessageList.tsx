@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDownIcon } from "lucide-react";
 import {
@@ -431,11 +432,15 @@ export function MessageList({
     if (lastRead === null || lastRead <= 0 || messages.length === 0) return;
     const oldest = parseUtcTimestamp(messages[0]!.created_at).getTime();
     if (!Number.isFinite(oldest) || oldest <= lastRead) return;
-    if (unreadPagesRef.current >= MAX_UNREAD_PAGES) return;
     if (!hasOlder || isLoadingOlder || !onLoadOlder) return;
+    if (unreadPagesRef.current >= MAX_UNREAD_PAGES) {
+      // 上限までに、既読位置まで届かなかった。未読の先頭は、読み込んでいない範囲にある。
+      toast.info(t("threads.unreadTooOld"), { id: "unread-too-old" });
+      return;
+    }
     unreadPagesRef.current += 1;
     onLoadOlder();
-  }, [lastRead, messages, hasOlder, isLoadingOlder, onLoadOlder]);
+  }, [lastRead, messages, hasOlder, isLoadingOlder, onLoadOlder, t]);
 
   useEffect(() => {
     const update = () => {

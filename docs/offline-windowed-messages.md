@@ -32,7 +32,7 @@ Electric の subset snapshot（`subset__where` / `subset__order_by` / `subset__l
 - `from(messages)` だけの live query や、全返信を購読する live query を作らない（on-demand では、全行を取る要求になる）。
   再描画のきっかけだけが要るときは、`subscribeChanges(…, { includeInitialState: false })` を使う（`useOptimisticDisplay`）。
 
-メモリ: 窓を縮めても、読み込んだ行は、コレクションを破棄する（チャンネルを離れて GC される）まで残る。
+メモリ: 窓を縮めても、読み込んだ行は、コレクションを破棄するまで残る。チャンネルのコレクションは、ログアウト時（`forgetCollections`）まで保持される（チャンネルを離れても GC されない）。
 
 ## 永続化（TanStack DB + OPFS）
 

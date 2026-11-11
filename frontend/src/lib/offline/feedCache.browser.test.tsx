@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { deleteFeedCache, loadFeedCache, saveFeedCache } from "./feedCache";
+import { clearFeedCache, deleteFeedCache, loadFeedCache, saveFeedCache } from "./feedCache";
 
 const NAMESPACE = "user-feed-cache-test";
 const OTHER = "user-feed-cache-other";
@@ -24,6 +24,14 @@ describe("feed cache", () => {
     expect(await loadFeedCache(OTHER, "general")).toBeNull();
     await deleteFeedCache(NAMESPACE);
     expect(await loadFeedCache(NAMESPACE, "general")).toBeNull();
+  });
+
+  it("drops a channel's cache when it is cleared (all messages deleted)", async () => {
+    await saveFeedCache(NAMESPACE, "general", [{ id: "a" }], 50);
+    await saveFeedCache(NAMESPACE, "random", [{ id: "b" }], 50);
+    await clearFeedCache(NAMESPACE, "general");
+    expect(await loadFeedCache(NAMESPACE, "general")).toBeNull();
+    expect((await loadFeedCache<{ id: string }>(NAMESPACE, "random"))?.rows).toEqual([{ id: "b" }]);
   });
 
   it("does not store an empty page", async () => {
