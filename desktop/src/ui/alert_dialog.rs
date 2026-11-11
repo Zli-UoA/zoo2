@@ -97,6 +97,8 @@ impl RenderOnce for AlertDialog {
         let text = div()
             .flex()
             .flex_col()
+            .flex_1()
+            .min_w_0()
             .gap(px(6.0))
             .when(centered, |d| d.items_center().text_center())
             .child(title_text(self.title, 24.0))
