@@ -285,10 +285,14 @@ fn Timeline(channel_id: String) -> impl IntoView {
     // 走るので、件数が増えていなければスクロールの位置を変えない。
     Effect::new(move |previous: Option<usize>| {
         let count = messages.with(Vec::len);
-        if previous.is_none_or(|previous| count > previous)
-            && let Some(list) = list.get()
-        {
-            list.set_scroll_top(list.scroll_height());
+        if previous.is_none_or(|previous| count > previous) {
+            // Effect の時点では新しい行がまだ描画されていないので、次の描画のときに
+            // 伸びた後の `scrollHeight` を読んで末尾へ送る。
+            request_animation_frame(move || {
+                if let Some(list) = list.get_untracked() {
+                    list.set_scroll_top(list.scroll_height());
+                }
+            });
         }
         count
     });
