@@ -2439,6 +2439,12 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
         "1704070100.000000",
         "1704070250.000000",
     );
+    // `reply` は、削除された B への返信。`d` は、公開されている形式 (`original_ts`) の削除の記録で消える
+    let (reply, d, delete_d) = (
+        "1704070210.000100",
+        "1704070300.000100",
+        "1704070350.000000",
+    );
     // `x` は、本物の投稿の `ts` が、編集の記録の `ts` と同じ (秒ちょうど) になった場合
     let zip = build_zip(&[
         (
@@ -2459,7 +2465,11 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
                 {"ts": x, "user": "U1", "text": "X is a real post"},
                 {"type":"message","subtype":"message_changed","ts": x, "user": "U1", "text": "edit",
                  "original": {"user": "U1", "type": "message", "ts": a, "text": "A"}},
-                {"ts": b, "user": "U1", "text": "B was deleted"},
+                {"ts": b, "user": "U1", "text": "B was deleted", "thread_ts": b},
+                {"ts": reply, "user": "U1", "text": "reply to B", "thread_ts": b},
+                {"ts": d, "user": "U1", "text": "D was deleted"},
+                {"type":"message","subtype":"message_deleted","ts": delete_d, "user": "U1", "text": "",
+                 "original_ts": d, "previous": {"user": "U1", "type": "message", "ts": d, "text": "D was deleted"}},
                 {"type":"message","subtype":"message_deleted","ts": delete, "user": "U1", "text": "",
                  "original": {"user": "U1", "type": "message", "ts": b, "text": "B was deleted"}}
             ]),
@@ -2513,12 +2523,22 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
             .unwrap()
         }
     };
-    // 初回の取り込みから、B は入らない。A と、同じ `ts` の本物の投稿 X は入る
-    assert_eq!(live("C1").await, 2);
-    assert!(
-        row("C1", b).await.is_empty(),
-        "the deleted post is not imported"
+    // 削除された B と D は、初回の取り込みから論理削除される。A と、同じ `ts` の本物の投稿 X、B への返信は残る
+    assert_eq!(live("C1").await, 3);
+    assert_eq!(row("C1", b).await[0]["deleted"], true);
+    assert_eq!(row("C1", d).await[0]["deleted"], true, "original_ts format");
+    // 返信は、削除された親のスレッドに残る (チャンネル直下に出ない)
+    let reply_row = sql(
+        &state,
+        "SELECT json_build_object('parent',parent_id,'deleted',deleted_at IS NOT NULL)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(&team, "C1", reply)],
+    )
+    .await?;
+    assert_eq!(
+        reply_row[0]["parent"],
+        backend::slack::message_id(&team, "C1", b)
     );
+    assert_eq!(reply_row[0]["deleted"], false);
     assert_eq!(row("C1", x).await[0]["deleted"], false);
     assert_eq!(
         row("C2", b).await[0]["deleted"],
@@ -2546,7 +2566,8 @@ async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<(
         "completed",
     )
     .await;
-    assert_eq!(live("C1").await, 2, "re-importing changes nothing");
+    assert_eq!(live("C1").await, 3, "re-importing changes nothing");
+    assert_eq!(row("C1", b).await[0]["deleted"], true);
     assert_eq!(row("C1", x).await[0]["deleted"], false);
     assert_eq!(live("C2").await, 1);
     Ok(())

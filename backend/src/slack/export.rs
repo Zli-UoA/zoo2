@@ -117,6 +117,9 @@ pub struct SlackMessage {
     /// 編集・削除の履歴を含むエクスポートで、`message_changed` / `message_deleted` の記録が持つ、元の投稿の全体
     #[serde(default)]
     pub original: Option<serde_json::Value>,
+    /// 公開されているエクスポートの形式では、削除された元の投稿の `ts` がトップレベルの `original_ts` にある
+    #[serde(default)]
+    pub original_ts: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -227,17 +230,27 @@ impl SlackMessage {
         )
     }
 
+    /// 編集・削除の記録が指す、元の投稿の `ts`。`original.ts` (確認したエクスポートの形式) と、
+    /// トップレベルの `original_ts` (公開されている形式) のどちらも読む
+    pub fn original_message_ts(&self) -> Option<&str> {
+        if !self.is_history_event() {
+            return None;
+        }
+        self.original
+            .as_ref()
+            .and_then(|o| o.get("ts"))
+            .and_then(|ts| ts.as_str())
+            .or(self.original_ts.as_deref())
+            .filter(|ts| crate::slack::is_valid_ts(ts))
+    }
+
     /// 削除の記録 (`message_deleted`) が指す、削除された元の投稿の `ts`。
     /// 削除された投稿の記録は、エクスポートには残らないので、以前の取り込みで入れた分を消すのに使う
     pub fn deleted_original_ts(&self) -> Option<&str> {
         if self.subtype.as_deref() != Some("message_deleted") {
             return None;
         }
-        self.original
-            .as_ref()?
-            .get("ts")?
-            .as_str()
-            .filter(|ts| crate::slack::is_valid_ts(ts))
+        self.original_message_ts()
     }
 
     /// 投稿者の Slack ID (ユーザーまたは bot)
@@ -720,6 +733,19 @@ pub(crate) mod tests {
             }));
             assert_eq!(record.deleted_original_ts(), None);
         }
+        // 公開されている形式: 元の投稿の `ts` はトップレベルの `original_ts` にあり、`original` はない
+        let public = message(serde_json::json!({
+            "type": "message", "subtype": "message_deleted", "ts": "1756918202.000000",
+            "deleted_ts": "1756918202.000000", "hidden": true, "channel": "C1",
+            "original_ts": "1756918197.952539",
+            "previous": {"user": "U1", "type": "message", "ts": "1756918197.952539", "text": "gone"}
+        }));
+        assert_eq!(public.deleted_original_ts(), Some("1756918197.952539"));
+        assert_eq!(public.original_message_ts(), Some("1756918197.952539"));
+        let invalid = message(serde_json::json!({
+            "subtype": "message_deleted", "ts": "1756918202.000000", "original_ts": "x"
+        }));
+        assert_eq!(invalid.deleted_original_ts(), None);
         // 不正な `original` は、何も指さない
         let broken = message(serde_json::json!({
             "subtype": "message_deleted", "ts": "1756918202.000000", "user": "U1", "original": "oops"
