@@ -348,7 +348,10 @@ export function MessageList({
         };
         restore();
       }
-      if (slid) setHasNewBelow(true);
+      if (slid) {
+        setHasNewBelow(true);
+        if (lastItem) setLiveAnnouncement(newMessageAnnouncement(lastItem.message, t));
+      }
     } else if (change === "initial" && firstUnreadId) {
       const index = items.findIndex((item) => item.message.id === firstUnreadId);
       atBottomRef.current = false;
