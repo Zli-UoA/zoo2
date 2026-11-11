@@ -8,7 +8,7 @@ import { useCollections } from "../lib/electric/collections-context";
 import { messageFeedQuery } from "../lib/electric/messageFeed";
 import { MESSAGE_PAGE_SIZE } from "../lib/electric/messageOrder";
 import type { ChannelRow, ChannelUserRow } from "../lib/electric/types";
-import { loadFeedCache, saveFeedCache } from "../lib/offline/feedCache";
+import { clearFeedCache, loadFeedCache, saveFeedCache } from "../lib/offline/feedCache";
 import { useOfflineStatus } from "../lib/offline/offline-context";
 import type { FeedMessage as FeedRow } from "../components/chat/messages/messageFormat";
 import { canAddChannelMember, canManageChannel } from "./channelPermissions";
@@ -95,6 +95,14 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
     );
     return () => clearTimeout(timer);
   }, [cacheable, isOnline, liveReady, namespace, channelId, query.data]);
+
+  // 正常に取得できた結果が空 (全件が削除された) なら、控えも消す。読み込み中の空とは区別する。
+  const loadedEmpty = query.isReady && !query.isLoading && live.length === 0;
+  useEffect(() => {
+    if (!cacheable || !isOnline || !loadedEmpty) return;
+    const timer = setTimeout(() => void clearFeedCache(namespace, channelId), 1_000);
+    return () => clearTimeout(timer);
+  }, [cacheable, isOnline, loadedEmpty, namespace, channelId]);
 
   const data = useOptimisticDisplay(channelId, cachedRows ?? oldestFirst);
   const fromCache = cachedRows !== null;

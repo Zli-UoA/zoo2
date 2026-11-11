@@ -97,3 +97,18 @@ export function deleteFeedCache(namespace: string): Promise<void> {
     req.onblocked = () => resolve();
   });
 }
+
+/** そのチャンネルの控えを消す (全件が削除されて、空になったときなど)。 */
+export async function clearFeedCache(namespace: string, channelId: string): Promise<void> {
+  if (typeof indexedDB === "undefined") return;
+  try {
+    const db = await open(namespace);
+    try {
+      await request(db.transaction(STORE, "readwrite").objectStore(STORE).delete(channelId));
+    } finally {
+      db.close();
+    }
+  } catch {
+    // 次の機会に消す。
+  }
+}

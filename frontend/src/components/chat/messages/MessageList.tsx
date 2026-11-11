@@ -274,7 +274,12 @@ export function MessageList({
 
     // 件数の上限で、新着の分だけ最古の行が外れたとき (先頭が変わる append)。最下部にいなければ、
     // 読んでいる行の位置を保つ。
-    const slid = change === "append" && snapshotRef.current.firstId !== next.firstId;
+    const lastItem = items[items.length - 1];
+    const slid =
+      change === "append" &&
+      snapshotRef.current.firstId !== next.firstId &&
+      // 自分の送信は、上にスクロールしていても最下部へ追従する (下の append の処理)。
+      lastItem?.message.user_id !== currentUserId;
     let stopRestoring: (() => void) | undefined;
     const oldest = messages[0] ? parseUtcTimestamp(messages[0].created_at).getTime() : NaN;
     const unreadCovered =
