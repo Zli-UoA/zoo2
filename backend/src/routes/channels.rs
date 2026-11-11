@@ -139,33 +139,39 @@ pub(crate) async fn create_channel(
     }
 
     // クライアント指定の ID が既に存在する場合、同一属性の再送であれば作成済みチャンネルを返して成功とする (冪等性)
-    // ※ 他人のチャンネル UUID の存在漏洩を防ぐため、ゲスト検証の後に判定する
+    // ※ 他人の非公開チャンネル等の UUID 存在漏洩を防ぐため、他人のチャンネル ID と重複した場合は新 UUID を割り当てて作成する
+    let mut id_to_use = id.clone();
     if supplied_id.is_some() {
         if let Some(existing) = Channel::filter(Channel::fields().id().eq(id.as_str()))
             .first()
             .exec(&mut tx)
             .await?
         {
-            if existing.created_user_id == auth_user.id
-                && existing.channel_name == payload.channel_name
-                && existing.description == payload.description
-                && existing.is_private == payload.is_private.unwrap_or(false)
-                && existing.deleted_at.is_none()
-            {
-                let _ = tx.rollback().await;
-                return Ok(Json(ApiResponse::new(
-                    ChannelResponse::from(existing),
-                    None,
-                )));
+            if existing.created_user_id == auth_user.id {
+                if existing.channel_name == payload.channel_name
+                    && existing.description == payload.description
+                    && existing.is_private == payload.is_private.unwrap_or(false)
+                    && existing.deleted_at.is_none()
+                {
+                    let _ = tx.rollback().await;
+                    return Ok(Json(ApiResponse::new(
+                        ChannelResponse::from(existing),
+                        None,
+                    )));
+                }
+                return Err(AppError::Conflict("Channel id already exists".into()));
+            } else {
+                // 他人のチャンネル ID と重複した場合、非公開チャンネルの存在有無で応答ステータスを変えず、
+                // かつ一意制約エラーを起こさないよう新しい UUID を割り当てて作成する
+                id_to_use = Uuid::new_v4().to_string();
             }
-            return Err(AppError::Conflict("Channel id already exists".into()));
         }
     }
 
     let now = crate::models::now_utc_millis();
 
     let channel_res = toasty::create!(Channel {
-        id: id.as_str(),
+        id: id_to_use.as_str(),
         channel_name: payload.channel_name.as_str(),
         description: payload.description.clone(),
         created_user_id: auth_user.id.as_str(),
@@ -185,10 +191,11 @@ pub(crate) async fn create_channel(
             // 同時送信の一意制約違反時、同一 ID かつ同一属性であれば既存チャンネルを返す
             if supplied_id.is_some() {
                 let _ = tx.rollback().await;
-                if let Some(existing) = Channel::filter(Channel::fields().id().eq(id.as_str()))
-                    .first()
-                    .exec(&mut db)
-                    .await?
+                if let Some(existing) =
+                    Channel::filter(Channel::fields().id().eq(id_to_use.as_str()))
+                        .first()
+                        .exec(&mut db)
+                        .await?
                 {
                     if existing.created_user_id == auth_user.id
                         && existing.channel_name == payload.channel_name
@@ -210,7 +217,7 @@ pub(crate) async fn create_channel(
     // 作成者をチャンネルメンバーに追加
     toasty::create!(ChannelUser {
         user_id: auth_user.id.as_str(),
-        channel_id: id.as_str(),
+        channel_id: id_to_use.as_str(),
         joined_at: now,
     })
     .exec(&mut tx)

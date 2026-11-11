@@ -38,6 +38,7 @@ pub struct WorkspaceView {
     pub emoji_picker_scroll: ScrollHandle,
     pub create_channel_private_focus: FocusHandle,
     pub expanded_cards: std::collections::HashSet<String>,
+    pub card_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     focus_handle: FocusHandle,
     login_primary_focus: FocusHandle,
     login_secondary_focus: FocusHandle,
@@ -101,6 +102,8 @@ impl WorkspaceView {
                 }
                 InputEvent::Up
                 | InputEvent::Down
+                | InputEvent::Left
+                | InputEvent::Right
                 | InputEvent::Tab
                 | InputEvent::CursorMoved(_) => {}
             },
@@ -144,6 +147,34 @@ impl WorkspaceView {
                             true
                         } else if state.mention_autocomplete.is_some() {
                             state.mention_select_next();
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if handled {
+                        cx.notify();
+                    }
+                }
+                InputEvent::Left => {
+                    let handled = this.state.update(cx, |state, cx| {
+                        if state.emoji_picker_open {
+                            state.emoji_picker_prev();
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if handled {
+                        cx.notify();
+                    }
+                }
+                InputEvent::Right => {
+                    let handled = this.state.update(cx, |state, cx| {
+                        if state.emoji_picker_open {
+                            state.emoji_picker_next();
                             cx.notify();
                             true
                         } else {
@@ -269,6 +300,8 @@ impl WorkspaceView {
                 }
                 InputEvent::Up
                 | InputEvent::Down
+                | InputEvent::Left
+                | InputEvent::Right
                 | InputEvent::Tab
                 | InputEvent::CursorMoved(_) => {}
             },
@@ -304,6 +337,8 @@ impl WorkspaceView {
                 }
                 InputEvent::Up
                 | InputEvent::Down
+                | InputEvent::Left
+                | InputEvent::Right
                 | InputEvent::Tab
                 | InputEvent::CursorMoved(_) => {}
             },
@@ -339,6 +374,8 @@ impl WorkspaceView {
                 }
                 InputEvent::Up
                 | InputEvent::Down
+                | InputEvent::Left
+                | InputEvent::Right
                 | InputEvent::Tab
                 | InputEvent::CursorMoved(_) => {}
             },
@@ -381,7 +418,10 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Tab | InputEvent::CursorMoved(_) => {}
+                InputEvent::Tab
+                | InputEvent::Left
+                | InputEvent::Right
+                | InputEvent::CursorMoved(_) => {}
             },
         )
         .detach();
@@ -413,7 +453,10 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
-                InputEvent::Tab | InputEvent::CursorMoved(_) => {}
+                InputEvent::Tab
+                | InputEvent::Left
+                | InputEvent::Right
+                | InputEvent::CursorMoved(_) => {}
             },
         )
         .detach();
@@ -454,6 +497,7 @@ impl WorkspaceView {
             }
             this.composer_input.update(cx, |input, _| {
                 input.intercept_vertical_arrows = is_mention_active || is_emoji_picker_open;
+                input.intercept_horizontal_arrows = is_emoji_picker_open;
                 input.intercept_tab = is_mention_active || is_emoji_picker_open;
             });
             this.search_input.update(cx, |i, _| i.theme = theme);
@@ -484,6 +528,7 @@ impl WorkspaceView {
             emoji_picker_scroll: ScrollHandle::new(),
             create_channel_private_focus: cx.focus_handle(),
             expanded_cards: std::collections::HashSet::new(),
+            card_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             focus_handle: cx.focus_handle(),
             login_primary_focus: cx.focus_handle(),
             login_secondary_focus: cx.focus_handle(),
@@ -2041,7 +2086,13 @@ impl WorkspaceView {
             .map(|(idx, card)| {
                 let card_key = format!("{}:{idx}", message.id);
                 let is_expanded = self.expanded_cards.contains(&card_key);
-                render_ogp_card(card, &card_key, is_expanded, &theme, cx)
+                let focus_handle = self
+                    .card_focus_handles
+                    .borrow_mut()
+                    .entry(card_key.clone())
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone();
+                render_ogp_card(card, &card_key, is_expanded, &focus_handle, &theme, cx)
             })
             .collect();
 
@@ -3881,6 +3932,7 @@ pub fn render_ogp_card(
     card: &CardData,
     card_key: &str,
     is_expanded: bool,
+    focus_handle: &FocusHandle,
     theme: &theme::Theme,
     cx: &mut Context<WorkspaceView>,
 ) -> Div {
@@ -3951,9 +4003,8 @@ pub fn render_ogp_card(
                     );
                 }
 
-                div()
-                    .min_w(px(120.0))
-                    .flex_1()
+                let is_short = f.short != Some(false);
+                let mut item_container = div()
                     .flex()
                     .flex_col()
                     .gap_0p5()
@@ -3964,7 +4015,13 @@ pub fn render_ogp_card(
                             .text_color(theme.text_muted)
                             .child(f_title),
                     )
-                    .child(val_view)
+                    .child(val_view);
+                if is_short {
+                    item_container = item_container.min_w(px(120.0)).flex_1();
+                } else {
+                    item_container = item_container.w_full();
+                }
+                item_container
             });
 
             Some(
@@ -3985,42 +4042,50 @@ pub fn render_ogp_card(
     let desc_element = if !desc.is_empty() {
         if is_ogp_description_long(&desc) {
             let key = card_key.to_string();
-            let view = cx.entity().clone();
+            let key_kd = key.clone();
             let toggle_btn = if is_expanded {
-                let key = key.clone();
-                let view = view.clone();
                 div()
+                    .track_focus(focus_handle)
                     .text_xs()
                     .text_color(theme.text_link)
                     .hover(|s| s.cursor_pointer())
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                             cx.stop_propagation();
-                            view.update(cx, |this, cx| {
-                                this.expanded_cards.remove(&key);
-                                cx.notify();
-                            });
+                            this.expanded_cards.remove(&key);
+                            cx.notify();
                         }),
                     )
+                    .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                        if is_activate_key(&ev.keystroke.key) {
+                            cx.stop_propagation();
+                            this.expanded_cards.remove(&key_kd);
+                            cx.notify();
+                        }
+                    }))
                     .child("折りたたむ")
             } else {
-                let key = key.clone();
-                let view = view.clone();
                 div()
+                    .track_focus(focus_handle)
                     .text_xs()
                     .text_color(theme.text_link)
                     .hover(|s| s.cursor_pointer())
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(move |_, _: &MouseUpEvent, _, cx| {
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                             cx.stop_propagation();
-                            view.update(cx, |this, cx| {
-                                this.expanded_cards.insert(key.clone());
-                                cx.notify();
-                            });
+                            this.expanded_cards.insert(key.clone());
+                            cx.notify();
                         }),
                     )
+                    .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                        if is_activate_key(&ev.keystroke.key) {
+                            cx.stop_propagation();
+                            this.expanded_cards.insert(key_kd.clone());
+                            cx.notify();
+                        }
+                    }))
                     .child("さらに表示")
             };
 
@@ -4152,8 +4217,8 @@ pub fn render_attachment_item(
     let file_name = att.file_name.clone();
     let att_id = att.id.clone();
 
-    // 描画時に未解決または期限切れ間近で取得中でなければ自動で取得を開始する
-    if needs_refresh && !is_fetching {
+    // 描画時に未解決または期限切れ間近で取得中でなければ自動で取得を開始する (画像のみ)
+    if is_img && needs_refresh && !is_fetching {
         let id = att_id.clone();
         let view = cx.entity().clone();
         cx.defer(move |cx| {

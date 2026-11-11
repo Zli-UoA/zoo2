@@ -54,6 +54,10 @@ pub enum InputEvent {
     Up,
     /// `↓` キーが押下された。
     Down,
+    /// `←` キーが押下された。
+    Left,
+    /// `→` キーが押下された。
+    Right,
     /// キャレット位置が移動した。
     CursorMoved(usize),
 }
@@ -117,6 +121,7 @@ pub struct TextInput {
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     pub intercept_vertical_arrows: bool,
+    pub intercept_horizontal_arrows: bool,
     pub intercept_tab: bool,
     pub theme: theme::Theme,
 }
@@ -154,6 +159,7 @@ impl TextInput {
             last_bounds: None,
             is_selecting: false,
             intercept_vertical_arrows: false,
+            intercept_horizontal_arrows: false,
             intercept_tab: false,
             theme: theme::Theme::dark(),
         }
@@ -253,6 +259,10 @@ impl TextInput {
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_horizontal_arrows {
+            cx.emit(InputEvent::Left);
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);
         } else {
@@ -261,6 +271,10 @@ impl TextInput {
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_horizontal_arrows {
+            cx.emit(InputEvent::Right);
+            return;
+        }
         if self.selected_range.is_empty() {
             self.move_to(self.next_boundary(self.selected_range.end), cx);
         } else {

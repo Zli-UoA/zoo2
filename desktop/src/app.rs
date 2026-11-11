@@ -1415,7 +1415,8 @@ impl AppState {
                         }
                     }
                 }
-                let mut pending_notifications: Vec<(String, String, String, bool)> = Vec::new();
+                let mut pending_notifications: Vec<Option<(String, String, String, bool)>> =
+                    Vec::new();
                 let mut notified_indices: std::collections::HashMap<String, usize> =
                     std::collections::HashMap::new();
                 if self.notifications_enabled
@@ -1424,22 +1425,42 @@ impl AppState {
                     && !batch.reset
                 {
                     for change in &batch.changes {
-                        if let electric::Change::Upsert { row, .. } = change
-                            && let Ok(msg) = Message::from_row(row)
-                        {
-                            if let Some(&idx) = notified_indices.get(&msg.id) {
-                                // 同一バッチ内の同一メッセージ更新を集約し、通知を1回のみに維持しつつ最新内容を反映
-                                pending_notifications[idx].2 = msg.content;
-                            } else if self.should_notify_message(ch, &msg) {
-                                let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                let idx = pending_notifications.len();
-                                pending_notifications.push((
-                                    ch.clone(),
-                                    msg.user_id,
-                                    msg.content,
-                                    is_dm,
-                                ));
-                                notified_indices.insert(msg.id, idx);
+                        match change {
+                            electric::Change::Upsert { row, .. } => {
+                                if let Ok(msg) = Message::from_row(row) {
+                                    if msg.deleted_at.is_some() {
+                                        // 同一バッチ内で後から削除されたメッセージの通知候補を取り消す
+                                        if let Some(&idx) = notified_indices.get(&msg.id) {
+                                            pending_notifications[idx] = None;
+                                        }
+                                    } else if let Some(&idx) = notified_indices.get(&msg.id) {
+                                        // 同一バッチ内の同一メッセージ更新を集約し、通知を1回のみに維持しつつ最新内容を反映
+                                        if let Some(entry) = &mut pending_notifications[idx] {
+                                            entry.2 = msg.content;
+                                        } else if self.should_notify_message(ch, &msg) {
+                                            let is_dm =
+                                                self.store.channel(ch).is_some_and(|c| c.is_dm);
+                                            pending_notifications[idx] =
+                                                Some((ch.clone(), msg.user_id, msg.content, is_dm));
+                                        }
+                                    } else if self.should_notify_message(ch, &msg) {
+                                        let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
+                                        let idx = pending_notifications.len();
+                                        pending_notifications.push(Some((
+                                            ch.clone(),
+                                            msg.user_id,
+                                            msg.content,
+                                            is_dm,
+                                        )));
+                                        notified_indices.insert(msg.id, idx);
+                                    }
+                                }
+                            }
+                            electric::Change::Delete { key } => {
+                                // 同一バッチ内で削除されたメッセージの通知候補を取り消す
+                                if let Some(&idx) = notified_indices.get(key) {
+                                    pending_notifications[idx] = None;
+                                }
                             }
                         }
                     }
@@ -1447,7 +1468,7 @@ impl AppState {
 
                 self.store.apply(&id, batch);
 
-                for (ch, sender_id, content, is_dm) in pending_notifications {
+                for (ch, sender_id, content, is_dm) in pending_notifications.into_iter().flatten() {
                     let sender_name = self.store.display_name(&sender_id);
                     let channel_name = self
                         .store
@@ -3889,6 +3910,8 @@ impl AppState {
 
     // --- 絵文字ピッカー ---
 
+    pub const EMOJI_PICKER_COLUMNS: usize = 9;
+
     pub const COMMON_EMOJIS: &[&str] = &[
         "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍",
         "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🥳",
@@ -3974,11 +3997,12 @@ impl AppState {
     pub fn emoji_picker_prev_row(&mut self) {
         let len = self.filtered_emojis().len();
         if len > 0 {
-            if self.emoji_picker_selected >= 8 {
-                self.emoji_picker_selected -= 8;
+            let cols = Self::EMOJI_PICKER_COLUMNS;
+            if self.emoji_picker_selected >= cols {
+                self.emoji_picker_selected -= cols;
             } else {
                 let rem = self.emoji_picker_selected;
-                let last_row_start = (len / 8) * 8;
+                let last_row_start = (len / cols) * cols;
                 let target = last_row_start + rem;
                 self.emoji_picker_selected = if target < len { target } else { len - 1 };
             }
@@ -3989,11 +4013,12 @@ impl AppState {
     pub fn emoji_picker_next_row(&mut self) {
         let len = self.filtered_emojis().len();
         if len > 0 {
-            let target = self.emoji_picker_selected + 8;
+            let cols = Self::EMOJI_PICKER_COLUMNS;
+            let target = self.emoji_picker_selected + cols;
             if target < len {
                 self.emoji_picker_selected = target;
             } else {
-                self.emoji_picker_selected %= 8;
+                self.emoji_picker_selected %= cols;
             }
             self.pending_emoji_picker_scroll = true;
         }
@@ -8172,17 +8197,55 @@ mod tests {
     }
 
     #[test]
+    fn batch_notifications_canceled_when_message_deleted_in_same_batch() {
+        let mut state = connected_state();
+        state.notifications_enabled = true;
+        state.window_active = false;
+
+        // 同一メッセージ m_del に対する insert と deleted_at 付き update を同一バッチで受信
+        let batch_data = batch(vec![
+            (
+                "m_del",
+                json!({
+                    "id": "m_del",
+                    "channel_id": "c1",
+                    "user_id": "u2",
+                    "content": "メンション通知 @alice",
+                    "created_at": "2026-11-11 00:00:00",
+                }),
+            ),
+            (
+                "m_del",
+                json!({
+                    "id": "m_del",
+                    "channel_id": "c1",
+                    "user_id": "u2",
+                    "content": "メンション通知 @alice",
+                    "created_at": "2026-11-11 00:00:00",
+                    "deleted_at": "2026-11-11 00:01:00",
+                }),
+            ),
+        ]);
+
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch_data,
+        ));
+        assert!(state.store.message("c1", "m_del").is_none());
+    }
+
+    #[test]
     fn emoji_picker_grid_navigation() {
         let mut state = connected_state();
         state.open_channel("c1".into());
         state.open_emoji_picker();
         assert_eq!(state.emoji_picker_selected, 0);
 
-        // 1行下へ (8項目進む)
+        // 1行下へ (9項目進む)
         state.emoji_picker_next_row();
-        assert_eq!(state.emoji_picker_selected, 8);
+        assert_eq!(state.emoji_picker_selected, 9);
 
-        // 1行上へ (8項目戻る)
+        // 1行上へ (9項目戻る)
         state.emoji_picker_prev_row();
         assert_eq!(state.emoji_picker_selected, 0);
     }

@@ -262,3 +262,68 @@ async fn test_messages_simple_list() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_create_channel_conflicting_id_with_other_user_generates_new_id(
+) -> Result<(), Box<dyn std::error::Error>> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    unsafe {
+        std::env::set_var("DEV_AUTH_ENABLED", "true");
+    }
+
+    let config = Config::from_env();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    let app = create_router(state);
+    let alice_id = uuid::Uuid::new_v4().to_string();
+    let bob_id = uuid::Uuid::new_v4().to_string();
+
+    for (uid, name) in [(&alice_id, "alice"), (&bob_id, "bob")] {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/users")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&json!({
+                "id": uid,
+                "user_name": format!("{name}_{}", uuid::Uuid::new_v4().simple()),
+                "display_name": name,
+            }))?))?;
+        assert_eq!(app.clone().oneshot(req).await?.status(), StatusCode::OK);
+    }
+
+    // 1. Alice が非公開チャンネルを作成
+    let target_channel_id = uuid::Uuid::new_v4().to_string();
+    let alice_req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": target_channel_id,
+            "channel_name": format!("alice-priv-{}", uuid::Uuid::new_v4().simple()),
+            "is_private": true,
+        }))?))?;
+    let resp = app.clone().oneshot(alice_req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 2. Bob が Alice のチャンネル ID を指定してチャンネル作成
+    //    他人の非公開チャンネルの存在有無で応答ステータスを変えないため、409 ではなく 200 で新 UUID が割り当てられる
+    let bob_req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &bob_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": target_channel_id,
+            "channel_name": format!("bob-chan-{}", uuid::Uuid::new_v4().simple()),
+            "is_private": false,
+        }))?))?;
+    let resp = app.clone().oneshot(bob_req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await?)?;
+    let created_id = body["data"]["id"].as_str().unwrap();
+    assert_ne!(created_id, target_channel_id);
+
+    Ok(())
+}
