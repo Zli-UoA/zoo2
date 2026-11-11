@@ -108,3 +108,19 @@ ShapeEvent ─▶ 1 本のループ
 
 - AuthZ が `zoo2-desktop-tauri` に refresh token を発行するか。`frontend/.env.example` には「offline_access は非対応で、refresh token は発行されません」と書かれている。TUI の `TokenManager` は refresh token がなくても動き、期限が切れたらログインし直しになる。検証の最初に TUI で確かめる。
 - ループバックの redirect（RFC 8252）を AuthZ が受け付けるか。今回はデバイスコードを使うので依存しないが、要確認として残す。
+
+## 開発
+
+`nix develop` の中で動かす。Tauri の CLI、trunk、wasm-bindgen、WebKitGTK が入っている。
+
+```sh
+cd desktop-tauri/src-tauri
+cargo tauri dev                    # trunk serve (localhost:1420) と一緒に起動する
+cargo tauri build --bundles deb    # NixOS では AppImage を作れないので deb だけ。AppImage は CI で作る
+```
+
+- 画面の案は `ZOO_DESKTOP_UI=leptos|remote` で選ぶ。既定は `leptos`。
+- 接続先とログインは TUI と同じ環境変数（`ZOO_API_BASE_URL`、`ZOO_OIDC_CLIENT_ID`、`ZOO_OIDC_RESOURCE` など）か、`~/.config/zoo2-desktop-tauri/config.toml` で変える。
+- ローカルの backend（`DEV_AUTH_ENABLED=true`）に向けるときは `ZOO_DEV_USER=<UUID>` を付ける。デバイスコードのログインを通らずに `X-Dev-User` で接続する。
+- NVIDIA と Wayland の組み合わせで画面が出ないときは、`WEBKIT_DISABLE_DMABUF_RENDERER=1` を付ける。
+- `wasm-bindgen` は `desktop-tauri/ui/Cargo.toml` で、nixpkgs の `wasm-bindgen-cli` と同じ版に固定している。flake.lock を更新して版が変わったら、両方をそろえる。
