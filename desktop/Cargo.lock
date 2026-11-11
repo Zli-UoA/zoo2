@@ -7590,6 +7590,7 @@ dependencies = [
  "gpui",
  "jiff",
  "notify-rust",
+ "regex",
  "reqwest",
  "serde_json",
  "tokio",

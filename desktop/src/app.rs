@@ -511,6 +511,28 @@ impl std::fmt::Debug for AppState {
     }
 }
 
+pub const MAX_CHANNEL_NAME_LEN: usize = 80;
+pub const RESERVED_CHANNEL_NAMES: &[&str] = &["all", "channel", "everyone", "here", "general"];
+
+/// チャンネル名の文字種・予約語・文字数バリデーション (バックエンドの `validate_channel_name` 準拠)
+pub fn validate_channel_name_input(name: &str) -> Result<(), &'static str> {
+    if name.trim().is_empty() {
+        return Err("チャンネル名を入力してください");
+    }
+    if name.chars().count() > MAX_CHANNEL_NAME_LEN {
+        return Err("チャンネル名は80文字以内で入力してください");
+    }
+    if RESERVED_CHANNEL_NAMES.contains(&name) {
+        return Err("このチャンネル名は予約されているため使用できません");
+    }
+    static CHANNEL_NAME_PATTERN: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\A[\p{L}\p{M}\p{N}_-]+\z").unwrap());
+    if !CHANNEL_NAME_PATTERN.is_match(name) {
+        return Err("チャンネル名には文字・数字・ハイフン(-)・アンダースコア(_)のみ使用できます");
+    }
+    Ok(())
+}
+
 impl AppState {
     /// 設定から初期状態を作る (単体テストおよび GPUI 起動の共通初期化)。
     pub fn from_config(config: &Config) -> Self {
@@ -1390,7 +1412,9 @@ impl AppState {
                         }
                     }
                 }
-                let mut pending_notifications = Vec::new();
+                let mut pending_notifications: Vec<(String, String, String, bool)> = Vec::new();
+                let mut notified_indices: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
                 if self.notifications_enabled
                     && let ShapeId::Messages(ch) = &id
                     && self.store.is_synced(&id)
@@ -1399,15 +1423,21 @@ impl AppState {
                     for change in &batch.changes {
                         if let electric::Change::Upsert { row, .. } = change
                             && let Ok(msg) = Message::from_row(row)
-                            && self.should_notify_message(ch, &msg)
                         {
-                            let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-                            pending_notifications.push((
-                                ch.clone(),
-                                msg.user_id,
-                                msg.content,
-                                is_dm,
-                            ));
+                            if let Some(&idx) = notified_indices.get(&msg.id) {
+                                // 同一バッチ内の同一メッセージ更新を集約し、通知を1回のみに維持しつつ最新内容を反映
+                                pending_notifications[idx].2 = msg.content;
+                            } else if self.should_notify_message(ch, &msg) {
+                                let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
+                                let idx = pending_notifications.len();
+                                pending_notifications.push((
+                                    ch.clone(),
+                                    msg.user_id,
+                                    msg.content,
+                                    is_dm,
+                                ));
+                                notified_indices.insert(msg.id, idx);
+                            }
                         }
                     }
                 }
@@ -3930,6 +3960,32 @@ impl AppState {
         }
     }
 
+    pub fn emoji_picker_prev_row(&mut self) {
+        let len = self.filtered_emojis().len();
+        if len > 0 {
+            if self.emoji_picker_selected >= 8 {
+                self.emoji_picker_selected -= 8;
+            } else {
+                let rem = self.emoji_picker_selected;
+                let last_row_start = (len / 8) * 8;
+                let target = last_row_start + rem;
+                self.emoji_picker_selected = if target < len { target } else { len - 1 };
+            }
+        }
+    }
+
+    pub fn emoji_picker_next_row(&mut self) {
+        let len = self.filtered_emojis().len();
+        if len > 0 {
+            let target = self.emoji_picker_selected + 8;
+            if target < len {
+                self.emoji_picker_selected = target;
+            } else {
+                self.emoji_picker_selected %= 8;
+            }
+        }
+    }
+
     pub fn insert_selected_emoji(&mut self, range: std::ops::Range<usize>) {
         if let Some(emoji) = self.selected_emoji() {
             self.insert_emoji(emoji, range);
@@ -3988,12 +4044,8 @@ impl AppState {
             return;
         }
         let name = modal.channel_name.trim().to_string();
-        if name.is_empty() {
-            modal.error = Some("チャンネル名を入力してください".to_string());
-            return;
-        }
-        if name.chars().count() > 80 {
-            modal.error = Some("チャンネル名は80文字以内で入力してください".to_string());
+        if let Err(err) = validate_channel_name_input(&name) {
+            modal.error = Some(err.to_string());
             return;
         }
         let desc_trimmed = modal.description.trim().to_string();
@@ -7934,6 +7986,11 @@ mod tests {
     fn create_channel_reissues_id_on_mutation_and_keeps_on_retry() {
         let mut state = connected_state();
         state.open_create_channel_modal();
+        let modal = state.create_channel_modal.as_mut().unwrap();
+        modal.channel_name = "test-channel".into();
+
+        // 1回目の送信 (初回 ID)
+        state.submit_create_channel();
         let initial_id = state
             .create_channel_modal
             .as_ref()
@@ -7941,34 +7998,180 @@ mod tests {
             .channel_id
             .clone()
             .expect("should have channel_id");
+        let initial_req_id = state.create_channel_modal.as_ref().unwrap().request_id;
+        assert!(state.create_channel_modal.as_ref().unwrap().in_flight);
 
-        // 名前を変更すると新しい channel_id が採番されること
+        // ネットワークエラー (非409) の失敗イベントを受信
+        state.on_app_event(AppEvent::ChannelCreateFailed {
+            request_id: initial_req_id,
+            error: "Connection refused".to_string(),
+        });
+        let modal = state.create_channel_modal.as_ref().unwrap();
+        assert!(!modal.in_flight);
+        // 通常の失敗では再試行のために同じ channel_id が維持される
+        assert_eq!(modal.channel_id.as_ref().unwrap(), &initial_id);
+
+        // 再試行で再送信
+        state.submit_create_channel();
+        let retry_modal = state.create_channel_modal.as_ref().unwrap();
+        assert!(retry_modal.in_flight);
+        let retry_req_id = retry_modal.request_id;
+        assert_eq!(retry_modal.channel_id.as_ref().unwrap(), &initial_id);
+
+        // 409 Conflict 失敗イベントを受信
+        state.on_app_event(AppEvent::ChannelCreateFailed {
+            request_id: retry_req_id,
+            error: "HTTP 409 Conflict: channel already exists".to_string(),
+        });
+        let modal_after_409 = state.create_channel_modal.as_ref().unwrap();
+        assert!(!modal_after_409.in_flight);
+        let reissued_id = modal_after_409.channel_id.clone().unwrap();
+        // 409 Conflict 後は次回再試行に向けて新しい channel_id が再採番される
+        assert_ne!(reissued_id, initial_id);
+
+        // モーダルの名前や説明が変更された場合も新しい channel_id が採番される
         {
             let modal = state.create_channel_modal.as_mut().unwrap();
             modal.channel_name = "new-name".into();
             modal.channel_id = Some(uuid::Uuid::new_v4().to_string());
         }
-        let updated_id = state
+        let mutated_id = state
             .create_channel_modal
             .as_ref()
             .unwrap()
             .channel_id
             .clone()
             .unwrap();
-        assert_ne!(initial_id, updated_id);
+        assert_ne!(mutated_id, reissued_id);
+    }
 
-        // 送信して失敗した（409 Conflict 等）場合でも、modal.channel_id が残っていれば再試行時は同じ ID が送られる
-        state.create_channel_modal.as_mut().unwrap().in_flight = false;
+    #[test]
+    fn create_channel_name_validation() {
+        let mut state = connected_state();
+        state.open_create_channel_modal();
+
+        // 空文字
+        state.create_channel_modal.as_mut().unwrap().channel_name = "   ".into();
+        state.submit_create_channel();
         assert_eq!(
             state
                 .create_channel_modal
                 .as_ref()
                 .unwrap()
-                .channel_id
-                .as_ref()
-                .unwrap(),
-            &updated_id
+                .error
+                .as_deref(),
+            Some("チャンネル名を入力してください")
         );
+        assert!(!state.create_channel_modal.as_ref().unwrap().in_flight);
+
+        // 80文字超過
+        state.create_channel_modal.as_mut().unwrap().channel_name = "a".repeat(81);
+        state.submit_create_channel();
+        assert_eq!(
+            state
+                .create_channel_modal
+                .as_ref()
+                .unwrap()
+                .error
+                .as_deref(),
+            Some("チャンネル名は80文字以内で入力してください")
+        );
+
+        // 予約語 (general, all, here, everyone, channel)
+        for reserved in &["general", "all", "here", "everyone", "channel"] {
+            state.create_channel_modal.as_mut().unwrap().channel_name = reserved.to_string();
+            state.submit_create_channel();
+            assert_eq!(
+                state
+                    .create_channel_modal
+                    .as_ref()
+                    .unwrap()
+                    .error
+                    .as_deref(),
+                Some("このチャンネル名は予約されているため使用できません")
+            );
+        }
+
+        // 不正な文字種 (空白、特殊記号)
+        for invalid in &["hello world", "test!", "chat#room", "my$channel"] {
+            state.create_channel_modal.as_mut().unwrap().channel_name = invalid.to_string();
+            state.submit_create_channel();
+            assert_eq!(
+                state
+                    .create_channel_modal
+                    .as_ref()
+                    .unwrap()
+                    .error
+                    .as_deref(),
+                Some("チャンネル名には文字・数字・ハイフン(-)・アンダースコア(_)のみ使用できます")
+            );
+        }
+
+        // 正常なチャンネル名 (日本語、ハイフン、アンダースコア、80文字)
+        for valid in &["dev", "dev-123", "開発_部屋", "test-room_01"] {
+            state.create_channel_modal.as_mut().unwrap().channel_name = valid.to_string();
+            state.create_channel_modal.as_mut().unwrap().in_flight = false;
+            state.submit_create_channel();
+            assert!(state.create_channel_modal.as_ref().unwrap().error.is_none());
+            assert!(state.create_channel_modal.as_ref().unwrap().in_flight);
+            state.create_channel_modal.as_mut().unwrap().in_flight = false;
+        }
+    }
+
+    #[test]
+    fn batch_notifications_deduplicated_per_message_id() {
+        let mut state = connected_state();
+        state.notifications_enabled = true;
+        state.window_active = false;
+
+        // 同一メッセージ m_dedup に対する insert と update の 2 件を同一バッチで受信
+        let batch_data = batch(vec![
+            (
+                "m_dedup",
+                json!({
+                    "id": "m_dedup",
+                    "channel_id": "c1",
+                    "user_id": "u2",
+                    "content": "最初の内容 @alice",
+                    "created_at": "2026-11-11 00:00:00",
+                }),
+            ),
+            (
+                "m_dedup",
+                json!({
+                    "id": "m_dedup",
+                    "channel_id": "c1",
+                    "user_id": "u2",
+                    "content": "更新後の内容 @alice",
+                    "created_at": "2026-11-11 00:00:00",
+                    "display_data": "{}",
+                }),
+            ),
+        ]);
+
+        // on_shape を実行してもパニックせず、store に正常に適用されること
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch_data,
+        ));
+        let stored = state.store.message("c1", "m_dedup").unwrap();
+        assert_eq!(stored.content, "更新後の内容 @alice");
+    }
+
+    #[test]
+    fn emoji_picker_grid_navigation() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.open_emoji_picker();
+        assert_eq!(state.emoji_picker_selected, 0);
+
+        // 1行下へ (8項目進む)
+        state.emoji_picker_next_row();
+        assert_eq!(state.emoji_picker_selected, 8);
+
+        // 1行上へ (8項目戻る)
+        state.emoji_picker_prev_row();
+        assert_eq!(state.emoji_picker_selected, 0);
     }
 
     #[test]

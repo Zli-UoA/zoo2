@@ -35,6 +35,8 @@ pub struct WorkspaceView {
     pub timeline_scroll: ScrollHandle,
     pub thread_scroll: ScrollHandle,
     pub quick_switcher_scroll: ScrollHandle,
+    pub emoji_picker_scroll: ScrollHandle,
+    pub create_channel_private_focus: FocusHandle,
     focus_handle: FocusHandle,
     login_primary_focus: FocusHandle,
     login_secondary_focus: FocusHandle,
@@ -117,7 +119,11 @@ impl WorkspaceView {
                 }
                 InputEvent::Up => {
                     let handled = this.state.update(cx, |state, cx| {
-                        if state.mention_autocomplete.is_some() {
+                        if state.emoji_picker_open {
+                            state.emoji_picker_prev_row();
+                            cx.notify();
+                            true
+                        } else if state.mention_autocomplete.is_some() {
                             state.mention_select_prev();
                             cx.notify();
                             true
@@ -131,7 +137,11 @@ impl WorkspaceView {
                 }
                 InputEvent::Down => {
                     let handled = this.state.update(cx, |state, cx| {
-                        if state.mention_autocomplete.is_some() {
+                        if state.emoji_picker_open {
+                            state.emoji_picker_next_row();
+                            cx.notify();
+                            true
+                        } else if state.mention_autocomplete.is_some() {
                             state.mention_select_next();
                             cx.notify();
                             true
@@ -145,6 +155,13 @@ impl WorkspaceView {
                 }
                 InputEvent::Tab => {
                     let sel = this.composer_input.read(cx).selected_range();
+                    if this.state.read(cx).emoji_picker_open {
+                        this.state.update(cx, |state, cx| {
+                            state.emoji_picker_next();
+                            cx.notify();
+                        });
+                        return;
+                    }
                     let mention_handled = this.state.update(cx, |state, cx| {
                         if state.mention_autocomplete.is_some() {
                             if !sel.is_empty() {
@@ -399,16 +416,23 @@ impl WorkspaceView {
         .detach();
 
         cx.observe(&state, |this, state, cx| {
-            let (pending_composer, pending_search, pending_open_url, is_mention_active, theme) =
-                state.update(cx, |s, _| {
-                    (
-                        s.pending_composer_text.take(),
-                        s.pending_search_text.take(),
-                        s.pending_open_url.take(),
-                        s.mention_autocomplete.is_some(),
-                        s.theme(),
-                    )
-                });
+            let (
+                pending_composer,
+                pending_search,
+                pending_open_url,
+                is_mention_active,
+                is_emoji_picker_open,
+                theme,
+            ) = state.update(cx, |s, _| {
+                (
+                    s.pending_composer_text.take(),
+                    s.pending_search_text.take(),
+                    s.pending_open_url.take(),
+                    s.mention_autocomplete.is_some(),
+                    s.emoji_picker_open,
+                    s.theme(),
+                )
+            });
             if let Some((text, cursor)) = pending_composer {
                 this.composer_input.update(cx, |input, cx| {
                     if let Some(pos) = cursor {
@@ -426,8 +450,8 @@ impl WorkspaceView {
                 cx.open_url(&url);
             }
             this.composer_input.update(cx, |input, _| {
-                input.intercept_vertical_arrows = is_mention_active;
-                input.intercept_tab = is_mention_active;
+                input.intercept_vertical_arrows = is_mention_active || is_emoji_picker_open;
+                input.intercept_tab = is_mention_active || is_emoji_picker_open;
             });
             this.search_input.update(cx, |i, _| i.theme = theme);
             this.composer_input.update(cx, |i, _| i.theme = theme);
@@ -454,6 +478,8 @@ impl WorkspaceView {
             timeline_scroll: ScrollHandle::new(),
             thread_scroll: ScrollHandle::new(),
             quick_switcher_scroll: ScrollHandle::new(),
+            emoji_picker_scroll: ScrollHandle::new(),
+            create_channel_private_focus: cx.focus_handle(),
             focus_handle: cx.focus_handle(),
             login_primary_focus: cx.focus_handle(),
             login_secondary_focus: cx.focus_handle(),
@@ -2929,6 +2955,7 @@ impl WorkspaceView {
         let state = self.state.read(cx);
         let theme = state.theme();
         let selected_idx = state.emoji_picker_selected;
+        self.emoji_picker_scroll.scroll_to_item(selected_idx);
 
         let filtered = state.filtered_emojis();
 
@@ -3011,6 +3038,7 @@ impl WorkspaceView {
             .child(
                 div()
                     .id("emoji-picker-list")
+                    .track_scroll(&self.emoji_picker_scroll)
                     .w_full()
                     .max_h(px(200.0))
                     .overflow_y_scroll()
@@ -3022,7 +3050,17 @@ impl WorkspaceView {
             )
     }
 
-    fn render_create_channel_modal(&self, cx: &mut Context<Self>) -> Div {
+    fn toggle_create_channel_is_private(&self, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| {
+            if let Some(m) = &mut s.create_channel_modal {
+                m.is_private = !m.is_private;
+                m.channel_id = Some(uuid::Uuid::new_v4().to_string());
+            }
+            cx.notify();
+        });
+    }
+
+    fn render_create_channel_modal(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let state = self.state.read(cx);
         let theme = state.theme();
         let modal = state.create_channel_modal.as_ref().unwrap();
@@ -3036,6 +3074,7 @@ impl WorkspaceView {
         } else {
             theme.text_muted
         };
+        let is_private_focused = self.create_channel_private_focus.is_focused(window);
 
         div()
             .w(px(400.0))
@@ -3059,6 +3098,8 @@ impl WorkspaceView {
                     .focus_handle(cx)
                     .is_focused(window)
                 {
+                    window.focus(&this.create_channel_private_focus);
+                } else if this.create_channel_private_focus.is_focused(window) {
                     window.focus(&this.create_channel_name_input.focus_handle(cx));
                 }
             }))
@@ -3168,11 +3209,18 @@ impl WorkspaceView {
             )
             .child(
                 div()
+                    .id("create-channel-private-toggle")
+                    .track_focus(&self.create_channel_private_focus)
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap_2()
-                    .hover(|s| s.cursor_pointer())
+                    .p_1()
+                    .rounded_md()
+                    .when(is_private_focused, |d| {
+                        d.border_1().border_color(theme.accent).bg(theme.bg_surface)
+                    })
+                    .hover(|s| s.cursor_pointer().bg(theme.bg_hover))
                     .child(
                         div()
                             .w_4()
@@ -3205,15 +3253,14 @@ impl WorkspaceView {
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                            this.state.update(cx, |s, cx| {
-                                if let Some(m) = &mut s.create_channel_modal {
-                                    m.is_private = !m.is_private;
-                                    m.channel_id = Some(uuid::Uuid::new_v4().to_string());
-                                }
-                                cx.notify();
-                            });
+                            this.toggle_create_channel_is_private(cx);
                         }),
-                    ),
+                    )
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                        if is_activate_key(&ev.keystroke.key) {
+                            this.toggle_create_channel_is_private(cx);
+                        }
+                    })),
             )
             .child(
                 div()
@@ -3655,16 +3702,30 @@ impl Render for WorkspaceView {
                         window.focus(&this.composer_input.focus_handle(cx));
                         return;
                     }
-                    if key == "arrow_left" || key == "arrow_up" {
+                    if key == "left" || key == "arrow_left" {
                         this.state.update(cx, |s, cx| {
                             s.emoji_picker_prev();
                             cx.notify();
                         });
                         return;
                     }
-                    if key == "arrow_right" || key == "arrow_down" || key == "tab" {
+                    if key == "right" || key == "arrow_right" || key == "tab" {
                         this.state.update(cx, |s, cx| {
                             s.emoji_picker_next();
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    if key == "up" || key == "arrow_up" {
+                        this.state.update(cx, |s, cx| {
+                            s.emoji_picker_prev_row();
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    if key == "down" || key == "arrow_down" {
+                        this.state.update(cx, |s, cx| {
+                            s.emoji_picker_next_row();
                             cx.notify();
                         });
                         return;
@@ -3716,7 +3777,7 @@ impl Render for WorkspaceView {
                         .items_center()
                         .justify_center()
                         .when(has_create_modal, |d| {
-                            d.child(self.render_create_channel_modal(cx))
+                            d.child(self.render_create_channel_modal(window, cx))
                         })
                         .when(has_quick_switcher, |d| {
                             d.child(self.render_quick_switcher_modal(cx))

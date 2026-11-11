@@ -587,8 +587,8 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     //      先行リクエストが INSERT と添付紐付けをコミットし、後続リクエストが事前照会をすり抜けた後に
     //      添付検証時点で already attached に遭遇しても、紐付け先が要求 ID と一致するため
     //      新設の冪等フォールバックにより両方とも 200 OK で同一メッセージを返すこと。
-    //      ※ 後続リクエストには X-Test-Delay-Attachment-Verify ヘッダを付与し、
-    //         事前照会（messages 存在確認）後から添付取得までの間に先行 commit を確実に挟み込む。
+    //      ※ 先行リクエストには X-Test-Gate-Notify ヘッダ、後続リクエストには X-Test-Gate-Wait ヘッダを付与し、
+    //         先行リクエストの commit 完了後に後続の添付検証が走るよう二段階同期を行う。
     let concurrent_att_msg_id = uuid::Uuid::new_v4().to_string();
 
     let conc_file_content = b"concurrent test png content";
