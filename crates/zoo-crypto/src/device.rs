@@ -331,13 +331,46 @@ fn derive_pickle_key(storage_key: &[u8; 32], salt: &[u8; PICKLE_SALT_LEN]) -> Ze
 /// 署名する対象を JSON ではなく長さ付きのバイト列にして、この署名がサーバーに送る
 /// 署名付き JSON の署名と取り違えられないようにする。
 fn binding_message(user_id: &str, device_id: &str) -> Vec<u8> {
+    length_prefixed(&[PICKLE_BINDING_CONTEXT, user_id, device_id])
+}
+
+/// 各部分を `LP(x) = UTF-8 のバイト長（u32、ビッグエンディアン）‖ UTF-8 のバイト列` にしてつなぐ
+/// （docs/e2ee.md の「鍵スロット」の AAD と同じ形）。
+pub(crate) fn length_prefixed(parts: &[&str]) -> Vec<u8> {
     let mut message = Vec::new();
-    for part in [PICKLE_BINDING_CONTEXT, user_id, device_id] {
-        let len = u32::try_from(part.len()).expect("ID は 4 GiB より短い");
+    for part in parts {
+        let len = u32::try_from(part.len()).expect("ID と定数は 4 GiB より短い");
         message.extend_from_slice(&len.to_be_bytes());
         message.extend_from_slice(part.as_bytes());
     }
     message
+}
+
+/// OS かブラウザーの暗号用乱数で `N` バイトを作る。
+///
+/// # Panics
+///
+/// OS やブラウザーの暗号用乱数を取れないとき（vodozemac の鍵の生成と同じ）。
+pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    getrandom::fill(&mut bytes).expect("OS かブラウザーの暗号用乱数を取れない");
+    bytes
+}
+
+/// 小文字でハイフン区切りの UUID v4 を作る（SSSS の `key_id`、鍵スロットの `slot_id`）。
+pub(crate) fn new_uuid_v4() -> String {
+    let mut bytes: [u8; 16] = random_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 /// 他の端末の、検証済みの端末鍵。

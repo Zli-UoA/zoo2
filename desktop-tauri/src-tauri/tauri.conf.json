@@ -25,5 +25,13 @@
     "linux": {
       "deb": { "depends": ["libwebkit2gtk-4.1-0", "libayatana-appindicator3-1"] }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/Zli-UoA/zoo2/releases/download/desktop-tauri-updater/latest.json"
+      ]
+    }
   }
 }

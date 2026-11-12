@@ -101,10 +101,21 @@ ShapeEvent ─▶ 1 本のループ
 
 ## 常駐、単一インスタンス
 
-- ウィンドウを閉じたら隠し、トレイ（`tauri` の tray）に残す。トレイのメニューは「開く」と「終了」にする。
+- ウィンドウを閉じたら隠し、トレイ（`tauri` の tray）に残す。トレイのメニューは「開く」と「終了」にする。更新の準備ができたら「更新して再起動」を足す（「配布と更新」）。
 - 2 つ目の起動は `tauri-plugin-single-instance` で 1 つ目に渡し、ウィンドウを表示する。Wayland では前面に出ないことがある。
 - ディープリンク（`tauri-plugin-deep-link`）は後続の項目にする。scheme が決まっておらず、Linux ではインストールした後でないと動かないため。
 - 常駐と単一インスタンスは同じ段階で入れる。どちらかが動かない環境では、常駐をやめて「閉じたら終了」にする。
+
+## 配布と更新
+
+- **配布**: `cd-desktop-tauri-release.yaml` が、`desktop-tauri/src-tauri/Cargo.toml` の `version` を上げて `main` に入れたときに、`desktop-tauri-v<version>` の GitHub Release を作る（TUI の `cd-tui-release.yaml` と同じ流れ）。deb と AppImage と、それぞれの署名（`.sig`）を置く。glibc と WebKitGTK を古めに合わせるため、ubuntu-22.04 で作る。リポジトリの「Latest」は TUI のままにする（`--latest=false`）。
+- **更新の確認**: `tauri-plugin-updater` を Rust 側だけで使う（WebView には許可を出さない）。起動の 30 秒後と 6 時間ごとに `latest.json` を読み、新しい版があれば裏で取得して署名を確かめる。入れ替えと再起動は、通知かトレイのメニューを利用者が押したときだけ行う（書きかけの下書きを勝手に失わないため）。`check_updates = false`（`ZOO_CHECK_UPDATES=false`、TUI と同じ設定）なら確かめない。
+- **`latest.json` の置き場所**: 「Latest」が TUI なので `releases/latest/download/` は使えない。決まったタグ `desktop-tauri-updater` のリリース（prerelease）を 1 つ作り、リリースのたびに `latest.json` だけを置き直す。`platforms` には `linux-x86_64-deb` と `linux-x86_64-appimage`（と、古い形の `linux-x86_64`）を書く。プラグインは、ビルドしたときの形（deb なら `dpkg -i` を `pkexec` で、AppImage ならファイルの置き換え）で入れる。リリース済みの版でも、`latest.json` がその版を指していなければ、workflow は既存のリリースの署名から作り直して公開する（公開が途中で失敗しても、再実行で直る）。
+- **署名の鍵**: 秘密鍵は Secrets の `TAURI_SIGNING_PRIVATE_KEY` と `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`、公開鍵は Variables の `TAURI_UPDATER_PUBKEY` に置く。公開鍵はリリースのビルドのときだけ `--config` で `plugins.updater.pubkey` に入れる。リポジトリの `tauri.conf.json` は空のままにして、ローカルや CI のビルド、`cargo tauri dev` では更新を確かめない（`bundle_type()` が取れないときも確かめない）。鍵がなければ、workflow はリリースを作らずに終わる。
+- **鍵の作り方と保管**: 管理者が手元で作る。秘密鍵とパスワードは、zoo2-infra の `github/zoo2-desktop-tauri/updater-signing-key.sops.yaml` に sops で暗号化して置き、これを正本にする（GitHub Secrets の値は後から読み出せないため）。GitHub Secrets へは、そこから `sops decrypt --extract` の出力を `gh secret set` に渡して登録する。手順は zoo2-infra の `github/README.md` にある。秘密鍵をなくすと、配った版はそれ以降の更新を受け付けない。
+- **後続の項目**:
+  - `requireSignedVersion`（署名に版を含め、古い版への差し戻しを防ぐ）は入れていない。いまの tauri-cli（2.11.4）は署名に版を書かないため。CLI を上げたら有効にする。
+  - macOS は、Developer ID の署名と公証を入れるときに、`darwin-aarch64` を足す。
 
 ## 未確定・確認が要るもの
 

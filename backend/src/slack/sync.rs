@@ -871,9 +871,36 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
     if done.is_empty() {
         return Err(SyncError::LeaseLost);
     }
-    // 同期中に Slack 連携した人の投稿は、キャッシュしたプレースホルダのまま保存されている。ZIP の取り込みと
-    // 同じく、終わりに連携済みの人の分を本人へ移す
-    super::link::reconcile_team(&mut tx, &task.team_id).await?;
+    // 同期中に Slack 連携した人の投稿は、キャッシュしたプレースホルダのまま保存されている。そういう投稿が
+    // このチャンネルに残っているときだけ、ZIP の取り込みと同じ付け替え (`reconcile_team`) をする。
+    // 付け替えは全ワークスペース共通のロックを取り、チームの投稿本文も走査するので、毎回は呼ばない
+    let linked = query(
+        &mut tx,
+        "SELECT json_build_object('slack_user_id',slack_user_id)::text FROM slack_users \
+         WHERE team_id=$1 AND linked",
+        &[&task.team_id],
+    )
+    .await?;
+    let placeholders: Vec<String> = linked
+        .iter()
+        .filter_map(|row| row["slack_user_id"].as_str())
+        .map(|user| super::user_id(&task.team_id, user))
+        .collect();
+    if !placeholders.is_empty() {
+        let leftover = query(
+            &mut tx,
+            "SELECT json_build_object('found',true)::text FROM messages WHERE channel_id=$1 \
+             AND user_id IN (SELECT jsonb_array_elements_text($2::jsonb)) LIMIT 1",
+            &[
+                &task.channel_id,
+                &serde_json::to_string(&placeholders).unwrap_or_else(|_| "[]".into()),
+            ],
+        )
+        .await?;
+        if !leftover.is_empty() {
+            super::link::reconcile_team(&mut tx, &task.team_id).await?;
+        }
+    }
     tx.commit().await.map_err(AppError::from)?;
     Ok(Step::Done)
 }

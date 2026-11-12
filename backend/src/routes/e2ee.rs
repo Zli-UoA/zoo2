@@ -83,7 +83,12 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 // エラー
 
-fn coded(status: StatusCode, code: &'static str, message: &str, extra: Value) -> AppError {
+pub(crate) fn coded(
+    status: StatusCode,
+    code: &'static str,
+    message: &str,
+    extra: Value,
+) -> AppError {
     AppError::Coded {
         status,
         code,
@@ -95,7 +100,7 @@ fn coded(status: StatusCode, code: &'static str, message: &str, extra: Value) ->
     }
 }
 
-fn limit_exceeded(limit: &str) -> AppError {
+pub(crate) fn limit_exceeded(limit: &str) -> AppError {
     limit_exceeded_with(limit, Map::new())
 }
 
@@ -109,7 +114,7 @@ fn limit_exceeded_with(limit: &str, mut extra: Map<String, Value>) -> AppError {
     )
 }
 
-fn bad_signature() -> AppError {
+pub(crate) fn bad_signature() -> AppError {
     coded(
         StatusCode::BAD_REQUEST,
         "E2EE_BAD_SIGNATURE",
@@ -140,7 +145,7 @@ fn device_not_found() -> AppError {
     AppError::NotFound("Device not found".into())
 }
 
-fn crypto_error(err: CryptoError) -> AppError {
+pub(crate) fn crypto_error(err: CryptoError) -> AppError {
     match err {
         CryptoError::MissingSignature { .. } | CryptoError::Signature(_) => bad_signature(),
         err => AppError::BadRequest(format!("Invalid key: {err}")),
@@ -182,11 +187,11 @@ fn key_generation(key_id: &str) -> Result<u64, AppError> {
         })
 }
 
-fn json_size(value: &Value) -> usize {
+pub(crate) fn json_size(value: &Value) -> usize {
     serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
 }
 
-fn check_key_size(value: &Value) -> Result<(), AppError> {
+pub(crate) fn check_key_size(value: &Value) -> Result<(), AppError> {
     if json_size(value) > MAX_KEY_JSON_BYTES {
         return Err(limit_exceeded("key_size"));
     }
@@ -194,7 +199,7 @@ fn check_key_size(value: &Value) -> Result<(), AppError> {
 }
 
 /// `signatures` に入っている署名の件数（全ユーザー、全鍵 ID の合計）。
-fn signature_count(value: &Value) -> usize {
+pub(crate) fn signature_count(value: &Value) -> usize {
     value
         .get("signatures")
         .and_then(Value::as_object)
@@ -289,7 +294,7 @@ fn check_display_name(name: &str) -> Result<(), AppError> {
 // ---------------------------------------------------------------------------
 // DB の小さな補助
 
-async fn rows(
+pub(crate) async fn rows(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,
     params: &[&str],
@@ -297,7 +302,7 @@ async fn rows(
     crate::apps::query(tx, sql, params).await
 }
 
-async fn first(
+pub(crate) async fn first(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,
     params: &[&str],
@@ -305,7 +310,7 @@ async fn first(
     Ok(rows(tx, sql, params).await?.into_iter().next())
 }
 
-async fn exec(
+pub(crate) async fn exec(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,
     params: &[&str],
@@ -323,7 +328,10 @@ async fn exec(
 /// `AuthUser` の確認はハンドラーとは別のトランザクションなので、そのあとで無効化がコミットされても、
 /// ここで止める。先にこの行を読めば、無効化の `UPDATE` はこのトランザクションのコミットを待ち、
 /// そのあとで（トリガーが）この書き込みの端末も削除する。
-async fn lock_active_user(tx: &mut toasty::Transaction<'_>, user_id: &str) -> Result<(), AppError> {
+pub(crate) async fn lock_active_user(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+) -> Result<(), AppError> {
     let row = first(
         tx,
         "SELECT '{}'::text FROM users WHERE id = $1 AND NOT is_deactivated FOR SHARE",
@@ -335,7 +343,10 @@ async fn lock_active_user(tx: &mut toasty::Transaction<'_>, user_id: &str) -> Re
 }
 
 /// ユーザー単位のロック。端末の登録（台数の確認と登録）と 30 日の回収のバッチを直列にする。
-async fn lock_user(tx: &mut toasty::Transaction<'_>, user_id: &str) -> Result<(), AppError> {
+pub(crate) async fn lock_user(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+) -> Result<(), AppError> {
     first(
         tx,
         "SELECT '{}'::text FROM pg_advisory_xact_lock(1, hashtext($1))",

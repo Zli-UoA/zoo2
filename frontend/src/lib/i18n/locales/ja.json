@@ -252,6 +252,8 @@
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
     "usersTitle": "{{emoji}} にリアクションしたユーザー",
+    "showAllUsers": "リアクションしたユーザーを表示",
+    "allUsersTitle": "リアクションしたユーザー",
     "usersLoading": "ユーザーを読み込み中",
     "userUnavailable": "ユーザーを表示できません",
     "usersEmpty": "リアクションはありません",
