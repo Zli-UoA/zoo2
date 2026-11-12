@@ -100,6 +100,7 @@ function Channel() {
         <ChannelThreadItems
           channel={{ id: "general", channel_name: "general" } as ChannelRow}
           threads={index.threads}
+          onObserveThread={index.observeThread}
         />
       </aside>
       <button onClick={() => openThread("old")}>Reply to parent</button>
@@ -305,6 +306,26 @@ it("keeps an observed archive hidden when an earlier refresh finishes late", asy
     expect(tree.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
     expect(fixture.get).toHaveBeenCalledTimes(2);
     expect(fixture.post).not.toHaveBeenCalled();
+  } finally {
+    fixture.roots[0].thread_archive_at = archiveAt;
+  }
+});
+
+it("retains a reopened unlisted root after closing while refresh fails", async () => {
+  fixture.get.mockRejectedValue(new Error("offline"));
+  const archiveAt = fixture.roots[0].thread_archive_at;
+  const view = setup("/channels/general?thread=old");
+  await screen.findByRole("link", { name: /Old archived conversation/ });
+  try {
+    fixture.roots[0].thread_archive_at = null;
+    await act(async () => window.dispatchEvent(new Event("zoo-threads-changed")));
+    await waitFor(() => expect(fixture.get).toHaveBeenCalledTimes(2));
+    await userEvent.click(screen.getByRole("button", { name: "Close conversation" }));
+    expect(await screen.findByRole("link", { name: /Old archived conversation/ })).toBeTruthy();
+    // キャッシュの購読を外して戻っても確定済みの行が残る。
+    view.unmount();
+    setup("/channels/general");
+    expect(await screen.findByRole("link", { name: /Old archived conversation/ })).toBeTruthy();
   } finally {
     fixture.roots[0].thread_archive_at = archiveAt;
   }

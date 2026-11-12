@@ -211,7 +211,11 @@ export function ChannelSidebar({
                       ) : null}
                     </Link>
                     {!channel.is_dm ? (
-                      <ChannelThreadItems channel={channel} threads={threadIndex.threads} />
+                      <ChannelThreadItems
+                        channel={channel}
+                        threads={threadIndex.threads}
+                        onObserveThread={threadIndex.observeThread}
+                      />
                     ) : null}
                   </div>
                 );

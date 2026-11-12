@@ -17,9 +17,11 @@ import { sidebarItemClassName } from "./sidebarStyles";
 export function ChannelThreadItems({
   channel,
   threads,
+  onObserveThread,
 }: {
   channel: ChannelRow;
   threads: ThreadSummary[];
+  onObserveThread?: (thread: ThreadSummary) => void;
 }) {
   const { t } = useTranslation();
   const shell = useShell();
@@ -63,6 +65,26 @@ export function ChannelThreadItems({
             0,
         }
       : channelThreads.find((thread) => thread.id === selectedId);
+  const selectedContent = selected?.content;
+  const selectedCount = selected?.reply_count;
+  useEffect(() => {
+    if (!selectedRoot || selectedRoot.deleted_at || !selectedCount) return;
+    onObserveThread?.({
+      id: selectedRoot.id,
+      channel_id: channel.id,
+      content: selectedContent ?? "",
+      thread_archive_at: observedArchiveAt,
+      reply_count: selectedCount,
+    });
+  }, [
+    selectedRoot?.id,
+    selectedRoot?.deleted_at,
+    channel.id,
+    selectedContent,
+    selectedCount,
+    observedArchiveAt,
+    onObserveThread,
+  ]);
   const visible = active.filter(
     (thread) => thread.id !== selectedId || !selectedRoot?.thread_archive_at,
   );

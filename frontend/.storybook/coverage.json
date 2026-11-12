@@ -292,7 +292,8 @@
         "Error",
         "Mobile",
         "Completions",
-        "AppCard"
+        "AppCard",
+        "RootLoadError"
       ]
     },
     {
@@ -849,6 +850,12 @@
     {
       "file": "src/components/chat/messages/ReactionPicker.tsx",
       "story": "src/components/chat/messages/ReactionPicker.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/ThreadPaneStatus.tsx",
+      "story": "src/components/chat/messages/ThreadPane.stories.tsx",
+      "composed": true,
+      "reason": "RootLoadErrorで親投稿の取得失敗、再試行・閉じる操作を確認する。"
     },
     {
       "file": "src/components/chat/messages/ThreadPane.tsx",

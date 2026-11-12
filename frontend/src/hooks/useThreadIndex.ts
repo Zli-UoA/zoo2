@@ -40,6 +40,7 @@ function createIndex(
 ) {
   const client = createConfiguredApiClient(config);
   let result: Result | null = null;
+  const observed = new Map<string, { thread: ThreadSummary; sequence: number }>();
   let fetchedAt = 0;
   let observedRevision = -1;
   let cursor: string | null = null;
@@ -99,26 +100,39 @@ function createIndex(
         }
         if (active && started === generation && !signal.aborted) {
           for (const item of items) requestSequences.set(item, requestedSequence);
+          for (const [id, local] of observed) {
+            if (
+              requestedSequence > local.sequence &&
+              (!append || items.some((item) => item.id === id))
+            ) {
+              observed.delete(id);
+            }
+          }
           fetchedAt = Date.now();
           observedRevision = startedRevision;
           failedRequest = null;
           cursor = rebuild ? rangeEnd : page.next_cursor;
           hasAdditionalPages = append || (rebuild && items.length > 100);
           const nextCursor = cursor;
-          setResult((current) => ({
-            items: [
-              ...new Map(
-                [...(append && current?.key === key ? current.items : []), ...items].map((item) => [
-                  item.id,
-                  item,
-                ]),
-              ).values(),
-            ],
-            next_cursor: nextCursor,
-            key,
-            isLoading: false,
-            isError: false,
-          }));
+          setResult((current) => {
+            const merged = new Map(
+              [...(append && current?.key === key ? current.items : []), ...items].map((item) => [
+                item.id,
+                item,
+              ]),
+            );
+            for (const [id, local] of observed) {
+              if (local.thread.thread_archive_at) merged.delete(id);
+              else merged.set(id, local.thread);
+            }
+            return {
+              items: [...merged.values()],
+              next_cursor: nextCursor,
+              key,
+              isLoading: false,
+              isError: false,
+            };
+          });
         }
       } catch {
         // 一時的な取得失敗では直前の一覧を残し、再試行できるようにする。
@@ -187,6 +201,19 @@ function createIndex(
     };
   };
   return {
+    observeThread: (thread: ThreadSummary) => {
+      if (archived || (channelId && thread.channel_id !== channelId)) return;
+      const previous = observed.get(thread.id)?.thread;
+      if (previous && JSON.stringify(previous) === JSON.stringify(thread)) return;
+      observed.set(thread.id, { thread, sequence: nextThreadIndexSequence() });
+      setResult((current) => ({
+        ...(current ?? { ...EMPTY_PAGE, key, isLoading: false, isError: false }),
+        items: [
+          ...(current?.items ?? []).filter((item) => item.id !== thread.id),
+          ...(!thread.thread_archive_at ? [thread] : []),
+        ],
+      }));
+    },
     snapshot: () => result,
     loadMore: () => loadMore(),
     subscribe: (listener: () => void) => {
@@ -240,5 +267,6 @@ export function useThreadIndex(
     isLoading: current?.isLoading ?? false,
     isError: current?.isError ?? false,
     loadMore: store.loadMore,
+    observeThread: store.observeThread,
   };
 }

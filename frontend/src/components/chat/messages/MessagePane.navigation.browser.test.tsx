@@ -309,9 +309,13 @@ describe("links and threads whose rows are older than the loaded range", () => {
   });
 });
 
-it("keeps the selected thread open when its root request fails", () => {
+it("shows a retryable pane without closing when its root request fails", async () => {
   fixture.rootRows = [];
   fixture.rootError = true;
   render(pane());
   expect(fixture.closeThread).not.toHaveBeenCalled();
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "再試行" })).toBeTruthy();
+  screen.getByRole("button", { name: "スレッドを閉じる" }).click();
+  expect(fixture.closeThread).toHaveBeenCalledTimes(1);
 });
