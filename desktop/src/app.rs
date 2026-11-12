@@ -412,6 +412,7 @@ pub struct AppState {
     pub login_phase: Option<LoginPhase>,
     pub login_task: Option<JoinHandle<()>>,
     logout_in_progress: bool,
+    deferred_unauthorized: bool,
     cancel_in_progress: bool,
     /// 実行中のデバイスログインでトークン保存が完了したマネージャ。
     /// 承認完了後にキャンセルされた場合、このマネージャが保存したトークンのみを削除・失効するために保持する。
@@ -609,6 +610,7 @@ impl AppState {
             login_phase: Some(LoginPhase::Checking),
             login_task: None,
             logout_in_progress: false,
+            deferred_unauthorized: false,
             cancel_in_progress: false,
             pending_device_login_manager: Arc::new(std::sync::Mutex::new(None)),
             credentials: None,
@@ -971,6 +973,7 @@ impl AppState {
 
     fn finish_logout(&mut self, result: Result<Vec<String>, (String, bool)>) {
         self.logout_in_progress = false;
+        let deferred_unauthorized = std::mem::take(&mut self.deferred_unauthorized);
         if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
             match result {
                 Ok(refresh_tokens) => {
@@ -997,9 +1000,13 @@ impl AppState {
                     self.reset_to_login(Some("別のログインを保持してログアウトしました".into()));
                 }
                 Err((err, false)) => {
-                    self.notify(format!(
-                        "ログアウトに失敗しました（トークン削除エラー）: {err:#}"
-                    ));
+                    let message =
+                        format!("ログアウトに失敗しました（トークン削除エラー）: {err:#}");
+                    if deferred_unauthorized {
+                        self.reset_to_login_after_unauthorized(message);
+                    } else {
+                        self.notify(message);
+                    }
                 }
             }
         }
@@ -1236,6 +1243,7 @@ impl AppState {
 
     fn reset_to_login_after_unauthorized(&mut self, error: String) {
         if self.logout_in_progress {
+            self.deferred_unauthorized = true;
             return;
         }
         let recovery = self
@@ -6077,6 +6085,25 @@ mod tests {
         assert_eq!(manager.access_token().await.unwrap(), "access");
         assert!(!manager.has_pending_persistence());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn failed_logout_replays_unauthorized_event() {
+        let mut state = connected_state();
+        state.config.auth = AuthConfig::Oidc(OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        });
+        state.logout_in_progress = true;
+        state.on_shape(ShapeEvent::Failed(
+            ShapeId::Users,
+            HttpError::Unauthorized.to_string(),
+        ));
+        assert!(state.login_phase.is_none());
+        state.finish_logout(Err(("storage error".into(), false)));
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
     }
 
     #[tokio::test]

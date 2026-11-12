@@ -121,6 +121,7 @@ async fn startup_me_or_interrupt(
     let me_result = tokio::select! {
         biased;
         signal = ctrl_c.as_mut() => {
+            eprintln!("token 更新の完了を待って終了しています。");
             let report = credentials.finish_token_tasks().await;
             return match signal {
                 Ok(()) => Err(startup_interrupt_error(report)),
@@ -1217,6 +1218,10 @@ mod tests {
         .await
         .expect("startup worker should finish after handling SIGINT");
         let output = child.wait_with_output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("token 更新の完了を待って終了しています")
+        );
         assert!(
             status.success(),
             "worker failed: {}",

@@ -829,9 +829,12 @@ pub fn delete_if_same_session(
     ))
 }
 
-/// Delete the token file only if it still contains the snapshot observed before
-/// revocation. The lock makes the comparison and unlink one atomic operation
-/// with respect to other token-file users.
+/// Read a snapshot for later comparison before deleting a token file.
+pub fn read_token_snapshot(path: &Path) -> Result<Option<StoredTokens>> {
+    read_tokens_unlocked(path)
+}
+
+/// Delete only the snapshot observed before revocation, while holding the file lock.
 pub fn delete_if_unchanged(path: &Path, expected: Option<&StoredTokens>) -> Result<DeleteOutcome> {
     let Some(_lock) = token_file_lock(path, false)? else {
         return Ok(DeleteOutcome::Missing);
@@ -1126,6 +1129,10 @@ impl TokenManager {
     }
 
     pub async fn access_token(&self) -> Result<String> {
+        Ok(self.access_token_with_expiry().await?.0)
+    }
+
+    pub async fn access_token_with_expiry(&self) -> Result<(String, i64)> {
         if self.signed_out() {
             return Err(HttpError::Unauthorized.into());
         }
@@ -1177,18 +1184,12 @@ impl TokenManager {
         }
     }
 
-    pub async fn access_token_with_expiry(&self) -> Result<(String, i64)> {
-        let access = self.access_token().await?;
-        let state = self.state.lock().await;
-        Ok((access, state.tokens.expires_at))
-    }
-
     async fn access_token_owned(
         http: reqwest::Client,
         oidc: OidcConfig,
         path: PathBuf,
         state: Arc<Mutex<State>>,
-    ) -> Result<String> {
+    ) -> Result<(String, i64)> {
         let mut state = state.lock().await;
 
         // Verify the on-disk session before returning even a still-fresh bearer.
@@ -1204,7 +1205,7 @@ impl TokenManager {
         let disk = reconcile_disk_snapshot(&mut state, disk)?;
         if state.tokens.expires_at - REFRESH_SKEW_SECONDS > now() {
             retry_pending_persistence_unlocked(&mut state, &path, &disk)?;
-            return Ok(state.tokens.access_token.clone());
+            return Ok((state.tokens.access_token.clone(), state.tokens.expires_at));
         }
         drop(file_lock);
 
@@ -1229,7 +1230,7 @@ impl TokenManager {
         let disk = reconcile_disk_snapshot(&mut state, disk)?;
         if state.tokens.expires_at - REFRESH_SKEW_SECONDS > now() {
             retry_pending_persistence_unlocked(&mut state, &path, &disk)?;
-            return Ok(state.tokens.access_token.clone());
+            return Ok((state.tokens.access_token.clone(), state.tokens.expires_at));
         }
         let expected_disk = state
             .pending_persist
@@ -1293,7 +1294,7 @@ impl TokenManager {
             }
         }
         drop(file_lock);
-        Ok(state.tokens.access_token.clone())
+        Ok((state.tokens.access_token.clone(), state.tokens.expires_at))
     }
 }
 
@@ -2098,6 +2099,36 @@ mod tests {
         old.as_object_mut().unwrap().remove("api_base_url");
         std::fs::write(&path, old.to_string()).unwrap();
         assert_eq!(load(&path, &config, Some(API)).unwrap(), None);
+        delete(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn token_and_expiry_are_returned_from_one_snapshot() {
+        let config = oidc("http://127.0.0.1:9");
+        let path = temp_path("token-expiry-snapshot");
+        let initial = tokens(&config, now() + 600, None);
+        let expected = (initial.access_token.clone(), initial.expires_at);
+        save(&path, &initial).unwrap();
+        let manager = TokenManager::new(
+            reqwest::Client::new(),
+            config.clone(),
+            path.clone(),
+            initial,
+        );
+        let snapshot = TokenManager::access_token_owned(
+            reqwest::Client::new(),
+            config,
+            path.clone(),
+            manager.state.clone(),
+        )
+        .await
+        .unwrap();
+        {
+            let mut state = manager.state.lock().await;
+            state.tokens.access_token = "later".into();
+            state.tokens.expires_at += 3600;
+        }
+        assert_eq!(snapshot, expected);
         delete(&path).unwrap();
     }
 
