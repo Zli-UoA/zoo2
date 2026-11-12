@@ -55,6 +55,7 @@
   },
   "auth": {
     "logout": "Log out",
+    "profile": "Edit profile",
     "loggedOut": "You have been logged out",
     "loggedOutHelp": "Log in again to continue.",
     "desktopOutdated": "Update the desktop app",

@@ -55,6 +55,7 @@
   },
   "auth": {
     "logout": "로그아웃",
+    "profile": "프로필 편집",
     "loggedOut": "로그아웃했습니다",
     "loggedOutHelp": "계속하려면 다시 로그인해 주세요.",
     "desktopOutdated": "데스크톱 앱을 업데이트해야 합니다",

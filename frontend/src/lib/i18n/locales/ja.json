@@ -55,6 +55,7 @@
   },
   "auth": {
     "logout": "ログアウト",
+    "profile": "プロフィールを編集",
     "loggedOut": "ログアウトしました",
     "loggedOutHelp": "続けるには再度ログインしてください。",
     "desktopOutdated": "デスクトップ版の更新が必要です",

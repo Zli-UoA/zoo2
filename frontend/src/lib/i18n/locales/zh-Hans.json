@@ -55,6 +55,7 @@
   },
   "auth": {
     "logout": "退出登录",
+    "profile": "编辑个人资料",
     "loggedOut": "您已退出登录",
     "loggedOutHelp": "请重新登录以继续。",
     "desktopOutdated": "需要更新桌面版",
