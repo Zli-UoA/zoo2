@@ -46,6 +46,12 @@ pub fn colors(p: &Palette, focused: bool, disabled: bool, invalid: bool) -> Text
     }
 }
 
+/// 実フォーカス時 (`.focus(...)`) に重ねる枠と輪。`colors()` の focused 版をそのまま使うので、
+/// invalid は focus より優先される。
+pub fn focus_style(p: &Palette, disabled: bool, invalid: bool) -> TextareaColors {
+    colors(p, true, disabled, invalid)
+}
+
 #[derive(IntoElement)]
 pub struct Textarea {
     value: Option<SharedString>,
@@ -147,10 +153,14 @@ impl RenderOnce for Textarea {
             .children(shown)
             .children(self.children);
         if let Some(handle) = self.focus_handle.as_ref() {
-            let ring_color = alpha(t.ring, 0.5);
-            area = area
-                .track_focus(handle)
-                .focus(move |s| s.border_color(t.ring).shadow(vec![ring(ring_color, 3.0)]));
+            let focus = focus_style(&p, self.disabled, self.invalid);
+            area = area.track_focus(handle).focus(move |s| {
+                let s = s.border_color(focus.border);
+                match focus.ring {
+                    Some((color, w)) => s.shadow(vec![ring(color, w)]),
+                    None => s,
+                }
+            });
         }
         area.style().refine(&self.style);
         area
@@ -180,6 +190,16 @@ mod tests {
         assert!((c.bg.a - 0.3).abs() < 1e-6);
         let d = colors(&p, false, true, false);
         assert!((d.bg.a - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn real_focus_style_keeps_invalid() {
+        let p = Palette::new(ThemeMode::Light);
+        let f = focus_style(&p, false, true);
+        assert_eq!(f.border, p.t.destructive);
+        assert_eq!(f.ring.map(|r| r.0), colors(&p, false, false, true).ring.map(|r| r.0));
+        let plain = focus_style(&p, false, false);
+        assert_eq!(plain.border, p.t.ring);
     }
 
     #[test]
