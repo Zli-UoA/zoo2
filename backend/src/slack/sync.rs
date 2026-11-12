@@ -70,12 +70,14 @@ const ACCESS_ERRORS: &[&str] = &[
 
 pub async fn worker(s: AppState) {
     let mut ticks = tokio::time::interval(Duration::from_secs(2));
-    let mut passes = 0u32;
+    let mut last_enqueue: Option<std::time::Instant> = None;
     loop {
         ticks.tick().await;
-        passes = passes.wrapping_add(1);
         // 新しく対応付いたチャンネルを、30 秒ごとにキューへ入れる
-        if passes.is_multiple_of(15) && s.config.slack.oauth_enabled() {
+        if last_enqueue.is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+            && s.config.slack.oauth_enabled()
+        {
+            last_enqueue = Some(std::time::Instant::now());
             let result = async {
                 let mut db = s.db.clone();
                 let mut tx = db.transaction().await?;
@@ -88,8 +90,13 @@ pub async fn worker(s: AppState) {
                 tracing::warn!(error = %e, "Failed to enqueue Slack syncs");
             }
         }
-        // 順番待ちのチャンネルがなくなるまで続ける
+        // 順番待ちのチャンネルがなくなるまで続ける。ただし、一巡に時間がかかっても新しいチャンネルの登録に
+        // 戻れるよう、一定の時間で外側へ戻る
+        let started = std::time::Instant::now();
         loop {
+            if started.elapsed() >= Duration::from_secs(30) {
+                break;
+            }
             match run_once(&s).await {
                 Ok(true) => {}
                 Ok(false) => break,
@@ -864,6 +871,9 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
     if done.is_empty() {
         return Err(SyncError::LeaseLost);
     }
+    // 同期中に Slack 連携した人の投稿は、キャッシュしたプレースホルダのまま保存されている。ZIP の取り込みと
+    // 同じく、終わりに連携済みの人の分を本人へ移す
+    super::link::reconcile_team(&mut tx, &task.team_id).await?;
     tx.commit().await.map_err(AppError::from)?;
     Ok(Step::Done)
 }
