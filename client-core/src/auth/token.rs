@@ -684,6 +684,22 @@ async fn logout_with_cleanup_result(
     let Some(expected) = expected else {
         return report_logout_cleanup_failure(cleanup_error, DeleteOutcome::Missing);
     };
+    if !expected.matches(oidc, None) {
+        let outcome = match read_tokens_unlocked(path)? {
+            None => DeleteOutcome::Missing,
+            Some(current) if current == expected => match std::fs::remove_file(path) {
+                Ok(()) => DeleteOutcome::Deleted,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    DeleteOutcome::Missing
+                }
+                Err(error) => {
+                    return Err(include_logout_cleanup_error(error.into(), cleanup_error));
+                }
+            },
+            Some(_) => DeleteOutcome::Changed,
+        };
+        return report_logout_cleanup_failure(cleanup_error, outcome);
+    }
     // Logout must remain possible for legacy files even when migration cannot
     // be persisted (for example, an obstructed .tmp path). The held file lock
     // is the identity boundary for this legacy session.
@@ -2563,6 +2579,25 @@ mod tests {
             Some("retried-refresh")
         );
         delete(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn logout_removes_unchanged_token_from_previous_oidc_configuration() {
+        let old_config = oidc("https://old.example");
+        let new_config = oidc("https://new.example");
+        let path = temp_path("logout-previous-oidc");
+        save(
+            &path,
+            &tokens(&old_config, now() + 300, Some("old-refresh")),
+        )
+        .unwrap();
+        assert_eq!(
+            logout(&path, &new_config, &reqwest::Client::new())
+                .await
+                .unwrap(),
+            DeleteOutcome::Deleted
+        );
+        assert!(!path.exists());
     }
 
     #[tokio::test]

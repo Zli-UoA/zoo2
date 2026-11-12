@@ -1307,6 +1307,14 @@ impl AppState {
                     return false;
                 }
                 if let Some(error) = error {
+                    let pending_manager = self
+                        .pending_device_login_manager
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some(manager) = pending_manager {
+                        manager.disable_persistence();
+                    }
                     if self
                         .recovery_manager
                         .as_ref()
@@ -5787,6 +5795,7 @@ mod tests {
         replacement.session_id = uuid::Uuid::new_v4().to_string();
         replacement.access_token = "new".into();
         token::save(&path, &replacement).unwrap();
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager.clone());
         state.on_auth_event(AuthEvent::Connected {
             credentials: Credentials::Bearer(manager.clone()),
             token_manager: Some(manager),
@@ -5802,6 +5811,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(state.on_desktop_event(event));
+        assert!(state.pending_device_login_manager.lock().unwrap().is_none());
         assert_eq!(
             token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
             Some(replacement)
