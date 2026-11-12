@@ -165,6 +165,8 @@ pub(crate) async fn create_channel(
         if !payload.is_private.unwrap_or(false) {
             return Err(e2ee_channels::public_forbidden());
         }
+        // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、チャンネルの行より前に取る。
+        e2ee_channels::lock_members(&mut tx, &[auth_user.id.as_str()]).await?;
     }
 
     // クライアント指定の ID が既に存在する場合、同一属性の再送であれば作成済みチャンネルを返して成功とする (冪等性)
@@ -593,6 +595,9 @@ pub(crate) async fn join_channel(
         cu
     } else {
         if channel.encrypted {
+            // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）。この経路はチャンネルの
+            // 行をロックしていない（encrypted は変わらないので、ロックなしで読んだ値で判定できる）。
+            e2ee_channels::lock_members(&mut tx, &[auth_user.id.as_str()]).await?;
             e2ee_channels::check_member_limit(&mut tx, &id, 1).await?;
         }
         let now = crate::models::now_utc_millis();
@@ -635,8 +640,24 @@ async fn add_channel_user(
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
-    // 退出、キック（同じ行ロック）と直列にし、追加する人がメンバーであることを確かめてから足すまでに抜けないようにする。
-    let _ = toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
+    // 暗号化チャンネルでは、追加する人のメンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、
+    // チャンネルの行より前に取る。encrypted は変わらないので、ロックなしで読んで判定できる。
+    let encrypted = crate::apps::query(
+        &mut tx,
+        "SELECT json_build_object('encrypted', encrypted)::text FROM channels WHERE id = $1",
+        &[id.as_str()],
+    )
+    .await?
+    .first()
+    .is_some_and(|row| row["encrypted"] == true);
+    if encrypted {
+        e2ee_channels::lock_members(&mut tx, &[payload.user_id.as_str()]).await?;
+    }
+
+    // 退出、キック、送信と直列にし、追加する人がメンバーであることを確かめてから足すまでに抜けないようにする。
+    // FOR NO KEY UPDATE は、epoch の UPDATE と送信の FOR SHARE とは競合し、外部キーの検査の FOR KEY SHARE とは
+    // 競合しないので、このチャンネルへの投稿や channel_user の INSERT を待たせない。
+    let _ = toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR NO KEY UPDATE")
         .bind(id.clone())
         .exec(&mut tx)
         .await?;

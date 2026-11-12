@@ -35,6 +35,10 @@ async fn try_create_or_get_1on1_dm(
     encrypted: bool,
 ) -> Result<Option<ApiResponse<ChannelResponse>>, AppError> {
     let mut tx = db.transaction().await?;
+    if encrypted {
+        // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、チャンネルの行より前に取る。
+        e2ee_channels::lock_members(&mut tx, &[auth_user_id, target_id]).await?;
+    }
 
     let existing = Channel::filter(
         Channel::fields()
@@ -301,6 +305,12 @@ pub(crate) async fn create_or_get_dm(
 
     // グループ DM の新規作成
     let mut tx = db.transaction().await?;
+    if payload.encrypted {
+        // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、チャンネルの行より前に取る。
+        let mut members: Vec<&str> = payload.target_user_ids.iter().map(String::as_str).collect();
+        members.push(auth_user.id.as_str());
+        e2ee_channels::lock_members(&mut tx, &members).await?;
+    }
     let channel_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let group_uuid = Uuid::new_v4().to_string();
     let channel_name = format!("dm:group:{group_uuid}");

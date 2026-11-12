@@ -200,6 +200,50 @@ pub async fn bump_user_epochs(
     Ok(())
 }
 
+/// 暗号化チャンネルへのメンバーの追加で、追加する人ごとにメンバー単位の advisory lock
+/// `(3, hashtext(user_id))` を `user_id` の昇順に取る。チャンネルの行より前に取る。
+///
+/// 端末の削除などでの一括の増加（`e2ee_bump_membership_epochs`）も、参加先を読む前に同じロックを取る。
+/// これで、一括の増加が参加先を確定してからコミットするまでに新しい所属が確定せず、追加された
+/// チャンネルが増加から漏れない（漏れると、削除した端末に配った鍵で、削除のあとの送信が通ってしまう）。
+pub async fn lock_members(
+    tx: &mut toasty::Transaction<'_>,
+    user_ids: &[&str],
+) -> Result<(), AppError> {
+    let mut ids: Vec<&str> = user_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        first(
+            tx,
+            "SELECT '{}'::text FROM pg_advisory_xact_lock(3, hashtext($1))",
+            &[id],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// 送信と編集で、チャンネルの行をロックした（`lock_channel_epoch`）あとに、まだメンバーであることを確かめる。
+/// ロックより前の確認のあとで退出、キックが確定していたら、ここで 404 にする。
+pub async fn require_member(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+    user_id: &str,
+    not_found: &str,
+) -> Result<(), AppError> {
+    let row = first(
+        tx,
+        "SELECT '{}'::text FROM channel_user WHERE channel_id = $1 AND user_id = $2",
+        &[channel_id, user_id],
+    )
+    .await?;
+    if row.is_none() {
+        return Err(AppError::NotFound(not_found.to_owned()));
+    }
+    Ok(())
+}
+
 /// 1 つのチャンネルの `membership_epoch` を 1 増やす（暗号化チャンネルだけ）。
 /// `channel_user` の行が実際に変わったとき（参加、追加、退出、キック、DM への再参加）に呼ぶ。
 pub async fn bump_channel_epoch(

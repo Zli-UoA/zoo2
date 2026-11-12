@@ -31,10 +31,15 @@ CREATE TRIGGER messages_clear_deleted_ciphertext BEFORE INSERT OR UPDATE ON mess
 -- そのユーザーが参加しているすべての暗号化チャンネル（削除済みを除く）の membership_epoch を 1 増やす。
 -- 端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成で使う。
 -- 行は id の昇順にまとめてロックし、ロックした行だけを更新する（並行した一括更新と行き詰まらない）。
+-- 参加先を読む前に、メンバー単位のロック (3, hashtext(user_id)) を取る。暗号化チャンネルへのメンバーの追加も、
+-- 追加する人について同じロックを取ってから channel_user に書く。これで、参加先を確定してからコミットするまでに
+-- 新しい所属が確定せず、追加されたチャンネルが増加から漏れない。
+-- ロックの順：users の行、ユーザー単位のロック (1)、端末単位のロック (2)、メンバー単位のロック (3)、channels の行。
 CREATE FUNCTION e2ee_bump_membership_epochs(target_user text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
   ids text[];
 BEGIN
+  PERFORM pg_advisory_xact_lock(3, hashtext(target_user));
   SELECT array_agg(id) INTO ids FROM (
     SELECT id FROM channels
       WHERE encrypted AND deleted_at IS NULL
