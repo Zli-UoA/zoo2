@@ -84,6 +84,12 @@
         "LoadError",
         "Mobile",
         "UnreadAndArchived",
+        "Threads",
+        "ArchivedThreads",
+        "ArchivePages",
+        "ArchiveRetry",
+        "EmptyThreadTitle",
+        "MobileThreads",
         "Sections",
         "MobileSections"
       ]
@@ -276,7 +282,19 @@
     },
     {
       "file": "src/components/chat/messages/ThreadPane.stories.tsx",
-      "states": ["Empty", "WithReplies", "Loading", "Error", "Mobile", "Completions", "AppCard"]
+      "states": [
+        "Empty",
+        "WithReplies",
+        "Archived",
+        "ArchivedReadOnly",
+        "ArchivedNotJoined",
+        "MobileArchived",
+        "Loading",
+        "Error",
+        "Mobile",
+        "Completions",
+        "AppCard"
+      ]
     },
     {
       "file": "src/components/chat/messages/TypingIndicator.stories.tsx",
@@ -719,6 +737,12 @@
         "src/lib/electric/collections.persistence.test.ts",
         "src/components/chat/ChannelSidebar.browser.test.tsx"
       ]
+    },
+    {
+      "file": "src/components/chat/ChannelThreadItems.tsx",
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "composed": true,
+      "reason": "チャンネル配下の表示とアーカイブ履歴の操作を親の Threads・ArchivedThreads Story で確認する。"
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",
