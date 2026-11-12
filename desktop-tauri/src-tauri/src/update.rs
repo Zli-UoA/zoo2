@@ -7,8 +7,8 @@
 //! 公開鍵 (`plugins.updater.pubkey`) は、リリースの workflow がビルドのときに入れる。空のとき
 //! (ローカルや CI のビルド) は何もしない。Linux では、deb や AppImage から動いていないとき
 //! (`bundle_type()` が `None`。`cargo tauri dev` など) も何もしない。macOS の `bundle_type()` は
-//! 印がなくても `App` を返すので、公開鍵の有無だけで決まる (公開鍵はリリースの `.app` にだけ入る)。利用者が `check_updates = false` (`ZOO_CHECK_UPDATES=false`) にしたときも、
-//! 確かめない (TUI と同じ設定)。
+//! 印がなくても `App` を返すので、公開鍵の有無だけで決まる (公開鍵はリリースの `.app` にだけ入る)。
+//! 利用者が `check_updates = false` (`ZOO_CHECK_UPDATES=false`) にしたときも、確かめない (TUI と同じ設定)。
 
 use std::{sync::Mutex, time::Duration};
 
