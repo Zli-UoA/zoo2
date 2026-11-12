@@ -771,6 +771,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
   署名者は常に呼び出したユーザー。サーバーは対象（端末鍵かマスター鍵）の Canonical JSON に対して署名を検証する。
   - 【決定】（#356）`signer_key_id` は今の自己署名鍵かユーザー署名鍵でなければ 400 `E2EE_BAD_SIGNATURE`。自己署名鍵で署名できるのは自分の削除されていない端末だけ、ユーザー署名鍵で署名できるのは他のユーザーの今のマスター鍵だけ（`target_key_id` はその公開鍵）。対象のユーザーは `keys/query` でマスター鍵を返す範囲（暗号化チャンネルを共有しているか、ピンか署名がある）に限り、範囲外と存在しない対象は 404。1 回 1000 件まで（`limit` は `signatures`）。
+  - 【決定】（#356）応答は `{"count"}`。`count` は受け付けた署名の件数（要求の `signatures` の件数）で、書き込んだ行の数ではない。同じ署名の再送も数える。`txid` は行を足すか署名を置き換えたときだけ返し、すべてが同じ署名の再送なら `null` にする（Shape に流れる変更がないため）。
 - `POST /api/e2ee/tofu_pins`：`{"pins": [{"target_user_id", "master_key", "signatures"}], "replace": false}`。TOFU のピン（[クロス署名](#クロス署名)）を足す。サーバーは `{type, user_id, target_user_id, master_key}` に `signatures` を付けた JSON を `pin_json` として保存し、そのまま返す。【決定】（#356）1 回 1000 件まで（`limit` は `pins`）。応答は保存したピン（`{"pins": [...]}`）。
   - サーバーは、呼び出したユーザーの今のユーザー署名鍵で署名を検証する（違えば 400 `E2EE_BAD_SIGNATURE`）。
   - 【決定】ピンと署名の書き込み（`POST /api/e2ee/tofu_pins`、`POST /api/e2ee/cross_signing/signatures`）は、ユーザー単位の `pg_advisory_xact_lock(1, hashtext(user_id))`（上の直列化の規則と同じキー）を取ってから、今のピンや署名を読んで判定する。同じユーザーの 2 つの端末が同時に同じ相手の最初のピンを作っても、後から入った方は主キーの衝突（500）にならず、読み直して、同じマスター鍵なら 200、違えば 409 `E2EE_PIN_CONFLICT` にする。署名の再送（同じ署名者、対象、署名）も、同じ署名なら 200 にする（違う署名なら置き換える）。
