@@ -165,6 +165,8 @@ struct Task {
     private: bool,
     deleted: bool,
     last_ts: Option<String>,
+    /// 一度でも同期が終わったことがあるか
+    synced: bool,
     token: String,
     attempts: i64,
     running: bool,
@@ -266,7 +268,7 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
              AND sc.team_id=t.team_id AND sc.slack_channel_id=t.slack_channel_id AND ch.id=sc.channel_id \
              RETURNING json_build_object('team_id',t.team_id,'slack_channel_id',t.slack_channel_id,\
              'channel_id',ch.id,'private',ch.is_private,'deleted',ch.deleted_at IS NOT NULL,\
-             'last_ts',sc.last_ts,'token',t.lease_token,'attempts',t.attempts,'running',t.running,\
+             'last_ts',sc.last_ts,'synced',t.last_synced_at IS NOT NULL,'token',t.lease_token,'attempts',t.attempts,'running',t.running,\
              'phase',t.phase,'run_oldest',t.run_oldest,'run_max_ts',t.run_max_ts,\
              'page_cursor',t.page_cursor,'pending_threads',t.pending_threads,\
              'known_threads',t.known_threads,'token_user_id',t.token_user_id)::text"
@@ -337,7 +339,8 @@ async fn reset_run(s: &AppState, task: &Task) -> Result<(), AppError> {
 struct Slack {
     client: reqwest::Client,
     base: String,
-    /// (zoo のユーザー ID, トークン)
+    key: [u8; 32],
+    /// (zoo のユーザー ID, 暗号化したトークン)。使うときに復号する
     tokens: Vec<(String, String)>,
     index: usize,
 }
@@ -349,8 +352,13 @@ impl Slack {
 
     async fn get(&mut self, method: &str, params: &[(&str, &str)]) -> Result<Value, SyncError> {
         loop {
-            let Some((_, token)) = self.tokens.get(self.index) else {
+            let Some((user, enc)) = self.tokens.get(self.index) else {
                 return Err(SyncError::NoAccess("no_usable_token".into()));
+            };
+            let Ok(token) = crypto::decrypt(&self.key, enc) else {
+                tracing::warn!(user_id = %user, "Failed to decrypt a Slack token");
+                self.index += 1;
+                continue;
             };
             let response = self
                 .client
@@ -434,6 +442,22 @@ fn max_ts(a: Option<String>, b: &str) -> Option<String> {
     }
 }
 
+/// 新しい同期の起点。最初の同期では、ZIP に含まれる最近のスレッドの新しい返信も取れるよう、カーソルより
+/// スレッドの監視範囲だけ前から取り直す (取り込み済みの投稿は、決定的 ID で重複しない)
+fn first_oldest(task: &Task) -> String {
+    let cursor = task.last_ts.clone().filter(|t| super::is_valid_ts(t));
+    if task.synced {
+        return cursor.unwrap_or_else(|| "0".into());
+    }
+    let horizon = now_secs().saturating_sub(THREAD_WINDOW_SECS);
+    match cursor {
+        // カーソルがなければ (取り込みが空だったチャンネル) 全履歴から取る
+        None => "0".into(),
+        Some(c) if ts_key(&c).is_some_and(|(secs, _)| secs <= horizon) => c,
+        Some(_) => format!("{horizon}.000000"),
+    }
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -456,11 +480,7 @@ struct Progress {
     known: Vec<String>,
 }
 
-async fn load_tokens(
-    s: &AppState,
-    key: &[u8; 32],
-    task: &Task,
-) -> Result<Vec<(String, String)>, AppError> {
+async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     // 非公開の zoo チャンネルは、そのメンバーのトークンだけを使う。公開なら、メンバーを先にして、ほかの人も使う。
@@ -472,7 +492,7 @@ async fn load_tokens(
          AND (NOT $3::boolean OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=$2 AND cu.user_id=l.user_id)) \
          ORDER BY (l.user_id=$4) DESC,\
          EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=$2 AND cu.user_id=l.user_id) DESC,\
-         l.updated_at DESC,l.user_id LIMIT 20",
+         l.updated_at DESC,l.user_id",
         &[
             &task.team_id,
             &task.channel_id,
@@ -482,16 +502,16 @@ async fn load_tokens(
     )
     .await?;
     tx.commit().await?;
-    let mut tokens = Vec::new();
-    for row in rows {
-        let (Some(user), Some(enc)) = (row["user_id"].as_str(), row["token"].as_str()) else {
-            continue;
-        };
-        match crypto::decrypt(key, enc) {
-            Ok(token) => tokens.push((user.to_string(), token)),
-            Err(_) => tracing::warn!(user_id = %user, "Failed to decrypt a Slack token"),
-        }
-    }
+    // 先頭のトークンが使えなくても、残りのトークンを試せるよう、人数で切らずに全員分を返す
+    let tokens: Vec<(String, String)> = rows
+        .into_iter()
+        .filter_map(|row| {
+            Some((
+                row["user_id"].as_str()?.to_string(),
+                row["token"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
     Ok(tokens)
 }
 
@@ -502,7 +522,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
     if task.deleted {
         return Ok(Step::Park(86_400, "channel_deleted".into()));
     }
-    let tokens = load_tokens(s, key, task).await?;
+    let tokens = load_tokens(s, task).await?;
     if tokens.is_empty() {
         return Ok(Step::Park(
             3600,
@@ -517,6 +537,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
     let mut slack = Slack {
         client,
         base: s.config.slack.api_base_url.clone(),
+        key: *key,
         tokens,
         index: 0,
     };
@@ -553,11 +574,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
     } else {
         Progress {
             phase: "history".into(),
-            oldest: task
-                .last_ts
-                .clone()
-                .filter(|t| super::is_valid_ts(t))
-                .unwrap_or_else(|| "0".into()),
+            oldest: first_oldest(task),
             max_ts: None,
             cursor: None,
             pending: Vec::new(),

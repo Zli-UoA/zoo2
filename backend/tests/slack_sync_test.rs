@@ -220,7 +220,7 @@ async fn test_slack_sync_resumes_after_429_without_duplicates() -> anyhow::Resul
     Mock::given(method("GET"))
         .and(path("/conversations.history"))
         .and(query_param("channel", "C1"))
-        .and(query_param("oldest", cursor0.as_str()))
+        // 最初の同期は、カーソル (2 時間前) より、スレッドの監視範囲 (3 日) だけ前から取り直す
         .and(query_param("limit", "200"))
         .and(header("authorization", "Bearer xoxp-alice"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
