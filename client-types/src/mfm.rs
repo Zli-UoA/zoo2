@@ -397,12 +397,11 @@ impl Inline<'_> {
             if let Some(name) = scan
                 .between(i, ":", ":")
                 .and_then(|name| name.strip_prefix('@'))
+                && let Some(profile) = self.profiles.get(name)
             {
-                if let Some(profile) = self.profiles.get(name) {
-                    let mut span = Span::styled(format!(":@{name}:"), base);
-                    span.avatar_url = profile.avatar_url.clone();
-                    return Some((name.len() + 3, vec![span]));
-                }
+                let mut span = Span::styled(format!(":@{name}:"), base);
+                span.avatar_url = profile.avatar_url.clone();
+                return Some((name.len() + 3, vec![span]));
             }
             return shortcode(scan, i, base);
         }
