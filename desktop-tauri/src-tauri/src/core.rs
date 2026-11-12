@@ -137,6 +137,7 @@ impl Core {
     fn set_state(&self, inner: &mut Inner, state: SessionState) {
         inner.state = state;
         let _ = self.app.emit(event::SESSION, self.info(&inner.state));
+        crate::window::follow_session(&self.app, self, &inner.state);
     }
 
     fn token_path(&self) -> Result<std::path::PathBuf> {

@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use tauri::{
     App, AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder, Window, WindowEvent,
+    ipc::CapabilityBuilder,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
 };
 use tauri_plugin_opener::OpenerExt;
-use zoo2_client_types::ipc::{OpenTarget, UiMode, event};
+use zoo2_client_types::ipc::{OpenTarget, SessionState, UiMode, command, event};
 
 use crate::core::Core;
 
@@ -49,14 +50,90 @@ pub fn classify(url: &Url, core: &Core) -> Origin {
 /// (b) で読み込んでよいオリジン。
 pub fn remote_origins(core: &Core) -> Vec<String> {
     let mut origins: Vec<String> = DEV_REMOTE_ORIGINS.iter().map(|o| o.to_string()).collect();
-    if let Some(origin) = core
-        .api_base_url()
-        .and_then(|base| Url::parse(base).ok())
-        .map(|url| url.origin().ascii_serialization())
-    {
-        origins.push(origin);
+    if let Some(url) = remote_url(core) {
+        origins.push(url.origin().ascii_serialization());
     }
+    origins.dedup();
     origins
+}
+
+/// (b) で読み込む URL。`api_base_url` の起点 (`https://zli.chat/` など)。
+/// debug ビルドだけ、`ZOO_DESKTOP_REMOTE_URL` で差し替えられる (Vite の dev サーバーなど)。
+pub fn remote_url(core: &Core) -> Option<Url> {
+    if cfg!(debug_assertions)
+        && let Ok(url) = std::env::var("ZOO_DESKTOP_REMOTE_URL")
+    {
+        return Url::parse(&url).ok();
+    }
+    let base = Url::parse(core.api_base_url()?).ok()?;
+    base.join("/").ok()
+}
+
+/// 同梱の画面の URL。release では tauri://localhost、開発中は trunk の dev サーバー。
+fn bundled_url() -> Url {
+    let url = if cfg!(debug_assertions) {
+        "http://localhost:1420/"
+    } else {
+        "tauri://localhost/"
+    };
+    Url::parse(url).expect("固定の URL")
+}
+
+/// (b) のリモートの画面に許すもの。トークンの受け渡しと通知の行の受け取りはここだけ。
+const REMOTE_COMMANDS: &[&str] = &[
+    command::SESSION,
+    command::START_LOGIN,
+    command::CANCEL_LOGIN,
+    command::LOGOUT,
+    command::SET_FOCUS,
+    command::ACCESS_TOKEN,
+    command::NOTIFICATIONS_OBSERVED,
+];
+
+/// (b) のときだけ、リモートのオリジンに IPC を許す capability を足す。
+/// オリジンは設定 (`api_base_url`) で決まるので、JSON ではなくここで作る。
+pub fn add_remote_capability(app: &App, core: &Core) -> tauri::Result<()> {
+    if core.ui() != UiMode::Remote {
+        return Ok(());
+    }
+    // `CapabilityBuilder::new` は `local: true` なので、外して同梱の画面には効かせない。
+    let mut capability = CapabilityBuilder::new("main-remote")
+        .local(false)
+        .window(MAIN)
+        .permission("core:event:allow-listen")
+        .permission("core:event:allow-unlisten");
+    for origin in remote_origins(core) {
+        capability = capability.remote(format!("{origin}/*"));
+    }
+    for name in REMOTE_COMMANDS {
+        capability = capability.permission(format!("allow-{}", name.replace('_', "-")));
+    }
+    app.add_capability(capability)
+}
+
+/// (b) では、ログインしたらリモートの画面へ、ログアウトしたら同梱のログイン画面へ移す。
+pub fn follow_session(app: &AppHandle, core: &Core, state: &SessionState) {
+    if core.ui() != UiMode::Remote {
+        return;
+    }
+    let Some(window) = app.get_webview_window(MAIN) else {
+        return;
+    };
+    let current = window.url().ok();
+    let on_remote = current
+        .as_ref()
+        .is_some_and(|url| classify(url, core) == Origin::Remote);
+    match state {
+        SessionState::Ready { .. } if !on_remote => {
+            if let Some(url) = remote_url(core) {
+                let _ = window.navigate(url);
+            }
+        }
+        SessionState::LoggedOut | SessionState::Failed { .. } if on_remote => {
+            let _ = window.navigate(bundled_url());
+        }
+        _ => {}
+    }
 }
 
 pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
