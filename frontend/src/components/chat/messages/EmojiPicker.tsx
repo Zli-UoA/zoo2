@@ -10,6 +10,7 @@ import { cn } from "cn";
 
 import { EMOJIBASE_DATA_URL, SUPPORTED_EMOJI_VERSION } from "../../../lib/emoji/data";
 import { resolveEmojiDataLocale } from "../../../lib/emoji/locale";
+import { resolveMultilingualEmojiData } from "../../../lib/emoji/resolver";
 import { addRecentEmoji, loadRecentEmojis } from "../../../lib/emoji/recents";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { inputClassName } from "../../ui/input-styles";
@@ -96,6 +97,7 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
       locale={resolveEmojiDataLocale(locale)}
       columns={COLUMNS}
       emojibaseUrl={EMOJIBASE_DATA_URL}
+      resolveEmojiData={resolveMultilingualEmojiData}
       emojiVersion={SUPPORTED_EMOJI_VERSION}
       onEmojiSelect={(emoji) => choose(emoji.emoji)}
       onKeyDown={forwardNavigationKey}
