@@ -181,11 +181,26 @@ impl Style {
 pub struct Span {
     pub content: String,
     pub style: Style,
+    /// リンクの行き先 (`http://` か `https://` で始まるものだけ)。`[label](url)` では
+    /// `content` がラベルになるので、行き先はこちらを使う。
+    pub href: Option<String>,
 }
 
 impl Span {
     pub fn styled(content: String, style: Style) -> Self {
-        Self { content, style }
+        Self {
+            content,
+            style,
+            href: None,
+        }
+    }
+
+    fn link(content: String, href: &str, style: Style) -> Self {
+        Self {
+            content,
+            style,
+            href: Some(href.to_string()),
+        }
     }
 }
 
@@ -339,7 +354,7 @@ impl Inline<'_> {
             let url = trim_url(rest.split(char::is_whitespace).next().unwrap_or(rest));
             return Some((
                 url.len(),
-                vec![Span::styled(url.to_string(), base.patch(LINK))],
+                vec![Span::link(url.to_string(), url, base.patch(LINK))],
             ));
         }
         if at_boundary && rest.starts_with('@') {
@@ -526,7 +541,7 @@ fn link(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span>)> {
         return None;
     }
     let consumed = offset + label.len() + 2 + url.len() + 2;
-    let mut spans = vec![Span::styled(label.to_string(), base.patch(LINK))];
+    let mut spans = vec![Span::link(label.to_string(), url, base.patch(LINK))];
     if label != url {
         spans.push(Span::styled(format!(" <{url}>"), base.dim()));
     }
@@ -655,5 +670,26 @@ mod tests {
         assert!(styled.contains(&("@alice".into(), MENTION.reversed())));
         assert!(styled.contains(&("@bob".into(), MENTION)));
         assert!(!styled.iter().any(|(text, _)| text == "@b"));
+    }
+
+    #[test]
+    fn links_keep_their_destination() {
+        let hrefs: Vec<(String, Option<String>)> =
+            parse("[docs](https://example.com) https://a.example/x", None)
+                .into_iter()
+                .flat_map(|line| line.spans)
+                .filter(|span| span.style.tone == Tone::Link)
+                .map(|span| (span.content, span.href))
+                .collect();
+        assert_eq!(
+            hrefs,
+            [
+                ("docs".into(), Some("https://example.com".into())),
+                (
+                    "https://a.example/x".into(),
+                    Some("https://a.example/x".into())
+                ),
+            ]
+        );
     }
 }

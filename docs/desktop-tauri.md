@@ -2,6 +2,8 @@
 
 macOS と Linux 向けのデスクトップ版を Tauri v2 で作る。画面は 2 案を作って比べる検証の段階にある。
 
+利用者向けの説明（インストール、ログイン、更新、困ったとき）は [desktop-tauri/README.md](../desktop-tauri/README.md) にある。
+
 - (a) Leptos（CSR）で書いた画面を同梱する
 - (b) `https://zli.chat` の React をリモートで読み込む
 
@@ -74,15 +76,15 @@ ShapeEvent ─▶ 1 本のループ
 - 起動したとき、有効なトークンがなければ、同梱の Leptos のログイン画面（(a) と同じもの）を表示する。`Ready` になったら、ウィンドウを `https://zli.chat` に移す。
 - React からログアウトしたら、Rust 側がトークンを消し、ウィンドウを同梱のログイン画面に戻す。
 - React 側に足す差し替え口は次のとおり。
-  - `frontend/src/lib/electric/headers.ts` と `frontend/src/lib/api/client.ts`：Tauri の中では、OIDC の代わりに `zoo_access_token` からトークンを取る。`expires_at` の 60 秒前まではキャッシュする。
+  - `frontend/src/components/auth/AuthGate.tsx`：Tauri の中では OIDC を通さず、`setTokenProvider` に `zoo_access_token` を渡す（`frontend/src/lib/desktop.ts`）。`expires_at` の 60 秒前まではキャッシュする。401 とログアウトでは `zoo_logout` を呼ぶ。
   - 通知のコレクション：初回の読み込みが終わった時点で、全行を `reset: true, up_to_date: true` のバッチで `zoo_notifications_observed` に渡す。それ以降は、変化ごとに `reset: false` のバッチで渡す。Rust 側はこれを (a) の通知の Shape と同じ流れで扱う。
   - 表示中のチャンネルとフォーカスを `zoo_set_focus` で、`zoo://open` を受けたらその画面へ移る。
-- Tauri の中で動いているかは `window.__TAURI_INTERNALS__` の有無で見分ける。さらに `zoo_session` の `protocol` が `PROTOCOL_VERSION` と一致する場合だけ IPC を使う。一致しなければ通常の Web として動く（Web は Tauri 版と別にデプロイされるため）。
-- capabilities：コマンドは `build.rs` の `AppManifest::commands` で 1 つずつ宣言する。宣言しないと許可の識別子が作られず、全ウィンドウから呼べてしまう。
+- Tauri の中で動いているかは `window.__TAURI_INTERNALS__` の有無で見分ける。さらに `zoo_session` の `protocol` が `PROTOCOL_VERSION` と一致する場合だけ IPC を使う。Web は Tauri 版と別にデプロイされるので、一致しないことがある。一致しないときと `zoo_session` が失敗したときは、OIDC のログインへは進まず（Tauri の中では AuthZ への移動を `on_navigation` が止めて既定のブラウザーで開くため、ログインを完了できない）、アプリの更新を案内する画面と再読み込みのボタンを出す。
+- capabilities：コマンドは `build.rs` の `AppManifest::commands` で 1 つずつ宣言する。宣言すると `allow-<名前>` の許可が作られ、capabilities でウィンドウごとに許せる。app の manifest があると、Tauri（2.12）は宣言のないコマンドを ACL がないものとして、ハンドラーに渡す前に拒否する。
   - `main-remote`：リモートの URL（`remote.urls`）は `Config.api_base_url` のオリジンだけにする。stg と `http://localhost:5173` は debug ビルドのときだけ足す。呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_access_token`、`zoo_notifications_observed` と、`zoo://session` と `zoo://open` を受け取るための `core:event:allow-listen`、`core:event:allow-unlisten` に限る。
   - コマンドの中でも、呼び出し元のウィンドウの `UiMode` と URL のオリジンを確かめ、合わなければ `ErrorCode::WrongMode` を返す。
   - 許可したオリジン以外への移動は `on_navigation` で止め、既定のブラウザーで開く。
-- Tauri の中では、Service Worker の登録と Web Push を止める。止めないと、Rust 側の通知と二重に出る。
+- Tauri の中では Web Push を使わない（`supportsPush()` が false を返す）。使うと、Rust 側の通知と二重に出る。Service Worker はオフライン保存に使うので止めない。
 - (a) の同梱の画面からは、`zoo_access_token` と `zoo_notifications_observed` を呼べなくする。トークンを WebView に出さないため。
 
 ## 通知
@@ -108,3 +110,20 @@ ShapeEvent ─▶ 1 本のループ
 
 - AuthZ が `zoo2-desktop-tauri` に refresh token を発行するか。`frontend/.env.example` には「offline_access は非対応で、refresh token は発行されません」と書かれている。TUI の `TokenManager` は refresh token がなくても動き、期限が切れたらログインし直しになる。検証の最初に TUI で確かめる。
 - ループバックの redirect（RFC 8252）を AuthZ が受け付けるか。今回はデバイスコードを使うので依存しないが、要確認として残す。
+
+## 開発
+
+`nix develop` の中で動かす。Tauri の CLI、trunk、wasm-bindgen、WebKitGTK が入っている。
+
+```sh
+cd desktop-tauri/src-tauri
+cargo tauri dev                    # trunk serve (localhost:1420) と一緒に起動する
+cargo tauri build --bundles deb    # NixOS では AppImage を作れないので deb だけ。AppImage は CI で作る
+```
+
+- 画面の案は `ZOO_DESKTOP_UI=leptos|remote` で選ぶ。既定は `leptos`。
+- (b) で読み込む先は `api_base_url` の起点。debug ビルドだけ、`ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` で Vite の dev サーバーに差し替えられる（React 側の変更をデプロイ前に試すため）。
+- 接続先とログインは TUI と同じ環境変数（`ZOO_API_BASE_URL`、`ZOO_OIDC_CLIENT_ID`、`ZOO_OIDC_RESOURCE` など）か、`~/.config/zoo2-desktop-tauri/config.toml` で変える。
+- ローカルの backend（`DEV_AUTH_ENABLED=true`）に向けるときは `ZOO_DEV_USER=<UUID>` を付ける。デバイスコードのログインを通らずに `X-Dev-User` で接続する。
+- NVIDIA と Wayland の組み合わせで画面が出ないときは、`WEBKIT_DISABLE_DMABUF_RENDERER=1` を付ける。
+- `wasm-bindgen` は `desktop-tauri/ui/Cargo.toml` で、nixpkgs の `wasm-bindgen-cli` と同じ版に固定している。flake.lock を更新して版が変わったら、両方をそろえる。
