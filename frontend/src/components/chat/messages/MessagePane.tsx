@@ -1,3 +1,4 @@
+import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -100,11 +101,6 @@ export function MessagePane({
   const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
-  const attachmentsQuery = useMessageAttachments(channelId);
-  const attachmentsByMessage = useMemo(
-    () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
-    [attachmentsQuery.data],
-  );
   const uploadAttachment = useAttachmentUpload(channelId);
   const { currentUserId } = useCurrentUser();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
@@ -144,6 +140,17 @@ export function MessagePane({
   const threadRootRow = threadRootQuery.data?.[0] ?? null;
   const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
   const threadIsArchived = !!threadRoot?.thread_archive_at;
+
+  const attachmentsQuery = useMessageAttachments(
+    channelId,
+    [...feed, ...threadReplies, ...(threadRoot ? [threadRoot] : [])].some(
+      (row) => !row.display_data,
+    ),
+  );
+  const attachmentsByMessage = useMemo(
+    () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
+    [attachmentsQuery.data],
+  );
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
@@ -218,6 +225,7 @@ export function MessagePane({
   // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。
   const targetQuery = useMessageById(channelId, targetMessageId ?? null);
   const target = targetQuery.data?.[0];
+
 
   // 対象が返信なら、そのスレッドを開く。
   useEffect(() => {
@@ -331,6 +339,7 @@ export function MessagePane({
             body: { channel_id: channelId, text: command[2] ?? "" },
           });
         }
+        refreshAppSurfaces();
         return true;
       } catch (error) {
         if (!appId && error instanceof ApiError && error.status === 404) return null;
@@ -487,14 +496,13 @@ export function MessagePane({
     <section className="relative flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
         {reactionsQuery.isError ||
-        reactionsQuery.federatedError ||
         messagesQuery.isError ||
         messagesQuery.persistedStatus === "error" ? (
           <div
             role="status"
             className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
           >
-            {reactionsQuery.isError || reactionsQuery.federatedError ? (
+            {reactionsQuery.isError ? (
               <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
             ) : null}
             {messagesQuery.isError ? (

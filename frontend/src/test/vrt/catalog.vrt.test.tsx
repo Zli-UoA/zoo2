@@ -1,3 +1,4 @@
+import { HomeLiveProvider } from "../../hooks/useHomeLive";
 import { delay, http, HttpResponse } from "msw";
 import { mockServer } from "../browser-setup";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -19,6 +20,7 @@ import { NotificationsScreen } from "../../components/chat/NotificationsScreen";
 import { NotificationCard } from "../../components/chat/notifications/NotificationCard";
 import { StoryShell } from "../../../.storybook/shell";
 import { StoryRouter } from "../../../.storybook/decorators";
+import { NotificationsProvider } from "../../hooks/useUnifiedNotifications";
 import { CollectionsProvider } from "../../lib/electric/collections-context";
 import {
   createStoryCollections,
@@ -154,9 +156,13 @@ function WithCollections({
   return (
     <Surface theme={theme} padded={padded}>
       <CollectionsProvider value={bundle}>
-        <StoryRouter>
-          <StoryShell>{children}</StoryShell>
-        </StoryRouter>
+        <HomeLiveProvider>
+          <NotificationsProvider>
+            <StoryRouter>
+              <StoryShell>{children}</StoryShell>
+            </StoryRouter>
+          </NotificationsProvider>
+        </HomeLiveProvider>
       </CollectionsProvider>
     </Surface>
   );

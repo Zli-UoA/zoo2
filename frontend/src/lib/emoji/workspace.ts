@@ -12,6 +12,7 @@ export interface WorkspaceEmoji {
   aliases: string[];
 }
 const cached = new WeakMap<AppConfig, WorkspaceEmoji[]>();
+const checked = new WeakMap<AppConfig, number>();
 const requests = new WeakMap<AppConfig, Promise<WorkspaceEmoji[]>>();
 
 export function useWorkspaceEmojis(enabled = true) {
@@ -22,7 +23,10 @@ export function useWorkspaceEmojis(enabled = true) {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  const retry = useCallback(() => {
+    checked.delete(config);
+    setAttempt((n) => n + 1);
+  }, [config]);
   useEffect(() => {
     if (!enabled) {
       setLoading(false);
@@ -31,14 +35,20 @@ export function useWorkspaceEmojis(enabled = true) {
     const controller = new AbortController();
     setLoading(true);
     setFailed(false);
+    if (cached.has(config) && Date.now() - (checked.get(config) ?? 0) < 60_000) {
+      setEmojis(cached.get(config)!);
+      setLoading(false);
+    }
     let request = requests.get(config);
-    if (!request) {
+    const fresh = cached.has(config) && Date.now() - (checked.get(config) ?? 0) < 60_000;
+    if (!request && !fresh) {
       request = client.get<WorkspaceEmoji[]>("/api/emojis").finally(() => requests.delete(config));
       requests.set(config, request);
     }
     void request
-      .then((values) => {
+      ?.then((values) => {
         cached.set(config, values);
+        checked.set(config, Date.now());
         if (!controller.signal.aborted) setEmojis(values);
       })
       .catch(() => {
@@ -47,13 +57,17 @@ export function useWorkspaceEmojis(enabled = true) {
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
       });
-    const refresh = () => retry();
+    const refresh = () => {
+      if (document.visibilityState !== "hidden") setAttempt((n) => n + 1);
+    };
     const timer = window.setInterval(refresh, 60_000);
-    window.addEventListener("workspace-emojis-changed", refresh);
+    window.addEventListener("workspace-emojis-changed", retry);
+    document.addEventListener("visibilitychange", refresh);
     return () => {
       window.clearInterval(timer);
       controller.abort();
-      window.removeEventListener("workspace-emojis-changed", refresh);
+      window.removeEventListener("workspace-emojis-changed", retry);
+      document.removeEventListener("visibilitychange", refresh);
     };
   }, [client, config, attempt, retry, enabled]);
   return {
