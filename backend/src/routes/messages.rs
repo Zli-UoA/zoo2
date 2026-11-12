@@ -275,9 +275,53 @@ pub(crate) async fn check_idempotent_existing_message(
     metadata: Option<&serde_json::Value>,
     attachment_ids: &[String],
 ) -> Result<Option<MessageResponse>, AppError> {
+    // 本文（モデル）、オプション、revision などの追加の列を別々の SELECT で読むので、同じスナップショットにそろえる。
+    // そろえないと、間に編集がコミットしたとき、編集前の本文に編集後の revision を付けて返す（一覧と同じ）。
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .exec(&mut tx)
+        .await?;
+    let result = idempotent_existing_message_in_snapshot(
+        &mut tx,
+        id,
+        auth_user_id,
+        channel_id,
+        content,
+        parent_id,
+        kind,
+        broadcast,
+        metadata,
+        attachment_ids,
+    )
+    .await;
+    match result {
+        Ok(response) => {
+            tx.commit().await?;
+            Ok(response)
+        }
+        Err(err) => {
+            let _ = tx.rollback().await;
+            Err(err)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn idempotent_existing_message_in_snapshot(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+    auth_user_id: &str,
+    channel_id: &str,
+    content: &str,
+    parent_id: Option<&str>,
+    kind: &str,
+    broadcast: bool,
+    metadata: Option<&serde_json::Value>,
+    attachment_ids: &[String],
+) -> Result<Option<MessageResponse>, AppError> {
     let existing = Message::filter(Message::fields().id().eq(id))
         .first()
-        .exec(db)
+        .exec(&mut *tx)
         .await?;
     let Some(existing_msg) = existing else {
         return Ok(None);
@@ -292,10 +336,10 @@ pub(crate) async fn check_idempotent_existing_message(
 
     // 暗号化チャンネルでは、同じ id、user_id、channel_id の行があれば、新しい暗号文を保存せずに既存の行を返す
     // （応答をなくした再送。暗号文は送り直すたびに変わるので、内容では比べない）。
-    if Channel::get_by_id(&mut *db, channel_id).await?.encrypted {
+    if Channel::get_by_id(&mut *tx, channel_id).await?.encrypted {
         if existing_msg.user_id == auth_user_id {
             return Ok(Some(
-                with_e2ee_fields(&mut *db, MessageResponse::from(existing_msg)).await?,
+                with_e2ee_fields(&mut *tx, MessageResponse::from(existing_msg)).await?,
             ));
         }
         return Err(AppError::Conflict("Idempotency key already used".into()));
@@ -305,7 +349,7 @@ pub(crate) async fn check_idempotent_existing_message(
     req_att_ids.sort();
 
     let existing_atts = Attachment::filter(Attachment::fields().message_id().eq(id))
-        .exec(db)
+        .exec(&mut *tx)
         .await?;
     let mut existing_att_ids: Vec<String> = existing_atts.into_iter().map(|a| a.id).collect();
     existing_att_ids.sort();
@@ -318,7 +362,7 @@ pub(crate) async fn check_idempotent_existing_message(
          )::text FROM messages WHERE id = $1",
     )
     .bind(id)
-    .exec(db)
+    .exec(&mut *tx)
     .await?;
 
     let mut options_match = false;
@@ -345,7 +389,7 @@ pub(crate) async fn check_idempotent_existing_message(
     {
         // 編集で増えた revision など、モデルに含めない列も保存済みの値を返す（暗号化側と同じ）。
         return Ok(Some(
-            with_e2ee_fields(&mut *db, MessageResponse::from(existing_msg)).await?,
+            with_e2ee_fields(&mut *tx, MessageResponse::from(existing_msg)).await?,
         ));
     }
     Err(AppError::Conflict("Idempotency key already used".into()))
