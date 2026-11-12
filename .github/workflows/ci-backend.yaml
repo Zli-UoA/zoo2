@@ -211,7 +211,8 @@ jobs:
       S3_CONSOLE_PORT: "0"
       ACTIVITYPUB_BASE_URL: https://zoo.example.com
     needs: runner
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    # e2e は compose のスタック一式を立てるため、ARC の runner では CPU/メモリ不足で通信が切れた。hosted → zli-k8s の large にする。
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     defaults:
       run:
         working-directory: ./backend

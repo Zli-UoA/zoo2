@@ -12,7 +12,7 @@ zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料で
 
 AuthZとzoo2-infraも、同じ順序に揃えます（追従PRがマージされるまでは、Docker必須のジョブもHosted優先のままです）。
 
-自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用、`large-runs-on` はkubecampの2GiBを超えるジョブ用です。`docker-runs-on` と `large-runs-on` は別の値を返すことがあります。backend の `check`（format・Clippy・ビルド・単体テスト）と frontend の `browser-test` は、Rust のビルド・リンク中に2GiBのRunnerを圧迫しないよう、`large-runs-on` を使います。次の条件で選びます。
+自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用、`large-runs-on` はkubecampの2GiBを超えるジョブ用です。`docker-runs-on` と `large-runs-on` は別の値を返すことがあります。backend の `check`（format・Clippy・ビルド・単体テスト）と frontend の `browser-test` に加え、compose のスタック一式を立てる backend の `e2e` は、Rust のビルド・リンク中に2GiBのRunnerを圧迫しないよう、`large-runs-on` を使います（`e2e` は、ARC の runner で CPU/メモリが足りず runner の通信が切れたため、hosted を優先します）。次の条件で選びます。
 
 1. onlineかつidleのkubecamp Runnerがあれば、自動選択対象のDocker不要ジョブを割り当てます。
 2. kubecampが不在または全台busyなら、GitHub-hostedを選びます。大容量ジョブは常にここから選びます。
