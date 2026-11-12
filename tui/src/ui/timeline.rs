@@ -100,7 +100,11 @@ fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> V
     }
 
     let mut lines = vec![Line::from(header)];
-    lines.extend(mfm::render(&message.content, Some(ctx.me_name)));
+    lines.extend(mfm::render_with_accounts(
+        &message.content,
+        Some(ctx.me_name),
+        &ctx.store.account_profiles,
+    ));
 
     let reactions = ctx
         .reactions

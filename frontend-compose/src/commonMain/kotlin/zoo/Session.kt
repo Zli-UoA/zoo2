@@ -33,6 +33,21 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             standardChecked = now
         } finally { standardMutex.unlock() }
     }
+    var accountProfiles by mutableStateOf<List<Row>>(emptyList())
+        private set
+    private var accountProfilesChecked = 0L
+    private val accountProfilesMutex = kotlinx.coroutines.sync.Mutex()
+    suspend fun loadAccountProfiles(force: Boolean = false) {
+        accountProfilesMutex.lock()
+        try {
+            val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+            if (!force && accountProfilesChecked != 0L && now - accountProfilesChecked < 60_000) return
+            accountProfilesChecked = now
+            try { accountProfiles = api.request("/api/emoji-accounts").jsonObject["accounts"]?.rows() ?: emptyList() }
+            catch (e: CancellationException) { accountProfilesChecked = 0L; throw e }
+            catch (_: Exception) { accountProfiles = emptyList() }
+        } finally { accountProfilesMutex.unlock() }
+    }
     var workspaceEmojis by mutableStateOf<List<Row>>(emptyList())
         private set
     var workspaceEmojiLoading by mutableStateOf(false)
@@ -46,11 +61,11 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         try {
             val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
             if (!force && workspaceEmojiChecked != 0L && now - workspaceEmojiChecked < 60_000) return
-            workspaceEmojiChecked = now
             workspaceEmojiLoading = true
             workspaceEmojiError = false
             try {
                 workspaceEmojis = api.request("/api/emojis").rows()
+                workspaceEmojiChecked = now
             } catch (e: CancellationException) {
                 workspaceEmojiChecked = 0L
                 throw e
@@ -59,6 +74,13 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 throw e
             } finally { workspaceEmojiLoading = false }
         } finally { workspaceEmojiMutex.unlock() }
+    }
+    internal val surfaceChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
+    private var surfaceWatchUntil = 0L
+    internal fun watchingSurfaces() = kotlin.time.Clock.System.now().toEpochMilliseconds() < surfaceWatchUntil
+    fun invalidateSurfaces() {
+        surfaceWatchUntil = kotlin.time.Clock.System.now().toEpochMilliseconds() + 15_000
+        surfaceChanges.tryEmit(Unit)
     }
     var env by mutableStateOf(initial)
     val overlays = mutableStateListOf<OverlaySlot>()
@@ -285,15 +307,9 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             }
         }
         scope.launch {
-            while (isActive) {
-                if (env.online && env.visible) {
-                    try {
-                        surfaces = api.request("/api/app-surfaces").rows()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {}
-                }
-                delay(2_000)
+            pollWhileVisible(snapshotFlow { env.online && env.visible }, surfaceChanges, 2000, 30000) {
+                surfaces = api.request("/api/app-surfaces").rows()
+                surfaces.isNotEmpty() || watchingSurfaces()
             }
         }
     }
@@ -324,6 +340,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                     "POST",
                     body,
                 )
+                invalidateSurfaces()
                 return true
             } catch (e: CancellationException) {
                 throw e

@@ -29,13 +29,13 @@ frontend-install:
 frontend-dev:
 	cd frontend && pnpm dev
 
-frontend-build:
+frontend-build: crypto-wasm
 	cd frontend && pnpm build
 
-frontend-check:
+frontend-check: crypto-wasm
 	cd frontend && pnpm check
 
-frontend-test:
+frontend-test: crypto-wasm
 	cd frontend && pnpm test
 
 # E2E スモーク: PostgreSQL + Electric + バックエンドを起動しておく (起動→送信→反映)
@@ -78,7 +78,7 @@ sdk-test:
 	node --experimental-strip-types --test sdk/src/index.test.ts
 
 # TUI クライアント。tui-dev は backend の dev モード (make backend-dev) に X-Dev-User で接続する。
-.PHONY: tui-dev tui-build tui-check desktop-dev desktop-build desktop-check
+.PHONY: tui-dev tui-build tui-check desktop-dev desktop-build desktop-check desktop-gallery
 tui-dev:
 	cd tui && ZOO_API_BASE_URL=$${ZOO_API_BASE_URL:-http://localhost:8000} ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run -- run
 
@@ -93,6 +93,12 @@ tui-check:
 .PHONY: crypto-check
 crypto-check:
 	cd crates/zoo-crypto && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && cargo build --locked --target wasm32-unknown-unknown
+	cd crates/zoo-crypto-wasm && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+
+# Web（frontend）が link: 依存で読む wasm のパッケージ（crates/zoo-crypto-wasm/pkg）を作る（#352）。
+.PHONY: crypto-wasm
+crypto-wasm:
+	crates/zoo-crypto-wasm/build.sh
 
 # デスクトップクライアント (GPUI)。desktop-dev は backend の dev モードに X-Dev-User で接続する。
 desktop-dev:
@@ -104,3 +110,7 @@ desktop-build:
 desktop-check:
 	cd client-core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 	cd desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+
+# 色・フォント・アイコンの確認画面。THEME=dark で暗い配色にする。
+desktop-gallery:
+	cd desktop && cargo run -- gallery --theme $${THEME:-light}

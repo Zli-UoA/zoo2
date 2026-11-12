@@ -5,6 +5,15 @@ import kotlinx.serialization.json.*
 
 class ContentTest {
     @Test
+    fun authzAvatarShortcodesAreDistinctFromMentionsAndPreserveCode() {
+        val tokens = parseInline(":@alice: @alice `:@alice: @alice` <plain>:@alice:</plain>")
+        assertEquals(1, tokens.count { it.kind == "accountEmoji" })
+        assertEquals(1, tokens.count { it.kind == "mention" })
+        assertEquals(":@alice: @alice", tokens.single { it.kind == "code" }.value)
+        assertEquals(":@alice:", tokens.single { it.kind == "plain" }.value)
+    }
+
+    @Test
     fun joinedEmojiMetadataReservesWideImagesBeforeDecoding() {
         val data = json.parseToJsonElement("""{"emojis":{"wide":{"url":"/wide.png","width":120,"height":20},"apub:remote::cat:":{"image_id":"remote","url":"https://peer/cat.png","width":60,"height":20}}}""").jsonObject
         val emojis = joinedEmojis(data)

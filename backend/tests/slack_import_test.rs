@@ -3447,6 +3447,279 @@ async fn test_slack_import_labels_files_in_existing_nsfw_channel() -> anyhow::Re
     Ok(())
 }
 
+/// 取り込みを始め、ワーカーが取る前の `importing` のジョブを返す (テストの準備)
+async fn importing_job(
+    state: &AppState,
+    app: &Router,
+    admin: &str,
+    team: &str,
+    name: &str,
+    days: &[(&str, Value)],
+) -> anyhow::Result<String> {
+    let mut files = vec![
+        (
+            "users.json".to_string(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".to_string(),
+            json!([{"id":"C1","name":name,"members":["U1"]}]),
+        ),
+    ];
+    for (day, messages) in days {
+        files.push((format!("{name}/{day}.json"), messages.clone()));
+    }
+    let export = upload(state, app, admin, &build_zip(&files)).await;
+    let (status, run) = start(
+        app,
+        admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"create","name":name}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    Ok(run["id"].as_str().unwrap().to_string())
+}
+
+async fn admin_state() -> anyhow::Result<(AppState, Router, String)> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_handoff").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    Ok((state, app, admin))
+}
+
+/// 終了の合図でジョブを手放しても、attempts を消費せず、別のワーカーが続きを完了できる
+#[tokio::test]
+async fn test_slack_import_releases_the_job_on_shutdown() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (state, app, admin) = admin_state().await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let name = format!("handoff-{}", uuid::Uuid::new_v4().simple());
+    let id = importing_job(
+        &state,
+        &app,
+        &admin,
+        &team,
+        &name,
+        &[(
+            "2024-01-01",
+            json!([{"ts":"1704070000.000100","user":"U1","text":"hello"}]),
+        )],
+    )
+    .await?;
+    let job = |state: &AppState| {
+        let state = state.clone();
+        let id = id.clone();
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('attempts',attempts,'handoffs',handoffs,'token',lease_token,\
+                 'waiting',available_at>now(),'status',status)::text FROM slack_import_jobs WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap()
+            .remove(0)
+        }
+    };
+
+    // すでに合図が来ているワーカーは、ジョブを取らない
+    let (stop_tx, mut stop) = tokio::sync::watch::channel(true);
+    assert!(matches!(
+        backend::slack::worker::run_once_until(&state, &mut stop).await?,
+        backend::slack::worker::Step::Stopped
+    ));
+    assert_eq!(job(&state).await["attempts"], 0);
+    drop(stop_tx);
+
+    // ワーカーが取って (attempts が増え、リースを持つ)、処理中に落ちる直前の状態を作る
+    sql(
+        &state,
+        "UPDATE slack_import_jobs SET attempts=3,lease_token='tok',lease_until=now()+interval '2 minutes' \
+         WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&id],
+    )
+    .await?;
+    // 別のトークン (リースを奪われた) では、何もしない
+    assert!(!backend::slack::worker::release_job(&state, &id, "other").await?);
+    assert_eq!(job(&state).await["attempts"], 3);
+
+    assert!(backend::slack::worker::release_job(&state, &id, "tok").await?);
+    let released = job(&state).await;
+    assert_eq!(
+        released["attempts"], 2,
+        "the hand-off gives the attempt back"
+    );
+    assert_eq!(released["handoffs"], 1);
+    assert!(released["token"].is_null(), "{released}");
+    assert_eq!(released["waiting"], true, "not taken again right away");
+    // 2 回目の手放しは、トークンが消えているので何もしない (attempts を二重に戻さない)
+    assert!(!backend::slack::worker::release_job(&state, &id, "tok").await?);
+    assert_eq!(job(&state).await["attempts"], 2);
+
+    // 待ち時間が過ぎれば、別のワーカーが取って完了する
+    sql(
+        &state,
+        "UPDATE slack_import_jobs SET available_at=now() WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&id],
+    )
+    .await?;
+    drive(&state, &app, &admin, &id, "completed").await;
+    Ok(())
+}
+
+/// 前の試行が取り込んだ日付ファイルは飛ばし、続きから取り込む。処理済みの件数も引き継ぐ
+#[tokio::test]
+async fn test_slack_import_resumes_after_the_completed_day_files() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (state, app, admin) = admin_state().await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let name = format!("resume-{}", uuid::Uuid::new_v4().simple());
+    let (d1, d2, d3) = (
+        "1704070000.000100",
+        "1704156400.000100",
+        "1704242800.000100",
+    );
+    let id = importing_job(
+        &state,
+        &app,
+        &admin,
+        &team,
+        &name,
+        &[
+            ("2024-01-01", json!([{"ts":d1,"user":"U1","text":"day 1"}])),
+            ("2024-01-02", json!([{"ts":d2,"user":"U1","text":"day 2"}])),
+            ("2024-01-03", json!([{"ts":d3,"user":"U1","text":"day 3"}])),
+        ],
+    )
+    .await?;
+    // 前の試行が 1 日目まで取り込んでコミットした状態 (1 日目の投稿は、ここでは入れない。飛ばされることの確認)
+    let progress = json!({"C1": format!("{name}/2024-01-01.json")}).to_string();
+    sql(
+        &state,
+        "UPDATE slack_import_jobs SET import_progress=$2,processed_messages=1 WHERE id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&id, &progress],
+    )
+    .await?;
+    drive(&state, &app, &admin, &id, "completed").await;
+
+    let target = backend::slack::channel_id(&team, "C1");
+    let live = |ts: &'static str| {
+        let state = state.clone();
+        let id = backend::slack::message_id(&team, "C1", ts);
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('n',count(*))::text FROM messages WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap()[0]["n"]
+                .as_i64()
+        }
+    };
+    assert_eq!(live(d1).await, Some(0), "the completed day file is skipped");
+    assert_eq!(live(d2).await, Some(1));
+    assert_eq!(live(d3).await, Some(1));
+    let row = sql(
+        &state,
+        "SELECT json_build_object('processed',processed_messages,'progress',import_progress,'channel',\
+         (SELECT count(*) FROM channels WHERE id=$2))::text FROM slack_import_jobs WHERE id=$1",
+        &[&id, &target],
+    )
+    .await?;
+    assert_eq!(row[0]["processed"], 3, "1 from before + 2 new: {}", row[0]);
+    assert!(
+        row[0]["progress"]
+            .as_str()
+            .unwrap()
+            .contains("2024-01-03.json"),
+        "{}",
+        row[0]
+    );
+    assert_eq!(row[0]["channel"], 1);
+    Ok(())
+}
+
+/// 再取り込み (別のジョブの行) は、前のジョブの再開位置を引き継がず、全部を取り込む
+#[tokio::test]
+async fn test_slack_reimport_does_not_inherit_the_resume_position() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (state, app, admin) = admin_state().await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let name = format!("reimport-{}", uuid::Uuid::new_v4().simple());
+    let d1 = "1704070000.000100";
+    let days = [("2024-01-01", json!([{"ts":d1,"user":"U1","text":"day 1"}]))];
+    let first = importing_job(&state, &app, &admin, &team, &name, &days).await?;
+    drive(&state, &app, &admin, &first, "completed").await;
+    let message = backend::slack::message_id(&team, "C1", d1);
+    sql(
+        &state,
+        "DELETE FROM messages WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&message],
+    )
+    .await
+    .ok();
+    let target = backend::slack::channel_id(&team, "C1");
+    let export = upload(
+        &state,
+        &app,
+        &admin,
+        &build_zip(&[
+            (
+                "users.json".into(),
+                json!([{"id":"U1","team_id":team,"name":"alice"}]),
+            ),
+            (
+                "channels.json".into(),
+                json!([{"id":"C1","name":name,"members":["U1"]}]),
+            ),
+            (format!("{name}/2024-01-01.json"), days[0].1.clone()),
+        ]),
+    )
+    .await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":target}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let second = run["id"].as_str().unwrap().to_string();
+    assert_ne!(first, second);
+    let progress = sql(
+        &state,
+        "SELECT json_build_object('p',import_progress) ::text FROM slack_import_jobs WHERE id=$1",
+        &[&second],
+    )
+    .await?;
+    assert!(progress[0]["p"].is_null(), "{}", progress[0]);
+    drive(&state, &app, &admin, &second, "completed").await;
+    let n = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM messages WHERE id=$1",
+        &[&message],
+    )
+    .await?;
+    assert_eq!(n[0]["n"], 1, "the re-import brings the message back");
+    Ok(())
+}
+
 /// 取り込みは平文の content を messages に入れるので、暗号化チャンネルを指定した開始は 400 にする (#358)
 #[tokio::test]
 async fn test_slack_import_rejects_encrypted_channels() -> anyhow::Result<()> {

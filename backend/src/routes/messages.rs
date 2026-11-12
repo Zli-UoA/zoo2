@@ -347,7 +347,10 @@ pub(crate) async fn check_idempotent_existing_message(
         && req_att_ids == existing_att_ids
         && options_match
     {
-        return Ok(Some(MessageResponse::from(existing_msg)));
+        // 編集で増えた revision など、モデルに含めない列も保存済みの値を返す（暗号化側と同じ）。
+        return Ok(Some(
+            with_e2ee_fields(&mut *db, MessageResponse::from(existing_msg)).await?,
+        ));
     }
     Err(AppError::Conflict("Idempotency key already used".into()))
 }
@@ -389,6 +392,13 @@ pub(crate) async fn create_message_impl(
     }
     if let Some(metadata) = &payload.metadata {
         crate::apps::events::object(metadata)?;
+    }
+    // 暗号化の項目のない要求（平文チャンネル向け）は、チャンネルを読む前に本文を検証する（#357 より前と同じ順）。
+    // 暗号化チャンネルの要求は content が空なので、チャンネルを読んだあとで分岐して検証する。
+    let plaintext_request =
+        payload.ciphertext.is_none() && payload.epoch.is_none() && payload.revision.is_none();
+    if plaintext_request {
+        validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
     }
 
     Uuid::parse_str(&payload.channel_id).map_err(|_| {
@@ -506,10 +516,9 @@ pub(crate) async fn create_message_impl(
         }
         Some(e2ee_channels::check_ciphertext_shape(ciphertext)?)
     } else {
-        if payload.ciphertext.is_some() || payload.epoch.is_some() || payload.revision.is_some() {
+        if !plaintext_request {
             return Err(e2ee_channels::plaintext_forbidden());
         }
-        validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
         None
     };
 
@@ -1541,6 +1550,9 @@ async fn reaction_emoji(
     input: &str,
     require_existing: bool,
 ) -> Result<String, AppError> {
+    if crate::validation::account_shortcode_username(input).is_some() {
+        return normalize_and_validate_emoji(input);
+    }
     if let Some(name) = input
         .trim()
         .strip_prefix(':')

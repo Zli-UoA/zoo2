@@ -54,6 +54,7 @@ html-escape = "0.2"
 zoo-crypto = { path = "../crates/zoo-crypto" }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6"
 # E2EE の結合テストで、クロス署名鍵の署名を作る（zoo-crypto と同じ版）。
 vodozemac = "0.11.2"
@@ -70,3 +71,7 @@ path = "src/main.rs"
 [[bin]]
 name = "zoo_dispatcher"
 path = "src/bin/zoo_dispatcher.rs"
+
+[[bin]]
+name = "zoo_slack_worker"
+path = "src/bin/zoo_slack_worker.rs"

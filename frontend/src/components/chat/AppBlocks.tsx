@@ -1,3 +1,4 @@
+import { refreshAppSurfaces } from "../../lib/appSurfaceEvents";
 import { Select } from "../ui/select";
 import { Input } from "../ui/input";
 import { MessageCard, parseMessageCard, type CardData } from "./messages/MessageCard";
@@ -83,6 +84,7 @@ export function AppBlocks({
           },
         },
       });
+      refreshAppSurfaces();
       if (kind === "submit") onDone?.();
     } catch {
       setError(t("apps.actionError"));

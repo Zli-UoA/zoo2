@@ -1,0 +1,23 @@
+{
+  "name": "@zoo/crypto-wasm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "zoo-crypto の wasm-bindgen バインディング。pkg/ は build.sh で作る（Git には入れない）",
+  "license": "MIT",
+  "type": "module",
+  "main": "./pkg/zoo_crypto_wasm.js",
+  "types": "./pkg/zoo_crypto_wasm.d.ts",
+  "exports": {
+    ".": {
+      "types": "./pkg/zoo_crypto_wasm.d.ts",
+      "default": "./pkg/zoo_crypto_wasm.js"
+    },
+    "./zoo_crypto_wasm_bg.wasm": "./pkg/zoo_crypto_wasm_bg.wasm"
+  },
+  "files": [
+    "pkg/zoo_crypto_wasm.js",
+    "pkg/zoo_crypto_wasm.d.ts",
+    "pkg/zoo_crypto_wasm_bg.wasm",
+    "pkg/zoo_crypto_wasm_bg.wasm.d.ts"
+  ]
+}

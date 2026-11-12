@@ -58,7 +58,7 @@ BEGIN
  ELSIF TG_OP='DELETE' OR row_data->>'deleted_at' IS NOT NULL AND old_data->>'deleted_at' IS NULL THEN
   PERFORM app_emit('message.deleted',data,row_data->>'user_id',row_data->>'channel_id');
   IF old_data->>'metadata' IS NOT NULL THEN PERFORM app_emit('message.metadata_deleted',jsonb_build_object('id',OLD.id,'previous_metadata',OLD.metadata::jsonb),OLD.user_id,OLD.channel_id);END IF;
- ELSIF row_data IS DISTINCT FROM old_data THEN
+ ELSIF (row_data-'thread_archive_at'-'thread_activity_at') IS DISTINCT FROM (old_data-'thread_archive_at'-'thread_activity_at') THEN
   PERFORM app_emit('message.updated',data,NEW.user_id,NEW.channel_id);
   IF NEW.metadata IS DISTINCT FROM OLD.metadata THEN
    PERFORM app_emit(CASE WHEN NEW.metadata IS NULL THEN 'message.metadata_deleted' WHEN OLD.metadata IS NULL THEN 'message.metadata_posted' ELSE 'message.metadata_updated' END,

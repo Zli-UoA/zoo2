@@ -5,6 +5,7 @@ pub mod export;
 pub mod import;
 pub mod link;
 pub mod self_import;
+pub mod sync;
 pub mod worker;
 
 use sha2::{Digest, Sha256};
@@ -71,5 +72,50 @@ mod tests {
         assert!(!is_valid_ts("1700000000."));
         assert!(!is_valid_ts("17e9"));
         assert!(!is_valid_ts("1;DROP"));
+    }
+}
+
+/// `SLACK_IMPORT_WORKER` が `false`/`0`/`off`/`disabled`/`no` のとき、この backend プロセスでは Slack の取り込みと
+/// 差分同期のワーカーを動かさない (専用の `zoo_slack_worker` に任せる)。未設定・空・その他の値は有効 (従来どおり)
+pub fn worker_enabled_from(raw: Option<&str>) -> bool {
+    !matches!(
+        raw.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("false" | "0" | "off" | "disabled" | "no")
+    )
+}
+
+pub fn worker_enabled() -> bool {
+    let raw = std::env::var("SLACK_IMPORT_WORKER").ok();
+    let enabled = worker_enabled_from(raw.as_deref());
+    // 書き間違い (`flase` など) は有効扱いになる。専用ワーカーに任せたつもりで二重に動かないよう警告する
+    if let Some(value) = raw.as_deref().map(str::trim)
+        && enabled
+        && !value.is_empty()
+        && !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "true" | "1" | "on" | "enabled" | "yes"
+        )
+    {
+        tracing::warn!(
+            value,
+            "Unrecognized SLACK_IMPORT_WORKER; the Slack workers stay enabled"
+        );
+    }
+    enabled
+}
+
+#[cfg(test)]
+mod worker_switch_tests {
+    use super::worker_enabled_from;
+
+    #[test]
+    fn only_explicit_off_values_disable_the_workers() {
+        for off in ["false", "0", "off", "disabled", "no", " FALSE ", "No"] {
+            assert!(!worker_enabled_from(Some(off)), "{off}");
+        }
+        for on in ["true", "1", "", "flase", "yes"] {
+            assert!(worker_enabled_from(Some(on)), "{on}");
+        }
+        assert!(worker_enabled_from(None));
     }
 }

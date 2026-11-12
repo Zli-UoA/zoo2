@@ -1241,3 +1241,42 @@ async fn member_additions_do_not_block_posts_to_the_channel() {
     assert_eq!(status, StatusCode::OK, "{body}");
     tx.rollback().await.unwrap();
 }
+
+#[tokio::test]
+async fn plaintext_resends_return_the_stored_revision() {
+    let env = env().await;
+    let alice = env.user().await;
+    let channel = env.plain_channel(&alice, &[]).await;
+    let id = Uuid::new_v4().to_string();
+    let create = json!({"id": id, "channel_id": channel, "content": "same"});
+    let (status, body) = env
+        .call("POST", "/api/messages", &alice, create.clone())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // 同じ本文での編集でも revision は増える。
+    let path = format!("/api/messages/{id}");
+    let (status, body) = env
+        .call(
+            "PATCH",
+            &path,
+            &alice,
+            json!({"content": "same", "revision": 1}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // 作成の再送の応答は、保存済みの revision を返し、それを基にした次の編集が通る。
+    let (status, body) = env.call("POST", "/api/messages", &alice, create).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["revision"], 1);
+    let next = body["data"]["revision"].as_i64().unwrap() + 1;
+    let (status, body) = env
+        .call(
+            "PATCH",
+            &path,
+            &alice,
+            json!({"content": "same", "revision": next}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["revision"], 2);
+}

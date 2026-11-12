@@ -8,6 +8,7 @@ pub const COMMANDS: &[&str] = &[
     "zoo_set_focus",
     "zoo_open_channel",
     "zoo_resync",
+    "zoo_account_profiles",
     "zoo_send_message",
     "zoo_access_token",
     "zoo_notifications_observed",

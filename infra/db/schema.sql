@@ -44,6 +44,8 @@ CREATE TABLE messages (
   updated_at timestamp(3),
   deleted_at timestamp(3),
   parent_id text,
+  thread_archive_at timestamp(3),
+  thread_activity_at timestamp(3),
   CONSTRAINT "Message_pkey" PRIMARY KEY (id),
   CONSTRAINT messages_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
@@ -120,6 +122,12 @@ CREATE TABLE message_reactions (
 
 CREATE INDEX idx_messages_channel_id ON messages (channel_id);
 CREATE INDEX idx_messages_parent_id ON messages (parent_id);
+CREATE INDEX idx_messages_thread_channel_active ON messages (channel_id, thread_activity_at DESC, id DESC)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NULL AND thread_activity_at IS NOT NULL;
+CREATE INDEX idx_messages_thread_channel_archived ON messages (channel_id, thread_activity_at DESC, id DESC)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NOT NULL AND thread_activity_at IS NOT NULL;
+CREATE INDEX idx_messages_thread_idle ON messages (thread_activity_at, id)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NULL AND thread_activity_at IS NOT NULL;
 CREATE INDEX idx_message_reactions_message_id ON message_reactions (message_id);
 CREATE INDEX idx_message_reactions_user_id ON message_reactions (user_id);
 
@@ -870,7 +878,7 @@ BEGIN
  ELSIF TG_OP='DELETE' OR row_data->>'deleted_at' IS NOT NULL AND old_data->>'deleted_at' IS NULL THEN
   PERFORM app_emit('message.deleted',data,row_data->>'user_id',row_data->>'channel_id');
   IF old_data->>'metadata' IS NOT NULL THEN PERFORM app_emit('message.metadata_deleted',jsonb_build_object('id',OLD.id,'previous_metadata',OLD.metadata::jsonb),OLD.user_id,OLD.channel_id);END IF;
- ELSIF row_data IS DISTINCT FROM old_data THEN
+ ELSIF (row_data-'thread_archive_at'-'thread_activity_at') IS DISTINCT FROM (old_data-'thread_archive_at'-'thread_activity_at') THEN
   PERFORM app_emit('message.updated',data,NEW.user_id,NEW.channel_id);
   IF NEW.metadata IS DISTINCT FROM OLD.metadata THEN
    PERFORM app_emit(CASE WHEN NEW.metadata IS NULL THEN 'message.metadata_deleted' WHEN OLD.metadata IS NULL THEN 'message.metadata_posted' ELSE 'message.metadata_updated' END,
@@ -1720,6 +1728,8 @@ CREATE TABLE slack_import_jobs (
   finished_at timestamptz,
   -- 取り込みのジョブなら、ZIP を読むエクスポート (NULL ならエクスポート自身)
   source_id text,
+  import_progress text,
+  handoffs integer NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
   CONSTRAINT slack_import_jobs_status_check CHECK (status IN (
     'uploading', 'analyzing', 'ready', 'importing',
@@ -1770,6 +1780,38 @@ CREATE TABLE slack_channels (
 );
 
 CREATE INDEX idx_slack_channels_channel_id ON slack_channels (channel_id);
+
+-- Slack の差分同期 (#292) のキューと再開位置。サーバー専用で、Electric の Shape には載せない。
+-- Slack チャンネル (slack_channels) ごとに 1 行。同期の進み具合は slack_channels.last_ts (チャンネル単位で共有するカーソル) で、
+-- ここには 1 回の同期の途中経過 (ページのカーソル、残りのスレッド) と、次に実行する日時・リースを持つ。
+-- 新しいテーブルの追加だけなので、適用前のバックエンドが動いたままでも壊れない。
+CREATE TABLE slack_channel_syncs (
+  team_id text NOT NULL,
+  slack_channel_id text NOT NULL,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  lease_until timestamptz,
+  lease_token text,
+  attempts integer NOT NULL DEFAULT 0,
+  running boolean NOT NULL DEFAULT false,
+  phase text NOT NULL DEFAULT 'history',
+  run_oldest text,
+  run_max_ts text,
+  page_cursor text,
+  pending_threads text NOT NULL DEFAULT '[]',
+  known_threads text NOT NULL DEFAULT '[]',
+  token_user_id text,
+  last_synced_at timestamptz,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (team_id, slack_channel_id),
+  CONSTRAINT slack_channel_syncs_phase_check CHECK (phase IN ('history', 'threads')),
+  CONSTRAINT slack_channel_syncs_channel_fkey
+    FOREIGN KEY (team_id, slack_channel_id) REFERENCES slack_channels (team_id, slack_channel_id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE INDEX idx_slack_channel_syncs_due ON slack_channel_syncs (available_at);
 
 -- エクスポートに実体が含まれない添付ファイル。トークンで取得して attachments に移す。
 -- 同じファイルが複数のメッセージに共有されることがあるため、メッセージごとに 1 行持つ。
@@ -2471,6 +2513,24 @@ CREATE TRIGGER users_apub_avatar_update AFTER UPDATE OF avatar_url ON users
 
 ALTER TABLE attachments ADD COLUMN width integer, ADD COLUMN height integer, ADD COLUMN blurhash text;
 
+-- 投稿経路によらず、返信と同じトランザクションで活動時刻と再開状態を更新する。
+CREATE FUNCTION update_thread_activity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.parent_id IS NULL OR NEW.deleted_at IS NOT NULL THEN RETURN NULL; END IF;
+  IF TG_OP='UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN RETURN NULL; END IF;
+  UPDATE messages parent SET
+    thread_activity_at=GREATEST(parent.thread_activity_at,parent.created_at,NEW.created_at),
+    -- INSERT 前にアーカイブされた通常の返信も再開し、過去の投稿の取り込みと区別する。
+    thread_archive_at=CASE WHEN NEW.created_at >= parent.thread_archive_at
+      OR NEW.created_at >= date_trunc('milliseconds',transaction_timestamp() AT TIME ZONE 'UTC')
+      THEN NULL ELSE parent.thread_archive_at END
+    WHERE parent.id=NEW.parent_id AND parent.channel_id=NEW.channel_id AND parent.deleted_at IS NULL;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER messages_thread_activity_insert AFTER INSERT ON messages
+  FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
+CREATE TRIGGER messages_thread_activity_parent_update AFTER UPDATE OF parent_id ON messages
+  FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
 -- E2EE: 端末と鍵（#354。仕様は docs/e2ee.md の「DB」）。
 -- 暗号化チャンネル。作成時の指定と変更の拒否は #357 で足す。既存の行は false なので後方互換。
 ALTER TABLE channels ADD COLUMN encrypted boolean NOT NULL DEFAULT false;
@@ -2938,7 +2998,7 @@ BEGIN
  ELSIF TG_OP='DELETE' OR row_data->>'deleted_at' IS NOT NULL AND old_data->>'deleted_at' IS NULL THEN
   PERFORM app_emit('message.deleted',data,row_data->>'user_id',row_data->>'channel_id');
   IF old_data->>'metadata' IS NOT NULL THEN PERFORM app_emit('message.metadata_deleted',jsonb_build_object('id',OLD.id,'previous_metadata',OLD.metadata::jsonb),OLD.user_id,OLD.channel_id);END IF;
- ELSIF row_data IS DISTINCT FROM old_data THEN
+ ELSIF (row_data-'thread_archive_at'-'thread_activity_at') IS DISTINCT FROM (old_data-'thread_archive_at'-'thread_activity_at') THEN
   PERFORM app_emit('message.updated',data,NEW.user_id,NEW.channel_id);
   IF NEW.metadata IS DISTINCT FROM OLD.metadata THEN
    PERFORM app_emit(CASE WHEN NEW.metadata IS NULL THEN 'message.metadata_deleted' WHEN OLD.metadata IS NULL THEN 'message.metadata_posted' ELSE 'message.metadata_updated' END,

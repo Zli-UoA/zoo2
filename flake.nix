@@ -57,6 +57,14 @@
           vulkan-loader
           wayland
         ];
+        # デスクトップの画面撮影 (scripts/desktop-screenshot.sh) 用。
+        # 仮想ディスプレイ (Xvfb) と WM (openbox) の上で GPUI を lavapipe (CPU の Vulkan) で描く。
+        desktopScreenshotTools = with pkgs; [
+          xvfb
+          openbox
+          xwd
+          imagemagick
+        ];
         # Tauri 版（desktop-tauri）の WebKitGTK と、そのランタイムで読まれるもの。
         # libayatana-appindicator はトレイのために dlopen されるので LD_LIBRARY_PATH にも入れる。
         tauriLibs = with pkgs; [
@@ -107,16 +115,19 @@
             opentofu
             sops
             age
-            # Tauri 版（desktop-tauri）。wasm-bindgen は desktop-tauri/ui/Cargo.toml の版と合わせる
+            # Tauri 版（desktop-tauri）と E2EE の wasm（crates/zoo-crypto-wasm）。wasm-bindgen-cli の版は
+            # desktop-tauri/ui/Cargo.toml と crates/zoo-crypto-wasm/Cargo.toml の wasm-bindgen（= で固定）と合わせる
             cargo-tauri
             trunk
             wasm-bindgen-cli
             # zoo-crypto のテストベクター（crates/zoo-crypto/tests/vectors/gen_secret_storage_v1.py）を、
             # zoo-crypto とは別の実装で計算し直すのに使う
             (python3.withPackages (p: [ p.cryptography ]))
-          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs ++ tauriLibs);
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs ++ tauriLibs ++ desktopScreenshotTools);
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           JAVA_HOME = "${pkgs.jdk21}";
+          # lavapipe の Vulkan ICD。desktop-screenshot.sh が VK_ICD_FILENAMES に使う。
+          ZOO_LVP_ICD = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.uname.processor}.json";
           CHROME_BIN = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${zooChrome}/bin/zoo-chrome";
           LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (pkgs.lib.makeLibraryPath (linuxDesktopLibs ++ tauriLibs));
           # WebKitGTK の TLS（glib-networking）と、GTK のファイル選択などが使う schema。

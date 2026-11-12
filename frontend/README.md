@@ -10,9 +10,12 @@ Zoo2 のフロントエンド。TanStack Start（React 19）+ Vite+ + Tailwind C
 ## セットアップ
 
 ```bash
+make crypto-wasm   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）を作る。リポジトリルートで実行
 cd frontend
 pnpm install
 ```
+
+`@zoo/crypto-wasm` は `crates/zoo-crypto-wasm` への `link:` 依存です。`pkg/` は Git に入れないので、`pnpm check`、`pnpm test`、`pnpm test:browser` の前に `make crypto-wasm` で作ります（Rust の `wasm32-unknown-unknown` と、`crates/zoo-crypto-wasm/Cargo.toml` の `wasm-bindgen` と同じ版の `wasm-bindgen-cli` を使います。どちらも `nix develop` に入っています）。`crates/zoo-crypto` を変えたら作り直してください。`make frontend-check`、`frontend-test`、`frontend-build` は先に作ります。
 
 ## コマンド
 
@@ -80,7 +83,8 @@ pnpm test:e2e:i18n    # 本番ビルド + Playwright。バックエンド不要
 リアクションの絵文字ピッカーは [frimousse](https://frimousse.liveblocks.io)（headless）で描画し、絵文字データは `public/emojibase-data` から自前配信します。実行時に CDN へはアクセスしません。
 
 - 配信するロケールは `en` / `ja` / `ko` / `zh-hant` の4つです。アプリのロケールとの対応は `src/lib/emoji/locale.ts` の中央マップで解決します（`zh-Hans` と `yue` は繁体字データ、`ko-KR` と `ko-KP` は `ko` データを使い、未対応は `en`）。
-- frimousse は初回に選択ロケールの `data.json` と `messages.json` だけを取得し、localStorage にキャッシュします。2回目以降のオープンではキャッシュを使います。
+- frimousse は初回に選択ロケールの `data.json` と `messages.json` を取得し、localStorage にキャッシュします。2回目以降のオープンではキャッシュを使います。
+- どの言語でも英語・日本語・韓国語・中国語とピンインで検索できるよう、`resolveMultilingualEmojiData`（`src/lib/emoji/resolver.ts`）が `search-index.json`（約 940KB、gzip で約 290KB）も1回取得し、各絵文字の検索用タグに足します。取得に失敗したときは選択ロケールのデータだけで検索します。足したタグは localStorage に保存しません（frimousse が保存するのは `defaultEmojiDataResolver` が取得した元データだけ）。
 - 表示する絵文字は `SUPPORTED_EMOJI_VERSION`（`src/lib/emoji/data.ts`、現在は 16）までに制限します。バックエンドの `emojis` クレートが Unicode 16.0 までしか検証しないためで、どちらかを更新するときは両方の上限を揃えてください。
 - recents は localStorage の `zoo-recent-emoji` に最大16件、新しい順で保存します。
 - データは `emojibase-data`（devDependency）からコピーします。バージョンを更新したら次を実行し、差分をコミットしてください。

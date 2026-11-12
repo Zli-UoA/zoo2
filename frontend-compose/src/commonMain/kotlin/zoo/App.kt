@@ -56,6 +56,12 @@ fun ZooApp(app: Session) {
         }
         return
     }
+    LaunchedEffect(app) {
+        pollWhileVisible(snapshotFlow { app.env.visible && app.env.online }, interval = 60_000) {
+            app.loadAccountProfiles()
+            false
+        }
+    }
     val channelRows by app.repo.channels.rows.collectAsState()
     val channels = visibleChannels(channelRows)
     val users by app.repo.users.rows.collectAsState()

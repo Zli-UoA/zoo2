@@ -62,10 +62,11 @@ class HomeTimeline(
     }
 
     fun refresh(retain: Boolean = false) {
-        if (retain && loadingOlder) {
+        if (retain && (loadingOlder || refreshJob?.isActive == true)) {
             deferred = true
             return
         }
+        deferred = false
         refreshJob?.cancel()
         val version = ++generation
         if (!retain) {
@@ -108,13 +109,17 @@ class HomeTimeline(
                 } catch (_: Exception) {
                     if (version == generation) error = true
                 } finally {
-                    if (version == generation) loading = false
+                    if (version == generation) {
+                        loading = false
+                        refreshJob = null
+                        if (deferred && app.env.visible && app.env.online) refresh(true)
+                    }
                 }
             }
     }
 
     fun older() {
-        if (loading || loadingOlder || !hasMore || posts.isEmpty()) return
+        if (loading || loadingOlder || refreshJob?.isActive == true || !hasMore || posts.isEmpty()) return
         val version = generation
         loadingOlder = true
         error = false

@@ -1,3 +1,4 @@
+import { coalescedRefresh } from "../../lib/coalescedRefresh";
 import { useUsers } from "../../hooks/useRealtime";
 import { useKitchenCatalog } from "../../hooks/useKitchenCatalog";
 import { ReactionEmoji } from "../chat/messages/ReactionEmoji";
@@ -43,6 +44,7 @@ import {
 } from "lucide-react";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
+import { THREADS_CHANGED } from "../../lib/electric/threads";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { ScreenHeader } from "../layout/PaneHeader";
 import { ActivityPubAvatar, type RemoteAvatar } from "./ActivityPubAvatar";
@@ -170,8 +172,17 @@ function HomeScreenContent({
     if (results[1].status === "fulfilled") setFollows(results[1].value);
     setControlsError(results.some((r) => r.status === "rejected"));
   }, [client]);
+  const scheduleControls = useRef<() => void>(() => {});
   useEffect(() => {
-    void loadControls();
+    const scheduler = coalescedRefresh(() =>
+      document.visibilityState === "hidden" ? undefined : loadControls(),
+    );
+    scheduleControls.current = scheduler.request;
+    scheduler.request();
+    return () => {
+      scheduleControls.current = () => {};
+      scheduler.dispose();
+    };
   }, [loadControls]);
   const controlAction = async (action: () => Promise<unknown>) => {
     if (controlsPending) return;
@@ -223,7 +234,7 @@ function HomeScreenContent({
   const deferredRefresh = useRef(false);
   const refresh = useCallback(
     async (retain = false) => {
-      if (retain && olderRequest.current) {
+      if (retain && (olderRequest.current || refreshRequest.current)) {
         deferredRefresh.current = true;
         return;
       }
@@ -284,6 +295,10 @@ function HomeScreenContent({
         if (!controller.signal.aborted) setError(true);
       } finally {
         if (version === generation.current) setLoading(false);
+        if (refreshRequest.current === controller) {
+          refreshRequest.current = null;
+          if (deferredRefresh.current && document.visibilityState !== "hidden") void refresh(true);
+        }
       }
     },
     [client, timelineQuery, postId],
@@ -298,11 +313,13 @@ function HomeScreenContent({
       deferredRefresh.current = false;
       refreshRequest.current?.abort();
       olderRequest.current?.abort();
+      refreshRequest.current = null;
+      olderRequest.current = null;
     };
   }, [refresh]);
   useHomeLive(() => {
     void refresh(true);
-    void loadControls();
+    scheduleControls.current();
   });
 
   const older = async () => {
@@ -334,7 +351,7 @@ function HomeScreenContent({
       if (olderRequest.current === controller) {
         olderRequest.current = null;
         setLoadingOlder(false);
-        if (deferredRefresh.current) void refresh(true);
+        if (deferredRefresh.current && document.visibilityState !== "hidden") void refresh(true);
       }
     }
   };
@@ -608,6 +625,7 @@ function HomeScreenContent({
                                 body: { content: editText },
                               })
                               .then(async () => {
+                                window.dispatchEvent(new Event(THREADS_CHANGED));
                                 setEditingId(null);
                                 await refresh();
                               })
@@ -969,6 +987,7 @@ function HomeScreenContent({
         federationEnabled={federation.enabled}
         onPost={async (post) => {
           await client.request("/api/home", { method: "POST", body: post });
+          if (post.in_reply_to) window.dispatchEvent(new Event(THREADS_CHANGED));
           void refresh();
         }}
       />
@@ -988,6 +1007,7 @@ function HomeScreenContent({
           setDeleteError(false);
           try {
             await client.request(`/api/home/${encodeURIComponent(deleteId)}`, { method: "DELETE" });
+            window.dispatchEvent(new Event(THREADS_CHANGED));
             setDeleteId(null);
             await refresh();
           } catch {

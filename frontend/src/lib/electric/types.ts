@@ -69,6 +69,10 @@ export type MessageRow = {
   deleted_at: TimestampString | null;
   /** 返信先のルートメッセージ。`null` はチャンネル直下のメッセージ。 */
   parent_id: string | null;
+  /** この投稿を返信先とするスレッドのアーカイブ日時。 */
+  thread_archive_at?: TimestampString | null;
+  /** 自動アーカイブ期限の計算に使う最終活動時刻。 */
+  thread_activity_at?: TimestampString | null;
   /** 暗号化チャンネルの Megolm の暗号文（`m.room.encrypted` と同じ形）。平文と削除済みの行は `null`。 */
   ciphertext?: Record<string, unknown> | null;
   /** 暗号化したセッションの `membership_epoch`（int8 なので文字列）。 */

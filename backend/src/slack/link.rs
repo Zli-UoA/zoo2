@@ -331,6 +331,8 @@ async fn store_link(
         let _ = tx.rollback().await;
         return Err(e);
     }
+    // 連携したら、そのワークスペースの対応済みチャンネルのエクスポート以降の差分を、すぐに同期する (#292)
+    super::sync::enqueue_team(&mut tx, &team.id).await?;
     let state = link_state(&mut tx, s, &user.id).await?;
     tx.commit().await?;
     Ok(state)
