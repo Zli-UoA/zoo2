@@ -104,7 +104,12 @@ vi.mock("../../../hooks/useTyping", () => ({
   useTyping: () => ({ users: fixture.empty, onTyping: () => {} }),
 }));
 vi.mock("../../../hooks/useWriteRunner", () => ({
-  useWriteRunner: () => ({ error: null, setError: () => {}, run: vi.fn(), isPending: false }),
+  useWriteRunner: () => ({
+    error: null,
+    setError: () => {},
+    run: async (action: () => unknown) => action(),
+    isPending: false,
+  }),
 }));
 vi.mock("../../../lib/offline/offline-context", () => ({
   useOfflineStatus: () => ({ isOnline: true }),
