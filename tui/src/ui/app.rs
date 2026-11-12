@@ -50,6 +50,9 @@ pub enum AppEvent {
         append: bool,
         next_cursor: Option<String>,
     },
+    ThreadRequestFinished {
+        archived: bool,
+    },
     ThreadsFailed {
         requested_at: Instant,
         archived: bool,
@@ -146,6 +149,8 @@ pub struct App {
     pub archived_threads: Vec<ThreadSummary>,
     /// 遅れた取得結果で、再開後の一覧を上書きしないための取得開始時刻。
     threads_requested_at: [Option<Instant>; 2],
+    thread_in_flight: [bool; 2],
+    thread_pending: [Option<bool>; 2],
     thread_updated_at: HashMap<String, Instant>,
     locally_reopened_threads: HashMap<String, jiff::civil::DateTime>,
     pub thread_cursors: [Option<String>; 2],
@@ -215,6 +220,8 @@ impl App {
             active_threads: Vec::new(),
             archived_threads: Vec::new(),
             threads_requested_at: [None, None],
+            thread_in_flight: [false; 2],
+            thread_pending: [None; 2],
             thread_updated_at: HashMap::new(),
             locally_reopened_threads: HashMap::new(),
             thread_cursors: [None, None],
@@ -390,6 +397,13 @@ impl App {
                 self.threads_requested_at[scope] = Some(requested_at);
                 self.restore_sidebar_selection(selected);
             }
+            AppEvent::ThreadRequestFinished { archived } => {
+                let scope = usize::from(archived);
+                self.thread_in_flight[scope] = false;
+                if let Some(append) = self.thread_pending[scope].take() {
+                    self.fetch_thread_page(archived, append);
+                }
+            }
             AppEvent::ThreadsFailed {
                 requested_at,
                 archived,
@@ -491,7 +505,17 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        if self.terminal_active && self.ticks.is_multiple_of(120) {
+        if self.terminal_active {
+            for archived in [false, true] {
+                let scope = usize::from(archived);
+                if !self.thread_in_flight[scope]
+                    && let Some(append) = self.thread_pending[scope].take()
+                {
+                    self.fetch_thread_page(archived, append);
+                }
+            }
+        }
+        if self.terminal_active && !self.thread_in_flight[0] && self.ticks.is_multiple_of(120) {
             self.refresh_threads();
         }
         if self.terminal_active && self.emoji_poll.start(Instant::now()) {
@@ -540,11 +564,19 @@ impl App {
         });
     }
 
-    fn refresh_threads(&self) {
+    fn refresh_threads(&mut self) {
         self.fetch_thread_page(false, false);
     }
 
-    fn fetch_thread_page(&self, archived: bool, append: bool) {
+    fn fetch_thread_page(&mut self, archived: bool, append: bool) {
+        let scope = usize::from(archived);
+        if self.thread_in_flight[scope] || !self.terminal_active {
+            // A refresh supersedes an append; repeat notifications collapse to one request.
+            self.thread_pending[scope] =
+                Some(self.thread_pending[scope].unwrap_or(append) && append);
+            return;
+        }
+        self.thread_in_flight[scope] = true;
         let api = self.api.clone();
         let tx = self.app_tx.clone();
         let cursor = if append {
@@ -558,8 +590,8 @@ impl App {
         } else {
             None
         };
+        let requested_at = Instant::now();
         tokio::spawn(async move {
-            let requested_at = Instant::now();
             let result = async {
                 let mut page = api
                     .thread_page(archived, cursor.as_deref(), through.as_deref())
@@ -599,6 +631,7 @@ impl App {
                     });
                 }
             }
+            let _ = tx.send(AppEvent::ThreadRequestFinished { archived });
         });
     }
 
@@ -825,6 +858,10 @@ impl App {
         if matches!(event, Event::FocusLost | Event::FocusGained) {
             self.terminal_active = matches!(event, Event::FocusGained);
             if self.terminal_active {
+                self.refresh_threads();
+                if self.show_archived_threads {
+                    self.fetch_thread_page(true, false);
+                }
                 self.read_poll.wake();
                 self.emoji_poll.wake();
                 self.typing_poll.wake();
@@ -1487,6 +1524,45 @@ mod tests {
             app_tx,
         );
         (app, app_rx)
+    }
+
+    #[tokio::test]
+    async fn thread_refreshes_are_serial_and_bursts_collapse_to_one_followup() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/threads"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(50))
+                    .set_body_json(serde_json::json!({"items":[],"next_cursor":null})),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        app.refresh_threads();
+        for _ in 0..10 {
+            app.refresh_threads();
+        }
+        assert!(app.thread_in_flight[0]);
+        assert_eq!(app.thread_pending[0], Some(false));
+        for _ in 0..4 {
+            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            app.on_app_event(event);
+        }
+        assert!(!app.thread_in_flight[0]);
+        assert!(app.thread_pending[0].is_none());
+        app.terminal_active = false;
+        app.refresh_threads();
+        assert!(!app.thread_in_flight[0]);
+        assert_eq!(app.thread_pending[0], Some(false));
     }
 
     #[tokio::test]

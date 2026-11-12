@@ -44,6 +44,7 @@ impl Store {
             && let ShapeId::Messages(channel) = id
         {
             self.reactions.remove(channel);
+            self.attachments.remove(channel);
         }
         let mut invalid = 0;
         match id {
@@ -188,33 +189,43 @@ impl Store {
 
     /// チャンネル内の全添付ファイルを返す。
     pub fn channel_attachments(&self, channel_id: &str) -> Vec<&Attachment> {
-        let Some(map) = self.attachments.get(channel_id) else {
-            return Vec::new();
-        };
-        map.values().collect()
+        let mut result: Vec<&Attachment> = self
+            .attachments
+            .get(channel_id)
+            .into_iter()
+            .flat_map(|map| map.values())
+            .filter(|attachment| {
+                !attachment.message_id.as_ref().is_some_and(|id| {
+                    self.message(channel_id, id)
+                        .is_some_and(|message| message.display_attachments.is_some())
+                })
+            })
+            .collect();
+        if let Some(messages) = self.messages.get(channel_id) {
+            for message in messages.values() {
+                if message.deleted_at.is_none() {
+                    result.extend(message.display_attachments.iter().flatten());
+                }
+            }
+        }
+        result
     }
 
     /// メッセージに紐づく添付ファイル一覧。
     pub fn attachments_for_message(&self, channel_id: &str, message_id: &str) -> Vec<&Attachment> {
-        let Some(map) = self.attachments.get(channel_id) else {
-            return Vec::new();
-        };
-        let mut result: Vec<&Attachment> = map
-            .values()
+        let mut result: Vec<_> = self
+            .channel_attachments(channel_id)
+            .into_iter()
             .filter(|att| att.message_id.as_deref() == Some(message_id))
             .collect();
         result.sort_by_key(|att| att.created_at);
         result
     }
 
-    /// チャンネル内の全添付ファイルを、メッセージ ID ごとに1回でまとめる。
-    /// 描画のたびにメッセージごとに全添付を走査しないためのもの。
+    /// 同梱メタデータを優先し、旧データだけをShapeから補完する。
     pub fn attachments_by_message(&self, channel_id: &str) -> HashMap<String, Vec<Attachment>> {
-        let Some(map) = self.attachments.get(channel_id) else {
-            return HashMap::new();
-        };
         let mut by_message: HashMap<String, Vec<Attachment>> = HashMap::new();
-        for att in map.values() {
+        for att in self.channel_attachments(channel_id) {
             if let Some(msg_id) = &att.message_id {
                 by_message
                     .entry(msg_id.clone())
@@ -228,10 +239,10 @@ impl Store {
         by_message
     }
 
-    /// 特定の添付ファイルを取得する。
     pub fn attachment(&self, channel_id: &str, attachment_id: &str) -> Option<&Attachment> {
-        let map = self.attachments.get(channel_id)?;
-        map.values().find(|att| att.id == attachment_id)
+        self.channel_attachments(channel_id)
+            .into_iter()
+            .find(|att| att.id == attachment_id)
     }
 
     /// 一覧に出す名前。DM は `dm:<id>:<id>` という内部名なので、自分以外の参加者の名前にする。
@@ -475,6 +486,31 @@ mod tests {
             ]),
         );
         store
+    }
+
+    #[test]
+    fn joined_attachments_override_legacy_rows_and_empty_lists_remove_stale_files() {
+        let mut store = Store::default();
+        let attachment = json!({"id":"a", "message_id":"m", "uploader_id":"u", "channel_id":"c", "file_name":"pic.png", "file_size":100, "content_type":"image/png", "storage_key":"key", "created_at":"2026-11-01 03:00:00"});
+        store.apply(
+            &ShapeId::Attachments("c".into()),
+            batch(vec![upsert("a", attachment.clone())]),
+        );
+        let mut row = json!({"id":"m", "user_id":"u", "channel_id":"c", "content":"", "created_at":"2026-11-01 03:00:00", "display_data": {"attachments":[attachment]}});
+        store.apply(
+            &ShapeId::Messages("c".into()),
+            batch(vec![upsert("electric-message-key", row.clone())]),
+        );
+        assert_eq!(store.channel_attachments("c").len(), 1);
+        row["display_data"] = json!({"attachments":[]});
+        store.apply(
+            &ShapeId::Messages("c".into()),
+            batch(vec![upsert("electric-message-key", row)]),
+        );
+        assert!(store.channel_attachments("c").is_empty());
+        assert!(store.attachments_by_message("c").is_empty());
+        assert!(store.attachment("c", "a").is_none());
+        assert_eq!(store.invalid_rows, 0);
     }
 
     #[test]

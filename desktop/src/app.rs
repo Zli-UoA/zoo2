@@ -1206,7 +1206,6 @@ impl AppState {
         self.subscribe(ShapeId::ChannelUsers);
         if let Some(ch) = self.current_channel.clone() {
             self.subscribe(ShapeId::Messages(ch.clone()));
-            self.subscribe(ShapeId::Attachments(ch));
         }
         self.poll_read_states();
     }
@@ -1539,6 +1538,7 @@ impl AppState {
                         if self.current_channel.as_deref() == Some(ch.as_str()) {
                             self.channel_cache.messages_dirty = true;
                             self.channel_cache.reactions_dirty = true;
+                            self.channel_cache.attachments_dirty = true;
                         }
                         if self.store.is_synced(&ShapeId::Messages(ch.clone())) {
                             self.reconcile_channel_targets(ch);
@@ -2199,16 +2199,20 @@ impl AppState {
                 true
             }
             AppEvent::RefreshAttachmentUrls => {
-                let visible_attachment_ids: std::collections::HashSet<String> =
-                    if let Some(ref ch) = self.current_channel {
-                        self.store
-                            .channel_attachments(ch)
-                            .into_iter()
-                            .map(|a| a.id.clone())
-                            .collect()
-                    } else {
-                        std::collections::HashSet::new()
-                    };
+                if !self.window_active {
+                    return false;
+                }
+                let cache = &self.channel_cache;
+                let (start, end) = self.visible_timeline_bounds(&cache.root_messages);
+                let visible_messages = cache.root_messages[start..end]
+                    .iter()
+                    .chain(cache.thread_root_message.iter())
+                    .chain(cache.thread_replies.iter());
+                let visible_attachment_ids: std::collections::HashSet<String> = visible_messages
+                    .filter_map(|message| cache.attachments_by_message.get(&message.id))
+                    .flatten()
+                    .map(|attachment| attachment.id.clone())
+                    .collect();
                 let to_refresh: Vec<String> = self
                     .attachment_download_urls
                     .iter()
@@ -2826,7 +2830,7 @@ impl AppState {
             self.timeline_anchor_first_id = None;
         }
         self.subscribe(ShapeId::Messages(channel_id.clone()));
-        self.subscribe(ShapeId::Attachments(channel_id.clone()));
+
         self.current_channel = Some(channel_id.clone());
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = true;
@@ -4736,6 +4740,42 @@ mod tests {
     }
 
     #[test]
+    fn bundled_attachments_refresh_without_another_subscription() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        assert!(
+            !state
+                .subscriptions
+                .contains_key(&ShapeId::Attachments("c1".into()))
+        );
+        let mut row = json!({"id":"m1", "user_id":"u2", "channel_id":"c1", "content":"hello", "created_at":"2026-11-01 03:00:00", "display_data":{"attachments":[
+            {"id":"a1", "message_id":"m1", "uploader_id":"u2", "channel_id":"c1", "file_name":"pic.png", "file_size":100, "content_type":"image/png", "storage_key":"key", "created_at":"2026-11-01 03:00:01"}
+        ]}});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row.clone())]),
+        ));
+        state.ensure_channel_cache();
+        assert_eq!(state.channel_cache.attachments_by_message["m1"][0].id, "a1");
+        assert_eq!(
+            state.store.attachment("c1", "a1").unwrap().file_name,
+            "pic.png"
+        );
+        row["display_data"] = json!({"attachments":[]});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row)]),
+        ));
+        state.ensure_channel_cache();
+        assert!(
+            !state
+                .channel_cache
+                .attachments_by_message
+                .contains_key("m1")
+        );
+    }
+
+    #[test]
     fn builds_app_state_from_dev_and_oidc_configs() {
         let dev_config = Config {
             api_base_url: "http://localhost:8000".into(),
@@ -6297,6 +6337,34 @@ mod tests {
                 .0
                 .contains("添付ファイルはチャンネルが異なるため除外されました")
         );
+    }
+
+    #[test]
+    fn attachment_url_renewal_only_runs_for_visible_messages_in_an_active_window() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.on_shape(ShapeEvent::Batch(ShapeId::Attachments("c1".into()), batch(vec![
+            ("a1", json!({"id":"a1", "message_id":"m1", "uploader_id":"u2", "channel_id":"c1", "file_name":"pic.png", "file_size":100, "content_type":"image/png", "storage_key":"key", "created_at":"2026-11-01 03:00:01"})),
+            ("offscreen", json!({"id":"offscreen", "message_id":"unloaded", "uploader_id":"u2", "channel_id":"c1", "file_name":"old.png", "file_size":100, "content_type":"image/png", "storage_key":"old", "created_at":"2026-11-01 03:00:01"})),
+        ])));
+        state.ensure_channel_cache();
+        for id in ["a1", "offscreen"] {
+            state.attachment_download_urls.insert(
+                id.into(),
+                CachedAttachmentUrl {
+                    url: "https://example.com/image".into(),
+                    fetched_at: Instant::now(),
+                    ttl_secs: 0,
+                },
+            );
+        }
+        state.window_active = false;
+        state.on_app_event(AppEvent::RefreshAttachmentUrls);
+        assert!(state.fetching_attachment_urls.is_empty());
+        state.window_active = true;
+        state.on_app_event(AppEvent::RefreshAttachmentUrls);
+        assert!(state.fetching_attachment_urls.contains("a1"));
+        assert!(!state.fetching_attachment_urls.contains("offscreen"));
     }
 
     #[test]
