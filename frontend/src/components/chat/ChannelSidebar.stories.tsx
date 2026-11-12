@@ -188,7 +188,7 @@ export const ArchivePages: Story = {
   },
   play: playForImplementation(async () => {
     await userEvent.click(
-      (await screen.findAllByRole("button", { name: "アーカイブ済みスレッド" }))[0]!,
+      await screen.findByRole("button", { name: "generalのアーカイブ済みスレッド" }),
     );
     await userEvent.click(await screen.findByRole("button", { name: "さらに表示" }));
     await expect(
@@ -224,7 +224,7 @@ export const ArchiveRetry: Story = {
   },
   play: playForImplementation(async () => {
     await userEvent.click(
-      (await screen.findAllByRole("button", { name: "アーカイブ済みスレッド" }))[0]!,
+      await screen.findByRole("button", { name: "generalのアーカイブ済みスレッド" }),
     );
     await expect(await screen.findByText("スレッド一覧を取得できませんでした。")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "再試行" }));
