@@ -96,6 +96,8 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     imported_from_slack: "bool",
     slack_import_kind: "text",
     slack_imported_at: "timestamp",
+    encrypted: "bool",
+    membership_epoch: "int8",
   },
 };
 
@@ -119,6 +121,9 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     updated_at: "timestamp",
     deleted_at: "timestamp",
     parent_id: "text",
+    ciphertext: "jsonb",
+    epoch: "int8",
+    revision: "int4",
   },
 };
 

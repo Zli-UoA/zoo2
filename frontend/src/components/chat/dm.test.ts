@@ -30,6 +30,7 @@ describe("DM channel names", () => {
     expect(isGroupDm("dm:u1:u2")).toBe(false);
     expect(parseOneToOneDmIds("dm:u1:u2")).toEqual(["u1", "u2"]);
     expect(parseOneToOneDmIds("dm:group:abc")).toBeNull();
+    expect(parseOneToOneDmIds("edm:u1:u2")).toEqual(["u1", "u2"]);
     expect(parseOneToOneDmIds("general")).toBeNull();
     expect(parseOneToOneDmIds("dm:only-one")).toBeNull();
   });

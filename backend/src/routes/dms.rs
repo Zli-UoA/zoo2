@@ -9,7 +9,7 @@ use crate::{
     db::get_current_txid,
     error::AppError,
     models::{Channel, ChannelUser, User},
-    routes::{channels::ChannelResponse, response::ApiResponse},
+    routes::{channels::ChannelResponse, e2ee_channels, response::ApiResponse},
     state::AppState,
 };
 
@@ -17,6 +17,9 @@ use crate::{
 pub struct CreateDmRequest {
     pub id: Option<String>,
     pub target_user_ids: Vec<String>,
+    /// 暗号化 DM にするか（作成時だけ。1 対 1 は `edm:` の名前で別の行になる。docs/e2ee.md）。
+    #[serde(default)]
+    pub encrypted: bool,
 }
 
 pub fn router() -> Router<AppState> {
@@ -29,6 +32,7 @@ async fn try_create_or_get_1on1_dm(
     target_id: &str,
     channel_name: &str,
     custom_id: Option<String>,
+    encrypted: bool,
 ) -> Result<Option<ApiResponse<ChannelResponse>>, AppError> {
     let mut tx = db.transaction().await?;
 
@@ -44,6 +48,10 @@ async fn try_create_or_get_1on1_dm(
     .await?;
 
     if let Some(existing_channel) = existing {
+        // edm: の名前の行は暗号化 DM のはず。不整合なら平文の DM として返さない。
+        if existing_channel.encrypted != encrypted {
+            return Err(e2ee_channels::encrypted_mismatch());
+        }
         let mut added_any = false;
         let now = crate::models::now_utc_millis();
 
@@ -83,6 +91,11 @@ async fn try_create_or_get_1on1_dm(
             }
         }
 
+        // 退出していたメンバーが戻ったときだけ増やす。
+        if added_any && existing_channel.encrypted {
+            e2ee_channels::bump_channel_epoch(&mut tx, &existing_channel.id).await?;
+        }
+
         if !added_any {
             // 両者とも既に所属中: WAL 書き込みなしで既存チャンネルを返却 (txid: None)
             return Ok(Some(ApiResponse::new(
@@ -92,12 +105,12 @@ async fn try_create_or_get_1on1_dm(
         }
 
         let txid = get_current_txid(&mut tx).await?;
+
+        // epoch を増やしたので読み直す。
+        let channel = Channel::get_by_id(&mut tx, existing_channel.id.as_str()).await?;
         tx.commit().await?;
 
-        return Ok(Some(ApiResponse::new(
-            ChannelResponse::from(existing_channel),
-            txid,
-        )));
+        return Ok(Some(ApiResponse::new(ChannelResponse::from(channel), txid)));
     }
 
     // 1対1 DM の新規作成
@@ -116,6 +129,8 @@ async fn try_create_or_get_1on1_dm(
         updated_at: None,
         archive_at: None,
         deleted_at: None,
+        encrypted,
+        membership_epoch: 0,
     })
     .exec(&mut tx)
     .await;
@@ -195,6 +210,11 @@ pub(crate) async fn create_or_get_dm(
         ));
     }
 
+    if payload.encrypted {
+        // App からの作成は apps/api.rs の dm で拒否する（ここは人間の POST /api/dms と共用）。
+        e2ee_channels::check_encrypted_creation(&state, false)?;
+    }
+
     if let Some(ref id) = payload.id {
         Uuid::parse_str(id)
             .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
@@ -255,7 +275,9 @@ pub(crate) async fn create_or_get_dm(
         } else {
             (target_id.as_str(), auth_user.id.as_str())
         };
-        let channel_name = format!("dm:{user_a}:{user_b}");
+        // 暗号化 DM は edm: の名前で、平文の DM とは別の行にする。
+        let prefix = if payload.encrypted { "edm" } else { "dm" };
+        let channel_name = format!("{prefix}:{user_a}:{user_b}");
 
         for _ in 0..2 {
             if let Some(resp) = try_create_or_get_1on1_dm(
@@ -264,6 +286,7 @@ pub(crate) async fn create_or_get_dm(
                 target_id,
                 &channel_name,
                 payload.id.clone(),
+                payload.encrypted,
             )
             .await?
             {
@@ -295,6 +318,8 @@ pub(crate) async fn create_or_get_dm(
         updated_at: None,
         archive_at: None,
         deleted_at: None,
+        encrypted: payload.encrypted,
+        membership_epoch: 0,
     })
     .exec(&mut tx)
     .await?;

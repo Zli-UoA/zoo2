@@ -20,6 +20,10 @@ export interface ChannelResponse {
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
   deleted_at: TimestampString | null;
+  /** 暗号化チャンネル（docs/e2ee.md） */
+  encrypted?: boolean;
+  /** 暗号化チャンネルのメンバーと端末の世代（API では数値） */
+  membership_epoch?: number;
 }
 
 export interface MessageResponse {

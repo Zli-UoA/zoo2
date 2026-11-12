@@ -270,6 +270,9 @@ async fn edit(
             Path(id),
             Json(crate::routes::messages::UpdateMessageRequest {
                 content: body.content,
+                ciphertext: None,
+                epoch: None,
+                revision: None,
             }),
         )
         .await?;

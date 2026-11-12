@@ -5,7 +5,7 @@
 //! 1. `users` の行（登録と鍵のアップロードは `FOR SHARE`。無効化の `UPDATE` は `FOR NO KEY UPDATE`）
 //! 2. ユーザー単位の advisory lock `(1, hashtext(user_id))`
 //! 3. 端末単位の advisory lock `(2, hashtext(user_id || ':' || device_id))`（複数なら昇順）
-//! 4. `channels` の行（`id` の昇順。`membership_epoch` を増やす #357 で足す）
+//! 4. `channels` の行（`id` の昇順。`membership_epoch` を増やす。`routes/e2ee_channels.rs`）
 //! 5. `e2ee_devices` の行
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -744,7 +744,8 @@ async fn rename_device(
 
 /// `DELETE /api/e2ee/devices/{device_id}`：自分の端末を論理削除する。冪等。
 ///
-/// 削除は失効ではない（削除された端末は鍵を持ったまま）。`membership_epoch` を増やす処理は #357 で足す。
+/// 削除は失効ではない（削除された端末は鍵を持ったまま）。持ち主が参加しているすべての暗号化チャンネルの
+/// `membership_epoch` を同じトランザクションで増やす（削除済みの端末への再試行では増やさない）。
 async fn delete_device(
     State(state): State<AppState>,
     actor: AuthUser,
@@ -771,6 +772,8 @@ async fn delete_device(
         // 削除済みの端末への再試行は 200（epoch も増やさない）。
         return Ok(Json(ApiResponse::new(data, None)));
     }
+    // ロックの順：端末単位のロック、channels の行（id の昇順）、e2ee_devices の行。
+    crate::routes::e2ee_channels::bump_user_epochs(&mut tx, &actor.id).await?;
     // その端末に付いた自己署名だけを消す。device_id は (user_id, device_id) でしか一意でないので、
     // 別のユーザーの同じ device_id への署名は消さない。
     exec(

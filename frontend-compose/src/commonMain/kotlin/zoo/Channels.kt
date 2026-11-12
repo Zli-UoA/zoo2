@@ -1020,12 +1020,18 @@ fun Members(
     }
 }
 
+/** 1 対 1 の DM（`dm:` と、暗号化 DM の `edm:`）の名前から 2 人の ID を取り出す。グループ DM などは null。 */
+fun oneToOneDmIds(name: String): List<String>? {
+    val rest = name.removePrefix("e").takeIf { it.startsWith("dm:") } ?: return null
+    if (rest.startsWith("dm:group:")) return null
+    return rest.removePrefix("dm:").split(':').takeIf { it.size == 2 }
+}
+
 fun dmTitle(app: Session, channel: Row, users: List<Row>, memberships: List<Row>): String {
     val name = channel.text("channel_name")
+    // 暗号化 DM は edm: の名前（docs/e2ee.md）。どちらも 1 対 1 の DM として扱う。
     val direct =
-        name.removePrefix("dm:").split(':').takeIf {
-            name.startsWith("dm:") && !name.startsWith("dm:group:") && it.size == 2
-        }
+        oneToOneDmIds(name)
     val ids =
         (direct
                 ?: memberships

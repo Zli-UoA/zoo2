@@ -330,6 +330,13 @@ async fn upload_cross_signing_keys(
         }
     }
 
+    // 公開鍵が変わる（初回の登録を含む）なら、参加している暗号化チャンネルの membership_epoch を増やす。
+    // 漏れた鍵で署名された端末に、今のセッションの続きが届かないようにするため。鍵の行を書く前に、
+    // ロックの順（ユーザー単位のロック、channels の行）のとおりに取る。
+    if !new_public_keys.is_empty() {
+        crate::routes::e2ee_channels::bump_user_epochs(&mut tx, &actor.id).await?;
+    }
+
     for (usage, key) in &changed {
         let old = current.get(*usage);
         exec(
@@ -367,7 +374,6 @@ async fn upload_cross_signing_keys(
             )
             .await?;
         }
-        // マスター鍵と自己署名鍵を変えたら、参加している暗号化チャンネルの membership_epoch を増やす（#357 で足す）。
     }
 
     let keys = current_keys(&mut tx, &actor.id).await?;

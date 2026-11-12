@@ -1761,3 +1761,73 @@ async fn cross_signing_shapes_hide_user_signing_keys_from_others() {
     let own = shape_rows(&env, "e2ee_key_signatures", &alice.user).await;
     assert!(own.iter().any(|s| s["target_user_id"] == json!(bob.user)));
 }
+
+// ---------------------------------------------------------------------------
+// membership_epoch（#357）
+
+async fn epoch(env: &Env, channel: &str) -> i64 {
+    env.query(
+        "SELECT membership_epoch::text FROM channels WHERE id = $1",
+        &[channel],
+    )
+    .await[0]
+        .as_i64()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn key_changes_and_backup_versions_bump_membership_epochs() {
+    let env = env().await;
+    let alice = env.identity().await;
+    let bob = env.user().await;
+    let user = alice.user.clone();
+    let shared = env.encrypted_channel(&[&user, &bob]).await;
+    let without_alice = env.encrypted_channel(&[&bob]).await;
+    let path = "/api/e2ee/cross_signing/keys";
+
+    // 自己署名鍵を変えると 1 増える。同じ内容の再送では増えない。
+    let new_ssk = Ed25519SecretKey::new();
+    let body = json!({
+        "self_signing_key": cs_key(&user, "self_signing", &new_ssk, Some(&alice.master)),
+        "expected_keys": alice.public(),
+    });
+    for _ in 0..2 {
+        let (status, res) = env.post(path, &user, true, body.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{res}");
+        assert_eq!(epoch(&env, &shared).await, 1);
+    }
+    // マスター鍵の差し替えでも増える。
+    let new_master = Ed25519SecretKey::new();
+    let new_usk = Ed25519SecretKey::new();
+    let body = json!({
+        "master_key": cs_key(&user, "master", &new_master, None),
+        "self_signing_key": cs_key(&user, "self_signing", &new_ssk, Some(&new_master)),
+        "user_signing_key": cs_key(&user, "user_signing", &new_usk, Some(&new_master)),
+        "expected_keys": {"master": pk(&alice.master), "self_signing": pk(&new_ssk), "user_signing": pk(&alice.usk)},
+    });
+    let (status, res) = env.post(path, &user, true, body).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(epoch(&env, &shared).await, 2);
+
+    // 鍵バックアップ：最初の版では増えず、2 つ目の版で増える。
+    let rotated = Identity {
+        user: user.clone(),
+        master: new_master,
+        ssk: new_ssk,
+        usk: new_usk,
+    };
+    env.ssss(&user, json!([recovery_slot()])).await;
+    let versions = "/api/e2ee/key_backup/versions";
+    let algorithm = "zoo.megolm_backup.v1.curve25519-aes-sha2";
+    let first = json!({"algorithm": algorithm, "auth_data": rotated.auth_data(&backup_key()), "expected_current_version": null});
+    let (status, res) = env.post(versions, &user, false, first).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(epoch(&env, &shared).await, 2);
+    let second = json!({"algorithm": algorithm, "auth_data": rotated.auth_data(&backup_key()), "expected_current_version": "1"});
+    let (status, res) = env.post(versions, &user, true, second).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(epoch(&env, &shared).await, 3);
+    assert!(res["txid"].is_string());
+
+    assert_eq!(epoch(&env, &without_alice).await, 0);
+}

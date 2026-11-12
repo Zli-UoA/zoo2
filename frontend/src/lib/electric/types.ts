@@ -41,6 +41,13 @@ export type ChannelRow = {
   slack_import_kind: "created" | "existing" | null;
   /** 最後に Slack から取り込んだ日時 */
   slack_imported_at: TimestampString | null;
+  /** 暗号化チャンネル（作成時だけ指定でき、変わらない。docs/e2ee.md） */
+  encrypted?: boolean;
+  /**
+   * 暗号化チャンネルのメンバーと端末の世代。Electric は int8 を文字列で配るので、比べる前に BigInt などの
+   * 正準な整数にする。
+   */
+  membership_epoch?: string;
 };
 
 export type MessageRow = {
@@ -62,6 +69,12 @@ export type MessageRow = {
   deleted_at: TimestampString | null;
   /** 返信先のルートメッセージ。`null` はチャンネル直下のメッセージ。 */
   parent_id: string | null;
+  /** 暗号化チャンネルの Megolm の暗号文（`m.room.encrypted` と同じ形）。平文と削除済みの行は `null`。 */
+  ciphertext?: Record<string, unknown> | null;
+  /** 暗号化したセッションの `membership_epoch`（int8 なので文字列）。 */
+  epoch?: string | null;
+  /** 編集の版（暗号化チャンネルでは編集のたびに 1 増える）。 */
+  revision?: number;
 };
 
 export type MessageReactionRow = {
