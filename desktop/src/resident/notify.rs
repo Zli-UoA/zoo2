@@ -231,6 +231,21 @@ mod tests {
         assert!(sink.lock().unwrap().is_empty());
     }
 
+    /// 実際の D-Bus に通知を出す。`dbus-run-session` と `dbus-monitor` の下で手で動かす
+    /// (`cargo test -- --ignored os_notification`)。CI では動かさない。
+    #[test]
+    #[ignore]
+    fn os_notification_reaches_dbus() {
+        show(&Toast {
+            notification_id: "n".into(),
+            channel_id: "c1".into(),
+            message_id: "m".into(),
+            notification_type: "mention".into(),
+            title: "Alice (#general)".into(),
+            body: "こんにちは".into(),
+        });
+    }
+
     #[test]
     fn dnd_event_updates_state_and_failure_keeps_value() {
         let mut state = connected_state();
