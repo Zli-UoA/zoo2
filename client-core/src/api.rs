@@ -141,6 +141,16 @@ impl ApiClient {
         Ok(envelope.txid)
     }
 
+    pub async fn account_profiles(&self) -> Result<zoo2_client_types::accounts::AccountProfiles> {
+        let value: Value = self.get("/api/emoji-accounts").await?;
+        let profiles: Vec<zoo2_client_types::accounts::AccountProfile> =
+            serde_json::from_value(value["accounts"].clone())?;
+        Ok(profiles
+            .into_iter()
+            .map(|p| (p.username.clone(), p))
+            .collect())
+    }
+
     pub async fn emoji_catalog(
         &self,
     ) -> Result<(

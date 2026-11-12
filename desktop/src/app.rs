@@ -305,6 +305,7 @@ pub struct ChannelViewCache {
 pub enum AppEvent {
     Notice(String),
     Unauthorized,
+    AccountProfiles(zoo2_client_core::store::AccountProfiles),
     EmojiCatalog {
         shortcodes: HashMap<String, String>,
         custom: HashSet<String>,
@@ -1204,6 +1205,11 @@ impl AppState {
                 let mut interval = tokio::time::interval(Duration::from_secs(60));
                 loop {
                     interval.tick().await;
+                    let profiles = api.account_profiles().await.unwrap_or_default();
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::AccountProfiles(profiles),
+                    });
                     if let Ok((shortcodes, custom)) = api.emoji_catalog().await
                         && tx
                             .send(DesktopEvent::App {
@@ -1937,6 +1943,10 @@ impl AppState {
 
     pub fn on_app_event(&mut self, event: AppEvent) -> bool {
         match event {
+            AppEvent::AccountProfiles(profiles) => {
+                self.store.account_profiles = profiles;
+                true
+            }
             AppEvent::EmojiCatalog { shortcodes, custom } => {
                 zoo2_client_core::mfm::set_emoji_catalog(shortcodes, custom);
                 true

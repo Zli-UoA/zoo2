@@ -31,12 +31,16 @@ class WorkspaceEmojisTest {
         override fun day(timestamp: String) = timestamp
     }
 
-    private fun TestScope.app(handler: MockRequestHandler): Session {
+    private fun TestScope.app(profiles: String = "{\"accounts\":[]}", handler: MockRequestHandler): Session {
         val http =
             HttpClient(MockEngine) {
                 engine {
                     dispatcher = StandardTestDispatcher(testScheduler)
-                    addHandler(handler)
+                    addHandler { request ->
+                        if (request.url.encodedPath == "/api/emoji-accounts")
+                            respond(profiles, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                        else handler.invoke(this, request)
+                    }
                 }
             }
         return Session(
@@ -49,6 +53,17 @@ class WorkspaceEmojisTest {
             backgroundScope,
             Environment(),
         )
+    }
+
+    @Test
+    fun accountProfilesComeFromTheDedicatedDirectory() = runTest {
+        val session = app(profiles = """{"accounts":[{"username":"alice","display_name":"AuthZ name","avatar_url":null}]}""") { request ->
+            assertEquals("/api/emojis", request.url.encodedPath)
+            respond("[]", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        session.loadWorkspaceEmojis()
+        assertEquals("AuthZ name", session.accountProfiles.single().text("display_name"))
+        assertTrue(session.workspaceEmojis.isEmpty())
     }
 
     @Test

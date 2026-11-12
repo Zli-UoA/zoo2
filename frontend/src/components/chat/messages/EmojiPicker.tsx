@@ -1,3 +1,4 @@
+import { AccountGlyph, useMfmAccounts } from "./MfmAccounts";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import { Input } from "../../ui/input";
 import { Button } from "../../ui/button";
@@ -189,7 +190,17 @@ export function CustomEmojiPicker({ onSelect }: { onSelect: (value: string) => v
   const { t } = useTranslation();
   const { emojis, loading, failed, retry, imageUrl } = useWorkspaceEmojis();
   const [query, setQuery] = useState("");
-  const filtered = emojis.filter((e) =>
+  const accounts = useMfmAccounts();
+  const options = [
+    ...emojis,
+    ...Array.from(accounts.values(), (account) => ({
+      name: `@${account.username}`,
+      category: "",
+      aliases: [account.display_name],
+      url: account.avatar_url ?? "",
+    })),
+  ];
+  const filtered = options.filter((e) =>
     [e.name, e.category, ...(e.aliases ?? [])].some((value) =>
       value?.toLowerCase().includes(query.toLowerCase()),
     ),
@@ -232,11 +243,15 @@ export function CustomEmojiPicker({ onSelect }: { onSelect: (value: string) => v
                     title={`:${e.name}:`}
                     onClick={() => onSelect(`:${e.name}:`)}
                   >
-                    <img
-                      src={imageUrl(e.url)}
-                      alt={`:${e.name}:`}
-                      className="h-7 w-auto max-w-40 object-contain"
-                    />
+                    {e.name.startsWith("@") ? (
+                      <AccountGlyph name={e.name.slice(1)} />
+                    ) : (
+                      <img
+                        src={imageUrl(e.url)}
+                        alt={`:${e.name}:`}
+                        className="h-7 w-auto max-w-40 object-contain"
+                      />
+                    )}
                   </Button>
                 ))}
             </div>

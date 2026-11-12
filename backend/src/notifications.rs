@@ -324,6 +324,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn account_avatar_shortcodes_do_not_send_mentions() {
+        let targets = extract_mentions(":@alice: :@here: @bob");
+        let ordinary = extract_mentions("@bob");
+        assert_eq!(targets.user_candidates, ordinary.user_candidates);
+        assert!(!targets.has_here);
+        assert!(!targets.has_channel);
+    }
+
+    #[test]
     fn test_extract_mentions_basic() {
         let text = "Hello @alice and @bob, check this out!";
         let targets = extract_mentions(text);

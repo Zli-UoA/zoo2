@@ -176,6 +176,14 @@ pub fn normalize_and_validate_emoji(raw: &str) -> Result<String, AppError> {
     // 1. ショートコード形式
     if trimmed.starts_with(':') && trimmed.ends_with(':') && trimmed.len() >= 3 {
         let inner = &trimmed[1..trimmed.len() - 1];
+        if let Some(account) = inner.strip_prefix('@')
+            && (1..=80).contains(&account.len())
+            && account
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c))
+        {
+            return Ok(trimmed.to_owned());
+        }
         if inner.len() <= 64
             && inner.chars().all(|c| {
                 c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' || c == '+'
@@ -325,6 +333,20 @@ fn parse_emoji_or_hex_codepoint(part: &str) -> Result<String, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authz_account_reactions_keep_their_shortcode() {
+        assert_eq!(
+            normalize_and_validate_emoji(":@alice:").unwrap(),
+            ":@alice:"
+        );
+        assert_eq!(
+            normalize_and_validate_emoji(":@a.b-c_1:").unwrap(),
+            ":@a.b-c_1:"
+        );
+        assert!(normalize_and_validate_emoji(":@alice@example:").is_err());
+        assert!(normalize_and_validate_emoji(":@:").is_err());
+    }
 
     #[test]
     fn test_normalize_and_validate_emoji() {
