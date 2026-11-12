@@ -24,8 +24,14 @@ use crate::app::AppState;
 pub enum ResidentEvent {
     /// ウィンドウを前に出す。
     Show,
-    /// ウィンドウを前に出し、そのチャンネルを開く。
-    Open { channel_id: String },
+    /// ウィンドウを前に出し、そのチャンネル (と投稿) を開く。
+    /// `user_id` は通知を出したときのログイン中のユーザー。ログアウトやアカウントの切り替えの後に
+    /// 古い通知をクリックしても、別のユーザーの画面で開かないように、合わなければ捨てる。
+    Open {
+        channel_id: String,
+        message_id: Option<String>,
+        user_id: String,
+    },
     /// アプリを終了する。
     Quit,
 }
@@ -52,7 +58,21 @@ pub fn install(cx: &mut App, state: Entity<AppState>, window: AnyWindowHandle) {
         return;
     }
 
-    let _ = window.update(cx, |_, window, cx| close::install(window, cx));
+    let _ = window.update(cx, |_, window, cx| {
+        close::install(window, cx, state.clone());
+        // ウィンドウの前面かどうかは render の中でも写しているが、最小化 (X11 では unmap) の後は
+        // 描画が止まって古い値が残る。通知の判定 (`focused_channel`) が狂うので、別に追う。
+        state.update(cx, |_, cx| {
+            cx.observe_window_activation(window, |state, window, cx| {
+                state.update_timeline_view_state(
+                    window.is_window_active(),
+                    state.timeline_at_bottom,
+                );
+                cx.notify();
+            })
+            .detach();
+        });
+    });
     tray::spawn();
     single_instance::spawn_server();
 
@@ -60,11 +80,17 @@ pub fn install(cx: &mut App, state: Entity<AppState>, window: AnyWindowHandle) {
         while let Some(event) = rx.next().await {
             let _ = cx.update(|cx| match event {
                 ResidentEvent::Show => show_window(window, cx),
-                ResidentEvent::Open { channel_id } => {
+                ResidentEvent::Open {
+                    channel_id,
+                    message_id,
+                    user_id,
+                } => {
                     show_window(window, cx);
                     state.update(cx, |state, cx| {
-                        state.open_channel(channel_id);
-                        cx.notify();
+                        if state.me.as_ref().map(|me| me.id.as_str()) == Some(user_id.as_str()) {
+                            state.open_message(channel_id, message_id);
+                            cx.notify();
+                        }
                     });
                 }
                 ResidentEvent::Quit => cx.quit(),

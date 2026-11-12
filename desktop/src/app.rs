@@ -144,62 +144,6 @@ pub struct FailedDraft {
     pub message_id: Option<String>,
 }
 
-const MENTION_PUNCTUATION: &[char] = &['.', ',', '!', '?', ':', ';', '。', '、', '！', '？'];
-
-fn is_mention_boundary_char(prev: char) -> bool {
-    prev.is_whitespace()
-        || matches!(
-            prev,
-            '(' | '[' | '{' | '<' | '（' | '「' | '『' | '"' | '\'' | '。' | '、'
-        )
-}
-
-/// 本文が指定ユーザー宛てメンションまたは `@channel` / `@here` を含むかを判定する。
-/// `backend/src/notifications.rs` の境界判定・末尾句読点トリム規則と整合させ、メールアドレスやURLの誤検知を防ぐ。
-pub fn has_mention_for(content: &str, me_user_name: &str) -> bool {
-    let chars: Vec<char> = content.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if chars[i] == '@' {
-            let is_boundary = i == 0 || is_mention_boundary_char(chars[i - 1]);
-            if is_boundary {
-                let start = i + 1;
-                let mut end = start;
-                while end < len {
-                    let c = chars[end];
-                    if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                        end += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                if end > start {
-                    let token: String = chars[start..end].iter().collect();
-                    let trimmed_token = token.trim_end_matches(MENTION_PUNCTUATION);
-
-                    if trimmed_token.eq_ignore_ascii_case("channel")
-                        || trimmed_token.eq_ignore_ascii_case("here")
-                    {
-                        return true;
-                    }
-                    if !me_user_name.is_empty()
-                        && (token == me_user_name || trimmed_token == me_user_name)
-                    {
-                        return true;
-                    }
-                    i = end;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    false
-}
-
 /// 送信待ちの添付ファイル。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingAttachment {
@@ -1086,7 +1030,12 @@ impl AppState {
 
     /// 現在発生している Shape 同期エラーの表示文字列を返す。
     pub fn sync_error(&self) -> Option<String> {
-        for shape in [ShapeId::Channels, ShapeId::Users, ShapeId::ChannelUsers] {
+        for shape in [
+            ShapeId::Channels,
+            ShapeId::Users,
+            ShapeId::ChannelUsers,
+            ShapeId::Notifications,
+        ] {
             if let Some(msg) = self.sync_errors.get(&shape) {
                 return Some(msg.clone());
             }
@@ -2760,6 +2709,44 @@ impl AppState {
         }
         self.sync_unread_with_latest();
         self.poll_typing();
+    }
+
+    /// 通知のクリックなどで、チャンネルを開き、`message_id` の投稿まで移る。
+    /// 投稿がまだ Store に無いとき (取得前) は、チャンネルを開くだけにする。
+    pub fn open_message(&mut self, channel_id: String, message_id: Option<String>) {
+        self.open_channel(channel_id.clone());
+        let Some(message_id) = message_id else {
+            return;
+        };
+        if self.current_channel.as_deref() != Some(channel_id.as_str()) {
+            return;
+        }
+        let Some(msg) = self.store.message(&channel_id, &message_id).cloned() else {
+            return;
+        };
+        if msg.deleted_at.is_some() {
+            return;
+        }
+        if let Some(parent_id) = msg.parent_id {
+            self.open_thread(parent_id);
+            if let Some(thread) = &mut self.thread {
+                thread.selected = Some(message_id);
+            }
+            self.pending_scroll_to_bottom = false;
+            self.pending_thread_scroll_to_bottom = false;
+            self.thread_at_bottom = false;
+            return;
+        }
+        let roots = self.store.root_messages(&channel_id);
+        let Some(pos) = roots.iter().position(|m| m.id == message_id) else {
+            return;
+        };
+        self.timeline_anchor_first_id = roots.get(pos.saturating_sub(10)).map(|m| m.id.clone());
+        self.timeline_at_bottom = false;
+        self.pending_scroll_to_bottom = false;
+        self.timeline_render_limit = MAX_TIMELINE_RENDER_LIMIT;
+        self.pending_scroll_to_message_id = Some(message_id);
+        self.ensure_channel_cache();
     }
 
     /// ウィンドウのアクティブ状態とタイムラインのスクロール位置を更新し、
@@ -6579,23 +6566,6 @@ pub(crate) mod tests {
         assert_eq!(preserved.1.len(), 2);
         assert_eq!(preserved.1[0].attachments[0].local_id, "local_1");
         assert_eq!(preserved.1[1].attachments[0].local_id, "local_2");
-    }
-
-    #[test]
-    fn validates_mention_notification_tokens() {
-        assert!(has_mention_for("@here", "alice"));
-        assert!(has_mention_for("@HERE", "alice"));
-        assert!(has_mention_for("Hey @channel all", "alice"));
-        assert!(has_mention_for("@alice hello", "alice"));
-        assert!(has_mention_for("Thanks @alice.", "alice"));
-        assert!(has_mention_for("Thanks @alice!", "alice"));
-        assert!(has_mention_for("(@alice)", "alice"));
-
-        // 境界文字のないメールアドレスやURL、単語の一部はメンションと判定されないこと
-        assert!(!has_mention_for("foo@alice.example", "alice"));
-        assert!(!has_mention_for("https://example.com/@here", "alice"));
-        assert!(!has_mention_for("@channel_inside", "alice"));
-        assert!(!has_mention_for("@bob", "alice"));
     }
 
     #[test]

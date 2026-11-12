@@ -6,7 +6,9 @@
 //! - Wayland: gpui には最小化からの復帰がなく、`activate` も拒否されやすい。戻す手段がないので、
 //!   閉じたら終了する。
 
-use gpui::{App, Window};
+use gpui::{App, Entity, Window};
+
+use crate::app::AppState;
 
 /// 閉じたときに常駐できる環境か。
 pub fn can_stay_resident() -> bool {
@@ -24,11 +26,15 @@ pub fn can_stay_resident() -> bool {
     }
 }
 
-pub fn install(window: &mut Window, cx: &App) {
+pub fn install(window: &mut Window, cx: &App, state: Entity<AppState>) {
     if !can_stay_resident() {
         return;
     }
-    window.on_window_should_close(cx, |window, _cx| {
+    window.on_window_should_close(cx, move |window, cx| {
+        // 最小化すると描画が止まって前面かどうかが更新されないので、先に前面でないことにする。
+        state.update(cx, |state, _| {
+            state.update_timeline_view_state(false, state.timeline_at_bottom);
+        });
         window.minimize_window();
         false
     });

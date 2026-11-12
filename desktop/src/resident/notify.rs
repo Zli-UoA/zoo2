@@ -4,12 +4,15 @@
 //! 通知は notify-rust で出す (Tauri 版と同じ)。Linux ではクリックでウィンドウを前に出し、
 //! そのチャンネルを開く。macOS は出すだけ。
 
-use std::time::Duration;
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use jiff::{Timestamp, civil::DateTime, tz::TimeZone};
 use zoo2_client_core::{
     electric::Batch,
-    notify::{self, NotifyContext, Toast},
+    notify::{self, NotifyContext, Toast, body_for_server},
 };
 
 use super::{ResidentEvent, send};
@@ -73,41 +76,82 @@ impl AppState {
     /// **バッチを Store に適用する前に**呼ぶ (既に知っている行かどうかを Store で見るため)。
     pub fn show_notifications(&self, batch: &Batch) {
         let toasts = notify::notifications_to_show(&self.store, batch, &self.notify_context());
+        let user_id = self.me.as_ref().map(|me| me.id.clone()).unwrap_or_default();
         for toast in toasts {
             if let Some(sink) = &self.notification_sink {
                 sink.lock().unwrap().push((toast.title, toast.body));
             } else {
-                std::thread::spawn(move || show(&toast));
+                let user_id = user_id.clone();
+                std::thread::spawn(move || show(&toast, &user_id));
             }
         }
     }
 }
 
+/// クリックを待つ通知の数の上限。待つたびにスレッドと D-Bus 接続が 1 つずつ要るので、
+/// 閉じられない通知が溜まっても増え続けないようにする。超えた分は出すだけで、クリックは捨てる。
+pub const MAX_WAITING: usize = 16;
+
+static WAITING: AtomicUsize = AtomicUsize::new(0);
+
+/// クリック待ちの枠。持っている間だけ数に入る。
+struct Slot<'a>(&'a AtomicUsize);
+
+impl<'a> Slot<'a> {
+    fn try_acquire(counter: &'a AtomicUsize, limit: usize) -> Option<Slot<'a>> {
+        counter
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < limit).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Slot(counter))
+    }
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// 通知を 1 件出す。Linux ではクリックされるまで待つので、専用のスレッドで呼ぶ。
-pub fn show(toast: &Toast) {
+/// `user_id` は、クリックされたときに合っているか確かめるための、通知を出した時点のユーザー。
+pub fn show(toast: &Toast, user_id: &str) {
     let mut notification = notify_rust::Notification::new();
-    notification
-        .appname("zoo2")
-        .summary(&toast.title)
-        .body(&toast.body);
+    notification.appname("zoo2").summary(&toast.title);
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        notification.action("default", "開く");
+        let markup = notify_rust::get_capabilities()
+            .is_ok_and(|caps| caps.iter().any(|cap| cap == "body-markup"));
+        notification.body(&body_for_server(&toast.body, markup));
+        // 上限を超えたら、クリックの action を付けず、出すだけにする。
+        let slot = Slot::try_acquire(&WAITING, MAX_WAITING);
+        if slot.is_some() {
+            notification.action("default", "開く");
+        }
         match notification.show() {
             Ok(handle) => {
-                let channel_id = toast.channel_id.clone();
-                handle.wait_for_action(|action| {
-                    if action == "default" {
-                        send(ResidentEvent::Open { channel_id });
-                    }
-                });
+                if slot.is_some() {
+                    let open = ResidentEvent::Open {
+                        channel_id: toast.channel_id.clone(),
+                        message_id: Some(toast.message_id.clone()).filter(|id| !id.is_empty()),
+                        user_id: user_id.to_string(),
+                    };
+                    handle.wait_for_action(|action| {
+                        if action == "default" {
+                            send(open);
+                        }
+                    });
+                }
             }
             Err(err) => eprintln!("通知を出せませんでした: {err}"),
         }
+        drop(slot);
     }
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     {
-        let _ = send;
+        let _ = (send, user_id);
+        notification.body(&toast.body);
         if let Err(err) = notification.show() {
             eprintln!("通知を出せませんでした: {err}");
         }
@@ -236,14 +280,67 @@ mod tests {
     #[test]
     #[ignore]
     fn os_notification_reaches_dbus() {
-        show(&Toast {
-            notification_id: "n".into(),
-            channel_id: "c1".into(),
-            message_id: "m".into(),
-            notification_type: "mention".into(),
-            title: "Alice (#general)".into(),
-            body: "こんにちは".into(),
-        });
+        show(
+            &Toast {
+                notification_id: "n".into(),
+                channel_id: "c1".into(),
+                message_id: "m".into(),
+                notification_type: "mention".into(),
+                title: "Alice (#general)".into(),
+                body: "こんにちは".into(),
+            },
+            "u1",
+        );
+    }
+
+    #[test]
+    fn waiting_slots_are_limited_and_released() {
+        let counter = AtomicUsize::new(0);
+        let mut slots = Vec::new();
+        for _ in 0..3 {
+            slots.push(Slot::try_acquire(&counter, 3).expect("上限までは取れる"));
+        }
+        assert!(Slot::try_acquire(&counter, 3).is_none());
+        assert_eq!(counter.load(Ordering::Acquire), 3);
+        slots.pop();
+        assert!(Slot::try_acquire(&counter, 3).is_some());
+        assert_eq!(MAX_WAITING, 16);
+    }
+
+    #[test]
+    fn open_message_moves_to_the_message_or_just_opens_the_channel() {
+        let mut state = connected_state();
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(
+                vec![(
+                    "m1",
+                    serde_json::json!({
+                        "id": "m1", "channel_id": "c1", "user_id": "u2",
+                        "content": "hello", "created_at": "2026-11-11 00:00:00",
+                    }),
+                )],
+                false,
+            ),
+        ));
+        state.open_message("c1".into(), Some("m1".into()));
+        assert_eq!(state.current_channel.as_deref(), Some("c1"));
+        assert_eq!(state.pending_scroll_to_message_id.as_deref(), Some("m1"));
+
+        // まだ取れていない投稿は、チャンネルを開くだけ。
+        state.pending_scroll_to_message_id = None;
+        state.open_message("c2".into(), Some("missing".into()));
+        assert_eq!(state.current_channel.as_deref(), Some("c2"));
+        assert_eq!(state.pending_scroll_to_message_id, None);
+    }
+
+    #[test]
+    fn notifications_failure_is_reported_as_sync_error() {
+        let mut state = connected_state();
+        state
+            .sync_errors
+            .insert(ShapeId::Notifications, "接続できません".into());
+        assert_eq!(state.sync_error().as_deref(), Some("接続できません"));
     }
 
     #[test]
