@@ -252,6 +252,8 @@
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",
     "usersTitle": "Users who reacted with {{emoji}}",
+    "showAllUsers": "Show users who reacted",
+    "allUsersTitle": "Users who reacted",
     "usersLoading": "Loading users",
     "userUnavailable": "User unavailable",
     "usersEmpty": "No reactions",

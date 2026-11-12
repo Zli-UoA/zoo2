@@ -252,6 +252,8 @@
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",
     "usersTitle": "使用 {{emoji}} 回應的使用者",
+    "showAllUsers": "查看所有回應的使用者",
+    "allUsersTitle": "所有回應的使用者",
     "usersLoading": "正在載入使用者",
     "userUnavailable": "無法顯示使用者",
     "usersEmpty": "沒有回應",

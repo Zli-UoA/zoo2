@@ -252,6 +252,8 @@
   "reactions": {
     "showUsers": "{{emoji}} 반응을 남긴 사용자 보기",
     "usersTitle": "{{emoji}} 반응을 남긴 사용자",
+    "showAllUsers": "반응을 남긴 사용자 보기",
+    "allUsersTitle": "반응을 남긴 사용자",
     "usersLoading": "사용자를 불러오는 중",
     "userUnavailable": "사용자를 표시할 수 없습니다",
     "usersEmpty": "반응이 없습니다",
