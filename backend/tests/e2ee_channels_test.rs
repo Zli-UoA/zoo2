@@ -52,11 +52,8 @@ async fn request(
     } else {
         builder.header("X-Dev-User", actor)
     };
-    let body = if body.is_null() {
-        Body::empty()
-    } else {
-        Body::from(body.to_string())
-    };
+    // 既存の結合テストと同じく、本文のない要求も `null` を送る（JSON を読む経路があるため）。
+    let body = Body::from(body.to_string());
     let response = app
         .clone()
         .oneshot(builder.body(body).unwrap())
