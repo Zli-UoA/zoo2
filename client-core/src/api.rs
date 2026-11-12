@@ -176,9 +176,21 @@ impl ApiClient {
     }
 
     pub async fn threads(&self, archived: bool, before: Option<&str>) -> Result<ThreadPage> {
+        self.thread_page(archived, before, None).await
+    }
+
+    pub async fn thread_page(
+        &self,
+        archived: bool,
+        before: Option<&str>,
+        through: Option<&str>,
+    ) -> Result<ThreadPage> {
         let mut path = format!("/api/threads?archived={archived}");
         if let Some(cursor) = before {
             path.push_str(&format!("&before={}", segment(cursor)));
+        }
+        if let Some(cursor) = through {
+            path.push_str(&format!("&through={}", segment(cursor)));
         }
         self.get(&path).await
     }

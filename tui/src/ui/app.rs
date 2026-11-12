@@ -145,6 +145,7 @@ pub struct App {
     /// 遅れた取得結果で、再開後の一覧を上書きしないための取得開始時刻。
     threads_requested_at: [Option<Instant>; 2],
     thread_updated_at: HashMap<String, Instant>,
+    locally_reopened_threads: HashMap<String, jiff::civil::DateTime>,
     pub thread_cursors: [Option<String>; 2],
     thread_has_additional_pages: [bool; 2],
     pub thread_failed_append: [Option<bool>; 2],
@@ -209,6 +210,7 @@ impl App {
             archived_threads: Vec::new(),
             threads_requested_at: [None, None],
             thread_updated_at: HashMap::new(),
+            locally_reopened_threads: HashMap::new(),
             thread_cursors: [None, None],
             thread_has_additional_pages: [false; 2],
             thread_failed_append: [None, None],
@@ -293,6 +295,15 @@ impl App {
                 self.notify(format!("同期を停止しました ({id:?}): {err}"));
             }
         }
+        let store = &self.store;
+        self.locally_reopened_threads
+            .retain(|root_id, reopened_at| {
+                !store.channels().iter().any(|channel| {
+                    store.message(&channel.id, root_id).is_some_and(|root| {
+                        root.thread_archive_at.is_some_and(|at| at > *reopened_at)
+                    })
+                })
+            });
         self.restore_sidebar_selection(selected);
     }
 
@@ -329,15 +340,13 @@ impl App {
                         id: first.id.clone(),
                     });
                 }
-                if append {
-                    self.thread_has_additional_pages[scope] = true;
-                } else if next_cursor.is_none() {
-                    self.thread_has_additional_pages[scope] = false;
-                }
-                let preserve = append || self.thread_has_additional_pages[scope];
+                self.thread_has_additional_pages[scope] = append || threads.len() > 100;
                 let incoming_ids: HashSet<_> =
                     threads.iter().map(|thread| thread.id.clone()).collect();
                 for thread in &threads {
+                    if thread.thread_archive_at.is_some() {
+                        self.locally_reopened_threads.remove(&thread.id);
+                    }
                     self.thread_updated_at
                         .insert(thread.id.clone(), requested_at);
                 }
@@ -347,7 +356,7 @@ impl App {
                     (&mut self.active_threads, &mut self.archived_threads)
                 };
                 other.retain(|entry| !incoming_ids.contains(&entry.id));
-                if preserve {
+                if append {
                     current.retain(|entry| !incoming_ids.contains(&entry.id));
                 } else {
                     current.clear();
@@ -363,9 +372,7 @@ impl App {
                     self.threads().map(|thread| thread.id.clone()).collect();
                 self.thread_updated_at
                     .retain(|id, _| loaded_ids.contains(id));
-                if append || !self.thread_has_additional_pages[scope] {
-                    self.thread_cursors[scope] = next_cursor;
-                }
+                self.thread_cursors[scope] = next_cursor;
                 self.thread_failed_append[scope] = None;
                 self.threads_requested_at[scope] = Some(requested_at);
                 self.restore_sidebar_selection(selected);
@@ -387,15 +394,22 @@ impl App {
                 ));
             }
             AppEvent::ThreadsChanged { reopened } => {
-                if let Some(id) = reopened
-                    && let Some(index) = self
+                if let Some(id) = reopened {
+                    self.locally_reopened_threads.insert(
+                        id.clone(),
+                        jiff::Timestamp::now()
+                            .to_zoned(jiff::tz::TimeZone::UTC)
+                            .datetime(),
+                    );
+                    if let Some(index) = self
                         .archived_threads
                         .iter()
                         .position(|entry| entry.id == id)
-                {
-                    let mut thread = self.archived_threads.remove(index);
-                    thread.thread_archive_at = None;
-                    self.active_threads.insert(0, thread);
+                    {
+                        let mut thread = self.archived_threads.remove(index);
+                        thread.thread_archive_at = None;
+                        self.active_threads.insert(0, thread);
+                    }
                 }
                 // 書き込み前の一覧で、確定済みの状態を上書きしない。
                 self.threads_requested_at = [Some(Instant::now()); 2];
@@ -514,16 +528,42 @@ impl App {
         } else {
             None
         };
+        let rebuild = !append && self.thread_has_additional_pages[usize::from(archived)];
+        let through = if rebuild {
+            self.thread_cursors[usize::from(archived)].clone()
+        } else {
+            None
+        };
         tokio::spawn(async move {
             let requested_at = Instant::now();
-            match api.threads(archived, cursor.as_deref()).await {
-                Ok(page) => {
+            let result = async {
+                let mut page = api
+                    .thread_page(archived, cursor.as_deref(), through.as_deref())
+                    .await?;
+                let mut items = page.items;
+                let mut seen_cursors = HashSet::new();
+                while let Some(next) = if rebuild {
+                    page.next_cursor.take()
+                } else {
+                    None
+                } {
+                    anyhow::ensure!(seen_cursors.insert(next.clone()), "Repeated thread cursor");
+                    page = api
+                        .thread_page(archived, Some(&next), through.as_deref())
+                        .await?;
+                    items.extend(page.items);
+                }
+                Ok::<_, anyhow::Error>((items, if rebuild { through } else { page.next_cursor }))
+            }
+            .await;
+            match result {
+                Ok((threads, next_cursor)) => {
                     let _ = tx.send(AppEvent::Threads {
                         requested_at,
-                        threads: page.items,
+                        threads,
                         archived,
                         append,
-                        next_cursor: page.next_cursor,
+                        next_cursor,
                     });
                 }
                 Err(error) => {
@@ -545,6 +585,13 @@ impl App {
     }
 
     pub fn thread_is_archived(&self, channel_id: &str, root_id: &str) -> bool {
+        if let Some(reopened_at) = self.locally_reopened_threads.get(root_id) {
+            return self
+                .store
+                .message(channel_id, root_id)
+                .and_then(|root| root.thread_archive_at)
+                .is_some_and(|archived_at| archived_at > *reopened_at);
+        }
         self.threads()
             .any(|thread| thread.id == root_id && thread.thread_archive_at.is_some())
             || self
@@ -1292,7 +1339,11 @@ impl App {
                     content,
                 });
             } else {
-                let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
+                let reopened = match target {
+                    Target::Reply(root_id) => Some(root_id),
+                    _ => None,
+                };
+                let _ = tx.send(AppEvent::ThreadsChanged { reopened });
             }
         });
     }

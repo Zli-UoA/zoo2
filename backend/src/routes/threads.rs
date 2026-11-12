@@ -40,6 +40,7 @@ struct ThreadQuery {
     #[serde(default)]
     archived: bool,
     before: Option<String>,
+    through: Option<String>,
     limit: Option<usize>,
 }
 
@@ -49,18 +50,16 @@ async fn list_threads(
     Query(page): Query<ThreadQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = page.limit.unwrap_or(100).clamp(1, 100);
-    let cursor = page
-        .before
-        .as_deref()
-        .map(|before| {
-            let cursor: [String; 2] = serde_json::from_str(before)
-                .map_err(|_| AppError::BadRequest("Invalid thread cursor".into()))?;
-            cursor[0]
-                .parse::<jiff::Timestamp>()
-                .map_err(|_| AppError::BadRequest("Invalid thread cursor".into()))?;
-            Ok::<_, AppError>(cursor)
-        })
-        .transpose()?;
+    let parse_cursor = |value: &str| -> Result<[String; 2], AppError> {
+        let cursor: [String; 2] = serde_json::from_str(value)
+            .map_err(|_| AppError::BadRequest("Invalid thread cursor".into()))?;
+        cursor[0]
+            .parse::<jiff::Timestamp>()
+            .map_err(|_| AppError::BadRequest("Invalid thread cursor".into()))?;
+        Ok(cursor)
+    };
+    let cursor = page.before.as_deref().map(parse_cursor).transpose()?;
+    let through = page.through.as_deref().map(parse_cursor).transpose()?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
@@ -82,6 +81,7 @@ async fn list_threads(
                AND root.thread_activity_at IS NOT NULL \
                AND root.thread_archive_at {archive_filter} \
                AND (root.thread_activity_at,root.id)<((COALESCE(NULLIF($3,'')::timestamptz,'infinity'::timestamptz) AT TIME ZONE 'UTC'),$4) \
+               AND (root.thread_activity_at,root.id)>=((COALESCE(NULLIF($6,'')::timestamptz,'-infinity'::timestamptz) AT TIME ZONE 'UTC'),$7) \
                AND EXISTS(SELECT 1 FROM messages reply WHERE reply.parent_id=root.id AND reply.deleted_at IS NULL) \
              ORDER BY root.thread_activity_at DESC,root.id DESC LIMIT $5::int \
            ) root \
@@ -97,6 +97,8 @@ async fn list_threads(
             cursor.as_ref().map(|v| v[0].as_str()).unwrap_or(""),
             cursor.as_ref().map(|v| v[1].as_str()).unwrap_or(""),
             &(limit + 1).to_string(),
+            through.as_ref().map(|v| v[0].as_str()).unwrap_or(""),
+            through.as_ref().map(|v| v[1].as_str()).unwrap_or(""),
         ],
     ).await?;
     let more = rows.len() > limit;

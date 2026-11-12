@@ -59,6 +59,9 @@ export function useThreadIndex(
       const params = new URLSearchParams();
       if (channelId) params.set("channel_id", channelId);
       if (archived) params.set("archived", "true");
+      const rebuild = !append && hasAdditionalPages;
+      const rangeEnd = rebuild ? before : null;
+      if (rangeEnd) params.set("through", rangeEnd);
       if (append && before) params.set("before", before);
       const query = params.size ? `?${params}` : "";
       setResult((current) => ({
@@ -68,32 +71,36 @@ export function useThreadIndex(
         isError: false,
       }));
       try {
-        const page = await client.get<ThreadPage>(`/api/threads${query}`);
+        let page = await client.get<ThreadPage>(`/api/threads${query}`);
+        const items = [...page.items];
+        const seenCursors = new Set<string>();
+        while (rebuild && page.next_cursor) {
+          if (!active || started !== generation) return;
+          if (seenCursors.has(page.next_cursor)) throw new Error("Repeated thread cursor");
+          seenCursors.add(page.next_cursor);
+          params.set("before", page.next_cursor);
+          page = await client.get<ThreadPage>(`/api/threads?${params}`);
+          items.push(...page.items);
+        }
         if (active && started === generation) {
           failedRequest = null;
-          if (append) hasAdditionalPages = true;
-          else {
-            if (page.next_cursor === null) hasAdditionalPages = false;
-          }
-          if (append || !hasAdditionalPages) cursor = page.next_cursor;
+          cursor = rebuild ? rangeEnd : page.next_cursor;
+          hasAdditionalPages = append || (rebuild && items.length > 100);
           const nextCursor = cursor;
-          const preserveAdditionalPages = hasAdditionalPages;
-          const refreshedIds = new Set(page.items.map((item) => item.id));
-          setResult((current) => {
-            const previous = current?.key === key ? current.items : EMPTY_PAGE.items;
-            const items = append
-              ? [...new Map([...previous, ...page.items].map((item) => [item.id, item])).values()]
-              : preserveAdditionalPages
-                ? [...page.items, ...previous.filter((item) => !refreshedIds.has(item.id))]
-                : page.items;
-            return {
-              items,
-              next_cursor: nextCursor,
-              key,
-              isLoading: false,
-              isError: false,
-            };
-          });
+          setResult((current) => ({
+            items: [
+              ...new Map(
+                [...(append && current?.key === key ? current.items : []), ...items].map((item) => [
+                  item.id,
+                  item,
+                ]),
+              ).values(),
+            ],
+            next_cursor: nextCursor,
+            key,
+            isLoading: false,
+            isError: false,
+          }));
         }
       } catch {
         // 一時的な取得失敗では直前の一覧を残し、再試行できるようにする。
