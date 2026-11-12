@@ -1,4 +1,5 @@
 import { http, HttpResponse } from "msw";
+import { storyCollections } from "../../../../.storybook/fixtures";
 import { federatedReactionFixture } from "../../../../.storybook/message-fixtures";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
@@ -67,16 +68,42 @@ export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
 };
 
+let separateReactionRequests = 0;
 export const FederatedReactions: Story = {
+  beforeEach: () => {
+    separateReactionRequests = 0;
+  },
   parameters: {
-    sharedApi: true,
-    a11y: { test: "error" },
     msw: {
       handlers: [
-        http.get("*/api/channels/:id/federated-reactions", () =>
-          HttpResponse.json([federatedReactionFixture]),
-        ),
+        http.get("*/api/channels/:id/federated-reactions", () => {
+          separateReactionRequests++;
+          return HttpResponse.json([]);
+        }),
       ],
+    },
+    sharedApi: true,
+    a11y: { test: "error" },
+    collections: {
+      ...storyCollections,
+      messages: storyCollections.messages?.map((row) =>
+        row.id === federatedReactionFixture.message_id
+          ? {
+              ...row,
+              display_data: {
+                emojis: {},
+                attachments: [],
+                reply_count: 2,
+                reactions: [
+                  ...(storyCollections.reactions ?? []).filter(
+                    (reaction) => reaction.message_id === row.id,
+                  ),
+                  federatedReactionFixture,
+                ],
+              },
+            }
+          : row,
+      ),
     },
   },
   play: playForImplementation(async () => {
@@ -86,5 +113,6 @@ export const FederatedReactions: Story = {
     const users = screen.getAllByRole("button", { name: "👍 にリアクションしたユーザーを表示" });
     await userEvent.click(users[0]!);
     await waitFor(() => expect(screen.getByText("Peer (@peer@remote.example)")).toBeVisible());
+    await expect(separateReactionRequests).toBe(0);
   }),
 };

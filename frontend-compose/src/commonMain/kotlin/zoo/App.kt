@@ -57,9 +57,9 @@ fun ZooApp(app: Session) {
         return
     }
     LaunchedEffect(app) {
-        while (true) {
+        pollWhileVisible(snapshotFlow { app.env.visible && app.env.online }, interval = 60_000) {
             app.loadAccountProfiles()
-            delay(60_000)
+            false
         }
     }
     val channelRows by app.repo.channels.rows.collectAsState()

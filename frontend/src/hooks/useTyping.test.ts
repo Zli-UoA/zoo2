@@ -107,3 +107,15 @@ describe("useTyping", () => {
     expect(payloads().at(-1).active).toBe(false);
   });
 });
+
+it("backs off empty-room polling and wakes immediately when typing starts", async () => {
+  mocks.get.mockResolvedValue([]);
+  await flush(() => root.render(createElement(Probe)));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60000);
+  });
+  expect(mocks.get.mock.calls.length).toBeLessThanOrEqual(14);
+  const previous = mocks.get.mock.calls.length;
+  await flush(() => typing.onTyping(true));
+  expect(mocks.get).toHaveBeenCalledTimes(previous + 1);
+});

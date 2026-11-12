@@ -3,6 +3,7 @@ pub mod auth;
 pub mod config;
 pub mod electric;
 pub mod http;
+pub mod poll;
 pub mod update;
 
 // 型と純粋関数は zoo2-client-types にある。TUI と GPUI 版はこれまでどおり

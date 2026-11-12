@@ -40,6 +40,7 @@ function Test({
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.useFakeTimers();
+  fixture.config = {};
   fixture.api.get.mockReset();
   fixture.api.post.mockReset().mockResolvedValue({ txid: "42" });
   root = createRoot(document.createElement("div"));
@@ -163,12 +164,16 @@ it("fetches archive pages only while expanded and does not poll history", async 
   await act(async () => root.render(view(false)));
   expect(fixture.api.get).not.toHaveBeenCalled();
   await act(async () => root.render(view(true)));
-  expect(fixture.api.get).toHaveBeenCalledWith("/api/threads?channel_id=general&archived=true");
+  expect(fixture.api.get).toHaveBeenCalledWith(
+    "/api/threads?channel_id=general&archived=true",
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
   await act(async () => vi.advanceTimersByTimeAsync(120_000));
   expect(fixture.api.get).toHaveBeenCalledTimes(1);
   await act(async () => index.loadMore());
   expect(fixture.api.get).toHaveBeenLastCalledWith(
     "/api/threads?channel_id=general&archived=true&before=older+%2F+cursor",
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
   );
   expect(index.threads.map((entry) => entry.id)).toEqual([thread.id, "older"]);
   expect(index.hasMore).toBe(false);
@@ -186,4 +191,92 @@ it("keeps a failed archive page retryable without losing loaded history", async 
   await act(async () => index.loadMore());
   expect(index.isError).toBe(false);
   expect(index.threads).toHaveLength(2);
+});
+
+it("shares requests and pagination, aborting only after the last subscriber leaves", async () => {
+  const secondRoot = createRoot(document.createElement("div"));
+  let resolve!: (value: ThreadPage) => void;
+  fixture.api.get.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  try {
+    await act(async () => {
+      root.render(createElement(Test, { userId: "alice" }));
+      secondRoot.render(createElement(Test, { userId: "alice" }));
+    });
+    expect(fixture.api.get).toHaveBeenCalledTimes(1);
+    const signal = fixture.api.get.mock.calls[0][1].signal as AbortSignal;
+    await act(async () => root.render(null));
+    expect(signal.aborted).toBe(false);
+    await act(async () => resolve(page([thread], "next")));
+    expect(index.threads).toEqual([thread]);
+    fixture.api.get.mockResolvedValue(page([{ ...thread, id: "next" }]));
+    await act(async () => index.loadMore());
+    expect(index.threads.map((row) => row.id)).toEqual(["thread", "next"]);
+    await act(async () => root.render(createElement(Test, { userId: "alice" })));
+    expect(index.threads).toHaveLength(2);
+    expect(fixture.api.get).toHaveBeenCalledTimes(2);
+    await act(async () => root.render(null));
+  } finally {
+    await act(async () => secondRoot.unmount());
+  }
+});
+
+it("pauses hidden lists and aborts a pending request when the last consumer unmounts", async () => {
+  fixture.api.get.mockImplementation(() => new Promise(() => {}));
+  await act(async () => root.render(createElement(Test, { userId: "alice" })));
+  const signal = fixture.api.get.mock.calls[0][1].signal as AbortSignal;
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+  try {
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(signal.aborted).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(120_000));
+    expect(fixture.api.get).toHaveBeenCalledTimes(1);
+  } finally {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    await act(async () => root.render(null));
+  }
+});
+
+it("cancels the previous account and the last outstanding subscription", async () => {
+  fixture.api.get.mockImplementation(
+    (_url, { signal }: { signal: AbortSignal }) =>
+      new Promise((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason)),
+      ),
+  );
+  await act(async () => root.render(createElement(Test, { userId: "alice" })));
+  const first = fixture.api.get.mock.calls[0][1].signal as AbortSignal;
+  await act(async () => root.render(createElement(Test, { userId: "bob" })));
+  expect(first.aborted).toBe(true);
+  const second = fixture.api.get.mock.calls[1][1].signal as AbortSignal;
+  expect(second.aborted).toBe(false);
+  expect(index.threads).toEqual([]);
+  await act(async () => root.render(null));
+  expect(second.aborted).toBe(true);
+});
+
+it("invalidates archived history changed while its last consumer was closed", async () => {
+  fixture.api.get
+    .mockResolvedValueOnce(page([thread]))
+    .mockResolvedValue(page([{ ...thread, content: "edited" }]));
+  const view = (enabled: boolean) =>
+    createElement(Test, { userId: "alice", channelId: "general", archived: true, enabled });
+  await act(async () => root.render(view(true)));
+  expect(index.threads[0].content).toBe("Thread");
+  await act(async () => root.render(view(false)));
+  await act(async () => window.dispatchEvent(new Event(THREADS_CHANGED)));
+  expect(fixture.api.get).toHaveBeenCalledTimes(1);
+  await act(async () => root.render(view(true)));
+  expect(fixture.api.get).toHaveBeenCalledTimes(2);
+  expect(index.threads[0].content).toBe("edited");
+  await act(async () => root.render(view(false)));
+  fixture.api.get.mockResolvedValue(page([]));
+  await act(async () => window.dispatchEvent(new Event(THREADS_CHANGED)));
+  await act(async () => root.render(view(true)));
+  expect(fixture.api.get).toHaveBeenCalledTimes(3);
+  expect(index.threads).toEqual([]);
 });
