@@ -46,7 +46,8 @@ export function useThreadIndex(
     let pending = false;
     let generation = 0;
     let cursor: string | null = null;
-    const refresh = async (append = false) => {
+    let failedRequest: { append: boolean; cursor: string | null } | null = null;
+    const refresh = async (append = false, before = cursor) => {
       if (document.visibilityState === "hidden") return;
       if (inFlight) {
         if (!append) pending = true;
@@ -57,7 +58,7 @@ export function useThreadIndex(
       const params = new URLSearchParams();
       if (channelId) params.set("channel_id", channelId);
       if (archived) params.set("archived", "true");
-      if (append && cursor) params.set("before", cursor);
+      if (append && before) params.set("before", before);
       const query = params.size ? `?${params}` : "";
       setResult((current) => ({
         ...(current?.key === key ? current : EMPTY_PAGE),
@@ -68,6 +69,7 @@ export function useThreadIndex(
       try {
         const page = await client.get<ThreadPage>(`/api/threads${query}`);
         if (active && started === generation) {
+          failedRequest = null;
           cursor = page.next_cursor;
           setResult((current) => ({
             ...page,
@@ -86,10 +88,12 @@ export function useThreadIndex(
         }
       } catch {
         // 一時的な取得失敗では直前の一覧を残し、再試行できるようにする。
-        if (active && started === generation)
+        if (active && started === generation) {
+          failedRequest = { append, cursor: before };
           setResult((current) =>
             current?.key === key ? { ...current, isLoading: false, isError: true } : current,
           );
+        }
       } finally {
         inFlight = false;
         if (active && pending) {
@@ -104,7 +108,10 @@ export function useThreadIndex(
       void refresh();
     };
     const refreshFirst = () => void refresh();
-    requestMore.current = () => void refresh(cursor !== null);
+    requestMore.current = () => {
+      const request = failedRequest;
+      void refresh(request?.append ?? cursor !== null, request ? request.cursor : cursor);
+    };
     void refresh();
     const interval = archived ? null : window.setInterval(refreshFirst, 60_000);
     window.addEventListener("focus", refreshFirst);

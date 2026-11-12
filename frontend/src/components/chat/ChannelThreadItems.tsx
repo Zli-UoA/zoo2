@@ -24,12 +24,15 @@ export function ChannelThreadItems({
   const shell = useShell();
   const channelThreads = threads.filter((thread) => thread.channel_id === channel.id);
   const active = channelThreads.filter((thread) => !thread.thread_archive_at);
+  const activeIds = new Set(active.map((thread) => thread.id));
   const [historyOpen, setHistoryOpen] = useState(false);
   const history = useThreadIndex(currentUserId, {
     channelId: channel.id,
     archived: true,
     enabled: historyOpen,
   });
+
+  const archived = history.threads.filter((thread) => !activeIds.has(thread.id));
 
   const renderThread = (thread: ThreadSummary) => (
     <Link
@@ -64,8 +67,8 @@ export function ChannelThreadItems({
         className="-mx-2"
       >
         <div className="flex min-w-0 flex-col px-2">
-          {history.threads.map(renderThread)}
-          {historyOpen && !history.isLoading && !history.isError && !history.threads.length ? (
+          {archived.map(renderThread)}
+          {historyOpen && !history.isLoading && !history.isError && !archived.length ? (
             <p className="p-2 text-xs text-muted-foreground">{t("threads.emptyArchive")}</p>
           ) : null}
           {history.isError ? (
