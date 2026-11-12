@@ -103,6 +103,7 @@ it("opens archived threads with the shared section and keyboard controls", async
     </LocaleProvider>,
   );
   const toggle = await screen.findByRole("button", { name: /アーカイブ済みスレッド/ });
+  expect(toggle.getAttribute("aria-label")).toContain("general");
   toggle.focus();
   await userEvent.keyboard("{Enter}");
   expect(toggle.getAttribute("aria-expanded")).toBe("true");

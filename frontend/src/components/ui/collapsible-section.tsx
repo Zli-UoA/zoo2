@@ -36,6 +36,7 @@ export function CollapsibleSection({
         <h2 id={headingId} className="min-w-0 flex-1">
           <button
             type="button"
+            aria-label={ariaLabel}
             aria-expanded={open}
             aria-controls={contentId}
             onClick={() => {
