@@ -121,12 +121,21 @@ function createIndex(
                 item,
               ]),
             );
+            // 古い応答にない確定済みの行は、ローカルでの順序のまま先頭に保つ。
+            const localOnly = (current?.items ?? []).filter(
+              (item) =>
+                !merged.has(item.id) && observed.get(item.id)?.thread.thread_archive_at === null,
+            );
             for (const [id, local] of observed) {
               if (local.thread.thread_archive_at) merged.delete(id);
               else merged.set(id, local.thread);
             }
             return {
-              items: [...merged.values()],
+              items: [
+                ...new Map(
+                  [...localOnly, ...merged.values()].map((item) => [item.id, item]),
+                ).values(),
+              ],
               next_cursor: nextCursor,
               key,
               isLoading: false,

@@ -325,3 +325,19 @@ it("preserves server order when viewing an existing thread and prepends a reopen
   await act(async () => index.observeThread({ ...newest, id: "reopened" }));
   expect(index.threads.map((row) => row.id)).toEqual(["reopened", "newest", "older"]);
 });
+
+it("keeps a newly observed reopen ahead of rows returned by an older request", async () => {
+  let resolve!: (value: ThreadPage) => void;
+  fixture.api.get.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  await act(async () => root.render(createElement(Test, { userId: "alice" })));
+  const older = { ...thread, id: "older", thread_archive_at: null };
+  const reopened = { ...older, id: "reopened" };
+  await act(async () => index.observeThread(reopened));
+  await act(async () => resolve(page([older])));
+  expect(index.threads.map((row) => row.id)).toEqual(["reopened", "older"]);
+});
