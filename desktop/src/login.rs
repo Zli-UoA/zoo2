@@ -27,6 +27,17 @@ use zoo2_client_core::{
 
 pub const APP_NAME: &str = "zoo2-desktop";
 
+#[derive(Debug)]
+pub(crate) struct SessionChanged;
+
+impl std::fmt::Display for SessionChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ログイン状態が変わったためトークンを削除しませんでした")
+    }
+}
+
+impl std::error::Error for SessionChanged {}
+
 /// 期限までの余裕秒数 (`client-core` の `REFRESH_SKEW_SECONDS` と同じ)。
 const REFRESH_SKEW_SECONDS: i64 = 60;
 
@@ -225,7 +236,7 @@ impl DesktopTokenManager {
                 if self.disable_generation.load(Ordering::SeqCst) == disable_generation {
                     self.logged_out.store(was_logged_out, Ordering::SeqCst);
                 }
-                bail!("ログイン状態が変わったためトークンを削除しませんでした")
+                Err(SessionChanged.into())
             }
             Err(error) => {
                 let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());

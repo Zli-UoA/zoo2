@@ -390,7 +390,7 @@ pub enum DesktopEvent {
     },
     CancelFinished {
         session_gen: u64,
-        result: Result<Vec<String>, String>,
+        result: Result<Vec<String>, (String, bool)>,
     },
 }
 
@@ -870,8 +870,10 @@ impl AppState {
                 .spawn_tokio(async move {
                     let result = tokio::task::spawn_blocking(move || manager.logout_and_delete())
                         .await
-                        .map_err(|e| e.to_string())
-                        .and_then(|r| r.map_err(|e| format!("{e:#}")));
+                        .map_err(|e| (e.to_string(), false))
+                        .and_then(|r| {
+                            r.map_err(|e| (format!("{e:#}"), e.is::<login::SessionChanged>()))
+                        });
                     if let (Ok(tokens), AuthConfig::Oidc(oidc)) = (&result, auth) {
                         let tokens = tokens.clone();
                         tokio::spawn(async move {
@@ -1290,7 +1292,17 @@ impl AppState {
                             });
                         }
                     }
-                    Err(error) => {
+                    Err((error, changed)) => {
+                        if changed {
+                            let manager = self
+                                .pending_device_login_manager
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .take();
+                            if let Some(manager) = manager {
+                                manager.disable_persistence();
+                            }
+                        }
                         self.login_phase = Some(LoginPhase::Ready {
                             error: Some(format!("ログイン取消に失敗しました: {error}")),
                         })
@@ -5750,6 +5762,60 @@ mod tests {
             .unwrap();
         assert!(state.on_desktop_event(event));
         assert!(state.login_phase.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cancel_changed_session_releases_pending_manager() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("cancel-changed-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager);
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        token::save(&path, &replacement).unwrap();
+        state.cancel_device_login();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.pending_device_login_manager.lock().unwrap().is_none());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -90,12 +90,25 @@ pub async fn run(
     if let Some(updates) = updates {
         updates.abort();
     }
+    if result.is_ok() {
+        let _ = draw_normal_shutdown_notice(&mut terminal);
+    }
     let (result, shutdown_warning) = finish_application_shutdown(result, &credentials).await;
     let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
     restore_terminal_then_report(ratatui::restore, shutdown_warning, |warning| {
         eprintln!("{warning}");
     });
     result
+}
+
+fn draw_normal_shutdown_notice<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
+    terminal.draw(|frame| {
+        frame.render_widget(
+            Paragraph::new("token 更新の完了を待って終了しています。").wrap(Wrap { trim: true }),
+            frame.area(),
+        );
+    })?;
+    Ok(())
 }
 
 type CtrlCSignal = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
@@ -1308,6 +1321,17 @@ mod tests {
         drop(fixture.readonly);
         token::delete(&fixture.path).unwrap();
         std::fs::remove_dir_all(fixture.dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn normal_shutdown_shows_waiting_notice() {
+        let mut terminal = Terminal::new(TestBackend::new(72, 8)).unwrap();
+        draw_normal_shutdown_notice(&mut terminal).unwrap();
+        assert!(
+            rendered(&terminal, 72, 8)
+                .replace(' ', "")
+                .contains("token更新の完了を待って終了しています")
+        );
     }
 
     #[tokio::test]
