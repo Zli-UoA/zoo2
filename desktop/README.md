@@ -7,6 +7,8 @@ zoo2 のネイティブデスクトップクライアントです。Rust と [GP
 - 書き込み、既読、入力中は REST API を使います。未読インジケーターと、入力中のユーザーも表示します。
 - ログインは AuthZ のデバイスコード方式 (RFC 8628) です。GUI のログイン画面または `zoo2-desktop login` コマンドからブラウザを開いて承認できます。
 
+この crate は `frontend/` のトークン・翻訳を埋め込むので、リポジトリの中でしかビルドできません (crates.io には公開しません)。
+
 ## 目次
 
 - [初期設定](#初期設定)
@@ -14,6 +16,7 @@ zoo2 のネイティブデスクトップクライアントです。Rust と [GP
 - [操作方法](#操作方法)
 - [設定項目](#設定項目)
 - [開発](#開発)
+- [デザインの土台とギャラリー](#デザインの土台とギャラリー)
 
 ## 初期設定
 
@@ -55,6 +58,7 @@ CLI からログイン・ログアウトすることもできます。
 | `zoo2-desktop` / `zoo2-desktop run` | デスクトップアプリのウィンドウを開く |
 | `zoo2-desktop login` | デバイスコードでログインする |
 | `zoo2-desktop logout` | 手元のトークンを消し、IdP 側の `refresh_token` を失効させる |
+| `zoo2-desktop gallery` | 色・フォント・アイコンの確認画面を開く |
 | `zoo2-desktop help` | 使い方を表示する |
 
 - トークンは設定ファイルと同じディレクトリの `token.json` に、所有者だけが読める権限 (Unix では `0600`) で保存します。
@@ -125,3 +129,43 @@ make desktop-check
 ```
 
 `cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test` を実行します。
+
+## デザインの土台とギャラリー
+
+見た目は Web 版 (`frontend/`) にそろえます。そのための部品を `src/` に置いています。
+
+| ファイル | 内容 |
+|---|---|
+| `tokens.rs` | `frontend/src/styles.css` の色変数 (Light は `:root`、Dark は `.dark`)、角丸、文字サイズ。`oklch` は sRGB に変換して持つ |
+| `fonts.rs` | 同梱の Geist と Noto Sans JP (どちらも Regular / Medium / SemiBold / Bold の静的 TTF) を登録する。かなと漢字は Noto Sans JP で描く |
+| `icons.rs` | lucide のアイコン。SVG は `assets/icons/` にある |
+| `i18n.rs` | `frontend/src/lib/i18n/locales/*.json` を埋め込んだ翻訳。言語は OS のロケールから決め、見つからなければ ja |
+| `assets.rs` | `assets/` (フォント、アイコン、ロゴ) を実行ファイルに埋め込む |
+
+- 色の値は `tokens.rs` のテストが `styles.css` を読んで突き合わせます。CSS に色変数を足したのに `tokens.rs` に無いときは、テストが失敗します。
+- アイコンを足すときは、`node desktop/scripts/collect-lucide-icons.mjs` で frontend の import から集め直し、`icons.rs` の `Icon` に足します。版は frontend の `lucide-react` に合わせています。
+- フォントとアイコンのライセンスは `assets/NOTICE` にあります。
+
+### ギャラリー
+
+```bash
+make desktop-gallery              # 明るい配色
+THEME=dark make desktop-gallery   # 暗い配色
+```
+
+`zoo2-desktop gallery --theme light|dark` と同じです。`--theme` は環境変数 `ZOO_DESKTOP_THEME` でも指定できます。
+
+`zoo2-desktop gallery components [1-6] --theme light|dark` は、`src/ui/` の UI 部品 (frontend の `components/ui/` の移植) を、`*.stories.tsx` と同じ状態で並べます。ページは 1 が Button など、2 が入力欄、3 がダイアログとメニュー、4 が Avatar など、5 が通知と画像、6 が AlertDialog の sm とメニューの種類です。
+
+### 画面の撮影 (Linux)
+
+仮想ディスプレイ (Xvfb) と openbox の上で動かし、root ウィンドウを PNG にします。`nix develop` の中で実行してください。
+
+```bash
+cd desktop && cargo build
+cd .. && scripts/desktop-screenshot.sh /tmp/gallery-dark.png -- desktop/target/debug/zoo2-desktop gallery --theme dark
+```
+
+`-w 秒` で待ち時間、`-s 幅x高さ` で画面の大きさを変えられます (既定は 6 秒、1440x900)。openbox が無いと GPUI のウィンドウは黒く描かれます。描画は lavapipe (CPU の Vulkan) で、devShell の `ZOO_LVP_ICD` を使います。
+
+スクリプトは自分で起動したプロセスの PID だけを止めます。`cargo run` で起動すると、アプリは cargo の子プロセスになって残ることがあるので、ビルドしたあとに `desktop/target/debug/zoo2-desktop` を直接渡してください。

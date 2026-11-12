@@ -82,6 +82,7 @@
     "emojibase-data": "18.0.0",
     "happy-dom": "^21.0.3",
     "msw": "^3.0.3",
+    "pinyin-pro": "^3.29.5",
     "storybook": "10.6.3",
     "typescript": "^6.0.2",
     "vite": "catalog:",

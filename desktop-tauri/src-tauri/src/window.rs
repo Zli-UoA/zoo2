@@ -167,12 +167,14 @@ pub fn create_tray(app: &App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
             "quit" => app.exit(0),
+            crate::update::MENU_ID => crate::update::install_and_restart(app),
             _ => {}
         });
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
     }
     tray.build(app)?;
+    app.manage(crate::update::TrayMenu(menu));
     Ok(())
 }
 

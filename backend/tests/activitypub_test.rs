@@ -3271,3 +3271,83 @@ async fn federated_image_metadata_survives_create_and_update() -> anyhow::Result
     finish_protocol(&mut f).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn renotes_accept_cc_followers_and_quote_links_survive_create_update() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let own = protocol_post(&f, "public", true).await?;
+    let mut announce = peer_activity(
+        &f,
+        "Announce",
+        json!(format!(
+            "https://zoo.example.com/api/activitypub/notes/{own}"
+        )),
+    );
+    announce["to"] = json!([]);
+    announce["cc"] = json!([format!("{}/followers", f.remote)]);
+    assert_eq!(receive_peer(&f, &announce).await?, StatusCode::ACCEPTED);
+    assert_eq!(receive_peer(&f, &announce).await?, StatusCode::ACCEPTED);
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    assert_eq!(
+        feed.as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["entry_id"] == format!("repost:{}", announce["id"].as_str().unwrap()))
+            .count(),
+        1
+    );
+    let (_, other_feed) = request(
+        &f.app,
+        "GET",
+        Some(&f.other),
+        "/api/home?timeline=social",
+        None,
+    )
+    .await?;
+    assert!(
+        other_feed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["reposted_by"].is_null())
+    );
+    let undo = peer_activity(&f, "Undo", announce.clone());
+    assert_eq!(receive_peer(&f, &undo).await?, StatusCode::ACCEPTED);
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    assert!(
+        feed.as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["reposted_by"].is_null())
+    );
+
+    let id = format!("{}/notes/quote", f.remote);
+    let quote = "https://third-party.example/notes/original";
+    let mut note = json!({"id":id,"type":"Note","attributedTo":f.remote,"content":"<p>Comment</p>","source":{"mediaType":"text/x.misskeymarkdown","content":"**Comment**"},"quoteUrl":quote,"_misskey_quote":quote,"to":["https://www.w3.org/ns/activitystreams#Public"],"published":"2026-01-01T00:00:00Z"});
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note.clone())).await?,
+        StatusCode::ACCEPTED
+    );
+    let path = format!(
+        "/api/home/{}",
+        percent_encoding::utf8_percent_encode(&id, percent_encoding::NON_ALPHANUMERIC)
+    );
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.user), &path, None).await?.1["content"],
+        format!("**Comment**\n\n<{quote}>")
+    );
+    note["quoteUrl"] = json!("https://third-party.example/notes/updated");
+    note["updated"] = json!("2026-01-02T00:00:00Z");
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Update", note)).await?,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.user), &path, None).await?.1["content"],
+        "**Comment**\n\n<https://third-party.example/notes/updated>"
+    );
+    finish_protocol(&mut f).await?;
+    Ok(())
+}

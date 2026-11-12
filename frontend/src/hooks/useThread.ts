@@ -1,16 +1,17 @@
-import { useLiveInfiniteQuery, useLiveQuery } from "@tanstack/react-db";
+import {
+  createCollection,
+  localOnlyCollectionOptions,
+  useLiveInfiniteQuery,
+  useLiveQuery,
+} from "@tanstack/react-db";
 import { useMemo } from "react";
 
 import { useCollections } from "../lib/electric/collections-context";
 import { messageFeedQuery } from "../lib/electric/messageFeed";
 import { MESSAGE_PAGE_SIZE } from "../lib/electric/messageOrder";
+import type { MessageRow } from "../lib/electric/types";
 import { useOptimisticDisplay } from "./useOptimisticDisplay";
 
-/**
- * スレッドが開いていないときの、何にも一致しない親の ID (空の範囲を要求するだけで、取得は 1 回で済む)。
- * parent_id は text なので、NUL を含まない固定の文字列にする (PostgreSQL の text は NUL を受け付けない)。
- */
-const NO_THREAD = "no-thread:none";
 const NO_ROWS: never[] = [];
 
 /**
@@ -20,17 +21,27 @@ const NO_ROWS: never[] = [];
  */
 export function useThreadFeed(channelId: string, rootId: string | null) {
   const { messages, users } = useCollections();
+  const empty = useMemo(
+    () =>
+      createCollection(
+        localOnlyCollectionOptions<MessageRow>({
+          getKey: (row) => row.id,
+          initialData: [],
+        }),
+      ),
+    [],
+  );
   const query = useLiveInfiniteQuery(
     (q) =>
       messageFeedQuery(
         q,
-        { messages: messages(channelId), users },
-        { parentId: rootId ?? NO_THREAD },
+        { messages: rootId ? messages(channelId) : empty, users },
+        { parentId: rootId },
       ),
     { pageSize: MESSAGE_PAGE_SIZE },
   );
   const oldestFirst = useMemo(() => [...(query.data ?? [])].reverse(), [query.data]);
-  const data = useOptimisticDisplay(channelId, rootId ? oldestFirst : NO_ROWS);
+  const data = useOptimisticDisplay(rootId ? channelId : null, rootId ? oldestFirst : NO_ROWS);
   return {
     ...query,
     data,
@@ -55,7 +66,7 @@ export function useMessageById(channelId: string | null, messageId: string | nul
         )
       : undefined,
   );
-  const data = useOptimisticDisplay(channelId, query.data);
+  const data = useOptimisticDisplay(channelId && messageId ? channelId : null, query.data);
   return { ...query, data };
 }
 

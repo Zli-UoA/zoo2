@@ -1,3 +1,4 @@
+import { visiblePoll } from "../visiblePoll";
 import {
   createContext,
   useCallback,
@@ -321,30 +322,32 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   );
 
   // アクティブな通話一覧の定期取得 (10秒ごと)
-  const pollActiveCalls = useCallback(async () => {
-    try {
-      const list = await apiClient.request<ActiveCallSummary[]>("/api/calls/active");
-      if (!Array.isArray(list)) return;
-      const map = new Map<string, number>();
-      for (const item of list) {
-        if (isActiveCallSummary(item) && item.participant_count > 0) {
-          map.set(item.channel_id, item.participant_count);
+  const pollActiveCalls = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const list = await apiClient.request<ActiveCallSummary[]>("/api/calls/active", { signal });
+        if (signal?.aborted || !Array.isArray(list)) return;
+        const map = new Map<string, number>();
+        for (const item of list) {
+          if (isActiveCallSummary(item) && item.participant_count > 0) {
+            map.set(item.channel_id, item.participant_count);
+          }
         }
-      }
-      setActiveCalls((prev) => {
-        if (prev.size !== map.size) return map;
-        for (const [k, v] of map.entries()) {
-          if (prev.get(k) !== v) return map;
-        }
-        return prev;
-      });
-    } catch {}
-  }, [apiClient]);
+        setActiveCalls((prev) => {
+          if (prev.size !== map.size) return map;
+          for (const [k, v] of map.entries()) {
+            if (prev.get(k) !== v) return map;
+          }
+          return prev;
+        });
+      } catch {}
+    },
+    [apiClient],
+  );
 
   useEffect(() => {
-    void pollActiveCalls();
-    const interval = window.setInterval(pollActiveCalls, 10000);
-    return () => window.clearInterval(interval);
+    const polling = visiblePoll(pollActiveCalls, { interval: 10000 });
+    return () => polling.dispose();
   }, [pollActiveCalls]);
 
   const cleanupPeers = useCallback(() => {

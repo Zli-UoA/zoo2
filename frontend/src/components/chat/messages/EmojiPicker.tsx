@@ -1,3 +1,4 @@
+import { AccountGlyph, useMfmAccounts } from "./MfmAccounts";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import { Input } from "../../ui/input";
 import { Button } from "../../ui/button";
@@ -10,6 +11,7 @@ import { cn } from "cn";
 
 import { EMOJIBASE_DATA_URL, SUPPORTED_EMOJI_VERSION } from "../../../lib/emoji/data";
 import { resolveEmojiDataLocale } from "../../../lib/emoji/locale";
+import { resolveMultilingualEmojiData } from "../../../lib/emoji/resolver";
 import { addRecentEmoji, loadRecentEmojis } from "../../../lib/emoji/recents";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { inputClassName } from "../../ui/input-styles";
@@ -25,8 +27,9 @@ const SCROLL_CORRECTION_WINDOW_MS = 200;
 /**
  * Frimousse is headless, so the picker, list and category headers are styled
  * here with the app's design tokens. Emojibase data is self-hosted under
- * `public/emojibase-data`; frimousse caches it in localStorage after the first
- * load, so only the active locale is fetched.
+ * `public/emojibase-data`; frimousse caches the active locale's data in
+ * localStorage after the first load. `resolveMultilingualEmojiData` also loads
+ * `search-index.json` once so every language (and pinyin) is searchable.
  */
 export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void }) {
   const { t } = useTranslation();
@@ -96,6 +99,7 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
       locale={resolveEmojiDataLocale(locale)}
       columns={COLUMNS}
       emojibaseUrl={EMOJIBASE_DATA_URL}
+      resolveEmojiData={resolveMultilingualEmojiData}
       emojiVersion={SUPPORTED_EMOJI_VERSION}
       onEmojiSelect={(emoji) => choose(emoji.emoji)}
       onKeyDown={forwardNavigationKey}
@@ -189,7 +193,17 @@ export function CustomEmojiPicker({ onSelect }: { onSelect: (value: string) => v
   const { t } = useTranslation();
   const { emojis, loading, failed, retry, imageUrl } = useWorkspaceEmojis();
   const [query, setQuery] = useState("");
-  const filtered = emojis.filter((e) =>
+  const accounts = useMfmAccounts();
+  const options = [
+    ...emojis,
+    ...Array.from(accounts.values(), (account) => ({
+      name: `@${account.username}`,
+      category: "",
+      aliases: [account.display_name],
+      url: account.avatar_url ?? "",
+    })),
+  ];
+  const filtered = options.filter((e) =>
     [e.name, e.category, ...(e.aliases ?? [])].some((value) =>
       value?.toLowerCase().includes(query.toLowerCase()),
     ),
@@ -232,11 +246,15 @@ export function CustomEmojiPicker({ onSelect }: { onSelect: (value: string) => v
                     title={`:${e.name}:`}
                     onClick={() => onSelect(`:${e.name}:`)}
                   >
-                    <img
-                      src={imageUrl(e.url)}
-                      alt={`:${e.name}:`}
-                      className="h-7 w-auto max-w-40 object-contain"
-                    />
+                    {e.name.startsWith("@") ? (
+                      <AccountGlyph name={e.name.slice(1)} />
+                    ) : (
+                      <img
+                        src={imageUrl(e.url)}
+                        alt={`:${e.name}:`}
+                        className="h-7 w-auto max-w-40 object-contain"
+                      />
+                    )}
                   </Button>
                 ))}
             </div>

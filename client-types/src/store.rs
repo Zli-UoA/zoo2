@@ -2,6 +2,7 @@
 //! リアクションの集計) を作る。frontend の `lib/electric/messageFeed.ts` や `threads.ts` と
 //! 同じく、結合と絞り込みはクライアントで行う。
 
+pub use crate::accounts::AccountProfiles;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
@@ -11,6 +12,8 @@ use crate::{
 
 #[derive(Debug, Default)]
 pub struct Store {
+    /// AuthZ directory; never filled from the application's users Shape.
+    pub account_profiles: crate::accounts::AccountProfiles,
     channels: HashMap<String, Channel>,
     users: HashMap<String, User>,
     /// 行はシェイプのキーで持つので、id から引くための索引を別に持つ。
@@ -37,6 +40,12 @@ pub struct ReactionGroup {
 
 impl Store {
     pub fn apply(&mut self, id: &ShapeId, batch: Batch) {
+        if batch.reset
+            && let ShapeId::Messages(channel) = id
+        {
+            self.reactions.remove(channel);
+            self.attachments.remove(channel);
+        }
         let mut invalid = 0;
         match id {
             ShapeId::Channels => {
@@ -180,33 +189,43 @@ impl Store {
 
     /// チャンネル内の全添付ファイルを返す。
     pub fn channel_attachments(&self, channel_id: &str) -> Vec<&Attachment> {
-        let Some(map) = self.attachments.get(channel_id) else {
-            return Vec::new();
-        };
-        map.values().collect()
+        let mut result: Vec<&Attachment> = self
+            .attachments
+            .get(channel_id)
+            .into_iter()
+            .flat_map(|map| map.values())
+            .filter(|attachment| {
+                !attachment.message_id.as_ref().is_some_and(|id| {
+                    self.message(channel_id, id)
+                        .is_some_and(|message| message.display_attachments.is_some())
+                })
+            })
+            .collect();
+        if let Some(messages) = self.messages.get(channel_id) {
+            for message in messages.values() {
+                if message.deleted_at.is_none() {
+                    result.extend(message.display_attachments.iter().flatten());
+                }
+            }
+        }
+        result
     }
 
     /// メッセージに紐づく添付ファイル一覧。
     pub fn attachments_for_message(&self, channel_id: &str, message_id: &str) -> Vec<&Attachment> {
-        let Some(map) = self.attachments.get(channel_id) else {
-            return Vec::new();
-        };
-        let mut result: Vec<&Attachment> = map
-            .values()
+        let mut result: Vec<_> = self
+            .channel_attachments(channel_id)
+            .into_iter()
             .filter(|att| att.message_id.as_deref() == Some(message_id))
             .collect();
         result.sort_by_key(|att| att.created_at);
         result
     }
 
-    /// チャンネル内の全添付ファイルを、メッセージ ID ごとに1回でまとめる。
-    /// 描画のたびにメッセージごとに全添付を走査しないためのもの。
+    /// 同梱メタデータを優先し、旧データだけをShapeから補完する。
     pub fn attachments_by_message(&self, channel_id: &str) -> HashMap<String, Vec<Attachment>> {
-        let Some(map) = self.attachments.get(channel_id) else {
-            return HashMap::new();
-        };
         let mut by_message: HashMap<String, Vec<Attachment>> = HashMap::new();
-        for att in map.values() {
+        for att in self.channel_attachments(channel_id) {
             if let Some(msg_id) = &att.message_id {
                 by_message
                     .entry(msg_id.clone())
@@ -220,10 +239,10 @@ impl Store {
         by_message
     }
 
-    /// 特定の添付ファイルを取得する。
     pub fn attachment(&self, channel_id: &str, attachment_id: &str) -> Option<&Attachment> {
-        let map = self.attachments.get(channel_id)?;
-        map.values().find(|att| att.id == attachment_id)
+        self.channel_attachments(channel_id)
+            .into_iter()
+            .find(|att| att.id == attachment_id)
     }
 
     /// 一覧に出す名前。DM は `dm:<id>:<id>` という内部名なので、自分以外の参加者の名前にする。
@@ -308,12 +327,7 @@ impl Store {
         message_id: &str,
         me: &str,
     ) -> Vec<ReactionGroup> {
-        let reactions = self
-            .reactions
-            .get(channel_id)
-            .into_iter()
-            .flat_map(|rows| rows.values())
-            .filter(|reaction| reaction.message_id == message_id);
+        let reactions = self.message_reactions(channel_id, message_id);
         group_reactions(reactions, me)
     }
 
@@ -325,20 +339,38 @@ impl Store {
         me: &str,
     ) -> HashMap<String, Vec<ReactionGroup>> {
         let mut by_message: HashMap<&str, Vec<&Reaction>> = HashMap::new();
-        for reaction in self
+        for row in self
             .reactions
             .get(channel_id)
             .into_iter()
             .flat_map(|rows| rows.values())
         {
-            by_message
-                .entry(reaction.message_id.as_str())
-                .or_default()
-                .push(reaction);
+            by_message.entry(&row.message_id).or_default().push(row);
+        }
+        for message in self.visible_messages(channel_id) {
+            if let Some(rows) = &message.display_reactions {
+                by_message.insert(&message.id, rows.iter().collect());
+            }
         }
         by_message
             .into_iter()
-            .map(|(message_id, reactions)| (message_id.to_string(), group_reactions(reactions, me)))
+            .filter(|(_, rows)| !rows.is_empty())
+            .map(|(id, rows)| (id.to_string(), group_reactions(rows, me)))
+            .collect()
+    }
+
+    fn message_reactions(&self, channel_id: &str, message_id: &str) -> Vec<&Reaction> {
+        if let Some(rows) = self
+            .message(channel_id, message_id)
+            .and_then(|message| message.display_reactions.as_ref())
+        {
+            return rows.iter().collect();
+        }
+        self.reactions
+            .get(channel_id)
+            .into_iter()
+            .flat_map(|rows| rows.values())
+            .filter(|reaction| reaction.message_id == message_id)
             .collect()
     }
 }
@@ -454,6 +486,31 @@ mod tests {
             ]),
         );
         store
+    }
+
+    #[test]
+    fn joined_attachments_override_legacy_rows_and_empty_lists_remove_stale_files() {
+        let mut store = Store::default();
+        let attachment = json!({"id":"a", "message_id":"m", "uploader_id":"u", "channel_id":"c", "file_name":"pic.png", "file_size":100, "content_type":"image/png", "storage_key":"key", "created_at":"2026-11-01 03:00:00"});
+        store.apply(
+            &ShapeId::Attachments("c".into()),
+            batch(vec![upsert("a", attachment.clone())]),
+        );
+        let mut row = json!({"id":"m", "user_id":"u", "channel_id":"c", "content":"", "created_at":"2026-11-01 03:00:00", "display_data": {"attachments":[attachment]}});
+        store.apply(
+            &ShapeId::Messages("c".into()),
+            batch(vec![upsert("electric-message-key", row.clone())]),
+        );
+        assert_eq!(store.channel_attachments("c").len(), 1);
+        row["display_data"] = json!({"attachments":[]});
+        store.apply(
+            &ShapeId::Messages("c".into()),
+            batch(vec![upsert("electric-message-key", row)]),
+        );
+        assert!(store.channel_attachments("c").is_empty());
+        assert!(store.attachments_by_message("c").is_empty());
+        assert!(store.attachment("c", "a").is_none());
+        assert_eq!(store.invalid_rows, 0);
     }
 
     #[test]
@@ -592,6 +649,24 @@ mod tests {
         assert_eq!(by_msg.get("m1").unwrap().len(), 1);
         assert_eq!(by_msg.get("m1").unwrap()[0].file_name, "pic.png");
         assert!(!by_msg.contains_key("m2"));
+    }
+
+    #[test]
+    fn bundled_reactions_include_remote_actors_and_empty_updates_remove_them() {
+        let mut store = Store::default();
+        let mut row = json!({ "id":"m1", "user_id":"me", "channel_id":"c1", "created_at":"2026-11-01 00:00:00", "display_data": { "reactions":[
+            {"id":"local", "message_id":"m1", "user_id":"me", "emoji":"👍", "created_at":"2026-11-01 00:00:01"},
+            {"id":"remote", "message_id":"m1", "user_id":"https://remote/user", "emoji":"👍", "created_at":"2026-11-01 00:00:02"}
+        ] }});
+        let id = ShapeId::Messages("c1".into());
+        store.apply(&id, batch(vec![upsert("m1", row.clone())]));
+        assert_eq!(store.reaction_groups("c1", "m1", "me")[0].count, 2);
+        assert!(store.reaction_groups_by_message("c1", "me")["m1"][0].mine);
+        row["display_data"] = Value::String(json!({"reactions":[]}).to_string());
+        store.apply(&id, batch(vec![upsert("m1", row)]));
+        assert!(store.reaction_groups("c1", "m1", "me").is_empty());
+        assert!(store.reaction_groups_by_message("c1", "me").is_empty());
+        assert_eq!(store.invalid_rows, 0);
     }
 
     #[test]

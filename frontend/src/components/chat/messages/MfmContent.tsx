@@ -18,6 +18,7 @@ import { useShortcodes } from "../../../lib/emoji/shortcodes";
 import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
 import { MfmSearch } from "./MfmSearch";
 import { ChannelHashtag } from "./MfmChannels";
+import { AccountGlyph } from "./MfmAccounts";
 import { messageTextSegments } from "./messageFormat";
 import { functionPresentation, MFM_FUNCTIONS } from "./mfmFunctions";
 
@@ -48,7 +49,7 @@ function text(content: string): ReactNode {
         externalLink(segment.value, segment.value.replace(/^https?:\/\//i, ""))
       ) : segment.kind === "mention" ? (
         <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">
-          {segment.value}
+          <AccountGlyph name={segment.value.slice(1)} mention />
         </span>
       ) : (
         segment.value
@@ -171,6 +172,7 @@ function renderNode(
     case "unicodeEmoji":
       return node.props.emoji;
     case "emojiCode":
+      if (node.props.name.startsWith("@")) return <AccountGlyph name={node.props.name.slice(1)} />;
       return (
         options.renderEmoji?.(node.props.name) ?? (
           <EmojiCode name={node.props.name} emojiUrls={options.emojiUrls} emojis={options.emojis} />
@@ -385,7 +387,10 @@ export function MfmContent({ content, ...options }: MfmContentProps) {
           }
         : undefined,
   };
-  const blocks = useMemo(() => messageBlocks(parse(content, { nestLimit: 20 })), [content]);
+  const blocks = useMemo(
+    () => messageBlocks(accountEmojiNodes(parse(content, { nestLimit: 20 }))),
+    [content],
+  );
   return (
     <ShortcodeContext.Provider value={shortcodes}>
       {blocks.map((block, index) => {
@@ -403,4 +408,32 @@ export function MfmContent({ content, ...options }: MfmContentProps) {
       })}
     </ShortcodeContext.Provider>
   );
+}
+
+/** mfm-js parses :@name: as text + mention + text. Preserve protected subtrees. */
+function accountEmojiNodes(input: MfmNode[]): MfmNode[] {
+  const nodes = input.map((node) => {
+    if ("children" in node && !["plain", "link"].includes(node.type))
+      return { ...node, children: accountEmojiNodes(node.children ?? []) } as MfmNode;
+    return node;
+  });
+  const out: MfmNode[] = [];
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const previous = out.at(-1);
+    const next = nodes[i + 1];
+    if (
+      node.type === "mention" &&
+      !node.props.host &&
+      previous?.type === "text" &&
+      previous.props.text.endsWith(":") &&
+      next?.type === "text" &&
+      next.props.text.startsWith(":")
+    ) {
+      out[out.length - 1] = { type: "text", props: { text: previous.props.text.slice(0, -1) } };
+      out.push({ type: "emojiCode", props: { name: `@${node.props.username}` } });
+      nodes[i + 1] = { type: "text", props: { text: next.props.text.slice(1) } };
+    } else out.push(node);
+  }
+  return out;
 }

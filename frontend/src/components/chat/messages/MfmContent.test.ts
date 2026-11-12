@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MfmChannelsProvider } from "./MfmChannels";
+import { MfmAccountsProvider } from "./MfmAccounts";
 import { parse } from "mfm-js";
 import { MfmContent, type MfmContentProps } from "./MfmContent";
 
@@ -18,6 +19,26 @@ const render = (content: string, options: Omit<MfmContentProps, "content"> = {})
   );
 
 describe("MfmContent", () => {
+  it("resolves account icons and mention labels only from the AuthZ directory", () => {
+    const html = renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        children: createElement(MfmAccountsProvider, {
+          accounts: [{ username: "alice", display_name: "AuthZ Name", avatar_url: null }],
+          children: createElement(MfmContent, {
+            content:
+              ":@alice: @alice :@unknown: @unknown `:@alice: @alice` <plain>:@alice:</plain>",
+          }),
+        }),
+      }),
+    );
+    expect(html).toContain('aria-label=":@alice:"');
+    expect(html).toContain("AuthZ Name");
+    expect(html).toContain(":@unknown:");
+    expect(html).toContain("@unknown");
+    expect(html).toContain("<code");
+    expect(html).toContain(":@alice: @alice</code>");
+    expect(html.endsWith(":@alice:")).toBe(true);
+  });
   it("renders six heading levels with inline MFM and optional closing markers", () => {
     for (let level = 1; level <= 6; level++) {
       expect(render(`${"#".repeat(level)} Title`)).toBe(

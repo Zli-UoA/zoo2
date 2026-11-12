@@ -319,6 +319,7 @@ pub struct ReceivedRoomKey {
     pub(crate) sender_key: Curve25519PublicKey,
     pub(crate) sender_user_id: String,
     pub(crate) sender_device_id: String,
+    pub(crate) sender_signing_key: Ed25519PublicKey,
     pub(crate) sender_verified: bool,
     pub(crate) session: InboundGroupSession,
 }
@@ -474,6 +475,7 @@ impl OlmDecrypted {
             sender_key: self.sender_key,
             sender_user_id: sender.to_owned(),
             sender_device_id: sender_device.to_owned(),
+            sender_signing_key: device_keys.ed25519,
             sender_verified,
             session,
         })

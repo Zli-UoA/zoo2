@@ -4,12 +4,14 @@
 //! - `commands`: WebView から呼ぶコマンド。
 //! - `toast`: OS の通知の表示。
 //! - `window`: ウィンドウ、トレイ、単一インスタンス。
+//! - `update`: アプリの自動更新。
 
 mod commands;
 #[cfg(test)]
 mod commands_list;
 mod core;
 mod toast;
+mod update;
 mod window;
 
 use std::sync::Arc;
@@ -37,6 +39,7 @@ pub fn run() {
             window::show_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::zoo_session,
             commands::zoo_start_login,
@@ -45,17 +48,21 @@ pub fn run() {
             commands::zoo_set_focus,
             commands::zoo_open_channel,
             commands::zoo_resync,
+            commands::zoo_account_profiles,
             commands::zoo_send_message,
             commands::zoo_access_token,
             commands::zoo_notifications_observed,
         ])
         .setup(move |app| {
             let config = Config::load_for(APP_NAME);
+            // 設定を読めないときは確かめる (直した版を届けられるように)。
+            let check_updates = !matches!(&config, Ok(config) if !config.check_updates);
             let core = Arc::new(core::Core::new(app.handle().clone(), ui, config));
             app.manage(core.clone());
             window::add_remote_capability(app, &core)?;
             window::create_main(app, &core)?;
             window::create_tray(app)?;
+            update::spawn(app.handle(), check_updates);
             core.start();
             Ok(())
         })
@@ -79,6 +86,7 @@ mod tests {
             command::SET_FOCUS,
             command::OPEN_CHANNEL,
             command::RESYNC,
+            command::ACCOUNT_PROFILES,
             command::SEND_MESSAGE,
             command::ACCESS_TOKEN,
             command::NOTIFICATIONS_OBSERVED,

@@ -1301,6 +1301,9 @@ async fn reaction_emoji(
     input: &str,
     require_existing: bool,
 ) -> Result<String, AppError> {
+    if crate::validation::account_shortcode_username(input).is_some() {
+        return normalize_and_validate_emoji(input);
+    }
     if let Some(name) = input
         .trim()
         .strip_prefix(':')

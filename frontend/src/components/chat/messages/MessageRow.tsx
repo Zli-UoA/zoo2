@@ -20,7 +20,7 @@ import { LinkPreviews } from "./LinkPreviews.tsx";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
-import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
+import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
@@ -200,13 +200,21 @@ export function MessageRow({
 
   const [platform] = useState(() => detectComposerPlatform());
   const [menuOpen, setMenuOpen] = useState(false);
-  const [reactionUsersKey, setReactionUsersKey] = useState<string | null>(null);
+  const [reactionUsersDialog, setReactionUsersDialog] = useState<
+    { type: "reaction"; key: string } | { type: "all" } | null
+  >(null);
   const selectedReaction = reactions.find(
-    (reaction) => reactionKey(reaction.emoji) === reactionUsersKey,
+    (reaction) =>
+      reactionUsersDialog?.type === "reaction" &&
+      reactionKey(reaction.emoji) === reactionUsersDialog.key,
   );
   useEffect(() => {
-    if (reactionUsersKey !== null && !selectedReaction) setReactionUsersKey(null);
-  }, [reactionUsersKey, selectedReaction]);
+    if (reactionUsersDialog?.type === "reaction" && !selectedReaction) {
+      setReactionUsersDialog(null);
+    } else if (reactionUsersDialog?.type === "all" && reactions.length === 0) {
+      setReactionUsersDialog(null);
+    }
+  }, [reactionUsersDialog, selectedReaction, reactions.length]);
   function reactionUserLabels(reaction: ReactionGroup): string[] {
     const ids = reaction.userIds ?? [];
     const labels = ids.flatMap((id) => (reaction.userNames?.[id] ? [reaction.userNames[id]] : []));
@@ -456,12 +464,17 @@ export function MessageRow({
                       </TooltipProvider>
                       <button
                         type="button"
-                        className="inline-flex size-10 items-center justify-center rounded-full text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring md:sr-only md:focus-visible:not-sr-only md:focus-visible:size-10 md:[@media(hover:none)]:not-sr-only md:[@media(hover:none)]:size-10 md:[@media(any-pointer:coarse)]:not-sr-only md:[@media(any-pointer:coarse)]:size-10"
+                        className="hidden size-10 items-center justify-center rounded-full text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring md:inline-flex md:sr-only md:focus-visible:not-sr-only md:focus-visible:size-10 md:[@media(hover:none)]:not-sr-only md:[@media(hover:none)]:size-10 md:[@media(any-pointer:coarse)]:not-sr-only md:[@media(any-pointer:coarse)]:size-10"
                         aria-label={t("reactions.showUsers", {
                           emoji: kitchenLabel(reaction.emoji),
                         })}
                         title={t("reactions.showUsers", { emoji: kitchenLabel(reaction.emoji) })}
-                        onClick={() => setReactionUsersKey(reactionKey(reaction.emoji))}
+                        onClick={() =>
+                          setReactionUsersDialog({
+                            type: "reaction",
+                            key: reactionKey(reaction.emoji),
+                          })
+                        }
                       >
                         <UsersRoundIcon className="size-4" aria-hidden="true" />
                       </button>
@@ -477,6 +490,15 @@ export function MessageRow({
                   >
                     <SmilePlusIcon />
                   </Button>
+                  <button
+                    type="button"
+                    className="inline-flex size-10 items-center justify-center rounded-full text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring md:hidden"
+                    aria-label={t("reactions.showAllUsers")}
+                    title={t("reactions.showAllUsers")}
+                    onClick={() => setReactionUsersDialog({ type: "all" })}
+                  >
+                    <UsersRoundIcon className="size-4" aria-hidden="true" />
+                  </button>
                 </div>
               ) : null}
             </>
@@ -587,24 +609,67 @@ export function MessageRow({
         ) : null}
       </div>
       <Dialog
-        open={reactionUsersKey !== null && !!selectedReaction}
+        open={
+          reactionUsersDialog?.type === "all"
+            ? reactions.length > 0
+            : reactionUsersDialog?.type === "reaction" && !!selectedReaction
+        }
         onOpenChange={(open) => {
-          if (!open) setReactionUsersKey(null);
+          if (!open) setReactionUsersDialog(null);
         }}
       >
         <DialogContent>
           <DialogTitle>
-            {t("reactions.usersTitle", {
-              emoji: selectedReaction ? kitchenLabel(selectedReaction.emoji) : "",
-            })}
+            {reactionUsersDialog?.type === "all"
+              ? t("reactions.allUsersTitle")
+              : t("reactions.usersTitle", {
+                  emoji: selectedReaction ? kitchenLabel(selectedReaction.emoji) : "",
+                })}
           </DialogTitle>
-          <ul className="space-y-2" aria-live="polite">
-            {(selectedReaction ? reactionUserLabels(selectedReaction) : []).map((label, index) => (
-              <li key={index} className="[overflow-wrap:anywhere]">
-                {label}
-              </li>
-            ))}
-          </ul>
+          {reactionUsersDialog?.type === "all" ? (
+            <div className="max-h-[min(60vh,32rem)] space-y-4 overflow-y-auto" aria-live="polite">
+              {reactions.map((reaction) => (
+                <section key={reactionKey(reaction.emoji)}>
+                  <h3
+                    className="mb-2 flex items-center gap-2 text-sm font-semibold"
+                    aria-label={kitchenLabel(reaction.emoji)}
+                  >
+                    <span aria-hidden="true" className="min-w-0 [overflow-wrap:anywhere]">
+                      {reaction.emoji.startsWith(":") || reaction.emoji.startsWith("apub:") ? (
+                        kitchenLabel(reaction.emoji)
+                      ) : (
+                        <ReactionEmoji
+                          emoji={reaction.emoji}
+                          catalog={kitchenCatalog}
+                          emojis={message.display_data?.emojis}
+                        />
+                      )}
+                    </span>
+                    {kitchenParts(reaction.emoji) ? (
+                      <span aria-hidden="true">{kitchenLabel(reaction.emoji)}</span>
+                    ) : null}
+                  </h3>
+                  <ul className="space-y-2">
+                    {reactionUserLabels(reaction).map((label, index) => (
+                      <li key={index} className="[overflow-wrap:anywhere]">
+                        {label}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          ) : (
+            <ul className="space-y-2" aria-live="polite">
+              {(selectedReaction ? reactionUserLabels(selectedReaction) : []).map(
+                (label, index) => (
+                  <li key={index} className="[overflow-wrap:anywhere]">
+                    {label}
+                  </li>
+                ),
+              )}
+            </ul>
+          )}
         </DialogContent>
       </Dialog>
     </>

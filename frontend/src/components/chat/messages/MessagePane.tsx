@@ -1,3 +1,4 @@
+import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -100,11 +101,6 @@ export function MessagePane({
   const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
-  const attachmentsQuery = useMessageAttachments(channelId);
-  const attachmentsByMessage = useMemo(
-    () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
-    [attachmentsQuery.data],
-  );
   const uploadAttachment = useAttachmentUpload(channelId);
   const { currentUserId } = useCurrentUser();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
@@ -132,10 +128,64 @@ export function MessagePane({
   );
   const pendingReactions = useRef(new Set<string>());
 
+  const { threadRootId, openThread, closeThread } = useShell();
+  const threadQuery = useThreadFeed(channelId, threadRootId);
+  const threadReplies = threadQuery.data ?? [];
+  const threadTyping = useTyping(
+    channelId,
+    threadRootId,
+    !readOnly && isMember && !!currentUserId && !!threadRootId,
+  );
+  const threadRootQuery = useThreadRoot(channelId, threadRootId);
+  const threadRootRow = threadRootQuery.data?.[0] ?? null;
+  const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
+  const threadIsArchived = !!threadRoot?.thread_archive_at;
+
+  const attachmentsQuery = useMessageAttachments(
+    channelId,
+    [...feed, ...threadReplies, ...(threadRoot ? [threadRoot] : [])].some(
+      (row) => !row.display_data,
+    ),
+  );
+  const attachmentsByMessage = useMemo(
+    () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
+    [attachmentsQuery.data],
+  );
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [isJoining, setIsJoining] = useState(false);
+
+  const isArchivedMessage = useCallback(
+    (id: string) => {
+      const message = messagesCollection.get(id);
+      const rootId = message?.parent_id ?? id;
+      return (
+        !!messagesCollection.get(rootId)?.thread_archive_at ||
+        (threadIsArchived &&
+          (id === threadRootId ||
+            message?.parent_id === threadRootId ||
+            threadReplies.some((reply) => reply.id === id)))
+      );
+    },
+    [messagesCollection, threadIsArchived, threadRootId, threadReplies],
+  );
+
+  useEffect(() => {
+    if (editingId && isArchivedMessage(editingId)) {
+      setEditingId(null);
+      setEditingText("");
+    }
+    if (pendingDeleteId && isArchivedMessage(pendingDeleteId)) setPendingDeleteId(null);
+    if (reactionMessageId && isArchivedMessage(reactionMessageId)) setReactionMessageId(null);
+  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage]);
+
   const handleReaction = useCallback(
     async (messageId: string, emoji: string) => {
       if (
         !currentUserId ||
+        isArchivedMessage(messageId) ||
         !messagesCollection.get(messageId) ||
         messagesCollection.get(messageId)?.deleted_at
       ) {
@@ -169,25 +219,8 @@ export function MessagePane({
         pendingReactions.current.delete(pendingKey);
       }
     },
-    [currentUserId, messagesCollection, reactionsCollection, run],
+    [currentUserId, messagesCollection, reactionsCollection, run, isArchivedMessage],
   );
-
-  const { threadRootId, openThread, closeThread } = useShell();
-  const threadQuery = useThreadFeed(channelId, threadRootId);
-  const threadReplies = threadQuery.data ?? [];
-  const threadTyping = useTyping(
-    channelId,
-    threadRootId,
-    !readOnly && isMember && !!currentUserId && !!threadRootId,
-  );
-  const threadRootQuery = useThreadRoot(channelId, threadRootId);
-  const threadRootRow = threadRootQuery.data?.[0] ?? null;
-  const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
-
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingText, setEditingText] = useState("");
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const [isJoining, setIsJoining] = useState(false);
 
   // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。
   const targetQuery = useMessageById(channelId, targetMessageId ?? null);
@@ -305,6 +338,7 @@ export function MessagePane({
             body: { channel_id: channelId, text: command[2] ?? "" },
           });
         }
+        refreshAppSurfaces();
         return true;
       } catch (error) {
         if (!appId && error instanceof ApiError && error.status === 404) return null;
@@ -430,7 +464,7 @@ export function MessagePane({
   const handleSaveEdit = useCallback(async () => {
     const id = editingId;
     const content = editingText.trim();
-    if (!id || !content) {
+    if (!id || !content || isArchivedMessage(id)) {
       return;
     }
     setEditingId(null);
@@ -440,12 +474,12 @@ export function MessagePane({
         message.content = content;
       }),
     );
-  }, [editingId, editingText, run, messagesCollection]);
+  }, [editingId, editingText, run, messagesCollection, isArchivedMessage]);
 
   const handleConfirmDelete = useCallback(async () => {
     const id = pendingDeleteId;
     setPendingDeleteId(null);
-    if (!id) {
+    if (!id || isArchivedMessage(id)) {
       return;
     }
     // 論理削除は `deleted_at` の update。Electric が流す operation と揃えて
@@ -455,20 +489,19 @@ export function MessagePane({
         message.deleted_at = nowIso();
       }),
     );
-  }, [pendingDeleteId, run, messagesCollection]);
+  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage]);
 
   return (
     <section className="relative flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
         {reactionsQuery.isError ||
-        reactionsQuery.federatedError ||
         messagesQuery.isError ||
         messagesQuery.persistedStatus === "error" ? (
           <div
             role="status"
             className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
           >
-            {reactionsQuery.isError || reactionsQuery.federatedError ? (
+            {reactionsQuery.isError ? (
               <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
             ) : null}
             {messagesQuery.isError ? (
@@ -556,6 +589,7 @@ export function MessagePane({
           mentionMemberIds={mentionMemberIds}
           key={threadRoot.id}
           readOnly={readOnly}
+          isArchived={threadIsArchived}
           isMember={!readOnly && isMember}
           isOffline={!isOnline}
           typingUsers={threadTyping.users}
@@ -565,14 +599,18 @@ export function MessagePane({
           onOpenThread={openThread}
           isLoading={threadQuery.isLoading}
           isError={threadQuery.isError}
-          currentUserId={readOnly ? null : currentUserId}
-          canModerate={canModerate}
+          currentUserId={readOnly || threadIsArchived ? null : currentUserId}
+          canModerate={canModerate && !threadIsArchived}
           reactions={reactionGroups}
           attachments={attachmentsByMessage}
           onUploadAttachment={uploadAttachment}
           kitchenCatalog={catalog}
           canReact={
-            !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
+            !readOnly &&
+            !threadIsArchived &&
+            !!currentUserId &&
+            !reactionsQuery.isLoading &&
+            !reactionsQuery.isError
           }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}

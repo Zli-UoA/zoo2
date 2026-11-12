@@ -44,6 +44,8 @@ CREATE TABLE messages (
   updated_at timestamp(3),
   deleted_at timestamp(3),
   parent_id text,
+  thread_archive_at timestamp(3),
+  thread_activity_at timestamp(3),
   CONSTRAINT "Message_pkey" PRIMARY KEY (id),
   CONSTRAINT messages_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
@@ -120,6 +122,12 @@ CREATE TABLE message_reactions (
 
 CREATE INDEX idx_messages_channel_id ON messages (channel_id);
 CREATE INDEX idx_messages_parent_id ON messages (parent_id);
+CREATE INDEX idx_messages_thread_channel_active ON messages (channel_id, thread_activity_at DESC, id DESC)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NULL AND thread_activity_at IS NOT NULL;
+CREATE INDEX idx_messages_thread_channel_archived ON messages (channel_id, thread_activity_at DESC, id DESC)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NOT NULL AND thread_activity_at IS NOT NULL;
+CREATE INDEX idx_messages_thread_idle ON messages (thread_activity_at, id)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NULL AND thread_activity_at IS NOT NULL;
 CREATE INDEX idx_message_reactions_message_id ON message_reactions (message_id);
 CREATE INDEX idx_message_reactions_user_id ON message_reactions (user_id);
 
@@ -870,7 +878,7 @@ BEGIN
  ELSIF TG_OP='DELETE' OR row_data->>'deleted_at' IS NOT NULL AND old_data->>'deleted_at' IS NULL THEN
   PERFORM app_emit('message.deleted',data,row_data->>'user_id',row_data->>'channel_id');
   IF old_data->>'metadata' IS NOT NULL THEN PERFORM app_emit('message.metadata_deleted',jsonb_build_object('id',OLD.id,'previous_metadata',OLD.metadata::jsonb),OLD.user_id,OLD.channel_id);END IF;
- ELSIF row_data IS DISTINCT FROM old_data THEN
+ ELSIF (row_data-'thread_archive_at'-'thread_activity_at') IS DISTINCT FROM (old_data-'thread_archive_at'-'thread_activity_at') THEN
   PERFORM app_emit('message.updated',data,NEW.user_id,NEW.channel_id);
   IF NEW.metadata IS DISTINCT FROM OLD.metadata THEN
    PERFORM app_emit(CASE WHEN NEW.metadata IS NULL THEN 'message.metadata_deleted' WHEN OLD.metadata IS NULL THEN 'message.metadata_posted' ELSE 'message.metadata_updated' END,
@@ -1771,6 +1779,38 @@ CREATE TABLE slack_channels (
 
 CREATE INDEX idx_slack_channels_channel_id ON slack_channels (channel_id);
 
+-- Slack の差分同期 (#292) のキューと再開位置。サーバー専用で、Electric の Shape には載せない。
+-- Slack チャンネル (slack_channels) ごとに 1 行。同期の進み具合は slack_channels.last_ts (チャンネル単位で共有するカーソル) で、
+-- ここには 1 回の同期の途中経過 (ページのカーソル、残りのスレッド) と、次に実行する日時・リースを持つ。
+-- 新しいテーブルの追加だけなので、適用前のバックエンドが動いたままでも壊れない。
+CREATE TABLE slack_channel_syncs (
+  team_id text NOT NULL,
+  slack_channel_id text NOT NULL,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  lease_until timestamptz,
+  lease_token text,
+  attempts integer NOT NULL DEFAULT 0,
+  running boolean NOT NULL DEFAULT false,
+  phase text NOT NULL DEFAULT 'history',
+  run_oldest text,
+  run_max_ts text,
+  page_cursor text,
+  pending_threads text NOT NULL DEFAULT '[]',
+  known_threads text NOT NULL DEFAULT '[]',
+  token_user_id text,
+  last_synced_at timestamptz,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (team_id, slack_channel_id),
+  CONSTRAINT slack_channel_syncs_phase_check CHECK (phase IN ('history', 'threads')),
+  CONSTRAINT slack_channel_syncs_channel_fkey
+    FOREIGN KEY (team_id, slack_channel_id) REFERENCES slack_channels (team_id, slack_channel_id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE INDEX idx_slack_channel_syncs_due ON slack_channel_syncs (available_at);
+
 -- エクスポートに実体が含まれない添付ファイル。トークンで取得して attachments に移す。
 -- 同じファイルが複数のメッセージに共有されることがあるため、メッセージごとに 1 行持つ。
 CREATE TABLE slack_files (
@@ -2471,6 +2511,24 @@ CREATE TRIGGER users_apub_avatar_update AFTER UPDATE OF avatar_url ON users
 
 ALTER TABLE attachments ADD COLUMN width integer, ADD COLUMN height integer, ADD COLUMN blurhash text;
 
+-- 投稿経路によらず、返信と同じトランザクションで活動時刻と再開状態を更新する。
+CREATE FUNCTION update_thread_activity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.parent_id IS NULL OR NEW.deleted_at IS NOT NULL THEN RETURN NULL; END IF;
+  IF TG_OP='UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN RETURN NULL; END IF;
+  UPDATE messages parent SET
+    thread_activity_at=GREATEST(parent.thread_activity_at,parent.created_at,NEW.created_at),
+    -- INSERT 前にアーカイブされた通常の返信も再開し、過去の投稿の取り込みと区別する。
+    thread_archive_at=CASE WHEN NEW.created_at >= parent.thread_archive_at
+      OR NEW.created_at >= date_trunc('milliseconds',transaction_timestamp() AT TIME ZONE 'UTC')
+      THEN NULL ELSE parent.thread_archive_at END
+    WHERE parent.id=NEW.parent_id AND parent.channel_id=NEW.channel_id AND parent.deleted_at IS NULL;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER messages_thread_activity_insert AFTER INSERT ON messages
+  FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
+CREATE TRIGGER messages_thread_activity_parent_update AFTER UPDATE OF parent_id ON messages
+  FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
 -- E2EE: 端末と鍵（#354。仕様は docs/e2ee.md の「DB」）。
 -- 暗号化チャンネル。作成時の指定と変更の拒否は #357 で足す。既存の行は false なので後方互換。
 ALTER TABLE channels ADD COLUMN encrypted boolean NOT NULL DEFAULT false;
@@ -2638,3 +2696,102 @@ CREATE TABLE e2ee_to_device_txns (
   PRIMARY KEY (sender_user_id, sender_device_id, txn_id, recipient_user_id, recipient_device_id)
 );
 CREATE INDEX e2ee_to_device_txns_created ON e2ee_to_device_txns (created_at);
+
+-- E2EE: クロス署名、Secret Storage、鍵バックアップ（#356。仕様は docs/e2ee.md の「DB」）。
+-- クロス署名鍵と署名は Shape で配る。
+ALTER TABLE e2ee_cross_signing_keys REPLICA IDENTITY FULL;
+ALTER TABLE e2ee_key_signatures REPLICA IDENTITY FULL;
+
+-- クロス署名鍵の変更の記録。old_public_key は登録し直しの拒否（E2EE_KEY_REUSED）に使う。
+CREATE TABLE e2ee_cross_signing_key_changes (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  usage text NOT NULL CHECK (usage IN ('master', 'self_signing', 'user_signing')),
+  old_public_key text,
+  new_public_key text NOT NULL,
+  changed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX e2ee_cs_key_changes_old ON e2ee_cross_signing_key_changes (user_id, old_public_key)
+  WHERE old_public_key IS NOT NULL;
+
+CREATE TABLE e2ee_secret_storage_keys (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  key_id text NOT NULL,
+  algorithm text NOT NULL CHECK (algorithm = 'm.secret_storage.v1.aes-hmac-sha2'),
+  iv text NOT NULL,
+  mac text NOT NULL,
+  is_default boolean NOT NULL DEFAULT false,
+  -- 既定の鍵の行で使う。鍵を作り直すときは前の値を引き継いで 1 増やす。
+  secrets_revision bigint NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, key_id)
+);
+CREATE UNIQUE INDEX e2ee_secret_storage_keys_default
+  ON e2ee_secret_storage_keys (user_id) WHERE is_default;
+
+CREATE TABLE e2ee_secrets (
+  user_id text NOT NULL,
+  name text NOT NULL CHECK (name IN ('m.cross_signing.master', 'm.cross_signing.self_signing',
+                                     'm.cross_signing.user_signing', 'm.megolm_backup.v1',
+                                     'zoo.megolm_backup.previous')),
+  key_id text NOT NULL,
+  iv text NOT NULL,
+  ciphertext text NOT NULL,
+  mac text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, name),
+  FOREIGN KEY (user_id, key_id) REFERENCES e2ee_secret_storage_keys ON DELETE CASCADE
+);
+CREATE INDEX e2ee_secrets_key ON e2ee_secrets (user_id, key_id);
+
+CREATE TABLE e2ee_secret_storage_key_slots (
+  -- slot_id（クライアントが作る UUID。AAD に入る）
+  id text PRIMARY KEY,
+  user_id text NOT NULL,
+  key_id text NOT NULL,
+  kind text NOT NULL CHECK (kind IN ('passkey', 'recovery')),
+  credential_id text,
+  prf_salt text,
+  nonce text NOT NULL,
+  ciphertext text NOT NULL,
+  label text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz,
+  FOREIGN KEY (user_id, key_id) REFERENCES e2ee_secret_storage_keys ON DELETE CASCADE,
+  CHECK ((kind = 'passkey' AND credential_id IS NOT NULL AND prf_salt IS NOT NULL)
+      OR (kind = 'recovery' AND credential_id IS NULL AND prf_salt IS NULL))
+);
+CREATE UNIQUE INDEX e2ee_slots_credential ON e2ee_secret_storage_key_slots (user_id, key_id, credential_id)
+  WHERE kind = 'passkey';
+CREATE UNIQUE INDEX e2ee_slots_recovery ON e2ee_secret_storage_key_slots (user_id, key_id)
+  WHERE kind = 'recovery';
+
+CREATE TABLE e2ee_key_backup_versions (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  version bigint NOT NULL,
+  algorithm text NOT NULL CHECK (algorithm = 'zoo.megolm_backup.v1.curve25519-aes-sha2'),
+  auth_data jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  -- 消した版も行を残し、番号と公開鍵の再利用の判定に使う。
+  deleted_at timestamptz,
+  PRIMARY KEY (user_id, version)
+);
+-- 過去の版と同じ公開鍵の拒否（E2EE_KEY_REUSED）に使う。
+CREATE INDEX e2ee_key_backup_versions_public_key
+  ON e2ee_key_backup_versions (user_id, (auth_data ->> 'public_key'));
+
+CREATE TABLE e2ee_key_backup_sessions (
+  user_id text NOT NULL,
+  version bigint NOT NULL,
+  -- チャンネルを消してもバックアップは残すので、外部キーを付けない。
+  channel_id text NOT NULL,
+  sender_key text NOT NULL,
+  session_id text NOT NULL,
+  first_message_index integer NOT NULL,
+  forwarded_count integer NOT NULL,
+  is_verified boolean NOT NULL,
+  session_data jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, version, channel_id, sender_key, session_id),
+  FOREIGN KEY (user_id, version) REFERENCES e2ee_key_backup_versions ON DELETE CASCADE
+);

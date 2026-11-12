@@ -1,5 +1,5 @@
 //! backend の REST API。読み取りは Electric のシェイプで行うため、ここは書き込みと
-//! シェイプにない情報 (自分、既読、入力中) だけを扱う。
+//! シェイプにない情報 (自分、既読、入力中、スレッド一覧) だけを扱う。
 
 use anyhow::Result;
 use reqwest::Method;
@@ -13,6 +13,7 @@ pub struct ApiClient {
     http: reqwest::Client,
     base_url: String,
     credentials: Credentials,
+    typing_write: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 pub use zoo2_client_types::api::Me;
@@ -22,6 +23,23 @@ pub use zoo2_client_types::api::Me;
 pub struct ReadState {
     pub channel_id: String,
     pub has_unread: bool,
+}
+
+/// 閲覧権限で絞り込まれた `GET /api/threads` の1件。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ThreadSummary {
+    pub id: String,
+    pub channel_id: String,
+    pub content: String,
+    pub thread_archive_at: Option<String>,
+    pub reply_count: u64,
+}
+
+/// スレッド一覧の1ページ。次ページは `next_cursor` をそのまま渡す。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThreadPage {
+    pub items: Vec<ThreadSummary>,
+    pub next_cursor: Option<String>,
 }
 
 /// `GET /api/channels/{id}/typing`
@@ -89,6 +107,7 @@ impl ApiClient {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             credentials,
+            typing_write: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -98,10 +117,14 @@ impl ApiClient {
         path: &str,
         body: Option<Value>,
     ) -> Result<reqwest::Response> {
+        let reading = method == Method::GET;
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base_url))
             .header(reqwest::header::ACCEPT, "application/json");
+        if reading {
+            request = request.timeout(std::time::Duration::from_secs(10));
+        }
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -122,6 +145,16 @@ impl ApiClient {
     ) -> Result<Option<String>> {
         let envelope: Envelope = self.send(method, path, body).await?.json().await?;
         Ok(envelope.txid)
+    }
+
+    pub async fn account_profiles(&self) -> Result<zoo2_client_types::accounts::AccountProfiles> {
+        let value: Value = self.get("/api/emoji-accounts").await?;
+        let profiles: Vec<zoo2_client_types::accounts::AccountProfile> =
+            serde_json::from_value(value["accounts"].clone())?;
+        Ok(profiles
+            .into_iter()
+            .map(|p| (p.username.clone(), p))
+            .collect())
     }
 
     pub async fn emoji_catalog(
@@ -164,6 +197,31 @@ impl ApiClient {
 
     pub async fn token_persistence_report(&self) -> TokenPersistenceReport {
         self.credentials.persistence_report().await
+    }
+
+    pub async fn threads(&self, archived: bool, before: Option<&str>) -> Result<ThreadPage> {
+        self.thread_page(archived, before, None).await
+    }
+
+    pub async fn thread_page(
+        &self,
+        archived: bool,
+        before: Option<&str>,
+        through: Option<&str>,
+    ) -> Result<ThreadPage> {
+        let mut path = format!("/api/threads?archived={archived}");
+        if let Some(cursor) = before {
+            path.push_str(&format!("&before={}", segment(cursor)));
+        }
+        if let Some(cursor) = through {
+            path.push_str(&format!("&through={}", segment(cursor)));
+        }
+        self.get(&path).await
+    }
+
+    pub async fn unarchive_thread(&self, id: &str) -> Result<Option<String>> {
+        let path = format!("/api/threads/{}/unarchive", segment(id));
+        self.write(Method::POST, &path, None).await
     }
 
     /// `GET /api/users/me/profile` のうち、クライアントが使う部分。
@@ -345,9 +403,23 @@ impl ApiClient {
         session_id: &str,
         active: bool,
     ) -> Result<()> {
+        // Repeated renewals may be skipped while a previous write is pending. Stops must
+        // wait for it, so a slow start cannot arrive after the lease was stopped.
+        let _guard = if active {
+            match self.typing_write.try_lock() {
+                Ok(guard) => guard,
+                Err(_) => return Ok(()),
+            }
+        } else {
+            self.typing_write.lock().await
+        };
         let path = format!("/api/channels/{}/typing", segment(channel_id));
         let body = json!({ "parent_id": parent_id, "session_id": session_id, "active": active });
-        self.send(Method::POST, &path, Some(body)).await?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.send(Method::POST, &path, Some(body)),
+        )
+        .await??;
         Ok(())
     }
 
@@ -386,6 +458,32 @@ mod tests {
             &format!("{}/", server.uri()),
             Credentials::Dev("u1".into()),
         )
+    }
+
+    #[tokio::test]
+    async fn slow_typing_renewals_do_not_overlap_and_stop_follows_the_start() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channels/c1/typing"))
+            .respond_with(
+                ResponseTemplate::new(204).set_delay(std::time::Duration::from_millis(30)),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        let first_api = api.clone();
+        let first =
+            tokio::spawn(async move { first_api.set_typing("c1", None, "session", true).await });
+        while server.received_requests().await.unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        api.set_typing("c1", None, "session", true).await.unwrap();
+        api.set_typing("c1", None, "session", false).await.unwrap();
+        first.await.unwrap().unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[0].body_json::<Value>().unwrap()["active"], true);
+        assert_eq!(requests[1].body_json::<Value>().unwrap()["active"], false);
     }
 
     #[tokio::test]
@@ -448,6 +546,53 @@ mod tests {
 
         let txid = client(&server).remove_reaction("m1", "👍").await.unwrap();
         assert_eq!(txid, None);
+    }
+
+    #[tokio::test]
+    async fn lists_threads_and_reopens_with_the_authenticated_api() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/api/threads")).and(wiremock::matchers::query_param("archived", "false"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items":[
+                {"id":"reply1","channel_id":"c1","content":"Nested thread","reply_count":2,"thread_archive_at":null}
+            ],"next_cursor":null}))).expect(1).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/threads/reply1/unarchive"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"data":{"id":"reply1","thread_archive_at":null},"txid":"43"}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/threads"))
+            .and(wiremock::matchers::query_param("archived", "true"))
+            .and(wiremock::matchers::query_param("before", "cursor /"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"items":[],"next_cursor":null})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        assert!(
+            api.threads(true, Some("cursor /"))
+                .await
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        let threads = api.threads(false, None).await.unwrap();
+        assert_eq!(threads.items[0].reply_count, 2);
+        assert!(threads.items[0].thread_archive_at.is_none());
+        assert_eq!(
+            api.unarchive_thread(&threads.items[0].id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("43")
+        );
     }
 
     #[tokio::test]

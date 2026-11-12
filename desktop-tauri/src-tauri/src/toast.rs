@@ -7,7 +7,20 @@
 use tauri::AppHandle;
 use zoo2_client_types::ipc::OpenTarget;
 
+/// 投稿の通知。クリックしたら、そのチャンネルを開く。
 pub fn show(app: &AppHandle, title: &str, body: &str, target: OpenTarget) {
+    show_with(app, title, body, move |app| {
+        crate::window::open_target(app, target);
+    });
+}
+
+/// 通知を出し、クリックされたら `on_click` を呼ぶ (Linux だけ)。
+pub fn show_with(
+    app: &AppHandle,
+    title: &str,
+    body: &str,
+    on_click: impl FnOnce(&AppHandle) + Send + 'static,
+) {
     let mut notification = notify_rust::Notification::new();
     notification.appname("zoo2").summary(title).body(body);
 
@@ -28,9 +41,12 @@ pub fn show(app: &AppHandle, title: &str, body: &str, target: OpenTarget) {
             let Ok(handle) = notification.show() else {
                 return;
             };
+            let mut on_click = Some(on_click);
             handle.wait_for_action(|action| {
-                if action == "default" {
-                    crate::window::open_target(&app, target);
+                if action == "default"
+                    && let Some(on_click) = on_click.take()
+                {
+                    on_click(&app);
                 }
             });
         });
@@ -38,7 +54,7 @@ pub fn show(app: &AppHandle, title: &str, body: &str, target: OpenTarget) {
 
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     {
-        let _ = (app, target);
+        let _ = (app, on_click);
         let _ = notification.show();
     }
 }

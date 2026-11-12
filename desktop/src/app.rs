@@ -21,6 +21,7 @@ use zoo2_client_core::{
         rows::{Attachment, Channel, FromRow, Message},
     },
     http::{Credentials, HttpError},
+    poll::PollGate,
     store::{ReactionGroup, Store},
     update,
 };
@@ -305,6 +306,7 @@ pub struct ChannelViewCache {
 pub enum AppEvent {
     Notice(String),
     Unauthorized,
+    AccountProfiles(zoo2_client_core::store::AccountProfiles),
     EmojiCatalog {
         shortcodes: HashMap<String, String>,
         custom: HashSet<String>,
@@ -334,6 +336,8 @@ pub enum AppEvent {
         users: Vec<TypingUser>,
     },
     TypingPollFinished,
+    ReadStatesPollFinished,
+    EmojiPollFinished,
     UpdateAvailable(String),
     AttachmentUploadFinished {
         local_id: String,
@@ -488,6 +492,9 @@ pub struct AppState {
     pub typing_sent: Option<(String, Option<String>, Instant)>,
     pub last_key_typed: Option<Instant>,
     pub typing_poll_in_flight: bool,
+    typing_poll: PollGate,
+    read_poll: PollGate,
+    emoji_poll: PollGate,
 
     pub notice: Option<(String, Instant)>,
     pub sync_errors: HashMap<ShapeId, String>,
@@ -650,6 +657,9 @@ impl AppState {
             typing_sent: None,
             last_key_typed: None,
             typing_poll_in_flight: false,
+            typing_poll: PollGate::new(Duration::from_millis(1500), Duration::from_secs(5)),
+            read_poll: PollGate::new(READ_STATE_POLL, READ_STATE_POLL),
+            emoji_poll: PollGate::new(Duration::from_secs(60), Duration::from_secs(60)),
             notice: None,
             sync_errors: HashMap::new(),
             update_available: None,
@@ -1014,6 +1024,9 @@ impl AppState {
             handles.push(handle);
         }
         self.typing_poll_in_flight = false;
+        self.typing_poll = PollGate::new(Duration::from_millis(1500), Duration::from_secs(5));
+        self.read_poll = PollGate::new(READ_STATE_POLL, READ_STATE_POLL);
+        self.emoji_poll = PollGate::new(Duration::from_secs(60), Duration::from_secs(60));
         self.read_mark_in_flight.clear();
         handles
     }
@@ -1194,6 +1207,9 @@ impl AppState {
         self.typing_sent = None;
         self.last_key_typed = None;
         self.typing_poll_in_flight = false;
+        self.typing_poll = PollGate::new(Duration::from_millis(1500), Duration::from_secs(5));
+        self.read_poll = PollGate::new(READ_STATE_POLL, READ_STATE_POLL);
+        self.emoji_poll = PollGate::new(Duration::from_secs(60), Duration::from_secs(60));
         self.notice = None;
         self.sync_errors.clear();
         self.pending_attachments.clear();
@@ -1514,54 +1530,12 @@ impl AppState {
         self.subscribe(ShapeId::ChannelUsers);
         if let Some(ch) = self.current_channel.clone() {
             self.subscribe(ShapeId::Messages(ch.clone()));
-            self.subscribe(ShapeId::Reactions(ch.clone()));
-            self.subscribe(ShapeId::Attachments(ch));
         }
         self.poll_read_states();
     }
 
     fn start_periodic_tasks(&mut self) {
         let session_gen = self.session_gen;
-        if let Some(api) = self.api.clone() {
-            let tx = self.event_tx.clone();
-            self.spawn_session_task(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(60));
-                loop {
-                    interval.tick().await;
-                    if let Ok((shortcodes, custom)) = api.emoji_catalog().await
-                        && tx
-                            .send(DesktopEvent::App {
-                                session_gen,
-                                event: AppEvent::EmojiCatalog { shortcodes, custom },
-                            })
-                            .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-        // 既読状態の定期取得
-        if let Some(api) = self.api.clone() {
-            let tx = self.event_tx.clone();
-            self.spawn_session_task(async move {
-                let mut interval = tokio::time::interval(READ_STATE_POLL);
-                loop {
-                    interval.tick().await;
-                    if let Ok(states) = api.read_states().await
-                        && tx
-                            .send(DesktopEvent::App {
-                                session_gen,
-                                event: AppEvent::ReadStates(states),
-                            })
-                            .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-
         // 1秒ごとの Tick (通知消去・入力中解除・既読送信)
         {
             let tx = self.event_tx.clone();
@@ -1887,6 +1861,8 @@ impl AppState {
                     ShapeId::Messages(ch) => {
                         if self.current_channel.as_deref() == Some(ch.as_str()) {
                             self.channel_cache.messages_dirty = true;
+                            self.channel_cache.reactions_dirty = true;
+                            self.channel_cache.attachments_dirty = true;
                         }
                         if self.store.is_synced(&ShapeId::Messages(ch.clone())) {
                             self.reconcile_channel_targets(ch);
@@ -2056,6 +2032,7 @@ impl AppState {
         if self.current_channel.as_deref() == Some(channel_id) {
             self.stop_typing();
             self.typing.clear();
+            self.typing_poll.wake();
             self.current_channel = None;
             self.channel_cache = ChannelViewCache::default();
             self.selected_message = None;
@@ -2088,6 +2065,7 @@ impl AppState {
             self.pending_composer_text = Some((String::new(), None));
             self.stop_typing();
             self.typing.clear();
+            self.typing_poll.wake();
             self.active_reaction_message = None;
             self.confirm_delete_message = None;
             self.target = Target::Channel;
@@ -2261,6 +2239,10 @@ impl AppState {
 
     pub fn on_app_event(&mut self, event: AppEvent) -> bool {
         match event {
+            AppEvent::AccountProfiles(profiles) => {
+                self.store.account_profiles = profiles;
+                true
+            }
             AppEvent::EmojiCatalog { shortcodes, custom } => {
                 zoo2_client_core::mfm::set_emoji_catalog(shortcodes, custom);
                 true
@@ -2404,8 +2386,21 @@ impl AppState {
                     false
                 }
             }
+            AppEvent::ReadStatesPollFinished => {
+                self.read_poll.finish(Instant::now(), true);
+                false
+            }
+            AppEvent::EmojiPollFinished => {
+                self.emoji_poll.finish(Instant::now(), true);
+                false
+            }
             AppEvent::TypingPollFinished => {
                 self.typing_poll_in_flight = false;
+                self.typing_poll.finish(
+                    Instant::now(),
+                    self.typing.values().any(|users| !users.is_empty())
+                        || self.typing_sent.is_some(),
+                );
                 false
             }
             AppEvent::UpdateAvailable(version) => {
@@ -2528,16 +2523,20 @@ impl AppState {
                 true
             }
             AppEvent::RefreshAttachmentUrls => {
-                let visible_attachment_ids: std::collections::HashSet<String> =
-                    if let Some(ref ch) = self.current_channel {
-                        self.store
-                            .channel_attachments(ch)
-                            .into_iter()
-                            .map(|a| a.id.clone())
-                            .collect()
-                    } else {
-                        std::collections::HashSet::new()
-                    };
+                if !self.window_active {
+                    return false;
+                }
+                let cache = &self.channel_cache;
+                let (start, end) = self.visible_timeline_bounds(&cache.root_messages);
+                let visible_messages = cache.root_messages[start..end]
+                    .iter()
+                    .chain(cache.thread_root_message.iter())
+                    .chain(cache.thread_replies.iter());
+                let visible_attachment_ids: std::collections::HashSet<String> = visible_messages
+                    .filter_map(|message| cache.attachments_by_message.get(&message.id))
+                    .flatten()
+                    .map(|attachment| attachment.id.clone())
+                    .collect();
                 let to_refresh: Vec<String> = self
                     .attachment_download_urls
                     .iter()
@@ -2577,6 +2576,8 @@ impl AppState {
             changed = true;
         }
         self.poll_typing();
+        self.poll_read_states();
+        self.poll_emojis();
         changed
     }
 
@@ -2678,23 +2679,69 @@ impl AppState {
     }
 
     pub fn poll_read_states(&mut self) {
+        if !self.window_active {
+            return;
+        }
         let Some(api) = self.api.clone() else {
             return;
         };
         let tx = self.event_tx.clone();
         let session_gen = self.session_gen;
-        self.spawn_session_task(async move {
+        if !self.read_poll.start(Instant::now()) {
+            return;
+        }
+        if !self.spawn_session_task(async move {
             if let Ok(states) = api.read_states().await {
                 let _ = tx.send(DesktopEvent::App {
                     session_gen,
                     event: AppEvent::ReadStates(states),
                 });
             }
-        });
+            let _ = tx.send(DesktopEvent::App {
+                session_gen,
+                event: AppEvent::ReadStatesPollFinished,
+            });
+        }) {
+            self.read_poll.finish(Instant::now(), true);
+        }
+    }
+
+    fn poll_emojis(&mut self) {
+        if !self.window_active {
+            return;
+        }
+        let Some(api) = self.api.clone() else {
+            return;
+        };
+        if !self.emoji_poll.start(Instant::now()) {
+            return;
+        }
+        let tx = self.event_tx.clone();
+        let session_gen = self.session_gen;
+        if !self.spawn_session_task(async move {
+            if let Ok(profiles) = api.account_profiles().await {
+                let _ = tx.send(DesktopEvent::App {
+                    session_gen,
+                    event: AppEvent::AccountProfiles(profiles),
+                });
+            }
+            if let Ok((shortcodes, custom)) = api.emoji_catalog().await {
+                let _ = tx.send(DesktopEvent::App {
+                    session_gen,
+                    event: AppEvent::EmojiCatalog { shortcodes, custom },
+                });
+            }
+            let _ = tx.send(DesktopEvent::App {
+                session_gen,
+                event: AppEvent::EmojiPollFinished,
+            });
+        }) {
+            self.emoji_poll.finish(Instant::now(), true);
+        }
     }
 
     pub fn poll_typing(&mut self) {
-        if self.typing_poll_in_flight {
+        if !self.window_active || self.typing_poll_in_flight {
             return;
         }
         let Some(api) = self.api.clone() else {
@@ -2715,6 +2762,7 @@ impl AppState {
             .is_none_or(|c| c.archive_at.is_some())
         {
             self.typing.clear();
+            self.typing_poll.wake();
             return;
         }
         let mut scopes = vec![None];
@@ -2723,6 +2771,9 @@ impl AppState {
         }
         let tx = self.event_tx.clone();
         let session_gen = self.session_gen;
+        if !self.typing_poll.start(Instant::now()) {
+            return;
+        }
         if self.spawn_session_task(async move {
             for parent_id in scopes {
                 if let Ok(users) = api.typing(&channel_id, parent_id.as_deref()).await {
@@ -2742,6 +2793,8 @@ impl AppState {
             });
         }) {
             self.typing_poll_in_flight = true;
+        } else {
+            self.typing_poll.finish(Instant::now(), true);
         }
     }
 
@@ -2797,6 +2850,9 @@ impl AppState {
             && now.duration_since(*at) < TYPING_SEND_INTERVAL
         {
             return;
+        }
+        if self.typing_sent.is_none() {
+            self.typing_poll.wake();
         }
         self.typing_sent = Some((channel_id.clone(), parent_id.clone(), now));
         self.send_typing(channel_id, parent_id, true);
@@ -3083,6 +3139,7 @@ impl AppState {
             }
             self.stop_typing();
             self.typing.clear();
+            self.typing_poll.wake();
             self.selected_message = None;
             self.thread = None;
             self.active_reaction_message = None;
@@ -3103,8 +3160,7 @@ impl AppState {
             self.timeline_anchor_first_id = None;
         }
         self.subscribe(ShapeId::Messages(channel_id.clone()));
-        self.subscribe(ShapeId::Reactions(channel_id.clone()));
-        self.subscribe(ShapeId::Attachments(channel_id.clone()));
+
         self.current_channel = Some(channel_id.clone());
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = true;
@@ -3127,6 +3183,11 @@ impl AppState {
     /// アクティブかつ最下部を表示しているときだけ最新メッセージを既読化する。
     pub fn update_timeline_view_state(&mut self, window_active: bool, at_bottom: bool) {
         let was_at_bottom = self.timeline_at_bottom;
+        if window_active && !self.window_active {
+            self.read_poll.wake();
+            self.emoji_poll.wake();
+            self.typing_poll.wake();
+        }
         self.window_active = window_active;
         self.timeline_at_bottom = at_bottom;
         let Some(channel_id) = self.current_channel.clone() else {
@@ -3221,6 +3282,7 @@ impl AppState {
 
     /// スレッドペインを開き、編集中および投稿不可チャンネルでなければ送信先をスレッド返信に切り替える。
     pub fn open_thread(&mut self, root_id: String) {
+        self.typing_poll.wake();
         self.thread = Some(ThreadState {
             root_id: root_id.clone(),
             selected: None,
@@ -3241,6 +3303,7 @@ impl AppState {
 
     /// スレッドペインを閉じ、送信先がスレッド返信ならチャンネルに戻す。
     pub fn close_thread(&mut self) {
+        self.typing_poll.wake();
         self.thread = None;
         if matches!(self.target, Target::Reply(_)) {
             let current = self.current_channel.clone();
@@ -3473,6 +3536,7 @@ impl AppState {
             if let Target::Reply(ref root_id) = resolved_target
                 && self.thread.as_ref().map(|t| &t.root_id) != Some(root_id)
             {
+                self.typing_poll.wake();
                 self.thread = Some(ThreadState {
                     root_id: root_id.clone(),
                     selected: None,
@@ -4977,6 +5041,69 @@ mod tests {
         }
     }
     impl<T> Pipe for T {}
+
+    #[test]
+    fn message_batches_refresh_bundled_reactions_without_another_subscription() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        assert!(
+            !state
+                .subscriptions
+                .contains_key(&ShapeId::Reactions("c1".into()))
+        );
+        let mut row = json!({"id":"m1", "user_id":"u2", "channel_id":"c1", "content":"hello", "created_at":"2026-11-01 03:00:00", "display_data":{"reactions":[
+            {"id":"remote", "message_id":"m1", "user_id":"https://remote/user", "emoji":"👍", "created_at":"2026-11-01 03:00:01"}
+        ]}});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row.clone())]),
+        ));
+        state.ensure_channel_cache();
+        assert_eq!(state.channel_cache.reactions_by_message["m1"][0].count, 1);
+        row["display_data"] = json!({"reactions":[]});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row)]),
+        ));
+        state.ensure_channel_cache();
+        assert!(!state.channel_cache.reactions_by_message.contains_key("m1"));
+    }
+
+    #[test]
+    fn bundled_attachments_refresh_without_another_subscription() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        assert!(
+            !state
+                .subscriptions
+                .contains_key(&ShapeId::Attachments("c1".into()))
+        );
+        let mut row = json!({"id":"m1", "user_id":"u2", "channel_id":"c1", "content":"hello", "created_at":"2026-11-01 03:00:00", "display_data":{"attachments":[
+            {"id":"a1", "message_id":"m1", "uploader_id":"u2", "channel_id":"c1", "file_name":"pic.png", "file_size":100, "content_type":"image/png", "storage_key":"key", "created_at":"2026-11-01 03:00:01"}
+        ]}});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row.clone())]),
+        ));
+        state.ensure_channel_cache();
+        assert_eq!(state.channel_cache.attachments_by_message["m1"][0].id, "a1");
+        assert_eq!(
+            state.store.attachment("c1", "a1").unwrap().file_name,
+            "pic.png"
+        );
+        row["display_data"] = json!({"attachments":[]});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row)]),
+        ));
+        state.ensure_channel_cache();
+        assert!(
+            !state
+                .channel_cache
+                .attachments_by_message
+                .contains_key("m1")
+        );
+    }
 
     #[test]
     fn builds_app_state_from_dev_and_oidc_configs() {
@@ -7104,6 +7231,34 @@ mod tests {
                 .0
                 .contains("添付ファイルはチャンネルが異なるため除外されました")
         );
+    }
+
+    #[test]
+    fn attachment_url_renewal_only_runs_for_visible_messages_in_an_active_window() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.on_shape(ShapeEvent::Batch(ShapeId::Attachments("c1".into()), batch(vec![
+            ("a1", json!({"id":"a1", "message_id":"m1", "uploader_id":"u2", "channel_id":"c1", "file_name":"pic.png", "file_size":100, "content_type":"image/png", "storage_key":"key", "created_at":"2026-11-01 03:00:01"})),
+            ("offscreen", json!({"id":"offscreen", "message_id":"unloaded", "uploader_id":"u2", "channel_id":"c1", "file_name":"old.png", "file_size":100, "content_type":"image/png", "storage_key":"old", "created_at":"2026-11-01 03:00:01"})),
+        ])));
+        state.ensure_channel_cache();
+        for id in ["a1", "offscreen"] {
+            state.attachment_download_urls.insert(
+                id.into(),
+                CachedAttachmentUrl {
+                    url: "https://example.com/image".into(),
+                    fetched_at: Instant::now(),
+                    ttl_secs: 0,
+                },
+            );
+        }
+        state.window_active = false;
+        state.on_app_event(AppEvent::RefreshAttachmentUrls);
+        assert!(state.fetching_attachment_urls.is_empty());
+        state.window_active = true;
+        state.on_app_event(AppEvent::RefreshAttachmentUrls);
+        assert!(state.fetching_attachment_urls.contains("a1"));
+        assert!(!state.fetching_attachment_urls.contains("offscreen"));
     }
 
     #[test]

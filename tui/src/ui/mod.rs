@@ -6,8 +6,8 @@ use std::{future::Future, io, pin::Pin};
 
 use anyhow::{Result, anyhow};
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEventKind,
-    KeyModifiers,
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event,
+    EventStream, KeyCode, KeyEventKind, KeyModifiers,
 };
 use futures_util::{Stream, StreamExt};
 use ratatui::{
@@ -56,7 +56,7 @@ pub async fn run(
 
     let mut terminal = ratatui::init();
     // 貼り付けを1つのイベントで受け取り、中の改行を送信の Enter と区別する。
-    let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+    let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste, EnableFocusChange);
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(app::TICK);
     let result = loop {
@@ -94,7 +94,7 @@ pub async fn run(
         let _ = draw_normal_shutdown_notice(&mut terminal);
     }
     let (result, shutdown_warning) = finish_application_shutdown(result, &credentials).await;
-    let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
+    let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste, DisableFocusChange);
     restore_terminal_then_report(ratatui::restore, shutdown_warning, |warning| {
         eprintln!("{warning}");
     });

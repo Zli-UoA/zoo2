@@ -1962,6 +1962,13 @@ impl WorkspaceView {
         let state = self.state.read(cx);
         let theme = state.theme();
         let msg_id = message.id.clone();
+        let body = mfm_view::render_mfm_accounts_with_theme(
+            &format!("{pane_prefix}-{msg_id}"),
+            &message.content,
+            Some(me_user_name),
+            &theme,
+            &state.store.account_profiles,
+        );
         let author_name = state.store.display_name(&message.user_id);
         let is_bot = state.store.user(&message.user_id).is_some_and(|u| u.is_bot);
         let is_mine = message.user_id == me_id;
@@ -2341,12 +2348,7 @@ impl WorkspaceView {
                     ),
             )
             // MFM 本文
-            .child(mfm_view::render_mfm_with_theme(
-                &format!("{pane_prefix}-{msg_id}"),
-                &message.content,
-                Some(me_user_name),
-                &theme,
-            ))
+            .child(body)
             // 添付ファイル (画像・ファイル)
             .when(!attachment_views.is_empty(), |d| {
                 d.child(
