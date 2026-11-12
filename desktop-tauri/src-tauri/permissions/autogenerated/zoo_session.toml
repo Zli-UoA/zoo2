@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-zoo-session"
+description = "Enables the zoo_session command without any pre-configured scope."
+commands.allow = ["zoo_session"]
+
+[[permission]]
+identifier = "deny-zoo-session"
+description = "Denies the zoo_session command without any pre-configured scope."
+commands.deny = ["zoo_session"]
