@@ -1506,12 +1506,12 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 | クライアント | 組み込み方 | 解錠の手段 | issue |
 | --- | --- | --- | --- |
-| React（`frontend/`） | wasm-bindgen（`wasm-pack build --target web`）。Worker で動かす | パスキー、リカバリーキー | #352、#359 |
+| React（`frontend/`） | wasm-bindgen（`crates/zoo-crypto-wasm` を `wasm-bindgen --target web` でパッケージにする）。Worker で動かす | パスキー、リカバリーキー | #352、#359 |
 | Compose Android | UniFFI で作った Kotlin バインディング | Credential Manager のパスキー【未検証】、リカバリーキー | #353、#359 |
 | TUI（`tui/`） | ネイティブの Rust クレートとして直接使う | リカバリーキー | #359、#360 |
 | デスクトップ版（`desktop/`） | 最初の範囲では対象にしない。暗号化チャンネルは表示できないと示す（[クロス署名の API](#クロス署名356)の【決定】）。この表示は、暗号化チャンネルを作れるようになる #361 に入れる | なし | #361 |
 
-【提案】バインディングは `crates/zoo-crypto-wasm` と `crates/zoo-crypto-ffi` のように別クレートに分け、コアにプラットフォームの依存を入れません。例外は `wasm32-unknown-unknown` で乱数のバックエンドを選ぶ設定（vodozemac の `wasm_js` feature、[乱数](#乱数)）の 1 つだけです。
+【決定】バインディングはコアとは別のクレートに分け、コアにプラットフォームの依存を入れません。Web 向けは `crates/zoo-crypto-wasm`（#352）です。Android 向けのクレートは #353 で決めます。例外は `wasm32-unknown-unknown` で乱数のバックエンドを選ぶ設定（vodozemac の `wasm_js` feature、[乱数](#乱数)）の 1 つだけです。
 
 - 【決定】`wasm_js` feature はバインディングのクレートではなくコアの `crates/zoo-crypto/Cargo.toml` で、`[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]` に書いて有効にする（#348）。理由は次の 3 つ。
   - getrandom 0.4 には `wasm32-unknown-unknown` の既定のバックエンドがなく、バックエンドを選ばないと `compile_error!` でビルドが止まる。
@@ -1527,13 +1527,23 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   - `.so` とバインディングはリポジトリに入れず、Gradle（`frontend-compose/build.gradle.kts`）がビルドのたびに作る。Android の各 ABI の `.so` は cargo-ndk（4.1.2）で作って jniLibs に入れ、Kotlin のバインディングはホスト向けの `.so` から、同じクレートの `uniffi-bindgen`（`--features cli`）で作る（ライブラリーと版が必ず一致する）。単体テスト（JVM）は同じホストの `.so` を JNA で読む。
   - ツール：`nix develop .#android` で、Android 向けの std を足した Rust、cargo-ndk、Android SDK（35）と NDK（29.0.14206865）が入る。既定の devShell と `rust-toolchain.toml` には足さない（Android を触らない人に NDK や std を入れないため）。CI Android も同じ版の NDK を使う。
 
+#### wasm バインディング（#352）
+
+- 【決定】`crates/zoo-crypto-wasm` は、端末アカウント、Olm と Megolm、クロス署名と配布先の判定、SSSS、鍵スロット、鍵バックアップを wasm-bindgen で JS に出す。暗号の処理は持たず、コアの型を包むだけにする。JS との受け渡しの決まり（サーバーの JSON は snake_case のオブジェクト、状態を持つものはクラス、32 バイトの鍵は `Uint8Array`、失敗は `name` が `ZooCryptoError` で `code` 付きの `Error`）は、クレートの `src/lib.rs` の先頭に書く。
+- 【決定】パッケージは wasm-pack を使わず、`cargo build --target wasm32-unknown-unknown` と `wasm-bindgen --target web` で作る（`crates/zoo-crypto-wasm/build.sh`、`make crypto-wasm`）。wasm-pack は wasm-bindgen-cli と wasm-opt を実行時にネットワークから取りに行くので、nix の dev shell と CI で版を固定しにくい。wasm-bindgen-cli は Tauri 版（`desktop-tauri/`）のために dev shell に入っているものを使う。
+- 【決定】wasm-bindgen クレートは、dev shell（nixpkgs）の wasm-bindgen-cli と同じ版に `=` で固定する（`desktop-tauri/ui/Cargo.toml` と同じ版）。版が違うと wasm-bindgen-cli が止まるので、`build.sh` は先に版を照合する。nixpkgs を上げて wasm-bindgen-cli の版が変わったら、両方の `Cargo.toml` を合わせる。CI は `Cargo.toml` の版を読んで `cargo install` する。
+- 【決定】`frontend` は `@zoo/crypto-wasm` を `link:../crates/zoo-crypto-wasm` で読む。生成物の `pkg/` は Git に入れず、`make crypto-wasm` で作る。CI Frontend は `crypto-wasm` ジョブで 1 回作り、check、unit-test、browser-test に渡す。CI Crypto は `crates/zoo-crypto-wasm` の fmt と clippy（ネイティブと `wasm32-unknown-unknown`）を見る。
+- 【決定】wasm は Worker（`frontend/src/lib/e2ee/crypto.worker.ts`）で動かし、鍵と Olm、Megolm の状態は Worker の中だけに置く。メインスレッドには結果の JSON だけを返す。操作は #359 以降で足す。
+- CSP の `script-src` の `'wasm-unsafe-eval'` は、SQLite の Worker のためにすでにある（`infra/frontend-nginx.conf`）。Vite は `*_bg.wasm` を `assets/` に出すので、Service Worker はほかの `assets/` と同じく、`pwa-assets.json` から先に保存し、オフラインでも返す（`frontend/scripts/pwa.test.mjs`）。
+- 【提案】本番のイメージ（`infra/Dockerfile-frontend-deploy`）は、まだ wasm を作らない。今はアプリの画面が `lib/e2ee` を読まないので、ビルドに入らないため。画面から読むようになる #359 で、イメージに wasm を作る段を足す。
+
 ### 乱数
 
 - 【決定】乱数は OS かブラウザーの暗号用乱数（Web では `crypto.getRandomValues`）だけを使う。
 - 【決定】vodozemac 0.11.2 は `getrandom ^0.4.3` に依存し、`wasm_js = ["getrandom/wasm_js"]` の feature を持つ。`wasm32-unknown-unknown` では vodozemac の `wasm_js` を有効にする。getrandom は 0.3.4（2025-10-14）以降と 0.4 系で、`wasm_js` feature を有効にするだけで wasm_js バックエンドを使うので、cfg フラグ（`--cfg getrandom_backend="wasm_js"`）は付けない（getrandom の CHANGELOG の 0.3.4 の項）。
   - `crates/zoo-crypto` は、`wasm32-unknown-unknown` のときだけ vodozemac の `wasm_js` を有効にする（#348）。この設定をコアに置く理由は、[共有の暗号コア](#共有の暗号コア)に書いた。
   - #348 のビルドで確かめたこと：cfg フラグなしで `cargo build --target wasm32-unknown-unknown` が通る。`wasm_js` feature を外すと、getrandom の `compile_error!` でビルドが止まる。今の依存（`Cargo.lock`）に入る getrandom は 0.4 だけ。
-  - 【未検証】ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドしか確かめていない）は、#352 で確かめる。
+  - 【決定】ブラウザーの Worker で実際に乱数を取れることを、#352 で確かめた（`frontend/src/lib/e2ee/cryptoWorker.browser.test.ts`。Chromium の Worker で鍵を 2 回作り、毎回違う鍵になる）。
 - 【決定】他の依存が getrandom 0.3 を使うなら 0.3.4 以降に上げ、`wasm_js` feature を有効にする（0.3.0〜0.3.3 は feature だけではビルドできない）。0.2 系なら `js` feature にする。`custom` バックエンドは使わない。
 
 ### 暗号ストア
@@ -1674,7 +1684,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 既存のパスキー（`prf: {}` なしで登録したプラットフォーム認証器）で PRF を使えるか。AuthZ#95 より前に登録したセキュリティキーは、登録し直すまで使えない | 【未検証】 | AuthZ#94、#369 |
 | Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` は AuthZ#96 で配信する | 【未検証】 | #360（前に AuthZ#96） |
 | `getrandom` の wasm のバックエンドの設定。cfg フラグは付けず、`wasm_js` feature だけにする（getrandom 0.3.4 以降と 0.4） | 【決定】 | #348 |
-| `getrandom` の wasm_js バックエンドで、ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドだけ確認） | 【未検証】 | #352 |
+| `getrandom` の wasm_js バックエンドで、ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドだけ確認） | 【決定】（#352 の Worker のテストで確かめた） | #352 |
 | 3 段のサブクエリの Shape で move-in と move-out が届くか | 【決定】（Electric 1.8.1 で確かめた） | #354 |
 | `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【提案】 | #358 |
 | エラー応答に `code` を足す方法 | 【決定】 | #354 |

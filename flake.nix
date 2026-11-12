@@ -86,6 +86,107 @@
           gst_all_1.gst-plugins-good
           gst_all_1.gst-plugins-bad
         ];
+        # デスクトップ版（desktop-tauri）。同梱の画面（Leptos の WASM）を先に作り、Rust 側に埋め込む。
+        # Nix で入れた版は自分では更新しない（ストアは書き換えられず、bundle_type() も取れないため）。
+        # 更新は flake の入力を上げて行う（desktop-tauri/README.md）。
+        desktopTauriVersion = (builtins.fromTOML (builtins.readFile ./desktop-tauri/src-tauri/Cargo.toml)).package.version;
+        desktopTauriSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./client-core
+            ./client-types
+            (pkgs.lib.fileset.difference ./desktop-tauri (pkgs.lib.fileset.unions [
+              (pkgs.lib.fileset.maybeMissing ./desktop-tauri/ui/dist)
+              (pkgs.lib.fileset.maybeMissing ./desktop-tauri/ui/target)
+              (pkgs.lib.fileset.maybeMissing ./desktop-tauri/src-tauri/target)
+              (pkgs.lib.fileset.maybeMissing ./desktop-tauri/src-tauri/gen)
+            ]))
+          ];
+        };
+        # 画面のビルドは長いので、Rust 側の変更で作り直さないよう、ソースを画面の分だけにする。
+        desktopTauriUiSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./client-types
+            (pkgs.lib.fileset.difference ./desktop-tauri/ui (pkgs.lib.fileset.unions [
+              (pkgs.lib.fileset.maybeMissing ./desktop-tauri/ui/dist)
+              (pkgs.lib.fileset.maybeMissing ./desktop-tauri/ui/target)
+            ]))
+          ];
+        };
+        zoo2-desktop-tauri-ui = rustPlatform.buildRustPackage {
+          pname = "zoo2-desktop-tauri-ui";
+          version = desktopTauriVersion;
+          src = desktopTauriUiSrc;
+          sourceRoot = "${desktopTauriUiSrc.name}/desktop-tauri/ui";
+          cargoLock.lockFile = ./desktop-tauri/ui/Cargo.lock;
+          # wasm-bindgen は desktop-tauri/ui/Cargo.toml で固定した版と同じもの。
+          # trunk は --release で wasm-opt (binaryen) も使う。オフラインなので取りに行けない。
+          nativeBuildInputs = with pkgs; [ trunk wasm-bindgen-cli binaryen ];
+          buildPhase = ''
+            runHook preBuild
+            trunk build --release --offline
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            cp -r dist $out
+            runHook postInstall
+          '';
+          doCheck = false;
+        };
+        zoo2-desktop-tauri = rustPlatform.buildRustPackage {
+          pname = "zoo2-desktop-tauri";
+          version = desktopTauriVersion;
+          src = desktopTauriSrc;
+          sourceRoot = "${desktopTauriSrc.name}/desktop-tauri/src-tauri";
+          cargoLock.lockFile = ./desktop-tauri/src-tauri/Cargo.lock;
+          # tauri::generate_context! が ../ui/dist を埋め込む。
+          preBuild = ''
+            # 展開したソースは読み取り専用なので、書き込めるようにしてから置く。
+            chmod u+w ..
+            mkdir -p ../ui
+            chmod u+w ../ui
+            rm -rf ../ui/dist
+            cp -r ${zoo2-desktop-tauri-ui} ../ui/dist
+            chmod -R u+w ../ui/dist
+          '';
+          # cargo tauri build と同じく、埋め込んだ画面を custom protocol で配る（devUrl を使わない）。
+          buildFeatures = [ "tauri/custom-protocol" ];
+          # リンクした WebKitGTK などを RUNPATH に入れる (入れないと起動時に見つからない)。
+          nativeBuildInputs = with pkgs; [ pkg-config wrapGAppsHook3 copyDesktopItems autoPatchelfHook ];
+          buildInputs = tauriLibs;
+          # トレイの libayatana-appindicator は dlopen で読まれる。
+          preFixup = ''
+            gappsWrapperArgs+=(--prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath [ pkgs.libayatana-appindicator ]}")
+          '';
+          postInstall = ''
+            for size in 32x32 64x64 128x128; do
+              install -Dm644 icons/$size.png $out/share/icons/hicolor/$size/apps/zoo2-desktop-tauri.png
+            done
+            install -Dm644 icons/128x128@2x.png $out/share/icons/hicolor/256x256/apps/zoo2-desktop-tauri.png
+          '';
+          desktopItems = [
+            (pkgs.makeDesktopItem {
+              name = "zoo2-desktop-tauri";
+              desktopName = "zoo2";
+              comment = "zoo2 のデスクトップクライアント";
+              exec = "zoo2-desktop-tauri";
+              icon = "zoo2-desktop-tauri";
+              categories = [ "Network" "Chat" ];
+              startupWMClass = "zoo2-desktop-tauri";
+            })
+          ];
+          # テストは CI Desktop Tauri で実行するので、ビルドだけにする。
+          doCheck = false;
+          meta = {
+            description = "zoo2 のデスクトップクライアント (Tauri)";
+            homepage = "https://github.com/Zli-UoA/zoo2/tree/main/desktop-tauri";
+            license = pkgs.lib.licenses.mit;
+            mainProgram = "zoo2-desktop-tauri";
+            platforms = pkgs.lib.platforms.linux;
+          };
+        };
         # Android（frontend-compose）の zoo-crypto のバインディング（crates/zoo-crypto-ffi、#353）。
         # Android SDK と NDK のライセンスに同意したうえで使う。既定の devShell には入れず、
         # `nix develop .#android` だけで使う（SDK と NDK は大きいので、Android を触らない人には入れない）。
@@ -122,8 +223,16 @@
       in
       {
         formatter = pkgs.nixpkgs-fmt;
-        packages.zoo2-tui = zoo2-tui;
-        apps.zoo2-tui = flake-utils.lib.mkApp { drv = zoo2-tui; };
+        packages = {
+          inherit zoo2-tui;
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          inherit zoo2-desktop-tauri;
+        };
+        apps = {
+          zoo2-tui = flake-utils.lib.mkApp { drv = zoo2-tui; };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          zoo2-desktop-tauri = flake-utils.lib.mkApp { drv = zoo2-desktop-tauri; };
+        };
         devShells.android = pkgs.mkShell {
           name = "zoo2-android";
           nativeBuildInputs = with pkgs; [
@@ -157,7 +266,8 @@
             opentofu
             sops
             age
-            # Tauri 版（desktop-tauri）。wasm-bindgen は desktop-tauri/ui/Cargo.toml の版と合わせる
+            # Tauri 版（desktop-tauri）と E2EE の wasm（crates/zoo-crypto-wasm）。wasm-bindgen-cli の版は
+            # desktop-tauri/ui/Cargo.toml と crates/zoo-crypto-wasm/Cargo.toml の wasm-bindgen（= で固定）と合わせる
             cargo-tauri
             trunk
             wasm-bindgen-cli
