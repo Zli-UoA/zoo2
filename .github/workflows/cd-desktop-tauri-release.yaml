@@ -1,0 +1,200 @@
+name: CD Desktop Tauri Release
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "client-core/**"
+      - "client-types/**"
+      - "desktop-tauri/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/cd-desktop-tauri-release.yaml"
+permissions:
+  contents: read
+concurrency:
+  group: desktop-tauri-release
+  cancel-in-progress: false
+# desktop-tauri/src-tauri/Cargo.toml の version を上げて main に入れると、desktop-tauri-v<version> の
+# タグで GitHub Release を作り、アプリの自動更新が読む latest.json を desktop-tauri-updater の
+# リリースに置き直します。同じ version のリリースがすでにあれば何もしません。
+#
+# 更新の署名に、次の 2 つを使います (docs/desktop-tauri.md の「更新」)。
+# - Secrets: TAURI_SIGNING_PRIVATE_KEY と TAURI_SIGNING_PRIVATE_KEY_PASSWORD (秘密鍵とそのパスワード)
+# - Variables: TAURI_UPDATER_PUBKEY (公開鍵。アプリに入れて、更新の署名を確かめる)
+# どれかがなければ、リリースを作らずに終わります。
+jobs:
+  version:
+    # 手動実行でも、レビュー前の作業ブランチからは公開しない。
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Check version and signing keys
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HAS_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY != '' }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' desktop-tauri/src-tauri/Cargo.toml | head -n 1)
+          tag="desktop-tauri-v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_PRIVATE_KEY" != true ] || [ "$HAS_PUBKEY" != true ]; then
+            echo "更新の署名の鍵 (Secrets の TAURI_SIGNING_PRIVATE_KEY、Variables の TAURI_UPDATER_PUBKEY) がないので、リリースを作りません。" >> "$GITHUB_STEP_SUMMARY"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag はリリース済みです。desktop-tauri/src-tauri/Cargo.toml の version を上げると次のリリースを作ります。" >> "$GITHUB_STEP_SUMMARY"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    strategy:
+      matrix:
+        # deb が依存する glibc と WebKitGTK を古めに合わせ、Ubuntu 22.04 でも入るようにする。
+        os: [ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libdbus-1-dev \
+            libxdo-dev \
+            file
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          targets: wasm32-unknown-unknown
+      - name: Install trunk, wasm-bindgen and tauri-cli
+        # ci-desktop-tauri.yaml と同じ版にする。
+        run: |
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.cargo/bin
+          cargo install --locked wasm-bindgen-cli --version 0.2.129
+          cargo install --locked tauri-cli --version 2.11.4
+      # 公開鍵をアプリに入れ、更新用の署名 (.sig) も作る。
+      - name: Bundle (deb, AppImage)
+        working-directory: ./desktop-tauri/src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          config=$(jq -nc --arg pubkey "$PUBKEY" \
+            '{bundle: {createUpdaterArtifacts: true}, plugins: {updater: {pubkey: $pubkey}}}')
+          cargo tauri build --bundles deb,appimage --config "$config" -- --locked
+      - name: Collect
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          bundle=desktop-tauri/src-tauri/target/release/bundle
+          collect() {
+            cp "$1" dist/
+            if [ -f "$1.sig" ]; then
+              cp "$1.sig" dist/
+            else
+              # bundler が署名しなかった形式は、同じ鍵でここで署名する。
+              cargo tauri signer sign "dist/$(basename "$1")"
+            fi
+          }
+          collect "$bundle/deb/zoo2_${VERSION}_amd64.deb"
+          collect "$bundle/appimage/zoo2_${VERSION}_amd64.AppImage"
+          ls -l dist
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: zoo2-desktop-tauri-release
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download
+        uses: actions/download-artifact@v8
+        with:
+          name: zoo2-desktop-tauri-release
+          path: dist
+      # アプリの自動更新 (tauri-plugin-updater) が読む形式。インストールの形ごとに、ファイルと署名を書く。
+      - name: Generate latest.json and checksums
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          base="https://github.com/$GH_REPO/releases/download/$TAG"
+          appimage="zoo2_${VERSION}_amd64.AppImage"
+          deb="zoo2_${VERSION}_amd64.deb"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "https://github.com/$GH_REPO/releases/tag/$TAG" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg appimage_url "$base/$appimage" --rawfile appimage_sig "dist/$appimage.sig" \
+            --arg deb_url "$base/$deb" --rawfile deb_sig "dist/$deb.sig" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: {
+              "linux-x86_64": {url: $appimage_url, signature: $appimage_sig},
+              "linux-x86_64-appimage": {url: $appimage_url, signature: $appimage_sig},
+              "linux-x86_64-deb": {url: $deb_url, signature: $deb_sig}
+            }}' > dist/latest.json
+          (cd dist && sha256sum -- *.deb *.AppImage > SHA256SUMS)
+          cat dist/latest.json
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        # Latest は TUI のリリースのままにする (--latest=false)。
+        run: |
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "zoo2 デスクトップ版 (Tauri) v$VERSION" \
+            --notes "インストール方法は [desktop-tauri/README.md](https://github.com/$GH_REPO/blob/$TAG/desktop-tauri/README.md#インストール) を参照してください。" \
+            --latest=false
+      # アプリはこの決まった場所の latest.json を読む。リリースは最初の 1 回だけ作り、以後は置き直す。
+      - name: Publish latest.json for the updater
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view desktop-tauri-updater > /dev/null 2>&1; then
+            gh release create desktop-tauri-updater \
+              --target "$GITHUB_SHA" \
+              --title "zoo2 デスクトップ版の更新情報" \
+              --notes "デスクトップ版 (Tauri) の自動更新が読む latest.json を置く場所です。インストールには使いません。最新の版は desktop-tauri-v* のリリースにあります。" \
+              --prerelease \
+              --latest=false
+          fi
+          gh release upload desktop-tauri-updater dist/latest.json --clobber

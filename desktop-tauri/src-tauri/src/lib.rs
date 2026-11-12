@@ -4,12 +4,14 @@
 //! - `commands`: WebView から呼ぶコマンド。
 //! - `toast`: OS の通知の表示。
 //! - `window`: ウィンドウ、トレイ、単一インスタンス。
+//! - `update`: アプリの自動更新。
 
 mod commands;
 #[cfg(test)]
 mod commands_list;
 mod core;
 mod toast;
+mod update;
 mod window;
 
 use std::sync::Arc;
@@ -37,6 +39,7 @@ pub fn run() {
             window::show_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             commands::zoo_session,
             commands::zoo_start_login,
@@ -56,6 +59,7 @@ pub fn run() {
             window::add_remote_capability(app, &core)?;
             window::create_main(app, &core)?;
             window::create_tray(app)?;
+            update::spawn(app.handle());
             core.start();
             Ok(())
         })
