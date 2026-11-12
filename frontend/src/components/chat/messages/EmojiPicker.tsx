@@ -26,8 +26,9 @@ const SCROLL_CORRECTION_WINDOW_MS = 200;
 /**
  * Frimousse is headless, so the picker, list and category headers are styled
  * here with the app's design tokens. Emojibase data is self-hosted under
- * `public/emojibase-data`; frimousse caches it in localStorage after the first
- * load, so only the active locale is fetched.
+ * `public/emojibase-data`; frimousse caches the active locale's data in
+ * localStorage after the first load. `resolveMultilingualEmojiData` also loads
+ * `search-index.json` once so every language (and pinyin) is searchable.
  */
 export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void }) {
   const { t } = useTranslation();
