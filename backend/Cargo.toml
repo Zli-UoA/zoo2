@@ -54,6 +54,7 @@ html-escape = "0.2"
 zoo-crypto = { path = "../crates/zoo-crypto" }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6"
 tokio-tungstenite = "0.29"
 

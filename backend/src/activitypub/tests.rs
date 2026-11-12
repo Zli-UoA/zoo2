@@ -567,3 +567,34 @@ fn invalid_quote_metadata_does_not_inject_markup_or_reject_the_comment() {
     let note = json!({"content":"Comment", "quoteUrl":{"id":"https://peer.example/n","content":"Unverified private text"}});
     assert_eq!(emoji::note_content(&note).unwrap(), "Comment");
 }
+
+#[test]
+fn quote_urls_are_normalized_before_becoming_visible_links() {
+    for (raw, normalized) in [
+        (
+            "https://peer.example/a\u{202e}gpj.exe",
+            "https://peer.example/a%E2%80%AEgpj.exe",
+        ),
+        (
+            "https://peer.example/a\u{200b}b",
+            "https://peer.example/a%E2%80%8Bb",
+        ),
+        (
+            "https://peer.example/引用",
+            "https://peer.example/%E5%BC%95%E7%94%A8",
+        ),
+        (
+            "https://PEER.example:443/a/../original",
+            "https://peer.example/original",
+        ),
+    ] {
+        for field in ["quoteUrl", "quoteUri", "_misskey_quote"] {
+            let mut note = json!({"content":"Comment"});
+            note[field] = json!(raw);
+            assert_eq!(
+                emoji::note_content(&note).unwrap(),
+                format!("Comment\n\n<{normalized}>")
+            );
+        }
+    }
+}

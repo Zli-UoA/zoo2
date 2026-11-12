@@ -367,18 +367,32 @@ async fn read_image(
     Ok(emoji_cache::Image { mime, bytes: data })
 }
 
+// Quote labels use the parsed serialization so Unicode formatting characters cannot
+// change the visible destination. Image URL handling intentionally keeps its existing policy.
+fn quote_url(value: &str) -> Option<reqwest::Url> {
+    if value.len() > 2048
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>'))
+    {
+        return None;
+    }
+    let url = reqwest::Url::parse(value).ok()?;
+    (url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port_or_known_default() == Some(443)
+        && url.as_str().len() <= 2048)
+        .then_some(url)
+}
+
 pub(super) fn note_content(note: &Value) -> Result<String, AppError> {
     // Quote metadata is otherwise lost when HTML is flattened or MFM source is preferred.
     // Keep only a link: an embedded quote is not proof of the quoted post's author/audience.
     let quote = ["quoteUrl", "quoteUri", "_misskey_quote"]
         .into_iter()
-        .filter_map(|key| note[key].as_str())
-        .find(|url| {
-            https(url)
-                && !url
-                    .chars()
-                    .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>'))
-        });
+        .find_map(|key| note[key].as_str().and_then(quote_url));
     let html = match note["content"].as_str() {
         Some(content) => content,
         None if quote.is_some() && note["content"].is_null() => "",
@@ -395,6 +409,7 @@ pub(super) fn note_content(note: &Value) -> Result<String, AppError> {
         .map(str::to_owned)
         .unwrap_or_else(|| plain_content(html));
     if let Some(quote) = quote {
+        let quote = quote.as_str();
         let link = format!("<{quote}>");
         let already_linked = content
             .split_whitespace()
