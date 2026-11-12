@@ -1,10 +1,11 @@
-//! E2EE の端末と鍵の API（#354）。仕様は `docs/e2ee.md` の「API」「DB」「membership_epoch と送信の順序」。
+//! E2EE の端末と鍵の API（#354）と、to-device メッセージ（#355。`to_device`）。仕様は `docs/e2ee.md` の「API」「DB」「membership_epoch と送信の順序」。
 //!
 //! ロックの順は、すべての書き込みで次にそろえる（逆の順で取る経路を作らない）。
 //!
 //! 1. `users` の行（登録と鍵のアップロードは `FOR SHARE`。無効化の `UPDATE` は `FOR NO KEY UPDATE`）
 //! 2. ユーザー単位の advisory lock `(1, hashtext(user_id))`
-//! 3. 端末単位の advisory lock `(2, hashtext(user_id || ':' || device_id))`（複数なら昇順）
+//! 3. 端末単位の advisory lock `(2, hashtext(user_id || ':' || device_id))`（複数なら昇順。
+//!    to-device の送信は宛先の端末ごとに取る）
 //! 4. `channels` の行（`id` の昇順。`membership_epoch` を増やす #357 で足す）
 //! 5. `e2ee_devices` の行
 
@@ -22,6 +23,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use zoo_crypto::{CryptoError, Curve25519PublicKey, Ed25519PublicKey, SIGNED_CURVE25519};
+
+pub mod to_device;
 
 use crate::{
     auth::AuthUser, db::get_current_txid, error::AppError, routes::response::ApiResponse,
@@ -66,6 +69,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/e2ee/keys/upload", post(upload_keys))
         .route("/api/e2ee/keys/query", post(query_keys))
         .route("/api/e2ee/keys/claim", post(claim_keys))
+        .merge(to_device::router())
         .layer(middleware::map_response(
             |mut response: Response| async move {
                 response
@@ -353,7 +357,7 @@ pub(crate) async fn lock_user(
 }
 
 /// 端末単位のロック。端末の削除、鍵のアップロード、アカウントの無効化（トリガー）、
-/// to-device の送信（#355）で同じキーを使う。
+/// to-device の送信（宛先の端末ごと）で同じキーを使う。
 pub async fn lock_device(
     tx: &mut toasty::Transaction<'_>,
     user_id: &str,
@@ -792,6 +796,14 @@ async fn delete_device(
         &[&actor.id, &device_id],
     )
     .await?;
+    // 未受信の to-device メッセージも消す。送信は同じ端末単位のロックのあとに deleted_at を読み直すので、
+    // このあとで削除済みの端末に入り直らない。
+    exec(
+        &mut tx,
+        "DELETE FROM e2ee_to_device_messages WHERE recipient_user_id = $1 AND recipient_device_id = $2",
+        &[&actor.id, &device_id],
+    )
+    .await?;
     exec(
         &mut tx,
         "UPDATE e2ee_devices SET deleted_at = now()
@@ -1147,6 +1159,9 @@ pub async fn worker(state: AppState) {
     loop {
         if let Err(err) = sweep_deleted_devices(&state.db).await {
             tracing::warn!("E2EE device sweep failed: {err}");
+        }
+        if let Err(err) = to_device::sweep_txns(&state.db).await {
+            tracing::warn!("E2EE to-device txn sweep failed: {err}");
         }
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }
