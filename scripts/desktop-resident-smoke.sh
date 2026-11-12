@@ -8,7 +8,9 @@
 #   2. 2 つ目の起動が、すぐ終了コード 0 で終わり、最初のインスタンスは生きている
 #   3. 閉じる操作 (WM_DELETE_WINDOW) で、終了せずに最小化される (WM_STATE が Iconic)
 #   4. 2 つ目の起動の「前に出す」で、最小化から戻る (WM_STATE が Normal)
-#   5. 最初のインスタンスを止めて残ったソケットでも、次の起動が通る (古いソケットの作り直し)
+#   5. 最初のインスタンスを kill -9 して残ったソケットでも、次の起動が通り、ソケットが作り直される (inode が変わる)
+#   6. 作り直した後も、もう一度起動すると 2 つ目として終わる
+#   7. 3 つを同時に起動しても、生きているのは 1 つだけ
 # 設定とソケットは一時ディレクトリに置き、実際の設定やトークンには触れない。
 set -euo pipefail
 
@@ -114,13 +116,33 @@ ok "3. 閉じる操作で終了せず最小化された (WM_STATE=Iconic)"
 wait_for "2つ目の起動で最小化から戻る" '[ "$(wm_state '"$win"')" = Normal ]'
 ok "4. 2つ目の起動で最小化から戻った (WM_STATE=Normal)"
 
+sock() { ls "$XDG_RUNTIME_DIR"/zoo2-desktop-*.sock 2>/dev/null | head -1; }
+[ -n "$(sock)" ] || fail "ソケットが無い"
+inode_before=$(stat -c %i "$(sock)")
 kill -9 "$app"
 wait "$app" 2>/dev/null || true
-[ -e "$XDG_RUNTIME_DIR/zoo2-desktop.sock" ] || fail "kill -9 後にソケットが残っていない (前提が崩れた)"
+[ -e "$(sock)" ] || fail "kill -9 後にソケットが残っていない (前提が崩れた)"
 "$bin" run >"$tmp/app4.log" 2>&1 &
 app=$!
 pids+=($app)
 sleep 3
 kill -0 "$app" 2>/dev/null || fail "古いソケットが残っていると起動できない"
-ok "5. 古いソケットが残っていても、作り直して起動した"
+inode_after=$(stat -c %i "$(sock)")
+[ "$inode_before" != "$inode_after" ] || fail "ソケットが作り直されていない (inode が同じ)"
+ok "5. 古いソケットが残っていても、作り直して (inode $inode_before -> $inode_after) 起動した"
+
+"$bin" run >"$tmp/app5.log" 2>&1 && code=0 || code=$?
+[ "$code" = 0 ] || fail "作り直した後の 2 つ目の起動が終了コード $code"
+kill -0 "$app" 2>/dev/null || fail "作り直した後の 2 つ目の起動で最初のインスタンスが落ちた"
+ok "6. 作り直した後も、2 つ目の起動は終了コード 0 で終わる"
+
+# 同時に起動しても、最初になるのは 1 つだけ。
+kill "$app"; wait "$app" 2>/dev/null || true
+rm -f "$XDG_RUNTIME_DIR"/zoo2-desktop-*
+for i in 1 2 3; do "$bin" run >"$tmp/race$i.log" 2>&1 & pids+=($!); racers[$i]=$!; done
+sleep 8
+alive=0
+for i in 1 2 3; do kill -0 "${racers[$i]}" 2>/dev/null && alive=$((alive + 1)); done
+[ "$alive" = 1 ] || fail "3 つを同時に起動して、生きているのが $alive 個 (期待は 1 個)"
+ok "7. 3 つを同時に起動しても、生きているのは 1 つだけ"
 echo "すべて通りました"

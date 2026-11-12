@@ -334,6 +334,21 @@ mod tests {
         assert_eq!(state.pending_scroll_to_message_id, None);
     }
 
+    /// 最小化の直前や、ウィンドウが前面でなくなったときに `update_timeline_view_state(false, ..)` が
+    /// 呼ばれ、そのチャンネルの通知を止めなくなる (`close.rs` と `mod.rs` の観察が呼ぶ)。
+    #[test]
+    fn deactivating_the_window_clears_focused_channel() {
+        let mut state = connected_state();
+        state.window_active = true;
+        state.current_channel = Some("c1".into());
+        assert_eq!(
+            state.notify_context().focused_channel.as_deref(),
+            Some("c1")
+        );
+        state.update_timeline_view_state(false, state.timeline_at_bottom);
+        assert_eq!(state.notify_context().focused_channel, None);
+    }
+
     #[test]
     fn notifications_failure_is_reported_as_sync_error() {
         let mut state = connected_state();
