@@ -61,7 +61,12 @@ async fn main() -> anyhow::Result<()> {
     let display_worker = tokio::spawn(backend::display_refresh::worker(state.clone()));
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
     let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));
-    let slack_import_worker = tokio::spawn(backend::slack::worker::worker(state.clone()));
+    // SIGTERM を受けたら、処理中の取り込みを手放す (attempts を消費せず、別の台がすぐに再開できる)
+    let (slack_import_stop, slack_import_stop_rx) = tokio::sync::watch::channel(false);
+    let slack_import_worker = tokio::spawn(backend::slack::worker::worker_until(
+        state.clone(),
+        slack_import_stop_rx,
+    ));
     let slack_sync_worker = tokio::spawn(backend::slack::sync::worker(state.clone()));
     let home_image_worker = tokio::spawn(backend::routes::home_images::worker(state.clone()));
     let emoji_worker = tokio::spawn(backend::emoji_service::worker(state.clone()));
@@ -78,7 +83,11 @@ async fn main() -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // 接続の終了を待つ間も、取り込みは先に手放す (待つ間に強制終了されると、attempts を消費する)
+        let _ = slack_import_stop.send(true);
+    })
     .await?;
 
     display_worker.abort();
@@ -87,7 +96,13 @@ async fn main() -> anyhow::Result<()> {
     home_image_worker.abort();
     federation_worker.abort();
     delivery_worker.abort();
-    slack_import_worker.abort();
+    // 手放す処理は、合図を受けた時点で始まっている。残りの猶予の中で、終わるのを待つ
+    if tokio::time::timeout(std::time::Duration::from_secs(10), slack_import_worker)
+        .await
+        .is_err()
+    {
+        tracing::warn!("Slack import worker did not stop in time");
+    }
     slack_sync_worker.abort();
     thread_archive_worker.abort();
     tracing::info!("Server shut down gracefully");
