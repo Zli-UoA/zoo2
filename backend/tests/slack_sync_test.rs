@@ -319,7 +319,7 @@ async fn test_slack_sync_resumes_after_429_without_duplicates() -> anyhow::Resul
         &[&team],
     )
     .await?[0];
-    assert_eq!(row["last_ts"], &ts(300));
+    assert_eq!(row["last_ts"], ts(300).as_str());
     assert_eq!(row["running"], false);
     assert_eq!(row["synced"], true);
 

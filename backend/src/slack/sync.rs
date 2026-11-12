@@ -450,6 +450,8 @@ struct Progress {
     max_ts: Option<String>,
     cursor: Option<String>,
     pending: Vec<String>,
+    /// 次の同期でも返信を確かめるスレッド (`pending` は処理するたびに減るので、別に持つ)
+    known: Vec<String>,
 }
 
 async fn load_tokens(
@@ -518,6 +520,25 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
     };
     let mut db = s.db.clone();
 
+    // 再開のときも、毎回確かめる。保存した途中経過のあとで、取り込み先が公開に変わっていることがある。
+    // 非公開の Slack チャンネルの履歴を、公開の zoo チャンネルに入れない
+    let info = slack
+        .get(
+            "conversations.info",
+            &[("channel", task.slack_channel_id.as_str())],
+        )
+        .await?;
+    let channel = &info["channel"];
+    let slack_private = ["is_private", "is_im", "is_mpim", "is_group"]
+        .iter()
+        .any(|k| channel[*k] == true);
+    if slack_private && !task.private {
+        return Ok(Step::Park(
+            6 * 3600,
+            "private_slack_channel_in_public_channel".into(),
+        ));
+    }
+    let known: Vec<String> = serde_json::from_str(&task.known_threads).unwrap_or_default();
     let mut progress = if task.running {
         Progress {
             phase: task.phase.clone(),
@@ -525,25 +546,9 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             max_ts: task.run_max_ts.clone(),
             cursor: task.page_cursor.clone(),
             pending: serde_json::from_str(&task.pending_threads).unwrap_or_default(),
+            known,
         }
     } else {
-        // 新しい同期を始める。非公開の Slack チャンネルの履歴を、公開の zoo チャンネルに入れない
-        let info = slack
-            .get(
-                "conversations.info",
-                &[("channel", task.slack_channel_id.as_str())],
-            )
-            .await?;
-        let channel = &info["channel"];
-        let slack_private = ["is_private", "is_im", "is_mpim", "is_group"]
-            .iter()
-            .any(|k| channel[*k] == true);
-        if slack_private && !task.private {
-            return Ok(Step::Park(
-                6 * 3600,
-                "private_slack_channel_in_public_channel".into(),
-            ));
-        }
         Progress {
             phase: "history".into(),
             oldest: task
@@ -554,6 +559,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             max_ts: None,
             cursor: None,
             pending: Vec::new(),
+            known,
         }
     };
 
@@ -616,9 +622,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             if !more {
                 progress.phase = "threads".into();
                 // 前回までに見つけたスレッドにも、新しい返信がないか確かめる
-                let known: Vec<String> =
-                    serde_json::from_str(&task.known_threads).unwrap_or_default();
-                for ts in known {
+                for ts in progress.known.clone() {
                     if !progress.pending.contains(&ts) {
                         progress.pending.push(ts);
                     }
@@ -631,6 +635,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                     .pending
                     .sort_by_key(|ts| std::cmp::Reverse(ts_key(ts)));
                 progress.pending.truncate(MAX_THREADS);
+                progress.known = progress.pending.clone();
             }
             store(&mut slack, &mut ctx, task, &progress, &messages, &mut db).await?;
         } else {
@@ -697,7 +702,7 @@ async fn store(
         &mut tx,
         "UPDATE slack_channel_syncs SET running=true,phase=$3,run_oldest=$4,run_max_ts=NULLIF($5,''),\
          page_cursor=NULLIF($6,''),pending_threads=$7,token_user_id=COALESCE(NULLIF($8,''),token_user_id),\
-         attempts=0,last_error=NULL,lease_until=now()+interval '5 minutes',updated_at=now() \
+         known_threads=$10,attempts=0,last_error=NULL,lease_until=now()+interval '5 minutes',updated_at=now() \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$9 \
          RETURNING json_build_object('ok',true)::text",
         &[
@@ -710,6 +715,7 @@ async fn store(
             &pending,
             slack.user().unwrap_or(""),
             &task.token,
+            &serde_json::to_string(&progress.known).unwrap_or_else(|_| "[]".into()),
         ],
     )
     .await?;
@@ -805,8 +811,7 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
         .await?;
     }
     // 次の同期でも返信を確かめるスレッドは、今回見つけたものと前回のものの、範囲内の新しいもの
-    let mut known: Vec<String> = serde_json::from_str(&task.known_threads).unwrap_or_default();
-    known.extend(progress.pending.iter().cloned());
+    let mut known = progress.known.clone();
     let horizon = now_secs().saturating_sub(THREAD_WINDOW_SECS);
     known.retain(|ts| ts_key(ts).is_some_and(|(secs, _)| secs >= horizon));
     known.sort_by_key(|ts| std::cmp::Reverse(ts_key(ts)));
