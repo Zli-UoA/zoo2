@@ -40,6 +40,11 @@ pub struct ReactionGroup {
 
 impl Store {
     pub fn apply(&mut self, id: &ShapeId, batch: Batch) {
+        if batch.reset
+            && let ShapeId::Messages(channel) = id
+        {
+            self.reactions.remove(channel);
+        }
         let mut invalid = 0;
         match id {
             ShapeId::Channels => {
@@ -311,12 +316,7 @@ impl Store {
         message_id: &str,
         me: &str,
     ) -> Vec<ReactionGroup> {
-        let reactions = self
-            .reactions
-            .get(channel_id)
-            .into_iter()
-            .flat_map(|rows| rows.values())
-            .filter(|reaction| reaction.message_id == message_id);
+        let reactions = self.message_reactions(channel_id, message_id);
         group_reactions(reactions, me)
     }
 
@@ -328,20 +328,38 @@ impl Store {
         me: &str,
     ) -> HashMap<String, Vec<ReactionGroup>> {
         let mut by_message: HashMap<&str, Vec<&Reaction>> = HashMap::new();
-        for reaction in self
+        for row in self
             .reactions
             .get(channel_id)
             .into_iter()
             .flat_map(|rows| rows.values())
         {
-            by_message
-                .entry(reaction.message_id.as_str())
-                .or_default()
-                .push(reaction);
+            by_message.entry(&row.message_id).or_default().push(row);
+        }
+        for message in self.visible_messages(channel_id) {
+            if let Some(rows) = &message.display_reactions {
+                by_message.insert(&message.id, rows.iter().collect());
+            }
         }
         by_message
             .into_iter()
-            .map(|(message_id, reactions)| (message_id.to_string(), group_reactions(reactions, me)))
+            .filter(|(_, rows)| !rows.is_empty())
+            .map(|(id, rows)| (id.to_string(), group_reactions(rows, me)))
+            .collect()
+    }
+
+    fn message_reactions(&self, channel_id: &str, message_id: &str) -> Vec<&Reaction> {
+        if let Some(rows) = self
+            .message(channel_id, message_id)
+            .and_then(|message| message.display_reactions.as_ref())
+        {
+            return rows.iter().collect();
+        }
+        self.reactions
+            .get(channel_id)
+            .into_iter()
+            .flat_map(|rows| rows.values())
+            .filter(|reaction| reaction.message_id == message_id)
             .collect()
     }
 }
@@ -595,6 +613,24 @@ mod tests {
         assert_eq!(by_msg.get("m1").unwrap().len(), 1);
         assert_eq!(by_msg.get("m1").unwrap()[0].file_name, "pic.png");
         assert!(!by_msg.contains_key("m2"));
+    }
+
+    #[test]
+    fn bundled_reactions_include_remote_actors_and_empty_updates_remove_them() {
+        let mut store = Store::default();
+        let mut row = json!({ "id":"m1", "user_id":"me", "channel_id":"c1", "created_at":"2026-11-01 00:00:00", "display_data": { "reactions":[
+            {"id":"local", "message_id":"m1", "user_id":"me", "emoji":"👍", "created_at":"2026-11-01 00:00:01"},
+            {"id":"remote", "message_id":"m1", "user_id":"https://remote/user", "emoji":"👍", "created_at":"2026-11-01 00:00:02"}
+        ] }});
+        let id = ShapeId::Messages("c1".into());
+        store.apply(&id, batch(vec![upsert("m1", row.clone())]));
+        assert_eq!(store.reaction_groups("c1", "m1", "me")[0].count, 2);
+        assert!(store.reaction_groups_by_message("c1", "me")["m1"][0].mine);
+        row["display_data"] = Value::String(json!({"reactions":[]}).to_string());
+        store.apply(&id, batch(vec![upsert("m1", row)]));
+        assert!(store.reaction_groups("c1", "m1", "me").is_empty());
+        assert!(store.reaction_groups_by_message("c1", "me").is_empty());
+        assert_eq!(store.invalid_rows, 0);
     }
 
     #[test]

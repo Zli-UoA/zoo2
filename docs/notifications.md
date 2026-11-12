@@ -25,3 +25,5 @@
 ## Reactの購読と取得
 
 シェル配下の `NotificationsProvider` で通知バッジと画面の一覧・ページング・既読状態を共有する。Home用WebSocketも `HomeLiveProvider` で他のHome・ActivityPub画面と共有する。取得中の更新は前のリクエストを中断せず集約し、完了後に再取得する。通信経路とポーリングの停止・集約方針は [リクエストと接続の設計](request-design.md) を参照。
+
+AndroidはSessionの `ActivityPubNotificationsState` と共有 `HomeLive` を使い、取得中の更新をキャンセルせず予約する。追加ページは進行中の先頭更新を待ち、画面・バッジで同じ保持範囲を共有する。

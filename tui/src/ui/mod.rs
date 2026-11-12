@@ -3,7 +3,9 @@ mod timeline;
 mod view;
 
 use anyhow::Result;
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream};
+use crossterm::event::{
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, EventStream,
+};
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
@@ -30,7 +32,7 @@ pub async fn run(
 
     let mut terminal = ratatui::init();
     // 貼り付けを1つのイベントで受け取り、中の改行を送信の Enter と区別する。
-    let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste);
+    let _ = crossterm::execute!(std::io::stdout(), EnableBracketedPaste, EnableFocusChange);
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(app::TICK);
     let result = loop {
@@ -60,7 +62,7 @@ pub async fn run(
     if let Some(updates) = updates {
         updates.abort();
     }
-    let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
+    let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste, DisableFocusChange);
     ratatui::restore();
     result
 }

@@ -9,6 +9,7 @@ use std::{
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tui_textarea::TextArea;
+use zoo2_client_core::poll::PollGate;
 
 use crate::{
     api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
@@ -20,9 +21,6 @@ use crate::{
 const NOTICE_TTL: Duration = Duration::from_secs(6);
 /// `on_tick` の間隔。`ui::run` の interval と合わせる。
 pub const TICK: Duration = Duration::from_millis(500);
-/// 未読一覧の再取得 (10秒) と、入力中ユーザーの取得 (1.5秒) の間隔。frontend と同じ。
-const READ_STATE_EVERY: u64 = 20;
-const TYPING_POLL_EVERY: u64 = 3;
 /// 入力中の通知は2秒に1回まで送り、3秒止まったら取り消す。
 const TYPING_SEND_INTERVAL: Duration = Duration::from_secs(2);
 const TYPING_IDLE: Duration = Duration::from_secs(3);
@@ -61,6 +59,9 @@ pub enum AppEvent {
     ThreadsChanged {
         reopened: Option<String>,
     },
+    ReadStatesPollFinished,
+    EmojiPollFinished,
+    TypingPollFinished,
     /// GitHub Releases に新しい版がある。
     UpdateAvailable(String),
     Typing {
@@ -181,6 +182,10 @@ pub struct App {
     typing_sent: Option<(String, Option<String>, Instant)>,
     last_keystroke: Option<Instant>,
     ticks: u64,
+    terminal_active: bool,
+    read_poll: PollGate,
+    emoji_poll: PollGate,
+    typing_poll: PollGate,
 }
 
 impl App {
@@ -235,6 +240,10 @@ impl App {
             typing_sent: None,
             last_keystroke: None,
             ticks: 0,
+            terminal_active: true,
+            read_poll: PollGate::new(Duration::from_secs(10), Duration::from_secs(10)),
+            emoji_poll: PollGate::new(Duration::from_secs(60), Duration::from_secs(60)),
+            typing_poll: PollGate::new(Duration::from_millis(1500), Duration::from_secs(5)),
         };
         for id in [ShapeId::Channels, ShapeId::Users, ShapeId::ChannelUsers] {
             app.subscribe(id);
@@ -448,6 +457,12 @@ impl App {
                     ));
                 }
             }
+            AppEvent::ReadStatesPollFinished => self.read_poll.finish(Instant::now(), true),
+            AppEvent::EmojiPollFinished => self.emoji_poll.finish(Instant::now(), true),
+            AppEvent::TypingPollFinished => self.typing_poll.finish(
+                Instant::now(),
+                self.typing.values().any(|users| !users.is_empty()) || self.typing_sent.is_some(),
+            ),
             AppEvent::ReadStates(states) => {
                 self.unread = states
                     .into_iter()
@@ -455,7 +470,9 @@ impl App {
                     .map(|state| state.channel_id)
                     .collect();
                 // 開いているチャンネルは既読を送り直す。
-                if let Some(channel_id) = &self.current {
+                if let Some(channel_id) = &self.current
+                    && self.unread.contains(channel_id)
+                {
                     self.marked_read.remove(channel_id);
                 }
                 self.mark_current_read();
@@ -466,7 +483,7 @@ impl App {
                 parent_id,
                 users,
             } => {
-                if self.current.as_deref() == Some(channel_id.as_str()) {
+                if self.terminal_active && self.current.as_deref() == Some(channel_id.as_str()) {
                     self.typing.insert(parent_id, users);
                 }
             }
@@ -474,10 +491,10 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        if self.ticks.is_multiple_of(120) {
+        if self.terminal_active && self.ticks.is_multiple_of(120) {
             self.refresh_threads();
         }
-        if self.ticks.is_multiple_of(60) {
+        if self.terminal_active && self.emoji_poll.start(Instant::now()) {
             let api = self.api.clone();
             let tx = self.app_tx.clone();
             tokio::spawn(async move {
@@ -486,6 +503,7 @@ impl App {
                 if let Ok((shortcodes, custom)) = api.emoji_catalog().await {
                     let _ = tx.send(AppEvent::EmojiCatalog { shortcodes, custom });
                 }
+                let _ = tx.send(AppEvent::EmojiPollFinished);
             });
         }
         if self
@@ -495,12 +513,8 @@ impl App {
         {
             self.notice = None;
         }
-        if self.ticks.is_multiple_of(READ_STATE_EVERY) {
-            self.refresh_read_states();
-        }
-        if self.ticks.is_multiple_of(TYPING_POLL_EVERY) {
-            self.poll_typing();
-        }
+        self.refresh_read_states();
+        self.poll_typing();
         if self
             .last_keystroke
             .is_some_and(|at| at.elapsed() > TYPING_IDLE)
@@ -511,7 +525,10 @@ impl App {
         self.ticks += 1;
     }
 
-    fn refresh_read_states(&self) {
+    fn refresh_read_states(&mut self) {
+        if !self.terminal_active || !self.read_poll.start(Instant::now()) {
+            return;
+        }
         let api = self.api.clone();
         let tx = self.app_tx.clone();
         tokio::spawn(async move {
@@ -519,6 +536,7 @@ impl App {
             if let Ok(states) = api.read_states().await {
                 let _ = tx.send(AppEvent::ReadStates(states));
             }
+            let _ = tx.send(AppEvent::ReadStatesPollFinished);
         });
     }
 
@@ -688,7 +706,8 @@ impl App {
         let Some(channel_id) = self.current.clone() else {
             return;
         };
-        if !self.store.is_synced(&ShapeId::Messages(channel_id.clone()))
+        if !self.terminal_active
+            || !self.store.is_synced(&ShapeId::Messages(channel_id.clone()))
             || !self.store.is_member(&channel_id, &self.me.id)
         {
             return;
@@ -713,31 +732,45 @@ impl App {
     }
 
     /// タイムラインと、開いているスレッドの入力中ユーザーを取得する。
-    fn poll_typing(&self) {
+    fn poll_typing(&mut self) {
+        if !self.terminal_active {
+            return;
+        }
         let Some(channel_id) = self.current.clone() else {
             return;
         };
         if !self.store.is_member(&channel_id, &self.me.id) {
             return;
         }
+        if self
+            .store
+            .channel(&channel_id)
+            .is_some_and(|channel| channel.archive_at.is_some() || channel.deleted_at.is_some())
+        {
+            self.typing.clear();
+            return;
+        }
         let mut scopes = vec![None];
         if let Some(thread) = &self.thread {
             scopes.push(Some(thread.root_id.clone()));
         }
-        for parent_id in scopes {
-            let api = self.api.clone();
-            let tx = self.app_tx.clone();
-            let channel_id = channel_id.clone();
-            tokio::spawn(async move {
+        if !self.typing_poll.start(Instant::now()) {
+            return;
+        }
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            for parent_id in scopes {
                 if let Ok(users) = api.typing(&channel_id, parent_id.as_deref()).await {
                     let _ = tx.send(AppEvent::Typing {
-                        channel_id,
+                        channel_id: channel_id.clone(),
                         parent_id,
                         users,
                     });
                 }
-            });
-        }
+            }
+            let _ = tx.send(AppEvent::TypingPollFinished);
+        });
     }
 
     /// 文字を入力したときに呼ぶ。送り先が変わったら、前の送り先の入力中を取り消す。
@@ -763,6 +796,9 @@ impl App {
                 self.last_keystroke = Some(Instant::now());
             }
         }
+        if self.typing_sent.is_none() {
+            self.typing_poll.wake();
+        }
         self.send_typing(&channel_id, parent_id.clone(), true);
         self.typing_sent = Some((channel_id, parent_id, Instant::now()));
     }
@@ -786,6 +822,18 @@ impl App {
     }
 
     pub fn on_terminal_event(&mut self, event: Event) {
+        if matches!(event, Event::FocusLost | Event::FocusGained) {
+            self.terminal_active = matches!(event, Event::FocusGained);
+            if self.terminal_active {
+                self.read_poll.wake();
+                self.emoji_poll.wake();
+                self.typing_poll.wake();
+            } else {
+                self.stop_typing();
+                self.typing.clear();
+            }
+            return;
+        }
         let key = match event {
             Event::Key(key) => key,
             Event::Paste(text) => return self.on_paste(&text),
@@ -1085,6 +1133,7 @@ impl App {
             Focus::Sidebar => self.activate_sidebar(),
             Focus::Messages => {
                 if let Some(root_id) = self.selected.clone() {
+                    self.typing_poll.wake();
                     self.thread = Some(ThreadView {
                         root_id,
                         selected: None,
@@ -1125,8 +1174,27 @@ impl App {
 
     pub fn open_channel(&mut self, channel_id: String) {
         if self.current.as_deref() != Some(channel_id.as_str()) {
+            let previous: Vec<_> = self
+                .subscriptions
+                .keys()
+                .filter(|id| matches!(id, ShapeId::Messages(_) | ShapeId::Reactions(_)))
+                .cloned()
+                .collect();
+            for id in previous {
+                if let Some(task) = self.subscriptions.remove(&id) {
+                    task.abort();
+                }
+                self.store.apply(
+                    &id,
+                    Batch {
+                        reset: true,
+                        ..Default::default()
+                    },
+                );
+            }
             self.stop_typing();
             self.typing.clear();
+            self.typing_poll.wake();
             self.selected = None;
             self.scroll = 0;
             self.thread = None;
@@ -1137,7 +1205,7 @@ impl App {
             self.target = Target::Channel;
         }
         self.subscribe(ShapeId::Messages(channel_id.clone()));
-        self.subscribe(ShapeId::Reactions(channel_id.clone()));
+
         self.current = Some(channel_id);
         self.poll_typing();
     }
@@ -1153,6 +1221,7 @@ impl App {
 
     /// スレッドを閉じる。返信を書きかけていたら、送り先をチャンネルに戻す。
     fn close_thread(&mut self) {
+        self.typing_poll.wake();
         self.thread = None;
         self.focus = Focus::Messages;
         if matches!(self.target, Target::Reply(_)) {

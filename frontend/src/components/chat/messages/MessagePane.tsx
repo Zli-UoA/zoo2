@@ -226,7 +226,6 @@ export function MessagePane({
   const targetQuery = useMessageById(channelId, targetMessageId ?? null);
   const target = targetQuery.data?.[0];
 
-
   // 対象が返信なら、そのスレッドを開く。
   useEffect(() => {
     if (target?.parent_id && !target.deleted_at) openThread(target.parent_id);
