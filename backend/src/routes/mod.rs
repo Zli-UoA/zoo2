@@ -19,6 +19,7 @@ pub mod push;
 pub mod read_states;
 pub mod response;
 pub mod shapes;
+pub mod threads;
 pub mod typing;
 pub mod users;
 pub mod webhooks;
@@ -90,6 +91,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(e2ee_secret_storage::router())
         .merge(e2ee_key_backup::router())
         .merge(messages::router())
+        .merge(threads::router())
         .merge(attachments::router())
         .merge(crate::slack::import::router())
         .merge(crate::slack::link::router())

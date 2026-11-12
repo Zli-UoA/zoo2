@@ -51,6 +51,8 @@ const MAX_THREADS: usize = 20;
 const MAX_CANDIDATES: usize = 200;
 /// 1 回の同期で、投稿者の名前を `users.info` で調べる人数の上限
 const MAX_PROFILE_LOOKUPS: usize = 20;
+/// 名前の取得にかけてよい時間。超えたら、残りの人は取得せず、既定の名前にする
+const PROFILE_LOOKUP_BUDGET: Duration = Duration::from_secs(90);
 /// トークンの持ち主が、そのチャンネルを読めない (またはトークンが使えない) ときの Slack のエラー。
 /// ほかの連携済みメンバーのトークンで取り直す
 const ACCESS_ERRORS: &[&str] = &[
@@ -465,6 +467,16 @@ fn first_oldest(task: &Task) -> String {
     }
 }
 
+/// スレッドの親になれる投稿か。入退室・トピック変更などのシステム通知は、スレッドにできない
+/// (`conversations.replies` が `thread_not_found` になる) ので、候補から外す
+fn threadable(message: &SlackMessage) -> bool {
+    message.is_importable()
+        && message
+            .subtype
+            .as_deref()
+            .is_none_or(|t| !(t.starts_with("channel_") || t.starts_with("group_")))
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -640,6 +652,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                     .as_deref()
                     .is_none_or(|t| t == message.ts.as_str());
                 if top_level
+                    && threadable(message)
                     && ts_key(&message.ts).is_some_and(|(secs, _)| secs >= horizon)
                     && progress.pending.len() < MAX_CANDIDATES
                     && !progress.pending.contains(&message.ts)
@@ -811,11 +824,16 @@ async fn lookup_profiles(
         .into_iter()
         .filter_map(|r| r["id"].as_str().map(str::to_string))
         .collect();
+    // 1 回の要求は最大 30 秒かかる。ページの保存 (リースの延長) まで 5 分のリースを切らさないよう、時間で打ち切る
+    let started = std::time::Instant::now();
     for id in wanted
         .into_iter()
         .filter(|id| !known.contains(id))
         .take(MAX_PROFILE_LOOKUPS)
     {
+        if started.elapsed() >= PROFILE_LOOKUP_BUDGET {
+            break;
+        }
         match slack.get("users.info", &[("user", id.as_str())]).await {
             Ok(value) => {
                 if let Ok(user) = serde_json::from_value::<SlackUser>(value["user"].clone()) {
@@ -851,6 +869,19 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
     known.sort_by_key(|ts| std::cmp::Reverse(ts_key(ts)));
     known.dedup();
     known.truncate(MAX_THREADS);
+    // 前回の同期の終わりのあとに連携した人がいれば、同期中に連携した可能性がある (投稿者・メンション先・リアクション
+    // のどれでも、キャッシュしたプレースホルダのまま保存されている)。そのときだけ、ZIP の取り込みと同じ付け替え
+    // (`reconcile_team`) をする。付け替えは全ワークスペース共通のロックを取り、チームの投稿本文も走査するので、
+    // 連携の変わっていない無更新の同期では呼ばない。前回の終わりの日時は、下の UPDATE の前に読む
+    let relinked = !query(
+        &mut tx,
+        "SELECT json_build_object('found',true)::text FROM slack_users su \
+         JOIN slack_channel_syncs t ON t.team_id=su.team_id AND t.slack_channel_id=$2 \
+         WHERE su.team_id=$1 AND su.linked AND (t.last_synced_at IS NULL OR su.updated_at>t.last_synced_at) LIMIT 1",
+        &[&task.team_id, &task.slack_channel_id],
+    )
+    .await?
+    .is_empty();
     let done = query(
         &mut tx,
         "UPDATE slack_channel_syncs SET running=false,phase='history',run_oldest=NULL,run_max_ts=NULL,\
@@ -871,35 +902,8 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
     if done.is_empty() {
         return Err(SyncError::LeaseLost);
     }
-    // 同期中に Slack 連携した人の投稿は、キャッシュしたプレースホルダのまま保存されている。そういう投稿が
-    // このチャンネルに残っているときだけ、ZIP の取り込みと同じ付け替え (`reconcile_team`) をする。
-    // 付け替えは全ワークスペース共通のロックを取り、チームの投稿本文も走査するので、毎回は呼ばない
-    let linked = query(
-        &mut tx,
-        "SELECT json_build_object('slack_user_id',slack_user_id)::text FROM slack_users \
-         WHERE team_id=$1 AND linked",
-        &[&task.team_id],
-    )
-    .await?;
-    let placeholders: Vec<String> = linked
-        .iter()
-        .filter_map(|row| row["slack_user_id"].as_str())
-        .map(|user| super::user_id(&task.team_id, user))
-        .collect();
-    if !placeholders.is_empty() {
-        let leftover = query(
-            &mut tx,
-            "SELECT json_build_object('found',true)::text FROM messages WHERE channel_id=$1 \
-             AND user_id IN (SELECT jsonb_array_elements_text($2::jsonb)) LIMIT 1",
-            &[
-                &task.channel_id,
-                &serde_json::to_string(&placeholders).unwrap_or_else(|_| "[]".into()),
-            ],
-        )
-        .await?;
-        if !leftover.is_empty() {
-            super::link::reconcile_team(&mut tx, &task.team_id).await?;
-        }
+    if relinked {
+        super::link::reconcile_team(&mut tx, &task.team_id).await?;
     }
     tx.commit().await.map_err(AppError::from)?;
     Ok(Step::Done)

@@ -52,6 +52,8 @@ pub struct Message {
     pub updated_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
     pub parent_id: Option<String>,
+    #[serde(default)]
+    pub thread_archive_at: Option<DateTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -205,6 +207,7 @@ impl FromRow for Message {
             updated_at: opt_time(row, "updated_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
             parent_id: opt_text(row, "parent_id"),
+            thread_archive_at: opt_time(row, "thread_archive_at")?,
         })
     }
 }
@@ -365,6 +368,7 @@ mod tests {
         })))
         .unwrap();
         assert_eq!(message.parent_id, None);
+        assert_eq!(message.thread_archive_at, None);
         assert_eq!(message.updated_at, None);
 
         let channel = Channel::from_row(&row(json!({
