@@ -203,7 +203,13 @@ jobs:
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
         # Latest は TUI のリリースのままにする (--latest=false)。
+        # 失敗したジョブだけを再実行したとき (version の出力は前のまま) に、作成済みなら飛ばして
+        # 次の latest.json の公開へ進む。
         run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "$TAG は作成済みなので、作成を飛ばします。"
+            exit 0
+          fi
           gh release create "$TAG" dist/* \
             --target "$GITHUB_SHA" \
             --title "zoo2 デスクトップ版 (Tauri) v$VERSION" \
