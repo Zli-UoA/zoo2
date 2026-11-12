@@ -2,7 +2,7 @@ import { useMemo, useSyncExternalStore } from "react";
 
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
-import { THREADS_CHANGED } from "../lib/electric/threads";
+import { THREADS_CHANGED, threadRevision } from "../lib/electric/threads";
 
 export interface ThreadSummary {
   id: string;
@@ -31,6 +31,7 @@ function createIndex(
   const client = createConfiguredApiClient(config);
   let result: Result | null = null;
   let fetchedAt = 0;
+  let observedRevision = -1;
   let cursor: string | null = null;
   let hasAdditionalPages = false;
   let failedRequest: { append: boolean; cursor: string | null } | null = null;
@@ -58,6 +59,7 @@ function createIndex(
       controller = request;
       const signal = AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]);
       const started = generation;
+      const startedRevision = threadRevision();
       const params = new URLSearchParams();
       if (channelId) params.set("channel_id", channelId);
       if (archived) params.set("archived", "true");
@@ -86,6 +88,7 @@ function createIndex(
         }
         if (active && started === generation && !signal.aborted) {
           fetchedAt = Date.now();
+          observedRevision = startedRevision;
           failedRequest = null;
           cursor = rebuild ? rangeEnd : page.next_cursor;
           hasAdditionalPages = append || (rebuild && items.length > 100);
@@ -140,7 +143,13 @@ function createIndex(
       const request = failedRequest;
       void refresh(request?.append ?? cursor !== null, request ? request.cursor : cursor);
     };
-    if (!result || result.isError || Date.now() - fetchedAt >= 60_000) void refresh();
+    if (
+      !result ||
+      result.isError ||
+      observedRevision !== threadRevision() ||
+      Date.now() - fetchedAt >= 60_000
+    )
+      void refresh();
     const interval = archived ? null : window.setInterval(refreshFirst, 60_000);
     window.addEventListener("focus", refreshFirst);
     window.addEventListener("online", refreshFirst);

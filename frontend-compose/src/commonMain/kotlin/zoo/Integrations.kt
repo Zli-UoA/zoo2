@@ -916,7 +916,7 @@ private fun AppHome(app: Session, id: String, channelId: String? = app.contextCh
     LaunchedEffect(app, id) {
         pollWhileVisible(snapshotFlow { app.env.visible && app.env.online }, app.surfaceChanges, 2000, 30000) {
             rows = app.api.request("/api/apps/$id/surfaces").rows()
-            rows.isNotEmpty()
+            rows.isNotEmpty() || app.watchingSurfaces()
         }
     }
     rows

@@ -258,3 +258,25 @@ it("cancels the previous account and the last outstanding subscription", async (
   await act(async () => root.render(null));
   expect(second.aborted).toBe(true);
 });
+
+it("invalidates archived history changed while its last consumer was closed", async () => {
+  fixture.api.get
+    .mockResolvedValueOnce(page([thread]))
+    .mockResolvedValue(page([{ ...thread, content: "edited" }]));
+  const view = (enabled: boolean) =>
+    createElement(Test, { userId: "alice", channelId: "general", archived: true, enabled });
+  await act(async () => root.render(view(true)));
+  expect(index.threads[0].content).toBe("Thread");
+  await act(async () => root.render(view(false)));
+  await act(async () => window.dispatchEvent(new Event(THREADS_CHANGED)));
+  expect(fixture.api.get).toHaveBeenCalledTimes(1);
+  await act(async () => root.render(view(true)));
+  expect(fixture.api.get).toHaveBeenCalledTimes(2);
+  expect(index.threads[0].content).toBe("edited");
+  await act(async () => root.render(view(false)));
+  fixture.api.get.mockResolvedValue(page([]));
+  await act(async () => window.dispatchEvent(new Event(THREADS_CHANGED)));
+  await act(async () => root.render(view(true)));
+  expect(fixture.api.get).toHaveBeenCalledTimes(3);
+  expect(index.threads).toEqual([]);
+});

@@ -76,8 +76,12 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         } finally { workspaceEmojiMutex.unlock() }
     }
     internal val surfaceChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST)
-    private var surfaceWatch = 0
-    fun invalidateSurfaces() { surfaceWatch = 8; surfaceChanges.tryEmit(Unit) }
+    private var surfaceWatchUntil = 0L
+    internal fun watchingSurfaces() = kotlin.time.Clock.System.now().toEpochMilliseconds() < surfaceWatchUntil
+    fun invalidateSurfaces() {
+        surfaceWatchUntil = kotlin.time.Clock.System.now().toEpochMilliseconds() + 15_000
+        surfaceChanges.tryEmit(Unit)
+    }
     var env by mutableStateOf(initial)
     val overlays = mutableStateListOf<OverlaySlot>()
     var dialog by mutableStateOf<String?>(null)
@@ -305,9 +309,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         scope.launch {
             pollWhileVisible(snapshotFlow { env.online && env.visible }, surfaceChanges, 2000, 30000) {
                 surfaces = api.request("/api/app-surfaces").rows()
-                val watching = surfaceWatch > 0
-                if (watching) surfaceWatch--
-                surfaces.isNotEmpty() || watching
+                surfaces.isNotEmpty() || watchingSurfaces()
             }
         }
     }

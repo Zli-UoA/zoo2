@@ -1,5 +1,5 @@
 import { visiblePoll } from "../../lib/visiblePoll";
-import { refreshAppSurfaces } from "../../lib/appSurfaceEvents";
+import { APP_SURFACES_CHANGED, refreshAppSurfaces } from "../../lib/appSurfaceEvents";
 import { Select } from "../ui/select";
 import { Input } from "../ui/input";
 import { useEffect, useMemo, useState } from "react";
@@ -195,15 +195,22 @@ function UserAppsDialog({
       setSurfaces([]);
       return;
     }
+    let watchUntil = 0;
     const polling = visiblePoll(
       async (signal) => {
         const rows = await client.get<Surface[]>(`/api/apps/${selected}/surfaces`, { signal });
         if (!signal.aborted) setSurfaces(rows);
-        return rows.length > 0;
+        return rows.length > 0 || Date.now() < watchUntil;
       },
       { interval: 2000, maxInterval: 30000 },
     );
+    const changed = () => {
+      watchUntil = Date.now() + 15000;
+      polling.refresh();
+    };
+    window.addEventListener(APP_SURFACES_CHANGED, changed);
     return () => {
+      window.removeEventListener(APP_SURFACES_CHANGED, changed);
       polling.dispose();
       setSurfaces([]);
     };
