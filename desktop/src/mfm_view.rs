@@ -10,6 +10,17 @@ use zoo2_client_core::mfm::{self, Line, Style, Tone};
 
 use crate::{login, theme};
 
+fn account_fallback(initial: String) -> Div {
+    div()
+        .w(px(18.0))
+        .h(px(18.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(initial)
+}
+
 /// MFM の `Style` を GPUI の `HighlightStyle` へ変換する (テーマ指定)。
 pub fn style_to_highlight_with_theme(style: Style, theme: &theme::Theme) -> HighlightStyle {
     let mut highlight = HighlightStyle::default();
@@ -159,23 +170,21 @@ pub fn render_mfm_accounts_with_theme(
                     .as_ref()
                     .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
                 {
+                    let initial = span
+                        .avatar_fallback
+                        .clone()
+                        .unwrap_or_else(|| "?".to_owned());
                     row = row.child(
                         gpui::img(url.clone())
+                            .with_fallback(move || {
+                                account_fallback(initial.clone()).into_any_element()
+                            })
                             .w(px(18.0))
                             .h(px(18.0))
                             .rounded_full(),
                     );
                 } else if let Some(initial) = &span.avatar_fallback {
-                    row = row.child(
-                        div()
-                            .w(px(18.0))
-                            .h(px(18.0))
-                            .rounded_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(initial.clone()),
-                    );
+                    row = row.child(account_fallback(initial.clone()));
                 } else {
                     let styled = StyledText::new(span.content.clone()).with_highlights(vec![(
                         0..span.content.len(),
