@@ -343,7 +343,10 @@ pub(crate) async fn check_idempotent_existing_message(
         && req_att_ids == existing_att_ids
         && options_match
     {
-        return Ok(Some(MessageResponse::from(existing_msg)));
+        // 編集で増えた revision など、モデルに含めない列も保存済みの値を返す（暗号化側と同じ）。
+        return Ok(Some(
+            with_e2ee_fields(&mut *db, MessageResponse::from(existing_msg)).await?,
+        ));
     }
     Err(AppError::Conflict("Idempotency key already used".into()))
 }
