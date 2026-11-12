@@ -84,6 +84,18 @@ Slack のエクスポート ZIP には、添付ファイルの実体が入って
 
 ZIP は添付ファイルと同じバケット（`S3_*`）の `slack-imports/` の下に置きます（削除されるまで残るので、その分のストレージを使います）。ブラウザから直接 PUT するため、バケットの CORS で PUT を許可しておく必要があります（`infra/terraform/r2.tf` で設定済みです）。ワーカーは解析と取り込みのために ZIP を `SLACK_IMPORT_TMP_DIR` へダウンロードするので、書き込みができて ZIP と同じ程度の空き容量があるディレクトリが必要です。Kubernetes でルートファイルシステムを読み取り専用にしている場合は、`emptyDir`（`sizeLimit` を ZIP の上限以上にする）をマウントして指定してください。書き込めないと、解析と取り込みは `SLACK_IMPORT_TMP_DIR` を含むエラーで失敗します。zli.chat の本番と Preview では Zli-UoA/zoo2-infra#122（マージ済み）で、`emptyDir`・`SLACK_IMPORT_TMP_DIR`・`fsGroup` を設定します。この PR を配備する前に、本番と Preview の backend にその設定が反映されていることを確認してください。ワーカーは使っている間 ZIP にロックをかけておき、起動時に、どのプロセスもロックしていない `zoo-slack-import-*.zip` を消します。取り込みの途中でコンテナが再起動しても（`emptyDir` はコンテナの再起動では消えません）、前のプロセスが残した ZIP で容量の上限を超えることはありません。
 
+### 専用のワーカー（`zoo_slack_worker`）
+
+取り込み（解析・取り込み・添付の取得）と差分同期のワーカーは、既定では backend のプロセスの中で動きます。backend の更新や再起動のたびに、処理中のジョブが止まるので、長い取り込みは、専用のプロセスに分けられます。
+
+- バイナリは `zoo_slack_worker`（backend と同じイメージ。Deployment の `command` に `/home/nonroot/zoo_slack_worker` を指定します）。HTTP の API は持たず、`/healthz`（`SLACK_WORKER_PORT`、既定 8082）だけを返します。設定は backend と同じ環境変数です（`DATABASE_URL`、`S3_*`、`SLACK_*`、`ENVIRONMENT` など。`Config::validate` も同じ検査をするので、本番では OIDC の設定も要ります）。`SLACK_IMPORT_TMP_DIR` と `emptyDir` は、専用のワーカーの Pod に付けます。
+- backend 側は、環境変数 `SLACK_IMPORT_WORKER=false`（`false`/`0`/`off`/`disabled`/`no`）で、取り込みと差分同期のワーカーを止めます。未設定・空・その他の値は、従来どおり有効です（書き間違いは警告のログが出ます）。起動時に読むので、変えたら再起動してください。
+- 管理画面からの操作（ZIP のアップロード、取り込みの開始、取り消し、添付の再取得）は、backend の API がデータベースのジョブの行を変えるだけなので、ワーカーの場所に関係なく、これまでどおり使えます。
+- 専用のワーカーと backend のワーカーが同時に動いても、1 つのジョブは `FOR UPDATE SKIP LOCKED` とリースで、1 台だけが進めます。配備の途中で両方が動く期間があっても安全です。
+- SIGTERM を受けると、処理中のジョブを手放します。`attempts` は消費せず、`handoffs` を 1 増やし、30 秒後から別のワーカーが取れます。取り込みは、日付ファイルごとに再開位置（`import_progress`）を保存するので、やり直しは、取り込み済みの日付ファイルを飛ばします。
+- 配備の順序: (1) このバイナリを含むイメージを配備する（backend の挙動は変わりません）、(2) 専用のワーカーの Deployment を足して、`/healthz` が通り、小さな ZIP が最後まで取り込めることを確認する、(3) backend に `SLACK_IMPORT_WORKER=false` を足して再起動する。戻すときは、この env を外して再起動します。
+
+
 ZIP はブラウザから署名付き URL に直接 PUT するので、フロントエンドの CSP の `connect-src` に、ストレージの公開オリジン（`CSP_STORAGE_SRC`。添付ファイルと同じ設定）が必要です。公開オリジンが Cloudflare のプロキシ配下だと、プランごとのリクエスト本文の上限（Free・Pro は 100 MB、Business は 200 MB）を超える ZIP はブラウザーから PUT できません。そのような大きな ZIP は、ブラウザーを使わず、管理者が手動でストレージへ直接アップロードします（「大きな ZIP を手動でアップロードする」）。プレースホルダのアイコンは Slack のプロフィール画像の URL（`https://avatars.slack-edge.com/…` など）を使うので、表示するには、その配信元を `CSP_APP_IMAGE_SRC`（`img-src`）に追加します。追加しない場合は、既定のアイコンを表示します。`SLACK_IMPORT_BOT_TOKEN` で添付ファイルを取得する場合は、バックエンドから `files.slack.com`（`SLACK_FILES_BASE_URL` のホスト）へ HTTPS で接続できる必要があります。NetworkPolicy などで外向きの通信を絞っている場合は、許可してください。
 
 ### 大きな ZIP を手動でアップロードする
