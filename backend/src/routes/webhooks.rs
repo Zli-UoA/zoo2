@@ -90,6 +90,7 @@ pub(super) async fn persist_card(
             ciphertext: None,
             epoch: None,
             revision: None,
+            mentions: None,
         },
         false,
         Some(card_data),

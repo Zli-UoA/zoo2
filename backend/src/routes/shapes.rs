@@ -677,6 +677,7 @@ async fn e2ee_to_device_shape(
 }
 
 /// App tokens only enumerate channels their acting identity has joined.
+/// 暗号化チャンネルは、委任トークンでも列挙しない（#358）。
 pub(crate) async fn app_channels_shape(
     state: AppState,
     p: &crate::apps::Principal,
@@ -686,7 +687,7 @@ pub(crate) async fn app_channels_shape(
         &state,
         "channels",
         Some(
-            "deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)",
+            "deleted_at IS NULL AND NOT encrypted AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)",
         ),
         &[("params[1]", p.user_id.as_str())],
         &params,

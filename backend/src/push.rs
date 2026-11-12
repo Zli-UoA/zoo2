@@ -136,6 +136,9 @@ struct NotificationPayload {
     notification_type: String,
 }
 
+/// 暗号化チャンネルの Web Push の本文。
+pub const ENCRYPTED_MESSAGE_BODY: &str = "新しいメッセージ";
+
 fn notification_payload(
     notification: &Notification,
     actor: &User,
@@ -158,7 +161,13 @@ fn notification_payload(
                 channel_name
             )
         },
-        body: message.content.chars().take(240).collect(),
+        // 暗号化チャンネルの本文はサーバーで読めないので、「新しいメッセージ」だけを送る (#358)。
+        // Service Worker での復号は後続 (#365)。
+        body: if channel.encrypted {
+            ENCRYPTED_MESSAGE_BODY.to_string()
+        } else {
+            message.content.chars().take(240).collect()
+        },
         url: format!("/channels/{}?message={}", channel.id, message.id),
         tag: format!("zoo-{}", notification.id),
         notification_type: notification.notification_type.clone(),
@@ -515,6 +524,11 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         assert_eq!(
             notification_payload(&notification, &actor, &channel, &message).title,
             "Alice"
+        );
+        channel.encrypted = true;
+        assert_eq!(
+            notification_payload(&notification, &actor, &channel, &message).body,
+            ENCRYPTED_MESSAGE_BODY
         );
     }
 }

@@ -224,8 +224,10 @@ async fn create(
     }
     let notifications = if body.channel_id.is_some() {
         let message = crate::models::Message::get_by_id(&mut tx, id.as_str()).await?;
-        crate::notifications::create_message_notifications(&mut tx, &message, &user.id, reply_user)
-            .await?
+        crate::notifications::create_message_notifications(
+            &mut tx, &message, &user.id, reply_user, None,
+        )
+        .await?
     } else {
         vec![]
     };

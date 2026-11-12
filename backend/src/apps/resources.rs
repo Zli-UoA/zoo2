@@ -523,7 +523,12 @@ async fn stars(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, AppEr
         if let Some(c) = row["channel_id"].as_str() {
             match a.channel(&mut tx, c, false).await {
                 Ok(_) => {}
-                Err(AppError::NotFound(_)) => continue,
+                // 暗号化チャンネル（#358）の項目も、見えないものとして読み飛ばす。
+                Err(AppError::NotFound(_))
+                | Err(AppError::Coded {
+                    code: "E2EE_APPS_FORBIDDEN",
+                    ..
+                }) => continue,
                 Err(e) => return Err(e),
             }
         }
@@ -1191,7 +1196,12 @@ async fn sessions(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, Ap
             .await
         {
             Ok(_) => visible.push(row),
-            Err(AppError::NotFound(_)) => {}
+            // 暗号化チャンネル（#358）の項目も、見えないものとして読み飛ばす。
+            Err(AppError::NotFound(_))
+            | Err(AppError::Coded {
+                code: "E2EE_APPS_FORBIDDEN",
+                ..
+            }) => {}
             Err(e) => return Err(e),
         }
     }
@@ -1511,7 +1521,12 @@ async fn readable_file(
         let c = share["channel"].as_str().unwrap();
         match a.channel(tx, c, false).await {
             Ok(_) => return Ok((f, c.to_owned())),
-            Err(AppError::NotFound(_)) => {}
+            // 暗号化チャンネル（#358）の項目も、見えないものとして読み飛ばす。
+            Err(AppError::NotFound(_))
+            | Err(AppError::Coded {
+                code: "E2EE_APPS_FORBIDDEN",
+                ..
+            }) => {}
             Err(e) => return Err(e),
         }
     }

@@ -258,6 +258,10 @@ pub(crate) async fn create_or_get_dm(
                     AppError::from(err)
                 }
             })?;
+        // 暗号化 DM には App（Bot）を入れない（#358）。Webhook のユーザーなどの bot も同じ。
+        if target.is_bot && payload.encrypted {
+            return Err(e2ee_channels::apps_forbidden());
+        }
         if target.is_bot && !crate::apps::bot_can_chat(&mut db, uid).await? {
             return Err(AppError::BadRequest(
                 "Cannot start a DM with an integration user".into(),

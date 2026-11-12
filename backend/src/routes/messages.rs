@@ -45,6 +45,10 @@ pub struct CreateMessageRequest {
     /// 作成では 0 だけ（省略できる）。
     #[serde(default)]
     pub revision: Option<i64>,
+    /// 暗号化チャンネルのメンション（平文。通知と Web Push の宛先だけに使う）。
+    /// 平文チャンネルでは使わず、今までどおり本文から作る（docs/e2ee.md の「機能ごとの扱い」）。
+    #[serde(default)]
+    pub mentions: Option<e2ee_channels::Mentions>,
 }
 
 fn default_message_kind() -> String {
@@ -497,6 +501,9 @@ pub(crate) async fn create_message_impl(
                 "revision must be 0 for a new message".into(),
             ));
         }
+        if let Some(mentions) = &payload.mentions {
+            e2ee_channels::check_mentions(mentions)?;
+        }
         Some(e2ee_channels::check_ciphertext_shape(ciphertext)?)
     } else {
         if payload.ciphertext.is_some() || payload.epoch.is_some() || payload.revision.is_some() {
@@ -842,6 +849,7 @@ pub(crate) async fn create_message_impl(
             &message,
             auth_user.id.as_str(),
             parent_author_id.as_deref(),
+            payload.mentions.as_ref(),
         )
         .await?
     } else {

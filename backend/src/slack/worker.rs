@@ -1069,6 +1069,10 @@ async fn ensure_can_import(
     channel_id: &str,
     channel: &SlackChannel,
 ) -> Result<(), AppError> {
+    // 開始のあとに暗号化チャンネルになった場合 (#367) も、ジョブの実行時に書き込みを止める (#358)
+    if crate::routes::e2ee_channels::is_encrypted_channel(tx, channel_id).await? {
+        return Err(crate::routes::e2ee_channels::plaintext_forbidden());
+    }
     if admin
         || super::self_import::can_import_into(
             tx,
