@@ -2,6 +2,7 @@
 //! リアクションの集計) を作る。frontend の `lib/electric/messageFeed.ts` や `threads.ts` と
 //! 同じく、結合と絞り込みはクライアントで行う。
 
+pub use crate::accounts::AccountProfiles;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
@@ -11,6 +12,8 @@ use crate::{
 
 #[derive(Debug, Default)]
 pub struct Store {
+    /// AuthZ directory; never filled from the application's users Shape.
+    pub account_profiles: crate::accounts::AccountProfiles,
     channels: HashMap<String, Channel>,
     users: HashMap<String, User>,
     /// 行はシェイプのキーで持つので、id から引くための索引を別に持つ。

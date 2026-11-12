@@ -31,6 +31,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/stars/{kind}/{id}", delete(remove_star))
         .route("/api/emoji-service", get(emoji_service))
         .route("/api/emoji-shortcodes", get(emoji_shortcodes))
+        .route("/api/emoji-accounts", get(emoji_accounts))
         .route("/api/emojis", get(emojis).post(put_emoji))
         .route(
             "/api/emojis/upload",
@@ -566,6 +567,9 @@ async fn remove_star(
 
 async fn emoji_shortcodes(_user: crate::auth::AuthUser) -> Result<Json<Value>, AppError> {
     Ok(Json(crate::emoji_shortcodes::catalog().await?))
+}
+async fn emoji_accounts(_user: crate::auth::AuthUser) -> Result<Json<Value>, AppError> {
+    Ok(Json(crate::emoji_accounts::catalog().await?))
 }
 
 async fn emoji_service(_user: crate::auth::AuthUser) -> Result<Json<Value>, AppError> {

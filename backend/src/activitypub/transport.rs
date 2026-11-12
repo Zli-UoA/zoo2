@@ -176,6 +176,76 @@ pub async fn fetch_json(
 ) -> Result<Value, AppError> {
     fetch_json_limit(state, user, url, 256 * 1024).await
 }
+// Unknown Announce originals can briefly be unavailable while their Create is being published.
+// Retry only transport failures and transient HTTP statuses; never bypass origin validation.
+pub(super) async fn fetch_json_with_retry(
+    state: &AppState,
+    user: Option<&str>,
+    url: &str,
+) -> Result<Value, AppError> {
+    retry_json_request(|| request(state, user, reqwest::Method::GET, url, None)).await
+}
+
+// Includes DNS, signed GETs, backoff and reading the final response body. Keep the
+// shared Inbox permit no longer than a single attempt's former worst-case budget.
+const ANNOUNCE_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
+async fn retry_json_request<F, Fut>(mut fetch: F) -> Result<Value, AppError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, AppError>>,
+{
+    let deadline = tokio::time::Instant::now() + ANNOUNCE_FETCH_TIMEOUT;
+    tokio::time::timeout_at(deadline, async {
+        for attempt in 0..3 {
+            let response = fetch().await;
+            let retry = match &response {
+                Ok(response) => matches!(response.status().as_u16(), 502..=504),
+                Err(AppError::BadGateway(_)) => true,
+                _ => false,
+            };
+            if !retry || attempt == 2 {
+                return read_json(response?, 256 * 1024).await;
+            }
+            let backoff = Duration::from_millis(250 * (1 << attempt));
+            let delay = response
+                .as_ref()
+                .ok()
+                .and_then(|response| response.headers().get(reqwest::header::RETRY_AFTER))
+                .and_then(|value| value.to_str().ok())
+                .and_then(retry_after)
+                .unwrap_or(backoff)
+                .max(backoff);
+            // Do not retry earlier than requested or hold an Inbox slot just to
+            // wait beyond the budget. Leave a later attempt to the sender's redelivery.
+            if delay >= deadline.saturating_duration_since(tokio::time::Instant::now()) {
+                return Err(AppError::BadGateway(
+                    "Announce original retry deferred".into(),
+                ));
+            }
+            drop(response);
+            tokio::time::sleep(delay).await;
+        }
+        unreachable!()
+    })
+    .await
+    .map_err(|_| AppError::BadGateway("Announce original fetch timed out".into()))?
+}
+
+fn retry_after(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    value
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+        .or_else(|| {
+            httpdate::parse_http_date(value).ok().map(|date| {
+                date.duration_since(SystemTime::now())
+                    .unwrap_or(Duration::ZERO)
+            })
+        })
+}
+
 pub(super) async fn fetch_json_limit(
     state: &AppState,
     user: Option<&str>,
@@ -292,6 +362,217 @@ mod tests {
                     .is_err(),
                 "{url}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod announce_fetch_tests {
+    use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    #[tokio::test]
+    async fn retries_server_failure_before_reading_the_original_note() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"type":"Note"})))
+            .with_priority(6)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        let result = retry_json_request(|| async {
+            client
+                .get(server.uri())
+                .send()
+                .await
+                .map_err(|_| AppError::BadGateway("Network failure".into()))
+        })
+        .await
+        .unwrap();
+        assert_eq!(result["type"], "Note");
+    }
+
+    #[tokio::test]
+    async fn stops_after_three_transient_failures() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(3)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        assert!(
+            retry_json_request(|| async {
+                client
+                    .get(server.uri())
+                    .send()
+                    .await
+                    .map_err(|_| AppError::BadGateway("Network failure".into()))
+            })
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_permanent_errors_rate_limits_or_invalid_json() {
+        for status in [403, 404, 429, 500, 501, 505, 200] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(status).set_body_string("invalid JSON"))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = reqwest::Client::new();
+            assert!(
+                retry_json_request(|| async {
+                    client
+                        .get(server.uri())
+                        .send()
+                        .await
+                        .map_err(|_| AppError::BadGateway("Network failure".into()))
+                })
+                .await
+                .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_network_errors_but_not_url_policy_rejections() {
+        let mut calls = 0;
+        let result = retry_json_request(|| {
+            calls += 1;
+            std::future::ready(Err(AppError::BadGateway("Network failure".into())))
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls, 3);
+        calls = 0;
+        let result = retry_json_request(|| {
+            calls += 1;
+            std::future::ready(Err(AppError::BadRequest("Private address".into())))
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_request_times_out_within_the_total_budget() {
+        let start = tokio::time::Instant::now();
+        let result = retry_json_request(|| async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Err(AppError::BadGateway("Slow origin".into()))
+        })
+        .await;
+        assert!(
+            matches!(result, Err(AppError::BadGateway(message)) if message == "Announce original fetch timed out")
+        );
+        assert_eq!(start.elapsed(), ANNOUNCE_FETCH_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retries_share_one_deadline_instead_of_resetting_the_budget() {
+        let start = tokio::time::Instant::now();
+        let mut calls = 0;
+        let result = retry_json_request(|| {
+            calls += 1;
+            async {
+                tokio::time::sleep(Duration::from_secs(8)).await;
+                Err(AppError::BadGateway("Slow origin".into()))
+            }
+        })
+        .await;
+        assert!(matches!(result, Err(AppError::BadGateway(_))));
+        assert_eq!(calls, 3);
+        assert_eq!(start.elapsed(), ANNOUNCE_FETCH_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn response_body_reads_share_the_same_deadline() {
+        let start = tokio::time::Instant::now();
+        let result = retry_json_request(|| {
+            let body = reqwest::Body::wrap_stream(futures_util::stream::once(async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok::<_, std::io::Error>(b"{}".as_slice())
+            }));
+            std::future::ready(Ok(axum::http::Response::new(body).into()))
+        })
+        .await;
+        assert!(matches!(result, Err(AppError::BadGateway(_))));
+        assert_eq!(start.elapsed(), ANNOUNCE_FETCH_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retries_wait_for_retry_after_instead_of_the_shorter_backoff() {
+        let start = tokio::time::Instant::now();
+        let mut attempts = Vec::new();
+        let result = retry_json_request(|| {
+            attempts.push(start.elapsed());
+            std::future::ready(Ok(axum::http::Response::builder()
+                .status(503)
+                .header("retry-after", "2")
+                .body("")
+                .unwrap()
+                .into()))
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            attempts,
+            [
+                Duration::ZERO,
+                Duration::from_secs(2),
+                Duration::from_secs(4)
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn long_retry_after_returns_without_holding_the_inbox_permit() {
+        for retry_after in [
+            "30".to_owned(),
+            httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(60)),
+        ] {
+            let start = tokio::time::Instant::now();
+            let mut calls = 0;
+            let result = retry_json_request(|| {
+                calls += 1;
+                std::future::ready(Ok(axum::http::Response::builder()
+                    .status(503)
+                    .header("retry-after", &retry_after)
+                    .body("")
+                    .unwrap()
+                    .into()))
+            })
+            .await;
+            assert!(
+                matches!(result, Err(AppError::BadGateway(message)) if message == "Announce original retry deferred")
+            );
+            assert_eq!(calls, 1);
+            assert_eq!(start.elapsed(), Duration::ZERO);
+        }
+    }
+
+    #[test]
+    fn retry_after_understands_http_dates_and_ignores_invalid_values() {
+        let now = SystemTime::now();
+        let delay = retry_after(&httpdate::fmt_http_date(now + Duration::from_secs(5))).unwrap();
+        assert!(delay > Duration::from_secs(3) && delay <= Duration::from_secs(5));
+        assert_eq!(
+            retry_after(&httpdate::fmt_http_date(now - Duration::from_secs(5))),
+            Some(Duration::ZERO)
+        );
+        for invalid in ["invalid", "-1", "1.5"] {
+            assert_eq!(retry_after(invalid), None);
         }
     }
 }

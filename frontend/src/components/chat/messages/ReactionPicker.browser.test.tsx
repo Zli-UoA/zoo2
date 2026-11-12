@@ -37,6 +37,7 @@ vi.mock("frimousse", async () => {
     return element("div", null, children);
   }
   return {
+    defaultEmojiDataResolver: vi.fn(),
     EmojiPicker: {
       Root,
       Search: () => null,

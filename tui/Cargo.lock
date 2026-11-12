@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "zoo2-tui"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "crossterm",

@@ -509,3 +509,92 @@ fn sensitive_media_is_emitted_on_note_and_document() -> anyhow::Result<()> {
     assert_eq!(media[0]["is_sensitive"], true);
     Ok(())
 }
+
+#[test]
+fn quoted_notes_keep_a_safe_reference_with_html_mfm_and_empty_comments() {
+    let quote = "https://peer.example/notes/quoted";
+    for field in ["quoteUrl", "quoteUri", "_misskey_quote"] {
+        for source in [None, Some("**MFM comment**")] {
+            let mut note = json!({"content":"<p>HTML comment</p>"});
+            note[field] = json!(quote);
+            if let Some(text) = source {
+                note["source"] = json!({"mediaType":"text/x.misskeymarkdown","content":text});
+            }
+            let content = emoji::note_content(&note).unwrap();
+            assert!(content.contains(source.unwrap_or("HTML comment")));
+            assert!(content.ends_with(&format!("<{quote}>")));
+        }
+    }
+    assert_eq!(
+        emoji::note_content(&json!({"quoteUrl":quote,"content":null})).unwrap(),
+        format!("<{quote}>")
+    );
+    for text in [quote.to_owned(), format!("Comment\n<{quote}>")] {
+        assert_eq!(
+            emoji::note_content(&json!({"quoteUrl":quote,"content":"", "_misskey_content":text}))
+                .unwrap(),
+            text
+        );
+    }
+    // A different URL with the same prefix must not hide the real quote target.
+    let note = json!({"quoteUrl":quote,"content":"","_misskey_content":format!("{quote}-other")});
+    assert!(
+        emoji::note_content(&note)
+            .unwrap()
+            .ends_with(&format!("<{quote}>"))
+    );
+}
+
+#[test]
+fn invalid_quote_metadata_does_not_inject_markup_or_reject_the_comment() {
+    for quote in [
+        "javascript:alert(1)",
+        "http://peer.example/n",
+        "https://user:password@peer.example/n",
+        "https://peer.example/a\n@everyone",
+        "https://peer.example/<script>",
+        "https://peer.example/n\u{0}",
+    ] {
+        let note = json!({"content":"Comment", "quoteUrl":quote});
+        assert_eq!(emoji::note_content(&note).unwrap(), "Comment");
+    }
+    let note = json!({"content":"Comment", "quoteUrl":"javascript:bad", "_misskey_quote":"https://peer.example/n"});
+    assert_eq!(
+        emoji::note_content(&note).unwrap(),
+        "Comment\n\n<https://peer.example/n>"
+    );
+    // Merely linking to a quote never imports third-party content.
+    let note = json!({"content":"Comment", "quoteUrl":{"id":"https://peer.example/n","content":"Unverified private text"}});
+    assert_eq!(emoji::note_content(&note).unwrap(), "Comment");
+}
+
+#[test]
+fn quote_urls_are_normalized_before_becoming_visible_links() {
+    for (raw, normalized) in [
+        (
+            "https://peer.example/a\u{202e}gpj.exe",
+            "https://peer.example/a%E2%80%AEgpj.exe",
+        ),
+        (
+            "https://peer.example/a\u{200b}b",
+            "https://peer.example/a%E2%80%8Bb",
+        ),
+        (
+            "https://peer.example/引用",
+            "https://peer.example/%E5%BC%95%E7%94%A8",
+        ),
+        (
+            "https://PEER.example:443/a/../original",
+            "https://peer.example/original",
+        ),
+    ] {
+        for field in ["quoteUrl", "quoteUri", "_misskey_quote"] {
+            let mut note = json!({"content":"Comment"});
+            note[field] = json!(raw);
+            assert_eq!(
+                emoji::note_content(&note).unwrap(),
+                format!("Comment\n\n<{normalized}>")
+            );
+        }
+    }
+}

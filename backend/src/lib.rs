@@ -15,5 +15,6 @@ pub mod state;
 pub mod storage;
 pub mod validation;
 
+pub mod emoji_accounts;
 pub mod emoji_service;
 pub mod emoji_shortcodes;

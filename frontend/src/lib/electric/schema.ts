@@ -121,6 +121,8 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     updated_at: "timestamp",
     deleted_at: "timestamp",
     parent_id: "text",
+    thread_archive_at: "timestamp",
+    thread_activity_at: "timestamp",
     ciphertext: "jsonb",
     epoch: "int8",
     revision: "int4",

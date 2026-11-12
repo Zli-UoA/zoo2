@@ -36,6 +36,7 @@ export interface ThreadPaneProps {
   isError: boolean;
   currentUserId: string | null;
   canModerate?: boolean;
+  isArchived?: boolean;
   readOnly?: boolean;
   reactions: Map<string, ReactionGroup[]>;
   attachments?: Map<string, AttachmentRow[]>;
@@ -92,6 +93,7 @@ export function ThreadPane({
   isError,
   currentUserId,
   canModerate = false,
+  isArchived = false,
   readOnly = false,
   reactions,
   attachments,
@@ -199,6 +201,9 @@ export function ThreadPane({
                 })}
           </p>
         </div>
+        {isArchived ? (
+          <span className="text-xs text-muted-foreground">{t("moderation.archived")}</span>
+        ) : null}
         <Button
           variant="ghost"
           size="icon-sm"

@@ -48,6 +48,7 @@ pub mod command {
     /// 引数なし。Rust 側が持っている行を `reset` 付きの [`super::event::SHAPE`] で送り直す。
     /// WebView を読み込み直したときに使う。
     pub const RESYNC: &str = "zoo_resync";
+    pub const ACCOUNT_PROFILES: &str = "zoo_account_profiles";
     /// [`super::SendMessage`]。[`super::SendResult`] を返す。
     pub const SEND_MESSAGE: &str = "zoo_send_message";
 

@@ -150,3 +150,13 @@ fn leptos_only(core: &Core) -> Result<(), IpcError> {
         ))
     }
 }
+
+#[tauri::command]
+pub async fn zoo_account_profiles(
+    webview: Webview,
+    core: Core_<'_>,
+) -> Result<zoo2_client_types::accounts::AccountProfiles, IpcError> {
+    require(&webview, &core, BUNDLED)?;
+    leptos_only(&core)?;
+    core.api().await?.account_profiles().await.map_err(to_ipc)
+}

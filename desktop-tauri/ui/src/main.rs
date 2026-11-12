@@ -58,6 +58,7 @@ impl Ctx {
             let ctx = *self;
             spawn_local(async move {
                 ctx.report(tauri::invoke0::<()>(command::RESYNC).await);
+                refresh_account_profiles(ctx).await;
             });
         }
         if !ready {
@@ -98,6 +99,24 @@ async fn send_focus(channel_id: Option<String>) {
     let _ = tauri::invoke::<()>(command::SET_FOCUS, serde_json::json!({ "focus": focus })).await;
 }
 
+async fn refresh_account_profiles(ctx: Ctx) {
+    if ctx.me().is_none()
+        || !matches!(
+            ctx.session.get_untracked().map(|info| info.ui),
+            Some(UiMode::Leptos)
+        )
+    {
+        return;
+    }
+    let profiles =
+        tauri::invoke0::<zoo2_client_types::accounts::AccountProfiles>(command::ACCOUNT_PROFILES)
+            .await
+            .unwrap_or_default();
+    if ctx.me().is_some() {
+        ctx.store.update(|store| store.account_profiles = profiles);
+    }
+}
+
 #[component]
 fn App() -> impl IntoView {
     let ctx = Ctx {
@@ -107,6 +126,14 @@ fn App() -> impl IntoView {
         error: RwSignal::new(None),
     };
     provide_context(ctx);
+    if let Ok(timer) = set_interval_with_handle(
+        move || {
+            spawn_local(refresh_account_profiles(ctx));
+        },
+        std::time::Duration::from_secs(60),
+    ) {
+        on_cleanup(move || timer.clear());
+    }
 
     spawn_local(async move {
         // SHAPE を先に購読する。SESSION の Ready で呼ぶ `zoo_resync` の行を取りこぼさないため。
@@ -317,11 +344,31 @@ fn Timeline(channel_id: String) -> impl IntoView {
 }
 
 #[component]
+fn AccountIcon(url: Option<String>, initial: String, label: String) -> impl IntoView {
+    let failed = RwSignal::new(false);
+    let url = url.filter(|value| value.starts_with("https://") || value.starts_with("http://"));
+    view! {
+        <span role="img" aria-label=label style="display:inline-flex;width:1.15em;height:1.15em;vertical-align:middle;align-items:center;justify-content:center;border-radius:50%">
+            {move || {
+                if !failed.get() && let Some(url) = &url {
+                    return view! { <img src=url.clone() alt="" style="width:100%;height:100%;border-radius:50%" on:error=move |_| failed.set(true) /> }.into_any();
+                }
+                initial.clone().into_any()
+            }}
+        </span>
+    }
+}
+
+#[component]
 fn MessageView(message: Message, name: String) -> impl IntoView {
     let ctx = expect_context::<Ctx>();
     let me = ctx.me().map(|me| me.user_name);
-    let lines = mfm::parse(&message.content, me.as_deref());
-    let lines = lines
+    let content = message.content.clone();
+    let lines = move || {
+        let lines = ctx.store.with(|store| {
+            mfm::parse_with_accounts(&content, me.as_deref(), &store.account_profiles)
+        });
+        lines
         .into_iter()
         .map(|line| {
             let spans = line
@@ -342,6 +389,9 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
                             class.push_str(name);
                             class.push(' ');
                         }
+                    }
+                    if let Some(initial) = span.avatar_fallback {
+                        return view! { <AccountIcon url=span.avatar_url initial=initial label=span.content /> }.into_any();
                     }
                     match style.tone {
                         Tone::Link => match span.href {
@@ -366,7 +416,8 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
                 .collect_view();
             view! { <div class="line">{spans}</div> }
         })
-        .collect_view();
+        .collect_view()
+    };
     view! {
         <article class="message">
             <header>
