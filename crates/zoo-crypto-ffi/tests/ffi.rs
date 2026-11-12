@@ -87,7 +87,7 @@ fn room_key_over_olm_then_megolm() {
 
     let outbound = OutboundSession::new(CHANNEL.into(), 1, 0);
     let content = alice
-        .encrypt_room_key(&alice_sessions, session_id, &bob_keys, outbound.room_key())
+        .encrypt_room_key(&alice_sessions, session_id, &bob_keys, &outbound)
         .unwrap();
 
     let bob_sessions = OlmSessionStore::new();

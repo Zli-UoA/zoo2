@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use zoo_crypto as core;
 
-use crate::{DeviceAccount, ReceivedRoomKey, Result, RoomKey, ZooCryptoError, lock, parse_json};
+use crate::{DeviceAccount, ReceivedRoomKey, Result, ZooCryptoError, lock, parse_json};
 
 /// チャンネルごとの Megolm の送信用セッション（[`core::OutboundSession`]）。
 ///
@@ -44,11 +44,6 @@ impl OutboundSession {
     /// 次に暗号化するメッセージのインデックス。
     pub fn message_index(&self) -> u32 {
         lock(&self.inner).message_index()
-    }
-
-    /// 配る Megolm セッション鍵（今のインデックスから）。
-    pub fn room_key(&self) -> RoomKey {
-        lock(&self.inner).room_key().into()
     }
 
     /// 作り直すべきか（期間、メッセージ数、`membership_epoch` の変化）。

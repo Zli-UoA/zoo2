@@ -128,6 +128,7 @@
           name = "zoo2-android";
           nativeBuildInputs = with pkgs; [
             androidToolchain
+            # nixpkgs の版（4.1.2）は CI Android の `cargo install cargo-ndk@4.1.2` と同じ。nixpkgs を上げたら合わせる。
             cargo-ndk
             gnumake
             jdk21

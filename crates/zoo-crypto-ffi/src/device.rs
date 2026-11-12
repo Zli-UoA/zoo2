@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use zoo_crypto as core;
 use zoo_crypto::Ed25519PublicKey;
 
-use crate::{Result, ZooCryptoError, bytes32, lock, parse_json};
+use crate::{OutboundSession, Result, ZooCryptoError, bytes32, lock, parse_json};
 
 /// 端末アカウント（[`core::DeviceAccount`]）。
 ///
@@ -135,16 +135,21 @@ impl DeviceAccount {
         Ok(session_id)
     }
 
-    /// `room_key` を `recipient` に送る to-device の `content`（JSON）を作る。`session_id` は
-    /// `sessions` にある、`recipient` との Olm セッション。
+    /// `outbound` の Megolm セッション鍵（今のインデックスから）を `recipient` に送る to-device の
+    /// `content`（JSON）を作る。`session_id` は `sessions` にある、`recipient` との Olm セッション。
+    ///
+    /// セッション鍵は秘密なので Kotlin に出さず、ここで `outbound` から作る（UniFFI の Record は
+    /// Kotlin の `data class` になり、`toString()` に中身が出るため）。ロックは端末アカウント、
+    /// `outbound`、`sessions` の順に取る。
     pub fn encrypt_room_key(
         &self,
         sessions: &OlmSessionStore,
         session_id: String,
         recipient: &VerifiedDeviceKeys,
-        room_key: RoomKey,
+        outbound: &OutboundSession,
     ) -> Result<String> {
         let account = lock(&self.inner);
+        let room_key = lock(&outbound.inner).room_key();
         let mut sessions = lock(&sessions.inner);
         let session = sessions
             .iter_mut()
@@ -152,7 +157,7 @@ impl DeviceAccount {
             .ok_or_else(|| ZooCryptoError::Olm {
                 reason: format!("Olm セッション {session_id} がありません"),
             })?;
-        let content = account.encrypt_room_key(session, &recipient.inner, &room_key.into())?;
+        let content = account.encrypt_room_key(session, &recipient.inner, &room_key)?;
         Ok(content.to_string())
     }
 
@@ -282,47 +287,6 @@ pub fn verify_json_signature(
 #[uniffi::export]
 pub fn to_canonical_json(json: String) -> Result<String> {
     Ok(core::to_canonical_json(&parse_json("json", &json)?)?)
-}
-
-/// Megolm セッション鍵の配布（`zoo.room_key` の `content`）。`session_key` は秘密。
-#[derive(Clone, PartialEq, Eq, uniffi::Record)]
-pub struct RoomKey {
-    pub channel_id: String,
-    pub epoch: u64,
-    pub session_id: String,
-    pub session_key: String,
-}
-
-impl std::fmt::Debug for RoomKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RoomKey")
-            .field("channel_id", &self.channel_id)
-            .field("epoch", &self.epoch)
-            .field("session_id", &self.session_id)
-            .finish_non_exhaustive()
-    }
-}
-
-impl From<RoomKey> for core::RoomKey {
-    fn from(key: RoomKey) -> Self {
-        Self {
-            channel_id: key.channel_id,
-            epoch: key.epoch,
-            session_id: key.session_id,
-            session_key: key.session_key,
-        }
-    }
-}
-
-impl From<core::RoomKey> for RoomKey {
-    fn from(key: core::RoomKey) -> Self {
-        Self {
-            channel_id: key.channel_id,
-            epoch: key.epoch,
-            session_id: key.session_id,
-            session_key: key.session_key,
-        }
-    }
 }
 
 /// 送信端末を検証済みにするための、送信ユーザーのクロス署名の情報（[`core::SenderTrust`]）。

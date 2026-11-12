@@ -100,7 +100,7 @@ class ZooCryptoFfiTest {
         val bobKeys = verifyDeviceKeys(bob.deviceKeys(), BOB, BOB_DEVICE)
         val sessionId = alice.createOutboundOlmSession(aliceSessions, bobKeys, oneTimeKey)
         val outbound = OutboundSession(CHANNEL, 1uL, 0uL)
-        val toDevice = alice.encryptRoomKey(aliceSessions, sessionId, bobKeys, outbound.roomKey())
+        val toDevice = alice.encryptRoomKey(aliceSessions, sessionId, bobKeys, outbound)
 
         // Bob が受け取り、検証して保存する。
         val bobSessions = OlmSessionStore()

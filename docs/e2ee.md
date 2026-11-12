@@ -1520,6 +1520,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - この target で動かすのは、JS の上で動く React だけ（Compose for Web は実験を中止し、`frontend-compose/` には Android 向けの共有コードだけが残る）なので、`crypto.getRandomValues` を前提にしてよい。JS のない環境で `wasm32-unknown-unknown` を使うことになったら、この例外を見直す。
 - 【決定】（#353）Android のバインディングは `crates/zoo-crypto-ffi` に置き、UniFFI（0.32）で Kotlin のバインディングを作る。コアの `crates/zoo-crypto/Cargo.toml` は変えない（feature も足さない）。
   - API の形：状態を持つもの（端末アカウント、Olm と Megolm のセッション、`TrustStore`、`BackupUploadState` など）は UniFFI のオブジェクトにし、中身を `Mutex` で守る。サーバーとやり取りする JSON（端末鍵、to-device の `content`、`ciphertext`、SSSS の応答、鍵スロットなど）は、コアと同じ形の JSON 文字列で渡し、Kotlin 側で型を二重に持たない。鍵などのバイト列は `ByteArray`、公開鍵はパディングなしの base64 の文字列にする。エラーはコアの `CryptoError` の variant と 1 対 1 の `ZooCryptoException` にし、`MissingRoomKey` のセッション ID、`BackupVersionRollback` の番号、`Rejected` の理由など、分岐に使う値は項目にも入れる。
+  - Megolm のセッション鍵は Kotlin に返さない。UniFFI の Record は Kotlin の `data class` になり、`toString()` に中身が出るため。鍵の配布は、`DeviceAccount.encrypt_room_key` が `OutboundSession` を受け取り、Rust の中で配る鍵を作る。
   - ロックの順序：複数のオブジェクトを一緒に使う操作は、端末アカウント、`OutboundSession`、`OlmSessionStore`、`InboundSessionStore` の順にロックを取る。`BackupUploadState` は `InboundSessionStore` より先に取る。
   - コアの Olm セッション、送信用セッション、受信用セッションはまだ保存形式を持たない。保存は暗号ストア（#359）で足す。
   - ABI は `arm64-v8a`、`armeabi-v7a`、`x86_64`（エミュレーター）。`x86` は入れない。`minSdk` は 26（アプリと同じ）。
