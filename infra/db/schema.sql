@@ -2598,3 +2598,7 @@ END $$;
 CREATE TRIGGER users_e2ee_deactivate AFTER UPDATE OF is_deactivated, guest_kind ON users
   FOR EACH ROW WHEN (NEW.is_deactivated AND NOT OLD.is_deactivated)
   EXECUTE FUNCTION e2ee_delete_devices_on_deactivate();
+
+-- Explicit content labels; defaults preserve existing clients during rollout.
+ALTER TABLE channels ADD COLUMN is_nsfw boolean NOT NULL DEFAULT false;
+ALTER TABLE attachments ADD COLUMN is_sensitive boolean NOT NULL DEFAULT false;

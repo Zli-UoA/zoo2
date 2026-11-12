@@ -1,3 +1,4 @@
+import { SensitiveMedia } from "../ui/sensitive-media";
 import { ImagePreview } from "../ui/image-preview";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
 import { MessageAttachments } from "../chat/messages/MessageAttachments";
@@ -13,6 +14,7 @@ export interface HomeMedia extends ImageMetadata {
   name: string;
   media_type: string;
   image_id?: string;
+  is_sensitive?: boolean;
 }
 
 /** The same MFM, emoji and link rendering in Home and public profiles. */
@@ -46,15 +48,21 @@ export function HomePostContent({
             if (!path) return null;
             const url = joinUrl(apiBaseUrl, path);
             return (
-              <ExternalLink key={index} href={url} className="block min-w-0">
-                <ImagePreview
-                  {...image}
-                  src={url}
-                  alt={image.name || t("home.image")}
-                  className="max-h-80 w-full"
-                  style={{ aspectRatio: imageAspectRatio(image) }}
-                />
-              </ExternalLink>
+              <SensitiveMedia
+                key={`${url}:${Boolean(image.is_sensitive)}:${index}`}
+                sensitive={image.is_sensitive}
+                preview={image}
+              >
+                <ExternalLink href={url} className="block min-w-0">
+                  <ImagePreview
+                    {...image}
+                    src={url}
+                    alt={image.name || t("home.image")}
+                    className="max-h-80 w-full"
+                    style={{ aspectRatio: imageAspectRatio(image) }}
+                  />
+                </ExternalLink>
+              </SensitiveMedia>
             );
           })}
         </div>

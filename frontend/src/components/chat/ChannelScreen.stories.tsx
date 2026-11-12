@@ -5,6 +5,8 @@ import { storyCommands } from "../../../.storybook/app-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { StoryShell } from "../../../.storybook/shell";
+import { storyAttachments } from "../../../.storybook/attachment-fixtures";
+import { storyCollections } from "../../../.storybook/fixtures";
 import { ChannelScreen } from "./ChannelScreen";
 
 const meta = {
@@ -103,5 +105,27 @@ export const CommandCompletion: Story = {
     );
     await expect(commandLookup).toHaveBeenCalledWith("channel-general");
     await expect(input).toHaveValue("");
+  }),
+};
+
+export const Nsfw: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    collections: {
+      ...storyCollections,
+      attachments: [{ ...storyAttachments[0], message_id: "message-hello", is_sensitive: true }],
+      channels: storyCollections.channels.map((channel) => ({
+        ...channel,
+        is_nsfw: channel.id === "channel-general",
+      })),
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const reveal = await canvas.findByRole("button", { name: "画像を表示" });
+    await expect(reveal.querySelector("canvas")).not.toBeNull();
+    await expect(canvas.queryByRole("img", { name: "screenshot.png" })).not.toBeInTheDocument();
+    await userEvent.click(reveal);
+    await waitFor(() => expect(canvas.getByRole("img", { name: "screenshot.png" })).toBeVisible());
   }),
 };
