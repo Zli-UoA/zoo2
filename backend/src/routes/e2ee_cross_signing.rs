@@ -22,8 +22,8 @@ use crate::{
     routes::{
         e2ee::{
             MAX_SIGNATURES_PER_UPLOAD, SHARED_USERS_SQL, bad_signature, check_key_size, coded,
-            crypto_error, exec, first, limit_exceeded, lock_active_user, lock_user, rows,
-            signature_count,
+            crypto_error, exec, first, limit_exceeded, lock_active_user, lock_device, lock_user,
+            rows, signature_count,
         },
         e2ee_reauth::reauth,
         response::ApiResponse,
@@ -434,12 +434,26 @@ async fn upload_signatures(
     };
     let (self_signing, user_signing) = (signer_of("self_signing"), signer_of("user_signing"));
 
+    // 自己署名の対象の端末は、端末の削除と同じ端末単位のロックを取ってから読む。
+    // 取らないと、端末を読んだあとに削除（署名の削除を含む）がコミットし、その後の
+    // INSERT で削除済みの端末に署名が残る。順序は全体の規則どおり、ユーザー単位の
+    // ロックのあとに device_id の昇順（BTreeSet）で取る。
+    let self_signed_devices: BTreeSet<&str> = req
+        .signatures
+        .iter()
+        .filter(|s| Some(&s.signer_key_id) == self_signing.as_ref() && s.target_user_id == actor.id)
+        .map(|s| s.target_key_id.as_str())
+        .collect();
+    for device_id in self_signed_devices {
+        lock_device(&mut tx, &actor.id, device_id).await?;
+    }
+
     let mut needs_reauth = false;
     for item in &req.signatures {
         let target = if Some(&item.signer_key_id) == self_signing.as_ref()
             && item.target_user_id == actor.id
         {
-            // 自分の端末への自己署名。
+            // 自分の端末への自己署名（端末単位のロックは上で取ってある）。
             first(
                 &mut tx,
                 "SELECT device_keys::text FROM e2ee_devices

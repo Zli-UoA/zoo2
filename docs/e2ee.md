@@ -771,6 +771,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
   署名者は常に呼び出したユーザー。サーバーは対象（端末鍵かマスター鍵）の Canonical JSON に対して署名を検証する。
   - 【決定】（#356）`signer_key_id` は今の自己署名鍵かユーザー署名鍵でなければ 400 `E2EE_BAD_SIGNATURE`。自己署名鍵で署名できるのは自分の削除されていない端末だけ、ユーザー署名鍵で署名できるのは他のユーザーの今のマスター鍵だけ（`target_key_id` はその公開鍵）。対象のユーザーは `keys/query` でマスター鍵を返す範囲（暗号化チャンネルを共有しているか、ピンか署名がある）に限り、範囲外と存在しない対象は 404。1 回 1000 件まで（`limit` は `signatures`）。
+  - 【決定】（#356）自己署名の対象の端末は、ユーザー単位のロックのあとに、端末の削除と同じ端末単位のロックを `device_id` の昇順で取ってから、削除されていないことを読む（読んだあとに削除がコミットし、削除済みの端末に署名が残るのを防ぐため）。
   - 【決定】（#356）応答は `{"count"}`。`count` は受け付けた署名の件数（要求の `signatures` の件数）で、書き込んだ行の数ではない。同じ署名の再送も数える。`txid` は行を足すか署名を置き換えたときだけ返し、すべてが同じ署名の再送なら `null` にする（Shape に流れる変更がないため）。
 - `POST /api/e2ee/tofu_pins`：`{"pins": [{"target_user_id", "master_key", "signatures"}], "replace": false}`。TOFU のピン（[クロス署名](#クロス署名)）を足す。サーバーは `{type, user_id, target_user_id, master_key}` に `signatures` を付けた JSON を `pin_json` として保存し、そのまま返す。【決定】（#356）1 回 1000 件まで（`limit` は `pins`）。応答は保存したピン（`{"pins": [...]}`）。
   - サーバーは、呼び出したユーザーの今のユーザー署名鍵で署名を検証する（違えば 400 `E2EE_BAD_SIGNATURE`）。
