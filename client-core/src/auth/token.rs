@@ -1058,6 +1058,7 @@ pub struct TokenManager {
     path: PathBuf,
     state: Arc<Mutex<State>>,
     task_tracker: Arc<TokenTaskTracker>,
+    persist: std::sync::Mutex<bool>,
 }
 
 impl TokenManager {
@@ -1080,6 +1081,7 @@ impl TokenManager {
                 refresh_outcome_unknown: false,
             })),
             task_tracker: TokenTaskTracker::new(),
+            persist: std::sync::Mutex::new(true),
         }
     }
 
@@ -1100,7 +1102,33 @@ impl TokenManager {
         }
     }
 
+    /// ログアウトする。以後このマネージャーはトークンを返さず、保存もしない。
+    /// 保存と同じロックの下で `token.json` を消すので、進行中の更新が後から
+    /// 終わっても、ファイルは作り直されない。
+    pub async fn sign_out(&self) -> Result<bool> {
+        *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        let expected = self.state.lock().await.tokens.clone();
+        let Some(lock) = token_file_lock_async(&self.path, false).await? else {
+            return Ok(false);
+        };
+        let (_lock, cleanup_error) = cleanup_stale_token_temps_async(&self.path, lock).await?;
+        if let Some(error) = cleanup_error {
+            return Err(error);
+        }
+        Ok(matches!(
+            delete_current_session_unlocked(&self.path, &self.oidc, &expected)?,
+            DeleteOutcome::Deleted
+        ))
+    }
+
+    fn signed_out(&self) -> bool {
+        !*self.persist.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub async fn access_token(&self) -> Result<String> {
+        if self.signed_out() {
+            return Err(HttpError::Unauthorized.into());
+        }
         // The caller may have its own request timeout (for example, the notes
         // client). Detaching this owned task means cancelling that caller does
         // not cancel an in-flight refresh after the IdP may already have
@@ -1133,6 +1161,9 @@ impl TokenManager {
                 Err(anyhow::Error::new(error).context("トークン更新処理が中断されました"))
             }
         };
+        if self.signed_out() {
+            return Err(HttpError::Unauthorized.into());
+        }
         match result {
             Err(error) => {
                 let pending = state.lock().await.pending_persist.is_some();
@@ -1144,6 +1175,12 @@ impl TokenManager {
             }
             result => result,
         }
+    }
+
+    pub async fn access_token_with_expiry(&self) -> Result<(String, i64)> {
+        let access = self.access_token().await?;
+        let state = self.state.lock().await;
+        Ok((access, state.tokens.expires_at))
     }
 
     async fn access_token_owned(
@@ -3059,5 +3096,41 @@ mod tests {
         let err = manager.access_token().await.unwrap_err();
         assert!(err.downcast_ref::<HttpError>().is_none(), "{err}");
         delete(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_finishing_after_sign_out_does_not_recreate_the_file() {
+        let server = MockServer::start().await;
+        let config = oidc(&issuer(&server).await);
+        Mock::given(method("POST"))
+            .and(path("/api/auth/oauth2/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "access_token": "new", "expires_in": 300 }))
+                    .set_delay(std::time::Duration::from_millis(300)),
+            )
+            .mount(&server)
+            .await;
+
+        let path = temp_path("sign-out");
+        save(&path, &tokens(&config, now() + 30, Some("rt"))).unwrap();
+        let manager = std::sync::Arc::new(TokenManager::new(
+            reqwest::Client::new(),
+            config.clone(),
+            path.clone(),
+            tokens(&config, now() + 30, Some("rt")),
+        ));
+        let refreshing = tokio::spawn({
+            let manager = manager.clone();
+            async move { manager.access_token().await }
+        });
+        // 更新の要求が IdP に届くのを待ってからログアウトする。
+        while server.received_requests().await.unwrap_or_default().len() < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(manager.sign_out().await.unwrap());
+        assert!(refreshing.await.unwrap().is_err());
+        assert!(load(&path, &config, Some(API)).unwrap().is_none());
+        assert!(manager.access_token().await.is_err());
     }
 }

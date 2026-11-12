@@ -41,7 +41,8 @@
     "descriptionTooLong": "簡介最多可以寫{{max}}個字元（而家{{length}}個）。",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "開緊…",
-    "create": "建立頻道"
+    "create": "建立頻道",
+    "nsfw": "NSFW 頻道"
   },
   "sync": {
     "title": "同步狀態",
@@ -56,6 +57,9 @@
     "logout": "登出",
     "loggedOut": "你已經登出咗",
     "loggedOutHelp": "請再登入先繼續。",
+    "desktopOutdated": "要更新桌面版",
+    "desktopOutdatedHelp": "呢個版本嘅應用程式開唔到而家嘅 zli.chat。請安裝新版本嘅應用程式。問題都可能係暫時嘅，請先試吓重新載入。",
+    "reload": "重新載入",
     "login": "登入",
     "failed": "登入唔到",
     "retry": "再登入",
@@ -221,7 +225,12 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "下載唔到檔案。",
-    "retry": "再試"
+    "retry": "再試",
+    "sensitive": "敏感圖片",
+    "markSensitive": "將圖片標記為敏感內容",
+    "showSensitive": "顯示圖片",
+    "hideSensitive": "隱藏圖片",
+    "sensitiveShort": "敏感圖片"
   },
   "threads": {
     "title": "子討論",
@@ -236,7 +245,9 @@
     "loadError": "載入唔到回覆。",
     "empty": "仲未有回覆。傳送第一則回覆啦。",
     "compose": "輸入回覆",
-    "rootDeleted": "原本嘅訊息已經刪除咗"
+    "rootDeleted": "原本嘅訊息已經刪除咗",
+    "targetTooOld": "呢則訊息太舊，喺度載入唔到",
+    "unreadTooOld": "更早嘅未讀訊息未載入"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應嘅用戶",

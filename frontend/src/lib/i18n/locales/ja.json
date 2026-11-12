@@ -41,7 +41,8 @@
     "descriptionTooLong": "説明は{{max}}文字以内で入力してください（現在{{length}}文字）。",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "作成中…",
-    "create": "チャンネル作成"
+    "create": "チャンネル作成",
+    "nsfw": "NSFWチャンネル"
   },
   "sync": {
     "title": "同期の状態",
@@ -56,6 +57,9 @@
     "logout": "ログアウト",
     "loggedOut": "ログアウトしました",
     "loggedOutHelp": "続けるには再度ログインしてください。",
+    "desktopOutdated": "デスクトップ版の更新が必要です",
+    "desktopOutdatedHelp": "このアプリの版では、いまの zli.chat を開けません。新しい版のアプリを入れてください。一時的な問題のこともあるので、先に再読み込みを試してください。",
+    "reload": "再読み込み",
     "login": "ログイン",
     "failed": "ログインできませんでした",
     "retry": "再ログイン",
@@ -221,7 +225,12 @@
     "download": "{{name}}をダウンロード",
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
-    "retry": "再試行"
+    "retry": "再試行",
+    "sensitive": "センシティブな画像",
+    "markSensitive": "画像をセンシティブとして投稿",
+    "showSensitive": "画像を表示",
+    "hideSensitive": "画像を隠す",
+    "sensitiveShort": "センシティブ"
   },
   "threads": {
     "title": "スレッド",
@@ -236,7 +245,9 @@
     "loadError": "返信の取得に失敗しました。",
     "empty": "返信はまだありません。最初の返信を送ってみましょう。",
     "compose": "返信を送信",
-    "rootDeleted": "元のメッセージは削除されました"
+    "rootDeleted": "元のメッセージは削除されました",
+    "targetTooOld": "このメッセージは古すぎて、ここまで読み込めませんでした",
+    "unreadTooOld": "これより古い未読は読み込まれていません"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",

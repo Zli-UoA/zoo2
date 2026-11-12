@@ -227,7 +227,7 @@ pub(super) async fn receive_verified(
                 ));
             }
             let content = emoji::note_content(object)?;
-            let media = emoji::media(&object["attachment"]);
+            let media = emoji::note_media(object);
             emoji::remember(&mut tx, &media).await?;
             let note_emojis = emoji::tags(&object["tag"]);
             emoji::remember(&mut tx, &note_emojis).await?;

@@ -1,0 +1,37 @@
+[package]
+name = "zoo2-desktop-tauri"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "zoo2 のデスクトップクライアント (Tauri)"
+homepage = "https://github.com/Zli-UoA/zoo2/tree/main/desktop-tauri"
+repository = "https://github.com/Zli-UoA/zoo2"
+
+[lib]
+name = "zoo2_desktop_tauri"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "zoo2-desktop-tauri"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+zoo2-client-core = { path = "../../client-core" }
+zoo2-client-types = { path = "../../client-types" }
+anyhow = "1"
+jiff = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+url = "2"
+notify-rust = "4"
+
+[profile.release]
+strip = true

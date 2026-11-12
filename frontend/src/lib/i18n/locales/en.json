@@ -41,7 +41,8 @@
     "descriptionTooLong": "Description must be {{max}} characters or fewer (currently {{length}}).",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "Creating…",
-    "create": "Create channel"
+    "create": "Create channel",
+    "nsfw": "NSFW channel"
   },
   "sync": {
     "title": "Sync status",
@@ -56,6 +57,9 @@
     "logout": "Log out",
     "loggedOut": "You have been logged out",
     "loggedOutHelp": "Log in again to continue.",
+    "desktopOutdated": "Update the desktop app",
+    "desktopOutdatedHelp": "This version of the app cannot open the current zli.chat. Install a newer version of the app. The problem may be temporary, so try reloading first.",
+    "reload": "Reload",
     "login": "Log in",
     "failed": "Unable to log in",
     "retry": "Log in again",
@@ -221,7 +225,12 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
-    "retry": "Try again"
+    "retry": "Try again",
+    "sensitive": "Sensitive image",
+    "markSensitive": "Mark images as sensitive",
+    "showSensitive": "Show image",
+    "hideSensitive": "Hide image",
+    "sensitiveShort": "Sensitive"
   },
   "threads": {
     "title": "Thread",
@@ -236,7 +245,9 @@
     "loadError": "Failed to load replies.",
     "empty": "No replies yet. Send the first reply.",
     "compose": "Write a reply",
-    "rootDeleted": "The original message was deleted"
+    "rootDeleted": "The original message was deleted",
+    "targetTooOld": "This message is too old to load here",
+    "unreadTooOld": "Older unread messages are not loaded"
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",

@@ -41,7 +41,8 @@
     "descriptionTooLong": "描述不能超过{{max}}个字符（当前{{length}}个）。",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "创建中…",
-    "create": "创建频道"
+    "create": "创建频道",
+    "nsfw": "NSFW 频道"
   },
   "sync": {
     "title": "同步状态",
@@ -56,6 +57,9 @@
     "logout": "退出登录",
     "loggedOut": "您已退出登录",
     "loggedOutHelp": "请重新登录以继续。",
+    "desktopOutdated": "需要更新桌面版",
+    "desktopOutdatedHelp": "此版本的应用无法打开当前的 zli.chat。请安装新版本的应用。问题也可能是暂时的，请先尝试重新加载。",
+    "reload": "重新加载",
     "login": "登录",
     "failed": "无法登录",
     "retry": "重新登录",
@@ -221,7 +225,12 @@
     "download": "下载{{name}}",
     "downloadShort": "下载",
     "downloadError": "无法下载文件。",
-    "retry": "重试"
+    "retry": "重试",
+    "sensitive": "敏感图片",
+    "markSensitive": "将图片标记为敏感内容",
+    "showSensitive": "显示图片",
+    "hideSensitive": "隐藏图片",
+    "sensitiveShort": "敏感图片"
   },
   "threads": {
     "title": "子线程",
@@ -236,7 +245,9 @@
     "loadError": "无法加载回复。",
     "empty": "暂无回复。发送第一条回复吧。",
     "compose": "输入回复",
-    "rootDeleted": "原消息已被删除"
+    "rootDeleted": "原消息已被删除",
+    "targetTooOld": "这条消息太久远，无法在此加载",
+    "unreadTooOld": "更早的未读消息未加载"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回应的用户",

@@ -1,0 +1,11 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[serve]
+port = 1420
+open = false
+
+[tools]
+# nixpkgs の wasm-bindgen-cli を使う (Cargo.toml の版と同じ)。
+wasm_bindgen = "0.2.129"

@@ -304,6 +304,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         parent: String?,
         commandAppId: String? = null,
         attachmentIds: List<String> = emptyList(),
+        sensitiveAttachmentIds: List<String> = emptyList(),
     ): Boolean {
         val command = Regex("^/([a-zA-Z0-9_-]+)(?:\\s+([\\s\\S]*))?$").matchEntire(content.trim())
         if (command != null && attachmentIds.isEmpty()) {
@@ -351,6 +352,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             parent?.let { put("parent_id", it) }
             if (attachmentIds.isNotEmpty())
                 put("attachment_ids", JsonArray(attachmentIds.map(::JsonPrimitive)))
+            if (sensitiveAttachmentIds.isNotEmpty()) put("sensitive_attachment_ids", JsonArray(sensitiveAttachmentIds.map(::JsonPrimitive)))
         }
         return try {
             repo.messages(channel).write(api, "/api/messages", "POST", body, row)
