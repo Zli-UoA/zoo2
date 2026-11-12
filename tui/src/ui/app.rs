@@ -351,7 +351,16 @@ impl App {
                                 .get(&id)
                                 .is_none_or(|reopened| at > *reopened)
                         });
-                        self.thread_states.insert(id, (archived, Instant::now()));
+                        let reopened = !archived
+                            && self
+                                .thread_states
+                                .get(&id)
+                                .is_some_and(|(was_archived, _)| *was_archived);
+                        self.thread_states
+                            .insert(id.clone(), (archived, Instant::now()));
+                        if reopened {
+                            self.ensure_active_thread(&id);
+                        }
                     }
                 }
             }
@@ -468,35 +477,7 @@ impl App {
                     );
                     self.thread_states
                         .insert(id.clone(), (false, Instant::now()));
-                    if let Some(thread) = self
-                        .active_threads
-                        .iter_mut()
-                        .find(|thread| thread.id == id)
-                    {
-                        thread.thread_archive_at = None;
-                    } else {
-                        let archived = self
-                            .archived_threads
-                            .iter()
-                            .position(|thread| thread.id == id)
-                            .map(|index| self.archived_threads.remove(index));
-                        let cached = archived.or_else(|| {
-                            self.store.channels().into_iter().find_map(|channel| {
-                                let root = self.store.message(&channel.id, &id)?;
-                                Some(ThreadSummary {
-                                    id: root.id.clone(),
-                                    channel_id: root.channel_id.clone(),
-                                    content: root.content.chars().take(160).collect(),
-                                    thread_archive_at: None,
-                                    reply_count: self.store.replies(&channel.id, &id).len() as u64,
-                                })
-                            })
-                        });
-                        if let Some(mut thread) = cached {
-                            thread.thread_archive_at = None;
-                            self.active_threads.insert(0, thread);
-                        }
-                    }
+                    self.ensure_active_thread(&id);
                 }
                 // 書き込み前の一覧で、確定済みの状態を上書きしない。
                 self.threads_requested_at = [Some(Instant::now()); 2];
@@ -690,6 +671,39 @@ impl App {
             }
             let _ = tx.send(AppEvent::ThreadRequestFinished { archived });
         });
+    }
+
+    /// 再開成功・購読で確認した再開を、一覧の再取得を待たず反映する。
+    fn ensure_active_thread(&mut self, id: &str) {
+        let archived = self
+            .archived_threads
+            .iter()
+            .position(|thread| thread.id == id)
+            .map(|index| self.archived_threads.remove(index));
+        if let Some(thread) = self
+            .active_threads
+            .iter_mut()
+            .find(|thread| thread.id == id)
+        {
+            thread.thread_archive_at = None;
+            return;
+        }
+        let cached = archived.or_else(|| {
+            self.store.channels().into_iter().find_map(|channel| {
+                let root = self.store.message(&channel.id, id)?;
+                Some(ThreadSummary {
+                    id: root.id.clone(),
+                    channel_id: root.channel_id.clone(),
+                    content: root.content.chars().take(160).collect(),
+                    thread_archive_at: None,
+                    reply_count: self.store.replies(&channel.id, id).len() as u64,
+                })
+            })
+        });
+        if let Some(mut thread) = cached {
+            thread.thread_archive_at = None;
+            self.active_threads.insert(0, thread);
+        }
     }
 
     pub fn threads(&self) -> impl Iterator<Item = &ThreadSummary> {

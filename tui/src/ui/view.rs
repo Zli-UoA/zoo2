@@ -831,6 +831,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shape_reopen_survives_close_stale_index_and_failed_refresh() {
+        let mut app = app();
+        app.open_channel("c1".into());
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                "content":"Reopened remotely","created_at":"2026-11-01 03:00:00",
+                "thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        app.focus = Focus::Messages;
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        assert!(app.active_threads.is_empty());
+        assert!(app.archived_threads.is_empty());
+        let stale_request = std::time::Instant::now();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                "content":"Reopened remotely","created_at":"2026-11-01 03:00:00",
+                "thread_archive_at":null}),
+            )]),
+        ));
+        press(&mut app, KeyCode::Esc);
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "m1".into(),
+        };
+        assert!(app.thread.is_none());
+        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.thread_is_archived("c1", "m1"));
+        assert!(render(&mut app).contains("Reopened remotely"));
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            threads: vec![],
+            next_cursor: None,
+            requested_at: stale_request,
+        });
+        assert!(app.sidebar_items().contains(&row));
+        app.on_app_event(AppEvent::ThreadsFailed {
+            archived: false,
+            append: false,
+            requested_at: std::time::Instant::now(),
+            message: "unavailable".into(),
+        });
+        assert!(app.sidebar_items().contains(&row));
+        app.open_channel("c2".into());
+        assert!(app.store.message("c1", "m1").is_none());
+        assert!(app.sidebar_items().contains(&row));
+    }
+
+    #[tokio::test]
     async fn unlisted_reopen_success_survives_close_and_failed_refresh() {
         let mut app = app();
         app.open_channel("c1".into());
