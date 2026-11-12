@@ -58,10 +58,9 @@ class WorkspaceEmojisTest {
     @Test
     fun accountProfilesComeFromTheDedicatedDirectory() = runTest {
         val session = app(profiles = """{"accounts":[{"username":"alice","display_name":"AuthZ name","avatar_url":null}]}""") { request ->
-            assertEquals("/api/emojis", request.url.encodedPath)
-            respond("[]", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+            error("Account profiles must not request the custom catalog: ${request.url}")
         }
-        session.loadWorkspaceEmojis()
+        session.loadAccountProfiles()
         assertEquals("AuthZ name", session.accountProfiles.single().text("display_name"))
         assertTrue(session.workspaceEmojis.isEmpty())
     }

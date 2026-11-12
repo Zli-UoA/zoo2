@@ -35,6 +35,19 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
     var accountProfiles by mutableStateOf<List<Row>>(emptyList())
         private set
+    private var accountProfilesChecked = 0L
+    private val accountProfilesMutex = kotlinx.coroutines.sync.Mutex()
+    suspend fun loadAccountProfiles(force: Boolean = false) {
+        accountProfilesMutex.lock()
+        try {
+            val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+            if (!force && accountProfilesChecked != 0L && now - accountProfilesChecked < 60_000) return
+            accountProfilesChecked = now
+            try { accountProfiles = api.request("/api/emoji-accounts").jsonObject["accounts"]?.rows() ?: emptyList() }
+            catch (e: CancellationException) { accountProfilesChecked = 0L; throw e }
+            catch (_: Exception) { accountProfiles = emptyList() }
+        } finally { accountProfilesMutex.unlock() }
+    }
     var workspaceEmojis by mutableStateOf<List<Row>>(emptyList())
         private set
     var workspaceEmojiLoading by mutableStateOf(false)
@@ -49,9 +62,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
             if (!force && workspaceEmojiChecked != 0L && now - workspaceEmojiChecked < 60_000) return
             workspaceEmojiChecked = now
-            try { accountProfiles = api.request("/api/emoji-accounts").jsonObject["accounts"]?.rows() ?: emptyList() }
-            catch (e: CancellationException) { workspaceEmojiChecked = 0L; throw e }
-            catch (_: Exception) { accountProfiles = emptyList() }
             workspaceEmojiLoading = true
             workspaceEmojiError = false
             try {
