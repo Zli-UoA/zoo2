@@ -521,6 +521,7 @@
     {
       "file": "src/components/home/HomeScreen.stories.tsx",
       "states": [
+        "QuotedRenote",
         "ReplyToMediaOnly",
         "WithImages",
         "MobileImages",
@@ -1082,7 +1083,7 @@
       "file": "src/components/home/HomePostContent.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
-      "reason": "MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
+      "reason": "QuotedRenoteでコメント付き・コメントなしの引用先リンクを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
     },
     {
       "file": "src/components/apps/console/AppConsole.tsx",

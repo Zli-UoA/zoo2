@@ -176,6 +176,37 @@ pub async fn fetch_json(
 ) -> Result<Value, AppError> {
     fetch_json_limit(state, user, url, 256 * 1024).await
 }
+// Unknown Announce originals can briefly be unavailable while their Create is being published.
+// Retry only transport failures and transient HTTP statuses; never bypass origin validation.
+pub(super) async fn fetch_json_with_retry(
+    state: &AppState,
+    user: Option<&str>,
+    url: &str,
+) -> Result<Value, AppError> {
+    retry_json_request(|| request(state, user, reqwest::Method::GET, url, None)).await
+}
+
+async fn retry_json_request<F, Fut>(mut fetch: F) -> Result<Value, AppError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, AppError>>,
+{
+    for attempt in 0..3 {
+        let response = fetch().await;
+        let retry = match &response {
+            Ok(response) => response.status().is_server_error(),
+            Err(AppError::BadGateway(_)) => true,
+            _ => false,
+        };
+        if !retry || attempt == 2 {
+            return read_json(response?, 256 * 1024).await;
+        }
+        drop(response);
+        tokio::time::sleep(Duration::from_millis(250 * (1 << attempt))).await;
+    }
+    unreachable!()
+}
+
 pub(super) async fn fetch_json_limit(
     state: &AppState,
     user: Option<&str>,
@@ -293,5 +324,105 @@ mod tests {
                 "{url}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod announce_fetch_tests {
+    use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    #[tokio::test]
+    async fn retries_server_failure_before_reading_the_original_note() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"type":"Note"})))
+            .with_priority(6)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        let result = retry_json_request(|| async {
+            client
+                .get(server.uri())
+                .send()
+                .await
+                .map_err(|_| AppError::BadGateway("Network failure".into()))
+        })
+        .await
+        .unwrap();
+        assert_eq!(result["type"], "Note");
+    }
+
+    #[tokio::test]
+    async fn stops_after_three_transient_failures() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .expect(3)
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        assert!(
+            retry_json_request(|| async {
+                client
+                    .get(server.uri())
+                    .send()
+                    .await
+                    .map_err(|_| AppError::BadGateway("Network failure".into()))
+            })
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_permanent_errors_rate_limits_or_invalid_json() {
+        for status in [403, 404, 429, 200] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(status).set_body_string("invalid JSON"))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = reqwest::Client::new();
+            assert!(
+                retry_json_request(|| async {
+                    client
+                        .get(server.uri())
+                        .send()
+                        .await
+                        .map_err(|_| AppError::BadGateway("Network failure".into()))
+                })
+                .await
+                .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn retries_network_errors_but_not_url_policy_rejections() {
+        let mut calls = 0;
+        let result = retry_json_request(|| {
+            calls += 1;
+            std::future::ready(Err(AppError::BadGateway("Network failure".into())))
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls, 3);
+        calls = 0;
+        let result = retry_json_request(|| {
+            calls += 1;
+            std::future::ready(Err(AppError::BadRequest("Private address".into())))
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
     }
 }

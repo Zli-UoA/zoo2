@@ -368,7 +368,22 @@ async fn read_image(
 }
 
 pub(super) fn note_content(note: &Value) -> Result<String, AppError> {
-    let html = string(note, "content")?;
+    // Quote metadata is otherwise lost when HTML is flattened or MFM source is preferred.
+    // Keep only a link: an embedded quote is not proof of the quoted post's author/audience.
+    let quote = ["quoteUrl", "quoteUri", "_misskey_quote"]
+        .into_iter()
+        .filter_map(|key| note[key].as_str())
+        .find(|url| {
+            https(url)
+                && !url
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>'))
+        });
+    let html = match note["content"].as_str() {
+        Some(content) => content,
+        None if quote.is_some() && note["content"].is_null() => "",
+        _ => return Err(AppError::BadRequest("Missing content".into())),
+    };
     let source = (note["source"]["mediaType"] == "text/x.misskeymarkdown")
         .then(|| note["source"]["content"].as_str())
         .flatten()
@@ -376,9 +391,22 @@ pub(super) fn note_content(note: &Value) -> Result<String, AppError> {
     if html.len() > 128 * 1024 || source.is_some_and(|value| value.len() > 128 * 1024) {
         return Err(AppError::BadRequest("Note too large".into()));
     }
-    Ok(source
+    let mut content = source
         .map(str::to_owned)
-        .unwrap_or_else(|| plain_content(html)))
+        .unwrap_or_else(|| plain_content(html));
+    if let Some(quote) = quote {
+        let link = format!("<{quote}>");
+        let already_linked = content
+            .split_whitespace()
+            .any(|word| word == quote || word == link);
+        if !already_linked {
+            if !content.is_empty() {
+                content.push_str("\n\n");
+            }
+            content.push_str(&link);
+        }
+    }
+    Ok(content)
 }
 
 pub(super) fn plain_content(raw: &str) -> String {
