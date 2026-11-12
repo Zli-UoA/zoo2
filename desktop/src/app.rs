@@ -18,7 +18,7 @@ use zoo2_client_core::{
     config::{AuthConfig, Config},
     electric::{
         self, Change, ShapeEvent, ShapeId,
-        rows::{Attachment, Channel, FromRow, Message},
+        rows::{Attachment, Channel, Message},
     },
     http::{Credentials, HttpError},
     poll::PollGate,
@@ -75,15 +75,6 @@ pub struct CachedAttachmentUrl {
     pub url: String,
     pub fetched_at: Instant,
     pub ttl_secs: u64,
-}
-
-/// OS ネイティブ通知を送信する。
-pub fn notify_desktop(title: &str, body: &str) {
-    let _ = notify_rust::Notification::new()
-        .appname("zoo2")
-        .summary(title)
-        .body(body)
-        .show();
 }
 
 /// 拡張子から簡易 MIME タイプを判定する。
@@ -304,6 +295,8 @@ pub struct ChannelViewCache {
 /// バックグラウンドタスクから `AppState` へ届くイベント。
 #[derive(Debug)]
 pub enum AppEvent {
+    /// DND の取得結果。`Some(until)` は取得成功、`None` は失敗 (前の値を保つ)。
+    Dnd(Option<Option<jiff::civil::DateTime>>),
     Notice(String),
     Unauthorized,
     AccountProfiles(zoo2_client_core::store::AccountProfiles),
@@ -509,6 +502,10 @@ pub struct AppState {
     pub notifications_enabled: bool,
     /// OS 通知送信ハンドラ（テストでの通知検証用やモック用）。
     pub notification_sink: Option<NotificationSink>,
+    /// `GET /api/users/me/profile` の `dnd_until` (UTC)。
+    pub dnd_until: Option<jiff::civil::DateTime>,
+    /// DND を一度でも取りにいったか。取れなかった場合も true にして、通知を止め続けない。
+    pub dnd_checked: bool,
     /// 検索移動時などに指定位置までスクロールするためのメッセージ ID。
     pub pending_scroll_to_message_id: Option<String>,
     /// モーダルや検索バーを閉じた後に composer へフォーカスを復帰させるフラグ。
@@ -652,6 +649,8 @@ impl AppState {
             theme_mode: crate::theme::ThemeMode::Dark,
             notifications_enabled: true,
             notification_sink: None,
+            dnd_until: None,
+            dnd_checked: false,
             pending_scroll_to_message_id: None,
             pending_focus_composer: false,
             pending_open_attachments: HashSet::new(),
@@ -881,7 +880,7 @@ impl AppState {
     }
 
     /// 現在のセッションに紐づくバックグラウンドタスクを起動し、`background_tasks` に登録する。
-    fn spawn_session_task<F>(&mut self, future: F) -> bool
+    pub(crate) fn spawn_session_task<F>(&mut self, future: F) -> bool
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -1017,6 +1016,8 @@ impl AppState {
         self.credentials = None;
         self.api = None;
         self.me = None;
+        self.dnd_until = None;
+        self.dnd_checked = false;
         self.me_is_admin = false;
         self.session_id = uuid::Uuid::new_v4().to_string();
         self.current_channel = None;
@@ -1194,6 +1195,7 @@ impl AppState {
         self.subscribe(ShapeId::Channels);
         self.subscribe(ShapeId::Users);
         self.subscribe(ShapeId::ChannelUsers);
+        self.subscribe(ShapeId::Notifications);
         self.poll_read_states();
         self.start_periodic_tasks();
     }
@@ -1204,6 +1206,7 @@ impl AppState {
         self.subscribe(ShapeId::Channels);
         self.subscribe(ShapeId::Users);
         self.subscribe(ShapeId::ChannelUsers);
+        self.subscribe(ShapeId::Notifications);
         if let Some(ch) = self.current_channel.clone() {
             self.subscribe(ShapeId::Messages(ch.clone()));
         }
@@ -1212,6 +1215,8 @@ impl AppState {
 
     fn start_periodic_tasks(&mut self) {
         let session_gen = self.session_gen;
+        crate::resident::notify::spawn_dnd_refresh(self);
+
         // 1秒ごとの Tick (通知消去・入力中解除・既読送信)
         {
             let tx = self.event_tx.clone();
@@ -1358,36 +1363,6 @@ impl AppState {
         }
     }
 
-    /// 受信したメッセージがデスクトップ OS 通知の対象かを判定する。
-    /// - 通知設定が有効であること
-    /// - 現在アクティブ表示中のチャンネルでないこと（フォアグラウンドかつ同じチャンネル）
-    /// - 既にローカル store に存在するメッセージや削除済みメッセージでないこと
-    /// - 自分自身のメッセージでないこと
-    /// - (DM または自分への @メンション) かつ そのチャンネルのメンバーであること（未参加の公開チャンネルでのメンションを除外。ChannelUsers 未同期時は保留＝許可）
-    pub fn should_notify_message(&self, ch: &str, msg: &Message) -> bool {
-        if !self.notifications_enabled {
-            return false;
-        }
-        let is_active_view = self.window_active && self.current_channel.as_deref() == Some(ch);
-        if is_active_view {
-            return false;
-        }
-        if self.store.message(ch, &msg.id).is_some() || msg.deleted_at.is_some() {
-            return false;
-        }
-        let Some(me) = self.me.as_ref() else {
-            return false;
-        };
-        if me.id == msg.user_id {
-            return false;
-        }
-        let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-        let is_member =
-            !self.store.is_synced(&ShapeId::ChannelUsers) || self.store.is_member(ch, &me.id);
-        let has_mention = has_mention_for(&msg.content, &me.user_name);
-        (is_dm || has_mention) && is_member
-    }
-
     pub fn on_shape(&mut self, event: ShapeEvent) {
         match event {
             ShapeEvent::Batch(id, batch) => {
@@ -1424,88 +1399,13 @@ impl AppState {
                         }
                     }
                 }
-                let mut pending_notifications: Vec<Option<(String, String, String, bool)>> =
-                    Vec::new();
-                let mut notified_indices: std::collections::HashMap<String, usize> =
-                    std::collections::HashMap::new();
-                if self.notifications_enabled
-                    && let ShapeId::Messages(ch) = &id
-                    && self.store.is_synced(&id)
-                    && !batch.reset
-                {
-                    for change in &batch.changes {
-                        match change {
-                            electric::Change::Upsert { row, .. } => {
-                                if let Ok(msg) = Message::from_row(row) {
-                                    if msg.deleted_at.is_some() {
-                                        // 同一バッチ内で後から削除されたメッセージの通知候補を取り消す
-                                        if let Some(&idx) = notified_indices.get(&msg.id) {
-                                            pending_notifications[idx] = None;
-                                        }
-                                    } else if let Some(&idx) = notified_indices.get(&msg.id) {
-                                        // 同一バッチ内の同一メッセージ更新を集約し、最新内容に基づいて通知可否を再評価
-                                        if self.should_notify_message(ch, &msg) {
-                                            let is_dm =
-                                                self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                            pending_notifications[idx] =
-                                                Some((ch.clone(), msg.user_id, msg.content, is_dm));
-                                        } else {
-                                            // メンション削除等により通知対象外となった場合は候補を取り消す
-                                            pending_notifications[idx] = None;
-                                        }
-                                    } else if self.should_notify_message(ch, &msg) {
-                                        let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                        let idx = pending_notifications.len();
-                                        pending_notifications.push(Some((
-                                            ch.clone(),
-                                            msg.user_id,
-                                            msg.content,
-                                            is_dm,
-                                        )));
-                                        notified_indices.insert(msg.id, idx);
-                                    }
-                                }
-                            }
-                            electric::Change::Delete { key } => {
-                                // 同一バッチ内で削除されたメッセージの通知候補を取り消す
-                                if let Some(&idx) = notified_indices.get(key) {
-                                    pending_notifications[idx] = None;
-                                }
-                            }
-                        }
-                    }
+                // 判定は適用より前に行う (適用後は、新しく届いた行と既知の行を区別できない)。
+                if id == ShapeId::Notifications {
+                    self.show_notifications(&batch);
                 }
 
                 self.store.apply(&id, batch);
 
-                for (ch, sender_id, content, is_dm) in pending_notifications.into_iter().flatten() {
-                    let sender_name = self.store.display_name(&sender_id);
-                    let channel_name = self
-                        .store
-                        .channel(&ch)
-                        .map(|c| c.channel_name.clone())
-                        .unwrap_or_else(|| "channel".to_string());
-                    let title = if is_dm {
-                        format!("{sender_name} からのDM")
-                    } else {
-                        format!("{sender_name} (#{channel_name})")
-                    };
-                    let body = if content.trim().is_empty() {
-                        "ファイルが送信されました".to_string()
-                    } else if content.chars().count() > 80 {
-                        let truncated: String = content.chars().take(80).collect();
-                        format!("{truncated}...")
-                    } else {
-                        content
-                    };
-                    if let Some(sink) = &self.notification_sink {
-                        sink.lock().unwrap().push((title, body));
-                    } else {
-                        std::thread::spawn(move || {
-                            notify_desktop(&title, &body);
-                        });
-                    }
-                }
                 if self.store.is_synced(&id) {
                     self.sync_errors.remove(&id);
                 }
@@ -1915,6 +1815,13 @@ impl AppState {
 
     pub fn on_app_event(&mut self, event: AppEvent) -> bool {
         match event {
+            AppEvent::Dnd(result) => {
+                if let Some(until) = result {
+                    self.dnd_until = until;
+                }
+                self.dnd_checked = true;
+                false
+            }
             AppEvent::AccountProfiles(profiles) => {
                 self.store.account_profiles = profiles;
                 true
@@ -4620,7 +4527,7 @@ fn is_access_or_not_found_error(message: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use serde_json::{Value, json};
     use zoo2_client_core::{
         config::OidcConfig,
@@ -4643,7 +4550,7 @@ mod tests {
         }
     }
 
-    fn connected_state() -> AppState {
+    pub(crate) fn connected_state() -> AppState {
         let config = Config {
             api_base_url: "http://127.0.0.1:9".into(),
             auth: AuthConfig::Dev {
@@ -7973,56 +7880,6 @@ mod tests {
     }
 
     #[test]
-    fn unjoined_public_channel_does_not_trigger_mention_notification() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-
-        // 公開チャンネル c_pub を追加（alice は未参加）
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Channels,
-            batch(vec![(
-                "c_pub",
-                json!({ "id": "c_pub", "channel_name": "public-general", "is_private": "f" }),
-            )]),
-        ));
-
-        let row_val = serde_json::from_value(json!({
-            "id": "m_unjoined",
-            "user_id": "u2",
-            "channel_id": "c_pub",
-            "content": "@alice 未参加チャンネルでのメンション",
-            "created_at": "2026-11-01 04:00:00",
-        }))
-        .unwrap();
-        let msg = Message::from_row(&row_val).unwrap();
-
-        // 未参加の公開チャンネルのため、メンションがあっても通知対象にならないこと
-        assert!(!state.should_notify_message("c_pub", &msg));
-
-        // ChannelUsers が未同期（同期中）の間は、所属確認を保留して通知を許可すること
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::ChannelUsers,
-            Batch {
-                reset: true,
-                changes: vec![],
-                up_to_date: false,
-            },
-        ));
-        assert!(state.should_notify_message("c_pub", &msg));
-
-        // チャンネルに参加した後は、メンション通知の対象になること
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::ChannelUsers,
-            batch(vec![(
-                "cu1",
-                json!({ "channel_id": "c_pub", "user_id": "u1" }),
-            )]),
-        ));
-        assert!(state.should_notify_message("c_pub", &msg));
-    }
-
-    #[test]
     fn unjoined_public_channel_blocks_attachment_upload() {
         let mut state = connected_state();
 
@@ -8454,170 +8311,6 @@ mod tests {
             assert!(state.create_channel_modal.as_ref().unwrap().in_flight);
             state.create_channel_modal.as_mut().unwrap().in_flight = false;
         }
-    }
-
-    #[test]
-    fn batch_notifications_deduplicated_per_message_id() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-
-        // 同一メッセージ m_dedup に対する insert と update の 2 件を同一バッチで受信
-        let batch_data = batch(vec![
-            (
-                "m_dedup",
-                json!({
-                    "id": "m_dedup",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "最初の内容 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                }),
-            ),
-            (
-                "m_dedup",
-                json!({
-                    "id": "m_dedup",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "更新後の内容 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                    "display_data": "{}",
-                }),
-            ),
-        ]);
-
-        // on_shape を実行してもパニックせず、store に正常に適用されること
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        let stored = state.store.message("c1", "m_dedup").unwrap();
-        assert_eq!(stored.content, "更新後の内容 @alice");
-    }
-
-    #[test]
-    fn batch_notifications_canceled_when_message_deleted_in_same_batch() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        state.notification_sink = Some(sink.clone());
-
-        // 同一メッセージ m_del に対する insert と deleted_at 付き update を同一バッチで受信
-        let batch_data = batch(vec![
-            (
-                "m_del",
-                json!({
-                    "id": "m_del",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "メンション通知 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                }),
-            ),
-            (
-                "m_del",
-                json!({
-                    "id": "m_del",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "メンション通知 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                    "deleted_at": "2026-11-11 00:01:00",
-                }),
-            ),
-        ]);
-
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        assert!(state.store.message("c1", "m_del").is_none());
-        assert_eq!(
-            sink.lock().unwrap().len(),
-            0,
-            "削除されたメッセージの通知候補は取り消され、通知は送信されないこと"
-        );
-    }
-
-    #[test]
-    fn batch_notifications_canceled_when_mention_removed_in_subsequent_update() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        state.notification_sink = Some(sink.clone());
-
-        // 同一バッチ内で @alice 付き投稿を受信後、メンションを除去した更新を受信
-        let batch_data = batch(vec![
-            (
-                "m_mention_removed",
-                json!({
-                    "id": "m_mention_removed",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "こんにちは @alice さん",
-                    "created_at": "2026-11-11 00:00:00",
-                }),
-            ),
-            (
-                "m_mention_removed",
-                json!({
-                    "id": "m_mention_removed",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "こんにちは 皆さん (メンション削除)",
-                    "created_at": "2026-11-11 00:00:00",
-                    "updated_at": "2026-11-11 00:01:00",
-                }),
-            ),
-        ]);
-
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        let stored = state.store.message("c1", "m_mention_removed").unwrap();
-        assert_eq!(stored.content, "こんにちは 皆さん (メンション削除)");
-        assert_eq!(
-            sink.lock().unwrap().len(),
-            0,
-            "メンション削除されたメッセージの通知候補は取り消され、通知は送信されないこと"
-        );
-    }
-
-    #[test]
-    fn batch_notification_sent_for_valid_mention() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        state.notification_sink = Some(sink.clone());
-
-        // 有効なメンション付き新規メッセージを受信
-        let batch_data = batch(vec![(
-            "m_valid",
-            json!({
-                "id": "m_valid",
-                "channel_id": "c1",
-                "user_id": "u2",
-                "content": "こんにちは @alice さん",
-                "created_at": "2026-11-11 00:00:00",
-            }),
-        )]);
-
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        let notifications = sink.lock().unwrap();
-        assert_eq!(
-            notifications.len(),
-            1,
-            "有効なメンション宛て通知が1件送信されること"
-        );
-        assert!(notifications[0].1.contains("こんにちは @alice さん"));
     }
 
     #[test]

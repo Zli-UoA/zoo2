@@ -62,6 +62,13 @@ fn main() -> Result<()> {
     let command = args.first().cloned().unwrap_or_else(|| "run".to_string());
     match command.as_str() {
         "run" => {
+            // 2 つ目の起動は、既存のウィンドウを前に出して終わる。
+            if matches!(
+                zoo2_desktop::resident::single_instance::acquire(),
+                zoo2_desktop::resident::single_instance::Acquired::Secondary
+            ) {
+                return Ok(());
+            }
             let config = Config::load_for(APP_NAME)?;
             zoo2_desktop::run(config);
             Ok(())
