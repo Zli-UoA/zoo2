@@ -831,6 +831,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_the_last_reply_removes_the_active_row_even_when_refresh_fails() {
+        for (physical_delete, archived) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let mut app = app();
+            app.open_channel("c1".into());
+            let thread = ThreadSummary {
+                id: "m1".into(),
+                channel_id: "c1".into(),
+                content: "Conversation".into(),
+                thread_archive_at: None,
+                reply_count: 1,
+            };
+            app.on_app_event(AppEvent::Threads {
+                archived: false,
+                append: false,
+                requested_at: std::time::Instant::now(),
+                next_cursor: None,
+                threads: vec![thread.clone()],
+            });
+            let row = SidebarItem::Thread {
+                channel_id: "c1".into(),
+                id: "m1".into(),
+            };
+            assert!(app.sidebar_items().contains(&row));
+            if archived {
+                app.on_shape(ShapeEvent::Batch(
+                    ShapeId::Messages("c1".into()),
+                    batch(vec![(
+                        "m1",
+                        json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                        "content":"Conversation","created_at":"2026-11-01 03:00:00",
+                        "thread_archive_at":"2026-11-10 00:00:00"}),
+                    )]),
+                ));
+                app.focus = Focus::Messages;
+                app.selected = Some("m1".into());
+                press(&mut app, KeyCode::Enter);
+            }
+            let stale_request = std::time::Instant::now();
+            let deletion = if physical_delete {
+                Batch {
+                    changes: vec![Change::Delete { key: "r1".into() }],
+                    ..Default::default()
+                }
+            } else {
+                batch(vec![(
+                    "r1",
+                    json!({"id":"r1","user_id":"u1","channel_id":"c1",
+                    "content":"返信です","parent_id":"m1","created_at":"2026-11-01 03:01:00",
+                    "deleted_at":"2026-11-11 00:00:00"}),
+                )])
+            };
+            app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), deletion));
+            assert_eq!(app.store.reply_counts("c1").get("m1"), None);
+            assert!(!app.active_threads.iter().any(|thread| thread.id == "m1"));
+            app.on_app_event(AppEvent::Threads {
+                archived: false,
+                append: false,
+                requested_at: stale_request,
+                next_cursor: None,
+                threads: vec![thread],
+            });
+            app.on_app_event(AppEvent::ThreadsFailed {
+                archived: false,
+                append: false,
+                requested_at: std::time::Instant::now(),
+                message: "unavailable".into(),
+            });
+            assert_eq!(app.sidebar_items().contains(&row), archived);
+            if archived {
+                assert!(app.thread_is_archived("c1", "m1"));
+                press(&mut app, KeyCode::Esc);
+                assert!(!app.sidebar_items().contains(&row));
+            }
+            assert!(!render(&mut app).contains("Conversation (0)"));
+        }
+    }
+
+    #[tokio::test]
     async fn first_reply_shape_updates_the_locally_created_thread_count() {
         let mut app = app();
         app.open_channel("c1".into());

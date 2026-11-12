@@ -392,6 +392,12 @@ impl App {
                         .or_insert((thread.thread_archive_at.is_some(), Instant::now()));
                 }
             }
+            // 最後の返信が消えた行は除外する。返信の到着待ちで0件の補完行は残す。
+            self.active_threads.retain(|thread| {
+                thread.channel_id != channel_id
+                    || !before.contains_key(&thread.id)
+                    || after.contains_key(&thread.id)
+            });
         }
         self.restore_sidebar_selection(selected);
     }
