@@ -25,7 +25,18 @@
 //! - [`verify_cross_signing_key`]：サーバーから受け取ったクロス署名鍵の検証
 //! - [`TrustStore`]：TOFU の記録（`confirmed_usk` を含む）、自分のユーザー署名鍵の履歴と、
 //!   [`TrustStore::evaluate`] による鍵の配布先の判定（規則 1〜6）
+//!
+//! #351 で足したもの:
+//!
+//! - [`SsssKey`]：SSSS 鍵、確認値、秘密の暗号化（`m.secret_storage.v1.aes-hmac-sha2`）
+//! - [`KeySlot`]：パスキー（PRF）とリカバリーキーの鍵スロット（AES-256-GCM）
+//! - [`SecretStorage`]、[`UnlockedSecretStorage`]：`GET /api/e2ee/secret_storage` の解錠と秘密の取り出し
+//! - [`RecoveryKey`]：リカバリーキーの生成、表示、読み取り（Base58）
+//! - [`BackupDecryptionKey`]、[`BackupEncryptionKey`]：鍵バックアップ（`zoo.megolm_backup.v1.curve25519-aes-sha2`）
+//! - [`verify_backup_version`]、[`BackupUploadState`]：今の版の検証と、アップロード待ちの状態機械
+//! - [`select_previous_backup_keys`]、[`previous_versions_to_migrate`]：失効のときの古い版の鍵の退避と移行
 
+mod backup;
 mod canonical_json;
 mod cross_signing;
 mod device;
@@ -33,9 +44,17 @@ mod error;
 mod inbound;
 mod megolm;
 mod olm;
+mod recovery_key;
+mod secret_storage;
 mod signing;
 mod trust;
 
+pub use backup::{
+    BACKUP_ALGORITHM, BackedUpSessionData, BackupDecryptionKey, BackupEncryptionKey, BackupRow,
+    BackupUpload, BackupUploadState, BackupVersionInfo, MAX_UPLOAD_SESSIONS,
+    PreviousBackupSelection, SenderClaimedKeys, SessionData, VerifiedBackupVersion, VersionChange,
+    previous_versions_to_migrate, select_previous_backup_keys, verify_backup_version,
+};
 pub use canonical_json::to_canonical_json;
 pub use cross_signing::{
     CrossSigningKeyPair, CrossSigningKeys, KeySignature, KeyUsage, SignatureUpload, TOFU_PIN_TYPE,
@@ -48,7 +67,7 @@ pub use device::{
 pub use error::{CryptoError, Rejection};
 pub use inbound::{
     AddOutcome, BackupSession, DecryptedMessage, EncryptedMessage, InboundSessionStore,
-    RevisionStatus, SessionOrigin,
+    RevisionStatus, SessionOrigin, SessionRef,
 };
 pub use megolm::{
     MAX_BODY_CHARS, MAX_SAFE_INTEGER, MESSAGE_TYPE, Mentions, MessageContent, MessagePayload,
@@ -56,6 +75,12 @@ pub use megolm::{
 };
 pub use olm::{
     ListedDevice, OlmDecrypted, OlmSession, ROOM_KEY_TYPE, ReceivedRoomKey, RoomKey, SenderTrust,
+};
+pub use recovery_key::{RECOVERY_KEY_CHARS, RecoveryKey};
+pub use secret_storage::{
+    EncryptedSecret, KeySlot, REQUIRED_SECRETS, SECRET_MEGOLM_BACKUP,
+    SECRET_PREVIOUS_MEGOLM_BACKUP, SSSS_ALGORITHM, SecretStorage, SecretStorageKeysRequest,
+    SlotKind, SlotSecret, SsssKey, SsssKeyDescription, UnlockedSecretStorage, new_prf_salt,
 };
 pub use signing::{signable_json, verify_json_signature};
 pub use trust::{
