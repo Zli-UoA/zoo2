@@ -3,7 +3,8 @@
 //! `backdrop-blur-xs` は GPUI に無いので、黒 10% の幕だけを描く。
 
 use gpui::{
-    AnyElement, App, ClickEvent, MouseButton, SharedString, StyleRefinement, Window, div, prelude::*, px,
+    AnyElement, App, ClickEvent, MouseButton, SharedString, StyleRefinement, Window, div,
+    prelude::*, px,
 };
 
 use super::button::{Button, ButtonSize, ButtonVariant};
@@ -228,9 +229,10 @@ mod tests {
                 .left_0()
                 .size(px(100.0))
                 .on_click(move |_, _, _| behind.set(behind.get() + 1));
-            let panel = div().id("panel-button").size(px(40.0)).on_click(move |_, _, _| {
-                inside.set(inside.get() + 1)
-            });
+            let panel = div()
+                .id("panel-button")
+                .size(px(40.0))
+                .on_click(move |_, _, _| inside.set(inside.get() + 1));
             let root = div().relative().size_full().child(button);
             if self.with_overlay {
                 root.child(overlay(panel))

@@ -197,7 +197,10 @@ mod tests {
         let p = Palette::new(ThemeMode::Light);
         let f = focus_style(&p, false, true);
         assert_eq!(f.border, p.t.destructive);
-        assert_eq!(f.ring.map(|r| r.0), colors(&p, false, false, true).ring.map(|r| r.0));
+        assert_eq!(
+            f.ring.map(|r| r.0),
+            colors(&p, false, false, true).ring.map(|r| r.0)
+        );
         let plain = focus_style(&p, false, false);
         assert_eq!(plain.border, p.t.ring);
     }
