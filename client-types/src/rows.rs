@@ -52,6 +52,10 @@ pub struct Message {
     pub updated_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
     pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_reactions: Option<Vec<Reaction>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_attachments: Option<Vec<Attachment>>,
     #[serde(default)]
     pub thread_archive_at: Option<DateTime>,
 }
@@ -207,9 +211,43 @@ impl FromRow for Message {
             updated_at: opt_time(row, "updated_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
             parent_id: opt_text(row, "parent_id"),
+            display_reactions: display_reactions(row)?,
+            display_attachments: display_attachments(row)?,
             thread_archive_at: opt_time(row, "thread_archive_at")?,
         })
     }
+}
+
+fn display_reactions(row: &Row) -> Result<Option<Vec<Reaction>>> {
+    let display = match row.get("display_data") {
+        Some(Value::String(raw)) => serde_json::from_str::<Value>(raw)?,
+        Some(value) => value.clone(),
+        None => return Ok(None),
+    };
+    let Some(reactions) = display.get("reactions").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    reactions
+        .iter()
+        .map(|value| Reaction::from_row(value.as_object().context("Invalid display reaction")?))
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
+fn display_attachments(row: &Row) -> Result<Option<Vec<Attachment>>> {
+    let display = match row.get("display_data") {
+        Some(Value::String(raw)) => serde_json::from_str::<Value>(raw)?,
+        Some(value) => value.clone(),
+        None => return Ok(None),
+    };
+    let Some(attachments) = display.get("attachments").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    attachments
+        .iter()
+        .map(|value| Attachment::from_row(value.as_object().context("Invalid display attachment")?))
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
 }
 
 impl FromRow for Reaction {

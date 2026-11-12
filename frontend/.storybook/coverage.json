@@ -683,7 +683,7 @@
     },
     {
       "file": "src/components/chat/AppSurfaceHost.tsx",
-      "reason": "イベント受信とポーリングでダイアログを起動する制御層。表面のフォームはBlocks、起動はブラウザ統合テストで確認する。",
+      "reason": "待機時のポーリングを間引き、コマンド・アクション後に即時更新する制御層。private UIの起動はブラウザ統合テスト、直列化・非表示・復帰はvisiblePoll.test.tsで確認する。",
       "checks": ["src/components/chat/AppInteraction.browser.test.tsx"]
     },
     {
