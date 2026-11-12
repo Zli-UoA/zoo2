@@ -3,7 +3,7 @@
 //! `backdrop-blur-xs` は GPUI に無いので、黒 10% の幕だけを描く。
 
 use gpui::{
-    AnyElement, App, ClickEvent, SharedString, StyleRefinement, Window, div, prelude::*, px,
+    AnyElement, App, ClickEvent, MouseButton, SharedString, StyleRefinement, Window, div, prelude::*, px,
 };
 
 use super::button::{Button, ButtonSize, ButtonVariant};
@@ -26,6 +26,10 @@ pub fn overlay(panel: impl IntoElement) -> gpui::Div {
         .items_center()
         .justify_center()
         .bg(black(0.1))
+        // 幕の外側のマウス操作を背後に通さない。
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(panel)
 }
 
@@ -194,5 +198,86 @@ impl RenderOnce for Dialog {
         }
         panel.style().refine(&self.style);
         panel
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use gpui::{Context, TestAppContext, point, px};
+
+    use super::*;
+
+    /// 背後に 100x100 のボタン、その上に (幕あり/なしで) 全面の層と、右下に 40x40 のパネル内ボタン。
+    struct Root {
+        behind: Rc<Cell<u32>>,
+        inside: Rc<Cell<u32>>,
+        with_overlay: bool,
+    }
+
+    impl Render for Root {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let behind = self.behind.clone();
+            let inside = self.inside.clone();
+            let button = div()
+                .id("behind")
+                .absolute()
+                .top_0()
+                .left_0()
+                .size(px(100.0))
+                .on_click(move |_, _, _| behind.set(behind.get() + 1));
+            let panel = div().id("panel-button").size(px(40.0)).on_click(move |_, _, _| {
+                inside.set(inside.get() + 1)
+            });
+            let root = div().relative().size_full().child(button);
+            if self.with_overlay {
+                root.child(overlay(panel))
+            } else {
+                root
+            }
+        }
+    }
+
+    fn click(with_overlay: bool, at: gpui::Point<gpui::Pixels>) -> (u32, u32) {
+        let behind = Rc::new(Cell::new(0));
+        let inside = Rc::new(Cell::new(0));
+        let (b, i) = (behind.clone(), inside.clone());
+        let cx = &mut TestAppContext::single();
+        let (_, cx) = cx.add_window_view(move |_, _| Root {
+            behind: b,
+            inside: i,
+            with_overlay,
+        });
+        cx.simulate_click(at, gpui::Modifiers::none());
+        (behind.get(), inside.get())
+    }
+
+    #[test]
+    fn overlay_blocks_clicks_to_what_is_behind() {
+        // パネル (中央の 40x40) の外、背後のボタン (左上 100x100) の上。
+        let outside = point(px(10.0), px(10.0));
+        assert_eq!(click(false, outside).0, 1, "幕なしの対照では背後に届く");
+        assert_eq!(click(true, outside).0, 0, "幕があれば背後に届かない");
+    }
+
+    #[test]
+    fn panel_content_stays_clickable_under_overlay() {
+        // ウィンドウ中央 (既定 1024x768 ではなく、実際の大きさから求める)。
+        let behind = Rc::new(Cell::new(0));
+        let inside = Rc::new(Cell::new(0));
+        let (b, i) = (behind.clone(), inside.clone());
+        let cx = &mut TestAppContext::single();
+        let (_, cx) = cx.add_window_view(move |_, _| Root {
+            behind: b,
+            inside: i,
+            with_overlay: true,
+        });
+        let size = cx.update(|window, _| window.viewport_size());
+        let center = point(size.width / 2.0, size.height / 2.0);
+        cx.simulate_click(center, gpui::Modifiers::none());
+        assert_eq!(inside.get(), 1);
+        assert_eq!(behind.get(), 0);
     }
 }

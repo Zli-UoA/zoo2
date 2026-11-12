@@ -37,3 +37,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "zoo2-desktop"
 path = "src/main.rs"
+
+[dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }
