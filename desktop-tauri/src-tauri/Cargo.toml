@@ -32,6 +32,7 @@ tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 url = "2"
 notify-rust = "4"
+tauri-plugin-updater = "2"
 
 [profile.release]
 strip = true

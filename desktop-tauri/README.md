@@ -2,7 +2,7 @@
 
 zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.app) で作っていて、Linux と macOS を 1 つのコードで扱います。
 
-> **試験版です。** まだ GitHub Releases では配布していません。macOS 版、自動更新、本番の AuthZ へのクライアントの登録は準備中です。下の「[いまの制限](#いまの制限)」も読んでください。
+> **試験版です。** macOS 版と、本番の AuthZ へのクライアントの登録は準備中です。下の「[いまの制限](#いまの制限)」も読んでください。
 
 - チャンネル一覧、タイムライン、入力欄を表示します。ほかの人の投稿はすぐに反映されます。
 - ウィンドウを閉じても、トレイに残って動き続けます。メンションや DM が届くと、OS の通知を出します。
@@ -33,18 +33,30 @@ zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.ap
 
 ## インストール
 
-試験版のあいだは、GitHub Actions の「CI Desktop Tauri」が作るファイルを使います。リポジトリを読める GitHub のアカウントが必要です。ファイルは 7 日で消えます。
+[GitHub Releases](https://github.com/Zli-UoA/zoo2/releases) の、`zoo2 デスクトップ版 (Tauri)` のリリース (タグは `desktop-tauri-v<版>`) からダウンロードします。一覧の「Latest」は TUI のリリースなので、デスクトップ版は名前で探してください。
+
+[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.1.0` は入れたい版に置き換えてください。
+
+```bash
+gh release download desktop-tauri-v0.1.0 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
+```
+
+リリースから入れると、アプリが自分で更新します (「[更新](#更新)」)。
+
+### 開発中の版
+
+`main` に入ったばかりで、まだリリースしていない版を試すときは、GitHub Actions の「CI Desktop Tauri」が作るファイルを使います。ファイルは 7 日で消えます。この版は自分では更新しません。
 
 1. [CI Desktop Tauri の実行一覧](https://github.com/Zli-UoA/zoo2/actions/workflows/ci-desktop-tauri.yaml) で、`main` の成功した実行を開きます。
 2. 下の「Artifacts」から `zoo2-desktop-tauri-linux` をダウンロードして、展開します。
-
-[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。
 
 ```bash
 gh run download --repo Zli-UoA/zoo2 --name zoo2-desktop-tauri-linux $(gh run list --repo Zli-UoA/zoo2 --workflow ci-desktop-tauri.yaml --branch main --status success --limit 1 --json databaseId -q '.[0].databaseId')
 ```
 
-中には次の 2 つのファイルが入っています。`0.1.0` の部分は版によって変わります。
+### ファイル
+
+どちらにも、次の 2 つのファイルがあります。`0.1.0` の部分は版によって変わります。
 
 | ファイル | 対象 |
 |---|---|
@@ -103,25 +115,34 @@ chmod +x zoo2_0.1.0_amd64.AppImage
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | `zoo2-desktop-tauri` | AuthZ に登録したデスクトップ版の public client の ID |
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
+| `check_updates` | `ZOO_CHECK_UPDATES` | `true` | `false` にすると、新しい版を確かめない (「[更新](#更新)」) |
 | なし | `ZOO_DESKTOP_UI` | `leptos` | 画面の種類。`remote` にすると zli.chat の Web 版の画面を読み込む (試験中) |
 
 ログインで得たトークンは、そのときの接続先 (`api_base_url`) にだけ送ります。接続先や OIDC の設定を変えたら、ログインし直してください。
 
 ## 更新
 
-いまは、アプリが自分で更新することはありません。新しい版のファイルを「[インストール](#インストール)」と同じ手順で入れ直してください。設定とログインの状態は残ります。
+GitHub Releases から入れたアプリは、自分で新しい版を確かめます。起動の少し後と、その後は 6 時間ごとに確かめます。
 
-| 入れ方 | 更新 |
+1. 新しい版があると、裏でダウンロードし、署名を確かめておきます。
+2. 準備ができると、「zoo2 を更新できます」という通知が出て、トレイのメニューに「更新して再起動 (v<版>)」が増えます。
+3. 通知かメニューを押すと、新しい版に入れ替えて、アプリを再起動します。押すまでは、いまの版のまま動きます。
+
+| 入れ方 | 入れ替えるとき |
 |---|---|
-| deb | 新しい `.deb` で `sudo apt install ./zoo2_<版>_amd64.deb` |
-| AppImage | 新しい `.AppImage` で置き換える |
+| deb | `dpkg` で入れ直すので、管理者のパスワードを聞かれます。やめた場合は、もう一度押せば入れ直せます |
+| AppImage | ファイルを置き換えます。ファイルを置いたディレクトリに書き込めることが必要です |
+
+設定とログインの状態は残ります。手で入れ直す場合は、新しいファイルを「[インストール](#インストール)」と同じ手順で入れてください (deb は `sudo apt install ./zoo2_<版>_amd64.deb`、AppImage は置き換え)。
+
+CI の成果物から入れた版 (「[開発中の版](#開発中の版)」) と、ソースから動かした場合は、自分では更新しません。
+
+更新を確かめたくないときは、設定の `check_updates = false` (環境変数なら `ZOO_CHECK_UPDATES=false`) にします。TUI と同じ設定です。
 
 画面の種類によって、更新が要る範囲が違います。
 
 - **既定の画面 (`leptos`)**: 画面もアプリに入っているので、画面の修正もアプリの更新で届きます。
 - **Web 版の画面 (`remote`)**: 画面は zli.chat から読み込むので、Web 版がデプロイされると、次の起動 (または再読み込み) で新しくなります。ログインや通知など、アプリ側の部分の修正だけがアプリの更新で届きます。アプリと Web 版のやり取りの形 (プロトコルの版) が合わなくなったときは、アプリの更新が必要です。
-
-GitHub Releases での配布と、アプリの中からの自動更新は準備中です (「[いまの制限](#いまの制限)」)。
 
 ## アンインストール
 
@@ -143,12 +164,12 @@ GitHub Releases での配布と、アプリの中からの自動更新は準備�
 - **ログイン画面に戻される**: ログインの期限が切れ、更新もできなくなっています。もう一度ログインしてください。
 - **ログインで `invalid_client` や `unauthorized_client` が出る**: AuthZ にデスクトップ版のクライアントが登録されていないか、`oidc_client_id` が違います。管理者に確かめてください。
 - **「デスクトップ版の更新が必要です」と出る (`remote`)**: Web 版のやり取りの形が、このアプリの版と合っていません。まず「再読み込み」を押し、直らなければ新しい版のアプリを入れてください。
+- **更新の通知が出ない**: CI の成果物から入れた版は、自分では更新しません。GitHub Releases の版を入れ直してください。
 - **「読み込んでいます…」から進まない**: zli.chat に接続できていません。ネットワークを確かめてください。
 
 ## いまの制限
 
 - macOS 版はまだありません。署名と公証をしていないので、配布の準備ができるまでは Linux だけです。
-- アプリの中からの自動更新はありません。新しい版は手で入れ直します。
 - 本番の AuthZ に `zoo2-desktop-tauri` のクライアントが登録されるまでは、本番の zli.chat にはログインできません。
 - 画面は最小限です。スレッド、リアクション、編集、ファイルの添付などは Web 版を使ってください。
 
