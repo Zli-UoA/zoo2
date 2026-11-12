@@ -51,6 +51,12 @@ pub enum AppEvent {
         append: bool,
         next_cursor: Option<String>,
     },
+    ThreadsFailed {
+        requested_at: Instant,
+        archived: bool,
+        append: bool,
+        message: String,
+    },
     ThreadsChanged {
         reopened: Option<String>,
     },
@@ -140,6 +146,8 @@ pub struct App {
     threads_requested_at: [Option<Instant>; 2],
     thread_updated_at: HashMap<String, Instant>,
     pub thread_cursors: [Option<String>; 2],
+    thread_has_additional_pages: [bool; 2],
+    pub thread_failed_append: [Option<bool>; 2],
     pub show_archived_threads: bool,
     pub current: Option<String>,
     /// 選択中のルートメッセージ。None なら最新を追う。
@@ -202,6 +210,8 @@ impl App {
             threads_requested_at: [None, None],
             thread_updated_at: HashMap::new(),
             thread_cursors: [None, None],
+            thread_has_additional_pages: [false; 2],
+            thread_failed_append: [None, None],
             show_archived_threads: false,
             current: None,
             selected: None,
@@ -319,31 +329,62 @@ impl App {
                         id: first.id.clone(),
                     });
                 }
-                if !append {
-                    if archived {
-                        self.archived_threads.clear();
-                    } else {
-                        self.active_threads.clear();
-                    }
+                if append {
+                    self.thread_has_additional_pages[scope] = true;
+                } else if next_cursor.is_none() {
+                    self.thread_has_additional_pages[scope] = false;
                 }
-                for thread in threads {
+                let preserve = append || self.thread_has_additional_pages[scope];
+                let incoming_ids: HashSet<_> =
+                    threads.iter().map(|thread| thread.id.clone()).collect();
+                for thread in &threads {
                     self.thread_updated_at
                         .insert(thread.id.clone(), requested_at);
-                    self.active_threads.retain(|entry| entry.id != thread.id);
-                    self.archived_threads.retain(|entry| entry.id != thread.id);
-                    if archived {
-                        self.archived_threads.push(thread);
-                    } else {
-                        self.active_threads.push(thread);
-                    }
+                }
+                let (current, other) = if archived {
+                    (&mut self.archived_threads, &mut self.active_threads)
+                } else {
+                    (&mut self.active_threads, &mut self.archived_threads)
+                };
+                other.retain(|entry| !incoming_ids.contains(&entry.id));
+                if preserve {
+                    current.retain(|entry| !incoming_ids.contains(&entry.id));
+                } else {
+                    current.clear();
+                }
+                if append {
+                    current.extend(threads);
+                } else {
+                    let mut refreshed = threads;
+                    refreshed.append(current);
+                    *current = refreshed;
                 }
                 let loaded_ids: HashSet<_> =
                     self.threads().map(|thread| thread.id.clone()).collect();
                 self.thread_updated_at
                     .retain(|id, _| loaded_ids.contains(id));
-                self.thread_cursors[scope] = next_cursor;
+                if append || !self.thread_has_additional_pages[scope] {
+                    self.thread_cursors[scope] = next_cursor;
+                }
+                self.thread_failed_append[scope] = None;
                 self.threads_requested_at[scope] = Some(requested_at);
                 self.restore_sidebar_selection(selected);
+            }
+            AppEvent::ThreadsFailed {
+                requested_at,
+                archived,
+                append,
+                message,
+            } => {
+                let scope = usize::from(archived);
+                if self.threads_requested_at[scope].is_some_and(|last| requested_at < last) {
+                    return;
+                }
+                self.threads_requested_at[scope] = Some(requested_at);
+                self.thread_failed_append[scope] = Some(append);
+                self.notify(format!(
+                    "スレッド一覧を取得できませんでした: {message}。一覧の再試行を選んでください"
+                ));
             }
             AppEvent::ThreadsChanged { reopened } => {
                 if let Some(id) = reopened
@@ -475,14 +516,24 @@ impl App {
         };
         tokio::spawn(async move {
             let requested_at = Instant::now();
-            if let Ok(page) = api.threads(archived, cursor.as_deref()).await {
-                let _ = tx.send(AppEvent::Threads {
-                    requested_at,
-                    threads: page.items,
-                    archived,
-                    append,
-                    next_cursor: page.next_cursor,
-                });
+            match api.threads(archived, cursor.as_deref()).await {
+                Ok(page) => {
+                    let _ = tx.send(AppEvent::Threads {
+                        requested_at,
+                        threads: page.items,
+                        archived,
+                        append,
+                        next_cursor: page.next_cursor,
+                    });
+                }
+                Err(error) => {
+                    let _ = tx.send(AppEvent::ThreadsFailed {
+                        requested_at,
+                        archived,
+                        append,
+                        message: error.to_string(),
+                    });
+                }
             }
         });
     }
@@ -542,7 +593,8 @@ impl App {
         }
         for archived in [false, true] {
             if (!archived || self.show_archived_threads)
-                && self.thread_cursors[usize::from(archived)].is_some()
+                && (self.thread_cursors[usize::from(archived)].is_some()
+                    || self.thread_failed_append[usize::from(archived)].is_some())
             {
                 items.push(SidebarItem::MoreThreads { archived });
             }
@@ -1010,7 +1062,10 @@ impl App {
                 self.focus = Focus::Thread;
                 self.poll_typing();
             }
-            Some(SidebarItem::MoreThreads { archived }) => self.fetch_thread_page(archived, true),
+            Some(SidebarItem::MoreThreads { archived }) => self.fetch_thread_page(
+                archived,
+                self.thread_failed_append[usize::from(archived)].unwrap_or(true),
+            ),
             None => {}
         }
     }
@@ -1406,12 +1461,20 @@ mod tests {
         assert!(matches!(&event, AppEvent::ThreadsChanged { reopened: Some(id) } if id == "root"));
         app.on_app_event(event);
         assert!(app.active_threads[0].thread_archive_at.is_none());
+        let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(&event, AppEvent::ThreadsFailed { .. }));
+        app.on_app_event(event);
+        assert!(app.active_threads[0].thread_archive_at.is_none());
         assert!(
-            tokio::time::timeout(Duration::from_millis(200), rx.recv())
-                .await
-                .is_err()
+            app.notice
+                .as_ref()
+                .unwrap()
+                .0
+                .starts_with("スレッド一覧を取得できませんでした")
         );
-        assert!(app.notice.is_none());
     }
 
     #[tokio::test]

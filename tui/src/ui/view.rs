@@ -120,11 +120,19 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 )));
             }
             if let SidebarItem::MoreThreads { archived } = item {
-                return Some(ListItem::new(if *archived {
-                    "  履歴をさらに表示"
-                } else {
-                    "  スレッドをさらに表示"
-                }));
+                return Some(ListItem::new(
+                    if app.thread_failed_append[usize::from(*archived)].is_some() {
+                        if *archived {
+                            "  履歴の取得を再試行"
+                        } else {
+                            "  スレッドの取得を再試行"
+                        }
+                    } else if *archived {
+                        "  履歴をさらに表示"
+                    } else {
+                        "  スレッドをさらに表示"
+                    },
+                ));
             }
             let SidebarItem::Channel(id) = item else {
                 return None;

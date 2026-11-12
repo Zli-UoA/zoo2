@@ -46,7 +46,6 @@ export function useThreadIndex(
     let pending = false;
     let generation = 0;
     let cursor: string | null = null;
-    let firstPageIds = new Set<string>();
     let hasAdditionalPages = false;
     let failedRequest: { append: boolean; cursor: string | null } | null = null;
     const refresh = async (append = false, before = cursor) => {
@@ -72,10 +71,8 @@ export function useThreadIndex(
         const page = await client.get<ThreadPage>(`/api/threads${query}`);
         if (active && started === generation) {
           failedRequest = null;
-          const previousFirstPageIds = firstPageIds;
           if (append) hasAdditionalPages = true;
           else {
-            firstPageIds = new Set(page.items.map((item) => item.id));
             if (page.next_cursor === null) hasAdditionalPages = false;
           }
           if (append || !hasAdditionalPages) cursor = page.next_cursor;
@@ -87,12 +84,7 @@ export function useThreadIndex(
             const items = append
               ? [...new Map([...previous, ...page.items].map((item) => [item.id, item])).values()]
               : preserveAdditionalPages
-                ? [
-                    ...page.items,
-                    ...previous.filter(
-                      (item) => !previousFirstPageIds.has(item.id) && !refreshedIds.has(item.id),
-                    ),
-                  ]
+                ? [...page.items, ...previous.filter((item) => !refreshedIds.has(item.id))]
                 : page.items;
             return {
               items,
