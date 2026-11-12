@@ -10,9 +10,12 @@ Zoo2 のフロントエンド。TanStack Start（React 19）+ Vite+ + Tailwind C
 ## セットアップ
 
 ```bash
+make crypto-wasm   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）を作る。リポジトリルートで実行
 cd frontend
 pnpm install
 ```
+
+`@zoo/crypto-wasm` は `crates/zoo-crypto-wasm` への `link:` 依存です。`pkg/` は Git に入れないので、`pnpm check`、`pnpm test`、`pnpm test:browser` の前に `make crypto-wasm` で作ります（Rust の `wasm32-unknown-unknown` と、`crates/zoo-crypto-wasm/Cargo.toml` の `wasm-bindgen` と同じ版の `wasm-bindgen-cli` を使います。どちらも `nix develop` に入っています）。`crates/zoo-crypto` を変えたら作り直してください。`make frontend-check`、`frontend-test`、`frontend-build` は先に作ります。
 
 ## コマンド
 

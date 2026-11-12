@@ -115,7 +115,8 @@
             opentofu
             sops
             age
-            # Tauri 版（desktop-tauri）。wasm-bindgen は desktop-tauri/ui/Cargo.toml の版と合わせる
+            # Tauri 版（desktop-tauri）と E2EE の wasm（crates/zoo-crypto-wasm）。wasm-bindgen-cli の版は
+            # desktop-tauri/ui/Cargo.toml と crates/zoo-crypto-wasm/Cargo.toml の wasm-bindgen（= で固定）と合わせる
             cargo-tauri
             trunk
             wasm-bindgen-cli

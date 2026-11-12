@@ -42,6 +42,11 @@ const config = defineConfig({
   },
   resolve: { tsconfigPaths: true },
   preview: { host: "127.0.0.1" },
+  server: {
+    // @zoo/crypto-wasm は link: で frontend の外（crates/zoo-crypto-wasm/pkg）を指す。
+    // dev サーバーとブラウザーのテストが *_bg.wasm を返せるよう、そのディレクトリーだけ許可する。
+    fs: { allow: [dirname, path.resolve(dirname, "../crates/zoo-crypto-wasm/pkg")] },
+  },
   build: {
     // Production CSP permits same-origin fonts only. Keep small KaTeX fonts out of data URLs.
     assetsInlineLimit: (filePath) => (/\.(?:woff2?|ttf|otf)$/i.test(filePath) ? false : undefined),
@@ -68,6 +73,8 @@ const config = defineConfig({
           name: "unit",
           environment: "node",
           include: ["src/**/*.test.ts"],
+          // Worker などブラウザーの API が要るテストは browser プロジェクトで動かす。
+          exclude: ["**/node_modules/**", "src/**/*.browser.test.ts"],
         },
       },
       {
@@ -80,7 +87,7 @@ const config = defineConfig({
           browser: {
             enabled: true,
             headless: true,
-            provider: playwright(),
+            provider: playwright({ launchOptions: { executablePath: process.env.CHROME_BIN } }),
             instances: [{ browser: "chromium" }],
           },
         },
