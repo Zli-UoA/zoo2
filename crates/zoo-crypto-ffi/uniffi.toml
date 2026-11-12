@@ -1,3 +1,3 @@
 [bindings.kotlin]
-package_name = "works.zli.zoo.crypto.ffi"
+package_name = "zoo.crypto.ffi"
 cdylib_name = "zoo_crypto_ffi"
