@@ -6,24 +6,26 @@ use jiff::civil::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::shape::Row;
+use crate::shape::Row;
 
 pub trait FromRow: Sized {
     fn from_row(row: &Row) -> Result<Self>;
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Channel {
     pub id: String,
     pub channel_name: String,
     pub description: Option<String>,
     pub is_private: bool,
+    #[serde(default)]
+    pub is_nsfw: bool,
     pub is_dm: bool,
     pub archive_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct User {
     pub id: String,
     pub user_name: String,
@@ -33,13 +35,13 @@ pub struct User {
     pub is_guest: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelUser {
     pub user_id: String,
     pub channel_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
     pub user_id: String,
@@ -52,7 +54,7 @@ pub struct Message {
     pub parent_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reaction {
     pub id: String,
     pub message_id: String,
@@ -61,7 +63,7 @@ pub struct Reaction {
     pub created_at: DateTime,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Attachment {
     pub id: String,
     pub message_id: Option<String>,
@@ -71,7 +73,26 @@ pub struct Attachment {
     pub file_size: i64,
     pub content_type: String,
     pub storage_key: String,
+    #[serde(default)]
+    pub is_sensitive: bool,
     pub created_at: DateTime,
+}
+
+/// 自分あての通知。プロキシが `notification_events` の `source = 'channel'` だけを返すので、
+/// チャンネルとメッセージは必ずある。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Notification {
+    pub id: String,
+    pub user_id: String,
+    pub actor_id: String,
+    pub channel_id: String,
+    pub message_id: String,
+    /// `mention`、`reply`、`dm`、`reaction` など。backend の `notifications.rs` を参照。
+    pub notification_type: String,
+    pub is_read: bool,
+    pub created_at: DateTime,
+    /// 投稿者名や本文の抜粋など、表示用に backend が詰めた JSON。
+    pub display_data: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +162,7 @@ impl FromRow for Channel {
             channel_name: text(row, "channel_name")?,
             description: opt_text(row, "description"),
             is_private: boolean(row, "is_private")?,
+            is_nsfw: opt_boolean(row, "is_nsfw")?.unwrap_or(false),
             // 古いスキーマには is_dm がないため、無ければ通常のチャンネルとして扱う。
             is_dm: opt_boolean(row, "is_dm")?.unwrap_or(false),
             archive_at: opt_time(row, "archive_at")?,
@@ -210,8 +232,36 @@ impl FromRow for Attachment {
             file_size: integer(row, "file_size")?,
             content_type: text(row, "content_type")?,
             storage_key: text(row, "storage_key")?,
+            is_sensitive: opt_boolean(row, "is_sensitive")?.unwrap_or(false),
             created_at: time(row, "created_at")?,
         })
+    }
+}
+
+impl FromRow for Notification {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
+            id: text(row, "id")?,
+            user_id: text(row, "user_id")?,
+            actor_id: text(row, "actor_id")?,
+            channel_id: text(row, "channel_id")?,
+            message_id: text(row, "message_id")?,
+            notification_type: text(row, "notification_type")?,
+            is_read: opt_boolean(row, "is_read")?.unwrap_or(false),
+            created_at: time(row, "created_at")?,
+            display_data: opt_json(row, "display_data")?,
+        })
+    }
+}
+
+/// jsonb の列。Electric は JSON の文字列で送るため、文字列ならパースする。
+fn opt_json(row: &Row, column: &str) -> Result<Option<Value>> {
+    match row.get(column) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(raw)) => serde_json::from_str(raw)
+            .map(Some)
+            .with_context(|| format!("列 {column} が JSON ではありません")),
+        Some(other) => Ok(Some(other.clone())),
     }
 }
 
@@ -294,11 +344,12 @@ mod tests {
     fn parses_electric_text_values() {
         let channel = Channel::from_row(&row(json!({
             "id": "c1", "channel_name": "general", "description": null,
-            "is_private": "f", "is_dm": "true", "archive_at": "2026-11-01 01:02:03.456",
+            "is_private": "f", "is_nsfw": "t", "is_dm": "true", "archive_at": "2026-11-01 01:02:03.456",
             "deleted_at": null
         })))
         .unwrap();
         assert!(!channel.is_private);
+        assert!(channel.is_nsfw);
         assert!(channel.is_dm);
         assert_eq!(
             channel.archive_at.unwrap().to_string(),
@@ -321,6 +372,7 @@ mod tests {
         })))
         .unwrap();
         assert!(!channel.is_dm);
+        assert!(!channel.is_nsfw);
     }
 
     #[test]
@@ -351,10 +403,12 @@ mod tests {
             "file_size": 12345,
             "content_type": "image/png",
             "storage_key": "keys/photo.png",
+            "is_sensitive": "t",
             "created_at": "2026-11-01 12:00:00"
         })))
         .unwrap();
         assert_eq!(attachment.id, "att1");
+        assert!(attachment.is_sensitive);
         assert_eq!(attachment.file_size, 12345);
         assert_eq!(attachment.content_type, "image/png");
 

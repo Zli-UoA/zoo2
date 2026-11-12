@@ -105,7 +105,7 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
         _ => return Err(AppError::NotFound("Local post".into())),
     };
     let content = html_escape::encode_safe(string(post, "content")?).replace('\n', "<br>");
-    let mut note = json!({"@context":[CONTEXT,{"_misskey_content":"https://misskey-hub.net/ns#_misskey_content","blurhash":"http://joinmastodon.org/ns#blurhash"}],"source":{"content":post["content"],"mediaType":"text/x.misskeymarkdown"},"_misskey_content":post["content"],"type":"Note","id":format!("{}/api/activitypub/notes/{id}",base_url()?),"attributedTo":author,"published":post["created_at"],"updated":post["updated_at"],"content":content,"mediaType":"text/html","likes":format!("{}/api/activitypub/notes/{id}/likes",base_url()?),"to":to,"cc":cc});
+    let mut note = json!({"@context":[CONTEXT,{"_misskey_content":"https://misskey-hub.net/ns#_misskey_content","blurhash":"http://joinmastodon.org/ns#blurhash","sensitive":"as:sensitive"}],"source":{"content":post["content"],"mediaType":"text/x.misskeymarkdown"},"_misskey_content":post["content"],"type":"Note","id":format!("{}/api/activitypub/notes/{id}",base_url()?),"attributedTo":author,"published":post["created_at"],"updated":post["updated_at"],"content":content,"mediaType":"text/html","likes":format!("{}/api/activitypub/notes/{id}/likes",base_url()?),"to":to,"cc":cc});
     let media_base = base_url()?;
     let attachments = post["media"]
         .as_array()
@@ -120,6 +120,7 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
                 }
             });
             let mut attachment = json!({"type":"Document","mediaType":item["media_type"],"name":item["name"],"url":url});
+            attachment["sensitive"] = json!(item["is_sensitive"] == true);
             for key in ["width", "height", "blurhash"] {
                 if !item[key].is_null() {
                     attachment[key] = item[key].clone();
@@ -128,6 +129,12 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
             attachment
         })
         .collect::<Vec<_>>();
+    note["sensitive"] = json!(
+        post["sensitive"] == true
+            || post["media"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item["is_sensitive"] == true))
+    );
     if !attachments.is_empty() {
         note["attachment"] = json!(attachments);
     }
@@ -150,7 +157,7 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
             .as_array_mut()
             .unwrap();
         tags.extend(emojis.iter().map(emoji::as_tag));
-        note["@context"] = json!([CONTEXT,{"Emoji":"http://joinmastodon.org/ns#Emoji","_misskey_content":"https://misskey-hub.net/ns#_misskey_content","blurhash":"http://joinmastodon.org/ns#blurhash"}]);
+        note["@context"] = json!([CONTEXT,{"Emoji":"http://joinmastodon.org/ns#Emoji","_misskey_content":"https://misskey-hub.net/ns#_misskey_content","blurhash":"http://joinmastodon.org/ns#blurhash","sensitive":"as:sensitive"}]);
     }
     Ok(note)
 }

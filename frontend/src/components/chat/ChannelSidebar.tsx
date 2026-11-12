@@ -175,6 +175,9 @@ export function ChannelSidebar({
                     >
                       {channel.channel_name}
                     </span>
+                    {channel.is_nsfw ? (
+                      <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
+                    ) : null}
                     {hasActiveCall ? (
                       <span
                         role="img"

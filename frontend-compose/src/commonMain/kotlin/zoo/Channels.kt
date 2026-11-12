@@ -52,6 +52,8 @@ fun ChannelDialog(
         }
     var name by remember(kind) { mutableStateOf(initialName) }
     var description by remember(kind) { mutableStateOf(initialDescription) }
+    val initialNsfw = remember(kind) { channel?.flag("is_nsfw") == true }
+    var nsfw by remember(kind) { mutableStateOf(initialNsfw) }
     var private by
         remember(kind) {
             mutableStateOf(
@@ -75,6 +77,7 @@ fun ChannelDialog(
                 name = ""
                 description = ""
                 private = false
+                nsfw = false
             }
             "dm" -> {
                 search = ""
@@ -105,6 +108,7 @@ fun ChannelDialog(
     fun saveChannel() {
         app.run("channel-dialog") {
             val body = buildJsonObject {
+                if (kind == "create" || nsfw != initialNsfw) put("is_nsfw", nsfw)
                 if (kind == "create" || name.trim() != initialName.trim())
                     put("channel_name", name.trim())
                 if (kind == "create") {
@@ -193,7 +197,7 @@ fun ChannelDialog(
                                 description.trim().codePointCount() <= 250 &&
                                 (kind == "create" ||
                                     name.trim() != initialName.trim() ||
-                                    description.trim() != initialDescription.trim()),
+                                    description.trim() != initialDescription.trim() || nsfw != initialNsfw),
                             ::saveChannel,
                         ),
                     )
@@ -317,6 +321,7 @@ fun ChannelDialog(
                             small = true,
                         )
                     }
+                    Check(app.t("channels.nsfw"), nsfw, !busy) { nsfw = it }
                     if (kind == "create")
                         Check(app.t("channels.makePrivate"), private, !busy) { private = it }
                 }

@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/shapes/notifications", get(notifications_shape))
         .route("/api/shapes/attachments", get(attachments_shape))
         .route("/api/shapes/e2ee_devices", get(e2ee_devices_shape))
+        .route("/api/shapes/e2ee_to_device", get(e2ee_to_device_shape))
 }
 
 /// クライアントから送信されたクエリパラメータのうち、Electric プロトコルで許可されたものを転送
@@ -136,6 +137,19 @@ pub(crate) fn e2ee_devices_shape_where(user_id: &str) -> (String, Vec<(&'static 
             crate::routes::e2ee::SHARED_USERS_SQL
         ),
         vec![("params[1]", user_id)],
+    )
+}
+
+/// E2EE の to-device メッセージの Shape の where 句とパラメータ（docs/e2ee.md の「Electric の Shape」）。
+///
+/// 呼び出したユーザーの、サーバーで確かめた端末宛ての行だけ。クライアントの where は使わない。
+pub(crate) fn e2ee_to_device_shape_where<'a>(
+    user_id: &'a str,
+    device_id: &'a str,
+) -> (String, Vec<(&'static str, &'a str)>) {
+    (
+        "recipient_user_id = $1 AND recipient_device_id = $2".to_string(),
+        vec![("params[1]", user_id), ("params[2]", device_id)],
     )
 }
 
@@ -555,6 +569,37 @@ async fn e2ee_devices_shape(
     .await
 }
 
+/// E2EE の to-device メッセージの Shape（宛先の端末ごと）。`device_id` は呼び出したユーザーの、
+/// 削除されていない端末でなければならない（他人の端末は、存在を推測されないよう 404）。
+async fn e2ee_to_device_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let device_id = raw_query.get("device_id").cloned().unwrap_or_default();
+    let own = {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        crate::routes::e2ee::to_device::own_active_device(&mut tx, &auth_user.id, &device_id)
+            .await?
+    };
+    if !own {
+        return Err(AppError::NotFound("Device not found".into()));
+    }
+    let (where_clause, extra_params) =
+        e2ee_to_device_shape_where(auth_user.id.as_str(), device_id.as_str());
+    proxy_shape(
+        &state,
+        "e2ee_to_device_messages",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
 /// App tokens only enumerate channels their acting identity has joined.
 pub(crate) async fn app_channels_shape(
     state: AppState,
@@ -689,6 +734,19 @@ mod tests {
         assert_eq!(params, vec![("params[1]", "user-123")]);
         assert!(!E2EE_DEVICES_SHAPE_COLUMNS.contains("display_name"));
         assert!(!E2EE_DEVICES_SHAPE_COLUMNS.contains("last_seen_at"));
+    }
+
+    #[test]
+    fn test_e2ee_to_device_shape_where() {
+        let (clause, params) = e2ee_to_device_shape_where("user-123", "device-1");
+        assert_eq!(
+            clause,
+            "recipient_user_id = $1 AND recipient_device_id = $2"
+        );
+        assert_eq!(
+            params,
+            vec![("params[1]", "user-123"), ("params[2]", "device-1")]
+        );
     }
 
     #[test]

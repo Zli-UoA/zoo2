@@ -170,7 +170,7 @@ pub(super) async fn resolve_announce(
     remote_actor(state, Some(user), &author, false).await?;
     let proof = note_identity::Proof::from_note(&note, object)?;
     let emojis = emoji::tags(&note["tag"]);
-    let media = emoji::media(&note["attachment"]);
+    let media = emoji::note_media(&note);
     let mut tx = db.transaction().await?;
     note_identity::reconcile(&mut tx, object, &author, Some(&proof)).await?;
     emoji::remember(&mut tx, &emojis).await?;

@@ -15,13 +15,7 @@ pub struct ApiClient {
     credentials: Credentials,
 }
 
-/// `GET /api/users/me`
-#[derive(Debug, Clone, Deserialize)]
-pub struct Me {
-    pub id: String,
-    pub user_name: String,
-    pub display_name: String,
-}
+pub use zoo2_client_types::api::Me;
 
 /// `GET /api/channel-read-states` の1件。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -62,6 +56,13 @@ pub struct CreatedChannel {
     pub channel_name: String,
     pub description: Option<String>,
     pub is_private: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MyProfile {
+    /// timestamptz の JSON 文字列。`notify::parse_dnd_until` で読む。
+    #[serde(default)]
+    pub dnd_until: Option<String>,
 }
 
 /// 書き込み API の `{data, txid}`。`txid` が null のときは何も変わっていない。
@@ -155,6 +156,12 @@ impl ApiClient {
     }
     pub async fn me(&self) -> Result<Me> {
         self.get("/api/users/me").await
+    }
+
+    /// `GET /api/users/me/profile` のうち、クライアントが使う部分。
+    /// `dnd_until` は `preferences:read` の scope がないと返らない (None になる)。
+    pub async fn my_profile(&self) -> Result<MyProfile> {
+        self.get("/api/users/me/profile").await
     }
 
     /// `id` はクライアントで採番する (frontend と同じく、送信直後の行と突き合わせるため)。

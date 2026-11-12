@@ -39,10 +39,11 @@ jobs:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   # fmt, clippy, build and unit tests share one job so the Rust cache is
-  # restored once; on kubecamp the restore takes longer than the build itself.
+  # restored once across the Rust checks.
   check:
     needs: runner
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     defaults:
       run:
         working-directory: ./backend
@@ -263,8 +264,14 @@ jobs:
 
           # atlas schema diff は未ログインだと関数を含む schema.sql を読めないため、
           # マイグレーションと schema.sql をそれぞれ空のDBに適用し、pg_dump の結果を比較します。
+          # `-- atlas:txmode none` のファイル（CREATE INDEX CONCURRENTLY など）は、Atlas と同じく
+          # トランザクションの外で実行します。それ以外は 1 ファイル 1 トランザクションです。
           for f in infra/db/migrations/*.sql; do
-            psql_exec -d from_migrations -1 < "$f" > /dev/null
+            if grep -q '^-- atlas:txmode none' "$f"; then
+              psql_exec -d from_migrations < "$f" > /dev/null
+            else
+              psql_exec -d from_migrations -1 < "$f" > /dev/null
+            fi
           done
           psql_exec -d from_schema -1 < infra/db/schema.sql > /dev/null
 

@@ -4,7 +4,7 @@
 
 zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料で、分数の上限もありません。zli-k8sへ進むのは、privateリポジトリでGitHub Freeの無料枠（月2,000分）を使い切りそうな場合だけです。AuthZとzoo2-infraも同じ判定を使います。
 
-自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用、`large-runs-on` はkubecampの2GiBを超えるジョブ用です。`docker-runs-on` と `large-runs-on` は同じ値を返します。次の条件で選びます。
+自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用、`large-runs-on` はkubecampの2GiBを超えるジョブ用です。`docker-runs-on` と `large-runs-on` は同じ値を返します。backend の `check`（format・Clippy・ビルド・単体テスト）は、Rust のビルド・リンク中に2GiBのRunnerを圧迫しないよう、`large-runs-on` を使います。次の条件で選びます。
 
 1. onlineかつidleのkubecamp Runnerがあれば、自動選択対象のDocker不要ジョブを割り当てます。
 2. kubecampが不在または全台busyなら、GitHub-hostedを選びます。Docker必須ジョブと大容量ジョブは常にここから選びます。

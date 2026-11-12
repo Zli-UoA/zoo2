@@ -29,6 +29,7 @@
             root = ./.;
             fileset = pkgs.lib.fileset.unions [
               ./client-core
+              ./client-types
               ./tui
             ];
           };
@@ -64,6 +65,27 @@
           xwd
           imagemagick
         ];
+        # Tauri 版（desktop-tauri）の WebKitGTK と、そのランタイムで読まれるもの。
+        # libayatana-appindicator はトレイのために dlopen されるので LD_LIBRARY_PATH にも入れる。
+        tauriLibs = with pkgs; [
+          webkitgtk_4_1
+          libsoup_3
+          gtk3
+          glib
+          glib-networking
+          librsvg
+          cairo
+          pango
+          gdk-pixbuf
+          atk
+          dbus
+          openssl
+          libayatana-appindicator
+          gst_all_1.gstreamer
+          gst_all_1.gst-plugins-base
+          gst_all_1.gst-plugins-good
+          gst_all_1.gst-plugins-bad
+        ];
         # ブラウザーテスト用の Chromium。CI と同じく
         # サンドボックスを外したラッパーを CHROME_BIN に渡す。Nix の chromium は Linux のみ。
         zooChrome = pkgs.writeShellScriptBin "zoo-chrome" ''
@@ -93,13 +115,22 @@
             opentofu
             sops
             age
-          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs ++ desktopScreenshotTools);
+            # Tauri 版（desktop-tauri）。wasm-bindgen は desktop-tauri/ui/Cargo.toml の版と合わせる
+            cargo-tauri
+            trunk
+            wasm-bindgen-cli
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs ++ tauriLibs ++ desktopScreenshotTools);
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           JAVA_HOME = "${pkgs.jdk21}";
           # lavapipe の Vulkan ICD。desktop-screenshot.sh が VK_ICD_FILENAMES に使う。
           ZOO_LVP_ICD = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.uname.processor}.json";
           CHROME_BIN = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${zooChrome}/bin/zoo-chrome";
-          LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (pkgs.lib.makeLibraryPath linuxDesktopLibs);
+          LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (pkgs.lib.makeLibraryPath (linuxDesktopLibs ++ tauriLibs));
+          # WebKitGTK の TLS（glib-networking）と、GTK のファイル選択などが使う schema。
+          GIO_MODULE_DIR = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${pkgs.glib-networking}/lib/gio/modules";
+          shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:''${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+          '';
         };
       }
     );

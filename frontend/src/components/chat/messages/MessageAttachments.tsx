@@ -1,3 +1,4 @@
+import { SensitiveMedia } from "../../ui/sensitive-media";
 import { ImagePreview } from "../../ui/image-preview";
 import { imageAspectRatio } from "../../../lib/imageMetadata";
 import { useTranslation } from "react-i18next";
@@ -33,11 +34,14 @@ export function MessageAttachments({ attachments }: { attachments: AttachmentMet
           }
         >
           {images.map((attachment) => (
-            <AttachmentImage
-              key={attachment.id}
-              attachment={attachment}
-              multiple={images.length > 1}
-            />
+            <SensitiveMedia
+              key={`${attachment.id}:${Boolean(attachment.is_sensitive)}`}
+              sensitive={attachment.is_sensitive}
+              preview={attachment}
+              className={images.length === 1 ? "w-64 max-w-full" : "w-full"}
+            >
+              <AttachmentImage attachment={attachment} multiple={images.length > 1} />
+            </SensitiveMedia>
           ))}
         </div>
       ) : null}
