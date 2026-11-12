@@ -37,12 +37,60 @@ const MAX_ATTEMPTS: i64 = 5;
 const LEASE_LOST: &str = "Slack import lease was lost";
 const LEASE_SQL: &str = "interval '2 minutes'";
 const HEARTBEAT: Duration = Duration::from_secs(30);
+/// 終了の合図で手放したジョブを、別のワーカーが取れるようになるまでの間隔 (終了処理中の古い台が取り直さないため)
+/// 手放すときに、データベースを待つ最長の時間 (超えたら、リースが切れるのを待つ)
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDOFF_DELAY_SQL: &str = "interval '30 seconds'";
 /// カードの説明文の上限 (`MessageCard::encode` と同じ)
 const MAX_CARD_DESCRIPTION: usize = 4000;
 /// 添付 1 件あたりの取得失敗の上限
 const MAX_FILE_ATTEMPTS: i64 = 3;
 
+/// 終了の合図 (SIGTERM など)。`true` になったら、新しいジョブを取らず、処理中の段階を捨ててジョブを手放す。
+pub type Stop = tokio::sync::watch::Receiver<bool>;
+
+/// 合図が来るまで待つ。送り手が先に落ちた (合図が来ない) ときは、永久に待つ
+async fn stopped(stop: &mut Stop) {
+    loop {
+        if *stop.borrow() {
+            return;
+        }
+        if stop.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// 終了の合図を受けたら、処理中のジョブを手放す。リースが切れるのを待たずに、別のワーカーが再開できる。
+/// `attempts` は、デプロイによる中断で上限に近づかないよう 1 戻す (取得のときに増えた分)。
+/// 古い台が、まだ終了処理中に取り直さないよう、少し先から取れるようにする。
+/// トークンが違う (リースを奪われた) ときは何もしない。手放したら true
+pub async fn release_job(s: &AppState, id: &str, token: &str) -> Result<bool, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = query(
+        &mut tx,
+        &format!(
+            "UPDATE slack_import_jobs SET attempts=GREATEST(attempts-1,0),handoffs=handoffs+1,\
+             lease_until=NULL,lease_token=NULL,available_at=now()+{HANDOFF_DELAY_SQL},updated_at=now() \
+             WHERE id=$1 AND lease_token=$2 \
+             RETURNING json_build_object('id',id)::text"
+        ),
+        &[id, token],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(!rows.is_empty())
+}
+
 pub async fn worker(s: AppState) {
+    // 合図を送らない (止まらない) ワーカー。送り手をここで持ち続ける
+    let (_keep, stop) = tokio::sync::watch::channel(false);
+    worker_until(s, stop).await;
+}
+
+/// `stop` が `true` になるまで動くワーカー。合図を受けたら、処理中のジョブを手放して戻る
+pub async fn worker_until(s: AppState, mut stop: Stop) {
     // 前のプロセスが取り込みの途中で止まると、ZIP が残る（Kubernetes の emptyDir は
     // コンテナの再起動では消えない）。残ったままだと、取り直したジョブの ZIP と合わせて
     // 容量の上限を超えることがあるので、始める前に片付ける。
@@ -56,10 +104,15 @@ pub async fn worker(s: AppState) {
     let mut ticks = tokio::time::interval(Duration::from_secs(2));
     let mut passes = 0u32;
     loop {
-        ticks.tick().await;
+        tokio::select! {
+            _ = ticks.tick() => {}
+            _ = stopped(&mut stop) => return,
+        }
         passes = passes.wrapping_add(1);
-        if let Err(e) = run_once(&s).await {
-            tracing::warn!(error = %e, "Slack import worker failed");
+        match run_once_until(&s, &mut stop).await {
+            Ok(Step::Stopped) => return,
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "Slack import worker failed"),
         }
         if passes.is_multiple_of(1800)
             && let Err(e) = cleanup(&s).await
@@ -81,25 +134,62 @@ struct Job {
     token: String,
 }
 
+/// `run_once_until` の結果
+pub enum Step {
+    /// 実行できるジョブがなかった
+    Idle,
+    /// ジョブを 1 段階進めた (失敗して、やり直しを待つ場合も含む)
+    Ran,
+    /// 終了の合図を受けて、ジョブを手放した (手放すジョブがなくても、合図を受けたときは、これを返す)
+    Stopped,
+}
+
 /// 実行できるジョブを 1 件取り、1 段階進める。ジョブがあれば true。
 pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
+    let (_keep, mut stop) = tokio::sync::watch::channel(false);
+    Ok(matches!(run_once_until(s, &mut stop).await?, Step::Ran))
+}
+
+/// `run_once` と同じだが、`stop` が `true` になったら、段階を捨ててジョブを手放す。
+/// 段階は、トランザクションごとに完結し、冪等なので、途中で捨ててよい (書き込み中のトランザクションは、
+/// 捨てるとロールバックされる)。ZIP の取得・展開のような、止められない処理も、ここで待たずに捨てる。
+pub async fn run_once_until(s: &AppState, stop: &mut Stop) -> Result<Step, AppError> {
+    if *stop.borrow() {
+        return Ok(Step::Stopped);
+    }
     let Some(job) = claim(s).await? else {
-        return Ok(false);
+        return Ok(Step::Idle);
     };
     let lease = Lease::start(s.clone(), job.id.clone(), job.token.clone());
     tracing::info!(import_id = %job.id, status = %job.status, attempt = job.attempts, "Slack import step started");
-    let result = match job.status.as_str() {
-        "analyzing" => analyze(s, &job, &lease).await,
-        "importing" => import(s, &job, &lease).await,
-        "fetching_files" => fetch_files(s, &job, &lease).await,
-        _ => Ok(()),
+    let step = async {
+        match job.status.as_str() {
+            "analyzing" => analyze(s, &job, &lease).await,
+            "importing" => import(s, &job, &lease).await,
+            "fetching_files" => fetch_files(s, &job, &lease).await,
+            _ => Ok(()),
+        }
+    };
+    let result = tokio::select! {
+        result = step => result,
+        _ = stopped(stop) => {
+            // 段階の future はここで捨てられる (トランザクションはロールバックされる)
+            drop(lease);
+            match tokio::time::timeout(RELEASE_TIMEOUT, release_job(s, &job.id, &job.token)).await {
+                Ok(Ok(true)) => tracing::info!(import_id = %job.id, "Released the Slack import job for shutdown"),
+                Ok(Ok(false)) => tracing::warn!(import_id = %job.id, "Slack import lease was already lost at shutdown"),
+                Ok(Err(e)) => tracing::warn!(import_id = %job.id, error = %e, "Failed to release the Slack import job; the lease will expire"),
+                Err(_) => tracing::warn!(import_id = %job.id, "Timed out releasing the Slack import job; the lease will expire"),
+            }
+            return Ok(Step::Stopped);
+        }
     };
     drop(lease);
     if let Err(e) = result {
         tracing::warn!(import_id = %job.id, error = %e, "Slack import step failed");
         fail(s, &job, &e).await?;
     }
-    Ok(true)
+    Ok(Step::Ran)
 }
 
 async fn claim(s: &AppState) -> Result<Option<Job>, AppError> {
@@ -682,6 +772,33 @@ async fn ensure_user(
     })
 }
 
+/// 前の試行の再開位置 (チャンネルごとに、取り込んだ最後の日付ファイル名) と、処理済みの件数。
+/// 記録がなければ、最初からなので、件数も 0
+async fn load_progress(
+    db: &mut toasty::Db,
+    id: &str,
+) -> Result<(HashMap<String, String>, u64), AppError> {
+    let mut tx = db.transaction().await?;
+    let row = one(
+        &mut tx,
+        "SELECT json_build_object('progress',import_progress,'processed',processed_messages)::text \
+         FROM slack_import_jobs WHERE id=$1",
+        &[id],
+    )
+    .await?;
+    tx.commit().await?;
+    let progress: HashMap<String, String> = row["progress"]
+        .as_str()
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default();
+    let processed = if progress.is_empty() {
+        0
+    } else {
+        row["processed"].as_u64().unwrap_or(0)
+    };
+    Ok((progress, processed))
+}
+
 async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> {
     let team = job
         .team_id
@@ -882,7 +999,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         tx.commit().await?;
     }
 
-    let mut processed = 0u64;
+    // 前の試行が、日付ファイルまで取り込んで止まったなら、その続きから始める。日付ファイルは、取り込みの
+    // トランザクションごとに、この記録と同時にコミットするので、記録にある分は、取り込み済み。
+    // 記録がない (古いジョブや最初の試行) ときは、処理済みの件数も数え直す
+    let (mut progress, mut processed) = load_progress(&mut db, &job.id).await?;
     for (channel, channel_id, _) in &targets {
         lease.check()?;
         {
@@ -907,12 +1027,20 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             tx.commit().await?;
         }
 
+        let done = progress.get(&channel.id).cloned();
         for entry in archive.day_files(channel) {
+            // 日付ファイルは、名前の昇順に処理する。取り込み済みの分は飛ばす
+            if done.as_deref().is_some_and(|done| entry.as_str() <= done) {
+                continue;
+            }
             lease.check()?;
-            let (returned, messages) = blocking(move || {
-                let mut archive = archive;
-                let messages = archive.messages(&entry)?;
-                Ok((archive, messages))
+            let (returned, messages) = blocking({
+                let entry = entry.clone();
+                move || {
+                    let mut archive = archive;
+                    let messages = archive.messages(&entry)?;
+                    Ok((archive, messages))
+                }
             })
             .await?;
             archive = returned;
@@ -974,10 +1102,18 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 )
                 .await?;
             }
+            // 取り込んだ日付ファイルの記録は、投稿と同じトランザクションでコミットする (再開位置)
+            progress.insert(channel.id.clone(), entry);
             exec(
                 &mut tx,
-                "UPDATE slack_import_jobs SET processed_messages=$3::bigint,updated_at=now() WHERE id=$1 AND lease_token=$2",
-                &[&job.id, &job.token, &processed.to_string()],
+                "UPDATE slack_import_jobs SET processed_messages=$3::bigint,import_progress=$4,updated_at=now() \
+                 WHERE id=$1 AND lease_token=$2",
+                &[
+                    &job.id,
+                    &job.token,
+                    &processed.to_string(),
+                    &serde_json::to_string(&progress).map_err(|e| AppError::Internal(e.into()))?,
+                ],
             )
             .await?;
             tx.commit().await?;

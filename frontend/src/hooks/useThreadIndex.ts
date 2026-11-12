@@ -16,6 +16,16 @@ export interface ThreadPage {
   items: ThreadSummary[];
   next_cursor: string | null;
 }
+// 取得開始とローカルでの状態検知を、共有キャッシュ全体で同じ順序に並べる。
+let sequence = 0;
+const requestSequences = new WeakMap<ThreadSummary, number>();
+export function nextThreadIndexSequence() {
+  return ++sequence;
+}
+export function threadSummaryRequestSequence(thread: ThreadSummary) {
+  return requestSequences.get(thread) ?? 0;
+}
+
 const EMPTY_PAGE: ThreadPage = { items: [], next_cursor: null };
 type Result = ThreadPage & { key: string; isLoading: boolean; isError: boolean };
 
@@ -30,6 +40,7 @@ function createIndex(
 ) {
   const client = createConfiguredApiClient(config);
   let result: Result | null = null;
+  const observed = new Map<string, { thread: ThreadSummary; sequence: number }>();
   let fetchedAt = 0;
   let observedRevision = -1;
   let cursor: string | null = null;
@@ -58,6 +69,7 @@ function createIndex(
       const request = new AbortController();
       controller = request;
       const signal = AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]);
+      const requestedSequence = nextThreadIndexSequence();
       const started = generation;
       const startedRevision = threadRevision();
       const params = new URLSearchParams();
@@ -87,26 +99,50 @@ function createIndex(
           items.push(...page.items);
         }
         if (active && started === generation && !signal.aborted) {
+          for (const item of items) requestSequences.set(item, requestedSequence);
+          for (const [id, local] of observed) {
+            if (
+              requestedSequence > local.sequence &&
+              (!append || items.some((item) => item.id === id))
+            ) {
+              observed.delete(id);
+            }
+          }
           fetchedAt = Date.now();
           observedRevision = startedRevision;
           failedRequest = null;
           cursor = rebuild ? rangeEnd : page.next_cursor;
           hasAdditionalPages = append || (rebuild && items.length > 100);
           const nextCursor = cursor;
-          setResult((current) => ({
-            items: [
-              ...new Map(
-                [...(append && current?.key === key ? current.items : []), ...items].map((item) => [
-                  item.id,
-                  item,
-                ]),
-              ).values(),
-            ],
-            next_cursor: nextCursor,
-            key,
-            isLoading: false,
-            isError: false,
-          }));
+          setResult((current) => {
+            const merged = new Map(
+              [...(append && current?.key === key ? current.items : []), ...items].map((item) => [
+                item.id,
+                item,
+              ]),
+            );
+            // 古い応答にない確定済みの行は、ローカルでの順序のまま先頭に保つ。
+            const localOnly = (current?.items ?? []).filter(
+              (item) =>
+                !merged.has(item.id) && observed.get(item.id)?.thread.thread_archive_at === null,
+            );
+            for (const [id, local] of observed) {
+              if (local.thread.thread_archive_at || local.thread.reply_count === 0)
+                merged.delete(id);
+              else merged.set(id, local.thread);
+            }
+            return {
+              items: [
+                ...new Map(
+                  [...localOnly, ...merged.values()].map((item) => [item.id, item]),
+                ).values(),
+              ],
+              next_cursor: nextCursor,
+              key,
+              isLoading: false,
+              isError: false,
+            };
+          });
         }
       } catch {
         // 一時的な取得失敗では直前の一覧を残し、再試行できるようにする。
@@ -175,6 +211,25 @@ function createIndex(
     };
   };
   return {
+    observeThread: (thread: ThreadSummary) => {
+      if (archived || (channelId && thread.channel_id !== channelId)) return;
+      const previous = observed.get(thread.id)?.thread;
+      if (previous && JSON.stringify(previous) === JSON.stringify(thread)) return;
+      observed.set(thread.id, { thread, sequence: nextThreadIndexSequence() });
+      setResult((current) => {
+        const items = current?.items ?? [];
+        const exists = items.some((item) => item.id === thread.id);
+        return {
+          ...(current ?? { ...EMPTY_PAGE, key, isLoading: false, isError: false }),
+          items:
+            thread.thread_archive_at || thread.reply_count === 0
+              ? items.filter((item) => item.id !== thread.id)
+              : exists
+                ? items.map((item) => (item.id === thread.id ? thread : item))
+                : [thread, ...items],
+        };
+      });
+    },
     snapshot: () => result,
     loadMore: () => loadMore(),
     subscribe: (listener: () => void) => {
@@ -228,5 +283,6 @@ export function useThreadIndex(
     isLoading: current?.isLoading ?? false,
     isError: current?.isError ?? false,
     loadMore: store.loadMore,
+    observeThread: store.observeThread,
   };
 }

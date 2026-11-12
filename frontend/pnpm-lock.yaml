@@ -217,6 +217,9 @@ importers:
       '@tanstack/react-virtual':
         specifier: ^3.14.20
         version: 3.14.20(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@zoo/crypto-wasm':
+        specifier: link:../crates/zoo-crypto-wasm
+        version: link:../crates/zoo-crypto-wasm
       blurhash:
         specifier: ^2.0.5
         version: 2.0.5

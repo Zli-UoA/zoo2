@@ -1,6 +1,6 @@
 # デスクトップ版（Tauri）の設計
 
-macOS と Linux 向けのデスクトップ版を Tauri v2 で作る。画面は 2 案を作って比べる検証の段階にある。
+macOS と Linux 向けのデスクトップ版を Tauri v2 で作る。PR の CI（`ci-desktop-tauri.yaml`）は、Linux に加えて macOS（macos-15）でもビルドを確かめる。画面は 2 案を作って比べる検証の段階にある。
 
 利用者向けの説明（インストール、ログイン、更新、困ったとき）は [desktop-tauri/README.md](../desktop-tauri/README.md) にある。
 
@@ -108,14 +108,15 @@ ShapeEvent ─▶ 1 本のループ
 
 ## 配布と更新
 
-- **配布**: `cd-desktop-tauri-release.yaml` が、`desktop-tauri/src-tauri/Cargo.toml` の `version` を上げて `main` に入れたときに、`desktop-tauri-v<version>` の GitHub Release を作る（TUI の `cd-tui-release.yaml` と同じ流れ）。deb と AppImage と、それぞれの署名（`.sig`）を置く。glibc と WebKitGTK を古めに合わせるため、ubuntu-22.04 で作る。リポジトリの「Latest」は TUI のままにする（`--latest=false`）。
+- **配布**: `cd-desktop-tauri-release.yaml` が、`desktop-tauri/src-tauri/Cargo.toml` の `version` を上げて `main` に入れたときに、`desktop-tauri-v<version>` の GitHub Release を作る（TUI の `cd-tui-release.yaml` と同じ流れ）。Linux は deb と AppImage を、glibc と WebKitGTK を古めに合わせるため ubuntu-22.04 で作る。macOS は Apple シリコンと Intel の両方で動く universal の `.app`（自動更新用の `.app.tar.gz`）と `.dmg` を macos-15 で作る。自動更新に使うものには、それぞれの署名（`.sig`）を置く。リポジトリの「Latest」は TUI のままにする（`--latest=false`）。
+- **Nix**: flake の `packages.<system>.zoo2-desktop-tauri`（Linux のみ）。同梱の画面を `trunk build --offline` で先に作り（`zoo2-desktop-tauri-ui`）、`tauri/custom-protocol` の feature で Rust 側に埋め込む。`wrapGAppsHook3` で GIO のモジュールと schema を渡し、dlopen で読まれる `libayatana-appindicator` は `LD_LIBRARY_PATH` に足す。Nix のストアは書き換えられず、`bundle_type()` も取れないので、アプリの中からは更新しない。更新は flake の入力を上げて行う。
 - **更新の確認**: `tauri-plugin-updater` を Rust 側だけで使う（WebView には許可を出さない）。起動の 30 秒後と 6 時間ごとに `latest.json` を読み、新しい版があれば裏で取得して署名を確かめる。入れ替えと再起動は、通知かトレイのメニューを利用者が押したときだけ行う（書きかけの下書きを勝手に失わないため）。`check_updates = false`（`ZOO_CHECK_UPDATES=false`、TUI と同じ設定）なら確かめない。
-- **`latest.json` の置き場所**: 「Latest」が TUI なので `releases/latest/download/` は使えない。決まったタグ `desktop-tauri-updater` のリリース（prerelease）を 1 つ作り、リリースのたびに `latest.json` だけを置き直す。`platforms` には `linux-x86_64-deb` と `linux-x86_64-appimage`（と、古い形の `linux-x86_64`）を書く。プラグインは、ビルドしたときの形（deb なら `dpkg -i` を `pkexec` で、AppImage ならファイルの置き換え）で入れる。リリース済みの版でも、`latest.json` がその版を指していなければ、workflow は既存のリリースの署名から作り直して公開する（公開が途中で失敗しても、再実行で直る）。
+- **`latest.json` の置き場所**: 「Latest」が TUI なので `releases/latest/download/` は使えない。決まったタグ `desktop-tauri-updater` のリリース（prerelease）を 1 つ作り、リリースのたびに `latest.json` だけを置き直す。`platforms` には `linux-x86_64-deb` と `linux-x86_64-appimage`（と、古い形の `linux-x86_64`）、`darwin-aarch64` と `darwin-x86_64`（と `-app` 付き。どちらも universal の `.app.tar.gz`）を書く。署名がない形は書かない。プラグインは、ビルドしたときの形（deb なら `dpkg -i` を `pkexec` で、AppImage ならファイルの置き換え）で入れる。リリース済みの版でも、`latest.json` がその版を指していなければ、workflow は既存のリリースの署名から作り直して公開する（公開が途中で失敗しても、再実行で直る）。
 - **署名の鍵**: 秘密鍵は Secrets の `TAURI_SIGNING_PRIVATE_KEY` と `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`、公開鍵は Variables の `TAURI_UPDATER_PUBKEY` に置く。公開鍵はリリースのビルドのときだけ `--config` で `plugins.updater.pubkey` に入れる。リポジトリの `tauri.conf.json` は空のままにして、ローカルや CI のビルド、`cargo tauri dev` では更新を確かめない（`bundle_type()` が取れないときも確かめない）。鍵がなければ、workflow はリリースを作らずに終わる。
 - **鍵の作り方と保管**: 管理者が手元で作る。秘密鍵とパスワードは、zoo2-infra の `github/zoo2-desktop-tauri/updater-signing-key.sops.yaml` に sops で暗号化して置き、これを正本にする（GitHub Secrets の値は後から読み出せないため）。GitHub Secrets へは、そこから `sops decrypt --extract` の出力を `gh secret set` に渡して登録する。手順は zoo2-infra の `github/README.md` にある。秘密鍵をなくすと、配った版はそれ以降の更新を受け付けない。
 - **後続の項目**:
   - `requireSignedVersion`（署名に版を含め、古い版への差し戻しを防ぐ）は入れていない。いまの tauri-cli（2.11.4）は署名に版を書かないため。CLI を上げたら有効にする。
-  - macOS は、Developer ID の署名と公証を入れるときに、`darwin-aarch64` を足す。
+  - macOS は、いまは ad-hoc 署名（`signingIdentity: "-"`）だけで、Developer ID の署名と公証をしていない。利用者は初回に quarantine を外すか「このまま開く」を押す。Apple Developer Program に入ったら、証明書と公証の Secrets を足して有効にする。
 
 ## 未確定・確認が要るもの
 

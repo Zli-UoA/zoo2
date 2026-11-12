@@ -64,7 +64,11 @@ jobs:
       - name: Install trunk, wasm-bindgen and tauri-cli
         # wasm-bindgen は desktop-tauri/ui/Cargo.toml で固定した版と合わせる。
         run: |
-          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.cargo/bin
+          # trunk は ~/.cargo/bin がない実行先 (macOS) もあるので、専用の場所に置いて PATH に足す。
+          trunk_bin="$HOME/.local/trunk/bin"
+          mkdir -p "$trunk_bin"
+          echo "$trunk_bin" >> "$GITHUB_PATH"
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C "$trunk_bin"
           cargo install --locked wasm-bindgen-cli --version 0.2.129
           cargo install --locked tauri-cli --version 2.11.4
       - name: format check
@@ -94,4 +98,56 @@ jobs:
           path: |
             desktop-tauri/src-tauri/target/release/bundle/deb/*.deb
             desktop-tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+          retention-days: 7
+
+  # macOS でもビルドできることを確かめる。リリース (cd-desktop-tauri-release.yaml) と同じ universal の
+  # .app を作る。Developer ID の署名と公証はまだしない (ad-hoc 署名だけ)。
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy
+          targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            desktop-tauri/src-tauri
+            desktop-tauri/ui
+      - name: Install trunk, wasm-bindgen and tauri-cli
+        run: |
+          # trunk は ~/.cargo/bin がない実行先 (macOS) もあるので、専用の場所に置いて PATH に足す。
+          trunk_bin="$HOME/.local/trunk/bin"
+          mkdir -p "$trunk_bin"
+          echo "$trunk_bin" >> "$GITHUB_PATH"
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-aarch64-apple-darwin.tar.gz | tar -xz -C "$trunk_bin"
+          cargo install --locked wasm-bindgen-cli --version 0.2.129
+          cargo install --locked tauri-cli --version 2.11.4
+      - name: build ui
+        working-directory: ./desktop-tauri/ui
+        run: trunk build --release
+      # macOS でだけ使う (または使わない) コードの警告を拾う。
+      - name: lint check
+        working-directory: ./desktop-tauri/src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        working-directory: ./desktop-tauri/src-tauri
+        run: cargo test --locked
+      - name: bundle (app, dmg)
+        working-directory: ./desktop-tauri/src-tauri
+        run: cargo tauri build --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' -- --locked
+      - name: Upload bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: zoo2-desktop-tauri-macos
+          path: desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
           retention-days: 7

@@ -21,7 +21,7 @@
     "targets": ["deb", "appimage"],
     "category": "SocialNetworking",
     "shortDescription": "zoo2 のデスクトップクライアント",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png", "icons/icon.icns"],
     "linux": {
       "deb": { "depends": ["libwebkit2gtk-4.1-0", "libayatana-appindicator3-1"] }
     }

@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import "../../styles.css";
+import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser/context";
 import { LocaleProvider } from "../i18n/LocaleProvider";
 import { ChannelSidebar } from "./ChannelSidebar";
 import type { ChannelRow } from "../../lib/electric/types";
@@ -11,6 +11,8 @@ const fixture = vi.hoisted(() => ({
   threads: [] as ThreadSummary[],
   navigate: vi.fn(),
   config: {},
+  get: vi.fn(),
+  selectedId: null as string | null,
 }));
 vi.mock("@tanstack/react-db", () => ({
   useLiveQuery: () => ({
@@ -47,6 +49,11 @@ vi.mock("@tanstack/react-router", () => ({
   ),
   useNavigate: () => fixture.navigate,
 }));
+vi.mock("../../hooks/useThread", () => ({
+  useThreadRoot: () => ({
+    data: fixture.threads.filter((thread) => thread.id === fixture.selectedId),
+  }),
+}));
 vi.mock("../../hooks/useCurrentUser", () => ({
   useCurrentUser: () => ({ currentUserId: "me", isLoading: false }),
 }));
@@ -57,18 +64,17 @@ vi.mock("../../lib/electric/collections-context", () => ({
 }));
 vi.mock("../../lib/api/client", () => ({
   createConfiguredApiClient: () => ({
-    get: async (path: string) => ({
-      items: fixture.threads.filter(
-        (thread) => !!thread.thread_archive_at === path.includes("archived=true"),
-      ),
-      next_cursor: null,
-    }),
+    get: fixture.get,
     post: vi.fn(),
   }),
 }));
 vi.mock("../../lib/call/call-context", () => ({ useCall: () => ({ activeCalls: new Map() }) }));
 vi.mock("../layout/shell-context", () => ({
-  useShell: () => ({ selectedChannelId: null, showChat: vi.fn() }),
+  useShell: () => ({
+    selectedChannelId: "general",
+    threadRootId: fixture.selectedId,
+    showChat: vi.fn(),
+  }),
 }));
 vi.mock("../SyncStatus", () => ({ SyncStatus: () => null }));
 vi.mock("./ChannelBrowserDialog", () => ({ ChannelBrowserDialog: () => null }));
@@ -79,45 +85,15 @@ vi.mock("./DmSection", () => ({ DmSection: () => null }));
 beforeEach(() => {
   fixture.memberships = [{ user_id: "other", channel_id: "general" }];
   fixture.threads = [];
+  fixture.selectedId = null;
   fixture.navigate.mockClear();
-});
-
-it("opens archived threads with the shared section and keyboard controls", async () => {
-  fixture.memberships = [{ user_id: "me", channel_id: "general" }];
-  fixture.threads = [
-    {
-      id: "child-thread",
-      channel_id: "general",
-      content: "Nested history",
-      thread_archive_at: "2020-02-01T00:00:00Z",
-      reply_count: 2,
-    },
-  ];
-  render(
-    <LocaleProvider>
-      <ChannelSidebar
-        channels={[{ id: "general", channel_name: "general", is_dm: false } as ChannelRow]}
-        loading={false}
-        error={false}
-      />
-    </LocaleProvider>,
-  );
-  const toggle = await screen.findByRole("button", { name: /アーカイブ済みスレッド/ });
-  expect(toggle.getAttribute("aria-label")).toContain("general");
-  toggle.focus();
-  await userEvent.keyboard("{Enter}");
-  expect(toggle.getAttribute("aria-expanded")).toBe("true");
-  await screen.findByRole("link", { name: /Nested history/ });
-  await userEvent.tab();
-  expect(document.activeElement).toBe(screen.getByRole("link", { name: /Nested history/ }));
-  await userEvent.keyboard("{Enter}");
-  await waitFor(() =>
-    expect(fixture.navigate).toHaveBeenCalledWith({
-      to: "/channels/$channelId",
-      params: { channelId: "general" },
-      search: { thread: "child-thread" },
-    }),
-  );
+  fixture.config = {};
+  fixture.get.mockReset().mockImplementation(async (path: string) => ({
+    items: fixture.threads.filter(
+      (thread) => !!thread.thread_archive_at === path.includes("archived=true"),
+    ),
+    next_cursor: null,
+  }));
 });
 
 it("waits for the current user's membership even when other users are cached", () => {
@@ -134,4 +110,44 @@ it("waits for the current user's membership even when other users are cached", (
   rerender(view());
   expect(screen.getByRole("link", { name: "general" })).toBeTruthy();
   expect(container.querySelector('[data-slot="skeleton"]')).toBeNull();
+});
+
+it("temporarily shows the selected archive without any history or search controls", async () => {
+  fixture.memberships = [{ user_id: "me", channel_id: "general" }];
+  fixture.threads = [
+    {
+      id: "old",
+      channel_id: "general",
+      content: "Old conversation",
+      thread_archive_at: "2020-01-01T00:00:00Z",
+      reply_count: 3,
+    },
+    {
+      id: "active",
+      channel_id: "general",
+      content: "Active conversation",
+      thread_archive_at: null,
+      reply_count: 1,
+    },
+  ];
+  fixture.selectedId = "old";
+  const view = () => (
+    <LocaleProvider>
+      <ChannelSidebar
+        channels={[{ id: "general", channel_name: "general", is_dm: false } as ChannelRow]}
+        loading={false}
+        error={false}
+      />
+    </LocaleProvider>
+  );
+  const { rerender } = render(view());
+  await screen.findByRole("link", { name: /Active conversation/ });
+  const selected = await screen.findByRole("link", { name: /Old conversation/ });
+  expect(selected.getAttribute("aria-current")).toBe("page");
+  expect(screen.queryByRole("button", { name: /アーカイブ済みスレッド/ })).toBeNull();
+  expect(screen.queryByRole("searchbox")).toBeNull();
+  expect(fixture.get.mock.calls.every(([path]) => !path.includes("archived=true"))).toBe(true);
+  fixture.selectedId = null;
+  rerender(view());
+  expect(screen.queryByRole("link", { name: /Old conversation/ })).toBeNull();
 });
