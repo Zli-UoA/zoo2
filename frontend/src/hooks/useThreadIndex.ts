@@ -46,6 +46,8 @@ export function useThreadIndex(
     let pending = false;
     let generation = 0;
     let cursor: string | null = null;
+    let firstPageIds = new Set<string>();
+    let hasAdditionalPages = false;
     let failedRequest: { append: boolean; cursor: string | null } | null = null;
     const refresh = async (append = false, before = cursor) => {
       if (document.visibilityState === "hidden") return;
@@ -70,21 +72,33 @@ export function useThreadIndex(
         const page = await client.get<ThreadPage>(`/api/threads${query}`);
         if (active && started === generation) {
           failedRequest = null;
-          cursor = page.next_cursor;
-          setResult((current) => ({
-            ...page,
-            items:
-              append && current?.key === key
+          const previousFirstPageIds = firstPageIds;
+          if (append) hasAdditionalPages = true;
+          else firstPageIds = new Set(page.items.map((item) => item.id));
+          if (append || !hasAdditionalPages) cursor = page.next_cursor;
+          const nextCursor = cursor;
+          const preserveAdditionalPages = hasAdditionalPages;
+          const refreshedIds = new Set(page.items.map((item) => item.id));
+          setResult((current) => {
+            const previous = current?.key === key ? current.items : EMPTY_PAGE.items;
+            const items = append
+              ? [...new Map([...previous, ...page.items].map((item) => [item.id, item])).values()]
+              : preserveAdditionalPages
                 ? [
-                    ...new Map(
-                      [...current.items, ...page.items].map((item) => [item.id, item]),
-                    ).values(),
+                    ...page.items,
+                    ...previous.filter(
+                      (item) => !previousFirstPageIds.has(item.id) && !refreshedIds.has(item.id),
+                    ),
                   ]
-                : page.items,
-            key,
-            isLoading: false,
-            isError: false,
-          }));
+                : page.items;
+            return {
+              items,
+              next_cursor: nextCursor,
+              key,
+              isLoading: false,
+              isError: false,
+            };
+          });
         }
       } catch {
         // 一時的な取得失敗では直前の一覧を残し、再試行できるようにする。

@@ -138,6 +138,7 @@ pub struct App {
     pub archived_threads: Vec<ThreadSummary>,
     /// 遅れた取得結果で、再開後の一覧を上書きしないための取得開始時刻。
     threads_requested_at: [Option<Instant>; 2],
+    thread_updated_at: HashMap<String, Instant>,
     pub thread_cursors: [Option<String>; 2],
     pub show_archived_threads: bool,
     pub current: Option<String>,
@@ -199,6 +200,7 @@ impl App {
             active_threads: Vec::new(),
             archived_threads: Vec::new(),
             threads_requested_at: [None, None],
+            thread_updated_at: HashMap::new(),
             thread_cursors: [None, None],
             show_archived_threads: false,
             current: None,
@@ -297,6 +299,16 @@ impl App {
                 if self.threads_requested_at[scope].is_some_and(|last| requested_at < last) {
                     return;
                 }
+                // 別種別の新しい応答で確定した項目を、古い応答で移動しない。
+                let threads: Vec<_> = threads
+                    .into_iter()
+                    .filter(|thread| {
+                        !self
+                            .thread_updated_at
+                            .get(&thread.id)
+                            .is_some_and(|last| requested_at < *last)
+                    })
+                    .collect();
                 let mut selected = self.sidebar_items().get(self.sidebar_index).cloned();
                 if append
                     && matches!(selected, Some(SidebarItem::MoreThreads { archived: scope }) if scope == archived)
@@ -315,6 +327,8 @@ impl App {
                     }
                 }
                 for thread in threads {
+                    self.thread_updated_at
+                        .insert(thread.id.clone(), requested_at);
                     self.active_threads.retain(|entry| entry.id != thread.id);
                     self.archived_threads.retain(|entry| entry.id != thread.id);
                     if archived {
@@ -323,24 +337,27 @@ impl App {
                         self.active_threads.push(thread);
                     }
                 }
+                let loaded_ids: HashSet<_> =
+                    self.threads().map(|thread| thread.id.clone()).collect();
+                self.thread_updated_at
+                    .retain(|id, _| loaded_ids.contains(id));
                 self.thread_cursors[scope] = next_cursor;
                 self.threads_requested_at[scope] = Some(requested_at);
                 self.restore_sidebar_selection(selected);
             }
             AppEvent::ThreadsChanged { reopened } => {
-                if let Some(id) = reopened {
-                    if let Some(index) = self
+                if let Some(id) = reopened
+                    && let Some(index) = self
                         .archived_threads
                         .iter()
                         .position(|entry| entry.id == id)
-                    {
-                        let mut thread = self.archived_threads.remove(index);
-                        thread.thread_archive_at = None;
-                        self.active_threads.insert(0, thread);
-                    }
-                    // 再開前の一覧で、確定済みの状態を上書きしない。
-                    self.threads_requested_at = [Some(Instant::now()); 2];
+                {
+                    let mut thread = self.archived_threads.remove(index);
+                    thread.thread_archive_at = None;
+                    self.active_threads.insert(0, thread);
                 }
+                // 書き込み前の一覧で、確定済みの状態を上書きしない。
+                self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
                 if self.show_archived_threads {
                     self.fetch_thread_page(true, false);
