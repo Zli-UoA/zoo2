@@ -7,9 +7,7 @@ import type { CryptoFailure, CryptoOperation, CryptoResults } from "./protocol";
  *
  * Worker の外（Node のテスト）からも同じ処理を確かめられるよう、メッセージの受け渡しと分けてある。
  */
-export function runCryptoOperation(
-  request: CryptoOperation,
-): CryptoResults[CryptoOperation["op"]] {
+export function runCryptoOperation(request: CryptoOperation): CryptoResults[CryptoOperation["op"]] {
   switch (request.op) {
     case "generateDeviceKeys":
       return generateDeviceKeys(request.userId, request.deviceId);

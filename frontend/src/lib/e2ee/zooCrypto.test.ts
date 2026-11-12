@@ -17,6 +17,7 @@ import {
   verifyCrossSigningKey,
   verifyDeviceKeys,
   verifyJsonSignature,
+  type JsonObject,
 } from "@zoo/crypto-wasm";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -128,20 +129,17 @@ describe("zoo-crypto wasm", () => {
 
   it("クロス署名鍵で自分の端末に署名できる", () => {
     const keys = CrossSigningKeys.generate(ALICE);
-    const upload = keys.uploadJson() as Record<string, unknown>;
+    const upload = keys.uploadJson() as Record<string, JsonObject>;
     const master = verifyCrossSigningKey(upload.master_key!, ALICE, "master");
     expect(master).toBe(keys.master.publicKey);
 
     const device = new DeviceAccount(ALICE, crypto.randomUUID());
     const signature = keys.selfSigning.signDevice(device.deviceKeys());
-    const deviceKeys = device.deviceKeys() as { signatures: Record<string, Record<string, string>> };
+    const deviceKeys = device.deviceKeys() as {
+      signatures: Record<string, Record<string, string>>;
+    };
     deviceKeys.signatures[ALICE]![signature.signer_key_id] = signature.signature;
-    verifyJsonSignature(
-      deviceKeys,
-      ALICE,
-      signature.signer_key_id,
-      keys.selfSigning.publicKey,
-    );
+    verifyJsonSignature(deviceKeys, ALICE, signature.signer_key_id, keys.selfSigning.publicKey);
   });
 
   it("リカバリーキーの鍵スロットで SSSS 鍵を開ける", () => {

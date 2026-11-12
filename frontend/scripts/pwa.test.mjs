@@ -560,8 +560,11 @@ test("static assets are cached on first fetch and served from the cache afterwar
 
 test("the E2EE wasm is precached with the build and served offline as application/wasm", async () => {
   // crates/zoo-crypto-wasm の *_bg.wasm は Vite が assets/ に出し、pwa-assets.json に入る（#352）。
+  // ページが読む前に保存しておけば、オフラインでも Worker が wasm を読める。
   const wasm = "/assets/zoo_crypto_wasm_bg-abc.wasm";
-  const cacheContext = memoryCaches();
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+  ]);
   let offline = false;
   const { handlers } = worker({
     caches: cacheContext.api,
@@ -569,23 +572,27 @@ test("the E2EE wasm is precached with the build and served offline as applicatio
       if (offline) throw new Error("offline");
       const path = new URL(requestKey(request)).pathname;
       if (path === "/pwa-assets.json")
-        return Response.json({ entry: "/assets/index-new.js", assets: ["/assets/index-new.js", wasm] });
+        return Response.json({
+          entry: "/assets/index-new.js",
+          assets: ["/assets/index-new.js", wasm],
+        });
       if (path === wasm)
-        return basicResponse("\0asm", { headers: { "content-type": "application/wasm" } });
+        return basicResponse("wasm-bytes", { headers: { "content-type": "application/wasm" } });
       if (path.startsWith("/assets/")) return basicResponse("code");
-      return basicResponse('<script src="/assets/index-new.js"></script>shell', {
+      return basicResponse('<script src="/assets/index-new.js"></script>new-shell', {
         headers: { "content-type": "text/html" },
       });
     },
   });
-  await dispatch(handlers, "install");
+  await fetchThrough(handlers, navigation(`${ORIGIN}/`, "reload"));
+  assert.ok(cacheContext.storeFor("zoo-shell-v2").has(`${ORIGIN}${wasm}`));
   offline = true;
   const response = await fetchThrough(handlers, {
     url: `${ORIGIN}${wasm}`,
     method: "GET",
     mode: "cors",
   });
-  assert.equal(await response.text(), "\0asm");
+  assert.equal(await response.text(), "wasm-bytes");
   assert.equal(response.headers.get("content-type"), "application/wasm");
 });
 
