@@ -5,8 +5,8 @@
 //! 利用者がメニューか通知を押したときだけ行う (書きかけの下書きなどを勝手に失わないため)。
 //!
 //! 公開鍵 (`plugins.updater.pubkey`) は、リリースの workflow がビルドのときに入れる。空のとき
-//! (ローカルや CI のビルド) と、deb や AppImage から動いていないとき (`cargo tauri dev` など) は
-//! 何もしない。利用者が `check_updates = false` (`ZOO_CHECK_UPDATES=false`) にしたときも、
+//! (ローカルや CI のビルド) と、deb、AppImage、macOS の .app から動いていないとき
+//! (`cargo tauri dev` など) は何もしない。利用者が `check_updates = false` (`ZOO_CHECK_UPDATES=false`) にしたときも、
 //! 確かめない (TUI と同じ設定)。
 
 use std::{sync::Mutex, time::Duration};

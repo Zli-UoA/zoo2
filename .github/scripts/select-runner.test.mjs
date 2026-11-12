@@ -98,6 +98,8 @@ const hostedJobs = {"ci-android.yaml": ["android", "publish-main"], "cd-storyboo
   // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
   "merge-queue.yaml": ["changes", "all-passed"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
+// macOS でビルドを確かめるジョブ。GitHub ホストの macOS を使う (公開リポジトリなので無料)。
+const macJobs = {"ci-desktop-tauri.yaml": ["macos"]};
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"],
   "cd-desktop-tauri-release.yaml": ["version", "build", "release"]};
 const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
@@ -134,6 +136,14 @@ test('every workload uses the right output and protects fork PRs', () => {
         (file === 'ci-backend.yaml' && id === 'check');
       const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);
+      const mac = (macJobs[file] || []).includes(id);
+      if (mac) {
+        // macOS は GitHub ホストにしかないので、fork の PR でも同じ実行先にする。
+        assert.match(block, /^    runs-on: macos-\d+$/m, `${file}/${id}: hosted macOS`);
+        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+        checked++;
+        continue;
+      }
       if (hosted) {
         assert.match(block, /^    runs-on: ubuntu-latest$/m, `${file}/${id}: hosted for all PRs`);
         assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
