@@ -30,6 +30,8 @@ export function RenameChannelDialog({
   const { channels } = useCollections();
   // 開いた時点の値を保持し、外部更新で prop が変わっても未編集フィールドは送らない。
   const initialName = useRef(channel.channel_name);
+  const initialNsfw = useRef(channel.is_nsfw ?? false);
+  const [isNsfw, setIsNsfw] = useState(initialNsfw.current);
   const initialDescription = useRef(channel.description ?? "");
   const [name, setName] = useState(initialName.current);
   const [description, setDescription] = useState(initialDescription.current);
@@ -42,7 +44,7 @@ export function RenameChannelDialog({
   const descriptionTooLong = descriptionLength > MAX_CHANNEL_DESCRIPTION_LENGTH;
   const nameChanged = nextName !== initialName.current.trim();
   const descriptionChanged = nextDescription !== initialDescription.current.trim();
-  const hasChanges = nameChanged || descriptionChanged;
+  const hasChanges = nameChanged || descriptionChanged || isNsfw !== initialNsfw.current;
 
   function handleOpenChange(open: boolean) {
     if (!pending.current) {
@@ -60,6 +62,7 @@ export function RenameChannelDialog({
     setErrorCause(null);
     try {
       const transaction = channels.update(channel.id, (draft) => {
+        if (isNsfw !== initialNsfw.current) draft.is_nsfw = isNsfw;
         if (nameChanged) {
           draft.channel_name = nextName;
         }
@@ -138,6 +141,15 @@ export function RenameChannelDialog({
                 : t("channels.descriptionHelp", { max: MAX_CHANNEL_DESCRIPTION_LENGTH })}
             </p>
           </div>
+          <label className="flex items-center gap-2 text-sm">
+            <Input
+              type="checkbox"
+              checked={isNsfw}
+              disabled={submitting}
+              onChange={(event) => setIsNsfw(event.target.checked)}
+            />
+            {t("channels.nsfw")}
+          </label>
           {errorCause ? (
             <p role="alert" className="text-xs text-destructive">
               {t("common.writeErrorDetail", { error: localizeApiError(errorCause.cause, t) })}

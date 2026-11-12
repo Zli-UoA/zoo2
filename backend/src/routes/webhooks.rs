@@ -82,6 +82,8 @@ pub(super) async fn persist_card(
             content,
             parent_id: None,
             attachment_ids: None,
+            sensitive: false,
+            sensitive_attachment_ids: vec![],
             kind: "message".into(),
             broadcast: false,
             metadata: None,

@@ -3374,3 +3374,75 @@ async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id(
     assert_eq!(imported[0]["n"], 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn test_slack_import_labels_files_in_existing_nsfw_channel() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/F1/photo.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![1, 2, 3, 4]))
+        .mount(&files)
+        .await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = Some("xoxb-test".into());
+    config.slack.files_base_url = format!("{}/files/", files.uri());
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "nsfw_import_admin").await?;
+    let mut db = db.clone();
+    toasty::sql::statement("INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin')")
+        .bind(admin.as_str())
+        .exec(&mut db)
+        .await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &admin,
+        Some(json!({"id":channel,"channel_name":channel,"is_nsfw":true})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let zip = build_zip(&[
+        ("team.json".into(), json!({"id":team,"name":"NSFW import"})),
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice","profile":{"real_name":"Alice"}}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C1","name":"photos","members":["U1"]}]),
+        ),
+        (
+            "photos/2024-01-01.json".into(),
+            json!([{"ts":"1704070000.000100","user":"U1","text":"photo","files":[{"id":"F1","name":"photo.png","mimetype":"image/png","size":4,"url_private_download":format!("{}/files/F1/photo.png",files.uri())}]}]),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":channel}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let result = drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    assert_eq!(result["failed_files"], 0);
+    let attachments = sql(&state, "SELECT json_build_object('is_sensitive',is_sensitive)::text FROM attachments WHERE channel_id=$1", &[&channel]).await?;
+    assert_eq!(attachments, vec![json!({"is_sensitive":true})]);
+    Ok(())
+}

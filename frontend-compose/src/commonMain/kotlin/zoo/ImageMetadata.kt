@@ -1,6 +1,17 @@
 package zoo
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -73,5 +84,19 @@ fun BlurhashPlaceholder(hash: String, modifier: Modifier = Modifier) {
         pixels.forEachIndexed { index, color ->
             drawRect(Color(color), Offset(index % 24 * w, index / 24 * h), Size(w + 0.5f, h + 0.5f))
         }
+    }
+}
+
+/** Only local BlurHash pixels are drawn until the user requests the original image. */
+@Composable
+fun SensitiveImagePlaceholder(app: Session, file: Row, modifier: Modifier, reveal: () -> Unit) {
+    val label = app.t("attachments.showSensitive")
+    Box(modifier.clip(RoundedCornerShape(8.dp))
+        .background(MaterialTheme.colorScheme.surfaceVariant)
+        .semantics { contentDescription = label }
+        .clickable(role = Role.Button, onClickLabel = label, onClick = reveal),
+        contentAlignment = Alignment.Center) {
+        BlurhashPlaceholder(file.text("blurhash"), Modifier.fillMaxSize())
+        Text(label, Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = .85f), RoundedCornerShape(4.dp)).padding(8.dp), small = true)
     }
 }

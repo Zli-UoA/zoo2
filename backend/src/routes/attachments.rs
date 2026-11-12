@@ -295,6 +295,7 @@ async fn presign_attachment(
         width: None,
         height: None,
         blurhash: None,
+        is_sensitive: channel.is_nsfw,
         created_at: now,
     })
     .exec(&mut db)

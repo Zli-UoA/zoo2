@@ -1681,8 +1681,8 @@ async fn fetch_one(
     let mut tx = db.transaction().await?;
     exec(
         &mut tx,
-        "INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at) \
-         SELECT $1,m.id,$3,$4,$5,$6::bigint,$7,$8,m.created_at FROM messages m WHERE m.id=$2 \
+        "INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at,is_sensitive) \
+         SELECT $1,m.id,$3,$4,$5,$6::bigint,$7,$8,m.created_at,(SELECT is_nsfw FROM channels WHERE id=$4) FROM messages m WHERE m.id=$2 \
          ON CONFLICT (id) DO NOTHING",
         &[
             &attachment,
