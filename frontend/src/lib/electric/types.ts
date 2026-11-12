@@ -74,7 +74,7 @@ export type MessageRow = {
   /** 自動アーカイブ期限の計算に使う最終活動時刻。 */
   thread_activity_at?: TimestampString | null;
   /** 暗号化チャンネルの Megolm の暗号文（`m.room.encrypted` と同じ形）。平文と削除済みの行は `null`。 */
-  ciphertext?: Record<string, unknown> | null;
+  ciphertext?: MegolmCiphertext | null;
   /** 暗号化したセッションの `membership_epoch`（int8 なので文字列）。 */
   epoch?: string | null;
   /** 編集の版（暗号化チャンネルでは編集のたびに 1 増える）。 */
@@ -112,6 +112,15 @@ export type DisplayEmoji = {
   url: string;
   width?: number | null;
   height?: number | null;
+};
+
+/** 暗号化チャンネルのメッセージの暗号文（サーバーが形を検証する。docs/e2ee.md の「メッセージ」）。 */
+export type MegolmCiphertext = {
+  algorithm: "m.megolm.v1.aes-sha2";
+  sender_key: string;
+  device_id: string;
+  session_id: string;
+  ciphertext: string;
 };
 
 export type MessageDisplayData = {
