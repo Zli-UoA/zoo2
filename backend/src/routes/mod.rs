@@ -5,6 +5,10 @@ pub mod channel_webhooks;
 pub mod channels;
 pub mod dms;
 pub mod e2ee;
+pub mod e2ee_cross_signing;
+pub mod e2ee_key_backup;
+pub mod e2ee_reauth;
+pub mod e2ee_secret_storage;
 pub mod health;
 pub mod home;
 pub mod home_images;
@@ -48,12 +52,14 @@ pub fn create_router(state: AppState) -> Router {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        // dev の `X-Dev-User`, Bearer の `Authorization`, JSON 書き込みの `Content-Type`
+        // dev の `X-Dev-User`, Bearer の `Authorization`, JSON 書き込みの `Content-Type`,
+        // E2EE の直前の再認証の `X-Zoo-Reauth`（docs/e2ee.md の「クロス署名」）
         .allow_headers([
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
             header::ACCEPT,
             HeaderName::from_static("x-dev-user"),
+            HeaderName::from_static(e2ee_reauth::REAUTH_HEADER),
         ])
         .expose_headers([
             HeaderName::from_static("electric-handle"),
@@ -81,6 +87,9 @@ pub fn create_router(state: AppState) -> Router {
         .merge(channels::router())
         .merge(dms::router())
         .merge(e2ee::router())
+        .merge(e2ee_cross_signing::router())
+        .merge(e2ee_secret_storage::router())
+        .merge(e2ee_key_backup::router())
         .merge(messages::router())
         .merge(threads::router())
         .merge(attachments::router())

@@ -30,6 +30,14 @@ pub fn router() -> Router<AppState> {
         .route("/api/shapes/notifications", get(notifications_shape))
         .route("/api/shapes/attachments", get(attachments_shape))
         .route("/api/shapes/e2ee_devices", get(e2ee_devices_shape))
+        .route(
+            "/api/shapes/e2ee_cross_signing_keys",
+            get(e2ee_cross_signing_keys_shape),
+        )
+        .route(
+            "/api/shapes/e2ee_key_signatures",
+            get(e2ee_key_signatures_shape),
+        )
         .route("/api/shapes/e2ee_to_device", get(e2ee_to_device_shape))
 }
 
@@ -134,6 +142,36 @@ pub(crate) fn e2ee_devices_shape_where(user_id: &str) -> (String, Vec<(&'static 
     (
         format!(
             "deleted_at IS NULL AND (user_id = $1 OR user_id IN ({}))",
+            crate::routes::e2ee::SHARED_USERS_SQL
+        ),
+        vec![("params[1]", user_id)],
+    )
+}
+
+/// E2EE のクロス署名鍵の Shape の where 句（docs/e2ee.md の「Electric の Shape」）。
+///
+/// 自分の鍵すべてと、自分と暗号化チャンネルを共有しているユーザーのマスター鍵と自己署名鍵。
+/// ユーザー署名鍵は本人にだけ配る。
+pub(crate) fn e2ee_cross_signing_keys_shape_where(
+    user_id: &str,
+) -> (String, Vec<(&'static str, &str)>) {
+    (
+        format!(
+            "user_id = $1 OR (usage <> 'user_signing' AND user_id IN ({}))",
+            crate::routes::e2ee::SHARED_USERS_SQL
+        ),
+        vec![("params[1]", user_id)],
+    )
+}
+
+/// E2EE の署名の Shape の where 句。自分が署名したものすべてと、共有しているユーザーの自己署名
+/// （自分の端末への署名）。他人のマスター鍵へのユーザー署名鍵の署名は、署名した本人にだけ配る。
+pub(crate) fn e2ee_key_signatures_shape_where(
+    user_id: &str,
+) -> (String, Vec<(&'static str, &str)>) {
+    (
+        format!(
+            "signer_user_id = $1 OR (signer_user_id = target_user_id AND target_user_id IN ({}))",
             crate::routes::e2ee::SHARED_USERS_SQL
         ),
         vec![("params[1]", user_id)],
@@ -560,6 +598,44 @@ async fn e2ee_devices_shape(
     proxy_shape(
         &state,
         "e2ee_devices",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
+/// E2EE のクロス署名鍵の Shape（ユーザー別の認可・配信）
+async fn e2ee_cross_signing_keys_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (where_clause, extra_params) = e2ee_cross_signing_keys_shape_where(auth_user.id.as_str());
+    proxy_shape(
+        &state,
+        "e2ee_cross_signing_keys",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
+/// E2EE の署名の Shape（ユーザー別の認可・配信）
+async fn e2ee_key_signatures_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (where_clause, extra_params) = e2ee_key_signatures_shape_where(auth_user.id.as_str());
+    proxy_shape(
+        &state,
+        "e2ee_key_signatures",
         Some(&where_clause),
         &extra_params,
         &raw_query,

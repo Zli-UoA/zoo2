@@ -55,6 +55,8 @@ zoo-crypto = { path = "../crates/zoo-crypto" }
 
 [dev-dependencies]
 wiremock = "0.6"
+# E2EE の結合テストで、クロス署名鍵の署名を作る（zoo-crypto と同じ版）。
+vodozemac = "0.11.2"
 tokio-tungstenite = "0.29"
 
 [lib]
