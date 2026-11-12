@@ -68,6 +68,8 @@ const config = defineConfig({
           name: "unit",
           environment: "node",
           include: ["src/**/*.test.ts"],
+          // Worker などブラウザーの API が要るテストは browser プロジェクトで動かす。
+          exclude: ["**/node_modules/**", "src/**/*.browser.test.ts"],
         },
       },
       {
@@ -80,7 +82,7 @@ const config = defineConfig({
           browser: {
             enabled: true,
             headless: true,
-            provider: playwright(),
+            provider: playwright({ launchOptions: { executablePath: process.env.CHROME_BIN } }),
             instances: [{ browser: "chromium" }],
           },
         },

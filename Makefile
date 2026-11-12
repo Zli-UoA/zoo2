@@ -29,13 +29,13 @@ frontend-install:
 frontend-dev:
 	cd frontend && pnpm dev
 
-frontend-build:
+frontend-build: crypto-wasm
 	cd frontend && pnpm build
 
-frontend-check:
+frontend-check: crypto-wasm
 	cd frontend && pnpm check
 
-frontend-test:
+frontend-test: crypto-wasm
 	cd frontend && pnpm test
 
 # E2E スモーク: PostgreSQL + Electric + バックエンドを起動しておく (起動→送信→反映)
@@ -93,6 +93,12 @@ tui-check:
 .PHONY: crypto-check
 crypto-check:
 	cd crates/zoo-crypto && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && cargo build --locked --target wasm32-unknown-unknown
+	cd crates/zoo-crypto-wasm && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+
+# Web（frontend）が link: 依存で読む wasm のパッケージ（crates/zoo-crypto-wasm/pkg）を作る（#352）。
+.PHONY: crypto-wasm
+crypto-wasm:
+	crates/zoo-crypto-wasm/build.sh
 
 # デスクトップクライアント (GPUI)。desktop-dev は backend の dev モードに X-Dev-User で接続する。
 desktop-dev:
