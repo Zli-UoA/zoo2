@@ -62,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
     let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));
     let slack_import_worker = tokio::spawn(backend::slack::worker::worker(state.clone()));
+    let slack_sync_worker = tokio::spawn(backend::slack::sync::worker(state.clone()));
     let home_image_worker = tokio::spawn(backend::routes::home_images::worker(state.clone()));
     let emoji_worker = tokio::spawn(backend::emoji_service::worker(state.clone()));
     let thread_archive_worker = tokio::spawn(backend::routes::threads::worker(state.clone()));
@@ -87,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
     federation_worker.abort();
     delivery_worker.abort();
     slack_import_worker.abort();
+    slack_sync_worker.abort();
     thread_archive_worker.abort();
     tracing::info!("Server shut down gracefully");
     Ok(())

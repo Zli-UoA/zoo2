@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
-import { useUnifiedNotifications } from "./useUnifiedNotifications";
+import { NotificationsProvider, useUnifiedNotifications } from "./useUnifiedNotifications";
 import type { NotificationRow } from "../lib/electric/types";
 import type { ActivityPubNotification } from "./useActivityPubNotifications";
 const mocks = vi.hoisted(() => ({
@@ -10,6 +10,10 @@ const mocks = vi.hoisted(() => ({
   remoteRead: vi.fn(),
   rows: [] as NotificationRow[],
   items: [] as ActivityPubNotification[],
+}));
+vi.mock("./useCurrentUser", () => ({ useCurrentUser: () => ({ currentUserId: "me" }) }));
+vi.mock("../lib/electric/collections-context", () => ({
+  useCollections: () => ({ config: { apiBaseUrl: "", devUserId: "me" } }),
 }));
 vi.mock("./useNotifications", () => ({
   useNotifications: () => ({
@@ -61,7 +65,9 @@ it("uses one unread count and fans out selected or all reads to both stores with
   }
   const root = createRoot(document.createElement("div"));
   try {
-    await act(async () => root.render(createElement(Probe)));
+    await act(async () =>
+      root.render(createElement(NotificationsProvider, { children: createElement(Probe) })),
+    );
     expect(result.unreadCount).toBe(2);
     expect(result.entries).toHaveLength(2);
     await act(async () => result.markRead(["local", "activitypub:peer"]));

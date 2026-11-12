@@ -57,28 +57,46 @@ class ActivityPubNotificationsState(
     private val pendingReads = mutableSetOf<String>()
     private var request: Job? = null
     private var unsubscribe: (() -> Unit)? = null
+    private var closed = false
+    private var queuedMore: Job? = null
+    private val updates = CoalescedRefresh(app.scope, allowed = { !closed && app.env.visible && app.env.online }) { refresh().join() }
 
     fun ensureLoaded() {
         if (!started) refresh()
     }
 
     fun refresh(): Job {
-        if (loadingMore) { deferred = true; return request ?: app.scope.launch {} }
+        if (closed) return app.scope.launch {}
+        request?.takeIf { it.isActive }?.let { deferred = true; return it }
         deferred = false
         started = true
         if (unsubscribe == null) unsubscribe = subscribe { invalidate() }
         val ticket = ++generation
-        request?.cancel()
-        loadingMore = false
-        return app.scope.launch { fetch(append = false, ticket = ticket) }.also { request = it }
+        return app.scope.launch(start = CoroutineStart.LAZY) {
+            do {
+                deferred = false
+                fetch(append = false, ticket = ticket)
+            } while (deferred && !closed && app.env.visible && app.env.online)
+        }.also { request = it; it.start() }
     }
 
     fun loadMore() {
-        if (nextCursor == null || loading || loadingMore) return
+        if (closed || nextCursor == null || loading || loadingMore) return
+        val running = request?.takeIf { it.isActive }
+        if (running != null) {
+            if (queuedMore?.isActive != true) queuedMore = app.scope.launch {
+                running.join()
+                queuedMore = null
+                loadMore()
+            }
+            return
+        }
         val ticket = ++generation
-        request?.cancel()
         loadingMore = true
-        request = app.scope.launch { fetch(append = true, ticket = ticket) }
+        app.scope.launch(start = CoroutineStart.LAZY) {
+            fetch(append = true, ticket = ticket)
+            if (deferred && !closed) { request = null; refresh() }
+        }.also { request = it; it.start() }
     }
 
     private suspend fun fetch(append: Boolean, ticket: Int) {
@@ -112,7 +130,7 @@ class ActivityPubNotificationsState(
             if (ticket == generation) error = true
         } finally {
             if (ticket == generation) {
-                if (append) { loadingMore = false; if (deferred) refresh() } else loading = false
+                if (append) loadingMore = false else loading = false
             }
         }
     }
@@ -140,10 +158,13 @@ class ActivityPubNotificationsState(
     }
 
     fun invalidate() {
-        if (started) refresh()
+        if (started && !closed) updates.request()
     }
 
     fun close() {
+        closed = true
+        updates.close()
+        queuedMore?.cancel()
         generation++
         request?.cancel()
         unsubscribe?.invoke()

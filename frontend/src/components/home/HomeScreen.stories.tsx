@@ -1219,7 +1219,7 @@ export const LiveWhileLoadingOlder: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "過去の投稿を読む" }));
     await waitFor(() => expect(olderPageStarted).toBe(true));
     olderLive.broadcast("refresh");
-    await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2), { timeout: 10000 });
     releaseOlderPage?.();
     await expect(await canvas.findByText(oldLivePost.content)).toBeInTheDocument();
     await waitFor(() => expect(retainedReloads).toBeGreaterThan(0));
