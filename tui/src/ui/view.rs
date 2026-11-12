@@ -831,6 +831,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resync_reconciles_rows_added_by_an_index_response_during_the_snapshot() {
+        for append in [false, true] {
+            for replies in [0, 1] {
+                let mut app = app();
+                // 再同期開始時に親・返信・一覧のどれも存在しない状態にする。
+                app.store.apply(
+                    &ShapeId::Messages("c1".into()),
+                    Batch {
+                        reset: true,
+                        ..Default::default()
+                    },
+                );
+                app.open_channel("c1".into());
+                app.on_shape(ShapeEvent::Batch(
+                    ShapeId::Messages("c1".into()),
+                    Batch {
+                        reset: true,
+                        ..Default::default()
+                    },
+                ));
+                assert!(app.active_threads.is_empty());
+                assert!(app.store.message("c1", "m1").is_none());
+                app.on_app_event(AppEvent::Threads {
+                    archived: false,
+                    append,
+                    requested_at: std::time::Instant::now(),
+                    next_cursor: None,
+                    threads: vec![ThreadSummary {
+                        id: "m1".into(),
+                        channel_id: "c1".into(),
+                        content: "Late index row".into(),
+                        thread_archive_at: None,
+                        reply_count: 1,
+                    }],
+                });
+                let row = SidebarItem::Thread {
+                    channel_id: "c1".into(),
+                    id: "m1".into(),
+                };
+                assert!(app.sidebar_items().contains(&row));
+                let mut snapshot = batch(vec![(
+                    "m1",
+                    json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                    "content":"Late index row","created_at":"2026-11-01 03:00:00"}),
+                )]);
+                snapshot.up_to_date = false;
+                app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), snapshot));
+                assert!(app.sidebar_items().contains(&row));
+                if replies > 0 {
+                    let mut reply = batch(vec![(
+                        "r1",
+                        json!({"id":"r1","user_id":"u1","channel_id":"c1",
+                        "content":"Still exists","parent_id":"m1","created_at":"2026-11-01 03:01:00"}),
+                    )]);
+                    reply.up_to_date = false;
+                    app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), reply));
+                }
+                let stale_request = std::time::Instant::now();
+                app.on_shape(ShapeEvent::Batch(
+                    ShapeId::Messages("c1".into()),
+                    Batch {
+                        up_to_date: true,
+                        ..Default::default()
+                    },
+                ));
+                assert_eq!(app.store.replies("c1", "m1").len(), replies);
+                assert_eq!(app.sidebar_items().contains(&row), replies > 0);
+                app.on_app_event(AppEvent::ThreadsFailed {
+                    archived: false,
+                    append: false,
+                    requested_at: std::time::Instant::now(),
+                    message: "unavailable".into(),
+                });
+                app.on_app_event(AppEvent::Threads {
+                    archived: false,
+                    append,
+                    requested_at: stale_request,
+                    next_cursor: None,
+                    threads: vec![ThreadSummary {
+                        id: "m1".into(),
+                        channel_id: "c1".into(),
+                        content: "Late index row".into(),
+                        thread_archive_at: None,
+                        reply_count: 1,
+                    }],
+                });
+                assert_eq!(app.sidebar_items().contains(&row), replies > 0);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn resync_keeps_rows_until_the_complete_snapshot_reconciles_reply_counts() {
         for count in [0, 1, 2] {
             let mut app = app();

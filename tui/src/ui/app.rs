@@ -309,9 +309,6 @@ impl App {
     }
 
     fn begin_message_resync(&mut self, channel_id: &str) {
-        if self.message_resync_counts.contains_key(channel_id) {
-            return;
-        }
         let mut counts = self.store.reply_counts(channel_id);
         // チャンネル切替でStoreが空でも、一覧で確認済みの件数を保持する。
         for thread in self
@@ -325,7 +322,9 @@ impl App {
             }
         }
         self.message_resync_counts
-            .insert(channel_id.to_owned(), counts);
+            .entry(channel_id.to_owned())
+            .or_default()
+            .extend(counts);
     }
 
     pub fn on_shape(&mut self, event: ShapeEvent) {
@@ -333,7 +332,10 @@ impl App {
         let mut completed_resync = false;
         let previous_reply_counts = match &event {
             ShapeEvent::Batch(ShapeId::Messages(channel_id), batch) => {
-                if batch.reset {
+                if batch.reset
+                    || (batch.up_to_date && self.message_resync_counts.contains_key(channel_id))
+                {
+                    // 同期途中に一覧応答・ローカル補完で追加された行も確定時に判定する。
                     self.begin_message_resync(channel_id);
                 }
                 if batch.up_to_date && self.message_resync_counts.contains_key(channel_id) {
