@@ -466,6 +466,9 @@ async fn upload_signatures(
             && item.target_user_id != actor.id
         {
             // 他のユーザーのマスター鍵への署名（検証済みの印）。直前の再認証が要る。
+            // 対象の鍵の行を FOR SHARE で読み、相手のマスター鍵の差し替えと直列にする
+            // （読んだあとに差し替えと古い鍵への署名の削除がコミットし、古い鍵への署名が
+            // 残るのを防ぐ）。差し替えが先なら、コミットを待ってから読み直し、404 にする。
             needs_reauth = true;
             first(
                 &mut tx,
@@ -474,7 +477,8 @@ async fn upload_signatures(
                      WHERE k.user_id = $2 AND k.usage = 'master' AND k.public_key = $3
                        AND (k.user_id IN ({SHARED_USERS_SQL})
                          OR EXISTS (SELECT 1 FROM e2ee_tofu_pins p WHERE p.user_id = $1 AND p.target_user_id = $2)
-                         OR EXISTS (SELECT 1 FROM e2ee_key_signatures s WHERE s.signer_user_id = $1 AND s.target_user_id = $2))"
+                         OR EXISTS (SELECT 1 FROM e2ee_key_signatures s WHERE s.signer_user_id = $1 AND s.target_user_id = $2))
+                     FOR SHARE OF k"
                 ),
                 &[&actor.id, &item.target_user_id, &item.target_key_id],
             )
