@@ -253,7 +253,7 @@ async fn test_slack_sync_resumes_after_429_without_duplicates() -> anyhow::Resul
     Mock::given(method("GET"))
         .and(path("/conversations.replies"))
         .and(query_param("channel", "C1"))
-        .and(query_param("ts", &ts(300)))
+        .and(query_param("ts", ts(300)))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true,
             "messages": [
@@ -264,6 +264,17 @@ async fn test_slack_sync_resumes_after_429_without_duplicates() -> anyhow::Resul
             ],
             "has_more": false,
         })))
+        .mount(&slack)
+        .await;
+
+    // 返信のない投稿のスレッドも、新しい返信がないか確かめる。返信がなければ、親だけが返る
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [], "has_more": false})),
+        )
+        .with_priority(9)
         .mount(&slack)
         .await;
 
@@ -327,7 +338,7 @@ async fn test_slack_sync_resumes_after_429_without_duplicates() -> anyhow::Resul
     Mock::given(method("GET"))
         .and(path("/conversations.history"))
         .and(query_param("channel", "C1"))
-        .and(query_param("oldest", &ts(300)))
+        .and(query_param("oldest", ts(300)))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "ok": true,
             "messages": [message(&ts(250), "UA", "second")],

@@ -47,6 +47,8 @@ const MAX_PAGES_PER_STEP: usize = 10;
 const THREAD_WINDOW_SECS: u64 = 3 * 24 * 60 * 60;
 /// 1 回の同期で返信を取り直すスレッドの上限 (新しい順)
 const MAX_THREADS: usize = 20;
+/// 履歴の取得中に、返信を取り直す候補として覚える投稿の上限 (最後に新しい順の `MAX_THREADS` 件に絞る)
+const MAX_CANDIDATES: usize = 200;
 /// 1 回の同期で、投稿者の名前を `users.info` で調べる人数の上限
 const MAX_PROFILE_LOOKUPS: usize = 20;
 /// トークンの持ち主が、そのチャンネルを読めない (またはトークンが使えない) ときの Slack のエラー。
@@ -604,10 +606,18 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             }
             let page = slack.get("conversations.history", &params).await?;
             let messages = parse_messages(&page);
+            let horizon = now_secs().saturating_sub(THREAD_WINDOW_SECS);
             for message in &messages {
                 progress.max_ts = max_ts(progress.max_ts.take(), &message.ts);
-                if message.thread_ts.as_deref() == Some(message.ts.as_str())
-                    && message.reply_count.unwrap_or(0) > 0
+                // スレッドの親になりうる投稿 (返信でないもの) は、まだ返信がなくても、範囲内なら監視の候補に入れる。
+                // 同期のあとで初めて返信が付いても、次回以降の同期で取り込めるようにするため
+                let top_level = message
+                    .thread_ts
+                    .as_deref()
+                    .is_none_or(|t| t == message.ts.as_str());
+                if top_level
+                    && ts_key(&message.ts).is_some_and(|(secs, _)| secs >= horizon)
+                    && progress.pending.len() < MAX_CANDIDATES
                     && !progress.pending.contains(&message.ts)
                 {
                     progress.pending.push(message.ts.clone());
