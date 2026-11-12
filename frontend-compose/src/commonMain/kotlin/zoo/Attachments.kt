@@ -221,6 +221,7 @@ class AttachmentLinks(private val app: Session) {
 }
 
 class AttachmentDraft(val file: Row, val name: String, val type: String) {
+    var sensitive by mutableStateOf(false)
     var uploaded by mutableStateOf<Row?>(null)
     var bitmap by mutableStateOf<ImageBitmap?>(null)
     var previewJob: Job? = null
@@ -433,9 +434,9 @@ fun DraftAttachments(app: Session, drafts: AttachmentDrafts, errorMessage: Strin
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             drafts.items.forEach { draft ->
+              Column(Modifier.width(if (draft.type in imageTypes) 128.dp else 224.dp)) {
                 Box(
-                    (if (draft.type in imageTypes) Modifier.size(80.dp)
-                        else Modifier.width(224.dp).height(80.dp))
+                    Modifier.fillMaxWidth().height(80.dp)
                         .background(
                             MaterialTheme.colorScheme.surfaceVariant,
                             RoundedCornerShape(8.dp),
@@ -488,6 +489,8 @@ fun DraftAttachments(app: Session, drafts: AttachmentDrafts, errorMessage: Strin
                         }
                     }
                 }
+                if (draft.type in imageTypes) Check(app.t("attachments.sensitiveShort"), draft.sensitive, true) { draft.sensitive = it }
+              }
             }
         }
     errorMessage?.let {
@@ -545,6 +548,11 @@ private fun AttachmentItem(
     multiple: Boolean = false,
 ) {
     val id = file.text("id")
+    var revealed by remember(id, file.flag("is_sensitive")) { mutableStateOf(false) }
+    if (image && file.flag("is_sensitive") && !revealed) {
+        SensitiveImagePlaceholder(app, file, modifier) { revealed = true }
+        return
+    }
     var attempt by remember(id) { mutableStateOf(0) }
     var url by remember(id) { mutableStateOf<String?>(null) }
     var bitmap by remember(id) { mutableStateOf<ImageBitmap?>(null) }

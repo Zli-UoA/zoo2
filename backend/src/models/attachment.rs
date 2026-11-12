@@ -13,6 +13,7 @@ pub struct Attachment {
     pub file_size: i64,
     pub content_type: String,
     pub storage_key: String,
+    pub is_sensitive: bool,
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub blurhash: Option<String>,

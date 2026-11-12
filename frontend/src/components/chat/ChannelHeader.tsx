@@ -131,6 +131,9 @@ export function ChannelHeader({
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-sm font-semibold">{displayTitle}</h2>
+          {channel.is_nsfw ? (
+            <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
+          ) : null}
           {isArchived && !isDm ? (
             <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
               {t("moderation.archived")}

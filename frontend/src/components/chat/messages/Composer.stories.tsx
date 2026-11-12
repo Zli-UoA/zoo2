@@ -1,7 +1,7 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
 import type { UserRow } from "../../../lib/electric/types";
 import { MfmChannelsProvider } from "./MfmChannels";
@@ -214,5 +214,34 @@ export const SendError: Story = {
     await userEvent.type(input, "Catalog send failure");
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await expect(input).toHaveValue("Catalog send failure");
+  }),
+};
+
+export const MixedSensitivity: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    onUploadAttachment: fn(async (file: File) => ({
+      id: file.name,
+      file_name: file.name,
+      file_size: file.size,
+      content_type: file.type,
+    })),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const bytes = Uint8Array.from(
+      atob(
+        "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII=",
+      ),
+      (char) => char.charCodeAt(0),
+    );
+    for (const name of ["first.png", "second.png"])
+      pasteFile(await canvas.findByRole("textbox"), new File([bytes], name, { type: "image/png" }));
+    await waitFor(() => expect(canvas.getByRole("button", { name: "送信" })).toBeEnabled());
+    await userEvent.click(canvas.getByRole("checkbox", { name: "second.png: センシティブ" }));
+    await expect(
+      canvas.getByRole("checkbox", { name: "first.png: センシティブ" }),
+    ).not.toBeChecked();
+    await expect(canvas.getByRole("checkbox", { name: "second.png: センシティブ" })).toBeChecked();
   }),
 };

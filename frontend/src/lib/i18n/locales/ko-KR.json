@@ -41,7 +41,8 @@
     "descriptionTooLong": "설명은 {{max}}자 이내로 입력해 주세요(현재 {{length}}자).",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "만드는 중…",
-    "create": "채널 만들기"
+    "create": "채널 만들기",
+    "nsfw": "NSFW 채널"
   },
   "sync": {
     "title": "동기화 상태",
@@ -56,6 +57,9 @@
     "logout": "로그아웃",
     "loggedOut": "로그아웃했습니다",
     "loggedOutHelp": "계속하려면 다시 로그인해 주세요.",
+    "desktopOutdated": "데스크톱 앱을 업데이트해야 합니다",
+    "desktopOutdatedHelp": "이 버전의 앱으로는 현재 zli.chat을 열 수 없습니다. 새 버전의 앱을 설치해 주세요. 일시적인 문제일 수도 있으니 먼저 새로고침해 보세요.",
+    "reload": "새로고침",
     "login": "로그인",
     "failed": "로그인하지 못했습니다",
     "retry": "다시 로그인",
@@ -221,7 +225,12 @@
     "download": "{{name}} 다운로드",
     "downloadShort": "다운로드",
     "downloadError": "다운로드하지 못했습니다.",
-    "retry": "다시 시도"
+    "retry": "다시 시도",
+    "sensitive": "민감한 이미지",
+    "markSensitive": "이미지를 민감한 콘텐츠로 표시",
+    "showSensitive": "이미지 표시",
+    "hideSensitive": "이미지 숨기기",
+    "sensitiveShort": "민감한 이미지"
   },
   "threads": {
     "title": "스레드",

@@ -4,9 +4,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::electric::{
-    Batch, Change, ShapeId,
-    rows::{Attachment, Channel, ChannelUser, FromRow, Message, Reaction, User},
+use crate::{
+    rows::{Attachment, Channel, ChannelUser, FromRow, Message, Notification, Reaction, User},
+    shape::{Batch, Change, ShapeId},
 };
 
 #[derive(Debug, Default)]
@@ -20,6 +20,8 @@ pub struct Store {
     messages: HashMap<String, HashMap<String, Message>>,
     reactions: HashMap<String, HashMap<String, Reaction>>,
     attachments: HashMap<String, HashMap<String, Attachment>>,
+    notifications: HashMap<String, Notification>,
+    notification_keys: HashMap<String, String>,
     synced: HashSet<ShapeId>,
     /// 型に変換できなかった行の数。スキーマのずれに気づけるよう画面に出す。
     pub invalid_rows: usize,
@@ -65,11 +67,20 @@ impl Store {
                 batch.changes,
                 &mut invalid,
             ),
+            ShapeId::Notifications => apply_rows(
+                &mut self.notifications,
+                batch.reset,
+                batch.changes,
+                &mut invalid,
+            ),
         }
         self.invalid_rows += invalid;
         match id {
             ShapeId::Channels => self.channel_keys = index(&self.channels, |c| &c.id),
             ShapeId::Users => self.user_keys = index(&self.users, |u| &u.id),
+            ShapeId::Notifications => {
+                self.notification_keys = index(&self.notifications, |n| &n.id)
+            }
             _ => {}
         }
         if batch.reset {
@@ -83,6 +94,37 @@ impl Store {
     /// 初回同期が終わったか。終わるまでは「読み込み中」と表示する。
     pub fn is_synced(&self, id: &ShapeId) -> bool {
         self.synced.contains(id)
+    }
+
+    /// 購読をやめたチャンネルの行を捨てる。チャンネルを切り替えるときに使う。
+    pub fn forget(&mut self, id: &ShapeId) {
+        match id {
+            ShapeId::Messages(channel_id) => {
+                self.messages.remove(channel_id);
+            }
+            ShapeId::Reactions(channel_id) => {
+                self.reactions.remove(channel_id);
+            }
+            ShapeId::Attachments(channel_id) => {
+                self.attachments.remove(channel_id);
+            }
+            // チャンネル一覧などは購読をやめないので、捨てない。
+            _ => return,
+        }
+        self.synced.remove(id);
+    }
+
+    /// 通知を新しい順に返す。
+    pub fn notifications(&self) -> Vec<&Notification> {
+        let mut notifications: Vec<&Notification> = self.notifications.values().collect();
+        notifications.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
+        notifications
+    }
+
+    /// 通知を id で引く。通知の行のキーは id と同じではないため、索引を通す。
+    pub fn notification(&self, notification_id: &str) -> Option<&Notification> {
+        self.notifications
+            .get(self.notification_keys.get(notification_id)?)
     }
 
     /// 削除されていないチャンネルを、通常のチャンネル (名前順)、DM の順に並べる。
@@ -371,7 +413,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::electric::Row;
+    use crate::shape::Row;
 
     fn upsert(key: &str, value: Value) -> Change {
         Change::Upsert {
@@ -589,5 +631,33 @@ mod tests {
         assert_eq!(by_message.len(), 1);
         assert_eq!(by_message["m1"], store.reaction_groups("c1", "m1", "u1"));
         assert_eq!(store.invalid_rows, 1);
+    }
+    #[test]
+    fn looks_up_notifications_by_id_through_the_index() {
+        let notification = |id: &str| {
+            upsert(
+                &format!("\"public\".\"notification_events\"/\"{id}\""),
+                json!({
+                    "id": id, "user_id": "me", "actor_id": "alice", "channel_id": "c1",
+                    "message_id": "m1", "notification_type": "mention", "is_read": "false",
+                    "created_at": "2026-11-11 00:00:00",
+                }),
+            )
+        };
+        let mut store = Store::default();
+        store.apply(
+            &ShapeId::Notifications,
+            batch(vec![notification("n1"), notification("n2")]),
+        );
+        assert_eq!(store.notification("n1").map(|n| n.id.as_str()), Some("n1"));
+
+        store.apply(
+            &ShapeId::Notifications,
+            batch(vec![Change::Delete {
+                key: "\"public\".\"notification_events\"/\"n1\"".into(),
+            }]),
+        );
+        assert!(store.notification("n1").is_none());
+        assert!(store.notification("n2").is_some());
     }
 }

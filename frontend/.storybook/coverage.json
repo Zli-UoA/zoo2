@@ -65,7 +65,15 @@
     },
     {
       "file": "src/components/chat/ChannelScreen.stories.tsx",
-      "states": ["Default", "PrivateChannel", "Archived", "NotFound", "Mobile", "CommandCompletion"]
+      "states": [
+        "Default",
+        "PrivateChannel",
+        "Archived",
+        "NotFound",
+        "Mobile",
+        "CommandCompletion",
+        "Nsfw"
+      ]
     },
     {
       "file": "src/components/chat/ChannelSidebar.stories.tsx",
@@ -173,7 +181,8 @@
         "WithAttachments",
         "WithFileAttachment",
         "AttachmentUploadError",
-        "SendError"
+        "SendError",
+        "MixedSensitivity"
       ]
     },
     {
@@ -229,7 +238,8 @@
         "ActivityPubPublic",
         "ActivityPubUnlisted",
         "ActivityPubGrouped",
-        "Grouped"
+        "Grouped",
+        "SensitiveAttachments"
       ]
     },
     {
@@ -606,6 +616,10 @@
         "UserAvatar",
         "UserAvatarFallback"
       ]
+    },
+    {
+      "file": "src/components/ui/sensitive-media.stories.tsx",
+      "states": ["Hidden", "RevealAndHide", "ActivityPub", "WithoutMetadata", "InvalidHash"]
     }
   ],
   "modules": [
@@ -869,6 +883,11 @@
       "story": "src/components/layout/ZooSettings.stories.tsx"
     },
     {
+      "file": "src/components/desktop/DesktopBridge.tsx",
+      "reason": "デスクトップ版（Tauri）の中だけで、通知・フォーカス・通知のクリックを Rust 側と受け渡す表示のない制御層。通常の Web と Storybook では何も描画しない。IPC の判定とトークンの扱いは desktop.test.ts で確認する。",
+      "checks": ["src/lib/desktop.test.ts"]
+    },
+    {
       "file": "src/components/offline/OfflineBanner.tsx",
       "story": "src/components/offline/OfflineBanner.stories.tsx"
     },
@@ -1100,6 +1119,10 @@
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
         "src/components/apps/console/model.test.ts"
       ]
+    },
+    {
+      "file": "src/components/ui/sensitive-media.tsx",
+      "story": "src/components/ui/sensitive-media.stories.tsx"
     }
   ]
 }
