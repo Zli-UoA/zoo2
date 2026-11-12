@@ -244,7 +244,9 @@
     "indexError": "Could not load threads.",
     "emptyArchive": "No archived threads",
     "archiveForChannel": "Archived threads in {{channel}}",
-    "untitled": "Untitled thread"
+    "untitled": "Untitled thread",
+    "targetTooOld": "This message is too old to load here",
+    "unreadTooOld": "Older unread messages are not loaded"
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",

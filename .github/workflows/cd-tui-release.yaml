@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "client-core/**"
+      - "client-types/**"
       - "tui/**"
       - "rust-toolchain.toml"
       - ".github/workflows/cd-tui-release.yaml"

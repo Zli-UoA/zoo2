@@ -30,6 +30,16 @@ function feedMessage(id: string): FeedMessage {
     parent_id: row.parent_id,
     user_name: user?.user_name ?? null,
     display_name: user?.display_name ?? null,
+    // 返信数・リアクションは、サーバーの表示用 VIEW (display_data) が持つ。スレッドの親は、返信が 2 件ある。
+    display_data:
+      id === "message-thread-root"
+        ? {
+            emojis: {},
+            attachments: [],
+            reactions: storyReactions.filter((reaction) => reaction.message_id === id),
+            reply_count: 2,
+          }
+        : undefined,
   };
 }
 
@@ -88,7 +98,6 @@ const meta = {
     canReact: true,
     onReaction: fn(),
     onPickReaction: fn(),
-    replyCounts: new Map([["message-thread-root", 2]]),
     onOpenThread: fn(),
   },
   decorators: [

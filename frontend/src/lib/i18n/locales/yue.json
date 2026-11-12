@@ -244,7 +244,9 @@
     "indexError": "無法載入討論串清單。",
     "emptyArchive": "冇已封存嘅討論串",
     "archiveForChannel": "{{channel}}嘅已封存討論串",
-    "untitled": "未命名子討論"
+    "untitled": "未命名子討論",
+    "targetTooOld": "呢則訊息太舊，喺度載入唔到",
+    "unreadTooOld": "更早嘅未讀訊息未載入"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應嘅用戶",

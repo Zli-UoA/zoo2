@@ -260,7 +260,6 @@ function messageList(overrides: Partial<ComponentProps<typeof MessageList>> = {}
       canReact={false}
       onReaction={noop}
       onPickReaction={noop}
-      replyCounts={new Map()}
       onOpenThread={noop}
       {...overrides}
     />

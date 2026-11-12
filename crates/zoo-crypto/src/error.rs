@@ -62,4 +62,101 @@ pub enum CryptoError {
         /// 保存した状態の端末 ID。
         device_id: String,
     },
+
+    /// 受け取った JSON や平文の形式が正しくない（項目がない、型が違う、方式が違うなど）。
+    #[error("形式が正しくありません: {0}")]
+    InvalidPayload(String),
+
+    /// Olm のセッションを作れない、または暗号化や復号に失敗した。
+    #[error("Olm の処理に失敗しました: {0}")]
+    Olm(String),
+
+    /// Megolm のメッセージを復号できない（署名や MAC が一致しないなど）。
+    #[error("Megolm のメッセージを復号できません: {0}")]
+    Megolm(String),
+
+    /// 復号に使うセッションの鍵がまだ届いていない。`message_index` があれば、
+    /// セッションはあるが、そのインデックスより後からしか読めない。
+    #[error("{session_id} の鍵がまだ届いていません（インデックス {message_index:?}）")]
+    MissingRoomKey {
+        /// Megolm セッション ID。
+        session_id: String,
+        /// 読めなかったメッセージのインデックス。
+        message_index: Option<u32>,
+    },
+
+    /// クロス署名鍵の JSON が正しくない（`user_id` や `usage` が違う、`keys` が 1 つの Ed25519 鍵でない）、
+    /// または鍵を用途の違う操作に使った（自己署名鍵で他のユーザーのマスター鍵に署名するなど）。
+    #[error("クロス署名鍵が正しくありません: {0}")]
+    InvalidCrossSigningKey(String),
+
+    /// 配布先の判定の記録（[`TrustStore`](crate::TrustStore)）の保存形式が正しくない、または別のユーザーのもの。
+    #[error("配布先の判定の記録が正しくありません: {0}")]
+    InvalidTrustStore(String),
+
+    /// 一度置き換わった自分のユーザー署名鍵に戻ろうとした（巻き戻し）。
+    #[error("一度置き換わったユーザー署名鍵です: {0}")]
+    UserSigningKeyRollback(String),
+
+    /// 渡したユーザー署名鍵が、記録にある今のユーザー署名鍵と違う。
+    #[error("今のユーザー署名鍵ではありません: {0}")]
+    StaleUserSigningKey(String),
+
+    /// 受信時の検証に失敗した。呼び出し側は破棄する。
+    #[error("受信時の検証に失敗しました: {0}")]
+    Rejected(Rejection),
+}
+
+/// 受信時の検証で破棄する理由（docs/e2ee.md の「受信時の検証」）。
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum Rejection {
+    /// `sender_device_keys` の `user_id` か `device_id` が平文の送信者と違う、または自己署名が壊れている。
+    #[error("sender_device_keys が正しくありません: {0}")]
+    InvalidSenderDeviceKeys(String),
+    /// `sender_device_keys` の鍵が、Shape か `keys/query` の端末鍵と違う。
+    #[error("sender_device_keys が登録済みの端末鍵と違います")]
+    SenderDeviceKeysConflict,
+    /// `sender_device_keys` がなく、Shape にも `keys/query` にも送信端末がない。
+    #[error("送信端末の端末鍵がありません")]
+    UnknownSenderDevice,
+    /// Olm セッションの相手の識別鍵が、送信端末の識別鍵と違う。
+    #[error("Olm セッションの相手が送信端末ではありません")]
+    SenderKeyMismatch,
+    /// 平文の `keys.ed25519` が、送信端末の署名鍵と違う。
+    #[error("keys.ed25519 が送信端末の署名鍵と違います")]
+    SenderSigningKeyMismatch,
+    /// `recipient` か `recipient_keys.ed25519` が自分ではない。
+    #[error("宛先がこの端末ではありません")]
+    RecipientMismatch,
+    /// ペイロードの `channel_id` が行のチャンネルと違う（別のチャンネルへの移植）。
+    #[error("channel_id が違います")]
+    ChannelMismatch,
+    /// ペイロードの `message_id` が行の `id` と違う（別の行への移植）。
+    #[error("message_id が違います")]
+    MessageIdMismatch,
+    /// ペイロードの `parent_id` が行の `parent_id` と違う（別のスレッドへの移植）。
+    #[error("parent_id が違います")]
+    ParentMismatch,
+    /// ペイロードの `content.kind` が行の `message_kind` と違う。
+    #[error("content.kind が違います")]
+    KindMismatch,
+    /// 行の `user_id` がセッションの送信ユーザーと違う（なりすまし）。
+    #[error("送信者がセッションの送信ユーザーと違います")]
+    SenderMismatch,
+    /// `ciphertext.device_id` がセッションの送信端末と違う（なりすまし）。
+    #[error("送信端末がセッションの送信端末と違います")]
+    DeviceMismatch,
+    /// ペイロード、行、セッションの `epoch` が一致しない。
+    #[error("epoch が一致しません")]
+    EpochMismatch,
+    /// 同じ `(session_id, message_index)` を、別の `message_id` で先に復号している（リプレイ）。
+    #[error("リプレイです（最初のメッセージは {first_message_id}）")]
+    Replay {
+        /// 最初に復号した `message_id`。
+        first_message_id: String,
+    },
+    /// ペイロードの `revision` が行の `revision` と違う。
+    #[error("revision が違います")]
+    RevisionMismatch,
 }

@@ -9,18 +9,58 @@
 //! - [`DeviceAccount`]：端末の識別鍵、ワンタイム鍵、フォールバック鍵と、署名付きの公開鍵の書き出し
 //! - [`DeviceAccount::pickle`] と [`DeviceAccount::from_pickle`]：呼び出し側の 32 バイトの保存鍵から保存ごとに導いた鍵で暗号化した保存と、持ち主を照合する復元
 //! - [`to_canonical_json`]、[`verify_json_signature`]、[`verify_device_keys`]：Matrix と同じ Canonical JSON と署名の検証
+//!
+//! #349 で足したもの:
+//!
+//! - [`DeviceAccount::create_outbound_olm_session`]、[`DeviceAccount::encrypt_room_key`]、
+//!   [`DeviceAccount::decrypt_to_device`]：Olm のセッションと、Megolm セッション鍵の配布（`zoo.room_key`）
+//! - [`OlmDecrypted::verify_room_key`]：受け取った `zoo.room_key` の検証（受信時の検証の手順 1〜4）
+//! - [`OutboundSession`]：チャンネルごとの送信用セッションと、作り直しの判断
+//! - [`InboundSessionStore`]：受信用セッションの保存の規則と、復号したメッセージの照合（リプレイの検出を含む）
+//!
+//! #350 で足したもの:
+//!
+//! - [`CrossSigningKeys`]、[`CrossSigningKeyPair`]：マスター鍵、自己署名鍵、ユーザー署名鍵の生成と、
+//!   端末、他のユーザーのマスター鍵、TOFU のピンへの署名
+//! - [`verify_cross_signing_key`]：サーバーから受け取ったクロス署名鍵の検証
+//! - [`TrustStore`]：TOFU の記録（`confirmed_usk` を含む）、自分のユーザー署名鍵の履歴と、
+//!   [`TrustStore::evaluate`] による鍵の配布先の判定（規則 1〜6）
 
 mod canonical_json;
+mod cross_signing;
 mod device;
 mod error;
+mod inbound;
+mod megolm;
+mod olm;
 mod signing;
+mod trust;
 
 pub use canonical_json::to_canonical_json;
+pub use cross_signing::{
+    CrossSigningKeyPair, CrossSigningKeys, KeySignature, KeyUsage, SignatureUpload, TOFU_PIN_TYPE,
+    cross_signing_key_id, verify_cross_signing_key,
+};
 pub use device::{
     DeviceAccount, DeviceKeys, MEGOLM_ALGORITHM, OLM_ALGORITHM, SIGNED_CURVE25519,
     verify_device_keys,
 };
-pub use error::CryptoError;
+pub use error::{CryptoError, Rejection};
+pub use inbound::{
+    AddOutcome, BackupSession, DecryptedMessage, EncryptedMessage, InboundSessionStore,
+    RevisionStatus, SessionOrigin,
+};
+pub use megolm::{
+    MAX_BODY_CHARS, MAX_SAFE_INTEGER, MESSAGE_TYPE, Mentions, MessageContent, MessagePayload,
+    OutboundSession, OutgoingMessage, ROTATION_PERIOD_MESSAGES, ROTATION_PERIOD_MS,
+};
+pub use olm::{
+    ListedDevice, OlmDecrypted, OlmSession, ROOM_KEY_TYPE, ReceivedRoomKey, RoomKey, SenderTrust,
+};
 pub use signing::{signable_json, verify_json_signature};
+pub use trust::{
+    AcceptedMasterKey, DeviceExclusion, Distribution, KeySnapshot, NewTofuPin,
+    ReverificationReason, TrustBasis, TrustRecord, TrustStore, TrustWarning, UserState, UserTrust,
+};
 pub use vodozemac::olm::IdentityKeys;
 pub use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, PickleError};

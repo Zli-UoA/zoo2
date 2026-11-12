@@ -244,7 +244,9 @@
     "indexError": "스레드 목록을 불러오지 못했습니다.",
     "emptyArchive": "보관된 스레드가 없습니다",
     "archiveForChannel": "{{channel}}의 보관된 스레드",
-    "untitled": "제목 없는 타래"
+    "untitled": "제목 없는 타래",
+    "targetTooOld": "이 통보문은 너무 오래되여 여기서 불러올수 없습니다",
+    "unreadTooOld": "이보다 오래된 읽지 않은 통보문은 불러오지 않았습니다"
   },
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",

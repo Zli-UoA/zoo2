@@ -37,6 +37,12 @@ describe("classifyScrollChange", () => {
     ).toBe("prepend");
   });
 
+  it("treats a window that slid forward (oldest row dropped, new row added) as an append", () => {
+    expect(classifyScrollChange(prev, { firstId: "b", lastId: "c" }, new Set(["b", "c"]))).toBe(
+      "append",
+    );
+  });
+
   it("detects a wholesale replace", () => {
     expect(classifyScrollChange(prev, { firstId: "x", lastId: "y" }, new Set(["x", "y"]))).toBe(
       "replace",

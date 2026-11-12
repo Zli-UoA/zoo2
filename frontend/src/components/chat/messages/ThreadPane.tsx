@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, XIcon } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -31,7 +31,6 @@ export interface ThreadPaneProps {
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
   replies: FeedMessage[];
-  replyCounts?: Map<string, number>;
   onOpenThread?: (messageId: string) => void;
   isLoading: boolean;
   isError: boolean;
@@ -60,6 +59,10 @@ export interface ThreadPaneProps {
   ) => Promise<boolean>;
   /** 上端付近で古い返信を読み足す。 */
   onLoadOlder?: () => void;
+  /** 端末より古い返信が、まだあるか。 */
+  hasOlder?: boolean;
+  /** 古いページを取っている最中か。 */
+  isLoadingOlder?: boolean;
   /** 取得失敗時の再試行。 */
   onRetry?: () => void;
   onClose: () => void;
@@ -84,7 +87,6 @@ export function ThreadPane({
   onTyping,
   root,
   replies,
-  replyCounts,
   onOpenThread,
   isLoading,
   isError,
@@ -108,6 +110,8 @@ export function ThreadPane({
   onUploadAttachment,
   onSendReply,
   onLoadOlder,
+  hasOlder = true,
+  isLoadingOlder = false,
   onRetry,
   onClose,
 }: ThreadPaneProps) {
@@ -115,6 +119,8 @@ export function ThreadPane({
   const items = useMemo(() => buildMessageItems(replies), [replies]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
+  // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
+  const lastReplyId = replies[replies.length - 1]?.id;
 
   useEffect(() => {
     atBottomRef.current = true;
@@ -128,7 +134,25 @@ export function ThreadPane({
     requestAnimationFrame(() => {
       element.scrollTop = element.scrollHeight;
     });
-  }, [items.length, root.id]);
+  }, [items.length, lastReplyId, root.id]);
+
+  // 古い返信のページが先頭に足されたときは、読んでいた位置が動かないよう、増えた高さの分だけ補正する。
+  const scrollSnapshot = useRef({ firstId: "", lastId: "", height: 0 });
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    const previous = scrollSnapshot.current;
+    const firstId = replies[0]?.id ?? "";
+    const lastId = replies[replies.length - 1]?.id ?? "";
+    if (element) {
+      const prepended =
+        previous.firstId !== "" &&
+        firstId !== previous.firstId &&
+        lastId === previous.lastId &&
+        !atBottomRef.current;
+      if (prepended) element.scrollTop += element.scrollHeight - previous.height;
+      scrollSnapshot.current = { firstId, lastId, height: element.scrollHeight };
+    }
+  }, [replies]);
 
   const scrolledTarget = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -169,7 +193,11 @@ export function ThreadPane({
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold">{t("threads.title")}</h2>
           <p className="text-xs tabular-nums text-muted-foreground">
-            {isLoading ? t("threads.loading") : t("threads.replyCount", { count: replies.length })}
+            {isLoading
+              ? t("threads.loading")
+              : t("threads.replyCount", {
+                  count: root.display_data?.reply_count ?? replies.length,
+                })}
           </p>
         </div>
         {isArchived ? (
@@ -216,12 +244,13 @@ export function ThreadPane({
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 py-2"
         onScroll={(event) => {
           const element = event.currentTarget;
+          scrollSnapshot.current.height = element.scrollHeight;
           atBottomRef.current = isNearBottom(
             element.scrollTop,
             element.scrollHeight,
             element.clientHeight,
           );
-          if (element.scrollTop <= 48) {
+          if (element.scrollTop <= 48 && hasOlder && !isLoadingOlder) {
             onLoadOlder?.();
           }
         }}
@@ -274,9 +303,7 @@ export function ThreadPane({
                   onCancelEdit={onCancelEdit}
                   onSaveEdit={onSaveEdit}
                   onRequestDelete={() => onRequestDelete(item.message.id)}
-                  replyCount={
-                    item.message.display_data?.reply_count ?? replyCounts?.get(item.message.id) ?? 0
-                  }
+                  replyCount={item.message.display_data?.reply_count ?? 0}
                   onOpenThread={onOpenThread ? () => onOpenThread(item.message.id) : undefined}
                   reactions={
                     item.message.display_data

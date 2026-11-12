@@ -244,7 +244,9 @@
     "indexError": "スレッド一覧を取得できませんでした。",
     "emptyArchive": "アーカイブ済みスレッドはありません",
     "archiveForChannel": "{{channel}}のアーカイブ済みスレッド",
-    "untitled": "無題のスレッド"
+    "untitled": "無題のスレッド",
+    "targetTooOld": "このメッセージは古すぎて、ここまで読み込めませんでした",
+    "unreadTooOld": "これより古い未読は読み込まれていません"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",

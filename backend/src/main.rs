@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
     let home_image_worker = tokio::spawn(backend::routes::home_images::worker(state.clone()));
     let emoji_worker = tokio::spawn(backend::emoji_service::worker(state.clone()));
     let thread_archive_worker = tokio::spawn(backend::routes::threads::worker(state.clone()));
+    let e2ee_worker = tokio::spawn(backend::routes::e2ee::worker(state.clone()));
     let app = create_router(state);
 
     // サーバーバインド
@@ -81,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
 
     display_worker.abort();
     emoji_worker.abort();
+    e2ee_worker.abort();
     home_image_worker.abort();
     federation_worker.abort();
     delivery_worker.abort();

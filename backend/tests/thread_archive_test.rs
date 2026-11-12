@@ -517,7 +517,7 @@ async fn activity_migration_preserves_existing_replies_and_reopens() -> anyhow::
     ))
     .await?;
     tx.batch_execute(include_str!(
-        "../../infra/db/migrations/20261112002000_thread_activity_index.sql"
+        "../../infra/db/migrations/20261115002000_thread_activity_index.sql"
     ))
     .await?;
     for (id, expected) in [

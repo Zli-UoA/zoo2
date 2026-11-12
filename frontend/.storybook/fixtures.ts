@@ -447,6 +447,17 @@ export const storyReactions: MessageReactionRow[] = [
   },
 ];
 
+// 返信数・リアクションは、サーバーの表示用 VIEW (display_data) が持つ。スレッドの親は、返信が 2 件ある。
+const threadRoot = storyMessages.find((message) => message.id === "message-thread-root");
+if (threadRoot) {
+  threadRoot.display_data = {
+    emojis: {},
+    attachments: [],
+    reactions: storyReactions.filter((reaction) => reaction.message_id === threadRoot.id),
+    reply_count: 2,
+  };
+}
+
 export const storyNotifications: NotificationRow[] = [
   {
     id: "notification-mention",

@@ -4,6 +4,7 @@ pub mod calls;
 pub mod channel_webhooks;
 pub mod channels;
 pub mod dms;
+pub mod e2ee;
 pub mod health;
 pub mod home;
 pub mod home_images;
@@ -79,6 +80,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(users::router())
         .merge(channels::router())
         .merge(dms::router())
+        .merge(e2ee::router())
         .merge(messages::router())
         .merge(threads::router())
         .merge(attachments::router())

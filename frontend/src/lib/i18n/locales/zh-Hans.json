@@ -244,7 +244,9 @@
     "indexError": "无法加载讨论串列表。",
     "emptyArchive": "没有已归档的讨论串",
     "archiveForChannel": "{{channel}}的已归档讨论串",
-    "untitled": "未命名子线程"
+    "untitled": "未命名子线程",
+    "targetTooOld": "这条消息太久远，无法在此加载",
+    "unreadTooOld": "更早的未读消息未加载"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回应的用户",

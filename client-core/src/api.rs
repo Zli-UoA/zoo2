@@ -15,13 +15,7 @@ pub struct ApiClient {
     credentials: Credentials,
 }
 
-/// `GET /api/users/me`
-#[derive(Debug, Clone, Deserialize)]
-pub struct Me {
-    pub id: String,
-    pub user_name: String,
-    pub display_name: String,
-}
+pub use zoo2_client_types::api::Me;
 
 /// `GET /api/channel-read-states` の1件。
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -54,9 +48,37 @@ pub struct TypingUser {
     pub display_name: String,
 }
 
+/// `POST /api/attachments/presign`
+#[derive(Debug, Clone, Deserialize)]
+pub struct PresignAttachmentResponse {
+    pub attachment_id: String,
+    pub upload_url: String,
+    pub storage_key: String,
+}
+
+/// `GET /api/attachments/{id}/url`
+#[derive(Debug, Clone, Deserialize)]
+pub struct AttachmentUrlResponse {
+    pub id: String,
+    pub download_url: String,
+    pub file_name: String,
+    pub file_size: i64,
+    pub content_type: String,
+}
+
+/// `POST /api/channels` で作成されたチャンネル
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreatedChannel {
+    pub id: String,
+    pub channel_name: String,
+    pub description: Option<String>,
+    pub is_private: bool,
+}
+
 /// 書き込み API の `{data, txid}`。`txid` が null のときは何も変わっていない。
 #[derive(Debug, Deserialize)]
-struct Envelope {
+struct Envelope<T = Value> {
+    data: Option<T>,
     txid: Option<String>,
 }
 
@@ -67,6 +89,8 @@ struct NewMessage<'a> {
     content: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attachment_ids: Option<Vec<String>>,
 }
 
 impl ApiClient {
@@ -165,13 +189,105 @@ impl ApiClient {
         content: &str,
         parent_id: Option<&str>,
     ) -> Result<Option<String>> {
+        self.send_message_with_attachments(id, channel_id, content, parent_id, None)
+            .await
+    }
+
+    /// 添付ファイル ID を含むメッセージ送信。
+    pub async fn send_message_with_attachments(
+        &self,
+        id: &str,
+        channel_id: &str,
+        content: &str,
+        parent_id: Option<&str>,
+        attachment_ids: Option<Vec<String>>,
+    ) -> Result<Option<String>> {
         let body = serde_json::to_value(NewMessage {
             id,
             channel_id,
             content,
             parent_id,
+            attachment_ids,
         })?;
         self.write(Method::POST, "/api/messages", Some(body)).await
+    }
+
+    /// 添付ファイルの署名付きアップロード URL を発行する。
+    pub async fn presign_attachment(
+        &self,
+        channel_id: &str,
+        file_name: &str,
+        file_size: i64,
+        content_type: &str,
+    ) -> Result<PresignAttachmentResponse> {
+        let body = json!({
+            "channel_id": channel_id,
+            "file_name": file_name,
+            "file_size": file_size,
+            "content_type": content_type,
+        });
+        let envelope: Envelope<PresignAttachmentResponse> = self
+            .send(Method::POST, "/api/attachments/presign", Some(body))
+            .await?
+            .json()
+            .await?;
+        envelope
+            .data
+            .ok_or_else(|| anyhow::anyhow!("Presign レスポンスにデータがありません"))
+    }
+
+    /// 署名付き URL へバイナリデータをアップロードする。
+    pub async fn upload_attachment_bytes(
+        &self,
+        upload_url: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        let response = self
+            .http
+            .put(upload_url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(bytes)
+            .send()
+            .await?;
+        error_for_status(response).await?;
+        Ok(())
+    }
+
+    /// 添付ファイルの署名付きダウンロード URL を取得する。
+    pub async fn get_attachment_url(&self, attachment_id: &str) -> Result<AttachmentUrlResponse> {
+        let path = format!("/api/attachments/{}/url", segment(attachment_id));
+        let envelope: Envelope<AttachmentUrlResponse> = self.get(&path).await?;
+        envelope
+            .data
+            .ok_or_else(|| anyhow::anyhow!("Attachment URL レスポンスにデータがありません"))
+    }
+
+    /// チャンネルを作成する。
+    pub async fn create_channel(
+        &self,
+        id: Option<&str>,
+        channel_name: &str,
+        description: Option<&str>,
+        is_private: bool,
+    ) -> Result<(CreatedChannel, Option<String>)> {
+        let mut body = json!({
+            "channel_name": channel_name,
+            "description": description,
+            "is_private": is_private,
+        });
+        if let Some(id_val) = id {
+            body["id"] = json!(id_val);
+        }
+        let envelope: Envelope<CreatedChannel> = self
+            .send(Method::POST, "/api/channels", Some(body))
+            .await?
+            .json()
+            .await?;
+        let channel = envelope
+            .data
+            .ok_or_else(|| anyhow::anyhow!("作成されたチャンネルのデータがありません"))?;
+        Ok((channel, envelope.txid))
     }
 
     pub async fn edit_message(&self, id: &str, content: &str) -> Result<Option<String>> {
@@ -478,5 +594,104 @@ mod tests {
         api.set_typing("c1", None, "s1", true).await.unwrap();
         let users = api.typing("c1", Some("p1")).await.unwrap();
         assert_eq!(users[0].display_name, "Bob");
+    }
+
+    #[tokio::test]
+    async fn send_message_with_attachments_and_presign_and_create_channel() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/messages"))
+            .and(body_json(json!({
+                "id": "m1", "channel_id": "c1", "content": "with attachment",
+                "attachment_ids": ["att1"]
+            })))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(json!({ "data": { "id": "m1" }, "txid": "99" })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/attachments/presign"))
+            .and(body_json(json!({
+                "channel_id": "c1", "file_name": "pic.png", "file_size": 1024, "content_type": "image/png"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "attachment_id": "att1",
+                    "upload_url": "https://s3.example.com/upload",
+                    "storage_key": "keys/pic.png"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/attachments/att1/url"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "id": "att1",
+                    "download_url": "https://s3.example.com/download",
+                    "file_name": "pic.png",
+                    "file_size": 1024,
+                    "content_type": "image/png"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/channels"))
+            .and(body_json(json!({
+                "channel_name": "dev", "description": "Dev channel", "is_private": false
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "data": {
+                    "id": "c_new",
+                    "channel_name": "dev",
+                    "description": "Dev channel",
+                    "is_private": false
+                },
+                "txid": "100"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+
+        let txid = api
+            .send_message_with_attachments(
+                "m1",
+                "c1",
+                "with attachment",
+                None,
+                Some(vec!["att1".into()]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(txid.as_deref(), Some("99"));
+
+        let presign = api
+            .presign_attachment("c1", "pic.png", 1024, "image/png")
+            .await
+            .unwrap();
+        assert_eq!(presign.attachment_id, "att1");
+        assert_eq!(presign.upload_url, "https://s3.example.com/upload");
+
+        let url_info = api.get_attachment_url("att1").await.unwrap();
+        assert_eq!(url_info.download_url, "https://s3.example.com/download");
+
+        let (created, txid) = api
+            .create_channel(None, "dev", Some("Dev channel"), false)
+            .await
+            .unwrap();
+        assert_eq!(created.id, "c_new");
+        assert_eq!(created.channel_name, "dev");
+        assert_eq!(txid.as_deref(), Some("100"));
     }
 }

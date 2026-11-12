@@ -4,6 +4,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ZooError } from "../../../sdk/src/index.ts";
 import { server } from "../src/server.ts";
 import { Store } from "../src/store.ts";
 import { GitHub } from "../src/github.ts";
@@ -47,7 +48,7 @@ test("revoked Zoo credentials retain accepted webhooks until delivery resumes", 
   });
   const request = f.zoo.request.bind(f.zoo);
   f.zoo.request = async (method, path, body) => {
-    if (path === "/auth") throw Object.assign(new Error("revoked"), { status: 401 });
+    if (path === "/auth") throw new ZooError(401, "revoked");
     return request(method, path, body);
   };
   const revoked = { ...command(""), type: "tokens.revoked", data: {} };
@@ -76,8 +77,9 @@ test("revoked Zoo credentials retain accepted webhooks until delivery resumes", 
   });
   assert.equal(again.status, 202, "The receiver stays available while Zoo is disabled");
   assert.equal(f.zoo.messages.size, 0);
-  // main.ts clears this flag when the operator supplies new bootstrap credentials.
-  f.store.remove("zoo-disabled");
+  // A successful periodic authentication check resumes the durable queue.
+  f.zoo.request = request;
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() + 60001 });
   await f.bot.tick();
   assert.equal(pending().status, "done");
   assert.equal(f.zoo.messages.size, 1);

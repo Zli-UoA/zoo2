@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::HeaderMap,
     routing::{patch, post},
 };
 use serde::{Deserialize, Serialize};
@@ -126,12 +127,136 @@ pub fn router() -> Router<AppState> {
         )
 }
 
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
+use tokio::sync::Notify;
+
+static TEST_SYNC_GATES: LazyLock<Mutex<HashMap<String, Arc<Notify>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn get_or_create_test_gate(key: &str) -> Arc<Notify> {
+    let mut map = TEST_SYNC_GATES.lock().unwrap();
+    map.entry(key.to_string())
+        .or_insert_with(|| Arc::new(Notify::new()))
+        .clone()
+}
+
 async fn create_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    headers: HeaderMap,
     Json(payload): Json<CreateMessageRequest>,
-) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
-    create_message_impl(state, auth_user, payload, true, None).await
+) -> Result<(HeaderMap, Json<ApiResponse<MessageResponse>>), AppError> {
+    let test_delay_ms = if state.config.dev_auth_enabled {
+        headers
+            .get("X-Test-Delay-Attachment-Verify")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|d| d.min(1000))
+    } else {
+        None
+    };
+    let test_gate_wait = if state.config.dev_auth_enabled {
+        headers
+            .get("X-Test-Gate-Wait")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    let test_gate_notify = if state.config.dev_auth_enabled {
+        headers
+            .get("X-Test-Gate-Notify")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    create_message_impl(
+        state,
+        auth_user,
+        payload,
+        true,
+        None,
+        test_delay_ms,
+        test_gate_wait,
+        test_gate_notify,
+    )
+    .await
+}
+
+pub(crate) async fn check_idempotent_existing_message(
+    db: &mut toasty::Db,
+    id: &str,
+    auth_user_id: &str,
+    channel_id: &str,
+    content: &str,
+    parent_id: Option<&str>,
+    kind: &str,
+    broadcast: bool,
+    metadata: Option<&serde_json::Value>,
+    attachment_ids: &[String],
+) -> Result<Option<MessageResponse>, AppError> {
+    let existing = Message::filter(Message::fields().id().eq(id))
+        .first()
+        .exec(db)
+        .await?;
+    let Some(existing_msg) = existing else {
+        return Ok(None);
+    };
+
+    // 他チャンネルのメッセージ UUID を探る攻撃を防ぐため、channel_id が異なる場合は 404 を返す
+    if existing_msg.channel_id != channel_id {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {channel_id}"
+        )));
+    }
+
+    let mut req_att_ids = attachment_ids.to_vec();
+    req_att_ids.sort();
+
+    let existing_atts = Attachment::filter(Attachment::fields().message_id().eq(id))
+        .exec(db)
+        .await?;
+    let mut existing_att_ids: Vec<String> = existing_atts.into_iter().map(|a| a.id).collect();
+    existing_att_ids.sort();
+
+    let opt_rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'kind', COALESCE(message_kind, 'message'),
+            'broadcast', COALESCE(broadcast, false),
+            'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END
+         )::text FROM messages WHERE id = $1",
+    )
+    .bind(id)
+    .exec(db)
+    .await?;
+
+    let mut options_match = false;
+    if let Some(toasty::stmt::Value::Record(r)) = opt_rows.into_iter().next()
+        && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
+        && let Ok(saved_opts) = serde_json::from_str::<serde_json::Value>(&s)
+    {
+        let saved_kind = saved_opts["kind"].as_str().unwrap_or("message");
+        let saved_broadcast = saved_opts["broadcast"].as_bool().unwrap_or(false);
+        let saved_metadata = saved_opts.get("metadata").filter(|v| !v.is_null()).cloned();
+        let req_metadata = metadata.filter(|v| !v.is_null()).cloned();
+
+        options_match =
+            saved_kind == kind && saved_broadcast == broadcast && saved_metadata == req_metadata;
+    }
+
+    if existing_msg.user_id == auth_user_id
+        && existing_msg.channel_id == channel_id
+        && existing_msg.content == content
+        && existing_msg.parent_id.as_deref() == parent_id
+        && existing_msg.deleted_at.is_none()
+        && req_att_ids == existing_att_ids
+        && options_match
+    {
+        return Ok(Some(MessageResponse::from(existing_msg)));
+    }
+    Err(AppError::Conflict("Idempotency key already used".into()))
 }
 
 pub(crate) async fn create_message_impl(
@@ -140,7 +265,10 @@ pub(crate) async fn create_message_impl(
     payload: CreateMessageRequest,
     notify: bool,
     card: Option<String>,
-) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+    test_delay_ms: Option<u64>,
+    test_gate_wait: Option<String>,
+    test_gate_notify: Option<String>,
+) -> Result<(HeaderMap, Json<ApiResponse<MessageResponse>>), AppError> {
     let attachment_ids = payload.attachment_ids.unwrap_or_default();
     const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
     if attachment_ids.len() > MAX_ATTACHMENTS_PER_MESSAGE {
@@ -169,11 +297,112 @@ pub(crate) async fn create_message_impl(
         ))
     })?;
 
+    let supplied_id = payload.id.clone();
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
+
+    // チャンネル存在確認・所属確認（他人のUUIDの存在漏洩防止のため冪等性チェックより前に検証）
+    let channel = Channel::get_by_id(&mut db, payload.channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found: {}", payload.channel_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {}",
+            payload.channel_id
+        )));
+    }
+
+    // ユーザー属性（bot, active, guest）を取得
+    let principal_rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'bot', EXISTS(SELECT 1 FROM users WHERE id = $1 AND is_bot),
+            'active', EXISTS(SELECT 1 FROM apps a JOIN app_installations i ON i.app_id = a.id WHERE a.bot_user_id = $1 AND a.status = 'installed' AND i.active),
+            'guest', EXISTS(SELECT 1 FROM users WHERE id = $1 AND is_guest)
+        )::text",
+    )
+    .bind(&auth_user.id)
+    .exec(&mut db)
+    .await?;
+
+    let mut bot_actor = false;
+    let mut guest_actor = false;
+    if let Some(toasty::stmt::Value::Record(r)) = principal_rows.into_iter().next()
+        && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
+    {
+        bot_actor = v["bot"] == true;
+        if bot_actor && v["active"] != true {
+            return Err(AppError::Forbidden("App is not installed".into()));
+        }
+        guest_actor = v["guest"] == true;
+    }
+
+    // プライベートチャンネル、Bot、またはゲストの場合、チャンネルに所属していなければ 404 で存在を隠蔽
+    // （他人の UUID の存在漏洩防止のため冪等性チェックおよびアーカイブ確認より前に検証）
+    if channel.is_private || bot_actor || guest_actor {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(payload.channel_id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut db)
+        .await?;
+
+        if membership.is_none() {
+            return Err(AppError::NotFound(format!(
+                "Channel not found: {}",
+                payload.channel_id
+            )));
+        }
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot post message to an archived channel".into(),
+        ));
+    }
+
+    // クライアント指定の ID が既に存在する場合、同一属性（本文・チャンネル・親・添付ファイル）の再送であれば既存メッセージを返して成功とする (冪等性)
+    if supplied_id.is_some() {
+        if let Some(msg_res) = check_idempotent_existing_message(
+            &mut db,
+            &id,
+            &auth_user.id,
+            &payload.channel_id,
+            &payload.content,
+            payload.parent_id.as_deref(),
+            &payload.kind,
+            payload.broadcast,
+            payload.metadata.as_ref(),
+            &attachment_ids,
+        )
+        .await?
+        {
+            return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+        }
+    }
+
+    if let Some(gate_key) = test_gate_wait {
+        let gate = get_or_create_test_gate(&gate_key);
+        let _ =
+            tokio::time::timeout(tokio::time::Duration::from_millis(1000), gate.notified()).await;
+    }
+
+    if let Some(delay_ms) = test_delay_ms {
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms.min(1000))).await;
+    }
 
     // 添付ファイルの検証 (外部ストレージへの HeadObject 検証はトランザクション外で実行)
     let mut verified_attachments = Vec::new();
@@ -213,6 +442,31 @@ pub(crate) async fn create_message_impl(
             }
 
             if att.message_id.is_some() {
+                if supplied_id.is_some() && att.message_id.as_deref() == Some(id.as_str()) {
+                    if let Some(msg_res) = check_idempotent_existing_message(
+                        &mut db,
+                        &id,
+                        &auth_user.id,
+                        &payload.channel_id,
+                        &payload.content,
+                        payload.parent_id.as_deref(),
+                        &payload.kind,
+                        payload.broadcast,
+                        payload.metadata.as_ref(),
+                        &attachment_ids,
+                    )
+                    .await?
+                    {
+                        let mut resp_headers = HeaderMap::new();
+                        if state.config.dev_auth_enabled {
+                            resp_headers.insert(
+                                "X-Test-Fallback",
+                                "attachment-already-attached".parse().unwrap(),
+                            );
+                        }
+                        return Ok((resp_headers, Json(ApiResponse::new(msg_res, None))));
+                    }
+                }
                 return Err(AppError::BadRequest(format!(
                     "Attachment {att_id} is already attached to a message"
                 )));
@@ -275,13 +529,7 @@ pub(crate) async fn create_message_impl(
         )));
     }
 
-    if channel.archive_at.is_some() {
-        return Err(AppError::BadRequest(
-            "Cannot post message to an archived channel".into(),
-        ));
-    }
-
-    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
+    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽（アーカイブ確認より前に検証）
     if channel.is_private || bot_actor || crate::apps::events::guest(&mut tx, &auth_user.id).await?
     {
         let membership = ChannelUser::filter(
@@ -300,6 +548,12 @@ pub(crate) async fn create_message_impl(
                 payload.channel_id
             )));
         }
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot post message to an archived channel".into(),
+        ));
     }
 
     crate::apps::events::posting(
@@ -341,7 +595,7 @@ pub(crate) async fn create_message_impl(
     let now = crate::models::now_utc_millis();
 
     // 投稿者は必ず認証済みユーザー (auth_user.id) を強制
-    let message = toasty::create!(Message {
+    let create_result = toasty::create!(Message {
         id: id.as_str(),
         user_id: auth_user.id.as_str(),
         channel_id: payload.channel_id.as_str(),
@@ -352,10 +606,39 @@ pub(crate) async fn create_message_impl(
         created_at: now,
         updated_at: None,
         deleted_at: None,
-        parent_id: payload.parent_id,
+        parent_id: payload.parent_id.clone(),
     })
     .exec(&mut tx)
-    .await?;
+    .await;
+
+    let message = match create_result {
+        Ok(msg) => msg,
+        Err(err) if supplied_id.is_some() && AppError::is_unique_violation(&err, None) => {
+            let _ = tx.rollback().await;
+            let mut retry_db = state.db.clone();
+            for _ in 0..10 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                if let Some(msg_res) = check_idempotent_existing_message(
+                    &mut retry_db,
+                    &id,
+                    &auth_user.id,
+                    &payload.channel_id,
+                    &payload.content,
+                    payload.parent_id.as_deref(),
+                    &payload.kind,
+                    payload.broadcast,
+                    payload.metadata.as_ref(),
+                    &attachment_ids,
+                )
+                .await?
+                {
+                    return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+                }
+            }
+            return Err(AppError::Conflict("Idempotency key already used".into()));
+        }
+        Err(err) => return Err(AppError::from(err)),
+    };
 
     // 添付ファイルの紐付け (条件付き原子的 UPDATE)
     for (att_id, metadata) in &verified_attachments {
@@ -397,10 +680,42 @@ pub(crate) async fn create_message_impl(
     };
 
     let txid = get_current_txid(&mut tx).await?;
-    tx.commit().await?;
+    if let Err(err) = tx.commit().await {
+        if supplied_id.is_some() && AppError::is_unique_violation(&err, None) {
+            let mut retry_db = state.db.clone();
+            for _ in 0..10 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                if let Some(msg_res) = check_idempotent_existing_message(
+                    &mut retry_db,
+                    &id,
+                    &auth_user.id,
+                    &payload.channel_id,
+                    &payload.content,
+                    payload.parent_id.as_deref(),
+                    &payload.kind,
+                    payload.broadcast,
+                    payload.metadata.as_ref(),
+                    &attachment_ids,
+                )
+                .await?
+                {
+                    return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+                }
+            }
+            return Err(AppError::Conflict("Idempotency key already used".into()));
+        }
+        return Err(AppError::from(err));
+    }
+    if let Some(gate_key) = test_gate_notify {
+        let gate = get_or_create_test_gate(&gate_key);
+        gate.notify_waiters();
+    }
     crate::push::dispatch(state.clone(), notifications);
 
-    Ok(Json(ApiResponse::new(MessageResponse::from(message), txid)))
+    Ok((
+        HeaderMap::new(),
+        Json(ApiResponse::new(MessageResponse::from(message), txid)),
+    ))
 }
 
 pub(crate) async fn update_message(

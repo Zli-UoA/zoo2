@@ -1,7 +1,7 @@
 import { createCollection, localOnlyCollectionOptions, queryOnce } from "@tanstack/react-db";
 import { describe, expect, it } from "vite-plus/test";
 
-import { messageFeedQuery, replyParentQuery } from "./messageFeed";
+import { messageFeedQuery } from "./messageFeed";
 import type { MessageRow, UserRow } from "./types";
 
 const users: UserRow[] = [
@@ -93,7 +93,8 @@ describe("messageFeedQuery", () => {
   it("joins the author and excludes logically deleted messages", async () => {
     const result = await queryOnce((q) => messageFeedQuery(q, makeCollections(messages, users)));
 
-    expect(result.map((row) => row.id)).toEqual(["message-1", "message-3"]);
+    // 新しい順
+    expect(result.map((row) => row.id)).toEqual(["message-3", "message-1"]);
     expect(result.find((row) => row.id === "message-1")?.display_name).toBe("Alice");
     expect(result.find((row) => row.id === "message-2")).toBeUndefined();
   });
@@ -201,56 +202,30 @@ describe("messageFeedQuery scopes", () => {
     expect(result.map((row) => row.id)).toEqual(["reply-1"]);
     expect(result[0]?.parent_id).toBe("root-1");
   });
-
-  it("counts non-deleted reply parents", async () => {
-    const result = await queryOnce((q) =>
-      replyParentQuery(q, { messages: makeCollections(withReplies, users).messages }),
-    );
-    expect(result.map((row) => row.parent_id)).toEqual(["root-1"]);
-  });
 });
 
-describe("messageFeedQuery since window", () => {
-  it("returns only messages at or after the window start", async () => {
-    const result = await queryOnce((q) =>
-      messageFeedQuery(q, makeCollections(messages, users), {
-        parentId: null,
-        since: "2026-01-03 00:00:00.000",
-      }),
-    );
-    expect(result.map((row) => row.id)).toEqual(["message-3"]);
+describe("messageFeedQuery order and deleted rows", () => {
+  it("returns the newest message first (the screen reverses it)", async () => {
+    const result = await queryOnce((q) => messageFeedQuery(q, makeCollections(messages, users)));
+    const times = result.map((row) => row.created_at);
+    expect(times).toEqual([...times].sort().reverse());
   });
 
-  it("applies the same window to thread replies", async () => {
-    const replies: MessageRow[] = [
-      {
-        id: "reply-old",
-        user_id: "user-1",
-        channel_id: "channel-1",
-        content: "old",
-        created_at: "2026-01-01 00:00:00.000",
-        updated_at: null,
-        deleted_at: null,
-        parent_id: "root-1",
-      },
-      {
-        id: "reply-new",
-        user_id: "user-1",
-        channel_id: "channel-1",
-        content: "new",
-        created_at: "2026-01-05 00:00:00.000",
-        updated_at: null,
-        deleted_at: null,
-        parent_id: "root-1",
-      },
-    ];
-    const result = await queryOnce((q) =>
-      messageFeedQuery(q, makeCollections(replies, users), {
-        parentId: "root-1",
-        since: "2026-01-02 00:00:00.000",
-      }),
+  it("returns a deleted row only when asked, with its deleted_at", async () => {
+    const deleted: MessageRow = {
+      ...messages[0],
+      id: "gone",
+      deleted_at: "2026-01-09 00:00:00.000",
+    };
+    const sources = makeCollections([deleted], users);
+    const hidden = await queryOnce((q) =>
+      messageFeedQuery(q, sources, { parentId: null, messageId: "gone" }),
     );
-    expect(result.map((row) => row.id)).toEqual(["reply-new"]);
+    expect(hidden).toHaveLength(0);
+    const shown = await queryOnce((q) =>
+      messageFeedQuery(q, sources, { parentId: null, messageId: "gone", includeDeleted: true }),
+    );
+    expect(shown.map((row) => row.deleted_at)).toEqual(["2026-01-09 00:00:00.000"]);
   });
 });
 

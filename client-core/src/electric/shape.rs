@@ -12,26 +12,10 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use reqwest::{StatusCode, header::HeaderMap};
 use serde::Deserialize;
-use serde_json::{Map, Value};
 
 use crate::http::{Credentials, error_for_status};
 
-pub type Row = Map<String, Value>;
-
-/// 1回の取得で起きた変化。`reset` が true なら、それまでの行をすべて捨ててから適用する。
-#[derive(Debug, Default, PartialEq)]
-pub struct Batch {
-    pub reset: bool,
-    pub changes: Vec<Change>,
-    /// 初回同期が終わり、ローカルの行がサーバーと揃ったことを示す。
-    pub up_to_date: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Change {
-    Upsert { key: String, row: Row },
-    Delete { key: String },
-}
+pub use zoo2_client_types::shape::{Batch, Change, Row};
 
 #[derive(Debug, Deserialize)]
 struct Message {
@@ -220,6 +204,7 @@ fn header(headers: &HeaderMap, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,

@@ -88,6 +88,9 @@ pub(super) async fn persist_card(
         },
         false,
         Some(card_data),
+        None,
+        None,
+        None,
     )
     .await?;
     Ok(StatusCode::OK)
