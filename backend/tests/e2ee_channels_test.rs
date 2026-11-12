@@ -355,7 +355,7 @@ async fn apps_cannot_create_encrypted_channels_or_dms() {
         let admin = backend::auth::DEFAULT_DEV_USER_ID;
         env.call("POST", "/api/users", admin, json!({"id": admin, "user_name": format!("admin_{}", Uuid::new_v4().simple()), "display_name": "Admin"}))
             .await;
-        let manifest = json!({"scopes":["channels:manage","dm:write"],"events":[],"transport":"websocket","dm_enabled":true,"redirect_uris":["https://example.com/callback"]});
+        let manifest = json!({"scopes":["channels:manage","messages:read","messages:write","dm:write"],"events":["message.created"],"transport":"websocket","dm_enabled":true,"redirect_uris":["https://example.com/callback"]});
         let (status, created) = env
             .call(
                 "POST",
@@ -367,12 +367,10 @@ async fn apps_cannot_create_encrypted_channels_or_dms() {
         assert_eq!(status, StatusCode::OK, "{created}");
         let id = created["id"].as_str().unwrap();
         let action = |a: &str| format!("/api/apps/{id}/actions/{a}");
-        assert_eq!(
-            env.call("POST", &action("submit"), &owner, Value::Null)
-                .await
-                .0,
-            StatusCode::OK
-        );
+        let (status, body) = env
+            .call("POST", &action("submit"), &owner, Value::Null)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(
             env.call("POST", &action("install"), admin, json!({"revision": 1}))
                 .await

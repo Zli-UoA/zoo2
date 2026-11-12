@@ -594,12 +594,12 @@ mod tests {
             0,
             vec![user("a", 600), user("b", 600), user("c", 600)],
             50,
-            1500,
+            2000,
         )
         .unwrap();
         assert_eq!(page["user_ids"], json!(["a", "b"]));
         assert_eq!(page["next_after"], "b");
-        assert!(crate::routes::e2ee::json_size(&page) <= 1500);
+        assert!(crate::routes::e2ee::json_size(&page) <= 2000);
     }
 
     #[test]

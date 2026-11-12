@@ -18,7 +18,9 @@ pub struct Channel {
     pub archive_at: Option<jiff::civil::DateTime>,
     pub deleted_at: Option<jiff::civil::DateTime>,
     /// 作成時だけ指定できる（DB のトリガーで変更を拒否する。docs/e2ee.md）。
+    #[serde(default)]
     pub encrypted: bool,
     /// 暗号化チャンネルのメンバーと端末の世代（#357）。サーバーだけが増やす。
+    #[serde(default)]
     pub membership_epoch: i64,
 }
