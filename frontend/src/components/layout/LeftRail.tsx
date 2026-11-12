@@ -65,8 +65,9 @@ export function LeftRail() {
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
   // プロフィールは AuthZ で編集する。保存後にこの画面へ戻れるよう、現在の origin を渡す。
+  // デスクトップ版では AuthZ が既定のブラウザーで開き、戻り先もブラウザーの Web 版になるため付けない。
   const profileUrl = config.oidc
-    ? accountProfileUrl(config.oidc.issuer, window.location.origin)
+    ? accountProfileUrl(config.oidc.issuer, isDesktopSession() ? null : window.location.origin)
     : null;
   const meLabel = me ? me.display_name || me.user_name : (currentUserId ?? "?");
 
@@ -134,8 +135,8 @@ export function LeftRail() {
         {profileUrl ? (
           <a
             href={profileUrl}
-            aria-label={t("auth.profile")}
-            title={t("auth.profile")}
+            aria-label={`${meLabel} - ${t("auth.profile")}`}
+            title={`${meLabel} - ${t("auth.profile")}`}
             className="rounded-full outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             <AppAvatar label={meLabel} src={me?.avatar_url} size="sm" />
