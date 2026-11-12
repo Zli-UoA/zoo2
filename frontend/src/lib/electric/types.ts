@@ -29,11 +29,18 @@ export type ChannelRow = {
   description: string | null;
   created_user_id: string;
   is_private: boolean;
+  is_nsfw?: boolean;
   is_dm: boolean;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
   deleted_at: TimestampString | null;
+  /** Slack から取り込んだチャンネル (取り込み先の新規作成も既存のチャンネルも) */
+  imported_from_slack: boolean;
+  /** Slack からの取り込みの種類 (新しく作った / 既存のチャンネルに追加)。取り込んでいなければ null */
+  slack_import_kind: "created" | "existing" | null;
+  /** 最後に Slack から取り込んだ日時 */
+  slack_imported_at: TimestampString | null;
 };
 
 export type MessageRow = {
@@ -119,6 +126,7 @@ export type AttachmentRow = import("../imageMetadata").ImageMetadata & {
   file_size: string | number;
   content_type: string;
   storage_key: string;
+  is_sensitive?: boolean;
   created_at: TimestampString;
 };
 

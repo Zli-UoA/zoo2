@@ -77,27 +77,29 @@ async fn create_message(
     // A supplied UUID is the idempotency key; never return another author's write.
     if let Some(id) = &body.id {
         let mut db = state.db.clone();
-        let existing =
-            crate::models::Message::filter(crate::models::Message::fields().id().eq(id.as_str()))
-                .first()
-                .exec(&mut db)
-                .await?;
-        if let Some(message) = existing {
-            if message.user_id == p.user_id
-                && message.channel_id == body.channel_id
-                && message.content == body.content
-                && message.parent_id == body.parent_id
-                && message.deleted_at.is_none()
-            {
-                return Ok(Json(crate::routes::response::ApiResponse::new(
-                    message.into(),
-                    None,
-                )));
-            }
-            return Err(AppError::Conflict("Idempotency key already used".into()));
+        let att_ids = body.attachment_ids.clone().unwrap_or_default();
+        if let Some(msg_res) = m::check_idempotent_existing_message(
+            &mut db,
+            id,
+            &p.user_id,
+            &body.channel_id,
+            &body.content,
+            body.parent_id.as_deref(),
+            &body.kind,
+            body.broadcast,
+            body.metadata.as_ref(),
+            &att_ids,
+        )
+        .await?
+        {
+            return Ok(Json(crate::routes::response::ApiResponse::new(
+                msg_res, None,
+            )));
         }
     }
-    m::create_message_impl(state, p.actor(), body, true, None).await
+    let (_, res) =
+        m::create_message_impl(state, p.actor(), body, true, None, None, None, None).await?;
+    Ok(res)
 }
 async fn update_message(
     State(s): State<AppState>,

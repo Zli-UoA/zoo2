@@ -332,6 +332,8 @@ async fn start(
                 MappingAction::Create {
                     name,
                     is_private: Some(channel["is_private"] == true),
+                    // 自分のチャンネルの取り込みでは、アーカイブの指定はできない
+                    archive: false,
                 }
             }
             MappingAction::Skip => MappingAction::Skip,

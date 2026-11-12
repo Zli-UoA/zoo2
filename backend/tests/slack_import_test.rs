@@ -1981,6 +1981,599 @@ async fn test_slack_import_same_name_files_keep_the_unfetched_name() -> anyhow::
     Ok(())
 }
 
+/// 取り込み先は、新しく作ったチャンネルも既存のチャンネルも「Slack から取り込んだ」印が付く。
+/// 新しく作るチャンネルは、指定があれば取り込みの完了時にアーカイブされる (既存のチャンネルはアーカイブしない)。
+#[tokio::test]
+async fn test_slack_import_flags_targets_and_archives_new_channels_on_request() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_flag").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let existing_id = uuid::Uuid::new_v4().to_string();
+    let existing_name = format!("flag-existing-{suffix}");
+    sql(
+        &state,
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$2,$3,false) RETURNING json_build_object('ok',true)::text",
+        &[&existing_id, &existing_name, &admin],
+    )
+    .await?;
+    let day = |ts: &str| json!([{"ts": ts, "user": "U1", "text": "hello"}]);
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([
+                {"id":"C1","name":format!("flag-keep-{suffix}"),"members":["U1"]},
+                {"id":"C2","name":format!("flag-archive-{suffix}"),"members":["U1"]},
+                {"id":"C3","name":format!("flag-into-{suffix}"),"members":["U1"]},
+                {"id":"C4","name":format!("flag-skip-{suffix}"),"members":["U1"]}
+            ]),
+        ),
+        (
+            format!("flag-keep-{suffix}/2024-01-01.json"),
+            day("1704070000.000100"),
+        ),
+        (
+            format!("flag-archive-{suffix}/2024-01-01.json"),
+            day("1704070000.000100"),
+        ),
+        (
+            format!("flag-into-{suffix}/2024-01-01.json"),
+            day("1704070000.000100"),
+        ),
+        (
+            format!("flag-skip-{suffix}/2024-01-01.json"),
+            day("1704070000.000100"),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([
+            {"slack_channel_id":"C1","action":"create","name":format!("flag-keep-{suffix}")},
+            {"slack_channel_id":"C2","action":"create","name":format!("flag-archive-{suffix}"),"archive":true},
+            {"slack_channel_id":"C3","action":"existing","channel_id":existing_id},
+            {"slack_channel_id":"C4","action":"skip"}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let row = |name: String| {
+        let state = state.clone();
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('flag',imported_from_slack,'archived',archive_at IS NOT NULL,\
+                 'kind',slack_import_kind,'at',slack_imported_at IS NOT NULL)::text \
+                 FROM channels WHERE channel_name=$1",
+                &[&name],
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let keep = row(format!("flag-keep-{suffix}")).await;
+    assert_eq!(
+        (&keep[0]["flag"], &keep[0]["archived"]),
+        (&json!(true), &json!(false))
+    );
+    let archived = row(format!("flag-archive-{suffix}")).await;
+    assert_eq!(
+        (&archived[0]["flag"], &archived[0]["archived"]),
+        (&json!(true), &json!(true)),
+        "a new channel asked to be archived is archived once the import completes"
+    );
+    let existing = row(existing_name).await;
+    assert_eq!(
+        (&existing[0]["flag"], &existing[0]["archived"]),
+        (&json!(true), &json!(false)),
+        "an existing target is flagged but never archived"
+    );
+    assert!(
+        row(format!("flag-skip-{suffix}")).await.is_empty(),
+        "skipped channels are not created"
+    );
+    // 取り込みの種類 (新しく作った / 既存のチャンネルへの追加) と、取り込んだ日時が付く
+    for (channel, kind) in [
+        (&keep, "created"),
+        (&archived, "created"),
+        (&existing, "existing"),
+    ] {
+        assert_eq!(channel[0]["kind"], kind);
+        assert_eq!(channel[0]["at"], true);
+    }
+    // 取り込み先に固定された再取り込みでは、種類は最初のまま (created) で、日時だけが更新される
+    let stamp = |name: String| {
+        let state = state.clone();
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('id',id,'at',slack_imported_at::text)::text FROM channels WHERE channel_name=$1",
+                &[&name],
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let before = stamp(format!("flag-keep-{suffix}")).await;
+    let (status, rerun) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":before[0]["id"]}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rerun}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        rerun["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let after = stamp(format!("flag-keep-{suffix}")).await;
+    assert_ne!(
+        before[0]["at"], after[0]["at"],
+        "the import time is updated"
+    );
+    let again = row(format!("flag-keep-{suffix}")).await;
+    assert_eq!(again[0]["kind"], "created", "the first kind is kept");
+    // 管理者の取り込み画面に、以前の取り込み先の種類と最後に取り込んだ日時を返す
+    let (status, saved) = request(
+        &app,
+        "GET",
+        &format!(
+            "/api/admin/slack-imports/{}",
+            export["id"].as_str().unwrap()
+        ),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let channels = saved["analysis"]["channels"].as_array().unwrap();
+    let c1 = channels
+        .iter()
+        .find(|channel| channel["slack_channel_id"] == "C1")
+        .unwrap();
+    assert_eq!(c1["existing_channel"]["import_kind"], "created");
+    assert!(c1["existing_channel"]["imported_at"].is_string());
+    Ok(())
+}
+
+/// マイグレーションの補完 (取り込みの種類) は、ジョブの最終状態に関わらず、「新しいチャンネル」の指定があれば
+/// created にする。ジョブが途中で失敗・取り消しになっても、作ったチャンネルと対応表は先にコミットされて残る。
+/// ロールバックするトランザクションの中で、実際のマイグレーションの補完の文を実行して確かめる。
+#[tokio::test]
+async fn test_slack_import_info_backfill_ignores_the_final_job_status() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_backfill").await?;
+    let migration =
+        include_str!("../../infra/db/migrations/20261112000000_channels_slack_import_info.sql");
+    let backfill = &migration[migration
+        .find("UPDATE \"channels\"")
+        .expect("the backfill statement")..];
+
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    // (ジョブの状態, 指定, 取り込み先が「新しいチャンネル」の決定的な ID か, 期待する種類, 取り込みの日時が入るか)
+    let cases = [
+        ("completed", "create", true, "created", true),
+        ("fetching_files", "create", true, "created", true),
+        ("failed", "create", true, "created", false),
+        ("cancelled", "create", true, "created", false),
+        ("completed", "existing", false, "existing", true),
+        // 作成の指定のジョブがチャンネルを作る前に失敗し、あとで既存のチャンネルに取り込んだ
+        ("failed", "create", false, "existing", false),
+    ];
+    let mut channel_ids = Vec::new();
+    for (index, (status, action, deterministic, _, _)) in cases.iter().enumerate() {
+        let slack_channel = format!("C{index}");
+        let channel_id = if *deterministic {
+            backend::slack::channel_id(&team, &slack_channel)
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
+        query(
+            &mut tx,
+            "INSERT INTO channels(id,channel_name,created_user_id,is_private,imported_from_slack) \
+             VALUES($1,$2,$3,false,true) RETURNING json_build_object('ok',true)::text",
+            &[&channel_id, &format!("backfill-{index}-{suffix}"), &admin],
+        )
+        .await?;
+        query(
+            &mut tx,
+            "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES($1,$2,$3) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&team, &slack_channel, &channel_id],
+        )
+        .await?;
+        let mappings = json!([{"slack_channel_id": slack_channel, "action": action,
+            "name": format!("backfill-{index}-{suffix}"), "channel_id": channel_id}])
+        .to_string();
+        query(
+            &mut tx,
+            "INSERT INTO slack_import_jobs(id,created_by,status,file_name,file_size,storage_key,team_id,mappings) \
+             VALUES($1,$2,$3,'export.zip',1,'k',$4,$5) RETURNING json_build_object('ok',true)::text",
+            &[&format!("backfill-job-{index}-{suffix}"), &admin, status, &team, &mappings],
+        )
+        .await?;
+        channel_ids.push(channel_id);
+    }
+    toasty::sql::statement(backfill).exec(&mut tx).await?;
+    for ((status, action, _, expected, imported), channel_id) in cases.iter().zip(&channel_ids) {
+        let rows = query(
+            &mut tx,
+            "SELECT json_build_object('kind',slack_import_kind,'at',slack_imported_at IS NOT NULL)::text \
+             FROM channels WHERE id=$1",
+            &[channel_id],
+        )
+        .await?;
+        assert_eq!(rows[0]["kind"], *expected, "{action} job in {status}");
+        assert_eq!(
+            rows[0]["at"], *imported,
+            "{action} job in {status}: the import time comes only from a job that finished importing"
+        );
+    }
+    // コミットしない (ロールバックされる)
+    drop(tx);
+    Ok(())
+}
+
+/// 編集・削除の履歴を含むエクスポートの記録 (`message_changed` / `message_deleted`) は、投稿として取り込まず、
+/// 以前の取り込みで入れてしまった分 (編集した日時の重複した投稿、削除された元の投稿) は、再取り込みで論理削除する。
+#[tokio::test]
+async fn test_slack_import_skips_history_events_and_removes_stale_rows() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_history").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let name = format!("history-{suffix}");
+    let (a, edit, b, delete, c) = (
+        "1704070000.000100",
+        "1704070100.000000",
+        "1704070200.000100",
+        "1704070250.000000",
+        "1704070300.000100",
+    );
+    let zip = |messages: Value| {
+        build_zip(&[
+            (
+                "users.json".into(),
+                json!([{"id":"U1","team_id":team,"name":"alice"}]),
+            ),
+            (
+                "channels.json".into(),
+                json!([{"id":"C1","name":name,"members":["U1"]}]),
+            ),
+            (format!("{name}/2024-01-01.json"), messages),
+        ])
+    };
+    // 以前の版の取り込み: 編集の記録を投稿として入れ (編集した日時の重複した投稿)、削除される前の投稿も入れていた
+    let before = zip(json!([
+        {"ts": a, "user": "U1", "text": "A"},
+        {"ts": edit, "user": "U1", "text": "A edited"},
+        {"ts": b, "user": "U1", "text": "B before it was deleted"},
+        {"ts": c, "user": "U1", "text": "C"}
+    ]));
+    let export = upload(&state, &app, &admin, &before).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"create","name":name}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let deleted = |ts: &'static str| {
+        let state = state.clone();
+        let id = backend::slack::message_id(&team, "C1", ts);
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('deleted',deleted_at IS NOT NULL)::text FROM messages WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        deleted(edit).await[0]["deleted"],
+        false,
+        "the old version imported it"
+    );
+
+    // 編集・削除の履歴を含むエクスポート: 元の投稿 (A, C) と、編集・削除の記録 (B の元の記録は残らない)
+    let after = zip(json!([
+        {"ts": a, "user": "U1", "text": "A edited"},
+        {"type":"message","subtype":"message_changed","ts": edit, "user": "U1", "text": "A edited",
+         "edited_by": "U1", "original": {"user": "U1", "type": "message", "ts": a, "text": "A"}},
+        {"type":"message","subtype":"message_deleted","ts": delete, "user": "U1", "text": "",
+         "deleted_by": "U1", "original": {"user": "U1", "type": "message", "ts": b, "text": "B before it was deleted"}},
+        {"ts": c, "user": "U1", "text": "C"}
+    ]));
+    let export = upload(&state, &app, &admin, &after).await;
+    // 解析のメッセージ数に、編集・削除の記録を含めない
+    assert_eq!(
+        export["analysis"]["channels"][0]["message_count"], 2,
+        "{export}"
+    );
+    let target = backend::slack::channel_id(&team, "C1");
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":target}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    assert_eq!(
+        deleted(a).await[0]["deleted"],
+        false,
+        "the original post stays"
+    );
+    assert_eq!(deleted(c).await[0]["deleted"], false, "other posts stay");
+    assert_eq!(
+        deleted(edit).await[0]["deleted"],
+        true,
+        "the duplicate post made from the edit record is removed"
+    );
+    assert_eq!(
+        deleted(b).await[0]["deleted"],
+        true,
+        "the post that was deleted in Slack is removed"
+    );
+    assert!(
+        deleted(delete).await.is_empty(),
+        "the delete record itself is never imported"
+    );
+    // 生きている投稿は、元の投稿 (A と C) だけ
+    let live = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1 AND deleted_at IS NULL",
+        &[&target],
+    )
+    .await?;
+    assert_eq!(live[0]["n"], 2);
+    Ok(())
+}
+
+/// 同じ日付ファイルに、削除された元の投稿の普通の記録と、削除の記録がある場合は、取り込んでから論理削除する
+/// (初回と再取り込みで結果が同じ。その投稿への返信は、削除された親のスレッドに残る)。
+/// 公開されている形式 (`original_ts`) の削除の記録も扱う。イベントの `ts` と同じ `ts` の本物の投稿は消さない。
+#[tokio::test]
+async fn test_slack_import_history_events_in_the_same_file() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_history_same").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let (name, other) = (format!("same-{suffix}"), format!("other-{suffix}"));
+    let (a, b, x, delete) = (
+        "1704070000.000100",
+        "1704070200.000100",
+        "1704070100.000000",
+        "1704070250.000000",
+    );
+    // `reply` は、削除された B への返信。`d` は、公開されている形式 (`original_ts`) の削除の記録で消える
+    let (reply, d, delete_d) = (
+        "1704070210.000100",
+        "1704070300.000100",
+        "1704070350.000000",
+    );
+    // `x` は、本物の投稿の `ts` が、編集の記録の `ts` と同じ (秒ちょうど) になった場合
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([
+                {"id":"C1","name":name,"members":["U1"]},
+                {"id":"C2","name":other,"members":["U1"]}
+            ]),
+        ),
+        (
+            format!("{name}/2024-01-01.json"),
+            json!([
+                {"ts": a, "user": "U1", "text": "A"},
+                {"ts": x, "user": "U1", "text": "X is a real post"},
+                {"type":"message","subtype":"message_changed","ts": x, "user": "U1", "text": "edit",
+                 "original": {"user": "U1", "type": "message", "ts": a, "text": "A"}},
+                {"ts": b, "user": "U1", "text": "B was deleted", "thread_ts": b},
+                {"ts": reply, "user": "U1", "text": "reply to B", "thread_ts": b},
+                {"ts": d, "user": "U1", "text": "D was deleted"},
+                {"type":"message","subtype":"message_deleted","ts": delete_d, "user": "U1", "text": "",
+                 "original_ts": d, "previous": {"user": "U1", "type": "message", "ts": d, "text": "D was deleted"}},
+                {"type":"message","subtype":"message_deleted","ts": delete, "user": "U1", "text": "",
+                 "original": {"user": "U1", "type": "message", "ts": b, "text": "B was deleted"}}
+            ]),
+        ),
+        // 別のチャンネルに、同じ `ts` の本物の投稿がある (削除の記録は C1 のものだけ)
+        (
+            format!("{other}/2024-01-01.json"),
+            json!([{"ts": b, "user": "U1", "text": "B in another channel"}]),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let mappings = json!([
+        {"slack_channel_id":"C1","action":"create","name":name},
+        {"slack_channel_id":"C2","action":"create","name":other}
+    ]);
+    let (status, run) = start(&app, &admin, export["id"].as_str().unwrap(), mappings).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let live = |channel: &'static str| {
+        let state = state.clone();
+        let channel_id = backend::slack::channel_id(&team, channel);
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1 AND deleted_at IS NULL",
+                &[&channel_id],
+            )
+            .await
+            .unwrap()[0]["n"]
+                .as_i64()
+                .unwrap()
+        }
+    };
+    let row = |channel: &'static str, ts: &'static str| {
+        let state = state.clone();
+        let id = backend::slack::message_id(&team, channel, ts);
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('deleted',deleted_at IS NOT NULL)::text FROM messages WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap()
+        }
+    };
+    // 削除された B と D は、初回の取り込みから論理削除される。A と、同じ `ts` の本物の投稿 X、B への返信は残る
+    assert_eq!(live("C1").await, 3);
+    assert_eq!(row("C1", b).await[0]["deleted"], true);
+    assert_eq!(row("C1", d).await[0]["deleted"], true, "original_ts format");
+    // 返信は、削除された親のスレッドに残る (チャンネル直下に出ない)
+    let reply_row = sql(
+        &state,
+        "SELECT json_build_object('parent',parent_id,'deleted',deleted_at IS NOT NULL)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(&team, "C1", reply)],
+    )
+    .await?;
+    assert_eq!(
+        reply_row[0]["parent"],
+        backend::slack::message_id(&team, "C1", b)
+    );
+    assert_eq!(reply_row[0]["deleted"], false);
+    assert_eq!(row("C1", x).await[0]["deleted"], false);
+    assert_eq!(
+        row("C2", b).await[0]["deleted"],
+        false,
+        "another channel is untouched"
+    );
+
+    // 再取り込みしても、同じ (X は、イベントと同じ `ts` でも消えない)
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([
+            {"slack_channel_id":"C1","action":"existing","channel_id":backend::slack::channel_id(&team, "C1")},
+            {"slack_channel_id":"C2","action":"existing","channel_id":backend::slack::channel_id(&team, "C2")}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    assert_eq!(live("C1").await, 3, "re-importing changes nothing");
+    assert_eq!(row("C1", b).await[0]["deleted"], true);
+    assert_eq!(row("C1", x).await[0]["deleted"], false);
+    assert_eq!(live("C2").await, 1);
+    Ok(())
+}
+
 /// Slack の `url_private_download` が 302 を返しても、許可した URL なら追従して取得する。
 /// Authorization は同じオリジンにだけ付け、許可していない URL へのリダイレクトは追従しない。
 #[tokio::test]
@@ -2779,5 +3372,77 @@ async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id(
     )
     .await?;
     assert_eq!(imported[0]["n"], 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_slack_import_labels_files_in_existing_nsfw_channel() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/F1/photo.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![1, 2, 3, 4]))
+        .mount(&files)
+        .await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = Some("xoxb-test".into());
+    config.slack.files_base_url = format!("{}/files/", files.uri());
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "nsfw_import_admin").await?;
+    let mut db = db.clone();
+    toasty::sql::statement("INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin')")
+        .bind(admin.as_str())
+        .exec(&mut db)
+        .await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &admin,
+        Some(json!({"id":channel,"channel_name":channel,"is_nsfw":true})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let zip = build_zip(&[
+        ("team.json".into(), json!({"id":team,"name":"NSFW import"})),
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice","profile":{"real_name":"Alice"}}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C1","name":"photos","members":["U1"]}]),
+        ),
+        (
+            "photos/2024-01-01.json".into(),
+            json!([{"ts":"1704070000.000100","user":"U1","text":"photo","files":[{"id":"F1","name":"photo.png","mimetype":"image/png","size":4,"url_private_download":format!("{}/files/F1/photo.png",files.uri())}]}]),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":channel}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let result = drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    assert_eq!(result["failed_files"], 0);
+    let attachments = sql(&state, "SELECT json_build_object('is_sensitive',is_sensitive)::text FROM attachments WHERE channel_id=$1", &[&channel]).await?;
+    assert_eq!(attachments, vec![json!({"is_sensitive":true})]);
     Ok(())
 }

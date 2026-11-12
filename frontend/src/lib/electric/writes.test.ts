@@ -65,6 +65,9 @@ const channel: ChannelRow = {
   created_at: "2026-01-01 00:00:00.000",
   updated_at: null,
   archive_at: null,
+  imported_from_slack: false,
+  slack_import_kind: null,
+  slack_imported_at: null,
   deleted_at: null,
 };
 
@@ -133,6 +136,50 @@ describe("message writes", () => {
       channel_id: "c1",
       content: "hello",
       attachment_ids: ["a1", "a2"],
+    });
+  });
+
+  it("keeps the sensitive label when sending attachment metadata", async () => {
+    const { client, post } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+    await writes.onInsert(
+      params(collection, [
+        { ...insertMutation(message), metadata: { attachment_ids: ["a1"], sensitive: true } },
+      ]),
+    );
+    expect(post).toHaveBeenCalledWith("/api/messages", {
+      id: "m1",
+      channel_id: "c1",
+      content: "hello",
+      attachment_ids: ["a1"],
+      sensitive: true,
+    });
+  });
+
+  it("sends the selected sensitive attachment IDs without labelling all attachments", async () => {
+    const { client, post } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+    await writes.onInsert(
+      params(collection, [
+        insertMutation(message, { attachment_ids: ["a1", "a2"], sensitive_attachment_ids: ["a2"] }),
+      ]),
+    );
+    expect(post).toHaveBeenCalledWith("/api/messages", {
+      id: "m1",
+      channel_id: "c1",
+      content: "hello",
+      attachment_ids: ["a1", "a2"],
+      sensitive_attachment_ids: ["a2"],
     });
   });
 

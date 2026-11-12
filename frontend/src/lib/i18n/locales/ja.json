@@ -20,6 +20,9 @@
     "searchClear": "検索をクリア",
     "searchEmpty": "一致するチャンネルがありません。",
     "browseEmpty": "参加できる公開チャンネルはありません。",
+    "slackImported": "Slack から取り込み",
+    "slackImportedCreated": "Slack から取り込み・新規作成（最後の取り込み {{date}}）",
+    "slackImportedExisting": "Slack から取り込み・既存（最後の取り込み {{date}}）",
     "noJoined": "参加中のチャンネルはありません。",
     "join": "参加する",
     "joining": "参加中…",
@@ -38,7 +41,8 @@
     "descriptionTooLong": "説明は{{max}}文字以内で入力してください（現在{{length}}文字）。",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "作成中…",
-    "create": "チャンネル作成"
+    "create": "チャンネル作成",
+    "nsfw": "NSFWチャンネル"
   },
   "sync": {
     "title": "同期の状態",
@@ -218,7 +222,12 @@
     "download": "{{name}}をダウンロード",
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
-    "retry": "再試行"
+    "retry": "再試行",
+    "sensitive": "センシティブな画像",
+    "markSensitive": "画像をセンシティブとして投稿",
+    "showSensitive": "画像を表示",
+    "hideSensitive": "画像を隠す",
+    "sensitiveShort": "センシティブ"
   },
   "threads": {
     "title": "スレッド",
@@ -233,7 +242,9 @@
     "loadError": "返信の取得に失敗しました。",
     "empty": "返信はまだありません。最初の返信を送ってみましょう。",
     "compose": "返信を送信",
-    "rootDeleted": "元のメッセージは削除されました"
+    "rootDeleted": "元のメッセージは削除されました",
+    "targetTooOld": "このメッセージは古すぎて、ここまで読み込めませんでした",
+    "unreadTooOld": "これより古い未読は読み込まれていません"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
@@ -778,6 +789,11 @@
     "actionCreate": "新しいチャンネル",
     "actionExisting": "既存のチャンネル",
     "actionSkip": "取り込まない",
+    "bulkCreate": "すべて新しいチャンネル",
+    "bulkSkip": "すべて取り込まない",
+    "bulkArchive": "新しいチャンネルは、取り込み後にすべてアーカイブする",
+    "archive": "取り込み後にアーカイブ",
+    "archiveFor": "#{{name}} を取り込み後にアーカイブする",
     "channelName": "#{{name}} の新しいチャンネル名",
     "targetChannel": "#{{name}} の取り込み先",
     "start_one": "{{count}} チャンネルを取り込む",
@@ -787,6 +803,8 @@
     "dismiss": "履歴に移す",
     "runTitle": "{{name}} からの取り込み",
     "importedTo": "取り込み先: #{{name}}",
+    "importedToCreated": "取り込み先: #{{name}}（新規作成・最後の取り込み {{date}}）",
+    "importedToExisting": "取り込み先: #{{name}}（既存・最後の取り込み {{date}}）",
     "importedToHidden": "以前、参加していないチャンネルに取り込みました。取り込めるのはそのチャンネルだけです。"
   },
   "slackLink": {

@@ -37,12 +37,27 @@ pub fn service_url() -> Result<Option<reqwest::Url>, AppError> {
     Ok(Some(url))
 }
 pub fn writable() -> Result<(), AppError> {
-    if service_url()?.is_some() {
+    write_policy(
+        service_url()?.is_some(),
+        std::env::var("EMOJI_WRITES_PAUSED").ok().as_deref(),
+    )
+}
+fn write_policy(shared: bool, pause: Option<&str>) -> Result<(), AppError> {
+    if shared {
         return Err(AppError::Forbidden(
             "Manage emojis in the shared emoji service".into(),
         ));
     }
-    Ok(())
+    match pause {
+        None | Some("" | "false") => Ok(()),
+        Some("true") => Err(AppError::ServiceUnavailable(
+            "Emoji changes are paused for migration".into(),
+        )),
+        // A typo must not silently reopen legacy writes during the export.
+        Some(_) => Err(AppError::ServiceUnavailable(
+            "Invalid EMOJI_WRITES_PAUSED configuration".into(),
+        )),
+    }
 }
 fn decode(value: &Value, origin: &reqwest::Url) -> Result<Vec<Value>, AppError> {
     let invalid = || AppError::BadGateway("Invalid shared emoji catalog".into());
@@ -299,6 +314,24 @@ pub async fn worker(state: AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn migration_pause_blocks_legacy_writes_without_selecting_a_new_catalog() {
+        for pause in [None, Some(""), Some("false")] {
+            assert!(write_policy(false, pause).is_ok());
+        }
+        for pause in [Some("true"), Some("TRUE"), Some("typo")] {
+            assert!(matches!(
+                write_policy(false, pause),
+                Err(AppError::ServiceUnavailable(_))
+            ));
+        }
+        // Switching the catalog continues to forbid old management APIs even
+        // if an operator subsequently clears the maintenance flag.
+        assert!(matches!(
+            write_policy(true, Some("false")),
+            Err(AppError::Forbidden(_))
+        ));
+    }
     #[test]
     fn catalog_validates_alias_namespace_and_image_origin() {
         let origin = reqwest::Url::parse("https://emoji.test").unwrap();

@@ -20,6 +20,9 @@
     "searchClear": "검색 지우기",
     "searchEmpty": "일치하는 채널이 없습니다.",
     "browseEmpty": "참여할 수 있는 공개 채널이 없습니다.",
+    "slackImported": "Slack에서 가져옴",
+    "slackImportedCreated": "Slack에서 가져옴·새 채널(마지막 가져옴 {{date}})",
+    "slackImportedExisting": "Slack에서 가져옴·기존 채널(마지막 가져옴 {{date}})",
     "noJoined": "참여 중인 채널이 없습니다.",
     "join": "참여하기",
     "joining": "참여 중…",
@@ -38,7 +41,8 @@
     "descriptionTooLong": "설명은 {{max}}자 이내로 입력해 주세요(현재 {{length}}자).",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "만드는 중…",
-    "create": "채널 만들기"
+    "create": "채널 만들기",
+    "nsfw": "NSFW 채널"
   },
   "sync": {
     "title": "동기화 상태",
@@ -218,7 +222,12 @@
     "download": "{{name}} 다운로드",
     "downloadShort": "다운로드",
     "downloadError": "다운로드하지 못했습니다.",
-    "retry": "다시 시도"
+    "retry": "다시 시도",
+    "sensitive": "민감한 이미지",
+    "markSensitive": "이미지를 민감한 콘텐츠로 표시",
+    "showSensitive": "이미지 표시",
+    "hideSensitive": "이미지 숨기기",
+    "sensitiveShort": "민감한 이미지"
   },
   "threads": {
     "title": "스레드",
@@ -233,7 +242,9 @@
     "loadError": "답글을 불러오지 못했습니다.",
     "empty": "아직 답글이 없습니다. 첫 번째 답글을 보내 보세요.",
     "compose": "답글 보내기",
-    "rootDeleted": "원본 메시지가 삭제되었습니다"
+    "rootDeleted": "원본 메시지가 삭제되었습니다",
+    "targetTooOld": "이 메시지는 너무 오래되어 여기서 불러올 수 없습니다",
+    "unreadTooOld": "이보다 오래된 읽지 않은 메시지는 불러오지 않았습니다"
   },
   "reactions": {
     "showUsers": "{{emoji}} 반응을 남긴 사용자 보기",
@@ -778,6 +789,11 @@
     "actionCreate": "새 채널",
     "actionExisting": "기존 채널",
     "actionSkip": "가져오지 않음",
+    "bulkCreate": "모두 새 채널로",
+    "bulkSkip": "모두 가져오지 않음",
+    "bulkArchive": "새 채널은 가져온 뒤 모두 보관",
+    "archive": "가져온 뒤 보관",
+    "archiveFor": "#{{name}}을(를) 가져온 뒤 보관",
     "channelName": "#{{name}}의 새 채널 이름",
     "targetChannel": "#{{name}}의 가져오기 대상",
     "start_one": "채널 {{count}}개 가져오기",
@@ -787,6 +803,8 @@
     "dismiss": "내역으로 옮기기",
     "runTitle": "{{name}}에서 가져오기",
     "importedTo": "가져오기 대상: #{{name}}",
+    "importedToCreated": "가져온 위치: #{{name}} (새 채널·마지막 가져옴 {{date}})",
+    "importedToExisting": "가져온 위치: #{{name}} (기존 채널·마지막 가져옴 {{date}})",
     "importedToHidden": "이전에 참여하지 않은 채널로 가져왔습니다. 해당 채널로만 가져올 수 있습니다."
   },
   "slackLink": {

@@ -2174,7 +2174,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "directories",
- "emojis",
  "futures-util",
  "jiff",
  "reqwest",
@@ -2185,11 +2184,23 @@ dependencies = [
  "toml",
  "url",
  "uuid",
+ "zoo2-client-types",
+]
+
+[[package]]
+name = "zoo2-client-types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "emojis",
+ "jiff",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "zoo2-tui"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "crossterm",

@@ -59,6 +59,9 @@ pub enum MappingAction {
         name: String,
         #[serde(default)]
         is_private: Option<bool>,
+        /// 取り込みが終わった時点で、作ったチャンネルをアーカイブする (新しく作るチャンネルだけ)
+        #[serde(default)]
+        archive: bool,
     },
     Existing {
         channel_id: String,
@@ -221,7 +224,8 @@ pub(crate) async fn annotate_channels(
     let rows = query(
         tx,
         "SELECT (e.c || jsonb_build_object(\
-         'existing_channel',(SELECT jsonb_build_object('id',c.id,'name',c.channel_name,'is_private',c.is_private) \
+         'existing_channel',(SELECT jsonb_build_object('id',c.id,'name',c.channel_name,'is_private',c.is_private,\
+          'import_kind',c.slack_import_kind,'imported_at',c.slack_imported_at) \
           FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
           WHERE s.team_id=$1 AND s.slack_channel_id=e.c->>'slack_channel_id' AND c.deleted_at IS NULL),\
          'deleted_channel',(SELECT c.channel_name FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
@@ -500,7 +504,9 @@ pub(crate) async fn validate_mappings(
         }
         ensure_same_target(tx, &team, mapping).await?;
         match &mapping.action {
-            MappingAction::Create { name, is_private } => {
+            MappingAction::Create {
+                name, is_private, ..
+            } => {
                 // 非公開チャンネルの履歴を、メンバー以外も読める公開チャンネルに出さない
                 if slack_private && *is_private == Some(false) {
                     return Err(AppError::BadRequest(format!(

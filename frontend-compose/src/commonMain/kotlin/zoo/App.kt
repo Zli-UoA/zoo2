@@ -176,6 +176,22 @@ internal fun AppDialogs(
                     512.dp,
                     description = channel.text("channel_name"),
                 ) {
+                    if (channel.flag("imported_from_slack")) {
+                        // 取り込みの種類 (最初の取り込み) と最後に取り込んだ日付がわかるときは、それも出す
+                        val importKind = channel.text("slack_import_kind")
+                        val importedAt = channel.text("slack_imported_at")
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            ChannelBadge(
+                                if (importKind.isNotEmpty() && importedAt.isNotEmpty())
+                                    app.t(
+                                        if (importKind == "created") "channels.slackImportedCreated"
+                                        else "channels.slackImportedExisting",
+                                        "date" to app.platform.day(importedAt),
+                                    )
+                                else app.t("channels.slackImported")
+                            )
+                        }
+                    }
                     Column(
                         Modifier.fillMaxWidth()
                             .border(

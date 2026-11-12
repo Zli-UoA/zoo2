@@ -87,11 +87,15 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     description: "varchar",
     created_user_id: "text",
     is_private: "bool",
+    is_nsfw: "bool",
     is_dm: "bool",
     created_at: "timestamp",
     updated_at: "timestamp",
     archive_at: "timestamp",
     deleted_at: "timestamp",
+    imported_from_slack: "bool",
+    slack_import_kind: "text",
+    slack_imported_at: "timestamp",
   },
 };
 
@@ -164,6 +168,7 @@ export const ATTACHMENT_SCHEMA: ShapeSchema<AttachmentRow> = {
     file_size: "int8",
     content_type: "text",
     storage_key: "text",
+    is_sensitive: "bool",
     width: "int4",
     height: "int4",
     blurhash: "text",

@@ -60,7 +60,6 @@ it("jumps to a notification target once and preserves position when more message
           canReact: false,
           onReaction: noop,
           onPickReaction: noop,
-          replyCounts: new Map(),
           onOpenThread: noop,
         }),
       }),

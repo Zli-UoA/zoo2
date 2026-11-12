@@ -20,6 +20,9 @@
     "searchClear": "검색 지우기",
     "searchEmpty": "일치하는 통로가 없습니다.",
     "browseEmpty": "참가할수 있는 공개 통로가 없습니다.",
+    "slackImported": "Slack에서 가져옴",
+    "slackImportedCreated": "Slack에서 가져옴·새 채널(마지막 가져옴 {{date}})",
+    "slackImportedExisting": "Slack에서 가져옴·기존 채널(마지막 가져옴 {{date}})",
     "noJoined": "참가하고 있는 통로가 없습니다.",
     "join": "참가",
     "joining": "참가하는 중…",
@@ -38,7 +41,8 @@
     "descriptionTooLong": "설명은 {{max}}자 이내로 입력하십시오(현재 {{length}}자).",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "만드는 중…",
-    "create": "통로 만들기"
+    "create": "통로 만들기",
+    "nsfw": "NSFW 통로"
   },
   "sync": {
     "title": "동기화 상태",
@@ -218,7 +222,12 @@
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
     "downloadError": "내려받지 못했습니다.",
-    "retry": "다시 시도"
+    "retry": "다시 시도",
+    "sensitive": "민감한 화상",
+    "markSensitive": "화상을 민감한 내용으로 표시",
+    "showSensitive": "화상 표시",
+    "hideSensitive": "화상 숨기기",
+    "sensitiveShort": "민감한 화상"
   },
   "threads": {
     "title": "타래",
@@ -233,7 +242,9 @@
     "loadError": "회답을 얻지 못했습니다.",
     "empty": "회답이 아직 없습니다. 첫 회답을 보내 보십시오.",
     "compose": "회답 보내기",
-    "rootDeleted": "원래 통보문은 삭제되였습니다"
+    "rootDeleted": "원래 통보문은 삭제되였습니다",
+    "targetTooOld": "이 통보문은 너무 오래되여 여기서 불러올수 없습니다",
+    "unreadTooOld": "이보다 오래된 읽지 않은 통보문은 불러오지 않았습니다"
   },
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",
@@ -778,6 +789,11 @@
     "actionCreate": "새 통로",
     "actionExisting": "기존 통로",
     "actionSkip": "들여오지 않음",
+    "bulkCreate": "모두 새 채널로",
+    "bulkSkip": "모두 가져오지 않음",
+    "bulkArchive": "새 채널은 가져온 뒤 모두 보관",
+    "archive": "가져온 뒤 보관",
+    "archiveFor": "#{{name}}을(를) 가져온 뒤 보관",
     "channelName": "#{{name}}의 새 통로 이름",
     "targetChannel": "#{{name}}을(를) 들여올 통로",
     "start_one": "통로 {{count}}개 들여오기",
@@ -787,6 +803,8 @@
     "dismiss": "리력으로 옮기기",
     "runTitle": "{{name}}에서 들여오기",
     "importedTo": "들여온 통로: #{{name}}",
+    "importedToCreated": "가져온 위치: #{{name}} (새 채널·마지막 가져옴 {{date}})",
+    "importedToExisting": "가져온 위치: #{{name}} (기존 채널·마지막 가져옴 {{date}})",
     "importedToHidden": "이전에 참가하지 않은 통로에 들여왔습니다. 그 통로에만 들여올수 있습니다."
   },
   "slackLink": {

@@ -487,7 +487,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         .unwrap();
         let mut channel: Channel = serde_json::from_value(json!({
             "id":"channel", "channel_name":"general", "description":null, "created_user_id":"actor",
-            "is_private":false, "is_dm":false, "created_at":now, "updated_at":null, "archive_at":null, "deleted_at":null
+            "is_private":false, "is_nsfw":false, "is_dm":false, "created_at":now, "updated_at":null, "archive_at":null, "deleted_at":null
         })).unwrap();
         let message: Message = serde_json::from_value(json!({
             "id":"message", "user_id":"actor", "channel_id":"channel", "content":"こんにちは🦊".repeat(100),

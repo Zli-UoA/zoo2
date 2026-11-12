@@ -28,6 +28,7 @@ pub struct CreateChannelRequest {
     pub channel_name: String,
     pub description: Option<String>,
     pub is_private: Option<bool>,
+    pub is_nsfw: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,6 +36,7 @@ pub struct UpdateChannelRequest {
     pub channel_name: Option<String>,
     pub description: Option<String>,
     pub is_private: Option<bool>,
+    pub is_nsfw: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +51,7 @@ pub struct ChannelResponse {
     pub description: Option<String>,
     pub created_user_id: String,
     pub is_private: bool,
+    pub is_nsfw: bool,
     pub is_dm: bool,
     pub created_at: String,
     pub updated_at: Option<String>,
@@ -64,6 +67,7 @@ impl From<Channel> for ChannelResponse {
             description: c.description,
             created_user_id: c.created_user_id,
             is_private: c.is_private,
+            is_nsfw: c.is_nsfw,
             is_dm: c.is_dm,
             created_at: c.created_at.to_string(),
             updated_at: c.updated_at.map(|t| t.to_string()),
@@ -124,6 +128,7 @@ pub(crate) async fn create_channel(
     validate_channel_name(&payload.channel_name)?;
     validate_channel_description(payload.description.as_deref())?;
 
+    let supplied_id = payload.id.clone();
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
@@ -137,14 +142,46 @@ pub(crate) async fn create_channel(
         ));
     }
 
+    // クライアント指定の ID が既に存在する場合、同一属性の再送であれば作成済みチャンネルを返して成功とする (冪等性)
+    // ※ 他人の非公開チャンネル等の UUID 存在漏洩を防ぐため、他人のチャンネル ID と重複した場合は新 UUID を割り当てて作成する
+    let mut id_to_use = id.clone();
+    if supplied_id.is_some() {
+        if let Some(existing) = Channel::filter(Channel::fields().id().eq(id.as_str()))
+            .first()
+            .exec(&mut tx)
+            .await?
+        {
+            if existing.created_user_id == auth_user.id {
+                if existing.channel_name == payload.channel_name
+                    && existing.description == payload.description
+                    && existing.is_private == payload.is_private.unwrap_or(false)
+                    && existing.is_nsfw == payload.is_nsfw.unwrap_or(false)
+                    && existing.deleted_at.is_none()
+                {
+                    let _ = tx.rollback().await;
+                    return Ok(Json(ApiResponse::new(
+                        ChannelResponse::from(existing),
+                        None,
+                    )));
+                }
+                return Err(AppError::Conflict("Channel id already exists".into()));
+            } else {
+                // 他人のチャンネル ID と重複した場合、非公開チャンネルの存在有無で応答ステータスを変えず、
+                // かつ一意制約エラーを起こさないよう新しい UUID を割り当てて作成する
+                id_to_use = Uuid::new_v4().to_string();
+            }
+        }
+    }
+
     let now = crate::models::now_utc_millis();
 
-    let channel = toasty::create!(Channel {
-        id: id.as_str(),
+    let channel_res = toasty::create!(Channel {
+        id: id_to_use.as_str(),
         channel_name: payload.channel_name.as_str(),
-        description: payload.description,
+        description: payload.description.clone(),
         created_user_id: auth_user.id.as_str(),
         is_private: payload.is_private.unwrap_or(false),
+        is_nsfw: payload.is_nsfw.unwrap_or(false),
         is_dm: false,
         created_at: now,
         updated_at: None,
@@ -152,12 +189,42 @@ pub(crate) async fn create_channel(
         deleted_at: None,
     })
     .exec(&mut tx)
-    .await?;
+    .await;
+
+    let channel = match channel_res {
+        Ok(c) => c,
+        Err(err) => {
+            // 同時送信の一意制約違反時、同一 ID かつ同一属性であれば既存チャンネルを返す
+            if supplied_id.is_some() {
+                let _ = tx.rollback().await;
+                if let Some(existing) =
+                    Channel::filter(Channel::fields().id().eq(id_to_use.as_str()))
+                        .first()
+                        .exec(&mut db)
+                        .await?
+                {
+                    if existing.created_user_id == auth_user.id
+                        && existing.channel_name == payload.channel_name
+                        && existing.description == payload.description
+                        && existing.is_private == payload.is_private.unwrap_or(false)
+                        && existing.is_nsfw == payload.is_nsfw.unwrap_or(false)
+                        && existing.deleted_at.is_none()
+                    {
+                        return Ok(Json(ApiResponse::new(
+                            ChannelResponse::from(existing),
+                            None,
+                        )));
+                    }
+                }
+            }
+            return Err(AppError::from_db_error(err));
+        }
+    };
 
     // 作成者をチャンネルメンバーに追加
     toasty::create!(ChannelUser {
         user_id: auth_user.id.as_str(),
-        channel_id: id.as_str(),
+        channel_id: id_to_use.as_str(),
         joined_at: now,
     })
     .exec(&mut tx)
@@ -269,7 +336,39 @@ pub(crate) async fn update_channel(
         update_stmt = update_stmt.is_private(is_private);
     }
 
+    if let Some(is_nsfw) = payload.is_nsfw {
+        update_stmt = update_stmt.is_nsfw(is_nsfw);
+    }
     update_stmt.exec(&mut tx).await?;
+    if payload.is_nsfw == Some(true) {
+        toasty::sql::statement(
+            "UPDATE attachments SET is_sensitive=true WHERE channel_id=$1 AND NOT is_sensitive",
+        )
+        .bind(id.as_str())
+        .exec(&mut tx)
+        .await?;
+        let posts = crate::apps::query(
+            &mut tx,
+            "UPDATE home_posts SET media=(SELECT jsonb_agg(image || '{\"is_sensitive\":true}'::jsonb ORDER BY position) FROM jsonb_array_elements(media) WITH ORDINALITY AS images(image,position)), updated_at=statement_timestamp()
+             WHERE channel_id=$1 AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM jsonb_array_elements(media) image WHERE image->'is_sensitive' IS DISTINCT FROM 'true'::jsonb)
+             RETURNING row_to_json(home_posts)::text",
+            &[id.as_str()],
+        ).await?;
+        for post in posts {
+            if post["apub"] == true {
+                let payload = serde_json::json!({"zoo_post":post,"type":"Update","activity_id":Uuid::new_v4().to_string()});
+                toasty::sql::statement(
+                    "INSERT INTO apub_deliveries(id,user_id,actor_id,payload)
+                     SELECT gen_random_uuid()::text,$1,a.id,$2 FROM apub_actors a
+                     WHERE NOT a.blocked AND (a.id=NULLIF($3,'') OR EXISTS(SELECT 1 FROM apub_follows f WHERE f.actor_id=a.id AND f.user_id=$1 AND f.direction='incoming' AND f.accepted))",
+                )
+                .bind(post["user_id"].as_str().unwrap())
+                .bind(payload.to_string())
+                .bind(post["reply_actor"].as_str().unwrap_or_default())
+                .exec(&mut tx).await?;
+            }
+        }
+    }
 
     let updated_channel = Channel::get_by_id(&mut tx, id.as_str()).await?;
     let txid = get_current_txid(&mut tx).await?;

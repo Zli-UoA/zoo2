@@ -20,6 +20,9 @@
     "searchClear": "Clear search",
     "searchEmpty": "No channels match your search.",
     "browseEmpty": "No public channels are available to join.",
+    "slackImported": "Imported from Slack",
+    "slackImportedCreated": "Imported from Slack · new (last imported {{date}})",
+    "slackImportedExisting": "Imported from Slack · existing (last imported {{date}})",
     "noJoined": "You haven't joined any channels yet.",
     "join": "Join",
     "joining": "Joining…",
@@ -38,7 +41,8 @@
     "descriptionTooLong": "Description must be {{max}} characters or fewer (currently {{length}}).",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "Creating…",
-    "create": "Create channel"
+    "create": "Create channel",
+    "nsfw": "NSFW channel"
   },
   "sync": {
     "title": "Sync status",
@@ -218,7 +222,12 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
-    "retry": "Try again"
+    "retry": "Try again",
+    "sensitive": "Sensitive image",
+    "markSensitive": "Mark images as sensitive",
+    "showSensitive": "Show image",
+    "hideSensitive": "Hide image",
+    "sensitiveShort": "Sensitive"
   },
   "threads": {
     "title": "Thread",
@@ -233,7 +242,9 @@
     "loadError": "Failed to load replies.",
     "empty": "No replies yet. Send the first reply.",
     "compose": "Write a reply",
-    "rootDeleted": "The original message was deleted"
+    "rootDeleted": "The original message was deleted",
+    "targetTooOld": "This message is too old to load here",
+    "unreadTooOld": "Older unread messages are not loaded"
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",
@@ -778,6 +789,11 @@
     "actionCreate": "New channel",
     "actionExisting": "Existing channel",
     "actionSkip": "Don't import",
+    "bulkCreate": "New channel for all",
+    "bulkSkip": "Skip all",
+    "bulkArchive": "Archive all new channels after importing",
+    "archive": "Archive after import",
+    "archiveFor": "Archive #{{name}} after import",
     "channelName": "New channel name for #{{name}}",
     "targetChannel": "Destination for #{{name}}",
     "start_one": "Import {{count}} channel",
@@ -787,6 +803,8 @@
     "dismiss": "Move to history",
     "runTitle": "Import from {{name}}",
     "importedTo": "Imported into #{{name}}",
+    "importedToCreated": "Imported into #{{name}} (new channel · last imported {{date}})",
+    "importedToExisting": "Imported into #{{name}} (existing channel · last imported {{date}})",
     "importedToHidden": "This was imported into a channel you haven't joined. It can only be imported there."
   },
   "slackLink": {

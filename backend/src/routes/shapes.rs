@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/shapes/channel_users", get(channel_users_shape))
         .route("/api/shapes/notifications", get(notifications_shape))
         .route("/api/shapes/attachments", get(attachments_shape))
+        .route("/api/shapes/e2ee_devices", get(e2ee_devices_shape))
 }
 
 /// クライアントから送信されたクエリパラメータのうち、Electric プロトコルで許可されたものを転送
@@ -124,6 +125,24 @@ pub(crate) fn channel_users_shape_where<'a>(
         )
     }
 }
+
+/// E2EE の端末の Shape の where 句とパラメータ（docs/e2ee.md の「Electric の Shape」）。
+///
+/// 自分の端末と、自分と暗号化チャンネル（削除されていないもの）を共有しているユーザーの端末。削除済みの端末は除く。
+pub(crate) fn e2ee_devices_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
+    (
+        format!(
+            "deleted_at IS NULL AND (user_id = $1 OR user_id IN ({}))",
+            crate::routes::e2ee::SHARED_USERS_SQL
+        ),
+        vec![("params[1]", user_id)],
+    )
+}
+
+/// 他のユーザーにも配る端末の列。`display_name`（環境が分かる）と `last_seen_at`（活動の時刻が分かる）は
+/// 配らず、本人には `GET /api/e2ee/devices` で返す。
+pub(crate) const E2EE_DEVICES_SHAPE_COLUMNS: &str =
+    "user_id,device_id,curve25519_key,ed25519_key,device_keys,deleted_at";
 
 /// Electric へのストリーミング Shape プロキシ実行
 async fn proxy_shape(
@@ -516,6 +535,26 @@ async fn notifications_shape(
     .await
 }
 
+/// E2EE の端末の Shape（ユーザー別の認可・配信）
+async fn e2ee_devices_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (where_clause, mut extra_params) = e2ee_devices_shape_where(auth_user.id.as_str());
+    extra_params.push(("columns", E2EE_DEVICES_SHAPE_COLUMNS));
+    proxy_shape(
+        &state,
+        "e2ee_devices",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
 /// App tokens only enumerate channels their acting identity has joined.
 pub(crate) async fn app_channels_shape(
     state: AppState,
@@ -638,6 +677,18 @@ mod tests {
         assert!(!keys.contains(&"table".to_string()));
         assert!(!keys.contains(&"where".to_string()));
         assert!(!keys.contains(&"token".to_string()));
+    }
+
+    #[test]
+    fn test_e2ee_devices_shape_where() {
+        let (clause, params) = e2ee_devices_shape_where("user-123");
+        assert!(clause.starts_with("deleted_at IS NULL AND (user_id = $1 OR user_id IN ("));
+        assert!(clause.contains("WHERE encrypted AND deleted_at IS NULL"));
+        // Electric は別名付きの列を受け付けない。
+        assert!(!clause.contains("cu.") && !clause.contains("c.id"));
+        assert_eq!(params, vec![("params[1]", "user-123")]);
+        assert!(!E2EE_DEVICES_SHAPE_COLUMNS.contains("display_name"));
+        assert!(!E2EE_DEVICES_SHAPE_COLUMNS.contains("last_seen_at"));
     }
 
     #[test]

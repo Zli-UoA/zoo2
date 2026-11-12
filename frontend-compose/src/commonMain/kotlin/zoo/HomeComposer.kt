@@ -291,6 +291,7 @@ fun HomeComposer(
                             val payload = buildJsonObject {
                                 put("content", state.content)
                                 if (images.items.isNotEmpty()) put("image_ids", JsonArray(images.items.map { JsonPrimitive(it.uploaded!!.text("id")) }))
+                                if (images.items.any { it.sensitive }) put("sensitive_image_ids", JsonArray(images.items.filter { it.sensitive }.map { JsonPrimitive(it.uploaded!!.text("id")) }))
                                 put("apub", federated)
                                 put("visibility", state.visibility)
                                 put(

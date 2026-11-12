@@ -20,6 +20,9 @@
     "searchClear": "清除搜索",
     "searchEmpty": "没有匹配的频道。",
     "browseEmpty": "没有可加入的公开频道。",
+    "slackImported": "来自 Slack 的导入",
+    "slackImportedCreated": "来自 Slack 的导入·新建（最后导入 {{date}}）",
+    "slackImportedExisting": "来自 Slack 的导入·现有（最后导入 {{date}}）",
     "noJoined": "还没有加入任何频道。",
     "join": "加入",
     "joining": "加入中…",
@@ -38,7 +41,8 @@
     "descriptionTooLong": "描述不能超过{{max}}个字符（当前{{length}}个）。",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "创建中…",
-    "create": "创建频道"
+    "create": "创建频道",
+    "nsfw": "NSFW 频道"
   },
   "sync": {
     "title": "同步状态",
@@ -218,7 +222,12 @@
     "download": "下载{{name}}",
     "downloadShort": "下载",
     "downloadError": "无法下载文件。",
-    "retry": "重试"
+    "retry": "重试",
+    "sensitive": "敏感图片",
+    "markSensitive": "将图片标记为敏感内容",
+    "showSensitive": "显示图片",
+    "hideSensitive": "隐藏图片",
+    "sensitiveShort": "敏感图片"
   },
   "threads": {
     "title": "子线程",
@@ -233,7 +242,9 @@
     "loadError": "无法加载回复。",
     "empty": "暂无回复。发送第一条回复吧。",
     "compose": "输入回复",
-    "rootDeleted": "原消息已被删除"
+    "rootDeleted": "原消息已被删除",
+    "targetTooOld": "这条消息太久远，无法在此加载",
+    "unreadTooOld": "更早的未读消息未加载"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回应的用户",
@@ -778,6 +789,11 @@
     "actionCreate": "新频道",
     "actionExisting": "现有频道",
     "actionSkip": "不导入",
+    "bulkCreate": "全部新建频道",
+    "bulkSkip": "全部不导入",
+    "bulkArchive": "导入后将所有新建频道归档",
+    "archive": "导入后归档",
+    "archiveFor": "导入后归档 #{{name}}",
     "channelName": "#{{name}} 的新频道名称",
     "targetChannel": "#{{name}} 的导入位置",
     "start_one": "导入 {{count}} 个频道",
@@ -787,6 +803,8 @@
     "dismiss": "移到历史记录",
     "runTitle": "从 {{name}} 导入",
     "importedTo": "已导入到 #{{name}}",
+    "importedToCreated": "导入到 #{{name}}（新建频道·最后导入 {{date}}）",
+    "importedToExisting": "导入到 #{{name}}（现有频道·最后导入 {{date}}）",
     "importedToHidden": "之前已导入到你未加入的频道，只能导入到该频道。"
   },
   "slackLink": {

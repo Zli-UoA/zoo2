@@ -20,6 +20,9 @@
     "searchClear": "清除搜尋",
     "searchEmpty": "沒有符合的頻道。",
     "browseEmpty": "沒有可加入的公開頻道。",
+    "slackImported": "來自 Slack 的匯入",
+    "slackImportedCreated": "來自 Slack 的匯入·新建（最後匯入 {{date}}）",
+    "slackImportedExisting": "來自 Slack 的匯入·既有（最後匯入 {{date}}）",
     "noJoined": "尚未加入任何頻道。",
     "join": "加入",
     "joining": "加入中…",
@@ -38,7 +41,8 @@
     "descriptionTooLong": "說明不能超過{{max}}個字元（目前{{length}}個）。",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "建立中…",
-    "create": "建立頻道"
+    "create": "建立頻道",
+    "nsfw": "NSFW 頻道"
   },
   "sync": {
     "title": "同步狀態",
@@ -218,7 +222,12 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
-    "retry": "重試"
+    "retry": "重試",
+    "sensitive": "敏感圖片",
+    "markSensitive": "將圖片標記為敏感內容",
+    "showSensitive": "顯示圖片",
+    "hideSensitive": "隱藏圖片",
+    "sensitiveShort": "敏感圖片"
   },
   "threads": {
     "title": "子討論",
@@ -233,7 +242,9 @@
     "loadError": "無法載入回覆。",
     "empty": "尚無回覆。傳送第一則回覆吧。",
     "compose": "輸入回覆",
-    "rootDeleted": "原訊息已被刪除"
+    "rootDeleted": "原訊息已被刪除",
+    "targetTooOld": "這則訊息太久遠，無法在此載入",
+    "unreadTooOld": "更早的未讀訊息未載入"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",
@@ -778,6 +789,11 @@
     "actionCreate": "新頻道",
     "actionExisting": "既有頻道",
     "actionSkip": "不匯入",
+    "bulkCreate": "全部建立新頻道",
+    "bulkSkip": "全部不匯入",
+    "bulkArchive": "匯入後將所有新建頻道封存",
+    "archive": "匯入後封存",
+    "archiveFor": "匯入後封存 #{{name}}",
     "channelName": "#{{name}} 的新頻道名稱",
     "targetChannel": "#{{name}} 的匯入位置",
     "start_one": "匯入 {{count}} 個頻道",
@@ -787,6 +803,8 @@
     "dismiss": "移到歷史紀錄",
     "runTitle": "從 {{name}} 匯入",
     "importedTo": "已匯入到 #{{name}}",
+    "importedToCreated": "匯入到 #{{name}}（新建頻道·最後匯入 {{date}}）",
+    "importedToExisting": "匯入到 #{{name}}（既有頻道·最後匯入 {{date}}）",
     "importedToHidden": "先前已匯入到你未加入的頻道，只能匯入到該頻道。"
   },
   "slackLink": {

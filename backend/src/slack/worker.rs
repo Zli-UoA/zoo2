@@ -818,7 +818,9 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             }
             let (target, private) = match &mapping.action {
                 MappingAction::Skip => continue,
-                MappingAction::Create { name, is_private } => {
+                MappingAction::Create {
+                    name, is_private, ..
+                } => {
                     // 非公開チャンネルは常に非公開で作る (start で拒否済みだが、古いジョブにも備える)。
                     // 以前作ったチャンネルを使うときは、その実際の公開・非公開を返す
                     let private = channel.is_private || is_private.unwrap_or(false);
@@ -862,7 +864,20 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                     .insert(channel.id.clone(), target.1.clone());
             }
             let create = matches!(mapping.action, MappingAction::Create { .. });
-            targets.push((channel.clone(), target.0, create));
+            // 取り込み先 (新しく作ったチャンネルも、既存のチャンネルも) に、Slack から取り込んだ印と、取り込みの種類を付ける。
+            // 種類は最初の取り込みのものを残す (以前の取り込みで作ったチャンネルへの再取り込みは created のまま)。
+            // 最後に取り込んだ日時は、このチャンネルの取り込みが終わったときに更新する (下)
+            exec(
+                &mut tx,
+                "UPDATE channels SET imported_from_slack=true,slack_import_kind=COALESCE(slack_import_kind,$2) WHERE id=$1",
+                &[&target.0, if create { "created" } else { "existing" }],
+            )
+            .await?;
+            // 取り込みが終わったあとにアーカイブするか (Slack でアーカイブ済みのチャンネルか、管理者の指定)
+            let archive = create
+                && (channel.is_archived
+                    || matches!(mapping.action, MappingAction::Create { archive: true, .. }));
+            targets.push((channel.clone(), target.0, archive));
         }
         tx.commit().await?;
     }
@@ -903,11 +918,51 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             archive = returned;
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
+            // 編集・削除の履歴を含むエクスポートの記録 (`message_changed` / `message_deleted`) は、投稿として取り込まない。
+            // 以前の取り込みで、これらを投稿として入れてしまった分 (編集した日時の重複した投稿、編集してから削除した
+            // 投稿の本文) と、削除された元の投稿 (記録はエクスポートに残らない) は、ここで論理削除する。
+            // 保存済みの ZIP から再取り込みするだけで片づく (存在しなければ何もしない)
+            //
+            // - 削除された元の投稿の普通の記録 (`ts` が `original.ts` / `original_ts` と同じ) が同じファイルにあれば、
+            //   先に INSERT してから、最後に論理削除する。初回の取り込みと再取り込みで結果が同じになり、その投稿への
+            //   返信は、削除された親のスレッドに残る (取り込まないと、返信の親が見つからず、チャンネル直下に出てしまう)。
+            // - イベントの `ts` と同じ `ts` の本物の投稿が同じファイルにあれば、その投稿は消さない (ID が同じになるため)。
+            let deleted_originals: std::collections::HashSet<&str> = messages
+                .iter()
+                .filter_map(|m| m.deleted_original_ts())
+                .collect();
+            let real_ts: std::collections::HashSet<&str> = messages
+                .iter()
+                .filter(|m| m.is_importable())
+                .map(|m| m.ts.as_str())
+                .collect();
             let mut last_ts = None;
             for message in messages.iter().filter(|m| m.is_importable()) {
                 insert_message(&mut tx, &mut ctx, &channel.id, channel_id, job, message).await?;
                 last_ts = Some(message.ts.as_str());
                 processed += 1;
+            }
+            let mut stale: Vec<String> = Vec::new();
+            for event in messages.iter().filter(|m| m.is_history_event()) {
+                // `ts` が元の投稿の `ts` と同じ形式の記録は、本物の投稿の ID と同じになるので消さない
+                if crate::slack::is_valid_ts(&event.ts)
+                    && !real_ts.contains(event.ts.as_str())
+                    && event.original_message_ts() != Some(event.ts.as_str())
+                {
+                    stale.push(super::message_id(&team, &channel.id, &event.ts));
+                }
+            }
+            for original in &deleted_originals {
+                stale.push(super::message_id(&team, &channel.id, original));
+            }
+            if !stale.is_empty() {
+                exec(
+                    &mut tx,
+                    "UPDATE messages SET deleted_at=CURRENT_TIMESTAMP \
+                     WHERE channel_id=$2 AND deleted_at IS NULL AND id IN (SELECT jsonb_array_elements_text($1::jsonb))",
+                    &[&serde_json::json!(stale).to_string(), channel_id],
+                )
+                .await?;
             }
             if let Some(ts) = last_ts {
                 exec(
@@ -943,6 +998,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             &[channel_id, &team, &channel.id],
         )
         .await?;
+        // このチャンネルの取り込みが終わった日時 (UTC。`timestamp` の列はほかの列と同じく UTC で持つ)
+        exec(
+            &mut tx,
+            "UPDATE channels SET slack_imported_at=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC') WHERE id=$1",
+            &[channel_id],
+        )
+        .await?;
         tx.commit().await?;
     }
 
@@ -966,10 +1028,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     } else {
         "completed"
     };
-    // Slack でアーカイブ済みのチャンネルは、作った取り込み先も最後にまとめてアーカイブする。
-    // 途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
-    for (channel, channel_id, created) in &targets {
-        if *created && channel.is_archived {
+    // Slack でアーカイブ済みのチャンネルと、管理者がアーカイブを指定したチャンネルは、作った取り込み先も最後に
+    // まとめてアーカイブする。途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
+    for (_channel, channel_id, archive) in &targets {
+        if *archive {
             exec(
                 &mut tx,
                 "UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1 AND archive_at IS NULL",
@@ -1619,8 +1681,8 @@ async fn fetch_one(
     let mut tx = db.transaction().await?;
     exec(
         &mut tx,
-        "INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at) \
-         SELECT $1,m.id,$3,$4,$5,$6::bigint,$7,$8,m.created_at FROM messages m WHERE m.id=$2 \
+        "INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at,is_sensitive) \
+         SELECT $1,m.id,$3,$4,$5,$6::bigint,$7,$8,m.created_at,(SELECT is_nsfw FROM channels WHERE id=$4) FROM messages m WHERE m.id=$2 \
          ON CONFLICT (id) DO NOTHING",
         &[
             &attachment,

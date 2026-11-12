@@ -195,8 +195,9 @@ export function CustomEmojiPicker({ onSelect }: { onSelect: (value: string) => v
     ),
   );
   return (
-    <div className="flex min-h-0 flex-col gap-3">
+    <div className="flex h-full min-h-0 flex-col gap-3">
       <Input
+        className="shrink-0"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         aria-label={t("home.searchEmoji")}
@@ -209,7 +210,12 @@ export function CustomEmojiPicker({ onSelect }: { onSelect: (value: string) => v
         </p>
       ) : null}
       {!loading && !failed && !filtered.length ? <p>{t("home.noEmojis")}</p> : null}
-      <div className="space-y-3 overflow-y-auto">
+      <div
+        role="region"
+        aria-label={t("home.customEmojis")}
+        tabIndex={0}
+        className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain"
+      >
         {[...new Set(filtered.map((e) => e.category ?? ""))].map((category) => (
           <section key={category}>
             <h3 className="text-sm text-muted-foreground">

@@ -57,6 +57,9 @@ const channel = (id, name, extra = {}) => ({
   updated_at: null,
   archive_at: null,
   deleted_at: null,
+  imported_from_slack: false,
+  slack_import_kind: null,
+  slack_imported_at: null,
   ...extra,
 });
 const message = (id, content, extra = {}) => ({
@@ -140,6 +143,90 @@ const resourceRows = (name, channelId) => {
     );
   return rows;
 };
+
+// A tiny evaluator for the subset predicates TanStack DB sends: terms joined by AND / OR, with
+// parentheses and NOT, each term one of `"col" IS NULL`, `"col" IS NOT NULL`, `"col" <op> $n`, or
+// `true = true`.
+const splitTop = (expr, word) => {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  const re = new RegExp(`^\\s${word}\\s`, "i");
+  for (let i = 0; i < expr.length; i++) {
+    const c = expr[i];
+    if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if (depth === 0) {
+      const m = re.exec(expr.slice(i - 1));
+      if (i > 0 && m) {
+        parts.push(expr.slice(start, i));
+        start = i - 1 + m[0].length;
+        i = start - 1;
+      }
+    }
+  }
+  parts.push(expr.slice(start));
+  return parts;
+};
+const unwrap = (expr) => {
+  let e = expr.trim();
+  while (e.startsWith("(") && e.endsWith(")")) {
+    let depth = 0;
+    let wraps = true;
+    for (let i = 0; i < e.length - 1; i++) {
+      if (e[i] === "(") depth++;
+      else if (e[i] === ")") depth--;
+      if (depth === 0) {
+        wraps = false;
+        break;
+      }
+    }
+    if (!wraps) break;
+    e = e.slice(1, -1).trim();
+  }
+  return e;
+};
+function evalPredicate(expr, row, values) {
+  const e = unwrap(expr);
+  const ors = splitTop(e, "OR");
+  if (ors.length > 1) return ors.some((part) => evalPredicate(part, row, values));
+  const ands = splitTop(e, "AND");
+  if (ands.length > 1) return ands.every((part) => evalPredicate(part, row, values));
+  const not = /^NOT\s+(.*)$/is.exec(e);
+  if (not) return !evalPredicate(not[1], row, values);
+  if (/^true\s*=\s*true$/i.test(e)) return true;
+  let m = /^"?(\w+)"?\s+IS\s+NULL$/i.exec(e);
+  if (m) return row[m[1]] === null || row[m[1]] === undefined;
+  m = /^"?(\w+)"?\s+IS\s+NOT\s+NULL$/i.exec(e);
+  if (m) return row[m[1]] !== null && row[m[1]] !== undefined;
+  m = /^"?(\w+)"?\s*(=|<=|>=|<>|<|>)\s*\$(\d+)$/.exec(e);
+  if (m) {
+    const left = row[m[1]];
+    const right = values[m[3]];
+    if (m[2] === "=") return left === right;
+    if (m[2] === "<>") return left !== right;
+    if (m[2] === "<") return left < right;
+    if (m[2] === "<=") return left <= right;
+    if (m[2] === ">") return left > right;
+    return left >= right;
+  }
+  throw new Error(`unsupported subset predicate in the e2e mock: ${e}`);
+}
+function subsetRows(rows, params) {
+  const where = params.get("subset__where") ?? "true = true";
+  const values = JSON.parse(params.get("subset__params") ?? "{}");
+  const test = (row) => evalPredicate(where, row, values);
+  let out = rows.filter(test);
+  const order = /^"?(\w+)"?\s+(ASC|DESC)/i.exec(params.get("subset__order_by") ?? "");
+  if (order) {
+    const sign = order[2].toUpperCase() === "DESC" ? -1 : 1;
+    out = [...out].sort((a, b) =>
+      a[order[1]] < b[order[1]] ? -sign : a[order[1]] > b[order[1]] ? sign : 0,
+    );
+  }
+  const limit = params.get("subset__limit");
+  return limit ? out.slice(0, Number(limit)) : out;
+}
 const key = (r) => r.id ?? `${r.user_id}:${r.channel_id}`;
 const control = () => ({ headers: { control: "up-to-date", global_last_seen_lsn: String(tx) } });
 const packet = (name, row, operation = "insert") => ({
@@ -243,9 +330,33 @@ const server = createSecureServer(tls, async (req, res) => {
       res.on("close", () => streams.delete(stream));
       return;
     }
+    // On-demand (log=changes_only) shapes: a subset snapshot request returns only the requested page.
+    if (
+      url.searchParams.has("subset__where") ||
+      url.searchParams.has("subset__order_by") ||
+      url.searchParams.has("subset__limit")
+    ) {
+      const page = subsetRows(rows, url.searchParams);
+      res.end(
+        JSON.stringify({
+          metadata: {
+            xmin: String(tx),
+            xmax: String(tx),
+            xip_list: [],
+            snapshot_mark: tx,
+            database_lsn: String(tx),
+          },
+          data: page.map((row) => packet(name, row)),
+        }),
+      );
+      return;
+    }
     // Continuation requests must not replay the initial inserts: duplicate
     // inserts put TanStack collections into an error state after the snapshot.
-    const snapshot = url.searchParams.get("offset") === "-1" || !url.searchParams.has("offset");
+    // A changes_only shape never sends its rows in the initial response.
+    const changesOnly = url.searchParams.get("log") === "changes_only";
+    const snapshot =
+      !changesOnly && (url.searchParams.get("offset") === "-1" || !url.searchParams.has("offset"));
     res.end(JSON.stringify([...(snapshot ? rows.map((row) => packet(name, row)) : []), control()]));
     return;
   }

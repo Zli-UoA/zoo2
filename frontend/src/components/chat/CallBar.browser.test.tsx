@@ -89,6 +89,9 @@ const channels: ChannelRow[] = [
     created_at: "2026-01-01 00:00:00.000",
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
     deleted_at: null,
   },
   {
@@ -101,6 +104,9 @@ const channels: ChannelRow[] = [
     created_at: "2026-01-01 00:00:00.000",
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
     deleted_at: null,
   },
 ];

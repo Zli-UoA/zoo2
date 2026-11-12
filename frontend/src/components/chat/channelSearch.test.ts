@@ -23,6 +23,9 @@ function channel(
     updated_at: null,
     archive_at: options.archived ? "2026-01-03 00:00:00.000" : null,
     deleted_at: null,
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
   };
 }
 

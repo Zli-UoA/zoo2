@@ -217,6 +217,37 @@ pub(crate) async fn decorate(
     tx: &mut toasty::Transaction<'_>,
     posts: &mut [Value],
 ) -> Result<(), AppError> {
+    let nsfw = query(
+        tx,
+        "SELECT json_build_object('id',id)::text FROM channels WHERE is_nsfw",
+        &[],
+    )
+    .await?;
+    let nsfw = nsfw
+        .iter()
+        .filter_map(|row| row["id"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    fn protect(post: &mut Value, nsfw: &std::collections::HashSet<&str>) {
+        if post["channel_id"]
+            .as_str()
+            .is_some_and(|id| nsfw.contains(id))
+        {
+            post["sensitive"] = json!(true);
+            for key in ["media", "attachments"] {
+                if let Some(images) = post[key].as_array_mut() {
+                    for image in images {
+                        image["is_sensitive"] = json!(true);
+                    }
+                }
+            }
+        }
+        if !post["parent"].is_null() {
+            protect(&mut post["parent"], nsfw);
+        }
+    }
+    for post in posts.iter_mut() {
+        protect(post, &nsfw);
+    }
     let ids = posts
         .iter()
         .filter(|post| {
@@ -230,7 +261,7 @@ pub(crate) async fn decorate(
     if ids.is_empty() {
         return Ok(());
     }
-    let rows = query(tx, "SELECT json_build_object('id',p.id,'media',(SELECT COALESCE(jsonb_agg(jsonb_build_object('url','/api/home/images/' || a.id,'name',a.file_name,'media_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM (SELECT a.id,a.file_name,a.content_type,a.created_at,a.width,a.height,a.blurhash FROM attachments a WHERE a.message_id=p.id AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp') ORDER BY a.created_at,a.id LIMIT 10) a))::text FROM home_posts p JOIN channels c ON c.id=p.channel_id WHERE p.id IN (SELECT jsonb_array_elements_text($1::jsonb)) AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL", &[&json!(ids).to_string()]).await?;
+    let rows = query(tx, "SELECT json_build_object('id',p.id,'media',(SELECT COALESCE(jsonb_agg(jsonb_build_object('url','/api/home/images/' || a.id,'name',a.file_name,'media_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash,'is_sensitive',a.is_sensitive OR c.is_nsfw) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM (SELECT a.id,a.file_name,a.content_type,a.created_at,a.width,a.height,a.blurhash,a.is_sensitive FROM attachments a WHERE a.message_id=p.id AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp') ORDER BY a.created_at,a.id LIMIT 10) a))::text FROM home_posts p JOIN channels c ON c.id=p.channel_id WHERE p.id IN (SELECT jsonb_array_elements_text($1::jsonb)) AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL", &[&json!(ids).to_string()]).await?;
     let media = rows
         .into_iter()
         .filter_map(|row| Some((row["id"].as_str()?.to_owned(), row["media"].clone())))

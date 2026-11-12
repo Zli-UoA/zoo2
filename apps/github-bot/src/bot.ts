@@ -28,6 +28,7 @@ export class GitHubBot {
   private busy = false;
   private stopping = false;
   private lastMaintenance = 0;
+  private nextAuthCheck = 0;
   constructor(config: Config, store: Store, github: GitHub, zoo: Zoo) {
     this.config = config;
     this.store = store;
@@ -76,6 +77,24 @@ export class GitHubBot {
     if (this.busy || this.stopping) return;
     this.busy = true;
     try {
+      if (this.store.get("zoo-disabled")) {
+        if (Date.now() < this.nextAuthCheck) return;
+        this.nextAuthCheck = Date.now() + 60000;
+        try {
+          const identity = await this.zoo.request<Json>("GET", "/auth");
+          const expected = this.store.get<Json>("zoo-identity")?.app_id;
+          if (expected && expected !== identity.app_id) {
+            console.error("Zoo authentication returned a different App; delivery remains paused");
+            return;
+          }
+          this.store.set("zoo-identity", identity);
+          this.store.remove("zoo-disabled");
+          console.info("Zoo authentication recovered; resuming delivery");
+        } catch {
+          console.error("Zoo authentication still unavailable; retrying in 60 seconds");
+          return;
+        }
+      }
       // Credential revocation pauses delivery, not durable webhook acceptance. Check
       // between jobs too: a tokens.revoked event can disable Zoo during this batch.
       for (let i = 0; i < 10 && !this.stopping && !this.store.get("zoo-disabled"); i++) {
@@ -393,8 +412,12 @@ export class GitHubBot {
     if (["app.uninstalled", "tokens.revoked"].includes(event.type)) {
       try {
         await this.zoo.request("GET", "/auth");
-      } catch {
+      } catch (error) {
+        // A timeout or server failure is retried as a job, not a permanent revocation.
+        if (!(error instanceof ZooError) || ![401, 403].includes(error.status)) throw error;
         this.store.set("zoo-disabled", true);
+        this.nextAuthCheck = Date.now() + 60000;
+        console.error(`Zoo authentication rejected (${error.status}); delivery paused`);
       }
       return;
     }
