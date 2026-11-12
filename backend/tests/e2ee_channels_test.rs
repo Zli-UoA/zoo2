@@ -1280,3 +1280,39 @@ async fn plaintext_resends_return_the_stored_revision() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["revision"], 2);
 }
+
+#[tokio::test]
+async fn guest_additions_lock_the_user_row_before_the_member_lock() {
+    let env = env().await;
+    let alice = env.user().await;
+    let guest = env.user().await;
+    env.exec(
+        "UPDATE users SET guest_kind = 'single' WHERE id = $1",
+        &[&guest],
+    )
+    .await
+    .unwrap();
+    let target = env.encrypted_channel(&alice, &[]).await;
+
+    // 無効化と同じく、users の行を更新してから（一括の増加で）メンバー単位のロックを取ったまま止める。
+    let mut db = env.db.clone();
+    let mut tx = db.transaction().await.unwrap();
+    toasty::sql::statement("UPDATE users SET guest_kind = 'deactivated' WHERE id = $1")
+        .bind(guest.as_str())
+        .exec(&mut tx)
+        .await
+        .unwrap();
+    // 追加は、メンバー単位のロックより前に、トリガーと同じ users の行のロックで待つ（逆の順だとデッドロックする）。
+    let add = {
+        let app = env.app.clone();
+        let (alice, path) = (alice.clone(), format!("/api/channels/{target}/users"));
+        let body = json!({"user_id": guest});
+        tokio::spawn(async move { request(&app, "POST", &path, &alice, body).await })
+    };
+    wait_for_lock(&env, "guest_kind = 'single' FOR UPDATE").await;
+    assert!(!add.is_finished());
+    tx.rollback().await.unwrap();
+
+    let (status, body) = add.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

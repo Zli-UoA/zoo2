@@ -892,6 +892,10 @@ pub(crate) async fn create_message_impl(
         }
         return Err(AppError::from(err));
     }
+    // 端末の last_seen_at は、コミットのあとに別の文で更新する（docs/e2ee.md の「端末」）。
+    if let Some(sender) = &sender {
+        e2ee_channels::touch_sender_device(&mut db, &auth_user.id, sender).await;
+    }
     if let Some(gate_key) = test_gate_notify {
         let gate = get_or_create_test_gate(&gate_key);
         gate.notify_waiters();
@@ -986,6 +990,7 @@ pub(crate) async fn update_message(
     }
 
     // ロックの順：チャンネルの行（FOR SHARE。membership_epoch の増加と直列にする）、メッセージの行（FOR UPDATE）。
+    let mut touched_sender = None;
     let current = e2ee_channels::lock_channel_epoch(&mut tx, &message.channel_id).await?;
     if current.encrypted {
         // ロックより前の所属の確認のあとに退出、キックが確定していたら、ここで拒否する。
@@ -1029,6 +1034,7 @@ pub(crate) async fn update_message(
             return Err(e2ee_channels::stale_revision(current_revision));
         }
         e2ee_channels::check_sender_device(&mut tx, &auth_user.id, &sender).await?;
+        touched_sender = Some(sender);
         toasty::sql::statement(
             "UPDATE messages SET ciphertext = $2::jsonb, epoch = $3::bigint, revision = $4::integer,
                updated_at = $5::timestamp
@@ -1075,6 +1081,10 @@ pub(crate) async fn update_message(
     let response = with_e2ee_fields(&mut tx, MessageResponse::from(updated_message)).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
+    // 端末の last_seen_at は、コミットのあとに別の文で更新する（docs/e2ee.md の「端末」）。
+    if let Some(sender) = &touched_sender {
+        e2ee_channels::touch_sender_device(&mut db, &auth_user.id, sender).await;
+    }
 
     Ok(Json(ApiResponse::new(response, txid)))
 }
@@ -1233,6 +1243,12 @@ async fn list_messages(
         }
     }
 
+    // 本文（モデル）と revision などの追加の列を別の SELECT で読むので、同じスナップショットにそろえる。
+    // そろえないと、間に編集がコミットしたとき、編集前の本文に編集後の revision が付く。
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .exec(&mut tx)
+        .await?;
     let messages = Message::filter(
         Message::fields()
             .channel_id()
@@ -1240,11 +1256,12 @@ async fn list_messages(
             .and(Message::fields().deleted_at().is_none()),
     )
     .order_by(Message::fields().created_at().asc())
-    .exec(&mut db)
+    .exec(&mut tx)
     .await?;
 
     let mut res: Vec<MessageResponse> = messages.into_iter().map(MessageResponse::from).collect();
-    fill_e2ee_fields(&mut db, &mut res).await?;
+    fill_e2ee_fields(&mut tx, &mut res).await?;
+    tx.commit().await?;
     Ok(Json(res))
 }
 
