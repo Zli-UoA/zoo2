@@ -11,7 +11,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tui_textarea::TextArea;
 
 use crate::{
-    api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
+    api::{ApiClient, Me, ReadState, TypingUser},
     electric::{self, Batch, ShapeEvent, ShapeId},
     http::Credentials,
     store::Store,
@@ -44,22 +44,6 @@ pub enum AppEvent {
         content: String,
     },
     ReadStates(Vec<ReadState>),
-    Threads {
-        requested_at: Instant,
-        threads: Vec<ThreadSummary>,
-        archived: bool,
-        append: bool,
-        next_cursor: Option<String>,
-    },
-    ThreadsFailed {
-        requested_at: Instant,
-        archived: bool,
-        append: bool,
-        message: String,
-    },
-    ThreadsChanged {
-        reopened: Option<String>,
-    },
     /// GitHub Releases に新しい版がある。
     UpdateAvailable(String),
     Typing {
@@ -74,13 +58,6 @@ pub enum Focus {
     Sidebar,
     Messages,
     Thread,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SidebarItem {
-    Channel(String),
-    Thread { channel_id: String, id: String },
-    MoreThreads { archived: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,16 +117,6 @@ pub struct App {
     pub focus: Focus,
     pub mode: Mode,
     pub sidebar_index: usize,
-    pub active_threads: Vec<ThreadSummary>,
-    pub archived_threads: Vec<ThreadSummary>,
-    /// 遅れた取得結果で、再開後の一覧を上書きしないための取得開始時刻。
-    threads_requested_at: [Option<Instant>; 2],
-    thread_updated_at: HashMap<String, Instant>,
-    locally_reopened_threads: HashMap<String, jiff::civil::DateTime>,
-    pub thread_cursors: [Option<String>; 2],
-    thread_has_additional_pages: [bool; 2],
-    pub thread_failed_append: [Option<bool>; 2],
-    pub show_archived_threads: bool,
     pub current: Option<String>,
     /// 選択中のルートメッセージ。None なら最新を追う。
     pub selected: Option<String>,
@@ -206,15 +173,6 @@ impl App {
             focus: Focus::Sidebar,
             mode: Mode::Normal,
             sidebar_index: 0,
-            active_threads: Vec::new(),
-            archived_threads: Vec::new(),
-            threads_requested_at: [None, None],
-            thread_updated_at: HashMap::new(),
-            locally_reopened_threads: HashMap::new(),
-            thread_cursors: [None, None],
-            thread_has_additional_pages: [false; 2],
-            thread_failed_append: [None, None],
-            show_archived_threads: false,
             current: None,
             selected: None,
             scroll: 0,
@@ -288,136 +246,19 @@ impl App {
     }
 
     pub fn on_shape(&mut self, event: ShapeEvent) {
-        let selected = self.sidebar_items().get(self.sidebar_index).cloned();
         match event {
             ShapeEvent::Batch(id, batch) => self.store.apply(&id, batch),
             ShapeEvent::Failed(id, err) => {
                 self.notify(format!("同期を停止しました ({id:?}): {err}"));
             }
         }
-        let store = &self.store;
-        self.locally_reopened_threads
-            .retain(|root_id, reopened_at| {
-                !store.channels().iter().any(|channel| {
-                    store.message(&channel.id, root_id).is_some_and(|root| {
-                        root.thread_archive_at.is_some_and(|at| at > *reopened_at)
-                    })
-                })
-            });
-        self.restore_sidebar_selection(selected);
+        self.sidebar_index = self
+            .sidebar_index
+            .min(self.store.channels().len().saturating_sub(1));
     }
 
     pub fn on_app_event(&mut self, event: AppEvent) {
         match event {
-            AppEvent::Threads {
-                requested_at,
-                threads,
-                archived,
-                append,
-                next_cursor,
-            } => {
-                let scope = usize::from(archived);
-                if self.threads_requested_at[scope].is_some_and(|last| requested_at < last) {
-                    return;
-                }
-                // 別種別の新しい応答で確定した項目を、古い応答で移動しない。
-                let threads: Vec<_> = threads
-                    .into_iter()
-                    .filter(|thread| {
-                        !self
-                            .thread_updated_at
-                            .get(&thread.id)
-                            .is_some_and(|last| requested_at < *last)
-                    })
-                    .collect();
-                let mut selected = self.sidebar_items().get(self.sidebar_index).cloned();
-                if append
-                    && matches!(selected, Some(SidebarItem::MoreThreads { archived: scope }) if scope == archived)
-                    && let Some(first) = threads.first()
-                {
-                    selected = Some(SidebarItem::Thread {
-                        channel_id: first.channel_id.clone(),
-                        id: first.id.clone(),
-                    });
-                }
-                self.thread_has_additional_pages[scope] = append || threads.len() > 100;
-                let incoming_ids: HashSet<_> =
-                    threads.iter().map(|thread| thread.id.clone()).collect();
-                for thread in &threads {
-                    if thread.thread_archive_at.is_some() {
-                        self.locally_reopened_threads.remove(&thread.id);
-                    }
-                    self.thread_updated_at
-                        .insert(thread.id.clone(), requested_at);
-                }
-                let (current, other) = if archived {
-                    (&mut self.archived_threads, &mut self.active_threads)
-                } else {
-                    (&mut self.active_threads, &mut self.archived_threads)
-                };
-                other.retain(|entry| !incoming_ids.contains(&entry.id));
-                if append {
-                    current.retain(|entry| !incoming_ids.contains(&entry.id));
-                } else {
-                    current.clear();
-                }
-                if append {
-                    current.extend(threads);
-                } else {
-                    let mut refreshed = threads;
-                    refreshed.append(current);
-                    *current = refreshed;
-                }
-                let loaded_ids: HashSet<_> =
-                    self.threads().map(|thread| thread.id.clone()).collect();
-                self.thread_updated_at
-                    .retain(|id, _| loaded_ids.contains(id));
-                self.thread_cursors[scope] = next_cursor;
-                self.thread_failed_append[scope] = None;
-                self.threads_requested_at[scope] = Some(requested_at);
-                self.restore_sidebar_selection(selected);
-            }
-            AppEvent::ThreadsFailed {
-                requested_at,
-                archived,
-                append,
-                message,
-            } => {
-                let scope = usize::from(archived);
-                if self.threads_requested_at[scope].is_some_and(|last| requested_at < last) {
-                    return;
-                }
-                self.threads_requested_at[scope] = Some(requested_at);
-                self.thread_failed_append[scope] = Some(append);
-                self.notify(format!(
-                    "スレッド一覧を取得できませんでした: {message}。一覧の再試行を選んでください"
-                ));
-            }
-            AppEvent::ThreadsChanged { reopened } => {
-                if let Some(id) = reopened {
-                    self.locally_reopened_threads.insert(
-                        id.clone(),
-                        jiff::Timestamp::now()
-                            .to_zoned(jiff::tz::TimeZone::UTC)
-                            .datetime(),
-                    );
-                    if let Some(index) = self
-                        .archived_threads
-                        .iter()
-                        .position(|entry| entry.id == id)
-                    {
-                        let mut thread = self.archived_threads.remove(index);
-                        thread.thread_archive_at = None;
-                        self.active_threads.insert(0, thread);
-                    }
-                }
-                // 書き込み前の一覧で、確定済みの状態を上書きしない。
-                self.threads_requested_at = [Some(Instant::now()); 2];
-                self.refresh_threads();
-                if self.show_archived_threads {
-                    self.fetch_thread_page(true, false);
-                }
-            }
             AppEvent::EmojiCatalog { shortcodes, custom } => {
                 crate::mfm::set_emoji_catalog(shortcodes, custom)
             }
@@ -470,9 +311,6 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
-        if self.ticks.is_multiple_of(120) {
-            self.refresh_threads();
-        }
         if self.ticks.is_multiple_of(60) {
             let api = self.api.clone();
             let tx = self.app_tx.clone();
@@ -513,166 +351,6 @@ impl App {
             if let Ok(states) = api.read_states().await {
                 let _ = tx.send(AppEvent::ReadStates(states));
             }
-        });
-    }
-
-    fn refresh_threads(&self) {
-        self.fetch_thread_page(false, false);
-    }
-
-    fn fetch_thread_page(&self, archived: bool, append: bool) {
-        let api = self.api.clone();
-        let tx = self.app_tx.clone();
-        let cursor = if append {
-            self.thread_cursors[usize::from(archived)].clone()
-        } else {
-            None
-        };
-        let rebuild = !append && self.thread_has_additional_pages[usize::from(archived)];
-        let through = if rebuild {
-            self.thread_cursors[usize::from(archived)].clone()
-        } else {
-            None
-        };
-        tokio::spawn(async move {
-            let requested_at = Instant::now();
-            let result = async {
-                let mut page = api
-                    .thread_page(archived, cursor.as_deref(), through.as_deref())
-                    .await?;
-                let mut items = page.items;
-                let mut seen_cursors = HashSet::new();
-                while let Some(next) = if rebuild {
-                    page.next_cursor.take()
-                } else {
-                    None
-                } {
-                    anyhow::ensure!(seen_cursors.insert(next.clone()), "Repeated thread cursor");
-                    page = api
-                        .thread_page(archived, Some(&next), through.as_deref())
-                        .await?;
-                    items.extend(page.items);
-                }
-                Ok::<_, anyhow::Error>((items, if rebuild { through } else { page.next_cursor }))
-            }
-            .await;
-            match result {
-                Ok((threads, next_cursor)) => {
-                    let _ = tx.send(AppEvent::Threads {
-                        requested_at,
-                        threads,
-                        archived,
-                        append,
-                        next_cursor,
-                    });
-                }
-                Err(error) => {
-                    let _ = tx.send(AppEvent::ThreadsFailed {
-                        requested_at,
-                        archived,
-                        append,
-                        message: error.to_string(),
-                    });
-                }
-            }
-        });
-    }
-
-    pub fn threads(&self) -> impl Iterator<Item = &ThreadSummary> {
-        self.active_threads
-            .iter()
-            .chain(self.archived_threads.iter())
-    }
-
-    pub fn thread_is_archived(&self, channel_id: &str, root_id: &str) -> bool {
-        if let Some(reopened_at) = self.locally_reopened_threads.get(root_id) {
-            return self
-                .store
-                .message(channel_id, root_id)
-                .and_then(|root| root.thread_archive_at)
-                .is_some_and(|archived_at| archived_at > *reopened_at);
-        }
-        self.threads()
-            .any(|thread| thread.id == root_id && thread.thread_archive_at.is_some())
-            || self
-                .store
-                .message(channel_id, root_id)
-                .is_some_and(|root| root.thread_archive_at.is_some())
-    }
-
-    fn can_change_message(&mut self, message_id: &str) -> bool {
-        let Some(channel_id) = self.current.as_deref() else {
-            return false;
-        };
-        let root_id = self
-            .store
-            .message(channel_id, message_id)
-            .and_then(|message| message.parent_id.as_deref())
-            .unwrap_or(message_id);
-        let archived = self.thread_is_archived(channel_id, root_id)
-            || (self.focus == Focus::Thread
-                && self
-                    .thread
-                    .as_ref()
-                    .is_some_and(|thread| self.thread_is_archived(channel_id, &thread.root_id)));
-        if archived {
-            self.notify("アーカイブ済みスレッドの変更は再開後に行ってください");
-        }
-        !archived
-    }
-
-    pub fn sidebar_items(&self) -> Vec<SidebarItem> {
-        let mut items = Vec::new();
-        for channel in self.store.channels() {
-            items.push(SidebarItem::Channel(channel.id.clone()));
-            if channel.is_dm || !self.store.is_member(&channel.id, &self.me.id) {
-                continue;
-            }
-            for thread in self.threads().filter(|thread| {
-                thread.channel_id == channel.id
-                    && (self.show_archived_threads || thread.thread_archive_at.is_none())
-            }) {
-                items.push(SidebarItem::Thread {
-                    channel_id: channel.id.clone(),
-                    id: thread.id.clone(),
-                });
-            }
-        }
-        for archived in [false, true] {
-            if (!archived || self.show_archived_threads)
-                && (self.thread_cursors[usize::from(archived)].is_some()
-                    || self.thread_failed_append[usize::from(archived)].is_some())
-            {
-                items.push(SidebarItem::MoreThreads { archived });
-            }
-        }
-        items
-    }
-
-    fn restore_sidebar_selection(&mut self, selected: Option<SidebarItem>) {
-        let items = self.sidebar_items();
-        self.sidebar_index = selected
-            .and_then(|selected| items.iter().position(|item| *item == selected))
-            .unwrap_or_else(|| self.sidebar_index.min(items.len().saturating_sub(1)));
-    }
-
-    fn reopen_thread(&self) {
-        let id = match self.focus {
-            Focus::Sidebar => match self.sidebar_items().get(self.sidebar_index) {
-                Some(SidebarItem::Thread { id, .. }) => Some(id.clone()),
-                _ => None,
-            },
-            Focus::Thread => self.thread.as_ref().map(|thread| thread.root_id.clone()),
-            _ => None,
-        };
-        let Some(id) = id else { return };
-        let api = self.api.clone();
-        let tx = self.app_tx.clone();
-        self.spawn_api("スレッドの再開", async move {
-            api.unarchive_thread(&id).await?;
-            // POST の成否だけを再開結果とし、一覧取得は画面側で再試行する。
-            let _ = tx.send(AppEvent::ThreadsChanged { reopened: Some(id) });
-            Ok(())
         });
     }
 
@@ -796,9 +474,7 @@ impl App {
             Mode::Normal => self.on_normal_key(key),
             Mode::Insert => self.on_insert_key(key),
             Mode::ConfirmDelete { message_id } => {
-                if matches!(key.code, KeyCode::Char('y' | 'Y'))
-                    && self.can_change_message(&message_id)
-                {
+                if matches!(key.code, KeyCode::Char('y' | 'Y')) {
                     // スレッドの親を消したら、スレッドも閉じる。
                     if self
                         .thread
@@ -808,12 +484,7 @@ impl App {
                         self.close_thread();
                     }
                     let api = self.api.clone();
-                    let tx = self.app_tx.clone();
-                    self.spawn_api("削除", async move {
-                        api.delete_message(&message_id).await?;
-                        let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
-                        Ok(())
-                    });
+                    self.spawn_api("削除", async move { api.delete_message(&message_id).await });
                 }
                 self.mode = Mode::Normal;
             }
@@ -847,9 +518,7 @@ impl App {
             KeyCode::Char('e') => self.start_edit(),
             KeyCode::Char('d') => self.confirm_delete(),
             KeyCode::Char('r') => {
-                if let Some((_, message_id)) = self.focused_message()
-                    && self.can_change_message(&message_id)
-                {
+                if let Some((_, message_id)) = self.focused_message() {
                     self.mode = Mode::React {
                         message_id,
                         input: String::new(),
@@ -860,15 +529,6 @@ impl App {
             KeyCode::Char('L') => self.join_or_leave(false),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
             KeyCode::Char('R') => self.restore_failed_draft(),
-            KeyCode::Char('a') => {
-                let selected = self.sidebar_items().get(self.sidebar_index).cloned();
-                self.show_archived_threads = !self.show_archived_threads;
-                self.restore_sidebar_selection(selected);
-                if self.show_archived_threads {
-                    self.fetch_thread_page(true, false);
-                }
-            }
-            KeyCode::Char('u') => self.reopen_thread(),
             _ => {}
         }
     }
@@ -953,9 +613,6 @@ impl App {
 
     /// 自分がすでに付けた絵文字なら外し、そうでなければ付ける。
     fn toggle_reaction(&mut self, message_id: String, emoji: String) {
-        if !self.can_change_message(&message_id) {
-            return;
-        }
         let Some(channel_id) = self.current.clone() else {
             return;
         };
@@ -977,27 +634,18 @@ impl App {
         }
     }
 
-    /// チャンネル名・スレッド名に `query` を含む行の添字。
+    /// 一覧の表示名に `query` を含むチャンネルの添字 (大文字小文字を区別しない)。
     pub fn search_matches(&self, query: &str) -> Vec<usize> {
         let query = query.to_lowercase();
-        self.sidebar_items()
+        self.store
+            .channels()
             .iter()
             .enumerate()
-            .filter(|(_, item)| {
-                let label = match item {
-                    SidebarItem::Channel(id) => self
-                        .store
-                        .channel(id)
-                        .map(|channel| self.store.channel_label(channel, &self.me.id))
-                        .unwrap_or_default(),
-                    SidebarItem::MoreThreads { .. } => return false,
-                    SidebarItem::Thread { id, .. } => self
-                        .threads()
-                        .find(|thread| thread.id == *id)
-                        .map(|thread| thread.content.clone())
-                        .unwrap_or_default(),
-                };
-                label.to_lowercase().contains(&query)
+            .filter(|(_, channel)| {
+                self.store
+                    .channel_label(channel, &self.me.id)
+                    .to_lowercase()
+                    .contains(&query)
             })
             .map(|(index, _)| index)
             .collect()
@@ -1023,7 +671,7 @@ impl App {
     fn move_selection(&mut self, delta: isize) {
         match self.focus {
             Focus::Sidebar => {
-                let len = self.sidebar_items().len();
+                let len = self.store.channels().len();
                 self.sidebar_index = step(Some(self.sidebar_index), delta, len).unwrap_or(0);
             }
             Focus::Messages => {
@@ -1093,28 +741,16 @@ impl App {
     }
 
     fn activate_sidebar(&mut self) {
-        match self.sidebar_items().get(self.sidebar_index).cloned() {
-            Some(SidebarItem::Channel(channel_id)) => {
-                self.open_channel(channel_id);
-                self.focus = Focus::Messages;
-            }
-            Some(SidebarItem::Thread { channel_id, id }) => {
-                self.open_channel(channel_id);
-                self.thread = Some(ThreadView {
-                    root_id: id,
-                    selected: None,
-                    scroll: 0,
-                    inner_scroll: 0,
-                });
-                self.focus = Focus::Thread;
-                self.poll_typing();
-            }
-            Some(SidebarItem::MoreThreads { archived }) => self.fetch_thread_page(
-                archived,
-                self.thread_failed_append[usize::from(archived)].unwrap_or(true),
-            ),
-            None => {}
-        }
+        let Some(channel) = self
+            .store
+            .channels()
+            .get(self.sidebar_index)
+            .map(|c| c.id.clone())
+        else {
+            return;
+        };
+        self.open_channel(channel);
+        self.focus = Focus::Messages;
     }
 
     pub fn open_channel(&mut self, channel_id: String) {
@@ -1227,9 +863,6 @@ impl App {
         let Some((channel_id, message_id)) = self.focused_message() else {
             return;
         };
-        if !self.can_change_message(&message_id) {
-            return;
-        }
         let Some(message) = self.store.message(&channel_id, &message_id) else {
             return;
         };
@@ -1251,9 +884,6 @@ impl App {
         let Some((channel_id, message_id)) = self.focused_message() else {
             return;
         };
-        if !self.can_change_message(&message_id) {
-            return;
-        }
         if self
             .store
             .message(&channel_id, &message_id)
@@ -1269,41 +899,24 @@ impl App {
     fn join_or_leave(&mut self, join: bool) {
         let channel_id = match self.focus {
             Focus::Sidebar => self
-                .sidebar_items()
+                .store
+                .channels()
                 .get(self.sidebar_index)
-                .and_then(|item| match item {
-                    SidebarItem::Channel(id) => Some(id.clone()),
-                    SidebarItem::Thread { channel_id, .. } => Some(channel_id.clone()),
-                    SidebarItem::MoreThreads { .. } => None,
-                }),
+                .map(|c| c.id.clone()),
             _ => self.current.clone(),
         };
         let Some(channel_id) = channel_id else {
             return;
         };
         let api = self.api.clone();
-        let tx = self.app_tx.clone();
         if join {
-            self.spawn_api("参加", async move {
-                api.join_channel(&channel_id).await?;
-                let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
-                Ok(())
-            });
+            self.spawn_api("参加", async move { api.join_channel(&channel_id).await });
         } else {
-            self.spawn_api("退出", async move {
-                api.leave_channel(&channel_id).await?;
-                let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
-                Ok(())
-            });
+            self.spawn_api("退出", async move { api.leave_channel(&channel_id).await });
         }
     }
 
     fn submit(&mut self) {
-        if let Target::Edit(message_id) = self.target.clone()
-            && !self.can_change_message(&message_id)
-        {
-            return;
-        }
         let content = self.composer.lines().join("\n");
         if content.trim().is_empty() {
             return;
@@ -1338,12 +951,6 @@ impl App {
                     target,
                     content,
                 });
-            } else {
-                let reopened = match target {
-                    Target::Reply(root_id) => Some(root_id),
-                    _ => None,
-                };
-                let _ = tx.send(AppEvent::ThreadsChanged { reopened });
             }
         });
     }
@@ -1391,246 +998,6 @@ fn move_id(ids: &[String], current: Option<&str>, delta: isize) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn api_test_app(base: &str) -> (App, mpsc::UnboundedReceiver<AppEvent>) {
-        let http = reqwest::Client::new();
-        let credentials = Credentials::Dev("u1".into());
-        let api = ApiClient::new(http.clone(), base, credentials.clone());
-        let (shape_tx, _shape_rx) = mpsc::unbounded_channel();
-        let (app_tx, app_rx) = mpsc::unbounded_channel();
-        let app = App::new(
-            api,
-            http,
-            base.into(),
-            credentials,
-            Me {
-                id: "u1".into(),
-                user_name: "alice".into(),
-                display_name: "Alice".into(),
-            },
-            shape_tx,
-            app_tx,
-        );
-        (app, app_rx)
-    }
-
-    #[tokio::test]
-    async fn membership_changes_refresh_the_thread_index() {
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{method, path},
-        };
-        for join in [true, false] {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path(if join {
-                    "/api/channels/c1/join"
-                } else {
-                    "/api/channels/c1/leave"
-                }))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({"data":{},"txid":"42"})),
-                )
-                .expect(1)
-                .mount(&server)
-                .await;
-            Mock::given(method("GET"))
-                .and(path("/api/threads"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({"items":[],"next_cursor":null})),
-                )
-                .expect(1)
-                .mount(&server)
-                .await;
-            let (mut app, mut rx) = api_test_app(&server.uri());
-            app.focus = Focus::Messages;
-            app.current = Some("c1".into());
-            app.join_or_leave(join);
-            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(matches!(
-                &event,
-                AppEvent::ThreadsChanged { reopened: None }
-            ));
-            app.on_app_event(event);
-            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            assert!(matches!(&event, AppEvent::Threads { .. }));
-            app.on_app_event(event);
-            assert!(app.notice.is_none());
-        }
-    }
-
-    #[tokio::test]
-    async fn committed_reopen_stays_successful_when_the_index_is_unavailable() {
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{method, path},
-        };
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/threads/root/unarchive"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"data":{},"txid":"42"})),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/threads"))
-            .respond_with(ResponseTemplate::new(503))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let (mut app, mut rx) = api_test_app(&server.uri());
-        app.archived_threads.push(ThreadSummary {
-            id: "root".into(),
-            channel_id: "c1".into(),
-            content: "Thread".into(),
-            thread_archive_at: Some("2026-11-10".into()),
-            reply_count: 1,
-        });
-        app.focus = Focus::Thread;
-        app.thread = Some(ThreadView {
-            root_id: "root".into(),
-            selected: None,
-            scroll: 0,
-            inner_scroll: 0,
-        });
-        app.reopen_thread();
-        let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(&event, AppEvent::ThreadsChanged { reopened: Some(id) } if id == "root"));
-        app.on_app_event(event);
-        assert!(app.active_threads[0].thread_archive_at.is_none());
-        let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(&event, AppEvent::ThreadsFailed { .. }));
-        app.on_app_event(event);
-        assert!(app.active_threads[0].thread_archive_at.is_none());
-        assert!(
-            app.notice
-                .as_ref()
-                .unwrap()
-                .0
-                .starts_with("スレッド一覧を取得できませんでした")
-        );
-    }
-
-    #[tokio::test]
-    async fn deleting_a_message_refreshes_the_thread_index() {
-        use wiremock::{
-            Mock, MockServer, ResponseTemplate,
-            matchers::{method, path},
-        };
-        let server = MockServer::start().await;
-        Mock::given(method("DELETE"))
-            .and(path("/api/messages/root"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"data":{},"txid":"42"})),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/threads"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(serde_json::json!({"items":[],"next_cursor":null})),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-        let (mut app, mut rx) = api_test_app(&server.uri());
-        app.current = Some("c1".into());
-        app.active_threads.push(ThreadSummary {
-            id: "root".into(),
-            channel_id: "c1".into(),
-            content: "Thread".into(),
-            thread_archive_at: None,
-            reply_count: 1,
-        });
-        app.mode = Mode::ConfirmDelete {
-            message_id: "root".into(),
-        };
-        app.on_terminal_event(Event::Key(KeyEvent::new(
-            KeyCode::Char('y'),
-            KeyModifiers::NONE,
-        )));
-        for _ in 0..2 {
-            let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            app.on_app_event(event);
-        }
-        assert!(app.active_threads.is_empty());
-        assert!(app.notice.is_none());
-    }
-
-    #[tokio::test]
-    async fn pending_changes_do_not_reach_the_api_after_a_thread_is_archived() {
-        let server = wiremock::MockServer::start().await;
-        let (mut app, mut rx) = api_test_app(&server.uri());
-        app.current = Some("c1".into());
-        app.archived_threads.push(ThreadSummary {
-            id: "root".into(),
-            channel_id: "c1".into(),
-            content: "Archived".into(),
-            thread_archive_at: Some("2026-11-10".into()),
-            reply_count: 1,
-        });
-        app.mode = Mode::ConfirmDelete {
-            message_id: "root".into(),
-        };
-        app.on_terminal_event(Event::Key(KeyEvent::new(
-            KeyCode::Char('y'),
-            KeyModifiers::NONE,
-        )));
-        assert_eq!(app.mode, Mode::Normal);
-        app.mode = Mode::React {
-            message_id: "root".into(),
-            input: "thumbsup".into(),
-        };
-        app.on_terminal_event(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        )));
-        assert_eq!(app.mode, Mode::Normal);
-        app.mode = Mode::Insert;
-        app.target = Target::Edit("root".into());
-        app.composer = composer_with("Edited reply");
-        app.on_terminal_event(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        )));
-        assert_eq!(app.composer.lines().join("\n"), "Edited reply");
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), rx.recv())
-                .await
-                .is_err()
-        );
-        assert!(
-            server
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .all(|request| request.method == "GET")
-        );
-    }
 
     #[test]
     fn step_clamps_and_starts_from_latest() {

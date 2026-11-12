@@ -62,10 +62,6 @@ export type MessageRow = {
   deleted_at: TimestampString | null;
   /** 返信先のルートメッセージ。`null` はチャンネル直下のメッセージ。 */
   parent_id: string | null;
-  /** この投稿を返信先とするスレッドのアーカイブ日時。 */
-  thread_archive_at?: TimestampString | null;
-  /** 自動アーカイブ期限の計算に使う最終活動時刻。 */
-  thread_activity_at?: TimestampString | null;
 };
 
 export type MessageReactionRow = {
