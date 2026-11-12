@@ -64,7 +64,11 @@ jobs:
       - name: Install trunk, wasm-bindgen and tauri-cli
         # wasm-bindgen は desktop-tauri/ui/Cargo.toml で固定した版と合わせる。
         run: |
-          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C ~/.cargo/bin
+          # trunk は ~/.cargo/bin がない実行先 (macOS) もあるので、専用の場所に置いて PATH に足す。
+          trunk_bin="$HOME/.local/trunk/bin"
+          mkdir -p "$trunk_bin"
+          echo "$trunk_bin" >> "$GITHUB_PATH"
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C "$trunk_bin"
           cargo install --locked wasm-bindgen-cli --version 0.2.129
           cargo install --locked tauri-cli --version 2.11.4
       - name: format check
@@ -121,7 +125,11 @@ jobs:
             desktop-tauri/ui
       - name: Install trunk, wasm-bindgen and tauri-cli
         run: |
-          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-aarch64-apple-darwin.tar.gz | tar -xz -C ~/.cargo/bin
+          # trunk は ~/.cargo/bin がない実行先 (macOS) もあるので、専用の場所に置いて PATH に足す。
+          trunk_bin="$HOME/.local/trunk/bin"
+          mkdir -p "$trunk_bin"
+          echo "$trunk_bin" >> "$GITHUB_PATH"
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-aarch64-apple-darwin.tar.gz | tar -xz -C "$trunk_bin"
           cargo install --locked wasm-bindgen-cli --version 0.2.129
           cargo install --locked tauri-cli --version 2.11.4
       - name: build ui

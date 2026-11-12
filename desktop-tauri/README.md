@@ -35,10 +35,10 @@ zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.ap
 
 [GitHub Releases](https://github.com/Zli-UoA/zoo2/releases) の、`zoo2 デスクトップ版 (Tauri)` のリリース (タグは `desktop-tauri-v<版>`) からダウンロードします。一覧の「Latest」は TUI のリリースなので、デスクトップ版は名前で探してください。
 
-[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.1.0` は入れたい版に置き換えてください。
+[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.2.0` は入れたい版に置き換えてください。
 
 ```bash
-gh release download desktop-tauri-v0.1.0 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
+gh release download desktop-tauri-v0.2.0 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
 ```
 
 リリースから入れると、アプリが自分で更新します (「[更新](#更新)」)。
@@ -56,17 +56,18 @@ gh run download --repo Zli-UoA/zoo2 --name zoo2-desktop-tauri-linux $(gh run lis
 
 ### ファイル
 
-どちらにも、次の 2 つのファイルがあります。`0.1.0` の部分は版によって変わります。
+次のファイルがあります。`0.2.0` の部分は版によって変わります。CI の成果物は、Linux の 2 つだけです。
 
 | ファイル | 対象 |
 |---|---|
-| `zoo2_0.1.0_amd64.deb` | Ubuntu、Debian |
-| `zoo2_0.1.0_amd64.AppImage` | そのほかの Linux |
+| `zoo2_0.2.0_amd64.deb` | Ubuntu、Debian |
+| `zoo2_0.2.0_amd64.AppImage` | そのほかの Linux |
+| `zoo2_0.2.0_universal.dmg` | macOS (Apple シリコン、Intel) |
 
 ### Ubuntu / Debian
 
 ```bash
-sudo apt install ./zoo2_0.1.0_amd64.deb
+sudo apt install ./zoo2_0.2.0_amd64.deb
 ```
 
 WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-appindicator3-1`) も一緒に入ります。アプリケーションの一覧に「zoo2」が出ます。コマンドは `zoo2-desktop-tauri` です。
@@ -74,11 +75,11 @@ WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-ap
 ### AppImage
 
 ```bash
-chmod +x zoo2_0.1.0_amd64.AppImage
+chmod +x zoo2_0.2.0_amd64.AppImage
 ```
 
 ```bash
-./zoo2_0.1.0_amd64.AppImage
+./zoo2_0.2.0_amd64.AppImage
 ```
 
 好きな場所に置いて、そのまま起動できます。システムの WebKitGTK 4.1 を使うので、入っていなければ、ディストリビューションのパッケージで入れてください。
@@ -144,7 +145,7 @@ NixOS の設定 (flake) に入れるときは、`inputs` に zoo2 を足し、�
 }
 ```
 
-特定のリリースに固定するときは `github:Zli-UoA/zoo2/desktop-tauri-v0.1.0` のようにタグを指定します。
+特定のリリースに固定するときは `github:Zli-UoA/zoo2/desktop-tauri-v0.2.0` のようにタグを指定します。flake のパッケージがあるのは v0.2.0 からです。
 
 Nix で入れた版は、アプリの中からは更新しません (「[更新](#更新)」)。
 
