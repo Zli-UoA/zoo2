@@ -3,9 +3,10 @@
 docs/e2ee.md の「SSSS（秘密の暗号化）」「鍵スロット」「リカバリーキーの形式」「鍵バックアップ」の
 手順を、Python の cryptography でそのまま書いたもの。乱数の代わりに決まったバイト列を使う。
 
-    nix-shell -p 'python3.withPackages (p: [ p.cryptography ])' \
-      --run 'python3 -I crates/zoo-crypto/tests/vectors/gen_secret_storage_v1.py' \
+    nix develop -c python3 -I crates/zoo-crypto/tests/vectors/gen_secret_storage_v1.py \
       > crates/zoo-crypto/tests/vectors/secret_storage_v1.json
+
+Python と cryptography は flake.nix の開発シェルに入れてある。
 """
 
 import base64
