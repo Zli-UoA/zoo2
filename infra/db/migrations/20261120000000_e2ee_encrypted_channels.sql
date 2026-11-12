@@ -63,6 +63,9 @@ BEGIN
       WHERE signer_user_id = NEW.id AND target_user_id = NEW.id AND target_key_id = d;
     DELETE FROM e2ee_one_time_keys WHERE user_id = NEW.id AND device_id = d;
     DELETE FROM e2ee_fallback_keys WHERE user_id = NEW.id AND device_id = d;
+    -- 未受信の to-device メッセージも消す（#355）。to-device の送信は同じ端末単位のロックのあとに
+    -- deleted_at を読み直すので、このあとで削除済みの端末に入り直らない。
+    DELETE FROM e2ee_to_device_messages WHERE recipient_user_id = NEW.id AND recipient_device_id = d;
   END LOOP;
   PERFORM e2ee_bump_membership_epochs(NEW.id);
   UPDATE e2ee_devices SET deleted_at = now() WHERE user_id = NEW.id AND deleted_at IS NULL;
