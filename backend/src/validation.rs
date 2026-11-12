@@ -158,6 +158,15 @@ pub fn validate_bubble_chat_content(content: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+pub fn account_shortcode_username(input: &str) -> Option<&str> {
+    let name = input.trim().strip_prefix(":@")?.strip_suffix(':')?;
+    ((1..=80).contains(&name.len())
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c)))
+    .then_some(name)
+}
+
 /// 絵文字のバリデーションと正規化:
 /// 1. ショートコード形式 (:thumbsup:, :+1:, :party_parrot:) -> 標準ショートコードは fully-qualified な絵文字に解決、その他は小文字ショートコードとして保持
 /// 2. Emoji Kitchen 形式 (kitchen:1f600_1f431, kitchen:😀_🐱) -> 実在する絵文字 2 要素のみを受け付け、コードポイント順にソートして一意化
@@ -176,12 +185,7 @@ pub fn normalize_and_validate_emoji(raw: &str) -> Result<String, AppError> {
     // 1. ショートコード形式
     if trimmed.starts_with(':') && trimmed.ends_with(':') && trimmed.len() >= 3 {
         let inner = &trimmed[1..trimmed.len() - 1];
-        if let Some(account) = inner.strip_prefix('@')
-            && (1..=80).contains(&account.len())
-            && account
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c))
-        {
+        if account_shortcode_username(trimmed).is_some() {
             return Ok(trimmed.to_owned());
         }
         if inner.len() <= 64

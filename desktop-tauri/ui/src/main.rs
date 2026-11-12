@@ -377,6 +377,9 @@ fn MessageView(message: Message, name: String) -> impl IntoView {
                     if let Some(url) = span.avatar_url.as_ref().filter(|url| url.starts_with("https://") || url.starts_with("http://")) {
                         return view! { <img style="display:inline-block;width:1.15em;height:1.15em;vertical-align:middle;border-radius:50%" src=url.clone() alt=span.content.clone() /> }.into_any();
                     }
+                    if let Some(initial) = &span.avatar_fallback {
+                        return view! { <span role="img" aria-label=span.content.clone() style="display:inline-flex;width:1.15em;height:1.15em;align-items:center;justify-content:center;border-radius:50%">{initial.clone()}</span> }.into_any();
+                    }
                     match style.tone {
                         Tone::Link => match span.href {
                             Some(href) => {

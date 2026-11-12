@@ -145,7 +145,7 @@ pub fn render_mfm_accounts_with_theme(
     let mut container = div().flex().flex_col().gap_0p5().w_full();
 
     for (line_idx, line) in parsed.iter().enumerate() {
-        if line.spans.iter().any(|span| span.avatar_url.is_some()) {
+        if line.spans.iter().any(|span| span.avatar_fallback.is_some()) {
             let mut row = div()
                 .flex()
                 .flex_wrap()
@@ -164,6 +164,17 @@ pub fn render_mfm_accounts_with_theme(
                             .w(px(18.0))
                             .h(px(18.0))
                             .rounded_full(),
+                    );
+                } else if let Some(initial) = &span.avatar_fallback {
+                    row = row.child(
+                        div()
+                            .w(px(18.0))
+                            .h(px(18.0))
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(initial.clone()),
                     );
                 } else {
                     let styled = StyledText::new(span.content.clone()).with_highlights(vec![(

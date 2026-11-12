@@ -12,8 +12,12 @@ struct AccountProfile {
     avatar_url: Option<String>,
 }
 
-static CACHE: LazyLock<Mutex<Option<(String, Instant, Value)>>> =
-    LazyLock::new(|| Mutex::new(None));
+struct CacheEntry {
+    source: String,
+    checked: Instant,
+    value: Option<Value>,
+}
+static CACHE: LazyLock<Mutex<Option<CacheEntry>>> = LazyLock::new(|| Mutex::new(None));
 
 pub async fn catalog() -> Result<Value, AppError> {
     let Some(source) = std::env::var("EMOJI_ACCOUNT_PROFILE_URL")
@@ -22,7 +26,14 @@ pub async fn catalog() -> Result<Value, AppError> {
     else {
         return Ok(json!({"accounts":[]}));
     };
-    let url = reqwest::Url::parse(&source)
+    cached_catalog(&source, &CACHE).await
+}
+
+async fn cached_catalog(
+    source: &str,
+    cache: &Mutex<Option<CacheEntry>>,
+) -> Result<Value, AppError> {
+    let url = reqwest::Url::parse(source)
         .map_err(|_| AppError::BadGateway("Invalid account directory configuration".into()))?;
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
@@ -34,12 +45,15 @@ pub async fn catalog() -> Result<Value, AppError> {
             "Invalid account directory configuration".into(),
         ));
     }
-    let mut cache = CACHE.lock().await;
-    if let Some((previous, checked, value)) = cache.as_ref()
-        && previous == &source
-        && checked.elapsed() < Duration::from_secs(60)
+    let mut cache = cache.lock().await;
+    if let Some(entry) = cache.as_ref()
+        && entry.source == source
+        && entry.checked.elapsed() < Duration::from_secs(60)
     {
-        return Ok(value.clone());
+        return entry
+            .value
+            .clone()
+            .ok_or_else(|| AppError::BadGateway("Account directory unavailable".into()));
     }
     let result = async {
         let client = reqwest::Client::builder()
@@ -81,12 +95,60 @@ pub async fn catalog() -> Result<Value, AppError> {
     .await;
     match result {
         Ok(value) => {
-            *cache = Some((source, Instant::now(), value.clone()));
+            *cache = Some(CacheEntry {
+                source: source.to_owned(),
+                checked: Instant::now(),
+                value: Some(value.clone()),
+            });
             Ok(value)
         }
         Err(error) => {
-            *cache = None;
+            *cache = Some(CacheEntry {
+                source: source.to_owned(),
+                checked: Instant::now(),
+                value: None,
+            });
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+    #[tokio::test]
+    async fn failure_is_shared_without_serving_expired_profiles() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503).set_delay(Duration::from_millis(50)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cache = Mutex::new(Some(CacheEntry {
+            source: server.uri(),
+            checked: Instant::now() - Duration::from_secs(61),
+            value: Some(json!({"accounts":[{"username":"old"}]})),
+        }));
+        let source = server.uri();
+        let (a, b, c) = tokio::join!(
+            cached_catalog(&source, &cache),
+            cached_catalog(&source, &cache),
+            cached_catalog(&source, &cache)
+        );
+        assert!(a.is_err() && b.is_err() && c.is_err());
+        assert!(cache.lock().await.as_ref().unwrap().value.is_none());
+        server.verify().await;
+        cache.lock().await.as_mut().unwrap().checked -= Duration::from_secs(61);
+        server.reset().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"accounts":[]})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            cached_catalog(&source, &cache).await.unwrap(),
+            json!({"accounts":[]})
+        );
     }
 }

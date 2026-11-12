@@ -195,6 +195,7 @@ pub struct Span {
     /// `content` がラベルになるので、行き先はこちらを使う。
     pub href: Option<String>,
     pub avatar_url: Option<String>,
+    pub avatar_fallback: Option<String>,
 }
 
 impl Span {
@@ -204,6 +205,7 @@ impl Span {
             style,
             href: None,
             avatar_url: None,
+            avatar_fallback: None,
         }
     }
 
@@ -213,6 +215,7 @@ impl Span {
             style,
             href: Some(href.to_string()),
             avatar_url: None,
+            avatar_fallback: None,
         }
     }
 }
@@ -401,6 +404,7 @@ impl Inline<'_> {
             {
                 let mut span = Span::styled(format!(":@{name}:"), base);
                 span.avatar_url = profile.avatar_url.clone();
+                span.avatar_fallback = Some(account_initial(profile));
                 return Some((name.len() + 3, vec![span]));
             }
             return shortcode(scan, i, base);
@@ -450,6 +454,7 @@ impl Inline<'_> {
         let spans = if let Some(profile) = self.profiles.get(name) {
             let mut icon = Span::styled("◉".to_owned(), style);
             icon.avatar_url = profile.avatar_url.clone();
+            icon.avatar_fallback = Some(account_initial(profile));
             vec![
                 Span::styled("@".to_owned(), style),
                 icon,
@@ -470,6 +475,15 @@ impl Inline<'_> {
         };
         Some((name.len() + 1, spans))
     }
+}
+
+fn account_initial(profile: &crate::accounts::AccountProfile) -> String {
+    let label = if profile.display_name.is_empty() {
+        &profile.username
+    } else {
+        &profile.display_name
+    };
+    label.chars().next().unwrap_or('?').to_string()
 }
 
 fn flush(plain: &mut String, style: Style, out: &mut Vec<Span>) {
@@ -771,5 +785,38 @@ mod tests {
         assert!(text.contains(":@alice: @alice"));
         assert!(text.ends_with(":@alice:"));
         assert_eq!(resolve_emoji(":@alice:"), Some(":@alice:".to_owned()));
+    }
+    #[test]
+    fn account_without_image_keeps_terminal_text_and_exposes_native_fallback() {
+        let profiles = [(
+            "alice".to_owned(),
+            crate::accounts::AccountProfile {
+                username: "alice".to_owned(),
+                display_name: "表示名".to_owned(),
+                avatar_url: None,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let spans: Vec<_> = parse_with_accounts(":@alice: @alice", None, &profiles)
+            .into_iter()
+            .flat_map(|line| line.spans)
+            .collect();
+        let icons: Vec<_> = spans
+            .iter()
+            .filter(|span| span.avatar_fallback.is_some())
+            .collect();
+        assert_eq!(icons.len(), 2);
+        assert!(
+            icons
+                .iter()
+                .all(|span| span.avatar_url.is_none()
+                    && span.avatar_fallback.as_deref() == Some("表"))
+        );
+        assert_eq!(icons[0].content, ":@alice:");
+        assert_eq!(
+            parse_with_accounts(":@unknown:", None, &profiles)[0].spans[0].avatar_fallback,
+            None
+        );
     }
 }
