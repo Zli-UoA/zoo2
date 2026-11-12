@@ -16,7 +16,9 @@ concurrency:
   cancel-in-progress: false
 # desktop-tauri/src-tauri/Cargo.toml の version を上げて main に入れると、desktop-tauri-v<version> の
 # タグで GitHub Release を作り、アプリの自動更新が読む latest.json を desktop-tauri-updater の
-# リリースに置き直します。同じ version のリリースがすでにあれば何もしません。
+# リリースに置き直します。同じ version のリリースがすでにあれば、ビルドはしません。
+# latest.json がその version を指していなければ (前回の公開が途中で失敗したときなど)、
+# 既存のリリースの署名から作り直して公開します。再実行で直せます。
 #
 # 更新の署名に、次の 2 つを使います (docs/desktop-tauri.md の「更新」)。
 # - Secrets: TAURI_SIGNING_PRIVATE_KEY と TAURI_SIGNING_PRIVATE_KEY_PASSWORD (秘密鍵とそのパスワード)
@@ -31,7 +33,8 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
-      release: ${{ steps.version.outputs.release }}
+      build: ${{ steps.version.outputs.build }}
+      publish: ${{ steps.version.outputs.publish }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -49,17 +52,26 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           if [ "$HAS_PRIVATE_KEY" != true ] || [ "$HAS_PUBKEY" != true ]; then
             echo "更新の署名の鍵 (Secrets の TAURI_SIGNING_PRIVATE_KEY、Variables の TAURI_UPDATER_PUBKEY) がないので、リリースを作りません。" >> "$GITHUB_STEP_SUMMARY"
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          elif gh release view "$tag" > /dev/null 2>&1; then
-            echo "$tag はリリース済みです。desktop-tauri/src-tauri/Cargo.toml の version を上げると次のリリースを作ります。" >> "$GITHUB_STEP_SUMMARY"
-            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif ! gh release view "$tag" > /dev/null 2>&1; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           else
-            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            published=$(gh release download desktop-tauri-updater --pattern latest.json --output - 2>/dev/null | jq -r '.version // empty' || true)
+            if [ "$published" = "$version" ]; then
+              echo "$tag はリリース済みです。desktop-tauri/src-tauri/Cargo.toml の version を上げると次のリリースを作ります。" >> "$GITHUB_STEP_SUMMARY"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "$tag はリリース済みですが、latest.json が ${published:-（なし）} を指しているので、公開し直します。" >> "$GITHUB_STEP_SUMMARY"
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
   build:
     needs: version
-    if: needs.version.outputs.release == 'true'
+    if: needs.version.outputs.build == 'true'
     strategy:
       matrix:
         # deb が依存する glibc と WebKitGTK を古めに合わせ、Ubuntu 22.04 でも入るようにする。
@@ -137,16 +149,27 @@ jobs:
 
   release:
     needs: [version, build]
+    # ビルドを飛ばしたとき (リリース済みで latest.json だけ公開し直すとき) も動かす。
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
       - name: Download
+        if: needs.version.outputs.build == 'true'
         uses: actions/download-artifact@v8
         with:
           name: zoo2-desktop-tauri-release
           path: dist
+      # リリース済みのときは、そのリリースの署名から latest.json を作り直す。
+      - name: Download signatures from the existing release
+        if: needs.version.outputs.build != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: gh release download "$TAG" --pattern '*.sig' --dir dist
       # アプリの自動更新 (tauri-plugin-updater) が読む形式。インストールの形ごとに、ファイルと署名を書く。
       - name: Generate latest.json and checksums
         env:
@@ -168,9 +191,12 @@ jobs:
               "linux-x86_64-appimage": {url: $appimage_url, signature: $appimage_sig},
               "linux-x86_64-deb": {url: $deb_url, signature: $deb_sig}
             }}' > dist/latest.json
-          (cd dist && sha256sum -- *.deb *.AppImage > SHA256SUMS)
+          if [ -f "dist/$deb" ]; then
+            (cd dist && sha256sum -- *.deb *.AppImage > SHA256SUMS)
+          fi
           cat dist/latest.json
       - name: Create release
+        if: needs.version.outputs.build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -197,4 +223,6 @@ jobs:
               --prerelease \
               --latest=false
           fi
+          # --clobber は古いものを消してから置くので、途中で失敗すると latest.json がなくなる。
+          # そのときアプリは更新を見つけられないだけで、この workflow を再実行すれば直る。
           gh release upload desktop-tauri-updater dist/latest.json --clobber

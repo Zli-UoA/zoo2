@@ -115,6 +115,7 @@ chmod +x zoo2_0.1.0_amd64.AppImage
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | `zoo2-desktop-tauri` | AuthZ に登録したデスクトップ版の public client の ID |
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
+| `check_updates` | `ZOO_CHECK_UPDATES` | `true` | `false` にすると、新しい版を確かめない (「[更新](#更新)」) |
 | なし | `ZOO_DESKTOP_UI` | `leptos` | 画面の種類。`remote` にすると zli.chat の Web 版の画面を読み込む (試験中) |
 
 ログインで得たトークンは、そのときの接続先 (`api_base_url`) にだけ送ります。接続先や OIDC の設定を変えたら、ログインし直してください。
@@ -135,6 +136,8 @@ GitHub Releases から入れたアプリは、自分で新しい版を確かめ�
 設定とログインの状態は残ります。手で入れ直す場合は、新しいファイルを「[インストール](#インストール)」と同じ手順で入れてください (deb は `sudo apt install ./zoo2_<版>_amd64.deb`、AppImage は置き換え)。
 
 CI の成果物から入れた版 (「[開発中の版](#開発中の版)」) と、ソースから動かした場合は、自分では更新しません。
+
+更新を確かめたくないときは、設定の `check_updates = false` (環境変数なら `ZOO_CHECK_UPDATES=false`) にします。TUI と同じ設定です。
 
 画面の種類によって、更新が要る範囲が違います。
 

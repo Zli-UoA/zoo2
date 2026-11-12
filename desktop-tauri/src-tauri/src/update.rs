@@ -6,7 +6,8 @@
 //!
 //! 公開鍵 (`plugins.updater.pubkey`) は、リリースの workflow がビルドのときに入れる。空のとき
 //! (ローカルや CI のビルド) と、deb や AppImage から動いていないとき (`cargo tauri dev` など) は
-//! 何もしない。
+//! 何もしない。利用者が `check_updates = false` (`ZOO_CHECK_UPDATES=false`) にしたときも、
+//! 確かめない (TUI と同じ設定)。
 
 use std::{sync::Mutex, time::Duration};
 
@@ -42,9 +43,9 @@ struct Ready {
     bytes: Vec<u8>,
 }
 
-/// 更新の確認を始める。使えないビルドでは何もしない。
-pub fn spawn(app: &AppHandle) {
-    if !enabled(app) {
+/// 更新の確認を始める。使えないビルドと、利用者が止めたときは何もしない。
+pub fn spawn(app: &AppHandle, check_updates: bool) {
+    if !check_updates || !enabled(app) {
         return;
     }
     app.manage(Updates::default());

@@ -54,12 +54,14 @@ pub fn run() {
         ])
         .setup(move |app| {
             let config = Config::load_for(APP_NAME);
+            // 設定を読めないときは確かめる (直した版を届けられるように)。
+            let check_updates = !matches!(&config, Ok(config) if !config.check_updates);
             let core = Arc::new(core::Core::new(app.handle().clone(), ui, config));
             app.manage(core.clone());
             window::add_remote_capability(app, &core)?;
             window::create_main(app, &core)?;
             window::create_tray(app)?;
-            update::spawn(app.handle());
+            update::spawn(app.handle(), check_updates);
             core.start();
             Ok(())
         })
