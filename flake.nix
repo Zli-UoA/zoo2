@@ -103,11 +103,22 @@
             ]))
           ];
         };
+        # 画面のビルドは長いので、Rust 側の変更で作り直さないよう、ソースを画面の分だけにする。
+        desktopTauriUiSrc = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./client-types
+            (pkgs.lib.fileset.difference ./desktop-tauri/ui (pkgs.lib.fileset.unions [
+              (pkgs.lib.fileset.maybeMissing ./desktop-tauri/ui/dist)
+              (pkgs.lib.fileset.maybeMissing ./desktop-tauri/ui/target)
+            ]))
+          ];
+        };
         zoo2-desktop-tauri-ui = rustPlatform.buildRustPackage {
           pname = "zoo2-desktop-tauri-ui";
           version = desktopTauriVersion;
-          src = desktopTauriSrc;
-          sourceRoot = "${desktopTauriSrc.name}/desktop-tauri/ui";
+          src = desktopTauriUiSrc;
+          sourceRoot = "${desktopTauriUiSrc.name}/desktop-tauri/ui";
           cargoLock.lockFile = ./desktop-tauri/ui/Cargo.lock;
           # wasm-bindgen は desktop-tauri/ui/Cargo.toml で固定した版と同じもの。
           # trunk は --release で wasm-opt (binaryen) も使う。オフラインなので取りに行けない。
@@ -142,7 +153,8 @@
           '';
           # cargo tauri build と同じく、埋め込んだ画面を custom protocol で配る（devUrl を使わない）。
           buildFeatures = [ "tauri/custom-protocol" ];
-          nativeBuildInputs = with pkgs; [ pkg-config wrapGAppsHook3 copyDesktopItems ];
+          # リンクした WebKitGTK などを RUNPATH に入れる (入れないと起動時に見つからない)。
+          nativeBuildInputs = with pkgs; [ pkg-config wrapGAppsHook3 copyDesktopItems autoPatchelfHook ];
           buildInputs = tauriLibs;
           # トレイの libayatana-appindicator は dlopen で読まれる。
           preFixup = ''
