@@ -1,14 +1,15 @@
 package zoo.crypto
 
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.security.GeneralSecurityException
 import java.security.KeyStore
 import java.security.SecureRandom
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -61,7 +62,14 @@ class AndroidKeystoreWrappingKey(
     }
 }
 
-/** 包んだ保存鍵を開けない（包む鍵が消えた、別の端末に移った、ファイルが壊れた・改ざんされた）。 */
+/**
+ * 包んだ保存鍵をもう開けない（包む鍵が消えた・失効した、別の端末に移った、ファイルが壊れた・改ざんされた）。
+ * 再試行しても開けないので、呼び出し側は暗号ストアを作り直す。
+ *
+ * Keystore の一時的な失敗（`KeyStoreException`、`UnrecoverableKeyException` など）は、これにせず
+ * そのまま投げる。暗号ストアを作り直すと、Olm セッションや、まだバックアップしていない
+ * Megolm の受信用セッションが消えるため。
+ */
 class StorageKeyUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
@@ -81,7 +89,12 @@ class StorageKeyStore(
     private val wrappingKey: WrappingKeyProvider,
     private val random: SecureRandom = SecureRandom(),
 ) {
-    /** 保存鍵を読む。なければ作って保存する。返した配列は使い終わったら呼び出し側で 0 で埋める。 */
+    /**
+     * 保存鍵を読む。なければ作って保存する。返した配列は使い終わったら呼び出し側で 0 で埋める。
+     *
+     * もう開けないときは [StorageKeyUnavailableException] を投げる。それ以外の例外
+     * （Keystore の一時的な失敗など）はそのまま投げるので、呼び出し側は暗号ストアを消さずに再試行する。
+     */
     @Synchronized
     fun loadOrCreate(): ByteArray = if (file.exists()) load() else create()
 
@@ -103,8 +116,11 @@ class StorageKeyStore(
             cipher.doFinal(bytes, 1 + IV_SIZE, bytes.size - 1 - IV_SIZE).also {
                 check(it.size == KEY_SIZE)
             }
-        } catch (e: GeneralSecurityException) {
+        } catch (e: AEADBadTagException) {
+            // 包む鍵が違う（消えて作り直された、別の端末に移った）か、ファイルが改ざんされた。
             throw StorageKeyUnavailableException("保存鍵を開けません", e)
+        } catch (e: KeyPermanentlyInvalidatedException) {
+            throw StorageKeyUnavailableException("保存鍵を包む鍵が失効しました", e)
         }
     }
 

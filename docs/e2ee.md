@@ -1567,7 +1567,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   | Android | アプリの内部ストレージ | Android Keystore で包む |
   | TUI | 設定ディレクトリーのファイル（0600） | OS のキーリング。使えなければ 0600 のファイル |
 
-  - 【決定】（#353）Android の保存鍵は、Android Keystore の AES-256-GCM の鍵（`setRandomizedEncryptionRequired(true)`。IV は Keystore が作る）で包み、アプリの内部ストレージのファイルに置く（`frontend-compose` の `zoo.crypto.StorageKeyStore`）。形式は `0x01 ‖ IV（12 バイト） ‖ 暗号文とタグ（48 バイト）`、AAD は `zoo e2ee storage key v1`。保存鍵は `SecureRandom` で作る。別の端末への復元などで Keystore の鍵がないときや、ファイルが壊れたときは `StorageKeyUnavailableException` を投げ、暗号ストアを作り直して SSSS で解錠し直す。ファイルの置き場所（ユーザーや端末ごとに分けるか）と、自動バックアップから外すかは #359 で決める。
+  - 【決定】（#353）Android の保存鍵は、Android Keystore の AES-256-GCM の鍵（`setRandomizedEncryptionRequired(true)`。IV は Keystore が作る）で包み、アプリの内部ストレージのファイルに置く（`frontend-compose` の `zoo.crypto.StorageKeyStore`）。形式は `0x01 ‖ IV（12 バイト） ‖ 暗号文とタグ（48 バイト）`、AAD は `zoo e2ee storage key v1`。保存鍵は `SecureRandom` で作る。別の端末への復元などで Keystore の鍵がないときや失効したとき、ファイルが壊れたときなど、もう開けないと分かるとき（`AEADBadTagException`、`KeyPermanentlyInvalidatedException`、ファイルの形式の不一致）だけ `StorageKeyUnavailableException` を投げ、呼び出し側は暗号ストアを作り直して SSSS で解錠し直す。Keystore の一時的な失敗（`KeyStoreException`、`UnrecoverableKeyException` など）はそのまま投げ、呼び出し側は暗号ストアを消さずに再試行する（作り直すと、Olm セッションや、まだバックアップしていない Megolm の受信用セッションが消えるため）。ファイルの置き場所（ユーザーや端末ごとに分けるか）と、自動バックアップから外すかは #359 で決める。
 
 - 【決定】複数のタブが同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。【提案】他のタブは BroadcastChannel でそのタブに処理を頼む。詳細は #359 で決める。
 - 【決定】暗号ストアには、自分のユーザー署名鍵の公開鍵の履歴（初めて見たとき、保存したとき、置き換わりを検出したときに足す）と、相手ごとの `confirmed_usk` も入れる。古いユーザー署名鍵への巻き戻しの検出（[クロス署名](#クロス署名)の、ユーザー署名鍵の変更の検出手順）に使う。履歴を持たない新しい端末は気付けない（[脅威モデル](#脅威モデル)）。
