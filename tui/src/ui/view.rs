@@ -632,6 +632,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reply_free_posts_do_not_become_temporary_threads() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "empty",
+                json!({"id":"empty","user_id":"u2","channel_id":"c1",
+                "content":"No replies","created_at":"2026-11-02 00:00:00"}),
+            )]),
+        ));
+        app.current = Some("c1".into());
+        app.focus = Focus::Messages;
+        app.selected = Some("empty".into());
+        press(&mut app, KeyCode::Enter);
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "empty".into(),
+        };
+        assert!(app.thread.is_some());
+        assert!(!app.sidebar_items().contains(&row));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "empty",
+                json!({"id":"empty","user_id":"u2","channel_id":"c1",
+                "content":"No replies","created_at":"2026-11-02 00:00:00",
+                "thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        assert!(app.sidebar_items().contains(&row));
+    }
+
+    #[tokio::test]
+    async fn enter_opens_an_archived_nested_thread_from_its_parent_reply() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "r1",
+                    json!({"id":"r1","user_id":"u1","channel_id":"c1",
+                "content":"Nested root","parent_id":"m1","created_at":"2026-11-01 03:01:00",
+                "thread_archive_at":"2026-11-10 00:00:00"}),
+                ),
+                (
+                    "r2",
+                    json!({"id":"r2","user_id":"u2","channel_id":"c1",
+                "content":"Nested reply","parent_id":"r1","created_at":"2026-11-01 03:02:00"}),
+                ),
+            ]),
+        ));
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "r1".into(),
+        };
+        assert!(!app.sidebar_items().contains(&row));
+        app.current = Some("c1".into());
+        app.focus = Focus::Messages;
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r1"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "r1");
+        assert!(app.sidebar_items().contains(&row));
+        let screen = render(&mut app);
+        assert!(screen.contains("Nested reply"), "{screen}");
+        assert!(screen.contains("アーカイブ / u:再開"), "{screen}");
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.sidebar_items().contains(&row));
+        assert!(app.thread_is_archived("c1", "r1"));
+    }
+
+    #[tokio::test]
     async fn unlisted_selected_archive_stays_under_its_channel() {
         let mut app = app();
         app.on_shape(ShapeEvent::Batch(

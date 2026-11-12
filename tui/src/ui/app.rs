@@ -779,6 +779,8 @@ impl App {
                 };
                 if !items.contains(&selected)
                     && self.store.message(&channel.id, &thread.root_id).is_some()
+                    && (self.thread_is_archived(&channel.id, &thread.root_id)
+                        || !self.store.replies(&channel.id, &thread.root_id).is_empty())
                 {
                     items.push(selected);
                 }
@@ -1243,21 +1245,29 @@ impl App {
     }
 
     fn activate(&mut self) {
-        match self.focus {
-            Focus::Sidebar => self.activate_sidebar(),
-            Focus::Messages => {
-                if let Some(root_id) = self.selected.clone() {
-                    self.typing_poll.wake();
-                    self.thread = Some(ThreadView {
-                        root_id,
-                        selected: None,
-                        scroll: 0,
-                        inner_scroll: 0,
-                    });
-                    self.focus = Focus::Thread;
-                }
+        let root_id = match self.focus {
+            Focus::Sidebar => {
+                self.activate_sidebar();
+                return;
             }
-            Focus::Thread => {}
+            Focus::Messages => self.selected.clone(),
+            Focus::Thread => self.thread.as_ref().and_then(|thread| {
+                thread
+                    .selected
+                    .as_ref()
+                    .filter(|id| **id != thread.root_id)
+                    .cloned()
+            }),
+        };
+        if let Some(root_id) = root_id {
+            self.typing_poll.wake();
+            self.thread = Some(ThreadView {
+                root_id,
+                selected: None,
+                scroll: 0,
+                inner_scroll: 0,
+            });
+            self.focus = Focus::Thread;
         }
     }
 

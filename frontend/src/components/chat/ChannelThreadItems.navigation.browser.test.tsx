@@ -330,3 +330,22 @@ it("retains a reopened unlisted root after closing while refresh fails", async (
     fixture.roots[0].thread_archive_at = archiveAt;
   }
 });
+
+it("does not add a reply-free ordinary post but still shows an archived root", async () => {
+  const root = fixture.roots[0];
+  const original = { ...root };
+  root.thread_archive_at = null;
+  root.reply_count = 0;
+  fixture.get.mockResolvedValue({ items: [], next_cursor: null });
+  try {
+    const view = setup("/channels/general?thread=old");
+    await screen.findByText("Viewing:old");
+    expect(screen.queryByRole("link", { name: /Old archived conversation/ })).toBeNull();
+    view.unmount();
+    root.thread_archive_at = original.thread_archive_at;
+    setup("/channels/general?thread=old");
+    expect(await screen.findByRole("link", { name: /Old archived conversation/ })).toBeTruthy();
+  } finally {
+    Object.assign(root, original);
+  }
+});

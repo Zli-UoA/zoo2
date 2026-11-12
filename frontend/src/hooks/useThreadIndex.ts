@@ -206,13 +206,18 @@ function createIndex(
       const previous = observed.get(thread.id)?.thread;
       if (previous && JSON.stringify(previous) === JSON.stringify(thread)) return;
       observed.set(thread.id, { thread, sequence: nextThreadIndexSequence() });
-      setResult((current) => ({
-        ...(current ?? { ...EMPTY_PAGE, key, isLoading: false, isError: false }),
-        items: [
-          ...(current?.items ?? []).filter((item) => item.id !== thread.id),
-          ...(!thread.thread_archive_at ? [thread] : []),
-        ],
-      }));
+      setResult((current) => {
+        const items = current?.items ?? [];
+        const exists = items.some((item) => item.id === thread.id);
+        return {
+          ...(current ?? { ...EMPTY_PAGE, key, isLoading: false, isError: false }),
+          items: thread.thread_archive_at
+            ? items.filter((item) => item.id !== thread.id)
+            : exists
+              ? items.map((item) => (item.id === thread.id ? thread : item))
+              : [thread, ...items],
+        };
+      });
     },
     snapshot: () => result,
     loadMore: () => loadMore(),

@@ -226,3 +226,35 @@ export const SelectedArchivedThread: Story = {
     await expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
   }),
 };
+
+export const SelectedPostWithoutReplies: Story = {
+  decorators: SelectedArchivedThread.decorators,
+  parameters: {
+    a11y: { test: "error" },
+    collections: {
+      ...storyCollections,
+      messages: storyMessages
+        .filter((message) => message.parent_id !== threadRoot.id)
+        .map((message) =>
+          message.id === threadRoot.id
+            ? {
+                ...message,
+                thread_archive_at: null,
+                display_data: { ...message.display_data, reply_count: 0 },
+              }
+            : message,
+        ),
+    },
+    msw: {
+      handlers: [
+        http.get("*/api/threads", () => HttpResponse.json({ items: [], next_cursor: null })),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("link", { name: "general" })).toBeVisible();
+    await expect(
+      screen.queryByRole("link", { name: /リリースノートの下書き/ }),
+    ).not.toBeInTheDocument();
+  }),
+};

@@ -86,6 +86,7 @@
         "UnreadAndArchived",
         "Threads",
         "SelectedArchivedThread",
+        "SelectedPostWithoutReplies",
         "EmptyThreadTitle",
         "MobileThreads",
         "Sections",

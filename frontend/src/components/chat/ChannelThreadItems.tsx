@@ -88,7 +88,12 @@ export function ChannelThreadItems({
   const visible = active.filter(
     (thread) => thread.id !== selectedId || !selectedRoot?.thread_archive_at,
   );
-  if (selected && !visible.some((thread) => thread.id === selected.id)) visible.push(selected);
+  if (
+    selected &&
+    (selected.thread_archive_at || selected.reply_count > 0) &&
+    !visible.some((thread) => thread.id === selected.id)
+  )
+    visible.push(selected);
   const renderThread = (thread: ThreadSummary) => (
     <Link
       key={thread.id}

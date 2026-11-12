@@ -312,3 +312,16 @@ it("preserves a root observed after a request began and accepts a newer refresh"
   await act(async () => window.dispatchEvent(new Event("focus")));
   expect(index.threads).toEqual([]);
 });
+
+it("preserves server order when viewing an existing thread and prepends a reopened row", async () => {
+  const newest = { ...thread, id: "newest", thread_archive_at: null };
+  const older = { ...newest, id: "older" };
+  fixture.api.get.mockResolvedValue(page([newest, older]));
+  await act(async () => root.render(createElement(Test, { userId: "alice" })));
+  await act(async () => index.observeThread({ ...newest, content: "Updated title" }));
+  expect(index.threads.map((row) => row.id)).toEqual(["newest", "older"]);
+  await act(async () => index.observeThread({ ...older }));
+  expect(index.threads.map((row) => row.id)).toEqual(["newest", "older"]);
+  await act(async () => index.observeThread({ ...newest, id: "reopened" }));
+  expect(index.threads.map((row) => row.id)).toEqual(["reopened", "newest", "older"]);
+});
