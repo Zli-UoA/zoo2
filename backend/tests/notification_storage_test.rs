@@ -38,6 +38,7 @@ async fn setup() -> anyhow::Result<(Router, toasty::Db, String, String, String, 
         .channel_name(format!("inbox-{channel}"))
         .created_user_id(owner.as_str())
         .is_private(false)
+        .is_nsfw(false)
         .is_dm(false)
         .created_at(now)
         .exec(&mut db)

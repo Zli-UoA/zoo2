@@ -41,7 +41,8 @@
     "descriptionTooLong": "説明は{{max}}文字以内で入力してください（現在{{length}}文字）。",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "作成中…",
-    "create": "チャンネル作成"
+    "create": "チャンネル作成",
+    "nsfw": "NSFWチャンネル"
   },
   "sync": {
     "title": "同期の状態",
@@ -221,7 +222,12 @@
     "download": "{{name}}をダウンロード",
     "downloadShort": "ダウンロード",
     "downloadError": "ダウンロードできませんでした。",
-    "retry": "再試行"
+    "retry": "再試行",
+    "sensitive": "センシティブな画像",
+    "markSensitive": "画像をセンシティブとして投稿",
+    "showSensitive": "画像を表示",
+    "hideSensitive": "画像を隠す",
+    "sensitiveShort": "センシティブ"
   },
   "threads": {
     "title": "スレッド",

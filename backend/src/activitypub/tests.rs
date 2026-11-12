@@ -480,3 +480,32 @@ fn note_media_accepts_only_bounded_https_raster_images() {
         10
     );
 }
+
+#[test]
+fn sensitive_note_and_attachment_labels_are_preserved() {
+    let image =
+        json!({"type":"Document","mediaType":"image/png","url":"https://peer.example/photo.png"});
+    for sensitive in [false, true] {
+        let note = json!({"sensitive":sensitive,"attachment":[image.clone()]});
+        assert_eq!(emoji::note_media(&note)[0]["is_sensitive"], sensitive);
+    }
+    let mut labelled = image.clone();
+    labelled["sensitive"] = json!(true);
+    let note = json!({"sensitive":false,"attachment":[labelled,image]});
+    let media = emoji::note_media(&note);
+    assert_eq!(media[0]["is_sensitive"], true);
+    assert_eq!(media[1]["is_sensitive"], false);
+    assert!(emoji::note_media(&json!({"sensitive":true})).is_empty());
+}
+
+#[test]
+#[ignore = "requires ACTIVITYPUB_BASE_URL"]
+fn sensitive_media_is_emitted_on_note_and_document() -> anyhow::Result<()> {
+    let post = json!({"id":"sensitive","user_id":"author","content":"photo","created_at":"2026-01-01T00:00:00Z","visibility":"public","media":[{"url":"/api/home/images/1","media_type":"image/png","is_sensitive":true}]});
+    let note = note_value(&post)?;
+    assert_eq!(note["sensitive"], true);
+    assert_eq!(note["attachment"][0]["sensitive"], true);
+    let media = emoji::note_media(&note);
+    assert_eq!(media[0]["is_sensitive"], true);
+    Ok(())
+}

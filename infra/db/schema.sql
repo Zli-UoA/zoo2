@@ -2602,6 +2602,10 @@ CREATE TRIGGER users_e2ee_deactivate AFTER UPDATE OF is_deactivated, guest_kind 
   FOR EACH ROW WHEN (NEW.is_deactivated AND NOT OLD.is_deactivated)
   EXECUTE FUNCTION e2ee_delete_devices_on_deactivate();
 
+-- Explicit content labels; defaults preserve existing clients during rollout.
+ALTER TABLE channels ADD COLUMN is_nsfw boolean NOT NULL DEFAULT false;
+ALTER TABLE attachments ADD COLUMN is_sensitive boolean NOT NULL DEFAULT false;
+
 -- E2EE: to-device メッセージ（#355。仕様は docs/e2ee.md の「to-device メッセージ」と「DB」）。
 -- 宛先の端末ごとのキュー。受信確認（to_device/ack）で消す。生きている端末では時間で回収せず、
 -- 件数（1 端末 1000 件）だけで抑える。端末の削除と無効化のときに、その端末宛ての行を消す。
