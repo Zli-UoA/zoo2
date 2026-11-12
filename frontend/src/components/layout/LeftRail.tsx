@@ -65,7 +65,9 @@ export function LeftRail() {
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
   // プロフィールは AuthZ で編集する。保存後にこの画面へ戻れるよう、現在の origin を渡す。
-  const profileUrl = config.oidc ? accountProfileUrl(config.oidc.issuer, window.location.origin) : null;
+  const profileUrl = config.oidc
+    ? accountProfileUrl(config.oidc.issuer, window.location.origin)
+    : null;
   const meLabel = me ? me.display_name || me.user_name : (currentUserId ?? "?");
 
   // OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）。
