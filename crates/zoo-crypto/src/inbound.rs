@@ -558,6 +558,7 @@ mod tests {
             sender_key: alice.identity_keys().curve25519,
             sender_user_id: sender_user_id.into(),
             sender_device_id: alice.device_id().into(),
+            sender_signing_key: alice.identity_keys().ed25519,
             sender_verified: false,
             session: InboundGroupSession::new(&session.session_key(), SessionConfig::version_1()),
         }
