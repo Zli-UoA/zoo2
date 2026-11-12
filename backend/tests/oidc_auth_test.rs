@@ -263,6 +263,7 @@ async fn setup_test_app(
         issuer: issuer.clone(),
         audience: audience.clone(),
         jwks_url,
+        reauth_audiences: Vec::new(),
     };
 
     let mut config = Config::from_env();

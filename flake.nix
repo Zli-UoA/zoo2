@@ -119,6 +119,9 @@
             cargo-tauri
             trunk
             wasm-bindgen-cli
+            # zoo-crypto のテストベクター（crates/zoo-crypto/tests/vectors/gen_secret_storage_v1.py）を、
+            # zoo-crypto とは別の実装で計算し直すのに使う
+            (python3.withPackages (p: [ p.cryptography ]))
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs ++ tauriLibs ++ desktopScreenshotTools);
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           JAVA_HOME = "${pkgs.jdk21}";

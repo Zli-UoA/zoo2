@@ -80,7 +80,8 @@ pnpm test:e2e:i18n    # 本番ビルド + Playwright。バックエンド不要
 リアクションの絵文字ピッカーは [frimousse](https://frimousse.liveblocks.io)（headless）で描画し、絵文字データは `public/emojibase-data` から自前配信します。実行時に CDN へはアクセスしません。
 
 - 配信するロケールは `en` / `ja` / `ko` / `zh-hant` の4つです。アプリのロケールとの対応は `src/lib/emoji/locale.ts` の中央マップで解決します（`zh-Hans` と `yue` は繁体字データ、`ko-KR` と `ko-KP` は `ko` データを使い、未対応は `en`）。
-- frimousse は初回に選択ロケールの `data.json` と `messages.json` だけを取得し、localStorage にキャッシュします。2回目以降のオープンではキャッシュを使います。
+- frimousse は初回に選択ロケールの `data.json` と `messages.json` を取得し、localStorage にキャッシュします。2回目以降のオープンではキャッシュを使います。
+- どの言語でも英語・日本語・韓国語・中国語とピンインで検索できるよう、`resolveMultilingualEmojiData`（`src/lib/emoji/resolver.ts`）が `search-index.json`（約 940KB、gzip で約 290KB）も1回取得し、各絵文字の検索用タグに足します。取得に失敗したときは選択ロケールのデータだけで検索します。足したタグは localStorage に保存しません（frimousse が保存するのは `defaultEmojiDataResolver` が取得した元データだけ）。
 - 表示する絵文字は `SUPPORTED_EMOJI_VERSION`（`src/lib/emoji/data.ts`、現在は 16）までに制限します。バックエンドの `emojis` クレートが Unicode 16.0 までしか検証しないためで、どちらかを更新するときは両方の上限を揃えてください。
 - recents は localStorage の `zoo-recent-emoji` に最大16件、新しい順で保存します。
 - データは `emojibase-data`（devDependency）からコピーします。バージョンを更新したら次を実行し、差分をコミットしてください。
@@ -159,7 +160,7 @@ cd frontend && pnpm dev           # http://localhost:5173
 ### 経路とポイント
 
 - 読み取り: `proxy` は `VITE_API_BASE_URL` + `VITE_SHAPE_PROXY_PATH`（既定 `/api/shapes`）を購読します。バックエンドが `table` / `where` を確定し、サーバ側で `ELECTRIC_SECRET` を付けて Electric へ転送します。`messages` / `channel_users` はクエリで `channel_id` を渡します。
-- 認証: REST と Shape の両方で同じ `X-Dev-User`（と `Authorization`）を受け付けます。バックエンドは `DEV_AUTH_ENABLED=true` のときだけこのヘッダを受け付け、それ以外は 403 です。CORS はバックエンドが `CORS_ALLOWED_ORIGINS` の許可オリジンに限定し（`ENVIRONMENT=production` 以外で未設定なら `http://localhost:5173`, `http://127.0.0.1:5173`、本番で未設定なら空）、メソッドとヘッダも既知のものだけを許可しつつ `electric-*` を公開します。`direct` は Electric の CORS が `X-Dev-User` / `Authorization` を許可しないため認証ヘッダを付けません（`collections.ts` の `shapeAuthSource`）。
+- 認証: REST と Shape の両方で同じ `X-Dev-User`（と `Authorization`）を受け付けます。バックエンドは `DEV_AUTH_ENABLED=true` のときだけこのヘッダを受け付け、それ以外は 403 です。CORS はバックエンドが `CORS_ALLOWED_ORIGINS` の許可オリジンに限定し（`ENVIRONMENT=production` 以外で未設定なら `http://localhost:5173`, `http://127.0.0.1:5173`、本番で未設定なら空）、メソッドとヘッダも既知のもの（ヘッダは `Authorization`、`X-Dev-User`、`Content-Type`、`Accept`、E2EE の直前の再認証の `X-Zoo-Reauth`）だけを許可しつつ `electric-*` を公開します。`direct` は Electric の CORS が `X-Dev-User` / `Authorization` を許可しないため認証ヘッダを付けません（`collections.ts` の `shapeAuthSource`）。
 - 認可: バックエンドの channels Shape は `is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = ...)` でメンバーシップに絞ります。未参加の非公開チャンネルは Shape・メッセージのどちらも届きません（存在隠蔽のため 404）。参加/退出で channels 側の行が move-in / move-out します。
 - `channel_users` のサブクエリ経路（`electric#3143`）: Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` で動かしており、`WHERE ... IN (SELECT ... WHERE user_id = $1)` の形がそのまま通ることを実測しました（`params[1]` により move-in / move-out も配信）。`$1` をリテラルへ埋め込む回避策は不要でした。
 - 書き込み: すべて REST（`{ data, txid }`）で行い、`txid` を `awaitTxId` で Electric の配信と突き合わせます。失敗時は楽観状態がロールバックします。

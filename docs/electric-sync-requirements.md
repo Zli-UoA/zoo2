@@ -105,7 +105,7 @@ Atlas は宣言的スキーマでの `REPLICA IDENTITY` の差分検知を標準
 
 フロントエンド側は認証プロバイダを差し替えられるよう、トークン取得関数（`getToken()`）のみを持つアダプタ層を設けます。ローカル開発時は IdP なしでも動作するよう、開発用認証モード（デフォルトのローカルユーザーとして扱う、または `X-Dev-User` ヘッダでユーザーを切り替えられる仕組み）があるとフロントエンド・バックエンド双方の検証が容易になります。Shape プロキシ（読み取り）と REST API（書き込み）の両方で同じ認証ヘッダを受け付けるようにしてください。
 
-また、ローカル開発ではフロントエンド（既定: `http://localhost:5173`）からバックエンド（`http://localhost:8000`）へリクエストを送るため、CORS で許可する**オリジンの allowlist** が必要です。バックエンドは環境変数 `CORS_ALLOWED_ORIGINS`（カンマ区切り）で許可オリジンを設定し、`ENVIRONMENT=production` 以外で未設定なら dev の `http://localhost:5173` と `http://127.0.0.1:5173` を既定許可します。本番（`ENVIRONMENT=production`）は同一オリジン配信のため外部オリジンは不要で、未設定なら**空リスト**（全クロスオリジン拒否）を既定とし、明示的に設定したオリジンのみ許可します。許可メソッドは REST 用の `GET`/`POST`/`PATCH`/`DELETE`（および preflight の `OPTIONS`）、許可ヘッダは `Authorization`/`X-Dev-User`/`Content-Type`/`Accept` に限定します。本番・ステージング環境では `ELECTRIC_INSECURE` を無効化し、`ELECTRIC_SECRET` をバックエンドと Electric 間で共有する構成を想定しています。
+また、ローカル開発ではフロントエンド（既定: `http://localhost:5173`）からバックエンド（`http://localhost:8000`）へリクエストを送るため、CORS で許可する**オリジンの allowlist** が必要です。バックエンドは環境変数 `CORS_ALLOWED_ORIGINS`（カンマ区切り）で許可オリジンを設定し、`ENVIRONMENT=production` 以外で未設定なら dev の `http://localhost:5173` と `http://127.0.0.1:5173` を既定許可します。本番（`ENVIRONMENT=production`）は同一オリジン配信のため外部オリジンは不要で、未設定なら**空リスト**（全クロスオリジン拒否）を既定とし、明示的に設定したオリジンのみ許可します。許可メソッドは REST 用の `GET`/`POST`/`PATCH`/`DELETE`（および preflight の `OPTIONS`）、許可ヘッダは `Authorization`/`X-Dev-User`/`Content-Type`/`Accept`/`X-Zoo-Reauth`（E2EE の直前の再認証。docs/e2ee.md）に限定します。本番・ステージング環境では `ELECTRIC_INSECURE` を無効化し、`ELECTRIC_SECRET` をバックエンドと Electric 間で共有する構成を想定しています。
 
 ## 5. フロントエンドの先行開発方針
 

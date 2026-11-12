@@ -274,7 +274,9 @@ pub(super) async fn receive_verified(
                 "public"
             } else if cc.contains(&PUBLIC) {
                 "unlisted"
-            } else if to.contains(&string(actor, "followers_url")?) {
+            } else if to.contains(&string(actor, "followers_url")?)
+                || cc.contains(&string(actor, "followers_url")?)
+            {
                 "followers"
             } else {
                 return Err(AppError::BadRequest("Unsupported Announce audience".into()));

@@ -5,6 +5,10 @@ pub struct OidcConfig {
     pub issuer: String,
     pub audience: String,
     pub jwks_url: Option<String>,
+    /// E2EE の再認証（`X-Zoo-Reauth`）の ID トークンの `aud` として認めるクライアント ID の一覧
+    /// （`OIDC_REAUTH_AUDIENCES`、カンマ区切り。Web、Android、TUI）。空なら再認証はすべて失敗する
+    /// （起動は止めない。docs/e2ee.md の「クロス署名」）。
+    pub reauth_audiences: Vec<String>,
 }
 
 impl fmt::Debug for OidcConfig {
@@ -13,6 +17,7 @@ impl fmt::Debug for OidcConfig {
             .field("issuer", &self.issuer)
             .field("audience", &self.audience)
             .field("jwks_url", &self.jwks_url)
+            .field("reauth_audiences", &self.reauth_audiences)
             .finish()
     }
 }
@@ -311,7 +316,19 @@ pub(crate) fn parse_oidc_config(
         issuer: issuer.to_string(),
         audience: audience.to_string(),
         jwks_url,
+        reauth_audiences: Vec::new(),
     })
+}
+
+/// `OIDC_REAUTH_AUDIENCES`（カンマ区切り）をパースする。空要素は無視する。
+pub(crate) fn parse_reauth_audiences(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// `DATABASE_URL`、なければ `POSTGRES_*` から接続 URL を組み立てる（dispatcher と共有）。
@@ -355,7 +372,17 @@ impl Config {
             env::var("OIDC_AUDIENCE").ok().as_deref(),
             env::var("OIDC_CLIENT_ID").ok().as_deref(),
             env::var("OIDC_JWKS_URL").ok().as_deref(),
-        );
+        )
+        .map(|mut oidc| {
+            oidc.reauth_audiences =
+                parse_reauth_audiences(env::var("OIDC_REAUTH_AUDIENCES").ok().as_deref());
+            if oidc.reauth_audiences.is_empty() {
+                tracing::warn!(
+                    "OIDC_REAUTH_AUDIENCES is not set; E2EE operations that need re-authentication will be rejected"
+                );
+            }
+            oidc
+        });
 
         let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
 
@@ -641,6 +668,7 @@ mod tests {
                 issuer: "https://idp.example.com".to_string(),
                 audience: "zoo-client".to_string(),
                 jwks_url: Some("https://idp.example.com/jwks".to_string()),
+                reauth_audiences: Vec::new(),
             }),
             dev_auth_enabled: false,
             environment: "production".to_string(),
@@ -728,10 +756,21 @@ mod tests {
                 issuer: "https://idp.example.com".to_string(),
                 audience: "zoo-client".to_string(),
                 jwks_url: None,
+                reauth_audiences: Vec::new(),
             }),
             ..prod_no_oidc
         };
         assert!(prod_with_oidc.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parse_reauth_audiences_splits_and_trims() {
+        assert!(parse_reauth_audiences(None).is_empty());
+        assert!(parse_reauth_audiences(Some(" , ")).is_empty());
+        assert_eq!(
+            parse_reauth_audiences(Some("web, android ,tui,")),
+            vec!["web", "android", "tui"]
+        );
     }
 
     #[test]
@@ -1043,6 +1082,7 @@ mod tests {
             issuer: "https://idm.example.com".to_string(),
             audience: "zoo_client".to_string(),
             jwks_url: None,
+            reauth_audiences: Vec::new(),
         });
 
         let mut config = Config {

@@ -2105,3 +2105,37 @@ export const LocalAvatarFallback: Story = {
     await expect(avatar.querySelector("img")).toBeNull();
   }),
 };
+
+export const QuotedRenote: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...misskeyPost,
+              content: "**引用へのコメント**\n\n<https://misskey.example/notes/quoted-original>",
+            },
+            {
+              ...misskeyPost,
+              id: "https://misskey.example/notes/quote-only",
+              content: "<https://misskey.example/notes/quoted-without-comment>",
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("引用へのコメント")).toBeVisible();
+    for (const url of [
+      "https://misskey.example/notes/quoted-original",
+      "https://misskey.example/notes/quoted-without-comment",
+    ]) {
+      const link = await canvas.findByRole("link", { name: url.replace(/^https:\/\//, "") });
+      await expect(link).toHaveAttribute("href", url);
+      await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    }
+  }),
+};
