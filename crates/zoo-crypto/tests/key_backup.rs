@@ -549,3 +549,33 @@ fn selects_previous_backup_keys_by_public_key() {
         .collect();
     assert_eq!(migrate, vec![("2", older.public_key())]);
 }
+
+#[test]
+fn success_of_an_older_upload_keeps_sessions_enqueued_again() {
+    let keys = CrossSigningKeys::generate(ALICE).unwrap();
+    let backup_key = BackupDecryptionKey::generate();
+    let alice = sender();
+    let mut state = BackupUploadState::new(ALICE).unwrap();
+    state.set_secrets_revision(Some(1));
+    state
+        .accept_current_version(
+            &version("1", &backup_key, &keys),
+            &keys.master.public_key(),
+            &backup_key,
+        )
+        .unwrap();
+    state.enqueue_all(&alice.store);
+    let in_flight = state.next_upload(&alice.store, 1000).unwrap().unwrap();
+
+    // 応答を待つ間に、同じセッションがより小さい first known index の鍵に置き換わって入れ直された。
+    let session = in_flight.sessions[0].clone();
+    state.enqueue(session.clone());
+    state.upload_succeeded(&in_flight);
+    assert_eq!(state.pending_len(), 1);
+
+    // 次のアップロードで送り、その成功で外れる。
+    let next = state.next_upload(&alice.store, 1000).unwrap().unwrap();
+    assert_eq!(next.sessions, vec![session]);
+    state.upload_succeeded(&next);
+    assert_eq!(state.pending_len(), 0);
+}

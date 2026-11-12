@@ -10,7 +10,7 @@
 //! - [`BackupUploadState`]：アップロード待ちの記録と、今の版の検証の状態機械
 //! - [`select_previous_backup_keys`]、[`previous_versions_to_migrate`]：古い版の秘密鍵の退避と移行
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockModeDecrypt as _, BlockModeEncrypt as _, KeyIvInit as _};
@@ -591,7 +591,10 @@ pub struct BackupUploadState {
     user_id: String,
     max_seen_version: Option<u64>,
     secrets_revision: Option<u64>,
-    pending: BTreeSet<SessionRef>,
+    /// アップロードを待つセッションと、待ちに入れた世代（入れるたびに増やす）。
+    pending: BTreeMap<SessionRef, u64>,
+    /// 次に使う世代。
+    next_generation: u64,
     current: Option<VerifiedBackupVersion>,
 }
 
@@ -628,6 +631,9 @@ pub struct BackupUpload {
     pub body: Value,
     /// このアップロードで送るセッション（手元から消えていたものを含む）。
     pub sessions: Vec<SessionRef>,
+    /// `sessions` の各要素を待ちに入れた世代。成功したときに、要求を作ったあとで入れ直した
+    /// セッションを待ちから外さないために使う。
+    generations: Vec<u64>,
 }
 
 impl BackupUploadState {
@@ -638,7 +644,8 @@ impl BackupUploadState {
             user_id: user_id.to_owned(),
             max_seen_version: None,
             secrets_revision: None,
-            pending: BTreeSet::new(),
+            pending: BTreeMap::new(),
+            next_generation: 0,
             current: None,
         })
     }
@@ -650,7 +657,7 @@ impl BackupUploadState {
             user_id: self.user_id.clone(),
             max_seen_version: self.max_seen_version.map(|v| v.to_string()),
             secrets_revision: self.secrets_revision,
-            pending: self.pending.iter().cloned().collect(),
+            pending: self.pending.keys().cloned().collect(),
         })
         .expect("文字列と数値だけの構造体は必ず JSON にできる")
     }
@@ -674,7 +681,9 @@ impl BackupUploadState {
             .map(parse_version_number)
             .transpose()?;
         restored.secrets_revision = state.secrets_revision;
-        restored.pending = state.pending.into_iter().collect();
+        for session in state.pending {
+            restored.enqueue(session);
+        }
         Ok(restored)
     }
 
@@ -745,13 +754,19 @@ impl BackupUploadState {
     /// セッションをアップロード待ちにする（送信用セッションを作ったとき、Olm で受け取ったとき、
     /// first known index のより小さいものに置き換わったとき）。バックアップから取り込んだセッションは
     /// 入れない（同じ版には上げ直さない）。
+    ///
+    /// すでに待っているセッションを入れ直すと、新しい世代になる。送っている途中の要求が成功しても、
+    /// 入れ直したセッションは待ちに残り、次のアップロードで今の鍵を送る。
     pub fn enqueue(&mut self, session: SessionRef) {
-        self.pending.insert(session);
+        self.next_generation += 1;
+        self.pending.insert(session, self.next_generation);
     }
 
     /// 手元のセッションをすべてアップロード待ちにする（今の版が新しい版に変わったとき）。
     pub fn enqueue_all(&mut self, store: &InboundSessionStore) {
-        self.pending.extend(store.session_refs());
+        for session in store.session_refs() {
+            self.enqueue(session);
+        }
     }
 
     /// アップロードを待つセッションの数。
@@ -771,7 +786,12 @@ impl BackupUploadState {
         };
         let limit = limit.clamp(1, MAX_UPLOAD_SESSIONS);
         let encryption_key = BackupEncryptionKey::new(current.public_key);
-        let sessions: Vec<SessionRef> = self.pending.iter().take(limit).cloned().collect();
+        let (sessions, generations): (Vec<SessionRef>, Vec<u64>) = self
+            .pending
+            .iter()
+            .take(limit)
+            .map(|(session, generation)| (session.clone(), *generation))
+            .unzip();
         if sessions.is_empty() {
             return Ok(None);
         }
@@ -795,19 +815,23 @@ impl BackupUploadState {
             secrets_revision,
             body: json!({ "sessions": rows }),
             sessions,
+            generations,
         }))
     }
 
     /// アップロードが成功したら、送ったセッションを待ちから外す。今の版が変わっていたら何もしない
-    /// （新しい版にも上げ直す必要があるため）。
+    /// （新しい版にも上げ直す必要があるため）。要求を作ったあとで [`enqueue`](Self::enqueue) で
+    /// 入れ直したセッション（first known index のより小さい鍵に置き換わったものなど）は外さない。
     pub fn upload_succeeded(&mut self, upload: &BackupUpload) {
         if self
             .current
             .as_ref()
             .is_some_and(|current| current.version == upload.version)
         {
-            for session in &upload.sessions {
-                self.pending.remove(session);
+            for (session, generation) in upload.sessions.iter().zip(&upload.generations) {
+                if self.pending.get(session) == Some(generation) {
+                    self.pending.remove(session);
+                }
             }
         }
     }
