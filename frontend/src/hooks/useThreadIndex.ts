@@ -74,7 +74,10 @@ export function useThreadIndex(
           failedRequest = null;
           const previousFirstPageIds = firstPageIds;
           if (append) hasAdditionalPages = true;
-          else firstPageIds = new Set(page.items.map((item) => item.id));
+          else {
+            firstPageIds = new Set(page.items.map((item) => item.id));
+            if (page.next_cursor === null) hasAdditionalPages = false;
+          }
           if (append || !hasAdditionalPages) cursor = page.next_cursor;
           const nextCursor = cursor;
           const preserveAdditionalPages = hasAdditionalPages;
