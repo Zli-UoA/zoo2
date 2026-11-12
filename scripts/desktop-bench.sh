@@ -8,10 +8,8 @@
 #   ZOO_DESKTOP_UI=remote scripts/desktop-bench.sh tauri-remote desktop-tauri/src-tauri/target/release/zoo2-desktop-tauri
 #
 # 測るもの (ログイン前の画面で測る。実際の AuthZ ログインと backend は使わない):
-#   window_ms   起動から、root ウィンドウの絵が何もない状態から最初に変わるまで
 #   first_paint_ms 起動から、絵が空でなくなる (輝度の標準偏差が閾値以上になる) 最初の絵が出るまで
-#   settled_ms  起動から、絵が最後に落ち着いた絵と同じになり、以後変わらなくなるまで
-#               (入力欄のキャレットの点滅などで落ち着かないときは "-")
+#               (「落ち着くまで」は測らない。キャレットの点滅などで 8 秒間変わり続け、判定できなかった)
 #   rss_mib     起動 8 秒後の、プロセスと子プロセス全体の RSS の合計 (共有ページは重複して数える)
 #   rss_main_mib そのうち、起動したプロセス本体の RSS
 #   pss_mib     全体の Pss の合計 (共有ページを按分する。smaps_rollup が読めるとき)
@@ -144,11 +142,9 @@ for i in $(seq 1 "$runs"); do
       prev=$sum
     fi
     last_t=$t
-    last_sum=$sum
   done
   poll_ms=$(( last_t / polls ))
-  window_ms=$(head -1 "$frames/log" | cut -d' ' -f1)
-  [ -n "$window_ms" ] || { echo "ウィンドウの絵が出ませんでした (8 秒)" >&2; exit 1; }
+  [ -s "$frames/log" ] || { echo "ウィンドウの絵が出ませんでした (8 秒)" >&2; exit 1; }
   # 最初に空でなくなった絵
   paint=
   while read -r t sum file; do
@@ -156,10 +152,6 @@ for i in $(seq 1 "$runs"); do
     if [ "${s%.*}" -ge 5 ] 2>/dev/null; then paint=$t; break; fi
   done <"$frames/log"
   [ -n "$paint" ] || paint=-
-  # 最後に落ち着いた絵と同じになり、以後変わらなくなった時刻 (最後の変化の時刻)
-  settled=-
-  last_line=$(tail -1 "$frames/log")
-  if [ "$(echo "$last_line" | cut -d' ' -f2)" = "$last_sum" ]; then settled=$(echo "$last_line" | cut -d' ' -f1); fi
   mapfile -t tree < <(descendants "$app")
   rss=$(rss_kib "${tree[@]}")
   rss_main=$(rss_kib "$app")
@@ -170,8 +162,8 @@ for i in $(seq 1 "$runs"); do
   t1=$(cpu_ticks "${tree[@]}")
   hz=$(getconf CLK_TCK)
   cpu=$(awk -v a="$t0" -v b="$t1" -v hz="$hz" 'BEGIN { printf "%.1f", (b - a) / hz / 10 * 100 }')
-  printf '%s run=%d window_ms=%s first_paint_ms=%s settled_ms=%s poll_ms=%d rss_mib=%.0f rss_main_mib=%.0f pss_mib=%.0f cpu_idle_pct=%s procs=%d\n' \
-    "$name" "$i" "$window_ms" "$paint" "$settled" "$poll_ms" \
+  printf '%s run=%d first_paint_ms=%s poll_ms=%d rss_mib=%.0f rss_main_mib=%.0f pss_mib=%.0f cpu_idle_pct=%s procs=%d\n' \
+    "$name" "$i" "$paint" "$poll_ms" \
     "$(awk -v k="$rss" 'BEGIN{print k/1024}')" "$(awk -v k="$rss_main" 'BEGIN{print k/1024}')" "$(awk -v k="$pss" 'BEGIN{print k/1024}')" \
     "$cpu" "${#tree[@]}"
   kill "$app" 2>/dev/null || true
