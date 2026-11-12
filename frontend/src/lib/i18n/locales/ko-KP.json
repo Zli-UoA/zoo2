@@ -41,7 +41,8 @@
     "descriptionTooLong": "설명은 {{max}}자 이내로 입력하십시오(현재 {{length}}자).",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "만드는 중…",
-    "create": "통로 만들기"
+    "create": "통로 만들기",
+    "nsfw": "NSFW 통로"
   },
   "sync": {
     "title": "동기화 상태",
@@ -221,7 +222,12 @@
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
     "downloadError": "내려받지 못했습니다.",
-    "retry": "다시 시도"
+    "retry": "다시 시도",
+    "sensitive": "민감한 화상",
+    "markSensitive": "화상을 민감한 내용으로 표시",
+    "showSensitive": "화상 표시",
+    "hideSensitive": "화상 숨기기",
+    "sensitiveShort": "민감한 화상"
   },
   "threads": {
     "title": "타래",

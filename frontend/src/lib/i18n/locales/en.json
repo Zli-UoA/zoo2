@@ -41,7 +41,8 @@
     "descriptionTooLong": "Description must be {{max}} characters or fewer (currently {{length}}).",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "Creating…",
-    "create": "Create channel"
+    "create": "Create channel",
+    "nsfw": "NSFW channel"
   },
   "sync": {
     "title": "Sync status",
@@ -221,7 +222,12 @@
     "download": "Download {{name}}",
     "downloadShort": "Download",
     "downloadError": "Could not download the file.",
-    "retry": "Try again"
+    "retry": "Try again",
+    "sensitive": "Sensitive image",
+    "markSensitive": "Mark images as sensitive",
+    "showSensitive": "Show image",
+    "hideSensitive": "Hide image",
+    "sensitiveShort": "Sensitive"
   },
   "threads": {
     "title": "Thread",

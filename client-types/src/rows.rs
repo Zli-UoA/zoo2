@@ -18,6 +18,8 @@ pub struct Channel {
     pub channel_name: String,
     pub description: Option<String>,
     pub is_private: bool,
+    #[serde(default)]
+    pub is_nsfw: bool,
     pub is_dm: bool,
     pub archive_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
@@ -71,6 +73,8 @@ pub struct Attachment {
     pub file_size: i64,
     pub content_type: String,
     pub storage_key: String,
+    #[serde(default)]
+    pub is_sensitive: bool,
     pub created_at: DateTime,
 }
 
@@ -158,6 +162,7 @@ impl FromRow for Channel {
             channel_name: text(row, "channel_name")?,
             description: opt_text(row, "description"),
             is_private: boolean(row, "is_private")?,
+            is_nsfw: opt_boolean(row, "is_nsfw")?.unwrap_or(false),
             // 古いスキーマには is_dm がないため、無ければ通常のチャンネルとして扱う。
             is_dm: opt_boolean(row, "is_dm")?.unwrap_or(false),
             archive_at: opt_time(row, "archive_at")?,
@@ -227,6 +232,7 @@ impl FromRow for Attachment {
             file_size: integer(row, "file_size")?,
             content_type: text(row, "content_type")?,
             storage_key: text(row, "storage_key")?,
+            is_sensitive: opt_boolean(row, "is_sensitive")?.unwrap_or(false),
             created_at: time(row, "created_at")?,
         })
     }
@@ -338,11 +344,12 @@ mod tests {
     fn parses_electric_text_values() {
         let channel = Channel::from_row(&row(json!({
             "id": "c1", "channel_name": "general", "description": null,
-            "is_private": "f", "is_dm": "true", "archive_at": "2026-11-01 01:02:03.456",
+            "is_private": "f", "is_nsfw": "t", "is_dm": "true", "archive_at": "2026-11-01 01:02:03.456",
             "deleted_at": null
         })))
         .unwrap();
         assert!(!channel.is_private);
+        assert!(channel.is_nsfw);
         assert!(channel.is_dm);
         assert_eq!(
             channel.archive_at.unwrap().to_string(),
@@ -365,6 +372,7 @@ mod tests {
         })))
         .unwrap();
         assert!(!channel.is_dm);
+        assert!(!channel.is_nsfw);
     }
 
     #[test]
@@ -395,10 +403,12 @@ mod tests {
             "file_size": 12345,
             "content_type": "image/png",
             "storage_key": "keys/photo.png",
+            "is_sensitive": "t",
             "created_at": "2026-11-01 12:00:00"
         })))
         .unwrap();
         assert_eq!(attachment.id, "att1");
+        assert!(attachment.is_sensitive);
         assert_eq!(attachment.file_size, 12345);
         assert_eq!(attachment.content_type, "image/png");
 

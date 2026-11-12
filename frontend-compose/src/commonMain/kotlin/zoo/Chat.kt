@@ -1344,6 +1344,7 @@ internal fun Composer(
             updateTyping(false)
             val drafts = attachments.items.toList()
             val attachmentIds = drafts.mapNotNull { it.uploaded?.text("id") }
+            val sensitiveAttachmentIds = drafts.filter { it.sensitive }.mapNotNull { it.uploaded?.text("id") }
             attachments.items.clear()
             attachments.error = null
             sendError = null
@@ -1353,7 +1354,7 @@ internal fun Composer(
                 val successful =
                     try {
                         sendMessage?.invoke(sent.trim(), commandAppId, attachmentIds)
-                            ?: app.send(channel, sent.trim(), parent, commandAppId, attachmentIds)
+                            ?: app.send(channel, sent.trim(), parent, commandAppId, attachmentIds, sensitiveAttachmentIds)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {

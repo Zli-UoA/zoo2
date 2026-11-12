@@ -27,6 +27,10 @@ pub struct CreateMessageRequest {
     pub content: String,
     pub parent_id: Option<String>,
     pub attachment_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub sensitive: bool,
+    #[serde(default)]
+    pub sensitive_attachment_ids: Vec<String>,
     #[serde(default = "default_message_kind")]
     pub kind: String,
     #[serde(default)]
@@ -278,6 +282,15 @@ pub(crate) async fn create_message_impl(
         )));
     }
 
+    if payload
+        .sensitive_attachment_ids
+        .iter()
+        .any(|id| !attachment_ids.contains(id))
+    {
+        return Err(AppError::BadRequest(
+            "Sensitive attachment IDs must belong to this message".into(),
+        ));
+    }
     validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
     if !matches!(payload.kind.as_str(), "message" | "emote")
         || payload.broadcast && payload.parent_id.is_none()
@@ -643,7 +656,7 @@ pub(crate) async fn create_message_impl(
     // 添付ファイルの紐付け (条件付き原子的 UPDATE)
     for (att_id, metadata) in &verified_attachments {
         let rows = toasty::sql::query(
-            "UPDATE attachments SET message_id = $1, width = NULLIF($5,'')::integer, height = NULLIF($6,'')::integer, blurhash = NULLIF($7,'')
+            "UPDATE attachments SET message_id = $1, width = NULLIF($5,'')::integer, height = NULLIF($6,'')::integer, blurhash = NULLIF($7,''), is_sensitive = is_sensitive OR $8::boolean OR (SELECT is_nsfw FROM channels WHERE id=$4)
              WHERE id = $2 AND uploader_id = $3 AND channel_id = $4
                AND message_id IS NULL
                AND created_at > (now() AT TIME ZONE 'UTC') - INTERVAL '23 hours'
@@ -656,6 +669,7 @@ pub(crate) async fn create_message_impl(
         .bind(metadata.as_ref().map(|m| m.width.to_string()).unwrap_or_default())
         .bind(metadata.as_ref().map(|m| m.height.to_string()).unwrap_or_default())
         .bind(metadata.as_ref().map(|m| m.blurhash.as_str()).unwrap_or_default())
+        .bind((payload.sensitive || payload.sensitive_attachment_ids.contains(att_id)).to_string())
         .exec(&mut tx)
         .await?;
 

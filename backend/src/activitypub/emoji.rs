@@ -44,6 +44,15 @@ pub(super) fn avatar(value: &Value) -> Option<Value> {
         Some(json!({"url":url,"image_id":image_id}))
     })
 }
+pub(super) fn note_media(note: &Value) -> Vec<Value> {
+    let mut images = media(&note["attachment"]);
+    if note["sensitive"] == true {
+        for image in &mut images {
+            image["is_sensitive"] = json!(true);
+        }
+    }
+    images
+}
 pub(super) fn media(value: &Value) -> Vec<Value> {
     let values = value
         .as_array()
@@ -62,6 +71,7 @@ pub(super) fn media(value: &Value) -> Vec<Value> {
             }
             let mut image = avatar(item)?;
             image["media_type"] = json!(mime);
+            image["is_sensitive"] = json!(item["sensitive"] == true);
             image["name"] = json!(
                 item["name"]
                     .as_str()
