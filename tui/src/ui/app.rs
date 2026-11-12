@@ -134,7 +134,8 @@ pub struct App {
     pub focus: Focus,
     pub mode: Mode,
     pub sidebar_index: usize,
-    pub threads: Vec<ThreadSummary>,
+    pub active_threads: Vec<ThreadSummary>,
+    pub archived_threads: Vec<ThreadSummary>,
     /// 遅れた取得結果で、再開後の一覧を上書きしないための取得開始時刻。
     threads_requested_at: [Option<Instant>; 2],
     pub thread_cursors: [Option<String>; 2],
@@ -195,7 +196,8 @@ impl App {
             focus: Focus::Sidebar,
             mode: Mode::Normal,
             sidebar_index: 0,
-            threads: Vec::new(),
+            active_threads: Vec::new(),
+            archived_threads: Vec::new(),
             threads_requested_at: [None, None],
             thread_cursors: [None, None],
             show_archived_threads: false,
@@ -306,12 +308,20 @@ impl App {
                     });
                 }
                 if !append {
-                    self.threads
-                        .retain(|entry| entry.thread_archive_at.is_some() != archived);
+                    if archived {
+                        self.archived_threads.clear();
+                    } else {
+                        self.active_threads.clear();
+                    }
                 }
                 for thread in threads {
-                    self.threads.retain(|entry| entry.id != thread.id);
-                    self.threads.push(thread);
+                    self.active_threads.retain(|entry| entry.id != thread.id);
+                    self.archived_threads.retain(|entry| entry.id != thread.id);
+                    if archived {
+                        self.archived_threads.push(thread);
+                    } else {
+                        self.active_threads.push(thread);
+                    }
                 }
                 self.thread_cursors[scope] = next_cursor;
                 self.threads_requested_at[scope] = Some(requested_at);
@@ -319,8 +329,14 @@ impl App {
             }
             AppEvent::ThreadsChanged { reopened } => {
                 if let Some(id) = reopened {
-                    if let Some(thread) = self.threads.iter_mut().find(|entry| entry.id == id) {
+                    if let Some(index) = self
+                        .archived_threads
+                        .iter()
+                        .position(|entry| entry.id == id)
+                    {
+                        let mut thread = self.archived_threads.remove(index);
                         thread.thread_archive_at = None;
+                        self.active_threads.insert(0, thread);
                     }
                     // 再開前の一覧で、確定済みの状態を上書きしない。
                     self.threads_requested_at = [Some(Instant::now()); 2];
@@ -454,6 +470,42 @@ impl App {
         });
     }
 
+    pub fn threads(&self) -> impl Iterator<Item = &ThreadSummary> {
+        self.active_threads
+            .iter()
+            .chain(self.archived_threads.iter())
+    }
+
+    pub fn thread_is_archived(&self, channel_id: &str, root_id: &str) -> bool {
+        self.threads()
+            .any(|thread| thread.id == root_id && thread.thread_archive_at.is_some())
+            || self
+                .store
+                .message(channel_id, root_id)
+                .is_some_and(|root| root.thread_archive_at.is_some())
+    }
+
+    fn can_change_message(&mut self, message_id: &str) -> bool {
+        let Some(channel_id) = self.current.as_deref() else {
+            return false;
+        };
+        let root_id = self
+            .store
+            .message(channel_id, message_id)
+            .and_then(|message| message.parent_id.as_deref())
+            .unwrap_or(message_id);
+        let archived = self.thread_is_archived(channel_id, root_id)
+            || (self.focus == Focus::Thread
+                && self
+                    .thread
+                    .as_ref()
+                    .is_some_and(|thread| self.thread_is_archived(channel_id, &thread.root_id)));
+        if archived {
+            self.notify("アーカイブ済みスレッドの変更は再開後に行ってください");
+        }
+        !archived
+    }
+
     pub fn sidebar_items(&self) -> Vec<SidebarItem> {
         let mut items = Vec::new();
         for channel in self.store.channels() {
@@ -461,7 +513,7 @@ impl App {
             if channel.is_dm || !self.store.is_member(&channel.id, &self.me.id) {
                 continue;
             }
-            for thread in self.threads.iter().filter(|thread| {
+            for thread in self.threads().filter(|thread| {
                 thread.channel_id == channel.id
                     && (self.show_archived_threads || thread.thread_archive_at.is_none())
             }) {
@@ -628,7 +680,9 @@ impl App {
             Mode::Normal => self.on_normal_key(key),
             Mode::Insert => self.on_insert_key(key),
             Mode::ConfirmDelete { message_id } => {
-                if matches!(key.code, KeyCode::Char('y' | 'Y')) {
+                if matches!(key.code, KeyCode::Char('y' | 'Y'))
+                    && self.can_change_message(&message_id)
+                {
                     // スレッドの親を消したら、スレッドも閉じる。
                     if self
                         .thread
@@ -677,7 +731,9 @@ impl App {
             KeyCode::Char('e') => self.start_edit(),
             KeyCode::Char('d') => self.confirm_delete(),
             KeyCode::Char('r') => {
-                if let Some((_, message_id)) = self.focused_message() {
+                if let Some((_, message_id)) = self.focused_message()
+                    && self.can_change_message(&message_id)
+                {
                     self.mode = Mode::React {
                         message_id,
                         input: String::new(),
@@ -781,6 +837,9 @@ impl App {
 
     /// 自分がすでに付けた絵文字なら外し、そうでなければ付ける。
     fn toggle_reaction(&mut self, message_id: String, emoji: String) {
+        if !self.can_change_message(&message_id) {
+            return;
+        }
         let Some(channel_id) = self.current.clone() else {
             return;
         };
@@ -817,8 +876,7 @@ impl App {
                         .unwrap_or_default(),
                     SidebarItem::MoreThreads { .. } => return false,
                     SidebarItem::Thread { id, .. } => self
-                        .threads
-                        .iter()
+                        .threads()
                         .find(|thread| thread.id == *id)
                         .map(|thread| thread.content.clone())
                         .unwrap_or_default(),
@@ -1050,6 +1108,9 @@ impl App {
         let Some((channel_id, message_id)) = self.focused_message() else {
             return;
         };
+        if !self.can_change_message(&message_id) {
+            return;
+        }
         let Some(message) = self.store.message(&channel_id, &message_id) else {
             return;
         };
@@ -1071,6 +1132,9 @@ impl App {
         let Some((channel_id, message_id)) = self.focused_message() else {
             return;
         };
+        if !self.can_change_message(&message_id) {
+            return;
+        }
         if self
             .store
             .message(&channel_id, &message_id)
@@ -1116,6 +1180,11 @@ impl App {
     }
 
     fn submit(&mut self) {
+        if let Target::Edit(message_id) = self.target.clone()
+            && !self.can_change_message(&message_id)
+        {
+            return;
+        }
         let content = self.composer.lines().join("\n");
         if content.trim().is_empty() {
             return;
@@ -1298,7 +1367,7 @@ mod tests {
             .mount(&server)
             .await;
         let (mut app, mut rx) = api_test_app(&server.uri());
-        app.threads.push(ThreadSummary {
+        app.archived_threads.push(ThreadSummary {
             id: "root".into(),
             channel_id: "c1".into(),
             content: "Thread".into(),
@@ -1319,7 +1388,7 @@ mod tests {
             .unwrap();
         assert!(matches!(&event, AppEvent::ThreadsChanged { reopened: Some(id) } if id == "root"));
         app.on_app_event(event);
-        assert!(app.threads[0].thread_archive_at.is_none());
+        assert!(app.active_threads[0].thread_archive_at.is_none());
         assert!(
             tokio::time::timeout(Duration::from_millis(200), rx.recv())
                 .await
@@ -1354,7 +1423,8 @@ mod tests {
             .mount(&server)
             .await;
         let (mut app, mut rx) = api_test_app(&server.uri());
-        app.threads.push(ThreadSummary {
+        app.current = Some("c1".into());
+        app.active_threads.push(ThreadSummary {
             id: "root".into(),
             channel_id: "c1".into(),
             content: "Thread".into(),
@@ -1375,8 +1445,60 @@ mod tests {
                 .unwrap();
             app.on_app_event(event);
         }
-        assert!(app.threads.is_empty());
+        assert!(app.active_threads.is_empty());
         assert!(app.notice.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_changes_do_not_reach_the_api_after_a_thread_is_archived() {
+        let server = wiremock::MockServer::start().await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        app.current = Some("c1".into());
+        app.archived_threads.push(ThreadSummary {
+            id: "root".into(),
+            channel_id: "c1".into(),
+            content: "Archived".into(),
+            thread_archive_at: Some("2026-11-10".into()),
+            reply_count: 1,
+        });
+        app.mode = Mode::ConfirmDelete {
+            message_id: "root".into(),
+        };
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.mode, Mode::Normal);
+        app.mode = Mode::React {
+            message_id: "root".into(),
+            input: "thumbsup".into(),
+        };
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.mode, Mode::Normal);
+        app.mode = Mode::Insert;
+        app.target = Target::Edit("root".into());
+        app.composer = composer_with("Edited reply");
+        app.on_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.composer.lines().join("\n"), "Edited reply");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .is_err()
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.method == "GET")
+        );
     }
 
     #[test]

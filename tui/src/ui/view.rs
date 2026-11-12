@@ -82,7 +82,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .filter_map(|(index, item)| {
             if let SidebarItem::Thread { id, .. } = item {
-                let thread = app.threads.iter().find(|thread| thread.id == *id)?;
+                let thread = app.threads().find(|thread| thread.id == *id)?;
                 let archived = thread.thread_archive_at.is_some();
                 let name = thread
                     .content
@@ -256,14 +256,7 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let (Some(channel_id), Some(thread)) = (app.current.clone(), app.thread.as_ref()) else {
         return;
     };
-    let archived = app
-        .threads
-        .iter()
-        .any(|entry| entry.id == thread.root_id && entry.thread_archive_at.is_some())
-        || app
-            .store
-            .message(&channel_id, &thread.root_id)
-            .is_some_and(|root| root.thread_archive_at.is_some());
+    let archived = app.thread_is_archived(&channel_id, &thread.root_id);
     let title = if archived {
         " スレッド (アーカイブ / u:再開) "
     } else {
@@ -612,13 +605,6 @@ mod tests {
                     reply_count: 1,
                 },
                 ThreadSummary {
-                    id: "r1".into(),
-                    channel_id: "c1".into(),
-                    content: "Nested history".into(),
-                    thread_archive_at: Some("2026-11-10T00:00:00".into()),
-                    reply_count: 1,
-                },
-                ThreadSummary {
                     id: "secret".into(),
                     channel_id: "c2".into(),
                     content: "Hidden thread".into(),
@@ -626,6 +612,19 @@ mod tests {
                     reply_count: 1,
                 },
             ],
+        });
+        app.on_app_event(AppEvent::Threads {
+            archived: true,
+            append: false,
+            next_cursor: None,
+            requested_at: std::time::Instant::now(),
+            threads: vec![ThreadSummary {
+                id: "r1".into(),
+                channel_id: "c1".into(),
+                content: "Nested history".into(),
+                thread_archive_at: Some("2026-11-10T00:00:00".into()),
+                reply_count: 1,
+            }],
         });
         assert_eq!(app.sidebar_items().len(), 3);
         assert!(render(&mut app).contains("Active thread"));
@@ -644,6 +643,120 @@ mod tests {
         assert_eq!(app.thread.as_ref().unwrap().root_id, "r1");
         assert!(render(&mut app).contains("アーカイブ / u:再開"));
         assert!(render(&mut app).contains("返信です"));
+    }
+
+    #[tokio::test]
+    async fn refreshing_either_thread_list_keeps_active_threads_before_history() {
+        let mut app = app();
+        app.show_archived_threads = true;
+        let active = ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "Active".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        };
+        let archived = ThreadSummary {
+            id: "r1".into(),
+            thread_archive_at: Some("2026-11-10".into()),
+            ..active.clone()
+        };
+        for (archived_scope, append, threads, expected) in [
+            (false, false, vec![active.clone()], vec!["m1"]),
+            (true, false, vec![archived.clone()], vec!["m1", "r1"]),
+            (false, false, vec![active.clone()], vec!["m1", "r1"]),
+            (true, false, vec![archived], vec!["m1", "r1"]),
+            (
+                false,
+                true,
+                vec![ThreadSummary {
+                    id: "older".into(),
+                    ..active
+                }],
+                vec!["m1", "older", "r1"],
+            ),
+        ] {
+            app.on_app_event(AppEvent::Threads {
+                archived: archived_scope,
+                append,
+                threads,
+                next_cursor: None,
+                requested_at: std::time::Instant::now(),
+            });
+            let ids: Vec<_> = app
+                .sidebar_items()
+                .into_iter()
+                .filter_map(|item| match item {
+                    SidebarItem::Thread { id, .. } => Some(id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(ids, expected);
+            if ids.len() > 1 {
+                app.sidebar_index = app
+                    .sidebar_items()
+                    .iter()
+                    .position(|item| matches!(item, SidebarItem::Thread { id, .. } if id == "r1"))
+                    .unwrap();
+            }
+        }
+        assert!(matches!(&app.sidebar_items()[app.sidebar_index],
+            SidebarItem::Thread { id, .. } if id == "r1"));
+    }
+
+    #[tokio::test]
+    async fn archived_thread_changes_require_reopening_but_replies_remain_available() {
+        let mut app = app();
+        app.open_channel("c1".into());
+        app.focus = Focus::Thread;
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "m1".into(),
+            selected: Some("r1".into()),
+            scroll: 0,
+            inner_scroll: 0,
+        });
+        let archived = ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "Archived".into(),
+            thread_archive_at: Some("2026-11-10".into()),
+            reply_count: 1,
+        };
+        app.on_app_event(AppEvent::Threads {
+            archived: true,
+            append: false,
+            next_cursor: None,
+            requested_at: std::time::Instant::now(),
+            threads: vec![archived.clone()],
+        });
+        for key in ['r', 'e', 'd'] {
+            press(&mut app, KeyCode::Char(key));
+            assert_eq!(app.mode, Mode::Normal);
+        }
+        assert!(app.composer.is_empty());
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.target, crate::ui::app::Target::Reply("m1".into()));
+        press(&mut app, KeyCode::Esc);
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            next_cursor: None,
+            requested_at: std::time::Instant::now(),
+            threads: vec![ThreadSummary {
+                thread_archive_at: None,
+                ..archived
+            }],
+        });
+        press(&mut app, KeyCode::Char('r'));
+        assert!(matches!(app.mode, Mode::React { .. }));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('d'));
+        assert!(matches!(app.mode, Mode::ConfirmDelete { .. }));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.target, crate::ui::app::Target::Edit("r1".into()));
     }
 
     #[tokio::test]
@@ -755,7 +868,7 @@ mod tests {
                 ..active
             }],
         });
-        assert!(app.threads[0].thread_archive_at.is_none());
+        assert!(app.active_threads[0].thread_archive_at.is_none());
     }
 
     #[tokio::test]
