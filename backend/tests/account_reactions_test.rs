@@ -11,7 +11,8 @@ async fn account_reactions_can_be_added_and_removed_without_a_workspace_registry
 -> anyhow::Result<()> {
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
-    let app = create_router(AppState::new(init_db(&config.database_url).await?, config));
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
     let user = uuid::Uuid::new_v4().to_string();
     let channel = uuid::Uuid::new_v4().to_string();
     let message = uuid::Uuid::new_v4().to_string();
@@ -55,6 +56,23 @@ async fn account_reactions_can_be_added_and_removed_without_a_workspace_registry
         StatusCode::OK
     );
     assert_eq!(
+        send(&app, "POST", &path, &user, json!({"emoji":":@alice:"})).await,
+        StatusCode::OK
+    );
+    let mut check_db = db.clone();
+    assert_eq!(
+        backend::models::MessageReaction::filter(
+            backend::models::MessageReaction::fields()
+                .message_id()
+                .eq(message.as_str())
+        )
+        .exec(&mut check_db)
+        .await?
+        .len(),
+        1
+    );
+
+    assert_eq!(
         send(
             &app,
             "DELETE",
@@ -64,6 +82,16 @@ async fn account_reactions_can_be_added_and_removed_without_a_workspace_registry
         )
         .await,
         StatusCode::OK
+    );
+    assert!(
+        backend::models::MessageReaction::filter(
+            backend::models::MessageReaction::fields()
+                .message_id()
+                .eq(message.as_str())
+        )
+        .exec(&mut check_db)
+        .await?
+        .is_empty()
     );
     assert_eq!(
         send(

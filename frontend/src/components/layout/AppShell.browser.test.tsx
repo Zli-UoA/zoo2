@@ -15,8 +15,6 @@ import { page } from "vite-plus/test/browser/context";
 import { AppShell } from "./AppShell";
 import { useShell } from "./shell-context";
 
-vi.mock("../../lib/emoji/accounts", () => ({ useAuthZAccounts: () => [] }));
-
 vi.mock("../preferences/SearchPreferences", () => ({
   SearchPreferencesProvider: ({ children }: { children: import("react").ReactNode }) => children,
 }));

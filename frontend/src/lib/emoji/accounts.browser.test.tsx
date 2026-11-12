@@ -4,15 +4,24 @@ import { http, HttpResponse } from "msw";
 import { mockServer, startMockServer } from "../../test/browser-setup";
 import { DEFAULT_CONFIG } from "../config";
 import { useAuthZAccounts } from "./accounts";
-const fixture = vi.hoisted(() => ({ config: {} as import("../config").AppConfig }));
+const fixture = vi.hoisted(() => ({
+  config: {} as import("../config").AppConfig,
+  available: true,
+}));
 vi.mock("../electric/collections-context", () => ({
-  useCollections: () => ({ config: fixture.config }),
+  useOptionalCollections: () => (fixture.available ? fixture : null),
+}));
+vi.mock("../electric/collections", () => ({
+  getCollections: () => {
+    throw Error("fixture invalid config");
+  },
 }));
 function Consumer({ id }: { id: string }) {
   const accounts = useAuthZAccounts();
   return <output aria-label={id}>{accounts.map((a) => a.display_name).join(",")}</output>;
 }
 beforeEach(async () => {
+  fixture.available = true;
   fixture.config = {
     ...DEFAULT_CONFIG,
     apiBaseUrl: "https://accounts.fixture.test",
@@ -45,4 +54,10 @@ it("uses the authenticated directory, coalesces consumers, and clears profiles o
   render(<Consumer id="next" />);
   await waitFor(() => expect(calls).toBe(2));
   await waitFor(() => expect(screen.getByLabelText("next").textContent).toBe(""));
+});
+
+it("a configuration failure leaves the optional directory empty without crashing its parent", async () => {
+  fixture.available = false;
+  render(<Consumer id="unconfigured" />);
+  await waitFor(() => expect(screen.getByLabelText("unconfigured").textContent).toBe(""));
 });
