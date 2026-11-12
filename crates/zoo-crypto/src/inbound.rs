@@ -8,13 +8,15 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use vodozemac::Curve25519PublicKey;
 use vodozemac::megolm::{
     DecryptionError, ExportedSessionKey, InboundGroupSession, MegolmMessage, SessionConfig,
     SessionOrdering,
 };
+use vodozemac::{Curve25519PublicKey, Ed25519PublicKey};
 
+use crate::backup::BackedUpSessionData;
 use crate::device::{DeviceAccount, MEGOLM_ALGORITHM};
 use crate::megolm::{MessagePayload, OutboundSession};
 use crate::olm::ReceivedRoomKey;
@@ -58,6 +60,8 @@ pub struct BackupSession {
     pub sender_user_id: String,
     /// 送信端末（と書かれている値）。
     pub sender_device_id: String,
+    /// 送信端末の署名鍵（平文の `sender_claimed_keys.ed25519` と書かれている値）。
+    pub sender_signing_key: Ed25519PublicKey,
     /// セッションの epoch。
     pub epoch: u64,
     /// vodozemac の `ExportedSessionKey` の base64。
@@ -72,6 +76,7 @@ impl std::fmt::Debug for BackupSession {
             .field("session_id", &self.session_id)
             .field("sender_user_id", &self.sender_user_id)
             .field("sender_device_id", &self.sender_device_id)
+            .field("sender_signing_key", &self.sender_signing_key)
             .field("epoch", &self.epoch)
             .finish_non_exhaustive()
     }
@@ -133,6 +138,8 @@ struct StoredSession {
     session: InboundGroupSession,
     sender_user_id: String,
     sender_device_id: String,
+    /// 鍵バックアップの `sender_claimed_keys.ed25519` に入れる値。
+    sender_signing_key: Ed25519PublicKey,
     epoch: u64,
     sender_verified: bool,
 }
@@ -143,11 +150,24 @@ struct Slot {
     backup: Option<StoredSession>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct SessionKeyId {
-    channel_id: String,
-    sender_key: String,
-    session_id: String,
+/// 受信用セッションのキー `(channel_id, sender_key, session_id)`。
+///
+/// 鍵バックアップの行の区別と、アップロード待ちの記録（[`BackupUploadState`](crate::BackupUploadState)）にも使う。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SessionRef {
+    /// セッションを使うチャンネル。
+    pub channel_id: String,
+    /// 送信端末の識別鍵（パディングなしの base64）。
+    pub sender_key: String,
+    /// Megolm セッション ID。
+    pub session_id: String,
+}
+
+/// 鍵バックアップに上げるために書き出したセッション。
+pub(crate) struct ExportedForBackup {
+    pub(crate) data: BackedUpSessionData,
+    pub(crate) first_message_index: u32,
+    pub(crate) is_verified: bool,
 }
 
 /// Megolm の受信用セッションと、リプレイと版の記録。
@@ -155,7 +175,7 @@ struct SessionKeyId {
 /// I/O を持たないメモリー上の状態。保存（暗号ストア）は #359 で足す。
 #[derive(Default)]
 pub struct InboundSessionStore {
-    sessions: HashMap<SessionKeyId, Slot>,
+    sessions: HashMap<SessionRef, Slot>,
     /// `(session_id, message_index)` ごとに、最初に復号した `message_id`。
     first_message_ids: HashMap<(String, u32), String>,
     /// `message_id` ごとに、見た中で最大の `revision` と、その平文の Canonical JSON。
@@ -184,7 +204,7 @@ impl InboundSessionStore {
     /// 捨て、同じなら first known index が小さい方を残す。バックアップ由来のセッションとは
     /// 比べない。
     pub fn add_room_key(&mut self, room_key: ReceivedRoomKey) -> AddOutcome {
-        let key = SessionKeyId {
+        let key = SessionRef {
             channel_id: room_key.channel_id,
             sender_key: room_key.sender_key.to_base64(),
             session_id: room_key.session.session_id(),
@@ -193,6 +213,7 @@ impl InboundSessionStore {
             session: room_key.session,
             sender_user_id: room_key.sender_user_id,
             sender_device_id: room_key.sender_device_id,
+            sender_signing_key: room_key.sender_signing_key,
             epoch: room_key.epoch,
             sender_verified: room_key.sender_verified,
         };
@@ -234,6 +255,7 @@ impl InboundSessionStore {
             sender_key: account.identity_keys().curve25519,
             sender_user_id: account.user_id().to_owned(),
             sender_device_id: account.device_id().to_owned(),
+            sender_signing_key: account.identity_keys().ed25519,
             sender_verified: true,
             session: InboundGroupSession::new(&session_key, SessionConfig::version_1()),
         })
@@ -257,7 +279,7 @@ impl InboundSessionStore {
                 "session_key から導いた session_id が宣言と違います".into(),
             ));
         }
-        let key = SessionKeyId {
+        let key = SessionRef {
             channel_id: backup.channel_id,
             sender_key: backup.sender_key.to_base64(),
             session_id: backup.session_id,
@@ -266,6 +288,7 @@ impl InboundSessionStore {
             session,
             sender_user_id: backup.sender_user_id,
             sender_device_id: backup.sender_device_id,
+            sender_signing_key: backup.sender_signing_key,
             epoch: backup.epoch,
             sender_verified: false,
         };
@@ -290,6 +313,44 @@ impl InboundSessionStore {
         })
     }
 
+    /// 保存しているセッションのキーをすべて返す（順は決まっていない）。
+    ///
+    /// 鍵バックアップの今の版が変わったときに、手元のセッションをすべてアップロード待ちにするのに使う
+    /// （[`BackupUploadState::enqueue_all`](crate::BackupUploadState::enqueue_all)）。
+    pub fn session_refs(&self) -> Vec<SessionRef> {
+        self.sessions.keys().cloned().collect()
+    }
+
+    /// 鍵バックアップに上げる形に書き出す。Olm 由来があればそれを、なければバックアップ由来を使う。
+    ///
+    /// `is_verified` は Olm 由来で、送信端末が検証済みのときだけ true にする。サーバーが残す行を
+    /// 決めるためだけの値で、取り込む端末は送信者の判定に使わない。
+    pub(crate) fn export_for_backup(&self, key: &SessionRef) -> Option<ExportedForBackup> {
+        let slot = self.sessions.get(key)?;
+        let (stored, is_verified) = match (&slot.olm, &slot.backup) {
+            (Some(olm), _) => (olm, olm.sender_verified),
+            (None, Some(backup)) => (backup, false),
+            (None, None) => return None,
+        };
+        Some(ExportedForBackup {
+            data: BackedUpSessionData {
+                algorithm: MEGOLM_ALGORITHM.to_owned(),
+                channel_id: key.channel_id.clone(),
+                epoch: stored.epoch,
+                session_id: key.session_id.clone(),
+                session_key: stored.session.export_at_first_known_index().to_base64(),
+                sender_key: key.sender_key.clone(),
+                sender_claimed_keys: crate::backup::SenderClaimedKeys {
+                    ed25519: stored.sender_signing_key.to_base64(),
+                },
+                sender_user_id: stored.sender_user_id.clone(),
+                sender_device_id: stored.sender_device_id.clone(),
+            },
+            first_message_index: stored.session.first_known_index(),
+            is_verified,
+        })
+    }
+
     /// `messages` の行を復号し、docs/e2ee.md の「受信時の検証」の表のとおり照合する。
     ///
     /// 照合に失敗したら [`CryptoError::Rejected`] を返し、呼び出し側はメッセージを破棄する。
@@ -297,7 +358,7 @@ impl InboundSessionStore {
     /// 同じメッセージの再取得と再復号は通る。
     pub fn decrypt(&mut self, row: &EncryptedMessage<'_>) -> Result<DecryptedMessage, CryptoError> {
         let ciphertext = ParsedCiphertext::parse(row.ciphertext)?;
-        let key = SessionKeyId {
+        let key = SessionRef {
             channel_id: row.channel_id.to_owned(),
             sender_key: ciphertext.sender_key.to_base64(),
             session_id: ciphertext.session_id.clone(),
