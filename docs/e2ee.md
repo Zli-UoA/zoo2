@@ -1215,7 +1215,9 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 
 【決定】オフラインだった端末が変化に気付かず、古いセッションで送ることを防ぐ仕組みです。
 
-【決定】ロックの順は、本書のすべての書き込みで次にそろえる：`users` の行（`FOR SHARE`、無効化は `FOR NO KEY UPDATE`。無効化はキー列を変えないので、to-device の `sender_user_id` や `keys/claim` の `claimer_user_id` の外部キーが取る `FOR KEY SHARE` とは衝突せず、登録系の `FOR SHARE` とは直列になる。`FOR UPDATE` にすると、無効化が `users` を持ったまま端末単位のロックを待ち、端末単位のロックを持つ to-device や `keys/claim` が外部キーで `users` を待つ循環になる）、ユーザー単位の advisory lock `(1, …)`、端末単位の advisory lock `(2, …)`（`(user_id, device_id)` の昇順）、`channels` の行（`id` の昇順）、`e2ee_devices` の行。逆の順で取る経路を作らない（行き詰まりを避けるため）。
+【決定】ロックの順は、本書のすべての書き込みで次にそろえる：`users` の行（`FOR SHARE`、無効化は `FOR NO KEY UPDATE`。無効化はキー列を変えないので、to-device の `sender_user_id` や `keys/claim` の `claimer_user_id` の外部キーが取る `FOR KEY SHARE` とは衝突せず、登録系の `FOR SHARE` とは直列になる。`FOR UPDATE` にすると、無効化が `users` を持ったまま端末単位のロックを待ち、端末単位のロックを持つ to-device や `keys/claim` が外部キーで `users` を待つ循環になる）、ユーザー単位の advisory lock `(1, …)`、端末単位の advisory lock `(2, …)`（`(user_id, device_id)` の昇順）、メンバー単位の advisory lock `(3, hashtext(user_id))`（`user_id` の昇順）、`channels` の行（`id` の昇順）、`e2ee_devices` の行。逆の順で取る経路を作らない（行き詰まりを避けるため）。
+
+【決定】（#357 のレビュー）メンバー単位のロック `(3, …)` は、`membership_epoch` の一括の増加（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）が参加先を読む前に取り、暗号化チャンネルへのメンバーの追加（作成、`join`、`POST /api/channels/{id}/users`、DM の作成と再参加）が追加する人について `channel_user` に書く前に取る。一括の増加が参加先を確定してからコミットするまでに新しい所属が確定すると、追加されたチャンネルの epoch が増えず、削除した端末に配った鍵で削除のあとの送信が通るため。メンバーの追加は、チャンネルの行を `FOR NO KEY UPDATE` で読む（epoch の `UPDATE` と送信の `FOR SHARE` とは直列になり、外部キーの検査の `FOR KEY SHARE` とは衝突しないので、そのチャンネルへの投稿を待たせない）。送信と編集は、チャンネルの行を `FOR SHARE` で読んだあとに、メンバーであることを確かめ直す（ロックより前の確認のあとに退出、キックが確定していたら 404）。
 
 【決定】複数のチャンネルの `membership_epoch` を一度に増やす処理（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）は、最初に `SELECT id FROM channels WHERE encrypted AND deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1) ORDER BY id FOR NO KEY UPDATE` でそのユーザーの暗号化チャンネルをまとめて `id` の昇順にロックしてから、同じ条件で `UPDATE` する。削除済みのチャンネルは増やさない。単独のチャンネルの変更（参加、退出、キック、送信）はこの対象ではない。同じユーザーの別の処理（端末の削除と、クロス署名鍵の変更）も、このロックで直列になる。
 

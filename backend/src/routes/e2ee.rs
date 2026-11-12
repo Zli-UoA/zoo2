@@ -6,8 +6,10 @@
 //! 2. ユーザー単位の advisory lock `(1, hashtext(user_id))`
 //! 3. 端末単位の advisory lock `(2, hashtext(user_id || ':' || device_id))`（複数なら昇順。
 //!    to-device の送信は宛先の端末ごとに取る）
-//! 4. `channels` の行（`id` の昇順。`membership_epoch` を増やす。`routes/e2ee_channels.rs`）
-//! 5. `e2ee_devices` の行
+//! 4. メンバー単位の advisory lock `(3, hashtext(user_id))`（`membership_epoch` の一括の増加と、暗号化
+//!    チャンネルへのメンバーの追加が取る。複数なら昇順。`routes/e2ee_channels.rs` の `lock_members`）
+//! 5. `channels` の行（`id` の昇順。`membership_epoch` を増やす。`routes/e2ee_channels.rs`）
+//! 6. `e2ee_devices` の行
 
 use std::collections::{BTreeMap, BTreeSet};
 

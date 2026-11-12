@@ -708,6 +708,14 @@ pub(crate) async fn create_message_impl(
         if !current.encrypted {
             return Err(e2ee_channels::plaintext_forbidden());
         }
+        // ロックより前の所属の確認のあとに退出、キックが確定していたら、ここで拒否する。
+        e2ee_channels::require_member(
+            &mut tx,
+            &payload.channel_id,
+            &auth_user.id,
+            &format!("Channel not found: {}", payload.channel_id),
+        )
+        .await?;
         e2ee_channels::check_epoch(payload.epoch.unwrap_or(0), current.membership_epoch)?;
         e2ee_channels::check_sender_device(&mut tx, &auth_user.id, sender).await?;
     }
@@ -978,6 +986,16 @@ pub(crate) async fn update_message(
 
     // ロックの順：チャンネルの行（FOR SHARE。membership_epoch の増加と直列にする）、メッセージの行（FOR UPDATE）。
     let current = e2ee_channels::lock_channel_epoch(&mut tx, &message.channel_id).await?;
+    if current.encrypted {
+        // ロックより前の所属の確認のあとに退出、キックが確定していたら、ここで拒否する。
+        e2ee_channels::require_member(
+            &mut tx,
+            &message.channel_id,
+            &auth_user.id,
+            &format!("Message not found: {id}"),
+        )
+        .await?;
+    }
     let row = crate::apps::query(
         &mut tx,
         "SELECT json_build_object('revision', revision, 'deleted', deleted_at IS NOT NULL)::text

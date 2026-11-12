@@ -1052,3 +1052,192 @@ async fn recipients_are_paged_by_user_id_and_tied_to_the_epoch() {
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+// ---------------------------------------------------------------------------
+// 競合（#357 のレビュー）
+
+/// `pattern` を含む文がロックを待つまで待つ。
+async fn wait_for_lock(env: &Env, pattern: &str) {
+    for _ in 0..100 {
+        let waiting = env
+            .query(
+                "SELECT json_build_object('n', count(*))::text FROM pg_stat_activity
+                 WHERE wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%'
+                   AND query NOT LIKE '%pg_stat_activity%'",
+                &[pattern],
+            )
+            .await;
+        if waiting[0]["n"].as_i64().unwrap_or(0) > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no statement waited on a lock: {pattern}");
+}
+
+#[tokio::test]
+async fn sends_and_edits_recheck_membership_after_the_channel_lock() {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    let channel = env.encrypted_channel(&alice, &[&bob]).await;
+    let device = env.device(&bob).await;
+    let epoch = env.epoch(&channel).await;
+    let id = Uuid::new_v4().to_string();
+    let (status, body) = env
+        .call(
+            "POST",
+            "/api/messages",
+            &bob,
+            message(&channel, &id, &device, epoch, "v0"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // チャンネルの行をロックしたまま、次の epoch での送信と編集を待たせる。
+    let mut db = env.db.clone();
+    let mut tx = db.transaction().await.unwrap();
+    toasty::sql::statement("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
+        .bind(channel.as_str())
+        .exec(&mut tx)
+        .await
+        .unwrap();
+    let send = {
+        let app = env.app.clone();
+        let body = message(
+            &channel,
+            &Uuid::new_v4().to_string(),
+            &device,
+            epoch + 1,
+            "after",
+        );
+        let bob = bob.clone();
+        tokio::spawn(async move { request(&app, "POST", "/api/messages", &bob, body).await })
+    };
+    let edit = {
+        let app = env.app.clone();
+        let body = json!({"content": "", "epoch": epoch + 1, "revision": 1, "ciphertext": ciphertext(&device, "v1")});
+        let (bob, path) = (bob.clone(), format!("/api/messages/{id}"));
+        tokio::spawn(async move { request(&app, "PATCH", &path, &bob, body).await })
+    };
+    wait_for_lock(&env, "FOR SHARE").await;
+    // 待っているあいだに、キックと epoch の増加を確定させる。
+    toasty::sql::statement("DELETE FROM channel_user WHERE channel_id = $1 AND user_id = $2")
+        .bind(channel.as_str())
+        .bind(bob.as_str())
+        .exec(&mut tx)
+        .await
+        .unwrap();
+    toasty::sql::statement(
+        "UPDATE channels SET membership_epoch = membership_epoch + 1 WHERE id = $1",
+    )
+    .bind(channel.as_str())
+    .exec(&mut tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let (status, body) = send.await.unwrap();
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = edit.await.unwrap();
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let rows = env
+        .query(
+            "SELECT json_build_object('revision', revision)::text FROM messages WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["revision"], 0);
+}
+
+#[tokio::test]
+async fn member_additions_wait_for_a_device_deletion_bump() {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    let joined = env.encrypted_channel(&alice, &[&bob]).await;
+    let target = env.encrypted_channel(&alice, &[]).await;
+    let device = env.device(&bob).await;
+    let before = env.epoch(&joined).await;
+
+    // bob が参加しているチャンネルの行をロックし、端末の削除の一括の増加を待たせる。
+    let mut db = env.db.clone();
+    let mut tx = db.transaction().await.unwrap();
+    toasty::sql::statement("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
+        .bind(joined.as_str())
+        .exec(&mut tx)
+        .await
+        .unwrap();
+    let delete = {
+        let app = env.app.clone();
+        let (bob, path) = (
+            bob.clone(),
+            format!("/api/e2ee/devices/{}", device.device_id()),
+        );
+        tokio::spawn(async move { request(&app, "DELETE", &path, &bob, Value::Null).await })
+    };
+    wait_for_lock(&env, "e2ee_bump_membership_epochs").await;
+    // そのあいだの bob の追加は、メンバー単位のロックで端末の削除のコミットを待つ。
+    let add = {
+        let app = env.app.clone();
+        let (alice, path) = (alice.clone(), format!("/api/channels/{target}/users"));
+        let body = json!({"user_id": bob});
+        tokio::spawn(async move { request(&app, "POST", &path, &alice, body).await })
+    };
+    wait_for_lock(&env, "pg_advisory_xact_lock(3").await;
+    assert!(!add.is_finished());
+    tx.commit().await.unwrap();
+
+    let (status, body) = delete.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = add.await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(env.epoch(&joined).await, before + 1);
+    // 追加は削除のあとに確定したので、追加先の配布先に削除した端末は入らない。
+    let (status, page) = env
+        .call(
+            "GET",
+            &format!("/api/e2ee/channels/{target}/recipients"),
+            &alice,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(
+        page["user_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u == &json!(bob))
+    );
+    assert!(page["device_keys"][&bob].get(device.device_id()).is_none());
+}
+
+#[tokio::test]
+async fn member_additions_do_not_block_posts_to_the_channel() {
+    let env = env().await;
+    let alice = env.user().await;
+    let channel = env.plain_channel(&alice, &[]).await;
+    // 追加と同じロック（FOR NO KEY UPDATE）を持ったままでも、投稿の外部キーの検査（FOR KEY SHARE）は待たない。
+    let mut db = env.db.clone();
+    let mut tx = db.transaction().await.unwrap();
+    toasty::sql::statement("SELECT 1 FROM channels WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(channel.as_str())
+        .exec(&mut tx)
+        .await
+        .unwrap();
+    let (status, body) = tokio::time::timeout(
+        Duration::from_secs(10),
+        env.call(
+            "POST",
+            "/api/messages",
+            &alice,
+            json!({"channel_id": channel, "content": "hi"}),
+        ),
+    )
+    .await
+    .expect("posting waited on the member addition lock");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    tx.rollback().await.unwrap();
+}
