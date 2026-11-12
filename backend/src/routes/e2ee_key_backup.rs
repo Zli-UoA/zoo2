@@ -490,6 +490,9 @@ async fn upload_sessions(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    // 無効化されたユーザーの書き込みは 403（AuthUser の確認のあとに無効化がコミットしても
+    // 書き込まない）。ロックの順は全体の規則どおり、users の行、ユーザー単位のロック。
+    lock_active_user(&mut tx, &actor.id).await?;
     // 版の作成と削除（同じキーの排他ロック）とだけ直列にし、アップロードどうしは並行させる。
     first(
         &mut tx,
