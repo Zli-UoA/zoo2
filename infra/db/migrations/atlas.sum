@@ -1,4 +1,4 @@
-h1:6Xqt6l9kF7IeeTkQUzFQlb+NG11JtSOZZJf+XpjWwjI=
+h1:h4JDMpQ1E/YqNAbkzMQzpPSCZk/CGmFLT/2wBNgxh4s=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -60,3 +60,4 @@ h1:6Xqt6l9kF7IeeTkQUzFQlb+NG11JtSOZZJf+XpjWwjI=
 20261113000000_e2ee_devices_and_keys.sql h1:3UPWA6n9ehdC/uWc1xvmzRlzh1zG9nyvwZruTWrbVp4=
 20261115000000_app_deliveries_backlog_index.sql h1:p+hjY4hrNFDJv3zILr4BIm1hYFm8qK9tDGhzmD8h7lc=
 20261116000000_content_sensitivity.sql h1:+2OXfy3IwU3znd7o7fzo0rVz4e6+haCQv3Q6OoVaaSA=
+20261117000000_app_delivery_role_regrant.sql h1:Xfvkt46Hpzjd/GmrEcllW91iaYh9OsEtl9SBpzYSiVc=
