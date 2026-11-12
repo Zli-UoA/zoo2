@@ -1,4 +1,4 @@
-h1:geh6jGsn27pceyrbarTRn/NkLFlMhfEg8TEG9V/1Nis=
+h1:CRlA47rhj+AGw8ELE86mCmnCsQ+HVHZ/cwaU9SXlU8k=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -66,4 +66,5 @@ h1:geh6jGsn27pceyrbarTRn/NkLFlMhfEg8TEG9V/1Nis=
 20261119001000_thread_archive.sql h1:z4bLMN+BdYtZs3Q5kJsjqLaz1sKAoZw04bDZ68bGyg8=
 20261119002000_thread_activity_index.sql h1:1dlmS+xjmzlbDkCHHg3TyaBJaBONPP1emxttATm8UNg=
 20261120000000_slack_channel_syncs.sql h1:jEfTkSJZ2kkB7KtSZvg49UknF44HkF+9PO2MrRGx2RU=
-20261120001000_e2ee_encrypted_channels.sql h1:mStittMJJvTx5n1lu5QbbrG8zsI4LeN7QRydwGhgX7A=
+20261120001000_slack_import_resume.sql h1:C/ApUvanb4nu7haogTotHcwSBxPiNnhZkKyqd7+dbiY=
+20261120100000_e2ee_encrypted_channels.sql h1:ZK+Q6lakC+QPzwWKQRoSjJBHZqHHJOl3J3k5vvQygXo=

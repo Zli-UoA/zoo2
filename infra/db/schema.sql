@@ -1728,6 +1728,8 @@ CREATE TABLE slack_import_jobs (
   finished_at timestamptz,
   -- 取り込みのジョブなら、ZIP を読むエクスポート (NULL ならエクスポート自身)
   source_id text,
+  import_progress text,
+  handoffs integer NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
   CONSTRAINT slack_import_jobs_status_check CHECK (status IN (
     'uploading', 'analyzing', 'ready', 'importing',
