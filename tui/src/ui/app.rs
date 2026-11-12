@@ -152,6 +152,8 @@ pub struct App {
     thread_in_flight: [bool; 2],
     thread_pending: [Option<bool>; 2],
     thread_states: HashMap<String, (bool, Instant)>,
+    /// 再同期中は部分スナップショットの件数で一覧を減らさない。
+    message_resync_counts: HashMap<String, HashMap<String, usize>>,
     locally_reopened_threads: HashMap<String, jiff::civil::DateTime>,
     pub thread_cursors: [Option<String>; 2],
     thread_has_additional_pages: [bool; 2],
@@ -222,6 +224,7 @@ impl App {
             thread_in_flight: [false; 2],
             thread_pending: [None; 2],
             thread_states: HashMap::new(),
+            message_resync_counts: HashMap::new(),
             locally_reopened_threads: HashMap::new(),
             thread_cursors: [None, None],
             thread_has_additional_pages: [false; 2],
@@ -264,6 +267,9 @@ impl App {
         {
             return;
         }
+        if let ShapeId::Messages(channel_id) = &id {
+            self.begin_message_resync(channel_id);
+        }
         // 止まった購読を作り直すときは最初から取り直すので、止まっていた間の行は捨てる。
         // 物理削除された行は新しいスナップショットに現れないため、捨てないと残り続ける。
         if self.subscriptions.contains_key(&id) {
@@ -302,11 +308,42 @@ impl App {
         });
     }
 
+    fn begin_message_resync(&mut self, channel_id: &str) {
+        if self.message_resync_counts.contains_key(channel_id) {
+            return;
+        }
+        let mut counts = self.store.reply_counts(channel_id);
+        // チャンネル切替でStoreが空でも、一覧で確認済みの件数を保持する。
+        for thread in self
+            .threads()
+            .filter(|thread| thread.channel_id == channel_id)
+        {
+            if thread.reply_count > 0 {
+                counts
+                    .entry(thread.id.clone())
+                    .or_insert(thread.reply_count as usize);
+            }
+        }
+        self.message_resync_counts
+            .insert(channel_id.to_owned(), counts);
+    }
+
     pub fn on_shape(&mut self, event: ShapeEvent) {
         let selected = self.sidebar_items().get(self.sidebar_index).cloned();
+        let mut completed_resync = false;
         let previous_reply_counts = match &event {
-            ShapeEvent::Batch(ShapeId::Messages(channel_id), _) => {
-                Some(self.store.reply_counts(channel_id))
+            ShapeEvent::Batch(ShapeId::Messages(channel_id), batch) => {
+                if batch.reset {
+                    self.begin_message_resync(channel_id);
+                }
+                if batch.up_to_date && self.message_resync_counts.contains_key(channel_id) {
+                    completed_resync = true;
+                    self.message_resync_counts.remove(channel_id)
+                } else if self.message_resync_counts.contains_key(channel_id) {
+                    None
+                } else {
+                    Some(self.store.reply_counts(channel_id))
+                }
             }
             _ => None,
         };
@@ -383,7 +420,7 @@ impl App {
                 .chain(self.archived_threads.iter_mut())
             {
                 if thread.channel_id == channel_id
-                    && before.get(&thread.id) != after.get(&thread.id)
+                    && (completed_resync || before.get(&thread.id) != after.get(&thread.id))
                 {
                     thread.reply_count = after.get(&thread.id).copied().unwrap_or(0) as u64;
                     self.thread_states
@@ -1359,6 +1396,9 @@ impl App {
             for id in previous {
                 if let Some(task) = self.subscriptions.remove(&id) {
                     task.abort();
+                }
+                if let ShapeId::Messages(channel_id) = &id {
+                    self.message_resync_counts.remove(channel_id);
                 }
                 self.store.apply(
                     &id,
