@@ -389,6 +389,13 @@ pub(crate) async fn create_message_impl(
     if let Some(metadata) = &payload.metadata {
         crate::apps::events::object(metadata)?;
     }
+    // 暗号化の項目のない要求（平文チャンネル向け）は、チャンネルを読む前に本文を検証する（#357 より前と同じ順）。
+    // 暗号化チャンネルの要求は content が空なので、チャンネルを読んだあとで分岐して検証する。
+    let plaintext_request =
+        payload.ciphertext.is_none() && payload.epoch.is_none() && payload.revision.is_none();
+    if plaintext_request {
+        validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
+    }
 
     Uuid::parse_str(&payload.channel_id).map_err(|_| {
         AppError::BadRequest(format!(
@@ -502,10 +509,9 @@ pub(crate) async fn create_message_impl(
         }
         Some(e2ee_channels::check_ciphertext_shape(ciphertext)?)
     } else {
-        if payload.ciphertext.is_some() || payload.epoch.is_some() || payload.revision.is_some() {
+        if !plaintext_request {
             return Err(e2ee_channels::plaintext_forbidden());
         }
-        validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
         None
     };
 
