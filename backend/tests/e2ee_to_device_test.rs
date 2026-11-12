@@ -788,7 +788,8 @@ async fn concurrent_sends_never_exceed_the_queue_limit() {
     assert_eq!(undelivered, 10);
 }
 
-/// 30 日より前の送信の記録は回収され、回収後の再送は新しい送信として入る。
+/// 30 日より前の送信の記録は回収される。回収後の同じ txn_id の再送は、メッセージが未 ack で残っていれば入らず、
+/// ack で削除済みなら新しい送信として入る。
 #[tokio::test]
 async fn old_txn_records_are_swept() {
     let env = env().await;
@@ -822,6 +823,42 @@ async fn old_txn_records_are_swept() {
     );
     // メッセージの行は時間では回収しない。
     assert_eq!(env.queued(&alice, &alice_devices[1]).await, 1);
+
+    // 送信の記録を回収しても、未 ack のメッセージが残っていれば、同じ txn_id の再送は入らない。
+    let (status, _) = send(
+        &env.app,
+        &alice,
+        &alice_devices[0],
+        &txn_id,
+        &[(&alice, &alice_devices[1])],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(env.queued(&alice, &alice_devices[1]).await, 1);
+
+    // メッセージも ack で削除済みなら、新しい送信として入る。
+    let ids = env.message_ids(&alice, &alice_devices[1]).await;
+    let (status, _) = env.ack(&alice, &alice_devices[1], &ids).await;
+    assert_eq!(status, StatusCode::OK);
+    env.exec(
+        "UPDATE e2ee_to_device_txns SET created_at = now() - interval '31 days' WHERE txn_id = $1",
+        &[&txn_id],
+    )
+    .await;
+    backend::routes::e2ee::to_device::sweep_txns(&env.db)
+        .await
+        .unwrap();
+    let (status, _) = send(
+        &env.app,
+        &alice,
+        &alice_devices[0],
+        &txn_id,
+        &[(&alice, &alice_devices[1])],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(env.queued(&alice, &alice_devices[1]).await, 1);
+    assert_ne!(env.message_ids(&alice, &alice_devices[1]).await, ids);
 }
 
 /// 端末の削除と、その端末宛ての送信を同時に走らせても、削除済みの端末宛てのメッセージは残らない。
