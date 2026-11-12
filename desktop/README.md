@@ -137,7 +137,7 @@ make desktop-check
 | ファイル | 内容 |
 |---|---|
 | `tokens.rs` | `frontend/src/styles.css` の色変数 (Light は `:root`、Dark は `.dark`)、角丸、文字サイズ。`oklch` は sRGB に変換して持つ |
-| `fonts.rs` | 同梱の Geist (Regular / Medium / SemiBold / Bold) を登録する。日本語などは環境のフォントにフォールバックする |
+| `fonts.rs` | 同梱の Geist と Noto Sans JP (どちらも Regular / Medium / SemiBold / Bold の静的 TTF) を登録する。かなと漢字は Noto Sans JP で描く |
 | `icons.rs` | lucide のアイコン。SVG は `assets/icons/` にある |
 | `i18n.rs` | `frontend/src/lib/i18n/locales/*.json` を埋め込んだ翻訳。言語は OS のロケールから決め、見つからなければ ja |
 | `assets.rs` | `assets/` (フォント、アイコン、ロゴ) を実行ファイルに埋め込む |

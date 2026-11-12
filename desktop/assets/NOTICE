@@ -5,6 +5,15 @@ npm パッケージ geist@1.9.2 の dist/fonts/geist-sans から Regular / Mediu
 Copyright (c) 2023 Vercel, in collaboration with basement.studio
 SIL Open Font License, Version 1.1。全文は fonts/OFL-Geist.txt にあります。
 
+== Noto Sans JP (fonts/NotoSansJP-*.ttf) ==
+google/fonts リポジトリの ofl/notosansjp/NotoSansJP[wght].ttf (コミット 66a36c8c94b1a5d992ee4e7f392fccfe4945767c、
+https://github.com/google/fonts/tree/main/ofl/notosansjp) の可変フォントから、fonttools の varLib.instancer で
+wght=400/500/600/700 の静的 TTF を切り出しています (glyph は削っていません)。ファミリー名は全ウェイト "Noto Sans JP"、
+ウェイトは OS/2 の usWeightClass で区別するよう、name テーブルを書き換えています。frontend の
+@fontsource-variable/noto-sans-jp と同じ字形です。
+Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'
+SIL Open Font License, Version 1.1。全文は fonts/OFL-NotoSansJP.txt にあります。
+
 == Lucide (icons/*.svg) ==
 lucide-static@1.57.0 (frontend の lucide-react と同じ版) から、frontend が使うアイコンだけを取り込んでいます。
 取り込みは scripts/collect-lucide-icons.mjs で行います。

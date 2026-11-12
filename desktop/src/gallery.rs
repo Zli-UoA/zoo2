@@ -87,7 +87,9 @@ impl Render for Gallery {
         let t = self.tokens;
         let i18n = self.i18n;
 
-        let mut fonts_card = card(&t).w(px(470.0)).child(heading(&t, "Geist"));
+        let mut fonts_card = card(&t)
+            .w(px(470.0))
+            .child(heading(&t, "Geist + Noto Sans JP"));
         for (label, weight) in [
             ("Regular", 400.0),
             ("Medium", 500.0),

@@ -1,6 +1,9 @@
-//! 同梱フォント (Geist) の登録。
+//! 同梱フォント (Geist と Noto Sans JP) の登録。
 //!
-//! 可変フォントは Linux でウェイトが変わらなかったので、静的な TTF を 4 本入れている。
+//! 可変フォントは Linux でウェイトが変わらなかったので、どちらも静的な TTF を 4 本ずつ入れている。
+//! Linux の GPUI (cosmic-text) は `Font.fallbacks` を無視し、Geist にない文字は登録済みのフォントから
+//! ウェイトが合うものを選ぶ。Noto Sans JP の 4 ウェイトを登録しておくと、かなと漢字も同じ太さで出る。
+//! 同梱しないと OS のフォールバックになり、かなが常に細字になる。
 
 use anyhow::{Context as _, Result};
 use gpui::{App, AssetSource, Font, FontFallbacks, FontStyle, FontWeight, font};
@@ -10,17 +13,21 @@ use crate::assets::Assets;
 /// Web 版の `--font-sans` に当たるファミリー名。
 pub const FAMILY: &str = "Geist";
 
-/// 同梱する TTF (Regular 400 / Medium 500 / SemiBold 600 / Bold 700)。
+/// 同梱する TTF。Geist と Noto Sans JP のそれぞれ Regular 400 / Medium 500 / SemiBold 600 / Bold 700。
 pub const FILES: &[&str] = &[
     "fonts/Geist-Regular.ttf",
     "fonts/Geist-Medium.ttf",
     "fonts/Geist-SemiBold.ttf",
     "fonts/Geist-Bold.ttf",
+    "fonts/NotoSansJP-Regular.ttf",
+    "fonts/NotoSansJP-Medium.ttf",
+    "fonts/NotoSansJP-SemiBold.ttf",
+    "fonts/NotoSansJP-Bold.ttf",
 ];
 
-/// 日本語など CJK を描くときのフォールバック順。
-/// 同梱はしない。環境にあるものを使う (macOS は Hiragino Sans)。
-pub const CJK_FALLBACKS: &[&str] = &["Noto Sans CJK JP", "Noto Sans JP", "Hiragino Sans"];
+/// 日本語など CJK を描くときのフォールバック順。frontend と同じ Noto Sans JP (同梱) を先にし、
+/// それでも足りない文字だけ macOS の Hiragino Sans に回す。Linux ではこの指定は使われない (上の説明)。
+pub const CJK_FALLBACKS: &[&str] = &["Noto Sans JP", "Hiragino Sans"];
 
 /// 同梱フォントを GPUI のテキストシステムに登録する。起動時に 1 回呼ぶ。
 pub fn register(cx: &App) -> Result<()> {
@@ -66,7 +73,7 @@ mod tests {
         assert_eq!(f.weight, FontWeight(600.0));
         assert_eq!(
             f.fallbacks.unwrap().fallback_list(),
-            ["Noto Sans CJK JP", "Noto Sans JP", "Hiragino Sans"]
+            ["Noto Sans JP", "Hiragino Sans"]
         );
     }
 }
