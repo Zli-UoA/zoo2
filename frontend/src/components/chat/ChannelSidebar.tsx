@@ -211,11 +211,7 @@ export function ChannelSidebar({
                       ) : null}
                     </Link>
                     {!channel.is_dm ? (
-                      <ChannelThreadItems
-                        channel={channel}
-                        threads={threadIndex.threads}
-                        currentUserId={currentUserId}
-                      />
+                      <ChannelThreadItems channel={channel} threads={threadIndex.threads} />
                     ) : null}
                   </div>
                 );

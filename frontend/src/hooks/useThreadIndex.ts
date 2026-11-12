@@ -16,6 +16,16 @@ export interface ThreadPage {
   items: ThreadSummary[];
   next_cursor: string | null;
 }
+// 取得開始とローカルでの状態検知を、共有キャッシュ全体で同じ順序に並べる。
+let sequence = 0;
+const requestSequences = new WeakMap<ThreadSummary, number>();
+export function nextThreadIndexSequence() {
+  return ++sequence;
+}
+export function threadSummaryRequestSequence(thread: ThreadSummary) {
+  return requestSequences.get(thread) ?? 0;
+}
+
 const EMPTY_PAGE: ThreadPage = { items: [], next_cursor: null };
 type Result = ThreadPage & { key: string; isLoading: boolean; isError: boolean };
 
@@ -58,6 +68,7 @@ function createIndex(
       const request = new AbortController();
       controller = request;
       const signal = AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]);
+      const requestedSequence = nextThreadIndexSequence();
       const started = generation;
       const startedRevision = threadRevision();
       const params = new URLSearchParams();
@@ -87,6 +98,7 @@ function createIndex(
           items.push(...page.items);
         }
         if (active && started === generation && !signal.aborted) {
+          for (const item of items) requestSequences.set(item, requestedSequence);
           fetchedAt = Date.now();
           observedRevision = startedRevision;
           failedRequest = null;

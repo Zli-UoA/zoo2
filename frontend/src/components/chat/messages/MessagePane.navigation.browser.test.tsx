@@ -22,6 +22,7 @@ const fixture = vi.hoisted(() => {
     /** `useThreadRoot` が返す行 (取得が終わるまでは、空)。 */
     rootRows: [root] as (typeof root)[],
     rootLoading: false,
+    rootError: false,
     /** 通知・リンクの対象 (`?message=`) として返す行。 */
     targetRows: [] as (typeof root)[],
     /** メイン一覧の行と、古いページの有無。 */
@@ -90,7 +91,11 @@ vi.mock("../../../hooks/useAttachments", () => ({
 }));
 vi.mock("../../../hooks/useThread", () => ({
   useMessageById: () => ({ data: fixture.targetRows, isLoading: false }),
-  useThreadRoot: () => ({ data: fixture.rootRows, isLoading: fixture.rootLoading }),
+  useThreadRoot: () => ({
+    data: fixture.rootRows,
+    isLoading: fixture.rootLoading,
+    isError: fixture.rootError,
+  }),
   useThreadFeed: () => ({
     data: fixture.replies,
     isLoading: false,
@@ -172,6 +177,7 @@ beforeEach(() => {
   fixture.root.parent_id = null;
   fixture.rootRows = [fixture.root];
   fixture.rootLoading = false;
+  fixture.rootError = false;
   fixture.targetRows = [];
   fixture.feed = [];
   fixture.feedLoading = false;
@@ -235,6 +241,7 @@ describe("links and threads whose rows are older than the loaded range", () => {
     expect(fixture.closeThread).not.toHaveBeenCalled();
     // 取得が終わっても、その行がなければ、(存在しないので) 閉じる
     fixture.rootLoading = false;
+    fixture.rootError = false;
     rerender(pane());
     await waitFor(() => expect(fixture.closeThread).toHaveBeenCalled());
   });
@@ -300,4 +307,11 @@ describe("links and threads whose rows are older than the loaded range", () => {
     render(pane());
     expect(await screen.findByText("Alice (@alice)")).toBeTruthy();
   });
+});
+
+it("keeps the selected thread open when its root request fails", () => {
+  fixture.rootRows = [];
+  fixture.rootError = true;
+  render(pane());
+  expect(fixture.closeThread).not.toHaveBeenCalled();
 });

@@ -1,39 +1,72 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArchiveIcon, MessageSquareIcon } from "lucide-react";
+import { MessageSquareIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 
-import { useThreadIndex, type ThreadSummary } from "../../hooks/useThreadIndex";
+import {
+  nextThreadIndexSequence,
+  threadSummaryRequestSequence,
+  type ThreadSummary,
+} from "../../hooks/useThreadIndex";
+import { useThreadRoot } from "../../hooks/useThread";
 import type { ChannelRow } from "../../lib/electric/types";
 import { useShell } from "../layout/shell-context";
-import { Button } from "../ui/button";
-import { CollapsibleSection } from "../ui/collapsible-section";
 import { sidebarItemClassName } from "./sidebarStyles";
 
 export function ChannelThreadItems({
   channel,
   threads,
-  currentUserId,
 }: {
   channel: ChannelRow;
   threads: ThreadSummary[];
-  currentUserId: string | null;
 }) {
   const { t } = useTranslation();
   const shell = useShell();
   const channelThreads = threads.filter((thread) => thread.channel_id === channel.id);
-  const active = channelThreads.filter((thread) => !thread.thread_archive_at);
-  const activeIds = new Set(active.map((thread) => thread.id));
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const history = useThreadIndex(currentUserId, {
-    channelId: channel.id,
-    archived: true,
-    enabled: historyOpen,
-  });
-
-  const archived = history.threads.filter((thread) => !activeIds.has(thread.id));
-
+  const selectedId = shell.selectedChannelId === channel.id ? shell.threadRootId : null;
+  const selectedQuery = useThreadRoot(selectedId ? channel.id : null, selectedId);
+  const selectedRoot = selectedQuery.data?.[0];
+  // 一覧の更新前に選択中の親がアーカイブされた場合も、移動後にツリーへ残さない。
+  const [observedArchives, setObservedArchives] = useState(() => new Map<string, number>());
+  const observedRootId = selectedRoot?.id;
+  const observedArchiveAt = selectedRoot?.thread_archive_at ?? null;
+  // 閲覧中は親投稿の状態を優先し、その行の一覧応答が届いた時点でも記録する。
+  const observedIndexRow = threads.find((thread) => thread.id === observedRootId);
+  useEffect(() => {
+    if (!observedRootId) return;
+    const observedSequence = nextThreadIndexSequence();
+    setObservedArchives((previous) => {
+      if (observedArchiveAt) return new Map(previous).set(observedRootId, observedSequence);
+      if (!previous.has(observedRootId)) return previous;
+      const next = new Map(previous);
+      next.delete(observedRootId);
+      return next;
+    });
+  }, [observedRootId, observedArchiveAt, observedIndexRow]);
+  // ページ追加や遅い応答では補正を失わず、検知後に開始した取得だけを受け入れる。
+  const active = channelThreads.filter(
+    (thread) =>
+      !thread.thread_archive_at &&
+      threadSummaryRequestSequence(thread) > (observedArchives.get(thread.id) ?? -1),
+  );
+  const selected =
+    selectedRoot && !selectedRoot.deleted_at
+      ? {
+          id: selectedRoot.id,
+          channel_id: channel.id,
+          content: selectedRoot.content,
+          thread_archive_at: selectedRoot.thread_archive_at ?? null,
+          reply_count:
+            selectedRoot.display_data?.reply_count ??
+            channelThreads.find((thread) => thread.id === selectedId)?.reply_count ??
+            0,
+        }
+      : channelThreads.find((thread) => thread.id === selectedId);
+  const visible = active.filter(
+    (thread) => thread.id !== selectedId || !selectedRoot?.thread_archive_at,
+  );
+  if (selected && !visible.some((thread) => thread.id === selected.id)) visible.push(selected);
   const renderThread = (thread: ThreadSummary) => (
     <Link
       key={thread.id}
@@ -46,7 +79,9 @@ export function ChannelThreadItems({
         title: thread.content || t("threads.untitled"),
         count: thread.reply_count,
       })}
-      onClick={() => shell.showChat()}
+      onClick={() => {
+        shell.showChat();
+      }}
     >
       <MessageSquareIcon className="size-3 shrink-0" aria-hidden="true" />
       <span className="min-w-0 flex-1 truncate">{thread.content || t("threads.untitled")}</span>
@@ -55,40 +90,6 @@ export function ChannelThreadItems({
   );
 
   return (
-    <div className="ml-5 flex min-w-0 flex-col border-l pl-2">
-      {active.map(renderThread)}
-
-      <CollapsibleSection
-        title={t("threads.archived")}
-        ariaLabel={t("threads.archiveForChannel", { channel: channel.channel_name })}
-        icon={<ArchiveIcon />}
-        defaultOpen={false}
-        onOpenChange={setHistoryOpen}
-        className="-mx-2"
-      >
-        <div className="flex min-w-0 flex-col px-2">
-          {archived.map(renderThread)}
-          {historyOpen && !history.isLoading && !history.isError && !archived.length ? (
-            <p className="p-2 text-xs text-muted-foreground">{t("threads.emptyArchive")}</p>
-          ) : null}
-          {history.isError ? (
-            <p className="p-2 text-xs text-destructive">{t("threads.indexError")}</p>
-          ) : null}
-          {history.isLoading ? (
-            <p className="p-2 text-xs text-muted-foreground">{t("threads.loading")}</p>
-          ) : null}
-          {history.hasMore || history.isError ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={history.isLoading}
-              onClick={history.loadMore}
-            >
-              {t(history.isError ? "threads.retry" : "threads.more")}
-            </Button>
-          ) : null}
-        </div>
-      </CollapsibleSection>
-    </div>
+    <div className="ml-5 flex min-w-0 flex-col border-l pl-2">{visible.map(renderThread)}</div>
   );
 }

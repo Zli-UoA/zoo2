@@ -85,9 +85,7 @@
         "Mobile",
         "UnreadAndArchived",
         "Threads",
-        "ArchivedThreads",
-        "ArchivePages",
-        "ArchiveRetry",
+        "SelectedArchivedThread",
         "EmptyThreadTitle",
         "MobileThreads",
         "Sections",
@@ -744,7 +742,7 @@
       "file": "src/components/chat/ChannelThreadItems.tsx",
       "story": "src/components/chat/ChannelSidebar.stories.tsx",
       "composed": true,
-      "reason": "チャンネル配下の表示とアーカイブ履歴の操作を親の Threads・ArchivedThreads Story で確認する。"
+      "reason": "アクティブなスレッドと閲覧中の一時表示を Threads・SelectedArchivedThread Story で確認する。履歴・検索UIは設けない。"
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",
