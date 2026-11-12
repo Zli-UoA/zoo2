@@ -76,6 +76,25 @@ fn decrypt(
     })
 }
 
+/// `store` のセッションをすべて、版 1 にアップロードしたときの行。
+fn uploaded_rows(
+    store: &InboundSessionStore,
+    backup_key: &BackupDecryptionKey,
+    keys: &CrossSigningKeys,
+) -> Vec<BackupRow> {
+    let mut state = BackupUploadState::new(ALICE).unwrap();
+    state.set_secrets_revision(Some(1));
+    state
+        .accept_current_version(
+            &version("1", backup_key, keys),
+            &keys.master.public_key(),
+            backup_key,
+        )
+        .unwrap();
+    state.enqueue_all(store);
+    rows(&state.next_upload(store, 1000).unwrap().unwrap().body)
+}
+
 /// サーバーに置いた行（アップロードの本文の `sessions`）。
 fn rows(body: &Value) -> Vec<BackupRow> {
     serde_json::from_value(body["sessions"].clone()).unwrap()
@@ -335,17 +354,7 @@ fn tampered_or_mismatched_rows_are_dropped() {
     let keys = CrossSigningKeys::generate(ALICE).unwrap();
     let backup_key = BackupDecryptionKey::generate();
     let alice = sender();
-    let mut state = BackupUploadState::new(ALICE).unwrap();
-    state.set_secrets_revision(Some(1));
-    state
-        .accept_current_version(
-            &version("1", &backup_key, &keys),
-            &keys.master.public_key(),
-            &backup_key,
-        )
-        .unwrap();
-    state.enqueue_all(&alice.store);
-    let good = rows(&state.next_upload(&alice.store, 1000).unwrap().unwrap().body).remove(0);
+    let good = uploaded_rows(&alice.store, &backup_key, &keys).remove(0);
 
     let mut bad_mac = good.clone();
     let mut mac = vodozemac::base64_decode(&bad_mac.session_data.mac).unwrap();
@@ -385,26 +394,15 @@ fn tampered_or_mismatched_rows_are_dropped() {
     assert!(BackupDecryptionKey::generate().decrypt_row(&good).is_err());
 
     // 平文の session_id と session_key が合わない（平文ごと作り直した）ものは取り込みで捨てる。
-    let mut forged = backup_key.decrypt(&good.session_data).unwrap();
-    let other = OutboundSession::new(CHANNEL, EPOCH, NOW_MS);
     let mut other_store = InboundSessionStore::new();
-    other_store.add_outbound(&alice.account, &other);
+    other_store.add_outbound(
+        &alice.account,
+        &OutboundSession::new(CHANNEL, EPOCH, NOW_MS),
+    );
+    let other_row = uploaded_rows(&other_store, &backup_key, &keys).remove(0);
+    let mut forged = backup_key.decrypt(&good.session_data).unwrap();
     forged.session_key = backup_key
-        .decrypt(
-            &rows(&{
-                let mut s = BackupUploadState::new(ALICE).unwrap();
-                s.set_secrets_revision(Some(1));
-                s.accept_current_version(
-                    &version("1", &backup_key, &keys),
-                    &keys.master.public_key(),
-                    &backup_key,
-                )
-                .unwrap();
-                s.enqueue_all(&other_store);
-                s.next_upload(&other_store, 1000).unwrap().unwrap().body
-            })[0]
-                .session_data,
-        )
+        .decrypt(&other_row.session_data)
         .unwrap()
         .session_key;
     let forged_row = BackupRow {
@@ -438,17 +436,7 @@ fn row_claims_do_not_make_the_sender_verified() {
     let keys = CrossSigningKeys::generate(ALICE).unwrap();
     let backup_key = BackupDecryptionKey::generate();
     let alice = sender();
-    let mut state = BackupUploadState::new(ALICE).unwrap();
-    state.set_secrets_revision(Some(1));
-    state
-        .accept_current_version(
-            &version("1", &backup_key, &keys),
-            &keys.master.public_key(),
-            &backup_key,
-        )
-        .unwrap();
-    state.enqueue_all(&alice.store);
-    let mut row = rows(&state.next_upload(&alice.store, 1000).unwrap().unwrap().body).remove(0);
+    let mut row = uploaded_rows(&alice.store, &backup_key, &keys).remove(0);
     row.is_verified = true;
     let mut store = InboundSessionStore::new();
     assert_eq!(backup_key.import_rows(&mut store, &[row]), 0);

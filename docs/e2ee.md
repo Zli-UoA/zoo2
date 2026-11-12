@@ -116,8 +116,8 @@ SSSS 鍵 → zoo.megolm_backup.previous   → 古い版のバックアップ鍵 
 - バイト列は、特に書かない限り**パディングなしの標準 base64**（[Unpadded Base64](https://spec.matrix.org/latest/appendices/#unpadded-base64)）で表す。受け取る側はパディング付きも受け付ける。WebAuthn の credential ID だけは、WebAuthn の慣習に合わせて base64url（パディングなし）にする。
 - 署名は [Signing JSON](https://spec.matrix.org/latest/appendices/#signing-json) と同じにする。`signatures` と `unsigned` を除いた JSON を [Canonical JSON](https://spec.matrix.org/latest/appendices/#canonical-json) にして Ed25519 で署名し、`signatures.<user_id>.<鍵 ID>` に入れる。鍵 ID は `ed25519:<device_id>`（端末の署名鍵）か `ed25519:<公開鍵>`（クロス署名の鍵）。
 - 次の ID は UUID の文字列にする：`user_id`、`channel_id`、`message_id`（既存の `users.id`、`channels.id`、`messages.id` と同じ）、`device_id`、SSSS の `key_id`、鍵スロットの `slot_id`、to-device の `txn_id`。`device_id` はクライアントが UUID v4 で作る。署名する JSON に `device_id` が入るので、サーバーに登録する前に決まっている必要があるため。
-- 【提案】上の UUID の ID はすべて、小文字のハイフン区切り（PostgreSQL の `uuid` 型が返す表記）で書く。`user_id` は署名する JSON に、`device_id` は署名する JSON と鍵 ID（`ed25519:<device_id>`、`curve25519:<device_id>`）に、SSSS の `key_id` と `slot_id` は鍵スロットの AAD に入り、`txn_id` は再送をまとめるときに文字列のまま比べる。表記がずれると、署名や AAD の検証、サーバーが返す ID との突き合わせに失敗するため。
-  - `zoo-crypto` が今（#348）この表記を検証するのは `user_id` と `device_id` だけで、他の表記は受け付けない。残りの ID の検証はそれを扱う issue（鍵スロットや to-device）で足す。
+- 【決定】（#351）上の UUID の ID はすべて、小文字のハイフン区切り（PostgreSQL の `uuid` 型が返す表記）で書く。`user_id` は署名する JSON に、`device_id` は署名する JSON と鍵 ID（`ed25519:<device_id>`、`curve25519:<device_id>`）に、SSSS の `key_id` と `slot_id` は鍵スロットの AAD に入り、`txn_id` は再送をまとめるときに文字列のまま比べる。表記がずれると、署名や AAD の検証、サーバーが返す ID との突き合わせに失敗するため。
+  - `zoo-crypto` は、`user_id` と `device_id`（#348）に加えて、SSSS の `key_id`、鍵スロットの `slot_id`、鍵バックアップの平文の `channel_id`（#351）の表記を検証し、他の表記は受け付けない（`CryptoError::InvalidId`。サーバーの応答の値なら `CryptoError::InvalidSecretStorage` か `CryptoError::BackupDecryption`）。版は問わない（`user_id` と同じ）。`zoo-crypto` が作る `key_id` と `slot_id` は UUID v4 にする。to-device の `txn_id` はサーバーが検証する（下）。
   - 【決定】（#355）サーバーは to-device の `txn_id` を、小文字のハイフン区切りの UUID（版は問わない）でなければ 400 で拒否する。
 - ワンタイム鍵とフォールバック鍵の `key_id`（`signed_curve25519:<key_id>`）は UUID ではない。vodozemac の `KeyId`（u64）をパディングなし base64 にした文字列をそのまま使う。DB の `e2ee_one_time_keys.key_id` と `e2ee_fallback_keys.key_id` も同じ値で、サーバーは UUID として検証しない。
 - Megolm の `session_id` と、鍵バックアップの `version`（10 進の文字列）も UUID ではない。
@@ -333,7 +333,9 @@ Matrix と違い、zoo の SSSS 鍵はユーザーに見せません。ユーザ
   ```
 
   `kind` は `passkey` か `recovery`、`key_id` は SSSS 鍵の ID、`slot_id` はスロットの ID（クライアントが作る UUID）。スロットを別のユーザー、別の SSSS 鍵、別のスロットに付け替えると開けなくなる。
-- テストベクターは [#351](https://github.com/Zli-UoA/zoo2/issues/351) で作り、`crates/zoo-crypto` に置く。
+- 【決定】（#351）`prf_salt` と `credential_id` は AAD に入れない。`credential_id` は、解錠のときに `credential.rawId` とスロットの値を文字列のまま比べて、評価したスロットを選ぶのに使う。`prf_salt` を書き換えられると、認証器が別の PRF 出力を返すので開けなくなるだけで、鍵は漏れない（サーバーはスロットを消すこともできるので、新しく妨害できることはない）。
+- 【決定】（#351）開けなかった理由（PRF 出力やリカバリーキーが違う、改ざん、付け替え）は区別せず、`CryptoError::KeySlotUnlock` にする。スロットを開けたあと、確認値と合わなければ `CryptoError::SsssKeyMismatch` にする。`credential_id` は base64url（パディングなし）で 1〜1023 バイト（WebAuthn の上限）のものだけを受け付ける。
+- テストベクターは `crates/zoo-crypto/tests/vectors/secret_storage_v1.json` に置いた（#351）。SSSS の確認値と秘密、パスキーとリカバリーキーのスロット（AAD と KEK の中間値を含む）、リカバリーキーの表示、鍵バックアップの暗号化を含む。値は、同じディレクトリーの `gen_secret_storage_v1.py`（Python の `cryptography`）で `zoo-crypto` とは別に計算し、`tests/vectors.rs` で一致を確かめる。形式を変えるときは、版を上げた別のファイルにする。
 
 PRF の salt について：
 
@@ -351,7 +353,7 @@ PRF の salt について：
 3. 35 バイトを Bitcoin と同じ alphabet の Base58 にする（48 文字）。
 4. 4 文字ごとに空白を入れて表示する。
 
-読み取るときは空白を無視し、長さ、先頭の 2 バイト、パリティを確かめます。
+読み取るときは空白（改行とタブを含む）を無視し、長さ、先頭の 2 バイト、パリティを確かめます。【決定】（#351）どれかが違えば `CryptoError::InvalidRecoveryKey` にし、スロットを開けようとしません（打ち間違いを、鍵が違うことと分けて表示できるようにするため）。形式は正しいが鍵が違うときは、スロットを開けずに `CryptoError::KeySlotUnlock` になります。
 
 **Matrix のリカバリーキーとは互換性がありません。** Matrix のリカバリーキーは SSSS 鍵そのものですが、zoo のリカバリーキーは SSSS 鍵を包む鍵スロットの鍵です。このため、SSSS 鍵を作り直しても（[失効](#失効と復旧)）、リカバリーキーが漏れていなければ同じリカバリーキーで新しいスロットを作れます。
 
@@ -433,6 +435,7 @@ Matrix の [`BackedUpSessionData`](https://spec.matrix.org/latest/client-server-
 - 古い版の中身はすでに漏れたものとして扱っているので（[取り消せないもの](#取り消せないもの)）、その秘密鍵を SSSS に退避しても、新しく漏れるものはない。古い版の中身は、どのみち新しい版に移す。
 - 【決定】クライアントは、今の版として見た版の番号の最大を暗号ストアに記録する。今の版としてそれより小さい番号が返ったら、その版を使わずに警告を出す。409 `E2EE_WRONG_BACKUP_VERSION` のあとで取り直した版を検証できなければ、暗号ストアの古い鍵には戻らず、SSSS で解錠し直すよう表示する。
 - 担当：`zoo.megolm_backup.previous` の形と、取り出した秘密鍵の検証は #351、解錠のあとに移行を続ける処理は #360、失効での退避は #362。
+- 【決定】（#351）`zoo-crypto` は次を持つ。`UnlockedSecretStorage::previous_backup_keys` は、各要素の秘密鍵から導いた公開鍵が `public_key` と一致しなければ、その秘密全体を `CryptoError::InvalidSecretStorage` で拒否する。`select_previous_backup_keys` は上の規則で入れる鍵と「新しい版に移せないバックアップ」を返し、`previous_versions_to_migrate` は解錠したあとに移行する版と鍵を返す（どちらも I/O を持たない判定だけで、呼ぶのは #360 と #362）。
 
 【決定】セッションのアップロード：
 
@@ -446,6 +449,14 @@ Matrix の [`BackedUpSessionData`](https://spec.matrix.org/latest/client-server-
 - アップロードを待つセッションは暗号ストアの送信待ちに記録し、成功するまで間隔をあけて再送する。送信と受信はアップロードの完了を待たない。409 `E2EE_WRONG_BACKUP_VERSION` を受けたら、今の版を取り直して検証し、通れば送信待ちのすべてをその版に送る。通らなければ送らずに警告を出す。
 - 送信用セッションの作り手だけでなく、受け取った各ユーザーの端末も、自分のバックアップにアップロードする。各ユーザーのバックアップは別なので、受け取った側も新しい端末で過去ログを読めるようにするため。
 - 担当：状態機械（アップロード待ちの記録と、版の検証）は #351、送信用セッションを作ったときと受け取ったときにアップロードする処理は #361、初回設定の直後と解錠の直後に送信待ちを送る処理は #360。
+- 【決定】（#351）状態機械は `zoo-crypto` の `BackupUploadState` にした。
+  - `accept_current_version` が今の版を上の規則で検証し、今の版として見た番号の最大と比べる（小さければ `CryptoError::BackupVersionRollback`）。検証に失敗したら、それまで受け入れていた版も外してアップロードを止める。版が変わったら `VersionChange::Changed` を返すので、呼び出し側は `enqueue_all` で手元のセッションをすべて待ちに入れる。
+  - 409 を受けたとき、今の版が 404 のときは `suspend` で止める。待ちは残し、版を取り直して検証できたら再開する。止めたあとに届いた成功や、版が変わったあとに届いた成功では、待ちから外さない。
+  - 1 回のアップロードは `next_upload` で作り、最大 1000 件、クエリの `version` と `secrets_revision`（解錠したときに `set_secrets_revision` で記録した値）を返す。`secrets_revision` を記録していなければアップロードしない。
+  - 同じセッションに Olm 由来とバックアップ由来の両方があれば、Olm 由来を書き出す。行の `is_verified` は、Olm 由来で送信端末が検証済みのときだけ true にする（バックアップ由来を上げ直すときは false）。
+  - 平文の `sender_claimed_keys.ed25519` に入れるため、受信用セッションに送信端末の署名鍵を持たせた（Olm 由来は検証した端末鍵の `ed25519`、自分の送信用セッションは自分の署名鍵、バックアップ由来は平文の値）。
+  - 保存形式は `BackupUploadState::to_json` の `{"version": 1, "user_id": "<自分>", "max_seen_version": "<10 進>"|null, "secrets_revision": <数>|null, "pending": [{"channel_id", "sender_key", "session_id"}]}`。受け入れた今の版は保存せず、起動のたびに検証し直す。`from_json` は、`version` が 1 でないもの、今のユーザーでないものを `CryptoError::InvalidBackup` で拒否する。各クライアント（#359）は、端末アカウントと同じ保存鍵で暗号化して暗号ストアに置く。
+  - 版の番号は、`0` で始まらない 10 進の文字列（u64）だけを受け付ける。
 
 これがないと、#321 の完了条件「新しい端末でパスキーで 1 回解錠すると、過去ログを読める」を満たせません。端末どうしで鍵を要求し合う仕組み（`m.room_key_request`）は初期版にないので、新しい端末が過去のセッションを得る手段はバックアップだけです。
 
@@ -1296,6 +1307,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - 異常系のテスト（受信用セッションの保存）：他のメンバーが転送した別の送信者のセッション鍵で、元の送信者のセッションが上書きされない。同じ送信者のセッションは first known index の小さい方が残る。
 - 異常系のテスト（`sender_device_keys`、#349）：`user_id` か `device_id` が `sender` と違う、自己署名が壊れている、識別鍵が Olm セッションの相手と違う、Shape の行と鍵が違う `sender_device_keys` は破棄する。自己署名だけで、自己署名鍵の署名がない端末は検証済みにならない。Shape にも `keys/query` の応答にもない端末（削除済みの端末を含む）の `sender_device_keys` は、自己署名と自己署名鍵の署名が正しくても検証済みにならず、そのセッションで復号したメッセージは「未検証の送信者」になる。
 - 異常系のテスト（入手経路、#349）：同じキーで、平文の `sender_user_id` か `sender_device_id` が違うバックアップ由来のセッションを取り込んでも、Olm 由来のセッションは残り、復号に使われる。first known index がより小さいバックアップ由来のセッションでも、Olm 由来のセッションを置き換えない。両方あるときは Olm 由来で復号し、印を付けない。Olm 由来の first known index より前のメッセージは、バックアップ由来で復号して印を付ける。あとから同じセッションを Olm で受け取っても、バックアップ由来のセッションは消えない。バックアップ由来どうしでは、`compare` が `Better` のときだけ新しい方に置き換わる。同じ `session_id` で、つながらないラチェットと小さい first known index を持つバックアップ由来のセッション（`Unconnected`）を取り込んでも、保存済みのバックアップ由来のセッションは残る。
+- 【決定】（#351）取り込みは `BackupDecryptionKey::decrypt_row` と `InboundSessionStore::import_backup_session`（`import_rows` はその両方）で行う。MAC が合わない行、平文の `algorithm` が `m.megolm.v1.aes-sha2` でない行、平文の `channel_id`、`sender_key`、`session_id` が行の値と違う行は `CryptoError::BackupDecryption` で捨てる。
 - 異常系のテスト（取り込み、#351）：取り込んだセッションは必ずバックアップ由来として保存する。`session_key` から導いた `session_id` が宣言された `session_id` と違うセッションは捨てる。平文の `sender_*` や行の `is_verified` が何であっても、そのセッションで復号したメッセージは「送信者を確かめられない」になる。
 
 ## 失効と復旧
