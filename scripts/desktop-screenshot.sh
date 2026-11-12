@@ -7,6 +7,7 @@
 #   scripts/desktop-screenshot.sh /tmp/gallery-dark.png -- desktop/target/debug/zoo2-desktop gallery --theme dark
 #
 # 仮想ディスプレイ (Xvfb) に openbox を立てて実行ファイルを動かし、root ウィンドウを撮る。
+# 飾りは openbox の設定で消している。
 # WM が無いと GPUI のウィンドウは黒く描かれるので、openbox は必須。
 # 描画は lavapipe (CPU の Vulkan)。ICD は devShell の ZOO_LVP_ICD を使う。
 set -euo pipefail
@@ -60,7 +61,19 @@ done
 [ -s "$tmp/display" ] || { echo "Xvfb が起動しませんでした" >&2; cat "$tmp/xvfb.log" >&2; exit 1; }
 export DISPLAY=":$(tr -d '\n' <"$tmp/display")"
 
-openbox >"$tmp/openbox.log" 2>&1 &
+# 撮影には内容だけが要るので、全ウィンドウの飾り (タイトルバーと枠) を消す。
+cat >"$tmp/rc.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc">
+  <applications>
+    <application class="*">
+      <decor>no</decor>
+      <maximized>yes</maximized>
+    </application>
+  </applications>
+</openbox_config>
+XML
+openbox --config-file "$tmp/rc.xml" >"$tmp/openbox.log" 2>&1 &
 pids+=($!)
 sleep 1
 
