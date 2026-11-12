@@ -46,12 +46,15 @@ impl Ctx {
 
     fn set_session(&self, info: SessionInfo) {
         let ready = matches!(info.state, SessionState::Ready { .. });
+        // remote では Ready になると Rust 側が WebView を zli.chat へ移すので、この画面の
+        // 同期は要らない (`zoo_resync` も leptos 専用で WrongMode になる)。
+        let leptos = info.ui == UiMode::Leptos;
         let was_ready = matches!(
             self.session.get_untracked().map(|s| s.state),
             Some(SessionState::Ready { .. })
         );
         self.session.set(Some(info));
-        if ready && !was_ready {
+        if ready && !was_ready && leptos {
             let ctx = *self;
             spawn_local(async move {
                 ctx.report(tauri::invoke0::<()>(command::RESYNC).await);
