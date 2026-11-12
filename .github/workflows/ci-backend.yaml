@@ -358,7 +358,10 @@ jobs:
           workspaces: backend
           shared-key: backend-check
       - name: Apply disposable database schema
-        run: psql "$EMOJI_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/db/schema.sql
+        # zli-k8s の runner image には psql がないので、service と同じ postgres:16 の psql を使う。
+        run: |
+          docker run --rm --network host -v "$PWD/infra/db/schema.sql:/schema.sql:ro" \
+            postgres:16 psql "$EMOJI_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f /schema.sql
       - name: Check shared emoji display projection
         working-directory: backend
         run: cargo test --test emoji_service_test --locked -- --include-ignored
