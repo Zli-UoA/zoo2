@@ -3,6 +3,9 @@
 // 同じ版の lucide-static から SVG を取って desktop/assets/icons/ に置く。
 // 集める対象は frontend/src の *.ts / *.tsx。*.stories.tsx、*.test.ts(x)、*.vrt.test.tsx、src/test/ は除く。
 // 使い方: node desktop/scripts/collect-lucide-icons.mjs
+// isScanned / importedNames / toKebab の規則は、Rust 側のテスト (desktop/src/icons.rs の
+// matches_frontend_lucide_imports) にも同じものがある。frontend の import と Icon::ALL の一致は
+// CI (ci-tui の cargo test) がそのテストで見る。規則を変えたら両方を合わせること。
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
