@@ -1,29 +1,40 @@
-import { describe, expect, it, vi } from "vitest";
-
-const data = (locale: string, label: string, tags: string[]) => ({
-  locale,
-  emojis: [{ emoji: "😀", category: 0, label, version: 1, tags }],
-  categories: [],
-  skinTones: {},
-});
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 vi.mock("frimousse", () => ({
-  defaultEmojiDataResolver: vi.fn(async (locale: string) =>
-    locale === "ja" ? data("ja", "にっこり", ["笑顔"]) : data("en", "grinning face", ["smile"]),
-  ),
+  defaultEmojiDataResolver: vi.fn(async (locale: string) => ({
+    locale,
+    emojis: [{ emoji: "😀", category: 0, label: "にっこり", version: 1, tags: ["笑顔"] }],
+    categories: [],
+    skinTones: {},
+  })),
 }));
 
-import { resolveMultilingualEmojiData } from "./resolver";
+const index = { "😀": ["にっこり", "笑顔", "smile", "웃음", "xiao lian", "xiaolian"] };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.resetModules();
+});
 
 describe("resolveMultilingualEmojiData", () => {
-  it("adds English label and tags to localized emojis", async () => {
-    const result = await resolveMultilingualEmojiData("ja", {});
+  it("adds keywords from other languages and pinyin without duplicating its own", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(index)),
+    );
+    const { resolveMultilingualEmojiData: resolve } = await import("./resolver");
+    const result = await resolve("ja", { emojibaseUrl: "/emojibase-data" });
     expect(result.emojis[0]?.label).toBe("にっこり");
-    expect(result.emojis[0]?.tags).toEqual(["笑顔", "grinning face", "smile"]);
+    expect(result.emojis[0]?.tags).toEqual(["笑顔", "smile", "웃음", "xiao lian", "xiaolian"]);
   });
 
-  it("leaves English data untouched", async () => {
-    const result = await resolveMultilingualEmojiData("en", {});
-    expect(result.emojis[0]?.tags).toEqual(["smile"]);
+  it("falls back to the localized data when the index cannot be loaded", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 404 })),
+    );
+    const { resolveMultilingualEmojiData: resolve } = await import("./resolver");
+    const result = await resolve("ja", { emojibaseUrl: "/emojibase-data" });
+    expect(result.emojis[0]?.tags).toEqual(["笑顔"]);
   });
 });
