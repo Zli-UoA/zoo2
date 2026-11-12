@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import { http, HttpResponse } from "msw";
 import { mockServer, startMockServer } from "../../test/browser-setup";
 import { DEFAULT_CONFIG } from "../config";
@@ -29,7 +29,8 @@ beforeEach(async () => {
   };
   await startMockServer();
 });
-it("uses the authenticated directory, coalesces consumers, and clears profiles on failure", async () => {
+afterEach(() => vi.restoreAllMocks());
+it("shares the authenticated directory and reuses it across remounts until expiry", async () => {
   let calls = 0;
   mockServer.use(
     http.get("https://accounts.fixture.test/api/emoji-accounts", ({ request }) => {
@@ -51,9 +52,15 @@ it("uses the authenticated directory, coalesces consumers, and clears profiles o
   await waitFor(() => expect(screen.getByLabelText("second")).toHaveTextContent("AuthZ name"));
   expect(calls).toBe(1);
   view.unmount();
-  render(<Consumer id="next" />);
+  const next = render(<Consumer id="next" />);
+  await expect.element(screen.getByLabelText("next")).toHaveTextContent("AuthZ name");
+  expect(calls).toBe(1);
+  next.unmount();
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now + 60_001);
+  render(<Consumer id="expired" />);
   await waitFor(() => expect(calls).toBe(2));
-  await waitFor(() => expect(screen.getByLabelText("next").textContent).toBe(""));
+  await waitFor(() => expect(screen.getByLabelText("expired").textContent).toBe(""));
 });
 
 it("a configuration failure leaves the optional directory empty without crashing its parent", async () => {

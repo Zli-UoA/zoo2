@@ -1,3 +1,6 @@
+import { StoryShell } from "../../../.storybook/shell";
+import { refreshAppSurfaces } from "../../lib/appSurfaceEvents";
+import { AppSurfaceHost } from "./AppSurfaceHost";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -13,13 +16,17 @@ vi.mock("../../lib/electric/collections-context", () => ({
   useCollections: () => collections,
   useOptionalCollections: () => collections,
 }));
+vi.mock("../../hooks/useCurrentUser", () => ({ useCurrentUser: () => ({ currentUserId: "me" }) }));
 vi.mock("../../lib/api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/api/client")>()),
   createConfiguredApiClient: () => api,
 }));
 
 describe("App interaction regressions", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    collections.config = { apiBaseUrl: "" };
+  });
   it("keeps modal input after a button action and closes only after submission", async () => {
     api.request.mockResolvedValue({ event_id: "event" });
     const done = vi.fn();
@@ -51,6 +58,30 @@ describe("App interaction regressions", () => {
       kind: "submit",
       values: { draft: "keep my input" },
     });
+  });
+  it("wakes private surface polling immediately after an app action", async () => {
+    api.get.mockResolvedValue([]);
+    render(
+      <LocaleProvider>
+        <StoryShell>
+          <AppSurfaceHost />
+        </StoryShell>
+      </LocaleProvider>,
+    );
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1));
+    api.get.mockResolvedValue([
+      {
+        id: "response",
+        kind: "ephemeral",
+        app_id: "app",
+        name: "App",
+        channel_id: "channel-general",
+        document: { blocks: [{ type: "text", text: "private reply" }] },
+      },
+    ]);
+    refreshAppSurfaces();
+    expect(await screen.findByText("private reply")).toBeVisible();
+    expect(api.get).toHaveBeenCalledTimes(2);
   });
   it("loads hyphenated custom emoji names as images", async () => {
     api.get.mockResolvedValue([

@@ -28,6 +28,9 @@ struct Ctx {
     store: RwSignal<Store, LocalStorage>,
     channel: RwSignal<Option<String>>,
     error: RwSignal<Option<String>>,
+    profile_request: RwSignal<Option<u64>>,
+    profile_checked: RwSignal<f64>,
+    generation: RwSignal<u64>,
 }
 
 impl Ctx {
@@ -62,6 +65,8 @@ impl Ctx {
             });
         }
         if !ready {
+            self.generation.update(|generation| *generation += 1);
+            self.profile_checked.set(0.0);
             self.store.set(Store::default());
             self.channel.set(None);
         }
@@ -100,7 +105,11 @@ async fn send_focus(channel_id: Option<String>) {
 }
 
 async fn refresh_account_profiles(ctx: Ctx) {
-    if ctx.me().is_none()
+    let generation = ctx.generation.get_untracked();
+    if !tauri::has_focus()
+        || ctx.me().is_none()
+        || ctx.profile_request.get_untracked() == Some(generation)
+        || js_sys::Date::now() - ctx.profile_checked.get_untracked() < 60_000.0
         || !matches!(
             ctx.session.get_untracked().map(|info| info.ui),
             Some(UiMode::Leptos)
@@ -108,11 +117,16 @@ async fn refresh_account_profiles(ctx: Ctx) {
     {
         return;
     }
+    ctx.profile_request.set(Some(generation));
     let profiles =
         tauri::invoke0::<zoo2_client_types::accounts::AccountProfiles>(command::ACCOUNT_PROFILES)
             .await
             .unwrap_or_default();
-    if ctx.me().is_some() {
+    if ctx.profile_request.get_untracked() == Some(generation) {
+        ctx.profile_request.set(None);
+    }
+    if ctx.generation.get_untracked() == generation && ctx.me().is_some() {
+        ctx.profile_checked.set(js_sys::Date::now());
         ctx.store.update(|store| store.account_profiles = profiles);
     }
 }
@@ -124,6 +138,9 @@ fn App() -> impl IntoView {
         store: RwSignal::new_local(Store::default()),
         channel: RwSignal::new(None),
         error: RwSignal::new(None),
+        profile_request: RwSignal::new(None),
+        profile_checked: RwSignal::new(0.0),
+        generation: RwSignal::new(0),
     };
     provide_context(ctx);
     if let Ok(timer) = set_interval_with_handle(
@@ -162,6 +179,7 @@ fn App() -> impl IntoView {
 
     // 前面かどうかが変わったら、表示中のチャンネルと一緒に知らせる (通知を抑えるため)。
     let _ = window_event_listener(ev::focus, move |_| {
+        spawn_local(refresh_account_profiles(ctx));
         spawn_local(send_focus(ctx.channel.get_untracked()));
     });
     let _ = window_event_listener(ev::blur, move |_| {

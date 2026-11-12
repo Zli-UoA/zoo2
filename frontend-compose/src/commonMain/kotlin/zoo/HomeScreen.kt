@@ -89,19 +89,21 @@ fun HomeScreen(
             }
         }
     }
+    val controlUpdates = remember(app, feed) { CoalescedRefresh(scope, allowed = { app.env.visible && app.env.online }) { controls() } }
     LaunchedEffect(app, feed) {
         feed.restoreSelection()
         feed.refresh()
-        controls()
+        controlUpdates.request()
     }
     DisposableEffect(app, feed) {
         val dispose =
             app.homeLive.subscribe {
                 feed.refresh(true)
-                scope.launch { controls() }
+                controlUpdates.request()
             }
         onDispose {
             dispose()
+            controlUpdates.close()
             feed.close()
         }
     }

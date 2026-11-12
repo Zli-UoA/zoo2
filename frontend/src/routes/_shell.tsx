@@ -1,3 +1,4 @@
+import { HomeLiveProvider } from "../hooks/useHomeLive";
 import { Outlet, createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
@@ -5,6 +6,7 @@ import { AppShell } from "../components/layout/AppShell";
 import { OfflineProvider } from "../components/offline/OfflineProvider";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
 import { CallProvider } from "../lib/call/call-context";
+import { NotificationsProvider } from "../hooks/useUnifiedNotifications";
 import { resolveConfig } from "../lib/config";
 
 export const Route = createFileRoute("/_shell")({ component: ShellLayout });
@@ -25,9 +27,13 @@ function ShellLayout() {
   return mounted ? (
     <OfflineProvider config={config}>
       <CallProvider config={config}>
-        <AppShell>
-          <Outlet />
-        </AppShell>
+        <HomeLiveProvider>
+          <NotificationsProvider>
+            <AppShell>
+              <Outlet />
+            </AppShell>
+          </NotificationsProvider>
+        </HomeLiveProvider>
       </CallProvider>
     </OfflineProvider>
   ) : (

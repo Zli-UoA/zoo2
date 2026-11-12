@@ -2,6 +2,7 @@ pub mod app;
 pub mod assets;
 pub mod fonts;
 pub mod gallery;
+pub mod gallery_components;
 pub mod i18n;
 pub mod icons;
 pub mod input;
@@ -9,6 +10,7 @@ pub mod login;
 pub mod mfm_view;
 pub mod theme;
 pub mod tokens;
+pub mod ui;
 pub mod view;
 
 use std::sync::Arc;

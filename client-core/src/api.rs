@@ -13,6 +13,7 @@ pub struct ApiClient {
     http: reqwest::Client,
     base_url: String,
     credentials: Credentials,
+    typing_write: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 pub use zoo2_client_types::api::Me;
@@ -106,6 +107,7 @@ impl ApiClient {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             credentials,
+            typing_write: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -115,10 +117,14 @@ impl ApiClient {
         path: &str,
         body: Option<Value>,
     ) -> Result<reqwest::Response> {
+        let reading = method == Method::GET;
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base_url))
             .header(reqwest::header::ACCEPT, "application/json");
+        if reading {
+            request = request.timeout(std::time::Duration::from_secs(10));
+        }
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -389,9 +395,23 @@ impl ApiClient {
         session_id: &str,
         active: bool,
     ) -> Result<()> {
+        // Repeated renewals may be skipped while a previous write is pending. Stops must
+        // wait for it, so a slow start cannot arrive after the lease was stopped.
+        let _guard = if active {
+            match self.typing_write.try_lock() {
+                Ok(guard) => guard,
+                Err(_) => return Ok(()),
+            }
+        } else {
+            self.typing_write.lock().await
+        };
         let path = format!("/api/channels/{}/typing", segment(channel_id));
         let body = json!({ "parent_id": parent_id, "session_id": session_id, "active": active });
-        self.send(Method::POST, &path, Some(body)).await?;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.send(Method::POST, &path, Some(body)),
+        )
+        .await??;
         Ok(())
     }
 
@@ -430,6 +450,32 @@ mod tests {
             &format!("{}/", server.uri()),
             Credentials::Dev("u1".into()),
         )
+    }
+
+    #[tokio::test]
+    async fn slow_typing_renewals_do_not_overlap_and_stop_follows_the_start() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/channels/c1/typing"))
+            .respond_with(
+                ResponseTemplate::new(204).set_delay(std::time::Duration::from_millis(30)),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        let first_api = api.clone();
+        let first =
+            tokio::spawn(async move { first_api.set_typing("c1", None, "session", true).await });
+        while server.received_requests().await.unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        api.set_typing("c1", None, "session", true).await.unwrap();
+        api.set_typing("c1", None, "session", false).await.unwrap();
+        first.await.unwrap().unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[0].body_json::<Value>().unwrap()["active"], true);
+        assert_eq!(requests[1].body_json::<Value>().unwrap()["active"], false);
     }
 
     #[tokio::test]

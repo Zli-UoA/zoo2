@@ -208,7 +208,7 @@ React版はメイン画面と同じ `ActivityPubProfileDetails`・`HomePostConte
 
 TLでは日時の隣に、チャンネルと共通の公開範囲アイコンを表示します。パブリック・ホーム・フォロワー限定・ローカルのみを区別し、連合ありの投稿にはActivityPubロゴも表示します。
 
-ローカルユーザーの紐付け投稿リアクションは `message_reactions` を共通の保存先とし、連合ユーザーは `apub_reactions` に保存します。`GET /api/channels/<ID>/federated-reactions` がチャンネルの閲覧権限を確認して連合ユーザー分を返し、チャンネルUIはElectricのローカル分に合流させます。両画面はHomeの通知を受けて更新します。公開Noteのlikes件数にも両方を含めます。
+ローカルユーザーの紐付け投稿リアクションは `message_reactions` を共通の保存先とし、連合ユーザーは `apub_reactions` に保存します。React・Android・TUI・デスクトップのチャンネルUIは `messages.display_data.reactions` からローカル・連合の両方を取得し、Electricで同時に更新します。`GET /api/channels/<ID>/federated-reactions` は既存クライアントとの互換用に残しますが、React・Androidは呼びません。Homeは共有のライブ通知を受けて更新します。公開Noteのlikes件数にも両方を含めます。
 
 `shared_channel_post_reactions` マイグレーションは既存のローカルリアクションを共通保存先へコピーします。旧バックエンドが動いている間のHome側の追加・変更・削除もトリガーで反映し、新しいTLは旧データとの二重計上を避けます。既存テーブル・カラムの削除はありません。
 

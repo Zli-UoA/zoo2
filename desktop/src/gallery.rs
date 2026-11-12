@@ -9,6 +9,7 @@ use gpui::{
 
 use crate::assets::{Assets, logo};
 use crate::fonts;
+use crate::gallery_components::ComponentsGallery;
 use crate::i18n::{I18n, Locale};
 use crate::icons::{Icon, icon};
 use crate::tokens::{ThemeMode, Tokens, font_size, initial_mode, radius};
@@ -214,41 +215,61 @@ impl Render for Gallery {
 }
 
 /// ギャラリーのウィンドウを開く。モードは `tokens::initial_mode()` (`--theme`) に従う。
-pub fn run() {
-    Application::new().with_assets(Assets).run(|cx: &mut App| {
-        if let Err(err) = fonts::register(cx) {
-            eprintln!("フォントを登録できませんでした: {err:#}");
-        }
-        cx.on_action(|_: &crate::Quit, cx| cx.quit());
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", crate::Quit, None),
-            KeyBinding::new("ctrl-q", crate::Quit, None),
-        ]);
-        // ウィンドウは 1 つだけなので、閉じたらアプリも終える。
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
+/// `args` は `gallery` の後ろの引数。`components [ページ]` なら UI 部品のページを開く。
+pub fn run(args: &[String]) {
+    let components_page = match args.first().map(String::as_str) {
+        Some("components") => Some(
+            args.get(1)
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1),
+        ),
+        _ => None,
+    };
+    Application::new()
+        .with_assets(Assets)
+        .run(move |cx: &mut App| {
+            if let Err(err) = fonts::register(cx) {
+                eprintln!("フォントを登録できませんでした: {err:#}");
             }
-        })
-        .detach();
-        let mode = initial_mode();
-        let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
-        if let Err(err) = cx.open_window(
-            WindowOptions {
+            cx.on_action(|_: &crate::Quit, cx| cx.quit());
+            cx.bind_keys([
+                KeyBinding::new("cmd-q", crate::Quit, None),
+                KeyBinding::new("ctrl-q", crate::Quit, None),
+            ]);
+            // ウィンドウは 1 つだけなので、閉じたらアプリも終える。
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            let mode = initial_mode();
+            crate::ui::set_theme(cx, mode);
+            let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
+            let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
-            },
-            move |_, cx| {
-                cx.new(|_| Gallery {
-                    mode,
-                    tokens: mode.tokens(),
-                    i18n: I18n::detect(),
-                })
-            },
-        ) {
-            eprintln!("ウィンドウを開けませんでした: {err:#}");
-            std::process::exit(1);
-        }
-        cx.activate(true);
-    });
+            };
+            let opened = match components_page {
+                Some(page) => cx
+                    .open_window(options, move |_, cx| {
+                        cx.new(|_| ComponentsGallery::new(page))
+                    })
+                    .map(|_| ()),
+                None => cx
+                    .open_window(options, move |_, cx| {
+                        cx.new(|_| Gallery {
+                            mode,
+                            tokens: mode.tokens(),
+                            i18n: I18n::detect(),
+                        })
+                    })
+                    .map(|_| ()),
+            };
+            if let Err(err) = opened {
+                eprintln!("ウィンドウを開けませんでした: {err:#}");
+                std::process::exit(1);
+            }
+            cx.activate(true);
+        });
 }

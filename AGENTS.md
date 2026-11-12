@@ -12,6 +12,13 @@
 - Storybookの追加・整理、またはUI変更に伴うStoryの要否を判断するときは `.agents/skills/storybook-coverage/SKILL.md` に従う。
 - 対象一覧は `frontend/.storybook/coverage.json` に置き、`pnpm --dir frontend check:storybook` で検証する。
 
+# リクエストと接続
+
+- 通信の実装・修正では `docs/request-design.md` に従う。画像などのファイル本体以外は、表示データの取得・同期を少数の共有経路へまとめ、部品ごとの接続や重複取得を増やさない。
+- 同じ機能を持つReact・Android・TUI・デスクトップの各実装を確認し、一方だけの修正で共通化済みとしない。
+- 既存のShape・DTOにあるデータを別APIで取り直さない。取得中の更新は集約し、ポーリングには必要性・頻度・停止条件を明記する。
+- 接続数・リクエスト数、遅い応答、非表示・復帰、アカウント切替を検証する。
+
 # フロントエンドの一貫性と再利用
 
 - フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。

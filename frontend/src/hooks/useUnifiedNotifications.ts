@@ -1,10 +1,18 @@
-import { useCallback, useMemo } from "react";
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useMemo,
+  type ReactNode,
+} from "react";
+import { useCurrentUser } from "./useCurrentUser";
+import { useCollections } from "../lib/electric/collections-context";
 import { useNotifications } from "./useNotifications";
 import { useActivityPubNotifications } from "./useActivityPubNotifications";
 import { unifiedNotificationFeed } from "../components/chat/notifications/groupNotifications";
 
-/** Read controls and ordering for the shared notifications screen and rail badge. */
-export function useUnifiedNotifications() {
+function useNotificationFeed() {
   const channel = useNotifications();
   const activitypub = useActivityPubNotifications();
   const feed = useMemo(
@@ -38,4 +46,27 @@ export function useUnifiedNotifications() {
     markRead,
     unreadCount: channel.unreadCount + activitypub.unread_count - feed.duplicateUnreadCount,
   };
+}
+
+const NotificationsContext = createContext<ReturnType<typeof useNotificationFeed> | null>(null);
+
+function NotificationFeedProvider({ children }: { children: ReactNode }) {
+  const value = useNotificationFeed();
+  return createElement(NotificationsContext.Provider, { value }, children);
+}
+
+/** One feed and live subscription for the rail and screen, scoped to the active account. */
+export function NotificationsProvider({ children }: { children: ReactNode }) {
+  const { currentUserId } = useCurrentUser();
+  const { config } = useCollections();
+  return createElement(NotificationFeedProvider, {
+    key: JSON.stringify([config.apiBaseUrl, config.devUserId, currentUserId]),
+    children,
+  });
+}
+
+export function useUnifiedNotifications() {
+  const notifications = useContext(NotificationsContext);
+  if (!notifications) throw new Error("NotificationsProvider is required");
+  return notifications;
 }

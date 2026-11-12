@@ -114,6 +114,11 @@ pub struct SlackMessage {
     /// スレッドの親なら、返信の ts の一覧 (エクスポートに含まれる場合)
     #[serde(default)]
     pub replies: Vec<SlackReplyRef>,
+    /// `conversations.history` が返す、スレッドの返信の数と最後の返信の `ts` (差分同期 #292 で返信の取得に使う)
+    #[serde(default)]
+    pub reply_count: Option<i64>,
+    #[serde(default)]
+    pub latest_reply: Option<String>,
     /// 編集・削除の履歴を含むエクスポートで、`message_changed` / `message_deleted` の記録が持つ、元の投稿の全体
     #[serde(default)]
     pub original: Option<serde_json::Value>,
