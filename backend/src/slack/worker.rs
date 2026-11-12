@@ -203,7 +203,7 @@ async fn extend_lease(s: &AppState, id: &str, token: &str) -> Result<bool, AppEr
     Ok(!rows.is_empty())
 }
 
-async fn exec(
+pub(super) async fn exec(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,
     params: &[&str],
@@ -217,7 +217,7 @@ async fn exec(
 }
 
 /// 取り込みで生じる行をアプリへ大量配送しないよう、このトランザクションのイベントを止める
-async fn suppress_app_events(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
+pub(super) async fn suppress_app_events(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
     one(
         tx,
         "SELECT json_build_object('ok',set_config('zoo.suppress_app_events','on',true))::text",
@@ -505,29 +505,29 @@ async fn analyze(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError>
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct ZooUser {
-    id: String,
-    user_name: String,
+pub(super) struct ZooUser {
+    pub(super) id: String,
+    pub(super) user_name: String,
 }
 
-struct Context {
-    team: String,
-    users: HashMap<String, ZooUser>,
-    profiles: HashMap<String, SlackUser>,
-    channel_names: HashMap<String, String>,
-    files: FilePolicy,
+pub(super) struct Context {
+    pub(super) team: String,
+    pub(super) users: HashMap<String, ZooUser>,
+    pub(super) profiles: HashMap<String, SlackUser>,
+    pub(super) channel_names: HashMap<String, String>,
+    pub(super) files: FilePolicy,
 }
 
 /// 添付ファイルを取得して添付にできるかを、取り込みの時点で判定する (`fetch_one` と同じ条件)
-struct FilePolicy {
+pub(super) struct FilePolicy {
     /// 添付を取得するトークンがあるか
-    token: bool,
-    max_size: u64,
-    base_url: String,
+    pub(super) token: bool,
+    pub(super) max_size: u64,
+    pub(super) base_url: String,
 }
 
 impl FilePolicy {
-    fn new(s: &AppState) -> Self {
+    pub(super) fn new(s: &AppState) -> Self {
         Self {
             token: s.config.slack.import_bot_token.is_some(),
             max_size: s.config.s3.max_file_size,
@@ -565,7 +565,7 @@ impl Resolver for Context {
 
 impl Context {
     /// Slack ユーザー (または bot) に対応する zoo ユーザーを返す。なければプレースホルダを作る。
-    async fn user(
+    pub(super) async fn user(
         &mut self,
         tx: &mut toasty::Transaction<'_>,
         slack_id: &str,
@@ -938,7 +938,8 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 .collect();
             let mut last_ts = None;
             for message in messages.iter().filter(|m| m.is_importable()) {
-                insert_message(&mut tx, &mut ctx, &channel.id, channel_id, job, message).await?;
+                insert_message(&mut tx, &mut ctx, &channel.id, channel_id, &job.id, message)
+                    .await?;
                 last_ts = Some(message.ts.as_str());
                 processed += 1;
             }
@@ -1191,12 +1192,12 @@ async fn create_channel(
     ))
 }
 
-async fn insert_message(
+pub(super) async fn insert_message(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
     slack_channel: &str,
     channel_id: &str,
-    job: &Job,
+    job_id: &str,
     message: &SlackMessage,
 ) -> Result<(), AppError> {
     let author = message.author().unwrap_or_default();
@@ -1344,14 +1345,14 @@ async fn insert_message(
             tx,
             "INSERT INTO slack_files(team_id,slack_file_id,job_id,message_id,channel_id,uploader_id,\
              name,mimetype,size,url_private_download,in_content) \
-             SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::bigint,$10,$11::boolean WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) \
-             ON CONFLICT (team_id,slack_file_id,message_id) DO UPDATE SET job_id=EXCLUDED.job_id,\
+             SELECT $1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9::bigint,$10,$11::boolean WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) \
+             ON CONFLICT (team_id,slack_file_id,message_id) DO UPDATE SET job_id=COALESCE(EXCLUDED.job_id,slack_files.job_id),\
              status='pending',attempts=0,error=NULL,updated_at=now() \
-             WHERE slack_files.status IN ('pending','failed')",
+             WHERE slack_files.status IN ('pending','failed') AND $3<>''",
             &[
                 &ctx.team,
                 &file.id,
-                &job.id,
+                job_id,
                 &id,
                 channel_id,
                 &user.id,
