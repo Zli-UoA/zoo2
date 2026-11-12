@@ -29,6 +29,7 @@ export type ChannelRow = {
   description: string | null;
   created_user_id: string;
   is_private: boolean;
+  is_nsfw?: boolean;
   is_dm: boolean;
   created_at: TimestampString;
   updated_at: TimestampString | null;
@@ -129,6 +130,7 @@ export type AttachmentRow = import("../imageMetadata").ImageMetadata & {
   file_size: string | number;
   content_type: string;
   storage_key: string;
+  is_sensitive?: boolean;
   created_at: TimestampString;
 };
 

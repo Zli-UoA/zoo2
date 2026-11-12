@@ -32,6 +32,7 @@ export function CreateChannelDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
+  const [isNsfw, setIsNsfw] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // 言語を切り替えても文言が追従するよう、翻訳前の原因を保持する。
   const [errorCause, setErrorCause] = useState<{ cause: unknown } | null>(null);
@@ -44,6 +45,7 @@ export function CreateChannelDialog({
       setName("");
       setDescription("");
       setIsPrivate(false);
+      setIsNsfw(false);
       setErrorCause(null);
       setSubmitting(false);
     }
@@ -65,6 +67,7 @@ export function CreateChannelDialog({
         description: trimmedDescription || null,
         created_user_id: currentUserId ?? "",
         is_private: isPrivate,
+        is_nsfw: isNsfw,
         is_dm: false,
         created_at: new Date().toISOString(),
         updated_at: null,
@@ -147,6 +150,15 @@ export function CreateChannelDialog({
               onChange={(event) => setIsPrivate(event.target.checked)}
             />
             {t("channels.makePrivate")}
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Input
+              type="checkbox"
+              checked={isNsfw}
+              disabled={submitting}
+              onChange={(event) => setIsNsfw(event.target.checked)}
+            />
+            {t("channels.nsfw")}
           </label>
           {errorCause ? (
             <p role="alert" className="text-xs text-destructive">

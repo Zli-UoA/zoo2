@@ -75,6 +75,13 @@ pub struct CreatedChannel {
     pub is_private: bool,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MyProfile {
+    /// timestamptz の JSON 文字列。`notify::parse_dnd_until` で読む。
+    #[serde(default)]
+    pub dnd_until: Option<String>,
+}
+
 /// 書き込み API の `{data, txid}`。`txid` が null のときは何も変わっていない。
 #[derive(Debug, Deserialize)]
 struct Envelope<T = Value> {
@@ -179,6 +186,12 @@ impl ApiClient {
     pub async fn unarchive_thread(&self, id: &str) -> Result<Option<String>> {
         let path = format!("/api/threads/{}/unarchive", segment(id));
         self.write(Method::POST, &path, None).await
+    }
+
+    /// `GET /api/users/me/profile` のうち、クライアントが使う部分。
+    /// `dnd_until` は `preferences:read` の scope がないと返らない (None になる)。
+    pub async fn my_profile(&self) -> Result<MyProfile> {
+        self.get("/api/users/me/profile").await
     }
 
     /// `id` はクライアントで採番する (frontend と同じく、送信直後の行と突き合わせるため)。

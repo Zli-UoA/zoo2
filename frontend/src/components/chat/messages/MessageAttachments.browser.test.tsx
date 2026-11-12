@@ -1,12 +1,17 @@
 import "../../../styles.css";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MessageAttachments } from "./MessageAttachments";
 import type { AttachmentUrlState } from "../../../hooks/useAttachments";
 
-const link = vi.hoisted(() => ({ state: {} as AttachmentUrlState }));
-vi.mock("../../../hooks/useAttachments", () => ({ useAttachmentUrl: () => link.state }));
+const link = vi.hoisted(() => ({ state: {} as AttachmentUrlState, load: vi.fn() }));
+vi.mock("../../../hooks/useAttachments", () => ({
+  useAttachmentUrl: () => {
+    link.load();
+    return link.state;
+  },
+}));
 
 it.each([160, 640])(
   "keeps attachment geometry through signed URL loading, wide image decode and failure at %ipx",
@@ -56,3 +61,38 @@ it.each([160, 640])(
     expect(screen.getByTestId("following").getBoundingClientRect().top).toBe(top);
   },
 );
+
+it("shows BlurHash without requesting the original image until a sensitive image is tapped", async () => {
+  link.load.mockClear();
+  link.state = {
+    url: "/sensitive.png",
+    status: "ready",
+    expiresAt: null,
+    reload: vi.fn(),
+    getFreshUrl: vi.fn(),
+  };
+  const attachment = {
+    id: "sensitive",
+    width: 640,
+    height: 480,
+    blurhash: "LEHV6nWB2yk8pyo0adR*.7kCMdnj",
+    file_name: "private.png",
+    file_size: 100,
+    content_type: "image/png",
+    is_sensitive: true,
+  };
+  render(
+    <LocaleProvider>
+      <MessageAttachments attachments={[attachment]} />
+    </LocaleProvider>,
+  );
+  expect(link.load).not.toHaveBeenCalled();
+  expect(screen.queryByRole("img")).toBeNull();
+  const preview = screen.getByRole("button", { name: "画像を表示" }).querySelector("canvas")!;
+  await waitFor(() => expect(preview.getContext("2d")!.getImageData(0, 0, 1, 1).data[3]).toBe(255));
+  fireEvent.click(screen.getByRole("button", { name: "画像を表示" }));
+  expect(await screen.findByRole("img", { name: "private.png" })).toBeTruthy();
+  expect(link.load).toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "画像を隠す" }));
+  expect(screen.queryByRole("img")).toBeNull();
+});

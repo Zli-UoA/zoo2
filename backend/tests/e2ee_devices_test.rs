@@ -1,6 +1,6 @@
 //! E2EE の端末と鍵の API（#354）の結合テスト。仕様は docs/e2ee.md。
 //!
-//! to-device の送信との競合（削除・無効化と to-device の送信）は #355 で、
+//! to-device の送信との競合（削除・無効化と to-device の送信）は #355（`e2ee_to_device_test.rs`）で、
 //! `membership_epoch` の増加は #357 で確かめる。
 
 use std::time::Duration;

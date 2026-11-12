@@ -94,6 +94,8 @@ function readChannelUserMetadata(metadata: unknown): ChannelUserWriteMetadata {
 
 export interface MessageWriteMetadata {
   attachment_ids?: string[];
+  sensitive?: boolean;
+  sensitive_attachment_ids?: string[];
 }
 
 function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
@@ -105,6 +107,14 @@ function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
     return {};
   }
   return {
+    ...((metadata as MessageWriteMetadata).sensitive ? { sensitive: true } : {}),
+    ...(Array.isArray((metadata as MessageWriteMetadata).sensitive_attachment_ids)
+      ? {
+          sensitive_attachment_ids: (
+            metadata as MessageWriteMetadata
+          ).sensitive_attachment_ids!.filter((id): id is string => typeof id === "string"),
+        }
+      : {}),
     attachment_ids: value.filter((id): id is string => typeof id === "string"),
   };
 }
@@ -133,6 +143,10 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       const attachmentIds = readMessageMetadata(mutation.metadata).attachment_ids;
       if (attachmentIds?.length) {
         body.attachment_ids = attachmentIds;
+        const metadata = readMessageMetadata(mutation.metadata);
+        if (metadata.sensitive) body.sensitive = true;
+        if (metadata.sensitive_attachment_ids?.length)
+          body.sensitive_attachment_ids = metadata.sensitive_attachment_ids;
       }
       const { txid } = await client.post<MessageRow>("/api/messages", body);
       if (row.parent_id) {
@@ -214,6 +228,7 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
         channel_name: row.channel_name,
         description: row.description,
         is_private: row.is_private,
+        ...(row.is_nsfw !== undefined ? { is_nsfw: row.is_nsfw } : {}),
       };
       const { txid } = await client.post<ChannelRow>("/api/channels", body);
       await syncTxid({
@@ -235,6 +250,9 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
       }
       if ("description" in changes) {
         body.description = changes.description ?? null;
+      }
+      if ("is_nsfw" in changes) {
+        body.is_nsfw = changes.is_nsfw;
       }
       if ("is_private" in changes) {
         body.is_private = changes.is_private;

@@ -69,9 +69,7 @@ describe("MessageRow", () => {
       userNames: { u1: "Alice" },
     };
     const view = renderRow(buildItem(), false, { reactions: [reaction] });
-    await userEvent.click(
-      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "リアクションしたユーザーを表示" }));
     expect(screen.getByRole("dialog")).toBeTruthy();
     view.update({ reactions: [] });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -83,9 +81,7 @@ describe("MessageRow", () => {
     renderRow(buildItem(), false, {
       reactions: [{ emoji: "👍", count: 2, ownId: null, userIds: ["u1", "u2"], userNames: {} }],
     });
-    await userEvent.click(
-      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "リアクションしたユーザーを表示" }));
     expect(screen.getAllByText("ユーザーを表示できません")).toHaveLength(1);
   });
   it("shows the loading message once alongside resolved users", async () => {
@@ -102,12 +98,93 @@ describe("MessageRow", () => {
         },
       ],
     });
-    await userEvent.click(
-      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "リアクションしたユーザーを表示" }));
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByText("Alice")).toBeTruthy();
     expect(dialog.getAllByText("ユーザーを読み込み中")).toHaveLength(1);
+  });
+  it("shows one mobile participant button for all reactions and keeps emoji groups inspectable", async () => {
+    await page.viewport(390, 844);
+    renderRow(buildItem(), false, {
+      reactions: [
+        {
+          emoji: "👍",
+          count: 2,
+          ownId: null,
+          userIds: ["u1", "u2"],
+          userNames: { u1: "Alice", u2: "Bob" },
+        },
+        { emoji: "🎉", count: 1, ownId: null, userIds: ["u3"], userNames: { u3: "Carol" } },
+      ],
+    });
+
+    expect(
+      screen.queryByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "🎉 にリアクションしたユーザーを表示" }),
+    ).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "リアクションしたユーザーを表示" }));
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(
+      [...screen.getByRole("dialog").querySelectorAll("h3")].map((heading) => heading.innerText),
+    ).toEqual(["👍", "🎉"]);
+    expect(screen.getByRole("heading", { name: "👍" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "🎉" })).toBeTruthy();
+    expect(dialog.getByText("Alice")).toBeTruthy();
+    expect(dialog.getByText("Bob")).toBeTruthy();
+    expect(dialog.getByText("Carol")).toBeTruthy();
+  });
+  it("wraps a missing custom emoji name without duplicating it", async () => {
+    await page.viewport(280, 844);
+    const emoji = `:${"a".repeat(64)}:`;
+    renderRow(buildItem(), false, {
+      reactions: [{ emoji, count: 1, ownId: null, userIds: [], userNames: {} }],
+    });
+    await userEvent.click(screen.getByRole("button", { name: "リアクションしたユーザーを表示" }));
+    const heading = screen.getByRole("heading", { name: emoji });
+    expect(heading.innerText).toBe(emoji);
+    expect(heading.scrollWidth).toBeLessThanOrEqual(heading.clientWidth);
+    await page.viewport(390, 844);
+  });
+  it("keeps the mobile participant button rightmost after wrapping and the add button", async () => {
+    await page.viewport(280, 844);
+    renderRow(buildItem(), false, {
+      reactions: ["👍", "🎉", "❤️", "😂", "🚀", "👀"].map((emoji) => ({
+        emoji,
+        count: 1,
+        ownId: null,
+        userIds: [],
+        userNames: {},
+      })),
+    });
+
+    const participantButton = screen.getByRole("button", {
+      name: "リアクションしたユーザーを表示",
+    });
+    const group = participantButton.closest('[role="group"]');
+    const addButton = within(group as HTMLElement).getByRole("button", {
+      name: "リアクションを追加",
+    });
+    expect(group?.lastElementChild).toBe(participantButton);
+
+    const visibleButtons = [...(group?.querySelectorAll("button") ?? [])].filter(
+      (button) => button.getBoundingClientRect().width > 0,
+    );
+    const participantRect = participantButton.getBoundingClientRect();
+    const participantRowButtons = visibleButtons.filter(
+      (button) => Math.abs(button.getBoundingClientRect().top - participantRect.top) < 1,
+    );
+    expect(participantRect.top).toBeGreaterThan(visibleButtons[0]!.getBoundingClientRect().top);
+    expect(
+      Math.max(...participantRowButtons.map((button) => button.getBoundingClientRect().right)),
+    ).toBe(participantRect.right);
+    const addRect = addButton.getBoundingClientRect();
+    expect(participantRect.top + participantRect.height / 2).toBeGreaterThanOrEqual(
+      addRect.top + addRect.height / 2,
+    );
+    await page.viewport(390, 844);
   });
   it("allows keyboard users to open the full reaction list on desktop", async () => {
     await page.viewport(1024, 768);
@@ -152,7 +229,7 @@ describe("MessageRow", () => {
     expect((await screen.findByRole("tooltip")).textContent).toContain("Alice");
     await page.viewport(390, 844);
   });
-  it("shows reaction users without toggling the reaction", async () => {
+  it("shows all reaction users without toggling the reaction", async () => {
     const onReaction = vi.fn();
     renderRow(buildItem(), false, {
       canReact: true,
@@ -167,9 +244,7 @@ describe("MessageRow", () => {
         },
       ],
     });
-    await userEvent.click(
-      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "リアクションしたユーザーを表示" }));
     expect(screen.getByRole("dialog").textContent).toContain("Alice");
     expect(screen.getByRole("dialog").textContent).toContain("Bob");
     expect(onReaction).not.toHaveBeenCalled();
@@ -183,9 +258,7 @@ describe("MessageRow", () => {
     renderRow(buildItem(), false, {
       reactions: [{ emoji: "👍", count: 1, ownId: null, userIds: ["missing"], userNames: {} }],
     });
-    await userEvent.click(
-      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "リアクションしたユーザーを表示" }));
     expect(screen.getByRole("dialog").textContent).toContain("ユーザーを表示できません");
   });
   it("hides the reaction strip until a reaction exists", () => {

@@ -153,6 +153,9 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             if channel.is_private && !channel.is_dm {
                 spans.push(Span::styled(" 🔒", DIM));
             }
+            if channel.is_nsfw {
+                spans.push(Span::styled(" NSFW", DIM));
+            }
             if channel.archive_at.is_some() {
                 spans.push(Span::styled(" (アーカイブ)", DIM));
             }

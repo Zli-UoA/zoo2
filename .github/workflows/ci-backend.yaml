@@ -39,11 +39,11 @@ jobs:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   # fmt, clippy, build and unit tests share one job so the Rust cache is
-  # restored once; on kubecamp the restore takes longer than the build itself.
+  # restored once across the Rust checks.
   check:
     needs: runner
-    # Rust のバイナリビルドは、メモリ上限 2GiB の kubecamp に載せない。
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
+    # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     defaults:
       run:
         working-directory: ./backend

@@ -56,6 +56,7 @@ export interface ThreadPaneProps {
     content: string,
     commandAppId?: string,
     attachmentIds?: string[],
+    sensitiveAttachmentIds?: string[],
   ) => Promise<boolean>;
   /** 上端付近で古い返信を読み足す。 */
   onLoadOlder?: () => void;

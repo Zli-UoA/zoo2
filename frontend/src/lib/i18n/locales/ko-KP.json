@@ -41,7 +41,8 @@
     "descriptionTooLong": "설명은 {{max}}자 이내로 입력하십시오(현재 {{length}}자).",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "만드는 중…",
-    "create": "통로 만들기"
+    "create": "통로 만들기",
+    "nsfw": "NSFW 통로"
   },
   "sync": {
     "title": "동기화 상태",
@@ -56,6 +57,9 @@
     "logout": "로그아웃",
     "loggedOut": "로그아웃했습니다",
     "loggedOutHelp": "계속하려면 다시 로그인하십시오.",
+    "desktopOutdated": "탁상용 프로그람을 갱신해야 합니다",
+    "desktopOutdatedHelp": "이 판본의 프로그람으로는 현재 zli.chat을 열수 없습니다. 새 판본의 프로그람을 설치하십시오. 일시적인 문제일수도 있으므로 먼저 다시 읽기를 해보십시오.",
+    "reload": "다시 읽기",
     "login": "로그인",
     "failed": "로그인하지 못했습니다",
     "retry": "다시 로그인",
@@ -221,7 +225,12 @@
     "download": "{{name}} 내려받기",
     "downloadShort": "내려받기",
     "downloadError": "내려받지 못했습니다.",
-    "retry": "다시 시도"
+    "retry": "다시 시도",
+    "sensitive": "민감한 화상",
+    "markSensitive": "화상을 민감한 내용으로 표시",
+    "showSensitive": "화상 표시",
+    "hideSensitive": "화상 숨기기",
+    "sensitiveShort": "민감한 화상"
   },
   "threads": {
     "title": "타래",
@@ -251,6 +260,8 @@
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",
     "usersTitle": "{{emoji}}에 반응한 사용자",
+    "showAllUsers": "반응한 사용자 표시",
+    "allUsersTitle": "반응한 사용자",
     "usersLoading": "사용자를 불러오는 중",
     "userUnavailable": "사용자를 표시할수 없습니다",
     "usersEmpty": "반응이 없습니다",
