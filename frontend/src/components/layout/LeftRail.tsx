@@ -17,6 +17,7 @@ import {
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
+import { desktopLogout, isDesktopSession } from "../../lib/desktop";
 import { getOidcClient } from "../../lib/oidc/session";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
 import { AppAvatar } from "../chat/AppIdentity";
@@ -67,6 +68,12 @@ export function LeftRail() {
   // OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）。
   // dev（OIDC 未設定）ではログアウト UI を出さない。
   const handleLogout = async () => {
+    // デスクトップ版では Rust 側がトークンを持つ。消すとログイン画面へ戻る。
+    if (isDesktopSession()) {
+      await clearUserData().catch(() => toast.error(t("offline.deleteFailed")));
+      await desktopLogout();
+      return;
+    }
     const client = getOidcClient(config);
     if (!client) {
       return;

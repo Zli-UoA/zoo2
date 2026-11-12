@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-zoo-open-channel"
+description = "Enables the zoo_open_channel command without any pre-configured scope."
+commands.allow = ["zoo_open_channel"]
+
+[[permission]]
+identifier = "deny-zoo-open-channel"
+description = "Denies the zoo_open_channel command without any pre-configured scope."
+commands.deny = ["zoo_open_channel"]

@@ -102,6 +102,52 @@ pub enum CryptoError {
     #[error("今のユーザー署名鍵ではありません: {0}")]
     StaleUserSigningKey(String),
 
+    /// リカバリーキーの形式が正しくない（Base58 でない、長さ、先頭の 2 バイト、パリティが違う）。
+    #[error("リカバリーキーが正しくありません: {0}")]
+    InvalidRecoveryKey(String),
+
+    /// SSSS の応答、秘密、鍵スロットの形式が正しくない。
+    #[error("Secret Storage の形式が正しくありません: {0}")]
+    InvalidSecretStorage(String),
+
+    /// 解錠に使える鍵スロットがない（その credential ID のスロットやリカバリーキーのスロットがない）。
+    #[error("使える鍵スロットがありません")]
+    NoKeySlot,
+
+    /// 鍵スロットを開けない。PRF 出力やリカバリーキーが違う、スロットが改ざんされた、
+    /// 別のユーザー、別の SSSS 鍵、別のスロットに付け替えられた、のどれか（区別できない）。
+    #[error("鍵スロットを開けません")]
+    KeySlotUnlock,
+
+    /// SSSS 鍵が確認値と合わない。
+    #[error("SSSS 鍵が確認値と一致しません")]
+    SsssKeyMismatch,
+
+    /// SSSS の秘密を復号できない（別の SSSS 鍵で暗号化された、MAC が合わない）。
+    #[error("秘密を復号できません: {0}")]
+    SecretDecryption(String),
+
+    /// 鍵バックアップの版や保存した状態の形式が正しくない。
+    #[error("鍵バックアップの形式が正しくありません: {0}")]
+    InvalidBackup(String),
+
+    /// 版の `auth_data.public_key` が、SSSS のバックアップ鍵と一致しない。
+    #[error("鍵バックアップの版の公開鍵が SSSS のバックアップ鍵と一致しません")]
+    BackupKeyMismatch,
+
+    /// 今の版として、前に見たより小さい番号の版が返った。
+    #[error("鍵バックアップの版が巻き戻りました（見た最大は {max_seen}、返ったのは {received}）")]
+    BackupVersionRollback {
+        /// 今の版として見た番号の最大。
+        max_seen: u64,
+        /// 返った番号。
+        received: u64,
+    },
+
+    /// 鍵バックアップのセッションを復号できない、または行と平文が合わない。
+    #[error("鍵バックアップのセッションを復号できません: {0}")]
+    BackupDecryption(String),
+
     /// 受信時の検証に失敗した。呼び出し側は破棄する。
     #[error("受信時の検証に失敗しました: {0}")]
     Rejected(Rejection),

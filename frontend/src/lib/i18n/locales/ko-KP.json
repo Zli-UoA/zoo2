@@ -57,6 +57,9 @@
     "logout": "로그아웃",
     "loggedOut": "로그아웃했습니다",
     "loggedOutHelp": "계속하려면 다시 로그인하십시오.",
+    "desktopOutdated": "탁상용 프로그람을 갱신해야 합니다",
+    "desktopOutdatedHelp": "이 판본의 프로그람으로는 현재 zli.chat을 열수 없습니다. 새 판본의 프로그람을 설치하십시오. 일시적인 문제일수도 있으므로 먼저 다시 읽기를 해보십시오.",
+    "reload": "다시 읽기",
     "login": "로그인",
     "failed": "로그인하지 못했습니다",
     "retry": "다시 로그인",
@@ -249,6 +252,8 @@
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",
     "usersTitle": "{{emoji}}에 반응한 사용자",
+    "showAllUsers": "반응한 사용자 표시",
+    "allUsersTitle": "반응한 사용자",
     "usersLoading": "사용자를 불러오는 중",
     "userUnavailable": "사용자를 표시할수 없습니다",
     "usersEmpty": "반응이 없습니다",

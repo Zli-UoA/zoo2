@@ -57,6 +57,9 @@
     "logout": "退出登录",
     "loggedOut": "您已退出登录",
     "loggedOutHelp": "请重新登录以继续。",
+    "desktopOutdated": "需要更新桌面版",
+    "desktopOutdatedHelp": "此版本的应用无法打开当前的 zli.chat。请安装新版本的应用。问题也可能是暂时的，请先尝试重新加载。",
+    "reload": "重新加载",
     "login": "登录",
     "failed": "无法登录",
     "retry": "重新登录",
@@ -249,6 +252,8 @@
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回应的用户",
     "usersTitle": "使用 {{emoji}} 回应的用户",
+    "showAllUsers": "查看所有回应的用户",
+    "allUsersTitle": "所有回应的用户",
     "usersLoading": "正在加载用户",
     "userUnavailable": "无法显示用户",
     "usersEmpty": "没有回应",

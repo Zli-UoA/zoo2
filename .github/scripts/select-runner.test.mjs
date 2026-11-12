@@ -94,10 +94,12 @@ const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["la
 const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
 const hostedJobs = {"ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
+  "ci-desktop-tauri.yaml": ["check"],
   // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
   "merge-queue.yaml": ["changes", "all-passed"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
-const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"]};
+const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"],
+  "cd-desktop-tauri-release.yaml": ["version", "build", "release"]};
 const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
   .matchAll(/^    uses: \.\/\.github\/workflows\/([\w-]+\.yaml)$/gm)].map(m => m[1])]);
 test('every workload uses the right output and protects fork PRs', () => {

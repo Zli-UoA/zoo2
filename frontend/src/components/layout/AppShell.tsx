@@ -9,6 +9,7 @@ import { useActiveChannels } from "../../hooks/useRealtime";
 import { useCall } from "../../lib/call/call-context";
 import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
 import { CallBar } from "../chat/CallBar";
+import { DesktopBridge } from "../desktop/DesktopBridge";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersPanel } from "../chat/MembersPanel";
 import { SearchPreferencesProvider } from "../preferences/SearchPreferences";
@@ -233,6 +234,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <SearchPreferencesProvider>
+      <DesktopBridge channelId={selectedChannelId ?? null} />
       <PwaProvider>
         <ShellContext.Provider value={value}>
           <MfmChannelsProvider channels={channels}>

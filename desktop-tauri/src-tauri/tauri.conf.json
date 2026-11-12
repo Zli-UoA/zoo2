@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "zoo2",
+  "mainBinaryName": "zoo2-desktop-tauri",
+  "identifier": "chat.zli.desktop",
+  "build": {
+    "beforeDevCommand": { "script": "trunk serve --port 1420", "cwd": "../ui", "wait": false },
+    "beforeBuildCommand": { "script": "trunk build --release", "cwd": "../ui" },
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "category": "SocialNetworking",
+    "shortDescription": "zoo2 のデスクトップクライアント",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"],
+    "linux": {
+      "deb": { "depends": ["libwebkit2gtk-4.1-0", "libayatana-appindicator3-1"] }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/Zli-UoA/zoo2/releases/download/desktop-tauri-updater/latest.json"
+      ]
+    }
+  }
+}
