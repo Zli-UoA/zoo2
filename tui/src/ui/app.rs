@@ -33,6 +33,7 @@ const INNER_SCROLL_STEP: usize = 10;
 #[derive(Debug)]
 pub enum AppEvent {
     Notice(String),
+    AccountProfiles(zoo2_client_core::store::AccountProfiles),
     EmojiCatalog {
         shortcodes: HashMap<String, String>,
         custom: HashSet<String>,
@@ -309,6 +310,9 @@ impl App {
 
     pub fn on_app_event(&mut self, event: AppEvent) {
         match event {
+            AppEvent::AccountProfiles(profiles) => {
+                self.store.account_profiles = profiles;
+            }
             AppEvent::Threads {
                 requested_at,
                 threads,
@@ -477,6 +481,8 @@ impl App {
             let api = self.api.clone();
             let tx = self.app_tx.clone();
             tokio::spawn(async move {
+                let profiles = api.account_profiles().await.unwrap_or_default();
+                let _ = tx.send(AppEvent::AccountProfiles(profiles));
                 if let Ok((shortcodes, custom)) = api.emoji_catalog().await {
                     let _ = tx.send(AppEvent::EmojiCatalog { shortcodes, custom });
                 }

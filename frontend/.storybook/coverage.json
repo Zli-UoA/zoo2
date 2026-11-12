@@ -260,7 +260,8 @@
         "Formatting",
         "CodeAndMathDark",
         "Headings",
-        "SharedShortcodes"
+        "SharedShortcodes",
+        "AuthZAccounts"
       ]
     },
     {
@@ -1148,6 +1149,12 @@
     {
       "file": "src/components/ui/sensitive-media.tsx",
       "story": "src/components/ui/sensitive-media.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/MfmAccounts.tsx",
+      "story": "src/components/chat/messages/MfmContent.stories.tsx",
+      "composed": true,
+      "reason": "AuthZAccountsで集中基盤のプロフィールによるアイコンとメンションを検証する。"
     }
   ]
 }

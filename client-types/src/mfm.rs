@@ -22,6 +22,16 @@ impl EmojiCatalog {
     fn resolve_emoji(&self, input: &str) -> Option<String> {
         let input = input.trim();
         let name = input.trim_matches(':');
+        if let Some(account) = name.strip_prefix('@')
+            && input.starts_with(':')
+            && input.ends_with(':')
+            && (1..=80).contains(&account.len())
+            && account
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"._-".contains(&c))
+        {
+            return Some(format!(":{name}:"));
+        }
         if self.custom.contains(name) {
             return Some(format!(":{name}:"));
         }
@@ -184,6 +194,8 @@ pub struct Span {
     /// リンクの行き先 (`http://` か `https://` で始まるものだけ)。`[label](url)` では
     /// `content` がラベルになるので、行き先はこちらを使う。
     pub href: Option<String>,
+    pub avatar_url: Option<String>,
+    pub avatar_fallback: Option<String>,
 }
 
 impl Span {
@@ -192,6 +204,8 @@ impl Span {
             content,
             style,
             href: None,
+            avatar_url: None,
+            avatar_fallback: None,
         }
     }
 
@@ -200,6 +214,8 @@ impl Span {
             content,
             style,
             href: Some(href.to_string()),
+            avatar_url: None,
+            avatar_fallback: None,
         }
     }
 }
@@ -234,6 +250,13 @@ pub const QUOTE: Style = Style::new().with_tone(Tone::Quote);
 /// 本文を行ごとのスタイル付きスパンにする。`me` は自分の `user_name` で、自分宛ての
 /// メンションを反転表示する。
 pub fn parse(content: &str, me: Option<&str>) -> Vec<Line> {
+    parse_with_accounts(content, me, &crate::accounts::AccountProfiles::new())
+}
+pub fn parse_with_accounts(
+    content: &str,
+    me: Option<&str>,
+    profiles: &crate::accounts::AccountProfiles,
+) -> Vec<Line> {
     let mut lines = Vec::new();
     let mut in_code = false;
     for raw in content.split('\n') {
@@ -255,7 +278,7 @@ pub fn parse(content: &str, me: Option<&str>) -> Vec<Line> {
             None => (None, line, Style::new()),
         };
         let mut spans: Vec<Span> = prefix.into_iter().collect();
-        Inline { me }.parse(body, base, 0, &mut spans);
+        Inline { me, profiles }.parse(body, base, 0, &mut spans);
         lines.push(Line::from_spans(spans));
     }
     lines
@@ -267,6 +290,7 @@ const MAX_DEPTH: usize = 20;
 
 struct Inline<'a> {
     me: Option<&'a str>,
+    profiles: &'a crate::accounts::AccountProfiles,
 }
 
 /// 囲み記法。開きと閉じの間を `style` で再帰的に解析する。
@@ -373,6 +397,16 @@ impl Inline<'_> {
             }
         }
         if rest.starts_with(':') {
+            if let Some(name) = scan
+                .between(i, ":", ":")
+                .and_then(|name| name.strip_prefix('@'))
+                && let Some(profile) = self.profiles.get(name)
+            {
+                let mut span = Span::styled(format!(":@{name}:"), base);
+                span.avatar_url = profile.avatar_url.clone();
+                span.avatar_fallback = Some(account_initial(profile));
+                return Some((name.len() + 3, vec![span]));
+            }
             return shortcode(scan, i, base);
         }
         None
@@ -407,7 +441,7 @@ impl Inline<'_> {
             .unwrap_or(rest.len() - 1);
         // 末尾のドットは文の句点として扱う (frontend の mentions.ts と同じ)。
         let name = rest[1..1 + name_len].trim_end_matches(['.', '@']);
-        if name.len() < 2 {
+        if name.is_empty() {
             return None;
         }
         let mine = matches!(name, "channel" | "here")
@@ -417,11 +451,39 @@ impl Inline<'_> {
         } else {
             base.patch(MENTION)
         };
-        Some((
-            name.len() + 1,
-            vec![Span::styled(format!("@{name}"), style)],
-        ))
+        let spans = if let Some(profile) = self.profiles.get(name) {
+            let mut icon = Span::styled("◉".to_owned(), style);
+            icon.avatar_url = profile.avatar_url.clone();
+            icon.avatar_fallback = Some(account_initial(profile));
+            vec![
+                Span::styled("@".to_owned(), style),
+                icon,
+                Span::styled(
+                    format!(
+                        " {}",
+                        if profile.display_name.is_empty() {
+                            &profile.username
+                        } else {
+                            &profile.display_name
+                        }
+                    ),
+                    style,
+                ),
+            ]
+        } else {
+            vec![Span::styled(format!("@{name}"), style)]
+        };
+        Some((name.len() + 1, spans))
     }
+}
+
+fn account_initial(profile: &crate::accounts::AccountProfile) -> String {
+    let label = if profile.display_name.is_empty() {
+        &profile.username
+    } else {
+        &profile.display_name
+    };
+    label.chars().next().unwrap_or('?').to_string()
 }
 
 fn flush(plain: &mut String, style: Style, out: &mut Vec<Span>) {
@@ -690,6 +752,71 @@ mod tests {
                     Some("https://a.example/x".into())
                 ),
             ]
+        );
+    }
+    #[test]
+    fn authz_account_profiles_render_icons_and_mentions_only_outside_code() {
+        let profiles = [(
+            "alice".to_owned(),
+            crate::accounts::AccountProfile {
+                username: "alice".to_owned(),
+                display_name: "AuthZ Name".to_owned(),
+                avatar_url: Some("https://emoji.example/api/v1/account-images/avatar".to_owned()),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let lines = parse_with_accounts(
+            ":@alice: @alice :@unknown: `:@alice: @alice` <plain>:@alice:</plain>",
+            None,
+            &profiles,
+        );
+        let spans: Vec<_> = lines.into_iter().flat_map(|line| line.spans).collect();
+        assert_eq!(
+            spans
+                .iter()
+                .filter(|span| span.avatar_url.is_some())
+                .count(),
+            2
+        );
+        let text: String = spans.iter().map(|span| span.content.as_str()).collect();
+        assert!(text.contains("AuthZ Name"));
+        assert!(text.contains(":@unknown:"));
+        assert!(text.contains(":@alice: @alice"));
+        assert!(text.ends_with(":@alice:"));
+        assert_eq!(resolve_emoji(":@alice:"), Some(":@alice:".to_owned()));
+    }
+    #[test]
+    fn account_without_image_keeps_terminal_text_and_exposes_native_fallback() {
+        let profiles = [(
+            "alice".to_owned(),
+            crate::accounts::AccountProfile {
+                username: "alice".to_owned(),
+                display_name: "表示名".to_owned(),
+                avatar_url: None,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let spans: Vec<_> = parse_with_accounts(":@alice: @alice", None, &profiles)
+            .into_iter()
+            .flat_map(|line| line.spans)
+            .collect();
+        let icons: Vec<_> = spans
+            .iter()
+            .filter(|span| span.avatar_fallback.is_some())
+            .collect();
+        assert_eq!(icons.len(), 2);
+        assert!(
+            icons
+                .iter()
+                .all(|span| span.avatar_url.is_none()
+                    && span.avatar_fallback.as_deref() == Some("表"))
+        );
+        assert_eq!(icons[0].content, ":@alice:");
+        assert_eq!(
+            parse_with_accounts(":@unknown:", None, &profiles)[0].spans[0].avatar_fallback,
+            None
         );
     }
 }

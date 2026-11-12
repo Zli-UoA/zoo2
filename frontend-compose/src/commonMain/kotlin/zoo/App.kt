@@ -56,6 +56,12 @@ fun ZooApp(app: Session) {
         }
         return
     }
+    LaunchedEffect(app) {
+        while (true) {
+            app.loadAccountProfiles()
+            delay(60_000)
+        }
+    }
     val channelRows by app.repo.channels.rows.collectAsState()
     val channels = visibleChannels(channelRows)
     val users by app.repo.users.rows.collectAsState()
