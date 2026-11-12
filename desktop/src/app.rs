@@ -2395,6 +2395,12 @@ impl AppState {
         let tx = self.event_tx.clone();
         let session_gen = self.session_gen;
         if !self.spawn_session_task(async move {
+            if let Ok(profiles) = api.account_profiles().await {
+                let _ = tx.send(DesktopEvent::App {
+                    session_gen,
+                    event: AppEvent::AccountProfiles(profiles),
+                });
+            }
             if let Ok((shortcodes, custom)) = api.emoji_catalog().await {
                 let _ = tx.send(DesktopEvent::App {
                     session_gen,

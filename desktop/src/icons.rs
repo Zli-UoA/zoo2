@@ -70,6 +70,7 @@ icons! {
     LogOut => "log-out",
     MessageCircle => "message-circle",
     MessageCircleMore => "message-circle-more",
+    MessageSquare => "message-square",
     MessageSquarePlus => "message-square-plus",
     MessageSquareText => "message-square-text",
     MessagesSquare => "messages-square",
