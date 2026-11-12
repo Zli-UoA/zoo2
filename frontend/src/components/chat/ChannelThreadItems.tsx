@@ -68,7 +68,7 @@ export function ChannelThreadItems({
   const selectedContent = selected?.content;
   const selectedCount = selected?.reply_count;
   useEffect(() => {
-    if (!selectedRoot || selectedRoot.deleted_at || !selectedCount) return;
+    if (!selectedRoot || selectedRoot.deleted_at || selectedCount === undefined) return;
     onObserveThread?.({
       id: selectedRoot.id,
       channel_id: channel.id,

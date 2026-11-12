@@ -349,3 +349,27 @@ it("does not add a reply-free ordinary post but still shows an archived root", a
     Object.assign(root, original);
   }
 });
+
+it("removes a thread after observing its last reply deleted even when refresh fails", async () => {
+  const root = fixture.roots[2];
+  const count = root.reply_count;
+  const view = setup("/channels/general?thread=active");
+  await screen.findByRole("link", { name: /Active conversation/ });
+  await waitFor(() => expect(fixture.get).toHaveBeenCalledTimes(1));
+  try {
+    fixture.get.mockRejectedValue(new Error("offline"));
+    root.reply_count = 0;
+    await act(async () => window.dispatchEvent(new Event("zoo-threads-changed")));
+    await waitFor(() => expect(fixture.get).toHaveBeenCalledTimes(2));
+    await userEvent.click(screen.getByRole("button", { name: "Close conversation" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("link", { name: /Active conversation/ })).toBeNull(),
+    );
+    view.unmount();
+    setup("/channels/general");
+    await screen.findByRole("complementary", { name: "Thread tree" });
+    expect(screen.queryByRole("link", { name: /Active conversation/ })).toBeNull();
+  } finally {
+    root.reply_count = count;
+  }
+});

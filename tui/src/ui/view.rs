@@ -831,6 +831,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn first_reply_shape_updates_the_locally_created_thread_count() {
+        let mut app = app();
+        app.open_channel("c1".into());
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "new-root",
+                json!({"id":"new-root","user_id":"u2","channel_id":"c1",
+                "content":"New thread","created_at":"2026-11-01 03:00:00"}),
+            )]),
+        ));
+        app.focus = Focus::Messages;
+        app.selected = Some("new-root".into());
+        press(&mut app, KeyCode::Enter);
+        app.on_app_event(AppEvent::ThreadsChanged {
+            reopened: Some("new-root".into()),
+        });
+        assert_eq!(app.active_threads[0].reply_count, 0);
+        let stale_request = std::time::Instant::now();
+        app.on_app_event(AppEvent::ThreadsFailed {
+            archived: false,
+            append: false,
+            requested_at: stale_request,
+            message: "unavailable".into(),
+        });
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "first",
+                json!({"id":"first","user_id":"u1","channel_id":"c1",
+                "content":"First reply","parent_id":"new-root","created_at":"2026-11-01 03:01:00"}),
+            )]),
+        ));
+        assert_eq!(app.store.reply_counts("c1").get("new-root"), Some(&1));
+        assert_eq!(app.active_threads[0].reply_count, 1);
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            requested_at: stale_request,
+            next_cursor: None,
+            threads: vec![ThreadSummary {
+                id: "new-root".into(),
+                channel_id: "c1".into(),
+                content: "New thread".into(),
+                thread_archive_at: None,
+                reply_count: 0,
+            }],
+        });
+        press(&mut app, KeyCode::Esc);
+        assert!(render(&mut app).contains("New thread (1)"));
+    }
+
+    #[tokio::test]
     async fn shape_reopen_survives_close_stale_index_and_failed_refresh() {
         let mut app = app();
         app.open_channel("c1".into());

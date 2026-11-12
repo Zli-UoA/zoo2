@@ -341,3 +341,19 @@ it("keeps a newly observed reopen ahead of rows returned by an older request", a
   await act(async () => resolve(page([older])));
   expect(index.threads.map((row) => row.id)).toEqual(["reopened", "older"]);
 });
+
+it("does not restore a zero-reply observation from an older response", async () => {
+  let resolve!: (value: ThreadPage) => void;
+  fixture.api.get.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  await act(async () => root.render(createElement(Test, { userId: "alice" })));
+  await act(async () =>
+    index.observeThread({ ...thread, thread_archive_at: null, reply_count: 0 }),
+  );
+  await act(async () => resolve(page([{ ...thread, thread_archive_at: null }])));
+  expect(index.threads).toEqual([]);
+});

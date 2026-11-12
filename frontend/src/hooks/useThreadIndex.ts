@@ -127,7 +127,8 @@ function createIndex(
                 !merged.has(item.id) && observed.get(item.id)?.thread.thread_archive_at === null,
             );
             for (const [id, local] of observed) {
-              if (local.thread.thread_archive_at) merged.delete(id);
+              if (local.thread.thread_archive_at || local.thread.reply_count === 0)
+                merged.delete(id);
               else merged.set(id, local.thread);
             }
             return {
@@ -220,11 +221,12 @@ function createIndex(
         const exists = items.some((item) => item.id === thread.id);
         return {
           ...(current ?? { ...EMPTY_PAGE, key, isLoading: false, isError: false }),
-          items: thread.thread_archive_at
-            ? items.filter((item) => item.id !== thread.id)
-            : exists
-              ? items.map((item) => (item.id === thread.id ? thread : item))
-              : [thread, ...items],
+          items:
+            thread.thread_archive_at || thread.reply_count === 0
+              ? items.filter((item) => item.id !== thread.id)
+              : exists
+                ? items.map((item) => (item.id === thread.id ? thread : item))
+                : [thread, ...items],
         };
       });
     },

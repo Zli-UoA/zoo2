@@ -304,6 +304,12 @@ impl App {
 
     pub fn on_shape(&mut self, event: ShapeEvent) {
         let selected = self.sidebar_items().get(self.sidebar_index).cloned();
+        let previous_reply_counts = match &event {
+            ShapeEvent::Batch(ShapeId::Messages(channel_id), _) => {
+                Some(self.store.reply_counts(channel_id))
+            }
+            _ => None,
+        };
         let changed_messages = match &event {
             ShapeEvent::Batch(ShapeId::Messages(channel_id), batch) => Some((
                 channel_id.clone(),
@@ -335,6 +341,9 @@ impl App {
                     })
                 })
             });
+        let changed_channel = changed_messages
+            .as_ref()
+            .map(|(channel_id, _)| channel_id.clone());
         if let Some((channel_id, ids)) = changed_messages {
             for id in ids {
                 if let Some(root) = self.store.message(&channel_id, &id) {
@@ -362,6 +371,25 @@ impl App {
                             self.ensure_active_thread(&id);
                         }
                     }
+                }
+            }
+        }
+        // 返信の同期で件数が変わった親は、一覧GETの成功を待たず補正する。
+        if let (Some(before), Some(channel_id)) = (previous_reply_counts, changed_channel) {
+            let after = self.store.reply_counts(&channel_id);
+            for thread in self
+                .active_threads
+                .iter_mut()
+                .chain(self.archived_threads.iter_mut())
+            {
+                if thread.channel_id == channel_id
+                    && before.get(&thread.id) != after.get(&thread.id)
+                {
+                    thread.reply_count = after.get(&thread.id).copied().unwrap_or(0) as u64;
+                    self.thread_states
+                        .entry(thread.id.clone())
+                        .and_modify(|(_, updated)| *updated = Instant::now())
+                        .or_insert((thread.thread_archive_at.is_some(), Instant::now()));
                 }
             }
         }
