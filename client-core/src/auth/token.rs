@@ -839,23 +839,35 @@ pub fn delete_if_unchanged(path: &Path, expected: Option<&StoredTokens>) -> Resu
     let Some(_lock) = token_file_lock(path, false)? else {
         return Ok(DeleteOutcome::Missing);
     };
-    cleanup_stale_token_temps_unlocked(path)?;
-    let current = read_tokens_unlocked(path)?;
+    let cleanup_error = cleanup_stale_token_temps_unlocked(path).err();
+    let current = match read_tokens_unlocked(path) {
+        Ok(current) => current,
+        Err(error) => return Err(include_logout_cleanup_error(error, cleanup_error)),
+    };
     if current.as_ref() != expected {
-        return Ok(if current.is_some() {
-            DeleteOutcome::Changed
-        } else {
-            DeleteOutcome::Missing
-        });
+        return report_logout_cleanup_failure(
+            cleanup_error,
+            if current.is_some() {
+                DeleteOutcome::Changed
+            } else {
+                DeleteOutcome::Missing
+            },
+        );
     }
     if current.is_none() {
-        return Ok(DeleteOutcome::Missing);
+        return report_logout_cleanup_failure(cleanup_error, DeleteOutcome::Missing);
     }
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(DeleteOutcome::Deleted),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(DeleteOutcome::Missing),
-        Err(err) => Err(err).with_context(|| format!("{} を消せません", path.display())),
-    }
+    let outcome = match std::fs::remove_file(path) {
+        Ok(()) => DeleteOutcome::Deleted,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => DeleteOutcome::Missing,
+        Err(err) => {
+            return Err(include_logout_cleanup_error(
+                anyhow!(err).context(format!("{} を消せません", path.display())),
+                cleanup_error,
+            ));
+        }
+    };
+    report_logout_cleanup_failure(cleanup_error, outcome)
 }
 
 pub fn now() -> i64 {
@@ -1115,11 +1127,12 @@ impl TokenManager {
             return Ok(false);
         };
         let (_lock, cleanup_error) = cleanup_stale_token_temps_async(&self.path, lock).await?;
-        if let Some(error) = cleanup_error {
-            return Err(error);
-        }
+        let outcome = match delete_current_session_unlocked(&self.path, &self.oidc, &expected) {
+            Ok(outcome) => outcome,
+            Err(error) => return Err(include_logout_cleanup_error(error, cleanup_error)),
+        };
         Ok(matches!(
-            delete_current_session_unlocked(&self.path, &self.oidc, &expected)?,
+            report_logout_cleanup_failure(cleanup_error, outcome)?,
             DeleteOutcome::Deleted
         ))
     }
@@ -1947,6 +1960,72 @@ mod tests {
         assert!(format!("{error:#}").contains("削除できません"));
         assert!(stale.exists(), "denied unlink must leave the file in place");
         assert!(!removable.exists(), "other stale temps are still collected");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sign_out_removes_token_when_stale_temp_is_unsafe() {
+        use std::os::unix::fs::PermissionsExt;
+        let config = oidc("https://issuer");
+        let path = temp_path("signout-stale-temp");
+        let initial = tokens(&config, now() + 900, Some("refresh"));
+        save(&path, &initial).unwrap();
+        let stale = unique_temporary_path(&path);
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let manager = TokenManager::new(reqwest::Client::new(), config, path.clone(), initial);
+        let error = manager.sign_out().await.unwrap_err().to_string();
+        assert!(
+            !path.exists(),
+            "token must be removed despite cleanup failure: {error}"
+        );
+        assert!(stale.exists());
+        assert!(error.contains("Deleted"), "{error}");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn delete_unchanged_reports_cleanup_failure_after_removing_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let config = oidc("https://issuer");
+        let path = temp_path("delete-unchanged-stale-temp");
+        let initial = tokens(&config, now() + 900, None);
+        save(&path, &initial).unwrap();
+        let stale = unique_temporary_path(&path);
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = delete_if_unchanged(&path, Some(&initial))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !path.exists(),
+            "token must be removed despite cleanup failure: {error}"
+        );
+        assert!(error.contains("Deleted"), "{error}");
+        assert!(stale.exists());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn delete_unchanged_preserves_replacement_when_cleanup_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let config = oidc("https://issuer");
+        let path = temp_path("delete-replaced-stale-temp");
+        let original = tokens(&config, now() + 900, None);
+        let mut replacement = original.clone();
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        save(&path, &replacement).unwrap();
+        let stale = unique_temporary_path(&path);
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = delete_if_unchanged(&path, Some(&original))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Changed"), "{error}");
+        assert_eq!(read_tokens_unlocked(&path).unwrap(), Some(replacement));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
