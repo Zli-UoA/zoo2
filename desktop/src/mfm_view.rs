@@ -173,6 +173,26 @@ pub fn build_line_highlights_and_links_with_theme(
     build_line_highlights_and_links_with_colors(line, &MfmColors::from_theme(theme))
 }
 
+/// ハッシュタグが開けるチャンネルを指すなら、そのチャンネルの ID。
+fn known_channel_id<'a>(content: &str, colors: &'a MfmColors) -> Option<&'a String> {
+    colors
+        .channels
+        .as_ref()
+        .and_then(|map| map.get(content.trim_start_matches('#')))
+}
+
+/// 表が渡されていて、そこに無い `#名前` は、本文と同じ見た目にする (frontend の `ChannelHashtag`)。
+fn span_style(span: &mfm::Span, colors: &MfmColors) -> Style {
+    let mut style = span.style;
+    if matches!(style.tone, Tone::Hashtag)
+        && colors.channels.is_some()
+        && known_channel_id(&span.content, colors).is_none()
+    {
+        style.tone = Tone::Default;
+    }
+    style
+}
+
 /// 1行分の `mfm::Line` からプレーン文字列、ハイライト範囲、リンク範囲を構築する (色指定)。
 pub fn build_line_highlights_and_links_with_colors(
     line: &Line,
@@ -189,7 +209,7 @@ pub fn build_line_highlights_and_links_with_colors(
         let start = text.len();
         text.push_str(&span.content);
         let end = text.len();
-        let highlight = style_to_highlight_with_colors(span.style, colors);
+        let highlight = style_to_highlight_with_colors(span_style(span, colors), colors);
         if highlight != HighlightStyle::default() {
             highlights.push((start..end, highlight));
         }
@@ -206,10 +226,7 @@ pub fn build_line_highlights_and_links_with_colors(
                 links.push((start..end, url));
             }
         } else if matches!(span.style.tone, Tone::Hashtag)
-            && let Some(id) = colors
-                .channels
-                .as_ref()
-                .and_then(|map| map.get(span.content.trim_start_matches('#')))
+            && let Some(id) = known_channel_id(&span.content, colors)
         {
             links.push((start..end, format!("{CHANNEL_SCHEME}{id}")));
         }
@@ -310,9 +327,30 @@ pub fn render_mfm_accounts_with_colors(
                 } else {
                     let styled = StyledText::new(span.content.clone()).with_highlights(vec![(
                         0..span.content.len(),
-                        style_to_highlight_with_colors(span.style, colors),
+                        style_to_highlight_with_colors(span_style(span, colors), colors),
                     )]);
-                    if let Some(url) = &span.href {
+                    let channel_id = matches!(span.style.tone, Tone::Hashtag)
+                        .then(|| known_channel_id(&span.content, colors).cloned())
+                        .flatten();
+                    if let Some(id) = channel_id {
+                        let on_channel = colors.on_channel.clone();
+                        row = row.child(
+                            InteractiveText::new(
+                                ElementId::Name(
+                                    format!("{elem_prefix}-channel-{line_idx}-{index}").into(),
+                                ),
+                                styled,
+                            )
+                            .on_click(
+                                std::iter::once(0..span.content.len()).collect(),
+                                move |_, _, cx| {
+                                    if let Some(open) = &on_channel {
+                                        open(&id, cx);
+                                    }
+                                },
+                            ),
+                        );
+                    } else if let Some(url) = &span.href {
                         let url = url.clone();
                         row = row.child(
                             InteractiveText::new(
@@ -451,6 +489,13 @@ mod tests {
         assert_eq!(links.len(), 1);
         assert_eq!(&text[links[0].0.clone()], "#general");
         assert_eq!(links[0].1, "zoo2-channel:c1");
+        // 表にある #general はリンク色、無い #nope は本文と同じ見た目 (ハイライトなし)。
+        let range_of = |word: &str| text.find(word).map(|i| i..i + word.len());
+        let general = range_of("#general").unwrap();
+        let nope = range_of("#nope").unwrap();
+        let (_, highlights, _) = build_line_highlights_and_links_with_colors(&lines[0], &colors);
+        assert!(highlights.iter().any(|(r, _)| *r == general));
+        assert!(!highlights.iter().any(|(r, _)| *r == nope));
         // 表が無ければ、どれもリンクにしない。
         let plain = MfmColors::from_tokens(&tokens);
         let (_, _, links) = build_line_highlights_and_links_with_colors(&lines[0], &plain);

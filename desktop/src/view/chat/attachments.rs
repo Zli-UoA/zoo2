@@ -14,6 +14,7 @@ use zoo2_client_core::electric::rows::Attachment;
 
 use crate::app::is_image_content_type;
 use crate::fonts;
+use crate::i18n::I18n;
 use crate::icons::Icon;
 use crate::tokens::radius;
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
@@ -94,6 +95,7 @@ fn retry_attachment(this: &mut WorkspaceView, id: &str, cx: &mut Context<Workspa
 pub fn render_message_attachments(
     items: Vec<AttachmentItem>,
     handles: &RefCell<HashMap<String, FocusHandle>>,
+    i18n: I18n,
     cx: &mut Context<WorkspaceView>,
 ) -> Option<Div> {
     if items.is_empty() {
@@ -105,11 +107,11 @@ pub fn render_message_attachments(
     let multiple = images.len() > 1;
     let image_views: Vec<AnyElement> = images
         .into_iter()
-        .map(|item| render_image(item, multiple, handles, cx))
+        .map(|item| render_image(item, multiple, handles, i18n, cx))
         .collect();
     let file_views: Vec<AnyElement> = files
         .into_iter()
-        .map(|item| render_file_card(item, handles, cx))
+        .map(|item| render_file_card(item, handles, i18n, cx))
         .collect();
     // `mt-2 flex max-w-xl flex-col gap-2`
     Some(
@@ -140,6 +142,7 @@ fn render_image(
     item: AttachmentItem,
     multiple: bool,
     handles: &RefCell<HashMap<String, FocusHandle>>,
+    i18n: I18n,
     cx: &mut Context<WorkspaceView>,
 ) -> AnyElement {
     let att = item.attachment.clone();
@@ -162,11 +165,18 @@ fn render_image(
     let Some(url) = item.download_url else {
         if item.is_failed {
             // 取得に失敗した画像は、ファイルのカードにして再試行を出す。
-            return render_file_card(item_with(att, None, false, true), handles, cx);
+            return render_file_card(item_with(att, None, false, true), handles, i18n, cx);
         }
         // 読み込み中。`aria-busy` の枠 (blurhash が無いので `bg-muted` だけ)。
+        // クリックかキーで、取得をもう一度頼める。
         let side = if multiple { 188.0 } else { IMAGE_WIDTH };
+        let focus = focus_handle(handles, format!("{id}:img"), cx);
+        let id_click = id.clone();
+        let id_key = id.clone();
         return div()
+            .id(ElementId::Name(SharedString::from(format!("att-img-{id}"))))
+            .track_focus(&focus)
+            .focus(move |s| s.border_color(alpha(t.ring, 0.5)))
             .w(px(side))
             .h(px(if multiple { 188.0 } else { side * 3.0 / 4.0 }))
             .overflow_hidden()
@@ -174,6 +184,19 @@ fn render_image(
             .border_1()
             .border_color(t.border)
             .bg(t.muted)
+            .cursor_pointer()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    retry_attachment(this, &id_click, cx)
+                }),
+            )
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                if is_activate_key(&ev.keystroke.key) {
+                    cx.stop_propagation();
+                    retry_attachment(this, &id_key, cx);
+                }
+            }))
             .into_any_element();
     };
 
@@ -243,6 +266,7 @@ fn item_with(
 fn render_file_card(
     item: AttachmentItem,
     handles: &RefCell<HashMap<String, FocusHandle>>,
+    i18n: I18n,
     cx: &mut Context<WorkspaceView>,
 ) -> AnyElement {
     let p = palette(cx);
@@ -254,9 +278,9 @@ fn render_file_card(
     let loading = item.is_fetching;
     let failed = item.is_failed;
     let status = if failed {
-        Some("読み込めませんでした")
+        Some(i18n.t("attachments.loadError"))
     } else if loading {
-        Some("読み込み中…")
+        Some(i18n.t("attachments.loading"))
     } else {
         None
     };
@@ -334,7 +358,7 @@ fn render_file_card(
                     .text_color(t.link)
                     .hover(|s| s.underline())
                     .cursor_pointer()
-                    .child("再試行")
+                    .child(i18n.t("attachments.retry"))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener({
