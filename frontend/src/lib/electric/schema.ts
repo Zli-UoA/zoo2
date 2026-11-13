@@ -1,5 +1,6 @@
 import type {
   AttachmentRow,
+  ChannelLeaveRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -40,6 +41,7 @@ export type ShapeName =
   | "messageReactions"
   | "users"
   | "channelUsers"
+  | "channelLeaves"
   | "notifications"
   | "attachments";
 
@@ -55,6 +57,7 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   users: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
+  channelLeaves: { table: "channel_leave", proxyPath: "channel_leaves" },
   attachments: { table: "attachments", proxyPath: "attachments" },
 };
 
@@ -150,6 +153,15 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
   },
 };
 
+export const CHANNEL_LEAVE_SCHEMA: ShapeSchema<ChannelLeaveRow> = {
+  table: "channel_leave",
+  columns: {
+    user_id: "text",
+    channel_id: "text",
+    left_at: "timestamp",
+  },
+};
+
 export const NOTIFICATION_SCHEMA: ShapeSchema<NotificationRow> = {
   table: "notifications",
   columns: {
@@ -191,6 +203,7 @@ export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = 
   messages: MESSAGE_SCHEMA,
   message_reactions: MESSAGE_REACTION_SCHEMA,
   channel_user: CHANNEL_USER_SCHEMA,
+  channel_leave: CHANNEL_LEAVE_SCHEMA,
   attachments: ATTACHMENT_SCHEMA,
 };
 

@@ -29,6 +29,7 @@ jobs:
       ci-crypto: ${{ steps.match.outputs.ci-crypto }}
       ci-github-bot: ${{ steps.match.outputs.ci-github-bot }}
       ci-flux-status: ${{ steps.match.outputs.ci-flux-status }}
+      ci-db-erd: ${{ steps.match.outputs.ci-db-erd }}
       terraform-r2: ${{ steps.match.outputs.terraform-r2 }}
       ci-android: ${{ steps.match.outputs.ci-android }}
     steps:
@@ -89,6 +90,12 @@ jobs:
     uses: ./.github/workflows/ci-flux-status.yaml
     secrets: inherit
 
+  ci-db-erd:
+    needs: changes
+    if: needs.changes.outputs.ci-db-erd == 'true'
+    uses: ./.github/workflows/ci-db-erd.yaml
+    secrets: inherit
+
   terraform-r2:
     needs: changes
     if: needs.changes.outputs.terraform-r2 == 'true'
@@ -115,6 +122,7 @@ jobs:
       - ci-crypto
       - ci-github-bot
       - ci-flux-status
+      - ci-db-erd
       - terraform-r2
       - ci-android
     if: ${{ !cancelled() }}

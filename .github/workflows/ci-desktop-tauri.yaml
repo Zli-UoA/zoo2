@@ -145,6 +145,17 @@ jobs:
       - name: bundle (app, dmg)
         working-directory: ./desktop-tauri/src-tauri
         run: cargo tauri build --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' -- --locked
+      # 通話のマイクとカメラに要る entitlement と、使用目的の説明が、署名したアプリに入っているか。
+      - name: Check entitlements and usage descriptions
+        working-directory: ./desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos
+        run: |
+          entitlements=$(codesign -d --entitlements - --xml zoo2.app)
+          for key in com.apple.security.device.audio-input com.apple.security.device.camera; do
+            grep -q "$key" <<<"$entitlements" || { echo "::error::$key がありません"; exit 1; }
+          done
+          for key in NSMicrophoneUsageDescription NSCameraUsageDescription; do
+            /usr/libexec/PlistBuddy -c "Print :$key" zoo2.app/Contents/Info.plist
+          done
       - name: Upload bundles
         uses: actions/upload-artifact@v7
         with:

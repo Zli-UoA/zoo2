@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   ATTACHMENT_SCHEMA,
+  CHANNEL_LEAVE_SCHEMA,
   MESSAGE_REACTION_SCHEMA,
   SHAPE_META,
   coerceElectricRow,
@@ -82,6 +83,14 @@ describe("SHAPE_META", () => {
       table: "channel_user",
       proxyPath: "channel_users",
     });
+  });
+
+  it("maps the channel leave proxy path to the channel_leave table", () => {
+    expect(SHAPE_META.channelLeaves).toEqual({
+      table: "channel_leave",
+      proxyPath: "channel_leaves",
+    });
+    expect(CHANNEL_LEAVE_SCHEMA.columns.left_at).toBe("timestamp");
   });
 
   it("maps the attachments shape to the attachments table", () => {
