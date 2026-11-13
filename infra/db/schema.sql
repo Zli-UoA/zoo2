@@ -44,6 +44,7 @@ CREATE TABLE messages (
   updated_at timestamp(3),
   deleted_at timestamp(3),
   parent_id text,
+  reply_to_message_id text,
   thread_archive_at timestamp(3),
   thread_activity_at timestamp(3),
   CONSTRAINT "Message_pkey" PRIMARY KEY (id),
@@ -1514,21 +1515,22 @@ EXCEPTION WHEN invalid_regular_expression THEN
   RETURN false;
 END $$;
 CREATE FUNCTION sync_channel_home_post() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE reply_target text := COALESCE(NEW.reply_to_message_id, NEW.parent_id);
 BEGIN
   IF NEW.home_post_id IS NOT NULL THEN
-    UPDATE home_posts SET parent_id=COALESCE(NEW.parent_id,parent_id),content=NEW.content,deleted_at=NEW.deleted_at AT TIME ZONE 'UTC',updated_at=NEW.updated_at AT TIME ZONE 'UTC'
-    WHERE id=NEW.home_post_id AND (content,deleted_at,parent_id) IS DISTINCT FROM (NEW.content,NEW.deleted_at AT TIME ZONE 'UTC',COALESCE(NEW.parent_id,parent_id));
+    UPDATE home_posts SET parent_id=reply_target,content=NEW.content,deleted_at=NEW.deleted_at AT TIME ZONE 'UTC',updated_at=NEW.updated_at AT TIME ZONE 'UTC'
+    WHERE id=NEW.home_post_id AND (content,deleted_at,parent_id) IS DISTINCT FROM (NEW.content,NEW.deleted_at AT TIME ZONE 'UTC',reply_target);
   ELSIF TG_OP='INSERT' AND NEW.deleted_at IS NULL AND EXISTS (
     SELECT 1 FROM channels c CROSS JOIN activitypub_settings s WHERE c.id=NEW.channel_id
       AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL
       AND (channel_matches_ltl(c.channel_name,s.ltl_channel_pattern) OR EXISTS(
-        SELECT 1 FROM home_posts parent WHERE parent.id=NEW.parent_id AND parent.channel_id=NEW.channel_id AND parent.deleted_at IS NULL
+        SELECT 1 FROM home_posts parent WHERE parent.id=reply_target AND parent.channel_id=NEW.channel_id AND parent.deleted_at IS NULL
       ))
   ) THEN
     INSERT INTO home_posts(id,user_id,content,channel_id,created_at,parent_id,visibility,reply_user_id)
-      VALUES(NEW.id,NEW.user_id,NEW.content,NEW.channel_id,NEW.created_at AT TIME ZONE 'UTC',NEW.parent_id,
-        COALESCE((SELECT visibility FROM home_posts WHERE id=NEW.parent_id),'local'),
-        (SELECT user_id FROM home_posts WHERE id=NEW.parent_id)) ON CONFLICT DO NOTHING;
+      VALUES(NEW.id,NEW.user_id,NEW.content,NEW.channel_id,NEW.created_at AT TIME ZONE 'UTC',reply_target,
+        COALESCE((SELECT visibility FROM home_posts WHERE id=reply_target),'local'),
+        (SELECT user_id FROM home_posts WHERE id=reply_target)) ON CONFLICT DO NOTHING;
   END IF;
   RETURN NEW;
 END $$;
@@ -1654,12 +1656,12 @@ BEGIN
     IF (TG_OP='INSERT' OR NEW.apub AND NEW.deleted_at IS NULL) AND (NEW.visibility='followers' OR NOT EXISTS (
       SELECT 1 FROM channels WHERE id=NEW.channel_id AND NOT is_private AND NOT is_dm AND deleted_at IS NULL
     )) THEN RAISE EXCEPTION 'Home posts require a public channel' USING ERRCODE='23514'; END IF;
-    INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,deleted_at,home_post_id,apub,apub_visibility,parent_id)
-      VALUES(NEW.id,NEW.user_id,NEW.channel_id,NEW.content,NEW.created_at AT TIME ZONE 'UTC',NEW.updated_at AT TIME ZONE 'UTC',NEW.deleted_at AT TIME ZONE 'UTC',NEW.id,NEW.apub,NEW.visibility,CASE WHEN EXISTS(SELECT 1 FROM messages parent WHERE parent.id=NEW.parent_id AND parent.channel_id=NEW.channel_id) THEN NEW.parent_id END)
+    INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,deleted_at,home_post_id,apub,apub_visibility,parent_id,reply_to_message_id)
+      VALUES(NEW.id,NEW.user_id,NEW.channel_id,NEW.content,NEW.created_at AT TIME ZONE 'UTC',NEW.updated_at AT TIME ZONE 'UTC',NEW.deleted_at AT TIME ZONE 'UTC',NEW.id,NEW.apub,NEW.visibility,CASE WHEN EXISTS(SELECT 1 FROM messages parent WHERE parent.id=NEW.parent_id AND parent.channel_id=NEW.channel_id) THEN NEW.parent_id END,CASE WHEN EXISTS(SELECT 1 FROM messages parent WHERE parent.id=NEW.parent_id AND parent.channel_id=NEW.channel_id) THEN NEW.parent_id END)
       ON CONFLICT(id) DO UPDATE SET content=EXCLUDED.content,updated_at=EXCLUDED.updated_at,
-        deleted_at=EXCLUDED.deleted_at,home_post_id=EXCLUDED.home_post_id,apub=EXCLUDED.apub,apub_visibility=EXCLUDED.apub_visibility,parent_id=EXCLUDED.parent_id
-      WHERE (messages.content,messages.deleted_at,messages.home_post_id,messages.apub,messages.apub_visibility,messages.parent_id)
-        IS DISTINCT FROM (EXCLUDED.content,EXCLUDED.deleted_at,EXCLUDED.home_post_id,EXCLUDED.apub,EXCLUDED.apub_visibility,EXCLUDED.parent_id);
+        deleted_at=EXCLUDED.deleted_at,home_post_id=EXCLUDED.home_post_id,apub=EXCLUDED.apub,apub_visibility=EXCLUDED.apub_visibility,parent_id=EXCLUDED.parent_id,reply_to_message_id=EXCLUDED.reply_to_message_id
+      WHERE (messages.content,messages.deleted_at,messages.home_post_id,messages.apub,messages.apub_visibility,messages.parent_id,messages.reply_to_message_id)
+        IS DISTINCT FROM (EXCLUDED.content,EXCLUDED.deleted_at,EXCLUDED.home_post_id,EXCLUDED.apub,EXCLUDED.apub_visibility,EXCLUDED.parent_id,EXCLUDED.reply_to_message_id);
   END IF;
   IF TG_OP='INSERT' THEN
     IF NEW.apub AND NEW.deleted_at IS NULL THEN kind:='Create'; END IF;
@@ -2532,6 +2534,50 @@ CREATE TRIGGER messages_thread_activity_insert AFTER INSERT ON messages
   FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
 CREATE TRIGGER messages_thread_activity_parent_update AFTER UPDATE OF parent_id ON messages
   FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
+
+-- 返信先に返信してもスレッド所属先は最上位の親投稿へ正規化する。
+-- 元の返信先は別カラムに残し、旧クライアントの parent_id 指定も受け付ける。
+CREATE FUNCTION normalize_message_thread_parent() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE requested_parent text; requested_parent_parent text; root_id text;
+BEGIN
+  IF NEW.parent_id IS NULL THEN RETURN NEW; END IF;
+  requested_parent := NEW.parent_id;
+  IF NEW.id = requested_parent THEN
+    RAISE EXCEPTION 'a message cannot reply to itself' USING ERRCODE = '23514';
+  END IF;
+  SELECT parent_id INTO requested_parent_parent FROM messages
+    WHERE id = requested_parent AND channel_id = NEW.channel_id;
+  IF NOT FOUND THEN
+    IF EXISTS (SELECT 1 FROM messages WHERE id = requested_parent) THEN
+      RAISE EXCEPTION 'reply target belongs to another channel' USING ERRCODE = '23514';
+    END IF;
+    -- 存在しない ID は既存の外部キー制約に拒否させる。
+    RETURN NEW;
+  END IF;
+  IF requested_parent_parent IS NOT NULL AND NEW.reply_to_message_id IS NULL THEN
+    NEW.reply_to_message_id := requested_parent;
+  END IF;
+  WITH RECURSIVE ancestors(id, parent_id, visited) AS (
+    SELECT id, parent_id, ARRAY[id] FROM messages
+      WHERE id = requested_parent AND channel_id = NEW.channel_id
+    UNION ALL
+    SELECT parent.id, parent.parent_id, ancestors.visited || parent.id
+      FROM ancestors JOIN messages parent
+        ON parent.id = ancestors.parent_id AND parent.channel_id = NEW.channel_id
+      WHERE parent.id <> ALL(ancestors.visited)
+  )
+  SELECT id INTO root_id FROM ancestors WHERE parent_id IS NULL LIMIT 1;
+  IF root_id IS NULL THEN
+    -- 祖先を確定できない場合は新規投稿を親として保存し、辿ろうとした ID を残す。
+    NEW.reply_to_message_id := COALESCE(NEW.reply_to_message_id, requested_parent);
+    NEW.parent_id := NULL;
+  ELSE
+    NEW.parent_id := root_id;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER messages_normalize_thread_parent BEFORE INSERT OR UPDATE OF parent_id ON messages
+  FOR EACH ROW EXECUTE FUNCTION normalize_message_thread_parent();
 -- E2EE: 端末と鍵（#354。仕様は docs/e2ee.md の「DB」）。
 -- 暗号化チャンネル。作成時の指定と変更の拒否は #357 で足す。既存の行は false なので後方互換。
 ALTER TABLE channels ADD COLUMN encrypted boolean NOT NULL DEFAULT false;

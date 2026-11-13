@@ -141,6 +141,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     var surfaces by mutableStateOf<List<Row>>(emptyList())
     var capabilities by mutableStateOf<JsonObject>(JsonObject(emptyMap()))
     var target by mutableStateOf<String?>(null)
+    var replyToMessageId by mutableStateOf<String?>(null)
     private val assetClient = HttpClient()
     val assets = mutableMapOf<String, JsonElement>()
     val activityPubNotifications by lazy { ActivityPubNotificationsState(this) }
@@ -352,6 +353,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             }
         }
         val id = platform.uuid()
+        val replyTarget = replyToMessageId?.takeIf { parent != null }
         val row = buildJsonObject {
             put("id", id)
             put("channel_id", channel)
@@ -359,6 +361,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             put("content", content)
             put("created_at", platform.now())
             put("parent_id", parent?.let(::JsonPrimitive) ?: JsonNull)
+            if (replyTarget != null && replyTarget != parent)
+                put("reply_to_message_id", replyTarget)
             put("deleted_at", JsonNull)
             put("updated_at", JsonNull)
         }
@@ -366,13 +370,14 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             put("id", id)
             put("channel_id", channel)
             put("content", content)
-            parent?.let { put("parent_id", it) }
+            (replyTarget ?: parent)?.let { put("parent_id", it) }
             if (attachmentIds.isNotEmpty())
                 put("attachment_ids", JsonArray(attachmentIds.map(::JsonPrimitive)))
             if (sensitiveAttachmentIds.isNotEmpty()) put("sensitive_attachment_ids", JsonArray(sensitiveAttachmentIds.map(::JsonPrimitive)))
         }
         return try {
             repo.messages(channel).write(api, "/api/messages", "POST", body, row)
+            if (replyTarget != null) replyToMessageId = null
             true
         } catch (e: CancellationException) {
             throw e

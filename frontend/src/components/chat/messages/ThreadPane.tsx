@@ -1,6 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, XIcon } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
@@ -9,12 +9,15 @@ import type { AttachmentRow } from "../../../lib/electric/types";
 import { groupReactions, type ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 import { PaneHeader } from "../../layout/PaneHeader";
+import { AppAvatar, AuthorIdentity } from "../AppIdentity";
+import { MessageAppContent, hasCardBlocks } from "../AppBlocks";
 
 import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
-import { MessageRow } from "./MessageRow";
-import type { FeedMessage } from "./messageFormat";
+import { MessageBody, MessageRow } from "./MessageRow";
+import { authorLabel, type FeedMessage } from "./messageFormat";
+import { MfmContent } from "./MfmContent";
 import { buildMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 
@@ -31,7 +34,8 @@ export interface ThreadPaneProps {
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
   replies: FeedMessage[];
-  onOpenThread?: (messageId: string) => void;
+  onNavigateToMessage?: (messageId: string) => void;
+  unavailableReplyTargetId?: string;
   isLoading: boolean;
   isError: boolean;
   currentUserId: string | null;
@@ -57,6 +61,7 @@ export interface ThreadPaneProps {
     commandAppId?: string,
     attachmentIds?: string[],
     sensitiveAttachmentIds?: string[],
+    replyToMessageId?: string,
   ) => Promise<boolean>;
   /** 上端付近で古い返信を読み足す。 */
   onLoadOlder?: () => void;
@@ -88,7 +93,8 @@ export function ThreadPane({
   onTyping,
   root,
   replies,
-  onOpenThread,
+  onNavigateToMessage,
+  unavailableReplyTargetId,
   isLoading,
   isError,
   currentUserId,
@@ -118,6 +124,9 @@ export function ThreadPane({
 }: ThreadPaneProps) {
   const { t } = useTranslation();
   const items = useMemo(() => buildMessageItems(replies), [replies]);
+  const repliesById = useMemo(() => new Map(replies.map((reply) => [reply.id, reply])), [replies]);
+  const [replyTargetId, setReplyTargetId] = useState<string | null>(null);
+  const replyTarget = replyTargetId === root.id ? root : repliesById.get(replyTargetId ?? "");
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   // 件数が上限のままでも、新着で末尾の返信が変わったら、最下部にいるときは追従する。
@@ -181,7 +190,7 @@ export function ThreadPane({
       aria-label={t("threads.title")}
       className="absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col border-l bg-background sm:static sm:z-auto sm:w-80 sm:shrink-0 xl:w-96"
     >
-      <PaneHeader className="gap-2">
+      <PaneHeader className="h-auto min-h-11 gap-2 py-1">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -191,15 +200,22 @@ export function ThreadPane({
         >
           <ArrowLeftIcon />
         </Button>
+        <AppAvatar
+          size="sm"
+          className="size-4"
+          label={authorLabel(root)}
+          isBot={!!root.is_bot}
+          src={root.avatar_url}
+        />
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold">{t("threads.title")}</h2>
-          <p className="text-xs tabular-nums text-muted-foreground">
-            {isLoading
-              ? t("threads.loading")
-              : t("threads.replyCount", {
-                  count: root.display_data?.reply_count ?? replies.length,
-                })}
-          </p>
+          <div className="flex min-w-0 items-baseline gap-1.5">
+            <AuthorIdentity message={root} />
+            {!root.card && !hasCardBlocks(root.app_blocks) ? (
+              <div className="min-w-0 flex-1 truncate text-xs text-foreground/80">
+                <MfmContent content={root.content} emojis={root.display_data?.emojis} />
+              </div>
+            ) : null}
+          </div>
         </div>
         {isArchived ? (
           <span className="text-xs text-muted-foreground">{t("moderation.archived")}</span>
@@ -215,30 +231,18 @@ export function ThreadPane({
         </Button>
       </PaneHeader>
 
-      <div className="max-h-60 shrink-0 overflow-y-auto border-b bg-muted/30 px-2 py-2">
-        <MessageRow
-          item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
-          isOwn={!!currentUserId && root.user_id === currentUserId}
-          canDelete={canModerate || (!!currentUserId && root.user_id === currentUserId)}
-          isEditing={editingId === root.id}
-          editingText={editingText}
-          onEditingTextChange={onEditingTextChange}
-          onStartEdit={() => onStartEdit(root.id, root.content)}
-          onCancelEdit={onCancelEdit}
-          onSaveEdit={onSaveEdit}
-          onRequestDelete={() => onRequestDelete(root.id)}
-          reactions={
-            root.display_data
-              ? (groupReactions(root.display_data.reactions, currentUserId).get(root.id) ?? [])
-              : (reactions.get(root.id) ?? [])
-          }
-          attachments={root.display_data?.attachments ?? attachments?.get(root.id) ?? []}
-          kitchenCatalog={kitchenCatalog}
-          canReact={canReact}
-          onReaction={(emoji) => onReaction(root.id, emoji)}
-          onPickReaction={() => onPickReaction(root.id)}
-        />
-      </div>
+      {root.card ? (
+        <div className="shrink-0 border-b px-3 py-2">
+          <MessageBody
+            emojis={root.display_data?.emojis}
+            content={root.content}
+            card={root.card}
+            appBlocks={root.app_blocks}
+            editedAt={root.updated_at}
+          />
+        </div>
+      ) : null}
+      <MessageAppContent message={root} />
 
       <div
         ref={scrollRef}
@@ -305,7 +309,18 @@ export function ThreadPane({
                   onSaveEdit={onSaveEdit}
                   onRequestDelete={() => onRequestDelete(item.message.id)}
                   replyCount={item.message.display_data?.reply_count ?? 0}
-                  onOpenThread={onOpenThread ? () => onOpenThread(item.message.id) : undefined}
+                  onReplyToMessage={
+                    !readOnly && isMember && !item.message.deleted_at
+                      ? () => setReplyTargetId(item.message.id)
+                      : undefined
+                  }
+                  onNavigateToMessage={onNavigateToMessage}
+                  unavailableReplyTargetId={unavailableReplyTargetId}
+                  replyTarget={
+                    item.message.reply_to_message_id
+                      ? repliesById.get(item.message.reply_to_message_id)
+                      : undefined
+                  }
                   reactions={
                     item.message.display_data
                       ? (groupReactions(item.message.display_data.reactions, currentUserId).get(
@@ -332,14 +347,53 @@ export function ThreadPane({
       {!readOnly ? (
         <>
           <TypingIndicator users={typingUsers} />
+          {replyTargetId ? (
+            <div className="flex items-center justify-between gap-2 border-t px-3 py-1 text-xs text-muted-foreground">
+              <span className="min-w-0 truncate">
+                {replyTarget && !replyTarget.deleted_at
+                  ? t("home.replyTo", { name: authorLabel(replyTarget) })
+                  : t("notifications.messageUnavailable")}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                onClick={() => setReplyTargetId(null)}
+              >
+                {t("common.cancelShort")}
+              </Button>
+            </div>
+          ) : null}
           <Composer
             commands={commands}
             onRequestCommands={onRequestCommands}
             mentionUsers={mentionUsers}
             mentionMemberIds={mentionMemberIds}
-            disabled={!isMember || isOffline}
+            disabled={
+              !isMember ||
+              isOffline ||
+              Boolean(replyTargetId && (!replyTarget || replyTarget.deleted_at))
+            }
             onTyping={onTyping}
-            onSend={onSendReply}
+            onSend={async (content, commandAppId, attachmentIds, sensitiveAttachmentIds) => {
+              const sent = replyTargetId
+                ? await onSendReply(
+                    content,
+                    commandAppId,
+                    attachmentIds,
+                    sensitiveAttachmentIds,
+                    replyTargetId,
+                  )
+                : sensitiveAttachmentIds !== undefined
+                  ? await onSendReply(content, commandAppId, attachmentIds, sensitiveAttachmentIds)
+                  : attachmentIds !== undefined
+                    ? await onSendReply(content, commandAppId, attachmentIds)
+                    : commandAppId !== undefined
+                      ? await onSendReply(content, commandAppId)
+                      : await onSendReply(content);
+              if (sent) setReplyTargetId(null);
+              return sent;
+            }}
             onUploadAttachment={onUploadAttachment}
             placeholder={isOffline ? t("offline.composeDisabled") : t("threads.compose")}
             ariaLabel={t("threads.compose")}

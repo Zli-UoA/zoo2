@@ -161,6 +161,7 @@ fun Chat(
     LaunchedEffect(id, app.query["thread"]) {
         val requested = app.query["thread"]
         if (requested != null) app.openThread(requested, wide) else app.thread = null
+        app.replyToMessageId = null
     }
     LaunchedEffect(id, app.query["message"], all.size) {
         val target = app.query["message"]
@@ -241,7 +242,32 @@ fun Chat(
                     },
                     composer =
                         if (joined && !channel.present("archive_at")) {
-                            { Composer(app, id, parent, users, canPost) }
+                            {
+                                Column {
+                                    app.replyToMessageId?.let { targetId ->
+                                        val target = all.find { it.text("id") == targetId }
+                                        Row(
+                                            Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                        ) {
+                                            Text(
+                                                target?.takeIf { !it.present("deleted_at") }?.let {
+                                                    app.t("home.replyTo", "name" to author(it))
+                                                } ?: app.t("notifications.messageUnavailable"),
+                                                small = true,
+                                                muted = true,
+                                            )
+                                            Button(
+                                                app.t("common.cancelShort"),
+                                                variant = "ghost",
+                                                size = "sm",
+                                            ) { app.replyToMessageId = null }
+                                        }
+                                    }
+                                    Composer(app, id, parent, users, canPost)
+                                }
+                            }
                         } else null,
                 )
             }
@@ -545,7 +571,15 @@ internal fun MessageList(
                             initialEditing = editingId == row.text("id"),
                             initialEditingText = editingText.takeIf { editingId == row.text("id") },
                             canReact = canReact,
-                            callbacks = callbacks?.invoke(row),
+                            callbacks =
+                                callbacks?.invoke(row)
+                                    ?: if (parent != null && canCompose && !row.present("deleted_at")) {
+                                        MessageCallbacks(
+                                            replyTo = { app.replyToMessageId = row.text("id") }
+                                        )
+                                    } else {
+                                        null
+                                    },
                             groupEnd =
                                 messages.getOrNull(index + 1)?.let { !groupedWith(row, it) } ?: true,
                         )
@@ -572,6 +606,7 @@ class MessageCallbacks(
     val pickReaction: (() -> Unit)? = null,
     val reaction: ((String) -> Unit)? = null,
     val changeText: ((String) -> Unit)? = null,
+    val replyTo: (() -> Unit)? = null,
 )
 
 @Composable
@@ -883,6 +918,38 @@ internal fun Message(
                                     LinkPreviews(app, message.text("content"))
                                 }
                             }
+                        }
+                        val replyTargetId = message.text("reply_to_message_id")
+                        if (replyTargetId.isNotEmpty()) {
+                            val replyTarget = all.find { it.text("id") == replyTargetId }
+                            val deleted = replyTarget?.present("deleted_at") == true
+                            Text(
+                                when {
+                                    deleted -> app.t("notifications.messageUnavailable")
+                                    replyTarget != null -> app.t("home.replyTo", "name" to author(replyTarget))
+                                    else -> app.t("notifications.openMessage")
+                                },
+                                Modifier.padding(top = 2.dp).then(
+                                    if (deleted) Modifier
+                                    else Modifier.clickable(role = Role.Button) {
+                                        app.navigate(
+                                            "/channels/${channel.text("id")}?thread=${message.text("parent_id")}&message=$replyTargetId"
+                                        )
+                                    }
+                                ),
+                                small = true,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        if (callbacks?.replyTo != null) {
+                            Text(
+                                app.t("home.replyTo", "name" to author(message)),
+                                Modifier.padding(top = 2.dp).clickable(role = Role.Button) {
+                                    callbacks.replyTo.invoke()
+                                },
+                                small = true,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
                         }
                         MessageAppContent(app, message)
                         MessageAttachments(

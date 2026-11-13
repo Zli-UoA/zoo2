@@ -1,5 +1,5 @@
 /**
- * メッセージ一覧の並び (新しい順) と、それを on-demand の subset snapshot で取るためのインデックス。
+ * メッセージ一覧の並び (作成日時・IDの新しい順) と、それを on-demand の subset snapshot で取るためのインデックス。
  *
  * `created_at` は `YYYY-MM-DD HH:MM:SS.sss` の文字列で持つ。TanStack DB は、文字列の列で並べて `limit` を付けた
  * クエリを、`stringSort: "lexical"` (サーバーの並びと一致する) のときだけ、ページ単位 (`subset__limit` と

@@ -11,6 +11,7 @@ import {
   MessageSquareTextIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  ReplyIcon,
   SmilePlusIcon,
   TrashIcon,
   UsersRoundIcon,
@@ -36,7 +37,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../
 import { Textarea } from "../../ui/textarea";
 import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
-import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
+import {
+  authorLabel,
+  formatDateSeparator,
+  formatTime,
+  fullTimestamp,
+  type FeedMessage,
+} from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
 import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
@@ -62,6 +69,11 @@ export interface MessageRowProps {
   replyCount?: number;
   /** スレッドペインを開く。返信行では未指定。 */
   onOpenThread?: () => void;
+  /** 返信元メッセージへ移動する。返信先が現在の一覧外でも ID から開く。 */
+  onNavigateToMessage?: (messageId: string) => void;
+  onReplyToMessage?: (messageId: string) => void;
+  replyTarget?: FeedMessage;
+  unavailableReplyTargetId?: string;
   attachments?: AttachmentRow[];
 }
 
@@ -183,6 +195,10 @@ export function MessageRow({
   onPickReaction,
   replyCount = 0,
   onOpenThread,
+  onNavigateToMessage,
+  onReplyToMessage,
+  replyTarget,
+  unavailableReplyTargetId,
   attachments = [],
 }: MessageRowProps) {
   const { t } = useTranslation();
@@ -395,6 +411,30 @@ export function MessageRow({
                 appBlocks={message.app_blocks}
                 editedAt={message.updated_at}
               />
+              {message.reply_to_message_id ? (
+                message.reply_to_message_id === unavailableReplyTargetId ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("notifications.messageUnavailable")}
+                  </p>
+                ) : replyTarget?.deleted_at ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("notifications.messageUnavailable")}
+                  </p>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    className="mt-1 h-auto min-h-0 justify-start px-0 py-0 text-xs"
+                    onClick={() => onNavigateToMessage?.(message.reply_to_message_id!)}
+                    disabled={!onNavigateToMessage}
+                  >
+                    {replyTarget && !replyTarget.deleted_at
+                      ? t("home.replyTo", { name: authorLabel(replyTarget) })
+                      : t("notifications.openMessage")}
+                  </Button>
+                )
+              ) : null}
               <MessageAttachments attachments={attachments} />
               <MessageAppContent message={message} />
               {message.updated_at && hasCardBlocks(message.app_blocks) ? (
@@ -525,6 +565,17 @@ export function MessageRow({
               >
                 <SmilePlusIcon />
               </Button>
+              {onReplyToMessage ? (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={t("home.replyTo", { name: authorLabel(message) })}
+                  title={t("home.replyTo", { name: authorLabel(message) })}
+                  onClick={() => onReplyToMessage(message.id)}
+                >
+                  <ReplyIcon />
+                </Button>
+              ) : null}
               {threadButton}
               {isOwn ? (
                 <>
@@ -583,6 +634,12 @@ export function MessageRow({
                   <SmilePlusIcon />
                   {t("reactions.add")}
                 </DropdownMenuItem>
+                {onReplyToMessage ? (
+                  <DropdownMenuItem onClick={() => onReplyToMessage(message.id)}>
+                    <ReplyIcon />
+                    {t("home.replyTo", { name: authorLabel(message) })}
+                  </DropdownMenuItem>
+                ) : null}
                 {onOpenThread ? (
                   <DropdownMenuItem onClick={onOpenThread}>
                     <MessageSquarePlusIcon />

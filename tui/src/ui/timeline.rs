@@ -106,6 +106,29 @@ fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> V
         &ctx.store.account_profiles,
     ));
 
+    if let Some(target_id) = message.reply_to_message_id.as_deref() {
+        let target = ctx.store.message(&message.channel_id, target_id);
+        let label = target.map_or_else(
+            || "↳ 返信先: メッセージが削除されたか、閲覧できません".to_string(),
+            |target| {
+                let preview = target
+                    .content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let preview = preview.chars().take(48).collect::<String>();
+                format!(
+                    "↳ 返信先: {}: {preview}",
+                    ctx.store.display_name(&target.user_id)
+                )
+            },
+        );
+        lines.push(Line::from(Span::styled(
+            label,
+            Style::new().fg(Color::Cyan),
+        )));
+    }
+
     let reactions = ctx
         .reactions
         .get(&message.id)

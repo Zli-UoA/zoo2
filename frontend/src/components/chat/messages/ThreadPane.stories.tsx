@@ -101,7 +101,18 @@ export const Empty: Story = {};
 
 export const WithReplies: Story = {
   args: {
-    replies,
+    replies: [
+      {
+        ...replies[0],
+        display_data: {
+          emojis: {},
+          attachments: [],
+          reactions: [],
+          reply_count: 2,
+        },
+      },
+      ...replies.slice(1),
+    ],
     reactions: new Map([
       [
         "reply-1",
@@ -119,6 +130,40 @@ export const WithReplies: Story = {
       ],
     ]),
   },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(root.content)).toBeVisible();
+    await expect(canvas.getByText(replies[0].content)).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "スレッドを開く" })).not.toBeInTheDocument();
+  }),
+};
+
+export const ReplyingToMessage: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies: [replies[0], { ...replies[1], reply_to_message_id: replies[0].id }],
+    onNavigateToMessage: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const replyRow = canvasElement.querySelector<HTMLElement>('[data-message-id="reply-1"]');
+    if (!replyRow) throw new globalThis.Error("first reply row was not rendered");
+    const replyRowCanvas = within(replyRow);
+    const canvas = within(canvasElement);
+    const replyButton = replyRowCanvas.getByRole("button", { name: "Bobさんに返信" });
+    replyButton.focus();
+    await userEvent.keyboard("{Enter}");
+    await expect(canvas.getAllByText("Bobさんに返信").length).toBeGreaterThan(1);
+    const input = canvas.getByRole("textbox", { name: "返信を送信" });
+    await userEvent.type(input, "補足します");
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(args.onSendReply).toHaveBeenCalledWith(
+      "補足します",
+      undefined,
+      undefined,
+      undefined,
+      "reply-1",
+    );
+  }),
 };
 
 export const Archived: Story = {

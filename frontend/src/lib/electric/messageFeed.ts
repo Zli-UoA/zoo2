@@ -92,6 +92,7 @@ export function messageFeedQuery(
         updated_at: messages.updated_at,
         deleted_at: messages.deleted_at,
         parent_id: messages.parent_id,
+        reply_to_message_id: messages.reply_to_message_id,
         thread_archive_at: messages.thread_archive_at,
         user_name: caseWhen(
           eq(messages.display_data?.author?.id, messages.user_id),
@@ -107,5 +108,7 @@ export function messageFeedQuery(
       // 新しい順。`limit` を付けると、必要な範囲だけを Electric の subset snapshot で取る
       // (`lexical` でないと、全件を取るフォールバックになる。messageOrder.ts)。表示は、呼び出し側で反転する。
       .orderBy(({ messages }) => messages.created_at, MESSAGE_ORDER)
+      // 同じ時刻の投稿も安定してページング・表示できるよう、IDを第2キーにする。
+      .orderBy(({ messages }) => messages.id, MESSAGE_ORDER)
   );
 }

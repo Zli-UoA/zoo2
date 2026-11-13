@@ -52,6 +52,8 @@ pub struct Message {
     pub updated_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
     pub parent_id: Option<String>,
+    #[serde(default)]
+    pub reply_to_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_reactions: Option<Vec<Reaction>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -211,6 +213,7 @@ impl FromRow for Message {
             updated_at: opt_time(row, "updated_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
             parent_id: opt_text(row, "parent_id"),
+            reply_to_message_id: opt_text(row, "reply_to_message_id"),
             display_reactions: display_reactions(row)?,
             display_attachments: display_attachments(row)?,
             thread_archive_at: opt_time(row, "thread_archive_at")?,

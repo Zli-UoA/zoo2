@@ -3,6 +3,7 @@ import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useRouter } from "@tanstack/react-router";
 
 import { useChannelCommands } from "../../../hooks/useChannelCommands";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
@@ -130,6 +131,7 @@ export function MessagePane({
   const pendingReactions = useRef(new Set<string>());
 
   const { threadRootId, openThread, closeThread } = useShell();
+  const router = useRouter();
   const threadQuery = useThreadFeed(channelId, threadRootId);
   const threadReplies = threadQuery.data ?? [];
   const threadTyping = useTyping(
@@ -229,8 +231,25 @@ export function MessagePane({
 
   // 対象が返信なら、そのスレッドを開く。
   useEffect(() => {
-    if (target?.parent_id && !target.deleted_at) openThread(target.parent_id);
-  }, [target?.id, target?.parent_id, target?.deleted_at, openThread]);
+    if (target?.parent_id) openThread(target.parent_id);
+  }, [target?.id, target?.parent_id, openThread]);
+
+  const navigateToMessage = useCallback(
+    (messageId: string) => {
+      const search = router.state.location.search as {
+        message?: string;
+        thread?: string;
+        members?: boolean;
+      };
+      void router.navigate({
+        to: "/channels/$channelId",
+        params: { channelId },
+        search: { ...search, message: messageId },
+        replace: true,
+      });
+    },
+    [channelId, router],
+  );
 
   // 対象がトップレベルで、いま読み込んでいる範囲より古いときは、含まれるまで 1 ページずつ古い方へ広げる
   // (連続した範囲になるので、間のメッセージが欠けない)。広げる回数には上限がある。
@@ -406,6 +425,7 @@ export function MessagePane({
       commandAppId?: string,
       attachmentIds: string[] = [],
       sensitiveAttachmentIds: string[] = [],
+      replyToMessageId?: string,
     ): Promise<boolean> => {
       if (readOnly || !isMember) {
         toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
@@ -440,6 +460,9 @@ export function MessagePane({
             updated_at: null,
             deleted_at: null,
             parent_id: rootId,
+            ...(replyToMessageId && replyToMessageId !== rootId
+              ? { reply_to_message_id: replyToMessageId }
+              : {}),
           },
           metadata ? { metadata } : undefined,
         ),
@@ -604,7 +627,15 @@ export function MessagePane({
           onTyping={threadTyping.onTyping}
           root={threadRoot}
           replies={threadReplies}
-          onOpenThread={openThread}
+          onNavigateToMessage={navigateToMessage}
+          unavailableReplyTargetId={
+            targetMessageId &&
+            !targetQuery.isLoading &&
+            !targetQuery.isError &&
+            (!target || target.deleted_at)
+              ? targetMessageId
+              : undefined
+          }
           isLoading={threadQuery.isLoading}
           isError={threadQuery.isError}
           currentUserId={readOnly || threadIsArchived ? null : currentUserId}

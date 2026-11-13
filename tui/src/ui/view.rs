@@ -329,7 +329,11 @@ fn draw_composer(frame: &mut Frame, app: &mut App, area: Rect) {
             .and_then(|id| app.store.channel(id))
             .map(|channel| format!(" {} へ送信 ", app.store.channel_label(channel, &app.me.id)))
             .unwrap_or_else(|| " 入力 ".to_string()),
-        Target::Reply(_) => " スレッドに返信 ".to_string(),
+        Target::Reply {
+            reply_to_message_id: Some(_),
+            ..
+        } => " 選択した投稿に返信 ".to_string(),
+        Target::Reply { .. } => " スレッドに返信 ".to_string(),
         Target::Edit(_) => " メッセージを編集 ".to_string(),
     };
     let hint = if insert {
@@ -355,7 +359,7 @@ fn draw_composer(frame: &mut Frame, app: &mut App, area: Rect) {
 /// 入力欄の送り先 (タイムラインかスレッド) で入力中の人。
 fn typing_line(app: &App) -> Option<String> {
     let scope = match &app.target {
-        Target::Reply(root_id) => Some(root_id.clone()),
+        Target::Reply { root_id, .. } => Some(root_id.clone()),
         _ => None,
     };
     let users = app.typing.get(&scope).filter(|users| !users.is_empty())?;
@@ -421,9 +425,11 @@ const HELP: &[(&str, &str)] = &[
     ("Enter", "チャンネルを開く / スレッドを開く"),
     ("Esc", "選択を外す / スレッドを閉じる"),
     ("i", "書く (スレッドでは返信)"),
+    ("a", "選択した投稿に返信"),
     ("e", "自分のメッセージを編集"),
     ("d", "自分のメッセージを削除"),
     ("r", "リアクションを付ける / 外す"),
+    ("p", "返信元の投稿へ移動"),
     ("J / L", "チャンネルに参加 / 退出"),
     ("/", "チャンネル・スレッドを検索"),
     ("u", "選択中のスレッドを再開"),
@@ -1468,7 +1474,13 @@ mod tests {
         assert!(app.composer.is_empty());
         press(&mut app, KeyCode::Char('i'));
         assert_eq!(app.mode, Mode::Insert);
-        assert_eq!(app.target, crate::ui::app::Target::Reply("m1".into()));
+        assert_eq!(
+            app.target,
+            crate::ui::app::Target::Reply {
+                root_id: "m1".into(),
+                reply_to_message_id: None,
+            }
+        );
         press(&mut app, KeyCode::Esc);
         app.on_app_event(AppEvent::Threads {
             archived: false,

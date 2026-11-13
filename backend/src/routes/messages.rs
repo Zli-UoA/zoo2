@@ -77,6 +77,7 @@ pub struct MessageResponse {
     pub updated_at: Option<String>,
     pub deleted_at: Option<String>,
     pub parent_id: Option<String>,
+    pub reply_to_message_id: Option<String>,
 }
 
 impl From<Message> for MessageResponse {
@@ -93,6 +94,7 @@ impl From<Message> for MessageResponse {
             updated_at: m.updated_at.map(|t| t.to_string()),
             deleted_at: m.deleted_at.map(|t| t.to_string()),
             parent_id: m.parent_id,
+            reply_to_message_id: m.reply_to_message_id,
         }
     }
 }
@@ -250,10 +252,13 @@ pub(crate) async fn check_idempotent_existing_message(
             saved_kind == kind && saved_broadcast == broadcast && saved_metadata == req_metadata;
     }
 
+    let (expected_parent_id, expected_reply_to_message_id) =
+        normalized_reply_target(db, parent_id).await?;
     if existing_msg.user_id == auth_user_id
         && existing_msg.channel_id == channel_id
         && existing_msg.content == content
-        && existing_msg.parent_id.as_deref() == parent_id
+        && existing_msg.parent_id == expected_parent_id
+        && existing_msg.reply_to_message_id == expected_reply_to_message_id
         && existing_msg.deleted_at.is_none()
         && req_att_ids == existing_att_ids
         && options_match
@@ -261,6 +266,25 @@ pub(crate) async fn check_idempotent_existing_message(
         return Ok(Some(MessageResponse::from(existing_msg)));
     }
     Err(AppError::Conflict("Idempotency key already used".into()))
+}
+
+/// `parent_id` は旧クライアントが指定する実際の返信先として読み、保存先の親と分ける。
+async fn normalized_reply_target(
+    db: &mut toasty::Db,
+    parent_id: Option<&str>,
+) -> Result<(Option<String>, Option<String>), AppError> {
+    let Some(parent_id) = parent_id else {
+        return Ok((None, None));
+    };
+    let target = Message::get_by_id(db, parent_id).await;
+    let Ok(target) = target else {
+        // 呼び出し元の既存バリデーションが、見つからない返信先を適切な 404 にする。
+        return Ok((Some(parent_id.to_owned()), None));
+    };
+    match target.parent_id {
+        Some(root_id) => Ok((Some(root_id), Some(target.id))),
+        None => Ok((Some(target.id), None)),
+    }
 }
 
 pub(crate) async fn create_message_impl(
@@ -578,6 +602,8 @@ pub(crate) async fn create_message_impl(
     .await?;
     // スレッド親メッセージ検証
     let mut parent_author_id: Option<String> = None;
+    let mut thread_parent_id = None;
+    let mut reply_to_message_id = None;
     if let Some(ref parent_id) = payload.parent_id {
         Uuid::parse_str(parent_id).map_err(|_| {
             AppError::BadRequest(format!("parent_id is not a valid UUID: {parent_id}"))
@@ -603,6 +629,12 @@ pub(crate) async fn create_message_impl(
         }
 
         parent_author_id = Some(parent.user_id);
+        if let Some(root_id) = parent.parent_id {
+            thread_parent_id = Some(root_id);
+            reply_to_message_id = Some(parent.id);
+        } else {
+            thread_parent_id = Some(parent.id);
+        }
     }
 
     let now = crate::models::now_utc_millis();
@@ -619,7 +651,8 @@ pub(crate) async fn create_message_impl(
         created_at: now,
         updated_at: None,
         deleted_at: None,
-        parent_id: payload.parent_id.clone(),
+        parent_id: thread_parent_id,
+        reply_to_message_id,
     })
     .exec(&mut tx)
     .await;

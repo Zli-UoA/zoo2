@@ -356,6 +356,14 @@ describe("catalog surfaces", () => {
     await expect(page).toMatchScreenshot("thread-pane-replies-desktop-light");
   });
 
+  it("thread pane replies mobile light", async () => {
+    await renderSurface(
+      { theme: "light", width: 390, height: 844 },
+      <div className="h-[720px] bg-muted/30">{threadPane({ replies: threadReplies })}</div>,
+    );
+    await expect(page).toMatchScreenshot("thread-pane-replies-mobile-light");
+  });
+
   it("thread pane empty desktop light", async () => {
     await renderSurface(
       { theme: "light", width: 1440, height: 900 },

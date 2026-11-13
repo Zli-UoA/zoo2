@@ -27,6 +27,8 @@ export interface FeedMessage {
   updated_at?: string | null;
   /** 返信先のルートメッセージ。`null` はチャンネル直下。 */
   parent_id: string | null;
+  reply_to_message_id?: string | null;
+  deleted_at?: string | null;
   thread_archive_at?: string | null;
   user_name?: string | null;
   display_name?: string | null;

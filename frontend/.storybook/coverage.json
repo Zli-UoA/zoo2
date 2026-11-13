@@ -285,6 +285,7 @@
       "states": [
         "Empty",
         "WithReplies",
+        "ReplyingToMessage",
         "Archived",
         "ArchivedReadOnly",
         "ArchivedNotJoined",

@@ -111,7 +111,10 @@ pub enum Mode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Channel,
-    Reply(String),
+    Reply {
+        root_id: String,
+        reply_to_message_id: Option<String>,
+    },
     Edit(String),
 }
 
@@ -990,7 +993,7 @@ impl App {
             self.current.clone(),
             match &self.target {
                 Target::Channel => None,
-                Target::Reply(root_id) => Some(root_id.clone()),
+                Target::Reply { root_id, .. } => Some(root_id.clone()),
                 Target::Edit(_) => return,
             },
         ) else {
@@ -1110,8 +1113,10 @@ impl App {
             KeyCode::Enter => self.activate(),
             KeyCode::Esc => self.back(),
             KeyCode::Char('i') => self.start_compose(),
+            KeyCode::Char('a') => self.start_reply_to_focused(),
             KeyCode::Char('e') => self.start_edit(),
             KeyCode::Char('d') => self.confirm_delete(),
+            KeyCode::Char('p') => self.jump_to_reply_target(),
             KeyCode::Char('r') => {
                 if let Some((_, message_id)) = self.focused_message()
                     && self.can_change_message(&message_id)
@@ -1442,7 +1447,7 @@ impl App {
         self.typing_poll.wake();
         self.thread = None;
         self.focus = Focus::Messages;
-        if matches!(self.target, Target::Reply(_)) {
+        if matches!(self.target, Target::Reply { .. }) {
             self.target = Target::Channel;
         }
     }
@@ -1467,7 +1472,10 @@ impl App {
             return;
         }
         let target = match (&self.thread, self.focus) {
-            (Some(thread), Focus::Thread) => Target::Reply(thread.root_id.clone()),
+            (Some(thread), Focus::Thread) => Target::Reply {
+                root_id: thread.root_id.clone(),
+                reply_to_message_id: None,
+            },
             _ => Target::Channel,
         };
         if matches!(self.target, Target::Edit(_)) || self.target != target {
@@ -1514,6 +1522,67 @@ impl App {
             Focus::Sidebar => return None,
         };
         Some((channel_id, message_id))
+    }
+
+    fn start_reply_to_focused(&mut self) {
+        let Some((channel_id, message_id)) = self.focused_message() else {
+            self.notify("返信する投稿を選択してください");
+            return;
+        };
+        let Some(message) = self.store.message(&channel_id, &message_id) else {
+            return;
+        };
+        if message.deleted_at.is_some() {
+            self.notify("削除済みの投稿には返信できません");
+            return;
+        }
+        let Some(thread) = self.thread.as_ref() else {
+            self.notify("返信先を選ぶにはスレッドを表示してください");
+            return;
+        };
+        let root_id = thread.root_id.clone();
+        if message_id != root_id && message.parent_id.as_deref() != Some(root_id.as_str()) {
+            self.notify("選択中の投稿は表示中のスレッドにありません");
+            return;
+        }
+        self.target = Target::Reply {
+            reply_to_message_id: (message_id != root_id).then_some(message_id),
+            root_id,
+        };
+        self.mode = Mode::Insert;
+    }
+
+    fn jump_to_reply_target(&mut self) {
+        let Some((channel_id, message_id)) = self.focused_message() else {
+            return;
+        };
+        let target_id = self
+            .store
+            .message(&channel_id, &message_id)
+            .and_then(|message| message.reply_to_message_id.clone());
+        let Some(target_id) = target_id else {
+            self.notify("選択中の投稿に返信元リンクはありません");
+            return;
+        };
+        let Some(target_root_id) = self
+            .store
+            .message(&channel_id, &target_id)
+            .and_then(|target| target.parent_id.clone())
+        else {
+            self.notify("返信先のメッセージが削除されたか、閲覧できません");
+            return;
+        };
+        let Some(thread) = self.thread.as_mut() else {
+            self.notify("返信先を開くにはスレッドを表示してください");
+            return;
+        };
+        if target_root_id != thread.root_id {
+            self.notify("返信先がこのスレッドにありません");
+            return;
+        }
+        thread.selected = Some(target_id);
+        thread.scroll = 0;
+        thread.inner_scroll = 0;
     }
 
     fn start_edit(&mut self) {
@@ -1609,6 +1678,13 @@ impl App {
         let target = self.target.clone();
         self.composer = new_composer();
         self.stop_typing();
+        if let Target::Reply { root_id, .. } = &target {
+            // 次の投稿はスレッド直下へ戻す。失敗時は保持した target と一緒に下書きを戻す。
+            self.target = Target::Reply {
+                root_id: root_id.clone(),
+                reply_to_message_id: None,
+            };
+        }
         // 編集は1回で終わる。新規投稿と返信は続けて書けるよう入力モードのままにする。
         if matches!(target, Target::Edit(_)) {
             self.target = Target::Channel;
@@ -1618,9 +1694,17 @@ impl App {
             let id = uuid::Uuid::new_v4().to_string();
             let result = match &target {
                 Target::Channel => api.send_message(&id, &channel_id, &content, None).await,
-                Target::Reply(root_id) => {
-                    api.send_message(&id, &channel_id, &content, Some(root_id))
-                        .await
+                Target::Reply {
+                    root_id,
+                    reply_to_message_id,
+                } => {
+                    api.send_message(
+                        &id,
+                        &channel_id,
+                        &content,
+                        Some(reply_to_message_id.as_deref().unwrap_or(root_id)),
+                    )
+                    .await
                 }
                 Target::Edit(message_id) => api.edit_message(message_id, &content).await,
             };
@@ -1633,7 +1717,7 @@ impl App {
                 });
             } else {
                 let reopened = match target {
-                    Target::Reply(root_id) => Some(root_id),
+                    Target::Reply { root_id, .. } => Some(root_id),
                     _ => None,
                 };
                 let _ = tx.send(AppEvent::ThreadsChanged { reopened });

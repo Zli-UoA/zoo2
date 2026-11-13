@@ -137,8 +137,9 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
         content: row.content,
       };
       // 通常メッセージではキー自体を送らない（バックエンドの既定はルート）。
-      if (row.parent_id) {
-        body.parent_id = row.parent_id;
+      const replyTargetId = row.reply_to_message_id ?? row.parent_id;
+      if (replyTargetId) {
+        body.parent_id = replyTargetId;
       }
       const attachmentIds = readMessageMetadata(mutation.metadata).attachment_ids;
       if (attachmentIds?.length) {

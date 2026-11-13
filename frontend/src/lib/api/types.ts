@@ -83,7 +83,7 @@ export interface CreateMessageRequest {
   id?: string;
   channel_id: string;
   content: string;
-  /** 返信先のルートメッセージ。通常メッセージでは省略する。 */
+  /** 返信先のメッセージ。サーバーが最上位の親メッセージへ正規化する。 */
   parent_id?: string;
   attachment_ids?: string[];
   sensitive?: boolean;

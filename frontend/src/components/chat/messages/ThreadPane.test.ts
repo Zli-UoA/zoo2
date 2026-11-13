@@ -51,7 +51,7 @@ function render(props: Partial<ThreadPaneProps> = {}): string {
 }
 
 describe("ThreadPane", () => {
-  it("shows the root message and the reply count", () => {
+  it("shows the parent and its replies", () => {
     const html = render({
       replies: [
         message({
@@ -67,14 +67,37 @@ describe("ThreadPane", () => {
 
     expect(html).toContain("root content");
     expect(html).toContain("a reply");
-    expect(html).toContain("1 件の返信");
+    expect(html).not.toContain("1 件の返信");
+    expect(html.indexOf("data-message-toolbar")).toBeLessThan(
+      html.indexOf('aria-label="Bobさんに返信"'),
+    );
     expect(html).toContain('placeholder="返信を送信"');
   });
 
-  it("uses a machine-readable datetime for the root timestamp", () => {
-    const html = render();
-    expect(html).toMatch(/datetime="2026-01-02T00:00:00\.000Z"/i);
-    expect(html).not.toMatch(/datetime="2026-01-02 00:00:00\.000"/i);
+  it("keeps the parent above replies and does not open nested threads", () => {
+    const html = render({
+      replies: [
+        message({
+          id: "reply-1",
+          user_id: "user-2",
+          content: "a reply",
+          parent_id: "root-1",
+          user_name: "bob",
+          display_name: "Bob",
+          display_data: {
+            emojis: {},
+            attachments: [],
+            reactions: [],
+            reply_count: 3,
+          },
+        }),
+      ],
+    });
+
+    expect(html.indexOf("Carol")).toBeLessThan(html.indexOf("root content"));
+    expect(html.indexOf("root content")).toBeLessThan(html.indexOf("a reply"));
+    expect(html).not.toContain('aria-label="スレッドを開く"');
+    expect(html).not.toContain('aria-label="3 件の返信（スレッドを開く）"');
   });
 
   it("shows an empty state for a thread without replies", () => {

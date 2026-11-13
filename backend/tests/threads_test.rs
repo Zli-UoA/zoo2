@@ -93,7 +93,7 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
     assert_eq!(json["data"]["parent_id"], root_message_id);
     assert!(json["txid"].is_string());
 
-    // 5. Homeと同じく、返信への再返信も元の投稿との関係を保持する
+    // 5. 返信への再返信も親スレッドへ所属させ、元の返信先 ID を別途保持する
     let nested_reply_payload = json!({
         "channel_id": channel_id_1,
         "content": "Nested reply to reply 1",
@@ -109,7 +109,8 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = to_bytes(resp.into_body(), usize::MAX).await?;
     let nested: Value = serde_json::from_slice(&body)?;
-    assert_eq!(nested["data"]["parent_id"], reply_1_id);
+    assert_eq!(nested["data"]["parent_id"], root_message_id);
+    assert_eq!(nested["data"]["reply_to_message_id"], reply_1_id);
 
     // 6. チャンネル 2 作成
     let channel_id_2 = uuid::Uuid::new_v4().to_string();
