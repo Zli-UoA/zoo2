@@ -97,7 +97,12 @@ beforeEach(() => {
 });
 
 it("waits for the current user's membership even when other users are cached", () => {
-  const channel = { id: "general", channel_name: "general", is_dm: false } as ChannelRow;
+  const channel = {
+    id: "general",
+    channel_name: "general",
+    is_dm: false,
+    archive_at: null,
+  } as ChannelRow;
   const view = () => (
     <LocaleProvider>
       <ChannelSidebar channels={[channel]} loading={false} error={false} />
@@ -134,7 +139,9 @@ it("temporarily shows the selected archive without any history or search control
   const view = () => (
     <LocaleProvider>
       <ChannelSidebar
-        channels={[{ id: "general", channel_name: "general", is_dm: false } as ChannelRow]}
+        channels={[
+          { id: "general", channel_name: "general", is_dm: false, archive_at: null } as ChannelRow,
+        ]}
         loading={false}
         error={false}
       />

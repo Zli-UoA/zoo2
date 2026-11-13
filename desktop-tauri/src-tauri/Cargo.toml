@@ -1,6 +1,6 @@
 [package]
 name = "zoo2-desktop-tauri"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 description = "zoo2 のデスクトップクライアント (Tauri)"
@@ -33,6 +33,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 url = "2"
 notify-rust = "4"
 tauri-plugin-updater = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# 通話のため、WebKitGTK の WebRTC を有効にする (window.rs の enable_webrtc)。
+webkit2gtk = { version = "2", features = ["v2_38"] }
 
 [profile.release]
 strip = true

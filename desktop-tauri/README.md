@@ -2,7 +2,7 @@
 
 zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.app) で作っていて、Linux と macOS を 1 つのコードで扱います。
 
-> **試験版です。** 本番の AuthZ へのクライアントの登録は準備中です。macOS 版は、まだ Apple の署名と公証をしていません。下の「[いまの制限](#いまの制限)」も読んでください。
+> **試験版です。** macOS 版は、まだ Apple の署名と公証をしていません。下の「[いまの制限](#いまの制限)」も読んでください。
 
 - チャンネル一覧、タイムライン、入力欄を表示します。ほかの人の投稿はすぐに反映されます。
 - ウィンドウを閉じても、トレイに残って動き続けます。メンションや DM が届くと、OS の通知を出します。
@@ -35,10 +35,10 @@ zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.ap
 
 [GitHub Releases](https://github.com/Zli-UoA/zoo2/releases) の、`zoo2 デスクトップ版 (Tauri)` のリリース (タグは `desktop-tauri-v<版>`) からダウンロードします。一覧の「Latest」は TUI のリリースなので、デスクトップ版は名前で探してください。
 
-[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.2.1` は入れたい版に置き換えてください。
+[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.2.2` は入れたい版に置き換えてください。
 
 ```bash
-gh release download desktop-tauri-v0.2.1 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
+gh release download desktop-tauri-v0.2.2 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
 ```
 
 リリースから入れると、アプリが自分で更新します (「[更新](#更新)」)。
@@ -56,18 +56,18 @@ gh run download --repo Zli-UoA/zoo2 --name zoo2-desktop-tauri-linux $(gh run lis
 
 ### ファイル
 
-次のファイルがあります。`0.2.1` の部分は版によって変わります。CI の成果物は、Linux の 2 つだけです。
+次のファイルがあります。`0.2.2` の部分は版によって変わります。CI の成果物は、Linux の 2 つだけです。
 
 | ファイル | 対象 |
 |---|---|
-| `zoo2_0.2.1_amd64.deb` | Ubuntu、Debian |
-| `zoo2_0.2.1_amd64.AppImage` | そのほかの Linux |
-| `zoo2_0.2.1_universal.dmg` | macOS (Apple シリコン、Intel) |
+| `zoo2_0.2.2_amd64.deb` | Ubuntu、Debian |
+| `zoo2_0.2.2_amd64.AppImage` | そのほかの Linux |
+| `zoo2_0.2.2_universal.dmg` | macOS (Apple シリコン、Intel) |
 
 ### Ubuntu / Debian
 
 ```bash
-sudo apt install ./zoo2_0.2.1_amd64.deb
+sudo apt install ./zoo2_0.2.2_amd64.deb
 ```
 
 WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-appindicator3-1`) も一緒に入ります。アプリケーションの一覧に「zoo2」が出ます。コマンドは `zoo2-desktop-tauri` です。
@@ -75,11 +75,11 @@ WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-ap
 ### AppImage
 
 ```bash
-chmod +x zoo2_0.2.1_amd64.AppImage
+chmod +x zoo2_0.2.2_amd64.AppImage
 ```
 
 ```bash
-./zoo2_0.2.1_amd64.AppImage
+./zoo2_0.2.2_amd64.AppImage
 ```
 
 好きな場所に置いて、そのまま起動できます。システムの WebKitGTK 4.1 を使うので、入っていなければ、ディストリビューションのパッケージで入れてください。
@@ -145,7 +145,7 @@ NixOS の設定 (flake) に入れるときは、`inputs` に zoo2 を足し、�
 }
 ```
 
-特定のリリースに固定するときは `github:Zli-UoA/zoo2/desktop-tauri-v0.2.1` のようにタグを指定します。flake のパッケージがあるのは v0.2.0 からです。
+特定のリリースに固定するときは `github:Zli-UoA/zoo2/desktop-tauri-v0.2.2` のようにタグを指定します。flake のパッケージがあるのは v0.2.0 からです。
 
 Nix で入れた版は、アプリの中からは更新しません (「[更新](#更新)」)。
 
@@ -182,7 +182,7 @@ Nix で入れた版は、アプリの中からは更新しません (「[更新]
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
 | `check_updates` | `ZOO_CHECK_UPDATES` | `true` | `false` にすると、新しい版を確かめない (「[更新](#更新)」) |
-| なし | `ZOO_DESKTOP_UI` | `leptos` | 画面の種類。`remote` にすると zli.chat の Web 版の画面を読み込む (試験中) |
+| `desktop_ui` | `ZOO_DESKTOP_UI` | `remote` (`dev_user` を指定したときは `leptos`) | 画面の種類。`remote` は `api_base_url` の Web 版の画面 (通話もできる)、`leptos` はアプリに入っている最小限の画面。ほかの値は設定のエラーになる |
 
 ログインで得たトークンは、そのときの接続先 (`api_base_url`) にだけ送ります。接続先や OIDC の設定を変えたら、ログインし直してください。
 
@@ -215,8 +215,8 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 
 画面の種類によって、更新が要る範囲が違います。
 
-- **既定の画面 (`leptos`)**: 画面もアプリに入っているので、画面の修正もアプリの更新で届きます。
-- **Web 版の画面 (`remote`)**: 画面は zli.chat から読み込むので、Web 版がデプロイされると、次の起動 (または再読み込み) で新しくなります。ログインや通知など、アプリ側の部分の修正だけがアプリの更新で届きます。アプリと Web 版のやり取りの形 (プロトコルの版) が合わなくなったときは、アプリの更新が必要です。
+- **Web 版の画面 (`remote`、既定)**: 画面は zli.chat から読み込むので、Web 版がデプロイされると、次の起動 (または再読み込み) で新しくなります。ログインや通知など、アプリ側の部分の修正だけがアプリの更新で届きます。アプリと Web 版のやり取りの形 (プロトコルの版) が合わなくなったときは、アプリの更新が必要です。
+- **最小限の画面 (`leptos`)**: 画面もアプリに入っているので、画面の修正もアプリの更新で届きます。
 
 ## アンインストール
 
@@ -248,7 +248,8 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 
 - macOS 版は、Apple の署名と公証をしていません。初回は「[macOS](#macos)」の手順で開きます。通知を押しても、チャンネルは開きません。
 - v0.2.0 までは既定の client_id が AuthZ に登録されていないので、そのままでは本番の zli.chat にログインできません。v0.2.1 以降に更新してください (アプリの中からの自動更新でも上がります)。
-- 画面は最小限です。スレッド、リアクション、編集、ファイルの添付などは Web 版を使ってください。
+- 最小限の画面 (`leptos`) では、スレッド、リアクション、編集、ファイルの添付、通話は使えません。既定の Web 版の画面 (`remote`) を使ってください。
+- 通話で初めてマイクを使うとき、macOS ではマイクの使用を許可するか尋ねられます。許可しなかったときは「システム設定」の「プライバシーとセキュリティ」→「マイク」で zoo2 をオンにしてください。
 
 ## 開発
 
