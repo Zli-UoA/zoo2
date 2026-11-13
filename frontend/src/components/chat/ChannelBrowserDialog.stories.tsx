@@ -21,6 +21,7 @@ const meta = {
     onOpenChange: fn(),
     channels: storyChannels,
     joinedChannelIds: joined,
+    onJoinChannel: fn(async () => {}),
   },
   decorators: [
     (Story) => (
@@ -38,6 +39,7 @@ export const Default: Story = {
   play: playForImplementation(async () => {
     await expect(await screen.findByText("random")).toBeInTheDocument();
     await expect(screen.getByRole("link", { name: /random/ })).toBeInTheDocument();
+    await expect(screen.getAllByRole("button", { name: "参加する" }).length).toBeGreaterThan(0);
   }),
 };
 

@@ -458,6 +458,7 @@ describe("catalog surfaces", () => {
         onOpenChange={noop}
         channels={storyChannels}
         joinedChannelIds={new Set(["channel-general", "channel-design", "channel-secret"])}
+        onJoinChannel={async () => {}}
       />,
     );
     await screen.findByText("old-announcements");
