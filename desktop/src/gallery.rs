@@ -221,7 +221,9 @@ pub fn run(args: &[String]) {
         match crate::gallery_shell::Scenario::parse(args.get(1).map(String::as_str)) {
             Some(scenario) => crate::gallery_shell::run(scenario),
             None => {
-                eprintln!("gallery shell の引数は workspace、loading、welcome のどれかです");
+                eprintln!(
+                    "gallery shell の引数は workspace、loading、welcome、thread のどれかです"
+                );
                 std::process::exit(2);
             }
         }
