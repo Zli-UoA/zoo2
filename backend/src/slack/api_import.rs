@@ -176,15 +176,20 @@ async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, 
             "SELECT json_build_object('channel_id',sc.channel_id,'name',c.channel_name,\
              'member',EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=sc.channel_id AND cu.user_id=$3),\
              'synced',t.last_synced_at IS NOT NULL,'running',COALESCE(t.running,false),\
-             'failed',t.last_error IS NOT NULL)::text \
+             'failed',t.last_error IS NOT NULL,'deleted',c.deleted_at IS NOT NULL)::text \
              FROM slack_channels sc JOIN channels c ON c.id=sc.channel_id \
              LEFT JOIN slack_channel_syncs t ON t.team_id=sc.team_id AND t.slack_channel_id=sc.slack_channel_id \
-             WHERE sc.team_id=$1 AND sc.slack_channel_id=$2 AND c.deleted_at IS NULL",
+             WHERE sc.team_id=$1 AND sc.slack_channel_id=$2",
             &[&link.team, &id, &user.id],
         )
         .await?
         .into_iter()
         .next();
+        // 取り込み先を削除したチャンネルは、過去ログが削除済みのチャンネルに残っていて、取り込み直せないので、一覧に出さない
+        // (`start` も、対応が残っている限り 409 を返す)
+        if found.as_ref().is_some_and(|row| row["deleted"] == true) {
+            continue;
+        }
         let mut entry = json!({
             "slack_channel_id": id,
             "name": name,
