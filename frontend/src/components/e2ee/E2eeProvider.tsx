@@ -90,6 +90,10 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const leader = useRef<ActiveStore | null>(null);
   const takeover = useRef<{ store: Promise<ActiveStore>; release: () => void } | null>(null);
+  /** ログアウトの確認中。起動の再試行で作り直す manager も、to-device を止めたままにする。 */
+  const logoutSuspended = useRef(false);
+  const namespaceRef = useRef(namespace);
+  namespaceRef.current = namespace;
 
   const createManager = useCallback(
     (worker: CryptoWorker, managerUserId: string) =>
@@ -138,6 +142,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
             let delay = START_RETRY_MS;
             while (!released) {
               const manager = createManager(worker, userId);
+              if (logoutSuspended.current) void manager.suspend();
               active = { worker, manager };
               leader.current = active;
               try {
@@ -182,6 +187,23 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       channel?.close();
     };
   }, [client, createManager, isOnline, namespace, supported, userId]);
+
+  // アンマウントしたら（ログアウトの確認中にオンラインに戻り、OfflineProvider が子を作り直した
+  // ときなど）、ログアウトのために奪ったロックを返し、ほかのタブに知らせる。
+  useEffect(
+    () => () => {
+      const entry = takeover.current;
+      if (!entry) return;
+      takeover.current = null;
+      entry.release();
+      if (typeof BroadcastChannel !== "undefined") {
+        const channel = new BroadcastChannel(LOCK_CHANNEL);
+        channel.postMessage({ type: "released", namespace: namespaceRef.current });
+        channel.close();
+      }
+    },
+    [],
+  );
 
   /**
    * ログアウトに使う暗号ストア。このタブが開いていなければ、ロックを奪って開く。
@@ -236,11 +258,13 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         const store = await storeForLogout();
         if (!store) return 0;
         // 数えたあとで鍵が増えないよう、to-device の処理を止めてから数える。
+        logoutSuspended.current = true;
         await store.manager.suspend();
         return store.manager.pendingBackupCount();
       },
       cancelLogout: () => {
         // このタブが開いていたなら、止めていた to-device の処理に戻る。
+        logoutSuspended.current = false;
         leader.current?.manager.resume();
         const entry = takeover.current;
         if (!entry) return;

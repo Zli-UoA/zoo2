@@ -53,7 +53,11 @@ function loadSqlite(): Promise<SQLiteAPI> {
     vfsCaches = vfs as unknown as typeof vfsCaches;
     sqlite3.vfs_register(vfs, true);
     return sqlite3;
-  })();
+  })().catch((error: unknown) => {
+    // 一時的な失敗なら、次の open で初期化し直す。
+    sqliteReady = null;
+    throw error;
+  });
   return sqliteReady;
 }
 
