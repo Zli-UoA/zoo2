@@ -15,7 +15,7 @@ use crate::http::{Credentials, HttpError};
 
 use super::store::{
     self, CryptoStore, PendingDeviceDeletion, ToDeviceRow, clear_pending_device_deletion,
-    mark_device_deletion_pending, read_pending_device_deletion,
+    mark_device_deletion_pending, read_pending_device_deletions,
 };
 
 /// ログアウトで端末の削除 API を待つ時間。オフラインならすぐ諦め、次の起動で消し直す。
@@ -118,11 +118,11 @@ pub async fn delete_device_or_remember(
     let _ = mark_device_deletion_pending(root, &pending);
     match tokio::time::timeout(DELETE_TIMEOUT, api.e2ee_delete_device(device_id)).await {
         Ok(Ok(())) => {
-            let _ = clear_pending_device_deletion(root);
+            let _ = clear_pending_device_deletion(root, &pending);
         }
         // 404 はサーバーに端末がない（登録の前に止まった）。消すものがない。
         Ok(Err(err)) if status_of(&err) == Some(reqwest::StatusCode::NOT_FOUND) => {
-            let _ = clear_pending_device_deletion(root);
+            let _ = clear_pending_device_deletion(root, &pending);
         }
         _ => {}
     }
@@ -130,10 +130,10 @@ pub async fn delete_device_or_remember(
 
 /// 前のログアウトで消せなかった端末を、同じユーザーで消し直す。
 pub async fn retry_pending_device_deletion(api: &ApiClient, root: &Path, user_id: &str) {
-    if let Some(pending) = read_pending_device_deletion(root)
-        && pending.user_id == user_id
-    {
-        delete_device_or_remember(api, root, &pending.user_id, &pending.device_id).await;
+    for pending in read_pending_device_deletions(root) {
+        if pending.user_id == user_id {
+            delete_device_or_remember(api, root, &pending.user_id, &pending.device_id).await;
+        }
     }
 }
 

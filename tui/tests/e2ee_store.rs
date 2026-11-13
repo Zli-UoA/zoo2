@@ -170,8 +170,9 @@ async fn logout_destroys_the_store_and_remembers_a_failed_deletion() {
             .unwrap();
     }
     assert!(!root.join(BOB).exists());
-    let pending = store::read_pending_device_deletion(&root).unwrap();
-    assert_eq!(pending.device_id, device_id);
+    let pending = store::read_pending_device_deletions(&root);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].device_id, device_id);
 
     // 次の起動で消し直す。
     Mock::given(method("DELETE"))
@@ -180,7 +181,7 @@ async fn logout_destroys_the_store_and_remembers_a_failed_deletion() {
         .mount(&server)
         .await;
     manager::retry_pending_device_deletion(&api, &root, BOB).await;
-    assert!(store::read_pending_device_deletion(&root).is_none());
+    assert!(store::read_pending_device_deletions(&root).is_empty());
 }
 
 #[tokio::test]
@@ -208,5 +209,23 @@ async fn logout_deletes_a_device_whose_registration_response_was_lost() {
             .await
             .unwrap();
     }
-    assert!(store::read_pending_device_deletion(&root).is_none());
+    assert!(store::read_pending_device_deletions(&root).is_empty());
+}
+
+#[test]
+fn pending_deletions_of_other_users_are_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let a = store::PendingDeviceDeletion {
+        user_id: ALICE.into(),
+        device_id: "a".into(),
+    };
+    let b = store::PendingDeviceDeletion {
+        user_id: BOB.into(),
+        device_id: "b".into(),
+    };
+    store::mark_device_deletion_pending(&root, &a).unwrap();
+    store::mark_device_deletion_pending(&root, &b).unwrap();
+    store::clear_pending_device_deletion(&root, &b).unwrap();
+    assert_eq!(store::read_pending_device_deletions(&root), vec![a]);
 }

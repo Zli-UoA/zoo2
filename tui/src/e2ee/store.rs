@@ -548,19 +548,37 @@ pub struct PendingDeviceDeletion {
 
 const PENDING_FILE: &str = "pending-device-delete.json";
 
+/// 削除待ちに足す。ユーザーと端末の組ごとに残し、別のユーザーの削除待ちを上書きしない。
 pub fn mark_device_deletion_pending(root: &Path, pending: &PendingDeviceDeletion) -> Result<()> {
+    let mut all = read_pending_device_deletions(root);
+    all.retain(|entry| entry != pending);
+    all.push(PendingDeviceDeletion {
+        user_id: pending.user_id.clone(),
+        device_id: pending.device_id.clone(),
+    });
     create_private_dir(root)?;
-    write_private(&root.join(PENDING_FILE), &serde_json::to_vec(pending)?)
+    write_private(&root.join(PENDING_FILE), &serde_json::to_vec(&all)?)
 }
 
-pub fn read_pending_device_deletion(root: &Path) -> Option<PendingDeviceDeletion> {
-    serde_json::from_slice(&fs::read(root.join(PENDING_FILE)).ok()?).ok()
+/// 削除待ちの端末（全ユーザー分）。
+pub fn read_pending_device_deletions(root: &Path) -> Vec<PendingDeviceDeletion> {
+    fs::read(root.join(PENDING_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }
 
-pub fn clear_pending_device_deletion(root: &Path) -> Result<()> {
-    match fs::remove_file(root.join(PENDING_FILE)) {
-        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
-        _ => Ok(()),
+/// 消せた端末を、削除待ちから外す。
+pub fn clear_pending_device_deletion(root: &Path, done: &PendingDeviceDeletion) -> Result<()> {
+    let mut rest = read_pending_device_deletions(root);
+    rest.retain(|entry| entry != done);
+    if rest.is_empty() {
+        match fs::remove_file(root.join(PENDING_FILE)) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
+            _ => Ok(()),
+        }
+    } else {
+        write_private(&root.join(PENDING_FILE), &serde_json::to_vec(&rest)?)
     }
 }
 
