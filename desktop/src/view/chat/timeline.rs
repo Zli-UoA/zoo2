@@ -1,15 +1,18 @@
 //! タイムライン (frontend の `ChannelScreen` / `ChannelThreadItems` に対応)。
 
-use gpui::{
-    Context, Div, FontWeight, MouseButton, MouseUpEvent, ParentElement, StatefulInteractiveElement,
-    Styled, div, prelude::*, px,
-};
+use gpui::{AnyElement, Context, Div, ParentElement, Styled, div, prelude::*, px};
 use zoo2_client_core::electric::ShapeId;
 
-use crate::theme;
+use crate::icons::Icon;
+use crate::ui::button::{Button, ButtonSize, ButtonVariant};
+use crate::ui::scroll_area::ScrollArea;
+use crate::ui::skeleton::Skeleton;
+use crate::ui::{TextSpec, h_flex, palette, shadow_md, v_flex};
+use crate::view::WorkspaceView;
 use crate::view::chat::channel_header::ChannelHeaderInfo;
+use crate::view::chat::message::RowList;
+use crate::view::chat::message_format::first_unread_id;
 use crate::view::shell::sidebar::{channel_title, is_group_dm};
-use crate::view::{WorkspaceView, local_zoned};
 
 impl WorkspaceView {
     pub(in crate::view) fn render_timeline_view(
@@ -40,12 +43,11 @@ impl WorkspaceView {
             reactions_by_msg,
             attachments_by_msg,
             is_searching,
+            read_boundary,
             start_idx,
             end_idx,
-            theme,
         ) = {
             let state = self.state.read(cx);
-            let theme = state.theme();
             let Some(channel_id) = state.current_channel.clone() else {
                 // 選択なしは上で `render_welcome_panel` を返している。ここへは来ない。
                 return (div(), None);
@@ -89,6 +91,7 @@ impl WorkspaceView {
             let reactions_by_msg = state.channel_cache.reactions_by_message.clone();
             let attachments_by_msg = state.channel_cache.attachments_by_message.clone();
             let is_searching = state.message_search.is_some();
+            let read_boundary = state.read_boundary.get(&channel_id).copied();
 
             (
                 channel_id,
@@ -110,9 +113,9 @@ impl WorkspaceView {
                 reactions_by_msg,
                 attachments_by_msg,
                 is_searching,
+                read_boundary,
                 start_idx,
                 end_idx,
-                theme,
             )
         };
 
@@ -120,68 +123,104 @@ impl WorkspaceView {
         let hidden_after = all_root_messages.len().saturating_sub(end_idx);
         let visible_roots = &all_root_messages[start_idx..end_idx];
 
-        let mut timeline_items: Vec<Div> = Vec::new();
+        let p = palette(cx);
+        let t = p.t;
+        let i18n = self.i18n;
+        let xs = TextSpec::XS;
+        let sm = TextSpec::SM;
+
+        // `px-2 py-3` の上の余白。
+        let mut timeline_items: Vec<AnyElement> =
+            vec![div().h(px(12.0)).flex_none().into_any_element()];
         if hidden_before > 0 {
             timeline_items.push(
-                div().w_full().flex().justify_center().py_1().child(
-                    div()
-                        .id("btn-load-older-messages")
-                        .px_3()
-                        .py_1()
-                        .rounded_md()
-                        .bg(theme.bg_surface)
-                        .border_1()
-                        .border_color(theme.border)
-                        .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                        .text_xs()
-                        .text_color(theme.accent)
-                        .child(format!("過去のメッセージを表示 (残り {hidden_before} 件)"))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                h_flex()
+                    .justify_center()
+                    .py_1()
+                    .child(
+                        Button::new("btn-load-older-messages")
+                            .variant(ButtonVariant::Outline)
+                            .size(ButtonSize::Sm)
+                            .label(format!("過去のメッセージを表示 (残り {hidden_before} 件)"))
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.state.update(cx, |s, cx| {
                                     s.load_older_messages();
                                     cx.notify();
                                 });
-                            }),
-                        ),
-                ),
+                            })),
+                    )
+                    .into_any_element(),
             );
         }
-        let mut target_scroll_item_index = None;
-        let mut last_date = None;
-        for msg in visible_roots {
-            let date = local_zoned(msg.created_at).map(|z| z.date());
-            if date.is_some() && date != last_date {
-                if let Some(d) = date {
-                    timeline_items.push(render_date_separator(&d.to_string(), &theme));
-                }
-                last_date = date;
-            }
-            if pending_scroll_id == Some(msg.id.as_str()) {
-                target_scroll_item_index = Some(timeline_items.len());
-            }
-            let reply_count = reply_counts.get(&msg.id).copied().unwrap_or(0);
-            let reactions = reactions_by_msg.get(&msg.id).cloned().unwrap_or_default();
-            let attachments = attachments_by_msg
-                .get(&msg.id)
-                .map(|v| v.as_slice())
-                .unwrap_or_default();
-            timeline_items.push(self.render_message_card(
-                msg,
-                &me_id,
-                &me_user_name,
+        let first_unread = read_boundary
+            .and_then(|boundary| first_unread_id(visible_roots, &me_id, boundary))
+            .map(str::to_string);
+        let (rows, target_in_rows) = self.render_message_rows(
+            RowList {
+                messages: visible_roots.iter().collect(),
+                first_unread_id: first_unread.as_deref(),
+                me_id: &me_id,
+                me_user_name: &me_user_name,
                 is_archived,
-                reactions,
-                attachments,
-                Some(reply_count),
-                "timeline",
-                cx,
-            ));
-        }
+                reactions: &reactions_by_msg,
+                attachments: &attachments_by_msg,
+                reply_counts: Some(&reply_counts),
+                pane_prefix: "timeline",
+                scroll_target: pending_scroll_id,
+                solo: false,
+            },
+            cx,
+        );
+        let target_scroll_item_index = target_in_rows.map(|i| timeline_items.len() + i);
+        timeline_items.extend(rows);
+        // `py-3` の下の余白。
+        timeline_items.push(div().h(px(12.0)).flex_none().into_any_element());
 
         let ch_id_for_join = channel_id.clone();
         let theme = self.state.read(cx).theme();
+
+        // 読み込み中は `MessageSkeleton`、空は `MessageState`。
+        let placeholder: Option<AnyElement> = if !synced {
+            Some(render_message_skeleton().into_any_element())
+        } else if visible_roots.is_empty() {
+            Some(
+                v_flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(8.0))
+                    .p(px(24.0))
+                    .child(
+                        div()
+                            .text_size(sm.size())
+                            .line_height(sm.line())
+                            .font(crate::fonts::sans(500.0))
+                            .child(i18n.t("messages.empty")),
+                    )
+                    .when(can_post_hint(is_member, is_archived), |d| {
+                        d.child(
+                            div()
+                                .text_size(xs.size())
+                                .line_height(xs.line())
+                                .text_color(t.muted_foreground)
+                                .child(i18n.t("messages.first")),
+                        )
+                    })
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+
+        let scroll_area = match placeholder {
+            Some(p) => div().relative().flex_1().min_h_0().child(p),
+            None => div().relative().flex_1().min_h_0().child(
+                ScrollArea::new("timeline-scroll-area")
+                    .scroll_handle(&self.timeline_scroll)
+                    .size_full()
+                    .children(timeline_items),
+            ),
+        };
 
         let timeline_view = div()
             .flex()
@@ -220,72 +259,38 @@ impl WorkspaceView {
             })
             // タイムライン本体
             .child(
-                div()
-                    .id("timeline-scroll-area")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.timeline_scroll)
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .when(!synced, |d| {
+                scroll_area
+                    // 最新へ戻るボタン (`absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-md`)
+                    .when(!timeline_at_bottom || hidden_after > 0, |d| {
+                        let label = if hidden_after > 0 {
+                            format!("{} ({hidden_after})", i18n.t("messages.new"))
+                        } else {
+                            i18n.t("messages.new")
+                        };
                         d.child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_muted)
-                                .child("メッセージを読み込み中…"),
-                        )
-                    })
-                    .when(synced && timeline_items.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_muted)
-                                .child("まだメッセージがありません"),
-                        )
-                    })
-                    .children(timeline_items),
-            )
-            // 最新へ戻るバー
-            .when(!timeline_at_bottom || hidden_after > 0, |d| {
-                d.child(
-                    div()
-                        .px_4()
-                        .py_1p5()
-                        .bg(theme.bg_surface)
-                        .border_t_1()
-                        .border_color(theme.border)
-                        .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .id("btn-jump-to-latest")
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .bg(theme.accent_button)
-                                .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
-                                .text_xs()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme.text_on_accent)
-                                .child(if hidden_after > 0 {
-                                    format!("↓ 最新メッセージへ移動 (新着ほか {hidden_after} 件)")
-                                } else {
-                                    "↓ 最新メッセージへ移動".to_string()
-                                })
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                        this.state.update(cx, |s, cx| {
-                                            s.jump_to_latest_messages();
-                                            cx.notify();
-                                        });
-                                    }),
+                            h_flex()
+                                .absolute()
+                                .bottom(px(12.0))
+                                .left_0()
+                                .right_0()
+                                .justify_center()
+                                .child(
+                                    Button::new("btn-jump-to-latest")
+                                        .size(ButtonSize::Sm)
+                                        .icon_start(Icon::ArrowDown)
+                                        .label(label)
+                                        .rounded_px(9999.0)
+                                        .shadow(shadow_md())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.state.update(cx, |s, cx| {
+                                                s.jump_to_latest_messages();
+                                                cx.notify();
+                                            });
+                                        })),
                                 ),
-                        ),
-                )
-            })
+                        )
+                    }),
+            )
             // 下部入力欄
             .child(self.render_composer_view(cx));
 
@@ -293,20 +298,56 @@ impl WorkspaceView {
     }
 }
 
-fn render_date_separator(date_label: &str, theme: &theme::Theme) -> Div {
-    div()
-        .w_full()
-        .py_1()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap_3()
-        .child(div().flex_1().h(px(1.0)).bg(theme.border))
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme.text_muted)
-                .child(date_label.to_string()),
-        )
-        .child(div().flex_1().h(px(1.0)).bg(theme.border))
+/// 空のときに「最初のメッセージを送ってみましょう」を添えるか (`canCompose`)。
+fn can_post_hint(is_member: bool, is_archived: bool) -> bool {
+    is_member && !is_archived
+}
+
+/// `MessageSkeleton`。6 行ぶんのアバターと、名前と本文の棒。
+pub(super) fn render_message_skeleton() -> Div {
+    // `flex flex-col gap-4 p-4`
+    let mut list = v_flex().gap(px(16.0)).p(px(16.0));
+    for row in 0..6usize {
+        list = list.child(
+            h_flex()
+                .items_start()
+                .gap(px(12.0))
+                // `size-9 shrink-0 rounded-full`
+                .child(
+                    Skeleton::new(("msg-skeleton-avatar", row))
+                        .size(px(36.0))
+                        .flex_none()
+                        .rounded_full(),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .gap(px(8.0))
+                        .child(
+                            Skeleton::new(("msg-skeleton-name", row))
+                                .h(px(12.0))
+                                .w(px(112.0)),
+                        )
+                        .child(
+                            Skeleton::new(("msg-skeleton-body", row))
+                                .h(px(16.0))
+                                .w_full()
+                                .max_w(px(448.0)),
+                        ),
+                ),
+        );
+    }
+    list
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_hint_only_for_members_of_open_channels() {
+        assert!(can_post_hint(true, false));
+        assert!(!can_post_hint(false, false));
+        assert!(!can_post_hint(true, true));
+    }
 }

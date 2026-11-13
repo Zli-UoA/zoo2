@@ -22,7 +22,7 @@ mod shell;
 
 pub use chat::{
     CARD_DESC_MAX_CHARS, CARD_DESC_MAX_LINES, format_file_size, is_ogp_description_long,
-    render_attachment_item, render_ogp_card, truncate_ogp_description,
+    render_message_attachments, render_ogp_card, truncate_ogp_description,
 };
 
 pub struct WorkspaceView {
@@ -629,7 +629,8 @@ impl Render for WorkspaceView {
         }
 
         let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
-            let (div, target) = self.render_thread_view(root_id, pending_scroll_id.as_deref(), cx);
+            let (div, target) =
+                self.render_thread_view(root_id, pending_scroll_id.as_deref(), window, cx);
             (Some(div), target)
         } else {
             (None, None)
