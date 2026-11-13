@@ -99,8 +99,10 @@ pub fn acquire() -> Acquired {
             acquired
         }
         Err(err) => {
-            // 確保できなくてもアプリは動かす (単一インスタンスにならないだけ)。
-            eprintln!("単一インスタンスの確保に失敗しました: {err}");
+            // 単一インスタンスの仕組みそのものが使えない (ディレクトリやロックファイルの I/O エラー、
+            // または他のインスタンスがロックを持ったままソケットに応答しない)。
+            // 起動を止めないために最初として動かすが、ロックは持たないので単一インスタンスにはならない。
+            eprintln!("単一インスタンスの確保に失敗しました (ロックなしで起動します): {err}");
             Acquired::Primary
         }
     }
@@ -113,6 +115,22 @@ pub fn acquire() -> Acquired {
 
 #[cfg(unix)]
 pub fn acquire_at(socket: &Path, lock: &Path) -> std::io::Result<(Acquired, Option<Held>)> {
+    acquire_with(socket, lock, CONNECT_RETRIES, CONNECT_INTERVAL, LOCK_ROUNDS)
+}
+
+/// ロックを取り直す回数。2 つ目がつなぎ直しに失敗したとき (最初のインスタンスが終わった直後など) に、
+/// ロックを取り直して自分が最初になるため。ロックを持たないまま最初になることは、ここでは決してしない。
+#[cfg(unix)]
+const LOCK_ROUNDS: u32 = 3;
+
+#[cfg(unix)]
+fn acquire_with(
+    socket: &Path,
+    lock: &Path,
+    retries: u32,
+    interval: Duration,
+    rounds: u32,
+) -> std::io::Result<(Acquired, Option<Held>)> {
     for path in [socket, lock] {
         if let Some(dir) = path.parent() {
             std::fs::DirBuilder::new()
@@ -127,41 +145,44 @@ pub fn acquire_at(socket: &Path, lock: &Path) -> std::io::Result<(Acquired, Opti
         .write(true)
         .mode(0o600)
         .open(lock)?;
-    match lock_file.try_lock() {
-        Ok(()) => {
-            // 最初のインスタンス。ソケットが残っていても持ち主はいないので、無条件に消す。
-            match std::fs::remove_file(socket) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err),
-            }
-            let listener = UnixListener::bind(socket)?;
-            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-            Ok((
-                Acquired::Primary,
-                Some(Held {
-                    listener,
-                    lock: lock_file,
-                }),
-            ))
-        }
-        Err(std::fs::TryLockError::WouldBlock) => {
-            // 2 つ目。最初のインスタンスがソケットを作るまで待ってつなぐ。
-            let mut last = None;
-            for _ in 0..CONNECT_RETRIES {
-                match UnixStream::connect(socket) {
-                    Ok(mut stream) => {
-                        stream.write_all(SHOW)?;
-                        return Ok((Acquired::Secondary, None));
-                    }
-                    Err(err) => last = Some(err),
+    let mut last = None;
+    for _ in 0..rounds.max(1) {
+        match lock_file.try_lock() {
+            Ok(()) => {
+                // 最初のインスタンス。ソケットが残っていても持ち主はいないので、無条件に消す。
+                match std::fs::remove_file(socket) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err),
                 }
-                std::thread::sleep(CONNECT_INTERVAL);
+                let listener = UnixListener::bind(socket)?;
+                std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+                return Ok((
+                    Acquired::Primary,
+                    Some(Held {
+                        listener,
+                        lock: lock_file,
+                    }),
+                ));
             }
-            Err(last.unwrap_or_else(|| std::io::Error::other("ソケットに接続できません")))
+            Err(std::fs::TryLockError::WouldBlock) => {
+                // 2 つ目。最初のインスタンスがソケットを作るまで待ってつなぐ。
+                // つなげないまま終わったら、最初のインスタンスが終わったのかもしれないので、ロックを取り直す。
+                for _ in 0..retries {
+                    match UnixStream::connect(socket) {
+                        Ok(mut stream) => {
+                            stream.write_all(SHOW)?;
+                            return Ok((Acquired::Secondary, None));
+                        }
+                        Err(err) => last = Some(err),
+                    }
+                    std::thread::sleep(interval);
+                }
+            }
+            Err(std::fs::TryLockError::Error(err)) => return Err(err),
         }
-        Err(std::fs::TryLockError::Error(err)) => Err(err),
     }
+    Err(last.unwrap_or_else(|| std::io::Error::other("ソケットに接続できません")))
 }
 
 /// 2 つ目の起動からの「前に出す」を待つスレッドを起動する。
@@ -290,6 +311,38 @@ mod tests {
                 .count();
             assert_eq!(primaries, 1, "round {round}");
         }
+    }
+
+    /// 最初のインスタンスが、2 つ目のつなぎ直しの途中で終わっても、
+    /// 2 つ目はロックを取り直して最初になり、その後の起動は 2 つ目になる (最初が 2 つにならない)。
+    #[test]
+    fn lock_is_retaken_when_primary_exits_during_connect_retries() {
+        let dir = TempDir::new("retake");
+        let (socket, lock) = dir.paths();
+        let (first, held) = acquire_at(&socket, &lock).unwrap();
+        assert!(matches!(first, Acquired::Primary));
+        let Held {
+            listener,
+            lock: a_lock,
+        } = held.unwrap();
+        // 最初のインスタンスが終わる途中: ソケットは先に閉じ (ファイルは残る)、ロックは少し後に手放す。
+        drop(listener);
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(a_lock);
+        });
+        let (acquired, held_b) = acquire_with(&socket, &lock, 5, Duration::from_millis(20), 3)
+            .expect("ロックを取り直せる");
+        releaser.join().unwrap();
+        assert!(matches!(acquired, Acquired::Primary));
+        let held_b = held_b.expect("最初になるときはロックを持つ");
+
+        let (c, held_c) = acquire_with(&socket, &lock, 1, Duration::from_millis(1), 1)
+            .map(|(a, h)| (Some(a), h))
+            .unwrap_or((None, None));
+        assert!(!matches!(c, Some(Acquired::Primary)), "最初が 2 つになった");
+        assert!(held_c.is_none());
+        drop(held_b);
     }
 
     #[test]

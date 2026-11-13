@@ -85,13 +85,19 @@ pub fn install(cx: &mut App, state: Entity<AppState>, window: AnyWindowHandle) {
                     message_id,
                     user_id,
                 } => {
-                    show_window(window, cx);
-                    state.update(cx, |state, cx| {
-                        if state.me.as_ref().map(|me| me.id.as_str()) == Some(user_id.as_str()) {
+                    // 前のユーザーの古い通知では、ウィンドウも前に出さない。
+                    let is_current_user = state
+                        .read(cx)
+                        .me
+                        .as_ref()
+                        .is_some_and(|me| me.id == user_id);
+                    if is_current_user {
+                        show_window(window, cx);
+                        state.update(cx, |state, cx| {
                             state.open_message(channel_id, message_id);
                             cx.notify();
-                        }
-                    });
+                        });
+                    }
                 }
                 ResidentEvent::Quit => cx.quit(),
             });

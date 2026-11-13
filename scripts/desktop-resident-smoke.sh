@@ -7,7 +7,7 @@
 #   1. 起動してウィンドウが出る
 #   2. 2 つ目の起動が、すぐ終了コード 0 で終わり、最初のインスタンスは生きている
 #   3. 閉じる操作 (WM_DELETE_WINDOW) で、終了せずに最小化される (WM_STATE が Iconic)
-#   4. 2 つ目の起動の「前に出す」で、最小化から戻る (WM_STATE が Normal)
+#   5. 最初のインスタンスを kill -9 して残ったソケットでも、次の起動が通り、その後の起動が 2 つ目として接続できる
 #   5. 最初のインスタンスを kill -9 して残ったソケットでも、次の起動が通り、ソケットが作り直される (inode が変わる)
 #   6. 作り直した後も、もう一度起動すると 2 つ目として終わる
 #   7. 3 つを同時に起動しても、生きているのは 1 つだけ
@@ -100,8 +100,14 @@ wait_for "ウィンドウが出る" '[ -n "$(client_window)" ]'
 win=$(client_window)
 ok "1. ウィンドウが出た ($win)"
 
+# 2つ目の起動は短い時間で終わるはず。単一インスタンスが壊れて常駐したままになっても、ここで止まらないようにする。
+second() {
+  timeout 10 "$bin" run >"$1" 2>&1 && code=0 || code=$?
+  [ "$code" != 124 ] || fail "2つ目の起動が 10 秒たっても終わらない (単一インスタンスが効いていない)"
+}
+
 start=$(date +%s%N)
-"$bin" run >"$tmp/app2.log" 2>&1 && code=0 || code=$?
+second "$tmp/app2.log"
 elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
 [ "$code" = 0 ] || fail "2つ目の起動が終了コード $code"
 kill -0 "$app" 2>/dev/null || fail "2つ目の起動で最初のインスタンスが落ちた"
@@ -112,13 +118,12 @@ wait_for "閉じる操作で最小化される" '[ "$(wm_state '"$win"')" = Icon
 kill -0 "$app" 2>/dev/null || fail "閉じる操作でプロセスが終了した"
 ok "3. 閉じる操作で終了せず最小化された (WM_STATE=Iconic)"
 
-"$bin" run >"$tmp/app3.log" 2>&1
+second "$tmp/app3.log"
 wait_for "2つ目の起動で最小化から戻る" '[ "$(wm_state '"$win"')" = Normal ]'
 ok "4. 2つ目の起動で最小化から戻った (WM_STATE=Normal)"
 
 sock() { ls "$XDG_RUNTIME_DIR"/zoo2-desktop-*.sock 2>/dev/null | head -1; }
 [ -n "$(sock)" ] || fail "ソケットが無い"
-inode_before=$(stat -c %i "$(sock)")
 kill -9 "$app"
 wait "$app" 2>/dev/null || true
 [ -e "$(sock)" ] || fail "kill -9 後にソケットが残っていない (前提が崩れた)"
@@ -127,11 +132,10 @@ app=$!
 pids+=($app)
 sleep 3
 kill -0 "$app" 2>/dev/null || fail "古いソケットが残っていると起動できない"
-inode_after=$(stat -c %i "$(sock)")
-[ "$inode_before" != "$inode_after" ] || fail "ソケットが作り直されていない (inode が同じ)"
-ok "5. 古いソケットが残っていても、作り直して (inode $inode_before -> $inode_after) 起動した"
+ok "5. 古いソケットが残っていても起動し、プロセスは生きている"
 
-"$bin" run >"$tmp/app5.log" 2>&1 && code=0 || code=$?
+# inode 番号は再利用されうるので比較しない。新しいインスタンスが接続を受けることで、作り直しを確かめる。
+second "$tmp/app5.log"
 [ "$code" = 0 ] || fail "作り直した後の 2 つ目の起動が終了コード $code"
 kill -0 "$app" 2>/dev/null || fail "作り直した後の 2 つ目の起動で最初のインスタンスが落ちた"
 ok "6. 作り直した後も、2 つ目の起動は終了コード 0 で終わる"

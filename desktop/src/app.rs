@@ -2653,6 +2653,12 @@ impl AppState {
 
     /// チャンネルを開き、メッセージとリアクションのシェイプ購読を開始する。
     pub fn open_channel(&mut self, channel_id: String) {
+        self.open_channel_inner(channel_id, true);
+    }
+
+    /// `jump_to_newest` が false のときは、最下部へのスクロールも、最新投稿を表示済みとする記録と既読化もしない。
+    /// 通知から古い投稿へ移るとき、移動先を見る前に既読化しないために使う。
+    fn open_channel_inner(&mut self, channel_id: String, jump_to_newest: bool) {
         if let Some(old_ch) = self.current_channel.clone()
             && old_ch != channel_id
         {
@@ -2694,9 +2700,17 @@ impl AppState {
         self.subscribe(ShapeId::Messages(channel_id.clone()));
 
         self.current_channel = Some(channel_id.clone());
+        self.timeline_anchor_first_id = None;
+        if !jump_to_newest {
+            self.timeline_at_bottom = false;
+            self.pending_scroll_to_bottom = false;
+            self.newest_shown = None;
+            self.ensure_channel_cache();
+            self.poll_typing();
+            return;
+        }
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = true;
-        self.timeline_anchor_first_id = None;
         self.ensure_channel_cache();
 
         // ウィンドウがアクティブであれば最新メッセージを表示済みとして記録し、既読化を試みる。
@@ -2714,27 +2728,37 @@ impl AppState {
     /// 通知のクリックなどで、チャンネルを開き、`message_id` の投稿まで移る。
     /// 投稿がまだ Store に無いとき (取得前) は、チャンネルを開くだけにする。
     pub fn open_message(&mut self, channel_id: String, message_id: Option<String>) {
-        self.open_channel(channel_id.clone());
-        let Some(message_id) = message_id else {
+        let target = message_id.and_then(|id| {
+            self.store
+                .message(&channel_id, &id)
+                .filter(|m| m.deleted_at.is_none())
+                .cloned()
+        });
+        let Some(msg) = target else {
+            self.open_channel(channel_id);
             return;
         };
+        let message_id = msg.id.clone();
+        self.open_channel_inner(channel_id.clone(), false);
         if self.current_channel.as_deref() != Some(channel_id.as_str()) {
             return;
         }
-        let Some(msg) = self.store.message(&channel_id, &message_id).cloned() else {
-            return;
-        };
-        if msg.deleted_at.is_some() {
-            return;
-        }
         if let Some(parent_id) = msg.parent_id {
-            self.open_thread(parent_id);
+            self.open_thread(parent_id.clone());
             if let Some(thread) = &mut self.thread {
-                thread.selected = Some(message_id);
+                thread.selected = Some(message_id.clone());
             }
             self.pending_scroll_to_bottom = false;
             self.pending_thread_scroll_to_bottom = false;
             self.thread_at_bottom = false;
+            let roots = self.store.root_messages(&channel_id);
+            self.timeline_anchor_first_id = match roots.iter().position(|m| m.id == parent_id) {
+                Some(pos) => roots.get(pos.saturating_sub(10)).map(|m| m.id.clone()),
+                None => Some(parent_id),
+            };
+            self.timeline_render_limit = MAX_TIMELINE_RENDER_LIMIT;
+            self.pending_scroll_to_message_id = Some(message_id);
+            self.ensure_channel_cache();
             return;
         }
         let roots = self.store.root_messages(&channel_id);
@@ -4611,6 +4635,60 @@ pub(crate) mod tests {
         }
     }
     impl<T> Pipe for T {}
+
+    #[test]
+    fn open_message_to_a_reply_scrolls_the_thread_to_the_reply() {
+        let mut state = connected_state();
+        state.open_message("c1".into(), Some("r1".into()));
+        assert_eq!(state.current_channel.as_deref(), Some("c1"));
+        assert_eq!(
+            state.thread.as_ref().map(|t| t.root_id.as_str()),
+            Some("m1")
+        );
+        assert_eq!(
+            state.thread.as_ref().and_then(|t| t.selected.as_deref()),
+            Some("r1")
+        );
+        assert_eq!(state.pending_scroll_to_message_id.as_deref(), Some("r1"));
+        assert!(!state.pending_thread_scroll_to_bottom);
+    }
+
+    #[test]
+    fn open_message_on_the_active_current_channel_does_not_mark_read() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.window_active = true;
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m_new",
+                json!({ "id": "m_new", "user_id": "u2", "channel_id": "c1",
+                        "content": "新しい投稿", "created_at": "2026-11-01 04:00:00" }),
+            )]),
+        ));
+        // 新着を、まだ見ていない状態にする。
+        state.update_timeline_view_state(true, false);
+        state.last_read_marked.clear();
+        state.read_mark_in_flight.clear();
+        state.unread.insert("c1".into());
+        state.newest_shown = None;
+
+        state.open_message("c1".into(), Some("m1".into()));
+
+        assert!(state.unread.contains("c1"), "既読化されてはいけない");
+        assert!(state.last_read_marked.is_empty());
+        assert!(state.read_mark_in_flight.is_empty());
+        assert_ne!(
+            state.newest_shown.as_ref().map(|(_, id)| id.as_str()),
+            Some("m_new")
+        );
+        assert!(!state.pending_scroll_to_bottom);
+        assert_eq!(state.pending_scroll_to_message_id.as_deref(), Some("m1"));
+
+        // 最下部まで見たら、通常の経路で既読になる。
+        state.update_timeline_view_state(true, true);
+        assert!(!state.unread.contains("c1"));
+    }
 
     #[test]
     fn message_batches_refresh_bundled_reactions_without_another_subscription() {
