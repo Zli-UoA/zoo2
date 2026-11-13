@@ -1,4 +1,6 @@
 import {
+  getAuthRequestGeneration,
+  getAuthSessionGeneration,
   getToken as defaultGetToken,
   notifyAuthorized,
   notifyUnauthorized,
@@ -43,6 +45,8 @@ export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
   const devUserId = source.devUserId ?? null;
 
   return async (input, init) => {
+    const authSessionGeneration = getAuthSessionGeneration();
+    const authRequestGeneration = getAuthRequestGeneration();
     const headers = new Headers(init?.headers);
     if (auth) {
       if (devUserId) {
@@ -55,9 +59,17 @@ export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
     }
     const response = await baseFetch(input, { ...init, headers });
     if (auth) {
-      if (response.status === 401) {
+      if (
+        response.status === 401 &&
+        authSessionGeneration === getAuthSessionGeneration() &&
+        authRequestGeneration === getAuthRequestGeneration()
+      ) {
         onUnauthorized();
-      } else if (response.ok) {
+      } else if (
+        response.ok &&
+        authSessionGeneration === getAuthSessionGeneration() &&
+        authRequestGeneration === getAuthRequestGeneration()
+      ) {
         onAuthorized();
       }
     }

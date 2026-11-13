@@ -1,11 +1,17 @@
 import { decodeJwtPayload, audienceIncludes, issuerMatches } from "./jwt";
 import {
+  notifyAuthSessionEnded,
+  notifyAuthSessionLogoutBlocked,
+  notifyAuthSessionReauthorizationStarted,
+} from "../auth";
+import {
   type AuthStorage,
   clearLoggedOut,
   clearPending,
+  isLoggedOut,
   markLoggedOut,
   savePending,
-  takePending,
+  takePendingForState,
 } from "./pending";
 import { createChallenge, createNonce, createState, createVerifier } from "./pkce";
 import { clearStoredSession, readStoredSession, writeStoredSession } from "./stored-session";
@@ -170,9 +176,11 @@ export class OidcClient {
   private endpoints: OidcEndpoints | null = null;
   private discoveryPromise: Promise<OidcEndpoints> | null = null;
   private tokens: OidcTokens | null = null;
+  /** One-use, memory-only hint for a logout whose durable cleanup must be retried. */
+  private pendingLogoutOperation: { generation: number; idTokenHint: string | null } | null = null;
   private refreshPromise: Promise<OidcTokens> | null = null;
   private callbackRequest: { url: string; promise: Promise<{ returnTo: string }> } | null = null;
-  /** セッション破棄と進行中の refresh の競合を検知するための世代番号。 */
+  /** login/logout と進行中の refresh/callback の競合を検知する認証操作世代。 */
   private generation = 0;
   private reauthorizeHandler: ReauthorizeHandler | null = null;
   private reauthorizeRequested = false;
@@ -241,6 +249,7 @@ export class OidcClient {
       return;
     }
     this.reauthorizeRequested = true;
+    notifyAuthSessionReauthorizationStarted();
     this.reauthorizeHandler(this.currentReturnTo());
   }
 
@@ -315,7 +324,22 @@ export class OidcClient {
 
   /** authorize エンドポイントへリダイレクトする。戻り値はテスト用の URL。 */
   async login(returnTo?: string): Promise<string> {
-    const endpoints = await this.discover();
+    // A login supersedes any older login/logout navigation and invalidates
+    // refresh or callback work started by the previous auth operation.
+    this.discardPendingLogoutOperation();
+    const generation = ++this.generation;
+    this.refreshPromise = null;
+    this.callbackRequest = null;
+    let endpoints: OidcEndpoints;
+    try {
+      endpoints = await this.discover();
+    } catch (cause) {
+      if (this.generation !== generation) {
+        throw new OidcError("session_reset", "セッションが破棄されました");
+      }
+      throw cause;
+    }
+    this.assertSessionGeneration(generation);
     const pending = {
       state: createState(),
       nonce: createNonce(),
@@ -323,8 +347,20 @@ export class OidcClient {
       returnTo: sanitizeReturnTo(returnTo, new URL(this.redirectUri).pathname),
       createdAt: this.environment.now(),
     };
-    const challenge = await createChallenge(pending.verifier);
+    let challenge: string;
+    try {
+      challenge = await createChallenge(pending.verifier);
+    } catch (cause) {
+      if (this.generation !== generation) {
+        throw new OidcError("session_reset", "セッションが破棄されました");
+      }
+      throw cause;
+    }
+    this.assertSessionGeneration(generation);
     savePending(this.environment.storage, pending);
+    // Keep the logout marker until an explicit login has replaced the old pending
+    // request, so a stale callback cannot revive the previous session.
+    if (isLoggedOut(this.environment.storage)) clearLoggedOut(this.environment.storage);
 
     const url = new URL(endpoints.authorizationEndpoint);
     url.searchParams.set("response_type", "code");
@@ -338,8 +374,15 @@ export class OidcClient {
     url.searchParams.set("code_challenge_method", "S256");
 
     const href = url.toString();
+    this.assertSessionGeneration(generation);
     this.environment.assign(href);
     return href;
+  }
+
+  private assertSessionGeneration(generation: number): void {
+    if (this.generation !== generation) {
+      throw new OidcError("session_reset", "セッションが破棄されました");
+    }
   }
 
   /**
@@ -351,6 +394,9 @@ export class OidcClient {
    * 二重消費しないため）。
    */
   handleCallback(url: string = this.environment.href): Promise<{ returnTo: string }> {
+    if (this.pendingLogoutOperation) {
+      return Promise.reject(new OidcError("session_reset", "ログアウトの完了処理中です"));
+    }
     if (this.callbackRequest?.url === url) {
       return this.callbackRequest.promise;
     }
@@ -360,11 +406,37 @@ export class OidcClient {
   }
 
   private async performCallback(url: string): Promise<{ returnTo: string }> {
+    const generation = this.generation;
+    let loggedOut: boolean;
+    try {
+      loggedOut = isLoggedOut(this.environment.storage);
+    } catch {
+      // Fail closed if we cannot validate the logout marker.
+      throw new OidcError("session_reset", "セッションが破棄されました");
+    }
+    if (loggedOut) {
+      try {
+        clearPending(this.environment.storage);
+      } catch {
+        // The logout marker still rejects this callback.
+      }
+      throw new OidcError("session_reset", "セッションが破棄されました");
+    }
     const current = new URL(url);
     const params = current.searchParams;
     const error = params.get("error");
     if (error) {
-      clearPending(this.environment.storage);
+      const state = params.get("state");
+      if (state) {
+        const pending = takePendingForState(
+          this.environment.storage,
+          state,
+          this.environment.now(),
+        );
+        if (pending.kind === "state_mismatch") {
+          throw new OidcError("state_mismatch", "state が一致しません");
+        }
+      }
       const description = params.get("error_description");
       throw new OidcError(error, description ?? `認可エラー: ${error}`, {
         source: description !== null ? "provider" : "client",
@@ -376,16 +448,21 @@ export class OidcClient {
     if (!code || !state) {
       throw new OidcError("invalid_callback", "コールバックに code / state がありません");
     }
-    const pending = takePending(this.environment.storage, this.environment.now());
-    if (!pending) {
+    const pendingResult = takePendingForState(
+      this.environment.storage,
+      state,
+      this.environment.now(),
+    );
+    if (pendingResult.kind === "state_mismatch") {
+      throw new OidcError("state_mismatch", "state が一致しません");
+    }
+    if (pendingResult.kind === "missing") {
       throw new OidcError(
         "missing_pending_request",
         "保存された認可リクエストが無いため state / nonce を検証できません",
       );
     }
-    if (pending.state !== state) {
-      throw new OidcError("state_mismatch", "state が一致しません");
-    }
+    const pending = pendingResult.pending;
 
     const body = new URLSearchParams({
       grant_type: "authorization_code",
@@ -395,8 +472,10 @@ export class OidcClient {
       code_verifier: pending.verifier,
     });
     this.addResource(body);
-    const generation = this.generation;
     const responseBody = await this.requestToken(body);
+    if (this.generation !== generation) {
+      throw new OidcError("session_reset", "セッションが破棄されました");
+    }
     // nonce を検証できるよう、コード交換では ID トークンを必須にする。
     const tokens = this.parseTokens(responseBody, pending.nonce, {
       refreshToken: null,
@@ -407,8 +486,9 @@ export class OidcClient {
     }
     this.tokens = tokens;
     writeStoredSession(this.environment.storage, this.sessionBinding, this.tokens);
+    this.generation += 1;
+
     this.reauthorizeRequested = false;
-    clearLoggedOut(this.environment.storage);
     return { returnTo: sanitizeReturnTo(pending.returnTo, new URL(this.redirectUri).pathname) };
   }
 
@@ -424,6 +504,7 @@ export class OidcClient {
     if (!tokens) {
       return null;
     }
+    const generation = this.generation;
     const remaining = tokens.expiresAt - this.environment.now();
     if (remaining > REFRESH_SKEW_MS) {
       return tokens.accessToken;
@@ -434,28 +515,39 @@ export class OidcClient {
       return remaining > 0 ? tokens.accessToken : null;
     }
     if (!tokens.refreshToken) {
-      this.requestReauthorization();
       if (remaining > 0) {
+        this.requestReauthorization();
         return tokens.accessToken;
       }
-      this.tokens = null;
-      clearStoredSession(this.environment.storage);
+      if (this.generation === generation && this.tokens === tokens) {
+        this.resetSession();
+        this.requestReauthorization();
+      }
+
       return null;
     }
     try {
       return (await this.refreshTokens()).accessToken;
     } catch {
-      // 更新中に別のログインが完了した場合は、新しいセッションを消さない。
-      if (this.tokens === tokens) this.resetSession();
+      if (this.generation === generation && this.tokens === tokens) {
+        this.resetSession();
+        this.requestReauthorization();
+      }
+
       return null;
     }
   }
 
   resetSession(): void {
+    this.discardPendingLogoutOperation();
     this.generation += 1;
     this.tokens = null;
     clearStoredSession(this.environment.storage);
+    this.refreshPromise = null;
+    this.callbackRequest = null;
+
     this.reauthorizeRequested = false;
+    notifyAuthSessionEnded("reset");
   }
 
   /**
@@ -463,9 +555,13 @@ export class OidcClient {
    * 集約する（IdP によっては refresh token の再利用を検知するとセッションを失効させるため）。
    */
   private refreshTokens(): Promise<OidcTokens> {
-    this.refreshPromise ??= this.performRefresh().finally(() => {
-      this.refreshPromise = null;
-    });
+    if (!this.refreshPromise) {
+      const refresh = this.performRefresh();
+      const shared = refresh.finally(() => {
+        if (this.refreshPromise === shared) this.refreshPromise = null;
+      });
+      this.refreshPromise = shared;
+    }
     return this.refreshPromise;
   }
 
@@ -501,32 +597,68 @@ export class OidcClient {
   }
 
   /**
-   * ローカルのトークンを破棄し、IdP が RP-initiated logout に対応していれば
-   * end_session_endpoint へ、対応していなければログアウト画面へ遷移する。
+   * ローカルのトークンと永続認証状態を無効化してから、IdP が RP-initiated
+   * logout に対応していれば end_session_endpoint へ遷移する。永続状態を無効化
+   * できない場合はページを離れず、AuthGate に再試行画面を出させる。
    */
   async logout(): Promise<void> {
-    const tokens = this.tokens;
-    this.generation += 1;
+    const currentIdTokenHint = this.tokens?.idToken ?? null;
+    const generation = ++this.generation;
+    const previousLogoutOperation = this.pendingLogoutOperation;
+    const idTokenHint = previousLogoutOperation?.idTokenHint ?? currentIdTokenHint;
+    if (previousLogoutOperation) previousLogoutOperation.idTokenHint = null;
+    const logoutOperation = { generation, idTokenHint };
+    this.pendingLogoutOperation = logoutOperation;
     this.tokens = null;
     clearStoredSession(this.environment.storage);
     this.refreshPromise = null;
+    this.callbackRequest = null;
     this.reauthorizeRequested = false;
-    clearPending(this.environment.storage);
-    markLoggedOut(this.environment.storage);
+    let pendingCleared = false;
+    try {
+      clearPending(this.environment.storage);
+      pendingCleared = true;
+    } catch {
+      // A denied storage API must not keep the in-memory session active or skip logout events.
+    }
+    let logoutMarkerStored = false;
+    try {
+      markLoggedOut(this.environment.storage);
+      logoutMarkerStored = true;
+    } catch {
+      // Keep logout in memory even when the persistent flag cannot be written.
+    }
+    const listenersInvalidated = notifyAuthSessionEnded("logout");
+    if (!pendingCleared || !logoutMarkerStored || !listenersInvalidated) {
+      // Navigating would discard the only memory protection while a stale callback
+      // or private-note recovery snapshot may still be persisted. Keep the app in
+      // its logged-out state and let the user retry cleanup after storage recovers.
+      notifyAuthSessionLogoutBlocked();
+      return;
+    }
 
     const endpoints = await this.discover().catch(() => null);
+    if (this.generation !== generation || this.pendingLogoutOperation !== logoutOperation) return;
+    const idTokenHintForRedirect = logoutOperation.idTokenHint;
+    logoutOperation.idTokenHint = null;
+    this.pendingLogoutOperation = null;
     if (endpoints?.endSessionEndpoint) {
       const url = new URL(endpoints.endSessionEndpoint);
       url.searchParams.set("client_id", this.clientId);
       url.searchParams.set("post_logout_redirect_uri", this.postLogoutRedirectUri);
       url.searchParams.set("state", createState());
-      if (tokens?.idToken) {
-        url.searchParams.set("id_token_hint", tokens.idToken);
+      if (idTokenHintForRedirect) {
+        url.searchParams.set("id_token_hint", idTokenHintForRedirect);
       }
       this.environment.assign(url.toString());
       return;
     }
     this.environment.assign(this.postLogoutRedirectUri);
+  }
+
+  private discardPendingLogoutOperation(): void {
+    if (this.pendingLogoutOperation) this.pendingLogoutOperation.idTokenHint = null;
+    this.pendingLogoutOperation = null;
   }
 
   private async requestToken(body: URLSearchParams): Promise<TokenResponse> {

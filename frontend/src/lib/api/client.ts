@@ -1,5 +1,7 @@
 import {
   getToken as defaultGetToken,
+  getAuthRequestGeneration,
+  getAuthSessionGeneration,
   notifyAuthorized,
   notifyUnauthorized,
   type AuthorizedHandler,
@@ -160,6 +162,8 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   }
 
   async function request<T>(path: string, requestOptions: RequestOptions = {}): Promise<T> {
+    const authSessionGeneration = getAuthSessionGeneration();
+    const authRequestGeneration = getAuthRequestGeneration();
     const hasBody = requestOptions.body !== undefined;
     const method = requestOptions.method ?? "GET";
     const headers = await buildHeaders(requestOptions.headers, hasBody);
@@ -174,7 +178,11 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
 
     const body = parseBody(await response.text());
     if (!response.ok) {
-      if (response.status === 401) {
+      if (
+        response.status === 401 &&
+        authSessionGeneration === getAuthSessionGeneration() &&
+        authRequestGeneration === getAuthRequestGeneration()
+      ) {
         onUnauthorized();
       }
       throw new ApiError(
@@ -184,7 +192,12 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         { path, method },
       );
     }
-    onAuthorized();
+    if (
+      authSessionGeneration === getAuthSessionGeneration() &&
+      authRequestGeneration === getAuthRequestGeneration()
+    ) {
+      onAuthorized();
+    }
     return body as T;
   }
 

@@ -1,5 +1,6 @@
 import { ApiError, createConfiguredApiClient, type FetchLike } from "./api/client";
 import type { UserResponse } from "./api/types";
+import { getAuthSessionGeneration } from "./auth";
 import type { AppConfig } from "./config";
 
 /**
@@ -106,6 +107,8 @@ export function createCurrentUserStore(
   let inflight: Promise<void> | null = null;
   let refreshing: Promise<void> | null = null;
   const listeners = new Set<() => void>();
+  let authGeneration = getAuthSessionGeneration();
+  let requestGeneration = 0;
 
   function setState(next: CurrentUserState): void {
     state = next;
@@ -114,8 +117,21 @@ export function createCurrentUserStore(
     }
   }
 
+  function syncAuthGeneration(): void {
+    if (!config.oidc) return;
+    const next = getAuthSessionGeneration();
+    if (next === authGeneration) return;
+    authGeneration = next;
+    requestGeneration += 1;
+    inflight = null;
+    setState({ currentUserId: null, isLoading: true, isAdmin: false, error: null });
+  }
+
   return {
-    getState: () => state,
+    getState: () => {
+      syncAuthGeneration();
+      return state;
+    },
     subscribe: (listener) => {
       listeners.add(listener);
       return () => {
@@ -139,11 +155,20 @@ export function createCurrentUserStore(
       return refreshing;
     },
     ensureLoaded: () => {
+      syncAuthGeneration();
       if (!inflight) {
         if (config.oidc) {
           setState({ currentUserId: null, isLoading: true, isAdmin: false, error: null });
         }
+        const currentRequestGeneration = ++requestGeneration;
+        const currentAuthGeneration = authGeneration;
         inflight = resolveCurrentUser(config, options).then((resolved) => {
+          if (
+            currentRequestGeneration !== requestGeneration ||
+            (config.oidc && currentAuthGeneration !== getAuthSessionGeneration())
+          ) {
+            return;
+          }
           setState({
             currentUserId: resolved.currentUserId,
             isLoading: false,

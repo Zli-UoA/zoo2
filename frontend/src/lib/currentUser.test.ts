@@ -4,6 +4,7 @@ import type { FetchLike } from "./api/client";
 import { resetTokenProvider, setTokenProvider, setUnauthorizedHandler } from "./auth";
 import { resolveConfig } from "./config";
 import { createCurrentUserStore, resolveCurrentUser, type CurrentUserState } from "./currentUser";
+import { OidcClient } from "./oidc/client";
 
 const DEV_CONFIG = resolveConfig({
   DEV: true,
@@ -164,6 +165,65 @@ describe("createCurrentUserStore", () => {
       error: null,
     });
     expect(states.at(-1)?.currentUserId).toBe("user-1");
+  });
+
+  it("ignores a late current-user response after logout and resolves the next session", async () => {
+    let finishOldRequest!: (response: Response) => void;
+    let oldRequestStarted!: () => void;
+    const oldStarted = new Promise<void>((resolve) => {
+      oldRequestStarted = resolve;
+    });
+    const fetchMock = vi.fn<FetchLike>(() => {
+      if (fetchMock.mock.calls.length === 1) {
+        oldRequestStarted();
+        return new Promise((resolve) => {
+          finishOldRequest = resolve;
+        });
+      }
+      return Promise.resolve(jsonResponse(userResponse("new-session-user", true)));
+    });
+    setTokenProvider(() => "old-session-token");
+    const store = createCurrentUserStore(OIDC_CONFIG, { fetch: fetchMock });
+    const oldLoad = store.ensureLoaded();
+    await oldStarted;
+
+    const logoutStorage = new Map<string, string>();
+    const logoutClient = new OidcClient({
+      issuer: "https://id.example",
+      clientId: "zoo",
+      environment: {
+        origin: "https://app.example",
+        href: "https://app.example/",
+        assign: () => {},
+        replaceUrl: () => {},
+        storage: {
+          getItem: (key) => logoutStorage.get(key) ?? null,
+          setItem: (key, value) => void logoutStorage.set(key, value),
+          removeItem: (key) => void logoutStorage.delete(key),
+        },
+        fetch: async () =>
+          jsonResponse({
+            issuer: "https://id.example",
+            authorization_endpoint: "https://id.example/authorize",
+            token_endpoint: "https://id.example/token",
+          }),
+        now: () => Date.now(),
+      },
+    });
+    await logoutClient.logout();
+    setTokenProvider(() => "new-session-token");
+    await store.ensureLoaded();
+    expect(store.getState()).toEqual({
+      currentUserId: "new-session-user",
+      isLoading: false,
+      isAdmin: true,
+      error: null,
+    });
+
+    finishOldRequest(jsonResponse(userResponse("old-session-user")));
+    await oldLoad;
+    expect(store.getState().currentUserId).toBe("new-session-user");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("retries on the next ensureLoaded after a transient failure", async () => {

@@ -8,7 +8,7 @@ import {
   type OidcEnvironment,
   type OidcFetch,
 } from "./client";
-import { savePending, takePending, type AuthStorage } from "./pending";
+import { isLoggedOut, savePending, takePending, type AuthStorage } from "./pending";
 import { base64UrlEncode, createChallenge } from "./pkce";
 
 const ISSUER = "https://id.example/oauth2/openid/zoo";
@@ -81,6 +81,7 @@ interface HarnessOptions {
   now?: number;
   online?: boolean;
   discovery?: Record<string, unknown>;
+  discoveryWait?: Promise<void>;
   /** token エンドポイントの応答。`URLSearchParams` と現在の nonce を受け取る。 */
   token?: (body: URLSearchParams, nonce: string) => unknown;
   resource?: string;
@@ -99,6 +100,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
 
   const fetchMock = vi.fn<OidcFetch>(async (input, init) => {
     if (input.endsWith("/.well-known/openid-configuration")) {
+      await options.discoveryWait;
       return jsonResponse(options.discovery ?? discoveryBody());
     }
     const body = new URLSearchParams(init?.body as string);
@@ -378,6 +380,130 @@ describe("OidcClient.login", () => {
     expect(pending?.returnTo).toBe("/channels/abc?tab=info");
   });
 
+  it("rejects a pre-logout callback after a one-time pending-removal failure but allows a new login", async () => {
+    const previous = createHarness();
+    await previous.client.login("/channels/old");
+    const oldPending = takePending(previous.storage, 1_000_001);
+    if (!oldPending) throw new Error("old pending authorization was not stored");
+    savePending(previous.storage, oldPending);
+    const remove = vi.spyOn(previous.storage, "removeItem").mockImplementationOnce(() => {
+      throw new Error("transient storage failure");
+    });
+
+    try {
+      await previous.client.logout();
+      expect(isLoggedOut(previous.storage)).toBe(true);
+
+      const resumed = createHarness({ storage: previous.storage });
+      const oldCallback = `${CALLBACK_URL}?code=old-code&state=${oldPending.state}`;
+      await expect(resumed.client.handleCallback(oldCallback)).rejects.toMatchObject({
+        code: "session_reset",
+      });
+      expect(resumed.tokenCalls).toHaveLength(0);
+      expect(isLoggedOut(previous.storage)).toBe(true);
+
+      await resumed.client.login("/channels/new");
+      expect(isLoggedOut(previous.storage)).toBe(false);
+      const newPending = takePending(previous.storage, 1_000_001);
+      if (!newPending) throw new Error("new pending authorization was not stored");
+      savePending(previous.storage, newPending);
+      resumed.setNonce(newPending.nonce);
+      const newCallback = `${CALLBACK_URL}?code=new-code&state=${newPending.state}`;
+      await expect(resumed.client.handleCallback(newCallback)).resolves.toEqual({
+        returnTo: "/channels/new",
+      });
+      expect(resumed.client.hasSession).toBe(true);
+    } finally {
+      remove.mockRestore();
+    }
+  });
+
+  it("does not persist or redirect after logout while discovery is pending", async () => {
+    let releaseDiscovery!: () => void;
+    let discoveryStarted!: () => void;
+    const discoveryWait = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      discoveryStarted = resolve;
+    });
+    const harness = createHarness({ discoveryWait });
+    harness.fetchMock.mockImplementationOnce(async (input) => {
+      if (input.endsWith("/.well-known/openid-configuration")) discoveryStarted();
+      await discoveryWait;
+      return jsonResponse(discoveryBody());
+    });
+
+    const oldLogin = harness.client.login("/channels/private");
+    await started;
+    const logout = harness.client.logout();
+    releaseDiscovery();
+
+    await logout;
+    await expect(oldLogin).rejects.toMatchObject({ code: "session_reset" });
+    expect(takePending(harness.storage, 1_000_001)).toBeNull();
+    expect(harness.assigned).toHaveLength(1);
+    expect(harness.assigned[0]).toContain("/ui/logout");
+  });
+
+  it("lets a newer login supersede a logout waiting for discovery", async () => {
+    let releaseDiscovery!: () => void;
+    let discoveryStarted!: () => void;
+    const discoveryWait = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      discoveryStarted = resolve;
+    });
+    const harness = createHarness({ discoveryWait });
+    harness.fetchMock.mockImplementationOnce(async (input) => {
+      if (input.endsWith("/.well-known/openid-configuration")) discoveryStarted();
+      await discoveryWait;
+      return jsonResponse(discoveryBody());
+    });
+
+    const logout = harness.client.logout();
+    await started;
+    const login = harness.client.login("/channels/new");
+    releaseDiscovery();
+
+    await expect(logout).resolves.toBeUndefined();
+    const authorizeUrl = await login;
+    expect(harness.assigned).toEqual([authorizeUrl]);
+    expect(new URL(authorizeUrl).pathname).toBe("/ui/oauth2");
+    expect(isLoggedOut(harness.storage)).toBe(false);
+  });
+
+  it("does not persist or redirect after logout while PKCE is pending", async () => {
+    const harness = createHarness();
+    await harness.client.discover();
+    let releaseDigest!: (digest: ArrayBuffer) => void;
+    let digestStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      digestStarted = resolve;
+    });
+    const digestWait = new Promise<ArrayBuffer>((resolve) => {
+      releaseDigest = resolve;
+    });
+    const digest = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(async () => {
+      digestStarted();
+      return await digestWait;
+    });
+
+    const oldLogin = harness.client.login("/channels/private");
+    await started;
+    await harness.client.logout();
+    releaseDigest(new Uint8Array(32).buffer);
+    try {
+      await expect(oldLogin).rejects.toMatchObject({ code: "session_reset" });
+      expect(takePending(harness.storage, 1_000_001)).toBeNull();
+      expect(harness.assigned).toHaveLength(1);
+      expect(harness.assigned[0]).toContain("/ui/logout");
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
   it("includes the resource in authorize and token requests when configured", async () => {
     const harness = createHarness({ resource: RESOURCE });
     const href = await harness.client.login();
@@ -459,6 +585,20 @@ describe("OidcClient.handleCallback", () => {
     ).rejects.toMatchObject({ code: "access_denied" });
   });
 
+  it("keeps the new pending request when an old authorization error arrives", async () => {
+    const harness = createHarness();
+    await harness.client.login("/channels/new");
+    const pending = takePending(harness.storage, 1_000_001)!;
+    savePending(harness.storage, pending);
+    harness.setNonce(pending.nonce);
+    await expect(
+      harness.client.handleCallback(`${CALLBACK_URL}?error=access_denied&state=old`),
+    ).rejects.toMatchObject({ code: "state_mismatch" });
+    await expect(
+      harness.client.handleCallback(`${CALLBACK_URL}?code=new&state=${pending.state}`),
+    ).resolves.toEqual({ returnTo: "/channels/new" });
+  });
+
   it("rejects a callback without a stored pending request", async () => {
     const harness = createHarness();
     await expect(
@@ -472,6 +612,33 @@ describe("OidcClient.handleCallback", () => {
     await expect(
       harness.client.handleCallback(`${CALLBACK_URL}?code=c&state=other`),
     ).rejects.toMatchObject({ code: "state_mismatch" });
+  });
+
+  it("preserves a new pending request when an old callback arrives first", async () => {
+    const harness = createHarness();
+    await harness.client.login("/channels/old");
+    const oldPending = takePending(harness.storage, 1_000_001);
+    if (!oldPending) throw new Error("old pending authorization was not stored");
+    savePending(harness.storage, oldPending);
+    await harness.client.logout();
+
+    await harness.client.login("/channels/new");
+    const newPending = takePending(harness.storage, 1_000_001);
+    if (!newPending) throw new Error("new pending authorization was not stored");
+    savePending(harness.storage, newPending);
+    harness.setNonce(newPending.nonce);
+
+    await expect(
+      harness.client.handleCallback(`${CALLBACK_URL}?code=old&state=${oldPending.state}`),
+    ).rejects.toMatchObject({ code: "state_mismatch" });
+    const preservedPending = takePending(harness.storage, 1_000_001);
+    expect(preservedPending?.state).toBe(newPending.state);
+    if (preservedPending) savePending(harness.storage, preservedPending);
+
+    await expect(
+      harness.client.handleCallback(`${CALLBACK_URL}?code=new&state=${newPending.state}`),
+    ).resolves.toEqual({ returnTo: "/channels/new" });
+    expect(harness.tokenCalls.map((body) => body.get("code"))).toEqual(["new"]);
   });
 
   it("rejects a nonce mismatch without storing a session", async () => {
@@ -636,6 +803,86 @@ describe("OidcClient.getAccessToken", () => {
     expect(harness.client.hasSession).toBe(false);
   });
 
+  it("does not let an old refresh failure clear a newly authenticated session", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let authorizationCodeExchanges = 0;
+    const harness = createHarness({
+      token: async (body, nonce) => {
+        if (body.get("grant_type") === "refresh_token") {
+          await gate;
+          return {
+            access_token: "stale-refresh",
+            refresh_token: "stale-refresh-2",
+            expires_in: 300,
+          };
+        }
+        authorizationCodeExchanges += 1;
+        return {
+          access_token: `access-${authorizationCodeExchanges}`,
+          refresh_token: `refresh-${authorizationCodeExchanges}`,
+          id_token: idToken({ nonce }),
+          expires_in: authorizationCodeExchanges === 1 ? 10 : 300,
+        };
+      },
+    });
+    await completeLogin(harness);
+
+    harness.advance(11_000);
+    const oldRefresh = harness.client.getAccessToken();
+    await Promise.resolve();
+    harness.client.resetSession();
+    await completeLogin(harness);
+    release();
+
+    await expect(oldRefresh).resolves.toBeNull();
+    expect(harness.client.hasSession).toBe(true);
+    await expect(harness.client.getAccessToken()).resolves.toBe("access-2");
+  });
+
+  it("discards an authorization response that arrives after logout", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const requestStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const harness = createHarness({
+      token: async (body, nonce) => {
+        if (body.get("grant_type") === "authorization_code") {
+          started();
+          await gate;
+          return {
+            access_token: "old-session-token",
+            refresh_token: "old-session-refresh",
+            id_token: idToken({ nonce }),
+            expires_in: 300,
+          };
+        }
+        return {};
+      },
+    });
+    await harness.client.login();
+    const pending = takePending(harness.storage, 1_000_001);
+    if (!pending) throw new Error("pending was not stored");
+    savePending(harness.storage, pending);
+    harness.setNonce(pending.nonce);
+    const callback = harness.client.handleCallback(
+      `${CALLBACK_URL}?code=old-code&state=${pending.state}`,
+    );
+    await requestStarted;
+
+    await harness.client.logout();
+    release();
+
+    await expect(callback).rejects.toMatchObject({ code: "session_reset" });
+    expect(harness.client.hasSession).toBe(false);
+  });
+
   it("drops an expired token that has no refresh token", async () => {
     const harness = createHarness({
       token: (_body, nonce) => ({
@@ -681,6 +928,31 @@ describe("OidcClient proactive reauthorization", () => {
     await expect(harness.client.getAccessToken()).resolves.toBeNull();
     expect(harness.reauthorizeCalls).toHaveLength(1);
     expect(harness.client.hasSession).toBe(false);
+  });
+
+  it("requests reauthorization after a refresh transport failure", async () => {
+    const harness = createHarness({
+      token: async (body, nonce) => {
+        if (body.get("grant_type") === "refresh_token") {
+          throw new TypeError("network unavailable");
+        }
+        return {
+          access_token: "access-1",
+          refresh_token: "refresh-1",
+          id_token: idToken({ nonce }),
+          expires_in: 10,
+        };
+      },
+    });
+    const reauthorize = vi.fn();
+    await completeLogin(harness);
+    harness.client.setReauthorizeHandler(reauthorize);
+    harness.advance(11_000);
+
+    await expect(harness.client.getAccessToken()).resolves.toBeNull();
+
+    expect(harness.client.hasSession).toBe(false);
+    expect(reauthorize).toHaveBeenCalledTimes(1);
   });
 
   it("starts reauthorization after expiry", async () => {
@@ -763,6 +1035,117 @@ describe("OidcClient.logout", () => {
     expect(url.searchParams.get("state")).toBeTruthy();
     expect(url.searchParams.get("id_token_hint")).not.toBeNull();
     expect(harness.storage.getItem("zoo.oidc.loggedOut")).toBe("1");
+  });
+
+  it("keeps only the logout hint through storage failure and consumes it once after retry", async () => {
+    const baseStorage = memoryStorage();
+    let storageDenied = false;
+    const storage: AuthStorage = {
+      getItem: (key) => baseStorage.getItem(key),
+      setItem: (key, value) => {
+        if (storageDenied) throw new Error("storage denied");
+        baseStorage.setItem(key, value);
+      },
+      removeItem: (key) => {
+        if (storageDenied) throw new Error("storage denied");
+        baseStorage.removeItem(key);
+      },
+    };
+    let issuedIdToken = "";
+    const harness = createHarness({
+      storage,
+      token: (_body, nonce) => {
+        issuedIdToken = idToken({ nonce });
+        return { access_token: "access-1", id_token: issuedIdToken, expires_in: 300 };
+      },
+    });
+    await completeLogin(harness);
+    harness.assigned.length = 0;
+
+    storageDenied = true;
+    await harness.client.logout();
+    expect(harness.client.hasSession).toBe(false);
+    await expect(harness.client.getAccessToken()).resolves.toBeNull();
+    expect(harness.assigned).toHaveLength(0);
+
+    storageDenied = false;
+    await harness.client.logout();
+    const retryLogoutUrl = new URL(harness.assigned[0]!);
+    expect(retryLogoutUrl.searchParams.get("id_token_hint")).toBe(issuedIdToken);
+
+    await harness.client.logout();
+    const laterLogoutUrl = new URL(harness.assigned[1]!);
+    expect(laterLogoutUrl.searchParams.get("id_token_hint")).toBeNull();
+  });
+
+  it("drops a blocked logout hint when a new user login replaces the session", async () => {
+    const baseStorage = memoryStorage();
+    let storageDenied = false;
+    const storage: AuthStorage = {
+      getItem: (key) => baseStorage.getItem(key),
+      setItem: (key, value) => {
+        if (storageDenied) throw new Error("storage denied");
+        baseStorage.setItem(key, value);
+      },
+      removeItem: (key) => {
+        if (storageDenied) throw new Error("storage denied");
+        baseStorage.removeItem(key);
+      },
+    };
+    const issuedIdTokens: string[] = [];
+    const harness = createHarness({
+      storage,
+      token: (_body, nonce) => {
+        const issuedIdToken = idToken({ nonce });
+        issuedIdTokens.push(issuedIdToken);
+        return { access_token: "access-1", id_token: issuedIdToken, expires_in: 300 };
+      },
+    });
+    await completeLogin(harness);
+    storageDenied = true;
+    await harness.client.logout();
+    storageDenied = false;
+
+    await completeLogin(harness);
+    expect(issuedIdTokens).toHaveLength(2);
+    await harness.client.logout();
+
+    const logoutUrl = new URL(harness.assigned.at(-1)!);
+    expect(logoutUrl.searchParams.get("id_token_hint")).toBe(issuedIdTokens[1]);
+    expect(logoutUrl.searchParams.get("id_token_hint")).not.toBe(issuedIdTokens[0]);
+  });
+
+  it("discards a blocked logout hint when the session is reset", async () => {
+    const baseStorage = memoryStorage();
+    let storageDenied = false;
+    const storage: AuthStorage = {
+      getItem: (key) => baseStorage.getItem(key),
+      setItem: (key, value) => {
+        if (storageDenied) throw new Error("storage denied");
+        baseStorage.setItem(key, value);
+      },
+      removeItem: (key) => {
+        if (storageDenied) throw new Error("storage denied");
+        baseStorage.removeItem(key);
+      },
+    };
+    const harness = createHarness({
+      storage,
+      token: (_body, nonce) => ({
+        access_token: "access-1",
+        id_token: idToken({ nonce }),
+        expires_in: 300,
+      }),
+    });
+    await completeLogin(harness);
+    storageDenied = true;
+    await harness.client.logout();
+    storageDenied = false;
+
+    harness.client.resetSession();
+    await harness.client.logout();
+
+    expect(new URL(harness.assigned.at(-1)!).searchParams.get("id_token_hint")).toBeNull();
   });
 
   it("falls back to the post-logout redirect when the IdP has no logout endpoint", async () => {
