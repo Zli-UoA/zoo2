@@ -5096,8 +5096,17 @@ pub(crate) mod tests {
         assert!(state.submit_message("同期後の本文".into()));
     }
 
-    #[test]
-    fn encrypted_channels_are_not_marked_read() {
+    #[tokio::test]
+    async fn encrypted_channels_are_not_marked_read() {
+        // 同じ状態の平文のチャンネルは既読になる（下の暗号化チャンネルとの比較のため）。
+        let mut plain = connected_state();
+        plain.window_active = true;
+        plain.open_channel("c1".into());
+        plain.unread.insert("c1".into());
+        assert!(plain.mark_current_read());
+        assert!(!plain.unread.contains("c1"));
+        assert!(plain.last_read_marked.contains_key("c1"));
+
         let mut state = connected_state();
         state.on_shape(ShapeEvent::Batch(
             ShapeId::Channels,
@@ -5108,8 +5117,11 @@ pub(crate) mod tests {
         ));
         state.window_active = true;
         state.open_channel("c1".into());
-        // 本文を表示しない暗号化チャンネルでは、既読の API を呼ばない。
+        state.unread.insert("c1".into());
+        // 本文を表示しない暗号化チャンネルでは、未読を消さず、既読の API も呼ばない。
         assert!(!state.mark_current_read());
+        assert!(state.unread.contains("c1"));
+        assert!(!state.last_read_marked.contains_key("c1"));
     }
 
     #[test]
