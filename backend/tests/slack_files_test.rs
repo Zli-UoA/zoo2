@@ -616,3 +616,38 @@ async fn test_orphan_files_keep_the_text_the_author_edited() -> anyhow::Result<(
     assert_eq!(f.content(&message).await, "F1.txt");
     Ok(())
 }
+
+/// 取得を繰り返し落とした行を `failed` にするときも、終わったジョブの `processed_files` が合う
+#[tokio::test]
+async fn test_orphan_files_update_processed_files_when_giving_up_stopped_rows() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, |_| {}).await?;
+    let job = f.job("completed").await?;
+    f.add(Row {
+        file: "F1",
+        job: &job,
+        content: "",
+        in_content: false,
+        size: 1,
+    })
+    .await?;
+    sql(
+        &f.state,
+        "UPDATE slack_files SET lease_token='dead',lease_until=now()-interval '1 minute',attempts=3 WHERE team_id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    assert!(!f.once().await);
+    assert_eq!(f.file("F1").await["status"], "failed");
+    let jobs = sql(
+        &f.state,
+        "SELECT json_build_object('n',processed_files)::text FROM slack_import_jobs WHERE id=$1",
+        &[&job],
+    )
+    .await?;
+    assert_eq!(jobs[0]["n"], 1);
+    Ok(())
+}

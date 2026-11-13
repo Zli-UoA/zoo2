@@ -1841,15 +1841,48 @@ pub enum FileStep {
 async fn fail_exhausted_files(s: &AppState, team: &str) -> Result<(), AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    let condition = "status='pending' AND lease_token IS NOT NULL AND lease_until<now() AND attempts>=$2::integer \
+                     AND ($1='' OR team_id=$1)";
+    let limit = MAX_FILE_ATTEMPTS.to_string();
+    // 終わったジョブの行は、ジョブの `processed_files` も数え直す。結果を書くときと同じく、ジョブの行を先にロックする
+    let jobs: Vec<String> = query(
+        &mut tx,
+        &format!(
+            "SELECT json_build_object('job',job_id)::text FROM slack_files WHERE job_id IS NOT NULL AND {condition} \
+             GROUP BY job_id ORDER BY job_id"
+        ),
+        &[team, &limit],
+    )
+    .await?
+    .into_iter()
+    .filter_map(|row| row["job"].as_str().map(str::to_string))
+    .collect();
+    for job in &jobs {
+        query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM slack_import_jobs WHERE id=$1 FOR UPDATE",
+            &[job],
+        )
+        .await?;
+    }
     exec(
         &mut tx,
-        "UPDATE slack_files SET status='failed',error='Fetching the file stopped repeatedly and was given up',\
-         lease_token=NULL,lease_until=NULL,updated_at=now() \
-         WHERE status='pending' AND lease_token IS NOT NULL AND lease_until<now() AND attempts>=$2::integer \
-         AND ($1='' OR team_id=$1)",
-        &[team, &MAX_FILE_ATTEMPTS.to_string()],
+        &format!(
+            "UPDATE slack_files SET status='failed',error='Fetching the file stopped repeatedly and was given up',\
+             lease_token=NULL,lease_until=NULL,updated_at=now() WHERE {condition}"
+        ),
+        &[team, &limit],
     )
     .await?;
+    for job in &jobs {
+        exec(
+            &mut tx,
+            "UPDATE slack_import_jobs SET processed_files=(SELECT count(*) FROM slack_files WHERE job_id=$1 AND status<>'pending') \
+             WHERE id=$1",
+            &[job],
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(())
 }
