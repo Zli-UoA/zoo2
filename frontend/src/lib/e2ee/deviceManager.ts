@@ -239,6 +239,11 @@ export class E2eeDeviceManager {
     if (rowsFailure) throw rowsFailure;
   }
 
+  /** 終わっていない失効があるか（#362）。 */
+  async revocationPending(): Promise<boolean> {
+    return (await this.options.worker.request({ op: "revocationStatus" })) !== null;
+  }
+
   /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
   pendingBackupCount(): Promise<number> {
     return this.options.worker.request({ op: "pendingBackupCount" });

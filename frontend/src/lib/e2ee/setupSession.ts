@@ -10,6 +10,7 @@ import {
   type KeySlot,
   type ResumePlan,
   type StartupCheck,
+  type UnlockedSecretStorage,
 } from "@zoo/crypto-wasm";
 
 import type { CryptoStore } from "./store/cryptoStore";
@@ -190,6 +191,21 @@ export class SetupSession {
       return own.keys.startupCheck(keysQuery, versions, store.deviceKeys());
     } finally {
       own.keys.free();
+    }
+  }
+
+  /**
+   * 開けた SSSS 鍵で、読み直した `GET /api/e2ee/secret_storage` の応答を開ける（失効の始めと再開。
+   * #362）。既定の鍵が開けた鍵と違えば `SsssKeyMismatch`。使い終わったら `free()` する。
+   */
+  unlockedStorage(response: JsonObject): UnlockedSecretStorage {
+    const pending = this.require();
+    const storage = SecretStorage.fromJson(this.userId(), response);
+    if (!storage) throw new SetupError("NoSecretStorage", "SSSS がまだありません");
+    try {
+      return storage.unlockWithKey(pending.ssss);
+    } finally {
+      storage.free();
     }
   }
 

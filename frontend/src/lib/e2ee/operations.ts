@@ -1,6 +1,7 @@
 import { DeviceAccount } from "@zoo/crypto-wasm";
 
 import { cryptoDatabaseName } from "./identity";
+import { RevocationSession, evaluateTrust } from "./revocationSession";
 import { SetupSession } from "./setupSession";
 import type { CryptoBackend } from "./store/backend";
 import { CryptoStore } from "./store/cryptoStore";
@@ -25,6 +26,7 @@ export class CryptoOperations {
   private store: CryptoStore | null = null;
   private storeName: string | null = null;
   private readonly setup = new SetupSession(() => this.opened().userId);
+  private readonly revocation = new RevocationSession(this.setup, () => this.opened().userId);
 
   constructor(
     private readonly backends: CryptoBackendFactory,
@@ -137,13 +139,74 @@ export class CryptoOperations {
       case "hasOwnKeys":
         return this.opened().hasOwnKeys();
       case "discardSecrets":
+        this.revocation.discard();
         this.setup.discard();
         return null;
       case "forgetOwnKeys":
         this.setup.discard();
         await this.opened().forgetOwnKeys();
         return null;
+      case "revocationStatus":
+        return this.revocation.status(this.opened());
+      case "revocationBegin": {
+        const { op: _op, ...input } = request;
+        return this.revocation.begin(this.opened(), input);
+      }
+      case "revocationResume":
+        return this.revocation.resume(this.opened(), request.secretStorage);
+      case "revocationNewRecoveryKey":
+        return this.revocation.newRecoveryKey();
+      case "revocationAddPasskeySlot":
+        this.revocation.addPasskeySlot(request);
+        return null;
+      case "revocationSecretStorageRequest":
+        return this.revocation.secretStorageRequest();
+      case "revocationSecretStorageSaved":
+        await this.revocation.secretStorageSaved(this.opened(), request.secretsRevision);
+        return null;
+      case "revocationCrossSigningRequest":
+        return this.revocation.crossSigningRequest();
+      case "revocationCrossSigningSaved":
+        await this.revocation.crossSigningSaved(this.opened(), request.secretsRevision);
+        return null;
+      case "revocationSignatures":
+        return this.revocation.signatures(this.opened());
+      case "revocationAdvance":
+        await this.revocation.advance(this.opened(), request.stage);
+        return null;
+      case "revocationBackupVersionRequest":
+        return this.revocation.backupVersionRequest();
+      case "revocationBackupCreated":
+        await this.revocation.backupCreated(this.opened(), request.version);
+        return null;
+      case "revocationVersionsToMigrate":
+        return this.revocation.versionsToMigrate(request.versions);
+      case "revocationReencrypt":
+        return this.revocation.reencrypt(request.version, request.rows);
+      case "revocationVerify":
+        await this.revocation.verify(
+          this.opened(),
+          request.secretStorage,
+          request.keysQuery,
+          request.currentVersion,
+        );
+        return null;
+      case "revocationAbandon":
+        await this.revocation.abandon(this.opened());
+        return null;
+      case "trustRecordedUsers":
+        return this.opened().trustStore.recordedUsers();
+      case "trustEvaluate":
+        return evaluateTrust(this.opened(), request.keysQuery, request.userIds);
+      case "trustPinResult":
+        if (request.registered) this.opened().trustStore.confirmTofuPin(request.pin);
+        else this.opened().trustStore.discardTofuPin(request.pin);
+        await this.opened().saveTrustStore();
+        return null;
+      case "acceptMasterKey":
+        return this.opened().acceptMasterKey(request.targetUserId, request.masterKey);
       case "close":
+        this.revocation.discard();
         this.setup.discard();
         this.lastOpen = null;
         this.reopenPending = false;
@@ -152,6 +215,7 @@ export class CryptoOperations {
         this.storeName = null;
         return null;
       case "destroy": {
+        this.revocation.discard();
         this.setup.discard();
         const name = cryptoDatabaseName(request.namespace);
         if (this.store && this.storeName === name) {

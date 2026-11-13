@@ -2,7 +2,7 @@ import { toast } from "sonner";
 import { useShell } from "./shell-context";
 import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import {
@@ -24,6 +24,7 @@ import { getOidcClient } from "../../lib/oidc/session";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
 import { useE2ee } from "../../lib/e2ee/e2ee-context";
 import { UnbackedKeysLogoutDialog } from "../e2ee/UnbackedKeysLogoutDialog";
+import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { AppAvatar } from "../chat/AppIdentity";
 import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
@@ -69,6 +70,10 @@ export function LeftRail() {
   // 鍵バックアップに送れていない鍵の数。0 より大きければ、ログアウトの前に確かめる。
   // null は閉じている、-1 は数えられなかった。
   const [unbackedKeys, setUnbackedKeys] = useState<number | null>(null);
+  // 終わっていない失効があるときの、ログアウトの確認（#362）。
+  const [revocationWarning, setRevocationWarning] = useState(false);
+  // 確認でダイアログが閉じたときに、ログアウトを取りやめたと扱わない。
+  const revocationConfirmed = useRef(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
@@ -82,6 +87,15 @@ export function LeftRail() {
   // OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）。
   // dev（OIDC 未設定）ではログアウト UI を出さない。
   const handleLogout = async () => {
+    // 失効の進み具合は暗号ストアにしかない。消す前に確かめる（docs/e2ee.md の「失効の手順」）。
+    if (await e2ee.revocationPending().catch(() => false)) {
+      setRevocationWarning(true);
+      return;
+    }
+    await continueLogout();
+  };
+
+  const continueLogout = async () => {
     // 暗号ストアを消すと、この端末にだけある鍵を失う。送れていない鍵があれば先に確かめる
     // （docs/e2ee.md の「ログアウトと端末の削除」）。
     // 数えられなかったら、送れていない鍵がないとは扱わず、分からないまま確かめる。
@@ -183,6 +197,26 @@ export function LeftRail() {
             <LogOutIcon />
           </Button>
         ) : null}
+        <ConfirmActionDialog
+          open={revocationWarning}
+          onOpenChange={(open) => {
+            if (open) return;
+            setRevocationWarning(false);
+            if (!revocationConfirmed.current) e2ee.cancelLogout();
+          }}
+          title={t("e2ee.logout.revocationTitle")}
+          description={t("e2ee.logout.revocationDescription")}
+          confirmLabel={t("e2ee.logout.revocationConfirm")}
+          onConfirm={async () => {
+            revocationConfirmed.current = true;
+            setRevocationWarning(false);
+            try {
+              await continueLogout();
+            } finally {
+              revocationConfirmed.current = false;
+            }
+          }}
+        />
         <UnbackedKeysLogoutDialog
           count={unbackedKeys}
           pending={loggingOut}

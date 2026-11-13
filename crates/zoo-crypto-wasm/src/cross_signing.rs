@@ -414,6 +414,12 @@ impl TrustStore {
         }
     }
 
+    /// 記録がある相手の一覧（失効の手順 4 の候補を集める。#362）。
+    #[wasm_bindgen(js_name = recordedUsers)]
+    pub fn recorded_users(&self) -> Vec<String> {
+        self.inner.records().map(|(user, _)| user.clone()).collect()
+    }
+
     /// 自分のマスター鍵を信頼する（SSSS で解錠したあと）。
     #[wasm_bindgen(js_name = trustOwnMasterKey)]
     pub fn trust_own_master_key(&mut self, master: &CrossSigningKeyPair) -> Result<(), JsValue> {

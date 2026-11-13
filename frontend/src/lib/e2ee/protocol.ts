@@ -1,4 +1,17 @@
-import type { IdentityKeys, JsonObject, KeySlot, ResumePlan, StartupCheck } from "@zoo/crypto-wasm";
+import type {
+  AcceptedMasterKey,
+  IdentityKeys,
+  JsonObject,
+  KeySlot,
+  NewTofuPin,
+  ResumePlan,
+  RevocationSignatures,
+  RevocationStage,
+  RevocationSummary,
+  StartupCheck,
+} from "@zoo/crypto-wasm";
+
+import type { RevocationBeginInput, TrustEvaluation } from "./revocationSession";
 
 import type { PasskeySlotInput, ResetExpectation, UnlockSecret } from "./setupSession";
 
@@ -12,6 +25,7 @@ import type {
 
 export type { DeviceKeysByUser, KeyUpload, RegistrationRequest, ToDeviceResult, ToDeviceRow };
 export type { KeySlot, PasskeySlotInput, ResetExpectation, ResumePlan, StartupCheck, UnlockSecret };
+export type { RevocationBeginInput, TrustEvaluation };
 
 /**
  * 暗号の Worker（`crypto.worker.ts`）とのやり取りの型。
@@ -55,6 +69,33 @@ export type CryptoOperation =
   | { op: "hasOwnKeys" }
   | { op: "discardSecrets" }
   | { op: "forgetOwnKeys" }
+  // 失効の手順と、他のユーザーの検証（#362）。
+  | { op: "revocationStatus" }
+  | ({ op: "revocationBegin" } & RevocationBeginInput)
+  | { op: "revocationResume"; secretStorage: JsonObject }
+  | { op: "revocationNewRecoveryKey" }
+  | ({ op: "revocationAddPasskeySlot" } & PasskeySlotInput)
+  | { op: "revocationSecretStorageRequest" }
+  | { op: "revocationSecretStorageSaved"; secretsRevision: number | null }
+  | { op: "revocationCrossSigningRequest" }
+  | { op: "revocationCrossSigningSaved"; secretsRevision: number | null }
+  | { op: "revocationSignatures" }
+  | { op: "revocationAdvance"; stage: RevocationStage }
+  | { op: "revocationBackupVersionRequest" }
+  | { op: "revocationBackupCreated"; version: string }
+  | { op: "revocationVersionsToMigrate"; versions: JsonObject }
+  | { op: "revocationReencrypt"; version: string; rows: JsonObject[] }
+  | {
+      op: "revocationVerify";
+      secretStorage: JsonObject;
+      keysQuery: JsonObject;
+      currentVersion: JsonObject;
+    }
+  | { op: "revocationAbandon" }
+  | { op: "trustRecordedUsers" }
+  | { op: "trustEvaluate"; keysQuery: JsonObject; userIds: string[] }
+  | { op: "trustPinResult"; pin: NewTofuPin; registered: boolean }
+  | { op: "acceptMasterKey"; targetUserId: string; masterKey: JsonObject }
   | {
       /** 暗号ストアを消す。開いていなくても、`namespace` のファイルと保存鍵を消す。 */
       op: "destroy";
@@ -103,6 +144,27 @@ export interface CryptoResults {
   hasOwnKeys: boolean;
   discardSecrets: null;
   forgetOwnKeys: null;
+  revocationStatus: RevocationSummary | null;
+  revocationBegin: RevocationSummary;
+  revocationResume: RevocationSummary;
+  revocationNewRecoveryKey: string;
+  revocationAddPasskeySlot: null;
+  revocationSecretStorageRequest: JsonObject;
+  revocationSecretStorageSaved: null;
+  revocationCrossSigningRequest: JsonObject;
+  revocationCrossSigningSaved: null;
+  revocationSignatures: RevocationSignatures;
+  revocationAdvance: null;
+  revocationBackupVersionRequest: JsonObject;
+  revocationBackupCreated: null;
+  revocationVersionsToMigrate: string[];
+  revocationReencrypt: { rows: JsonObject[]; dropped: number };
+  revocationVerify: null;
+  revocationAbandon: null;
+  trustRecordedUsers: string[];
+  trustEvaluate: TrustEvaluation;
+  trustPinResult: null;
+  acceptMasterKey: AcceptedMasterKey;
 }
 
 export type CryptoRequest = CryptoOperation & { id: number };
