@@ -72,7 +72,9 @@ it("opens public channel messages without joining and keeps private channels out
   );
   const link = await screen.findByRole("link", { name: /public/ });
   expect(screen.queryByRole("link", { name: /private/ })).toBeNull();
-  expect(screen.getByRole("link", { name: /archived/ })).toBeTruthy();
+  expect(screen.queryByRole("link", { name: /archived/ })).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "アーカイブ済みのチャンネルを含める" }));
+  expect(await screen.findByRole("link", { name: /archived/ })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "参加する" })).toBeNull();
   await userEvent.click(link);
   await screen.findByText("Channel messages");

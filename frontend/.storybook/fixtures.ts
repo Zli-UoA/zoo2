@@ -5,6 +5,7 @@ import type { CollectionsBundle } from "../src/lib/electric/collections";
 import type {
   AttachmentRow,
   ChannelRow,
+  ChannelLeaveRow,
   ChannelUserRow,
   MessageReactionRow,
   MessageRow,
@@ -17,6 +18,7 @@ export interface StoryCollectionsInput {
   users?: UserRow[];
   channels?: ChannelRow[];
   channelUsers?: ChannelUserRow[];
+  channelLeaves?: ChannelLeaveRow[];
   messages?: MessageRow[];
   reactions?: MessageReactionRow[];
   notifications?: NotificationRow[];
@@ -140,6 +142,10 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
     channels,
     users,
     channelUsers,
+    channelLeaves: (userId: string) =>
+      createStoryChannelLeaveCollection(
+        (input.channelLeaves ?? []).filter((row) => row.user_id === userId),
+      ) as unknown as ReturnType<CollectionsBundle["channelLeaves"]>,
     notifications: (userId: string) => {
       let collection = notificationCache.get(userId);
       if (!collection) {
@@ -187,6 +193,14 @@ function createStoryReactionCollection(rows: MessageReactionRow[]) {
 
 function createStoryNotificationCollection(rows: NotificationRow[]) {
   return rowsCollection<NotificationRow>("notifications", (row) => row.id, rows);
+}
+
+function createStoryChannelLeaveCollection(rows: ChannelLeaveRow[]) {
+  return rowsCollection<ChannelLeaveRow>(
+    "channelLeaves",
+    (row) => `${row.user_id}:${row.channel_id}`,
+    rows,
+  );
 }
 
 function createStoryAttachmentCollection(rows: AttachmentRow[]) {

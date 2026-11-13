@@ -461,8 +461,9 @@ describe("catalog surfaces", () => {
         onJoinChannel={async () => {}}
       />,
     );
-    await screen.findByText("old-announcements");
     await screen.findByText("random");
+    await page.getByRole("button", { name: "アーカイブ済みのチャンネルを含める" }).click();
+    await screen.findByText("old-announcements");
     await expect(page).toMatchScreenshot("channel-browser-dialog-desktop-light");
   });
 
