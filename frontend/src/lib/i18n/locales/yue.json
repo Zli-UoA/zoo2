@@ -1150,7 +1150,10 @@
     "undeliverable": {
       "title": "以下嘅人睇唔到新訊息",
       "notSetUp": "{{name}} 未設定加密",
-      "needsReverification": "{{name}} 需要重新驗證"
+      "needsReverification": "{{name}} 需要重新驗證",
+      "invalidKeys": "{{name}} 嘅加密鑰匙唔正確",
+      "pinPending": "仲喺度確認緊 {{name}} 嘅鑰匙",
+      "blocked": "而家冇辦法將鑰匙交俾 {{name}}"
     },
     "loadPreviews": "載入連結預覽",
     "desktopUnsupported": {
@@ -1158,6 +1161,15 @@
       "description": "呢個客戶端顯示唔到加密頻道。請用網頁版或者手機 app 開。"
     },
     "sendUnavailable": "呢個版本暫時未可以喺加密頻道傳訊息。",
+    "deviceNotReady": "呢部裝置（分頁）暫時未準備好加密。請檢查加密設定同解鎖，再閂咗其他 zoo 分頁。",
+    "sendNeedsUnlock": "要傳去加密頻道，請喺呢部裝置解鎖加密。",
+    "sendStaleEpoch": "成員一直變緊，所以傳唔到訊息。請再傳一次。",
+    "editConflict": "呢條訊息喺其他地方改過。請重新載入再改。",
+    "recipients": {
+      "summary": "為 {{users}} 個人嘅 {{devices}} 部裝置加密。",
+      "added": "上次傳送之後新加嘅收件人：{{names}}"
+    },
+    "downgraded": "呢個頻道之前係加密嘅，但伺服器而家話冇加密。唔會用明文傳送。",
     "attachments": {
       "encrypted": "已加密",
       "decryptFailed": "解密唔到附件。內容可能已經畀人改過。"

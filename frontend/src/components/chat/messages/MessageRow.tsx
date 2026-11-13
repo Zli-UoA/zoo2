@@ -46,6 +46,7 @@ import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
 import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
 import {
+  useMessageDecryption,
   resolveMessageDecryption,
   type MessageDecryption,
   type SenderTrust,
@@ -257,7 +258,8 @@ export function MessageRow({
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
-  const resolvedDecryption = resolveMessageDecryption(message, decryption);
+  const decryptionFromPane = useMessageDecryption(message.id);
+  const resolvedDecryption = resolveMessageDecryption(message, decryption ?? decryptionFromPane);
   // 暗号化チャンネルの行の `content` は空なので、復号した本文を使う。
   const bodyText =
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;

@@ -1,4 +1,5 @@
 import type { AttachmentInfo } from "@zoo/crypto-wasm";
+import { createContext, useContext } from "react";
 
 import type { MessageRow } from "../electric/types";
 
@@ -53,4 +54,15 @@ export function resolveMessageDecryption(
 ): MessageDecryption | null {
   if (!isEncryptedMessage(message)) return null;
   return decryption ?? { status: "undecryptable", reason: "locked" };
+}
+
+const EMPTY: ReadonlyMap<string, MessageDecryption> = new Map();
+
+/** 表示中のチャンネルの復号の結果（メッセージの ID ごと）。`MessagePane` が渡す。 */
+export const MessageDecryptionsContext =
+  createContext<ReadonlyMap<string, MessageDecryption>>(EMPTY);
+
+/** `id` のメッセージの復号の結果。なければ `undefined`。 */
+export function useMessageDecryption(id: string): MessageDecryption | undefined {
+  return useContext(MessageDecryptionsContext).get(id);
 }

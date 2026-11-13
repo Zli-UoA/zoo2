@@ -1150,7 +1150,10 @@
     "undeliverable": {
       "title": "以下使用者無法讀取新訊息",
       "notSetUp": "{{name}} 尚未設定加密",
-      "needsReverification": "需要重新驗證 {{name}}"
+      "needsReverification": "需要重新驗證 {{name}}",
+      "invalidKeys": "{{name}} 的加密金鑰無效",
+      "pinPending": "正在確認 {{name}} 的金鑰",
+      "blocked": "目前無法將金鑰分發給 {{name}}"
     },
     "loadPreviews": "載入連結預覽",
     "desktopUnsupported": {
@@ -1158,6 +1161,15 @@
       "description": "此用戶端無法顯示加密頻道。請在網頁版或行動應用程式中開啟。"
     },
     "sendUnavailable": "此版本尚不能向加密頻道傳送訊息。",
+    "deviceNotReady": "此裝置（分頁）上的加密尚未就緒。請檢查加密設定與解鎖狀態，並關閉其他 zoo 分頁。",
+    "sendNeedsUnlock": "要傳送到加密頻道，請先在此裝置上解鎖加密。",
+    "sendStaleEpoch": "成員持續變動，訊息未能傳送。請再試一次。",
+    "editConflict": "此訊息已在其他地方被編輯。請重新載入後再編輯。",
+    "recipients": {
+      "summary": "正在為 {{users}} 人的 {{devices}} 台裝置加密。",
+      "added": "自上次傳送以來新增的接收者：{{names}}"
+    },
+    "downgraded": "此頻道曾經加密，但伺服器現在表示未加密。不會以明文傳送訊息。",
     "attachments": {
       "encrypted": "已加密",
       "decryptFailed": "無法解密附件。內容可能已被更改。"

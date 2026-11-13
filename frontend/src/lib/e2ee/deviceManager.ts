@@ -27,6 +27,8 @@ export interface E2eeDeviceManagerOptions {
   /** ログアウトで、処理中のもの（登録の要求など）を待つ時間。 */
   settleTimeoutMs?: number;
   onStatus?: (status: E2eeDeviceStatus, error?: unknown) => void;
+  /** Megolm のセッション鍵を保存した（「鍵がまだ届いていない」メッセージを復号し直す。#361）。 */
+  onRoomKeys?: () => void;
 }
 
 /** ログアウトで端末の削除 API を待つ時間。オフラインならすぐ失敗し、次のログインで消し直す。 */
@@ -223,6 +225,7 @@ export class E2eeDeviceManager {
         if (this.stopped) return;
         const result = await worker.request({ op: "processToDevice", rows, deviceKeys });
         if (result.newOlmSessions > 0) this.needsReplenish = true;
+        if (result.roomKeys > 0) this.options.onRoomKeys?.();
         if (result.processed.length > 0) {
           await ackToDevice(client, deviceId, result.processed, signal);
           await worker.request({ op: "acknowledged", ids: result.processed });

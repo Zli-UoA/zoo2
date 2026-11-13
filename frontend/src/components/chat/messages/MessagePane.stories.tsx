@@ -128,3 +128,14 @@ export const Encrypted: Story = {
     await expect(screen.queryByRole("button", { name: "ファイルを添付" })).not.toBeInTheDocument();
   }),
 };
+
+export const EncryptionDowngraded: Story = {
+  args: { encrypted: false, channelName: "edm:user-alice:user-bob" },
+  play: playForImplementation(async () => {
+    // 暗号化 DM の名前なのに encrypted = false が届いたら、平文では送らず警告する。
+    const composer = await screen.findByPlaceholderText(
+      "このチャンネルは暗号化されていましたが、サーバーが暗号化されていないと返しています。平文では送信しません。",
+    );
+    await expect(composer).toBeDisabled();
+  }),
+};

@@ -1150,7 +1150,10 @@
     "undeliverable": {
       "title": "다음 사람은 새 메시지를 읽을 수 없습니다",
       "notSetUp": "{{name}} 님이 암호화를 설정하지 않았습니다",
-      "needsReverification": "{{name}} 님을 다시 확인해야 합니다"
+      "needsReverification": "{{name}} 님을 다시 확인해야 합니다",
+      "invalidKeys": "{{name}} 님의 암호화 키가 올바르지 않습니다",
+      "pinPending": "{{name}} 님의 키를 확인하는 중입니다",
+      "blocked": "{{name}} 님에게는 지금 키를 보낼 수 없습니다"
     },
     "loadPreviews": "링크 미리보기 불러오기",
     "desktopUnsupported": {
@@ -1158,6 +1161,15 @@
       "description": "이 클라이언트에서는 암호화된 채널을 표시할 수 없습니다. 웹이나 모바일 앱에서 여세요."
     },
     "sendUnavailable": "이 버전에서는 아직 암호화된 채널에 보낼 수 없습니다.",
+    "deviceNotReady": "이 기기(탭)에서는 아직 암호화가 준비되지 않았습니다. 암호화 설정과 잠금 해제를 확인하고 다른 zoo 탭을 닫으세요.",
+    "sendNeedsUnlock": "암호화된 채널에 보내려면 이 기기에서 암호화를 잠금 해제하세요.",
+    "sendStaleEpoch": "멤버가 계속 바뀌어 메시지를 보내지 못했습니다. 다시 보내세요.",
+    "editConflict": "이 메시지는 다른 곳에서 편집되었습니다. 다시 불러온 뒤 편집하세요.",
+    "recipients": {
+      "summary": "{{users}}명의 기기 {{devices}}대에 맞춰 암호화합니다.",
+      "added": "지난번 전송 이후 늘어난 수신자: {{names}}"
+    },
+    "downgraded": "이 채널은 암호화되어 있었지만 서버가 암호화되지 않았다고 응답합니다. 암호화하지 않은 메시지는 보내지 않습니다.",
     "attachments": {
       "encrypted": "암호화됨",
       "decryptFailed": "첨부 파일을 복호화하지 못했습니다. 내용이 변경되었을 수 있습니다."

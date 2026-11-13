@@ -1150,7 +1150,10 @@
     "undeliverable": {
       "title": "次の人は新しいメッセージを読めません",
       "notSetUp": "{{name}} さんは暗号化を設定していません",
-      "needsReverification": "{{name}} さんの再検証が必要です"
+      "needsReverification": "{{name}} さんの再検証が必要です",
+      "invalidKeys": "{{name}} さんの暗号化の鍵が正しくありません",
+      "pinPending": "{{name}} さんの鍵を確かめています",
+      "blocked": "{{name}} さんには今は鍵を配れません"
     },
     "loadPreviews": "リンクのプレビューを読み込む",
     "desktopUnsupported": {
@@ -1158,6 +1161,15 @@
       "description": "このクライアントでは暗号化チャンネルを表示できません。Web 版かモバイルアプリで開いてください。"
     },
     "sendUnavailable": "このバージョンでは、暗号化チャンネルにまだ送信できません。",
+    "deviceNotReady": "この端末（タブ）では、まだ暗号化の準備ができていません。暗号化の設定と解錠を確かめ、ほかの zoo のタブを閉じてください。",
+    "sendNeedsUnlock": "暗号化チャンネルに送るには、この端末で暗号化を解錠してください。",
+    "sendStaleEpoch": "メンバーが変わり続けたため、送信できませんでした。もう一度送ってください。",
+    "editConflict": "このメッセージはほかの場所で編集されました。読み込み直してから編集してください。",
+    "recipients": {
+      "summary": "{{users}} 人の {{devices}} 台の端末あてに暗号化しています。",
+      "added": "前回の送信から増えた配布先：{{names}}"
+    },
+    "downgraded": "このチャンネルは暗号化されていましたが、サーバーが暗号化されていないと返しています。平文では送信しません。",
     "attachments": {
       "encrypted": "暗号化",
       "decryptFailed": "添付を復号できませんでした。中身が変わっているおそれがあります。"
