@@ -81,6 +81,10 @@ describe("capture helpers", () => {
     expect(inferElectricShape("/api/shapes/messages?offset=-1")).toBe("messages");
     expect(inferElectricShape("/api/shapes/message_reactions")).toBe("message_reactions");
     expect(inferElectricShape("/api/shapes/channel_users")).toBe("channel_users");
+    expect(inferElectricShape("/api/shapes/attachments?channel_id=1")).toBe("attachments");
+    expect(inferElectricShape("http://localhost:3000/v1/shape?table=attachments")).toBe(
+      "attachments",
+    );
     expect(inferElectricShape("http://localhost:3000/v1/shape?table=channels")).toBe("channels");
   });
 });
@@ -347,6 +351,58 @@ describe("TelemetryReporter", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("protects an in-flight normal batch with keepalive when pagehide flush runs before it settles", async () => {
+    let hidden = false;
+    const calls: Array<{ keepalive: boolean | undefined; body: string }> = [];
+    let rejectNormalFetch: ((reason?: unknown) => void) | undefined;
+
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const keepalive = init?.keepalive;
+      const body = typeof init?.body === "string" ? init.body : "";
+      calls.push({ keepalive, body });
+      if (!keepalive) {
+        return await new Promise<Response>((_resolve, reject) => {
+          rejectNormalFetch = reject;
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        });
+      }
+      return new Response(null, { status: 202 });
+    });
+
+    const reporter = new TelemetryReporter({
+      fetchImpl: fetchMock,
+      flushIntervalMs: 100,
+      isHidden: () => hidden,
+      isOnline: () => true,
+    });
+
+    reporter.enqueue({
+      kind: "error",
+      category: "runtime",
+      route: "/home",
+      message: "in-flight batch",
+    });
+
+    const normalFlush = reporter.flush();
+    expect(reporter.pendingCount()).toBe(0);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.keepalive).toBe(false);
+
+    // キューが空でも送信中バッチを keepalive へ引き継ぐ
+    hidden = true;
+    await reporter.flush({ keepalive: true });
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.keepalive).toBe(true);
+    expect(calls[1]?.body).toContain("in-flight batch");
+
+    rejectNormalFetch?.(new Error("late failure after takeover"));
+    await normalFlush;
+    expect(reporter.pendingCount()).toBe(0);
+    reporter.dispose();
   });
 });
 
@@ -693,6 +749,168 @@ describe("installBrowserTelemetry web vitals", () => {
       reporter.dispose();
     }
   });
+
+  it("estimates total interactions from interactionId span even with fewer than 10 observations and handles a single interaction", async () => {
+    const runCase = async (entries: Array<{ duration: number; interactionId: number }>) => {
+      let hidden = false;
+      const documentListeners = new Map<string, EventListener>();
+      const callbacks = new Map<string, PerformanceObserverCallback>();
+
+      class MockPerformanceObserver {
+        private callback: PerformanceObserverCallback;
+        constructor(callback: PerformanceObserverCallback) {
+          this.callback = callback;
+        }
+        observe(options: PerformanceObserverInit) {
+          if (options.type) {
+            callbacks.set(options.type, this.callback);
+          }
+        }
+        disconnect() {}
+      }
+
+      vi.stubGlobal("PerformanceObserver", MockPerformanceObserver);
+      vi.stubGlobal("performance", {});
+      vi.stubGlobal("window", {
+        location: { origin: "http://localhost:5173", pathname: "/home" },
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      });
+      vi.stubGlobal("document", {
+        get visibilityState() {
+          return hidden ? "hidden" : "visible";
+        },
+        addEventListener: (type: string, cb: EventListener) => {
+          documentListeners.set(type, cb);
+        },
+        removeEventListener: (type: string) => {
+          documentListeners.delete(type);
+        },
+      });
+
+      const sent: Array<{ kind: string; metric?: string; value_ms?: number }> = [];
+      const reporter = resetTelemetryReporterForTests({
+        apiBaseUrl: "http://localhost:8000",
+        fetchImpl: async (_url, init) => {
+          const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as {
+            events: Array<{ kind: string; metric?: string; value_ms?: number }>;
+          };
+          sent.push(...parsed.events);
+          return new Response(null, { status: 202 });
+        },
+        isHidden: () => hidden,
+        isOnline: () => true,
+      });
+
+      const uninstall = installBrowserTelemetry({
+        apiBaseUrl: "http://localhost:8000",
+        telemetryEnabled: true,
+      });
+      try {
+        callbacks.get("event")?.(
+          {
+            getEntries: () => entries as unknown as PerformanceEntry[],
+          } as unknown as PerformanceObserverEntryList,
+          {} as PerformanceObserver,
+        );
+        hidden = true;
+        documentListeners.get("visibilitychange")?.(new Event("visibilitychange"));
+        await Promise.resolve();
+        return sent.find((e) => e.metric === "inp")?.value_ms;
+      } finally {
+        uninstall();
+        reporter.dispose();
+        vi.unstubAllGlobals();
+      }
+    };
+
+    // 3件 (ID 7, 350, 700 -> floor((700-7)/7)+1 = 100 -> p98Index=2 -> 100ms)
+    await expect(
+      runCase([
+        { duration: 300, interactionId: 7 },
+        { duration: 200, interactionId: 350 },
+        { duration: 100, interactionId: 700 },
+      ]),
+    ).resolves.toBe(100);
+
+    // 1件のみ (ID 7 -> p98Index=0 -> 150ms)
+    await expect(runCase([{ duration: 150, interactionId: 7 }])).resolves.toBe(150);
+  });
+
+  it("drains pending PerformanceObserver records via takeRecords() before pagehide flush", async () => {
+    let hidden = false;
+    const windowListeners = new Map<string, EventListener>();
+    const pendingByType = new Map<string, PerformanceEntry[]>();
+
+    class MockPerformanceObserver {
+      private type = "";
+      observe(options: PerformanceObserverInit) {
+        if (options.type) {
+          this.type = options.type;
+        }
+      }
+      takeRecords() {
+        const items = pendingByType.get(this.type) ?? [];
+        pendingByType.set(this.type, []);
+        return items;
+      }
+      disconnect() {}
+    }
+
+    vi.stubGlobal("PerformanceObserver", MockPerformanceObserver);
+    vi.stubGlobal("performance", {});
+    vi.stubGlobal("window", {
+      location: { origin: "http://localhost:5173", pathname: "/home" },
+      addEventListener: (type: string, cb: EventListener) => {
+        windowListeners.set(type, cb);
+      },
+      removeEventListener: (type: string) => {
+        windowListeners.delete(type);
+      },
+    });
+    vi.stubGlobal("document", {
+      get visibilityState() {
+        return hidden ? "hidden" : "visible";
+      },
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+
+    const sent: Array<{ kind: string; metric?: string; value_ms?: number }> = [];
+    const reporter = resetTelemetryReporterForTests({
+      apiBaseUrl: "http://localhost:8000",
+      fetchImpl: async (_url, init) => {
+        const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as {
+          events: Array<{ kind: string; metric?: string; value_ms?: number }>;
+        };
+        sent.push(...parsed.events);
+        return new Response(null, { status: 202 });
+      },
+      isHidden: () => hidden,
+      isOnline: () => true,
+    });
+
+    const uninstall = installBrowserTelemetry({
+      apiBaseUrl: "http://localhost:8000",
+      telemetryEnabled: true,
+    });
+    try {
+      pendingByType.set("largest-contentful-paint", [{ startTime: 1200 } as PerformanceEntry]);
+      pendingByType.set("event", [
+        { duration: 500, interactionId: 7 } as unknown as PerformanceEntry,
+      ]);
+
+      hidden = true;
+      windowListeners.get("pagehide")?.(new Event("pagehide"));
+      await Promise.resolve();
+
+      expect(sent.find((e) => e.metric === "lcp")?.value_ms).toBe(1200);
+      expect(sent.find((e) => e.metric === "inp")?.value_ms).toBe(500);
+    } finally {
+      uninstall();
+      reporter.dispose();
+    }
+  });
 });
 
 describe("API and Electric client trace propagation", () => {
@@ -986,6 +1204,81 @@ describe("API and Electric client trace propagation", () => {
     await reader.cancel();
     await expect(pendingRead).resolves.toEqual({ done: true, value: undefined });
     expect(reporter.pendingCount()).toBe(0);
+    reporter.dispose();
+  });
+
+  it("attributes API error route to request start route even after SPA navigation before response settles", async () => {
+    const locationObj = { origin: "http://localhost:5173", pathname: "/home" };
+    vi.stubGlobal("window", { location: locationObj });
+
+    const telemetryCalls: string[] = [];
+    const reporter = resetTelemetryReporterForTests({
+      apiBaseUrl: "http://localhost:8000",
+      fetchImpl: async (_input, init) => {
+        telemetryCalls.push(typeof init?.body === "string" ? init.body : "");
+        return new Response(null, { status: 202 });
+      },
+      isHidden: () => false,
+      isOnline: () => true,
+    });
+
+    try {
+      let resolveFetchStarted: (() => void) | undefined;
+      const fetchStarted = new Promise<void>((resolve) => {
+        resolveFetchStarted = resolve;
+      });
+      let resolveResponse: ((res: Response) => void) | undefined;
+      const client = createApiClient({
+        baseUrl: "http://localhost:8000",
+        fetch: async () => {
+          resolveFetchStarted?.();
+          return await new Promise<Response>((resolve) => {
+            resolveResponse = resolve;
+          });
+        },
+      });
+
+      const pendingRequest = client.get("/api/channels");
+      await fetchStarted;
+      // 応答待ち中に /settings へ SPA 遷移しても開始時の /home を記録する
+      locationObj.pathname = "/settings";
+      resolveResponse?.(new Response("down", { status: 503 }));
+
+      await expect(pendingRequest).rejects.toThrow();
+      expect(reporter.pendingCount()).toBe(1);
+      await reporter.flush();
+      expect(telemetryCalls).toHaveLength(1);
+      expect(telemetryCalls[0]).toContain('"route":"/home"');
+      expect(telemetryCalls[0]).toContain('"http_status":503');
+    } finally {
+      vi.unstubAllGlobals();
+      reporter.dispose();
+    }
+  });
+
+  it("classifies /api/shapes/attachments errors as attachments shape", async () => {
+    const telemetryCalls: string[] = [];
+    const reporter = resetTelemetryReporterForTests({
+      apiBaseUrl: "http://localhost:8000",
+      fetchImpl: async (_input, init) => {
+        telemetryCalls.push(typeof init?.body === "string" ? init.body : "");
+        return new Response(null, { status: 202 });
+      },
+      isHidden: () => false,
+      isOnline: () => true,
+    });
+
+    const shapeFetch = createShapeFetch({
+      getToken: () => null,
+      apiBaseUrl: "http://localhost:8000",
+      fetch: async () => new Response("attachments error", { status: 503 }),
+    });
+
+    const response = await shapeFetch("/api/shapes/attachments?channel_id=c1");
+    expect(response.status).toBe(503);
+    await reporter.flush();
+    expect(telemetryCalls).toHaveLength(1);
+    expect(telemetryCalls[0]).toContain('"shape":"attachments"');
     reporter.dispose();
   });
 

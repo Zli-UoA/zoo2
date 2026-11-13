@@ -17,6 +17,7 @@ export type TelemetryElectricShape =
   | "channel_users"
   | "messages"
   | "message_reactions"
+  | "attachments"
   | "notifications"
   | "other";
 
@@ -145,7 +146,11 @@ export class TelemetryReporter {
   private queue: FrontendTelemetryEvent[] = [];
   private recentKeys = new Map<string, number>();
   private timerId: ReturnType<typeof setTimeout> | null = null;
-  private inFlight = false;
+  private activeNormalFlush: {
+    batch: FrontendTelemetryEvent[];
+    takenOverByKeepalive: boolean;
+    abortController: AbortController | null;
+  } | null = null;
   private failureCount = 0;
   private backoffUntil = 0;
 
@@ -169,6 +174,7 @@ export class TelemetryReporter {
     if (options.enabled !== undefined) {
       this.enabled = options.enabled;
       if (!this.enabled) {
+        this.cancelActiveNormalFlush();
         this.queue = [];
         this.stopTimer();
       }
@@ -214,7 +220,11 @@ export class TelemetryReporter {
   handleVisibilityOrNetworkChange(): void {
     if (this.isHidden() || !this.isOnline()) {
       this.stopTimer();
-      if (this.isHidden() && this.isOnline() && this.queue.length > 0) {
+      if (
+        this.isHidden() &&
+        this.isOnline() &&
+        (this.queue.length > 0 || this.activeNormalFlush !== null)
+      ) {
         void this.flush({ keepalive: true });
       }
       return;
@@ -224,12 +234,15 @@ export class TelemetryReporter {
 
   async flush(options: { keepalive?: boolean } = {}): Promise<void> {
     const keepalive = options.keepalive ?? false;
-    if (!this.enabled || this.queue.length === 0) {
+    if (
+      !this.enabled ||
+      (this.queue.length === 0 && (!keepalive || this.activeNormalFlush === null))
+    ) {
       this.stopTimer();
       return;
     }
     if (!keepalive) {
-      if (this.inFlight || !this.isOnline() || this.now() < this.backoffUntil) {
+      if (this.activeNormalFlush !== null || !this.isOnline() || this.now() < this.backoffUntil) {
         this.scheduleIfActive();
         return;
       }
@@ -238,12 +251,25 @@ export class TelemetryReporter {
     this.stopTimer();
     const endpoint = joinUrl(this.apiBaseUrl, "/api/telemetry");
     if (keepalive) {
+      if (this.activeNormalFlush && !this.activeNormalFlush.takenOverByKeepalive) {
+        const takenOver = this.activeNormalFlush;
+        takenOver.takenOverByKeepalive = true;
+        this.activeNormalFlush = null;
+        takenOver.abortController?.abort();
+        this.requeueBatch(takenOver.batch);
+      }
       await this.flushKeepaliveBatches(endpoint);
       return;
     }
 
     const batch = this.queue.splice(0, this.maxBatchEvents);
-    this.inFlight = true;
+    const abortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const flight = {
+      batch,
+      takenOverByKeepalive: false,
+      abortController,
+    };
+    this.activeNormalFlush = flight;
 
     try {
       const response = await this.fetchImpl(endpoint, {
@@ -251,7 +277,11 @@ export class TelemetryReporter {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ events: batch }),
         keepalive: false,
+        ...(abortController ? { signal: abortController.signal } : {}),
       });
+      if (flight.takenOverByKeepalive) {
+        return;
+      }
       if (response.ok) {
         this.failureCount = 0;
         this.backoffUntil = 0;
@@ -260,10 +290,15 @@ export class TelemetryReporter {
         this.recordFailure();
       }
     } catch {
+      if (flight.takenOverByKeepalive) {
+        return;
+      }
       this.requeueBatch(batch);
       this.recordFailure();
     } finally {
-      this.inFlight = false;
+      if (this.activeNormalFlush === flight) {
+        this.activeNormalFlush = null;
+      }
       this.scheduleIfActive();
     }
   }
@@ -353,8 +388,18 @@ export class TelemetryReporter {
 
   dispose(): void {
     this.stopTimer();
+    this.cancelActiveNormalFlush();
     this.queue = [];
     this.recentKeys.clear();
+  }
+
+  private cancelActiveNormalFlush(): void {
+    if (!this.activeNormalFlush) {
+      return;
+    }
+    this.activeNormalFlush.takenOverByKeepalive = true;
+    this.activeNormalFlush.abortController?.abort();
+    this.activeNormalFlush = null;
   }
 
   private recordFailure(): void {

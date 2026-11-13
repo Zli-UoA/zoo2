@@ -7,7 +7,7 @@ import {
   type UnauthorizedHandler,
 } from "../auth";
 import { joinUrl, type AppConfig } from "../config";
-import { reportApiError } from "../telemetry/capture";
+import { normalizeRouteGroup, reportApiError } from "../telemetry/capture";
 import { runWithHttpSpan } from "../telemetry/tracer";
 
 export interface ApiEnvelope<T> {
@@ -167,6 +167,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   async function request<T>(path: string, requestOptions: RequestOptions = {}): Promise<T> {
     const hasBody = requestOptions.body !== undefined;
     const method = requestOptions.method ?? "GET";
+    const requestRoute = telemetry ? normalizeRouteGroup() : undefined;
     const headers = await buildHeaders(requestOptions.headers, hasBody);
     const url = joinUrl(baseUrl, path);
     const startedAt = Date.now();
@@ -192,6 +193,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
               httpStatus: res.status,
               durationMs: Date.now() - startedAt,
               error: new Error(`HTTP ${res.status}`),
+              route: requestRoute,
               traceIds,
             });
           }
@@ -205,6 +207,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
               httpStatus: responseStatus >= 500 ? responseStatus : 0,
               durationMs: Date.now() - startedAt,
               error,
+              route: requestRoute,
               traceIds,
             });
           }

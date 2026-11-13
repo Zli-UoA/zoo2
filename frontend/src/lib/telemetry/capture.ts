@@ -56,6 +56,7 @@ export function inferElectricShape(urlOrPath: string): TelemetryElectricShape {
   const lowered = urlOrPath.toLowerCase();
   if (lowered.includes("message_reactions")) return "message_reactions";
   if (lowered.includes("channel_users")) return "channel_users";
+  if (lowered.includes("attachments")) return "attachments";
   if (lowered.includes("notifications")) return "notifications";
   if (lowered.includes("channels")) return "channels";
   if (lowered.includes("messages")) return "messages";
@@ -83,13 +84,14 @@ export function reportApiError(params: {
   httpStatus?: number;
   durationMs?: number;
   error?: unknown;
+  route?: string;
   traceIds?: ActiveTraceIds;
 }): void {
   const traceIds = params.traceIds ?? getActiveTraceIds();
   getTelemetryReporter().enqueue({
     kind: "error",
     category: "api",
-    route: normalizeRouteGroup(),
+    route: params.route ? normalizeRouteGroup(params.route) : normalizeRouteGroup(),
     http_status: params.httpStatus,
     duration_ms: params.durationMs,
     message: params.error ? sanitizeErrorMessage(params.error) : undefined,
@@ -114,6 +116,7 @@ export function reportElectricSyncEvent(params: {
   shape: TelemetryElectricShape;
   state: TelemetryElectricSyncState;
   httpStatus?: number;
+  route?: string;
   traceIds?: ActiveTraceIds;
 }): void {
   const traceIds = params.traceIds ?? getActiveTraceIds();
@@ -122,7 +125,7 @@ export function reportElectricSyncEvent(params: {
     shape: params.shape,
     state: params.state,
     http_status: params.httpStatus,
-    route: normalizeRouteGroup(),
+    route: params.route ? normalizeRouteGroup(params.route) : normalizeRouteGroup(),
     trace_id: traceIds.traceId,
     span_id: traceIds.spanId,
   });
@@ -194,9 +197,8 @@ export function installBrowserTelemetry(
           : undefined;
       const estimatedFromIds =
         perfInteractionCount === undefined &&
-        sorted.length >= 10 &&
         Number.isFinite(minInteractionId) &&
-        maxInteractionId >= minInteractionId
+        maxInteractionId > minInteractionId
           ? Math.floor((maxInteractionId - minInteractionId) / 7) + 1
           : 0;
       const totalInteractions = Math.max(
@@ -210,7 +212,20 @@ export function installBrowserTelemetry(
     return fallbackMaxInp;
   };
 
+  const observerEntries: Array<{
+    observer: PerformanceObserver;
+    process: (entries: PerformanceEntry[]) => void;
+  }> = [];
+
   const flushVitals = () => {
+    for (const { observer, process } of observerEntries) {
+      if (typeof observer.takeRecords === "function") {
+        const pending = observer.takeRecords();
+        if (pending.length > 0) {
+          process(pending);
+        }
+      }
+    }
     const currentRoute = normalizeRouteGroup();
     if (latestLcpMs !== null && !lcpReported) {
       lcpReported = true;
@@ -280,80 +295,80 @@ export function installBrowserTelemetry(
     document.addEventListener("visibilitychange", onVisibilityOrNetwork);
   }
 
-  const observers: PerformanceObserver[] = [];
   if (typeof PerformanceObserver !== "undefined") {
-    try {
-      const lcpObserver = new PerformanceObserver((list) => {
-        const entries = list.getEntries();
-        const last = entries.at(-1);
-        if (last && Number.isFinite(last.startTime) && last.startTime >= 0) {
-          latestLcpMs = last.startTime;
-          latestLcpRoute = normalizeRouteGroup();
-        }
-      });
-      lcpObserver.observe({ type: "largest-contentful-paint", buffered: true });
-      observers.push(lcpObserver);
-    } catch {
-      // Unsupported entry type
-    }
+    const observeWithHandler = (
+      options: PerformanceObserverInit & { durationThreshold?: number },
+      process: (entries: PerformanceEntry[]) => void,
+    ) => {
+      try {
+        const observer = new PerformanceObserver((list) => {
+          process(list.getEntries());
+        });
+        observer.observe(options);
+        observerEntries.push({ observer, process });
+      } catch {
+        // Unsupported entry type
+      }
+    };
 
-    try {
-      const paintObserver = new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          if (entry.name === "first-contentful-paint" && !fcpReported && entry.startTime >= 0) {
-            fcpReported = true;
-            reporter.enqueue({
-              kind: "web_vital",
-              metric: "fcp",
-              value_ms: Math.round(entry.startTime),
-              rating: vitalRating("fcp", entry.startTime),
-              route: normalizeRouteGroup(),
-            });
-          }
-        }
-      });
-      paintObserver.observe({ type: "paint", buffered: true });
-      observers.push(paintObserver);
-    } catch {
-      // Unsupported entry type
-    }
+    observeWithHandler({ type: "largest-contentful-paint", buffered: true }, (entries) => {
+      const last = entries.at(-1);
+      if (last && Number.isFinite(last.startTime) && last.startTime >= 0) {
+        latestLcpMs = last.startTime;
+        latestLcpRoute = normalizeRouteGroup();
+      }
+    });
 
-    try {
-      const navObserver = new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          if (ttfbReported) continue;
-          const nav = entry as PerformanceNavigationTiming & { activationStart?: number };
-          const activationStart =
-            typeof nav.activationStart === "number" && Number.isFinite(nav.activationStart)
-              ? Math.max(0, nav.activationStart)
-              : 0;
-          if (
-            typeof nav.responseStart === "number" &&
-            Number.isFinite(nav.responseStart) &&
-            nav.responseStart >= 0
-          ) {
-            const ttfb = Math.max(0, nav.responseStart - activationStart);
-            ttfbReported = true;
-            reporter.enqueue({
-              kind: "web_vital",
-              metric: "ttfb",
-              value_ms: Math.round(ttfb),
-              rating: vitalRating("ttfb", ttfb),
-              route: normalizeRouteGroup(),
-            });
-          }
+    observeWithHandler({ type: "paint", buffered: true }, (entries) => {
+      for (const entry of entries) {
+        if (entry.name === "first-contentful-paint" && !fcpReported && entry.startTime >= 0) {
+          fcpReported = true;
+          reporter.enqueue({
+            kind: "web_vital",
+            metric: "fcp",
+            value_ms: Math.round(entry.startTime),
+            rating: vitalRating("fcp", entry.startTime),
+            route: normalizeRouteGroup(),
+          });
         }
-      });
-      navObserver.observe({ type: "navigation", buffered: true });
-      observers.push(navObserver);
-    } catch {
-      // Unsupported entry type
-    }
+      }
+    });
 
-    try {
-      const eventObserver = new PerformanceObserver((list) => {
+    observeWithHandler({ type: "navigation", buffered: true }, (entries) => {
+      for (const entry of entries) {
+        if (ttfbReported) continue;
+        const nav = entry as PerformanceNavigationTiming & { activationStart?: number };
+        const activationStart =
+          typeof nav.activationStart === "number" && Number.isFinite(nav.activationStart)
+            ? Math.max(0, nav.activationStart)
+            : 0;
+        if (
+          typeof nav.responseStart === "number" &&
+          Number.isFinite(nav.responseStart) &&
+          nav.responseStart >= 0
+        ) {
+          const ttfb = Math.max(0, nav.responseStart - activationStart);
+          ttfbReported = true;
+          reporter.enqueue({
+            kind: "web_vital",
+            metric: "ttfb",
+            value_ms: Math.round(ttfb),
+            rating: vitalRating("ttfb", ttfb),
+            route: normalizeRouteGroup(),
+          });
+        }
+      }
+    });
+
+    observeWithHandler(
+      {
+        type: "event",
+        buffered: true,
+        durationThreshold: 16,
+      },
+      (entries) => {
         const routeAtObservation = normalizeRouteGroup();
-        for (const entry of list.getEntries()) {
+        for (const entry of entries) {
           const eventEntry = entry as PerformanceEntry & { interactionId?: number };
           const duration = entry.duration;
           if (!Number.isFinite(duration) || duration < 0) {
@@ -375,16 +390,8 @@ export function installBrowserTelemetry(
             }
           }
         }
-      });
-      eventObserver.observe({
-        type: "event",
-        buffered: true,
-        durationThreshold: 16,
-      } as PerformanceObserverInit & { durationThreshold?: number });
-      observers.push(eventObserver);
-    } catch {
-      // Unsupported entry type
-    }
+      },
+    );
   }
 
   const uninstall = () => {
@@ -396,7 +403,7 @@ export function installBrowserTelemetry(
     if (typeof document !== "undefined") {
       document.removeEventListener("visibilitychange", onVisibilityOrNetwork);
     }
-    for (const observer of observers) {
+    for (const { observer } of observerEntries) {
       observer.disconnect();
     }
     uninstallActive = null;

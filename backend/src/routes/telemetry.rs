@@ -170,6 +170,7 @@ pub enum ElectricShape {
     ChannelUsers,
     Messages,
     MessageReactions,
+    Attachments,
     Notifications,
     Other,
 }
@@ -182,6 +183,7 @@ impl ElectricShape {
             Self::ChannelUsers => "channel_users",
             Self::Messages => "messages",
             Self::MessageReactions => "message_reactions",
+            Self::Attachments => "attachments",
             Self::Notifications => "notifications",
             Self::Other => "other",
         }
@@ -743,6 +745,13 @@ mod tests {
                     "value_ms": 1200.0,
                     "rating": "good",
                     "route": "/home"
+                },
+                {
+                    "kind": "electric_sync",
+                    "shape": "attachments",
+                    "state": "error",
+                    "http_status": 503,
+                    "route": "/channels"
                 }
             ]
         });
