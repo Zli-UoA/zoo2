@@ -390,6 +390,48 @@ describe("E2eeDeviceManager", () => {
     await instance.stop();
   });
 
+  it("ログアウトのために開いて保存鍵を作り直していたら、前の端末も消す", async () => {
+    const OLD = "00000000-0000-4000-8000-0000000000d0";
+    const { worker } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: false, replacedDeviceId: OLD },
+    });
+    const { client, requests } = fakeClient();
+    const instance = manager(worker, client);
+    await instance.attach();
+    expect(readPendingDeviceDeletions()).toContainEqual({ userId: USER, deviceId: OLD });
+    await instance.destroy();
+    const deleted = requests.filter((r) => r.method === "DELETE").map((r) => r.path);
+    expect(deleted).toEqual([`/api/e2ee/devices/${DEVICE}`, `/api/e2ee/devices/${OLD}`]);
+    expect(readPendingDeviceDeletions()).toEqual([]);
+  });
+
+  it("受信中に端末が消されていたら（ack が 404）、作り直して登録し直す", async () => {
+    const { worker, calls } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+    });
+    const { client } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw new ApiError(404, "gone");
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() =>
+      expect(calls.map((call) => call.op)).toEqual(expect.arrayContaining(["destroy"])),
+    );
+    await vi.waitFor(() => expect(calls.filter((call) => call.op === "open")).toHaveLength(2));
+    await instance.stop();
+  });
+
   it("別のユーザーの削除待ちを上書きしない", async () => {
     markDeviceDeletionPending({ userId: "other", deviceId: "d-other" });
     markDeviceDeletionPending({ userId: USER, deviceId: DEVICE });

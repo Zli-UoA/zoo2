@@ -71,6 +71,8 @@ export class E2eeDeviceManager {
   private processAbort = new AbortController();
   /** 登録の要求の結果がまだ分からない。分からないうちは、ログアウトで端末を消さない。 */
   private registering = false;
+  /** ログアウトのために開いたとき、保存鍵を失って作り直した前の端末（これも消す）。 */
+  private readonly replacedDeviceIds: string[] = [];
 
   constructor(private readonly options: E2eeDeviceManagerOptions) {}
 
@@ -144,6 +146,12 @@ export class E2eeDeviceManager {
     // 登録の応答をなくした端末は、サーバーにはあるのに手元では未登録のまま。どちらでも
     // 削除 API を呼ぶ（冪等で、サーバーになければ 404 になり、消すものがないと分かる）。
     this.deviceId = opened.deviceId;
+    if (opened.replacedDeviceId) {
+      // 保存鍵を失って作り直した。前の端末の ID はもう暗号ストアにないので、先に削除待ちに
+      // 残し、ログアウトで一緒に消す。
+      markDeviceDeletionPending({ userId: this.options.userId, deviceId: opened.replacedDeviceId });
+      this.replacedDeviceIds.push(opened.replacedDeviceId);
+    }
   }
 
   private async ensureRegistered(registered: boolean, deviceId: string): Promise<KeyCounts> {
@@ -196,7 +204,13 @@ export class E2eeDeviceManager {
           this.dirty = false;
           await this.process(this.latestRows);
         }
-      } catch {
+      } catch (error) {
+        // 受信の途中で、端末が別の端末から消されていた（ack や補充が 404）。同じ端末で試し直しても
+        // 直らないので、起動と同じく暗号ストアを作り直して、新しい端末として登録し直す。
+        if (isDeviceGone(error) && !this.stopped && !this.suspended) {
+          void this.reregister();
+          return;
+        }
         // オフラインなどで失敗したら、少し待って残っている行と鍵の補充を試し直す。
         if (!this.stopped && !this.suspended) {
           this.retryTimer = setTimeout(() => {
@@ -237,6 +251,27 @@ export class E2eeDeviceManager {
       await this.replenish(await uploadKeys(client, deviceId, null, signal), signal);
     }
     if (rowsFailure) throw rowsFailure;
+  }
+
+  /** 端末が消されていたので、暗号ストアを作り直して起動し直す。失敗したら試し直す。 */
+  private async reregister(): Promise<void> {
+    this.subscription?.unsubscribe();
+    this.subscription = null;
+    this.latestRows = [];
+    this.needsReplenish = false;
+    try {
+      await this.options.worker.request({ op: "destroy", namespace: this.options.namespace });
+      this.deviceId = null;
+      if (this.stopped) return;
+      await this.start();
+    } catch {
+      if (!this.stopped && !this.suspended) {
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          void this.reregister();
+        }, this.options.retryDelayMs ?? 30_000);
+      }
+    }
   }
 
   /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
@@ -291,6 +326,7 @@ export class E2eeDeviceManager {
     // 待っても登録の結果が分からなければ、いま消すと、そのあとに登録が届いて端末が残りうる
     // （404 で削除待ちを外してしまう）。削除待ちに残し、次のログインで消し直す。
     if (deviceId && !this.registering) await this.deleteDeviceOrRemember(deviceId);
+    for (const replaced of this.replacedDeviceIds) await this.deleteDeviceOrRemember(replaced);
   }
 
   private halt(): void {

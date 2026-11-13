@@ -128,6 +128,9 @@ export class CryptoOperations {
         if (this.storeName === name) {
           this.store = null;
           this.storeName = null;
+        }
+        // 開き直しに失敗したあと（storeName が null）でも、消したストアを開き直さない。
+        if (this.lastOpen?.namespace === request.namespace) {
           this.lastOpen = null;
           this.reopenPending = false;
         }
