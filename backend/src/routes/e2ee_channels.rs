@@ -167,6 +167,65 @@ pub fn disabled() -> AppError {
     )
 }
 
+pub fn webhooks_forbidden() -> AppError {
+    coded(
+        StatusCode::FORBIDDEN,
+        "E2EE_WEBHOOKS_FORBIDDEN",
+        "Incoming webhooks cannot post to an encrypted channel",
+        Value::Null,
+    )
+}
+
+/// チャンネルが暗号化チャンネルか（ないチャンネルは false）。
+pub async fn is_encrypted_channel(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+) -> Result<bool, AppError> {
+    Ok(first(
+        tx,
+        "SELECT json_build_object('encrypted', encrypted)::text FROM channels WHERE id = $1",
+        &[channel_id],
+    )
+    .await?
+    .is_some_and(|row| row["encrypted"] == true))
+}
+
+// ---------------------------------------------------------------------------
+// mentions
+
+/// 1 通の `mentions.user_ids` の上限（暗号化チャンネルのメンバー数の上限と同じ）。
+pub const MAX_MENTION_USERS: usize = MAX_ENCRYPTED_CHANNEL_MEMBERS as usize;
+
+/// 暗号化チャンネルの送信で、送信側が平文で付けるメンション（#358。docs/e2ee.md の「機能ごとの扱い」）。
+///
+/// サーバーは本文を読めないので、メンション通知と Web Push の宛先はこれだけから作る。
+/// 平文チャンネルでは使わない（今までどおり本文から作る）。
+#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq)]
+pub struct Mentions {
+    /// メンションしたユーザーの ID。
+    #[serde(default)]
+    pub user_ids: Vec<String>,
+    /// `@channel`。
+    #[serde(default)]
+    pub channel: bool,
+    /// `@here`。
+    #[serde(default)]
+    pub here: bool,
+}
+
+/// `mentions` の形を確かめる。`user_ids` は UUID だけ（重複は通知を作るときに 1 つにまとまる）。
+pub fn check_mentions(mentions: &Mentions) -> Result<(), AppError> {
+    if mentions.user_ids.len() > MAX_MENTION_USERS {
+        return Err(limit_exceeded("mentions"));
+    }
+    for id in &mentions.user_ids {
+        uuid::Uuid::parse_str(id).map_err(|_| {
+            AppError::BadRequest(format!("mentions.user_ids has an invalid user id: {id}"))
+        })?;
+    }
+    Ok(())
+}
+
 /// `encrypted: true` の作成を受け付けるか。App（委任トークンを含む）は設定によらず拒否する
 /// （判定の順は、App かどうか、設定）。
 pub fn check_encrypted_creation(state: &AppState, from_app: bool) -> Result<(), AppError> {
@@ -602,6 +661,36 @@ mod tests {
             "master_key": null, "self_signing_key": null, "user_signing_key": null,
             "signatures": [], "tofu_pin": null,
         })
+    }
+
+    #[test]
+    fn mentions_shape() {
+        let parsed: Mentions = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(parsed, Mentions::default());
+        let ok = Mentions {
+            user_ids: vec![uuid::Uuid::new_v4().to_string()],
+            channel: true,
+            here: false,
+        };
+        assert!(check_mentions(&ok).is_ok());
+        let bad = Mentions {
+            user_ids: vec!["alice".into()],
+            ..Mentions::default()
+        };
+        assert!(matches!(
+            check_mentions(&bad).unwrap_err(),
+            AppError::BadRequest(_)
+        ));
+        let many = Mentions {
+            user_ids: (0..=MAX_MENTION_USERS)
+                .map(|_| uuid::Uuid::new_v4().to_string())
+                .collect(),
+            ..Mentions::default()
+        };
+        assert!(matches!(
+            check_mentions(&many).unwrap_err(),
+            AppError::Coded { code: "E2EE_LIMIT_EXCEEDED", ref extra, .. } if extra["limit"] == "mentions"
+        ));
     }
 
     #[test]

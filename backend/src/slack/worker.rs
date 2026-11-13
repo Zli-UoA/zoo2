@@ -161,33 +161,56 @@ pub async fn run_once_until(s: &AppState, stop: &mut Stop) -> Result<Step, AppEr
         return Ok(Step::Idle);
     };
     let lease = Lease::start(s.clone(), job.id.clone(), job.token.clone());
-    tracing::info!(import_id = %job.id, status = %job.status, attempt = job.attempts, "Slack import step started");
+    let step_name = job.status.clone();
+    let span = tracing::info_span!(
+        "slack_import_step",
+        import_id = %job.id,
+        step = %step_name,
+        attempt = job.attempts
+    );
+    let started = std::time::Instant::now();
+    span.in_scope(|| {
+        tracing::info!(import_id = %job.id, status = %step_name, attempt = job.attempts, "Slack import step started");
+    });
+
+    use tracing::Instrument;
     let step = async {
-        match job.status.as_str() {
+        match step_name.as_str() {
             "analyzing" => analyze(s, &job, &lease).await,
             "importing" => import(s, &job, &lease).await,
             "fetching_files" => fetch_files(s, &job, &lease).await,
             _ => Ok(()),
         }
-    };
+    }
+    .instrument(span.clone());
     let result = tokio::select! {
         result = step => result,
         _ = stopped(stop) => {
             // 段階の future はここで捨てられる (トランザクションはロールバックされる)
             drop(lease);
             match tokio::time::timeout(RELEASE_TIMEOUT, release_job(s, &job.id, &job.token)).await {
-                Ok(Ok(true)) => tracing::info!(import_id = %job.id, "Released the Slack import job for shutdown"),
-                Ok(Ok(false)) => tracing::warn!(import_id = %job.id, "Slack import lease was already lost at shutdown"),
-                Ok(Err(e)) => tracing::warn!(import_id = %job.id, error = %e, "Failed to release the Slack import job; the lease will expire"),
-                Err(_) => tracing::warn!(import_id = %job.id, "Timed out releasing the Slack import job; the lease will expire"),
+                Ok(Ok(true)) => span.in_scope(|| tracing::info!(import_id = %job.id, "Released the Slack import job for shutdown")),
+                Ok(Ok(false)) => span.in_scope(|| tracing::warn!(import_id = %job.id, "Slack import lease was already lost at shutdown")),
+                Ok(Err(e)) => span.in_scope(|| tracing::warn!(import_id = %job.id, error = %e, "Failed to release the Slack import job; the lease will expire")),
+                Err(_) => span.in_scope(|| tracing::warn!(import_id = %job.id, "Timed out releasing the Slack import job; the lease will expire")),
             }
+            crate::metrics::record_slack_import_step(&step_name, "stopped", started.elapsed().as_secs_f64());
             return Ok(Step::Stopped);
         }
     };
     drop(lease);
     if let Err(e) = result {
-        tracing::warn!(import_id = %job.id, error = %e, "Slack import step failed");
+        span.in_scope(
+            || tracing::warn!(import_id = %job.id, error = %e, "Slack import step failed"),
+        );
+        crate::metrics::record_slack_import_step(
+            &step_name,
+            "err",
+            started.elapsed().as_secs_f64(),
+        );
         fail(s, &job, &e).await?;
+    } else {
+        crate::metrics::record_slack_import_step(&step_name, "ok", started.elapsed().as_secs_f64());
     }
     Ok(Step::Ran)
 }
@@ -902,8 +925,32 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             super::import::ensure_same_target(&mut tx, &team, mapping)
                 .await
                 .map_err(|e| AppError::BadRequest(e.to_string()))?;
-            if matches!(mapping.action, MappingAction::Skip) {
-                continue;
+            // 以前の取り込みで作ったチャンネルや既存のチャンネルに入れるなら、開始後に外されていないか確かめる
+            let reused = match &mapping.action {
+                MappingAction::Skip => continue,
+                MappingAction::Existing { channel_id } => Some(channel_id.clone()),
+                MappingAction::Create { .. } => {
+                    let own = super::channel_id(&team, &channel.id);
+                    let exists = !query(
+                        &mut tx,
+                        "SELECT json_build_object('id',id)::text FROM channels WHERE id=$1",
+                        &[&own],
+                    )
+                    .await?
+                    .is_empty();
+                    exists.then_some(own)
+                }
+            };
+            if let Some(channel_id) = &reused {
+                ensure_plaintext_allowed(&mut tx, channel_id).await?;
+            } else if matches!(mapping.action, MappingAction::Create { .. })
+                && crate::apps::events::guest(&mut tx, &job.created_by).await?
+            {
+                // 開始した後でゲストになった場合も、通常のチャンネル作成と同じく新しいチャンネルは作らない
+                return Err(AppError::BadRequest(format!(
+                    "Guests cannot create channels by importing from Slack ({})",
+                    channel.id
+                )));
             }
             let (target, private) = match &mapping.action {
                 MappingAction::Skip => continue,
@@ -980,6 +1027,8 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         {
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
+            // メンバーを足す直前にも、実行者がまだ取り込み先にメンバーを足せるか確かめる
+            ensure_plaintext_allowed(&mut tx, channel_id).await?;
             for member in &channel.members {
                 let user = ctx.user(&mut tx, member, None).await?;
                 // 連携したゲストは、管理者が決めたチャンネルにだけ参加する (取り込みでは足さない)。
@@ -1136,7 +1185,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         "completed"
     };
     // Slack でアーカイブ済みのチャンネルと、管理者がアーカイブを指定したチャンネルは、作った取り込み先も最後に
-    // まとめてアーカイブする。途中でアーカイブすると、再開したときに取り込み先が変わってしまうため。
+    // まとめてアーカイブする。途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_plaintext_allowed`) で止まるため。
     for (_channel, channel_id, archive) in &targets {
         if *archive {
             exec(
@@ -1164,6 +1213,17 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     .await?;
     tx.commit().await?;
     // ZIP はエクスポートとして残し、管理者が消すか新しい ZIP に置き換わるまで使う
+    Ok(())
+}
+
+/// 開始のあとに暗号化チャンネルになった場合 (#367) も、ジョブの実行時に書き込みを止める (#358)
+async fn ensure_plaintext_allowed(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+) -> Result<(), AppError> {
+    if crate::routes::e2ee_channels::is_encrypted_channel(tx, channel_id).await? {
+        return Err(crate::routes::e2ee_channels::plaintext_forbidden());
+    }
     Ok(())
 }
 

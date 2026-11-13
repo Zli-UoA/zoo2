@@ -2,6 +2,9 @@
   "nav": {
     "main": "주요 탐색"
   },
+  "telemetry": {
+    "unexpectedError": "화면을 표시하는 중 문제가 발생하였습니다. 페이지를 다시 읽어 주십시오."
+  },
   "channels": {
     "view": "열기",
     "unread": "읽지 않은 통보문이 있습니다",
@@ -15,7 +18,7 @@
     "empty": "통로가 없습니다.",
     "createAction": "만들기",
     "browseTitle": "통로 찾기",
-    "browseDescription": "공개 통로의 통보문을 참가하지 않고 볼수 있습니다.",
+    "browseDescription": "공개 통로와 보관된 통로의 통보문을 참가하지 않고 볼수 있습니다.",
     "browseSearch": "통로 이름으로 검색",
     "searchClear": "검색 지우기",
     "searchEmpty": "일치하는 통로가 없습니다.",
@@ -26,7 +29,6 @@
     "noJoined": "참가하고 있는 통로가 없습니다.",
     "join": "참가",
     "joining": "참가하는 중…",
-    "joinUnavailable": "참가 불가",
     "notFound": "통로를 찾을수 없습니다.",
     "duplicateName": "같은 이름의 통로가 이미 있습니다.",
     "privateMessages": "이 통로는 비공개입니다. 초대를 받으면 통보문을 볼수 있습니다.",
@@ -55,6 +57,7 @@
   },
   "auth": {
     "logout": "로그아웃",
+    "profile": "프로필 편집",
     "loggedOut": "로그아웃했습니다",
     "loggedOutHelp": "계속하려면 다시 로그인하십시오.",
     "desktopOutdated": "탁상용 프로그람을 갱신해야 합니다",

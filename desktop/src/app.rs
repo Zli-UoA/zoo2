@@ -18,7 +18,7 @@ use zoo2_client_core::{
     config::{AuthConfig, Config},
     electric::{
         self, Change, ShapeEvent, ShapeId,
-        rows::{Attachment, Channel, FromRow, Message},
+        rows::{Attachment, Channel, Message},
     },
     http::{Credentials, HttpError},
     poll::PollGate,
@@ -75,15 +75,6 @@ pub struct CachedAttachmentUrl {
     pub url: String,
     pub fetched_at: Instant,
     pub ttl_secs: u64,
-}
-
-/// OS ネイティブ通知を送信する。
-pub fn notify_desktop(title: &str, body: &str) {
-    let _ = notify_rust::Notification::new()
-        .appname("zoo2")
-        .summary(title)
-        .body(body)
-        .show();
 }
 
 /// 拡張子から簡易 MIME タイプを判定する。
@@ -151,62 +142,6 @@ pub struct FailedDraft {
     pub content: String,
     pub attachments: Vec<PendingAttachment>,
     pub message_id: Option<String>,
-}
-
-const MENTION_PUNCTUATION: &[char] = &['.', ',', '!', '?', ':', ';', '。', '、', '！', '？'];
-
-fn is_mention_boundary_char(prev: char) -> bool {
-    prev.is_whitespace()
-        || matches!(
-            prev,
-            '(' | '[' | '{' | '<' | '（' | '「' | '『' | '"' | '\'' | '。' | '、'
-        )
-}
-
-/// 本文が指定ユーザー宛てメンションまたは `@channel` / `@here` を含むかを判定する。
-/// `backend/src/notifications.rs` の境界判定・末尾句読点トリム規則と整合させ、メールアドレスやURLの誤検知を防ぐ。
-pub fn has_mention_for(content: &str, me_user_name: &str) -> bool {
-    let chars: Vec<char> = content.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if chars[i] == '@' {
-            let is_boundary = i == 0 || is_mention_boundary_char(chars[i - 1]);
-            if is_boundary {
-                let start = i + 1;
-                let mut end = start;
-                while end < len {
-                    let c = chars[end];
-                    if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                        end += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                if end > start {
-                    let token: String = chars[start..end].iter().collect();
-                    let trimmed_token = token.trim_end_matches(MENTION_PUNCTUATION);
-
-                    if trimmed_token.eq_ignore_ascii_case("channel")
-                        || trimmed_token.eq_ignore_ascii_case("here")
-                    {
-                        return true;
-                    }
-                    if !me_user_name.is_empty()
-                        && (token == me_user_name || trimmed_token == me_user_name)
-                    {
-                        return true;
-                    }
-                    i = end;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    false
 }
 
 /// 送信待ちの添付ファイル。
@@ -304,6 +239,8 @@ pub struct ChannelViewCache {
 /// バックグラウンドタスクから `AppState` へ届くイベント。
 #[derive(Debug)]
 pub enum AppEvent {
+    /// DND の取得結果。`Some(until)` は取得成功、`None` は失敗 (前の値を保つ)。
+    Dnd(Option<Option<jiff::civil::DateTime>>),
     Notice(String),
     Unauthorized,
     AccountProfiles(zoo2_client_core::store::AccountProfiles),
@@ -368,10 +305,34 @@ pub enum AppEvent {
 /// Tokio タスク群から GPUI の `Entity<AppState>` へ橋渡しする統合イベント。
 #[derive(Debug)]
 pub enum DesktopEvent {
-    Auth { session_gen: u64, event: AuthEvent },
-    Shape { session_gen: u64, event: ShapeEvent },
-    App { session_gen: u64, event: AppEvent },
-    Tick { session_gen: u64 },
+    Auth {
+        session_gen: u64,
+        event: AuthEvent,
+    },
+    Shape {
+        session_gen: u64,
+        event: ShapeEvent,
+    },
+    App {
+        session_gen: u64,
+        event: AppEvent,
+    },
+    Tick {
+        session_gen: u64,
+    },
+    LogoutFinished {
+        session_gen: u64,
+        result: Result<Vec<String>, (String, bool)>,
+    },
+    AuthPersisted {
+        session_gen: u64,
+        event: AuthEvent,
+        error: Option<String>,
+    },
+    CancelFinished {
+        session_gen: u64,
+        result: Result<Vec<String>, (String, bool)>,
+    },
 }
 
 /// デスクトップ版のアプリケーション状態 (`Entity<AppState>`)。
@@ -387,6 +348,9 @@ pub struct AppState {
     /// ログイン画面のフェーズ (`None` のときはログイン済みでチャット画面を表示)。
     pub login_phase: Option<LoginPhase>,
     pub login_task: Option<JoinHandle<()>>,
+    logout_in_progress: bool,
+    deferred_unauthorized: bool,
+    cancel_in_progress: bool,
     /// 実行中のデバイスログインでトークン保存が完了したマネージャ。
     /// 承認完了後にキャンセルされた場合、このマネージャが保存したトークンのみを削除・失効するために保持する。
     pub pending_device_login_manager:
@@ -394,6 +358,7 @@ pub struct AppState {
 
     pub credentials: Option<Credentials>,
     pub token_manager: Option<Arc<login::DesktopTokenManager>>,
+    recovery_manager: Option<Arc<login::DesktopTokenManager>>,
     pub api: Option<ApiClient>,
     pub me: Option<Me>,
     pub me_is_admin: bool,
@@ -509,6 +474,10 @@ pub struct AppState {
     pub notifications_enabled: bool,
     /// OS 通知送信ハンドラ（テストでの通知検証用やモック用）。
     pub notification_sink: Option<NotificationSink>,
+    /// `GET /api/users/me/profile` の `dnd_until` (UTC)。
+    pub dnd_until: Option<jiff::civil::DateTime>,
+    /// DND を一度でも取りにいったか。取れなかった場合も true にして、通知を止め続けない。
+    pub dnd_checked: bool,
     /// 検索移動時などに指定位置までスクロールするためのメッセージ ID。
     pub pending_scroll_to_message_id: Option<String>,
     /// モーダルや検索バーを閉じた後に composer へフォーカスを復帰させるフラグ。
@@ -581,9 +550,13 @@ impl AppState {
             event_tx,
             login_phase: Some(LoginPhase::Checking),
             login_task: None,
+            logout_in_progress: false,
+            deferred_unauthorized: false,
+            cancel_in_progress: false,
             pending_device_login_manager: Arc::new(std::sync::Mutex::new(None)),
             credentials: None,
             token_manager: None,
+            recovery_manager: None,
             api: None,
             me: None,
             me_is_admin: false,
@@ -652,6 +625,8 @@ impl AppState {
             theme_mode: crate::theme::ThemeMode::Dark,
             notifications_enabled: true,
             notification_sink: None,
+            dnd_until: None,
+            dnd_checked: false,
             pending_scroll_to_message_id: None,
             pending_focus_composer: false,
             pending_open_attachments: HashSet::new(),
@@ -724,6 +699,10 @@ impl AppState {
             task.abort();
         }
         let session_gen = self.bump_session_gen();
+        let recovery_manager = self.recovery_manager.clone();
+        if let Some(manager) = &recovery_manager {
+            manager.bind_to_session_gen(session_gen);
+        }
         let active_session_gen = self.active_session_gen.clone();
         self.login_phase = Some(LoginPhase::Checking);
         let http = self.http.clone();
@@ -744,13 +723,34 @@ impl AppState {
                     }
                 }
             });
-            login::connect_initial(http, config, session_gen, active_session_gen, auth_tx).await;
+            if let Some(manager) = recovery_manager {
+                login::retry_pending_session(http, config, manager, auth_tx).await;
+            } else {
+                login::connect_initial(http, config, session_gen, active_session_gen, auth_tx)
+                    .await;
+            }
             let _ = forward.await;
         });
     }
 
     /// OIDC デバイスコード認証を開始する。
     pub fn start_device_login(&mut self) {
+        if self.recovery_manager.is_some() {
+            self.start_initial_auth();
+            return;
+        }
+        if self.cancel_in_progress {
+            return;
+        }
+        if self
+            .pending_device_login_manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            self.cancel_device_login();
+            return;
+        }
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
@@ -794,59 +794,164 @@ impl AppState {
     /// 世代番号を進め、このログイン試行が承認後にトークンを保存していた場合のみ削除・失効して次回起動時の誤接続を防ぐ。
     /// 承認前キャンセル時は、以前から存在していた正常なトークンファイルを誤削除しない。
     pub fn cancel_device_login(&mut self) {
+        if self.cancel_in_progress {
+            return;
+        }
+        if self.recovery_manager.is_some() {
+            if let Some(task) = self.login_task.take() {
+                task.abort();
+            }
+            self.bump_session_gen();
+            self.login_phase = Some(LoginPhase::Ready { error: Some("認証情報を保存できていません。保存領域の復旧後に再試行してください。アプリ終了時には更新済み token が失われる可能性があります".into()) });
+            return;
+        }
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
         self.bump_session_gen();
-        if let Some(manager) = self
+        let manager = self
             .pending_device_login_manager
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            let delete_res = manager.logout_and_delete();
-            if let Ok(Some(refresh_token)) = delete_res
-                && let AuthConfig::Oidc(oidc) = self.config.auth.clone()
+            .clone();
+        if let Some(manager) = manager {
+            self.cancel_in_progress = true;
+            self.login_phase = Some(LoginPhase::Checking);
+            let tx = self.event_tx.clone();
+            let session_gen = self.session_gen;
+            let http = self.http.clone();
+            let auth = self.config.auth.clone();
+            if self
+                .spawn_tokio(async move {
+                    let result = tokio::task::spawn_blocking(move || manager.logout_and_delete())
+                        .await
+                        .map_err(|e| (e.to_string(), false))
+                        .and_then(|r| {
+                            r.map_err(|e| (format!("{e:#}"), e.is::<login::SessionChanged>()))
+                        });
+                    if let (Ok(tokens), AuthConfig::Oidc(oidc)) = (&result, auth) {
+                        let tokens = tokens.clone();
+                        tokio::spawn(async move {
+                            for refresh_token in tokens {
+                                login::revoke_refresh_token(
+                                    http.clone(),
+                                    oidc.clone(),
+                                    refresh_token,
+                                )
+                                .await;
+                            }
+                        });
+                    }
+                    let result = result.map(|_| Vec::new());
+                    let _ = tx.send(DesktopEvent::CancelFinished {
+                        session_gen,
+                        result,
+                    });
+                })
+                .is_none()
             {
-                let http = self.http.clone();
-                self.spawn_tokio(async move {
-                    login::revoke_refresh_token(http, oidc, refresh_token).await;
+                self.cancel_in_progress = false;
+                self.login_phase = Some(LoginPhase::Ready {
+                    error: Some("ログイン取消を開始できませんでした".into()),
                 });
             }
+        } else {
+            self.login_phase = Some(LoginPhase::Ready { error: None });
         }
-        self.login_phase = Some(LoginPhase::Ready { error: None });
     }
 
     /// ログアウトしてトークンを削除し、ログイン画面へ戻る。
     /// ローカルトークンの削除をタスク中断より前に確定させるため、削除に失敗した場合はタスクや実行中フラグを壊さずにログイン状態を維持する。
     pub fn logout(&mut self) {
         if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
-            let delete_res = match &self.token_manager {
-                Some(tm) => tm.logout_and_delete(),
-                None => login::delete_local_token_for_logout(&self.config).map(|(_, rt)| rt),
-            };
-            match delete_res {
-                Ok(refresh_token) => {
-                    self.stop_typing();
-                    self.preserved_unauthorized_drafts = None;
-                    self.reset_to_login(None);
-                    if let Some(refresh_token) = refresh_token {
-                        let http = self.http.clone();
-                        self.spawn_tokio(async move {
-                            login::revoke_refresh_token(http, oidc, refresh_token).await;
+            if self.logout_in_progress {
+                return;
+            }
+            let manager = self.token_manager.clone();
+            let tx = self.event_tx.clone();
+            let session_gen = self.session_gen;
+            let http = self.http.clone();
+            self.logout_in_progress = true;
+            if self
+                .spawn_tokio(async move {
+                    let result = tokio::task::spawn_blocking(move || match manager {
+                        Some(tm) => tm.logout_and_delete(),
+                        None => Err(anyhow::anyhow!("現在のログイン状態を確認できません")),
+                    })
+                    .await
+                    .map_err(|e| (e.to_string(), false))
+                    .and_then(|r| {
+                        r.map_err(|e| (format!("{e:#}"), e.is::<login::SessionChanged>()))
+                    });
+                    if let Ok(tokens) = &result {
+                        let tokens = tokens.clone();
+                        tokio::spawn(async move {
+                            for refresh_token in tokens {
+                                login::revoke_refresh_token(
+                                    http.clone(),
+                                    oidc.clone(),
+                                    refresh_token,
+                                )
+                                .await;
+                            }
                         });
                     }
-                }
-                Err(err) => {
-                    self.notify(format!(
-                        "ログアウトに失敗しました（トークン削除エラー）: {err:#}"
-                    ));
-                }
+                    let result = result.map(|_| Vec::new());
+                    let _ = tx.send(DesktopEvent::LogoutFinished {
+                        session_gen,
+                        result,
+                    });
+                })
+                .is_none()
+            {
+                self.logout_in_progress = false;
+                self.notify("ログアウトを開始できませんでした");
             }
         } else {
             self.stop_typing();
             self.preserved_unauthorized_drafts = None;
             self.reset_to_login(None);
+        }
+    }
+
+    fn finish_logout(&mut self, result: Result<Vec<String>, (String, bool)>) {
+        self.logout_in_progress = false;
+        let deferred_unauthorized = std::mem::take(&mut self.deferred_unauthorized);
+        if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
+            match result {
+                Ok(refresh_tokens) => {
+                    self.stop_typing();
+                    self.preserved_unauthorized_drafts = None;
+                    self.reset_to_login(None);
+                    if !refresh_tokens.is_empty() {
+                        let http = self.http.clone();
+                        self.spawn_tokio(async move {
+                            for refresh_token in refresh_tokens {
+                                login::revoke_refresh_token(
+                                    http.clone(),
+                                    oidc.clone(),
+                                    refresh_token,
+                                )
+                                .await;
+                            }
+                        });
+                    }
+                }
+                Err((_, true)) => {
+                    self.stop_typing();
+                    self.preserved_unauthorized_drafts = None;
+                    self.reset_to_login(Some("別のログインを保持してログアウトしました".into()));
+                }
+                Err((err, false)) => {
+                    let message =
+                        format!("ログアウトに失敗しました（トークン削除エラー）: {err:#}");
+                    if deferred_unauthorized {
+                        self.reset_to_login_after_unauthorized(message);
+                    } else {
+                        self.notify(message);
+                    }
+                }
+            }
         }
     }
 
@@ -881,7 +986,7 @@ impl AppState {
     }
 
     /// 現在のセッションに紐づくバックグラウンドタスクを起動し、`background_tasks` に登録する。
-    fn spawn_session_task<F>(&mut self, future: F) -> bool
+    pub(crate) fn spawn_session_task<F>(&mut self, future: F) -> bool
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -1017,6 +1122,8 @@ impl AppState {
         self.credentials = None;
         self.api = None;
         self.me = None;
+        self.dnd_until = None;
+        self.dnd_checked = false;
         self.me_is_admin = false;
         self.session_id = uuid::Uuid::new_v4().to_string();
         self.current_channel = None;
@@ -1079,13 +1186,43 @@ impl AppState {
         self.login_phase = Some(LoginPhase::Ready { error });
     }
 
+    fn reset_to_login_after_unauthorized(&mut self, error: String) {
+        if self.logout_in_progress {
+            self.deferred_unauthorized = true;
+            return;
+        }
+        let recovery = self
+            .token_manager
+            .take()
+            .filter(|manager| manager.retain_pending_or_disable());
+        let generation = self.bump_session_gen();
+        self.clear_session_state();
+        if let Some(manager) = recovery {
+            manager.bind_to_session_gen(generation);
+            self.recovery_manager = Some(manager);
+            self.login_phase = Some(LoginPhase::Ready {
+                error: Some(
+                    "更新済みの認証情報を保存できていません。保存領域を確認し、再試行してください"
+                        .into(),
+                ),
+            });
+        } else {
+            self.login_phase = Some(LoginPhase::Ready { error: Some(error) });
+        }
+    }
+
     pub fn notify(&mut self, message: impl Into<String>) {
         self.notice = Some((message.into(), Instant::now()));
     }
 
     /// 現在発生している Shape 同期エラーの表示文字列を返す。
     pub fn sync_error(&self) -> Option<String> {
-        for shape in [ShapeId::Channels, ShapeId::Users, ShapeId::ChannelUsers] {
+        for shape in [
+            ShapeId::Channels,
+            ShapeId::Users,
+            ShapeId::ChannelUsers,
+            ShapeId::Notifications,
+        ] {
             if let Some(msg) = self.sync_errors.get(&shape) {
                 return Some(msg.clone());
             }
@@ -1107,6 +1244,103 @@ impl AppState {
     /// イベントを処理し、画面の再描画が必要な状態変化があった場合に `true` を返す。
     pub fn on_desktop_event(&mut self, event: DesktopEvent) -> bool {
         match event {
+            DesktopEvent::CancelFinished {
+                session_gen,
+                result,
+            } => {
+                self.cancel_in_progress = false;
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                match result {
+                    Ok(refresh_tokens) => {
+                        self.pending_device_login_manager
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take();
+                        self.login_phase = Some(LoginPhase::Ready { error: None });
+                        if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
+                            let http = self.http.clone();
+                            self.spawn_tokio(async move {
+                                for refresh_token in refresh_tokens {
+                                    login::revoke_refresh_token(
+                                        http.clone(),
+                                        oidc.clone(),
+                                        refresh_token,
+                                    )
+                                    .await;
+                                }
+                            });
+                        }
+                    }
+                    Err((error, changed)) => {
+                        if changed {
+                            let manager = self
+                                .pending_device_login_manager
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .take();
+                            if let Some(manager) = manager {
+                                manager.disable_persistence();
+                            }
+                        }
+                        self.login_phase = Some(LoginPhase::Ready {
+                            error: Some(format!("ログイン取消に失敗しました: {error}")),
+                        })
+                    }
+                }
+                true
+            }
+            DesktopEvent::AuthPersisted {
+                session_gen,
+                event,
+                error,
+            } => {
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                if let Some(error) = error {
+                    let pending_manager = self
+                        .pending_device_login_manager
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some(manager) = pending_manager {
+                        manager.disable_persistence();
+                    }
+                    if self
+                        .recovery_manager
+                        .as_ref()
+                        .is_some_and(|manager| !manager.has_pending_persistence())
+                    {
+                        self.recovery_manager = None;
+                    }
+                    self.login_phase = Some(LoginPhase::Ready { error: Some(error) });
+                } else if let AuthEvent::Connected {
+                    credentials,
+                    token_manager,
+                    me,
+                    is_admin,
+                } = event
+                {
+                    self.recovery_manager = None;
+                    self.connect_session(credentials, me);
+                    self.me_is_admin = is_admin;
+                    self.token_manager = token_manager;
+                }
+                true
+            }
+            DesktopEvent::LogoutFinished {
+                session_gen,
+                result,
+            } => {
+                self.logout_in_progress = false;
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                self.finish_logout(result);
+                true
+            }
             DesktopEvent::Auth { session_gen, event } => {
                 if session_gen != self.session_gen {
                     return false;
@@ -1146,12 +1380,41 @@ impl AppState {
             } => {
                 if let Some(tm) = &token_manager {
                     tm.bind_to_session_gen(self.session_gen);
-                    if let Err(err) = tm.enable_persistence_and_save() {
+                    let manager = tm.clone();
+                    let tx = self.event_tx.clone();
+                    let session_gen = self.session_gen;
+                    let event = AuthEvent::Connected {
+                        credentials,
+                        token_manager,
+                        me,
+                        is_admin,
+                    };
+                    if self
+                        .spawn_tokio(async move {
+                            let error = match tokio::task::spawn_blocking(move || {
+                                manager.confirm_persisted_session()
+                            })
+                            .await
+                            {
+                                Ok(Ok(())) => None,
+                                Ok(Err(err)) => {
+                                    Some(format!("トークンの保存に失敗しました: {err:#}"))
+                                }
+                                Err(err) => Some(format!("トークンの保存に失敗しました: {err}")),
+                            };
+                            let _ = tx.send(DesktopEvent::AuthPersisted {
+                                session_gen,
+                                event,
+                                error,
+                            });
+                        })
+                        .is_none()
+                    {
                         self.login_phase = Some(LoginPhase::Ready {
-                            error: Some(format!("トークンの保存に失敗しました: {err:#}")),
+                            error: Some("トークン保存を開始できませんでした".into()),
                         });
-                        return;
                     }
+                    return;
                 }
                 self.connect_session(credentials, me);
                 self.me_is_admin = is_admin;
@@ -1167,11 +1430,30 @@ impl AppState {
                 });
             }
             AuthEvent::LoginRequired { error } => {
+                if self
+                    .recovery_manager
+                    .as_ref()
+                    .is_some_and(|manager| !manager.has_pending_persistence())
+                {
+                    self.recovery_manager = None;
+                }
                 self.pending_device_login_manager
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take();
                 self.login_phase = Some(LoginPhase::Ready { error });
+            }
+            AuthEvent::RecoveryRequired { manager, error } => {
+                self.pending_device_login_manager
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                self.recovery_manager = Some(manager);
+                self.login_phase = Some(LoginPhase::Ready {
+                    error: Some(format!(
+                        "{error}。保存領域を復旧して再試行してください。アプリを終了すると更新済み token が失われる可能性があります"
+                    )),
+                });
             }
         }
     }
@@ -1194,6 +1476,7 @@ impl AppState {
         self.subscribe(ShapeId::Channels);
         self.subscribe(ShapeId::Users);
         self.subscribe(ShapeId::ChannelUsers);
+        self.subscribe(ShapeId::Notifications);
         self.poll_read_states();
         self.start_periodic_tasks();
     }
@@ -1204,6 +1487,7 @@ impl AppState {
         self.subscribe(ShapeId::Channels);
         self.subscribe(ShapeId::Users);
         self.subscribe(ShapeId::ChannelUsers);
+        self.subscribe(ShapeId::Notifications);
         if let Some(ch) = self.current_channel.clone() {
             self.subscribe(ShapeId::Messages(ch.clone()));
         }
@@ -1212,6 +1496,8 @@ impl AppState {
 
     fn start_periodic_tasks(&mut self) {
         let session_gen = self.session_gen;
+        crate::resident::notify::spawn_dnd_refresh(self);
+
         // 1秒ごとの Tick (通知消去・入力中解除・既読送信)
         {
             let tx = self.event_tx.clone();
@@ -1358,36 +1644,6 @@ impl AppState {
         }
     }
 
-    /// 受信したメッセージがデスクトップ OS 通知の対象かを判定する。
-    /// - 通知設定が有効であること
-    /// - 現在アクティブ表示中のチャンネルでないこと（フォアグラウンドかつ同じチャンネル）
-    /// - 既にローカル store に存在するメッセージや削除済みメッセージでないこと
-    /// - 自分自身のメッセージでないこと
-    /// - (DM または自分への @メンション) かつ そのチャンネルのメンバーであること（未参加の公開チャンネルでのメンションを除外。ChannelUsers 未同期時は保留＝許可）
-    pub fn should_notify_message(&self, ch: &str, msg: &Message) -> bool {
-        if !self.notifications_enabled {
-            return false;
-        }
-        let is_active_view = self.window_active && self.current_channel.as_deref() == Some(ch);
-        if is_active_view {
-            return false;
-        }
-        if self.store.message(ch, &msg.id).is_some() || msg.deleted_at.is_some() {
-            return false;
-        }
-        let Some(me) = self.me.as_ref() else {
-            return false;
-        };
-        if me.id == msg.user_id {
-            return false;
-        }
-        let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-        let is_member =
-            !self.store.is_synced(&ShapeId::ChannelUsers) || self.store.is_member(ch, &me.id);
-        let has_mention = has_mention_for(&msg.content, &me.user_name);
-        (is_dm || has_mention) && is_member
-    }
-
     pub fn on_shape(&mut self, event: ShapeEvent) {
         match event {
             ShapeEvent::Batch(id, batch) => {
@@ -1424,88 +1680,13 @@ impl AppState {
                         }
                     }
                 }
-                let mut pending_notifications: Vec<Option<(String, String, String, bool)>> =
-                    Vec::new();
-                let mut notified_indices: std::collections::HashMap<String, usize> =
-                    std::collections::HashMap::new();
-                if self.notifications_enabled
-                    && let ShapeId::Messages(ch) = &id
-                    && self.store.is_synced(&id)
-                    && !batch.reset
-                {
-                    for change in &batch.changes {
-                        match change {
-                            electric::Change::Upsert { row, .. } => {
-                                if let Ok(msg) = Message::from_row(row) {
-                                    if msg.deleted_at.is_some() {
-                                        // 同一バッチ内で後から削除されたメッセージの通知候補を取り消す
-                                        if let Some(&idx) = notified_indices.get(&msg.id) {
-                                            pending_notifications[idx] = None;
-                                        }
-                                    } else if let Some(&idx) = notified_indices.get(&msg.id) {
-                                        // 同一バッチ内の同一メッセージ更新を集約し、最新内容に基づいて通知可否を再評価
-                                        if self.should_notify_message(ch, &msg) {
-                                            let is_dm =
-                                                self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                            pending_notifications[idx] =
-                                                Some((ch.clone(), msg.user_id, msg.content, is_dm));
-                                        } else {
-                                            // メンション削除等により通知対象外となった場合は候補を取り消す
-                                            pending_notifications[idx] = None;
-                                        }
-                                    } else if self.should_notify_message(ch, &msg) {
-                                        let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                        let idx = pending_notifications.len();
-                                        pending_notifications.push(Some((
-                                            ch.clone(),
-                                            msg.user_id,
-                                            msg.content,
-                                            is_dm,
-                                        )));
-                                        notified_indices.insert(msg.id, idx);
-                                    }
-                                }
-                            }
-                            electric::Change::Delete { key } => {
-                                // 同一バッチ内で削除されたメッセージの通知候補を取り消す
-                                if let Some(&idx) = notified_indices.get(key) {
-                                    pending_notifications[idx] = None;
-                                }
-                            }
-                        }
-                    }
+                // 判定は適用より前に行う (適用後は、新しく届いた行と既知の行を区別できない)。
+                if id == ShapeId::Notifications {
+                    self.show_notifications(&batch);
                 }
 
                 self.store.apply(&id, batch);
 
-                for (ch, sender_id, content, is_dm) in pending_notifications.into_iter().flatten() {
-                    let sender_name = self.store.display_name(&sender_id);
-                    let channel_name = self
-                        .store
-                        .channel(&ch)
-                        .map(|c| c.channel_name.clone())
-                        .unwrap_or_else(|| "channel".to_string());
-                    let title = if is_dm {
-                        format!("{sender_name} からのDM")
-                    } else {
-                        format!("{sender_name} (#{channel_name})")
-                    };
-                    let body = if content.trim().is_empty() {
-                        "ファイルが送信されました".to_string()
-                    } else if content.chars().count() > 80 {
-                        let truncated: String = content.chars().take(80).collect();
-                        format!("{truncated}...")
-                    } else {
-                        content
-                    };
-                    if let Some(sink) = &self.notification_sink {
-                        sink.lock().unwrap().push((title, body));
-                    } else {
-                        std::thread::spawn(move || {
-                            notify_desktop(&title, &body);
-                        });
-                    }
-                }
                 if self.store.is_synced(&id) {
                     self.sync_errors.remove(&id);
                 }
@@ -1577,9 +1758,9 @@ impl AppState {
             ShapeEvent::Failed(id, message) => {
                 if message == HttpError::Unauthorized.to_string() {
                     self.preserve_drafts_for_unauthorized();
-                    self.reset_to_login(Some(
+                    self.reset_to_login_after_unauthorized(
                         "セッションの有効期限が切れました。再度ログインしてください".to_string(),
-                    ));
+                    );
                     return;
                 }
                 if let ShapeId::Messages(ch) | ShapeId::Reactions(ch) | ShapeId::Attachments(ch) =
@@ -1915,6 +2096,13 @@ impl AppState {
 
     pub fn on_app_event(&mut self, event: AppEvent) -> bool {
         match event {
+            AppEvent::Dnd(result) => {
+                if let Some(until) = result {
+                    self.dnd_until = until;
+                }
+                self.dnd_checked = true;
+                false
+            }
             AppEvent::AccountProfiles(profiles) => {
                 self.store.account_profiles = profiles;
                 true
@@ -1929,9 +2117,9 @@ impl AppState {
             }
             AppEvent::Unauthorized => {
                 self.preserve_drafts_for_unauthorized();
-                self.reset_to_login(Some(
+                self.reset_to_login_after_unauthorized(
                     "認証が切れました。再度ログインしてください".to_string(),
-                ));
+                );
                 true
             }
             AppEvent::SubmissionSucceeded {
@@ -2797,6 +2985,12 @@ impl AppState {
 
     /// チャンネルを開き、メッセージとリアクションのシェイプ購読を開始する。
     pub fn open_channel(&mut self, channel_id: String) {
+        self.open_channel_inner(channel_id, true);
+    }
+
+    /// `jump_to_newest` が false のときは、最下部へのスクロールも、最新投稿を表示済みとする記録と既読化もしない。
+    /// 通知から古い投稿へ移るとき、移動先を見る前に既読化しないために使う。
+    fn open_channel_inner(&mut self, channel_id: String, jump_to_newest: bool) {
         if let Some(old_ch) = self.current_channel.clone()
             && old_ch != channel_id
         {
@@ -2838,9 +3032,17 @@ impl AppState {
         self.subscribe(ShapeId::Messages(channel_id.clone()));
 
         self.current_channel = Some(channel_id.clone());
+        self.timeline_anchor_first_id = None;
+        if !jump_to_newest {
+            self.timeline_at_bottom = false;
+            self.pending_scroll_to_bottom = false;
+            self.newest_shown = None;
+            self.ensure_channel_cache();
+            self.poll_typing();
+            return;
+        }
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = true;
-        self.timeline_anchor_first_id = None;
         self.ensure_channel_cache();
 
         // ウィンドウがアクティブであれば最新メッセージを表示済みとして記録し、既読化を試みる。
@@ -2853,6 +3055,55 @@ impl AppState {
         }
         self.sync_unread_with_latest();
         self.poll_typing();
+    }
+
+    /// 通知のクリックなどで、チャンネルを開き、`message_id` の投稿まで移る。
+    /// 投稿がまだ Store に無いとき (取得前) は、チャンネルを開くだけにする。
+    pub fn open_message(&mut self, channel_id: String, message_id: Option<String>) {
+        let target = message_id.and_then(|id| {
+            self.store
+                .message(&channel_id, &id)
+                .filter(|m| m.deleted_at.is_none())
+                .cloned()
+        });
+        let Some(msg) = target else {
+            self.open_channel(channel_id);
+            return;
+        };
+        let message_id = msg.id.clone();
+        self.open_channel_inner(channel_id.clone(), false);
+        if self.current_channel.as_deref() != Some(channel_id.as_str()) {
+            return;
+        }
+        if let Some(parent_id) = msg.parent_id {
+            self.open_thread(parent_id.clone());
+            if let Some(thread) = &mut self.thread {
+                thread.selected = Some(message_id.clone());
+            }
+            self.timeline_at_bottom = false;
+            self.pending_scroll_to_bottom = false;
+            self.pending_thread_scroll_to_bottom = false;
+            self.thread_at_bottom = false;
+            let roots = self.store.root_messages(&channel_id);
+            self.timeline_anchor_first_id = match roots.iter().position(|m| m.id == parent_id) {
+                Some(pos) => roots.get(pos.saturating_sub(10)).map(|m| m.id.clone()),
+                None => Some(parent_id),
+            };
+            self.timeline_render_limit = MAX_TIMELINE_RENDER_LIMIT;
+            self.pending_scroll_to_message_id = Some(message_id);
+            self.ensure_channel_cache();
+            return;
+        }
+        let roots = self.store.root_messages(&channel_id);
+        let Some(pos) = roots.iter().position(|m| m.id == message_id) else {
+            return;
+        };
+        self.timeline_anchor_first_id = roots.get(pos.saturating_sub(10)).map(|m| m.id.clone());
+        self.timeline_at_bottom = false;
+        self.pending_scroll_to_bottom = false;
+        self.timeline_render_limit = MAX_TIMELINE_RENDER_LIMIT;
+        self.pending_scroll_to_message_id = Some(message_id);
+        self.ensure_channel_cache();
     }
 
     /// ウィンドウのアクティブ状態とタイムラインのスクロール位置を更新し、
@@ -4620,7 +4871,7 @@ fn is_access_or_not_found_error(message: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use serde_json::{Value, json};
     use zoo2_client_core::{
         config::OidcConfig,
@@ -4643,7 +4894,7 @@ mod tests {
         }
     }
 
-    fn connected_state() -> AppState {
+    pub(crate) fn connected_state() -> AppState {
         let config = Config {
             api_base_url: "http://127.0.0.1:9".into(),
             auth: AuthConfig::Dev {
@@ -4717,6 +4968,62 @@ mod tests {
         }
     }
     impl<T> Pipe for T {}
+
+    #[test]
+    fn open_message_to_a_reply_scrolls_the_thread_to_the_reply() {
+        let mut state = connected_state();
+        state.open_message("c1".into(), Some("r1".into()));
+        assert_eq!(state.current_channel.as_deref(), Some("c1"));
+        assert_eq!(
+            state.thread.as_ref().map(|t| t.root_id.as_str()),
+            Some("m1")
+        );
+        assert_eq!(
+            state.thread.as_ref().and_then(|t| t.selected.as_deref()),
+            Some("r1")
+        );
+        assert_eq!(state.pending_scroll_to_message_id.as_deref(), Some("r1"));
+        // 返信へ移る間は、タイムラインを最下部として扱わない (古い位置から既読にしない)。
+        assert!(!state.timeline_at_bottom);
+        assert!(!state.pending_thread_scroll_to_bottom);
+    }
+
+    #[test]
+    fn open_message_on_the_active_current_channel_does_not_mark_read() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.window_active = true;
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m_new",
+                json!({ "id": "m_new", "user_id": "u2", "channel_id": "c1",
+                        "content": "新しい投稿", "created_at": "2026-11-01 04:00:00" }),
+            )]),
+        ));
+        // 新着を、まだ見ていない状態にする。
+        state.update_timeline_view_state(true, false);
+        state.last_read_marked.clear();
+        state.read_mark_in_flight.clear();
+        state.unread.insert("c1".into());
+        state.newest_shown = None;
+
+        state.open_message("c1".into(), Some("m1".into()));
+
+        assert!(state.unread.contains("c1"), "既読化されてはいけない");
+        assert!(state.last_read_marked.is_empty());
+        assert!(state.read_mark_in_flight.is_empty());
+        assert_ne!(
+            state.newest_shown.as_ref().map(|(_, id)| id.as_str()),
+            Some("m_new")
+        );
+        assert!(!state.pending_scroll_to_bottom);
+        assert_eq!(state.pending_scroll_to_message_id.as_deref(), Some("m1"));
+
+        // 最下部まで見たら、通常の経路で既読になる。
+        state.update_timeline_view_state(true, true);
+        assert!(!state.unread.contains("c1"));
+    }
 
     #[test]
     fn message_batches_refresh_bundled_reactions_without_another_subscription() {
@@ -5502,6 +5809,568 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connected_event_remains_responsive_while_token_lock_is_held() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir =
+            std::env::temp_dir().join(format!("desktop-connected-lock-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        state.on_auth_event(AuthEvent::Connected {
+            credentials: Credentials::Bearer(manager.clone()),
+            token_manager: Some(manager),
+            me: Me {
+                id: "u1".into(),
+                user_name: "u".into(),
+                display_name: "U".into(),
+            },
+            is_admin: false,
+        });
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "connected event blocked UI for {elapsed:?}"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.login_phase.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cancel_changed_session_releases_pending_manager() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("cancel-changed-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager);
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        token::save(&path, &replacement).unwrap();
+        state.cancel_device_login();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.pending_device_login_manager.lock().unwrap().is_none());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn connected_event_does_not_overwrite_another_login() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir =
+            std::env::temp_dir().join(format!("desktop-connected-new-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &old).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        replacement.access_token = "new".into();
+        token::save(&path, &replacement).unwrap();
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager.clone());
+        state.on_auth_event(AuthEvent::Connected {
+            credentials: Credentials::Bearer(manager.clone()),
+            token_manager: Some(manager),
+            me: Me {
+                id: "u".into(),
+                user_name: "u".into(),
+                display_name: "U".into(),
+            },
+            is_admin: false,
+        });
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.pending_device_login_manager.lock().unwrap().is_none());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
+        assert!(matches!(
+            state.login_phase,
+            Some(LoginPhase::Ready { error: Some(_) })
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_preserves_pending_refresh_for_retry() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("desktop-recovery-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url,
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path,
+            tokens.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        manager.set_pending_for_test(tokens);
+        state.token_manager = Some(manager.clone());
+        state.logout_in_progress = true;
+        let generation = state.session_gen;
+        state.on_app_event(AppEvent::Unauthorized);
+        assert_eq!(state.session_gen, generation);
+        assert!(state.recovery_manager.is_none());
+        state.logout_in_progress = false;
+        state.on_app_event(AppEvent::Unauthorized);
+        assert!(Arc::ptr_eq(
+            state.recovery_manager.as_ref().unwrap(),
+            &manager
+        ));
+        assert!(manager.has_pending_persistence());
+        assert_eq!(manager.access_token().await.unwrap(), "access");
+        assert!(!manager.has_pending_persistence());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn failed_logout_replays_unauthorized_event() {
+        let mut state = connected_state();
+        state.config.auth = AuthConfig::Oidc(OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        });
+        state.logout_in_progress = true;
+        state.on_shape(ShapeEvent::Failed(
+            ShapeId::Users,
+            HttpError::Unauthorized.to_string(),
+        ));
+        assert!(state.login_phase.is_none());
+        state.finish_logout(Err(("storage error".into(), false)));
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
+    }
+
+    #[tokio::test]
+    async fn logout_preserves_replacement_session_and_leaves_chat() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!(
+            "desktop-logout-replacement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let original = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            original.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        state.token_manager = Some(manager.clone());
+        state.login_phase = None;
+        let mut replacement = original;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        token::save(&path, &replacement).unwrap();
+        state.logout();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
+        assert!(state.token_manager.is_none());
+        assert!(!manager.save_if_active().unwrap());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn logout_remains_responsive_while_another_process_holds_token_lock() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("desktop-lock-test-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "zoo2-desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        state.token_manager = Some(Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        )));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        state.logout();
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "logout blocked the UI for {elapsed:?}"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(!path.exists());
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_token_even_if_ui_session_changes_before_completion() {
+        use std::io::{Read, Write};
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let server_issuer = issuer.clone();
+        let (request_tx, request_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let mut count = 0;
+            while count < 2 && std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0; 8192];
+                        let _ = stream.read(&mut buf);
+                        let body = if count == 0 {
+                            serde_json::json!({"issuer":server_issuer,"token_endpoint":format!("{server_issuer}/token"),"revocation_endpoint":format!("{server_issuer}/revoke")}).to_string()
+                        } else {
+                            "{}".to_string()
+                        };
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        count += 1;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    Err(_) => break,
+                }
+            }
+            request_tx.send(count).unwrap();
+        });
+        let dir =
+            std::env::temp_dir().join(format!("desktop-logout-stale-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer,
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        state.token_manager = Some(Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        )));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        state.logout();
+        state.bump_session_gen();
+        drop(lock);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!state.on_desktop_event(event));
+        let count = tokio::task::spawn_blocking(move || request_rx.recv().unwrap())
+            .await
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            count, 2,
+            "revocation must run even when the UI event is stale"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cancelling_login_remains_responsive_while_token_lock_is_held() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir =
+            std::env::temp_dir().join(format!("desktop-cancel-lock-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager);
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        state.cancel_device_login();
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "cancel blocked UI for {elapsed:?}"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn preserves_token_manager_persistence_after_connected_event_and_cleans_up_on_cancel() {
         use zoo2_client_core::auth::token::{self, StoredTokens};
 
@@ -5526,11 +6395,13 @@ mod tests {
             auth: AuthConfig::Oidc(oidc.clone()),
             check_updates: false,
         };
-        let mut state = AppState::from_config(&config);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
         assert_eq!(state.session_gen, 0);
 
         let active_gen = state.active_session_gen.clone();
         let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
             issuer: oidc.issuer.clone(),
             client_id: oidc.client_id.clone(),
             resource: oidc.resource.clone(),
@@ -5548,6 +6419,8 @@ mod tests {
             active_gen,
         ));
 
+        assert!(tm.save_if_active().unwrap());
+
         // 接続イベント (Connected) を受け取ると、セッション世代を維持したままトークンが保存され、
         // 接続後もトークンマネージャの save_if_active() による更新保存が可能であること
         state.on_auth_event(AuthEvent::Connected {
@@ -5560,6 +6433,12 @@ mod tests {
             },
             is_admin: false,
         });
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
 
         assert!(state.login_phase.is_none());
         assert!(token_path.exists());
@@ -5599,6 +6478,17 @@ mod tests {
         state.cancel_device_login();
         assert_ne!(state.session_gen, old_gen);
         // 今回のログインが保存したトークンが削除される
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let event = event_rx.recv().await.unwrap();
+                if matches!(event, DesktopEvent::CancelFinished { .. }) {
+                    break event;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(state.on_desktop_event(event));
         assert!(!token_path.exists());
         assert_eq!(state.login_phase, Some(LoginPhase::Ready { error: None }));
 
@@ -6672,23 +7562,6 @@ mod tests {
         assert_eq!(preserved.1.len(), 2);
         assert_eq!(preserved.1[0].attachments[0].local_id, "local_1");
         assert_eq!(preserved.1[1].attachments[0].local_id, "local_2");
-    }
-
-    #[test]
-    fn validates_mention_notification_tokens() {
-        assert!(has_mention_for("@here", "alice"));
-        assert!(has_mention_for("@HERE", "alice"));
-        assert!(has_mention_for("Hey @channel all", "alice"));
-        assert!(has_mention_for("@alice hello", "alice"));
-        assert!(has_mention_for("Thanks @alice.", "alice"));
-        assert!(has_mention_for("Thanks @alice!", "alice"));
-        assert!(has_mention_for("(@alice)", "alice"));
-
-        // 境界文字のないメールアドレスやURL、単語の一部はメンションと判定されないこと
-        assert!(!has_mention_for("foo@alice.example", "alice"));
-        assert!(!has_mention_for("https://example.com/@here", "alice"));
-        assert!(!has_mention_for("@channel_inside", "alice"));
-        assert!(!has_mention_for("@bob", "alice"));
     }
 
     #[test]
@@ -7973,56 +8846,6 @@ mod tests {
     }
 
     #[test]
-    fn unjoined_public_channel_does_not_trigger_mention_notification() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-
-        // 公開チャンネル c_pub を追加（alice は未参加）
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Channels,
-            batch(vec![(
-                "c_pub",
-                json!({ "id": "c_pub", "channel_name": "public-general", "is_private": "f" }),
-            )]),
-        ));
-
-        let row_val = serde_json::from_value(json!({
-            "id": "m_unjoined",
-            "user_id": "u2",
-            "channel_id": "c_pub",
-            "content": "@alice 未参加チャンネルでのメンション",
-            "created_at": "2026-11-01 04:00:00",
-        }))
-        .unwrap();
-        let msg = Message::from_row(&row_val).unwrap();
-
-        // 未参加の公開チャンネルのため、メンションがあっても通知対象にならないこと
-        assert!(!state.should_notify_message("c_pub", &msg));
-
-        // ChannelUsers が未同期（同期中）の間は、所属確認を保留して通知を許可すること
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::ChannelUsers,
-            Batch {
-                reset: true,
-                changes: vec![],
-                up_to_date: false,
-            },
-        ));
-        assert!(state.should_notify_message("c_pub", &msg));
-
-        // チャンネルに参加した後は、メンション通知の対象になること
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::ChannelUsers,
-            batch(vec![(
-                "cu1",
-                json!({ "channel_id": "c_pub", "user_id": "u1" }),
-            )]),
-        ));
-        assert!(state.should_notify_message("c_pub", &msg));
-    }
-
-    #[test]
     fn unjoined_public_channel_blocks_attachment_upload() {
         let mut state = connected_state();
 
@@ -8454,170 +9277,6 @@ mod tests {
             assert!(state.create_channel_modal.as_ref().unwrap().in_flight);
             state.create_channel_modal.as_mut().unwrap().in_flight = false;
         }
-    }
-
-    #[test]
-    fn batch_notifications_deduplicated_per_message_id() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-
-        // 同一メッセージ m_dedup に対する insert と update の 2 件を同一バッチで受信
-        let batch_data = batch(vec![
-            (
-                "m_dedup",
-                json!({
-                    "id": "m_dedup",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "最初の内容 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                }),
-            ),
-            (
-                "m_dedup",
-                json!({
-                    "id": "m_dedup",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "更新後の内容 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                    "display_data": "{}",
-                }),
-            ),
-        ]);
-
-        // on_shape を実行してもパニックせず、store に正常に適用されること
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        let stored = state.store.message("c1", "m_dedup").unwrap();
-        assert_eq!(stored.content, "更新後の内容 @alice");
-    }
-
-    #[test]
-    fn batch_notifications_canceled_when_message_deleted_in_same_batch() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        state.notification_sink = Some(sink.clone());
-
-        // 同一メッセージ m_del に対する insert と deleted_at 付き update を同一バッチで受信
-        let batch_data = batch(vec![
-            (
-                "m_del",
-                json!({
-                    "id": "m_del",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "メンション通知 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                }),
-            ),
-            (
-                "m_del",
-                json!({
-                    "id": "m_del",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "メンション通知 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                    "deleted_at": "2026-11-11 00:01:00",
-                }),
-            ),
-        ]);
-
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        assert!(state.store.message("c1", "m_del").is_none());
-        assert_eq!(
-            sink.lock().unwrap().len(),
-            0,
-            "削除されたメッセージの通知候補は取り消され、通知は送信されないこと"
-        );
-    }
-
-    #[test]
-    fn batch_notifications_canceled_when_mention_removed_in_subsequent_update() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        state.notification_sink = Some(sink.clone());
-
-        // 同一バッチ内で @alice 付き投稿を受信後、メンションを除去した更新を受信
-        let batch_data = batch(vec![
-            (
-                "m_mention_removed",
-                json!({
-                    "id": "m_mention_removed",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "こんにちは @alice さん",
-                    "created_at": "2026-11-11 00:00:00",
-                }),
-            ),
-            (
-                "m_mention_removed",
-                json!({
-                    "id": "m_mention_removed",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "こんにちは 皆さん (メンション削除)",
-                    "created_at": "2026-11-11 00:00:00",
-                    "updated_at": "2026-11-11 00:01:00",
-                }),
-            ),
-        ]);
-
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        let stored = state.store.message("c1", "m_mention_removed").unwrap();
-        assert_eq!(stored.content, "こんにちは 皆さん (メンション削除)");
-        assert_eq!(
-            sink.lock().unwrap().len(),
-            0,
-            "メンション削除されたメッセージの通知候補は取り消され、通知は送信されないこと"
-        );
-    }
-
-    #[test]
-    fn batch_notification_sent_for_valid_mention() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        state.notification_sink = Some(sink.clone());
-
-        // 有効なメンション付き新規メッセージを受信
-        let batch_data = batch(vec![(
-            "m_valid",
-            json!({
-                "id": "m_valid",
-                "channel_id": "c1",
-                "user_id": "u2",
-                "content": "こんにちは @alice さん",
-                "created_at": "2026-11-11 00:00:00",
-            }),
-        )]);
-
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        let notifications = sink.lock().unwrap();
-        assert_eq!(
-            notifications.len(),
-            1,
-            "有効なメンション宛て通知が1件送信されること"
-        );
-        assert!(notifications[0].1.contains("こんにちは @alice さん"));
     }
 
     #[test]

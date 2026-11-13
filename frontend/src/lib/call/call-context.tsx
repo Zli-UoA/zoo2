@@ -42,6 +42,7 @@ import {
   type CallDiagnostics,
   type PeerStatsSample,
 } from "./call-diagnostics";
+import { reportWebrtcEvent } from "../telemetry/capture";
 
 const defaultCallContext: CallContextValue = {
   currentChannelId: null,
@@ -558,7 +559,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             heartbeatFailuresRef.current = 0;
           })
           .catch((err: unknown) => {
-            if (callGenerationRef.current === sentGen) heartbeatFailuresRef.current += 1;
+            if (callGenerationRef.current === sentGen) {
+              heartbeatFailuresRef.current += 1;
+              if (heartbeatFailuresRef.current === 3) {
+                reportWebrtcEvent({ state: "heartbeat_timeout" });
+              }
+            }
             // 送信時の世代・セッション・チャンネルが現在の通話と一致する場合のみ退出処理を実行 ([P1])
             if (
               callGenerationRef.current !== sentGen ||
@@ -594,6 +600,16 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       }
 
       const pc = new RTCPeerConnection({ iceServers });
+      pc.addEventListener("iceconnectionstatechange", () => {
+        if (pc.iceConnectionState === "failed") {
+          reportWebrtcEvent({ state: "ice_failed" });
+        }
+      });
+      pc.addEventListener("connectionstatechange", () => {
+        if (pc.connectionState === "failed") {
+          reportWebrtcEvent({ state: "connection_failed" });
+        }
+      });
       const entry: PeerEntry = {
         pc,
         userId: targetUserId,

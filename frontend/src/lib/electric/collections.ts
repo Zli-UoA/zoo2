@@ -41,9 +41,13 @@ import {
  */
 export function shapeAuthSource(config: AppConfig): ShapeFetchSource {
   if (config.shapeMode === "proxy") {
-    return { devUserId: config.devUserId };
+    return {
+      devUserId: config.devUserId,
+      apiBaseUrl: config.apiBaseUrl,
+      telemetry: config.telemetryEnabled,
+    };
   }
-  return { auth: false };
+  return { auth: false, telemetry: config.telemetryEnabled };
 }
 
 function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOptions = {}) {

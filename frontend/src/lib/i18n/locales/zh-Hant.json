@@ -2,6 +2,9 @@
   "nav": {
     "main": "主導覽"
   },
+  "telemetry": {
+    "unexpectedError": "顯示頁面時發生問題，請重新載入。"
+  },
   "channels": {
     "view": "開啟",
     "unread": "有未讀訊息",
@@ -15,7 +18,7 @@
     "empty": "尚無頻道。",
     "createAction": "建立頻道",
     "browseTitle": "瀏覽頻道",
-    "browseDescription": "不需加入即可瀏覽公開頻道的訊息。",
+    "browseDescription": "不需加入即可瀏覽公開頻道與已封存頻道的訊息。",
     "browseSearch": "依頻道名稱搜尋",
     "searchClear": "清除搜尋",
     "searchEmpty": "沒有符合的頻道。",
@@ -26,7 +29,6 @@
     "noJoined": "尚未加入任何頻道。",
     "join": "加入",
     "joining": "加入中…",
-    "joinUnavailable": "無法加入",
     "notFound": "找不到頻道。",
     "duplicateName": "同名頻道已存在。",
     "privateMessages": "此頻道為私人頻道，受邀後即可查看訊息。",
@@ -55,6 +57,7 @@
   },
   "auth": {
     "logout": "登出",
+    "profile": "編輯個人資料",
     "loggedOut": "您已登出",
     "loggedOutHelp": "請重新登入以繼續。",
     "desktopOutdated": "需要更新桌面版",

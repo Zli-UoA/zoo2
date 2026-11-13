@@ -3209,6 +3209,92 @@ async fn test_slack_reimport_does_not_inherit_the_resume_position() -> anyhow::R
     Ok(())
 }
 
+/// 取り込みは平文の content を messages に入れるので、暗号化チャンネルを指定した開始は 400 にする (#358)
+#[tokio::test]
+async fn test_slack_import_rejects_encrypted_channels() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.e2ee_encrypted_channels_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_e2ee").await?;
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::create!(UserRole {
+            user_id: admin.as_str(),
+            role_id: "role_admin",
+        })
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        ("channels.json".into(), json!([])),
+        (
+            "groups.json".into(),
+            json!([{"id":"G1","name":"secret","members":["U1"]}]),
+        ),
+        (
+            "secret/2024-01-02.json".into(),
+            json!([{"ts":"1704160000.000600","user":"U1","text":"s"}]),
+        ),
+    ]);
+    let analyzed = upload(&state, &app, &admin, &zip).await;
+    let id = analyzed["id"].as_str().unwrap().to_string();
+
+    let mut targets = Vec::new();
+    for encrypted in [true, false] {
+        let channel = uuid::Uuid::new_v4().to_string();
+        let (status, body) = request(
+            &app,
+            "POST",
+            "/api/channels",
+            &admin,
+            Some(
+                json!({"id": channel, "channel_name": format!("e2ee-{encrypted}-{suffix}"),
+                "is_private": true, "encrypted": encrypted}),
+            ),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        targets.push(channel);
+    }
+
+    let (status, body) = start(
+        &app,
+        &admin,
+        &id,
+        json!([{"slack_channel_id":"G1","action":"existing","channel_id":targets[0]}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "E2EE_PLAINTEXT_FORBIDDEN", "{body}");
+
+    // 平文の非公開チャンネルへは今までどおり取り込める
+    let (status, body) = start(
+        &app,
+        &admin,
+        &id,
+        json!([{"slack_channel_id":"G1","action":"existing","channel_id":targets[1]}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    Ok(())
+}
+
 /// ユーザーが自分で取り込む方式 (ZIP) をやめたので、管理者でない人が作ったジョブ (廃止前に作られて残っているもの、
 /// 管理者でなくなった人のもの) は、権限の確認なしでは実行せず、失敗にする
 #[tokio::test]

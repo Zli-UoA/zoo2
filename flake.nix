@@ -63,6 +63,7 @@
           xvfb
           openbox
           xwd
+          xprop
           imagemagick
         ];
         # Tauri 版（desktop-tauri）の WebKitGTK と、そのランタイムで読まれるもの。

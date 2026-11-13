@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   ClientOnly,
   HeadContent,
@@ -16,8 +17,11 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
+import { resolvePublicConfig } from "../lib/config";
 import { localeInitScript } from "../lib/i18n/locale";
 import { LocaleProvider } from "../components/i18n/LocaleProvider";
+import { installBrowserTelemetry } from "../lib/telemetry/capture";
+import { TelemetryErrorBoundary } from "../components/telemetry/TelemetryErrorBoundary";
 
 import appCss from "../styles.css?url";
 
@@ -53,6 +57,10 @@ export const Route = createRootRoute({
 });
 
 function RootDocument({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    return installBrowserTelemetry(resolvePublicConfig());
+  }, []);
+
   return (
     <html lang="ja" suppressHydrationWarning>
       <head>
@@ -65,7 +73,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           <LocaleProvider>
             <ThemeProvider>
               <TooltipProvider>
-                <RouteAccess>{children}</RouteAccess>
+                <TelemetryErrorBoundary>
+                  <RouteAccess>{children}</RouteAccess>
+                </TelemetryErrorBoundary>
                 <Toaster />
               </TooltipProvider>
             </ThemeProvider>
