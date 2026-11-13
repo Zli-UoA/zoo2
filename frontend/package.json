@@ -79,7 +79,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
-    "@vitest/browser-playwright": "5.0.3",
+    "@vitest/browser-playwright": "5.0.5",
     "emojibase-data": "18.0.0",
     "happy-dom": "^21.0.4",
     "msw": "^3.0.3",
