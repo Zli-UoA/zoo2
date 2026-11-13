@@ -1853,7 +1853,12 @@ async fn cross_signing_and_versions_check_the_expected_default_ssss_key() {
             "/api/e2ee/secret_storage/keys",
             &user,
             true,
-            ssss_body(&key_b, json!(key_a), json!(revision), json!([recovery_slot()])),
+            ssss_body(
+                &key_b,
+                json!(key_a),
+                json!(revision),
+                json!([recovery_slot()]),
+            ),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{res}");
@@ -1868,10 +1873,18 @@ async fn cross_signing_and_versions_check_the_expected_default_ssss_key() {
     let mut body = a.upload_body(b.public());
     body["expected_default_key_id"] = json!(key_a);
     let (status, res) = env.post(keys, &user, true, body).await;
-    assert_eq!((status, code(&res)), (StatusCode::CONFLICT, "E2EE_SSSS_CONFLICT"));
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::CONFLICT, "E2EE_SSSS_CONFLICT")
+    );
     assert_eq!(res["default_key_id"], json!(key_b));
     let (_, own) = env
-        .post("/api/e2ee/keys/query", &user, false, json!({"user_ids": [user]}))
+        .post(
+            "/api/e2ee/keys/query",
+            &user,
+            false,
+            json!({"user_ids": [user]}),
+        )
         .await;
     assert_eq!(
         own["master_keys"][&user]["keys"][format!("ed25519:{}", pk(&b.master))],
@@ -1882,7 +1895,10 @@ async fn cross_signing_and_versions_check_the_expected_default_ssss_key() {
     let mut first = json!({"algorithm": algorithm, "auth_data": b.auth_data(&backup_key()), "expected_current_version": null});
     first["expected_default_key_id"] = json!(key_a);
     let (status, res) = env.post(versions, &user, false, first.clone()).await;
-    assert_eq!((status, code(&res)), (StatusCode::CONFLICT, "E2EE_SSSS_CONFLICT"));
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::CONFLICT, "E2EE_SSSS_CONFLICT")
+    );
     first["expected_default_key_id"] = json!(key_b);
     let (status, res) = env.post(versions, &user, false, first).await;
     assert_eq!(status, StatusCode::OK, "{res}");
