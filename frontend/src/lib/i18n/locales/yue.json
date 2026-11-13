@@ -844,13 +844,6 @@
       "linked_other_account": "你已經連結咗另一個 Slack 帳戶。想轉帳戶，請先解除連結。",
       "failed": "同 Slack 連結唔到。"
     },
-    "importTitle": "由 Slack 匯入",
-    "importDescription": "可以由管理員保存嘅 Slack 匯出入面，匯入你喺 Slack 開嘅頻道嘅歷史紀錄。匯入位置可以揀你已經加入咗嘅同名頻道，或者開新頻道。",
-    "importLoading": "載入緊可以匯入嘅頻道",
-    "importNoExport": "管理員保存 Slack 匯出之後，你就可以喺度匯入自己嘅頻道。",
-    "importNoChannels": "保存咗嘅匯出入面冇你開嘅頻道。",
-    "importSummary_one": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。",
-    "importSummary_other": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。",
     "privateTitle": "由 Slack 匯入",
     "privateDescription": "可以用你連結咗嘅 Slack 帳戶，匯入你喺 Slack 開嘅私人頻道嘅歷史紀錄，唔使 ZIP。公開頻道由管理員匯入。",
     "privateLoading": "載入緊可以匯入嘅頻道",

@@ -844,13 +844,6 @@
       "linked_other_account": "你已連結了另一個 Slack 帳號。要切換帳號，請先解除連結。",
       "failed": "無法與 Slack 連結。"
     },
-    "importTitle": "從 Slack 匯入",
-    "importDescription": "可以從管理員保存的 Slack 匯出中，匯入你在 Slack 建立的頻道的歷史紀錄。匯入位置可以選擇你已加入的同名頻道，或新建頻道。",
-    "importLoading": "正在載入可匯入的頻道",
-    "importNoExport": "管理員保存 Slack 匯出後，你可以在這裡匯入自己的頻道。",
-    "importNoChannels": "已保存的匯出中沒有你建立的頻道。",
-    "importSummary_one": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。",
-    "importSummary_other": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。",
     "privateTitle": "從 Slack 匯入",
     "privateDescription": "可以用已連結的 Slack 帳號，匯入你在 Slack 建立的私人頻道的歷史紀錄，不需要 ZIP。公開頻道由管理員匯入。",
     "privateLoading": "正在載入可匯入的頻道",
