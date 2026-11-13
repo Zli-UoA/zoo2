@@ -11,7 +11,9 @@ use zoo2_client_types::ipc::OpenTarget;
 /// 指定しないと notify-rust は Finder として出そうとし、今の macOS では表示されないことがある。
 #[cfg(target_os = "macos")]
 pub fn init_macos(identifier: &str) {
-    let _ = notify_rust::set_application(identifier);
+    if let Err(error) = notify_rust::set_application(identifier) {
+        eprintln!("通知の bundle identifier を設定できませんでした ({identifier}): {error}");
+    }
 }
 
 /// 投稿の通知。クリックしたら、そのチャンネルを開く。

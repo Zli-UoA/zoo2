@@ -4901,7 +4901,6 @@ pub(crate) mod tests {
                 user_id: "u1".into(),
             },
             check_updates: false,
-            desktop_ui: None,
         };
         let mut state = AppState::from_config(&config);
         state.connect_session(
@@ -5097,7 +5096,6 @@ pub(crate) mod tests {
                 user_id: "00000000-0000-0000-0000-000000000001".into(),
             },
             check_updates: false,
-            desktop_ui: None,
         };
         let dev_state = AppState::from_config(&dev_config);
         assert_eq!(dev_state.api_base_url, "http://localhost:8000");
@@ -5113,7 +5111,6 @@ pub(crate) mod tests {
                 scope: "openid profile offline_access".into(),
             }),
             check_updates: true,
-            desktop_ui: None,
         };
         let oidc_state = AppState::from_config(&oidc_config);
         assert_eq!(oidc_state.api_base_url, "https://zli.chat");
@@ -6397,7 +6394,6 @@ pub(crate) mod tests {
             api_base_url: "https://api.example".into(),
             auth: AuthConfig::Oidc(oidc.clone()),
             check_updates: false,
-            desktop_ui: None,
         };
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let mut state = AppState::with_channel(config.clone(), None, event_tx);

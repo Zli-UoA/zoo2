@@ -23,8 +23,6 @@ pub struct Config {
     pub auth: AuthConfig,
     /// 起動時に GitHub Releases の新しい版を調べるか。
     pub check_updates: bool,
-    /// デスクトップ版 (Tauri) の画面の種類 (`remote` か `leptos`)。未指定ならアプリの既定。
-    pub desktop_ui: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +53,7 @@ struct FileConfig {
     oidc_resource: Option<String>,
     oidc_scope: Option<String>,
     check_updates: Option<bool>,
+    /// デスクトップ版 (Tauri) の画面の種類。`Config` には入れず、`desktop_ui_for` で読む。
     desktop_ui: Option<String>,
 }
 
@@ -73,6 +72,25 @@ impl Config {
             .collect();
         resolve_for(app_name, file, &env)
     }
+}
+
+/// デスクトップ版 (Tauri) の画面の種類 (`desktop_ui`、`ZOO_DESKTOP_UI`)。環境変数が優先される。
+/// 値の検査と既定はデスクトップ版が決める。ほかのクライアントの起動に影響させないため、`Config` には入れない。
+pub fn desktop_ui_for(app_name: &str) -> Result<Option<String>> {
+    let file = match config_dir_for(app_name) {
+        Some(dir) => read_file_config(&dir.join("config.toml"))?,
+        None => FileConfig::default(),
+    };
+    Ok(pick_desktop_ui(
+        file.desktop_ui,
+        std::env::var("ZOO_DESKTOP_UI").ok(),
+    ))
+}
+
+fn pick_desktop_ui(file: Option<String>, env: Option<String>) -> Option<String> {
+    env.or(file)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn default_oidc_client_id(app_name: &str) -> &str {
@@ -152,18 +170,10 @@ fn resolve_for(app_name: &str, file: FileConfig, env: &HashMap<String, String>) 
         None => file.check_updates.unwrap_or(true),
     };
 
-    let desktop_ui = pick("ZOO_DESKTOP_UI", file.desktop_ui);
-    if let Some(ui) = &desktop_ui
-        && !matches!(ui.as_str(), "remote" | "leptos")
-    {
-        bail!("desktop_ui は remote か leptos にしてください: {ui}");
-    }
-
     Ok(Config {
         api_base_url,
         auth,
         check_updates,
-        desktop_ui,
     })
 }
 
@@ -292,24 +302,20 @@ mod tests {
     }
 
     #[test]
-    fn desktop_ui_comes_from_env_or_file() {
+    fn desktop_ui_prefers_env_over_file() {
+        assert_eq!(super::pick_desktop_ui(None, None), None);
         assert_eq!(
-            resolve(FileConfig::default(), &env(&[]))
-                .unwrap()
-                .desktop_ui,
-            None
-        );
-        let file = FileConfig {
-            desktop_ui: Some("leptos".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            resolve(file, &env(&[])).unwrap().desktop_ui.as_deref(),
+            super::pick_desktop_ui(Some("leptos".into()), None).as_deref(),
             Some("leptos")
         );
-        let config = resolve(FileConfig::default(), &env(&[("ZOO_DESKTOP_UI", "remote")]));
-        assert_eq!(config.unwrap().desktop_ui.as_deref(), Some("remote"));
-        assert!(resolve(FileConfig::default(), &env(&[("ZOO_DESKTOP_UI", "web")])).is_err());
+        assert_eq!(
+            super::pick_desktop_ui(Some("leptos".into()), Some(" remote ".into())).as_deref(),
+            Some("remote")
+        );
+        assert_eq!(super::pick_desktop_ui(None, Some("".into())), None);
+        // TUI などは desktop_ui を読まない。設定ファイルにあっても、値が何でも起動を止めない。
+        let file: FileConfig = toml::from_str("desktop_ui = \"web\"").unwrap();
+        assert!(resolve(file, &env(&[("ZOO_DESKTOP_UI", "web")])).is_ok());
     }
 
     #[test]

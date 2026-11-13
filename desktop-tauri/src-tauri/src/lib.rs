@@ -17,24 +17,38 @@ mod window;
 use std::sync::Arc;
 
 use tauri::Manager;
-use zoo2_client_core::config::Config;
+use zoo2_client_core::config::{AuthConfig, Config, desktop_ui_for};
 use zoo2_client_types::ipc::UiMode;
 
 /// 設定ディレクトリとトークンの置き場所の名前。GPUI 版 (`zoo2-desktop`) や TUI とは分ける。
 pub const APP_NAME: &str = "zoo2-desktop-tauri";
 
-/// 画面の種類。`desktop_ui` (`ZOO_DESKTOP_UI`) が `leptos` のときだけ同梱の画面にし、
-/// 既定は zli.chat の Web 版の画面 (`remote`)。設定を読めないときも `remote` にする。
-fn ui_mode(config: &anyhow::Result<Config>) -> UiMode {
-    match config {
-        Ok(config) if config.desktop_ui.as_deref() == Some("leptos") => UiMode::Leptos,
-        _ => UiMode::Remote,
+/// 画面の種類。`desktop_ui` (`ZOO_DESKTOP_UI`) で `remote` か `leptos` を選ぶ。
+/// 指定がなければ、zli.chat の Web 版の画面 (`remote`) にする。ただし dev 認証 (`ZOO_DEV_USER`) で
+/// ローカルの backend に向けているときは、backend が Web の画面を配信しないので、同梱の画面にする。
+/// 知らない値は、警告を出して指定がないものとして扱う (起動は止めない)。
+fn ui_mode(desktop_ui: Option<&str>, dev_auth: bool) -> UiMode {
+    match desktop_ui {
+        Some("remote") => UiMode::Remote,
+        Some("leptos") => UiMode::Leptos,
+        other => {
+            if let Some(value) = other {
+                eprintln!("desktop_ui は remote か leptos にしてください (無視します): {value}");
+            }
+            if dev_auth {
+                UiMode::Leptos
+            } else {
+                UiMode::Remote
+            }
+        }
     }
 }
 
 pub fn run() {
     let config = Config::load_for(APP_NAME);
-    let ui = ui_mode(&config);
+    let desktop_ui = desktop_ui_for(APP_NAME).ok().flatten();
+    let dev_auth = matches!(&config, Ok(config) if matches!(config.auth, AuthConfig::Dev { .. }));
+    let ui = ui_mode(desktop_ui.as_deref(), dev_auth);
     tauri::Builder::default()
         // 単一インスタンスは最初に登録する (2 つ目のプロセスを、他の初期化より前に止めるため)。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -77,7 +91,18 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use zoo2_client_types::ipc::command;
+    use zoo2_client_types::ipc::{UiMode, command};
+
+    #[test]
+    fn ui_mode_defaults_to_remote_except_dev_auth() {
+        use super::ui_mode;
+        assert_eq!(ui_mode(None, false), UiMode::Remote);
+        assert_eq!(ui_mode(None, true), UiMode::Leptos);
+        assert_eq!(ui_mode(Some("leptos"), false), UiMode::Leptos);
+        assert_eq!(ui_mode(Some("remote"), true), UiMode::Remote);
+        assert_eq!(ui_mode(Some("web"), false), UiMode::Remote);
+        assert_eq!(ui_mode(Some("web"), true), UiMode::Leptos);
+    }
 
     #[test]
     fn declared_commands_match_ipc_names() {
