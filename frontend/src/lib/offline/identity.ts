@@ -26,9 +26,17 @@ function hashNamespace(namespace: string, seed: number): string {
  * ユーザー ID はそのまま使わず固定長のハッシュにする。
  */
 export function offlineDatabaseName(namespace: string): string {
+  return hashedDatabaseName(OFFLINE_DATABASE_PREFIX, namespace);
+}
+
+/**
+ * `prefix` に名前空間のハッシュを付けた、OPFS の SQLite のファイル名。
+ * 暗号ストア（`lib/e2ee/identity.ts`）も同じ作り方で名前を決める。
+ */
+export function hashedDatabaseName(prefix: string, namespace: string): string {
   const left = hashNamespace(namespace, 0x811c9dc5);
   const right = hashNamespace(namespace, 0x9e3779b9);
-  return `${OFFLINE_DATABASE_PREFIX}${left}${right}.sqlite`;
+  return `${prefix}${left}${right}.sqlite`;
 }
 
 /**

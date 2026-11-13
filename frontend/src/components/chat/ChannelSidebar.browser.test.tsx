@@ -59,6 +59,7 @@ vi.mock("../../hooks/useCurrentUser", () => ({
 }));
 vi.mock("../../hooks/useRealtime", () => ({ useUsers: () => ({ data: [], isLoading: false }) }));
 vi.mock("../../hooks/useUnreadChannels", () => ({ useUnreadChannels: () => new Set() }));
+vi.mock("../../hooks/useChannelLeaveDates", () => ({ useChannelLeaveDates: () => new Map() }));
 vi.mock("../../lib/electric/collections-context", () => ({
   useCollections: () => ({ channelUsers: {}, config: fixture.config }),
 }));

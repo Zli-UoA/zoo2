@@ -7,6 +7,10 @@ on:
     paths:
       - "frontend/**"
       - "backend/**"
+      # frontend が link: 依存で読む E2EE の wasm（@zoo/crypto-wasm）。
+      - "crates/zoo-crypto/**"
+      - "crates/zoo-crypto-wasm/**"
+      - "rust-toolchain.toml"
       - "infra/db/**"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
       - ".github/workflows/select-runner.yaml"
@@ -14,6 +18,10 @@ on:
     paths:
       - "frontend/**"
       - "backend/**"
+      # frontend が link: 依存で読む E2EE の wasm（@zoo/crypto-wasm）。
+      - "crates/zoo-crypto/**"
+      - "crates/zoo-crypto-wasm/**"
+      - "rust-toolchain.toml"
       - "infra/db/**"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
       - ".github/workflows/select-runner.yaml"
@@ -28,8 +36,49 @@ jobs:
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
-  oidc-e2e:
+  # E2EE の wasm（crates/zoo-crypto-wasm/pkg）。アプリが lib/e2ee を読むので、dev サーバーの起動に要る（#359）。
+  crypto-wasm:
     needs: runner
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # この後のビルドで動く依存のコードから、GitHub のトークンを読めないようにする。
+          persist-credentials: false
+      - name: Read Rust toolchain and wasm-bindgen version
+        id: versions
+        run: |
+          echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+          echo "wasm-bindgen=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/zoo-crypto-wasm/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.channel }}
+          targets: wasm32-unknown-unknown
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/zoo-crypto-wasm
+      - name: Install wasm-bindgen-cli
+        # crates/zoo-crypto-wasm/Cargo.toml で = 固定した wasm-bindgen と同じ版にする（build.sh が照合する）。
+        run: |
+          if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen ${{ steps.versions.outputs.wasm-bindgen }}" ]; then
+            cargo install --locked wasm-bindgen-cli --version "${{ steps.versions.outputs.wasm-bindgen }}"
+          fi
+      - name: Build wasm package
+        run: crates/zoo-crypto-wasm/build.sh
+      - name: Upload wasm package
+        uses: actions/upload-artifact@v7
+        with:
+          name: zoo-crypto-wasm
+          path: crates/zoo-crypto-wasm/pkg
+          if-no-files-found: error
+          retention-days: 1
+
+  oidc-e2e:
+    needs: [runner, crypto-wasm]
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 30
     env:
@@ -76,6 +125,12 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Download wasm package
+        uses: actions/download-artifact@v8
+        with:
+          name: zoo-crypto-wasm
+          path: crates/zoo-crypto-wasm/pkg
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

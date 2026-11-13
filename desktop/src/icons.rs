@@ -40,6 +40,7 @@ icons! {
     ArchiveRestore => "archive-restore",
     ArrowDown => "arrow-down",
     ArrowLeft => "arrow-left",
+    ArrowUpDown => "arrow-up-down",
     ArrowUpRight => "arrow-up-right",
     AtSign => "at-sign",
     Bell => "bell",

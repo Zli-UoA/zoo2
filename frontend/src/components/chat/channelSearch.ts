@@ -1,4 +1,5 @@
-import type { ChannelRow } from "../../lib/electric/types";
+import type { ChannelLeaveRow, ChannelRow } from "../../lib/electric/types";
+import { parseUtcTimestamp } from "../../lib/timestamps";
 
 /** サイドバーに出す、現在ユーザーが参加中でアーカイブされていないチャンネルだけを残す。 */
 export function filterJoinedChannels(
@@ -41,6 +42,8 @@ export function filterDiscoverableChannels(
 }
 
 export const CHANNEL_SORTS = [
+  "left-desc",
+  "left-asc",
   "name-asc",
   "name-desc",
   "created-desc",
@@ -51,7 +54,8 @@ export const CHANNEL_SORTS = [
 
 export type ChannelSort = (typeof CHANNEL_SORTS)[number];
 
-export const DEFAULT_CHANNEL_SORT: ChannelSort = "name-asc";
+/** 既定は退出日の新しい順。退出日のないチャンネルは最後に名前順で並ぶ。 */
+export const DEFAULT_CHANNEL_SORT: ChannelSort = "left-desc";
 
 export function isChannelSort(value: unknown): value is ChannelSort {
   return CHANNEL_SORTS.includes(value as ChannelSort);
@@ -65,13 +69,19 @@ function compareNames(a: ChannelRow, b: ChannelRow): number {
  * 「チャンネルを探す」の並び順。入力は変更しない。
  *
  * - 同順位（同じ作成日時・同じメンバー数）は名前の昇順で安定させる。
- * - 作成日時は `created_at`、メンバー数は `memberCounts`（未登録は 0）で比べる。
+ * - 作成日時は `created_at`、メンバー数は `memberCounts`（未登録は 0）、退出日は `leaveDates` で比べる。
  */
 export function sortChannels(
   channels: ChannelRow[],
   sort: ChannelSort,
   memberCounts: ReadonlyMap<string, number> = new Map(),
+  leaveDates: ReadonlyMap<string, string> = new Map(),
 ): ChannelRow[] {
+  if (sort === "left-desc" || sort === "left-asc") {
+    return [...channels].sort(
+      compareByLeaveDate(leaveDates, sort === "left-desc" ? "newest" : "oldest"),
+    );
+  }
   const direction = sort.endsWith("-desc") ? -1 : 1;
   const key = (channel: ChannelRow): string | number => {
     if (sort.startsWith("created")) return channel.created_at;
@@ -87,4 +97,53 @@ export function sortChannels(
     const order = ka < kb ? -1 : ka > kb ? 1 : 0;
     return order !== 0 ? direction * order : compareNames(a, b);
   });
+}
+
+/**
+ * 退出日の対応表（channel_id → 退出日）を作る。
+ *
+ * 再参加して今は参加中のチャンネルは、前回の退出日が残っていても含めない
+ * （退出済みのチャンネルだけを退出日で並べるため）。
+ */
+export function buildLeaveDateMap(
+  leaves: readonly ChannelLeaveRow[],
+  joinedChannelIds: ReadonlySet<string>,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const leave of leaves) {
+    if (!joinedChannelIds.has(leave.channel_id)) {
+      map.set(leave.channel_id, leave.left_at);
+    }
+  }
+  return map;
+}
+
+function leaveTime(leaveDates: ReadonlyMap<string, string>, channelId: string): number | null {
+  const leftAt = leaveDates.get(channelId);
+  if (leftAt === undefined) return null;
+  const time = parseUtcTimestamp(leftAt).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+/**
+ * 退出日で比較する関数を返す。`newest` は新しい退出が先、`oldest` は古い退出が先。
+ *
+ * 退出日のないチャンネル（一度も自分で退出していない、キックされた、機能の導入前に退出した）は、
+ * どちらの向きでも最後に置く。同じ退出日どうしと退出日のないものどうしは、名前順にする。
+ */
+export function compareByLeaveDate(
+  leaveDates: ReadonlyMap<string, string>,
+  direction: "newest" | "oldest",
+): (a: ChannelRow, b: ChannelRow) => number {
+  return (a, b) => {
+    const timeA = leaveTime(leaveDates, a.id);
+    const timeB = leaveTime(leaveDates, b.id);
+    if (timeA !== null && timeB !== null && timeA !== timeB) {
+      return direction === "newest" ? timeB - timeA : timeA - timeB;
+    }
+    if ((timeA === null) !== (timeB === null)) {
+      return timeA === null ? 1 : -1;
+    }
+    return a.channel_name.localeCompare(b.channel_name);
+  };
 }

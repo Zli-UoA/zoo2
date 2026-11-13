@@ -22,6 +22,8 @@
     "browseSearch": "用頻道名搵",
     "sortLabel": "排序",
     "sort": {
+      "left-desc": "退出日期（新→舊）",
+      "left-asc": "退出日期（舊→新）",
       "name-asc": "字母（A → Z）",
       "name-desc": "字母（Z → A）",
       "created-desc": "頻道建立（新→舊）",
@@ -777,7 +779,7 @@
   "slackImport": {
     "tab": "Slack 匯入",
     "title": "由 Slack 匯入",
-    "description": "上載喺 Slack 管理設定匯出嘅 ZIP，就可以保存喺 Zoo。你可以喺度匯入任何頻道；成員連結 Slack 帳戶之後，可以匯入自己開嘅頻道。",
+    "description": "上載喺 Slack 管理設定匯出嘅 ZIP，就可以保存喺 Zoo。你可以喺度匯入任何頻道；成員連結 Slack 帳戶之後，可以喺「Slack 連結」分頁匯入自己開嘅私人頻道（公開頻道只有管理員可以匯入）。",
     "chooseFile": "揀選並上載 ZIP",
     "uploading": "上載緊…",
     "loading": "載入緊匯入紀錄",
@@ -856,13 +858,26 @@
       "linked_other_account": "你已經連結咗另一個 Slack 帳戶。想轉帳戶，請先解除連結。",
       "failed": "同 Slack 連結唔到。"
     },
-    "importTitle": "由 Slack 匯入",
-    "importDescription": "可以由管理員保存嘅 Slack 匯出入面，匯入你喺 Slack 開嘅頻道嘅歷史紀錄。匯入位置可以揀你已經加入咗嘅同名頻道，或者開新頻道。",
-    "importLoading": "載入緊可以匯入嘅頻道",
-    "importNoExport": "管理員保存 Slack 匯出之後，你就可以喺度匯入自己嘅頻道。",
-    "importNoChannels": "保存咗嘅匯出入面冇你開嘅頻道。",
-    "importSummary_one": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。",
-    "importSummary_other": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。"
+    "privateTitle": "由 Slack 匯入",
+    "privateDescription": "可以用你連結咗嘅 Slack 帳戶，匯入你喺 Slack 開嘅私人頻道嘅歷史紀錄，唔使 ZIP。公開頻道由管理員匯入。",
+    "privateLoading": "載入緊可以匯入嘅頻道",
+    "privateEmpty": "你冇開過私人頻道。",
+    "privateRelink": "你嘅 Slack 連結冇權限讀取私人頻道。請先解除連結，再重新連結。",
+    "privateUnavailable": "暫時載入唔到可以匯入嘅頻道。",
+    "privateMembers_one": "{{count}} 位成員",
+    "privateMembers_other": "{{count}} 位成員",
+    "privateArchived": "已封存",
+    "privateName": "{{name}} 嘅匯入頻道名稱",
+    "privateStart": "匯入 {{name}}",
+    "privateStartButton": "匯入",
+    "privateStarting": "開始緊…",
+    "privateStatus": {
+      "queued": "等緊匯入（#{{name}}）。",
+      "running": "匯入緊（#{{name}}）。",
+      "done": "已匯入（#{{name}}）。新嘅留言會自動同步。",
+      "error": "匯入失敗，會自動重試（#{{name}}）。",
+      "hidden": "已經匯入（因為你冇加入呢個頻道，所以唔顯示名稱）。"
+    }
   },
   "publicProfile": {
     "followTitle": "由你嘅伺服器追蹤",
@@ -1052,6 +1067,16 @@
       "list": "呢個 App 嘅 Webhook",
       "hidden_one": "仲有 {{count}} 個（唔會顯示你管理唔到嘅頻道嘅 Webhook）。",
       "hidden_other": "仲有 {{count}} 個（唔會顯示你管理唔到嘅頻道嘅 Webhook）。"
+    }
+  },
+  "e2ee": {
+    "logout": {
+      "unbackedTitle": "有啲鎖匙未備份",
+      "unbackedDescription_one": "有 {{count}} 條鎖匙未備份。登出之後，淨係呢部裝置解到嘅舊訊息就會睇唔到。",
+      "unbackedDescription_other": "有 {{count}} 條鎖匙未備份。登出之後，淨係呢部裝置解到嘅舊訊息就會睇唔到。",
+      "unknownDescription": "確認唔到啲鎖匙有冇備份。登出之後，淨係呢部裝置解到嘅舊訊息可能會睇唔到。",
+      "confirm": "登出",
+      "deleteFailed": "刪唔到呢部裝置嘅加密鎖匙。下次打開嗰陣會再刪。"
     }
   }
 }

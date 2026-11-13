@@ -39,6 +39,7 @@ export function ChannelBrowserDialog({
   joinedChannelIds,
   onJoinChannel,
   memberCounts,
+  leaveDates,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -47,6 +48,8 @@ export function ChannelBrowserDialog({
   onJoinChannel?: (channelId: string) => Promise<void>;
   /** チャンネル ID ごとのメンバー数。メンバー数での並び替えに使う。 */
   memberCounts?: ReadonlyMap<string, number>;
+  /** チャンネル ID ごとの自分の退出日。退出日での並び替えに使う。 */
+  leaveDates?: ReadonlyMap<string, string>;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -59,8 +62,9 @@ export function ChannelBrowserDialog({
         filterDiscoverableChannels(channels, joinedChannelIds, query),
         sort,
         memberCounts,
+        leaveDates,
       ),
-    [channels, joinedChannelIds, query, sort, memberCounts],
+    [channels, joinedChannelIds, query, sort, memberCounts, leaveDates],
   );
 
   async function handleJoin(channelId: string) {
