@@ -77,6 +77,11 @@ class FakeServer {
         this.fail = null;
         throw new TypeError("network error");
       }
+      if (path === "/api/e2ee/keys/query" && this.beforeKeysQuery) {
+        const hook = this.beforeKeysQuery;
+        this.beforeKeysQuery = null;
+        await hook();
+      }
       const result = this.respond(method, path, options.body as Json, reauth);
       if (fail?.when === "after") {
         this.fail = null;
@@ -102,6 +107,18 @@ class FakeServer {
   private error(status: number, code: string, extra: Json = {}): never {
     throw new ApiError(status, code, { error: code, code, ...extra });
   }
+
+  /** 実際のサーバーと同じく、前提にした既定の SSSS 鍵を照合する（省略したら照合しない）。 */
+  private checkExpectedDefaultKey(body: Json) {
+    if (body.expected_default_key_id === undefined) return;
+    const current = (this.ssss?.default_key_id as string | undefined) ?? null;
+    if (body.expected_default_key_id !== current) {
+      this.error(409, "E2EE_SSSS_CONFLICT", { default_key_id: current });
+    }
+  }
+
+  /** 次の `keys/query` の応答を返す前に、`hook` を待つ（読み直しと保存の間の競合を作るため）。 */
+  beforeKeysQuery: (() => Promise<void>) | null = null;
 
   private requireReauth(reauth: boolean) {
     if (!reauth) this.error(403, "E2EE_REAUTH_REQUIRED");
@@ -198,6 +215,7 @@ class FakeServer {
       }
       case "POST /api/e2ee/cross_signing/keys": {
         this.requireReauth(reauth);
+        this.checkExpectedDefaultKey(body);
         const keyOf = (key: Json | null) =>
           key ? Object.values(key.keys as Record<string, string>)[0] : null;
         const expected = body.expected_keys as Json;
@@ -219,6 +237,7 @@ class FakeServer {
         }
         return { count: (body.signatures as Json[]).length };
       case "POST /api/e2ee/key_backup/versions": {
+        this.checkExpectedDefaultKey(body);
         const current = this.versions.at(-1);
         const authData = body.auth_data as Json;
         if (current && (current.auth_data as Json).public_key === authData.public_key) {
@@ -868,5 +887,38 @@ describe("初回設定と解錠", () => {
     await expect(uploadKeyBackup(deps)).rejects.toThrow("storage down");
     expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 1 });
     expect(server.backupSessions).toHaveLength(2);
+  });
+
+  it("読み直してから送るまでの間に別の端末がリセットしても、サーバーが前提の SSSS 鍵で拒む", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const original = await beginSetup(first.deps(server), null);
+    await completeSetup(first.deps(server), original.keyId, TOKEN);
+
+    const a = await device("a");
+    const aStatus = await loadE2eeStatus(a.deps(server));
+    if (aStatus.kind !== "locked") throw new Error("unreachable");
+    const resetA = await beginSetup(a.deps(server), aStatus.storage);
+
+    // A が SSSS を保存し、続きのために SSSS と公開鍵を読み直す。SSSS は A のまま返り、公開鍵の
+    // 取得を待つ間に、B がリセットを最後まで終える。
+    const b = await device("b");
+    let resetBKeyId = "";
+    server.beforeKeysQuery = async () => {
+      const bStatus = await loadE2eeStatus(b.deps(server));
+      if (bStatus.kind !== "locked") throw new Error("unreachable");
+      const resetB = await beginSetup(b.deps(server), bStatus.storage);
+      await completeSetup(b.deps(server), resetB.keyId, TOKEN);
+      resetBKeyId = resetB.keyId;
+    };
+    const masterBefore = () => server.master;
+    await expect(completeSetup(a.deps(server), resetA.keyId, TOKEN)).rejects.toBeInstanceOf(
+      SetupConflictError,
+    );
+    const masterB = masterBefore();
+    expect(server.ssss?.default_key_id).toBe(resetBKeyId);
+    // B のクロス署名鍵と版が残り、B は解錠済みのまま。
+    expect(server.master).toEqual(masterB);
+    expect((await loadE2eeStatus(b.deps(server))).kind).toBe("unlocked");
   });
 });

@@ -259,7 +259,7 @@ fn slots_required() -> AppError {
     )
 }
 
-fn ssss_conflict(current: Option<&Value>) -> AppError {
+pub(crate) fn ssss_conflict(current: Option<&Value>) -> AppError {
     coded(
         StatusCode::CONFLICT,
         "E2EE_SSSS_CONFLICT",
@@ -288,6 +288,25 @@ pub(crate) async fn default_key(
         &[user_id],
     )
     .await
+}
+
+/// クロス署名鍵と鍵バックアップの版の保存の前提にした既定の SSSS 鍵（`expected_default_key_id`）を、
+/// ユーザー単位のロックのあとの同じトランザクションで照合する（#360）。違えば 409
+/// `E2EE_SSSS_CONFLICT`。初回設定とリセットで、別の端末が同時に SSSS を作り直したときに、SSSS と
+/// サーバーの公開鍵の世代がずれないようにするため。省略したら照合しない。
+pub(crate) async fn check_expected_default_key(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+    expected: Option<&str>,
+) -> Result<(), AppError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let current = default_key(tx, user_id).await?;
+    if current.as_ref().and_then(|c| c["key_id"].as_str()) != Some(expected) {
+        return Err(ssss_conflict(current.as_ref()));
+    }
+    Ok(())
 }
 
 async fn insert_slots(

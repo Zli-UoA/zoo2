@@ -262,11 +262,30 @@ export async function saveRemaining(
   keyId?: string,
 ): Promise<void> {
   const plan = await planRemaining(deps, keyId);
-  await withReauth(async () => {
-    if (plan.cross_signing) await uploadCrossSigningKeys(deps.client, plan.cross_signing, reauth);
-    if (plan.device_signature) await uploadSignatures(deps.client, [plan.device_signature]);
-    if (plan.backup_version) await createBackupVersion(deps.client, plan.backup_version, reauth);
-  });
+  // 初回設定とリセットでは、作った SSSS 鍵を前提にする。サーバーが同じトランザクションで既定の
+  // 鍵を照合するので、読み直してから送るまでの間に別の端末が SSSS を作り直しても、鍵を差し替えない。
+  const precondition: JsonObject = keyId === undefined ? {} : { expected_default_key_id: keyId };
+  try {
+    await withReauth(async () => {
+      if (plan.cross_signing) {
+        await uploadCrossSigningKeys(
+          deps.client,
+          { ...plan.cross_signing, ...precondition },
+          reauth,
+        );
+      }
+      if (plan.device_signature) await uploadSignatures(deps.client, [plan.device_signature]);
+      if (plan.backup_version) {
+        await createBackupVersion(deps.client, { ...plan.backup_version, ...precondition }, reauth);
+      }
+    });
+  } catch (error) {
+    if (keyId !== undefined && ssssConflict(error)) {
+      await deps.worker.request({ op: "discardSecrets" });
+      throw new SetupConflictError();
+    }
+    throw error;
+  }
   await deps.worker.request({ op: "finishSetup", secretsRevision, keyId });
   // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送る。失敗しても解錠は済んでいる。
   await uploadKeyBackup(deps).catch(() => undefined);

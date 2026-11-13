@@ -1831,3 +1831,65 @@ async fn key_changes_and_backup_versions_bump_membership_epochs() {
 
     assert_eq!(epoch(&env, &without_alice).await, 0);
 }
+
+/// 初回設定とリセットの保存（#360）：クロス署名鍵と版の保存は、前提にした既定の SSSS 鍵
+/// （`expected_default_key_id`）を同じトランザクションで照合する。別の端末が SSSS を作り直していたら、
+/// `expected_keys` が今の鍵と同じでも 409 `E2EE_SSSS_CONFLICT` にし、何も変えない。
+#[tokio::test]
+async fn cross_signing_and_versions_check_the_expected_default_ssss_key() {
+    let env = env().await;
+    let user = env.user().await;
+    let keys = "/api/e2ee/cross_signing/keys";
+    let versions = "/api/e2ee/key_backup/versions";
+    let algorithm = "zoo.megolm_backup.v1.curve25519-aes-sha2";
+
+    // 端末 A が SSSS を保存した。
+    let key_a = env.ssss(&user, json!([recovery_slot()])).await;
+    // その間に端末 B が SSSS を作り直し、クロス署名鍵も保存した。
+    let revision = env.revision(&user).await;
+    let key_b = Uuid::new_v4().to_string();
+    let (status, res) = env
+        .post(
+            "/api/e2ee/secret_storage/keys",
+            &user,
+            true,
+            ssss_body(&key_b, json!(key_a), json!(revision), json!([recovery_slot()])),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let b = Identity::new(&user);
+    let mut body = b.upload_body(Value::Null);
+    body["expected_default_key_id"] = json!(key_b);
+    let (status, res) = env.post(keys, &user, true, body).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+
+    // 端末 A が、今の B の鍵を expected_keys にして差し替えようとしても、SSSS が A の鍵でないので 409。
+    let a = Identity::new(&user);
+    let mut body = a.upload_body(b.public());
+    body["expected_default_key_id"] = json!(key_a);
+    let (status, res) = env.post(keys, &user, true, body).await;
+    assert_eq!((status, code(&res)), (StatusCode::CONFLICT, "E2EE_SSSS_CONFLICT"));
+    assert_eq!(res["default_key_id"], json!(key_b));
+    let (_, own) = env
+        .post("/api/e2ee/keys/query", &user, false, json!({"user_ids": [user]}))
+        .await;
+    assert_eq!(
+        own["master_keys"][&user]["keys"][format!("ed25519:{}", pk(&b.master))],
+        json!(pk(&b.master))
+    );
+
+    // 版も同じ。A の前提では作れず、B の前提なら作れる。
+    let mut first = json!({"algorithm": algorithm, "auth_data": b.auth_data(&backup_key()), "expected_current_version": null});
+    first["expected_default_key_id"] = json!(key_a);
+    let (status, res) = env.post(versions, &user, false, first.clone()).await;
+    assert_eq!((status, code(&res)), (StatusCode::CONFLICT, "E2EE_SSSS_CONFLICT"));
+    first["expected_default_key_id"] = json!(key_b);
+    let (status, res) = env.post(versions, &user, false, first).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+
+    // 省略したら照合しない（これまでの要求のまま）。
+    let mut body = b.upload_body(Value::Null);
+    body.as_object_mut().unwrap().remove("expected_keys");
+    let (status, res) = env.post(keys, &user, false, body).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+}
