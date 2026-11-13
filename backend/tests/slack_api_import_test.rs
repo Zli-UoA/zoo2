@@ -347,6 +347,16 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
     assert_eq!(done["channels"][0]["status"], "done", "{done}");
     assert_eq!(done["channels"][0]["channel_id"], zoo_channel.as_str());
 
+    // 取り込み先を削除すると、一覧には出ない (対応は残るので、取り込み直しは 409 になる)
+    sql(
+        &state,
+        "UPDATE channels SET deleted_at=now() WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&zoo_channel],
+    )
+    .await?;
+    let (_, gone) = request(&app, "GET", "/api/slack/private-channels", &alice, None).await?;
+    assert_eq!(gone["channels"], json!([]), "{gone}");
+
     // 同じチャンネルは、もう一度取り込めない
     let (status, _) = request(
         &app,
