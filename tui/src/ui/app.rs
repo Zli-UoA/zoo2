@@ -1591,7 +1591,22 @@ impl App {
         }
     }
 
+    /// 暗号化チャンネルか。TUI はまだ Megolm で暗号化して送れないので、平文を送らないために使う。
+    fn is_encrypted_channel(&self, channel_id: &str) -> bool {
+        self.store.channel(channel_id).is_some_and(|c| c.encrypted)
+    }
+
     fn submit(&mut self) {
+        // 暗号化チャンネルには、暗号化の送信を入れるまで投稿、返信、編集を送らない（docs/e2ee.md、#361）。
+        // サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため、ここで止める。下書きは残す。
+        if self
+            .current
+            .as_deref()
+            .is_some_and(|id| self.is_encrypted_channel(id))
+        {
+            self.notify("暗号化チャンネルには、このバージョンの TUI からはまだ送信できません");
+            return;
+        }
         if let Target::Edit(message_id) = self.target.clone()
             && !self.can_change_message(&message_id)
         {
@@ -1997,6 +2012,50 @@ mod tests {
                 .iter()
                 .all(|request| request.method == "GET")
         );
+    }
+
+    #[tokio::test]
+    async fn encrypted_channels_do_not_send_plaintext() {
+        let server = wiremock::MockServer::start().await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            Batch {
+                changes: vec![electric::Change::Upsert {
+                    key: "c1".into(),
+                    row: serde_json::json!({
+                        "id":"c1", "channel_name":"secret", "is_private":"t", "encrypted":"t"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                }],
+                ..Default::default()
+            },
+        ));
+        app.current = Some("c1".into());
+        for target in [
+            Target::Channel,
+            Target::Reply("root".into()),
+            Target::Edit("root".into()),
+        ] {
+            app.mode = Mode::Insert;
+            app.target = target;
+            app.composer = composer_with("secret text");
+            app.submit();
+            // 下書きは消さずに残す。
+            assert_eq!(app.composer.lines().join("\n"), "secret text");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.method == "GET")
+        );
+        assert!(app.notice.is_some());
     }
 
     #[test]
