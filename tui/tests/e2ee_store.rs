@@ -318,3 +318,19 @@ async fn logout_keeps_another_users_device_for_their_next_login() {
         (ALICE, device_id.as_str())
     );
 }
+
+#[test]
+fn retry_interval_returns_to_the_first_after_a_working_connection() {
+    use std::time::Duration;
+    let mut backoff = Duration::from_secs(5);
+    let mut delays = Vec::new();
+    for _ in 0..8 {
+        let (delay, next) = manager::retry_delay(backoff, false);
+        delays.push(delay.as_secs());
+        backoff = next;
+    }
+    assert_eq!(delays, vec![5, 10, 20, 40, 80, 160, 300, 300]);
+    // Shape を受け取れていたあとの切断は、5 秒から数え直す。
+    let (delay, next) = manager::retry_delay(backoff, true);
+    assert_eq!((delay.as_secs(), next.as_secs()), (5, 10));
+}

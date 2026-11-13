@@ -160,15 +160,36 @@ pub fn spawn(
                 backoff = (backoff * 2).min(Duration::from_secs(300));
                 continue;
             };
-            match run(&http, &api_base_url, &credentials, &api, &root, user_id).await {
+            let mut connected = false;
+            match run(
+                &http,
+                &api_base_url,
+                &credentials,
+                &api,
+                &root,
+                user_id,
+                &mut connected,
+            )
+            .await
+            {
                 // ほかの zoo2-tui が開いているなど、試し直しても変わらないときは止める。
                 Err(err) if err.to_string().contains("ほかの zoo2-tui") => return,
                 _ => {}
             }
-            tokio::time::sleep(backoff).await;
-            backoff = (backoff * 2).min(Duration::from_secs(300));
+            let (delay, next) = retry_delay(backoff, connected);
+            tokio::time::sleep(delay).await;
+            backoff = next;
         }
     })
+}
+
+/// 試し直すまでに待つ時間と、その次の間隔を返す。登録と補充を終えて Shape を受け取れていた
+/// （`connected`）なら、そのあとの切断は連続した失敗ではないので、最初の 5 秒から数え直す。
+/// 続けて失敗したら倍にする（最大 5 分）。
+pub fn retry_delay(backoff: Duration, connected: bool) -> (Duration, Duration) {
+    const FIRST: Duration = Duration::from_secs(5);
+    let delay = if connected { FIRST } else { backoff };
+    (delay, (delay * 2).min(Duration::from_secs(300)))
 }
 
 async fn run(
@@ -178,6 +199,7 @@ async fn run(
     api: &ApiClient,
     root: &Path,
     user_id: &str,
+    connected: &mut bool,
 ) -> Result<()> {
     retry_pending_device_deletion(api, root, user_id).await;
     let opened = CryptoStore::open(root, user_id)?;
@@ -214,6 +236,8 @@ async fn run(
     let mut rows: std::collections::BTreeMap<String, ToDeviceRow> = Default::default();
     loop {
         let batch = stream.next_batch().await?;
+        // Shape を受け取れた。このあとの切断は、最初の間隔から試し直す。
+        *connected = true;
         if batch.reset {
             rows.clear();
         }
