@@ -49,6 +49,19 @@ describe("zoo-crypto Worker", () => {
     expect(names.filter((name) => name.startsWith("zoo-crypto-"))).toEqual([]);
   });
 
+  it("同じ Worker で暗号ストアを消してから、同じ名前で作り直せる", async () => {
+    // 別の端末から消された端末を作り直すとき（deviceManager の start）と同じ順。
+    const namespace = `test-${crypto.randomUUID()}`;
+    worker = startCryptoWorker();
+    const first = await worker.request({ op: "open", namespace, userId: USER });
+    await worker.request({ op: "destroy", namespace });
+    const second = await worker.request({ op: "open", namespace, userId: USER });
+    expect(second.deviceId).not.toBe(first.deviceId);
+    const request = await worker.request({ op: "registrationRequest" });
+    expect(request.device_keys).toMatchObject({ device_id: second.deviceId });
+    await worker.request({ op: "destroy", namespace });
+  });
+
   it("wasm の失敗を code 付きで返す", async () => {
     worker = startCryptoWorker();
     await expect(
