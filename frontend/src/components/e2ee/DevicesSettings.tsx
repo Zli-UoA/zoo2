@@ -110,6 +110,7 @@ function DeviceLimit({ staleIds }: { staleIds: string[] }) {
             signed: true,
           })),
           verifications: [],
+          warnings: [],
           unlocked: false,
           pendingRevocation: null,
           accountUrls: null,
@@ -215,12 +216,15 @@ function DevicesPanel() {
           deps.worker.request({ op: "hasOwnKeys" }),
           revocationStatus(deps),
         ]);
-        const verifications = unlocked ? await loadVerifications(deps, peers) : [];
+        const verifications = unlocked
+          ? await loadVerifications(deps, peers)
+          : { users: [], warnings: [] };
         if (seq !== loadSeq.current) return;
         setState((current) => ({
           step: "ready",
           devices,
-          verifications: verifications.map((row) => ({ ...row, name: nameOf(row.userId) })),
+          verifications: verifications.users.map((row) => ({ ...row, name: nameOf(row.userId) })),
+          warnings: verifications.warnings,
           unlocked,
           pendingRevocation: pending ? { scope: pending.scope, stage: pending.stage } : null,
           accountUrls,

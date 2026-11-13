@@ -679,7 +679,34 @@
         "LockedResume",
         "LockedMismatch",
         "NeedsReauth",
-        "Unlocked"
+        "Unlocked",
+        "ResetChooseDevices",
+        "NewRecoveryKey",
+        "UnlockedRegenerateRecoveryKey"
+      ]
+    },
+    {
+      "file": "src/components/e2ee/DevicesSettingsView.stories.tsx",
+      "states": [
+        "Loading",
+        "LoadFailed",
+        "Ready",
+        "Reverify",
+        "Rename",
+        "UserSigningKeyRollback",
+        "ReadyLocked",
+        "PendingRevocation",
+        "SelectDevices",
+        "Unlock",
+        "UnlockResume",
+        "WrongRecoveryKey",
+        "FullRecoveryKey",
+        "Confirm",
+        "ConfirmReauthFailed",
+        "Running",
+        "Conflict",
+        "Done",
+        "DeviceLimit"
       ]
     }
   ],
@@ -1232,6 +1259,15 @@
         "src/lib/e2ee/reauth.test.ts",
         "src/lib/oidc/reauth.test.ts"
       ]
+    },
+    {
+      "file": "src/components/e2ee/DevicesSettingsView.tsx",
+      "story": "src/components/e2ee/DevicesSettingsView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/DevicesSettings.tsx",
+      "reason": "端末タブ（端末一覧、失効、他のユーザーの検証）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
+      "checks": ["src/lib/e2ee/revocationController.test.ts"]
     }
   ]
 }

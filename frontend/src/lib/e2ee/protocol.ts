@@ -64,6 +64,7 @@ export type CryptoOperation =
   | { op: "planResume"; keysQuery: JsonObject; versions: JsonObject }
   | { op: "finishSetup"; secretsRevision: number | null }
   | ({ op: "newPasskeySlot" } & PasskeySlotInput)
+  | { op: "newRecoverySlot" }
   | { op: "startupCheck"; keysQuery: JsonObject; versions: JsonObject }
   | { op: "hasSecrets" }
   | { op: "hasOwnKeys" }
@@ -139,6 +140,7 @@ export interface CryptoResults {
   planResume: ResumePlan;
   finishSetup: null;
   newPasskeySlot: KeySlot;
+  newRecoverySlot: { slot: KeySlot; recoveryKey: string };
   startupCheck: StartupCheck | null;
   hasSecrets: boolean;
   hasOwnKeys: boolean;

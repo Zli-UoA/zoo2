@@ -1267,7 +1267,14 @@
       },
       "reverify": "重新验证",
       "confirmTitle": "要信任 {{name}} 的当前密钥吗？",
-      "confirmDescription": "请在频道之外（当面或其他联系方式）确认对方确实重新生成了密钥后再信任。保存前需要重新登录确认身份。"
+      "confirmDescription": "请在频道之外（当面或其他联系方式）确认对方确实重新生成了密钥后再信任。保存前需要重新登录确认身份。",
+      "warning": {
+        "own_identity_unknown": "尚未确认你的主密钥。解锁后即可确认。",
+        "own_master_key_changed": "服务器上的主密钥与此设备确认过的不同。在重新解锁之前不会向任何设备分发密钥。",
+        "untrusted_user_signing_key": "无法确认你的用户签名密钥。不会向其他用户分发密钥。",
+        "user_signing_key_rollback": "你的用户签名密钥被回退到曾被替换的旧密钥。服务器可能被篡改，因此不会向其他用户分发密钥。",
+        "user_signing_key_changed": "你的用户签名密钥已变更。未重新签名的用户需要重新验证。"
+      }
     },
     "authz": {
       "beforeTitle": "开始前在 AuthZ 中要做的事",

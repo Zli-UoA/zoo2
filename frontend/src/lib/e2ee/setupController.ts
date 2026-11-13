@@ -8,7 +8,7 @@ import {
   evaluatePrfForNewSlot,
   evaluatePrfForUnlock,
 } from "./passkey";
-import type { ResumePlan } from "./protocol";
+import type { KeySlot, ResumePlan } from "./protocol";
 import {
   type SecretStorageResponse,
   addKeySlot,
@@ -274,6 +274,23 @@ export async function addPasskeySlot(
   const prfSalt = crypto.getRandomValues(new Uint8Array(32));
   const result = await evaluatePrfForNewSlot(deps.rpId, prfSalt, deps.getCredential);
   const slot = await deps.worker.request({ op: "newPasskeySlot", ...result, prfSalt, label });
+  await withReauth(() => addKeySlot(deps.client, storage.default_key_id as string, slot, reauth));
+}
+
+/** リカバリーキーを作り直す（#362）。保存するまでサーバーは変えない。 */
+export function newRecoveryKey(
+  deps: E2eeSetupDeps,
+): Promise<{ slot: KeySlot; recoveryKey: string }> {
+  return deps.worker.request({ op: "newRecoverySlot" });
+}
+
+/** 作り直したリカバリーキーのスロットを保存する。今のスロットの置き換えには直前の再認証が要る。 */
+export async function saveRecoverySlot(
+  deps: E2eeSetupDeps,
+  storage: SecretStorageResponse,
+  slot: KeySlot,
+  reauth: string | null,
+): Promise<void> {
   await withReauth(() => addKeySlot(deps.client, storage.default_key_id as string, slot, reauth));
 }
 

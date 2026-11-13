@@ -104,6 +104,23 @@ export class SetupSession {
     };
   }
 
+  /**
+   * 解錠したあとに、既定の SSSS 鍵のリカバリーキーのスロットを作り直す（#362）。返したリカバリーキーを
+   * 利用者に控えてもらってから、スロットを保存する（置き換えには再認証が要る）。
+   */
+  newRecoverySlot(): { slot: KeySlot; recoveryKey: string } {
+    const pending = this.require();
+    const recovery = RecoveryKey.generate();
+    try {
+      return {
+        slot: { ...newRecoverySlot(this.userId(), pending.ssss, recovery), label: null },
+        recoveryKey: recovery.toDisplay(),
+      };
+    } finally {
+      recovery.free();
+    }
+  }
+
   /** 初回設定で作ったスロット（保存の再試行で、サーバーにないものを足す）。 */
   pendingSlots(): KeySlot[] {
     return [...this.created().slots];

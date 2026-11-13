@@ -23,6 +23,9 @@ const handlers = (): EncryptionSettingsHandlers => ({
   onCancelReunlock: fn(),
   onRemoveSlot: fn(),
   onReset: fn(),
+  onRegenerateRecoveryKey: fn(),
+  onSaveRecoveryKey: fn(),
+  onCancelRecoveryKey: fn(),
 });
 
 const recoveryKey: EncryptionViewState = {
@@ -137,6 +140,70 @@ export const SetupConflict: Story = { args: { state: { ...locked, error: "setupC
 
 export const ResetRecoveryKey: Story = { args: { state: { ...recoveryKey, reset: true } } };
 
+/**
+ * リセットでは、見覚えのない端末を選んで削除してもらう。選択を確かめるまで保存できない（#362）。
+ */
+export const ResetChooseDevices: Story = {
+  args: {
+    state: {
+      ...recoveryKey,
+      reset: true,
+      accountUrls: {
+        security: "https://account.zli.works/settings/security",
+        services: "https://account.zli.works/settings/services",
+      },
+      resetDevices: [
+        {
+          deviceId: "5b7d1a8a-1c2e-4e9f-a1b2-c3d4e5f60718",
+          displayName: "Chrome（macOS）",
+          createdAt: "2026-11-01T09:00:00Z",
+          lastSeenAt: "2026-11-12T22:10:00Z",
+          current: false,
+          signed: true,
+        },
+        {
+          deviceId: "9c3e2b1a-7d6f-4a5b-8c9d-0e1f2a3b4c5d",
+          displayName: "Chrome（macOS）",
+          createdAt: "2026-11-13T03:00:00Z",
+          lastSeenAt: "2026-11-13T03:05:00Z",
+          current: false,
+          signed: false,
+        },
+      ],
+    },
+    handlers: handlers(),
+  },
+  play: playForImplementation(async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("checkbox", { name: "リカバリーキーを控えました" }));
+    const save = canvas.getByRole("button", { name: "リセットして保存する" });
+    await expect(save).toBeDisabled();
+    const devices = canvas.getAllByRole("checkbox", { name: /Chrome/ });
+    await userEvent.click(devices[1]);
+    await userEvent.click(canvas.getByRole("checkbox", { name: /見覚えのない端末を選んだ/ }));
+    await userEvent.click(save);
+    await expect(args.handlers.onSave).toHaveBeenCalledWith([
+      "9c3e2b1a-7d6f-4a5b-8c9d-0e1f2a3b4c5d",
+    ]);
+  }),
+};
+
+/** 解錠済みの端末で、リカバリーキーを作り直す。控えたと確かめるまで保存できない。 */
+export const NewRecoveryKey: Story = {
+  args: {
+    state: { step: "newRecoveryKey", recoveryKey: RECOVERY_KEY, busy: false, error: null },
+    handlers: handlers(),
+  },
+  play: playForImplementation(async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const save = canvas.getByRole("button", { name: "保存する" });
+    await expect(save).toBeDisabled();
+    await userEvent.click(canvas.getByRole("checkbox", { name: "リカバリーキーを控えました" }));
+    await userEvent.click(save);
+    await expect(args.handlers.onSaveRecoveryKey).toHaveBeenCalled();
+  }),
+};
+
 export const Locked: Story = {
   args: { state: locked, handlers: handlers() },
   play: playForImplementation(async ({ args, canvasElement }) => {
@@ -185,6 +252,16 @@ export const Unlocked: Story = {
     );
     await userEvent.click(await screen.findByRole("button", { name: "削除する" }));
     await expect(args.handlers.onRemoveSlot).toHaveBeenCalledWith("slot-passkey");
+  }),
+};
+
+/** リカバリーキーのスロットも作り直しと削除ができる（#362）。 */
+export const UnlockedRegenerateRecoveryKey: Story = {
+  args: { state: unlocked, handlers: handlers() },
+  play: playForImplementation(async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "リカバリーキーを作り直す" }));
+    await expect(args.handlers.onRegenerateRecoveryKey).toHaveBeenCalled();
   }),
 };
 

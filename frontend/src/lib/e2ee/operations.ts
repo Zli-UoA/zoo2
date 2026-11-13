@@ -132,6 +132,8 @@ export class CryptoOperations {
         return null;
       case "newPasskeySlot":
         return this.setup.newPasskeySlot(request);
+      case "newRecoverySlot":
+        return this.setup.newRecoverySlot();
       case "startupCheck":
         return this.setup.startupCheck(this.opened(), request.keysQuery, request.versions);
       case "hasSecrets":

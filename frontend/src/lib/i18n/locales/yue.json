@@ -1267,7 +1267,14 @@
       },
       "reverify": "重新驗證",
       "confirmTitle": "要信任 {{name}} 而家嘅金鑰嗎？",
-      "confirmDescription": "請喺頻道以外（當面或者其他聯絡方法）確認對方真係重新產生咗金鑰先信任。儲存之前要重新登入確認身分。"
+      "confirmDescription": "請喺頻道以外（當面或者其他聯絡方法）確認對方真係重新產生咗金鑰先信任。儲存之前要重新登入確認身分。",
+      "warning": {
+        "own_identity_unknown": "未確認你嘅主金鑰。解鎖之後就可以確認。",
+        "own_master_key_changed": "伺服器上面嘅主金鑰同呢部裝置確認過嘅唔同。重新解鎖之前唔會發金鑰畀任何裝置。",
+        "untrusted_user_signing_key": "確認唔到你嘅用戶簽署金鑰。唔會發金鑰畀其他用戶。",
+        "user_signing_key_rollback": "你嘅用戶簽署金鑰俾人退返去一條曾經被取代嘅舊金鑰。伺服器可能俾人改過，所以唔會發金鑰畀其他用戶。",
+        "user_signing_key_changed": "你嘅用戶簽署金鑰變咗。冇重新簽署嘅用戶要重新驗證。"
+      }
     },
     "authz": {
       "beforeTitle": "開始之前喺 AuthZ 要做嘅嘢",

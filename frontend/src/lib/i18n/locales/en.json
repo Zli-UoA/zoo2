@@ -1267,7 +1267,14 @@
       },
       "reverify": "Verify again",
       "confirmTitle": "Trust {{name}}'s current key?",
-      "confirmDescription": "Confirm outside the channel (in person or another way) that they really replaced their keys. You will sign in again to confirm it is you before saving."
+      "confirmDescription": "Confirm outside the channel (in person or another way) that they really replaced their keys. You will sign in again to confirm it is you before saving.",
+      "warning": {
+        "own_identity_unknown": "Your master key has not been checked yet. Unlock to check it.",
+        "own_master_key_changed": "The master key on the server differs from the one this device checked. No keys are sent to any device until you unlock again.",
+        "untrusted_user_signing_key": "Your user-signing key could not be checked. No keys are sent to other people.",
+        "user_signing_key_rollback": "Your user-signing key was rolled back to an old key that had been replaced. The server may have been tampered with, so no keys are sent to other people.",
+        "user_signing_key_changed": "Your user-signing key changed. People who were not re-signed need to be verified again."
+      }
     },
     "authz": {
       "beforeTitle": "Before you start, in AuthZ",

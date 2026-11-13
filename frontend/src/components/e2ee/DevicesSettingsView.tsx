@@ -11,9 +11,16 @@ import {
   PencilIcon,
   ShieldAlertIcon,
   ShieldCheckIcon,
+  ShieldIcon,
   Trash2Icon,
 } from "lucide-react";
-import type { ResignNote, RevocationScope, RevocationStage, UserState } from "@zoo/crypto-wasm";
+import type {
+  ResignNote,
+  RevocationScope,
+  RevocationStage,
+  TrustWarning,
+  UserState,
+} from "@zoo/crypto-wasm";
 
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -87,6 +94,11 @@ export type DevicesViewState =
       step: "ready";
       devices: DeviceRowView[];
       verifications: VerificationRowView[];
+      /**
+       * 配布先の判定の警告（自分のユーザー署名鍵の巻き戻し、自分のマスター鍵の変更など）。
+       * 一度置き換わったユーザー署名鍵に戻ったときは、他のユーザーに鍵を配らない（#362）。
+       */
+      warnings: TrustWarning[];
       /** この端末が解錠済みか（失効と再検証は解錠済みの端末だけ）。 */
       unlocked: boolean;
       /** 終わっていない失効（あれば、続けるよう表示する）。 */
@@ -145,7 +157,7 @@ function Busy({ label }: { label: string }) {
 }
 
 /** 端末の名前と日時。端末名は攻撃者も付けられるので、登録日時と最後に使った日時を並べる。 */
-function DeviceSummary({ device }: { device: DeviceRowView }) {
+export function DeviceSummary({ device }: { device: DeviceRowView }) {
   const { t, i18n } = useTranslation();
   const created = formatDate(device.createdAt, i18n.language);
   const used = formatDate(device.lastSeenAt, i18n.language);
@@ -350,6 +362,12 @@ function VerificationList({
       title={t("e2ee.verification.title")}
       description={t("e2ee.verification.description")}
     >
+      {state.warnings.map((warning) => (
+        <p key={warning} role="alert" className="flex items-start gap-2 text-sm text-destructive">
+          <ShieldAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+          {t(`e2ee.verification.warning.${warning}`)}
+        </p>
+      ))}
       {state.verifications.length === 0 ? (
         <p className="text-sm text-muted-foreground">{t("e2ee.verification.empty")}</p>
       ) : (
@@ -364,8 +382,13 @@ function VerificationList({
                       aria-hidden="true"
                       className="size-4 shrink-0 text-destructive"
                     />
-                  ) : (
+                  ) : row.state.state === "trusted" ? (
                     <ShieldCheckIcon aria-hidden="true" className="size-4 shrink-0" />
+                  ) : (
+                    <ShieldIcon
+                      aria-hidden="true"
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
                   )}
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{row.name}</p>
@@ -408,7 +431,7 @@ function VerificationList({
 }
 
 /** AuthZ で行う手順（今の AuthZ には 1 回で失効する API がない。docs/e2ee.md の【決定】）。 */
-function AuthzSteps({
+export function AuthzSteps({
   urls,
   after,
 }: {

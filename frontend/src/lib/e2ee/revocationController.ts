@@ -3,6 +3,7 @@ import type {
   RevocationScope,
   RevocationStage,
   RevocationSummary,
+  TrustWarning,
   UserState,
 } from "@zoo/crypto-wasm";
 
@@ -415,17 +416,20 @@ export interface UserVerification {
 export async function loadVerifications(
   deps: E2eeSetupDeps,
   userIds: string[],
-): Promise<UserVerification[]> {
+): Promise<{ users: UserVerification[]; warnings: TrustWarning[] }> {
   const others = [...new Set(userIds)].filter((user) => user !== deps.userId);
-  if (others.length === 0) return [];
+  if (others.length === 0) return { users: [], warnings: [] };
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const keysQuery = await queryKeys(deps.client, [...others, deps.userId]);
     const result = await deps.worker.request({ op: "trustEvaluate", keysQuery, userIds: others });
     if (result.new_pins.length === 0 || attempt === 2) {
-      return others.map((userId) => ({
-        userId,
-        state: result.users[userId]?.state ?? { state: "no_cross_signing_keys" },
-      }));
+      return {
+        users: others.map((userId) => ({
+          userId,
+          state: result.users[userId]?.state ?? { state: "no_cross_signing_keys" },
+        })),
+        warnings: result.warnings,
+      };
     }
     for (const pin of result.new_pins) {
       try {
@@ -437,7 +441,7 @@ export async function loadVerifications(
       }
     }
   }
-  return [];
+  return { users: [], warnings: [] };
 }
 
 /**

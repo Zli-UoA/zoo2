@@ -18,11 +18,16 @@ import {
   completeSetup,
   hasUnlockedSecrets,
   loadE2eeStatus,
+  newRecoveryKey,
   removeKeySlot,
+  saveRecoverySlot,
   saveRemaining,
   unlock,
 } from "../../lib/e2ee/setupController";
+import { accountRevocationUrls } from "../../lib/oidc/accountUrl";
 import { getOidcClient } from "../../lib/oidc/session";
+import { deleteSelectedDevices, loadDevices } from "../../lib/e2ee/revocationController";
+import type { KeySlot } from "../../lib/e2ee/protocol";
 import {
   type EncryptionErrorCode,
   type EncryptionSettingsHandlers,
@@ -94,7 +99,7 @@ function startReauth(config: AppConfig): () => Promise<string | null> {
 
 /** 設定の「暗号化」タブ（初回設定と解錠。#360）。 */
 export function EncryptionSettings() {
-  const { worker, userId } = useE2ee();
+  const { worker, userId, deviceId } = useE2ee();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const rpId = passkeyRpId(config);
@@ -104,6 +109,8 @@ export function EncryptionSettings() {
   const keyIdRef = useRef<string | null>(null);
   const resetRef = useRef(false);
   const revisionRef = useRef<number | null>(null);
+  /** 作り直したリカバリーキーのスロット（保存するまでサーバーにない）。 */
+  const recoverySlotRef = useRef<KeySlot | null>(null);
   /**
    * 状態の取得の番号。取得を始めるときと、利用者が初回設定を始めたときに進め、古い取得の
    * 結果で今の画面を上書きしないようにする。
@@ -175,6 +182,11 @@ export function EncryptionSettings() {
         const { recoveryKey, keyId } = await beginSetup(deps, resetFrom);
         keyIdRef.current = keyId;
         resetRef.current = resetFrom !== null;
+        // リセットでは、見覚えのない端末を選んで削除してもらう（docs/e2ee.md の【決定】）。
+        const resetDevices =
+          resetFrom !== null
+            ? (await loadDevices(deps, deviceId)).filter((device) => !device.current)
+            : null;
         setState({
           step: "recoveryKey",
           recoveryKey,
@@ -183,12 +195,14 @@ export function EncryptionSettings() {
           passkeyAdded: false,
           busy: null,
           error: null,
+          resetDevices,
+          accountUrls: config.oidc ? accountRevocationUrls(config.oidc.issuer) : null,
         });
       } catch {
         setState({ step: "loadFailed" });
       }
     },
-    [deps],
+    [deps, deviceId, config.oidc],
   );
 
   const update = (patch: (current: EncryptionViewState) => EncryptionViewState) =>
@@ -220,7 +234,7 @@ export function EncryptionSettings() {
           ),
       );
     },
-    onSave: () => {
+    onSave: (deleteDevices) => {
       if (!deps || !keyIdRef.current) return;
       const keyId = keyIdRef.current;
       const reauth = startReauth(config);
@@ -229,7 +243,9 @@ export function EncryptionSettings() {
       );
       void (async () => {
         try {
-          await completeSetup(deps, keyId, await reauth());
+          const token = await reauth();
+          if (resetRef.current) await deleteSelectedDevices(deps, deleteDevices);
+          await completeSetup(deps, keyId, token);
           keyIdRef.current = null;
           await load();
         } catch (error) {
@@ -326,6 +342,48 @@ export function EncryptionSettings() {
       });
     },
     onCancelReunlock: () => void load(),
+    onRegenerateRecoveryKey: () => {
+      if (!deps) return;
+      loadSeq.current += 1;
+      void newRecoveryKey(deps).then(
+        ({ slot, recoveryKey }) => {
+          recoverySlotRef.current = slot;
+          setState({ step: "newRecoveryKey", recoveryKey, busy: false, error: null });
+        },
+        (error) =>
+          update((current) =>
+            current.step === "unlocked"
+              ? { ...current, error: toEncryptionError(error, "saveFailed") }
+              : current,
+          ),
+      );
+    },
+    onSaveRecoveryKey: () => {
+      const storage = storageRef.current;
+      const slot = recoverySlotRef.current;
+      if (!deps || !storage || !slot) return;
+      const reauth = startReauth(config);
+      update((current) =>
+        current.step === "newRecoveryKey" ? { ...current, busy: true, error: null } : current,
+      );
+      void (async () => {
+        try {
+          await saveRecoverySlot(deps, storage, slot, await reauth());
+          recoverySlotRef.current = null;
+          await load();
+        } catch (error) {
+          update((current) =>
+            current.step === "newRecoveryKey"
+              ? { ...current, busy: false, error: toEncryptionError(error, "saveFailed") }
+              : current,
+          );
+        }
+      })();
+    },
+    onCancelRecoveryKey: () => {
+      recoverySlotRef.current = null;
+      void load();
+    },
     onReset: () => {
       const storage = storageRef.current;
       if (!storage) return;
