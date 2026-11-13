@@ -872,6 +872,17 @@ pub(crate) async fn leave_channel(
     .delete()
     .exec(&mut tx)
     .await?;
+    // 退出日を残す（「チャンネルを探す」の退出日での並び替え用）。自分で退出した場合だけ記録し、
+    // 再参加後にもう一度退出したときは上書きする。メンバー行の削除と同じトランザクションで行う。
+    let _ = toasty::sql::query(
+        "INSERT INTO channel_leave (user_id, channel_id, left_at) \
+         VALUES ($1, $2, date_trunc('milliseconds', now() AT TIME ZONE 'UTC')) \
+         ON CONFLICT (user_id, channel_id) DO UPDATE SET left_at = EXCLUDED.left_at",
+    )
+    .bind(auth_user.id.clone())
+    .bind(id.clone())
+    .exec(&mut tx)
+    .await?;
     if channel.encrypted {
         e2ee_channels::bump_channel_epoch(&mut tx, &id).await?;
     }

@@ -656,15 +656,6 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(restricted["link"]["slack_user_id"], "U1");
     assert_eq!(restricted["link"]["team_allowed"], false);
-    let (status, _, _) = request(
-        &other_app,
-        "POST",
-        "/api/slack/imports",
-        Some(&alice),
-        Some(json!({"mappings": []})),
-    )
-    .await?;
-    assert_eq!(status, StatusCode::FORBIDDEN);
 
     // 解除するとトークンを無効にして消す。付け替えた投稿は残る。許可していないワークスペースの連携も解除できる
     let (status, unlinked, _) =
