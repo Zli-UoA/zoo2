@@ -20,6 +20,15 @@
     "browseTitle": "瀏覽頻道",
     "browseDescription": "不需加入即可瀏覽公開頻道與已封存頻道的訊息。",
     "browseSearch": "依頻道名稱搜尋",
+    "sortLabel": "排序",
+    "sort": {
+      "name-asc": "字母（A → Z）",
+      "name-desc": "字母（Z → A）",
+      "created-desc": "頻道建立（新→舊）",
+      "created-asc": "頻道建立（舊→新）",
+      "members-desc": "成員數（多→少）",
+      "members-asc": "成員數（少→多）"
+    },
     "searchClear": "清除搜尋",
     "searchEmpty": "沒有符合的頻道。",
     "browseEmpty": "沒有可加入的公開頻道。",
