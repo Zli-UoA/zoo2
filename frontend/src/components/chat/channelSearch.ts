@@ -6,7 +6,7 @@ export function filterJoinedChannels(
   joinedChannelIds: ReadonlySet<string>,
 ): ChannelRow[] {
   return channels.filter(
-    (channel) => joinedChannelIds.has(channel.id) && channel.archive_at === null,
+    (channel) => joinedChannelIds.has(channel.id) && !channel.archive_at,
   );
 }
 
@@ -32,10 +32,10 @@ export function filterDiscoverableChannels(
   return channels.filter((channel) => {
     const joined = joinedChannelIds.has(channel.id);
     // 参加済みのアーカイブ済みは、サイドバーに出さない代わりに非公開でもここに残す。
-    if (channel.is_private && !(channel.archive_at !== null && joined)) {
+    if (channel.is_private && !(channel.archive_at && joined)) {
       return false;
     }
-    if (channel.archive_at === null && joined) {
+    if (!channel.archive_at && joined) {
       return false;
     }
     return needle.length === 0 || channel.channel_name.toLowerCase().includes(needle);
