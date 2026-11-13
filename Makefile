@@ -124,3 +124,22 @@ desktop-check:
 # 色・フォント・アイコンの確認画面。THEME=dark で暗い配色にする。
 desktop-gallery:
 	cd desktop && cargo run -- gallery --theme $${THEME:-light}
+
+# ローカル監視スタック (Prometheus / Loki / Alloy / Grafana / Tempo)
+.PHONY: observability-up observability-up-traces observability-down observability-reset observability-logs
+observability-up:
+	mkdir -p .local/logs
+	docker compose -f infra/compose.observability.yaml up -d --wait
+
+observability-up-traces:
+	mkdir -p .local/logs
+	docker compose -f infra/compose.observability.yaml --profile traces up -d --wait
+
+observability-down:
+	docker compose -f infra/compose.observability.yaml --profile traces down
+
+observability-reset:
+	docker compose -f infra/compose.observability.yaml --profile traces down --volumes
+
+observability-logs:
+	docker compose -f infra/compose.observability.yaml logs -f

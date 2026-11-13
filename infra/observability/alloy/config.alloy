@@ -1,0 +1,89 @@
+// ローカル検証用 Grafana Alloy 設定。
+// `.local/logs/*.jsonl` へ出力された 1 行 JSON ログ（LOG_FORMAT=json）を監視し、
+// 許可フィールドのみ抽出・低カーディナリティラベル付与・トークン保護を行って Loki へ送信する。
+// （OTLP トレースは `--profile traces` 起動時の Tempo が :4317 / :4318 で直接受信する）
+
+local.file_match "zoo_logs" {
+  path_targets = [{
+    __path__ = "/var/log/zoo/*.jsonl",
+  }]
+  sync_period = "5s"
+}
+
+loki.source.file "zoo_logs" {
+  targets    = local.file_match.zoo_logs.targets
+  forward_to = [loki.process.zoo_safe.receiver]
+}
+
+loki.process "zoo_safe" {
+  // 万一の Bearer トークン混入を防ぐ防御的マスキング
+  stage.replace {
+    expression = "(Bearer\\s+[A-Za-z0-9._~+/=-]+)"
+    replace    = "Bearer [REDACTED]"
+  }
+
+  // zoo2 の JsonLogFormat / POST /api/telemetry が出力する許可フィールドのみを抽出する
+  stage.json {
+    expressions = {
+      timestamp      = "timestamp",
+      level          = "level",
+      service        = "service",
+      target         = "target",
+      trace_id       = "trace_id",
+      span_id        = "span_id",
+      span           = "span",
+      method         = "method",
+      route          = "route",
+      http_status    = "http_status",
+      duration_ms    = "duration_ms",
+      error_class    = "error_class",
+      category       = "category",
+      metric         = "metric",
+      shape          = "shape",
+      state          = "state",
+      candidate_type = "candidate_type",
+    }
+  }
+
+  stage.timestamp {
+    source            = "timestamp"
+    format            = "RFC3339Nano"
+    action_on_failure = "skip"
+  }
+
+  // ストリーム爆発を避けるため、ラベルは低カーディナリティ値に限定する
+  stage.labels {
+    values = {
+      service     = "",
+      level       = "",
+      error_class = "",
+      category    = "",
+    }
+  }
+
+  // 高カーディナリティ・検索用属性は structured metadata に格納する
+  stage.structured_metadata {
+    values = {
+      trace_id       = "",
+      span_id        = "",
+      target         = "",
+      span           = "",
+      method         = "",
+      route          = "",
+      http_status    = "",
+      duration_ms    = "",
+      metric         = "",
+      shape          = "",
+      state          = "",
+      candidate_type = "",
+    }
+  }
+
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

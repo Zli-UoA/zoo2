@@ -415,10 +415,71 @@ mod tests {
                 KeyValue::new("route", "/api/channels/{id}"),
             ],
         );
+        metrics.http_in_flight_requests.add(
+            1,
+            &[
+                KeyValue::new("service", "zoo-backend"),
+                KeyValue::new("route", "/api/channels/{id}"),
+            ],
+        );
+        metrics
+            .sse_active_connections
+            .add(1, &[KeyValue::new("shape", "messages")]);
+        metrics
+            .ws_active_connections
+            .add(1, &[KeyValue::new("kind", "call_signaling")]);
+        metrics.electric_proxy_requests_total.add(
+            1,
+            &[
+                KeyValue::new("shape", "messages"),
+                KeyValue::new("status_class", "2xx"),
+            ],
+        );
         metrics.auth_verifications_total.add(
             1,
             &[KeyValue::new("mode", "oidc"), KeyValue::new("result", "ok")],
         );
+        metrics.app_errors_total.add(
+            1,
+            &[
+                KeyValue::new("service", "zoo-backend"),
+                KeyValue::new("kind", "internal"),
+            ],
+        );
+        metrics.slack_import_jobs_total.add(
+            1,
+            &[
+                KeyValue::new("step", "archive_import"),
+                KeyValue::new("status", "ok"),
+            ],
+        );
+        metrics
+            .slack_import_duration_seconds
+            .record(1.25, &[KeyValue::new("step", "archive_import")]);
+        metrics.frontend_errors_total.add(
+            1,
+            &[
+                KeyValue::new("category", "api"),
+                KeyValue::new("route", "/channels/:channelId"),
+            ],
+        );
+        metrics.frontend_web_vitals_seconds.record(
+            0.85,
+            &[
+                KeyValue::new("metric", "LCP"),
+                KeyValue::new("route", "/channels/:channelId"),
+            ],
+        );
+        metrics.frontend_electric_sync_events_total.add(
+            1,
+            &[
+                KeyValue::new("shape", "messages"),
+                KeyValue::new("state", "fetch_error"),
+            ],
+        );
+        metrics
+            .frontend_webrtc_events_total
+            .add(1, &[KeyValue::new("state", "ice_failed")]);
 
         let encoder = TextEncoder::new();
         let mut out = Vec::new();
@@ -429,7 +490,18 @@ mod tests {
         assert!(text.contains(r#"route="/api/channels/{id}""#));
         assert!(text.contains(r#"status_class="2xx""#));
         assert!(text.contains("zoo_http_request_duration_seconds_bucket{"));
+        assert!(text.contains("zoo_http_in_flight_requests{"));
+        assert!(text.contains("zoo_sse_active_connections{"));
+        assert!(text.contains("zoo_ws_active_connections{"));
+        assert!(text.contains("zoo_electric_proxy_requests_total{"));
         assert!(text.contains("zoo_auth_verifications_total{"));
+        assert!(text.contains("zoo_app_errors_total{"));
+        assert!(text.contains("zoo_slack_import_jobs_total{"));
+        assert!(text.contains("zoo_slack_import_duration_seconds_bucket{"));
+        assert!(text.contains("zoo_frontend_errors_total{"));
+        assert!(text.contains("zoo_frontend_web_vitals_seconds_bucket{"));
+        assert!(text.contains("zoo_frontend_electric_sync_events_total{"));
+        assert!(text.contains("zoo_frontend_webrtc_events_total{"));
         assert!(!text.contains("otel_scope_name"));
     }
 }
