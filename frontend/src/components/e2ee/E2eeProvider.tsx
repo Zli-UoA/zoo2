@@ -21,6 +21,7 @@ import {
   markCryptoStoreDeletionPending,
   readPendingCryptoStoreDeletion,
 } from "../../lib/e2ee/identity";
+import { runStartupCheck, uploadKeyBackup } from "../../lib/e2ee/setupController";
 import { supportsCryptoStore } from "../../lib/e2ee/support";
 import { readLastOfflineUserId } from "../../lib/offline/identity";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
@@ -85,6 +86,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     supported ? "idle" : "unsupported",
   );
   const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [readyWorker, setReadyWorker] = useState<CryptoWorker | null>(null);
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const leader = useRef<ActiveStore | null>(null);
   const takeover = useRef<{ store: Promise<ActiveStore>; release: () => void } | null>(null);
@@ -92,6 +94,36 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const logoutSuspended = useRef(false);
   const namespaceRef = useRef(namespace);
   namespaceRef.current = namespace;
+
+  // 鍵バックアップへの送信は、暗号ストアを開いたタブで 1 つずつ行う。送っている間に頼まれたら、
+  // 終わったあとにもう一度送る。
+  const backupQueue = useRef({ running: false, again: false });
+  const requestKeyBackup = useCallback(() => {
+    const active = leader.current;
+    if (!active || !userId) return;
+    const queue = backupQueue.current;
+    if (queue.running) {
+      queue.again = true;
+      return;
+    }
+    queue.running = true;
+    void (async () => {
+      try {
+        do {
+          queue.again = false;
+          await uploadKeyBackup({ worker: active.worker, client, userId, rpId: null }).catch(
+            () => undefined,
+          );
+        } while (queue.again && leader.current === active);
+      } finally {
+        queue.running = false;
+        // 送っている間にリーダーが替わって頼まれた分は、今のリーダーで送り直す。
+        if (queue.again && leader.current) requestKeyBackupRef.current();
+      }
+    })();
+  }, [client, userId]);
+  const requestKeyBackupRef = useRef(requestKeyBackup);
+  requestKeyBackupRef.current = requestKeyBackup;
 
   const createManager = useCallback(
     (worker: CryptoWorker, managerUserId: string) =>
@@ -106,6 +138,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
           setStatus(next);
           if (next === "stopped") setDeviceId(null);
         },
+        onRoomKeys: () => requestKeyBackupRef.current(),
       }),
     [client, config, namespace],
   );
@@ -146,6 +179,10 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
               try {
                 await manager.start();
                 setDeviceId(manager.currentDeviceId);
+                setReadyWorker(worker);
+                // 解錠済みの端末は、起動時に自分の端末への署名を確かめ、なければ署名し直す
+                // （docs/e2ee.md の「初回設定と解錠の流れ」。止まった初回設定は暗号化タブで案内する）。
+                void runStartupCheck({ worker, client, userId, rpId: null }).catch(() => undefined);
                 break;
               } catch {
                 await manager.stop().catch(() => undefined);
@@ -155,6 +192,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
             }
             await held;
           } finally {
+            setReadyWorker((current) => (current === worker ? null : current));
             if (leader.current === active) leader.current = null;
             await active?.manager.stop().catch(() => undefined);
             worker.terminate();
@@ -179,7 +217,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       releaseCurrent();
       channel?.close();
     };
-  }, [createManager, isOnline, namespace, supported, userId]);
+  }, [client, createManager, isOnline, namespace, supported, userId]);
 
   // アンマウントしたら（ログアウトの確認中にオンラインに戻り、OfflineProvider が子を作り直した
   // ときなど）、ログアウトのために奪ったロックを返し、ほかのタブに知らせる。
@@ -245,6 +283,8 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     () => ({
       status,
       deviceId,
+      worker: status === "ready" ? readyWorker : null,
+      userId: userId || null,
       pendingBackupCount: async () => {
         const store = await storeForLogout();
         if (!store) return 0;
@@ -276,8 +316,9 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         clearPendingCryptoStoreDeletion();
         store.worker.terminate();
       },
+      requestKeyBackup,
     }),
-    [deviceId, namespace, status, storeForLogout, supported],
+    [deviceId, namespace, readyWorker, requestKeyBackup, status, storeForLogout, supported, userId],
   );
 
   return <E2eeContext.Provider value={value}>{children}</E2eeContext.Provider>;

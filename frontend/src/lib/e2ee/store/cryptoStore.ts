@@ -1,8 +1,12 @@
 import {
+  BackupUploadState,
   DeviceAccount,
+  type BackupUpload,
   InboundSessionStore,
   OlmSessions,
+  OwnKeys,
   TrustStore,
+  type OwnSecrets,
   type JsonObject,
   type SessionRef,
 } from "@zoo/crypto-wasm";
@@ -20,6 +24,38 @@ const META_USER_ID = "user_id";
 const META_DEVICE_ID = "device_id";
 /** サーバーへの登録が済んだか（`"1"`）。応答をなくしたら、同じ鍵で登録し直す（冪等）。 */
 const META_REGISTERED = "registered";
+/**
+ * 解錠した自分の鍵（自己署名鍵、ユーザー署名鍵、バックアップ鍵。#360）。値は `OwnKeys.pickle` の
+ * 封筒（保存鍵で暗号化したもの）で、平文の秘密は入らない。
+ */
+const META_OWN_KEYS = "own_keys";
+/** 最後に解錠したときの SSSS の `secrets_revision`（鍵バックアップへのアップロードに付ける）。 */
+const META_SECRETS_REVISION = "secrets_revision";
+/**
+ * 鍵バックアップのアップロードの状態（`BackupUploadState.toJson`。見た版の最大を持ち、版の
+ * 巻き戻りに気付くため）。秘密は入らない。
+ */
+const META_BACKUP_UPLOAD = "backup_upload";
+
+/** 鍵バックアップへの 1 回のアップロード（`POST /api/e2ee/key_backup/keys`）。 */
+export type BackupUploadRequest =
+  | {
+      kind: "upload";
+      /** この要求の ID。応答を受けたら、同じ ID で完了か失敗を知らせる。 */
+      uploadId: number;
+      version: string;
+      secretsRevision: number;
+      body: JsonObject;
+      count: number;
+    }
+  /** 送るものがない（未解錠、今の版がない、送信待ちがない）。 */
+  | { kind: "none" }
+  /**
+   * 今の版を使えない（`code` は zoo-crypto の誤り。マスター鍵の署名がない `Signature` や
+   * `MissingSignature`、公開鍵が SSSS と違う `BackupKeyMismatch`、版の巻き戻り
+   * `BackupVersionRollback` など）。送らない。
+   */
+  | { kind: "rejected"; code: string };
 
 /** to-device の Shape の行のうち、処理に使う列。 */
 export interface ToDeviceRow {
@@ -82,6 +118,16 @@ export class CryptoStore {
   private readonly loadedInbound = new Set<string>();
   private readonly processedToDevice: Set<string>;
   private closed = false;
+  private backupState: BackupUploadState | null = null;
+  /**
+   * 応答を待っているアップロード（ID ごと）。要求が重なっても、応答を受けた要求に入れた
+   * セッションだけを送信済みにする。
+   */
+  private readonly pendingUploads = new Map<
+    number,
+    { upload: BackupUpload; sessions: { key: string; pickle: string }[] }
+  >();
+  private nextUploadId = 0;
   private broken = false;
 
   private constructor(
@@ -423,6 +469,177 @@ export class CryptoStore {
     for (const id of ids) this.processedToDevice.delete(id);
   }
 
+  /**
+   * 解錠した（または初回設定で作った）自分の鍵を保存する（#360）。マスター鍵の秘密鍵は保存せず、
+   * 自分のマスター鍵の公開鍵とユーザー署名鍵を、配布先の判定の記録に入れる。
+   */
+  async saveOwnKeys(secrets: OwnSecrets, secretsRevision: number | null): Promise<void> {
+    const keys = secrets.ownKeys();
+    const crossSigning = secrets.crossSigning;
+    try {
+      this.trust.trustOwnMasterKey(crossSigning.master);
+      this.trust.recordOwnUserSigningKey(crossSigning.userSigning);
+      // 失敗したら、メモリーの記録が保存と食い違うので、開き直させる（`write` が印を付ける）。
+      await this.write({
+        meta: {
+          [META_OWN_KEYS]: keys.pickle(this.account, this.storageKey),
+          [META_SECRETS_REVISION]: secretsRevision === null ? null : String(secretsRevision),
+        },
+        trustStore: this.trust.pickle(this.account, this.storageKey),
+      });
+    } finally {
+      keys.free();
+      crossSigning.free();
+    }
+  }
+
+  /** 保存した自分の鍵。まだ解錠していなければ `null`。使い終わったら `free()` する。 */
+  async ownKeys(): Promise<{ keys: OwnKeys; secretsRevision: number | null } | null> {
+    const { meta } = await this.backend.read();
+    const sealed = meta[META_OWN_KEYS];
+    if (!sealed) return null;
+    const revision = meta[META_SECRETS_REVISION];
+    return {
+      keys: OwnKeys.fromPickle(sealed, this.account, this.storageKey),
+      secretsRevision: revision ? Number(revision) : null,
+    };
+  }
+
+  /**
+   * 鍵バックアップへ送る次の要求を作る（docs/e2ee.md の「鍵バックアップ」。#360）。
+   *
+   * `currentVersion` は `GET /api/e2ee/key_backup/versions/current` の応答（なければ `null`）。
+   * 今の版の `auth_data` に自分のマスター鍵の署名があり、公開鍵が SSSS のバックアップ鍵と同じで、
+   * 前に見た版より古くないときだけ送る。版が変わったら、すべてのセッションを送り直す。
+   */
+  async prepareBackupUpload(
+    currentVersion: JsonObject | null,
+    limit: number,
+  ): Promise<BackupUploadRequest> {
+    const own = await this.ownKeys();
+    if (!own) return { kind: "none" };
+    const state = await this.loadBackupState();
+    try {
+      state.setSecretsRevision(own.secretsRevision ?? undefined);
+      if (!currentVersion) {
+        state.suspend();
+        return { kind: "none" };
+      }
+      let change: string;
+      try {
+        change = state.acceptCurrentVersion(
+          currentVersion,
+          own.keys.masterPublicKey,
+          own.keys.backupKey,
+        );
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        return { kind: "rejected", code: typeof code === "string" ? code : "Unknown" };
+      }
+      if (change === "changed") {
+        try {
+          await this.backend.resetBackedUp();
+        } catch (error) {
+          // 新しい版を見たことは、送信待ちに戻せたあとでだけ記録する。次の呼び出しで、保存した
+          // 状態から読み直して、もう一度戻す。
+          this.backupState?.free();
+          this.backupState = null;
+          throw error;
+        }
+      }
+      await this.saveBackupState(state);
+    } finally {
+      own.keys.free();
+    }
+
+    const sessions = await this.backend.pendingBackupSessions(limit);
+    if (sessions.length === 0) return { kind: "none" };
+    for (const session of sessions) {
+      const ref = JSON.parse(session.key) as [string, string, string];
+      const sessionRef = { channel_id: ref[0], sender_key: ref[1], session_id: ref[2] };
+      await this.loadInboundSession(sessionRef);
+      state.enqueue(sessionRef);
+    }
+    const upload = state.nextUpload(this.inbound, limit);
+    if (!upload) return { kind: "none" };
+    const sent = new Set(upload.sessions.map((ref) => inboundSessionKey(ref)));
+    const uploadId = ++this.nextUploadId;
+    this.pendingUploads.set(uploadId, {
+      upload,
+      sessions: sessions.filter((session) => sent.has(session.key)),
+    });
+    return {
+      kind: "upload",
+      uploadId,
+      version: upload.version,
+      secretsRevision: upload.secretsRevision,
+      body: upload.body,
+      count: sent.size,
+    };
+  }
+
+  /**
+   * {@link prepareBackupUpload} の `uploadId` の要求が成功した。その要求に入れたセッションだけを
+   * 送信済みにする（送ったあとに書き換わったものは除く）。
+   */
+  async backupUploaded(uploadId: number): Promise<void> {
+    const pending = this.pendingUploads.get(uploadId);
+    if (!pending) return;
+    this.pendingUploads.delete(uploadId);
+    try {
+      this.backupState?.uploadSucceeded(pending.upload);
+      await this.backend.markBackedUp(pending.sessions);
+      if (this.backupState) await this.saveBackupState(this.backupState);
+    } finally {
+      pending.upload.free();
+    }
+  }
+
+  /** `uploadId` の要求が失敗した。入れたセッションは送信待ちのまま残す。 */
+  discardPendingUpload(uploadId?: number): void {
+    const ids = uploadId === undefined ? [...this.pendingUploads.keys()] : [uploadId];
+    for (const id of ids) {
+      this.pendingUploads.get(id)?.upload.free();
+      this.pendingUploads.delete(id);
+    }
+  }
+
+  private async loadBackupState(): Promise<BackupUploadState> {
+    if (this.backupState) return this.backupState;
+    const { meta } = await this.backend.read();
+    const saved = meta[META_BACKUP_UPLOAD];
+    let state: BackupUploadState;
+    try {
+      state = saved
+        ? BackupUploadState.fromJson(saved, this.userId)
+        : new BackupUploadState(this.userId);
+    } catch {
+      state = new BackupUploadState(this.userId);
+    }
+    this.backupState = state;
+    return state;
+  }
+
+  private async saveBackupState(state: BackupUploadState): Promise<void> {
+    await this.backend.write({ meta: { [META_BACKUP_UPLOAD]: state.toJson() } });
+  }
+
+  /** 自分の鍵を保存してあるか（解錠済みの端末か）。 */
+  async hasOwnKeys(): Promise<boolean> {
+    const { meta } = await this.backend.read();
+    return Boolean(meta[META_OWN_KEYS]);
+  }
+
+  /** 自分の鍵を消す（E2EE のリセットや、SSSS を開けなくなったとき）。 */
+  async forgetOwnKeys(): Promise<void> {
+    await this.backend.write({ meta: { [META_OWN_KEYS]: null, [META_SECRETS_REVISION]: null } });
+  }
+
+  /** 今の端末の署名付きの端末鍵。 */
+  deviceKeys(): JsonObject {
+    return this.account.deviceKeys();
+  }
+
   /** 配布先の判定の記録を保存し直す（#361 以降が判定のたびに呼ぶ）。 */
   async saveTrustStore(): Promise<void> {
     await this.write({ trustStore: this.trust.pickle(this.account, this.storageKey) });
@@ -456,5 +673,8 @@ export class CryptoStore {
     this.olmSessions.free();
     this.inbound.free();
     this.trust.free();
+    this.discardPendingUpload();
+    this.backupState?.free();
+    this.backupState = null;
   }
 }

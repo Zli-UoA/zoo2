@@ -561,7 +561,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 【決定】AuthZ でパスキーを削除しても、zoo2 の鍵スロットは自動では消しません。**これは #321 の「AuthZ でパスキーを消したときは、対応する鍵スロットも消す」からの変更です。** AuthZ でパスキーを削除しても zoo2 には通知が来ず、zoo2 からはそれを確実に知る手段がないためです。鍵スロットは、ユーザーが zoo2 の設定で消します。
 
 - AuthZ でパスキーを削除しても、認証器にはクレデンシャルが残る。AuthZ のログインには使えなくなるが、zoo2 のページから同じ credential ID で PRF を評価できるので、**zoo2 の鍵スロットを消すまでは、そのパスキーで解錠できる**。設定の画面にもそう書く。
-- 【提案】設定の鍵スロットの一覧に、スロットごとのラベル、作成日時、最後に使った日時を出す。
+- 【決定】（#360）設定の鍵スロットの一覧に、スロットごとのラベル、作成日時、最後に使った日時を出す。最後に使った日時は、解錠に使ったスロットについて `POST /api/e2ee/secret_storage/slots/{slot_id}/used` で記録する（失敗しても解錠は止めない）。Web は今のところラベルを付けず（`null`）、一覧では「パスキー」と出す。
 - 【提案】AuthZ が自分のパスキーの credential ID の一覧を返す API を持てば（AuthZ 側の issue が要る）、zoo2 はそれと鍵スロットの `credential_id` を照合し、AuthZ にないパスキーのスロットに「AuthZ で削除済み」と表示して削除を勧める。自動では消さない。
 
 ### 使えない環境
@@ -591,7 +591,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 4. SSSS 鍵を作り、4 つの秘密（クロス署名の 3 つの秘密鍵とバックアップ鍵）を暗号化する。
 5. パスキーのスロットを作る（PRF を使える場合）。
 6. リカバリーキーを作ってスロットを作り、ユーザーに表示して控えてもらう。
-7. SSSS（鍵、4 つの秘密、スロット）を `POST /api/e2ee/secret_storage/keys` で 1 回で保存する。次にクロス署名鍵、端末への署名、バックアップの版の順に保存する。SSSS を先に保存するのは、途中で失敗しても秘密鍵を失わず、SSSS から取り出して続きを保存し直せるようにするため。SSSS とクロス署名鍵の保存には直前の再認証が要る（[クロス署名の API](#クロス署名356)）。【決定】再認証は、利用者がリカバリーキーを控え終えたあと、7 の保存の直前に、今の画面を離れずに行う。Web は別のウィンドウで `max_age=0` の認可リクエストを開き、リダイレクト先のページから `postMessage` で認可コードを元のページに返す。Android は Custom Tabs、TUI はループバックのリダイレクトで受け取る。どれもアプリやページが残るので、メモリーにある鍵とリカバリーキーは消えない。ID トークンの有効期限（AuthZ は 300 秒）がリカバリーキーを控える時間に食われないようにするため。保存が 403 になったら、もう一度再認証して同じ鍵で保存し直す。別のウィンドウを開けない（ポップアップを止められたなど）ときは、利用者に操作を求めて開き直す。`postMessage` の送信先の `targetOrigin` は元のページの実際のオリジン（`window.location.origin`。本番は `https://zli.chat`、開発は `http://localhost:5173`、Preview は `https://zoo2-pr-<番号>.zli.chat` など、環境ごとに違う）に固定し、受け取る側はオリジンと `state` を確かめる。PKCE の code verifier は元のページのメモリーにだけ置き、別ウィンドウには渡さない（リダイレクト先のページは認可コードと `state` だけを返す）。その他の細部は #360 で決める。SSSS を保存したあとで端末やページが閉じられたら、下の初回設定の再開で、再認証してから SSSS を開け直して続ける。
+7. SSSS（鍵、4 つの秘密、スロット）を `POST /api/e2ee/secret_storage/keys` で 1 回で保存する。次にクロス署名鍵、端末への署名、バックアップの版の順に保存する。SSSS を先に保存するのは、途中で失敗しても秘密鍵を失わず、SSSS から取り出して続きを保存し直せるようにするため。SSSS とクロス署名鍵の保存には直前の再認証が要る（[クロス署名の API](#クロス署名356)）。【決定】再認証は、利用者がリカバリーキーを控え終えたあと、7 の保存の直前に、今の画面を離れずに行う。Web は別のウィンドウで `max_age=0` の認可リクエストを開き、リダイレクト先のページから `postMessage` で認可コードを元のページに返す。Android は Custom Tabs、TUI はループバックのリダイレクトで受け取る。どれもアプリやページが残るので、メモリーにある鍵とリカバリーキーは消えない。ID トークンの有効期限（AuthZ は 300 秒）がリカバリーキーを控える時間に食われないようにするため。保存が 403 になったら、もう一度再認証して同じ鍵で保存し直す。別のウィンドウを開けない（ポップアップを止められたなど）ときは、利用者に操作を求めて開き直す。`postMessage` の送信先の `targetOrigin` は元のページの実際のオリジン（`window.location.origin`。本番は `https://zli.chat`、開発は `http://localhost:5173`、Preview は `https://zoo2-pr-<番号>.zli.chat` など、環境ごとに違う）に固定し、受け取る側はオリジンと `state` を確かめる。PKCE の code verifier は元のページのメモリーにだけ置き、別ウィンドウには渡さない（リダイレクト先のページは認可コードと `state` だけを返す）。その他の細部は、下の「[初回設定と解錠の実装](#初回設定と解錠の実装360)」に書いた（#360）。SSSS を保存したあとで端末やページが閉じられたら、下の初回設定の再開で、再認証してから SSSS を開け直して続ける。
 
 【決定】初回設定の再開：
 
@@ -635,6 +635,36 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 【決定】解錠済みの端末は、起動したときと、Shape でサーバーの自己署名鍵が変わったのを見たときに、今の端末に今の自己署名鍵の有効な署名があるかを確かめます。暗号ストアの自己署名鍵がサーバーの鍵と同じで、署名がなければ、自分に署名し直します。失効の途中で解錠した端末が、失効が終わったあとも署名のないまま残らないようにするためです。担当は #360（解錠）と #362（失効）。
 
 ユーザーに「未検証の端末」を見せない運用（[MSC4153](https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4153-invisible-crypto.md) と同じ考え方）にします。解錠するまでは、暗号化チャンネルを「解錠が必要」と表示し、送信もできないようにします。
+
+### 初回設定と解錠の実装（#360）
+
+#### 共有の判定（zoo-crypto）
+
+- 【決定】どの段で止まったかの判定と、続きに送る要求は、全クライアントで `crates/zoo-crypto` の `plan_resume` を使う（`src/setup.rs`）。入力は、SSSS から取り出した（または初回設定で作った）秘密鍵（`OwnSecrets`）、サーバーの状態（`ServerKeyState`。自分だけを問い合わせた `keys/query` と `GET /api/e2ee/key_backup/versions`）、今の端末の端末鍵。出力（`ResumePlan`）は、送る順に、`POST /api/e2ee/cross_signing/keys` の本文（ない鍵だけ。マスター鍵がなければ 3 つとも。`expected_keys` 付き）、今の端末への自己署名、最初の版の作成（`expected_current_version: null`）。
+- 【決定】初回設定も、SSSS を保存したあとは「サーバーに何もない状態からの再開」として同じ `plan_resume` で送る。初回設定と再開で、保存の順と冪等の扱いが同じになる。
+- 【決定】サーバーの鍵や版が SSSS と「違う」ときは `CryptoError::ServerKeyMismatch` にし、何も送らない（端末に署名しない）。違うとみなすのは、クロス署名鍵の公開鍵が違う（読めない鍵を含む）、版があるのにクロス署名鍵がそろっていない、今の版を消してある、今の版の `auth_data` を今のマスター鍵で検証できないか公開鍵が SSSS のバックアップ鍵と違う、のどれか。
+- 【決定】E2EE のリセットは `plan_reset` で、クロス署名鍵を 3 つとも差し替え（`expected_keys` はサーバーの今の鍵）、新しい版を作る（`expected_current_version` はサーバーの今の版。消してあれば `null`）。リセットの SSSS の作り直しは、`GET /api/e2ee/secret_storage` で読んだ `default_key_id` と `secrets_revision` を前提の値にする。どちらも直前の再認証が要る。
+- 【決定】解錠済みの端末の起動時の確認は `startup_check` で、暗号ストアの鍵とサーバーの状態から、`Ready`（何もしない）、`SignDevice`（今の自己署名鍵で署名し直す）、`ResumeSetup`（クロス署名鍵か版がない。SSSS を開け直して続ける）、`Unlock`（鍵が違う。解錠し直す）を返す。
+- 【決定】解錠した端末が暗号ストアに置く自分の鍵（自己署名鍵、ユーザー署名鍵、バックアップ鍵の秘密鍵と、マスター鍵の公開鍵）の形式は `OwnKeys::pickle` で、[暗号ストア](#暗号ストア)の封筒（`kind` は `own_keys`）に入れる。マスター鍵の秘密鍵と SSSS 鍵は入れない。初回設定で作ったときと解錠したときに、`TrustStore` の自分のマスター鍵とユーザー署名鍵の履歴も更新する。
+
+#### Web
+
+- 【決定】設定の「暗号化」タブ（`routes/_shell.settings.tsx` の `encryption`、`components/e2ee/EncryptionSettings.tsx`）で、初回設定、解錠、初回設定の続き、鍵スロットの追加と削除、E2EE のリセットを行う。マスター鍵の秘密鍵と SSSS 鍵は Worker（`lib/e2ee/setupSession.ts`）のメモリーにだけ置き、メインスレッドには要求の本文とリカバリーキーの表示だけを返す。SSSS 鍵は、解錠のあとページを閉じるまでメモリーに残し、鍵スロットの追加に使う（読み込み直したあとに追加するときは、解錠し直す）。
+- 【決定】自分の鍵は、暗号ストアの `meta` に `own_keys`（上の封筒）と `secrets_revision`（最後に解錠したときの値）として置く。
+- 【決定】起動時の確認（`startup_check`）は、端末の登録が済んだあとに `E2eeProvider` が行い、署名がなければ署名し直す。暗号ストアに自分の鍵がない（まだ解錠していない）端末は、確認のための取得をしない。止まった初回設定（`ResumeSetup`）と鍵の不一致（`Unlock`）は、暗号化タブで「初回設定が途中です」「解錠し直してください」と案内する。
+- 【決定】再認証の別ウィンドウは、利用者のクリックの中で同期的に開き（`window.open`）、そのあとで認可リクエスト（`max_age=0`、PKCE、`state`、`nonce`）の URL に移す。リダイレクト先は静的なページ `https://<オリジン>/auth/reauth-callback.html`（`frontend/public/auth/`）で、SPA を読み込まずに、認可コードと `state` を `postMessage`（`targetOrigin` は自分のオリジン）と、同じオリジンの `BroadcastChannel`（`zoo-reauth`）の両方で返し、URL から認可コードを消して閉じる。`BroadcastChannel` も使うのは、AuthZ を経由すると `Cross-Origin-Opener-Policy` で `window.opener` が切れる場合があるため。同じ理由で、ウィンドウが閉じたこと（`popup.closed`）では失敗にせず、10 分で時間切れにする。元のページは、自分のオリジンからで `state` が一致するメッセージだけを受け取り、PKCE の code verifier と `nonce` はメモリーにだけ置いて、トークンエンドポイントで ID トークンに換える（今のセッションのトークンは変えない）。
+- 【決定】AuthZ の Web のクライアントには、リダイレクト URI として `https://zli.chat/auth/reauth-callback.html` を登録する（開発は `http://localhost:5173/auth/reauth-callback.html`）。登録は AuthZ の管理画面で行う（zoo2-infra の `docs/installation.md` と同じ）。登録するまでは、本番で初回設定を保存できない。
+- 【決定】OIDC を設定していない開発環境（`DEV_AUTH_ENABLED`）では、サーバーも再認証を確かめないので、別ウィンドウを開かずに `X-Zoo-Reauth` なしで保存する。
+- 【決定】パスキーを使えるかは、RP ID（issuer のホスト名）を決められて、`PublicKeyCredential.getClientCapabilities()` が `extension:prf` を `false` と返さないときとする（分からないときは試し、`prf.results.first` がなければ案内する）。使えないときは、初回設定ではパスキーのスロットを作らず、解錠ではリカバリーキーだけを出す。
+- 【決定】WebAuthn の失敗は、`NotAllowedError`（取り消し、または使えるパスキーがない。ブラウザーは区別させない）、`SecurityError`（Related Origin Requests の許可がない）、PRF の結果がない、選んだパスキーのスロットがない、に分けて表示する。resident key でないセキュリティキーは、`NotAllowedError` の案内でリカバリーキーを勧める。
+- 【決定】初回設定とリセットの保存は、利用者がリカバリーキーを控えた SSSS 鍵の ID を Worker に渡し、Worker はメモリーの鍵がその鍵のときだけ本文を作る。再認証を待つ間に別の初回設定を始めていたら、古い保存は何も送らない。
+- 【決定】SSSS を保存したあと、クロス署名鍵と版を保存する前に `GET /api/e2ee/secret_storage` を読み直し、既定の鍵が自分の作った鍵でなければ何も送らずに止める（同時にリセットした別の端末の SSSS があるとき）。読んでから送るまでの間の競合は、サーバーが防ぐ（次の【決定】）。
+- 【決定】（#360）`POST /api/e2ee/cross_signing/keys` と `POST /api/e2ee/key_backup/versions` は、任意の `expected_default_key_id`（前提にした既定の SSSS 鍵の ID）を受け付ける。送られたときは、ユーザー単位のロックのあとの同じトランザクションで今の既定の鍵と照合し、違えば何も変えずに 409 `E2EE_SSSS_CONFLICT`（`default_key_id`、`secrets_revision` 付き）を返す（応答をなくした同じ内容の送り直しでも照合する）。初回設定とリセットのクライアントは作った SSSS 鍵の ID を、解錠のあとの続きの保存（再認証を待ったあとを含む）は開けた SSSS 鍵の ID を、必ず入れる。別の端末が SSSS を作り直したあとに、`expected_keys` を今の鍵にして古い鍵で差し替え、SSSS とサーバーの公開鍵の世代がずれるのを防ぐため。省略したときは照合しない。
+- 【決定】保存が 409 `E2EE_SSSS_CONFLICT` になったら、`GET /api/e2ee/secret_storage` を読み直し、`default_key_id` が自分の鍵なら続け、別の鍵なら手元の鍵を捨てて「別の端末が先に設定を始めた。表示したリカバリーキーは使えない」と出し、その SSSS の解錠に移る。
+- 【決定】鍵バックアップへのアップロード（`POST /api/e2ee/key_backup/keys`）は、解錠した端末だけが行う（Web では #360 で入れた）。送る前に、`GET /api/e2ee/key_backup/versions/current` の今の版を `BackupUploadState::accept_current_version` で確かめる。`auth_data` に暗号ストアの自分のマスター鍵の署名がない、公開鍵が暗号ストアのバックアップ鍵（SSSS の `m.megolm_backup.v1`）と違う、前に見た版より番号が小さい、のどれかなら送らない。前に見た版の番号は、暗号ストアの `meta` の `backup_upload`（`BackupUploadState::to_json`）に置く。今の版が前に見た版から変わったら、すべての受信用セッションを送信待ちに戻す。新しい版を見たことは、送信待ちに戻せたあとでだけ記録する（戻せなければ、次の送信でもう一度戻す）。
+- 【決定】送信待ちは、Web の暗号ストアの `inbound_sessions.backed_up`（#359）で持つ。1 回に 1000 件までを送り、成功したら送ったセッションだけを送信済みにする。要求には ID を付け、応答を受けた要求に入れたセッションだけを送信済みにする（要求が重なっても、別の要求の未送信の鍵を送信済みにしない）。送信は、呼び出し元（解錠、起動時の確認、鍵の受信）にかかわらず、同じ Worker では 1 つずつ行う。送ったあとに書き換わった（pickle が違う）セッションは、送信待ちのまま残す。409 `E2EE_WRONG_BACKUP_VERSION` と `E2EE_SSSS_CONFLICT` のときは送るのをやめ、送信待ちに残す。
+- 【決定】送るのは、解錠や初回設定を終えたとき、解錠済みの端末が起動したとき（起動時の確認のあと）、to-device で Megolm セッションの鍵を受け取ったとき。送信用セッションの写しを保存したとき（#361）は、`useE2ee().requestKeyBackup()` で送る。送信は暗号ストアを開いたタブで 1 つずつ行う。
+- 異常系の単体テストは `frontend/src/lib/e2ee/setupController.test.ts`（実際の wasm と、API を模したサーバー）。初回設定の 4 つの保存の直前と直後で止めて再起動し、同じ鍵で最後まで終わること、別の端末で解錠できること、2 つの端末の同時の初回設定、鍵の差し替えの検出、リセット、仮想の認証器でのパスキーの解錠を確かめる。
 
 ## API
 
@@ -770,7 +800,8 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
     - クライアントの登録は AuthZ の DB にあり、AuthZ の管理画面で行う（zoo2-infra の `docs/installation.md` の手順と同じ）。Android と TUI のクライアントに、認可コードのグラントとリダイレクト URI を足す。
   - 【決定】デスクトップ版（`desktop/`、`zoo2-desktop`。デバイスコードでログインする）は、最初の範囲では E2EE の対象にしない。AGENTS.md の追従の対象は TUI で、デスクトップ版は含まないため。デスクトップ版は端末を登録せず、暗号化チャンネルを「このクライアントでは暗号化チャンネルを表示できない」と表示する（[クライアントの構成](#クライアントの構成)）。この表示は #361 に入れる。#361 で暗号化チャンネルを作れるようになると、表示を変えていないデスクトップ版は空の `content` を表示してしまうため。対象にするときは、TUI と同じく zoo-crypto をネイティブで使い、再認証はループバックのリダイレクトで受け取る形になる（issue は未作成）。
   - 【決定】すでにある自己署名鍵かユーザー署名鍵を差し替えるときも、同じ直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。初めて登録するとき（初回設定）も、上のマスター鍵と同じく求める。端末だけの失効でもこの 2 つを差し替えるので（[失効の手順](#失効の手順)の 4）、失効には再認証が要る。
-  - 【決定】`expected_keys`（`{"master", "self_signing", "user_signing"}` の今の公開鍵。ない鍵は `null`）を送り、今の鍵と違えば 409 `E2EE_CROSS_SIGNING_CONFLICT`。2 つの端末の失効が、互いの鍵を知らずに差し替えないようにするため。
+  - 【決定】`expected_keys`（`{"master", "self_signing", "user_signing"}` の今の公開鍵。ない鍵は `null`）を送り、今の鍵と違えば 409 `E2EE_CROSS_SIGNING_CONFLICT`。
+  - 【決定】（#360）任意の `expected_default_key_id` を送ると、今の既定の SSSS 鍵と照合し、違えば 409 `E2EE_SSSS_CONFLICT`（[初回設定と解錠の実装](#初回設定と解錠の実装360)）。2 つの端末の失効が、互いの鍵を知らずに差し替えないようにするため。
   - 【決定】`POST /api/e2ee/cross_signing/keys`、`POST /api/e2ee/secret_storage/keys`、`POST /api/e2ee/secret_storage/secrets`、`POST /api/e2ee/key_backup/versions`、`POST /api/e2ee/devices`（台数の確認）、`POST /api/e2ee/secret_storage/slots`、`DELETE /api/e2ee/secret_storage/slots/{slot_id}`、`POST /api/e2ee/tofu_pins`、`POST /api/e2ee/cross_signing/signatures` は、ユーザー単位の `pg_advisory_xact_lock(1, hashtext(user_id))`（この式を、ユーザー単位のロックのキーとして本書で 1 か所に定義する）を取ってから、判定と書き込みを同じトランザクションで行う。`expected_*` を持つ API（`cross_signing/keys`、`secret_storage/keys`、`secret_storage/secrets`、`key_backup/versions`）では、その照合を同じトランザクションで行う。`POST /api/e2ee/devices`、スロットの 2 つの API、`tofu_pins`、`cross_signing/signatures`、`DELETE key_backup/versions/{version}` は `expected_*` を持たず、ロックを取ってから今の値（台数、スロットの件数、ピンや署名、版）を読んで判定する。`DELETE /api/e2ee/key_backup/versions/{version}` も同じロックを取るが、`expected_*` は持たず、ロックを取ってからパスの `version` が今も消していない版かを読んで消す。READ COMMITTED では、2 つの端末が同時に同じ値を読んで両方の照合を通り、後から書いた方が先の鍵を上書きしてしまうため。`expected_keys`、`expected_default_key_id`、`expected_secrets_revision`、`expected_current_version` を省略した要求は（`expected_*` を持つ上の API で）、初回の登録（今の鍵や版がないとき）でなければ 400 にする。
   - 【決定】今の鍵と公開鍵と `key_json`（署名を含む）がどちらも同じものを送ったときだけ、`expected_keys` より先に判定し、何も変えずに 200 を返す（公開鍵が同じでも署名が違えば、上のとおり `key_json` を更新する。no-op の条件はここだけ）（変更の記録、署名の削除、epoch の増加をせず、再認証も求めない）。応答をなくした要求を送り直しても失敗しないようにするため。
   - 【決定】登録し直しの拒否：そのユーザーが過去に使い、今は使っていないクロス署名鍵の公開鍵（`e2ee_cross_signing_key_changes` の `old_public_key` にあるもの）は、用途にかかわらず登録できない（400 `E2EE_KEY_REUSED`）。端末だけの失効ではマスター鍵を残すので、古い自己署名鍵とユーザー署名鍵には、マスター鍵の有効な署名が付いたまま残る。失った端末の暗号ストアから古い自己署名鍵を取り出した攻撃者が、送り直してそれで自分の端末に署名すると、[配布先の判定](#鍵の配布先の判定)の規則 6 を通って、失効のあとのセッションを受け取れてしまうため。サーバーを乗っ取った攻撃者による巻き戻しは、これでは防げない（[脅威モデル](#脅威モデル)の「古いクロス署名鍵への巻き戻し」）。
@@ -849,7 +880,8 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - 【決定】今の版は、そのユーザーが作った版のうち番号が最も大きいもの。それを消してあれば、今の版はない。番号は、消した版も含めた最大に 1 を足して振る。今の版を消しても、それより前の版が今の版に戻ることはない。漏れたバックアップ鍵の古い版に、アップロードを戻させないため。
 - `POST /api/e2ee/key_backup/versions`：`{"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": {"public_key", "signatures"}, "expected_current_version": "1"}`。新しい版を作り、今の版にする。応答は `{"version": "2"}`。
   - 【決定】`auth_data.public_key` が今の版の公開鍵と同じなら、新しい版を作らずに今の版を返す（再認証も epoch の増加もない）。応答をなくした要求を送り直しても失敗しないようにするため。この判定は下の検査より先に行う。【決定】（#356）`auth_data` が今の版と同じなら何もしない。公開鍵が同じで署名が違えば（マスター鍵の差し替えのあとに署名し直したもの）、今のマスター鍵の署名を検証してから、今の版の `auth_data` を更新する（no-op は `auth_data` がまったく同じときだけ。クロス署名鍵の `key_json` と同じ規則）。
-  - 【決定】`expected_current_version` が今の版（今の版がなければ `null`）と違えば 409 `E2EE_WRONG_BACKUP_VERSION`。2 つの端末の失効が、互いの版を知らずに切り替えないようにするため。409 を受けた端末は SSSS を読み直し、[失効の手順](#失効の手順)をやり直す。
+  - 【決定】`expected_current_version` が今の版（今の版がなければ `null`）と違えば 409 `E2EE_WRONG_BACKUP_VERSION`。
+  - 【決定】（#360）任意の `expected_default_key_id` を送ると、今の既定の SSSS 鍵と照合し、違えば 409 `E2EE_SSSS_CONFLICT`（クロス署名鍵と同じ）。2 つの端末の失効が、互いの版を知らずに切り替えないようにするため。409 を受けた端末は SSSS を読み直し、[失効の手順](#失効の手順)をやり直す。
   - サーバーは `auth_data` の、今のマスター鍵の署名を検証する（違えば 400 `E2EE_BAD_SIGNATURE`）。
   - 【決定】そのユーザーが過去に作った版（消した版を含む）と同じ `auth_data.public_key` は、400 `E2EE_KEY_REUSED` で拒否する。漏れたバックアップ鍵の古い `auth_data` には、残したマスター鍵の有効な署名が付いているので、トークンを持つ攻撃者がそれを送り直して、漏れた鍵を今の版に戻せないようにするため。
   - 【決定】そのユーザーの最初の版でなければ（消した版を含めて過去に版があれば）、直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`。条件は[クロス署名の API](#クロス署名356)と同じ）。また、同じトランザクションで、そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（この増加は #357 で足す）。切り替えより前の版に入ったセッションを、切り替えのあとの送信に使わせないため（[失効の手順](#失効の手順)の 3）。

@@ -4,6 +4,7 @@ import { ZooSettings } from "../components/layout/ZooSettings";
 export const SETTINGS_TABS = [
   "general",
   "call",
+  "encryption",
   "apps",
   "members",
   "activitypub",

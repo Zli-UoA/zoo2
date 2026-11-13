@@ -335,7 +335,7 @@ impl SecretStorage {
 /// 解錠した SSSS。秘密を取り出す。
 #[wasm_bindgen]
 pub struct UnlockedSecretStorage {
-    inner: core::UnlockedSecretStorage,
+    pub(crate) inner: core::UnlockedSecretStorage,
 }
 
 #[wasm_bindgen]

@@ -26,6 +26,7 @@ use crate::{
             rows, signature_count,
         },
         e2ee_reauth::reauth,
+        e2ee_secret_storage::check_expected_default_key,
         response::ApiResponse,
     },
     state::AppState,
@@ -188,6 +189,9 @@ pub struct CrossSigningRequest {
     user_signing_key: Option<Value>,
     #[serde(default, deserialize_with = "present")]
     expected_keys: Option<Value>,
+    /// 前提にした既定の SSSS 鍵（初回設定とリセット。#360）。省略したら照合しない。
+    #[serde(default)]
+    expected_default_key_id: Option<String>,
 }
 
 /// `POST /api/e2ee/cross_signing/keys`：クロス署名鍵を登録するか差し替える。
@@ -227,6 +231,7 @@ async fn upload_cross_signing_keys(
     let mut tx = db.transaction().await?;
     lock_active_user(&mut tx, &actor.id).await?;
     lock_user(&mut tx, &actor.id).await?;
+    check_expected_default_key(&mut tx, &actor.id, req.expected_default_key_id.as_deref()).await?;
     let current = current_keys(&mut tx, &actor.id).await?;
 
     // 公開鍵と key_json（署名を含む）がどちらも今と同じなら、何も変えずに 200（応答をなくした再送）。

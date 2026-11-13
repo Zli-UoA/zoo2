@@ -648,6 +648,24 @@
     {
       "file": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx",
       "states": ["HealthyChild", "FallbackShown"]
+    },
+    {
+      "file": "src/components/e2ee/EncryptionSettingsView.stories.tsx",
+      "states": [
+        "Loading",
+        "Unavailable",
+        "LoadFailed",
+        "NotSetUp",
+        "RecoveryKey",
+        "Saving",
+        "PopupBlocked",
+        "Locked",
+        "LockedRecoveryOnly",
+        "LockedResume",
+        "LockedMismatch",
+        "NeedsReauth",
+        "Unlocked"
+      ]
     }
   ],
   "modules": [
@@ -1186,6 +1204,19 @@
     {
       "file": "src/components/telemetry/TelemetryErrorBoundary.tsx",
       "story": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/EncryptionSettingsView.tsx",
+      "story": "src/components/e2ee/EncryptionSettingsView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/EncryptionSettings.tsx",
+      "reason": "暗号化タブの状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はEncryptionSettingsViewのストーリーで、手順は単体テストで確認する。",
+      "checks": [
+        "src/lib/e2ee/setupController.test.ts",
+        "src/lib/e2ee/reauth.test.ts",
+        "src/lib/oidc/reauth.test.ts"
+      ]
     }
   ]
 }

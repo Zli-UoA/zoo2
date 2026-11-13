@@ -1,4 +1,7 @@
-import type { IdentityKeys, JsonObject } from "@zoo/crypto-wasm";
+import type { IdentityKeys, JsonObject, KeySlot, ResumePlan, StartupCheck } from "@zoo/crypto-wasm";
+
+import type { PasskeySlotInput, ResetExpectation, UnlockSecret } from "./setupSession";
+import type { BackupUploadRequest } from "./store/cryptoStore";
 
 import type {
   DeviceKeysByUser,
@@ -9,6 +12,7 @@ import type {
 } from "./store/cryptoStore";
 
 export type { DeviceKeysByUser, KeyUpload, RegistrationRequest, ToDeviceResult, ToDeviceRow };
+export type { KeySlot, PasskeySlotInput, ResetExpectation, ResumePlan, StartupCheck, UnlockSecret };
 
 /**
  * 暗号の Worker（`crypto.worker.ts`）とのやり取りの型。
@@ -38,6 +42,25 @@ export type CryptoOperation =
   | { op: "acknowledged"; ids: string[] }
   | { op: "pendingBackupCount" }
   | { op: "close" }
+  // 初回設定と解錠（#360）。秘密は Worker のメモリーにだけ置き、要求の本文だけを返す。
+  | { op: "setupBegin"; reset: ResetExpectation | null }
+  | ({ op: "setupAddPasskeySlot" } & PasskeySlotInput)
+  | { op: "setupSecretStorageRequest"; keyId: string }
+  | { op: "setupPendingSlots" }
+  | { op: "unlock"; response: JsonObject; secret: UnlockSecret }
+  /** `keyId` を渡すと、メモリーの SSSS 鍵がその鍵のときだけ行う（初回設定とリセット）。 */
+  | { op: "planResume"; keysQuery: JsonObject; versions: JsonObject; keyId?: string }
+  | { op: "finishSetup"; secretsRevision: number | null; keyId?: string }
+  | ({ op: "newPasskeySlot" } & PasskeySlotInput)
+  | { op: "startupCheck"; keysQuery: JsonObject; versions: JsonObject }
+  | { op: "hasSecrets" }
+  | { op: "hasOwnKeys" }
+  // 鍵バックアップへのアップロード（#360）。
+  | { op: "prepareBackupUpload"; currentVersion: JsonObject | null; limit: number }
+  | { op: "backupUploaded"; uploadId: number }
+  | { op: "backupUploadFailed"; uploadId: number }
+  | { op: "discardSecrets" }
+  | { op: "forgetOwnKeys" }
   | {
       /** 暗号ストアを消す。開いていなくても、`namespace` のファイルと保存鍵を消す。 */
       op: "destroy";
@@ -73,6 +96,22 @@ export interface CryptoResults {
   pendingBackupCount: number;
   close: null;
   destroy: null;
+  setupBegin: { recoveryKey: string; keyId: string };
+  setupAddPasskeySlot: null;
+  setupSecretStorageRequest: JsonObject;
+  setupPendingSlots: KeySlot[];
+  unlock: { keyId: string; secretsRevision: number | null };
+  planResume: ResumePlan;
+  finishSetup: null;
+  newPasskeySlot: KeySlot;
+  startupCheck: StartupCheck | null;
+  hasSecrets: boolean;
+  hasOwnKeys: boolean;
+  prepareBackupUpload: BackupUploadRequest;
+  backupUploaded: null;
+  backupUploadFailed: null;
+  discardSecrets: null;
+  forgetOwnKeys: null;
 }
 
 export type CryptoRequest = CryptoOperation & { id: number };
