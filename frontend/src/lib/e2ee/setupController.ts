@@ -114,6 +114,20 @@ export async function loadE2eeStatus(deps: E2eeSetupDeps): Promise<E2eeStatus> {
 }
 
 /**
+ * 起動時の確認（docs/e2ee.md の「初回設定と解錠の流れ」）。解錠済みの端末だけが、自分の端末への
+ * 署名を確かめ、なければ署名し直す。まだ解錠していない端末は、何も取得しない。
+ */
+export async function runStartupCheck(deps: E2eeSetupDeps): Promise<void> {
+  if (!(await deps.worker.request({ op: "hasOwnKeys" }))) return;
+  const [keysQuery, versions] = await Promise.all([
+    queryOwnKeys(deps.client, deps.userId),
+    listBackupVersions(deps.client),
+  ]);
+  const check = await deps.worker.request({ op: "startupCheck", keysQuery, versions });
+  if (check?.kind === "sign_device") await uploadSignatures(deps.client, [check.signature]);
+}
+
+/**
  * 初回設定（`storage` が `null`）か、E2EE のリセットを始める。リカバリーキーを返すので、利用者に
  * 控えてもらう。リセットは、`GET /api/e2ee/secret_storage` で読んだ鍵と `secrets_revision` を前提にする。
  */

@@ -116,6 +116,8 @@ export class CryptoOperations {
         return this.setup.startupCheck(this.opened(), request.keysQuery, request.versions);
       case "hasSecrets":
         return this.setup.hasSecrets;
+      case "hasOwnKeys":
+        return this.opened().hasOwnKeys();
       case "discardSecrets":
         this.setup.discard();
         return null;

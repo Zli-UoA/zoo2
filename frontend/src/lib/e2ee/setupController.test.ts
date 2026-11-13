@@ -19,6 +19,7 @@ import {
   completeSetup,
   hasUnlockedSecrets,
   loadE2eeStatus,
+  runStartupCheck,
   saveRemaining,
   unlock,
   type E2eeSetupDeps,
@@ -582,5 +583,23 @@ describe("初回設定と解錠", () => {
       "recovery",
       "passkey",
     ]);
+  });
+
+  it("起動時の確認は、解錠していない端末では何も取得せず、解錠済みなら署名し直す", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const { keyId } = await beginSetup(first.deps(server), null);
+    await completeSetup(first.deps(server), keyId, TOKEN);
+
+    const other = await device("other");
+    server.requests = [];
+    await runStartupCheck(other.deps(server));
+    expect(server.requests).toEqual([]);
+
+    // 署名を失った（失効の途中で解錠した端末など）。起動時に署名し直す。
+    server.signatures = [];
+    await runStartupCheck(first.deps(server));
+    expect(server.requests.map((r) => r.path)).toContain("/api/e2ee/cross_signing/signatures");
+    expect(deviceSignatureCount(server)).toBe(1);
   });
 });

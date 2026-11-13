@@ -651,7 +651,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 - 【決定】設定の「暗号化」タブ（`routes/_shell.settings.tsx` の `encryption`、`components/e2ee/EncryptionSettings.tsx`）で、初回設定、解錠、初回設定の続き、鍵スロットの追加と削除、E2EE のリセットを行う。マスター鍵の秘密鍵と SSSS 鍵は Worker（`lib/e2ee/setupSession.ts`）のメモリーにだけ置き、メインスレッドには要求の本文とリカバリーキーの表示だけを返す。SSSS 鍵は、解錠のあとページを閉じるまでメモリーに残し、鍵スロットの追加に使う（読み込み直したあとに追加するときは、解錠し直す）。
 - 【決定】自分の鍵は、暗号ストアの `meta` に `own_keys`（上の封筒）と `secrets_revision`（最後に解錠したときの値）として置く。
-- 【決定】起動時の確認（`startup_check`）は、端末の登録が済んだあとに `E2eeProvider` が行い、署名がなければ署名し直す。止まった初回設定（`ResumeSetup`）と鍵の不一致（`Unlock`）は、暗号化タブで「初回設定が途中です」「解錠し直してください」と案内する。
+- 【決定】起動時の確認（`startup_check`）は、端末の登録が済んだあとに `E2eeProvider` が行い、署名がなければ署名し直す。暗号ストアに自分の鍵がない（まだ解錠していない）端末は、確認のための取得をしない。止まった初回設定（`ResumeSetup`）と鍵の不一致（`Unlock`）は、暗号化タブで「初回設定が途中です」「解錠し直してください」と案内する。
 - 【決定】再認証の別ウィンドウは、利用者のクリックの中で同期的に開き（`window.open`）、そのあとで認可リクエスト（`max_age=0`、PKCE、`state`、`nonce`）の URL に移す。リダイレクト先は静的なページ `https://<オリジン>/auth/reauth-callback.html`（`frontend/public/auth/`）で、SPA を読み込まずに、認可コードと `state` を `postMessage`（`targetOrigin` は自分のオリジン）と、同じオリジンの `BroadcastChannel`（`zoo-reauth`）の両方で返し、URL から認可コードを消して閉じる。`BroadcastChannel` も使うのは、AuthZ を経由すると `Cross-Origin-Opener-Policy` で `window.opener` が切れる場合があるため。同じ理由で、ウィンドウが閉じたこと（`popup.closed`）では失敗にせず、10 分で時間切れにする。元のページは、自分のオリジンからで `state` が一致するメッセージだけを受け取り、PKCE の code verifier と `nonce` はメモリーにだけ置いて、トークンエンドポイントで ID トークンに換える（今のセッションのトークンは変えない）。
 - 【決定】AuthZ の Web のクライアントには、リダイレクト URI として `https://zli.chat/auth/reauth-callback.html` を登録する（開発は `http://localhost:5173/auth/reauth-callback.html`）。登録は AuthZ の管理画面で行う（zoo2-infra の `docs/installation.md` と同じ）。登録するまでは、本番で初回設定を保存できない。
 - 【決定】OIDC を設定していない開発環境（`DEV_AUTH_ENABLED`）では、サーバーも再認証を確かめないので、別ウィンドウを開かずに `X-Zoo-Reauth` なしで保存する。

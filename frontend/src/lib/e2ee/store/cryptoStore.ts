@@ -426,6 +426,12 @@ export class CryptoStore {
     };
   }
 
+  /** 自分の鍵を保存してあるか（解錠済みの端末か）。 */
+  async hasOwnKeys(): Promise<boolean> {
+    const { meta } = await this.backend.read();
+    return Boolean(meta[META_OWN_KEYS]);
+  }
+
   /** 自分の鍵を消す（E2EE のリセットや、SSSS を開けなくなったとき）。 */
   async forgetOwnKeys(): Promise<void> {
     await this.backend.write({ meta: { [META_OWN_KEYS]: null, [META_SECRETS_REVISION]: null } });
