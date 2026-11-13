@@ -31,7 +31,25 @@ export class CryptoOperations {
     private readonly keys: WrappingKeyStore = indexedDbWrappingKeys,
   ) {}
 
+  private lastOpen: { namespace: string; userId: string } | null = null;
+
   async run(request: CryptoOperation): Promise<CryptoResults[Op]> {
+    try {
+      return await this.dispatch(request);
+    } catch (error) {
+      // 保存に失敗した操作のあとは、メモリーの状態を捨てて、保存済みの状態から開き直す。
+      if (this.store?.isBroken && this.lastOpen) {
+        const reopen = this.lastOpen;
+        await this.store.close().catch(() => undefined);
+        this.store = null;
+        this.storeName = null;
+        await this.dispatch({ op: "open", ...reopen }).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  private async dispatch(request: CryptoOperation): Promise<CryptoResults[Op]> {
     switch (request.op) {
       case "generateDeviceKeys":
         return generateDeviceKeys(request.userId, request.deviceId);
@@ -56,6 +74,7 @@ export class CryptoOperations {
         });
         this.store = store;
         this.storeName = name;
+        this.lastOpen = { namespace: request.namespace, userId: request.userId };
         return this.describe(replacedDeviceId);
       }
       case "registrationRequest":
@@ -104,6 +123,7 @@ export class CryptoOperations {
         return null;
       case "close":
         this.setup.discard();
+        this.lastOpen = null;
         await this.store?.close();
         this.store = null;
         this.storeName = null;
@@ -120,6 +140,7 @@ export class CryptoOperations {
         if (this.storeName === name) {
           this.store = null;
           this.storeName = null;
+          this.lastOpen = null;
         }
         return null;
       }

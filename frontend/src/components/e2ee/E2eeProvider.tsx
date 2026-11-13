@@ -23,6 +23,7 @@ import {
 } from "../../lib/e2ee/identity";
 import { loadE2eeStatus } from "../../lib/e2ee/setupController";
 import { supportsCryptoStore } from "../../lib/e2ee/support";
+import { readLastOfflineUserId } from "../../lib/offline/identity";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
 
 interface ActiveStore {
@@ -30,15 +31,36 @@ interface ActiveStore {
   manager: E2eeDeviceManager;
 }
 
-/** 前のログアウトで消せなかった暗号ストアを消し直す（使っているタブがなければ）。 */
-async function retryPendingStoreDeletion(worker: CryptoWorker): Promise<void> {
+/** ログアウトを取りやめてロックを返したことを、ほかのタブに知らせる。 */
+const LOCK_CHANNEL = "zoo-crypto-lock";
+/** 起動に失敗したときに試し直す間隔（最初と最大）。 */
+const START_RETRY_MS = 5_000;
+const START_RETRY_MAX_MS = 300_000;
+
+/**
+ * 前のログアウトで消せなかった暗号ストアを消し直す。
+ *
+ * `namespace` は今ロックを持っている暗号ストア。同じなら、そのロックの下で消す（もう一度取ろうと
+ * すると、自分のロックに阻まれる）。別の名前空間なら、使っているタブがないときだけ消す。
+ */
+async function retryPendingStoreDeletion(worker: CryptoWorker, namespace: string): Promise<void> {
   const pending = readPendingCryptoStoreDeletion();
   if (!pending) return;
-  await navigator.locks.request(cryptoLockName(pending), { ifAvailable: true }, async (lock) => {
-    if (!lock) return;
+  const destroy = async () => {
     await worker.request({ op: "destroy", namespace: pending });
     clearPendingCryptoStoreDeletion();
+  };
+  if (pending === namespace) {
+    await destroy();
+    return;
+  }
+  await navigator.locks.request(cryptoLockName(pending), { ifAvailable: true }, async (lock) => {
+    if (lock) await destroy();
   });
+}
+
+function wait(ms: number, until: Promise<void>): Promise<void> {
+  return Promise.race([until, new Promise<void>((resolve) => setTimeout(resolve, ms))]);
 }
 
 /**
@@ -46,7 +68,8 @@ async function retryPendingStoreDeletion(worker: CryptoWorker): Promise<void> {
  *
  * 暗号ストアを開くのは、Web Locks（`zoo-crypto:<DB 名>`）を取れた 1 つのタブだけにする
  * （docs/e2ee.md の「暗号ストア」）。他のタブはロックを待ち、開いているタブが閉じたら引き継ぐ。
- * ログアウトしたタブは、ロックを奪って（`steal`）件数の確認と削除を行う。
+ * ログアウトしたタブは、ロックを奪って（`steal`）件数の確認と削除を行う。取りやめたらロックを返し、
+ * 奪われたタブはもう一度ロックを待つ。
  */
 export function E2eeProvider({ config, children }: { config: AppConfig; children: ReactNode }) {
   const { namespace, isOnline } = useOfflineStatus();
@@ -66,15 +89,15 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const [readyWorker, setReadyWorker] = useState<CryptoWorker | null>(null);
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const leader = useRef<ActiveStore | null>(null);
-  const takeover = useRef<Promise<ActiveStore> | null>(null);
+  const takeover = useRef<{ store: Promise<ActiveStore>; release: () => void } | null>(null);
 
   const createManager = useCallback(
-    (worker: CryptoWorker, userId: string) =>
+    (worker: CryptoWorker, managerUserId: string) =>
       new E2eeDeviceManager({
         config,
         client,
         worker,
-        userId,
+        userId: managerUserId,
         namespace,
         displayName: deviceDisplayName(),
         onStatus: (next) => {
@@ -88,70 +111,119 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   useEffect(() => {
     if (!supported || !userId || !isOnline) return;
     const controller = new AbortController();
-    let release: () => void = () => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    navigator.locks
-      .request(cryptoLockName(namespace), { signal: controller.signal }, async () => {
-        const worker = startCryptoWorker();
-        const manager = createManager(worker, userId);
-        const active = { worker, manager };
-        leader.current = active;
-        try {
-          await retryPendingStoreDeletion(worker).catch(() => undefined);
-          await manager
-            .start()
-            .then(() => {
-              setDeviceId(manager.currentDeviceId);
-              setReadyWorker(worker);
-              // 解錠済みの端末は、起動時に自分の端末への署名を確かめ、なければ署名し直す
-              // （docs/e2ee.md の「初回設定と解錠の流れ」。止まった初回設定は暗号化タブで案内する）。
-              void loadE2eeStatus({ worker, client, userId, rpId: null }).catch(() => undefined);
-            })
-            .catch(() => undefined);
-          await held;
-        } finally {
-          setReadyWorker((current) => (current === worker ? null : current));
-          if (leader.current === active) leader.current = null;
-          await manager.stop().catch(() => undefined);
-          worker.terminate();
-        }
-      })
-      // 中止（アンマウント）と、ログアウトする別のタブに奪われたときは、持っていた分を片付ける。
-      .catch(() => release());
+    const channel =
+      typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(LOCK_CHANNEL);
+    let requesting = false;
+    let releaseCurrent: () => void = () => {};
+
+    const lead = () => {
+      requesting = true;
+      let released = false;
+      let resolveHeld: () => void = () => {};
+      const held = new Promise<void>((resolve) => {
+        resolveHeld = resolve;
+      });
+      const release = () => {
+        released = true;
+        resolveHeld();
+      };
+      releaseCurrent = release;
+      navigator.locks
+        .request(cryptoLockName(namespace), { signal: controller.signal }, async () => {
+          const worker = startCryptoWorker();
+          let active: ActiveStore | null = null;
+          try {
+            await retryPendingStoreDeletion(worker, namespace).catch(() => undefined);
+            // 登録や鍵の補充が一時的に失敗しても（503、通信の失敗）、間隔をあけて試し直す。
+            let delay = START_RETRY_MS;
+            while (!released) {
+              const manager = createManager(worker, userId);
+              active = { worker, manager };
+              leader.current = active;
+              try {
+                await manager.start();
+                setDeviceId(manager.currentDeviceId);
+                setReadyWorker(worker);
+                // 解錠済みの端末は、起動時に自分の端末への署名を確かめ、なければ署名し直す
+                // （docs/e2ee.md の「初回設定と解錠の流れ」。止まった初回設定は暗号化タブで案内する）。
+                void loadE2eeStatus({ worker, client, userId, rpId: null }).catch(() => undefined);
+                break;
+              } catch {
+                await manager.stop().catch(() => undefined);
+                await wait(delay, held);
+                delay = Math.min(delay * 2, START_RETRY_MAX_MS);
+              }
+            }
+            await held;
+          } finally {
+            setReadyWorker((current) => (current === worker ? null : current));
+            if (leader.current === active) leader.current = null;
+            await active?.manager.stop().catch(() => undefined);
+            worker.terminate();
+          }
+        })
+        // 中止（アンマウント）と、ログアウトする別のタブに奪われたときは、持っていた分を片付ける。
+        .catch(() => release())
+        .finally(() => {
+          requesting = false;
+        });
+    };
+
+    lead();
+    // ログアウトを取りやめたタブがロックを返したら、奪われていたタブはもう一度ロックを待つ。
+    if (channel) {
+      channel.onmessage = ({ data }: MessageEvent<{ type?: string; namespace?: string }>) => {
+        if (data?.type === "released" && data.namespace === namespace && !requesting) lead();
+      };
+    }
     return () => {
       controller.abort();
-      release();
+      releaseCurrent();
+      channel?.close();
     };
   }, [client, createManager, isOnline, namespace, supported, userId]);
 
-  /** ログアウトに使う暗号ストア。このタブが開いていなければ、ロックを奪って開く。 */
+  /**
+   * ログアウトに使う暗号ストア。このタブが開いていなければ、ロックを奪って開く。
+   *
+   * オフラインで起動して今のユーザーを確かめられないときも、保存済みのユーザー（オフライン DB の
+   * 名前空間と同じもの）の暗号ストアを開く。
+   */
   const storeForLogout = useCallback(async (): Promise<ActiveStore | null> => {
-    if (!supported || !userId) return null;
+    const logoutUserId = userId || readLastOfflineUserId();
+    if (!supported || !logoutUserId) return null;
     if (leader.current) return leader.current;
-    takeover.current ??= new Promise<ActiveStore>((resolve, reject) => {
-      void navigator.locks
-        .request(cryptoLockName(namespace), { steal: true }, async () => {
-          const worker = startCryptoWorker();
-          const manager = createManager(worker, userId);
-          try {
-            await manager.attach();
-            resolve({ worker, manager });
-          } catch (error) {
-            worker.terminate();
-            reject(error);
-            return;
-          }
-          // ログアウトはページを離れるので、ロックはそのときまで持つ。
-          await new Promise(() => {});
-        })
-        .catch(reject);
-    }).catch((error: unknown) => {
-      takeover.current = null;
-      throw error;
-    });
-    return takeover.current;
+    if (!takeover.current) {
+      let resolveHold: () => void = () => {};
+      const hold = new Promise<void>((resolve) => {
+        resolveHold = resolve;
+      });
+      const store = new Promise<ActiveStore>((resolve, reject) => {
+        void navigator.locks
+          .request(cryptoLockName(namespace), { steal: true }, async () => {
+            const worker = startCryptoWorker();
+            try {
+              const manager = createManager(worker, logoutUserId);
+              await manager.attach();
+              resolve({ worker, manager });
+              // ログアウトはページを離れるので、取りやめる（`release`）までロックを持つ。
+              await hold;
+            } catch (error) {
+              reject(error);
+            } finally {
+              worker.terminate();
+            }
+          })
+          .catch(reject);
+      });
+      const entry = { store, release: resolveHold };
+      takeover.current = entry;
+      store.catch(() => {
+        if (takeover.current === entry) takeover.current = null;
+        resolveHold();
+      });
+    }
+    return takeover.current.store;
   }, [createManager, namespace, supported, userId]);
 
   const value = useMemo<E2eeContextValue>(
@@ -164,9 +236,19 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         const store = await storeForLogout();
         return store ? store.manager.pendingBackupCount() : 0;
       },
+      cancelLogout: () => {
+        const entry = takeover.current;
+        if (!entry) return;
+        takeover.current = null;
+        entry.release();
+        const channel =
+          typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(LOCK_CHANNEL);
+        channel?.postMessage({ type: "released", namespace });
+        channel?.close();
+      },
       clearForLogout: async () => {
-        if (!supported || !userId) return;
-        // 消し切れなければ、次の起動で消し直す。
+        if (!supported || namespace === "anonymous") return;
+        // 消し切れなければ（開けない、ユーザーが分からない）、次の起動で消し直す。
         markCryptoStoreDeletionPending(namespace);
         const store = await storeForLogout();
         if (!store) return;

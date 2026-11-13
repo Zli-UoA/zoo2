@@ -104,12 +104,15 @@ export function LeftRail() {
     }
     const client = getOidcClient(config);
     if (!client) {
+      e2ee.cancelLogout();
       return;
     }
     try {
       await disablePush(config);
     } catch {
       toast.error(t("pwa.logoutError"));
+      // ログアウトを続けないので、件数の確認で奪ったロックを返す。
+      e2ee.cancelLogout();
       return;
     }
     await clearEncryptionData();
@@ -181,7 +184,10 @@ export function LeftRail() {
         <UnbackedKeysLogoutDialog
           count={unbackedKeys}
           pending={loggingOut}
-          onCancel={() => setUnbackedKeys(0)}
+          onCancel={() => {
+            setUnbackedKeys(0);
+            e2ee.cancelLogout();
+          }}
           onConfirm={async () => {
             setLoggingOut(true);
             try {
