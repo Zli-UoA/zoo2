@@ -131,20 +131,11 @@ export function ZooSettings() {
               </SettingRow>
             </div>
             {config.oidc ? (
-              <section
-                aria-labelledby="danger-zone-title"
-                className="mt-6 overflow-hidden rounded-lg border border-destructive/50"
-              >
-                <h3
-                  id="danger-zone-title"
-                  className="border-b border-destructive/50 bg-destructive/10 px-4 py-2 text-sm font-semibold text-destructive"
-                >
-                  {t("settings.dangerZone")}
-                </h3>
+              <div className="mt-6 overflow-hidden rounded-lg border border-destructive/50 bg-destructive/5">
                 <SettingRow icon={<LogOutIcon />} label={t("auth.logout")}>
                   <LogoutButton />
                 </SettingRow>
-              </section>
+              </div>
             ) : null}
           </Tabs.Panel>
           <Tabs.Panel value="call" className="min-h-0">
