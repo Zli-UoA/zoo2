@@ -98,13 +98,21 @@ pub struct TelemetryGuard {
 
 impl TelemetryGuard {
     /// 非同期コンテキストから安全に全プロバイダをフラッシュ・停止する。
+    ///
+    /// exporter の `shutdown()` が応答せずブロックした場合でも、Tokio ランタイムの
+    /// blocking スレッドプール終了待ちに影響しないよう独立 OS スレッドで実行し、
+    /// 最大 5 秒で待機を打ち切る。
     pub async fn shutdown(mut self) {
         let tracer = self.tracer_provider.take();
         let meter = self.meter_provider.take();
         let logger = self.logger_provider.take();
-        let _ = tokio::time::timeout(
-            Duration::from_secs(5),
-            tokio::task::spawn_blocking(move || {
+        if tracer.is_none() && meter.is_none() && logger.is_none() {
+            return;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if std::thread::Builder::new()
+            .name("otel-shutdown".to_string())
+            .spawn(move || {
                 if let Some(p) = logger {
                     let _ = p.shutdown();
                 }
@@ -114,9 +122,12 @@ impl TelemetryGuard {
                 if let Some(p) = meter {
                     let _ = p.shutdown();
                 }
-            }),
-        )
-        .await;
+                let _ = tx.send(());
+            })
+            .is_ok()
+        {
+            let _ = tokio::time::timeout(Duration::from_secs(5), rx).await;
+        }
     }
 }
 
@@ -377,6 +388,24 @@ fn is_streaming_response(response: &Response) -> bool {
         .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("text/event-stream"))
 }
 
+/// 標準 HTTP メソッドのみをそのまま返し、任意のカスタムメソッドは `"OTHER"` へ集約する。
+///
+/// 任意のメソッド名によるメトリクス系列数上限 (`otel_metric_overflow`) やカーディナリティ増加を防ぐ。
+pub(crate) fn normalize_http_method(method: &axum::http::Method) -> &'static str {
+    match *method {
+        axum::http::Method::GET => "GET",
+        axum::http::Method::POST => "POST",
+        axum::http::Method::PUT => "PUT",
+        axum::http::Method::PATCH => "PATCH",
+        axum::http::Method::DELETE => "DELETE",
+        axum::http::Method::HEAD => "HEAD",
+        axum::http::Method::OPTIONS => "OPTIONS",
+        axum::http::Method::CONNECT => "CONNECT",
+        axum::http::Method::TRACE => "TRACE",
+        _ => "OTHER",
+    }
+}
+
 /// W3C `traceparent` 抽出・HTTP スパン生成・メトリクス計測・構造化完了ログ出力を行うミドルウェア。
 pub async fn http_telemetry_middleware(request: Request, next: Next) -> Response {
     let parent_cx =
@@ -387,7 +416,7 @@ pub async fn http_telemetry_middleware(request: Request, next: Next) -> Response
         .get::<MatchedPath>()
         .map(|m| m.as_str().to_string());
     let route = sanitize_route(matched.as_deref(), request.uri().path());
-    let method = request.method().as_str().to_string();
+    let method = normalize_http_method(request.method());
     let service = service_name();
 
     let span = tracing::info_span!(
@@ -411,7 +440,7 @@ pub async fn http_telemetry_middleware(request: Request, next: Next) -> Response
     span.record("http.response.status_code", status);
 
     let duration_secs = (!is_streaming_response(&response)).then_some(elapsed.as_secs_f64());
-    crate::metrics::record_http_request(service, &method, &route, status, duration_secs);
+    crate::metrics::record_http_request(service, method, &route, status, duration_secs);
 
     let duration_ms = (elapsed.as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
     span.in_scope(|| {
@@ -764,5 +793,87 @@ mod tests {
         let parsed: Value = serde_json::from_str(output.trim()).expect("valid json line");
         assert_eq!(parsed["trace_id"], expected_trace_id);
         assert_ne!(parsed["span_id"], "00f067aa0ba902b7");
+    }
+
+    #[test]
+    fn normalize_http_method_allows_standard_methods_and_collapses_unknown() {
+        use axum::http::Method;
+
+        for (raw, expected) in [
+            ("GET", "GET"),
+            ("POST", "POST"),
+            ("PUT", "PUT"),
+            ("PATCH", "PATCH"),
+            ("DELETE", "DELETE"),
+            ("HEAD", "HEAD"),
+            ("OPTIONS", "OPTIONS"),
+            ("CONNECT", "CONNECT"),
+            ("TRACE", "TRACE"),
+            ("PROPFIND", "OTHER"),
+            ("CUSTOM_METHOD", "OTHER"),
+        ] {
+            let method = Method::from_bytes(raw.as_bytes()).unwrap();
+            assert_eq!(normalize_http_method(&method), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_http_methods_do_not_overflow_metrics_or_drop_get() {
+        use axum::http::Method;
+        use tower::ServiceExt;
+
+        let registry = Registry::new();
+        let exporter = opentelemetry_prometheus::exporter()
+            .with_registry(registry.clone())
+            .scope_info_enabled(false)
+            .without_units()
+            .build()
+            .unwrap();
+        let meter_provider = SdkMeterProvider::builder().with_reader(exporter).build();
+        global::set_meter_provider(meter_provider.clone());
+        crate::metrics::register(registry);
+
+        let app = Router::new()
+            .route("/healthz", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(http_telemetry_middleware));
+
+        for i in 0..2005 {
+            let method = Method::from_bytes(format!("M{i:04}").as_bytes()).unwrap();
+            let req = axum::http::Request::builder()
+                .method(method)
+                .uri("/healthz")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+        }
+
+        let get_req = axum::http::Request::builder()
+            .method(Method::GET)
+            .uri("/healthz")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let get_resp = app.oneshot(get_req).await.unwrap();
+        assert_eq!(get_resp.status(), StatusCode::OK);
+
+        let prom = crate::metrics::render_prometheus();
+        assert!(
+            !prom.contains("otel_metric_overflow"),
+            "unexpected metric overflow in prometheus output:\n{prom}"
+        );
+        assert!(
+            prom.contains(
+                r#"zoo_http_requests_total{method="OTHER",route="/healthz",service="zoo-backend",status_class="4xx"} 2005"#
+            ),
+            "expected unknown methods to be aggregated under OTHER:\n{prom}"
+        );
+        assert!(
+            prom.contains(
+                r#"zoo_http_requests_total{method="GET",route="/healthz",service="zoo-backend",status_class="2xx"} 1"#
+            ),
+            "expected normal GET /healthz series to remain recorded:\n{prom}"
+        );
+
+        let _ = meter_provider.shutdown();
     }
 }

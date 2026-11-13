@@ -116,6 +116,17 @@ services:
       SLACK_OAUTH_REDIRECT_URL:
       SLACK_FRONTEND_URL:
       SLACK_TOKEN_ENCRYPTION_KEY:
+      # Observability (OpenTelemetry / Prometheus / Structured Logging)
+      LOG_FORMAT:
+      METRICS_HOST:
+      METRICS_PORT:
+      OTEL_EXPORTER_OTLP_ENDPOINT:
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:
+      OTEL_SERVICE_NAME:
+      OTEL_TRACES_SAMPLER:
+      OTEL_TRACES_SAMPLER_ARG:
     networks:
       - backend
       - backend-egress
