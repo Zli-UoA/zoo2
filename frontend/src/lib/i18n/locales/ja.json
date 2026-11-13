@@ -1041,5 +1041,14 @@
       "hidden_one": "ほかに {{count}} 件あります（管理できないチャンネルの Webhook は表示しません）。",
       "hidden_other": "ほかに {{count}} 件あります（管理できないチャンネルの Webhook は表示しません）。"
     }
+  },
+  "e2ee": {
+    "logout": {
+      "unbackedTitle": "バックアップされていない鍵があります",
+      "unbackedDescription_one": "{{count}} 件の鍵がバックアップされていません。ログアウトすると、この端末にだけある過去ログは読めなくなります。",
+      "unbackedDescription_other": "{{count}} 件の鍵がバックアップされていません。ログアウトすると、この端末にだけある過去ログは読めなくなります。",
+      "confirm": "ログアウトする",
+      "deleteFailed": "この端末の暗号の鍵を消せませんでした。次に開いたときに消し直します。"
+    }
   }
 }

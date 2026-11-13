@@ -79,7 +79,15 @@ const config = defineConfig({
       },
       {
         extends: true,
-        optimizeDeps: { include: ["vite-plus/test/browser/context"] },
+        optimizeDeps: {
+          include: [
+            "vite-plus/test/browser/context",
+            // 暗号ストアの Worker（lib/e2ee）が読む。テストの途中で最適化し直して読み込み直さないように。
+            "@journeyapps/wa-sqlite",
+            "@journeyapps/wa-sqlite/dist/wa-sqlite.mjs",
+            "@journeyapps/wa-sqlite/src/examples/OPFSCoopSyncVFS.js",
+          ],
+        },
         test: {
           name: "browser",
           include: ["src/**/*.browser.test.{ts,tsx}"],

@@ -2,6 +2,7 @@ import { toast } from "sonner";
 import { useShell } from "./shell-context";
 import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import {
@@ -20,6 +21,8 @@ import { useCollections } from "../../lib/electric/collections-context";
 import { desktopLogout, isDesktopSession } from "../../lib/desktop";
 import { getOidcClient } from "../../lib/oidc/session";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
+import { useE2ee } from "../../lib/e2ee/e2ee-context";
+import { UnbackedKeysLogoutDialog } from "../e2ee/UnbackedKeysLogoutDialog";
 import { AppAvatar } from "../chat/AppIdentity";
 import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
@@ -61,6 +64,10 @@ export function LeftRail() {
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
   const { clearUserData } = useOfflineStatus();
+  const e2ee = useE2ee();
+  // 鍵バックアップに送れていない鍵の数。0 より大きければ、ログアウトの前に確かめる。
+  const [unbackedKeys, setUnbackedKeys] = useState(0);
+  const [loggingOut, setLoggingOut] = useState(false);
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
   const meLabel = me ? me.display_name || me.user_name : (currentUserId ?? "?");
@@ -68,8 +75,23 @@ export function LeftRail() {
   // OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）。
   // dev（OIDC 未設定）ではログアウト UI を出さない。
   const handleLogout = async () => {
+    // 暗号ストアを消すと、この端末にだけある鍵を失う。送れていない鍵があれば先に確かめる
+    // （docs/e2ee.md の「ログアウトと端末の削除」）。
+    const pending = await e2ee.pendingBackupCount().catch(() => 0);
+    if (pending > 0) {
+      setUnbackedKeys(pending);
+      return;
+    }
+    await performLogout();
+  };
+
+  const clearEncryptionData = () =>
+    e2ee.clearForLogout().catch(() => toast.error(t("e2ee.logout.deleteFailed")));
+
+  const performLogout = async () => {
     // デスクトップ版では Rust 側がトークンを持つ。消すとログイン画面へ戻る。
     if (isDesktopSession()) {
+      await clearEncryptionData();
       await clearUserData().catch(() => toast.error(t("offline.deleteFailed")));
       await desktopLogout();
       return;
@@ -84,6 +106,7 @@ export function LeftRail() {
       toast.error(t("pwa.logoutError"));
       return;
     }
+    await clearEncryptionData();
     try {
       await clearUserData();
     } catch {
@@ -138,6 +161,20 @@ export function LeftRail() {
             <LogOutIcon />
           </Button>
         ) : null}
+        <UnbackedKeysLogoutDialog
+          count={unbackedKeys}
+          pending={loggingOut}
+          onCancel={() => setUnbackedKeys(0)}
+          onConfirm={async () => {
+            setLoggingOut(true);
+            try {
+              await performLogout();
+            } finally {
+              setLoggingOut(false);
+              setUnbackedKeys(0);
+            }
+          }}
+        />
       </div>
     </nav>
   );
