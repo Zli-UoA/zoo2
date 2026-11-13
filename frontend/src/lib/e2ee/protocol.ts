@@ -14,6 +14,7 @@ import type {
 import type { RevocationBeginInput, TrustEvaluation } from "./revocationSession";
 
 import type { PasskeySlotInput, ResetExpectation, UnlockSecret } from "./setupSession";
+import type { BackupUploadRequest } from "./store/cryptoStore";
 
 import type {
   DeviceKeysByUser,
@@ -68,6 +69,10 @@ export type CryptoOperation =
   | { op: "startupCheck"; keysQuery: JsonObject; versions: JsonObject }
   | { op: "hasSecrets" }
   | { op: "hasOwnKeys" }
+  // 鍵バックアップへのアップロード（#360）。
+  | { op: "prepareBackupUpload"; currentVersion: JsonObject | null; limit: number }
+  | { op: "backupUploaded" }
+  | { op: "backupUploadFailed" }
   | { op: "discardSecrets" }
   | { op: "forgetOwnKeys" }
   // 失効の手順と、他のユーザーの検証（#362）。
@@ -144,6 +149,9 @@ export interface CryptoResults {
   startupCheck: StartupCheck | null;
   hasSecrets: boolean;
   hasOwnKeys: boolean;
+  prepareBackupUpload: BackupUploadRequest;
+  backupUploaded: null;
+  backupUploadFailed: null;
   discardSecrets: null;
   forgetOwnKeys: null;
   revocationStatus: RevocationSummary | null;

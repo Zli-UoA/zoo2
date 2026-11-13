@@ -57,6 +57,15 @@ export interface CryptoBackend {
   write(changes: CryptoStoreWrite): Promise<void>;
   /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
   pendingBackupCount(): Promise<number>;
+  /** 鍵バックアップにまだ送っていない受信用セッションを、`limit` 件まで（#360）。 */
+  pendingBackupSessions(limit: number): Promise<{ key: InboundSessionKey; pickle: string }[]>;
+  /**
+   * 送れた受信用セッションを送信済みにする。送ったあとに書き換わった（`pickle` が違う）
+   * セッションは、送信待ちのまま残す。
+   */
+  markBackedUp(sessions: { key: InboundSessionKey; pickle: string }[]): Promise<void>;
+  /** 鍵バックアップの版が変わったので、すべての受信用セッションを送信待ちに戻す。 */
+  resetBackedUp(): Promise<void>;
   close(): Promise<void>;
   /** 閉じて、保存先を消す。 */
   destroy(): Promise<void>;
@@ -105,6 +114,24 @@ export class MemoryCryptoBackend implements CryptoBackend {
 
   async pendingBackupCount(): Promise<number> {
     return [...this.inboundSessions.values()].filter((session) => !session.backedUp).length;
+  }
+
+  async pendingBackupSessions(limit: number) {
+    return [...this.inboundSessions]
+      .filter(([, session]) => !session.backedUp)
+      .slice(0, limit)
+      .map(([key, session]) => ({ key, pickle: session.pickle }));
+  }
+
+  async markBackedUp(sessions: { key: InboundSessionKey; pickle: string }[]): Promise<void> {
+    for (const { key, pickle } of sessions) {
+      const session = this.inboundSessions.get(key);
+      if (session?.pickle === pickle) session.backedUp = true;
+    }
+  }
+
+  async resetBackedUp(): Promise<void> {
+    for (const session of this.inboundSessions.values()) session.backedUp = false;
   }
 
   async close(): Promise<void> {}

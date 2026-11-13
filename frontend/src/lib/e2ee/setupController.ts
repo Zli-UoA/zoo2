@@ -14,6 +14,9 @@ import {
   addKeySlot,
   createBackupVersion,
   createSecretStorageKey,
+  errorCode,
+  getCurrentBackupVersion,
+  uploadBackupKeys,
   deleteKeySlot,
   getSecretStorage,
   hasSecretStorage,
@@ -113,6 +116,50 @@ export async function loadE2eeStatus(deps: E2eeSetupDeps): Promise<E2eeStatus> {
   }
 }
 
+/** 1 回に送るセッションの数（サーバーの上限）。 */
+export const BACKUP_UPLOAD_BATCH = 1000;
+
+export type BackupUploadResult =
+  | { kind: "done"; uploaded: number }
+  /** 今の版を使えない（署名がない、SSSS の鍵と違う、巻き戻りなど）。送っていない。 */
+  | { kind: "rejected"; code: string }
+  /**
+   * サーバーが拒んだ（409 `E2EE_WRONG_BACKUP_VERSION` か `E2EE_SSSS_CONFLICT`）。版が変わったか、
+   * 失効で秘密が書き換わったので、解錠し直すまで送らない。
+   */
+  | { kind: "conflict"; code: string };
+
+/**
+ * 鍵バックアップの送信待ちのセッションを、今の版に送る（docs/e2ee.md の「鍵バックアップ」）。
+ * 解錠していない端末と、今の版がない場合は何もしない。
+ */
+export async function uploadKeyBackup(deps: E2eeSetupDeps): Promise<BackupUploadResult> {
+  if (!(await deps.worker.request({ op: "hasOwnKeys" }))) return { kind: "done", uploaded: 0 };
+  const currentVersion = await getCurrentBackupVersion(deps.client);
+  let uploaded = 0;
+  for (;;) {
+    const request = await deps.worker.request({
+      op: "prepareBackupUpload",
+      currentVersion,
+      limit: BACKUP_UPLOAD_BATCH,
+    });
+    if (request.kind === "none") return { kind: "done", uploaded };
+    if (request.kind === "rejected") return request;
+    try {
+      await uploadBackupKeys(deps.client, request.version, request.secretsRevision, request.body);
+    } catch (error) {
+      await deps.worker.request({ op: "backupUploadFailed" });
+      const code = errorCode(error);
+      if (code === "E2EE_WRONG_BACKUP_VERSION" || code === "E2EE_SSSS_CONFLICT") {
+        return { kind: "conflict", code };
+      }
+      throw error;
+    }
+    await deps.worker.request({ op: "backupUploaded" });
+    uploaded += request.count;
+  }
+}
+
 /**
  * 起動時の確認（docs/e2ee.md の「初回設定と解錠の流れ」）。解錠済みの端末だけが、自分の端末への
  * 署名を確かめ、なければ署名し直す。まだ解錠していない端末は、何も取得しない。
@@ -125,6 +172,9 @@ export async function runStartupCheck(deps: E2eeSetupDeps): Promise<void> {
   ]);
   const check = await deps.worker.request({ op: "startupCheck", keysQuery, versions });
   if (check?.kind === "sign_device") await uploadSignatures(deps.client, [check.signature]);
+  if (check && check.kind !== "resume_setup" && check.kind !== "unlock") {
+    await uploadKeyBackup(deps);
+  }
 }
 
 /**
@@ -205,6 +255,8 @@ export async function saveRemaining(
     if (plan.backup_version) await createBackupVersion(deps.client, plan.backup_version, reauth);
   });
   await deps.worker.request({ op: "finishSetup", secretsRevision });
+  // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送る。失敗しても解錠は済んでいる。
+  await uploadKeyBackup(deps).catch(() => undefined);
 }
 
 async function planRemaining(deps: E2eeSetupDeps): Promise<ResumePlan> {

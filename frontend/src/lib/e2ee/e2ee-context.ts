@@ -30,6 +30,11 @@ export interface E2eeContextValue {
   deviceLimit: StaleDevice[] | null;
   /** ログアウトを取りやめた。件数の確認のために奪ったロックを返す。 */
   cancelLogout(): void;
+  /**
+   * 鍵バックアップの送信待ちのセッションを送る（#360）。新しい受信用セッションを保存したあと
+   * （送信用セッションの写しを含む）に呼ぶ。解錠していない端末では何もしない。
+   */
+  requestKeyBackup(): void;
   /** ログアウト：暗号ストアを消し、端末を削除する（失敗したら次のログインで消し直す）。 */
   clearForLogout(): Promise<void>;
 }
@@ -43,6 +48,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   revocationPending: async () => false,
   deviceLimit: null,
   cancelLogout: () => {},
+  requestKeyBackup: () => {},
   clearForLogout: async () => {},
 });
 

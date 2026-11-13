@@ -140,6 +140,14 @@ export class CryptoOperations {
         return this.setup.hasSecrets;
       case "hasOwnKeys":
         return this.opened().hasOwnKeys();
+      case "prepareBackupUpload":
+        return this.opened().prepareBackupUpload(request.currentVersion, request.limit);
+      case "backupUploaded":
+        await this.opened().backupUploaded();
+        return null;
+      case "backupUploadFailed":
+        this.opened().discardPendingUpload();
+        return null;
       case "discardSecrets":
         this.revocation.discard();
         this.setup.discard();
@@ -229,6 +237,9 @@ export class CryptoOperations {
         if (this.storeName === name) {
           this.store = null;
           this.storeName = null;
+        }
+        // 開き直しに失敗したあと（storeName が null）でも、消したストアを開き直さない。
+        if (this.lastOpen?.namespace === request.namespace) {
           this.lastOpen = null;
           this.reopenPending = false;
         }

@@ -157,7 +157,8 @@ function DeviceLimit({ staleIds }: { staleIds: string[] }) {
 }
 
 function DevicesPanel() {
-  const { worker, userId, deviceId } = useE2ee();
+  const e2ee = useE2ee();
+  const { worker, userId, deviceId } = e2ee;
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const rpId = passkeyRpId(config);
@@ -407,6 +408,8 @@ function DevicesPanel() {
             })),
           );
           setPhase({ phase: "done", result: toResult(result) });
+          // 手元の受信用セッションを、新しい版に送り直す（版が変わったので、すべて送り直す）。
+          e2ee.requestKeyBackup();
           void load(true);
         } catch (error) {
           if (error instanceof RevocationConflictError || error instanceof ServerKeyMismatchError) {
