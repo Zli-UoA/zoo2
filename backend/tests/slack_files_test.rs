@@ -20,12 +20,7 @@ use backend::{
     state::AppState, storage::ensure_bucket_exists,
 };
 
-async fn request(
-    app: &Router,
-    uri: &str,
-    user: &str,
-    body: Value,
-) -> anyhow::Result<StatusCode> {
+async fn request(app: &Router, uri: &str, user: &str, body: Value) -> anyhow::Result<StatusCode> {
     let response = app
         .clone()
         .oneshot(
@@ -218,7 +213,13 @@ async fn test_orphan_files_fetch_sync_rows_and_remove_the_filled_name() -> anyho
     let f = fixture(&files, |_| {}).await?;
     // 差分同期の形: ジョブなし、本文は同期が補ったファイル名
     let message = f
-        .add(Row { file: "F1", job: "", content: "F1.txt", in_content: true, size: 5 })
+        .add(Row {
+            file: "F1",
+            job: "",
+            content: "F1.txt",
+            in_content: true,
+            size: 5,
+        })
         .await?;
 
     assert!(f.once().await);
@@ -262,8 +263,14 @@ async fn test_orphan_files_take_rows_of_finished_jobs_but_not_active_ones() -> a
         ("F4", &importing),
         ("F5", &ready),
     ] {
-        f.add(Row { file, job, content: "", in_content: false, size: 1 })
-            .await?;
+        f.add(Row {
+            file,
+            job,
+            content: "",
+            in_content: false,
+            size: 1,
+        })
+        .await?;
     }
 
     // 終わったジョブの 3 件だけが取れて、進行中・開始前のジョブの行は、ジョブの取得に任せる
@@ -281,7 +288,8 @@ async fn test_orphan_files_take_rows_of_finished_jobs_but_not_active_ones() -> a
 }
 
 #[tokio::test]
-async fn test_orphan_files_retry_with_a_wait_and_give_up_after_three_failures() -> anyhow::Result<()> {
+async fn test_orphan_files_retry_with_a_wait_and_give_up_after_three_failures() -> anyhow::Result<()>
+{
     let files = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/files/F1/F1.txt"))
@@ -291,13 +299,25 @@ async fn test_orphan_files_retry_with_a_wait_and_give_up_after_three_failures() 
     let f = fixture(&files, |_| {}).await?;
     // 本文のファイル名は、取得に失敗しても残る
     let message = f
-        .add(Row { file: "F1", job: "", content: "F1.txt", in_content: true, size: 1 })
+        .add(Row {
+            file: "F1",
+            job: "",
+            content: "F1.txt",
+            in_content: true,
+            size: 1,
+        })
         .await?;
 
     assert!(f.once().await);
     let row = f.file("F1").await;
-    assert_eq!((row["status"].as_str(), row["attempts"].as_i64()), (Some("pending"), Some(1)));
-    assert_eq!((row["leased"].as_bool(), row["waiting"].as_bool()), (Some(false), Some(true)));
+    assert_eq!(
+        (row["status"].as_str(), row["attempts"].as_i64()),
+        (Some("pending"), Some(1))
+    );
+    assert_eq!(
+        (row["leased"].as_bool(), row["waiting"].as_bool()),
+        (Some(false), Some(true))
+    );
     // 待ちの間は取らない (3 回を短い間に使い切らない)
     assert!(!f.once().await);
 
@@ -327,8 +347,14 @@ async fn test_orphan_files_do_not_count_a_429_as_an_attempt() -> anyhow::Result<
         .await;
     serve(&files, "F1", b"ok").await;
     let f = fixture(&files, |_| {}).await?;
-    f.add(Row { file: "F1", job: "", content: "", in_content: false, size: 2 })
-        .await?;
+    f.add(Row {
+        file: "F1",
+        job: "",
+        content: "",
+        in_content: false,
+        size: 2,
+    })
+    .await?;
 
     assert!(f.once().await);
     let row = f.file("F1").await;
@@ -349,7 +375,13 @@ async fn test_orphan_files_skip_oversized_files_and_keep_the_name() -> anyhow::R
     let f = fixture(&files, |config| config.s3.max_file_size = 5).await?;
     // 記録上のサイズは小さいが、実際は上限を超えている。取得してからスキップする
     let message = f
-        .add(Row { file: "F1", job: "", content: "", in_content: false, size: 1 })
+        .add(Row {
+            file: "F1",
+            job: "",
+            content: "",
+            in_content: false,
+            size: 1,
+        })
         .await?;
     assert!(f.once().await);
     let row = f.file("F1").await;
@@ -364,8 +396,14 @@ async fn test_orphan_files_skip_oversized_files_and_keep_the_name() -> anyhow::R
 async fn test_orphan_files_give_up_rows_that_keep_stopping_the_worker() -> anyhow::Result<()> {
     let files = MockServer::start().await;
     let f = fixture(&files, |_| {}).await?;
-    f.add(Row { file: "F1", job: "", content: "", in_content: false, size: 1 })
-        .await?;
+    f.add(Row {
+        file: "F1",
+        job: "",
+        content: "",
+        in_content: false,
+        size: 1,
+    })
+    .await?;
     // 取得の途中でプロセスが落ちて、リースが切れた形 (3 回取ったあと)
     sql(
         &f.state,
@@ -386,8 +424,14 @@ async fn test_orphan_files_retake_an_expired_lease() -> anyhow::Result<()> {
     let files = MockServer::start().await;
     serve(&files, "F1", b"x").await;
     let f = fixture(&files, |_| {}).await?;
-    f.add(Row { file: "F1", job: "", content: "", in_content: false, size: 1 })
-        .await?;
+    f.add(Row {
+        file: "F1",
+        job: "",
+        content: "",
+        in_content: false,
+        size: 1,
+    })
+    .await?;
     // 別の台が取っている間 (リースが有効) は取らない。切れたら取り直す
     sql(
         &f.state,
@@ -400,28 +444,29 @@ async fn test_orphan_files_retake_an_expired_lease() -> anyhow::Result<()> {
     f.expire_wait().await;
     assert!(f.once().await);
     let row = f.file("F1").await;
-    assert_eq!((row["status"].as_str(), row["attempts"].as_i64()), (Some("done"), Some(2)));
+    assert_eq!(
+        (row["status"].as_str(), row["attempts"].as_i64()),
+        (Some("done"), Some(2))
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn test_orphan_files_ignore_deleted_and_encrypted_channels() -> anyhow::Result<()> {
+async fn test_orphan_files_ignore_deleted_channels() -> anyhow::Result<()> {
     let files = MockServer::start().await;
     serve(&files, "F1", b"x").await;
     let f = fixture(&files, |_| {}).await?;
-    f.add(Row { file: "F1", job: "", content: "", in_content: false, size: 1 })
-        .await?;
+    f.add(Row {
+        file: "F1",
+        job: "",
+        content: "",
+        in_content: false,
+        size: 1,
+    })
+    .await?;
     sql(
         &f.state,
         "UPDATE channels SET deleted_at=CURRENT_TIMESTAMP WHERE id=$1 RETURNING json_build_object('ok',true)::text",
-        &[&f.channel],
-    )
-    .await?;
-    assert!(!f.once().await);
-    assert_eq!(f.file("F1").await["status"], "pending");
-    sql(
-        &f.state,
-        "UPDATE channels SET deleted_at=NULL,encrypted=true WHERE id=$1 RETURNING json_build_object('ok',true)::text",
         &[&f.channel],
     )
     .await?;

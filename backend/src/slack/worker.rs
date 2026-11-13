@@ -1817,7 +1817,11 @@ async fn fail_exhausted_files(s: &AppState, team: &str) -> Result<(), AppError> 
     Ok(())
 }
 
-async fn claim_file(s: &AppState, team: &str, token: &str) -> Result<Option<PendingFile>, AppError> {
+async fn claim_file(
+    s: &AppState,
+    team: &str,
+    token: &str,
+) -> Result<Option<PendingFile>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     // 削除済みと暗号化 (平文の添付を置けない) チャンネルの行は取らない。リースが切れた行と、失敗後の待ちが終わった行を取る。
