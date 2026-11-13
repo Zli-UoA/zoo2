@@ -41,6 +41,8 @@ pub(crate) enum StoreKind {
     InboundSession,
     /// [`TrustStore`](crate::TrustStore)。
     TrustStore,
+    /// 解錠した自分の鍵（[`OwnKeys`](crate::OwnKeys)。#360）。
+    OwnKeys,
 }
 
 impl StoreKind {
@@ -49,6 +51,7 @@ impl StoreKind {
             Self::OlmSession => "olm_session",
             Self::InboundSession => "inbound_session",
             Self::TrustStore => "trust_store",
+            Self::OwnKeys => "own_keys",
         }
     }
 }

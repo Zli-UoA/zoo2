@@ -52,6 +52,7 @@ mod megolm;
 mod olm;
 mod recovery_key;
 mod secret_storage;
+mod setup;
 mod signing;
 mod store;
 mod trust;
@@ -88,6 +89,9 @@ pub use secret_storage::{
     EncryptedSecret, KeySlot, REQUIRED_SECRETS, SECRET_MEGOLM_BACKUP,
     SECRET_PREVIOUS_MEGOLM_BACKUP, SSSS_ALGORITHM, SecretStorage, SecretStorageKeysRequest,
     SlotKind, SlotSecret, SsssKey, SsssKeyDescription, UnlockedSecretStorage, new_prf_salt,
+};
+pub use setup::{
+    OwnKeys, OwnSecrets, ResumePlan, ServerKeyState, StartupCheck, plan_resume, startup_check,
 };
 pub use signing::{signable_json, verify_json_signature};
 pub use trust::{

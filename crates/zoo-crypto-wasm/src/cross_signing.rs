@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 use zoo_crypto as core;
 
 use crate::convert::{IntoJs, bytes32, ed25519, from_js, invalid_argument, set, to_js};
-use crate::device::DeviceKeys;
+use crate::device::{DeviceAccount, DeviceKeys};
 
 pub(crate) fn parse_usage(usage: &str) -> Result<core::KeyUsage, JsValue> {
     match usage {
@@ -359,6 +359,26 @@ impl TrustStore {
     pub fn from_json(json: &str, user_id: &str) -> Result<TrustStore, JsValue> {
         Ok(Self {
             inner: core::TrustStore::from_json(json, user_id).js()?,
+        })
+    }
+
+    /// 暗号ストアに置く文字列（`toJson` の JSON を、`account` の端末に結び付けて保存鍵で
+    /// 暗号化したもの。#359）。記録が変わる操作のあとで保存し直す。
+    pub fn pickle(&self, account: &DeviceAccount, storage_key: &[u8]) -> Result<String, JsValue> {
+        let key = bytes32(storage_key, "storageKey")?;
+        Ok(self.inner.pickle(&account.inner, &key))
+    }
+
+    /// [`pickle`](Self::pickle) の文字列から戻す。
+    #[wasm_bindgen(js_name = fromPickle)]
+    pub fn from_pickle(
+        pickle: &str,
+        account: &DeviceAccount,
+        storage_key: &[u8],
+    ) -> Result<TrustStore, JsValue> {
+        let key = bytes32(storage_key, "storageKey")?;
+        Ok(Self {
+            inner: core::TrustStore::from_pickle(pickle, &account.inner, &key).js()?,
         })
     }
 
