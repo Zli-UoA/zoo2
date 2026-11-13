@@ -206,6 +206,7 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
 
 // Slack の API を読む一覧なので、間隔は長めにする
 const POLL_INTERVAL_MS = 5_000;
+const POLL_MAX_INTERVAL_MS = 60_000;
 
 /** 連携した Slack アカウントで作った非公開チャンネルを、Slack の API から取り込む */
 function OwnImportSection({ client }: { client: ReturnType<typeof createConfiguredApiClient> }) {
@@ -223,36 +224,55 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
   useEffect(() => {
     const controller = new AbortController();
     let timer: number | undefined;
-    // 前の取得が終わってから次を予約する (遅い応答で重ならない)。非表示の間は止め、戻ったら取り直す。
+    let inflight: Promise<void> | null = null;
+    let delay = POLL_INTERVAL_MS;
+    let lastKey = "";
+    // 前の取得が終わってから次を予約する。取得中の要求は、タイマーでも復帰でも共有する (重ならない)。
+    // 状態が変わらない間・失敗した間は、上限付きで間隔を延ばし、変わったら戻す。非表示の間は止めて、戻ったら取り直す。
     // 一覧は Slack の API を呼ぶので、頻度を抑える (`docs/request-design.md`)
-    const load = (): Promise<void> =>
+    const fetchOnce = (): Promise<void> =>
       getPrivateSlackChannels(client, controller.signal)
         .then((value) => {
           if (controller.signal.aborted) return;
           setData(value);
           setLoadError("");
+          const key = value.channels.map((c) => `${c.slack_channel_id}:${c.status}`).join(",");
+          delay = key === lastKey ? Math.min(delay * 2, POLL_MAX_INTERVAL_MS) : POLL_INTERVAL_MS;
+          lastKey = key;
         })
         .catch((cause) => {
-          if (!controller.signal.aborted) setLoadError(describeImportError(cause, t, false));
+          if (controller.signal.aborted) return;
+          setLoadError(describeImportError(cause, t, false));
+          delay = Math.min(delay * 2, POLL_MAX_INTERVAL_MS);
         });
+    const load = (): Promise<void> => {
+      inflight ??= fetchOnce().finally(() => {
+        inflight = null;
+      });
+      return inflight;
+    };
     const schedule = () => {
       window.clearTimeout(timer);
-      if (!active || controller.signal.aborted || document.hidden) return;
-      timer = window.setTimeout(() => void load().then(schedule), POLL_INTERVAL_MS);
+      if (!active || controller.signal.aborted || document.hidden || !navigator.onLine) return;
+      timer = window.setTimeout(() => void load().then(schedule), delay);
     };
     const onVisible = () => {
       if (document.hidden) {
         window.clearTimeout(timer);
         return;
       }
+      delay = POLL_INTERVAL_MS;
       void load().then(schedule);
     };
     void load().then(schedule);
     document.addEventListener("visibilitychange", onVisible);
+    // オフラインの間は止め、戻ったら取り直す
+    window.addEventListener("online", onVisible);
     return () => {
       controller.abort();
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", onVisible);
     };
   }, [client, revision, active, t]);
 

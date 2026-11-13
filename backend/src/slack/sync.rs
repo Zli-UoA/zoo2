@@ -916,13 +916,17 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
         .await?;
     }
     // API から取り込みを始めたチャンネルの最初の同期では、既存メンバーに過去ログが未読として大量に出ないよう、
-    // 既読位置を取り込んだ過去ログの最新まで進める (ZIP の取り込みと同じ。それより新しい投稿の未読は残る)
+    // 既読位置を取り込んだ過去ログの最新 (同期カーソルと、返信を含む取り込み済みの最新の投稿の新しいほう。
+    // 取り込みを始めたあとに Zoo で投稿された分は含めない) まで進める。ZIP の取り込みと同じで、それより新しい投稿の未読は残る
     if is_initial(task) {
         query(
             &mut tx,
             "INSERT INTO channel_read_states(user_id,channel_id,last_read_at) \
              SELECT cu.user_id,cu.channel_id,m.latest FROM channel_user cu JOIN users u ON u.id=cu.user_id \
-             CROSS JOIN (SELECT (to_timestamp(last_ts::numeric) AT TIME ZONE 'UTC')::timestamp(3) AS latest \
+             CROSS JOIN (SELECT GREATEST((to_timestamp(last_ts::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+               COALESCE((SELECT max(x.created_at) FROM messages x WHERE x.channel_id=$1 AND x.deleted_at IS NULL \
+                 AND x.created_at<(SELECT (t.created_at AT TIME ZONE 'UTC') FROM slack_channel_syncs t \
+                   WHERE t.team_id=$2 AND t.slack_channel_id=$3)),'-infinity'::timestamp)) AS latest \
              FROM slack_channels WHERE team_id=$2 AND slack_channel_id=$3 AND last_ts IS NOT NULL AND last_ts<>'0') m \
              WHERE cu.channel_id=$1 AND NOT u.is_deactivated \
              ON CONFLICT (user_id,channel_id) DO UPDATE \

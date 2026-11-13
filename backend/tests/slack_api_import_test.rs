@@ -221,7 +221,7 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
                 message("1704070200.000200", "UU", "second"),
                 // 3 日より古いスレッドの親。最初の同期は、返信も取る
                 {"type": "message", "ts": "1704070100.000100", "user": "UA", "text": "first",
-                 "thread_ts": "1704070100.000100", "reply_count": 1, "latest_reply": "1704070150.000100"},
+                 "thread_ts": "1704070100.000100", "reply_count": 1, "latest_reply": "1704070300.000100"},
             ],
             "has_more": false,
         })))
@@ -236,7 +236,7 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
             "messages": [
                 {"type": "message", "ts": "1704070100.000100", "user": "UA", "text": "first",
                  "thread_ts": "1704070100.000100", "reply_count": 1},
-                {"type": "message", "ts": "1704070150.000100", "user": "UU", "text": "reply",
+                {"type": "message", "ts": "1704070300.000100", "user": "UU", "text": "reply",
                  "thread_ts": "1704070100.000100"},
             ],
             "has_more": false,
@@ -335,10 +335,10 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
     )
     .await?;
     assert_eq!(authors[0]["user"], alice.as_str());
-    // 既存メンバー (作成者) の既読位置は、取り込んだ履歴の最新まで進む。履歴が未読として並ばない
+    // 既存メンバー (作成者) の既読位置は、返信を含む取り込んだ履歴の最新まで進む。履歴が未読として並ばない
     let read = sql(
         &state,
-        "SELECT json_build_object('read',last_read_at IS NOT NULL)::text FROM channel_read_states WHERE channel_id=$1 AND user_id=$2",
+        "SELECT json_build_object('read',last_read_at>=(to_timestamp(1704070300) AT TIME ZONE 'UTC')::timestamp(3))::text FROM channel_read_states WHERE channel_id=$1 AND user_id=$2",
         &[&zoo_channel, &alice],
     )
     .await?;
