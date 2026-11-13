@@ -342,7 +342,7 @@ fn trust_warning(warning: core::TrustWarning) -> &'static str {
 /// 配布先の判定に使う、暗号ストアの記録（TOFU、`confirmed_usk`、ユーザー署名鍵の履歴）。
 #[wasm_bindgen]
 pub struct TrustStore {
-    inner: core::TrustStore,
+    pub(crate) inner: core::TrustStore,
 }
 
 #[wasm_bindgen]
