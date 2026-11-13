@@ -104,7 +104,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
         json!({"channel_id":channel,"content":"Grandchild","parent_id":child_id}),
     )
     .await?;
-    toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '8 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-interval '8 days' WHERE channel_id=$1")
+    toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '2 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-interval '2 days' WHERE channel_id=$1")
         .bind(channel.as_str()).exec(&mut db).await?;
     archive_idle_threads(&db).await?;
     let threads = request(
@@ -149,8 +149,10 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
         "an unchanged thread must not allocate a replication txid"
     );
 
+    toasty::sql::statement("UPDATE messages SET thread_activity_at=(now() AT TIME ZONE 'UTC')-interval '23 hours' WHERE id=$1")
+        .bind(child_id).exec(&mut db).await?;
     archive_idle_threads(&db).await?;
-    // Reopening counts as activity even if the replies are old.
+    // A thread idle for less than one day stays active even if its replies are old.
     let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
     assert!(
         threads["items"]
