@@ -15,7 +15,7 @@ GPUI 版（`desktop/`）は比較の基準として残す。
 | crate 名 | `zoo2-desktop-tauri` |
 | 更新タグ | `desktop-tauri-v*` |
 | 設定ディレクトリ | `config_dir_for("zoo2-desktop-tauri")`（GPUI 版の `zoo2-desktop`、TUI の `zoo2-tui` とは別） |
-| OIDC の client_id | `zoo2-desktop-tauri`（AuthZ に public client として登録する。デバイスコードと refresh_token を許可する） |
+| OIDC の client_id | `MwrfTPwsaaelMmxBdQGjWYuywWrsMHMe`（AuthZ の「Zoo for Desktop」。AuthZ が発行した ID。public client で、デバイスコードと refresh_token を許可し、resource `https://zli.chat/api` を紐付けてある） |
 
 ## crate の層
 
@@ -120,7 +120,7 @@ ShapeEvent ─▶ 1 本のループ
 
 ## 未確定・確認が要るもの
 
-- AuthZ が `zoo2-desktop-tauri` に refresh token を発行するか。`frontend/.env.example` には「offline_access は非対応で、refresh token は発行されません」と書かれている。TUI の `TokenManager` は refresh token がなくても動き、期限が切れたらログインし直しになる。検証の最初に TUI で確かめる。
+- AuthZ が「Zoo for Desktop」に refresh token を発行するか。`frontend/.env.example` には「offline_access は非対応で、refresh token は発行されません」と書かれている。TUI の `TokenManager` は refresh token がなくても動き、期限が切れたらログインし直しになる。検証の最初に TUI で確かめる。
 - ループバックの redirect（RFC 8252）を AuthZ が受け付けるか。今回はデバイスコードを使うので依存しないが、要確認として残す。
 
 ## 開発
