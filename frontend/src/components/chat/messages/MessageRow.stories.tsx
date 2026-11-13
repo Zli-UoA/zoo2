@@ -391,3 +391,90 @@ export const SensitiveAttachments: Story = {
     await expect(canvas.queryByRole("img", { name: "screenshot.png" })).not.toBeInTheDocument();
   }),
 };
+
+const encryptedItem: MessageItem = {
+  ...item,
+  message: {
+    ...item.message,
+    id: "message-encrypted",
+    content: "",
+    ciphertext: {
+      algorithm: "m.megolm.v1.aes-sha2",
+      sender_key: "story-sender-key",
+      device_id: "story-device",
+      session_id: "story-session",
+      ciphertext: "AwgAEhA",
+    },
+    epoch: "3",
+    revision: 0,
+  },
+};
+
+export const EncryptedDecrypted: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "暗号化したメッセージです。詳細は https://example.com/docs を参照してください。",
+      kind: "message",
+      sender: "verified",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/暗号化したメッセージです/)).toBeVisible();
+    await expect(
+      canvas.getByRole("button", { name: "リンクのプレビューを読み込む" }),
+    ).toBeVisible();
+  }),
+};
+
+export const EncryptedUnverifiedSender: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "未検証の端末から届いたメッセージです。",
+      kind: "message",
+      sender: "unverified",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText("未検証の送信者")).toBeVisible();
+  }),
+};
+
+export const EncryptedBackupSender: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "鍵バックアップから復号したメッセージです。",
+      kind: "message",
+      sender: "unauthenticated",
+    },
+  },
+};
+
+export const EncryptedKeyMissing: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: { status: "undecryptable", reason: "keyMissing" },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByText("このメッセージを復号する鍵がまだ届いていません。"),
+    ).toBeVisible();
+  }),
+};
+
+export const EncryptedLocked: Story = {
+  args: { item: encryptedItem },
+};
+
+export const EncryptedInvalid: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: { status: "undecryptable", reason: "invalid" },
+  },
+};

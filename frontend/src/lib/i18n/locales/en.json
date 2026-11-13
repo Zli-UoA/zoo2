@@ -1041,5 +1041,38 @@
       "hidden_one": "{{count}} more webhook is in a channel you do not manage and is not shown.",
       "hidden_other": "{{count}} more webhooks are in channels you do not manage and are not shown."
     }
+  },
+  "e2ee": {
+    "badge": "Encrypted",
+    "encryptChannel": "Encrypt end-to-end",
+    "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "encryptChannelPrivateOnly": "Only private channels can be encrypted.",
+    "encryptDm": "Encrypt end-to-end",
+    "encryptDmHelp": "Only participants' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "undecryptable": {
+      "keyMissing": "Waiting for the key to decrypt this message.",
+      "locked": "Unlock encryption on this device to read this message.",
+      "staleEpoch": "This message was encrypted for an earlier member list and can't be read.",
+      "invalid": "This message failed verification and isn't shown.",
+      "failed": "This message couldn't be decrypted."
+    },
+    "sender": {
+      "unverified": "Unverified sender",
+      "unauthenticated": "Sender can't be confirmed"
+    },
+    "undeliverable": {
+      "title": "These people can't read new messages",
+      "notSetUp": "{{name}} hasn't set up encryption",
+      "needsReverification": "{{name}} needs to be verified again"
+    },
+    "loadPreviews": "Load link previews",
+    "desktopUnsupported": {
+      "title": "Encrypted channel",
+      "description": "This client can't show encrypted channels. Open it in the web or mobile app."
+    },
+    "errors": {
+      "disabled": "Encrypted channels aren't available on this server yet.",
+      "publicForbidden": "Only private channels can be encrypted."
+    }
   }
 }

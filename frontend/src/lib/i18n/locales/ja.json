@@ -1041,5 +1041,38 @@
       "hidden_one": "ほかに {{count}} 件あります（管理できないチャンネルの Webhook は表示しません）。",
       "hidden_other": "ほかに {{count}} 件あります（管理できないチャンネルの Webhook は表示しません）。"
     }
+  },
+  "e2ee": {
+    "badge": "暗号化",
+    "encryptChannel": "エンドツーエンドで暗号化する",
+    "encryptChannelHelp": "メッセージはメンバーの検証済みの端末だけが読めます。暗号化はあとから解除できません。添付はまだ送れません。",
+    "encryptChannelPrivateOnly": "暗号化できるのは非公開チャンネルだけです。",
+    "encryptDm": "エンドツーエンドで暗号化する",
+    "encryptDmHelp": "メッセージは参加者の検証済みの端末だけが読めます。暗号化はあとから解除できません。添付はまだ送れません。",
+    "undecryptable": {
+      "keyMissing": "このメッセージを復号する鍵がまだ届いていません。",
+      "locked": "この端末で暗号化を解錠すると、このメッセージを読めます。",
+      "staleEpoch": "以前のメンバー向けに暗号化されたメッセージなので読めません。",
+      "invalid": "このメッセージは検証に失敗したため表示しません。",
+      "failed": "このメッセージを復号できませんでした。"
+    },
+    "sender": {
+      "unverified": "未検証の送信者",
+      "unauthenticated": "送信者を確かめられません"
+    },
+    "undeliverable": {
+      "title": "次の人は新しいメッセージを読めません",
+      "notSetUp": "{{name}} さんは暗号化を設定していません",
+      "needsReverification": "{{name}} さんの再検証が必要です"
+    },
+    "loadPreviews": "リンクのプレビューを読み込む",
+    "desktopUnsupported": {
+      "title": "暗号化チャンネル",
+      "description": "このクライアントでは暗号化チャンネルを表示できません。Web 版かモバイルアプリで開いてください。"
+    },
+    "errors": {
+      "disabled": "このサーバーでは、暗号化チャンネルをまだ使えません。",
+      "publicForbidden": "暗号化できるのは非公開チャンネルだけです。"
+    }
   }
 }

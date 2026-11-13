@@ -1041,5 +1041,38 @@
       "hidden_one": "另有 {{count}} 个（不显示你无法管理的频道中的 Webhook）。",
       "hidden_other": "另有 {{count}} 个（不显示你无法管理的频道中的 Webhook）。"
     }
+  },
+  "e2ee": {
+    "badge": "已加密",
+    "encryptChannel": "端到端加密",
+    "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消，目前也还不能发送附件。",
+    "encryptChannelPrivateOnly": "只有私密频道可以加密。",
+    "encryptDm": "端到端加密",
+    "encryptDmHelp": "只有参与者已验证的设备才能读取消息。加密之后无法取消，目前也还不能发送附件。",
+    "undecryptable": {
+      "keyMissing": "解密此消息的密钥尚未送达。",
+      "locked": "在此设备上解锁加密后即可读取此消息。",
+      "staleEpoch": "此消息是为之前的成员加密的，无法读取。",
+      "invalid": "此消息验证失败，因此不显示。",
+      "failed": "无法解密此消息。"
+    },
+    "sender": {
+      "unverified": "未验证的发送者",
+      "unauthenticated": "无法确认发送者"
+    },
+    "undeliverable": {
+      "title": "以下用户无法读取新消息",
+      "notSetUp": "{{name}} 尚未设置加密",
+      "needsReverification": "需要重新验证 {{name}}"
+    },
+    "loadPreviews": "加载链接预览",
+    "desktopUnsupported": {
+      "title": "加密频道",
+      "description": "此客户端无法显示加密频道。请在网页版或移动应用中打开。"
+    },
+    "errors": {
+      "disabled": "此服务器尚不支持加密频道。",
+      "publicForbidden": "只有私密频道可以加密。"
+    }
   }
 }

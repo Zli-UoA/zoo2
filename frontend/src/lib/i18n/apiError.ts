@@ -19,6 +19,16 @@ function isChannelNameConflict(error: ApiError): boolean {
   return error.method === "PATCH" && /^\/api\/channels\/[^/]+$/.test(error.path);
 }
 
+/** E2EE などの API が返す `code`（`{"error", "code"}` の形）。なければ `null`。 */
+function apiErrorCode(error: ApiError): string | null {
+  const body = error.body;
+  if (typeof body === "object" && body !== null && "code" in body) {
+    const code = (body as { code: unknown }).code;
+    return typeof code === "string" ? code : null;
+  }
+  return null;
+}
+
 /**
  * `ApiError` を現在の言語のユーザー向け文言にする。
  *
@@ -30,6 +40,12 @@ export function localizeApiError(cause: unknown, t: TFunction): string {
   if (cause instanceof ApiError) {
     if (isChannelNameConflict(cause)) {
       return t("channels.duplicateName");
+    }
+    switch (apiErrorCode(cause)) {
+      case "E2EE_DISABLED":
+        return t("e2ee.errors.disabled");
+      case "E2EE_PUBLIC_FORBIDDEN":
+        return t("e2ee.errors.publicForbidden");
     }
     switch (cause.status) {
       case 400:

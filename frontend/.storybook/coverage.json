@@ -99,11 +99,11 @@
     },
     {
       "file": "src/components/chat/CreateChannelDialog.stories.tsx",
-      "states": ["Default", "Filled", "Closed"]
+      "states": ["Default", "Filled", "Closed", "Encrypted"]
     },
     {
       "file": "src/components/chat/CreateDmDialog.stories.tsx",
-      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile", "UserAvatar"]
+      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile", "UserAvatar", "Encrypted"]
     },
     {
       "file": "src/components/chat/DmListItem.stories.tsx",
@@ -244,7 +244,13 @@
         "ActivityPubUnlisted",
         "ActivityPubGrouped",
         "Grouped",
-        "SensitiveAttachments"
+        "SensitiveAttachments",
+        "EncryptedDecrypted",
+        "EncryptedUnverifiedSender",
+        "EncryptedBackupSender",
+        "EncryptedKeyMissing",
+        "EncryptedLocked",
+        "EncryptedInvalid"
       ]
     },
     {

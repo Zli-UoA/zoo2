@@ -1041,5 +1041,38 @@
       "hidden_one": "另有 {{count}} 個（不顯示你無法管理之頻道的 Webhook）。",
       "hidden_other": "另有 {{count}} 個（不顯示你無法管理之頻道的 Webhook）。"
     }
+  },
+  "e2ee": {
+    "badge": "已加密",
+    "encryptChannel": "端對端加密",
+    "encryptChannelHelp": "只有成員已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",
+    "encryptChannelPrivateOnly": "只有私人頻道可以加密。",
+    "encryptDm": "端對端加密",
+    "encryptDmHelp": "只有參與者已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",
+    "undecryptable": {
+      "keyMissing": "解密此訊息的金鑰尚未送達。",
+      "locked": "在此裝置上解鎖加密後即可讀取此訊息。",
+      "staleEpoch": "此訊息是為先前的成員加密的，無法讀取。",
+      "invalid": "此訊息驗證失敗，因此不顯示。",
+      "failed": "無法解密此訊息。"
+    },
+    "sender": {
+      "unverified": "未驗證的傳送者",
+      "unauthenticated": "無法確認傳送者"
+    },
+    "undeliverable": {
+      "title": "以下使用者無法讀取新訊息",
+      "notSetUp": "{{name}} 尚未設定加密",
+      "needsReverification": "需要重新驗證 {{name}}"
+    },
+    "loadPreviews": "載入連結預覽",
+    "desktopUnsupported": {
+      "title": "加密頻道",
+      "description": "此用戶端無法顯示加密頻道。請在網頁版或行動應用程式中開啟。"
+    },
+    "errors": {
+      "disabled": "此伺服器尚不支援加密頻道。",
+      "publicForbidden": "只有私人頻道可以加密。"
+    }
   }
 }

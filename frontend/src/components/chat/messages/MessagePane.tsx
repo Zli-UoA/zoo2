@@ -76,12 +76,15 @@ export function MessagePane({
   isMember,
   canModerate = false,
   readOnly = false,
+  encrypted = false,
   targetMessageId,
 }: {
   channelId: string;
   isMember: boolean;
   canModerate?: boolean;
   readOnly?: boolean;
+  /** 暗号化チャンネル。初期版では添付できないので、添付ボタンを出さない（docs/e2ee.md）。 */
+  encrypted?: boolean;
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
@@ -102,7 +105,10 @@ export function MessagePane({
   const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
-  const uploadAttachment = useAttachmentUpload(channelId);
+  const channelUpload = useAttachmentUpload(channelId);
+  // 暗号化チャンネルでは添付を送らない（サーバーも 400 E2EE_ATTACHMENTS_FORBIDDEN で拒否する）。
+  // 暗号化した添付（#364）を入れたら外す。
+  const uploadAttachment = encrypted ? undefined : channelUpload;
   const { currentUserId } = useCurrentUser();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
