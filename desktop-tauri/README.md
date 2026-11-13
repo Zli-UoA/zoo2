@@ -182,7 +182,7 @@ Nix で入れた版は、アプリの中からは更新しません (「[更新]
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
 | `check_updates` | `ZOO_CHECK_UPDATES` | `true` | `false` にすると、新しい版を確かめない (「[更新](#更新)」) |
-| `desktop_ui` | `ZOO_DESKTOP_UI` | `remote` (`dev_user` を指定したときは `leptos`) | 画面の種類。`remote` は `api_base_url` の Web 版の画面 (通話もできる)、`leptos` はアプリに入っている最小限の画面。ほかの値は無視する |
+| `desktop_ui` | `ZOO_DESKTOP_UI` | `remote` (`dev_user` を指定したときは `leptos`) | 画面の種類。`remote` は `api_base_url` の Web 版の画面 (通話もできる)、`leptos` はアプリに入っている最小限の画面。ほかの値は設定のエラーになる |
 
 ログインで得たトークンは、そのときの接続先 (`api_base_url`) にだけ送ります。接続先や OIDC の設定を変えたら、ログインし直してください。
 
