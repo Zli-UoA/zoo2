@@ -37,8 +37,8 @@ const config = defineConfig({
     include: [
       "@base-ui/react/toggle-group",
       "@base-ui/react/toggle",
-      // 暗号ストアの Worker（lib/e2ee）が、ログインのあとに読む。dev サーバーが途中で見つけて最適化し直すと、
-      // ページを読み込み直してしまう（E2E が足したスタイルや入力が消える）ので、先に最適化しておく。
+      // 暗号ストアの Worker（lib/e2ee）が読む。dev サーバーがログインのあとで初めて見つけると、
+      // 依存を最適化し直してページを読み直し、操作中の画面が消える（OIDC E2E）。
       "@journeyapps/wa-sqlite",
       "@journeyapps/wa-sqlite/dist/wa-sqlite.mjs",
       "@journeyapps/wa-sqlite/src/examples/OPFSCoopSyncVFS.js",

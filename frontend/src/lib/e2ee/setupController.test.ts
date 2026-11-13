@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 
-import { initSync, type JsonObject } from "@zoo/crypto-wasm";
+import {
+  DeviceAccount,
+  OutboundSession,
+  initSync,
+  verifyDeviceKeys,
+  type JsonObject,
+} from "@zoo/crypto-wasm";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { ApiError, type ApiClient, type RequestOptions } from "../api/client";
@@ -20,6 +26,7 @@ import {
   hasUnlockedSecrets,
   loadE2eeStatus,
   runStartupCheck,
+  uploadKeyBackup,
   saveRemaining,
   unlock,
   type E2eeSetupDeps,
@@ -52,6 +59,7 @@ class FakeServer {
   userSigning: Json | null = null;
   signatures: Json[] = [];
   versions: Json[] = [];
+  backupSessions: Json[] = [];
   fail: { path: string; when: "before" | "after" } | null = null;
   requests: { method: string; path: string; reauth: boolean }[] = [];
 
@@ -95,8 +103,10 @@ class FakeServer {
     if (!reauth) this.error(403, "E2EE_REAUTH_REQUIRED");
   }
 
-  private respond(method: string, path: string, body: Json, reauth: boolean): unknown {
-    const route = `${method} ${path.replace(/\/[0-9a-f-]{36}(\/used)?$/, "/:id$1")}`;
+  private respond(method: string, fullPath: string, body: Json, reauth: boolean): unknown {
+    const [path, search] = fullPath.split("?");
+    const params = new URLSearchParams(search);
+    const route = `${method} ${path!.replace(/\/[0-9a-f-]{36}(\/used)?$/, "/:id$1")}`;
     switch (route) {
       case "GET /api/e2ee/secret_storage":
         return this.ssss
@@ -166,6 +176,22 @@ class FakeServer {
       }
       case "GET /api/e2ee/key_backup/versions":
         return { versions: this.versions };
+      case "GET /api/e2ee/key_backup/versions/current": {
+        const current = this.versions.at(-1);
+        if (!current || current.deleted) this.error(404, "NOT_FOUND");
+        return { ...current, count: this.backupSessions.length };
+      }
+      case "POST /api/e2ee/key_backup/keys": {
+        const current = this.versions.at(-1);
+        if (!current || params.get("version") !== current.version) {
+          this.error(409, "E2EE_WRONG_BACKUP_VERSION");
+        }
+        if (params.get("secrets_revision") !== String(this.revision)) {
+          this.error(409, "E2EE_SSSS_CONFLICT");
+        }
+        this.backupSessions.push(...(body.sessions as Json[]));
+        return { count: this.backupSessions.length };
+      }
       case "POST /api/e2ee/cross_signing/keys": {
         this.requireReauth(reauth);
         const keyOf = (key: Json | null) =>
@@ -228,7 +254,7 @@ function memoryKeys(): WrappingKeyStore {
 
 /** 1 つの端末。`restart` で Worker のメモリー（マスター鍵と SSSS 鍵）を失い、暗号ストアは残る。 */
 class Device {
-  private readonly backend = new MemoryCryptoBackend();
+  readonly backend = new MemoryCryptoBackend();
   private readonly keys = memoryKeys();
   private operations!: CryptoOperations;
   worker!: CryptoWorker;
@@ -601,5 +627,119 @@ describe("初回設定と解錠", () => {
     await runStartupCheck(first.deps(server));
     expect(server.requests.map((r) => r.path)).toContain("/api/e2ee/cross_signing/signatures");
     expect(deviceSignatureCount(server)).toBe(1);
+  });
+
+  /** 別のユーザーの端末から、この端末に Megolm セッションの鍵を届ける（#359 の to-device の処理）。 */
+  async function receiveRoomKey(target: Device): Promise<void> {
+    const request = await target.worker.request({ op: "registrationRequest" });
+    await target.worker.request({ op: "markRegistered" });
+    let oneTimeKeys = request.one_time_keys;
+    if (Object.keys(oneTimeKeys).length === 0) {
+      // 登録で公開した鍵は使い切ったので、補充した鍵を使う。
+      const upload = await target.worker.request({
+        op: "prepareKeyUpload",
+        oneTimeKeyCount: 0,
+        hasUnusedFallbackKey: true,
+      });
+      oneTimeKeys = upload!.one_time_keys;
+      await target.worker.request({ op: "markKeysPublished" });
+    }
+    const sender = new DeviceAccount("00000000-0000-4000-8000-00000000000b", crypto.randomUUID());
+    const keys = request.device_keys;
+    const recipient = verifyDeviceKeys(keys, USER, keys.device_id as string);
+    const olm = sender.createOutboundOlmSession(recipient, Object.values(oneTimeKeys)[0]!);
+    const outbound = new OutboundSession("c0000000-0000-4000-8000-000000000001", 1, Date.now());
+    const content = sender.encryptRoomKey(olm, recipient, outbound.roomKey());
+    const result = await target.worker.request({
+      op: "processToDevice",
+      rows: [
+        {
+          id: crypto.randomUUID(),
+          sender_user_id: sender.userId,
+          sender_device_id: sender.deviceId,
+          type: "m.room.encrypted",
+          content,
+        },
+      ],
+      deviceKeys: { [sender.userId]: { [sender.deviceId]: sender.deviceKeys() } },
+    });
+    expect(result.roomKeys).toBe(1);
+  }
+
+  it("解錠した端末は、受け取ったセッションを鍵バックアップの今の版に送る", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    // 解錠していない端末は送らない（取得もしない）。
+    await receiveRoomKey(first);
+    server.requests = [];
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 0 });
+    expect(server.requests).toEqual([]);
+
+    // 初回設定を終えると、解錠前に受け取ったセッションも送る。
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    expect(server.backupSessions).toHaveLength(1);
+    expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(0);
+    expect([...first.backend.inboundSessions.values()].every((s) => s.backedUp)).toBe(true);
+
+    await receiveRoomKey(first);
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 1 });
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 0 });
+    expect(server.backupSessions).toHaveLength(2);
+  });
+
+  it("今の版をマスター鍵で検証できないか、公開鍵が違えば送らない", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    await receiveRoomKey(first);
+
+    // 別の鍵（攻撃者の鍵）で作った版に差し替えられた。
+    const attacker = new FakeServer();
+    const evil = await device("evil");
+    const evilSetup = await beginSetup(evil.deps(attacker), null);
+    await completeSetup(evil.deps(attacker), evilSetup.keyId, TOKEN);
+    const original = server.versions[0]!;
+    server.versions = [{ ...attacker.versions[0]!, version: "2" }];
+    const signatureFailure = await uploadKeyBackup(deps);
+    expect(signatureFailure.kind).toBe("rejected");
+    expect(server.backupSessions).toHaveLength(0);
+
+    // 署名は今のマスター鍵のものでも、公開鍵が SSSS のバックアップ鍵と違う。
+    const authData = original.auth_data as Json;
+    server.versions = [
+      original,
+      {
+        ...original,
+        version: "2",
+        auth_data: {
+          ...authData,
+          public_key: (attacker.versions[0]!.auth_data as Json).public_key,
+        },
+      },
+    ];
+    expect((await uploadKeyBackup(deps)).kind).toBe("rejected");
+    expect(server.backupSessions).toHaveLength(0);
+    expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
+
+    // 元の版に戻れば送る（検証できなかった版は、見た版として数えない）。
+    server.versions = [original];
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 1 });
+    expect(server.backupSessions).toHaveLength(1);
+  });
+
+  it("秘密が書き換わったら（409）、送るのをやめて送信待ちに残す", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    await receiveRoomKey(first);
+    server.revision += 1;
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "conflict", code: "E2EE_SSSS_CONFLICT" });
+    expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
   });
 });

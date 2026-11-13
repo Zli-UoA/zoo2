@@ -129,6 +129,27 @@ export async function uploadSignatures(
   await client.post("/api/e2ee/cross_signing/signatures", { signatures });
 }
 
+/** `GET /api/e2ee/key_backup/versions/current`。今の版がなければ `null`。 */
+export async function getCurrentBackupVersion(client: ApiClient): Promise<JsonObject | null> {
+  try {
+    return await client.get<JsonObject>("/api/e2ee/key_backup/versions/current");
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
+/** `POST /api/e2ee/key_backup/keys`。 */
+export async function uploadBackupKeys(
+  client: ApiClient,
+  version: string,
+  secretsRevision: number,
+  body: JsonObject,
+): Promise<void> {
+  const query = new URLSearchParams({ version, secrets_revision: String(secretsRevision) });
+  await client.post(`/api/e2ee/key_backup/keys?${query.toString()}`, body);
+}
+
 /** `POST /api/e2ee/key_backup/versions`。作った（または同じ公開鍵の今の）版を返す。 */
 export async function createBackupVersion(
   client: ApiClient,
