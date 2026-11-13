@@ -12,6 +12,8 @@ on:
       # アイコンのテストは frontend/src の lucide-react の import を読む。
       - "frontend/src/**"
       - "tui/**"
+      # TUI は E2EE の暗号コアを path で依存する（#359）。
+      - "crates/zoo-crypto/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
       - ".github/workflows/select-runner.yaml"
@@ -25,6 +27,8 @@ on:
       # アイコンのテストは frontend/src の lucide-react の import を読む。
       - "frontend/src/**"
       - "tui/**"
+      # TUI は E2EE の暗号コアを path で依存する（#359）。
+      - "crates/zoo-crypto/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
       - ".github/workflows/select-runner.yaml"

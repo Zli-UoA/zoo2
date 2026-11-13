@@ -191,6 +191,82 @@ impl ApiClient {
         self.get("/api/users/me").await
     }
 
+    /// 応答の封筒 `{data, txid}` の `data`。
+    async fn write_data(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
+        let envelope: Envelope = self.send(method, path, body).await?.json().await?;
+        Ok(envelope.data.unwrap_or(Value::Null))
+    }
+
+    /// `POST /api/e2ee/devices`：端末を登録する（docs/e2ee.md の「端末とワンタイム鍵」）。
+    /// 応答の `one_time_key_counts` と `unused_fallback_key_types` を含む端末の行を返す。
+    pub async fn e2ee_register_device(&self, body: Value) -> Result<Value> {
+        self.write_data(Method::POST, "/api/e2ee/devices", Some(body))
+            .await
+    }
+
+    /// `POST /api/e2ee/keys/upload`。鍵が空なら、今の数を読むだけになる。
+    pub async fn e2ee_upload_keys(
+        &self,
+        device_id: &str,
+        one_time_keys: Value,
+        fallback_keys: Value,
+    ) -> Result<Value> {
+        self.write_data(
+            Method::POST,
+            "/api/e2ee/keys/upload",
+            Some(serde_json::json!({
+                "device_id": device_id,
+                "one_time_keys": one_time_keys,
+                "fallback_keys": fallback_keys,
+            })),
+        )
+        .await
+    }
+
+    /// `POST /api/e2ee/keys/query`（封筒なしの JSON）。一度に 50 人までにする。
+    pub async fn e2ee_query_keys(&self, user_ids: &[String]) -> Result<Value> {
+        let mut device_keys = serde_json::Map::new();
+        for chunk in user_ids.chunks(50) {
+            let response: Value = self
+                .send(
+                    Method::POST,
+                    "/api/e2ee/keys/query",
+                    Some(serde_json::json!({ "user_ids": chunk })),
+                )
+                .await?
+                .json()
+                .await?;
+            if let Some(Value::Object(users)) = response.get("device_keys") {
+                device_keys.extend(users.clone());
+            }
+        }
+        Ok(serde_json::json!({ "device_keys": device_keys }))
+    }
+
+    /// `POST /api/e2ee/to_device/ack`。一度に 1000 件までにする。
+    pub async fn e2ee_ack_to_device(&self, device_id: &str, ids: &[String]) -> Result<()> {
+        for chunk in ids.chunks(1000) {
+            self.write(
+                Method::POST,
+                "/api/e2ee/to_device/ack",
+                Some(serde_json::json!({ "device_id": device_id, "ids": chunk })),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// `DELETE /api/e2ee/devices/{device_id}`。削除済みでも成功する（冪等）。
+    pub async fn e2ee_delete_device(&self, device_id: &str) -> Result<()> {
+        self.write(
+            Method::DELETE,
+            &format!("/api/e2ee/devices/{device_id}"),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn threads(&self, archived: bool, before: Option<&str>) -> Result<ThreadPage> {
         self.thread_page(archived, before, None).await
     }

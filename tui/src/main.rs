@@ -9,6 +9,7 @@ use zoo2_tui::{
         token::{self, StoredTokens, TokenManager},
     },
     config::{self, AuthConfig, Config, OidcConfig},
+    e2ee,
     http::Credentials,
     ui,
 };
@@ -19,7 +20,7 @@ const USAGE: &str = "\
 コマンド:
   run      チャット画面を開く (省略時の既定)
   login    ブラウザでコードを承認してログインする
-  logout   保存したトークンを消す
+  logout   この端末の暗号の鍵と、保存したトークンを消す
   help     このヘルプを表示する
 
 設定は ~/.config/zoo2-tui/config.toml と環境変数 ZOO_* から読み込みます。";
@@ -79,7 +80,26 @@ async fn run() -> Result<()> {
             )))
         }
     };
-    ui::run(http, config.api_base_url, credentials, config.check_updates).await
+    // 端末の登録と to-device の処理は、画面と並行して裏で行う（#359）。
+    let crypto_task = config::config_dir().map(|dir| {
+        let user_id = match &credentials {
+            Credentials::Dev(user_id) => Some(user_id.clone()),
+            Credentials::Bearer(_) => None,
+        };
+        e2ee::manager::spawn(
+            http.clone(),
+            config.api_base_url.clone(),
+            credentials.clone(),
+            ApiClient::new(http.clone(), &config.api_base_url, credentials.clone()),
+            e2ee::store::crypto_root(&dir),
+            user_id,
+        )
+    });
+    let result = ui::run(http, config.api_base_url, credentials, config.check_updates).await;
+    if let Some(task) = crypto_task {
+        task.abort();
+    }
+    result
 }
 
 async fn login() -> Result<()> {
@@ -131,6 +151,10 @@ async fn logout() -> Result<()> {
     let oidc = oidc_config(&config)?;
     let path = token_file()?;
     let http = reqwest::Client::new();
+    if !clear_encryption(&config, oidc, &path, &http).await? {
+        println!("ログアウトを取りやめました。");
+        return Ok(());
+    }
     // IdP 側でも refresh_token を失効させる。失敗しても手元のトークンは消す。
     if let Some(refresh_token) =
         token::load(&path, oidc, None)?.and_then(|tokens| tokens.refresh_token)
@@ -150,6 +174,53 @@ async fn logout() -> Result<()> {
         println!("ログインしていません。");
     }
     Ok(())
+}
+
+/// 暗号ストアを消し、端末を削除する（docs/e2ee.md の「ログアウトと端末の削除」）。
+///
+/// 鍵バックアップに送れていない鍵があれば、件数を示して確かめる。取りやめたら `false`。
+async fn clear_encryption(
+    config: &Config,
+    oidc: &OidcConfig,
+    token_path: &std::path::Path,
+    http: &reqwest::Client,
+) -> Result<bool> {
+    let Some(dir) = config::config_dir() else {
+        return Ok(true);
+    };
+    let root = e2ee::store::crypto_root(&dir);
+    let targets = e2ee::manager::open_for_logout(&root)?;
+    if targets.is_empty() {
+        return Ok(true);
+    }
+    let pending: usize = targets.iter().map(|target| target.pending_backup).sum();
+    if pending > 0 {
+        println!(
+            "{pending} 件の鍵がバックアップされていません。ログアウトすると、この端末にだけある過去ログは読めなくなります。"
+        );
+        print!("ログアウトしますか？ [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Ok(false);
+        }
+    }
+    // 端末の削除 API にはトークンが要る。トークンがなければ、次のログインで消し直す。
+    let credentials = match token::load(token_path, oidc, Some(&config.api_base_url))? {
+        Some(tokens) => Credentials::Bearer(Arc::new(TokenManager::new(
+            http.clone(),
+            oidc.clone(),
+            token_path.to_path_buf(),
+            tokens,
+        ))),
+        None => Credentials::Dev(String::new()),
+    };
+    let api = ApiClient::new(http.clone(), &config.api_base_url, credentials);
+    for target in targets {
+        e2ee::manager::destroy_for_logout(&api, &root, target).await?;
+    }
+    Ok(true)
 }
 
 /// 既定のブラウザで開く。開けなくても URL は表示しているので、失敗は無視する。
