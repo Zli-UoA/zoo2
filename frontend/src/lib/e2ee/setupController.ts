@@ -133,7 +133,17 @@ export type BackupUploadResult =
  * 鍵バックアップの送信待ちのセッションを、今の版に送る（docs/e2ee.md の「鍵バックアップ」）。
  * 解錠していない端末と、今の版がない場合は何もしない。
  */
-export async function uploadKeyBackup(deps: E2eeSetupDeps): Promise<BackupUploadResult> {
+export function uploadKeyBackup(deps: E2eeSetupDeps): Promise<BackupUploadResult> {
+  // 呼び出し元（解錠、起動時の確認、鍵の受信）にかかわらず、同じ Worker への送信は 1 つずつ行う。
+  const previous = backupQueues.get(deps.worker) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(() => uploadKeyBackupNow(deps));
+  backupQueues.set(deps.worker, run);
+  return run;
+}
+
+const backupQueues = new WeakMap<CryptoWorker, Promise<unknown>>();
+
+async function uploadKeyBackupNow(deps: E2eeSetupDeps): Promise<BackupUploadResult> {
   if (!(await deps.worker.request({ op: "hasOwnKeys" }))) return { kind: "done", uploaded: 0 };
   const currentVersion = await getCurrentBackupVersion(deps.client);
   let uploaded = 0;
@@ -148,14 +158,14 @@ export async function uploadKeyBackup(deps: E2eeSetupDeps): Promise<BackupUpload
     try {
       await uploadBackupKeys(deps.client, request.version, request.secretsRevision, request.body);
     } catch (error) {
-      await deps.worker.request({ op: "backupUploadFailed" });
+      await deps.worker.request({ op: "backupUploadFailed", uploadId: request.uploadId });
       const code = errorCode(error);
       if (code === "E2EE_WRONG_BACKUP_VERSION" || code === "E2EE_SSSS_CONFLICT") {
         return { kind: "conflict", code };
       }
       throw error;
     }
-    await deps.worker.request({ op: "backupUploaded" });
+    await deps.worker.request({ op: "backupUploaded", uploadId: request.uploadId });
     uploaded += request.count;
   }
 }

@@ -96,7 +96,9 @@ export const UnreadAndArchived: Story = {
   },
   play: playForImplementation(async () => {
     await expect(await screen.findAllByRole("img", { name: "未読メッセージあり" })).toHaveLength(2);
-    await expect(screen.getByRole("img", { name: "アーカイブ済み" })).toBeInTheDocument();
+    // アーカイブ済みは参加済みでもサイドバーに出さない（「チャンネルを探す」から開く）。
+    await expect(screen.queryByRole("img", { name: "アーカイブ済み" })).not.toBeInTheDocument();
+    await expect(screen.queryByRole("link", { name: /old-announcements/ })).not.toBeInTheDocument();
   }),
 };
 

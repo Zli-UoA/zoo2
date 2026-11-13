@@ -71,8 +71,8 @@ export type CryptoOperation =
   | { op: "hasOwnKeys" }
   // 鍵バックアップへのアップロード（#360）。
   | { op: "prepareBackupUpload"; currentVersion: JsonObject | null; limit: number }
-  | { op: "backupUploaded" }
-  | { op: "backupUploadFailed" }
+  | { op: "backupUploaded"; uploadId: number }
+  | { op: "backupUploadFailed"; uploadId: number }
   | { op: "discardSecrets" }
   | { op: "forgetOwnKeys" }
   // 失効の手順と、他のユーザーの検証（#362）。

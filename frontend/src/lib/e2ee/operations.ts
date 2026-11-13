@@ -143,10 +143,10 @@ export class CryptoOperations {
       case "prepareBackupUpload":
         return this.opened().prepareBackupUpload(request.currentVersion, request.limit);
       case "backupUploaded":
-        await this.opened().backupUploaded();
+        await this.opened().backupUploaded(request.uploadId);
         return null;
       case "backupUploadFailed":
-        this.opened().discardPendingUpload();
+        this.opened().discardPendingUpload(request.uploadId);
         return null;
       case "discardSecrets":
         this.revocation.discard();

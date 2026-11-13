@@ -742,4 +742,56 @@ describe("初回設定と解錠", () => {
     expect(await uploadKeyBackup(deps)).toEqual({ kind: "conflict", code: "E2EE_SSSS_CONFLICT" });
     expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
   });
+
+  it("送信が重なっても、応答を受けた要求のセッションだけを送信済みにする", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    const currentVersion = (await deps.client.get("/api/e2ee/key_backup/versions/current")) as Json;
+
+    // 要求 A（1 個）の応答を待つ間に、別の鍵を受け取って要求 B（2 個）を作る。
+    await receiveRoomKey(first);
+    const a = await first.worker.request({
+      op: "prepareBackupUpload",
+      currentVersion: currentVersion as JsonObject,
+      limit: 1000,
+    });
+    await receiveRoomKey(first);
+    const b = await first.worker.request({
+      op: "prepareBackupUpload",
+      currentVersion: currentVersion as JsonObject,
+      limit: 1000,
+    });
+    if (a.kind !== "upload" || b.kind !== "upload") throw new Error("unreachable");
+    expect(a.count).toBe(1);
+    expect(b.count).toBe(2);
+    // A だけが成功し、B は失敗した。B だけに入っていた鍵は送信待ちに残る。
+    await first.worker.request({ op: "backupUploaded", uploadId: a.uploadId });
+    await first.worker.request({ op: "backupUploadFailed", uploadId: b.uploadId });
+    expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
+
+    // 残った鍵は次の送信で送る（A の鍵を送り直すことはあるが、サーバーはよい方を残す）。
+    expect((await uploadKeyBackup(deps)).kind).toBe("done");
+    expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(0);
+    expect(new Set(server.backupSessions.map((row) => row.session_id)).size).toBe(2);
+  });
+
+  it("どの呼び出し元からの送信も、同じ端末では 1 つずつ行う", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    await receiveRoomKey(first);
+    server.requests = [];
+    const results = await Promise.all([uploadKeyBackup(deps), uploadKeyBackup(deps)]);
+    expect(results.map((r) => (r.kind === "done" ? r.uploaded : -1)).sort((a, b) => a - b)).toEqual(
+      [0, 1],
+    );
+    const posts = server.requests.filter((r) => r.path.startsWith("/api/e2ee/key_backup/keys"));
+    expect(posts).toHaveLength(1);
+    expect(server.backupSessions).toHaveLength(1);
+  });
 });

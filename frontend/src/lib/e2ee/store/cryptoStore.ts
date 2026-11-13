@@ -49,7 +49,15 @@ const META_BACKUP_UPLOAD = "backup_upload";
 
 /** 鍵バックアップへの 1 回のアップロード（`POST /api/e2ee/key_backup/keys`）。 */
 export type BackupUploadRequest =
-  | { kind: "upload"; version: string; secretsRevision: number; body: JsonObject; count: number }
+  | {
+      kind: "upload";
+      /** この要求の ID。応答を受けたら、同じ ID で完了か失敗を知らせる。 */
+      uploadId: number;
+      version: string;
+      secretsRevision: number;
+      body: JsonObject;
+      count: number;
+    }
   /** 送るものがない（未解錠、今の版がない、送信待ちがない）。 */
   | { kind: "none" }
   /**
@@ -121,10 +129,15 @@ export class CryptoStore {
   private readonly processedToDevice: Set<string>;
   private closed = false;
   private backupState: BackupUploadState | null = null;
-  private pendingUpload: {
-    upload: BackupUpload;
-    sessions: { key: string; pickle: string }[];
-  } | null = null;
+  /**
+   * 応答を待っているアップロード（ID ごと）。要求が重なっても、応答を受けた要求に入れた
+   * セッションだけを送信済みにする。
+   */
+  private readonly pendingUploads = new Map<
+    number,
+    { upload: BackupUpload; sessions: { key: string; pickle: string }[] }
+  >();
+  private nextUploadId = 0;
   private broken = false;
 
   private constructor(
@@ -512,7 +525,6 @@ export class CryptoStore {
     currentVersion: JsonObject | null,
     limit: number,
   ): Promise<BackupUploadRequest> {
-    this.discardPendingUpload();
     const own = await this.ownKeys();
     if (!own) return { kind: "none" };
     const state = await this.loadBackupState();
@@ -550,12 +562,14 @@ export class CryptoStore {
     const upload = state.nextUpload(this.inbound, limit);
     if (!upload) return { kind: "none" };
     const sent = new Set(upload.sessions.map((ref) => inboundSessionKey(ref)));
-    this.pendingUpload = {
+    const uploadId = ++this.nextUploadId;
+    this.pendingUploads.set(uploadId, {
       upload,
       sessions: sessions.filter((session) => sent.has(session.key)),
-    };
+    });
     return {
       kind: "upload",
+      uploadId,
       version: upload.version,
       secretsRevision: upload.secretsRevision,
       body: upload.body,
@@ -563,11 +577,14 @@ export class CryptoStore {
     };
   }
 
-  /** 前の {@link prepareBackupUpload} の要求が成功した。送ったセッションを送信済みにする。 */
-  async backupUploaded(): Promise<void> {
-    const pending = this.pendingUpload;
+  /**
+   * {@link prepareBackupUpload} の `uploadId` の要求が成功した。その要求に入れたセッションだけを
+   * 送信済みにする（送ったあとに書き換わったものは除く）。
+   */
+  async backupUploaded(uploadId: number): Promise<void> {
+    const pending = this.pendingUploads.get(uploadId);
     if (!pending) return;
-    this.pendingUpload = null;
+    this.pendingUploads.delete(uploadId);
     try {
       this.backupState?.uploadSucceeded(pending.upload);
       await this.backend.markBackedUp(pending.sessions);
@@ -577,10 +594,13 @@ export class CryptoStore {
     }
   }
 
-  /** 前の要求が失敗した。送信待ちのまま残す。 */
-  discardPendingUpload(): void {
-    this.pendingUpload?.upload.free();
-    this.pendingUpload = null;
+  /** `uploadId` の要求が失敗した。入れたセッションは送信待ちのまま残す。 */
+  discardPendingUpload(uploadId?: number): void {
+    const ids = uploadId === undefined ? [...this.pendingUploads.keys()] : [uploadId];
+    for (const id of ids) {
+      this.pendingUploads.get(id)?.upload.free();
+      this.pendingUploads.delete(id);
+    }
   }
 
   private async loadBackupState(): Promise<BackupUploadState> {

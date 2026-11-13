@@ -7,6 +7,7 @@ use tauri::{
     ipc::CapabilityBuilder,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
+    webview::{PermissionKind, PermissionResponse},
 };
 use tauri_plugin_opener::OpenerExt;
 use zoo2_client_types::ipc::{OpenTarget, SessionState, UiMode, command, event};
@@ -139,7 +140,9 @@ pub fn follow_session(app: &AppHandle, core: &Core, state: &SessionState) {
 pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
     let handle = app.handle().clone();
     let nav_core = core.clone();
-    WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
+    let perm_core = core.clone();
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+    let window = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
         .title("zoo2")
         .inner_size(1100.0, 760.0)
         .min_inner_size(480.0, 360.0)
@@ -153,8 +156,35 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
             }
             false
         })
+        // 通話 (getUserMedia) のマイクとカメラは、(b) の Web の画面にだけ許す。
+        // macOS では、このあと OS がマイクの使用を尋ねる (Info.plist の説明文を出す)。
+        .on_permission_request(move |webview, kind| {
+            let remote = webview
+                .url()
+                .is_ok_and(|url| classify(&url, &perm_core) == Origin::Remote);
+            match kind {
+                PermissionKind::Microphone | PermissionKind::Camera if remote => {
+                    PermissionResponse::Allow
+                }
+                _ => PermissionResponse::Default,
+            }
+        })
         .build()?;
+    #[cfg(target_os = "linux")]
+    enable_webrtc(&window);
     Ok(())
+}
+
+/// WebKitGTK は WebRTC と getUserMedia が既定で無効なので、通話のために有効にする。
+#[cfg(target_os = "linux")]
+fn enable_webrtc(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| {
+        use webkit2gtk::{SettingsExt, WebViewExt};
+        if let Some(settings) = webview.inner().settings() {
+            settings.set_enable_webrtc(true);
+            settings.set_enable_media_stream(true);
+        }
+    });
 }
 
 pub fn create_tray(app: &App) -> tauri::Result<()> {
