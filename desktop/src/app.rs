@@ -3219,6 +3219,15 @@ impl AppState {
 
     /// スレッドペインを開き、編集中および投稿不可チャンネルでなければ送信先をスレッド返信に切り替える。
     pub fn open_thread(&mut self, root_id: String) {
+        // 暗号化チャンネルは本文を表示しないので、スレッドも開かない（通知から開いた返信を含む）。
+        if self
+            .current_channel
+            .as_deref()
+            .is_some_and(|id| self.is_encrypted_channel(id))
+        {
+            self.thread = None;
+            return;
+        }
         self.typing_poll.wake();
         self.thread = Some(ThreadState {
             root_id: root_id.clone(),
@@ -3299,6 +3308,10 @@ impl AppState {
         let Some(channel_id) = self.current_channel.clone() else {
             return;
         };
+        // デスクトップ版は暗号化して送れないので、暗号化チャンネルでは編集の状態に入らない。
+        if self.is_encrypted_channel(&channel_id) {
+            return;
+        }
         if self
             .store
             .channel(&channel_id)
@@ -4978,6 +4991,27 @@ pub(crate) mod tests {
         }
     }
     impl<T> Pipe for T {}
+
+    #[test]
+    fn encrypted_channels_do_not_open_threads_or_edits() {
+        let mut state = connected_state();
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "general", "is_private": "t", "encrypted": "t" }),
+            )]),
+        ));
+        // 通知から暗号化チャンネルの返信を開いても、スレッドペインを開かない。
+        state.open_message("c1".into(), Some("r1".into()));
+        assert_eq!(state.current_channel.as_deref(), Some("c1"));
+        assert!(state.thread.is_none());
+        state.open_thread("m1".into());
+        assert!(state.thread.is_none());
+        // 自分のメッセージでも、編集の状態に入らない。
+        state.start_edit("r1".into());
+        assert!(!matches!(state.target, Target::Edit(_)));
+    }
 
     #[test]
     fn open_message_to_a_reply_scrolls_the_thread_to_the_reply() {
