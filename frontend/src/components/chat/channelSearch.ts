@@ -84,7 +84,11 @@ export function sortChannels(
   }
   const direction = sort.endsWith("-desc") ? -1 : 1;
   const key = (channel: ChannelRow): string | number => {
-    if (sort.startsWith("created")) return channel.created_at;
+    if (sort.startsWith("created")) {
+      // 空白区切りと ISO 形式が混ざっても時刻順になるよう、数値にして比べる。
+      const time = parseUtcTimestamp(channel.created_at).getTime();
+      return Number.isNaN(time) ? 0 : time;
+    }
     if (sort.startsWith("members")) return memberCounts.get(channel.id) ?? 0;
     return 0;
   };

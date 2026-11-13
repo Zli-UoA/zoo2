@@ -144,6 +144,15 @@ describe("sortChannels", () => {
     expect(ids(sortChannels(dated, "created-asc"))).toEqual(["a", "c", "b"]);
   });
 
+  it("compares creation times across space-separated and ISO formats", () => {
+    const mixed = [
+      { ...channel("x", "x"), created_at: "2026-03-01 23:00:00.000" },
+      { ...channel("y", "y"), created_at: "2026-03-01T00:00:00.000Z" },
+    ];
+    expect(ids(sortChannels(mixed, "created-desc"))).toEqual(["x", "y"]);
+    expect(ids(sortChannels(mixed, "created-asc"))).toEqual(["y", "x"]);
+  });
+
   it("sorts by member count and breaks ties by name", () => {
     const counts = new Map([
       ["a", 5],
