@@ -5,7 +5,6 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { cn } from "cn";
 import { HashIcon, HeadphonesIcon, LockIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
-import { toast } from "sonner";
 
 import { useThreadIndex } from "../../hooks/useThreadIndex";
 import { useUnreadChannels } from "../../hooks/useUnreadChannels";
@@ -86,21 +85,14 @@ export function ChannelSidebar({
       if (!currentUserId) {
         return;
       }
-      // `useWriteRunner` の error は状態に溜まるだけなので、失敗はここで直接通知する。
-      try {
-        const transaction = channelUsers.insert(
-          { user_id: currentUserId, channel_id: channelId, joined_at: nowIso() },
-          { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
-        );
-        await transaction.when("settled");
-      } catch (cause) {
-        toast.error(t("common.writeError"), {
-          description: cause instanceof Error ? cause.message : String(cause),
-          id: "channel-join-error",
-        });
-      }
+      // 失敗は呼び出し側（検索ダイアログ）が受けて表示する。
+      const transaction = channelUsers.insert(
+        { user_id: currentUserId, channel_id: channelId, joined_at: nowIso() },
+        { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
+      );
+      await transaction.when("settled");
     },
-    [channelUsers, currentUserId, t],
+    [channelUsers, currentUserId],
   );
   const dmChannels = useMemo(
     () =>

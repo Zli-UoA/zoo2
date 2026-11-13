@@ -43,6 +43,34 @@ export const Default: Story = {
   }),
 };
 
+export const JoinStaysInDialog: Story = {
+  play: playForImplementation(async ({ args }) => {
+    await userEvent.click((await screen.findAllByRole("button", { name: "参加する" }))[0]);
+    await expect(args.onJoinChannel).toHaveBeenCalledWith("channel-random");
+    await expect(args.onOpenChange).not.toHaveBeenCalled();
+  }),
+};
+
+export const JoinPending: Story = {
+  args: { onJoinChannel: fn(() => new Promise<void>(() => {})) },
+  play: playForImplementation(async () => {
+    await userEvent.click((await screen.findAllByRole("button", { name: "参加する" }))[0]);
+    const pending = await screen.findByRole("button", { name: "参加中…" });
+    await expect(pending).toBeDisabled();
+    await expect(pending).toHaveAttribute("aria-busy", "true");
+  }),
+};
+
+export const JoinFailed: Story = {
+  args: { onJoinChannel: fn(() => Promise.reject(new Error("network error"))) },
+  play: playForImplementation(async ({ args }) => {
+    await userEvent.click((await screen.findAllByRole("button", { name: "参加する" }))[0]);
+    await expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await expect(args.onOpenChange).not.toHaveBeenCalled();
+    await expect(screen.getAllByRole("button", { name: "参加する" })[0]).toBeEnabled();
+  }),
+};
+
 export const SearchEmpty: Story = {
   play: playForImplementation(async () => {
     await userEvent.type(await screen.findByRole("searchbox"), "zzzz");

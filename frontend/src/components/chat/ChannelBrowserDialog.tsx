@@ -14,7 +14,8 @@ import { filterDiscoverableChannels, isChannelJoinable } from "./channelSearch";
 
 /**
  * 未参加の公開チャンネルとアーカイブ済みチャンネルを探す。行を押すとチャンネルを開き、
- * 「参加」ボタンは開かずにこの画面で参加する（アーカイブ済みは参加不可）。
+ * 「参加」ボタンは開かずにこの画面で参加する（アーカイブ済みは参加不可）。`onJoinChannel` は
+ * 失敗時に reject し、ここでエラーを表示する。
  */
 export function ChannelBrowserDialog({
   open,
@@ -31,6 +32,7 @@ export function ChannelBrowserDialog({
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const [joinError, setJoinError] = useState<string | null>(null);
   const [joiningIds, setJoiningIds] = useState<ReadonlySet<string>>(new Set());
   const discoverableChannels = useMemo(
     () => filterDiscoverableChannels(channels, joinedChannelIds, query),
@@ -41,9 +43,12 @@ export function ChannelBrowserDialog({
     if (!onJoinChannel || joiningIds.has(channelId)) {
       return;
     }
+    setJoinError(null);
     setJoiningIds((prev) => new Set(prev).add(channelId));
     try {
       await onJoinChannel(channelId);
+    } catch (cause) {
+      setJoinError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setJoiningIds((prev) => {
         const next = new Set(prev);
@@ -56,6 +61,7 @@ export function ChannelBrowserDialog({
   function handleOpenChange(next: boolean) {
     if (!next) {
       setQuery("");
+      setJoinError(null);
     }
     onOpenChange(next);
   }
@@ -108,6 +114,13 @@ export function ChannelBrowserDialog({
             </Button>
           ) : null}
         </div>
+
+        {joinError ? (
+          <p role="alert" className="text-xs text-destructive">
+            {t("common.writeError")}
+            <span className="sr-only">: {joinError}</span>
+          </p>
+        ) : null}
 
         <div className="h-80 min-h-0 min-w-0">
           {discoverableChannels.length === 0 ? (

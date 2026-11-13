@@ -6,6 +6,7 @@
     "unexpectedError": "Something went wrong while displaying this page. Please reload."
   },
   "channels": {
+    "view": "Open",
     "unread": "Unread messages",
     "editTitle": "Edit channel",
     "editHelp": "Use up to 80 letters, numbers, hyphens (-), or underscores (_) for the channel name. Spaces, emoji, other symbols, and reserved names are not allowed.",
