@@ -72,6 +72,8 @@ export class E2eeDeviceManager {
     try {
       await retryPendingDeviceDeletion(client, userId);
       let opened = await worker.request({ op: "open", namespace, userId });
+      // 登録が途中で失敗しても、ログアウトで消せるように先に覚える。
+      this.deviceId = opened.deviceId;
       if (opened.replacedDeviceId) {
         // 保存鍵を失って作り直した。前の端末はもう使えないので消す。
         await this.deleteDeviceOrRemember(opened.replacedDeviceId);
@@ -84,10 +86,10 @@ export class E2eeDeviceManager {
         // 別の端末から消された。暗号ストアを作り直して、新しい端末として登録する。
         await worker.request({ op: "destroy", namespace });
         opened = await worker.request({ op: "open", namespace, userId });
+        this.deviceId = opened.deviceId;
         counts = await this.ensureRegistered(opened.registered, opened.deviceId);
       }
       if (this.stopped) return;
-      this.deviceId = opened.deviceId;
       await this.replenish(counts);
       if (this.stopped) return;
       const subscribe = this.options.subscribe ?? subscribeToDevice;
@@ -112,8 +114,9 @@ export class E2eeDeviceManager {
       namespace: this.options.namespace,
       userId: this.options.userId,
     });
-    // 登録していない端末はサーバーにないので、消さなくてよい。
-    this.deviceId = opened.registered ? opened.deviceId : null;
+    // 登録の応答をなくした端末は、サーバーにはあるのに手元では未登録のまま。どちらでも
+    // 削除 API を呼ぶ（冪等で、サーバーになければ 404 になり、消すものがないと分かる）。
+    this.deviceId = opened.deviceId;
   }
 
   private async ensureRegistered(registered: boolean, deviceId: string): Promise<KeyCounts> {

@@ -209,6 +209,21 @@ describe("E2eeDeviceManager", () => {
     expect(readPendingDeviceDeletion()).toBeNull();
   });
 
+  it("登録の応答をなくした端末も、ログアウトで削除 API を呼ぶ", async () => {
+    // open は registered: false を返す（登録はサーバーで済んだが、応答をなくした）。
+    const { worker } = fakeWorker();
+    const { client, requests } = fakeClient();
+    const instance = manager(worker, client);
+    await instance.attach();
+    await instance.destroy();
+    expect(requests).toContainEqual({
+      method: "DELETE",
+      path: `/api/e2ee/devices/${DEVICE}`,
+      body: null,
+    });
+    expect(readPendingDeviceDeletion()).toBeNull();
+  });
+
   it("別のユーザーの削除待ちは消し直さない", async () => {
     markDeviceDeletionPending({ userId: "other", deviceId: DEVICE });
     const { client, requests } = fakeClient();
