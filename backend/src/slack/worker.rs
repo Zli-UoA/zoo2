@@ -1687,6 +1687,13 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 file.lease_token = lease_token;
                 let outcome = fetch_one(s, &client, token, &file).await;
                 let mut tx = db.transaction().await?;
+                // 投稿の編集 (messages → slack_files の順) と同じ順にロックして、行き違いのデッドロックを避ける
+                query(
+                    &mut tx,
+                    "SELECT json_build_object('ok',true)::text FROM messages WHERE id=$1 FOR UPDATE",
+                    &[&file.message_id],
+                )
+                .await?;
                 // 429 を待って取り直すのは行単位の取得だけ。ジョブの取得は、これまでどおり失敗として数える
                 let outcome = match outcome {
                     Ok(FileOutcome::RetryLater(_)) => Err(AppError::BadGateway(
