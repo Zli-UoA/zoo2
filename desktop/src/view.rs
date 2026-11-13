@@ -3762,6 +3762,11 @@ impl Render for WorkspaceView {
             self.timeline_scroll.scroll_to_bottom();
             self.state
                 .update(cx, |s, _| s.update_timeline_view_state(window_active, true));
+        } else if pending_scroll_id.is_some() {
+            // 返信へ移る途中。タイムラインの古いスクロール位置から最下部と判定して既読にしない。
+            self.state.update(cx, |s, _| {
+                s.update_timeline_view_state(window_active, false);
+            });
         } else {
             let max_y = self.timeline_scroll.max_offset().height;
             let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));

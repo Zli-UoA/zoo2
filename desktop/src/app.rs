@@ -2748,6 +2748,7 @@ impl AppState {
             if let Some(thread) = &mut self.thread {
                 thread.selected = Some(message_id.clone());
             }
+            self.timeline_at_bottom = false;
             self.pending_scroll_to_bottom = false;
             self.pending_thread_scroll_to_bottom = false;
             self.thread_at_bottom = false;
@@ -4650,6 +4651,8 @@ pub(crate) mod tests {
             Some("r1")
         );
         assert_eq!(state.pending_scroll_to_message_id.as_deref(), Some("r1"));
+        // 返信へ移る間は、タイムラインを最下部として扱わない (古い位置から既読にしない)。
+        assert!(!state.timeline_at_bottom);
         assert!(!state.pending_thread_scroll_to_bottom);
     }
 

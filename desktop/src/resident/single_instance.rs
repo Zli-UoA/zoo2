@@ -176,10 +176,11 @@ fn acquire_with(
                 // つなげないまま終わったら、最初のインスタンスが終わったのかもしれないので、ロックを取り直す。
                 for _ in 0..retries {
                     match UnixStream::connect(socket) {
-                        Ok(mut stream) => {
-                            stream.write_all(SHOW)?;
-                            return Ok((Acquired::Secondary, None));
-                        }
+                        // 送れなかったとき (相手が接続の直後に終わったなど) も、つなげなかったときと同じく再試行する。
+                        Ok(mut stream) => match stream.write_all(SHOW) {
+                            Ok(()) => return Ok((Acquired::Secondary, None)),
+                            Err(err) => last = Some(err),
+                        },
                         Err(err) => last = Some(err),
                     }
                     std::thread::sleep(interval);
