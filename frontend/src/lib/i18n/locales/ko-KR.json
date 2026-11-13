@@ -847,13 +847,6 @@
       "linked_other_account": "이미 다른 Slack 계정과 연동되어 있습니다. 계정을 바꾸려면 먼저 연동을 해제해 주세요.",
       "failed": "Slack과 연동하지 못했습니다."
     },
-    "importTitle": "Slack에서 가져오기",
-    "importDescription": "Slack에서 내가 만든 채널의 이전 기록을 관리자가 저장한 Slack 내보내기 데이터에서 가져올 수 있습니다. 가져올 위치는 참여 중인 같은 이름의 채널이나 새로 만들 채널 중에서 선택할 수 있습니다.",
-    "importLoading": "가져올 수 있는 채널을 불러오는 중",
-    "importNoExport": "관리자가 Slack 내보내기 데이터를 저장하면 여기에서 내 채널을 가져올 수 있습니다.",
-    "importNoChannels": "저장된 내보내기 데이터에 내가 만든 채널이 없습니다.",
-    "importSummary_one": "{{name}}에 내가 만든 채널이 {{count}}개 있습니다. 가져올 채널을 선택해 주세요.",
-    "importSummary_other": "{{name}}에 내가 만든 채널이 {{count}}개 있습니다. 가져올 채널을 선택해 주세요.",
     "privateTitle": "Slack에서 가져오기",
     "privateDescription": "연동한 Slack 계정으로, 내가 만든 비공개 채널의 이전 기록을 가져올 수 있습니다. ZIP 파일은 필요하지 않습니다. 공개 채널은 관리자가 가져옵니다.",
     "privateLoading": "가져올 수 있는 채널을 불러오는 중",
