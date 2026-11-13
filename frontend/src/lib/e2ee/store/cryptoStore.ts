@@ -267,7 +267,10 @@ export class CryptoStore {
    * `deviceKeys` は送信ユーザーの `keys/query` の応答。送信端末の検証済みかの判定（手順 4）は、
    * クロス署名を扱う #360 以降で足す。それまでは「未検証の送信者」として保存する。
    */
-  async processToDevice(rows: ToDeviceRow[], deviceKeys: DeviceKeysByUser): Promise<ToDeviceResult> {
+  async processToDevice(
+    rows: ToDeviceRow[],
+    deviceKeys: DeviceKeysByUser,
+  ): Promise<ToDeviceResult> {
     const result: ToDeviceResult = { processed: [], roomKeys: 0, dropped: 0, newOlmSessions: 0 };
     for (const row of rows) {
       if (this.processedToDevice.has(row.id)) {
