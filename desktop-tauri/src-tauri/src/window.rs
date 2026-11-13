@@ -142,8 +142,6 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
     let nav_core = core.clone();
     let perm_core = core.clone();
     let builder = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()));
-    #[cfg(target_os = "macos")]
-    let builder = builder.with_webview_configuration(macos_webview_configuration());
     #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     let window = builder
         .title("zoo2")
@@ -176,23 +174,6 @@ pub fn create_main(app: &App, core: &Arc<Core>) -> tauri::Result<()> {
     #[cfg(target_os = "linux")]
     enable_webrtc(&window);
     Ok(())
-}
-
-/// WKWebView は既定で、ユーザーの操作なしに音声や動画を再生しない。通話では相手の音声を
-/// 操作なしで再生する (`new Audio()` の `play()`) ので、この制限を外す。Tauri には設定がないので、
-/// 設定 (WKWebViewConfiguration) を作って渡す。データの保存先は既定と同じ (defaultDataStore)。
-#[cfg(target_os = "macos")]
-fn macos_webview_configuration() -> objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration> {
-    use objc2::MainThreadMarker;
-    use objc2_web_kit::{WKAudiovisualMediaTypes, WKWebViewConfiguration, WKWebsiteDataStore};
-    let mtm = MainThreadMarker::new().expect("setup はメインスレッドで呼ばれる");
-    // Safety: メインスレッドで、作ったばかりの設定に値を入れるだけ。
-    unsafe {
-        let config = WKWebViewConfiguration::new(mtm);
-        config.setWebsiteDataStore(&WKWebsiteDataStore::defaultDataStore(mtm));
-        config.setMediaTypesRequiringUserActionForPlayback(WKAudiovisualMediaTypes::None);
-        config
-    }
 }
 
 /// WebKitGTK は WebRTC と getUserMedia が既定で無効なので、通話のために有効にする。
