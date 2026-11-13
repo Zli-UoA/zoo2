@@ -244,12 +244,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: crates/zoo-crypto-wasm
+      # cargo install は毎回ソースからビルドして約90秒かかるので、版ごとにバイナリーをキャッシュする。
+      - name: Restore wasm-bindgen-cli
+        id: wasm-bindgen-cli
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo-tools
+          key: cargo-tools-${{ runner.os }}-${{ runner.arch }}-wasm-bindgen-cli-${{ steps.versions.outputs.wasm-bindgen }}
       - name: Install wasm-bindgen-cli
         # crates/zoo-crypto-wasm/Cargo.toml で = 固定した wasm-bindgen と同じ版にする（build.sh が照合する）。
-        run: |
-          if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen ${{ steps.versions.outputs.wasm-bindgen }}" ]; then
-            cargo install --locked wasm-bindgen-cli --version "${{ steps.versions.outputs.wasm-bindgen }}"
-          fi
+        if: steps.wasm-bindgen-cli.outputs.cache-hit != 'true'
+        run: cargo install --locked --root "$HOME/.cargo-tools" wasm-bindgen-cli --version "${{ steps.versions.outputs.wasm-bindgen }}"
+      - name: Add cached tools to PATH
+        run: echo "$HOME/.cargo-tools/bin" >> "$GITHUB_PATH"
       - name: Build wasm package
         run: crates/zoo-crypto-wasm/build.sh
       - name: Upload wasm package
