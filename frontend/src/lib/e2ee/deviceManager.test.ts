@@ -27,7 +27,8 @@ function fakeWorker(overrides: Partial<Record<CryptoOperation["op"], unknown>> =
   const worker = {
     request: vi.fn(async (operation: CryptoOperation) => {
       calls.push(operation);
-      return results[operation.op] ?? null;
+      const result = results[operation.op];
+      return (typeof result === "function" ? result(operation) : result) ?? null;
     }),
     terminate: vi.fn(),
   };
@@ -432,21 +433,42 @@ describe("E2eeDeviceManager", () => {
     await instance.stop();
   });
 
-  it("再登録のあとで補充に失敗しても、試し直しで暗号ストアを消し直さない", async () => {
+  it("再登録で新しい端末を登録したあとで補充に失敗しても、試し直しで暗号ストアを消し直さない", async () => {
+    const NEW_DEVICE = "00000000-0000-4000-8000-0000000000d2";
+    let destroyed = false;
+    let registered = false;
+    const upload = { one_time_keys: { "signed_curve25519:AAAA": {} }, fallback_keys: {} };
     const { worker, calls } = fakeWorker({
-      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      // 作り直したあとは、新しい未登録の端末を返す。登録が済んだら登録済みとして返す。
+      open: () =>
+        destroyed
+          ? { userId: USER, deviceId: NEW_DEVICE, registered, replacedDeviceId: null }
+          : { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      destroy: () => {
+        destroyed = true;
+        return null;
+      },
+      markRegistered: () => {
+        registered = true;
+        return null;
+      },
       // 受信の処理の中で補充しないよう、新しい Olm セッションは作らない。
       processToDevice: { processed: ["1"], roomKeys: 0, dropped: 0, newOlmSessions: 0 },
+      // 新しい端末は、鍵を補充しなければならない。
+      prepareKeyUpload: () => (destroyed ? upload : null),
     });
-    let uploads = 0;
-    const { client } = fakeClient({
+    let failedUploads = 0;
+    const { client, requests } = fakeClient({
       "POST /api/e2ee/to_device/ack": () => {
         throw new ApiError(404, "gone");
       },
-      "POST /api/e2ee/keys/upload": () => {
-        uploads += 1;
-        // 最初の起動（1 回目）は通し、再登録の起動（2 回目）だけ失敗させる。
-        if (uploads === 2) throw new ApiError(503, "busy");
+      "POST /api/e2ee/keys/upload": (body) => {
+        const keys = (body as { one_time_keys: Record<string, unknown> }).one_time_keys;
+        // 新しい端末の登録のあとの補充（鍵のある送信）を、最初の 2 回だけ失敗させる。
+        if (Object.keys(keys).length > 0 && failedUploads < 2) {
+          failedUploads += 1;
+          throw new ApiError(503, "busy");
+        }
         return { one_time_key_counts: { signed_curve25519: 50 }, unused_fallback_key_types: [] };
       },
     });
@@ -461,8 +483,16 @@ describe("E2eeDeviceManager", () => {
         content: {},
       },
     ]);
-    await vi.waitFor(() => expect(calls.filter((call) => call.op === "open")).toHaveLength(3));
+    // 補充が通るまで起動を試し直し、新しい端末の補充を公開済みにする。
+    await vi.waitFor(() =>
+      expect(calls.filter((call) => call.op === "markKeysPublished")).toHaveLength(1),
+    );
+    expect(failedUploads).toBe(2);
+    // 暗号ストアを消したのは、端末が消されていたと分かったときの 1 回だけ。
     expect(calls.filter((call) => call.op === "destroy")).toHaveLength(1);
+    // 新しい端末の登録も 1 回だけで、試し直しは同じ端末を使う。
+    expect(requests.filter((r) => r.path === "/api/e2ee/devices")).toHaveLength(1);
+    expect(instance.currentDeviceId).toBe(NEW_DEVICE);
     await instance.stop();
   });
 
