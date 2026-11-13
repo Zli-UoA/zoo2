@@ -73,6 +73,11 @@ export class E2eeDeviceManager {
   private registering = false;
   /** ログアウトのために開いたとき、保存鍵を失って作り直した前の端末（これも消す）。 */
   private readonly replacedDeviceIds: string[] = [];
+  /** 端末が消されていたので、起動し直さなければならない（`reregister`）。済むまで残す。 */
+  private restartPending = false;
+  /** 起動し直す前に、まだ暗号ストアを消していない。 */
+  private destroyBeforeRestart = false;
+  private restarting = false;
 
   constructor(private readonly options: E2eeDeviceManagerOptions) {}
 
@@ -208,6 +213,7 @@ export class E2eeDeviceManager {
         // 受信の途中で、端末が別の端末から消されていた（ack や補充が 404）。同じ端末で試し直しても
         // 直らないので、起動と同じく暗号ストアを作り直して、新しい端末として登録し直す。
         if (isDeviceGone(error) && !this.stopped && !this.suspended) {
+          this.destroyBeforeRestart = true;
           void this.reregister();
           return;
         }
@@ -253,17 +259,31 @@ export class E2eeDeviceManager {
     if (rowsFailure) throw rowsFailure;
   }
 
-  /** 端末が消されていたので、暗号ストアを作り直して起動し直す。失敗したら試し直す。 */
+  /**
+   * 端末が消されていたので、暗号ストアを作り直して起動し直す。失敗したら試し直す。
+   *
+   * 暗号ストアを消すのは最初の 1 回だけにする（`destroyBeforeRestart`）。新しい端末の登録が済んだ
+   * あとで補充などが失敗したときに消すと、登録した端末の秘密鍵まで失う。試し直しでは起動
+   * （`start`）だけをやり直し、同じ暗号ストアの端末を使う。ログアウトの確認で止めているあいだは
+   * 待ち（`restartPending`）だけを残し、取りやめたら（`resume`）再開する。
+   */
   private async reregister(): Promise<void> {
     this.subscription?.unsubscribe();
     this.subscription = null;
     this.latestRows = [];
     this.needsReplenish = false;
+    this.restartPending = true;
+    if (this.stopped || this.suspended || this.restarting) return;
+    this.restarting = true;
     try {
-      await this.options.worker.request({ op: "destroy", namespace: this.options.namespace });
-      this.deviceId = null;
-      if (this.stopped) return;
+      if (this.destroyBeforeRestart) {
+        await this.options.worker.request({ op: "destroy", namespace: this.options.namespace });
+        this.destroyBeforeRestart = false;
+        this.deviceId = null;
+      }
+      if (this.stopped || this.suspended) return;
       await this.start();
+      this.restartPending = false;
     } catch {
       if (!this.stopped && !this.suspended) {
         this.retryTimer = setTimeout(() => {
@@ -271,6 +291,8 @@ export class E2eeDeviceManager {
           void this.reregister();
         }, this.options.retryDelayMs ?? 30_000);
       }
+    } finally {
+      this.restarting = false;
     }
   }
 
@@ -300,6 +322,11 @@ export class E2eeDeviceManager {
     if (!this.suspended) return;
     this.suspended = false;
     this.processAbort = new AbortController();
+    // 止めているあいだに、起動し直しを待っていた（タイマーは止めたので、ここで再開する）。
+    if (this.restartPending) {
+      void this.reregister();
+      return;
+    }
     this.subscribe();
   }
 

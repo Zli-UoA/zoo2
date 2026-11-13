@@ -432,6 +432,85 @@ describe("E2eeDeviceManager", () => {
     await instance.stop();
   });
 
+  it("再登録のあとで補充に失敗しても、試し直しで暗号ストアを消し直さない", async () => {
+    const { worker, calls } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      // 受信の処理の中で補充しないよう、新しい Olm セッションは作らない。
+      processToDevice: { processed: ["1"], roomKeys: 0, dropped: 0, newOlmSessions: 0 },
+    });
+    let uploads = 0;
+    const { client } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw new ApiError(404, "gone");
+      },
+      "POST /api/e2ee/keys/upload": () => {
+        uploads += 1;
+        // 最初の起動（1 回目）は通し、再登録の起動（2 回目）だけ失敗させる。
+        if (uploads === 2) throw new ApiError(503, "busy");
+        return { one_time_key_counts: { signed_curve25519: 50 }, unused_fallback_key_types: [] };
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() => expect(calls.filter((call) => call.op === "open")).toHaveLength(3));
+    expect(calls.filter((call) => call.op === "destroy")).toHaveLength(1);
+    await instance.stop();
+  });
+
+  it("ログアウトの確認で止めていたあいだに再登録が失敗したら、取りやめたときに再開する", async () => {
+    const { worker, calls } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      processToDevice: { processed: ["1"], roomKeys: 0, dropped: 0, newOlmSessions: 0 },
+    });
+    let uploads = 0;
+    let failRestart: (error: Error) => void = () => {};
+    const { client } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw new ApiError(404, "gone");
+      },
+      "POST /api/e2ee/keys/upload": () => {
+        uploads += 1;
+        // 再登録の起動（2 回目）の要求は、ログアウトの確認で止めてから失敗させる。
+        if (uploads === 2)
+          return new Promise((_resolve, reject) => {
+            failRestart = reject;
+          });
+        return { one_time_key_counts: { signed_curve25519: 50 }, unused_fallback_key_types: [] };
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() => expect(uploads).toBe(2));
+    await instance.suspend();
+    failRestart(new ApiError(503, "busy"));
+    // 止めているあいだは試し直さない。
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.filter((call) => call.op === "open")).toHaveLength(2);
+    instance.resume();
+    await vi.waitFor(() => expect(calls.filter((call) => call.op === "open")).toHaveLength(3));
+    // 作り直しは最初の 1 回だけ。
+    expect(calls.filter((call) => call.op === "destroy")).toHaveLength(1);
+    await instance.stop();
+  });
+
   it("別のユーザーの削除待ちを上書きしない", async () => {
     markDeviceDeletionPending({ userId: "other", deviceId: "d-other" });
     markDeviceDeletionPending({ userId: USER, deviceId: DEVICE });
