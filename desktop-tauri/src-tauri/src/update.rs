@@ -14,6 +14,9 @@
 //! macOS では、メニューバーのアプリのメニューに「アップデートを確認…」を置く。押すと、その場で
 //! 確かめ、新しい版があれば取得して更新し、再起動する。`check_updates = false` でも使える
 //! (利用者が自分で押したときだけ確かめるので)。
+//!
+//! 利用者が更新を始めたとき (メニュー、トレイ、通知) は、更新のウィンドウ (`updater_window`) に
+//! 確認、ダウンロードの進み具合、インストールを順に出す。自動の確認は裏で静かに行う。
 
 use std::{sync::Mutex, time::Duration};
 
@@ -24,7 +27,10 @@ use tauri::{
 };
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-use crate::toast;
+use crate::{
+    toast,
+    updater_window::{self, Bar, View},
+};
 
 /// トレイのメニューの「更新して再起動」。
 pub const MENU_ID: &str = "update";
@@ -56,6 +62,8 @@ struct Updates {
     item: Mutex<Option<MenuItem<Wry>>>,
     /// 確かめている最中か (自動の確認と、メニューから押したときが重ならないように)。
     checking: Mutex<bool>,
+    /// 取得が終わったら、すぐ入れて再起動する (自動の取得の最中にメニューから押したとき)。
+    install_when_ready: Mutex<bool>,
 }
 
 struct Ready {
@@ -85,16 +93,17 @@ pub fn spawn(app: &AppHandle, check_updates: bool) {
     });
 }
 
-/// メニューバーの「アップデートを確認…」を押したとき。準備済みの更新があればすぐ入れる。
-/// なければその場で確かめ、新しい版があれば取得して入れる。なければ最新だと知らせる。
+/// メニューバーの「アップデートを確認…」を押したとき。更新のウィンドウを出し、準備済みの
+/// 更新があればすぐ入れる。なければその場で確かめ、新しい版があれば取得して入れる。
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn check_now(app: &AppHandle) {
+    updater_window::open(app);
     let Some(state) = app.try_state::<Updates>() else {
-        toast::show_with(
+        show_result(
             app,
-            "zoo2 を更新できません",
-            "このビルドは、アプリの中からの更新に対応していません。",
-            |_| {},
+            "このビルドは更新できません",
+            "アプリの中からの更新は、GitHub Releases の版だけが対応しています。",
+            true,
         );
         return;
     };
@@ -102,33 +111,47 @@ pub fn check_now(app: &AppHandle) {
         install_and_restart(app);
         return;
     }
+    updater_window::set(
+        app,
+        View {
+            title: "更新を確かめています",
+            detail: "",
+            bar: Bar::Indeterminate,
+            busy: true,
+            error: false,
+        },
+    );
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         match check(&app, false).await {
             Ok(Checked::Ready) => install_and_restart(&app),
-            Ok(Checked::Busy) => toast::show_with(
-                &app,
-                "zoo2 の更新を確かめています",
-                "終わったら、通知とメニューでお知らせします。",
-                |_| {},
-            ),
+            // 自動の取得が進んでいる。終わったら入れる (進み具合はそちらがウィンドウに出す)。
+            Ok(Checked::Busy) => {
+                *lock(&app.state::<Updates>().install_when_ready) = true;
+            }
             Ok(Checked::UpToDate) => {
                 let version = app.package_info().version.to_string();
-                toast::show_with(
-                    &app,
-                    "zoo2 は最新です",
-                    &format!("いまの版 (v{version}) が最新です。"),
-                    |_| {},
-                );
+                show_result(&app, "zoo2 は最新です", &format!("v{version}"), false);
             }
-            Err(err) => toast::show_with(
-                &app,
-                "zoo2 の更新を確かめられませんでした",
-                &err.to_string(),
-                |_| {},
-            ),
+            Err(err) => show_result(&app, "更新を確かめられませんでした", &err.to_string(), true),
         }
     });
+}
+
+/// 結果をウィンドウに出して、少し後に閉じる。
+fn show_result(app: &AppHandle, title: &str, detail: &str, error: bool) {
+    updater_window::set(
+        app,
+        View {
+            title,
+            detail,
+            bar: Bar::Hidden,
+            busy: false,
+            error,
+        },
+    );
+    let delay = if error { 8 } else { 3 };
+    updater_window::close_after(app, Duration::from_secs(delay));
 }
 
 /// 確かめた結果。
@@ -189,13 +212,19 @@ async fn fetch(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Ch
     if already {
         return Ok(Checked::Ready);
     }
-    // download は署名を確かめてから返す。
-    let bytes = update.download(|_, _| {}, || {}).await?;
     let version = update.version.clone();
+    // download は署名を確かめてから返す。更新のウィンドウが出ていれば、進み具合を出す。
+    let mut progress = Progress::new(app, &version);
+    let bytes = update
+        .download(|chunk, total| progress.add(chunk, total), || {})
+        .await?;
     *lock(&state.ready) = Some(Ready { update, bytes });
 
     show_menu_item(app, &version);
-    if notify {
+    // 自動の取得の最中にメニューから押されていたら、通知は出さずにそのまま入れる。
+    if std::mem::take(&mut *lock(&state.install_when_ready)) {
+        install_and_restart(app);
+    } else if notify {
         toast::show_with(
             app,
             "zoo2 を更新できます",
@@ -204,6 +233,65 @@ async fn fetch(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Ch
         );
     }
     Ok(Checked::Ready)
+}
+
+/// ダウンロードの進み具合を、更新のウィンドウに出す (出ていないときは何もしない)。
+/// 表示を変えるのは、1% 進んだとき (大きさが分からないときは 1 MiB ごと) だけにする。
+struct Progress {
+    app: AppHandle,
+    version: String,
+    received: u64,
+    /// 最後に表示した値 (% か MiB)。
+    shown: Option<u64>,
+}
+
+impl Progress {
+    fn new(app: &AppHandle, version: &str) -> Self {
+        Self {
+            app: app.clone(),
+            version: version.to_string(),
+            received: 0,
+            shown: None,
+        }
+    }
+
+    fn add(&mut self, chunk: usize, total: Option<u64>) {
+        const MIB: u64 = 1024 * 1024;
+        self.received += chunk as u64;
+        if !updater_window::is_open(&self.app) {
+            return;
+        }
+        let received_mib = self.received / MIB;
+        let total = total.filter(|total| *total > 0);
+        let (value, detail, bar) = match total {
+            Some(total) => {
+                let ratio = self.received as f64 / total as f64;
+                let percent = (self.received * 100 / total).min(100);
+                let detail = format!("{received_mib} / {} MiB ({percent}%)", total / MIB);
+                (percent, detail, Bar::Ratio(ratio))
+            }
+            None => (
+                received_mib,
+                format!("{received_mib} MiB"),
+                Bar::Indeterminate,
+            ),
+        };
+        if self.shown == Some(value) {
+            return;
+        }
+        self.shown = Some(value);
+        let title = format!("v{} をダウンロードしています", self.version);
+        updater_window::set(
+            &self.app,
+            View {
+                title: &title,
+                detail: &detail,
+                bar,
+                busy: true,
+                error: false,
+            },
+        );
+    }
 }
 
 fn show_menu_item(app: &AppHandle, version: &str) {
@@ -235,6 +323,18 @@ pub fn install_and_restart(app: &AppHandle) {
     let Some(ready) = lock(&state.ready).take() else {
         return;
     };
+    updater_window::open(app);
+    let title = format!("v{} をインストールしています", ready.update.version);
+    updater_window::set(
+        app,
+        View {
+            title: &title,
+            detail: "終わると、zoo2 を再起動します",
+            bar: Bar::Indeterminate,
+            busy: true,
+            error: false,
+        },
+    );
     let app = app.clone();
     // deb では pkexec が管理者のパスワードを聞くので、待つ間に他を止めないよう別のスレッドで入れる。
     std::thread::spawn(move || {
@@ -244,12 +344,7 @@ pub fn install_and_restart(app: &AppHandle) {
             Err(err) => {
                 // パスワードの入力をやめたときなども、もう一度押せるように残す。
                 *lock(&app.state::<Updates>().ready) = Some(ready);
-                toast::show_with(
-                    &app,
-                    "zoo2 を更新できませんでした",
-                    &err.to_string(),
-                    |_| {},
-                );
+                show_result(&app, "更新できませんでした", &err.to_string(), true);
             }
         }
     });

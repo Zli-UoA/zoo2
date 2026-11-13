@@ -5,6 +5,7 @@
 //! - `toast`: OS の通知の表示。
 //! - `window`: ウィンドウ、トレイ、単一インスタンス。
 //! - `update`: アプリの自動更新。
+//! - `updater_window`: 更新のウィンドウ (アイコン、状態、進捗バー)。
 
 mod commands;
 #[cfg(test)]
@@ -12,6 +13,7 @@ mod commands_list;
 mod core;
 mod toast;
 mod update;
+mod updater_window;
 mod window;
 
 use std::sync::Arc;
