@@ -4,6 +4,8 @@
 //! ヘッダーの「返信を書く」はその入力欄へ移るための、デスクトップだけのボタン)、
 //! 親投稿・返信の取得失敗と再試行 (`isError` / `isOffline` に当たる状態がない)、狭い幅での全画面表示。
 
+use std::{collections::HashMap, rc::Rc};
+
 use gpui::{
     AnyElement, Context, Div, Focusable, ParentElement, Styled, Window, div, prelude::*, px,
 };
@@ -37,6 +39,7 @@ impl WorkspaceView {
         &self,
         root_id: &str,
         pending_scroll_id: Option<&str>,
+        channels: Rc<HashMap<String, String>>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> (Div, Option<usize>) {
@@ -83,6 +86,7 @@ impl WorkspaceView {
                     scroll_target: None,
                     solo: true,
                 },
+                channels.clone(),
                 cx,
             );
             div()
@@ -135,6 +139,7 @@ impl WorkspaceView {
                     scroll_target: pending_scroll_id,
                     solo: false,
                 },
+                channels.clone(),
                 cx,
             );
             target_scroll_index = target.map(|i| items.len() + i);

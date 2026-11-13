@@ -137,18 +137,9 @@ pub(super) struct RowList<'a> {
 }
 
 impl WorkspaceView {
-    /// 日付の区切り、未読の線、行を並べる (`MessageList` の行)。
-    /// 返す 2 つ目は、`scroll_target` の行の位置 (返す列の中の番号)。
-    pub(super) fn render_message_rows(
-        &self,
-        list: RowList<'_>,
-        cx: &mut Context<Self>,
-    ) -> (Vec<AnyElement>, Option<usize>) {
-        let t = palette(cx).t;
-        let i18n = self.i18n;
-        // `#名前` は開けるチャンネルへのリンクにする (`MfmChannelsProvider`)。
-        let mut colors = MfmColors::from_tokens(&t);
-        colors.channels = Some(Rc::new(
+    /// `#名前` → チャンネル ID の対応 (DM を除く)。描画ごとに 1 回だけ作って各一覧に渡す。
+    pub(in crate::view) fn channel_links(&self, cx: &Context<Self>) -> Rc<HashMap<String, String>> {
+        Rc::new(
             self.state
                 .read(cx)
                 .store
@@ -157,7 +148,22 @@ impl WorkspaceView {
                 .filter(|c| !c.is_dm)
                 .map(|c| (c.channel_name.clone(), c.id.clone()))
                 .collect(),
-        ));
+        )
+    }
+
+    /// 日付の区切り、未読の線、行を並べる (`MessageList` の行)。
+    /// 返す 2 つ目は、`scroll_target` の行の位置 (返す列の中の番号)。
+    pub(super) fn render_message_rows(
+        &self,
+        list: RowList<'_>,
+        channels: Rc<HashMap<String, String>>,
+        cx: &mut Context<Self>,
+    ) -> (Vec<AnyElement>, Option<usize>) {
+        let t = palette(cx).t;
+        let i18n = self.i18n;
+        // `#名前` は開けるチャンネルへのリンクにする (`MfmChannelsProvider`)。
+        let mut colors = MfmColors::from_tokens(&t);
+        colors.channels = Some(channels);
         let state_entity = self.state.clone();
         colors.on_channel = Some(Rc::new(move |id: &str, cx: &mut gpui::App| {
             let id = id.to_string();
@@ -307,7 +313,7 @@ impl WorkspaceView {
             })
             .collect();
         let attachments_view =
-            render_message_attachments(attachment_items, &self.attachment_focus_handles, cx);
+            render_message_attachments(attachment_items, &self.attachment_focus_handles, i18n, cx);
 
         let group = SharedString::from(format!("row-{pane_prefix}-{msg_id}"));
         let row_id = ElementId::Name(SharedString::from(format!("{pane_prefix}-row-{msg_id}")));
@@ -593,8 +599,9 @@ impl WorkspaceView {
                 &t,
                 move |window, cx| open(&(), window, cx),
             ));
-            if reply_count.is_some() {
+            {
                 // 返信ボタン。スレッドを開いて入力欄を返信先にする。
+                // frontend の `ThreadPane` も行に `onOpenThread` を渡すので、スレッドの行にも出す。
                 let view = cx.entity().clone();
                 let root = msg_id.clone();
                 buttons.push(toolbar_button(

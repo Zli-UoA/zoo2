@@ -56,21 +56,25 @@ pub fn build_message_items(
     first_unread_id: Option<&str>,
     to_local: impl Fn(DateTime) -> DateTime,
 ) -> Vec<MessageItem> {
-    let day = |m: &Message| to_local(m.created_at).date();
+    // ローカル日時は 1 通につき 1 回だけ求める。
+    let days: Vec<Date> = messages
+        .iter()
+        .map(|m| to_local(m.created_at).date())
+        .collect();
     messages
         .iter()
         .enumerate()
         .map(|(i, m)| {
             let previous = i.checked_sub(1).and_then(|j| messages.get(j));
             let next = messages.get(i + 1);
-            let show_date_separator = previous.is_none_or(|p| day(p) != day(m));
+            let show_date_separator = i.checked_sub(1).is_none_or(|j| days[j] != days[i]);
             let continues_from_previous = first_unread_id != Some(m.id.as_str())
                 && !show_date_separator
                 && previous.is_some_and(|p| p.user_id == m.user_id && within_group(p, m, gap_ms));
             let continues_to_next = next.is_some_and(|n| {
                 first_unread_id != Some(n.id.as_str())
                     && n.user_id == m.user_id
-                    && day(n) == day(m)
+                    && days[i + 1] == days[i]
                     && within_group(m, n, gap_ms)
             });
             MessageItem {
@@ -94,6 +98,19 @@ pub fn first_unread_id<'a>(
         .map(|m| m.id.as_str())
 }
 
+/// `first_unread_id` を全ルートメッセージで求め、描画窓 (`start_idx` 以降) にある行のときだけ返す。
+/// 既読位置が窓より古いと、窓の先頭行に線が付いて「過去を表示」で動くので、その場合は置かない。
+pub fn first_unread_id_in_window<'a>(
+    all_roots: &'a [Message],
+    start_idx: usize,
+    me_id: &str,
+    last_read: DateTime,
+) -> Option<&'a str> {
+    let id = first_unread_id(all_roots, me_id, last_read)?;
+    let idx = all_roots.iter().position(|m| m.id == id)?;
+    (idx >= start_idx).then_some(id)
+}
+
 /// `HH:mm` (`formatClock`)。
 pub fn format_clock(local: DateTime) -> String {
     format!("{:02}:{:02}", local.hour(), local.minute())
@@ -109,6 +126,31 @@ fn weekday_ja(w: Weekday) -> &'static str {
         Weekday::Saturday => "土",
         Weekday::Sunday => "日",
     }
+}
+
+fn weekday_ko(w: Weekday) -> &'static str {
+    match w {
+        Weekday::Monday => "월",
+        Weekday::Tuesday => "화",
+        Weekday::Wednesday => "수",
+        Weekday::Thursday => "목",
+        Weekday::Friday => "금",
+        Weekday::Saturday => "토",
+        Weekday::Sunday => "일",
+    }
+}
+
+fn weekday_zh(w: Weekday, simplified: bool) -> &'static str {
+    let (hans, hant) = match w {
+        Weekday::Monday => ("周一", "週一"),
+        Weekday::Tuesday => ("周二", "週二"),
+        Weekday::Wednesday => ("周三", "週三"),
+        Weekday::Thursday => ("周四", "週四"),
+        Weekday::Friday => ("周五", "週五"),
+        Weekday::Saturday => ("周六", "週六"),
+        Weekday::Sunday => ("周日", "週日"),
+    };
+    if simplified { hans } else { hant }
 }
 
 fn weekday_en(w: Weekday) -> &'static str {
@@ -139,7 +181,7 @@ const MONTHS_EN: [&str; 12] = [
 ];
 
 /// 日付区切りのラベル (`formatRelativeDay`)。今日と昨日は相対表記、それ以前は
-/// 「2026年6月10日(水)」(英語は「Wed, June 10, 2026」)。Intl が出す他の言語の書式は、日本語の形で代用する。
+/// 「2026年6月10日(水)」(英語は「Wed, June 10, 2026」)。韓国語と中国語・広東語はそれぞれの言語の形にする。
 pub fn relative_day_label(date: Date, today: Date, i18n: &I18n) -> String {
     if date == today {
         return i18n.t("dates.today");
@@ -155,7 +197,28 @@ pub fn relative_day_label(date: Date, today: Date, i18n: &I18n) -> String {
             date.day(),
             date.year()
         ),
-        _ => format!(
+        Locale::KoKr | Locale::KoKp => format!(
+            "{}년 {}월 {}일 ({})",
+            date.year(),
+            date.month(),
+            date.day(),
+            weekday_ko(date.weekday())
+        ),
+        Locale::ZhHans => format!(
+            "{}年{}月{}日 {}",
+            date.year(),
+            date.month(),
+            date.day(),
+            weekday_zh(date.weekday(), true)
+        ),
+        Locale::ZhHant | Locale::Yue => format!(
+            "{}年{}月{}日 {}",
+            date.year(),
+            date.month(),
+            date.day(),
+            weekday_zh(date.weekday(), false)
+        ),
+        Locale::Ja => format!(
             "{}年{}月{}日({})",
             date.year(),
             date.month(),
@@ -185,6 +248,32 @@ mod tests {
             display_attachments: None,
             thread_archive_at: None,
         }
+    }
+
+    #[test]
+    fn unread_line_only_inside_render_window() {
+        let m = [
+            msg("1", "a", "2025-01-02T09:00:00"),
+            msg("2", "a", "2025-01-02T10:00:00"),
+            msg("3", "a", "2025-01-02T11:00:00"),
+        ];
+        let read: DateTime = "2025-01-02T09:30:00".parse().unwrap();
+        // 最初の未読は 2 番目。窓が 2 番目から始まるなら出す。
+        assert_eq!(first_unread_id_in_window(&m, 1, "me", read), Some("2"));
+        assert_eq!(first_unread_id_in_window(&m, 0, "me", read), Some("2"));
+        // 窓が 3 番目から始まるなら、窓の先頭行に付け替えず出さない。
+        assert_eq!(first_unread_id_in_window(&m, 2, "me", read), None);
+    }
+
+    #[test]
+    fn relative_day_label_uses_locale_format() {
+        let today = date(2026, 6, 10);
+        let d = date(2026, 6, 3);
+        let label = |l| relative_day_label(d, today, &I18n::new(l));
+        assert_eq!(label(Locale::KoKr), "2026년 6월 3일 (수)");
+        assert_eq!(label(Locale::ZhHans), "2026年6月3日 周三");
+        assert_eq!(label(Locale::ZhHant), "2026年6月3日 週三");
+        assert_eq!(label(Locale::Yue), "2026年6月3日 週三");
     }
 
     fn items(messages: &[Message], unread: Option<&str>) -> Vec<MessageItem> {

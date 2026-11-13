@@ -1,5 +1,7 @@
 //! タイムライン (frontend の `ChannelScreen` / `ChannelThreadItems` に対応)。
 
+use std::{collections::HashMap, rc::Rc};
+
 use gpui::{AnyElement, Context, Div, ParentElement, Styled, div, prelude::*, px};
 use zoo2_client_core::electric::ShapeId;
 
@@ -11,17 +13,18 @@ use crate::ui::{TextSpec, h_flex, palette, shadow_md, v_flex};
 use crate::view::WorkspaceView;
 use crate::view::chat::channel_header::ChannelHeaderInfo;
 use crate::view::chat::message::RowList;
-use crate::view::chat::message_format::first_unread_id;
+use crate::view::chat::message_format::first_unread_id_in_window;
 use crate::view::shell::sidebar::{channel_title, is_group_dm};
 
 impl WorkspaceView {
     pub(in crate::view) fn render_timeline_view(
         &self,
         pending_scroll_id: Option<&str>,
+        channels: Rc<HashMap<String, String>>,
         cx: &mut Context<Self>,
-    ) -> (Div, Option<usize>) {
+    ) -> (Div, Option<usize>, bool) {
         if self.state.read(cx).current_channel.is_none() {
-            return (self.render_welcome_panel(cx), None);
+            return (self.render_welcome_panel(cx), None, true);
         }
         let (
             channel_id,
@@ -51,7 +54,7 @@ impl WorkspaceView {
             let state = self.state.read(cx);
             let Some(channel_id) = state.current_channel.clone() else {
                 // 選択なしは上で `render_welcome_panel` を返している。ここへは来ない。
-                return (div(), None);
+                return (div(), None, true);
             };
 
             let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
@@ -160,7 +163,9 @@ impl WorkspaceView {
             );
         }
         let first_unread = read_boundary
-            .and_then(|boundary| first_unread_id(visible_roots, &me_id, boundary))
+            .and_then(|boundary| {
+                first_unread_id_in_window(&all_root_messages, start_idx, &me_id, boundary)
+            })
             .map(str::to_string);
         let (rows, target_in_rows) = self.render_message_rows(
             RowList {
@@ -176,6 +181,7 @@ impl WorkspaceView {
                 scroll_target: pending_scroll_id,
                 solo: false,
             },
+            channels,
             cx,
         );
         let target_scroll_item_index = target_in_rows.map(|i| timeline_items.len() + i);
@@ -187,10 +193,11 @@ impl WorkspaceView {
         let theme = self.state.read(cx).theme();
 
         // 読み込み中は `MessageSkeleton`、空は `MessageState`。
-        let placeholder: Option<AnyElement> = if !synced {
-            Some(render_message_skeleton().into_any_element())
-        } else if visible_roots.is_empty() {
-            Some(
+        let placeholder_kind = timeline_placeholder(visible_roots.is_empty(), synced);
+        let placeholder: Option<AnyElement> = match placeholder_kind {
+            Placeholder::None => None,
+            Placeholder::Skeleton => Some(render_message_skeleton().into_any_element()),
+            Placeholder::Empty => Some(
                 v_flex()
                     .size_full()
                     .items_center()
@@ -214,9 +221,7 @@ impl WorkspaceView {
                         )
                     })
                     .into_any_element(),
-            )
-        } else {
-            None
+            ),
         };
 
         let scroll_area = match placeholder {
@@ -269,40 +274,66 @@ impl WorkspaceView {
             .child(
                 scroll_area
                     // 最新へ戻るボタン (`absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-md`)
-                    .when(!timeline_at_bottom || hidden_after > 0, |d| {
-                        let label = if hidden_after > 0 {
-                            format!("{} ({hidden_after})", i18n.t("messages.new"))
-                        } else {
-                            i18n.t("messages.new")
-                        };
-                        d.child(
-                            h_flex()
-                                .absolute()
-                                .bottom(px(12.0))
-                                .left_0()
-                                .right_0()
-                                .justify_center()
-                                .child(
-                                    Button::new("btn-jump-to-latest")
-                                        .size(ButtonSize::Sm)
-                                        .icon_start(Icon::ArrowDown)
-                                        .label(label)
-                                        .rounded_px(9999.0)
-                                        .shadow(shadow_md())
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.state.update(cx, |s, cx| {
-                                                s.jump_to_latest_messages();
-                                                cx.notify();
-                                            });
-                                        })),
-                                ),
-                        )
-                    }),
+                    .when(
+                        placeholder_kind == Placeholder::None
+                            && (!timeline_at_bottom || hidden_after > 0),
+                        |d| {
+                            let label = if hidden_after > 0 {
+                                format!("{} ({hidden_after})", i18n.t("messages.new"))
+                            } else {
+                                i18n.t("messages.new")
+                            };
+                            d.child(
+                                h_flex()
+                                    .absolute()
+                                    .bottom(px(12.0))
+                                    .left_0()
+                                    .right_0()
+                                    .justify_center()
+                                    .child(
+                                        Button::new("btn-jump-to-latest")
+                                            .size(ButtonSize::Sm)
+                                            .icon_start(Icon::ArrowDown)
+                                            .label(label)
+                                            .rounded_px(9999.0)
+                                            .shadow(shadow_md())
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.state.update(cx, |s, cx| {
+                                                    s.jump_to_latest_messages();
+                                                    cx.notify();
+                                                });
+                                            })),
+                                    ),
+                            )
+                        },
+                    ),
             )
             // 下部入力欄
             .child(self.render_composer_view(cx));
 
-        (timeline_view, target_scroll_item_index)
+        (
+            timeline_view,
+            target_scroll_item_index,
+            placeholder_kind != Placeholder::None,
+        )
+    }
+}
+
+/// タイムライン本体に出すもの。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Placeholder {
+    None,
+    Skeleton,
+    Empty,
+}
+
+/// frontend は `items.length === 0` のときだけ placeholder を出す。
+/// 同期前でも行があれば出し、同期済みで空なら空表示、同期前で空ならスケルトン。
+pub(super) fn timeline_placeholder(visible_is_empty: bool, synced: bool) -> Placeholder {
+    match (visible_is_empty, synced) {
+        (false, _) => Placeholder::None,
+        (true, false) => Placeholder::Skeleton,
+        (true, true) => Placeholder::Empty,
     }
 }
 
@@ -351,6 +382,15 @@ pub(super) fn render_message_skeleton() -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholder_only_when_no_rows() {
+        // 行があれば同期前でもスケルトンで隠さない。
+        assert_eq!(timeline_placeholder(false, false), Placeholder::None);
+        assert_eq!(timeline_placeholder(false, true), Placeholder::None);
+        assert_eq!(timeline_placeholder(true, false), Placeholder::Skeleton);
+        assert_eq!(timeline_placeholder(true, true), Placeholder::Empty);
+    }
 
     #[test]
     fn empty_hint_only_for_members_of_open_channels() {
