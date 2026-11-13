@@ -18,7 +18,7 @@ use crate::{
     state::AppState,
 };
 
-const THREAD_IDLE_DAYS: i64 = 7;
+const THREAD_IDLE_DAYS: i64 = 1;
 
 pub fn router() -> Router<AppState> {
     Router::new()
