@@ -8,6 +8,7 @@ import {
   HashIcon,
   HeadphonesIcon,
   LockIcon,
+  LockKeyholeIcon,
   PlusIcon,
   SearchIcon,
 } from "lucide-react";
@@ -165,7 +166,11 @@ export function ChannelSidebar({
                       onClick={() => shell.showChat()}
                       className={sidebarItemClassName(isActive, isUnread)}
                     >
-                      {channel.is_private ? (
+                      {channel.encrypted ? (
+                        <span role="img" aria-label={t("e2ee.badge")} title={t("e2ee.badge")}>
+                          <LockKeyholeIcon className="size-4 shrink-0" aria-hidden="true" />
+                        </span>
+                      ) : channel.is_private ? (
                         <LockIcon className="size-4 shrink-0" aria-hidden="true" />
                       ) : (
                         <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />

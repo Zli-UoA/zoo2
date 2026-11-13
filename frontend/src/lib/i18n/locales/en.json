@@ -1153,6 +1153,7 @@
     "desktopUnsupported": {
       "title": "Encrypted channel",
       "description": "This client can't show encrypted channels. Open it in the web or mobile app."
-    }
+    },
+    "sendUnavailable": "Sending to encrypted channels isn't available in this version yet."
   }
 }

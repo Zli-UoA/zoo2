@@ -1153,6 +1153,7 @@
     "desktopUnsupported": {
       "title": "加密频道",
       "description": "此客户端无法显示加密频道。请在网页版或移动应用中打开。"
-    }
+    },
+    "sendUnavailable": "此版本尚不能向加密频道发送消息。"
   }
 }

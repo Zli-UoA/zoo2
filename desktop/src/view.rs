@@ -1522,9 +1522,6 @@ impl WorkspaceView {
                     None,
                 );
             };
-            if state.is_encrypted_channel(&channel_id) {
-                return (render_encrypted_unsupported(&theme), None);
-            }
 
             let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
             let me_user_name = state
@@ -1582,9 +1579,18 @@ impl WorkspaceView {
             )
         };
 
-        let hidden_before = start_idx;
-        let hidden_after = all_root_messages.len().saturating_sub(end_idx);
-        let visible_roots = &all_root_messages[start_idx..end_idx];
+        // デスクトップ版は E2EE の対象外。暗号化チャンネルでは、ヘッダー（退出などの操作）は残し、
+        // メッセージの一覧の代わりに「表示できない」と出す。
+        let is_encrypted = self.state.read(cx).is_encrypted_channel(&channel_id);
+        let (hidden_before, hidden_after, visible_roots) = if is_encrypted {
+            (0, 0, &all_root_messages[..0])
+        } else {
+            (
+                start_idx,
+                all_root_messages.len().saturating_sub(end_idx),
+                &all_root_messages[start_idx..end_idx],
+            )
+        };
 
         let mut timeline_items: Vec<Div> = Vec::new();
         if hidden_before > 0 {
@@ -1879,74 +1885,84 @@ impl WorkspaceView {
                         ),
                 )
             })
+            .when(is_encrypted, |d| {
+                d.child(render_encrypted_unsupported(&theme))
+            })
             // タイムライン本体
-            .child(
-                div()
-                    .id("timeline-scroll-area")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.timeline_scroll)
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .when(!synced, |d| {
-                        d.child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_muted)
-                                .child("メッセージを読み込み中…"),
-                        )
-                    })
-                    .when(synced && timeline_items.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_sm()
-                                .text_color(theme.text_muted)
-                                .child("まだメッセージがありません"),
-                        )
-                    })
-                    .children(timeline_items),
-            )
-            // 最新へ戻るバー
-            .when(!timeline_at_bottom || hidden_after > 0, |d| {
+            .when(!is_encrypted, |d| {
                 d.child(
                     div()
-                        .px_4()
-                        .py_1p5()
-                        .bg(theme.bg_surface)
-                        .border_t_1()
-                        .border_color(theme.border)
+                        .id("timeline-scroll-area")
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.timeline_scroll)
+                        .p_4()
                         .flex()
-                        .justify_center()
-                        .child(
-                            div()
-                                .id("btn-jump-to-latest")
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .bg(theme.accent_button)
-                                .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
-                                .text_xs()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme.text_on_accent)
-                                .child(if hidden_after > 0 {
-                                    format!("↓ 最新メッセージへ移動 (新着ほか {hidden_after} 件)")
-                                } else {
-                                    "↓ 最新メッセージへ移動".to_string()
-                                })
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                        this.state.update(cx, |s, cx| {
-                                            s.jump_to_latest_messages();
-                                            cx.notify();
-                                        });
-                                    }),
-                                ),
-                        ),
+                        .flex_col()
+                        .gap_2()
+                        .when(!synced, |d| {
+                            d.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text_muted)
+                                    .child("メッセージを読み込み中…"),
+                            )
+                        })
+                        .when(synced && timeline_items.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.text_muted)
+                                    .child("まだメッセージがありません"),
+                            )
+                        })
+                        .children(timeline_items),
                 )
             })
+            // 最新へ戻るバー
+            .when(
+                !is_encrypted && (!timeline_at_bottom || hidden_after > 0),
+                |d| {
+                    d.child(
+                        div()
+                            .px_4()
+                            .py_1p5()
+                            .bg(theme.bg_surface)
+                            .border_t_1()
+                            .border_color(theme.border)
+                            .flex()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .id("btn-jump-to-latest")
+                                    .px_3()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(theme.accent_button)
+                                    .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(theme.text_on_accent)
+                                    .child(if hidden_after > 0 {
+                                        format!(
+                                            "↓ 最新メッセージへ移動 (新着ほか {hidden_after} 件)"
+                                        )
+                                    } else {
+                                        "↓ 最新メッセージへ移動".to_string()
+                                    })
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                            this.state.update(cx, |s, cx| {
+                                                s.jump_to_latest_messages();
+                                                cx.notify();
+                                            });
+                                        }),
+                                    ),
+                            ),
+                    )
+                },
+            )
             // 下部入力欄
             .child(self.render_composer_view(cx));
 

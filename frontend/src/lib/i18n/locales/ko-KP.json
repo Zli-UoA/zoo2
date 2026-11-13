@@ -1153,6 +1153,7 @@
     "desktopUnsupported": {
       "title": "암호화된 통로",
       "description": "이 의뢰기에서는 암호화된 통로를 표시할수 없습니다. 웨브판이나 이동앱에서 여십시오."
-    }
+    },
+    "sendUnavailable": "이 판에서는 아직 암호화된 통로에 보낼수 없습니다."
   }
 }

@@ -1153,6 +1153,7 @@
     "desktopUnsupported": {
       "title": "암호화된 채널",
       "description": "이 클라이언트에서는 암호화된 채널을 표시할 수 없습니다. 웹이나 모바일 앱에서 여세요."
-    }
+    },
+    "sendUnavailable": "이 버전에서는 아직 암호화된 채널에 보낼 수 없습니다."
   }
 }

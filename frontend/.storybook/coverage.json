@@ -60,7 +60,8 @@
         "NoDescription",
         "LongDescription",
         "Mobile",
-        "WebhookSettingsOpen"
+        "WebhookSettingsOpen",
+        "Encrypted"
       ]
     },
     {
@@ -107,7 +108,15 @@
     },
     {
       "file": "src/components/chat/DmListItem.stories.tsx",
-      "states": ["Default", "Active", "Unread", "LongName", "UserAvatar", "UserAvatarFallback"]
+      "states": [
+        "Default",
+        "Active",
+        "Unread",
+        "LongName",
+        "UserAvatar",
+        "UserAvatarFallback",
+        "Encrypted"
+      ]
     },
     {
       "file": "src/components/chat/DmSection.stories.tsx",
@@ -220,7 +229,7 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.stories.tsx",
-      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile", "FederatedReactions"]
+      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile", "FederatedReactions", "Encrypted"]
     },
     {
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
