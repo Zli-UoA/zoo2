@@ -305,10 +305,34 @@ pub enum AppEvent {
 /// Tokio タスク群から GPUI の `Entity<AppState>` へ橋渡しする統合イベント。
 #[derive(Debug)]
 pub enum DesktopEvent {
-    Auth { session_gen: u64, event: AuthEvent },
-    Shape { session_gen: u64, event: ShapeEvent },
-    App { session_gen: u64, event: AppEvent },
-    Tick { session_gen: u64 },
+    Auth {
+        session_gen: u64,
+        event: AuthEvent,
+    },
+    Shape {
+        session_gen: u64,
+        event: ShapeEvent,
+    },
+    App {
+        session_gen: u64,
+        event: AppEvent,
+    },
+    Tick {
+        session_gen: u64,
+    },
+    LogoutFinished {
+        session_gen: u64,
+        result: Result<Vec<String>, (String, bool)>,
+    },
+    AuthPersisted {
+        session_gen: u64,
+        event: AuthEvent,
+        error: Option<String>,
+    },
+    CancelFinished {
+        session_gen: u64,
+        result: Result<Vec<String>, (String, bool)>,
+    },
 }
 
 /// デスクトップ版のアプリケーション状態 (`Entity<AppState>`)。
@@ -324,6 +348,9 @@ pub struct AppState {
     /// ログイン画面のフェーズ (`None` のときはログイン済みでチャット画面を表示)。
     pub login_phase: Option<LoginPhase>,
     pub login_task: Option<JoinHandle<()>>,
+    logout_in_progress: bool,
+    deferred_unauthorized: bool,
+    cancel_in_progress: bool,
     /// 実行中のデバイスログインでトークン保存が完了したマネージャ。
     /// 承認完了後にキャンセルされた場合、このマネージャが保存したトークンのみを削除・失効するために保持する。
     pub pending_device_login_manager:
@@ -331,6 +358,7 @@ pub struct AppState {
 
     pub credentials: Option<Credentials>,
     pub token_manager: Option<Arc<login::DesktopTokenManager>>,
+    recovery_manager: Option<Arc<login::DesktopTokenManager>>,
     pub api: Option<ApiClient>,
     pub me: Option<Me>,
     pub me_is_admin: bool,
@@ -522,9 +550,13 @@ impl AppState {
             event_tx,
             login_phase: Some(LoginPhase::Checking),
             login_task: None,
+            logout_in_progress: false,
+            deferred_unauthorized: false,
+            cancel_in_progress: false,
             pending_device_login_manager: Arc::new(std::sync::Mutex::new(None)),
             credentials: None,
             token_manager: None,
+            recovery_manager: None,
             api: None,
             me: None,
             me_is_admin: false,
@@ -667,6 +699,10 @@ impl AppState {
             task.abort();
         }
         let session_gen = self.bump_session_gen();
+        let recovery_manager = self.recovery_manager.clone();
+        if let Some(manager) = &recovery_manager {
+            manager.bind_to_session_gen(session_gen);
+        }
         let active_session_gen = self.active_session_gen.clone();
         self.login_phase = Some(LoginPhase::Checking);
         let http = self.http.clone();
@@ -687,13 +723,34 @@ impl AppState {
                     }
                 }
             });
-            login::connect_initial(http, config, session_gen, active_session_gen, auth_tx).await;
+            if let Some(manager) = recovery_manager {
+                login::retry_pending_session(http, config, manager, auth_tx).await;
+            } else {
+                login::connect_initial(http, config, session_gen, active_session_gen, auth_tx)
+                    .await;
+            }
             let _ = forward.await;
         });
     }
 
     /// OIDC デバイスコード認証を開始する。
     pub fn start_device_login(&mut self) {
+        if self.recovery_manager.is_some() {
+            self.start_initial_auth();
+            return;
+        }
+        if self.cancel_in_progress {
+            return;
+        }
+        if self
+            .pending_device_login_manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            self.cancel_device_login();
+            return;
+        }
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
@@ -737,59 +794,164 @@ impl AppState {
     /// 世代番号を進め、このログイン試行が承認後にトークンを保存していた場合のみ削除・失効して次回起動時の誤接続を防ぐ。
     /// 承認前キャンセル時は、以前から存在していた正常なトークンファイルを誤削除しない。
     pub fn cancel_device_login(&mut self) {
+        if self.cancel_in_progress {
+            return;
+        }
+        if self.recovery_manager.is_some() {
+            if let Some(task) = self.login_task.take() {
+                task.abort();
+            }
+            self.bump_session_gen();
+            self.login_phase = Some(LoginPhase::Ready { error: Some("認証情報を保存できていません。保存領域の復旧後に再試行してください。アプリ終了時には更新済み token が失われる可能性があります".into()) });
+            return;
+        }
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
         self.bump_session_gen();
-        if let Some(manager) = self
+        let manager = self
             .pending_device_login_manager
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            let delete_res = manager.logout_and_delete();
-            if let Ok(Some(refresh_token)) = delete_res
-                && let AuthConfig::Oidc(oidc) = self.config.auth.clone()
+            .clone();
+        if let Some(manager) = manager {
+            self.cancel_in_progress = true;
+            self.login_phase = Some(LoginPhase::Checking);
+            let tx = self.event_tx.clone();
+            let session_gen = self.session_gen;
+            let http = self.http.clone();
+            let auth = self.config.auth.clone();
+            if self
+                .spawn_tokio(async move {
+                    let result = tokio::task::spawn_blocking(move || manager.logout_and_delete())
+                        .await
+                        .map_err(|e| (e.to_string(), false))
+                        .and_then(|r| {
+                            r.map_err(|e| (format!("{e:#}"), e.is::<login::SessionChanged>()))
+                        });
+                    if let (Ok(tokens), AuthConfig::Oidc(oidc)) = (&result, auth) {
+                        let tokens = tokens.clone();
+                        tokio::spawn(async move {
+                            for refresh_token in tokens {
+                                login::revoke_refresh_token(
+                                    http.clone(),
+                                    oidc.clone(),
+                                    refresh_token,
+                                )
+                                .await;
+                            }
+                        });
+                    }
+                    let result = result.map(|_| Vec::new());
+                    let _ = tx.send(DesktopEvent::CancelFinished {
+                        session_gen,
+                        result,
+                    });
+                })
+                .is_none()
             {
-                let http = self.http.clone();
-                self.spawn_tokio(async move {
-                    login::revoke_refresh_token(http, oidc, refresh_token).await;
+                self.cancel_in_progress = false;
+                self.login_phase = Some(LoginPhase::Ready {
+                    error: Some("ログイン取消を開始できませんでした".into()),
                 });
             }
+        } else {
+            self.login_phase = Some(LoginPhase::Ready { error: None });
         }
-        self.login_phase = Some(LoginPhase::Ready { error: None });
     }
 
     /// ログアウトしてトークンを削除し、ログイン画面へ戻る。
     /// ローカルトークンの削除をタスク中断より前に確定させるため、削除に失敗した場合はタスクや実行中フラグを壊さずにログイン状態を維持する。
     pub fn logout(&mut self) {
         if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
-            let delete_res = match &self.token_manager {
-                Some(tm) => tm.logout_and_delete(),
-                None => login::delete_local_token_for_logout(&self.config).map(|(_, rt)| rt),
-            };
-            match delete_res {
-                Ok(refresh_token) => {
-                    self.stop_typing();
-                    self.preserved_unauthorized_drafts = None;
-                    self.reset_to_login(None);
-                    if let Some(refresh_token) = refresh_token {
-                        let http = self.http.clone();
-                        self.spawn_tokio(async move {
-                            login::revoke_refresh_token(http, oidc, refresh_token).await;
+            if self.logout_in_progress {
+                return;
+            }
+            let manager = self.token_manager.clone();
+            let tx = self.event_tx.clone();
+            let session_gen = self.session_gen;
+            let http = self.http.clone();
+            self.logout_in_progress = true;
+            if self
+                .spawn_tokio(async move {
+                    let result = tokio::task::spawn_blocking(move || match manager {
+                        Some(tm) => tm.logout_and_delete(),
+                        None => Err(anyhow::anyhow!("現在のログイン状態を確認できません")),
+                    })
+                    .await
+                    .map_err(|e| (e.to_string(), false))
+                    .and_then(|r| {
+                        r.map_err(|e| (format!("{e:#}"), e.is::<login::SessionChanged>()))
+                    });
+                    if let Ok(tokens) = &result {
+                        let tokens = tokens.clone();
+                        tokio::spawn(async move {
+                            for refresh_token in tokens {
+                                login::revoke_refresh_token(
+                                    http.clone(),
+                                    oidc.clone(),
+                                    refresh_token,
+                                )
+                                .await;
+                            }
                         });
                     }
-                }
-                Err(err) => {
-                    self.notify(format!(
-                        "ログアウトに失敗しました（トークン削除エラー）: {err:#}"
-                    ));
-                }
+                    let result = result.map(|_| Vec::new());
+                    let _ = tx.send(DesktopEvent::LogoutFinished {
+                        session_gen,
+                        result,
+                    });
+                })
+                .is_none()
+            {
+                self.logout_in_progress = false;
+                self.notify("ログアウトを開始できませんでした");
             }
         } else {
             self.stop_typing();
             self.preserved_unauthorized_drafts = None;
             self.reset_to_login(None);
+        }
+    }
+
+    fn finish_logout(&mut self, result: Result<Vec<String>, (String, bool)>) {
+        self.logout_in_progress = false;
+        let deferred_unauthorized = std::mem::take(&mut self.deferred_unauthorized);
+        if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
+            match result {
+                Ok(refresh_tokens) => {
+                    self.stop_typing();
+                    self.preserved_unauthorized_drafts = None;
+                    self.reset_to_login(None);
+                    if !refresh_tokens.is_empty() {
+                        let http = self.http.clone();
+                        self.spawn_tokio(async move {
+                            for refresh_token in refresh_tokens {
+                                login::revoke_refresh_token(
+                                    http.clone(),
+                                    oidc.clone(),
+                                    refresh_token,
+                                )
+                                .await;
+                            }
+                        });
+                    }
+                }
+                Err((_, true)) => {
+                    self.stop_typing();
+                    self.preserved_unauthorized_drafts = None;
+                    self.reset_to_login(Some("別のログインを保持してログアウトしました".into()));
+                }
+                Err((err, false)) => {
+                    let message =
+                        format!("ログアウトに失敗しました（トークン削除エラー）: {err:#}");
+                    if deferred_unauthorized {
+                        self.reset_to_login_after_unauthorized(message);
+                    } else {
+                        self.notify(message);
+                    }
+                }
+            }
         }
     }
 
@@ -1024,6 +1186,31 @@ impl AppState {
         self.login_phase = Some(LoginPhase::Ready { error });
     }
 
+    fn reset_to_login_after_unauthorized(&mut self, error: String) {
+        if self.logout_in_progress {
+            self.deferred_unauthorized = true;
+            return;
+        }
+        let recovery = self
+            .token_manager
+            .take()
+            .filter(|manager| manager.retain_pending_or_disable());
+        let generation = self.bump_session_gen();
+        self.clear_session_state();
+        if let Some(manager) = recovery {
+            manager.bind_to_session_gen(generation);
+            self.recovery_manager = Some(manager);
+            self.login_phase = Some(LoginPhase::Ready {
+                error: Some(
+                    "更新済みの認証情報を保存できていません。保存領域を確認し、再試行してください"
+                        .into(),
+                ),
+            });
+        } else {
+            self.login_phase = Some(LoginPhase::Ready { error: Some(error) });
+        }
+    }
+
     pub fn notify(&mut self, message: impl Into<String>) {
         self.notice = Some((message.into(), Instant::now()));
     }
@@ -1057,6 +1244,103 @@ impl AppState {
     /// イベントを処理し、画面の再描画が必要な状態変化があった場合に `true` を返す。
     pub fn on_desktop_event(&mut self, event: DesktopEvent) -> bool {
         match event {
+            DesktopEvent::CancelFinished {
+                session_gen,
+                result,
+            } => {
+                self.cancel_in_progress = false;
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                match result {
+                    Ok(refresh_tokens) => {
+                        self.pending_device_login_manager
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take();
+                        self.login_phase = Some(LoginPhase::Ready { error: None });
+                        if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
+                            let http = self.http.clone();
+                            self.spawn_tokio(async move {
+                                for refresh_token in refresh_tokens {
+                                    login::revoke_refresh_token(
+                                        http.clone(),
+                                        oidc.clone(),
+                                        refresh_token,
+                                    )
+                                    .await;
+                                }
+                            });
+                        }
+                    }
+                    Err((error, changed)) => {
+                        if changed {
+                            let manager = self
+                                .pending_device_login_manager
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .take();
+                            if let Some(manager) = manager {
+                                manager.disable_persistence();
+                            }
+                        }
+                        self.login_phase = Some(LoginPhase::Ready {
+                            error: Some(format!("ログイン取消に失敗しました: {error}")),
+                        })
+                    }
+                }
+                true
+            }
+            DesktopEvent::AuthPersisted {
+                session_gen,
+                event,
+                error,
+            } => {
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                if let Some(error) = error {
+                    let pending_manager = self
+                        .pending_device_login_manager
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some(manager) = pending_manager {
+                        manager.disable_persistence();
+                    }
+                    if self
+                        .recovery_manager
+                        .as_ref()
+                        .is_some_and(|manager| !manager.has_pending_persistence())
+                    {
+                        self.recovery_manager = None;
+                    }
+                    self.login_phase = Some(LoginPhase::Ready { error: Some(error) });
+                } else if let AuthEvent::Connected {
+                    credentials,
+                    token_manager,
+                    me,
+                    is_admin,
+                } = event
+                {
+                    self.recovery_manager = None;
+                    self.connect_session(credentials, me);
+                    self.me_is_admin = is_admin;
+                    self.token_manager = token_manager;
+                }
+                true
+            }
+            DesktopEvent::LogoutFinished {
+                session_gen,
+                result,
+            } => {
+                self.logout_in_progress = false;
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                self.finish_logout(result);
+                true
+            }
             DesktopEvent::Auth { session_gen, event } => {
                 if session_gen != self.session_gen {
                     return false;
@@ -1096,12 +1380,41 @@ impl AppState {
             } => {
                 if let Some(tm) = &token_manager {
                     tm.bind_to_session_gen(self.session_gen);
-                    if let Err(err) = tm.enable_persistence_and_save() {
+                    let manager = tm.clone();
+                    let tx = self.event_tx.clone();
+                    let session_gen = self.session_gen;
+                    let event = AuthEvent::Connected {
+                        credentials,
+                        token_manager,
+                        me,
+                        is_admin,
+                    };
+                    if self
+                        .spawn_tokio(async move {
+                            let error = match tokio::task::spawn_blocking(move || {
+                                manager.confirm_persisted_session()
+                            })
+                            .await
+                            {
+                                Ok(Ok(())) => None,
+                                Ok(Err(err)) => {
+                                    Some(format!("トークンの保存に失敗しました: {err:#}"))
+                                }
+                                Err(err) => Some(format!("トークンの保存に失敗しました: {err}")),
+                            };
+                            let _ = tx.send(DesktopEvent::AuthPersisted {
+                                session_gen,
+                                event,
+                                error,
+                            });
+                        })
+                        .is_none()
+                    {
                         self.login_phase = Some(LoginPhase::Ready {
-                            error: Some(format!("トークンの保存に失敗しました: {err:#}")),
+                            error: Some("トークン保存を開始できませんでした".into()),
                         });
-                        return;
                     }
+                    return;
                 }
                 self.connect_session(credentials, me);
                 self.me_is_admin = is_admin;
@@ -1117,11 +1430,30 @@ impl AppState {
                 });
             }
             AuthEvent::LoginRequired { error } => {
+                if self
+                    .recovery_manager
+                    .as_ref()
+                    .is_some_and(|manager| !manager.has_pending_persistence())
+                {
+                    self.recovery_manager = None;
+                }
                 self.pending_device_login_manager
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take();
                 self.login_phase = Some(LoginPhase::Ready { error });
+            }
+            AuthEvent::RecoveryRequired { manager, error } => {
+                self.pending_device_login_manager
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                self.recovery_manager = Some(manager);
+                self.login_phase = Some(LoginPhase::Ready {
+                    error: Some(format!(
+                        "{error}。保存領域を復旧して再試行してください。アプリを終了すると更新済み token が失われる可能性があります"
+                    )),
+                });
             }
         }
     }
@@ -1426,9 +1758,9 @@ impl AppState {
             ShapeEvent::Failed(id, message) => {
                 if message == HttpError::Unauthorized.to_string() {
                     self.preserve_drafts_for_unauthorized();
-                    self.reset_to_login(Some(
+                    self.reset_to_login_after_unauthorized(
                         "セッションの有効期限が切れました。再度ログインしてください".to_string(),
-                    ));
+                    );
                     return;
                 }
                 if let ShapeId::Messages(ch) | ShapeId::Reactions(ch) | ShapeId::Attachments(ch) =
@@ -1785,9 +2117,9 @@ impl AppState {
             }
             AppEvent::Unauthorized => {
                 self.preserve_drafts_for_unauthorized();
-                self.reset_to_login(Some(
+                self.reset_to_login_after_unauthorized(
                     "認証が切れました。再度ログインしてください".to_string(),
-                ));
+                );
                 true
             }
             AppEvent::SubmissionSucceeded {
@@ -5480,6 +5812,568 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn connected_event_remains_responsive_while_token_lock_is_held() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir =
+            std::env::temp_dir().join(format!("desktop-connected-lock-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        state.on_auth_event(AuthEvent::Connected {
+            credentials: Credentials::Bearer(manager.clone()),
+            token_manager: Some(manager),
+            me: Me {
+                id: "u1".into(),
+                user_name: "u".into(),
+                display_name: "U".into(),
+            },
+            is_admin: false,
+        });
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "connected event blocked UI for {elapsed:?}"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.login_phase.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cancel_changed_session_releases_pending_manager() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("cancel-changed-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager);
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        token::save(&path, &replacement).unwrap();
+        state.cancel_device_login();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.pending_device_login_manager.lock().unwrap().is_none());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn connected_event_does_not_overwrite_another_login() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir =
+            std::env::temp_dir().join(format!("desktop-connected-new-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &old).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        replacement.access_token = "new".into();
+        token::save(&path, &replacement).unwrap();
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager.clone());
+        state.on_auth_event(AuthEvent::Connected {
+            credentials: Credentials::Bearer(manager.clone()),
+            token_manager: Some(manager),
+            me: Me {
+                id: "u".into(),
+                user_name: "u".into(),
+                display_name: "U".into(),
+            },
+            is_admin: false,
+        });
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.pending_device_login_manager.lock().unwrap().is_none());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
+        assert!(matches!(
+            state.login_phase,
+            Some(LoginPhase::Ready { error: Some(_) })
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_preserves_pending_refresh_for_retry() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("desktop-recovery-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url,
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path,
+            tokens.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        manager.set_pending_for_test(tokens);
+        state.token_manager = Some(manager.clone());
+        state.logout_in_progress = true;
+        let generation = state.session_gen;
+        state.on_app_event(AppEvent::Unauthorized);
+        assert_eq!(state.session_gen, generation);
+        assert!(state.recovery_manager.is_none());
+        state.logout_in_progress = false;
+        state.on_app_event(AppEvent::Unauthorized);
+        assert!(Arc::ptr_eq(
+            state.recovery_manager.as_ref().unwrap(),
+            &manager
+        ));
+        assert!(manager.has_pending_persistence());
+        assert_eq!(manager.access_token().await.unwrap(), "access");
+        assert!(!manager.has_pending_persistence());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn failed_logout_replays_unauthorized_event() {
+        let mut state = connected_state();
+        state.config.auth = AuthConfig::Oidc(OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        });
+        state.logout_in_progress = true;
+        state.on_shape(ShapeEvent::Failed(
+            ShapeId::Users,
+            HttpError::Unauthorized.to_string(),
+        ));
+        assert!(state.login_phase.is_none());
+        state.finish_logout(Err(("storage error".into(), false)));
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
+    }
+
+    #[tokio::test]
+    async fn logout_preserves_replacement_session_and_leaves_chat() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!(
+            "desktop-logout-replacement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let original = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            original.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        state.token_manager = Some(manager.clone());
+        state.login_phase = None;
+        let mut replacement = original;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        token::save(&path, &replacement).unwrap();
+        state.logout();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
+        assert!(state.token_manager.is_none());
+        assert!(!manager.save_if_active().unwrap());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn logout_remains_responsive_while_another_process_holds_token_lock() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("desktop-lock-test-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "zoo2-desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        state.token_manager = Some(Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        )));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        state.logout();
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "logout blocked the UI for {elapsed:?}"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(!path.exists());
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_token_even_if_ui_session_changes_before_completion() {
+        use std::io::{Read, Write};
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let server_issuer = issuer.clone();
+        let (request_tx, request_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let mut count = 0;
+            while count < 2 && std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0; 8192];
+                        let _ = stream.read(&mut buf);
+                        let body = if count == 0 {
+                            serde_json::json!({"issuer":server_issuer,"token_endpoint":format!("{server_issuer}/token"),"revocation_endpoint":format!("{server_issuer}/revoke")}).to_string()
+                        } else {
+                            "{}".to_string()
+                        };
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        count += 1;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    Err(_) => break,
+                }
+            }
+            request_tx.send(count).unwrap();
+        });
+        let dir =
+            std::env::temp_dir().join(format!("desktop-logout-stale-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer,
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        state.token_manager = Some(Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        )));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        state.logout();
+        state.bump_session_gen();
+        drop(lock);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!state.on_desktop_event(event));
+        let count = tokio::task::spawn_blocking(move || request_rx.recv().unwrap())
+            .await
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            count, 2,
+            "revocation must run even when the UI event is stale"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cancelling_login_remains_responsive_while_token_lock_is_held() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir =
+            std::env::temp_dir().join(format!("desktop-cancel-lock-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager);
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        state.cancel_device_login();
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "cancel blocked UI for {elapsed:?}"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn preserves_token_manager_persistence_after_connected_event_and_cleans_up_on_cancel() {
         use zoo2_client_core::auth::token::{self, StoredTokens};
 
@@ -5505,11 +6399,13 @@ pub(crate) mod tests {
             check_updates: false,
             desktop_ui: None,
         };
-        let mut state = AppState::from_config(&config);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
         assert_eq!(state.session_gen, 0);
 
         let active_gen = state.active_session_gen.clone();
         let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
             issuer: oidc.issuer.clone(),
             client_id: oidc.client_id.clone(),
             resource: oidc.resource.clone(),
@@ -5527,6 +6423,8 @@ pub(crate) mod tests {
             active_gen,
         ));
 
+        assert!(tm.save_if_active().unwrap());
+
         // 接続イベント (Connected) を受け取ると、セッション世代を維持したままトークンが保存され、
         // 接続後もトークンマネージャの save_if_active() による更新保存が可能であること
         state.on_auth_event(AuthEvent::Connected {
@@ -5539,6 +6437,12 @@ pub(crate) mod tests {
             },
             is_admin: false,
         });
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
 
         assert!(state.login_phase.is_none());
         assert!(token_path.exists());
@@ -5578,6 +6482,17 @@ pub(crate) mod tests {
         state.cancel_device_login();
         assert_ne!(state.session_gen, old_gen);
         // 今回のログインが保存したトークンが削除される
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let event = event_rx.recv().await.unwrap();
+                if matches!(event, DesktopEvent::CancelFinished { .. }) {
+                    break event;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(state.on_desktop_event(event));
         assert!(!token_path.exists());
         assert_eq!(state.login_phase, Some(LoginPhase::Ready { error: None }));
 
