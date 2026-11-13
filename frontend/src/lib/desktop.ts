@@ -130,6 +130,26 @@ export function desktopSetFocus(channelId: string | null): void {
   }).catch(() => {});
 }
 
+/** アプリが OS の通知を出すかどうか。 */
+export type DesktopNotificationSettings = { enabled: boolean };
+
+/**
+ * アプリの通知の設定を読む。古い版のアプリにはこのコマンドがないので、呼べなかったら null
+ * （設定画面は、オン・オフの代わりに説明だけを出す）。
+ */
+export async function desktopNotificationSettings(): Promise<DesktopNotificationSettings | null> {
+  try {
+    return await invoke<DesktopNotificationSettings>("zoo_notification_settings");
+  } catch {
+    return null;
+  }
+}
+
+/** アプリの通知のオン・オフを変える。Rust 側が保存する。 */
+export async function desktopSetNotifications(enabled: boolean): Promise<void> {
+  await invoke("zoo_set_notifications", { settings: { enabled } });
+}
+
 export function desktopReportNotifications(batch: DesktopBatch): void {
   void invoke("zoo_notifications_observed", { observed: { batch } }).catch(() => {});
 }

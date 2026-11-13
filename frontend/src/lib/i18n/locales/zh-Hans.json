@@ -412,7 +412,10 @@
     "on": "启用",
     "off": "停用",
     "unavailable": "不可用",
-    "title": "推送通知"
+    "title": "推送通知",
+    "desktopTitle": "通知",
+    "desktopValue": "系统通知",
+    "desktopDescription": "应用会通过系统通知提醒你被提及和收到私信。如果在系统设置中关闭了 zoo2 的通知，请在那里也将其打开。"
   },
   "mfm": {
     "suggestions": "MFM 候选",

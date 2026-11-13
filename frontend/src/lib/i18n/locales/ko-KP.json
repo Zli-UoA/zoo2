@@ -412,7 +412,10 @@
     "on": "켬",
     "off": "끔",
     "unavailable": "리용 불가",
-    "title": "푸시알림"
+    "title": "푸시알림",
+    "desktopTitle": "알림",
+    "desktopValue": "체계 알림",
+    "desktopDescription": "언급과 DM을 앱이 체계 알림으로 알려줍니다. 체계 설정에서 zoo2 알림을 꺼두었다면 그쪽도 켜주십시오."
   },
   "mfm": {
     "suggestions": "MFM 후보",

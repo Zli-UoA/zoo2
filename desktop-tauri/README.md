@@ -35,10 +35,10 @@ zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.ap
 
 [GitHub Releases](https://github.com/Zli-UoA/zoo2/releases) の、`zoo2 デスクトップ版 (Tauri)` のリリース (タグは `desktop-tauri-v<版>`) からダウンロードします。一覧の「Latest」は TUI のリリースなので、デスクトップ版は名前で探してください。
 
-[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.2.3` は入れたい版に置き換えてください。
+[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.2.5` は入れたい版に置き換えてください。
 
 ```bash
-gh release download desktop-tauri-v0.2.3 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
+gh release download desktop-tauri-v0.2.5 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
 ```
 
 リリースから入れると、アプリが自分で更新します (「[更新](#更新)」)。
@@ -56,18 +56,18 @@ gh run download --repo Zli-UoA/zoo2 --name zoo2-desktop-tauri-linux $(gh run lis
 
 ### ファイル
 
-次のファイルがあります。`0.2.3` の部分は版によって変わります。CI の成果物は、Linux の 2 つだけです。
+次のファイルがあります。`0.2.5` の部分は版によって変わります。CI の成果物は、Linux の 2 つだけです。
 
 | ファイル | 対象 |
 |---|---|
-| `zoo2_0.2.3_amd64.deb` | Ubuntu、Debian |
-| `zoo2_0.2.3_amd64.AppImage` | そのほかの Linux |
-| `zoo2_0.2.3_universal.dmg` | macOS (Apple シリコン、Intel) |
+| `zoo2_0.2.5_amd64.deb` | Ubuntu、Debian |
+| `zoo2_0.2.5_amd64.AppImage` | そのほかの Linux |
+| `zoo2_0.2.5_universal.dmg` | macOS (Apple シリコン、Intel) |
 
 ### Ubuntu / Debian
 
 ```bash
-sudo apt install ./zoo2_0.2.3_amd64.deb
+sudo apt install ./zoo2_0.2.5_amd64.deb
 ```
 
 WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-appindicator3-1`) も一緒に入ります。アプリケーションの一覧に「zoo2」が出ます。コマンドは `zoo2-desktop-tauri` です。
@@ -75,11 +75,11 @@ WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-ap
 ### AppImage
 
 ```bash
-chmod +x zoo2_0.2.3_amd64.AppImage
+chmod +x zoo2_0.2.5_amd64.AppImage
 ```
 
 ```bash
-./zoo2_0.2.3_amd64.AppImage
+./zoo2_0.2.5_amd64.AppImage
 ```
 
 好きな場所に置いて、そのまま起動できます。システムの WebKitGTK 4.1 を使うので、入っていなければ、ディストリビューションのパッケージで入れてください。
@@ -145,7 +145,7 @@ NixOS の設定 (flake) に入れるときは、`inputs` に zoo2 を足し、�
 }
 ```
 
-特定のリリースに固定するときは `github:Zli-UoA/zoo2/desktop-tauri-v0.2.3` のようにタグを指定します。flake のパッケージがあるのは v0.2.0 からです。
+特定のリリースに固定するときは `github:Zli-UoA/zoo2/desktop-tauri-v0.2.5` のようにタグを指定します。flake のパッケージがあるのは v0.2.0 からです。
 
 Nix で入れた版は、アプリの中からは更新しません (「[更新](#更新)」)。
 
@@ -168,6 +168,7 @@ Nix で入れた版は、アプリの中からは更新しません (「[更新]
   - 自分の操作による通知
   - アカウントに DND (`dnd_until`) が設定されている間。Web 版の Push 通知と同じ扱いで、止めた分を後から出すこともしません (DND はいまのところ App の API から設定します)。DND はログインした直後と 5 分おきに確かめます。ログインした直後に確かめられなかったとき (オフラインなど) は、DND なしとして通知を出し、次に確かめられた時点から止めます
   - ウィンドウが前面にあり、そのチャンネルを表示しているとき
+- **通知のオン・オフ**: Web 版の画面の「設定」→「一般」→「通知」で切り替えます。オフにすると、アプリは投稿の通知を出しません (更新の知らせは出します)。設定はアプリに保存します (`~/.config/zoo2-desktop-tauri/notifications.json`)。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。
 - **通知のクリック**: Linux では、通知をクリックするとそのチャンネルを開きます。
 
 ## 設定項目

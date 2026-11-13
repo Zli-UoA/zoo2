@@ -30,8 +30,8 @@ use zoo2_client_core::{
 use zoo2_client_types::{
     api::Me,
     ipc::{
-        DeviceLogin, ErrorCode, FocusState, IpcError, OpenTarget, PROTOCOL_VERSION, SessionInfo,
-        SessionState, ShapeBatch, ShapeFailed, UiMode, event,
+        DeviceLogin, ErrorCode, FocusState, IpcError, NotificationSettings, OpenTarget,
+        PROTOCOL_VERSION, SessionInfo, SessionState, ShapeBatch, ShapeFailed, UiMode, event,
     },
     notify::{self, NotifyContext, Toast},
     shape::{Batch, Replica, ShapeId},
@@ -49,6 +49,8 @@ pub struct Core {
     config: Result<Config, String>,
     http: reqwest::Client,
     inner: Mutex<Inner>,
+    /// OS の通知を出すか (`notifications.json` に保存する)。
+    notifications: std::sync::Mutex<NotificationSettings>,
 }
 
 struct Inner {
@@ -103,6 +105,7 @@ impl Core {
             ui,
             config: config.map_err(|err| format!("{err:#}")),
             http: reqwest::Client::new(),
+            notifications: std::sync::Mutex::new(load_notification_settings()),
             inner: Mutex::new(Inner {
                 generation: 0,
                 state: SessionState::Starting,
@@ -143,6 +146,27 @@ impl Core {
         inner.state = state;
         let _ = self.app.emit(event::SESSION, self.info(&inner.state));
         crate::window::follow_session(&self.app, self, &inner.state);
+    }
+
+    pub fn notification_settings(&self) -> NotificationSettings {
+        *self
+            .notifications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// 変えて保存する。保存できなかったら、変えない。
+    pub fn set_notification_settings(&self, settings: NotificationSettings) -> Result<()> {
+        let path = notification_settings_path()?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, serde_json::to_vec(&settings)?)?;
+        *self
+            .notifications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = settings;
+        Ok(())
     }
 
     fn token_path(&self) -> Result<std::path::PathBuf> {
@@ -392,6 +416,9 @@ impl Core {
     }
 
     fn show_toast(&self, toast: Toast) {
+        if !self.notification_settings().enabled {
+            return;
+        }
         let target = OpenTarget {
             channel_id: toast.channel_id.clone(),
             message_id: Some(toast.message_id.clone()),
@@ -654,4 +681,19 @@ pub fn to_ipc(err: anyhow::Error) -> IpcError {
         None => ErrorCode::Internal,
     };
     IpcError::new(code, format!("{err:#}"))
+}
+
+fn notification_settings_path() -> Result<std::path::PathBuf> {
+    config_dir_for(APP_NAME)
+        .map(|dir| dir.join("notifications.json"))
+        .ok_or_else(|| anyhow!("設定ディレクトリが見つかりません"))
+}
+
+/// 保存した通知の設定。ないときや読めないときは、既定 (出す)。
+fn load_notification_settings() -> NotificationSettings {
+    notification_settings_path()
+        .ok()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
 }

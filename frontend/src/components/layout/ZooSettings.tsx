@@ -20,6 +20,8 @@ import { SearchEngineSelect } from "../preferences/SearchEngineSelect";
 import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
+import { isDesktopSession } from "../../lib/desktop";
+import { DesktopNotificationSelect } from "../desktop/DesktopNotificationSelect";
 import { AppsPanel } from "../chat/AppsDialog";
 import { CallSettingsDevices } from "../call/CallSettingsDevices";
 import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
@@ -123,9 +125,20 @@ export function ZooSettings() {
               <SettingRow icon={<SearchIcon />} label={t("search.engine")}>
                 <SearchEngineSelect />
               </SettingRow>
-              <SettingRow icon={<BellIcon />} label={t("pwa.title")}>
-                <PwaControls presentation="select" />
-              </SettingRow>
+              {isDesktopSession() ? (
+                // デスクトップ版では Web Push を使わず、アプリが OS の通知を出す (lib/desktop.ts)。
+                <SettingRow
+                  icon={<BellIcon />}
+                  label={t("pwa.desktopTitle")}
+                  description={t("pwa.desktopDescription")}
+                >
+                  <DesktopNotificationSelect />
+                </SettingRow>
+              ) : (
+                <SettingRow icon={<BellIcon />} label={t("pwa.title")}>
+                  <PwaControls presentation="select" />
+                </SettingRow>
+              )}
             </div>
           </Tabs.Panel>
           <Tabs.Panel value="call" className="min-h-0">

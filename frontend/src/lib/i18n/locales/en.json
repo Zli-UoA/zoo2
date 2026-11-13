@@ -412,7 +412,10 @@
     "on": "On",
     "off": "Off",
     "unavailable": "Unavailable",
-    "title": "Push notifications"
+    "title": "Push notifications",
+    "desktopTitle": "Notifications",
+    "desktopValue": "System notifications",
+    "desktopDescription": "The app shows mentions and DMs as system notifications. If notifications for zoo2 are turned off in your system settings, turn them on there as well."
   },
   "mfm": {
     "suggestions": "MFM suggestions",
