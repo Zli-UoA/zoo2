@@ -45,10 +45,9 @@ describe("filterJoinedChannels", () => {
     ]);
   });
 
-  it("includes private and archived channels when joined", () => {
+  it("includes private channels but hides archived ones even when joined", () => {
     expect(filterJoinedChannels(channels, new Set(["c3", "c5"])).map((entry) => entry.id)).toEqual([
       "c3",
-      "c5",
     ]);
   });
 
@@ -69,10 +68,16 @@ describe("isChannelJoinable", () => {
 });
 
 describe("filterDiscoverableChannels", () => {
-  it("excludes joined and private channels", () => {
+  it("excludes joined and private channels but keeps archived ones", () => {
+    expect(
+      filterDiscoverableChannels(channels, new Set(["c1"]), "").map((entry) => entry.id),
+    ).toEqual(["c2", "c4", "c5"]);
+  });
+
+  it("keeps joined archived channels because the sidebar hides them", () => {
     expect(
       filterDiscoverableChannels(channels, new Set(["c1", "c5"]), "").map((entry) => entry.id),
-    ).toEqual(["c2", "c4"]);
+    ).toEqual(["c2", "c4", "c5"]);
   });
 
   it("matches channel names partially, ignoring case", () => {

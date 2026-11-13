@@ -6,7 +6,6 @@
     "unexpectedError": "顯示頁面嗰陣出現問題，請重新載入。"
   },
   "channels": {
-    "view": "開啟",
     "unread": "有未讀訊息",
     "editTitle": "編輯頻道",
     "editHelp": "頻道名最多80個字元，只可以用文字、數字、半形連字號（-）同底線（_）。唔可以用空格、表情符號、其他符號或者保留名稱。",
@@ -18,7 +17,7 @@
     "empty": "仲未有頻道。",
     "createAction": "開個頻道",
     "browseTitle": "搵頻道",
-    "browseDescription": "唔使加入都可以睇公開頻道嘅訊息。",
+    "browseDescription": "唔使加入都可以睇公開頻道同已封存頻道嘅訊息。",
     "browseSearch": "用頻道名搵",
     "searchClear": "清除搜尋",
     "searchEmpty": "冇頻道符合你嘅搜尋。",
@@ -29,7 +28,6 @@
     "noJoined": "你仲未加入任何頻道。",
     "join": "加入",
     "joining": "加入緊…",
-    "joinUnavailable": "唔可以加入",
     "notFound": "搵唔到頻道。",
     "duplicateName": "同名頻道已經存在。",
     "privateMessages": "呢個係私人頻道，收到邀請之後就可以睇訊息。",
