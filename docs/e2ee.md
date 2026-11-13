@@ -1549,6 +1549,14 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
   - CI Crypto（`.github/workflows/ci-crypto.yaml`）と `make crypto-check` は、バインディングのクレートなしで、コアだけを `wasm32-unknown-unknown` 向けにビルドする。コアで有効にしないと、このビルドが通らない。
   - target を限った依存なので、ネイティブ、Android、TUI のビルドには入らない。この target のときだけ、getrandom が `wasm-bindgen` に依存する（`atomics` を有効にしたときは `js-sys` にも。既定では出ない）。`cargo tree --target wasm32-unknown-unknown` で確かめられる。`Cargo.lock` は target を記録しないので根拠にならない。
 - この target で動かすのは、JS の上で動く React だけ（Compose for Web は実験を中止し、`frontend-compose/` には Android 向けの共有コードだけが残る）なので、`crypto.getRandomValues` を前提にしてよい。JS のない環境で `wasm32-unknown-unknown` を使うことになったら、この例外を見直す。
+- 【決定】（#353）Android のバインディングは `crates/zoo-crypto-ffi` に置き、UniFFI（0.32）で Kotlin のバインディングを作る。コアの `crates/zoo-crypto/Cargo.toml` は変えない（feature も足さない）。
+  - API の形：状態を持つもの（端末アカウント、Olm と Megolm のセッション、`TrustStore`、`BackupUploadState` など）は UniFFI のオブジェクトにし、中身を `Mutex` で守る。サーバーとやり取りする JSON（端末鍵、to-device の `content`、`ciphertext`、SSSS の応答、鍵スロットなど）は、コアと同じ形の JSON 文字列で渡し、Kotlin 側で型を二重に持たない。鍵などのバイト列は `ByteArray`、公開鍵はパディングなしの base64 の文字列にする。エラーはコアの `CryptoError` の variant と 1 対 1 の `ZooCryptoException` にし、`MissingRoomKey` のセッション ID、`BackupVersionRollback` の番号、`Rejected` の理由など、分岐に使う値は項目にも入れる。
+  - Megolm のセッション鍵は Kotlin に返さない。UniFFI の Record は Kotlin の `data class` になり、`toString()` に中身が出るため。鍵の配布は、`DeviceAccount.encrypt_room_key` が `OutboundSession` を受け取り、Rust の中で配る鍵を作る。
+  - ロックの順序：複数のオブジェクトを一緒に使う操作は、端末アカウント、`OutboundSession`、`OlmSessionStore`、`InboundSessionStore` の順にロックを取る。`BackupUploadState` は `InboundSessionStore` より先に取る。
+  - コアの Olm セッション、送信用セッション、受信用セッションはまだ保存形式を持たない。保存は暗号ストア（#359）で足す。
+  - ABI は `arm64-v8a`、`armeabi-v7a`、`x86_64`（エミュレーター）。`x86` は入れない。`minSdk` は 26（アプリと同じ）。
+  - `.so` とバインディングはリポジトリに入れず、Gradle（`frontend-compose/build.gradle.kts`）がビルドのたびに作る。Android の各 ABI の `.so` は cargo-ndk（4.1.2）で作って jniLibs に入れ、Kotlin のバインディングはホスト向けの `.so` から、同じクレートの `uniffi-bindgen`（`--features cli`）で作る（ライブラリーと版が必ず一致する）。単体テスト（JVM）は同じホストの `.so` を JNA で読む。
+  - ツール：`nix develop .#android` で、Android 向けの std を足した Rust、cargo-ndk、Android SDK（35）と NDK（29.0.14206865）が入る。既定の devShell と `rust-toolchain.toml` には足さない（Android を触らない人に NDK や std を入れないため）。CI Android も同じ版の NDK を使う。
 
 #### wasm バインディング（#352）
 
@@ -1599,6 +1607,8 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
   | React | OPFS の別 DB（`zoo-crypto-<ユーザーのハッシュ>.sqlite`。名前は `lib/offline/identity.ts` と同じ作り方） | 抽出できない WebCrypto の鍵（IndexedDB に保存）で包み、起動時に Worker のメモリーに展開する |
   | Android | アプリの内部ストレージ | Android Keystore で包む |
   | TUI | 設定ディレクトリーのファイル（0600） | OS のキーリング。使えなければ 0600 のファイル |
+
+  - 【決定】（#353）Android の保存鍵は、Android Keystore の AES-256-GCM の鍵（`setRandomizedEncryptionRequired(true)`。IV は Keystore が作る）で包み、アプリの内部ストレージのファイルに置く（`frontend-compose` の `zoo.crypto.StorageKeyStore`）。形式は `0x01 ‖ IV（12 バイト） ‖ 暗号文とタグ（48 バイト）`、AAD は `zoo e2ee storage key v1`。保存鍵は `SecureRandom` で作る。別の端末への復元などで Keystore の鍵がないときや失効したとき、ファイルが壊れたときなど、もう開けないと分かるとき（`AEADBadTagException`、`KeyPermanentlyInvalidatedException`、ファイルの形式の不一致）だけ `StorageKeyUnavailableException` を投げ、呼び出し側は暗号ストアを作り直して SSSS で解錠し直す。Keystore の一時的な失敗（`KeyStoreException`、`UnrecoverableKeyException` など）はそのまま投げ、呼び出し側は暗号ストアを消さずに再試行する（作り直すと、Olm セッションや、まだバックアップしていない Megolm の受信用セッションが消えるため）。ファイルの置き場所（ユーザーや端末ごとに分けるか）と、自動バックアップから外すかは #359 で決める。
 
 - 【決定】複数のタブが同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。【提案】他のタブは BroadcastChannel でそのタブに処理を頼む。詳細は #359 で決める。
 - 【決定】暗号ストアには、自分のユーザー署名鍵の公開鍵の履歴（初めて見たとき、保存したとき、置き換わりを検出したときに足す）と、相手ごとの `confirmed_usk` も入れる。古いユーザー署名鍵への巻き戻しの検出（[クロス署名](#クロス署名)の、ユーザー署名鍵の変更の検出手順）に使う。履歴を持たない新しい端末は気付けない（[脅威モデル](#脅威モデル)）。

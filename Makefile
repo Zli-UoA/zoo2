@@ -100,6 +100,16 @@ crypto-check:
 crypto-wasm:
 	crates/zoo-crypto-wasm/build.sh
 
+# zoo-crypto の UniFFI バインディング（#353）。Android 向けのクロスビルドは
+# `nix develop .#android -c make crypto-ffi-android` で行う。
+.PHONY: crypto-ffi-check
+crypto-ffi-check:
+	cd crates/zoo-crypto-ffi && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
+
+.PHONY: crypto-ffi-android
+crypto-ffi-android:
+	cd crates/zoo-crypto-ffi && cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -P 26 build --locked --release --lib
+
 # デスクトップクライアント (GPUI)。desktop-dev は backend の dev モードに X-Dev-User で接続する。
 desktop-dev:
 	cd desktop && ZOO_API_BASE_URL=$${ZOO_API_BASE_URL:-http://localhost:8000} ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run

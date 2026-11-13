@@ -7,6 +7,10 @@ on:
       - "frontend-compose/**"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
+      # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
+      - "crates/zoo-crypto/**"
+      - "crates/zoo-crypto-ffi/**"
+      - "rust-toolchain.toml"
       - ".github/workflows/ci-android.yaml"
       - ".github/scripts/android-update-manifest*.py"
   push:
@@ -17,6 +21,10 @@ on:
       - "frontend-compose/**"
       - "frontend/src/lib/i18n/locales/**"
       - "frontend/public/icons/**"
+      # zoo-crypto の UniFFI バインディング（#353）。APK に .so を入れ、単体テストでも使う。
+      - "crates/zoo-crypto/**"
+      - "crates/zoo-crypto-ffi/**"
+      - "rust-toolchain.toml"
       - ".github/workflows/ci-android.yaml"
       - ".github/scripts/android-update-manifest*.py"
   workflow_dispatch:
@@ -37,8 +45,29 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: 13114758
-          packages: platform-tools platforms;android-35 build-tools;35.0.0
+          # NDK は zoo-crypto のバインディング（crates/zoo-crypto-ffi）を cargo-ndk でビルドするのに使う。
+          # 版は flake.nix の androidNdkVersion と同じ。
+          packages: platform-tools platforms;android-35 build-tools;35.0.0 ndk;29.0.14206865
           log-accepted-android-sdk-licenses: false
+      - name: Use the Android NDK
+        run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy, rustfmt
+          # frontend-compose/build.gradle.kts の cryptoAbis と同じ ABI。
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/zoo-crypto-ffi
+      - name: Install cargo-ndk
+        run: cargo install --locked cargo-ndk@4.1.2
       - name: Restore Gradle wrapper distribution
         id: gradle-wrapper
         uses: actions/cache/restore@v6
@@ -65,6 +94,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Test update manifest generation
         run: python3 .github/scripts/android-update-manifest.test.py
+      - name: Check zoo-crypto-ffi (fmt, clippy, test)
+        working-directory: crates/zoo-crypto-ffi
+        run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
       - name: Build, test and lint Android
         working-directory: frontend-compose
         run: ./gradlew --no-daemon -Pzoo.android=true :androidApp:assembleDebug :androidApp:testDebugUnitTest :androidApp:lintDebug testDebugUnitTest
@@ -93,8 +125,29 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: 13114758
-          packages: platform-tools platforms;android-35 build-tools;35.0.0
+          # NDK は zoo-crypto のバインディング（crates/zoo-crypto-ffi）を cargo-ndk でビルドするのに使う。
+          # 版は flake.nix の androidNdkVersion と同じ。
+          packages: platform-tools platforms;android-35 build-tools;35.0.0 ndk;29.0.14206865
           log-accepted-android-sdk-licenses: false
+      - name: Use the Android NDK
+        run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy, rustfmt
+          # frontend-compose/build.gradle.kts の cryptoAbis と同じ ABI。
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/zoo-crypto-ffi
+      - name: Install cargo-ndk
+        run: cargo install --locked cargo-ndk@4.1.2
       - name: Restore Gradle wrapper distribution
         id: gradle-wrapper
         uses: actions/cache/restore@v6
@@ -154,7 +207,7 @@ jobs:
           if [ "$latest" != "$GITHUB_SHA" ]; then
             # push の paths と同じ一覧。Android に関係しない新しいコミット (TUI など) はビルドを起動しないので、
             # それだけが後から入ったときは、このビルドが最新の Android と同じ内容として公開する。
-            paths=(frontend-compose frontend/src/lib/i18n/locales frontend/public/icons .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
+            paths=(frontend-compose frontend/src/lib/i18n/locales frontend/public/icons crates/zoo-crypto crates/zoo-crypto-ffi rust-toolchain.toml .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
             git fetch --quiet origin "$latest"
             if ! git diff --quiet "$GITHUB_SHA" "$latest" -- "${paths[@]}"; then
               echo "A newer main commit changes Android; skip this older build."
