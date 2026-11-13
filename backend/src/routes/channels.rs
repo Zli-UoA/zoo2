@@ -17,7 +17,7 @@ use crate::{
     db::get_current_txid,
     error::AppError,
     models::{Channel, ChannelUser},
-    routes::response::ApiResponse,
+    routes::{e2ee_channels, response::ApiResponse},
     state::AppState,
     validation::{validate_channel_description, validate_channel_name},
 };
@@ -29,6 +29,9 @@ pub struct CreateChannelRequest {
     pub description: Option<String>,
     pub is_private: Option<bool>,
     pub is_nsfw: Option<bool>,
+    /// 暗号化チャンネルにするか（作成時だけ指定できる。docs/e2ee.md）。
+    #[serde(default)]
+    pub encrypted: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +40,8 @@ pub struct UpdateChannelRequest {
     pub description: Option<String>,
     pub is_private: Option<bool>,
     pub is_nsfw: Option<bool>,
+    /// 変更はできない。今と違う値なら 409 `E2EE_ENCRYPTED_IMMUTABLE`。
+    pub encrypted: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +62,10 @@ pub struct ChannelResponse {
     pub updated_at: Option<String>,
     pub archive_at: Option<String>,
     pub deleted_at: Option<String>,
+    #[serde(default)]
+    pub encrypted: bool,
+    #[serde(default)]
+    pub membership_epoch: i64,
 }
 
 impl From<Channel> for ChannelResponse {
@@ -73,6 +82,8 @@ impl From<Channel> for ChannelResponse {
             updated_at: c.updated_at.map(|t| t.to_string()),
             archive_at: c.archive_at.map(|t| t.to_string()),
             deleted_at: c.deleted_at.map(|t| t.to_string()),
+            encrypted: c.encrypted,
+            membership_epoch: c.membership_epoch,
         }
     }
 }
@@ -141,6 +152,22 @@ pub(crate) async fn create_channel(
             "Guests cannot create or join channels without an invitation".into(),
         ));
     }
+    if payload.encrypted {
+        // App（委任トークンは apps/api.rs で拒否する）、設定、公開チャンネルの順に判定する。
+        let bot = crate::apps::one(
+            &mut tx,
+            "SELECT json_build_object('bot', EXISTS (SELECT 1 FROM users WHERE id = $1 AND is_bot))::text",
+            &[auth_user.id.as_str()],
+        )
+        .await?["bot"]
+            == true;
+        e2ee_channels::check_encrypted_creation(&state, bot)?;
+        if !payload.is_private.unwrap_or(false) {
+            return Err(e2ee_channels::public_forbidden());
+        }
+        // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、チャンネルの行より前に取る。
+        e2ee_channels::lock_members(&mut tx, &[auth_user.id.as_str()]).await?;
+    }
 
     // クライアント指定の ID が既に存在する場合、同一属性の再送であれば作成済みチャンネルを返して成功とする (冪等性)
     // ※ 他人の非公開チャンネル等の UUID 存在漏洩を防ぐため、他人のチャンネル ID と重複した場合は新 UUID を割り当てて作成する
@@ -156,6 +183,7 @@ pub(crate) async fn create_channel(
                     && existing.description == payload.description
                     && existing.is_private == payload.is_private.unwrap_or(false)
                     && existing.is_nsfw == payload.is_nsfw.unwrap_or(false)
+                    && existing.encrypted == payload.encrypted
                     && existing.deleted_at.is_none()
                 {
                     let _ = tx.rollback().await;
@@ -187,6 +215,8 @@ pub(crate) async fn create_channel(
         updated_at: None,
         archive_at: None,
         deleted_at: None,
+        encrypted: payload.encrypted,
+        membership_epoch: 0,
     })
     .exec(&mut tx)
     .await;
@@ -208,6 +238,7 @@ pub(crate) async fn create_channel(
                         && existing.description == payload.description
                         && existing.is_private == payload.is_private.unwrap_or(false)
                         && existing.is_nsfw == payload.is_nsfw.unwrap_or(false)
+                        && existing.encrypted == payload.encrypted
                         && existing.deleted_at.is_none()
                     {
                         return Ok(Json(ApiResponse::new(
@@ -315,6 +346,13 @@ pub(crate) async fn update_channel(
             }
             .into(),
         ));
+    }
+
+    // encrypted は作成時だけ指定できる。暗号化チャンネルは公開にできない（DB のトリガーと CHECK でも拒否する）。
+    if payload.encrypted.is_some_and(|e| e != channel.encrypted)
+        || (channel.encrypted && payload.is_private == Some(false))
+    {
+        return Err(e2ee_channels::encrypted_immutable());
     }
 
     if channel.archive_at.is_some() {
@@ -556,14 +594,25 @@ pub(crate) async fn join_channel(
     let channel_user = if let Some(cu) = existing {
         cu
     } else {
+        if channel.encrypted {
+            // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）。この経路はチャンネルの
+            // 行をロックしていない（encrypted は変わらないので、ロックなしで読んだ値で判定できる）。
+            e2ee_channels::lock_members(&mut tx, &[auth_user.id.as_str()]).await?;
+            e2ee_channels::check_member_limit(&mut tx, &id, 1).await?;
+        }
         let now = crate::models::now_utc_millis();
-        toasty::create!(ChannelUser {
+        let cu = toasty::create!(ChannelUser {
             user_id: auth_user.id.as_str(),
             channel_id: id.as_str(),
             joined_at: now,
         })
         .exec(&mut tx)
-        .await?
+        .await?;
+        // メンバーが実際に増えたときだけ増やす。
+        if channel.encrypted {
+            e2ee_channels::bump_channel_epoch(&mut tx, &id).await?;
+        }
+        cu
     };
 
     let txid = get_current_txid(&mut tx).await?;
@@ -591,6 +640,28 @@ async fn add_channel_user(
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
+    // 暗号化チャンネルでは、追加する人のメンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、
+    // チャンネルの行より前に取る。encrypted は変わらないので、ロックなしで読んで判定できる。
+    let encrypted = crate::apps::query(
+        &mut tx,
+        "SELECT json_build_object('encrypted', encrypted)::text FROM channels WHERE id = $1",
+        &[id.as_str()],
+    )
+    .await?
+    .first()
+    .is_some_and(|row| row["encrypted"] == true);
+    if encrypted {
+        e2ee_channels::lock_members(&mut tx, &[payload.user_id.as_str()]).await?;
+    }
+
+    // 退出、キック、送信と直列にし、追加する人がメンバーであることを確かめてから足すまでに抜けないようにする。
+    // FOR NO KEY UPDATE は、epoch の UPDATE と送信の FOR SHARE とは競合し、外部キーの検査の FOR KEY SHARE とは
+    // 競合しないので、このチャンネルへの投稿や channel_user の INSERT を待たせない。
+    let _ = toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(id.clone())
+        .exec(&mut tx)
+        .await?;
+
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
         .map_err(|err| {
@@ -613,25 +684,31 @@ async fn add_channel_user(
         is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
     };
 
-    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
-        let membership = ChannelUser::filter(
-            ChannelUser::fields()
-                .channel_id()
-                .eq(id.as_str())
-                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
-        )
-        .first()
-        .exec(&mut tx)
-        .await?;
+    let actor_membership = ChannelUser::filter(
+        ChannelUser::fields()
+            .channel_id()
+            .eq(id.as_str())
+            .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?
+    .is_some();
 
-        if membership.is_none()
-            && (!is_admin || channel.is_dm)
-            && (channel.created_user_id != auth_user.id || channel.is_dm)
-        {
-            return Err(AppError::NotFound(format!(
-                "Channel not found with id: {id}"
-            )));
-        }
+    if (channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await?)
+        && !actor_membership
+        && (!is_admin || channel.is_dm)
+        && (channel.created_user_id != auth_user.id || channel.is_dm)
+    {
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
+    }
+
+    // 暗号化チャンネルでは、作成者と管理者も channel_user の実際の行で判定する。メンバーでない管理者と、
+    // 退出した作成者が自分を足して、それ以降のセッションを受け取れないようにする。
+    if channel.encrypted && !actor_membership {
+        return Err(e2ee_channels::add_forbidden());
     }
 
     let is_creator = channel.created_user_id == auth_user.id;
@@ -700,14 +777,22 @@ async fn add_channel_user(
     let channel_user = if let Some(cu) = existing {
         cu
     } else {
+        if channel.encrypted {
+            e2ee_channels::check_member_limit(&mut tx, &id, 1).await?;
+        }
         let now = crate::models::now_utc_millis();
-        toasty::create!(ChannelUser {
+        let cu = toasty::create!(ChannelUser {
             user_id: payload.user_id.as_str(),
             channel_id: id.as_str(),
             joined_at: now,
         })
         .exec(&mut tx)
-        .await?
+        .await?;
+        // メンバーが実際に増えたときだけ増やす。すでにメンバーなら何もしない。
+        if channel.encrypted {
+            e2ee_channels::bump_channel_epoch(&mut tx, &id).await?;
+        }
+        cu
     };
 
     let txid = get_current_txid(&mut tx).await?;
@@ -787,6 +872,9 @@ pub(crate) async fn leave_channel(
     .delete()
     .exec(&mut tx)
     .await?;
+    if channel.encrypted {
+        e2ee_channels::bump_channel_epoch(&mut tx, &id).await?;
+    }
 
     // 通話 presence の削除と退出通知を同一トランザクション内で不可分に実行 ([P1], [P2])
     let _ = crate::routes::calls::CallRegistry::delete_user_presence_and_notify_tx(
@@ -1120,6 +1208,9 @@ async fn kick_channel_user(
     .delete()
     .exec(&mut tx)
     .await?;
+    if channel.encrypted {
+        e2ee_channels::bump_channel_epoch(&mut tx, &id).await?;
+    }
 
     // 通話 presence の削除と退出通知を同一トランザクション内で不可分に実行 ([P1], [P2])
     let _ = crate::routes::calls::CallRegistry::delete_user_presence_and_notify_tx(

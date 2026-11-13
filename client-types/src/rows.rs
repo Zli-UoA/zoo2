@@ -21,6 +21,9 @@ pub struct Channel {
     #[serde(default)]
     pub is_nsfw: bool,
     pub is_dm: bool,
+    /// 暗号化チャンネル（作成時だけ指定でき、変わらない。docs/e2ee.md）。
+    #[serde(default)]
+    pub encrypted: bool,
     pub archive_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
 }
@@ -171,6 +174,8 @@ impl FromRow for Channel {
             is_nsfw: opt_boolean(row, "is_nsfw")?.unwrap_or(false),
             // 古いスキーマには is_dm がないため、無ければ通常のチャンネルとして扱う。
             is_dm: opt_boolean(row, "is_dm")?.unwrap_or(false),
+            // 古いスキーマには encrypted がないため、無ければ平文のチャンネルとして扱う。
+            encrypted: opt_boolean(row, "encrypted")?.unwrap_or(false),
             archive_at: opt_time(row, "archive_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
         })
@@ -386,9 +391,10 @@ mod tests {
         let channel = Channel::from_row(&row(json!({
             "id": "c1", "channel_name": "general", "description": null,
             "is_private": "f", "is_nsfw": "t", "is_dm": "true", "archive_at": "2026-11-01 01:02:03.456",
-            "deleted_at": null
+            "deleted_at": null, "encrypted": "t", "membership_epoch": "3"
         })))
         .unwrap();
+        assert!(channel.encrypted);
         assert!(!channel.is_private);
         assert!(channel.is_nsfw);
         assert!(channel.is_dm);
@@ -415,6 +421,7 @@ mod tests {
         .unwrap();
         assert!(!channel.is_dm);
         assert!(!channel.is_nsfw);
+        assert!(!channel.encrypted);
     }
 
     #[test]

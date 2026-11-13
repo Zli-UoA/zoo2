@@ -142,6 +142,10 @@ async fn create_channel(
     Json(b): Json<c::CreateChannelRequest>,
 ) -> Result<Json<crate::routes::response::ApiResponse<c::ChannelResponse>>, AppError> {
     p.require("channels:manage")?;
+    if b.encrypted {
+        // 委任トークンを含め、App からは暗号化チャンネルを作れない（設定より先に判定する）。
+        return Err(crate::routes::e2ee_channels::apps_forbidden());
+    }
     c::create_channel(State(s), p.actor(), Json(b)).await
 }
 async fn update_channel(
@@ -199,6 +203,10 @@ async fn dm(
     Json(b): Json<dms::CreateDmRequest>,
 ) -> Result<Json<crate::routes::response::ApiResponse<c::ChannelResponse>>, AppError> {
     p.require("dm:write")?;
+    if b.encrypted {
+        // dms::create_or_get_dm は人間の POST /api/dms と共用で Principal を受け取らないので、ここで拒否する。
+        return Err(crate::routes::e2ee_channels::apps_forbidden());
+    }
     if !p.manifest.dm_enabled {
         return Err(AppError::Forbidden("App DMs are disabled".into()));
     }

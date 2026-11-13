@@ -5,6 +5,7 @@ pub mod channel_webhooks;
 pub mod channels;
 pub mod dms;
 pub mod e2ee;
+pub mod e2ee_channels;
 pub mod e2ee_cross_signing;
 pub mod e2ee_key_backup;
 pub mod e2ee_reauth;
@@ -87,6 +88,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(channels::router())
         .merge(dms::router())
         .merge(e2ee::router())
+        .merge(e2ee_channels::router())
         .merge(e2ee_cross_signing::router())
         .merge(e2ee_secret_storage::router())
         .merge(e2ee_key_backup::router())

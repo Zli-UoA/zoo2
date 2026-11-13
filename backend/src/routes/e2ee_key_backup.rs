@@ -207,7 +207,9 @@ async fn create_version(
     if max.is_some() {
         // 最初の版でなければ（消した版を含めて過去に版があれば）、直前の再認証が要る。
         reauth.require()?;
-        // 参加している暗号化チャンネルの membership_epoch を増やす（#357 で足す）。
+        // 切り替えより前の版に入ったセッションを、切り替えのあとの送信に使わせないため、参加している
+        // 暗号化チャンネルの membership_epoch を増やす。
+        crate::routes::e2ee_channels::bump_user_epochs(&mut tx, &actor.id).await?;
     }
     let version = max.unwrap_or(0) + 1;
     exec(
@@ -222,10 +224,16 @@ async fn create_version(
         ],
     )
     .await?;
+    // epoch を増やしたときは Channels Shape に変更が流れるので、txid を返す。
+    let txid = if max.is_some() {
+        Some(crate::db::get_current_txid(&mut tx).await?)
+    } else {
+        None
+    };
     tx.commit().await?;
     Ok(Json(ApiResponse::new(
         json!({"version": version.to_string()}),
-        None,
+        txid,
     )))
 }
 
