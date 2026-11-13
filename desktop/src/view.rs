@@ -18,6 +18,7 @@ use zoo2_client_core::{
 
 use crate::{
     app::{AppState, QUICK_EMOJIS, Target, is_image_content_type, reaction_label},
+    i18n::I18n,
     input::{InputEvent, TextInput},
     login::{self, LoginPhase},
     mfm_view, theme,
@@ -1124,7 +1125,10 @@ impl WorkspaceView {
             let is_unread = unread.contains(&ch_id);
             let is_member = state.store.is_member(&ch_id, &me_id);
             let mut label = state.store.channel_label(ch, &me_id);
-            if ch.is_private && !ch.is_dm {
+            if ch.encrypted {
+                // 暗号化チャンネル（このクライアントでは開いても表示しない）。
+                label.push_str(" 🔐");
+            } else if ch.is_private && !ch.is_dm {
                 label.push_str(" 🔒");
             }
             if ch.archive_at.is_some() {
@@ -1518,6 +1522,9 @@ impl WorkspaceView {
                     None,
                 );
             };
+            if state.is_encrypted_channel(&channel_id) {
+                return (render_encrypted_unsupported(&theme), None);
+            }
 
             let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
             let me_user_name = state
@@ -2467,9 +2474,14 @@ impl WorkspaceView {
         };
 
         let is_editing = matches!(state.target, Target::Edit(_));
+        // 暗号化チャンネルはタイムラインに「表示できない」と出すので、入力欄も制限の案内も出さない。
+        let is_encrypted = state
+            .current_channel
+            .as_deref()
+            .is_some_and(|id| state.is_encrypted_channel(id));
         let is_posting_restricted =
-            is_synced && has_channel && !is_archived && !can_post && !is_editing;
-        let show_composer = !is_archived && (can_post || is_editing);
+            is_synced && has_channel && !is_archived && !is_encrypted && !can_post && !is_editing;
+        let show_composer = !is_archived && !is_encrypted && (can_post || is_editing);
         let typing_text = state.typing_text(&typing_scope);
         let notice = state.notice.as_ref().map(|(msg, _)| msg.clone());
         let invalid_rows = state.store.invalid_rows;
@@ -4604,6 +4616,34 @@ pub fn render_attachment_item(
                     ),
             )
     }
+}
+
+/// 暗号化チャンネルを開いたときの表示。デスクトップ版は E2EE の対象外なので、本文も入力欄も出さない
+/// （docs/e2ee.md の「クライアントの構成」、#361）。
+fn render_encrypted_unsupported(theme: &theme::Theme) -> Div {
+    let i18n = I18n::detect();
+    div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .h_full()
+        .justify_center()
+        .items_center()
+        .p_6()
+        .gap_2()
+        .child(
+            div()
+                .text_lg()
+                .font_weight(FontWeight::BOLD)
+                .text_color(theme.text_primary)
+                .child(format!("🔐 {}", i18n.t("e2ee.desktopUnsupported.title"))),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(theme.text_muted)
+                .child(i18n.t("e2ee.desktopUnsupported.description")),
+        )
 }
 
 #[cfg(test)]

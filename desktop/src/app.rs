@@ -2624,10 +2624,20 @@ impl AppState {
     }
 
     /// 指定チャンネルへ新規メッセージや返信を投稿可能か判定する。
+    /// 暗号化チャンネルか。デスクトップ版は復号も暗号化もしないので、表示と送信をしない。
+    pub fn is_encrypted_channel(&self, channel_id: &str) -> bool {
+        self.store.channel(channel_id).is_some_and(|c| c.encrypted)
+    }
+
     pub fn can_post_in_channel(&self, channel_id: &str) -> bool {
         let Some(me) = self.me.as_ref() else {
             return false;
         };
+        // デスクトップ版は E2EE の対象外。暗号化チャンネルには平文で送らない（docs/e2ee.md）。
+        // 再同期中の判定より先に見る（行が届いていれば、同期中でも送らない）。
+        if self.is_encrypted_channel(channel_id) {
+            return false;
+        }
         // Channels または ChannelUsers が再同期中（reset 受信〜初期同期完了）の間は、
         // 投稿制限やメンバーシップ欠落と誤判定せず、入力欄の表示と本文入力を維持する。
         if !self.store.is_synced(&ShapeId::Channels)
