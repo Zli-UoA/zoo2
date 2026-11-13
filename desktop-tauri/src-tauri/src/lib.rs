@@ -23,16 +23,18 @@ use zoo2_client_types::ipc::UiMode;
 /// 設定ディレクトリとトークンの置き場所の名前。GPUI 版 (`zoo2-desktop`) や TUI とは分ける。
 pub const APP_NAME: &str = "zoo2-desktop-tauri";
 
-/// `ZOO_DESKTOP_UI=leptos|remote`。既定は検証中なので `leptos`。
-fn ui_mode() -> UiMode {
-    match std::env::var("ZOO_DESKTOP_UI").as_deref() {
-        Ok("remote") => UiMode::Remote,
-        _ => UiMode::Leptos,
+/// 画面の種類。`desktop_ui` (`ZOO_DESKTOP_UI`) が `leptos` のときだけ同梱の画面にし、
+/// 既定は zli.chat の Web 版の画面 (`remote`)。設定を読めないときも `remote` にする。
+fn ui_mode(config: &anyhow::Result<Config>) -> UiMode {
+    match config {
+        Ok(config) if config.desktop_ui.as_deref() == Some("leptos") => UiMode::Leptos,
+        _ => UiMode::Remote,
     }
 }
 
 pub fn run() {
-    let ui = ui_mode();
+    let config = Config::load_for(APP_NAME);
+    let ui = ui_mode(&config);
     tauri::Builder::default()
         // 単一インスタンスは最初に登録する (2 つ目のプロセスを、他の初期化より前に止めるため)。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -54,7 +56,8 @@ pub fn run() {
             commands::zoo_notifications_observed,
         ])
         .setup(move |app| {
-            let config = Config::load_for(APP_NAME);
+            #[cfg(target_os = "macos")]
+            toast::init_macos(&app.config().identifier);
             // 設定を読めないときは確かめる (直した版を届けられるように)。
             let check_updates = !matches!(&config, Ok(config) if !config.check_updates);
             let core = Arc::new(core::Core::new(app.handle().clone(), ui, config));

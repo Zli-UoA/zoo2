@@ -133,7 +133,9 @@ cargo tauri dev                    # trunk serve (localhost:1420) と一緒に�
 cargo tauri build --bundles deb    # NixOS では AppImage を作れないので deb だけ。AppImage は CI で作る
 ```
 
-- 画面の案は `ZOO_DESKTOP_UI=leptos|remote` で選ぶ。既定は `leptos`。
+- 画面の案は `desktop_ui`（`ZOO_DESKTOP_UI`）の `remote|leptos` で選ぶ。既定は `remote`（Web 版の画面。通話もこちらでだけ使える）。
+- 通話: (b) の画面にだけ、マイクとカメラの許可を与える（`on_permission_request`）。macOS は `src-tauri/Info.plist` の `NSMicrophoneUsageDescription` と `NSCameraUsageDescription` で OS が使用を尋ねる。Linux は WebKitGTK の WebRTC と media stream を既定で無効にしているので、ウィンドウを作ったあとに有効にする。
+- macOS の通知は、起動時に `notify_rust::set_application` でアプリの bundle identifier を指定する（指定しないと Finder として出そうとして、表示されないことがある）。
 - (b) で読み込む先は `api_base_url` の起点。debug ビルドだけ、`ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` で Vite の dev サーバーに差し替えられる（React 側の変更をデプロイ前に試すため）。
 - 接続先とログインは TUI と同じ環境変数（`ZOO_API_BASE_URL`、`ZOO_OIDC_CLIENT_ID`、`ZOO_OIDC_RESOURCE` など）か、`~/.config/zoo2-desktop-tauri/config.toml` で変える。
 - ローカルの backend（`DEV_AUTH_ENABLED=true`）に向けるときは `ZOO_DEV_USER=<UUID>` を付ける。デバイスコードのログインを通らずに `X-Dev-User` で接続する。

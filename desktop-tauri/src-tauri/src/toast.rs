@@ -7,6 +7,13 @@
 use tauri::AppHandle;
 use zoo2_client_types::ipc::OpenTarget;
 
+/// macOS の通知を、このアプリ (bundle identifier) から出すようにする。
+/// 指定しないと notify-rust は Finder として出そうとし、今の macOS では表示されないことがある。
+#[cfg(target_os = "macos")]
+pub fn init_macos(identifier: &str) {
+    let _ = notify_rust::set_application(identifier);
+}
+
 /// 投稿の通知。クリックしたら、そのチャンネルを開く。
 pub fn show(app: &AppHandle, title: &str, body: &str, target: OpenTarget) {
     show_with(app, title, body, move |app| {
