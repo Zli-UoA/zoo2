@@ -5,6 +5,7 @@ import {
   filterDiscoverableChannels,
   filterJoinedChannels,
   isChannelJoinable,
+  sortChannels,
 } from "./channelSearch";
 
 function channel(
@@ -120,5 +121,40 @@ describe("filterDiscoverableChannels", () => {
     const input = [...channels];
     filterDiscoverableChannels(input, new Set(), "dev");
     expect(input).toEqual(channels);
+  });
+});
+
+describe("sortChannels", () => {
+  const dated = [
+    { ...channel("a", "Beta"), created_at: "2026-01-02 00:00:00.000" },
+    { ...channel("b", "alpha"), created_at: "2026-03-01 00:00:00.000" },
+    { ...channel("c", "Gamma"), created_at: "2026-02-01 00:00:00.000" },
+  ];
+  const ids = (list: ChannelRow[]) => list.map((entry) => entry.id);
+
+  it("sorts by name in both directions, ignoring case", () => {
+    expect(ids(sortChannels(dated, "name-asc"))).toEqual(["b", "a", "c"]);
+    expect(ids(sortChannels(dated, "name-desc"))).toEqual(["c", "a", "b"]);
+  });
+
+  it("sorts by creation time in both directions", () => {
+    expect(ids(sortChannels(dated, "created-desc"))).toEqual(["b", "c", "a"]);
+    expect(ids(sortChannels(dated, "created-asc"))).toEqual(["a", "c", "b"]);
+  });
+
+  it("sorts by member count and breaks ties by name", () => {
+    const counts = new Map([
+      ["a", 5],
+      ["b", 5],
+      ["c", 9],
+    ]);
+    expect(ids(sortChannels(dated, "members-desc", counts))).toEqual(["c", "b", "a"]);
+    expect(ids(sortChannels(dated, "members-asc", counts))).toEqual(["b", "a", "c"]);
+  });
+
+  it("treats channels without a count as zero and does not mutate the input", () => {
+    const input = [...dated];
+    expect(ids(sortChannels(input, "members-desc", new Map([["a", 1]])))[0]).toBe("a");
+    expect(input).toEqual(dated);
   });
 });

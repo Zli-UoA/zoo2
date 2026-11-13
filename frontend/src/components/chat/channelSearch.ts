@@ -39,3 +39,52 @@ export function filterDiscoverableChannels(
     return needle.length === 0 || channel.channel_name.toLowerCase().includes(needle);
   });
 }
+
+export const CHANNEL_SORTS = [
+  "name-asc",
+  "name-desc",
+  "created-desc",
+  "created-asc",
+  "members-desc",
+  "members-asc",
+] as const;
+
+export type ChannelSort = (typeof CHANNEL_SORTS)[number];
+
+export const DEFAULT_CHANNEL_SORT: ChannelSort = "name-asc";
+
+export function isChannelSort(value: unknown): value is ChannelSort {
+  return CHANNEL_SORTS.includes(value as ChannelSort);
+}
+
+function compareNames(a: ChannelRow, b: ChannelRow): number {
+  return a.channel_name.localeCompare(b.channel_name, undefined, { sensitivity: "base" });
+}
+
+/**
+ * 「チャンネルを探す」の並び順。入力は変更しない。
+ *
+ * - 同順位（同じ作成日時・同じメンバー数）は名前の昇順で安定させる。
+ * - 作成日時は `created_at`、メンバー数は `memberCounts`（未登録は 0）で比べる。
+ */
+export function sortChannels(
+  channels: ChannelRow[],
+  sort: ChannelSort,
+  memberCounts: ReadonlyMap<string, number> = new Map(),
+): ChannelRow[] {
+  const direction = sort.endsWith("-desc") ? -1 : 1;
+  const key = (channel: ChannelRow): string | number => {
+    if (sort.startsWith("created")) return channel.created_at;
+    if (sort.startsWith("members")) return memberCounts.get(channel.id) ?? 0;
+    return 0;
+  };
+  return [...channels].sort((a, b) => {
+    if (sort.startsWith("name")) {
+      return direction * compareNames(a, b);
+    }
+    const ka = key(a);
+    const kb = key(b);
+    const order = ka < kb ? -1 : ka > kb ? 1 : 0;
+    return order !== 0 ? direction * order : compareNames(a, b);
+  });
+}

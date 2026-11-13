@@ -71,6 +71,17 @@ export const JoinFailed: Story = {
   }),
 };
 
+export const SortByName: Story = {
+  play: playForImplementation(async () => {
+    const rows = async () =>
+      (await screen.findAllByRole("link")).map((link) => link.textContent ?? "");
+    await expect((await rows())[0]).toContain("old-announcements");
+    await userEvent.click(screen.getByRole("button", { name: /並び替え/ }));
+    await userEvent.click(await screen.findByRole("menuitemradio", { name: /Z → A/ }));
+    await expect((await rows())[0]).toContain("random");
+  }),
+};
+
 export const SearchEmpty: Story = {
   play: playForImplementation(async () => {
     await userEvent.type(await screen.findByRole("searchbox"), "zzzz");

@@ -20,6 +20,15 @@
     "browseTitle": "통로 찾기",
     "browseDescription": "공개 통로와 보관된 통로의 통보문을 참가하지 않고 볼수 있습니다.",
     "browseSearch": "통로 이름으로 검색",
+    "sortLabel": "정렬",
+    "sort": {
+      "name-asc": "알파벳순 (A → Z)",
+      "name-desc": "알파벳 역순 (Z → A)",
+      "created-desc": "통로 창설 (최신순)",
+      "created-asc": "통로 창설 (오래된순)",
+      "members-desc": "성원수 (많은순)",
+      "members-asc": "성원수 (적은순)"
+    },
     "searchClear": "검색 지우기",
     "searchEmpty": "일치하는 통로가 없습니다.",
     "browseEmpty": "참가할수 있는 공개 통로가 없습니다.",

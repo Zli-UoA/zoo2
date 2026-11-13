@@ -2,15 +2,30 @@ import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
-import { ArchiveIcon, HashIcon, SearchIcon, XIcon } from "lucide-react";
+import { ArchiveIcon, ArrowUpDownIcon, HashIcon, SearchIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type { ChannelRow } from "../../lib/electric/types";
 import { Button } from "../ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
-import { filterDiscoverableChannels, isChannelJoinable } from "./channelSearch";
+import {
+  CHANNEL_SORTS,
+  DEFAULT_CHANNEL_SORT,
+  filterDiscoverableChannels,
+  isChannelJoinable,
+  isChannelSort,
+  sortChannels,
+  type ChannelSort,
+} from "./channelSearch";
 
 /**
  * 未参加の公開チャンネルとアーカイブ済みチャンネルを探す。行を押すとチャンネルを開き、
@@ -23,20 +38,29 @@ export function ChannelBrowserDialog({
   channels,
   joinedChannelIds,
   onJoinChannel,
+  memberCounts,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   channels: ChannelRow[];
   joinedChannelIds: ReadonlySet<string>;
   onJoinChannel?: (channelId: string) => Promise<void>;
+  /** チャンネル ID ごとのメンバー数。メンバー数での並び替えに使う。 */
+  memberCounts?: ReadonlyMap<string, number>;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joiningIds, setJoiningIds] = useState<ReadonlySet<string>>(new Set());
+  const [sort, setSort] = useState<ChannelSort>(DEFAULT_CHANNEL_SORT);
   const discoverableChannels = useMemo(
-    () => filterDiscoverableChannels(channels, joinedChannelIds, query),
-    [channels, joinedChannelIds, query],
+    () =>
+      sortChannels(
+        filterDiscoverableChannels(channels, joinedChannelIds, query),
+        sort,
+        memberCounts,
+      ),
+    [channels, joinedChannelIds, query, sort, memberCounts],
   );
 
   async function handleJoin(channelId: string) {
@@ -74,45 +98,76 @@ export function ChannelBrowserDialog({
           <DialogDescription>{t("channels.browseDescription")}</DialogDescription>
         </DialogHeader>
 
-        <div className="relative min-w-0">
-          <SearchIcon
-            aria-hidden="true"
-            className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-          />
-          <Input
-            type="search"
-            className={cn(
-              inputClassName(),
-              "w-full pr-8 pl-8 [&::-webkit-search-cancel-button]:appearance-none",
-            )}
-            placeholder={t("channels.browseSearch")}
-            aria-label={t("channels.browseSearch")}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape" && query) {
-                event.preventDefault();
-                event.stopPropagation();
-                setQuery("");
+        <div className="flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <SearchIcon
+              aria-hidden="true"
+              className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+              type="search"
+              className={cn(
+                inputClassName(),
+                "w-full pr-8 pl-8 [&::-webkit-search-cancel-button]:appearance-none",
+              )}
+              placeholder={t("channels.browseSearch")}
+              aria-label={t("channels.browseSearch")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && query) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setQuery("");
+                }
+              }}
+              autoComplete="off"
+              spellCheck={false}
+              autoFocus
+            />
+            {query ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="absolute top-1/2 right-1 -translate-y-1/2"
+                aria-label={t("channels.searchClear")}
+                title={t("channels.searchClear")}
+                onClick={() => setQuery("")}
+              >
+                <XIcon />
+              </Button>
+            ) : null}
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={`${t("channels.sortLabel")}: ${t(`channels.sort.${sort}`)}`}
+                  title={`${t("channels.sortLabel")}: ${t(`channels.sort.${sort}`)}`}
+                />
               }
-            }}
-            autoComplete="off"
-            spellCheck={false}
-            autoFocus
-          />
-          {query ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              className="absolute top-1/2 right-1 -translate-y-1/2"
-              aria-label={t("channels.searchClear")}
-              title={t("channels.searchClear")}
-              onClick={() => setQuery("")}
             >
-              <XIcon />
-            </Button>
-          ) : null}
+              <ArrowUpDownIcon aria-hidden="true" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuRadioGroup
+                value={sort}
+                onValueChange={(value) => {
+                  if (isChannelSort(value)) setSort(value);
+                }}
+              >
+                {CHANNEL_SORTS.map((value) => (
+                  <DropdownMenuRadioItem key={value} value={value} closeOnClick>
+                    {t(`channels.sort.${value}`)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {joinError ? (
