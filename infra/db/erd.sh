@@ -41,7 +41,7 @@ start_db() {
     -e POSTGRES_PASSWORD="$pw" -e POSTGRES_DB=erd \
     -p 127.0.0.1::5432 postgres:16 >/dev/null
   for _ in $(seq 1 60); do
-    docker exec "$name" pg_isready -U postgres -d erd -q && return 0
+    docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -d erd -q && return 0
     sleep 1
   done
   echo "postgres が起動しませんでした" >&2
