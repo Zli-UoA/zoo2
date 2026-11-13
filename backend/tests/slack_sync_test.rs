@@ -425,3 +425,128 @@ async fn test_slack_sync_resumes_after_429_without_duplicates() -> anyhow::Resul
     assert_eq!(row["error"], "private_slack_channel_in_public_channel");
     Ok(())
 }
+
+/// 同期した投稿の添付は、同期の中では取得せず、ファイル名を本文に補って行 (`job_id` なし) を残す。
+/// 行単位の取得が、あとから添付として取得し、補った名前を本文から外す。
+#[tokio::test]
+async fn test_slack_sync_files_are_fetched_later_by_the_file_worker() -> anyhow::Result<()> {
+    let key = [3u8; 32];
+    let team = format!("TSYNC{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let files = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/files/F1/a.txt"))
+        .and(header("authorization", "Bearer xoxb-test"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/plain")
+                .set_body_bytes(b"hello".to_vec()),
+        )
+        .mount(&files)
+        .await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    config.slack.import_bot_token = Some("xoxb-test".into());
+    config.slack.files_base_url = format!("{}/files/", files.uri());
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    backend::storage::ensure_bucket_exists(&state.s3_client, &state.config.s3.bucket).await;
+    let app = create_router(state.clone());
+
+    let t0 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        - 7200;
+    let ts = format!("{}.000100", t0 + 100);
+    let alice = create_user(&app, "files_alice").await?;
+    link(&state, &key, &alice, &team, "UA", "xoxp-alice").await?;
+    let c1 = create_channel(&app, &alice, false).await?;
+    sql(
+        &state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C1',$2,$3) \
+         RETURNING json_build_object('ok',true)::text",
+        &[&team, &c1, &format!("{t0}.000000")],
+    )
+    .await?;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "channel": {"id": "C1", "is_private": false}})),
+        )
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            // 本文がなく、ファイルだけの投稿
+            "messages": [{"type": "message", "ts": &ts, "user": "UA", "text": "", "files": [{
+                "id": "F1", "name": "a.txt", "mimetype": "text/plain", "size": 5,
+                "url_private_download": format!("{}/files/F1/a.txt", files.uri()),
+            }]}],
+            "has_more": false,
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [], "has_more": false})),
+        )
+        .mount(&slack)
+        .await;
+
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        sync::enqueue_team(&mut tx, &team).await?;
+        tx.commit().await?;
+    }
+    drain(&state).await;
+
+    let message = backend::slack::message_id(&team, "C1", &ts);
+    let content = |state: AppState, message: String| async move {
+        sql(
+            &state,
+            "SELECT json_build_object('c',content)::text FROM messages WHERE id=$1",
+            &[&message],
+        )
+        .await
+        .unwrap()[0]["c"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    // 同期は取得せず、ファイル名を本文に補う。行は、ジョブに紐づかない pending
+    assert_eq!(content(state.clone(), message.clone()).await, "a.txt");
+    let row = &sql(
+        &state,
+        "SELECT json_build_object('status',status,'job',job_id,'in_content',in_content)::text \
+         FROM slack_files WHERE team_id=$1 AND message_id=$2",
+        &[&team, &message],
+    )
+    .await?[0];
+    assert_eq!(row["status"], "pending");
+    assert!(row["job"].is_null());
+    assert_eq!(row["in_content"], true);
+
+    // 行単位の取得が添付にして、補った名前を本文から外す
+    assert!(backend::slack::worker::orphan_files_once(&state, &team).await?);
+    assert_eq!(content(state.clone(), message.clone()).await, "");
+    let attached = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM attachments WHERE message_id=$1 AND file_name='a.txt'",
+        &[&message],
+    )
+    .await?;
+    assert_eq!(attached[0]["n"], 1);
+    Ok(())
+}
