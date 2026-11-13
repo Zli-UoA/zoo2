@@ -62,6 +62,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     supported ? "idle" : "unsupported",
   );
   const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [readyWorker, setReadyWorker] = useState<CryptoWorker | null>(null);
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const leader = useRef<ActiveStore | null>(null);
   const takeover = useRef<Promise<ActiveStore> | null>(null);
@@ -100,10 +101,14 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
           await retryPendingStoreDeletion(worker).catch(() => undefined);
           await manager
             .start()
-            .then(() => setDeviceId(manager.currentDeviceId))
+            .then(() => {
+              setDeviceId(manager.currentDeviceId);
+              setReadyWorker(worker);
+            })
             .catch(() => undefined);
           await held;
         } finally {
+          setReadyWorker((current) => (current === worker ? null : current));
           if (leader.current === active) leader.current = null;
           await manager.stop().catch(() => undefined);
           worker.terminate();
@@ -149,6 +154,8 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     () => ({
       status,
       deviceId,
+      worker: status === "ready" ? readyWorker : null,
+      userId: userId || null,
       pendingBackupCount: async () => {
         const store = await storeForLogout();
         return store ? store.manager.pendingBackupCount() : 0;
@@ -164,7 +171,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         store.worker.terminate();
       },
     }),
-    [deviceId, namespace, status, storeForLogout, supported, userId],
+    [deviceId, namespace, readyWorker, status, storeForLogout, supported, userId],
   );
 
   return <E2eeContext.Provider value={value}>{children}</E2eeContext.Provider>;

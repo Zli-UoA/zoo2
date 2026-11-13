@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import type { AppConfig } from "../../lib/config";
 import { useCollections } from "../../lib/electric/collections-context";
-import { useE2eeDevice } from "../../lib/e2ee/deviceContext";
+import { useE2ee } from "../../lib/e2ee/e2ee-context";
 import { PasskeyError, passkeyPrfSupported, passkeyRpId } from "../../lib/e2ee/passkey";
 import { ReauthError, openReauthWindow, reauthenticate } from "../../lib/e2ee/reauth";
 import type { SecretStorageResponse } from "../../lib/e2ee/secretStorageApi";
@@ -94,7 +94,7 @@ function startReauth(config: AppConfig): () => Promise<string | null> {
 
 /** 設定の「暗号化」タブ（初回設定と解錠。#360）。 */
 export function EncryptionSettings() {
-  const device = useE2eeDevice();
+  const { worker, userId } = useE2ee();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const rpId = passkeyRpId(config);
@@ -106,8 +106,8 @@ export function EncryptionSettings() {
   const revisionRef = useRef<number | null>(null);
 
   const deps: E2eeSetupDeps | null = useMemo(
-    () => (device ? { worker: device.worker, client, userId: device.userId, rpId } : null),
-    [device, client, rpId],
+    () => (worker && userId ? { worker, client, userId, rpId } : null),
+    [worker, userId, client, rpId],
   );
   const passkeyAvailable = rpId !== null && prfSupported;
 

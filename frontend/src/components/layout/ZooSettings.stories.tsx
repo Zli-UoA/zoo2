@@ -60,6 +60,14 @@ export const Apps: Story = {
     await expect(screen.getByRole("button", { name: "メッセージ" })).toBeVisible();
   }),
 };
+/** 暗号化タブ。暗号ストアを開いていない（Worker がない）ときは、準備ができていないと出す。 */
+export const Encryption: Story = {
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "暗号化" }));
+    await expect(await screen.findByText("エンドツーエンド暗号化")).toBeVisible();
+    await expect(screen.getByText(/まだ暗号化の準備ができていません/)).toBeVisible();
+  }),
+};
 export const AppsMobile: Story = { ...Apps, globals: { viewport: { value: "mobile" } } };
 export const Management: Story = {
   play: playForImplementation(async (context) => {
