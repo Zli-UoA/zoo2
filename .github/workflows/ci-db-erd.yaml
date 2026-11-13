@@ -1,6 +1,8 @@
 name: Check DB ER diagram
 
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   pull_request:
     paths:
       - infra/db/schema.sql
@@ -36,7 +38,7 @@ jobs:
 
   check:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -45,6 +47,9 @@ jobs:
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0
+        with:
+          # 生成物を文字単位で比べるので、開発シェル (flake.nix の nixpkgs の atlas) と版をそろえる。
+          version: v1.3.0
 
       - name: Check ER diagram is up to date
         run: infra/db/erd.sh --check
