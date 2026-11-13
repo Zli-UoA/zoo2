@@ -104,6 +104,11 @@ export function EncryptionSettings() {
   const keyIdRef = useRef<string | null>(null);
   const resetRef = useRef(false);
   const revisionRef = useRef<number | null>(null);
+  /**
+   * 状態の取得の番号。取得を始めるときと、利用者が初回設定を始めたときに進め、古い取得の
+   * 結果で今の画面を上書きしないようにする。
+   */
+  const loadSeq = useRef(0);
 
   const deps: E2eeSetupDeps | null = useMemo(
     () => (worker && userId ? { worker, client, userId, rpId } : null),
@@ -115,23 +120,9 @@ export function EncryptionSettings() {
     void passkeyPrfSupported().then(setPrfSupported);
   }, []);
 
-  const showUnlocked = useCallback(
-    async (activeDeps: E2eeSetupDeps, storage: SecretStorageResponse) => {
-      storageRef.current = storage;
-      const canAddPasskey = await hasUnlockedSecrets(activeDeps);
-      setState({
-        step: "unlocked",
-        slots: slotViews(storage),
-        passkeyAvailable,
-        canAddPasskey,
-        busy: null,
-        error: null,
-      });
-    },
-    [passkeyAvailable],
-  );
-
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    const latest = () => seq === loadSeq.current;
     if (!deps) {
       setState({ step: "unavailable" });
       return;
@@ -139,6 +130,7 @@ export function EncryptionSettings() {
     setState({ step: "loading" });
     try {
       const status = await loadE2eeStatus(deps);
+      if (!latest()) return;
       if (status.kind === "notSetUp") {
         storageRef.current = null;
         setState({ step: "notSetUp", busy: false });
@@ -147,18 +139,28 @@ export function EncryptionSettings() {
         setState({
           step: "locked",
           reason: status.reason,
-          passkeyAvailable,
+          passkeyAvailable: false,
           hasPasskeySlots: status.storage.slots.some((slot) => slot.kind === "passkey"),
           busy: null,
           error: null,
         });
       } else {
-        await showUnlocked(deps, status.storage);
+        storageRef.current = status.storage;
+        const canAddPasskey = await hasUnlockedSecrets(deps);
+        if (!latest()) return;
+        setState({
+          step: "unlocked",
+          slots: slotViews(status.storage),
+          passkeyAvailable: false,
+          canAddPasskey,
+          busy: null,
+          error: null,
+        });
       }
     } catch {
-      setState({ step: "loadFailed" });
+      if (latest()) setState({ step: "loadFailed" });
     }
-  }, [deps, passkeyAvailable, showUnlocked]);
+  }, [deps]);
 
   useEffect(() => {
     void load();
@@ -167,6 +169,8 @@ export function EncryptionSettings() {
   const begin = useCallback(
     async (resetFrom: SecretStorageResponse | null) => {
       if (!deps) return;
+      // 進行中の状態の取得は、終わっても画面を変えない。
+      loadSeq.current += 1;
       try {
         const { recoveryKey, keyId } = await beginSetup(deps, resetFrom);
         keyIdRef.current = keyId;
@@ -175,7 +179,7 @@ export function EncryptionSettings() {
           step: "recoveryKey",
           recoveryKey,
           reset: resetFrom !== null,
-          passkeyAvailable,
+          passkeyAvailable: false,
           passkeyAdded: false,
           busy: null,
           error: null,
@@ -184,7 +188,7 @@ export function EncryptionSettings() {
         setState({ step: "loadFailed" });
       }
     },
-    [deps, passkeyAvailable],
+    [deps],
   );
 
   const update = (patch: (current: EncryptionViewState) => EncryptionViewState) =>
@@ -303,6 +307,20 @@ export function EncryptionSettings() {
         }
       })();
     },
+    onReunlock: () => {
+      const storage = storageRef.current;
+      if (!storage) return;
+      loadSeq.current += 1;
+      setState({
+        step: "locked",
+        reason: "addPasskey",
+        passkeyAvailable: false,
+        hasPasskeySlots: storage.slots.some((slot) => slot.kind === "passkey"),
+        busy: null,
+        error: null,
+      });
+    },
+    onCancelReunlock: () => void load(),
     onReset: () => {
       const storage = storageRef.current;
       if (!storage) return;
@@ -337,5 +355,7 @@ export function EncryptionSettings() {
     })();
   }
 
-  return <EncryptionSettingsView state={state} handlers={handlers} />;
+  // PRF に対応するかは非同期に分かる。状態を取り直さずに、表示のときに反映する。
+  const viewState = "passkeyAvailable" in state ? { ...state, passkeyAvailable } : state;
+  return <EncryptionSettingsView state={viewState} handlers={handlers} />;
 }

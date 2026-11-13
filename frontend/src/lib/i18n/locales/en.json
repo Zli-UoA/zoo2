@@ -1125,6 +1125,8 @@
       "passkeyOriginNotAllowed": "Passkeys can't be used from this page. Use your recovery key.",
       "passkeyNoSlot": "The selected passkey isn't registered for unlocking encryption.",
       "lastSlot": "You can't remove the last way to unlock."
-    }
+    },
+    "reunlockToAdd": "Unlock again to add a passkey",
+    "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey. This device stays unlocked either way."
   }
 }

@@ -1125,6 +1125,8 @@
       "passkeyOriginNotAllowed": "呢個頁面用唔到通行金鑰，請用復原金鑰解鎖。",
       "passkeyNoSlot": "揀咗嘅通行金鑰未註冊做加密解鎖方式。",
       "lastSlot": "最後一個解鎖方式唔可以刪除。"
-    }
+    },
+    "reunlockToAdd": "重新解鎖嚟加通行金鑰",
+    "reunlockToAddDescription": "要加通行金鑰，請用通行金鑰或者復原金鑰再解鎖一次。呢部裝置嘅解鎖狀態唔會變。"
   }
 }

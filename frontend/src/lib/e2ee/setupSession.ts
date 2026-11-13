@@ -103,6 +103,11 @@ export class SetupSession {
     };
   }
 
+  /** 初回設定で作ったスロット（保存の再試行で、サーバーにないものを足す）。 */
+  pendingSlots(): KeySlot[] {
+    return [...this.created().slots];
+  }
+
   /** `POST /api/e2ee/secret_storage/keys` の本文。 */
   secretStorageRequest(): JsonObject {
     const pending = this.created();

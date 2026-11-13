@@ -164,6 +164,13 @@ export async function completeSetup(
       throw new SetupConflictError();
     }
     revision = current.secrets_revision;
+    // 前の試行で SSSS を保存したあとに足したパスキーのスロットは、まだサーバーにない。
+    // 足すだけなので、再認証は要らない（同じ ID の再送は何もしない）。
+    const saved = new Set(current.slots.map((slot) => slot.id));
+    const pending = await deps.worker.request({ op: "setupPendingSlots" });
+    for (const slot of pending) {
+      if (!saved.has(slot.id)) await addKeySlot(deps.client, keyId, slot, reauth);
+    }
   }
   await saveRemaining(deps, revision, reauth);
 }

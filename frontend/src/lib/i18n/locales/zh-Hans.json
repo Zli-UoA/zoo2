@@ -1125,6 +1125,8 @@
       "passkeyOriginNotAllowed": "无法从此页面使用通行密钥，请使用恢复密钥解锁。",
       "passkeyNoSlot": "所选的通行密钥未注册为加密解锁方式。",
       "lastSlot": "无法删除最后一个解锁方式。"
-    }
+    },
+    "reunlockToAdd": "重新解锁以添加通行密钥",
+    "reunlockToAddDescription": "要添加通行密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。"
   }
 }
