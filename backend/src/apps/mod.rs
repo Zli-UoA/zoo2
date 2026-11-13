@@ -452,9 +452,15 @@ impl Principal {
         id: &str,
         write: bool,
     ) -> Result<(), AppError> {
-        let value=one(tx,"SELECT json_build_object('allowed',EXISTS(SELECT 1 FROM channels c JOIN channel_user cu ON cu.channel_id=c.id WHERE c.id=$1 AND c.deleted_at IS NULL AND (NOT $3::boolean OR c.archive_at IS NULL) AND cu.user_id=$2))::text",&[id,&self.user_id,if write {"true"} else {"false"}]).await?;
+        let value=one(tx,"SELECT json_build_object('allowed',EXISTS(SELECT 1 FROM channels c JOIN channel_user cu ON cu.channel_id=c.id WHERE c.id=$1 AND c.deleted_at IS NULL AND (NOT $3::boolean OR c.archive_at IS NULL) AND cu.user_id=$2),'encrypted',EXISTS(SELECT 1 FROM channels WHERE id=$1 AND encrypted))::text",&[id,&self.user_id,if write {"true"} else {"false"}]).await?;
         if value["allowed"] != true {
             return Err(AppError::NotFound("Channel not found".into()));
+        }
+        // 暗号化チャンネルは、ボットのトークンも委任トークンも読み書きできない（#358）。
+        // 委任トークンはチャンネルに参加しないままユーザーの権限で動くので、参加の禁止だけでは止まらない。
+        // 存在を隠すため、見えるチャンネルのときだけ 403 にする。
+        if value["encrypted"] == true {
+            return Err(crate::routes::e2ee_channels::apps_forbidden());
         }
         Ok(())
     }

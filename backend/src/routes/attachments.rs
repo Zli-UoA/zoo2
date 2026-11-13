@@ -248,6 +248,11 @@ async fn presign_attachment(
         }
     }
 
+    // 暗号化チャンネルへの添付は、暗号化した添付（#364）ができるまで禁止する（#358）。
+    // 非公開チャンネルの存在を漏らさないよう、メンバーの確認のあとで判定する。
+    if channel.encrypted {
+        return Err(crate::routes::e2ee_channels::attachments_forbidden());
+    }
     if channel.archive_at.is_some() {
         return Err(AppError::BadRequest(
             "Cannot attach files to an archived channel".into(),

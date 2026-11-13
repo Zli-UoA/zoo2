@@ -30,11 +30,12 @@
 12. [受信時の検証](#受信時の検証)
 13. [失効と復旧](#失効と復旧)
 14. [機能ごとの扱い](#機能ごとの扱い)
-15. [クライアントの構成](#クライアントの構成)
-16. [脅威モデル](#脅威モデル)
-17. [ロードマップ](#ロードマップ)
-18. [未決と未検証の一覧](#未決と未検証の一覧)
-19. [参考](#参考)
+15. [有効化と運用](#有効化と運用)
+16. [クライアントの構成](#クライアントの構成)
+17. [脅威モデル](#脅威モデル)
+18. [ロードマップ](#ロードマップ)
+19. [未決と未検証の一覧](#未決と未検証の一覧)
+20. [参考](#参考)
 
 ## 決めたこと
 
@@ -238,7 +239,7 @@ Megolm セッション鍵の配布（`zoo.room_key`）の `content` は次の形
 | `content.body` | 本文。MFM の文字列。上限は平文チャンネルと同じ 40000 文字 |
 | `content.format` | `mfm` だけ |
 | `content.kind` | `message` か `emote`（`messages.message_kind` と同じ値） |
-| `mentions` | メンション。`user_ids` はユーザー ID の配列、`channel` は `@channel`、`here` は `@here`。【提案】形は [#358](https://github.com/Zli-UoA/zoo2/issues/358) と合わせて確定する |
+| `mentions` | メンション。`user_ids` はユーザー ID の配列、`channel` は `@channel`、`here` は `@here`。【決定】（#358）形は送信の要求の平文の `mentions` と同じ `{user_ids, channel, here}`。受信側は、表示とハイライトにこの暗号化した `mentions` だけを使う |
 
 編集は別の型を作らず、同じ `zoo.message` で `revision` を増やして送ります。編集履歴は持たないので、サーバーの行の暗号文を置き換えます。
 
@@ -660,22 +661,22 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_DEVICE_EXISTS` | 同じ `device_id` の端末が削除済み（墓標を含む。登録は `e2ee_devices` と `e2ee_deleted_device_ids` を 1 つの文で確かめる）、または同じ `device_id` で `device_keys` の内容が違う（削除されていない同じ内容の再送は 200） | |
 | 400 | `E2EE_SLOTS_REQUIRED` | `POST /api/e2ee/secret_storage/keys` の `slots` が空、または最後のスロットを削除しようとした | |
 | 429 | `E2EE_RATE_LIMITED` | 端末の登録が 1 ユーザーにつき 1 時間に 30 回を超えた【決定】（#354） | `retry_after`（秒） |
-| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号化チャンネルのメンバー数（200 人）、暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、`keys/query` の応答の合計サイズ（8 MiB）、`recipients` の 1 人分の応答（4 MiB）、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）、ピンの件数（1 回 1000 件）、SSSS の秘密の暗号文（64 KiB）、鍵バックアップの `session_data`（8 KiB）が上限を超えた。すべて同じコードで返す。【決定】#354 の `limit` の値は、端末の数が `devices`、ワンタイム鍵とフォールバック鍵の数が `one_time_keys`、署名の件数が `signatures`、鍵の JSON のサイズが `key_size`、`keys/query` のユーザー数が `query_users`、応答の合計サイズが `response_size`、`keys/claim` の宛先の数が `claim_devices`。【決定】#355 の `limit` の値は、to-device の宛先の数が `to_device_recipients`、`content` の大きさが `to_device_content`、`to_device/ack` の件数が `to_device_ack`。【決定】#356 の `limit` の値は、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）が `slots`、ピンの件数（1 回 1000 件）が `pins`、SSSS の秘密の暗号文（64 KiB）が `secret_size`、鍵バックアップの `session_data`（8 KiB）が `session_size`、`key_backup/keys` の件数が `backup_sessions`。クロス署名鍵、`auth_data`、ピンの JSON（8 KiB）は `key_size`、`cross_signing/signatures` の件数とクロス署名鍵の署名の数（1000 件）は `signatures`。【決定】#357 の `limit` の値は、暗号文のサイズ（256 KiB）が `ciphertext_size`、`recipients` の 1 人分の応答（4 MiB）が `response_size`、暗号化チャンネルのメンバー数（200 人）が `members` | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
+| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号化チャンネルのメンバー数（200 人）、暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、送信の `mentions.user_ids` の数（200 件）、`keys/query` の応答の合計サイズ（8 MiB）、`recipients` の 1 人分の応答（4 MiB）、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）、ピンの件数（1 回 1000 件）、SSSS の秘密の暗号文（64 KiB）、鍵バックアップの `session_data`（8 KiB）が上限を超えた。すべて同じコードで返す。【決定】#354 の `limit` の値は、端末の数が `devices`、ワンタイム鍵とフォールバック鍵の数が `one_time_keys`、署名の件数が `signatures`、鍵の JSON のサイズが `key_size`、`keys/query` のユーザー数が `query_users`、応答の合計サイズが `response_size`、`keys/claim` の宛先の数が `claim_devices`。【決定】#355 の `limit` の値は、to-device の宛先の数が `to_device_recipients`、`content` の大きさが `to_device_content`、`to_device/ack` の件数が `to_device_ack`。【決定】#356 の `limit` の値は、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）が `slots`、ピンの件数（1 回 1000 件）が `pins`、SSSS の秘密の暗号文（64 KiB）が `secret_size`、鍵バックアップの `session_data`（8 KiB）が `session_size`、`key_backup/keys` の件数が `backup_sessions`。クロス署名鍵、`auth_data`、ピンの JSON（8 KiB）は `key_size`、`cross_signing/signatures` の件数とクロス署名鍵の署名の数（1000 件）は `signatures`。【決定】#357 の `limit` の値は、暗号文のサイズ（256 KiB）が `ciphertext_size`、`recipients` の 1 人分の応答（4 MiB）が `response_size`、暗号化チャンネルのメンバー数（200 人）が `members`。【決定】#358 の `limit` の値は、送信の `mentions.user_ids` の数（200 件）が `mentions` | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
 | 409 | `E2EE_KEY_EXISTS` | 同じ鍵 ID で内容が違うワンタイム鍵をアップロードした | |
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない（暗号化チャンネルで必須。平文チャンネルでは、送ったときだけ） | `current_revision` |
 | 409 | `E2EE_PIN_CONFLICT` | `replace: false` で、同じ相手に、違うマスター鍵の TOFU のピンがすでにあり、そのピンを今のユーザー署名鍵で検証できる | `pin` |
 | 400 | `E2EE_CIPHERTEXT_REQUIRED` | 暗号化チャンネルに `ciphertext` なしで送った | |
 | 400 | `E2EE_PLAINTEXT_FORBIDDEN` | 暗号化チャンネルに空でない `content` を送った、または平文チャンネルに `ciphertext` か `epoch` を送った、または Slack 取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで暗号化チャンネルを指定した（メッセージの作成では `revision` も。編集では `revision` は送ってよい） | |
-| 400 | `E2EE_ATTACHMENTS_FORBIDDEN` | 暗号化チャンネルへの添付 | |
+| 400 | `E2EE_ATTACHMENTS_FORBIDDEN` | 暗号化チャンネルへの添付（`POST /api/attachments/presign` と、送信の `attachment_ids`。#358） | |
 | 400 | `E2EE_BAD_SIGNATURE` | 署名が不正 | |
 | 400 | `E2EE_KEY_REUSED` | 過去に使ったクロス署名鍵の公開鍵か、過去の版のバックアップの公開鍵を登録し直そうとした | |
 | 400 | `E2EE_INVALID_EPOCH` | `epoch` が今の値より大きい | |
 | 400 | `E2EE_PUBLIC_FORBIDDEN` | 公開チャンネルを `encrypted: true` で作ろうとした | |
-| 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加と、App からの暗号化チャンネルと DM の作成。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む） | |
+| 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加（`POST /api/apps/{id}/channels/{channel}`）と、暗号化 DM の相手に Bot を選んだとき（`POST /api/dms`）。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む。#358）。App からの暗号化チャンネルと DM の作成の拒否は #357 で入れた（作成 API の入口） | |
 | 403 | `E2EE_ADD_FORBIDDEN` | 暗号化チャンネルで、メンバーでないワークスペースの管理者と、退出した作成者が `POST /api/channels/{id}/users` でメンバーを足そうとした（`channel_user` の実際の行で判定する） | |
 | 403 | `E2EE_DISABLED` | 暗号化チャンネルの作成が、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` で無効（#358 の拒否が入るまでと、運用で false に戻したあと） | |
 | 403 | `E2EE_REAUTH_REQUIRED` | `X-Zoo-Reauth` の ID トークンがない、検証できない、または `authenticated_at`（AuthZ が直前に認証した時刻の claim）がないか 5 分より前。対象は、クロス署名鍵の登録と差し替え（初回設定を含む）、SSSS 鍵の作成と作り直し（初回設定を含む）、既存の秘密とスロットの置き換え、スロットの削除、`replace: true` のピンと、ユーザー署名鍵によるマスター鍵への署名、最初の版でない鍵バックアップの版の作成、今の版の削除で、直前の再認証がない | |
-| 403 | `E2EE_WEBHOOKS_FORBIDDEN` | 暗号化チャンネルへの Incoming Webhook の作成 | |
+| 403 | `E2EE_WEBHOOKS_FORBIDDEN` | 暗号化チャンネルへの Incoming Webhook の作成（`POST /api/channels/{channel_id}/webhooks`。#358） | |
 | 404 | （既存と同じ） | 他人の端末やスロットなど。存在を推測されないよう 403 ではなく 404 | |
 
 ### 端末とワンタイム鍵（[#354](https://github.com/Zli-UoA/zoo2/issues/354)）
@@ -942,14 +943,21 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - `revision` が 0（違えば 400）。
   - 平文チャンネルに `ciphertext`、`epoch`、`revision` を送ったら 400 `E2EE_PLAINTEXT_FORBIDDEN`。
   - `ciphertext`、`epoch`、`revision` のどれもない要求は、平文チャンネルと同じく、チャンネルを読む前に `content` を検証する（空白だけなら `code` のない 400。チャンネルがなくても 404 より先）。
-- `PATCH /api/messages/{id}`：`{"content": "", "epoch", "revision", "ciphertext", "mentions"}`。規則は送信と同じだが、`revision` の扱いだけは次の 2 点で上書きする（送信の平文チャンネルでは `revision` を拒否するが、編集では下のとおり省略も指定もできる）。
+- `PATCH /api/messages/{id}`：`{"content": "", "epoch", "revision", "ciphertext"}`。規則は送信と同じだが、`revision` の扱いだけは次の 2 点で上書きする（送信の平文チャンネルでは `revision` を拒否するが、編集では下のとおり省略も指定もできる）。
   - 【決定】暗号化チャンネルでは `revision` を必須にし、サーバーは `messages.revision` を単調に増やす。行を `FOR UPDATE` で読み、`revision` が今の値 + 1 でなければ 409 `E2EE_STALE_REVISION`（`current_revision` 付き）。同じユーザーの 2 つの端末が同時に編集しても、同じ `revision` の版が 2 つできないようにするため。
   - 【決定】平文チャンネルでは `revision` を省略できる（後方互換）。既存のクライアントは `{"content"}` だけを送る（`backend/src/routes/messages.rs` の `UpdateMessageRequest`）ので、省略した要求は今までどおり受け付け、サーバーが `messages.revision` を 1 増やすだけにする（照合しない）。`revision` を送った場合だけ、暗号化チャンネルと同じ照合をする。クライアントとサーバーの更新が同時でなくても、更新前のクライアントの平文の編集が失敗しないようにするため。平文チャンネルで `ciphertext` と `epoch` を送ったときは、今までどおり 400 `E2EE_PLAINTEXT_FORBIDDEN`。
   - 409 を受けたクライアントは、最新の行を復号してから編集し直す。最新の行を復号できなければ、編集を止めてユーザーに表示する（復号できない版を上書きしない）。
 - `DELETE /api/messages/{id}`：暗号化チャンネルでは、論理削除と同時に `ciphertext` を消す（API ではなく、DB のトリガーで `deleted_at` が入った行の `ciphertext` を NULL にする。履歴の消去 `clear_history` も同じ）。すでに取得した端末のキャッシュは消せない。
-- `mentions` は平文で、サーバーはメンション通知と Web Push の宛先を作るためだけに使う（[機能ごとの扱い](#機能ごとの扱い)）。
+- `mentions` は平文で、サーバーはメンション通知と Web Push の宛先を作るためだけに使う（[機能ごとの扱い](#機能ごとの扱い)）。【決定】（#358）
+  - 形は `{"user_ids": [<ユーザー ID>], "channel": false, "here": false}`。どの項目も省略でき、`mentions` 自体を省いたときはメンションなしとして扱う。
+  - `user_ids` は UUID だけを受け付け（違えば 400）、200 件まで（暗号化チャンネルのメンバー数の上限と同じ。超えたら 400 `E2EE_LIMIT_EXCEEDED`、`limit` は `mentions`）。重複は 1 件の通知にまとめる。
+  - 通知を作るのは、チャンネルのメンバーで、送信者自身でなく、Bot でも無効化済みでもないユーザーだけ（平文チャンネルの本文のメンションと同じ規則）。メンバーでない ID は黙って無視し、400 にしない（送信のあいだに退出した人がいても送信を止めないため）。`channel` と `here` は、平文チャンネルの `@channel` と `@here` と同じく、送信者以外のメンバー全員に通知する。
+  - 平文チャンネルでは `mentions` を使わず、今までどおり本文から作る（送っても 400 にはせず、無視する）。
+  - 編集（`PATCH /api/messages/{id}`）は、平文チャンネルと同じく通知を作らないので、`mentions` を受け取らない（`UpdateMessageRequest` にない項目なので、送っても無視する）。
 - `POST /api/attachments/presign`：暗号化チャンネルの `channel_id` なら 400 `E2EE_ATTACHMENTS_FORBIDDEN`（#358）。
 - App の API（`/api/apps/v1/*`）：【決定】暗号化チャンネルと DM の作成（`encrypted: true`。`/api/apps/v1/dms` と `create_channel`）も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のときも、App からの `encrypted: true` は `E2EE_APPS_FORBIDDEN` を返す（判定の順は、App かどうか、設定の順。App には、設定にかかわらず作成を許さないため）。暗号化チャンネルとそのメッセージへの読み書きを、委任トークン（`app_credentials.user_id` があり、ユーザーとして動くもの）を含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する（#358）。メッセージの作成（`/api/apps/v1/messages`）、ファイルの紐付け（`/api/apps/v1/messages/{id}/files`）、`blocks`、`unfurls` を含む。委任トークンはチャンネルに参加しないまま、そのユーザーの権限で動くので、App の参加の禁止だけでは止まらないため。
+  - 【決定】（#358）拒否は `Principal::channel`（`Actor::channel` は App のトークンのとき、これを先に呼ぶ）で行う。メンバーでない（見えない）チャンネルは今までどおり 404 にし、見えるチャンネルが暗号化されているときだけ 403 にする（存在を推測させないため）。一覧の API（`/api/apps/v1/stars`、`assistant-sessions`、ファイルの共有先の解決）は、暗号化チャンネルの項目を 404 と同じく読み飛ばす。
+  - 【決定】（#358）`GET /api/apps/v1/shapes/channels` の where に `NOT encrypted` を足し、委任トークンでも暗号化チャンネルを列挙しない。App の応答トークン（`POST /api/app-responses/{token}`）も、暗号化チャンネルには書き込まない。
 
 ## DB
 
@@ -1178,6 +1186,9 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 【決定】`channels.encrypted` と CHECK `channels_encrypted_private` は #354 で足す。[端末の Shape](#electric-の-shape) の where が `channels.encrypted` を使い、#354 は #357 より先に入るため。既存の行は `false` なので、後方互換を保つ。#354 の時点では `encrypted = true` にする API がないので、Shape が配るのは自分の端末だけになる。3 段のサブクエリの確認（#354）では、テストで行を直接 `encrypted = true` にする。
 - 【決定】残りの `channels.membership_epoch`、`messages` の列と制約、作成時の `encrypted` の指定、`encrypted` と `is_private` を変えさせない 409 とトリガーは #357 で足す。
 - 【決定】DB のトリガーで、暗号化チャンネルの `messages` に平文が入らないようにする。`BEFORE INSERT OR UPDATE ON messages`（列を限らない）で、チャンネルが `encrypted` なら、削除済みでない行に `content = ''` と `ciphertext IS NOT NULL` を求め、すべての行で `app_attachments`、`app_blocks`、`app_unfurls`、`metadata`、`card` が NULL（または空文字列）で、`home_post_id` が NULL、`apub` が false であることを求める。`card` は Incoming Webhook や App の経路で入る平文の列で、Messages Shape にも含まれる。`home_post_id` と `apub` は Home と ActivityPub への同期の列で、暗号化チャンネルでは同期しない（[機能ごとの扱い](#機能ごとの扱い)）。API 以外の経路（Webhook、App と委任トークン、Slack 取り込み、Home の同期など）で書き込まれても止めるための最後の防御（#358）。
+  - 【決定】（#358）トリガーは `messages_e2ee_reject_plaintext`（関数 `e2ee_reject_plaintext_messages`）。違反は SQLSTATE `23514` で拒否する。`metadata` は INSERT では `app_message_options`（`zoo.message_options`）が入れるので、名前の順でそれより後に動くこのトリガーが、入れたあとの値を確かめる。削除済みの行の `ciphertext` は `messages_clear_deleted_ciphertext`（#357）が先に消す。
+  - 【決定】（#358）`channel_user` の `BEFORE INSERT OR UPDATE` のトリガー `channel_user_e2ee_reject_bots`（関数 `e2ee_reject_bot_members`）で、`users.is_bot` のユーザー（App の Bot と Incoming Webhook のユーザー）を暗号化チャンネルに入れない。
+  - 【決定】（#358）`app_message_events_v2` は、暗号化チャンネルのメッセージ（INSERT、UPDATE、DELETE）を App のイベントにしない。本文を解析する `is_mention`（`app.mentioned`）と `link.shared` もここで止まる。`sync_channel_home_post` の対象にも `NOT c.encrypted` を足す（暗号化チャンネルは非公開なので、もともと対象外だが明示する）。
 - 【決定】`channels.encrypted` は作成時だけ指定でき、トリガーで `OLD.encrypted IS DISTINCT FROM NEW.encrypted` の更新（両方向）を拒否する。平文のメッセージを持つチャンネルが暗号化チャンネルとして扱われ、履歴を復号できず平文と暗号文が混在するのを防ぐため（既存チャンネルの暗号化は初期版ではできない）。`is_private` も false にできないようにする。
 - 【決定】送信と編集のトランザクションは `channels` の行を `FOR SHARE` で読んで `epoch` を比べる。`membership_epoch` を増やす処理は `UPDATE`（行ロック）なので、epoch の比較と増加が直列になる。
 
@@ -1480,7 +1491,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 本文と MFM | `content` は空にし、`ciphertext` に Megolm の暗号文を保存する |
 | 編集 | 置き換えた本文を暗号化して送る。編集履歴は持たない。`revision` はサーバーで単調に増やし、受信側は巻き戻しを検出する |
 | 削除 | 論理削除し、`ciphertext` を消す。どの経路でも守るために、DB のトリガーで `deleted_at` が入った行の `ciphertext` を NULL にする（`DELETE /api/channels/{channel}/history` の `clear_history` など、`DELETE /api/messages` 以外の論理削除も含む）（#358） |
-| メンション通知 | 送信側が平文の `mentions` を付け、サーバーはそこから通知を作る。本文の解析はしない。止める解析は、`backend/src/notifications.rs` の `extract_mentions` と、`infra/db/schema.sql` の SQL 関数 `is_mention`（`app_message_events_v2()` が App の `app.mentioned` イベントを作るときに呼ぶ）の 2 か所。受信側の表示とハイライトは、復号した `mentions` だけを使う。平文と暗号文の `mentions` が違っても、表示には平文を使わない |
+| メンション通知 | 送信側が平文の `mentions` を付け、サーバーはそこから通知を作る（規則は[メッセージ](#メッセージ357358)の `mentions`）。本文の解析はしない。止める解析は、`backend/src/notifications.rs` の `extract_mentions` と、`infra/db/schema.sql` の SQL 関数 `is_mention`（`app_message_events_v2()` が App の `app.mentioned` イベントを作るときに呼ぶ）の 2 か所。受信側の表示とハイライトは、復号した `mentions` だけを使う。平文と暗号文の `mentions` が違っても、表示には平文を使わない |
 | 通知一覧 | `notification_display` の本文の抜粋は空になる。クライアントは手元で復号できれば本文を出し、できなければ「暗号化されたメッセージ」と出す |
 | Web Push | 本文の代わりに「新しいメッセージ」だけを送る（`push.rs` の本文先頭 240 文字を使わない）。Service Worker での復号は後続（[#365](https://github.com/Zli-UoA/zoo2/issues/365)） |
 | 添付 | **初期版では禁止**。クライアントは添付ボタンと貼り付けを出さない。サーバーは `POST /api/attachments/presign` と、メッセージへの添付の紐付けを 400 で拒否する。App のファイル API（`/api/apps/v1/files`、`/api/apps/v1/messages/{id}/files`）は別の S3 バケットへの経路なので、App の行の規則で拒否する。暗号化した添付（#364）を実装したら禁止を外す |
@@ -1489,13 +1500,30 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | URL カード | 【提案】既定では展開しない。カードを出すとクライアントが URL を Summaly と画像プロクシに送るので、それらの運用者に URL が見えるため。メッセージごとに「プレビューを読み込む」を押したときだけ取得する。#361 で確定する |
 | 検索 | サーバーの検索の対象外。クライアントが今読み込んで復号した範囲だけを検索する |
 | オフラインキャッシュ | 暗号文だけを保存し、復号した平文は保存しない。ログアウト時の削除は今と同じ |
-| Home/LTL への同期 | 止める（`sync_channel_home_post` の対象外） |
-| ActivityPub の連合 | 止める |
+| Home/LTL への同期 | 止める（`sync_channel_home_post` の対象外。DB のトリガーで `home_post_id` を NULL に保つ） |
+| ActivityPub の連合 | 止める（DB のトリガーで `apub` を false に保つ。Home の投稿は公開チャンネルにしか置けないので、暗号化チャンネルからは連合しない） |
 | App（Bot） | 参加を禁止し（403 `E2EE_APPS_FORBIDDEN`。強制する場所は、`backend/src/apps/management.rs` の `add_channel`、`POST /api/dms` の対象（`is_bot`）、DB の `channel_user` の挿入前のトリガー（ボットの参加を、暗号化チャンネルでは拒否する。`app_guest_membership_rules` と同じ形）、読み書きの入口の `Principal::channel` と `Actor::channel`（委任トークンとボットのトークンを 403 にする。`/api/apps/v1/shapes/*` と Actor 経由のピン、履歴、メタデータも対象）の 4 か所）、App からの `encrypted: true` のチャンネルと DM の作成も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` にする。理由は 2 つある。`backend/src/apps/api.rs` の `create_channel` は `c::create_channel` を呼ぶので、App が暗号化チャンネルを作って作成者として参加できてしまう。`/api/apps/v1/dms` は `dms::create_or_get_dm` を呼び、`create_channel` を通らずにチャンネルと参加者を直接作る。拒否は、`create_channel` 側と、`apps/api.rs` の `dm`（`Principal` を見て判定する。`dms::create_or_get_dm` は人間の `POST /api/dms` と共用で `Principal` を受け取らない）で行う。`app_message_events_v2` のイベントと App の履歴 API の対象から外す。`/api/apps/v1/*` は、委任トークン（ユーザーとして動くもの）を含めて、暗号化チャンネルへの読み書きと添付（`files`、`messages/{id}/files`、`blocks`、`unfurls`）を拒否する。DB のトリガーで、暗号化チャンネルの行の `app_attachments`、`app_blocks`、`app_unfurls`、`metadata` を空に保つ（[DB](#db)）。担当は #358。ただし、App からの暗号化チャンネルと DM の作成の拒否は #357 の作業（作成 API の入口）。Bot を端末として参加させるのは後続（[#366](https://github.com/Zli-UoA/zoo2/issues/366)） |
-| Slack 取り込み | 暗号化チャンネルへの取り込みを禁止する。取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで、既存のチャンネル（`MappingAction::Existing`）として暗号化チャンネルを指定したら 400 `E2EE_PLAINTEXT_FORBIDDEN`（`backend/src/slack/import.rs` の `MappingAction::Existing` と worker は平文の `content` を `messages` に入れるため。添付も取り込めない）（#358） Slack 取り込みのコードは #300 で入る。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のあいだは暗号化チャンネルを作れないので、#357 より前の拒否は設定で足りる（Slack 取り込みの拒否は #358 で入れ、#358 のあとに設定を true にする）。#300 が先に入ったら #358 で `docs/slack-import.md` にも書く。worker も、ジョブの実行時に暗号化チャンネルへの書き込みを検査する（#367 で既存のチャンネルを暗号化できるようになると、開始のあとにチャンネルが暗号化されうるため。#367 の条件にも書く）。 |
-| Incoming Webhook | 作成を禁止する（403 `E2EE_WEBHOOKS_FORBIDDEN`） |
+| Slack 取り込み | 暗号化チャンネルへの取り込みを禁止する。取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで、既存のチャンネル（`MappingAction::Existing`）として暗号化チャンネルを指定したら 400 `E2EE_PLAINTEXT_FORBIDDEN`（`backend/src/slack/import.rs` の `MappingAction::Existing` と worker は平文の `content` を `messages` に入れるため。添付も取り込めない）（#358） Slack 取り込みのコードは #300 で入った。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のあいだは暗号化チャンネルを作れないので、#357 より前の拒否は設定で足りる（Slack 取り込みの拒否は #358 で入れ、#358 のあとに設定を true にする）。`docs/slack-import.md` にも書いた。worker も、ジョブの実行時に暗号化チャンネルへの書き込みを検査する（#367 で既存のチャンネルを暗号化できるようになると、開始のあとにチャンネルが暗号化されうるため。#367 の条件にも書く）。 |
+| Incoming Webhook | 作成を禁止する（403 `E2EE_WEBHOOKS_FORBIDDEN`）。Webhook のユーザーは Bot なので、DB のトリガーでも参加できない。既存の Webhook は、暗号化チャンネルを後から作れない（[既存チャンネルの暗号化](#機能ごとの扱い)は初期版ではできない）ので存在しない（#358） |
 | 通話 | 本書の対象外。通話のシグナリングとメディアは今の仕組みのまま |
 | 既存チャンネルの暗号化 | 初期版ではできない。後続（[#367](https://github.com/Zli-UoA/zoo2/issues/367)） |
+
+## 有効化と運用
+
+【決定】（#358）暗号化チャンネルの作成は、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` で切り替えます（既定は false）。#358 の拒否（API と DB のトリガー）が本番に入ってから、#361（クライアントの作成と送受信）の前に true にします。
+
+zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読みます。各拠点（`$CTX`）で、既存のキーを残す `patch` で足し、backend を再起動します。
+
+```sh
+kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge \
+  -p '{"data":{"E2EE_ENCRYPTED_CHANNELS_ENABLED":"true"}}'
+kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
+```
+
+- `kubectl create configmap ... --dry-run=client -o yaml | kubectl apply -f -` は使わない。zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるため。
+- 戻すときは、同じ `patch` で `"false"` にして、同じく再起動する。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルと DM の作成だけが 403 `E2EE_DISABLED` になる。送受信、メンバーの変更、鍵の配布は続けられる。
+- `ciphertext` を扱えない旧イメージ（#357 より前）にはロールバックしない。旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる。設定を false に戻すのは、#358 以降のイメージのあいだで行う。
+- zoo2-infra の運用の文書（`docs/operations.md` など）にこの手順を書くかは、zoo2-infra 側で決める。本書を正とする。
 
 ## クライアントの構成
 
@@ -1666,7 +1694,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#355](https://github.com/Zli-UoA/zoo2/issues/355) | to-device メッセージ | #354 |
 | [#356](https://github.com/Zli-UoA/zoo2/issues/356) | クロス署名（TOFU のピンと `GET /api/e2ee/tofu_pins` を含む）、クロス署名鍵と署名の Shape、Secret Storage、鍵バックアップの保存 API | #354、AuthZ#97（再認証の正常系の結合テスト） |
 | [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` の読み取りと 403 `E2EE_DISABLED` の判定、App からの作成の拒否（403 `E2EE_APPS_FORBIDDEN`）、メンバーでない管理者と退出した作成者の追加の拒否（403 `E2EE_ADD_FORBIDDEN`）、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えでの epoch の増加、配布先のスナップショット | #354、#356 |
-| [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否。#358 の拒否が入ってから、`E2EE_ENCRYPTED_CHANNELS_ENABLED` を true にする（#361 の前に行う。zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読むので、`zoo2-oidc` に足して各拠点で、既存のキーを残す `kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge -p '{"data":{"<キー>":"<値>"}}'` で足す（`create ... --dry-run=client -o yaml \| apply` は、zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるので使わない）。そのあと `kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend` で backend を再起動する。戻すときは false にして、同じく再起動する。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルの作成だけが 403 になる。`ciphertext` を扱えない旧イメージにはロールバックしない（旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる）【提案】） | #357 |
+| [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否。#358 の拒否が入ってから、`E2EE_ENCRYPTED_CHANNELS_ENABLED` を true にする（#361 の前に行う。zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読むので、`zoo2-oidc` に足して各拠点で、既存のキーを残す `kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge -p '{"data":{"<キー>":"<値>"}}'` で足す（`create ... --dry-run=client -o yaml \| apply` は、zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるので使わない）。そのあと `kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend` で backend を再起動する。戻すときは false にして、同じく再起動する。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルの作成だけが 403 になる。`ciphertext` を扱えない旧イメージにはロールバックしない（旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる）。手順は[有効化と運用](#有効化と運用)） | #357 |
 | [#359](https://github.com/Zli-UoA/zoo2/issues/359) | 暗号ストアと端末の登録（React、Compose Android、TUI） | #352、#353、#354、#355 |
 | [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー）。各クライアントの再認証（Web は `max_age=0`、Android は Custom Tabs と App Links、TUI はループバック）と、zli.chat の `assetlinks.json` もここで作る | #359、#356、AuthZ#94、AuthZ#96、AuthZ#97 |
 | [#361](https://github.com/Zli-UoA/zoo2/issues/361) | 暗号化チャンネルと DM の作成と送受信 | #360、#357、#358 |
@@ -1689,7 +1717,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | `getrandom` の wasm のバックエンドの設定。cfg フラグは付けず、`wasm_js` feature だけにする（getrandom 0.3.4 以降と 0.4） | 【決定】 | #348 |
 | `getrandom` の wasm_js バックエンドで、ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドだけ確認） | 【決定】（#352 の Worker のテストで確かめた） | #352 |
 | 3 段のサブクエリの Shape で move-in と move-out が届くか | 【決定】（Electric 1.8.1 で確かめた） | #354 |
-| `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【提案】 | #358 |
+| `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【決定】 | #358 |
 | エラー応答に `code` を足す方法 | 【決定】 | #354 |
 | 暗号化チャンネルでの URL カードの扱い | 【提案】 | #361 |
 | 複数タブでの暗号ストアの共有（Web Locks と BroadcastChannel） | 【提案】 | #359 |

@@ -537,10 +537,13 @@ pub(crate) async fn validate_mappings(
                 let private = slack_private || *is_private == Some(true);
                 let reused = query(
                     tx,
-                    "SELECT json_build_object('is_private',is_private)::text FROM channels WHERE id=$1",
+                    "SELECT json_build_object('is_private',is_private,'encrypted',encrypted)::text FROM channels WHERE id=$1",
                     &[&own],
                 )
                 .await?;
+                if reused.first().is_some_and(|c| c["encrypted"] == true) {
+                    return Err(crate::routes::e2ee_channels::plaintext_forbidden());
+                }
                 if private && reused.first().is_some_and(|c| c["is_private"] != true) {
                     return Err(AppError::BadRequest(format!(
                         "Slack channel {} was imported into a public channel; it cannot be imported as private",
@@ -551,7 +554,7 @@ pub(crate) async fn validate_mappings(
             MappingAction::Existing { channel_id } => {
                 let found = query(
                     tx,
-                    "SELECT json_build_object('is_private',is_private)::text FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
+                    "SELECT json_build_object('is_private',is_private,'encrypted',encrypted)::text FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
                     &[channel_id],
                 )
                 .await?;
@@ -560,6 +563,10 @@ pub(crate) async fn validate_mappings(
                         "Channel {channel_id} does not exist"
                     )));
                 };
+                // 取り込みは平文の content を messages に入れるので、暗号化チャンネルには取り込めない (#358)
+                if found["encrypted"] == true {
+                    return Err(crate::routes::e2ee_channels::plaintext_forbidden());
+                }
                 if slack_private && found["is_private"] != true {
                     return Err(AppError::BadRequest(format!(
                         "Private Slack channel {} must be imported into a private channel",
