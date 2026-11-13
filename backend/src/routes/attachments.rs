@@ -248,10 +248,11 @@ async fn presign_attachment(
         }
     }
 
-    // 暗号化チャンネルへの添付は、暗号化した添付（#364）ができるまで禁止する（#358）。
-    // 非公開チャンネルの存在を漏らさないよう、メンバーの確認のあとで判定する。
+    // 暗号化チャンネルには、クライアントで暗号化した添付だけを受け付ける（#364）。本当のファイル名と
+    // MIME は Megolm で暗号化した本文に入るので、サーバーには決まった値だけを渡させる（MIME の検証と
+    // 画像の処理もしない）。非公開チャンネルの存在を漏らさないよう、メンバーの確認のあとで判定する。
     if channel.encrypted {
-        return Err(crate::routes::e2ee_channels::attachments_forbidden());
+        crate::routes::e2ee_channels::check_encrypted_attachment(file_name, &payload.content_type)?;
     }
     if channel.archive_at.is_some() {
         return Err(AppError::BadRequest(

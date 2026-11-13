@@ -358,10 +358,10 @@ async fn encrypted_mentions_come_only_from_the_plaintext_mentions() {
 }
 
 // ---------------------------------------------------------------------------
-// 添付、Webhook、App（Bot）の参加
+// 平文の添付、Webhook、App（Bot）の参加
 
 #[tokio::test]
-async fn attachments_and_webhooks_are_rejected_in_encrypted_channels() {
+async fn plaintext_attachments_and_webhooks_are_rejected_in_encrypted_channels() {
     let env = env().await;
     let (alice, _) = env.user().await;
     let encrypted = env.channel(&alice, &[], true).await;
@@ -376,11 +376,22 @@ async fn attachments_and_webhooks_are_rejected_in_encrypted_channels() {
             presign(&encrypted),
         )
         .await;
+    // 暗号化チャンネルには、クライアントで暗号化した添付（決まったファイル名と Content-Type）だけを
+    // 受け付ける（#364。e2ee_attachments_test.rs）。
     assert_eq!(
         (status, code(&body)),
-        (StatusCode::BAD_REQUEST, "E2EE_ATTACHMENTS_FORBIDDEN"),
+        (StatusCode::BAD_REQUEST, "E2EE_PLAINTEXT_FORBIDDEN"),
         "{body}"
     );
+    let (status, body) = env
+        .call(
+            "POST",
+            "/api/attachments/presign",
+            &alice,
+            json!({"channel_id": encrypted, "file_name": "encrypted.bin", "file_size": 10, "content_type": "application/octet-stream"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = env
         .call("POST", "/api/attachments/presign", &alice, presign(&plain))
         .await;
