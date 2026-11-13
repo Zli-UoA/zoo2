@@ -348,13 +348,14 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
     )
     .await?;
     let mut roots = Vec::new();
-    for days in [1, 2] {
+    // Parallel archive tests sweep all channels, so keep these activities within one day.
+    for hours in [1, 2] {
         let root = request(
             &app,
             "POST",
             &user,
             "/api/home",
-            json!({"channel_id":channel,"content":format!("Thread {days}")}),
+            json!({"channel_id":channel,"content":format!("Thread {hours}")}),
         )
         .await?;
         let root_id = root["id"].as_str().unwrap().to_owned();
@@ -366,11 +367,11 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
             json!({"channel_id":channel,"content":"Existing reply","parent_id":root_id}),
         )
         .await?;
-        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 day') WHERE id=$1")
-            .bind(reply["data"]["id"].as_str().unwrap()).bind(days.to_string()).exec(&mut db).await?;
+        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 hour') WHERE id=$1")
+            .bind(reply["data"]["id"].as_str().unwrap()).bind(hours.to_string()).exec(&mut db).await?;
         // The migration backfills the latest existing reply before indexed reads start.
-        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '30 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 day') WHERE id=$1")
-            .bind(root_id.as_str()).bind(days.to_string()).exec(&mut db).await?;
+        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '30 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 hour') WHERE id=$1")
+            .bind(root_id.as_str()).bind(hours.to_string()).exec(&mut db).await?;
         roots.push(root_id);
     }
     for imported in [false, true] {
