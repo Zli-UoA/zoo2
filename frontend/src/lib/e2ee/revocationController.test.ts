@@ -462,7 +462,10 @@ describe("失効の手順", () => {
     const restarted = first.deps(server);
     expect(await revocationStatus(restarted)).toMatchObject({ stage: "cross_signing_saved" });
     await openSecretStorage(restarted, { kind: "recovery", recoveryKey });
-    expect(await resumeRevocation(restarted)).toMatchObject({ stage: "cross_signing_saved" });
+    expect(await resumeRevocation(restarted)).toMatchObject({
+      kind: "resumed",
+      summary: { stage: "cross_signing_saved" },
+    });
     await continueRevocation(restarted, TOKEN);
     expect(liveVersions(server)).toEqual(["2"]);
     expect(await revocationStatus(restarted)).toBeNull();
@@ -482,12 +485,18 @@ describe("失効の手順", () => {
     const oldMaster = keyOf(server.master);
     const oldKeyId = server.ssss?.default_key_id;
     await openSecretStorage(deps, { kind: "recovery", recoveryKey });
-    await beginRevocation(deps, "full", []);
+    const lost = crypto.randomUUID();
+    await beginRevocation(deps, "full", [lost]);
     // SSSS を保存する前に止めた。マスター鍵と SSSS 鍵は保存しないので続けられない。
     await first.start();
     const restarted = first.deps(server);
     await openSecretStorage(restarted, { kind: "recovery", recoveryKey });
-    expect(await resumeRevocation(restarted)).toBeNull();
+    // やり直しでも、記録した範囲（1〜5）と削除した端末を引き継ぐ（端末だけに縮めない）。
+    expect(await resumeRevocation(restarted)).toEqual({
+      kind: "restart",
+      scope: "full",
+      deletedDevices: [lost],
+    });
     expect(await revocationStatus(restarted)).toBeNull();
 
     await beginRevocation(restarted, "full", []);

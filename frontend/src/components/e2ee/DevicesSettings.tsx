@@ -288,12 +288,14 @@ function DevicesPanel() {
     if (!deps) return;
     if (resumeRef.current) {
       const resumed = await resumeRevocation(deps);
-      if (resumed) {
-        notesRef.current = notesOf(resumed);
+      if (resumed.kind === "resumed") {
+        notesRef.current = notesOf(resumed.summary);
         setPhase({ phase: "confirm", ...notesRef.current });
         return;
       }
-      // 2〜5 を SSSS の保存の前に止めた。同じ範囲と端末で最初からやり直す。
+      // 2〜5 を SSSS の保存の前に止めた。記録した範囲と端末で最初からやり直す（ページを読み込み
+      // 直したあとでも、範囲を端末だけに縮めない）。
+      planRef.current = { scope: resumed.scope, selected: resumed.deletedDevices };
       resumeRef.current = false;
     }
     const { scope, selected } = planRef.current;

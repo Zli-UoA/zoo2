@@ -195,19 +195,33 @@ async function recordedUsers(deps: E2eeSetupDeps): Promise<string[]> {
   return deps.worker.request({ op: "trustRecordedUsers" });
 }
 
-/** 止まった失効を、開け直した SSSS で続ける。2〜5 を SSSS の保存の前に止めたら `null`（やり直す）。 */
-export async function resumeRevocation(deps: E2eeSetupDeps): Promise<RevocationSummary | null> {
+/** {@link resumeRevocation} の結果。 */
+export type ResumeResult =
+  /** 記録した段から続ける。 */
+  | { kind: "resumed"; summary: RevocationSummary }
+  /**
+   * 2〜5 を SSSS の保存の前に止めたので、最初からやり直す。記録は捨てたが、範囲と削除した端末は
+   * 引き継ぐ（範囲を黙って端末だけに縮めないため）。
+   */
+  | { kind: "restart"; scope: RevocationScope; deletedDevices: string[] };
+
+/** 止まった失効を、開け直した SSSS で続ける。 */
+export async function resumeRevocation(deps: E2eeSetupDeps): Promise<ResumeResult> {
+  // やり直しになったら記録を捨てるので、その前に範囲と削除した端末を読んでおく。
+  const saved = await deps.worker.request({ op: "revocationStatus" });
+  if (!saved) throw new Error("続ける失効がありません");
   const secretStorage = await getSecretStorage(deps.client);
   try {
-    return await deps.worker.request({
+    const summary = await deps.worker.request({
       op: "revocationResume",
       secretStorage: secretStorage as unknown as JsonObject,
     });
+    return { kind: "resumed", summary };
   } catch (error) {
     const code = (error as { code?: unknown } | null)?.code;
     if (code === "RevocationRestart") {
       await deps.worker.request({ op: "revocationAbandon" });
-      return null;
+      return { kind: "restart", scope: saved.scope, deletedDevices: saved.deleted_devices };
     }
     if (code === "ServerKeyMismatch") throw new ServerKeyMismatchError((error as Error).message);
     throw error;
