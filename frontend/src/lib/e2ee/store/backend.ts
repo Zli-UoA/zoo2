@@ -3,7 +3,8 @@
  *
  * 値はすべて zoo-crypto が暗号化した文字列（端末アカウントは `DeviceAccount.pickle`、ほかは
  * `zoo-crypto` の保存用の封筒）で、保存先は中身を読まない。例外は `meta` の値で、秘密を入れない
- * （包んだ保存鍵、`device_id`、登録済みかどうか）。
+ * （包んだ保存鍵、`device_id`、登録済みかどうか、`secrets_revision`）。秘密を含む値を `meta` に
+ * 置くときは、ほかの値と同じく封筒に入れる（自分の鍵の `own_keys`。#360）。
  *
  * ブラウザーでは OPFS の SQLite（`sqliteBackend.ts`）、Node のテストではメモリー
  * （{@link MemoryCryptoBackend}）を使う。

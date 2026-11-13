@@ -374,6 +374,47 @@ pub fn plan_resume(
     Ok(plan)
 }
 
+/// E2EE のリセット（SSSS を開けないとき。他人が作った SSSS を含む）で、新しく作った鍵に
+/// 差し替える要求を作る。SSSS の作り直し（`POST /api/e2ee/secret_storage/keys`。前提の値は
+/// `GET /api/e2ee/secret_storage` で読んだもの）を保存したあとに送る。
+///
+/// - クロス署名鍵は 3 つとも差し替える（`expected_keys` はサーバーの今の鍵）。
+/// - 鍵バックアップは新しい版を作る（`expected_current_version` はサーバーの今の版）。今の版を
+///   消してあれば `null`。どちらも直前の再認証が要る。
+pub fn plan_reset(
+    secrets: &OwnSecrets,
+    server: &ServerKeyState,
+    device_keys: &Value,
+) -> Result<ResumePlan, CryptoError> {
+    let keys = &secrets.cross_signing;
+    let user_id = keys.master.user_id().to_owned();
+    let mut server_keys = Vec::with_capacity(3);
+    for usage in [
+        KeyUsage::Master,
+        KeyUsage::SelfSigning,
+        KeyUsage::UserSigning,
+    ] {
+        // 読めない鍵は、差し替えの前提にできないので、ないものとして扱う（サーバーが 409 を返す）。
+        server_keys.push(server.public_key(&user_id, usage).ok().flatten());
+    }
+    let mut body = cross_signing_request(keys, &[None, None, None]);
+    body["expected_keys"] = cross_signing_request(keys, &server_keys)["expected_keys"].clone();
+    let current = server
+        .current_version()
+        .filter(|version| !version.deleted)
+        .map(|version| version.version.clone());
+    Ok(ResumePlan {
+        cross_signing: Some(body),
+        device_signature: Some(keys.self_signing.sign_device(device_keys)?),
+        backup_version: Some(
+            secrets
+                .backup_key
+                .create_version_request(&keys.master, current.as_deref())?,
+        ),
+        current_backup_version: None,
+    })
+}
+
 /// ない鍵だけを送る `POST /api/e2ee/cross_signing/keys` の本文。マスター鍵がなければ 3 つとも送る
 /// （サーバーは、送ったマスター鍵の署名がない自己署名鍵とユーザー署名鍵を拒否するため）。
 fn cross_signing_request(

@@ -161,33 +161,56 @@ pub async fn run_once_until(s: &AppState, stop: &mut Stop) -> Result<Step, AppEr
         return Ok(Step::Idle);
     };
     let lease = Lease::start(s.clone(), job.id.clone(), job.token.clone());
-    tracing::info!(import_id = %job.id, status = %job.status, attempt = job.attempts, "Slack import step started");
+    let step_name = job.status.clone();
+    let span = tracing::info_span!(
+        "slack_import_step",
+        import_id = %job.id,
+        step = %step_name,
+        attempt = job.attempts
+    );
+    let started = std::time::Instant::now();
+    span.in_scope(|| {
+        tracing::info!(import_id = %job.id, status = %step_name, attempt = job.attempts, "Slack import step started");
+    });
+
+    use tracing::Instrument;
     let step = async {
-        match job.status.as_str() {
+        match step_name.as_str() {
             "analyzing" => analyze(s, &job, &lease).await,
             "importing" => import(s, &job, &lease).await,
             "fetching_files" => fetch_files(s, &job, &lease).await,
             _ => Ok(()),
         }
-    };
+    }
+    .instrument(span.clone());
     let result = tokio::select! {
         result = step => result,
         _ = stopped(stop) => {
             // 段階の future はここで捨てられる (トランザクションはロールバックされる)
             drop(lease);
             match tokio::time::timeout(RELEASE_TIMEOUT, release_job(s, &job.id, &job.token)).await {
-                Ok(Ok(true)) => tracing::info!(import_id = %job.id, "Released the Slack import job for shutdown"),
-                Ok(Ok(false)) => tracing::warn!(import_id = %job.id, "Slack import lease was already lost at shutdown"),
-                Ok(Err(e)) => tracing::warn!(import_id = %job.id, error = %e, "Failed to release the Slack import job; the lease will expire"),
-                Err(_) => tracing::warn!(import_id = %job.id, "Timed out releasing the Slack import job; the lease will expire"),
+                Ok(Ok(true)) => span.in_scope(|| tracing::info!(import_id = %job.id, "Released the Slack import job for shutdown")),
+                Ok(Ok(false)) => span.in_scope(|| tracing::warn!(import_id = %job.id, "Slack import lease was already lost at shutdown")),
+                Ok(Err(e)) => span.in_scope(|| tracing::warn!(import_id = %job.id, error = %e, "Failed to release the Slack import job; the lease will expire")),
+                Err(_) => span.in_scope(|| tracing::warn!(import_id = %job.id, "Timed out releasing the Slack import job; the lease will expire")),
             }
+            crate::metrics::record_slack_import_step(&step_name, "stopped", started.elapsed().as_secs_f64());
             return Ok(Step::Stopped);
         }
     };
     drop(lease);
     if let Err(e) = result {
-        tracing::warn!(import_id = %job.id, error = %e, "Slack import step failed");
+        span.in_scope(
+            || tracing::warn!(import_id = %job.id, error = %e, "Slack import step failed"),
+        );
+        crate::metrics::record_slack_import_step(
+            &step_name,
+            "err",
+            started.elapsed().as_secs_f64(),
+        );
         fail(s, &job, &e).await?;
+    } else {
+        crate::metrics::record_slack_import_step(&step_name, "ok", started.elapsed().as_secs_f64());
     }
     Ok(Step::Ran)
 }

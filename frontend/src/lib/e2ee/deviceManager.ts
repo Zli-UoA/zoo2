@@ -72,6 +72,8 @@ export class E2eeDeviceManager {
     try {
       await retryPendingDeviceDeletion(client, userId);
       let opened = await worker.request({ op: "open", namespace, userId });
+      // 登録が途中で失敗しても、ログアウトで消せるように先に覚える。
+      this.deviceId = opened.deviceId;
       if (opened.replacedDeviceId) {
         // 保存鍵を失って作り直した。前の端末はもう使えないので消す。
         await this.deleteDeviceOrRemember(opened.replacedDeviceId);
@@ -84,10 +86,10 @@ export class E2eeDeviceManager {
         // 別の端末から消された。暗号ストアを作り直して、新しい端末として登録する。
         await worker.request({ op: "destroy", namespace });
         opened = await worker.request({ op: "open", namespace, userId });
+        this.deviceId = opened.deviceId;
         counts = await this.ensureRegistered(opened.registered, opened.deviceId);
       }
       if (this.stopped) return;
-      this.deviceId = opened.deviceId;
       await this.replenish(counts);
       if (this.stopped) return;
       const subscribe = this.options.subscribe ?? subscribeToDevice;
@@ -100,6 +102,21 @@ export class E2eeDeviceManager {
       if (!this.stopped) this.options.onStatus?.("error", error);
       throw error;
     }
+  }
+
+  /**
+   * 登録も購読もせずに暗号ストアだけを開く。ログアウトしようとしたタブが、別のタブからロックを
+   * 奪って、件数の確認と削除だけを行うときに使う。
+   */
+  async attach(): Promise<void> {
+    const opened = await this.options.worker.request({
+      op: "open",
+      namespace: this.options.namespace,
+      userId: this.options.userId,
+    });
+    // 登録の応答をなくした端末は、サーバーにはあるのに手元では未登録のまま。どちらでも
+    // 削除 API を呼ぶ（冪等で、サーバーになければ 404 になり、消すものがないと分かる）。
+    this.deviceId = opened.deviceId;
   }
 
   private async ensureRegistered(registered: boolean, deviceId: string): Promise<KeyCounts> {
@@ -212,8 +229,10 @@ export class E2eeDeviceManager {
     try {
       await deleteDevice(this.options.client, deviceId, { signal: controller.signal });
       clearPendingDeviceDeletion();
-    } catch {
-      // 印を残す。次のログインで消し直す。
+    } catch (error) {
+      // 404 はサーバーに端末がない（登録の前に止まった）。消すものがない。
+      if (error instanceof ApiError && error.status === 404) clearPendingDeviceDeletion();
+      // それ以外は印を残し、次のログインで消し直す。
     } finally {
       clearTimeout(timer);
     }
@@ -227,7 +246,8 @@ export async function retryPendingDeviceDeletion(client: ApiClient, userId: stri
   try {
     await deleteDevice(client, pending.deviceId);
     clearPendingDeviceDeletion();
-  } catch {
-    // 次の起動で試し直す。
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) clearPendingDeviceDeletion();
+    // それ以外は次の起動で試し直す。
   }
 }

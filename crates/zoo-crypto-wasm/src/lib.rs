@@ -24,6 +24,7 @@ mod cross_signing;
 mod device;
 mod megolm;
 mod secret_storage;
+mod setup;
 
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
@@ -38,6 +39,7 @@ pub use device::{
 };
 pub use megolm::{BackupSession, InboundSessionStore, OutboundSession, RoomKey};
 pub use secret_storage::{RecoveryKey, SecretStorage, SsssKey, UnlockedSecretStorage};
+pub use setup::{OwnKeys, OwnSecrets};
 
 use convert::{IntoJs, ed25519, from_js, to_js};
 

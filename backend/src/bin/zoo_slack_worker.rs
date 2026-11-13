@@ -16,20 +16,16 @@
 //! （Pod の terminationGracePeriodSeconds はこれより長くする）。
 use axum::{Router, routing::get};
 use std::{net::SocketAddr, time::Duration};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// SIGTERM 後に、ジョブを手放すのを待つ最大時間。残ったリースは、期限切れで他のワーカーが拾う
 const DRAIN: Duration = Duration::from_secs(15);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "backend=info,zoo_slack_worker=info,info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let telemetry = backend::telemetry::init(
+        "zoo-slack-worker",
+        "backend=info,zoo_slack_worker=info,info",
+    );
 
     let config = backend::config::Config::from_env();
     if let Err(err) = config.validate() {
@@ -84,22 +80,30 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let app = Router::new().route(
-        "/healthz",
-        get(move || {
-            let alive = alive.clone();
-            async move {
-                if alive.load(std::sync::atomic::Ordering::Relaxed) {
-                    (axum::http::StatusCode::OK, "ok")
-                } else {
-                    (
-                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                        "worker stopped",
-                    )
+    let app = Router::new()
+        .route(
+            "/healthz",
+            get(move || {
+                let alive = alive.clone();
+                async move {
+                    if alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        (axum::http::StatusCode::OK, "ok")
+                    } else {
+                        (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            "worker stopped",
+                        )
+                    }
                 }
-            }
-        }),
-    );
+            }),
+        )
+        .route(
+            "/metrics",
+            get(backend::telemetry::prometheus_metrics_handler),
+        )
+        .layer(axum::middleware::from_fn(
+            backend::telemetry::http_telemetry_middleware,
+        ));
     tracing::info!(addr=%listener.local_addr()?, "zoo-slack-worker listening");
     // 合図を受けたら、HTTP サーバーの終了を待たずに、ジョブを手放し始める
     let stop_on_signal = stop.clone();
@@ -117,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
         import.abort();
     }
     tracing::info!("zoo-slack-worker stopped");
+    telemetry.shutdown().await;
     Ok(())
 }
 

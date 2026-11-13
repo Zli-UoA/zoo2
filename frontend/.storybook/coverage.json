@@ -646,6 +646,32 @@
     {
       "file": "src/components/ui/sensitive-media.stories.tsx",
       "states": ["Hidden", "RevealAndHide", "ActivityPub", "WithoutMetadata", "InvalidHash"]
+    },
+    {
+      "file": "src/components/e2ee/UnbackedKeysLogoutDialog.stories.tsx",
+      "states": ["Default", "Pending"]
+    },
+    {
+      "file": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx",
+      "states": ["HealthyChild", "FallbackShown"]
+    },
+    {
+      "file": "src/components/e2ee/EncryptionSettingsView.stories.tsx",
+      "states": [
+        "Loading",
+        "Unavailable",
+        "LoadFailed",
+        "NotSetUp",
+        "RecoveryKey",
+        "Saving",
+        "PopupBlocked",
+        "Locked",
+        "LockedRecoveryOnly",
+        "LockedResume",
+        "LockedMismatch",
+        "NeedsReauth",
+        "Unlocked"
+      ]
     }
   ],
   "modules": [
@@ -926,6 +952,19 @@
       "checks": ["src/lib/desktop.test.ts"]
     },
     {
+      "file": "src/components/e2ee/E2eeProvider.tsx",
+      "reason": "暗号ストアのWorkerと端末の登録を動かす制御層で、画面を持たない。保存とWorkerはブラウザテスト、登録とto-deviceの処理は単体テストで確認する。",
+      "checks": [
+        "src/lib/e2ee/cryptoWorker.browser.test.ts",
+        "src/lib/e2ee/store/cryptoStore.test.ts",
+        "src/lib/e2ee/deviceManager.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/e2ee/UnbackedKeysLogoutDialog.tsx",
+      "story": "src/components/e2ee/UnbackedKeysLogoutDialog.stories.tsx"
+    },
+    {
       "file": "src/components/offline/OfflineBanner.tsx",
       "story": "src/components/offline/OfflineBanner.stories.tsx"
     },
@@ -1167,6 +1206,23 @@
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
       "reason": "AuthZAccountsで集中基盤のプロフィールによるアイコンとメンションを検証する。"
+    },
+    {
+      "file": "src/components/telemetry/TelemetryErrorBoundary.tsx",
+      "story": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/EncryptionSettingsView.tsx",
+      "story": "src/components/e2ee/EncryptionSettingsView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/EncryptionSettings.tsx",
+      "reason": "暗号化タブの状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はEncryptionSettingsViewのストーリーで、手順は単体テストで確認する。",
+      "checks": [
+        "src/lib/e2ee/setupController.test.ts",
+        "src/lib/e2ee/reauth.test.ts",
+        "src/lib/oidc/reauth.test.ts"
+      ]
     }
   ]
 }
