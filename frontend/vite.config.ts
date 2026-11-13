@@ -33,7 +33,17 @@ const offlineAssets: Plugin = {
 };
 
 const config = defineConfig({
-  optimizeDeps: { include: ["@base-ui/react/toggle-group", "@base-ui/react/toggle"] },
+  optimizeDeps: {
+    include: [
+      "@base-ui/react/toggle-group",
+      "@base-ui/react/toggle",
+      // 暗号ストアの Worker（lib/e2ee）が読む。dev サーバーがログインのあとで初めて見つけると、
+      // 依存を最適化し直してページを読み直し、操作中の画面が消える（OIDC E2E）。
+      "@journeyapps/wa-sqlite",
+      "@journeyapps/wa-sqlite/dist/wa-sqlite.mjs",
+      "@journeyapps/wa-sqlite/src/examples/OPFSCoopSyncVFS.js",
+    ],
+  },
   fmt: {},
   lint: {
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],

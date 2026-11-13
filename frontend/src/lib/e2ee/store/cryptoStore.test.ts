@@ -7,7 +7,7 @@ import {
   verifyDeviceKeys,
   type JsonObject,
 } from "@zoo/crypto-wasm";
-import { beforeAll, describe, expect, it } from "vite-plus/test";
+import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { CryptoOperations } from "../operations";
 import { MemoryCryptoBackend, type CryptoStoreWrite } from "./backend";
@@ -108,6 +108,62 @@ describe("CryptoStore", () => {
     await second.store.close();
   });
 
+  it("開き直しにも失敗したら、ストレージが戻ったあとの操作で開き直す", async () => {
+    class DownBackend extends MemoryCryptoBackend {
+      down = false;
+      override async read() {
+        if (this.down) throw new Error("storage down");
+        return super.read();
+      }
+      override async write(changes: CryptoStoreWrite): Promise<void> {
+        if (this.down) throw new Error("storage down");
+        return super.write(changes);
+      }
+    }
+    const backend = new DownBackend();
+    const operations = new CryptoOperations(
+      { open: async () => backend, remove: async () => backend.destroy() },
+      memoryKeys(),
+    );
+    await operations.run({ op: "open", namespace: `user-${BOB}`, userId: BOB });
+    backend.down = true;
+    // 書き込みに失敗し、そのあとの開き直しも失敗する。
+    await expect(operations.run({ op: "markRegistered" })).rejects.toThrow("storage down");
+    await expect(operations.run({ op: "pendingBackupCount" })).rejects.toThrow("storage down");
+    backend.down = false;
+    expect(await operations.run({ op: "pendingBackupCount" })).toBe(0);
+    await operations.run({ op: "markRegistered" });
+  });
+
+  it("開き直しに失敗したあとで消したストアは、次の操作で開き直さない", async () => {
+    class DownBackend extends MemoryCryptoBackend {
+      down = false;
+      override async read() {
+        if (this.down) throw new Error("storage down");
+        return super.read();
+      }
+      override async write(changes: CryptoStoreWrite): Promise<void> {
+        if (this.down) throw new Error("storage down");
+        return super.write(changes);
+      }
+    }
+    const backend = new DownBackend();
+    const operations = new CryptoOperations(
+      { open: async () => backend, remove: async () => backend.destroy() },
+      memoryKeys(),
+    );
+    const namespace = `user-${BOB}`;
+    await operations.run({ op: "open", namespace, userId: BOB });
+    backend.down = true;
+    await expect(operations.run({ op: "markRegistered" })).rejects.toThrow("storage down");
+    backend.down = false;
+    await operations.run({ op: "destroy", namespace });
+    await expect(operations.run({ op: "pendingBackupCount" })).rejects.toThrow(
+      "暗号ストアが開いていません",
+    );
+    expect(backend.account).toBeNull();
+  });
+
   it("包んだ保存鍵の base64 が壊れていても作り直す", async () => {
     const backend = new MemoryCryptoBackend();
     const keys = memoryKeys();
@@ -118,6 +174,38 @@ describe("CryptoStore", () => {
     const second = await open(backend, keys);
     expect(second.replacedDeviceId).toBe(deviceId);
     await second.store.close();
+  });
+
+  it.each([
+    ["新しい端末の最初の保存", "write"],
+    ["保存した Olm セッションの復元", "restore"],
+  ] as const)("%sに失敗したら、作った鍵のオブジェクトを解放して閉じる", async (_, failure) => {
+    const backend = new MemoryCryptoBackend();
+    const keys = memoryKeys();
+    if (failure === "restore") {
+      await (await open(backend, keys)).store.close();
+      backend.olmSessions.set("broken", {
+        sessionId: "broken",
+        theirIdentityKey: "x",
+        pickle: "not a pickle",
+      });
+    } else {
+      // 包んだ保存鍵の保存は通し、新しい端末の最初の保存だけ失敗させる。
+      const write = backend.write.bind(backend);
+      backend.write = async (changes) => {
+        if (changes.account !== undefined) throw new Error("disk full");
+        return write(changes);
+      };
+    }
+    const free = vi.spyOn(CryptoStore.prototype as unknown as { free(): void }, "free");
+    const close = vi.spyOn(backend, "close");
+    try {
+      await expect(open(backend, keys)).rejects.toThrow();
+      expect(free).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalled();
+    } finally {
+      free.mockRestore();
+    }
   });
 
   it("別のユーザーの暗号ストアは開かない", async () => {

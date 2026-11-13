@@ -24,6 +24,8 @@ export interface E2eeDeviceManagerOptions {
   subscribe?: typeof subscribeToDevice;
   /** to-device の処理が失敗したときに、もう一度試すまでの時間。 */
   retryDelayMs?: number;
+  /** ログアウトで、処理中のもの（登録の要求など）を待つ時間。 */
+  settleTimeoutMs?: number;
   onStatus?: (status: E2eeDeviceStatus, error?: unknown) => void;
 }
 
@@ -65,6 +67,17 @@ export class E2eeDeviceManager {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   /** 止めたら、通信中の要求（登録を除く）を中止する。 */
   private readonly abort = new AbortController();
+  /** to-device の処理の要求。ログアウトの確認で止めるときにも中止し、再開したら作り直す。 */
+  private processAbort = new AbortController();
+  /** 登録の要求の結果がまだ分からない。分からないうちは、ログアウトで端末を消さない。 */
+  private registering = false;
+  /** ログアウトのために開いたとき、保存鍵を失って作り直した前の端末（これも消す）。 */
+  private readonly replacedDeviceIds: string[] = [];
+  /** 端末が消されていたので、起動し直さなければならない（`reregister`）。済むまで残す。 */
+  private restartPending = false;
+  /** 起動し直す前に、まだ暗号ストアを消していない。 */
+  private destroyBeforeRestart = false;
+  private restarting = false;
 
   constructor(private readonly options: E2eeDeviceManagerOptions) {}
 
@@ -138,6 +151,12 @@ export class E2eeDeviceManager {
     // 登録の応答をなくした端末は、サーバーにはあるのに手元では未登録のまま。どちらでも
     // 削除 API を呼ぶ（冪等で、サーバーになければ 404 になり、消すものがないと分かる）。
     this.deviceId = opened.deviceId;
+    if (opened.replacedDeviceId) {
+      // 保存鍵を失って作り直した。前の端末の ID はもう暗号ストアにないので、先に削除待ちに
+      // 残し、ログアウトで一緒に消す。
+      markDeviceDeletionPending({ userId: this.options.userId, deviceId: opened.replacedDeviceId });
+      this.replacedDeviceIds.push(opened.replacedDeviceId);
+    }
   }
 
   private async ensureRegistered(registered: boolean, deviceId: string): Promise<KeyCounts> {
@@ -149,15 +168,24 @@ export class E2eeDeviceManager {
     const request = await worker.request({ op: "registrationRequest" });
     // 登録は中止しない。中止しても、サーバーが受け取っていれば端末はできる。ログアウトは、
     // この要求の結果を待ってから端末を消す（`destroy`）。
-    const counts = await registerDevice(client, {
-      ...request,
-      display_name: this.options.displayName,
-    });
+    this.registering = true;
+    let counts: KeyCounts;
+    try {
+      counts = await registerDevice(client, {
+        ...request,
+        display_name: this.options.displayName,
+      });
+    } catch (error) {
+      // 失敗が分かった（応答をなくしたなら、サーバーにはあるかもしれないが、削除は冪等）。
+      this.registering = false;
+      throw error;
+    }
+    this.registering = false;
     await worker.request({ op: "markRegistered" });
     return counts;
   }
 
-  private async replenish(counts: KeyCounts): Promise<void> {
+  private async replenish(counts: KeyCounts, signal = this.abort.signal): Promise<void> {
     const deviceId = this.deviceId;
     if (!deviceId) return;
     const upload = await this.options.worker.request({
@@ -166,7 +194,7 @@ export class E2eeDeviceManager {
       hasUnusedFallbackKey: counts.unused_fallback_key_types.includes("signed_curve25519"),
     });
     if (upload) {
-      await uploadKeys(this.options.client, deviceId, upload, this.abort.signal);
+      await uploadKeys(this.options.client, deviceId, upload, signal);
       await this.options.worker.request({ op: "markKeysPublished" });
     }
     this.needsReplenish = false;
@@ -181,7 +209,14 @@ export class E2eeDeviceManager {
           this.dirty = false;
           await this.process(this.latestRows);
         }
-      } catch {
+      } catch (error) {
+        // 受信の途中で、端末が別の端末から消されていた（ack や補充が 404）。同じ端末で試し直しても
+        // 直らないので、起動と同じく暗号ストアを作り直して、新しい端末として登録し直す。
+        if (isDeviceGone(error) && !this.stopped && !this.suspended) {
+          this.destroyBeforeRestart = true;
+          void this.reregister();
+          return;
+        }
         // オフラインなどで失敗したら、少し待って残っている行と鍵の補充を試し直す。
         if (!this.stopped && !this.suspended) {
           this.retryTimer = setTimeout(() => {
@@ -199,22 +234,65 @@ export class E2eeDeviceManager {
     const deviceId = this.deviceId;
     if (!deviceId) return;
     const { worker, client } = this.options;
-    const signal = this.abort.signal;
+    const signal = this.processAbort.signal;
+    let rowsFailure: unknown = null;
     if (rows.length > 0) {
-      const senders = [...new Set(rows.map((row) => row.sender_user_id))].sort();
-      const deviceKeys = await queryDeviceKeys(client, senders, signal);
-      if (this.stopped) return;
-      const result = await worker.request({ op: "processToDevice", rows, deviceKeys });
-      if (result.newOlmSessions > 0) this.needsReplenish = true;
-      if (result.processed.length > 0) {
-        await ackToDevice(client, deviceId, result.processed, signal);
-        await worker.request({ op: "acknowledged", ids: result.processed });
+      try {
+        const senders = [...new Set(rows.map((row) => row.sender_user_id))].sort();
+        const deviceKeys = await queryDeviceKeys(client, senders, signal);
+        if (this.stopped) return;
+        const result = await worker.request({ op: "processToDevice", rows, deviceKeys });
+        if (result.newOlmSessions > 0) this.needsReplenish = true;
+        if (result.processed.length > 0) {
+          await ackToDevice(client, deviceId, result.processed, signal);
+          await worker.request({ op: "acknowledged", ids: result.processed });
+        }
+      } catch (error) {
+        rowsFailure = error;
       }
     }
-    // 補充は受信の行とは別に持つ。ack や補充が失敗して試し直すと、同じ行は処理済みとして
-    // 返るので、行の結果だけでは補充し直せない。
-    if (this.needsReplenish && !this.stopped) {
-      await this.replenish(await uploadKeys(client, deviceId, null, signal));
+    // 補充は受信の行とは別に持ち、行の処理（keys/query や ack）が失敗しても行う。ack や補充が
+    // 失敗して試し直すと、同じ行は処理済みとして返るので、行の結果だけでは補充し直せない。
+    if (this.needsReplenish && !this.stopped && !signal.aborted) {
+      await this.replenish(await uploadKeys(client, deviceId, null, signal), signal);
+    }
+    if (rowsFailure) throw rowsFailure;
+  }
+
+  /**
+   * 端末が消されていたので、暗号ストアを作り直して起動し直す。失敗したら試し直す。
+   *
+   * 暗号ストアを消すのは最初の 1 回だけにする（`destroyBeforeRestart`）。新しい端末の登録が済んだ
+   * あとで補充などが失敗したときに消すと、登録した端末の秘密鍵まで失う。試し直しでは起動
+   * （`start`）だけをやり直し、同じ暗号ストアの端末を使う。ログアウトの確認で止めているあいだは
+   * 待ち（`restartPending`）だけを残し、取りやめたら（`resume`）再開する。
+   */
+  private async reregister(): Promise<void> {
+    this.subscription?.unsubscribe();
+    this.subscription = null;
+    this.latestRows = [];
+    this.needsReplenish = false;
+    this.restartPending = true;
+    if (this.stopped || this.suspended || this.restarting) return;
+    this.restarting = true;
+    try {
+      if (this.destroyBeforeRestart) {
+        await this.options.worker.request({ op: "destroy", namespace: this.options.namespace });
+        this.destroyBeforeRestart = false;
+        this.deviceId = null;
+      }
+      if (this.stopped || this.suspended) return;
+      await this.start();
+      this.restartPending = false;
+    } catch {
+      if (!this.stopped && !this.suspended) {
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          void this.reregister();
+        }, this.options.retryDelayMs ?? 30_000);
+      }
+    } finally {
+      this.restarting = false;
     }
   }
 
@@ -229,6 +307,9 @@ export class E2eeDeviceManager {
    */
   async suspend(): Promise<void> {
     this.suspended = true;
+    // 通信中の要求（keys/query、ack、補充）を中止する。暗号ストアの書き込みは Worker の中で
+    // 1 つずつ終わるので、処理中のものが終わるのを待てばよい。
+    this.processAbort.abort();
     this.subscription?.unsubscribe();
     this.subscription = null;
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -240,6 +321,12 @@ export class E2eeDeviceManager {
   resume(): void {
     if (!this.suspended) return;
     this.suspended = false;
+    this.processAbort = new AbortController();
+    // 止めているあいだに、起動し直しを待っていた（タイマーは止めたので、ここで再開する）。
+    if (this.restartPending) {
+      void this.reregister();
+      return;
+    }
     this.subscribe();
   }
 
@@ -263,12 +350,16 @@ export class E2eeDeviceManager {
     if (deviceId) markDeviceDeletionPending({ userId: this.options.userId, deviceId });
     await this.options.worker.request({ op: "destroy", namespace: this.options.namespace });
     this.options.onStatus?.("stopped");
-    if (deviceId) await this.deleteDeviceOrRemember(deviceId);
+    // 待っても登録の結果が分からなければ、いま消すと、そのあとに登録が届いて端末が残りうる
+    // （404 で削除待ちを外してしまう）。削除待ちに残し、次のログインで消し直す。
+    if (deviceId && !this.registering) await this.deleteDeviceOrRemember(deviceId);
+    for (const replaced of this.replacedDeviceIds) await this.deleteDeviceOrRemember(replaced);
   }
 
   private halt(): void {
     this.stopped = true;
     this.abort.abort();
+    this.processAbort.abort();
     this.subscription?.unsubscribe();
     this.subscription = null;
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -280,7 +371,7 @@ export class E2eeDeviceManager {
     const starting = this.starting?.catch(() => undefined);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, DELETE_TIMEOUT_MS);
+      timer = setTimeout(resolve, this.options.settleTimeoutMs ?? DELETE_TIMEOUT_MS);
     });
     await Promise.race([Promise.all([starting, this.processing?.catch(() => undefined)]), timeout]);
     clearTimeout(timer);

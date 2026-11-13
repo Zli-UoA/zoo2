@@ -27,32 +27,38 @@ function fakeWorker(overrides: Partial<Record<CryptoOperation["op"], unknown>> =
   const worker = {
     request: vi.fn(async (operation: CryptoOperation) => {
       calls.push(operation);
-      return results[operation.op] ?? null;
+      const result = results[operation.op];
+      return (typeof result === "function" ? result(operation) : result) ?? null;
     }),
     terminate: vi.fn(),
   };
   return { worker: worker as unknown as CryptoWorker, calls };
 }
 
-function fakeClient(handlers: Record<string, (body: unknown) => unknown> = {}) {
+function fakeClient(
+  handlers: Record<string, (body: unknown, signal?: AbortSignal) => unknown> = {},
+) {
   const requests: { method: string; path: string; body: unknown }[] = [];
   const counts = {
     one_time_key_counts: { signed_curve25519: 50 },
     unused_fallback_key_types: ["signed_curve25519"],
   };
-  const respond = (method: string, path: string, body: unknown) => {
+  const respond = (method: string, path: string, body: unknown, signal?: AbortSignal) => {
     requests.push({ method, path, body });
     const handler = handlers[`${method} ${path}`];
-    if (handler) return handler(body);
+    if (handler) return handler(body, signal);
     if (path === "/api/e2ee/keys/query") return { device_keys: {} };
     return counts;
   };
   const client = {
-    request: vi.fn(async (path: string, options: { method?: string; body?: unknown } = {}) =>
-      respond(options.method ?? "GET", path, options.body),
+    request: vi.fn(
+      async (
+        path: string,
+        options: { method?: string; body?: unknown; signal?: AbortSignal } = {},
+      ) => respond(options.method ?? "GET", path, options.body, options.signal),
     ),
-    post: vi.fn(async (path: string, body: unknown) => ({
-      data: await respond("POST", path, body),
+    post: vi.fn(async (path: string, body: unknown, options: { signal?: AbortSignal } = {}) => ({
+      data: await respond("POST", path, body, options.signal),
       txid: null,
     })),
     delete: vi.fn(async (path: string) => ({
@@ -69,8 +75,9 @@ const subscribe = vi.fn((_config, _userId, _deviceId, onRows: (rows: ToDeviceRow
   return { unsubscribe: vi.fn() };
 });
 
-function manager(worker: CryptoWorker, client: ApiClient) {
+function manager(worker: CryptoWorker, client: ApiClient, settleTimeoutMs?: number) {
   return new E2eeDeviceManager({
+    settleTimeoutMs,
     config: resolveConfig({ DEV: false }),
     client,
     worker,
@@ -300,6 +307,237 @@ describe("E2eeDeviceManager", () => {
     expect(first.unsubscribe).toHaveBeenCalled();
     instance.resume();
     expect(subscribe).toHaveBeenCalledTimes(2);
+    await instance.stop();
+  });
+
+  it("ack が失敗し続けても、鍵の補充は行う", async () => {
+    const { worker, calls } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+    });
+    const { client, requests } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw new ApiError(503, "busy");
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    const uploadsBefore = requests.filter((r) => r.path === "/api/e2ee/keys/upload").length;
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    // 新しい Olm セッションを作ったので、ack が失敗しても補充の数を読み、補充を試す。
+    await vi.waitFor(() =>
+      expect(requests.filter((r) => r.path === "/api/e2ee/keys/upload").length).toBeGreaterThan(
+        uploadsBefore,
+      ),
+    );
+    expect(calls.filter((call) => call.op === "prepareKeyUpload").length).toBeGreaterThan(1);
+    await instance.stop();
+  });
+
+  it("登録の結果が分からないうちは、ログアウトで端末を消さずに削除待ちに残す", async () => {
+    const { worker } = fakeWorker();
+    const { client, requests } = fakeClient({
+      // 登録の応答が返らない（タイムアウトより長くかかる）。
+      "POST /api/e2ee/devices": () => new Promise(() => {}),
+    });
+    const instance = manager(worker, client, 20);
+    void instance.start().catch(() => undefined);
+    await vi.waitFor(() =>
+      expect(requests.some((request) => request.path === "/api/e2ee/devices")).toBe(true),
+    );
+    await instance.destroy();
+    expect(requests.some((request) => request.method === "DELETE")).toBe(false);
+    expect(readPendingDeviceDeletions()).toEqual([{ userId: USER, deviceId: DEVICE }]);
+  });
+
+  it("ログアウトの確認で止めるときは、通信中の要求を中止する", async () => {
+    const { worker } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+    });
+    let aborted = false;
+    const { client, requests } = fakeClient({
+      // keys/query の応答が返らない。中止されたら終わる。
+      "POST /api/e2ee/keys/query": (_body, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() =>
+      expect(requests.some((request) => request.path === "/api/e2ee/keys/query")).toBe(true),
+    );
+    await instance.suspend();
+    expect(aborted).toBe(true);
+    await instance.stop();
+  });
+
+  it("ログアウトのために開いて保存鍵を作り直していたら、前の端末も消す", async () => {
+    const OLD = "00000000-0000-4000-8000-0000000000d0";
+    const { worker } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: false, replacedDeviceId: OLD },
+    });
+    const { client, requests } = fakeClient();
+    const instance = manager(worker, client);
+    await instance.attach();
+    expect(readPendingDeviceDeletions()).toContainEqual({ userId: USER, deviceId: OLD });
+    await instance.destroy();
+    const deleted = requests.filter((r) => r.method === "DELETE").map((r) => r.path);
+    expect(deleted).toEqual([`/api/e2ee/devices/${DEVICE}`, `/api/e2ee/devices/${OLD}`]);
+    expect(readPendingDeviceDeletions()).toEqual([]);
+  });
+
+  it("受信中に端末が消されていたら（ack が 404）、作り直して登録し直す", async () => {
+    const { worker, calls } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+    });
+    const { client } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw new ApiError(404, "gone");
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() =>
+      expect(calls.map((call) => call.op)).toEqual(expect.arrayContaining(["destroy"])),
+    );
+    await vi.waitFor(() => expect(calls.filter((call) => call.op === "open")).toHaveLength(2));
+    await instance.stop();
+  });
+
+  it("再登録で新しい端末を登録したあとで補充に失敗しても、試し直しで暗号ストアを消し直さない", async () => {
+    const NEW_DEVICE = "00000000-0000-4000-8000-0000000000d2";
+    let destroyed = false;
+    let registered = false;
+    const upload = { one_time_keys: { "signed_curve25519:AAAA": {} }, fallback_keys: {} };
+    const { worker, calls } = fakeWorker({
+      // 作り直したあとは、新しい未登録の端末を返す。登録が済んだら登録済みとして返す。
+      open: () =>
+        destroyed
+          ? { userId: USER, deviceId: NEW_DEVICE, registered, replacedDeviceId: null }
+          : { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      destroy: () => {
+        destroyed = true;
+        return null;
+      },
+      markRegistered: () => {
+        registered = true;
+        return null;
+      },
+      // 受信の処理の中で補充しないよう、新しい Olm セッションは作らない。
+      processToDevice: { processed: ["1"], roomKeys: 0, dropped: 0, newOlmSessions: 0 },
+      // 新しい端末は、鍵を補充しなければならない。
+      prepareKeyUpload: () => (destroyed ? upload : null),
+    });
+    let failedUploads = 0;
+    const { client, requests } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw new ApiError(404, "gone");
+      },
+      "POST /api/e2ee/keys/upload": (body) => {
+        const keys = (body as { one_time_keys: Record<string, unknown> }).one_time_keys;
+        // 新しい端末の登録のあとの補充（鍵のある送信）を、最初の 2 回だけ失敗させる。
+        if (Object.keys(keys).length > 0 && failedUploads < 2) {
+          failedUploads += 1;
+          throw new ApiError(503, "busy");
+        }
+        return { one_time_key_counts: { signed_curve25519: 50 }, unused_fallback_key_types: [] };
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    // 補充が通るまで起動を試し直し、新しい端末の補充を公開済みにする。
+    await vi.waitFor(() =>
+      expect(calls.filter((call) => call.op === "markKeysPublished")).toHaveLength(1),
+    );
+    expect(failedUploads).toBe(2);
+    // 暗号ストアを消したのは、端末が消されていたと分かったときの 1 回だけ。
+    expect(calls.filter((call) => call.op === "destroy")).toHaveLength(1);
+    // 新しい端末の登録も 1 回だけで、試し直しは同じ端末を使う。
+    expect(requests.filter((r) => r.path === "/api/e2ee/devices")).toHaveLength(1);
+    expect(instance.currentDeviceId).toBe(NEW_DEVICE);
+    await instance.stop();
+  });
+
+  it("ログアウトの確認で止めていたあいだに再登録が失敗したら、取りやめたときに再開する", async () => {
+    const { worker, calls } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      processToDevice: { processed: ["1"], roomKeys: 0, dropped: 0, newOlmSessions: 0 },
+    });
+    let uploads = 0;
+    let failRestart: (error: Error) => void = () => {};
+    const { client } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw new ApiError(404, "gone");
+      },
+      "POST /api/e2ee/keys/upload": () => {
+        uploads += 1;
+        // 再登録の起動（2 回目）の要求は、ログアウトの確認で止めてから失敗させる。
+        if (uploads === 2)
+          return new Promise((_resolve, reject) => {
+            failRestart = reject;
+          });
+        return { one_time_key_counts: { signed_curve25519: 50 }, unused_fallback_key_types: [] };
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() => expect(uploads).toBe(2));
+    await instance.suspend();
+    failRestart(new ApiError(503, "busy"));
+    // 止めているあいだは試し直さない。
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.filter((call) => call.op === "open")).toHaveLength(2);
+    instance.resume();
+    await vi.waitFor(() => expect(calls.filter((call) => call.op === "open")).toHaveLength(3));
+    // 作り直しは最初の 1 回だけ。
+    expect(calls.filter((call) => call.op === "destroy")).toHaveLength(1);
     await instance.stop();
   });
 

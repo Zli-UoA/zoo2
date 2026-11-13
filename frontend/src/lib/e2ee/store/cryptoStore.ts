@@ -61,6 +61,14 @@ export interface OpenedStore {
   replacedDeviceId: string | null;
 }
 
+interface OpenOptions {
+  backend: CryptoBackend;
+  name: string;
+  userId: string;
+  reset: () => Promise<CryptoBackend>;
+  keys?: WrappingKeyStore;
+}
+
 /**
  * 1 つのユーザーの暗号ストア（端末アカウント、Olm セッション、Megolm の受信用セッション、
  * 配布先の判定の記録）。docs/e2ee.md の「暗号ストア」。
@@ -94,14 +102,22 @@ export class CryptoStore {
    *
    * `reset` は、保存鍵を開けないときに保存先を消して作り直す関数（新しい空の保存先を返す）。
    */
-  static async open(options: {
-    backend: CryptoBackend;
-    name: string;
-    userId: string;
-    reset: () => Promise<CryptoBackend>;
-    keys?: WrappingKeyStore;
-  }): Promise<OpenedStore> {
-    let backend = options.backend;
+  static async open(options: OpenOptions): Promise<OpenedStore> {
+    const current = { backend: options.backend };
+    try {
+      return await CryptoStore.openWith(options, current);
+    } catch (error) {
+      // 途中で失敗したら、開いた保存先を閉じる（呼び出し側は store を受け取らないので閉じられない）。
+      await current.backend.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private static async openWith(
+    options: OpenOptions,
+    current: { backend: CryptoBackend },
+  ): Promise<OpenedStore> {
+    let backend = current.backend;
     const keys = options.keys ?? indexedDbWrappingKeys;
     let snapshot = await backend.read();
     let replacedDeviceId: string | null = null;
@@ -123,6 +139,7 @@ export class CryptoStore {
       // 開いたままのファイルは消せないので、先に閉じる。
       await backend.close().catch(() => undefined);
       backend = await options.reset();
+      current.backend = backend;
       snapshot = await backend.read();
       storageKey = await loadStorageKey({
         name: options.name,
@@ -140,9 +157,16 @@ export class CryptoStore {
         options.userId,
         deviceId,
       );
-      const trust = snapshot.trustStore
-        ? TrustStore.fromPickle(snapshot.trustStore, account, storageKey)
-        : new TrustStore(options.userId);
+      let trust: TrustStore;
+      try {
+        trust = snapshot.trustStore
+          ? TrustStore.fromPickle(snapshot.trustStore, account, storageKey)
+          : new TrustStore(options.userId);
+      } catch (error) {
+        // 秘密鍵を持つ wasm 側のメモリーを、失敗してもすぐに返す。
+        account.free();
+        throw error;
+      }
       const store = new CryptoStore(
         backend,
         keys,
@@ -153,8 +177,13 @@ export class CryptoStore {
         snapshot.meta[META_REGISTERED] === "1",
         snapshot.processedToDevice,
       );
-      for (const session of snapshot.olmSessions) {
-        store.olmSessions.pushPickle(session.pickle, account, storageKey);
+      try {
+        for (const session of snapshot.olmSessions) {
+          store.olmSessions.pushPickle(session.pickle, account, storageKey);
+        }
+      } catch (error) {
+        store.free();
+        throw error;
       }
       return { store, replacedDeviceId };
     }
@@ -173,15 +202,20 @@ export class CryptoStore {
       false,
       [],
     );
-    await backend.write({
-      meta: {
-        [META_USER_ID]: options.userId,
-        [META_DEVICE_ID]: account.deviceId,
-        [META_REGISTERED]: "0",
-      },
-      account: account.pickle(storageKey),
-      trustStore: trust.pickle(account, storageKey),
-    });
+    try {
+      await backend.write({
+        meta: {
+          [META_USER_ID]: options.userId,
+          [META_DEVICE_ID]: account.deviceId,
+          [META_REGISTERED]: "0",
+        },
+        account: account.pickle(storageKey),
+        trustStore: trust.pickle(account, storageKey),
+      });
+    } catch (error) {
+      store.free();
+      throw error;
+    }
     return { store, replacedDeviceId };
   }
 

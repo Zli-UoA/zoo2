@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
             get(message_reactions_shape),
         )
         .route("/api/shapes/users", get(users_shape))
+        .route("/api/shapes/channel_leaves", get(channel_leaves_shape))
         .route("/api/shapes/channel_users", get(channel_users_shape))
         .route("/api/shapes/notifications", get(notifications_shape))
         .route("/api/shapes/attachments", get(attachments_shape))
@@ -134,6 +135,13 @@ pub(crate) fn channel_users_shape_where<'a>(
             vec![("params[1]", user_id)],
         )
     }
+}
+
+/// Channel Leaves Shape（自分の退出日）の where 句とパラメータの純粋組み立て。
+///
+/// 呼び出したユーザー自身の行だけ。クライアントの where は使わず、他人の退出履歴は配らない。
+pub(crate) fn channel_leaves_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
+    ("user_id = $1".to_string(), vec![("params[1]", user_id)])
 }
 
 /// E2EE の端末の Shape の where 句とパラメータ（docs/e2ee.md の「Electric の Shape」）。
@@ -578,6 +586,25 @@ pub(crate) async fn channel_users_shape(
     .await
 }
 
+/// Channel Leaves Shape（自分が退出した日時。本人にだけ配る）
+async fn channel_leaves_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (where_clause, extra_params) = channel_leaves_shape_where(auth_user.id.as_str());
+    proxy_shape(
+        &state,
+        "channel_leave",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
 /// Notifications Shape (ユーザー別認可・配信)
 async fn notifications_shape(
     State(state): State<AppState>,
@@ -893,6 +920,13 @@ mod tests {
         let (clause, params) = channel_users_shape_where(None, user_id);
         assert!(clause.contains("WHERE is_private = false AND deleted_at IS NULL"));
         assert!(clause.contains("WHERE user_id = $1"));
+        assert_eq!(params, vec![("params[1]", "user-123")]);
+    }
+
+    #[test]
+    fn test_channel_leaves_shape_where() {
+        let (clause, params) = channel_leaves_shape_where("user-123");
+        assert_eq!(clause, "user_id = $1");
         assert_eq!(params, vec![("params[1]", "user-123")]);
     }
 
