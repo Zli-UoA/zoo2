@@ -101,10 +101,10 @@ async function prepareOutboundSession(
   const needsSnapshot =
     minEpoch !== null ||
     (await worker.request({ op: "megolmNeedsSnapshot", channelId, epoch: Number(epoch) }));
-  if (!needsSnapshot) return;
-
+  // スナップショットが要らなくても、配り終えていない端末（前の配布の途中の失敗、払い出されなかった
+  // 端末、`undelivered`）が残っていれば、送る前に配布を続ける（下の `megolmStart` から）。
   // TOFU のピンが別の端末のピンとぶつかったら、そのピンを入れたスナップショットで判定し直す。
-  for (let round = 0; ; round += 1) {
+  for (let round = 0; needsSnapshot; round += 1) {
     const pages = await fetchRecipients(client, channelId, minEpoch, signal);
     const summary = await worker.request({ op: "megolmEvaluate", channelId, pages });
     noteEpoch(channelId, BigInt(summary.epoch));

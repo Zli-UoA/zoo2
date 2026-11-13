@@ -120,9 +120,9 @@ export const FederatedReactions: Story = {
 export const Encrypted: Story = {
   args: { encrypted: true },
   play: playForImplementation(async () => {
-    // 暗号化の送信を入れるまで、平文を送らないよう入力欄を止め、添付ボタンも出さない。
+    // 暗号ストアを開いていないタブでは、平文を送らないよう入力欄を止め、添付ボタンも出さない。
     const composer = await screen.findByPlaceholderText(
-      "このバージョンでは、暗号化チャンネルにまだ送信できません。",
+      "この端末（タブ）では、まだ暗号化の準備ができていません。暗号化の設定と解錠を確かめ、ほかの zoo のタブを閉じてください。",
     );
     await expect(composer).toBeDisabled();
     await expect(screen.queryByRole("button", { name: "ファイルを添付" })).not.toBeInTheDocument();

@@ -1169,6 +1169,7 @@
       "summary": "Encrypted for {{users}} people on {{devices}} devices.",
       "added": "New since your last message: {{names}}"
     },
-    "downgraded": "This channel was encrypted, but the server now says it isn't. Messages won't be sent unencrypted."
+    "downgraded": "This channel was encrypted, but the server now says it isn't. Messages won't be sent unencrypted.",
+    "checking": "Checking this channel's encryption…"
   }
 }
