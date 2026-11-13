@@ -5,7 +5,6 @@ pub mod crypto;
 pub mod export;
 pub mod import;
 pub mod link;
-pub mod self_import;
 pub mod sync;
 pub mod worker;
 

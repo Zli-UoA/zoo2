@@ -844,6 +844,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         tx.commit().await?;
         admin
     };
+    // 取り込みを始められるのは管理者だけ。ユーザーが自分で取り込む方式 (ZIP) をやめたので、管理者でない人が
+    // 作ったジョブ (廃止前に作られて残っているもの、管理者でなくなった人のもの) は、権限の確認なしでは実行せず失敗にする
+    if !admin {
+        return Err(AppError::BadRequest(
+            "Only workspace admins can import from Slack".into(),
+        ));
+    }
 
     // プレースホルダは、選んだチャンネルのメンバー・投稿者・リアクション・メンションに出る人だけを作る
     // (users.json の全員を作ると、大きいワークスペースで users の同期量が増えるため)
@@ -894,44 +901,9 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             // 開始後に別のジョブが同じチャンネルを取り込んだ場合も、取り込み先はずらさない
             super::import::ensure_same_target(&mut tx, &team, mapping)
                 .await
-                .map_err(|e| {
-                    if admin {
-                        AppError::BadRequest(e.to_string())
-                    } else {
-                        // 管理者以外の取り込みは、ジョブの失敗理由が本人に見える。参加していない非公開チャンネルの
-                        // 名前が入らないよう、以前の取り込み先の名前を出さない
-                        AppError::BadRequest(format!(
-                            "Slack channel {} was already imported into another channel; import it into the same channel or skip it",
-                            mapping.slack_channel_id
-                        ))
-                    }
-                })?;
-            // 以前の取り込みで作ったチャンネルや既存のチャンネルに入れるなら、開始後に外されていないか確かめる
-            let reused = match &mapping.action {
-                MappingAction::Skip => continue,
-                MappingAction::Existing { channel_id } => Some(channel_id.clone()),
-                MappingAction::Create { .. } => {
-                    let own = super::channel_id(&team, &channel.id);
-                    let exists = !query(
-                        &mut tx,
-                        "SELECT json_build_object('id',id)::text FROM channels WHERE id=$1",
-                        &[&own],
-                    )
-                    .await?
-                    .is_empty();
-                    exists.then_some(own)
-                }
-            };
-            if let Some(channel_id) = &reused {
-                ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
-            } else if matches!(mapping.action, MappingAction::Create { .. })
-                && crate::apps::events::guest(&mut tx, &job.created_by).await?
-            {
-                // 開始した後でゲストになった場合も、通常のチャンネル作成と同じく新しいチャンネルは作らない
-                return Err(AppError::BadRequest(format!(
-                    "Guests cannot create channels by importing from Slack ({})",
-                    channel.id
-                )));
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            if matches!(mapping.action, MappingAction::Skip) {
+                continue;
             }
             let (target, private) = match &mapping.action {
                 MappingAction::Skip => continue,
@@ -1008,8 +980,6 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         {
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
-            // メンバーを足す直前にも、実行者がまだ取り込み先にメンバーを足せるか確かめる
-            ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
             for member in &channel.members {
                 let user = ctx.user(&mut tx, member, None).await?;
                 // 連携したゲストは、管理者が決めたチャンネルにだけ参加する (取り込みでは足さない)。
@@ -1166,7 +1136,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         "completed"
     };
     // Slack でアーカイブ済みのチャンネルと、管理者がアーカイブを指定したチャンネルは、作った取り込み先も最後に
-    // まとめてアーカイブする。途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
+    // まとめてアーカイブする。途中でアーカイブすると、再開したときに取り込み先が変わってしまうため。
     for (_channel, channel_id, archive) in &targets {
         if *archive {
             exec(
@@ -1195,33 +1165,6 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     tx.commit().await?;
     // ZIP はエクスポートとして残し、管理者が消すか新しい ZIP に置き換わるまで使う
     Ok(())
-}
-
-/// セルフサービスの取り込み (実行者が管理者でないジョブ) では、開始時と同じく取り込み先に参加していて
-/// メンバーを足せることを実行時にも求める。開始後にチャンネルから外された人が、取り込みで戻らないようにする。
-async fn ensure_can_import(
-    tx: &mut toasty::Transaction<'_>,
-    job: &Job,
-    admin: bool,
-    channel_id: &str,
-    channel: &SlackChannel,
-) -> Result<(), AppError> {
-    if admin
-        || super::self_import::can_import_into(
-            tx,
-            channel_id,
-            &job.created_by,
-            false,
-            channel.is_private,
-        )
-        .await?
-    {
-        return Ok(());
-    }
-    Err(AppError::BadRequest(format!(
-        "You can no longer import Slack channel {} into this channel",
-        channel.id
-    )))
 }
 
 pub(super) async fn create_channel(
