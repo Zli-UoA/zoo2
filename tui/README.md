@@ -186,7 +186,7 @@ zoo2-tui
 |---|---|
 | `zoo2-tui` / `zoo2-tui run` | チャット画面を開く |
 | `zoo2-tui login` | デバイスコードでログインする |
-| `zoo2-tui logout` | IdP 側の refresh_token を失効させてから、手元のトークンを消す |
+| `zoo2-tui logout` | この端末の暗号の鍵（`crypto/`）を消して E2EE の端末を削除し、IdP 側の refresh_token を失効させてから、手元のトークンを消す。鍵バックアップに送れていない鍵があれば、件数を示して確かめる |
 | `zoo2-tui help` | 使い方を表示する |
 
 - トークンは設定ファイルと同じディレクトリの `token.json` に、所有者だけが読める権限 (0600) で保存します。
@@ -262,7 +262,7 @@ AuthZ には、デバイスコードと refresh_token のグラントを許可�
 | アーカイブ | 新しいバイナリで置き換える | `sudo rm /usr/local/bin/zoo2-tui` |
 | cargo install | 同じコマンドをもう一度実行 | `cargo uninstall zoo2-tui` |
 
-設定とトークンはパッケージを消しても残ります。完全に消すときは `~/.config/zoo2-tui` (macOS では `~/Library/Application Support/zoo2-tui`) を削除してください。消す前に `zoo2-tui logout` を実行すると、IdP 側のトークンも失効します。
+設定とトークンはパッケージを消しても残ります。完全に消すときは `~/.config/zoo2-tui` (macOS では `~/Library/Application Support/zoo2-tui`) を削除してください。消す前に `zoo2-tui logout` を実行すると、IdP 側のトークンも失効し、E2EE の端末もサーバーから削除されます。
 
 ## 困ったとき
 
