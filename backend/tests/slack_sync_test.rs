@@ -18,6 +18,11 @@ use backend::{
     apps::query, config::Config, db::init_db, routes::create_router, slack::sync, state::AppState,
 };
 
+/// `sync::run_once` は DB 上のどのチャンネルの項目でも拾い、ほかのワークスペースの項目は自分の設定で
+/// 保留にしてしまう。設定 (ワークスペース・モックの Slack) の違うテスト同士が互いの項目を処理しないよう、
+/// このファイルのテストは順に実行する。
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn request(
     app: &Router,
     method: &str,
@@ -147,6 +152,7 @@ async fn count_messages(state: &AppState, channel: &str) -> i64 {
 
 #[tokio::test]
 async fn test_slack_sync_resumes_after_429_without_duplicates() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     let key = [3u8; 32];
     let team = format!("TSYNC{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let slack = MockServer::start().await;
@@ -430,6 +436,7 @@ async fn test_slack_sync_resumes_after_429_without_duplicates() -> anyhow::Resul
 /// 行単位の取得が、あとから添付として取得し、補った名前を本文から外す。
 #[tokio::test]
 async fn test_slack_sync_files_are_fetched_later_by_the_file_worker() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     let key = [3u8; 32];
     let team = format!("TSYNC{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let slack = MockServer::start().await;
