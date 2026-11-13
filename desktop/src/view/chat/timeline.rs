@@ -31,6 +31,7 @@ impl WorkspaceView {
             ch_desc,
             is_archived,
             header_kind,
+            dm_member_count,
             is_member,
             can_join,
             can_leave,
@@ -75,6 +76,11 @@ impl WorkspaceView {
                     c.is_nsfw,
                 )
             });
+            let dm_member_count = if channel.is_some_and(|c| c.is_dm) {
+                state.store.channel_members(&channel_id).len()
+            } else {
+                0
+            };
             let is_member = state.store.is_member(&channel_id, &me_id);
             let can_join = channel.is_some_and(|c| state.can_join_channel(c));
             let can_leave = channel.is_some_and(|c| state.can_leave_channel(c));
@@ -101,6 +107,7 @@ impl WorkspaceView {
                 ch_desc,
                 is_archived,
                 header_kind,
+                dm_member_count,
                 is_member,
                 can_join,
                 can_leave,
@@ -235,6 +242,7 @@ impl WorkspaceView {
                     ChannelHeaderInfo {
                         title: ch_label,
                         description: ch_desc,
+                        member_count: dm_member_count,
                         is_dm,
                         is_group_dm,
                         is_private,

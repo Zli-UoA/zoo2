@@ -16,7 +16,7 @@ use crate::ui::avatar::{Avatar, AvatarSize};
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::pane_header::PaneHeader;
 use crate::ui::separator::Separator;
-use crate::ui::{alpha, h_flex, icon_colored, palette, ring, v_flex};
+use crate::ui::{h_flex, icon_colored, palette, v_flex};
 use crate::view::WorkspaceView;
 use crate::view::shell::sidebar::initials;
 
@@ -98,7 +98,6 @@ impl WorkspaceView {
                     .rounded(radius::XL)
                     .bg(bg)
                     .child(icon_colored(dest.icon(), 20.0, fg))
-                    .focus(move |s| s.shadow(vec![ring(alpha(t.ring, 0.5), 3.0)]))
                     .into_any_element()
             })
             .collect();

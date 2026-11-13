@@ -377,10 +377,6 @@ pub struct AppState {
     /// 削除確認を出している対象のメッセージ ID。
     pub confirm_delete_message: Option<String>,
 
-    /// サイドバーのチャンネル絞り込みクエリ。
-    pub search_query: String,
-    /// `AppState` 側から検索欄 (`TextInput`) へ反映すべき文字列。
-    pub pending_search_text: Option<String>,
     /// メッセージ入力欄の現在の文字列。
     pub composer_draft: String,
     /// `(チャンネル ID, 送信先)` ごとの書きかけ下書き。
@@ -572,8 +568,6 @@ impl AppState {
             target: Target::Channel,
             active_reaction_message: None,
             confirm_delete_message: None,
-            search_query: String::new(),
-            pending_search_text: None,
             composer_draft: String::new(),
             saved_drafts: HashMap::new(),
             saved_draft_message_ids: HashMap::new(),
@@ -1136,8 +1130,6 @@ impl AppState {
         self.target = Target::Channel;
         self.active_reaction_message = None;
         self.confirm_delete_message = None;
-        self.search_query.clear();
-        self.pending_search_text = Some(String::new());
         self.composer_draft.clear();
         self.saved_drafts.clear();
         self.saved_draft_message_ids.clear();
@@ -2808,25 +2800,6 @@ impl AppState {
                 }
             }
         });
-    }
-
-    /// 検索クエリで絞り込んだチャンネル一覧。
-    pub fn filtered_channels(&self) -> Vec<&Channel> {
-        let query = self.search_query.trim().to_lowercase();
-        let me_id = self.me.as_ref().map(|m| m.id.as_str()).unwrap_or_default();
-        self.store
-            .channels()
-            .into_iter()
-            .filter(|ch| {
-                if query.is_empty() {
-                    return true;
-                }
-                self.store
-                    .channel_label(ch, me_id)
-                    .to_lowercase()
-                    .contains(&query)
-            })
-            .collect()
     }
 
     /// 指定チャンネルの作成者ユーザー ID を返す。
@@ -5182,7 +5155,6 @@ pub(crate) mod tests {
         );
 
         state.composer_draft = "残っていた下書き".into();
-        state.search_query = "general".into();
         state.failed_drafts.push(FailedDraft {
             channel_id: "c1".into(),
             target: Target::Channel,
@@ -5207,20 +5179,12 @@ pub(crate) mod tests {
                 .map(|(s, _)| s.as_str()),
             Some("")
         );
-        assert!(state.search_query.is_empty());
-        assert_eq!(state.pending_search_text.as_deref(), Some(""));
         assert!(state.failed_drafts.is_empty());
     }
 
     #[tokio::test]
-    async fn opens_channel_thread_and_filters_sidebar() {
+    async fn opens_channel_and_thread() {
         let mut state = connected_state();
-        assert_eq!(state.filtered_channels().len(), 2);
-        state.search_query = "sec".into();
-        assert_eq!(state.filtered_channels().len(), 1);
-        assert_eq!(state.filtered_channels()[0].id, "c2");
-        state.search_query.clear();
-
         state.open_channel("c1".into());
         assert_eq!(state.current_channel.as_deref(), Some("c1"));
         assert_eq!(state.target, Target::Channel);

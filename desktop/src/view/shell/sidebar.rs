@@ -94,7 +94,12 @@ pub fn dm_display_name(
     more: impl Fn(usize) -> String,
 ) -> String {
     names.retain(|n| !n.is_empty());
-    names.sort();
+    // `Intl.Collator` の近似。大文字小文字を無視して並べ、同じなら元の文字列で決める。
+    names.sort_by(|a, b| {
+        a.to_lowercase()
+            .cmp(&b.to_lowercase())
+            .then_with(|| a.cmp(b))
+    });
     let max = max.max(1);
     let remaining = names.len().saturating_sub(max);
     names.truncate(max);
@@ -129,7 +134,37 @@ pub fn initials(value: &str) -> String {
     }
 }
 
+/// 1 対 1 の DM の名前 (`dm:<id>:<id>` または `edm:<id>:<id>`) から 2 人の ID を取り出す (`parseOneToOneDmIds`)。
+pub fn parse_one_to_one_dm_ids(channel_name: &str) -> Option<(&str, &str)> {
+    if is_group_dm(channel_name) {
+        return None;
+    }
+    let rest = channel_name
+        .strip_prefix("edm:")
+        .or_else(|| channel_name.strip_prefix("dm:"))?;
+    let (a, b) = rest.split_once(':')?;
+    if a.is_empty() || b.is_empty() || b.contains(':') {
+        return None;
+    }
+    Some((a, b))
+}
+
+/// DM の参加者の ID。1 対 1 は名前から、グループはメンバー行から (`resolveDmDisplayName`)。
+/// 自分は除く。
+pub fn dm_other_ids(channel_name: &str, member_ids: &[String], me_id: &str) -> Vec<String> {
+    let all: Vec<String> = match parse_one_to_one_dm_ids(channel_name) {
+        Some((a, b)) => vec![a.to_string(), b.to_string()],
+        None => member_ids.to_vec(),
+    };
+    if me_id.is_empty() {
+        all
+    } else {
+        all.into_iter().filter(|id| id != me_id).collect()
+    }
+}
+
 /// 一覧とヘッダーに出す名前。DM は自分以外の参加者の名前 (`formatDmDisplayName`)、通常のチャンネルは名前そのまま。
+/// 1 対 1 の DM はメンバー行が消えても名前の ID から引ける。名前を引けないユーザーは出さない。
 pub(in crate::view) fn channel_title(
     state: &AppState,
     ch: &Channel,
@@ -139,15 +174,23 @@ pub(in crate::view) fn channel_title(
     if !ch.is_dm {
         return ch.channel_name.clone();
     }
-    let names = state
-        .store
-        .channel_members(&ch.id)
+    let member_ids: Vec<String> = if parse_one_to_one_dm_ids(&ch.channel_name).is_some() {
+        Vec::new()
+    } else {
+        state
+            .store
+            .channel_members(&ch.id)
+            .into_iter()
+            .map(|u| u.id.clone())
+            .collect()
+    };
+    let names = dm_other_ids(&ch.channel_name, &member_ids, me_id)
         .into_iter()
-        .filter(|u| u.id != me_id)
-        .map(|u| state.store.display_name(&u.id))
+        .filter(|id| state.store.user(id).is_some())
+        .map(|id| state.store.display_name(&id))
         .collect();
     dm_display_name(names, 3, &i18n.t("dms.untitled"), |n| {
-        i18n.t_with("dms.moreNames", &[("count", &n.to_string())])
+        i18n.t_count("dms.moreNames", n as i64, &[])
     })
 }
 
@@ -180,7 +223,7 @@ impl WorkspaceView {
 
         let mut channel_rows: Vec<Row> = Vec::new();
         let mut dm_rows: Vec<Row> = Vec::new();
-        for ch in state.filtered_channels() {
+        for ch in state.store.channels() {
             let label = channel_title(state, ch, &me_id, &i18n);
             let row = Row {
                 id: ch.id.clone(),
@@ -597,6 +640,38 @@ mod tests {
             dm_display_name(vec![String::new()], 3, "無題", |n| format!("+{n}")),
             "無題"
         );
+    }
+
+    #[test]
+    fn dm_name_sorts_case_insensitively() {
+        let names = ["bob", "Alice", "carol", "Dave"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            dm_display_name(names, 10, "無題", |n| format!("+{n}")),
+            "Alice, bob, carol, Dave"
+        );
+    }
+
+    #[test]
+    fn one_to_one_ids_are_parsed_from_the_name() {
+        assert_eq!(parse_one_to_one_dm_ids("dm:u1:u2"), Some(("u1", "u2")));
+        assert_eq!(parse_one_to_one_dm_ids("edm:u1:u2"), Some(("u1", "u2")));
+        assert_eq!(parse_one_to_one_dm_ids("dm:group:abc"), None);
+        assert_eq!(parse_one_to_one_dm_ids("dm:u1"), None);
+        assert_eq!(parse_one_to_one_dm_ids("dm:u1:u2:u3"), None);
+        assert_eq!(parse_one_to_one_dm_ids("general"), None);
+    }
+
+    #[test]
+    fn one_to_one_uses_name_ids_even_without_member_rows() {
+        assert_eq!(dm_other_ids("dm:me:bob", &[], "me"), ["bob"]);
+        // 自分との DM は自分だけなので空になる。
+        assert!(dm_other_ids("dm:me:me", &[], "me").is_empty());
+        // グループはメンバー行を使う。
+        let members = vec!["me".to_string(), "a".to_string(), "b".to_string()];
+        assert_eq!(dm_other_ids("dm:group:x", &members, "me"), ["a", "b"]);
     }
 
     #[test]
