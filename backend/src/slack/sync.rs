@@ -198,7 +198,7 @@ enum Step {
     Park(u64, String),
 }
 
-enum SyncError {
+pub(super) enum SyncError {
     RateLimited(u64),
     /// どのトークンでも読めなかった
     NoAccess(String),
@@ -345,7 +345,7 @@ async fn reset_run(s: &AppState, task: &Task) -> Result<(), AppError> {
 // ---------------------------------------------------------------------------
 
 /// 連携済みメンバーのトークンで Slack を呼ぶ。読めないトークンは飛ばして次のトークンで呼び直す
-struct Slack {
+pub(super) struct Slack {
     client: reqwest::Client,
     base: String,
     key: [u8; 32],
@@ -355,11 +355,36 @@ struct Slack {
 }
 
 impl Slack {
+    /// 1 人のトークンだけで Slack を呼ぶ (ユーザーが自分で始める取り込み用)
+    pub(super) fn single(
+        s: &AppState,
+        key: [u8; 32],
+        user: &str,
+        enc: &str,
+    ) -> Result<Self, AppError> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(Self {
+            client,
+            base: s.config.slack.api_base_url.clone(),
+            key,
+            tokens: vec![(user.to_string(), enc.to_string())],
+            index: 0,
+        })
+    }
+
     fn user(&self) -> Option<&str> {
         self.tokens.get(self.index).map(|(u, _)| u.as_str())
     }
 
-    async fn get(&mut self, method: &str, params: &[(&str, &str)]) -> Result<Value, SyncError> {
+    pub(super) async fn get(
+        &mut self,
+        method: &str,
+        params: &[(&str, &str)],
+    ) -> Result<Value, SyncError> {
         loop {
             let Some((user, enc)) = self.tokens.get(self.index) else {
                 return Err(SyncError::NoAccess("no_usable_token".into()));
@@ -449,6 +474,11 @@ fn max_ts(a: Option<String>, b: &str) -> Option<String> {
         (None, Some(_)) => Some(b.to_string()),
         _ => a,
     }
+}
+
+/// ユーザーが API から取り込みを始めた (カーソルが 0 で、まだ一度も同期が終わっていない) チャンネルの最初の同期か
+fn is_initial(task: &Task) -> bool {
+    !task.synced && task.last_ts.as_deref() == Some("0")
 }
 
 /// 新しい同期の起点。最初の同期では、ZIP に含まれる最近のスレッドの新しい返信も取れるよう、カーソルより
@@ -630,6 +660,9 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
         tx.commit().await.map_err(AppError::from)?;
     }
 
+    // ユーザーが API から取り込みを始めたチャンネルの最初の同期 (カーソルが 0)。全履歴を取るので、返信も、
+    // 差分同期の監視範囲 (3 日・最大 20 スレッド) には限らず、返信のある全スレッドから取る
+    let initial = is_initial(task);
     for _ in 0..MAX_PAGES_PER_STEP {
         if progress.phase == "history" {
             let mut params = vec![
@@ -651,10 +684,16 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                     .thread_ts
                     .as_deref()
                     .is_none_or(|t| t == message.ts.as_str());
+                let recent = ts_key(&message.ts).is_some_and(|(secs, _)| secs >= horizon);
+                let candidate = if initial {
+                    // 最初の同期は、返信のあるスレッドをすべて取る (範囲内の親は、あとで返信が付くので監視に残す)
+                    recent || message.reply_count.unwrap_or(0) > 0
+                } else {
+                    recent && progress.pending.len() < MAX_CANDIDATES
+                };
                 if top_level
                     && threadable(message)
-                    && ts_key(&message.ts).is_some_and(|(secs, _)| secs >= horizon)
-                    && progress.pending.len() < MAX_CANDIDATES
+                    && candidate
                     && !progress.pending.contains(&message.ts)
                 {
                     progress.pending.push(message.ts.clone());
@@ -675,14 +714,28 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                     }
                 }
                 let horizon = now_secs().saturating_sub(THREAD_WINDOW_SECS);
-                progress
-                    .pending
-                    .retain(|ts| ts_key(ts).is_some_and(|(secs, _)| secs >= horizon));
-                progress
-                    .pending
-                    .sort_by_key(|ts| std::cmp::Reverse(ts_key(ts)));
-                progress.pending.truncate(MAX_THREADS);
-                progress.known = progress.pending.clone();
+                if initial {
+                    // 古いスレッドも返信を取るが、次回以降に監視するのは、範囲内の新しいスレッドだけ
+                    progress
+                        .pending
+                        .sort_by_key(|ts| std::cmp::Reverse(ts_key(ts)));
+                    progress.known = progress
+                        .pending
+                        .iter()
+                        .filter(|ts| ts_key(ts).is_some_and(|(secs, _)| secs >= horizon))
+                        .take(MAX_THREADS)
+                        .cloned()
+                        .collect();
+                } else {
+                    progress
+                        .pending
+                        .retain(|ts| ts_key(ts).is_some_and(|(secs, _)| secs >= horizon));
+                    progress
+                        .pending
+                        .sort_by_key(|ts| std::cmp::Reverse(ts_key(ts)));
+                    progress.pending.truncate(MAX_THREADS);
+                    progress.known = progress.pending.clone();
+                }
             }
             store(&mut slack, &mut ctx, task, &progress, &messages, &mut db).await?;
         } else {
@@ -859,6 +912,27 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
             "UPDATE slack_channels SET last_ts=$3,updated_at=now() WHERE team_id=$1 AND slack_channel_id=$2 \
              AND (last_ts IS NULL OR last_ts::numeric<$3::numeric) RETURNING json_build_object('ok',true)::text",
             &[&task.team_id, &task.slack_channel_id, ts],
+        )
+        .await?;
+    }
+    // API から取り込みを始めたチャンネルの最初の同期では、既存メンバーに過去ログが未読として大量に出ないよう、
+    // 既読位置を取り込んだ過去ログの最新 (同期カーソルと、返信を含む取り込み済みの最新の投稿の新しいほう。
+    // 取り込みを始めたあとに Zoo で投稿された分は含めない) まで進める。ZIP の取り込みと同じで、それより新しい投稿の未読は残る
+    if is_initial(task) {
+        query(
+            &mut tx,
+            "INSERT INTO channel_read_states(user_id,channel_id,last_read_at) \
+             SELECT cu.user_id,cu.channel_id,m.latest FROM channel_user cu JOIN users u ON u.id=cu.user_id \
+             CROSS JOIN (SELECT GREATEST((to_timestamp(last_ts::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+               COALESCE((SELECT max(x.created_at) FROM messages x WHERE x.channel_id=$1 AND x.deleted_at IS NULL \
+                 AND x.created_at<(SELECT (t.created_at AT TIME ZONE 'UTC') FROM slack_channel_syncs t \
+                   WHERE t.team_id=$2 AND t.slack_channel_id=$3)),'-infinity'::timestamp)) AS latest \
+             FROM slack_channels WHERE team_id=$2 AND slack_channel_id=$3 AND last_ts IS NOT NULL AND last_ts<>'0') m \
+             WHERE cu.channel_id=$1 AND NOT u.is_deactivated \
+             ON CONFLICT (user_id,channel_id) DO UPDATE \
+             SET last_read_at=GREATEST(channel_read_states.last_read_at,EXCLUDED.last_read_at) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&task.channel_id, &task.team_id, &task.slack_channel_id],
         )
         .await?;
     }

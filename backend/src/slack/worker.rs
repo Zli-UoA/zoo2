@@ -1251,7 +1251,7 @@ async fn ensure_can_import(
     )))
 }
 
-async fn create_channel(
+pub(super) async fn create_channel(
     tx: &mut toasty::Transaction<'_>,
     team: &str,
     channel: &SlackChannel,

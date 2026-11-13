@@ -768,7 +768,7 @@
   "slackImport": {
     "tab": "Slack import",
     "title": "Import from Slack",
-    "description": "Upload the export ZIP downloaded from Slack's admin settings to store it in Zoo. You can import any of its channels here, and members who link their Slack account can import the channels they created.",
+    "description": "Upload the export ZIP downloaded from Slack's admin settings to store it in Zoo. You can import any of its channels here, and members who link their Slack account can import the private channels they created from the Slack link tab. Public channels are imported by admins only.",
     "chooseFile": "Choose and upload ZIP",
     "uploading": "Uploading…",
     "loading": "Loading import history",
@@ -853,7 +853,27 @@
     "importNoExport": "Once an admin saves a Slack export, you can import your channels here.",
     "importNoChannels": "The saved export has no channels that you created.",
     "importSummary_one": "{{name}} has {{count}} channel that you created. Choose the channels to import.",
-    "importSummary_other": "{{name}} has {{count}} channels that you created. Choose the channels to import."
+    "importSummary_other": "{{name}} has {{count}} channels that you created. Choose the channels to import.",
+    "privateTitle": "Import from Slack",
+    "privateDescription": "Import the history of the private Slack channels you created with your linked Slack account. No ZIP is needed. Admins import public channels.",
+    "privateLoading": "Loading the channels you can import",
+    "privateEmpty": "You have not created any private channels.",
+    "privateRelink": "Your Slack link cannot read private channels. Unlink it and link your account again.",
+    "privateUnavailable": "The channels you can import cannot be loaded right now.",
+    "privateMembers_one": "{{count}} member",
+    "privateMembers_other": "{{count}} members",
+    "privateArchived": "Archived",
+    "privateName": "Name of the channel for {{name}}",
+    "privateStart": "Import {{name}}",
+    "privateStartButton": "Import",
+    "privateStarting": "Starting…",
+    "privateStatus": {
+      "queued": "Waiting to import (#{{name}}).",
+      "running": "Importing (#{{name}}).",
+      "done": "Imported (#{{name}}). New posts are synced automatically.",
+      "error": "The import failed. It will be retried automatically (#{{name}}).",
+      "hidden": "Already imported (the name is hidden because you have not joined the channel)."
+    }
   },
   "publicProfile": {
     "followTitle": "Follow from your server",
