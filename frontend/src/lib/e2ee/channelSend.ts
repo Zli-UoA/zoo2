@@ -56,17 +56,45 @@ function noteEpoch(channelId: string, epoch: bigint): bigint {
 /** テスト用：覚えた epoch を忘れる。 */
 export function resetKnownEpochs(): void {
   knownEpochs.clear();
+  preparing.clear();
+}
+
+/**
+ * チャンネルごとの送信用セッションの用意を直列にする。続けて送ったときに、両方が同時に
+ * スナップショットを取り、同じ端末に鍵を 2 回配らないようにする（暗号化と送信は並べてよい）。
+ */
+const preparing = new Map<string, Promise<void>>();
+
+function serialized(channelId: string, task: () => Promise<void>): Promise<void> {
+  const previous = preparing.get(channelId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(task);
+  preparing.set(channelId, next);
+  void next
+    .finally(() => {
+      if (preparing.get(channelId) === next) preparing.delete(channelId);
+    })
+    .catch(() => undefined);
+  return next;
 }
 
 /**
  * 送信用セッションを用意し、まだ配っていない検証済みの端末に鍵を配る（docs/e2ee.md の
  * 「membership_epoch と送信の順序」の手順 2）。`minEpoch` は 409 で受けた `current_epoch`。
  */
-export async function ensureOutboundSession(
+export function ensureOutboundSession(
   deps: ChannelCryptoDeps,
   channelId: string,
   shapeEpoch: string | null | undefined,
   minEpoch: bigint | null = null,
+): Promise<void> {
+  return serialized(channelId, () => prepareOutboundSession(deps, channelId, shapeEpoch, minEpoch));
+}
+
+async function prepareOutboundSession(
+  deps: ChannelCryptoDeps,
+  channelId: string,
+  shapeEpoch: string | null | undefined,
+  minEpoch: bigint | null,
 ): Promise<void> {
   const { worker, client, signal } = deps;
   const epoch = noteEpoch(channelId, minEpoch ?? BigInt(shapeEpoch ?? "0"));

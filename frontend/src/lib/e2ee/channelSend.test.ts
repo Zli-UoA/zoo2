@@ -190,6 +190,24 @@ describe("sendEncryptedMessage", () => {
     expect(second.calls.map((call) => call.path)).toEqual(["/api/messages"]);
   });
 
+  it("続けて送っても、スナップショットの取得と鍵の配布は 1 回にまとまる", async () => {
+    const { worker } = fakeWorker();
+    const { client, calls } = fakeClient([null, null], [3]);
+    const send = (messageId: string) =>
+      sendEncryptedMessage(deps(worker, client), {
+        channelId: CHANNEL,
+        shapeEpoch: "3",
+        messageId,
+        parentId: null,
+        body: "hello",
+        mentions: NO_MENTIONS,
+      });
+    await Promise.all([send("m1"), send("m2")]);
+    expect(calls.filter((call) => call.path.endsWith("/recipients"))).toHaveLength(1);
+    expect(calls.filter((call) => call.path === "/api/e2ee/to_device")).toHaveLength(1);
+    expect(calls.filter((call) => call.path === "/api/messages")).toHaveLength(2);
+  });
+
   it("3 回続けて E2EE_STALE_EPOCH なら諦める", async () => {
     const { worker } = fakeWorker();
     const { client, calls } = fakeClient(

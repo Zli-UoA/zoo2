@@ -225,6 +225,37 @@ describe("MegolmChannels", () => {
     await bob.store.close();
   });
 
+  it("開き直しても、自分が送ったメッセージを読める（送信用セッションは作り直す）", async () => {
+    const backend = new MemoryCryptoBackend();
+    const keys = memoryKeys();
+    const options = {
+      backend,
+      name: "zoo-crypto-own.sqlite",
+      userId: ALICE,
+      keys,
+      reset: async () => backend,
+    };
+    const bob = await openStore(BOB);
+    const first = await CryptoStore.open(options);
+    first.store.megolm.setDistribution(CHANNEL, 1, [recipient(bob.store).device()]);
+    await first.store.megolm.start(CHANNEL);
+    const encrypted = first.store.megolm.encrypt(CHANNEL, outgoing("m1", "before reload"));
+    const message = row(first.store, "m1", encrypted);
+    await first.store.close();
+
+    const second = await CryptoStore.open(options);
+    // 自分の送信用セッションの受信用の写しは暗号ストアにある（鍵バックアップの対象にも入る）。
+    expect(await second.store.pendingBackupCount()).toBe(1);
+    expect((await second.store.megolm.decrypt([message]))[0]).toMatchObject({
+      status: "decrypted",
+      body: "before reload",
+    });
+    // 送信用セッションはメモリーにしかないので、次の送信の前に作り直す。
+    expect(second.store.megolm.needsSnapshot(CHANNEL, 1)).toBe(true);
+    await second.store.close();
+    await bob.store.close();
+  });
+
   it("一度暗号化と見たチャンネルを、開き直しても覚えている", async () => {
     const backend = new MemoryCryptoBackend();
     const keys = memoryKeys();
