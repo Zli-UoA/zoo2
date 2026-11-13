@@ -210,6 +210,9 @@ jobs:
       S3_PORT: "0"
       S3_CONSOLE_PORT: "0"
       ACTIVITYPUB_BASE_URL: https://zoo.example.com
+      # 34 個のテストバイナリーをそれぞれリンクするので、デバッグ情報を行番号だけにしてリンクを軽くする。
+      # panic のバックトレースの行番号は残る。
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     needs: runner
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     defaults:
