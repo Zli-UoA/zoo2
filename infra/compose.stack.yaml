@@ -53,6 +53,7 @@ services:
         VITE_OIDC_SCOPE: ${VITE_OIDC_SCOPE:-}
         VITE_OIDC_RESOURCE: ${VITE_OIDC_RESOURCE:-}
         VITE_OIDC_POST_LOGOUT_REDIRECT_URI: ${VITE_OIDC_POST_LOGOUT_REDIRECT_URI:-}
+        VITE_TELEMETRY_ENABLED: ${VITE_TELEMETRY_ENABLED:-}
     restart: unless-stopped
     environment:
       # CSP の connect-src に足す IdP のオリジン（空白区切り）。未設定なら同一オリジンのみ。

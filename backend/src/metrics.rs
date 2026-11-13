@@ -25,6 +25,10 @@ pub struct Metrics {
     app_errors_total: Counter<u64>,
     slack_import_jobs_total: Counter<u64>,
     slack_import_duration_seconds: Histogram<f64>,
+    frontend_errors_total: Counter<u64>,
+    frontend_web_vitals_seconds: Histogram<f64>,
+    frontend_electric_sync_events_total: Counter<u64>,
+    frontend_webrtc_events_total: Counter<u64>,
 }
 
 impl Metrics {
@@ -73,6 +77,23 @@ impl Metrics {
                 .f64_histogram("zoo_slack_import_duration_seconds")
                 .with_description("Duration of Slack import job steps in seconds.")
                 .with_boundaries(vec![0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0, 1800.0, 3600.0])
+                .build(),
+            frontend_errors_total: meter
+                .u64_counter("zoo_frontend_errors")
+                .with_description("Frontend error events reported via /api/telemetry.")
+                .build(),
+            frontend_web_vitals_seconds: meter
+                .f64_histogram("zoo_frontend_web_vitals_seconds")
+                .with_description("Frontend Web Vitals timings in seconds.")
+                .with_boundaries(vec![0.05, 0.1, 0.25, 0.5, 1.0, 1.8, 2.5, 4.0, 6.0, 10.0])
+                .build(),
+            frontend_electric_sync_events_total: meter
+                .u64_counter("zoo_frontend_electric_sync_events")
+                .with_description("Frontend Electric sync state/error events.")
+                .build(),
+            frontend_webrtc_events_total: meter
+                .u64_counter("zoo_frontend_webrtc_events")
+                .with_description("Frontend WebRTC connectivity/quality events.")
                 .build(),
         }
     }
@@ -300,6 +321,52 @@ pub fn record_slack_import_step(step: &str, status: &'static str, duration_secs:
         duration_secs.max(0.0),
         &[KeyValue::new("step", step.to_owned())],
     );
+}
+
+pub fn record_frontend_error(category: &'static str, route: &'static str) {
+    let Some(m) = METRICS.get() else {
+        return;
+    };
+    m.frontend_errors_total.add(
+        1,
+        &[
+            KeyValue::new("category", category),
+            KeyValue::new("route", route),
+        ],
+    );
+}
+
+pub fn record_frontend_web_vital(metric: &'static str, route: &'static str, seconds: f64) {
+    let Some(m) = METRICS.get() else {
+        return;
+    };
+    if seconds.is_finite() && seconds >= 0.0 {
+        m.frontend_web_vitals_seconds.record(
+            seconds,
+            &[
+                KeyValue::new("metric", metric),
+                KeyValue::new("route", route),
+            ],
+        );
+    }
+}
+
+pub fn record_frontend_electric_sync(shape: &'static str, state: &'static str) {
+    let Some(m) = METRICS.get() else {
+        return;
+    };
+    m.frontend_electric_sync_events_total.add(
+        1,
+        &[KeyValue::new("shape", shape), KeyValue::new("state", state)],
+    );
+}
+
+pub fn record_frontend_webrtc(state: &'static str) {
+    let Some(m) = METRICS.get() else {
+        return;
+    };
+    m.frontend_webrtc_events_total
+        .add(1, &[KeyValue::new("state", state)]);
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ pub mod push;
 pub mod read_states;
 pub mod response;
 pub mod shapes;
+pub mod telemetry;
 pub mod threads;
 pub mod typing;
 pub mod users;
@@ -109,6 +110,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(push::router())
         .merge(read_states::router())
         .merge(shapes::router())
+        .merge(telemetry::router())
         .layer(middleware::from_fn(
             crate::telemetry::http_telemetry_middleware,
         ))

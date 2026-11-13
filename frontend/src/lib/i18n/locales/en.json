@@ -2,6 +2,9 @@
   "nav": {
     "main": "Main navigation"
   },
+  "telemetry": {
+    "unexpectedError": "Something went wrong while displaying this page. Please reload."
+  },
   "channels": {
     "view": "Open",
     "unread": "Unread messages",

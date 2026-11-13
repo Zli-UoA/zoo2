@@ -2,6 +2,9 @@
   "nav": {
     "main": "주요 탐색"
   },
+  "telemetry": {
+    "unexpectedError": "화면을 표시하는 중 문제가 발생하였습니다. 페이지를 다시 읽어 주십시오."
+  },
   "channels": {
     "view": "열기",
     "unread": "읽지 않은 통보문이 있습니다",
