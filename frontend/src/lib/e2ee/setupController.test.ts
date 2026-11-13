@@ -787,7 +787,9 @@ describe("初回設定と解錠", () => {
     await receiveRoomKey(first);
     server.requests = [];
     const results = await Promise.all([uploadKeyBackup(deps), uploadKeyBackup(deps)]);
-    expect(results.map((r) => (r.kind === "done" ? r.uploaded : -1)).sort()).toEqual([0, 1]);
+    expect(results.map((r) => (r.kind === "done" ? r.uploaded : -1)).sort((a, b) => a - b)).toEqual(
+      [0, 1],
+    );
     const posts = server.requests.filter((r) => r.path.startsWith("/api/e2ee/key_backup/keys"));
     expect(posts).toHaveLength(1);
     expect(server.backupSessions).toHaveLength(1);
