@@ -1646,7 +1646,8 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 "SELECT json_build_object('team_id',team_id,'slack_file_id',slack_file_id,\
                  'message_id',message_id,'channel_id',channel_id,'uploader_id',uploader_id,'name',name,\
                  'mimetype',mimetype,'size',size,'url',url_private_download,'attempts',attempts)::text \
-                 FROM slack_files WHERE job_id=$1 AND status='pending' ORDER BY created_at,slack_file_id,message_id LIMIT 20",
+                 FROM slack_files WHERE job_id=$1 AND status='pending' \
+                 AND (lease_until IS NULL OR lease_until<now()) ORDER BY created_at,slack_file_id,message_id LIMIT 20",
                 &[&job.id],
             )
             .await?;
@@ -1656,8 +1657,34 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
             }
             for value in batch {
                 lease.check()?;
-                let file: PendingFile =
+                let mut file: PendingFile =
                     serde_json::from_value(value).map_err(|e| AppError::Internal(e.into()))?;
+                // 行単位の取得と同じリースを取ってから取得する。行単位の取得が取っている行は、取らない
+                // (同じファイルを並行して取得して、結果を取り違えないため。取れなかった行は、次の選び直しから外れる)
+                let lease_token = uuid::Uuid::new_v4().to_string();
+                let mut tx = db.transaction().await?;
+                let claimed = query(
+                    &mut tx,
+                    &format!(
+                        "UPDATE slack_files SET lease_token=$4,lease_until=now()+{FILE_LEASE_SQL} \
+                         WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$3 AND job_id=$5 AND status='pending' \
+                         AND (lease_until IS NULL OR lease_until<now()) \
+                         RETURNING json_build_object('ok',true)::text"
+                    ),
+                    &[
+                        &file.team_id,
+                        &file.slack_file_id,
+                        &file.message_id,
+                        &lease_token,
+                        &job.id,
+                    ],
+                )
+                .await?;
+                tx.commit().await?;
+                if claimed.is_empty() {
+                    continue;
+                }
+                file.lease_token = lease_token;
                 let outcome = fetch_one(s, &client, token, &file).await;
                 let mut tx = db.transaction().await?;
                 // 429 を待って取り直すのは行単位の取得だけ。ジョブの取得は、これまでどおり失敗として数える
@@ -1681,8 +1708,10 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 let updated = query(
                     &mut tx,
                     "UPDATE slack_files SET status=$3,attachment_id=NULLIF($4,''),error=NULLIF($5,''),\
+                     lease_token=NULL,lease_until=NULL,\
                      attempts=attempts+CASE WHEN $3 IN ('pending','failed') THEN 1 ELSE 0 END,updated_at=now() \
                      WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$6 AND job_id=$7 AND status='pending' \
+                     AND lease_token=$8 \
                      RETURNING json_build_object('ok',true)::text",
                     &[
                         &file.team_id,
@@ -1692,6 +1721,7 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                         &error,
                         &file.message_id,
                         &job.id,
+                        &file.lease_token,
                     ],
                 )
                 .await?;
@@ -1957,6 +1987,16 @@ async fn write_file_result(
         &[&file.message_id],
     )
     .await?;
+    // 終わったジョブの行は、結果を書くときに、ジョブの `processed_files` も数え直す。同時に書く行の結果を
+    // 取りこぼさないよう、ジョブの行を先にロックする (messages → ジョブ → slack_files の順)
+    if let Some(job_id) = file.job_id.as_deref() {
+        query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM slack_import_jobs WHERE id=$1 FOR UPDATE",
+            &[job_id],
+        )
+        .await?;
+    }
     // 取得中に再取り込みが行を別のジョブへ移していたら (リースも消える)、古い結果は書かない。
     // 失敗して再試行するときは、リースの期限を「次に試す時刻」にして、短い間に使い切らないようにする
     let updated = query(
@@ -1981,6 +2021,15 @@ async fn write_file_result(
     .await?;
     if !updated.is_empty() {
         record_file_result(&mut tx, file, status).await?;
+        if let Some(job_id) = file.job_id.as_deref() {
+            exec(
+                &mut tx,
+                "UPDATE slack_import_jobs SET processed_files=(SELECT count(*) FROM slack_files WHERE job_id=$1 AND status<>'pending') \
+                 WHERE id=$1",
+                &[job_id],
+            )
+            .await?;
+        }
     }
     tx.commit().await?;
     Ok(())

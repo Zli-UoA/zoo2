@@ -2,6 +2,7 @@
 //! `orphan_files_once` が 1 件ずつ取得することを、モックのファイルサーバーに対して確かめる。
 //! テストごとに一意なワークスペース (`team`) を使い、`orphan_files_once` もそのワークスペースだけを取るので、
 //! 同じバイナリの中のほかのテストと並列に動かしても、互いの行を取らない。
+//! ただし、ジョブの取得 (`run_once`) は DB 上のどのジョブでも拾うので、それを使うテストは `SERIAL` で順に実行する。
 
 use axum::{
     Router,
@@ -44,6 +45,8 @@ async fn sql(state: &AppState, statement: &str, params: &[&str]) -> anyhow::Resu
     tx.commit().await?;
     Ok(rows)
 }
+
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct Fixture {
     state: AppState,
@@ -140,8 +143,9 @@ impl Fixture {
         let id = uuid::Uuid::new_v4().to_string();
         sql(
             &self.state,
-            "INSERT INTO slack_import_jobs(id,created_by,status,file_name,file_size,storage_key,team_id) \
-             VALUES($1,$2,$3,'x.zip',1,'slack-imports/x.zip',$4) RETURNING json_build_object('ok',true)::text",
+            // ジョブの取得 (`run_once`) が、このテストのジョブを勝手に拾わないよう、次に動く時刻は先にしておく
+            "INSERT INTO slack_import_jobs(id,created_by,status,file_name,file_size,storage_key,team_id,available_at) \
+             VALUES($1,$2,$3,'x.zip',1,'slack-imports/x.zip',$4,now()+interval '1 day') RETURNING json_build_object('ok',true)::text",
             &[&id, &self.user, status, &self.team],
         )
         .await?;
@@ -208,6 +212,7 @@ async fn serve(files: &MockServer, file: &str, body: &[u8]) {
 
 #[tokio::test]
 async fn test_orphan_files_fetch_sync_rows_and_remove_the_filled_name() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     let files = MockServer::start().await;
     serve(&files, "F1", b"hello").await;
     let f = fixture(&files, |_| {}).await?;
@@ -246,6 +251,7 @@ async fn test_orphan_files_fetch_sync_rows_and_remove_the_filled_name() -> anyho
 
 #[tokio::test]
 async fn test_orphan_files_take_rows_of_finished_jobs_but_not_active_ones() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     let files = MockServer::start().await;
     for name in ["F1", "F2", "F3", "F4", "F5"] {
         serve(&files, name, b"x").await;
@@ -290,6 +296,7 @@ async fn test_orphan_files_take_rows_of_finished_jobs_but_not_active_ones() -> a
 #[tokio::test]
 async fn test_orphan_files_retry_with_a_wait_and_give_up_after_three_failures() -> anyhow::Result<()>
 {
+    let _serial = SERIAL.lock().await;
     let files = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/files/F1/F1.txt"))
@@ -337,6 +344,7 @@ async fn test_orphan_files_retry_with_a_wait_and_give_up_after_three_failures() 
 
 #[tokio::test]
 async fn test_orphan_files_do_not_count_a_429_as_an_attempt() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     let files = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/files/F1/F1.txt"))
@@ -370,6 +378,7 @@ async fn test_orphan_files_do_not_count_a_429_as_an_attempt() -> anyhow::Result<
 
 #[tokio::test]
 async fn test_orphan_files_skip_oversized_files_and_keep_the_name() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     let files = MockServer::start().await;
     serve(&files, "F1", b"0123456789").await;
     let f = fixture(&files, |config| config.s3.max_file_size = 5).await?;
@@ -394,6 +403,7 @@ async fn test_orphan_files_skip_oversized_files_and_keep_the_name() -> anyhow::R
 
 #[tokio::test]
 async fn test_orphan_files_give_up_rows_that_keep_stopping_the_worker() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     let files = MockServer::start().await;
     let f = fixture(&files, |_| {}).await?;
     f.add(Row {
@@ -421,6 +431,7 @@ async fn test_orphan_files_give_up_rows_that_keep_stopping_the_worker() -> anyho
 
 #[tokio::test]
 async fn test_orphan_files_retake_an_expired_lease() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     let files = MockServer::start().await;
     serve(&files, "F1", b"x").await;
     let f = fixture(&files, |_| {}).await?;
@@ -453,6 +464,7 @@ async fn test_orphan_files_retake_an_expired_lease() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_orphan_files_ignore_deleted_channels() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     let files = MockServer::start().await;
     serve(&files, "F1", b"x").await;
     let f = fixture(&files, |_| {}).await?;
@@ -472,5 +484,135 @@ async fn test_orphan_files_ignore_deleted_channels() -> anyhow::Result<()> {
     .await?;
     assert!(!f.once().await);
     assert_eq!(f.file("F1").await["status"], "pending");
+    Ok(())
+}
+
+/// 管理画面の「添付ファイルを取得」(ジョブの取得) は、行単位の取得が取っている行 (リースが有効) を飛ばす。
+/// 行単位の取得が書く前に、ジョブの取得が同じファイルを取得して失敗させることがない。リースが切れたら取る
+#[tokio::test]
+async fn test_job_fetch_skips_rows_leased_by_the_file_worker() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    serve(&files, "F1", b"x").await;
+    let f = fixture(&files, |_| {}).await?;
+    let job = f.job("completed").await?;
+    let message = f
+        .add(Row {
+            file: "F1",
+            job: &job,
+            content: "F1.txt",
+            in_content: true,
+            size: 1,
+        })
+        .await?;
+    // 行単位の取得が取っている間 (リースが有効)
+    sql(
+        &f.state,
+        "UPDATE slack_files SET lease_token='row',lease_until=now()+interval '5 minutes',attempts=1 WHERE team_id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    // 管理者が再取得を始めた形 (ジョブを取得の段階に戻す)
+    sql(
+        &f.state,
+        "UPDATE slack_import_jobs SET status='fetching_files',available_at=now(),finished_at=NULL WHERE id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&job],
+    )
+    .await?;
+    while worker::run_once(&f.state).await? {}
+    let row = f.file("F1").await;
+    assert_eq!(row["status"], "pending");
+    assert_eq!(row["leased"], true);
+    assert_eq!(files.received_requests().await.unwrap().len(), 0);
+    assert_eq!(f.content(&message).await, "F1.txt");
+
+    // 持ち主が落ちて、リースが切れたら、ジョブの取得が取得する (リースは結果を書くときに外れる)
+    f.expire_wait().await;
+    sql(
+        &f.state,
+        "UPDATE slack_import_jobs SET status='fetching_files',available_at=now(),finished_at=NULL WHERE id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&job],
+    )
+    .await?;
+    while worker::run_once(&f.state).await? {}
+    let row = f.file("F1").await;
+    assert_eq!(row["status"], "done");
+    assert_eq!(row["leased"], false);
+    assert_eq!(f.content(&message).await, "");
+    Ok(())
+}
+
+/// 行単位の取得が、終わったジョブの添付を取得したら、そのジョブの `processed_files` も合う
+#[tokio::test]
+async fn test_orphan_files_update_processed_files_of_finished_jobs() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    serve(&files, "F1", b"x").await;
+    let f = fixture(&files, |_| {}).await?;
+    let job = f.job("completed").await?;
+    sql(
+        &f.state,
+        "UPDATE slack_import_jobs SET total_files=1,processed_files=0 WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&job],
+    )
+    .await?;
+    f.add(Row {
+        file: "F1",
+        job: &job,
+        content: "",
+        in_content: false,
+        size: 1,
+    })
+    .await?;
+    assert!(f.once().await);
+    assert_eq!(f.file("F1").await["status"], "done");
+    let jobs = sql(
+        &f.state,
+        "SELECT json_build_object('n',processed_files)::text FROM slack_import_jobs WHERE id=$1",
+        &[&job],
+    )
+    .await?;
+    assert_eq!(jobs[0]["n"], 1);
+    Ok(())
+}
+
+/// 投稿者が、補われたファイル名の本文を書き換えたら、添付を取得できても、その本文は外さない
+#[tokio::test]
+async fn test_orphan_files_keep_the_text_the_author_edited() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    serve(&files, "F1", b"x").await;
+    let f = fixture(&files, |_| {}).await?;
+    let message = f
+        .add(Row {
+            file: "F1",
+            job: "",
+            content: "F1.txt",
+            in_content: true,
+            size: 1,
+        })
+        .await?;
+    let app = create_router(f.state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/messages/{message}"))
+                .header("X-Dev-User", &f.user)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(
+                    &json!({"content": "F1.txt"}),
+                )?))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(f.file("F1").await["in_content"], false);
+    assert!(f.once().await);
+    assert_eq!(f.file("F1").await["status"], "done");
+    // 投稿者が書いた本文は、添付と同じ文字列でも残る
+    assert_eq!(f.content(&message).await, "F1.txt");
     Ok(())
 }
