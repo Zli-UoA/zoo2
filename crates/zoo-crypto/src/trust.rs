@@ -14,12 +14,14 @@ use serde_json::Value;
 use vodozemac::Ed25519PublicKey;
 
 use crate::cross_signing::{SignatureCheck, check_signature};
-use crate::device::validate_uuid;
+use crate::device::{DeviceAccount, validate_uuid};
+use crate::store::{self, StoreKind};
 use crate::{
     CrossSigningKeyPair, CryptoError, DeviceKeys, KeySignature, KeyUsage, SignatureUpload,
     TOFU_PIN_TYPE, cross_signing_key_id, verify_cross_signing_key, verify_device_keys,
     verify_json_signature,
 };
+use zeroize::Zeroizing;
 
 /// 保存形式の版。形式を変えたら上げる。
 const TRUST_STORE_VERSION: u32 = 1;
@@ -248,6 +250,31 @@ impl TrustStore {
             records: self.records.clone(),
         };
         serde_json::to_string(&json).expect("文字列だけの構造体は必ず JSON にできる")
+    }
+
+    /// [`to_json`](Self::to_json) の JSON を、暗号ストアに置く文字列にする（#359。形式は
+    /// `store` モジュールの封筒）。`account` は今の端末。呼ぶたびに出力は変わる。
+    ///
+    /// # Panics
+    ///
+    /// OS やブラウザーの暗号用乱数を取れないとき。
+    pub fn pickle(&self, account: &DeviceAccount, storage_key: &[u8; 32]) -> String {
+        let json = Zeroizing::new(self.to_json());
+        store::seal(storage_key, StoreKind::TrustStore, account, json.as_bytes())
+    }
+
+    /// [`pickle`](Self::pickle) の文字列から戻す。封筒を開けないときは [`CryptoError::InvalidPickle`]、
+    /// 中の JSON が正しくない、または `account` のユーザーの記録でないときは
+    /// [`CryptoError::InvalidTrustStore`]。
+    pub fn from_pickle(
+        pickle: &str,
+        account: &DeviceAccount,
+        storage_key: &[u8; 32],
+    ) -> Result<Self, CryptoError> {
+        let plaintext = store::open(pickle, storage_key, StoreKind::TrustStore, account)?;
+        let json = std::str::from_utf8(&plaintext)
+            .map_err(|_| CryptoError::InvalidTrustStore("UTF-8 ではありません".into()))?;
+        Self::from_json(json, account.user_id())
     }
 
     /// [`to_json`](Self::to_json) の文字列から戻す。`user_id` は今ログインしているユーザー。

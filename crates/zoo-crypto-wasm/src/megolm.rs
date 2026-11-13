@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
 use zoo_crypto as core;
 
-use crate::convert::{IntoJs, from_js, safe_u64, to_js};
+use crate::convert::{IntoJs, bytes32, from_js, safe_u64, to_js};
 use crate::device::{DeviceAccount, ReceivedRoomKey};
 
 /// チャンネルに配る Megolm セッション鍵（`zoo.room_key` の中身）。
@@ -213,6 +213,39 @@ impl InboundSessionStore {
     #[wasm_bindgen(js_name = importBackupSession, unchecked_return_type = "AddOutcome")]
     pub fn import_backup_session(&mut self, session: BackupSession) -> Result<String, JsValue> {
         Ok(add_outcome(self.inner.import_backup_session(session.inner).js()?).to_owned())
+    }
+
+    /// `ref` のセッション（Olm 由来とバックアップ由来）を、暗号ストアに置く文字列にする（#359）。
+    /// そのキーのセッションがなければ `undefined`。リプレイと版の記録は入れない（#361 で足す）。
+    #[wasm_bindgen(js_name = pickleSession)]
+    pub fn pickle_session(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "SessionRef")] session_ref: JsValue,
+        account: &DeviceAccount,
+        storage_key: &[u8],
+    ) -> Result<Option<String>, JsValue> {
+        let session_ref: core::SessionRef = from_js(&session_ref, "ref")?;
+        let key = bytes32(storage_key, "storageKey")?;
+        Ok(self
+            .inner
+            .pickle_session(&session_ref, &account.inner, &key))
+    }
+
+    /// [`pickleSession`](Self::pickle_session) の文字列から、そのキーのセッションを戻す
+    /// （同じキーがあれば置き換える）。戻したキーを返す。
+    #[wasm_bindgen(js_name = restoreSession, unchecked_return_type = "SessionRef")]
+    pub fn restore_session(
+        &mut self,
+        pickle: &str,
+        account: &DeviceAccount,
+        storage_key: &[u8],
+    ) -> Result<JsValue, JsValue> {
+        let key = bytes32(storage_key, "storageKey")?;
+        let session_ref = self
+            .inner
+            .restore_session(pickle, &account.inner, &key)
+            .js()?;
+        to_js(&session_ref)
     }
 
     /// 保存しているセッションのキー `{channel_id, sender_key, session_id}` の一覧。

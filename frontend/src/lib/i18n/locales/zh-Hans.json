@@ -1057,5 +1057,15 @@
       "hidden_one": "另有 {{count}} 个（不显示你无法管理的频道中的 Webhook）。",
       "hidden_other": "另有 {{count}} 个（不显示你无法管理的频道中的 Webhook）。"
     }
+  },
+  "e2ee": {
+    "logout": {
+      "unbackedTitle": "有未备份的密钥",
+      "unbackedDescription_one": "有 {{count}} 个密钥未备份。退出登录后，只有此设备能解密的历史消息将无法阅读。",
+      "unbackedDescription_other": "有 {{count}} 个密钥未备份。退出登录后，只有此设备能解密的历史消息将无法阅读。",
+      "unknownDescription": "无法确认密钥是否已备份。退出登录后，只有此设备能解密的历史消息可能无法阅读。",
+      "confirm": "退出登录",
+      "deleteFailed": "无法删除此设备的加密密钥。下次打开时会再次删除。"
+    }
   }
 }

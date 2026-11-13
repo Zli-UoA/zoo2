@@ -1057,5 +1057,15 @@
       "hidden_one": "另有 {{count}} 個（不顯示你無法管理之頻道的 Webhook）。",
       "hidden_other": "另有 {{count}} 個（不顯示你無法管理之頻道的 Webhook）。"
     }
+  },
+  "e2ee": {
+    "logout": {
+      "unbackedTitle": "有未備份的金鑰",
+      "unbackedDescription_one": "有 {{count}} 個金鑰尚未備份。登出後，只有此裝置能解密的過去訊息將無法閱讀。",
+      "unbackedDescription_other": "有 {{count}} 個金鑰尚未備份。登出後，只有此裝置能解密的過去訊息將無法閱讀。",
+      "unknownDescription": "無法確認金鑰是否已備份。登出後，只有此裝置能解密的過去訊息可能無法閱讀。",
+      "confirm": "登出",
+      "deleteFailed": "無法刪除此裝置的加密金鑰。下次開啟時會再次刪除。"
+    }
   }
 }

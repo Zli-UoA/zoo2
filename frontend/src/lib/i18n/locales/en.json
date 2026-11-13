@@ -1057,5 +1057,15 @@
       "hidden_one": "{{count}} more webhook is in a channel you do not manage and is not shown.",
       "hidden_other": "{{count}} more webhooks are in channels you do not manage and are not shown."
     }
+  },
+  "e2ee": {
+    "logout": {
+      "unbackedTitle": "Some keys are not backed up",
+      "unbackedDescription_one": "{{count}} key is not backed up. If you log out, past messages that only this device can decrypt will become unreadable.",
+      "unbackedDescription_other": "{{count}} keys are not backed up. If you log out, past messages that only this device can decrypt will become unreadable.",
+      "unknownDescription": "Could not check whether your keys are backed up. If you log out, past messages that only this device can decrypt may become unreadable.",
+      "confirm": "Log out",
+      "deleteFailed": "Could not delete this device's encryption keys. They will be deleted the next time you open the app."
+    }
   }
 }
