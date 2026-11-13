@@ -921,4 +921,40 @@ describe("初回設定と解錠", () => {
     expect(server.master).toEqual(masterB);
     expect((await loadE2eeStatus(b.deps(server))).kind).toBe("unlocked");
   });
+
+  it("解錠のあと再認証を待つ間に別の端末が SSSS だけを作り直しても、続きを保存しない", async () => {
+    const server = new FakeServer();
+    // A の初回設定は、SSSS の保存のあと、クロス署名鍵の保存の前で止まった。
+    const a = await device("a");
+    const setupA = await beginSetup(a.deps(server), null);
+    server.fail = { path: "POST /api/e2ee/cross_signing/keys", when: "before" };
+    await expect(completeSetup(a.deps(server), setupA.keyId, TOKEN)).rejects.toThrow();
+
+    // 端末 C が A のリカバリーキーで解錠する。続き（クロス署名鍵）には再認証が要る。
+    const c = await device("c");
+    const cStatus = await loadE2eeStatus(c.deps(server));
+    if (cStatus.kind !== "locked") throw new Error("unreachable");
+    expect(cStatus.reason).toBe("new");
+    const result = await unlock(c.deps(server), cStatus.storage, {
+      kind: "recovery",
+      recoveryKey: setupA.recoveryKey,
+    });
+    expect(result).toMatchObject({ needsReauth: true, keyId: setupA.keyId });
+
+    // その間に端末 B がリセットを始め、SSSS だけを保存して止まった。
+    const b = await device("b");
+    const bStatus = await loadE2eeStatus(b.deps(server));
+    if (bStatus.kind !== "locked") throw new Error("unreachable");
+    const resetB = await beginSetup(b.deps(server), bStatus.storage);
+    server.fail = { path: "POST /api/e2ee/cross_signing/keys", when: "before" };
+    await expect(completeSetup(b.deps(server), resetB.keyId, TOKEN)).rejects.toThrow();
+    expect(server.ssss?.default_key_id).toBe(resetB.keyId);
+
+    // C が再認証して続きを保存しようとしても、SSSS が B のものなので拒まれ、何も変わらない。
+    await expect(
+      saveRemaining(c.deps(server), result.secretsRevision, TOKEN, result.keyId),
+    ).rejects.toBeInstanceOf(SetupConflictError);
+    expect(server.master).toBeNull();
+    expect(server.versions).toHaveLength(0);
+  });
 });

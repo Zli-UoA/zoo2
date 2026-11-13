@@ -320,25 +320,28 @@ export type UnlockMethod = { kind: "recovery"; recoveryKey: string } | { kind: "
 /**
  * パスキーかリカバリーキーで SSSS を開ける。続きの保存に再認証が要らなければ、そのまま最後まで
  * 保存して `{ needsReauth: false }` を返す。要るとき（初回設定の再開でクロス署名鍵がない）は
- * `{ needsReauth: true }` を返すので、利用者の操作で再認証してから {@link saveRemaining} を呼ぶ。
+ * `{ needsReauth: true }` を返すので、利用者の操作で再認証してから、返した `keyId` を付けて
+ * {@link saveRemaining} を呼ぶ。続きの保存は、開けた SSSS 鍵がサーバーの既定の鍵のままであることを
+ * 前提にする（別の端末が SSSS を作り直していたら、サーバーが 409 で拒む）。
  */
 export async function unlock(
   deps: E2eeSetupDeps,
   storage: SecretStorageResponse,
   method: UnlockMethod,
-): Promise<{ needsReauth: boolean; secretsRevision: number | null }> {
+): Promise<{ needsReauth: boolean; secretsRevision: number | null; keyId: string }> {
   let secretsRevision: number | null;
+  let keyId: string;
   if (method.kind === "passkey") {
     if (!deps.rpId) throw new PasskeyError("prfUnsupported", "パスキーを使えない環境です");
     const result = await evaluatePrfForUnlock(deps.rpId, storage.slots, deps.getCredential);
-    ({ secretsRevision } = await deps.worker.request({
+    ({ secretsRevision, keyId } = await deps.worker.request({
       op: "unlock",
       response: storage as unknown as JsonObject,
       secret: { kind: "passkey", credentialId: result.credentialId, prfOutput: result.prfOutput },
     }));
     void markKeySlotUsed(deps.client, result.slot.id);
   } else {
-    ({ secretsRevision } = await deps.worker.request({
+    ({ secretsRevision, keyId } = await deps.worker.request({
       op: "unlock",
       response: storage as unknown as JsonObject,
       secret: { kind: "recovery", recoveryKey: method.recoveryKey },
@@ -346,10 +349,10 @@ export async function unlock(
     const recovery = storage.slots.find((slot) => slot.kind === "recovery");
     if (recovery) void markKeySlotUsed(deps.client, recovery.id);
   }
-  const plan = await planRemaining(deps);
-  if (plan.cross_signing) return { needsReauth: true, secretsRevision };
-  await saveRemaining(deps, secretsRevision, null);
-  return { needsReauth: false, secretsRevision };
+  const plan = await planRemaining(deps, keyId);
+  if (plan.cross_signing) return { needsReauth: true, secretsRevision, keyId };
+  await saveRemaining(deps, secretsRevision, null, keyId);
+  return { needsReauth: false, secretsRevision, keyId };
 }
 
 /**

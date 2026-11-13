@@ -256,7 +256,8 @@ export function EncryptionSettings() {
       setState({ step: "needsReauth", busy: true, error: null });
       void (async () => {
         try {
-          await saveRemaining(deps, revisionRef.current, await reauth());
+          const keyId = keyIdRef.current ?? undefined;
+          await saveRemaining(deps, revisionRef.current, await reauth(), keyId);
           await load();
         } catch (error) {
           const code = toEncryptionError(error, "saveFailed");
@@ -345,6 +346,8 @@ export function EncryptionSettings() {
       try {
         const result = await unlock(deps, storage, method);
         revisionRef.current = result.secretsRevision;
+        // 再認証のあとの続きの保存も、開けた SSSS 鍵を前提にする。
+        keyIdRef.current = result.keyId;
         if (result.needsReauth) {
           setState({ step: "needsReauth", busy: false, error: null });
         } else {
