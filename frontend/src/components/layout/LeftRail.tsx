@@ -19,6 +19,7 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import { desktopLogout, isDesktopSession } from "../../lib/desktop";
+import { accountProfileUrl } from "../../lib/oidc/accountUrl";
 import { getOidcClient } from "../../lib/oidc/session";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
 import { useE2ee } from "../../lib/e2ee/e2ee-context";
@@ -70,6 +71,11 @@ export function LeftRail() {
   const [loggingOut, setLoggingOut] = useState(false);
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
+  // プロフィールは AuthZ で編集する。保存後にこの画面へ戻れるよう、現在の origin を渡す。
+  // デスクトップ版では AuthZ が既定のブラウザーで開き、戻り先もブラウザーの Web 版になるため付けない。
+  const profileUrl = config.oidc
+    ? accountProfileUrl(config.oidc.issuer, isDesktopSession() ? null : window.location.origin)
+    : null;
   const meLabel = me ? me.display_name || me.user_name : (currentUserId ?? "?");
 
   // OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）。
@@ -149,7 +155,18 @@ export function LeftRail() {
           <SettingsIcon className="size-5" aria-hidden="true" />
         </Link>
         <Separator className="w-6" />
-        <AppAvatar label={meLabel} src={me?.avatar_url} size="sm" title={meLabel} />
+        {profileUrl ? (
+          <a
+            href={profileUrl}
+            aria-label={`${meLabel} - ${t("auth.profile")}`}
+            title={`${meLabel} - ${t("auth.profile")}`}
+            className="rounded-full outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+          >
+            <AppAvatar label={meLabel} src={me?.avatar_url} size="sm" />
+          </a>
+        ) : (
+          <AppAvatar label={meLabel} src={me?.avatar_url} size="sm" title={meLabel} />
+        )}
         {config.oidc ? (
           <Button
             variant="ghost"

@@ -2,6 +2,9 @@
   "nav": {
     "main": "주요 탐색"
   },
+  "telemetry": {
+    "unexpectedError": "화면을 표시하는 중 문제가 발생하였습니다. 페이지를 다시 읽어 주십시오."
+  },
   "channels": {
     "view": "열기",
     "unread": "읽지 않은 통보문이 있습니다",
@@ -55,6 +58,7 @@
   },
   "auth": {
     "logout": "로그아웃",
+    "profile": "프로필 편집",
     "loggedOut": "로그아웃했습니다",
     "loggedOutHelp": "계속하려면 다시 로그인하십시오.",
     "desktopOutdated": "탁상용 프로그람을 갱신해야 합니다",

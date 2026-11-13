@@ -2,6 +2,9 @@
   "nav": {
     "main": "主导航"
   },
+  "telemetry": {
+    "unexpectedError": "显示页面时出现问题，请重新加载。"
+  },
   "channels": {
     "view": "打开",
     "unread": "有未读消息",
@@ -55,6 +58,7 @@
   },
   "auth": {
     "logout": "退出登录",
+    "profile": "编辑个人资料",
     "loggedOut": "您已退出登录",
     "loggedOutHelp": "请重新登录以继续。",
     "desktopOutdated": "需要更新桌面版",

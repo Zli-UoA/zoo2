@@ -644,6 +644,10 @@
     {
       "file": "src/components/e2ee/UnbackedKeysLogoutDialog.stories.tsx",
       "states": ["Default", "Pending"]
+    },
+    {
+      "file": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx",
+      "states": ["HealthyChild", "FallbackShown"]
     }
   ],
   "modules": [
@@ -1178,6 +1182,10 @@
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
       "reason": "AuthZAccountsで集中基盤のプロフィールによるアイコンとメンションを検証する。"
+    },
+    {
+      "file": "src/components/telemetry/TelemetryErrorBoundary.tsx",
+      "story": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx"
     }
   ]
 }

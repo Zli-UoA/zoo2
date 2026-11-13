@@ -593,7 +593,10 @@ pub struct AuthUser {
 }
 
 impl AuthUser {
-    async fn resolve_request(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
+    async fn resolve_request_with_mode(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> (&'static str, Result<Self, AppError>) {
         let is_dev_enabled = state.config.dev_auth_enabled;
 
         let auth_header = parts
@@ -602,10 +605,18 @@ impl AuthUser {
             .and_then(|v| v.to_str().ok());
 
         let x_dev_user = match parts.headers.get("X-Dev-User") {
-            Some(v) => Some(
-                v.to_str()
-                    .map_err(|_| AppError::BadRequest("Invalid X-Dev-User header format".into()))?,
-            ),
+            Some(v) => match v.to_str() {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    let mode = if is_dev_enabled { "dev" } else { "oidc" };
+                    return (
+                        mode,
+                        Err(AppError::BadRequest(
+                            "Invalid X-Dev-User header format".into(),
+                        )),
+                    );
+                }
+            },
             None => None,
         };
 
@@ -616,17 +627,23 @@ impl AuthUser {
             {
                 // (a) UUID の場合は開発用 Bearer
                 if let Ok(uuid) = Uuid::parse_str(token) {
-                    return Ok(AuthUser {
-                        id: uuid.to_string(),
-                        user_name: "dev_user".to_string(),
-                        display_name: "Dev User".to_string(),
-                    });
+                    return (
+                        "dev",
+                        Ok(AuthUser {
+                            id: uuid.to_string(),
+                            user_name: "dev_user".to_string(),
+                            display_name: "Dev User".to_string(),
+                        }),
+                    );
                 }
 
                 // (b) UUID 形式でない場合、OIDC 設定があれば OIDC トークンとして検証
                 if let Some(ref oidc_config) = state.config.oidc {
-                    let claims = state.jwks_verifier.verify_token(token, oidc_config).await?;
-                    return resolve_or_provision_user(
+                    let claims = match state.jwks_verifier.verify_token(token, oidc_config).await {
+                        Ok(c) => c,
+                        Err(e) => return ("oidc", Err(e)),
+                    };
+                    let res = resolve_or_provision_user(
                         &state.db,
                         &state.user_cache,
                         &state.jwks_verifier,
@@ -635,37 +652,56 @@ impl AuthUser {
                         &claims,
                     )
                     .await;
+                    return ("oidc", res);
                 }
             }
 
             // X-Dev-User ヘッダまたはデフォルト開発ユーザーへのフォールバック
             let default_id = std::env::var("DEV_DEFAULT_USER_ID").ok();
-            return resolve_auth_user(
+            let res = resolve_auth_user(
                 is_dev_enabled,
                 auth_header,
                 x_dev_user,
                 default_id.as_deref(),
             );
+            return ("dev", res);
         }
 
         // 2. 本番環境 (is_dev_enabled == false) の処理 (fail-closed)
         // X-Dev-User や開発用デフォルトへのフォールバックは絶対禁止
-        let auth_str = auth_header.ok_or_else(|| {
-            AppError::Unauthorized("Authorization header is required".to_string())
-        })?;
+        let Some(auth_str) = auth_header else {
+            return (
+                "oidc",
+                Err(AppError::Unauthorized(
+                    "Authorization header is required".to_string(),
+                )),
+            );
+        };
 
-        let token = auth_str.strip_prefix("Bearer ").ok_or_else(|| {
-            AppError::Unauthorized("Authorization header must be Bearer token".to_string())
-        })?;
+        let Some(token) = auth_str.strip_prefix("Bearer ") else {
+            return (
+                "oidc",
+                Err(AppError::Unauthorized(
+                    "Authorization header must be Bearer token".to_string(),
+                )),
+            );
+        };
 
-        let oidc_config =
-            state.config.oidc.as_ref().ok_or_else(|| {
-                AppError::Internal(anyhow::anyhow!("OIDC configuration is missing"))
-            })?;
+        let Some(oidc_config) = state.config.oidc.as_ref() else {
+            return (
+                "oidc",
+                Err(AppError::Internal(anyhow::anyhow!(
+                    "OIDC configuration is missing"
+                ))),
+            );
+        };
 
-        let claims = state.jwks_verifier.verify_token(token, oidc_config).await?;
+        let claims = match state.jwks_verifier.verify_token(token, oidc_config).await {
+            Ok(c) => c,
+            Err(e) => return ("oidc", Err(e)),
+        };
 
-        resolve_or_provision_user(
+        let res = resolve_or_provision_user(
             &state.db,
             &state.user_cache,
             &state.jwks_verifier,
@@ -673,7 +709,14 @@ impl AuthUser {
             token,
             &claims,
         )
-        .await
+        .await;
+        ("oidc", res)
+    }
+
+    async fn resolve_request(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
+        let (mode, res) = Self::resolve_request_with_mode(parts, state).await;
+        crate::metrics::record_auth_verification(mode, if res.is_ok() { "ok" } else { "err" });
+        res
     }
 }
 

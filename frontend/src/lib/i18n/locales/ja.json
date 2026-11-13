@@ -2,6 +2,9 @@
   "nav": {
     "main": "メインナビゲーション"
   },
+  "telemetry": {
+    "unexpectedError": "表示中に問題が発生しました。ページを再読み込みしてください。"
+  },
   "channels": {
     "view": "開く",
     "unread": "未読メッセージあり",
@@ -55,6 +58,7 @@
   },
   "auth": {
     "logout": "ログアウト",
+    "profile": "プロフィールを編集",
     "loggedOut": "ログアウトしました",
     "loggedOutHelp": "続けるには再度ログインしてください。",
     "desktopOutdated": "デスクトップ版の更新が必要です",

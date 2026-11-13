@@ -2,6 +2,9 @@
   "nav": {
     "main": "主導覽"
   },
+  "telemetry": {
+    "unexpectedError": "顯示頁面時發生問題，請重新載入。"
+  },
   "channels": {
     "view": "開啟",
     "unread": "有未讀訊息",
@@ -55,6 +58,7 @@
   },
   "auth": {
     "logout": "登出",
+    "profile": "編輯個人資料",
     "loggedOut": "您已登出",
     "loggedOutHelp": "請重新登入以繼續。",
     "desktopOutdated": "需要更新桌面版",
