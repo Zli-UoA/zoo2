@@ -60,6 +60,8 @@ jobs:
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: crates/zoo-crypto-wasm
       - name: Install wasm-bindgen-cli
         # crates/zoo-crypto-wasm/Cargo.toml で = 固定した wasm-bindgen と同じ版にする（build.sh が照合する）。
@@ -158,6 +160,8 @@ jobs:
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: backend
           # Kept apart from ci-backend.yaml's check job, which also caches clippy and tests.
           shared-key: backend-debug

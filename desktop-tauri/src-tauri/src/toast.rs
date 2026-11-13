@@ -2,18 +2,24 @@
 //!
 //! `tauri-plugin-notification` はデスクトップでクリックを受け取れないため、`notify-rust` を
 //! 直接使う。Linux (freedesktop) では action を付け、専用のスレッドで `wait_for_action` を
-//! 待つ。macOS では表示するだけで、クリックには対応しない (docs/desktop-tauri.md)。
+//! 待つ。macOS では UNUserNotificationCenter で非同期に出すだけで、クリックには対応しない
+//! (docs/desktop-tauri.md)。
 
 use tauri::AppHandle;
 use zoo2_client_types::ipc::OpenTarget;
 
-/// macOS の通知を、このアプリ (bundle identifier) から出すようにする。
-/// 指定しないと notify-rust は Finder として出そうとし、今の macOS では表示されないことがある。
+/// macOS で、起動時に通知の許可を求める (初回は OS が尋ねる。2 回目からは前の答えを返す)。
+/// 通知は UNUserNotificationCenter で出す (notify-rust の `preview-macos-un`)。
 #[cfg(target_os = "macos")]
-pub fn init_macos(identifier: &str) {
-    if let Err(error) = notify_rust::set_application(identifier) {
-        eprintln!("通知の bundle identifier を設定できませんでした ({identifier}): {error}");
-    }
+pub fn request_permission_macos() {
+    // 答えを待つ間、起動を止めないよう別のスレッドで待つ。
+    std::thread::spawn(|| match notify_rust::request_auth_blocking() {
+        Ok(true) => {}
+        Ok(false) => eprintln!(
+            "通知が許可されていません。「システム設定」の「通知」で zoo2 をオンにしてください"
+        ),
+        Err(error) => eprintln!("通知の許可を求められませんでした: {error}"),
+    });
 }
 
 /// 投稿の通知。クリックしたら、そのチャンネルを開く。
@@ -59,7 +65,20 @@ pub fn show_with(
         });
     }
 
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    // macOS: 同期の `show()` は、メインスレッドの run loop がちょうど待機中でないと
+    // `MainThreadNotRunning` で失敗する (通知はメイン以外のスレッドから出すため)。
+    // 非同期の `show_async()` は run loop を待たないので、別のスレッドでこれを待つ。
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (app, on_click);
+        std::thread::spawn(move || {
+            if let Err(error) = tauri::async_runtime::block_on(notification.show_async()) {
+                eprintln!("通知を出せませんでした: {error}");
+            }
+        });
+    }
+
+    #[cfg(not(unix))]
     {
         let _ = (app, on_click);
         let _ = notification.show();

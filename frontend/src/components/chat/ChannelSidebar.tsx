@@ -15,6 +15,7 @@ import { useCallback, useMemo, useState } from "react";
 
 import { useThreadIndex } from "../../hooks/useThreadIndex";
 import { useUnreadChannels } from "../../hooks/useUnreadChannels";
+import { useChannelLeaveDates } from "../../hooks/useChannelLeaveDates";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
 import { useUsers } from "../../hooks/useRealtime";
@@ -74,6 +75,15 @@ export function ChannelSidebar({
     }
     return joined;
   }, [membershipsQuery.data, currentUserId]);
+  // メンバー数。同期済みの `channel_user` から数える（「チャンネルを探す」の並び替え用）。
+  const memberCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const membership of membershipsQuery.data ?? []) {
+      counts.set(membership.channel_id, (counts.get(membership.channel_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [membershipsQuery.data]);
+  const leaveDates = useChannelLeaveDates(currentUserId, joinedChannelIds);
   // サイドバーは参加中だけを出すため、参加状態が解決するまでは一覧を確定しない
   // （解決前に空の一覧を一瞬出さない）。
   const sidebarLoading =
@@ -270,6 +280,8 @@ export function ChannelSidebar({
         channels={regularChannels}
         joinedChannelIds={joinedChannelIds}
         onJoinChannel={joinChannel}
+        memberCounts={memberCounts}
+        leaveDates={leaveDates}
       />
     </aside>
   );

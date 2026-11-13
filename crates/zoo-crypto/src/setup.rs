@@ -105,15 +105,16 @@ const OWN_KEYS_VERSION: u32 = 1;
 impl OwnKeys {
     /// 暗号ストアの封筒（`kind` は `own_keys`）に入れる。
     pub fn pickle(&self, account: &DeviceAccount, storage_key: &[u8; 32]) -> String {
+        // シリアライズの前の構造体も、捨てるときに秘密鍵の文字列を消す。
+        let keys = Zeroizing::new(OwnKeysJson {
+            version: OWN_KEYS_VERSION,
+            master_public_key: self.master_public_key.to_base64(),
+            self_signing: base64_encode(*self.self_signing.seed()),
+            user_signing: base64_encode(*self.user_signing.seed()),
+            backup_key: self.backup_key.to_base64().to_string(),
+        });
         let json = Zeroizing::new(
-            serde_json::to_string(&OwnKeysJson {
-                version: OWN_KEYS_VERSION,
-                master_public_key: self.master_public_key.to_base64(),
-                self_signing: base64_encode(*self.self_signing.seed()),
-                user_signing: base64_encode(*self.user_signing.seed()),
-                backup_key: self.backup_key.to_base64().to_string(),
-            })
-            .expect("文字列だけの構造体は必ず JSON にできる"),
+            serde_json::to_string(&*keys).expect("文字列だけの構造体は必ず JSON にできる"),
         );
         store::seal(storage_key, StoreKind::OwnKeys, account, json.as_bytes())
     }

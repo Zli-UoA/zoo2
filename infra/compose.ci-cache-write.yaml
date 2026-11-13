@@ -1,0 +1,14 @@
+# main の CI だけで、compose.ci-cache.yaml に足す。ignore-error で、保存の失敗がビルドを落とさないようにする。
+services:
+  backend:
+    build:
+      cache_to:
+        - type=gha,mode=max,ignore-error=true,scope=ci-compose-backend
+  frontend:
+    build:
+      cache_to:
+        - type=gha,mode=max,ignore-error=true,scope=ci-compose-frontend
+  proxy:
+    build:
+      cache_to:
+        - type=gha,mode=max,ignore-error=true,scope=ci-compose-proxy
