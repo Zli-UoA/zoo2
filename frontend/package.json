@@ -81,7 +81,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "@vitest/browser-playwright": "5.0.3",
     "emojibase-data": "18.0.0",
-    "happy-dom": "^21.0.3",
+    "happy-dom": "^21.0.4",
     "msw": "^3.0.3",
     "pinyin-pro": "^3.29.5",
     "storybook": "10.6.3",
