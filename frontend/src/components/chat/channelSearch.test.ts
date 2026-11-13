@@ -71,9 +71,17 @@ describe("isChannelJoinable", () => {
 });
 
 describe("filterDiscoverableChannels", () => {
-  it("excludes joined and private channels but keeps archived ones", () => {
+  it("excludes joined, private and archived channels by default", () => {
     expect(
       filterDiscoverableChannels(channels, new Set(["c1"]), "").map((entry) => entry.id),
+    ).toEqual(["c2", "c4"]);
+  });
+
+  it("keeps archived ones when they are included", () => {
+    expect(
+      filterDiscoverableChannels(channels, new Set(["c1"]), "", { includeArchived: true }).map(
+        (entry) => entry.id,
+      ),
     ).toEqual(["c2", "c4", "c5"]);
   });
 
@@ -83,13 +91,17 @@ describe("filterDiscoverableChannels", () => {
     const all = [...channels, privateArchived, unjoined];
     expect(filterJoinedChannels(all, new Set(["c6"]))).toEqual([]);
     expect(
-      filterDiscoverableChannels(all, new Set(["c6"]), "secret").map((entry) => entry.id),
+      filterDiscoverableChannels(all, new Set(["c6"]), "secret", { includeArchived: true }).map(
+        (entry) => entry.id,
+      ),
     ).toEqual(["c6"]);
   });
 
   it("keeps joined archived channels because the sidebar hides them", () => {
     expect(
-      filterDiscoverableChannels(channels, new Set(["c1", "c5"]), "").map((entry) => entry.id),
+      filterDiscoverableChannels(channels, new Set(["c1", "c5"]), "", {
+        includeArchived: true,
+      }).map((entry) => entry.id),
     ).toEqual(["c2", "c4", "c5"]);
   });
 
@@ -110,7 +122,9 @@ describe("filterDiscoverableChannels", () => {
   });
 
   it("keeps archived channels so they can be shown as unavailable", () => {
-    const result = filterDiscoverableChannels(channels, new Set(), "old");
+    const result = filterDiscoverableChannels(channels, new Set(), "old", {
+      includeArchived: true,
+    });
     expect(result.map((entry) => entry.id)).toEqual(["c5"]);
     expect(isChannelJoinable(result[0])).toBe(false);
   });

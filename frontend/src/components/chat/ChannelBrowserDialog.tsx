@@ -2,7 +2,7 @@ import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
-import { ArchiveIcon, ArrowUpDownIcon, HashIcon, SearchIcon, XIcon } from "lucide-react";
+import { ArchiveIcon, ArrowUpDownIcon, CheckIcon, HashIcon, SearchIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type { ChannelRow } from "../../lib/electric/types";
@@ -56,15 +56,16 @@ export function ChannelBrowserDialog({
   const [joinError, setJoinError] = useState<string | null>(null);
   const [joiningIds, setJoiningIds] = useState<ReadonlySet<string>>(new Set());
   const [sort, setSort] = useState<ChannelSort>(DEFAULT_CHANNEL_SORT);
+  const [includeArchived, setIncludeArchived] = useState(false);
   const discoverableChannels = useMemo(
     () =>
       sortChannels(
-        filterDiscoverableChannels(channels, joinedChannelIds, query),
+        filterDiscoverableChannels(channels, joinedChannelIds, query, { includeArchived }),
         sort,
         memberCounts,
         leaveDates,
       ),
-    [channels, joinedChannelIds, query, sort, memberCounts, leaveDates],
+    [channels, joinedChannelIds, query, includeArchived, sort, memberCounts, leaveDates],
   );
 
   async function handleJoin(channelId: string) {
@@ -90,6 +91,7 @@ export function ChannelBrowserDialog({
     if (!next) {
       setQuery("");
       setJoinError(null);
+      setIncludeArchived(false);
     }
     onOpenChange(next);
   }
@@ -173,6 +175,18 @@ export function ChannelBrowserDialog({
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+
+        <Button
+          type="button"
+          variant={includeArchived ? "secondary" : "outline"}
+          size="sm"
+          className="justify-self-start"
+          aria-pressed={includeArchived}
+          onClick={() => setIncludeArchived((value) => !value)}
+        >
+          {includeArchived ? <CheckIcon aria-hidden="true" /> : <ArchiveIcon aria-hidden="true" />}
+          {t("channels.includeArchived")}
+        </Button>
 
         {joinError ? (
           <p role="alert" className="text-xs text-destructive">

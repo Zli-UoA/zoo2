@@ -19,16 +19,20 @@ export function isChannelJoinable(channel: ChannelRow): boolean {
  *
  * - 未参加の非公開チャンネルと、参加済みでアーカイブされていないチャンネルは出さない。
  * - チャンネル名の部分一致（大文字小文字と前後の空白を無視）。
- * - アーカイブ済みも閲覧できるため一覧には残す。
+ * - アーカイブ済みは `includeArchived` のときだけ出す（既定は出さない）。
  * - 並び順は変えない。
  */
 export function filterDiscoverableChannels(
   channels: ChannelRow[],
   joinedChannelIds: ReadonlySet<string>,
   query: string,
+  options: { includeArchived?: boolean } = {},
 ): ChannelRow[] {
   const needle = query.trim().toLowerCase();
   return channels.filter((channel) => {
+    if (channel.archive_at && !options.includeArchived) {
+      return false;
+    }
     const joined = joinedChannelIds.has(channel.id);
     // 参加済みのアーカイブ済みは、サイドバーに出さない代わりに非公開でもここに残す。
     if (channel.is_private && !(channel.archive_at && joined)) {
@@ -54,8 +58,8 @@ export const CHANNEL_SORTS = [
 
 export type ChannelSort = (typeof CHANNEL_SORTS)[number];
 
-/** 既定は退出日の新しい順。退出日のないチャンネルは最後に名前順で並ぶ。 */
-export const DEFAULT_CHANNEL_SORT: ChannelSort = "left-desc";
+/** 既定はチャンネル作成日の新しい順。 */
+export const DEFAULT_CHANNEL_SORT: ChannelSort = "created-desc";
 
 export function isChannelSort(value: unknown): value is ChannelSort {
   return CHANNEL_SORTS.includes(value as ChannelSort);

@@ -75,10 +75,27 @@ export const SortByName: Story = {
   play: playForImplementation(async () => {
     const rows = async () =>
       (await screen.findAllByRole("link")).map((link) => link.textContent ?? "");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "アーカイブ済みのチャンネルを含める" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /並び替え/ }));
+    await userEvent.click(await screen.findByRole("menuitemradio", { name: /A → Z/ }));
     await expect((await rows())[0]).toContain("old-announcements");
     await userEvent.click(screen.getByRole("button", { name: /並び替え/ }));
     await userEvent.click(await screen.findByRole("menuitemradio", { name: /Z → A/ }));
     await expect((await rows())[0]).toContain("random");
+  }),
+};
+
+export const IncludeArchived: Story = {
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText("random")).toBeInTheDocument();
+    await expect(screen.queryByText("old-announcements")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "アーカイブ済みのチャンネルを含める" });
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(toggle);
+    await expect(await screen.findByText("old-announcements")).toBeInTheDocument();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
   }),
 };
 

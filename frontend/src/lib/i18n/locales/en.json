@@ -18,8 +18,9 @@
     "empty": "No channels yet.",
     "createAction": "Create one",
     "browseTitle": "Browse channels",
-    "browseDescription": "Browse public and archived channel messages before joining.",
+    "browseDescription": "Browse public channel messages before joining.",
     "browseSearch": "Search by channel name",
+    "includeArchived": "Include archived channels",
     "sortLabel": "Sort",
     "sort": {
       "left-desc": "Left date (most recent first)",

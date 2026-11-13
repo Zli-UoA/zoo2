@@ -18,8 +18,9 @@
     "empty": "暂无频道。",
     "createAction": "创建频道",
     "browseTitle": "浏览频道",
-    "browseDescription": "无需加入即可浏览公开频道与已归档频道的消息。",
+    "browseDescription": "无需加入即可浏览公开频道的消息。",
     "browseSearch": "按频道名搜索",
+    "includeArchived": "包含已归档的频道",
     "sortLabel": "排序",
     "sort": {
       "left-desc": "退出日期（新→旧）",

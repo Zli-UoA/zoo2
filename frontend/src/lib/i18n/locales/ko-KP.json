@@ -18,8 +18,9 @@
     "empty": "통로가 없습니다.",
     "createAction": "만들기",
     "browseTitle": "통로 찾기",
-    "browseDescription": "공개 통로와 보관된 통로의 통보문을 참가하지 않고 볼수 있습니다.",
+    "browseDescription": "공개 통로의 통보문을 참가하지 않고 볼수 있습니다.",
     "browseSearch": "통로 이름으로 검색",
+    "includeArchived": "보관된 통로 포함",
     "sortLabel": "정렬",
     "sort": {
       "left-desc": "탈퇴 날짜 (최신순)",

@@ -18,8 +18,9 @@
     "empty": "尚無頻道。",
     "createAction": "建立頻道",
     "browseTitle": "瀏覽頻道",
-    "browseDescription": "不需加入即可瀏覽公開頻道與已封存頻道的訊息。",
+    "browseDescription": "不需加入即可瀏覽公開頻道的訊息。",
     "browseSearch": "依頻道名稱搜尋",
+    "includeArchived": "包含已封存的頻道",
     "sortLabel": "排序",
     "sort": {
       "left-desc": "退出日期（新→舊）",
