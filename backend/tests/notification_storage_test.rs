@@ -354,6 +354,8 @@ async fn electric_stream_reads_the_common_store_without_changing_the_client_row_
     let filter = &params["where"];
     assert!(filter.contains("source = 'channel'"));
     assert!(filter.contains("user_id = $1"));
+    assert!(filter.contains("message_deleted = false"));
+    assert!(!filter.contains("FROM messages"));
     assert!(filter.contains("deleted_at IS NULL"));
     assert!(filter.contains("channel_user"));
     electric.verify().await;
