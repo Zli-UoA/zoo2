@@ -21,7 +21,7 @@ import {
   markCryptoStoreDeletionPending,
   readPendingCryptoStoreDeletion,
 } from "../../lib/e2ee/identity";
-import { runStartupCheck } from "../../lib/e2ee/setupController";
+import { runStartupCheck, uploadKeyBackup } from "../../lib/e2ee/setupController";
 import { supportsCryptoStore } from "../../lib/e2ee/support";
 import { readLastOfflineUserId } from "../../lib/offline/identity";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
@@ -95,6 +95,34 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const namespaceRef = useRef(namespace);
   namespaceRef.current = namespace;
 
+  // 鍵バックアップへの送信は、暗号ストアを開いたタブで 1 つずつ行う。送っている間に頼まれたら、
+  // 終わったあとにもう一度送る。
+  const backupQueue = useRef({ running: false, again: false });
+  const requestKeyBackup = useCallback(() => {
+    const active = leader.current;
+    if (!active || !userId) return;
+    const queue = backupQueue.current;
+    if (queue.running) {
+      queue.again = true;
+      return;
+    }
+    queue.running = true;
+    void (async () => {
+      try {
+        do {
+          queue.again = false;
+          await uploadKeyBackup({ worker: active.worker, client, userId, rpId: null }).catch(
+            () => undefined,
+          );
+        } while (queue.again && leader.current === active);
+      } finally {
+        queue.running = false;
+      }
+    })();
+  }, [client, userId]);
+  const requestKeyBackupRef = useRef(requestKeyBackup);
+  requestKeyBackupRef.current = requestKeyBackup;
+
   const createManager = useCallback(
     (worker: CryptoWorker, managerUserId: string) =>
       new E2eeDeviceManager({
@@ -108,6 +136,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
           setStatus(next);
           if (next === "stopped") setDeviceId(null);
         },
+        onRoomKeys: () => requestKeyBackupRef.current(),
       }),
     [client, config, namespace],
   );
@@ -285,8 +314,9 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         clearPendingCryptoStoreDeletion();
         store.worker.terminate();
       },
+      requestKeyBackup,
     }),
-    [deviceId, namespace, readyWorker, status, storeForLogout, supported, userId],
+    [deviceId, namespace, readyWorker, requestKeyBackup, status, storeForLogout, supported, userId],
   );
 
   return <E2eeContext.Provider value={value}>{children}</E2eeContext.Provider>;

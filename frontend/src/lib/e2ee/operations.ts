@@ -136,6 +136,14 @@ export class CryptoOperations {
         return this.setup.hasSecrets;
       case "hasOwnKeys":
         return this.opened().hasOwnKeys();
+      case "prepareBackupUpload":
+        return this.opened().prepareBackupUpload(request.currentVersion, request.limit);
+      case "backupUploaded":
+        await this.opened().backupUploaded();
+        return null;
+      case "backupUploadFailed":
+        this.opened().discardPendingUpload();
+        return null;
       case "discardSecrets":
         this.setup.discard();
         return null;

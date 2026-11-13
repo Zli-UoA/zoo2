@@ -658,6 +658,9 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - 【決定】パスキーを使えるかは、RP ID（issuer のホスト名）を決められて、`PublicKeyCredential.getClientCapabilities()` が `extension:prf` を `false` と返さないときとする（分からないときは試し、`prf.results.first` がなければ案内する）。使えないときは、初回設定ではパスキーのスロットを作らず、解錠ではリカバリーキーだけを出す。
 - 【決定】WebAuthn の失敗は、`NotAllowedError`（取り消し、または使えるパスキーがない。ブラウザーは区別させない）、`SecurityError`（Related Origin Requests の許可がない）、PRF の結果がない、選んだパスキーのスロットがない、に分けて表示する。resident key でないセキュリティキーは、`NotAllowedError` の案内でリカバリーキーを勧める。
 - 【決定】保存が 409 `E2EE_SSSS_CONFLICT` になったら、`GET /api/e2ee/secret_storage` を読み直し、`default_key_id` が自分の鍵なら続け、別の鍵なら手元の鍵を捨てて「別の端末が先に設定を始めた。表示したリカバリーキーは使えない」と出し、その SSSS の解錠に移る。
+- 【決定】鍵バックアップへのアップロード（`POST /api/e2ee/key_backup/keys`）は、解錠した端末だけが行う（Web では #360 で入れた）。送る前に、`GET /api/e2ee/key_backup/versions/current` の今の版を `BackupUploadState::accept_current_version` で確かめる。`auth_data` に暗号ストアの自分のマスター鍵の署名がない、公開鍵が暗号ストアのバックアップ鍵（SSSS の `m.megolm_backup.v1`）と違う、前に見た版より番号が小さい、のどれかなら送らない。前に見た版の番号は、暗号ストアの `meta` の `backup_upload`（`BackupUploadState::to_json`）に置く。今の版が前に見た版から変わったら、すべての受信用セッションを送信待ちに戻す。
+- 【決定】送信待ちは、Web の暗号ストアの `inbound_sessions.backed_up`（#359）で持つ。1 回に 1000 件までを送り、成功したら送ったセッションだけを送信済みにする。送ったあとに書き換わった（pickle が違う）セッションは、送信待ちのまま残す。409 `E2EE_WRONG_BACKUP_VERSION` と `E2EE_SSSS_CONFLICT` のときは送るのをやめ、送信待ちに残す。
+- 【決定】送るのは、解錠や初回設定を終えたとき、解錠済みの端末が起動したとき（起動時の確認のあと）、to-device で Megolm セッションの鍵を受け取ったとき。送信用セッションの写しを保存したとき（#361）は、`useE2ee().requestKeyBackup()` で送る。送信は暗号ストアを開いたタブで 1 つずつ行う。
 - 異常系の単体テストは `frontend/src/lib/e2ee/setupController.test.ts`（実際の wasm と、API を模したサーバー）。初回設定の 4 つの保存の直前と直後で止めて再起動し、同じ鍵で最後まで終わること、別の端末で解錠できること、2 つの端末の同時の初回設定、鍵の差し替えの検出、リセット、仮想の認証器でのパスキーの解錠を確かめる。
 
 ## API
