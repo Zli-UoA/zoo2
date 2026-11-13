@@ -22,7 +22,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     auth::AuthUser,
     error::AppError,
-    routes::e2ee::{coded, first, limit_exceeded, rows, touch_last_seen},
+    routes::e2ee::{coded, first, limit_exceeded, rows},
     state::AppState,
 };
 
@@ -260,7 +260,8 @@ pub async fn bump_user_epochs(
 }
 
 /// 暗号化チャンネルへのメンバーの追加で、追加する人ごとにメンバー単位の advisory lock
-/// `(3, hashtext(user_id))` を `user_id` の昇順に取る。チャンネルの行より前に取る。
+/// `(3, hashtext(user_id))` を `user_id` の昇順に取る。チャンネルの行より前に取る。単一チャンネルゲストは、
+/// その前に `users` の行を `FOR UPDATE` で取る。
 ///
 /// 端末の削除などでの一括の増加（`e2ee_bump_membership_epochs`）も、参加先を読む前に同じロックを取る。
 /// これで、一括の増加が参加先を確定してからコミットするまでに新しい所属が確定せず、追加された
@@ -272,6 +273,18 @@ pub async fn lock_members(
     let mut ids: Vec<&str> = user_ids.to_vec();
     ids.sort_unstable();
     ids.dedup();
+    // `users` の行はメンバー単位のロックより前（e2ee.rs のロックの順）。`channel_user` の INSERT で
+    // トリガー `app_guest_membership_rules` が単一チャンネルゲストの行を `FOR UPDATE` でロックするので、
+    // 同じ行を先に取る。後で取ると、無効化（`users` の UPDATE のあとに一括の増加でこのロックを待つ）と
+    // 逆の順になり、デッドロックする。
+    for &id in &ids {
+        first(
+            tx,
+            "SELECT '{}'::text FROM users WHERE id = $1 AND guest_kind = 'single' FOR UPDATE",
+            &[id],
+        )
+        .await?;
+    }
     for id in ids {
         first(
             tx,
@@ -411,7 +424,9 @@ pub fn check_ciphertext_shape(ciphertext: &Value) -> Result<CiphertextSender, Ap
 }
 
 /// `ciphertext` の送信端末が、送信者の削除されていない端末で、`sender_key` がその端末の識別鍵と一致することを
-/// 確かめ、端末の `last_seen_at` を更新する（5 分に 1 回まで）。チャンネルの行のロックのあとで呼ぶ。
+/// 確かめる（端末の行はロックしない）。チャンネルの行のロックのあとで呼ぶ。
+///
+/// `last_seen_at` の更新は、コミットのあとに `touch_sender_device` で行う。
 pub async fn check_sender_device(
     tx: &mut toasty::Transaction<'_>,
     user_id: &str,
@@ -429,7 +444,27 @@ pub async fn check_sender_device(
             "ciphertext.device_id and sender_key must be one of your current devices".into(),
         )
     })?;
-    touch_last_seen(tx, user_id, &sender.device_id).await
+    Ok(())
+}
+
+/// 送信端末の `last_seen_at` を更新する（5 分に 1 回まで）。送信と編集のトランザクションのコミットのあとに、
+/// 別の文として呼ぶ（docs/e2ee.md の「端末」。失敗しても送信は成功のまま）。
+///
+/// トランザクションの中で更新すると、メッセージの行（編集の `FOR UPDATE`、返信の外部キーの検査）と端末の行を
+/// 経路ごとに逆の順でロックしてデッドロックし、`channels` の行を `FOR SHARE` で持ったまま端末の行を待つため。
+pub async fn touch_sender_device(db: &mut toasty::Db, user_id: &str, sender: &CiphertextSender) {
+    let result = toasty::sql::statement(
+        "UPDATE e2ee_devices SET last_seen_at = now()
+         WHERE user_id = $1 AND device_id = $2 AND deleted_at IS NULL
+           AND (last_seen_at IS NULL OR last_seen_at < now() - interval '5 minutes')",
+    )
+    .bind(user_id)
+    .bind(sender.device_id.as_str())
+    .exec(db)
+    .await;
+    if let Err(err) = result {
+        tracing::warn!(error = %err, "failed to update e2ee device last_seen_at");
+    }
 }
 
 // ---------------------------------------------------------------------------

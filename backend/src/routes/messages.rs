@@ -279,9 +279,53 @@ pub(crate) async fn check_idempotent_existing_message(
     metadata: Option<&serde_json::Value>,
     attachment_ids: &[String],
 ) -> Result<Option<MessageResponse>, AppError> {
+    // 本文（モデル）、オプション、revision などの追加の列を別々の SELECT で読むので、同じスナップショットにそろえる。
+    // そろえないと、間に編集がコミットしたとき、編集前の本文に編集後の revision を付けて返す（一覧と同じ）。
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .exec(&mut tx)
+        .await?;
+    let result = idempotent_existing_message_in_snapshot(
+        &mut tx,
+        id,
+        auth_user_id,
+        channel_id,
+        content,
+        parent_id,
+        kind,
+        broadcast,
+        metadata,
+        attachment_ids,
+    )
+    .await;
+    match result {
+        Ok(response) => {
+            tx.commit().await?;
+            Ok(response)
+        }
+        Err(err) => {
+            let _ = tx.rollback().await;
+            Err(err)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn idempotent_existing_message_in_snapshot(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+    auth_user_id: &str,
+    channel_id: &str,
+    content: &str,
+    parent_id: Option<&str>,
+    kind: &str,
+    broadcast: bool,
+    metadata: Option<&serde_json::Value>,
+    attachment_ids: &[String],
+) -> Result<Option<MessageResponse>, AppError> {
     let existing = Message::filter(Message::fields().id().eq(id))
         .first()
-        .exec(db)
+        .exec(&mut *tx)
         .await?;
     let Some(existing_msg) = existing else {
         return Ok(None);
@@ -296,10 +340,10 @@ pub(crate) async fn check_idempotent_existing_message(
 
     // 暗号化チャンネルでは、同じ id、user_id、channel_id の行があれば、新しい暗号文を保存せずに既存の行を返す
     // （応答をなくした再送。暗号文は送り直すたびに変わるので、内容では比べない）。
-    if Channel::get_by_id(&mut *db, channel_id).await?.encrypted {
+    if Channel::get_by_id(&mut *tx, channel_id).await?.encrypted {
         if existing_msg.user_id == auth_user_id {
             return Ok(Some(
-                with_e2ee_fields(&mut *db, MessageResponse::from(existing_msg)).await?,
+                with_e2ee_fields(&mut *tx, MessageResponse::from(existing_msg)).await?,
             ));
         }
         return Err(AppError::Conflict("Idempotency key already used".into()));
@@ -309,7 +353,7 @@ pub(crate) async fn check_idempotent_existing_message(
     req_att_ids.sort();
 
     let existing_atts = Attachment::filter(Attachment::fields().message_id().eq(id))
-        .exec(db)
+        .exec(&mut *tx)
         .await?;
     let mut existing_att_ids: Vec<String> = existing_atts.into_iter().map(|a| a.id).collect();
     existing_att_ids.sort();
@@ -322,7 +366,7 @@ pub(crate) async fn check_idempotent_existing_message(
          )::text FROM messages WHERE id = $1",
     )
     .bind(id)
-    .exec(db)
+    .exec(&mut *tx)
     .await?;
 
     let mut options_match = false;
@@ -349,7 +393,7 @@ pub(crate) async fn check_idempotent_existing_message(
     {
         // 編集で増えた revision など、モデルに含めない列も保存済みの値を返す（暗号化側と同じ）。
         return Ok(Some(
-            with_e2ee_fields(&mut *db, MessageResponse::from(existing_msg)).await?,
+            with_e2ee_fields(&mut *tx, MessageResponse::from(existing_msg)).await?,
         ));
     }
     Err(AppError::Conflict("Idempotency key already used".into()))
@@ -900,6 +944,10 @@ pub(crate) async fn create_message_impl(
         }
         return Err(AppError::from(err));
     }
+    // 端末の last_seen_at は、コミットのあとに別の文で更新する（docs/e2ee.md の「端末」）。
+    if let Some(sender) = &sender {
+        e2ee_channels::touch_sender_device(&mut db, &auth_user.id, sender).await;
+    }
     if let Some(gate_key) = test_gate_notify {
         let gate = get_or_create_test_gate(&gate_key);
         gate.notify_waiters();
@@ -994,6 +1042,7 @@ pub(crate) async fn update_message(
     }
 
     // ロックの順：チャンネルの行（FOR SHARE。membership_epoch の増加と直列にする）、メッセージの行（FOR UPDATE）。
+    let mut touched_sender = None;
     let current = e2ee_channels::lock_channel_epoch(&mut tx, &message.channel_id).await?;
     if current.encrypted {
         // ロックより前の所属の確認のあとに退出、キックが確定していたら、ここで拒否する。
@@ -1037,6 +1086,7 @@ pub(crate) async fn update_message(
             return Err(e2ee_channels::stale_revision(current_revision));
         }
         e2ee_channels::check_sender_device(&mut tx, &auth_user.id, &sender).await?;
+        touched_sender = Some(sender);
         toasty::sql::statement(
             "UPDATE messages SET ciphertext = $2::jsonb, epoch = $3::bigint, revision = $4::integer,
                updated_at = $5::timestamp
@@ -1083,6 +1133,10 @@ pub(crate) async fn update_message(
     let response = with_e2ee_fields(&mut tx, MessageResponse::from(updated_message)).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
+    // 端末の last_seen_at は、コミットのあとに別の文で更新する（docs/e2ee.md の「端末」）。
+    if let Some(sender) = &touched_sender {
+        e2ee_channels::touch_sender_device(&mut db, &auth_user.id, sender).await;
+    }
 
     Ok(Json(ApiResponse::new(response, txid)))
 }
@@ -1241,6 +1295,12 @@ async fn list_messages(
         }
     }
 
+    // 本文（モデル）と revision などの追加の列を別の SELECT で読むので、同じスナップショットにそろえる。
+    // そろえないと、間に編集がコミットしたとき、編集前の本文に編集後の revision が付く。
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .exec(&mut tx)
+        .await?;
     let messages = Message::filter(
         Message::fields()
             .channel_id()
@@ -1248,11 +1308,12 @@ async fn list_messages(
             .and(Message::fields().deleted_at().is_none()),
     )
     .order_by(Message::fields().created_at().asc())
-    .exec(&mut db)
+    .exec(&mut tx)
     .await?;
 
     let mut res: Vec<MessageResponse> = messages.into_iter().map(MessageResponse::from).collect();
-    fill_e2ee_fields(&mut db, &mut res).await?;
+    fill_e2ee_fields(&mut tx, &mut res).await?;
+    tx.commit().await?;
     Ok(Json(res))
 }
 

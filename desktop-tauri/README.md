@@ -2,7 +2,7 @@
 
 zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.app) で作っていて、Linux と macOS を 1 つのコードで扱います。
 
-> **試験版です。** macOS 版と、本番の AuthZ へのクライアントの登録は準備中です。下の「[いまの制限](#いまの制限)」も読んでください。
+> **試験版です。** 本番の AuthZ へのクライアントの登録は準備中です。macOS 版は、まだ Apple の署名と公証をしていません。下の「[いまの制限](#いまの制限)」も読んでください。
 
 - チャンネル一覧、タイムライン、入力欄を表示します。ほかの人の投稿はすぐに反映されます。
 - ウィンドウを閉じても、トレイに残って動き続けます。メンションや DM が届くと、OS の通知を出します。
@@ -27,18 +27,18 @@ zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.ap
 |---|---|
 | Ubuntu 22.04 以降、Debian 12 以降 (x86_64) | deb で入れられます |
 | そのほかの Linux (x86_64) | AppImage で動きます。WebKitGTK 4.1 が必要です |
-| NixOS | ソースから動かします (「[開発](#開発)」) |
-| macOS (Apple シリコン) | 準備中です |
-| ARM64 の Linux、Intel Mac、Windows | 対応していません |
+| NixOS / Nix (Linux) | flake のパッケージで入れられます (「[NixOS / Nix](#nixos--nix)」) |
+| macOS 11 以降 (Apple シリコン、Intel) | dmg で入れられます。署名と公証はまだなので、初回に手順が要ります (「[macOS](#macos)」) |
+| ARM64 の Linux、Windows | 対応していません |
 
 ## インストール
 
 [GitHub Releases](https://github.com/Zli-UoA/zoo2/releases) の、`zoo2 デスクトップ版 (Tauri)` のリリース (タグは `desktop-tauri-v<版>`) からダウンロードします。一覧の「Latest」は TUI のリリースなので、デスクトップ版は名前で探してください。
 
-[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.1.0` は入れたい版に置き換えてください。
+[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.2.0` は入れたい版に置き換えてください。
 
 ```bash
-gh release download desktop-tauri-v0.1.0 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
+gh release download desktop-tauri-v0.2.0 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
 ```
 
 リリースから入れると、アプリが自分で更新します (「[更新](#更新)」)。
@@ -56,17 +56,18 @@ gh run download --repo Zli-UoA/zoo2 --name zoo2-desktop-tauri-linux $(gh run lis
 
 ### ファイル
 
-どちらにも、次の 2 つのファイルがあります。`0.1.0` の部分は版によって変わります。
+次のファイルがあります。`0.2.0` の部分は版によって変わります。CI の成果物は、Linux の 2 つだけです。
 
 | ファイル | 対象 |
 |---|---|
-| `zoo2_0.1.0_amd64.deb` | Ubuntu、Debian |
-| `zoo2_0.1.0_amd64.AppImage` | そのほかの Linux |
+| `zoo2_0.2.0_amd64.deb` | Ubuntu、Debian |
+| `zoo2_0.2.0_amd64.AppImage` | そのほかの Linux |
+| `zoo2_0.2.0_universal.dmg` | macOS (Apple シリコン、Intel) |
 
 ### Ubuntu / Debian
 
 ```bash
-sudo apt install ./zoo2_0.1.0_amd64.deb
+sudo apt install ./zoo2_0.2.0_amd64.deb
 ```
 
 WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-appindicator3-1`) も一緒に入ります。アプリケーションの一覧に「zoo2」が出ます。コマンドは `zoo2-desktop-tauri` です。
@@ -74,14 +75,79 @@ WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-ap
 ### AppImage
 
 ```bash
-chmod +x zoo2_0.1.0_amd64.AppImage
+chmod +x zoo2_0.2.0_amd64.AppImage
 ```
 
 ```bash
-./zoo2_0.1.0_amd64.AppImage
+./zoo2_0.2.0_amd64.AppImage
 ```
 
 好きな場所に置いて、そのまま起動できます。システムの WebKitGTK 4.1 を使うので、入っていなければ、ディストリビューションのパッケージで入れてください。
+
+### macOS
+
+リリースの `zoo2_<版>_universal.dmg` を開き、`zoo2` を「アプリケーション」に入れます。Apple シリコンと Intel の両方で動きます。
+
+いまの版は Apple の署名と公証をしていないので、そのままでは「開発元を検証できない」などと出て開けません。初回だけ、次のどちらかをしてください。
+
+- ターミナルで、ダウンロードの印 (quarantine) を外します。
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/zoo2.app
+  ```
+
+- 一度開こうとしてから、「システム設定」の「プライバシーとセキュリティ」で「このまま開く」を押します。
+
+2 回目からは、普通に開けます。アプリの中からの更新 (「[更新](#更新)」) も使えます。
+
+### NixOS / Nix
+
+flake の `zoo2-desktop-tauri` パッケージを使います (Linux のみ。x86_64 で確かめています)。どれも 1 行で入れられます。ソースからビルドするので、初回は時間がかかります。WebKitGTK などの依存も一緒に入ります。
+
+インストールせずに起動するときは次のとおりです。
+
+```bash
+nix run github:Zli-UoA/zoo2#zoo2-desktop-tauri
+```
+
+ユーザーのプロファイルに入れるときは次のとおりです。アプリケーションの一覧に「zoo2」が出ます。
+
+```bash
+nix profile install github:Zli-UoA/zoo2#zoo2-desktop-tauri
+```
+
+flakes を有効にしていない Nix では、次のようにオプションを付けます。
+
+```bash
+nix --extra-experimental-features 'nix-command flakes' profile install github:Zli-UoA/zoo2#zoo2-desktop-tauri
+```
+
+NixOS の設定 (flake) に入れるときは、`inputs` に zoo2 を足し、パッケージを `environment.systemPackages` か Home Manager の `home.packages` に加えます。
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    zoo2.url = "github:Zli-UoA/zoo2";
+  };
+
+  outputs = { nixpkgs, zoo2, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./configuration.nix
+        ({ pkgs, ... }: {
+          environment.systemPackages = [ zoo2.packages.${pkgs.system}.zoo2-desktop-tauri ];
+        })
+      ];
+    };
+  };
+}
+```
+
+特定のリリースに固定するときは `github:Zli-UoA/zoo2/desktop-tauri-v0.2.0` のようにタグを指定します。flake のパッケージがあるのは v0.2.0 からです。
+
+Nix で入れた版は、アプリの中からは更新しません (「[更新](#更新)」)。
 
 ## ログイン
 
@@ -132,10 +198,18 @@ GitHub Releases から入れたアプリは、自分で新しい版を確かめ�
 |---|---|
 | deb | `dpkg` で入れ直すので、管理者のパスワードを聞かれます。やめた場合は、もう一度押せば入れ直せます |
 | AppImage | ファイルを置き換えます。ファイルを置いたディレクトリに書き込めることが必要です |
+| macOS | `zoo2.app` を置き換えます。「アプリケーション」に書き込めることが必要です |
 
 設定とログインの状態は残ります。手で入れ直す場合は、新しいファイルを「[インストール](#インストール)」と同じ手順で入れてください (deb は `sudo apt install ./zoo2_<版>_amd64.deb`、AppImage は置き換え)。
 
 CI の成果物から入れた版 (「[開発中の版](#開発中の版)」) と、ソースから動かした場合は、自分では更新しません。
+
+Nix で入れた版も、アプリの中からは更新しません (Nix のストアは書き換えられないため)。Nix の手順で更新します。
+
+| 入れ方 | 更新 |
+|---|---|
+| `nix profile` | `nix profile upgrade zoo2-desktop-tauri` |
+| NixOS の flake | `nix flake update zoo2` してから、`nixos-rebuild switch` (Home Manager なら `home-manager switch`) |
 
 更新を確かめたくないときは、設定の `check_updates = false` (環境変数なら `ZOO_CHECK_UPDATES=false`) にします。TUI と同じ設定です。
 
@@ -150,6 +224,9 @@ CI の成果物から入れた版 (「[開発中の版](#開発中の版)」) �
 |---|---|
 | deb | `sudo apt remove zoo2` |
 | AppImage | ファイルを消す |
+| macOS | 「アプリケーション」の `zoo2.app` をゴミ箱に入れる |
+| `nix profile` | `nix profile remove zoo2-desktop-tauri` |
+| NixOS の flake | 設定から消して `nixos-rebuild switch` |
 
 設定とログインの状態は、アプリを消しても残ります。完全に消すときは、先にアプリからログアウトしてから、次のディレクトリを消してください。
 
@@ -169,7 +246,7 @@ CI の成果物から入れた版 (「[開発中の版](#開発中の版)」) �
 
 ## いまの制限
 
-- macOS 版はまだありません。署名と公証をしていないので、配布の準備ができるまでは Linux だけです。
+- macOS 版は、Apple の署名と公証をしていません。初回は「[macOS](#macos)」の手順で開きます。通知を押しても、チャンネルは開きません。
 - 本番の AuthZ に `zoo2-desktop-tauri` のクライアントが登録されるまでは、本番の zli.chat にはログインできません。
 - 画面は最小限です。スレッド、リアクション、編集、ファイルの添付などは Web 版を使ってください。
 

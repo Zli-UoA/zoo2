@@ -32,6 +32,7 @@ import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
+import { ThreadPaneStatus } from "./ThreadPaneStatus";
 
 /** 通知・リンクの対象を含むまで、古い方へ広げるページ数の上限 (1 ページは `MESSAGE_PAGE_SIZE` 件)。 */
 const MAX_REVEAL_PAGES = 200;
@@ -281,7 +282,7 @@ export function MessagePane({
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。親は、メイン一覧の範囲とは関係なく、
   // ID で取る。取得が終わるまでは判断しない。
   useEffect(() => {
-    if (!threadRootId || threadRootQuery.isLoading) {
+    if (!threadRootId || threadRootQuery.isLoading || threadRootQuery.isError) {
       return;
     }
     if (threadRootRow && !threadRootRow.deleted_at) return;
@@ -289,7 +290,14 @@ export function MessagePane({
     if (threadRootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
     }
-  }, [threadRootId, threadRootRow, threadRootQuery.isLoading, closeThread, t]);
+  }, [
+    threadRootId,
+    threadRootRow,
+    threadRootQuery.isLoading,
+    threadRootQuery.isError,
+    closeThread,
+    t,
+  ]);
 
   // 書き込み失敗は sonner で通知する（既存の `useWriteRunner` の error を監視）。
   useEffect(() => {
@@ -625,6 +633,12 @@ export function MessagePane({
           hasOlder={threadQuery.hasOlder}
           isLoadingOlder={threadQuery.isLoadingOlder}
           onLoadOlder={() => void threadQuery.loadOlder()}
+          onRetry={() => window.location.reload()}
+          onClose={closeThread}
+        />
+      ) : threadRootId && (threadRootQuery.isLoading || threadRootQuery.isError) ? (
+        <ThreadPaneStatus
+          isError={!!threadRootQuery.isError}
           onRetry={() => window.location.reload()}
           onClose={closeThread}
         />
