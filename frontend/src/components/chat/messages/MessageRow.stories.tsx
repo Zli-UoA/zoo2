@@ -7,6 +7,8 @@ import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
 import { storyAttachments } from "../../../../.storybook/attachment-fixtures";
+import { EncryptedAttachmentError } from "../../../lib/e2ee/attachments";
+import { EncryptedAttachmentLoaderContext } from "./EncryptedMessageAttachments";
 import { MessageRow } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
@@ -482,4 +484,114 @@ export const EncryptedInvalid: Story = {
     item: encryptedItem,
     decryption: { status: "undecryptable", reason: "invalid" },
   },
+};
+
+// 暗号化した添付（#364）。Storybook では暗号の Worker の代わりに、決まった中身を返す。
+async function storyImage(): Promise<Blob> {
+  const canvas = document.createElement("canvas");
+  canvas.width = 320;
+  canvas.height = 200;
+  const context = canvas.getContext("2d")!;
+  const gradient = context.createLinearGradient(0, 0, 320, 200);
+  gradient.addColorStop(0, "#6366f1");
+  gradient.addColorStop(1, "#22d3ee");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 320, 200);
+  context.fillStyle = "#ffffff";
+  context.font = "bold 28px sans-serif";
+  context.fillText("🔒 decrypted", 70, 110);
+  return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob!), "image/png"));
+}
+
+const storyEncryptedFile = {
+  v: "v2" as const,
+  key: {
+    kty: "oct" as const,
+    key_ops: ["encrypt", "decrypt"],
+    alg: "A256CTR" as const,
+    k: "story-key",
+    ext: true as const,
+  },
+  iv: "story-iv",
+  hashes: { sha256: "story-hash" },
+};
+
+const encryptedAttachments = [
+  {
+    attachment_id: "00000000-0000-4000-8000-0000000000e1",
+    name: "architecture.png",
+    mimetype: "image/png",
+    size: 48_213,
+    width: 320,
+    height: 200,
+    file: storyEncryptedFile,
+  },
+  {
+    attachment_id: "00000000-0000-4000-8000-0000000000e2",
+    name: "議事録.pdf",
+    mimetype: "application/pdf",
+    size: 1_204_224,
+    file: storyEncryptedFile,
+  },
+];
+
+export const EncryptedWithAttachments: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "設計図と議事録を共有します。",
+      kind: "message",
+      sender: "verified",
+      attachments: encryptedAttachments,
+    },
+  },
+  decorators: [
+    (Story) => (
+      <EncryptedAttachmentLoaderContext.Provider
+        value={async (info) =>
+          info.mimetype.startsWith("image/")
+            ? storyImage()
+            : new Blob(["%PDF-1.7"], { type: info.mimetype })
+        }
+      >
+        <Story />
+      </EncryptedAttachmentLoaderContext.Provider>
+    ),
+  ],
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("img", { name: "architecture.png" })).toBeVisible();
+    await expect(canvas.getByText("議事録.pdf")).toBeVisible();
+    await expect(canvas.queryByText("encrypted.bin")).not.toBeInTheDocument();
+  }),
+};
+
+export const EncryptedAttachmentDecryptFailed: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "中身を差し替えられた添付です。",
+      kind: "message",
+      sender: "verified",
+      attachments: encryptedAttachments.slice(0, 1),
+    },
+  },
+  decorators: [
+    (Story) => (
+      <EncryptedAttachmentLoaderContext.Provider
+        value={async () => {
+          throw new EncryptedAttachmentError("decrypt");
+        }}
+      >
+        <Story />
+      </EncryptedAttachmentLoaderContext.Provider>
+    ),
+  ],
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText(/添付を復号できませんでした/),
+    ).toBeVisible();
+  }),
 };

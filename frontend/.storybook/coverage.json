@@ -259,7 +259,9 @@
         "EncryptedBackupSender",
         "EncryptedKeyMissing",
         "EncryptedLocked",
-        "EncryptedInvalid"
+        "EncryptedInvalid",
+        "EncryptedWithAttachments",
+        "EncryptedAttachmentDecryptFailed"
       ]
     },
     {
@@ -861,6 +863,12 @@
       "story": "src/components/chat/messages/MessageRow.stories.tsx",
       "composed": true,
       "reason": "WithAttachmentsで画像とファイルの実表示・読み込み状態を確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/EncryptedMessageAttachments.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "EncryptedWithAttachmentsで復号した画像とファイルを、EncryptedAttachmentDecryptFailedで復号できない添付を確認する。"
     },
     {
       "file": "src/components/chat/messages/MessageList.tsx",

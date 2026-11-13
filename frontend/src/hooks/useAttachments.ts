@@ -1,10 +1,17 @@
 import { useLiveQuery } from "@tanstack/react-db";
+import type { AttachmentInfo } from "@zoo/crypto-wasm";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { attachmentUrlExpiresAt, shouldRefreshAttachmentUrl } from "../lib/attachments";
 import { createConfiguredApiClient } from "../lib/api/client";
-import { uploadAttachment, type UploadedAttachment } from "../lib/api/attachments";
+import {
+  AttachmentUploadError,
+  uploadAttachment,
+  type UploadedAttachment,
+} from "../lib/api/attachments";
 import type { AttachmentUrlResponse } from "../lib/api/types";
+import { uploadEncryptedAttachment, workerAttachmentCrypto } from "../lib/e2ee/attachments";
+import { useE2ee } from "../lib/e2ee/e2ee-context";
 import { useCollections } from "../lib/electric/collections-context";
 
 type UrlEntry = { url: string; expiresAt: number };
@@ -34,6 +41,25 @@ export function useAttachmentUpload(channelId: string) {
   return useCallback(
     (file: File): Promise<UploadedAttachment> => uploadAttachment(client, channelId, file),
     [client, channelId],
+  );
+}
+
+/**
+ * 暗号化チャンネルの添付（#364）。ファイルを暗号の Worker で暗号化して上げ、Megolm で暗号化する本文の
+ * `attachments` に入れる `AttachmentInfo` を返す。解錠していなければ失敗する。
+ */
+export function useEncryptedAttachmentUpload(channelId: string) {
+  const { config } = useCollections();
+  const { worker } = useE2ee();
+  const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  return useCallback(
+    async (file: File, options: { sensitive?: boolean } = {}): Promise<AttachmentInfo> => {
+      if (!worker) throw new AttachmentUploadError("request");
+      return uploadEncryptedAttachment(client, channelId, file, workerAttachmentCrypto(worker), {
+        sensitive: options.sensitive,
+      });
+    },
+    [client, channelId, worker],
   );
 }
 

@@ -1157,6 +1157,10 @@
       "title": "加密頻道",
       "description": "此用戶端無法顯示加密頻道。請在網頁版或行動應用程式中開啟。"
     },
-    "sendUnavailable": "此版本尚不能向加密頻道傳送訊息。"
+    "sendUnavailable": "此版本尚不能向加密頻道傳送訊息。",
+    "attachments": {
+      "encrypted": "已加密",
+      "decryptFailed": "無法解密附件。內容可能已被更改。"
+    }
   }
 }

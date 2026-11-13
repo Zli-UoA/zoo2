@@ -110,8 +110,9 @@ export function MessagePane({
   // 送らない。サーバーは平文を 400 E2EE_PLAINTEXT_FORBIDDEN で拒否するが、拒否の前に本文がサーバーに
   // 届いてしまうため、クライアントで止める。
   const sendBlocked = encrypted;
-  // 暗号化チャンネルでは添付を送らない（サーバーも 400 E2EE_ATTACHMENTS_FORBIDDEN で拒否する）。
-  // 暗号化した添付（#364）を入れたら外す。
+  // 暗号化チャンネルの添付は、暗号化して上げ、鍵などを Megolm で暗号化した本文の attachments に入れる
+  // （#364。useEncryptedAttachmentUpload）。本文の暗号化（#361 の続く PR）を入れるまでは送信そのものを
+  // 止めているので、添付ボタンも出さない。平文の添付は、サーバーが 400 E2EE_PLAINTEXT_FORBIDDEN で拒否する。
   const uploadAttachment = encrypted ? undefined : channelUpload;
   const { currentUserId } = useCurrentUser();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);

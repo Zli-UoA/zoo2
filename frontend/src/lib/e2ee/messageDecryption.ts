@@ -1,3 +1,5 @@
+import type { AttachmentInfo } from "@zoo/crypto-wasm";
+
 import type { MessageRow } from "../electric/types";
 
 /**
@@ -28,6 +30,8 @@ export type MessageDecryption =
       /** 復号したペイロードの `content.kind`。行の `message_kind` との照合は済んでいる。 */
       kind: "message" | "emote";
       sender: SenderTrust;
+      /** 復号したペイロードの `attachments`（暗号化した添付。#364）。ないときは空。 */
+      attachments?: AttachmentInfo[];
     }
   | { status: "undecryptable"; reason: UndecryptableReason };
 

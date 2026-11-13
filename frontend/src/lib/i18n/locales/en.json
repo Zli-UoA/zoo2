@@ -1157,6 +1157,10 @@
       "title": "Encrypted channel",
       "description": "This client can't show encrypted channels. Open it in the web or mobile app."
     },
-    "sendUnavailable": "Sending to encrypted channels isn't available in this version yet."
+    "sendUnavailable": "Sending to encrypted channels isn't available in this version yet.",
+    "attachments": {
+      "encrypted": "Encrypted",
+      "decryptFailed": "Couldn't decrypt the attachment. Its contents may have been altered."
+    }
   }
 }
