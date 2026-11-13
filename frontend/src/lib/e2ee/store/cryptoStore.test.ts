@@ -108,6 +108,33 @@ describe("CryptoStore", () => {
     await second.store.close();
   });
 
+  it("開き直しにも失敗したら、ストレージが戻ったあとの操作で開き直す", async () => {
+    class DownBackend extends MemoryCryptoBackend {
+      down = false;
+      override async read() {
+        if (this.down) throw new Error("storage down");
+        return super.read();
+      }
+      override async write(changes: CryptoStoreWrite): Promise<void> {
+        if (this.down) throw new Error("storage down");
+        return super.write(changes);
+      }
+    }
+    const backend = new DownBackend();
+    const operations = new CryptoOperations(
+      { open: async () => backend, remove: async () => backend.destroy() },
+      memoryKeys(),
+    );
+    await operations.run({ op: "open", namespace: `user-${BOB}`, userId: BOB });
+    backend.down = true;
+    // 書き込みに失敗し、そのあとの開き直しも失敗する。
+    await expect(operations.run({ op: "markRegistered" })).rejects.toThrow("storage down");
+    await expect(operations.run({ op: "pendingBackupCount" })).rejects.toThrow("storage down");
+    backend.down = false;
+    expect(await operations.run({ op: "pendingBackupCount" })).toBe(0);
+    await operations.run({ op: "markRegistered" });
+  });
+
   it("包んだ保存鍵の base64 が壊れていても作り直す", async () => {
     const backend = new MemoryCryptoBackend();
     const keys = memoryKeys();
