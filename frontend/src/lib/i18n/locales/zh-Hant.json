@@ -2,6 +2,9 @@
   "nav": {
     "main": "主導覽"
   },
+  "telemetry": {
+    "unexpectedError": "顯示頁面時發生問題，請重新載入。"
+  },
   "channels": {
     "view": "開啟",
     "unread": "有未讀訊息",

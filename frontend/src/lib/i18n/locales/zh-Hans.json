@@ -2,6 +2,9 @@
   "nav": {
     "main": "主导航"
   },
+  "telemetry": {
+    "unexpectedError": "显示页面时出现问题，请重新加载。"
+  },
   "channels": {
     "view": "打开",
     "unread": "有未读消息",

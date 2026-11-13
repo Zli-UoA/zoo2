@@ -6,6 +6,8 @@ import {
   type TokenProvider,
   type UnauthorizedHandler,
 } from "../auth";
+import { inferElectricShape, reportElectricSyncEvent } from "../telemetry/capture";
+import { runWithHttpSpan } from "../telemetry/tracer";
 
 export interface ShapeFetchSource {
   getToken?: TokenProvider;
@@ -17,11 +19,19 @@ export interface ShapeFetchSource {
    * `authorization` / `X-Dev-User` を許可していないため false にする。
    */
   auth?: boolean;
+  apiBaseUrl?: string;
+  telemetry?: boolean;
   /** Shape の 401 を再ログイン導線へ渡す。既定は `auth.notifyUnauthorized`。 */
   onUnauthorized?: UnauthorizedHandler;
   /** Shape の成功通知（再ログイン試行カウンタの消去用）。既定は `auth.notifyAuthorized`。 */
   onAuthorized?: AuthorizedHandler;
   fetch?: typeof fetch;
+}
+
+function targetUrlString(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
 }
 
 /**
@@ -41,6 +51,8 @@ export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
   const onAuthorized = source.onAuthorized ?? notifyAuthorized;
   const baseFetch: typeof fetch = source.fetch ?? ((input, init) => fetch(input, init));
   const devUserId = source.devUserId ?? null;
+  const apiBaseUrl = source.apiBaseUrl ?? "";
+  const telemetry = source.telemetry ?? true;
 
   return async (input, init) => {
     const headers = new Headers(init?.headers);
@@ -53,7 +65,42 @@ export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
         headers.set("Authorization", `Bearer ${token}`);
       }
     }
-    const response = await baseFetch(input, { ...init, headers });
+    const url = targetUrlString(input);
+    const shape = inferElectricShape(url);
+    const response = await runWithHttpSpan(
+      {
+        enabled: auth && telemetry,
+        method: init?.method ?? "GET",
+        url,
+        apiBaseUrl,
+        headers,
+      },
+      async (traceIds) => {
+        try {
+          const res = await baseFetch(input, { ...init, headers });
+          if (telemetry && res.status >= 500) {
+            reportElectricSyncEvent({
+              shape,
+              state: "error",
+              httpStatus: res.status,
+              traceIds,
+            });
+          }
+          return res;
+        } catch (error) {
+          const isAbort = error instanceof DOMException && error.name === "AbortError";
+          if (telemetry && !isAbort) {
+            reportElectricSyncEvent({
+              shape,
+              state: "error",
+              httpStatus: 0,
+              traceIds,
+            });
+          }
+          throw error;
+        }
+      },
+    );
     if (auth) {
       if (response.status === 401) {
         onUnauthorized();

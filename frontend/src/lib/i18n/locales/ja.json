@@ -2,6 +2,9 @@
   "nav": {
     "main": "メインナビゲーション"
   },
+  "telemetry": {
+    "unexpectedError": "表示中に問題が発生しました。ページを再読み込みしてください。"
+  },
   "channels": {
     "view": "開く",
     "unread": "未読メッセージあり",
