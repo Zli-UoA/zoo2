@@ -63,11 +63,15 @@ fn main() -> Result<()> {
     match command.as_str() {
         "run" => {
             // 2 つ目の起動は、既存のウィンドウを前に出して終わる。
-            if matches!(
-                zoo2_desktop::resident::single_instance::acquire(),
-                zoo2_desktop::resident::single_instance::Acquired::Secondary
-            ) {
-                return Ok(());
+            use zoo2_desktop::resident::single_instance::{Acquired, acquire};
+            match acquire() {
+                Acquired::Primary => {}
+                Acquired::Secondary => return Ok(()),
+                Acquired::Busy => {
+                    anyhow::bail!(
+                        "既に起動しているインスタンスが応答しないため、起動を中止しました"
+                    )
+                }
             }
             let config = Config::load_for(APP_NAME)?;
             zoo2_desktop::run(config);

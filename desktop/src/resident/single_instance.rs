@@ -75,6 +75,8 @@ pub enum Acquired {
     Primary,
     /// 既存のインスタンスに「前に出す」を送った。終了してよい。
     Secondary,
+    /// 他のインスタンスがロックを持ったまま応答しない。2 つ目のウィンドウは開かずに終わる。
+    Busy,
 }
 
 /// 最初のインスタンスが持つもの。`lock` はプロセスの終わりまで手放さない。
@@ -98,9 +100,13 @@ pub fn acquire() -> Acquired {
             }
             acquired
         }
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+            // ロックは他のインスタンスが持っている。ロックなしで最初になると 2 つ動くので、起動しない。
+            eprintln!("他のインスタンスが応答しません: {err}");
+            Acquired::Busy
+        }
         Err(err) => {
-            // 単一インスタンスの仕組みそのものが使えない (ディレクトリやロックファイルの I/O エラー、
-            // または他のインスタンスがロックを持ったままソケットに応答しない)。
+            // 単一インスタンスの仕組みそのものが使えない (ディレクトリやロックファイルの I/O エラー)。
             // 起動を止めないために最初として動かすが、ロックは持たないので単一インスタンスにはならない。
             eprintln!("単一インスタンスの確保に失敗しました (ロックなしで起動します): {err}");
             Acquired::Primary
@@ -182,7 +188,12 @@ fn acquire_with(
             Err(std::fs::TryLockError::Error(err)) => return Err(err),
         }
     }
-    Err(last.unwrap_or_else(|| std::io::Error::other("ソケットに接続できません")))
+    // ロックは最後まで他のインスタンスが持っていた。I/O エラーと区別するため WouldBlock で返す。
+    let detail = last.map_or_else(
+        || "ソケットに接続できません".to_string(),
+        |err| err.to_string(),
+    );
+    Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, detail))
 }
 
 /// 2 つ目の起動からの「前に出す」を待つスレッドを起動する。
@@ -343,6 +354,24 @@ mod tests {
         assert!(!matches!(c, Some(Acquired::Primary)), "最初が 2 つになった");
         assert!(held_c.is_none());
         drop(held_b);
+    }
+
+    /// ロックを持つ相手がソケットに応答し続けないときは、ロックなしで最初にならず WouldBlock を返す。
+    #[test]
+    fn unresponsive_lock_holder_is_reported_as_busy() {
+        let dir = TempDir::new("busy");
+        let (socket, lock) = dir.paths();
+        let (_, held) = acquire_at(&socket, &lock).unwrap();
+        let Held {
+            listener,
+            lock: a_lock,
+        } = held.unwrap();
+        drop(listener);
+        let err = acquire_with(&socket, &lock, 2, Duration::from_millis(1), 2)
+            .err()
+            .expect("最初になってはいけない");
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        drop(a_lock);
     }
 
     #[test]
