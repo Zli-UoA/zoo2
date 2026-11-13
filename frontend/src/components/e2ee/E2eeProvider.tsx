@@ -21,6 +21,7 @@ import {
   markCryptoStoreDeletionPending,
   readPendingCryptoStoreDeletion,
 } from "../../lib/e2ee/identity";
+import { loadE2eeStatus } from "../../lib/e2ee/setupController";
 import { supportsCryptoStore } from "../../lib/e2ee/support";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
 
@@ -104,6 +105,9 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
             .then(() => {
               setDeviceId(manager.currentDeviceId);
               setReadyWorker(worker);
+              // 解錠済みの端末は、起動時に自分の端末への署名を確かめ、なければ署名し直す
+              // （docs/e2ee.md の「初回設定と解錠の流れ」。止まった初回設定は暗号化タブで案内する）。
+              void loadE2eeStatus({ worker, client, userId, rpId: null }).catch(() => undefined);
             })
             .catch(() => undefined);
           await held;
@@ -120,7 +124,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       controller.abort();
       release();
     };
-  }, [createManager, isOnline, namespace, supported, userId]);
+  }, [client, createManager, isOnline, namespace, supported, userId]);
 
   /** ログアウトに使う暗号ストア。このタブが開いていなければ、ロックを奪って開く。 */
   const storeForLogout = useCallback(async (): Promise<ActiveStore | null> => {
