@@ -103,8 +103,9 @@ export async function loadStorageKey(options: {
     if (!wrappingKey) {
       throw new StorageKeyUnavailableError("保存鍵を包む鍵がありません");
     }
-    const packed = fromBase64(options.wrapped);
     try {
+      // base64 が壊れていても（atob が投げる）、開けない保存鍵として作り直させる。
+      const packed = fromBase64(options.wrapped);
       const raw = await crypto.subtle.decrypt(
         { name: "AES-GCM", iv: packed.subarray(0, 12), additionalData: WRAP_AAD },
         wrappingKey,

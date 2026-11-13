@@ -229,3 +229,57 @@ fn pending_deletions_of_other_users_are_kept() {
     store::clear_pending_device_deletion(&root, &b).unwrap();
     assert_eq!(store::read_pending_device_deletions(&root), vec![a]);
 }
+
+#[test]
+fn reads_shape_rows_with_jsonb_as_text() {
+    // Electric の Shape は jsonb の列を文字列で配る（backend/tests/e2ee_to_device_test.rs）。
+    let row = json!({
+        "id": "12",
+        "sender_user_id": ALICE,
+        "type": "m.room.encrypted",
+        "content": "{\"algorithm\":\"m.olm.v1.curve25519-aes-sha2\"}",
+    });
+    let parsed = manager::to_device_row(row.as_object().unwrap());
+    assert_eq!(parsed.id, "12");
+    assert_eq!(parsed.content["algorithm"], "m.olm.v1.curve25519-aes-sha2");
+    let object = json!({ "id": 13, "content": { "algorithm": "x" } });
+    let parsed = manager::to_device_row(object.as_object().unwrap());
+    assert_eq!(parsed.id, "13");
+    assert_eq!(parsed.content["algorithm"], "x");
+}
+
+#[tokio::test]
+async fn logout_also_deletes_the_device_replaced_after_losing_the_storage_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let mut bob = CryptoStore::open(&root, BOB).unwrap().store;
+    bob.mark_registered().unwrap();
+    let old_device = bob.device_id().to_owned();
+    drop(bob);
+    std::fs::remove_file(root.join(BOB).join("storage.key")).unwrap();
+
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {}, "txid": null })))
+        .mount(&server)
+        .await;
+    let api = ApiClient::new(
+        reqwest::Client::new(),
+        &server.uri(),
+        Credentials::Dev(BOB.into()),
+    );
+    for target in manager::open_for_logout(&root).unwrap() {
+        manager::destroy_for_logout(&api, &root, target)
+            .await
+            .unwrap();
+    }
+    let deleted: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect();
+    assert!(deleted.contains(&format!("/api/e2ee/devices/{old_device}")));
+    assert!(store::read_pending_device_deletions(&root).is_empty());
+}

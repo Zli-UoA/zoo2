@@ -220,28 +220,7 @@ async fn run(
         for change in batch.changes {
             match change {
                 Change::Upsert { key, row } => {
-                    let id = match &row["id"] {
-                        Value::String(id) => id.clone(),
-                        other => other.to_string(),
-                    };
-                    rows.insert(
-                        key,
-                        ToDeviceRow {
-                            id,
-                            sender_user_id: row["sender_user_id"]
-                                .as_str()
-                                .unwrap_or_default()
-                                .to_owned(),
-                            r#type: row["type"].as_str().unwrap_or_default().to_owned(),
-                            // Shape は jsonb の列を文字列で配るので、JSON として読む。
-                            content: match &row["content"] {
-                                Value::String(raw) => {
-                                    serde_json::from_str(raw).unwrap_or(Value::Null)
-                                }
-                                other => other.clone(),
-                            },
-                        },
-                    );
+                    rows.insert(key, to_device_row(&row));
                 }
                 Change::Delete { key } => {
                     rows.remove(&key);
@@ -254,6 +233,26 @@ async fn run(
         let mut pending: Vec<ToDeviceRow> = rows.values().cloned().collect();
         pending.sort_by(|a, b| a.id.len().cmp(&b.id.len()).then_with(|| a.id.cmp(&b.id)));
         process(api, &store, &device_id, &pending).await?;
+    }
+}
+
+/// to-device の Shape の行を読む。Shape は bigint と jsonb の列を文字列で配るので、`content` は
+/// JSON として読み直す（読めなければ `null` にして、復号できないメッセージとして捨てる）。
+pub fn to_device_row(row: &crate::electric::Row) -> ToDeviceRow {
+    let text = |column: &str| match &row.get(column) {
+        Some(Value::String(value)) => value.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    };
+    ToDeviceRow {
+        id: text("id"),
+        sender_user_id: text("sender_user_id"),
+        r#type: text("type"),
+        content: match row.get("content") {
+            Some(Value::String(raw)) => serde_json::from_str(raw).unwrap_or(Value::Null),
+            Some(other) => other.clone(),
+            None => Value::Null,
+        },
     }
 }
 

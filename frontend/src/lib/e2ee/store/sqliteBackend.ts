@@ -34,6 +34,13 @@ PRAGMA user_version = ${SCHEMA_VERSION};
 type Row = Record<string, SQLiteCompatibleType | null>;
 
 let sqliteReady: Promise<SQLiteAPI> | null = null;
+/**
+ * `OPFSCoopSyncVFS` が持つ、ファイルのハンドルのキャッシュ（wa-sqlite 1.4.1 の公開フィールド）。
+ * 接続を閉じてもハンドルを持ち続けるので、ファイルを消したら外す。外さないと、同じ Worker で
+ * 開き直したときに、消したファイルのハンドルを使って失敗する。
+ */
+let vfsCaches: { persistentFiles: Map<string, unknown>; accessiblePaths: Set<string> } | null =
+  null;
 
 /** wa-sqlite と OPFS の VFS を、Worker で 1 回だけ用意する。 */
 function loadSqlite(): Promise<SQLiteAPI> {
@@ -43,6 +50,7 @@ function loadSqlite(): Promise<SQLiteAPI> {
     // オフライン DB の Worker（@tanstack/browser-db-sqlite-persistence）と同じ VFS。
     // 別の Worker の接続とは、VFS が Web Locks でファイルを譲り合う。
     const vfs = await OPFSCoopSyncVFS.create("zoo-crypto-opfs", module);
+    vfsCaches = vfs as unknown as typeof vfsCaches;
     sqlite3.vfs_register(vfs, true);
     return sqlite3;
   })();
@@ -193,6 +201,10 @@ export async function openSqliteCryptoBackend(databaseName: string): Promise<Cry
 export async function removeCryptoDatabaseFiles(databaseName: string): Promise<void> {
   const root = await navigator.storage.getDirectory();
   for (const suffix of ["", "-journal", "-wal"]) {
+    // VFS はパスを `new URL(name, "file://").pathname` で持つ。
+    const path = `/${databaseName}${suffix}`;
+    vfsCaches?.persistentFiles.delete(path);
+    vfsCaches?.accessiblePaths.delete(path);
     try {
       await root.removeEntry(`${databaseName}${suffix}`);
     } catch (error) {
