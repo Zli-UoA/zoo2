@@ -25,24 +25,55 @@ loki.process "zoo_safe" {
   // zoo2 の JsonLogFormat / POST /api/telemetry が出力する許可フィールドのみを抽出する
   stage.json {
     expressions = {
-      timestamp      = "timestamp",
-      level          = "level",
-      service        = "service",
-      target         = "target",
-      trace_id       = "trace_id",
-      span_id        = "span_id",
-      span           = "span",
-      method         = "method",
-      route          = "route",
-      http_status    = "http_status",
-      duration_ms    = "duration_ms",
-      error_class    = "error_class",
-      category       = "category",
-      metric         = "metric",
-      shape          = "shape",
-      state          = "state",
-      candidate_type = "candidate_type",
+      timestamp         = "timestamp",
+      level             = "level",
+      service           = "service",
+      target            = "target",
+      event             = "event",
+      message           = "message",
+      trace_id          = "trace_id",
+      span_id           = "span_id",
+      frontend_trace_id = "frontend_trace_id",
+      frontend_span_id  = "frontend_span_id",
+      span              = "span",
+      method            = "method",
+      route             = "route",
+      http_status       = "http_status",
+      duration_ms       = "duration_ms",
+      error_class       = "error_class",
+      error_summary     = "error_summary",
+      category          = "category",
+      metric            = "metric",
+      shape             = "shape",
+      state             = "state",
+      candidate_type    = "candidate_type",
     }
+  }
+
+  // zoo_frontend ログでは /api/telemetry のインジェスト trace ではなく原因側トレースを trace_id / span_id へ昇格する
+  stage.template {
+    source   = "ingest_trace_id"
+    template = "{{ if and .frontend_trace_id .trace_id }}{{ .trace_id }}{{ end }}"
+  }
+
+  stage.template {
+    source   = "trace_id"
+    template = "{{ if .frontend_trace_id }}{{ .frontend_trace_id }}{{ else }}{{ .trace_id }}{{ end }}"
+  }
+
+  stage.template {
+    source   = "span_id"
+    template = "{{ if .frontend_span_id }}{{ .frontend_span_id }}{{ else }}{{ .span_id }}{{ end }}"
+  }
+
+  // 許可フィールドのみで JSON ログ行を再構築し、未定義フィールド（user_id 等の万一の混入）を本文から破棄する
+  stage.template {
+    source   = "safe_output"
+    template = `{{- $out := dict "timestamp" .timestamp "level" .level "service" .service "target" .target -}}{{- if .event -}}{{- $_ := set $out "event" .event -}}{{- end -}}{{- if .trace_id -}}{{- $_ := set $out "trace_id" .trace_id -}}{{- end -}}{{- if .span_id -}}{{- $_ := set $out "span_id" .span_id -}}{{- end -}}{{- if .ingest_trace_id -}}{{- $_ := set $out "ingest_trace_id" .ingest_trace_id -}}{{- end -}}{{- if .span -}}{{- $_ := set $out "span" .span -}}{{- end -}}{{- if .method -}}{{- $_ := set $out "method" .method -}}{{- end -}}{{- if .route -}}{{- $_ := set $out "route" .route -}}{{- end -}}{{- if .http_status -}}{{- $_ := set $out "http_status" .http_status -}}{{- end -}}{{- if .duration_ms -}}{{- $_ := set $out "duration_ms" .duration_ms -}}{{- end -}}{{- if .error_class -}}{{- $_ := set $out "error_class" .error_class -}}{{- end -}}{{- if .error_summary -}}{{- $_ := set $out "error_summary" .error_summary -}}{{- end -}}{{- if .category -}}{{- $_ := set $out "category" .category -}}{{- end -}}{{- if .metric -}}{{- $_ := set $out "metric" .metric -}}{{- end -}}{{- if .shape -}}{{- $_ := set $out "shape" .shape -}}{{- end -}}{{- if .state -}}{{- $_ := set $out "state" .state -}}{{- end -}}{{- if .candidate_type -}}{{- $_ := set $out "candidate_type" .candidate_type -}}{{- end -}}{{- if .message -}}{{- $_ := set $out "message" .message -}}{{- end -}}{{- toJson $out -}}`
+  }
+
+  stage.output {
+    source = "safe_output"
   }
 
   stage.timestamp {
@@ -64,18 +95,19 @@ loki.process "zoo_safe" {
   // 高カーディナリティ・検索用属性は structured metadata に格納する
   stage.structured_metadata {
     values = {
-      trace_id       = "",
-      span_id        = "",
-      target         = "",
-      span           = "",
-      method         = "",
-      route          = "",
-      http_status    = "",
-      duration_ms    = "",
-      metric         = "",
-      shape          = "",
-      state          = "",
-      candidate_type = "",
+      trace_id        = "",
+      span_id         = "",
+      ingest_trace_id = "",
+      target          = "",
+      span            = "",
+      method          = "",
+      route           = "",
+      http_status     = "",
+      duration_ms     = "",
+      metric          = "",
+      shape           = "",
+      state           = "",
+      candidate_type  = "",
     }
   }
 

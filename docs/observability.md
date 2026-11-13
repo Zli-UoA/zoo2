@@ -99,7 +99,7 @@ Prometheus メトリクスおよび Loki ラベルのカーディナリティ爆
 
 - **ルート名**: `axum::extract::MatchedPath`（例: `/api/channels/{id}`）のみを使用し、UUID / ULID などの生 ID やクエリ文字列はメトリクスに載せません。`/api/app-responses/...` と `/api/webhooks/...` のトークンを含むルートは `[redacted]` に集約します。
 - **閉じたラベル値**: Frontend テレメトリは許可された enum（`category`, `metric`, `shape`, `state`）および正規化ルートグループのみをラベル化します。自由記述のメッセージはサニタイズ後に構造化ログへのみ出力し、Prometheus ラベルには入れません。
-- **構造化ログと Loki ラベル**: `infra/observability/alloy/config.alloy` では `service`・`level`・`error_class`・`category` のみを Loki ストリームラベルとし、`trace_id` / `span_id` / `route` / `http_status` 等は Structured Metadata として格納します。
+- **構造化ログと Loki ラベル**: `infra/observability/alloy/config.alloy` では許可フィールドのみを抽出して `stage.output` でログ本文を再構築し、未定義フィールド（`user_id` 等）が万一出力されても保存前に破棄します。また `service`・`level`・`error_class`・`category` のみを Loki ストリームラベルとし、`trace_id`（`zoo_frontend` ログでは `frontend_trace_id` を優先して昇格、元の値は `ingest_trace_id` に保持）・`span_id`・`route`・`http_status` 等は Structured Metadata として格納します。
 
 ### 主要メトリクス一覧
 

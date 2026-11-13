@@ -524,7 +524,7 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{service=~\"$service\", level=~\"$level\"} |= \"$trace_id\" |= \"$route_filter\"",
+          "expr": "{service=~\"$log_service\", level=~\"$level\"} |= \"$trace_id\" |= \"$route_filter\"",
           "refId": "A"
         }
       ],
@@ -543,9 +543,29 @@
         "datasource": { "type": "prometheus", "uid": "prometheus" },
         "definition": "label_values(zoo_http_requests_total, service)",
         "includeAll": true,
+        "label": "HTTP Service",
         "multi": true,
         "name": "service",
         "query": "label_values(zoo_http_requests_total, service)",
+        "refresh": 2,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".+",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "datasource": { "type": "loki", "uid": "loki" },
+        "definition": "label_values(service)",
+        "includeAll": true,
+        "label": "Log Service",
+        "multi": true,
+        "name": "log_service",
+        "query": {
+          "label": "service",
+          "refId": "LokiVariableQueryEditor-VariableQuery",
+          "stream": "",
+          "type": 1
+        },
         "refresh": 2,
         "sort": 1,
         "type": "query"
