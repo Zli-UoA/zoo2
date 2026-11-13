@@ -640,6 +640,10 @@
     {
       "file": "src/components/ui/sensitive-media.stories.tsx",
       "states": ["Hidden", "RevealAndHide", "ActivityPub", "WithoutMetadata", "InvalidHash"]
+    },
+    {
+      "file": "src/components/e2ee/UnbackedKeysLogoutDialog.stories.tsx",
+      "states": ["Default", "Pending"]
     }
   ],
   "modules": [
@@ -918,6 +922,19 @@
       "file": "src/components/desktop/DesktopBridge.tsx",
       "reason": "デスクトップ版（Tauri）の中だけで、通知・フォーカス・通知のクリックを Rust 側と受け渡す表示のない制御層。通常の Web と Storybook では何も描画しない。IPC の判定とトークンの扱いは desktop.test.ts で確認する。",
       "checks": ["src/lib/desktop.test.ts"]
+    },
+    {
+      "file": "src/components/e2ee/E2eeProvider.tsx",
+      "reason": "暗号ストアのWorkerと端末の登録を動かす制御層で、画面を持たない。保存とWorkerはブラウザテスト、登録とto-deviceの処理は単体テストで確認する。",
+      "checks": [
+        "src/lib/e2ee/cryptoWorker.browser.test.ts",
+        "src/lib/e2ee/store/cryptoStore.test.ts",
+        "src/lib/e2ee/deviceManager.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/e2ee/UnbackedKeysLogoutDialog.tsx",
+      "story": "src/components/e2ee/UnbackedKeysLogoutDialog.stories.tsx"
     },
     {
       "file": "src/components/offline/OfflineBanner.tsx",

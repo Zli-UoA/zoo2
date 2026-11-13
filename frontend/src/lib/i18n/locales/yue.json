@@ -1041,5 +1041,14 @@
       "hidden_one": "仲有 {{count}} 個（唔會顯示你管理唔到嘅頻道嘅 Webhook）。",
       "hidden_other": "仲有 {{count}} 個（唔會顯示你管理唔到嘅頻道嘅 Webhook）。"
     }
+  },
+  "e2ee": {
+    "logout": {
+      "unbackedTitle": "有啲鎖匙未備份",
+      "unbackedDescription_one": "有 {{count}} 條鎖匙未備份。登出之後，淨係喺呢部裝置度嘅舊訊息就會睇唔到。",
+      "unbackedDescription_other": "有 {{count}} 條鎖匙未備份。登出之後，淨係喺呢部裝置度嘅舊訊息就會睇唔到。",
+      "confirm": "登出",
+      "deleteFailed": "刪唔到呢部裝置嘅加密鎖匙。下次打開嗰陣會再刪。"
+    }
   }
 }

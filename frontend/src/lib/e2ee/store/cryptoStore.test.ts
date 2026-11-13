@@ -54,7 +54,7 @@ async function open(backend: MemoryCryptoBackend, keys: WrappingKeyStore, userId
 
 /** Alice の端末から Bob の端末へ、Megolm セッション鍵を Olm で送る。 */
 function sendRoomKey(alice: DeviceAccount, bobKeys: JsonObject, bobOneTimeKey: JsonObject) {
-  const recipient = verifyDeviceKeys(bobKeys, BOB, String(bobKeys.device_id));
+  const recipient = verifyDeviceKeys(bobKeys, BOB, bobKeys.device_id as string);
   const session = alice.createOutboundOlmSession(recipient, bobOneTimeKey);
   const outbound = new OutboundSession(CHANNEL, 1, Date.now());
   return alice.encryptRoomKey(session, recipient, outbound.roomKey());
@@ -72,7 +72,8 @@ describe("CryptoStore", () => {
     expect(Object.keys(request.one_time_keys)).toHaveLength(50);
     expect(Object.keys(request.fallback_keys)).toHaveLength(1);
     // 保存したものに平文の鍵は入らない（包んだ保存鍵と暗号化した pickle だけ）。
-    expect(backend.account).not.toContain(String(request.device_keys.keys));
+    const identityKeys = Object.values(request.device_keys.keys as Record<string, string>);
+    for (const key of identityKeys) expect(backend.account).not.toContain(key);
     const deviceId = store.deviceId;
     await store.markRegistered();
     await store.close();

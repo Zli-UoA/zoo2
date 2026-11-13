@@ -1474,7 +1474,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 ### ログアウトと端末の削除
 
-【決定】ログアウトするときは、暗号ストアを消す前に、鍵バックアップの送信待ちを短い時間（数秒）で送り切ろうとします。送り切れないセッションが残るとき（オフライン、版の不一致、SSSS の衝突など）は、「N 件の鍵がバックアップされていません。ログアウトすると、この端末にだけある過去ログは読めなくなります」と表示して、利用者が取りやめられるようにし、黙って消しません（サーバーに記録がなく、この端末だけにある鍵を失わないため）。そのうえで、API の結果を待たずに、先に端末の暗号ストアを消します。端末の削除 API が失敗したら（オフラインなど）、秘密ではない `device_id` だけを別に残し、同じユーザーの次のログインで削除を再試行します。再試行できるまでは、他の端末の端末一覧にその端末が残るので、手動で削除できます。
+【決定】ログアウトするときは、暗号ストアを消す前に、鍵バックアップの送信待ちを短い時間（数秒）で送り切ろうとします（#359 は件数の確認と表示まで。バックアップ鍵を持つのは解錠のあとなので、送信は #360 以降で足す）。送り切れないセッションが残るとき（オフライン、版の不一致、SSSS の衝突など）は、「N 件の鍵がバックアップされていません。ログアウトすると、この端末にだけある過去ログは読めなくなります」と表示して、利用者が取りやめられるようにし、黙って消しません（サーバーに記録がなく、この端末だけにある鍵を失わないため）。そのうえで、API の結果を待たずに、先に端末の暗号ストアを消します。端末の削除 API が失敗したら（オフラインなど）、秘密ではない `device_id` だけを別に残し、同じユーザーの次のログインで削除を再試行します。再試行できるまでは、他の端末の端末一覧にその端末が残るので、手動で削除できます。
 
 ### 復旧
 
@@ -1553,7 +1553,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
   - API の形：状態を持つもの（端末アカウント、Olm と Megolm のセッション、`TrustStore`、`BackupUploadState` など）は UniFFI のオブジェクトにし、中身を `Mutex` で守る。サーバーとやり取りする JSON（端末鍵、to-device の `content`、`ciphertext`、SSSS の応答、鍵スロットなど）は、コアと同じ形の JSON 文字列で渡し、Kotlin 側で型を二重に持たない。鍵などのバイト列は `ByteArray`、公開鍵はパディングなしの base64 の文字列にする。エラーはコアの `CryptoError` の variant と 1 対 1 の `ZooCryptoException` にし、`MissingRoomKey` のセッション ID、`BackupVersionRollback` の番号、`Rejected` の理由など、分岐に使う値は項目にも入れる。
   - Megolm のセッション鍵は Kotlin に返さない。UniFFI の Record は Kotlin の `data class` になり、`toString()` に中身が出るため。鍵の配布は、`DeviceAccount.encrypt_room_key` が `OutboundSession` を受け取り、Rust の中で配る鍵を作る。
   - ロックの順序：複数のオブジェクトを一緒に使う操作は、端末アカウント、`OutboundSession`、`OlmSessionStore`、`InboundSessionStore` の順にロックを取る。`BackupUploadState` は `InboundSessionStore` より先に取る。
-  - コアの Olm セッション、送信用セッション、受信用セッションはまだ保存形式を持たない。保存は暗号ストア（#359）で足す。
+  - コアの Olm セッション、受信用セッション、`TrustStore` の保存形式は #359 で足した（[暗号ストア](#暗号ストア)）。UniFFI への公開は、Android の暗号ストアと同じ PR で行う。送信用セッションの保存形式は、送信を行う #361 で足す。
   - ABI は `arm64-v8a`、`armeabi-v7a`、`x86_64`（エミュレーター）。`x86` は入れない。`minSdk` は 26（アプリと同じ）。
   - `.so` とバインディングはリポジトリに入れず、Gradle（`frontend-compose/build.gradle.kts`）がビルドのたびに作る。Android の各 ABI の `.so` は cargo-ndk（4.1.2）で作って jniLibs に入れ、Kotlin のバインディングはホスト向けの `.so` から、同じクレートの `uniffi-bindgen`（`--features cli`）で作る（ライブラリーと版が必ず一致する）。単体テスト（JVM）は同じホストの `.so` を JNA で読む。
   - ツール：`nix develop .#android` で、Android 向けの std を足した Rust、cargo-ndk、Android SDK（35）と NDK（29.0.14206865）が入る。既定の devShell と `rust-toolchain.toml` には足さない（Android を触らない人に NDK や std を入れないため）。CI Android も同じ版の NDK を使う。
@@ -1564,9 +1564,9 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 - 【決定】パッケージは wasm-pack を使わず、`cargo build --target wasm32-unknown-unknown` と `wasm-bindgen --target web` で作る（`crates/zoo-crypto-wasm/build.sh`、`make crypto-wasm`）。wasm-pack は wasm-bindgen-cli と wasm-opt を実行時にネットワークから取りに行くので、nix の dev shell と CI で版を固定しにくい。wasm-bindgen-cli は Tauri 版（`desktop-tauri/`）のために dev shell に入っているものを使う。
 - 【決定】wasm-bindgen クレートは、dev shell（nixpkgs）の wasm-bindgen-cli と同じ版に `=` で固定する（`desktop-tauri/ui/Cargo.toml` と同じ版）。版が違うと wasm-bindgen-cli が止まるので、`build.sh` は先に版を照合する。nixpkgs を上げて wasm-bindgen-cli の版が変わったら、両方の `Cargo.toml` を合わせる。CI は `Cargo.toml` の版を読んで `cargo install` する。
 - 【決定】`frontend` は `@zoo/crypto-wasm` を `link:../crates/zoo-crypto-wasm` で読む。生成物の `pkg/` は Git に入れず、`make crypto-wasm` で作る。CI Frontend は `crypto-wasm` ジョブで 1 回作り、check、unit-test、browser-test に渡す。CI Crypto は `crates/zoo-crypto-wasm` の fmt と clippy（ネイティブと `wasm32-unknown-unknown`）を見る。
-- 【決定】wasm は Worker（`frontend/src/lib/e2ee/crypto.worker.ts`）で動かし、鍵と Olm、Megolm の状態は Worker の中だけに置く。メインスレッドには結果の JSON だけを返す。操作は #359 以降で足す。
+- 【決定】wasm は Worker（`frontend/src/lib/e2ee/crypto.worker.ts`）で動かし、鍵と Olm、Megolm の状態は Worker の中だけに置く。メインスレッドには結果の JSON だけを返す。操作は #359 以降で足す（#359 の操作は `frontend/src/lib/e2ee/protocol.ts`）。
 - CSP の `script-src` の `'wasm-unsafe-eval'` は、SQLite の Worker のためにすでにある（`infra/frontend-nginx.conf`）。Vite は `*_bg.wasm` を `assets/` に出すので、Service Worker はほかの `assets/` と同じく、`pwa-assets.json` から先に保存し、オフラインでも返す（`frontend/scripts/pwa.test.mjs`）。
-- 【提案】本番のイメージ（`infra/Dockerfile-frontend-deploy`）は、まだ wasm を作らない。今はアプリの画面が `lib/e2ee` を読まないので、ビルドに入らないため。画面から読むようになる #359 で、イメージに wasm を作る段を足す。
+- 【決定】（#359）本番のイメージ（`infra/Dockerfile-frontend-deploy`）は、`crypto-wasm` の段で `crates/zoo-crypto-wasm/build.sh` を動かして wasm を作り、`frontend` の `link:` 依存の先（`/crates/zoo-crypto-wasm`）に置いてから `pnpm install` する。Rust は `rust-toolchain.toml` の版、wasm-bindgen-cli は `Cargo.toml` で `=` 固定した版を `cargo install` する（CI の `crypto-wasm` ジョブと同じ）。
 
 ### 乱数
 
@@ -1600,17 +1600,36 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
   4. 保存した `user_id` と `device_id` が引数の値と一致する。一致しなければ `CryptoError::PickleOwnerMismatch` になる。
 
   4 で照合するのは、`binding` をその pickle 自身の署名鍵で検証するため。同じ保存鍵で保存した別のユーザーや端末の pickle を丸ごと差し替えられても、3 までは通る。保存鍵をユーザーや端末ごとに分けるかは各クライアント（#359）で決めるので、分けていない場合でも別のユーザーや端末の鍵で動かないように、zoo-crypto の側で照合する。
-- 【提案】保存先と保存鍵の置き場所。表の鍵は長く使う保存鍵で、vodozemac の pickle key は上のとおり保存のたびにここから導く。
+- 【決定】（#359）端末アカウント以外の状態（Olm セッション、受信用セッション、`TrustStore`）は、`zoo-crypto` の保存用の封筒に入れる（`crates/zoo-crypto/src/store.rs`。`OlmSession::pickle`、`InboundSessionStore::pickle_session`、`TrustStore::pickle` と、それぞれの戻し方）。
+
+  ```json
+  {"version": 1, "kind": "olm_session | inbound_session | trust_store", "salt": "<32 バイト>", "nonce": "<12 バイト>", "ciphertext": "<AES-256-GCM>"}
+  ```
+
+  - 鍵は、保存のたびに作る `salt` から `HKDF-SHA256(ikm = 保存鍵, salt, info = "zoo e2ee store key v1")` で導く。端末アカウントの pickle key と同じく、同じ鍵と nonce を使い回さない。
+  - AAD は `LP("zoo e2ee store v1") ‖ LP(kind) ‖ LP(user_id) ‖ LP(device_id)`（今の端末アカウントの ID）。種類の違う値や、別のユーザーや端末の値に差し替えると開けない（どれも `CryptoError::InvalidPickle`）。
+  - 平文は、vodozemac の pickle（serde の形）と、それに付く情報の JSON。Olm セッションは相手の識別鍵、受信用セッションは 1 つのキー `(channel_id, sender_key, session_id)` の Olm 由来とバックアップ由来の両方と、送信者、epoch、`sender_verified`。`TrustStore` は上の `to_json` の JSON。
+  - 受信用セッションは、キーごとに 1 つの値にする（数が多いので、使うときにそのキーだけを読む）。リプレイと版の記録（`InboundSessionStore::decrypt` が使う）は入れない。保存は復号を行う #361 で足す。
+- 【決定】（#359）React の暗号ストア。
+  - 保存先は OPFS の SQLite（`zoo-crypto-<ユーザーのハッシュ>.sqlite`。名前空間とハッシュは `lib/offline/identity.ts` と同じ）。Worker が wa-sqlite と `OPFSCoopSyncVFS`（オフライン DB と同じ VFS）で開く。表は `meta`（包んだ保存鍵、`user_id`、`device_id`、登録済みか。秘密は入れない）、`account`、`olm_sessions`、`inbound_sessions`（`backed_up` の列を持ち、0 の行の数が鍵バックアップの送信待ちの件数）、`trust_store`、`processed_to_device`（処理を終えて ack を送れていない to-device の ID）。版は `PRAGMA user_version`（`frontend/src/lib/e2ee/store/sqliteBackend.ts`）。
+  - 保存鍵は 32 バイトの乱数で、抽出できない WebCrypto の AES-256-GCM 鍵（IndexedDB `zoo-crypto-keys` に DB 名ごとに置く）で包み、`meta` に置く。Worker が起動時に開いてメモリーにだけ持つ。包んだ保存鍵はあるのに IndexedDB の鍵がない、または開けないときは、どの値も読めないので、暗号ストアを作り直して新しい端末として登録し、前の `device_id` を削除する。
+  - to-device は、1 件ごとに、変わった状態（端末アカウント、Olm セッション、受信用セッション）と `processed_to_device` を 1 つのトランザクションで書いてから ack する。ack の前に終了しても、同じメッセージを 2 回復号しない（Olm のメッセージは 2 回は復号できない）。復号や検証に失敗したメッセージは、何度試しても読めないので捨てて ack する。`keys/query` などの通信に失敗したら ack せずに待って試し直す。
+  - 送信端末を検証済みにする判定（受信時の検証の手順 4）は、クロス署名を扱う #360 以降で足す。#359 では `trust` を渡さず、Olm で受け取ったセッションを「未検証の送信者」として保存する。
+  - サーバーのワンタイム鍵の数は、登録と `keys/upload` の応答で知る。起動時と、to-device で Olm セッションを新しく作った（ワンタイム鍵を使われた）ときに、空の `keys/upload` で数を読み、50 個に足りない分と、使われたフォールバック鍵を作って送る。応答をなくした鍵は、公開済みにしないまま残るので、次の送信に同じ鍵が入る（サーバーは同じ内容の再送を無視する）。
+  - 登録が 409 `E2EE_DEVICE_EXISTS`、`keys/upload` が 404 なら、端末が別の端末から削除されている。暗号ストアを作り直し、新しい端末として登録する。
 
   | クライアント | 保存先 | 保存鍵 |
   | --- | --- | --- |
-  | React | OPFS の別 DB（`zoo-crypto-<ユーザーのハッシュ>.sqlite`。名前は `lib/offline/identity.ts` と同じ作り方） | 抽出できない WebCrypto の鍵（IndexedDB に保存）で包み、起動時に Worker のメモリーに展開する |
-  | Android | アプリの内部ストレージ | Android Keystore で包む |
-  | TUI | 設定ディレクトリーのファイル（0600） | OS のキーリング。使えなければ 0600 のファイル |
+  | React | 【決定】（#359）上のとおり | 【決定】（#359）上のとおり |
+  | Android | 【提案】アプリの内部ストレージ | Android Keystore で包む（下の【決定】） |
+  | TUI | 【提案】設定ディレクトリーのファイル（0600） | 【提案】OS のキーリング。使えなければ 0600 のファイル |
 
   - 【決定】（#353）Android の保存鍵は、Android Keystore の AES-256-GCM の鍵（`setRandomizedEncryptionRequired(true)`。IV は Keystore が作る）で包み、アプリの内部ストレージのファイルに置く（`frontend-compose` の `zoo.crypto.StorageKeyStore`）。形式は `0x01 ‖ IV（12 バイト） ‖ 暗号文とタグ（48 バイト）`、AAD は `zoo e2ee storage key v1`。保存鍵は `SecureRandom` で作る。別の端末への復元などで Keystore の鍵がないときや失効したとき、ファイルが壊れたときなど、もう開けないと分かるとき（`AEADBadTagException`、`KeyPermanentlyInvalidatedException`、ファイルの形式の不一致）だけ `StorageKeyUnavailableException` を投げ、呼び出し側は暗号ストアを作り直して SSSS で解錠し直す。Keystore の一時的な失敗（`KeyStoreException`、`UnrecoverableKeyException` など）はそのまま投げ、呼び出し側は暗号ストアを消さずに再試行する（作り直すと、Olm セッションや、まだバックアップしていない Megolm の受信用セッションが消えるため）。ファイルの置き場所（ユーザーや端末ごとに分けるか）と、自動バックアップから外すかは #359 で決める。
 
-- 【決定】複数のタブが同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。【提案】他のタブは BroadcastChannel でそのタブに処理を頼む。詳細は #359 で決める。
+- 【決定】複数のタブが同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。
+  - 【決定】（#359）ロックの名前は `zoo-crypto:<DB 名>`。ロックを取れたタブが、端末の登録、鍵の補充、to-device の処理を行う（`frontend/src/components/e2ee/E2eeProvider.tsx`）。他のタブはロックを待ち、開いているタブが閉じたら引き継ぐ。#359 の処理はどれも 1 つのタブで行えば足りるので、他のタブから頼む仕組みは持たない。
+  - 【決定】（#359）ログアウトしたタブがロックを持っていなければ、ロックを奪って（`steal: true`）暗号ストアを開き、件数の確認と削除を行う。奪われたタブは暗号ストアを閉じる。ログアウトはページを離れるので、奪ったロックはそのときまで持つ。
+  - 【提案】暗号化と復号を他のタブから頼む仕組み（BroadcastChannel でロックを持つタブに頼む）は、画面から復号する #361 で決める。
 - 【決定】暗号ストアには、自分のユーザー署名鍵の公開鍵の履歴（初めて見たとき、保存したとき、置き換わりを検出したときに足す）と、相手ごとの `confirmed_usk` も入れる。古いユーザー署名鍵への巻き戻しの検出（[クロス署名](#クロス署名)の、ユーザー署名鍵の変更の検出手順）に使う。履歴を持たない新しい端末は気付けない（[脅威モデル](#脅威モデル)）。
   - 【決定】保存形式（#350）は、`zoo-crypto` の `TrustStore::to_json` が返す次の JSON にする。各クライアント（#359）は、これを暗号ストアに、端末アカウントと同じ保存鍵で暗号化して置く。
 
@@ -1620,7 +1639,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 
     鍵はすべてパディングなしの base64 の公開鍵。`own_master_key` は初回設定で作ったとき、または SSSS から取り出した秘密鍵で確かめたときだけ設定する。`TrustStore::from_json` は、`version` が 1 でない、`user_id` が今のユーザーでない、鍵や ID の形式が正しくないものを `CryptoError::InvalidTrustStore` で拒否する。配布先の判定（`TrustStore::evaluate`）は TOFU の記録、`confirmed_usk`、履歴を書き換えるので、呼び出し側は判定のたびに保存し直す。
   - 【決定】規則 4 の TOFU の記録は、ピンをサーバーに置けるまで `pin_pending: true` にし、その相手には配らない。判定のたびに同じピンを返し直すので、ピンを置く前に保存して終了しても、登録と別の端末のピンとの競合の確認を経ずに配ることはない。ピンの登録が成功したら `TrustStore::confirm_tofu_pin` で外し、409 `E2EE_PIN_CONFLICT` なら `TrustStore::discard_tofu_pin` で記録を戻して、返ったピンで判定し直す。スナップショットに同じマスター鍵のピンが見えたら（登録は成功していたが、外す前に終了した）外し、違うマスター鍵のピンが見えたら記録を戻して共有ピンとして採用する。
-- ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。
+- ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。【決定】（#359）React は、消せなかった暗号ストアの名前空間（`zoo.e2ee.pendingStoreDelete`）と、削除 API が失敗した端末（`zoo.e2ee.pendingDeviceDelete`。`user_id` と `device_id`）を localStorage に残し、次の起動と、同じユーザーの次のログインで消し直す（`frontend/src/lib/e2ee/identity.ts`）。削除 API の 404（登録の前に止まった端末）は、消すものがないので済んだものとして扱う。
 - 保存鍵による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
 
 ## 脅威モデル
@@ -1720,7 +1739,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 | `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【決定】 | #358 |
 | エラー応答に `code` を足す方法 | 【決定】 | #354 |
 | 暗号化チャンネルでの URL カードの扱い | 【提案】 | #361 |
-| 複数タブでの暗号ストアの共有（Web Locks と BroadcastChannel） | 【提案】 | #359 |
+| 他のタブから暗号ストアの処理を頼む仕組み（BroadcastChannel） | 【提案】 | #361 |
 | クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。`max_age=0` で取り直した ID トークンの `authenticated_at` で確かめる（[クロス署名の API](#クロス署名356)） | 【決定】（実際の AuthZ での動きは AuthZ#102 の E2E で確かめた） | #356 |
 | AuthZ で、すべてのセッションとトークンを 1 回で失効し、パスキーの削除と同時にも行える機能（今は、パスキーの削除はセッションもトークンも失効しない） | 【決定】AuthZ に頼む（AuthZ#100） | #362、AuthZ#100 |
 | 本番のアクセストークンの有効期間（`accessTokenTtl`。推奨は 3600 秒） | 【未検証】 | #362 |

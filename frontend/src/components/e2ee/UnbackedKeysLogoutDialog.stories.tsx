@@ -4,7 +4,7 @@ import { fn } from "storybook/test";
 import { UnbackedKeysLogoutDialog } from "./UnbackedKeysLogoutDialog";
 
 const meta = {
-  title: "E2EE/UnbackedKeysLogoutDialog",
+  title: "Features/E2EE/UnbackedKeysLogoutDialog",
   component: UnbackedKeysLogoutDialog,
   parameters: { a11y: { test: "error" } },
   args: { count: 3, onCancel: fn(), onConfirm: fn() },
