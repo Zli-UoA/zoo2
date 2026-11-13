@@ -399,7 +399,7 @@ impl Styled for Button {
 }
 
 impl RenderOnce for Button {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = palette(cx);
         let mut sp = size_spec(self.size);
         if let Some(r) = self.radius {
@@ -428,6 +428,13 @@ impl RenderOnce for Button {
             },
         );
         let group: SharedString = format!("button-{}", self.id).into();
+        // キーボードの Enter / Space によるクリックは、`on_click` を持つ要素自身が
+        // フォーカスを追っているときだけ届く。なのでフォーカスは外側の要素で追い、
+        // 輪は描くときにフォーカスの有無を見て殻に付ける。
+        let focused = self
+            .focus_handle
+            .as_ref()
+            .is_some_and(|h| h.is_focused(window));
 
         let has_start = self.icon_start.is_some() && self.label.is_some();
         let has_end = self.icon_end.is_some() && self.label.is_some();
@@ -462,18 +469,18 @@ impl RenderOnce for Button {
             .rounded(px(sp.radius))
             .border_1()
             .border_color(normal.border)
-            .when_some(normal.ring, |d, (c, w)| d.shadow(vec![ring(c, w)]))
+            .when(focused, |d| {
+                let d = d.border_color(focus_state.border);
+                match focus_state.ring {
+                    Some((c, w)) => d.shadow(vec![ring(c, w)]),
+                    None => d,
+                }
+            })
+            .when(!focused, |d| {
+                d.when_some(normal.ring, |d, (c, w)| d.shadow(vec![ring(c, w)]))
+            })
             .when(!self.state.disabled, |d| {
                 d.group_active(group.clone(), |s| s.top(px(1.0)))
-            })
-            .when_some(self.focus_handle.as_ref(), |d, handle| {
-                d.track_focus(handle).focus(move |s| {
-                    let s = s.border_color(focus_state.border);
-                    match focus_state.ring {
-                        Some((c, w)) => s.shadow(vec![ring(c, w)]),
-                        None => s,
-                    }
-                })
             })
             .child(layer)
             .when_some(self.icon_start, |d, ic| {
@@ -488,6 +495,9 @@ impl RenderOnce for Button {
         let mut root = div()
             .id(self.id)
             .group(group)
+            .when_some(self.focus_handle.as_ref(), |d, handle| {
+                d.track_focus(handle)
+            })
             .flex_none()
             .h(px(sp.height))
             .when_some(sp.width, |d, w| d.w(px(w)))
@@ -687,5 +697,61 @@ mod tests {
         };
         assert!(resolve(ButtonVariant::Link, &p, h).underline);
         assert_eq!(resolve(ButtonVariant::Link, &p, h).fg, p.t.link);
+    }
+
+    mod keyboard {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use gpui::{Context, TestAppContext};
+
+        use super::super::*;
+
+        struct Root {
+            focus: FocusHandle,
+            clicks: Rc<Cell<u32>>,
+        }
+
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let clicks = self.clicks.clone();
+                div().size_full().child(
+                    Button::new("kbd")
+                        .label("ok")
+                        .focus_handle(&self.focus)
+                        .on_click(move |_, _, _| clicks.set(clicks.get() + 1)),
+                )
+            }
+        }
+
+        fn press(key: &str) -> u32 {
+            let clicks = Rc::new(Cell::new(0));
+            let c = clicks.clone();
+            let cx = &mut TestAppContext::single();
+            cx.update(|cx| cx.set_global(Palette::new(crate::tokens::ThemeMode::Light)));
+            let (view, cx) = cx.add_window_view(move |_, cx| Root {
+                focus: cx.focus_handle().tab_stop(true),
+                clicks: c,
+            });
+            let focus = view.read_with(cx, |v, _| v.focus.clone());
+            cx.update(|window, _| window.focus(&focus));
+            cx.run_until_parked();
+            // キーボードのクリックはキーを離したときに起きる。
+            cx.simulate_keystrokes(key);
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse(key).unwrap(),
+            });
+            clicks.get()
+        }
+
+        #[test]
+        fn enter_on_focused_button_fires_on_click() {
+            assert_eq!(press("enter"), 1);
+        }
+
+        #[test]
+        fn space_on_focused_button_fires_on_click() {
+            assert_eq!(press("space"), 1);
+        }
     }
 }
