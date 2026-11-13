@@ -35,6 +35,12 @@
 //! - [`BackupDecryptionKey`]、[`BackupEncryptionKey`]：鍵バックアップ（`zoo.megolm_backup.v1.curve25519-aes-sha2`）
 //! - [`verify_backup_version`]、[`BackupUploadState`]：今の版の検証と、アップロード待ちの状態機械
 //! - [`select_previous_backup_keys`]、[`previous_versions_to_migrate`]：失効のときの古い版の鍵の退避と移行
+//!
+//! #359 で足したもの:
+//!
+//! - [`OlmSession::pickle`]、[`InboundSessionStore::pickle_session`]、[`TrustStore::pickle`] と、
+//!   それぞれの戻し方：暗号ストアに置く保存形式（保存鍵から保存ごとに導いた鍵の AES-256-GCM で、
+//!   持ち主の端末に結び付ける）
 
 mod backup;
 mod canonical_json;
@@ -47,6 +53,7 @@ mod olm;
 mod recovery_key;
 mod secret_storage;
 mod signing;
+mod store;
 mod trust;
 
 pub use backup::{

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { AppShell } from "../components/layout/AppShell";
 import { OfflineProvider } from "../components/offline/OfflineProvider";
+import { E2eeProvider } from "../components/e2ee/E2eeProvider";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
 import { CallProvider } from "../lib/call/call-context";
 import { NotificationsProvider } from "../hooks/useUnifiedNotifications";
@@ -26,15 +27,17 @@ function ShellLayout() {
 
   return mounted ? (
     <OfflineProvider config={config}>
-      <CallProvider config={config}>
-        <HomeLiveProvider>
-          <NotificationsProvider>
-            <AppShell>
-              <Outlet />
-            </AppShell>
-          </NotificationsProvider>
-        </HomeLiveProvider>
-      </CallProvider>
+      <E2eeProvider config={config}>
+        <CallProvider config={config}>
+          <HomeLiveProvider>
+            <NotificationsProvider>
+              <AppShell>
+                <Outlet />
+              </AppShell>
+            </NotificationsProvider>
+          </HomeLiveProvider>
+        </CallProvider>
+      </E2eeProvider>
     </OfflineProvider>
   ) : (
     <ShellSkeleton />

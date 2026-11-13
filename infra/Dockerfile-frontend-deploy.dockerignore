@@ -5,6 +5,14 @@
 !infra/frontend-entrypoint.sh
 !frontend/
 !frontend/**
+!rust-toolchain.toml
+!crates/
+!crates/zoo-crypto/
+!crates/zoo-crypto/**
+!crates/zoo-crypto-wasm/
+!crates/zoo-crypto-wasm/**
+crates/*/target
+crates/*/pkg
 frontend/node_modules
 frontend/.env*
 frontend/.tanstack

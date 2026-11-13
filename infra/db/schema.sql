@@ -71,6 +71,21 @@ CREATE TABLE channel_user (
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
+-- ユーザーが自分でチャンネルを退出した日時（退出日での並び替え用）。退出のたびに上書きし、
+-- 本人の Shape にだけ配る。チャンネルへの再参加では消さない。
+CREATE TABLE channel_leave (
+  user_id text NOT NULL,
+  channel_id text NOT NULL,
+  left_at timestamp(3) NOT NULL,
+  CONSTRAINT channel_leave_pkey PRIMARY KEY (user_id, channel_id),
+  CONSTRAINT channel_leave_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT channel_leave_channel_id_fkey
+    FOREIGN KEY (channel_id) REFERENCES channels (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
 CREATE TABLE role (
   id text NOT NULL,
   role_name varchar(255) NOT NULL,

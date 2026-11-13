@@ -3,15 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { cn } from "cn";
-import {
-  ArchiveIcon,
-  HashIcon,
-  HeadphonesIcon,
-  LockIcon,
-  PlusIcon,
-  SearchIcon,
-} from "lucide-react";
-import { useMemo, useState } from "react";
+import { HashIcon, HeadphonesIcon, LockIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 
 import { useThreadIndex } from "../../hooks/useThreadIndex";
 import { useUnreadChannels } from "../../hooks/useUnreadChannels";
@@ -20,6 +13,8 @@ import { useCall } from "../../lib/call/call-context";
 import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
+import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
+import { nowIso } from "../../lib/time";
 import { SyncStatus } from "../SyncStatus";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
@@ -84,6 +79,20 @@ export function ChannelSidebar({
   const sidebarChannels = useMemo(
     () => filterJoinedChannels(regularChannels, joinedChannelIds),
     [regularChannels, joinedChannelIds],
+  );
+  const joinChannel = useCallback(
+    async (channelId: string) => {
+      if (!currentUserId) {
+        return;
+      }
+      // 失敗は呼び出し側（検索ダイアログ）が受けて表示する。
+      const transaction = channelUsers.insert(
+        { user_id: currentUserId, channel_id: channelId, joined_at: nowIso() },
+        { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
+      );
+      await transaction.when("settled");
+    },
+    [channelUsers, currentUserId],
   );
   const dmChannels = useMemo(
     () =>
@@ -170,14 +179,7 @@ export function ChannelSidebar({
                       ) : (
                         <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
                       )}
-                      <span
-                        className={cn(
-                          "min-w-0 flex-1 truncate",
-                          channel.archive_at ? "text-muted-foreground" : null,
-                        )}
-                      >
-                        {channel.channel_name}
-                      </span>
+                      <span className="min-w-0 flex-1 truncate">{channel.channel_name}</span>
                       {channel.is_nsfw ? (
                         <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
                       ) : null}
@@ -198,16 +200,6 @@ export function ChannelSidebar({
                           title={t("channels.unread")}
                           className="size-2 shrink-0 rounded-full bg-brand"
                         />
-                      ) : null}
-                      {channel.archive_at ? (
-                        <span
-                          role="img"
-                          title={t("moderation.archived")}
-                          aria-label={t("moderation.archived")}
-                          className="shrink-0 text-muted-foreground/70"
-                        >
-                          <ArchiveIcon className="size-3" aria-hidden="true" />
-                        </span>
                       ) : null}
                     </Link>
                     {!channel.is_dm ? (
@@ -266,6 +258,7 @@ export function ChannelSidebar({
         onOpenChange={setBrowserOpen}
         channels={regularChannels}
         joinedChannelIds={joinedChannelIds}
+        onJoinChannel={joinChannel}
       />
     </aside>
   );

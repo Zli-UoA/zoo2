@@ -3,15 +3,18 @@
 //! 形式は docs/e2ee.md の「Olm（to-device メッセージ）」、受け取ったときの検証は
 //! 「受信時の検証」の `zoo.room_key` の手順 1〜4 と同じ。
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use vodozemac::megolm::{InboundGroupSession, SessionConfig as MegolmSessionConfig, SessionKey};
-use vodozemac::olm::{OlmMessage, Session, SessionConfig};
+use vodozemac::olm::{OlmMessage, Session, SessionConfig, SessionPickle};
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, base64_decode, base64_encode};
+use zeroize::Zeroizing;
 
 use crate::device::{
     DeviceAccount, DeviceKeys, MEGOLM_ALGORITHM, OLM_ALGORITHM, verify_device_keys,
 };
 use crate::megolm::check_safe_integer;
+use crate::store::{self, StoreKind};
 use crate::{CryptoError, Rejection, verify_json_signature};
 
 /// Megolm セッション鍵の配布に使う、Olm で暗号化する平文の `type`。
@@ -35,6 +38,50 @@ impl OlmSession {
     /// 相手の端末の識別鍵（Curve25519）。
     pub fn their_identity_key(&self) -> Curve25519PublicKey {
         self.their_identity_key
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct OlmSessionPickle {
+    their_identity_key: String,
+    session: SessionPickle,
+}
+
+impl OlmSession {
+    /// 暗号ストアに置く文字列にする（#359。形式は `store` モジュールの封筒）。
+    ///
+    /// `account` はこのセッションを持つ自分の端末。別のユーザーや端末の値には差し替えられない。
+    /// 呼ぶたびに出力は変わる。
+    ///
+    /// # Panics
+    ///
+    /// OS やブラウザーの暗号用乱数を取れないとき。
+    pub fn pickle(&self, account: &DeviceAccount, storage_key: &[u8; 32]) -> String {
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(&OlmSessionPickle {
+                their_identity_key: self.their_identity_key.to_base64(),
+                session: self.session.pickle(),
+            })
+            .expect("vodozemac の pickle は必ず JSON にできる"),
+        );
+        store::seal(storage_key, StoreKind::OlmSession, account, &plaintext)
+    }
+
+    /// [`pickle`](Self::pickle) の文字列から戻す。保存鍵が違う、別のユーザーや端末の値、
+    /// 形式が壊れているときは [`CryptoError::InvalidPickle`]。
+    pub fn from_pickle(
+        pickle: &str,
+        account: &DeviceAccount,
+        storage_key: &[u8; 32],
+    ) -> Result<Self, CryptoError> {
+        let plaintext = store::open(pickle, storage_key, StoreKind::OlmSession, account)?;
+        let parsed: OlmSessionPickle = serde_json::from_slice(&plaintext)
+            .map_err(|e| CryptoError::InvalidPickle(format!("Olm セッションを読めません: {e}")))?;
+        Ok(Self {
+            session: Session::from_pickle(parsed.session),
+            their_identity_key: Curve25519PublicKey::from_base64(&parsed.their_identity_key)
+                .map_err(|e| CryptoError::InvalidPickle(format!("識別鍵を読めません: {e}")))?,
+        })
     }
 }
 
@@ -617,6 +664,63 @@ mod tests {
             Err(CryptoError::Rejected(reason)) => reason,
             other => panic!("破棄されるはずが {other:?}"),
         }
+    }
+
+    #[test]
+    fn pickled_olm_sessions_keep_decrypting() {
+        let alice = DeviceAccount::new(ALICE, ALICE_DEVICE).unwrap();
+        let mut bob = DeviceAccount::new(BOB, BOB_DEVICE).unwrap();
+        bob.generate_one_time_keys(1);
+        let one_time_key = bob.one_time_keys().into_values().next().unwrap();
+        let mut outbound = alice
+            .create_outbound_olm_session(&keys(&bob), &one_time_key)
+            .unwrap();
+        let group = vodozemac::megolm::GroupSession::new(MegolmSessionConfig::version_1());
+        let room_key = RoomKey {
+            channel_id: "c".into(),
+            epoch: 1,
+            session_id: group.session_id(),
+            session_key: group.session_key().to_base64(),
+        };
+        let mut sessions = Vec::new();
+        let first = alice
+            .encrypt_room_key(&mut outbound, &keys(&bob), &room_key)
+            .unwrap();
+        bob.decrypt_to_device(&mut sessions, &first).unwrap();
+        assert_eq!(sessions.len(), 1);
+
+        // 保存して戻したセッションで、次のメッセージを復号できる。
+        let storage_key = [9u8; 32];
+        let pickled = sessions[0].pickle(&bob, &storage_key);
+        assert_ne!(pickled, sessions[0].pickle(&bob, &storage_key));
+        let mut restored = vec![OlmSession::from_pickle(&pickled, &bob, &storage_key).unwrap()];
+        assert_eq!(restored[0].session_id(), sessions[0].session_id());
+        assert_eq!(
+            restored[0].their_identity_key(),
+            alice.identity_keys().curve25519
+        );
+        let pickled_outbound = outbound.pickle(&alice, &storage_key);
+        let mut outbound =
+            OlmSession::from_pickle(&pickled_outbound, &alice, &storage_key).unwrap();
+        let second = alice
+            .encrypt_room_key(&mut outbound, &keys(&bob), &room_key)
+            .unwrap();
+        bob.decrypt_to_device(&mut restored, &second).unwrap();
+        assert_eq!(
+            restored.len(),
+            1,
+            "既存のセッションで復号し、新しく作らない"
+        );
+
+        // 別の端末や保存鍵では戻せない。
+        assert!(matches!(
+            OlmSession::from_pickle(&pickled, &alice, &storage_key),
+            Err(CryptoError::InvalidPickle(_))
+        ));
+        assert!(matches!(
+            OlmSession::from_pickle(&pickled, &bob, &[8u8; 32]),
+            Err(CryptoError::InvalidPickle(_))
+        ));
     }
 
     #[test]

@@ -18,7 +18,7 @@
     "empty": "No channels yet.",
     "createAction": "Create one",
     "browseTitle": "Browse channels",
-    "browseDescription": "Browse public channel messages before joining.",
+    "browseDescription": "Browse public and archived channel messages before joining.",
     "browseSearch": "Search by channel name",
     "searchClear": "Clear search",
     "searchEmpty": "No channels match your search.",
@@ -29,7 +29,6 @@
     "noJoined": "You haven't joined any channels yet.",
     "join": "Join",
     "joining": "Joining…",
-    "joinUnavailable": "Unavailable",
     "notFound": "Channel not found.",
     "duplicateName": "A channel with this name already exists.",
     "privateMessages": "This channel is private. You can view messages once you are invited.",
@@ -769,7 +768,7 @@
   "slackImport": {
     "tab": "Slack import",
     "title": "Import from Slack",
-    "description": "Upload the export ZIP downloaded from Slack's admin settings to store it in Zoo. You can import any of its channels here, and members who link their Slack account can import the channels they created.",
+    "description": "Upload the export ZIP downloaded from Slack's admin settings to store it in Zoo. You can import any of its channels here, and members who link their Slack account can import the private channels they created from the Slack link tab. Public channels are imported by admins only.",
     "chooseFile": "Choose and upload ZIP",
     "uploading": "Uploading…",
     "loading": "Loading import history",
@@ -848,13 +847,26 @@
       "linked_other_account": "You are already linked to a different Slack account. Unlink it first to switch accounts.",
       "failed": "Couldn't link with Slack."
     },
-    "importTitle": "Import from Slack",
-    "importDescription": "Import the history of the Slack channels you created from the Slack export saved by an admin. Import each into a channel with the same name that you have joined, or into a new channel.",
-    "importLoading": "Loading the channels you can import",
-    "importNoExport": "Once an admin saves a Slack export, you can import your channels here.",
-    "importNoChannels": "The saved export has no channels that you created.",
-    "importSummary_one": "{{name}} has {{count}} channel that you created. Choose the channels to import.",
-    "importSummary_other": "{{name}} has {{count}} channels that you created. Choose the channels to import."
+    "privateTitle": "Import from Slack",
+    "privateDescription": "Import the history of the private Slack channels you created with your linked Slack account. No ZIP is needed. Admins import public channels.",
+    "privateLoading": "Loading the channels you can import",
+    "privateEmpty": "You have not created any private channels.",
+    "privateRelink": "Your Slack link cannot read private channels. Unlink it and link your account again.",
+    "privateUnavailable": "The channels you can import cannot be loaded right now.",
+    "privateMembers_one": "{{count}} member",
+    "privateMembers_other": "{{count}} members",
+    "privateArchived": "Archived",
+    "privateName": "Name of the channel for {{name}}",
+    "privateStart": "Import {{name}}",
+    "privateStartButton": "Import",
+    "privateStarting": "Starting…",
+    "privateStatus": {
+      "queued": "Waiting to import (#{{name}}).",
+      "running": "Importing (#{{name}}).",
+      "done": "Imported (#{{name}}). New posts are synced automatically.",
+      "error": "The import failed. It will be retried automatically (#{{name}}).",
+      "hidden": "Already imported (the name is hidden because you have not joined the channel)."
+    }
   },
   "publicProfile": {
     "followTitle": "Follow from your server",
@@ -1044,6 +1056,16 @@
       "list": "Webhooks for this app",
       "hidden_one": "{{count}} more webhook is in a channel you do not manage and is not shown.",
       "hidden_other": "{{count}} more webhooks are in channels you do not manage and are not shown."
+    }
+  },
+  "e2ee": {
+    "logout": {
+      "unbackedTitle": "Some keys are not backed up",
+      "unbackedDescription_one": "{{count}} key is not backed up. If you log out, past messages that only this device can decrypt will become unreadable.",
+      "unbackedDescription_other": "{{count}} keys are not backed up. If you log out, past messages that only this device can decrypt will become unreadable.",
+      "unknownDescription": "Could not check whether your keys are backed up. If you log out, past messages that only this device can decrypt may become unreadable.",
+      "confirm": "Log out",
+      "deleteFailed": "Could not delete this device's encryption keys. They will be deleted the next time you open the app."
     }
   }
 }

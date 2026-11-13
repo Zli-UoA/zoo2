@@ -1047,6 +1047,31 @@ fn trust_store_round_trips_and_checks_owner() {
 }
 
 #[test]
+fn trust_store_pickle_is_sealed_to_the_device() {
+    let (alice, bob) = alice_and_bob();
+    let mut store = unlocked_store(&alice);
+    evaluate(&mut store, &alice, &Snapshot::new(&alice, &[&alice, &bob]));
+    let device = DeviceAccount::new(ALICE, "4d8a1c2e-5b7d-4e9f-a1b2-c3d4e5f60718").unwrap();
+    let other = DeviceAccount::new(BOB, "5e8a1c2e-5b7d-4e9f-a1b2-c3d4e5f60718").unwrap();
+    let storage_key = [5u8; 32];
+    let pickled = store.pickle(&device, &storage_key);
+    assert!(!pickled.contains(BOB), "相手のユーザー ID も暗号化される");
+    assert_ne!(pickled, store.pickle(&device, &storage_key));
+    assert_eq!(
+        TrustStore::from_pickle(&pickled, &device, &storage_key).unwrap(),
+        store
+    );
+    assert!(matches!(
+        TrustStore::from_pickle(&pickled, &device, &[6u8; 32]),
+        Err(CryptoError::InvalidPickle(_))
+    ));
+    assert!(matches!(
+        TrustStore::from_pickle(&pickled, &other, &storage_key),
+        Err(CryptoError::InvalidPickle(_))
+    ));
+}
+
+#[test]
 fn snapshot_pages_can_be_merged() {
     let (alice, bob) = alice_and_bob();
     let mut store = unlocked_store(&alice);

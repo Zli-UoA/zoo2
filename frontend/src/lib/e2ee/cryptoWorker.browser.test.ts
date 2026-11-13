@@ -23,6 +23,45 @@ describe("zoo-crypto Worker", () => {
     expect(second.identityKeys.curve25519).not.toBe(first.identityKeys.curve25519);
   });
 
+  it("OPFS の SQLite に暗号ストアを置き、開き直すと同じ端末に戻る", async () => {
+    const namespace = `test-${crypto.randomUUID()}`;
+    worker = startCryptoWorker();
+    const opened = await worker.request({ op: "open", namespace, userId: USER });
+    expect(opened).toMatchObject({ userId: USER, registered: false, replacedDeviceId: null });
+    const request = await worker.request({ op: "registrationRequest" });
+    expect(request.device_keys).toMatchObject({ device_id: opened.deviceId });
+    await worker.request({ op: "markRegistered" });
+    await worker.request({ op: "close" });
+    worker.terminate();
+
+    // 別の Worker（タブを開き直したのと同じ）で開いても、同じ端末に戻る。
+    worker = startCryptoWorker();
+    const reopened = await worker.request({ op: "open", namespace, userId: USER });
+    expect(reopened).toMatchObject({ deviceId: opened.deviceId, registered: true });
+    expect(await worker.request({ op: "pendingBackupCount" })).toBe(0);
+    await worker.request({ op: "destroy", namespace });
+
+    const root = await navigator.storage.getDirectory();
+    const names: string[] = [];
+    for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) {
+      names.push(name);
+    }
+    expect(names.filter((name) => name.startsWith("zoo-crypto-"))).toEqual([]);
+  });
+
+  it("同じ Worker で暗号ストアを消してから、同じ名前で作り直せる", async () => {
+    // 別の端末から消された端末を作り直すとき（deviceManager の start）と同じ順。
+    const namespace = `test-${crypto.randomUUID()}`;
+    worker = startCryptoWorker();
+    const first = await worker.request({ op: "open", namespace, userId: USER });
+    await worker.request({ op: "destroy", namespace });
+    const second = await worker.request({ op: "open", namespace, userId: USER });
+    expect(second.deviceId).not.toBe(first.deviceId);
+    const request = await worker.request({ op: "registrationRequest" });
+    expect(request.device_keys).toMatchObject({ device_id: second.deviceId });
+    await worker.request({ op: "destroy", namespace });
+  });
+
   it("wasm の失敗を code 付きで返す", async () => {
     worker = startCryptoWorker();
     await expect(

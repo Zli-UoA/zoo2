@@ -244,7 +244,7 @@ pub fn verify_device_keys(
     })
 }
 
-/// Olm のセッション 1 つ。保存（暗号ストア）は #359 で足すので、今はメモリー上にだけある。
+/// Olm のセッション 1 つ。暗号ストアには [`pickle`](Self::pickle) で保存する（#359）。
 #[wasm_bindgen]
 pub struct OlmSession {
     pub(crate) inner: core::OlmSession,
@@ -252,6 +252,26 @@ pub struct OlmSession {
 
 #[wasm_bindgen]
 impl OlmSession {
+    /// 暗号ストアに置く文字列にする。`account` はこのセッションを持つ自分の端末、
+    /// `storageKey` は 32 バイト。呼ぶたびに出力は変わる。
+    pub fn pickle(&self, account: &DeviceAccount, storage_key: &[u8]) -> Result<String, JsValue> {
+        let key = bytes32(storage_key, "storageKey")?;
+        Ok(self.inner.pickle(&account.inner, &key))
+    }
+
+    /// [`pickle`](Self::pickle) の文字列から戻す。保存鍵や持ち主が違えば `InvalidPickle`。
+    #[wasm_bindgen(js_name = fromPickle)]
+    pub fn from_pickle(
+        pickle: &str,
+        account: &DeviceAccount,
+        storage_key: &[u8],
+    ) -> Result<OlmSession, JsValue> {
+        let key = bytes32(storage_key, "storageKey")?;
+        Ok(Self {
+            inner: core::OlmSession::from_pickle(pickle, &account.inner, &key).js()?,
+        })
+    }
+
     #[wasm_bindgen(getter, js_name = sessionId)]
     pub fn session_id(&self) -> String {
         self.inner.session_id()
@@ -295,6 +315,50 @@ impl OlmSessions {
             .iter()
             .map(core::OlmSession::session_id)
             .collect()
+    }
+
+    /// 相手の識別鍵が `theirIdentityKey` のセッション（省略したらすべて）を、暗号ストアに置く
+    /// 文字列にする（`OlmSession.pickle` と同じ形式）。`decryptToDevice` のあとで、送信端末の
+    /// 識別鍵を渡して、使ったセッションと新しく作ったセッションを保存し直す。
+    #[wasm_bindgen(js_name = pickleSessions, unchecked_return_type = "PickledOlmSession[]")]
+    pub fn pickle_sessions(
+        &self,
+        account: &DeviceAccount,
+        storage_key: &[u8],
+        their_identity_key: Option<String>,
+    ) -> Result<JsValue, JsValue> {
+        let key = bytes32(storage_key, "storageKey")?;
+        let pickled: Vec<Value> = self
+            .inner
+            .iter()
+            .filter(|session| {
+                their_identity_key
+                    .as_deref()
+                    .is_none_or(|k| session.their_identity_key().to_base64() == k)
+            })
+            .map(|session| {
+                serde_json::json!({
+                    "session_id": session.session_id(),
+                    "their_identity_key": session.their_identity_key().to_base64(),
+                    "pickle": session.pickle(&account.inner, &key),
+                })
+            })
+            .collect();
+        to_js(&pickled)
+    }
+
+    /// [`pickleSessions`](Self::pickle_sessions) か `OlmSession.pickle` の文字列から戻して足す。
+    #[wasm_bindgen(js_name = pushPickle)]
+    pub fn push_pickle(
+        &mut self,
+        pickle: &str,
+        account: &DeviceAccount,
+        storage_key: &[u8],
+    ) -> Result<(), JsValue> {
+        let key = bytes32(storage_key, "storageKey")?;
+        self.inner
+            .push(core::OlmSession::from_pickle(pickle, &account.inner, &key).js()?);
+        Ok(())
     }
 }
 
