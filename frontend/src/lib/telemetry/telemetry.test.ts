@@ -217,6 +217,56 @@ describe("TelemetryReporter", () => {
     expect(deliveredBatches[0]).toHaveLength(2);
     reporter.dispose();
   });
+
+  it("drops permanently rejected 4xx batches instead of requeuing them forever", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 400 }));
+    const reporter = new TelemetryReporter({
+      fetchImpl: fetchMock,
+      isHidden: () => false,
+      isOnline: () => true,
+    });
+
+    reporter.enqueue({ kind: "error", category: "runtime", route: "/home", message: "bad" });
+    await reporter.flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(reporter.pendingCount()).toBe(0);
+    reporter.dispose();
+  });
+
+  it("drains all batches across keepalive flush when queue exceeds single batch size", async () => {
+    const sentEvents: unknown[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as {
+        events: unknown[];
+      };
+      sentEvents.push(...parsed.events);
+      return new Response(null, { status: 202 });
+    });
+
+    const reporter = new TelemetryReporter({
+      fetchImpl: fetchMock,
+      maxBatchEvents: 20,
+      isHidden: () => true,
+      isOnline: () => true,
+    });
+
+    for (let i = 0; i < 21; i += 1) {
+      reporter.enqueue({
+        kind: "error",
+        category: "runtime",
+        route: "/home",
+        message: `err-${i}`,
+      });
+    }
+    expect(reporter.pendingCount()).toBe(21);
+
+    await reporter.flush({ keepalive: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sentEvents).toHaveLength(21);
+    expect(reporter.pendingCount()).toBe(0);
+    reporter.dispose();
+  });
 });
 
 describe("installBrowserTelemetry web vitals", () => {
@@ -336,6 +386,137 @@ describe("installBrowserTelemetry web vitals", () => {
       reporter.dispose();
     }
   });
+
+  it("computes INP p98 using total interactionCount, preserves selected interaction route, and retries dedup-suppressed INP updates", async () => {
+    let hidden = false;
+    let now = 1000;
+    const windowListeners = new Map<string, EventListener>();
+    const documentListeners = new Map<string, EventListener>();
+    const locationObj = { origin: "http://localhost:5173", pathname: "/home" };
+    const perfMock = { interactionCount: 100 };
+    const callbacks = new Map<string, PerformanceObserverCallback>();
+
+    class MockPerformanceObserver {
+      private callback: PerformanceObserverCallback;
+      constructor(callback: PerformanceObserverCallback) {
+        this.callback = callback;
+      }
+      observe(options: PerformanceObserverInit) {
+        if (options.type) {
+          callbacks.set(options.type, this.callback);
+        }
+      }
+      disconnect() {}
+    }
+
+    vi.stubGlobal("PerformanceObserver", MockPerformanceObserver);
+    vi.stubGlobal("performance", perfMock);
+    vi.stubGlobal("window", {
+      location: locationObj,
+      addEventListener: (type: string, cb: EventListener) => {
+        windowListeners.set(type, cb);
+      },
+      removeEventListener: (type: string) => {
+        windowListeners.delete(type);
+      },
+    });
+    vi.stubGlobal("document", {
+      get visibilityState() {
+        return hidden ? "hidden" : "visible";
+      },
+      addEventListener: (type: string, cb: EventListener) => {
+        documentListeners.set(type, cb);
+      },
+      removeEventListener: (type: string) => {
+        documentListeners.delete(type);
+      },
+    });
+
+    const sent: Array<{ kind: string; metric?: string; value_ms?: number; route?: string }> = [];
+    const reporter = resetTelemetryReporterForTests({
+      apiBaseUrl: "http://localhost:8000",
+      dedupWindowMs: 10_000,
+      now: () => now,
+      fetchImpl: async (_url, init) => {
+        const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as {
+          events: Array<{ kind: string; metric?: string; value_ms?: number; route?: string }>;
+        };
+        sent.push(...parsed.events);
+        return new Response(null, { status: 202 });
+      },
+      isHidden: () => hidden,
+      isOnline: () => true,
+    });
+
+    const uninstall = installBrowserTelemetry({
+      apiBaseUrl: "http://localhost:8000",
+      telemetryEnabled: true,
+    });
+    try {
+      const eventCb = callbacks.get("event");
+      expect(eventCb).toBeDefined();
+
+      // 1) 総操作数 100 で 3 件 (300, 200, 100) -> P98 順位で 3 番目の 100ms (/home)
+      eventCb?.(
+        {
+          getEntries: () => [
+            { duration: 300, interactionId: 1 } as unknown as PerformanceEntry,
+            { duration: 200, interactionId: 2 } as unknown as PerformanceEntry,
+            { duration: 100, interactionId: 3 } as unknown as PerformanceEntry,
+          ],
+        } as unknown as PerformanceObserverEntryList,
+        {} as PerformanceObserver,
+      );
+
+      hidden = true;
+      documentListeners.get("visibilitychange")?.(new Event("visibilitychange"));
+      await Promise.resolve();
+      expect(sent.map((e) => `${e.value_ms}@${e.route}`)).toEqual(["100@/home"]);
+
+      // 2) 重複ウィンドウ内で /home に 500ms が発生（総数 2 扱いへ落とすため一旦少数ではなく追加悪化を確認）
+      hidden = false;
+      perfMock.interactionCount = 101;
+      // interactionId 1,2 は 300,200 のまま 500ms が 2 件増えれば P98(101/50=2) が 300 -> 500ms テスト用に直接 4 件目として既存より遅い操作を追加:
+      // 300/200/100 に加え id=4 (500ms), id=5 (400ms) にすると P98(102/50=2) は 3 番目の 300ms、
+      // 102件中 3番目 500ms になるよう id=1,2,3 も 600,550,500 なら確実に選ばれる
+      eventCb?.(
+        {
+          getEntries: () => [
+            { duration: 600, interactionId: 1 } as unknown as PerformanceEntry,
+            { duration: 550, interactionId: 2 } as unknown as PerformanceEntry,
+            { duration: 500, interactionId: 3 } as unknown as PerformanceEntry,
+          ],
+        } as unknown as PerformanceObserverEntryList,
+        {} as PerformanceObserver,
+      );
+      now += 5000;
+      hidden = true;
+      documentListeners.get("visibilitychange")?.(new Event("visibilitychange"));
+      await Promise.resolve();
+      // 10秒以内なので重複抑制で送られない
+      expect(sent.map((e) => `${e.value_ms}@${e.route}`)).toEqual(["100@/home"]);
+
+      // 3) 別画面 /channels で 32ms の操作が起きても、選ばれた 500ms のルートは /home のまま、
+      // かつ 11秒後には重複抑制に捨てられた 500ms が送信される
+      hidden = false;
+      locationObj.pathname = "/channels/99";
+      perfMock.interactionCount = 102;
+      eventCb?.(
+        {
+          getEntries: () => [{ duration: 32, interactionId: 4 } as unknown as PerformanceEntry],
+        } as unknown as PerformanceObserverEntryList,
+        {} as PerformanceObserver,
+      );
+      now += 11_000;
+      hidden = true;
+      documentListeners.get("visibilitychange")?.(new Event("visibilitychange"));
+      await Promise.resolve();
+      expect(sent.map((e) => `${e.value_ms}@${e.route}`)).toEqual(["100@/home", "500@/home"]);
+    } finally {
+      uninstall();
+      reporter.dispose();
+    }
+  });
 });
 
 describe("API and Electric client trace propagation", () => {
@@ -432,6 +613,82 @@ describe("API and Electric client trace propagation", () => {
     expect(telemetryCalls[0]).toContain('"category":"api"');
     expect(telemetryCalls[0]).toContain('"http_status":0');
     expect(telemetryCalls[0]).toContain("stream read failed");
+    reporter.dispose();
+  });
+
+  it("records a single error when a 5xx API response fails while reading the body stream", async () => {
+    const telemetryCalls: string[] = [];
+    const reporter = resetTelemetryReporterForTests({
+      apiBaseUrl: "http://localhost:8000",
+      fetchImpl: async (_input, init) => {
+        telemetryCalls.push(typeof init?.body === "string" ? init.body : "");
+        return new Response(null, { status: 202 });
+      },
+      isHidden: () => false,
+      isOnline: () => true,
+    });
+
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      fetch: async () =>
+        ({
+          ok: false,
+          status: 503,
+          text: async () => {
+            throw new Error("body stream broken");
+          },
+        }) as unknown as Response,
+    });
+
+    await expect(client.get("/api/channels")).rejects.toThrow("body stream broken");
+    expect(reporter.pendingCount()).toBe(1);
+    await reporter.flush();
+    expect(telemetryCalls).toHaveLength(1);
+    expect(telemetryCalls[0]).toContain('"http_status":503');
+    reporter.dispose();
+  });
+
+  it("reports Electric ReadableStream failures from wrapped 200 SSE responses", async () => {
+    const telemetryCalls: string[] = [];
+    const reporter = resetTelemetryReporterForTests({
+      apiBaseUrl: "http://localhost:8000",
+      fetchImpl: async (_input, init) => {
+        telemetryCalls.push(typeof init?.body === "string" ? init.body : "");
+        return new Response(null, { status: 202 });
+      },
+      isHidden: () => false,
+      isOnline: () => true,
+    });
+
+    const failingStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: {}\n\n"));
+      },
+      pull() {
+        throw new Error("SSE stream dropped");
+      },
+    });
+
+    const shapeFetch = createShapeFetch({
+      getToken: () => null,
+      apiBaseUrl: "http://localhost:8000",
+      fetch: async () =>
+        new Response(failingStream, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+    });
+
+    const response = await shapeFetch("/api/shapes/messages?live=true");
+    expect(response.status).toBe(200);
+    await expect(response.text()).rejects.toThrow("SSE stream dropped");
+
+    expect(reporter.pendingCount()).toBe(1);
+    await reporter.flush();
+    expect(telemetryCalls).toHaveLength(1);
+    expect(telemetryCalls[0]).toContain('"kind":"electric_sync"');
+    expect(telemetryCalls[0]).toContain('"shape":"messages"');
+    expect(telemetryCalls[0]).toContain('"state":"error"');
     reporter.dispose();
   });
 

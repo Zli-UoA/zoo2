@@ -88,6 +88,11 @@ const DEFAULT_MAX_BATCH_EVENTS = 20;
 const DEFAULT_MAX_QUEUE_SIZE = 100;
 const DEFAULT_DEDUP_WINDOW_MS = 10_000;
 const MAX_BACKOFF_MS = 300_000;
+const KEEPALIVE_MAX_BYTES = 60_000;
+
+function isRetryableStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
 
 function defaultIsHidden(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
@@ -166,15 +171,15 @@ export class TelemetryReporter {
     return this.queue.length;
   }
 
-  enqueue(event: FrontendTelemetryEvent): void {
+  enqueue(event: FrontendTelemetryEvent): boolean {
     if (!this.enabled) {
-      return;
+      return false;
     }
     const now = this.now();
     const key = dedupKey(event);
     const prev = this.recentKeys.get(key);
     if (prev !== undefined && now - prev < this.dedupWindowMs) {
-      return;
+      return false;
     }
     this.recentKeys.set(key, now);
     if (this.recentKeys.size > 128) {
@@ -192,9 +197,10 @@ export class TelemetryReporter {
 
     if (this.queue.length >= this.maxBatchEvents && !this.isHidden() && this.isOnline()) {
       void this.flush();
-      return;
+      return true;
     }
     this.scheduleIfActive();
+    return true;
   }
 
   handleVisibilityOrNetworkChange(): void {
@@ -222,8 +228,13 @@ export class TelemetryReporter {
     }
 
     this.stopTimer();
-    const batch = this.queue.splice(0, this.maxBatchEvents);
     const endpoint = joinUrl(this.apiBaseUrl, "/api/telemetry");
+    if (keepalive) {
+      await this.flushKeepaliveBatches(endpoint);
+      return;
+    }
+
+    const batch = this.queue.splice(0, this.maxBatchEvents);
     this.inFlight = true;
 
     try {
@@ -231,14 +242,14 @@ export class TelemetryReporter {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ events: batch }),
-        keepalive,
+        keepalive: false,
       });
-      if (!response.ok) {
-        this.requeueBatch(batch);
-        this.recordFailure();
-      } else {
+      if (response.ok) {
         this.failureCount = 0;
         this.backoffUntil = 0;
+      } else if (isRetryableStatus(response.status)) {
+        this.requeueBatch(batch);
+        this.recordFailure();
       }
     } catch {
       this.requeueBatch(batch);
@@ -246,6 +257,75 @@ export class TelemetryReporter {
     } finally {
       this.inFlight = false;
       this.scheduleIfActive();
+    }
+  }
+
+  private async flushKeepaliveBatches(endpoint: string): Promise<void> {
+    const prepared: Array<{ batch: FrontendTelemetryEvent[]; payload: string }> = [];
+    let totalBytes = 0;
+
+    while (this.queue.length > 0) {
+      const nextCount = Math.min(this.maxBatchEvents, this.queue.length);
+      const candidate = this.queue.slice(0, nextCount);
+      const payload = JSON.stringify({ events: candidate });
+      if (prepared.length > 0 && totalBytes + payload.length > KEEPALIVE_MAX_BYTES) {
+        break;
+      }
+      this.queue.splice(0, nextCount);
+      prepared.push({ batch: candidate, payload });
+      totalBytes += payload.length;
+    }
+
+    if (prepared.length === 0) {
+      return;
+    }
+
+    let anyTemporaryFailure = false;
+    let allSucceeded = true;
+    const retryEvents: FrontendTelemetryEvent[] = [];
+
+    const results = await Promise.all(
+      prepared.map(async ({ batch, payload }) => {
+        try {
+          const response = await this.fetchImpl(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: payload,
+            keepalive: true,
+          });
+          if (response.ok) {
+            return { batch, outcome: "ok" as const };
+          }
+          return {
+            batch,
+            outcome: isRetryableStatus(response.status)
+              ? ("retry" as const)
+              : ("permanent" as const),
+          };
+        } catch {
+          return { batch, outcome: "retry" as const };
+        }
+      }),
+    );
+
+    for (const result of results) {
+      if (result.outcome !== "ok") {
+        allSucceeded = false;
+      }
+      if (result.outcome === "retry") {
+        anyTemporaryFailure = true;
+        retryEvents.push(...result.batch);
+      }
+    }
+
+    if (retryEvents.length > 0) {
+      this.requeueBatch(retryEvents);
+    }
+    if (anyTemporaryFailure) {
+      this.recordFailure();
+    } else if (allSucceeded) {
+      this.failureCount = 0;
+      this.backoffUntil = 0;
     }
   }
 

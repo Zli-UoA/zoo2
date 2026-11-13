@@ -642,7 +642,7 @@
       "states": ["Hidden", "RevealAndHide", "ActivityPub", "WithoutMetadata", "InvalidHash"]
     },
     {
-      "file": "src/lib/telemetry/errorBoundary.stories.tsx",
+      "file": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx",
       "states": ["HealthyChild", "FallbackShown"]
     }
   ],
@@ -1165,6 +1165,10 @@
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
       "reason": "AuthZAccountsで集中基盤のプロフィールによるアイコンとメンションを検証する。"
+    },
+    {
+      "file": "src/components/telemetry/TelemetryErrorBoundary.tsx",
+      "story": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx"
     }
   ]
 }

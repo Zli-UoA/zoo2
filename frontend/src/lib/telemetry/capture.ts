@@ -168,20 +168,33 @@ export function installBrowserTelemetry(
   let latestLcpMs: number | null = null;
   let latestLcpRoute: string | null = null;
   let lcpReported = false;
-  const interactionsById = new Map<number, number>();
-  let fallbackMaxInpMs: number | null = null;
-  let latestInpRoute: string | null = null;
+  const interactionsById = new Map<number, { duration: number; route: string }>();
+  let fallbackMaxInp: { duration: number; route: string } | null = null;
   let lastFlushedInpMs: number | null = null;
+  let lastFlushedInpRoute: string | null = null;
   let fcpReported = false;
   let ttfbReported = false;
 
-  const computeInpMs = (): number | null => {
+  const computeInp = (): { duration: number; route: string } | null => {
     if (interactionsById.size > 0) {
-      const sorted = [...interactionsById.values()].sort((a, b) => b - a);
-      const p98Index = Math.min(sorted.length - 1, Math.floor(sorted.length / 50));
+      const sorted = [...interactionsById.values()].sort((a, b) => b.duration - a.duration);
+      const perfInteractionCount =
+        typeof performance !== "undefined" &&
+        typeof (performance as Performance & { interactionCount?: number }).interactionCount ===
+          "number" &&
+        Number.isFinite(
+          (performance as Performance & { interactionCount?: number }).interactionCount,
+        )
+          ? Math.max(
+              0,
+              (performance as Performance & { interactionCount?: number }).interactionCount ?? 0,
+            )
+          : 0;
+      const totalInteractions = Math.max(perfInteractionCount, sorted.length);
+      const p98Index = Math.min(sorted.length - 1, Math.floor(totalInteractions / 50));
       return sorted[p98Index] ?? null;
     }
-    return fallbackMaxInpMs;
+    return fallbackMaxInp;
   };
 
   const flushVitals = () => {
@@ -196,16 +209,22 @@ export function installBrowserTelemetry(
         route: latestLcpRoute ?? currentRoute,
       });
     }
-    const currentInpMs = computeInpMs();
-    if (currentInpMs !== null && currentInpMs !== lastFlushedInpMs) {
-      lastFlushedInpMs = currentInpMs;
-      reporter.enqueue({
+    const currentInp = computeInp();
+    if (
+      currentInp !== null &&
+      (currentInp.duration !== lastFlushedInpMs || currentInp.route !== lastFlushedInpRoute)
+    ) {
+      const accepted = reporter.enqueue({
         kind: "web_vital",
         metric: "inp",
-        value_ms: Math.round(currentInpMs),
-        rating: vitalRating("inp", currentInpMs),
-        route: latestInpRoute ?? currentRoute,
+        value_ms: Math.round(currentInp.duration),
+        rating: vitalRating("inp", currentInp.duration),
+        route: currentInp.route,
       });
+      if (accepted) {
+        lastFlushedInpMs = currentInp.duration;
+        lastFlushedInpRoute = currentInp.route;
+      }
     }
   };
 
@@ -320,6 +339,7 @@ export function installBrowserTelemetry(
 
     try {
       const eventObserver = new PerformanceObserver((list) => {
+        const routeAtObservation = normalizeRouteGroup();
         for (const entry of list.getEntries()) {
           const eventEntry = entry as PerformanceEntry & { interactionId?: number };
           const duration = entry.duration;
@@ -327,15 +347,17 @@ export function installBrowserTelemetry(
             continue;
           }
           if (typeof eventEntry.interactionId === "number" && eventEntry.interactionId > 0) {
-            const prev = interactionsById.get(eventEntry.interactionId) ?? 0;
-            if (duration > prev) {
-              interactionsById.set(eventEntry.interactionId, duration);
-              latestInpRoute = normalizeRouteGroup();
+            const prev = interactionsById.get(eventEntry.interactionId);
+            if (!prev || duration > prev.duration) {
+              interactionsById.set(eventEntry.interactionId, {
+                duration,
+                route: routeAtObservation,
+              });
             }
           } else if (eventEntry.interactionId === undefined) {
-            fallbackMaxInpMs =
-              fallbackMaxInpMs === null ? duration : Math.max(fallbackMaxInpMs, duration);
-            latestInpRoute = normalizeRouteGroup();
+            if (!fallbackMaxInp || duration > fallbackMaxInp.duration) {
+              fallbackMaxInp = { duration, route: routeAtObservation };
+            }
           }
         }
       });

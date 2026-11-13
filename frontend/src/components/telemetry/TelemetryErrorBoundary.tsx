@@ -1,8 +1,8 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Button } from "../../components/ui/button";
-import { reportReactBoundaryError } from "./capture";
+import { Button } from "../ui/button";
+import { reportReactBoundaryError } from "../../lib/telemetry/capture";
 
 interface TelemetryErrorBoundaryProps {
   children: ReactNode;

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 
-import { TelemetryErrorBoundary } from "./errorBoundary";
+import { TelemetryErrorBoundary } from "./TelemetryErrorBoundary";
 
 function HealthyContent() {
   return <p className="p-4 text-sm text-foreground">表示は正常です。</p>;

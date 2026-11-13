@@ -21,7 +21,7 @@ import { resolvePublicConfig } from "../lib/config";
 import { localeInitScript } from "../lib/i18n/locale";
 import { LocaleProvider } from "../components/i18n/LocaleProvider";
 import { installBrowserTelemetry } from "../lib/telemetry/capture";
-import { TelemetryErrorBoundary } from "../lib/telemetry/errorBoundary";
+import { TelemetryErrorBoundary } from "../components/telemetry/TelemetryErrorBoundary";
 
 import appCss from "../styles.css?url";
 

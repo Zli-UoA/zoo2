@@ -34,6 +34,66 @@ function targetUrlString(input: RequestInfo | URL): string {
   return input.url;
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function wrapShapeResponseStream(
+  res: Response,
+  options: {
+    shape: ReturnType<typeof inferElectricShape>;
+    traceIds: { traceId?: string; spanId?: string };
+    alreadyReported: boolean;
+    onStreamError: () => void;
+    signal?: AbortSignal | null;
+  },
+): Response {
+  const sourceBody = res.body;
+  if (!sourceBody || res.status === 204 || res.status === 205 || res.status === 304) {
+    return res;
+  }
+
+  let reported = options.alreadyReported;
+  const reader = sourceBody.getReader();
+  const wrappedBody = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        if (!reported && !isAbortError(error) && !options.signal?.aborted) {
+          reported = true;
+          options.onStreamError();
+          reportElectricSyncEvent({
+            shape: options.shape,
+            state: "error",
+            httpStatus: res.status >= 500 ? res.status : 0,
+            traceIds: options.traceIds,
+          });
+        }
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason);
+    },
+  });
+
+  const wrapped = new Response(wrappedBody, {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+  });
+  if (res.url) {
+    Object.defineProperty(wrapped, "url", { value: res.url });
+  }
+  return wrapped;
+}
+
 /**
  * Electric の ShapeStream 用 fetch を生成する。
  *
@@ -76,9 +136,11 @@ export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
         headers,
       },
       async (traceIds) => {
+        let syncErrorReported = false;
         try {
           const res = await baseFetch(input, { ...init, headers });
           if (telemetry && res.status >= 500) {
+            syncErrorReported = true;
             reportElectricSyncEvent({
               shape,
               state: "error",
@@ -86,10 +148,21 @@ export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
               traceIds,
             });
           }
-          return res;
+          if (!telemetry) {
+            return res;
+          }
+          return wrapShapeResponseStream(res, {
+            shape,
+            traceIds,
+            alreadyReported: syncErrorReported,
+            onStreamError: () => {
+              syncErrorReported = true;
+            },
+            signal: init?.signal,
+          });
         } catch (error) {
-          const isAbort = error instanceof DOMException && error.name === "AbortError";
-          if (telemetry && !isAbort) {
+          if (telemetry && !syncErrorReported && !isAbortError(error) && !init?.signal?.aborted) {
+            syncErrorReported = true;
             reportElectricSyncEvent({
               shape,
               state: "error",
