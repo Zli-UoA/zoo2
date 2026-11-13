@@ -100,13 +100,13 @@ function defaultIsOnline(): boolean {
 function dedupKey(event: FrontendTelemetryEvent): string {
   switch (event.kind) {
     case "error":
-      return `error:${event.category}:${event.route ?? "other"}:${event.http_status ?? 0}`;
+      return `error:${event.category}:${event.route ?? "other"}:${event.http_status ?? 0}:${event.message ?? ""}`;
     case "web_vital":
       return `vital:${event.metric}:${event.route ?? "other"}`;
     case "electric_sync":
       return `electric:${event.shape}:${event.state}:${event.http_status ?? 0}`;
     case "webrtc":
-      return `webrtc:${event.state}`;
+      return `webrtc:${event.state}:${event.candidate_type ?? ""}`;
   }
 }
 
@@ -216,6 +216,7 @@ export class TelemetryReporter {
     }
     if (!keepalive) {
       if (this.inFlight || !this.isOnline() || this.now() < this.backoffUntil) {
+        this.scheduleIfActive();
         return;
       }
     }
@@ -233,17 +234,31 @@ export class TelemetryReporter {
         keepalive,
       });
       if (!response.ok) {
+        this.requeueBatch(batch);
         this.recordFailure();
       } else {
         this.failureCount = 0;
         this.backoffUntil = 0;
       }
     } catch {
+      this.requeueBatch(batch);
       this.recordFailure();
     } finally {
       this.inFlight = false;
       this.scheduleIfActive();
     }
+  }
+
+  private requeueBatch(batch: FrontendTelemetryEvent[]): void {
+    if (batch.length === 0) {
+      return;
+    }
+    const combined = [...batch, ...this.queue];
+    // Queue cap matches enqueue(): keep the newest events if overflow occurs during in-flight errors.
+    this.queue =
+      combined.length > this.maxQueueSize
+        ? combined.slice(combined.length - this.maxQueueSize)
+        : combined;
   }
 
   dispose(): void {

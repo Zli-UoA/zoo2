@@ -317,7 +317,25 @@ fn resolve_rate_limit_key(peer: Option<IpAddr>, headers: &HeaderMap) -> Result<I
     Ok(resolved.map_or(IpBucket::Unknown, IpBucket::Addr))
 }
 
+fn is_json_content_type(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .is_some_and(|essence| essence.eq_ignore_ascii_case("application/json"))
+}
+
 async fn ingest_telemetry(request: Request) -> Result<Response, AppError> {
+    if !is_json_content_type(request.headers()) {
+        return Ok((
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(serde_json::json!({ "error": "Content-Type must be application/json" })),
+        )
+            .into_response());
+    }
+
     let peer = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
@@ -700,11 +718,28 @@ mod tests {
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/api/telemetry")
-            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
             .body(Body::from(valid_body.to_string()))
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+        let req_plain = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/telemetry")
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(Body::from(valid_body.to_string()))
+            .unwrap();
+        let resp_plain = app.clone().oneshot(req_plain).await.unwrap();
+        assert_eq!(resp_plain.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        let req_missing_ct = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/telemetry")
+            .body(Body::from(valid_body.to_string()))
+            .unwrap();
+        let resp_missing_ct = app.clone().oneshot(req_missing_ct).await.unwrap();
+        assert_eq!(resp_missing_ct.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 
         let oversized = "x".repeat(MAX_BODY_BYTES + 1024);
         let req_big = axum::http::Request::builder()

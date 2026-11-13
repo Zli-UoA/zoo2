@@ -171,7 +171,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     const url = joinUrl(baseUrl, path);
     const startedAt = Date.now();
 
-    const response = await runWithHttpSpan(
+    const { res: response, rawText } = await runWithHttpSpan(
       { enabled: telemetry, method, url, apiBaseUrl: baseUrl, headers },
       async (traceIds) => {
         try {
@@ -190,7 +190,8 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
               traceIds,
             });
           }
-          return res;
+          const rawText = await res.text();
+          return { res, rawText };
         } catch (error) {
           const isAbort = error instanceof DOMException && error.name === "AbortError";
           if (telemetry && !isAbort) {
@@ -206,7 +207,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       },
     );
 
-    const body = parseBody(await response.text());
+    const body = parseBody(rawText);
     if (!response.ok) {
       if (response.status === 401) {
         onUnauthorized();

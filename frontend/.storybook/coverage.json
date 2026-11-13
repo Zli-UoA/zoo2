@@ -640,6 +640,10 @@
     {
       "file": "src/components/ui/sensitive-media.stories.tsx",
       "states": ["Hidden", "RevealAndHide", "ActivityPub", "WithoutMetadata", "InvalidHash"]
+    },
+    {
+      "file": "src/lib/telemetry/errorBoundary.stories.tsx",
+      "states": ["HealthyChild", "FallbackShown"]
     }
   ],
   "modules": [

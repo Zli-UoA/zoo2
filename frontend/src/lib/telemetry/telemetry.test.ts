@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { resolvePublicConfig, resolveTelemetryEnabled } from "../config";
 import { createApiClient } from "../api/client";
 import { createShapeFetch } from "../electric/headers";
-import { inferElectricShape, normalizeRouteGroup, sanitizeErrorMessage } from "./capture";
+import {
+  inferElectricShape,
+  installBrowserTelemetry,
+  normalizeRouteGroup,
+  sanitizeErrorMessage,
+} from "./capture";
 import { TelemetryReporter, resetTelemetryReporterForTests } from "./reporter";
 import { shouldPropagateTraceHeader } from "./tracer";
 
@@ -159,6 +164,178 @@ describe("TelemetryReporter", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     reporter.dispose();
   });
+
+  it("requeues failed batch for retry after backoff expires and separates distinct error messages", async () => {
+    let now = 1000;
+    let shouldFail = true;
+    const deliveredBatches: Array<Array<{ kind: string; message?: string }>> = [];
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      if (shouldFail) {
+        return new Response(null, { status: 503 });
+      }
+      const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as {
+        events: Array<{ kind: string; message?: string }>;
+      };
+      deliveredBatches.push(parsed.events);
+      return new Response(null, { status: 202 });
+    });
+
+    const reporter = new TelemetryReporter({
+      fetchImpl: fetchMock,
+      flushIntervalMs: 1000,
+      dedupWindowMs: 10_000,
+      now: () => now,
+      isHidden: () => false,
+      isOnline: () => true,
+    });
+
+    reporter.enqueue({
+      kind: "error",
+      category: "api",
+      route: "/home",
+      http_status: 500,
+      message: "Request timed out",
+    });
+    reporter.enqueue({
+      kind: "error",
+      category: "api",
+      route: "/home",
+      http_status: 500,
+      message: "Internal error",
+    });
+    expect(reporter.pendingCount()).toBe(2);
+
+    await reporter.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(reporter.pendingCount()).toBe(2);
+
+    shouldFail = false;
+    now += 20_000;
+    await reporter.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(reporter.pendingCount()).toBe(0);
+    expect(deliveredBatches[0]).toHaveLength(2);
+    reporter.dispose();
+  });
+});
+
+describe("installBrowserTelemetry web vitals", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves LCP route across SPA navigation, includes activationStart in TTFB, and configures INP durationThreshold", async () => {
+    const windowListeners = new Map<string, EventListener>();
+    const documentListeners = new Map<string, EventListener>();
+    const locationObj = { origin: "http://localhost:5173", pathname: "/channels/123" };
+    const observerRecords: Array<{
+      options: PerformanceObserverInit & { durationThreshold?: number };
+      callback: PerformanceObserverCallback;
+    }> = [];
+
+    class MockPerformanceObserver {
+      private callback: PerformanceObserverCallback;
+      constructor(callback: PerformanceObserverCallback) {
+        this.callback = callback;
+      }
+      observe(options: PerformanceObserverInit & { durationThreshold?: number }) {
+        observerRecords.push({ options, callback: this.callback });
+      }
+      disconnect() {}
+    }
+
+    vi.stubGlobal("PerformanceObserver", MockPerformanceObserver);
+    vi.stubGlobal("window", {
+      location: locationObj,
+      addEventListener: (type: string, cb: EventListener) => {
+        windowListeners.set(type, cb);
+      },
+      removeEventListener: (type: string) => {
+        windowListeners.delete(type);
+      },
+    });
+    vi.stubGlobal("document", {
+      visibilityState: "visible",
+      addEventListener: (type: string, cb: EventListener) => {
+        documentListeners.set(type, cb);
+      },
+      removeEventListener: (type: string) => {
+        documentListeners.delete(type);
+      },
+    });
+
+    const sent: Array<{ kind: string; metric?: string; value_ms?: number; route?: string }> = [];
+    const reporter = resetTelemetryReporterForTests({
+      apiBaseUrl: "http://localhost:8000",
+      fetchImpl: async (_url, init) => {
+        const parsed = JSON.parse(typeof init?.body === "string" ? init.body : "{}") as {
+          events: Array<{ kind: string; metric?: string; value_ms?: number; route?: string }>;
+        };
+        sent.push(...parsed.events);
+        return new Response(null, { status: 202 });
+      },
+      isHidden: () => false,
+      isOnline: () => true,
+    });
+
+    const uninstall = installBrowserTelemetry({
+      apiBaseUrl: "http://localhost:8000",
+      telemetryEnabled: true,
+    });
+    try {
+      const findObserver = (type: string) =>
+        observerRecords.find((item) => item.options.type === type);
+
+      const lcpObs = findObserver("largest-contentful-paint");
+      const navObs = findObserver("navigation");
+      const eventObs = findObserver("event");
+      expect(lcpObs).toBeDefined();
+      expect(navObs).toBeDefined();
+      expect(eventObs).toBeDefined();
+      expect(eventObs?.options.durationThreshold).toBe(16);
+
+      lcpObs?.callback(
+        {
+          getEntries: () => [{ startTime: 820 } as PerformanceEntry],
+        } as unknown as PerformanceObserverEntryList,
+        {} as PerformanceObserver,
+      );
+      navObs?.callback(
+        {
+          getEntries: () => [
+            {
+              requestStart: 120,
+              responseStart: 350,
+              activationStart: 50,
+            } as unknown as PerformanceNavigationTiming,
+          ],
+        } as unknown as PerformanceObserverEntryList,
+        {} as PerformanceObserver,
+      );
+      eventObs?.callback(
+        {
+          getEntries: () => [{ duration: 48, interactionId: 7 } as unknown as PerformanceEntry],
+        } as unknown as PerformanceObserverEntryList,
+        {} as PerformanceObserver,
+      );
+
+      // LCP 確定後に SPA 遷移しても記録時ルート (/channels) を維持する
+      locationObj.pathname = "/home";
+      windowListeners.get("pagehide")?.(new Event("pagehide"));
+
+      await reporter.flush({ keepalive: true });
+      const lcp = sent.find((e) => e.metric === "lcp");
+      const ttfb = sent.find((e) => e.metric === "ttfb");
+      const inp = sent.find((e) => e.metric === "inp");
+
+      expect(lcp).toMatchObject({ metric: "lcp", value_ms: 820, route: "/channels" });
+      expect(ttfb).toMatchObject({ metric: "ttfb", value_ms: 300, route: "/channels" });
+      expect(inp).toMatchObject({ metric: "inp", value_ms: 48, route: "/channels" });
+    } finally {
+      uninstall();
+      reporter.dispose();
+    }
+  });
 });
 
 describe("API and Electric client trace propagation", () => {
@@ -221,6 +398,40 @@ describe("API and Electric client trace propagation", () => {
     expect(telemetryCalls).toHaveLength(1);
     expect(telemetryCalls[0]).toContain('"category":"api"');
     expect(telemetryCalls[0]).toContain('"http_status":502');
+    reporter.dispose();
+  });
+
+  it("reports body stream read failures inside the HTTP span", async () => {
+    const telemetryCalls: string[] = [];
+    const reporter = resetTelemetryReporterForTests({
+      apiBaseUrl: "http://localhost:8000",
+      fetchImpl: async (_input, init) => {
+        telemetryCalls.push(typeof init?.body === "string" ? init.body : "");
+        return new Response(null, { status: 202 });
+      },
+      isHidden: () => false,
+      isOnline: () => true,
+    });
+
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      fetch: async () =>
+        ({
+          ok: true,
+          status: 200,
+          text: async () => {
+            throw new Error("stream read failed");
+          },
+        }) as unknown as Response,
+    });
+
+    await expect(client.get("/api/channels")).rejects.toThrow("stream read failed");
+    expect(reporter.pendingCount()).toBe(1);
+    await reporter.flush();
+    expect(telemetryCalls).toHaveLength(1);
+    expect(telemetryCalls[0]).toContain('"category":"api"');
+    expect(telemetryCalls[0]).toContain('"http_status":0');
+    expect(telemetryCalls[0]).toContain("stream read failed");
     reporter.dispose();
   });
 

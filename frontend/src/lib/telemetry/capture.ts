@@ -166,14 +166,26 @@ export function installBrowserTelemetry(
   ensureWebTracer(true);
 
   let latestLcpMs: number | null = null;
+  let latestLcpRoute: string | null = null;
   let lcpReported = false;
-  let maxInpMs: number | null = null;
-  let inpReported = false;
+  const interactionsById = new Map<number, number>();
+  let fallbackMaxInpMs: number | null = null;
+  let latestInpRoute: string | null = null;
+  let lastFlushedInpMs: number | null = null;
   let fcpReported = false;
   let ttfbReported = false;
 
+  const computeInpMs = (): number | null => {
+    if (interactionsById.size > 0) {
+      const sorted = [...interactionsById.values()].sort((a, b) => b - a);
+      const p98Index = Math.min(sorted.length - 1, Math.floor(sorted.length / 50));
+      return sorted[p98Index] ?? null;
+    }
+    return fallbackMaxInpMs;
+  };
+
   const flushVitals = () => {
-    const route = normalizeRouteGroup();
+    const currentRoute = normalizeRouteGroup();
     if (latestLcpMs !== null && !lcpReported) {
       lcpReported = true;
       reporter.enqueue({
@@ -181,17 +193,18 @@ export function installBrowserTelemetry(
         metric: "lcp",
         value_ms: Math.round(latestLcpMs),
         rating: vitalRating("lcp", latestLcpMs),
-        route,
+        route: latestLcpRoute ?? currentRoute,
       });
     }
-    if (maxInpMs !== null && !inpReported) {
-      inpReported = true;
+    const currentInpMs = computeInpMs();
+    if (currentInpMs !== null && currentInpMs !== lastFlushedInpMs) {
+      lastFlushedInpMs = currentInpMs;
       reporter.enqueue({
         kind: "web_vital",
         metric: "inp",
-        value_ms: Math.round(maxInpMs),
-        rating: vitalRating("inp", maxInpMs),
-        route,
+        value_ms: Math.round(currentInpMs),
+        rating: vitalRating("inp", currentInpMs),
+        route: latestInpRoute ?? currentRoute,
       });
     }
   };
@@ -243,6 +256,7 @@ export function installBrowserTelemetry(
         const last = entries.at(-1);
         if (last && Number.isFinite(last.startTime) && last.startTime >= 0) {
           latestLcpMs = last.startTime;
+          latestLcpRoute = normalizeRouteGroup();
         }
       });
       lcpObserver.observe({ type: "largest-contentful-paint", buffered: true });
@@ -276,13 +290,17 @@ export function installBrowserTelemetry(
       const navObserver = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
           if (ttfbReported) continue;
-          const nav = entry as PerformanceNavigationTiming;
+          const nav = entry as PerformanceNavigationTiming & { activationStart?: number };
+          const activationStart =
+            typeof nav.activationStart === "number" && Number.isFinite(nav.activationStart)
+              ? Math.max(0, nav.activationStart)
+              : 0;
           if (
             typeof nav.responseStart === "number" &&
-            typeof nav.requestStart === "number" &&
-            nav.responseStart >= nav.requestStart
+            Number.isFinite(nav.responseStart) &&
+            nav.responseStart >= 0
           ) {
-            const ttfb = nav.responseStart - nav.requestStart;
+            const ttfb = Math.max(0, nav.responseStart - activationStart);
             ttfbReported = true;
             reporter.enqueue({
               kind: "web_vital",
@@ -303,16 +321,29 @@ export function installBrowserTelemetry(
     try {
       const eventObserver = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
+          const eventEntry = entry as PerformanceEntry & { interactionId?: number };
           const duration = entry.duration;
-          if (Number.isFinite(duration) && duration >= 0) {
-            maxInpMs = maxInpMs === null ? duration : Math.max(maxInpMs, duration);
+          if (!Number.isFinite(duration) || duration < 0) {
+            continue;
+          }
+          if (typeof eventEntry.interactionId === "number" && eventEntry.interactionId > 0) {
+            const prev = interactionsById.get(eventEntry.interactionId) ?? 0;
+            if (duration > prev) {
+              interactionsById.set(eventEntry.interactionId, duration);
+              latestInpRoute = normalizeRouteGroup();
+            }
+          } else if (eventEntry.interactionId === undefined) {
+            fallbackMaxInpMs =
+              fallbackMaxInpMs === null ? duration : Math.max(fallbackMaxInpMs, duration);
+            latestInpRoute = normalizeRouteGroup();
           }
         }
       });
       eventObserver.observe({
         type: "event",
         buffered: true,
-      } as PerformanceObserverInit);
+        durationThreshold: 16,
+      } as PerformanceObserverInit & { durationThreshold?: number });
       observers.push(eventObserver);
     } catch {
       // Unsupported entry type
