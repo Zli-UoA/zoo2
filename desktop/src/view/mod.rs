@@ -5,10 +5,13 @@ use gpui::{
     Styled, Window, div, prelude::*, px,
 };
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
+use zoo2_client_core::electric::ShapeId;
 
 use crate::{
     app::AppState,
+    i18n::I18n,
     input::{InputEvent, TextInput},
+    ui::Palette,
 };
 
 mod auth;
@@ -32,6 +35,11 @@ pub struct WorkspaceView {
     pub quick_switcher_input: Entity<TextInput>,
     pub message_search_input: Entity<TextInput>,
     pub timeline_scroll: ScrollHandle,
+    pub sidebar_scroll: ScrollHandle,
+    /// サイドバーの「チャンネル」「ダイレクトメッセージ」の開閉 (`CollapsibleSection` の `defaultOpen`)。
+    pub sidebar_channels_open: bool,
+    pub sidebar_dms_open: bool,
+    pub i18n: I18n,
     pub thread_scroll: ScrollHandle,
     pub quick_switcher_scroll: ScrollHandle,
     pub emoji_picker_scroll: ScrollHandle,
@@ -525,6 +533,10 @@ impl WorkspaceView {
             quick_switcher_input,
             message_search_input,
             timeline_scroll: ScrollHandle::new(),
+            sidebar_scroll: ScrollHandle::new(),
+            sidebar_channels_open: true,
+            sidebar_dms_open: true,
+            i18n: I18n::detect(),
             thread_scroll: ScrollHandle::new(),
             quick_switcher_scroll: ScrollHandle::new(),
             emoji_picker_scroll: ScrollHandle::new(),
@@ -543,11 +555,30 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 部品 (`ui/`) は `Palette` を読む。旧テーマのモードに合わせて入れ直す。
+        let mode = shell::left_rail::token_mode(self.state.read(cx).theme_mode);
+        if cx.try_global::<Palette>().map(|p| p.mode) != Some(mode) {
+            cx.set_global(Palette::new(mode));
+        }
+
         let login_phase = self.state.read(cx).login_phase.clone();
         if let Some(phase) = login_phase {
             return div()
                 .size_full()
                 .child(self.render_login_view(&phase, window, cx));
+        }
+
+        // チャンネル一覧の最初の同期が終わるまでは、3 ペインの枠だけを出す (`ShellSkeleton`)。
+        let loading_shell = {
+            let s = self.state.read(cx);
+            !s.store.is_synced(&ShapeId::Channels)
+                && s.store.channels().is_empty()
+                && s.sync_error().is_none()
+        };
+        if loading_shell {
+            return div()
+                .size_full()
+                .child(shell::shell_skeleton::render_shell_skeleton(true, cx));
         }
 
         // ウィンドウのアクティブ状態とタイムライン・スレッドのスクロール位置を AppState に同期し、
@@ -624,7 +655,6 @@ impl Render for WorkspaceView {
         let has_quick_switcher = state_ref.quick_switcher.is_some();
         let has_emoji_picker = state_ref.emoji_picker_open;
         let has_message_search = state_ref.message_search.is_some();
-        let theme = state_ref.theme();
 
         let should_focus_composer = self
             .state
@@ -638,7 +668,7 @@ impl Render for WorkspaceView {
             window.focus(&self.composer_input.focus_handle(cx));
         }
 
-        let main_view = self.render_app_shell(timeline_div, thread_div, theme, cx);
+        let main_view = self.render_app_shell(timeline_div, thread_div, cx);
 
         if has_create_modal || has_quick_switcher || has_emoji_picker {
             div()

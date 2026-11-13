@@ -6,7 +6,8 @@ use gpui::{
 };
 
 use crate::app::Target;
-use crate::theme::Theme;
+use crate::fonts;
+use crate::ui::{palette, v_flex};
 use crate::view::{WorkspaceView, is_activate_key};
 
 impl WorkspaceView {
@@ -14,15 +15,18 @@ impl WorkspaceView {
         &self,
         timeline_div: Div,
         thread_div: Option<Div>,
-        theme: Theme,
         cx: &mut Context<Self>,
     ) -> Div {
+        let t = palette(cx).t;
+        // `fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground`
         div()
             .flex()
             .flex_row()
             .size_full()
-            .bg(theme.bg_primary)
-            .text_color(theme.text_primary)
+            .overflow_hidden()
+            .bg(t.background)
+            .text_color(t.foreground)
+            .font(fonts::sans(400.0))
             .track_focus(&self.focus_handle(cx))
             .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 for path in paths.paths() {
@@ -35,8 +39,17 @@ impl WorkspaceView {
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 this.handle_global_key_down(ev, window, cx);
             }))
+            .child(self.render_left_rail(cx))
             .child(self.render_sidebar_view(cx))
-            .child(timeline_div)
+            // `main`: `min-h-0 min-w-0 flex-1 flex-col`
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .h_full()
+                    .child(timeline_div),
+            )
             .when_some(thread_div, |d, v| d.child(v))
     }
 

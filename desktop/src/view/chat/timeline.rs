@@ -7,6 +7,8 @@ use gpui::{
 use zoo2_client_core::electric::ShapeId;
 
 use crate::theme;
+use crate::view::chat::channel_header::ChannelHeaderInfo;
+use crate::view::shell::sidebar::{channel_title, is_group_dm};
 use crate::view::{WorkspaceView, local_zoned};
 
 impl WorkspaceView {
@@ -15,6 +17,9 @@ impl WorkspaceView {
         pending_scroll_id: Option<&str>,
         cx: &mut Context<Self>,
     ) -> (Div, Option<usize>) {
+        if self.state.read(cx).current_channel.is_none() {
+            return (self.render_welcome_panel(cx), None);
+        }
         let (
             channel_id,
             me_id,
@@ -22,6 +27,7 @@ impl WorkspaceView {
             ch_label,
             ch_desc,
             is_archived,
+            header_kind,
             is_member,
             can_join,
             can_leave,
@@ -41,28 +47,8 @@ impl WorkspaceView {
             let state = self.state.read(cx);
             let theme = state.theme();
             let Some(channel_id) = state.current_channel.clone() else {
-                return (
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .h_full()
-                        .justify_center()
-                        .items_center()
-                        .p_6()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme.text_primary)
-                                .child("チャンネルを選択してください"),
-                        )
-                        .child(div().text_sm().text_color(theme.text_muted).child(
-                            "左のサイドバーからチャンネルまたはダイレクトメッセージを開けます。",
-                        )),
-                    None,
-                );
+                // 選択なしは上で `render_welcome_panel` を返している。ここへは来ない。
+                return (div(), None);
             };
 
             let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
@@ -73,12 +59,20 @@ impl WorkspaceView {
                 .unwrap_or_default();
             let channel = state.store.channel(&channel_id);
             let ch_label = channel
-                .map(|c| state.store.channel_label(c, &me_id))
+                .map(|c| channel_title(state, c, &me_id, &self.i18n))
                 .unwrap_or_else(|| format!("#{channel_id}"));
             let ch_desc = channel
                 .and_then(|c| c.description.clone())
                 .filter(|d| !d.is_empty());
             let is_archived = channel.is_some_and(|c| c.archive_at.is_some());
+            let header_kind = channel.map(|c| {
+                (
+                    c.is_dm,
+                    c.is_dm && is_group_dm(&c.channel_name),
+                    c.is_private,
+                    c.is_nsfw,
+                )
+            });
             let is_member = state.store.is_member(&channel_id, &me_id);
             let can_join = channel.is_some_and(|c| state.can_join_channel(c));
             let can_leave = channel.is_some_and(|c| state.can_leave_channel(c));
@@ -103,6 +97,7 @@ impl WorkspaceView {
                 ch_label,
                 ch_desc,
                 is_archived,
+                header_kind,
                 is_member,
                 can_join,
                 can_leave,
@@ -194,18 +189,27 @@ impl WorkspaceView {
             .flex_1()
             .h_full()
             // チャンネルヘッダー
-            .child(self.render_channel_header(
-                ch_label,
-                ch_desc,
-                is_archived,
-                failed_draft_count,
-                can_join,
-                can_leave,
-                is_member,
-                ch_id_for_join,
-                theme,
-                cx,
-            ))
+            .child({
+                let (is_dm, is_group_dm, is_private, is_nsfw) =
+                    header_kind.unwrap_or((false, false, false, false));
+                self.render_channel_header(
+                    ChannelHeaderInfo {
+                        title: ch_label,
+                        description: ch_desc,
+                        is_dm,
+                        is_group_dm,
+                        is_private,
+                        is_nsfw,
+                        is_archived,
+                        failed_draft_count,
+                        can_join,
+                        can_leave,
+                        is_member,
+                        channel_id: ch_id_for_join,
+                    },
+                    cx,
+                )
+            })
             // 検索バー
             .when(is_searching, |d| {
                 d.child(self.render_message_search_bar(cx))

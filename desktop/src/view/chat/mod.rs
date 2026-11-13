@@ -1,11 +1,12 @@
 //! チャット領域 (frontend の `components/chat/**` に対応)。
 
 mod attachments;
-mod channel_header;
+pub(super) mod channel_header;
 mod message;
 mod ogp_card;
 mod thread;
 mod timeline;
+mod welcome_panel;
 
 pub use attachments::{format_file_size, render_attachment_item};
 pub use ogp_card::{

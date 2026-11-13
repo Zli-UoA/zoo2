@@ -1,172 +1,203 @@
-//! チャンネルヘッダー (frontend の `chat/ChannelHeader.tsx` に対応)。
+//! チャンネルヘッダー (frontend の `chat/ChannelHeader.tsx` と `layout/PaneHeader.tsx` に対応)。
+//!
+//! 写していないもの: 通話ボタン (通話の機能がない)、メンバーの開閉 (MembersPanel がない)、
+//! チャンネル設定・DM のメニュー・アーカイブ操作 (ダイアログがまだない)。
+//! 背景は `bg-background/80` を `backdrop-blur` なしで描く (GPUI にぼかしがない)。
 
-use gpui::{
-    Context, Div, FontWeight, MouseButton, MouseUpEvent, ParentElement, Styled, div, prelude::*,
-};
+use gpui::{Context, Div, ParentElement, Styled, div, prelude::*, px};
 
-use crate::theme::Theme;
+use crate::fonts;
+use crate::icons::Icon;
+use crate::tokens::radius;
+use crate::ui::button::{Button, ButtonSize, ButtonVariant};
+use crate::ui::pane_header::PaneHeader;
+use crate::ui::{TextSpec, alpha, h_flex, icon_colored, palette};
 use crate::view::WorkspaceView;
 
+/// ヘッダーに出すチャンネルの情報。
+pub struct ChannelHeaderInfo {
+    pub title: String,
+    pub description: Option<String>,
+    pub is_dm: bool,
+    pub is_group_dm: bool,
+    pub is_private: bool,
+    pub is_nsfw: bool,
+    pub is_archived: bool,
+    pub failed_draft_count: usize,
+    pub can_join: bool,
+    pub can_leave: bool,
+    pub is_member: bool,
+    pub channel_id: String,
+}
+
+/// 左端の枠に入れるアイコン (`ChannelHeader.tsx`)。
+pub fn header_icon(is_dm: bool, is_group_dm: bool, is_private: bool) -> Icon {
+    if is_dm {
+        if is_group_dm {
+            Icon::Users
+        } else {
+            Icon::MessagesSquare
+        }
+    } else if is_private {
+        Icon::Lock
+    } else {
+        Icon::Hash
+    }
+}
+
 impl WorkspaceView {
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::view) fn render_channel_header(
         &self,
-        ch_label: String,
-        ch_desc: Option<String>,
-        is_archived: bool,
-        failed_draft_count: usize,
-        can_join: bool,
-        can_leave: bool,
-        is_member: bool,
-        ch_id_for_join: String,
-        theme: Theme,
+        info: ChannelHeaderInfo,
         cx: &mut Context<Self>,
     ) -> Div {
-        div()
-            .px_4()
-            .py_3()
-            .bg(theme.bg_surface)
-            .border_b_1()
-            .border_color(theme.border)
-            .flex()
-            .flex_row()
-            .justify_between()
-            .items_center()
-            .gap_3()
+        let p = palette(cx);
+        let t = p.t;
+        let i18n = self.i18n;
+        let sm = TextSpec::SM;
+        let xs = TextSpec::XS;
+        let subtitle = info
+            .description
+            .clone()
+            .unwrap_or_else(|| i18n.t("channels.noDescription"));
+        let ch_id = info.channel_id.clone();
+        let is_member = info.is_member;
+
+        let header = PaneHeader::new()
+            .bg(alpha(t.background, 0.8))
             .child(
+                // `flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground`
                 div()
                     .flex()
-                    .flex_row()
+                    .flex_none()
                     .items_center()
-                    .gap_2()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .text_base()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.text_primary)
-                            .child(ch_label),
-                    )
-                    .when_some(ch_desc, |d, desc| {
-                        d.child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.text_muted)
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .child(format!("— {desc}")),
-                        )
-                    })
-                    .when(is_archived, |d| {
-                        d.child(
-                            div()
-                                .px_2()
-                                .py_0p5()
-                                .rounded_sm()
-                                .bg(theme.bg_secondary)
-                                .text_xs()
-                                .text_color(theme.warning)
-                                .child("アーカイブ済み"),
-                        )
-                    }),
+                    .justify_center()
+                    .size(px(32.0))
+                    .rounded(radius::LG)
+                    .bg(t.muted)
+                    .child(icon_colored(
+                        header_icon(info.is_dm, info.is_group_dm, info.is_private),
+                        16.0,
+                        t.muted_foreground,
+                    )),
             )
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .when(failed_draft_count > 0, |d| {
-                        d.child(
-                            div()
-                                .id("btn-restore-draft")
-                                .px_2p5()
-                                .py_1()
-                                .rounded_md()
-                                .bg(theme.bg_secondary)
-                                .border_1()
-                                .border_color(theme.warning)
-                                .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                                .text_xs()
-                                .text_color(theme.warning)
-                                .child(format!("下書きを復元 ({failed_draft_count})"))
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                        this.state.update(cx, |s, cx| {
-                                            s.restore_failed_draft();
-                                            cx.notify();
-                                        });
-                                    }),
-                                ),
-                        )
-                    })
-                    .when(can_join || can_leave, |d| {
-                        d.child(
-                            div()
-                                .id("btn-join-or-leave")
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .bg(if is_member {
-                                    theme.bg_secondary
-                                } else {
-                                    theme.accent_button
-                                })
-                                .border_1()
-                                .border_color(theme.border)
-                                .hover(move |s| {
-                                    s.bg(if is_member {
-                                        theme.bg_hover
-                                    } else {
-                                        theme.accent_button_hover
-                                    })
-                                    .cursor_pointer()
-                                })
-                                .text_xs()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(if is_member {
-                                    theme.text_primary
-                                } else {
-                                    theme.text_on_accent
-                                })
-                                .child(if is_member {
-                                    "退出する"
-                                } else {
-                                    "参加する"
-                                })
-                                .on_mouse_up(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                                        let ch = ch_id_for_join.clone();
-                                        this.state.update(cx, |s, cx| {
-                                            s.join_or_leave(ch, !is_member);
-                                            cx.notify();
-                                        });
-                                    }),
-                                ),
-                        )
-                    })
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .gap(px(8.0))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(sm.size())
+                                    .line_height(sm.line())
+                                    .font(fonts::sans(600.0))
+                                    .child(info.title.clone()),
+                            )
+                            .when(info.is_nsfw, |d| {
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(xs.size())
+                                        .line_height(xs.line())
+                                        .text_color(t.muted_foreground)
+                                        .child("NSFW"),
+                                )
+                            })
+                            .when(info.is_archived && !info.is_dm, |d| {
+                                // `shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground`
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .px(px(6.0))
+                                        .py(px(2.0))
+                                        .rounded(px(4.0))
+                                        .bg(t.muted)
+                                        .text_size(px(10.4))
+                                        .line_height(px(14.0))
+                                        .text_color(t.muted_foreground)
+                                        .child(i18n.t("moderation.archived")),
+                                )
+                            }),
+                    )
                     .child(
                         div()
-                            .id("btn-open-search")
-                            .px_2p5()
-                            .py_1()
-                            .rounded_md()
-                            .bg(theme.bg_secondary)
-                            .border_1()
-                            .border_color(theme.border)
-                            .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child("🔍 検索")
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                                    this.toggle_message_search(window, cx);
-                                }),
-                            ),
+                            .truncate()
+                            .text_size(xs.size())
+                            .line_height(xs.line())
+                            .text_color(t.muted_foreground)
+                            .child(subtitle),
                     ),
             )
+            .child(
+                // `flex shrink-0 items-center gap-1`
+                h_flex()
+                    .flex_none()
+                    .gap(px(4.0))
+                    .when(info.failed_draft_count > 0, |d| {
+                        d.child(
+                            Button::new("btn-restore-draft")
+                                .variant(ButtonVariant::Outline)
+                                .size(ButtonSize::Sm)
+                                .label(format!("下書きを復元 ({})", info.failed_draft_count))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.update(cx, |s, cx| {
+                                        s.restore_failed_draft();
+                                        cx.notify();
+                                    });
+                                })),
+                        )
+                    })
+                    .when(info.can_join || info.can_leave, |d| {
+                        d.child(
+                            Button::new("btn-join-or-leave")
+                                .variant(if is_member {
+                                    ButtonVariant::Outline
+                                } else {
+                                    ButtonVariant::Default
+                                })
+                                .size(ButtonSize::Sm)
+                                .label(if is_member {
+                                    i18n.t("members.leave")
+                                } else {
+                                    i18n.t("channels.join")
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let ch = ch_id.clone();
+                                    this.state.update(cx, |s, cx| {
+                                        s.join_or_leave(ch, !is_member);
+                                        cx.notify();
+                                    });
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new("btn-open-search")
+                            .variant(ButtonVariant::Ghost)
+                            .size(ButtonSize::Sm)
+                            .icon_start(Icon::Search)
+                            .label(i18n.t("search.action"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_message_search(window, cx);
+                            })),
+                    ),
+            );
+        div().child(header)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icon_follows_channel_kind() {
+        assert_eq!(header_icon(false, false, false), Icon::Hash);
+        assert_eq!(header_icon(false, false, true), Icon::Lock);
+        assert_eq!(header_icon(true, false, true), Icon::MessagesSquare);
+        assert_eq!(header_icon(true, true, true), Icon::Users);
     }
 }

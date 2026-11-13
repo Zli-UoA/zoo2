@@ -1,4 +1,6 @@
 //! アプリシェル (frontend の `components/layout/**` に対応)。
 
 mod app_shell;
-mod sidebar;
+pub(super) mod left_rail;
+pub(super) mod shell_skeleton;
+pub(super) mod sidebar;
