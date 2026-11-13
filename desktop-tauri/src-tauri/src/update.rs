@@ -36,6 +36,10 @@ pub const CHECK_MENU_ID: &str = "check_update";
 /// 起動の直後はログインや同期で忙しいので、少し待ってから確かめる。
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// `latest.json` を読むときの上限。応答が止まっても、確認中のまま残らないように。
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// 更新のファイル (数十 MB) を取得するときの上限。遅い回線でも終わるよう、確認より長くする。
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// トレイのメニュー。更新の準備ができたら、項目を足す。
 pub struct TrayMenu(pub Menu<Wry>);
@@ -165,7 +169,8 @@ async fn check(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Ch
 }
 
 async fn fetch(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Checked> {
-    let Some(update) = app.updater()?.check().await? else {
+    let updater = app.updater_builder().timeout(CHECK_TIMEOUT).build()?;
+    let Some(mut update) = updater.check().await? else {
         return Ok(Checked::UpToDate);
     };
     let state = app.state::<Updates>();
@@ -175,7 +180,8 @@ async fn fetch(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Ch
     if already {
         return Ok(Checked::Ready);
     }
-    // download は署名を確かめてから返す。
+    // download は署名を確かめてから返す。上限は、確認とは別に長くする。
+    update.timeout = Some(DOWNLOAD_TIMEOUT);
     let bytes = update.download(|_, _| {}, || {}).await?;
     let version = update.version.clone();
     *lock(&state.ready) = Some(Ready { update, bytes });
