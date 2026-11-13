@@ -1,0 +1,48 @@
+name: Check DB ER diagram
+
+on:
+  pull_request:
+    paths:
+      - infra/db/schema.sql
+      - infra/db/atlas.hcl
+      - infra/db/erd.sh
+      - docs/db-erd.md
+      - .github/workflows/ci-db-erd.yaml
+      - .github/workflows/select-runner.yaml
+  push:
+    branches: [main]
+    paths:
+      - infra/db/schema.sql
+      - infra/db/atlas.hcl
+      - infra/db/erd.sh
+      - docs/db-erd.md
+      - .github/workflows/ci-db-erd.yaml
+      - .github/workflows/select-runner.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-db-erd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
+  check:
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Atlas
+        uses: ariga/setup-atlas@v0
+
+      - name: Check ER diagram is up to date
+        run: infra/db/erd.sh --check
