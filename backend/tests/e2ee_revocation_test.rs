@@ -1239,11 +1239,7 @@ async fn signatures_on_users_who_left_are_resigned() {
         RevocationStage::Verified,
     )
     .await;
-    let new_usk = revoked
-        .secrets()
-        .cross_signing
-        .user_signing
-        .key_id();
+    let new_usk = revoked.secrets().cross_signing.user_signing.key_id();
     let response = env.keys_query(&alice.id, &[&bob.user]).await;
     let signed = response["signatures"]
         .as_array()
