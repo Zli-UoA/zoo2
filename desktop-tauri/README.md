@@ -178,7 +178,7 @@ Nix で入れた版は、アプリの中からは更新しません (「[更新]
 |---|---|---|---|
 | `api_base_url` | `ZOO_API_BASE_URL` | `https://zli.chat` | backend の URL |
 | `oidc_issuer` | `ZOO_OIDC_ISSUER` | `https://account.zli.works/api/auth` | AuthZ の issuer |
-| `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | `zoo2-desktop-tauri` | AuthZ に登録したデスクトップ版の public client の ID |
+| `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | AuthZ の「Zoo for Desktop」の ID | AuthZ に登録したデスクトップ版の public client の ID |
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
 | `check_updates` | `ZOO_CHECK_UPDATES` | `true` | `false` にすると、新しい版を確かめない (「[更新](#更新)」) |
@@ -247,7 +247,7 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 ## いまの制限
 
 - macOS 版は、Apple の署名と公証をしていません。初回は「[macOS](#macos)」の手順で開きます。通知を押しても、チャンネルは開きません。
-- 本番の AuthZ に `zoo2-desktop-tauri` のクライアントが登録されるまでは、本番の zli.chat にはログインできません。
+- v0.1.0 は既定の client_id が AuthZ に登録されていないので、そのままでは本番の zli.chat にログインできません。v0.2.0 以降に更新してください。
 - 画面は最小限です。スレッド、リアクション、編集、ファイルの添付などは Web 版を使ってください。
 
 ## 開発
