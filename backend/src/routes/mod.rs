@@ -28,8 +28,9 @@ pub mod webhooks;
 use axum::{
     Router,
     http::{HeaderName, HeaderValue, Method, header},
+    middleware,
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::cors::CorsLayer;
 
 use crate::state::AppState;
 
@@ -54,13 +55,16 @@ pub fn create_router(state: AppState) -> Router {
             Method::OPTIONS,
         ])
         // dev の `X-Dev-User`, Bearer の `Authorization`, JSON 書き込みの `Content-Type`,
-        // E2EE の直前の再認証の `X-Zoo-Reauth`（docs/e2ee.md の「クロス署名」）
+        // E2EE の直前の再認証の `X-Zoo-Reauth`（docs/e2ee.md の「クロス署名」）,
+        // OpenTelemetry のトレースコンテキスト伝播 (`traceparent`, `tracestate`)
         .allow_headers([
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
             header::ACCEPT,
             HeaderName::from_static("x-dev-user"),
             HeaderName::from_static(e2ee_reauth::REAUTH_HEADER),
+            HeaderName::from_static("traceparent"),
+            HeaderName::from_static("tracestate"),
         ])
         .expose_headers([
             HeaderName::from_static("electric-handle"),
@@ -105,17 +109,8 @@ pub fn create_router(state: AppState) -> Router {
         .merge(push::router())
         .merge(read_states::router())
         .merge(shapes::router())
-        .layer(TraceLayer::new_for_http().make_span_with(
-            |request: &axum::http::Request<axum::body::Body>| {
-                let path = if request.uri().path().starts_with("/api/app-responses/") {
-                    "/api/app-responses/[redacted]"
-                } else if request.uri().path().starts_with("/api/webhooks/") {
-                    "/api/webhooks/[redacted]"
-                } else {
-                    request.uri().path()
-                };
-                tracing::info_span!("http_request", method = %request.method(), path)
-            },
+        .layer(middleware::from_fn(
+            crate::telemetry::http_telemetry_middleware,
         ))
         .layer(cors)
         .with_state(state)
