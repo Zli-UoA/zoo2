@@ -261,8 +261,9 @@ export function EncryptionSettings() {
           await load();
         } catch (error) {
           const code = toEncryptionError(error, "saveFailed");
-          if (code === "mismatch") {
-            // 手元の鍵は捨てた（サーバーの鍵が変わった）。読み直して、解錠し直すかリセットを選べるようにする。
+          if (code === "mismatch" || code === "setupConflict") {
+            // 手元の鍵は捨てた（サーバーの鍵が変わったか、別の端末が SSSS を作り直した）。読み直して、
+            // 今の SSSS を解錠し直すかリセットを選べるようにする。
             await load();
             update((current) =>
               current.step === "locked" ? { ...current, error: code } : current,
