@@ -23,6 +23,8 @@ pub struct Config {
     pub auth: AuthConfig,
     /// 起動時に GitHub Releases の新しい版を調べるか。
     pub check_updates: bool,
+    /// デスクトップ版 (Tauri) の画面の種類 (`remote` か `leptos`)。未指定ならアプリの既定。
+    pub desktop_ui: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +55,7 @@ struct FileConfig {
     oidc_resource: Option<String>,
     oidc_scope: Option<String>,
     check_updates: Option<bool>,
+    desktop_ui: Option<String>,
 }
 
 impl Config {
@@ -149,10 +152,18 @@ fn resolve_for(app_name: &str, file: FileConfig, env: &HashMap<String, String>) 
         None => file.check_updates.unwrap_or(true),
     };
 
+    let desktop_ui = pick("ZOO_DESKTOP_UI", file.desktop_ui);
+    if let Some(ui) = &desktop_ui
+        && !matches!(ui.as_str(), "remote" | "leptos")
+    {
+        bail!("desktop_ui は remote か leptos にしてください: {ui}");
+    }
+
     Ok(Config {
         api_base_url,
         auth,
         check_updates,
+        desktop_ui,
     })
 }
 
@@ -278,6 +289,27 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn desktop_ui_comes_from_env_or_file() {
+        assert_eq!(
+            resolve(FileConfig::default(), &env(&[]))
+                .unwrap()
+                .desktop_ui,
+            None
+        );
+        let file = FileConfig {
+            desktop_ui: Some("leptos".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve(file, &env(&[])).unwrap().desktop_ui.as_deref(),
+            Some("leptos")
+        );
+        let config = resolve(FileConfig::default(), &env(&[("ZOO_DESKTOP_UI", "remote")]));
+        assert_eq!(config.unwrap().desktop_ui.as_deref(), Some("remote"));
+        assert!(resolve(FileConfig::default(), &env(&[("ZOO_DESKTOP_UI", "web")])).is_err());
     }
 
     #[test]

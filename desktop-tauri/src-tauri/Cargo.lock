@@ -5819,6 +5819,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "url",
+ "webkit2gtk",
  "zoo2-client-core",
  "zoo2-client-types",
 ]
