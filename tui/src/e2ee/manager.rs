@@ -315,7 +315,17 @@ pub fn open_for_logout(root: &Path) -> Result<Vec<LogoutTarget>> {
 ///
 /// 登録の応答をなくして手元では未登録のままの端末も、サーバーにはあるかもしれないので消す
 /// （なければ 404 で、消すものがないと分かる）。
-pub async fn destroy_for_logout(api: &ApiClient, root: &Path, target: LogoutTarget) -> Result<()> {
+///
+/// `signed_in_user` は、`api` のトークンのユーザー（`/api/users/me`）。暗号ストアが別のユーザーのもの
+/// （そのユーザーでログアウトせずに、別のユーザーでログインし直した）か、ユーザーが分からない
+/// ときは削除 API を呼ばない。別のユーザーのトークンで消すと、サーバーは 404 を返し、消えたと
+/// 取り違えてしまう。削除待ちに残し、そのユーザーの次の起動で消し直す。
+pub async fn destroy_for_logout(
+    api: &ApiClient,
+    root: &Path,
+    target: LogoutTarget,
+    signed_in_user: Option<&str>,
+) -> Result<()> {
     let user_id = target.store.user_id().to_owned();
     let device_id = target.store.device_id().to_owned();
     // 消し切る前に印を残す。API の結果を待たずに、先に暗号ストアを消す。
@@ -336,6 +346,9 @@ pub async fn destroy_for_logout(api: &ApiClient, root: &Path, target: LogoutTarg
         )?;
     }
     target.store.destroy()?;
+    if signed_in_user != Some(user_id.as_str()) {
+        return Ok(());
+    }
     delete_device_or_remember(api, root, &user_id, &device_id).await;
     if let Some(replaced) = &target.replaced_device_id {
         delete_device_or_remember(api, root, &user_id, replaced).await;

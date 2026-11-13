@@ -211,8 +211,11 @@ async fn clear_encryption(
         None => Credentials::Dev(String::new()),
     };
     let api = ApiClient::new(http.clone(), &config.api_base_url, credentials);
+    // 削除 API は、トークンのユーザーの暗号ストアにだけ呼ぶ。分からなければ（オフラインなど）、
+    // 削除待ちに残して次の起動で消し直す。
+    let signed_in_user = api.me().await.ok().map(|me| me.id);
     for target in targets {
-        e2ee::manager::destroy_for_logout(&api, &root, target).await?;
+        e2ee::manager::destroy_for_logout(&api, &root, target, signed_in_user.as_deref()).await?;
     }
     Ok(true)
 }

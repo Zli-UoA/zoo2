@@ -165,7 +165,7 @@ async fn logout_destroys_the_store_and_remembers_a_failed_deletion() {
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].pending_backup, 0);
     for target in targets {
-        manager::destroy_for_logout(&api, &root, target)
+        manager::destroy_for_logout(&api, &root, target, Some(BOB))
             .await
             .unwrap();
     }
@@ -205,7 +205,7 @@ async fn logout_deletes_a_device_whose_registration_response_was_lost() {
         Credentials::Dev(BOB.into()),
     );
     for target in manager::open_for_logout(&root).unwrap() {
-        manager::destroy_for_logout(&api, &root, target)
+        manager::destroy_for_logout(&api, &root, target, Some(BOB))
             .await
             .unwrap();
     }
@@ -269,7 +269,7 @@ async fn logout_also_deletes_the_device_replaced_after_losing_the_storage_key() 
         Credentials::Dev(BOB.into()),
     );
     for target in manager::open_for_logout(&root).unwrap() {
-        manager::destroy_for_logout(&api, &root, target)
+        manager::destroy_for_logout(&api, &root, target, Some(BOB))
             .await
             .unwrap();
     }
@@ -282,4 +282,39 @@ async fn logout_also_deletes_the_device_replaced_after_losing_the_storage_key() 
         .collect();
     assert!(deleted.contains(&format!("/api/e2ee/devices/{old_device}")));
     assert!(store::read_pending_device_deletions(&root).is_empty());
+}
+
+#[tokio::test]
+async fn logout_keeps_another_users_device_for_their_next_login() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let mut alice = CryptoStore::open(&root, ALICE).unwrap().store;
+    alice.mark_registered().unwrap();
+    let device_id = alice.device_id().to_owned();
+    drop(alice);
+
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(0)
+        .mount(&server)
+        .await;
+    // Bob のトークンで、Alice の暗号ストアを消す（Alice でログアウトせずに Bob でログインした）。
+    let api = ApiClient::new(
+        reqwest::Client::new(),
+        &server.uri(),
+        Credentials::Dev(BOB.into()),
+    );
+    for target in manager::open_for_logout(&root).unwrap() {
+        manager::destroy_for_logout(&api, &root, target, Some(BOB))
+            .await
+            .unwrap();
+    }
+    assert!(!root.join(ALICE).exists());
+    let pending = store::read_pending_device_deletions(&root);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        (pending[0].user_id.as_str(), pending[0].device_id.as_str()),
+        (ALICE, device_id.as_str())
+    );
 }
