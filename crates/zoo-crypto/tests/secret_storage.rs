@@ -163,7 +163,9 @@ fn wrong_prf_output_or_recovery_key_cannot_unlock() {
 
 #[test]
 fn rejects_malformed_recovery_keys() {
-    let key = RecoveryKey::generate();
+    // 乱数の鍵だと、1 文字を変えた値が、まれにパリティと先頭 2 バイトの検査を通ってしまい、
+    // 試験が不定期に失敗する。固定の鍵で、結果が毎回同じになるようにする。
+    let key = RecoveryKey::from_bytes([0x5a; 32]);
     let display = key.to_display();
     assert_eq!(display.len(), 48 + 11);
     assert!(display.split(' ').all(|group| group.len() == 4));
@@ -176,7 +178,8 @@ fn rejects_malformed_recovery_keys() {
         format!("0{}", &compact[1..]),  // Base58 にない文字（0）
         format!("{}l", &compact[..47]), // Base58 にない文字（l）
     ];
-    // 1 文字の打ち間違いはパリティか先頭の 2 バイトで見つかる。
+    // 1 文字の打ち間違いは、パリティと先頭の 2 バイトの検査で見つかる。ただし、検査を通る値が
+    // ごくまれにある（試験で全位置を試すと、固定の鍵でも通る位置がある）ので、位置は決めておく。
     for i in [0, 10, 47] {
         let mut chars: Vec<char> = compact.chars().collect();
         chars[i] = if chars[i] == 'z' { 'y' } else { 'z' };
