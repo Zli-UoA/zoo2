@@ -32,9 +32,17 @@ pub struct View<'a> {
     pub error: bool,
 }
 
-/// 最後に渡した状態 (読み込みが終わったときに渡し直す)。
+/// 最後に渡した状態 (読み込みが終わったときに渡し直す) と、その世代。
+/// 世代は状態を渡すたびに増やし、閉じる予約は、予約したときの世代のままのときだけ閉じる
+/// (結果を出した後にもう一度押して始めた作業の最中に、前の予約で閉じないように)。
 #[derive(Default)]
-struct Last(Mutex<Option<String>>);
+struct Last(Mutex<LastState>);
+
+#[derive(Default)]
+struct LastState {
+    json: Option<String>,
+    generation: u64,
+}
 
 /// ウィンドウを出す (出ていれば前に出す)。
 pub fn open(app: &AppHandle) {
@@ -59,7 +67,7 @@ pub fn open(app: &AppHandle) {
             .on_page_load(|window, payload| {
                 if payload.event() == PageLoadEvent::Finished
                     && let Some(last) = window.app_handle().try_state::<Last>()
-                    && let Some(json) = lock(&last.0).clone()
+                    && let Some(json) = lock(&last.0).json.clone()
                 {
                     let _ = window.eval(script(&json));
                 }
@@ -86,7 +94,9 @@ pub fn set(app: &AppHandle, view: View<'_>) {
     })
     .to_string();
     if let Some(last) = app.try_state::<Last>() {
-        *lock(&last.0) = Some(json.clone());
+        let mut last = lock(&last.0);
+        last.json = Some(json.clone());
+        last.generation += 1;
     }
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.eval(script(&json));
@@ -98,16 +108,24 @@ pub fn is_open(app: &AppHandle) -> bool {
     app.get_webview_window(LABEL).is_some()
 }
 
-/// 少し待ってから閉じる (結果を読めるように)。
+/// 少し待ってから閉じる (結果を読めるように)。その間に新しい状態を渡したら、閉じない。
 pub fn close_after(app: &AppHandle, delay: Duration) {
+    let Some(generation) = app.try_state::<Last>().map(|last| lock(&last.0).generation) else {
+        return;
+    };
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(delay).await;
+        let Some(last) = app.try_state::<Last>() else {
+            return;
+        };
+        let mut last = lock(&last.0);
+        if last.generation != generation {
+            return;
+        }
+        last.json = None;
         if let Some(window) = app.get_webview_window(LABEL) {
             let _ = window.close();
-        }
-        if let Some(last) = app.try_state::<Last>() {
-            *lock(&last.0) = None;
         }
     });
 }

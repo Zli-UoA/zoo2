@@ -125,10 +125,9 @@ pub fn check_now(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         match check(&app, false).await {
             Ok(Checked::Ready) => install_and_restart(&app),
-            // 自動の取得が進んでいる。終わったら入れる (進み具合はそちらがウィンドウに出す)。
-            Ok(Checked::Busy) => {
-                *lock(&app.state::<Updates>().install_when_ready) = true;
-            }
+            // 自動の確認が進んでいる。check が予約したので、その確認が終わったときに
+            // 結果を出す (新しい版なら入れる)。進み具合もそちらがウィンドウに出す。
+            Ok(Checked::Busy) => {}
             Ok(Checked::UpToDate) => {
                 let version = app.package_info().version.to_string();
                 show_result(&app, "zoo2 は最新です", &format!("v{version}"), false);
@@ -178,17 +177,40 @@ fn enabled(app: &AppHandle) -> bool {
 
 /// 新しい版を確かめて、あれば取得する。`notify` のときは、準備ができたことを通知で知らせる
 /// (メニューから押したときは、続けてすぐ入れるので知らせない)。
+///
+/// メニューから押したとき (`notify` が false) にほかの確認が進んでいたら、その確認に結果の表示を
+/// 予約して `Busy` を返す。予約した確認は、終わったときに (新しい版、更新なし、失敗のどれでも)
+/// 更新のウィンドウに結果を出し、予約を消す。予約と確認中の印は同じロックの中で読み書きする
+/// (確認が終わる瞬間に予約して、予約が残り続けることがないように)。
 async fn check(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Checked> {
     let state = app.state::<Updates>();
     {
         let mut checking = lock(&state.checking);
         if *checking {
+            if !notify {
+                *lock(&state.install_when_ready) = true;
+            }
             return Ok(Checked::Busy);
         }
         *checking = true;
     }
     let result = fetch(app, notify).await;
-    *lock(&state.checking) = false;
+    let requested = {
+        let mut checking = lock(&state.checking);
+        *checking = false;
+        std::mem::take(&mut *lock(&state.install_when_ready))
+    };
+    if requested {
+        match &result {
+            Ok(Checked::Ready) => install_and_restart(app),
+            Ok(Checked::UpToDate) => {
+                let version = app.package_info().version.to_string();
+                show_result(app, "zoo2 は最新です", &format!("v{version}"), false);
+            }
+            Ok(Checked::Busy) => {}
+            Err(err) => show_result(app, "更新を確かめられませんでした", &err.to_string(), true),
+        }
+    }
     result
 }
 
@@ -221,10 +243,9 @@ async fn fetch(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Ch
     *lock(&state.ready) = Some(Ready { update, bytes });
 
     show_menu_item(app, &version);
-    // 自動の取得の最中にメニューから押されていたら、通知は出さずにそのまま入れる。
-    if std::mem::take(&mut *lock(&state.install_when_ready)) {
-        install_and_restart(app);
-    } else if notify {
+    // メニューから押されて予約されていたら、通知は出さない (check がそのまま入れる)。
+    let requested = *lock(&state.install_when_ready);
+    if notify && !requested {
         toast::show_with(
             app,
             "zoo2 を更新できます",
