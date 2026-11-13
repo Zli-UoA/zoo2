@@ -420,7 +420,7 @@ async fn thread_index_limits_membership_history_and_page_size() -> anyhow::Resul
             json!({"id":channel,"channel_name":channel,"is_private":false}),
         )
         .await?;
-        toasty::sql::statement("WITH roots AS (INSERT INTO messages(id,user_id,channel_id,content,created_at) SELECT gen_random_uuid()::text,$1,$2,'Root '||n,(now() AT TIME ZONE 'UTC')-interval '1 day'+n*interval '1 second' FROM generate_series(1,105) n RETURNING id,user_id,channel_id,created_at) INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) SELECT gen_random_uuid()::text,user_id,channel_id,'Reply',id,created_at FROM roots")
+        toasty::sql::statement("WITH roots AS (INSERT INTO messages(id,user_id,channel_id,content,created_at) SELECT gen_random_uuid()::text,$1,$2,'Root '||n,(now() AT TIME ZONE 'UTC')-interval '1 hour'+n*interval '1 second' FROM generate_series(1,105) n RETURNING id,user_id,channel_id,created_at) INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) SELECT gen_random_uuid()::text,user_id,channel_id,'Reply',id,created_at FROM roots")
             .bind(user.as_str()).bind(channel.as_str()).exec(&mut db).await?;
         channels.push(channel);
     }
