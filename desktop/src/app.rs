@@ -5124,8 +5124,8 @@ pub(crate) mod tests {
         assert!(!state.last_read_marked.contains_key("c1"));
     }
 
-    #[test]
-    fn channels_without_a_row_are_not_marked_read() {
+    #[tokio::test]
+    async fn channels_without_a_row_are_not_marked_read() {
         let mut state = connected_state();
         state.window_active = true;
         state.open_channel("c1".into());
@@ -5138,7 +5138,12 @@ pub(crate) mod tests {
                 up_to_date: false,
             },
         ));
+        // 開いたときに記録した既読を消し、未読を立てる（既読済みの判定で戻らないようにする）。
+        state.last_read_marked.clear();
+        state.unread.insert("c1".into());
         assert!(!state.mark_current_read());
+        assert!(state.unread.contains("c1"));
+        assert!(state.last_read_marked.is_empty());
     }
 
     #[test]
