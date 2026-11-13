@@ -187,6 +187,34 @@
             platforms = pkgs.lib.platforms.linux;
           };
         };
+        # Android（frontend-compose）の zoo-crypto のバインディング（crates/zoo-crypto-ffi、#353）。
+        # Android SDK と NDK のライセンスに同意したうえで使う。既定の devShell には入れず、
+        # `nix develop .#android` だけで使う（SDK と NDK は大きいので、Android を触らない人には入れない）。
+        androidPkgs = import nixpkgs {
+          inherit system;
+          config = {
+            allowUnfree = true;
+            android_sdk.accept_license = true;
+          };
+        };
+        # CI Android（.github/workflows/ci-android.yaml）の setup-android と同じ版にそろえる。
+        androidNdkVersion = "29.0.14206865";
+        androidComposition = androidPkgs.androidenv.composeAndroidPackages {
+          platformVersions = [ "35" ];
+          buildToolsVersions = [ "35.0.0" ];
+          includeNDK = true;
+          ndkVersions = [ androidNdkVersion ];
+        };
+        # crates/zoo-crypto-ffi の ANDROID_TARGETS（frontend-compose/build.gradle.kts）と同じ。
+        # rust-toolchain.toml には足さない（Android を触らない人の rustup に std を入れないため）。
+        # 版は rust-toolchain.toml と同じで、sha256 も同じ版のマニフェストのもの。
+        androidRustTargets = [ "aarch64-linux-android" "armv7-linux-androideabi" "x86_64-linux-android" ];
+        androidToolchain = fenix.packages.${system}.combine ([ toolchain ] ++ map
+          (target: (fenix.packages.${system}.targets.${target}.fromToolchainName {
+            name = (builtins.fromTOML (builtins.readFile ./rust-toolchain.toml)).toolchain.channel;
+            sha256 = "sha256-zm3dyIY2T414ZRR3EhLOvptzG6gta4WZUcawzMUWtqI=";
+          }).rust-std)
+          androidRustTargets);
         # ブラウザーテスト用の Chromium。CI と同じく
         # サンドボックスを外したラッパーを CHROME_BIN に渡す。Nix の chromium は Linux のみ。
         zooChrome = pkgs.writeShellScriptBin "zoo-chrome" ''
@@ -204,6 +232,20 @@
           zoo2-tui = flake-utils.lib.mkApp { drv = zoo2-tui; };
         } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           zoo2-desktop-tauri = flake-utils.lib.mkApp { drv = zoo2-desktop-tauri; };
+        };
+        devShells.android = pkgs.mkShell {
+          name = "zoo2-android";
+          nativeBuildInputs = with pkgs; [
+            androidToolchain
+            # nixpkgs の版（4.1.2）は CI Android の `cargo install cargo-ndk@4.1.2` と同じ。nixpkgs を上げたら合わせる。
+            cargo-ndk
+            gnumake
+            jdk21
+            androidComposition.androidsdk
+          ];
+          JAVA_HOME = "${pkgs.jdk21}";
+          ANDROID_HOME = "${androidComposition.androidsdk}/libexec/android-sdk";
+          ANDROID_NDK_HOME = "${androidComposition.androidsdk}/libexec/android-sdk/ndk/${androidNdkVersion}";
         };
         devShells.default = pkgs.stdenv.mkDerivation {
           name = "rust-env";
