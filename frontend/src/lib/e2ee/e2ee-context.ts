@@ -11,6 +11,8 @@ export interface E2eeContextValue {
    * 暗号ストアがなければ 0。
    */
   pendingBackupCount(): Promise<number>;
+  /** ログアウトを取りやめた。件数の確認のために奪ったロックを返す。 */
+  cancelLogout(): void;
   /** ログアウト：暗号ストアを消し、端末を削除する（失敗したら次のログインで消し直す）。 */
   clearForLogout(): Promise<void>;
 }
@@ -19,6 +21,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   status: "idle",
   deviceId: null,
   pendingBackupCount: async () => 0,
+  cancelLogout: () => {},
   clearForLogout: async () => {},
 });
 

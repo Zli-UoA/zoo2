@@ -74,6 +74,7 @@ export class CryptoStore {
   private readonly loadedInbound = new Set<string>();
   private readonly processedToDevice: Set<string>;
   private closed = false;
+  private broken = false;
 
   private constructor(
     private readonly backend: CryptoBackend,
@@ -210,7 +211,7 @@ export class CryptoStore {
 
   async markRegistered(): Promise<void> {
     this.account.markKeysAsPublished();
-    await this.backend.write({
+    await this.write({
       meta: { [META_REGISTERED]: "1" },
       account: this.account.pickle(this.storageKey),
     });
@@ -237,7 +238,7 @@ export class CryptoStore {
       changed = true;
     }
     if (changed) {
-      await this.backend.write({ account: this.account.pickle(this.storageKey) });
+      await this.write({ account: this.account.pickle(this.storageKey) });
     }
     const upload = {
       one_time_keys: this.account.oneTimeKeys(),
@@ -254,7 +255,7 @@ export class CryptoStore {
 
   async markKeysPublished(): Promise<void> {
     this.account.markKeysAsPublished();
-    await this.backend.write({ account: this.account.pickle(this.storageKey) });
+    await this.write({ account: this.account.pickle(this.storageKey) });
   }
 
   /**
@@ -283,7 +284,7 @@ export class CryptoStore {
       } else {
         result.dropped += 1;
       }
-      await this.backend.write(changes);
+      await this.write(changes);
       this.processedToDevice.add(row.id);
       result.processed.push(row.id);
     }
@@ -352,16 +353,36 @@ export class CryptoStore {
     this.loadedInbound.add(key);
   }
 
+  /**
+   * 保存できなかったら、メモリーの状態（端末アカウント、Olm セッションなど）は保存より先に
+   * 進んでいる。そのまま次の操作を続けると、保存されていない状態で処理し直すことになる
+   * （消費済みの Olm メッセージを捨ててしまうなど）。{@link isBroken} にして、呼び出し側に
+   * 保存先から開き直させる。
+   */
+  private async write(changes: CryptoStoreWrite): Promise<void> {
+    try {
+      await this.backend.write(changes);
+    } catch (error) {
+      this.broken = true;
+      throw error;
+    }
+  }
+
+  /** 保存に失敗し、メモリーの状態が保存先とずれている。閉じて開き直す。 */
+  get isBroken(): boolean {
+    return this.broken;
+  }
+
   /** ack を送れた ID を、処理済みの印から外す。 */
   async acknowledged(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
-    await this.backend.write({ removeProcessedToDevice: ids });
+    await this.write({ removeProcessedToDevice: ids });
     for (const id of ids) this.processedToDevice.delete(id);
   }
 
   /** 配布先の判定の記録を保存し直す（#361 以降が判定のたびに呼ぶ）。 */
   async saveTrustStore(): Promise<void> {
-    await this.backend.write({ trustStore: this.trust.pickle(this.account, this.storageKey) });
+    await this.write({ trustStore: this.trust.pickle(this.account, this.storageKey) });
   }
 
   /** 鍵バックアップにまだ送っていない受信用セッションの数（ログアウトの確認に使う）。 */

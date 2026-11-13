@@ -9,7 +9,8 @@ import {
 } from "@zoo/crypto-wasm";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
-import { MemoryCryptoBackend } from "./backend";
+import { CryptoOperations } from "../operations";
+import { MemoryCryptoBackend, type CryptoStoreWrite } from "./backend";
 import { CryptoStore } from "./cryptoStore";
 import type { WrappingKeyStore } from "./storageKey";
 
@@ -159,6 +160,57 @@ describe("CryptoStore", () => {
     await reopened.destroy();
     expect(backend.destroyed).toBe(true);
     expect(keys.keys.size).toBe(0);
+    alice.free();
+  });
+
+  it("保存に失敗したら、保存済みの状態から開き直してから処理し直す", async () => {
+    class FlakyBackend extends MemoryCryptoBackend {
+      failNext = false;
+      override async write(changes: CryptoStoreWrite): Promise<void> {
+        if (this.failNext) {
+          this.failNext = false;
+          throw new Error("disk full");
+        }
+        return super.write(changes);
+      }
+    }
+    const backend = new FlakyBackend();
+    const operations = new CryptoOperations(
+      { open: async () => backend, remove: async () => backend.destroy() },
+      memoryKeys(),
+    );
+    const namespace = `user-${BOB}`;
+    await operations.run({ op: "open", namespace, userId: BOB });
+    const request = (await operations.run({ op: "registrationRequest" })) as Awaited<
+      ReturnType<CryptoStore["registrationRequest"]>
+    >;
+    await operations.run({ op: "markRegistered" });
+    const alice = new DeviceAccount(ALICE, crypto.randomUUID());
+    const content = sendRoomKey(
+      alice,
+      request.device_keys,
+      Object.values(request.one_time_keys)[0]!,
+    );
+    const row = {
+      id: "7",
+      sender_user_id: ALICE,
+      sender_device_id: alice.deviceId,
+      type: "m.room.encrypted",
+      content,
+    };
+    const deviceKeys = { [ALICE]: { [alice.deviceId]: alice.deviceKeys() } };
+
+    backend.failNext = true;
+    await expect(
+      operations.run({ op: "processToDevice", rows: [row], deviceKeys }),
+    ).rejects.toThrow("disk full");
+    // 復号で進んだメモリーの状態は捨ててあるので、同じメッセージをもう一度復号できる。
+    expect(await operations.run({ op: "processToDevice", rows: [row], deviceKeys })).toEqual({
+      processed: ["7"],
+      roomKeys: 1,
+      dropped: 0,
+      newOlmSessions: 1,
+    });
     alice.free();
   });
 });
