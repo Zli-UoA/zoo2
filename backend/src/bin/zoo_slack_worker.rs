@@ -100,7 +100,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/metrics",
             get(backend::telemetry::prometheus_metrics_handler),
-        );
+        )
+        .layer(axum::middleware::from_fn(
+            backend::telemetry::http_telemetry_middleware,
+        ));
     tracing::info!(addr=%listener.local_addr()?, "zoo-slack-worker listening");
     // 合図を受けたら、HTTP サーバーの終了を待たずに、ジョブを手放し始める
     let stop_on_signal = stop.clone();

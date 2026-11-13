@@ -105,7 +105,10 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .route("/metrics", get(metrics))
-        .merge(backend::apps::dispatcher_api::router(&token));
+        .merge(backend::apps::dispatcher_api::router(&token))
+        .layer(axum::middleware::from_fn(
+            backend::telemetry::http_telemetry_middleware,
+        ));
     tracing::info!(addr=%listener.local_addr()?, "zoo-dispatcher listening");
     // 停止信号を受けたらすぐ新しいリースを取らなくし（HTTP サーバーの終了を待たない）、
     // 送信中の分を待つ。
