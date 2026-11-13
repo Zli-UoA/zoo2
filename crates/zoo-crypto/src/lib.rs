@@ -41,7 +41,14 @@
 //! - [`OlmSession::pickle`]、[`InboundSessionStore::pickle_session`]、[`TrustStore::pickle`] と、
 //!   それぞれの戻し方：暗号ストアに置く保存形式（保存鍵から保存ごとに導いた鍵の AES-256-GCM で、
 //!   持ち主の端末に結び付ける）
+//!
+//! #364 で足したもの:
+//!
+//! - [`encrypt_attachment`]、[`decrypt_attachment`]、[`EncryptedFile`]、[`AttachmentInfo`]：
+//!   暗号化した添付（Matrix の `EncryptedFile` と同じ AES-256-CTR と SHA-256）と、
+//!   [`MessagePayload::attachments`]
 
+mod attachment;
 mod backup;
 mod canonical_json;
 mod cross_signing;
@@ -57,6 +64,12 @@ mod signing;
 mod store;
 mod trust;
 
+pub use attachment::{
+    ATTACHMENT_KEY_ALGORITHM, ATTACHMENT_VERSION, AttachmentInfo, AttachmentKey,
+    ENCRYPTED_ATTACHMENT_CONTENT_TYPE, ENCRYPTED_ATTACHMENT_FILE_NAME, EncryptedAttachment,
+    EncryptedFile, MAX_ATTACHMENT_MIMETYPE_CHARS, MAX_ATTACHMENT_NAME_CHARS, MAX_ATTACHMENTS,
+    decrypt_attachment, encrypt_attachment,
+};
 pub use backup::{
     BACKUP_ALGORITHM, BackedUpSessionData, BackupDecryptionKey, BackupEncryptionKey, BackupRow,
     BackupUpload, BackupUploadState, BackupVersionInfo, MAX_UPLOAD_SESSIONS,
