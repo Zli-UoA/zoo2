@@ -2,6 +2,9 @@
   "nav": {
     "main": "主导航"
   },
+  "telemetry": {
+    "unexpectedError": "显示页面时出现问题，请重新加载。"
+  },
   "channels": {
     "view": "打开",
     "unread": "有未读消息",
@@ -55,6 +58,7 @@
   },
   "auth": {
     "logout": "退出登录",
+    "profile": "编辑个人资料",
     "loggedOut": "您已退出登录",
     "loggedOutHelp": "请重新登录以继续。",
     "desktopOutdated": "需要更新桌面版",
@@ -1043,6 +1047,13 @@
     }
   },
   "e2ee": {
+    "logout": {
+      "unbackedTitle": "有未备份的密钥",
+      "unbackedDescription_one": "有 {{count}} 个密钥未备份。退出登录后，将无法阅读仅保存在此设备上的历史消息。",
+      "unbackedDescription_other": "有 {{count}} 个密钥未备份。退出登录后，将无法阅读仅保存在此设备上的历史消息。",
+      "confirm": "退出登录",
+      "deleteFailed": "无法删除此设备的加密密钥。下次打开时会再次删除。"
+    },
     "tab": "加密",
     "title": "端到端加密",
     "description": "加密频道和私信中的消息只能在你的设备上读取。密钥由通行密钥或恢复密钥保护。",

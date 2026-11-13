@@ -2,6 +2,9 @@
   "nav": {
     "main": "주요 탐색"
   },
+  "telemetry": {
+    "unexpectedError": "화면을 표시하는 중 문제가 발생하였습니다. 페이지를 다시 읽어 주십시오."
+  },
   "channels": {
     "view": "열기",
     "unread": "읽지 않은 통보문이 있습니다",
@@ -55,6 +58,7 @@
   },
   "auth": {
     "logout": "로그아웃",
+    "profile": "프로필 편집",
     "loggedOut": "로그아웃했습니다",
     "loggedOutHelp": "계속하려면 다시 로그인하십시오.",
     "desktopOutdated": "탁상용 프로그람을 갱신해야 합니다",
@@ -1043,6 +1047,13 @@
     }
   },
   "e2ee": {
+    "logout": {
+      "unbackedTitle": "예비보관되지 않은 열쇠가 있습니다",
+      "unbackedDescription_one": "{{count}}개의 열쇠가 예비보관되지 않았습니다. 가입탈퇴하면 이 단말기에만 있는 지난 기록을 읽을수 없게 됩니다.",
+      "unbackedDescription_other": "{{count}}개의 열쇠가 예비보관되지 않았습니다. 가입탈퇴하면 이 단말기에만 있는 지난 기록을 읽을수 없게 됩니다.",
+      "confirm": "가입탈퇴",
+      "deleteFailed": "이 단말기의 암호열쇠를 지우지 못했습니다. 다음번에 열 때 다시 지웁니다."
+    },
     "tab": "암호화",
     "title": "종단 간 암호화",
     "description": "암호화된 통로과 DM의 통보문는 내 장치에서만 읽을 수 있습니다. 키는 패스키 또는 복구 키로 보호됩니다.",

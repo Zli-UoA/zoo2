@@ -1,7 +1,27 @@
+# E2EE の wasm（@zoo/crypto-wasm）。frontend は link:../crates/zoo-crypto-wasm で読む（docs/e2ee.md の
+# 「wasm バインディング」）。Rust は rust-toolchain.toml の版（wasm32 の target 付き）を rustup が入れる。
+FROM rust:1.99-bookworm AS crypto-wasm
+WORKDIR /src
+COPY rust-toolchain.toml ./
+COPY crates/zoo-crypto/ crates/zoo-crypto/
+COPY crates/zoo-crypto-wasm/ crates/zoo-crypto-wasm/
+# wasm-bindgen-cli は Cargo.toml で = 固定した wasm-bindgen と同じ版にする（build.sh が照合する）。
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    set -eu; \
+    version="$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/zoo-crypto-wasm/Cargo.toml)"; \
+    cargo install --locked wasm-bindgen-cli --version "$version"
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    crates/zoo-crypto-wasm/build.sh
+
 FROM node:22-bookworm-slim AS build
 
 WORKDIR /app
 
+# link: 依存の先（/app から見た ../crates/zoo-crypto-wasm）に、作った pkg を置く。
+COPY --from=crypto-wasm /src/crates/zoo-crypto-wasm/package.json /crates/zoo-crypto-wasm/package.json
+COPY --from=crypto-wasm /src/crates/zoo-crypto-wasm/pkg/ /crates/zoo-crypto-wasm/pkg/
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 # pnpm のバージョンは package.json の devEngines に揃える（corepack は devEngines を読まない）。
 # フィールドが無いと pnpm@undefined を入れようとして分かりにくく失敗するため、先に検証する。
@@ -20,6 +40,9 @@ ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 ENV VITE_SHAPE_MODE=proxy
 ARG VITE_PREVIEW_AUTH="false"
 ENV VITE_PREVIEW_AUTH=$VITE_PREVIEW_AUTH
+
+ARG VITE_TELEMETRY_ENABLED=""
+ENV VITE_TELEMETRY_ENABLED=$VITE_TELEMETRY_ENABLED
 # SPA の OIDC PKCE 設定はビルド時に埋め込まれる。未設定（空）なら dev の
 # X-Dev-User 動作のまま。Kanidm の確定値は #50 で差し替える。
 ARG VITE_OIDC_ISSUER=""

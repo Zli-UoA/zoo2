@@ -102,6 +102,20 @@ export class E2eeDeviceManager {
     }
   }
 
+  /**
+   * 登録も購読もせずに暗号ストアだけを開く。ログアウトしようとしたタブが、別のタブからロックを
+   * 奪って、件数の確認と削除だけを行うときに使う。
+   */
+  async attach(): Promise<void> {
+    const opened = await this.options.worker.request({
+      op: "open",
+      namespace: this.options.namespace,
+      userId: this.options.userId,
+    });
+    // 登録していない端末はサーバーにないので、消さなくてよい。
+    this.deviceId = opened.registered ? opened.deviceId : null;
+  }
+
   private async ensureRegistered(registered: boolean, deviceId: string): Promise<KeyCounts> {
     const { worker, client } = this.options;
     if (registered) {
@@ -212,8 +226,10 @@ export class E2eeDeviceManager {
     try {
       await deleteDevice(this.options.client, deviceId, { signal: controller.signal });
       clearPendingDeviceDeletion();
-    } catch {
-      // 印を残す。次のログインで消し直す。
+    } catch (error) {
+      // 404 はサーバーに端末がない（登録の前に止まった）。消すものがない。
+      if (error instanceof ApiError && error.status === 404) clearPendingDeviceDeletion();
+      // それ以外は印を残し、次のログインで消し直す。
     } finally {
       clearTimeout(timer);
     }
@@ -227,7 +243,8 @@ export async function retryPendingDeviceDeletion(client: ApiClient, userId: stri
   try {
     await deleteDevice(client, pending.deviceId);
     clearPendingDeviceDeletion();
-  } catch {
-    // 次の起動で試し直す。
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) clearPendingDeviceDeletion();
+    // それ以外は次の起動で試し直す。
   }
 }

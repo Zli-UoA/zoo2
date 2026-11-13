@@ -68,6 +68,23 @@ pub struct Toast {
     pub body: String,
 }
 
+/// freedesktop の通知の本文 (簡単な XML のマークアップ) で、文字として表示させる。
+pub fn escape_markup(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// 通知サーバーに渡す本文。サーバーが本文をマークアップとして読む (`body-markup` の capability が
+/// ある) ときだけ、投稿の `<` や `&` がタグとして扱われないようにエスケープする。
+pub fn body_for_server(body: &str, supports_markup: bool) -> std::borrow::Cow<'_, str> {
+    if supports_markup {
+        std::borrow::Cow::Owned(escape_markup(body))
+    } else {
+        std::borrow::Cow::Borrowed(body)
+    }
+}
+
 /// 通知の Shape のバッチのうち、OS の通知として出すものを返す。
 ///
 /// `store.apply` で**適用する前の** `store` を渡す。適用した後では、新しく届いた行と
@@ -306,6 +323,16 @@ mod tests {
         let mut disabled = ctx();
         disabled.enabled = false;
         assert!(notifications_to_show(&store, &incoming, &disabled).is_empty());
+    }
+
+    #[test]
+    fn escapes_markup_only_when_the_server_reads_it() {
+        assert_eq!(
+            escape_markup("a < b && <img src=x>"),
+            "a &lt; b &amp;&amp; &lt;img src=x&gt;"
+        );
+        assert_eq!(body_for_server("a < b", true), "a &lt; b");
+        assert_eq!(body_for_server("a < b", false), "a < b");
     }
 
     #[test]

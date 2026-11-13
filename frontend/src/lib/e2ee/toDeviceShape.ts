@@ -27,10 +27,16 @@ export function toDeviceShapeUrl(config: AppConfig, userId: string, deviceId: st
   });
 }
 
-interface ToDeviceShapeRow extends ToDeviceRow {
+// Electric の行の型は index signature が要るので、interface ではなく type にする。
+type ToDeviceShapeRow = {
+  id: string;
   recipient_user_id: string;
   recipient_device_id: string;
-}
+  sender_user_id: string;
+  sender_device_id: string;
+  type: string;
+  content: ToDeviceRow["content"];
+};
 
 export interface ToDeviceSubscription {
   unsubscribe(): void;

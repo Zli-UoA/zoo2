@@ -2,6 +2,9 @@
   "nav": {
     "main": "主導覽"
   },
+  "telemetry": {
+    "unexpectedError": "顯示頁面時發生問題，請重新載入。"
+  },
   "channels": {
     "view": "開啟",
     "unread": "有未讀訊息",
@@ -55,6 +58,7 @@
   },
   "auth": {
     "logout": "登出",
+    "profile": "編輯個人資料",
     "loggedOut": "您已登出",
     "loggedOutHelp": "請重新登入以繼續。",
     "desktopOutdated": "需要更新桌面版",
@@ -1043,6 +1047,13 @@
     }
   },
   "e2ee": {
+    "logout": {
+      "unbackedTitle": "有未備份的金鑰",
+      "unbackedDescription_one": "有 {{count}} 個金鑰尚未備份。登出後，將無法閱讀只存在此裝置上的過去訊息。",
+      "unbackedDescription_other": "有 {{count}} 個金鑰尚未備份。登出後，將無法閱讀只存在此裝置上的過去訊息。",
+      "confirm": "登出",
+      "deleteFailed": "無法刪除此裝置的加密金鑰。下次開啟時會再次刪除。"
+    },
     "tab": "加密",
     "title": "端對端加密",
     "description": "加密頻道與私訊中的訊息只能在你的裝置上讀取。金鑰由通行金鑰或復原金鑰保護。",
