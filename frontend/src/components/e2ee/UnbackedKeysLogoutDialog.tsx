@@ -12,8 +12,8 @@ export function UnbackedKeysLogoutDialog({
   onCancel,
   onConfirm,
 }: {
-  /** 送れていない鍵の数。0 なら出さない。 */
-  count: number;
+  /** 送れていない鍵の数。`null` なら出さない。負なら数えられなかった。 */
+  count: number | null;
   pending?: boolean;
   onCancel: () => void;
   onConfirm: () => void | Promise<void>;
@@ -21,12 +21,16 @@ export function UnbackedKeysLogoutDialog({
   const { t } = useTranslation();
   return (
     <ConfirmActionDialog
-      open={count > 0}
+      open={count !== null}
       onOpenChange={(open) => {
         if (!open) onCancel();
       }}
       title={t("e2ee.logout.unbackedTitle")}
-      description={t("e2ee.logout.unbackedDescription", { count })}
+      description={
+        count !== null && count < 0
+          ? t("e2ee.logout.unknownDescription")
+          : t("e2ee.logout.unbackedDescription", { count: count ?? 0 })
+      }
       confirmLabel={t("e2ee.logout.confirm")}
       onConfirm={onConfirm}
       pending={pending}

@@ -120,6 +120,8 @@ export class CryptoStore {
       if (!(error instanceof StorageKeyUnavailableError)) throw error;
       // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
       replacedDeviceId = snapshot.meta[META_DEVICE_ID] ?? null;
+      // 開いたままのファイルは消せないので、先に閉じる。
+      await backend.close().catch(() => undefined);
       backend = await options.reset();
       snapshot = await backend.read();
       storageKey = await loadStorageKey({
