@@ -36,10 +36,11 @@ pub const CHECK_MENU_ID: &str = "check_update";
 /// 起動の直後はログインや同期で忙しいので、少し待ってから確かめる。
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-/// `latest.json` を読むときの上限。応答が止まっても、確認中のまま残らないように。
-const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
-/// 更新のファイル (数十 MB) を取得するときの上限。遅い回線でも終わるよう、確認より長くする。
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// 受信が止まってから諦めるまでの時間。応答が止まっても、確認中のまま残らないように。
+/// 全体の時間には上限を付けない (遅い回線でも、受信が進んでいれば数十 MB の取得を終えられるように)。
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// 接続を確立するまでの上限。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// トレイのメニュー。更新の準備ができたら、項目を足す。
 pub struct TrayMenu(pub Menu<Wry>);
@@ -169,8 +170,16 @@ async fn check(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Ch
 }
 
 async fn fetch(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Checked> {
-    let updater = app.updater_builder().timeout(CHECK_TIMEOUT).build()?;
-    let Some(mut update) = updater.check().await? else {
+    // configure_client は、確認とダウンロードの両方の通信に効く。
+    let updater = app
+        .updater_builder()
+        .configure_client(|client| {
+            client
+                .read_timeout(READ_TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
+        })
+        .build()?;
+    let Some(update) = updater.check().await? else {
         return Ok(Checked::UpToDate);
     };
     let state = app.state::<Updates>();
@@ -180,8 +189,7 @@ async fn fetch(app: &AppHandle, notify: bool) -> tauri_plugin_updater::Result<Ch
     if already {
         return Ok(Checked::Ready);
     }
-    // download は署名を確かめてから返す。上限は、確認とは別に長くする。
-    update.timeout = Some(DOWNLOAD_TIMEOUT);
+    // download は署名を確かめてから返す。
     let bytes = update.download(|_, _| {}, || {}).await?;
     let version = update.version.clone();
     *lock(&state.ready) = Some(Ready { update, bytes });
