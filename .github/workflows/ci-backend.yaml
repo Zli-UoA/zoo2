@@ -120,7 +120,8 @@ jobs:
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:
           builder: ${{ steps.buildx.outputs.name }}
-          skip-extraction: ${{ (steps.rust-cache-main.outputs.cache-hit || steps.rust-cache-pr.outputs.cache-hit) }}
+          # main 以外はキャッシュを保存しないので、ビルド後の取り出し（ホストへのコピー）も省く。
+          skip-extraction: ${{ github.ref != 'refs/heads/main' || steps.rust-cache-main.outputs.cache-hit == 'true' }}
           cache-map: |
             {
               ".buildkit-cache/registry": "/usr/local/cargo/registry",
