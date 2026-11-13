@@ -7,6 +7,7 @@ on:
       - infra/db/atlas.hcl
       - infra/db/erd.sh
       - docs/db-erd.md
+      - docs/db-erd/**
       - .github/workflows/ci-db-erd.yaml
       - .github/workflows/select-runner.yaml
   push:
@@ -16,6 +17,7 @@ on:
       - infra/db/atlas.hcl
       - infra/db/erd.sh
       - docs/db-erd.md
+      - docs/db-erd/**
       - .github/workflows/ci-db-erd.yaml
       - .github/workflows/select-runner.yaml
 
