@@ -63,6 +63,8 @@ jobs:
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: backend
           # Not shared with oidc-e2e (backend-debug): cache keys are immutable, and
           # its build-only save would keep clippy and test artifacts out of this one.
@@ -94,9 +96,20 @@ jobs:
         with:
           driver-opts: default-load=true
 
+      # 保存するのは main だけにする（PR で保存すると、キャッシュの容量の上限を超えて、main のキャッシュも追い出される）。
       - name: Restore Rust cache mounts
-        id: rust-cache
+        id: rust-cache-main
+        if: github.ref == 'refs/heads/main'
         uses: actions/cache@v6
+        with:
+          path: .buildkit-cache
+          key: ci-rust-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            ci-rust-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-
+      - name: Restore Rust cache mounts
+        id: rust-cache-pr
+        if: github.ref != 'refs/heads/main'
+        uses: actions/cache/restore@v6
         with:
           path: .buildkit-cache
           key: ci-rust-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
@@ -107,7 +120,7 @@ jobs:
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:
           builder: ${{ steps.buildx.outputs.name }}
-          skip-extraction: ${{ steps.rust-cache.outputs.cache-hit }}
+          skip-extraction: ${{ (steps.rust-cache-main.outputs.cache-hit || steps.rust-cache-pr.outputs.cache-hit) }}
           cache-map: |
             {
               ".buildkit-cache/registry": "/usr/local/cargo/registry",
@@ -115,9 +128,19 @@ jobs:
               ".buildkit-cache/target": "/app/target"
             }
 
+      # docker compose build の type=gha が、Actions のキャッシュサービスに接続するために要る。
+      - name: Expose the Actions cache runtime to docker
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       - name: Build production backend image
         run: |
-          docker compose --project-directory . -f infra/compose.stack.yaml \
+          files=(-f infra/compose.stack.yaml -f infra/compose.ci-cache.yaml)
+          if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
+          docker compose --project-directory . "${files[@]}" \
             build --builder "${{ steps.buildx.outputs.name }}" backend
 
       # compose の backend サービスは ENVIRONMENT=production なので、
@@ -231,6 +254,8 @@ jobs:
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: backend
 
       - name: Start PostgreSQL, Electric, and RustFS
@@ -355,6 +380,8 @@ jobs:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: backend
           shared-key: backend-check
       - name: Apply disposable database schema

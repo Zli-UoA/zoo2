@@ -108,10 +108,22 @@ jobs:
           test -n "${ISSUER//[[:space:]]/}" || { echo 'Set VITE_OIDC_ISSUER repository variable'; exit 1; }
           test -n "${CLIENT_ID//[[:space:]]/}" || { echo 'Set VITE_OIDC_CLIENT_ID repository variable'; exit 1; }
       # Save once per dependency set; a per-commit key would evict the buildx layer caches.
+      # 保存するのは main だけにする（PR で保存すると、キャッシュの容量の上限を超えて、main のキャッシュも追い出される）。
       - name: Restore Rust cache mounts
-        id: rust-cache
-        if: matrix.component == 'backend' && steps.existing.outputs.image == 'false'
+        id: rust-cache-main
+        if: (matrix.component == 'backend' && steps.existing.outputs.image == 'false') && github.ref == 'refs/heads/main'
         uses: actions/cache@v6
+        with:
+          path: .buildkit-cache
+          key: rust-image-${{ runner.os }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
+          # Reuse dependency builds only within the same compiler/base image. Native artifacts
+          # (for example vendored OpenSSL) may require a newer glibc than the next build image.
+          restore-keys: |
+            rust-image-${{ runner.os }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-
+      - name: Restore Rust cache mounts
+        id: rust-cache-pr
+        if: (matrix.component == 'backend' && steps.existing.outputs.image == 'false') && github.ref != 'refs/heads/main'
+        uses: actions/cache/restore@v6
         with:
           path: .buildkit-cache
           key: rust-image-${{ runner.os }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
@@ -123,7 +135,7 @@ jobs:
         if: matrix.component == 'backend' && steps.existing.outputs.image == 'false'
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:
-          skip-extraction: ${{ steps.rust-cache.outputs.cache-hit }}
+          skip-extraction: ${{ (steps.rust-cache-main.outputs.cache-hit || steps.rust-cache-pr.outputs.cache-hit) }}
           cache-map: |
             {
               ".buildkit-cache/registry": "/usr/local/cargo/registry",

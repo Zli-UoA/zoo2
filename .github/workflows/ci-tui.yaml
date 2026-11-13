@@ -65,6 +65,8 @@ jobs:
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: tui
       - name: format check (client-types)
         working-directory: ./client-types
@@ -135,6 +137,8 @@ jobs:
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: desktop
       - name: format check
         run: cargo fmt --check

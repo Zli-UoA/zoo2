@@ -86,8 +86,24 @@ jobs:
         working-directory: ./frontend
         run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver-opts: default-load=true
+
+      # docker compose build の type=gha が、Actions のキャッシュサービスに接続するために要る。
+      - name: Expose the Actions cache runtime to docker
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       - name: Build and start frontend
-        run: docker compose --project-directory . -f infra/compose.stack.yaml up -d --build --wait --wait-timeout 60 frontend
+        run: |
+          files=(-f infra/compose.stack.yaml -f infra/compose.ci-cache.yaml)
+          if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
+          docker compose --project-directory . "${files[@]}" up -d --build --wait --wait-timeout 60 frontend
 
       - name: Check SPA routes and security headers
         run: |
@@ -209,8 +225,24 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver-opts: default-load=true
+
+      # docker compose build の type=gha が、Actions のキャッシュサービスに接続するために要る。
+      - name: Expose the Actions cache runtime to docker
+        uses: actions/github-script@v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       - name: Build proxy
-        run: docker compose --project-directory . -f infra/compose.stack.yaml build proxy
+        run: |
+          files=(-f infra/compose.stack.yaml -f infra/compose.ci-cache.yaml)
+          if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
+          docker compose --project-directory . "${files[@]}" build proxy
       - name: Start proxy with mock frontend and Rust
         run: docker compose --project-directory . -f infra/compose.stack.yaml -f infra/proxy/test/compose.yaml up -d --no-build --no-deps --wait frontend backend proxy
       - name: Check routing, header stripping, and streaming
@@ -243,6 +275,8 @@ jobs:
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: crates/zoo-crypto-wasm
       - name: Install wasm-bindgen-cli
         # crates/zoo-crypto-wasm/Cargo.toml で = 固定した wasm-bindgen と同じ版にする（build.sh が照合する）。
