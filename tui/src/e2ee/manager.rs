@@ -256,7 +256,10 @@ async fn run(
         }
         let mut pending: Vec<ToDeviceRow> = rows.values().cloned().collect();
         pending.sort_by(|a, b| a.id.len().cmp(&b.id.len()).then_with(|| a.id.cmp(&b.id)));
-        process(api, &store, &device_id, &pending).await?;
+        let processed = process(api, &store, &device_id, &pending).await?;
+        // ack を送れた行は、Shape の Delete が届く前でも外す。初めの Shape が何回かに分かれて
+        // 届くと、Delete より先に次の回が来て、同じ行をもう一度処理してしまうため。
+        rows.retain(|_, row| !processed.contains(&row.id));
     }
 }
 
@@ -280,12 +283,13 @@ pub fn to_device_row(row: &crate::electric::Row) -> ToDeviceRow {
     }
 }
 
+/// 行を処理して ack を送り、ack を送れた ID を返す。
 async fn process(
     api: &ApiClient,
     store: &Mutex<CryptoStore>,
     device_id: &str,
     rows: &[ToDeviceRow],
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let mut senders: Vec<String> = rows.iter().map(|row| row.sender_user_id.clone()).collect();
     senders.sort();
     senders.dedup();
@@ -308,7 +312,7 @@ async fn process(
             .await?;
         replenish(api, store, counts(&value)).await?;
     }
-    Ok(())
+    Ok(result.processed)
 }
 
 /// ログアウトの前に見る、暗号ストアの状態。

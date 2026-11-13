@@ -262,7 +262,7 @@ AuthZ には、デバイスコードと refresh_token のグラントを許可�
 | アーカイブ | 新しいバイナリで置き換える | `sudo rm /usr/local/bin/zoo2-tui` |
 | cargo install | 同じコマンドをもう一度実行 | `cargo uninstall zoo2-tui` |
 
-設定とトークンはパッケージを消しても残ります。完全に消すときは `~/.config/zoo2-tui` (macOS では `~/Library/Application Support/zoo2-tui`) を削除してください。消す前に `zoo2-tui logout` を実行すると、IdP 側のトークンも失効し、E2EE の端末もサーバーから削除されます。
+設定とトークンはパッケージを消しても残ります。完全に消すときは `~/.config/zoo2-tui` (macOS では `~/Library/Application Support/zoo2-tui`) を削除してください。消す前に `zoo2-tui logout` を実行すると、IdP 側のトークンも失効し、E2EE の端末もサーバーから削除されます。オフラインなどで端末を削除できなかったときは、`crypto/pending-device-delete.json` に削除待ちが残り、次に同じユーザーで起動したときに消し直します。設定ディレクトリを消すとこの記録も消えるので、先にオンラインで `zoo2-tui run` を一度起動して消し直すか、Web など別の端末の端末一覧から削除してください。
 
 ## 困ったとき
 

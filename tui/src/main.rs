@@ -153,10 +153,30 @@ async fn login() -> Result<()> {
 
 async fn logout() -> Result<()> {
     let config = Config::load()?;
+    let http = reqwest::Client::new();
+    // dev モードでも、run で作った暗号ストアと端末は消す。トークンの失効はない。
+    if let AuthConfig::Dev { user_id } = &config.auth {
+        let credentials = Credentials::Dev(user_id.clone());
+        if !clear_encryption(&config, credentials, &http).await? {
+            println!("ログアウトを取りやめました。");
+        } else {
+            println!("この端末の暗号の鍵を消しました。");
+        }
+        return Ok(());
+    }
     let oidc = oidc_config(&config)?;
     let path = token_file()?;
-    let http = reqwest::Client::new();
-    if !clear_encryption(&config, oidc, &path, &http).await? {
+    // 端末の削除 API にはトークンが要る。トークンがなければ、次のログインで消し直す。
+    let credentials = match token::load(&path, oidc, Some(&config.api_base_url))? {
+        Some(tokens) => Credentials::Bearer(Arc::new(TokenManager::new(
+            http.clone(),
+            oidc.clone(),
+            path.clone(),
+            tokens,
+        ))),
+        None => Credentials::Dev(String::new()),
+    };
+    if !clear_encryption(&config, credentials, &http).await? {
         println!("ログアウトを取りやめました。");
         return Ok(());
     }
@@ -175,8 +195,7 @@ async fn logout() -> Result<()> {
 /// 鍵バックアップに送れていない鍵があれば、件数を示して確かめる。取りやめたら `false`。
 async fn clear_encryption(
     config: &Config,
-    oidc: &OidcConfig,
-    token_path: &std::path::Path,
+    credentials: Credentials,
     http: &reqwest::Client,
 ) -> Result<bool> {
     let Some(dir) = config::config_dir() else {
@@ -200,16 +219,6 @@ async fn clear_encryption(
             return Ok(false);
         }
     }
-    // 端末の削除 API にはトークンが要る。トークンがなければ、次のログインで消し直す。
-    let credentials = match token::load(token_path, oidc, Some(&config.api_base_url))? {
-        Some(tokens) => Credentials::Bearer(Arc::new(TokenManager::new(
-            http.clone(),
-            oidc.clone(),
-            token_path.to_path_buf(),
-            tokens,
-        ))),
-        None => Credentials::Dev(String::new()),
-    };
     let api = ApiClient::new(http.clone(), &config.api_base_url, credentials);
     // 削除 API は、トークンのユーザーの暗号ストアにだけ呼ぶ。分からなければ（オフラインなど）、
     // 削除待ちに残して次の起動で消し直す。

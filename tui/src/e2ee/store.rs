@@ -6,7 +6,8 @@
 //!   配布先の判定の記録（`zoo-crypto` の保存用の封筒）。値はどれも保存鍵で暗号化してある。
 //!   `user_id`、`device_id`、登録済みか、処理済みの to-device の ID だけが平文で、秘密ではない。
 //! - `storage.key`：32 バイトの保存鍵。
-//! - `lock`：同じユーザーの暗号ストアを 2 つのプロセスで開かないためのロック。
+//! - `../<user_id>.lock`：同じユーザーの暗号ストアを 2 つのプロセスで開かないためのロック
+//!   （ディレクトリーの外に置き、消しているあいだも持ち続ける）。
 //!
 //! ファイルはどれも 0600 で作る。`state.json` は一時ファイルに書いて `rename` で置き換えるので、
 //! 書いている途中で終了しても、前の状態か次の状態のどちらかが残る。
@@ -27,7 +28,8 @@ use zoo_crypto::{
 const STATE_VERSION: u32 = 1;
 const STATE_FILE: &str = "state.json";
 const KEY_FILE: &str = "storage.key";
-const LOCK_FILE: &str = "lock";
+/// 削除待ちの一覧を更新するときのロック（全ユーザーで 1 つ）。
+const PENDING_LOCK_FILE: &str = "pending-device-delete.lock";
 
 #[derive(Default, Serialize, Deserialize)]
 struct State {
@@ -138,6 +140,13 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         file.sync_all()?;
     }
     fs::rename(&tmp, path).with_context(|| format!("{} を置き換えられません", path.display()))?;
+    // rename したディレクトリーのエントリーも、ディスクに書き出す（停電で前の状態に戻らないように）。
+    #[cfg(unix)]
+    if let Some(parent) = path.parent() {
+        File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .with_context(|| format!("{} を同期できません", parent.display()))?;
+    }
     Ok(())
 }
 
@@ -151,12 +160,22 @@ fn create_private_dir(dir: &Path) -> Result<()> {
         .with_context(|| format!("{} を作れません", dir.display()))
 }
 
-fn lock_dir(dir: &Path) -> Result<File> {
+fn open_lock_file(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let file = options.open(dir.join(LOCK_FILE))?;
+    options
+        .open(path)
+        .with_context(|| format!("{} を開けません", path.display()))
+}
+
+/// `<root>/<user_id>.lock` を排他でロックする。ロックファイルは暗号ストアのディレクトリーの外に
+/// 置くので、消している（`destroy`）あいだもロックを持ち続け、ほかのプロセスが消しかけの
+/// ストアを開くことはない。ロックファイル自体は消さない（消すと、別の inode を新しく作った
+/// プロセスと同時にロックを持ててしまう）。
+fn lock_user(root: &Path, user_id: &str) -> Result<File> {
+    let file = open_lock_file(&root.join(format!("{user_id}.lock")))?;
     file.try_lock().map_err(|_| {
         anyhow!(
             "ほかの zoo2-tui がこのユーザーの暗号ストアを使っています。そちらを終了してください"
@@ -201,8 +220,9 @@ impl CryptoStore {
     /// `user_id` の暗号ストアを開く。なければ端末を作る（`device_id` は UUID v4）。
     pub fn open(root: &Path, user_id: &str) -> Result<Opened> {
         let dir = user_dir(root, user_id)?;
+        create_private_dir(root)?;
+        let lock = lock_user(root, user_id)?;
         create_private_dir(&dir)?;
-        let lock = lock_dir(&dir)?;
         let state_path = dir.join(STATE_FILE);
         let key_path = dir.join(KEY_FILE);
         let state: Option<State> = match fs::read(&state_path) {
@@ -229,6 +249,15 @@ impl CryptoStore {
                 });
             }
             // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
+            // 前の端末の ID は state.json にしかない。消す前に削除待ちに残し、作り直しが途中で
+            // 失敗しても、次の起動で前の端末を消せるようにする。
+            mark_device_deletion_pending(
+                root,
+                &PendingDeviceDeletion {
+                    user_id: user_id.to_owned(),
+                    device_id: state.device_id.clone(),
+                },
+            )?;
             replaced_device_id = Some(state.device_id);
             fs::remove_file(&state_path)?;
         }
@@ -510,11 +539,13 @@ impl CryptoStore {
             .count()
     }
 
-    /// 暗号ストアを消す（ログアウト）。
+    /// 暗号ストアを消す（ログアウト）。消し終えるまで、ユーザーのロックを持ち続ける。
     pub fn destroy(self) -> Result<()> {
-        let dir = self.dir.clone();
-        drop(self);
-        fs::remove_dir_all(&dir).with_context(|| format!("{} を消せません", dir.display()))
+        let Self { dir, _lock, .. } = self;
+        let result =
+            fs::remove_dir_all(&dir).with_context(|| format!("{} を消せません", dir.display()));
+        drop(_lock);
+        result
     }
 }
 
@@ -548,16 +579,29 @@ pub struct PendingDeviceDeletion {
 
 const PENDING_FILE: &str = "pending-device-delete.json";
 
+/// 削除待ちの一覧を読んで書き戻すあいだ、プロセスをまたいで直列にする（`<root>/pending-device-delete.lock`）。
+/// ユーザーのロックとは別にする（一覧は全ユーザーで共有し、ストアを開く前にも更新するため）。
+fn with_pending_lock<T>(root: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    create_private_dir(root)?;
+    let lock = open_lock_file(&root.join(PENDING_LOCK_FILE))?;
+    lock.lock()
+        .with_context(|| format!("{} をロックできません", PENDING_LOCK_FILE))?;
+    let result = f();
+    drop(lock);
+    result
+}
+
 /// 削除待ちに足す。ユーザーと端末の組ごとに残し、別のユーザーの削除待ちを上書きしない。
 pub fn mark_device_deletion_pending(root: &Path, pending: &PendingDeviceDeletion) -> Result<()> {
-    let mut all = read_pending_device_deletions(root);
-    all.retain(|entry| entry != pending);
-    all.push(PendingDeviceDeletion {
-        user_id: pending.user_id.clone(),
-        device_id: pending.device_id.clone(),
-    });
-    create_private_dir(root)?;
-    write_private(&root.join(PENDING_FILE), &serde_json::to_vec(&all)?)
+    with_pending_lock(root, || {
+        let mut all = read_pending_device_deletions(root);
+        all.retain(|entry| entry != pending);
+        all.push(PendingDeviceDeletion {
+            user_id: pending.user_id.clone(),
+            device_id: pending.device_id.clone(),
+        });
+        write_private(&root.join(PENDING_FILE), &serde_json::to_vec(&all)?)
+    })
 }
 
 /// 削除待ちの端末（全ユーザー分）。
@@ -570,16 +614,18 @@ pub fn read_pending_device_deletions(root: &Path) -> Vec<PendingDeviceDeletion> 
 
 /// 消せた端末を、削除待ちから外す。
 pub fn clear_pending_device_deletion(root: &Path, done: &PendingDeviceDeletion) -> Result<()> {
-    let mut rest = read_pending_device_deletions(root);
-    rest.retain(|entry| entry != done);
-    if rest.is_empty() {
-        match fs::remove_file(root.join(PENDING_FILE)) {
-            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
-            _ => Ok(()),
+    with_pending_lock(root, || {
+        let mut rest = read_pending_device_deletions(root);
+        rest.retain(|entry| entry != done);
+        if rest.is_empty() {
+            match fs::remove_file(root.join(PENDING_FILE)) {
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
+                _ => Ok(()),
+            }
+        } else {
+            write_private(&root.join(PENDING_FILE), &serde_json::to_vec(&rest)?)
         }
-    } else {
-        write_private(&root.join(PENDING_FILE), &serde_json::to_vec(&rest)?)
-    }
+    })
 }
 
 /// テストと manager が使う、`keys/query` の応答の形の空の値。

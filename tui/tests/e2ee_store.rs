@@ -334,3 +334,40 @@ fn retry_interval_returns_to_the_first_after_a_working_connection() {
     let (delay, next) = manager::retry_delay(backoff, true);
     assert_eq!((delay.as_secs(), next.as_secs()), (5, 10));
 }
+
+#[test]
+fn losing_the_storage_key_records_the_old_device_before_removing_the_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let first = CryptoStore::open(&root, BOB).unwrap().store;
+    let old_device = first.device_id().to_owned();
+    drop(first);
+    std::fs::remove_file(root.join(BOB).join("storage.key")).unwrap();
+    let reopened = CryptoStore::open(&root, BOB).unwrap();
+    assert_eq!(
+        reopened.replaced_device_id.as_deref(),
+        Some(old_device.as_str())
+    );
+    // 作り直しが途中で失敗しても前の端末を消せるよう、state.json を消す前に削除待ちに残してある。
+    let pending = store::read_pending_device_deletions(&root);
+    assert!(
+        pending
+            .iter()
+            .any(|p| p.user_id == BOB && p.device_id == old_device)
+    );
+}
+
+#[test]
+fn the_user_lock_lives_outside_the_store_and_is_held_while_destroying() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let bob = CryptoStore::open(&root, BOB).unwrap().store;
+    assert!(root.join(format!("{BOB}.lock")).exists());
+    assert!(!root.join(BOB).join("lock").exists());
+    bob.destroy().unwrap();
+    assert!(!root.join(BOB).exists());
+    // 消し終えたらロックを返すので、開き直せる（新しい端末になる）。
+    assert!(CryptoStore::open(&root, BOB).is_ok());
+    // 削除待ちの一覧を探すときに、ロックファイルをユーザーと取り違えない。
+    assert_eq!(store::stored_user_ids(&root).unwrap(), vec![BOB.to_owned()]);
+}

@@ -117,13 +117,24 @@ impl ApiClient {
         path: &str,
         body: Option<Value>,
     ) -> Result<reqwest::Response> {
-        let reading = method == Method::GET;
+        let timeout = (method == Method::GET).then(|| std::time::Duration::from_secs(10));
+        self.send_with_timeout(method, path, body, timeout).await
+    }
+
+    /// `timeout` は、接続から応答の本文を読み終えるまでの期限（reqwest の `RequestBuilder::timeout`）。
+    async fn send_with_timeout(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<reqwest::Response> {
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base_url))
             .header(reqwest::header::ACCEPT, "application/json");
-        if reading {
-            request = request.timeout(std::time::Duration::from_secs(10));
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
         }
         if let Some(body) = body {
             request = request.json(&body);
@@ -199,9 +210,17 @@ impl ApiClient {
         self.credentials.persistence_report().await
     }
 
-    /// 応答の封筒 `{data, txid}` の `data`。
+    /// E2EE の要求の期限。応答が止まっても、端末の管理（暗号ストアのロックを持つ）が
+    /// 止まったままにならないようにする。
+    const E2EE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// E2EE の要求を送り、応答の封筒 `{data, txid}` の `data` を返す。
     async fn write_data(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
-        let envelope: Envelope = self.send(method, path, body).await?.json().await?;
+        let envelope: Envelope = self
+            .send_with_timeout(method, path, body, Some(Self::E2EE_TIMEOUT))
+            .await?
+            .json()
+            .await?;
         Ok(envelope.data.unwrap_or(Value::Null))
     }
 
@@ -236,10 +255,11 @@ impl ApiClient {
         let mut device_keys = serde_json::Map::new();
         for chunk in user_ids.chunks(50) {
             let response: Value = self
-                .send(
+                .send_with_timeout(
                     Method::POST,
                     "/api/e2ee/keys/query",
                     Some(serde_json::json!({ "user_ids": chunk })),
+                    Some(Self::E2EE_TIMEOUT),
                 )
                 .await?
                 .json()
@@ -254,7 +274,7 @@ impl ApiClient {
     /// `POST /api/e2ee/to_device/ack`。一度に 1000 件までにする。
     pub async fn e2ee_ack_to_device(&self, device_id: &str, ids: &[String]) -> Result<()> {
         for chunk in ids.chunks(1000) {
-            self.write(
+            self.write_data(
                 Method::POST,
                 "/api/e2ee/to_device/ack",
                 Some(serde_json::json!({ "device_id": device_id, "ids": chunk })),
@@ -266,7 +286,7 @@ impl ApiClient {
 
     /// `DELETE /api/e2ee/devices/{device_id}`。削除済みでも成功する（冪等）。
     pub async fn e2ee_delete_device(&self, device_id: &str) -> Result<()> {
-        self.write(
+        self.write_data(
             Method::DELETE,
             &format!("/api/e2ee/devices/{device_id}"),
             None,
