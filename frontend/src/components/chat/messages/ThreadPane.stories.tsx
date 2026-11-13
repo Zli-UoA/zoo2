@@ -8,6 +8,7 @@ import { storyChannels, storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
 import { storyCommands, storyDeploymentCard } from "../../../../.storybook/app-fixtures";
 import { ThreadPane } from "./ThreadPane";
+import { ThreadPaneStatus } from "./ThreadPaneStatus";
 import type { FeedMessage } from "./messageFormat";
 
 const root: FeedMessage = {
@@ -228,5 +229,19 @@ export const AppCard: Story = {
     await expect(
       canvas.queryByText("Plain fallback for card-capable clients"),
     ).not.toBeInTheDocument();
+  }),
+};
+
+export const RootLoadError: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { onRetry: fn(), onClose: fn() },
+  render: (args) => <ThreadPaneStatus isError onRetry={args.onRetry!} onClose={args.onClose} />,
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("alert")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "再試行" }));
+    await expect(args.onRetry).toHaveBeenCalledTimes(1);
+    await userEvent.click(canvas.getByRole("button", { name: "スレッドを閉じる" }));
+    await expect(args.onClose).toHaveBeenCalledTimes(1);
   }),
 };

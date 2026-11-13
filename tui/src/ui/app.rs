@@ -151,12 +151,13 @@ pub struct App {
     threads_requested_at: [Option<Instant>; 2],
     thread_in_flight: [bool; 2],
     thread_pending: [Option<bool>; 2],
-    thread_updated_at: HashMap<String, Instant>,
+    thread_states: HashMap<String, (bool, Instant)>,
+    /// 再同期中は部分スナップショットの件数で一覧を減らさない。
+    message_resync_counts: HashMap<String, HashMap<String, usize>>,
     locally_reopened_threads: HashMap<String, jiff::civil::DateTime>,
     pub thread_cursors: [Option<String>; 2],
     thread_has_additional_pages: [bool; 2],
     pub thread_failed_append: [Option<bool>; 2],
-    pub show_archived_threads: bool,
     pub current: Option<String>,
     /// 選択中のルートメッセージ。None なら最新を追う。
     pub selected: Option<String>,
@@ -222,12 +223,12 @@ impl App {
             threads_requested_at: [None, None],
             thread_in_flight: [false; 2],
             thread_pending: [None; 2],
-            thread_updated_at: HashMap::new(),
+            thread_states: HashMap::new(),
+            message_resync_counts: HashMap::new(),
             locally_reopened_threads: HashMap::new(),
             thread_cursors: [None, None],
             thread_has_additional_pages: [false; 2],
             thread_failed_append: [None, None],
-            show_archived_threads: false,
             current: None,
             selected: None,
             scroll: 0,
@@ -265,6 +266,9 @@ impl App {
             .is_some_and(|task| !task.is_finished())
         {
             return;
+        }
+        if let ShapeId::Messages(channel_id) = &id {
+            self.begin_message_resync(channel_id);
         }
         // 止まった購読を作り直すときは最初から取り直すので、止まっていた間の行は捨てる。
         // 物理削除された行は新しいスナップショットに現れないため、捨てないと残り続ける。
@@ -304,8 +308,63 @@ impl App {
         });
     }
 
+    fn begin_message_resync(&mut self, channel_id: &str) {
+        let mut counts = self.store.reply_counts(channel_id);
+        // チャンネル切替でStoreが空でも、一覧で確認済みの件数を保持する。
+        for thread in self
+            .threads()
+            .filter(|thread| thread.channel_id == channel_id)
+        {
+            if thread.reply_count > 0 {
+                counts
+                    .entry(thread.id.clone())
+                    .or_insert(thread.reply_count as usize);
+            }
+        }
+        self.message_resync_counts
+            .entry(channel_id.to_owned())
+            .or_default()
+            .extend(counts);
+    }
+
     pub fn on_shape(&mut self, event: ShapeEvent) {
         let selected = self.sidebar_items().get(self.sidebar_index).cloned();
+        let mut completed_resync = false;
+        let previous_reply_counts = match &event {
+            ShapeEvent::Batch(ShapeId::Messages(channel_id), batch) => {
+                if batch.reset
+                    || (batch.up_to_date && self.message_resync_counts.contains_key(channel_id))
+                {
+                    // 同期途中に一覧応答・ローカル補完で追加された行も確定時に判定する。
+                    self.begin_message_resync(channel_id);
+                }
+                if batch.up_to_date && self.message_resync_counts.contains_key(channel_id) {
+                    completed_resync = true;
+                    self.message_resync_counts.remove(channel_id)
+                } else if self.message_resync_counts.contains_key(channel_id) {
+                    None
+                } else {
+                    Some(self.store.reply_counts(channel_id))
+                }
+            }
+            _ => None,
+        };
+        let changed_messages = match &event {
+            ShapeEvent::Batch(ShapeId::Messages(channel_id), batch) => Some((
+                channel_id.clone(),
+                batch
+                    .changes
+                    .iter()
+                    .filter_map(|change| match change {
+                        electric::Change::Upsert { row, .. } => {
+                            row.get("id")?.as_str().map(str::to_owned)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            )),
+            _ => None,
+        };
         match event {
             ShapeEvent::Batch(id, batch) => self.store.apply(&id, batch),
             ShapeEvent::Failed(id, err) => {
@@ -321,6 +380,64 @@ impl App {
                     })
                 })
             });
+        let changed_channel = changed_messages
+            .as_ref()
+            .map(|(channel_id, _)| channel_id.clone());
+        if let Some((channel_id, ids)) = changed_messages {
+            for id in ids {
+                if let Some(root) = self.store.message(&channel_id, &id) {
+                    let relevant = root.thread_archive_at.is_some()
+                        || self.thread_states.contains_key(&id)
+                        || self.threads().any(|thread| thread.id == id)
+                        || self
+                            .thread
+                            .as_ref()
+                            .is_some_and(|thread| thread.root_id == id);
+                    if relevant {
+                        let archived = root.thread_archive_at.is_some_and(|at| {
+                            self.locally_reopened_threads
+                                .get(&id)
+                                .is_none_or(|reopened| at > *reopened)
+                        });
+                        let reopened = !archived
+                            && self
+                                .thread_states
+                                .get(&id)
+                                .is_some_and(|(was_archived, _)| *was_archived);
+                        self.thread_states
+                            .insert(id.clone(), (archived, Instant::now()));
+                        if reopened {
+                            self.ensure_active_thread(&id);
+                        }
+                    }
+                }
+            }
+        }
+        // 返信の同期で件数が変わった親は、一覧GETの成功を待たず補正する。
+        if let (Some(before), Some(channel_id)) = (previous_reply_counts, changed_channel) {
+            let after = self.store.reply_counts(&channel_id);
+            for thread in self
+                .active_threads
+                .iter_mut()
+                .chain(self.archived_threads.iter_mut())
+            {
+                if thread.channel_id == channel_id
+                    && (completed_resync || before.get(&thread.id) != after.get(&thread.id))
+                {
+                    thread.reply_count = after.get(&thread.id).copied().unwrap_or(0) as u64;
+                    self.thread_states
+                        .entry(thread.id.clone())
+                        .and_modify(|(_, updated)| *updated = Instant::now())
+                        .or_insert((thread.thread_archive_at.is_some(), Instant::now()));
+                }
+            }
+            // 最後の返信が消えた行は除外する。返信の到着待ちで0件の補完行は残す。
+            self.active_threads.retain(|thread| {
+                thread.channel_id != channel_id
+                    || !before.contains_key(&thread.id)
+                    || after.contains_key(&thread.id)
+            });
+        }
         self.restore_sidebar_selection(selected);
     }
 
@@ -345,9 +462,9 @@ impl App {
                     .into_iter()
                     .filter(|thread| {
                         !self
-                            .thread_updated_at
+                            .thread_states
                             .get(&thread.id)
-                            .is_some_and(|last| requested_at < *last)
+                            .is_some_and(|(_, last)| requested_at < *last)
                     })
                     .collect();
                 let mut selected = self.sidebar_items().get(self.sidebar_index).cloned();
@@ -367,8 +484,10 @@ impl App {
                     if thread.thread_archive_at.is_some() {
                         self.locally_reopened_threads.remove(&thread.id);
                     }
-                    self.thread_updated_at
-                        .insert(thread.id.clone(), requested_at);
+                    self.thread_states.insert(
+                        thread.id.clone(),
+                        (thread.thread_archive_at.is_some(), requested_at),
+                    );
                 }
                 let (current, other) = if archived {
                     (&mut self.archived_threads, &mut self.active_threads)
@@ -379,7 +498,11 @@ impl App {
                 if append {
                     current.retain(|entry| !incoming_ids.contains(&entry.id));
                 } else {
-                    current.clear();
+                    current.retain(|entry| {
+                        self.thread_states
+                            .get(&entry.id)
+                            .is_some_and(|(_, updated)| *updated > requested_at)
+                    });
                 }
                 if append {
                     current.extend(threads);
@@ -388,10 +511,7 @@ impl App {
                     refreshed.append(current);
                     *current = refreshed;
                 }
-                let loaded_ids: HashSet<_> =
-                    self.threads().map(|thread| thread.id.clone()).collect();
-                self.thread_updated_at
-                    .retain(|id, _| loaded_ids.contains(id));
+                // Shapeで確認した状態は、購読停止や一覧からの除外でも保持する。
                 self.thread_cursors[scope] = next_cursor;
                 self.thread_failed_append[scope] = None;
                 self.threads_requested_at[scope] = Some(requested_at);
@@ -428,22 +548,13 @@ impl App {
                             .to_zoned(jiff::tz::TimeZone::UTC)
                             .datetime(),
                     );
-                    if let Some(index) = self
-                        .archived_threads
-                        .iter()
-                        .position(|entry| entry.id == id)
-                    {
-                        let mut thread = self.archived_threads.remove(index);
-                        thread.thread_archive_at = None;
-                        self.active_threads.insert(0, thread);
-                    }
+                    self.thread_states
+                        .insert(id.clone(), (false, Instant::now()));
+                    self.ensure_active_thread(&id);
                 }
                 // 書き込み前の一覧で、確定済みの状態を上書きしない。
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
-                if self.show_archived_threads {
-                    self.fetch_thread_page(true, false);
-                }
             }
             AppEvent::EmojiCatalog { shortcodes, custom } => {
                 crate::mfm::set_emoji_catalog(shortcodes, custom)
@@ -635,6 +746,39 @@ impl App {
         });
     }
 
+    /// 再開成功・購読で確認した再開を、一覧の再取得を待たず反映する。
+    fn ensure_active_thread(&mut self, id: &str) {
+        let archived = self
+            .archived_threads
+            .iter()
+            .position(|thread| thread.id == id)
+            .map(|index| self.archived_threads.remove(index));
+        if let Some(thread) = self
+            .active_threads
+            .iter_mut()
+            .find(|thread| thread.id == id)
+        {
+            thread.thread_archive_at = None;
+            return;
+        }
+        let cached = archived.or_else(|| {
+            self.store.channels().into_iter().find_map(|channel| {
+                let root = self.store.message(&channel.id, id)?;
+                Some(ThreadSummary {
+                    id: root.id.clone(),
+                    channel_id: root.channel_id.clone(),
+                    content: root.content.chars().take(160).collect(),
+                    thread_archive_at: None,
+                    reply_count: self.store.replies(&channel.id, id).len() as u64,
+                })
+            })
+        });
+        if let Some(mut thread) = cached {
+            thread.thread_archive_at = None;
+            self.active_threads.insert(0, thread);
+        }
+    }
+
     pub fn threads(&self) -> impl Iterator<Item = &ThreadSummary> {
         self.active_threads
             .iter()
@@ -649,12 +793,27 @@ impl App {
                 .and_then(|root| root.thread_archive_at)
                 .is_some_and(|archived_at| archived_at > *reopened_at);
         }
+        if let Some((archived, _)) = self.thread_states.get(root_id) {
+            return *archived;
+        }
         self.threads()
             .any(|thread| thread.id == root_id && thread.thread_archive_at.is_some())
             || self
                 .store
                 .message(channel_id, root_id)
                 .is_some_and(|root| root.thread_archive_at.is_some())
+    }
+
+    /// 一覧外の一時表示にも、描画と検索で同じ本文を使う。
+    pub fn thread_content(&self, channel_id: &str, id: &str) -> Option<&str> {
+        self.threads()
+            .find(|thread| thread.id == id && thread.channel_id == channel_id)
+            .map(|thread| thread.content.as_str())
+            .or_else(|| {
+                self.store
+                    .message(channel_id, id)
+                    .map(|root| root.content.as_str())
+            })
     }
 
     fn can_change_message(&mut self, message_id: &str) -> bool {
@@ -682,21 +841,40 @@ impl App {
         let mut items = Vec::new();
         for channel in self.store.channels() {
             items.push(SidebarItem::Channel(channel.id.clone()));
-            if channel.is_dm || !self.store.is_member(&channel.id, &self.me.id) {
-                continue;
-            }
+            let joined = !channel.is_dm && self.store.is_member(&channel.id, &self.me.id);
             for thread in self.threads().filter(|thread| {
-                thread.channel_id == channel.id
-                    && (self.show_archived_threads || thread.thread_archive_at.is_none())
+                joined
+                    && thread.channel_id == channel.id
+                    && (!self.thread_is_archived(&channel.id, &thread.id)
+                        || (self.current.as_deref() == Some(channel.id.as_str())
+                            && self
+                                .thread
+                                .as_ref()
+                                .is_some_and(|selected| selected.root_id == thread.id)))
             }) {
                 items.push(SidebarItem::Thread {
                     channel_id: channel.id.clone(),
                     id: thread.id.clone(),
                 });
             }
+            if self.current.as_deref() == Some(channel.id.as_str())
+                && let Some(thread) = &self.thread
+            {
+                let selected = SidebarItem::Thread {
+                    channel_id: channel.id.clone(),
+                    id: thread.root_id.clone(),
+                };
+                if !items.contains(&selected)
+                    && self.store.message(&channel.id, &thread.root_id).is_some()
+                    && (self.thread_is_archived(&channel.id, &thread.root_id)
+                        || !self.store.replies(&channel.id, &thread.root_id).is_empty())
+                {
+                    items.push(selected);
+                }
+            }
         }
         for archived in [false, true] {
-            if (!archived || self.show_archived_threads)
+            if !archived
                 && (self.thread_cursors[usize::from(archived)].is_some()
                     || self.thread_failed_append[usize::from(archived)].is_some())
             {
@@ -859,9 +1037,6 @@ impl App {
             self.terminal_active = matches!(event, Event::FocusGained);
             if self.terminal_active {
                 self.refresh_threads();
-                if self.show_archived_threads {
-                    self.fetch_thread_page(true, false);
-                }
                 self.read_poll.wake();
                 self.emoji_poll.wake();
                 self.typing_poll.wake();
@@ -951,14 +1126,6 @@ impl App {
             KeyCode::Char('L') => self.join_or_leave(false),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
             KeyCode::Char('R') => self.restore_failed_draft(),
-            KeyCode::Char('a') => {
-                let selected = self.sidebar_items().get(self.sidebar_index).cloned();
-                self.show_archived_threads = !self.show_archived_threads;
-                self.restore_sidebar_selection(selected);
-                if self.show_archived_threads {
-                    self.fetch_thread_page(true, false);
-                }
-            }
             KeyCode::Char('u') => self.reopen_thread(),
             _ => {}
         }
@@ -1082,11 +1249,10 @@ impl App {
                         .map(|channel| self.store.channel_label(channel, &self.me.id))
                         .unwrap_or_default(),
                     SidebarItem::MoreThreads { .. } => return false,
-                    SidebarItem::Thread { id, .. } => self
-                        .threads()
-                        .find(|thread| thread.id == *id)
-                        .map(|thread| thread.content.clone())
-                        .unwrap_or_default(),
+                    SidebarItem::Thread { channel_id, id } => self
+                        .thread_content(channel_id, id)
+                        .unwrap_or_default()
+                        .to_owned(),
                 };
                 label.to_lowercase().contains(&query)
             })
@@ -1166,21 +1332,29 @@ impl App {
     }
 
     fn activate(&mut self) {
-        match self.focus {
-            Focus::Sidebar => self.activate_sidebar(),
-            Focus::Messages => {
-                if let Some(root_id) = self.selected.clone() {
-                    self.typing_poll.wake();
-                    self.thread = Some(ThreadView {
-                        root_id,
-                        selected: None,
-                        scroll: 0,
-                        inner_scroll: 0,
-                    });
-                    self.focus = Focus::Thread;
-                }
+        let root_id = match self.focus {
+            Focus::Sidebar => {
+                self.activate_sidebar();
+                return;
             }
-            Focus::Thread => {}
+            Focus::Messages => self.selected.clone(),
+            Focus::Thread => self.thread.as_ref().and_then(|thread| {
+                thread
+                    .selected
+                    .as_ref()
+                    .filter(|id| **id != thread.root_id)
+                    .cloned()
+            }),
+        };
+        if let Some(root_id) = root_id {
+            self.typing_poll.wake();
+            self.thread = Some(ThreadView {
+                root_id,
+                selected: None,
+                scroll: 0,
+                inner_scroll: 0,
+            });
+            self.focus = Focus::Thread;
         }
     }
 
@@ -1193,11 +1367,15 @@ impl App {
             Some(SidebarItem::Thread { channel_id, id }) => {
                 self.open_channel(channel_id);
                 self.thread = Some(ThreadView {
-                    root_id: id,
+                    root_id: id.clone(),
                     selected: None,
                     scroll: 0,
                     inner_scroll: 0,
                 });
+                self.restore_sidebar_selection(Some(SidebarItem::Thread {
+                    channel_id: self.current.clone().unwrap_or_default(),
+                    id: id.clone(),
+                }));
                 self.focus = Focus::Thread;
                 self.poll_typing();
             }
@@ -1220,6 +1398,9 @@ impl App {
             for id in previous {
                 if let Some(task) = self.subscriptions.remove(&id) {
                     task.abort();
+                }
+                if let ShapeId::Messages(channel_id) = &id {
+                    self.message_resync_counts.remove(channel_id);
                 }
                 self.store.apply(
                     &id,
@@ -1641,13 +1822,43 @@ mod tests {
             .mount(&server)
             .await;
         let (mut app, mut rx) = api_test_app(&server.uri());
-        app.archived_threads.push(ThreadSummary {
-            id: "root".into(),
-            channel_id: "c1".into(),
-            content: "Thread".into(),
-            thread_archive_at: Some("2026-11-10".into()),
-            reply_count: 1,
-        });
+        // 履歴一覧を取得しなくても、購読中の親投稿から再開結果を確定する。
+        for (shape, key, row) in [
+            (
+                ShapeId::Channels,
+                "c1",
+                serde_json::json!({
+                    "id":"c1", "channel_name":"general", "is_private":"f"
+                }),
+            ),
+            (
+                ShapeId::ChannelUsers,
+                "cu1",
+                serde_json::json!({"id":"cu1", "channel_id":"c1", "user_id":"u1"}),
+            ),
+            (
+                ShapeId::Messages("c1".into()),
+                "root",
+                serde_json::json!({
+                    "id":"root", "channel_id":"c1", "user_id":"u1", "content":"Thread",
+                    "created_at":"2026-11-01 00:00:00", "thread_archive_at":"2026-11-10 00:00:00"
+                }),
+            ),
+        ] {
+            app.on_shape(ShapeEvent::Batch(
+                shape,
+                Batch {
+                    changes: vec![electric::Change::Upsert {
+                        key: key.into(),
+                        row: row.as_object().unwrap().clone(),
+                    }],
+                    ..Default::default()
+                },
+            ));
+        }
+        app.current = Some("c1".into());
+        assert!(app.active_threads.is_empty());
+        assert!(app.archived_threads.is_empty());
         app.focus = Focus::Thread;
         app.thread = Some(ThreadView {
             root_id: "root".into(),
@@ -1663,6 +1874,11 @@ mod tests {
         assert!(matches!(&event, AppEvent::ThreadsChanged { reopened: Some(id) } if id == "root"));
         app.on_app_event(event);
         assert!(app.active_threads[0].thread_archive_at.is_none());
+        app.close_thread();
+        assert!(app.sidebar_items().contains(&SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "root".into(),
+        }));
         let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
             .await
             .unwrap()

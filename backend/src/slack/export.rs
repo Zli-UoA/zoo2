@@ -441,7 +441,11 @@ impl<R: Read + Seek> ExportArchive<R> {
     pub fn new(reader: R) -> Result<Self, AppError> {
         let zip = ZipArchive::new(reader)
             .map_err(|e| AppError::BadRequest(format!("Not a valid ZIP archive: {e}")))?;
-        let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+        let names: Vec<String> = zip
+            .file_names()
+            .map(|name| name.map(|name| name.into_owned()))
+            .collect::<Result<_, _>>()
+            .map_err(|e| AppError::BadRequest(format!("Invalid ZIP entry name: {e}")))?;
         let channels_entry = names
             .iter()
             .filter(|n| {

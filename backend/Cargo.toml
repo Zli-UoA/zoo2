@@ -29,7 +29,7 @@ tokio-postgres-rustls = "0.14"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 futures-util = "0.3"
-jsonwebtoken = "9"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 emojis = "0.6"
 imagesize = "0.14"
 blurhash = "0.2"
@@ -43,7 +43,7 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 ece = "2.4"
 aes-gcm = "0.10"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # Statically link OpenSSL so the distroless runtime needs no shared libcrypto.
 openssl = { version = "0.10", features = ["vendored"] }
 

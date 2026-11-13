@@ -81,14 +81,11 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
-            if let SidebarItem::Thread { id, .. } = item {
-                let thread = app.threads().find(|thread| thread.id == *id)?;
-                let archived = thread.thread_archive_at.is_some();
-                let name = thread
-                    .content
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
+            if let SidebarItem::Thread { id, channel_id } = item {
+                let thread = app.threads().find(|thread| thread.id == *id);
+                let archived = app.thread_is_archived(channel_id, id);
+                let content = app.thread_content(channel_id, id)?;
+                let name = content.split_whitespace().collect::<Vec<_>>().join(" ");
                 let name = if name.is_empty() {
                     "無題のスレッド"
                 } else {
@@ -115,7 +112,16 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 };
                 let marker = if archived { "▣" } else { "↳" };
                 return Some(ListItem::new(Line::styled(
-                    format!("    {marker} {name} ({})", thread.reply_count),
+                    format!(
+                        "    {marker} {name} ({})",
+                        thread.map(|thread| thread.reply_count).unwrap_or_else(|| {
+                            app.store
+                                .reply_counts(channel_id)
+                                .get(id)
+                                .copied()
+                                .unwrap_or(0) as u64
+                        })
+                    ),
                     style,
                 )));
             }
@@ -172,11 +178,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let title = if app.store.is_synced(&ShapeId::Channels) {
-        Line::from(if app.show_archived_threads {
-            " チャンネル (履歴含む) "
-        } else {
-            " チャンネル "
-        })
+        Line::from(" チャンネル ")
     } else {
         Line::from(" チャンネル (読み込み中) ")
     };
@@ -424,7 +426,6 @@ const HELP: &[(&str, &str)] = &[
     ("r", "リアクションを付ける / 外す"),
     ("J / L", "チャンネルに参加 / 退出"),
     ("/", "チャンネル・スレッドを検索"),
-    ("a", "アーカイブ済みスレッドの表示切替"),
     ("u", "選択中のスレッドを再開"),
     ("R", "送れなかった本文を入力欄に戻す"),
     ("q / Ctrl+C", "終了"),
@@ -600,66 +601,795 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sidebar_lists_nested_threads_and_opens_archived_history() {
+    async fn archives_open_from_replies_and_appear_only_while_viewing() {
         let mut app = app();
-        app.on_app_event(AppEvent::Threads {
-            archived: false,
-            append: false,
-            next_cursor: None,
-            requested_at: std::time::Instant::now(),
-            threads: vec![
-                ThreadSummary {
-                    id: "m1".into(),
-                    channel_id: "c1".into(),
-                    content: "Active thread".into(),
-                    thread_archive_at: None,
-                    reply_count: 1,
-                },
-                ThreadSummary {
-                    id: "secret".into(),
-                    channel_id: "c2".into(),
-                    content: "Hidden thread".into(),
-                    thread_archive_at: None,
-                    reply_count: 1,
-                },
-            ],
+        app.archived_threads.push(ThreadSummary {
+            id: "r1".into(),
+            channel_id: "c1".into(),
+            content: "Nested history".into(),
+            thread_archive_at: Some("2026-11-10T00:00:00".into()),
+            reply_count: 1,
         });
-        app.on_app_event(AppEvent::Threads {
-            archived: true,
-            append: false,
-            next_cursor: None,
-            requested_at: std::time::Instant::now(),
-            threads: vec![ThreadSummary {
-                id: "r1".into(),
-                channel_id: "c1".into(),
-                content: "Nested history".into(),
-                thread_archive_at: Some("2026-11-10T00:00:00".into()),
-                reply_count: 1,
-            }],
-        });
-        assert_eq!(app.sidebar_items().len(), 3);
-        assert!(render(&mut app).contains("Active thread"));
-        assert!(!render(&mut app).contains("Nested history"));
-        assert!(!render(&mut app).contains("Hidden thread"));
-        press(&mut app, KeyCode::Down);
-        assert_eq!(app.search_matches("active"), vec![1]);
-        press(&mut app, KeyCode::Enter);
-        assert_eq!(app.focus, Focus::Thread);
-        assert_eq!(app.thread.as_ref().unwrap().root_id, "m1");
-        app.focus = Focus::Sidebar;
+        let items = app.sidebar_items();
         press(&mut app, KeyCode::Char('a'));
-        assert!(render(&mut app).contains("Nested history"));
-        press(&mut app, KeyCode::Down);
+        assert_eq!(app.sidebar_items(), items);
+        app.current = Some("c1".into());
+        app.focus = Focus::Messages;
+        app.selected = Some("r1".into());
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.thread.as_ref().unwrap().root_id, "r1");
         assert!(render(&mut app).contains("アーカイブ / u:再開"));
         assert!(render(&mut app).contains("返信です"));
+        let selected = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "r1".into(),
+        };
+        assert!(app.sidebar_items().contains(&selected));
+        press(&mut app, KeyCode::Esc);
+        assert!(app.thread.is_none());
+        assert!(!app.sidebar_items().contains(&selected));
+        assert!(app.archived_threads[0].thread_archive_at.is_some());
     }
 
     #[tokio::test]
-    async fn refreshing_either_thread_list_keeps_active_threads_before_history() {
+    async fn reply_free_posts_do_not_become_temporary_threads() {
         let mut app = app();
-        app.show_archived_threads = true;
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "empty",
+                json!({"id":"empty","user_id":"u2","channel_id":"c1",
+                "content":"No replies","created_at":"2026-11-02 00:00:00"}),
+            )]),
+        ));
+        app.current = Some("c1".into());
+        app.focus = Focus::Messages;
+        app.selected = Some("empty".into());
+        press(&mut app, KeyCode::Enter);
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "empty".into(),
+        };
+        assert!(app.thread.is_some());
+        assert!(!app.sidebar_items().contains(&row));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "empty",
+                json!({"id":"empty","user_id":"u2","channel_id":"c1",
+                "content":"No replies","created_at":"2026-11-02 00:00:00",
+                "thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        assert!(app.sidebar_items().contains(&row));
+    }
+
+    #[tokio::test]
+    async fn enter_opens_an_archived_nested_thread_from_its_parent_reply() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "r1",
+                    json!({"id":"r1","user_id":"u1","channel_id":"c1",
+                "content":"Nested root","parent_id":"m1","created_at":"2026-11-01 03:01:00",
+                "thread_archive_at":"2026-11-10 00:00:00"}),
+                ),
+                (
+                    "r2",
+                    json!({"id":"r2","user_id":"u2","channel_id":"c1",
+                "content":"Nested reply","parent_id":"r1","created_at":"2026-11-01 03:02:00"}),
+                ),
+            ]),
+        ));
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "r1".into(),
+        };
+        assert!(!app.sidebar_items().contains(&row));
+        app.current = Some("c1".into());
+        app.focus = Focus::Messages;
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r1"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "r1");
+        assert!(app.sidebar_items().contains(&row));
+        let screen = render(&mut app);
+        assert!(screen.contains("Nested reply"), "{screen}");
+        assert!(screen.contains("アーカイブ / u:再開"), "{screen}");
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.sidebar_items().contains(&row));
+        assert!(app.thread_is_archived("c1", "r1"));
+    }
+
+    #[tokio::test]
+    async fn unlisted_selected_archive_stays_under_its_channel() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                "content":"Old conversation","created_at":"2026-11-01 03:00:00",
+                "thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        assert!(app.active_threads.is_empty());
+        assert!(app.archived_threads.is_empty());
+        app.current = Some("c1".into());
+        app.focus = Focus::Messages;
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.sidebar_items(),
+            vec![
+                SidebarItem::Channel("c1".into()),
+                SidebarItem::Thread {
+                    channel_id: "c1".into(),
+                    id: "m1".into()
+                },
+                SidebarItem::Channel("c2".into()),
+            ]
+        );
+        assert!(app.thread_is_archived("c1", "m1"));
+        assert_eq!(app.search_matches("Old conversation"), vec![1]);
+        press(&mut app, KeyCode::Char('/'));
+        for ch in "Old conversation".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.sidebar_index, 1);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "m1");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.sidebar_items(),
+            vec![
+                SidebarItem::Channel("c1".into()),
+                SidebarItem::Channel("c2".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn unlisted_archive_renders_loaded_reply_count() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                    "content":"Old","created_at":"2026-11-01 03:00:00",
+                    "thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        assert!(app.active_threads.is_empty());
+        assert!(app.archived_threads.is_empty());
+        assert_eq!(app.store.reply_counts("c1").get("m1"), Some(&1));
+        app.current = Some("c1".into());
+        app.focus = Focus::Messages;
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        let screen = render(&mut app);
+        assert!(screen.contains("Old (1)"), "{screen}");
+        assert!(screen.contains("返信 1 件"), "{screen}");
+    }
+
+    #[tokio::test]
+    async fn archived_shape_state_survives_subscription_reset() {
+        let mut app = app();
+        app.open_channel("c1".into());
+        let active = ThreadSummary {
+            id: "m1".into(),
+            channel_id: "c1".into(),
+            content: "Old conversation".into(),
+            thread_archive_at: None,
+            reply_count: 1,
+        };
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            threads: vec![active.clone()],
+            next_cursor: None,
+            requested_at: std::time::Instant::now(),
+        });
+        let stale_request = std::time::Instant::now();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1","content":"Old conversation",
+                "created_at":"2026-11-01 03:00:00","thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        app.open_channel("c2".into());
+        assert!(app.store.message("c1", "m1").is_none());
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "m1".into(),
+        };
+        assert!(!app.sidebar_items().contains(&row));
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: true,
+            threads: vec![active.clone()],
+            next_cursor: None,
+            requested_at: stale_request,
+        });
+        assert!(!app.sidebar_items().contains(&row));
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            threads: vec![active],
+            next_cursor: None,
+            requested_at: std::time::Instant::now(),
+        });
+        assert!(app.sidebar_items().contains(&row));
+    }
+
+    #[tokio::test]
+    async fn resync_reconciles_rows_added_by_an_index_response_during_the_snapshot() {
+        for append in [false, true] {
+            for replies in [0, 1] {
+                let mut app = app();
+                // 再同期開始時に親・返信・一覧のどれも存在しない状態にする。
+                app.store.apply(
+                    &ShapeId::Messages("c1".into()),
+                    Batch {
+                        reset: true,
+                        ..Default::default()
+                    },
+                );
+                app.open_channel("c1".into());
+                app.on_shape(ShapeEvent::Batch(
+                    ShapeId::Messages("c1".into()),
+                    Batch {
+                        reset: true,
+                        ..Default::default()
+                    },
+                ));
+                assert!(app.active_threads.is_empty());
+                assert!(app.store.message("c1", "m1").is_none());
+                app.on_app_event(AppEvent::Threads {
+                    archived: false,
+                    append,
+                    requested_at: std::time::Instant::now(),
+                    next_cursor: None,
+                    threads: vec![ThreadSummary {
+                        id: "m1".into(),
+                        channel_id: "c1".into(),
+                        content: "Late index row".into(),
+                        thread_archive_at: None,
+                        reply_count: 1,
+                    }],
+                });
+                let row = SidebarItem::Thread {
+                    channel_id: "c1".into(),
+                    id: "m1".into(),
+                };
+                assert!(app.sidebar_items().contains(&row));
+                let mut snapshot = batch(vec![(
+                    "m1",
+                    json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                    "content":"Late index row","created_at":"2026-11-01 03:00:00"}),
+                )]);
+                snapshot.up_to_date = false;
+                app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), snapshot));
+                assert!(app.sidebar_items().contains(&row));
+                if replies > 0 {
+                    let mut reply = batch(vec![(
+                        "r1",
+                        json!({"id":"r1","user_id":"u1","channel_id":"c1",
+                        "content":"Still exists","parent_id":"m1","created_at":"2026-11-01 03:01:00"}),
+                    )]);
+                    reply.up_to_date = false;
+                    app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), reply));
+                }
+                let stale_request = std::time::Instant::now();
+                app.on_shape(ShapeEvent::Batch(
+                    ShapeId::Messages("c1".into()),
+                    Batch {
+                        up_to_date: true,
+                        ..Default::default()
+                    },
+                ));
+                assert_eq!(app.store.replies("c1", "m1").len(), replies);
+                assert_eq!(app.sidebar_items().contains(&row), replies > 0);
+                app.on_app_event(AppEvent::ThreadsFailed {
+                    archived: false,
+                    append: false,
+                    requested_at: std::time::Instant::now(),
+                    message: "unavailable".into(),
+                });
+                app.on_app_event(AppEvent::Threads {
+                    archived: false,
+                    append,
+                    requested_at: stale_request,
+                    next_cursor: None,
+                    threads: vec![ThreadSummary {
+                        id: "m1".into(),
+                        channel_id: "c1".into(),
+                        content: "Late index row".into(),
+                        thread_archive_at: None,
+                        reply_count: 1,
+                    }],
+                });
+                assert_eq!(app.sidebar_items().contains(&row), replies > 0);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn resync_keeps_rows_until_the_complete_snapshot_reconciles_reply_counts() {
+        for count in [0, 1, 2] {
+            let mut app = app();
+            app.open_channel("c1".into());
+            let summary = ThreadSummary {
+                id: "m1".into(),
+                channel_id: "c1".into(),
+                content: "Resync conversation".into(),
+                thread_archive_at: None,
+                reply_count: 1,
+            };
+            app.on_app_event(AppEvent::Threads {
+                archived: false,
+                append: false,
+                requested_at: std::time::Instant::now(),
+                next_cursor: None,
+                threads: vec![summary.clone()],
+            });
+            let row = SidebarItem::Thread {
+                channel_id: "c1".into(),
+                id: "m1".into(),
+            };
+            app.focus = Focus::Messages;
+            app.selected = Some("m1".into());
+            press(&mut app, KeyCode::Enter);
+            for _ in 0..2 {
+                app.on_shape(ShapeEvent::Batch(
+                    ShapeId::Messages("c1".into()),
+                    Batch {
+                        reset: true,
+                        ..Default::default()
+                    },
+                ));
+                assert!(app.sidebar_items().contains(&row));
+                assert_eq!(app.active_threads[0].reply_count, 1);
+                assert_eq!(app.thread.as_ref().unwrap().root_id, "m1");
+                assert!(render(&mut app).contains("読み込み中"));
+            }
+            let mut root = batch(vec![(
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                "content":"Resync conversation","created_at":"2026-11-01 03:00:00"}),
+            )]);
+            root.up_to_date = false;
+            app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), root));
+            assert!(app.sidebar_items().contains(&row));
+            assert_eq!(app.active_threads[0].reply_count, 1);
+            for i in 0..count {
+                let id = format!("restored-{i}");
+                let mut reply = batch(vec![(
+                    &id,
+                    json!({"id":id,"user_id":"u1","channel_id":"c1",
+                    "content":"Restored reply","parent_id":"m1","created_at":"2026-11-01 03:01:00"}),
+                )]);
+                reply.up_to_date = false;
+                app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), reply));
+                assert_eq!(app.active_threads[0].reply_count, 1);
+            }
+            let stale_request = std::time::Instant::now();
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages("c1".into()),
+                Batch {
+                    up_to_date: true,
+                    ..Default::default()
+                },
+            ));
+            assert_eq!(app.store.replies("c1", "m1").len(), count);
+            assert_eq!(app.sidebar_items().contains(&row), count > 0);
+            if count > 0 {
+                assert_eq!(app.active_threads[0].reply_count, count as u64);
+            }
+            app.on_app_event(AppEvent::Threads {
+                archived: false,
+                append: false,
+                requested_at: stale_request,
+                next_cursor: None,
+                threads: vec![summary],
+            });
+            app.on_app_event(AppEvent::ThreadsFailed {
+                archived: false,
+                append: false,
+                requested_at: std::time::Instant::now(),
+                message: "unavailable".into(),
+            });
+            assert_eq!(app.sidebar_items().contains(&row), count > 0);
+            if count > 0 {
+                assert_eq!(app.active_threads[0].reply_count, count as u64);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn resubscribing_reconciles_known_rows_even_when_the_store_was_unloaded() {
+        for root_exists in [false, true] {
+            let mut app = app();
+            app.open_channel("c1".into());
+            app.on_app_event(AppEvent::Threads {
+                archived: false,
+                append: false,
+                requested_at: std::time::Instant::now(),
+                next_cursor: None,
+                threads: vec![ThreadSummary {
+                    id: "m1".into(),
+                    channel_id: "c1".into(),
+                    content: "Known thread".into(),
+                    thread_archive_at: None,
+                    reply_count: 1,
+                }],
+            });
+            app.open_channel("c2".into());
+            app.open_channel("c1".into());
+            assert!(app.store.message("c1", "m1").is_none());
+            let row = SidebarItem::Thread {
+                channel_id: "c1".into(),
+                id: "m1".into(),
+            };
+            assert!(app.sidebar_items().contains(&row));
+            if root_exists {
+                let mut snapshot = batch(vec![
+                    (
+                        "m1",
+                        json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                        "content":"Known thread","created_at":"2026-11-01 03:00:00"}),
+                    ),
+                    (
+                        "r1",
+                        json!({"id":"r1","user_id":"u1","channel_id":"c1",
+                        "content":"Reply","parent_id":"m1","created_at":"2026-11-01 03:01:00"}),
+                    ),
+                ]);
+                snapshot.up_to_date = false;
+                app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), snapshot));
+            }
+            assert!(app.sidebar_items().contains(&row));
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages("c1".into()),
+                Batch {
+                    up_to_date: true,
+                    ..Default::default()
+                },
+            ));
+            assert_eq!(app.sidebar_items().contains(&row), root_exists);
+        }
+    }
+
+    #[tokio::test]
+    async fn atomic_resync_keeps_a_pending_first_reply_and_reconciles_known_threads() {
+        let mut app = app();
+        app.open_channel("c1".into());
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            requested_at: std::time::Instant::now(),
+            next_cursor: None,
+            threads: vec![ThreadSummary {
+                id: "m1".into(),
+                channel_id: "c1".into(),
+                content: "Known".into(),
+                thread_archive_at: None,
+                reply_count: 1,
+            }],
+        });
+        let pending = json!({"id":"pending","user_id":"u2","channel_id":"c1",
+            "content":"Pending first reply","created_at":"2026-11-01 03:00:00"});
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("pending", pending.clone())]),
+        ));
+        app.focus = Focus::Messages;
+        app.selected = Some("pending".into());
+        press(&mut app, KeyCode::Enter);
+        app.on_app_event(AppEvent::ThreadsChanged {
+            reopened: Some("pending".into()),
+        });
+        let mut snapshot = batch(vec![
+            ("pending", pending),
+            (
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                "content":"Known","created_at":"2026-11-01 03:00:00"}),
+            ),
+            (
+                "a",
+                json!({"id":"a","user_id":"u1","channel_id":"c1",
+                "content":"A","parent_id":"m1","created_at":"2026-11-01 03:01:00"}),
+            ),
+            (
+                "b",
+                json!({"id":"b","user_id":"u1","channel_id":"c1",
+                "content":"B","parent_id":"m1","created_at":"2026-11-01 03:02:00"}),
+            ),
+        ]);
+        snapshot.reset = true;
+        app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), snapshot));
+        assert_eq!(
+            app.active_threads
+                .iter()
+                .find(|row| row.id == "m1")
+                .unwrap()
+                .reply_count,
+            2
+        );
+        assert_eq!(
+            app.active_threads
+                .iter()
+                .find(|row| row.id == "pending")
+                .unwrap()
+                .reply_count,
+            0
+        );
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "first",
+                json!({"id":"first","user_id":"u1","channel_id":"c1","content":"First",
+                "parent_id":"pending","created_at":"2026-11-01 03:03:00"}),
+            )]),
+        ));
+        assert_eq!(
+            app.active_threads
+                .iter()
+                .find(|row| row.id == "pending")
+                .unwrap()
+                .reply_count,
+            1
+        );
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "pending");
+    }
+
+    #[tokio::test]
+    async fn deleting_the_last_reply_removes_the_active_row_even_when_refresh_fails() {
+        for (physical_delete, archived) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let mut app = app();
+            app.open_channel("c1".into());
+            // fixtureの初期行が同期済みになってから、liveの削除を受信する。
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages("c1".into()),
+                Batch {
+                    up_to_date: true,
+                    ..Default::default()
+                },
+            ));
+            let thread = ThreadSummary {
+                id: "m1".into(),
+                channel_id: "c1".into(),
+                content: "Conversation".into(),
+                thread_archive_at: None,
+                reply_count: 1,
+            };
+            app.on_app_event(AppEvent::Threads {
+                archived: false,
+                append: false,
+                requested_at: std::time::Instant::now(),
+                next_cursor: None,
+                threads: vec![thread.clone()],
+            });
+            let row = SidebarItem::Thread {
+                channel_id: "c1".into(),
+                id: "m1".into(),
+            };
+            assert!(app.sidebar_items().contains(&row));
+            if archived {
+                app.on_shape(ShapeEvent::Batch(
+                    ShapeId::Messages("c1".into()),
+                    batch(vec![(
+                        "m1",
+                        json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                        "content":"Conversation","created_at":"2026-11-01 03:00:00",
+                        "thread_archive_at":"2026-11-10 00:00:00"}),
+                    )]),
+                ));
+                app.focus = Focus::Messages;
+                app.selected = Some("m1".into());
+                press(&mut app, KeyCode::Enter);
+            }
+            let stale_request = std::time::Instant::now();
+            let deletion = if physical_delete {
+                Batch {
+                    changes: vec![Change::Delete { key: "r1".into() }],
+                    ..Default::default()
+                }
+            } else {
+                batch(vec![(
+                    "r1",
+                    json!({"id":"r1","user_id":"u1","channel_id":"c1",
+                    "content":"返信です","parent_id":"m1","created_at":"2026-11-01 03:01:00",
+                    "deleted_at":"2026-11-11 00:00:00"}),
+                )])
+            };
+            app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), deletion));
+            assert_eq!(app.store.reply_counts("c1").get("m1"), None);
+            assert!(!app.active_threads.iter().any(|thread| thread.id == "m1"));
+            app.on_app_event(AppEvent::Threads {
+                archived: false,
+                append: false,
+                requested_at: stale_request,
+                next_cursor: None,
+                threads: vec![thread],
+            });
+            app.on_app_event(AppEvent::ThreadsFailed {
+                archived: false,
+                append: false,
+                requested_at: std::time::Instant::now(),
+                message: "unavailable".into(),
+            });
+            assert_eq!(app.sidebar_items().contains(&row), archived);
+            if archived {
+                assert!(app.thread_is_archived("c1", "m1"));
+                press(&mut app, KeyCode::Esc);
+                assert!(!app.sidebar_items().contains(&row));
+            }
+            assert!(!render(&mut app).contains("Conversation (0)"));
+        }
+    }
+
+    #[tokio::test]
+    async fn first_reply_shape_updates_the_locally_created_thread_count() {
+        let mut app = app();
+        app.open_channel("c1".into());
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "new-root",
+                json!({"id":"new-root","user_id":"u2","channel_id":"c1",
+                "content":"New thread","created_at":"2026-11-01 03:00:00"}),
+            )]),
+        ));
+        app.focus = Focus::Messages;
+        app.selected = Some("new-root".into());
+        press(&mut app, KeyCode::Enter);
+        app.on_app_event(AppEvent::ThreadsChanged {
+            reopened: Some("new-root".into()),
+        });
+        assert_eq!(app.active_threads[0].reply_count, 0);
+        let stale_request = std::time::Instant::now();
+        app.on_app_event(AppEvent::ThreadsFailed {
+            archived: false,
+            append: false,
+            requested_at: stale_request,
+            message: "unavailable".into(),
+        });
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "first",
+                json!({"id":"first","user_id":"u1","channel_id":"c1",
+                "content":"First reply","parent_id":"new-root","created_at":"2026-11-01 03:01:00"}),
+            )]),
+        ));
+        assert_eq!(app.store.reply_counts("c1").get("new-root"), Some(&1));
+        assert_eq!(app.active_threads[0].reply_count, 1);
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            requested_at: stale_request,
+            next_cursor: None,
+            threads: vec![ThreadSummary {
+                id: "new-root".into(),
+                channel_id: "c1".into(),
+                content: "New thread".into(),
+                thread_archive_at: None,
+                reply_count: 0,
+            }],
+        });
+        press(&mut app, KeyCode::Esc);
+        assert!(render(&mut app).contains("New thread (1)"));
+    }
+
+    #[tokio::test]
+    async fn shape_reopen_survives_close_stale_index_and_failed_refresh() {
+        let mut app = app();
+        app.open_channel("c1".into());
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                "content":"Reopened remotely","created_at":"2026-11-01 03:00:00",
+                "thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        app.focus = Focus::Messages;
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        assert!(app.active_threads.is_empty());
+        assert!(app.archived_threads.is_empty());
+        let stale_request = std::time::Instant::now();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1",
+                "content":"Reopened remotely","created_at":"2026-11-01 03:00:00",
+                "thread_archive_at":null}),
+            )]),
+        ));
+        press(&mut app, KeyCode::Esc);
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "m1".into(),
+        };
+        assert!(app.thread.is_none());
+        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.thread_is_archived("c1", "m1"));
+        assert!(render(&mut app).contains("Reopened remotely"));
+        app.on_app_event(AppEvent::Threads {
+            archived: false,
+            append: false,
+            threads: vec![],
+            next_cursor: None,
+            requested_at: stale_request,
+        });
+        assert!(app.sidebar_items().contains(&row));
+        app.on_app_event(AppEvent::ThreadsFailed {
+            archived: false,
+            append: false,
+            requested_at: std::time::Instant::now(),
+            message: "unavailable".into(),
+        });
+        assert!(app.sidebar_items().contains(&row));
+        app.open_channel("c2".into());
+        assert!(app.store.message("c1", "m1").is_none());
+        assert!(app.sidebar_items().contains(&row));
+    }
+
+    #[tokio::test]
+    async fn unlisted_reopen_success_survives_close_and_failed_refresh() {
+        let mut app = app();
+        app.open_channel("c1".into());
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({"id":"m1","user_id":"u2","channel_id":"c1","content":"Old conversation",
+                "created_at":"2026-11-01 03:00:00","thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        app.focus = Focus::Messages;
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        assert!(app.active_threads.is_empty());
+        assert!(app.archived_threads.is_empty());
+        app.on_app_event(AppEvent::ThreadsChanged {
+            reopened: Some("m1".into()),
+        });
+        press(&mut app, KeyCode::Esc);
+        assert!(app.thread.is_none());
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "m1".into(),
+        };
+        assert!(app.sidebar_items().contains(&row));
+        assert!(!app.thread_is_archived("c1", "m1"));
+        app.on_app_event(AppEvent::ThreadsFailed {
+            archived: false,
+            append: false,
+            requested_at: std::time::Instant::now(),
+            message: "unavailable".into(),
+        });
+        assert!(app.sidebar_items().contains(&row));
+    }
+
+    #[tokio::test]
+    async fn refreshing_lists_keeps_archives_in_history_only() {
+        let mut app = app();
         let active = ThreadSummary {
             id: "m1".into(),
             channel_id: "c1".into(),
@@ -674,9 +1404,9 @@ mod tests {
         };
         for (archived_scope, append, threads, expected) in [
             (false, false, vec![active.clone()], vec!["m1"]),
-            (true, false, vec![archived.clone()], vec!["m1", "r1"]),
-            (false, false, vec![active.clone()], vec!["m1", "r1"]),
-            (true, false, vec![archived], vec!["m1", "r1"]),
+            (true, false, vec![archived.clone()], vec!["m1"]),
+            (false, false, vec![active.clone()], vec!["m1"]),
+            (true, false, vec![archived], vec!["m1"]),
             (
                 false,
                 true,
@@ -684,7 +1414,7 @@ mod tests {
                     id: "older".into(),
                     ..active
                 }],
-                vec!["m1", "older", "r1"],
+                vec!["m1", "older"],
             ),
         ] {
             app.on_app_event(AppEvent::Threads {
@@ -703,16 +1433,7 @@ mod tests {
                 })
                 .collect();
             assert_eq!(ids, expected);
-            if ids.len() > 1 {
-                app.sidebar_index = app
-                    .sidebar_items()
-                    .iter()
-                    .position(|item| matches!(item, SidebarItem::Thread { id, .. } if id == "r1"))
-                    .unwrap();
-            }
         }
-        assert!(matches!(&app.sidebar_items()[app.sidebar_index],
-            SidebarItem::Thread { id, .. } if id == "r1"));
     }
 
     #[tokio::test]
@@ -783,7 +1504,6 @@ mod tests {
         app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), batch(vec![(
             "m1", serde_json::json!({"id":"m1", "user_id":"u1", "channel_id":"c1", "content":"Archived root", "created_at":"2026-11-01T00:00:00", "thread_archive_at":"2026-11-10T00:00:00"})
         )])));
-        assert!(!app.show_archived_threads);
         assert!(render(&mut app).contains("アーカイブ / u:再開"));
     }
 

@@ -104,7 +104,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
         json!({"channel_id":channel,"content":"Grandchild","parent_id":child_id}),
     )
     .await?;
-    toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '8 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-interval '8 days' WHERE channel_id=$1")
+    toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '2 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-interval '2 days' WHERE channel_id=$1")
         .bind(channel.as_str()).exec(&mut db).await?;
     archive_idle_threads(&db).await?;
     let threads = request(
@@ -149,8 +149,10 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
         "an unchanged thread must not allocate a replication txid"
     );
 
+    toasty::sql::statement("UPDATE messages SET thread_activity_at=(now() AT TIME ZONE 'UTC')-interval '23 hours' WHERE id=$1")
+        .bind(child_id).exec(&mut db).await?;
     archive_idle_threads(&db).await?;
-    // Reopening counts as activity even if the replies are old.
+    // A thread idle for less than one day stays active even if its replies are old.
     let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
     assert!(
         threads["items"]
@@ -346,13 +348,14 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
     )
     .await?;
     let mut roots = Vec::new();
-    for days in [1, 2] {
+    // Parallel archive tests sweep all channels, so keep these activities within one day.
+    for hours in [1, 2] {
         let root = request(
             &app,
             "POST",
             &user,
             "/api/home",
-            json!({"channel_id":channel,"content":format!("Thread {days}")}),
+            json!({"channel_id":channel,"content":format!("Thread {hours}")}),
         )
         .await?;
         let root_id = root["id"].as_str().unwrap().to_owned();
@@ -364,11 +367,11 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
             json!({"channel_id":channel,"content":"Existing reply","parent_id":root_id}),
         )
         .await?;
-        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 day') WHERE id=$1")
-            .bind(reply["data"]["id"].as_str().unwrap()).bind(days.to_string()).exec(&mut db).await?;
+        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 hour') WHERE id=$1")
+            .bind(reply["data"]["id"].as_str().unwrap()).bind(hours.to_string()).exec(&mut db).await?;
         // The migration backfills the latest existing reply before indexed reads start.
-        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '30 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 day') WHERE id=$1")
-            .bind(root_id.as_str()).bind(days.to_string()).exec(&mut db).await?;
+        toasty::sql::statement("UPDATE messages SET created_at=(now() AT TIME ZONE 'UTC')-interval '30 days',thread_activity_at=(now() AT TIME ZONE 'UTC')-($2::int * interval '1 hour') WHERE id=$1")
+            .bind(root_id.as_str()).bind(hours.to_string()).exec(&mut db).await?;
         roots.push(root_id);
     }
     for imported in [false, true] {
@@ -417,7 +420,7 @@ async fn thread_index_limits_membership_history_and_page_size() -> anyhow::Resul
             json!({"id":channel,"channel_name":channel,"is_private":false}),
         )
         .await?;
-        toasty::sql::statement("WITH roots AS (INSERT INTO messages(id,user_id,channel_id,content,created_at) SELECT gen_random_uuid()::text,$1,$2,'Root '||n,(now() AT TIME ZONE 'UTC')-interval '1 day'+n*interval '1 second' FROM generate_series(1,105) n RETURNING id,user_id,channel_id,created_at) INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) SELECT gen_random_uuid()::text,user_id,channel_id,'Reply',id,created_at FROM roots")
+        toasty::sql::statement("WITH roots AS (INSERT INTO messages(id,user_id,channel_id,content,created_at) SELECT gen_random_uuid()::text,$1,$2,'Root '||n,(now() AT TIME ZONE 'UTC')-interval '1 hour'+n*interval '1 second' FROM generate_series(1,105) n RETURNING id,user_id,channel_id,created_at) INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) SELECT gen_random_uuid()::text,user_id,channel_id,'Reply',id,created_at FROM roots")
             .bind(user.as_str()).bind(channel.as_str()).exec(&mut db).await?;
         channels.push(channel);
     }

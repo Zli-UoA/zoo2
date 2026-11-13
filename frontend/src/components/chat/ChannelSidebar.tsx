@@ -214,7 +214,7 @@ export function ChannelSidebar({
                       <ChannelThreadItems
                         channel={channel}
                         threads={threadIndex.threads}
-                        currentUserId={currentUserId}
+                        onObserveThread={threadIndex.observeThread}
                       />
                     ) : null}
                   </div>
