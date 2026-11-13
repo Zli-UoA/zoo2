@@ -465,6 +465,11 @@ export const EncryptedKeyMissing: Story = {
     await expect(
       within(canvasElement).getByText("このメッセージを復号する鍵がまだ届いていません。"),
     ).toBeVisible();
+    // 本文がないので、空文字列をコピーしないよう「原文をコピー」を出さない。
+    (await within(canvasElement).findByRole("button", { name: "その他の操作" })).focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByRole("menu")).toBeVisible());
+    await expect(screen.queryByRole("menuitem", { name: "原文をコピー" })).not.toBeInTheDocument();
   }),
 };
 

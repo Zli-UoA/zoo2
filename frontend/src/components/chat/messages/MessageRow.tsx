@@ -262,6 +262,8 @@ export function MessageRow({
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
 
   async function copyRawMessage() {
+    // メニューを出さない状態でも、ほかの経路から呼ばれたときに空文字列で上書きしない。
+    if (resolvedDecryption?.status === "undecryptable") return;
     try {
       await navigator.clipboard.writeText(bodyText);
       toast.success(t("messages.copied"));
@@ -647,10 +649,13 @@ export function MessageRow({
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => void copyRawMessage()}>
-                  <CopyIcon />
-                  {t("messages.copyRaw")}
-                </DropdownMenuItem>
+                {/* 復号できない暗号化メッセージは本文がないので、空文字列をコピーしないようメニューを出さない。 */}
+                {resolvedDecryption?.status === "undecryptable" ? null : (
+                  <DropdownMenuItem onClick={() => void copyRawMessage()}>
+                    <CopyIcon />
+                    {t("messages.copyRaw")}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
                   onClick={() =>
                     window.dispatchEvent(
