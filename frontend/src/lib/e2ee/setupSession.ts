@@ -108,9 +108,12 @@ export class SetupSession {
     return [...this.created().slots];
   }
 
-  /** `POST /api/e2ee/secret_storage/keys` の本文。 */
-  secretStorageRequest(): JsonObject {
-    const pending = this.created();
+  /**
+   * `POST /api/e2ee/secret_storage/keys` の本文。`keyId` は、利用者がリカバリーキーを控えた初回設定の
+   * SSSS 鍵の ID。保存を待つ間に別の初回設定を始めていたら、その本文は返さない。
+   */
+  secretStorageRequest(keyId: string): JsonObject {
+    const pending = this.created(keyId);
     const crossSigning = pending.secrets.crossSigning;
     const backupKey = pending.secrets.backupKey;
     const previous = new BackupKeyList();
@@ -162,8 +165,13 @@ export class SetupSession {
    * サーバーの状態と比べ、続きに送る要求を決める。リセットなら差し替える要求を作る。
    * 鍵が違えば `code` が `ServerKeyMismatch` のエラーになる。
    */
-  plan(store: CryptoStore, keysQuery: JsonObject, versions: JsonObject): ResumePlan {
-    const pending = this.require();
+  plan(
+    store: CryptoStore,
+    keysQuery: JsonObject,
+    versions: JsonObject,
+    keyId?: string,
+  ): ResumePlan {
+    const pending = this.require(keyId);
     const deviceKeys = store.deviceKeys();
     return pending.reset
       ? pending.secrets.planReset(keysQuery, versions, deviceKeys)
@@ -171,8 +179,8 @@ export class SetupSession {
   }
 
   /** 続きの保存が終わったら、自分の鍵を暗号ストアに保存する。リセットの前提はここで外す。 */
-  async finish(store: CryptoStore, secretsRevision: number | null): Promise<void> {
-    const pending = this.require();
+  async finish(store: CryptoStore, secretsRevision: number | null, keyId?: string): Promise<void> {
+    const pending = this.require(keyId);
     await store.saveOwnKeys(pending.secrets, secretsRevision);
     pending.reset = null;
     pending.slots = [];
@@ -201,13 +209,17 @@ export class SetupSession {
     this.pending = null;
   }
 
-  private require(): Pending {
+  /** `keyId` を渡したら、メモリーの SSSS 鍵がその鍵であることも確かめる。 */
+  private require(keyId?: string): Pending {
     if (!this.pending) throw new SetupError("NoSecrets", "SSSS を開けていません");
+    if (keyId !== undefined && this.pending.ssss.keyId !== keyId) {
+      throw new SetupError("Superseded", "別の初回設定に置き換わりました");
+    }
     return this.pending;
   }
 
-  private created(): Pending {
-    const pending = this.require();
+  private created(keyId?: string): Pending {
+    const pending = this.require(keyId);
     if (!pending.created) throw new SetupError("NoSecrets", "初回設定を始めていません");
     return pending;
   }
@@ -216,7 +228,7 @@ export class SetupSession {
 /** Worker の中の初回設定と解錠の誤り（`code` で分岐する）。 */
 export class SetupError extends Error {
   constructor(
-    readonly code: "NoSecretStorage" | "NoSecrets",
+    readonly code: "NoSecretStorage" | "NoSecrets" | "Superseded",
     message: string,
   ) {
     super(message);

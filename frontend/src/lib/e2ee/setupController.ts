@@ -225,7 +225,8 @@ export async function completeSetup(
   keyId: string,
   reauth: string | null,
 ): Promise<void> {
-  const body = await deps.worker.request({ op: "setupSecretStorageRequest" });
+  // 再認証を待つ間に別の初回設定を始めていたら、Worker はこの本文を返さない（keyId が違う）。
+  const body = await deps.worker.request({ op: "setupSecretStorageRequest", keyId });
   let revision: number | null;
   try {
     revision = await withReauth(() => createSecretStorageKey(deps.client, body, reauth));
@@ -246,7 +247,7 @@ export async function completeSetup(
       if (!saved.has(slot.id)) await addKeySlot(deps.client, keyId, slot, reauth);
     }
   }
-  await saveRemaining(deps, revision, reauth);
+  await saveRemaining(deps, revision, reauth, keyId);
 }
 
 /**
@@ -257,25 +258,54 @@ export async function saveRemaining(
   deps: E2eeSetupDeps,
   secretsRevision: number | null,
   reauth: string | null,
+  /** 開けた（作った）SSSS 鍵の ID。サーバーの既定の鍵がこれでなければ、何も保存しない。 */
+  keyId?: string,
 ): Promise<void> {
-  const plan = await planRemaining(deps);
-  await withReauth(async () => {
-    if (plan.cross_signing) await uploadCrossSigningKeys(deps.client, plan.cross_signing, reauth);
-    if (plan.device_signature) await uploadSignatures(deps.client, [plan.device_signature]);
-    if (plan.backup_version) await createBackupVersion(deps.client, plan.backup_version, reauth);
-  });
-  await deps.worker.request({ op: "finishSetup", secretsRevision });
+  const plan = await planRemaining(deps, keyId);
+  // 初回設定とリセットでは、作った SSSS 鍵を前提にする。サーバーが同じトランザクションで既定の
+  // 鍵を照合するので、読み直してから送るまでの間に別の端末が SSSS を作り直しても、鍵を差し替えない。
+  const precondition: JsonObject = keyId === undefined ? {} : { expected_default_key_id: keyId };
+  try {
+    await withReauth(async () => {
+      if (plan.cross_signing) {
+        await uploadCrossSigningKeys(
+          deps.client,
+          { ...plan.cross_signing, ...precondition },
+          reauth,
+        );
+      }
+      if (plan.device_signature) await uploadSignatures(deps.client, [plan.device_signature]);
+      if (plan.backup_version) {
+        await createBackupVersion(deps.client, { ...plan.backup_version, ...precondition }, reauth);
+      }
+    });
+  } catch (error) {
+    if (keyId !== undefined && ssssConflict(error)) {
+      await deps.worker.request({ op: "discardSecrets" });
+      throw new SetupConflictError();
+    }
+    throw error;
+  }
+  await deps.worker.request({ op: "finishSetup", secretsRevision, keyId });
   // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送る。失敗しても解錠は済んでいる。
   await uploadKeyBackup(deps).catch(() => undefined);
 }
 
-async function planRemaining(deps: E2eeSetupDeps): Promise<ResumePlan> {
-  const [keysQuery, versions] = await Promise.all([
+async function planRemaining(deps: E2eeSetupDeps, keyId?: string): Promise<ResumePlan> {
+  const [keysQuery, versions, storage] = await Promise.all([
     queryOwnKeys(deps.client, deps.userId),
     listBackupVersions(deps.client),
+    keyId === undefined ? null : getSecretStorage(deps.client),
   ]);
+  // 別の端末が SSSS を作り直した（同時のリセットなど）。手元の鍵でクロス署名鍵や版を差し替えると、
+  // SSSS とサーバーの鍵の世代がずれるので、何も送らない。サーバーの鍵の差し替えは SSSS の世代を
+  // 前提にしないので、ここで読み直して確かめる（読んでから送るまでの間の競合は残る）。
+  if (storage && storage.default_key_id !== keyId) {
+    await deps.worker.request({ op: "discardSecrets" });
+    throw new SetupConflictError();
+  }
   try {
-    return await deps.worker.request({ op: "planResume", keysQuery, versions });
+    return await deps.worker.request({ op: "planResume", keysQuery, versions, keyId });
   } catch (error) {
     if (isServerKeyMismatch(error)) {
       await deps.worker.request({ op: "discardSecrets" });
@@ -290,25 +320,28 @@ export type UnlockMethod = { kind: "recovery"; recoveryKey: string } | { kind: "
 /**
  * パスキーかリカバリーキーで SSSS を開ける。続きの保存に再認証が要らなければ、そのまま最後まで
  * 保存して `{ needsReauth: false }` を返す。要るとき（初回設定の再開でクロス署名鍵がない）は
- * `{ needsReauth: true }` を返すので、利用者の操作で再認証してから {@link saveRemaining} を呼ぶ。
+ * `{ needsReauth: true }` を返すので、利用者の操作で再認証してから、返した `keyId` を付けて
+ * {@link saveRemaining} を呼ぶ。続きの保存は、開けた SSSS 鍵がサーバーの既定の鍵のままであることを
+ * 前提にする（別の端末が SSSS を作り直していたら、サーバーが 409 で拒む）。
  */
 export async function unlock(
   deps: E2eeSetupDeps,
   storage: SecretStorageResponse,
   method: UnlockMethod,
-): Promise<{ needsReauth: boolean; secretsRevision: number | null }> {
+): Promise<{ needsReauth: boolean; secretsRevision: number | null; keyId: string }> {
   let secretsRevision: number | null;
+  let keyId: string;
   if (method.kind === "passkey") {
     if (!deps.rpId) throw new PasskeyError("prfUnsupported", "パスキーを使えない環境です");
     const result = await evaluatePrfForUnlock(deps.rpId, storage.slots, deps.getCredential);
-    ({ secretsRevision } = await deps.worker.request({
+    ({ secretsRevision, keyId } = await deps.worker.request({
       op: "unlock",
       response: storage as unknown as JsonObject,
       secret: { kind: "passkey", credentialId: result.credentialId, prfOutput: result.prfOutput },
     }));
     void markKeySlotUsed(deps.client, result.slot.id);
   } else {
-    ({ secretsRevision } = await deps.worker.request({
+    ({ secretsRevision, keyId } = await deps.worker.request({
       op: "unlock",
       response: storage as unknown as JsonObject,
       secret: { kind: "recovery", recoveryKey: method.recoveryKey },
@@ -316,10 +349,10 @@ export async function unlock(
     const recovery = storage.slots.find((slot) => slot.kind === "recovery");
     if (recovery) void markKeySlotUsed(deps.client, recovery.id);
   }
-  const plan = await planRemaining(deps);
-  if (plan.cross_signing) return { needsReauth: true, secretsRevision };
-  await saveRemaining(deps, secretsRevision, null);
-  return { needsReauth: false, secretsRevision };
+  const plan = await planRemaining(deps, keyId);
+  if (plan.cross_signing) return { needsReauth: true, secretsRevision, keyId };
+  await saveRemaining(deps, secretsRevision, null, keyId);
+  return { needsReauth: false, secretsRevision, keyId };
 }
 
 /**

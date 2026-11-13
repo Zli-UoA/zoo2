@@ -112,17 +112,18 @@ function EditedIndicator({ at }: { at: string }) {
  */
 function ManualLinkPreviews({ content }: { content: string }) {
   const { t } = useTranslation();
-  const [loaded, setLoaded] = useState(false);
+  // 押したときの本文にだけ許可する。編集で本文（URL）が変わったら、もう一度押すまで取得しない。
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const hasUrls = useMemo(() => previewUrls(content).length > 0, [content]);
   if (!hasUrls) return null;
-  if (loaded) return <LinkPreviews content={content} />;
+  if (loadedFor === content) return <LinkPreviews content={content} />;
   return (
     <Button
       type="button"
       variant="link"
       size="sm"
       className="h-auto min-h-8 px-0 text-xs text-muted-foreground"
-      onClick={() => setLoaded(true)}
+      onClick={() => setLoadedFor(content)}
     >
       {t("e2ee.loadPreviews")}
     </Button>

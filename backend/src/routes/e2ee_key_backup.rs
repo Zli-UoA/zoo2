@@ -27,7 +27,7 @@ use crate::{
         },
         e2ee_cross_signing::{present, verify_signed_by},
         e2ee_reauth::reauth,
-        e2ee_secret_storage::default_key,
+        e2ee_secret_storage::{check_expected_default_key, default_key},
         response::ApiResponse,
     },
     state::AppState,
@@ -109,6 +109,9 @@ pub struct CreateVersionRequest {
     auth_data: Value,
     #[serde(default, deserialize_with = "present")]
     expected_current_version: Option<Value>,
+    /// 前提にした既定の SSSS 鍵（初回設定とリセット。#360）。省略したら照合しない。
+    #[serde(default)]
+    expected_default_key_id: Option<String>,
 }
 
 /// `POST /api/e2ee/key_backup/versions`：新しい版を作り、今の版にする。
@@ -141,6 +144,7 @@ async fn create_version(
     let mut tx = db.transaction().await?;
     lock_active_user(&mut tx, &actor.id).await?;
     lock_user(&mut tx, &actor.id).await?;
+    check_expected_default_key(&mut tx, &actor.id, req.expected_default_key_id.as_deref()).await?;
     let now = current(&mut tx, &actor.id).await?;
     let now_version = now.as_ref().and_then(|v| v["version"].as_i64());
 
