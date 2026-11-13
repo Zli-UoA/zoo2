@@ -1,0 +1,840 @@
+//! GPUI による画面描画 (`WorkspaceView`、`LoginView`、`SidebarView`、`TimelineView`、`ComposerView`、`ThreadView`)。
+
+use gpui::{
+    Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement, Render, ScrollHandle, Styled, Window, div, prelude::*, px, rgba,
+};
+use jiff::{Zoned, civil::DateTime, tz::TimeZone};
+
+use crate::{
+    app::{AppState, Target},
+    input::{InputEvent, TextInput},
+};
+
+mod auth;
+mod chat;
+mod composer;
+mod dialogs;
+mod shell;
+
+pub use chat::{
+    CARD_DESC_MAX_CHARS, CARD_DESC_MAX_LINES, format_file_size, is_ogp_description_long,
+    render_attachment_item, render_ogp_card, truncate_ogp_description,
+};
+
+pub struct WorkspaceView {
+    pub state: Entity<AppState>,
+    pub search_input: Entity<TextInput>,
+    pub composer_input: Entity<TextInput>,
+    pub reaction_input: Entity<TextInput>,
+    pub create_channel_name_input: Entity<TextInput>,
+    pub create_channel_desc_input: Entity<TextInput>,
+    pub quick_switcher_input: Entity<TextInput>,
+    pub message_search_input: Entity<TextInput>,
+    pub timeline_scroll: ScrollHandle,
+    pub thread_scroll: ScrollHandle,
+    pub quick_switcher_scroll: ScrollHandle,
+    pub emoji_picker_scroll: ScrollHandle,
+    pub create_channel_private_focus: FocusHandle,
+    pub theme_toggle_focus: FocusHandle,
+    pub expanded_cards: std::collections::HashSet<String>,
+    pub card_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
+    pub attachment_focus_handles:
+        std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
+    focus_handle: FocusHandle,
+    login_primary_focus: FocusHandle,
+    login_secondary_focus: FocusHandle,
+    login_cancel_focus: FocusHandle,
+}
+
+impl Focusable for WorkspaceView {
+    fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl WorkspaceView {
+    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let search_input = cx.new(|cx| TextInput::new_single_line(cx, "チャンネル・DM を検索…"));
+        let composer_input = cx.new(|cx| {
+            TextInput::new_multiline(cx, "メッセージを入力 (Enter で送信、Shift+Enter で改行)…")
+        });
+        let reaction_input = cx.new(|cx| {
+            TextInput::new_single_line(cx, "絵文字またはショートコード (例: thumbsup, 🎉)")
+        });
+        let create_channel_name_input =
+            cx.new(|cx| TextInput::new_single_line(cx, "例: general, random"));
+        let create_channel_desc_input =
+            cx.new(|cx| TextInput::new_single_line(cx, "チャンネルのトピックや説明…"));
+        let quick_switcher_input = cx.new(|cx| {
+            let mut input = TextInput::new_single_line(cx, "チャンネル名またはメンバー名…");
+            input.intercept_vertical_arrows = true;
+            input
+        });
+        let message_search_input = cx.new(|cx| {
+            let mut input = TextInput::new_single_line(cx, "チャンネル内メッセージを検索…");
+            input.intercept_vertical_arrows = true;
+            input
+        });
+
+        cx.subscribe(
+            &search_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    this.state.update(cx, |state, cx| {
+                        state.search_query = text.clone();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Submit(_) => {
+                    this.state.update(cx, |state, cx| {
+                        if let Some(first) = state.filtered_channels().first().map(|c| c.id.clone())
+                        {
+                            state.open_channel(first);
+                            cx.notify();
+                        }
+                    });
+                }
+                InputEvent::Cancel => {
+                    this.search_input.update(cx, |input, cx| input.clear(cx));
+                    this.state.update(cx, |state, cx| {
+                        state.search_query.clear();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Up
+                | InputEvent::Down
+                | InputEvent::Left
+                | InputEvent::Right
+                | InputEvent::Tab
+                | InputEvent::CursorMoved(_) => {}
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &composer_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    let caret = this.composer_input.read(cx).cursor_offset();
+                    this.state.update(cx, |state, cx| {
+                        state.on_composer_changed(text.clone());
+                        state.update_mention_autocomplete(text, caret);
+                        cx.notify();
+                    });
+                }
+                InputEvent::Up => {
+                    let handled = this.state.update(cx, |state, cx| {
+                        if state.emoji_picker_open {
+                            state.emoji_picker_prev_row();
+                            cx.notify();
+                            true
+                        } else if state.mention_autocomplete.is_some() {
+                            state.mention_select_prev();
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if handled {
+                        cx.notify();
+                    }
+                }
+                InputEvent::Down => {
+                    let handled = this.state.update(cx, |state, cx| {
+                        if state.emoji_picker_open {
+                            state.emoji_picker_next_row();
+                            cx.notify();
+                            true
+                        } else if state.mention_autocomplete.is_some() {
+                            state.mention_select_next();
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if handled {
+                        cx.notify();
+                    }
+                }
+                InputEvent::Left => {
+                    let handled = this.state.update(cx, |state, cx| {
+                        if state.emoji_picker_open {
+                            state.emoji_picker_prev();
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if handled {
+                        cx.notify();
+                    }
+                }
+                InputEvent::Right => {
+                    let handled = this.state.update(cx, |state, cx| {
+                        if state.emoji_picker_open {
+                            state.emoji_picker_next();
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if handled {
+                        cx.notify();
+                    }
+                }
+                InputEvent::Tab => {
+                    let sel = this.composer_input.read(cx).selected_range();
+                    if this.state.read(cx).emoji_picker_open {
+                        this.state.update(cx, |state, cx| {
+                            state.emoji_picker_next();
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    let mention_handled = this.state.update(cx, |state, cx| {
+                        if state.mention_autocomplete.is_some() {
+                            if !sel.is_empty() {
+                                state.close_mention_autocomplete();
+                                cx.notify();
+                                return false;
+                            }
+                            state.mention_confirm();
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if mention_handled {
+                        cx.notify();
+                    }
+                }
+                InputEvent::Submit(text) => {
+                    let sel = this.composer_input.read(cx).selected_range();
+                    if this.state.read(cx).emoji_picker_open {
+                        this.state.update(cx, |state, cx| {
+                            state.insert_selected_emoji(sel);
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    let mention_handled = this.state.update(cx, |state, cx| {
+                        if state.mention_autocomplete.is_some() {
+                            if !sel.is_empty() {
+                                state.close_mention_autocomplete();
+                                cx.notify();
+                                return false;
+                            }
+                            state.mention_confirm();
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                    if mention_handled {
+                        return;
+                    }
+                    let submitted = this.state.update(cx, |state, cx| {
+                        let ok = state.submit_message(text.clone());
+                        cx.notify();
+                        ok
+                    });
+                    if submitted {
+                        this.composer_input.update(cx, |input, cx| input.clear(cx));
+                    }
+                }
+                InputEvent::Cancel => {
+                    this.state.update(cx, |state, cx| {
+                        if state.mention_autocomplete.is_some() {
+                            state.close_mention_autocomplete();
+                        } else if state.emoji_picker_open {
+                            state.close_emoji_picker();
+                        } else {
+                            state.cancel_target();
+                        }
+                        cx.notify();
+                    });
+                }
+                InputEvent::CursorMoved(caret) => {
+                    let sel = this.composer_input.read(cx).selected_range();
+                    this.state.update(cx, |state, cx| {
+                        if let Some(ac) = &state.mention_autocomplete
+                            && (!sel.is_empty() || *caret != ac.end_byte)
+                        {
+                            state.close_mention_autocomplete();
+                            cx.notify();
+                        }
+                    });
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &reaction_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(_) => {}
+                InputEvent::Submit(text) => {
+                    let ok = this.state.update(cx, |state, cx| {
+                        let Some((_, msg_id)) = state.active_reaction_message.clone() else {
+                            return false;
+                        };
+                        let res = state.submit_reaction_input(&msg_id, text);
+                        cx.notify();
+                        res
+                    });
+                    if ok {
+                        this.reaction_input.update(cx, |input, cx| input.clear(cx));
+                    }
+                }
+                InputEvent::Cancel => {
+                    this.reaction_input.update(cx, |input, cx| input.clear(cx));
+                    this.state.update(cx, |state, cx| {
+                        state.active_reaction_message = None;
+                        cx.notify();
+                    });
+                }
+                InputEvent::Up
+                | InputEvent::Down
+                | InputEvent::Left
+                | InputEvent::Right
+                | InputEvent::Tab
+                | InputEvent::CursorMoved(_) => {}
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &create_channel_name_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    this.state.update(cx, |state, cx| {
+                        if let Some(m) = &mut state.create_channel_modal
+                            && m.channel_name != *text
+                        {
+                            m.channel_name = text.clone();
+                            m.channel_id = Some(uuid::Uuid::new_v4().to_string());
+                            m.error = None;
+                        }
+                        cx.notify();
+                    });
+                }
+                InputEvent::Submit(_) => {
+                    this.state.update(cx, |state, cx| {
+                        state.submit_create_channel();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Cancel => {
+                    this.state.update(cx, |state, cx| {
+                        state.close_create_channel_modal();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Up
+                | InputEvent::Down
+                | InputEvent::Left
+                | InputEvent::Right
+                | InputEvent::Tab
+                | InputEvent::CursorMoved(_) => {}
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &create_channel_desc_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    this.state.update(cx, |state, cx| {
+                        if let Some(m) = &mut state.create_channel_modal
+                            && m.description != *text
+                        {
+                            m.description = text.clone();
+                            m.channel_id = Some(uuid::Uuid::new_v4().to_string());
+                            m.error = None;
+                        }
+                        cx.notify();
+                    });
+                }
+                InputEvent::Submit(_) => {
+                    this.state.update(cx, |state, cx| {
+                        state.submit_create_channel();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Cancel => {
+                    this.state.update(cx, |state, cx| {
+                        state.close_create_channel_modal();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Up
+                | InputEvent::Down
+                | InputEvent::Left
+                | InputEvent::Right
+                | InputEvent::Tab
+                | InputEvent::CursorMoved(_) => {}
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &quick_switcher_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    this.state.update(cx, |state, cx| {
+                        if let Some(qs) = &mut state.quick_switcher {
+                            qs.query = text.clone();
+                            qs.selected_index = 0;
+                        }
+                        cx.notify();
+                    });
+                }
+                InputEvent::Up => {
+                    this.state.update(cx, |state, cx| {
+                        state.quick_switcher_select_prev();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Down => {
+                    this.state.update(cx, |state, cx| {
+                        state.quick_switcher_select_next();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Submit(_) => {
+                    this.state.update(cx, |state, cx| {
+                        state.quick_switcher_confirm();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Cancel => {
+                    this.state.update(cx, |state, cx| {
+                        state.close_quick_switcher();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Tab
+                | InputEvent::Left
+                | InputEvent::Right
+                | InputEvent::CursorMoved(_) => {}
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &message_search_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    this.state.update(cx, |state, cx| {
+                        state.update_message_search_query(text.clone());
+                        cx.notify();
+                    });
+                }
+                InputEvent::Up => {
+                    this.state.update(cx, |state, cx| {
+                        state.search_select_prev();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Down | InputEvent::Submit(_) => {
+                    this.state.update(cx, |state, cx| {
+                        state.search_select_next();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Cancel => {
+                    this.state.update(cx, |state, cx| {
+                        state.close_message_search();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Tab
+                | InputEvent::Left
+                | InputEvent::Right
+                | InputEvent::CursorMoved(_) => {}
+            },
+        )
+        .detach();
+
+        cx.observe(&state, |this, state, cx| {
+            let (
+                pending_composer,
+                pending_search,
+                pending_open_url,
+                is_mention_active,
+                is_emoji_picker_open,
+                theme,
+            ) = state.update(cx, |s, _| {
+                (
+                    s.pending_composer_text.take(),
+                    s.pending_search_text.take(),
+                    s.pending_open_url.take(),
+                    s.mention_autocomplete.is_some(),
+                    s.emoji_picker_open,
+                    s.theme(),
+                )
+            });
+            if let Some((text, cursor)) = pending_composer {
+                this.composer_input.update(cx, |input, cx| {
+                    if let Some(pos) = cursor {
+                        input.set_text_and_cursor(text, pos, cx);
+                    } else {
+                        input.set_text(text, cx);
+                    }
+                });
+            }
+            if let Some(text) = pending_search {
+                this.search_input
+                    .update(cx, |input, cx| input.set_text(text, cx));
+            }
+            if let Some(url) = pending_open_url {
+                cx.open_url(&url);
+            }
+            this.composer_input.update(cx, |input, _| {
+                input.intercept_vertical_arrows = is_mention_active || is_emoji_picker_open;
+                input.intercept_horizontal_arrows = is_emoji_picker_open;
+                input.intercept_tab = is_mention_active || is_emoji_picker_open;
+            });
+            this.search_input.update(cx, |i, _| i.theme = theme);
+            this.composer_input.update(cx, |i, _| i.theme = theme);
+            this.reaction_input.update(cx, |i, _| i.theme = theme);
+            this.create_channel_name_input
+                .update(cx, |i, _| i.theme = theme);
+            this.create_channel_desc_input
+                .update(cx, |i, _| i.theme = theme);
+            this.quick_switcher_input.update(cx, |i, _| i.theme = theme);
+            this.message_search_input.update(cx, |i, _| i.theme = theme);
+            cx.notify();
+        })
+        .detach();
+
+        Self {
+            state,
+            search_input,
+            composer_input,
+            reaction_input,
+            create_channel_name_input,
+            create_channel_desc_input,
+            quick_switcher_input,
+            message_search_input,
+            timeline_scroll: ScrollHandle::new(),
+            thread_scroll: ScrollHandle::new(),
+            quick_switcher_scroll: ScrollHandle::new(),
+            emoji_picker_scroll: ScrollHandle::new(),
+            create_channel_private_focus: cx.focus_handle().tab_stop(true),
+            theme_toggle_focus: cx.focus_handle().tab_stop(true),
+            expanded_cards: std::collections::HashSet::new(),
+            card_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
+            attachment_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
+            focus_handle: cx.focus_handle(),
+            login_primary_focus: cx.focus_handle(),
+            login_secondary_focus: cx.focus_handle(),
+            login_cancel_focus: cx.focus_handle(),
+        }
+    }
+}
+
+impl Render for WorkspaceView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let login_phase = self.state.read(cx).login_phase.clone();
+        if let Some(phase) = login_phase {
+            return div()
+                .size_full()
+                .child(self.render_login_view(&phase, window, cx));
+        }
+
+        // ウィンドウのアクティブ状態とタイムライン・スレッドのスクロール位置を AppState に同期し、
+        // ウィンドウがアクティブかつ最下部を見ているときだけ最新メッセージを既読扱いにする。
+        let window_active = window.is_window_active();
+        let (scroll_to_bottom, thread_scroll_to_bottom) = self.state.update(cx, |s, _| {
+            s.ensure_channel_cache();
+            (
+                std::mem::take(&mut s.pending_scroll_to_bottom),
+                std::mem::take(&mut s.pending_thread_scroll_to_bottom),
+            )
+        });
+
+        let thread_root = self
+            .state
+            .read(cx)
+            .thread
+            .as_ref()
+            .map(|t| t.root_id.clone());
+
+        let pending_scroll_id = self
+            .state
+            .update(cx, |s, _| s.pending_scroll_to_message_id.take());
+
+        let (timeline_div, timeline_scroll_target) =
+            self.render_timeline_view(pending_scroll_id.as_deref(), cx);
+        if let Some(target_idx) = timeline_scroll_target {
+            self.timeline_scroll.scroll_to_item(target_idx);
+            self.state.update(cx, |s, _| {
+                s.update_timeline_view_state(window_active, false);
+            });
+        } else if scroll_to_bottom {
+            self.timeline_scroll.scroll_to_bottom();
+            self.state
+                .update(cx, |s, _| s.update_timeline_view_state(window_active, true));
+        } else if pending_scroll_id.is_some() {
+            // 返信へ移る途中。タイムラインの古いスクロール位置から最下部と判定して既読にしない。
+            self.state.update(cx, |s, _| {
+                s.update_timeline_view_state(window_active, false);
+            });
+        } else {
+            let max_y = self.timeline_scroll.max_offset().height;
+            let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));
+            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
+            self.state.update(cx, |s, _| {
+                s.update_timeline_view_state(window_active, at_bottom)
+            });
+        }
+
+        let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
+            let (div, target) = self.render_thread_view(root_id, pending_scroll_id.as_deref(), cx);
+            (Some(div), target)
+        } else {
+            (None, None)
+        };
+        if let Some(target_idx) = thread_scroll_target {
+            self.thread_scroll.scroll_to_item(target_idx);
+            self.state
+                .update(cx, |s, _| s.update_thread_scroll_state(false));
+        } else if thread_scroll_to_bottom {
+            self.thread_scroll.scroll_to_bottom();
+            self.state
+                .update(cx, |s, _| s.update_thread_scroll_state(true));
+        } else {
+            let max_y = self.thread_scroll.max_offset().height;
+            let cur_y = (-self.thread_scroll.offset().y).max(px(0.0));
+            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
+            self.state
+                .update(cx, |s, _| s.update_thread_scroll_state(at_bottom));
+        }
+
+        let state_ref = self.state.read(cx);
+        let has_create_modal = state_ref.create_channel_modal.is_some();
+        let has_quick_switcher = state_ref.quick_switcher.is_some();
+        let has_emoji_picker = state_ref.emoji_picker_open;
+        let has_message_search = state_ref.message_search.is_some();
+        let theme = state_ref.theme();
+
+        let should_focus_composer = self
+            .state
+            .update(cx, |s, _| std::mem::take(&mut s.pending_focus_composer));
+        if should_focus_composer
+            && !has_create_modal
+            && !has_quick_switcher
+            && !has_emoji_picker
+            && !has_message_search
+        {
+            window.focus(&self.composer_input.focus_handle(cx));
+        }
+
+        let main_view = div()
+            .flex()
+            .flex_row()
+            .size_full()
+            .bg(theme.bg_primary)
+            .text_color(theme.text_primary)
+            .track_focus(&self.focus_handle(cx))
+            .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                for path in paths.paths() {
+                    this.state.update(cx, |s, cx| {
+                        s.add_attachment_from_path(path.clone());
+                        cx.notify();
+                    });
+                }
+            }))
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                let key = ev.keystroke.key.as_str();
+                let cmd_or_ctrl = ev.keystroke.modifiers.platform || ev.keystroke.modifiers.control;
+                let is_modal_open = this.state.read(cx).create_channel_modal.is_some();
+
+                // チャンネル作成モーダル表示中は背面の検索・スイッチャー等のショートカットを無効化
+                if is_modal_open {
+                    if key == "escape" {
+                        this.create_channel_name_input
+                            .update(cx, |i, cx| i.clear(cx));
+                        this.create_channel_desc_input
+                            .update(cx, |i, cx| i.clear(cx));
+                        this.state.update(cx, |s, cx| {
+                            s.close_create_channel_modal();
+                            cx.notify();
+                        });
+                        window.focus(&this.composer_input.focus_handle(cx));
+                    }
+                    return;
+                }
+
+                // グローバルショートカット
+                if cmd_or_ctrl && key == "k" {
+                    this.open_quick_switcher(window, cx);
+                    return;
+                }
+                if cmd_or_ctrl && key == "n" {
+                    if this.state.read(cx).is_current_user_guest() {
+                        return;
+                    }
+                    this.open_create_channel_modal(window, cx);
+                    return;
+                }
+                if cmd_or_ctrl && key == "f" {
+                    this.toggle_message_search(window, cx);
+                    return;
+                }
+                if cmd_or_ctrl && key == "u" {
+                    if matches!(this.state.read(cx).target, Target::Edit(_)) {
+                        return;
+                    }
+                    this.prompt_and_add_attachments(cx);
+                    return;
+                }
+                if cmd_or_ctrl && key == "e" {
+                    this.state.update(cx, |s, cx| {
+                        if s.emoji_picker_open {
+                            s.close_emoji_picker();
+                        } else {
+                            s.open_emoji_picker();
+                        }
+                        cx.notify();
+                    });
+                    return;
+                }
+                if cmd_or_ctrl && (key == "t" || key == "T") {
+                    this.state.update(cx, |s, cx| {
+                        s.toggle_theme();
+                        cx.notify();
+                    });
+                    return;
+                }
+                if this.state.read(cx).emoji_picker_open {
+                    if is_activate_key(key) {
+                        let range = this.composer_input.read(cx).selected_range();
+                        this.state.update(cx, |s, cx| {
+                            s.insert_selected_emoji(range);
+                            cx.notify();
+                        });
+                        window.focus(&this.composer_input.focus_handle(cx));
+                        return;
+                    }
+                    if key == "left" || key == "arrow_left" {
+                        this.state.update(cx, |s, cx| {
+                            s.emoji_picker_prev();
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    if key == "right" || key == "arrow_right" || key == "tab" {
+                        this.state.update(cx, |s, cx| {
+                            s.emoji_picker_next();
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    if key == "up" || key == "arrow_up" {
+                        this.state.update(cx, |s, cx| {
+                            s.emoji_picker_prev_row();
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    if key == "down" || key == "arrow_down" {
+                        this.state.update(cx, |s, cx| {
+                            s.emoji_picker_next_row();
+                            cx.notify();
+                        });
+                        return;
+                    }
+                }
+                if key == "tab" {
+                    if ev.keystroke.modifiers.shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
+                    cx.notify();
+                    return;
+                }
+                if key == "escape" {
+                    this.create_channel_name_input
+                        .update(cx, |i, cx| i.clear(cx));
+                    this.create_channel_desc_input
+                        .update(cx, |i, cx| i.clear(cx));
+                    this.quick_switcher_input.update(cx, |i, cx| i.clear(cx));
+                    this.message_search_input.update(cx, |i, cx| i.clear(cx));
+                    this.state.update(cx, |s, cx| {
+                        if s.create_channel_modal.is_some() {
+                            s.close_create_channel_modal();
+                        } else if s.quick_switcher.is_some() {
+                            s.close_quick_switcher();
+                        } else if s.emoji_picker_open {
+                            s.close_emoji_picker();
+                        } else if s.message_search.is_some() {
+                            s.close_message_search();
+                        } else if s.thread.is_some() {
+                            s.close_thread();
+                        }
+                        cx.notify();
+                    });
+                    window.focus(&this.composer_input.focus_handle(cx));
+                }
+            }))
+            .child(self.render_sidebar_view(cx))
+            .child(timeline_div)
+            .when_some(thread_div, |d, v| d.child(v));
+
+        if has_create_modal || has_quick_switcher || has_emoji_picker {
+            div()
+                .size_full()
+                .relative()
+                .track_focus(&self.focus_handle(cx))
+                .child(main_view)
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .bg(rgba(0x00000077))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(has_create_modal, |d| {
+                            d.child(self.render_create_channel_modal(window, cx))
+                        })
+                        .when(has_quick_switcher, |d| {
+                            d.child(self.render_quick_switcher_modal(cx))
+                        })
+                        .when(has_emoji_picker, |d| d.child(self.render_emoji_picker(cx))),
+                )
+        } else {
+            div().size_full().child(main_view)
+        }
+    }
+}
+
+/// UTC の naive 日時をローカルタイムゾーンへ変換する。
+pub fn local_zoned(at: DateTime) -> Option<Zoned> {
+    at.to_zoned(TimeZone::UTC)
+        .ok()
+        .map(|zoned| zoned.with_time_zone(TimeZone::system()))
+}
+
+pub fn local_time_string(at: DateTime) -> String {
+    local_zoned(at)
+        .map(|z| z.strftime("%H:%M").to_string())
+        .unwrap_or_default()
+}
+
+fn is_activate_key(key: &str) -> bool {
+    matches!(key, "enter" | "space" | " ")
+}
