@@ -15,7 +15,8 @@ export interface E2eeContextValue {
   userId: string | null;
   /**
    * ログアウトの前に、鍵バックアップにまだ送っていない受信用セッションの数を返す。
-   * 暗号ストアがなければ 0。
+   * 暗号ストアがなければ 0。数える前に to-device の処理を止める（取りやめたら `cancelLogout`）。
+   * 数えられなければ投げる。
    */
   pendingBackupCount(): Promise<number>;
   /** ログアウトを取りやめた。件数の確認のために奪ったロックを返す。 */

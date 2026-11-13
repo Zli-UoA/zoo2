@@ -1049,8 +1049,9 @@
   "e2ee": {
     "logout": {
       "unbackedTitle": "有未備份的金鑰",
-      "unbackedDescription_one": "有 {{count}} 個金鑰尚未備份。登出後，將無法閱讀只存在此裝置上的過去訊息。",
-      "unbackedDescription_other": "有 {{count}} 個金鑰尚未備份。登出後，將無法閱讀只存在此裝置上的過去訊息。",
+      "unbackedDescription_one": "有 {{count}} 個金鑰尚未備份。登出後，只有此裝置能解密的過去訊息將無法閱讀。",
+      "unbackedDescription_other": "有 {{count}} 個金鑰尚未備份。登出後，只有此裝置能解密的過去訊息將無法閱讀。",
+      "unknownDescription": "無法確認金鑰是否已備份。登出後，只有此裝置能解密的過去訊息可能無法閱讀。",
       "confirm": "登出",
       "deleteFailed": "無法刪除此裝置的加密金鑰。下次開啟時會再次刪除。"
     },
@@ -1127,6 +1128,8 @@
       "disabled": "此伺服器尚不支援加密頻道。",
       "publicForbidden": "只有私人頻道可以加密。"
     },
+    "reunlockToAdd": "重新解鎖以新增通行金鑰",
+    "reunlockToAddDescription": "若要新增通行金鑰，請使用通行金鑰或復原金鑰重新解鎖。此裝置的解鎖狀態不會改變。",
     "badge": "已加密",
     "encryptChannel": "端對端加密",
     "encryptChannelHelp": "只有成員已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",

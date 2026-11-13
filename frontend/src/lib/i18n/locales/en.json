@@ -1049,8 +1049,9 @@
   "e2ee": {
     "logout": {
       "unbackedTitle": "Some keys are not backed up",
-      "unbackedDescription_one": "{{count}} key is not backed up. If you log out, past messages that only this device can read will be lost.",
-      "unbackedDescription_other": "{{count}} keys are not backed up. If you log out, past messages that only this device can read will be lost.",
+      "unbackedDescription_one": "{{count}} key is not backed up. If you log out, past messages that only this device can decrypt will become unreadable.",
+      "unbackedDescription_other": "{{count}} keys are not backed up. If you log out, past messages that only this device can decrypt will become unreadable.",
+      "unknownDescription": "Could not check whether your keys are backed up. If you log out, past messages that only this device can decrypt may become unreadable.",
       "confirm": "Log out",
       "deleteFailed": "Could not delete this device's encryption keys. They will be deleted the next time you open the app."
     },
@@ -1127,6 +1128,8 @@
       "disabled": "Encrypted channels aren't available on this server yet.",
       "publicForbidden": "Only private channels can be encrypted."
     },
+    "reunlockToAdd": "Unlock again to add a passkey",
+    "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey. This device stays unlocked either way.",
     "badge": "Encrypted",
     "encryptChannel": "Encrypt end-to-end",
     "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",

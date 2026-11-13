@@ -19,6 +19,8 @@ const handlers = (): EncryptionSettingsHandlers => ({
   onUnlockWithRecoveryKey: fn(),
   onContinue: fn(),
   onAddPasskey: fn(),
+  onReunlock: fn(),
+  onCancelReunlock: fn(),
   onRemoveSlot: fn(),
   onReset: fn(),
 });
@@ -186,8 +188,23 @@ export const Unlocked: Story = {
   }),
 };
 
+/** 読み込み直したあと：SSSS 鍵がメモリーにないので、開け直してから足す。 */
 export const UnlockedNeedsUnlockToAdd: Story = {
-  args: { state: { ...unlocked, canAddPasskey: false } },
+  args: { state: { ...unlocked, canAddPasskey: false }, handlers: handlers() },
+  play: playForImplementation(async ({ args }) => {
+    await userEvent.click(screen.getByRole("button", { name: "解錠し直してパスキーを追加" }));
+    await expect(args.handlers.onReunlock).toHaveBeenCalled();
+  }),
+};
+
+/** パスキーを足すために SSSS を開け直す。リセットは出さず、取り消せる。 */
+export const ReunlockToAddPasskey: Story = {
+  args: { state: { ...locked, reason: "addPasskey" }, handlers: handlers() },
+  play: playForImplementation(async ({ args }) => {
+    await expect(screen.queryByRole("button", { name: "リセットする" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "キャンセル" }));
+    await expect(args.handlers.onCancelReunlock).toHaveBeenCalled();
+  }),
 };
 
 export const LastSlot: Story = { args: { state: { ...unlocked, error: "lastSlot" } } };

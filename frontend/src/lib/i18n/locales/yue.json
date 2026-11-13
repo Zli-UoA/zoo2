@@ -1049,8 +1049,9 @@
   "e2ee": {
     "logout": {
       "unbackedTitle": "有啲鎖匙未備份",
-      "unbackedDescription_one": "有 {{count}} 條鎖匙未備份。登出之後，淨係喺呢部裝置度嘅舊訊息就會睇唔到。",
-      "unbackedDescription_other": "有 {{count}} 條鎖匙未備份。登出之後，淨係喺呢部裝置度嘅舊訊息就會睇唔到。",
+      "unbackedDescription_one": "有 {{count}} 條鎖匙未備份。登出之後，淨係呢部裝置解到嘅舊訊息就會睇唔到。",
+      "unbackedDescription_other": "有 {{count}} 條鎖匙未備份。登出之後，淨係呢部裝置解到嘅舊訊息就會睇唔到。",
+      "unknownDescription": "確認唔到啲鎖匙有冇備份。登出之後，淨係呢部裝置解到嘅舊訊息可能會睇唔到。",
       "confirm": "登出",
       "deleteFailed": "刪唔到呢部裝置嘅加密鎖匙。下次打開嗰陣會再刪。"
     },
@@ -1127,6 +1128,8 @@
       "disabled": "呢部伺服器暫時用唔到加密頻道。",
       "publicForbidden": "只有私人頻道先可以加密。"
     },
+    "reunlockToAdd": "重新解鎖嚟加通行金鑰",
+    "reunlockToAddDescription": "要加通行金鑰，請用通行金鑰或者復原金鑰再解鎖一次。呢部裝置嘅解鎖狀態唔會變。",
     "badge": "已加密",
     "encryptChannel": "端對端加密",
     "encryptChannelHelp": "只有成員已驗證嘅裝置先睇到訊息。加密之後唔可以取消，暫時亦都唔可以傳附件。",

@@ -60,7 +60,11 @@ export type EncryptionViewState =
     }
   | {
       step: "locked";
-      reason: "new" | "resume" | "mismatch";
+      /**
+       * `addPasskey` は、解錠済みの端末で、パスキーを足すために SSSS を開け直すとき
+       * （ページを読み込み直すと、SSSS 鍵はメモリーから消える）。
+       */
+      reason: "new" | "resume" | "mismatch" | "addPasskey";
       passkeyAvailable: boolean;
       hasPasskeySlots: boolean;
       busy: "passkey" | "recovery" | null;
@@ -88,6 +92,10 @@ export interface EncryptionSettingsHandlers {
   onUnlockWithRecoveryKey: (recoveryKey: string) => void;
   onContinue: () => void;
   onAddPasskey: () => void;
+  /** 解錠済みの端末で、パスキーを足すために SSSS を開け直す画面に移る。 */
+  onReunlock: () => void;
+  /** SSSS を開け直すのをやめて、解錠済みの画面に戻る。 */
+  onCancelReunlock: () => void;
   onRemoveSlot: (slotId: string) => void;
   onReset: () => void;
 }
@@ -305,11 +313,13 @@ function LockedStep({
   const inputId = useId();
   const busy = state.busy !== null;
   const description =
-    state.reason === "resume"
-      ? t("e2ee.resumeDescription")
-      : state.reason === "mismatch"
-        ? t("e2ee.reunlockDescription")
-        : t("e2ee.lockedDescription");
+    state.reason === "addPasskey"
+      ? t("e2ee.reunlockToAddDescription")
+      : state.reason === "resume"
+        ? t("e2ee.resumeDescription")
+        : state.reason === "mismatch"
+          ? t("e2ee.reunlockDescription")
+          : t("e2ee.lockedDescription");
   return (
     <div className="space-y-4">
       <SettingsSection title={t("e2ee.lockedTitle")} description={description}>
@@ -348,7 +358,13 @@ function LockedStep({
         </form>
         {busy ? <Busy label={t("e2ee.unlocking")} /> : null}
       </SettingsSection>
-      <ResetSection onReset={handlers.onReset} disabled={busy} />
+      {state.reason === "addPasskey" ? (
+        <Button variant="ghost" disabled={busy} onClick={handlers.onCancelReunlock}>
+          {t("common.cancel")}
+        </Button>
+      ) : (
+        <ResetSection onReset={handlers.onReset} disabled={busy} />
+      )}
     </div>
   );
 }
@@ -424,7 +440,13 @@ function UnlockedStep({
               {t("e2ee.addPasskey")}
             </Button>
           ) : (
-            <p className="text-xs text-muted-foreground">{t("e2ee.addPasskeyNeedsUnlock")}</p>
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">{t("e2ee.addPasskeyNeedsUnlock")}</p>
+              <Button variant="outline" disabled={busy} onClick={handlers.onReunlock}>
+                <FingerprintIcon />
+                {t("e2ee.reunlockToAdd")}
+              </Button>
+            </div>
           )
         ) : null}
         {state.busy === "passkey" || state.busy === "remove" ? (

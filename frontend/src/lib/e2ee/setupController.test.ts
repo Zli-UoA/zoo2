@@ -15,7 +15,9 @@ import {
   SetupConflictError,
   addSetupPasskey,
   beginSetup,
+  addPasskeySlot,
   completeSetup,
+  hasUnlockedSecrets,
   loadE2eeStatus,
   saveRemaining,
   unlock,
@@ -106,7 +108,6 @@ class FakeServer {
           body.expected_default_key_id !== current ||
           body.expected_secrets_revision !== (this.ssss ? this.revision : null)
         ) {
-          if (current === body.key_id) return { secrets_revision: this.revision };
           this.error(409, "E2EE_SSSS_CONFLICT", {
             default_key_id: current,
             secrets_revision: this.ssss ? this.revision : null,
@@ -135,6 +136,22 @@ class FakeServer {
       }
       case "POST /api/e2ee/secret_storage/slots/:id/used":
         return {};
+      case "POST /api/e2ee/secret_storage/slots": {
+        if (!this.ssss || body.key_id !== this.ssss.default_key_id) {
+          this.error(409, "E2EE_SSSS_CONFLICT");
+        }
+        if (body.label === null) this.error(422, "label が null です");
+        const slots = this.ssss.slots as Json[];
+        const replaced = slots.filter(
+          (slot) => body.kind === "passkey" && slot.credential_id === body.credential_id,
+        );
+        if (replaced.length > 0) this.requireReauth(reauth);
+        this.ssss.slots = [
+          ...slots.filter((slot) => !replaced.includes(slot)),
+          { ...body, created_at: "2026-11-13T00:00:00Z", last_used_at: null },
+        ];
+        return {};
+      }
       case "POST /api/e2ee/keys/query": {
         const own = (key: Json | null) => (key ? { [USER]: key } : {});
         return {
@@ -520,5 +537,50 @@ describe("初回設定と解錠", () => {
     expect(keyRequest?.reauth).toBe(true);
     const json = server.ssss as JsonObject;
     expect(JSON.stringify(json)).not.toContain("private");
+  });
+
+  it("SSSS を保存したあとに足したパスキーのスロットも、保存の再試行で反映する", async () => {
+    const server = new FakeServer();
+    const authenticator = virtualAuthenticator();
+    const first = await device("first");
+    const deps = first.deps(server, authenticator);
+    const { keyId } = await beginSetup(deps, null);
+    server.fail = { path: "POST /api/e2ee/cross_signing/keys", when: "before" };
+    await expect(completeSetup(deps, keyId, TOKEN)).rejects.toThrow();
+    expect(((server.ssss?.slots ?? []) as Json[]).map((slot) => slot.kind)).toEqual(["recovery"]);
+    // 同じ画面のまま、パスキーを足して保存し直す。
+    await addSetupPasskey(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    const slots = (server.ssss?.slots ?? []) as Json[];
+    expect(slots.map((slot) => slot.kind)).toEqual(["recovery", "passkey"]);
+    expect(slots[1]).not.toHaveProperty("label");
+
+    const second = await device("second");
+    const secondDeps = second.deps(server, authenticator);
+    const status = await loadE2eeStatus(secondDeps);
+    if (status.kind !== "locked") throw new Error("unreachable");
+    await unlock(secondDeps, status.storage, { kind: "passkey" });
+    expect((await loadE2eeStatus(secondDeps)).kind).toBe("unlocked");
+  });
+
+  it("解錠済みの端末で、開け直した SSSS からラベルなしのパスキーを足せる", async () => {
+    const server = new FakeServer();
+    const authenticator = virtualAuthenticator();
+    const first = await device("first");
+    const { recoveryKey, keyId } = await beginSetup(first.deps(server), null);
+    await completeSetup(first.deps(server), keyId, TOKEN);
+    // 読み込み直した：暗号ストアの鍵はあるが、SSSS 鍵はメモリーにない。
+    await first.start();
+    const deps = first.deps(server, authenticator);
+    const status = await loadE2eeStatus(deps);
+    if (status.kind !== "unlocked") throw new Error("unreachable");
+    expect(await hasUnlockedSecrets(deps)).toBe(false);
+    await unlock(deps, status.storage, { kind: "recovery", recoveryKey });
+    expect(await hasUnlockedSecrets(deps)).toBe(true);
+    await addPasskeySlot(deps, status.storage, null, TOKEN);
+    expect(((server.ssss?.slots ?? []) as Json[]).map((slot) => slot.kind)).toEqual([
+      "recovery",
+      "passkey",
+    ]);
   });
 });

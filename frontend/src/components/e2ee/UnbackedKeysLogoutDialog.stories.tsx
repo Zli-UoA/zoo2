@@ -16,3 +16,6 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 export const Pending: Story = { args: { pending: true } };
+
+/** 数えられなかったときも、送れていない鍵がないとは扱わずに確かめる。 */
+export const Unknown: Story = { args: { count: -1 } };

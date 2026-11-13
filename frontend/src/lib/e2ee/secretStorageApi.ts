@@ -73,12 +73,12 @@ export async function addKeySlot(
   slot: KeySlot,
   reauth: string | null,
 ): Promise<void> {
+  // サーバーの `label` は省略できるが `null` は受け付けないので、ないときは送らない。
+  const { label, ...rest } = slot;
   await client.post(
     "/api/e2ee/secret_storage/slots",
-    { ...slot, key_id: keyId },
-    {
-      headers: reauthHeaders(reauth),
-    },
+    { ...rest, key_id: keyId, ...(label ? { label } : {}) },
+    { headers: reauthHeaders(reauth) },
   );
 }
 

@@ -1049,8 +1049,9 @@
   "e2ee": {
     "logout": {
       "unbackedTitle": "백업되지 않은 키가 있습니다",
-      "unbackedDescription_one": "{{count}}개의 키가 백업되지 않았습니다. 로그아웃하면 이 기기에만 있는 지난 메시지를 읽을 수 없게 됩니다.",
-      "unbackedDescription_other": "{{count}}개의 키가 백업되지 않았습니다. 로그아웃하면 이 기기에만 있는 지난 메시지를 읽을 수 없게 됩니다.",
+      "unbackedDescription_one": "{{count}}개의 키가 백업되지 않았습니다. 로그아웃하면 이 기기에서만 복호화할 수 있는 지난 메시지를 읽을 수 없게 됩니다.",
+      "unbackedDescription_other": "{{count}}개의 키가 백업되지 않았습니다. 로그아웃하면 이 기기에서만 복호화할 수 있는 지난 메시지를 읽을 수 없게 됩니다.",
+      "unknownDescription": "키가 백업되었는지 확인하지 못했습니다. 로그아웃하면 이 기기에서만 복호화할 수 있는 지난 메시지를 읽지 못하게 될 수 있습니다.",
       "confirm": "로그아웃",
       "deleteFailed": "이 기기의 암호화 키를 삭제하지 못했습니다. 다음에 열 때 다시 삭제합니다."
     },
@@ -1127,6 +1128,8 @@
       "disabled": "이 서버에서는 아직 암호화된 채널을 사용할 수 없습니다.",
       "publicForbidden": "비공개 채널만 암호화할 수 있습니다."
     },
+    "reunlockToAdd": "다시 잠금 해제하고 패스키 추가",
+    "reunlockToAddDescription": "패스키를 추가하려면 패스키 또는 복구 키로 다시 잠금을 해제하세요. 이 기기의 잠금 해제 상태는 바뀌지 않습니다.",
     "badge": "암호화됨",
     "encryptChannel": "종단 간 암호화",
     "encryptChannelHelp": "멤버의 확인된 기기만 메시지를 읽을 수 있습니다. 암호화는 나중에 해제할 수 없으며, 아직 첨부 파일을 보낼 수 없습니다.",

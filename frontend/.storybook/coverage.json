@@ -658,7 +658,7 @@
     },
     {
       "file": "src/components/e2ee/UnbackedKeysLogoutDialog.stories.tsx",
-      "states": ["Default", "Pending"]
+      "states": ["Default", "Pending", "Unknown"]
     },
     {
       "file": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx",

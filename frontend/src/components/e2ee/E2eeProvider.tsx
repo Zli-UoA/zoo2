@@ -234,9 +234,14 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       userId: userId || null,
       pendingBackupCount: async () => {
         const store = await storeForLogout();
-        return store ? store.manager.pendingBackupCount() : 0;
+        if (!store) return 0;
+        // 数えたあとで鍵が増えないよう、to-device の処理を止めてから数える。
+        await store.manager.suspend();
+        return store.manager.pendingBackupCount();
       },
       cancelLogout: () => {
+        // このタブが開いていたなら、止めていた to-device の処理に戻る。
+        leader.current?.manager.resume();
         const entry = takeover.current;
         if (!entry) return;
         takeover.current = null;

@@ -101,6 +101,8 @@ export class CryptoOperations {
         return null;
       case "setupSecretStorageRequest":
         return this.setup.secretStorageRequest();
+      case "setupPendingSlots":
+        return this.setup.pendingSlots();
       case "unlock":
         return this.setup.unlock(request.response, request.secret);
       case "planResume":

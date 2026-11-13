@@ -1049,9 +1049,10 @@
   "e2ee": {
     "logout": {
       "unbackedTitle": "예비보관되지 않은 열쇠가 있습니다",
-      "unbackedDescription_one": "{{count}}개의 열쇠가 예비보관되지 않았습니다. 가입탈퇴하면 이 단말기에만 있는 지난 기록을 읽을수 없게 됩니다.",
-      "unbackedDescription_other": "{{count}}개의 열쇠가 예비보관되지 않았습니다. 가입탈퇴하면 이 단말기에만 있는 지난 기록을 읽을수 없게 됩니다.",
-      "confirm": "가입탈퇴",
+      "unbackedDescription_one": "{{count}}개의 열쇠가 예비보관되지 않았습니다. 로그아웃하면 이 단말기에서만 해독할수 있는 지난 통보문을 읽을수 없게 됩니다.",
+      "unbackedDescription_other": "{{count}}개의 열쇠가 예비보관되지 않았습니다. 로그아웃하면 이 단말기에서만 해독할수 있는 지난 통보문을 읽을수 없게 됩니다.",
+      "unknownDescription": "열쇠가 예비보관되였는지 확인하지 못했습니다. 로그아웃하면 이 단말기에서만 해독할수 있는 지난 통보문을 읽을수 없게 될수 있습니다.",
+      "confirm": "로그아웃",
       "deleteFailed": "이 단말기의 암호열쇠를 지우지 못했습니다. 다음번에 열 때 다시 지웁니다."
     },
     "tab": "암호화",
@@ -1127,6 +1128,8 @@
       "disabled": "이 봉사기에서는 암호화된 통로를 아직 쓸수 없습니다.",
       "publicForbidden": "비공개 통로만 암호화할수 있습니다."
     },
+    "reunlockToAdd": "다시 잠금 해제하고 패스키 추가",
+    "reunlockToAddDescription": "패스키를 추가하려면 패스키 또는 복구 키로 다시 잠금을 해제하십시오. 이 장치의 잠금 해제 상태는 바뀌지 않습니다.",
     "badge": "암호화됨",
     "encryptChannel": "종단간 암호화하기",
     "encryptChannelHelp": "성원의 확인된 장치만 통보문을 읽을수 있습니다. 암호화는 후에 해제할수 없으며 첨부는 아직 보낼수 없습니다.",

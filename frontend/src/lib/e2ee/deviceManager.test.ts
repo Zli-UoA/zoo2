@@ -4,7 +4,7 @@ import { ApiError, type ApiClient } from "../api/client";
 import { resolveConfig } from "../config";
 import type { CryptoWorker } from "./cryptoWorker";
 import { E2eeDeviceManager, retryPendingDeviceDeletion } from "./deviceManager";
-import { markDeviceDeletionPending, readPendingDeviceDeletion } from "./identity";
+import { markDeviceDeletionPending, readPendingDeviceDeletions } from "./identity";
 import type { CryptoOperation, ToDeviceRow } from "./protocol";
 
 const USER = "00000000-0000-4000-8000-00000000000a";
@@ -199,14 +199,14 @@ describe("E2eeDeviceManager", () => {
     expect(await instance.pendingBackupCount()).toBe(2);
     await instance.destroy();
     expect(calls.at(-1)).toEqual({ op: "destroy", namespace: `user-${USER}` });
-    expect(readPendingDeviceDeletion()).toEqual({ userId: USER, deviceId: DEVICE });
+    expect(readPendingDeviceDeletions()).toEqual([{ userId: USER, deviceId: DEVICE }]);
 
     const retry = fakeClient();
     await retryPendingDeviceDeletion(retry.client, USER);
     expect(retry.requests).toEqual([
       { method: "DELETE", path: `/api/e2ee/devices/${DEVICE}`, body: null },
     ]);
-    expect(readPendingDeviceDeletion()).toBeNull();
+    expect(readPendingDeviceDeletions()).toEqual([]);
   });
 
   it("登録の応答をなくした端末も、ログアウトで削除 API を呼ぶ", async () => {
@@ -221,7 +221,94 @@ describe("E2eeDeviceManager", () => {
       path: `/api/e2ee/devices/${DEVICE}`,
       body: null,
     });
-    expect(readPendingDeviceDeletion()).toBeNull();
+    expect(readPendingDeviceDeletions()).toEqual([]);
+  });
+
+  it("登録中にログアウトしたら、登録の結果を待ってから端末を消す", async () => {
+    const { worker } = fakeWorker();
+    let finishRegistration: () => void = () => {};
+    const order: string[] = [];
+    const { client, requests } = fakeClient({
+      "POST /api/e2ee/devices": () =>
+        new Promise((resolve) => {
+          finishRegistration = () => {
+            order.push("registered");
+            resolve({
+              one_time_key_counts: { signed_curve25519: 50 },
+              unused_fallback_key_types: [],
+            });
+          };
+        }),
+      [`DELETE /api/e2ee/devices/${DEVICE}`]: () => {
+        order.push("deleted");
+        return {};
+      },
+    });
+    const instance = manager(worker, client);
+    const started = instance.start().catch(() => undefined);
+    await vi.waitFor(() =>
+      expect(requests.some((request) => request.path === "/api/e2ee/devices")).toBe(true),
+    );
+    const destroyed = instance.destroy();
+    finishRegistration();
+    await Promise.all([started, destroyed]);
+    expect(order).toEqual(["registered", "deleted"]);
+  });
+
+  it("鍵の補充に失敗したら、行を処理し終えたあとも補充を試し直す", async () => {
+    const { worker, calls } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      prepareKeyUpload: { one_time_keys: { "signed_curve25519:AAAA": {} }, fallback_keys: {} },
+    });
+    let uploads = 0;
+    const { client } = fakeClient({
+      "POST /api/e2ee/keys/upload": (body) => {
+        uploads += 1;
+        const keys = (body as { one_time_keys: Record<string, unknown> }).one_time_keys;
+        // 起動時の補充（2 回目の送信）のあと、新しいセッションの補充の 1 回目だけ失敗させる。
+        if (uploads === 3 && Object.keys(keys).length === 0) throw new ApiError(503, "busy");
+        return { one_time_key_counts: { signed_curve25519: 49 }, unused_fallback_key_types: [] };
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() =>
+      expect(calls.filter((call) => call.op === "markKeysPublished")).toHaveLength(2),
+    );
+    await instance.stop();
+  });
+
+  it("ログアウトの確認のあいだは to-device を止め、取りやめたら再開する", async () => {
+    const { worker } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+    });
+    const { client } = fakeClient();
+    const instance = manager(worker, client);
+    await instance.start();
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    const first = subscribe.mock.results[0]!.value as { unsubscribe: ReturnType<typeof vi.fn> };
+    await instance.suspend();
+    expect(first.unsubscribe).toHaveBeenCalled();
+    instance.resume();
+    expect(subscribe).toHaveBeenCalledTimes(2);
+    await instance.stop();
+  });
+
+  it("別のユーザーの削除待ちを上書きしない", async () => {
+    markDeviceDeletionPending({ userId: "other", deviceId: "d-other" });
+    markDeviceDeletionPending({ userId: USER, deviceId: DEVICE });
+    const { client } = fakeClient();
+    await retryPendingDeviceDeletion(client, USER);
+    expect(readPendingDeviceDeletions()).toEqual([{ userId: "other", deviceId: "d-other" }]);
   });
 
   it("別のユーザーの削除待ちは消し直さない", async () => {
@@ -229,6 +316,6 @@ describe("E2eeDeviceManager", () => {
     const { client, requests } = fakeClient();
     await retryPendingDeviceDeletion(client, USER);
     expect(requests).toEqual([]);
-    expect(readPendingDeviceDeletion()).not.toBeNull();
+    expect(readPendingDeviceDeletions()).toHaveLength(1);
   });
 });

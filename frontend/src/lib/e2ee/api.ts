@@ -27,24 +27,34 @@ export async function uploadKeys(
   client: ApiClient,
   deviceId: string,
   keys: KeyUpload | null,
+  signal?: AbortSignal,
 ): Promise<KeyCounts> {
-  const { data } = await client.post<KeyCounts>("/api/e2ee/keys/upload", {
-    device_id: deviceId,
-    one_time_keys: keys?.one_time_keys ?? {},
-    fallback_keys: keys?.fallback_keys ?? {},
-  });
+  const { data } = await client.post<KeyCounts>(
+    "/api/e2ee/keys/upload",
+    {
+      device_id: deviceId,
+      one_time_keys: keys?.one_time_keys ?? {},
+      fallback_keys: keys?.fallback_keys ?? {},
+    },
+    { signal },
+  );
   return data;
 }
 
 export async function queryDeviceKeys(
   client: ApiClient,
   userIds: string[],
+  signal?: AbortSignal,
 ): Promise<DeviceKeysByUser> {
   const result: DeviceKeysByUser = {};
   for (let start = 0; start < userIds.length; start += KEYS_QUERY_BATCH) {
     const response = await client.request<{ device_keys?: DeviceKeysByUser }>(
       "/api/e2ee/keys/query",
-      { method: "POST", body: { user_ids: userIds.slice(start, start + KEYS_QUERY_BATCH) } },
+      {
+        method: "POST",
+        body: { user_ids: userIds.slice(start, start + KEYS_QUERY_BATCH) },
+        signal,
+      },
     );
     Object.assign(result, response.device_keys ?? {});
   }
@@ -55,12 +65,14 @@ export async function ackToDevice(
   client: ApiClient,
   deviceId: string,
   ids: string[],
+  signal?: AbortSignal,
 ): Promise<void> {
   for (let start = 0; start < ids.length; start += TO_DEVICE_ACK_BATCH) {
-    await client.post("/api/e2ee/to_device/ack", {
-      device_id: deviceId,
-      ids: ids.slice(start, start + TO_DEVICE_ACK_BATCH),
-    });
+    await client.post(
+      "/api/e2ee/to_device/ack",
+      { device_id: deviceId, ids: ids.slice(start, start + TO_DEVICE_ACK_BATCH) },
+      { signal },
+    );
   }
 }
 

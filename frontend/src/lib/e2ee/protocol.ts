@@ -45,6 +45,7 @@ export type CryptoOperation =
   | { op: "setupBegin"; reset: ResetExpectation | null }
   | ({ op: "setupAddPasskeySlot" } & PasskeySlotInput)
   | { op: "setupSecretStorageRequest" }
+  | { op: "setupPendingSlots" }
   | { op: "unlock"; response: JsonObject; secret: UnlockSecret }
   | { op: "planResume"; keysQuery: JsonObject; versions: JsonObject }
   | { op: "finishSetup"; secretsRevision: number | null }
@@ -91,6 +92,7 @@ export interface CryptoResults {
   setupBegin: { recoveryKey: string; keyId: string };
   setupAddPasskeySlot: null;
   setupSecretStorageRequest: JsonObject;
+  setupPendingSlots: KeySlot[];
   unlock: { keyId: string; secretsRevision: number | null };
   planResume: ResumePlan;
   finishSetup: null;

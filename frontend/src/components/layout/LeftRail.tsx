@@ -67,7 +67,8 @@ export function LeftRail() {
   const { clearUserData } = useOfflineStatus();
   const e2ee = useE2ee();
   // 鍵バックアップに送れていない鍵の数。0 より大きければ、ログアウトの前に確かめる。
-  const [unbackedKeys, setUnbackedKeys] = useState(0);
+  // null は閉じている、-1 は数えられなかった。
+  const [unbackedKeys, setUnbackedKeys] = useState<number | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
@@ -83,8 +84,9 @@ export function LeftRail() {
   const handleLogout = async () => {
     // 暗号ストアを消すと、この端末にだけある鍵を失う。送れていない鍵があれば先に確かめる
     // （docs/e2ee.md の「ログアウトと端末の削除」）。
-    const pending = await e2ee.pendingBackupCount().catch(() => 0);
-    if (pending > 0) {
+    // 数えられなかったら、送れていない鍵がないとは扱わず、分からないまま確かめる。
+    const pending = await e2ee.pendingBackupCount().catch(() => -1);
+    if (pending !== 0) {
       setUnbackedKeys(pending);
       return;
     }
@@ -185,7 +187,7 @@ export function LeftRail() {
           count={unbackedKeys}
           pending={loggingOut}
           onCancel={() => {
-            setUnbackedKeys(0);
+            setUnbackedKeys(null);
             e2ee.cancelLogout();
           }}
           onConfirm={async () => {
@@ -194,7 +196,7 @@ export function LeftRail() {
               await performLogout();
             } finally {
               setLoggingOut(false);
-              setUnbackedKeys(0);
+              setUnbackedKeys(null);
             }
           }}
         />
