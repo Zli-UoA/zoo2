@@ -207,7 +207,10 @@ mod tests {
                 scope: DEFAULT_SCOPE.into(),
             })
         );
-        assert_ne!(TUI_DEFAULT_OIDC_CLIENT_ID, DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID);
+        assert_ne!(
+            TUI_DEFAULT_OIDC_CLIENT_ID,
+            DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID
+        );
     }
 
     #[test]
