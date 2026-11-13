@@ -2,7 +2,8 @@
 //!
 //! `tauri-plugin-notification` はデスクトップでクリックを受け取れないため、`notify-rust` を
 //! 直接使う。Linux (freedesktop) では action を付け、専用のスレッドで `wait_for_action` を
-//! 待つ。macOS では表示するだけで、クリックには対応しない (docs/desktop-tauri.md)。
+//! 待つ。macOS では UNUserNotificationCenter で非同期に出すだけで、クリックには対応しない
+//! (docs/desktop-tauri.md)。
 
 use tauri::AppHandle;
 use zoo2_client_types::ipc::OpenTarget;
@@ -64,7 +65,20 @@ pub fn show_with(
         });
     }
 
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    // macOS: 同期の `show()` は、メインスレッドの run loop がちょうど待機中でないと
+    // `MainThreadNotRunning` で失敗する (通知はメイン以外のスレッドから出すため)。
+    // 非同期の `show_async()` は run loop を待たないので、別のスレッドでこれを待つ。
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (app, on_click);
+        std::thread::spawn(move || {
+            if let Err(error) = tauri::async_runtime::block_on(notification.show_async()) {
+                eprintln!("通知を出せませんでした: {error}");
+            }
+        });
+    }
+
+    #[cfg(not(unix))]
     {
         let _ = (app, on_click);
         let _ = notification.show();
