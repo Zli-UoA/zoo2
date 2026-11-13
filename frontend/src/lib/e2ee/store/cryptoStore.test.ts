@@ -108,6 +108,33 @@ describe("CryptoStore", () => {
     await second.store.close();
   });
 
+  it("開き直しにも失敗したら、ストレージが戻ったあとの操作で開き直す", async () => {
+    class DownBackend extends MemoryCryptoBackend {
+      down = false;
+      override async read() {
+        if (this.down) throw new Error("storage down");
+        return super.read();
+      }
+      override async write(changes: CryptoStoreWrite): Promise<void> {
+        if (this.down) throw new Error("storage down");
+        return super.write(changes);
+      }
+    }
+    const backend = new DownBackend();
+    const operations = new CryptoOperations(
+      { open: async () => backend, remove: async () => backend.destroy() },
+      memoryKeys(),
+    );
+    await operations.run({ op: "open", namespace: `user-${BOB}`, userId: BOB });
+    backend.down = true;
+    // 書き込みに失敗し、そのあとの開き直しも失敗する。
+    await expect(operations.run({ op: "markRegistered" })).rejects.toThrow("storage down");
+    await expect(operations.run({ op: "pendingBackupCount" })).rejects.toThrow("storage down");
+    backend.down = false;
+    expect(await operations.run({ op: "pendingBackupCount" })).toBe(0);
+    await operations.run({ op: "markRegistered" });
+  });
+
   it("包んだ保存鍵の base64 が壊れていても作り直す", async () => {
     const backend = new MemoryCryptoBackend();
     const keys = memoryKeys();
@@ -175,15 +202,26 @@ describe("CryptoStore", () => {
     alice.free();
   });
 
-  it("保存に失敗したら、保存済みの状態から開き直してから処理し直す", async () => {
+  it.each([
+    ["書き込み", "write"],
+    ["保存済みのセッションの読み取り", "read"],
+  ] as const)("%sに失敗したら、保存済みの状態から開き直してから処理し直す", async (_, failure) => {
     class FlakyBackend extends MemoryCryptoBackend {
-      failNext = false;
+      failNextWrite = false;
+      failNextRead = false;
       override async write(changes: CryptoStoreWrite): Promise<void> {
-        if (this.failNext) {
-          this.failNext = false;
-          throw new Error("disk full");
+        if (this.failNextWrite) {
+          this.failNextWrite = false;
+          throw new Error("I/O error");
         }
         return super.write(changes);
+      }
+      override async readInboundSession(key: string): Promise<string | null> {
+        if (this.failNextRead) {
+          this.failNextRead = false;
+          throw new Error("I/O error");
+        }
+        return super.readInboundSession(key);
       }
     }
     const backend = new FlakyBackend();
@@ -212,10 +250,11 @@ describe("CryptoStore", () => {
     };
     const deviceKeys = { [ALICE]: { [alice.deviceId]: alice.deviceKeys() } };
 
-    backend.failNext = true;
+    if (failure === "write") backend.failNextWrite = true;
+    else backend.failNextRead = true;
     await expect(
       operations.run({ op: "processToDevice", rows: [row], deviceKeys }),
-    ).rejects.toThrow("disk full");
+    ).rejects.toThrow("I/O error");
     // 復号で進んだメモリーの状態は捨ててあるので、同じメッセージをもう一度復号できる。
     expect(await operations.run({ op: "processToDevice", rows: [row], deviceKeys })).toEqual({
       processed: ["7"],

@@ -34,25 +34,30 @@ function fakeWorker(overrides: Partial<Record<CryptoOperation["op"], unknown>> =
   return { worker: worker as unknown as CryptoWorker, calls };
 }
 
-function fakeClient(handlers: Record<string, (body: unknown) => unknown> = {}) {
+function fakeClient(
+  handlers: Record<string, (body: unknown, signal?: AbortSignal) => unknown> = {},
+) {
   const requests: { method: string; path: string; body: unknown }[] = [];
   const counts = {
     one_time_key_counts: { signed_curve25519: 50 },
     unused_fallback_key_types: ["signed_curve25519"],
   };
-  const respond = (method: string, path: string, body: unknown) => {
+  const respond = (method: string, path: string, body: unknown, signal?: AbortSignal) => {
     requests.push({ method, path, body });
     const handler = handlers[`${method} ${path}`];
-    if (handler) return handler(body);
+    if (handler) return handler(body, signal);
     if (path === "/api/e2ee/keys/query") return { device_keys: {} };
     return counts;
   };
   const client = {
-    request: vi.fn(async (path: string, options: { method?: string; body?: unknown } = {}) =>
-      respond(options.method ?? "GET", path, options.body),
+    request: vi.fn(
+      async (
+        path: string,
+        options: { method?: string; body?: unknown; signal?: AbortSignal } = {},
+      ) => respond(options.method ?? "GET", path, options.body, options.signal),
     ),
-    post: vi.fn(async (path: string, body: unknown) => ({
-      data: await respond("POST", path, body),
+    post: vi.fn(async (path: string, body: unknown, options: { signal?: AbortSignal } = {}) => ({
+      data: await respond("POST", path, body, options.signal),
       txid: null,
     })),
     delete: vi.fn(async (path: string) => ({
@@ -69,8 +74,9 @@ const subscribe = vi.fn((_config, _userId, _deviceId, onRows: (rows: ToDeviceRow
   return { unsubscribe: vi.fn() };
 });
 
-function manager(worker: CryptoWorker, client: ApiClient) {
+function manager(worker: CryptoWorker, client: ApiClient, settleTimeoutMs?: number) {
   return new E2eeDeviceManager({
+    settleTimeoutMs,
     config: resolveConfig({ DEV: false }),
     client,
     worker,
@@ -300,6 +306,87 @@ describe("E2eeDeviceManager", () => {
     expect(first.unsubscribe).toHaveBeenCalled();
     instance.resume();
     expect(subscribe).toHaveBeenCalledTimes(2);
+    await instance.stop();
+  });
+
+  it("ack が失敗し続けても、鍵の補充は行う", async () => {
+    const { worker, calls } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+    });
+    const { client, requests } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw new ApiError(503, "busy");
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    const uploadsBefore = requests.filter((r) => r.path === "/api/e2ee/keys/upload").length;
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    // 新しい Olm セッションを作ったので、ack が失敗しても補充の数を読み、補充を試す。
+    await vi.waitFor(() =>
+      expect(requests.filter((r) => r.path === "/api/e2ee/keys/upload").length).toBeGreaterThan(
+        uploadsBefore,
+      ),
+    );
+    expect(calls.filter((call) => call.op === "prepareKeyUpload").length).toBeGreaterThan(1);
+    await instance.stop();
+  });
+
+  it("登録の結果が分からないうちは、ログアウトで端末を消さずに削除待ちに残す", async () => {
+    const { worker } = fakeWorker();
+    const { client, requests } = fakeClient({
+      // 登録の応答が返らない（タイムアウトより長くかかる）。
+      "POST /api/e2ee/devices": () => new Promise(() => {}),
+    });
+    const instance = manager(worker, client, 20);
+    void instance.start().catch(() => undefined);
+    await vi.waitFor(() =>
+      expect(requests.some((request) => request.path === "/api/e2ee/devices")).toBe(true),
+    );
+    await instance.destroy();
+    expect(requests.some((request) => request.method === "DELETE")).toBe(false);
+    expect(readPendingDeviceDeletions()).toEqual([{ userId: USER, deviceId: DEVICE }]);
+  });
+
+  it("ログアウトの確認で止めるときは、通信中の要求を中止する", async () => {
+    const { worker } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+    });
+    let aborted = false;
+    const { client, requests } = fakeClient({
+      // keys/query の応答が返らない。中止されたら終わる。
+      "POST /api/e2ee/keys/query": (_body, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            aborted = true;
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        }),
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() =>
+      expect(requests.some((request) => request.path === "/api/e2ee/keys/query")).toBe(true),
+    );
+    await instance.suspend();
+    expect(aborted).toBe(true);
     await instance.stop();
   });
 

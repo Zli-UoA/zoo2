@@ -32,21 +32,38 @@ export class CryptoOperations {
   ) {}
 
   private lastOpen: { namespace: string; userId: string } | null = null;
+  /** 開き直しが済んでいない（開き直しにも失敗した）。次の操作の前に、もう一度開き直す。 */
+  private reopenPending = false;
 
   async run(request: CryptoOperation): Promise<CryptoResults[Op]> {
+    const needsStore = !["generateDeviceKeys", "open", "close", "destroy"].includes(request.op);
+    if (this.reopenPending && needsStore) {
+      // ストレージが戻っていなければ、ここで失敗する。呼び出し側はあとで試し直す。
+      await this.reopen();
+    }
     try {
       return await this.dispatch(request);
     } catch (error) {
       // 保存に失敗した操作のあとは、メモリーの状態を捨てて、保存済みの状態から開き直す。
       if (this.store?.isBroken && this.lastOpen) {
-        const reopen = this.lastOpen;
         await this.store.close().catch(() => undefined);
         this.store = null;
         this.storeName = null;
-        await this.dispatch({ op: "open", ...reopen }).catch(() => undefined);
+        this.reopenPending = true;
+        await this.reopen().catch(() => undefined);
       }
       throw error;
     }
+  }
+
+  private async reopen(): Promise<void> {
+    const reopen = this.lastOpen;
+    if (!reopen) {
+      this.reopenPending = false;
+      return;
+    }
+    await this.dispatch({ op: "open", ...reopen });
+    this.reopenPending = false;
   }
 
   private async dispatch(request: CryptoOperation): Promise<CryptoResults[Op]> {
@@ -75,6 +92,7 @@ export class CryptoOperations {
         this.store = store;
         this.storeName = name;
         this.lastOpen = { namespace: request.namespace, userId: request.userId };
+        this.reopenPending = false;
         return this.describe(replacedDeviceId);
       }
       case "registrationRequest":
@@ -128,6 +146,7 @@ export class CryptoOperations {
       case "close":
         this.setup.discard();
         this.lastOpen = null;
+        this.reopenPending = false;
         await this.store?.close();
         this.store = null;
         this.storeName = null;
@@ -145,6 +164,7 @@ export class CryptoOperations {
           this.store = null;
           this.storeName = null;
           this.lastOpen = null;
+          this.reopenPending = false;
         }
         return null;
       }
