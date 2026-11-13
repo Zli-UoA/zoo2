@@ -24,6 +24,8 @@ export interface E2eeDeviceManagerOptions {
   subscribe?: typeof subscribeToDevice;
   /** to-device の処理が失敗したときに、もう一度試すまでの時間。 */
   retryDelayMs?: number;
+  /** ログアウトで、処理中のもの（登録の要求など）を待つ時間。 */
+  settleTimeoutMs?: number;
   onStatus?: (status: E2eeDeviceStatus, error?: unknown) => void;
 }
 
@@ -65,6 +67,10 @@ export class E2eeDeviceManager {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   /** 止めたら、通信中の要求（登録を除く）を中止する。 */
   private readonly abort = new AbortController();
+  /** to-device の処理の要求。ログアウトの確認で止めるときにも中止し、再開したら作り直す。 */
+  private processAbort = new AbortController();
+  /** 登録の要求の結果がまだ分からない。分からないうちは、ログアウトで端末を消さない。 */
+  private registering = false;
 
   constructor(private readonly options: E2eeDeviceManagerOptions) {}
 
@@ -149,15 +155,24 @@ export class E2eeDeviceManager {
     const request = await worker.request({ op: "registrationRequest" });
     // 登録は中止しない。中止しても、サーバーが受け取っていれば端末はできる。ログアウトは、
     // この要求の結果を待ってから端末を消す（`destroy`）。
-    const counts = await registerDevice(client, {
-      ...request,
-      display_name: this.options.displayName,
-    });
+    this.registering = true;
+    let counts: KeyCounts;
+    try {
+      counts = await registerDevice(client, {
+        ...request,
+        display_name: this.options.displayName,
+      });
+    } catch (error) {
+      // 失敗が分かった（応答をなくしたなら、サーバーにはあるかもしれないが、削除は冪等）。
+      this.registering = false;
+      throw error;
+    }
+    this.registering = false;
     await worker.request({ op: "markRegistered" });
     return counts;
   }
 
-  private async replenish(counts: KeyCounts): Promise<void> {
+  private async replenish(counts: KeyCounts, signal = this.abort.signal): Promise<void> {
     const deviceId = this.deviceId;
     if (!deviceId) return;
     const upload = await this.options.worker.request({
@@ -166,7 +181,7 @@ export class E2eeDeviceManager {
       hasUnusedFallbackKey: counts.unused_fallback_key_types.includes("signed_curve25519"),
     });
     if (upload) {
-      await uploadKeys(this.options.client, deviceId, upload, this.abort.signal);
+      await uploadKeys(this.options.client, deviceId, upload, signal);
       await this.options.worker.request({ op: "markKeysPublished" });
     }
     this.needsReplenish = false;
@@ -199,23 +214,29 @@ export class E2eeDeviceManager {
     const deviceId = this.deviceId;
     if (!deviceId) return;
     const { worker, client } = this.options;
-    const signal = this.abort.signal;
+    const signal = this.processAbort.signal;
+    let rowsFailure: unknown = null;
     if (rows.length > 0) {
-      const senders = [...new Set(rows.map((row) => row.sender_user_id))].sort();
-      const deviceKeys = await queryDeviceKeys(client, senders, signal);
-      if (this.stopped) return;
-      const result = await worker.request({ op: "processToDevice", rows, deviceKeys });
-      if (result.newOlmSessions > 0) this.needsReplenish = true;
-      if (result.processed.length > 0) {
-        await ackToDevice(client, deviceId, result.processed, signal);
-        await worker.request({ op: "acknowledged", ids: result.processed });
+      try {
+        const senders = [...new Set(rows.map((row) => row.sender_user_id))].sort();
+        const deviceKeys = await queryDeviceKeys(client, senders, signal);
+        if (this.stopped) return;
+        const result = await worker.request({ op: "processToDevice", rows, deviceKeys });
+        if (result.newOlmSessions > 0) this.needsReplenish = true;
+        if (result.processed.length > 0) {
+          await ackToDevice(client, deviceId, result.processed, signal);
+          await worker.request({ op: "acknowledged", ids: result.processed });
+        }
+      } catch (error) {
+        rowsFailure = error;
       }
     }
-    // 補充は受信の行とは別に持つ。ack や補充が失敗して試し直すと、同じ行は処理済みとして
-    // 返るので、行の結果だけでは補充し直せない。
-    if (this.needsReplenish && !this.stopped) {
-      await this.replenish(await uploadKeys(client, deviceId, null, signal));
+    // 補充は受信の行とは別に持ち、行の処理（keys/query や ack）が失敗しても行う。ack や補充が
+    // 失敗して試し直すと、同じ行は処理済みとして返るので、行の結果だけでは補充し直せない。
+    if (this.needsReplenish && !this.stopped && !signal.aborted) {
+      await this.replenish(await uploadKeys(client, deviceId, null, signal), signal);
     }
+    if (rowsFailure) throw rowsFailure;
   }
 
   /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
@@ -229,6 +250,9 @@ export class E2eeDeviceManager {
    */
   async suspend(): Promise<void> {
     this.suspended = true;
+    // 通信中の要求（keys/query、ack、補充）を中止する。暗号ストアの書き込みは Worker の中で
+    // 1 つずつ終わるので、処理中のものが終わるのを待てばよい。
+    this.processAbort.abort();
     this.subscription?.unsubscribe();
     this.subscription = null;
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -240,6 +264,7 @@ export class E2eeDeviceManager {
   resume(): void {
     if (!this.suspended) return;
     this.suspended = false;
+    this.processAbort = new AbortController();
     this.subscribe();
   }
 
@@ -263,12 +288,15 @@ export class E2eeDeviceManager {
     if (deviceId) markDeviceDeletionPending({ userId: this.options.userId, deviceId });
     await this.options.worker.request({ op: "destroy", namespace: this.options.namespace });
     this.options.onStatus?.("stopped");
-    if (deviceId) await this.deleteDeviceOrRemember(deviceId);
+    // 待っても登録の結果が分からなければ、いま消すと、そのあとに登録が届いて端末が残りうる
+    // （404 で削除待ちを外してしまう）。削除待ちに残し、次のログインで消し直す。
+    if (deviceId && !this.registering) await this.deleteDeviceOrRemember(deviceId);
   }
 
   private halt(): void {
     this.stopped = true;
     this.abort.abort();
+    this.processAbort.abort();
     this.subscription?.unsubscribe();
     this.subscription = null;
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -280,7 +308,7 @@ export class E2eeDeviceManager {
     const starting = this.starting?.catch(() => undefined);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, DELETE_TIMEOUT_MS);
+      timer = setTimeout(resolve, this.options.settleTimeoutMs ?? DELETE_TIMEOUT_MS);
     });
     await Promise.race([Promise.all([starting, this.processing?.catch(() => undefined)]), timeout]);
     clearTimeout(timer);

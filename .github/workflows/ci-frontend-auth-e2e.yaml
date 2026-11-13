@@ -44,6 +44,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # この後のビルドで動く依存のコードから、GitHub のトークンを読めないようにする。
+          persist-credentials: false
       - name: Read Rust toolchain and wasm-bindgen version
         id: versions
         run: |

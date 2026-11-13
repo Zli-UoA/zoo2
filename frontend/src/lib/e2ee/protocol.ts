@@ -52,6 +52,7 @@ export type CryptoOperation =
   | ({ op: "newPasskeySlot" } & PasskeySlotInput)
   | { op: "startupCheck"; keysQuery: JsonObject; versions: JsonObject }
   | { op: "hasSecrets" }
+  | { op: "hasOwnKeys" }
   | { op: "discardSecrets" }
   | { op: "forgetOwnKeys" }
   | {
@@ -99,6 +100,7 @@ export interface CryptoResults {
   newPasskeySlot: KeySlot;
   startupCheck: StartupCheck | null;
   hasSecrets: boolean;
+  hasOwnKeys: boolean;
   discardSecrets: null;
   forgetOwnKeys: null;
 }

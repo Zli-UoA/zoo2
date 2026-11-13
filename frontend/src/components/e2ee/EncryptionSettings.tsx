@@ -259,11 +259,16 @@ export function EncryptionSettings() {
           await saveRemaining(deps, revisionRef.current, await reauth());
           await load();
         } catch (error) {
-          setState({
-            step: "needsReauth",
-            busy: false,
-            error: toEncryptionError(error, "saveFailed"),
-          });
+          const code = toEncryptionError(error, "saveFailed");
+          if (code === "mismatch") {
+            // 手元の鍵は捨てた（サーバーの鍵が変わった）。読み直して、解錠し直すかリセットを選べるようにする。
+            await load();
+            update((current) =>
+              current.step === "locked" ? { ...current, error: code } : current,
+            );
+            return;
+          }
+          setState({ step: "needsReauth", busy: false, error: code });
         }
       })();
     },
