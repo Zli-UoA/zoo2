@@ -1,6 +1,7 @@
 import { DeviceAccount } from "@zoo/crypto-wasm";
 
 import { cryptoDatabaseName } from "./identity";
+import { SetupSession } from "./setupSession";
 import type { CryptoBackend } from "./store/backend";
 import { CryptoStore } from "./store/cryptoStore";
 import { indexedDbWrappingKeys, type WrappingKeyStore } from "./store/storageKey";
@@ -23,6 +24,7 @@ export interface CryptoBackendFactory {
 export class CryptoOperations {
   private store: CryptoStore | null = null;
   private storeName: string | null = null;
+  private readonly setup = new SetupSession(() => this.opened().userId);
 
   constructor(
     private readonly backends: CryptoBackendFactory,
@@ -73,12 +75,41 @@ export class CryptoOperations {
         return null;
       case "pendingBackupCount":
         return this.opened().pendingBackupCount();
+      case "setupBegin":
+        return this.setup.begin(request.reset);
+      case "setupAddPasskeySlot":
+        this.setup.addPasskeySlot(request);
+        return null;
+      case "setupSecretStorageRequest":
+        return this.setup.secretStorageRequest();
+      case "unlock":
+        return this.setup.unlock(request.response, request.secret);
+      case "planResume":
+        return this.setup.plan(this.opened(), request.keysQuery, request.versions);
+      case "finishSetup":
+        await this.setup.finish(this.opened(), request.secretsRevision);
+        return null;
+      case "newPasskeySlot":
+        return this.setup.newPasskeySlot(request);
+      case "startupCheck":
+        return this.setup.startupCheck(this.opened(), request.keysQuery, request.versions);
+      case "hasSecrets":
+        return this.setup.hasSecrets;
+      case "discardSecrets":
+        this.setup.discard();
+        return null;
+      case "forgetOwnKeys":
+        this.setup.discard();
+        await this.opened().forgetOwnKeys();
+        return null;
       case "close":
+        this.setup.discard();
         await this.store?.close();
         this.store = null;
         this.storeName = null;
         return null;
       case "destroy": {
+        this.setup.discard();
         const name = cryptoDatabaseName(request.namespace);
         if (this.store && this.storeName === name) {
           await this.store.destroy();

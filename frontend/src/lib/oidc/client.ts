@@ -60,6 +60,15 @@ export interface OidcEndpoints {
   endSessionEndpoint: string | null;
 }
 
+/** 直前の再認証の認可リクエスト。verifier と nonce は呼び出し側のメモリーにだけ置く。 */
+export interface ReauthRequest {
+  url: string;
+  state: string;
+  nonce: string;
+  verifier: string;
+  redirectUri: string;
+}
+
 export interface OidcTokens {
   accessToken: string;
   refreshToken: string | null;
@@ -340,6 +349,58 @@ export class OidcClient {
     const href = url.toString();
     this.environment.assign(href);
     return href;
+  }
+
+  /**
+   * 直前の再認証（`max_age=0`）の認可リクエストを作る（docs/e2ee.md の「クロス署名」の【決定】。#360）。
+   *
+   * 今のページを離れずに、別のウィンドウで開く。PKCE の verifier と nonce は戻り値（呼び出し側の
+   * メモリー）にだけ置き、セッションストレージにもウィンドウにも渡さない。
+   */
+  async createReauthRequest(redirectUri: string): Promise<ReauthRequest> {
+    const endpoints = await this.discover();
+    const request = {
+      state: createState(),
+      nonce: createNonce(),
+      verifier: createVerifier(),
+      redirectUri,
+    };
+    const url = new URL(endpoints.authorizationEndpoint);
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("client_id", this.clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    url.searchParams.set("scope", this.scope);
+    this.addResource(url.searchParams);
+    url.searchParams.set("state", request.state);
+    url.searchParams.set("nonce", request.nonce);
+    url.searchParams.set("code_challenge", await createChallenge(request.verifier));
+    url.searchParams.set("code_challenge_method", "S256");
+    // 既存の AuthZ のセッションがあっても、必ずログインし直させる（AuthZ#102 の E2E で確認済み）。
+    url.searchParams.set("max_age", "0");
+    return { ...request, url: url.toString() };
+  }
+
+  /**
+   * 再認証の認可コードを ID トークンに換える。今のセッション（アクセストークン）は変えない。
+   * ID トークンは `X-Zoo-Reauth` に入れ、サーバーが `authenticated_at` などを確かめる。
+   */
+  async exchangeReauthCode(request: ReauthRequest, code: string): Promise<string> {
+    const body = new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: request.redirectUri,
+      client_id: this.clientId,
+      code_verifier: request.verifier,
+    });
+    this.addResource(body);
+    const tokens = this.parseTokens(await this.requestToken(body), request.nonce, {
+      refreshToken: null,
+      idToken: null,
+    });
+    if (!tokens.idToken) {
+      throw new OidcError("invalid_id_token", "id_token がありません");
+    }
+    return tokens.idToken;
   }
 
   /**

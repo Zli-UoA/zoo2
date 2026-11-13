@@ -206,7 +206,10 @@ export function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
 
-export function withParams(url: string, params: Record<string, string | number | undefined>): string {
+export function withParams(
+  url: string,
+  params: Record<string, string | number | undefined>,
+): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) {

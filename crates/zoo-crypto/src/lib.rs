@@ -91,7 +91,8 @@ pub use secret_storage::{
     SlotKind, SlotSecret, SsssKey, SsssKeyDescription, UnlockedSecretStorage, new_prf_salt,
 };
 pub use setup::{
-    OwnKeys, OwnSecrets, ResumePlan, ServerKeyState, StartupCheck, plan_resume, startup_check,
+    OwnKeys, OwnSecrets, ResumePlan, ServerKeyState, StartupCheck, plan_reset, plan_resume,
+    startup_check,
 };
 pub use signing::{signable_json, verify_json_signature};
 pub use trust::{

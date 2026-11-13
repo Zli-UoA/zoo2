@@ -2,7 +2,9 @@ import {
   DeviceAccount,
   InboundSessionStore,
   OlmSessions,
+  OwnKeys,
   TrustStore,
+  type OwnSecrets,
   type JsonObject,
   type SessionRef,
 } from "@zoo/crypto-wasm";
@@ -20,6 +22,13 @@ const META_USER_ID = "user_id";
 const META_DEVICE_ID = "device_id";
 /** サーバーへの登録が済んだか（`"1"`）。応答をなくしたら、同じ鍵で登録し直す（冪等）。 */
 const META_REGISTERED = "registered";
+/**
+ * 解錠した自分の鍵（自己署名鍵、ユーザー署名鍵、バックアップ鍵。#360）。値は `OwnKeys.pickle` の
+ * 封筒（保存鍵で暗号化したもの）で、平文の秘密は入らない。
+ */
+const META_OWN_KEYS = "own_keys";
+/** 最後に解錠したときの SSSS の `secrets_revision`（鍵バックアップへのアップロードに付ける）。 */
+const META_SECRETS_REVISION = "secrets_revision";
 
 /** to-device の Shape の行のうち、処理に使う列。 */
 export interface ToDeviceRow {
@@ -267,7 +276,10 @@ export class CryptoStore {
    * `deviceKeys` は送信ユーザーの `keys/query` の応答。送信端末の検証済みかの判定（手順 4）は、
    * クロス署名を扱う #360 以降で足す。それまでは「未検証の送信者」として保存する。
    */
-  async processToDevice(rows: ToDeviceRow[], deviceKeys: DeviceKeysByUser): Promise<ToDeviceResult> {
+  async processToDevice(
+    rows: ToDeviceRow[],
+    deviceKeys: DeviceKeysByUser,
+  ): Promise<ToDeviceResult> {
     const result: ToDeviceResult = { processed: [], roomKeys: 0, dropped: 0, newOlmSessions: 0 };
     for (const row of rows) {
       if (this.processedToDevice.has(row.id)) {
@@ -354,6 +366,51 @@ export class CryptoStore {
     if (ids.length === 0) return;
     await this.backend.write({ removeProcessedToDevice: ids });
     for (const id of ids) this.processedToDevice.delete(id);
+  }
+
+  /**
+   * 解錠した（または初回設定で作った）自分の鍵を保存する（#360）。マスター鍵の秘密鍵は保存せず、
+   * 自分のマスター鍵の公開鍵とユーザー署名鍵を、配布先の判定の記録に入れる。
+   */
+  async saveOwnKeys(secrets: OwnSecrets, secretsRevision: number | null): Promise<void> {
+    const keys = secrets.ownKeys();
+    const crossSigning = secrets.crossSigning;
+    try {
+      this.trust.trustOwnMasterKey(crossSigning.master);
+      this.trust.recordOwnUserSigningKey(crossSigning.userSigning);
+      await this.backend.write({
+        meta: {
+          [META_OWN_KEYS]: keys.pickle(this.account, this.storageKey),
+          [META_SECRETS_REVISION]: secretsRevision === null ? null : String(secretsRevision),
+        },
+        trustStore: this.trust.pickle(this.account, this.storageKey),
+      });
+    } finally {
+      keys.free();
+      crossSigning.free();
+    }
+  }
+
+  /** 保存した自分の鍵。まだ解錠していなければ `null`。使い終わったら `free()` する。 */
+  async ownKeys(): Promise<{ keys: OwnKeys; secretsRevision: number | null } | null> {
+    const { meta } = await this.backend.read();
+    const sealed = meta[META_OWN_KEYS];
+    if (!sealed) return null;
+    const revision = meta[META_SECRETS_REVISION];
+    return {
+      keys: OwnKeys.fromPickle(sealed, this.account, this.storageKey),
+      secretsRevision: revision ? Number(revision) : null,
+    };
+  }
+
+  /** 自分の鍵を消す（E2EE のリセットや、SSSS を開けなくなったとき）。 */
+  async forgetOwnKeys(): Promise<void> {
+    await this.backend.write({ meta: { [META_OWN_KEYS]: null, [META_SECRETS_REVISION]: null } });
+  }
+
+  /** 今の端末の署名付きの端末鍵。 */
+  deviceKeys(): JsonObject {
+    return this.account.deviceKeys();
   }
 
   /** 配布先の判定の記録を保存し直す（#361 以降が判定のたびに呼ぶ）。 */

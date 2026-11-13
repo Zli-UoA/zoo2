@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use zoo_crypto::{
     BACKUP_ALGORITHM, BackupDecryptionKey, CrossSigningKeys, CryptoError, DeviceAccount, KeySlot,
     OwnKeys, OwnSecrets, RecoveryKey, SecretStorage, ServerKeyState, SignatureUpload, SsssKey,
-    StartupCheck, plan_resume, startup_check,
+    StartupCheck, plan_reset, plan_resume, startup_check,
 };
 
 const ALICE: &str = "00000000-0000-0000-0000-00000000000a";
@@ -53,8 +53,12 @@ impl Server {
     }
 
     fn state(&self) -> ServerKeyState {
-        ServerKeyState::from_json(ALICE, &self.keys_query(), &json!({ "versions": self.versions }))
-            .unwrap()
+        ServerKeyState::from_json(
+            ALICE,
+            &self.keys_query(),
+            &json!({ "versions": self.versions }),
+        )
+        .unwrap()
     }
 
     fn apply_cross_signing(&mut self, body: &Value) {
@@ -122,7 +126,10 @@ fn first_setup_uploads_everything_in_order() {
     assert!(body.get("master_key").is_some());
     assert!(body.get("self_signing_key").is_some());
     assert!(body.get("user_signing_key").is_some());
-    assert_eq!(plan.device_signature.as_ref().unwrap().target_key_id, DEVICE);
+    assert_eq!(
+        plan.device_signature.as_ref().unwrap().target_key_id,
+        DEVICE
+    );
     let version = plan.backup_version.as_ref().unwrap();
     assert_eq!(version["algorithm"], BACKUP_ALGORITHM);
     assert_eq!(version["expected_current_version"], Value::Null);
@@ -154,7 +161,11 @@ fn resumes_from_every_stop_without_mismatch() {
         }
         // 再起動して解錠した端末（止まった端末自身）
         run(&mut server, &secrets, &device);
-        assert!(plan_resume(&secrets, &server.state(), &device).unwrap().is_empty());
+        assert!(
+            plan_resume(&secrets, &server.state(), &device)
+                .unwrap()
+                .is_empty()
+        );
         // 別の端末で解錠しても、署名だけを足して終わる
         let other = device_keys(OTHER_DEVICE);
         let plan = plan_resume(&secrets, &server.state(), &other).unwrap();
@@ -182,7 +193,11 @@ fn uploads_only_missing_subkeys() {
     assert_eq!(body["expected_keys"]["self_signing"], Value::Null);
     server.apply_cross_signing(&body);
     run(&mut server, &secrets, &device);
-    assert!(plan_resume(&secrets, &server.state(), &device).unwrap().is_empty());
+    assert!(
+        plan_resume(&secrets, &server.state(), &device)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -344,4 +359,35 @@ fn own_keys_round_trip_and_startup_check() {
         startup_check(&own, &server.state(), &device).unwrap(),
         StartupCheck::Unlock
     ));
+}
+
+/// E2EE のリセット：今のサーバーの鍵と版を前提にして、3 つの鍵と版を差し替える。
+#[test]
+fn reset_replaces_keys_and_version() {
+    let old = secrets();
+    let device = device_keys(DEVICE);
+    let mut server = Server::default();
+    run(&mut server, &old, &device);
+
+    let new = secrets();
+    let plan = plan_reset(&new, &server.state(), &device).unwrap();
+    let body = plan.cross_signing.as_ref().unwrap();
+    assert_eq!(
+        body["expected_keys"]["master"],
+        old.cross_signing.master.public_key().to_base64()
+    );
+    assert!(body.get("master_key").is_some() && body.get("user_signing_key").is_some());
+    assert_eq!(
+        plan.backup_version.as_ref().unwrap()["expected_current_version"],
+        "1"
+    );
+
+    server.apply_cross_signing(body);
+    server.apply_signature(plan.device_signature.as_ref().unwrap());
+    server.apply_version(plan.backup_version.as_ref().unwrap());
+    assert!(
+        plan_resume(&new, &server.state(), &device)
+            .unwrap()
+            .is_empty()
+    );
 }
