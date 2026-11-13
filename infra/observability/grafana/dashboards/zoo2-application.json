@@ -75,13 +75,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\", status_class=\"5xx\"}[$__rate_interval])) / clamp_min(sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\"}[$__rate_interval])), 1e-9)",
+          "expr": "(sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\", status_class=\"5xx\"}[$__rate_interval])) or on(service) (sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\"}[$__rate_interval])) * 0)) / clamp_min(sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\"}[$__rate_interval])), 1e-9)",
           "legendFormat": "{{service}} 5xx rate",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\", status_class=\"4xx\"}[$__rate_interval])) / clamp_min(sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\"}[$__rate_interval])), 1e-9)",
+          "expr": "(sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\", status_class=\"4xx\"}[$__rate_interval])) or on(service) (sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\"}[$__rate_interval])) * 0)) / clamp_min(sum by (service) (rate(zoo_http_requests_total{service=~\"$service\", route=~\"$route\"}[$__rate_interval])), 1e-9)",
           "legendFormat": "{{service}} 4xx rate",
           "refId": "B"
         }

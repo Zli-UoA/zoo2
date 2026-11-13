@@ -27,7 +27,7 @@ Zoo2 の Backend（`zoo_backend` / `zoo_dispatcher` / `zoo_slack_worker`）お�
 | `METRICS_HOST` | `0.0.0.0` | `zoo_backend` の内部 `/metrics` サーバー待受ホスト |
 | `METRICS_PORT` | `9464` | `zoo_backend` の内部 `/metrics` ポート（`0` / `off` / `false` / `disabled` で無効化） |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 未設定 | OTLP/HTTP エンドポイント（例: `http://localhost:4318`）。未設定時は OTLP 送信無効（ローカル `trace_id`/`span_id` ログ相関は常に有効） |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `METRICS_ENDPOINT` / `LOGS_ENDPOINT` | 未設定 | シグナル個別の OTLP エンドポイント上書き |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` / `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | 未設定 | シグナル個別の OTLP エンドポイント上書き |
 | `OTEL_SERVICE_NAME` | バイナリ固有値 | OpenTelemetry `service.name` 上書き（既定: `zoo-backend`, `zoo-dispatcher`, `zoo-slack-worker`） |
 | `OTEL_TRACES_SAMPLER` | SDK 既定 | 標準 OTel サンプラー設定（例: `parentbased_traceidratio`） |
 
@@ -76,8 +76,8 @@ make observability-up
 ```bash
 mkdir -p .local/logs
 LOG_FORMAT=json make backend-dev 2>&1 | tee -a .local/logs/zoo-backend.jsonl
-# Tempo へ OTLP トレースも送る場合:
-# LOG_FORMAT=json OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 make backend-dev 2>&1 | tee -a .local/logs/zoo-backend.jsonl
+# Tempo へ OTLP トレースも送る場合（未実装の metrics/logs 送信抑止のため traces 専用変数を推奨）:
+# LOG_FORMAT=json OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://localhost:4318/v1/traces make backend-dev 2>&1 | tee -a .local/logs/zoo-backend.jsonl
 ```
 
 3. 別ターミナルで Frontend を起動します（`make frontend-dev`）。

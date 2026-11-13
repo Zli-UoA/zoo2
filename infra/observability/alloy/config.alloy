@@ -61,12 +61,12 @@ loki.process "zoo_safe" {
 
   stage.template {
     source   = "trace_id"
-    template = "{{ if .frontend_trace_id }}{{ .frontend_trace_id }}{{ else }}{{ .trace_id }}{{ end }}"
+    template = "{{ if .frontend_trace_id }}{{ .frontend_trace_id }}{{ else if .trace_id }}{{ .trace_id }}{{ end }}"
   }
 
   stage.template {
     source   = "span_id"
-    template = "{{ if .frontend_span_id }}{{ .frontend_span_id }}{{ else }}{{ .span_id }}{{ end }}"
+    template = "{{ if .frontend_span_id }}{{ .frontend_span_id }}{{ else if .span_id }}{{ .span_id }}{{ end }}"
   }
 
   // 許可フィールドのみで JSON ログ行を再構築し、未定義フィールド（user_id 等の万一の混入）を本文から破棄する
