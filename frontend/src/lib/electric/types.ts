@@ -35,6 +35,12 @@ export type ChannelRow = {
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
   deleted_at: TimestampString | null;
+  /** スレッドチャンネルの場合、その親チャンネル。 */
+  parent_channel_id?: string | null;
+  /** スレッドチャンネルのタイトル。 */
+  thread_title?: string | null;
+  thread_archived_at?: TimestampString | null;
+  thread_activity_at?: TimestampString | null;
   /** Slack から取り込んだチャンネル (取り込み先の新規作成も既存のチャンネルも) */
   imported_from_slack: boolean;
   /** Slack からの取り込みの種類 (新しく作った / 既存のチャンネルに追加)。取り込んでいなければ null */
@@ -62,6 +68,8 @@ export type MessageRow = {
   deleted_at: TimestampString | null;
   /** 返信先のルートメッセージ。`null` はチャンネル直下のメッセージ。 */
   parent_id: string | null;
+  /** チャンネル内で返信した元の投稿。スレッド所属とは独立。 */
+  reply_to_message_id?: string | null;
   /** この投稿を返信先とするスレッドのアーカイブ日時。 */
   thread_archive_at?: TimestampString | null;
   /** 自動アーカイブ期限の計算に使う最終活動時刻。 */
@@ -105,8 +113,19 @@ export type MessageDisplayData = {
   author?: Pick<UserRow, "id" | "user_name" | "display_name" | "avatar_url" | "is_bot" | "app_id">;
   emojis: Record<string, DisplayEmoji>;
   attachments: AttachmentRow[];
-  reactions: (MessageReactionRow & { user_name?: string; display_name?: string })[];
+  reactions: (MessageReactionRow & {
+    user_name?: string;
+    display_name?: string;
+  })[];
   reply_count: number;
+  reply_target?: {
+    id: string;
+    user_id: string;
+    channel_id: string;
+    content: string | null;
+    deleted_at: TimestampString | null;
+    author: Pick<UserRow, "user_name" | "display_name" | "avatar_url"> | null;
+  } | null;
 };
 
 export type NotificationDisplayData = {

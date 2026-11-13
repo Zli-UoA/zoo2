@@ -121,6 +121,26 @@ describe("ChannelHeader", () => {
     expect(screen.queryByText("メッセージ管理")).toBeNull();
   });
 
+  it("uses thread archive controls instead of channel settings for a thread channel", () => {
+    const thread: ChannelRow = {
+      ...channel,
+      id: "thread-release-plan",
+      channel_name: "thread-release-plan",
+      parent_channel_id: channel.id,
+      thread_title: "Release planning",
+      thread_archived_at: null,
+      thread_activity_at: channel.created_at,
+    };
+    render(
+      <LocaleProvider>
+        <ChannelHeader channel={thread} memberCount={1} />
+      </LocaleProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: "スレッドをアーカイブ" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "チャンネル設定" })).toBeNull();
+  });
+
   it("shows how and when a channel was imported from Slack in the settings only", async () => {
     const imported: ChannelRow = {
       ...channel,

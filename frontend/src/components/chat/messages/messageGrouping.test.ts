@@ -69,4 +69,17 @@ describe("buildMessageItems", () => {
   it("handles an empty list", () => {
     expect(buildMessageItems([])).toEqual([]);
   });
+
+  it("resolves a reply preview only to its exact parent message", () => {
+    const parent = message("parent", "alice", "2026-01-02 00:00:00.000");
+    const reply = {
+      ...message("reply", "bob", "2026-01-02 00:01:00.000"),
+      reply_to_message_id: parent.id,
+    };
+    const unrelated = message("unrelated", "eve", "2026-01-02 00:02:00.000");
+    const items = buildMessageItems([parent, reply, unrelated]);
+
+    expect(items[1].replyTarget?.id).toBe(parent.id);
+    expect(items[2].replyTarget).toBeUndefined();
+  });
 });

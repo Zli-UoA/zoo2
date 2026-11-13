@@ -96,6 +96,12 @@ describe("messageTextSegments", () => {
     ]);
   });
 
+  it("linkifies valid internal channel paths without accepting arbitrary relative paths", () => {
+    const path = "/channels/123e4567-e89b-12d3-a456-426614174000";
+    expect(messageTextSegments(`Open ${path}`)).toEqual([text("Open "), link(path)]);
+    expect(messageTextSegments("/admin/delete-all")).toEqual([text("/admin/delete-all")]);
+  });
+
   it("linkifies http and https, but not other schemes", () => {
     expect(messageTextSegments("http://example.com")).toEqual([link("http://example.com")]);
     expect(messageTextSegments("javascript:alert(1)")).toEqual([text("javascript:alert(1)")]);

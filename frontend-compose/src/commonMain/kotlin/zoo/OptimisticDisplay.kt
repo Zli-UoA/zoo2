@@ -18,8 +18,8 @@ internal fun optimisticDisplay(
     var replyDelta = 0
     for ((id, after) in messageEdits) {
         val before = baseMessages.find { rowKey(it) == id }
-        if (before?.text("parent_id") == messageId && !before.present("deleted_at")) replyDelta--
-        if (after?.text("parent_id") == messageId && !after.present("deleted_at")) replyDelta++
+        if ((before?.text("reply_to_message_id") == messageId || before?.text("parent_id") == messageId) && !before.present("deleted_at")) replyDelta--
+        if ((after?.text("reply_to_message_id") == messageId || after?.text("parent_id") == messageId) && !after.present("deleted_at")) replyDelta++
     }
     val reactions = display.array("reactions").rows().associateBy { it.text("id") }.toMutableMap()
     val emojis = display.nested("emojis").toMutableMap()

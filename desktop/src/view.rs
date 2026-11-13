@@ -2073,8 +2073,9 @@ impl WorkspaceView {
         }
 
         let root_for_reply_btn = message
-            .parent_id
+            .reply_to_message_id
             .clone()
+            .or(message.parent_id.clone())
             .unwrap_or_else(|| msg_id_reply.clone());
 
         let is_search_matched = state

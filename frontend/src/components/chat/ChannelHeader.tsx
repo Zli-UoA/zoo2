@@ -2,6 +2,7 @@ import { ChannelWebhooksDialog } from "./ChannelWebhooksDialog";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
 import { cn } from "cn";
 import {
   ArchiveIcon,
@@ -17,10 +18,12 @@ import {
   SettingsIcon,
   WebhookIcon,
   UsersIcon,
+  UserPlusIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
+import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -52,6 +55,7 @@ import { normalizeChannelDescription } from "./channelDescription";
 import { RenameChannelDialog } from "./RenameChannelDialog";
 import { isGroupDm } from "./dm";
 import { PaneHeader } from "../layout/PaneHeader";
+import { ChannelThreadsDialog } from "./ChannelThreadsDialog";
 
 /** チャンネルヘッダ。名前・説明・メンバー数と管理メニュー、狭幅の戻る。 */
 export function ChannelHeader({
@@ -72,7 +76,7 @@ export function ChannelHeader({
   const isDm = channel.is_dm;
   const isGroup = isDm && isGroupDm(channel.channel_name);
   const isArchived = admin.access.isArchived;
-  const canManage = admin.access.canManageChannel && !isDm;
+  const canManage = admin.access.canManageChannel && !isDm && !channel.parent_channel_id;
   const description = normalizeChannelDescription(channel.description);
   const displayTitle = title ?? channel.channel_name;
   const displaySubtitle = subtitle ?? (description || t("channels.noDescription"));
@@ -80,8 +84,14 @@ export function ChannelHeader({
   const [webhooksOpen, setWebhooksOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [threadsOpen, setThreadsOpen] = useState(false);
+  const [threadArchivePending, setThreadArchivePending] = useState(false);
+  const [threadJoinPending, setThreadJoinPending] = useState(false);
 
   const call = useCall();
+  const { config } = useCollections();
+  const api = useMemo(() => createConfiguredApiClient(config), [config]);
+  const threadArchived = !!channel.thread_archived_at;
   const isInThisCall = call.currentChannelId === channel.id;
   const activeCallCount = call.activeCalls.get(channel.id) ?? 0;
   const hasActiveCall = activeCallCount > 0;
@@ -101,6 +111,31 @@ export function ChannelHeader({
     const succeeded = await admin.setArchived(confirmAction === "archive");
     if (succeeded) {
       setConfirmAction(null);
+    }
+  }
+
+  async function toggleThreadArchive() {
+    if (!channel.parent_channel_id || threadArchivePending) return;
+    setThreadArchivePending(true);
+    try {
+      await api.post(`/api/threads/${channel.id}/${threadArchived ? "open" : "archive"}`);
+    } catch (cause) {
+      toast.error(localizeApiError(cause, t));
+    } finally {
+      setThreadArchivePending(false);
+    }
+  }
+
+  async function joinThread() {
+    if (!channel.parent_channel_id || threadJoinPending) return;
+    setThreadJoinPending(true);
+    try {
+      await api.post(`/api/threads/${channel.id}/join`);
+      toast.success(t("threads.joined"));
+    } catch (cause) {
+      toast.error(localizeApiError(cause, t));
+    } finally {
+      setThreadJoinPending(false);
     }
   }
 
@@ -139,10 +174,48 @@ export function ChannelHeader({
               {t("moderation.archived")}
             </span>
           ) : null}
+          {threadArchived ? (
+            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+              {t("moderation.archived")}
+            </span>
+          ) : null}
         </div>
         <p className="truncate text-xs text-muted-foreground">{displaySubtitle}</p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
+        {!isDm && !channel.parent_channel_id && !isArchived ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setThreadsOpen(true)}
+            aria-label={t("threads.title")}
+            title={t("threads.title")}
+          >
+            <MessagesSquareIcon aria-hidden="true" />
+            <span>{t("threads.title")}</span>
+          </Button>
+        ) : null}
+        {!isDm ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={shell.toggleMembers}
+            aria-expanded={shell.membersOpen}
+            aria-label={
+              memberCount === undefined || memberCount === null
+                ? t("members.title")
+                : `${t("members.title")} ${memberCount}`
+            }
+          >
+            <UsersIcon aria-hidden="true" />
+            <span className="hidden sm:inline">{t("members.title")}</span>
+            {memberCount === undefined ? null : (
+              <span className="tabular-nums text-muted-foreground">
+                {memberCount === null ? "…" : memberCount}
+              </span>
+            )}
+          </Button>
+        ) : null}
         {!isArchived ? (
           <Button
             variant={isInThisCall ? "secondary" : hasActiveCall ? "outline" : "ghost"}
@@ -182,26 +255,31 @@ export function ChannelHeader({
             ) : null}
           </Button>
         ) : null}
-        {!isDm ? (
+        {channel.parent_channel_id && !admin.access.isMember ? (
           <Button
             variant="outline"
             size="sm"
-            onClick={shell.toggleMembers}
-            aria-expanded={shell.membersOpen}
-            aria-label={
-              memberCount === undefined || memberCount === null
-                ? t("members.title")
-                : `${t("members.title")} ${memberCount}`
-            }
+            disabled={threadJoinPending}
+            onClick={() => void joinThread()}
           >
-            <UsersIcon aria-hidden="true" />
-            <span className="hidden sm:inline">{t("members.title")}</span>
-            {memberCount === undefined ? null : (
-              <span className="tabular-nums text-muted-foreground">
-                {memberCount === null ? "…" : memberCount}
-              </span>
-            )}
+            <UserPlusIcon aria-hidden="true" />
+            <span>{threadJoinPending ? t("threads.joining") : t("threads.join")}</span>
           </Button>
+        ) : null}
+        {channel.parent_channel_id && admin.access.isMember ? (
+          <>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={threadArchived ? t("threads.open") : t("threads.archive")}
+              title={threadArchived ? t("threads.open") : t("threads.archive")}
+              disabled={threadArchivePending}
+              onClick={() => void toggleThreadArchive()}
+            >
+              {threadArchived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
+            </Button>
+            <ThreadHeaderMenu channel={channel} />
+          </>
         ) : null}
         {isDm ? <DmHeaderMenu channel={channel} /> : null}
         {canManage ? (
@@ -220,6 +298,10 @@ export function ChannelHeader({
 
       {webhooksOpen && canManage ? (
         <ChannelWebhooksDialog key={channel.id} channel={channel} onOpenChange={setWebhooksOpen} />
+      ) : null}
+
+      {!isDm && !channel.parent_channel_id ? (
+        <ChannelThreadsDialog channel={channel} open={threadsOpen} onOpenChange={setThreadsOpen} />
       ) : null}
 
       {renameOpen && canManage && !isArchived ? (
@@ -324,6 +406,85 @@ export function ChannelHeader({
         </DialogContent>
       </Dialog>
     </PaneHeader>
+  );
+}
+
+function ThreadHeaderMenu({ channel }: { channel: ChannelRow }) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { config } = useCollections();
+  const api = useMemo(() => createConfiguredApiClient(config), [config]);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function leave() {
+    if (!channel.parent_channel_id || pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await api.delete(`/api/threads/${channel.id}/leave`);
+      setConfirmOpen(false);
+      await navigate({
+        to: "/channels/$channelId",
+        params: { channelId: channel.parent_channel_id },
+      });
+    } catch (cause) {
+      setError(localizeApiError(cause, t));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          aria-label={t("threads.menu")}
+          title={t("threads.menu")}
+          className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "size-11 md:size-8")}
+        >
+          <MoreHorizontalIcon />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            variant="destructive"
+            className="min-h-11"
+            onClick={() => setConfirmOpen(true)}
+          >
+            <LogOutIcon />
+            {t("threads.leave")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <AlertDialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          if (!pending) setConfirmOpen(open);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("threads.leaveTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("threads.leaveDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          {error ? (
+            <p className="text-xs text-destructive">{t("common.writeErrorDetail", { error })}</p>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pending}>{t("common.cancelShort")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={pending}
+              onClick={() => void leave()}
+            >
+              {pending ? t("threads.leaving") : t("threads.leave")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 

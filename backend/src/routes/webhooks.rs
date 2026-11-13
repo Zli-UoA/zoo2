@@ -81,6 +81,7 @@ pub(super) async fn persist_card(
             channel_id: settings.channel,
             content,
             parent_id: None,
+            reply_to_message_id: None,
             attachment_ids: None,
             sensitive: false,
             sensitive_attachment_ids: vec![],

@@ -350,7 +350,19 @@ async fn get_attachment_url(
         )));
     }
 
-    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+    let thread_readable = if let Some(parent_id) = &channel.parent_channel_id {
+        let mut tx = db.transaction().await?;
+        crate::routes::threads::ensure_parent_thread_access(&mut tx, parent_id, &auth_user.id)
+            .await?;
+        tx.commit().await?;
+        true
+    } else {
+        false
+    };
+
+    if !thread_readable
+        && (channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?)
+    {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()

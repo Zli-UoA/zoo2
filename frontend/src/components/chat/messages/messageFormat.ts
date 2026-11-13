@@ -12,6 +12,7 @@ export interface FeedMessage {
   display_data?: MessageDisplayData;
   id: string;
   user_id: string;
+  channel_id?: string;
   content: string;
   card?: string | null;
   app_blocks?: string | null;
@@ -25,8 +26,10 @@ export interface FeedMessage {
   avatar_url?: string | null;
   created_at: string;
   updated_at?: string | null;
+  deleted_at?: string | null;
   /** 返信先のルートメッセージ。`null` はチャンネル直下。 */
   parent_id: string | null;
+  reply_to_message_id?: string | null;
   thread_archive_at?: string | null;
   user_name?: string | null;
   display_name?: string | null;
@@ -42,7 +45,10 @@ export function authorLabel(message: FeedMessage): string {
 }
 
 /** 本文をリンク化するための断片。`text` はそのまま、`link` は href として描く。 */
-export type MessageTextSegment = { kind: "text" | "link" | "mention"; value: string };
+export type MessageTextSegment = {
+  kind: "text" | "link" | "mention";
+  value: string;
+};
 
 /**
  * `http(s)` URL の候補。ホスト部の先頭 1 文字を要求して `https://.` のような
@@ -50,6 +56,8 @@ export type MessageTextSegment = { kind: "text" | "link" | "mention"; value: str
  * 開始スキームが合わないため拾わない。`\b` で語中（`foohttps://`）を防ぐ。
  */
 const URL_PATTERN = /\bhttps?:\/\/[^\s<>"'`/.?#][^\s<>"'`]*/gi;
+const CHANNEL_PATH_PATTERN =
+  /\/channels\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 /** 約物だけが残って `https://` になった断片を弾く（ホスト部が 1 文字以上ある）。 */
 const URL_HAS_HOST = /^https?:\/\/./i;
@@ -103,10 +111,16 @@ function trimUrlEnd(candidate: string): string {
 export function messageTextSegments(content: string): MessageTextSegment[] {
   const segments: MessageTextSegment[] = [];
   let cursor = 0;
-  for (const match of content.matchAll(URL_PATTERN)) {
+  const matches = [
+    ...content.matchAll(URL_PATTERN),
+    ...content.matchAll(CHANNEL_PATH_PATTERN),
+  ].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+  for (const match of matches) {
     const start = match.index ?? 0;
-    const url = trimUrlEnd(match[0]);
-    if (!url || !URL_HAS_HOST.test(url)) {
+    const isChannelPath = CHANNEL_PATH_PATTERN.test(match[0]);
+    CHANNEL_PATH_PATTERN.lastIndex = 0;
+    const url = isChannelPath ? match[0] : trimUrlEnd(match[0]);
+    if (!url || (!isChannelPath && !URL_HAS_HOST.test(url))) {
       continue;
     }
     if (start > cursor) {

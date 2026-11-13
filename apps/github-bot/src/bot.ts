@@ -291,7 +291,7 @@ export class GitHubBot {
                 content: withMentions,
                 ...(threading
                   ? {
-                      parent_id: thread.message,
+                      reply_to_message_id: thread.message,
                       broadcast: Boolean(
                         notice.stateChange ||
                         (notice.feature === "comments" && sub.broadcastComments) ||

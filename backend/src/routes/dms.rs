@@ -116,6 +116,10 @@ async fn try_create_or_get_1on1_dm(
         updated_at: None,
         archive_at: None,
         deleted_at: None,
+        parent_channel_id: None,
+        thread_title: None,
+        thread_archived_at: None,
+        thread_activity_at: None,
     })
     .exec(&mut tx)
     .await;
@@ -295,6 +299,10 @@ pub(crate) async fn create_or_get_dm(
         updated_at: None,
         archive_at: None,
         deleted_at: None,
+        parent_channel_id: None,
+        thread_title: None,
+        thread_archived_at: None,
+        thread_activity_at: None,
     })
     .exec(&mut tx)
     .await?;

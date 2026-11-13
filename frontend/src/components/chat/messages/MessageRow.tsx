@@ -11,6 +11,7 @@ import {
   MessageSquareTextIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  ReplyIcon,
   SmilePlusIcon,
   TrashIcon,
   UsersRoundIcon,
@@ -62,6 +63,7 @@ export interface MessageRowProps {
   replyCount?: number;
   /** スレッドペインを開く。返信行では未指定。 */
   onOpenThread?: () => void;
+  onReply?: () => void;
   attachments?: AttachmentRow[];
 }
 
@@ -183,11 +185,31 @@ export function MessageRow({
   onPickReaction,
   replyCount = 0,
   onOpenThread,
+  onReply,
   attachments = [],
 }: MessageRowProps) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
+  const replyPreview = message.display_data?.reply_target;
+  const replyAuthor = item.replyTarget
+    ? authorLabel(item.replyTarget)
+    : replyPreview?.author?.display_name ||
+      replyPreview?.author?.user_name ||
+      t("messages.unavailableReplyTarget");
+  const replyContent =
+    item.replyTarget && !item.replyTarget.deleted_at
+      ? item.replyTarget.content
+      : replyPreview && !replyPreview.deleted_at
+        ? (replyPreview.content ?? t("messages.unavailableReplyTarget"))
+        : t("messages.unavailableReplyTarget");
+  const replyAvatar = item.replyTarget?.avatar_url ?? replyPreview?.author?.avatar_url;
+  const replyTargetId = item.replyTarget?.id ?? replyPreview?.id;
+  const replyTargetChannelId = replyPreview?.channel_id ?? message.channel_id;
+  const replyTargetHref =
+    replyTargetId && replyTargetChannelId && !replyPreview?.deleted_at
+      ? `/channels/${encodeURIComponent(replyTargetChannelId)}?message=${encodeURIComponent(replyTargetId)}`
+      : null;
 
   async function copyRawMessage() {
     try {
@@ -234,17 +256,18 @@ export function MessageRow({
   }
   useEffect(() => cancelHold, []);
 
-  const threadButton = onOpenThread ? (
-    <Button
-      variant="ghost"
-      size="icon-xs"
-      aria-label={t("threads.open")}
-      title={t("threads.open")}
-      onClick={onOpenThread}
-    >
-      <MessageSquarePlusIcon />
-    </Button>
-  ) : null;
+  const threadButton =
+    onOpenThread && replyCount > 0 ? (
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        aria-label={t("threads.open")}
+        title={t("threads.open")}
+        onClick={onOpenThread}
+      >
+        <MessageSquarePlusIcon />
+      </Button>
+    ) : null;
 
   return (
     <>
@@ -321,6 +344,18 @@ export function MessageRow({
         )}
 
         <div className="min-w-0 flex-1">
+          {message.reply_to_message_id ? (
+            <ReplyContextLine
+              href={replyTargetHref}
+              author={replyAuthor}
+              avatar={replyAvatar}
+              content={replyContent}
+              label={t("messages.openReplyTarget", {
+                author: replyAuthor,
+                content: replyContent,
+              })}
+            />
+          ) : null}
           {item.isGroupStart || message.apub ? (
             <div className="flex flex-wrap items-center gap-2">
               {item.isGroupStart ? <AuthorIdentity message={message} /> : null}
@@ -468,7 +503,9 @@ export function MessageRow({
                         aria-label={t("reactions.showUsers", {
                           emoji: kitchenLabel(reaction.emoji),
                         })}
-                        title={t("reactions.showUsers", { emoji: kitchenLabel(reaction.emoji) })}
+                        title={t("reactions.showUsers", {
+                          emoji: kitchenLabel(reaction.emoji),
+                        })}
                         onClick={() =>
                           setReactionUsersDialog({
                             type: "reaction",
@@ -525,6 +562,17 @@ export function MessageRow({
               >
                 <SmilePlusIcon />
               </Button>
+              {onReply ? (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={t("messages.reply")}
+                  title={t("messages.reply")}
+                  onClick={onReply}
+                >
+                  <ReplyIcon />
+                </Button>
+              ) : null}
               {threadButton}
               {isOwn ? (
                 <>
@@ -572,7 +620,9 @@ export function MessageRow({
                 <DropdownMenuItem
                   onClick={() =>
                     window.dispatchEvent(
-                      new CustomEvent("zoo:message-actions", { detail: message.id }),
+                      new CustomEvent("zoo:message-actions", {
+                        detail: message.id,
+                      }),
                     )
                   }
                 >
@@ -583,7 +633,13 @@ export function MessageRow({
                   <SmilePlusIcon />
                   {t("reactions.add")}
                 </DropdownMenuItem>
-                {onOpenThread ? (
+                {onReply ? (
+                  <DropdownMenuItem onClick={onReply}>
+                    <ReplyIcon />
+                    {t("messages.reply")}
+                  </DropdownMenuItem>
+                ) : null}
+                {onOpenThread && replyCount > 0 ? (
                   <DropdownMenuItem onClick={onOpenThread}>
                     <MessageSquarePlusIcon />
                     {t("threads.open")}
@@ -673,5 +729,44 @@ export function MessageRow({
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+function ReplyContextLine({
+  href,
+  author,
+  avatar,
+  content,
+  label,
+}: {
+  href: string | null;
+  author: string;
+  avatar?: string | null;
+  content: string;
+  label: string;
+}) {
+  const body = (
+    <>
+      <span className="inline-flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted text-[9px] font-semibold">
+        {avatar ? (
+          <img src={avatar} alt="" className="size-full object-cover" />
+        ) : (
+          author.slice(0, 1)
+        )}
+      </span>
+      <span className="shrink-0 font-medium">{author}</span>
+      <span className="min-w-0 truncate">{content}</span>
+    </>
+  );
+  const className =
+    "mb-1 flex min-w-0 max-w-full items-center gap-1.5 text-left text-xs text-muted-foreground";
+  return href ? (
+    <a href={href} className={`${className} hover:text-foreground`} aria-label={label}>
+      {body}
+    </a>
+  ) : (
+    <div className={className} aria-label={label} title={content}>
+      {body}
+    </div>
   );
 }

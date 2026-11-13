@@ -14,7 +14,7 @@ createServer(async (request, response) => {
     if (payload.type === "url_verification" && typeof payload.challenge === "string") { response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ challenge: payload.challenge })); return; }
     const delivery = payload as Delivery;
     await app.dispatch(delivery, async (event) => {
-      if (event.type === "app.mentioned" && event.channel_id) await app.postMessage({ channel_id: event.channel_id, content: "HTTP Botからの返信です。", parent_id: String(event.data.parent_id ?? event.data.id) });
+      if (event.type === "app.mentioned" && event.channel_id) await app.postMessage({ channel_id: event.channel_id, content: "HTTP Botからの返信です。", reply_to_message_id: String(event.data.parent_id ?? event.data.id) });
     });
     response.writeHead(200).end();
   } catch { response.writeHead(500).end(); }

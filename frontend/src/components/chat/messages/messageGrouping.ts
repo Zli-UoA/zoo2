@@ -6,6 +6,7 @@ export const GROUP_GAP_MS = 5 * 60 * 1000;
 
 export interface MessageItem {
   message: FeedMessage;
+  replyTarget?: FeedMessage;
   /** 連投のかたまりの先頭（アバター・投稿者名を出す）。 */
   isGroupStart: boolean;
   /** 連投のかたまりの末尾（下余白を広げる）。 */
@@ -32,6 +33,7 @@ export function buildMessageItems(
   groupGapMs: number = GROUP_GAP_MS,
   firstUnreadId: string | null = null,
 ): MessageItem[] {
+  const byId = new Map(messages.map((message) => [message.id, message]));
   return messages.map((message, index) => {
     const previous = messages[index - 1];
     const next = messages[index + 1];
@@ -56,6 +58,7 @@ export function buildMessageItems(
 
     return {
       message,
+      replyTarget: message.reply_to_message_id ? byId.get(message.reply_to_message_id) : undefined,
       isGroupStart: !continuesFromPrevious,
       isGroupEnd: !continuesToNext,
       showDateSeparator,

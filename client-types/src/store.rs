@@ -293,7 +293,10 @@ impl Store {
     pub fn replies(&self, channel_id: &str, root_id: &str) -> Vec<&Message> {
         let mut messages: Vec<&Message> = self
             .visible_messages(channel_id)
-            .filter(|message| message.parent_id.as_deref() == Some(root_id))
+            .filter(|message| {
+                message.reply_to_message_id.as_deref() == Some(root_id)
+                    || message.parent_id.as_deref() == Some(root_id)
+            })
             .collect();
         sort_messages(&mut messages);
         messages
@@ -303,7 +306,11 @@ impl Store {
     pub fn reply_counts(&self, channel_id: &str) -> HashMap<String, usize> {
         let mut counts = HashMap::new();
         for message in self.visible_messages(channel_id) {
-            if let Some(parent_id) = &message.parent_id {
+            if let Some(parent_id) = message
+                .reply_to_message_id
+                .as_ref()
+                .or(message.parent_id.as_ref())
+            {
                 *counts.entry(parent_id.clone()).or_insert(0) += 1;
             }
         }
@@ -515,13 +522,24 @@ mod tests {
 
     #[test]
     fn builds_timeline_threads_and_reply_counts() {
-        let store = store_with_messages();
+        let mut store = store_with_messages();
+        store.apply(
+            &ShapeId::Messages("c1".into()),
+            batch(vec![upsert(
+                "r3",
+                json!({
+                    "id":"r3", "user_id":"u1", "channel_id":"c1", "content":"direct reply",
+                    "created_at":"2026-11-01 00:00:06", "parent_id":null,
+                    "reply_to_message_id":"m2"
+                }),
+            )]),
+        );
         let roots: Vec<&str> = store
             .root_messages("c1")
             .iter()
             .map(|m| m.id.as_str())
             .collect();
-        assert_eq!(roots, ["m1", "m2"]);
+        assert_eq!(roots, ["m1", "m2", "r3"]);
         let replies: Vec<&str> = store
             .replies("c1", "m1")
             .iter()
@@ -529,6 +547,8 @@ mod tests {
             .collect();
         assert_eq!(replies, ["r1"]);
         assert_eq!(store.reply_counts("c1").get("m1"), Some(&1));
+        assert_eq!(store.reply_counts("c1").get("m2"), Some(&1));
+        assert_eq!(store.replies("c1", "m2")[0].id, "r3");
         assert_eq!(store.latest_root("c1").unwrap().id, "m2");
         assert!(store.is_synced(&ShapeId::Messages("c1".into())));
     }

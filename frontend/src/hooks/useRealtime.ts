@@ -1,5 +1,5 @@
 import { useOptimisticDisplay } from "./useOptimisticDisplay";
-import { eq, isNull, useLiveInfiniteQuery, useLiveQuery } from "@tanstack/react-db";
+import { and, eq, isNull, useLiveInfiniteQuery, useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { createConfiguredApiClient } from "../lib/api/client";
@@ -29,7 +29,7 @@ export function useActiveChannels() {
   const query = useLiveQuery((q) =>
     q
       .from({ channels })
-      .where(({ channels }) => isNull(channels.deleted_at))
+      .where(({ channels }) => and(isNull(channels.deleted_at), isNull(channels.parent_channel_id)))
       .orderBy(({ channels }) => channels.channel_name, "asc"),
   );
   // 保存済みの一覧を復元できたら、初回のネットワーク同期は裏で続ける。
@@ -39,6 +39,14 @@ export function useActiveChannels() {
     isInitialSyncLoading: query.isLoading,
     isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
   };
+}
+
+/** URL で指定されたチャンネルを一覧条件にかかわらず引く。スレッドチャンネルも対象。 */
+export function useChannelById(channelId: string) {
+  const { channels } = useCollections();
+  return useLiveQuery((q) =>
+    q.from({ channels }).where(({ channels }) => eq(channels.id, channelId)),
+  );
 }
 
 export interface MessageFeedOptions {
@@ -69,7 +77,10 @@ export function useMessageFeed(channelId: string, options: MessageFeedOptions = 
   const cacheable = parentId === null;
   const live = oldestFirst as FeedRow[];
   const liveReady = !query.isLoading && live.length > 0;
-  const [cached, setCached] = useState<{ channelId: string; rows: FeedRow[] | null } | null>(null);
+  const [cached, setCached] = useState<{
+    channelId: string;
+    rows: FeedRow[] | null;
+  } | null>(null);
   // `navigator.onLine` は、サーバーに届かない状態でも真になる。そのため、オフラインのときだけでなく、
   // ライブの行が届くまで (読み込み中・失敗) は、控えを表示しておく。
   const wantCache =
@@ -279,17 +290,26 @@ export interface ChannelAccess {
 export function useChannelAccess(channel: ChannelRow | null): ChannelAccess {
   const { currentUserId, isLoading: currentUserLoading, isAdmin } = useCurrentUser();
   const membersQuery = useChannelMembers(channel?.id ?? null);
+  const parentMembersQuery = useChannelMembers(channel?.parent_channel_id ?? null);
   const members = membersQuery.data ?? [];
   const isMember = currentUserId
     ? members.some((member) => member.user_id === currentUserId)
     : false;
   const isCreator = !!channel && currentUserId === channel.created_user_id;
+  const isParentMember =
+    !!currentUserId &&
+    (parentMembersQuery.data ?? []).some((member) => member.user_id === currentUserId);
+  const canRead = channel
+    ? channel.parent_channel_id
+      ? !channel.is_private || isParentMember
+      : !channel.is_private || isMember
+    : false;
   return {
     members,
     isMember,
     isCreator,
     isAdmin,
-    canRead: channel ? !channel.is_private || isMember : false,
+    canRead,
     canAddMember: channel
       ? canAddChannelMember({
           isAdmin,
@@ -300,10 +320,15 @@ export function useChannelAccess(channel: ChannelRow | null): ChannelAccess {
       : false,
     canManageChannel: channel ? canManageChannel({ isAdmin, isCreator }) : false,
     isArchived: !!channel?.archive_at,
-    isLoading: membersQuery.isLoading,
+    isLoading:
+      membersQuery.isLoading || (!!channel?.parent_channel_id && parentMembersQuery.isLoading),
     isMembershipPending:
       !!channel?.is_private &&
-      (currentUserLoading || (!isMember && membersQuery.isInitialSyncLoading)),
-    isError: membersQuery.isError,
+      !canRead &&
+      (currentUserLoading ||
+        (!isMember &&
+          membersQuery.isInitialSyncLoading &&
+          parentMembersQuery.isInitialSyncLoading)),
+    isError: membersQuery.isError || parentMembersQuery.isError,
   };
 }

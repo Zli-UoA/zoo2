@@ -3,7 +3,12 @@ import { ArchiveIcon, ArrowLeftIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useActiveChannels, useChannelAccess, useUsers } from "../../hooks/useRealtime";
+import {
+  useActiveChannels,
+  useChannelAccess,
+  useChannelById,
+  useUsers,
+} from "../../hooks/useRealtime";
 import { useLocale } from "../i18n/LocaleProvider";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
@@ -48,12 +53,13 @@ export function ChannelScreen({
   const { locale } = useLocale();
   const { currentUserId } = useCurrentUser();
   const channelsQuery = useActiveChannels();
+  const channelQuery = useChannelById(channelId);
   const usersQuery = useUsers();
   const channels = channelsQuery.data ?? [];
-  const channel = useMemo(
-    () => channels.find((candidate) => candidate.id === channelId) ?? null,
-    [channels, channelId],
-  );
+  const channel = channelQuery.data?.[0] ?? null;
+  const parentChannel = channel?.parent_channel_id
+    ? (channels.find((candidate) => candidate.id === channel.parent_channel_id) ?? null)
+    : null;
   // 権限判定（閲覧可否・参加状態・保留中）は `useChannelAccess` に集約する。
   const access = useChannelAccess(channel);
   const dm = useMemo(() => {
@@ -74,7 +80,7 @@ export function ChannelScreen({
   }, [access.members, channel, currentUserId, locale, t, usersQuery.data]);
 
   if (!channel) {
-    if (channelsQuery.isInitialSyncLoading) {
+    if (channelQuery.isLoading || channelsQuery.isInitialSyncLoading) {
       return (
         <div className="flex h-full min-h-0 flex-col">
           <ChannelLoading />
@@ -104,15 +110,17 @@ export function ChannelScreen({
     <div className="flex h-full min-h-0 flex-col">
       <ChannelHeader
         channel={channel}
-        title={dm?.title}
+        title={channel.thread_title ?? dm?.title}
         subtitle={
-          dm
-            ? dm.group
-              ? access.isLoading
-                ? "…"
-                : t("dms.memberCount", { count: access.members.length })
-              : t("dms.direct")
-            : undefined
+          channel.thread_title
+            ? (parentChannel?.channel_name ?? t("threads.title"))
+            : dm
+              ? dm.group
+                ? access.isLoading
+                  ? "…"
+                  : t("dms.memberCount", { count: access.members.length })
+                : t("dms.direct")
+              : undefined
         }
         memberCount={
           channel.is_dm
@@ -142,6 +150,7 @@ export function ChannelScreen({
                 targetMessageId={targetMessageId}
                 key={channelId}
                 channelId={channelId}
+                allowThreads={!channel.parent_channel_id}
                 isMember={access.isMember}
                 canModerate={!channel.is_dm && access.canManageChannel}
                 readOnly={access.isArchived}

@@ -85,6 +85,7 @@ async fn create_message(
             &body.channel_id,
             &body.content,
             body.parent_id.as_deref(),
+            body.reply_to_message_id.as_deref(),
             &body.kind,
             body.broadcast,
             body.metadata.as_ref(),

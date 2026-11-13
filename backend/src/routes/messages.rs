@@ -26,6 +26,7 @@ pub struct CreateMessageRequest {
     pub channel_id: String,
     pub content: String,
     pub parent_id: Option<String>,
+    pub reply_to_message_id: Option<String>,
     pub attachment_ids: Option<Vec<String>>,
     #[serde(default)]
     pub sensitive: bool,
@@ -77,6 +78,7 @@ pub struct MessageResponse {
     pub updated_at: Option<String>,
     pub deleted_at: Option<String>,
     pub parent_id: Option<String>,
+    pub reply_to_message_id: Option<String>,
 }
 
 impl From<Message> for MessageResponse {
@@ -93,6 +95,7 @@ impl From<Message> for MessageResponse {
             updated_at: m.updated_at.map(|t| t.to_string()),
             deleted_at: m.deleted_at.map(|t| t.to_string()),
             parent_id: m.parent_id,
+            reply_to_message_id: m.reply_to_message_id,
         }
     }
 }
@@ -196,6 +199,7 @@ pub(crate) async fn check_idempotent_existing_message(
     channel_id: &str,
     content: &str,
     parent_id: Option<&str>,
+    reply_to_message_id: Option<&str>,
     kind: &str,
     broadcast: bool,
     metadata: Option<&serde_json::Value>,
@@ -254,6 +258,7 @@ pub(crate) async fn check_idempotent_existing_message(
         && existing_msg.channel_id == channel_id
         && existing_msg.content == content
         && existing_msg.parent_id.as_deref() == parent_id
+        && existing_msg.reply_to_message_id.as_deref() == reply_to_message_id
         && existing_msg.deleted_at.is_none()
         && req_att_ids == existing_att_ids
         && options_match
@@ -292,8 +297,13 @@ pub(crate) async fn create_message_impl(
         ));
     }
     validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
+    if payload.parent_id.is_some() && payload.reply_to_message_id.is_some() {
+        return Err(AppError::BadRequest(
+            "A message cannot use both parent_id and reply_to_message_id".into(),
+        ));
+    }
     if !matches!(payload.kind.as_str(), "message" | "emote")
-        || payload.broadcast && payload.parent_id.is_none()
+        || payload.broadcast && payload.parent_id.is_none() && payload.reply_to_message_id.is_none()
     {
         return Err(AppError::BadRequest(
             "Invalid message kind or broadcast target".into(),
@@ -396,6 +406,7 @@ pub(crate) async fn create_message_impl(
             &payload.channel_id,
             &payload.content,
             payload.parent_id.as_deref(),
+            payload.reply_to_message_id.as_deref(),
             &payload.kind,
             payload.broadcast,
             payload.metadata.as_ref(),
@@ -463,6 +474,7 @@ pub(crate) async fn create_message_impl(
                         &payload.channel_id,
                         &payload.content,
                         payload.parent_id.as_deref(),
+                        payload.reply_to_message_id.as_deref(),
                         &payload.kind,
                         payload.broadcast,
                         payload.metadata.as_ref(),
@@ -576,6 +588,27 @@ pub(crate) async fn create_message_impl(
         state.config.dev_auth_enabled,
     )
     .await?;
+    let thread_parent = crate::apps::one(
+        &mut tx,
+        "SELECT json_build_object('parent_channel_id',(SELECT parent_channel_id FROM threads WHERE channel_id=$1))::text",
+        &[&payload.channel_id],
+    )
+    .await?["parent_channel_id"]
+        .as_str()
+        .map(str::to_owned);
+    if let Some(parent_id) = thread_parent {
+        crate::apps::one(
+            &mut tx,
+            "SELECT '{}'::text FROM channels p WHERE p.id=$1 AND p.deleted_at IS NULL AND NOT p.is_dm AND ((NOT p.is_private AND NOT EXISTS(SELECT 1 FROM users WHERE id=$2 AND is_guest)) OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=p.id AND cu.user_id=$2))",
+            &[&parent_id, &auth_user.id],
+        )
+        .await?;
+        toasty::sql::statement("INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now() AT TIME ZONE 'UTC') ON CONFLICT DO NOTHING")
+            .bind(auth_user.id.as_str())
+            .bind(payload.channel_id.as_str())
+            .exec(&mut tx)
+            .await?;
+    }
     // スレッド親メッセージ検証
     let mut parent_author_id: Option<String> = None;
     if let Some(ref parent_id) = payload.parent_id {
@@ -602,7 +635,57 @@ pub(crate) async fn create_message_impl(
             )));
         }
 
+        let legacy_thread = crate::apps::one(
+            &mut tx,
+            "WITH RECURSIVE ancestors(id,parent_id,channel_id) AS ( \
+               SELECT id,parent_id,channel_id FROM messages WHERE id=$1 \
+               UNION ALL \
+               SELECT parent.id,parent.parent_id,parent.channel_id \
+               FROM ancestors child JOIN messages parent ON parent.id=child.parent_id \
+               WHERE child.parent_id IS NOT NULL AND parent.channel_id=child.channel_id \
+             ) SELECT json_build_object('allowed',EXISTS( \
+               SELECT 1 FROM ancestors root JOIN legacy_thread_roots legacy ON legacy.root_message_id=root.id \
+               WHERE root.parent_id IS NULL AND root.channel_id=$2 \
+             ))::text",
+            &[parent_id.as_str(), payload.channel_id.as_str()],
+        )
+        .await?;
+        if legacy_thread["allowed"] != true {
+            return Err(AppError::BadRequest(
+                "Legacy nested replies are accepted only for existing threads during migration"
+                    .into(),
+            ));
+        }
+
         parent_author_id = Some(parent.user_id);
+    }
+
+    // A direct reply targets a message in the same channel or thread.
+    let mut reply_author_id: Option<String> = None;
+    if let Some(ref reply_to_id) = payload.reply_to_message_id {
+        Uuid::parse_str(reply_to_id).map_err(|_| {
+            AppError::BadRequest(format!(
+                "reply_to_message_id is not a valid UUID: {reply_to_id}"
+            ))
+        })?;
+        let reply_to = Message::get_by_id(&mut tx, reply_to_id.as_str())
+            .await
+            .map_err(|err| {
+                if err.is_record_not_found() {
+                    AppError::NotFound(format!("Reply target not found: {reply_to_id}"))
+                } else {
+                    AppError::from(err)
+                }
+            })?;
+        if reply_to.deleted_at.is_some()
+            || reply_to.channel_id != payload.channel_id
+            || reply_to_id == &id
+        {
+            return Err(AppError::NotFound(format!(
+                "Reply target not found: {reply_to_id}"
+            )));
+        }
+        reply_author_id = Some(reply_to.user_id);
     }
 
     let now = crate::models::now_utc_millis();
@@ -620,6 +703,7 @@ pub(crate) async fn create_message_impl(
         updated_at: None,
         deleted_at: None,
         parent_id: payload.parent_id.clone(),
+        reply_to_message_id: payload.reply_to_message_id.clone(),
     })
     .exec(&mut tx)
     .await;
@@ -638,6 +722,7 @@ pub(crate) async fn create_message_impl(
                     &payload.channel_id,
                     &payload.content,
                     payload.parent_id.as_deref(),
+                    payload.reply_to_message_id.as_deref(),
                     &payload.kind,
                     payload.broadcast,
                     payload.metadata.as_ref(),
@@ -686,7 +771,7 @@ pub(crate) async fn create_message_impl(
             &mut tx,
             &message,
             auth_user.id.as_str(),
-            parent_author_id.as_deref(),
+            parent_author_id.as_deref().or(reply_author_id.as_deref()),
         )
         .await?
     } else {
@@ -706,6 +791,7 @@ pub(crate) async fn create_message_impl(
                     &payload.channel_id,
                     &payload.content,
                     payload.parent_id.as_deref(),
+                    payload.reply_to_message_id.as_deref(),
                     &payload.kind,
                     payload.broadcast,
                     payload.metadata.as_ref(),
@@ -974,7 +1060,21 @@ async fn list_messages(
         )));
     }
 
-    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+    let thread_access = if channel.parent_channel_id.is_some() {
+        thread_channel_access(&mut db, &query.channel_id, &auth_user.id).await?
+    } else {
+        None
+    };
+    if thread_access == Some(false) {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {}",
+            query.channel_id
+        )));
+    }
+
+    if thread_access.is_none()
+        && (channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?)
+    {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -1005,6 +1105,24 @@ async fn list_messages(
 
     let res = messages.into_iter().map(MessageResponse::from).collect();
     Ok(Json(res))
+}
+
+/// A private thread channel inherits its read access from the parent channel. Posting still
+/// requires membership in the child channel; this exception only allows parent members to read.
+async fn thread_channel_access(
+    db: &mut toasty::Db,
+    channel_id: &str,
+    user_id: &str,
+) -> Result<Option<bool>, AppError> {
+    let mut tx = db.transaction().await?;
+    let access = crate::apps::one(
+        &mut tx,
+        "SELECT json_build_object('is_thread',t.channel_id IS NOT NULL,'allowed',COALESCE((SELECT NOT p.is_dm AND p.deleted_at IS NULL AND ((NOT p.is_private AND NOT EXISTS(SELECT 1 FROM users WHERE id=$2 AND is_guest)) OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=p.id AND cu.user_id=$2)) FROM channels p WHERE p.id=t.parent_channel_id),false))::text FROM channels c LEFT JOIN threads t ON t.channel_id=c.id WHERE c.id=$1",
+        &[channel_id, user_id],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((access["is_thread"] == true).then_some(access["allowed"] == true))
 }
 
 pub(crate) async fn add_reaction(

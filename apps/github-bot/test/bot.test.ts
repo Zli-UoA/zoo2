@@ -66,7 +66,7 @@ test("PR updates edit one parent and reply in its thread, with merge reflected i
   assert.match(f.zoo.messages.get(root.message)!.content, /merged/);
   assert.equal(f.zoo.posts.filter((m) => m.id === root.message).length, 1);
   assert.match(f.zoo.messages.get(root.message)!.content, /New title/);
-  const reply = [...f.zoo.messages.values()].find((m) => m.parent_id === root.message)!;
+  const reply = [...f.zoo.messages.values()].find((m) => m.reply_to_message_id === root.message)!;
   assert.match(reply.content, /merged/);
   assert.equal(reply.broadcast, true);
   // A late opened webhook cannot replace the parent with its old state.
@@ -95,7 +95,7 @@ test("GitHub comments create, edit, and delete the same Zoo reply; stale deliver
   });
   await f.bot.githubEvent(event);
   const thread = f.store.thread("channel", { repo: "acme/project", kind: "issue", number: "7" })!;
-  const reply = [...f.zoo.messages.values()].find((m) => m.parent_id === thread.message)!;
+  const reply = [...f.zoo.messages.values()].find((m) => m.reply_to_message_id === thread.message)!;
   assert.match(reply.content, /Current comment/);
   assert.doesNotMatch(reply.content, /stale body/);
   assert.match(reply.content, /#issuecomment-99/);
@@ -173,7 +173,7 @@ test("review dismissal edits its existing reply and Checks changes edit the PR m
     }),
   );
   const root = f.store.thread("channel", { repo: "acme/project", kind: "pull", number: "8" })!,
-    reply = [...f.zoo.messages.values()].find((m) => m.parent_id === root.message)!;
+    reply = [...f.zoo.messages.values()].find((m) => m.reply_to_message_id === root.message)!;
   assert.match(reply.content, /APPROVED/);
   f.remote.review.state = "DISMISSED";
   f.remote.reviews = [f.remote.review];
@@ -225,7 +225,7 @@ test("workflow and deployment status transitions retain one parent and append pr
   await f.bot.githubEvent(completed);
   assert.equal(f.zoo.messages.size, 3);
   assert.match(f.zoo.messages.get(root.message)!.content, /failure/);
-  assert.equal([...f.zoo.messages.values()].filter((m) => m.parent_id === root.message).length, 2);
+  assert.equal([...f.zoo.messages.values()].filter((m) => m.reply_to_message_id === root.message).length, 2);
   await f.bot.githubEvent(
     job("deployment_status", {
       deployment: f.remote.deployment,
@@ -352,7 +352,7 @@ test("Organization and repository subscriptions do not duplicate a channel notif
     job("issue_comment", { action: "created", issue: f.remote.issue, comment: { id: 99 } }),
   );
   assert.equal(f.zoo.messages.size, 2);
-  assert.equal(f.zoo.posts.filter((m) => m.parent_id).length, 1);
+  assert.equal(f.zoo.posts.filter((m) => m.reply_to_message_id).length, 1);
 });
 
 test("private previews use only configured repositories and code snippets support refs containing slashes", async (t) => {
@@ -491,7 +491,7 @@ test("Discussions answer updates edit the parent, and discussion comment edits r
     m.content.includes("Discussion comment"),
   )!;
   assert.ok(comment);
-  assert.equal(comment.parent_id, root.message);
+  assert.equal(comment.reply_to_message_id, root.message);
   f.remote.extra = (url, init) =>
     url.pathname === "/graphql" && String(init.body).includes("DiscussionComment")
       ? Response.json({

@@ -68,7 +68,11 @@ fun ZooApp(app: Session) {
     val members by app.repo.members.rows.collectAsState()
     val notifications by app.repo.notifications.rows.collectAsState()
     val loading by app.repo.channels.loading.collectAsState()
-    val channel = channels.find { it.text("id") == app.channelId }
+    // Thread channels are hidden from the channel list but remain directly addressable.
+    val channel =
+        channelRows.find {
+            it.text("id") == app.channelId && !it.present("deleted_at")
+        }
     val isHome = isHomePath(app.env.path)
     val isNotifications = app.env.path.startsWith("/notifications")
     val isSettings = app.env.path.startsWith("/settings")
@@ -174,6 +178,7 @@ internal fun AppDialogs(
         "rename",
         "moderate",
         "leave" -> ChannelDialog(app, dialog, channel, channels, users, members)
+        "threads" -> if (channel != null) ThreadChannelsDialog(app, channel)
         "channel-settings" ->
             if (channel != null)
                 Panel(
@@ -599,7 +604,9 @@ internal fun Header(
     presentation: Row = JsonObject(emptyMap()),
 ) {
     val id = channel.text("id")
-    val manage = canManage(channel, app.config.userId, app.config.isAdmin)
+    val manage =
+        canManage(channel, app.config.userId, app.config.isAdmin) &&
+            !channel.present("parent_channel_id")
     val count =
         if ("memberCount" in presentation) presentation.text("memberCount")
         else {
@@ -652,6 +659,12 @@ internal fun Header(
                 )
                 if (channel.present("archive_at") && !channel.flag("is_dm"))
                     ChannelArchiveBadge(app)
+                else if (channel.present("thread_archived_at"))
+                    Text(
+                        app.t("moderation.archived"),
+                        size = 10.sp,
+                        muted = true,
+                    )
             }
             Text(
                 presentation.text("subtitle").ifEmpty {
@@ -663,6 +676,17 @@ internal fun Header(
             )
         }
         Spacer(Modifier.width(12.dp))
+        if (!channel.flag("is_dm") && !channel.present("parent_channel_id")) {
+            Button(
+                app.t("threads.title"),
+                modifier = Modifier.height(32.dp),
+                size = "sm",
+                icon = "messages-square",
+                inlineStartIcon = true,
+                click = { app.dialog = "threads" },
+            )
+            Spacer(Modifier.width(4.dp))
+        }
         if (!channel.flag("is_dm"))
             Row(
                 Modifier.height(28.dp)

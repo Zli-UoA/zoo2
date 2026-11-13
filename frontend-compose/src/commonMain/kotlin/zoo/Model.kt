@@ -21,11 +21,16 @@ fun author(row: Row): String =
     row.text("display_name").ifEmpty { row.text("user_name") }.ifEmpty { row.text("user_id") }
 
 fun visibleChannels(rows: List<Row>): List<Row> =
-    rows.filterNot { it.present("deleted_at") }.sortedBy { it.text("channel_name").lowercase() }
+    rows
+        .filterNot { it.present("deleted_at") || it.present("parent_channel_id") }
+        .sortedBy { it.text("channel_name").lowercase() }
 
 fun visibleMessages(rows: List<Row>, parent: String? = null): List<Row> =
-    rows
-        .filter { !it.present("deleted_at") && it.text("parent_id").ifEmpty { null } == parent }
+    rows.filter {
+        !it.present("deleted_at") &&
+            if (parent == null) it.text("parent_id").isEmpty()
+            else it.text("parent_id") == parent
+    }
         .sortedWith(
             compareBy(
                 { timestampMillis(it.text("created_at")) ?: Long.MIN_VALUE },

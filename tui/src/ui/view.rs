@@ -91,10 +91,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
                 } else {
                     &name
                 };
-                let selected = app
-                    .thread
-                    .as_ref()
-                    .is_some_and(|thread| thread.root_id == *id);
+                let selected = app.current.as_deref() == Some(id.as_str());
                 let style = if selected {
                     Style::new().fg(ACCENT)
                 } else if archived {
@@ -211,6 +208,9 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             .unwrap_or_default(),
         Style::new().add_modifier(Modifier::BOLD),
     ));
+    if channel.is_some_and(|c| c.thread_archived_at.is_some()) {
+        title.push(Span::styled(" (アーカイブ / u:再開)", DIM));
+    }
     if let Some(description) = channel
         .and_then(|c| c.description.as_deref())
         .filter(|d| !d.is_empty())
@@ -329,7 +329,7 @@ fn draw_composer(frame: &mut Frame, app: &mut App, area: Rect) {
             .and_then(|id| app.store.channel(id))
             .map(|channel| format!(" {} へ送信 ", app.store.channel_label(channel, &app.me.id)))
             .unwrap_or_else(|| " 入力 ".to_string()),
-        Target::Reply(_) => " スレッドに返信 ".to_string(),
+        Target::Reply(_) => " メッセージに返信 ".to_string(),
         Target::Edit(_) => " メッセージを編集 ".to_string(),
     };
     let hint = if insert {
@@ -1529,6 +1529,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn thread_channel_is_nested_under_parent_and_opens_as_a_channel() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "thread-1",
+                json!({
+                    "id":"thread-1",
+                    "channel_name":"thread-release",
+                    "is_private":"f",
+                    "is_dm":"f",
+                    "parent_channel_id":"c1",
+                    "thread_title":"Release planning",
+                    "thread_archived_at":null
+                }),
+            )]),
+        ));
+        app.on_app_event(AppEvent::Threads {
+            requested_at: std::time::Instant::now(),
+            threads: vec![ThreadSummary {
+                id: "thread-1".into(),
+                channel_id: "c1".into(),
+                content: "Release planning".into(),
+                thread_archive_at: None,
+                reply_count: 1,
+            }],
+            archived: false,
+            append: false,
+            next_cursor: None,
+        });
+
+        assert_eq!(
+            app.sidebar_items(),
+            [
+                SidebarItem::Channel("c1".into()),
+                SidebarItem::Thread {
+                    channel_id: "c1".into(),
+                    id: "thread-1".into()
+                },
+                SidebarItem::Channel("c2".into())
+            ]
+        );
+        app.sidebar_index = 1;
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.current.as_deref(), Some("thread-1"));
+        assert_eq!(app.focus, Focus::Messages);
+        assert!(app.thread.is_none());
+    }
+
+    #[tokio::test]
     async fn loading_another_thread_page_selects_the_first_added_thread() {
         let mut app = app();
         let first = ThreadSummary {
@@ -1626,7 +1677,7 @@ mod tests {
         assert!(screen.contains("返信です"));
 
         press(&mut app, KeyCode::Char('i'));
-        assert!(render(&mut app).contains("スレッドに返信"));
+        assert!(render(&mut app).contains("メッセージに返信"));
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
         assert!(app.thread.is_none());

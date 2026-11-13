@@ -281,7 +281,7 @@ test("a lost POST response recovers changed parents and comments after a databas
     let interrupted = false;
     f.zoo.postMessage = async (input) => {
       const result = await post(input);
-      if (!interrupted && Boolean(input.parent_id) === child) {
+      if (!interrupted && Boolean(input.reply_to_message_id) === child) {
         interrupted = true;
         throw new Error("Connection lost after POST committed");
       }
@@ -298,7 +298,7 @@ test("a lost POST response recovers changed parents and comments after a databas
     try {
       await bot.tick();
       assert.equal(f.zoo.messages.size, child ? 2 : 1);
-      const message = [...f.zoo.messages.values()].find((m) => Boolean(m.parent_id) === child)!;
+      const message = [...f.zoo.messages.values()].find((m) => Boolean(m.reply_to_message_id) === child)!;
       assert.match(message.content, /while the bot was stopped/);
       assert.match(
         child ? message.blocks[1].card.description : message.blocks[1].card.title,

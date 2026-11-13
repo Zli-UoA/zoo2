@@ -321,6 +321,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         commandAppId: String? = null,
         attachmentIds: List<String> = emptyList(),
         sensitiveAttachmentIds: List<String> = emptyList(),
+        legacyThreadReply: Boolean = false,
     ): Boolean {
         val command = Regex("^/([a-zA-Z0-9_-]+)(?:\\s+([\\s\\S]*))?$").matchEntire(content.trim())
         if (command != null && attachmentIds.isEmpty()) {
@@ -358,7 +359,14 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             put("user_id", config.userId)
             put("content", content)
             put("created_at", platform.now())
-            put("parent_id", parent?.let(::JsonPrimitive) ?: JsonNull)
+            put(
+                "parent_id",
+                if (legacyThreadReply) parent?.let(::JsonPrimitive) ?: JsonNull else JsonNull,
+            )
+            put(
+                "reply_to_message_id",
+                if (legacyThreadReply) JsonNull else parent?.let(::JsonPrimitive) ?: JsonNull,
+            )
             put("deleted_at", JsonNull)
             put("updated_at", JsonNull)
         }
@@ -366,7 +374,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             put("id", id)
             put("channel_id", channel)
             put("content", content)
-            parent?.let { put("parent_id", it) }
+            if (legacyThreadReply) parent?.let { put("parent_id", it) }
+            else parent?.let { put("reply_to_message_id", it) }
             if (attachmentIds.isNotEmpty())
                 put("attachment_ids", JsonArray(attachmentIds.map(::JsonPrimitive)))
             if (sensitiveAttachmentIds.isNotEmpty()) put("sensitive_attachment_ids", JsonArray(sensitiveAttachmentIds.map(::JsonPrimitive)))
@@ -425,15 +434,14 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         }
     }
 
-    fun openThread(id: String, wide: Boolean) {
-        thread = id
-        if (wide) setMembersOpen(false, true)
-    }
-
     fun openMembers(wide: Boolean) {
         configureMembersLayout(wide)
         setMembersOpen(!membersOpen, wide)
-        if (membersOpen && wide) thread = null
+    }
+
+    fun openThread(id: String, wide: Boolean) {
+        thread = id
+        if (wide) setMembersOpen(false, true)
     }
 
     private val homeLiveState = lazy { HomeLive(this) }

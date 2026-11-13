@@ -110,7 +110,7 @@ pub async fn zoo_send_message(
             &message.id,
             &message.channel_id,
             &message.content,
-            message.parent_id.as_deref(),
+            message.reply_to_message_id.as_deref(),
         )
         .await
         .map_err(to_ipc)?;

@@ -60,13 +60,16 @@
         "NoDescription",
         "LongDescription",
         "Mobile",
-        "WebhookSettingsOpen"
+        "WebhookSettingsOpen",
+        "ThreadChannel",
+        "ThreadChannelNotJoined"
       ]
     },
     {
       "file": "src/components/chat/ChannelScreen.stories.tsx",
       "states": [
         "Default",
+        "ThreadChannel",
         "PrivateChannel",
         "Archived",
         "NotFound",
@@ -84,11 +87,6 @@
         "LoadError",
         "Mobile",
         "UnreadAndArchived",
-        "Threads",
-        "SelectedArchivedThread",
-        "SelectedPostWithoutReplies",
-        "EmptyThreadTitle",
-        "MobileThreads",
         "Sections",
         "MobileSections"
       ]
@@ -128,7 +126,7 @@
     },
     {
       "file": "src/components/chat/MembersPanel.stories.tsx",
-      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined", "UserAvatar"]
+      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined", "ThreadMembers", "UserAvatar"]
     },
     {
       "file": "src/components/chat/NotificationsButton.stories.tsx",
@@ -244,7 +242,8 @@
         "ActivityPubUnlisted",
         "ActivityPubGrouped",
         "Grouped",
-        "SensitiveAttachments"
+        "SensitiveAttachments",
+        "ReplyContext"
       ]
     },
     {
@@ -640,6 +639,10 @@
     {
       "file": "src/components/ui/sensitive-media.stories.tsx",
       "states": ["Hidden", "RevealAndHide", "ActivityPub", "WithoutMetadata", "InvalidHash"]
+    },
+    {
+      "file": "src/components/chat/ChannelThreadsDialog.stories.tsx",
+      "states": ["ActiveThreads", "CreateThread"]
     }
   ],
   "modules": [
@@ -739,12 +742,6 @@
         "src/lib/electric/collections.persistence.test.ts",
         "src/components/chat/ChannelSidebar.browser.test.tsx"
       ]
-    },
-    {
-      "file": "src/components/chat/ChannelThreadItems.tsx",
-      "story": "src/components/chat/ChannelSidebar.stories.tsx",
-      "composed": true,
-      "reason": "アクティブなスレッドと閲覧中の一時表示を Threads・SelectedArchivedThread Story で確認する。履歴・検索UIは設けない。"
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",
@@ -1161,6 +1158,10 @@
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
       "reason": "AuthZAccountsで集中基盤のプロフィールによるアイコンとメンションを検証する。"
+    },
+    {
+      "file": "src/components/chat/ChannelThreadsDialog.tsx",
+      "story": "src/components/chat/ChannelThreadsDialog.stories.tsx"
     }
   ]
 }

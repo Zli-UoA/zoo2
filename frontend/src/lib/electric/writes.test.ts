@@ -100,7 +100,7 @@ describe("message writes", () => {
     expect(awaitMatch).not.toHaveBeenCalled();
   });
 
-  it("sends parent_id for thread replies", async () => {
+  it("sends reply_to_message_id for a direct reply", async () => {
     const { client, post } = makeClient();
     const writes = createMessageWrites({
       client,
@@ -108,9 +108,30 @@ describe("message writes", () => {
       getCurrentUserId: () => CURRENT_USER,
     });
     const { collection } = makeCollection();
-    const reply = { ...message, id: "m2", parent_id: "m1" };
+    const reply = { ...message, id: "m2", reply_to_message_id: "m1" };
 
     await writes.onInsert(params(collection, [insertMutation(reply)]));
+
+    expect(post).toHaveBeenCalledWith("/api/messages", {
+      id: "m2",
+      channel_id: "c1",
+      content: "hello",
+      reply_to_message_id: "m1",
+    });
+  });
+
+  it("preserves parent_id for replies in legacy threads during migration", async () => {
+    const { client, post } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+
+    await writes.onInsert(
+      params(collection, [insertMutation({ ...message, id: "m2", parent_id: "m1" })]),
+    );
 
     expect(post).toHaveBeenCalledWith("/api/messages", {
       id: "m2",
@@ -141,7 +162,7 @@ describe("message writes", () => {
     });
   });
 
-  it("does not refresh threads for root posts or failed replies", async () => {
+  it("does not refresh the thread index for root posts or failed direct replies", async () => {
     const { client, post } = makeClient();
     const writes = createMessageWrites({
       client,
@@ -156,7 +177,9 @@ describe("message writes", () => {
       expect(changed).not.toHaveBeenCalled();
       post.mockRejectedValueOnce(new Error("Forbidden"));
       await expect(
-        writes.onInsert(params(collection, [insertMutation({ ...message, parent_id: "root" })])),
+        writes.onInsert(
+          params(collection, [insertMutation({ ...message, reply_to_message_id: "target" })]),
+        ),
       ).rejects.toThrow("Forbidden");
       expect(changed).not.toHaveBeenCalled();
     } finally {

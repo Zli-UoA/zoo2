@@ -402,7 +402,7 @@ async fn channel_posts_share_reactions_replies_and_visible_conversation() -> any
         Some(&user),
         "/api/messages",
         Some(json!({
-            "channel_id":channel,"parent_id":child,"content":"grandchild"
+            "channel_id":channel,"reply_to_message_id":child,"content":"grandchild"
         })),
     )
     .await?;

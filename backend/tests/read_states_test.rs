@@ -175,7 +175,7 @@ async fn server_read_states_are_private_persistent_and_monotonic() -> anyhow::Re
             "POST",
             "/api/messages",
             &owner,
-            json!({"id":reply,"channel_id":channel,"content":"reply","parent_id":first})
+            json!({"id":reply,"channel_id":channel,"content":"reply","reply_to_message_id":first})
         )
         .await
         .0,

@@ -34,12 +34,21 @@ class ModelTest {
     }
 
     @Test
-    fun deletedMessagesAndRepliesAreExcludedFromTheRootFeed() {
+    fun deletedMessagesAndDirectRepliesStayInTheChannelFeed() {
         val root = row("""{"id":"r","parent_id":null,"created_at":"2026-10-01T00:00:00Z"}""")
-        val reply = row("""{"id":"p","parent_id":"r","created_at":"2026-10-02T00:00:00Z"}""")
+        val reply = row("""{"id":"p","parent_id":null,"reply_to_message_id":"r","created_at":"2026-10-02T00:00:00Z"}""")
         val deleted = row("""{"id":"d","deleted_at":"2026-10-03T00:00:00Z"}""")
-        assertEquals(listOf(root), visibleMessages(listOf(deleted, reply, root)))
+        assertEquals(listOf(root, reply), visibleMessages(listOf(deleted, reply, root)))
         assertEquals(listOf(reply), visibleMessages(listOf(deleted, reply, root), "r"))
+    }
+
+    @Test
+    fun threadChannelsAreNotListedAsRegularChannels() {
+        val regular = row("""{"id":"c","channel_name":"general"}""")
+        val thread = row(
+            """{"id":"t","channel_name":"thread-1","parent_channel_id":"c"}""")
+        val deleted = row("""{"id":"d","deleted_at":"2026-11-01T00:00:00Z"}""")
+        assertEquals(listOf(regular), visibleChannels(listOf(thread, deleted, regular)))
     }
 
     @Test

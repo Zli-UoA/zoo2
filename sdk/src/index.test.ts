@@ -32,7 +32,9 @@ test("refreshes credentials and retains the message id across a retry",async()=>
   return Response.json({data:{id:body.id},txid:"42"});
  };
  const client=new ZooApp({baseUrl:"https://zoo.example",credentials:{access_token:"old",refresh_token:"refresh"},fetch:fetcher,saveCredentials:async()=>{saved=true;}});
- const message=await client.postMessage({channel_id:"channel",content:"hello"});
+ const message=await client.postMessage({channel_id:"channel",content:"hello",reply_to_message_id:"root"});
+ assert.equal(messages[0].reply_to_message_id,"root");
+ assert.equal("parent_id" in messages[0],false);
  assert.equal(messages[0].id,messages[1].id);assert.equal(message.id,messages[0].id);assert.equal(saved,true);
 });
 

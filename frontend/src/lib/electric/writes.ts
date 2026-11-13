@@ -136,9 +136,11 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
         channel_id: row.channel_id,
         content: row.content,
       };
-      // 通常メッセージではキー自体を送らない（バックエンドの既定はルート）。
       if (row.parent_id) {
         body.parent_id = row.parent_id;
+      }
+      if (row.reply_to_message_id) {
+        body.reply_to_message_id = row.reply_to_message_id;
       }
       const attachmentIds = readMessageMetadata(mutation.metadata).attachment_ids;
       if (attachmentIds?.length) {
@@ -149,10 +151,6 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
           body.sensitive_attachment_ids = metadata.sensitive_attachment_ids;
       }
       const { txid } = await client.post<MessageRow>("/api/messages", body);
-      if (row.parent_id) {
-        // 保存が確定した返信は、Electric の同期や定期取得を待たず一覧に反映する。
-        window.dispatchEvent(new Event(THREADS_CHANGED));
-      }
       await syncTxid({
         mode: txidMode,
         txid,

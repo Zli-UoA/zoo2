@@ -9,6 +9,6 @@ process.on("SIGINT", () => stop.abort());
 await app.connect(async (event) => {
   if (event.type === "app.mentioned" && event.channel_id) {
     const root = String(event.data.parent_id ?? event.data.id);
-    await app.postMessage({ channel_id: event.channel_id, content: "こんにちは！ Zoo Botからの返信です。", parent_id: root });
+    await app.postMessage({ channel_id: event.channel_id, content: "こんにちは！ Zoo Botからの返信です。", reply_to_message_id: root });
   }
 }, stop.signal);

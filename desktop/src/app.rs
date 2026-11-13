@@ -4304,22 +4304,15 @@ impl AppState {
     }
 
     /// チャンネル内で検索クエリに一致するメッセージ ID 一覧を収集する。
-    /// 返信メッセージの親メッセージ存在確認は、チャンネル内の可視メッセージ ID を一度集合にまとめることで
-    /// 二重走査（O(N^2)）を避けて O(N) で行う。
+    /// チャンネル内で本文が一致するメッセージ ID を集める。
     fn collect_search_matches(&self, ch: &str, query_lower: &str) -> Vec<String> {
         if query_lower.is_empty() {
             return Vec::new();
         }
         let channel_msgs = self.store.channel_messages(ch);
-        let existing_ids: HashSet<&str> = channel_msgs.iter().map(|m| m.id.as_str()).collect();
         let mut matches = Vec::new();
         for msg in channel_msgs {
             // 親メッセージが削除された（または不可視な）返信はスレッド描画不能なため検索結果から除外
-            if let Some(parent_id) = &msg.parent_id
-                && !existing_ids.contains(parent_id.as_str())
-            {
-                continue;
-            }
             if msg.content.to_lowercase().contains(query_lower) {
                 matches.push(msg.id.clone());
             }
@@ -4407,7 +4400,7 @@ impl AppState {
             return;
         };
         if let Some(msg) = self.store.message(&channel_id, &matched_id).cloned() {
-            if let Some(parent_id) = msg.parent_id {
+            if let Some(parent_id) = msg.reply_to_message_id.or(msg.parent_id) {
                 let thread_already_open =
                     self.thread.as_ref().is_some_and(|t| t.root_id == parent_id);
                 if !thread_already_open {

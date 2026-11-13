@@ -96,7 +96,7 @@ async fn post(
         "/api/messages",
         user,
         Some(json!({
-            "channel_id":channel, "content":content, "parent_id":parent
+            "channel_id":channel, "content":content, "reply_to_message_id":parent
         })),
     )
     .await?;

@@ -20,6 +20,10 @@ export interface ChannelResponse {
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
   deleted_at: TimestampString | null;
+  parent_channel_id?: string | null;
+  thread_title?: string | null;
+  thread_archived_at?: TimestampString | null;
+  thread_activity_at?: TimestampString | null;
 }
 
 export interface MessageResponse {
@@ -33,6 +37,7 @@ export interface MessageResponse {
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;
   parent_id: string | null;
+  reply_to_message_id?: string | null;
 }
 
 export interface MessageReactionResponse {
@@ -83,8 +88,10 @@ export interface CreateMessageRequest {
   id?: string;
   channel_id: string;
   content: string;
-  /** 返信先のルートメッセージ。通常メッセージでは省略する。 */
-  parent_id?: string;
+  /** 旧スレッド表示を段階移行中も維持するための互換フィールド。新規スレッドでは使わない。 */
+  parent_id?: string | null;
+  /** チャンネルまたはスレッド内の返信先メッセージ。 */
+  reply_to_message_id?: string;
   attachment_ids?: string[];
   sensitive?: boolean;
   sensitive_attachment_ids?: string[];

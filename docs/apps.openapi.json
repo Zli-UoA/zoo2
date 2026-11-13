@@ -6953,12 +6953,13 @@
           "content": {
             "type": "string"
           },
-          "parent_id": {
+          "reply_to_message_id": {
             "type": [
               "string",
               "null"
             ],
-            "format": "uuid"
+            "format": "uuid",
+            "description": "Message being replied to"
           },
           "kind": {
             "type": "string",

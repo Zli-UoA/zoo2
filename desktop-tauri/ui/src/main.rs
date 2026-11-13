@@ -485,7 +485,7 @@ fn Composer(channel_id: String) -> impl IntoView {
                 id: uuid::Uuid::new_v4().to_string(),
                 channel_id,
                 content,
-                parent_id: None,
+                reply_to_message_id: None,
             };
             match tauri::invoke::<SendResult>(
                 command::SEND_MESSAGE,

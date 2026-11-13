@@ -96,7 +96,7 @@ struct NewMessage<'a> {
     channel_id: &'a str,
     content: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    parent_id: Option<&'a str>,
+    reply_to_message_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attachment_ids: Option<Vec<String>>,
 }
@@ -212,8 +212,24 @@ impl ApiClient {
     }
 
     pub async fn unarchive_thread(&self, id: &str) -> Result<Option<String>> {
-        let path = format!("/api/threads/{}/unarchive", segment(id));
+        let path = format!("/api/threads/{}/open", segment(id));
         self.write(Method::POST, &path, None).await
+    }
+
+    pub async fn set_thread_archived(&self, id: &str, archived: bool) -> Result<Option<String>> {
+        let action = if archived { "archive" } else { "open" };
+        let path = format!("/api/threads/{}/{action}", segment(id));
+        self.write(Method::POST, &path, None).await
+    }
+
+    pub async fn join_thread(&self, id: &str) -> Result<Option<String>> {
+        let path = format!("/api/threads/{}/join", segment(id));
+        self.write(Method::POST, &path, None).await
+    }
+
+    pub async fn leave_thread(&self, id: &str) -> Result<Option<String>> {
+        let path = format!("/api/threads/{}/leave", segment(id));
+        self.write(Method::DELETE, &path, None).await
     }
 
     /// `GET /api/users/me/profile` のうち、クライアントが使う部分。
@@ -228,9 +244,9 @@ impl ApiClient {
         id: &str,
         channel_id: &str,
         content: &str,
-        parent_id: Option<&str>,
+        reply_to_message_id: Option<&str>,
     ) -> Result<Option<String>> {
-        self.send_message_with_attachments(id, channel_id, content, parent_id, None)
+        self.send_message_with_attachments(id, channel_id, content, reply_to_message_id, None)
             .await
     }
 
@@ -240,14 +256,14 @@ impl ApiClient {
         id: &str,
         channel_id: &str,
         content: &str,
-        parent_id: Option<&str>,
+        reply_to_message_id: Option<&str>,
         attachment_ids: Option<Vec<String>>,
     ) -> Result<Option<String>> {
         let body = serde_json::to_value(NewMessage {
             id,
             channel_id,
             content,
-            parent_id,
+            reply_to_message_id,
             attachment_ids,
         })?;
         self.write(Method::POST, "/api/messages", Some(body)).await
@@ -506,7 +522,7 @@ mod tests {
             .and(path("/api/messages"))
             .and(header("X-Dev-User", "u1"))
             .and(body_json(json!({
-                "id": "m1", "channel_id": "c1", "content": "hi", "parent_id": "p1"
+                "id": "m1", "channel_id": "c1", "content": "hi", "reply_to_message_id": "p1"
             })))
             .respond_with(
                 ResponseTemplate::new(201)
@@ -549,7 +565,7 @@ mod tests {
                 {"id":"reply1","channel_id":"c1","content":"Nested thread","reply_count":2,"thread_archive_at":null}
             ],"next_cursor":null}))).expect(1).mount(&server).await;
         Mock::given(method("POST"))
-            .and(path("/api/threads/reply1/unarchive"))
+            .and(path("/api/threads/reply1/open"))
             .and(header("X-Dev-User", "u1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(
                 json!({"data":{"id":"reply1","thread_archive_at":null},"txid":"43"}),

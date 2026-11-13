@@ -17,4 +17,8 @@ pub struct Channel {
     pub updated_at: Option<jiff::civil::DateTime>,
     pub archive_at: Option<jiff::civil::DateTime>,
     pub deleted_at: Option<jiff::civil::DateTime>,
+    pub parent_channel_id: Option<String>,
+    pub thread_title: Option<String>,
+    pub thread_archived_at: Option<jiff::civil::DateTime>,
+    pub thread_activity_at: Option<jiff::civil::DateTime>,
 }

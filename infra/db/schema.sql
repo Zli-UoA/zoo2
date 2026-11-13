@@ -22,6 +22,12 @@ CREATE TABLE channels (
   imported_from_slack boolean NOT NULL DEFAULT false,
   slack_import_kind text,
   slack_imported_at timestamp(3),
+  parent_channel_id text,
+  thread_title text,
+  thread_archived_at timestamp(3),
+  thread_activity_at timestamp(3),
+  CONSTRAINT channels_parent_channel_id_fkey
+    FOREIGN KEY (parent_channel_id) REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
   CONSTRAINT "Channel_pkey" PRIMARY KEY (id),
   CONSTRAINT channels_channel_name_key UNIQUE (channel_name),
   CONSTRAINT channels_slack_import_kind_check
@@ -32,6 +38,7 @@ CREATE TABLE channels (
 );
 
 CREATE INDEX idx_channels_is_dm ON channels (is_dm);
+CREATE INDEX idx_channels_parent_thread ON channels (parent_channel_id) WHERE parent_channel_id IS NOT NULL;
 
 
 CREATE TABLE messages (
@@ -44,6 +51,7 @@ CREATE TABLE messages (
   updated_at timestamp(3),
   deleted_at timestamp(3),
   parent_id text,
+  reply_to_message_id text,
   thread_archive_at timestamp(3),
   thread_activity_at timestamp(3),
   CONSTRAINT "Message_pkey" PRIMARY KEY (id),
@@ -55,7 +63,18 @@ CREATE TABLE messages (
     ON UPDATE CASCADE ON DELETE RESTRICT,
   CONSTRAINT messages_parent_id_fkey
     FOREIGN KEY (parent_id) REFERENCES messages (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT messages_reply_to_message_id_fkey
+    FOREIGN KEY (reply_to_message_id) REFERENCES messages (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
+);
+
+CREATE TABLE legacy_thread_roots (
+  root_message_id text NOT NULL,
+  CONSTRAINT legacy_thread_roots_pkey PRIMARY KEY (root_message_id),
+  CONSTRAINT legacy_thread_roots_root_message_id_fkey
+    FOREIGN KEY (root_message_id) REFERENCES messages (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
 );
 
 CREATE TABLE channel_user (
@@ -70,6 +89,50 @@ CREATE TABLE channel_user (
     FOREIGN KEY (channel_id) REFERENCES channels (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
+
+-- スレッドは、通常チャンネル配下にある独立したチャンネルとして保持する。
+CREATE TABLE threads (
+  channel_id text NOT NULL,
+  parent_channel_id text NOT NULL,
+  title text NOT NULL,
+  source_message_id text,
+  archived_at timestamp(3),
+  activity_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT threads_pkey PRIMARY KEY (channel_id),
+  CONSTRAINT threads_channel_id_fkey FOREIGN KEY (channel_id) REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT threads_parent_channel_id_fkey FOREIGN KEY (parent_channel_id) REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT threads_source_message_id_fkey FOREIGN KEY (source_message_id) REFERENCES messages (id) ON UPDATE CASCADE ON DELETE SET NULL
+);
+CREATE INDEX idx_threads_parent_activity ON threads (parent_channel_id, archived_at, activity_at DESC);
+CREATE INDEX idx_threads_source_message ON threads (source_message_id) WHERE source_message_id IS NOT NULL;
+
+CREATE FUNCTION update_channel_thread_activity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.deleted_at IS NOT NULL THEN RETURN NULL; END IF;
+  IF TG_OP = 'UPDATE' AND NEW.channel_id IS NOT DISTINCT FROM OLD.channel_id
+     AND NEW.deleted_at IS NOT DISTINCT FROM OLD.deleted_at THEN RETURN NULL; END IF;
+  UPDATE threads SET
+    activity_at = GREATEST(activity_at, NEW.created_at),
+    archived_at = CASE WHEN NEW.created_at >= archived_at
+      OR NEW.created_at >= date_trunc('milliseconds', transaction_timestamp() AT TIME ZONE 'UTC')
+      THEN NULL ELSE archived_at END
+  WHERE channel_id = NEW.channel_id;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER messages_thread_channel_activity
+  AFTER INSERT OR UPDATE OF channel_id, deleted_at ON messages
+  FOR EACH ROW EXECUTE FUNCTION update_channel_thread_activity();
+
+CREATE FUNCTION sync_thread_channel_projection() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE channels SET thread_archived_at=NEW.archived_at, thread_activity_at=NEW.activity_at
+  WHERE id=NEW.channel_id;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER threads_channel_projection
+  AFTER INSERT OR UPDATE OF archived_at, activity_at ON threads
+  FOR EACH ROW EXECUTE FUNCTION sync_thread_channel_projection();
 
 CREATE TABLE role (
   id text NOT NULL,
@@ -122,6 +185,7 @@ CREATE TABLE message_reactions (
 
 CREATE INDEX idx_messages_channel_id ON messages (channel_id);
 CREATE INDEX idx_messages_parent_id ON messages (parent_id);
+CREATE INDEX idx_messages_reply_to_message_id ON messages (reply_to_message_id) WHERE reply_to_message_id IS NOT NULL;
 CREATE INDEX idx_messages_thread_channel_active ON messages (channel_id, thread_activity_at DESC, id DESC)
   WHERE deleted_at IS NULL AND thread_archive_at IS NULL AND thread_activity_at IS NOT NULL;
 CREATE INDEX idx_messages_thread_channel_archived ON messages (channel_id, thread_activity_at DESC, id DESC)
@@ -2120,8 +2184,24 @@ SELECT m.id, jsonb_build_object(
     FROM attachments a WHERE a.message_id=m.id),'[]'::jsonb),
   'reactions', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.created_at,r.id)
     FROM message_display_reactions r WHERE r.message_id=m.id),'[]'::jsonb),
-  'reply_count', (SELECT count(*) FROM messages reply WHERE reply.parent_id=m.id AND reply.deleted_at IS NULL)
+  'reply_target', (SELECT jsonb_build_object('id',target.id,'user_id',target.user_id,'channel_id',target.channel_id,
+    'content',CASE WHEN target.deleted_at IS NULL THEN target.content ELSE NULL END,
+    'deleted_at',target.deleted_at,'author',(SELECT jsonb_build_object('user_name',u.user_name,
+      'display_name',u.display_name,'avatar_url',u.avatar_url) FROM users u WHERE u.id=target.user_id))
+    FROM messages target WHERE target.id=m.reply_to_message_id),
+  'reply_count', (SELECT count(*) FROM messages reply WHERE (reply.reply_to_message_id=m.id OR (reply.reply_to_message_id IS NULL AND reply.parent_id=m.id)) AND reply.deleted_at IS NULL)
 ) AS display_data FROM messages m;
+
+CREATE FUNCTION refresh_reply_target_previews() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE messages reply SET display_data=source.display_data
+  FROM message_display source
+  WHERE reply.reply_to_message_id=NEW.id AND source.id=reply.id;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER messages_reply_target_preview_update
+  AFTER UPDATE OF content,user_id,deleted_at ON messages
+  FOR EACH ROW EXECUTE FUNCTION refresh_reply_target_previews();
 
 CREATE VIEW notification_display AS
 SELECT n.id, jsonb_build_object(
@@ -2179,7 +2259,7 @@ BEGIN
 END;
 $$;
 CREATE TRIGGER messages_display_insert AFTER INSERT ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_display();
-CREATE TRIGGER messages_display_update AFTER UPDATE OF content,user_id,parent_id,deleted_at ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_display();
+CREATE TRIGGER messages_display_update AFTER UPDATE OF content,user_id,parent_id,reply_to_message_id,deleted_at ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_display();
 CREATE TRIGGER messages_display_delete AFTER DELETE ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_display();
 
 CREATE FUNCTION sync_message_relation_display() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -2532,6 +2612,30 @@ CREATE TRIGGER messages_thread_activity_insert AFTER INSERT ON messages
   FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
 CREATE TRIGGER messages_thread_activity_parent_update AFTER UPDATE OF parent_id ON messages
   FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
+CREATE FUNCTION register_legacy_thread_root() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE root_id text;
+BEGIN
+  IF NEW.parent_id IS NULL OR NEW.deleted_at IS NOT NULL THEN RETURN NULL; END IF;
+  WITH RECURSIVE ancestors(id,parent_id,channel_id) AS (
+    SELECT parent.id,parent.parent_id,parent.channel_id FROM messages parent WHERE parent.id=NEW.parent_id
+    UNION ALL
+    SELECT parent.id,parent.parent_id,parent.channel_id
+    FROM ancestors child JOIN messages parent ON parent.id=child.parent_id
+    WHERE child.parent_id IS NOT NULL AND child.channel_id=NEW.channel_id
+  )
+  SELECT id INTO root_id FROM ancestors
+  WHERE parent_id IS NULL AND channel_id=NEW.channel_id LIMIT 1;
+  IF root_id IS NOT NULL THEN
+    INSERT INTO legacy_thread_roots(root_message_id) VALUES(root_id) ON CONFLICT DO NOTHING;
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER messages_register_legacy_thread_root_insert
+  AFTER INSERT ON messages
+  FOR EACH ROW EXECUTE FUNCTION register_legacy_thread_root();
+CREATE TRIGGER messages_register_legacy_thread_root_update
+  AFTER UPDATE OF parent_id ON messages
+  FOR EACH ROW EXECUTE FUNCTION register_legacy_thread_root();
 -- E2EE: 端末と鍵（#354。仕様は docs/e2ee.md の「DB」）。
 -- 暗号化チャンネル。作成時の指定と変更の拒否は #357 で足す。既存の行は false なので後方互換。
 ALTER TABLE channels ADD COLUMN encrypted boolean NOT NULL DEFAULT false;

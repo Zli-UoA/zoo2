@@ -17,4 +17,5 @@ pub struct Message {
     pub updated_at: Option<jiff::civil::DateTime>,
     pub deleted_at: Option<jiff::civil::DateTime>,
     pub parent_id: Option<String>,
+    pub reply_to_message_id: Option<String>,
 }

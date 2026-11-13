@@ -9,6 +9,17 @@ import { storyAttachments } from "../../../.storybook/attachment-fixtures";
 import { storyCollections } from "../../../.storybook/fixtures";
 import { ChannelScreen } from "./ChannelScreen";
 
+const general = storyCollections.channels.find((channel) => channel.id === "channel-general")!;
+const threadChannel = {
+  ...general,
+  id: "thread-release-planning",
+  channel_name: "thread-thread-release-planning",
+  parent_channel_id: general.id,
+  thread_title: "Release planning",
+  thread_archived_at: null,
+  thread_activity_at: general.created_at,
+};
+
 const meta = {
   title: "Pages/Channel",
   component: ChannelScreen,
@@ -32,6 +43,16 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+export const ThreadChannel: Story = {
+  args: { channelId: threadChannel.id },
+  parameters: {
+    collections: {
+      ...storyCollections,
+      channels: [...storyCollections.channels, threadChannel],
+    },
+  },
+};
 
 export const PrivateChannel: Story = {
   args: {

@@ -182,7 +182,7 @@ async fn test_notifications_full_flow() -> anyhow::Result<()> {
         "id": reply_id,
         "channel_id": channel_id,
         "content": "Replying to your message",
-        "parent_id": bob_root_msg_id,
+        "reply_to_message_id": bob_root_msg_id,
     });
     let req = Request::builder()
         .method("POST")
@@ -351,7 +351,7 @@ async fn test_notifications_full_flow() -> anyhow::Result<()> {
             "id": reply_to_kicked_id,
             "channel_id": priv_channel_id,
             "content": "Reply after kick",
-            "parent_id": bob_priv_msg_id,
+            "reply_to_message_id": bob_priv_msg_id,
         }))?))?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -480,7 +480,7 @@ async fn test_notifications_p2_p3_fixes() -> anyhow::Result<()> {
             "id": reply_msg_id,
             "channel_id": public_ch_id,
             "content": "Alice replies to Dave",
-            "parent_id": dave_root_msg_id,
+            "reply_to_message_id": dave_root_msg_id,
         }))?))?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);

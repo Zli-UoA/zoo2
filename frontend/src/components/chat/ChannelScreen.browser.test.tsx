@@ -10,16 +10,35 @@ const state = vi.hoisted(() => ({
     isInitialSyncLoading: true,
     isError: false,
   },
+  allChannels: [] as Array<Record<string, unknown>>,
 }));
 
-vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../i18n/LocaleProvider", () => ({ useLocale: () => ({ locale: "ja" }) }));
-vi.mock("../layout/shell-context", () => ({ useShell: () => ({ showSidebar: vi.fn() }) }));
-vi.mock("../../hooks/useCurrentUser", () => ({ useCurrentUser: () => ({ currentUserId: "me" }) }));
+vi.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: (key: string) => key }),
+}));
+vi.mock("../i18n/LocaleProvider", () => ({
+  useLocale: () => ({ locale: "ja" }),
+}));
+vi.mock("../layout/shell-context", () => ({
+  useShell: () => ({ showSidebar: vi.fn() }),
+}));
+vi.mock("../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => ({ currentUserId: "me" }),
+}));
 vi.mock("../../hooks/useRealtime", () => ({
   useActiveChannels: () => state.query,
+  useChannelById: (id: string) => ({
+    data: state.allChannels.find((channel) => channel.id === id)
+      ? [state.allChannels.find((channel) => channel.id === id)]
+      : state.query.data.filter((channel) => channel.id === id),
+    isLoading: false,
+  }),
   useUsers: () => ({ data: [] }),
-  useChannelAccess: () => ({ members: [], canRead: true, isMembershipPending: false }),
+  useChannelAccess: () => ({
+    members: [],
+    canRead: true,
+    isMembershipPending: false,
+  }),
 }));
 vi.mock("./ChannelHeader", () => ({
   ChannelHeader: ({ channel }: { channel: { channel_name: string } }) => (
@@ -32,6 +51,7 @@ vi.mock("./messages/MessagePane", () => ({
 
 beforeEach(() => {
   state.query.data = [{ id: "cached", channel_name: "Cached channel", is_dm: false }];
+  state.allChannels = [];
   state.query.isInitialSyncLoading = true;
 });
 
@@ -63,4 +83,22 @@ it("renders a cached channel while initial sync is still pending", () => {
   expect(screen.getByRole("heading", { name: "Cached channel" })).toBeTruthy();
   expect(screen.getByText("messages:cached")).toBeTruthy();
   expect(container.querySelector('[data-slot="skeleton"]')).toBeNull();
+});
+
+it("opens a thread channel by URL even though it is absent from the regular channel list", () => {
+  state.query.data = [{ id: "parent", channel_name: "general", is_dm: false }];
+  state.allChannels = [
+    {
+      id: "thread-1",
+      channel_name: "thread-thread-1",
+      thread_title: "Release planning",
+      parent_channel_id: "parent",
+      is_dm: false,
+    },
+  ];
+
+  render(<ChannelScreen channelId="thread-1" />);
+
+  expect(screen.getByRole("heading", { name: "thread-thread-1" })).toBeTruthy();
+  expect(screen.getByText("messages:thread-1")).toBeTruthy();
 });

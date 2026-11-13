@@ -18,7 +18,7 @@ test("late workflow and deployment transitions keep their historical reply state
     number: "42",
   })!;
   const workflowReply = [...f.zoo.messages.values()].find(
-    (m) => m.parent_id === workflowRoot.message,
+    (m) => m.reply_to_message_id === workflowRoot.message,
   )!;
   const status = (message: any) =>
     message.blocks[1].card.fields.find((f: any) => f.title === "Status").value;
@@ -48,7 +48,7 @@ test("late workflow and deployment transitions keep their historical reply state
     number: "11",
   })!;
   const deploymentReply = [...f.zoo.messages.values()].find(
-    (m) => m.parent_id === deploymentRoot.message,
+    (m) => m.reply_to_message_id === deploymentRoot.message,
   )!;
   assert.equal(status(f.zoo.messages.get(deploymentRoot.message)), "Completed");
   assert.equal(status(deploymentReply), "in_progress");

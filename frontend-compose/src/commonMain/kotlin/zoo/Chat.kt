@@ -134,6 +134,7 @@ fun Chat(
     val reactions = nativeReactions
     val joined = membershipOverride ?: isMember(members, id, app.config.userId)
     val canPost = joined && !channel.present("archive_at") && app.env.online
+    var replyTargetId by remember(id) { mutableStateOf<String?>(null) }
     LaunchedEffect(id, app.env.visible, app.env.online) {
         if (app.env.online && app.env.visible) {
             try {
@@ -158,21 +159,27 @@ fun Chat(
             }
         }
     }
-    LaunchedEffect(id, app.query["thread"]) {
+    LaunchedEffect(id, app.query["thread"], all.size) {
         val requested = app.query["thread"]
-        if (requested != null) app.openThread(requested, wide) else app.thread = null
+        val root = all.find { it.text("id") == requested && !it.present("deleted_at") }
+        if (requested != null && root?.present("thread_activity_at") == true)
+            app.openThread(requested, wide)
+        else app.thread = null
     }
     LaunchedEffect(id, app.query["message"], all.size) {
-        val target = app.query["message"]
-        all.find { it.text("id") == target }
-            ?.let { if (it.present("parent_id")) app.openThread(it.text("parent_id"), wide) }
+        val target = all.find { it.text("id") == app.query["message"] }
+        val rootId = target?.text("parent_id").orEmpty()
+        if (rootId.isNotEmpty() && all.any {
+                it.text("id") == rootId && it.present("thread_activity_at")
+            }
+        ) app.openThread(rootId, wide)
     }
     val attachmentRows = if (all.any { !it.containsKey("display_data") }) {
         val legacy by app.repo.attachments(id).rows.collectAsState()
         legacy
     } else emptyList()
     CompositionLocalProvider(LocalAttachments provides attachmentRows) {
-        Row(modifier.fillMaxWidth()) {
+        Row(modifier.fillMaxWidth().fillMaxHeight()) {
             if (wide || app.thread == null)
                 Column(Modifier.weight(1f).fillMaxHeight()) {
                     MessageList(
@@ -187,6 +194,15 @@ fun Chat(
                         isLoading = loading,
                         isError = error != null,
                         canCompose = canPost,
+                        callbacks = { message ->
+                            MessageCallbacks(
+                                reply = { replyTargetId = message.text("id") },
+                                openLegacyThread = if (
+                                    !channel.present("parent_channel_id") &&
+                                        message.present("thread_activity_at")
+                                ) ({ app.openThread(message.text("id"), wide) }) else null,
+                            )
+                        },
                         retry = { table.refresh() },
                     )
                     when {
@@ -197,53 +213,98 @@ fun Chat(
                                 muted = true,
                             )
                         !joined -> JoinToPostPrompt(app, channel)
-                        else -> Composer(app, id, null, users, canPost)
+                        else -> {
+                            replyTargetId?.let { targetId ->
+                                val target = all.find { it.text("id") == targetId && !it.present("deleted_at") }
+                                val targetAuthor = target?.let { message ->
+                                    users.find { it.text("id") == message.text("user_id") }?.let(::author)
+                                        ?: message.text("display_name").ifEmpty { message.text("user_name") }
+                                }?.takeIf(String::isNotEmpty)
+                                    ?: app.t("messages.unavailableReplyTarget")
+                                Row(
+                                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(app.t("messages.replyingTo"), small = true, muted = true)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        target?.let { "$targetAuthor: ${it.text("content")}" }
+                                            ?: app.t("messages.unavailableReplyTarget"),
+                                        Modifier.weight(1f),
+                                        small = true,
+                                        muted = true,
+                                        maxLines = 1,
+                                    )
+                                    IconButton(
+                                        "x",
+                                        app.t("messages.cancelReply"),
+                                        size = 28.dp,
+                                    ) { replyTargetId = null }
+                                }
+                            }
+                            Composer(
+                                app,
+                                id,
+                                replyTargetId,
+                                users,
+                                canPost,
+                                onSent = { replyTargetId = null },
+                            )
+                        }
                     }
                 }
-            app.thread?.let { parent ->
-                if (wide) VerticalDivider()
-                ThreadSurface(
-                    app,
-                    visibleMessages(all, parent).size,
-                    loading,
-                    close = { app.thread = null },
-                    root = {
-                        all.find { it.text("id") == parent && !it.present("deleted_at") }
-                            ?.let {
-                                Message(
+            app.thread?.let { rootId ->
+                val root = all.find { it.text("id") == rootId && it.present("thread_activity_at") }
+                if (root != null) {
+                    if (wide) VerticalDivider()
+                    ThreadSurface(
+                        app,
+                        visibleMessages(all, rootId).size,
+                        loading,
+                        close = { app.thread = null },
+                        root = {
+                            Message(app, channel, root, all, reactions, users, false, wide)
+                        },
+                        replies = {
+                            MessageList(
+                                app,
+                                channel,
+                                all,
+                                reactions,
+                                users,
+                                rootId,
+                                wide,
+                                Modifier.fillMaxSize(),
+                                isLoading = loading,
+                                isError = error != null,
+                                canCompose = canPost,
+                                callbacks = { message ->
+                                    MessageCallbacks(
+                                        openLegacyThread = if (
+                                            !channel.present("parent_channel_id") &&
+                                                message.present("thread_activity_at")
+                                        ) ({ app.openThread(message.text("id"), wide) }) else null,
+                                    )
+                                },
+                                retry = { table.refresh() },
+                            )
+                        },
+                        composer = if (joined && !channel.present("archive_at")) {
+                            {
+                                Composer(
                                     app,
-                                    channel,
-                                    it,
-                                    all,
-                                    reactions,
+                                    id,
+                                    rootId,
                                     users,
-                                    false,
-                                    wide,
-                                    canOpenThread = false,
+                                    canPost,
+                                    legacyThreadReply = true,
                                 )
                             }
-                    },
-                    replies = {
-                        MessageList(
-                            app,
-                            channel,
-                            all,
-                            reactions,
-                            users,
-                            parent,
-                            wide,
-                            Modifier.fillMaxSize(),
-                            isLoading = loading,
-                            isError = error != null,
-                            canCompose = canPost,
-                            retry = { table.refresh() },
-                        )
-                    },
-                    composer =
-                        if (joined && !channel.present("archive_at")) {
-                            { Composer(app, id, parent, users, canPost) }
                         } else null,
-                )
+                    )
+                } else if (!wide) {
+                    app.thread = null
+                }
             }
         }
     }
@@ -290,7 +351,7 @@ private fun JoinToPostPrompt(app: Session, channel: Row) {
                 muted = true,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
             )
-            if (!channel.flag("is_private"))
+            if (!channel.flag("is_private") || channel.present("parent_channel_id"))
                 Button(
                     app.t("messages.joinToPost"),
                     app.env.online && "join:$id" !in app.pending,
@@ -568,7 +629,8 @@ class MessageCallbacks(
     val cancelEdit: (() -> Unit)? = null,
     val saveEdit: (() -> Unit)? = null,
     val requestDelete: (() -> Unit)? = null,
-    val openThread: (() -> Unit)? = null,
+    val reply: (() -> Unit)? = null,
+    val openLegacyThread: (() -> Unit)? = null,
     val pickReaction: (() -> Unit)? = null,
     val reaction: ((String) -> Unit)? = null,
     val changeText: ((String) -> Unit)? = null,
@@ -590,7 +652,6 @@ internal fun Message(
     canReact: Boolean = true,
     callbacks: MessageCallbacks? = null,
     ownOverride: Boolean? = null,
-    canOpenThread: Boolean = true,
 ) {
     val id = message.text("id")
     val messageTable = app.repo.messages(channel.text("id"))
@@ -620,10 +681,6 @@ internal fun Message(
         (display?.array("attachments")?.rows() ?: attachmentRows)
             .filter { it.text("message_id") == id }.sortedBy { it.text("created_at") }
     }
-    val replyCount = remember(display, all, id) {
-        display?.text("reply_count")?.toIntOrNull() ?:
-            all.count { it.text("parent_id") == id && !it.present("deleted_at") }
-    }
     val reactionGroups = remember(display, reactions, id) {
         (display?.array("reactions")?.rows() ?: reactions)
             .filter { it.text("message_id") == id }.groupBy { reactionKey(it.text("emoji")) }
@@ -647,10 +704,6 @@ internal fun Message(
         remember(viewConfiguration, gestureArbitration) {
             gestureArbitration.selectionConfiguration(viewConfiguration)
         }
-    val openThread = {
-        if (callbacks?.openThread != null) callbacks.openThread.invoke()
-        else app.openThread(id, wide)
-    }
     val startEdit = {
         if (callbacks?.startEdit != null) callbacks.startEdit.invoke() else editing = true
     }
@@ -660,8 +713,8 @@ internal fun Message(
     val pickReaction = {
         if (callbacks?.pickReaction != null) callbacks.pickReaction.invoke() else picker = true
     }
-    val showThread =
-        canOpenThread && (callbacks == null || callbacks.openThread != null)
+    val showReply = callbacks?.reply != null
+    val openLegacyThread = callbacks?.openLegacyThread
     val canDelete =
         mine ||
             (callbacks == null &&
@@ -710,6 +763,35 @@ internal fun Message(
                     }
                 else Avatar(user, Modifier.padding(top = 2.dp))
                 Column(Modifier.weight(1f)) {
+                    val replyToId =
+                        message.text("reply_to_message_id").ifEmpty { message.text("parent_id") }
+                    if (replyToId.isNotEmpty()) {
+                        val preview = display?.nested("reply_target")
+                        val unavailable = preview == null || preview.present("deleted_at")
+                        val authorRow = preview?.nested("author")
+                        val targetAuthor = authorRow?.let(::author)
+                            ?.takeIf(String::isNotEmpty)
+                            ?: app.t("messages.unavailableReplyTarget")
+                        val targetContent = preview?.text("content")
+                            ?.takeIf(String::isNotEmpty)
+                            ?: app.t("messages.unavailableReplyTarget")
+                        val targetChannel = preview?.text("channel_id").orEmpty()
+                        val targetPath =
+                            if (unavailable || targetChannel.isEmpty()) null
+                            else "/channels/${targetChannel.encodeURLParameter()}?message=${replyToId.encodeURLParameter()}"
+                        val context: @Composable () -> Unit = {
+                            Row(
+                                Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(targetAuthor, small = true, muted = true)
+                                Text(targetContent, Modifier.weight(1f), small = true, muted = true, maxLines = 1)
+                            }
+                        }
+                        if (targetPath != null) NativeLink(targetPath) { context() }
+                        else context()
+                    }
                     if (!grouped || message.flag("apub"))
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (!grouped)
@@ -891,49 +973,6 @@ internal fun Message(
                         )
                     }
                     if (!editing) {
-                        val replies = replyCount
-                        if (showThread && replies > 0)
-                            Row(
-                                Modifier.padding(top = 4.dp)
-                                    .height(22.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .border(
-                                        1.dp,
-                                        MaterialTheme.colorScheme.secondary.copy(alpha = .3f),
-                                        RoundedCornerShape(12.dp),
-                                    )
-                                    .background(
-                                        MaterialTheme.colorScheme.secondaryContainer.copy(
-                                            alpha = .5f
-                                        )
-                                    )
-                                    .clickable(role = Role.Button) {
-                                        if (callbacks?.openThread != null)
-                                            callbacks.openThread.invoke()
-                                        else app.openThread(id, wide)
-                                    }
-                                    .semantics {
-                                        contentDescription =
-                                            app.t(
-                                                "threads.openWithCount",
-                                                "count" to replies.toString(),
-                                            )
-                                    }
-                                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Icon(
-                                    "message-square-text",
-                                    modifier = Modifier.size(14.dp),
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                )
-                                Text(
-                                    app.t("threads.replyCount", "count" to replies.toString()),
-                                    small = true,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                )
-                            }
                         val groups = reactionGroups
                         if (groups.isNotEmpty())
                             FlowRow(
@@ -994,12 +1033,19 @@ internal fun Message(
                             size = 24.dp,
                             click = pickReaction,
                         )
-                        if (showThread)
+                        if (showReply)
+                            IconButton(
+                                "reply",
+                                app.t("messages.reply"),
+                                size = 24.dp,
+                                click = { callbacks?.reply?.invoke() },
+                            )
+                        if (openLegacyThread != null)
                             IconButton(
                                 "message-square-plus",
                                 app.t("threads.open"),
                                 size = 24.dp,
-                                click = openThread,
+                                click = openLegacyThread,
                             )
                         if (mine)
                             IconButton(
@@ -1050,12 +1096,20 @@ internal fun Message(
                                     pickReaction,
                                 )
                             )
-                            if (showThread)
+                            if (showReply)
+                                add(
+                                    MenuAction(
+                                        "reply",
+                                        app.t("messages.reply"),
+                                        action = { callbacks?.reply?.invoke() },
+                                    )
+                                )
+                            if (openLegacyThread != null)
                                 add(
                                     MenuAction(
                                         "message-square-plus",
                                         app.t("threads.open"),
-                                        action = openThread,
+                                        action = openLegacyThread,
                                     )
                                 )
                             if (mine)
@@ -1186,10 +1240,12 @@ internal fun Composer(
     showTyping: Boolean = true,
     placeholder: String? = null,
     ariaLabel: String? = null,
+    onSent: (() -> Unit)? = null,
     commandOptions: List<Row>? = null,
     mentionMemberIds: Set<String>? = null,
     onTyping: ((Boolean) -> Unit)? = null,
     onRequestCommands: (() -> Unit)? = null,
+    legacyThreadReply: Boolean = false,
 ) {
     val key = "draft:$channel:${parent.orEmpty()}"
     var value by remember(key, initialValue) { mutableStateOf(initialValue) }
@@ -1290,7 +1346,7 @@ internal fun Composer(
                             "/api/channels/$channel/typing",
                             "POST",
                             buildJsonObject {
-                                put("parent_id", parent?.let(::JsonPrimitive) ?: JsonNull)
+                                put("parent_id", JsonNull)
                                 put("session_id", typingSession)
                                 put("active", true)
                             },
@@ -1307,7 +1363,7 @@ internal fun Composer(
                             "/api/channels/$channel/typing",
                             "POST",
                             buildJsonObject {
-                                put("parent_id", parent?.let(::JsonPrimitive) ?: JsonNull)
+                                put("parent_id", JsonNull)
                                 put("session_id", typingSession)
                                 put("active", false)
                             },
@@ -1324,10 +1380,7 @@ internal fun Composer(
             try {
                 typing =
                     app.api
-                        .request(
-                            "/api/channels/$channel/typing" +
-                                (parent?.let { "?parent_id=$it" } ?: "")
-                        )
+                        .request("/api/channels/$channel/typing")
                         .rows()
                         .filter { it.text("id") != app.config.userId }
                         .map { row ->
@@ -1359,7 +1412,15 @@ internal fun Composer(
                 val successful =
                     try {
                         sendMessage?.invoke(sent.trim(), commandAppId, attachmentIds)
-                            ?: app.send(channel, sent.trim(), parent, commandAppId, attachmentIds, sensitiveAttachmentIds)
+                        ?: app.send(
+                            channel,
+                            sent.trim(),
+                            parent,
+                            commandAppId,
+                            attachmentIds,
+                            sensitiveAttachmentIds,
+                            legacyThreadReply,
+                        )
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {
@@ -1374,7 +1435,10 @@ internal fun Composer(
                         value = sent
                         caret = sent.length
                     }
-                } else attachments.release(drafts)
+                } else {
+                    attachments.release(drafts)
+                    onSent?.invoke()
+                }
             }
         }
         Unit
@@ -1504,7 +1568,7 @@ internal fun Composer(
                 value,
                 ariaLabel
                     ?: placeholder
-                    ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
+                    ?: app.t(if (parent == null) "messages.compose" else "messages.reply"),
                 Modifier.weight(1f)
                     .onGloballyPositioned { coordinates ->
                         val bounds = coordinates.boundsInWindow()
@@ -1557,7 +1621,7 @@ internal fun Composer(
                 readOnly = !enabled,
                 placeholder =
                     placeholder
-                        ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
+                        ?: app.t(if (parent == null) "messages.compose" else "messages.reply"),
                 focusRequester = composerFocusRequester,
                 onBlur = {
                     dismissed = true

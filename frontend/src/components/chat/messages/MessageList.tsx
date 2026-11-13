@@ -62,7 +62,8 @@ interface MessageListProps {
   onReaction: (messageId: string, emoji: string) => void;
   onPickReaction: (messageId: string) => void;
   attachments?: Map<string, AttachmentRow[]>;
-  onOpenThread: (messageId: string) => void;
+  onOpenThread?: (messageId: string) => void;
+  onReply?: (messageId: string) => void;
   /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
   canCompose?: boolean;
   /** オフラインか。スケルトンの代わりに保存済みがない旨を出す。 */
@@ -158,6 +159,7 @@ export function MessageList({
   onPickReaction,
   attachments,
   onOpenThread,
+  onReply,
   canCompose = true,
   isOffline = false,
   onLoadOlder,
@@ -223,7 +225,10 @@ export function MessageList({
     for (const row of element.querySelectorAll<HTMLElement>("[data-message-id]")) {
       const bounds = row.getBoundingClientRect();
       if (bounds.bottom > viewport.top && bounds.top < viewport.bottom) {
-        scrollAnchorRef.current = { id: row.dataset.messageId!, offset: bounds.top - viewport.top };
+        scrollAnchorRef.current = {
+          id: row.dataset.messageId!,
+          offset: bounds.top - viewport.top,
+        };
         break;
       }
     }
@@ -592,7 +597,14 @@ export function MessageList({
                     onSaveEdit={onSaveEdit}
                     onRequestDelete={() => onRequestDelete(item.message.id)}
                     replyCount={item.message.display_data?.reply_count ?? 0}
-                    onOpenThread={() => onOpenThread(item.message.id)}
+                    onOpenThread={
+                      onOpenThread &&
+                      item.message.thread_activity_at &&
+                      (item.message.display_data?.reply_count ?? 0) > 0
+                        ? () => onOpenThread(item.message.id)
+                        : undefined
+                    }
+                    onReply={onReply ? () => onReply(item.message.id) : undefined}
                     attachments={
                       item.message.display_data?.attachments ??
                       attachments?.get(item.message.id) ??

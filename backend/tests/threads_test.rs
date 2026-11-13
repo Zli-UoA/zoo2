@@ -1,4 +1,5 @@
 use axum::{
+    Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
@@ -7,211 +8,428 @@ use tower::ServiceExt;
 
 use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
 
+async fn request(
+    app: &Router,
+    method: &str,
+    user: &str,
+    path: &str,
+    body: Value,
+) -> anyhow::Result<(StatusCode, Value)> {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .header("X-Dev-User", user)
+                .body(Body::from(body.to_string()))?,
+        )
+        .await?;
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    Ok((status, serde_json::from_slice(&body)?))
+}
+
+async fn ok(
+    app: &Router,
+    method: &str,
+    user: &str,
+    path: &str,
+    body: Value,
+) -> anyhow::Result<Value> {
+    let (status, result) = request(app, method, user, path, body).await?;
+    assert!(status.is_success(), "{status}: {result}");
+    Ok(result)
+}
+
 #[tokio::test]
-async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
+async fn thread_channels_are_public_joinable_and_archivable() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
 
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let db = init_db(&config.database_url).await?;
-    let state = AppState::new(db.clone(), config);
-    let app = create_router(state);
+    let app = create_router(AppState::new(db.clone(), config));
+    let alice = uuid::Uuid::new_v4().to_string();
+    let bob = uuid::Uuid::new_v4().to_string();
+    let charlie = uuid::Uuid::new_v4().to_string();
+    let parent = uuid::Uuid::new_v4().to_string();
 
-    let alice_id = uuid::Uuid::new_v4().to_string();
+    ok(
+        &app,
+        "POST",
+        &alice,
+        "/api/users",
+        json!({"id":alice,"user_name":format!("alice_{}",uuid::Uuid::new_v4().simple()),"display_name":"Alice"}),
+    )
+    .await?;
+    ok(
+        &app,
+        "POST",
+        &charlie,
+        "/api/users",
+        json!({"id":charlie,"user_name":format!("charlie_{}",uuid::Uuid::new_v4().simple()),"display_name":"Charlie"}),
+    )
+    .await?;
+    ok(
+        &app,
+        "POST",
+        &bob,
+        "/api/users",
+        json!({"id":bob,"user_name":format!("bob_{}",uuid::Uuid::new_v4().simple()),"display_name":"Bob"}),
+    )
+    .await?;
+    ok(
+        &app,
+        "POST",
+        &alice,
+        "/api/channels",
+        json!({"id":parent,"channel_name":format!("thread-test-{}",uuid::Uuid::new_v4().simple()),"is_private":false}),
+    )
+    .await?;
 
-    // 1. Alice 作成
-    let user_payload = json!({
-        "id": alice_id,
-        "user_name": format!("alice_{}", uuid::Uuid::new_v4().simple()),
-        "display_name": "Alice",
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/users")
-        .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&user_payload)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
+    let parent_post = ok(
+        &app,
+        "POST",
+        &alice,
+        "/api/messages",
+        json!({"channel_id":parent,"content":"Parent channel post"}),
+    )
+    .await?["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
 
-    // 2. チャンネル 1 作成
-    let channel_id_1 = uuid::Uuid::new_v4().to_string();
-    let channel_payload_1 = json!({
-        "id": channel_id_1,
-        "channel_name": format!("ch1-{}", uuid::Uuid::new_v4().simple()),
-        "is_private": false,
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/channels")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&channel_payload_1)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Simulate an old backend write during the rolling upgrade. The migration trigger
+    // registers the pre-existing root so the new backend can preserve its old reply pane.
+    let legacy_reply_id = uuid::Uuid::new_v4().to_string();
+    let mut test_db = db.clone();
+    let mut tx = test_db.transaction().await?;
+    toasty::sql::statement(
+        "INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) \
+         VALUES($1,$2,$3,'Legacy reply',$4,now() AT TIME ZONE 'UTC')",
+    )
+    .bind(legacy_reply_id.as_str())
+    .bind(bob.as_str())
+    .bind(parent.as_str())
+    .bind(parent_post.as_str())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
 
-    // 3. 親メッセージ (Root) 投稿
-    let root_message_id = uuid::Uuid::new_v4().to_string();
-    let root_payload = json!({
-        "id": root_message_id,
-        "channel_id": channel_id_1,
-        "content": "Root message",
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/messages")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&root_payload)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
+    let legacy_reply = ok(
+        &app,
+        "POST",
+        &charlie,
+        "/api/messages",
+        json!({"channel_id":parent,"content":"Reply during rollout","parent_id":parent_post}),
+    )
+    .await?;
+    assert_eq!(legacy_reply["data"]["parent_id"], parent_post);
+    let legacy_threads = ok(
+        &app,
+        "GET",
+        &alice,
+        &format!("/api/threads?channel_id={parent}&archived=false"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(legacy_threads["items"][0]["id"], parent_post);
+    assert_eq!(legacy_threads["items"][0]["legacy"], true);
+    let archived_legacy = ok(
+        &app,
+        "POST",
+        &alice,
+        &format!("/api/threads/{parent_post}/archive"),
+        json!({}),
+    )
+    .await?;
+    assert!(archived_legacy["data"]["thread_archive_at"].is_string());
+    ok(
+        &app,
+        "POST",
+        &alice,
+        &format!("/api/threads/{parent_post}/open"),
+        json!({}),
+    )
+    .await?;
 
-    let body = to_bytes(resp.into_body(), usize::MAX).await?;
-    let json: Value = serde_json::from_slice(&body)?;
-    assert!(json["data"]["parent_id"].is_null());
-    assert!(json["txid"].is_string());
+    let created = ok(
+        &app,
+        "POST",
+        &alice,
+        &format!("/api/channels/{parent}/threads"),
+        json!({"title":"Release planning","initial_post":"Let's plan the release."}),
+    )
+    .await?;
+    let thread = created["data"]["channel_id"].as_str().unwrap().to_owned();
+    let first_post = created["data"]["first_message_id"].as_str().unwrap();
+    assert_eq!(created["data"]["parent_channel_id"], parent);
 
-    // 4. 親メッセージへのスレッド返信 1 を投稿
-    let reply_1_id = uuid::Uuid::new_v4().to_string();
-    let reply_1_payload = json!({
-        "id": reply_1_id,
-        "channel_id": channel_id_1,
-        "content": "Reply 1 to root",
-        "parent_id": root_message_id,
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/messages")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&reply_1_payload)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (archive_status, _) = request(
+        &app,
+        "POST",
+        &alice,
+        &format!("/api/channels/{thread}/archive"),
+        json!({}),
+    )
+    .await?;
+    assert_eq!(archive_status, StatusCode::BAD_REQUEST);
+    let (update_status, _) = request(
+        &app,
+        "PATCH",
+        &alice,
+        &format!("/api/channels/{thread}"),
+        json!({"is_private":true}),
+    )
+    .await?;
+    assert_eq!(update_status, StatusCode::BAD_REQUEST);
 
-    let body = to_bytes(resp.into_body(), usize::MAX).await?;
-    let json: Value = serde_json::from_slice(&body)?;
-    assert_eq!(json["data"]["parent_id"], root_message_id);
-    assert!(json["txid"].is_string());
+    let listed = ok(
+        &app,
+        "GET",
+        &bob,
+        &format!("/api/channels/{parent}/threads?archived=false"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(listed["items"][0]["channel_id"], thread);
+    assert_eq!(listed["items"][0]["title"], "Release planning");
+    assert_eq!(listed["items"][0]["is_member"], false);
 
-    // 5. Homeと同じく、返信への再返信も元の投稿との関係を保持する
-    let nested_reply_payload = json!({
-        "channel_id": channel_id_1,
-        "content": "Nested reply to reply 1",
-        "parent_id": reply_1_id,
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/messages")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&nested_reply_payload)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = to_bytes(resp.into_body(), usize::MAX).await?;
-    let nested: Value = serde_json::from_slice(&body)?;
-    assert_eq!(nested["data"]["parent_id"], reply_1_id);
+    let (cross_channel_reply_status, _) = request(
+        &app,
+        "POST",
+        &alice,
+        "/api/messages",
+        json!({"channel_id":thread,"content":"Cross-channel reply","reply_to_message_id":parent_post}),
+    )
+    .await?;
+    assert_eq!(cross_channel_reply_status, StatusCode::NOT_FOUND);
 
-    // 6. チャンネル 2 作成
-    let channel_id_2 = uuid::Uuid::new_v4().to_string();
-    let channel_payload_2 = json!({
-        "id": channel_id_2,
-        "channel_name": format!("ch2-{}", uuid::Uuid::new_v4().simple()),
-        "is_private": false,
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/channels")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&channel_payload_2)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
+    ok(
+        &app,
+        "POST",
+        &bob,
+        &format!("/api/threads/{thread}/join"),
+        json!({}),
+    )
+    .await?;
+    let reply = ok(
+        &app,
+        "POST",
+        &bob,
+        "/api/messages",
+        json!({"channel_id":thread,"content":"I will draft the timeline.","reply_to_message_id":first_post}),
+    )
+    .await?;
+    assert!(reply["data"]["parent_id"].is_null());
+    assert_eq!(reply["data"]["reply_to_message_id"], first_post);
 
-    // 7. チャンネル 2 でチャンネル 1 の root_message_id を指定して投稿試行 -> 404 Not Found (非公開メッセージの存在漏洩防止)
-    let cross_channel_payload = json!({
-        "channel_id": channel_id_2,
-        "content": "Cross channel reply",
-        "parent_id": root_message_id,
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/messages")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&cross_channel_payload)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    ok(
+        &app,
+        "POST",
+        &alice,
+        &format!("/api/threads/{thread}/archive"),
+        json!({}),
+    )
+    .await?;
+    let archived = ok(
+        &app,
+        "GET",
+        &bob,
+        &format!("/api/channels/{parent}/threads?archived=true"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(archived["items"][0]["channel_id"], thread);
+    assert!(archived["items"][0]["archived_at"].is_string());
 
-    // 8. parent_id が不正な UUID の場合 -> 400 Bad Request
-    let invalid_uuid_payload = json!({
-        "channel_id": channel_id_1,
-        "content": "Invalid parent UUID",
-        "parent_id": "not-a-valid-uuid",
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/messages")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&invalid_uuid_payload)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    // Posting remains allowed in an archived thread and reopens it atomically.
+    ok(
+        &app,
+        "POST",
+        &bob,
+        "/api/messages",
+        json!({"channel_id":thread,"content":"One more detail.","reply_to_message_id":first_post}),
+    )
+    .await?;
+    let active = ok(
+        &app,
+        "GET",
+        &alice,
+        &format!("/api/channels/{parent}/threads?archived=false"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(active["items"][0]["channel_id"], thread);
+    assert!(active["items"][0]["archived_at"].is_null());
 
-    // 9. 自メッセージ自身を親として指定した場合 (id == parent_id) -> 404 Not Found
-    let self_id = uuid::Uuid::new_v4().to_string();
-    let self_parent_payload = json!({
-        "id": self_id,
-        "channel_id": channel_id_1,
-        "content": "Self parent message",
-        "parent_id": self_id,
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/messages")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&self_parent_payload)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    ok(
+        &app,
+        "POST",
+        &bob,
+        &format!("/api/threads/{thread}/archive"),
+        json!({}),
+    )
+    .await?;
+    ok(
+        &app,
+        "POST",
+        &bob,
+        &format!("/api/threads/{thread}/open"),
+        json!({}),
+    )
+    .await?;
+    let manually_opened = ok(
+        &app,
+        "GET",
+        &alice,
+        &format!("/api/channels/{parent}/threads?archived=false"),
+        Value::Null,
+    )
+    .await?;
+    assert!(manually_opened["items"][0]["archived_at"].is_null());
 
-    // 10. 親メッセージを論理削除
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(format!("/api/messages/{root_message_id}"))
-        .header("X-Dev-User", &alice_id)
-        .body(Body::empty())?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
+    ok(
+        &app,
+        "POST",
+        &alice,
+        &format!("/api/threads/{thread}/archive"),
+        json!({}),
+    )
+    .await?;
+    ok(
+        &app,
+        "POST",
+        &charlie,
+        &format!("/api/threads/{thread}/join"),
+        json!({}),
+    )
+    .await?;
+    let joined_archived = ok(
+        &app,
+        "GET",
+        &alice,
+        &format!("/api/channels/{parent}/threads?archived=true"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(joined_archived["items"][0]["channel_id"], thread);
+    assert!(joined_archived["items"][0]["archived_at"].is_string());
+    assert!(joined_archived["items"][0]["is_member"].as_bool().unwrap());
 
-    // 11. 削除済み親メッセージへの返信投稿試行 -> 404 Not Found
-    let reply_to_deleted_payload = json!({
-        "channel_id": channel_id_1,
-        "content": "Reply to deleted parent",
-        "parent_id": root_message_id,
-    });
-    let req = Request::builder()
-        .method("POST")
-        .uri("/api/messages")
-        .header("content-type", "application/json")
-        .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&reply_to_deleted_payload)?))?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // Posting to an archived thread adds the poster as a member and reopens it.
+    ok(
+        &app,
+        "POST",
+        &charlie,
+        "/api/messages",
+        json!({"channel_id":thread,"content":"Reply after joining"}),
+    )
+    .await?;
+    let active_after_post = ok(
+        &app,
+        "GET",
+        &alice,
+        &format!("/api/channels/{parent}/threads?archived=false"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(active_after_post["items"][0]["channel_id"], thread);
+    assert!(active_after_post["items"][0]["archived_at"].is_null());
 
-    // 10. 親メッセージ削除後も既存の子返信は保持されていること (GET /api/messages)
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/api/messages?channel_id={channel_id_1}"))
-        .header("X-Dev-User", &alice_id)
-        .body(Body::empty())?;
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Old nested-thread writes are rejected; a reply uses the explicit link field.
+    let (status, _) = request(
+        &app,
+        "POST",
+        &bob,
+        "/api/messages",
+        json!({"channel_id":thread,"content":"Nested thread","parent_id":first_post}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    let body = to_bytes(resp.into_body(), usize::MAX).await?;
-    let messages: Vec<Value> = serde_json::from_slice(&body)?;
-    let reply_found = messages.iter().find(|m| m["id"] == reply_1_id);
-    assert!(reply_found.is_some(), "Reply 1 should still exist");
-    assert_eq!(reply_found.unwrap()["parent_id"], root_message_id);
+    ok(
+        &app,
+        "DELETE",
+        &bob,
+        &format!("/api/threads/{thread}/leave"),
+        Value::Null,
+    )
+    .await?;
+    Ok(())
+}
 
+#[tokio::test]
+async fn private_parent_members_can_read_but_must_join_before_posting() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config));
+    let alice = uuid::Uuid::new_v4().to_string();
+    let bob = uuid::Uuid::new_v4().to_string();
+    let parent = uuid::Uuid::new_v4().to_string();
+    ok(&app, "POST", &alice, "/api/users", json!({"id":alice,"user_name":format!("private_thread_alice_{}",uuid::Uuid::new_v4().simple()),"display_name":"Alice"})).await?;
+    ok(&app, "POST", &bob, "/api/users", json!({"id":bob,"user_name":format!("private_thread_bob_{}",uuid::Uuid::new_v4().simple()),"display_name":"Bob"})).await?;
+    ok(&app, "POST", &alice, "/api/channels", json!({"id":parent,"channel_name":format!("private-thread-{}",uuid::Uuid::new_v4().simple()),"is_private":true})).await?;
+    ok(
+        &app,
+        "POST",
+        &alice,
+        &format!("/api/channels/{parent}/users"),
+        json!({"user_id":bob}),
+    )
+    .await?;
+    let created = ok(
+        &app,
+        "POST",
+        &alice,
+        &format!("/api/channels/{parent}/threads"),
+        json!({"title":"Private discussion","initial_post":"Read access follows the parent."}),
+    )
+    .await?;
+    let thread = created["data"]["channel_id"].as_str().unwrap();
+
+    let (status, messages) = request(
+        &app,
+        "GET",
+        &bob,
+        &format!("/api/messages?channel_id={thread}"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{messages}");
+    assert_eq!(messages.as_array().unwrap().len(), 1);
+    let (status, _) = request(
+        &app,
+        "POST",
+        &bob,
+        "/api/messages",
+        json!({"channel_id":thread,"content":"Not joined yet"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    ok(
+        &app,
+        "POST",
+        &bob,
+        &format!("/api/threads/{thread}/join"),
+        json!({}),
+    )
+    .await?;
+    ok(
+        &app,
+        "POST",
+        &bob,
+        "/api/messages",
+        json!({"channel_id":thread,"content":"Joined and posting"}),
+    )
+    .await?;
     Ok(())
 }

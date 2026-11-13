@@ -481,9 +481,7 @@ impl App {
                 let incoming_ids: HashSet<_> =
                     threads.iter().map(|thread| thread.id.clone()).collect();
                 for thread in &threads {
-                    if thread.thread_archive_at.is_some() {
-                        self.locally_reopened_threads.remove(&thread.id);
-                    }
+                    self.locally_reopened_threads.remove(&thread.id);
                     self.thread_states.insert(
                         thread.id.clone(),
                         (thread.thread_archive_at.is_some(), requested_at),
@@ -762,19 +760,34 @@ impl App {
             return;
         }
         let cached = archived.or_else(|| {
-            self.store.channels().into_iter().find_map(|channel| {
-                let root = self.store.message(&channel.id, id)?;
+            self.store.channels().into_iter().find_map(|_| {
+                let child = self.store.channel(id)?;
+                let parent_channel_id = child.parent_channel_id.as_ref()?;
                 Some(ThreadSummary {
-                    id: root.id.clone(),
-                    channel_id: root.channel_id.clone(),
-                    content: root.content.chars().take(160).collect(),
+                    id: child.id.clone(),
+                    channel_id: parent_channel_id.clone(),
+                    content: child.thread_title.clone().unwrap_or_default(),
                     thread_archive_at: None,
-                    reply_count: self.store.replies(&channel.id, id).len() as u64,
+                    reply_count: self.store.channel_messages(&child.id).len() as u64,
                 })
             })
         });
         if let Some(mut thread) = cached {
             thread.thread_archive_at = None;
+            self.active_threads.insert(0, thread);
+            return;
+        }
+        let cached = self.store.channels().into_iter().find_map(|channel| {
+            let root = self.store.message(&channel.id, id)?;
+            Some(ThreadSummary {
+                id: root.id.clone(),
+                channel_id: root.channel_id.clone(),
+                content: root.content.chars().take(160).collect(),
+                thread_archive_at: None,
+                reply_count: self.store.replies(&channel.id, id).len() as u64,
+            })
+        });
+        if let Some(thread) = cached {
             self.active_threads.insert(0, thread);
         }
     }
@@ -786,6 +799,11 @@ impl App {
     }
 
     pub fn thread_is_archived(&self, channel_id: &str, root_id: &str) -> bool {
+        if let Some(thread) = self.store.channel(root_id)
+            && thread.parent_channel_id.as_deref() == Some(channel_id)
+        {
+            return thread.thread_archived_at.is_some();
+        }
         if let Some(reopened_at) = self.locally_reopened_threads.get(root_id) {
             return self
                 .store
@@ -796,12 +814,21 @@ impl App {
         if let Some((archived, _)) = self.thread_states.get(root_id) {
             return *archived;
         }
-        self.threads()
-            .any(|thread| thread.id == root_id && thread.thread_archive_at.is_some())
-            || self
-                .store
-                .message(channel_id, root_id)
-                .is_some_and(|root| root.thread_archive_at.is_some())
+        if self
+            .store
+            .message(channel_id, root_id)
+            .is_some_and(|root| root.thread_archive_at.is_some())
+        {
+            return true;
+        }
+        self.threads().any(|thread| {
+            thread.id == root_id
+                && thread.channel_id == channel_id
+                && thread.thread_archive_at.is_some()
+        }) || self.store.channel(root_id).is_some_and(|thread| {
+            thread.parent_channel_id.as_deref() == Some(channel_id)
+                && thread.thread_archived_at.is_some()
+        })
     }
 
     /// 一覧外の一時表示にも、描画と検索で同じ本文を使う。
@@ -809,6 +836,11 @@ impl App {
         self.threads()
             .find(|thread| thread.id == id && thread.channel_id == channel_id)
             .map(|thread| thread.content.as_str())
+            .or_else(|| {
+                self.store
+                    .channel(id)
+                    .and_then(|thread| thread.thread_title.as_deref())
+            })
             .or_else(|| {
                 self.store
                     .message(channel_id, id)
@@ -823,9 +855,18 @@ impl App {
         let root_id = self
             .store
             .message(channel_id, message_id)
-            .and_then(|message| message.parent_id.as_deref())
+            .and_then(|message| {
+                message
+                    .reply_to_message_id
+                    .as_deref()
+                    .or(message.parent_id.as_deref())
+            })
             .unwrap_or(message_id);
         let archived = self.thread_is_archived(channel_id, root_id)
+            || self
+                .store
+                .channel(channel_id)
+                .is_some_and(|channel| channel.thread_archived_at.is_some())
             || (self.focus == Focus::Thread
                 && self
                     .thread
@@ -839,18 +880,17 @@ impl App {
 
     pub fn sidebar_items(&self) -> Vec<SidebarItem> {
         let mut items = Vec::new();
-        for channel in self.store.channels() {
+        for channel in self
+            .store
+            .channels()
+            .into_iter()
+            .filter(|channel| channel.parent_channel_id.is_none())
+        {
             items.push(SidebarItem::Channel(channel.id.clone()));
-            let joined = !channel.is_dm && self.store.is_member(&channel.id, &self.me.id);
             for thread in self.threads().filter(|thread| {
-                joined
-                    && thread.channel_id == channel.id
+                thread.channel_id == channel.id
                     && (!self.thread_is_archived(&channel.id, &thread.id)
-                        || (self.current.as_deref() == Some(channel.id.as_str())
-                            && self
-                                .thread
-                                .as_ref()
-                                .is_some_and(|selected| selected.root_id == thread.id)))
+                        || self.current.as_deref() == Some(thread.id.as_str()))
             }) {
                 items.push(SidebarItem::Thread {
                     channel_id: channel.id.clone(),
@@ -865,9 +905,10 @@ impl App {
                     id: thread.root_id.clone(),
                 };
                 if !items.contains(&selected)
-                    && self.store.message(&channel.id, &thread.root_id).is_some()
-                    && (self.thread_is_archived(&channel.id, &thread.root_id)
-                        || !self.store.replies(&channel.id, &thread.root_id).is_empty())
+                    && (self.store.channel(&thread.root_id).is_some()
+                        || (self.store.message(&channel.id, &thread.root_id).is_some()
+                            && (self.thread_is_archived(&channel.id, &thread.root_id)
+                                || !self.store.replies(&channel.id, &thread.root_id).is_empty())))
                 {
                     items.push(selected);
                 }
@@ -1365,19 +1406,31 @@ impl App {
                 self.focus = Focus::Messages;
             }
             Some(SidebarItem::Thread { channel_id, id }) => {
-                self.open_channel(channel_id);
-                self.thread = Some(ThreadView {
-                    root_id: id.clone(),
-                    selected: None,
-                    scroll: 0,
-                    inner_scroll: 0,
-                });
-                self.restore_sidebar_selection(Some(SidebarItem::Thread {
-                    channel_id: self.current.clone().unwrap_or_default(),
-                    id: id.clone(),
-                }));
-                self.focus = Focus::Thread;
-                self.poll_typing();
+                if self.store.channel(&id).is_some_and(|thread| {
+                    thread.parent_channel_id.as_deref() == Some(channel_id.as_str())
+                }) {
+                    self.open_channel(id);
+                    self.thread = None;
+                    self.restore_sidebar_selection(Some(SidebarItem::Thread {
+                        channel_id,
+                        id: self.current.clone().unwrap_or_default(),
+                    }));
+                    self.focus = Focus::Messages;
+                } else {
+                    self.open_channel(channel_id);
+                    self.thread = Some(ThreadView {
+                        root_id: id.clone(),
+                        selected: None,
+                        scroll: 0,
+                        inner_scroll: 0,
+                    });
+                    self.restore_sidebar_selection(Some(SidebarItem::Thread {
+                        channel_id: self.current.clone().unwrap_or_default(),
+                        id,
+                    }));
+                    self.focus = Focus::Thread;
+                    self.poll_typing();
+                }
             }
             Some(SidebarItem::MoreThreads { archived }) => self.fetch_thread_page(
                 archived,
@@ -1468,7 +1521,10 @@ impl App {
         }
         let target = match (&self.thread, self.focus) {
             (Some(thread), Focus::Thread) => Target::Reply(thread.root_id.clone()),
-            _ => Target::Channel,
+            _ => match &self.target {
+                Target::Reply(message_id) => Target::Reply(message_id.clone()),
+                _ => Target::Channel,
+            },
         };
         if matches!(self.target, Target::Edit(_)) || self.target != target {
             if matches!(self.target, Target::Edit(_)) {
@@ -1560,31 +1616,51 @@ impl App {
 
     /// サイドバーでは選択中のチャンネル、それ以外では開いているチャンネルを対象にする。
     fn join_or_leave(&mut self, join: bool) {
-        let channel_id = match self.focus {
+        let target = match self.focus {
             Focus::Sidebar => self
                 .sidebar_items()
                 .get(self.sidebar_index)
                 .and_then(|item| match item {
-                    SidebarItem::Channel(id) => Some(id.clone()),
-                    SidebarItem::Thread { channel_id, .. } => Some(channel_id.clone()),
+                    SidebarItem::Channel(id) => Some((id.clone(), false)),
+                    SidebarItem::Thread { id, .. } => self
+                        .store
+                        .channel(id)
+                        .filter(|channel| channel.parent_channel_id.is_some())
+                        .map(|_| (id.clone(), true)),
                     SidebarItem::MoreThreads { .. } => None,
                 }),
-            _ => self.current.clone(),
+            Focus::Messages => self.current.clone().and_then(|id| {
+                let is_thread = self
+                    .store
+                    .channel(&id)
+                    .is_some_and(|channel| channel.parent_channel_id.is_some());
+                self.store.channel(&id).map(|_| (id, is_thread))
+            }),
+            // Legacy message threads inherit their parent channel membership.
+            Focus::Thread => None,
         };
-        let Some(channel_id) = channel_id else {
+        let Some((channel_id, is_thread)) = target else {
             return;
         };
         let api = self.api.clone();
         let tx = self.app_tx.clone();
         if join {
             self.spawn_api("参加", async move {
-                api.join_channel(&channel_id).await?;
+                if is_thread {
+                    api.join_thread(&channel_id).await?;
+                } else {
+                    api.join_channel(&channel_id).await?;
+                }
                 let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
                 Ok(())
             });
         } else {
             self.spawn_api("退出", async move {
-                api.leave_channel(&channel_id).await?;
+                if is_thread {
+                    api.leave_thread(&channel_id).await?;
+                } else {
+                    api.leave_channel(&channel_id).await?;
+                }
                 let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
                 Ok(())
             });
@@ -1777,6 +1853,29 @@ mod tests {
                 .mount(&server)
                 .await;
             let (mut app, mut rx) = api_test_app(&server.uri());
+            let channel = serde_json::json!({
+                "id": "c1",
+                "channel_name": "channel",
+                "is_private": false,
+                "is_nsfw": false,
+                "is_dm": false,
+                "archive_at": null,
+                "deleted_at": null,
+                "parent_channel_id": null,
+                "thread_title": null,
+                "thread_archived_at": null
+            });
+            app.store.apply(
+                &ShapeId::Channels,
+                Batch {
+                    reset: true,
+                    changes: vec![electric::Change::Upsert {
+                        key: "c1".into(),
+                        row: channel.as_object().unwrap().clone(),
+                    }],
+                    up_to_date: true,
+                },
+            );
             app.focus = Focus::Messages;
             app.current = Some("c1".into());
             app.join_or_leave(join);
@@ -1807,7 +1906,7 @@ mod tests {
         };
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/threads/root/unarchive"))
+            .and(path("/api/threads/root/open"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!({"data":{},"txid":"42"})),

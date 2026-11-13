@@ -74,6 +74,7 @@ export function MembersPanel({
   const admin = useChannelAdmin(channel);
   const { adminIds, isLoading: adminIdsLoading } = useWorkspaceAdminIds();
   const isArchived = admin.access.isArchived;
+  const isThread = channel.parent_channel_id != null;
   const isCreator = admin.access.isCreator;
   const canManage = admin.access.canManageChannel;
   const [query, setQuery] = useState("");
@@ -114,8 +115,12 @@ export function MembersPanel({
   const isMember = currentUserId
     ? members.some((member) => member.user_id === currentUserId)
     : false;
-  const canAddMember = admin.access.canAddMember && !isArchived;
-  const canViewMembers = !channel.is_private || isMember;
+  // Thread membership is managed through the thread endpoints in ChannelHeader.
+  // Generic channel_user writes bypass the thread join behavior and management routes reject child channels.
+  const canAddMember = !isThread && admin.access.canAddMember && !isArchived;
+  const canViewMembers = isThread
+    ? admin.access.canRead
+    : !channel.is_private || isMember;
   const busy = membersQuery.isLoading || admin.pending !== null;
 
   function candidateOptionId(userId: string): string {
@@ -302,6 +307,7 @@ export function MembersPanel({
                     const canKick =
                       !isArchived &&
                       !adminIdsLoading &&
+                      !isThread &&
                       canKickChannelMember({
                         actorId: currentUserId,
                         actorCanManage: canManage,
@@ -456,7 +462,7 @@ export function MembersPanel({
                       ? t("moderation.archived")
                       : t("members.notJoined")}
               </span>
-              {!currentUserLoading && currentUserId ? (
+              {!isThread && !currentUserLoading && currentUserId ? (
                 isMember ? (
                   <>
                     <span title={isCreator ? t("moderation.forbidden") : undefined}>

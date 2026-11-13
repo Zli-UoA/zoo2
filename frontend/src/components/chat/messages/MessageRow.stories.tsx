@@ -88,6 +88,37 @@ export const OwnMessage: Story = {
   },
 };
 
+export const ReplyContext: Story = {
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        channel_id: "thread-release-plan",
+        reply_to_message_id: "message-parent",
+        display_data: {
+          emojis: {},
+          attachments: [],
+          reactions: [],
+          reply_count: 0,
+          reply_target: {
+            id: "message-parent",
+            user_id: "user-alice",
+            channel_id: "channel-general",
+            content: "The release window is Friday at 18:00.",
+            deleted_at: null,
+            author: {
+              user_name: "alice",
+              display_name: "Alice",
+              avatar_url: null,
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 export const HoverActions: Story = {
   args: {
     isOwn: true,
@@ -143,7 +174,13 @@ export const ReactionUsers: Story = {
         userIds: ["long", "user-bob"],
         userNames: { ...reactionUsers, long: `${"A".repeat(80)} (@longname)` },
       },
-      { emoji: "🎉", count: 1, ownId: null, userIds: ["user-alice"], userNames: reactionUsers },
+      {
+        emoji: "🎉",
+        count: 1,
+        ownId: null,
+        userIds: ["user-alice"],
+        userNames: reactionUsers,
+      },
     ],
   },
   play: playForImplementation(async ({ canvasElement }) => {
@@ -165,7 +202,9 @@ export const ReactionUsersHover: Story = {
   parameters: { a11y: { test: "error" } },
   args: WithReactions.args,
   play: playForImplementation(async ({ canvasElement }) => {
-    const chip = await within(canvasElement).findByRole("button", { name: /👍 3 件/ });
+    const chip = await within(canvasElement).findByRole("button", {
+      name: /👍 3 件/,
+    });
     await userEvent.hover(chip);
     const tooltip = await screen.findByRole("tooltip");
     await expect(tooltip).toHaveTextContent("@alice");
@@ -234,7 +273,9 @@ export const WithAttachments: Story = {
     );
     const dialog = await screen.findByRole("dialog");
     await waitFor(async () => {
-      const preview = within(dialog).getByRole("img", { name: "screenshot.png" });
+      const preview = within(dialog).getByRole("img", {
+        name: "screenshot.png",
+      });
       await expect(preview).toBeVisible();
       await expect((preview as HTMLImageElement).naturalWidth).toBeGreaterThan(0);
     });
@@ -342,7 +383,12 @@ export const Edited: Story = {
 
 export const ActivityPubPublic: Story = {
   parameters: { a11y: { test: "error" } },
-  args: { item: { ...item, message: { ...item.message, apub: true, apub_visibility: "public" } } },
+  args: {
+    item: {
+      ...item,
+      message: { ...item.message, apub: true, apub_visibility: "public" },
+    },
+  },
   play: playForImplementation(async ({ canvasElement }) => {
     await expect(
       await within(canvasElement).findByRole("img", { name: "ActivityPub" }),
@@ -362,7 +408,10 @@ export const ActivityPubPublic: Story = {
 export const ActivityPubUnlisted: Story = {
   ...ActivityPubPublic,
   args: {
-    item: { ...item, message: { ...item.message, apub: true, apub_visibility: "unlisted" } },
+    item: {
+      ...item,
+      message: { ...item.message, apub: true, apub_visibility: "unlisted" },
+    },
   },
   play: playForImplementation(async ({ canvasElement }) => {
     await expect(await within(canvasElement).findByRole("img", { name: "ホーム" })).toBeVisible();

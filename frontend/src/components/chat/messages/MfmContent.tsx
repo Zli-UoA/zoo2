@@ -46,7 +46,15 @@ function text(content: string): ReactNode {
   return messageTextSegments(content).map((segment, index) => (
     <Fragment key={index}>
       {segment.kind === "link" ? (
-        externalLink(segment.value, segment.value.replace(/^https?:\/\//i, ""))
+        /^\/channels\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          segment.value,
+        ) ? (
+          <a href={segment.value} className="underline [overflow-wrap:anywhere]">
+            {segment.value}
+          </a>
+        ) : (
+          externalLink(segment.value, segment.value.replace(/^https?:\/\//i, ""))
+        )
       ) : segment.kind === "mention" ? (
         <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">
           <AccountGlyph name={segment.value.slice(1)} mention />

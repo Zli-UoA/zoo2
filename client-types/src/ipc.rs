@@ -138,7 +138,7 @@ pub struct SendMessage {
     pub id: String,
     pub channel_id: String,
     pub content: String,
-    pub parent_id: Option<String>,
+    pub reply_to_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

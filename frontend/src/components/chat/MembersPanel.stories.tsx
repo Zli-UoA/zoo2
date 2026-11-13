@@ -9,6 +9,13 @@ import { MembersPanel } from "./MembersPanel";
 const general = storyChannels.find((channel) => channel.id === "channel-general")!;
 const secret = storyChannels.find((channel) => channel.id === "channel-secret")!;
 const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
+const thread = {
+  ...secret,
+  id: "thread-general",
+  channel_name: "thread-general",
+  parent_channel_id: secret.id,
+  thread_title: "General thread",
+};
 
 const meta = {
   title: "Features/Channels/Members",
@@ -58,6 +65,25 @@ export const PrivateNotJoined: Story = {
       ),
     },
   },
+};
+
+export const ThreadMembers: Story = {
+  args: { channel: thread },
+  parameters: {
+    collections: {
+      ...storyCollections,
+      channelUsers: [
+        ...storyChannelUsers,
+        { user_id: "user-bob", channel_id: thread.id, joined_at: "2026-11-13T00:00:00.000Z" },
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText("Bob")).toBeVisible();
+    await expect(screen.queryByRole("combobox", { name: "メンバーを追加" })).not.toBeInTheDocument();
+    await expect(screen.queryByRole("button", { name: "参加" })).not.toBeInTheDocument();
+    await expect(screen.queryByRole("button", { name: "退出" })).not.toBeInTheDocument();
+  }),
 };
 
 export const UserAvatar: Story = {

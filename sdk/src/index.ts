@@ -37,7 +37,7 @@ export class ZooApp {
     }
     throw new Error("Zoo API retry limit reached");
   }
-  postMessage(input: { channel_id: string; content: string; parent_id?: string; id?: string; kind?: "message" | "emote"; broadcast?: boolean; metadata?: Record<string, unknown> }) { return this.request<{ id: string }>("POST", "/messages", { ...input, id: input.id ?? crypto.randomUUID() }); }
+  postMessage(input: { channel_id: string; content: string; reply_to_message_id?: string; id?: string; kind?: "message" | "emote"; broadcast?: boolean; metadata?: Record<string, unknown> }) { return this.request<{ id: string }>("POST", "/messages", { ...input, id: input.id ?? crypto.randomUUID() }); }
   updateMessage(id: string, content: string) { return this.request("PATCH", `/messages/${encodeURIComponent(id)}`, { content }); }
   deleteMessage(id: string) { return this.request("DELETE", `/messages/${encodeURIComponent(id)}`); }
   setBlocks(id: string, blocks: unknown[]) { return this.request("POST", `/messages/${encodeURIComponent(id)}/blocks`, blocks); }

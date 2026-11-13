@@ -22,6 +22,15 @@ use crate::{
     validation::{validate_channel_description, validate_channel_name},
 };
 
+fn reject_thread_channel(channel: &Channel) -> Result<(), AppError> {
+    if channel.parent_channel_id.is_some() {
+        return Err(AppError::BadRequest(
+            "Thread channels must be managed through thread endpoints".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CreateChannelRequest {
     pub id: Option<String>,
@@ -57,6 +66,10 @@ pub struct ChannelResponse {
     pub updated_at: Option<String>,
     pub archive_at: Option<String>,
     pub deleted_at: Option<String>,
+    pub parent_channel_id: Option<String>,
+    pub thread_title: Option<String>,
+    pub thread_archived_at: Option<String>,
+    pub thread_activity_at: Option<String>,
 }
 
 impl From<Channel> for ChannelResponse {
@@ -73,6 +86,10 @@ impl From<Channel> for ChannelResponse {
             updated_at: c.updated_at.map(|t| t.to_string()),
             archive_at: c.archive_at.map(|t| t.to_string()),
             deleted_at: c.deleted_at.map(|t| t.to_string()),
+            parent_channel_id: c.parent_channel_id,
+            thread_title: c.thread_title,
+            thread_archived_at: c.thread_archived_at.map(|t| t.to_string()),
+            thread_activity_at: c.thread_activity_at.map(|t| t.to_string()),
         }
     }
 }
@@ -187,6 +204,10 @@ pub(crate) async fn create_channel(
         updated_at: None,
         archive_at: None,
         deleted_at: None,
+        parent_channel_id: None,
+        thread_title: None,
+        thread_archived_at: None,
+        thread_activity_at: None,
     })
     .exec(&mut tx)
     .await;
@@ -271,6 +292,8 @@ pub(crate) async fn update_channel(
             "Channel not found with id: {id}"
         )));
     }
+
+    reject_thread_channel(&channel)?;
 
     let is_admin = if channel.is_dm {
         false
@@ -408,6 +431,8 @@ pub(crate) async fn delete_channel(
         )));
     }
 
+    reject_thread_channel(&channel)?;
+
     let is_admin = if channel.is_dm {
         false
     } else {
@@ -505,6 +530,15 @@ pub(crate) async fn join_channel(
         )));
     }
 
+    if let Some(parent_id) = &channel.parent_channel_id {
+        crate::apps::one(
+            &mut tx,
+            "SELECT '{}'::text FROM channels p WHERE p.id=$1 AND p.deleted_at IS NULL AND NOT p.is_dm AND ((NOT p.is_private AND NOT EXISTS(SELECT 1 FROM users WHERE id=$2 AND is_guest)) OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=p.id AND cu.user_id=$2))",
+            &[parent_id, &auth_user.id],
+        )
+        .await?;
+    }
+
     if channel.archive_at.is_some() {
         return Err(AppError::BadRequest(
             "Cannot join an archived channel".into(),
@@ -536,7 +570,7 @@ pub(crate) async fn join_channel(
     }
 
     // プライベートチャンネルへの直接 join は禁止 (作成者または招待による追加のみ)
-    if !can_join(channel.is_private, channel.is_dm) {
+    if channel.parent_channel_id.is_none() && !can_join(channel.is_private, channel.is_dm) {
         return Err(AppError::Forbidden(
             "Cannot join a private channel directly. You must be added by the channel owner."
                 .into(),
@@ -606,6 +640,8 @@ async fn add_channel_user(
             "Channel not found with id: {id}"
         )));
     }
+
+    reject_thread_channel(&channel)?;
 
     let is_admin = if channel.is_dm {
         false
@@ -753,6 +789,8 @@ pub(crate) async fn leave_channel(
         )));
     }
 
+    reject_thread_channel(&channel)?;
+
     // 作成者が抜けると作成者不在のチャンネルになり、管理権限を失う。
     // UI でも退出ボタンを無効化しているが、API 直叩きに対する最終防衛線として拒否する。
     // ※ DM チャンネルでは作成者も自由に退出可能
@@ -840,6 +878,8 @@ pub(crate) async fn archive_channel(
             "Channel not found with id: {id}"
         )));
     }
+
+    reject_thread_channel(&channel)?;
 
     let is_admin = if channel.is_dm {
         false
@@ -934,6 +974,8 @@ pub(crate) async fn unarchive_channel(
             "Channel not found with id: {id}"
         )));
     }
+
+    reject_thread_channel(&channel)?;
 
     let is_admin = if channel.is_dm {
         false
@@ -1041,6 +1083,8 @@ async fn kick_channel_user(
         )));
     }
 
+    reject_thread_channel(&channel)?;
+
     let actor_is_admin = if channel.is_dm {
         false
     } else {
@@ -1146,25 +1190,40 @@ async fn list_channels(
     auth_user: AuthUser,
 ) -> Result<Json<Vec<ChannelResponse>>, AppError> {
     let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
 
     // ユーザーが参加しているチャンネル ID リストを取得
     let memberships =
         ChannelUser::filter(ChannelUser::fields().user_id().eq(auth_user.id.as_str()))
-            .exec(&mut db)
+            .exec(&mut tx)
             .await?;
     let joined_channel_ids: Vec<String> = memberships.into_iter().map(|m| m.channel_id).collect();
 
     let all_channels = Channel::filter(Channel::fields().deleted_at().is_none())
         .order_by(Channel::fields().created_at().asc())
-        .exec(&mut db)
+        .exec(&mut tx)
         .await?;
 
-    let guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
+    let thread_channels = crate::apps::query(
+        &mut tx,
+        "SELECT to_json(channel_id)::text FROM threads",
+        &[],
+    )
+    .await?;
+    let thread_channel_ids: std::collections::HashSet<String> = thread_channels
+        .into_iter()
+        .filter_map(|row| row.as_str().map(str::to_owned))
+        .collect();
+
+    let guest = crate::apps::events::guest(&mut tx, &auth_user.id).await?;
     let visible_channels: Vec<ChannelResponse> = all_channels
         .into_iter()
+        .filter(|c| !thread_channel_ids.contains(&c.id))
         .filter(|c| is_channel_visible(c.is_private || guest, joined_channel_ids.contains(&c.id)))
         .map(ChannelResponse::from)
         .collect();
+
+    tx.commit().await?;
 
     Ok(Json(visible_channels))
 }
@@ -1194,7 +1253,30 @@ async fn get_channel_by_id(
         )));
     }
 
-    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+    let thread_readable = {
+        let mut tx = db.transaction().await?;
+        let access = crate::apps::one(
+            &mut tx,
+            "SELECT json_build_object('is_thread',t.channel_id IS NOT NULL,'allowed',COALESCE((SELECT NOT p.is_dm AND p.deleted_at IS NULL AND ((NOT p.is_private AND NOT EXISTS(SELECT 1 FROM users WHERE id=$2 AND is_guest)) OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=p.id AND cu.user_id=$2)) FROM channels p WHERE p.id=t.parent_channel_id),false))::text FROM channels c LEFT JOIN threads t ON t.channel_id=c.id WHERE c.id=$1",
+            &[id.as_str(), auth_user.id.as_str()],
+        )
+        .await?;
+        tx.commit().await?;
+        if access["is_thread"] == true {
+            if access["allowed"] != true {
+                return Err(AppError::NotFound(format!(
+                    "Channel not found with id: {id}"
+                )));
+            }
+            true
+        } else {
+            false
+        }
+    };
+
+    if !thread_readable
+        && (channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?)
+    {
         let is_member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()

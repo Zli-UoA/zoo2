@@ -372,7 +372,7 @@ async fn channel_crossposting_visibility_and_ltl() -> anyhow::Result<()> {
         0
     );
     let reply_id = uuid::Uuid::new_v4().to_string();
-    assert_eq!(request(&app,"POST",Some(&alice),"/api/messages",Some(json!({"id":reply_id,"channel_id":channel,"parent_id":message,"content":"thread reply in local timeline"}))).await?.0,StatusCode::OK);
+    assert_eq!(request(&app,"POST",Some(&alice),"/api/messages",Some(json!({"id":reply_id,"channel_id":channel,"reply_to_message_id":message,"content":"thread reply in local timeline"}))).await?.0,StatusCode::OK);
     assert_eq!(
         value(
             &mut db,

@@ -29,7 +29,7 @@ export class ZooDouble implements Zoo {
       existing &&
       (existing.channel_id !== input.channel_id ||
         existing.content !== input.content ||
-        existing.parent_id !== input.parent_id)
+        existing.reply_to_message_id !== input.reply_to_message_id)
     )
       throw new ZooError(409, "Idempotency key already used");
     if (!this.messages.has(id)) this.messages.set(id, { ...input, id });

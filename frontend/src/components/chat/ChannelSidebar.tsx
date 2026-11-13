@@ -13,7 +13,6 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { useThreadIndex } from "../../hooks/useThreadIndex";
 import { useUnreadChannels } from "../../hooks/useUnreadChannels";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
@@ -31,7 +30,6 @@ import { filterJoinedChannels } from "./channelSearch";
 import { CreateChannelDialog } from "./CreateChannelDialog";
 import { CreateDmDialog } from "./CreateDmDialog";
 import { DmSection } from "./DmSection";
-import { ChannelThreadItems } from "./ChannelThreadItems";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
 
@@ -57,7 +55,6 @@ export function ChannelSidebar({
   const [createOpen, setCreateOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [dmOpen, setDmOpen] = useState(false);
-  const threadIndex = useThreadIndex(currentUserId);
 
   // 一覧の各チャンネルについて現在ユーザーの参加状態を出す。`channel_user` の
   // 購読は `getCollections()` が 1 本だけ持つため、ここで直接 live query を張っても
@@ -210,30 +207,10 @@ export function ChannelSidebar({
                         </span>
                       ) : null}
                     </Link>
-                    {!channel.is_dm ? (
-                      <ChannelThreadItems
-                        channel={channel}
-                        threads={threadIndex.threads}
-                        onObserveThread={threadIndex.observeThread}
-                      />
-                    ) : null}
                   </div>
                 );
               })
             )}
-            {threadIndex.isError ? (
-              <p className="p-2 text-xs text-destructive">{t("threads.indexError")}</p>
-            ) : null}
-            {threadIndex.hasMore || threadIndex.isError ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={threadIndex.isLoading}
-                onClick={threadIndex.loadMore}
-              >
-                {t(threadIndex.isError ? "threads.retry" : "threads.more")}
-              </Button>
-            ) : null}
           </div>
         </CollapsibleSection>
         <DmSection

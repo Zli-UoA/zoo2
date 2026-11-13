@@ -450,7 +450,7 @@ async fn mutations_produce_authorized_events_and_private_state_requires_consent(
         "POST",
         "/api/messages",
         u,
-        json!({"channel_id":c,"content":"reply","parent_id":mid,"broadcast":true,"kind":"emote"}),
+        json!({"channel_id":c,"content":"reply","reply_to_message_id":mid,"broadcast":true,"kind":"emote"}),
     )
     .await;
     ok(
@@ -1618,7 +1618,7 @@ async fn link_callbacks_and_message_streams_obey_their_distinct_read_scopes() ->
         json!({"content":"visible edit"}),
     )
     .await;
-    ok(&f.app,"POST","/api/messages",&f.owner,json!({"channel_id":f.channel,"content":"reply","parent_id":mid,"metadata":{"event_type":"secret_review_metadata","event_payload":{}}})).await;
+    ok(&f.app,"POST","/api/messages",&f.owner,json!({"channel_id":f.channel,"content":"reply","reply_to_message_id":mid,"metadata":{"event_type":"secret_review_metadata","event_payload":{}}})).await;
     for p in payloads(&f, &f.channel).await? {
         assert!(
             !p.to_string().contains("secret_review_metadata"),

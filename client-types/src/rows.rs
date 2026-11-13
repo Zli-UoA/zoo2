@@ -23,6 +23,12 @@ pub struct Channel {
     pub is_dm: bool,
     pub archive_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
+    #[serde(default)]
+    pub parent_channel_id: Option<String>,
+    #[serde(default)]
+    pub thread_title: Option<String>,
+    #[serde(default)]
+    pub thread_archived_at: Option<DateTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +58,8 @@ pub struct Message {
     pub updated_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
     pub parent_id: Option<String>,
+    #[serde(default)]
+    pub reply_to_message_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_reactions: Option<Vec<Reaction>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,6 +181,9 @@ impl FromRow for Channel {
             is_dm: opt_boolean(row, "is_dm")?.unwrap_or(false),
             archive_at: opt_time(row, "archive_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
+            parent_channel_id: opt_text(row, "parent_channel_id"),
+            thread_title: opt_text(row, "thread_title"),
+            thread_archived_at: opt_time(row, "thread_archived_at")?,
         })
     }
 }
@@ -211,6 +222,7 @@ impl FromRow for Message {
             updated_at: opt_time(row, "updated_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
             parent_id: opt_text(row, "parent_id"),
+            reply_to_message_id: opt_text(row, "reply_to_message_id"),
             display_reactions: display_reactions(row)?,
             display_attachments: display_attachments(row)?,
             thread_archive_at: opt_time(row, "thread_archive_at")?,

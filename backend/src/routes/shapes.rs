@@ -70,7 +70,7 @@ pub(crate) fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec
 /// Channels Shape の where 句とパラメータの純粋組み立て
 pub(crate) fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
-        "is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)"
+        "((parent_channel_id IS NULL AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))) OR EXISTS (SELECT 1 FROM threads t JOIN channels p ON p.id=t.parent_channel_id WHERE t.channel_id=channels.id AND p.deleted_at IS NULL AND NOT p.is_dm AND ((NOT p.is_private AND NOT EXISTS(SELECT 1 FROM users WHERE id=$1 AND is_guest)) OR p.id IN (SELECT channel_id FROM channel_user WHERE user_id=$1))))"
             .to_string(),
         vec![("params[1]", user_id)],
     )
@@ -97,6 +97,24 @@ pub(crate) fn messages_shape_where(channel_id: &str) -> (String, Vec<(&'static s
         "channel_id = $1".to_string(),
         vec![("params[1]", channel_id)],
     )
+}
+
+/// スレッドチャンネルは、子チャンネルへ参加していなくても親チャンネルの閲覧者に公開する。
+/// `None` は通常チャンネル、`Some(false)` は親チャンネルの閲覧権限がない状態。
+async fn thread_read_access(
+    db: &mut toasty::Db,
+    channel_id: &str,
+    user_id: &str,
+) -> Result<Option<bool>, AppError> {
+    let mut tx = db.transaction().await?;
+    let row = crate::apps::one(
+        &mut tx,
+        "SELECT json_build_object('is_thread',t.channel_id IS NOT NULL,'allowed',COALESCE((SELECT NOT p.is_dm AND p.deleted_at IS NULL AND ((NOT p.is_private AND NOT EXISTS(SELECT 1 FROM users WHERE id=$2 AND is_guest)) OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=p.id AND cu.user_id=$2)) FROM channels p WHERE p.id=t.parent_channel_id),false))::text FROM channels c LEFT JOIN threads t ON t.channel_id=c.id WHERE c.id=$1",
+        &[channel_id, user_id],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok((row["is_thread"] == true).then_some(row["allowed"] == true))
 }
 
 /// Message Reactions Shape の where 句とパラメータの純粋組み立て
@@ -329,7 +347,7 @@ async fn channels_shape(
     let (mut where_clause, extra_params) = channels_shape_where(auth_user.id.as_str());
     let mut db = state.db.clone();
     if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
-        where_clause = "id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".into();
+        where_clause = "(parent_channel_id IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)) OR EXISTS (SELECT 1 FROM threads t JOIN channel_user cu ON cu.channel_id=t.parent_channel_id WHERE t.channel_id=channels.id AND cu.user_id=$1)".into();
     }
 
     proxy_shape(
@@ -376,7 +394,15 @@ pub(crate) async fn messages_shape(
         )));
     }
 
-    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+    let thread_access = thread_read_access(&mut db, channel_id, &auth_user.id).await?;
+    if thread_access == Some(false) {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {channel_id}"
+        )));
+    }
+    if thread_access.is_none()
+        && (channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?)
+    {
         let is_member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -441,7 +467,15 @@ pub(crate) async fn message_reactions_shape(
         )));
     }
 
-    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+    let thread_access = thread_read_access(&mut db, channel_id, &auth_user.id).await?;
+    if thread_access == Some(false) {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {channel_id}"
+        )));
+    }
+    if thread_access.is_none()
+        && (channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?)
+    {
         let is_member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -515,7 +549,16 @@ pub(crate) async fn channel_users_shape(
             )));
         }
 
-        if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+        let thread_access = thread_read_access(&mut db, channel_id, &auth_user.id).await?;
+        if thread_access == Some(false) {
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {channel_id}"
+            )));
+        }
+        if thread_access.is_none()
+            && (channel.is_private
+                || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?)
+        {
             let is_member = ChannelUser::filter(
                 ChannelUser::fields()
                     .channel_id()
@@ -544,7 +587,7 @@ pub(crate) async fn channel_users_shape(
         let mut db = state.db.clone();
         if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
             where_clause =
-                "channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".into();
+                "channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1) AND channel_id NOT IN (SELECT channel_id FROM threads)".into();
         }
     }
 
@@ -730,7 +773,13 @@ async fn attachments_shape(
     }
 
     let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
-    if channel.is_private || is_guest {
+    let thread_access = thread_read_access(&mut db, channel_id, &auth_user.id).await?;
+    if thread_access == Some(false) {
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {channel_id}"
+        )));
+    }
+    if thread_access.is_none() && (channel.is_private || is_guest) {
         let is_member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()

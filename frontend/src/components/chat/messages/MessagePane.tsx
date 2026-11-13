@@ -29,10 +29,12 @@ import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { useTyping } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
+import { XIcon } from "lucide-react";
 import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
 import { ThreadPaneStatus } from "./ThreadPaneStatus";
+import { authorLabel } from "./messageFormat";
 
 /** 通知・リンクの対象を含むまで、古い方へ広げるページ数の上限 (1 ページは `MESSAGE_PAGE_SIZE` 件)。 */
 const MAX_REVEAL_PAGES = 200;
@@ -60,13 +62,13 @@ function JoinToPostPrompt({
 }
 
 /**
- * チャンネルのメッセージ表示・送信・編集・論理削除に加え、リアクションと
- * スレッドを扱う。
+ * チャンネルのメッセージ表示・送信・編集・論理削除とリアクションを扱う。
+ * `allowThreads` は段階移行中の既存メッセージスレッド表示にだけ使う。
  *
  * データ層は `useMessageFeed`（messages ⋈ users の live query）と
  * `useWriteRunner`（楽観更新の確定待ち）をそのまま使い、表示だけを作り込む。
- * スレッドも同じ messages コレクションを `parent_id` で絞るだけで、専用の
- * Shape / コレクションは作らない。
+ * 新しいスレッドは独立チャンネルとして扱い、この `parent_id` ベースの表示から
+ * 作成しない。
  *
  * 未参加の公開チャンネルでは Composer の代わりに参加導線を出し、参加後に
  * 通常の Composer へ戻す（`isMember` は `useChannelAccess` の判定）。
@@ -76,12 +78,15 @@ export function MessagePane({
   isMember,
   canModerate = false,
   readOnly = false,
+  allowThreads = true,
   targetMessageId,
 }: {
   channelId: string;
   isMember: boolean;
   canModerate?: boolean;
   readOnly?: boolean;
+  /** Thread channels cannot contain another thread. */
+  allowThreads?: boolean;
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
@@ -101,6 +106,8 @@ export function MessagePane({
   // 新しい方から `MESSAGE_PAGE_SIZE` 件だけを同期し、上端付近で `loadOlder()` が古い方へ 1 ページずつ広げる。
   const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
+  const [replyTargetId, setReplyTargetId] = useState<string | null>(null);
+  const replyTarget = feed.find((message) => message.id === replyTargetId) ?? null;
   const reactionsQuery = useMessageReactions(channelId);
   const uploadAttachment = useAttachmentUpload(channelId);
   const { currentUserId } = useCurrentUser();
@@ -282,6 +289,10 @@ export function MessagePane({
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。親は、メイン一覧の範囲とは関係なく、
   // ID で取る。取得が終わるまでは判断しない。
   useEffect(() => {
+    if (!allowThreads) {
+      closeThread();
+      return;
+    }
     if (!threadRootId || threadRootQuery.isLoading || threadRootQuery.isError) {
       return;
     }
@@ -292,6 +303,7 @@ export function MessagePane({
     }
   }, [
     threadRootId,
+    allowThreads,
     threadRootRow,
     threadRootQuery.isLoading,
     threadRootQuery.isError,
@@ -304,7 +316,10 @@ export function MessagePane({
     if (!error) {
       return;
     }
-    toast.error(t("common.writeError"), { description: error, id: "message-write-error" });
+    toast.error(t("common.writeError"), {
+      description: error,
+      id: "message-write-error",
+    });
     setError(null);
   }, [error, setError, t]);
 
@@ -316,7 +331,11 @@ export function MessagePane({
     try {
       await run(() =>
         channelUsers.insert(
-          { user_id: currentUserId, channel_id: channelId, joined_at: nowIso() },
+          {
+            user_id: currentUserId,
+            channel_id: channelId,
+            joined_at: nowIso(),
+          },
           { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
         ),
       );
@@ -389,15 +408,18 @@ export function MessagePane({
             updated_at: null,
             deleted_at: null,
             parent_id: null,
+            reply_to_message_id: replyTargetId,
           },
           metadata ? { metadata } : undefined,
         ),
       );
       // `run` は失敗を握ってロールバックするため、確定後に楽観行が残っているかで
       // 成否を判定する（Composer が失敗時に下書きを復元できるようにする）。
-      return messagesCollection.get(id) !== undefined;
+      const saved = messagesCollection.get(id) !== undefined;
+      if (saved && replyTargetId) setReplyTargetId(null);
+      return saved;
     },
-    [run, messagesCollection, currentUserId, channelId, runCommand],
+    [run, messagesCollection, currentUserId, channelId, runCommand, replyTargetId],
   );
 
   const handleSendReply = useCallback(
@@ -408,7 +430,9 @@ export function MessagePane({
       sensitiveAttachmentIds: string[] = [],
     ): Promise<boolean> => {
       if (readOnly || !isMember) {
-        toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
+        toast.info(t("messages.joinToPostDescription"), {
+          id: "thread-reply-join-required",
+        });
         return false;
       }
       if (attachmentIds.length === 0) {
@@ -552,7 +576,8 @@ export function MessagePane({
           }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}
-          onOpenThread={openThread}
+          onOpenThread={allowThreads ? openThread : undefined}
+          onReply={setReplyTargetId}
           canCompose={isMember}
           isOffline={!isOnline}
           hasOlder={messagesQuery.hasOlder}
@@ -564,6 +589,25 @@ export function MessagePane({
         {readOnly ? null : isMember ? (
           <>
             <TypingIndicator users={typing.users} />
+            {replyTargetId ? (
+              <div className="flex min-w-0 items-center gap-2 border-t px-3 py-2 text-xs text-muted-foreground">
+                <span className="shrink-0">{t("messages.replyingTo")}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  {replyTarget
+                    ? `${authorLabel(replyTarget)}: ${replyTarget.content}`
+                    : t("messages.unavailableReplyTarget")}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={t("messages.cancelReply")}
+                  title={t("messages.cancelReply")}
+                  onClick={() => setReplyTargetId(null)}
+                >
+                  <XIcon />
+                </Button>
+              </div>
+            ) : null}
             <Composer
               commands={commandSuggestions.commands}
               onRequestCommands={commandSuggestions.load}
@@ -588,7 +632,7 @@ export function MessagePane({
         )}
       </div>
 
-      {threadRoot ? (
+      {allowThreads && threadRoot ? (
         <ThreadPane
           commands={commandSuggestions.commands}
           onRequestCommands={commandSuggestions.load}
@@ -636,7 +680,7 @@ export function MessagePane({
           onRetry={() => window.location.reload()}
           onClose={closeThread}
         />
-      ) : threadRootId && (threadRootQuery.isLoading || threadRootQuery.isError) ? (
+      ) : allowThreads && threadRootId && (threadRootQuery.isLoading || threadRootQuery.isError) ? (
         <ThreadPaneStatus
           isError={!!threadRootQuery.isError}
           onRetry={() => window.location.reload()}
