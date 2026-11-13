@@ -8,7 +8,7 @@ use gpui::{
 };
 use zoo2_client_core::mfm::{self, Line, Style, Tone};
 
-use crate::{login, theme};
+use crate::{login, theme, tokens::Tokens};
 
 fn account_fallback(initial: String) -> Div {
     div()
@@ -21,34 +21,118 @@ fn account_fallback(initial: String) -> Div {
         .child(initial)
 }
 
-/// MFM の `Style` を GPUI の `HighlightStyle` へ変換する (テーマ指定)。
-pub fn style_to_highlight_with_theme(style: Style, theme: &theme::Theme) -> HighlightStyle {
+/// MFM の描画に使う色と行の高さ。旧テーマ (`theme::Theme`) とトークン (`tokens::Tokens`) のどちらからも作れる。
+#[derive(Clone)]
+pub struct MfmColors {
+    pub text: gpui::Rgba,
+    pub code: gpui::Rgba,
+    pub link: gpui::Rgba,
+    pub mention: gpui::Rgba,
+    pub math: gpui::Rgba,
+    pub quote: gpui::Rgba,
+    pub code_bg: gpui::Rgba,
+    /// 自分あてのメンション (反転) の背景と文字。
+    pub reversed_bg: gpui::Rgba,
+    pub reversed_fg: gpui::Rgba,
+    /// メンションの背景 (トークン版だけ。`bg-brand-muted`)。
+    pub mention_bg: Option<gpui::Rgba>,
+    /// 1 行の高さ (px)。
+    pub line_height: f32,
+    /// 行と行の間 (px)。
+    pub line_gap: f32,
+    /// `#名前` を、あるチャンネルの ID に結ぶ表 (`MfmChannelsProvider`)。無ければリンクにしない。
+    pub channels: Option<std::rc::Rc<std::collections::HashMap<String, String>>>,
+    /// チャンネルのリンクを押したときの動作 (チャンネル ID を渡す)。
+    pub on_channel: Option<ChannelOpener>,
+}
+
+/// チャンネルのリンクを押したときに呼ぶ関数。
+pub type ChannelOpener = std::rc::Rc<dyn Fn(&str, &mut gpui::App)>;
+
+/// チャンネルのリンクの行き先に付ける接頭辞 (ブラウザの URL と取り違えない)。
+const CHANNEL_SCHEME: &str = "zoo2-channel:";
+
+impl MfmColors {
+    pub fn from_theme(theme: &theme::Theme) -> Self {
+        Self {
+            text: theme.text_primary,
+            code: theme.text_code,
+            link: theme.text_link,
+            mention: theme.accent,
+            math: theme.text_math,
+            quote: theme.text_muted,
+            code_bg: theme.bg_code,
+            reversed_bg: theme.bg_mention_mine,
+            reversed_fg: theme.text_primary,
+            mention_bg: None,
+            line_height: 20.0,
+            line_gap: 2.0,
+            channels: None,
+            on_channel: None,
+        }
+    }
+
+    /// frontend の `MfmContent.tsx` に合わせた色。メンションは `bg-brand-muted text-brand-muted-foreground`、
+    /// インラインコードは `bg-muted`。本文は `text-sm leading-relaxed` (14px / 22.75px)。
+    pub fn from_tokens(t: &Tokens) -> Self {
+        Self {
+            text: t.foreground,
+            code: t.foreground,
+            link: t.link,
+            mention: t.brand_muted_foreground,
+            math: t.foreground,
+            quote: t.muted_foreground,
+            code_bg: t.muted,
+            reversed_bg: t.brand_muted,
+            reversed_fg: t.brand_muted_foreground,
+            mention_bg: Some(t.brand_muted),
+            line_height: 22.75,
+            line_gap: 0.0,
+            channels: None,
+            on_channel: None,
+        }
+    }
+}
+
+/// MFM の `Style` を GPUI の `HighlightStyle` へ変換する (色指定)。
+pub fn style_to_highlight_with_colors(style: Style, colors: &MfmColors) -> HighlightStyle {
     let mut highlight = HighlightStyle::default();
 
     let color = match style.tone {
         Tone::Default => None,
-        Tone::Code => Some(theme.text_code.into()),
-        Tone::Link | Tone::Hashtag => Some(theme.text_link.into()),
-        Tone::Mention => Some(theme.accent.into()),
-        Tone::Math => Some(theme.text_math.into()),
-        Tone::Quote => Some(theme.text_muted.into()),
+        Tone::Code => Some(colors.code.into()),
+        Tone::Link | Tone::Hashtag => Some(colors.link.into()),
+        Tone::Mention => Some(colors.mention.into()),
+        Tone::Math => Some(colors.math.into()),
+        Tone::Quote => Some(colors.quote.into()),
     };
     highlight.color = color;
 
     if style.reversed {
-        highlight.background_color = Some(theme.bg_mention_mine.into());
-        highlight.color = Some(theme.text_primary.into());
+        highlight.background_color = Some(colors.reversed_bg.into());
+        highlight.color = Some(colors.reversed_fg.into());
     } else if matches!(style.tone, Tone::Code) {
-        highlight.background_color = Some(theme.bg_code.into());
+        highlight.background_color = Some(colors.code_bg.into());
+    } else if matches!(style.tone, Tone::Mention)
+        && let Some(bg) = colors.mention_bg
+    {
+        highlight.background_color = Some(bg.into());
+        // `font-medium`
+        highlight.font_weight = Some(FontWeight::MEDIUM);
     }
 
-    if style.bold {
+    // メンションの太さは `font-medium` (上で決めた)。ほかは本文の太字に従う。
+    let medium_mention = colors.mention_bg.is_some() && matches!(style.tone, Tone::Mention);
+    if style.bold && !medium_mention {
         highlight.font_weight = Some(FontWeight::BOLD);
     }
     if style.italic {
         highlight.font_style = Some(FontStyle::Italic);
     }
-    if style.underlined {
+    // 本文のリンクは `underline`。
+    let underlined = style.underlined
+        || (colors.mention_bg.is_some() && matches!(style.tone, Tone::Link | Tone::Hashtag));
+    if underlined {
         highlight.underline = Some(UnderlineStyle {
             thickness: px(1.0),
             color,
@@ -68,6 +152,11 @@ pub fn style_to_highlight_with_theme(style: Style, theme: &theme::Theme) -> High
     highlight
 }
 
+/// MFM の `Style` を GPUI の `HighlightStyle` へ変換する (テーマ指定)。
+pub fn style_to_highlight_with_theme(style: Style, theme: &theme::Theme) -> HighlightStyle {
+    style_to_highlight_with_colors(style, &MfmColors::from_theme(theme))
+}
+
 /// MFM の `Style` を GPUI の `HighlightStyle` へ変換する (デフォルトダークテーマ)。
 pub fn style_to_highlight(style: Style) -> HighlightStyle {
     style_to_highlight_with_theme(style, &theme::Theme::dark())
@@ -81,6 +170,14 @@ pub fn build_line_highlights_and_links_with_theme(
     line: &Line,
     theme: &theme::Theme,
 ) -> (String, Vec<HighlightSpan>, Vec<LinkSpan>) {
+    build_line_highlights_and_links_with_colors(line, &MfmColors::from_theme(theme))
+}
+
+/// 1行分の `mfm::Line` からプレーン文字列、ハイライト範囲、リンク範囲を構築する (色指定)。
+pub fn build_line_highlights_and_links_with_colors(
+    line: &Line,
+    colors: &MfmColors,
+) -> (String, Vec<HighlightSpan>, Vec<LinkSpan>) {
     let mut text = String::new();
     let mut highlights = Vec::new();
     let mut links = Vec::new();
@@ -92,7 +189,7 @@ pub fn build_line_highlights_and_links_with_theme(
         let start = text.len();
         text.push_str(&span.content);
         let end = text.len();
-        let highlight = style_to_highlight_with_theme(span.style, theme);
+        let highlight = style_to_highlight_with_colors(span.style, colors);
         if highlight != HighlightStyle::default() {
             highlights.push((start..end, highlight));
         }
@@ -108,6 +205,13 @@ pub fn build_line_highlights_and_links_with_theme(
             if let Some(url) = target_url {
                 links.push((start..end, url));
             }
+        } else if matches!(span.style.tone, Tone::Hashtag)
+            && let Some(id) = colors
+                .channels
+                .as_ref()
+                .and_then(|map| map.get(span.content.trim_start_matches('#')))
+        {
+            links.push((start..end, format!("{CHANNEL_SCHEME}{id}")));
         }
     }
 
@@ -152,8 +256,25 @@ pub fn render_mfm_accounts_with_theme(
     theme: &theme::Theme,
     accounts: &zoo2_client_core::store::AccountProfiles,
 ) -> Div {
+    render_mfm_accounts_with_colors(
+        elem_prefix,
+        content,
+        me_user_name,
+        &MfmColors::from_theme(theme),
+        accounts,
+    )
+}
+
+/// MFM 本文を解析して、GPUI の行要素 (`Div`) として描画する (色指定)。
+pub fn render_mfm_accounts_with_colors(
+    elem_prefix: &str,
+    content: &str,
+    me_user_name: Option<&str>,
+    colors: &MfmColors,
+    accounts: &zoo2_client_core::store::AccountProfiles,
+) -> Div {
     let parsed = mfm::parse_with_accounts(content, me_user_name, accounts);
-    let mut container = div().flex().flex_col().gap_0p5().w_full();
+    let mut container = div().flex().flex_col().gap(px(colors.line_gap)).w_full();
 
     for (line_idx, line) in parsed.iter().enumerate() {
         if line.spans.iter().any(|span| span.avatar_fallback.is_some()) {
@@ -163,7 +284,8 @@ pub fn render_mfm_accounts_with_theme(
                 .items_center()
                 .w_full()
                 .text_sm()
-                .text_color(theme.text_primary);
+                .line_height(px(colors.line_height))
+                .text_color(colors.text);
             for (index, span) in line.spans.iter().enumerate() {
                 if let Some(url) = span
                     .avatar_url
@@ -188,7 +310,7 @@ pub fn render_mfm_accounts_with_theme(
                 } else {
                     let styled = StyledText::new(span.content.clone()).with_highlights(vec![(
                         0..span.content.len(),
-                        style_to_highlight_with_theme(span.style, theme),
+                        style_to_highlight_with_colors(span.style, colors),
                     )]);
                     if let Some(url) = &span.href {
                         let url = url.clone();
@@ -214,9 +336,14 @@ pub fn render_mfm_accounts_with_theme(
             container = container.child(row);
             continue;
         }
-        let (text, highlights, links) = build_line_highlights_and_links_with_theme(line, theme);
+        let (text, highlights, links) = build_line_highlights_and_links_with_colors(line, colors);
         if text.is_empty() {
-            container = container.child(div().h(px(14.0)));
+            let blank = if colors.mention_bg.is_some() {
+                colors.line_height
+            } else {
+                14.0
+            };
+            container = container.child(div().h(px(blank)));
         } else {
             let styled = if highlights.is_empty() {
                 StyledText::new(text)
@@ -226,22 +353,33 @@ pub fn render_mfm_accounts_with_theme(
             let line_div = div()
                 .w_full()
                 .text_sm()
-                .line_height(px(20.0))
-                .text_color(theme.text_primary);
+                .line_height(px(colors.line_height))
+                .text_color(colors.text);
             if links.is_empty() {
                 container = container.child(line_div.child(styled));
             } else {
                 let ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
                 let urls: Vec<String> = links.into_iter().map(|(_, u)| u).collect();
+                let on_channel = colors.on_channel.clone();
                 let interactive = InteractiveText::new(
                     ElementId::Name(SharedString::from(format!(
                         "{elem_prefix}-mfm-line-{line_idx}"
                     ))),
                     styled,
                 )
-                .on_click(ranges, move |clicked_idx, _window, _cx| {
-                    if let Some(url) = urls.get(clicked_idx) {
-                        login::open_browser(url);
+                .on_click(ranges, move |clicked_idx, _window, cx| {
+                    let Some(url) = urls.get(clicked_idx) else {
+                        return;
+                    };
+                    match url.strip_prefix(CHANNEL_SCHEME) {
+                        Some(id) => {
+                            if let Some(open) = &on_channel {
+                                open(id, cx);
+                            }
+                        }
+                        None => {
+                            login::open_browser(url);
+                        }
                     }
                 });
                 container = container.child(line_div.child(interactive));
@@ -299,5 +437,46 @@ mod tests {
         assert_eq!(links[1].1, "https://zli.chat");
         assert_eq!(&l_text[links[2].0.clone()], "https://a.example");
         assert_eq!(links[2].1, "https://b.example");
+    }
+
+    #[test]
+    fn hashtags_link_only_to_known_channels() {
+        let tokens = Tokens::light();
+        let mut colors = MfmColors::from_tokens(&tokens);
+        colors.channels = Some(std::rc::Rc::new(
+            [("general".to_string(), "c1".to_string())].into(),
+        ));
+        let lines = mfm::parse("#general と #nope", None);
+        let (text, _, links) = build_line_highlights_and_links_with_colors(&lines[0], &colors);
+        assert_eq!(links.len(), 1);
+        assert_eq!(&text[links[0].0.clone()], "#general");
+        assert_eq!(links[0].1, "zoo2-channel:c1");
+        // 表が無ければ、どれもリンクにしない。
+        let plain = MfmColors::from_tokens(&tokens);
+        let (_, _, links) = build_line_highlights_and_links_with_colors(&lines[0], &plain);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn mentions_use_brand_muted_with_tokens() {
+        let tokens = Tokens::light();
+        let colors = MfmColors::from_tokens(&tokens);
+        let lines = mfm::parse("@bob @alice", Some("alice"));
+        let (text, highlights, _) = build_line_highlights_and_links_with_colors(&lines[0], &colors);
+        let bob = highlights
+            .iter()
+            .find(|(range, _)| &text[range.clone()] == "@bob")
+            .expect("@bob");
+        assert_eq!(bob.1.background_color, Some(tokens.brand_muted.into()));
+        assert_eq!(bob.1.color, Some(tokens.brand_muted_foreground.into()));
+        assert_eq!(bob.1.font_weight, Some(FontWeight::MEDIUM));
+        // 旧テーマは今までどおり (背景なし)。
+        let (_, old, _) =
+            build_line_highlights_and_links_with_theme(&lines[0], &theme::Theme::dark());
+        assert!(
+            old.iter()
+                .find(|(r, _)| &text[r.clone()] == "@bob")
+                .is_some_and(|(_, h)| h.background_color.is_none())
+        );
     }
 }
