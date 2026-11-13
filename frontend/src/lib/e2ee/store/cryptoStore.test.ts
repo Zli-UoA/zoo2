@@ -108,6 +108,18 @@ describe("CryptoStore", () => {
     await second.store.close();
   });
 
+  it("包んだ保存鍵の base64 が壊れていても作り直す", async () => {
+    const backend = new MemoryCryptoBackend();
+    const keys = memoryKeys();
+    const first = await open(backend, keys);
+    const deviceId = first.store.deviceId;
+    await first.store.close();
+    backend.meta.set("wrapped_storage_key", "!");
+    const second = await open(backend, keys);
+    expect(second.replacedDeviceId).toBe(deviceId);
+    await second.store.close();
+  });
+
   it("別のユーザーの暗号ストアは開かない", async () => {
     const backend = new MemoryCryptoBackend();
     const keys = memoryKeys();
