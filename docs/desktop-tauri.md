@@ -136,7 +136,8 @@ cargo tauri build --bundles deb    # NixOS では AppImage を作れないので
 - 画面の案は `desktop_ui`（`ZOO_DESKTOP_UI`）の `remote|leptos` で選ぶ。既定は `remote`（Web 版の画面。通話もこちらでだけ使える）。ただし `ZOO_DEV_USER` を付けたとき（dev 認証）は `leptos` にする。ローカルの backend は Web の画面を配信しないため。`desktop_ui` は `client-core` の `desktop_ui_for` で Tauri 版だけが読み、`Config` には入れない（値を誤っても TUI や GPUI 版の起動を止めないように）。知らない値は設定のエラーとして同梱の画面に出す（打ち間違いに気づけるように）。TUI と GPUI 版は読まないので影響しない。
 - macOS の署名は ad-hoc でも Hardened Runtime になるので、マイクとカメラの entitlement（`src-tauri/Entitlements.plist`、`bundle.macOS.entitlements`）が要る。CI の macOS のジョブで、署名したアプリに入っていることを `codesign` で確かめる。
 - 通話: (b) の画面にだけ、マイクとカメラの許可を与える（`on_permission_request`）。macOS は `src-tauri/Info.plist` の `NSMicrophoneUsageDescription` と `NSCameraUsageDescription` で OS が使用を尋ねる。Linux は WebKitGTK の WebRTC と media stream を既定で無効にしているので、ウィンドウを作ったあとに有効にする。
-- macOS の通知は、起動時に `notify_rust::set_application` でアプリの bundle identifier を指定する（指定しないと Finder として出そうとして、表示されないことがある）。
+- macOS の通知は、notify-rust の `preview-macos-un` で UNUserNotificationCenter から出し、起動時に許可を求める（古い NSUserNotification は許可を求められず、Finder として出そうとして表示されないことがある）。
+- macOS の WKWebView は既定で、ユーザーの操作なしに音声を再生しない。通話の相手の音声が鳴らないので、`WKWebViewConfiguration` を作って `mediaTypesRequiringUserActionForPlayback` を外し、`with_webview_configuration` で渡す（Tauri には autoplay の設定がない）。
 - (b) で読み込む先は `api_base_url` の起点。debug ビルドだけ、`ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` で Vite の dev サーバーに差し替えられる（React 側の変更をデプロイ前に試すため）。
 - 接続先とログインは TUI と同じ環境変数（`ZOO_API_BASE_URL`、`ZOO_OIDC_CLIENT_ID`、`ZOO_OIDC_RESOURCE` など）か、`~/.config/zoo2-desktop-tauri/config.toml` で変える。
 - ローカルの backend（`DEV_AUTH_ENABLED=true`）に向けるときは `ZOO_DEV_USER=<UUID>` を付ける。デバイスコードのログインを通らずに `X-Dev-User` で接続する。画面は同梱の `leptos` になる。Web の画面を試すときは、frontend の dev サーバー（`pnpm dev`）を立てて、debug ビルドで `ZOO_DESKTOP_UI=remote ZOO_DESKTOP_REMOTE_URL=http://localhost:5173` を付ける。

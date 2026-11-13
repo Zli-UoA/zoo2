@@ -34,6 +34,13 @@ url = "2"
 notify-rust = "4"
 tauri-plugin-updater = "2"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# UNUserNotificationCenter で通知を出す (起動時に通知の許可を求められる)。NSUserNotification は古く、許可を求められない。
+notify-rust = { version = "4", features = ["preview-macos-un"] }
+# 通話の音声を、ユーザーの操作なしで再生できるようにする (window.rs の macos_webview_configuration)。
+objc2 = "0.6"
+objc2-web-kit = { version = "0.3", features = ["WKWebViewConfiguration", "WKWebsiteDataStore"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # 通話のため、WebKitGTK の WebRTC を有効にする (window.rs の enable_webrtc)。
 webkit2gtk = { version = "2", features = ["v2_38"] }
