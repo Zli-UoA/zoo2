@@ -182,3 +182,31 @@ async fn logout_destroys_the_store_and_remembers_a_failed_deletion() {
     manager::retry_pending_device_deletion(&api, &root, BOB).await;
     assert!(store::read_pending_device_deletion(&root).is_none());
 }
+
+#[tokio::test]
+async fn logout_deletes_a_device_whose_registration_response_was_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    // 登録はサーバーで済んだが、応答をなくして手元では未登録のまま。
+    let bob = CryptoStore::open(&root, BOB).unwrap().store;
+    let device_id = bob.device_id().to_owned();
+    drop(bob);
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("/api/e2ee/devices/{device_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {}, "txid": null })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let api = ApiClient::new(
+        reqwest::Client::new(),
+        &server.uri(),
+        Credentials::Dev(BOB.into()),
+    );
+    for target in manager::open_for_logout(&root).unwrap() {
+        manager::destroy_for_logout(&api, &root, target)
+            .await
+            .unwrap();
+    }
+    assert!(store::read_pending_device_deletion(&root).is_none());
+}

@@ -304,23 +304,21 @@ pub fn open_for_logout(root: &Path) -> Result<Vec<LogoutTarget>> {
 }
 
 /// ログアウト：暗号ストアを消してから、端末の削除 API を呼ぶ（docs/e2ee.md の「ログアウトと端末の削除」）。
+///
+/// 登録の応答をなくして手元では未登録のままの端末も、サーバーにはあるかもしれないので消す
+/// （なければ 404 で、消すものがないと分かる）。
 pub async fn destroy_for_logout(api: &ApiClient, root: &Path, target: LogoutTarget) -> Result<()> {
     let user_id = target.store.user_id().to_owned();
     let device_id = target.store.device_id().to_owned();
-    let registered = target.store.is_registered();
-    if registered {
-        // 消し切る前に印を残す。API の結果を待たずに、先に暗号ストアを消す。
-        mark_device_deletion_pending(
-            root,
-            &PendingDeviceDeletion {
-                user_id: user_id.clone(),
-                device_id: device_id.clone(),
-            },
-        )?;
-    }
+    // 消し切る前に印を残す。API の結果を待たずに、先に暗号ストアを消す。
+    mark_device_deletion_pending(
+        root,
+        &PendingDeviceDeletion {
+            user_id: user_id.clone(),
+            device_id: device_id.clone(),
+        },
+    )?;
     target.store.destroy()?;
-    if registered {
-        delete_device_or_remember(api, root, &user_id, &device_id).await;
-    }
+    delete_device_or_remember(api, root, &user_id, &device_id).await;
     Ok(())
 }
