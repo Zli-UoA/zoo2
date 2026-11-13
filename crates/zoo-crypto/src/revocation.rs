@@ -436,6 +436,9 @@ pub struct RevocationInput<'a> {
     pub master_keys: &'a BTreeMap<String, Value>,
     /// 失効を行う端末の暗号ストアにあるバックアップ鍵（あれば）。
     pub local_backup_key: Option<&'a BackupDecryptionKey>,
+    /// 失効を行う端末の暗号ストアにあるユーザー署名鍵（あれば）。署名し直す候補の検証に使う。
+    /// サーバーが見せる鍵や、別の端末の失効が書いた SSSS の鍵では検証しないため。
+    pub old_user_signing: Option<&'a CrossSigningKeyPair>,
     /// 手順 1 で削除した端末。
     pub deleted_devices: Vec<String>,
 }
@@ -453,8 +456,9 @@ impl Revocation {
     /// 失効を始める。署名し直す一覧を集め、新しい鍵を作る。返した [`state`](Self::state) を
     /// 暗号ストアに保存してから、サーバーへの保存を始める。
     ///
-    /// サーバーのクロス署名鍵が、開け直した SSSS の鍵と違えば [`CryptoError::ServerKeyMismatch`]
-    /// （別の端末の失効が入り混じった。SSSS を開け直してやり直す）。
+    /// `expected_keys` には、サーバーの今の鍵を入れる（別の端末の失効が SSSS を書いたあとで止まって
+    /// いても、やり直せるように）。端末だけの失効で、SSSS のマスター鍵がサーバーの鍵と違えば
+    /// [`CryptoError::ServerKeyMismatch`]（1〜5 で作り直す）。
     pub fn begin(input: RevocationInput<'_>) -> Result<Self, CryptoError> {
         let old = OwnSecrets::from_unlocked(input.unlocked)?;
         let user_id = old.cross_signing.master.user_id().to_owned();
@@ -463,31 +467,34 @@ impl Revocation {
                 "記録が SSSS のユーザーのものではありません".into(),
             ));
         }
-        let mut expected_keys = PublicCrossSigningKeys::default();
-        for (slot, pair) in [
-            (&mut expected_keys.master, &old.cross_signing.master),
-            (
-                &mut expected_keys.self_signing,
-                &old.cross_signing.self_signing,
-            ),
-            (
-                &mut expected_keys.user_signing,
-                &old.cross_signing.user_signing,
-            ),
-        ] {
-            let on_server = server_public_key(input.server, &user_id, pair.usage())?;
-            if on_server.is_some_and(|key| key != pair.public_key()) {
-                return Err(CryptoError::ServerKeyMismatch(format!(
-                    "サーバーの {} が SSSS の鍵と違います",
-                    pair.usage().as_str()
-                )));
-            }
-            *slot = on_server.map(|key| key.to_base64());
+        // `expected_keys` はサーバーの今の鍵にする。SSSS の自己署名鍵とユーザー署名鍵がサーバーと
+        // 違うのは、別の端末の失効が SSSS を書いたあとで止まったとき（やり直す）。
+        let expected_keys = PublicCrossSigningKeys {
+            master: server_public_key(input.server, &user_id, KeyUsage::Master)?
+                .map(|key| key.to_base64()),
+            self_signing: server_public_key(input.server, &user_id, KeyUsage::SelfSigning)?
+                .map(|key| key.to_base64()),
+            user_signing: server_public_key(input.server, &user_id, KeyUsage::UserSigning)?
+                .map(|key| key.to_base64()),
+        };
+        // 端末だけの失効はマスター鍵を残すので、SSSS のマスター鍵がサーバーの鍵でなければ行えない
+        // （1〜5 で作り直す）。
+        if input.scope == RevocationScope::DeviceOnly
+            && expected_keys.master.as_deref()
+                != Some(old.cross_signing.master.public_key().to_base64().as_str())
+        {
+            return Err(CryptoError::ServerKeyMismatch(
+                "サーバーのマスター鍵が SSSS の鍵と違います".into(),
+            ));
         }
 
+        // 署名し直す候補は、暗号ストアにある古いユーザー署名鍵で検証する（なければ SSSS の鍵）。
+        let old_user_signing = input
+            .old_user_signing
+            .unwrap_or(&old.cross_signing.user_signing);
         let resign = ResignPlan::collect(
             input.trust,
-            &old.cross_signing.user_signing,
+            old_user_signing,
             input.pins,
             input.signatures,
             input.master_keys,

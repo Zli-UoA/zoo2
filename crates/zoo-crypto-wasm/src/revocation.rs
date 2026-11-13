@@ -104,6 +104,7 @@ impl Revocation {
         unlocked: &UnlockedSecretStorage,
         trust: &TrustStore,
         local_backup_key: Option<BackupDecryptionKey>,
+        old_user_signing: Option<CrossSigningKeyPair>,
     ) -> Result<Revocation, JsValue> {
         let input: InputJson = from_js(&input, "input")?;
         let user_id = trust.inner.user_id().to_owned();
@@ -129,6 +130,7 @@ impl Revocation {
                 signatures: &signatures,
                 master_keys: &master_keys,
                 local_backup_key: local_backup_key.as_ref().map(|key| &key.inner),
+                old_user_signing: old_user_signing.as_ref().map(|key| &key.inner),
                 deleted_devices: input.deleted_devices,
             })
             .js()?,

@@ -318,6 +318,7 @@ fn begin(alice: &Alice, secrets: &OwnSecrets, scope: RevocationScope) -> Revocat
         signatures: &[],
         master_keys: &BTreeMap::new(),
         local_backup_key: Some(&secrets.backup_key),
+        old_user_signing: Some(&secrets.cross_signing.user_signing),
         deleted_devices: vec![DEVICE.to_owned()],
     })
     .unwrap()
