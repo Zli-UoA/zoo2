@@ -55,6 +55,7 @@
   },
   "auth": {
     "logout": "로그아웃",
+    "profile": "프로필 편집",
     "loggedOut": "로그아웃했습니다",
     "loggedOutHelp": "계속하려면 다시 로그인하십시오.",
     "desktopOutdated": "탁상용 프로그람을 갱신해야 합니다",
