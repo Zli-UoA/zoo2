@@ -10,7 +10,7 @@ use crate::theme;
 use crate::view::{WorkspaceView, is_activate_key};
 
 impl WorkspaceView {
-    pub(crate) fn render_sidebar_view(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::view) fn render_sidebar_view(&self, cx: &mut Context<Self>) -> Div {
         let state = self.state.read(cx);
         let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
         let me_summary = state

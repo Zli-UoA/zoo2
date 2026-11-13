@@ -8,7 +8,7 @@ use gpui::{
 use crate::view::WorkspaceView;
 
 impl WorkspaceView {
-    pub(crate) fn render_emoji_picker(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::view) fn render_emoji_picker(&self, cx: &mut Context<Self>) -> Div {
         let (selected_idx, should_scroll, theme) = self.state.update(cx, |s, _| {
             let scroll = s.take_pending_emoji_picker_scroll();
             (s.emoji_picker_selected, scroll, s.theme())

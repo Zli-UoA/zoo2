@@ -1,4 +1,4 @@
-//! コンポーザー (frontend の `HomeComposer` / チャンネルの入力欄に対応)。
+//! コンポーザー (frontend の `chat/messages/Composer.tsx` / `ComposerField.tsx` に対応)。
 
 use gpui::{
     Context, Div, FontWeight, KeyDownEvent, MouseButton, MouseUpEvent, ParentElement,
@@ -11,12 +11,12 @@ use crate::view::format_file_size;
 use crate::view::{WorkspaceView, is_activate_key};
 
 impl WorkspaceView {
-    pub(crate) fn submit_composer(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::view) fn submit_composer(&mut self, cx: &mut Context<Self>) {
         self.composer_input
             .update(cx, |input, cx| input.request_submit(cx));
     }
 
-    pub(crate) fn prompt_and_add_attachments(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::view) fn prompt_and_add_attachments(&mut self, cx: &mut Context<Self>) {
         let state = self.state.read(cx);
         let Some(channel_id) = state.current_channel.as_deref() else {
             return;
@@ -45,7 +45,7 @@ impl WorkspaceView {
         .detach();
     }
 
-    pub(crate) fn render_composer_view(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::view) fn render_composer_view(&self, cx: &mut Context<Self>) -> Div {
         let state = self.state.read(cx);
         let theme = state.theme();
         let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
@@ -319,7 +319,7 @@ impl WorkspaceView {
             )
     }
 
-    pub(crate) fn render_pending_attachments_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn render_pending_attachments_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
         let state = self.state.read(cx);
         if matches!(state.target, Target::Edit(_)) {
             return None;
@@ -419,7 +419,7 @@ impl WorkspaceView {
         )
     }
 
-    pub(crate) fn render_mention_autocomplete(&self, cx: &mut Context<Self>) -> Option<Div> {
+    fn render_mention_autocomplete(&self, cx: &mut Context<Self>) -> Option<Div> {
         let state = self.state.read(cx);
         let theme = state.theme();
         let autocomplete = state.mention_autocomplete.as_ref()?;

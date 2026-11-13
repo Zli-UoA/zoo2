@@ -8,7 +8,7 @@ use gpui::{
 use crate::view::{WorkspaceView, is_activate_key};
 
 impl WorkspaceView {
-    pub(crate) fn open_create_channel_modal(
+    pub(in crate::view) fn open_create_channel_modal(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -37,7 +37,7 @@ impl WorkspaceView {
         window.focus(&self.create_channel_name_input.focus_handle(cx));
     }
 
-    pub(crate) fn toggle_create_channel_is_private(&self, cx: &mut Context<Self>) {
+    pub(in crate::view) fn toggle_create_channel_is_private(&self, cx: &mut Context<Self>) {
         self.state.update(cx, |s, cx| {
             if let Some(m) = &mut s.create_channel_modal {
                 m.is_private = !m.is_private;
@@ -47,7 +47,7 @@ impl WorkspaceView {
         });
     }
 
-    pub(crate) fn render_create_channel_modal(
+    pub(in crate::view) fn render_create_channel_modal(
         &self,
         window: &Window,
         cx: &mut Context<Self>,

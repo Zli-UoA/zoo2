@@ -8,7 +8,11 @@ use gpui::{
 use crate::view::WorkspaceView;
 
 impl WorkspaceView {
-    pub(crate) fn toggle_message_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(in crate::view) fn toggle_message_search(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.state.read(cx).create_channel_modal.is_some() {
             return;
         }
@@ -25,7 +29,11 @@ impl WorkspaceView {
         }
     }
 
-    pub(crate) fn open_message_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(in crate::view) fn open_message_search(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.state.read(cx).create_channel_modal.is_some() {
             return;
         }
@@ -45,7 +53,7 @@ impl WorkspaceView {
         window.focus(&self.message_search_input.focus_handle(cx));
     }
 
-    pub(crate) fn render_message_search_bar(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::view) fn render_message_search_bar(&self, cx: &mut Context<Self>) -> Div {
         let state = self.state.read(cx);
         let theme = state.theme();
         let ms = state.message_search.as_ref().unwrap();

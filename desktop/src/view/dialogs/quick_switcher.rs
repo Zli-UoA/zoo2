@@ -8,7 +8,11 @@ use gpui::{
 use crate::view::WorkspaceView;
 
 impl WorkspaceView {
-    pub(crate) fn open_quick_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(in crate::view) fn open_quick_switcher(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.state.read(cx).create_channel_modal.is_some() {
             return;
         }
@@ -31,7 +35,7 @@ impl WorkspaceView {
         window.focus(&self.quick_switcher_input.focus_handle(cx));
     }
 
-    pub(crate) fn render_quick_switcher_modal(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::view) fn render_quick_switcher_modal(&self, cx: &mut Context<Self>) -> Div {
         let should_scroll = self
             .state
             .update(cx, |s, _| s.take_pending_quick_switcher_scroll());

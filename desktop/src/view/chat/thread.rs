@@ -8,7 +8,7 @@ use gpui::{
 use crate::view::WorkspaceView;
 
 impl WorkspaceView {
-    pub(crate) fn render_thread_view(
+    pub(in crate::view) fn render_thread_view(
         &self,
         root_id: &str,
         pending_scroll_id: Option<&str>,

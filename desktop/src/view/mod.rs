@@ -1,13 +1,13 @@
 //! GPUI による画面描画 (`WorkspaceView`、`LoginView`、`SidebarView`、`TimelineView`、`ComposerView`、`ThreadView`)。
 
 use gpui::{
-    Context, Entity, ExternalPaths, FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, Render, ScrollHandle, Styled, Window, div, prelude::*, px, rgba,
+    Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render, ScrollHandle,
+    Styled, Window, div, prelude::*, px,
 };
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
 
 use crate::{
-    app::{AppState, Target},
+    app::AppState,
     input::{InputEvent, TextInput},
 };
 
@@ -638,158 +638,7 @@ impl Render for WorkspaceView {
             window.focus(&self.composer_input.focus_handle(cx));
         }
 
-        let main_view = div()
-            .flex()
-            .flex_row()
-            .size_full()
-            .bg(theme.bg_primary)
-            .text_color(theme.text_primary)
-            .track_focus(&self.focus_handle(cx))
-            .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _, cx| {
-                for path in paths.paths() {
-                    this.state.update(cx, |s, cx| {
-                        s.add_attachment_from_path(path.clone());
-                        cx.notify();
-                    });
-                }
-            }))
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                let key = ev.keystroke.key.as_str();
-                let cmd_or_ctrl = ev.keystroke.modifiers.platform || ev.keystroke.modifiers.control;
-                let is_modal_open = this.state.read(cx).create_channel_modal.is_some();
-
-                // チャンネル作成モーダル表示中は背面の検索・スイッチャー等のショートカットを無効化
-                if is_modal_open {
-                    if key == "escape" {
-                        this.create_channel_name_input
-                            .update(cx, |i, cx| i.clear(cx));
-                        this.create_channel_desc_input
-                            .update(cx, |i, cx| i.clear(cx));
-                        this.state.update(cx, |s, cx| {
-                            s.close_create_channel_modal();
-                            cx.notify();
-                        });
-                        window.focus(&this.composer_input.focus_handle(cx));
-                    }
-                    return;
-                }
-
-                // グローバルショートカット
-                if cmd_or_ctrl && key == "k" {
-                    this.open_quick_switcher(window, cx);
-                    return;
-                }
-                if cmd_or_ctrl && key == "n" {
-                    if this.state.read(cx).is_current_user_guest() {
-                        return;
-                    }
-                    this.open_create_channel_modal(window, cx);
-                    return;
-                }
-                if cmd_or_ctrl && key == "f" {
-                    this.toggle_message_search(window, cx);
-                    return;
-                }
-                if cmd_or_ctrl && key == "u" {
-                    if matches!(this.state.read(cx).target, Target::Edit(_)) {
-                        return;
-                    }
-                    this.prompt_and_add_attachments(cx);
-                    return;
-                }
-                if cmd_or_ctrl && key == "e" {
-                    this.state.update(cx, |s, cx| {
-                        if s.emoji_picker_open {
-                            s.close_emoji_picker();
-                        } else {
-                            s.open_emoji_picker();
-                        }
-                        cx.notify();
-                    });
-                    return;
-                }
-                if cmd_or_ctrl && (key == "t" || key == "T") {
-                    this.state.update(cx, |s, cx| {
-                        s.toggle_theme();
-                        cx.notify();
-                    });
-                    return;
-                }
-                if this.state.read(cx).emoji_picker_open {
-                    if is_activate_key(key) {
-                        let range = this.composer_input.read(cx).selected_range();
-                        this.state.update(cx, |s, cx| {
-                            s.insert_selected_emoji(range);
-                            cx.notify();
-                        });
-                        window.focus(&this.composer_input.focus_handle(cx));
-                        return;
-                    }
-                    if key == "left" || key == "arrow_left" {
-                        this.state.update(cx, |s, cx| {
-                            s.emoji_picker_prev();
-                            cx.notify();
-                        });
-                        return;
-                    }
-                    if key == "right" || key == "arrow_right" || key == "tab" {
-                        this.state.update(cx, |s, cx| {
-                            s.emoji_picker_next();
-                            cx.notify();
-                        });
-                        return;
-                    }
-                    if key == "up" || key == "arrow_up" {
-                        this.state.update(cx, |s, cx| {
-                            s.emoji_picker_prev_row();
-                            cx.notify();
-                        });
-                        return;
-                    }
-                    if key == "down" || key == "arrow_down" {
-                        this.state.update(cx, |s, cx| {
-                            s.emoji_picker_next_row();
-                            cx.notify();
-                        });
-                        return;
-                    }
-                }
-                if key == "tab" {
-                    if ev.keystroke.modifiers.shift {
-                        window.focus_prev();
-                    } else {
-                        window.focus_next();
-                    }
-                    cx.notify();
-                    return;
-                }
-                if key == "escape" {
-                    this.create_channel_name_input
-                        .update(cx, |i, cx| i.clear(cx));
-                    this.create_channel_desc_input
-                        .update(cx, |i, cx| i.clear(cx));
-                    this.quick_switcher_input.update(cx, |i, cx| i.clear(cx));
-                    this.message_search_input.update(cx, |i, cx| i.clear(cx));
-                    this.state.update(cx, |s, cx| {
-                        if s.create_channel_modal.is_some() {
-                            s.close_create_channel_modal();
-                        } else if s.quick_switcher.is_some() {
-                            s.close_quick_switcher();
-                        } else if s.emoji_picker_open {
-                            s.close_emoji_picker();
-                        } else if s.message_search.is_some() {
-                            s.close_message_search();
-                        } else if s.thread.is_some() {
-                            s.close_thread();
-                        }
-                        cx.notify();
-                    });
-                    window.focus(&this.composer_input.focus_handle(cx));
-                }
-            }))
-            .child(self.render_sidebar_view(cx))
-            .child(timeline_div)
-            .when_some(thread_div, |d, v| d.child(v));
+        let main_view = self.render_app_shell(timeline_div, thread_div, theme, cx);
 
         if has_create_modal || has_quick_switcher || has_emoji_picker {
             div()
@@ -797,25 +646,13 @@ impl Render for WorkspaceView {
                 .relative()
                 .track_focus(&self.focus_handle(cx))
                 .child(main_view)
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .occlude()
-                        .bg(rgba(0x00000077))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(has_create_modal, |d| {
-                            d.child(self.render_create_channel_modal(window, cx))
-                        })
-                        .when(has_quick_switcher, |d| {
-                            d.child(self.render_quick_switcher_modal(cx))
-                        })
-                        .when(has_emoji_picker, |d| d.child(self.render_emoji_picker(cx))),
-                )
+                .child(self.render_modal_overlay(
+                    has_create_modal,
+                    has_quick_switcher,
+                    has_emoji_picker,
+                    window,
+                    cx,
+                ))
         } else {
             div().size_full().child(main_view)
         }

@@ -18,7 +18,7 @@ use crate::{
 
 impl WorkspaceView {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn render_message_card(
+    pub(super) fn render_message_card(
         &self,
         message: &Message,
         me_id: &str,

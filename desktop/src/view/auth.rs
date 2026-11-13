@@ -10,7 +10,7 @@ use crate::login::{self, LoginPhase};
 use crate::view::{WorkspaceView, is_activate_key};
 
 impl WorkspaceView {
-    pub(crate) fn render_login_view(
+    pub(in crate::view) fn render_login_view(
         &self,
         phase: &LoginPhase,
         window: &mut Window,

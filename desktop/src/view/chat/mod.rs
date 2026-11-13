@@ -1,6 +1,7 @@
 //! チャット領域 (frontend の `components/chat/**` に対応)。
 
 mod attachments;
+mod channel_header;
 mod message;
 mod ogp_card;
 mod thread;
