@@ -281,12 +281,19 @@ export class CryptoStore {
         continue;
       }
       const changes: CryptoStoreWrite = { addProcessedToDevice: [row.id] };
-      if (row.type === "m.room.encrypted") {
-        await this.processEncrypted(row, deviceKeys, changes, result);
-      } else {
-        result.dropped += 1;
+      try {
+        if (row.type === "m.room.encrypted") {
+          await this.processEncrypted(row, deviceKeys, changes, result);
+        } else {
+          result.dropped += 1;
+        }
+        await this.write(changes);
+      } catch (error) {
+        // 復号で進んだメモリーの状態を保存できていない。書き込みに限らず（保存済みのセッションの
+        // 読み取りなど）途中で失敗したら、開き直すまで使わない。
+        this.broken = true;
+        throw error;
       }
-      await this.write(changes);
       this.processedToDevice.add(row.id);
       result.processed.push(row.id);
     }
