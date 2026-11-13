@@ -5,9 +5,7 @@ export function filterJoinedChannels(
   channels: ChannelRow[],
   joinedChannelIds: ReadonlySet<string>,
 ): ChannelRow[] {
-  return channels.filter(
-    (channel) => joinedChannelIds.has(channel.id) && !channel.archive_at,
-  );
+  return channels.filter((channel) => joinedChannelIds.has(channel.id) && !channel.archive_at);
 }
 
 /** アーカイブ済みでなければ参加できる。公開チャンネルのみを対象にする。 */
