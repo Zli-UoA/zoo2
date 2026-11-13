@@ -18,6 +18,8 @@ use crate::view::WorkspaceView;
 pub struct ChannelHeaderInfo {
     pub title: String,
     pub description: Option<String>,
+    /// グループ DM の参加者数 (サブタイトルの `dms.memberCount` に使う)。
+    pub member_count: usize,
     pub is_dm: bool,
     pub is_group_dm: bool,
     pub is_private: bool,
@@ -45,6 +47,22 @@ pub fn header_icon(is_dm: bool, is_group_dm: bool, is_private: bool) -> Icon {
     }
 }
 
+/// サブタイトル (`ChannelScreen.tsx`)。DM は 1 対 1 なら `dms.direct`、グループなら人数。
+/// 通常のチャンネルは説明で、無ければ `channels.noDescription`。
+pub fn header_subtitle(info: &ChannelHeaderInfo, i18n: &crate::i18n::I18n) -> String {
+    if info.is_dm {
+        if info.is_group_dm {
+            i18n.t_count("dms.memberCount", info.member_count as i64, &[])
+        } else {
+            i18n.t("dms.direct")
+        }
+    } else {
+        info.description
+            .clone()
+            .unwrap_or_else(|| i18n.t("channels.noDescription"))
+    }
+}
+
 impl WorkspaceView {
     pub(in crate::view) fn render_channel_header(
         &self,
@@ -56,10 +74,7 @@ impl WorkspaceView {
         let i18n = self.i18n;
         let sm = TextSpec::SM;
         let xs = TextSpec::XS;
-        let subtitle = info
-            .description
-            .clone()
-            .unwrap_or_else(|| i18n.t("channels.noDescription"));
+        let subtitle = header_subtitle(&info, &i18n);
         let ch_id = info.channel_id.clone();
         let is_member = info.is_member;
 
@@ -192,6 +207,47 @@ impl WorkspaceView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn info(is_dm: bool, is_group_dm: bool, description: Option<&str>) -> ChannelHeaderInfo {
+        ChannelHeaderInfo {
+            title: "t".into(),
+            description: description.map(String::from),
+            member_count: 4,
+            is_dm,
+            is_group_dm,
+            is_private: false,
+            is_nsfw: false,
+            is_archived: false,
+            failed_draft_count: 0,
+            can_join: false,
+            can_leave: false,
+            is_member: true,
+            channel_id: "c".into(),
+        }
+    }
+
+    #[test]
+    fn subtitle_follows_channel_kind() {
+        use crate::i18n::{I18n, Locale};
+        let ja = I18n::new(Locale::Ja);
+        assert_eq!(
+            header_subtitle(&info(true, false, None), &ja),
+            ja.t("dms.direct")
+        );
+        assert_eq!(
+            header_subtitle(&info(true, true, Some("x")), &ja),
+            ja.t_count("dms.memberCount", 4, &[])
+        );
+        assert!(header_subtitle(&info(true, true, None), &ja).contains('4'));
+        assert_eq!(
+            header_subtitle(&info(false, false, Some("説明")), &ja),
+            "説明"
+        );
+        assert_eq!(
+            header_subtitle(&info(false, false, None), &ja),
+            ja.t("channels.noDescription")
+        );
+    }
 
     #[test]
     fn icon_follows_channel_kind() {
