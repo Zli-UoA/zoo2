@@ -80,6 +80,11 @@ struct Session {
     store: Store,
 }
 
+struct EndingSession {
+    tokens: Option<Arc<TokenManager>>,
+    fallback: Option<(std::path::PathBuf, Option<StoredTokens>)>,
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         for task in &self.tasks {
@@ -301,7 +306,8 @@ impl Core {
                     ShapeEvent::Batch(id, batch) => core.handle_batch(generation, id, batch).await,
                     // 401 は、トークンが切れて更新もできない。ログイン画面に戻す。
                     ShapeEvent::Failed(_, message) if is_unauthorized_message(&message) => {
-                        core.expire_session(generation).await;
+                        let core = core.clone();
+                        tokio::spawn(async move { core.expire_session(generation).await });
                         return;
                     }
                     ShapeEvent::Failed(id, message) => {
@@ -484,9 +490,10 @@ impl Core {
 
     pub async fn logout(&self) -> Result<(), IpcError> {
         let mut inner = self.inner.lock().await;
-        let result = self.end_session(&mut inner);
+        let ending = self.prepare_end_session(&mut inner).map_err(to_ipc)?;
         self.set_state(&mut inner, SessionState::LoggedOut);
-        result.map_err(to_ipc)
+        drop(inner);
+        self.finish_end_session(ending).await.map_err(to_ipc)
     }
 
     /// 購読が 401 で止まったとき。その世代のセッションのままなら、ログアウトする。
@@ -495,14 +502,35 @@ impl Core {
         if inner.generation != generation {
             return;
         }
-        let _ = self.end_session(&mut inner);
+        let Ok(ending) = self.prepare_end_session(&mut inner) else {
+            return;
+        };
         self.set_state(&mut inner, SessionState::LoggedOut);
+        drop(inner);
+        let _ = self.finish_end_session(ending).await;
     }
 
     /// セッションを捨て、保存したトークンを消す。セッションの `TokenManager` を
     /// `sign_out` するので、コマンドが持っている `ApiClient` で進行中だった更新が
     /// 後から終わっても、`token.json` は作り直されない。
-    fn end_session(&self, inner: &mut Inner) -> Result<()> {
+    fn prepare_end_session(&self, inner: &mut Inner) -> Result<EndingSession> {
+        let oidc = matches!(
+            self.config.as_ref().map(|c| &c.auth),
+            Ok(AuthConfig::Oidc(_))
+        );
+        let fallback = if oidc
+            && inner
+                .session
+                .as_ref()
+                .and_then(|session| session.tokens.as_ref())
+                .is_none()
+        {
+            let path = self.token_path()?;
+            let expected = token::read_token_snapshot(&path)?;
+            Some((path, expected))
+        } else {
+            None
+        };
         inner.generation += 1;
         if let Some(task) = inner.login_task.take() {
             task.abort();
@@ -512,16 +540,21 @@ impl Core {
         inner.focus = FocusState::default();
         inner.dnd_until = None;
         inner.dnd_checked = false;
-        if !matches!(
-            self.config.as_ref().map(|c| &c.auth),
-            Ok(AuthConfig::Oidc(_))
-        ) {
-            return Ok(());
+        Ok(EndingSession {
+            tokens: session.and_then(|session| session.tokens.clone()),
+            fallback,
+        })
+    }
+
+    async fn finish_end_session(&self, ending: EndingSession) -> Result<()> {
+        if let Some(tokens) = ending.tokens {
+            tokens.sign_out().await?;
+        } else if let Some((path, expected)) = ending.fallback {
+            tokio::task::spawn_blocking(move || {
+                token::delete_if_unchanged(&path, expected.as_ref())
+            })
+            .await??;
         }
-        match session.and_then(|session| session.tokens.clone()) {
-            Some(tokens) => tokens.sign_out()?,
-            None => token::delete(&self.token_path()?)?,
-        };
         Ok(())
     }
 

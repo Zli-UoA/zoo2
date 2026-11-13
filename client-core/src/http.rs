@@ -5,6 +5,38 @@ use anyhow::Result;
 /// OIDC のアクセストークンを返すもの。期限が近ければ更新してから返す。
 pub trait BearerSource: Send + Sync {
     fn bearer(&self) -> Pin<Box<dyn Future<Output = Result<String>> + Send + '_>>;
+
+    fn persistence_report(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = TokenPersistenceReport> + Send + '_>> {
+        Box::pin(async {
+            TokenPersistenceReport {
+                status: TokenPersistenceStatus::Unknown,
+                reason: None,
+            }
+        })
+    }
+
+    /// Stop admitting token operations, then wait for every registered owner task.
+    fn finish_token_tasks(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = TokenPersistenceReport> + Send + '_>> {
+        self.persistence_report()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenPersistenceStatus {
+    Pending,
+    Saved,
+    SessionChanged,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenPersistenceReport {
+    pub status: TokenPersistenceStatus,
+    pub reason: Option<&'static str>,
 }
 
 /// REST と Shape の両方に付ける認証情報。
@@ -21,6 +53,26 @@ impl Credentials {
             Credentials::Dev(user_id) => request.header("X-Dev-User", user_id),
             Credentials::Bearer(source) => request.bearer_auth(source.bearer().await?),
         })
+    }
+
+    pub async fn finish_token_tasks(&self) -> TokenPersistenceReport {
+        match self {
+            Credentials::Dev(_) => TokenPersistenceReport {
+                status: TokenPersistenceStatus::Saved,
+                reason: None,
+            },
+            Credentials::Bearer(source) => source.finish_token_tasks().await,
+        }
+    }
+
+    pub async fn persistence_report(&self) -> TokenPersistenceReport {
+        match self {
+            Credentials::Dev(_) => TokenPersistenceReport {
+                status: TokenPersistenceStatus::Saved,
+                reason: None,
+            },
+            Credentials::Bearer(source) => source.persistence_report().await,
+        }
     }
 }
 
