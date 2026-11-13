@@ -2811,13 +2811,15 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         (
             "channels.json".into(),
             json!([
-                {"id":"C1","name":shared,"creator":"U1","members":["U1","U2"]},
+                // alice が作った公開チャンネルは、管理者だけが取り込める
+                {"id":"C1","name":format!("public-{suffix}"),"creator":"U1","members":["U1"]},
                 {"id":"C2","name":format!("bobs-{suffix}"),"creator":"U2","members":["U2"]}
             ]),
         ),
         (
             "groups.json".into(),
             json!([
+                {"id":"G3","name":shared,"creator":"U1","members":["U1","U2"]},
                 {"id":"G1","name":format!("secret-{suffix}"),"creator":"U1","members":["U1"]},
                 {"id":"G2","name":format!("old-{suffix}"),"creator":"U1","members":["U1"],"is_archived":true}
             ]),
@@ -2825,6 +2827,10 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         (
             format!("old-{suffix}/2024-01-01.json"),
             json!([{"ts":"1704070000.000400","user":"U1","text":"archived"}]),
+        ),
+        (
+            format!("public-{suffix}/2024-01-01.json"),
+            json!([{"ts":"1704070000.000500","user":"U1","text":"public"}]),
         ),
         (
             format!("{shared}/2024-01-01.json"),
@@ -2849,7 +2855,7 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         "POST",
         "/api/channels",
         &admin,
-        Some(json!({"id": same, "channel_name": shared, "is_private": false})),
+        Some(json!({"id": same, "channel_name": shared, "is_private": true})),
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
@@ -2865,8 +2871,8 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         .collect();
     assert_eq!(
         ids,
-        vec!["C1", "G1", "G2"],
-        "only the channels alice created"
+        vec!["G3", "G1", "G2"],
+        "only the private channels alice created"
     );
     assert_eq!(
         own["channels"][0]["targets"],
@@ -2887,7 +2893,7 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         "POST",
         "/api/slack/imports",
         &alice,
-        Some(json!({"mappings": [{"slack_channel_id":"C1","action":"create","name":format!("blocked-{suffix}")}]})),
+        Some(json!({"mappings": [{"slack_channel_id":"G3","action":"create","name":format!("blocked-{suffix}")}]})),
     )
     .await?;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -2920,6 +2926,13 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
             .unwrap()
         }
     };
+    // 公開チャンネルは、自分が作ったものでも取り込めない (管理者だけ)
+    let (status, body) = import(
+        json!([{"slack_channel_id":"C1","action":"create","name":format!("public-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(body.to_string().contains("private"), "{body}");
     // 他人が作ったチャンネルや、参加していない同名チャンネルには取り込めない
     let (status, _) = import(
         json!([{"slack_channel_id":"C2","action":"create","name":format!("taken-{suffix}")}]),
@@ -2927,7 +2940,7 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) =
-        import(json!([{"slack_channel_id":"C1","action":"existing","channel_id":same}])).await;
+        import(json!([{"slack_channel_id":"G3","action":"existing","channel_id":same}])).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     {
@@ -2940,13 +2953,19 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         .bind(same.as_str())
         .exec(&mut tx)
         .await?;
+        // 非公開チャンネルにメンバーを足せるのは作成者 (か管理者) だけ
+        toasty::sql::statement("UPDATE channels SET created_user_id=$1 WHERE id=$2")
+            .bind(alice.as_str())
+            .bind(same.as_str())
+            .exec(&mut tx)
+            .await?;
         tx.commit().await?;
     }
     let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
     assert_eq!(own["channels"][0]["targets"][0]["id"], same.as_str());
     // 非公開チャンネルは、公開を指定しても非公開で作る
     let (status, run) = import(json!([
-        {"slack_channel_id":"C1","action":"existing","channel_id":same},
+        {"slack_channel_id":"G3","action":"existing","channel_id":same},
         {"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}"),"is_private":false}
     ]))
     .await;
@@ -2965,7 +2984,7 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     let rows = sql(
         &state,
         "SELECT json_build_object('channel',channel_id,'user',user_id)::text FROM messages WHERE id=$1",
-        &[&backend::slack::message_id(&team, "C1", "1704070000.000100")],
+        &[&backend::slack::message_id(&team, "G3", "1704070000.000100")],
     )
     .await?;
     assert_eq!(rows[0], json!({"channel": same, "user": alice}));
@@ -2984,25 +3003,6 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     );
     let g1 = backend::slack::channel_id(&team, "G1");
     assert_eq!(own["channels"][1]["targets"][0]["id"], g1.as_str());
-
-    // 投稿を管理者に限ったチャンネルには、通常の投稿と同じく一般メンバーは取り込めない
-    sql(
-        &state,
-        "UPDATE channels SET posting_policy='managers' WHERE id=$1 RETURNING json_build_object('id',id)::text",
-        &[&same],
-    )
-    .await?;
-    let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
-    assert_eq!(own["channels"][0]["targets"], json!([]));
-    let (status, _) =
-        import(json!([{"slack_channel_id":"C1","action":"existing","channel_id":same}])).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    sql(
-        &state,
-        "UPDATE channels SET posting_policy='members' WHERE id=$1 RETURNING json_build_object('id',id)::text",
-        &[&same],
-    )
-    .await?;
 
     // 取り込みは ZIP のメンバーも足すので、取り込み先は現在の参加状況とメンバー追加の権限で絞る
     let targets = || async {
@@ -3123,33 +3123,21 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     // 取り込もうとしても、取り込み先の名前を含むエラーは返さない
     sql(
         &state,
-        "UPDATE channels SET is_private=true WHERE id=$1 RETURNING json_build_object('id',id)::text",
-        &[&same],
-    )
-    .await?;
-    sql(
-        &state,
         "DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2 RETURNING json_build_object('ok',true)::text",
         &[&same, &alice],
     )
     .await?;
     let (status, body) = import(
-        json!([{"slack_channel_id":"C1","action":"create","name":format!("hidden-{suffix}")}]),
+        json!([{"slack_channel_id":"G3","action":"create","name":format!("hidden-{suffix}")}]),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert!(!body.to_string().contains("imported into #"), "{body}");
-    sql(
-        &state,
-        "UPDATE channels SET is_private=false WHERE id=$1 RETURNING json_build_object('id',id)::text",
-        &[&same],
-    )
-    .await?;
 
     // ゲストは、通常の API と同じくチャンネルを作れない
     exec("UPDATE users SET is_guest=true WHERE id=$2 AND $1<>$3").await;
     let (status, body) = import(
-        json!([{"slack_channel_id":"C1","action":"create","name":format!("guest-{suffix}")}]),
+        json!([{"slack_channel_id":"G3","action":"create","name":format!("guest-{suffix}")}]),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -3163,7 +3151,7 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     )
     .await?;
     let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
-    assert_eq!(own["channels"][0]["slack_channel_id"], "C1");
+    assert_eq!(own["channels"][0]["slack_channel_id"], "G3");
     assert_eq!(own["channels"][0]["existing_channel"], Value::Null, "{own}");
     assert_eq!(
         own["channels"][0]["same_name_channel"],
@@ -3211,8 +3199,8 @@ async fn test_self_import_does_not_create_channels_after_becoming_guest() -> any
             json!([{"id":"U1","team_id":team,"name":"alice"}]),
         ),
         (
-            "channels.json".into(),
-            json!([{"id":"C9","name":format!("later-{suffix}"),"creator":"U1","members":["U1"]}]),
+            "groups.json".into(),
+            json!([{"id":"G9","name":format!("later-{suffix}"),"creator":"U1","members":["U1"]}]),
         ),
         (
             format!("later-{suffix}/2024-01-01.json"),
@@ -3225,7 +3213,7 @@ async fn test_self_import_does_not_create_channels_after_becoming_guest() -> any
         "POST",
         "/api/slack/imports",
         &alice,
-        Some(json!({"mappings":[{"slack_channel_id":"C9","action":"create","name":format!("later-{suffix}")}]})),
+        Some(json!({"mappings":[{"slack_channel_id":"G9","action":"create","name":format!("later-{suffix}")}]})),
     )
     .await?;
     assert_eq!(status, StatusCode::OK, "{run}");
@@ -3244,7 +3232,7 @@ async fn test_self_import_does_not_create_channels_after_becoming_guest() -> any
     let created = sql(
         &state,
         "SELECT json_build_object('id',id)::text FROM channels WHERE id=$1",
-        &[&backend::slack::channel_id(&team, "C9")],
+        &[&backend::slack::channel_id(&team, "G9")],
     )
     .await?;
     assert!(created.is_empty(), "{created:?}");
@@ -3290,8 +3278,8 @@ async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id(
             json!([{"id":"U1","team_id":team,"name":"alice"}]),
         ),
         (
-            "channels.json".into(),
-            json!([{"id":"C7","name":format!("mine-{suffix}"),"creator":"U1","members":["U1"]}]),
+            "groups.json".into(),
+            json!([{"id":"G7","name":format!("mine-{suffix}"),"creator":"U1","members":["U1"]}]),
         ),
         (
             format!("mine-{suffix}/2024-01-01.json"),
@@ -3300,7 +3288,7 @@ async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id(
     ]);
     let export = upload(&state, &app, &admin, &zip).await;
     // mallory が、決定的な ID のチャンネルを先に作り、alice を入れておく
-    let foreign = backend::slack::channel_id(&team, "C7");
+    let foreign = backend::slack::channel_id(&team, "G7");
     let (status, _) = request(
         &app,
         "POST",
@@ -3325,7 +3313,7 @@ async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id(
         "POST",
         "/api/slack/imports",
         &alice,
-        Some(json!({"mappings":[{"slack_channel_id":"C7","action":"create","name":format!("mine-{suffix}")}]})),
+        Some(json!({"mappings":[{"slack_channel_id":"G7","action":"create","name":format!("mine-{suffix}")}]})),
     )
     .await?;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
@@ -3336,7 +3324,7 @@ async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id(
         &app,
         &admin,
         export["id"].as_str().unwrap(),
-        json!([{"slack_channel_id":"C7","action":"create","name":format!("mine-{suffix}")}]),
+        json!([{"slack_channel_id":"G7","action":"create","name":format!("mine-{suffix}")}]),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{run}");

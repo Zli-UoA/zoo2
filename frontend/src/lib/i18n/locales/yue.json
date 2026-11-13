@@ -765,7 +765,7 @@
   "slackImport": {
     "tab": "Slack 匯入",
     "title": "由 Slack 匯入",
-    "description": "上載喺 Slack 管理設定匯出嘅 ZIP，就可以保存喺 Zoo。你可以喺度匯入任何頻道；成員連結 Slack 帳戶之後，可以匯入自己開嘅頻道。",
+    "description": "上載喺 Slack 管理設定匯出嘅 ZIP，就可以保存喺 Zoo。你可以喺度匯入任何頻道；成員連結 Slack 帳戶之後，可以匯入自己開嘅私人頻道（公開頻道只有管理員可以匯入）。",
     "chooseFile": "揀選並上載 ZIP",
     "uploading": "上載緊…",
     "loading": "載入緊匯入紀錄",
@@ -845,12 +845,12 @@
       "failed": "同 Slack 連結唔到。"
     },
     "importTitle": "由 Slack 匯入",
-    "importDescription": "可以由管理員保存嘅 Slack 匯出入面，匯入你喺 Slack 開嘅頻道嘅歷史紀錄。匯入位置可以揀你已經加入咗嘅同名頻道，或者開新頻道。",
+    "importDescription": "可以由管理員保存嘅 Slack 匯出入面，匯入你喺 Slack 開嘅私人頻道嘅歷史紀錄。匯入位置可以揀你已經加入咗嘅同名頻道，或者開新頻道。",
     "importLoading": "載入緊可以匯入嘅頻道",
-    "importNoExport": "管理員保存 Slack 匯出之後，你就可以喺度匯入自己嘅頻道。",
-    "importNoChannels": "保存咗嘅匯出入面冇你開嘅頻道。",
-    "importSummary_one": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。",
-    "importSummary_other": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。"
+    "importNoExport": "管理員保存 Slack 匯出之後，你就可以喺度匯入自己嘅私人頻道。",
+    "importNoChannels": "保存咗嘅匯出入面冇你開嘅私人頻道。公開頻道由管理員匯入。",
+    "importSummary_one": "{{name}} 入面有 {{count}} 個你開嘅私人頻道。請揀要匯入嘅頻道。",
+    "importSummary_other": "{{name}} 入面有 {{count}} 個你開嘅私人頻道。請揀要匯入嘅頻道。"
   },
   "publicProfile": {
     "followTitle": "由你嘅伺服器追蹤",

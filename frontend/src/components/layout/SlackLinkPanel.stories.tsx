@@ -28,10 +28,11 @@ const exported = {
   file_name: "Zli Slack export Jan 1 2024 - Nov 1 2026.zip",
   created_at: "2026-11-01T09:00:00Z",
 };
+// 連携したユーザーが取り込めるのは、自分が作った非公開チャンネルだけ (公開チャンネルは管理者が取り込む)
 const ownChannel = (overrides: Record<string, unknown>) => ({
-  slack_channel_id: "C1",
+  slack_channel_id: "G1",
   name: "design",
-  is_private: false,
+  is_private: true,
   is_archived: false,
   members: 8,
   creator: "U1",
@@ -39,14 +40,14 @@ const ownChannel = (overrides: Record<string, unknown>) => ({
   suggested_name: "slack-design",
   name_taken: true,
   existing_channel: null,
-  same_name_channel: { id: "channel-design", name: "design", is_private: false },
-  targets: [{ id: "channel-design", name: "design", is_private: false }],
+  same_name_channel: { id: "channel-design", name: "design", is_private: true },
+  targets: [{ id: "channel-design", name: "design", is_private: true }],
   ...overrides,
 });
 const ownChannels = [
   ownChannel({}),
   ownChannel({
-    slack_channel_id: "G1",
+    slack_channel_id: "G2",
     name: "secret",
     is_private: true,
     members: 3,
@@ -298,7 +299,7 @@ export const OwnImport: Story = {
     },
   },
   play: playForImplementation(async () => {
-    // 自分が作ったチャンネルだけが並び、同じ名前の参加中のチャンネルか、新しいチャンネルを選べる
+    // 自分が作った非公開チャンネルだけが並び、同じ名前の参加中のチャンネルか、新しいチャンネルを選べる
     await userEvent.selectOptions(
       await screen.findByRole("combobox", { name: "#design の取り込み方" }),
       "existing",
@@ -354,7 +355,7 @@ export const OwnImportNoChannels: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await expect(await screen.findByText(/あなたが作ったチャンネルはありません/)).toBeVisible();
+    await expect(await screen.findByText(/あなたが作った非公開チャンネルはありません/)).toBeVisible();
   }),
 };
 

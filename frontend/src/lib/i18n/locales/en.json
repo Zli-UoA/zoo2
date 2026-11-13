@@ -765,7 +765,7 @@
   "slackImport": {
     "tab": "Slack import",
     "title": "Import from Slack",
-    "description": "Upload the export ZIP downloaded from Slack's admin settings to store it in Zoo. You can import any of its channels here, and members who link their Slack account can import the channels they created.",
+    "description": "Upload the export ZIP downloaded from Slack's admin settings to store it in Zoo. You can import any of its channels here, and members who link their Slack account can import the private channels they created. Public channels are imported by admins only.",
     "chooseFile": "Choose and upload ZIP",
     "uploading": "Uploading…",
     "loading": "Loading import history",
@@ -845,12 +845,12 @@
       "failed": "Couldn't link with Slack."
     },
     "importTitle": "Import from Slack",
-    "importDescription": "Import the history of the Slack channels you created from the Slack export saved by an admin. Import each into a channel with the same name that you have joined, or into a new channel.",
+    "importDescription": "Import the history of the private Slack channels you created from the Slack export saved by an admin. Import each into a channel with the same name that you have joined, or into a new channel.",
     "importLoading": "Loading the channels you can import",
-    "importNoExport": "Once an admin saves a Slack export, you can import your channels here.",
-    "importNoChannels": "The saved export has no channels that you created.",
-    "importSummary_one": "{{name}} has {{count}} channel that you created. Choose the channels to import.",
-    "importSummary_other": "{{name}} has {{count}} channels that you created. Choose the channels to import."
+    "importNoExport": "Once an admin saves a Slack export, you can import your private channels here.",
+    "importNoChannels": "The saved export has no private channels that you created. Public channels are imported by an admin.",
+    "importSummary_one": "{{name}} has {{count}} private channel that you created. Choose the channels to import.",
+    "importSummary_other": "{{name}} has {{count}} private channels that you created. Choose the channels to import."
   },
   "publicProfile": {
     "followTitle": "Follow from your server",

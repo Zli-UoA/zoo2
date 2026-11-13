@@ -1,4 +1,5 @@
-//! 各ユーザーが、連携した Slack アカウントで作ったチャンネルを、管理者が保存したエクスポートから取り込む (#291)。
+//! 各ユーザーが、連携した Slack アカウントで作った非公開チャンネルを、管理者が保存したエクスポートから取り込む (#291)。
+//! 公開チャンネルの取り込みは管理者だけが行う (`import.rs`)。DM・グループ DM は取り込まない。
 //!
 //! 取り込み先は、Slack と同じ名前の既存チャンネル (自分が参加しているもの) か、新しく作るチャンネルから選ぶ。
 //! 以前に取り込んだチャンネルは、同じ取り込み先に固定する (`import::ensure_same_target`)。
@@ -137,7 +138,11 @@ async fn own_channels(
         .into_iter()
         .flatten()
     {
-        if channel["creator"] != slack_user || channel["deleted_channel"].is_string() {
+        // 公開チャンネルの取り込みは管理者だけ。非公開チャンネル (`groups.json` 由来) だけを本人に任せる
+        if channel["creator"] != slack_user
+            || channel["is_private"] != true
+            || channel["deleted_channel"].is_string()
+        {
             continue;
         }
         // 以前に取り込んだチャンネルは、その取り込み先にしか入れられない。
@@ -260,7 +265,7 @@ async fn start(
     for mapping in body.mappings {
         let Some(channel) = own.get(mapping.slack_channel_id.as_str()) else {
             return Err(AppError::Forbidden(format!(
-                "You can only import Slack channels you created ({})",
+                "You can only import private Slack channels you created; public channels are imported by workspace admins ({})",
                 mapping.slack_channel_id
             )));
         };
@@ -328,7 +333,7 @@ async fn start(
                         mapping.slack_channel_id
                     )));
                 }
-                // 公開・非公開は Slack に合わせる
+                // 非公開チャンネルだけがここに来るので、作るチャンネルも非公開になる
                 MappingAction::Create {
                     name,
                     is_private: Some(channel["is_private"] == true),
