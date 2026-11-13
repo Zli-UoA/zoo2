@@ -6,6 +6,7 @@ export type TableName =
   | "messages"
   | "message_reactions"
   | "channel_user"
+  | "channel_leave"
   | "notifications"
   | "attachments";
 
@@ -95,6 +96,13 @@ export type ChannelUserRow = {
   joined_at: TimestampString;
 };
 
+/** 自分でチャンネルを退出した日時。本人の行だけが届く。 */
+export type ChannelLeaveRow = {
+  user_id: string;
+  channel_id: string;
+  left_at: TimestampString;
+};
+
 export type NotificationRow = {
   display_data?: NotificationDisplayData;
   id: string;
@@ -163,5 +171,6 @@ export type TableRowMap = {
   messages: MessageRow;
   message_reactions: MessageReactionRow;
   channel_user: ChannelUserRow;
+  channel_leave: ChannelLeaveRow;
   attachments: AttachmentRow;
 };
