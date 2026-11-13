@@ -43,6 +43,8 @@ pub(crate) enum StoreKind {
     TrustStore,
     /// 解錠した自分の鍵（[`OwnKeys`](crate::OwnKeys)。#360）。
     OwnKeys,
+    /// 失効の進み具合（[`RevocationState`](crate::RevocationState)。#362）。
+    Revocation,
 }
 
 impl StoreKind {
@@ -52,6 +54,7 @@ impl StoreKind {
             Self::InboundSession => "inbound_session",
             Self::TrustStore => "trust_store",
             Self::OwnKeys => "own_keys",
+            Self::Revocation => "revocation",
         }
     }
 }
