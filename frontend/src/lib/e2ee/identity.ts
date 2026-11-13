@@ -51,27 +51,40 @@ export function clearPendingCryptoStoreDeletion(): void {
 
 /**
  * 削除 API の結果を待たずに暗号ストアを消すので、失敗に備えて先に残す。`device_id` は秘密ではない
- * （docs/e2ee.md の「ログアウトと端末の削除」）。
+ * （docs/e2ee.md の「ログアウトと端末の削除」）。ユーザーと端末ごとに残し、別のユーザーの
+ * 削除待ちを上書きしない。
  */
 export function markDeviceDeletionPending(pending: PendingDeviceDeletion): void {
-  writeStorage(CRYPTO_PENDING_DEVICE_DELETE_KEY, JSON.stringify(pending));
+  const all = readPendingDeviceDeletions().filter(
+    (entry) => entry.userId !== pending.userId || entry.deviceId !== pending.deviceId,
+  );
+  writeStorage(CRYPTO_PENDING_DEVICE_DELETE_KEY, JSON.stringify([...all, pending]));
 }
 
-export function readPendingDeviceDeletion(): PendingDeviceDeletion | null {
+/** 削除待ちの端末（全ユーザー分）。 */
+export function readPendingDeviceDeletions(): PendingDeviceDeletion[] {
   const raw = readStorageValue(CRYPTO_PENDING_DEVICE_DELETE_KEY);
-  if (!raw) return null;
+  if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw) as Partial<PendingDeviceDeletion>;
-    if (typeof parsed.userId === "string" && typeof parsed.deviceId === "string") {
-      return { userId: parsed.userId, deviceId: parsed.deviceId };
-    }
+    const parsed = JSON.parse(raw) as unknown;
+    // 前の形式（1 件のオブジェクト）も読む。
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    return entries.flatMap((entry) => {
+      const { userId, deviceId } = (entry ?? {}) as Partial<PendingDeviceDeletion>;
+      return typeof userId === "string" && typeof deviceId === "string"
+        ? [{ userId, deviceId }]
+        : [];
+    });
   } catch {
-    // Fall through: a broken marker cannot be retried.
+    writeStorage(CRYPTO_PENDING_DEVICE_DELETE_KEY, null);
+    return [];
   }
-  writeStorage(CRYPTO_PENDING_DEVICE_DELETE_KEY, null);
-  return null;
 }
 
-export function clearPendingDeviceDeletion(): void {
-  writeStorage(CRYPTO_PENDING_DEVICE_DELETE_KEY, null);
+/** 消せた端末を、削除待ちから外す。 */
+export function clearPendingDeviceDeletion(done: PendingDeviceDeletion): void {
+  const rest = readPendingDeviceDeletions().filter(
+    (entry) => entry.userId !== done.userId || entry.deviceId !== done.deviceId,
+  );
+  writeStorage(CRYPTO_PENDING_DEVICE_DELETE_KEY, rest.length > 0 ? JSON.stringify(rest) : null);
 }
