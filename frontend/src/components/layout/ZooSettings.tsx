@@ -131,7 +131,7 @@ export function ZooSettings() {
               </SettingRow>
             </div>
             {config.oidc ? (
-              <div className="mt-6 overflow-hidden rounded-lg border border-destructive/50 bg-destructive/5">
+              <div className="mt-6 overflow-hidden rounded-lg border border-destructive/50 dark:bg-destructive/5">
                 <SettingRow icon={<LogOutIcon />} label={t("auth.logout")}>
                   <LogoutButton />
                 </SettingRow>
