@@ -278,41 +278,45 @@ impl WorkspaceView {
         let text_sm = TextSpec::SM;
         let text_xs = TextSpec::XS;
 
+        // 同期エラーと再試行は、チャンネルの欄を閉じていても見えるように、折りたたみの外に置く。
+        let sync_error_block: Option<AnyElement> = if loading {
+            None
+        } else {
+            sync_error.map(|err| {
+                v_flex()
+                    .items_start()
+                    .gap(px(8.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .child(
+                        div()
+                            .text_size(text_xs.size())
+                            .line_height(text_xs.line())
+                            .text_color(t.destructive)
+                            .child(err),
+                    )
+                    .child(
+                        h_flex().child(
+                            Button::new("btn-sidebar-retry-sync")
+                                .variant(ButtonVariant::Outline)
+                                .size(ButtonSize::Sm)
+                                .label(i18n.t("offline.retry"))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.state.update(cx, |s, cx| {
+                                        s.retry_sync();
+                                        cx.notify();
+                                    });
+                                })),
+                        ),
+                    )
+                    .into_any_element()
+            })
+        };
+
         let channels_body: Vec<AnyElement> = if loading {
             skeleton_rows("sidebar-skel-ch", 5)
         } else {
             let mut body: Vec<AnyElement> = Vec::new();
-            if let Some(err) = sync_error {
-                body.push(
-                    v_flex()
-                        .items_start()
-                        .gap(px(8.0))
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .child(
-                            div()
-                                .text_size(text_xs.size())
-                                .line_height(text_xs.line())
-                                .text_color(t.destructive)
-                                .child(err),
-                        )
-                        .child(
-                            h_flex().child(
-                                Button::new("btn-sidebar-retry-sync")
-                                    .variant(ButtonVariant::Outline)
-                                    .size(ButtonSize::Sm)
-                                    .label(i18n.t("offline.retry"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.state.update(cx, |s, cx| {
-                                            s.retry_sync();
-                                            cx.notify();
-                                        });
-                                    })),
-                            ),
-                        )
-                        .into_any_element(),
-                );
-            }
             if current_channel.is_none()
                 && let Some(msg) = notice
             {
@@ -454,6 +458,7 @@ impl WorkspaceView {
                     .flex_1()
                     .min_h_0()
                     .py(px(4.0))
+                    .children(sync_error_block)
                     .child(channels_section)
                     .child(dms_section),
             )
