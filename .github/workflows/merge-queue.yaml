@@ -25,8 +25,11 @@ jobs:
       ci-frontend: ${{ steps.match.outputs.ci-frontend }}
       ci-frontend-auth-e2e: ${{ steps.match.outputs.ci-frontend-auth-e2e }}
       ci-tui: ${{ steps.match.outputs.ci-tui }}
+      ci-desktop-tauri: ${{ steps.match.outputs.ci-desktop-tauri }}
+      ci-crypto: ${{ steps.match.outputs.ci-crypto }}
       ci-github-bot: ${{ steps.match.outputs.ci-github-bot }}
       ci-flux-status: ${{ steps.match.outputs.ci-flux-status }}
+      ci-db-erd: ${{ steps.match.outputs.ci-db-erd }}
       terraform-r2: ${{ steps.match.outputs.terraform-r2 }}
       ci-android: ${{ steps.match.outputs.ci-android }}
     steps:
@@ -60,6 +63,17 @@ jobs:
     uses: ./.github/workflows/ci-tui.yaml
     secrets: inherit
 
+  ci-desktop-tauri:
+    needs: changes
+    if: needs.changes.outputs.ci-desktop-tauri == 'true'
+    uses: ./.github/workflows/ci-desktop-tauri.yaml
+
+  ci-crypto:
+    needs: changes
+    if: needs.changes.outputs.ci-crypto == 'true'
+    uses: ./.github/workflows/ci-crypto.yaml
+    secrets: inherit
+
   ci-github-bot:
     needs: changes
     if: needs.changes.outputs.ci-github-bot == 'true'
@@ -74,6 +88,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.ci-flux-status == 'true'
     uses: ./.github/workflows/ci-flux-status.yaml
+    secrets: inherit
+
+  ci-db-erd:
+    needs: changes
+    if: needs.changes.outputs.ci-db-erd == 'true'
+    uses: ./.github/workflows/ci-db-erd.yaml
     secrets: inherit
 
   terraform-r2:
@@ -98,8 +118,11 @@ jobs:
       - ci-frontend
       - ci-frontend-auth-e2e
       - ci-tui
+      - ci-desktop-tauri
+      - ci-crypto
       - ci-github-bot
       - ci-flux-status
+      - ci-db-erd
       - terraform-r2
       - ci-android
     if: ${{ !cancelled() }}

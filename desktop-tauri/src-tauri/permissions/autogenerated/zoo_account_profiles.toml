@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-zoo-account-profiles"
+description = "Enables the zoo_account_profiles command without any pre-configured scope."
+commands.allow = ["zoo_account_profiles"]
+
+[[permission]]
+identifier = "deny-zoo-account-profiles"
+description = "Denies the zoo_account_profiles command without any pre-configured scope."
+commands.deny = ["zoo_account_profiles"]

@@ -30,11 +30,12 @@
 12. [受信時の検証](#受信時の検証)
 13. [失効と復旧](#失効と復旧)
 14. [機能ごとの扱い](#機能ごとの扱い)
-15. [クライアントの構成](#クライアントの構成)
-16. [脅威モデル](#脅威モデル)
-17. [ロードマップ](#ロードマップ)
-18. [未決と未検証の一覧](#未決と未検証の一覧)
-19. [参考](#参考)
+15. [有効化と運用](#有効化と運用)
+16. [クライアントの構成](#クライアントの構成)
+17. [脅威モデル](#脅威モデル)
+18. [ロードマップ](#ロードマップ)
+19. [未決と未検証の一覧](#未決と未検証の一覧)
+20. [参考](#参考)
 
 ## 決めたこと
 
@@ -116,6 +117,9 @@ SSSS 鍵 → zoo.megolm_backup.previous   → 古い版のバックアップ鍵 
 - バイト列は、特に書かない限り**パディングなしの標準 base64**（[Unpadded Base64](https://spec.matrix.org/latest/appendices/#unpadded-base64)）で表す。受け取る側はパディング付きも受け付ける。WebAuthn の credential ID だけは、WebAuthn の慣習に合わせて base64url（パディングなし）にする。
 - 署名は [Signing JSON](https://spec.matrix.org/latest/appendices/#signing-json) と同じにする。`signatures` と `unsigned` を除いた JSON を [Canonical JSON](https://spec.matrix.org/latest/appendices/#canonical-json) にして Ed25519 で署名し、`signatures.<user_id>.<鍵 ID>` に入れる。鍵 ID は `ed25519:<device_id>`（端末の署名鍵）か `ed25519:<公開鍵>`（クロス署名の鍵）。
 - 次の ID は UUID の文字列にする：`user_id`、`channel_id`、`message_id`（既存の `users.id`、`channels.id`、`messages.id` と同じ）、`device_id`、SSSS の `key_id`、鍵スロットの `slot_id`、to-device の `txn_id`。`device_id` はクライアントが UUID v4 で作る。署名する JSON に `device_id` が入るので、サーバーに登録する前に決まっている必要があるため。
+- 【決定】（#351）上の UUID の ID はすべて、小文字のハイフン区切り（PostgreSQL の `uuid` 型が返す表記）で書く。`user_id` は署名する JSON に、`device_id` は署名する JSON と鍵 ID（`ed25519:<device_id>`、`curve25519:<device_id>`）に、SSSS の `key_id` と `slot_id` は鍵スロットの AAD に入り、`txn_id` は再送をまとめるときに文字列のまま比べる。表記がずれると、署名や AAD の検証、サーバーが返す ID との突き合わせに失敗するため。
+  - `zoo-crypto` は、`user_id` と `device_id`（#348）に加えて、SSSS の `key_id`、鍵スロットの `slot_id`、鍵バックアップの平文の `channel_id`（#351）の表記を検証し、他の表記は受け付けない（`CryptoError::InvalidId`。サーバーの応答の値なら `CryptoError::InvalidSecretStorage` か `CryptoError::BackupDecryption`）。版は問わない（`user_id` と同じ）。`zoo-crypto` が作る `key_id` と `slot_id` は UUID v4 にする。to-device の `txn_id` はサーバーが検証する（下）。
+  - 【決定】（#355）サーバーは to-device の `txn_id` を、小文字のハイフン区切りの UUID（版は問わない）でなければ 400 で拒否する。
 - ワンタイム鍵とフォールバック鍵の `key_id`（`signed_curve25519:<key_id>`）は UUID ではない。vodozemac の `KeyId`（u64）をパディングなし base64 にした文字列をそのまま使う。DB の `e2ee_one_time_keys.key_id` と `e2ee_fallback_keys.key_id` も同じ値で、サーバーは UUID として検証しない。
 - Megolm の `session_id` と、鍵バックアップの `version`（10 進の文字列）も UUID ではない。
 
@@ -173,7 +177,7 @@ Olm で暗号化する平文は Matrix と同じ形にします。
 }
 ```
 
-- `sender_device_keys` は送信端末の署名付き端末鍵（[MSC4147](https://github.com/matrix-org/matrix-spec-proposals/pull/4147) と同じ）です。【提案】受信側の Shape が送信端末の登録に追いついていなくても検証できるように入れます。受信側が使う前に確かめることは[受信時の検証](#受信時の検証)の手順 1 と 4 に書きます。
+- `sender_device_keys` は送信端末の署名付き端末鍵（[MSC4147](https://github.com/matrix-org/matrix-spec-proposals/pull/4147) と同じ）です。【決定】（#349）受信側の Shape が送信端末の登録に追いついていなくても検証できるように入れます。受信側が使う前に確かめることは[受信時の検証](#受信時の検証)の手順 1 と 4 に書きます。
 - 内側の `type` は、初期版では `zoo.room_key` だけを受け付けます。SAS（#368）などを足すときは、ここに型を足します。
 
 Megolm セッション鍵の配布（`zoo.room_key`）の `content` は次の形です。Matrix の [`m.room_key`](https://spec.matrix.org/latest/client-server-api/#mroom_key) の `room_id` を `channel_id` に替え、`epoch` を足しました。
@@ -235,7 +239,7 @@ Megolm セッション鍵の配布（`zoo.room_key`）の `content` は次の形
 | `content.body` | 本文。MFM の文字列。上限は平文チャンネルと同じ 40000 文字 |
 | `content.format` | `mfm` だけ |
 | `content.kind` | `message` か `emote`（`messages.message_kind` と同じ値） |
-| `mentions` | メンション。`user_ids` はユーザー ID の配列、`channel` は `@channel`、`here` は `@here`。【提案】形は [#358](https://github.com/Zli-UoA/zoo2/issues/358) と合わせて確定する |
+| `mentions` | メンション。`user_ids` はユーザー ID の配列、`channel` は `@channel`、`here` は `@here`。【決定】（#358）形は送信の要求の平文の `mentions` と同じ `{user_ids, channel, here}`。受信側は、表示とハイライトにこの暗号化した `mentions` だけを使う |
 
 編集は別の型を作らず、同じ `zoo.message` で `revision` を増やして送ります。編集履歴は持たないので、サーバーの行の暗号文を置き換えます。
 
@@ -253,7 +257,7 @@ Megolm セッション鍵の配布（`zoo.room_key`）の `content` は次の形
 }
 ```
 
-Matrix では `sender_key` と `device_id` を非推奨にしていますが、zoo では受信時の照合と「鍵がまだ届いていない」表示に使うので必須にします。暗号文の上限は 256 KiB です【提案】。
+Matrix では `sender_key` と `device_id` を非推奨にしていますが、zoo では受信時の照合と「鍵がまだ届いていない」表示に使うので必須にします。【決定】暗号文（`ciphertext` の JSON 全体）の上限は 256 KiB です（#357。超えたら 400 `E2EE_LIMIT_EXCEEDED`、`limit` は `ciphertext_size`）。
 
 ### クロス署名
 
@@ -318,7 +322,7 @@ Matrix と違い、zoo の SSSS 鍵はユーザーに見せません。ユーザ
 | KEK | `HKDF-SHA256(ikm = PRF 出力, salt = なし, info = "zoo e2ee ssss v1", L = 32)` | `HKDF-SHA256(ikm = リカバリーキー, salt = なし, info = "zoo e2ee ssss recovery v1", L = 32)` |
 | `credential_id` | 必須（base64url） | なし |
 | `prf_salt` | 必須。スロットごとに 32 バイトの乱数 | なし |
-| 数 | credential ID ごとに 1 つ | SSSS 鍵ごとに最大 1 つ |
+| 数 | credential ID ごとに 1 つ。SSSS 鍵ごとに 20 個まで【決定】（#356） | SSSS 鍵ごとに最大 1 つ |
 
 - 「salt = なし」は RFC 5869 の既定どおり、32 バイトの 0 を salt にすることを指す。
 - 暗号化：`nonce` は 12 バイトの乱数。平文は SSSS 鍵の 32 バイト。保存する `ciphertext` は暗号文と 16 バイトのタグをつないだ 48 バイト。
@@ -330,7 +334,10 @@ Matrix と違い、zoo の SSSS 鍵はユーザーに見せません。ユーザ
   ```
 
   `kind` は `passkey` か `recovery`、`key_id` は SSSS 鍵の ID、`slot_id` はスロットの ID（クライアントが作る UUID）。スロットを別のユーザー、別の SSSS 鍵、別のスロットに付け替えると開けなくなる。
-- テストベクターは [#351](https://github.com/Zli-UoA/zoo2/issues/351) で作り、`crates/zoo-crypto` に置く。
+- 【決定】（#351）`prf_salt` と `credential_id` は AAD に入れない。`credential_id` は、解錠のときに `credential.rawId` とスロットの値を文字列のまま比べて、評価したスロットを選ぶのに使う。`prf_salt` を書き換えられると、認証器が別の PRF 出力を返すので開けなくなるだけで、鍵は漏れない（サーバーはスロットを消すこともできるので、新しく妨害できることはない）。
+- 【決定】（#351）開けなかった理由（PRF 出力やリカバリーキーが違う、改ざん、付け替え）は区別せず、`CryptoError::KeySlotUnlock` にする。スロットを開けたあと、確認値と合わなければ `CryptoError::SsssKeyMismatch` にする。`credential_id` は base64url（パディングなし）で 1〜1023 バイト（WebAuthn の上限）のものだけを受け付ける。
+- テストベクターは `crates/zoo-crypto/tests/vectors/secret_storage_v1.json` に置いた（#351）。SSSS の確認値と秘密、パスキーとリカバリーキーのスロット（AAD と KEK の中間値を含む）、リカバリーキーの表示、鍵バックアップの暗号化を含む。値は、同じディレクトリーの `gen_secret_storage_v1.py`（Python の `cryptography`）で `zoo-crypto` とは別に計算し、`tests/vectors.rs` で一致を確かめる。形式を変えるときは、版を上げた別のファイルにする。
+- 【決定】（#356）パスキーのスロットは、1 つの SSSS 鍵につき 20 個まで。解錠の `allowCredentials` と `evalByCredential` にすべてのパスキーのスロットを並べるので、際限なく長くしない。20 個は、1 ユーザーの端末の上限（20 台）と同じで、端末ごとに別のパスキーを使っても足りる。超える追加（`POST /api/e2ee/secret_storage/slots` と `POST /api/e2ee/secret_storage/keys`）は 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `slots`）。同じ credential ID のスロットの置き換えは数を増やさないので、20 個でも通る。
 
 PRF の salt について：
 
@@ -348,7 +355,7 @@ PRF の salt について：
 3. 35 バイトを Bitcoin と同じ alphabet の Base58 にする（48 文字）。
 4. 4 文字ごとに空白を入れて表示する。
 
-読み取るときは空白を無視し、長さ、先頭の 2 バイト、パリティを確かめます。
+読み取るときは空白（改行とタブを含む）を無視し、長さ、先頭の 2 バイト、パリティを確かめます。【決定】（#351）どれかが違えば `CryptoError::InvalidRecoveryKey` にし、スロットを開けようとしません（打ち間違いを、鍵が違うことと分けて表示できるようにするため）。形式は正しいが鍵が違うときは、スロットを開けずに `CryptoError::KeySlotUnlock` になります。
 
 **Matrix のリカバリーキーとは互換性がありません。** Matrix のリカバリーキーは SSSS 鍵そのものですが、zoo のリカバリーキーは SSSS 鍵を包む鍵スロットの鍵です。このため、SSSS 鍵を作り直しても（[失効](#失効と復旧)）、リカバリーキーが漏れていなければ同じリカバリーキーで新しいスロットを作れます。
 
@@ -430,6 +437,7 @@ Matrix の [`BackedUpSessionData`](https://spec.matrix.org/latest/client-server-
 - 古い版の中身はすでに漏れたものとして扱っているので（[取り消せないもの](#取り消せないもの)）、その秘密鍵を SSSS に退避しても、新しく漏れるものはない。古い版の中身は、どのみち新しい版に移す。
 - 【決定】クライアントは、今の版として見た版の番号の最大を暗号ストアに記録する。今の版としてそれより小さい番号が返ったら、その版を使わずに警告を出す。409 `E2EE_WRONG_BACKUP_VERSION` のあとで取り直した版を検証できなければ、暗号ストアの古い鍵には戻らず、SSSS で解錠し直すよう表示する。
 - 担当：`zoo.megolm_backup.previous` の形と、取り出した秘密鍵の検証は #351、解錠のあとに移行を続ける処理は #360、失効での退避は #362。
+- 【決定】（#351）`zoo-crypto` は次を持つ。`UnlockedSecretStorage::previous_backup_keys` は、各要素の秘密鍵から導いた公開鍵が `public_key` と一致しなければ、その秘密全体を `CryptoError::InvalidSecretStorage` で拒否する。`select_previous_backup_keys` は上の規則で入れる鍵と「新しい版に移せないバックアップ」を返し、`previous_versions_to_migrate` は解錠したあとに移行する版と鍵を返す（どちらも I/O を持たない判定だけで、呼ぶのは #360 と #362）。
 
 【決定】セッションのアップロード：
 
@@ -443,6 +451,14 @@ Matrix の [`BackedUpSessionData`](https://spec.matrix.org/latest/client-server-
 - アップロードを待つセッションは暗号ストアの送信待ちに記録し、成功するまで間隔をあけて再送する。送信と受信はアップロードの完了を待たない。409 `E2EE_WRONG_BACKUP_VERSION` を受けたら、今の版を取り直して検証し、通れば送信待ちのすべてをその版に送る。通らなければ送らずに警告を出す。
 - 送信用セッションの作り手だけでなく、受け取った各ユーザーの端末も、自分のバックアップにアップロードする。各ユーザーのバックアップは別なので、受け取った側も新しい端末で過去ログを読めるようにするため。
 - 担当：状態機械（アップロード待ちの記録と、版の検証）は #351、送信用セッションを作ったときと受け取ったときにアップロードする処理は #361、初回設定の直後と解錠の直後に送信待ちを送る処理は #360。
+- 【決定】（#351）状態機械は `zoo-crypto` の `BackupUploadState` にした。
+  - `accept_current_version` が今の版を上の規則で検証し、今の版として見た番号の最大と比べる（小さければ `CryptoError::BackupVersionRollback`）。検証に失敗したら、それまで受け入れていた版も外してアップロードを止める。版が変わったら `VersionChange::Changed` を返すので、呼び出し側は `enqueue_all` で手元のセッションをすべて待ちに入れる。
+  - 409 を受けたとき、今の版が 404 のときは `suspend` で止める。待ちは残し、版を取り直して検証できたら再開する。止めたあとに届いた成功や、版が変わったあとに届いた成功では、待ちから外さない。要求を作ったあとで同じセッションを待ちに入れ直した（first known index のより小さい鍵に置き換わったなど）ときも、その成功では外さず、次のアップロードで今の鍵を送る（待ちに入れるたびに世代を進めて照合する。世代は保存しない）。
+  - 1 回のアップロードは `next_upload` で作り、最大 1000 件、クエリの `version` と `secrets_revision`（解錠したときに `set_secrets_revision` で記録した値）を返す。`secrets_revision` を記録していなければアップロードしない。
+  - 同じセッションに Olm 由来とバックアップ由来の両方があれば、Olm 由来を書き出す。行の `is_verified` は、Olm 由来で送信端末が検証済みのときだけ true にする（バックアップ由来を上げ直すときは false）。
+  - 平文の `sender_claimed_keys.ed25519` に入れるため、受信用セッションに送信端末の署名鍵を持たせた（Olm 由来は検証した端末鍵の `ed25519`、自分の送信用セッションは自分の署名鍵、バックアップ由来は平文の値）。
+  - 保存形式は `BackupUploadState::to_json` の `{"version": 1, "user_id": "<自分>", "max_seen_version": "<10 進>"|null, "secrets_revision": <数>|null, "pending": [{"channel_id", "sender_key", "session_id"}]}`。受け入れた今の版は保存せず、起動のたびに検証し直す。`from_json` は、`version` が 1 でないもの、今のユーザーでないものを `CryptoError::InvalidBackup` で拒否する。各クライアント（#359）は、端末アカウントと同じ保存鍵で暗号化して暗号ストアに置く。
+  - 版の番号は、`0` で始まらない 10 進の文字列（u64）だけを受け付ける。
 
 これがないと、#321 の完了条件「新しい端末でパスキーで 1 回解錠すると、過去ログを読める」を満たせません。端末どうしで鍵を要求し合う仕組み（`m.room_key_request`）は初期版にないので、新しい端末が過去のセッションを得る手段はバックアップだけです。
 
@@ -632,7 +648,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 ### エラー
 
-【提案】既存のエラー応答 `{"error": "..."}` に、機械判定用の `code` を足します（`backend/src/error.rs` に `code` と追加フィールドを持てる種類を足す）。
+【決定】既存のエラー応答 `{"error": "..."}` に、機械判定用の `code` を足します（#354 で `backend/src/error.rs` に `code` と追加フィールドを持てる `AppError::Coded` を足した）。
 
 | HTTP | `code` | 条件 | 追加のフィールド |
 | --- | --- | --- | --- |
@@ -641,26 +657,26 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_ENCRYPTED_MISMATCH` | 暗号化 DM の行が `encrypted = false` だった（不整合） | |
 | 409 | `E2EE_WRONG_BACKUP_VERSION` | 鍵バックアップの書き込み先が今の版ではない。版の作成で `expected_current_version` が今の版と違う | `current_version` |
 | 409 | `E2EE_CROSS_SIGNING_CONFLICT` | クロス署名鍵の差し替えで、`expected_keys` が今の鍵と違う | 今の公開鍵 |
-| 409 | `E2EE_SSSS_CONFLICT` | SSSS の既定の鍵か `secrets_revision` が、クライアントが前提にした値から変わっていた（鍵バックアップへのアップロードを含む） | `default_key_id`、`secrets_revision` |
+| 409 | `E2EE_SSSS_CONFLICT` | SSSS の既定の鍵か `secrets_revision` が、クライアントが前提にした値から変わっていた（鍵バックアップへのアップロードを含む）。秘密の書き込みとスロットの追加の `key_id` が今の既定の鍵でない（既定の鍵がない場合を含む） | `default_key_id`、`secrets_revision` |
 | 409 | `E2EE_DEVICE_EXISTS` | 同じ `device_id` の端末が削除済み（墓標を含む。登録は `e2ee_devices` と `e2ee_deleted_device_ids` を 1 つの文で確かめる）、または同じ `device_id` で `device_keys` の内容が違う（削除されていない同じ内容の再送は 200） | |
 | 400 | `E2EE_SLOTS_REQUIRED` | `POST /api/e2ee/secret_storage/keys` の `slots` が空、または最後のスロットを削除しようとした | |
-| 429 | `E2EE_RATE_LIMITED` | 端末の登録が 1 ユーザーにつき 1 時間に 30 回を超えた【提案】 | `retry_after`（秒） |
-| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、`keys/query` の応答の合計サイズ（8 MiB）、`recipients` の 1 人分の応答（4 MiB）が上限を超えた。すべて同じコードで返す | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
+| 429 | `E2EE_RATE_LIMITED` | 端末の登録が 1 ユーザーにつき 1 時間に 30 回を超えた【決定】（#354） | `retry_after`（秒） |
+| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号化チャンネルのメンバー数（200 人）、暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、送信の `mentions.user_ids` の数（200 件）、`keys/query` の応答の合計サイズ（8 MiB）、`recipients` の 1 人分の応答（4 MiB）、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）、ピンの件数（1 回 1000 件）、SSSS の秘密の暗号文（64 KiB）、鍵バックアップの `session_data`（8 KiB）が上限を超えた。すべて同じコードで返す。【決定】#354 の `limit` の値は、端末の数が `devices`、ワンタイム鍵とフォールバック鍵の数が `one_time_keys`、署名の件数が `signatures`、鍵の JSON のサイズが `key_size`、`keys/query` のユーザー数が `query_users`、応答の合計サイズが `response_size`、`keys/claim` の宛先の数が `claim_devices`。【決定】#355 の `limit` の値は、to-device の宛先の数が `to_device_recipients`、`content` の大きさが `to_device_content`、`to_device/ack` の件数が `to_device_ack`。【決定】#356 の `limit` の値は、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）が `slots`、ピンの件数（1 回 1000 件）が `pins`、SSSS の秘密の暗号文（64 KiB）が `secret_size`、鍵バックアップの `session_data`（8 KiB）が `session_size`、`key_backup/keys` の件数が `backup_sessions`。クロス署名鍵、`auth_data`、ピンの JSON（8 KiB）は `key_size`、`cross_signing/signatures` の件数とクロス署名鍵の署名の数（1000 件）は `signatures`。【決定】#357 の `limit` の値は、暗号文のサイズ（256 KiB）が `ciphertext_size`、`recipients` の 1 人分の応答（4 MiB）が `response_size`、暗号化チャンネルのメンバー数（200 人）が `members`。【決定】#358 の `limit` の値は、送信の `mentions.user_ids` の数（200 件）が `mentions` | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
 | 409 | `E2EE_KEY_EXISTS` | 同じ鍵 ID で内容が違うワンタイム鍵をアップロードした | |
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない（暗号化チャンネルで必須。平文チャンネルでは、送ったときだけ） | `current_revision` |
 | 409 | `E2EE_PIN_CONFLICT` | `replace: false` で、同じ相手に、違うマスター鍵の TOFU のピンがすでにあり、そのピンを今のユーザー署名鍵で検証できる | `pin` |
 | 400 | `E2EE_CIPHERTEXT_REQUIRED` | 暗号化チャンネルに `ciphertext` なしで送った | |
 | 400 | `E2EE_PLAINTEXT_FORBIDDEN` | 暗号化チャンネルに空でない `content` を送った、または平文チャンネルに `ciphertext` か `epoch` を送った、または Slack 取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで暗号化チャンネルを指定した（メッセージの作成では `revision` も。編集では `revision` は送ってよい） | |
-| 400 | `E2EE_ATTACHMENTS_FORBIDDEN` | 暗号化チャンネルへの添付 | |
+| 400 | `E2EE_ATTACHMENTS_FORBIDDEN` | 暗号化チャンネルへの添付（`POST /api/attachments/presign` と、送信の `attachment_ids`。#358） | |
 | 400 | `E2EE_BAD_SIGNATURE` | 署名が不正 | |
 | 400 | `E2EE_KEY_REUSED` | 過去に使ったクロス署名鍵の公開鍵か、過去の版のバックアップの公開鍵を登録し直そうとした | |
 | 400 | `E2EE_INVALID_EPOCH` | `epoch` が今の値より大きい | |
 | 400 | `E2EE_PUBLIC_FORBIDDEN` | 公開チャンネルを `encrypted: true` で作ろうとした | |
-| 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加と、App からの暗号化チャンネルと DM の作成。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む） | |
+| 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加（`POST /api/apps/{id}/channels/{channel}`）と、暗号化 DM の相手に Bot を選んだとき（`POST /api/dms`）。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む。#358）。App からの暗号化チャンネルと DM の作成の拒否は #357 で入れた（作成 API の入口） | |
 | 403 | `E2EE_ADD_FORBIDDEN` | 暗号化チャンネルで、メンバーでないワークスペースの管理者と、退出した作成者が `POST /api/channels/{id}/users` でメンバーを足そうとした（`channel_user` の実際の行で判定する） | |
 | 403 | `E2EE_DISABLED` | 暗号化チャンネルの作成が、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` で無効（#358 の拒否が入るまでと、運用で false に戻したあと） | |
 | 403 | `E2EE_REAUTH_REQUIRED` | `X-Zoo-Reauth` の ID トークンがない、検証できない、または `authenticated_at`（AuthZ が直前に認証した時刻の claim）がないか 5 分より前。対象は、クロス署名鍵の登録と差し替え（初回設定を含む）、SSSS 鍵の作成と作り直し（初回設定を含む）、既存の秘密とスロットの置き換え、スロットの削除、`replace: true` のピンと、ユーザー署名鍵によるマスター鍵への署名、最初の版でない鍵バックアップの版の作成、今の版の削除で、直前の再認証がない | |
-| 403 | `E2EE_WEBHOOKS_FORBIDDEN` | 暗号化チャンネルへの Incoming Webhook の作成 | |
+| 403 | `E2EE_WEBHOOKS_FORBIDDEN` | 暗号化チャンネルへの Incoming Webhook の作成（`POST /api/channels/{channel_id}/webhooks`。#358） | |
 | 404 | （既存と同じ） | 他人の端末やスロットなど。存在を推測されないよう 403 ではなく 404 | |
 
 ### 端末とワンタイム鍵（[#354](https://github.com/Zli-UoA/zoo2/issues/354)）
@@ -676,7 +692,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   }
   ```
 
-  `device_keys.user_id` は呼び出したユーザーと一致していなければならない。応答は端末の行と `one_time_key_counts`。同じ `device_id` で同じ `device_keys` を送り直した場合は、削除されていなければ成功として扱い（冪等）、削除済みなら 409 `E2EE_DEVICE_EXISTS`（削除済みの `device_id` は再利用できない）、内容が違えば 409 `E2EE_DEVICE_EXISTS`。
+  `device_keys.user_id` は呼び出したユーザーと一致していなければならない。応答は端末の行と `one_time_key_counts`。同じ `device_id` で同じ `device_keys` を送り直した場合は、削除されていなければ成功として扱い（冪等）、削除済みなら 409 `E2EE_DEVICE_EXISTS`（削除済みの `device_id` は再利用できない）、内容が違えば 409 `E2EE_DEVICE_EXISTS`。【決定】再送でも、端末単位のロックを取ったあとに `deleted_at` を読み直し、削除済みなら 409 `E2EE_DEVICE_EXISTS` にする（再送が既存の端末を読んだあとに削除がコミットすると、削除済みの端末に鍵が入り直るため。`keys/upload` と同じ）。【決定】応答の `txid` は端末の行を挿入したときだけ返し、既存の端末への再送（鍵の追加を含む）では `null` にする（端末の Shape に流れる変更がないので、待っても進まないため）。
 - 【決定】`last_seen_at` は、`POST /api/e2ee/keys/upload` と `POST /api/e2ee/to_device/ack`（どちらも `device_id` を持つ）に加え、暗号化チャンネルへのメッセージの送信（`ciphertext` を送るときの `device_id`。#357）で更新する。設定画面の「最後に使った日時」と、20 台に達したときの `stale_devices`（30 日以上使っていない端末の候補）が、実際の利用と合うようにするため。登録時に `last_seen_at` に `now()` を入れる（NULL にしない。登録直後でまだ鍵のアップロードも ack もしていない端末を、`stale_devices` に入れないため）。更新は 1 端末につき 5 分に 1 回までにして、書き込みを増やしすぎない。ベアラートークンはユーザー単位で、`GET /api/e2ee/secret_storage` と `POST /api/e2ee/key_backup/keys` からは端末を特定できないので、これらでは更新しない。
   - 【決定】メッセージの送信による `last_seen_at` の更新は、送信のトランザクションの外（コミットのあとの別の文。失敗してもよい）で行う。ロックの順は全体の順（`users` の行、ユーザー単位のロック、端末単位のロック、`channels` の行、`e2ee_devices` の行）にそろえてあり、端末の削除もこの順で、行き詰まりにはならないが、送信が `channels` の行を `FOR SHARE` で持ったまま `e2ee_devices` の行の更新を待つと、端末の削除（`channels` の行の更新を待つ）を長く止めるため。
 - `GET /api/e2ee/devices`：自分の端末の一覧（削除済みを除く）。`display_name` と `last_seen_at` を返すのはこの API だけで、他のユーザーには見せない。
@@ -698,10 +714,11 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
   端末鍵とクロス署名鍵は、アップロードされたときの署名付きの JSON をそのまま返す。`tofu_pins` には、問い合わせたユーザーに対する自分のピン（署名付き）を返す。`signatures` には、[Shape](#electric-の-shape) と同じ範囲の `e2ee_key_signatures` の行を返す。【決定】問い合わせできるのは、自分と、暗号化チャンネルを共有しているユーザー（削除されていない暗号化チャンネルだけ。`channels.deleted_at IS NULL`。チャンネルの削除（`channels.deleted_at`）は `channel_user` の行を消さないので、条件に入れないと、削除済みのチャンネルの元メンバーが共有相手に残る。応答の端末も `e2ee_devices.deleted_at IS NULL` のものだけ。`keys/claim`、to-device の宛先、`recipients` も同じ）（[端末の Shape](#electric-の-shape) と to-device の宛先と同じ where）。範囲外のユーザーは、存在を推測されないよう、エラーにせず応答から除く。Users Shape はゲスト以外では全ユーザーを返すので、それに合わせると、暗号化チャンネルを共有していない相手の端末鍵やクロス署名の関係まで取得できてしまうため。暗号化 DM を始めるときは、先に `POST /api/dms` で DM を作るので、その時点で暗号化チャンネルを共有する相手になる。全ユーザーの端末鍵は要らない。
   - 【決定】例外として、呼び出したユーザーがピンか署名（`e2ee_tofu_pins` か、自分を署名者とする `e2ee_key_signatures`）を持つ相手については、暗号化チャンネルを共有していなくても、マスター鍵だけを返す（端末鍵、自己署名鍵、ワンタイム鍵は返さない）。マスター鍵は公開鍵で、暗号化 DM を作れば誰でも共有相手になれる（上）ので、この例外で広がる情報は、署名やピンを作った相手のマスター鍵の公開鍵だけで、意図どおり。失効の手順 4 で、SAS（#368）や #362 の受け入れで署名した相手が、すでに暗号化チャンネルを抜けていても、その相手の今のマスター鍵で署名を検証して付け直せるようにするため。ユーザー署名鍵は本人にだけ返す。暗号化チャンネルを共有する相手の鍵は [Shape](#electric-の-shape) で受け取り、この API は初回と Shape が追いつかないときの補助に使う。ピンや署名だけの相手（共有していない相手）のマスター鍵は Shape に来ないので、失効の手順 4 の直前などに、この API で取る。
-- `POST /api/e2ee/keys/claim`：【決定】ワンタイム鍵の払い出しの回数（1 日の上限。20 個は【提案】）は、`INSERT INTO e2ee_one_time_key_claim_counts ... ON CONFLICT DO UPDATE SET claimed = claimed + 1 WHERE claimed < 20` のような原子的な更新で数え、更新できなければ（上限）フォールバック鍵を返す。同じ端末への `POST /api/e2ee/keys/upload`（1 端末 100 個）は、端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`。端末の削除と to-device の送信と同じキー。別のキーだと、アップロードと削除が直列にならず、削除後に鍵が入り直す）を取って、件数の確認と挿入を直列にする。`{"one_time_keys": {"<user_id>": {"<device_id>": "signed_curve25519"}}}`。端末ごとにワンタイム鍵を 1 つ払い出し、なければフォールバック鍵を返す。応答は `{"one_time_keys": {"<user_id>": {"<device_id>": {"signed_curve25519:<key_id>": {"key": "...", "signatures": {}}}}}}` で、鍵がない端末は含めない。ワンタイム鍵は 1 文の `DELETE ... RETURNING`（`FOR UPDATE SKIP LOCKED` で選ぶ）で払い出し、並行した claim でも同じ鍵を 2 回返さない。フォールバック鍵を返したら `used = true` にする。
+- `POST /api/e2ee/keys/claim`：【決定】ワンタイム鍵の払い出しの回数（1 日の上限。20 個は【決定】（#354））は、`INSERT INTO e2ee_one_time_key_claim_counts ... ON CONFLICT DO UPDATE SET claimed = claimed + 1 WHERE claimed < 20` のような原子的な更新で数え、更新できなければ（上限）フォールバック鍵を返す。同じ端末への `POST /api/e2ee/keys/upload`（1 端末 100 個）は、端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`。端末の削除と to-device の送信と同じキー。別のキーだと、アップロードと削除が直列にならず、削除後に鍵が入り直す）を取って、件数の確認と挿入を直列にする。`{"one_time_keys": {"<user_id>": {"<device_id>": "signed_curve25519"}}}`。端末ごとにワンタイム鍵を 1 つ払い出し、なければフォールバック鍵を返す。応答は `{"one_time_keys": {"<user_id>": {"<device_id>": {"signed_curve25519:<key_id>": {"key": "...", "signatures": {}}}}}}` で、鍵がない端末は含めない。【決定】ワンタイム鍵は、`SELECT ... ORDER BY created_at, key_id LIMIT 1 FOR UPDATE SKIP LOCKED` で 1 行をロックしてから、別の文で主キーを指定して `claimed_at = now()` に更新し、並行した claim でも同じ鍵を 2 回返さない（1 文の `UPDATE ... WHERE ... IN (SELECT ... FOR UPDATE SKIP LOCKED)` は、計画によって、残っている鍵があっても 0 行になることがあるため）。払い出した鍵の行は消さずに残し（`claimed_at` あり）、アップロードの応答をなくした再送は主キーの衝突（`ON CONFLICT DO NOTHING`）で入れ直さない（同じ `key_id` で内容が違えば 409 `E2EE_KEY_EXISTS`）。主キーで判定するので、払い出しがコミットする前に再送の `INSERT` が始まっても、衝突した行の確定を待ってから判定し、入り直らない（別の表に移す方法では、再送の文のスナップショットに移した行が見えず、入り直る）。払い出し済みの行は端末の行と一緒に消える（削除から 30 日のバッチ）。件数の上限（100 個）と応答の `one_time_key_counts` は、払い出していない鍵だけを数える。行の数は、その端末と作った Olm セッションの数と同じ程度。フォールバック鍵を返したら `used = true` にする。
+  - 【決定】フォールバック鍵は、今の鍵より新しい世代のときだけ置き換える。世代は `key_id`（vodozemac の `KeyId`。端末ごとに 1 ずつ増える u64 のビッグエンディアンの 8 バイトをパディングなし base64 にしたもの）で比べ、デコードできない `key_id` のフォールバック鍵は 400 にする。古い世代の鍵（遅れて届いた要求や、応答をなくした再送）は、エラーにせずに無視する。端末は今と 1 つ前のフォールバック鍵の秘密鍵しか持たないので、古い鍵に巻き戻すと、その鍵を払い出された送信者が作った Olm セッションを宛先が開けないため。同じ `key_id` で同じ内容は何もせず（`used` を戻さない）、内容が違えば 409 `E2EE_KEY_EXISTS`。
   - 払い出せるのは、`keys/query` で問い合わせできるのと同じ範囲（自分と、暗号化チャンネルを共有しているユーザー）の端末だけ。範囲外のユーザーと端末は、存在を推測されないよう、エラーにせず黙って応答から除く。
-  - 【決定】ゲストでないユーザーは、`POST /api/dms` で相手の同意なしに暗号化 DM を作れるので、誰でも任意の相手と「暗号化チャンネルを共有するユーザー」になれる。範囲を限るだけでは、端末鍵の取得やワンタイム鍵の枯渇を防げない。そこで、呼び出したユーザーと宛先の端末の組ごとに、ワンタイム鍵の払い出しを 1 日に 20 個までにする（数え方は【決定】。20 個は【提案】で、#354 で決めるが、1 ユーザーの端末の最大数（20 台）以上にする。送信側が端末をすべて使っても、1 台につき 1 個ずつ払い出せるように）。上限を超えた払い出しにはエラーを返さず、フォールバック鍵を返す。送信者は今までどおり Olm セッションを作れるので、宛先の端末を黙って飛ばすことはない。正規の送信者が必要とするのは、送信者の端末ごとに、宛先の端末と Olm セッションを作るときの 1 個ずつ（送信者の端末の数だけ。ログインし直すと新しい端末になる）なので、この上限で足りる。払い出しの要求の回数（宛先にワンタイム鍵がなくフォールバック鍵を返した要求も数える。判定を先に行うため）は、呼び出したユーザー、宛先の端末、日付の組で数える表（`e2ee_one_time_key_claim_counts`。`claimed` は要求の回数）に持つ（表は【決定】、数の列の意味もここで決める）。
-  - 1 回で払い出す端末は 1000 台まで【提案】。
+  - 【決定】ゲストでないユーザーは、`POST /api/dms` で相手の同意なしに暗号化 DM を作れるので、誰でも任意の相手と「暗号化チャンネルを共有するユーザー」になれる。範囲を限るだけでは、端末鍵の取得やワンタイム鍵の枯渇を防げない。そこで、呼び出したユーザーと宛先の端末の組ごとに、ワンタイム鍵の払い出しを 1 日に 20 個までにする（数え方は【決定】。20 個は #354 で【決定】。1 ユーザーの端末の最大数（20 台）以上にする。送信側が端末をすべて使っても、1 台につき 1 個ずつ払い出せるように）。上限を超えた払い出しにはエラーを返さず、フォールバック鍵を返す。送信者は今までどおり Olm セッションを作れるので、宛先の端末を黙って飛ばすことはない。正規の送信者が必要とするのは、送信者の端末ごとに、宛先の端末と Olm セッションを作るときの 1 個ずつ（送信者の端末の数だけ。ログインし直すと新しい端末になる）なので、この上限で足りる。払い出しの要求の回数（宛先にワンタイム鍵がなくフォールバック鍵を返した要求も数える。判定を先に行うため）は、呼び出したユーザー、宛先の端末、日付の組で数える表（`e2ee_one_time_key_claim_counts`。`claimed` は要求の回数）に持つ（表は【決定】、数の列の意味もここで決める）。
+  - 1 回で払い出す端末は 1000 台まで【決定】（#354）。
 
 ### to-device メッセージ（[#355](https://github.com/Zli-UoA/zoo2/issues/355)）
 
@@ -717,15 +734,18 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   ```
 
   - 応答は `{"undelivered": [...]}`（下のキューの上限で入れなかった宛先。なければ空）。
-  - 同じ `(送信ユーザー, 送信端末, txn_id, 宛先)` の再送は 1 件にまとめる（冪等）。ack でメッセージ行を消すと冪等性が失われるので、送信の記録（`e2ee_to_device_txns`：送信ユーザー、送信端末、`txn_id`、宛先、作成日時）を 30 日残し、ack 後の再送は入れずに成功として扱う【提案】。送信の記録は、キューに入れた宛先にだけ書く（`undelivered` の宛先には書かない）ので、`undelivered` を同じ `txn_id` で送り直しても、入れられなかった宛先は通常どおり入る。重複した要求の応答の `undelivered` は、その時点で入れられなかった宛先を改めて返す（元の応答は覚えない）。
+  - 同じ `(送信ユーザー, 送信端末, txn_id, 宛先)` の再送は 1 件にまとめる（冪等）。ack でメッセージ行を消すと冪等性が失われるので、送信の記録（`e2ee_to_device_txns`：送信ユーザー、送信端末、`txn_id`、宛先、作成日時）を 30 日残し、ack 後の再送は入れずに成功として扱う。【決定】（#355）送信の記録を残す期間は 30 日。回収は端末の回収と同じ 1 時間ごとのバッチで、`created_at` が 30 日より前の行を消す。30 日より後の同じ `txn_id` の再送は、送信の記録が回収され、メッセージも ack で削除済みの場合に、新しい送信として入る（メッセージが未 ack で残っていれば、送信の記録がなくても入らない。クライアントは、送れなかった送信待ちを 30 日より長く同じ `txn_id` で送り直さない）。送信の記録は、キューに入れた宛先にだけ書く（`undelivered` の宛先には書かない）ので、`undelivered` を同じ `txn_id` で送り直しても、入れられなかった宛先は通常どおり入る。重複した要求の応答の `undelivered` は、その時点で入れられなかった宛先を改めて返す（元の応答は覚えない）。
   - 【決定】1 件の `content` は 64 KiB まで。1 回の宛先は 100 端末までで、超える送信者は複数のリクエストに分ける（各リクエストに別の `txn_id`、冪等の単位は変わらない）。1 リクエストは最大 6.4 MiB で、Axum の既定のボディ上限（2 MB）を超えるので、このルートだけ 8 MiB に上げる。応答の `undelivered` は、リクエストごとに返す。
-  - 【決定】端末の数などの上限をサーバーで強制し、超えたら 400 `E2EE_LIMIT_EXCEEDED`（上限の名前を `limit` に入れる）で拒否する。数は【提案】で、#354 で決める：1 ユーザーの端末は削除済みを除いて 20 台まで。台数の確認と登録は、ユーザー単位の `pg_advisory_xact_lock`（下の直列化の規則と同じキー）を取ったトランザクションで行う。取らないと、並列の登録が READ COMMITTED で全員 20 台未満と読んで 20 台を超えてしまうため。【決定】20 台に達した登録は、古い端末を自動で削除せず、400 `E2EE_LIMIT_EXCEEDED` で拒否する。応答の `stale_devices`（最後に使ってから 30 日以上たった端末の `device_id`、`last_seen_at`）で、利用者に削除する端末を選んでもらう。端末の削除は失効ではなく、削除された端末はバックアップ鍵、自己署名鍵、ユーザー署名鍵の秘密鍵を持ったままなので（[取り消せないもの](#取り消せないもの)）、自動で削除すると、利用者が失効を選ばないまま、鍵を持つ端末が残ってしまうため。端末一覧は #362 で、それまでは `DELETE /api/e2ee/devices/{device_id}` を直接呼ぶ。ログインし直すたびに新しい端末になるので、古い端末が溜まって初回設定や失効ができなくなるのを、`stale_devices` で利用者に選んでもらって防ぐ。1 端末のワンタイム鍵とフォールバック鍵は合わせて 100 個まで。1 回のアップロードの署名は 1000 件まで。端末鍵と署名の JSON は 8 KiB まで。削除済みの端末の行は `device_id` の再利用を防ぐために残るが、登録と削除を繰り返して増やせる。削除済みの端末は、削除から 30 日たったら、定期のバッチ（#354。ユーザーごとにユーザー単位のロックを取り、墓標の挿入と `e2ee_devices` の行の削除を 1 つのトランザクションで行う）で、鍵や `device_keys` を持たない `(user_id, device_id)` だけの墓標（`e2ee_deleted_device_ids`。小さい行で、`device_id` の再利用を防ぐためだけに永久に残す）に移し、`e2ee_devices` の行を消す。`e2ee_devices` の削除済みの行は 30 日で減るので、登録が上限で詰まらない。墓標は件数を数えず、登録の回数制限（1 時間に 30 回）で増え方を抑える。端末をすべて失っても、パスキーかリカバリーキーがあれば、新しい `device_id` で登録できる。30 日のあいだに回数制限（1 時間に 30 回。【提案】で、この計算はそれに依存する）いっぱいまで登録と削除を繰り返すと、`e2ee_devices` の削除済みの行は約 21,600 行になる。1 行は `device_keys` を 8 KiB まで持てるので、最大で約 170 MB（21,600 × 8 KiB）になるが、1 ユーザーの最大で、実際の端末鍵の JSON は 1 KiB 前後なので約 20 MB で、30 日で回収されるため、上限は置かず許容する。登録は 1 ユーザーにつき 1 時間に 30 回までにし、超えたら 429 `E2EE_RATE_LIMITED`（`retry_after` 付き）にする【提案】。暗号化チャンネルを共有するだけの相手に大量の端末を登録され、送信側が各端末に鍵を送る負荷と、`keys/claim` の枯渇を防ぐため。
-  - 初期版の `type` は `m.room.encrypted` だけ。宛先の端末が存在しない、または削除済みなら、その宛先は黙って捨てる（存在の推測を防ぐため）。
+  - 【決定】端末の数などの上限をサーバーで強制し、超えたら 400 `E2EE_LIMIT_EXCEEDED`（上限の名前を `limit` に入れる）で拒否する。数は #354 で【決定】：1 ユーザーの端末は削除済みを除いて 20 台まで。台数の確認と登録は、ユーザー単位の `pg_advisory_xact_lock`（下の直列化の規則と同じキー）を取ったトランザクションで行う。取らないと、並列の登録が READ COMMITTED で全員 20 台未満と読んで 20 台を超えてしまうため。【決定】20 台に達した登録は、古い端末を自動で削除せず、400 `E2EE_LIMIT_EXCEEDED` で拒否する。応答の `stale_devices`（最後に使ってから 30 日以上たった端末の `device_id`、`last_seen_at`）で、利用者に削除する端末を選んでもらう。端末の削除は失効ではなく、削除された端末はバックアップ鍵、自己署名鍵、ユーザー署名鍵の秘密鍵を持ったままなので（[取り消せないもの](#取り消せないもの)）、自動で削除すると、利用者が失効を選ばないまま、鍵を持つ端末が残ってしまうため。端末一覧は #362 で、それまでは `DELETE /api/e2ee/devices/{device_id}` を直接呼ぶ。ログインし直すたびに新しい端末になるので、古い端末が溜まって初回設定や失効ができなくなるのを、`stale_devices` で利用者に選んでもらって防ぐ。1 端末のワンタイム鍵とフォールバック鍵は合わせて 100 個まで。1 回のアップロードの署名は 1000 件まで。端末鍵と署名の JSON は 8 KiB まで。削除済みの端末の行は `device_id` の再利用を防ぐために残るが、登録と削除を繰り返して増やせる。削除済みの端末は、削除から 30 日たったら、定期のバッチ（#354。ユーザーごとにユーザー単位のロックを取り、墓標の挿入と `e2ee_devices` の行の削除を 1 つのトランザクションで行う）で、鍵や `device_keys` を持たない `(user_id, device_id)` だけの墓標（`e2ee_deleted_device_ids`。小さい行で、`device_id` の再利用を防ぐためだけに永久に残す）に移し、`e2ee_devices` の行を消す。`e2ee_devices` の削除済みの行は 30 日で減るので、登録が上限で詰まらない。墓標は件数を数えず、登録の回数制限（1 時間に 30 回）で増え方を抑える。端末をすべて失っても、パスキーかリカバリーキーがあれば、新しい `device_id` で登録できる。30 日のあいだに回数制限（1 時間に 30 回。#354 で【決定】）いっぱいまで登録と削除を繰り返すと、`e2ee_devices` の削除済みの行は約 21,600 行になる。1 行は `device_keys` を 8 KiB まで持てるので、最大で約 170 MB（21,600 × 8 KiB）になるが、1 ユーザーの最大で、実際の端末鍵の JSON は 1 KiB 前後なので約 20 MB で、30 日で回収されるため、上限は置かず許容する。登録は 1 ユーザーにつき 1 時間に 30 回までにし、超えたら 429 `E2EE_RATE_LIMITED`（`retry_after` 付き）にする【決定】（#354）。暗号化チャンネルを共有するだけの相手に大量の端末を登録され、送信側が各端末に鍵を送る負荷と、`keys/claim` の枯渇を防ぐため。
+  - 初期版の `type` は `m.room.encrypted` だけ（ほかは 400）。宛先の端末が存在しない、または削除済みなら、その宛先は黙って捨てる（存在の推測を防ぐため）。
+  - 【決定】（#355）`content` は JSON のオブジェクトだけを受け付ける（ほかは 400）。大きさはシリアライズした JSON のバイト数で数える。サーバーは中身（`algorithm` や `ciphertext`）を検証しない。
+  - 【決定】（#355）`device_id`（送信端末）は、呼び出したユーザーの削除されていない端末でなければ 404 にする（[方針](#方針)の認可）。送信は `users` の行を `FOR SHARE` で読んでから（無効化されていれば 403）、宛先の端末ごとのロックを取る（[ロックの順](#membership_epoch-と送信の順序)）。
+  - 【決定】（#355）応答の `txid` は、キューに 1 件以上入れたときだけ返し、それ以外（範囲外の宛先だけ、再送だけ、`undelivered` だけ）は `null` にする。
   - 【決定】宛先にできるのは、送信者自身の端末と、送信者と暗号化チャンネルを共有しているユーザーの端末だけ。範囲は[端末の Shape](#electric-の-shape) と同じ where（`$1` を送信者にしたもの）で決める。範囲外のユーザーと端末への宛先は、`keys/claim` と同じく、エラーにせずに捨てる。暗号化チャンネルを共有していないユーザーは、他人の端末のキューに書き込めない。応答は範囲外の宛先でも同じなので、応答の違いから端末が存在するかを推測することもできない。暗号化チャンネルを共有しているユーザーは、この規則では止まらない（下のキューの上限で量を抑える）。
   - 【決定】宛先の端末ごとに、受信確認されていないメッセージは 1000 件までにする。件数の確認と挿入は、宛先の端末ごとの `pg_advisory_xact_lock(2, hashtext(recipient_user_id || ':' || recipient_device_id))`（第 1 引数の 2 は端末単位。ユーザー単位の 1 と空間を分けて、無関係なキーが衝突して待たないようにする）を取って直列にする（READ COMMITTED で、同じ端末宛ての並行した要求が全員 999 件以下と読んで 1000 件を超えないようにするため）。複数の宛先は、デッドロックを避けるために `(user_id, device_id)` の昇順でロックを取る。上限に達した端末への宛先は入れず、応答の `undelivered`（`[{"user_id", "device_id"}]`）で返す。リクエストのほかの宛先は通常どおり入れる。範囲内の端末は送信者が端末の Shape でもともと見ているので、上限に達したことを知らせても、端末が存在するかは漏れない（範囲外の宛先と、存在しない端末への宛先は、これまでどおり知らせずに捨てる）。送信者は `undelivered` の宛先を暗号ストアの送信待ちに記録し、間隔をあけて送り直す。セッションを作り直したら、古いセッションの送り直しはやめる。
   - 上限に達するのは、暗号化チャンネルを共有するユーザーがわざと埋めた場合だけではない。多くの暗号化チャンネルに入っている端末が長くオフラインだった場合にも起こりうる（送信者の端末ごと、チャンネルごとに、セッションを作り直すたびに 1 件届くため）。初期版には鍵を要求し合う仕組みがないので、送り直しでも届かなかった鍵は、そのユーザーの別の端末が受け取って鍵バックアップに上げたものからしか取り戻せない。取り戻せなければ、そのセッションのメッセージは「鍵がまだ届いていない」と表示されたまま読めない（[受信時の検証](#受信時の検証)）。この上限で、1 台の端末のキューは 62.5 MiB（64 KiB × 1000 件）を超えない。暗号化チャンネルを共有しているユーザーがキューを埋めて受信を妨げることは防げない（[脅威モデル](#脅威モデル)）。
-- 受信は Shape（`/api/shapes/e2ee_to_device`）で受け取る。
-- `POST /api/e2ee/to_device/ack`：`{"device_id": "<自分の端末>", "ids": ["123", "124"]}`（最大 1000 件）。処理済みのメッセージを ID の一覧で消す。【決定】削除は `WHERE recipient_user_id = $1 AND recipient_device_id = $2 AND id = ANY($ids)`（`$1` は呼び出したユーザー、`$2` は要求の `device_id`）のように、呼び出した端末宛ての行だけを対象にする。ID は連番の bigint で推測できるので、これがないと他のユーザー宛てのメッセージを消して、Megolm 鍵の配布を妨げられる。すでに消えた ID（ack の再送）は黙って無視して 200 を返す。【決定】「ある ID 以下をすべて消す」方式にしない。ID の採番順とコミット順は一致しないので、後からコミットされた小さい ID のメッセージを、受け取る前に消してしまうため。
+- 受信は Shape（`/api/shapes/e2ee_to_device?device_id=<自分の端末>`）で受け取る。【決定】（#355）`device_id` が呼び出したユーザーの削除されていない端末でなければ 404（他人の端末の存在を推測されないよう 403 にしない）。
+- `POST /api/e2ee/to_device/ack`：`{"device_id": "<自分の端末>", "ids": ["123", "124"]}`（最大 1000 件）。処理済みのメッセージを ID の一覧で消す。【決定】削除は `WHERE recipient_user_id = $1 AND recipient_device_id = $2 AND id = ANY($ids)`（`$1` は呼び出したユーザー、`$2` は要求の `device_id`）のように、呼び出した端末宛ての行だけを対象にする。ID は連番の bigint で推測できるので、これがないと他のユーザー宛てのメッセージを消して、Megolm 鍵の配布を妨げられる。すでに消えた ID（ack の再送）は黙って無視して 200 を返す。【決定】（#355）`device_id` が呼び出したユーザーの削除されていない端末でなければ 404。ID は文字列（Shape が bigint を文字列で配るため）と数のどちらも受け付ける。応答は `{"deleted": <消した件数>}` で、消した行があるときだけ `txid` を返す。【決定】「ある ID 以下をすべて消す」方式にしない。ID の採番順とコミット順は一致しないので、後からコミットされた小さい ID のメッセージを、受け取る前に消してしまうため。
 - 【決定】受信確認されないメッセージは、生きている端末では時間では回収しない（件数の上限 1000 件だけ）。時間で回収すると、端末が 1 台だけの利用者が 30 日以上オフラインだったとき、Megolm 鍵が失われ、バックアップにもない過去ログを永久に読めなくなるため。削除した端末のメッセージは、削除のときに消す。
 
 ### クロス署名（[#356](https://github.com/Zli-UoA/zoo2/issues/356)）
@@ -738,11 +758,12 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 【決定】自己署名鍵を変えたときも、同じように `membership_epoch` を増やす。漏れた自己署名鍵で署名された端末に、今のセッションの続きが届かないようにするため（#356 の「マスター鍵の変更」に加える。この増加も #357 で足す）。
   - 【決定】すでにあるマスター鍵を差し替えるときは、直前の再認証を求める。盗んだトークンだけでマスター鍵を差し替えられないようにするため。
   - 【決定】初めてマスター鍵を登録するとき（初回設定）にも、同じ直前の再認証を求める。E2EE の初回設定が済んでいないアカウントのトークンを盗んだ者が、利用者より先にマスター鍵、自己署名鍵、自分だけが開けられる SSSS を登録すると、他のユーザーはそのマスター鍵を TOFU で信頼し、その者の端末に鍵を配ってしまう。利用者はその SSSS を開けられないので、初回設定を続けることもできない。初回設定ではパスキーかリカバリーキーを作るので、再認証の手間は小さい。SSSS の最初の作成（`POST /api/e2ee/secret_storage/keys`）にも同じく求める。最初のバックアップの版は、サーバーが今のマスター鍵の署名を検証するので、再認証は求めない。
-  - 【決定】再認証の確かめ方：クライアントは `max_age=0` を付けて AuthZ の認可リクエストを送り直し（AuthZ でログインし直す）、受け取った ID トークンを、再認証が要る要求のヘッダー `X-Zoo-Reauth` に入れる。サーバーは、その ID トークンの署名（AuthZ の JWKS）、`iss`、`aud`（zoo2 のクライアント ID の一覧。Web、Android、TUI の ID を、`OIDC_AUDIENCE` とは別の新しい設定キーで持つ。キーの名前と形式は #356 で決め、zoo2-infra の ConfigMap `zoo2-oidc` に値を足す）、`exp` を検証し、`sub` がアクセストークンのユーザーと同じで、AuthZ がパスキーなどで直前に認証した時刻（下の `authenticated_at`）が 5 分以内であることを確かめる。満たさなければ 403 `E2EE_REAUTH_REQUIRED`。アクセストークンを使わないのは、AuthZ（`@better-auth/oauth-provider` 1.7.12）の JWT のアクセストークンには `auth_time` が入らないため。ID トークンには `auth_time` が入り、認可リクエストの `max_age` にも対応している（`max_age=0` なら必ずログインし直させる）。どちらも AuthZ のソースで確かめた。【未検証】実際の AuthZ で `max_age=0` が再ログインになることは #356 の結合テストで確かめる。
+  - 【決定】再認証の確かめ方：クライアントは `max_age=0` を付けて AuthZ の認可リクエストを送り直し（AuthZ でログインし直す）、受け取った ID トークンを、再認証が要る要求のヘッダー `X-Zoo-Reauth` に入れる。サーバーは、その ID トークンの署名（AuthZ の JWKS）、`iss`、`aud`（zoo2 のクライアント ID の一覧。Web、Android、TUI の ID を、`OIDC_AUDIENCE` とは別の設定キー `OIDC_REAUTH_AUDIENCES`（カンマ区切り）で持ち、zoo2-infra の ConfigMap `zoo2-oidc` に値を足す。【決定】（#356）キーがない、または空でも backend は起動し、起動時に警告を出したうえで、再認証が要る要求をすべて 403 `E2EE_REAUTH_REQUIRED` にする。#357 で暗号化チャンネルを有効にするまでは E2EE を使わないので、ConfigMap より先に backend を配備しても止まらないようにするため。`OIDC` の設定がない開発環境（`DEV_AUTH_ENABLED`）では再認証を確かめない）、`exp` を検証し、`sub` がアクセストークンのユーザーと同じで、AuthZ がパスキーなどで直前に認証した時刻（下の `authenticated_at`）が 5 分以内であることを確かめる。満たさなければ 403 `E2EE_REAUTH_REQUIRED`。アクセストークンを使わないのは、AuthZ（`@better-auth/oauth-provider` 1.7.12）の JWT のアクセストークンには `auth_time` が入らないため。ID トークンには `auth_time` が入り、認可リクエストの `max_age` にも対応している（`max_age=0` なら必ずログインし直させる）。どちらも AuthZ のソースで確かめた。実際の AuthZ で `max_age=0` が再ログインになり、ID トークンに `authenticated_at` が入ること（QR のセッションとリフレッシュでは入らないこと）は、AuthZ#102 の E2E（`tests/e2e/reauth.spec.ts`）で確かめた。#356 の結合テストは、テストの鍵で署名した ID トークンで、claim がない、古い、`sub` が違う、`aud` が zoo2 のクライアントでない、アクセストークン（`typ: at+jwt`）のときに 403 になることを確かめる。
   - 【決定】`auth_time` だけでは足りない。ID トークンの `auth_time` は AuthZ のセッションの作成時刻なので、QR でのログイン（`/login/qr`）で作ったセッションも新しい時刻になる。AuthZ は QR で作ったセッションの `authenticatedAt` を空にし、「元の端末の認証時刻を移さず、重要な操作には受け取った端末でのパスキーの再認証を求める」としている（AuthZ の main の `src/lib/auth.ts`、`docs/architecture.md`）。zoo2 もこれにそろえ、QR で作ったセッションを再認証として認めない。そのために、AuthZ が ID トークンに、セッションの `authenticatedAt` を表す独自の claim（ここでは `authenticated_at` と呼ぶ。名前は [AuthZ#97](https://github.com/Zli-UoA/AuthZ/issues/97) で決める）を足す。`auth_time`、`acr`、`amr` は採用版で上書きできない予約済みの名前なので、別の名前にする。zoo2 はこの claim がない、または 5 分より前なら 403 `E2EE_REAUTH_REQUIRED` を返す。
     - 足し方：採用版の `customIdTokenClaims` にはセッションが渡らないので使えない。`OAuthProviderExtension` の `claims.idToken`（`sessionId` が渡る）でセッションを読み、`authenticatedAt` を入れる。
     - claim を入れるのは、認可コードのグラント（`grantType === 'authorization_code'`）で発行する ID トークンだけにする。リフレッシュトークンのグラントで発行する ID トークンには入れない。リフレッシュのたびに今のセッションを読んで入れると、盗んだリフレッシュトークンで、利用者が別の場所で直前に認証した時刻の付いた ID トークンを取れてしまうため。
     - 試験：AuthZ#97 では、リフレッシュで発行した ID トークンに claim が入らないことを確かめる。#356 では、リフレッシュで発行した ID トークン（claim なし）を 403 にすることを確かめる。
+    - 【決定】（#356）`authenticated_at` は秒の UNIX 時刻（AuthZ#102）。今から 300 秒以内を認め、時計のずれとして 60 秒先までを認める。`sub` は、`(iss, sub)` の `user_identities` の行のユーザーが、アクセストークンのユーザーと同じであることで確かめる。
   - 【決定】`backend/src/routes/mod.rs` の CORS の許可ヘッダーに `X-Zoo-Reauth` を足す（#356）。本番は同一オリジン（`CORS_ALLOWED_ORIGINS` が空）なので効かないが、開発と #363 の Playwright（5173 から 8000）では足さないと、React からの要求がプリフライトで拒否される。`docs/electric-sync-requirements.md` と `frontend/README.md` も許可ヘッダーを列挙しているので、#356 で合わせて直す。
   - 【決定】Android と TUI は、ふだんのログインにデバイス認可グラント（device code）を使うので、そのままでは `max_age` を付けた ID トークンを取れない。この 2 つも、再認証のときだけ認可コードフロー（PKCE、`max_age=0`）を使う。Android は Custom Tabs で開き、`https` の App Links のリダイレクトで受け取る（AuthZ は本番でリダイレクト URI に `https:` だけを受け付けるので、カスタムスキームは登録できない）。リダイレクト先は `https://zli.chat/android/reauth-callback` とし、zoo2 のフロントエンドの nginx が `https://zli.chat/.well-known/assetlinks.json`（zoo の Android アプリに `delegate_permission/common.handle_all_urls` を与える）を配信する。今の `infra/frontend-nginx.conf` は `try_files $uri /index.html` なので、ファイルがないと `index.html` を 200 で返し、App Links の検証が失敗する。このパスには完全一致の `location` を置き、`application/json` で返し、ない場合は 404 にする。ファイルはイメージに含めるか、起動時に設定（パッケージ名と指紋）から作るかを #360 で決める。Android アプリの manifest には、このパスの `autoVerify` 付きの intent-filter を足す（どちらも #360。初回設定でも再認証が要るため）。【未検証】AuthZ からの 302 のリダイレクトで、Custom Tabs がアプリに処理を渡すかは #360 か #369 の実機で確かめる。TUI はブラウザーで開き、ループバックのリダイレクト（`http://127.0.0.1:<空いているポート>/callback`）で受け取る。SSH の先で TUI を動かしていてブラウザーが別のマシンにあると、ブラウザーからこの URL に届かない。その場合は、`ssh -L <ポート>:127.0.0.1:<ポート>` でポートを転送するか、初回設定や失効を Web か Android で行うよう、TUI が案内する（#360）。解錠はリカバリーキーだけで済むので影響しない。Web だけで失効させる形にしないのは、Compose と TUI にも同じ機能を入れる方針（#321）に合わせるため。そのために、次のことが要る（[AuthZ#97](https://github.com/Zli-UoA/AuthZ/issues/97)。[ロードマップ](#ロードマップ)）。
     - AuthZ（`src/lib/oauth-clients.ts`）は、本番ではリダイレクト URI に `https:` だけを受け付け、`http://127.0.0.1` は開発時だけ許している。このままでは TUI のループバックの URI を本番に登録できないので、AuthZ のコードと `docs/architecture.md` を変え、public client にループバックの `http`（RFC 8252 の 7.3）を許す。採用版の Provider は、認可のときにループバックのポートの違いを許す（`stripLoopbackRedirectPort`）ので、ポートは固定しなくてよい。
@@ -765,7 +786,10 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   ```
 
   署名者は常に呼び出したユーザー。サーバーは対象（端末鍵かマスター鍵）の Canonical JSON に対して署名を検証する。
-- `POST /api/e2ee/tofu_pins`：`{"pins": [{"target_user_id", "master_key", "signatures"}], "replace": false}`。TOFU のピン（[クロス署名](#クロス署名)）を足す。
+  - 【決定】（#356）`signer_key_id` は今の自己署名鍵かユーザー署名鍵でなければ 400 `E2EE_BAD_SIGNATURE`。自己署名鍵で署名できるのは自分の削除されていない端末だけ、ユーザー署名鍵で署名できるのは他のユーザーの今のマスター鍵だけ（`target_key_id` はその公開鍵）。対象のユーザーは `keys/query` でマスター鍵を返す範囲（暗号化チャンネルを共有しているか、ピンか署名がある）に限り、範囲外と存在しない対象は 404。1 回 1000 件まで（`limit` は `signatures`）。
+  - 【決定】（#356）自己署名の対象の端末は、ユーザー単位のロックのあとに、端末の削除と同じ端末単位のロックを `device_id` の昇順で取ってから、削除されていないことを読む（読んだあとに削除がコミットし、削除済みの端末に署名が残るのを防ぐため）。他のユーザーのマスター鍵への署名では、対象の鍵の行を `FOR SHARE` で読む（読んだあとに相手のマスター鍵の差し替えと古い鍵への署名の削除がコミットし、古い鍵への署名が残るのを防ぐため。差し替えが先にコミットすれば、読み直して 404 にする）。
+  - 【決定】（#356）応答は `{"count"}`。`count` は受け付けた署名の件数（要求の `signatures` の件数）で、書き込んだ行の数ではない。同じ署名の再送も数える。`txid` は行を足すか署名を置き換えたときだけ返し、すべてが同じ署名の再送なら `null` にする（Shape に流れる変更がないため）。
+- `POST /api/e2ee/tofu_pins`：`{"pins": [{"target_user_id", "master_key", "signatures"}], "replace": false}`。TOFU のピン（[クロス署名](#クロス署名)）を足す。サーバーは `{type, user_id, target_user_id, master_key}` に `signatures` を付けた JSON を `pin_json` として保存し、そのまま返す。【決定】（#356）1 回 1000 件まで（`limit` は `pins`）。応答は保存したピン（`{"pins": [...]}`）。
   - サーバーは、呼び出したユーザーの今のユーザー署名鍵で署名を検証する（違えば 400 `E2EE_BAD_SIGNATURE`）。
   - 【決定】ピンと署名の書き込み（`POST /api/e2ee/tofu_pins`、`POST /api/e2ee/cross_signing/signatures`）は、ユーザー単位の `pg_advisory_xact_lock(1, hashtext(user_id))`（上の直列化の規則と同じキー）を取ってから、今のピンや署名を読んで判定する。同じユーザーの 2 つの端末が同時に同じ相手の最初のピンを作っても、後から入った方は主キーの衝突（500）にならず、読み直して、同じマスター鍵なら 200、違えば 409 `E2EE_PIN_CONFLICT` にする。署名の再送（同じ署名者、対象、署名）も、同じ署名なら 200 にする（違う署名なら置き換える）。
   - `replace: false` で、同じ相手のピンがすでにあり、今のユーザー署名鍵で署名を検証できる場合は、`master_key` が違えば 409 `E2EE_PIN_CONFLICT`（今のピンを返す）。同じなら成功として扱う（冪等）。今の鍵で検証できないピン（ユーザー署名鍵を作り直す前の署名のまま残ったもの）は、新しいピンで置き換える。
@@ -773,7 +797,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - ピンは本人にだけ返す（`keys/query`、[配布先のスナップショット](#配布先のスナップショット)、下の `GET /api/e2ee/tofu_pins`）。
 - `GET /api/e2ee/tofu_pins?after=<任意>&limit=<任意>`：呼び出したユーザー自身のピンをすべて、`target_user_id` の昇順で返す。応答は `{"pins": [<署名付きの zoo.tofu_pin>], "next": "<target_user_id>"}` で、続きがなければ `next` は `null`。続きは `after` に `next` を入れて取る。
   - 認可は他の E2EE の API と同じく、トークンのユーザーまで。他のユーザーのピンを指定する引数はない。
-  - `limit` は 1〜1000 で、省略時は 1000【提案】。範囲外なら 400。
+  - `limit` は 1〜1000 で、省略時は 1000【決定】（#356）。範囲外なら 400。
   - ピンは保存されたときの署名付きの JSON をそのまま返す。署名を検証するのはクライアント。
   - 共有チャンネルにいない相手のピンも返す。ユーザー署名鍵を作り直すとき（[失効の手順](#失効の手順)の 4）に、署名し直すピンを選び、署名し直さないピンを利用者に示すため。`keys/query` の `tofu_pins` は問い合わせたユーザーの分しか返さないので、他の端末がピンを作った相手を知らない端末は、ピンをすべて集められない。
 
@@ -816,13 +840,15 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 【決定】すでにある秘密を置き換えるときは、直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。秘密の暗号化には版や回数が入らないので、トークンを持つだけの攻撃者が、前に取得した古い暗号文を送り直して、失効の前の秘密鍵を SSSS に戻せないようにするため。足すだけのときは求めない。
 - `POST /api/e2ee/secret_storage/slots`：【決定】要求に `key_id` を入れ、今の既定の鍵と違えば 409 `E2EE_SSSS_CONFLICT`（`default_key_id` 付き）にする（古い端末が、すでに消えた鍵のスロットを足して、「最後の 1 つ」の規則を満たしてしまうのを防ぐため）。既定の鍵にスロットを足す。`kind = "passkey"` で同じ `credential_id` のスロットがあれば置き換える。`kind = "recovery"` は 1 つの鍵に 1 つだけで、あれば置き換える。置き換えるときは直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。
 - `DELETE /api/e2ee/secret_storage/slots/{slot_id}`：スロットを消す。判定の順は、スロットがなければ 404（すでに消えたスロットの再試行と見分けるため）、そのあと最後の 1 つなら 400 `E2EE_SLOTS_REQUIRED`。【決定】`POST /api/e2ee/secret_storage/slots` と `DELETE /api/e2ee/secret_storage/slots/{slot_id}` も、ユーザー単位の `pg_advisory_xact_lock`（上の直列化の規則と同じキー）を取り、件数の確認と書き込みを同じトランザクションで行う。取らないと、2 つの DELETE が同時に来て、どちらも「まだ 2 つある」と読んで別々のスロットを消し、0 個にできてしまう。直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。
-- `POST /api/e2ee/secret_storage/slots/{slot_id}/used`：最後に使った日時を記録する【提案】。
+- `POST /api/e2ee/secret_storage/slots/{slot_id}/used`：最後に使った日時を記録する【決定】（#356）。再認証もロックも要らない。他人のスロットとないスロットは 404。
+- 【決定】（#356）サーバーは暗号文を復号できないので、形だけを確かめる。`key_id` と `slot_id` は小文字でハイフン区切りの UUID。SSSS 鍵の `iv` は 16 バイト、`mac` は 32 バイト。秘密の `iv` は 16 バイト、`mac` は 32 バイト、`ciphertext` は 64 KiB（base64 の文字数）まで（`limit` は `secret_size`）。スロットの `nonce` は 12 バイト、`ciphertext` は 48 バイト、`prf_salt` は 32 バイト、`credential_id` は base64url（パディングなし）で 1023 バイトまで、`label` は 255 文字まで。base64 はパディングの有無を問わない。`slot_id` は表全体で一意で、使われている ID は 400。
+- 【決定】（#356）`POST /api/e2ee/secret_storage/slots` は、要求に `key_id` とスロットの項目（`id`、`kind`、`credential_id`、`prf_salt`、`nonce`、`ciphertext`、`label`）を並べて送る。同じ `id` で同じ内容の再送は、何もせずに 200。
 
 ### 鍵バックアップ（[#356](https://github.com/Zli-UoA/zoo2/issues/356)）
 
 - 【決定】今の版は、そのユーザーが作った版のうち番号が最も大きいもの。それを消してあれば、今の版はない。番号は、消した版も含めた最大に 1 を足して振る。今の版を消しても、それより前の版が今の版に戻ることはない。漏れたバックアップ鍵の古い版に、アップロードを戻させないため。
 - `POST /api/e2ee/key_backup/versions`：`{"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": {"public_key", "signatures"}, "expected_current_version": "1"}`。新しい版を作り、今の版にする。応答は `{"version": "2"}`。
-  - 【決定】`auth_data.public_key` が今の版の公開鍵と同じなら、新しい版を作らずに今の版を返す（再認証も epoch の増加もない）。応答をなくした要求を送り直しても失敗しないようにするため。この判定は下の検査より先に行う。
+  - 【決定】`auth_data.public_key` が今の版の公開鍵と同じなら、新しい版を作らずに今の版を返す（再認証も epoch の増加もない）。応答をなくした要求を送り直しても失敗しないようにするため。この判定は下の検査より先に行う。【決定】（#356）`auth_data` が今の版と同じなら何もしない。公開鍵が同じで署名が違えば（マスター鍵の差し替えのあとに署名し直したもの）、今のマスター鍵の署名を検証してから、今の版の `auth_data` を更新する（no-op は `auth_data` がまったく同じときだけ。クロス署名鍵の `key_json` と同じ規則）。
   - 【決定】`expected_current_version` が今の版（今の版がなければ `null`）と違えば 409 `E2EE_WRONG_BACKUP_VERSION`。2 つの端末の失効が、互いの版を知らずに切り替えないようにするため。409 を受けた端末は SSSS を読み直し、[失効の手順](#失効の手順)をやり直す。
   - サーバーは `auth_data` の、今のマスター鍵の署名を検証する（違えば 400 `E2EE_BAD_SIGNATURE`）。
   - 【決定】そのユーザーが過去に作った版（消した版を含む）と同じ `auth_data.public_key` は、400 `E2EE_KEY_REUSED` で拒否する。漏れたバックアップ鍵の古い `auth_data` には、残したマスター鍵の有効な署名が付いているので、トークンを持つ攻撃者がそれを送り直して、漏れた鍵を今の版に戻せないようにするため。
@@ -830,7 +856,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 【決定】版の作成と削除、セッションのアップロードは、ユーザーごとに直列にする。古い版が受け付けるのを、切り替えの前（epoch を増やす前）のアップロードだけにするため。版の作成と削除はユーザー単位の `pg_advisory_xact_lock(1, hashtext(user_id))`（上の直列化の規則と同じキー）を、アップロードは同じキーで `pg_advisory_xact_lock_shared` を取ってから、今の版を読む。
 - `GET /api/e2ee/key_backup/versions/current`：`{"version", "algorithm", "auth_data", "count"}`。今の版がなければ 404。
 - `GET /api/e2ee/key_backup/versions/{version}`：消していない版の `{"version", "algorithm", "auth_data"}`。消した版と、ない版は 404。
-- `GET /api/e2ee/key_backup/versions`：そのユーザーのすべての版（消した版を含む）の `{"version", "auth_data", "deleted"}` を番号の昇順で返す。古い版の秘密鍵を版に割り当てるために使う。
+- `GET /api/e2ee/key_backup/versions`：そのユーザーのすべての版（消した版を含む）の `{"version", "algorithm", "auth_data", "deleted"}` を番号の昇順で、`{"versions": [...]}` として返す。古い版の秘密鍵を版に割り当てるために使う。
 - `DELETE /api/e2ee/key_backup/versions/{version}`：版のセッションを消し、版の行に `deleted_at` を入れる。行は残し、番号と公開鍵の再利用の判定に使う。今の版を消すときは直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。消した版と、ない版は 404。【決定】削除には `expected_*` を足さず、パスの `version` を前提の値として扱う（指定した版だけを消す。別の端末が先に消していれば 404）。
 - `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`：
 
@@ -842,7 +868,8 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   }
   ```
 
-  - 1 回 1000 件まで。`version` が今の版でなければ 409 `E2EE_WRONG_BACKUP_VERSION`。
+  - 1 回 1000 件まで（`limit` は `backup_sessions`）。`version` が今の版でなければ 409 `E2EE_WRONG_BACKUP_VERSION`。応答は今の版のセッションの数（`{"count"}`）。
+  - 【決定】（#356）1 つの `session_data` の JSON は 8 KiB まで（`limit` は `session_size`）。このルートだけ要求の本文の上限を 10 MiB にする（Axum の既定は 2 MB）。`channel_id`、`sender_key`、`session_id` は 1〜128 文字。同じ要求の中の同じセッションは、下の規則でよいほうだけを残してから書く。
   - 【決定】要求に、端末が最後に解錠したときの `secrets_revision` を入れる（クエリの `secrets_revision`。必須で、省略したら 400）。今の値と違えば 409 `E2EE_SSSS_CONFLICT`。SSSS の秘密が失効で書き換えられたあとも、起動し直していない端末が古い鍵で古い版にアップロードし続けないようにするため。409 を受けた端末は、バックアップ鍵、自己署名鍵、ユーザー署名鍵を使う処理を止め、SSSS で解錠し直すよう表示する。
   - セッションは `(channel_id, sender_key, session_id)` で区別する（[受信時の検証](#受信時の検証)の手順 5 と同じ）。取り込む端末は、復号した平文の `channel_id`、`sender_key`、`session_id` がこの値と一致するかを確かめ、違えば捨てる。【決定】平文の `session_key` から作った受信用セッション（vodozemac の `InboundGroupSession::import`）の `session_id()` が、宣言された `session_id`（行と平文の値）と一致するかも確かめ、違えば捨てる。
   - 【決定】アップロードの書き込みは 1 つの文（`INSERT ... ON CONFLICT (user_id, version, channel_id, sender_key, session_id) DO UPDATE SET ... WHERE (EXCLUDED.is_verified::int, -EXCLUDED.first_message_index, -EXCLUDED.forwarded_count) > (e2ee_key_backup_sessions.is_verified::int, -e2ee_key_backup_sessions.first_message_index, -e2ee_key_backup_sessions.forwarded_count)`）で行う。アップロードは共有ロックで並行するので、読んでから書くと、同じセッションの 2 つのアップロードが競合して、よい行が上書きされたり、主キーの衝突（500）になったりするため。
@@ -851,7 +878,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 ### 暗号化チャンネル（[#357](https://github.com/Zli-UoA/zoo2/issues/357)）
 
-- `POST /api/channels`：【決定】`encrypted: true` は、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が true のときだけ受け付ける（false なら 403 `E2EE_DISABLED`。`POST /api/dms` も同じ）。#358 の拒否（API と DB トリガー）が入ってから true にする。`encrypted`（省略時 `false`）を足す。`encrypted: true` は `is_private: true` のときだけ（違えば 400 `E2EE_PUBLIC_FORBIDDEN`）。
+- `POST /api/channels`：【決定】`encrypted: true` は、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が true のときだけ受け付ける（false なら 403 `E2EE_DISABLED`。`POST /api/dms` も同じ）。【決定】値は `true` か `1`（大文字と小文字は区別しない）で有効、未設定や空、それ以外の値は無効（#357）。#358 の拒否（API と DB トリガー）が入ってから true にする。`encrypted`（省略時 `false`）を足す。`encrypted: true` は `is_private: true` のときだけ（違えば 400 `E2EE_PUBLIC_FORBIDDEN`）。
 - `POST /api/dms`：`encrypted`（省略時 `false`。`encrypted: true` は上と同じく `E2EE_ENCRYPTED_CHANNELS_ENABLED` が true のときだけ）を足す。
   - 【決定】1 対 1 の暗号化 DM の `channel_name` は `edm:{user_a}:{user_b}`（`user_a < user_b`）。平文の DM（`dm:{user_a}:{user_b}`）とは別の行になり、同じ 2 人に平文の DM と暗号化 DM が 1 つずつある状態を認める。ユーザーが作るチャンネル名には `:` を使えない（`validation.rs`）ので、衝突しない。
   - 【決定】`encrypted: true` のときは `edm:` の名前で get-or-create し、`encrypted = true` の行だけを返す。平文の DM を返すことはない。`edm:` の行が `encrypted = false` なら 409 `E2EE_ENCRYPTED_MISMATCH`。`encrypted` を省くと今までどおり `dm:` の名前で探す。
@@ -868,7 +895,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 【決定】Megolm セッション鍵の配布先は、epoch と結び付いた 1 つのスナップショットから計算します（[鍵の配布先の判定](#鍵の配布先の判定)）。Electric の Shape はそれぞれ別のストリームで、同じトランザクションまで届いている保証がないので、Channels Shape の epoch と Channel Users Shape のメンバーを組み合わせると、退出したメンバーに鍵を配ってしまうことがあるためです。この API は [#357](https://github.com/Zli-UoA/zoo2/issues/357) で作ります。
 
-- `GET /api/e2ee/channels/{channel_id}/recipients`：削除済みのチャンネルは 404。応答は `keys/query` と同じ形に、`channel_id`、`membership_epoch`、`user_ids` を足したもの。【決定】応答は `user_id` の昇順に、1 ページ最大 50 人（`limit`）で返す。1 ページの応答は 4 MiB までにし、それを超えるときは、入る人数で切って `next_after` を返す。1 人分を小さく抑えるため、`signatures` は、ページのユーザーを対象とする署名のうち、署名者が呼び出したユーザーか、そのユーザー自身のものだけにする（配布先の判定が使うのはこの 2 種類で、Shape の範囲より狭い）。1 人の端末は 20 台まで、1 台の鍵 JSON は 8 KiB まで（どちらも #354 で決める【提案】の値で、変わったときはこの見積もりと 4 MiB の根拠も直す）なので、端末鍵 8 KiB × 20 台、クロス署名鍵 3 つ、署名（呼び出したユーザーの署名とそのユーザー自身の署名で、それぞれ 21 件ほど）、ピン 1 つに収まり、1 MiB を超えない。それでも 1 人分が 4 MiB を超えるときは、400 `E2EE_LIMIT_EXCEEDED`（`limit` は `response_size`）にする。8 MiB の上限（`E2EE_LIMIT_EXCEEDED`）は `keys/query` だけに適用する。続きは、前のページの `next_after`（最後の `user_id`。最後のページは `null`）を `after` に、最初のページの `membership_epoch` を `epoch` に入れて取る。各ページは 1 つの `REPEATABLE READ READ ONLY` のトランザクションで作り、`epoch` が今の `membership_epoch` と違うときは、ページを返さず 409 `E2EE_STALE_EPOCH`（`current_epoch` 付き）にする。メンバーの変更、端末の削除と失効、クロス署名鍵の変更は epoch を増やす（[membership_epoch と送信の順序](#membership_epoch-と送信の順序)）ので、同じ `epoch` で取れたページは、メンバーと削除済みの端末が同じになる。端末の追加は epoch を増やさないので、取得中に追加された端末は一部のページにだけ入ることがあるが、退出したメンバーや削除した端末に鍵を配ることにはならず、追加された端末には、端末が増えたときの手順（今のセッションを今のインデックスから配る）で別に配る。クライアントは 409 を受けたら、最初のページから取り直す。Channel Users Shape や `keys/query` の 50 人ずつの組み立てでは配布先を作らない（Shape が遅れていると、退出したメンバーに鍵を配ってしまう）。暗号化チャンネルのメンバー数の上限は、#357 で決める【提案】。
+- `GET /api/e2ee/channels/{channel_id}/recipients`：削除済みのチャンネルは 404。応答は `keys/query` と同じ形に、`channel_id`、`membership_epoch`、`user_ids` を足したもの。【決定】応答は `user_id` の昇順に、1 ページ最大 50 人（`limit`）で返す。1 ページの応答は 4 MiB までにし、それを超えるときは、入る人数で切って `next_after` を返す。1 人分を小さく抑えるため、`signatures` は、ページのユーザーを対象とする署名のうち、署名者が呼び出したユーザーか、そのユーザー自身のものだけにする（配布先の判定が使うのはこの 2 種類で、Shape の範囲より狭い）。1 人の端末は 20 台まで、1 台の鍵 JSON は 8 KiB まで（どちらも #354 で決める【提案】の値で、変わったときはこの見積もりと 4 MiB の根拠も直す）なので、端末鍵 8 KiB × 20 台、クロス署名鍵 3 つ、署名（呼び出したユーザーの署名とそのユーザー自身の署名で、それぞれ 21 件ほど）、ピン 1 つに収まり、1 MiB を超えない。それでも 1 人分が 4 MiB を超えるときは、400 `E2EE_LIMIT_EXCEEDED`（`limit` は `response_size`）にする。8 MiB の上限（`E2EE_LIMIT_EXCEEDED`）は `keys/query` だけに適用する。続きは、前のページの `next_after`（最後の `user_id`。最後のページは `null`）を `after` に、最初のページの `membership_epoch` を `epoch` に入れて取る。各ページは 1 つの `REPEATABLE READ READ ONLY` のトランザクションで作り、`epoch` が今の `membership_epoch` と違うときは、ページを返さず 409 `E2EE_STALE_EPOCH`（`current_epoch` 付き）にする。メンバーの変更、端末の削除と失効、クロス署名鍵の変更は epoch を増やす（[membership_epoch と送信の順序](#membership_epoch-と送信の順序)）ので、同じ `epoch` で取れたページは、メンバーと削除済みの端末が同じになる。端末の追加は epoch を増やさないので、取得中に追加された端末は一部のページにだけ入ることがあるが、退出したメンバーや削除した端末に鍵を配ることにはならず、追加された端末には、端末が増えたときの手順（今のセッションを今のインデックスから配る）で別に配る。クライアントは 409 を受けたら、最初のページから取り直す。Channel Users Shape や `keys/query` の 50 人ずつの組み立てでは配布先を作らない（Shape が遅れていると、退出したメンバーに鍵を配ってしまう）。【決定】暗号化チャンネルのメンバー数の上限は 200 人（#357）。送信者は Megolm セッションを全メンバーの全端末（1 人 20 台まで）に to-device で配るので、1 回の配布は 4000 台まで（`keys/claim` の 1000 台ずつで 4 回）になり、`recipients` も 4 ページに収まる。上限を超える追加（`join`、`POST /api/channels/{id}/users`）は 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `members`）。グループ DM は今までどおり 10 人まで。
 
   ```json
   {
@@ -891,7 +918,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 ### メッセージ（[#357](https://github.com/Zli-UoA/zoo2/issues/357)、[#358](https://github.com/Zli-UoA/zoo2/issues/358)）
 
-- `POST /api/messages`：【決定】クライアントが決める `id` が、同じ `user_id` と `channel_id` のメッセージとしてすでにあれば（応答をなくした再送）、新しい暗号文を保存せず、既存の行を返して 200 にする。別のユーザーやチャンネルの `id` だと衝突するときは、`code` のない既存の 409 のままで、`E2EE_STALE_EPOCH` とは別物。クライアントは HTTP ステータスではなく `code` で分岐し、再試行の 3 回の数に入れるのは `E2EE_STALE_EPOCH` だけにする。編集も、409 `E2EE_STALE_REVISION` の `current_revision` の行を復号して、自分が送ろうとした内容と同じなら、成功として扱う。暗号化チャンネルでは次の形にする。
+- `POST /api/messages`：【決定】クライアントが決める `id` が、同じ `user_id` と `channel_id` のメッセージとしてすでにあれば（応答をなくした再送）、新しい暗号文を保存せず、既存の行を返して 200 にする。既存の行の本文と `revision` などの追加の列は、1 つの `REPEATABLE READ READ ONLY` のトランザクションで読む（平文のチャンネルの再送と `GET /api/messages` も同じ。別々に読むと、間に確定した編集の `revision` が編集前の本文に付く）。別のユーザーやチャンネルの `id` だと衝突するときは、`code` のない既存の 409 のままで、`E2EE_STALE_EPOCH` とは別物。クライアントは HTTP ステータスではなく `code` で分岐し、再試行の 3 回の数に入れるのは `E2EE_STALE_EPOCH` だけにする。編集も、409 `E2EE_STALE_REVISION` の `current_revision` の行を復号して、自分が送ろうとした内容と同じなら、成功として扱う。暗号化チャンネルでは次の形にする。
 
   ```json
   {
@@ -915,14 +942,22 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - `epoch` が今の `membership_epoch` と等しい。小さければ 409 `E2EE_STALE_EPOCH`、大きければ 400 `E2EE_INVALID_EPOCH`。
   - `revision` が 0（違えば 400）。
   - 平文チャンネルに `ciphertext`、`epoch`、`revision` を送ったら 400 `E2EE_PLAINTEXT_FORBIDDEN`。
-- `PATCH /api/messages/{id}`：`{"content": "", "epoch", "revision", "ciphertext", "mentions"}`。規則は送信と同じだが、`revision` の扱いだけは次の 2 点で上書きする（送信の平文チャンネルでは `revision` を拒否するが、編集では下のとおり省略も指定もできる）。
+  - `ciphertext`、`epoch`、`revision` のどれもない要求は、平文チャンネルと同じく、チャンネルを読む前に `content` を検証する（空白だけなら `code` のない 400。チャンネルがなくても 404 より先）。
+- `PATCH /api/messages/{id}`：`{"content": "", "epoch", "revision", "ciphertext"}`。規則は送信と同じだが、`revision` の扱いだけは次の 2 点で上書きする（送信の平文チャンネルでは `revision` を拒否するが、編集では下のとおり省略も指定もできる）。
   - 【決定】暗号化チャンネルでは `revision` を必須にし、サーバーは `messages.revision` を単調に増やす。行を `FOR UPDATE` で読み、`revision` が今の値 + 1 でなければ 409 `E2EE_STALE_REVISION`（`current_revision` 付き）。同じユーザーの 2 つの端末が同時に編集しても、同じ `revision` の版が 2 つできないようにするため。
   - 【決定】平文チャンネルでは `revision` を省略できる（後方互換）。既存のクライアントは `{"content"}` だけを送る（`backend/src/routes/messages.rs` の `UpdateMessageRequest`）ので、省略した要求は今までどおり受け付け、サーバーが `messages.revision` を 1 増やすだけにする（照合しない）。`revision` を送った場合だけ、暗号化チャンネルと同じ照合をする。クライアントとサーバーの更新が同時でなくても、更新前のクライアントの平文の編集が失敗しないようにするため。平文チャンネルで `ciphertext` と `epoch` を送ったときは、今までどおり 400 `E2EE_PLAINTEXT_FORBIDDEN`。
   - 409 を受けたクライアントは、最新の行を復号してから編集し直す。最新の行を復号できなければ、編集を止めてユーザーに表示する（復号できない版を上書きしない）。
 - `DELETE /api/messages/{id}`：暗号化チャンネルでは、論理削除と同時に `ciphertext` を消す（API ではなく、DB のトリガーで `deleted_at` が入った行の `ciphertext` を NULL にする。履歴の消去 `clear_history` も同じ）。すでに取得した端末のキャッシュは消せない。
-- `mentions` は平文で、サーバーはメンション通知と Web Push の宛先を作るためだけに使う（[機能ごとの扱い](#機能ごとの扱い)）。
+- `mentions` は平文で、サーバーはメンション通知と Web Push の宛先を作るためだけに使う（[機能ごとの扱い](#機能ごとの扱い)）。【決定】（#358）
+  - 形は `{"user_ids": [<ユーザー ID>], "channel": false, "here": false}`。どの項目も省略でき、`mentions` 自体を省いたときはメンションなしとして扱う。
+  - `user_ids` は UUID だけを受け付け（違えば 400）、200 件まで（暗号化チャンネルのメンバー数の上限と同じ。超えたら 400 `E2EE_LIMIT_EXCEEDED`、`limit` は `mentions`）。重複は 1 件の通知にまとめる。
+  - 通知を作るのは、チャンネルのメンバーで、送信者自身でなく、Bot でも無効化済みでもないユーザーだけ（平文チャンネルの本文のメンションと同じ規則）。メンバーでない ID は黙って無視し、400 にしない（送信のあいだに退出した人がいても送信を止めないため）。`channel` と `here` は、平文チャンネルの `@channel` と `@here` と同じく、送信者以外のメンバー全員に通知する。
+  - 平文チャンネルでは `mentions` を使わず、今までどおり本文から作る（送っても 400 にはせず、無視する）。
+  - 編集（`PATCH /api/messages/{id}`）は、平文チャンネルと同じく通知を作らないので、`mentions` を受け取らない（`UpdateMessageRequest` にない項目なので、送っても無視する）。
 - `POST /api/attachments/presign`：暗号化チャンネルの `channel_id` なら 400 `E2EE_ATTACHMENTS_FORBIDDEN`（#358）。
 - App の API（`/api/apps/v1/*`）：【決定】暗号化チャンネルと DM の作成（`encrypted: true`。`/api/apps/v1/dms` と `create_channel`）も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のときも、App からの `encrypted: true` は `E2EE_APPS_FORBIDDEN` を返す（判定の順は、App かどうか、設定の順。App には、設定にかかわらず作成を許さないため）。暗号化チャンネルとそのメッセージへの読み書きを、委任トークン（`app_credentials.user_id` があり、ユーザーとして動くもの）を含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する（#358）。メッセージの作成（`/api/apps/v1/messages`）、ファイルの紐付け（`/api/apps/v1/messages/{id}/files`）、`blocks`、`unfurls` を含む。委任トークンはチャンネルに参加しないまま、そのユーザーの権限で動くので、App の参加の禁止だけでは止まらないため。
+  - 【決定】（#358）拒否は `Principal::channel`（`Actor::channel` は App のトークンのとき、これを先に呼ぶ）で行う。メンバーでない（見えない）チャンネルは今までどおり 404 にし、見えるチャンネルが暗号化されているときだけ 403 にする（存在を推測させないため）。一覧の API（`/api/apps/v1/stars`、`assistant-sessions`、ファイルの共有先の解決）は、暗号化チャンネルの項目を 404 と同じく読み飛ばす。
+  - 【決定】（#358）`GET /api/apps/v1/shapes/channels` の where に `NOT encrypted` を足し、委任トークンでも暗号化チャンネルを列挙しない。App の応答トークン（`POST /api/app-responses/{token}`）も、暗号化チャンネルには書き込まない。
 
 ## DB
 
@@ -957,6 +992,7 @@ CREATE TABLE e2ee_one_time_keys (
   key_id text NOT NULL,
   key_json jsonb NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
+  claimed_at timestamptz,  -- 払い出した時刻（行は残し、再送が主キーで衝突して入り直らないようにする）
   PRIMARY KEY (user_id, device_id, algorithm, key_id),
   FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
 );
@@ -989,7 +1025,7 @@ CREATE TABLE e2ee_to_device_messages (
 CREATE INDEX e2ee_to_device_recipient ON e2ee_to_device_messages (recipient_user_id, recipient_device_id, id);
 CREATE INDEX e2ee_to_device_created ON e2ee_to_device_messages (created_at);
 
--- ack 後の再送を冪等にするための送信の記録（【提案】。30 日で回収する）
+-- ack 後の再送を冪等にするための送信の記録（【決定】（#355）。30 日で回収する）
 CREATE TABLE e2ee_to_device_txns (
   sender_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   sender_device_id text NOT NULL,
@@ -1001,7 +1037,7 @@ CREATE TABLE e2ee_to_device_txns (
 );
 CREATE INDEX e2ee_to_device_txns_created ON e2ee_to_device_txns (created_at);
 
--- keys/claim の払い出しの要求の回数（1 日分だけ持ち、古い行は回収する）
+-- keys/claim の払い出しの要求の回数（当日（UTC）の行だけ持ち、前日までの行は 1 時間ごとのバッチで回収する）
 CREATE TABLE e2ee_one_time_key_claim_counts (
   claimer_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   target_user_id text NOT NULL,
@@ -1150,6 +1186,9 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 【決定】`channels.encrypted` と CHECK `channels_encrypted_private` は #354 で足す。[端末の Shape](#electric-の-shape) の where が `channels.encrypted` を使い、#354 は #357 より先に入るため。既存の行は `false` なので、後方互換を保つ。#354 の時点では `encrypted = true` にする API がないので、Shape が配るのは自分の端末だけになる。3 段のサブクエリの確認（#354）では、テストで行を直接 `encrypted = true` にする。
 - 【決定】残りの `channels.membership_epoch`、`messages` の列と制約、作成時の `encrypted` の指定、`encrypted` と `is_private` を変えさせない 409 とトリガーは #357 で足す。
 - 【決定】DB のトリガーで、暗号化チャンネルの `messages` に平文が入らないようにする。`BEFORE INSERT OR UPDATE ON messages`（列を限らない）で、チャンネルが `encrypted` なら、削除済みでない行に `content = ''` と `ciphertext IS NOT NULL` を求め、すべての行で `app_attachments`、`app_blocks`、`app_unfurls`、`metadata`、`card` が NULL（または空文字列）で、`home_post_id` が NULL、`apub` が false であることを求める。`card` は Incoming Webhook や App の経路で入る平文の列で、Messages Shape にも含まれる。`home_post_id` と `apub` は Home と ActivityPub への同期の列で、暗号化チャンネルでは同期しない（[機能ごとの扱い](#機能ごとの扱い)）。API 以外の経路（Webhook、App と委任トークン、Slack 取り込み、Home の同期など）で書き込まれても止めるための最後の防御（#358）。
+  - 【決定】（#358）トリガーは `messages_e2ee_reject_plaintext`（関数 `e2ee_reject_plaintext_messages`）。違反は SQLSTATE `23514` で拒否する。`metadata` は INSERT では `app_message_options`（`zoo.message_options`）が入れるので、名前の順でそれより後に動くこのトリガーが、入れたあとの値を確かめる。削除済みの行の `ciphertext` は `messages_clear_deleted_ciphertext`（#357）が先に消す。
+  - 【決定】（#358）`channel_user` の `BEFORE INSERT OR UPDATE` のトリガー `channel_user_e2ee_reject_bots`（関数 `e2ee_reject_bot_members`）で、`users.is_bot` のユーザー（App の Bot と Incoming Webhook のユーザー）を暗号化チャンネルに入れない。
+  - 【決定】（#358）`app_message_events_v2` は、暗号化チャンネルのメッセージ（INSERT、UPDATE、DELETE）を App のイベントにしない。本文を解析する `is_mention`（`app.mentioned`）と `link.shared` もここで止まる。`sync_channel_home_post` の対象にも `NOT c.encrypted` を足す（暗号化チャンネルは非公開なので、もともと対象外だが明示する）。
 - 【決定】`channels.encrypted` は作成時だけ指定でき、トリガーで `OLD.encrypted IS DISTINCT FROM NEW.encrypted` の更新（両方向）を拒否する。平文のメッセージを持つチャンネルが暗号化チャンネルとして扱われ、履歴を復号できず平文と暗号文が混在するのを防ぐため（既存チャンネルの暗号化は初期版ではできない）。`is_private` も false にできないようにする。
 - 【決定】送信と編集のトランザクションは `channels` の行を `FOR SHARE` で読んで `epoch` を比べる。`membership_epoch` を増やす処理は `UPDATE`（行ロック）なので、epoch の比較と増加が直列になる。
 
@@ -1167,7 +1206,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 【決定】`/api/shapes/e2ee_devices` は `columns` をサーバーで固定し、`user_id`、`device_id`、`curve25519_key`、`ed25519_key`、`device_keys`、`deleted_at` だけを配る。`display_name`（環境が分かる）と `last_seen_at`（活動の時刻が分かる）は他のユーザーに見せず、本人には `GET /api/e2ee/devices` で返す。
 - 【決定】担当は、端末の Shape が #354、クロス署名鍵と署名の Shape が #356、to-device の Shape が #355。端末、クロス署名鍵、署名の Shape の where が使う `channels.encrypted` は #354 で足す（[DB](#db)）ので、#356 は列を足さずに同じ where を使える。
 - 端末、クロス署名鍵、署名の Shape は、ユーザーごとに 1 本にする。「自分」と「自分と暗号化チャンネルを共有しているユーザー」の分を配る。チャンネルごとに Shape を開くと、暗号化チャンネルの数だけ SSE の接続が増えるため。
-- 【未検証】上の where は `allow_subqueries` で 3 段のサブクエリになる。Electric 1.8.1 で move-in と move-out が正しく届くかは #354 で確かめる。届かなければ、`?channel_id=` を付けたチャンネルごとの Shape（where は `user_id IN (SELECT user_id FROM channel_user WHERE channel_id = $2)`、サーバーで参加を確かめる）に替え、本書を直す。
+- 【決定】上の where は `allow_subqueries` で 3 段のサブクエリになる。Electric 1.8.1 で、メンバーの参加、退出、再参加とチャンネルの削除で move-in と move-out が届くことを #354 で確かめた。Electric の where は別名付きの列（`cu.user_id`）を受け付けない（400 `Expected a plain column reference`）ので、上の表のとおり別名を使わずに書く。
 - ユーザー署名鍵と、他人のマスター鍵へのユーザー署名鍵の署名は、本人にだけ配る。
 - 自己署名の追加も Shape で届くので、新しい端末を解錠して自己署名すると、他のメンバーは次の送信からその端末に鍵を配る。
 - 【決定】送信側は、この 3 つの Shape と Channels Shape、Channel Users Shape の変化を「配布先が変わったかもしれない」という知らせとしてだけ使い、[配布先のスナップショット](#配布先のスナップショット)を取り直す。Shape はそれぞれ別のストリームで、同じトランザクションまで届いている保証がないので、Shape の行を組み合わせて配布先を計算しない。Shape の行は、画面の表示（端末一覧、検証状態）と受信時の検証に使う。
@@ -1177,7 +1216,9 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 
 【決定】オフラインだった端末が変化に気付かず、古いセッションで送ることを防ぐ仕組みです。
 
-【決定】ロックの順は、本書のすべての書き込みで次にそろえる：`users` の行（`FOR SHARE`、無効化は `FOR NO KEY UPDATE`。無効化はキー列を変えないので、to-device の `sender_user_id` や `keys/claim` の `claimer_user_id` の外部キーが取る `FOR KEY SHARE` とは衝突せず、登録系の `FOR SHARE` とは直列になる。`FOR UPDATE` にすると、無効化が `users` を持ったまま端末単位のロックを待ち、端末単位のロックを持つ to-device や `keys/claim` が外部キーで `users` を待つ循環になる）、ユーザー単位の advisory lock `(1, …)`、端末単位の advisory lock `(2, …)`（`(user_id, device_id)` の昇順）、`channels` の行（`id` の昇順）、`e2ee_devices` の行。逆の順で取る経路を作らない（行き詰まりを避けるため）。
+【決定】ロックの順は、本書のすべての書き込みで次にそろえる：`users` の行（`FOR SHARE`、無効化は `FOR NO KEY UPDATE`。無効化はキー列を変えないので、to-device の `sender_user_id` や `keys/claim` の `claimer_user_id` の外部キーが取る `FOR KEY SHARE` とは衝突せず、登録系の `FOR SHARE` とは直列になる。`FOR UPDATE` にすると、無効化が `users` を持ったまま端末単位のロックを待ち、端末単位のロックを持つ to-device や `keys/claim` が外部キーで `users` を待つ循環になる）、ユーザー単位の advisory lock `(1, …)`、端末単位の advisory lock `(2, …)`（`(user_id, device_id)` の昇順）、メンバー単位の advisory lock `(3, hashtext(user_id))`（`user_id` の昇順）、`channels` の行（`id` の昇順）、`e2ee_devices` の行。逆の順で取る経路を作らない（行き詰まりを避けるため）。
+
+【決定】（#357 のレビュー）メンバー単位のロック `(3, …)` は、`membership_epoch` の一括の増加（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）が参加先を読む前に取り、暗号化チャンネルへのメンバーの追加（作成、`join`、`POST /api/channels/{id}/users`、DM の作成と再参加）が追加する人について `channel_user` に書く前に取る。一括の増加が参加先を確定してからコミットするまでに新しい所属が確定すると、追加されたチャンネルの epoch が増えず、削除した端末に配った鍵で削除のあとの送信が通るため。メンバーの追加は、チャンネルの行を `FOR NO KEY UPDATE` で読む（epoch の `UPDATE` と送信の `FOR SHARE` とは直列になり、外部キーの検査の `FOR KEY SHARE` とは衝突しないので、そのチャンネルへの投稿を待たせない）。送信と編集は、チャンネルの行を `FOR SHARE` で読んだあとに、メンバーであることを確かめ直す（ロックより前の確認のあとに退出、キックが確定していたら 404）。
 
 【決定】複数のチャンネルの `membership_epoch` を一度に増やす処理（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）は、最初に `SELECT id FROM channels WHERE encrypted AND deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1) ORDER BY id FOR NO KEY UPDATE` でそのユーザーの暗号化チャンネルをまとめて `id` の昇順にロックしてから、同じ条件で `UPDATE` する。削除済みのチャンネルは増やさない。単独のチャンネルの変更（参加、退出、キック、送信）はこの対象ではない。同じユーザーの別の処理（端末の削除と、クロス署名鍵の変更）も、このロックで直列になる。
 
@@ -1288,6 +1329,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - 異常系のテスト（受信用セッションの保存）：他のメンバーが転送した別の送信者のセッション鍵で、元の送信者のセッションが上書きされない。同じ送信者のセッションは first known index の小さい方が残る。
 - 異常系のテスト（`sender_device_keys`、#349）：`user_id` か `device_id` が `sender` と違う、自己署名が壊れている、識別鍵が Olm セッションの相手と違う、Shape の行と鍵が違う `sender_device_keys` は破棄する。自己署名だけで、自己署名鍵の署名がない端末は検証済みにならない。Shape にも `keys/query` の応答にもない端末（削除済みの端末を含む）の `sender_device_keys` は、自己署名と自己署名鍵の署名が正しくても検証済みにならず、そのセッションで復号したメッセージは「未検証の送信者」になる。
 - 異常系のテスト（入手経路、#349）：同じキーで、平文の `sender_user_id` か `sender_device_id` が違うバックアップ由来のセッションを取り込んでも、Olm 由来のセッションは残り、復号に使われる。first known index がより小さいバックアップ由来のセッションでも、Olm 由来のセッションを置き換えない。両方あるときは Olm 由来で復号し、印を付けない。Olm 由来の first known index より前のメッセージは、バックアップ由来で復号して印を付ける。あとから同じセッションを Olm で受け取っても、バックアップ由来のセッションは消えない。バックアップ由来どうしでは、`compare` が `Better` のときだけ新しい方に置き換わる。同じ `session_id` で、つながらないラチェットと小さい first known index を持つバックアップ由来のセッション（`Unconnected`）を取り込んでも、保存済みのバックアップ由来のセッションは残る。
+- 【決定】（#351）取り込みは `BackupDecryptionKey::decrypt_row` と `InboundSessionStore::import_backup_session`（`import_rows` はその両方）で行う。MAC が合わない行、平文の `algorithm` が `m.megolm.v1.aes-sha2` でない行、平文の `channel_id`、`sender_key`、`session_id` が行の値と違う行は `CryptoError::BackupDecryption` で捨てる。
 - 異常系のテスト（取り込み、#351）：取り込んだセッションは必ずバックアップ由来として保存する。`session_key` から導いた `session_id` が宣言された `session_id` と違うセッションは捨てる。平文の `sender_*` や行の `is_verified` が何であっても、そのセッションで復号したメッセージは「送信者を確かめられない」になる。
 
 ## 失効と復旧
@@ -1418,10 +1460,10 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 - そのユーザーの E2EE の端末をすべて削除する（論理削除）。端末の削除 API と同じく、ワンタイム鍵、フォールバック鍵、その端末あての未受信の to-device メッセージも消す。【決定】削除する端末ごとの端末単位のロック（`pg_advisory_xact_lock(2, hashtext(user_id || ':' || device_id))`）を、`device_id` の昇順で取ってから行う（`DELETE /api/e2ee/devices/{device_id}` と同じキー。to-device の送信がロックのあとに `deleted_at` を読み直すので、無効化された端末宛てのメッセージが残らない）。担当は #354（結合テストは #354 と #355）。
 - そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす。担当は #357（#354 の処理に足す）。
-- `is_deactivated` は `guest_kind` から `app_guest_rules` トリガーで決まり、App の API（`backend/src/apps/resources.rs`）などの経路で変わる。【提案】経路によらず同じトランザクションで行うよう、`users` の `AFTER UPDATE OF guest_kind` のトリガーで行う。
+- `is_deactivated` は `guest_kind` から `app_guest_rules` トリガーで決まり、App の API（`backend/src/apps/resources.rs`）などの経路で変わる。【決定】経路によらず同じトランザクションで行うよう、`users` の `AFTER UPDATE OF is_deactivated, guest_kind` のトリガー（`users_e2ee_deactivate`。#354）で行う。
 - クロス署名鍵、SSSS、鍵バックアップは消さない。無効化を解いたユーザーは新しい端末を登録し、パスキーかリカバリーキーで解錠し直す。【決定】無効化は認証情報を失効しない。アカウントの乗っ取りに対応して無効化するときは、無効化に加えて、AuthZ で攻撃者のパスキーを削除し、AuthZ のセッションとトークン（[失効の手順](#失効の手順)のとおり、別々の操作）を失効し、E2EE のリセット（[失効の手順](#失効の手順)）を行う。無効化を解いたあとに、残ったリフレッシュトークンで API を使われないようにするため。パスキーの削除と E2EE のリセットのどちらかをしないと、攻撃者がパスキーかリカバリーキーを持っていれば、無効化を解いたあとに新しい端末を登録して SSSS を開けられる。
 - 【決定】無効化されたユーザーは E2EE の API を使えない。E2EE の API は既存の API と同じく `AuthUser` で呼び出したユーザーを決め、`AuthUser` は無効化されたユーザーを 403 で拒否するため（`backend/src/auth.rs` の `FromRequestParts` が `apps::events::active_user` を呼ぶ）。このため、無効化されたユーザーが端末を登録し直して自己署名し、配布先に戻ることはできない。
-- 【決定】`AuthUser` の確認はハンドラーとは別のトランザクションで行うので、確認を通ったあとで無効化がコミットされることがある。この競合を防ぐため、端末の登録（`POST /api/e2ee/devices`）、鍵のアップロード（`POST /api/e2ee/keys/upload`）、クロス署名の鍵（`POST /api/e2ee/cross_signing/keys`）と署名（`POST /api/e2ee/cross_signing/signatures`）の書き込み、SSSS の鍵（`POST /api/e2ee/secret_storage/keys`）、秘密（`POST /api/e2ee/secret_storage/secrets`）、スロットの追加（`POST /api/e2ee/secret_storage/slots`）、鍵バックアップの版の作成（`POST /api/e2ee/key_backup/versions`）は、書き込みと同じトランザクションで、最初に `SELECT 1 FROM users WHERE id = $1 AND NOT is_deactivated FOR SHARE` で自分の行を読む。行が返らなければ 403 にする。
+- 【決定】`AuthUser` の確認はハンドラーとは別のトランザクションで行うので、確認を通ったあとで無効化がコミットされることがある。この競合を防ぐため、端末の登録（`POST /api/e2ee/devices`）、鍵のアップロード（`POST /api/e2ee/keys/upload`）、クロス署名の鍵（`POST /api/e2ee/cross_signing/keys`）と署名（`POST /api/e2ee/cross_signing/signatures`）の書き込み、SSSS の鍵（`POST /api/e2ee/secret_storage/keys`）、秘密（`POST /api/e2ee/secret_storage/secrets`）、スロットの追加（`POST /api/e2ee/secret_storage/slots`）、鍵バックアップの版の作成（`POST /api/e2ee/key_backup/versions`）とセッションのアップロード（`POST /api/e2ee/key_backup/keys`。【決定】（#356））は、書き込みと同じトランザクションで、最初に `SELECT 1 FROM users WHERE id = $1 AND NOT is_deactivated FOR SHARE` で自分の行を読む。行が返らなければ 403 にする。
   - 書き込みが先に行を読んだ場合、無効化の `UPDATE` はこの行ロックが外れるのを待つ。そのあとで行う無効化の端末の削除は、先にコミットされた端末も削除する。
   - 無効化が先にコミットされた場合、`FOR SHARE` は更新後の行を見て行を返さないので、書き込みは 403 になる。
   - 担当は、端末の登録と鍵のアップロードが #354、署名の書き込みが #356。
@@ -1432,7 +1474,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 ### ログアウトと端末の削除
 
-【決定】ログアウトするときは、暗号ストアを消す前に、鍵バックアップの送信待ちを短い時間（数秒）で送り切ろうとします。送り切れないセッションが残るとき（オフライン、版の不一致、SSSS の衝突など）は、「N 件の鍵がバックアップされていません。ログアウトすると、この端末にだけある過去ログは読めなくなります」と表示して、利用者が取りやめられるようにし、黙って消しません（サーバーに記録がなく、この端末だけにある鍵を失わないため）。そのうえで、API の結果を待たずに、先に端末の暗号ストアを消します。端末の削除 API が失敗したら（オフラインなど）、秘密ではない `device_id` だけを別に残し、同じユーザーの次のログインで削除を再試行します。再試行できるまでは、他の端末の端末一覧にその端末が残るので、手動で削除できます。
+【決定】ログアウトするときは、暗号ストアを消す前に、鍵バックアップの送信待ちを短い時間（数秒）で送り切ろうとします（#359 は件数の確認と表示まで。バックアップ鍵を持つのは解錠のあとなので、送信は #360 以降で足す）。送り切れないセッションが残るとき（オフライン、版の不一致、SSSS の衝突など）は、「N 件の鍵がバックアップされていません。ログアウトすると、この端末でしか復号できない過去のメッセージが読めなくなります」と表示して、利用者が取りやめられるようにし、黙って消しません（サーバーに記録がなく、この端末だけにある鍵を失わないため）。そのうえで、API の結果を待たずに、先に端末の暗号ストアを消します。端末の削除 API が失敗したら（オフラインなど）、秘密ではない `device_id` だけを別に残し、同じユーザーの次のログインで削除を再試行します。再試行できるまでは、他の端末の端末一覧にその端末が残るので、手動で削除できます。
 
 ### 復旧
 
@@ -1449,7 +1491,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 本文と MFM | `content` は空にし、`ciphertext` に Megolm の暗号文を保存する |
 | 編集 | 置き換えた本文を暗号化して送る。編集履歴は持たない。`revision` はサーバーで単調に増やし、受信側は巻き戻しを検出する |
 | 削除 | 論理削除し、`ciphertext` を消す。どの経路でも守るために、DB のトリガーで `deleted_at` が入った行の `ciphertext` を NULL にする（`DELETE /api/channels/{channel}/history` の `clear_history` など、`DELETE /api/messages` 以外の論理削除も含む）（#358） |
-| メンション通知 | 送信側が平文の `mentions` を付け、サーバーはそこから通知を作る。本文の解析はしない。止める解析は、`backend/src/notifications.rs` の `extract_mentions` と、`infra/db/schema.sql` の SQL 関数 `is_mention`（`app_message_events_v2()` が App の `app.mentioned` イベントを作るときに呼ぶ）の 2 か所。受信側の表示とハイライトは、復号した `mentions` だけを使う。平文と暗号文の `mentions` が違っても、表示には平文を使わない |
+| メンション通知 | 送信側が平文の `mentions` を付け、サーバーはそこから通知を作る（規則は[メッセージ](#メッセージ357358)の `mentions`）。本文の解析はしない。止める解析は、`backend/src/notifications.rs` の `extract_mentions` と、`infra/db/schema.sql` の SQL 関数 `is_mention`（`app_message_events_v2()` が App の `app.mentioned` イベントを作るときに呼ぶ）の 2 か所。受信側の表示とハイライトは、復号した `mentions` だけを使う。平文と暗号文の `mentions` が違っても、表示には平文を使わない |
 | 通知一覧 | `notification_display` の本文の抜粋は空になる。クライアントは手元で復号できれば本文を出し、できなければ「暗号化されたメッセージ」と出す |
 | Web Push | 本文の代わりに「新しいメッセージ」だけを送る（`push.rs` の本文先頭 240 文字を使わない）。Service Worker での復号は後続（[#365](https://github.com/Zli-UoA/zoo2/issues/365)） |
 | 添付 | **初期版では禁止**。クライアントは添付ボタンと貼り付けを出さない。サーバーは `POST /api/attachments/presign` と、メッセージへの添付の紐付けを 400 で拒否する。App のファイル API（`/api/apps/v1/files`、`/api/apps/v1/messages/{id}/files`）は別の S3 バケットへの経路なので、App の行の規則で拒否する。暗号化した添付（#364）を実装したら禁止を外す |
@@ -1458,13 +1500,30 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | URL カード | 【提案】既定では展開しない。カードを出すとクライアントが URL を Summaly と画像プロクシに送るので、それらの運用者に URL が見えるため。メッセージごとに「プレビューを読み込む」を押したときだけ取得する。#361 で確定する |
 | 検索 | サーバーの検索の対象外。クライアントが今読み込んで復号した範囲だけを検索する |
 | オフラインキャッシュ | 暗号文だけを保存し、復号した平文は保存しない。ログアウト時の削除は今と同じ |
-| Home/LTL への同期 | 止める（`sync_channel_home_post` の対象外） |
-| ActivityPub の連合 | 止める |
+| Home/LTL への同期 | 止める（`sync_channel_home_post` の対象外。DB のトリガーで `home_post_id` を NULL に保つ） |
+| ActivityPub の連合 | 止める（DB のトリガーで `apub` を false に保つ。Home の投稿は公開チャンネルにしか置けないので、暗号化チャンネルからは連合しない） |
 | App（Bot） | 参加を禁止し（403 `E2EE_APPS_FORBIDDEN`。強制する場所は、`backend/src/apps/management.rs` の `add_channel`、`POST /api/dms` の対象（`is_bot`）、DB の `channel_user` の挿入前のトリガー（ボットの参加を、暗号化チャンネルでは拒否する。`app_guest_membership_rules` と同じ形）、読み書きの入口の `Principal::channel` と `Actor::channel`（委任トークンとボットのトークンを 403 にする。`/api/apps/v1/shapes/*` と Actor 経由のピン、履歴、メタデータも対象）の 4 か所）、App からの `encrypted: true` のチャンネルと DM の作成も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` にする。理由は 2 つある。`backend/src/apps/api.rs` の `create_channel` は `c::create_channel` を呼ぶので、App が暗号化チャンネルを作って作成者として参加できてしまう。`/api/apps/v1/dms` は `dms::create_or_get_dm` を呼び、`create_channel` を通らずにチャンネルと参加者を直接作る。拒否は、`create_channel` 側と、`apps/api.rs` の `dm`（`Principal` を見て判定する。`dms::create_or_get_dm` は人間の `POST /api/dms` と共用で `Principal` を受け取らない）で行う。`app_message_events_v2` のイベントと App の履歴 API の対象から外す。`/api/apps/v1/*` は、委任トークン（ユーザーとして動くもの）を含めて、暗号化チャンネルへの読み書きと添付（`files`、`messages/{id}/files`、`blocks`、`unfurls`）を拒否する。DB のトリガーで、暗号化チャンネルの行の `app_attachments`、`app_blocks`、`app_unfurls`、`metadata` を空に保つ（[DB](#db)）。担当は #358。ただし、App からの暗号化チャンネルと DM の作成の拒否は #357 の作業（作成 API の入口）。Bot を端末として参加させるのは後続（[#366](https://github.com/Zli-UoA/zoo2/issues/366)） |
-| Slack 取り込み | 暗号化チャンネルへの取り込みを禁止する。取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで、既存のチャンネル（`MappingAction::Existing`）として暗号化チャンネルを指定したら 400 `E2EE_PLAINTEXT_FORBIDDEN`（`backend/src/slack/import.rs` の `MappingAction::Existing` と worker は平文の `content` を `messages` に入れるため。添付も取り込めない）（#358） Slack 取り込みのコードは #300 で入る。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のあいだは暗号化チャンネルを作れないので、#357 より前の拒否は設定で足りる（Slack 取り込みの拒否は #358 で入れ、#358 のあとに設定を true にする）。#300 が先に入ったら #358 で `docs/slack-import.md` にも書く。worker も、ジョブの実行時に暗号化チャンネルへの書き込みを検査する（#367 で既存のチャンネルを暗号化できるようになると、開始のあとにチャンネルが暗号化されうるため。#367 の条件にも書く）。 |
-| Incoming Webhook | 作成を禁止する（403 `E2EE_WEBHOOKS_FORBIDDEN`） |
+| Slack 取り込み | 暗号化チャンネルへの取り込みを禁止する。取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで、既存のチャンネル（`MappingAction::Existing`）として暗号化チャンネルを指定したら 400 `E2EE_PLAINTEXT_FORBIDDEN`（`backend/src/slack/import.rs` の `MappingAction::Existing` と worker は平文の `content` を `messages` に入れるため。添付も取り込めない）（#358） Slack 取り込みのコードは #300 で入った。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のあいだは暗号化チャンネルを作れないので、#357 より前の拒否は設定で足りる（Slack 取り込みの拒否は #358 で入れ、#358 のあとに設定を true にする）。`docs/slack-import.md` にも書いた。worker も、ジョブの実行時に暗号化チャンネルへの書き込みを検査する（#367 で既存のチャンネルを暗号化できるようになると、開始のあとにチャンネルが暗号化されうるため。#367 の条件にも書く）。 |
+| Incoming Webhook | 作成を禁止する（403 `E2EE_WEBHOOKS_FORBIDDEN`）。Webhook のユーザーは Bot なので、DB のトリガーでも参加できない。既存の Webhook は、暗号化チャンネルを後から作れない（[既存チャンネルの暗号化](#機能ごとの扱い)は初期版ではできない）ので存在しない（#358） |
 | 通話 | 本書の対象外。通話のシグナリングとメディアは今の仕組みのまま |
 | 既存チャンネルの暗号化 | 初期版ではできない。後続（[#367](https://github.com/Zli-UoA/zoo2/issues/367)） |
+
+## 有効化と運用
+
+【決定】（#358）暗号化チャンネルの作成は、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` で切り替えます（既定は false）。#358 の拒否（API と DB のトリガー）が本番に入ってから、#361（クライアントの作成と送受信）の前に true にします。
+
+zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読みます。各拠点（`$CTX`）で、既存のキーを残す `patch` で足し、backend を再起動します。
+
+```sh
+kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge \
+  -p '{"data":{"E2EE_ENCRYPTED_CHANNELS_ENABLED":"true"}}'
+kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
+```
+
+- `kubectl create configmap ... --dry-run=client -o yaml | kubectl apply -f -` は使わない。zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるため。
+- 戻すときは、同じ `patch` で `"false"` にして、同じく再起動する。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルと DM の作成だけが 403 `E2EE_DISABLED` になる。送受信、メンバーの変更、鍵の配布は続けられる。
+- `ciphertext` を扱えない旧イメージ（#357 より前）にはロールバックしない。旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる。設定を false に戻すのは、#358 以降のイメージのあいだで行う。
+- zoo2-infra の運用の文書（`docs/operations.md` など）にこの手順を書くかは、zoo2-infra 側で決める。本書を正とする。
 
 ## クライアントの構成
 
@@ -1478,35 +1537,114 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 | クライアント | 組み込み方 | 解錠の手段 | issue |
 | --- | --- | --- | --- |
-| React（`frontend/`） | wasm-bindgen（`wasm-pack build --target web`）。Worker で動かす | パスキー、リカバリーキー | #352、#359 |
+| React（`frontend/`） | wasm-bindgen（`crates/zoo-crypto-wasm` を `wasm-bindgen --target web` でパッケージにする）。Worker で動かす | パスキー、リカバリーキー | #352、#359 |
 | Compose Android | UniFFI で作った Kotlin バインディング | Credential Manager のパスキー【未検証】、リカバリーキー | #353、#359 |
 | TUI（`tui/`） | ネイティブの Rust クレートとして直接使う | リカバリーキー | #359、#360 |
 | デスクトップ版（`desktop/`） | 最初の範囲では対象にしない。暗号化チャンネルは表示できないと示す（[クロス署名の API](#クロス署名356)の【決定】）。この表示は、暗号化チャンネルを作れるようになる #361 に入れる | なし | #361 |
 
-【提案】バインディングは `crates/zoo-crypto-wasm` と `crates/zoo-crypto-ffi` のように別クレートに分け、コアにプラットフォームの依存を入れません。
+【決定】バインディングはコアとは別のクレートに分け、コアにプラットフォームの依存を入れません。Web 向けは `crates/zoo-crypto-wasm`（#352）です。Android 向けのクレートは #353 で決めます。例外は `wasm32-unknown-unknown` で乱数のバックエンドを選ぶ設定（vodozemac の `wasm_js` feature、[乱数](#乱数)）の 1 つだけです。
+
+- 【決定】`wasm_js` feature はバインディングのクレートではなくコアの `crates/zoo-crypto/Cargo.toml` で、`[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]` に書いて有効にする（#348）。理由は次の 3 つ。
+  - getrandom 0.4 には `wasm32-unknown-unknown` の既定のバックエンドがなく、バックエンドを選ばないと `compile_error!` でビルドが止まる。
+  - CI Crypto（`.github/workflows/ci-crypto.yaml`）と `make crypto-check` は、バインディングのクレートなしで、コアだけを `wasm32-unknown-unknown` 向けにビルドする。コアで有効にしないと、このビルドが通らない。
+  - target を限った依存なので、ネイティブ、Android、TUI のビルドには入らない。この target のときだけ、getrandom が `wasm-bindgen` に依存する（`atomics` を有効にしたときは `js-sys` にも。既定では出ない）。`cargo tree --target wasm32-unknown-unknown` で確かめられる。`Cargo.lock` は target を記録しないので根拠にならない。
+- この target で動かすのは、JS の上で動く React だけ（Compose for Web は実験を中止し、`frontend-compose/` には Android 向けの共有コードだけが残る）なので、`crypto.getRandomValues` を前提にしてよい。JS のない環境で `wasm32-unknown-unknown` を使うことになったら、この例外を見直す。
+- 【決定】（#353）Android のバインディングは `crates/zoo-crypto-ffi` に置き、UniFFI（0.32）で Kotlin のバインディングを作る。コアの `crates/zoo-crypto/Cargo.toml` は変えない（feature も足さない）。
+  - API の形：状態を持つもの（端末アカウント、Olm と Megolm のセッション、`TrustStore`、`BackupUploadState` など）は UniFFI のオブジェクトにし、中身を `Mutex` で守る。サーバーとやり取りする JSON（端末鍵、to-device の `content`、`ciphertext`、SSSS の応答、鍵スロットなど）は、コアと同じ形の JSON 文字列で渡し、Kotlin 側で型を二重に持たない。鍵などのバイト列は `ByteArray`、公開鍵はパディングなしの base64 の文字列にする。エラーはコアの `CryptoError` の variant と 1 対 1 の `ZooCryptoException` にし、`MissingRoomKey` のセッション ID、`BackupVersionRollback` の番号、`Rejected` の理由など、分岐に使う値は項目にも入れる。
+  - Megolm のセッション鍵は Kotlin に返さない。UniFFI の Record は Kotlin の `data class` になり、`toString()` に中身が出るため。鍵の配布は、`DeviceAccount.encrypt_room_key` が `OutboundSession` を受け取り、Rust の中で配る鍵を作る。
+  - ロックの順序：複数のオブジェクトを一緒に使う操作は、端末アカウント、`OutboundSession`、`OlmSessionStore`、`InboundSessionStore` の順にロックを取る。`BackupUploadState` は `InboundSessionStore` より先に取る。
+  - コアの Olm セッション、受信用セッション、`TrustStore` の保存形式は #359 で足した（[暗号ストア](#暗号ストア)）。UniFFI への公開は、Android の暗号ストアと同じ PR で行う。送信用セッションの保存形式は、送信を行う #361 で足す。
+  - ABI は `arm64-v8a`、`armeabi-v7a`、`x86_64`（エミュレーター）。`x86` は入れない。`minSdk` は 26（アプリと同じ）。
+  - `.so` とバインディングはリポジトリに入れず、Gradle（`frontend-compose/build.gradle.kts`）がビルドのたびに作る。Android の各 ABI の `.so` は cargo-ndk（4.1.2）で作って jniLibs に入れ、Kotlin のバインディングはホスト向けの `.so` から、同じクレートの `uniffi-bindgen`（`--features cli`）で作る（ライブラリーと版が必ず一致する）。単体テスト（JVM）は同じホストの `.so` を JNA で読む。
+  - ツール：`nix develop .#android` で、Android 向けの std を足した Rust、cargo-ndk、Android SDK（35）と NDK（29.0.14206865）が入る。既定の devShell と `rust-toolchain.toml` には足さない（Android を触らない人に NDK や std を入れないため）。CI Android も同じ版の NDK を使う。
+
+#### wasm バインディング（#352）
+
+- 【決定】`crates/zoo-crypto-wasm` は、端末アカウント、Olm と Megolm、クロス署名と配布先の判定、SSSS、鍵スロット、鍵バックアップを wasm-bindgen で JS に出す。暗号の処理は持たず、コアの型を包むだけにする。JS との受け渡しの決まり（サーバーの JSON は snake_case のオブジェクト、状態を持つものはクラス、32 バイトの鍵は `Uint8Array`、失敗は `name` が `ZooCryptoError` で `code` 付きの `Error`）は、クレートの `src/lib.rs` の先頭に書く。
+- 【決定】パッケージは wasm-pack を使わず、`cargo build --target wasm32-unknown-unknown` と `wasm-bindgen --target web` で作る（`crates/zoo-crypto-wasm/build.sh`、`make crypto-wasm`）。wasm-pack は wasm-bindgen-cli と wasm-opt を実行時にネットワークから取りに行くので、nix の dev shell と CI で版を固定しにくい。wasm-bindgen-cli は Tauri 版（`desktop-tauri/`）のために dev shell に入っているものを使う。
+- 【決定】wasm-bindgen クレートは、dev shell（nixpkgs）の wasm-bindgen-cli と同じ版に `=` で固定する（`desktop-tauri/ui/Cargo.toml` と同じ版）。版が違うと wasm-bindgen-cli が止まるので、`build.sh` は先に版を照合する。nixpkgs を上げて wasm-bindgen-cli の版が変わったら、両方の `Cargo.toml` を合わせる。CI は `Cargo.toml` の版を読んで `cargo install` する。
+- 【決定】`frontend` は `@zoo/crypto-wasm` を `link:../crates/zoo-crypto-wasm` で読む。生成物の `pkg/` は Git に入れず、`make crypto-wasm` で作る。CI Frontend は `crypto-wasm` ジョブで 1 回作り、check、unit-test、browser-test に渡す。CI Crypto は `crates/zoo-crypto-wasm` の fmt と clippy（ネイティブと `wasm32-unknown-unknown`）を見る。
+- 【決定】wasm は Worker（`frontend/src/lib/e2ee/crypto.worker.ts`）で動かし、鍵と Olm、Megolm の状態は Worker の中だけに置く。メインスレッドには結果の JSON だけを返す。操作は #359 以降で足す（#359 の操作は `frontend/src/lib/e2ee/protocol.ts`）。
+- CSP の `script-src` の `'wasm-unsafe-eval'` は、SQLite の Worker のためにすでにある（`infra/frontend-nginx.conf`）。Vite は `*_bg.wasm` を `assets/` に出すので、Service Worker はほかの `assets/` と同じく、`pwa-assets.json` から先に保存し、オフラインでも返す（`frontend/scripts/pwa.test.mjs`）。
+- 【決定】（#359）本番のイメージ（`infra/Dockerfile-frontend-deploy`）は、`crypto-wasm` の段で `crates/zoo-crypto-wasm/build.sh` を動かして wasm を作り、`frontend` の `link:` 依存の先（`/crates/zoo-crypto-wasm`）に置いてから `pnpm install` する。Rust は `rust-toolchain.toml` の版、wasm-bindgen-cli は `Cargo.toml` で `=` 固定した版を `cargo install` する（CI の `crypto-wasm` ジョブと同じ）。
 
 ### 乱数
 
 - 【決定】乱数は OS かブラウザーの暗号用乱数（Web では `crypto.getRandomValues`）だけを使う。
 - 【決定】vodozemac 0.11.2 は `getrandom ^0.4.3` に依存し、`wasm_js = ["getrandom/wasm_js"]` の feature を持つ。`wasm32-unknown-unknown` では vodozemac の `wasm_js` を有効にする。getrandom は 0.3.4（2025-10-14）以降と 0.4 系で、`wasm_js` feature を有効にするだけで wasm_js バックエンドを使うので、cfg フラグ（`--cfg getrandom_backend="wasm_js"`）は付けない（getrandom の CHANGELOG の 0.3.4 の項）。
+  - `crates/zoo-crypto` は、`wasm32-unknown-unknown` のときだけ vodozemac の `wasm_js` を有効にする（#348）。この設定をコアに置く理由は、[共有の暗号コア](#共有の暗号コア)に書いた。
+  - #348 のビルドで確かめたこと：cfg フラグなしで `cargo build --target wasm32-unknown-unknown` が通る。`wasm_js` feature を外すと、getrandom の `compile_error!` でビルドが止まる。今の依存（`Cargo.lock`）に入る getrandom は 0.4 だけ。
+  - 【決定】ブラウザーの Worker で実際に乱数を取れることを、#352 で確かめた（`frontend/src/lib/e2ee/cryptoWorker.browser.test.ts`。Chromium の Worker で鍵を 2 回作り、毎回違う鍵になる）。
 - 【決定】他の依存が getrandom 0.3 を使うなら 0.3.4 以降に上げ、`wasm_js` feature を有効にする（0.3.0〜0.3.3 は feature だけではビルドできない）。0.2 系なら `js` feature にする。`custom` バックエンドは使わない。
 
 ### 暗号ストア
 
 - 【決定】暗号ストアは、オフライン DB（`zoo-offline-*`）とは別に置く。`OFFLINE_SCHEMA_VERSION` を変えてオフライン DB を作り直しても、暗号ストアは消えない（消えると端末の鍵を失うため）。
-- 【決定】Olm と Megolm の状態は、vodozemac の pickle を 32 バイトの pickle key で暗号化して保存する（#348）。
-- 【提案】保存先と pickle key の置き場所：
+- 【決定】Olm と Megolm の状態は、vodozemac の pickle を暗号化して保存する（#348）。暗号化に使う pickle key は保存のたびに変える。
+  - 呼び出し側は 32 バイトの**保存鍵**を長く持ち、vodozemac には直接渡さない。保存するたびに新しい 32 バイトの salt を作り、`HKDF-SHA256(ikm = 保存鍵, salt, info)` で、その保存だけに使う pickle key を導く。salt は保存形式に平文で入れる。`info` は保存するものごとに分ける（端末アカウントは `zoo e2ee device pickle key v1`）。
+  - pickle key を保存のたびに変えるのは、vodozemac の pickle が pickle key から AES 鍵と IV を決まった方法で導くため。同じ pickle key を使い回すと、保存のたびに同じ鍵と IV で AES-CBC を使うことになる。そうなると、先頭から同じ平文が続く範囲は同じ暗号文ブロックになるので、複数の版やバックアップを手に入れた攻撃者は、暗号文を比べて pickle のどこが変わったかを知ることができる。[鍵バックアップ](#鍵バックアップ)で暗号化のたびに一時鍵を作り直すのも、同じ理由による。状態が変わっていなくても、保存のたびに出力は変わる。
+- 【提案】端末アカウントの保存形式（`DeviceAccount::pickle`）は、次の JSON にする。
 
-  | クライアント | 保存先 | pickle key |
+  ```json
+  {"version": 2, "user_id": "...", "device_id": "...", "salt": "<32 バイト>", "account": "<vodozemac の暗号化した pickle>", "binding": "<署名>"}
+  ```
+
+  `salt` は上の pickle key を導く salt で、パディングなしの base64 で書く。`version` の 1 は salt のない形式だった。#348 のクレートは公開前で、1 の形式で保存したデータはないので、1 の読み込みには対応せず、移行もしない。
+
+  `user_id` と `device_id` は平文で持つ。書き換えに気付けるように、`binding` に `LP("zoo e2ee device pickle v1")‖LP(user_id)‖LP(device_id)` への端末の署名鍵の署名を入れる（`LP` は[鍵スロット](#鍵スロット)の AAD と同じ）。署名する対象を JSON ではなく長さ付きのバイト列にして、この署名がサーバーに送る署名付き JSON の署名と取り違えられないようにする。
+
+  `DeviceAccount::from_pickle` は、保存した文字列と保存鍵に加えて、今ログインしているユーザーの `user_id` と、そのユーザーで登録した端末の `device_id` を受け取る。戻すときは次の順に確かめる。
+  1. `user_id` と `device_id` が `DeviceAccount::new` と同じ条件（`device_id` は UUID v4）を満たす。満たさなければ `CryptoError::InvalidPickle` になる。
+  2. 保存鍵と `salt` から導いた pickle key で復号できる。保存鍵が違えば `CryptoError::Pickle` になる。
+  3. `binding` が正しい。正しくなければ `CryptoError::InvalidPickle` になる。
+  4. 保存した `user_id` と `device_id` が引数の値と一致する。一致しなければ `CryptoError::PickleOwnerMismatch` になる。
+
+  4 で照合するのは、`binding` をその pickle 自身の署名鍵で検証するため。同じ保存鍵で保存した別のユーザーや端末の pickle を丸ごと差し替えられても、3 までは通る。保存鍵をユーザーや端末ごとに分けるかは各クライアント（#359）で決めるので、分けていない場合でも別のユーザーや端末の鍵で動かないように、zoo-crypto の側で照合する。
+- 【決定】（#359）端末アカウント以外の状態（Olm セッション、受信用セッション、`TrustStore`）は、`zoo-crypto` の保存用の封筒に入れる（`crates/zoo-crypto/src/store.rs`。`OlmSession::pickle`、`InboundSessionStore::pickle_session`、`TrustStore::pickle` と、それぞれの戻し方）。
+
+  ```json
+  {"version": 1, "kind": "olm_session | inbound_session | trust_store", "salt": "<32 バイト>", "nonce": "<12 バイト>", "ciphertext": "<AES-256-GCM>"}
+  ```
+
+  - 鍵は、保存のたびに作る `salt` から `HKDF-SHA256(ikm = 保存鍵, salt, info = "zoo e2ee store key v1")` で導く。端末アカウントの pickle key と同じく、同じ鍵と nonce を使い回さない。
+  - AAD は `LP("zoo e2ee store v1") ‖ LP(kind) ‖ LP(user_id) ‖ LP(device_id)`（今の端末アカウントの ID）。種類の違う値や、別のユーザーや端末の値に差し替えると開けない（どれも `CryptoError::InvalidPickle`）。
+  - 平文は、vodozemac の pickle（serde の形）と、それに付く情報の JSON。Olm セッションは相手の識別鍵、受信用セッションは 1 つのキー `(channel_id, sender_key, session_id)` の Olm 由来とバックアップ由来の両方と、送信者、epoch、`sender_verified`。`TrustStore` は上の `to_json` の JSON。
+  - 受信用セッションは、キーごとに 1 つの値にする（数が多いので、使うときにそのキーだけを読む）。リプレイと版の記録（`InboundSessionStore::decrypt` が使う）は入れない。保存は復号を行う #361 で足す。
+- 【決定】（#359）React の暗号ストア。
+  - 保存先は OPFS の SQLite（`zoo-crypto-<ユーザーのハッシュ>.sqlite`。名前空間とハッシュは `lib/offline/identity.ts` と同じ）。Worker が wa-sqlite と `OPFSCoopSyncVFS`（オフライン DB と同じ VFS）で開く。表は `meta`（包んだ保存鍵、`user_id`、`device_id`、登録済みか。秘密は入れない）、`account`、`olm_sessions`、`inbound_sessions`（`backed_up` の列を持ち、0 の行の数が鍵バックアップの送信待ちの件数）、`trust_store`、`processed_to_device`（処理を終えて ack を送れていない to-device の ID）。版は `PRAGMA user_version`（`frontend/src/lib/e2ee/store/sqliteBackend.ts`）。
+  - 保存鍵は 32 バイトの乱数で、抽出できない WebCrypto の AES-256-GCM 鍵（IndexedDB `zoo-crypto-keys` に DB 名ごとに置く）で包み、`meta` に置く。Worker が起動時に開いてメモリーにだけ持つ。包んだ保存鍵はあるのに IndexedDB の鍵がない、または開けないときは、どの値も読めないので、暗号ストアを作り直して新しい端末として登録し、前の `device_id` を削除する。
+  - to-device は、1 件ごとに、変わった状態（端末アカウント、Olm セッション、受信用セッション）と `processed_to_device` を 1 つのトランザクションで書いてから ack する。ack の前に終了しても、同じメッセージを 2 回復号しない（Olm のメッセージは 2 回は復号できない）。復号や検証に失敗したメッセージは、何度試しても読めないので捨てて ack する。`keys/query` などの通信に失敗したら ack せずに待って試し直す。1 件の処理の途中（SQLite の読み取りや書き込み）で失敗したら、メモリーの状態は保存より先に進んでいるので、Worker は暗号ストアを閉じて保存済みの状態から開き直してから、次の処理を受ける（進んだ状態のまま試し直すと、消費済みの Olm メッセージを捨ててしまうため）。開き直しにも失敗したら、開き直しが済むまで、暗号ストアを使う次の操作の前に開き直しを試す。
+  - 送信端末を検証済みにする判定（受信時の検証の手順 4）は、クロス署名を扱う #360 以降で足す。#359 では `trust` を渡さず、Olm で受け取ったセッションを「未検証の送信者」として保存する。
+  - サーバーのワンタイム鍵の数は、登録と `keys/upload` の応答で知る。起動時と、to-device で Olm セッションを新しく作った（ワンタイム鍵を使われた）ときに、空の `keys/upload` で数を読み、50 個に足りない分と、使われたフォールバック鍵を作って送る。応答をなくした鍵は、公開済みにしないまま残るので、次の送信に同じ鍵が入る（サーバーは同じ内容の再送を無視する）。
+  - 登録が 409 `E2EE_DEVICE_EXISTS`、`keys/upload` や to-device の ack が 404 なら、端末が別の端末から削除されている。起動のときも受信の途中でも、暗号ストアを作り直し、新しい端末として登録する。
+
+  | クライアント | 保存先 | 保存鍵 |
   | --- | --- | --- |
-  | React | OPFS の別 DB（`zoo-crypto-<ユーザーのハッシュ>.sqlite`。名前は `lib/offline/identity.ts` と同じ作り方） | 抽出できない WebCrypto の鍵（IndexedDB に保存）で包み、起動時に Worker のメモリーに展開する |
-  | Android | アプリの内部ストレージ | Android Keystore で包む |
-  | TUI | 設定ディレクトリーのファイル（0600） | OS のキーリング。使えなければ 0600 のファイル |
+  | React | 【決定】（#359）上のとおり | 【決定】（#359）上のとおり |
+  | Android | 【提案】アプリの内部ストレージ | Android Keystore で包む（下の【決定】） |
+  | TUI | 【提案】設定ディレクトリーのファイル（0600） | 【提案】OS のキーリング。使えなければ 0600 のファイル |
 
-- 【決定】複数のタブが同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。【提案】他のタブは BroadcastChannel でそのタブに処理を頼む。詳細は #359 で決める。
+  - 【決定】（#353）Android の保存鍵は、Android Keystore の AES-256-GCM の鍵（`setRandomizedEncryptionRequired(true)`。IV は Keystore が作る）で包み、アプリの内部ストレージのファイルに置く（`frontend-compose` の `zoo.crypto.StorageKeyStore`）。形式は `0x01 ‖ IV（12 バイト） ‖ 暗号文とタグ（48 バイト）`、AAD は `zoo e2ee storage key v1`。保存鍵は `SecureRandom` で作る。別の端末への復元などで Keystore の鍵がないときや失効したとき、ファイルが壊れたときなど、もう開けないと分かるとき（`AEADBadTagException`、`KeyPermanentlyInvalidatedException`、ファイルの形式の不一致）だけ `StorageKeyUnavailableException` を投げ、呼び出し側は暗号ストアを作り直して SSSS で解錠し直す。Keystore の一時的な失敗（`KeyStoreException`、`UnrecoverableKeyException` など）はそのまま投げ、呼び出し側は暗号ストアを消さずに再試行する（作り直すと、Olm セッションや、まだバックアップしていない Megolm の受信用セッションが消えるため）。ファイルの置き場所（ユーザーや端末ごとに分けるか）と、自動バックアップから外すかは #359 で決める。
+
+- 【決定】複数のタブが同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。
+  - 【決定】（#359）ロックの名前は `zoo-crypto:<DB 名>`。ロックを取れたタブが、端末の登録、鍵の補充、to-device の処理を行う（`frontend/src/components/e2ee/E2eeProvider.tsx`）。他のタブはロックを待ち、開いているタブが閉じたら引き継ぐ。#359 の処理はどれも 1 つのタブで行えば足りるので、他のタブから頼む仕組みは持たない。
+  - 【決定】（#359）ログアウトしたタブがロックを持っていなければ、ロックを奪って（`steal: true`）暗号ストアを開き、件数の確認と削除を行う。奪われたタブは暗号ストアを閉じる。ログアウトはページを離れるので、奪ったロックはそのときまで持つ。確認で取りやめたら（ログアウトが途中で止まったときも）ロックを返し、BroadcastChannel（`zoo-crypto-lock`）で知らせて、奪われたタブにもう一度ロックを待たせる。
+  - 【決定】（#359）ログアウトの確認の前に to-device の処理を止め、処理中のものを終わらせてから件数を数える（数えたあとで増えた鍵を、確かめずに消さないため）。取りやめたら処理に戻る。件数を数えられなかったときは、送れていない鍵がないとは扱わず、「確かめられなかった」と示して確かめる。確認のために止めるときも、ログアウトでも、通信中の要求（`keys/query`、ack、鍵のアップロード）を中止する。端末の登録の要求だけは中止せずに結果を待ってから、端末を消す（先に消すと、あとから届いた登録で端末ができてしまうため）。待つのは 5 秒までで、それでも結果が分からなければ、いまは消さずに削除待ちに残し、次のログインで消し直す。
+  - 【決定】（#359）新しい Olm セッションを作ったときの鍵の補充は、受信の行とは別に「補充待ち」として持ち、行の処理（`keys/query` や ack）が失敗しても行い、成功するまで試し直す（ack や補充が失敗して試し直すと、同じ行は処理済みとして返るため）。
+  - 【決定】（#359）ロックを取れたタブは、端末の登録や鍵の補充が一時的に失敗したら（503、通信の失敗）、間隔をのばしながら（5 秒から 5 分まで）試し直す。
+  - 【決定】（#359）オフラインで起動して今のユーザーを確かめられないときも、ログアウトでは保存済みのユーザー（オフライン DB の名前空間と同じ）の暗号ストアを開いて消す。登録の応答をなくして手元では未登録のままの端末も、削除 API を呼ぶ（なければ 404 で、消すものがないと分かる）。ログアウトのために開いたときに保存鍵を失って作り直していたら、前の端末も削除待ちに残して消す。
+  - 【提案】暗号化と復号を他のタブから頼む仕組み（BroadcastChannel でロックを持つタブに頼む）は、画面から復号する #361 で決める。
 - 【決定】暗号ストアには、自分のユーザー署名鍵の公開鍵の履歴（初めて見たとき、保存したとき、置き換わりを検出したときに足す）と、相手ごとの `confirmed_usk` も入れる。古いユーザー署名鍵への巻き戻しの検出（[クロス署名](#クロス署名)の、ユーザー署名鍵の変更の検出手順）に使う。履歴を持たない新しい端末は気付けない（[脅威モデル](#脅威モデル)）。
-- ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。
-- pickle key による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
+  - 【決定】保存形式（#350）は、`zoo-crypto` の `TrustStore::to_json` が返す次の JSON にする。各クライアント（#359）は、これを暗号ストアに、端末アカウントと同じ保存鍵で暗号化して置く。
+
+    ```json
+    {"version": 1, "user_id": "<自分>", "own_master_key": "<自分のマスター鍵>|null", "user_signing_key_history": ["<古い順。最後が今の基準>"], "records": {"<相手の user_id>": {"master_key": "<信頼したマスター鍵>", "confirmed_usk": "<ユーザー署名鍵>|null", "pin_pending": false}}}
+    ```
+
+    鍵はすべてパディングなしの base64 の公開鍵。`own_master_key` は初回設定で作ったとき、または SSSS から取り出した秘密鍵で確かめたときだけ設定する。`TrustStore::from_json` は、`version` が 1 でない、`user_id` が今のユーザーでない、鍵や ID の形式が正しくないものを `CryptoError::InvalidTrustStore` で拒否する。配布先の判定（`TrustStore::evaluate`）は TOFU の記録、`confirmed_usk`、履歴を書き換えるので、呼び出し側は判定のたびに保存し直す。
+  - 【決定】規則 4 の TOFU の記録は、ピンをサーバーに置けるまで `pin_pending: true` にし、その相手には配らない。判定のたびに同じピンを返し直すので、ピンを置く前に保存して終了しても、登録と別の端末のピンとの競合の確認を経ずに配ることはない。ピンの登録が成功したら `TrustStore::confirm_tofu_pin` で外し、409 `E2EE_PIN_CONFLICT` なら `TrustStore::discard_tofu_pin` で記録を戻して、返ったピンで判定し直す。スナップショットに同じマスター鍵のピンが見えたら（登録は成功していたが、外す前に終了した）外し、違うマスター鍵のピンが見えたら記録を戻して共有ピンとして採用する。
+- ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。【決定】（#359）React は、消せなかった暗号ストアの名前空間（`zoo.e2ee.pendingStoreDelete`）と、削除 API が失敗した端末（`zoo.e2ee.pendingDeviceDelete`。`user_id` と `device_id` の組の一覧で、別のユーザーの削除待ちを上書きしない）を localStorage に残し、次の起動と、同じユーザーの次のログインで消し直す（`frontend/src/lib/e2ee/identity.ts`）。削除 API の 404（登録の前に止まった端末）は、消すものがないので済んだものとして扱う。
+- 保存鍵による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
 
 ## 脅威モデル
 
@@ -1579,7 +1717,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#355](https://github.com/Zli-UoA/zoo2/issues/355) | to-device メッセージ | #354 |
 | [#356](https://github.com/Zli-UoA/zoo2/issues/356) | クロス署名（TOFU のピンと `GET /api/e2ee/tofu_pins` を含む）、クロス署名鍵と署名の Shape、Secret Storage、鍵バックアップの保存 API | #354、AuthZ#97（再認証の正常系の結合テスト） |
 | [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` の読み取りと 403 `E2EE_DISABLED` の判定、App からの作成の拒否（403 `E2EE_APPS_FORBIDDEN`）、メンバーでない管理者と退出した作成者の追加の拒否（403 `E2EE_ADD_FORBIDDEN`）、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えでの epoch の増加、配布先のスナップショット | #354、#356 |
-| [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否。#358 の拒否が入ってから、`E2EE_ENCRYPTED_CHANNELS_ENABLED` を true にする（#361 の前に行う。zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読むので、`zoo2-oidc` に足して各拠点で、既存のキーを残す `kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge -p '{"data":{"<キー>":"<値>"}}'` で足す（`create ... --dry-run=client -o yaml \| apply` は、zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるので使わない）。そのあと `kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend` で backend を再起動する。戻すときは false にして、同じく再起動する。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルの作成だけが 403 になる。`ciphertext` を扱えない旧イメージにはロールバックしない（旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる）【提案】） | #357 |
+| [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否。#358 の拒否が入ってから、`E2EE_ENCRYPTED_CHANNELS_ENABLED` を true にする（#361 の前に行う。zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読むので、`zoo2-oidc` に足して各拠点で、既存のキーを残す `kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge -p '{"data":{"<キー>":"<値>"}}'` で足す（`create ... --dry-run=client -o yaml \| apply` は、zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるので使わない）。そのあと `kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend` で backend を再起動する。戻すときは false にして、同じく再起動する。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルの作成だけが 403 になる。`ciphertext` を扱えない旧イメージにはロールバックしない（旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる）。手順は[有効化と運用](#有効化と運用)） | #357 |
 | [#359](https://github.com/Zli-UoA/zoo2/issues/359) | 暗号ストアと端末の登録（React、Compose Android、TUI） | #352、#353、#354、#355 |
 | [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー）。各クライアントの再認証（Web は `max_age=0`、Android は Custom Tabs と App Links、TUI はループバック）と、zli.chat の `assetlinks.json` もここで作る | #359、#356、AuthZ#94、AuthZ#96、AuthZ#97 |
 | [#361](https://github.com/Zli-UoA/zoo2/issues/361) | 暗号化チャンネルと DM の作成と送受信 | #360、#357、#358 |
@@ -1600,19 +1738,20 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 既存のパスキー（`prf: {}` なしで登録したプラットフォーム認証器）で PRF を使えるか。AuthZ#95 より前に登録したセキュリティキーは、登録し直すまで使えない | 【未検証】 | AuthZ#94、#369 |
 | Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` は AuthZ#96 で配信する | 【未検証】 | #360（前に AuthZ#96） |
 | `getrandom` の wasm のバックエンドの設定。cfg フラグは付けず、`wasm_js` feature だけにする（getrandom 0.3.4 以降と 0.4） | 【決定】 | #348 |
-| 3 段のサブクエリの Shape で move-in と move-out が届くか | 【未検証】 | #354 |
-| `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【提案】 | #358 |
-| エラー応答に `code` を足す方法 | 【提案】 | #354 か #357 |
+| `getrandom` の wasm_js バックエンドで、ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドだけ確認） | 【決定】（#352 の Worker のテストで確かめた） | #352 |
+| 3 段のサブクエリの Shape で move-in と move-out が届くか | 【決定】（Electric 1.8.1 で確かめた） | #354 |
+| `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【決定】 | #358 |
+| エラー応答に `code` を足す方法 | 【決定】 | #354 |
 | 暗号化チャンネルでの URL カードの扱い | 【提案】 | #361 |
-| 複数タブでの暗号ストアの共有（Web Locks と BroadcastChannel） | 【提案】 | #359 |
-| クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。`max_age=0` で取り直した ID トークンの `authenticated_at` で確かめる（[クロス署名の API](#クロス署名356)） | 【決定】（実際の AuthZ での動きは【未検証】） | #356 |
+| 他のタブから暗号ストアの処理を頼む仕組み（BroadcastChannel） | 【提案】 | #361 |
+| クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。`max_age=0` で取り直した ID トークンの `authenticated_at` で確かめる（[クロス署名の API](#クロス署名356)） | 【決定】（実際の AuthZ での動きは AuthZ#102 の E2E で確かめた） | #356 |
 | AuthZ で、すべてのセッションとトークンを 1 回で失効し、パスキーの削除と同時にも行える機能（今は、パスキーの削除はセッションもトークンも失効しない） | 【決定】AuthZ に頼む（AuthZ#100） | #362、AuthZ#100 |
 | 本番のアクセストークンの有効期間（`accessTokenTtl`。推奨は 3600 秒） | 【未検証】 | #362 |
 | 再認証の AuthZ 側の変更（`authenticatedAt` の claim、本番のループバックのリダイレクト）。Android は App Links、TUI はループバックで受け取る。初回設定、失効、鍵の差し替えのすべてで使う | 【決定】（AuthZ#97） | #356、#360、#362 |
 | Android の再認証で、AuthZ からの 302 のリダイレクトを Custom Tabs が App Links としてアプリに渡すか | 【未検証】 | #360、#369 |
 | デスクトップ版を E2EE の対象にするか | 【決定】最初の範囲では対象外（後続の issue は未作成） | 後続 |
 | 一度置き換わった自己署名鍵に戻ったことをクライアントで検出する | 【提案】 | #362 |
-| 一度置き換わったユーザー署名鍵に戻ったことを、暗号ストアのユーザー署名鍵の履歴と `confirmed_usk` で検出する（検出は【決定】。履歴の保存形式は【提案】で、暗号ストアの保存は #359、検出と警告は #362） | 【決定】（保存形式は【提案】） | #359、#362 |
+| 一度置き換わったユーザー署名鍵に戻ったことを、暗号ストアのユーザー署名鍵の履歴と `confirmed_usk` で検出する（検出と保存形式は【決定】。検出は #350 の `zoo-crypto` に入れた。暗号ストアの保存は #359、警告の表示は #362） | 【決定】（保存形式は #350 で決定） | #350、#359、#362 |
 | AuthZ でパスキーの credential ID の一覧を取れるようにし、削除済みのパスキーの鍵スロットを表示する | 【提案】（AuthZ の issue が要る） | #362 |
 | 自分の端末どうしで鍵を要求し合う仕組み（Matrix の `m.room_key_request`）。初期版は鍵バックアップで代える | 未決 | 後続 |
 | 許可オリジンを外したときに、パスキーのスロットの作り直しを求める仕組み | 【提案】 | #362 |

@@ -6,7 +6,11 @@ on:
   pull_request:
     paths:
       - "client-core/**"
+      - "client-types/**"
       - "desktop/**"
+      # desktop のトークンと翻訳は frontend のファイルを include_str! で読み、
+      # アイコンのテストは frontend/src の lucide-react の import を読む。
+      - "frontend/src/**"
       - "tui/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
@@ -15,7 +19,11 @@ on:
     branches: [main]
     paths:
       - "client-core/**"
+      - "client-types/**"
       - "desktop/**"
+      # desktop のトークンと翻訳は frontend のファイルを include_str! で読み、
+      # アイコンのテストは frontend/src の lucide-react の import を読む。
+      - "frontend/src/**"
       - "tui/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
@@ -52,10 +60,24 @@ jobs:
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: clippy, rustfmt
+          # client-types は Tauri 版の WebView 側 (Leptos) でも使うため、wasm32 でも確かめる。
+          targets: wasm32-unknown-unknown
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: tui
+      - name: format check (client-types)
+        working-directory: ./client-types
+        run: cargo fmt --check
+      - name: lint check (client-types)
+        working-directory: ./client-types
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test (client-types)
+        working-directory: ./client-types
+        run: cargo test --locked
+      - name: wasm32 build check (client-types)
+        working-directory: ./client-types
+        run: cargo check --locked --target wasm32-unknown-unknown
       - name: format check (client-core)
         working-directory: ./client-core
         run: cargo fmt --check

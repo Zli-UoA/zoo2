@@ -337,4 +337,10 @@ Worker のファイル名が同じまま CSP が変わる場合、SW の Cache A
 
 ### 共通絵文字サービス
 
+最終エクスポートの前に`EMOJI_WRITES_PAUSED=true`でbackendを再作成し、旧Pod/コンテナの終了を確認する。旧管理APIの登録・画像アップロード・削除だけが503となり、一覧・画像・本文・リアクションは維持する。未設定・空文字・`false`で解除でき、不正値では書き込みを許可しない。共有サービスへ切り替えた後は、この停止を解除しても旧管理APIへは書き込めない。
+
 `compose.stack.yaml` は `EMOJI_SERVICE_URL` と任意の `EMOJI_CACHE_FILE` をbackendへ渡す。`EMOJI_SERVICE_URL=https://emoji.zli.works` で共有サービスへ切り替える。画像の表示にはfrontendの `CSP_APP_IMAGE_SRC=https://emoji.zli.works https://emoji.zliusercontent.com` を設定する。既存添付画像の `CSP_STORAGE_SRC` は変更しない。ディスクキャッシュを使う場合は `EMOJI_CACHE_FILE` の保存先へ書き込み可能な永続ボリュームを別途マウントする。未設定・空のキャッシュパスは無効扱いとする。
+
+### ローカル監視スタック（Prometheus / Loki / Grafana / Tempo）
+
+`infra/compose.observability.yaml` で、Backend 3 バイナリと Frontend テレメトリのメトリクス・構造化ログ・OTLP トレースをローカル検証できます。起動・環境変数・Grafana ダッシュボードの詳細は [可観測性（Observability）ガイド](../docs/observability.md) を参照してください。

@@ -31,6 +31,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/stars/{kind}/{id}", delete(remove_star))
         .route("/api/emoji-service", get(emoji_service))
         .route("/api/emoji-shortcodes", get(emoji_shortcodes))
+        .route("/api/emoji-accounts", get(emoji_accounts))
         .route("/api/emojis", get(emojis).post(put_emoji))
         .route(
             "/api/emojis/upload",
@@ -523,7 +524,12 @@ async fn stars(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, AppEr
         if let Some(c) = row["channel_id"].as_str() {
             match a.channel(&mut tx, c, false).await {
                 Ok(_) => {}
-                Err(AppError::NotFound(_)) => continue,
+                // 暗号化チャンネル（#358）の項目も、見えないものとして読み飛ばす。
+                Err(AppError::NotFound(_))
+                | Err(AppError::Coded {
+                    code: "E2EE_APPS_FORBIDDEN",
+                    ..
+                }) => continue,
                 Err(e) => return Err(e),
             }
         }
@@ -566,6 +572,9 @@ async fn remove_star(
 
 async fn emoji_shortcodes(_user: crate::auth::AuthUser) -> Result<Json<Value>, AppError> {
     Ok(Json(crate::emoji_shortcodes::catalog().await?))
+}
+async fn emoji_accounts(_user: crate::auth::AuthUser) -> Result<Json<Value>, AppError> {
+    Ok(Json(crate::emoji_accounts::catalog().await?))
 }
 
 async fn emoji_service(_user: crate::auth::AuthUser) -> Result<Json<Value>, AppError> {
@@ -1191,7 +1200,12 @@ async fn sessions(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, Ap
             .await
         {
             Ok(_) => visible.push(row),
-            Err(AppError::NotFound(_)) => {}
+            // 暗号化チャンネル（#358）の項目も、見えないものとして読み飛ばす。
+            Err(AppError::NotFound(_))
+            | Err(AppError::Coded {
+                code: "E2EE_APPS_FORBIDDEN",
+                ..
+            }) => {}
             Err(e) => return Err(e),
         }
     }
@@ -1511,7 +1525,12 @@ async fn readable_file(
         let c = share["channel"].as_str().unwrap();
         match a.channel(tx, c, false).await {
             Ok(_) => return Ok((f, c.to_owned())),
-            Err(AppError::NotFound(_)) => {}
+            // 暗号化チャンネル（#358）の項目も、見えないものとして読み飛ばす。
+            Err(AppError::NotFound(_))
+            | Err(AppError::Coded {
+                code: "E2EE_APPS_FORBIDDEN",
+                ..
+            }) => {}
             Err(e) => return Err(e),
         }
     }

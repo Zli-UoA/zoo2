@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::HeaderMap,
     routing::{patch, post},
 };
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use crate::{
     db::get_current_txid,
     error::AppError,
     models::{Attachment, Channel, ChannelUser, Message, MessageReaction},
-    routes::response::ApiResponse,
+    routes::{e2ee_channels, response::ApiResponse},
     state::AppState,
     validation::{normalize_and_validate_emoji, validate_message_content_with_options},
 };
@@ -26,11 +27,28 @@ pub struct CreateMessageRequest {
     pub content: String,
     pub parent_id: Option<String>,
     pub attachment_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub sensitive: bool,
+    #[serde(default)]
+    pub sensitive_attachment_ids: Vec<String>,
     #[serde(default = "default_message_kind")]
     pub kind: String,
     #[serde(default)]
     pub broadcast: bool,
     pub metadata: Option<serde_json::Value>,
+    /// 暗号化チャンネルの Megolm の暗号文（`content` は空にする。docs/e2ee.md）。
+    #[serde(default)]
+    pub ciphertext: Option<serde_json::Value>,
+    /// 暗号化したセッションの `membership_epoch`。
+    #[serde(default)]
+    pub epoch: Option<i64>,
+    /// 作成では 0 だけ（省略できる）。
+    #[serde(default)]
+    pub revision: Option<i64>,
+    /// 暗号化チャンネルのメンション（平文。通知と Web Push の宛先だけに使う）。
+    /// 平文チャンネルでは使わず、今までどおり本文から作る（docs/e2ee.md の「機能ごとの扱い」）。
+    #[serde(default)]
+    pub mentions: Option<e2ee_channels::Mentions>,
 }
 
 fn default_message_kind() -> String {
@@ -40,6 +58,13 @@ fn default_message_kind() -> String {
 #[derive(Debug, Deserialize)]
 pub struct UpdateMessageRequest {
     pub content: String,
+    #[serde(default)]
+    pub ciphertext: Option<serde_json::Value>,
+    #[serde(default)]
+    pub epoch: Option<i64>,
+    /// 暗号化チャンネルでは必須で、今の値 + 1。平文チャンネルでは省略できる（送ったときだけ照合する）。
+    #[serde(default)]
+    pub revision: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,6 +97,13 @@ pub struct MessageResponse {
     pub updated_at: Option<String>,
     pub deleted_at: Option<String>,
     pub parent_id: Option<String>,
+    /// 暗号化チャンネルの暗号文（平文チャンネルと削除済みの行は null）。
+    #[serde(default)]
+    pub ciphertext: Option<serde_json::Value>,
+    #[serde(default)]
+    pub epoch: Option<i64>,
+    #[serde(default)]
+    pub revision: i64,
 }
 
 impl From<Message> for MessageResponse {
@@ -88,8 +120,59 @@ impl From<Message> for MessageResponse {
             updated_at: m.updated_at.map(|t| t.to_string()),
             deleted_at: m.deleted_at.map(|t| t.to_string()),
             parent_id: m.parent_id,
+            // toasty のモデルに含めない列。fill_e2ee_fields で埋める。
+            ciphertext: None,
+            epoch: None,
+            revision: 0,
         }
     }
+}
+
+/// `ciphertext`、`epoch`、`revision`（toasty のモデルに含めない列）を DB から読んで埋める。
+pub(crate) async fn fill_e2ee_fields(
+    executor: &mut dyn toasty::Executor,
+    messages: &mut [MessageResponse],
+) -> Result<(), AppError> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let ids = serde_json::Value::from(messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>())
+        .to_string();
+    let rows = toasty::sql::query(
+        "SELECT json_build_object('id', id, 'ciphertext', ciphertext, 'epoch', epoch, 'revision', revision)::text
+         FROM messages WHERE id IN (SELECT jsonb_array_elements_text($1::jsonb))",
+    )
+    .bind(ids.as_str())
+    .exec(executor)
+    .await?;
+    let mut fields = HashMap::new();
+    for row in rows {
+        if let toasty::stmt::Value::Record(r) = row
+            && let Some(toasty::stmt::Value::String(text)) = r.fields.into_iter().next()
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+            && let Some(id) = value["id"].as_str()
+        {
+            fields.insert(id.to_owned(), value);
+        }
+    }
+    for message in messages.iter_mut() {
+        if let Some(value) = fields.get(&message.id) {
+            message.ciphertext = Some(value["ciphertext"].clone()).filter(|v| !v.is_null());
+            message.epoch = value["epoch"].as_i64();
+            message.revision = value["revision"].as_i64().unwrap_or(0);
+        }
+    }
+    Ok(())
+}
+
+async fn with_e2ee_fields(
+    executor: &mut dyn toasty::Executor,
+    message: MessageResponse,
+) -> Result<MessageResponse, AppError> {
+    let mut messages = [message];
+    fill_e2ee_fields(executor, &mut messages).await?;
+    let [message] = messages;
+    Ok(message)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,12 +209,194 @@ pub fn router() -> Router<AppState> {
         )
 }
 
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
+use tokio::sync::Notify;
+
+static TEST_SYNC_GATES: LazyLock<Mutex<HashMap<String, Arc<Notify>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn get_or_create_test_gate(key: &str) -> Arc<Notify> {
+    let mut map = TEST_SYNC_GATES.lock().unwrap();
+    map.entry(key.to_string())
+        .or_insert_with(|| Arc::new(Notify::new()))
+        .clone()
+}
+
 async fn create_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    headers: HeaderMap,
     Json(payload): Json<CreateMessageRequest>,
-) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
-    create_message_impl(state, auth_user, payload, true, None).await
+) -> Result<(HeaderMap, Json<ApiResponse<MessageResponse>>), AppError> {
+    let test_delay_ms = if state.config.dev_auth_enabled {
+        headers
+            .get("X-Test-Delay-Attachment-Verify")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|d| d.min(1000))
+    } else {
+        None
+    };
+    let test_gate_wait = if state.config.dev_auth_enabled {
+        headers
+            .get("X-Test-Gate-Wait")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    let test_gate_notify = if state.config.dev_auth_enabled {
+        headers
+            .get("X-Test-Gate-Notify")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    create_message_impl(
+        state,
+        auth_user,
+        payload,
+        true,
+        None,
+        test_delay_ms,
+        test_gate_wait,
+        test_gate_notify,
+    )
+    .await
+}
+
+pub(crate) async fn check_idempotent_existing_message(
+    db: &mut toasty::Db,
+    id: &str,
+    auth_user_id: &str,
+    channel_id: &str,
+    content: &str,
+    parent_id: Option<&str>,
+    kind: &str,
+    broadcast: bool,
+    metadata: Option<&serde_json::Value>,
+    attachment_ids: &[String],
+) -> Result<Option<MessageResponse>, AppError> {
+    // 本文（モデル）、オプション、revision などの追加の列を別々の SELECT で読むので、同じスナップショットにそろえる。
+    // そろえないと、間に編集がコミットしたとき、編集前の本文に編集後の revision を付けて返す（一覧と同じ）。
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .exec(&mut tx)
+        .await?;
+    let result = idempotent_existing_message_in_snapshot(
+        &mut tx,
+        id,
+        auth_user_id,
+        channel_id,
+        content,
+        parent_id,
+        kind,
+        broadcast,
+        metadata,
+        attachment_ids,
+    )
+    .await;
+    match result {
+        Ok(response) => {
+            tx.commit().await?;
+            Ok(response)
+        }
+        Err(err) => {
+            let _ = tx.rollback().await;
+            Err(err)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn idempotent_existing_message_in_snapshot(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+    auth_user_id: &str,
+    channel_id: &str,
+    content: &str,
+    parent_id: Option<&str>,
+    kind: &str,
+    broadcast: bool,
+    metadata: Option<&serde_json::Value>,
+    attachment_ids: &[String],
+) -> Result<Option<MessageResponse>, AppError> {
+    let existing = Message::filter(Message::fields().id().eq(id))
+        .first()
+        .exec(&mut *tx)
+        .await?;
+    let Some(existing_msg) = existing else {
+        return Ok(None);
+    };
+
+    // 他チャンネルのメッセージ UUID を探る攻撃を防ぐため、channel_id が異なる場合は 404 を返す
+    if existing_msg.channel_id != channel_id {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {channel_id}"
+        )));
+    }
+
+    // 暗号化チャンネルでは、同じ id、user_id、channel_id の行があれば、新しい暗号文を保存せずに既存の行を返す
+    // （応答をなくした再送。暗号文は送り直すたびに変わるので、内容では比べない）。
+    if Channel::get_by_id(&mut *tx, channel_id).await?.encrypted {
+        if existing_msg.user_id == auth_user_id {
+            return Ok(Some(
+                with_e2ee_fields(&mut *tx, MessageResponse::from(existing_msg)).await?,
+            ));
+        }
+        return Err(AppError::Conflict("Idempotency key already used".into()));
+    }
+
+    let mut req_att_ids = attachment_ids.to_vec();
+    req_att_ids.sort();
+
+    let existing_atts = Attachment::filter(Attachment::fields().message_id().eq(id))
+        .exec(&mut *tx)
+        .await?;
+    let mut existing_att_ids: Vec<String> = existing_atts.into_iter().map(|a| a.id).collect();
+    existing_att_ids.sort();
+
+    let opt_rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'kind', COALESCE(message_kind, 'message'),
+            'broadcast', COALESCE(broadcast, false),
+            'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END
+         )::text FROM messages WHERE id = $1",
+    )
+    .bind(id)
+    .exec(&mut *tx)
+    .await?;
+
+    let mut options_match = false;
+    if let Some(toasty::stmt::Value::Record(r)) = opt_rows.into_iter().next()
+        && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
+        && let Ok(saved_opts) = serde_json::from_str::<serde_json::Value>(&s)
+    {
+        let saved_kind = saved_opts["kind"].as_str().unwrap_or("message");
+        let saved_broadcast = saved_opts["broadcast"].as_bool().unwrap_or(false);
+        let saved_metadata = saved_opts.get("metadata").filter(|v| !v.is_null()).cloned();
+        let req_metadata = metadata.filter(|v| !v.is_null()).cloned();
+
+        options_match =
+            saved_kind == kind && saved_broadcast == broadcast && saved_metadata == req_metadata;
+    }
+
+    if existing_msg.user_id == auth_user_id
+        && existing_msg.channel_id == channel_id
+        && existing_msg.content == content
+        && existing_msg.parent_id.as_deref() == parent_id
+        && existing_msg.deleted_at.is_none()
+        && req_att_ids == existing_att_ids
+        && options_match
+    {
+        // 編集で増えた revision など、モデルに含めない列も保存済みの値を返す（暗号化側と同じ）。
+        return Ok(Some(
+            with_e2ee_fields(&mut *tx, MessageResponse::from(existing_msg)).await?,
+        ));
+    }
+    Err(AppError::Conflict("Idempotency key already used".into()))
 }
 
 pub(crate) async fn create_message_impl(
@@ -140,7 +405,10 @@ pub(crate) async fn create_message_impl(
     payload: CreateMessageRequest,
     notify: bool,
     card: Option<String>,
-) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+    test_delay_ms: Option<u64>,
+    test_gate_wait: Option<String>,
+    test_gate_notify: Option<String>,
+) -> Result<(HeaderMap, Json<ApiResponse<MessageResponse>>), AppError> {
     let attachment_ids = payload.attachment_ids.unwrap_or_default();
     const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
     if attachment_ids.len() > MAX_ATTACHMENTS_PER_MESSAGE {
@@ -150,7 +418,15 @@ pub(crate) async fn create_message_impl(
         )));
     }
 
-    validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
+    if payload
+        .sensitive_attachment_ids
+        .iter()
+        .any(|id| !attachment_ids.contains(id))
+    {
+        return Err(AppError::BadRequest(
+            "Sensitive attachment IDs must belong to this message".into(),
+        ));
+    }
     if !matches!(payload.kind.as_str(), "message" | "emote")
         || payload.broadcast && payload.parent_id.is_none()
     {
@@ -161,6 +437,13 @@ pub(crate) async fn create_message_impl(
     if let Some(metadata) = &payload.metadata {
         crate::apps::events::object(metadata)?;
     }
+    // 暗号化の項目のない要求（平文チャンネル向け）は、チャンネルを読む前に本文を検証する（#357 より前と同じ順）。
+    // 暗号化チャンネルの要求は content が空なので、チャンネルを読んだあとで分岐して検証する。
+    let plaintext_request =
+        payload.ciphertext.is_none() && payload.epoch.is_none() && payload.revision.is_none();
+    if plaintext_request {
+        validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
+    }
 
     Uuid::parse_str(&payload.channel_id).map_err(|_| {
         AppError::BadRequest(format!(
@@ -169,11 +452,149 @@ pub(crate) async fn create_message_impl(
         ))
     })?;
 
+    let supplied_id = payload.id.clone();
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
+
+    // チャンネル存在確認・所属確認（他人のUUIDの存在漏洩防止のため冪等性チェックより前に検証）
+    let channel = Channel::get_by_id(&mut db, payload.channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found: {}", payload.channel_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {}",
+            payload.channel_id
+        )));
+    }
+
+    // ユーザー属性（bot, active, guest）を取得
+    let principal_rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'bot', EXISTS(SELECT 1 FROM users WHERE id = $1 AND is_bot),
+            'active', EXISTS(SELECT 1 FROM apps a JOIN app_installations i ON i.app_id = a.id WHERE a.bot_user_id = $1 AND a.status = 'installed' AND i.active),
+            'guest', EXISTS(SELECT 1 FROM users WHERE id = $1 AND is_guest)
+        )::text",
+    )
+    .bind(&auth_user.id)
+    .exec(&mut db)
+    .await?;
+
+    let mut bot_actor = false;
+    let mut guest_actor = false;
+    if let Some(toasty::stmt::Value::Record(r)) = principal_rows.into_iter().next()
+        && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&s)
+    {
+        bot_actor = v["bot"] == true;
+        if bot_actor && v["active"] != true {
+            return Err(AppError::Forbidden("App is not installed".into()));
+        }
+        guest_actor = v["guest"] == true;
+    }
+
+    // プライベートチャンネル、Bot、またはゲストの場合、チャンネルに所属していなければ 404 で存在を隠蔽
+    // （他人の UUID の存在漏洩防止のため冪等性チェックおよびアーカイブ確認より前に検証）
+    if channel.is_private || bot_actor || guest_actor {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(payload.channel_id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut db)
+        .await?;
+
+        if membership.is_none() {
+            return Err(AppError::NotFound(format!(
+                "Channel not found: {}",
+                payload.channel_id
+            )));
+        }
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot post message to an archived channel".into(),
+        ));
+    }
+
+    // 暗号化チャンネルは content を空にして ciphertext を送る。平文チャンネルに暗号化の項目は送れない。
+    let sender = if channel.encrypted {
+        if !payload.content.is_empty() {
+            return Err(e2ee_channels::plaintext_forbidden());
+        }
+        let Some(ciphertext) = payload.ciphertext.as_ref().filter(|v| !v.is_null()) else {
+            return Err(e2ee_channels::ciphertext_required());
+        };
+        if !attachment_ids.is_empty() || !payload.sensitive_attachment_ids.is_empty() {
+            return Err(e2ee_channels::attachments_forbidden());
+        }
+        if payload.metadata.is_some() {
+            return Err(AppError::BadRequest(
+                "metadata cannot be used in an encrypted channel".into(),
+            ));
+        }
+        if payload.epoch.is_none() {
+            return Err(AppError::BadRequest(
+                "epoch is required in an encrypted channel".into(),
+            ));
+        }
+        if payload.revision.is_some_and(|r| r != 0) {
+            return Err(AppError::BadRequest(
+                "revision must be 0 for a new message".into(),
+            ));
+        }
+        if let Some(mentions) = &payload.mentions {
+            e2ee_channels::check_mentions(mentions)?;
+        }
+        Some(e2ee_channels::check_ciphertext_shape(ciphertext)?)
+    } else {
+        if !plaintext_request {
+            return Err(e2ee_channels::plaintext_forbidden());
+        }
+        None
+    };
+
+    // クライアント指定の ID が既に存在する場合、同一属性（本文・チャンネル・親・添付ファイル）の再送であれば既存メッセージを返して成功とする (冪等性)
+    if supplied_id.is_some() {
+        if let Some(msg_res) = check_idempotent_existing_message(
+            &mut db,
+            &id,
+            &auth_user.id,
+            &payload.channel_id,
+            &payload.content,
+            payload.parent_id.as_deref(),
+            &payload.kind,
+            payload.broadcast,
+            payload.metadata.as_ref(),
+            &attachment_ids,
+        )
+        .await?
+        {
+            return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+        }
+    }
+
+    if let Some(gate_key) = test_gate_wait {
+        let gate = get_or_create_test_gate(&gate_key);
+        let _ =
+            tokio::time::timeout(tokio::time::Duration::from_millis(1000), gate.notified()).await;
+    }
+
+    if let Some(delay_ms) = test_delay_ms {
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms.min(1000))).await;
+    }
 
     // 添付ファイルの検証 (外部ストレージへの HeadObject 検証はトランザクション外で実行)
     let mut verified_attachments = Vec::new();
@@ -213,6 +634,31 @@ pub(crate) async fn create_message_impl(
             }
 
             if att.message_id.is_some() {
+                if supplied_id.is_some() && att.message_id.as_deref() == Some(id.as_str()) {
+                    if let Some(msg_res) = check_idempotent_existing_message(
+                        &mut db,
+                        &id,
+                        &auth_user.id,
+                        &payload.channel_id,
+                        &payload.content,
+                        payload.parent_id.as_deref(),
+                        &payload.kind,
+                        payload.broadcast,
+                        payload.metadata.as_ref(),
+                        &attachment_ids,
+                    )
+                    .await?
+                    {
+                        let mut resp_headers = HeaderMap::new();
+                        if state.config.dev_auth_enabled {
+                            resp_headers.insert(
+                                "X-Test-Fallback",
+                                "attachment-already-attached".parse().unwrap(),
+                            );
+                        }
+                        return Ok((resp_headers, Json(ApiResponse::new(msg_res, None))));
+                    }
+                }
                 return Err(AppError::BadRequest(format!(
                     "Attachment {att_id} is already attached to a message"
                 )));
@@ -275,13 +721,7 @@ pub(crate) async fn create_message_impl(
         )));
     }
 
-    if channel.archive_at.is_some() {
-        return Err(AppError::BadRequest(
-            "Cannot post message to an archived channel".into(),
-        ));
-    }
-
-    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
+    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽（アーカイブ確認より前に検証）
     if channel.is_private || bot_actor || crate::apps::events::guest(&mut tx, &auth_user.id).await?
     {
         let membership = ChannelUser::filter(
@@ -302,6 +742,12 @@ pub(crate) async fn create_message_impl(
         }
     }
 
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot post message to an archived channel".into(),
+        ));
+    }
+
     crate::apps::events::posting(
         &mut tx,
         &auth_user.id,
@@ -309,6 +755,23 @@ pub(crate) async fn create_message_impl(
         state.config.dev_auth_enabled,
     )
     .await?;
+    // チャンネルの行を FOR SHARE で読み、membership_epoch を増やす処理と直列にしてから epoch を比べる。
+    if let Some(sender) = &sender {
+        let current = e2ee_channels::lock_channel_epoch(&mut tx, &payload.channel_id).await?;
+        if !current.encrypted {
+            return Err(e2ee_channels::plaintext_forbidden());
+        }
+        // ロックより前の所属の確認のあとに退出、キックが確定していたら、ここで拒否する。
+        e2ee_channels::require_member(
+            &mut tx,
+            &payload.channel_id,
+            &auth_user.id,
+            &format!("Channel not found: {}", payload.channel_id),
+        )
+        .await?;
+        e2ee_channels::check_epoch(payload.epoch.unwrap_or(0), current.membership_epoch)?;
+        e2ee_channels::check_sender_device(&mut tx, &auth_user.id, sender).await?;
+    }
     // スレッド親メッセージ検証
     let mut parent_author_id: Option<String> = None;
     if let Some(ref parent_id) = payload.parent_id {
@@ -341,26 +804,82 @@ pub(crate) async fn create_message_impl(
     let now = crate::models::now_utc_millis();
 
     // 投稿者は必ず認証済みユーザー (auth_user.id) を強制
-    let message = toasty::create!(Message {
-        id: id.as_str(),
-        user_id: auth_user.id.as_str(),
-        channel_id: payload.channel_id.as_str(),
-        content: payload.content.as_str(),
-        card,
-        apub: false,
-        apub_visibility: None,
-        created_at: now,
-        updated_at: None,
-        deleted_at: None,
-        parent_id: payload.parent_id,
-    })
-    .exec(&mut tx)
-    .await?;
+    let create_result = if sender.is_some() {
+        // 暗号文の列は toasty のモデルにないので、SQL で入れる。
+        let ciphertext = payload
+            .ciphertext
+            .as_ref()
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let inserted = toasty::sql::statement(
+            "INSERT INTO messages (id, user_id, channel_id, content, card, created_at, parent_id, ciphertext, epoch, revision)
+             VALUES ($1, $2, $3, '', NULLIF($4, ''), $5::timestamp, NULLIF($6, ''), $7::jsonb, $8::bigint, 0)",
+        )
+        .bind(id.as_str())
+        .bind(auth_user.id.as_str())
+        .bind(payload.channel_id.as_str())
+        .bind(card.as_deref().unwrap_or_default())
+        .bind(now.to_string())
+        .bind(payload.parent_id.as_deref().unwrap_or_default())
+        .bind(ciphertext.as_str())
+        .bind(payload.epoch.unwrap_or(0).to_string())
+        .exec(&mut tx)
+        .await;
+        match inserted {
+            Ok(_) => Message::get_by_id(&mut tx, id.as_str()).await,
+            Err(err) => Err(err),
+        }
+    } else {
+        toasty::create!(Message {
+            id: id.as_str(),
+            user_id: auth_user.id.as_str(),
+            channel_id: payload.channel_id.as_str(),
+            content: payload.content.as_str(),
+            card,
+            apub: false,
+            apub_visibility: None,
+            created_at: now,
+            updated_at: None,
+            deleted_at: None,
+            parent_id: payload.parent_id.clone(),
+        })
+        .exec(&mut tx)
+        .await
+    };
+
+    let message = match create_result {
+        Ok(msg) => msg,
+        Err(err) if supplied_id.is_some() && AppError::is_unique_violation(&err, None) => {
+            let _ = tx.rollback().await;
+            let mut retry_db = state.db.clone();
+            for _ in 0..10 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                if let Some(msg_res) = check_idempotent_existing_message(
+                    &mut retry_db,
+                    &id,
+                    &auth_user.id,
+                    &payload.channel_id,
+                    &payload.content,
+                    payload.parent_id.as_deref(),
+                    &payload.kind,
+                    payload.broadcast,
+                    payload.metadata.as_ref(),
+                    &attachment_ids,
+                )
+                .await?
+                {
+                    return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+                }
+            }
+            return Err(AppError::Conflict("Idempotency key already used".into()));
+        }
+        Err(err) => return Err(AppError::from(err)),
+    };
 
     // 添付ファイルの紐付け (条件付き原子的 UPDATE)
     for (att_id, metadata) in &verified_attachments {
         let rows = toasty::sql::query(
-            "UPDATE attachments SET message_id = $1, width = NULLIF($5,'')::integer, height = NULLIF($6,'')::integer, blurhash = NULLIF($7,'')
+            "UPDATE attachments SET message_id = $1, width = NULLIF($5,'')::integer, height = NULLIF($6,'')::integer, blurhash = NULLIF($7,''), is_sensitive = is_sensitive OR $8::boolean OR (SELECT is_nsfw FROM channels WHERE id=$4)
              WHERE id = $2 AND uploader_id = $3 AND channel_id = $4
                AND message_id IS NULL
                AND created_at > (now() AT TIME ZONE 'UTC') - INTERVAL '23 hours'
@@ -373,6 +892,7 @@ pub(crate) async fn create_message_impl(
         .bind(metadata.as_ref().map(|m| m.width.to_string()).unwrap_or_default())
         .bind(metadata.as_ref().map(|m| m.height.to_string()).unwrap_or_default())
         .bind(metadata.as_ref().map(|m| m.blurhash.as_str()).unwrap_or_default())
+        .bind((payload.sensitive || payload.sensitive_attachment_ids.contains(att_id)).to_string())
         .exec(&mut tx)
         .await?;
 
@@ -390,6 +910,7 @@ pub(crate) async fn create_message_impl(
             &message,
             auth_user.id.as_str(),
             parent_author_id.as_deref(),
+            payload.mentions.as_ref(),
         )
         .await?
     } else {
@@ -397,10 +918,48 @@ pub(crate) async fn create_message_impl(
     };
 
     let txid = get_current_txid(&mut tx).await?;
-    tx.commit().await?;
+    if let Err(err) = tx.commit().await {
+        if supplied_id.is_some() && AppError::is_unique_violation(&err, None) {
+            let mut retry_db = state.db.clone();
+            for _ in 0..10 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+                if let Some(msg_res) = check_idempotent_existing_message(
+                    &mut retry_db,
+                    &id,
+                    &auth_user.id,
+                    &payload.channel_id,
+                    &payload.content,
+                    payload.parent_id.as_deref(),
+                    &payload.kind,
+                    payload.broadcast,
+                    payload.metadata.as_ref(),
+                    &attachment_ids,
+                )
+                .await?
+                {
+                    return Ok((HeaderMap::new(), Json(ApiResponse::new(msg_res, None))));
+                }
+            }
+            return Err(AppError::Conflict("Idempotency key already used".into()));
+        }
+        return Err(AppError::from(err));
+    }
+    // 端末の last_seen_at は、コミットのあとに別の文で更新する（docs/e2ee.md の「端末」）。
+    if let Some(sender) = &sender {
+        e2ee_channels::touch_sender_device(&mut db, &auth_user.id, sender).await;
+    }
+    if let Some(gate_key) = test_gate_notify {
+        let gate = get_or_create_test_gate(&gate_key);
+        gate.notify_waiters();
+    }
     crate::push::dispatch(state.clone(), notifications);
 
-    Ok(Json(ApiResponse::new(MessageResponse::from(message), txid)))
+    let mut response = MessageResponse::from(message);
+    if sender.is_some() {
+        response.ciphertext = payload.ciphertext.clone();
+        response.epoch = payload.epoch;
+    }
+    Ok((HeaderMap::new(), Json(ApiResponse::new(response, txid))))
 }
 
 pub(crate) async fn update_message(
@@ -482,31 +1041,104 @@ pub(crate) async fn update_message(
         ));
     }
 
-    if payload.content.trim().is_empty() {
-        let has_attachments = Attachment::filter(Attachment::fields().message_id().eq(id.as_str()))
-            .first()
-            .exec(&mut tx)
-            .await?
-            .is_some();
-        validate_message_content_with_options(&payload.content, has_attachments)?;
+    // ロックの順：チャンネルの行（FOR SHARE。membership_epoch の増加と直列にする）、メッセージの行（FOR UPDATE）。
+    let mut touched_sender = None;
+    let current = e2ee_channels::lock_channel_epoch(&mut tx, &message.channel_id).await?;
+    if current.encrypted {
+        // ロックより前の所属の確認のあとに退出、キックが確定していたら、ここで拒否する。
+        e2ee_channels::require_member(
+            &mut tx,
+            &message.channel_id,
+            &auth_user.id,
+            &format!("Message not found: {id}"),
+        )
+        .await?;
     }
-
+    let row = crate::apps::query(
+        &mut tx,
+        "SELECT json_build_object('revision', revision, 'deleted', deleted_at IS NOT NULL)::text
+         FROM messages WHERE id = $1 FOR UPDATE",
+        &[id.as_str()],
+    )
+    .await?
+    .into_iter()
+    .next()
+    .filter(|row| row["deleted"] != true)
+    .ok_or_else(|| AppError::NotFound(format!("Message not found: {id}")))?;
+    let current_revision = row["revision"].as_i64().unwrap_or(0);
     let now = crate::models::now_utc_millis();
 
-    Message::update_by_id(id.as_str())
-        .content(payload.content.as_str())
-        .updated_at(Some(now))
+    if current.encrypted {
+        if !payload.content.is_empty() {
+            return Err(e2ee_channels::plaintext_forbidden());
+        }
+        let Some(ciphertext) = payload.ciphertext.as_ref().filter(|v| !v.is_null()) else {
+            return Err(e2ee_channels::ciphertext_required());
+        };
+        let (Some(epoch), Some(revision)) = (payload.epoch, payload.revision) else {
+            return Err(AppError::BadRequest(
+                "epoch and revision are required in an encrypted channel".into(),
+            ));
+        };
+        let sender = e2ee_channels::check_ciphertext_shape(ciphertext)?;
+        e2ee_channels::check_epoch(epoch, current.membership_epoch)?;
+        if revision != current_revision + 1 {
+            return Err(e2ee_channels::stale_revision(current_revision));
+        }
+        e2ee_channels::check_sender_device(&mut tx, &auth_user.id, &sender).await?;
+        touched_sender = Some(sender);
+        toasty::sql::statement(
+            "UPDATE messages SET ciphertext = $2::jsonb, epoch = $3::bigint, revision = $4::integer,
+               updated_at = $5::timestamp
+             WHERE id = $1",
+        )
+        .bind(id.as_str())
+        .bind(ciphertext.to_string())
+        .bind(epoch.to_string())
+        .bind(revision.to_string())
+        .bind(now.to_string())
         .exec(&mut tx)
         .await?;
+    } else {
+        if payload.ciphertext.is_some() || payload.epoch.is_some() {
+            return Err(e2ee_channels::plaintext_forbidden());
+        }
+        // 省略したとき（更新前のクライアント）は照合せず、1 増やすだけ。
+        if let Some(revision) = payload.revision
+            && revision != current_revision + 1
+        {
+            return Err(e2ee_channels::stale_revision(current_revision));
+        }
+        if payload.content.trim().is_empty() {
+            let has_attachments =
+                Attachment::filter(Attachment::fields().message_id().eq(id.as_str()))
+                    .first()
+                    .exec(&mut tx)
+                    .await?
+                    .is_some();
+            validate_message_content_with_options(&payload.content, has_attachments)?;
+        }
+        toasty::sql::statement(
+            "UPDATE messages SET content = $2, updated_at = $3::timestamp, revision = revision + 1
+             WHERE id = $1",
+        )
+        .bind(id.as_str())
+        .bind(payload.content.as_str())
+        .bind(now.to_string())
+        .exec(&mut tx)
+        .await?;
+    }
 
     let updated_message = Message::get_by_id(&mut tx, id.as_str()).await?;
+    let response = with_e2ee_fields(&mut tx, MessageResponse::from(updated_message)).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
+    // 端末の last_seen_at は、コミットのあとに別の文で更新する（docs/e2ee.md の「端末」）。
+    if let Some(sender) = &touched_sender {
+        e2ee_channels::touch_sender_device(&mut db, &auth_user.id, sender).await;
+    }
 
-    Ok(Json(ApiResponse::new(
-        MessageResponse::from(updated_message),
-        txid,
-    )))
+    Ok(Json(ApiResponse::new(response, txid)))
 }
 
 pub(crate) async fn delete_message(
@@ -605,13 +1237,12 @@ pub(crate) async fn delete_message(
         .await?;
 
     let deleted_message = Message::get_by_id(&mut tx, id.as_str()).await?;
+    // 暗号文は DB のトリガーが消している。
+    let response = with_e2ee_fields(&mut tx, MessageResponse::from(deleted_message)).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
-    Ok(Json(ApiResponse::new(
-        MessageResponse::from(deleted_message),
-        txid,
-    )))
+    Ok(Json(ApiResponse::new(response, txid)))
 }
 
 async fn list_messages(
@@ -664,6 +1295,12 @@ async fn list_messages(
         }
     }
 
+    // 本文（モデル）と revision などの追加の列を別の SELECT で読むので、同じスナップショットにそろえる。
+    // そろえないと、間に編集がコミットしたとき、編集前の本文に編集後の revision が付く。
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .exec(&mut tx)
+        .await?;
     let messages = Message::filter(
         Message::fields()
             .channel_id()
@@ -671,10 +1308,12 @@ async fn list_messages(
             .and(Message::fields().deleted_at().is_none()),
     )
     .order_by(Message::fields().created_at().asc())
-    .exec(&mut db)
+    .exec(&mut tx)
     .await?;
 
-    let res = messages.into_iter().map(MessageResponse::from).collect();
+    let mut res: Vec<MessageResponse> = messages.into_iter().map(MessageResponse::from).collect();
+    fill_e2ee_fields(&mut tx, &mut res).await?;
+    tx.commit().await?;
     Ok(Json(res))
 }
 
@@ -972,6 +1611,9 @@ async fn reaction_emoji(
     input: &str,
     require_existing: bool,
 ) -> Result<String, AppError> {
+    if crate::validation::account_shortcode_username(input).is_some() {
+        return normalize_and_validate_emoji(input);
+    }
     if let Some(name) = input
         .trim()
         .strip_prefix(':')

@@ -360,7 +360,12 @@ export class OidcClient {
     savePending(this.environment.storage, pending);
     // Keep the logout marker until an explicit login has replaced the old pending
     // request, so a stale callback cannot revive the previous session.
-    if (isLoggedOut(this.environment.storage)) clearLoggedOut(this.environment.storage);
+    if (isLoggedOut(this.environment.storage)) {
+      if (!clearStoredSession(this.environment.storage)) {
+        throw new OidcError("session_reset", "保存されたセッションを削除できません");
+      }
+      clearLoggedOut(this.environment.storage);
+    }
 
     const url = new URL(endpoints.authorizationEndpoint);
     url.searchParams.set("response_type", "code");
@@ -377,6 +382,12 @@ export class OidcClient {
     this.assertSessionGeneration(generation);
     this.environment.assign(href);
     return href;
+  }
+
+  /** Discard an authorization attempt when its page is restored from bfcache. */
+  cancelPendingLogin(): void {
+    this.generation += 1;
+    this.reauthorizeRequested = false;
   }
 
   private assertSessionGeneration(generation: number): void {
@@ -610,7 +621,7 @@ export class OidcClient {
     const logoutOperation = { generation, idTokenHint };
     this.pendingLogoutOperation = logoutOperation;
     this.tokens = null;
-    clearStoredSession(this.environment.storage);
+    const storedSessionCleared = clearStoredSession(this.environment.storage);
     this.refreshPromise = null;
     this.callbackRequest = null;
     this.reauthorizeRequested = false;
@@ -629,7 +640,7 @@ export class OidcClient {
       // Keep logout in memory even when the persistent flag cannot be written.
     }
     const listenersInvalidated = notifyAuthSessionEnded("logout");
-    if (!pendingCleared || !logoutMarkerStored || !listenersInvalidated) {
+    if (!storedSessionCleared || !pendingCleared || !logoutMarkerStored || !listenersInvalidated) {
       // Navigating would discard the only memory protection while a stale callback
       // or private-note recovery snapshot may still be persisted. Keep the app in
       // its logged-out state and let the user retry cleanup after storage recovers.

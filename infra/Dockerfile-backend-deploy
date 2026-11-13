@@ -7,6 +7,8 @@ ARG DATABASE_URL="postgresql://postgres:postgres@localhost:5432/db?schema=public
 WORKDIR /app
 
 COPY backend/ /app
+# backend は E2EE の署名の検証に crates/zoo-crypto を path で依存する（../crates/zoo-crypto）。
+COPY crates/zoo-crypto/ /crates/zoo-crypto
 # events.rs embeds this public contract at compile time.
 COPY docs/slack-event-coverage.json /docs/slack-event-coverage.json
 
@@ -15,18 +17,19 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
     cargo clean --locked --release --package backend && \
-    cargo build --locked --release --bin zoo_backend --bin zoo_dispatcher && \
+    cargo build --locked --release --bin zoo_backend --bin zoo_dispatcher --bin zoo_slack_worker && \
     cp /app/target/release/zoo_backend /zoo_backend && \
-    cp /app/target/release/zoo_dispatcher /zoo_dispatcher
+    cp /app/target/release/zoo_dispatcher /zoo_dispatcher && \
+    cp /app/target/release/zoo_slack_worker /zoo_slack_worker
 
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 USER nonroot
 
-COPY --chown=nonroot:nonroot --from=build-env /zoo_backend /zoo_dispatcher /home/nonroot/
+COPY --chown=nonroot:nonroot --from=build-env /zoo_backend /zoo_dispatcher /zoo_slack_worker /home/nonroot/
 
-# 同じイメージで 2 つのバイナリを持つ。zoo-dispatcher の Deployment は command で
-# /home/nonroot/zoo_dispatcher を指定する。
+# 同じイメージで 3 つのバイナリを持つ。zoo-dispatcher と zoo-slack-worker の Deployment は command で
+# /home/nonroot/zoo_dispatcher、/home/nonroot/zoo_slack_worker を指定する。
 CMD ["/home/nonroot/zoo_backend"]
 

@@ -1,0 +1,164 @@
+name: CI Desktop Tauri
+on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "client-core/**"
+      - "client-types/**"
+      - "desktop-tauri/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci-desktop-tauri.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "client-core/**"
+      - "client-types/**"
+      - "desktop-tauri/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci-desktop-tauri.yaml"
+permissions:
+  contents: read
+concurrency:
+  group: desktop-tauri-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+# WebKitGTK などの apt パッケージが要るため、GitHub ホストの実行先を使う。
+# AppImage は NixOS では作れないので、ここで deb と一緒に作って成果物にする。
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libdbus-1-dev \
+            libxdo-dev \
+            file
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            desktop-tauri/src-tauri
+            desktop-tauri/ui
+      - name: Install trunk, wasm-bindgen and tauri-cli
+        # wasm-bindgen は desktop-tauri/ui/Cargo.toml で固定した版と合わせる。
+        run: |
+          # trunk は ~/.cargo/bin がない実行先 (macOS) もあるので、専用の場所に置いて PATH に足す。
+          trunk_bin="$HOME/.local/trunk/bin"
+          mkdir -p "$trunk_bin"
+          echo "$trunk_bin" >> "$GITHUB_PATH"
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C "$trunk_bin"
+          cargo install --locked wasm-bindgen-cli --version 0.2.129
+          cargo install --locked tauri-cli --version 2.11.4
+      - name: format check
+        run: |
+          cargo fmt --check --manifest-path desktop-tauri/src-tauri/Cargo.toml
+          cargo fmt --check --manifest-path desktop-tauri/ui/Cargo.toml
+      # tauri::generate_context! は ui/dist を読むので、clippy とテストより先に作る。
+      - name: build ui
+        working-directory: ./desktop-tauri/ui
+        run: trunk build --release
+      - name: lint check (ui)
+        working-directory: ./desktop-tauri/ui
+        run: cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+      - name: lint check
+        working-directory: ./desktop-tauri/src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        working-directory: ./desktop-tauri/src-tauri
+        run: cargo test --locked
+      - name: bundle (deb, AppImage)
+        working-directory: ./desktop-tauri/src-tauri
+        run: cargo tauri build --bundles deb,appimage -- --locked
+      - name: Upload bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: zoo2-desktop-tauri-linux
+          path: |
+            desktop-tauri/src-tauri/target/release/bundle/deb/*.deb
+            desktop-tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+          retention-days: 7
+
+  # macOS でもビルドできることを確かめる。リリース (cd-desktop-tauri-release.yaml) と同じ universal の
+  # .app を作る。Developer ID の署名と公証はまだしない (ad-hoc 署名だけ)。
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy
+          targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            desktop-tauri/src-tauri
+            desktop-tauri/ui
+      - name: Install trunk, wasm-bindgen and tauri-cli
+        run: |
+          # trunk は ~/.cargo/bin がない実行先 (macOS) もあるので、専用の場所に置いて PATH に足す。
+          trunk_bin="$HOME/.local/trunk/bin"
+          mkdir -p "$trunk_bin"
+          echo "$trunk_bin" >> "$GITHUB_PATH"
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-aarch64-apple-darwin.tar.gz | tar -xz -C "$trunk_bin"
+          cargo install --locked wasm-bindgen-cli --version 0.2.129
+          cargo install --locked tauri-cli --version 2.11.4
+      - name: build ui
+        working-directory: ./desktop-tauri/ui
+        run: trunk build --release
+      # macOS でだけ使う (または使わない) コードの警告を拾う。
+      - name: lint check
+        working-directory: ./desktop-tauri/src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        working-directory: ./desktop-tauri/src-tauri
+        run: cargo test --locked
+      - name: bundle (app, dmg)
+        working-directory: ./desktop-tauri/src-tauri
+        run: cargo tauri build --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}' -- --locked
+      # 通話のマイクとカメラに要る entitlement と、使用目的の説明が、署名したアプリに入っているか。
+      - name: Check entitlements and usage descriptions
+        working-directory: ./desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle/macos
+        run: |
+          entitlements=$(codesign -d --entitlements - --xml zoo2.app)
+          for key in com.apple.security.device.audio-input com.apple.security.device.camera; do
+            grep -q "$key" <<<"$entitlements" || { echo "::error::$key がありません"; exit 1; }
+          done
+          for key in NSMicrophoneUsageDescription NSCameraUsageDescription; do
+            /usr/libexec/PlistBuddy -c "Print :$key" zoo2.app/Contents/Info.plist
+          done
+      - name: Upload bundles
+        uses: actions/upload-artifact@v7
+        with:
+          name: zoo2-desktop-tauri-macos
+          path: desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          retention-days: 7

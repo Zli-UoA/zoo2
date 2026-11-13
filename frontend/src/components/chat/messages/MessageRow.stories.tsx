@@ -143,17 +143,21 @@ export const ReactionUsers: Story = {
         userIds: ["long", "user-bob"],
         userNames: { ...reactionUsers, long: `${"A".repeat(80)} (@longname)` },
       },
+      { emoji: "🎉", count: 1, ownId: null, userIds: ["user-alice"], userNames: reactionUsers },
     ],
   },
   play: playForImplementation(async ({ canvasElement }) => {
     await userEvent.click(
       await within(canvasElement).findByRole("button", {
-        name: "👍 にリアクションしたユーザーを表示",
+        name: "リアクションしたユーザーを表示",
       }),
     );
     const dialog = await screen.findByRole("dialog");
-    await waitFor(() => expect(within(dialog).getByText(/@longname/)).toBeVisible());
-    await waitFor(() => expect(within(dialog).getByText(/@bob/)).toBeVisible());
+    const thumbs = within(dialog).getByRole("heading", { name: "👍" }).closest("section")!;
+    const celebration = within(dialog).getByRole("heading", { name: "🎉" }).closest("section")!;
+    await waitFor(() => expect(within(thumbs).getByText(/@longname/)).toBeVisible());
+    await expect(within(thumbs).getByText(/@bob/)).toBeVisible();
+    await expect(within(celebration).getByText(/@alice/)).toBeVisible();
   }),
 };
 
@@ -373,4 +377,17 @@ export const ActivityPubGrouped: Story = {
       message: { ...item.message, apub: true, apub_visibility: "public" },
     },
   },
+};
+
+export const SensitiveAttachments: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { attachments: [{ ...storyAttachments[0], is_sensitive: true }] },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("img", { name: "screenshot.png" })).not.toBeInTheDocument();
+    await userEvent.click(canvas.getByRole("button", { name: "画像を表示" }));
+    await waitFor(() => expect(canvas.getByRole("img", { name: "screenshot.png" })).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: "画像を隠す" }));
+    await expect(canvas.queryByRole("img", { name: "screenshot.png" })).not.toBeInTheDocument();
+  }),
 };

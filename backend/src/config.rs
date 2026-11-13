@@ -5,6 +5,10 @@ pub struct OidcConfig {
     pub issuer: String,
     pub audience: String,
     pub jwks_url: Option<String>,
+    /// E2EE の再認証（`X-Zoo-Reauth`）の ID トークンの `aud` として認めるクライアント ID の一覧
+    /// （`OIDC_REAUTH_AUDIENCES`、カンマ区切り。Web、Android、TUI）。空なら再認証はすべて失敗する
+    /// （起動は止めない。docs/e2ee.md の「クロス署名」）。
+    pub reauth_audiences: Vec<String>,
 }
 
 impl fmt::Debug for OidcConfig {
@@ -13,6 +17,7 @@ impl fmt::Debug for OidcConfig {
             .field("issuer", &self.issuer)
             .field("audience", &self.audience)
             .field("jwks_url", &self.jwks_url)
+            .field("reauth_audiences", &self.reauth_audiences)
             .finish()
     }
 }
@@ -265,6 +270,9 @@ pub struct Config {
     pub webrtc_ice_servers_json: String,
     pub s3: S3Config,
     pub slack: SlackConfig,
+    /// `encrypted: true` のチャンネルと DM の作成を受け付けるか（`E2EE_ENCRYPTED_CHANNELS_ENABLED`。既定は false）。
+    /// false のあいだは 403 `E2EE_DISABLED`。#358 の拒否が入ってから true にする（docs/e2ee.md）。
+    pub e2ee_encrypted_channels_enabled: bool,
 }
 
 impl fmt::Debug for Config {
@@ -285,6 +293,10 @@ impl fmt::Debug for Config {
             .field("webrtc_ice_servers_json", &"[REDACTED]")
             .field("s3", &self.s3)
             .field("slack", &self.slack)
+            .field(
+                "e2ee_encrypted_channels_enabled",
+                &self.e2ee_encrypted_channels_enabled,
+            )
             .finish()
     }
 }
@@ -311,7 +323,19 @@ pub(crate) fn parse_oidc_config(
         issuer: issuer.to_string(),
         audience: audience.to_string(),
         jwks_url,
+        reauth_audiences: Vec::new(),
     })
+}
+
+/// `OIDC_REAUTH_AUDIENCES`（カンマ区切り）をパースする。空要素は無視する。
+pub(crate) fn parse_reauth_audiences(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// `DATABASE_URL`、なければ `POSTGRES_*` から接続 URL を組み立てる（dispatcher と共有）。
@@ -325,6 +349,14 @@ pub fn database_url_from_env() -> String {
         let port = env::var("POSTGRES_PORT").unwrap_or_else(|_| "5432".to_string());
         let db = env::var("POSTGRES_DB").unwrap_or_else(|_| "zoo".to_string());
         format!("postgresql://{user}:{password}@{host}:{port}/{db}?sslmode=disable")
+    })
+}
+
+/// `true` か `1` だけを有効とみなす（大文字と小文字は区別しない）。未設定や空、それ以外の値は無効。
+pub fn parse_bool_flag(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        let v = v.trim();
+        v.eq_ignore_ascii_case("true") || v == "1"
     })
 }
 
@@ -355,7 +387,17 @@ impl Config {
             env::var("OIDC_AUDIENCE").ok().as_deref(),
             env::var("OIDC_CLIENT_ID").ok().as_deref(),
             env::var("OIDC_JWKS_URL").ok().as_deref(),
-        );
+        )
+        .map(|mut oidc| {
+            oidc.reauth_audiences =
+                parse_reauth_audiences(env::var("OIDC_REAUTH_AUDIENCES").ok().as_deref());
+            if oidc.reauth_audiences.is_empty() {
+                tracing::warn!(
+                    "OIDC_REAUTH_AUDIENCES is not set; E2EE operations that need re-authentication will be rejected"
+                );
+            }
+            oidc
+        });
 
         let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
 
@@ -432,6 +474,9 @@ impl Config {
             webrtc_ice_servers_json,
             s3,
             slack: SlackConfig::from_env(),
+            e2ee_encrypted_channels_enabled: parse_bool_flag(
+                env::var("E2EE_ENCRYPTED_CHANNELS_ENABLED").ok().as_deref(),
+            ),
         }
     }
 
@@ -606,6 +651,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_bool_flag() {
+        assert!(!parse_bool_flag(None));
+        assert!(!parse_bool_flag(Some("")));
+        assert!(!parse_bool_flag(Some("false")));
+        assert!(!parse_bool_flag(Some("yes")));
+        assert!(parse_bool_flag(Some("true")));
+        assert!(parse_bool_flag(Some(" TRUE ")));
+        assert!(parse_bool_flag(Some("1")));
+    }
+
+    #[test]
     fn slack_team_allowed_applies_only_when_set() {
         let mut slack = SlackConfig::default();
         assert!(slack.team_allowed("T1"));
@@ -641,6 +697,7 @@ mod tests {
                 issuer: "https://idp.example.com".to_string(),
                 audience: "zoo-client".to_string(),
                 jwks_url: Some("https://idp.example.com/jwks".to_string()),
+                reauth_audiences: Vec::new(),
             }),
             dev_auth_enabled: false,
             environment: "production".to_string(),
@@ -648,6 +705,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
@@ -676,6 +734,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
 
         // 有効な JSON 配列
@@ -712,6 +771,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -728,10 +788,21 @@ mod tests {
                 issuer: "https://idp.example.com".to_string(),
                 audience: "zoo-client".to_string(),
                 jwks_url: None,
+                reauth_audiences: Vec::new(),
             }),
             ..prod_no_oidc
         };
         assert!(prod_with_oidc.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parse_reauth_audiences_splits_and_trims() {
+        assert!(parse_reauth_audiences(None).is_empty());
+        assert!(parse_reauth_audiences(Some(" , ")).is_empty());
+        assert_eq!(
+            parse_reauth_audiences(Some("web, android ,tui,")),
+            vec!["web", "android", "tui"]
+        );
     }
 
     #[test]
@@ -792,6 +863,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         assert!(config.validate().is_err());
     }
@@ -819,6 +891,7 @@ mod tests {
             webrtc_ice_servers_json: "[]".to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         assert!(config.validate().is_ok());
 
@@ -856,6 +929,7 @@ mod tests {
             webrtc_ice_servers_json: "[]".to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
 
         // 境界値 OK (1 秒、604,800 秒 = 7 日)
@@ -909,6 +983,7 @@ mod tests {
             webrtc_ice_servers_json: json.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
 
         // 正常系: 有効な STUN / TURN
@@ -1010,6 +1085,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("stun:stun.l.google.com:19302"));
@@ -1043,6 +1119,7 @@ mod tests {
             issuer: "https://idm.example.com".to_string(),
             audience: "zoo_client".to_string(),
             jwks_url: None,
+            reauth_audiences: Vec::new(),
         });
 
         let mut config = Config {
@@ -1058,6 +1135,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
 
         // None は OK

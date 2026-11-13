@@ -4,12 +4,10 @@ import {
   and,
   caseWhen,
   eq,
-  gte,
   isNull,
-  not,
 } from "@tanstack/react-db";
 
-import type { TimestampString } from "../timestamps";
+import { MESSAGE_ORDER } from "./messageOrder";
 import type { MessageRow, UserRow } from "./types";
 
 /**
@@ -22,19 +20,16 @@ export interface MessageFeedSources {
   users: Collection<UserRow, string | number>;
 }
 
-export interface ReplyCountSources {
-  messages: Collection<MessageRow, string | number>;
-}
-
 /**
  * フィードの範囲。`parentId: null` はチャンネル直下（スレッドのルート）、
- * 文字列はそのメッセージへの返信を表す。`since` を渡すとその時刻以降だけを
- * 返す（30日窓。過去は上スクロールで広げる）。
+ * 文字列はそのメッセージへの返信を表す。範囲 (何件読むか) は、クエリの `limit` を呼び出し側が
+ * `useLiveInfiniteQuery` で動かして決める (端末に同期するのは、その範囲だけ)。
  */
 export interface MessageFeedScope {
   parentId: string | null;
   messageId?: string;
-  since?: TimestampString;
+  /** 削除済みの行も返す (スレッドの親が削除されたかを調べる)。 */
+  includeDeleted?: boolean;
 }
 
 /**
@@ -52,72 +47,65 @@ export function messageFeedQuery(
   sources: MessageFeedSources,
   scope: MessageFeedScope = { parentId: null },
 ) {
-  return q
-    .from({ messages: sources.messages })
-    .join({ users: sources.users }, ({ messages, users }) => eq(messages.user_id, users.id))
-    .where(({ messages }) => {
-      const parent = scope.messageId
-        ? eq(messages.id, scope.messageId)
-        : scope.parentId === null
-          ? isNull(messages.parent_id)
-          : eq(messages.parent_id, scope.parentId);
-      return scope.since
-        ? and(isNull(messages.deleted_at), parent, gte(messages.created_at, scope.since))
-        : and(isNull(messages.deleted_at), parent);
-    })
-    .select(({ messages, users }) => ({
-      id: messages.id,
-      display_data: messages.display_data,
-      channel_id: messages.channel_id,
-      user_id: messages.user_id,
-      content: messages.content,
-      card: messages.card,
-      app_blocks: messages.app_blocks,
-      app_attachments: messages.app_attachments,
-      app_unfurls: messages.app_unfurls,
-      app_origin_id: messages.app_origin_id,
-      home_post_id: messages.home_post_id,
-      apub: messages.apub,
-      apub_visibility: messages.apub_visibility,
-      is_bot: caseWhen(
-        eq(messages.display_data?.author?.id, messages.user_id),
-        messages.display_data?.author?.is_bot,
-        users.is_bot,
-      ),
-      app_id: caseWhen(
-        eq(messages.display_data?.author?.id, messages.user_id),
-        messages.display_data?.author?.app_id,
-        users.app_id,
-      ),
-      avatar_url: caseWhen(
-        eq(messages.display_data?.author?.id, messages.user_id),
-        messages.display_data?.author?.avatar_url,
-        users.avatar_url,
-      ),
-      created_at: messages.created_at,
-      updated_at: messages.updated_at,
-      parent_id: messages.parent_id,
-      user_name: caseWhen(
-        eq(messages.display_data?.author?.id, messages.user_id),
-        messages.display_data?.author?.user_name,
-        users.user_name,
-      ),
-      display_name: caseWhen(
-        eq(messages.display_data?.author?.id, messages.user_id),
-        messages.display_data?.author?.display_name,
-        users.display_name,
-      ),
-    }))
-    .orderBy(({ messages }) => messages.created_at);
-}
-
-/**
- * 返信数の集計用に、削除されていない返信の `parent_id` だけを購読する。
- * 表示用VIEWがまだない旧キャッシュ・楽観更新の件数を補完する。
- */
-export function replyParentQuery(q: InitialQueryBuilder, sources: ReplyCountSources) {
-  return q
-    .from({ messages: sources.messages })
-    .where(({ messages }) => and(isNull(messages.deleted_at), not(isNull(messages.parent_id))))
-    .select(({ messages }) => ({ parent_id: messages.parent_id }));
+  return (
+    q
+      .from({ messages: sources.messages })
+      .join({ users: sources.users }, ({ messages, users }) => eq(messages.user_id, users.id))
+      .where(({ messages }) => {
+        const parent = scope.messageId
+          ? eq(messages.id, scope.messageId)
+          : scope.parentId === null
+            ? isNull(messages.parent_id)
+            : eq(messages.parent_id, scope.parentId);
+        return scope.includeDeleted ? parent : and(isNull(messages.deleted_at), parent);
+      })
+      .select(({ messages, users }) => ({
+        id: messages.id,
+        display_data: messages.display_data,
+        channel_id: messages.channel_id,
+        user_id: messages.user_id,
+        content: messages.content,
+        card: messages.card,
+        app_blocks: messages.app_blocks,
+        app_attachments: messages.app_attachments,
+        app_unfurls: messages.app_unfurls,
+        app_origin_id: messages.app_origin_id,
+        home_post_id: messages.home_post_id,
+        apub: messages.apub,
+        apub_visibility: messages.apub_visibility,
+        is_bot: caseWhen(
+          eq(messages.display_data?.author?.id, messages.user_id),
+          messages.display_data?.author?.is_bot,
+          users.is_bot,
+        ),
+        app_id: caseWhen(
+          eq(messages.display_data?.author?.id, messages.user_id),
+          messages.display_data?.author?.app_id,
+          users.app_id,
+        ),
+        avatar_url: caseWhen(
+          eq(messages.display_data?.author?.id, messages.user_id),
+          messages.display_data?.author?.avatar_url,
+          users.avatar_url,
+        ),
+        created_at: messages.created_at,
+        updated_at: messages.updated_at,
+        deleted_at: messages.deleted_at,
+        parent_id: messages.parent_id,
+        thread_archive_at: messages.thread_archive_at,
+        user_name: caseWhen(
+          eq(messages.display_data?.author?.id, messages.user_id),
+          messages.display_data?.author?.user_name,
+          users.user_name,
+        ),
+        display_name: caseWhen(
+          eq(messages.display_data?.author?.id, messages.user_id),
+          messages.display_data?.author?.display_name,
+          users.display_name,
+        ),
+      }))
+      // 新しい順。`limit` を付けると、必要な範囲だけを Electric の subset snapshot で取る
+      // (`lexical` でないと、全件を取るフォールバックになる。messageOrder.ts)。表示は、呼び出し側で反転する。
+      .orderBy(({ messages }) => messages.created_at, MESSAGE_ORDER)
+  );
 }

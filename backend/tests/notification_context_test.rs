@@ -66,6 +66,7 @@ async fn setup(
         .channel_name(format!("notify-{channel}"))
         .created_user_id(users[0].as_str())
         .is_private(private)
+        .is_nsfw(false)
         .is_dm(is_dm)
         .created_at(now)
         .exec(&mut db)

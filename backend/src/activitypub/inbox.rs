@@ -227,7 +227,7 @@ pub(super) async fn receive_verified(
                 ));
             }
             let content = emoji::note_content(object)?;
-            let media = emoji::media(&object["attachment"]);
+            let media = emoji::note_media(object);
             emoji::remember(&mut tx, &media).await?;
             let note_emojis = emoji::tags(&object["tag"]);
             emoji::remember(&mut tx, &note_emojis).await?;
@@ -274,7 +274,9 @@ pub(super) async fn receive_verified(
                 "public"
             } else if cc.contains(&PUBLIC) {
                 "unlisted"
-            } else if to.contains(&string(actor, "followers_url")?) {
+            } else if to.contains(&string(actor, "followers_url")?)
+                || cc.contains(&string(actor, "followers_url")?)
+            {
                 "followers"
             } else {
                 return Err(AppError::BadRequest("Unsupported Announce audience".into()));

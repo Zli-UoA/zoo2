@@ -1,3 +1,4 @@
+import { HomeLiveProvider } from "../../hooks/useHomeLive";
 import { delay, http, HttpResponse } from "msw";
 import { mockServer } from "../browser-setup";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -19,12 +20,14 @@ import { NotificationsScreen } from "../../components/chat/NotificationsScreen";
 import { NotificationCard } from "../../components/chat/notifications/NotificationCard";
 import { StoryShell } from "../../../.storybook/shell";
 import { StoryRouter } from "../../../.storybook/decorators";
+import { NotificationsProvider } from "../../hooks/useUnifiedNotifications";
 import { CollectionsProvider } from "../../lib/electric/collections-context";
 import {
   createStoryCollections,
   storyChannels,
   storyCollections,
   storyNotifications,
+  storyMessages,
   storyUsers,
 } from "../../../.storybook/fixtures";
 import type { MessageItem } from "../../components/chat/messages/messageGrouping";
@@ -94,6 +97,26 @@ const threadReplies: FeedMessage[] = [
 
 function noop() {}
 
+function mockSidebarThreads() {
+  const root = storyMessages.find((message) => message.id === "message-thread-root")!;
+  mockServer.use(
+    http.get("*/api/threads", () =>
+      HttpResponse.json({
+        items: [
+          {
+            id: root.id,
+            channel_id: root.channel_id,
+            content: root.content,
+            thread_archive_at: null,
+            reply_count: storyMessages.filter((message) => message.parent_id === root.id).length,
+          },
+        ],
+        next_cursor: null,
+      }),
+    ),
+  );
+}
+
 function Surface({
   theme,
   children,
@@ -133,9 +156,13 @@ function WithCollections({
   return (
     <Surface theme={theme} padded={padded}>
       <CollectionsProvider value={bundle}>
-        <StoryRouter>
-          <StoryShell>{children}</StoryShell>
-        </StoryRouter>
+        <HomeLiveProvider>
+          <NotificationsProvider>
+            <StoryRouter>
+              <StoryShell>{children}</StoryShell>
+            </StoryRouter>
+          </NotificationsProvider>
+        </HomeLiveProvider>
       </CollectionsProvider>
     </Surface>
   );
@@ -239,7 +266,6 @@ function messageList(overrides: Partial<ComponentProps<typeof MessageList>> = {}
       canReact={false}
       onReaction={noop}
       onPickReaction={noop}
-      replyCounts={new Map()}
       onOpenThread={noop}
       {...overrides}
     />
@@ -387,24 +413,26 @@ describe("catalog surfaces", () => {
   }
 
   it("channel sidebar desktop light", async () => {
+    mockSidebarThreads();
     await renderScreen(
       { theme: "light", width: 1440, height: 900 },
       <div className="flex h-screen bg-background">
         <ChannelSidebar channels={storyChannels} loading={false} error={false} />
       </div>,
     );
-    await screen.findByText("general");
+    await screen.findByRole("link", { name: /リリースノートの下書き/ });
     await expect(page).toMatchScreenshot("channel-sidebar-desktop-light");
   });
 
   it("channel sidebar mobile light", async () => {
+    mockSidebarThreads();
     await renderScreen(
       { theme: "light", width: 390, height: 844 },
       <div className="flex h-screen bg-background">
         <ChannelSidebar channels={storyChannels} loading={false} error={false} />
       </div>,
     );
-    await screen.findByText("general");
+    await screen.findByRole("link", { name: /リリースノートの下書き/ });
     await expect(page).toMatchScreenshot("channel-sidebar-mobile-light");
   });
 
@@ -430,6 +458,7 @@ describe("catalog surfaces", () => {
         onOpenChange={noop}
         channels={storyChannels}
         joinedChannelIds={new Set(["channel-general", "channel-design", "channel-secret"])}
+        onJoinChannel={async () => {}}
       />,
     );
     await screen.findByText("old-announcements");

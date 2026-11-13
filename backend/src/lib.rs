@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod display_refresh;
 pub mod error;
+pub mod metrics;
 pub mod models;
 pub mod notifications;
 pub mod push;
@@ -13,7 +14,9 @@ pub mod routes;
 pub mod slack;
 pub mod state;
 pub mod storage;
+pub mod telemetry;
 pub mod validation;
 
+pub mod emoji_accounts;
 pub mod emoji_service;
 pub mod emoji_shortcodes;

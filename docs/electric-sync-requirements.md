@@ -105,7 +105,7 @@ Atlas は宣言的スキーマでの `REPLICA IDENTITY` の差分検知を標準
 
 フロントエンド側は認証プロバイダを差し替えられるよう、トークン取得関数（`getToken()`）のみを持つアダプタ層を設けます。ローカル開発時は IdP なしでも動作するよう、開発用認証モード（デフォルトのローカルユーザーとして扱う、または `X-Dev-User` ヘッダでユーザーを切り替えられる仕組み）があるとフロントエンド・バックエンド双方の検証が容易になります。Shape プロキシ（読み取り）と REST API（書き込み）の両方で同じ認証ヘッダを受け付けるようにしてください。
 
-また、ローカル開発ではフロントエンド（既定: `http://localhost:5173`）からバックエンド（`http://localhost:8000`）へリクエストを送るため、CORS で許可する**オリジンの allowlist** が必要です。バックエンドは環境変数 `CORS_ALLOWED_ORIGINS`（カンマ区切り）で許可オリジンを設定し、`ENVIRONMENT=production` 以外で未設定なら dev の `http://localhost:5173` と `http://127.0.0.1:5173` を既定許可します。本番（`ENVIRONMENT=production`）は同一オリジン配信のため外部オリジンは不要で、未設定なら**空リスト**（全クロスオリジン拒否）を既定とし、明示的に設定したオリジンのみ許可します。許可メソッドは REST 用の `GET`/`POST`/`PATCH`/`DELETE`（および preflight の `OPTIONS`）、許可ヘッダは `Authorization`/`X-Dev-User`/`Content-Type`/`Accept` に限定します。本番・ステージング環境では `ELECTRIC_INSECURE` を無効化し、`ELECTRIC_SECRET` をバックエンドと Electric 間で共有する構成を想定しています。
+また、ローカル開発ではフロントエンド（既定: `http://localhost:5173`）からバックエンド（`http://localhost:8000`）へリクエストを送るため、CORS で許可する**オリジンの allowlist** が必要です。バックエンドは環境変数 `CORS_ALLOWED_ORIGINS`（カンマ区切り）で許可オリジンを設定し、`ENVIRONMENT=production` 以外で未設定なら dev の `http://localhost:5173` と `http://127.0.0.1:5173` を既定許可します。本番（`ENVIRONMENT=production`）は同一オリジン配信のため外部オリジンは不要で、未設定なら**空リスト**（全クロスオリジン拒否）を既定とし、明示的に設定したオリジンのみ許可します。許可メソッドは REST 用の `GET`/`POST`/`PATCH`/`DELETE`（および preflight の `OPTIONS`）、許可ヘッダは `Authorization`/`X-Dev-User`/`Content-Type`/`Accept`/`X-Zoo-Reauth`（E2EE の直前の再認証。docs/e2ee.md）に限定します。本番・ステージング環境では `ELECTRIC_INSECURE` を無効化し、`ELECTRIC_SECRET` をバックエンドと Electric 間で共有する構成を想定しています。
 
 ## 5. フロントエンドの先行開発方針
 
@@ -130,3 +130,22 @@ Atlas は宣言的スキーマでの `REPLICA IDENTITY` の差分検知を標準
 - [ ] 書き込み処理の `txid` 取得方法: Toasty のトランザクション API で生 SQL を実行できるかを確認する。実行できない場合、書き込み本体を `tokio-postgres` に寄せて Toasty を読み取り中心にする方針を許容するか。
 - [ ] 主キーの型: `text` のまま進めるか、UUID に変更するか。
 - [ ] `txid` レスポンスの形式: 共通エンベロープ（`{ data, txid }`）か、行に `txid` を足す形式か。
+
+## 通知のメッセージ削除状態
+
+通知のShapeは `notification_events.message_deleted = false` で親メッセージの削除状態を確認する。
+全メッセージを対象とする `message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL)` は使わない。
+Electric 1.8.1ではこの条件から全未削除メッセージIDの依存Shapeが作られ、通知数が少なくても履歴全体が同期対象になるため。
+
+`message_deleted` はDB内部の投影列で、通知挿入・参照先変更時にトリガーが設定し、親メッセージの論理削除・復元時にも同じトランザクションで更新する。
+親行の共有ロックにより、通知挿入と削除・復元の同時実行で古い削除状態が残ることを防ぐ。
+既存の `notifications`、`channel_notifications`、`notification_events` の書き込み経路を維持する。
+既存行はマイグレーションで埋め、クライアントはこの列を送信・受信しない。
+バックフィル中はメッセージの書き込みを共有テーブルロックで一時的に待機させ、メッセージ→通知のロック順序を保つ。
+既読更新などの互換ブリッジは、参照先が変わらなければ既存の投影値を使い、親行を追加でロックしない。
+チャンネルの削除・公開範囲・所属による認可は既存のサブクエリで継続し、ゲストの所属制限も維持する。
+React・Android・TUI・デスクトップは同じShapeプロキシを使い、DTO・クライアントコードの変更は不要。
+
+この変更は通知の全メッセージ依存を除くもので、ElectricのOOM解消を保証するものではない。
+反映後はメモリ使用量・再起動回数・初期同期量を監視する。
+リアクションの全履歴同期と、Android・TUI・GPUIの本文ページングは別の改善対象とする。

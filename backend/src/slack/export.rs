@@ -114,6 +114,17 @@ pub struct SlackMessage {
     /// スレッドの親なら、返信の ts の一覧 (エクスポートに含まれる場合)
     #[serde(default)]
     pub replies: Vec<SlackReplyRef>,
+    /// `conversations.history` が返す、スレッドの返信の数と最後の返信の `ts` (差分同期 #292 で返信の取得に使う)
+    #[serde(default)]
+    pub reply_count: Option<i64>,
+    #[serde(default)]
+    pub latest_reply: Option<String>,
+    /// 編集・削除の履歴を含むエクスポートで、`message_changed` / `message_deleted` の記録が持つ、元の投稿の全体
+    #[serde(default)]
+    pub original: Option<serde_json::Value>,
+    /// 公開されているエクスポートの形式では、削除された元の投稿の `ts` がトップレベルの `original_ts` にある
+    #[serde(default)]
+    pub original_ts: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -208,9 +219,45 @@ const SKIPPED_SUBTYPES: &[&str] = &[
     "tombstone",
     "joiner_notification",
     "reminder_add",
+    // 編集・削除の履歴を含むエクスポートの記録。`ts` は編集・削除した日時で、投稿そのものではない
+    // (`message_changed` は編集後の本文と投稿者を持つので、取り込むと別の投稿として重複して入る。
+    // 編集してから削除した投稿は、元の記録がなくなっても、この記録が残る)
+    "message_changed",
+    "message_deleted",
 ];
 
 impl SlackMessage {
+    /// 編集・削除の履歴を含むエクスポートの、編集 (`message_changed`)・削除 (`message_deleted`) の記録か
+    pub fn is_history_event(&self) -> bool {
+        matches!(
+            self.subtype.as_deref(),
+            Some("message_changed" | "message_deleted")
+        )
+    }
+
+    /// 編集・削除の記録が指す、元の投稿の `ts`。`original.ts` (確認したエクスポートの形式) と、
+    /// トップレベルの `original_ts` (公開されている形式) のどちらも読む
+    pub fn original_message_ts(&self) -> Option<&str> {
+        if !self.is_history_event() {
+            return None;
+        }
+        self.original
+            .as_ref()
+            .and_then(|o| o.get("ts"))
+            .and_then(|ts| ts.as_str())
+            .or(self.original_ts.as_deref())
+            .filter(|ts| crate::slack::is_valid_ts(ts))
+    }
+
+    /// 削除の記録 (`message_deleted`) が指す、削除された元の投稿の `ts`。
+    /// 削除された投稿の記録は、エクスポートには残らないので、以前の取り込みで入れた分を消すのに使う
+    pub fn deleted_original_ts(&self) -> Option<&str> {
+        if self.subtype.as_deref() != Some("message_deleted") {
+            return None;
+        }
+        self.original_message_ts()
+    }
+
     /// 投稿者の Slack ID (ユーザーまたは bot)
     pub fn author(&self) -> Option<&str> {
         self.user
@@ -394,7 +441,11 @@ impl<R: Read + Seek> ExportArchive<R> {
     pub fn new(reader: R) -> Result<Self, AppError> {
         let zip = ZipArchive::new(reader)
             .map_err(|e| AppError::BadRequest(format!("Not a valid ZIP archive: {e}")))?;
-        let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+        let names: Vec<String> = zip
+            .file_names()
+            .map(|name| name.map(|name| name.into_owned()))
+            .collect::<Result<_, _>>()
+            .map_err(|e| AppError::BadRequest(format!("Invalid ZIP entry name: {e}")))?;
         let channels_entry = names
             .iter()
             .filter(|n| {
@@ -656,5 +707,74 @@ pub(crate) mod tests {
     fn compares_ts_numerically() {
         assert!(compare_ts("9.1", "10.0").is_lt());
         assert!(compare_ts("10.000002", "10.00001").is_lt());
+    }
+
+    #[test]
+    fn edit_and_delete_history_records_are_not_importable() {
+        let message =
+            |value: serde_json::Value| -> SlackMessage { serde_json::from_value(value).unwrap() };
+        // 編集の記録: 編集後の本文と投稿者を持つが、編集した日時の別の投稿として取り込まない
+        let changed = message(serde_json::json!({
+            "type": "message", "subtype": "message_changed", "ts": "1794015604.000000",
+            "user": "U1", "text": "edited", "edited_by": "U1",
+            "original": {"user": "U1", "type": "message", "ts": "1794015588.372869", "text": "before"}
+        }));
+        assert!(changed.is_history_event());
+        assert!(!changed.is_importable());
+        assert_eq!(changed.deleted_original_ts(), None);
+        // 削除の記録: 削除された元の投稿の `ts` を持つ
+        let deleted = message(serde_json::json!({
+            "type": "message", "subtype": "message_deleted", "ts": "1756918202.000000",
+            "user": "U1", "text": "", "deleted_by": "U1",
+            "original": {"user": "U1", "type": "message", "ts": "1756918197.952539", "text": "gone"}
+        }));
+        assert!(deleted.is_history_event());
+        assert!(!deleted.is_importable());
+        assert_eq!(deleted.deleted_original_ts(), Some("1756918197.952539"));
+        // `original` がない、`ts` が不正な記録は、何も指さない
+        for original in [
+            serde_json::json!(null),
+            serde_json::json!({"ts": "17e9"}),
+            serde_json::json!({}),
+        ] {
+            let record = message(serde_json::json!({
+                "subtype": "message_deleted", "ts": "1756918202.000000", "user": "U1", "original": original
+            }));
+            assert_eq!(record.deleted_original_ts(), None);
+        }
+        // 公開されている形式: 元の投稿の `ts` はトップレベルの `original_ts` にあり、`original` はない
+        let public = message(serde_json::json!({
+            "type": "message", "subtype": "message_deleted", "ts": "1756918202.000000",
+            "deleted_ts": "1756918202.000000", "hidden": true, "channel": "C1",
+            "original_ts": "1756918197.952539",
+            "previous": {"user": "U1", "type": "message", "ts": "1756918197.952539", "text": "gone"}
+        }));
+        assert_eq!(public.deleted_original_ts(), Some("1756918197.952539"));
+        assert_eq!(public.original_message_ts(), Some("1756918197.952539"));
+        let invalid = message(serde_json::json!({
+            "subtype": "message_deleted", "ts": "1756918202.000000", "original_ts": "x"
+        }));
+        assert_eq!(invalid.deleted_original_ts(), None);
+        // 不正な `original` は、何も指さない
+        let broken = message(serde_json::json!({
+            "subtype": "message_deleted", "ts": "1756918202.000000", "user": "U1", "original": "oops"
+        }));
+        assert_eq!(broken.deleted_original_ts(), None);
+        // 普通の投稿と、これまでどおり取り込む subtype は変わらない
+        for subtype in [None, Some("thread_broadcast"), Some("bot_message")] {
+            let mut value =
+                serde_json::json!({"ts": "1704070000.000100", "user": "U1", "text": "hello"});
+            if let Some(subtype) = subtype {
+                value["subtype"] = serde_json::json!(subtype);
+            }
+            let message = message(value);
+            assert!(!message.is_history_event());
+            assert!(message.is_importable(), "{subtype:?}");
+        }
+        // `tombstone` は、これまでどおり取り込まない
+        let tombstone = message(
+            serde_json::json!({"subtype": "tombstone", "ts": "1704070000.000100", "user": "USLACKBOT", "text": "This message was deleted."}),
+        );
+        assert!(!tombstone.is_importable());
     }
 }

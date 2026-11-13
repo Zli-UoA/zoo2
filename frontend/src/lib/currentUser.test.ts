@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { FetchLike } from "./api/client";
-import { resetTokenProvider, setTokenProvider, setUnauthorizedHandler } from "./auth";
+import {
+  notifyAuthSessionEnded,
+  resetTokenProvider,
+  setTokenProvider,
+  setUnauthorizedHandler,
+} from "./auth";
 import { resolveConfig } from "./config";
 import { createCurrentUserStore, resolveCurrentUser, type CurrentUserState } from "./currentUser";
 import { OidcClient } from "./oidc/client";
@@ -346,4 +351,43 @@ it("clears the resolved identity when a background refresh is unauthorized", asy
   await store.ensureLoaded();
   await store.refresh();
   expect(store.getState()).toMatchObject({ currentUserId: null, isAdmin: false });
+});
+
+it("isolates overlapping user refreshes across authentication sessions", async () => {
+  setTokenProvider(() => "token");
+  const pending: Array<(response: Response) => void> = [];
+  const fetchMock = vi.fn<FetchLike>(() => new Promise((resolve) => pending.push(resolve)));
+  const store = createCurrentUserStore(OIDC_CONFIG, { fetch: fetchMock });
+  const oldRefresh = store.refresh();
+  await vi.waitFor(() => expect(pending).toHaveLength(1));
+  notifyAuthSessionEnded("logout");
+  expect(store.getState().currentUserId).toBeNull();
+  const newRefresh = store.refresh();
+  await vi.waitFor(() => expect(pending).toHaveLength(2));
+  pending[0]!(jsonResponse(userResponse("old-user", true)));
+  await oldRefresh;
+  expect(store.getState().currentUserId).toBeNull();
+  const concurrentNewRefresh = store.refresh();
+  expect(concurrentNewRefresh).toBe(newRefresh);
+  pending[1]!(jsonResponse(userResponse("new-user", false)));
+  await Promise.all([newRefresh, concurrentNewRefresh]);
+  expect(store.getState()).toMatchObject({ currentUserId: "new-user", isAdmin: false });
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+it("does not overwrite a new session when the old user refresh finishes last", async () => {
+  setTokenProvider(() => "token");
+  const pending: Array<(response: Response) => void> = [];
+  const fetchMock = vi.fn<FetchLike>(() => new Promise((resolve) => pending.push(resolve)));
+  const store = createCurrentUserStore(OIDC_CONFIG, { fetch: fetchMock });
+  const oldRefresh = store.refresh();
+  await vi.waitFor(() => expect(pending).toHaveLength(1));
+  notifyAuthSessionEnded("logout");
+  const newRefresh = store.refresh();
+  await vi.waitFor(() => expect(pending).toHaveLength(2));
+  pending[1]!(jsonResponse(userResponse("new-user", false)));
+  await newRefresh;
+  pending[0]!(jsonResponse(userResponse("old-user", true)));
+  await oldRefresh;
+  expect(store.getState()).toMatchObject({ currentUserId: "new-user", isAdmin: false });
 });

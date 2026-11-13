@@ -1037,6 +1037,36 @@ describe("OidcClient.logout", () => {
     expect(harness.storage.getItem("zoo.oidc.loggedOut")).toBe("1");
   });
 
+  it("blocks logout until the stored session is deleted even if the logout marker succeeds", async () => {
+    const baseStorage = memoryStorage();
+    let denySessionDeletion = false;
+    const storage: AuthStorage = {
+      getItem: (key) => baseStorage.getItem(key),
+      setItem: (key, value) => baseStorage.setItem(key, value),
+      removeItem: (key) => {
+        if (denySessionDeletion && key === "zoo.oidc.session") throw new Error("storage denied");
+        baseStorage.removeItem(key);
+      },
+    };
+    const harness = createHarness({ storage });
+    await completeLogin(harness);
+    harness.assigned.length = 0;
+    expect(storage.getItem("zoo.oidc.session")).not.toBeNull();
+    denySessionDeletion = true;
+    await harness.client.logout();
+    expect(harness.client.hasSession).toBe(false);
+    expect(storage.getItem("zoo.oidc.loggedOut")).toBe("1");
+    expect(harness.assigned).toHaveLength(0);
+    const reloaded = createHarness({ storage });
+    await expect(reloaded.client.login()).rejects.toThrow();
+    expect(storage.getItem("zoo.oidc.loggedOut")).toBe("1");
+    expect(reloaded.assigned).toHaveLength(0);
+    denySessionDeletion = false;
+    await harness.client.logout();
+    expect(storage.getItem("zoo.oidc.session")).toBeNull();
+    expect(harness.assigned).toHaveLength(1);
+  });
+
   it("keeps only the logout hint through storage failure and consumes it once after retry", async () => {
     const baseStorage = memoryStorage();
     let storageDenied = false;

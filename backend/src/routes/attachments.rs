@@ -142,6 +142,17 @@ pub(crate) fn validate_upload_mime(content_type: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+const DISALLOWED_UPLOAD_EXTENSIONS: &[&str] = &[
+    "exe", "com", "scr", "msi", "dll", "so", "dylib", "bat", "cmd", "sh",
+];
+
+pub fn is_disallowed_extension(file_name: &str) -> bool {
+    let trimmed = file_name.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    let lower = trimmed.to_ascii_lowercase();
+    let ext = lower.rsplit('.').next().unwrap_or("");
+    DISALLOWED_UPLOAD_EXTENSIONS.contains(&ext)
+}
+
 async fn presign_attachment(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -169,6 +180,14 @@ async fn presign_attachment(
         return Err(AppError::BadRequest(
             "file_name exceeds 255 characters".into(),
         ));
+    }
+    if file_name.ends_with('.') {
+        return Err(AppError::BadRequest(
+            "file_name cannot end with a period".into(),
+        ));
+    }
+    if is_disallowed_extension(file_name) {
+        return Err(AppError::BadRequest("File extension not allowed".into()));
     }
 
     // ファイルサイズバリデーション
@@ -229,6 +248,11 @@ async fn presign_attachment(
         }
     }
 
+    // 暗号化チャンネルへの添付は、暗号化した添付（#364）ができるまで禁止する（#358）。
+    // 非公開チャンネルの存在を漏らさないよう、メンバーの確認のあとで判定する。
+    if channel.encrypted {
+        return Err(crate::routes::e2ee_channels::attachments_forbidden());
+    }
     if channel.archive_at.is_some() {
         return Err(AppError::BadRequest(
             "Cannot attach files to an archived channel".into(),
@@ -276,6 +300,7 @@ async fn presign_attachment(
         width: None,
         height: None,
         blurhash: None,
+        is_sensitive: channel.is_nsfw,
         created_at: now,
     })
     .exec(&mut db)
@@ -426,5 +451,30 @@ mod tests {
         assert!(validate_upload_mime("/png").is_err());
         assert!(validate_upload_mime("image/png\r\nInjected: true").is_err());
         assert!(validate_upload_mime("image/png; invalid token @!").is_err());
+    }
+
+    #[test]
+    fn test_is_disallowed_extension() {
+        assert!(is_disallowed_extension("malicious.exe"));
+        assert!(is_disallowed_extension("script.bat"));
+        assert!(is_disallowed_extension("install.cmd"));
+        assert!(is_disallowed_extension("run.sh"));
+        assert!(is_disallowed_extension("setup.msi"));
+        assert!(is_disallowed_extension("library.dll"));
+        assert!(is_disallowed_extension("lib.so"));
+        assert!(is_disallowed_extension("lib.dylib"));
+        assert!(is_disallowed_extension("screen.scr"));
+        assert!(is_disallowed_extension("command.com"));
+        assert!(is_disallowed_extension("TEST.EXE"));
+        assert!(is_disallowed_extension("malware.exe."));
+        assert!(is_disallowed_extension("malware.exe. "));
+        assert!(is_disallowed_extension("malware.exe.."));
+        assert!(is_disallowed_extension("script.bat. . "));
+
+        assert!(!is_disallowed_extension("document.pdf"));
+        assert!(!is_disallowed_extension("photo.png"));
+        assert!(!is_disallowed_extension("image.jpeg"));
+        assert!(!is_disallowed_extension("archive.tar.gz"));
+        assert!(!is_disallowed_extension("no_extension"));
     }
 }

@@ -1,3 +1,4 @@
+import { visiblePoll } from "../visiblePoll";
 import {
   createContext,
   useCallback,
@@ -41,6 +42,7 @@ import {
   type CallDiagnostics,
   type PeerStatsSample,
 } from "./call-diagnostics";
+import { reportWebrtcEvent } from "../telemetry/capture";
 
 const defaultCallContext: CallContextValue = {
   currentChannelId: null,
@@ -321,30 +323,32 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   );
 
   // アクティブな通話一覧の定期取得 (10秒ごと)
-  const pollActiveCalls = useCallback(async () => {
-    try {
-      const list = await apiClient.request<ActiveCallSummary[]>("/api/calls/active");
-      if (!Array.isArray(list)) return;
-      const map = new Map<string, number>();
-      for (const item of list) {
-        if (isActiveCallSummary(item) && item.participant_count > 0) {
-          map.set(item.channel_id, item.participant_count);
+  const pollActiveCalls = useCallback(
+    async (signal?: AbortSignal) => {
+      try {
+        const list = await apiClient.request<ActiveCallSummary[]>("/api/calls/active", { signal });
+        if (signal?.aborted || !Array.isArray(list)) return;
+        const map = new Map<string, number>();
+        for (const item of list) {
+          if (isActiveCallSummary(item) && item.participant_count > 0) {
+            map.set(item.channel_id, item.participant_count);
+          }
         }
-      }
-      setActiveCalls((prev) => {
-        if (prev.size !== map.size) return map;
-        for (const [k, v] of map.entries()) {
-          if (prev.get(k) !== v) return map;
-        }
-        return prev;
-      });
-    } catch {}
-  }, [apiClient]);
+        setActiveCalls((prev) => {
+          if (prev.size !== map.size) return map;
+          for (const [k, v] of map.entries()) {
+            if (prev.get(k) !== v) return map;
+          }
+          return prev;
+        });
+      } catch {}
+    },
+    [apiClient],
+  );
 
   useEffect(() => {
-    void pollActiveCalls();
-    const interval = window.setInterval(pollActiveCalls, 10000);
-    return () => window.clearInterval(interval);
+    const polling = visiblePoll(pollActiveCalls, { interval: 10000 });
+    return () => polling.dispose();
   }, [pollActiveCalls]);
 
   const cleanupPeers = useCallback(() => {
@@ -555,7 +559,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             heartbeatFailuresRef.current = 0;
           })
           .catch((err: unknown) => {
-            if (callGenerationRef.current === sentGen) heartbeatFailuresRef.current += 1;
+            if (callGenerationRef.current === sentGen) {
+              heartbeatFailuresRef.current += 1;
+              if (heartbeatFailuresRef.current === 3) {
+                reportWebrtcEvent({ state: "heartbeat_timeout" });
+              }
+            }
             // 送信時の世代・セッション・チャンネルが現在の通話と一致する場合のみ退出処理を実行 ([P1])
             if (
               callGenerationRef.current !== sentGen ||
@@ -591,6 +600,16 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       }
 
       const pc = new RTCPeerConnection({ iceServers });
+      pc.addEventListener("iceconnectionstatechange", () => {
+        if (pc.iceConnectionState === "failed") {
+          reportWebrtcEvent({ state: "ice_failed" });
+        }
+      });
+      pc.addEventListener("connectionstatechange", () => {
+        if (pc.connectionState === "failed") {
+          reportWebrtcEvent({ state: "connection_failed" });
+        }
+      });
       const entry: PeerEntry = {
         pc,
         userId: targetUserId,

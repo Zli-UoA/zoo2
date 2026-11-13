@@ -10,6 +10,12 @@ import {
   setUnauthorizedHandler,
   subscribeAuthSessionEnded,
 } from "../../lib/auth";
+import {
+  desktopAccessToken,
+  desktopLogout,
+  detectDesktop,
+  hasDesktopBridge,
+} from "../../lib/desktop";
 import { resolveConfig, type AppConfig } from "../../lib/config";
 import { OidcClient, OidcError } from "../../lib/oidc/client";
 import {
@@ -48,12 +54,64 @@ function currentReturnTo(): string {
 }
 
 /**
- * 認証の入口。OIDC 未設定（dev の X-Dev-User）なら素通しし、設定済みなら
+ * 認証の入口。デスクトップ版（Tauri）の中では Rust 側のトークンを使い、
+ * それ以外では OIDC（`WebAuthGate`）を使う。Tauri の中では OIDC へは進まない。
+ */
+export function AuthGate({ children }: { children: ReactNode }) {
+  if (hasDesktopBridge()) return <DesktopAuthGate>{children}</DesktopAuthGate>;
+  return <WebAuthGate>{children}</WebAuthGate>;
+}
+
+/**
+ * デスクトップ版の (b)。ログインは Rust 側（同梱のログイン画面）で済んでいるので、
+ * トークンを IPC で受け取るだけにする。401 になったら Rust 側でログアウトし、
+ * Rust 側がウィンドウをログイン画面へ戻す。
+ *
+ * Tauri の中では OIDC のログインを完了できない（AuthZ への移動は `on_navigation` が止めて
+ * 既定のブラウザーで開くため）。プロトコルが合わないときや `zoo_session` が失敗したときは
+ * `WebAuthGate` へ進まず、アプリの更新を案内する。
+ */
+function DesktopAuthGate({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
+  const [mode, setMode] = useState<"checking" | "desktop" | "unsupported">("checking");
+  useEffect(() => {
+    let cancelled = false;
+    void detectDesktop().then((desktop) => {
+      if (cancelled) return;
+      if (desktop) {
+        setTokenProvider(desktopAccessToken);
+        setUnauthorizedHandler(() => {
+          void desktopLogout();
+        });
+      }
+      setMode(desktop ? "desktop" : "unsupported");
+    });
+    return () => {
+      cancelled = true;
+      setUnauthorizedHandler(null);
+    };
+  }, []);
+  if (mode === "checking") return <ShellSkeleton />;
+  if (mode === "desktop") return <>{children}</>;
+  return (
+    <div className="flex h-dvh w-full items-center justify-center bg-background p-6 text-foreground">
+      <div className="flex max-w-md flex-col items-center gap-4 text-center">
+        <LanguageToggle />
+        <h1 className="text-lg font-semibold">{t("auth.desktopOutdated")}</h1>
+        <p className="text-sm text-muted-foreground">{t("auth.desktopOutdatedHelp")}</p>
+        <Button onClick={() => window.location.reload()}>{t("auth.reload")}</Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * OIDC 未設定（dev の X-Dev-User）なら素通しし、設定済みなら
  * authorize リダイレクト / コールバック処理 / 401 時の再ログインを担う。
  *
  * 同じタブの再読み込みではセッションを復元し、IdP への往復を省く。
  */
-export function AuthGate({ children }: { children: ReactNode }) {
+function WebAuthGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const router = useRouter();
   const [phase, setPhase] = useState<AuthPhase>("checking");
@@ -188,6 +246,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
         const now = Date.now();
         let redirectState: ReturnType<typeof readUnauthorizedRedirectState>;
         try {
+          if (isLoggedOut(storage)) {
+            authRecoveryPending.current = false;
+            setPhase("loggedOut");
+            return;
+          }
           redirectState = readUnauthorizedRedirectState(storage, now, REDIRECT_COOLDOWN_MS);
           if (redirectState === "recent" && failedRedirectAt.current !== null) {
             if (readLastRedirectAt(storage) === failedRedirectAt.current) {
@@ -243,9 +306,30 @@ export function AuthGate({ children }: { children: ReactNode }) {
       // 落とす。戻った先で 401 が続いても再ログインを止めないようにする。
       handlePageShow = (event: PageTransitionEvent) => {
         if (event.persisted) {
+          const wasLoggingIn = loginInProgress.current;
+          if (wasLoggingIn) {
+            loginAttempt.current += 1;
+            loginInProgress.current = false;
+            activeClient.cancelPendingLogin();
+          }
           try {
             clearAuthorizeRedirectPending(storage);
+            if (wasLoggingIn) {
+              clearRedirectStarted(storage);
+              if (activeClient.hasSession) {
+                authRecoveryPending.current = false;
+                setError(null);
+                setPhase("ready");
+              } else {
+                authRecoveryPending.current = true;
+                setError(
+                  describeAuthError(new OidcError("session_reset", "セッションが破棄されました")),
+                );
+                setPhase("error");
+              }
+            }
           } catch (cause) {
+            loginInProgress.current = false;
             authRecoveryPending.current = true;
             setError(describeAuthError(cause));
             setPhase("error");

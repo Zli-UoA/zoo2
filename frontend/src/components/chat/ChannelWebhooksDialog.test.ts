@@ -32,6 +32,9 @@ const channel = {
   created_at: "2026-10-23",
   updated_at: null,
   archive_at: null,
+  imported_from_slack: false,
+  slack_import_kind: null,
+  slack_imported_at: null,
   deleted_at: null,
 };
 let root: Root;

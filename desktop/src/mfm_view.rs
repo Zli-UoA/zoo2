@@ -10,25 +10,36 @@ use zoo2_client_core::mfm::{self, Line, Style, Tone};
 
 use crate::{login, theme};
 
-/// MFM の `Style` を GPUI の `HighlightStyle` へ変換する。
-pub fn style_to_highlight(style: Style) -> HighlightStyle {
+fn account_fallback(initial: String) -> Div {
+    div()
+        .w(px(18.0))
+        .h(px(18.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(initial)
+}
+
+/// MFM の `Style` を GPUI の `HighlightStyle` へ変換する (テーマ指定)。
+pub fn style_to_highlight_with_theme(style: Style, theme: &theme::Theme) -> HighlightStyle {
     let mut highlight = HighlightStyle::default();
 
     let color = match style.tone {
         Tone::Default => None,
-        Tone::Code => Some(theme::TEXT_CODE.into()),
-        Tone::Link | Tone::Hashtag => Some(theme::TEXT_LINK.into()),
-        Tone::Mention => Some(theme::ACCENT.into()),
-        Tone::Math => Some(theme::TEXT_MATH.into()),
-        Tone::Quote => Some(theme::TEXT_MUTED.into()),
+        Tone::Code => Some(theme.text_code.into()),
+        Tone::Link | Tone::Hashtag => Some(theme.text_link.into()),
+        Tone::Mention => Some(theme.accent.into()),
+        Tone::Math => Some(theme.text_math.into()),
+        Tone::Quote => Some(theme.text_muted.into()),
     };
     highlight.color = color;
 
     if style.reversed {
-        highlight.background_color = Some(theme::BG_MENTION_MINE.into());
-        highlight.color = Some(theme::TEXT_PRIMARY.into());
+        highlight.background_color = Some(theme.bg_mention_mine.into());
+        highlight.color = Some(theme.text_primary.into());
     } else if matches!(style.tone, Tone::Code) {
-        highlight.background_color = Some(theme::BG_CODE.into());
+        highlight.background_color = Some(theme.bg_code.into());
     }
 
     if style.bold {
@@ -57,11 +68,19 @@ pub fn style_to_highlight(style: Style) -> HighlightStyle {
     highlight
 }
 
+/// MFM の `Style` を GPUI の `HighlightStyle` へ変換する (デフォルトダークテーマ)。
+pub fn style_to_highlight(style: Style) -> HighlightStyle {
+    style_to_highlight_with_theme(style, &theme::Theme::dark())
+}
+
 pub type HighlightSpan = (Range<usize>, HighlightStyle);
 pub type LinkSpan = (Range<usize>, String);
 
-/// 1行分の `mfm::Line` からプレーン文字列、GPUI ハイライト範囲、およびクリック可能なリンク範囲を構築する。
-pub fn build_line_highlights_and_links(line: &Line) -> (String, Vec<HighlightSpan>, Vec<LinkSpan>) {
+/// 1行分の `mfm::Line` からプレーン文字列、GPUI ハイライト範囲、およびクリック可能なリンク範囲を構築する (テーマ指定)。
+pub fn build_line_highlights_and_links_with_theme(
+    line: &Line,
+    theme: &theme::Theme,
+) -> (String, Vec<HighlightSpan>, Vec<LinkSpan>) {
     let mut text = String::new();
     let mut highlights = Vec::new();
     let mut links = Vec::new();
@@ -73,7 +92,7 @@ pub fn build_line_highlights_and_links(line: &Line) -> (String, Vec<HighlightSpa
         let start = text.len();
         text.push_str(&span.content);
         let end = text.len();
-        let highlight = style_to_highlight(span.style);
+        let highlight = style_to_highlight_with_theme(span.style, theme);
         if highlight != HighlightStyle::default() {
             highlights.push((start..end, highlight));
         }
@@ -95,6 +114,11 @@ pub fn build_line_highlights_and_links(line: &Line) -> (String, Vec<HighlightSpa
     (text, highlights, links)
 }
 
+/// 1行分の `mfm::Line` からプレーン文字列、GPUI ハイライト範囲、およびクリック可能なリンク範囲を構築する。
+pub fn build_line_highlights_and_links(line: &Line) -> (String, Vec<HighlightSpan>, Vec<LinkSpan>) {
+    build_line_highlights_and_links_with_theme(line, &theme::Theme::dark())
+}
+
 /// 1行分の `mfm::Line` からプレーン文字列と GPUI ハイライト範囲の列を構築する。
 pub fn build_line_highlights(line: &Line) -> (String, Vec<(Range<usize>, HighlightStyle)>) {
     let (text, highlights, _) = build_line_highlights_and_links(line);
@@ -106,14 +130,91 @@ fn extract_bracketed_url(s: &str) -> Option<String> {
     login::validate_http_url(inner).map(|_| inner.trim().to_string())
 }
 
-/// MFM 本文を解析して、GPUI の行要素 (`Div`) として描画する。
-/// リンク (`Tone::Link`) を含む行は `InteractiveText::on_click` でブラウザを開けるようにする。
-pub fn render_mfm(elem_prefix: &str, content: &str, me_user_name: Option<&str>) -> Div {
-    let parsed = mfm::parse(content, me_user_name);
+/// MFM 本文を解析して、GPUI の行要素 (`Div`) として描画する (テーマ指定)。
+pub fn render_mfm_with_theme(
+    elem_prefix: &str,
+    content: &str,
+    me_user_name: Option<&str>,
+    theme: &theme::Theme,
+) -> Div {
+    render_mfm_accounts_with_theme(
+        elem_prefix,
+        content,
+        me_user_name,
+        theme,
+        &Default::default(),
+    )
+}
+pub fn render_mfm_accounts_with_theme(
+    elem_prefix: &str,
+    content: &str,
+    me_user_name: Option<&str>,
+    theme: &theme::Theme,
+    accounts: &zoo2_client_core::store::AccountProfiles,
+) -> Div {
+    let parsed = mfm::parse_with_accounts(content, me_user_name, accounts);
     let mut container = div().flex().flex_col().gap_0p5().w_full();
 
     for (line_idx, line) in parsed.iter().enumerate() {
-        let (text, highlights, links) = build_line_highlights_and_links(line);
+        if line.spans.iter().any(|span| span.avatar_fallback.is_some()) {
+            let mut row = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .w_full()
+                .text_sm()
+                .text_color(theme.text_primary);
+            for (index, span) in line.spans.iter().enumerate() {
+                if let Some(url) = span
+                    .avatar_url
+                    .as_ref()
+                    .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+                {
+                    let initial = span
+                        .avatar_fallback
+                        .clone()
+                        .unwrap_or_else(|| "?".to_owned());
+                    row = row.child(
+                        gpui::img(url.clone())
+                            .with_fallback(move || {
+                                account_fallback(initial.clone()).into_any_element()
+                            })
+                            .w(px(18.0))
+                            .h(px(18.0))
+                            .rounded_full(),
+                    );
+                } else if let Some(initial) = &span.avatar_fallback {
+                    row = row.child(account_fallback(initial.clone()));
+                } else {
+                    let styled = StyledText::new(span.content.clone()).with_highlights(vec![(
+                        0..span.content.len(),
+                        style_to_highlight_with_theme(span.style, theme),
+                    )]);
+                    if let Some(url) = &span.href {
+                        let url = url.clone();
+                        row = row.child(
+                            InteractiveText::new(
+                                ElementId::Name(
+                                    format!("{elem_prefix}-account-{line_idx}-{index}").into(),
+                                ),
+                                styled,
+                            )
+                            .on_click(
+                                std::iter::once(0..span.content.len()).collect(),
+                                move |_, _, _| {
+                                    login::open_browser(&url);
+                                },
+                            ),
+                        );
+                    } else {
+                        row = row.child(styled);
+                    }
+                }
+            }
+            container = container.child(row);
+            continue;
+        }
+        let (text, highlights, links) = build_line_highlights_and_links_with_theme(line, theme);
         if text.is_empty() {
             container = container.child(div().h(px(14.0)));
         } else {
@@ -126,7 +227,7 @@ pub fn render_mfm(elem_prefix: &str, content: &str, me_user_name: Option<&str>) 
                 .w_full()
                 .text_sm()
                 .line_height(px(20.0))
-                .text_color(theme::TEXT_PRIMARY);
+                .text_color(theme.text_primary);
             if links.is_empty() {
                 container = container.child(line_div.child(styled));
             } else {
@@ -149,6 +250,11 @@ pub fn render_mfm(elem_prefix: &str, content: &str, me_user_name: Option<&str>) 
     }
 
     container
+}
+
+/// MFM 本文を解析して、GPUI の行要素 (`Div`) として描画する (デフォルトダークテーマ)。
+pub fn render_mfm(elem_prefix: &str, content: &str, me_user_name: Option<&str>) -> Div {
+    render_mfm_with_theme(elem_prefix, content, me_user_name, &theme::Theme::dark())
 }
 
 #[cfg(test)]

@@ -172,6 +172,39 @@ async fn test_attachments_presign_and_validation() -> anyhow::Result<()> {
         );
     }
 
+    // 4b. 危険な拡張子（および末尾ピリオド・空白による迂回）は 400 Bad Request
+    for bad_ext_name in [
+        "malicious.exe",
+        "malicious.exe.",
+        "malicious.exe. ",
+        "malicious.bat",
+        "malicious.sh",
+        "test.cmd",
+        "danger.scr",
+        "test_ending_period.",
+    ] {
+        let bad_ext_payload = json!({
+            "channel_id": channel_id,
+            "file_name": bad_ext_name,
+            "file_size": 1024,
+            "content_type": "application/octet-stream"
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/attachments/presign")
+            .header("content-type", "application/json")
+            .header("X-Dev-User", &alice_id)
+            .body(Body::from(serde_json::to_vec(&bad_ext_payload)?))?;
+
+        let resp = app.clone().oneshot(req).await?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "dangerous file extension or ending period must be rejected: {bad_ext_name:?}"
+        );
+    }
+
     // 4c. 認可検証: 公開チャンネルでも未参加のユーザー (Bob) は 403 Forbidden
     let req = Request::builder()
         .method("POST")
@@ -489,6 +522,278 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
 
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
+
+    // 5b. Alice が同じ message_id かつ同一内容（同一添付）で再度 POST した場合、
+    //     重複エラーや添付二重紐付けエラーにならず、200 OK で既存メッセージが返ること（冪等性）
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_valid)?))?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let res: Value = serde_json::from_slice(&body)?;
+    assert_eq!(res["data"]["id"].as_str().unwrap(), message_id);
+
+    // 5b2. Alice が同じ message_id かつ同一内容で同時に2つの POST を送信した場合（競合状態）、
+    //      片方が INSERT され、もう片方は一意制約違反から同一性比較フォールバックにより、両方とも 200 OK で同一メッセージを返すこと
+    let concurrent_id = uuid::Uuid::new_v4().to_string();
+    let concurrent_payload = json!({
+        "id": concurrent_id,
+        "channel_id": channel_id,
+        "content": "Concurrent message",
+        "attachment_ids": []
+    });
+
+    let (resp1, resp2) = tokio::join!(
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/messages")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &alice_id)
+                .body(Body::from(serde_json::to_vec(&concurrent_payload)?))?
+        ),
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/messages")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &alice_id)
+                .body(Body::from(serde_json::to_vec(&concurrent_payload)?))?
+        )
+    );
+
+    let (resp1, resp2) = (resp1?, resp2?);
+    assert_eq!(
+        resp1.status(),
+        StatusCode::OK,
+        "first concurrent request should succeed"
+    );
+    assert_eq!(
+        resp2.status(),
+        StatusCode::OK,
+        "second concurrent request should succeed via idempotency fallback"
+    );
+    let body1: Value = serde_json::from_slice(&to_bytes(resp1.into_body(), usize::MAX).await?)?;
+    let body2: Value = serde_json::from_slice(&to_bytes(resp2.into_body(), usize::MAX).await?)?;
+    assert_eq!(body1["data"]["id"].as_str().unwrap(), concurrent_id);
+    assert_eq!(body2["data"]["id"].as_str().unwrap(), concurrent_id);
+
+    // 5b3. Alice が添付ファイル付きで新しい message_id のリクエストを同時に送信した場合、
+    //      先行リクエストが INSERT と添付紐付けをコミットし、後続リクエストが事前照会をすり抜けた後に
+    //      添付検証時点で already attached に遭遇しても、紐付け先が要求 ID と一致するため
+    //      新設の冪等フォールバックにより両方とも 200 OK で同一メッセージを返すこと。
+    //      ※ 先行リクエストには X-Test-Gate-Notify ヘッダ、後続リクエストには X-Test-Gate-Wait ヘッダを付与し、
+    //         先行リクエストの commit 完了後に後続の添付検証が走るよう二段階同期を行う。
+    let concurrent_att_msg_id = uuid::Uuid::new_v4().to_string();
+
+    let conc_file_content = b"concurrent test png content";
+    let presign_conc_payload = json!({
+        "channel_id": channel_id,
+        "file_name": "concurrent_photo.png",
+        "file_size": conc_file_content.len() as i64,
+        "content_type": "image/png"
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/attachments/presign")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&presign_conc_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let res: Value = serde_json::from_slice(&body)?;
+    let conc_attachment_id = res["data"]["attachment_id"].as_str().unwrap().to_string();
+    let conc_storage_key = res["data"]["storage_key"].as_str().unwrap().to_string();
+
+    state
+        .s3_client
+        .put_object()
+        .bucket(&config.s3.bucket)
+        .key(&conc_storage_key)
+        .content_type("image/png")
+        .body(conc_file_content.to_vec().into())
+        .send()
+        .await?;
+
+    let concurrent_att_payload = json!({
+        "id": concurrent_att_msg_id,
+        "channel_id": channel_id,
+        "content": "Concurrent message with attachment",
+        "attachment_ids": [conc_attachment_id]
+    });
+
+    let gate_key = format!("gate_{}", uuid::Uuid::new_v4().simple());
+    let (resp_att1, resp_att2) = tokio::join!(
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/messages")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &alice_id)
+                .header("X-Test-Gate-Notify", &gate_key)
+                .body(Body::from(serde_json::to_vec(&concurrent_att_payload)?))?
+        ),
+        app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/messages")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &alice_id)
+                .header("X-Test-Gate-Wait", &gate_key)
+                .body(Body::from(serde_json::to_vec(&concurrent_att_payload)?))?
+        )
+    );
+
+    let (resp_att1, resp_att2) = (resp_att1?, resp_att2?);
+    assert_eq!(
+        resp_att1.status(),
+        StatusCode::OK,
+        "first concurrent attachment request should succeed"
+    );
+    assert_eq!(
+        resp_att2.status(),
+        StatusCode::OK,
+        "second concurrent attachment request should succeed via idempotency fallback in attachment loop"
+    );
+    // 新設した att.message_id.is_some() の競合フォールバック分岐を確実に通過したことをレスポンスヘッダで検証
+    assert_eq!(
+        resp_att2
+            .headers()
+            .get("X-Test-Fallback")
+            .and_then(|v| v.to_str().ok()),
+        Some("attachment-already-attached"),
+        "second request must deterministicly hit attachment-already-attached fallback"
+    );
+    let body_att1: Value =
+        serde_json::from_slice(&to_bytes(resp_att1.into_body(), usize::MAX).await?)?;
+    let body_att2: Value =
+        serde_json::from_slice(&to_bytes(resp_att2.into_body(), usize::MAX).await?)?;
+    assert_eq!(
+        body_att1["data"]["id"].as_str().unwrap(),
+        concurrent_att_msg_id
+    );
+    assert_eq!(
+        body_att2["data"]["id"].as_str().unwrap(),
+        concurrent_att_msg_id
+    );
+
+    // 5c. Alice が同じ message_id で異なる内容を POST した場合、409 Conflict になること
+    let msg_payload_conflict = json!({
+        "id": message_id,
+        "channel_id": channel_id,
+        "content": "Different content with same id",
+        "attachment_ids": [attachment_id]
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_conflict)?))?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // 5c2. Alice が同じ message_id かつ同一本文でも、添付ファイルを変更（空や別ファイル）して POST した場合、409 Conflict になること
+    let msg_payload_diff_att = json!({
+        "id": message_id,
+        "channel_id": channel_id,
+        "content": "Valid message with attachment",
+        "attachment_ids": []
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_diff_att)?))?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // 5d. Bob が Alice の message_id で POST した場合、409 Conflict になること
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &bob_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_valid)?))?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // 5e. 別チャンネルの message_id を指定して POST した場合、他チャンネルのメッセージ存在漏洩を防ぐため 404 Not Found になること
+    let other_channel_id = uuid::Uuid::new_v4().to_string();
+    let channel_payload2 = json!({
+        "id": other_channel_id,
+        "channel_name": format!("other_chan_{}", uuid::Uuid::new_v4().simple()),
+        "is_private": false
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&channel_payload2)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let msg_payload_diff_channel = json!({
+        "id": message_id,
+        "channel_id": other_channel_id,
+        "content": "Message probing another channel's id",
+        "attachment_ids": []
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&msg_payload_diff_channel)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 5f. アーカイブ済みプライベートチャンネルへの非メンバー投稿が 400 ではなく 404 Not Found になること
+    let private_channel_id = uuid::Uuid::new_v4().to_string();
+    let private_channel_payload = json!({
+        "id": private_channel_id,
+        "channel_name": format!("priv_arch_{}", uuid::Uuid::new_v4().simple()),
+        "is_private": true
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&private_channel_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{private_channel_id}/archive"))
+        .header("X-Dev-User", &alice_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &bob_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "channel_id": private_channel_id,
+            "content": "Secret probe"
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     // 6. DB 上で attachments.message_id が設定されていることを検証
     let mut db_conn = db.clone();
@@ -1158,7 +1463,7 @@ async fn channel_image_metadata_case(case: &str) -> anyhow::Result<()> {
         .bind(attachment.as_str()).bind(user.as_str()).bind(channel.as_str()).bind(expected_size.to_string()).exec(&mut db).await?;
     let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/messages")
         .header("content-type","application/json").header("X-Dev-User", &user)
-        .body(Body::from(json!({"id":message,"channel_id":channel,"content":"photo","attachment_ids":[attachment]}).to_string()))?).await?;
+        .body(Body::from(json!({"id":message,"channel_id":channel,"content":"photo","attachment_ids":[attachment],"sensitive_attachment_ids":[attachment]}).to_string()))?).await?;
     let expected_status = if matches!(case, "larger" | "smaller") {
         StatusCode::BAD_GATEWAY
     } else {
@@ -1180,6 +1485,7 @@ async fn channel_image_metadata_case(case: &str) -> anyhow::Result<()> {
         cleanup_metadata_case(&mut db, &attachment, &message, &channel).await?;
         return Ok(());
     }
+    assert!(saved.is_sensitive);
     assert_eq!(saved.width, (case == "valid").then_some(12));
     assert_eq!(saved.height, (case == "valid").then_some(8));
     assert_eq!(saved.blurhash.is_some(), case == "valid");

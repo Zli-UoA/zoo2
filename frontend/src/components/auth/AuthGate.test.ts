@@ -237,6 +237,48 @@ afterEach(async () => {
 });
 
 describe("AuthGate session recovery", () => {
+  it("discards authorization still waiting for discovery after a bfcache return", async () => {
+    let releaseDiscovery!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const waiting = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    const harness = createOidcHarness(async () => ({}), { wait: waiting, onStart: markStarted });
+    authMocks.client = harness.client;
+    await renderGate();
+    await started;
+    await flush(() => {
+      const event = new Event("pageshow");
+      Object.defineProperty(event, "persisted", { value: true });
+      window.dispatchEvent(event);
+    });
+    await flush(() => releaseDiscovery());
+    expect(harness.assigned).toHaveLength(0);
+    expect(container.textContent).toContain("auth.retry");
+  });
+  it("allows retry after returning from authorize through the back-forward cache", async () => {
+    const harness = createOidcHarness(async () => ({}));
+    authMocks.client = harness.client;
+    await renderGate();
+    await vi.waitFor(() => expect(harness.assigned).toHaveLength(1));
+    await flush(() => {
+      const event = new Event("pageshow");
+      Object.defineProperty(event, "persisted", { value: true });
+      window.dispatchEvent(event);
+    });
+    expect(container.textContent).toContain("auth.retry");
+    await flush(() => {
+      const retry = Array.from(container.querySelectorAll("button")).find((button) =>
+        button.textContent?.includes("auth.retry"),
+      );
+      if (!retry) throw new Error("retry action missing");
+      retry.click();
+    });
+    await vi.waitFor(() => expect(harness.assigned).toHaveLength(2));
+  });
   it("keeps the logged-out screen when an older login fails after logout", async () => {
     let releaseDiscovery!: () => void;
     let discoveryStarted!: () => void;

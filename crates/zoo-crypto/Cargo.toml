@@ -1,0 +1,37 @@
+[package]
+name = "zoo-crypto"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "zoo2 の E2EE の暗号コア（I/O を持たない）"
+repository = "https://github.com/Zli-UoA/zoo2"
+
+[dependencies]
+# 鍵スロット（AES-256-GCM）、SSSS（AES-256-CTR と HMAC-SHA256）、鍵バックアップ（AES-256-CBC と
+# HMAC-SHA256）に使う（#351）。aes、cbc、hmac は vodozemac と同じ版にそろえる。aes-gcm と ctr は
+# 同じ RustCrypto の世代（cipher 0.5、aead 0.6）の版を選ぶ。aes-gcm の既定の getrandom は使わず、
+# nonce は getrandom で作る。
+aes = "0.9.4"
+aes-gcm = { version = "0.11.1", default-features = false, features = ["aes", "alloc"] }
+cbc = { version = "0.2.1", features = ["alloc"] }
+ctr = "0.10.1"
+# getrandom、hkdf、sha2、zeroize は vodozemac が使っているのと同じ版にそろえる
+# （Cargo.lock に新しいクレートを増やさない）。保存ごとの pickle key を作るのに使う。
+getrandom = "0.4.3"
+hkdf = "0.13.0"
+hmac = "0.13.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11.0"
+thiserror = "2"
+vodozemac = "0.11.2"
+zeroize = "1.9.0"
+
+# wasm32-unknown-unknown には OS の乱数がないので、getrandom 0.4 の wasm_js
+# バックエンド（crypto.getRandomValues）を使う。getrandom 0.4 は feature だけで
+# 有効になり、cfg フラグ（getrandom_backend）は要らない。
+# コアにプラットフォームの依存を入れない方針の例外は、この設定だけ（理由は
+# docs/e2ee.md の「共有の暗号コア」）。
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+vodozemac = { version = "0.11.2", features = ["wasm_js"] }

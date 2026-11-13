@@ -12,6 +12,8 @@ PWA のインストールとプッシュ通知の設定・動作は [PWA とプ�
 
 本番の配備結果と履歴は [Flux の通知](docs/flux-status.md) を参照してください。
 
+データベースの構造は [DB の ER 図](docs/db-erd.md) を参照してください。
+
 Slack のエクスポートの取り込みとアカウント連携は [Slack からの取り込みとアカウント連携](docs/slack-import.md) を参照してください。
 
 App・Botの開発、認証、イベント配信、既存Webhookの移行は [App・Bot基盤](docs/apps.md) を参照してください。
@@ -31,6 +33,8 @@ Compose Multiplatform を使う [Android 版](docs/android.md) のビルド・�
 ## 共通カスタム絵文字サービス
 
 バックエンドの `EMOJI_SERVICE_URL` にZli-UoA/emojiの公開オリジン（末尾スラッシュなし）を設定すると、既存の絵文字API・リアクション・ActivityPubが公開カタログを参照する。React・Composeの設定画面はサービスへのリンクに切り替わり、旧管理APIへの書き込みを拒否する。未設定時は既存機能を維持する。 `infra/compose.stack.yaml` も環境変数を渡す。画像のCSPは `CSP_APP_IMAGE_SRC` に管理サービスと画像配信のHTTPSオリジンを設定する（例: `https://emoji.zli.works https://emoji.zliusercontent.com`）。既存の添付画像用 `CSP_STORAGE_SRC` は維持する。
+
+最終エクスポートの前に `EMOJI_WRITES_PAUSED=true` を全backendへ配備し、ローリング更新の完了と旧Podの終了を確認する。旧絵文字の登録・画像アップロード・削除だけが503となり、本文・リアクション・一覧・既存画像は現在のカタログで利用できる。未設定または`false`で解除し、誤った値では書き込みを再開しない。移行・照合の完了後に`EMOJI_SERVICE_URL`を設定する。設定後はpauseを解除しても旧管理APIへ戻らない。React・Android・desktop・TUIは既存のAPIエラー表示を使うため、この停止のためのクライアント更新は不要。
 
 60秒ごとにETagで再検証し、専用の `shared_emojis` 読み取り複製へ反映する。投稿・通知の表示用JOINと絵文字APIは同じ `display_workspace_emojis` ビューを使い、変更を表示再確認キューと `emoji.changed` へ反映する。管理・作成者の正本はサービスだけが持ち、旧登録データは変更しない。取得失敗・再起動後もDB内の最終成功複製を使用し、成功履歴がない場合は旧登録データへフォールバックする。`EMOJI_CACHE_FILE` はHTTPカタログの任意の追加キャッシュとして使える。マイグレーションをバックエンドより先に適用する。
 

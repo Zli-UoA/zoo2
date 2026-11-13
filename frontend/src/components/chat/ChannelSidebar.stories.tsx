@@ -4,7 +4,12 @@ import { http, HttpResponse } from "msw";
 import { expect, screen, userEvent, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
-import { storyChannelUsers, storyChannels, storyCollections } from "../../../.storybook/fixtures";
+import {
+  storyChannelUsers,
+  storyChannels,
+  storyCollections,
+  storyMessages,
+} from "../../../.storybook/fixtures";
 import { ChannelSidebar } from "./ChannelSidebar";
 
 const meta = {
@@ -91,9 +96,60 @@ export const UnreadAndArchived: Story = {
   },
   play: playForImplementation(async () => {
     await expect(await screen.findAllByRole("img", { name: "未読メッセージあり" })).toHaveLength(2);
-    await expect(screen.getByRole("img", { name: "アーカイブ済み" })).toBeInTheDocument();
+    // アーカイブ済みは参加済みでもサイドバーに出さない（「チャンネルを探す」から開く）。
+    await expect(screen.queryByRole("img", { name: "アーカイブ済み" })).not.toBeInTheDocument();
+    await expect(screen.queryByRole("link", { name: /old-announcements/ })).not.toBeInTheDocument();
   }),
 };
+
+const threadRoot = storyMessages.find((message) => message.id === "message-thread-root")!;
+const threadEntry = {
+  id: threadRoot.id,
+  channel_id: threadRoot.channel_id,
+  content: threadRoot.content,
+  thread_archive_at: null as string | null,
+  reply_count: storyMessages.filter((message) => message.parent_id === threadRoot.id).length,
+};
+
+export const Threads: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        http.get("*/api/threads", () =>
+          HttpResponse.json({ items: [threadEntry], next_cursor: null }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("link", { name: /リリースノートの下書き/ })).toBeVisible();
+  }),
+};
+
+export const EmptyThreadTitle: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    collections: {
+      ...storyCollections,
+      messages: storyMessages.map((message) =>
+        message.id === threadRoot.id ? { ...message, content: "" } : message,
+      ),
+    },
+    msw: {
+      handlers: [
+        http.get("*/api/threads", () =>
+          HttpResponse.json({ items: [{ ...threadEntry, content: "" }], next_cursor: null }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("link", { name: /無題のスレッド/ })).toBeVisible();
+  }),
+};
+
+export const MobileThreads: Story = { ...Threads, globals: { viewport: { value: "mobile" } } };
 
 const dm = {
   ...storyChannels[0],
@@ -138,3 +194,69 @@ export const Sections: Story = {
   }),
 };
 export const MobileSections: Story = { ...Sections, globals: { viewport: { value: "mobile" } } };
+
+export const SelectedArchivedThread: Story = {
+  decorators: [
+    (Story) => (
+      <StoryShell selectedChannelId={threadRoot.channel_id} initialThreadRootId={threadRoot.id}>
+        <Story />
+      </StoryShell>
+    ),
+  ],
+  parameters: {
+    a11y: { test: "error" },
+    collections: {
+      ...storyCollections,
+      messages: storyMessages.map((message) =>
+        message.id === threadRoot.id
+          ? { ...message, thread_archive_at: "2020-01-01T00:00:00Z" }
+          : message,
+      ),
+    },
+    msw: {
+      handlers: [
+        http.get("*/api/threads", () => HttpResponse.json({ items: [], next_cursor: null })),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    const link = await screen.findByRole("link", { name: /リリースノートの下書き/ });
+    await expect(link).toHaveAttribute("aria-current", "page");
+    await expect(
+      screen.queryByRole("button", { name: /アーカイブ済みスレッド/ }),
+    ).not.toBeInTheDocument();
+    await expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+  }),
+};
+
+export const SelectedPostWithoutReplies: Story = {
+  decorators: SelectedArchivedThread.decorators,
+  parameters: {
+    a11y: { test: "error" },
+    collections: {
+      ...storyCollections,
+      messages: storyMessages
+        .filter((message) => message.parent_id !== threadRoot.id)
+        .map((message) =>
+          message.id === threadRoot.id
+            ? {
+                ...message,
+                thread_archive_at: null,
+                display_data: { ...message.display_data, reply_count: 0 },
+              }
+            : message,
+        ),
+    },
+    msw: {
+      handlers: [
+        http.get("*/api/threads", () => HttpResponse.json({ items: [], next_cursor: null })),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("link", { name: "general" })).toBeVisible();
+    await expect(
+      screen.queryByRole("link", { name: /リリースノートの下書き/ }),
+    ).not.toBeInTheDocument();
+  }),
+};

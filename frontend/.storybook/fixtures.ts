@@ -249,6 +249,9 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
     deleted_at: null,
   },
   {
@@ -261,6 +264,9 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
     deleted_at: null,
   },
   {
@@ -273,6 +279,9 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
     deleted_at: null,
   },
   {
@@ -285,6 +294,9 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: null,
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
     deleted_at: null,
   },
   {
@@ -297,6 +309,9 @@ export const storyChannels: ChannelRow[] = [
     created_at: timestamp(1, 0),
     updated_at: null,
     archive_at: timestamp(1, 1),
+    imported_from_slack: false,
+    slack_import_kind: null,
+    slack_imported_at: null,
     deleted_at: null,
   },
 ];
@@ -431,6 +446,17 @@ export const storyReactions: MessageReactionRow[] = [
     created_at: timestamp(2, 9, 3),
   },
 ];
+
+// 返信数・リアクションは、サーバーの表示用 VIEW (display_data) が持つ。スレッドの親は、返信が 2 件ある。
+const threadRoot = storyMessages.find((message) => message.id === "message-thread-root");
+if (threadRoot) {
+  threadRoot.display_data = {
+    emojis: {},
+    attachments: [],
+    reactions: storyReactions.filter((reaction) => reaction.message_id === threadRoot.id),
+    reply_count: 2,
+  };
+}
 
 export const storyNotifications: NotificationRow[] = [
   {

@@ -1,18 +1,10 @@
 use std::net::SocketAddr;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // ロギング初期化 (RUST_LOG=info など)
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "backend=debug,tower_http=debug,info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let telemetry = backend::telemetry::init("zoo-backend", "backend=debug,tower_http=debug,info");
 
     // 設定読み込み
     let config = Config::from_env();
@@ -61,10 +53,47 @@ async fn main() -> anyhow::Result<()> {
     let display_worker = tokio::spawn(backend::display_refresh::worker(state.clone()));
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
     let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));
-    let slack_import_worker = tokio::spawn(backend::slack::worker::worker(state.clone()));
+    // Slack の取り込み・差分同期は、専用の zoo_slack_worker に任せているときは動かさない (SLACK_IMPORT_WORKER=false)。
+    // 起動時に読むので、変えたら再起動する。戻すときは、この env を外して再起動する
+    let slack_workers = backend::slack::worker_enabled();
+    if !slack_workers {
+        tracing::info!(
+            "Slack import and sync workers are disabled in this process (SLACK_IMPORT_WORKER)"
+        );
+    }
+    // SIGTERM を受けたら、処理中の取り込みを手放す (attempts を消費せず、別の台がすぐに再開できる)
+    let (slack_import_stop, slack_import_stop_rx) = tokio::sync::watch::channel(false);
+    let slack_import_worker = slack_workers.then(|| {
+        tokio::spawn(backend::slack::worker::worker_until(
+            state.clone(),
+            slack_import_stop_rx,
+        ))
+    });
+    let slack_sync_worker =
+        slack_workers.then(|| tokio::spawn(backend::slack::sync::worker(state.clone())));
     let home_image_worker = tokio::spawn(backend::routes::home_images::worker(state.clone()));
     let emoji_worker = tokio::spawn(backend::emoji_service::worker(state.clone()));
+    let thread_archive_worker = tokio::spawn(backend::routes::threads::worker(state.clone()));
+    let e2ee_worker = tokio::spawn(backend::routes::e2ee::worker(state.clone()));
     let app = create_router(state);
+
+    let (metrics_stop_tx, mut metrics_stop_rx) = tokio::sync::watch::channel(false);
+    let metrics_server =
+        if let Some(metrics_addr) = backend::telemetry::metrics_bind_from_env(9464).await? {
+            Some(
+                backend::telemetry::spawn_metrics_server(metrics_addr, async move {
+                    while !*metrics_stop_rx.borrow_and_update() {
+                        if metrics_stop_rx.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                })
+                .await?,
+            )
+        } else {
+            tracing::info!("Metrics server disabled via METRICS_PORT");
+            None
+        };
 
     // サーバーバインド
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
@@ -75,16 +104,41 @@ async fn main() -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        // 接続の終了を待つ間も、取り込みは先に手放す (待つ間に強制終了されると、attempts を消費する)
+        let _ = slack_import_stop.send(true);
+    })
     .await?;
 
+    let _ = metrics_stop_tx.send(true);
     display_worker.abort();
     emoji_worker.abort();
+    e2ee_worker.abort();
     home_image_worker.abort();
     federation_worker.abort();
     delivery_worker.abort();
-    slack_import_worker.abort();
+    // 手放す処理は、合図を受けた時点で始まっている。残りの猶予の中で、終わるのを待つ
+    if let Some(worker) = slack_import_worker
+        && tokio::time::timeout(std::time::Duration::from_secs(10), worker)
+            .await
+            .is_err()
+    {
+        tracing::warn!("Slack import worker did not stop in time");
+    }
+    if let Some(worker) = slack_sync_worker {
+        worker.abort();
+    }
+    thread_archive_worker.abort();
+    if let Some(handle) = metrics_server
+        && tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .is_err()
+    {
+        tracing::warn!("Metrics server did not stop in time");
+    }
     tracing::info!("Server shut down gracefully");
+    telemetry.shutdown().await;
     Ok(())
 }
 

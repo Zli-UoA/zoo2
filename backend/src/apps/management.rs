@@ -275,6 +275,9 @@ async fn add_channel(
     if c.is_dm || c.deleted_at.is_some() || c.archive_at.is_some() {
         return Err(AppError::BadRequest("Unavailable channel".into()));
     }
+    // 暗号化チャンネルには App（Bot）を入れない（#358）。非公開チャンネルの存在を漏らさないよう、
+    // 下のメンバーの確認のあとで判定する。
+    let encrypted = c.encrypted;
     let member = crate::models::ChannelUser::filter(
         crate::models::ChannelUser::fields()
             .channel_id()
@@ -302,6 +305,9 @@ async fn add_channel(
         return Err(AppError::Forbidden(
             "Cannot add an app to this channel".into(),
         ));
+    }
+    if encrypted {
+        return Err(crate::routes::e2ee_channels::apps_forbidden());
     }
     toasty::sql::statement("INSERT INTO channel_user(channel_id,user_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING").bind(channel.as_str()).bind(a["bot"].as_str().unwrap()).exec(&mut tx).await?;
     audit(&mut tx, &id, &actor.id, "channel.added").await?;

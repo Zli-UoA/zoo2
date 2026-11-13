@@ -1,0 +1,273 @@
+name: CD Desktop Tauri Release
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "client-core/**"
+      - "client-types/**"
+      - "desktop-tauri/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/cd-desktop-tauri-release.yaml"
+permissions:
+  contents: read
+concurrency:
+  group: desktop-tauri-release
+  cancel-in-progress: false
+# desktop-tauri/src-tauri/Cargo.toml の version を上げて main に入れると、desktop-tauri-v<version> の
+# タグで GitHub Release を作り、アプリの自動更新が読む latest.json を desktop-tauri-updater の
+# リリースに置き直します。同じ version のリリースがすでにあれば、ビルドはしません。
+# latest.json がその version を指していなければ (前回の公開が途中で失敗したときなど)、
+# 既存のリリースの署名から作り直して公開します。再実行で直せます。
+#
+# 更新の署名に、次の 2 つを使います (docs/desktop-tauri.md の「更新」)。
+# - Secrets: TAURI_SIGNING_PRIVATE_KEY と TAURI_SIGNING_PRIVATE_KEY_PASSWORD (秘密鍵とそのパスワード)
+# - Variables: TAURI_UPDATER_PUBKEY (公開鍵。アプリに入れて、更新の署名を確かめる)
+# どれかがなければ、リリースを作らずに終わります。
+jobs:
+  version:
+    # 手動実行でも、レビュー前の作業ブランチからは公開しない。
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      build: ${{ steps.version.outputs.build }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Check version and signing keys
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HAS_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY != '' }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' desktop-tauri/src-tauri/Cargo.toml | head -n 1)
+          tag="desktop-tauri-v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$HAS_PRIVATE_KEY" != true ] || [ "$HAS_PUBKEY" != true ]; then
+            echo "更新の署名の鍵 (Secrets の TAURI_SIGNING_PRIVATE_KEY、Variables の TAURI_UPDATER_PUBKEY) がないので、リリースを作りません。" >> "$GITHUB_STEP_SUMMARY"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif ! gh release view "$tag" > /dev/null 2>&1; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            published=$(gh release download desktop-tauri-updater --pattern latest.json --output - 2>/dev/null | jq -r '.version // empty' || true)
+            if [ "$published" = "$version" ]; then
+              echo "$tag はリリース済みです。desktop-tauri/src-tauri/Cargo.toml の version を上げると次のリリースを作ります。" >> "$GITHUB_STEP_SUMMARY"
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "$tag はリリース済みですが、latest.json が ${published:-（なし）} を指しているので、公開し直します。" >> "$GITHUB_STEP_SUMMARY"
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  build:
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # deb が依存する glibc と WebKitGTK を古めに合わせ、Ubuntu 22.04 でも入るようにする。
+          - name: linux
+            os: ubuntu-22.04
+          # Apple Silicon と Intel の両方で動く universal の .app と .dmg。
+          # Developer ID の署名と公証はまだしていない (ad-hoc 署名だけ。README の「macOS」)。
+          - name: macos
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libwebkit2gtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libdbus-1-dev \
+            libxdo-dev \
+            file
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          targets: ${{ runner.os == 'macOS' && 'wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin' || 'wasm32-unknown-unknown' }}
+      - name: Install trunk, wasm-bindgen and tauri-cli
+        # ci-desktop-tauri.yaml と同じ版にする。
+        run: |
+          case "$RUNNER_OS" in
+            Linux) trunk_target=x86_64-unknown-linux-gnu ;;
+            macOS) trunk_target=aarch64-apple-darwin ;;
+          esac
+          # trunk は ~/.cargo/bin がない実行先 (macOS) もあるので、専用の場所に置いて PATH に足す。
+          trunk_bin="$HOME/.local/trunk/bin"
+          mkdir -p "$trunk_bin"
+          echo "$trunk_bin" >> "$GITHUB_PATH"
+          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-$trunk_target.tar.gz" | tar -xz -C "$trunk_bin"
+          cargo install --locked wasm-bindgen-cli --version 0.2.129
+          cargo install --locked tauri-cli --version 2.11.4
+      # 公開鍵をアプリに入れ、更新用の署名 (.sig) も作る。
+      - name: Bundle
+        working-directory: ./desktop-tauri/src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          config=$(jq -nc --arg pubkey "$PUBKEY" \
+            '{bundle: {createUpdaterArtifacts: true, macOS: {signingIdentity: "-"}}, plugins: {updater: {pubkey: $pubkey}}}')
+          if [ "$RUNNER_OS" = macOS ]; then
+            cargo tauri build --target universal-apple-darwin --bundles app,dmg --config "$config" -- --locked
+          else
+            cargo tauri build --bundles deb,appimage --config "$config" -- --locked
+          fi
+      - name: Collect
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          # $1 を dist/$2 に置き、署名も置く。
+          collect() {
+            cp "$1" "dist/$2"
+            if [ -f "$1.sig" ]; then
+              cp "$1.sig" "dist/$2.sig"
+            else
+              # bundler が署名しなかった形式は、同じ鍵でここで署名する。
+              cargo tauri signer sign "dist/$2"
+            fi
+          }
+          if [ "$RUNNER_OS" = macOS ]; then
+            bundle=desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle
+            # .app.tar.gz は自動更新が使う。.dmg はインストール用なので署名は要らない。
+            collect "$bundle/macos/zoo2.app.tar.gz" "zoo2_${VERSION}_universal.app.tar.gz"
+            cp "$bundle/dmg/zoo2_${VERSION}_universal.dmg" dist/
+          else
+            bundle=desktop-tauri/src-tauri/target/release/bundle
+            collect "$bundle/deb/zoo2_${VERSION}_amd64.deb" "zoo2_${VERSION}_amd64.deb"
+            collect "$bundle/appimage/zoo2_${VERSION}_amd64.AppImage" "zoo2_${VERSION}_amd64.AppImage"
+          fi
+          ls -l dist
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: zoo2-desktop-tauri-release-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    # ビルドを飛ばしたとき (リリース済みで latest.json だけ公開し直すとき) も動かす。
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download
+        if: needs.version.outputs.build == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: zoo2-desktop-tauri-release-*
+          merge-multiple: true
+          path: dist
+      # リリース済みのときは、そのリリースの署名から latest.json を作り直す。
+      - name: Download signatures from the existing release
+        if: needs.version.outputs.build != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: gh release download "$TAG" --pattern '*.sig' --dir dist
+      # アプリの自動更新 (tauri-plugin-updater) が読む形式。インストールの形ごとに、ファイルと署名を書く。
+      - name: Generate latest.json and checksums
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          base="https://github.com/$GH_REPO/releases/download/$TAG"
+          # platforms に、ファイルと署名の組を 1 つ足す。署名がない形 (前の版にない形) は飛ばす。
+          platforms='{}'
+          add() {
+            [ -f "dist/$2.sig" ] || return 0
+            platforms=$(jq -c --arg key "$1" --arg url "$base/$2" --rawfile sig "dist/$2.sig" \
+              '. + {($key): {url: $url, signature: $sig}}' <<< "$platforms")
+          }
+          appimage="zoo2_${VERSION}_amd64.AppImage"
+          add linux-x86_64 "$appimage"
+          add linux-x86_64-appimage "$appimage"
+          add linux-x86_64-deb "zoo2_${VERSION}_amd64.deb"
+          app="zoo2_${VERSION}_universal.app.tar.gz"
+          add darwin-aarch64 "$app"
+          add darwin-x86_64 "$app"
+          add darwin-aarch64-app "$app"
+          add darwin-x86_64-app "$app"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "https://github.com/$GH_REPO/releases/tag/$TAG" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson platforms "$platforms" \
+            '{version: $version, notes: $notes, pub_date: $pub_date, platforms: $platforms}' > dist/latest.json
+          # ビルドしたとき (インストール用のファイルがあるとき) だけ作る。
+          if [ -f "dist/zoo2_${VERSION}_amd64.deb" ]; then
+            (cd dist && sha256sum -- *.deb *.AppImage *.dmg *.app.tar.gz > SHA256SUMS)
+          fi
+          cat dist/latest.json
+      - name: Create release
+        if: needs.version.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        # Latest は TUI のリリースのままにする (--latest=false)。
+        # 失敗したジョブだけを再実行したとき (version の出力は前のまま) に、作成済みなら飛ばして
+        # 次の latest.json の公開へ進む。
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "$TAG は作成済みなので、作成を飛ばします。"
+            exit 0
+          fi
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "zoo2 デスクトップ版 (Tauri) v$VERSION" \
+            --notes "インストール方法は [desktop-tauri/README.md](https://github.com/$GH_REPO/blob/$TAG/desktop-tauri/README.md#インストール) を参照してください。" \
+            --latest=false
+      # アプリはこの決まった場所の latest.json を読む。リリースは最初の 1 回だけ作り、以後は置き直す。
+      - name: Publish latest.json for the updater
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view desktop-tauri-updater > /dev/null 2>&1; then
+            gh release create desktop-tauri-updater \
+              --target "$GITHUB_SHA" \
+              --title "zoo2 デスクトップ版の更新情報" \
+              --notes "デスクトップ版 (Tauri) の自動更新が読む latest.json を置く場所です。インストールには使いません。最新の版は desktop-tauri-v* のリリースにあります。" \
+              --prerelease \
+              --latest=false
+          fi
+          # --clobber は古いものを消してから置くので、途中で失敗すると latest.json がなくなる。
+          # そのときアプリは更新を見つけられないだけで、この workflow を再実行すれば直る。
+          gh release upload desktop-tauri-updater dist/latest.json --clobber

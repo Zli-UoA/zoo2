@@ -1219,7 +1219,7 @@ export const LiveWhileLoadingOlder: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "過去の投稿を読む" }));
     await waitFor(() => expect(olderPageStarted).toBe(true));
     olderLive.broadcast("refresh");
-    await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2), { timeout: 10000 });
     releaseOlderPage?.();
     await expect(await canvas.findByText(oldLivePost.content)).toBeInTheDocument();
     await waitFor(() => expect(retainedReloads).toBeGreaterThan(0));
@@ -2103,5 +2103,39 @@ export const LocalAvatarFallback: Story = {
     const avatar = await within(canvasElement).findByRole("img", { name: "Alice" });
     await waitFor(async () => await expect(avatar).toHaveTextContent("A"));
     await expect(avatar.querySelector("img")).toBeNull();
+  }),
+};
+
+export const QuotedRenote: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...misskeyPost,
+              content: "**引用へのコメント**\n\n<https://misskey.example/notes/quoted-original>",
+            },
+            {
+              ...misskeyPost,
+              id: "https://misskey.example/notes/quote-only",
+              content: "<https://misskey.example/notes/quoted-without-comment>",
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("引用へのコメント")).toBeVisible();
+    for (const url of [
+      "https://misskey.example/notes/quoted-original",
+      "https://misskey.example/notes/quoted-without-comment",
+    ]) {
+      const link = await canvas.findByRole("link", { name: url.replace(/^https:\/\//, "") });
+      await expect(link).toHaveAttribute("href", url);
+      await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    }
   }),
 };

@@ -8,6 +8,7 @@ import { storyChannels, storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
 import { storyCommands, storyDeploymentCard } from "../../../../.storybook/app-fixtures";
 import { ThreadPane } from "./ThreadPane";
+import { ThreadPaneStatus } from "./ThreadPaneStatus";
 import type { FeedMessage } from "./messageFormat";
 
 const root: FeedMessage = {
@@ -120,6 +121,44 @@ export const WithReplies: Story = {
   },
 };
 
+export const Archived: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies, isArchived: true, currentUserId: null, canReact: false },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("アーカイブ済み")).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "スレッドを再開" })).not.toBeInTheDocument();
+    const input = canvas.getByRole("textbox", { name: "返信を送信" });
+    await userEvent.type(input, "このスレッドで続きを話します");
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(args.onSendReply).toHaveBeenCalledWith("このスレッドで続きを話します");
+  }),
+};
+
+export const ArchivedReadOnly: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies, isArchived: true, readOnly: true, currentUserId: null, canReact: false },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("アーカイブ済み")).toBeVisible();
+    await expect(canvas.queryByRole("textbox", { name: "返信を送信" })).not.toBeInTheDocument();
+  }),
+};
+
+export const MobileArchived: Story = {
+  ...Archived,
+  globals: { viewport: { value: "mobile" } },
+};
+
+export const ArchivedNotJoined: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies, isArchived: true, isMember: false, currentUserId: null, canReact: false },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("textbox", { name: "返信を送信" })).toBeDisabled();
+  }),
+};
+
 export const Loading: Story = {
   args: {
     isLoading: true,
@@ -190,5 +229,19 @@ export const AppCard: Story = {
     await expect(
       canvas.queryByText("Plain fallback for card-capable clients"),
     ).not.toBeInTheDocument();
+  }),
+};
+
+export const RootLoadError: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { onRetry: fn(), onClose: fn() },
+  render: (args) => <ThreadPaneStatus isError onRetry={args.onRetry!} onClose={args.onClose} />,
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("alert")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "再試行" }));
+    await expect(args.onRetry).toHaveBeenCalledTimes(1);
+    await userEvent.click(canvas.getByRole("button", { name: "スレッドを閉じる" }));
+    await expect(args.onClose).toHaveBeenCalledTimes(1);
   }),
 };

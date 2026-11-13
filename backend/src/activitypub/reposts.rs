@@ -165,12 +165,12 @@ pub(super) async fn resolve_announce(
     }
     one(&mut tx,"SELECT '{}'::text FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND accepted",&[user,string(activity,"actor")?]).await?;
     drop(tx);
-    let note = transport::fetch_json(state, Some(user), object).await?;
+    let note = transport::fetch_json_with_retry(state, Some(user), object).await?;
     let (author, visibility, published, updated) = validate_public_note(&note, object)?;
     remote_actor(state, Some(user), &author, false).await?;
     let proof = note_identity::Proof::from_note(&note, object)?;
     let emojis = emoji::tags(&note["tag"]);
-    let media = emoji::media(&note["attachment"]);
+    let media = emoji::note_media(&note);
     let mut tx = db.transaction().await?;
     note_identity::reconcile(&mut tx, object, &author, Some(&proof)).await?;
     emoji::remember(&mut tx, &emojis).await?;

@@ -19,8 +19,13 @@ CREATE TABLE channels (
   updated_at timestamp(3),
   archive_at timestamp(3),
   deleted_at timestamp(3),
+  imported_from_slack boolean NOT NULL DEFAULT false,
+  slack_import_kind text,
+  slack_imported_at timestamp(3),
   CONSTRAINT "Channel_pkey" PRIMARY KEY (id),
   CONSTRAINT channels_channel_name_key UNIQUE (channel_name),
+  CONSTRAINT channels_slack_import_kind_check
+    CHECK (slack_import_kind IS NULL OR slack_import_kind IN ('created', 'existing')),
   CONSTRAINT channels_created_user_id_fkey
     FOREIGN KEY (created_user_id) REFERENCES users (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
@@ -39,6 +44,8 @@ CREATE TABLE messages (
   updated_at timestamp(3),
   deleted_at timestamp(3),
   parent_id text,
+  thread_archive_at timestamp(3),
+  thread_activity_at timestamp(3),
   CONSTRAINT "Message_pkey" PRIMARY KEY (id),
   CONSTRAINT messages_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
@@ -62,6 +69,21 @@ CREATE TABLE channel_user (
   CONSTRAINT channel_user_channel_id_fkey
     FOREIGN KEY (channel_id) REFERENCES channels (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
+);
+
+-- ユーザーが自分でチャンネルを退出した日時（退出日での並び替え用）。退出のたびに上書きし、
+-- 本人の Shape にだけ配る。チャンネルへの再参加では消さない。
+CREATE TABLE channel_leave (
+  user_id text NOT NULL,
+  channel_id text NOT NULL,
+  left_at timestamp(3) NOT NULL,
+  CONSTRAINT channel_leave_pkey PRIMARY KEY (user_id, channel_id),
+  CONSTRAINT channel_leave_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT channel_leave_channel_id_fkey
+    FOREIGN KEY (channel_id) REFERENCES channels (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
 );
 
 CREATE TABLE role (
@@ -115,6 +137,12 @@ CREATE TABLE message_reactions (
 
 CREATE INDEX idx_messages_channel_id ON messages (channel_id);
 CREATE INDEX idx_messages_parent_id ON messages (parent_id);
+CREATE INDEX idx_messages_thread_channel_active ON messages (channel_id, thread_activity_at DESC, id DESC)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NULL AND thread_activity_at IS NOT NULL;
+CREATE INDEX idx_messages_thread_channel_archived ON messages (channel_id, thread_activity_at DESC, id DESC)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NOT NULL AND thread_activity_at IS NOT NULL;
+CREATE INDEX idx_messages_thread_idle ON messages (thread_activity_at, id)
+  WHERE deleted_at IS NULL AND thread_archive_at IS NULL AND thread_activity_at IS NOT NULL;
 CREATE INDEX idx_message_reactions_message_id ON message_reactions (message_id);
 CREATE INDEX idx_message_reactions_user_id ON message_reactions (user_id);
 
@@ -181,6 +209,21 @@ CREATE TABLE channel_webhooks (
 );
 CREATE INDEX idx_channel_webhooks_channel_id ON channel_webhooks (channel_id);
 
+CREATE TABLE channel_notes (
+  id text NOT NULL PRIMARY KEY,
+  channel_id text NOT NULL REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  title varchar(200) NOT NULL,
+  content text NOT NULL,
+  position integer NOT NULL DEFAULT 0,
+  deleted_at timestamp(3),
+  version integer NOT NULL DEFAULT 1 CHECK (version > 0),
+  created_user_id text NOT NULL REFERENCES users (id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_channel_notes_channel_updated ON channel_notes (channel_id, updated_at DESC, id);
+CREATE INDEX idx_channel_notes_channel_position ON channel_notes (channel_id, position) WHERE deleted_at IS NULL;
+CREATE INDEX idx_channel_notes_deleted_at ON channel_notes (channel_id, deleted_at) WHERE deleted_at IS NOT NULL;
 -- Structured integration cards are separate from user-controlled message content.
 ALTER TABLE messages ADD COLUMN card text;
 ALTER TABLE users ADD COLUMN is_bot boolean NOT NULL DEFAULT false;
@@ -865,7 +908,7 @@ BEGIN
  ELSIF TG_OP='DELETE' OR row_data->>'deleted_at' IS NOT NULL AND old_data->>'deleted_at' IS NULL THEN
   PERFORM app_emit('message.deleted',data,row_data->>'user_id',row_data->>'channel_id');
   IF old_data->>'metadata' IS NOT NULL THEN PERFORM app_emit('message.metadata_deleted',jsonb_build_object('id',OLD.id,'previous_metadata',OLD.metadata::jsonb),OLD.user_id,OLD.channel_id);END IF;
- ELSIF row_data IS DISTINCT FROM old_data THEN
+ ELSIF (row_data-'thread_archive_at'-'thread_activity_at') IS DISTINCT FROM (old_data-'thread_archive_at'-'thread_activity_at') THEN
   PERFORM app_emit('message.updated',data,NEW.user_id,NEW.channel_id);
   IF NEW.metadata IS DISTINCT FROM OLD.metadata THEN
    PERFORM app_emit(CASE WHEN NEW.metadata IS NULL THEN 'message.metadata_deleted' WHEN OLD.metadata IS NULL THEN 'message.metadata_posted' ELSE 'message.metadata_updated' END,
@@ -1107,6 +1150,11 @@ CREATE INDEX app_deliveries_dispatch_count ON app_deliveries(installation_id,fir
 -- Harden event delivery and bound transport/retention work without rewriting deployed migrations.
 CREATE INDEX app_deliveries_retention ON app_deliveries(created_at,id);
 CREATE INDEX app_deliveries_ready ON app_deliveries(installation_id,available_at,created_at,id) WHERE acked_at IS NULL;
+-- 滞留（未 ACK・期限内）の集計用。期限切れの未 ACK が溜まっても、行ごとにヒープを読まずに済む。
+-- app_deliveries_backlog: GET /api/apps/{id}/metrics の滞留（インストールごと）。
+-- app_deliveries_queue: zoo-dispatcher の zoo_dispatch_queue_depth・oldest_pending_seconds（全体）。
+CREATE INDEX app_deliveries_backlog ON app_deliveries(installation_id,expires_at) INCLUDE (created_at,event_type) WHERE acked_at IS NULL;
+CREATE INDEX app_deliveries_queue ON app_deliveries(expires_at) INCLUDE (created_at) WHERE acked_at IS NULL;
 CREATE FUNCTION app_delivery_notify() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF EXISTS (SELECT 1 FROM new_rows n JOIN app_installations i ON i.id=n.installation_id WHERE i.manifest::jsonb->>'transport'='http') THEN
@@ -1710,6 +1758,8 @@ CREATE TABLE slack_import_jobs (
   finished_at timestamptz,
   -- 取り込みのジョブなら、ZIP を読むエクスポート (NULL ならエクスポート自身)
   source_id text,
+  import_progress text,
+  handoffs integer NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
   CONSTRAINT slack_import_jobs_status_check CHECK (status IN (
     'uploading', 'analyzing', 'ready', 'importing',
@@ -1760,6 +1810,38 @@ CREATE TABLE slack_channels (
 );
 
 CREATE INDEX idx_slack_channels_channel_id ON slack_channels (channel_id);
+
+-- Slack の差分同期 (#292) のキューと再開位置。サーバー専用で、Electric の Shape には載せない。
+-- Slack チャンネル (slack_channels) ごとに 1 行。同期の進み具合は slack_channels.last_ts (チャンネル単位で共有するカーソル) で、
+-- ここには 1 回の同期の途中経過 (ページのカーソル、残りのスレッド) と、次に実行する日時・リースを持つ。
+-- 新しいテーブルの追加だけなので、適用前のバックエンドが動いたままでも壊れない。
+CREATE TABLE slack_channel_syncs (
+  team_id text NOT NULL,
+  slack_channel_id text NOT NULL,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  lease_until timestamptz,
+  lease_token text,
+  attempts integer NOT NULL DEFAULT 0,
+  running boolean NOT NULL DEFAULT false,
+  phase text NOT NULL DEFAULT 'history',
+  run_oldest text,
+  run_max_ts text,
+  page_cursor text,
+  pending_threads text NOT NULL DEFAULT '[]',
+  known_threads text NOT NULL DEFAULT '[]',
+  token_user_id text,
+  last_synced_at timestamptz,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (team_id, slack_channel_id),
+  CONSTRAINT slack_channel_syncs_phase_check CHECK (phase IN ('history', 'threads')),
+  CONSTRAINT slack_channel_syncs_channel_fkey
+    FOREIGN KEY (team_id, slack_channel_id) REFERENCES slack_channels (team_id, slack_channel_id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE INDEX idx_slack_channel_syncs_due ON slack_channel_syncs (available_at);
 
 -- エクスポートに実体が含まれない添付ファイル。トークンで取得して attachments に移す。
 -- 同じファイルが複数のメッセージに共有されることがあるため、メッセージごとに 1 行持つ。
@@ -1878,6 +1960,7 @@ CREATE TRIGGER linked_message_reaction_live AFTER INSERT OR DELETE ON message_re
 
 -- Canonical inbox. Legacy tables remain rolling-deployment projections only.
 CREATE TABLE notification_events (
+  message_deleted boolean NOT NULL DEFAULT true,
   display_data jsonb NOT NULL DEFAULT '{}',
   id text PRIMARY KEY,
   user_id text NOT NULL REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
@@ -1901,6 +1984,14 @@ CREATE INDEX notification_events_owner ON notification_events(user_id, created_a
 CREATE INDEX notification_events_unread ON notification_events(user_id) WHERE NOT is_read;
 CREATE INDEX notification_events_message ON notification_events(message_id) WHERE message_id IS NOT NULL;
 ALTER TABLE notification_events REPLICA IDENTITY FULL;
+-- Match the existing ElectricSQL identities established by earlier migrations.
+ALTER TABLE attachments REPLICA IDENTITY FULL;
+ALTER TABLE channel_user REPLICA IDENTITY FULL;
+ALTER TABLE channels REPLICA IDENTITY FULL;
+ALTER TABLE message_reactions REPLICA IDENTITY FULL;
+ALTER TABLE messages REPLICA IDENTITY FULL;
+ALTER TABLE notifications REPLICA IDENTITY FULL;
+ALTER TABLE users REPLICA IDENTITY FULL;
 
 -- Updatable, storage-free projections preserve the existing source-specific DTOs.
 CREATE VIEW channel_notifications AS
@@ -2460,3 +2551,561 @@ CREATE TRIGGER users_apub_avatar_update AFTER UPDATE OF avatar_url ON users
   EXECUTE FUNCTION enqueue_apub_avatar_update();
 
 ALTER TABLE attachments ADD COLUMN width integer, ADD COLUMN height integer, ADD COLUMN blurhash text;
+
+-- 投稿経路によらず、返信と同じトランザクションで活動時刻と再開状態を更新する。
+CREATE FUNCTION update_thread_activity() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.parent_id IS NULL OR NEW.deleted_at IS NOT NULL THEN RETURN NULL; END IF;
+  IF TG_OP='UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN RETURN NULL; END IF;
+  UPDATE messages parent SET
+    thread_activity_at=GREATEST(parent.thread_activity_at,parent.created_at,NEW.created_at),
+    -- INSERT 前にアーカイブされた通常の返信も再開し、過去の投稿の取り込みと区別する。
+    thread_archive_at=CASE WHEN NEW.created_at >= parent.thread_archive_at
+      OR NEW.created_at >= date_trunc('milliseconds',transaction_timestamp() AT TIME ZONE 'UTC')
+      THEN NULL ELSE parent.thread_archive_at END
+    WHERE parent.id=NEW.parent_id AND parent.channel_id=NEW.channel_id AND parent.deleted_at IS NULL;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER messages_thread_activity_insert AFTER INSERT ON messages
+  FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
+CREATE TRIGGER messages_thread_activity_parent_update AFTER UPDATE OF parent_id ON messages
+  FOR EACH ROW EXECUTE FUNCTION update_thread_activity();
+-- E2EE: 端末と鍵（#354。仕様は docs/e2ee.md の「DB」）。
+-- 暗号化チャンネル。作成時の指定と変更の拒否は #357 で足す。既存の行は false なので後方互換。
+ALTER TABLE channels ADD COLUMN encrypted boolean NOT NULL DEFAULT false;
+ALTER TABLE channels ADD CONSTRAINT channels_encrypted_private CHECK (NOT encrypted OR is_private);
+
+CREATE TABLE e2ee_devices (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id text NOT NULL,
+  display_name text NOT NULL DEFAULT '',
+  curve25519_key text NOT NULL UNIQUE,
+  ed25519_key text NOT NULL UNIQUE,
+  device_keys jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz,
+  -- 論理削除。30 日たったらバッチで行を消し、device_id を e2ee_deleted_device_ids に残す。
+  deleted_at timestamptz,
+  PRIMARY KEY (user_id, device_id)
+);
+-- 登録の回数制限（1 時間に 30 回）と、30 日の回収のバッチが使う。
+CREATE INDEX e2ee_devices_user_created ON e2ee_devices (user_id, created_at);
+CREATE INDEX e2ee_devices_deleted ON e2ee_devices (deleted_at) WHERE deleted_at IS NOT NULL;
+ALTER TABLE e2ee_devices REPLICA IDENTITY FULL;
+
+-- 削除した端末の device_id の墓標（鍵を持たない。再利用を防ぐためだけに残す）。
+CREATE TABLE e2ee_deleted_device_ids (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id text NOT NULL,
+  deleted_at timestamptz NOT NULL,
+  PRIMARY KEY (user_id, device_id)
+);
+
+CREATE TABLE e2ee_one_time_keys (
+  user_id text NOT NULL,
+  device_id text NOT NULL,
+  algorithm text NOT NULL CHECK (algorithm = 'signed_curve25519'),
+  key_id text NOT NULL,
+  key_json jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  -- 払い出した時刻。払い出した鍵も行を消さずに残し、アップロードの応答をなくした再送が、主キーの
+  -- 衝突で入り直らないようにする（並行した払い出しのコミット前に再送が始まっても）。端末の行と一緒に消える。
+  claimed_at timestamptz,
+  PRIMARY KEY (user_id, device_id, algorithm, key_id),
+  FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
+);
+-- 払い出しと件数の確認は、まだ払い出していない鍵だけを読む。
+CREATE INDEX e2ee_one_time_keys_unclaimed ON e2ee_one_time_keys (user_id, device_id, created_at, key_id)
+  WHERE claimed_at IS NULL;
+
+CREATE TABLE e2ee_fallback_keys (
+  user_id text NOT NULL,
+  device_id text NOT NULL,
+  algorithm text NOT NULL CHECK (algorithm = 'signed_curve25519'),
+  key_id text NOT NULL,
+  key_json jsonb NOT NULL,
+  used boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, device_id, algorithm),
+  FOREIGN KEY (user_id, device_id) REFERENCES e2ee_devices ON DELETE CASCADE
+);
+
+-- keys/claim の払い出しの要求の回数（当日（UTC）の行だけ持ち、前日までの行はバッチで回収する）。
+CREATE TABLE e2ee_one_time_key_claim_counts (
+  claimer_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_user_id text NOT NULL,
+  target_device_id text NOT NULL,
+  day date NOT NULL,
+  claimed integer NOT NULL DEFAULT 0,
+  PRIMARY KEY (claimer_user_id, target_user_id, target_device_id, day),
+  FOREIGN KEY (target_user_id, target_device_id) REFERENCES e2ee_devices ON DELETE CASCADE
+);
+CREATE INDEX e2ee_one_time_key_claim_counts_day ON e2ee_one_time_key_claim_counts (day);
+
+-- クロス署名鍵、署名、TOFU のピン。書き込みの API は #356 で足す。
+-- keys/query の応答と、端末の削除で自己署名を消す処理（#354）が読み書きするので、表はここで作る。
+CREATE TABLE e2ee_cross_signing_keys (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  usage text NOT NULL CHECK (usage IN ('master', 'self_signing', 'user_signing')),
+  public_key text NOT NULL,
+  key_json jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, usage)
+);
+
+CREATE TABLE e2ee_key_signatures (
+  signer_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  signer_key_id text NOT NULL,
+  target_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_key_id text NOT NULL,
+  signature text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (signer_user_id, signer_key_id, target_user_id, target_key_id)
+);
+CREATE INDEX e2ee_key_signatures_target ON e2ee_key_signatures (target_user_id, target_key_id);
+
+CREATE TABLE e2ee_tofu_pins (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  master_key text NOT NULL,
+  pin_json jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, target_user_id)
+);
+
+-- アカウントの無効化（is_deactivated が false から true）と同じトランザクションで、端末をすべて削除する。
+-- 経路（guest_kind の更新、App の API など）によらず同じにするため、トリガーで行う。
+-- 無効化の UPDATE は users の行を FOR NO KEY UPDATE で持つので、ロックの順（users の行、端末単位のロック）に合う。
+-- 端末単位のロックは DELETE /api/e2ee/devices/{device_id} と同じキーを device_id の昇順で取る。
+CREATE FUNCTION e2ee_delete_devices_on_deactivate() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  d text;
+BEGIN
+  -- 鍵の行も端末ごとに device_id の昇順で消す。keys/claim は宛先を (user_id, device_id) の昇順で
+  -- 払い出すので、同じ順で行ロックを取り、並行した claim と行き詰まらない。
+  FOR d IN SELECT device_id FROM e2ee_devices
+      WHERE user_id = NEW.id AND deleted_at IS NULL ORDER BY device_id COLLATE "C" LOOP
+    PERFORM pg_advisory_xact_lock(2, hashtext(NEW.id || ':' || d));
+    DELETE FROM e2ee_key_signatures
+      WHERE signer_user_id = NEW.id AND target_user_id = NEW.id AND target_key_id = d;
+    DELETE FROM e2ee_one_time_keys WHERE user_id = NEW.id AND device_id = d;
+    DELETE FROM e2ee_fallback_keys WHERE user_id = NEW.id AND device_id = d;
+    -- 未受信の to-device メッセージも消す（#355）。to-device の送信は同じ端末単位のロックのあとに
+    -- deleted_at を読み直すので、このあとで削除済みの端末に入り直らない。
+    DELETE FROM e2ee_to_device_messages WHERE recipient_user_id = NEW.id AND recipient_device_id = d;
+  END LOOP;
+  UPDATE e2ee_devices SET deleted_at = now() WHERE user_id = NEW.id AND deleted_at IS NULL;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER users_e2ee_deactivate AFTER UPDATE OF is_deactivated, guest_kind ON users
+  FOR EACH ROW WHEN (NEW.is_deactivated AND NOT OLD.is_deactivated)
+  EXECUTE FUNCTION e2ee_delete_devices_on_deactivate();
+
+-- Explicit content labels; defaults preserve existing clients during rollout.
+ALTER TABLE channels ADD COLUMN is_nsfw boolean NOT NULL DEFAULT false;
+ALTER TABLE attachments ADD COLUMN is_sensitive boolean NOT NULL DEFAULT false;
+
+-- E2EE: to-device メッセージ（#355。仕様は docs/e2ee.md の「to-device メッセージ」と「DB」）。
+-- 宛先の端末ごとのキュー。受信確認（to_device/ack）で消す。生きている端末では時間で回収せず、
+-- 件数（1 端末 1000 件）だけで抑える。端末の削除と無効化のときに、その端末宛ての行を消す。
+CREATE TABLE e2ee_to_device_messages (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  recipient_user_id text NOT NULL,
+  recipient_device_id text NOT NULL,
+  sender_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sender_device_id text NOT NULL,
+  txn_id text NOT NULL,
+  type text NOT NULL,
+  content jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (recipient_user_id, recipient_device_id) REFERENCES e2ee_devices ON DELETE CASCADE,
+  UNIQUE (sender_user_id, sender_device_id, txn_id, recipient_user_id, recipient_device_id)
+);
+-- 宛先の端末の Shape、件数の確認、ack が使う。
+CREATE INDEX e2ee_to_device_recipient ON e2ee_to_device_messages (recipient_user_id, recipient_device_id, id);
+CREATE INDEX e2ee_to_device_created ON e2ee_to_device_messages (created_at);
+ALTER TABLE e2ee_to_device_messages REPLICA IDENTITY FULL;
+
+-- ack 後の再送を冪等にするための送信の記録。キューに入れた宛先にだけ書き、30 日で回収する。
+CREATE TABLE e2ee_to_device_txns (
+  sender_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sender_device_id text NOT NULL,
+  txn_id text NOT NULL,
+  recipient_user_id text NOT NULL,
+  recipient_device_id text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (sender_user_id, sender_device_id, txn_id, recipient_user_id, recipient_device_id)
+);
+CREATE INDEX e2ee_to_device_txns_created ON e2ee_to_device_txns (created_at);
+
+-- E2EE: クロス署名、Secret Storage、鍵バックアップ（#356。仕様は docs/e2ee.md の「DB」）。
+-- クロス署名鍵と署名は Shape で配る。
+ALTER TABLE e2ee_cross_signing_keys REPLICA IDENTITY FULL;
+ALTER TABLE e2ee_key_signatures REPLICA IDENTITY FULL;
+
+-- クロス署名鍵の変更の記録。old_public_key は登録し直しの拒否（E2EE_KEY_REUSED）に使う。
+CREATE TABLE e2ee_cross_signing_key_changes (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  usage text NOT NULL CHECK (usage IN ('master', 'self_signing', 'user_signing')),
+  old_public_key text,
+  new_public_key text NOT NULL,
+  changed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX e2ee_cs_key_changes_old ON e2ee_cross_signing_key_changes (user_id, old_public_key)
+  WHERE old_public_key IS NOT NULL;
+
+CREATE TABLE e2ee_secret_storage_keys (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  key_id text NOT NULL,
+  algorithm text NOT NULL CHECK (algorithm = 'm.secret_storage.v1.aes-hmac-sha2'),
+  iv text NOT NULL,
+  mac text NOT NULL,
+  is_default boolean NOT NULL DEFAULT false,
+  -- 既定の鍵の行で使う。鍵を作り直すときは前の値を引き継いで 1 増やす。
+  secrets_revision bigint NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, key_id)
+);
+CREATE UNIQUE INDEX e2ee_secret_storage_keys_default
+  ON e2ee_secret_storage_keys (user_id) WHERE is_default;
+
+CREATE TABLE e2ee_secrets (
+  user_id text NOT NULL,
+  name text NOT NULL CHECK (name IN ('m.cross_signing.master', 'm.cross_signing.self_signing',
+                                     'm.cross_signing.user_signing', 'm.megolm_backup.v1',
+                                     'zoo.megolm_backup.previous')),
+  key_id text NOT NULL,
+  iv text NOT NULL,
+  ciphertext text NOT NULL,
+  mac text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, name),
+  FOREIGN KEY (user_id, key_id) REFERENCES e2ee_secret_storage_keys ON DELETE CASCADE
+);
+CREATE INDEX e2ee_secrets_key ON e2ee_secrets (user_id, key_id);
+
+CREATE TABLE e2ee_secret_storage_key_slots (
+  -- slot_id（クライアントが作る UUID。AAD に入る）
+  id text PRIMARY KEY,
+  user_id text NOT NULL,
+  key_id text NOT NULL,
+  kind text NOT NULL CHECK (kind IN ('passkey', 'recovery')),
+  credential_id text,
+  prf_salt text,
+  nonce text NOT NULL,
+  ciphertext text NOT NULL,
+  label text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  last_used_at timestamptz,
+  FOREIGN KEY (user_id, key_id) REFERENCES e2ee_secret_storage_keys ON DELETE CASCADE,
+  CHECK ((kind = 'passkey' AND credential_id IS NOT NULL AND prf_salt IS NOT NULL)
+      OR (kind = 'recovery' AND credential_id IS NULL AND prf_salt IS NULL))
+);
+CREATE UNIQUE INDEX e2ee_slots_credential ON e2ee_secret_storage_key_slots (user_id, key_id, credential_id)
+  WHERE kind = 'passkey';
+CREATE UNIQUE INDEX e2ee_slots_recovery ON e2ee_secret_storage_key_slots (user_id, key_id)
+  WHERE kind = 'recovery';
+
+CREATE TABLE e2ee_key_backup_versions (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  version bigint NOT NULL,
+  algorithm text NOT NULL CHECK (algorithm = 'zoo.megolm_backup.v1.curve25519-aes-sha2'),
+  auth_data jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  -- 消した版も行を残し、番号と公開鍵の再利用の判定に使う。
+  deleted_at timestamptz,
+  PRIMARY KEY (user_id, version)
+);
+-- 過去の版と同じ公開鍵の拒否（E2EE_KEY_REUSED）に使う。
+CREATE INDEX e2ee_key_backup_versions_public_key
+  ON e2ee_key_backup_versions (user_id, (auth_data ->> 'public_key'));
+
+CREATE TABLE e2ee_key_backup_sessions (
+  user_id text NOT NULL,
+  version bigint NOT NULL,
+  -- チャンネルを消してもバックアップは残すので、外部キーを付けない。
+  channel_id text NOT NULL,
+  sender_key text NOT NULL,
+  session_id text NOT NULL,
+  first_message_index integer NOT NULL,
+  forwarded_count integer NOT NULL,
+  is_verified boolean NOT NULL,
+  session_data jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, version, channel_id, sender_key, session_id),
+  FOREIGN KEY (user_id, version) REFERENCES e2ee_key_backup_versions ON DELETE CASCADE
+);
+
+-- Keep message visibility on the small inbox, rather than replicating every
+-- undeleted message ID into Electric's notification dependency Shape.
+CREATE FUNCTION set_notification_message_deleted() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  -- Legacy/canonical inbox bridges use INSERT ... ON CONFLICT even for read
+  -- receipts. Reuse the current projection for an unchanged parent instead of
+  -- taking message locks while the bridge already owns the notification row.
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.source = OLD.source AND NEW.message_id IS NOT DISTINCT FROM OLD.message_id
+      AND NEW.message_deleted = OLD.message_deleted THEN RETURN NEW; END IF;
+  ELSIF pg_trigger_depth() > 1 THEN
+    SELECT message_deleted INTO NEW.message_deleted FROM notification_events
+      WHERE id = NEW.id AND source = NEW.source
+        AND message_id IS NOT DISTINCT FROM NEW.message_id;
+    IF FOUND THEN RETURN NEW; END IF;
+  END IF;
+  NEW.message_deleted := true;
+  IF NEW.source = 'channel' THEN
+    -- Serialize with soft deletion/restoration. A plain SELECT can see the old
+    -- message while its updater cannot yet see this new notification.
+    SELECT deleted_at IS NOT NULL INTO NEW.message_deleted
+      FROM messages WHERE id = NEW.message_id FOR SHARE;
+    NEW.message_deleted := COALESCE(NEW.message_deleted, true);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER notification_message_deleted BEFORE INSERT OR UPDATE OF source,message_id,message_deleted ON notification_events
+  FOR EACH ROW EXECUTE FUNCTION set_notification_message_deleted();
+
+CREATE FUNCTION sync_notification_message_deleted() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE notification_events SET message_deleted = (NEW.deleted_at IS NOT NULL)
+    WHERE source = 'channel' AND message_id = NEW.id
+      AND message_deleted IS DISTINCT FROM (NEW.deleted_at IS NOT NULL);
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER message_notification_deleted AFTER UPDATE OF deleted_at ON messages
+  FOR EACH ROW WHEN (OLD.deleted_at IS DISTINCT FROM NEW.deleted_at)
+  EXECUTE FUNCTION sync_notification_message_deleted();
+
+-- E2EE: 暗号化チャンネル（#357。仕様は docs/e2ee.md の「DB」と「membership_epoch と送信の順序」）。
+-- channels.encrypted と CHECK channels_encrypted_private は #354 で足した。
+ALTER TABLE channels ADD COLUMN membership_epoch bigint NOT NULL DEFAULT 0;
+
+ALTER TABLE messages ADD COLUMN ciphertext jsonb;
+ALTER TABLE messages ADD COLUMN epoch bigint;
+ALTER TABLE messages ADD COLUMN revision integer NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
+  CHECK (ciphertext IS NULL OR (content = '' AND epoch IS NOT NULL));
+
+-- encrypted は作成時だけ指定できる（両方向の変更を拒否する）。暗号化チャンネルを公開にする変更は
+-- CHECK channels_encrypted_private が拒否する。
+CREATE FUNCTION e2ee_protect_channel_encryption() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'channels.encrypted cannot be changed' USING ERRCODE = '23514';
+END $$;
+CREATE TRIGGER channels_encrypted_immutable BEFORE UPDATE ON channels
+  FOR EACH ROW WHEN (OLD.encrypted IS DISTINCT FROM NEW.encrypted)
+  EXECUTE FUNCTION e2ee_protect_channel_encryption();
+
+-- 論理削除した行（DELETE /api/messages/{id} と履歴の消去）の暗号文は残さない。
+CREATE FUNCTION e2ee_clear_deleted_ciphertext() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.ciphertext := NULL;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER messages_clear_deleted_ciphertext BEFORE INSERT OR UPDATE ON messages
+  FOR EACH ROW WHEN (NEW.deleted_at IS NOT NULL AND NEW.ciphertext IS NOT NULL)
+  EXECUTE FUNCTION e2ee_clear_deleted_ciphertext();
+
+-- そのユーザーが参加しているすべての暗号化チャンネル（削除済みを除く）の membership_epoch を 1 増やす。
+-- 端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成で使う。
+-- 行は id の昇順にまとめてロックし、ロックした行だけを更新する（並行した一括更新と行き詰まらない）。
+-- 参加先を読む前に、メンバー単位のロック (3, hashtext(user_id)) を取る。暗号化チャンネルへのメンバーの追加も、
+-- 追加する人について同じロックを取ってから channel_user に書く。これで、参加先を確定してからコミットするまでに
+-- 新しい所属が確定せず、追加されたチャンネルが増加から漏れない。
+-- ロックの順：users の行、ユーザー単位のロック (1)、端末単位のロック (2)、メンバー単位のロック (3)、channels の行。
+CREATE FUNCTION e2ee_bump_membership_epochs(target_user text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  ids text[];
+BEGIN
+  PERFORM pg_advisory_xact_lock(3, hashtext(target_user));
+  SELECT array_agg(id) INTO ids FROM (
+    SELECT id FROM channels
+      WHERE encrypted AND deleted_at IS NULL
+        AND id IN (SELECT channel_id FROM channel_user WHERE user_id = target_user)
+      ORDER BY id FOR NO KEY UPDATE
+  ) locked;
+  IF ids IS NOT NULL THEN
+    UPDATE channels SET membership_epoch = membership_epoch + 1
+      WHERE id = ANY (ids) AND encrypted AND deleted_at IS NULL;
+  END IF;
+END $$;
+
+-- アカウントの無効化でも、参加しているすべての暗号化チャンネルの membership_epoch を増やす。
+-- ロックの順（users の行、端末単位のロック、channels の行、e2ee_devices の行）に合わせ、端末単位のロックのあと、
+-- e2ee_devices の更新の前に増やす。
+CREATE OR REPLACE FUNCTION e2ee_delete_devices_on_deactivate() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  d text;
+BEGIN
+  -- 鍵の行も端末ごとに device_id の昇順で消す。keys/claim は宛先を (user_id, device_id) の昇順で
+  -- 払い出すので、同じ順で行ロックを取り、並行した claim と行き詰まらない。
+  FOR d IN SELECT device_id FROM e2ee_devices
+      WHERE user_id = NEW.id AND deleted_at IS NULL ORDER BY device_id COLLATE "C" LOOP
+    PERFORM pg_advisory_xact_lock(2, hashtext(NEW.id || ':' || d));
+    DELETE FROM e2ee_key_signatures
+      WHERE signer_user_id = NEW.id AND target_user_id = NEW.id AND target_key_id = d;
+    DELETE FROM e2ee_one_time_keys WHERE user_id = NEW.id AND device_id = d;
+    DELETE FROM e2ee_fallback_keys WHERE user_id = NEW.id AND device_id = d;
+    -- 未受信の to-device メッセージも消す（#355）。to-device の送信は同じ端末単位のロックのあとに
+    -- deleted_at を読み直すので、このあとで削除済みの端末に入り直らない。
+    DELETE FROM e2ee_to_device_messages WHERE recipient_user_id = NEW.id AND recipient_device_id = d;
+  END LOOP;
+  PERFORM e2ee_bump_membership_epochs(NEW.id);
+  UPDATE e2ee_devices SET deleted_at = now() WHERE user_id = NEW.id AND deleted_at IS NULL;
+  RETURN NULL;
+END $$;
+
+-- membership_epoch だけの変更では、通知の表示、App のイベント、Home の同期を作り直さない。
+CREATE OR REPLACE FUNCTION sync_channel_notification_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
+BEGIN
+  IF (to_jsonb(OLD) - 'membership_epoch') IS NOT DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch') THEN RETURN NULL; END IF;
+  INSERT INTO display_refresh_queue(kind,target) VALUES ('channel',NEW.id) ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END;
+$$;
+CREATE OR REPLACE FUNCTION app_channel_events_v2() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE row_data jsonb:=CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;channel text:=row_data->>'id';actor text:=COALESCE(NULLIF(current_setting('zoo.actor_id',true),''),row_data->>'created_user_id');
+BEGIN
+ -- membership_epoch だけの変更（暗号化チャンネルのメンバーや端末の変化）は、チャンネルのイベントにしない。
+ IF TG_OP='UPDATE' AND (to_jsonb(OLD) - 'membership_epoch') IS NOT DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch') THEN RETURN NULL; END IF;
+ IF TG_OP='INSERT' AND NOT NEW.is_private AND NOT NEW.is_dm THEN
+  PERFORM app_emit(CASE WHEN NEW.is_dm THEN 'conversation.created' ELSE 'channel.created' END,row_data,actor,channel);
+ ELSIF TG_OP='INSERT' THEN NULL;
+ ELSIF TG_OP='DELETE' OR row_data->>'deleted_at' IS NOT NULL AND to_jsonb(OLD)->>'deleted_at' IS NULL THEN
+  PERFORM app_emit('channel.deleted',row_data,actor,channel);
+ ELSE
+  IF OLD.archive_at IS DISTINCT FROM NEW.archive_at THEN PERFORM app_emit(CASE WHEN NEW.archive_at IS NULL THEN 'channel.unarchived' ELSE 'channel.archived' END,row_data,actor,channel);END IF;
+  IF OLD.channel_name<>NEW.channel_name THEN PERFORM app_emit('channel.renamed',row_data||jsonb_build_object('previous_name',OLD.channel_name),actor,channel);END IF;
+  IF OLD.description IS DISTINCT FROM NEW.description THEN PERFORM app_emit('channel.purpose_changed',row_data,actor,channel);END IF;
+  IF OLD.topic IS DISTINCT FROM NEW.topic THEN PERFORM app_emit('channel.topic_changed',row_data,actor,channel);END IF;
+  IF OLD.is_private<>NEW.is_private THEN PERFORM app_emit('channel.privacy_changed',row_data||jsonb_build_object('previous_is_private',OLD.is_private),actor,channel);END IF;
+  IF OLD.posting_policy<>NEW.posting_policy THEN PERFORM app_emit('channel.posting_permissions_changed',row_data,actor,channel);END IF;
+  IF to_jsonb(OLD) IS DISTINCT FROM row_data THEN PERFORM app_emit('channel.updated',row_data,actor,channel);END IF;
+ END IF;
+ RETURN NULL;
+END $$;
+
+-- 文レベルのトリガーは OLD と NEW を見られないので、UPDATE だけを行レベルのトリガーに分ける。
+DROP TRIGGER channels_home_live ON channels;
+CREATE TRIGGER channels_home_live AFTER INSERT OR DELETE ON channels FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
+CREATE TRIGGER channels_home_live_update AFTER UPDATE ON channels FOR EACH ROW
+  WHEN ((to_jsonb(OLD) - 'membership_epoch') IS DISTINCT FROM (to_jsonb(NEW) - 'membership_epoch'))
+  EXECUTE FUNCTION notify_home_timeline();
+
+-- 通知の表示に埋め込むチャンネルは列を明示し、membership_epoch を含めない。
+CREATE OR REPLACE VIEW notification_display AS
+SELECT n.id, jsonb_build_object(
+  'message', CASE WHEN m.deleted_at IS NULL AND m.id IS NOT NULL THEN
+    jsonb_build_object('id',m.id,'user_id',m.user_id,'content',left(m.content,281),
+      'emojis',COALESCE((SELECT jsonb_object_agg(e.key,e.value)
+        FROM jsonb_each(COALESCE(m.display_data->'emojis','{}'::jsonb)) e
+        WHERE strpos(left(m.content,281),':'||e.key||':')>0 OR
+          badge.reaction->>'emoji' IN (e.key,':'||e.key||':')), '{}'::jsonb)) ELSE NULL END,
+  'reactions', CASE WHEN n.notification_type='reaction' AND m.deleted_at IS NULL AND badge.reaction IS NOT NULL
+    THEN jsonb_build_array(badge.reaction) ELSE '[]'::jsonb END,
+  'actor', jsonb_build_object('id',u.id,'user_name',u.user_name,'display_name',u.display_name,
+    'avatar_url',u.avatar_url,'is_bot',u.is_bot,'app_id',u.app_id),
+  'channel', jsonb_build_object('id',c.id,'channel_name',c.channel_name,'description',c.description,'created_user_id',c.created_user_id,'is_private',c.is_private,'is_dm',c.is_dm,'created_at',c.created_at,'updated_at',c.updated_at,'archive_at',c.archive_at,'deleted_at',c.deleted_at,'imported_from_slack',c.imported_from_slack,'slack_import_kind',c.slack_import_kind,'slack_imported_at',c.slack_imported_at,'topic',c.topic,'posting_policy',c.posting_policy,'encrypted',c.encrypted,'is_nsfw',c.is_nsfw)
+) AS display_data
+FROM notification_events n JOIN users u ON u.id=n.actor_id JOIN channels c ON c.id=n.channel_id
+LEFT JOIN messages m ON m.id=n.message_id AND m.channel_id=n.channel_id
+LEFT JOIN LATERAL (
+  SELECT entry.value AS reaction FROM jsonb_array_elements(COALESCE(m.display_data->'reactions','[]'::jsonb)) AS entry(value)
+  WHERE n.notification_type='reaction' AND entry.value->>'user_id'=n.actor_id
+  ORDER BY entry.value->>'created_at' DESC,entry.value->>'id' LIMIT 1
+) badge ON true
+WHERE n.source='channel';
+
+-- E2EE: 暗号化チャンネルで平文に依存する機能を止める（#358。仕様は docs/e2ee.md の「DB」と「機能ごとの扱い」）。
+
+-- 暗号化チャンネルの messages に平文が入らないようにする。API 以外の経路（Webhook、App と委任トークン、
+-- Slack 取り込み、Home の同期など）で書き込まれても止める最後の防御。論理削除した行の ciphertext は
+-- messages_clear_deleted_ciphertext（名前の順でこれより先に動く）が消す。
+CREATE FUNCTION e2ee_reject_plaintext_messages() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM channels WHERE id = NEW.channel_id AND encrypted) THEN
+    RETURN NEW;
+  END IF;
+  IF NEW.deleted_at IS NULL AND (NEW.content <> '' OR NEW.ciphertext IS NULL) THEN
+    RAISE EXCEPTION 'messages in an encrypted channel require ciphertext and empty content' USING ERRCODE = '23514';
+  END IF;
+  IF NULLIF(NEW.app_attachments, '') IS NOT NULL OR NULLIF(NEW.app_blocks, '') IS NOT NULL
+     OR NULLIF(NEW.app_unfurls, '') IS NOT NULL OR NULLIF(NEW.metadata, '') IS NOT NULL
+     OR NULLIF(NEW.card, '') IS NOT NULL OR NEW.home_post_id IS NOT NULL OR NEW.apub THEN
+    RAISE EXCEPTION 'messages in an encrypted channel cannot carry plaintext fields' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER messages_e2ee_reject_plaintext BEFORE INSERT OR UPDATE ON messages
+  FOR EACH ROW EXECUTE FUNCTION e2ee_reject_plaintext_messages();
+
+-- 暗号化チャンネルには App（Bot）と Webhook のユーザーを入れない。
+CREATE FUNCTION e2ee_reject_bot_members() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM users WHERE id = NEW.user_id AND is_bot)
+     AND EXISTS (SELECT 1 FROM channels WHERE id = NEW.channel_id AND encrypted) THEN
+    RAISE EXCEPTION 'apps cannot join an encrypted channel' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER channel_user_e2ee_reject_bots BEFORE INSERT OR UPDATE ON channel_user
+  FOR EACH ROW EXECUTE FUNCTION e2ee_reject_bot_members();
+
+-- 暗号化チャンネルのメッセージは App のイベントにしない。
+CREATE OR REPLACE FUNCTION app_message_events_v2() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE data jsonb; row_data jsonb; old_data jsonb; installation record;
+BEGIN
+ -- 暗号化チャンネルのメッセージは App のイベントにしない（本文の解析による app.mentioned と link.shared も作らない）。
+ IF EXISTS(SELECT 1 FROM channels WHERE id=(CASE WHEN TG_OP='DELETE' THEN OLD.channel_id ELSE NEW.channel_id END) AND encrypted) THEN RETURN NULL; END IF;
+ row_data:=(CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END)-'display_data';
+ old_data:=(CASE WHEN TG_OP='INSERT' THEN NULL ELSE to_jsonb(OLD) END)-'display_data';
+ data:=row_data||jsonb_build_object('previous',old_data);
+ IF TG_OP='INSERT' THEN
+  PERFORM app_emit('message.created',data,NEW.user_id,NEW.channel_id);
+  IF NEW.parent_id IS NOT NULL THEN PERFORM app_emit('message.replied',jsonb_build_object('parent_id',NEW.parent_id,'reply',row_data),NEW.user_id,NEW.channel_id);END IF;
+  IF NEW.broadcast THEN PERFORM app_emit('message.thread_broadcast',data,NEW.user_id,NEW.channel_id);END IF;
+  IF NEW.message_kind='emote' THEN PERFORM app_emit('message.emote',data,NEW.user_id,NEW.channel_id);END IF;
+  IF NEW.metadata IS NOT NULL THEN PERFORM app_emit('message.metadata_posted',jsonb_build_object('id',NEW.id,'metadata',NEW.metadata::jsonb),NEW.user_id,NEW.channel_id);END IF;
+  FOR installation IN SELECT i.*,a.bot_user_id,u.user_name FROM app_installations i JOIN apps a ON a.id=i.app_id JOIN users u ON u.id=a.bot_user_id WHERE i.active AND a.status='installed'
+  LOOP
+   IF is_mention(NEW.content,installation.user_name) THEN PERFORM app_emit('app.mentioned',data,NEW.user_id,NEW.channel_id,NULL,installation.id);END IF;
+   IF EXISTS(SELECT 1 FROM jsonb_array_elements_text(COALESCE(installation.manifest::jsonb->'link_domains','[]')) domain WHERE NEW.content ~ ('https://' || replace(domain.value,'.','[.]') || '([/:?#[:space:]]|$)')) THEN
+    PERFORM app_emit('link.shared',data,NEW.user_id,NEW.channel_id,NULL,installation.id);
+   END IF;
+  END LOOP;
+ ELSIF TG_OP='DELETE' OR row_data->>'deleted_at' IS NOT NULL AND old_data->>'deleted_at' IS NULL THEN
+  PERFORM app_emit('message.deleted',data,row_data->>'user_id',row_data->>'channel_id');
+  IF old_data->>'metadata' IS NOT NULL THEN PERFORM app_emit('message.metadata_deleted',jsonb_build_object('id',OLD.id,'previous_metadata',OLD.metadata::jsonb),OLD.user_id,OLD.channel_id);END IF;
+ ELSIF (row_data-'thread_archive_at'-'thread_activity_at') IS DISTINCT FROM (old_data-'thread_archive_at'-'thread_activity_at') THEN
+  PERFORM app_emit('message.updated',data,NEW.user_id,NEW.channel_id);
+  IF NEW.metadata IS DISTINCT FROM OLD.metadata THEN
+   PERFORM app_emit(CASE WHEN NEW.metadata IS NULL THEN 'message.metadata_deleted' WHEN OLD.metadata IS NULL THEN 'message.metadata_posted' ELSE 'message.metadata_updated' END,
+    jsonb_build_object('id',NEW.id,'metadata',NEW.metadata::jsonb,'previous_metadata',OLD.metadata::jsonb),NEW.user_id,NEW.channel_id);
+  END IF;
+ END IF;
+ RETURN NULL;
+END $$;
+
+-- 暗号化チャンネルは Home/LTL に同期しない（暗号化チャンネルは非公開なので今も対象外だが、明示する）。
+CREATE OR REPLACE FUNCTION sync_channel_home_post() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.home_post_id IS NOT NULL THEN
+    UPDATE home_posts SET parent_id=COALESCE(NEW.parent_id,parent_id),content=NEW.content,deleted_at=NEW.deleted_at AT TIME ZONE 'UTC',updated_at=NEW.updated_at AT TIME ZONE 'UTC'
+    WHERE id=NEW.home_post_id AND (content,deleted_at,parent_id) IS DISTINCT FROM (NEW.content,NEW.deleted_at AT TIME ZONE 'UTC',COALESCE(NEW.parent_id,parent_id));
+  ELSIF TG_OP='INSERT' AND NEW.deleted_at IS NULL AND EXISTS (
+    SELECT 1 FROM channels c CROSS JOIN activitypub_settings s WHERE c.id=NEW.channel_id
+      AND NOT c.is_private AND NOT c.is_dm AND NOT c.encrypted AND c.deleted_at IS NULL
+      AND (channel_matches_ltl(c.channel_name,s.ltl_channel_pattern) OR EXISTS(
+        SELECT 1 FROM home_posts parent WHERE parent.id=NEW.parent_id AND parent.channel_id=NEW.channel_id AND parent.deleted_at IS NULL
+      ))
+  ) THEN
+    INSERT INTO home_posts(id,user_id,content,channel_id,created_at,parent_id,visibility,reply_user_id)
+      VALUES(NEW.id,NEW.user_id,NEW.content,NEW.channel_id,NEW.created_at AT TIME ZONE 'UTC',NEW.parent_id,
+        COALESCE((SELECT visibility FROM home_posts WHERE id=NEW.parent_id),'local'),
+        (SELECT user_id FROM home_posts WHERE id=NEW.parent_id)) ON CONFLICT DO NOTHING;
+  END IF;
+  RETURN NEW;
+END $$;

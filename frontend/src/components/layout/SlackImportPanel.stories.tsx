@@ -37,7 +37,12 @@ const base: SlackImport = {
         message_count: 860,
         suggested_name: "random",
         name_taken: false,
-        existing_channel: { id: "channel-random", name: "random" },
+        existing_channel: {
+          id: "channel-random",
+          name: "random",
+          import_kind: "existing",
+          imported_at: "2026-11-10T12:00:00",
+        },
       },
       {
         slack_channel_id: "G1",
@@ -165,12 +170,42 @@ export const Mapping: Story = {
     // 取り込み先が削除済みの #design は取り込まない
     await expect(screen.getByText(/#slack-design が削除されている/)).toBeVisible();
     // 以前取り込んだ #random は同じ取り込み先に固定する
-    await expect(screen.getByText("取り込み先: #random")).toBeVisible();
+    await expect(
+      screen.getByText(/取り込み先: #random（既存・最後の取り込み 2026\/.+）/),
+    ).toBeVisible();
     await userEvent.selectOptions(
       screen.getByRole("combobox", { name: "#random の取り込み方" }),
       "existing",
     );
     await expect(screen.getByRole("combobox", { name: "#random の取り込み先" })).toBeDisabled();
+  }),
+};
+
+export const BulkSelection: Story = {
+  parameters: { msw: { handlers: [list(base)] } },
+  play: playForImplementation(async () => {
+    // 一括で「新しいチャンネル」にする (#general と非公開のチャンネル)。以前取り込んだ #random と、
+    // 取り込み先が削除済みの #design は変えない
+    await userEvent.click(await screen.findByRole("button", { name: "すべて新しいチャンネル" }));
+    await expect(screen.getByRole("button", { name: "2 チャンネルを取り込む" })).toBeEnabled();
+    await expect(screen.getByRole("combobox", { name: "#random の取り込み方" })).toHaveValue(
+      "skip",
+    );
+    // 取り込み後のアーカイブを、一括と、チャンネルごとに指定する
+    const archive = screen.getByRole("checkbox", { name: "#general を取り込み後にアーカイブする" });
+    await expect(archive).not.toBeChecked();
+    await userEvent.click(
+      screen.getByRole("checkbox", {
+        name: "新しいチャンネルは、取り込み後にすべてアーカイブする",
+      }),
+    );
+    await expect(archive).toBeChecked();
+    // 一括で取り込まないにすると、アーカイブの指定も消える
+    await userEvent.click(screen.getByRole("button", { name: "すべて取り込まない" }));
+    await expect(screen.getByRole("button", { name: "0 チャンネルを取り込む" })).toBeDisabled();
+    await expect(
+      screen.queryByRole("checkbox", { name: "#general を取り込み後にアーカイブする" }),
+    ).not.toBeInTheDocument();
   }),
 };
 

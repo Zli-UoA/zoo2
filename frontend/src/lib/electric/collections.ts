@@ -10,11 +10,13 @@ import { resolveConfig, type AppConfig } from "../config";
 import { getCurrentUserStore } from "../currentUser";
 import { OFFLINE_SCHEMA_VERSION } from "../offline/schema";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
+import { MESSAGE_INDEX_COMPARE_OPTIONS } from "./messageOrder";
 import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
 import type {
   AttachmentRow,
   ChannelRow,
+  ChannelLeaveRow,
   ChannelUserRow,
   MessageReactionRow,
   MessageRow,
@@ -40,9 +42,13 @@ import {
  */
 export function shapeAuthSource(config: AppConfig): ShapeFetchSource {
   if (config.shapeMode === "proxy") {
-    return { devUserId: config.devUserId };
+    return {
+      devUserId: config.devUserId,
+      apiBaseUrl: config.apiBaseUrl,
+      telemetry: config.telemetryEnabled,
+    };
   }
-  return { auth: false };
+  return { auth: false, telemetry: config.telemetryEnabled };
 }
 
 function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOptions = {}) {
@@ -77,6 +83,8 @@ function withPersistence<
   options: TOptions,
   persistence: PersistedCollectionPersistence | null | undefined,
   getKey: (row: T) => TKey,
+  /** 初回の描画で、ネットワークより先に復元済みの行を出すか。on-demand の同期では使えない。 */
+  networkFirst = true,
 ): TOptions {
   if (!persistence) {
     return options;
@@ -88,7 +96,10 @@ function withPersistence<
     getKey,
     persistence,
     schemaVersion: OFFLINE_SCHEMA_VERSION,
-    initialRender: { strategy: "network-first", networkTimeoutMs: 2_000 },
+    // `initialRender` は eager の同期でだけ使える (on-demand では、永続化の設定がエラーにする)。
+    ...(networkFirst
+      ? { initialRender: { strategy: "network-first", networkTimeoutMs: 2_000 } }
+      : {}),
   } as unknown as Parameters<typeof persistedCollectionOptions>[0]) as unknown as TOptions;
 }
 
@@ -169,6 +180,23 @@ function channelUsersCollection(
   return collection;
 }
 
+/**
+ * 自分が退出した日時。proxy ではバックエンドが認証ユーザーの行だけに絞る。
+ * 退出日での並び替えにだけ使うため、永続化はしない。
+ */
+function channelLeavesCollection(userId: string, config: AppConfig) {
+  const collection = createCollection(
+    electricCollectionOptions<ChannelLeaveRow>({
+      id: `channel_leave:${userId}`,
+      getKey: (row) => `${row.user_id}:${row.channel_id}`,
+      defaultIndexType: BasicIndex,
+      shapeOptions: shapeOptions("channelLeaves", config, { userId }),
+    }),
+  );
+  collection.createIndex((row) => row.channel_id);
+  return collection;
+}
+
 function messagesCollection(
   channelId: string,
   config: AppConfig,
@@ -182,6 +210,10 @@ function messagesCollection(
         id: `messages:${channelId}`,
         getKey: (row) => row.id,
         defaultIndexType: BasicIndex,
+        // 全件を同期せず、画面の live query が要求した範囲だけを Electric の subset snapshot で取る
+        // (`messageFeedQuery` の `orderBy(created_at desc).limit(N)`)。新着・編集・削除は、同期している
+        // 範囲について live で届く。詳細は docs/offline-windowed-messages.md。
+        syncMode: "on-demand",
         shapeOptions: shapeOptions("messages", config, { channelId }),
         onInsert: writes.onInsert,
         onUpdate: writes.onUpdate,
@@ -189,9 +221,16 @@ function messagesCollection(
       }),
       persistence,
       (row: MessageRow) => row.id,
+      false,
     ),
   );
   collection.createIndex((row) => row.id);
+  // 並びの `created_at` は文字列なので、`lexical` の比較に合わせたインデックスが要る。ないと、TanStack DB は
+  // ページ単位の取得をやめて、チャンネルの全行を取るフォールバックに黙って切り替わる。
+  collection.createIndex((row) => row.created_at, {
+    indexType: BasicIndex,
+    options: { compareOptions: MESSAGE_INDEX_COMPARE_OPTIONS },
+  });
   return collection;
 }
 
@@ -256,6 +295,7 @@ export type NotificationsCollection = ReturnType<typeof notificationsCollection>
 export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
+export type ChannelLeavesCollection = ReturnType<typeof channelLeavesCollection>;
 export type MessagesCollection = ReturnType<typeof messagesCollection>;
 export type ReactionsCollection = ReturnType<typeof reactionsCollection>;
 export type AttachmentsCollection = ReturnType<typeof attachmentsCollection>;
@@ -270,6 +310,8 @@ export interface CollectionsBundle {
   channels: ChannelsCollection;
   users: UsersCollection;
   channelUsers: ChannelUsersCollection;
+  /** 自分の退出日。ユーザー単位で生成しキャッシュする。 */
+  channelLeaves: (userId: string) => ChannelLeavesCollection;
   /** `channel_id` 単位で生成しキャッシュした messages コレクションを返す。 */
   messages: (channelId: string) => MessagesCollection;
   /** `channel_id` 単位で生成しキャッシュした message_reactions コレクションを返す。 */
@@ -326,6 +368,7 @@ export function getCollections(
   }
 
   const notificationCache = new Map<string, NotificationsCollection>();
+  const channelLeaveCache = new Map<string, ChannelLeavesCollection>();
   const messageCache = new Map<string, MessagesCollection>();
   const reactionCache = new Map<string, ReactionsCollection>();
   const attachmentCache = new Map<string, AttachmentsCollection>();
@@ -353,6 +396,14 @@ export function getCollections(
     channels: channelsCollection(resolved, dependencies, persistence),
     users: usersCollection(resolved, persistence),
     channelUsers: channelUsersCollection(resolved, dependencies, persistence),
+    channelLeaves: (userId) => {
+      let collection = channelLeaveCache.get(userId);
+      if (!collection) {
+        collection = channelLeavesCollection(userId, resolved);
+        channelLeaveCache.set(userId, collection);
+      }
+      return collection;
+    },
     reactions: (channelId) => {
       let collection = reactionCache.get(channelId);
       if (!collection) {

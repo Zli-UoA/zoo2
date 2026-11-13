@@ -83,7 +83,6 @@ it.each(["bottom", "returned", "visible", "above"] as const)(
             canReact={false}
             onReaction={noop}
             onPickReaction={noop}
-            replyCounts={new Map()}
             onOpenThread={noop}
           />
         </div>
@@ -191,7 +190,6 @@ it("keeps an initial unread boundary without marking later messages read when th
           canReact={false}
           onReaction={noop}
           onPickReaction={noop}
-          replyCounts={new Map()}
           onOpenThread={noop}
         />
       </div>

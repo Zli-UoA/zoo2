@@ -16,6 +16,7 @@ import type {
 import { reactionKey } from "../emoji/kitchen";
 import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
+import { THREADS_CHANGED } from "./threads";
 import type {
   ChannelRow,
   ChannelUserRow,
@@ -93,6 +94,8 @@ function readChannelUserMetadata(metadata: unknown): ChannelUserWriteMetadata {
 
 export interface MessageWriteMetadata {
   attachment_ids?: string[];
+  sensitive?: boolean;
+  sensitive_attachment_ids?: string[];
 }
 
 function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
@@ -104,6 +107,14 @@ function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
     return {};
   }
   return {
+    ...((metadata as MessageWriteMetadata).sensitive ? { sensitive: true } : {}),
+    ...(Array.isArray((metadata as MessageWriteMetadata).sensitive_attachment_ids)
+      ? {
+          sensitive_attachment_ids: (
+            metadata as MessageWriteMetadata
+          ).sensitive_attachment_ids!.filter((id): id is string => typeof id === "string"),
+        }
+      : {}),
     attachment_ids: value.filter((id): id is string => typeof id === "string"),
   };
 }
@@ -132,8 +143,16 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       const attachmentIds = readMessageMetadata(mutation.metadata).attachment_ids;
       if (attachmentIds?.length) {
         body.attachment_ids = attachmentIds;
+        const metadata = readMessageMetadata(mutation.metadata);
+        if (metadata.sensitive) body.sensitive = true;
+        if (metadata.sensitive_attachment_ids?.length)
+          body.sensitive_attachment_ids = metadata.sensitive_attachment_ids;
       }
       const { txid } = await client.post<MessageRow>("/api/messages", body);
+      if (row.parent_id) {
+        // 保存が確定した返信は、Electric の同期や定期取得を待たず一覧に反映する。
+        window.dispatchEvent(new Event(THREADS_CHANGED));
+      }
       await syncTxid({
         mode: txidMode,
         txid,
@@ -151,6 +170,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
 
       if (isSoftDelete) {
         const { txid } = await client.delete<MessageRow>(`/api/messages/${row.id}`);
+        window.dispatchEvent(new Event(THREADS_CHANGED));
         await syncTxid({
           mode: txidMode,
           txid,
@@ -165,6 +185,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
 
       const body: UpdateMessageRequest = { content: row.content };
       const { txid } = await client.patch<MessageRow>(`/api/messages/${row.id}`, body);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await syncTxid({
         mode: txidMode,
         txid,
@@ -181,6 +202,7 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
     for (const mutation of transaction.mutations) {
       const row = mutation.original;
       const { txid } = await client.delete<MessageRow>(`/api/messages/${row.id}`);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await syncTxid({
         mode: txidMode,
         txid,
@@ -206,6 +228,7 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
         channel_name: row.channel_name,
         description: row.description,
         is_private: row.is_private,
+        ...(row.is_nsfw !== undefined ? { is_nsfw: row.is_nsfw } : {}),
       };
       const { txid } = await client.post<ChannelRow>("/api/channels", body);
       await syncTxid({
@@ -227,6 +250,9 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
       }
       if ("description" in changes) {
         body.description = changes.description ?? null;
+      }
+      if ("is_nsfw" in changes) {
+        body.is_nsfw = changes.is_nsfw;
       }
       if ("is_private" in changes) {
         body.is_private = changes.is_private;
@@ -276,11 +302,13 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
           `/api/channels/${row.channel_id}/users`,
           body,
         );
+        if (row.user_id === getCurrentUserId()) window.dispatchEvent(new Event(THREADS_CHANGED));
         await waitForChannelUserSync("insert", row, collection.utils, txid, txidMode);
         continue;
       }
 
       const { txid } = await client.post<ChannelUserRow>(`/api/channels/${row.channel_id}/join`);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await waitForChannelUserSync("insert", row, collection.utils, txid, txidMode);
     }
   }
@@ -295,6 +323,7 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
         );
       }
       const { txid } = await client.post<ChannelUserRow>(`/api/channels/${row.channel_id}/leave`);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await waitForChannelUserSync("delete", row, collection.utils, txid, txidMode);
     }
   }

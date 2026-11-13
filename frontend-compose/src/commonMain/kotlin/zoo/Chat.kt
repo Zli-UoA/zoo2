@@ -131,8 +131,7 @@ fun Chat(
     val loading by table.loading.collectAsState()
     val error by table.error.collectAsState()
     val nativeReactions by app.repo.reactions(id).rows.collectAsState()
-    val (federatedReactions, federatedReactionError) = federatedChannelReactions(app, id)
-    val reactions = remember(nativeReactions, federatedReactions) { nativeReactions + federatedReactions }
+    val reactions = nativeReactions
     val joined = membershipOverride ?: isMember(members, id, app.config.userId)
     val canPost = joined && !channel.present("archive_at") && app.env.online
     LaunchedEffect(id, app.env.visible, app.env.online) {
@@ -168,12 +167,14 @@ fun Chat(
         all.find { it.text("id") == target }
             ?.let { if (it.present("parent_id")) app.openThread(it.text("parent_id"), wide) }
     }
-    val attachmentRows by app.repo.attachments(id).rows.collectAsState()
+    val attachmentRows = if (all.any { !it.containsKey("display_data") }) {
+        val legacy by app.repo.attachments(id).rows.collectAsState()
+        legacy
+    } else emptyList()
     CompositionLocalProvider(LocalAttachments provides attachmentRows) {
         Row(modifier.fillMaxWidth()) {
             if (wide || app.thread == null)
                 Column(Modifier.weight(1f).fillMaxHeight()) {
-                    if (federatedReactionError) Text(app.t("reactions.fetchError"), Modifier.padding(8.dp).then(webControlModifier("alert")))
                     MessageList(
                         app,
                         channel,
@@ -1280,8 +1281,8 @@ internal fun Composer(
         delay(250)
         app.platform.invoke("storageWrite", obj("key" to key, "value" to value).toString())
     }
-    LaunchedEffect(typingActive, enabled, app.env.visible, onTyping) {
-        if (onTyping == null && typingActive && enabled && app.env.visible) {
+    LaunchedEffect(typingActive, enabled, app.env.visible, app.env.online, onTyping) {
+        if (onTyping == null && typingActive && enabled && app.env.visible && app.env.online) {
             try {
                 while (isActive) {
                     try {
@@ -1316,8 +1317,10 @@ internal fun Composer(
             }
         }
     }
-    LaunchedEffect(key, app.env.visible, enabled) {
-        while (enabled && app.env.visible && isActive) {
+    LaunchedEffect(key, app.env.visible, app.env.online, enabled, typingActive) {
+        if (!app.env.visible || !enabled) typing = emptyList()
+        var pollDelay = 1500L
+        while (enabled && app.env.visible && app.env.online && isActive) {
             try {
                 typing =
                     app.api
@@ -1326,15 +1329,17 @@ internal fun Composer(
                                 (parent?.let { "?parent_id=$it" } ?: "")
                         )
                         .rows()
-                        .filter { it.text("user_id") != app.config.userId }
+                        .filter { it.text("id") != app.config.userId }
                         .map { row ->
-                            users.find { it.text("id") == row.text("user_id") }?.let(::author)
-                                ?: row.text("user_id")
+                            row.text("display_name").ifEmpty {
+                                users.find { it.text("id") == row.text("id") }?.let(::author) ?: row.text("id")
+                            }
                         }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {}
-            delay(1500)
+            pollDelay = if (typing.isNotEmpty() || typingActive) 1500L else (pollDelay * 2).coerceAtMost(5000L)
+            delay(pollDelay)
         }
     }
     val send = {
@@ -1344,6 +1349,7 @@ internal fun Composer(
             updateTyping(false)
             val drafts = attachments.items.toList()
             val attachmentIds = drafts.mapNotNull { it.uploaded?.text("id") }
+            val sensitiveAttachmentIds = drafts.filter { it.sensitive }.mapNotNull { it.uploaded?.text("id") }
             attachments.items.clear()
             attachments.error = null
             sendError = null
@@ -1353,7 +1359,7 @@ internal fun Composer(
                 val successful =
                     try {
                         sendMessage?.invoke(sent.trim(), commandAppId, attachmentIds)
-                            ?: app.send(channel, sent.trim(), parent, commandAppId, attachmentIds)
+                            ?: app.send(channel, sent.trim(), parent, commandAppId, attachmentIds, sensitiveAttachmentIds)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (_: Exception) {

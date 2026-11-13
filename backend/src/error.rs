@@ -36,6 +36,17 @@ pub enum AppError {
 
     #[error("Internal server error: {0}")]
     Internal(#[from] anyhow::Error),
+
+    /// 機械判定用の `code` と追加のフィールドを持つエラー（docs/e2ee.md の「エラー」）。
+    /// 応答は `{"error": message, "code": code, ...extra}`。429 で `extra` に `retry_after`（秒）があれば、
+    /// `Retry-After` ヘッダーにも同じ値を入れる。
+    #[error("{code}: {message}")]
+    Coded {
+        status: StatusCode,
+        code: &'static str,
+        message: String,
+        extra: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 impl AppError {
@@ -132,30 +143,62 @@ impl From<toasty::Error> for AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, message) = match &self {
+        let service = crate::telemetry::service_name();
+        if let AppError::Coded {
+            status,
+            code,
+            message,
+            extra,
+        } = self
+        {
+            crate::metrics::record_app_error(service, "coded");
+            let retry_after = extra.get("retry_after").and_then(serde_json::Value::as_u64);
+            let mut body = extra;
+            body.insert("error".into(), message.into());
+            body.insert("code".into(), code.into());
+            let mut response = (status, Json(serde_json::Value::Object(body))).into_response();
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                let value = retry_after.unwrap_or(60).to_string();
+                if let Ok(value) = axum::http::HeaderValue::from_str(&value) {
+                    response.headers_mut().insert("retry-after", value);
+                }
+            }
+            return response;
+        }
+        let (status, message, kind) = match &self {
             AppError::RateLimited => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "Rate limit exceeded".to_string(),
+                "rate_limited",
             ),
-            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
-            AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
-            AppError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
-            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
-            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
-            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone(), "unauthorized"),
+            AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg.clone(), "bad_gateway"),
+            AppError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                msg.clone(),
+                "service_unavailable",
+            ),
+            AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone(), "conflict"),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone(), "forbidden"),
+            AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone(), "bad_request"),
+            AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone(), "not_found"),
             AppError::Database(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Database operation failed".to_string(),
+                "database",
             ),
             AppError::Internal(err) => {
                 tracing::error!("Internal error: {:?}", err);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Internal server error".to_string(),
+                    "internal",
                 )
             }
+            AppError::Coded { .. } => unreachable!("handled above"),
         };
+
+        crate::metrics::record_app_error(service, kind);
 
         let body = Json(json!({
             "error": message,
@@ -194,5 +237,28 @@ mod tests {
 
         let forbidden = AppError::Forbidden("access denied".into()).into_response();
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn coded_errors_carry_code_extra_fields_and_retry_after() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("retry_after".into(), 42.into());
+        let response = AppError::Coded {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code: "E2EE_RATE_LIMITED",
+            message: "slow down".into(),
+            extra,
+        }
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "42");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            json!({"error": "slow down", "code": "E2EE_RATE_LIMITED", "retry_after": 42})
+        );
     }
 }

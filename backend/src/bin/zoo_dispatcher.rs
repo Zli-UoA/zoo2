@@ -10,10 +10,9 @@
 //!
 //! `DATABASE_URL` は直接接続にすること。LISTEN（#378 以降）はトランザクションプールのプーラー
 //! （PgBouncer のトランザクションモードなど）を経由すると動かない（配信はポーリングで続く）。
-//! DB プールの上限は `DB_MAX_POOL_SIZE`（未設定ならドライバの既定: 論理 CPU 数 × 2）。
+//! DB プールの上限は `DB_MAX_POOL_SIZE`（未設定なら 10。`db::DEFAULT_MAX_POOL_SIZE`）。
 use axum::{Router, http::header, response::IntoResponse, routing::get};
 use std::{net::SocketAddr, time::Duration};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// 通知が無くても配信を探す間隔。
 const POLL: Duration = Duration::from_secs(3);
@@ -25,13 +24,8 @@ const DRAIN: Duration = Duration::from_secs(8);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "backend=info,zoo_dispatcher=info,info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let telemetry =
+        backend::telemetry::init("zoo-dispatcher", "backend=info,zoo_dispatcher=info,info");
 
     let database_url = backend::config::database_url_from_env();
     let host = std::env::var("DISPATCHER_HOST").unwrap_or_else(|_| "0.0.0.0".into());
@@ -111,7 +105,10 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .route("/metrics", get(metrics))
-        .merge(backend::apps::dispatcher_api::router(&token));
+        .merge(backend::apps::dispatcher_api::router(&token))
+        .layer(axum::middleware::from_fn(
+            backend::telemetry::http_telemetry_middleware,
+        ));
     tracing::info!(addr=%listener.local_addr()?, "zoo-dispatcher listening");
     // 停止信号を受けたらすぐ新しいリースを取らなくし（HTTP サーバーの終了を待たない）、
     // 送信中の分を待つ。
@@ -131,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
         http.abort();
     }
     tracing::info!("zoo-dispatcher stopped");
+    telemetry.shutdown().await;
     Ok(())
 }
 
@@ -143,12 +141,20 @@ impl Drop for AliveGuard {
 }
 
 async fn metrics() -> impl IntoResponse {
+    let mut out = backend::metrics::render_prometheus();
+    let dispatch = backend::apps::dispatch_metrics::global().render();
+    if !dispatch.is_empty() {
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&dispatch);
+    }
     (
         [(
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        backend::apps::dispatch_metrics::global().render(),
+        out,
     )
 }
 

@@ -1,7 +1,8 @@
 [package]
 name = "zoo2-desktop"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
+publish = false
 license = "MIT"
 description = "zoo2 のデスクトップクライアント"
 homepage = "https://github.com/Zli-UoA/zoo2/tree/main/desktop"
@@ -13,16 +14,27 @@ strip = true
 [dependencies]
 zoo2-client-core = { path = "../client-core" }
 anyhow = "1"
+blurhash = { version = "0.2", default-features = false }
 emojis = "0.6"
+futures = "0.3"
 gpui = "0.2.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
 jiff = "0.2"
+notify-rust = "4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 unicode-segmentation = "1"
+regex = "1"
+rust-embed = { version = "8", features = ["debug-embed"] }
+serde_json = "1"
+sys-locale = "0.3"
 uuid = { version = "1", features = ["v4"] }
 
-[dev-dependencies]
-serde_json = "1"
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tray-icon = { version = "0.21", default-features = false }
 
 [lib]
 name = "zoo2_desktop"
@@ -31,3 +43,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "zoo2-desktop"
 path = "src/main.rs"
+
+[dev-dependencies]
+gpui = { version = "0.2.2", features = ["test-support"] }

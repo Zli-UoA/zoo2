@@ -1,0 +1,25 @@
+[package]
+name = "zoo-crypto-wasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MIT"
+description = "zoo-crypto の wasm-bindgen バインディング（Web の React 向け）"
+repository = "https://github.com/Zli-UoA/zoo2"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# wasm-bindgen-cli（flake.nix の nixpkgs と CI）と完全に同じ版に固定する。
+# 版がずれると、wasm-bindgen-cli が「schema version」の違いでビルドを止める。
+wasm-bindgen = "=0.2.129"
+zeroize = "1.9.0"
+zoo-crypto = { path = "../zoo-crypto" }
+
+[profile.release]
+codegen-units = 1
+lto = true

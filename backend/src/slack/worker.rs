@@ -37,12 +37,60 @@ const MAX_ATTEMPTS: i64 = 5;
 const LEASE_LOST: &str = "Slack import lease was lost";
 const LEASE_SQL: &str = "interval '2 minutes'";
 const HEARTBEAT: Duration = Duration::from_secs(30);
+/// 終了の合図で手放したジョブを、別のワーカーが取れるようになるまでの間隔 (終了処理中の古い台が取り直さないため)
+/// 手放すときに、データベースを待つ最長の時間 (超えたら、リースが切れるのを待つ)
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDOFF_DELAY_SQL: &str = "interval '30 seconds'";
 /// カードの説明文の上限 (`MessageCard::encode` と同じ)
 const MAX_CARD_DESCRIPTION: usize = 4000;
 /// 添付 1 件あたりの取得失敗の上限
 const MAX_FILE_ATTEMPTS: i64 = 3;
 
+/// 終了の合図 (SIGTERM など)。`true` になったら、新しいジョブを取らず、処理中の段階を捨ててジョブを手放す。
+pub type Stop = tokio::sync::watch::Receiver<bool>;
+
+/// 合図が来るまで待つ。送り手が先に落ちた (合図が来ない) ときは、永久に待つ
+async fn stopped(stop: &mut Stop) {
+    loop {
+        if *stop.borrow() {
+            return;
+        }
+        if stop.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// 終了の合図を受けたら、処理中のジョブを手放す。リースが切れるのを待たずに、別のワーカーが再開できる。
+/// `attempts` は、デプロイによる中断で上限に近づかないよう 1 戻す (取得のときに増えた分)。
+/// 古い台が、まだ終了処理中に取り直さないよう、少し先から取れるようにする。
+/// トークンが違う (リースを奪われた) ときは何もしない。手放したら true
+pub async fn release_job(s: &AppState, id: &str, token: &str) -> Result<bool, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = query(
+        &mut tx,
+        &format!(
+            "UPDATE slack_import_jobs SET attempts=GREATEST(attempts-1,0),handoffs=handoffs+1,\
+             lease_until=NULL,lease_token=NULL,available_at=now()+{HANDOFF_DELAY_SQL},updated_at=now() \
+             WHERE id=$1 AND lease_token=$2 \
+             RETURNING json_build_object('id',id)::text"
+        ),
+        &[id, token],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(!rows.is_empty())
+}
+
 pub async fn worker(s: AppState) {
+    // 合図を送らない (止まらない) ワーカー。送り手をここで持ち続ける
+    let (_keep, stop) = tokio::sync::watch::channel(false);
+    worker_until(s, stop).await;
+}
+
+/// `stop` が `true` になるまで動くワーカー。合図を受けたら、処理中のジョブを手放して戻る
+pub async fn worker_until(s: AppState, mut stop: Stop) {
     // 前のプロセスが取り込みの途中で止まると、ZIP が残る（Kubernetes の emptyDir は
     // コンテナの再起動では消えない）。残ったままだと、取り直したジョブの ZIP と合わせて
     // 容量の上限を超えることがあるので、始める前に片付ける。
@@ -56,10 +104,15 @@ pub async fn worker(s: AppState) {
     let mut ticks = tokio::time::interval(Duration::from_secs(2));
     let mut passes = 0u32;
     loop {
-        ticks.tick().await;
+        tokio::select! {
+            _ = ticks.tick() => {}
+            _ = stopped(&mut stop) => return,
+        }
         passes = passes.wrapping_add(1);
-        if let Err(e) = run_once(&s).await {
-            tracing::warn!(error = %e, "Slack import worker failed");
+        match run_once_until(&s, &mut stop).await {
+            Ok(Step::Stopped) => return,
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "Slack import worker failed"),
         }
         if passes.is_multiple_of(1800)
             && let Err(e) = cleanup(&s).await
@@ -81,25 +134,85 @@ struct Job {
     token: String,
 }
 
+/// `run_once_until` の結果
+pub enum Step {
+    /// 実行できるジョブがなかった
+    Idle,
+    /// ジョブを 1 段階進めた (失敗して、やり直しを待つ場合も含む)
+    Ran,
+    /// 終了の合図を受けて、ジョブを手放した (手放すジョブがなくても、合図を受けたときは、これを返す)
+    Stopped,
+}
+
 /// 実行できるジョブを 1 件取り、1 段階進める。ジョブがあれば true。
 pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
+    let (_keep, mut stop) = tokio::sync::watch::channel(false);
+    Ok(matches!(run_once_until(s, &mut stop).await?, Step::Ran))
+}
+
+/// `run_once` と同じだが、`stop` が `true` になったら、段階を捨ててジョブを手放す。
+/// 段階は、トランザクションごとに完結し、冪等なので、途中で捨ててよい (書き込み中のトランザクションは、
+/// 捨てるとロールバックされる)。ZIP の取得・展開のような、止められない処理も、ここで待たずに捨てる。
+pub async fn run_once_until(s: &AppState, stop: &mut Stop) -> Result<Step, AppError> {
+    if *stop.borrow() {
+        return Ok(Step::Stopped);
+    }
     let Some(job) = claim(s).await? else {
-        return Ok(false);
+        return Ok(Step::Idle);
     };
     let lease = Lease::start(s.clone(), job.id.clone(), job.token.clone());
-    tracing::info!(import_id = %job.id, status = %job.status, attempt = job.attempts, "Slack import step started");
-    let result = match job.status.as_str() {
-        "analyzing" => analyze(s, &job, &lease).await,
-        "importing" => import(s, &job, &lease).await,
-        "fetching_files" => fetch_files(s, &job, &lease).await,
-        _ => Ok(()),
+    let step_name = job.status.clone();
+    let span = tracing::info_span!(
+        "slack_import_step",
+        import_id = %job.id,
+        step = %step_name,
+        attempt = job.attempts
+    );
+    let started = std::time::Instant::now();
+    span.in_scope(|| {
+        tracing::info!(import_id = %job.id, status = %step_name, attempt = job.attempts, "Slack import step started");
+    });
+
+    use tracing::Instrument;
+    let step = async {
+        match step_name.as_str() {
+            "analyzing" => analyze(s, &job, &lease).await,
+            "importing" => import(s, &job, &lease).await,
+            "fetching_files" => fetch_files(s, &job, &lease).await,
+            _ => Ok(()),
+        }
+    }
+    .instrument(span.clone());
+    let result = tokio::select! {
+        result = step => result,
+        _ = stopped(stop) => {
+            // 段階の future はここで捨てられる (トランザクションはロールバックされる)
+            drop(lease);
+            match tokio::time::timeout(RELEASE_TIMEOUT, release_job(s, &job.id, &job.token)).await {
+                Ok(Ok(true)) => span.in_scope(|| tracing::info!(import_id = %job.id, "Released the Slack import job for shutdown")),
+                Ok(Ok(false)) => span.in_scope(|| tracing::warn!(import_id = %job.id, "Slack import lease was already lost at shutdown")),
+                Ok(Err(e)) => span.in_scope(|| tracing::warn!(import_id = %job.id, error = %e, "Failed to release the Slack import job; the lease will expire")),
+                Err(_) => span.in_scope(|| tracing::warn!(import_id = %job.id, "Timed out releasing the Slack import job; the lease will expire")),
+            }
+            crate::metrics::record_slack_import_step(&step_name, "stopped", started.elapsed().as_secs_f64());
+            return Ok(Step::Stopped);
+        }
     };
     drop(lease);
     if let Err(e) = result {
-        tracing::warn!(import_id = %job.id, error = %e, "Slack import step failed");
+        span.in_scope(
+            || tracing::warn!(import_id = %job.id, error = %e, "Slack import step failed"),
+        );
+        crate::metrics::record_slack_import_step(
+            &step_name,
+            "err",
+            started.elapsed().as_secs_f64(),
+        );
         fail(s, &job, &e).await?;
+    } else {
+        crate::metrics::record_slack_import_step(&step_name, "ok", started.elapsed().as_secs_f64());
     }
-    Ok(true)
+    Ok(Step::Ran)
 }
 
 async fn claim(s: &AppState) -> Result<Option<Job>, AppError> {
@@ -203,7 +316,7 @@ async fn extend_lease(s: &AppState, id: &str, token: &str) -> Result<bool, AppEr
     Ok(!rows.is_empty())
 }
 
-async fn exec(
+pub(super) async fn exec(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,
     params: &[&str],
@@ -217,7 +330,7 @@ async fn exec(
 }
 
 /// 取り込みで生じる行をアプリへ大量配送しないよう、このトランザクションのイベントを止める
-async fn suppress_app_events(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
+pub(super) async fn suppress_app_events(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
     one(
         tx,
         "SELECT json_build_object('ok',set_config('zoo.suppress_app_events','on',true))::text",
@@ -505,29 +618,29 @@ async fn analyze(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError>
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct ZooUser {
-    id: String,
-    user_name: String,
+pub(super) struct ZooUser {
+    pub(super) id: String,
+    pub(super) user_name: String,
 }
 
-struct Context {
-    team: String,
-    users: HashMap<String, ZooUser>,
-    profiles: HashMap<String, SlackUser>,
-    channel_names: HashMap<String, String>,
-    files: FilePolicy,
+pub(super) struct Context {
+    pub(super) team: String,
+    pub(super) users: HashMap<String, ZooUser>,
+    pub(super) profiles: HashMap<String, SlackUser>,
+    pub(super) channel_names: HashMap<String, String>,
+    pub(super) files: FilePolicy,
 }
 
 /// 添付ファイルを取得して添付にできるかを、取り込みの時点で判定する (`fetch_one` と同じ条件)
-struct FilePolicy {
+pub(super) struct FilePolicy {
     /// 添付を取得するトークンがあるか
-    token: bool,
-    max_size: u64,
-    base_url: String,
+    pub(super) token: bool,
+    pub(super) max_size: u64,
+    pub(super) base_url: String,
 }
 
 impl FilePolicy {
-    fn new(s: &AppState) -> Self {
+    pub(super) fn new(s: &AppState) -> Self {
         Self {
             token: s.config.slack.import_bot_token.is_some(),
             max_size: s.config.s3.max_file_size,
@@ -565,7 +678,7 @@ impl Resolver for Context {
 
 impl Context {
     /// Slack ユーザー (または bot) に対応する zoo ユーザーを返す。なければプレースホルダを作る。
-    async fn user(
+    pub(super) async fn user(
         &mut self,
         tx: &mut toasty::Transaction<'_>,
         slack_id: &str,
@@ -682,6 +795,33 @@ async fn ensure_user(
     })
 }
 
+/// 前の試行の再開位置 (チャンネルごとに、取り込んだ最後の日付ファイル名) と、処理済みの件数。
+/// 記録がなければ、最初からなので、件数も 0
+async fn load_progress(
+    db: &mut toasty::Db,
+    id: &str,
+) -> Result<(HashMap<String, String>, u64), AppError> {
+    let mut tx = db.transaction().await?;
+    let row = one(
+        &mut tx,
+        "SELECT json_build_object('progress',import_progress,'processed',processed_messages)::text \
+         FROM slack_import_jobs WHERE id=$1",
+        &[id],
+    )
+    .await?;
+    tx.commit().await?;
+    let progress: HashMap<String, String> = row["progress"]
+        .as_str()
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default();
+    let processed = if progress.is_empty() {
+        0
+    } else {
+        row["processed"].as_u64().unwrap_or(0)
+    };
+    Ok((progress, processed))
+}
+
 async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> {
     let team = job
         .team_id
@@ -727,6 +867,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         tx.commit().await?;
         admin
     };
+    // 取り込みを始められるのは管理者だけ。ユーザーが自分で取り込む方式 (ZIP) をやめたので、管理者でない人が
+    // 作ったジョブ (廃止前に作られて残っているもの、管理者でなくなった人のもの) は、権限の確認なしでは実行せず失敗にする
+    if !admin {
+        return Err(AppError::BadRequest(
+            "Only workspace admins can import from Slack".into(),
+        ));
+    }
 
     // プレースホルダは、選んだチャンネルのメンバー・投稿者・リアクション・メンションに出る人だけを作る
     // (users.json の全員を作ると、大きいワークスペースで users の同期量が増えるため)
@@ -777,18 +924,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             // 開始後に別のジョブが同じチャンネルを取り込んだ場合も、取り込み先はずらさない
             super::import::ensure_same_target(&mut tx, &team, mapping)
                 .await
-                .map_err(|e| {
-                    if admin {
-                        AppError::BadRequest(e.to_string())
-                    } else {
-                        // 管理者以外の取り込みは、ジョブの失敗理由が本人に見える。参加していない非公開チャンネルの
-                        // 名前が入らないよう、以前の取り込み先の名前を出さない
-                        AppError::BadRequest(format!(
-                            "Slack channel {} was already imported into another channel; import it into the same channel or skip it",
-                            mapping.slack_channel_id
-                        ))
-                    }
-                })?;
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
             // 以前の取り込みで作ったチャンネルや既存のチャンネルに入れるなら、開始後に外されていないか確かめる
             let reused = match &mapping.action {
                 MappingAction::Skip => continue,
@@ -806,7 +942,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 }
             };
             if let Some(channel_id) = &reused {
-                ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
+                ensure_plaintext_allowed(&mut tx, channel_id).await?;
             } else if matches!(mapping.action, MappingAction::Create { .. })
                 && crate::apps::events::guest(&mut tx, &job.created_by).await?
             {
@@ -818,7 +954,9 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             }
             let (target, private) = match &mapping.action {
                 MappingAction::Skip => continue,
-                MappingAction::Create { name, is_private } => {
+                MappingAction::Create {
+                    name, is_private, ..
+                } => {
                     // 非公開チャンネルは常に非公開で作る (start で拒否済みだが、古いジョブにも備える)。
                     // 以前作ったチャンネルを使うときは、その実際の公開・非公開を返す
                     let private = channel.is_private || is_private.unwrap_or(false);
@@ -862,19 +1000,35 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                     .insert(channel.id.clone(), target.1.clone());
             }
             let create = matches!(mapping.action, MappingAction::Create { .. });
-            targets.push((channel.clone(), target.0, create));
+            // 取り込み先 (新しく作ったチャンネルも、既存のチャンネルも) に、Slack から取り込んだ印と、取り込みの種類を付ける。
+            // 種類は最初の取り込みのものを残す (以前の取り込みで作ったチャンネルへの再取り込みは created のまま)。
+            // 最後に取り込んだ日時は、このチャンネルの取り込みが終わったときに更新する (下)
+            exec(
+                &mut tx,
+                "UPDATE channels SET imported_from_slack=true,slack_import_kind=COALESCE(slack_import_kind,$2) WHERE id=$1",
+                &[&target.0, if create { "created" } else { "existing" }],
+            )
+            .await?;
+            // 取り込みが終わったあとにアーカイブするか (Slack でアーカイブ済みのチャンネルか、管理者の指定)
+            let archive = create
+                && (channel.is_archived
+                    || matches!(mapping.action, MappingAction::Create { archive: true, .. }));
+            targets.push((channel.clone(), target.0, archive));
         }
         tx.commit().await?;
     }
 
-    let mut processed = 0u64;
+    // 前の試行が、日付ファイルまで取り込んで止まったなら、その続きから始める。日付ファイルは、取り込みの
+    // トランザクションごとに、この記録と同時にコミットするので、記録にある分は、取り込み済み。
+    // 記録がない (古いジョブや最初の試行) ときは、処理済みの件数も数え直す
+    let (mut progress, mut processed) = load_progress(&mut db, &job.id).await?;
     for (channel, channel_id, _) in &targets {
         lease.check()?;
         {
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
             // メンバーを足す直前にも、実行者がまだ取り込み先にメンバーを足せるか確かめる
-            ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
+            ensure_plaintext_allowed(&mut tx, channel_id).await?;
             for member in &channel.members {
                 let user = ctx.user(&mut tx, member, None).await?;
                 // 連携したゲストは、管理者が決めたチャンネルにだけ参加する (取り込みでは足さない)。
@@ -892,22 +1046,71 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             tx.commit().await?;
         }
 
+        let done = progress.get(&channel.id).cloned();
         for entry in archive.day_files(channel) {
+            // 日付ファイルは、名前の昇順に処理する。取り込み済みの分は飛ばす
+            if done.as_deref().is_some_and(|done| entry.as_str() <= done) {
+                continue;
+            }
             lease.check()?;
-            let (returned, messages) = blocking(move || {
-                let mut archive = archive;
-                let messages = archive.messages(&entry)?;
-                Ok((archive, messages))
+            let (returned, messages) = blocking({
+                let entry = entry.clone();
+                move || {
+                    let mut archive = archive;
+                    let messages = archive.messages(&entry)?;
+                    Ok((archive, messages))
+                }
             })
             .await?;
             archive = returned;
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
+            // 編集・削除の履歴を含むエクスポートの記録 (`message_changed` / `message_deleted`) は、投稿として取り込まない。
+            // 以前の取り込みで、これらを投稿として入れてしまった分 (編集した日時の重複した投稿、編集してから削除した
+            // 投稿の本文) と、削除された元の投稿 (記録はエクスポートに残らない) は、ここで論理削除する。
+            // 保存済みの ZIP から再取り込みするだけで片づく (存在しなければ何もしない)
+            //
+            // - 削除された元の投稿の普通の記録 (`ts` が `original.ts` / `original_ts` と同じ) が同じファイルにあれば、
+            //   先に INSERT してから、最後に論理削除する。初回の取り込みと再取り込みで結果が同じになり、その投稿への
+            //   返信は、削除された親のスレッドに残る (取り込まないと、返信の親が見つからず、チャンネル直下に出てしまう)。
+            // - イベントの `ts` と同じ `ts` の本物の投稿が同じファイルにあれば、その投稿は消さない (ID が同じになるため)。
+            let deleted_originals: std::collections::HashSet<&str> = messages
+                .iter()
+                .filter_map(|m| m.deleted_original_ts())
+                .collect();
+            let real_ts: std::collections::HashSet<&str> = messages
+                .iter()
+                .filter(|m| m.is_importable())
+                .map(|m| m.ts.as_str())
+                .collect();
             let mut last_ts = None;
             for message in messages.iter().filter(|m| m.is_importable()) {
-                insert_message(&mut tx, &mut ctx, &channel.id, channel_id, job, message).await?;
+                insert_message(&mut tx, &mut ctx, &channel.id, channel_id, &job.id, message)
+                    .await?;
                 last_ts = Some(message.ts.as_str());
                 processed += 1;
+            }
+            let mut stale: Vec<String> = Vec::new();
+            for event in messages.iter().filter(|m| m.is_history_event()) {
+                // `ts` が元の投稿の `ts` と同じ形式の記録は、本物の投稿の ID と同じになるので消さない
+                if crate::slack::is_valid_ts(&event.ts)
+                    && !real_ts.contains(event.ts.as_str())
+                    && event.original_message_ts() != Some(event.ts.as_str())
+                {
+                    stale.push(super::message_id(&team, &channel.id, &event.ts));
+                }
+            }
+            for original in &deleted_originals {
+                stale.push(super::message_id(&team, &channel.id, original));
+            }
+            if !stale.is_empty() {
+                exec(
+                    &mut tx,
+                    "UPDATE messages SET deleted_at=CURRENT_TIMESTAMP \
+                     WHERE channel_id=$2 AND deleted_at IS NULL AND id IN (SELECT jsonb_array_elements_text($1::jsonb))",
+                    &[&serde_json::json!(stale).to_string(), channel_id],
+                )
+                .await?;
             }
             if let Some(ts) = last_ts {
                 exec(
@@ -918,10 +1121,18 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 )
                 .await?;
             }
+            // 取り込んだ日付ファイルの記録は、投稿と同じトランザクションでコミットする (再開位置)
+            progress.insert(channel.id.clone(), entry);
             exec(
                 &mut tx,
-                "UPDATE slack_import_jobs SET processed_messages=$3::bigint,updated_at=now() WHERE id=$1 AND lease_token=$2",
-                &[&job.id, &job.token, &processed.to_string()],
+                "UPDATE slack_import_jobs SET processed_messages=$3::bigint,import_progress=$4,updated_at=now() \
+                 WHERE id=$1 AND lease_token=$2",
+                &[
+                    &job.id,
+                    &job.token,
+                    &processed.to_string(),
+                    &serde_json::to_string(&progress).map_err(|e| AppError::Internal(e.into()))?,
+                ],
             )
             .await?;
             tx.commit().await?;
@@ -941,6 +1152,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
              ON CONFLICT (user_id,channel_id) DO UPDATE \
              SET last_read_at=GREATEST(channel_read_states.last_read_at,EXCLUDED.last_read_at)",
             &[channel_id, &team, &channel.id],
+        )
+        .await?;
+        // このチャンネルの取り込みが終わった日時 (UTC。`timestamp` の列はほかの列と同じく UTC で持つ)
+        exec(
+            &mut tx,
+            "UPDATE channels SET slack_imported_at=(CURRENT_TIMESTAMP AT TIME ZONE 'UTC') WHERE id=$1",
+            &[channel_id],
         )
         .await?;
         tx.commit().await?;
@@ -966,10 +1184,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     } else {
         "completed"
     };
-    // Slack でアーカイブ済みのチャンネルは、作った取り込み先も最後にまとめてアーカイブする。
-    // 途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
-    for (channel, channel_id, created) in &targets {
-        if *created && channel.is_archived {
+    // Slack でアーカイブ済みのチャンネルと、管理者がアーカイブを指定したチャンネルは、作った取り込み先も最後に
+    // まとめてアーカイブする。途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_plaintext_allowed`) で止まるため。
+    for (_channel, channel_id, archive) in &targets {
+        if *archive {
             exec(
                 &mut tx,
                 "UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1 AND archive_at IS NULL",
@@ -998,34 +1216,18 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     Ok(())
 }
 
-/// セルフサービスの取り込み (実行者が管理者でないジョブ) では、開始時と同じく取り込み先に参加していて
-/// メンバーを足せることを実行時にも求める。開始後にチャンネルから外された人が、取り込みで戻らないようにする。
-async fn ensure_can_import(
+/// 開始のあとに暗号化チャンネルになった場合 (#367) も、ジョブの実行時に書き込みを止める (#358)
+async fn ensure_plaintext_allowed(
     tx: &mut toasty::Transaction<'_>,
-    job: &Job,
-    admin: bool,
     channel_id: &str,
-    channel: &SlackChannel,
 ) -> Result<(), AppError> {
-    if admin
-        || super::self_import::can_import_into(
-            tx,
-            channel_id,
-            &job.created_by,
-            false,
-            channel.is_private,
-        )
-        .await?
-    {
-        return Ok(());
+    if crate::routes::e2ee_channels::is_encrypted_channel(tx, channel_id).await? {
+        return Err(crate::routes::e2ee_channels::plaintext_forbidden());
     }
-    Err(AppError::BadRequest(format!(
-        "You can no longer import Slack channel {} into this channel",
-        channel.id
-    )))
+    Ok(())
 }
 
-async fn create_channel(
+pub(super) async fn create_channel(
     tx: &mut toasty::Transaction<'_>,
     team: &str,
     channel: &SlackChannel,
@@ -1129,12 +1331,12 @@ async fn create_channel(
     ))
 }
 
-async fn insert_message(
+pub(super) async fn insert_message(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
     slack_channel: &str,
     channel_id: &str,
-    job: &Job,
+    job_id: &str,
     message: &SlackMessage,
 ) -> Result<(), AppError> {
     let author = message.author().unwrap_or_default();
@@ -1282,14 +1484,14 @@ async fn insert_message(
             tx,
             "INSERT INTO slack_files(team_id,slack_file_id,job_id,message_id,channel_id,uploader_id,\
              name,mimetype,size,url_private_download,in_content) \
-             SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::bigint,$10,$11::boolean WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) \
-             ON CONFLICT (team_id,slack_file_id,message_id) DO UPDATE SET job_id=EXCLUDED.job_id,\
+             SELECT $1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9::bigint,$10,$11::boolean WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) \
+             ON CONFLICT (team_id,slack_file_id,message_id) DO UPDATE SET job_id=COALESCE(EXCLUDED.job_id,slack_files.job_id),\
              status='pending',attempts=0,error=NULL,updated_at=now() \
-             WHERE slack_files.status IN ('pending','failed')",
+             WHERE slack_files.status IN ('pending','failed') AND $3<>''",
             &[
                 &ctx.team,
                 &file.id,
-                &job.id,
+                job_id,
                 &id,
                 channel_id,
                 &user.id,
@@ -1619,8 +1821,8 @@ async fn fetch_one(
     let mut tx = db.transaction().await?;
     exec(
         &mut tx,
-        "INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at) \
-         SELECT $1,m.id,$3,$4,$5,$6::bigint,$7,$8,m.created_at FROM messages m WHERE m.id=$2 \
+        "INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at,is_sensitive) \
+         SELECT $1,m.id,$3,$4,$5,$6::bigint,$7,$8,m.created_at,(SELECT is_nsfw FROM channels WHERE id=$4) FROM messages m WHERE m.id=$2 \
          ON CONFLICT (id) DO NOTHING",
         &[
             &attachment,

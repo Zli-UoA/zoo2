@@ -1,5 +1,6 @@
 import { ActivityPubEmoji } from "../../home/ActivityPubEmoji";
 import { useState } from "react";
+import { AccountGlyph } from "./MfmAccounts";
 
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import type { DisplayEmoji } from "../../../lib/electric/types";
@@ -27,6 +28,12 @@ export function ReactionEmoji({
 }) {
   const url = catalog ? kitchenImageUrl(catalog, emoji) : null;
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  if (/^:@[a-z0-9._-]{1,80}:$/.test(emoji))
+    return (
+      <span style={{ fontSize: size / 1.15 }}>
+        <AccountGlyph name={emoji.slice(2, -1)} />
+      </span>
+    );
   const label = kitchenLabel(emoji);
   const kitchen = kitchenParts(emoji);
   const remote = /^apub:([a-f0-9]{64}):(:[A-Za-z0-9_+-]+:)$/.exec(emoji);

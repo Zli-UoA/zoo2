@@ -2,6 +2,9 @@
   "nav": {
     "main": "主導覽"
   },
+  "telemetry": {
+    "unexpectedError": "顯示頁面時發生問題，請重新載入。"
+  },
   "channels": {
     "view": "開啟",
     "unread": "有未讀訊息",
@@ -15,15 +18,17 @@
     "empty": "尚無頻道。",
     "createAction": "建立頻道",
     "browseTitle": "瀏覽頻道",
-    "browseDescription": "不需加入即可瀏覽公開頻道的訊息。",
+    "browseDescription": "不需加入即可瀏覽公開頻道與已封存頻道的訊息。",
     "browseSearch": "依頻道名稱搜尋",
     "searchClear": "清除搜尋",
     "searchEmpty": "沒有符合的頻道。",
     "browseEmpty": "沒有可加入的公開頻道。",
+    "slackImported": "來自 Slack 的匯入",
+    "slackImportedCreated": "來自 Slack 的匯入·新建（最後匯入 {{date}}）",
+    "slackImportedExisting": "來自 Slack 的匯入·既有（最後匯入 {{date}}）",
     "noJoined": "尚未加入任何頻道。",
     "join": "加入",
     "joining": "加入中…",
-    "joinUnavailable": "無法加入",
     "notFound": "找不到頻道。",
     "duplicateName": "同名頻道已存在。",
     "privateMessages": "此頻道為私人頻道，受邀後即可查看訊息。",
@@ -38,7 +43,8 @@
     "descriptionTooLong": "說明不能超過{{max}}個字元（目前{{length}}個）。",
     "descriptionCounter": "{{length}}/{{max}}",
     "creating": "建立中…",
-    "create": "建立頻道"
+    "create": "建立頻道",
+    "nsfw": "NSFW 頻道"
   },
   "sync": {
     "title": "同步狀態",
@@ -51,8 +57,12 @@
   },
   "auth": {
     "logout": "登出",
+    "profile": "編輯個人資料",
     "loggedOut": "您已登出",
     "loggedOutHelp": "請重新登入以繼續。",
+    "desktopOutdated": "需要更新桌面版",
+    "desktopOutdatedHelp": "此版本的應用程式無法開啟目前的 zli.chat。請安裝新版本的應用程式。問題也可能是暫時的，請先嘗試重新載入。",
+    "reload": "重新載入",
     "login": "登入",
     "failed": "無法登入",
     "retry": "重新登入",
@@ -221,7 +231,12 @@
     "download": "下載{{name}}",
     "downloadShort": "下載",
     "downloadError": "無法下載檔案。",
-    "retry": "重試"
+    "retry": "重試",
+    "sensitive": "敏感圖片",
+    "markSensitive": "將圖片標記為敏感內容",
+    "showSensitive": "顯示圖片",
+    "hideSensitive": "隱藏圖片",
+    "sensitiveShort": "敏感圖片"
   },
   "threads": {
     "title": "子討論",
@@ -236,11 +251,23 @@
     "loadError": "無法載入回覆。",
     "empty": "尚無回覆。傳送第一則回覆吧。",
     "compose": "輸入回覆",
-    "rootDeleted": "原訊息已被刪除"
+    "rootDeleted": "原訊息已被刪除",
+    "sidebarOpen": "開啟子討論：{{title}}（{{count}} 則回覆）",
+    "archived": "已封存的討論串",
+    "more": "顯示更多",
+    "retry": "重試",
+    "indexError": "無法載入討論串清單。",
+    "emptyArchive": "沒有已封存的討論串",
+    "archiveForChannel": "{{channel}}的已封存討論串",
+    "untitled": "未命名子討論",
+    "targetTooOld": "這則訊息太久遠，無法在此載入",
+    "unreadTooOld": "更早的未讀訊息未載入"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",
     "usersTitle": "使用 {{emoji}} 回應的使用者",
+    "showAllUsers": "查看所有回應的使用者",
+    "allUsersTitle": "所有回應的使用者",
     "usersLoading": "正在載入使用者",
     "userUnavailable": "無法顯示使用者",
     "usersEmpty": "沒有回應",
@@ -744,7 +771,7 @@
   "slackImport": {
     "tab": "Slack 匯入",
     "title": "從 Slack 匯入",
-    "description": "上傳從 Slack 管理設定匯出的 ZIP，即可將其保存在 Zoo 中。你可以在這裡匯入任意頻道；成員連結 Slack 帳號後，可以匯入自己建立的頻道。",
+    "description": "上傳從 Slack 管理設定匯出的 ZIP，即可將其保存在 Zoo 中。你可以在這裡匯入任意頻道；成員連結 Slack 帳號後，可以在「Slack 連結」分頁匯入自己建立的私人頻道（公開頻道只有管理員可以匯入）。",
     "chooseFile": "選擇並上傳 ZIP",
     "uploading": "上傳中…",
     "loading": "正在載入匯入紀錄",
@@ -781,6 +808,11 @@
     "actionCreate": "新頻道",
     "actionExisting": "既有頻道",
     "actionSkip": "不匯入",
+    "bulkCreate": "全部建立新頻道",
+    "bulkSkip": "全部不匯入",
+    "bulkArchive": "匯入後將所有新建頻道封存",
+    "archive": "匯入後封存",
+    "archiveFor": "匯入後封存 #{{name}}",
     "channelName": "#{{name}} 的新頻道名稱",
     "targetChannel": "#{{name}} 的匯入位置",
     "start_one": "匯入 {{count}} 個頻道",
@@ -790,6 +822,8 @@
     "dismiss": "移到歷史紀錄",
     "runTitle": "從 {{name}} 匯入",
     "importedTo": "已匯入到 #{{name}}",
+    "importedToCreated": "匯入到 #{{name}}（新建頻道·最後匯入 {{date}}）",
+    "importedToExisting": "匯入到 #{{name}}（既有頻道·最後匯入 {{date}}）",
     "importedToHidden": "先前已匯入到你未加入的頻道，只能匯入到該頻道。"
   },
   "slackLink": {
@@ -816,13 +850,26 @@
       "linked_other_account": "你已連結了另一個 Slack 帳號。要切換帳號，請先解除連結。",
       "failed": "無法與 Slack 連結。"
     },
-    "importTitle": "從 Slack 匯入",
-    "importDescription": "可以從管理員保存的 Slack 匯出中，匯入你在 Slack 建立的頻道的歷史紀錄。匯入位置可以選擇你已加入的同名頻道，或新建頻道。",
-    "importLoading": "正在載入可匯入的頻道",
-    "importNoExport": "管理員保存 Slack 匯出後，你可以在這裡匯入自己的頻道。",
-    "importNoChannels": "已保存的匯出中沒有你建立的頻道。",
-    "importSummary_one": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。",
-    "importSummary_other": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。"
+    "privateTitle": "從 Slack 匯入",
+    "privateDescription": "可以用已連結的 Slack 帳號，匯入你在 Slack 建立的私人頻道的歷史紀錄，不需要 ZIP。公開頻道由管理員匯入。",
+    "privateLoading": "正在載入可匯入的頻道",
+    "privateEmpty": "你沒有建立過私人頻道。",
+    "privateRelink": "你的 Slack 連結沒有讀取私人頻道的權限。請先解除連結，再重新連結。",
+    "privateUnavailable": "目前無法載入可匯入的頻道。",
+    "privateMembers_one": "{{count}} 位成員",
+    "privateMembers_other": "{{count}} 位成員",
+    "privateArchived": "已封存",
+    "privateName": "{{name}} 的匯入頻道名稱",
+    "privateStart": "匯入 {{name}}",
+    "privateStartButton": "匯入",
+    "privateStarting": "正在開始…",
+    "privateStatus": {
+      "queued": "等待匯入（#{{name}}）。",
+      "running": "正在匯入（#{{name}}）。",
+      "done": "已匯入（#{{name}}）。新的訊息會自動同步。",
+      "error": "匯入失敗，將自動重試（#{{name}}）。",
+      "hidden": "已匯入（你沒有加入該頻道，因此不顯示名稱）。"
+    }
   },
   "publicProfile": {
     "followTitle": "從你的伺服器追蹤",
@@ -1012,6 +1059,16 @@
       "list": "此 App 的 Webhook",
       "hidden_one": "另有 {{count}} 個（不顯示你無法管理之頻道的 Webhook）。",
       "hidden_other": "另有 {{count}} 個（不顯示你無法管理之頻道的 Webhook）。"
+    }
+  },
+  "e2ee": {
+    "logout": {
+      "unbackedTitle": "有未備份的金鑰",
+      "unbackedDescription_one": "有 {{count}} 個金鑰尚未備份。登出後，只有此裝置能解密的過去訊息將無法閱讀。",
+      "unbackedDescription_other": "有 {{count}} 個金鑰尚未備份。登出後，只有此裝置能解密的過去訊息將無法閱讀。",
+      "unknownDescription": "無法確認金鑰是否已備份。登出後，只有此裝置能解密的過去訊息可能無法閱讀。",
+      "confirm": "登出",
+      "deleteFailed": "無法刪除此裝置的加密金鑰。下次開啟時會再次刪除。"
     }
   }
 }

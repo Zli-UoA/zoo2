@@ -53,6 +53,7 @@ services:
         VITE_OIDC_SCOPE: ${VITE_OIDC_SCOPE:-}
         VITE_OIDC_RESOURCE: ${VITE_OIDC_RESOURCE:-}
         VITE_OIDC_POST_LOGOUT_REDIRECT_URI: ${VITE_OIDC_POST_LOGOUT_REDIRECT_URI:-}
+        VITE_TELEMETRY_ENABLED: ${VITE_TELEMETRY_ENABLED:-}
     restart: unless-stopped
     environment:
       # CSP の connect-src に足す IdP のオリジン（空白区切り）。未設定なら同一オリジンのみ。
@@ -77,6 +78,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
       EMOJI_SERVICE_URL: ${EMOJI_SERVICE_URL:-}
       EMOJI_CACHE_FILE: ${EMOJI_CACHE_FILE:-}
+      EMOJI_WRITES_PAUSED: ${EMOJI_WRITES_PAUSED:-}
       ELECTRIC_URL: http://electric:3000
       PORT: ${PORT:-8000}
       ACTIVITYPUB_BASE_URL: ${ACTIVITYPUB_BASE_URL:-}
@@ -115,6 +117,17 @@ services:
       SLACK_OAUTH_REDIRECT_URL:
       SLACK_FRONTEND_URL:
       SLACK_TOKEN_ENCRYPTION_KEY:
+      # Observability (OpenTelemetry / Prometheus / Structured Logging)
+      LOG_FORMAT:
+      METRICS_HOST:
+      METRICS_PORT:
+      OTEL_EXPORTER_OTLP_ENDPOINT:
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:
+      OTEL_EXPORTER_OTLP_LOGS_ENDPOINT:
+      OTEL_SERVICE_NAME:
+      OTEL_TRACES_SAMPLER:
+      OTEL_TRACES_SAMPLER_ARG:
     networks:
       - backend
       - backend-egress

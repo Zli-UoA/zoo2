@@ -8,7 +8,10 @@ import { AppSurfaceHost } from "../chat/AppSurfaceHost";
 import { useActiveChannels } from "../../hooks/useRealtime";
 import { useCall } from "../../lib/call/call-context";
 import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
+import { MfmAccountsProvider } from "../chat/messages/MfmAccounts";
+import { useAuthZAccounts } from "../../lib/emoji/accounts";
 import { CallBar } from "../chat/CallBar";
+import { DesktopBridge } from "../desktop/DesktopBridge";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersPanel } from "../chat/MembersPanel";
 import { SearchPreferencesProvider } from "../preferences/SearchPreferences";
@@ -34,6 +37,7 @@ import { useVisualViewport } from "./useVisualViewport";
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const accounts = useAuthZAccounts();
   usePresence();
   const viewportRef = useVisualViewport();
   const router = useRouter();
@@ -233,55 +237,58 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <SearchPreferencesProvider>
+      <DesktopBridge channelId={selectedChannelId ?? null} />
       <PwaProvider>
         <ShellContext.Provider value={value}>
           <MfmChannelsProvider channels={channels}>
-            <div
-              ref={viewportRef}
-              data-app-shell
-              className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
-            >
-              <OfflineBanner />
-              <AppSurfaceHost />
-              <div className={isSettings || showMembersScreen ? "hidden" : "contents"}>
-                <LeftRail />
-                <ChannelSidebar
-                  channels={channels}
-                  loading={channelsQuery.isLoading}
-                  error={channelsQuery.isError}
-                  className={
-                    isChannelView ? (sidebarVisible ? "flex" : "hidden md:flex") : "hidden"
-                  }
-                />
-              </div>
-              <main
-                className={cn(
-                  "min-h-0 min-w-0 flex-1 flex-col",
-                  showChat ? "flex" : "hidden md:flex",
-                  isCallActive && "pb-20",
-                )}
+            <MfmAccountsProvider accounts={accounts}>
+              <div
+                ref={viewportRef}
+                data-app-shell
+                className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
               >
-                <div className={showMembersScreen ? "hidden" : "contents"}>{children}</div>
-                {showMembersScreen && membersChannel ? (
-                  <MembersPanel
-                    channel={membersChannel}
-                    className={cn("flex h-full", isCallActive && "pb-20")}
-                    onBack={() => setMembersOpen(false)}
+                <OfflineBanner />
+                <AppSurfaceHost />
+                <div className={isSettings || showMembersScreen ? "hidden" : "contents"}>
+                  <LeftRail />
+                  <ChannelSidebar
+                    channels={channels}
+                    loading={channelsQuery.isLoading}
+                    error={channelsQuery.isError}
+                    className={
+                      isChannelView ? (sidebarVisible ? "flex" : "hidden md:flex") : "hidden"
+                    }
                   />
-                ) : null}
-              </main>
-              {/* 一覧は現在の配置先だけにマウントする。 */}
-              {isWide && membersOpen && membersChannel ? (
-                <MembersPanel
-                  channel={membersChannel}
+                </div>
+                <main
                   className={cn(
-                    "hidden w-72 shrink-0 border-l lg:flex xl:w-80",
+                    "min-h-0 min-w-0 flex-1 flex-col",
+                    showChat ? "flex" : "hidden md:flex",
                     isCallActive && "pb-20",
                   )}
-                />
-              ) : null}
-              <CallBar channels={channels} />
-            </div>
+                >
+                  <div className={showMembersScreen ? "hidden" : "contents"}>{children}</div>
+                  {showMembersScreen && membersChannel ? (
+                    <MembersPanel
+                      channel={membersChannel}
+                      className={cn("flex h-full", isCallActive && "pb-20")}
+                      onBack={() => setMembersOpen(false)}
+                    />
+                  ) : null}
+                </main>
+                {/* 一覧は現在の配置先だけにマウントする。 */}
+                {isWide && membersOpen && membersChannel ? (
+                  <MembersPanel
+                    channel={membersChannel}
+                    className={cn(
+                      "hidden w-72 shrink-0 border-l lg:flex xl:w-80",
+                      isCallActive && "pb-20",
+                    )}
+                  />
+                ) : null}
+                <CallBar channels={channels} />
+              </div>
+            </MfmAccountsProvider>
           </MfmChannelsProvider>
         </ShellContext.Provider>
       </PwaProvider>

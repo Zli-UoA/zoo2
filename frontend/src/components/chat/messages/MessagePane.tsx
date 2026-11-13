@@ -1,3 +1,4 @@
+import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,18 +14,15 @@ import {
   useMessageFeed,
   useMessageReactions,
 } from "../../../hooks/useRealtime";
-import { useReplyCounts, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
+import { useMessageById, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
-import { expandWindowSince, messageWindowStart } from "../../../lib/electric/messageWindow";
-import type { MessageRow } from "../../../lib/electric/types";
 import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
 import { groupReactions, reactionUserLabel } from "../../../lib/emoji/reactions";
 import { useOfflineStatus } from "../../../lib/offline/offline-context";
 import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
-import { parseUtcTimestamp } from "../../../lib/timestamps";
 import { useShell } from "../../layout/shell-context";
 import { Button } from "../../ui/button";
 import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
@@ -34,24 +32,10 @@ import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
+import { ThreadPaneStatus } from "./ThreadPaneStatus";
 
-function oldestRowTimestamp(
-  rows: Iterable<MessageRow>,
-  predicate: (row: MessageRow) => boolean,
-): string | null {
-  let oldest: { at: string; ms: number } | null = null;
-  for (const row of rows) {
-    if (row.deleted_at || !predicate(row)) {
-      continue;
-    }
-    const ms = parseUtcTimestamp(row.created_at).getTime();
-    if (!Number.isFinite(ms) || (oldest && ms >= oldest.ms)) {
-      continue;
-    }
-    oldest = { at: row.created_at, ms };
-  }
-  return oldest?.at ?? null;
-}
+/** 通知・リンクの対象を含むまで、古い方へ広げるページ数の上限 (1 ページは `MESSAGE_PAGE_SIZE` 件)。 */
+const MAX_REVEAL_PAGES = 200;
 
 function JoinToPostPrompt({
   onJoin,
@@ -114,17 +98,10 @@ export function MessagePane({
   );
   const messagesCollection = messages(channelId);
   const reactionsCollection = reactions(channelId);
-  // 直近30日を初期表示し、上端付近で `since` を過去へ広げる。`limit` は
-  // 新着で最古行が落ちるため使わない。
-  const [since, setSince] = useState(messageWindowStart);
-  const messagesQuery = useMessageFeed(channelId, { since });
+  // 新しい方から `MESSAGE_PAGE_SIZE` 件だけを同期し、上端付近で `loadOlder()` が古い方へ 1 ページずつ広げる。
+  const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
-  const attachmentsQuery = useMessageAttachments(channelId);
-  const attachmentsByMessage = useMemo(
-    () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
-    [attachmentsQuery.data],
-  );
   const uploadAttachment = useAttachmentUpload(channelId);
   const { currentUserId } = useCurrentUser();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
@@ -152,10 +129,64 @@ export function MessagePane({
   );
   const pendingReactions = useRef(new Set<string>());
 
+  const { threadRootId, openThread, closeThread } = useShell();
+  const threadQuery = useThreadFeed(channelId, threadRootId);
+  const threadReplies = threadQuery.data ?? [];
+  const threadTyping = useTyping(
+    channelId,
+    threadRootId,
+    !readOnly && isMember && !!currentUserId && !!threadRootId,
+  );
+  const threadRootQuery = useThreadRoot(channelId, threadRootId);
+  const threadRootRow = threadRootQuery.data?.[0] ?? null;
+  const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
+  const threadIsArchived = !!threadRoot?.thread_archive_at;
+
+  const attachmentsQuery = useMessageAttachments(
+    channelId,
+    [...feed, ...threadReplies, ...(threadRoot ? [threadRoot] : [])].some(
+      (row) => !row.display_data,
+    ),
+  );
+  const attachmentsByMessage = useMemo(
+    () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
+    [attachmentsQuery.data],
+  );
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [isJoining, setIsJoining] = useState(false);
+
+  const isArchivedMessage = useCallback(
+    (id: string) => {
+      const message = messagesCollection.get(id);
+      const rootId = message?.parent_id ?? id;
+      return (
+        !!messagesCollection.get(rootId)?.thread_archive_at ||
+        (threadIsArchived &&
+          (id === threadRootId ||
+            message?.parent_id === threadRootId ||
+            threadReplies.some((reply) => reply.id === id)))
+      );
+    },
+    [messagesCollection, threadIsArchived, threadRootId, threadReplies],
+  );
+
+  useEffect(() => {
+    if (editingId && isArchivedMessage(editingId)) {
+      setEditingId(null);
+      setEditingText("");
+    }
+    if (pendingDeleteId && isArchivedMessage(pendingDeleteId)) setPendingDeleteId(null);
+    if (reactionMessageId && isArchivedMessage(reactionMessageId)) setReactionMessageId(null);
+  }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage]);
+
   const handleReaction = useCallback(
     async (messageId: string, emoji: string) => {
       if (
         !currentUserId ||
+        isArchivedMessage(messageId) ||
         !messagesCollection.get(messageId) ||
         messagesCollection.get(messageId)?.deleted_at
       ) {
@@ -189,115 +220,81 @@ export function MessagePane({
         pendingReactions.current.delete(pendingKey);
       }
     },
-    [currentUserId, messagesCollection, reactionsCollection, run],
+    [currentUserId, messagesCollection, reactionsCollection, run, isArchivedMessage],
   );
 
-  const replyCounts = useReplyCounts(channelId);
+  // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。
+  const targetQuery = useMessageById(channelId, targetMessageId ?? null);
+  const target = targetQuery.data?.[0];
 
-  const { threadRootId, openThread, closeThread } = useShell();
-  const [threadSince, setThreadSince] = useState(messageWindowStart);
-  const threadQuery = useThreadFeed(channelId, threadRootId, threadSince);
-  const threadReplies = threadQuery.data ?? [];
-  const threadTyping = useTyping(
-    channelId,
-    threadRootId,
-    !readOnly && isMember && !!currentUserId && !!threadRootId,
-  );
-  const threadRootQuery = useThreadRoot(channelId, threadRootId);
-  const threadRoot = threadRootQuery.data?.[0] ?? null;
-
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingText, setEditingText] = useState("");
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
-  const [isJoining, setIsJoining] = useState(false);
-
+  // 対象が返信なら、そのスレッドを開く。
   useEffect(() => {
-    if (!threadRootId) {
-      setThreadSince(messageWindowStart());
-      return;
-    }
-    // 通知から開いた返信が30日窓の外なら、その返信を含む位置から始める。
-    const target = targetMessageId ? messagesCollection.get(targetMessageId) : undefined;
-    const anchor = target?.parent_id === threadRootId ? target.created_at : null;
-    setThreadSince(anchor ? expandWindowSince(messageWindowStart(), anchor) : messageWindowStart());
-  }, [messagesCollection, targetMessageId, threadRootId]);
-
-  // 30日窓が空でも、コレクションに古いメッセージがあれば自動で広げる。
-  useEffect(() => {
-    if (messagesQuery.isLoading || feed.length > 0) {
-      return;
-    }
-    const oldest = oldestRowTimestamp(messagesCollection.values(), (row) => row.parent_id === null);
-    if (oldest) {
-      setSince((current) => expandWindowSince(current, oldest));
-    }
-  }, [feed.length, messagesCollection, messagesQuery.isLoading]);
-
-  // 通知から開いたメッセージが30日窓の外でも、その行まで含める。
-  useEffect(() => {
-    if (!targetMessageId) {
-      return;
-    }
-    const target = messagesCollection.get(targetMessageId);
-    if (!target || target.deleted_at) {
-      return;
-    }
-    if (target.parent_id) {
-      setThreadSince((current) => expandWindowSince(current, target.created_at));
-    } else {
-      setSince((current) => expandWindowSince(current, target.created_at));
-    }
-  }, [messagesCollection, targetMessageId, messagesQuery.isInitialSyncLoading]);
-
-  // スレッドのルートが窓の外でも、返信と一緒に表示できるよう広げる。
-  useEffect(() => {
-    if (!threadRootId) {
-      return;
-    }
-    const root = messagesCollection.get(threadRootId);
-    if (root) {
-      setSince((current) => expandWindowSince(current, root.created_at));
-    }
-  }, [messagesCollection, threadRootId, messagesQuery.isInitialSyncLoading]);
-
-  // 返信が30日窓で空なら、コレクション内の最も古い返信まで広げる。
-  useEffect(() => {
-    if (!threadRootId || threadQuery.isLoading || threadReplies.length > 0) {
-      return;
-    }
-    const oldest = oldestRowTimestamp(
-      messagesCollection.values(),
-      (row) => row.parent_id === threadRootId,
-    );
-    if (oldest) {
-      setThreadSince((current) => expandWindowSince(current, oldest));
-    }
-  }, [messagesCollection, threadReplies.length, threadQuery.isLoading, threadRootId]);
-
-  useEffect(() => {
-    if (!targetMessageId || messagesQuery.isInitialSyncLoading) return;
-    const target = messagesCollection.get(targetMessageId);
     if (target?.parent_id && !target.deleted_at) openThread(target.parent_id);
-  }, [targetMessageId, messagesQuery.isInitialSyncLoading, messagesCollection, openThread]);
+  }, [target?.id, target?.parent_id, target?.deleted_at, openThread]);
 
-  // ルートが（他ユーザーの操作などで）見えなくなったらスレッドも閉じる。
-  // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。
+  // 対象がトップレベルで、いま読み込んでいる範囲より古いときは、含まれるまで 1 ページずつ古い方へ広げる
+  // (連続した範囲になるので、間のメッセージが欠けない)。広げる回数には上限がある。
+  const revealedPages = useRef({ id: "", pages: 0 });
+  const { hasOlder, isLoadingOlder, loadOlder } = messagesQuery;
   useEffect(() => {
-    if (!threadRootId || messagesQuery.isInitialSyncLoading || threadRoot) {
+    if (!target || target.deleted_at || target.parent_id) return;
+    if (revealedPages.current.id !== target.id) revealedPages.current = { id: target.id, pages: 0 };
+    if (feed.some((row) => row.id === target.id)) return;
+    if (!hasOlder || isLoadingOlder) return;
+    if (revealedPages.current.pages >= MAX_REVEAL_PAGES) {
+      toast.info(t("threads.targetTooOld"), { id: "target-too-old" });
       return;
     }
-    const rootRow = messagesCollection.get(threadRootId);
-    // The root may exist outside the current feed window; let setSince above load it.
-    if (rootRow && !rootRow.deleted_at) return;
+    revealedPages.current.pages += 1;
+    void loadOlder();
+  }, [target, feed, hasOlder, isLoadingOlder, loadOlder, t]);
+
+  // 対象がスレッドの返信なら、スレッドの範囲も、含まれるまで広げる。
+  const revealedThreadPages = useRef({ id: "", pages: 0 });
+  const { hasOlder: threadHasOlder, isLoadingOlder: threadLoadingOlder } = threadQuery;
+  const loadOlderReplies = threadQuery.loadOlder;
+  useEffect(() => {
+    if (!target || target.deleted_at || !target.parent_id || target.parent_id !== threadRootId) {
+      return;
+    }
+    if (revealedThreadPages.current.id !== target.id) {
+      revealedThreadPages.current = { id: target.id, pages: 0 };
+    }
+    if (threadReplies.some((row) => row.id === target.id)) return;
+    if (!threadHasOlder || threadLoadingOlder) return;
+    if (revealedThreadPages.current.pages >= MAX_REVEAL_PAGES) {
+      toast.info(t("threads.targetTooOld"), { id: "target-too-old" });
+      return;
+    }
+    revealedThreadPages.current.pages += 1;
+    void loadOlderReplies();
+  }, [
+    target,
+    threadRootId,
+    threadReplies,
+    threadHasOlder,
+    threadLoadingOlder,
+    loadOlderReplies,
+    t,
+  ]);
+
+  // スレッドの親が (他ユーザーの操作などで) 見えなくなったらスレッドも閉じる。
+  // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。親は、メイン一覧の範囲とは関係なく、
+  // ID で取る。取得が終わるまでは判断しない。
+  useEffect(() => {
+    if (!threadRootId || threadRootQuery.isLoading || threadRootQuery.isError) {
+      return;
+    }
+    if (threadRootRow && !threadRootRow.deleted_at) return;
     closeThread();
-    if (rootRow?.deleted_at) {
+    if (threadRootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
     }
   }, [
     threadRootId,
-    threadRoot,
-    messagesQuery.isInitialSyncLoading,
-    messagesCollection,
+    threadRootRow,
+    threadRootQuery.isLoading,
+    threadRootQuery.isError,
     closeThread,
     t,
   ]);
@@ -349,6 +346,7 @@ export function MessagePane({
             body: { channel_id: channelId, text: command[2] ?? "" },
           });
         }
+        refreshAppSurfaces();
         return true;
       } catch (error) {
         if (!appId && error instanceof ApiError && error.status === 404) return null;
@@ -364,13 +362,22 @@ export function MessagePane({
       content: string,
       commandAppId?: string,
       attachmentIds: string[] = [],
+      sensitiveAttachmentIds: string[] = [],
     ): Promise<boolean> => {
       if (attachmentIds.length === 0) {
         const commandResult = await runCommand(content, commandAppId);
         if (commandResult !== null) return commandResult;
       }
       const id = crypto.randomUUID();
-      const metadata = attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : undefined;
+      const metadata =
+        attachmentIds.length > 0
+          ? {
+              attachment_ids: attachmentIds,
+              ...(sensitiveAttachmentIds.length
+                ? { sensitive_attachment_ids: sensitiveAttachmentIds }
+                : {}),
+            }
+          : undefined;
       await run(() =>
         messagesCollection.insert(
           {
@@ -398,6 +405,7 @@ export function MessagePane({
       content: string,
       commandAppId?: string,
       attachmentIds: string[] = [],
+      sensitiveAttachmentIds: string[] = [],
     ): Promise<boolean> => {
       if (readOnly || !isMember) {
         toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
@@ -412,7 +420,15 @@ export function MessagePane({
         return false;
       }
       const id = crypto.randomUUID();
-      const metadata = attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : undefined;
+      const metadata =
+        attachmentIds.length > 0
+          ? {
+              attachment_ids: attachmentIds,
+              ...(sensitiveAttachmentIds.length
+                ? { sensitive_attachment_ids: sensitiveAttachmentIds }
+                : {}),
+            }
+          : undefined;
       await run(() =>
         messagesCollection.insert(
           {
@@ -456,7 +472,7 @@ export function MessagePane({
   const handleSaveEdit = useCallback(async () => {
     const id = editingId;
     const content = editingText.trim();
-    if (!id || !content) {
+    if (!id || !content || isArchivedMessage(id)) {
       return;
     }
     setEditingId(null);
@@ -466,12 +482,12 @@ export function MessagePane({
         message.content = content;
       }),
     );
-  }, [editingId, editingText, run, messagesCollection]);
+  }, [editingId, editingText, run, messagesCollection, isArchivedMessage]);
 
   const handleConfirmDelete = useCallback(async () => {
     const id = pendingDeleteId;
     setPendingDeleteId(null);
-    if (!id) {
+    if (!id || isArchivedMessage(id)) {
       return;
     }
     // 論理削除は `deleted_at` の update。Electric が流す operation と揃えて
@@ -481,20 +497,19 @@ export function MessagePane({
         message.deleted_at = nowIso();
       }),
     );
-  }, [pendingDeleteId, run, messagesCollection]);
+  }, [pendingDeleteId, run, messagesCollection, isArchivedMessage]);
 
   return (
     <section className="relative flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
         {reactionsQuery.isError ||
-        reactionsQuery.federatedError ||
         messagesQuery.isError ||
         messagesQuery.persistedStatus === "error" ? (
           <div
             role="status"
             className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
           >
-            {reactionsQuery.isError || reactionsQuery.federatedError ? (
+            {reactionsQuery.isError ? (
               <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
             ) : null}
             {messagesQuery.isError ? (
@@ -537,13 +552,12 @@ export function MessagePane({
           }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}
-          replyCounts={replyCounts}
           onOpenThread={openThread}
           canCompose={isMember}
           isOffline={!isOnline}
-          onLoadOlder={(oldest) => {
-            setSince((current) => expandWindowSince(current, oldest));
-          }}
+          hasOlder={messagesQuery.hasOlder}
+          isLoadingOlder={messagesQuery.isLoadingOlder}
+          onLoadOlder={() => void messagesQuery.loadOlder()}
           onRetry={() => window.location.reload()}
         />
 
@@ -559,7 +573,9 @@ export function MessagePane({
               onSend={handleSend}
               onUploadAttachment={uploadAttachment}
               onTyping={typing.onTyping}
-              disabled={readOnly || !isOnline}
+              // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
+              // 最初のページの取得を止めるため、互いに待ち合って失敗する。
+              disabled={readOnly || !isOnline || messagesQuery.isLoading}
               placeholder={isOnline ? undefined : t("offline.composeDisabled")}
             />
           </>
@@ -581,24 +597,28 @@ export function MessagePane({
           mentionMemberIds={mentionMemberIds}
           key={threadRoot.id}
           readOnly={readOnly}
+          isArchived={threadIsArchived}
           isMember={!readOnly && isMember}
           isOffline={!isOnline}
           typingUsers={threadTyping.users}
           onTyping={threadTyping.onTyping}
           root={threadRoot}
           replies={threadReplies}
-          replyCounts={replyCounts}
           onOpenThread={openThread}
           isLoading={threadQuery.isLoading}
           isError={threadQuery.isError}
-          currentUserId={readOnly ? null : currentUserId}
-          canModerate={canModerate}
+          currentUserId={readOnly || threadIsArchived ? null : currentUserId}
+          canModerate={canModerate && !threadIsArchived}
           reactions={reactionGroups}
           attachments={attachmentsByMessage}
           onUploadAttachment={uploadAttachment}
           kitchenCatalog={catalog}
           canReact={
-            !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
+            !readOnly &&
+            !threadIsArchived &&
+            !!currentUserId &&
+            !reactionsQuery.isLoading &&
+            !reactionsQuery.isError
           }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}
@@ -610,12 +630,15 @@ export function MessagePane({
           onSaveEdit={handleSaveEdit}
           onRequestDelete={setPendingDeleteId}
           onSendReply={handleSendReply}
-          onLoadOlder={() => {
-            const oldest = threadReplies[0];
-            if (oldest) {
-              setThreadSince((current) => expandWindowSince(current, oldest.created_at));
-            }
-          }}
+          hasOlder={threadQuery.hasOlder}
+          isLoadingOlder={threadQuery.isLoadingOlder}
+          onLoadOlder={() => void threadQuery.loadOlder()}
+          onRetry={() => window.location.reload()}
+          onClose={closeThread}
+        />
+      ) : threadRootId && (threadRootQuery.isLoading || threadRootQuery.isError) ? (
+        <ThreadPaneStatus
+          isError={!!threadRootQuery.isError}
           onRetry={() => window.location.reload()}
           onClose={closeThread}
         />

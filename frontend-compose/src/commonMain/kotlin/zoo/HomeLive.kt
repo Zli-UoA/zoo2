@@ -35,9 +35,9 @@ class HomeLive(private val app: Session) {
         if (pending?.isActive == true) return
         pending =
             app.scope.launch {
-                delay(100)
+                delay(1000)
                 pending = null
-                listeners.values.toList().forEach { it() }
+                if (app.env.visible && app.env.online) listeners.values.toList().forEach { it() }
             }
     }
 

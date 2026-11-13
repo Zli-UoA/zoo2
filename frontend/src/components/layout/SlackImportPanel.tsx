@@ -2,11 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { LockIcon, UploadIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import { parseUtcTimestamp } from "../../lib/timestamps";
 import { useActiveChannels } from "../../hooks/useRealtime";
 import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import {
   SLACK_IMPORT_RUNNING,
   cancelSlackImport,
+  applyBulkAction,
+  applyBulkArchive,
   defaultMappings,
   fetchSlackImportFiles,
   isSlackExport,
@@ -244,6 +247,7 @@ function ImportCard({
       {exported && job.status === "ready" && job.analysis ? (
         <MappingForm
           key={form}
+          admin
           channels={job.analysis.channels}
           summary={t("slackImport.summary", {
             channels: job.analysis.channels.length,
@@ -351,20 +355,25 @@ export function MappingForm({
   pending,
   onSubmit,
   targetsFor,
+  admin = false,
 }: {
   channels: SlackChannelSummary[];
   summary: string;
   pending: boolean;
   onSubmit: (mappings: SlackChannelMapping[]) => void | Promise<void>;
   targetsFor?: (channel: SlackChannelSummary) => MappingTarget[];
+  /** 管理者の取り込み: 一括指定と、取り込み後のアーカイブの指定を出す */
+  admin?: boolean;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const zooChannels = useActiveChannels();
   const targets: MappingTarget[] = (zooChannels.data ?? []).filter((channel) => !channel.is_dm);
   const [mappings, setMappings] = useState(() => defaultMappings(channels));
   const update = (index: number, mapping: SlackChannelMapping) =>
     setMappings((current) => current.map((item, i) => (i === index ? mapping : item)));
   const selected = mappings.filter((mapping) => mapping.action !== "skip").length;
+  const creating = mappings.filter((mapping) => mapping.action === "create");
+  const allArchive = creating.length > 0 && creating.every((mapping) => mapping.archive === true);
 
   return (
     <form
@@ -375,6 +384,39 @@ export function MappingForm({
       }}
     >
       <p className="text-sm text-muted-foreground">{summary}</p>
+      {admin ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={pending}
+            onClick={() => setMappings((current) => applyBulkAction(channels, current, "create"))}
+          >
+            {t("slackImport.bulkCreate")}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={pending}
+            onClick={() => setMappings((current) => applyBulkAction(channels, current, "skip"))}
+          >
+            {t("slackImport.bulkSkip")}
+          </Button>
+          <label className="flex items-center gap-2 text-sm">
+            <Input
+              type="checkbox"
+              checked={allArchive}
+              disabled={pending || creating.length === 0}
+              onChange={(event) =>
+                setMappings((current) => applyBulkArchive(current, event.target.checked))
+              }
+            />
+            {t("slackImport.bulkArchive")}
+          </label>
+        </div>
+      ) : null}
       <ul className="divide-y rounded-md border">
         {channels.map((channel, index) => {
           const mapping = mappings[index];
@@ -400,7 +442,7 @@ export function MappingForm({
                 </p>
                 {channel.existing_channel ? (
                   <p className="text-xs text-muted-foreground">
-                    {t("slackImport.importedTo", { name: channel.existing_channel.name })}
+                    {importedToLabel(channel.existing_channel, t, i18n.language)}
                   </p>
                 ) : null}
                 {channel.existing_hidden ? (
@@ -449,6 +491,20 @@ export function MappingForm({
                   disabled={pending}
                   onChange={(event) => update(index, { ...mapping, name: event.target.value })}
                 />
+              ) : null}
+              {admin && mapping.action === "create" ? (
+                <label className="flex items-center gap-2 text-sm">
+                  <Input
+                    type="checkbox"
+                    aria-label={t("slackImport.archiveFor", { name: channel.name })}
+                    checked={mapping.archive === true}
+                    disabled={pending}
+                    onChange={(event) =>
+                      update(index, { ...mapping, archive: event.target.checked })
+                    }
+                  />
+                  {t("slackImport.archive")}
+                </label>
               ) : null}
               {mapping.action === "existing" ? (
                 <Select
@@ -550,4 +606,22 @@ export function describeImportError(cause: unknown, t: TFunction, admin = true):
     }
   }
   return t("slackImport.failed");
+}
+
+/** 以前の取り込み先。取り込みの種類 (最初の取り込み) と最後に取り込んだ日付がわかるときは、それも出す */
+function importedToLabel(
+  target: NonNullable<SlackChannelSummary["existing_channel"]>,
+  t: TFunction,
+  language: string,
+): string {
+  if (target.import_kind && target.imported_at) {
+    const date = parseUtcTimestamp(target.imported_at).toLocaleDateString(language);
+    return t(
+      target.import_kind === "created"
+        ? "slackImport.importedToCreated"
+        : "slackImport.importedToExisting",
+      { name: target.name, date },
+    );
+  }
+  return t("slackImport.importedTo", { name: target.name });
 }

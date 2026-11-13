@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-export const WORKFLOWS = ['ci-backend', 'ci-frontend', 'ci-frontend-auth-e2e', 'ci-tui', 'ci-github-bot', 'ci-flux-status', 'terraform-r2', 'ci-android'];
+export const WORKFLOWS = ['ci-backend', 'ci-frontend', 'ci-frontend-auth-e2e', 'ci-tui', 'ci-desktop-tauri', 'ci-crypto', 'ci-github-bot', 'ci-flux-status', 'ci-db-erd', 'terraform-r2', 'ci-android'];
 
 // on: の pull_request: にある paths: の一覧だけを読む。各 workflow はこの形で書かれている。
 export function pullRequestPaths(yaml) {

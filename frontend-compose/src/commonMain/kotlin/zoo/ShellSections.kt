@@ -161,8 +161,7 @@ internal fun DmSidebar(
                             narrow,
                             onOpen,
                             users.find { user ->
-                                user.text("id") == it.text("channel_name")
-                                    .removePrefix("dm:").split(":")
+                                user.text("id") == (oneToOneDmIds(it.text("channel_name")) ?: emptyList())
                                     .firstOrNull { id -> id != app.config.userId }
                             },
                         )
@@ -173,9 +172,13 @@ internal fun DmSidebar(
 }
 
 @Composable
-internal fun ChannelArchiveBadge(app: Session) {
+internal fun ChannelArchiveBadge(app: Session) = ChannelBadge(app.t("moderation.archived"))
+
+/** チャンネルの小さな印 (アーカイブ済み・チャンネル設定の右上の Slack から取り込み) */
+@Composable
+internal fun ChannelBadge(label: String) {
     Text(
-        app.t("moderation.archived"),
+        label,
         Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
             .padding(horizontal = 6.dp, vertical = 2.dp),
         small = true,

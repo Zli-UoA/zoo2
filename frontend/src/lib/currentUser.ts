@@ -124,6 +124,7 @@ export function createCurrentUserStore(
     authGeneration = next;
     requestGeneration += 1;
     inflight = null;
+    refreshing = null;
     setState({ currentUserId: null, isLoading: true, isAdmin: false, error: null });
   }
 
@@ -139,19 +140,25 @@ export function createCurrentUserStore(
       };
     },
     refresh: () => {
-      refreshing ??= resolveCurrentUser(config, options)
-        .then((resolved) => {
-          setState({
-            ...resolved,
-            // A transient role refresh failure does not invalidate the signed-in identity.
-            // resolveCurrentUser returns error=null for 401, so that path still clears it.
-            currentUserId: resolved.error !== null ? state.currentUserId : resolved.currentUserId,
-            isLoading: false,
+      syncAuthGeneration();
+      if (!refreshing) {
+        const currentAuthGeneration = authGeneration;
+        const currentRefresh = resolveCurrentUser(config, options)
+          .then((resolved) => {
+            if (config.oidc && currentAuthGeneration !== getAuthSessionGeneration()) return;
+            setState({
+              ...resolved,
+              // A transient role refresh failure does not invalidate the signed-in identity.
+              // resolveCurrentUser returns error=null for 401, so that path still clears it.
+              currentUserId: resolved.error !== null ? state.currentUserId : resolved.currentUserId,
+              isLoading: false,
+            });
+          })
+          .finally(() => {
+            if (refreshing === currentRefresh) refreshing = null;
           });
-        })
-        .finally(() => {
-          refreshing = null;
-        });
+        refreshing = currentRefresh;
+      }
       return refreshing;
     },
     ensureLoaded: () => {

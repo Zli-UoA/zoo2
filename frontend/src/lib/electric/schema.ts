@@ -1,5 +1,6 @@
 import type {
   AttachmentRow,
+  ChannelLeaveRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -40,6 +41,7 @@ export type ShapeName =
   | "messageReactions"
   | "users"
   | "channelUsers"
+  | "channelLeaves"
   | "notifications"
   | "attachments";
 
@@ -55,6 +57,7 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   users: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
+  channelLeaves: { table: "channel_leave", proxyPath: "channel_leaves" },
   attachments: { table: "attachments", proxyPath: "attachments" },
 };
 
@@ -87,11 +90,17 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     description: "varchar",
     created_user_id: "text",
     is_private: "bool",
+    is_nsfw: "bool",
     is_dm: "bool",
     created_at: "timestamp",
     updated_at: "timestamp",
     archive_at: "timestamp",
     deleted_at: "timestamp",
+    imported_from_slack: "bool",
+    slack_import_kind: "text",
+    slack_imported_at: "timestamp",
+    encrypted: "bool",
+    membership_epoch: "int8",
   },
 };
 
@@ -115,6 +124,11 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     updated_at: "timestamp",
     deleted_at: "timestamp",
     parent_id: "text",
+    thread_archive_at: "timestamp",
+    thread_activity_at: "timestamp",
+    ciphertext: "jsonb",
+    epoch: "int8",
+    revision: "int4",
   },
 };
 
@@ -135,6 +149,15 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
     user_id: "text",
     channel_id: "text",
     joined_at: "timestamp",
+  },
+};
+
+export const CHANNEL_LEAVE_SCHEMA: ShapeSchema<ChannelLeaveRow> = {
+  table: "channel_leave",
+  columns: {
+    user_id: "text",
+    channel_id: "text",
+    left_at: "timestamp",
   },
 };
 
@@ -164,6 +187,7 @@ export const ATTACHMENT_SCHEMA: ShapeSchema<AttachmentRow> = {
     file_size: "int8",
     content_type: "text",
     storage_key: "text",
+    is_sensitive: "bool",
     width: "int4",
     height: "int4",
     blurhash: "text",
@@ -178,6 +202,7 @@ export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = 
   messages: MESSAGE_SCHEMA,
   message_reactions: MESSAGE_REACTION_SCHEMA,
   channel_user: CHANNEL_USER_SCHEMA,
+  channel_leave: CHANNEL_LEAVE_SCHEMA,
   attachments: ATTACHMENT_SCHEMA,
 };
 

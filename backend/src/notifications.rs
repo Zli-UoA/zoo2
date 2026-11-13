@@ -4,6 +4,7 @@ use uuid::Uuid;
 use crate::{
     error::AppError,
     models::{Channel, ChannelUser, Message, Notification, User, now_utc_millis},
+    routes::e2ee_channels::Mentions,
 };
 
 pub(crate) async fn create_federated_notification(
@@ -154,16 +155,32 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
 /// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する (メンション > 返信 > DM)。
 /// [P2] 公開チャンネルでは非メンバー投稿者への返信通知も配信する。
 /// プライベートチャンネルではチャンネル非所属ユーザー (キック・退出者含む) への通知を除外する。
+///
+/// 暗号化チャンネル (#358) では本文を解析せず、送信側が平文で付けた `explicit_mentions` だけから
+/// メンションを作る (省略時はメンションなし)。平文チャンネルでは `explicit_mentions` を使わない。
 pub async fn create_message_notifications(
     tx: &mut toasty::Transaction<'_>,
     message: &Message,
     actor_id: &str,
     parent_author_id: Option<&str>,
+    explicit_mentions: Option<&Mentions>,
 ) -> Result<Vec<Notification>, AppError> {
-    let mentions = extract_mentions(&message.content);
-
     // チャンネル情報を取得 (公開かプライベートかで通知先ポリシーを判定)
     let channel = Channel::get_by_id(tx, message.channel_id.as_str()).await?;
+
+    let (mentions, mentioned_ids) = if channel.encrypted {
+        let explicit = explicit_mentions.cloned().unwrap_or_default();
+        (
+            MentionTargets {
+                user_candidates: Vec::new(),
+                has_channel: explicit.channel,
+                has_here: explicit.here,
+            },
+            explicit.user_ids,
+        )
+    } else {
+        (extract_mentions(&message.content), Vec::new())
+    };
 
     // チャンネル所属メンバーのIDを取得
     let channel_users =
@@ -200,6 +217,13 @@ pub async fn create_message_notifications(
             && member_ids.contains(&user.id)
         {
             targets_to_notify.insert(user.id, "mention");
+        }
+    }
+
+    // 2'. 暗号化チャンネルの `mentions.user_ids`: メンバーだけ (本人除く)
+    for user_id in mentioned_ids {
+        if user_id != actor_id && member_ids.contains(&user_id) {
+            targets_to_notify.insert(user_id, "mention");
         }
     }
 
@@ -322,6 +346,15 @@ pub async fn create_reaction_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_avatar_shortcodes_do_not_send_mentions() {
+        let targets = extract_mentions(":@alice: :@here: @bob");
+        let ordinary = extract_mentions("@bob");
+        assert_eq!(targets.user_candidates, ordinary.user_candidates);
+        assert!(!targets.has_here);
+        assert!(!targets.has_channel);
+    }
 
     #[test]
     fn test_extract_mentions_basic() {

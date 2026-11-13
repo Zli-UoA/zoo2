@@ -59,6 +59,9 @@ pub enum MappingAction {
         name: String,
         #[serde(default)]
         is_private: Option<bool>,
+        /// 取り込みが終わった時点で、作ったチャンネルをアーカイブする (新しく作るチャンネルだけ)
+        #[serde(default)]
+        archive: bool,
     },
     Existing {
         channel_id: String,
@@ -221,7 +224,8 @@ pub(crate) async fn annotate_channels(
     let rows = query(
         tx,
         "SELECT (e.c || jsonb_build_object(\
-         'existing_channel',(SELECT jsonb_build_object('id',c.id,'name',c.channel_name,'is_private',c.is_private) \
+         'existing_channel',(SELECT jsonb_build_object('id',c.id,'name',c.channel_name,'is_private',c.is_private,\
+          'import_kind',c.slack_import_kind,'imported_at',c.slack_imported_at) \
           FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
           WHERE s.team_id=$1 AND s.slack_channel_id=e.c->>'slack_channel_id' AND c.deleted_at IS NULL),\
          'deleted_channel',(SELECT c.channel_name FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
@@ -500,7 +504,9 @@ pub(crate) async fn validate_mappings(
         }
         ensure_same_target(tx, &team, mapping).await?;
         match &mapping.action {
-            MappingAction::Create { name, is_private } => {
+            MappingAction::Create {
+                name, is_private, ..
+            } => {
                 // 非公開チャンネルの履歴を、メンバー以外も読める公開チャンネルに出さない
                 if slack_private && *is_private == Some(false) {
                     return Err(AppError::BadRequest(format!(
@@ -531,10 +537,13 @@ pub(crate) async fn validate_mappings(
                 let private = slack_private || *is_private == Some(true);
                 let reused = query(
                     tx,
-                    "SELECT json_build_object('is_private',is_private)::text FROM channels WHERE id=$1",
+                    "SELECT json_build_object('is_private',is_private,'encrypted',encrypted)::text FROM channels WHERE id=$1",
                     &[&own],
                 )
                 .await?;
+                if reused.first().is_some_and(|c| c["encrypted"] == true) {
+                    return Err(crate::routes::e2ee_channels::plaintext_forbidden());
+                }
                 if private && reused.first().is_some_and(|c| c["is_private"] != true) {
                     return Err(AppError::BadRequest(format!(
                         "Slack channel {} was imported into a public channel; it cannot be imported as private",
@@ -545,7 +554,7 @@ pub(crate) async fn validate_mappings(
             MappingAction::Existing { channel_id } => {
                 let found = query(
                     tx,
-                    "SELECT json_build_object('is_private',is_private)::text FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
+                    "SELECT json_build_object('is_private',is_private,'encrypted',encrypted)::text FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
                     &[channel_id],
                 )
                 .await?;
@@ -554,6 +563,10 @@ pub(crate) async fn validate_mappings(
                         "Channel {channel_id} does not exist"
                     )));
                 };
+                // 取り込みは平文の content を messages に入れるので、暗号化チャンネルには取り込めない (#358)
+                if found["encrypted"] == true {
+                    return Err(crate::routes::e2ee_channels::plaintext_forbidden());
+                }
                 if slack_private && found["is_private"] != true {
                     return Err(AppError::BadRequest(format!(
                         "Private Slack channel {} must be imported into a private channel",

@@ -9,6 +9,8 @@ import {
   type UnauthorizedHandler,
 } from "../auth";
 import { joinUrl, type AppConfig } from "../config";
+import { normalizeRouteGroup, reportApiError } from "../telemetry/capture";
+import { runWithHttpSpan } from "../telemetry/tracer";
 
 export interface ApiEnvelope<T> {
   data: T;
@@ -67,6 +69,8 @@ export interface ApiClientOptions {
   /** 成功時の通知（再ログイン試行カウンタの消去用）。既定は `auth.notifyAuthorized`。 */
   onAuthorized?: AuthorizedHandler;
   fetch?: FetchLike;
+  /** OpenTelemetry traceparent 注入と 5xx/通信エラー計測を有効にするか（既定 true）。 */
+  telemetry?: boolean;
 }
 
 export interface AuthHeadersSource {
@@ -142,6 +146,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   const onUnauthorized = options.onUnauthorized ?? notifyUnauthorized;
   const onAuthorized = options.onAuthorized ?? notifyAuthorized;
   const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init));
+  const telemetry = options.telemetry ?? true;
 
   let lastAuthHeaders: Headers | undefined;
 
@@ -166,17 +171,56 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     const authRequestGeneration = getAuthRequestGeneration();
     const hasBody = requestOptions.body !== undefined;
     const method = requestOptions.method ?? "GET";
+    const requestRoute = telemetry ? normalizeRouteGroup() : undefined;
     const headers = await buildHeaders(requestOptions.headers, hasBody);
+    const url = joinUrl(baseUrl, path);
+    const startedAt = Date.now();
 
-    const response = await doFetch(joinUrl(baseUrl, path), {
-      method,
-      headers,
-      body: hasBody ? JSON.stringify(requestOptions.body) : undefined,
-      signal: requestOptions.signal,
-      keepalive: requestOptions.keepalive,
-    });
+    let responseStatus = 0;
+    let errorReported = false;
+    const { res: response, rawText } = await runWithHttpSpan(
+      { enabled: telemetry, method, url, apiBaseUrl: baseUrl, headers },
+      async (traceIds, spanControl) => {
+        try {
+          const res = await doFetch(url, {
+            method,
+            headers,
+            body: hasBody ? JSON.stringify(requestOptions.body) : undefined,
+            signal: requestOptions.signal,
+            keepalive: requestOptions.keepalive,
+          });
+          responseStatus = res.status;
+          spanControl.setResponseStatus(res.status);
+          if (telemetry && res.status >= 500) {
+            errorReported = true;
+            reportApiError({
+              httpStatus: res.status,
+              durationMs: Date.now() - startedAt,
+              error: new Error(`HTTP ${res.status}`),
+              route: requestRoute,
+              traceIds,
+            });
+          }
+          const rawText = await res.text();
+          return { res, rawText };
+        } catch (error) {
+          const isAbort = error instanceof DOMException && error.name === "AbortError";
+          if (telemetry && !isAbort && !errorReported) {
+            errorReported = true;
+            reportApiError({
+              httpStatus: responseStatus >= 500 ? responseStatus : 0,
+              durationMs: Date.now() - startedAt,
+              error,
+              route: requestRoute,
+              traceIds,
+            });
+          }
+          throw error;
+        }
+      },
+    );
 
-    const body = parseBody(await response.text());
+    const body = parseBody(rawText);
     if (!response.ok) {
       if (
         response.status === 401 &&
@@ -231,6 +275,7 @@ export function createConfiguredApiClient(
   return createApiClient({
     baseUrl: config.apiBaseUrl,
     devUserId: config.devUserId,
+    telemetry: config.telemetryEnabled,
     ...options,
   });
 }
