@@ -7,7 +7,7 @@ import {
   verifyDeviceKeys,
   type JsonObject,
 } from "@zoo/crypto-wasm";
-import { beforeAll, describe, expect, it } from "vite-plus/test";
+import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { CryptoOperations } from "../operations";
 import { MemoryCryptoBackend, type CryptoStoreWrite } from "./backend";
@@ -174,6 +174,38 @@ describe("CryptoStore", () => {
     const second = await open(backend, keys);
     expect(second.replacedDeviceId).toBe(deviceId);
     await second.store.close();
+  });
+
+  it.each([
+    ["新しい端末の最初の保存", "write"],
+    ["保存した Olm セッションの復元", "restore"],
+  ] as const)("%sに失敗したら、作った鍵のオブジェクトを解放して閉じる", async (_, failure) => {
+    const backend = new MemoryCryptoBackend();
+    const keys = memoryKeys();
+    if (failure === "restore") {
+      await (await open(backend, keys)).store.close();
+      backend.olmSessions.set("broken", {
+        sessionId: "broken",
+        theirIdentityKey: "x",
+        pickle: "not a pickle",
+      });
+    } else {
+      // 包んだ保存鍵の保存は通し、新しい端末の最初の保存だけ失敗させる。
+      const write = backend.write.bind(backend);
+      backend.write = async (changes) => {
+        if (changes.account !== undefined) throw new Error("disk full");
+        return write(changes);
+      };
+    }
+    const free = vi.spyOn(CryptoStore.prototype as unknown as { free(): void }, "free");
+    const close = vi.spyOn(backend, "close");
+    try {
+      await expect(open(backend, keys)).rejects.toThrow();
+      expect(free).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalled();
+    } finally {
+      free.mockRestore();
+    }
   });
 
   it("別のユーザーの暗号ストアは開かない", async () => {

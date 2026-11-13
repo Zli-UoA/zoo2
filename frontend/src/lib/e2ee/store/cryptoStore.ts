@@ -157,9 +157,16 @@ export class CryptoStore {
         options.userId,
         deviceId,
       );
-      const trust = snapshot.trustStore
-        ? TrustStore.fromPickle(snapshot.trustStore, account, storageKey)
-        : new TrustStore(options.userId);
+      let trust: TrustStore;
+      try {
+        trust = snapshot.trustStore
+          ? TrustStore.fromPickle(snapshot.trustStore, account, storageKey)
+          : new TrustStore(options.userId);
+      } catch (error) {
+        // 秘密鍵を持つ wasm 側のメモリーを、失敗してもすぐに返す。
+        account.free();
+        throw error;
+      }
       const store = new CryptoStore(
         backend,
         keys,
@@ -170,8 +177,13 @@ export class CryptoStore {
         snapshot.meta[META_REGISTERED] === "1",
         snapshot.processedToDevice,
       );
-      for (const session of snapshot.olmSessions) {
-        store.olmSessions.pushPickle(session.pickle, account, storageKey);
+      try {
+        for (const session of snapshot.olmSessions) {
+          store.olmSessions.pushPickle(session.pickle, account, storageKey);
+        }
+      } catch (error) {
+        store.free();
+        throw error;
       }
       return { store, replacedDeviceId };
     }
@@ -190,15 +202,20 @@ export class CryptoStore {
       false,
       [],
     );
-    await backend.write({
-      meta: {
-        [META_USER_ID]: options.userId,
-        [META_DEVICE_ID]: account.deviceId,
-        [META_REGISTERED]: "0",
-      },
-      account: account.pickle(storageKey),
-      trustStore: trust.pickle(account, storageKey),
-    });
+    try {
+      await backend.write({
+        meta: {
+          [META_USER_ID]: options.userId,
+          [META_DEVICE_ID]: account.deviceId,
+          [META_REGISTERED]: "0",
+        },
+        account: account.pickle(storageKey),
+        trustStore: trust.pickle(account, storageKey),
+      });
+    } catch (error) {
+      store.free();
+      throw error;
+    }
     return { store, replacedDeviceId };
   }
 
