@@ -57,6 +57,7 @@
 - `NOT NULL` のカラムを追加するときは `DEFAULT` を付ける。付けられない場合は、NULL許容で追加し、既存行を埋めてから `NOT NULL` にする。
 - `UNIQUE`・外部キー・`CHECK` などの制約を追加するときは、本番の既存データで失敗しないかを確かめる。違反しうるデータがあれば、それを直すマイグレーションを先に置く。
 - スキーマは `infra/db/schema.sql` を編集し、`make migrate-diff name=<名前>` でマイグレーションを生成する。CIは `schema.sql` とマイグレーションが一致するかを検証する。
+- `infra/db/schema.sql` を変えたら、毎回 `infra/db/erd.sh` を実行して `docs/db-erd.md` と `docs/db-erd/` を再生成し、同じPRに含める。CI（`ci-db-erd`）は `infra/db/erd.sh --check` で検査するだけで、自動では直さない。実行には `atlas` と docker が要る。
 - main にある適用済みのマイグレーションファイルは編集・削除しない。直すときは新しいファイルを追加する。
 - main を取り込んで `atlas.sum` が衝突したら、自分のマイグレーションのファイル名のタイムスタンプを main の最新より後に付け直し、`atlas migrate hash --dir file://infra/db/migrations` で `atlas.sum` を作り直す。本番に適用済みのものより古いタイムスタンプのファイルは、Atlas が適用を拒否する。
 - main へはマージキューから入れる。PRをmainの最新に追従させる必要はない。キューがmainと合わせた状態でCIを実行し、通ったものだけをmainに入れる。
