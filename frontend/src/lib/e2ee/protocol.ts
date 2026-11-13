@@ -83,6 +83,8 @@ export type CryptoOperation =
   | { op: "megolmEncrypt"; channelId: string; message: OutgoingMessage }
   | { op: "megolmDiscard"; channelId: string }
   | { op: "megolmDecrypt"; rows: EncryptedMessage[] }
+  | { op: "megolmRememberEncrypted"; channelId: string }
+  | { op: "megolmIsKnownEncrypted"; channelId: string }
   | {
       /** 暗号ストアを消す。開いていなくても、`namespace` のファイルと保存鍵を消す。 */
       op: "destroy";
@@ -140,6 +142,8 @@ export interface CryptoResults {
   megolmEncrypt: { ciphertext: JsonObject; epoch: number };
   megolmDiscard: null;
   megolmDecrypt: DecryptOutcome[];
+  megolmRememberEncrypted: null;
+  megolmIsKnownEncrypted: boolean;
 }
 
 export type CryptoRequest = CryptoOperation & { id: number };

@@ -164,6 +164,11 @@ export class CryptoOperations {
         return null;
       case "megolmDecrypt":
         return this.opened().megolm.decrypt(request.rows);
+      case "megolmRememberEncrypted":
+        await this.opened().megolm.rememberEncrypted(request.channelId);
+        return null;
+      case "megolmIsKnownEncrypted":
+        return this.opened().megolm.isKnownEncrypted(request.channelId);
       case "close":
         this.setup.discard();
         this.lastOpen = null;

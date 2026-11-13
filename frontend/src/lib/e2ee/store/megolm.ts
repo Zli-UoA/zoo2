@@ -27,6 +27,12 @@ import { inboundSessionKey, type CryptoStoreWrite } from "./backend";
  */
 export const OUTBOUND_OLM_META_PREFIX = "outbound_olm:";
 
+/**
+ * 一度 `encrypted = true` を見たチャンネルの印を置く `meta` のキーの接頭辞（後ろはチャンネル ID）。
+ * docs/e2ee.md の「暗号化の格下げを防ぐ」。
+ */
+export const ENCRYPTED_CHANNEL_META_PREFIX = "encrypted_channel:";
+
 /** 配れない相手の理由（送信画面に出す。docs/e2ee.md の「鍵の配布先の判定」）。 */
 export type UndeliverableReason =
   | "notSetUp"
@@ -326,6 +332,18 @@ export class MegolmChannels {
       ciphertext: current.session.encrypt(this.ctx.account, message),
       epoch: current.session.epoch,
     };
+  }
+
+  /** `encrypted = true` を見たチャンネルを記録する（以後、Shape や API の値にかかわらず暗号化して扱う）。 */
+  async rememberEncrypted(channelId: string): Promise<void> {
+    const key = ENCRYPTED_CHANNEL_META_PREFIX + channelId;
+    if ((await this.ctx.readMeta())[key]) return;
+    await this.ctx.write({ meta: { [key]: "1" } });
+  }
+
+  /** 暗号化チャンネルとして記録したことがあるか。 */
+  async isKnownEncrypted(channelId: string): Promise<boolean> {
+    return Boolean((await this.ctx.readMeta())[ENCRYPTED_CHANNEL_META_PREFIX + channelId]);
   }
 
   /** 送信用セッションを捨てる（409 `E2EE_STALE_EPOCH` を受けたときなど）。 */

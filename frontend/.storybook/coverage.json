@@ -229,7 +229,15 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.stories.tsx",
-      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile", "FederatedReactions", "Encrypted"]
+      "states": [
+        "Default",
+        "ThreadOpen",
+        "NotJoined",
+        "Mobile",
+        "FederatedReactions",
+        "Encrypted",
+        "EncryptionDowngraded"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageRow.stories.tsx",

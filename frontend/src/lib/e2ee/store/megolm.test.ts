@@ -225,6 +225,26 @@ describe("MegolmChannels", () => {
     await bob.store.close();
   });
 
+  it("一度暗号化と見たチャンネルを、開き直しても覚えている", async () => {
+    const backend = new MemoryCryptoBackend();
+    const keys = memoryKeys();
+    const options = {
+      backend,
+      name: "zoo-crypto-remember.sqlite",
+      userId: ALICE,
+      keys,
+      reset: async () => backend,
+    };
+    const first = await CryptoStore.open(options);
+    expect(await first.store.megolm.isKnownEncrypted(CHANNEL)).toBe(false);
+    await first.store.megolm.rememberEncrypted(CHANNEL);
+    await first.store.close();
+    const second = await CryptoStore.open(options);
+    expect(await second.store.megolm.isKnownEncrypted(CHANNEL)).toBe(true);
+    expect(await second.store.megolm.isKnownEncrypted("other")).toBe(false);
+    await second.store.close();
+  });
+
   it("解錠していない端末は、配布先を判定せず NeedsUnlock で失敗する", async () => {
     const alice = await openStore(ALICE);
     await expect(

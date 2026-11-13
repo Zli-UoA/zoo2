@@ -147,6 +147,7 @@ export function ChannelScreen({
                 readOnly={access.isArchived}
                 encrypted={channel.encrypted === true}
                 membershipEpoch={channel.membership_epoch ?? null}
+                channelName={channel.channel_name}
               />
             </div>
           </>
