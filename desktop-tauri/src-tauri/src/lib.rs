@@ -80,6 +80,8 @@ pub fn run() {
             window::add_remote_capability(app, &core)?;
             window::create_main(app, &core)?;
             window::create_tray(app)?;
+            #[cfg(target_os = "macos")]
+            window::create_app_menu(app)?;
             update::spawn(app.handle(), check_updates);
             core.start();
             Ok(())
