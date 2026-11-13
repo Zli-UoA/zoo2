@@ -20,14 +20,8 @@ export interface PrivateSlackChannel {
   channel_name?: string;
 }
 
-/** 一覧を返せない理由。`missing_scope` などは、連携し直すと直る */
-export type PrivateChannelsUnavailable =
-  | "not_linked"
-  | "team_mismatch"
-  | "missing_scope"
-  | "token_revoked"
-  | "invalid_auth"
-  | string;
+/** 一覧を返せない理由 (`not_linked`・`team_mismatch`・`missing_scope`・`token_revoked` など)。連携し直すと直るものがある */
+export type PrivateChannelsUnavailable = string;
 
 export interface PrivateSlackChannels {
   linked: boolean;
@@ -40,9 +34,12 @@ export interface PrivateChannelPick {
   name: string;
 }
 
-/** 取り込みの進み具合を、画面でポーリングするか */
+/** 取り込みの進み具合を、画面でポーリングするか。`error` も、バックエンドが自動で再試行するので続ける */
 export function hasActivePrivateImport(channels: PrivateSlackChannel[]): boolean {
-  return channels.some((channel) => channel.status === "queued" || channel.status === "running");
+  return channels.some(
+    (channel) =>
+      channel.status === "queued" || channel.status === "running" || channel.status === "error",
+  );
 }
 
 /** 連携し直すと使えるようになる理由か (トークンの失効・スコープ不足) */
@@ -64,12 +61,13 @@ export function getPrivateSlackChannels(
   return client.get<PrivateSlackChannels>("/api/slack/private-channels", { signal });
 }
 
+/** 1 回の要求で取り込むのは 1 チャンネル */
 export function startPrivateSlackImport(
   client: ApiClient,
-  channels: PrivateChannelPick[],
-): Promise<{ imported: { slack_channel_id: string; channel_id: string; channel_name: string }[] }> {
+  pick: PrivateChannelPick,
+): Promise<{ slack_channel_id: string; channel_id: string; channel_name: string }> {
   return client.request("/api/slack/private-channels/import", {
     method: "POST",
-    body: { channels },
+    body: pick,
   });
 }

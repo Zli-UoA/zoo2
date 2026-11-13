@@ -204,7 +204,8 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
   );
 }
 
-const POLL_INTERVAL_MS = 3_000;
+// Slack の API を読む一覧なので、間隔は長めにする
+const POLL_INTERVAL_MS = 5_000;
 
 /** 連携した Slack アカウントで作った非公開チャンネルを、Slack の API から取り込む */
 function OwnImportSection({ client }: { client: ReturnType<typeof createConfiguredApiClient> }) {
@@ -221,7 +222,10 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
 
   useEffect(() => {
     const controller = new AbortController();
-    const load = () =>
+    let timer: number | undefined;
+    // 前の取得が終わってから次を予約する (遅い応答で重ならない)。非表示の間は止め、戻ったら取り直す。
+    // 一覧は Slack の API を呼ぶので、頻度を抑える (`docs/request-design.md`)
+    const load = (): Promise<void> =>
       getPrivateSlackChannels(client, controller.signal)
         .then((value) => {
           if (controller.signal.aborted) return;
@@ -231,27 +235,34 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
         .catch((cause) => {
           if (!controller.signal.aborted) setLoadError(describeImportError(cause, t, false));
         });
-    void load();
-    const timer = active ? window.setInterval(load, POLL_INTERVAL_MS) : undefined;
+    const schedule = () => {
+      window.clearTimeout(timer);
+      if (!active || controller.signal.aborted || document.hidden) return;
+      timer = window.setTimeout(() => void load().then(schedule), POLL_INTERVAL_MS);
+    };
+    const onVisible = () => {
+      if (document.hidden) {
+        window.clearTimeout(timer);
+        return;
+      }
+      void load().then(schedule);
+    };
+    void load().then(schedule);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       controller.abort();
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [client, revision, active, t]);
 
   async function start(channel: PrivateSlackChannel) {
     if (pendingId) return;
-    const name = (
-      names[channel.slack_channel_id] ??
-      channel.suggested_name ??
-      channel.name
-    ).trim();
+    const name = (names[channel.slack_channel_id] ?? channel.suggested_name ?? channel.name).trim();
     setPendingId(channel.slack_channel_id);
     setError("");
     try {
-      await startPrivateSlackImport(client, [
-        { slack_channel_id: channel.slack_channel_id, name },
-      ]);
+      await startPrivateSlackImport(client, { slack_channel_id: channel.slack_channel_id, name });
     } catch (cause) {
       setError(describeImportError(cause, t, false));
     } finally {

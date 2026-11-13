@@ -325,8 +325,6 @@ export const OwnImportNeedsRelink: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await expect(
-      await screen.findByText(/非公開チャンネルを読む権限がありません/),
-    ).toBeVisible();
+    await expect(await screen.findByText(/非公開チャンネルを読む権限がありません/)).toBeVisible();
   }),
 };

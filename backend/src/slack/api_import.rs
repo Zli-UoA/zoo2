@@ -27,10 +27,8 @@ use super::{
 };
 use crate::{apps::query, auth::AuthUser, error::AppError, state::AppState};
 
-/// 1 回の要求で始められるチャンネルの数
-const MAX_CHANNELS: usize = 20;
-/// 一覧・メンバーの取得で辿るページ数 (1 ページ 200 件)
-const MAX_PAGES: usize = 10;
+/// 一覧・メンバーの取得で辿るページ数の上限 (1 ページ 200 件)。超えたら、不完全な結果を確定せず、エラーにする
+const MAX_PAGES: usize = 50;
 /// メンバーの名前を `users.info` で調べる人数の上限
 const MAX_PROFILE_LOOKUPS: usize = 50;
 /// 名前の取得にかけてよい時間
@@ -163,6 +161,10 @@ async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, 
             break;
         }
     }
+    // 上限に達しても続きがあるなら、一覧を不完全なまま返さない
+    if !cursor.is_empty() {
+        return Err(AppError::BadGateway("Too many Slack channels".into()));
+    }
 
     let mut tx = db.transaction().await?;
     let mut channels = Vec::with_capacity(own.len());
@@ -233,13 +235,9 @@ async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, 
     Ok(Json(json!({"linked": true, "channels": channels})))
 }
 
+/// 1 回の要求で取り込むのは 1 チャンネル (複数を 1 つの要求にすると、途中で失敗したときに一部だけが確定する)
 #[derive(Deserialize)]
 struct StartRequest {
-    channels: Vec<Pick>,
-}
-
-#[derive(Deserialize)]
-struct Pick {
     slack_channel_id: String,
     name: String,
 }
@@ -271,6 +269,12 @@ async fn members(slack: &mut Slack, channel: &str) -> Result<Vec<String>, AppErr
         if cursor.is_empty() {
             break;
         }
+    }
+    // 上限に達しても続きがあるなら、不完全なメンバーで取り込みを確定しない
+    if !cursor.is_empty() {
+        return Err(AppError::BadGateway(
+            "Too many Slack channel members".into(),
+        ));
     }
     Ok(all)
 }
@@ -326,17 +330,7 @@ async fn start(
     Json(body): Json<StartRequest>,
 ) -> Result<Json<Value>, AppError> {
     let key = key(&s)?;
-    if body.channels.is_empty() || body.channels.len() > MAX_CHANNELS {
-        return Err(AppError::BadRequest(format!(
-            "Choose between 1 and {MAX_CHANNELS} channels"
-        )));
-    }
-    let mut seen = HashSet::new();
-    if !body
-        .channels
-        .iter()
-        .all(|c| valid_slack_id(&c.slack_channel_id) && seen.insert(c.slack_channel_id.as_str()))
-    {
+    if !valid_slack_id(&body.slack_channel_id) {
         return Err(AppError::BadRequest("Invalid Slack channel".into()));
     }
     let mut db = s.db.clone();
@@ -362,8 +356,8 @@ async fn start(
     tx.commit().await?;
 
     let mut slack = Slack::single(&s, key, &user.id, &link.token)?;
-    let mut imported = Vec::new();
-    for pick in body.channels {
+    let pick = body;
+    {
         let info = slack
             .get(
                 "conversations.info",
@@ -405,6 +399,12 @@ async fn start(
 
         let mut tx = db.transaction().await?;
         suppress_app_events(&mut tx).await?;
+        // Slack の応答を待つ間に、単一チャンネルのゲストなどに変わったかもしれない。書き込みと同じトランザクションで確かめ直す
+        if crate::apps::events::guest(&mut tx, &user.id).await? {
+            return Err(AppError::Forbidden(
+                "Guests cannot create channels by importing from Slack".into(),
+            ));
+        }
         let already = !query(
             &mut tx,
             "SELECT json_build_object('ok',true)::text FROM slack_channels WHERE team_id=$1 AND slack_channel_id=$2",
@@ -463,11 +463,10 @@ async fn start(
         }
         sync::request_channel(&mut tx, &link.team, &pick.slack_channel_id).await?;
         tx.commit().await?;
-        imported.push(json!({
+        Ok(Json(json!({
             "slack_channel_id": pick.slack_channel_id,
             "channel_id": target.0,
             "channel_name": target.1,
-        }));
+        })))
     }
-    Ok(Json(json!({"imported": imported})))
 }

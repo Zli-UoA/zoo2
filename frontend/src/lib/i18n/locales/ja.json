@@ -844,6 +844,13 @@
       "linked_other_account": "すでに別の Slack アカウントと連携しています。切り替えるには、先に連携を解除してください。",
       "failed": "Slack との連携に失敗しました。"
     },
+    "importTitle": "Slack から取り込む",
+    "importDescription": "Slack であなたが作ったチャンネルの過去ログを、管理者が保存した Slack のエクスポートから取り込めます。取り込み先は、同じ名前の参加中のチャンネルか、新しく作るチャンネルから選べます。",
+    "importLoading": "取り込めるチャンネルを読み込み中",
+    "importNoExport": "管理者が Slack のエクスポートを保存すると、ここで自分のチャンネルを取り込めます。",
+    "importNoChannels": "保存されているエクスポートに、あなたが作ったチャンネルはありません。",
+    "importSummary_one": "{{name}} に、あなたが作ったチャンネルが {{count}} 件あります。取り込むチャンネルを選んでください。",
+    "importSummary_other": "{{name}} に、あなたが作ったチャンネルが {{count}} 件あります。取り込むチャンネルを選んでください。",
     "privateTitle": "Slack から取り込む",
     "privateDescription": "Slack であなたが作った非公開チャンネルの過去ログを、連携した Slack アカウントで取り込めます。ZIP は要りません。公開チャンネルは管理者が取り込みます。",
     "privateLoading": "取り込めるチャンネルを読み込み中",
