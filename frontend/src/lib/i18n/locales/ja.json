@@ -765,7 +765,7 @@
   "slackImport": {
     "tab": "Slack 取り込み",
     "title": "Slack から取り込む",
-    "description": "Slack の管理画面で書き出したエクスポートの ZIP をアップロードすると、Zoo に保存します。ここでは任意のチャンネルを取り込めます。各メンバーは、Slack アカウントを連携すると自分が作ったチャンネルを取り込めます。",
+    "description": "Slack の管理画面で書き出したエクスポートの ZIP をアップロードすると、Zoo に保存します。ここでは任意のチャンネルを取り込めます。各メンバーは、Slack アカウントを連携すると、自分が作った非公開チャンネルを「Slack 連携」タブから取り込めます（公開チャンネルは管理者だけが取り込めます）。",
     "chooseFile": "ZIP を選んでアップロード",
     "uploading": "アップロード中…",
     "loading": "取り込みの履歴を読み込み中",
@@ -844,13 +844,26 @@
       "linked_other_account": "すでに別の Slack アカウントと連携しています。切り替えるには、先に連携を解除してください。",
       "failed": "Slack との連携に失敗しました。"
     },
-    "importTitle": "Slack から取り込む",
-    "importDescription": "Slack であなたが作ったチャンネルの過去ログを、管理者が保存した Slack のエクスポートから取り込めます。取り込み先は、同じ名前の参加中のチャンネルか、新しく作るチャンネルから選べます。",
-    "importLoading": "取り込めるチャンネルを読み込み中",
-    "importNoExport": "管理者が Slack のエクスポートを保存すると、ここで自分のチャンネルを取り込めます。",
-    "importNoChannels": "保存されているエクスポートに、あなたが作ったチャンネルはありません。",
-    "importSummary_one": "{{name}} に、あなたが作ったチャンネルが {{count}} 件あります。取り込むチャンネルを選んでください。",
-    "importSummary_other": "{{name}} に、あなたが作ったチャンネルが {{count}} 件あります。取り込むチャンネルを選んでください。"
+    "privateTitle": "Slack から取り込む",
+    "privateDescription": "Slack であなたが作った非公開チャンネルの過去ログを、連携した Slack アカウントで取り込めます。ZIP は要りません。公開チャンネルは管理者が取り込みます。",
+    "privateLoading": "取り込めるチャンネルを読み込み中",
+    "privateEmpty": "あなたが作った非公開チャンネルはありません。",
+    "privateRelink": "Slack の連携に、非公開チャンネルを読む権限がありません。連携を解除してから、もう一度連携してください。",
+    "privateUnavailable": "いまは取り込めるチャンネルを読み込めません。",
+    "privateMembers_one": "{{count}} 人",
+    "privateMembers_other": "{{count}} 人",
+    "privateArchived": "アーカイブ済み",
+    "privateName": "{{name}} の取り込み先の名前",
+    "privateStart": "{{name}} を取り込む",
+    "privateStartButton": "取り込む",
+    "privateStarting": "開始中…",
+    "privateStatus": {
+      "queued": "取り込みを待っています（#{{name}}）。",
+      "running": "取り込み中です（#{{name}}）。",
+      "done": "取り込み済みです（#{{name}}）。新しい投稿も自動で同期されます。",
+      "error": "取り込みに失敗しました。自動で再試行します（#{{name}}）。",
+      "hidden": "取り込み済みです（参加していないチャンネルのため、名前は表示しません）。"
+    }
   },
   "publicProfile": {
     "followTitle": "外部サーバーからフォロー",

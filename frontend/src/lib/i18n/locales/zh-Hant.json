@@ -765,7 +765,7 @@
   "slackImport": {
     "tab": "Slack 匯入",
     "title": "從 Slack 匯入",
-    "description": "上傳從 Slack 管理設定匯出的 ZIP，即可將其保存在 Zoo 中。你可以在這裡匯入任意頻道；成員連結 Slack 帳號後，可以匯入自己建立的頻道。",
+    "description": "上傳從 Slack 管理設定匯出的 ZIP，即可將其保存在 Zoo 中。你可以在這裡匯入任意頻道；成員連結 Slack 帳號後，可以在「Slack 連結」分頁匯入自己建立的私人頻道（公開頻道只有管理員可以匯入）。",
     "chooseFile": "選擇並上傳 ZIP",
     "uploading": "上傳中…",
     "loading": "正在載入匯入紀錄",
@@ -844,13 +844,26 @@
       "linked_other_account": "你已連結了另一個 Slack 帳號。要切換帳號，請先解除連結。",
       "failed": "無法與 Slack 連結。"
     },
-    "importTitle": "從 Slack 匯入",
-    "importDescription": "可以從管理員保存的 Slack 匯出中，匯入你在 Slack 建立的頻道的歷史紀錄。匯入位置可以選擇你已加入的同名頻道，或新建頻道。",
-    "importLoading": "正在載入可匯入的頻道",
-    "importNoExport": "管理員保存 Slack 匯出後，你可以在這裡匯入自己的頻道。",
-    "importNoChannels": "已保存的匯出中沒有你建立的頻道。",
-    "importSummary_one": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。",
-    "importSummary_other": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。"
+    "privateTitle": "從 Slack 匯入",
+    "privateDescription": "可以用已連結的 Slack 帳號，匯入你在 Slack 建立的私人頻道的歷史紀錄，不需要 ZIP。公開頻道由管理員匯入。",
+    "privateLoading": "正在載入可匯入的頻道",
+    "privateEmpty": "你沒有建立過私人頻道。",
+    "privateRelink": "你的 Slack 連結沒有讀取私人頻道的權限。請先解除連結，再重新連結。",
+    "privateUnavailable": "目前無法載入可匯入的頻道。",
+    "privateMembers_one": "{{count}} 位成員",
+    "privateMembers_other": "{{count}} 位成員",
+    "privateArchived": "已封存",
+    "privateName": "{{name}} 的匯入頻道名稱",
+    "privateStart": "匯入 {{name}}",
+    "privateStartButton": "匯入",
+    "privateStarting": "正在開始…",
+    "privateStatus": {
+      "queued": "等待匯入（#{{name}}）。",
+      "running": "正在匯入（#{{name}}）。",
+      "done": "已匯入（#{{name}}）。新的訊息會自動同步。",
+      "error": "匯入失敗，將自動重試（#{{name}}）。",
+      "hidden": "已匯入（你沒有加入該頻道，因此不顯示名稱）。"
+    }
   },
   "publicProfile": {
     "followTitle": "從你的伺服器追蹤",

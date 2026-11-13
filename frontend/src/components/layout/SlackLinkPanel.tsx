@@ -15,17 +15,20 @@ import {
   type SlackLinkState,
 } from "../../lib/api/slackLink";
 import {
-  SLACK_IMPORT_RUNNING,
-  getOwnSlackImports,
-  startOwnSlackImport,
-  type OwnSlackImports,
-} from "../../lib/api/slackImport";
+  getPrivateSlackChannels,
+  hasActivePrivateImport,
+  needsRelink,
+  startPrivateSlackImport,
+  type PrivateSlackChannel,
+  type PrivateSlackChannels,
+} from "../../lib/api/slackPrivateImport";
 import { useCollections } from "../../lib/electric/collections-context";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { SettingsSection } from "../ui/control-panel";
 import { Spinner } from "../ui/spinner";
-import { MappingForm, SlackImportRunStatus, describeImportError } from "./SlackImportPanel";
+import { describeImportError } from "./SlackImportPanel";
 
 const LINK_ERRORS = {
   denied: "slackLink.errors.denied",
@@ -201,26 +204,25 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
   );
 }
 
-const POLL_INTERVAL_MS = 2_000;
+const POLL_INTERVAL_MS = 3_000;
 
-/** 連携した Slack アカウントで作ったチャンネルを、管理者が保存した ZIP から取り込む */
+/** 連携した Slack アカウントで作った非公開チャンネルを、Slack の API から取り込む */
 function OwnImportSection({ client }: { client: ReturnType<typeof createConfiguredApiClient> }) {
   const { t } = useTranslation();
-  const [data, setData] = useState<OwnSlackImports | null>(null);
+  const [data, setData] = useState<PrivateSlackChannels | null>(null);
   const [error, setError] = useState("");
   // 一覧を取れなかったときのエラー。次に取れたら消える (取り込みの操作のエラーとは分ける)
   const [loadError, setLoadError] = useState("");
-  const [pending, setPending] = useState(false);
+  const [pendingId, setPendingId] = useState("");
   const [revision, setRevision] = useState(0);
-  // 取り込みを始めたら選択を戻し、続けて別のチャンネルを選べるようにする
-  const [form, setForm] = useState(0);
-  const latest = data?.imports[0];
-  const running = !!latest && SLACK_IMPORT_RUNNING.includes(latest.status);
+  // 取り込み先の名前の編集。まだ編集していないチャンネルは、サーバーの提案を使う
+  const [names, setNames] = useState<Record<string, string>>({});
+  const active = !!data && hasActivePrivateImport(data.channels);
 
   useEffect(() => {
     const controller = new AbortController();
     const load = () =>
-      getOwnSlackImports(client, controller.signal)
+      getPrivateSlackChannels(client, controller.signal)
         .then((value) => {
           if (controller.signal.aborted) return;
           setData(value);
@@ -230,67 +232,106 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
           if (!controller.signal.aborted) setLoadError(describeImportError(cause, t, false));
         });
     void load();
-    const timer = running ? window.setInterval(load, POLL_INTERVAL_MS) : undefined;
+    const timer = active ? window.setInterval(load, POLL_INTERVAL_MS) : undefined;
     return () => {
       controller.abort();
       window.clearInterval(timer);
     };
-  }, [client, revision, running, t]);
+  }, [client, revision, active, t]);
 
+  async function start(channel: PrivateSlackChannel) {
+    if (pendingId) return;
+    const name = (
+      names[channel.slack_channel_id] ??
+      channel.suggested_name ??
+      channel.name
+    ).trim();
+    setPendingId(channel.slack_channel_id);
+    setError("");
+    try {
+      await startPrivateSlackImport(client, [
+        { slack_channel_id: channel.slack_channel_id, name },
+      ]);
+    } catch (cause) {
+      setError(describeImportError(cause, t, false));
+    } finally {
+      setPendingId("");
+      setRevision((value) => value + 1);
+    }
+  }
+
+  const unavailable = data && data.channels.length === 0 && data.reason;
   return (
     <SettingsSection
-      title={t("slackLink.importTitle")}
-      description={t("slackLink.importDescription")}
+      title={t("slackLink.privateTitle")}
+      description={t("slackLink.privateDescription")}
     >
       {data === null && !error && !loadError ? (
-        <Spinner label={t("slackLink.importLoading")} className="justify-start" />
+        <Spinner label={t("slackLink.privateLoading")} className="justify-start" />
       ) : null}
-      {data && !data.export ? (
-        <p className="text-sm text-muted-foreground">{t("slackLink.importNoExport")}</p>
+      {unavailable ? (
+        <p className="text-sm text-muted-foreground">
+          {needsRelink(data.reason)
+            ? t("slackLink.privateRelink")
+            : t("slackLink.privateUnavailable")}
+        </p>
       ) : null}
-      {data?.export && data.channels.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t("slackLink.importNoChannels")}</p>
+      {data && !data.reason && data.channels.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{t("slackLink.privateEmpty")}</p>
       ) : null}
-      {data?.export && data.channels.length > 0 ? (
-        <MappingForm
-          // 管理者が新しい ZIP を保存すると、ポーリングでチャンネルの並びが変わる。選択状態は並びごとに作り直す
-          key={`${form}:${data.channels.map((channel) => channel.slack_channel_id).join(",")}`}
-          channels={data.channels}
-          summary={t("slackLink.importSummary", {
-            name: data.export.file_name,
-            count: data.channels.length,
+      {data && data.channels.length > 0 ? (
+        <ul className="flex flex-col gap-3">
+          {data.channels.map((channel) => {
+            const id = channel.slack_channel_id;
+            const label = `#${channel.name}`;
+            return (
+              <li
+                key={id}
+                className="flex flex-col gap-2 rounded-md border border-border p-3 sm:flex-row sm:items-center"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{label}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {t("slackLink.privateMembers", { count: channel.members })}
+                    {channel.is_archived ? ` · ${t("slackLink.privateArchived")}` : ""}
+                  </p>
+                  {channel.status !== "new" ? (
+                    <p className="text-xs text-muted-foreground" role="status">
+                      {channel.status === "hidden"
+                        ? t("slackLink.privateStatus.hidden")
+                        : t(`slackLink.privateStatus.${channel.status}`, {
+                            name: channel.channel_name ?? "",
+                          })}
+                    </p>
+                  ) : null}
+                </div>
+                {channel.status === "new" ? (
+                  <>
+                    <Input
+                      aria-label={t("slackLink.privateName", { name: label })}
+                      value={names[id] ?? channel.suggested_name ?? channel.name}
+                      onChange={(event) =>
+                        setNames((current) => ({ ...current, [id]: event.target.value }))
+                      }
+                      className="sm:w-56"
+                    />
+                    <Button
+                      type="button"
+                      disabled={!!pendingId}
+                      aria-label={t("slackLink.privateStart", { name: label })}
+                      onClick={() => void start(channel)}
+                    >
+                      {pendingId === id
+                        ? t("slackLink.privateStarting")
+                        : t("slackLink.privateStartButton")}
+                    </Button>
+                  </>
+                ) : null}
+              </li>
+            );
           })}
-          pending={pending || running}
-          targetsFor={(channel) =>
-            (
-              data.channels.find((own) => own.slack_channel_id === channel.slack_channel_id)
-                ?.targets ?? []
-            ).map((target) => ({
-              id: target.id,
-              channel_name: target.name,
-              is_private: target.is_private,
-            }))
-          }
-          onSubmit={async (mappings) => {
-            if (pending) return;
-            setPending(true);
-            setError("");
-            try {
-              const started = await startOwnSlackImport(client, mappings);
-              setData((current) =>
-                current ? { ...current, imports: [started, ...current.imports] } : current,
-              );
-              setForm((value) => value + 1);
-            } catch (cause) {
-              setError(describeImportError(cause, t, false));
-            } finally {
-              setPending(false);
-              setRevision((value) => value + 1);
-            }
-          }}
-        />
+        </ul>
       ) : null}
-      {latest ? <SlackImportRunStatus job={latest} /> : null}
       {loadError ? (
         <p role="alert" className="text-sm text-destructive">
           {loadError}

@@ -765,7 +765,7 @@
   "slackImport": {
     "tab": "Slack 导入",
     "title": "从 Slack 导入",
-    "description": "上传从 Slack 管理设置导出的 ZIP，即可将其保存在 Zoo 中。你可以在这里导入任意频道；成员关联 Slack 账号后，可以导入自己创建的频道。",
+    "description": "上传从 Slack 管理设置导出的 ZIP，即可将其保存在 Zoo 中。你可以在这里导入任意频道；成员关联 Slack 账号后，可以在“Slack 关联”标签页导入自己创建的私有频道（公开频道只有管理员可以导入）。",
     "chooseFile": "选择并上传 ZIP",
     "uploading": "上传中…",
     "loading": "正在加载导入记录",
@@ -844,13 +844,26 @@
       "linked_other_account": "你已关联了另一个 Slack 账号。要切换账号，请先解除关联。",
       "failed": "无法与 Slack 关联。"
     },
-    "importTitle": "从 Slack 导入",
-    "importDescription": "可以从管理员保存的 Slack 导出中，导入你在 Slack 创建的频道的历史记录。导入位置可以选择你已加入的同名频道，或新建频道。",
-    "importLoading": "正在加载可导入的频道",
-    "importNoExport": "管理员保存 Slack 导出后，你可以在这里导入自己的频道。",
-    "importNoChannels": "已保存的导出中没有你创建的频道。",
-    "importSummary_one": "{{name}} 中有 {{count}} 个你创建的频道。请选择要导入的频道。",
-    "importSummary_other": "{{name}} 中有 {{count}} 个你创建的频道。请选择要导入的频道。"
+    "privateTitle": "从 Slack 导入",
+    "privateDescription": "可以用已关联的 Slack 账号，导入你在 Slack 创建的私有频道的历史记录，不需要 ZIP。公开频道由管理员导入。",
+    "privateLoading": "正在加载可导入的频道",
+    "privateEmpty": "你没有创建过私有频道。",
+    "privateRelink": "你的 Slack 关联没有读取私有频道的权限。请先解除关联，再重新关联。",
+    "privateUnavailable": "目前无法加载可导入的频道。",
+    "privateMembers_one": "{{count}} 位成员",
+    "privateMembers_other": "{{count}} 位成员",
+    "privateArchived": "已归档",
+    "privateName": "{{name}} 的导入频道名称",
+    "privateStart": "导入 {{name}}",
+    "privateStartButton": "导入",
+    "privateStarting": "正在开始…",
+    "privateStatus": {
+      "queued": "等待导入（#{{name}}）。",
+      "running": "正在导入（#{{name}}）。",
+      "done": "已导入（#{{name}}）。新的消息会自动同步。",
+      "error": "导入失败，将自动重试（#{{name}}）。",
+      "hidden": "已导入（你没有加入该频道，因此不显示名称）。"
+    }
   },
   "publicProfile": {
     "followTitle": "从你的服务器关注",

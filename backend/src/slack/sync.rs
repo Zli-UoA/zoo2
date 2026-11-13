@@ -198,7 +198,7 @@ enum Step {
     Park(u64, String),
 }
 
-enum SyncError {
+pub(super) enum SyncError {
     RateLimited(u64),
     /// どのトークンでも読めなかった
     NoAccess(String),
@@ -345,7 +345,7 @@ async fn reset_run(s: &AppState, task: &Task) -> Result<(), AppError> {
 // ---------------------------------------------------------------------------
 
 /// 連携済みメンバーのトークンで Slack を呼ぶ。読めないトークンは飛ばして次のトークンで呼び直す
-struct Slack {
+pub(super) struct Slack {
     client: reqwest::Client,
     base: String,
     key: [u8; 32],
@@ -355,11 +355,36 @@ struct Slack {
 }
 
 impl Slack {
+    /// 1 人のトークンだけで Slack を呼ぶ (ユーザーが自分で始める取り込み用)
+    pub(super) fn single(
+        s: &AppState,
+        key: [u8; 32],
+        user: &str,
+        enc: &str,
+    ) -> Result<Self, AppError> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| AppError::Internal(e.into()))?;
+        Ok(Self {
+            client,
+            base: s.config.slack.api_base_url.clone(),
+            key,
+            tokens: vec![(user.to_string(), enc.to_string())],
+            index: 0,
+        })
+    }
+
     fn user(&self) -> Option<&str> {
         self.tokens.get(self.index).map(|(u, _)| u.as_str())
     }
 
-    async fn get(&mut self, method: &str, params: &[(&str, &str)]) -> Result<Value, SyncError> {
+    pub(super) async fn get(
+        &mut self,
+        method: &str,
+        params: &[(&str, &str)],
+    ) -> Result<Value, SyncError> {
         loop {
             let Some((user, enc)) = self.tokens.get(self.index) else {
                 return Err(SyncError::NoAccess("no_usable_token".into()));

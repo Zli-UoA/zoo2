@@ -98,6 +98,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(crate::slack::import::router())
         .merge(crate::slack::link::router())
         .merge(crate::slack::self_import::router())
+        .merge(crate::slack::api_import::router())
         .merge(typing::router())
         .merge(bubble_chat::router())
         .merge(calls::router())
