@@ -233,7 +233,13 @@ async fn run(
                                 .unwrap_or_default()
                                 .to_owned(),
                             r#type: row["type"].as_str().unwrap_or_default().to_owned(),
-                            content: row["content"].clone(),
+                            // Shape は jsonb の列を文字列で配るので、JSON として読む。
+                            content: match &row["content"] {
+                                Value::String(raw) => {
+                                    serde_json::from_str(raw).unwrap_or(Value::Null)
+                                }
+                                other => other.clone(),
+                            },
                         },
                     );
                 }
@@ -286,6 +292,8 @@ async fn process(
 pub struct LogoutTarget {
     pub store: CryptoStore,
     pub pending_backup: usize,
+    /// 保存鍵を失って作り直したときの、前の端末（これも消す）。
+    pub replaced_device_id: Option<String>,
 }
 
 /// ログアウトで消す暗号ストアを開く（`root` にあるもの全部）。
@@ -293,11 +301,12 @@ pub fn open_for_logout(root: &Path) -> Result<Vec<LogoutTarget>> {
     store::stored_user_ids(root)?
         .into_iter()
         .map(|user_id| {
-            let store = CryptoStore::open(root, &user_id)?.store;
-            let pending_backup = store.pending_backup_count();
+            let opened = CryptoStore::open(root, &user_id)?;
+            let pending_backup = opened.store.pending_backup_count();
             Ok(LogoutTarget {
-                store,
+                store: opened.store,
                 pending_backup,
+                replaced_device_id: opened.replaced_device_id,
             })
         })
         .collect()
@@ -318,7 +327,19 @@ pub async fn destroy_for_logout(api: &ApiClient, root: &Path, target: LogoutTarg
             device_id: device_id.clone(),
         },
     )?;
+    if let Some(replaced) = &target.replaced_device_id {
+        mark_device_deletion_pending(
+            root,
+            &PendingDeviceDeletion {
+                user_id: user_id.clone(),
+                device_id: replaced.clone(),
+            },
+        )?;
+    }
     target.store.destroy()?;
     delete_device_or_remember(api, root, &user_id, &device_id).await;
+    if let Some(replaced) = &target.replaced_device_id {
+        delete_device_or_remember(api, root, &user_id, replaced).await;
+    }
     Ok(())
 }
