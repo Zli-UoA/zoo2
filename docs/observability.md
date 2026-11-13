@@ -90,8 +90,10 @@ LOG_FORMAT=json make backend-dev 2>&1 | tee -a .local/logs/zoo-backend.jsonl
 
 ```bash
 make observability-down
-make observability-reset   # ボリュームも削除
+make observability-reset   # 監視ボリュームと .local/logs/*.jsonl を削除して初期化する
 ```
+
+> **補足（データ初期化の対象範囲）**: `make observability-reset` は Prometheus / Loki / Alloy / Tempo / Grafana の Docker ボリュームに加えて入力ログファイル（`.local/logs/*.jsonl`）も削除します（Alloy の読み取り位置情報だけが消えて入力ファイルが残ると、次回起動時に過去ログが先頭から再取込されるためです）。再解析用に入力ログを残したい場合は、事前に別ディレクトリへ退避してください。また、別ターミナルで `tee -a .local/logs/*.jsonl` 等が稼働中の場合は停止してから実行してください。
 
 ## 4. メトリクス・カーディナリティ・PII 設計
 
@@ -99,7 +101,7 @@ Prometheus メトリクスおよび Loki ラベルのカーディナリティ爆
 
 - **ルート名**: `axum::extract::MatchedPath`（例: `/api/channels/{id}`）のみを使用し、UUID / ULID などの生 ID やクエリ文字列はメトリクスに載せません。`/api/app-responses/...` と `/api/webhooks/...` のトークンを含むルートは `[redacted]` に集約します。
 - **閉じたラベル値**: Frontend テレメトリは許可された enum（`category`, `metric`, `shape`, `state`）および正規化ルートグループのみをラベル化します。自由記述のメッセージはサニタイズ後に構造化ログへのみ出力し、Prometheus ラベルには入れません。
-- **構造化ログと Loki ラベル**: `infra/observability/alloy/config.alloy` では許可フィールドのみを抽出して `stage.output` でログ本文を再構築し、未定義フィールド（`user_id` 等）が万一出力されても保存前に破棄します。また `service`・`level`・`error_class`・`category` のみを Loki ストリームラベルとし、`trace_id`（`zoo_frontend` ログでは `frontend_trace_id` を優先して昇格、元の値は `ingest_trace_id` に保持）・`span_id`・`route`・`http_status` 等は Structured Metadata として格納します。
+- **構造化ログと Loki ラベル**: `infra/observability/alloy/config.alloy` では許可フィールドのみを抽出して `stage.output` でログ本文を再構築し、未定義フィールド（`user_id` 等）が万一出力されても保存前に破棄します。Frontend 由来の検証済み品質値（`rating`, `rtt_ms`, `loss_ratio`）も許可フィールドとして保持します。また `service`・`level`・`error_class`・`category` のみを Loki ストリームラベルとし、`trace_id`（`zoo_frontend` ログでは `frontend_trace_id` を優先して昇格、元の値は `ingest_trace_id` に保持）・`span_id`・`route`・`http_status`・`rating`・`rtt_ms`・`loss_ratio` 等は Structured Metadata として格納します。
 
 ### 主要メトリクス一覧
 

@@ -140,6 +140,7 @@ observability-down:
 
 observability-reset:
 	docker compose -f infra/compose.observability.yaml --profile traces down --volumes
+	rm -f .local/logs/*.jsonl
 
 observability-logs:
 	docker compose -f infra/compose.observability.yaml logs -f
