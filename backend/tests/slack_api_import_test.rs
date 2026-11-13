@@ -219,7 +219,25 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
             "ok": true,
             "messages": [
                 message("1704070200.000200", "UU", "second"),
-                message("1704070100.000100", "UA", "first"),
+                // 3 日より古いスレッドの親。最初の同期は、返信も取る
+                {"type": "message", "ts": "1704070100.000100", "user": "UA", "text": "first",
+                 "thread_ts": "1704070100.000100", "reply_count": 1, "latest_reply": "1704070150.000100"},
+            ],
+            "has_more": false,
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("channel", "G1"))
+        .and(query_param("ts", "1704070100.000100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [
+                {"type": "message", "ts": "1704070100.000100", "user": "UA", "text": "first",
+                 "thread_ts": "1704070100.000100", "reply_count": 1},
+                {"type": "message", "ts": "1704070150.000100", "user": "UU", "text": "reply",
+                 "thread_ts": "1704070100.000100"},
             ],
             "has_more": false,
         })))
@@ -238,7 +256,7 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
         "POST",
         "/api/slack/private-channels/import",
         &bob,
-        Some(json!({"channels": [{"slack_channel_id": "G2", "name": "bobs"}]})),
+        Some(json!({"slack_channel_id": "G2", "name": "bobs"})),
     )
     .await?;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -263,7 +281,7 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
             "POST",
             "/api/slack/private-channels/import",
             &alice,
-            Some(json!({"channels": [{"slack_channel_id": id, "name": format!("x-{suffix}")}]})),
+            Some(json!({"slack_channel_id": id, "name": format!("x-{suffix}")})),
         )
         .await?;
         assert_eq!(status, expect, "{id}: {body}");
@@ -274,14 +292,11 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
         "POST",
         "/api/slack/private-channels/import",
         &alice,
-        Some(json!({"channels": [{"slack_channel_id": "G1", "name": name}]})),
+        Some(json!({"slack_channel_id": "G1", "name": name})),
     )
     .await?;
     assert_eq!(status, StatusCode::OK, "{started}");
-    let zoo_channel = started["imported"][0]["channel_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let zoo_channel = started["channel_id"].as_str().unwrap().to_string();
     assert_eq!(zoo_channel, backend::slack::channel_id(&team, "G1"));
     let row = sql(
         &state,
@@ -303,7 +318,7 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
 
     // 同期のワーカーが、全履歴を取る。もう一度回しても重複しない
     drain(&state).await;
-    assert_eq!(count_messages(&state, &zoo_channel).await, 2);
+    assert_eq!(count_messages(&state, &zoo_channel).await, 3);
     sql(
         &state,
         "UPDATE slack_channel_syncs SET available_at=now() WHERE team_id=$1 AND lease_token IS NULL \
@@ -312,7 +327,7 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
     )
     .await?;
     drain(&state).await;
-    assert_eq!(count_messages(&state, &zoo_channel).await, 2);
+    assert_eq!(count_messages(&state, &zoo_channel).await, 3);
     let authors = sql(
         &state,
         "SELECT json_build_object('user',user_id)::text FROM messages WHERE channel_id=$1 AND content='first'",
@@ -320,6 +335,14 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
     )
     .await?;
     assert_eq!(authors[0]["user"], alice.as_str());
+    // 既存メンバー (作成者) の既読位置は、取り込んだ履歴の最新まで進む。履歴が未読として並ばない
+    let read = sql(
+        &state,
+        "SELECT json_build_object('read',last_read_at IS NOT NULL)::text FROM channel_read_states WHERE channel_id=$1 AND user_id=$2",
+        &[&zoo_channel, &alice],
+    )
+    .await?;
+    assert_eq!(read[0]["read"], true, "{read:?}");
     let (_, done) = request(&app, "GET", "/api/slack/private-channels", &alice, None).await?;
     assert_eq!(done["channels"][0]["status"], "done", "{done}");
     assert_eq!(done["channels"][0]["channel_id"], zoo_channel.as_str());
@@ -330,7 +353,7 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
         "POST",
         "/api/slack/private-channels/import",
         &alice,
-        Some(json!({"channels": [{"slack_channel_id": "G1", "name": format!("again-{suffix}")}]})),
+        Some(json!({"slack_channel_id": "G1", "name": format!("again-{suffix}")})),
     )
     .await?;
     assert_eq!(status, StatusCode::CONFLICT);
