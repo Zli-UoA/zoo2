@@ -16,6 +16,11 @@ export interface ChannelCryptoDeps {
   signal?: AbortSignal;
   /** 配布先を判定し直したとき（送信画面の「配れない相手」と配布先の数の表示に使う）。 */
   onRecipients?: (channelId: string, summary: RecipientSummary) => void;
+  /**
+   * 新しい送信用セッションを用意した（その受信用の写しを暗号ストアに保存した）。鍵バックアップに
+   * 送るのに使う（`E2eeContextValue.requestKeyBackup`）。
+   */
+  onSessionCreated?: () => void;
 }
 
 /** 送信の要求に入れる、暗号化チャンネルのメッセージ（docs/e2ee.md の「メッセージ」）。 */
@@ -123,6 +128,7 @@ async function prepareOutboundSession(
   }
 
   const plan = await worker.request({ op: "megolmStart", channelId });
+  if (needsSnapshot) deps.onSessionCreated?.();
   if (plan.pending === 0) return;
   const claimed =
     Object.keys(plan.claim).length > 0 ? await claimKeys(client, plan.claim, signal) : {};

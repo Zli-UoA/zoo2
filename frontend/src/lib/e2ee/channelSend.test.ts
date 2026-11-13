@@ -159,19 +159,25 @@ describe("sendEncryptedMessage", () => {
   it("同じ epoch なら、2 通目は配り直さずに送る", async () => {
     const { worker } = fakeWorker();
     const { client, calls } = fakeClient([null, null], [3]);
+    let sessionsCreated = 0;
     const send = (messageId: string) =>
-      sendEncryptedMessage(deps(worker, client), {
-        channelId: CHANNEL,
-        shapeEpoch: "3",
-        messageId,
-        parentId: null,
-        body: "hello",
-        mentions: NO_MENTIONS,
-      });
+      sendEncryptedMessage(
+        { ...deps(worker, client), onSessionCreated: () => (sessionsCreated += 1) },
+        {
+          channelId: CHANNEL,
+          shapeEpoch: "3",
+          messageId,
+          parentId: null,
+          body: "hello",
+          mentions: NO_MENTIONS,
+        },
+      );
     await send("m1");
     calls.length = 0;
     await send("m2");
     expect(calls.map((call) => call.path)).toEqual(["/api/messages"]);
+    // 新しい送信用セッションを作ったときだけ、鍵バックアップへの送信を頼む。
+    expect(sessionsCreated).toBe(1);
   });
 
   it("409 E2EE_STALE_EPOCH なら current_epoch 以上で作り直し、同じ ID で送り直す", async () => {

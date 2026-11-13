@@ -18,6 +18,7 @@ import type {
 } from "./store/megolm";
 
 import type { PasskeySlotInput, ResetExpectation, UnlockSecret } from "./setupSession";
+import type { BackupUploadRequest } from "./store/cryptoStore";
 
 import type {
   DeviceKeysByUser,
@@ -71,6 +72,10 @@ export type CryptoOperation =
   | { op: "startupCheck"; keysQuery: JsonObject; versions: JsonObject }
   | { op: "hasSecrets" }
   | { op: "hasOwnKeys" }
+  // 鍵バックアップへのアップロード（#360）。
+  | { op: "prepareBackupUpload"; currentVersion: JsonObject | null; limit: number }
+  | { op: "backupUploaded" }
+  | { op: "backupUploadFailed" }
   | { op: "discardSecrets" }
   | { op: "forgetOwnKeys" }
   // Megolm の送信と復号（#361）。
@@ -131,6 +136,9 @@ export interface CryptoResults {
   startupCheck: StartupCheck | null;
   hasSecrets: boolean;
   hasOwnKeys: boolean;
+  prepareBackupUpload: BackupUploadRequest;
+  backupUploaded: null;
+  backupUploadFailed: null;
   discardSecrets: null;
   forgetOwnKeys: null;
   megolmNeedsSnapshot: boolean;

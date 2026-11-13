@@ -27,7 +27,10 @@ export interface E2eeDeviceManagerOptions {
   /** ログアウトで、処理中のもの（登録の要求など）を待つ時間。 */
   settleTimeoutMs?: number;
   onStatus?: (status: E2eeDeviceStatus, error?: unknown) => void;
-  /** Megolm のセッション鍵を保存した（「鍵がまだ届いていない」メッセージを復号し直す。#361）。 */
+  /**
+   * Megolm のセッション鍵を受け取って保存した。鍵バックアップに送り（#360）、「鍵がまだ届いていない」
+   * メッセージを復号し直す（#361）。
+   */
   onRoomKeys?: () => void;
 }
 
@@ -73,6 +76,13 @@ export class E2eeDeviceManager {
   private processAbort = new AbortController();
   /** 登録の要求の結果がまだ分からない。分からないうちは、ログアウトで端末を消さない。 */
   private registering = false;
+  /** ログアウトのために開いたとき、保存鍵を失って作り直した前の端末（これも消す）。 */
+  private readonly replacedDeviceIds: string[] = [];
+  /** 端末が消されていたので、起動し直さなければならない（`reregister`）。済むまで残す。 */
+  private restartPending = false;
+  /** 起動し直す前に、まだ暗号ストアを消していない。 */
+  private destroyBeforeRestart = false;
+  private restarting = false;
 
   constructor(private readonly options: E2eeDeviceManagerOptions) {}
 
@@ -146,6 +156,12 @@ export class E2eeDeviceManager {
     // 登録の応答をなくした端末は、サーバーにはあるのに手元では未登録のまま。どちらでも
     // 削除 API を呼ぶ（冪等で、サーバーになければ 404 になり、消すものがないと分かる）。
     this.deviceId = opened.deviceId;
+    if (opened.replacedDeviceId) {
+      // 保存鍵を失って作り直した。前の端末の ID はもう暗号ストアにないので、先に削除待ちに
+      // 残し、ログアウトで一緒に消す。
+      markDeviceDeletionPending({ userId: this.options.userId, deviceId: opened.replacedDeviceId });
+      this.replacedDeviceIds.push(opened.replacedDeviceId);
+    }
   }
 
   private async ensureRegistered(registered: boolean, deviceId: string): Promise<KeyCounts> {
@@ -198,7 +214,14 @@ export class E2eeDeviceManager {
           this.dirty = false;
           await this.process(this.latestRows);
         }
-      } catch {
+      } catch (error) {
+        // 受信の途中で、端末が別の端末から消されていた（ack や補充が 404）。同じ端末で試し直しても
+        // 直らないので、起動と同じく暗号ストアを作り直して、新しい端末として登録し直す。
+        if (isDeviceGone(error) && !this.stopped && !this.suspended) {
+          this.destroyBeforeRestart = true;
+          void this.reregister();
+          return;
+        }
         // オフラインなどで失敗したら、少し待って残っている行と鍵の補充を試し直す。
         if (!this.stopped && !this.suspended) {
           this.retryTimer = setTimeout(() => {
@@ -242,6 +265,43 @@ export class E2eeDeviceManager {
     if (rowsFailure) throw rowsFailure;
   }
 
+  /**
+   * 端末が消されていたので、暗号ストアを作り直して起動し直す。失敗したら試し直す。
+   *
+   * 暗号ストアを消すのは最初の 1 回だけにする（`destroyBeforeRestart`）。新しい端末の登録が済んだ
+   * あとで補充などが失敗したときに消すと、登録した端末の秘密鍵まで失う。試し直しでは起動
+   * （`start`）だけをやり直し、同じ暗号ストアの端末を使う。ログアウトの確認で止めているあいだは
+   * 待ち（`restartPending`）だけを残し、取りやめたら（`resume`）再開する。
+   */
+  private async reregister(): Promise<void> {
+    this.subscription?.unsubscribe();
+    this.subscription = null;
+    this.latestRows = [];
+    this.needsReplenish = false;
+    this.restartPending = true;
+    if (this.stopped || this.suspended || this.restarting) return;
+    this.restarting = true;
+    try {
+      if (this.destroyBeforeRestart) {
+        await this.options.worker.request({ op: "destroy", namespace: this.options.namespace });
+        this.destroyBeforeRestart = false;
+        this.deviceId = null;
+      }
+      if (this.stopped || this.suspended) return;
+      await this.start();
+      this.restartPending = false;
+    } catch {
+      if (!this.stopped && !this.suspended) {
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          void this.reregister();
+        }, this.options.retryDelayMs ?? 30_000);
+      }
+    } finally {
+      this.restarting = false;
+    }
+  }
+
   /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
   pendingBackupCount(): Promise<number> {
     return this.options.worker.request({ op: "pendingBackupCount" });
@@ -268,6 +328,11 @@ export class E2eeDeviceManager {
     if (!this.suspended) return;
     this.suspended = false;
     this.processAbort = new AbortController();
+    // 止めているあいだに、起動し直しを待っていた（タイマーは止めたので、ここで再開する）。
+    if (this.restartPending) {
+      void this.reregister();
+      return;
+    }
     this.subscribe();
   }
 
@@ -294,6 +359,7 @@ export class E2eeDeviceManager {
     // 待っても登録の結果が分からなければ、いま消すと、そのあとに登録が届いて端末が残りうる
     // （404 で削除待ちを外してしまう）。削除待ちに残し、次のログインで消し直す。
     if (deviceId && !this.registering) await this.deleteDeviceOrRemember(deviceId);
+    for (const replaced of this.replacedDeviceIds) await this.deleteDeviceOrRemember(replaced);
   }
 
   private halt(): void {

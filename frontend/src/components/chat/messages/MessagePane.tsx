@@ -187,9 +187,10 @@ export function MessagePane({
             client: appClient,
             deviceId: e2ee.deviceId,
             onRecipients: (_channelId, summary) => setRecipients(summary),
+            onSessionCreated: () => e2ee.requestKeyBackup(),
           }
         : null,
-    [appClient, e2ee.deviceId, e2ee.worker, encrypted],
+    [appClient, e2ee, encrypted],
   );
   const sendBlocked = (encrypted && cryptoDeps === null) || downgraded || checkingEncryption;
   // 暗号化チャンネルでは添付を送らない（サーバーも 400 E2EE_ATTACHMENTS_FORBIDDEN で拒否する）。
