@@ -70,6 +70,10 @@
       "states": [
         "Default",
         "ThreadChannel",
+        "RegularChannelReplies",
+        "ThreadChannelReplies",
+        "ReplyToReply",
+        "MultipleRepliesToOneMessage",
         "PrivateChannel",
         "Archived",
         "NotFound",

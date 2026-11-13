@@ -7,6 +7,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { StoryShell } from "../../../.storybook/shell";
 import { storyAttachments } from "../../../.storybook/attachment-fixtures";
 import { storyCollections } from "../../../.storybook/fixtures";
+import type { MessageRow } from "../../lib/electric/types";
 import { ChannelScreen } from "./ChannelScreen";
 
 const general = storyCollections.channels.find((channel) => channel.id === "channel-general")!;
@@ -19,6 +20,110 @@ const threadChannel = {
   thread_archived_at: null,
   thread_activity_at: general.created_at,
 };
+
+function replyScenarioMessages(
+  channelId: string,
+  {
+    replyToReply = false,
+    multipleReplies = false,
+  }: { replyToReply?: boolean; multipleReplies?: boolean } = {},
+): MessageRow[] {
+  const users = storyCollections.users ?? [];
+  const alice = users.find((user) => user.id === "user-alice")!;
+  const bob = users.find((user) => user.id === "user-bob")!;
+  const carol = users.find((user) => user.id === "user-carol")!;
+  const parent: MessageRow = {
+    id: `${channelId}-reply-parent`,
+    user_id: alice.id,
+    channel_id: channelId,
+    content: "リリース計画を確認してください。切替は18時の予定です。",
+    created_at: "2026-01-02 09:00:00.000",
+    updated_at: null,
+    deleted_at: null,
+    parent_id: null,
+  };
+  const makeReply = (
+    id: string,
+    user: typeof bob,
+    content: string,
+    target: MessageRow,
+    seconds: number,
+  ): MessageRow => ({
+    id: `${channelId}-${id}`,
+    user_id: user.id,
+    channel_id: channelId,
+    content,
+    created_at: `2026-01-02 09:00:${String(seconds).padStart(2, "0")}.000`,
+    updated_at: null,
+    deleted_at: null,
+    parent_id: null,
+    reply_to_message_id: target.id,
+    display_data: {
+      emojis: {},
+      attachments: [],
+      reactions: [],
+      reply_count: 0,
+      reply_target: {
+        id: target.id,
+        user_id: target.user_id,
+        channel_id: target.channel_id,
+        content: target.content,
+        deleted_at: null,
+        author: {
+          user_name:
+            users.find((candidate) => candidate.id === target.user_id)?.user_name ?? "user",
+          display_name:
+            users.find((candidate) => candidate.id === target.user_id)?.display_name ?? "User",
+          avatar_url: null,
+        },
+      },
+    },
+  });
+  const first = makeReply(
+    "reply-bob",
+    bob,
+    "切替手順を確認しました。",
+    parent,
+    12,
+  );
+  if (!replyToReply && !multipleReplies) return [parent, first];
+  const second = makeReply(
+    "reply-carol",
+    carol,
+    replyToReply ? "その補足を反映しました。" : "監視項目を追加しました。",
+    replyToReply ? first : parent,
+    24,
+  );
+  return [parent, first, second];
+}
+
+function withReplyMessages(
+  channelId: string,
+  options: { replyToReply?: boolean; multipleReplies?: boolean } = {},
+) {
+  return {
+    ...storyCollections,
+    messages: [
+      ...(storyCollections.messages ?? []).filter((message) => message.channel_id !== channelId),
+      ...replyScenarioMessages(channelId, options),
+    ],
+    channels:
+      channelId === threadChannel.id
+        ? [...(storyCollections.channels ?? []), threadChannel]
+        : storyCollections.channels,
+    channelUsers:
+      channelId === threadChannel.id
+        ? [
+            ...(storyCollections.channelUsers ?? []),
+            ...["user-alice", "user-bob", "user-carol"].map((user_id) => ({
+              user_id,
+              channel_id: threadChannel.id,
+              joined_at: general.created_at,
+            })),
+          ]
+        : storyCollections.channelUsers,
+  };
+}
 
 const meta = {
   title: "Pages/Channel",
@@ -52,6 +157,23 @@ export const ThreadChannel: Story = {
       channels: [...storyCollections.channels, threadChannel],
     },
   },
+};
+
+export const RegularChannelReplies: Story = {
+  parameters: { collections: withReplyMessages(general.id) },
+};
+
+export const ThreadChannelReplies: Story = {
+  args: { channelId: threadChannel.id },
+  parameters: { collections: withReplyMessages(threadChannel.id) },
+};
+
+export const ReplyToReply: Story = {
+  parameters: { collections: withReplyMessages(general.id, { replyToReply: true }) },
+};
+
+export const MultipleRepliesToOneMessage: Story = {
+  parameters: { collections: withReplyMessages(general.id, { multipleReplies: true }) },
 };
 
 export const PrivateChannel: Story = {
