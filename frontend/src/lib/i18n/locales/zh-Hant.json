@@ -1170,6 +1170,7 @@
       "added": "自上次傳送以來新增的接收者：{{names}}"
     },
     "downgraded": "此頻道曾經加密，但伺服器現在表示未加密。不會以明文傳送訊息。",
+    "checking": "正在確認此頻道的加密狀態…",
     "attachments": {
       "encrypted": "已加密",
       "decryptFailed": "無法解密附件。內容可能已被更改。"

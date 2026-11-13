@@ -34,6 +34,7 @@ function fakeWorker() {
   const ops: CryptoOperation[] = [];
   let sessionEpoch: number | null = null;
   let pendingEpoch = 0;
+  let shared = false;
   const worker = {
     request: async (operation: CryptoOperation) => {
       ops.push(operation);
@@ -51,14 +52,21 @@ function fakeWorker() {
             userIds: ["alice", "bob"],
           };
         case "megolmStart":
+          if (sessionEpoch !== pendingEpoch) shared = false;
           sessionEpoch = pendingEpoch;
-          return { claim: { bob: { "bob-device": "signed_curve25519" } }, pending: 1 };
+          return shared
+            ? { claim: {}, pending: 0 }
+            : { claim: { bob: { "bob-device": "signed_curve25519" } }, pending: 1 };
+        case "megolmMarkShared":
+          if (operation.devices.length > 0) shared = true;
+          return null;
         case "megolmShare":
           return { messages: { bob: { "bob-device": { ciphertext: "room-key" } } }, missing: [] };
         case "megolmEncrypt":
           return { ciphertext: { ciphertext: "opaque", session_id: "s" }, epoch: sessionEpoch };
         case "megolmDiscard":
           sessionEpoch = null;
+          shared = false;
           return null;
         default:
           return null;
@@ -70,7 +78,11 @@ function fakeWorker() {
 }
 
 /** API を記録し、`/api/messages` には決めた順で応答する偽の client。 */
-function fakeClient(messageResults: (Error | null)[], epochs: number[]) {
+function fakeClient(
+  messageResults: (Error | null)[],
+  epochs: number[],
+  toDeviceResults: (Error | null)[] = [],
+) {
   const calls: Call[] = [];
   let recipientsCall = 0;
   const respond = (method: string, path: string, body?: unknown) => {
@@ -86,7 +98,11 @@ function fakeClient(messageResults: (Error | null)[], epochs: number[]) {
       };
     }
     if (path === "/api/e2ee/keys/claim") return { data: { one_time_keys: {} }, txid: null };
-    if (path === "/api/e2ee/to_device") return { data: { undelivered: [] }, txid: null };
+    if (path === "/api/e2ee/to_device") {
+      const result = toDeviceResults.shift() ?? null;
+      if (result) throw result;
+      return { data: { undelivered: [] }, txid: null };
+    }
     if (path.startsWith("/api/messages")) {
       const result = messageResults.shift() ?? null;
       if (result) throw result;
@@ -143,19 +159,25 @@ describe("sendEncryptedMessage", () => {
   it("同じ epoch なら、2 通目は配り直さずに送る", async () => {
     const { worker } = fakeWorker();
     const { client, calls } = fakeClient([null, null], [3]);
+    let sessionsCreated = 0;
     const send = (messageId: string) =>
-      sendEncryptedMessage(deps(worker, client), {
-        channelId: CHANNEL,
-        shapeEpoch: "3",
-        messageId,
-        parentId: null,
-        body: "hello",
-        mentions: NO_MENTIONS,
-      });
+      sendEncryptedMessage(
+        { ...deps(worker, client), onSessionCreated: () => (sessionsCreated += 1) },
+        {
+          channelId: CHANNEL,
+          shapeEpoch: "3",
+          messageId,
+          parentId: null,
+          body: "hello",
+          mentions: NO_MENTIONS,
+        },
+      );
     await send("m1");
     calls.length = 0;
     await send("m2");
     expect(calls.map((call) => call.path)).toEqual(["/api/messages"]);
+    // 新しい送信用セッションを作ったときだけ、鍵バックアップへの送信を頼む。
+    expect(sessionsCreated).toBe(1);
   });
 
   it("409 E2EE_STALE_EPOCH なら current_epoch 以上で作り直し、同じ ID で送り直す", async () => {
@@ -206,6 +228,35 @@ describe("sendEncryptedMessage", () => {
     expect(calls.filter((call) => call.path.endsWith("/recipients"))).toHaveLength(1);
     expect(calls.filter((call) => call.path === "/api/e2ee/to_device")).toHaveLength(1);
     expect(calls.filter((call) => call.path === "/api/messages")).toHaveLength(2);
+  });
+
+  it("鍵の配布が途中で失敗したら、次の送信の前に配り直す", async () => {
+    const { worker } = fakeWorker();
+    const unavailable = new ApiError(503, "unavailable", null, {
+      path: "/api/e2ee/to_device",
+      method: "POST",
+    });
+    const { client, calls } = fakeClient([null], [3], [unavailable]);
+    const send = (messageId: string) =>
+      sendEncryptedMessage(deps(worker, client), {
+        channelId: CHANNEL,
+        shapeEpoch: "3",
+        messageId,
+        parentId: null,
+        body: "hello",
+        mentions: NO_MENTIONS,
+      });
+    // 1 回目は配布で失敗し、メッセージは送らない（本文は入力欄に戻る）。
+    await expect(send("m1")).rejects.toBe(unavailable);
+    expect(calls.filter((call) => call.path === "/api/messages")).toHaveLength(0);
+    calls.length = 0;
+    // 2 回目は、スナップショットを取り直さなくても、配り終えていない端末に配ってから送る。
+    await send("m1");
+    expect(calls.map((call) => call.path)).toEqual([
+      "/api/e2ee/keys/claim",
+      "/api/e2ee/to_device",
+      "/api/messages",
+    ]);
   });
 
   it("3 回続けて E2EE_STALE_EPOCH なら諦める", async () => {

@@ -1170,6 +1170,7 @@
       "added": "自上次发送以来新增的接收者：{{names}}"
     },
     "downgraded": "此频道曾经加密，但服务器现在表示未加密。不会以明文发送消息。",
+    "checking": "正在确认此频道的加密状态…",
     "attachments": {
       "encrypted": "已加密",
       "decryptFailed": "无法解密附件。内容可能已被更改。"

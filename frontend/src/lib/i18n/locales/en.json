@@ -1170,6 +1170,7 @@
       "added": "New since your last message: {{names}}"
     },
     "downgraded": "This channel was encrypted, but the server now says it isn't. Messages won't be sent unencrypted.",
+    "checking": "Checking this channel's encryption…",
     "attachments": {
       "encrypted": "Encrypted",
       "decryptFailed": "Couldn't decrypt the attachment. Its contents may have been altered."

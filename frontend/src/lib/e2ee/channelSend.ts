@@ -16,6 +16,11 @@ export interface ChannelCryptoDeps {
   signal?: AbortSignal;
   /** 配布先を判定し直したとき（送信画面の「配れない相手」と配布先の数の表示に使う）。 */
   onRecipients?: (channelId: string, summary: RecipientSummary) => void;
+  /**
+   * 新しい送信用セッションを用意した（その受信用の写しを暗号ストアに保存した）。鍵バックアップに
+   * 送るのに使う（`E2eeContextValue.requestKeyBackup`）。
+   */
+  onSessionCreated?: () => void;
 }
 
 /** 送信の要求に入れる、暗号化チャンネルのメッセージ（docs/e2ee.md の「メッセージ」）。 */
@@ -103,10 +108,10 @@ async function prepareOutboundSession(
   const needsSnapshot =
     minEpoch !== null ||
     (await worker.request({ op: "megolmNeedsSnapshot", channelId, epoch: Number(epoch) }));
-  if (!needsSnapshot) return;
-
+  // スナップショットが要らなくても、配り終えていない端末（前の配布の途中の失敗、払い出されなかった
+  // 端末、`undelivered`）が残っていれば、送る前に配布を続ける（下の `megolmStart` から）。
   // TOFU のピンが別の端末のピンとぶつかったら、そのピンを入れたスナップショットで判定し直す。
-  for (let round = 0; ; round += 1) {
+  for (let round = 0; needsSnapshot; round += 1) {
     const pages = await fetchRecipients(client, channelId, minEpoch, signal);
     const summary = await worker.request({ op: "megolmEvaluate", channelId, pages });
     noteEpoch(channelId, BigInt(summary.epoch));
@@ -125,6 +130,7 @@ async function prepareOutboundSession(
   }
 
   const plan = await worker.request({ op: "megolmStart", channelId });
+  if (needsSnapshot) deps.onSessionCreated?.();
   if (plan.pending === 0) return;
   const claimed =
     Object.keys(plan.claim).length > 0 ? await claimKeys(client, plan.claim, signal) : {};

@@ -1170,6 +1170,7 @@
       "added": "上次傳送之後新加嘅收件人：{{names}}"
     },
     "downgraded": "呢個頻道之前係加密嘅，但伺服器而家話冇加密。唔會用明文傳送。",
+    "checking": "確認緊呢個頻道嘅加密…",
     "attachments": {
       "encrypted": "已加密",
       "decryptFailed": "解密唔到附件。內容可能已經畀人改過。"

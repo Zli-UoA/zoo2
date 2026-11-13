@@ -50,6 +50,11 @@ import {
   type ChannelCryptoDeps,
 } from "../../../lib/e2ee/channelSend";
 import { useE2ee } from "../../../lib/e2ee/e2ee-context";
+import {
+  encryptionSendState,
+  noteEncryptedChannel,
+  type KnownEncryptedState,
+} from "../../../lib/e2ee/encryptionGuard";
 import { apiErrorCode } from "../../../lib/e2ee/megolmApi";
 import { MessageDecryptionsContext } from "../../../lib/e2ee/messageDecryption";
 import type { RecipientSummary } from "../../../lib/e2ee/store/megolm";
@@ -136,31 +141,45 @@ export function MessagePane({
   const e2ee = useE2ee();
   // 暗号化の格下げを防ぐ（docs/e2ee.md）。一度 `encrypted = true` を見たチャンネル、名前が `edm:` の
   // チャンネル、暗号文のある行があるチャンネルに `encrypted = false` が届いたら、平文では送らず警告する。
-  const [knownEncrypted, setKnownEncrypted] = useState(false);
+  // 見た時点で同期的に覚える（暗号ストアへの問い合わせを待たずに、格下げとして扱えるように）。
+  if (encrypted) noteEncryptedChannel(channelId);
+  const [knownEncrypted, setKnownEncrypted] = useState<{
+    channelId: string;
+    known: KnownEncryptedState;
+  } | null>(null);
   useEffect(() => {
     const worker = e2ee.worker;
-    setKnownEncrypted(false);
     if (!worker) return;
     let active = true;
     if (encrypted) {
       void worker.request({ op: "megolmRememberEncrypted", channelId }).catch(() => undefined);
     } else {
+      setKnownEncrypted({ channelId, known: "pending" });
       void worker
         .request({ op: "megolmIsKnownEncrypted", channelId })
         .then((known) => {
-          if (active) setKnownEncrypted(known);
+          if (active) setKnownEncrypted({ channelId, known });
         })
-        .catch(() => undefined);
+        .catch(() => {
+          if (active) setKnownEncrypted({ channelId, known: "failed" });
+        });
     }
     return () => {
       active = false;
     };
   }, [channelId, e2ee.worker, encrypted]);
-  const downgraded =
-    !encrypted &&
-    (knownEncrypted ||
-      channelName?.startsWith("edm:") === true ||
-      feed.some((row) => row.ciphertext != null));
+  // 別のチャンネルの結果や、問い合わせを始める前の描画では、確かめ終わっていないものとして扱う。
+  const { downgraded, checking: checkingEncryption } = encryptionSendState({
+    channelId,
+    encrypted,
+    known: !e2ee.worker
+      ? "unavailable"
+      : knownEncrypted?.channelId === channelId
+        ? knownEncrypted.known
+        : "pending",
+    channelName,
+    hasCiphertext: feed.some((row) => row.ciphertext != null),
+  });
   /** 表示と添付の扱いを暗号化チャンネルにするか（格下げを見つけたときも暗号化として扱う）。 */
   const treatAsEncrypted = encrypted || downgraded;
   // 暗号化チャンネルには、送る直前に Megolm で暗号化して送る（docs/e2ee.md）。このタブが暗号ストアを
@@ -175,14 +194,15 @@ export function MessagePane({
             client: appClient,
             deviceId: e2ee.deviceId,
             onRecipients: (_channelId, summary) => setRecipients(summary),
+            onSessionCreated: () => e2ee.requestKeyBackup(),
           }
         : null,
-    [appClient, e2ee.deviceId, e2ee.worker, encrypted],
+    [appClient, e2ee, encrypted],
   );
-  const sendBlocked = (encrypted && cryptoDeps === null) || downgraded;
+  const sendBlocked = (encrypted && cryptoDeps === null) || downgraded || checkingEncryption;
   // 暗号化チャンネルの添付は、暗号化して上げ、鍵などを Megolm で暗号化した本文の attachments に入れる
   // （#364。docs/e2ee.md の「暗号化した添付」）。Composer には今までどおり ID を返し、本文に入れる
-  // AttachmentInfo は送信まで ID ごとに持っておく。送れないあいだ（cryptoDeps がない、格下げ）は出さない。
+  // AttachmentInfo は送信まで ID ごとに持っておく。送れないあいだ（sendBlocked。cryptoDeps がない、格下げ、確認待ち）は出さない。
   const encryptedUpload = useEncryptedAttachmentUpload(channelId);
   const encryptedAttachments = useRef(new Map<string, AttachmentInfo>());
   const uploadEncryptedAttachment = useCallback(
@@ -834,11 +854,13 @@ export function MessagePane({
                 placeholder={
                   downgraded
                     ? t("e2ee.downgraded")
-                    : sendBlocked
-                      ? t("e2ee.deviceNotReady")
-                      : isOnline
-                        ? undefined
-                        : t("offline.composeDisabled")
+                    : checkingEncryption
+                      ? t("e2ee.checking")
+                      : sendBlocked
+                        ? t("e2ee.deviceNotReady")
+                        : isOnline
+                          ? undefined
+                          : t("offline.composeDisabled")
                 }
               />
             </>
@@ -894,7 +916,13 @@ export function MessagePane({
             onRequestDelete={setPendingDeleteId}
             onSendReply={handleSendReply}
             composeDisabledReason={
-              downgraded ? t("e2ee.downgraded") : sendBlocked ? t("e2ee.deviceNotReady") : undefined
+              downgraded
+                ? t("e2ee.downgraded")
+                : checkingEncryption
+                  ? t("e2ee.checking")
+                  : sendBlocked
+                    ? t("e2ee.deviceNotReady")
+                    : undefined
             }
             hasOlder={threadQuery.hasOlder}
             isLoadingOlder={threadQuery.isLoadingOlder}

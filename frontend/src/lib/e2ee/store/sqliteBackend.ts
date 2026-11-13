@@ -53,7 +53,11 @@ function loadSqlite(): Promise<SQLiteAPI> {
     vfsCaches = vfs as unknown as typeof vfsCaches;
     sqlite3.vfs_register(vfs, true);
     return sqlite3;
-  })();
+  })().catch((error: unknown) => {
+    // 一時的な失敗なら、次の open で初期化し直す。
+    sqliteReady = null;
+    throw error;
+  });
   return sqliteReady;
 }
 
@@ -186,6 +190,38 @@ export async function openSqliteCryptoBackend(databaseName: string): Promise<Cry
       enqueue(async () => {
         const rows = await query("SELECT count(*) AS n FROM inbound_sessions WHERE backed_up = 0");
         return Number(rows[0]?.n ?? 0);
+      }),
+
+    pendingBackupSessions: (limit: number) =>
+      enqueue(async () => {
+        const rows = await query(
+          "SELECT key, pickle FROM inbound_sessions WHERE backed_up = 0 ORDER BY key LIMIT ?",
+          [limit],
+        );
+        return rows.map((row) => ({ key: String(row.key), pickle: String(row.pickle) }));
+      }),
+
+    markBackedUp: (sessions: { key: InboundSessionKey; pickle: string }[]) =>
+      enqueue(async () => {
+        await sqlite3.exec(db, "BEGIN IMMEDIATE");
+        try {
+          for (const { key, pickle } of sessions) {
+            // 送ったあとに書き換わったセッションは、送信待ちのまま残す。
+            await query("UPDATE inbound_sessions SET backed_up = 1 WHERE key = ? AND pickle = ?", [
+              key,
+              pickle,
+            ]);
+          }
+          await sqlite3.exec(db, "COMMIT");
+        } catch (error) {
+          await sqlite3.exec(db, "ROLLBACK").catch(() => undefined);
+          throw error;
+        }
+      }),
+
+    resetBackedUp: () =>
+      enqueue(async () => {
+        await query("UPDATE inbound_sessions SET backed_up = 0");
       }),
 
     close,
