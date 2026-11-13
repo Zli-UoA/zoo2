@@ -62,6 +62,8 @@ describe("capture helpers", () => {
     expect(normalizeRouteGroup("/")).toBe("/");
     expect(normalizeRouteGroup("/channels/0193-abc?thread=1")).toBe("/channels");
     expect(normalizeRouteGroup("/public/users/alice")).toBe("/public");
+    expect(normalizeRouteGroup("/bubble")).toBe("/bubble");
+    expect(normalizeRouteGroup("/realtime?room=lobby")).toBe("/realtime");
     expect(normalizeRouteGroup("/unknown/route")).toBe("other");
   });
 
@@ -353,24 +355,19 @@ describe("TelemetryReporter", () => {
     }
   });
 
-  it("protects an in-flight normal batch with keepalive when pagehide flush runs before it settles", async () => {
+  it("sends normal batches with keepalive=true and avoids duplicate POSTs when pagehide flush runs while awaiting response", async () => {
     let hidden = false;
     const calls: Array<{ keepalive: boolean | undefined; body: string }> = [];
-    let rejectNormalFetch: ((reason?: unknown) => void) | undefined;
+    let resolveNormalFetch: ((res: Response) => void) | undefined;
 
     const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
-      const keepalive = init?.keepalive;
-      const body = typeof init?.body === "string" ? init.body : "";
-      calls.push({ keepalive, body });
-      if (!keepalive) {
-        return await new Promise<Response>((_resolve, reject) => {
-          rejectNormalFetch = reject;
-          init?.signal?.addEventListener("abort", () => {
-            reject(new DOMException("Aborted", "AbortError"));
-          });
-        });
-      }
-      return new Response(null, { status: 202 });
+      calls.push({
+        keepalive: init?.keepalive,
+        body: typeof init?.body === "string" ? init.body : "",
+      });
+      return await new Promise<Response>((resolve) => {
+        resolveNormalFetch = resolve;
+      });
     });
 
     const reporter = new TelemetryReporter({
@@ -390,17 +387,74 @@ describe("TelemetryReporter", () => {
     const normalFlush = reporter.flush();
     expect(reporter.pendingCount()).toBe(0);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.keepalive).toBe(false);
+    expect(calls[0]?.keepalive).toBe(true);
 
-    // キューが空でも送信中バッチを keepalive へ引き継ぐ
+    // すでに keepalive=true で送信済みのため、応答保留中に pagehide が来ても重複 POST しない
     hidden = true;
     await reporter.flush({ keepalive: true });
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.keepalive).toBe(true);
-    expect(calls[1]?.body).toContain("in-flight batch");
+    expect(calls).toHaveLength(1);
 
-    rejectNormalFetch?.(new Error("late failure after takeover"));
+    resolveNormalFetch?.(new Response(null, { status: 202 }));
     await normalFlush;
+    expect(reporter.pendingCount()).toBe(0);
+    reporter.dispose();
+  });
+
+  it("shares the 60,000-byte keepalive budget across overlapping visibilitychange and pagehide flushes", async () => {
+    const encoder = new TextEncoder();
+    const inFlightResolvers: Array<(res: Response) => void> = [];
+    const sentByteLengths: number[] = [];
+
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = typeof init?.body === "string" ? init.body : "";
+      sentByteLengths.push(encoder.encode(body).byteLength);
+      return await new Promise<Response>((resolve) => {
+        inFlightResolvers.push(resolve);
+      });
+    });
+
+    const reporter = new TelemetryReporter({
+      fetchImpl: fetchMock,
+      maxBatchEvents: 20,
+      isHidden: () => true,
+      isOnline: () => true,
+    });
+
+    // 75件（1件あたり日本語250文字）-> 先行3バッチ(60件で約50KB)が応答待ちの間は残り15件(約12.5KB)を追加送信せず60KB上限を守る
+    const jpMsg = "あ".repeat(250);
+    for (let i = 0; i < 75; i += 1) {
+      reporter.enqueue({
+        kind: "error",
+        category: "runtime",
+        route: "/home",
+        message: `${i}:${jpMsg}`,
+      });
+    }
+
+    const firstKeepalive = reporter.flush({ keepalive: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(reporter.pendingCount()).toBe(15);
+
+    // 先行keepaliveが応答待ちのまま続けて pagehide の keepalive が走っても予算を超えない
+    await reporter.flush({ keepalive: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(reporter.pendingCount()).toBe(15);
+
+    const inflightTotal = sentByteLengths.reduce((acc, bytes) => acc + bytes, 0);
+    expect(inflightTotal).toBeLessThanOrEqual(60_000);
+
+    for (const resolve of inFlightResolvers.splice(0)) {
+      resolve(new Response(null, { status: 202 }));
+    }
+    await firstKeepalive;
+
+    // 応答完了後は空いた枠で残り15件も送信できる
+    const secondKeepalive = reporter.flush({ keepalive: true });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const resolve of inFlightResolvers.splice(0)) {
+      resolve(new Response(null, { status: 202 }));
+    }
+    await secondKeepalive;
     expect(reporter.pendingCount()).toBe(0);
     reporter.dispose();
   });

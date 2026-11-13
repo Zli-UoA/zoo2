@@ -540,6 +540,10 @@ pub(crate) fn normalize_route_group(raw: Option<&str>) -> &'static str {
         "/auth"
     } else if path.starts_with("/apps") {
         "/apps"
+    } else if path.starts_with("/bubble") {
+        "/bubble"
+    } else if path.starts_with("/realtime") {
+        "/realtime"
     } else {
         "other"
     }
@@ -622,6 +626,8 @@ mod tests {
             normalize_route_group(Some("/auth/callback?code=xyz")),
             "/auth"
         );
+        assert_eq!(normalize_route_group(Some("/bubble")), "/bubble");
+        assert_eq!(normalize_route_group(Some("/realtime?room=1")), "/realtime");
         assert_eq!(normalize_route_group(Some("/unknown/page")), "other");
     }
 

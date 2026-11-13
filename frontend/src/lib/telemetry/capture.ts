@@ -26,6 +26,8 @@ export function normalizeRouteGroup(pathname?: string): string {
     "/public",
     "/auth",
     "/apps",
+    "/bubble",
+    "/realtime",
   ]) {
     if (clean.startsWith(prefix)) {
       return prefix;

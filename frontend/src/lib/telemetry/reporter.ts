@@ -146,11 +146,8 @@ export class TelemetryReporter {
   private queue: FrontendTelemetryEvent[] = [];
   private recentKeys = new Map<string, number>();
   private timerId: ReturnType<typeof setTimeout> | null = null;
-  private activeNormalFlush: {
-    batch: FrontendTelemetryEvent[];
-    takenOverByKeepalive: boolean;
-    abortController: AbortController | null;
-  } | null = null;
+  private inFlightNormal = false;
+  private inFlightKeepaliveBytes = 0;
   private failureCount = 0;
   private backoffUntil = 0;
 
@@ -174,7 +171,6 @@ export class TelemetryReporter {
     if (options.enabled !== undefined) {
       this.enabled = options.enabled;
       if (!this.enabled) {
-        this.cancelActiveNormalFlush();
         this.queue = [];
         this.stopTimer();
       }
@@ -220,11 +216,7 @@ export class TelemetryReporter {
   handleVisibilityOrNetworkChange(): void {
     if (this.isHidden() || !this.isOnline()) {
       this.stopTimer();
-      if (
-        this.isHidden() &&
-        this.isOnline() &&
-        (this.queue.length > 0 || this.activeNormalFlush !== null)
-      ) {
+      if (this.isHidden() && this.isOnline() && this.queue.length > 0) {
         void this.flush({ keepalive: true });
       }
       return;
@@ -234,15 +226,12 @@ export class TelemetryReporter {
 
   async flush(options: { keepalive?: boolean } = {}): Promise<void> {
     const keepalive = options.keepalive ?? false;
-    if (
-      !this.enabled ||
-      (this.queue.length === 0 && (!keepalive || this.activeNormalFlush === null))
-    ) {
+    if (!this.enabled || this.queue.length === 0) {
       this.stopTimer();
       return;
     }
     if (!keepalive) {
-      if (this.activeNormalFlush !== null || !this.isOnline() || this.now() < this.backoffUntil) {
+      if (this.inFlightNormal || !this.isOnline() || this.now() < this.backoffUntil) {
         this.scheduleIfActive();
         return;
       }
@@ -251,37 +240,36 @@ export class TelemetryReporter {
     this.stopTimer();
     const endpoint = joinUrl(this.apiBaseUrl, "/api/telemetry");
     if (keepalive) {
-      if (this.activeNormalFlush && !this.activeNormalFlush.takenOverByKeepalive) {
-        const takenOver = this.activeNormalFlush;
-        takenOver.takenOverByKeepalive = true;
-        this.activeNormalFlush = null;
-        takenOver.abortController?.abort();
-        this.requeueBatch(takenOver.batch);
-      }
       await this.flushKeepaliveBatches(endpoint);
       return;
     }
 
-    const batch = this.queue.splice(0, this.maxBatchEvents);
-    const abortController = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const flight = {
-      batch,
-      takenOverByKeepalive: false,
-      abortController,
-    };
-    this.activeNormalFlush = flight;
+    const nextCount = Math.min(this.maxBatchEvents, this.queue.length);
+    const batch = this.queue.slice(0, nextCount);
+    const payload = JSON.stringify({ events: batch });
+    const payloadBytes = utf8ByteLength(payload);
+    if (
+      this.inFlightKeepaliveBytes > 0 &&
+      this.inFlightKeepaliveBytes + payloadBytes > KEEPALIVE_MAX_BYTES
+    ) {
+      this.scheduleIfActive();
+      return;
+    }
+
+    this.queue.splice(0, nextCount);
+    const useKeepalive = payloadBytes <= KEEPALIVE_MAX_BYTES;
+    this.inFlightNormal = true;
+    if (useKeepalive) {
+      this.inFlightKeepaliveBytes += payloadBytes;
+    }
 
     try {
       const response = await this.fetchImpl(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ events: batch }),
-        keepalive: false,
-        ...(abortController ? { signal: abortController.signal } : {}),
+        body: payload,
+        keepalive: useKeepalive,
       });
-      if (flight.takenOverByKeepalive) {
-        return;
-      }
       if (response.ok) {
         this.failureCount = 0;
         this.backoffUntil = 0;
@@ -290,21 +278,19 @@ export class TelemetryReporter {
         this.recordFailure();
       }
     } catch {
-      if (flight.takenOverByKeepalive) {
-        return;
-      }
       this.requeueBatch(batch);
       this.recordFailure();
     } finally {
-      if (this.activeNormalFlush === flight) {
-        this.activeNormalFlush = null;
+      if (useKeepalive) {
+        this.inFlightKeepaliveBytes = Math.max(0, this.inFlightKeepaliveBytes - payloadBytes);
       }
+      this.inFlightNormal = false;
       this.scheduleIfActive();
     }
   }
 
   private async flushKeepaliveBatches(endpoint: string): Promise<void> {
-    const prepared: Array<{ batch: FrontendTelemetryEvent[]; payload: string }> = [];
+    const prepared: Array<{ batch: FrontendTelemetryEvent[]; payload: string; bytes: number }> = [];
     let totalBytes = 0;
 
     while (this.queue.length > 0) {
@@ -312,15 +298,19 @@ export class TelemetryReporter {
       const candidate = this.queue.slice(0, nextCount);
       const payload = JSON.stringify({ events: candidate });
       const payloadBytes = utf8ByteLength(payload);
-      if (prepared.length > 0 && totalBytes + payloadBytes > KEEPALIVE_MAX_BYTES) {
+      if (
+        (this.inFlightKeepaliveBytes > 0 || prepared.length > 0) &&
+        this.inFlightKeepaliveBytes + totalBytes + payloadBytes > KEEPALIVE_MAX_BYTES
+      ) {
         break;
       }
       this.queue.splice(0, nextCount);
-      prepared.push({ batch: candidate, payload });
+      prepared.push({ batch: candidate, payload, bytes: payloadBytes });
       totalBytes += payloadBytes;
     }
 
     if (prepared.length === 0) {
+      this.scheduleIfActive();
       return;
     }
 
@@ -328,8 +318,9 @@ export class TelemetryReporter {
     let allSucceeded = true;
     const retryEvents: FrontendTelemetryEvent[] = [];
 
+    this.inFlightKeepaliveBytes += totalBytes;
     const results = await Promise.all(
-      prepared.map(async ({ batch, payload }) => {
+      prepared.map(async ({ batch, payload, bytes }) => {
         try {
           const response = await this.fetchImpl(endpoint, {
             method: "POST",
@@ -348,6 +339,8 @@ export class TelemetryReporter {
           };
         } catch {
           return { batch, outcome: "retry" as const };
+        } finally {
+          this.inFlightKeepaliveBytes = Math.max(0, this.inFlightKeepaliveBytes - bytes);
         }
       }),
     );
@@ -388,18 +381,8 @@ export class TelemetryReporter {
 
   dispose(): void {
     this.stopTimer();
-    this.cancelActiveNormalFlush();
     this.queue = [];
     this.recentKeys.clear();
-  }
-
-  private cancelActiveNormalFlush(): void {
-    if (!this.activeNormalFlush) {
-      return;
-    }
-    this.activeNormalFlush.takenOverByKeepalive = true;
-    this.activeNormalFlush.abortController?.abort();
-    this.activeNormalFlush = null;
   }
 
   private recordFailure(): void {
