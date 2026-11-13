@@ -23,6 +23,9 @@ pub use zoo2_client_types::api::Me;
 pub struct ReadState {
     pub channel_id: String,
     pub has_unread: bool,
+    /// 最後に読んだ位置の時刻 (UTC)。一度も読んでいなければ `None`。未読の線を置くのに使う。
+    #[serde(default)]
+    pub last_read_at: Option<String>,
 }
 
 /// 閲覧権限で絞り込まれた `GET /api/threads` の1件。
@@ -716,7 +719,8 @@ mod tests {
             api.read_states().await.unwrap(),
             vec![ReadState {
                 channel_id: "c1".into(),
-                has_unread: true
+                has_unread: true,
+                last_read_at: None,
             }]
         );
     }

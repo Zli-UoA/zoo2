@@ -407,6 +407,9 @@ pub struct AppState {
     pub channel_cache: ChannelViewCache,
 
     pub unread: HashSet<String>,
+    /// 未読の線を置く位置 (チャンネルごと)。そのチャンネルが未読のときの `last_read_at` で、
+    /// チャンネルを閲覧している間は既読になっても残す (frontend の `useMessageReadState` と同じ)。
+    pub read_boundary: HashMap<String, jiff::civil::DateTime>,
     pub last_read_marked: HashMap<String, String>,
     pub read_mark_in_flight: HashMap<String, String>,
     pub read_mark_backoff_until: HashMap<String, (String, Instant)>,
@@ -585,6 +588,7 @@ impl AppState {
             channel_posting_policies_by_key: HashMap::new(),
             channel_cache: ChannelViewCache::default(),
             unread: HashSet::new(),
+            read_boundary: HashMap::new(),
             last_read_marked: HashMap::new(),
             read_mark_in_flight: HashMap::new(),
             read_mark_backoff_until: HashMap::new(),
@@ -1145,6 +1149,7 @@ impl AppState {
         self.channel_posting_policies_by_key.clear();
         self.channel_cache = ChannelViewCache::default();
         self.unread.clear();
+        self.read_boundary.clear();
         self.last_read_marked.clear();
         self.read_mark_in_flight.clear();
         self.read_mark_backoff_until.clear();
@@ -1875,6 +1880,7 @@ impl AppState {
     fn evict_channel(&mut self, channel_id: &str) {
         self.unsubscribe_channel(channel_id);
         self.unread.remove(channel_id);
+        self.read_boundary.remove(channel_id);
         self.last_read_marked.remove(channel_id);
         self.read_mark_in_flight.remove(channel_id);
         self.read_mark_backoff_until.remove(channel_id);
@@ -2194,6 +2200,7 @@ impl AppState {
                 true
             }
             AppEvent::ReadStates(states) => {
+                self.update_read_boundaries(&states);
                 let next_unread: HashSet<String> = states
                     .into_iter()
                     .filter(|s| s.has_unread)
@@ -2446,6 +2453,32 @@ impl AppState {
     }
 
     /// 開いているチャンネルの最新メッセージを画面に表示済みであれば既読にする。
+    /// 未読になったチャンネルの `last_read_at` を、未読の線の位置として覚える。
+    /// 覚えたものは、そのチャンネルを閲覧している間と、未読のままの間は残し、
+    /// 閲覧していない既読のチャンネルのものは捨てる。
+    fn update_read_boundaries(&mut self, states: &[zoo2_client_core::api::ReadState]) {
+        for state in states {
+            if state.has_unread && !self.read_boundary.contains_key(&state.channel_id) {
+                let boundary = match state.last_read_at.as_deref() {
+                    Some(value) => parse_utc_timestamp(value),
+                    // 一度も読んでいなければ、すべてが未読。
+                    None => Some(jiff::civil::DateTime::MIN),
+                };
+                if let Some(boundary) = boundary {
+                    self.read_boundary
+                        .insert(state.channel_id.clone(), boundary);
+                }
+            }
+        }
+        let current = self.current_channel.clone();
+        self.read_boundary.retain(|channel, _| {
+            current.as_deref() == Some(channel.as_str())
+                || states
+                    .iter()
+                    .any(|s| &s.channel_id == channel && s.has_unread)
+        });
+    }
+
     fn sync_unread_with_latest(&mut self) -> bool {
         let Some(channel_id) = self.current_channel.clone() else {
             return false;
@@ -4850,6 +4883,15 @@ impl AppState {
     }
 }
 
+/// サーバーの時刻 (`2026-11-01T00:00:00` や `2026-11-01 00:00:00`、`Z` やオフセット付きも可) を UTC の日時にする。
+pub fn parse_utc_timestamp(value: &str) -> Option<jiff::civil::DateTime> {
+    let value = value.trim();
+    if let Ok(ts) = value.parse::<jiff::Timestamp>() {
+        return Some(ts.to_zoned(jiff::tz::TimeZone::UTC).datetime());
+    }
+    value.replacen(' ', "T", 1).parse().ok()
+}
+
 /// `thumbsup` や `:thumbsup:` のショートコード、または絵文字そのものを絵文字に変換する。
 pub fn resolve_emoji(input: &str) -> Option<String> {
     zoo2_client_core::mfm::resolve_emoji(input)
@@ -5327,10 +5369,12 @@ pub(crate) mod tests {
             ReadState {
                 channel_id: "c1".into(),
                 has_unread: true,
+                last_read_at: None,
             },
             ReadState {
                 channel_id: "c2".into(),
                 has_unread: true,
+                last_read_at: None,
             },
         ]));
         assert!(state.unread.contains("c1"));
@@ -9532,5 +9576,81 @@ pub(crate) mod tests {
         assert_eq!(atts_by_msg.get("m1").unwrap()[1].file_name, "file2.pdf");
         assert_eq!(atts_by_msg.get("m2").unwrap().len(), 1);
         assert_eq!(atts_by_msg.get("m2").unwrap()[0].file_name, "file3.jpg");
+    }
+}
+
+#[cfg(test)]
+mod read_boundary_tests {
+    use super::*;
+    use jiff::civil::DateTime;
+    use zoo2_client_core::api::ReadState;
+
+    fn state() -> AppState {
+        AppState::from_config(&Config {
+            api_base_url: "http://localhost:0".to_string(),
+            auth: zoo2_client_core::config::AuthConfig::Dev {
+                user_id: "u".to_string(),
+            },
+            check_updates: false,
+        })
+    }
+
+    fn read_state(channel: &str, has_unread: bool, at: Option<&str>) -> ReadState {
+        ReadState {
+            channel_id: channel.to_string(),
+            has_unread,
+            last_read_at: at.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn parses_server_timestamps() {
+        let expected: DateTime = "2026-11-01T09:00:00".parse().unwrap();
+        assert_eq!(parse_utc_timestamp("2026-11-01T09:00:00"), Some(expected));
+        assert_eq!(parse_utc_timestamp("2026-11-01 09:00:00"), Some(expected));
+        assert_eq!(parse_utc_timestamp("2026-11-01T09:00:00Z"), Some(expected));
+        assert_eq!(
+            parse_utc_timestamp("2026-11-01T18:00:00+09:00"),
+            Some(expected)
+        );
+        assert_eq!(parse_utc_timestamp("あ"), None);
+    }
+
+    #[test]
+    fn keeps_the_boundary_of_the_open_channel_after_it_is_read() {
+        let mut s = state();
+        s.current_channel = Some("c1".into());
+        s.update_read_boundaries(&[
+            read_state("c1", true, Some("2026-11-01T09:00:00")),
+            read_state("c2", true, None),
+        ]);
+        assert_eq!(
+            s.read_boundary.get("c1"),
+            Some(&"2026-11-01T09:00:00".parse().unwrap())
+        );
+        assert_eq!(s.read_boundary.get("c2"), Some(&DateTime::MIN));
+
+        // 既読になっても、開いている c1 の線は残る。閲覧していない c2 は捨てる。
+        s.update_read_boundaries(&[
+            read_state("c1", false, Some("2026-11-01T10:00:00")),
+            read_state("c2", false, Some("2026-11-01T10:00:00")),
+        ]);
+        assert!(s.read_boundary.contains_key("c1"));
+        assert!(!s.read_boundary.contains_key("c2"));
+        // 残っている線は、あとから届いた `last_read_at` で動かさない。
+        assert_eq!(
+            s.read_boundary.get("c1"),
+            Some(&"2026-11-01T09:00:00".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn leaving_a_read_channel_drops_its_boundary_on_the_next_poll() {
+        let mut s = state();
+        s.current_channel = Some("c1".into());
+        s.update_read_boundaries(&[read_state("c1", true, None)]);
+        s.current_channel = Some("c2".into());
+        s.update_read_boundaries(&[read_state("c1", false, None)]);
+        assert!(s.read_boundary.is_empty());
     }
 }
