@@ -681,6 +681,10 @@
         "NeedsReauth",
         "Unlocked"
       ]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
+      "states": ["Default", "Undeliverable"]
     }
   ],
   "modules": [
@@ -1232,6 +1236,10 @@
         "src/lib/e2ee/reauth.test.ts",
         "src/lib/oidc/reauth.test.ts"
       ]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",
+      "story": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx"
     }
   ]
 }

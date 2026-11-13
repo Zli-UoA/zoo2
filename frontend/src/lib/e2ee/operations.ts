@@ -143,6 +143,27 @@ export class CryptoOperations {
         this.setup.discard();
         await this.opened().forgetOwnKeys();
         return null;
+      case "megolmNeedsSnapshot":
+        return this.opened().megolm.needsSnapshot(request.channelId, request.epoch);
+      case "megolmEvaluate":
+        return this.opened().megolm.evaluate(request.channelId, request.pages);
+      case "megolmSettlePins":
+        await this.opened().megolm.settlePins(request.confirmed, request.discarded);
+        return null;
+      case "megolmStart":
+        return this.opened().megolm.start(request.channelId);
+      case "megolmShare":
+        return this.opened().megolm.share(request.channelId, request.claimed);
+      case "megolmMarkShared":
+        this.opened().megolm.markShared(request.channelId, request.devices);
+        return null;
+      case "megolmEncrypt":
+        return this.opened().megolm.encrypt(request.channelId, request.message);
+      case "megolmDiscard":
+        this.opened().megolm.discard(request.channelId);
+        return null;
+      case "megolmDecrypt":
+        return this.opened().megolm.decrypt(request.rows);
       case "close":
         this.setup.discard();
         this.lastOpen = null;

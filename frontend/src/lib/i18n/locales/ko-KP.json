@@ -1150,13 +1150,24 @@
     "undeliverable": {
       "title": "다음 사람은 새 통보문을 읽을수 없습니다",
       "notSetUp": "{{name}}님은 암호화를 설정하지 않았습니다",
-      "needsReverification": "{{name}}님을 다시 확인해야 합니다"
+      "needsReverification": "{{name}}님을 다시 확인해야 합니다",
+      "invalidKeys": "{{name}}님의 암호화열쇠가 옳지 않습니다",
+      "pinPending": "{{name}}님의 열쇠를 확인하고 있습니다",
+      "blocked": "{{name}}님에게는 지금 열쇠를 보낼수 없습니다"
     },
     "loadPreviews": "련결 미리보기 불러오기",
     "desktopUnsupported": {
       "title": "암호화된 통로",
       "description": "이 의뢰기에서는 암호화된 통로를 표시할수 없습니다. 웨브판이나 이동앱에서 여십시오."
     },
-    "sendUnavailable": "이 판에서는 아직 암호화된 통로에 보낼수 없습니다."
+    "sendUnavailable": "이 판에서는 아직 암호화된 통로에 보낼수 없습니다.",
+    "deviceNotReady": "이 장치(탭)에서는 아직 암호화가 준비되지 않았습니다. 암호화설정과 열기를 확인하고 다른 zoo 탭을 닫으십시오.",
+    "sendNeedsUnlock": "암호화된 통로에 보내려면 이 장치에서 암호화를 여십시오.",
+    "sendStaleEpoch": "성원이 계속 바뀌여 통보문을 보내지 못했습니다. 다시 보내십시오.",
+    "editConflict": "이 통보문은 다른 곳에서 편집되였습니다. 다시 불러온 다음 편집하십시오.",
+    "recipients": {
+      "summary": "{{users}}명의 장치 {{devices}}대에 맞추어 암호화합니다.",
+      "added": "지난번 송신이후 늘어난 수신자: {{names}}"
+    }
   }
 }
