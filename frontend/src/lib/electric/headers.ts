@@ -54,17 +54,24 @@ function wrapShapeResponseStream(
   }
 
   let reported = options.alreadyReported;
+  let cancelled = false;
   const reader = sourceBody.getReader();
   const wrappedBody = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
+        if (cancelled) {
+          return;
+        }
         if (done) {
           controller.close();
           return;
         }
         controller.enqueue(value);
       } catch (error) {
+        if (cancelled) {
+          return;
+        }
         if (!reported && !isAbortError(error) && !options.signal?.aborted) {
           reported = true;
           options.onStreamError();
@@ -79,6 +86,7 @@ function wrapShapeResponseStream(
       }
     },
     async cancel(reason) {
+      cancelled = true;
       await reader.cancel(reason);
     },
   });
@@ -135,10 +143,11 @@ export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
         apiBaseUrl,
         headers,
       },
-      async (traceIds) => {
+      async (traceIds, spanControl) => {
         let syncErrorReported = false;
         try {
           const res = await baseFetch(input, { ...init, headers });
+          spanControl.setResponseStatus(res.status);
           if (telemetry && res.status >= 500) {
             syncErrorReported = true;
             reportElectricSyncEvent({

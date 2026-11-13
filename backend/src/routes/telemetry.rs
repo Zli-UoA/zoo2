@@ -283,10 +283,12 @@ impl TelemetryRateLimiter {
             .buckets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if map.len() >= MAX_TRACKED_IPS && !map.contains_key(&key) {
-            map.retain(|_, v| now.duration_since(v.started_at) < self.window);
+        if !map.contains_key(&key) {
             if map.len() >= MAX_TRACKED_IPS {
-                map.clear();
+                map.retain(|_, v| now.duration_since(v.started_at) < self.window);
+            }
+            if map.len() >= MAX_TRACKED_IPS {
+                return false;
             }
         }
         let entry = map.entry(key).or_insert(WindowState {
@@ -684,6 +686,36 @@ mod tests {
         assert!(limiter.check(ip, start + Duration::from_secs(10)));
         assert!(!limiter.check(ip, start + Duration::from_secs(20)));
         assert!(limiter.check(ip, start + Duration::from_secs(61)));
+    }
+
+    #[test]
+    fn rate_limiter_preserves_existing_quotas_when_capacity_full() {
+        let limiter = TelemetryRateLimiter::new(Duration::from_secs(60), 1);
+        let start = Instant::now();
+
+        for i in 0..MAX_TRACKED_IPS {
+            let ip = IpBucket::Addr(IpAddr::from(std::net::Ipv4Addr::from((i as u32) + 1)));
+            assert!(limiter.check(ip, start));
+        }
+
+        let tracked_ip = IpBucket::Addr(IpAddr::from(std::net::Ipv4Addr::from(1)));
+        assert!(
+            !limiter.check(tracked_ip, start + Duration::from_secs(10)),
+            "existing quota must not be cleared when table is full"
+        );
+
+        let extra_ip = IpBucket::Addr(IpAddr::from(std::net::Ipv4Addr::from(
+            (MAX_TRACKED_IPS as u32) + 10,
+        )));
+        assert!(
+            !limiter.check(extra_ip, start + Duration::from_secs(10)),
+            "new untracked IP should be rejected instead of evicting all quotas"
+        );
+
+        assert!(
+            limiter.check(extra_ip, start + Duration::from_secs(61)),
+            "expired entries should be reclaimed after the window"
+        );
     }
 
     #[tokio::test]

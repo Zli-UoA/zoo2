@@ -172,9 +172,10 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     const startedAt = Date.now();
 
     let responseStatus = 0;
+    let errorReported = false;
     const { res: response, rawText } = await runWithHttpSpan(
       { enabled: telemetry, method, url, apiBaseUrl: baseUrl, headers },
-      async (traceIds) => {
+      async (traceIds, spanControl) => {
         try {
           const res = await doFetch(url, {
             method,
@@ -184,8 +185,9 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
             keepalive: requestOptions.keepalive,
           });
           responseStatus = res.status;
-          const rawText = await res.text();
+          spanControl.setResponseStatus(res.status);
           if (telemetry && res.status >= 500) {
+            errorReported = true;
             reportApiError({
               httpStatus: res.status,
               durationMs: Date.now() - startedAt,
@@ -193,10 +195,12 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
               traceIds,
             });
           }
+          const rawText = await res.text();
           return { res, rawText };
         } catch (error) {
           const isAbort = error instanceof DOMException && error.name === "AbortError";
-          if (telemetry && !isAbort) {
+          if (telemetry && !isAbort && !errorReported) {
+            errorReported = true;
             reportApiError({
               httpStatus: responseStatus >= 500 ? responseStatus : 0,
               durationMs: Date.now() - startedAt,

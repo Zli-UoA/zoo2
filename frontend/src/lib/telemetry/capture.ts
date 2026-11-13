@@ -169,6 +169,8 @@ export function installBrowserTelemetry(
   let latestLcpRoute: string | null = null;
   let lcpReported = false;
   const interactionsById = new Map<number, { duration: number; route: string }>();
+  let minInteractionId = Infinity;
+  let maxInteractionId = 0;
   let fallbackMaxInp: { duration: number; route: string } | null = null;
   let lastFlushedInpMs: number | null = null;
   let lastFlushedInpRoute: string | null = null;
@@ -189,8 +191,19 @@ export function installBrowserTelemetry(
               0,
               (performance as Performance & { interactionCount?: number }).interactionCount ?? 0,
             )
+          : undefined;
+      const estimatedFromIds =
+        perfInteractionCount === undefined &&
+        sorted.length >= 10 &&
+        Number.isFinite(minInteractionId) &&
+        maxInteractionId >= minInteractionId
+          ? Math.floor((maxInteractionId - minInteractionId) / 7) + 1
           : 0;
-      const totalInteractions = Math.max(perfInteractionCount, sorted.length);
+      const totalInteractions = Math.max(
+        perfInteractionCount ?? 0,
+        estimatedFromIds,
+        sorted.length,
+      );
       const p98Index = Math.min(sorted.length - 1, Math.floor(totalInteractions / 50));
       return sorted[p98Index] ?? null;
     }
@@ -347,6 +360,8 @@ export function installBrowserTelemetry(
             continue;
           }
           if (typeof eventEntry.interactionId === "number" && eventEntry.interactionId > 0) {
+            minInteractionId = Math.min(minInteractionId, eventEntry.interactionId);
+            maxInteractionId = Math.max(maxInteractionId, eventEntry.interactionId);
             const prev = interactionsById.get(eventEntry.interactionId);
             if (!prev || duration > prev.duration) {
               interactionsById.set(eventEntry.interactionId, {

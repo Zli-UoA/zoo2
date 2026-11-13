@@ -89,6 +89,14 @@ const DEFAULT_MAX_QUEUE_SIZE = 100;
 const DEFAULT_DEDUP_WINDOW_MS = 10_000;
 const MAX_BACKOFF_MS = 300_000;
 const KEEPALIVE_MAX_BYTES = 60_000;
+const utf8Encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
+
+function utf8ByteLength(text: string): number {
+  if (utf8Encoder) {
+    return utf8Encoder.encode(text).length;
+  }
+  return new Blob([text]).size;
+}
 
 function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
@@ -107,7 +115,7 @@ function dedupKey(event: FrontendTelemetryEvent): string {
     case "error":
       return `error:${event.category}:${event.route ?? "other"}:${event.http_status ?? 0}:${event.message ?? ""}`;
     case "web_vital":
-      return `vital:${event.metric}:${event.route ?? "other"}`;
+      return `vital:${event.metric}:${event.route ?? "other"}:${event.value_ms}`;
     case "electric_sync":
       return `electric:${event.shape}:${event.state}:${event.http_status ?? 0}`;
     case "webrtc":
@@ -268,12 +276,13 @@ export class TelemetryReporter {
       const nextCount = Math.min(this.maxBatchEvents, this.queue.length);
       const candidate = this.queue.slice(0, nextCount);
       const payload = JSON.stringify({ events: candidate });
-      if (prepared.length > 0 && totalBytes + payload.length > KEEPALIVE_MAX_BYTES) {
+      const payloadBytes = utf8ByteLength(payload);
+      if (prepared.length > 0 && totalBytes + payloadBytes > KEEPALIVE_MAX_BYTES) {
         break;
       }
       this.queue.splice(0, nextCount);
       prepared.push({ batch: candidate, payload });
-      totalBytes += payload.length;
+      totalBytes += payloadBytes;
     }
 
     if (prepared.length === 0) {
@@ -327,6 +336,7 @@ export class TelemetryReporter {
       this.failureCount = 0;
       this.backoffUntil = 0;
     }
+    this.scheduleIfActive();
   }
 
   private requeueBatch(batch: FrontendTelemetryEvent[]): void {

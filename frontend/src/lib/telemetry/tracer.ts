@@ -8,7 +8,7 @@ import {
   type TextMapSetter,
 } from "@opentelemetry/api";
 import { W3CTraceContextPropagator } from "@opentelemetry/core";
-import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
+import { type WebTracerConfig, WebTracerProvider } from "@opentelemetry/sdk-trace-web";
 
 const TRACER_NAME = "zoo-frontend";
 const FALLBACK_ORIGIN = "http://localhost";
@@ -50,6 +50,20 @@ export function ensureWebTracer(enabled: boolean): void {
   const provider = new WebTracerProvider();
   provider.register();
   initializedProvider = provider;
+}
+
+export function resetWebTracerForTests(config?: WebTracerConfig): void {
+  void initializedProvider?.shutdown();
+  trace.disable();
+  initializedProvider = null;
+  propagatorRegistered = false;
+  if (config) {
+    propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+    propagatorRegistered = true;
+    const provider = new WebTracerProvider(config);
+    provider.register();
+    initializedProvider = provider;
+  }
 }
 
 /**
@@ -105,6 +119,10 @@ export function getActiveTraceIds(): ActiveTraceIds {
   return extractTraceIds(activeSpan.spanContext());
 }
 
+export interface HttpSpanControl {
+  setResponseStatus: (status: number) => void;
+}
+
 /**
  * Backend API 呼び出し向けの HTTP クライアントスパンを開始し、対象 URL であれば
  * `traceparent` / `tracestate` を `headers` へ注入する。
@@ -117,10 +135,13 @@ export async function runWithHttpSpan<T>(
     apiBaseUrl: string;
     headers: Headers;
   },
-  fn: (traceIds: ActiveTraceIds) => Promise<T>,
+  fn: (traceIds: ActiveTraceIds, control: HttpSpanControl) => Promise<T>,
 ): Promise<T> {
+  const noopControl: HttpSpanControl = {
+    setResponseStatus: () => {},
+  };
   if (!options.enabled || !shouldPropagateTraceHeader(options.url, options.apiBaseUrl)) {
-    return fn({});
+    return fn({}, noopControl);
   }
 
   ensureWebTracer(true);
@@ -135,13 +156,33 @@ export async function runWithHttpSpan<T>(
       },
     },
     async (span) => {
+      let responseStatus: number | undefined;
+      const control: HttpSpanControl = {
+        setResponseStatus(status: number) {
+          responseStatus = status;
+        },
+      };
       try {
         propagation.inject(context.active(), options.headers, headerSetter);
         const traceIds = extractTraceIds(span.spanContext());
-        const result = await fn(traceIds);
-        span.setStatus({ code: SpanStatusCode.OK });
+        const result = await fn(traceIds, control);
+        const status = responseStatus ?? (result instanceof Response ? result.status : undefined);
+        if (status !== undefined) {
+          span.setAttribute("http.response.status_code", status);
+        }
+        if (status !== undefined && status >= 500) {
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: `HTTP ${status}`,
+          });
+        } else {
+          span.setStatus({ code: SpanStatusCode.OK });
+        }
         return result;
       } catch (error) {
+        if (responseStatus !== undefined) {
+          span.setAttribute("http.response.status_code", responseStatus);
+        }
         span.setStatus({
           code: SpanStatusCode.ERROR,
           message: error instanceof Error ? error.message : String(error),
