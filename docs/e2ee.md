@@ -943,7 +943,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - `revision` が 0（違えば 400）。
   - 平文チャンネルに `ciphertext`、`epoch`、`revision` を送ったら 400 `E2EE_PLAINTEXT_FORBIDDEN`。
   - `ciphertext`、`epoch`、`revision` のどれもない要求は、平文チャンネルと同じく、チャンネルを読む前に `content` を検証する（空白だけなら `code` のない 400。チャンネルがなくても 404 より先）。
-- `PATCH /api/messages/{id}`：`{"content": "", "epoch", "revision", "ciphertext", "mentions"}`。規則は送信と同じだが、`revision` の扱いだけは次の 2 点で上書きする（送信の平文チャンネルでは `revision` を拒否するが、編集では下のとおり省略も指定もできる）。
+- `PATCH /api/messages/{id}`：`{"content": "", "epoch", "revision", "ciphertext"}`。規則は送信と同じだが、`revision` の扱いだけは次の 2 点で上書きする（送信の平文チャンネルでは `revision` を拒否するが、編集では下のとおり省略も指定もできる）。
   - 【決定】暗号化チャンネルでは `revision` を必須にし、サーバーは `messages.revision` を単調に増やす。行を `FOR UPDATE` で読み、`revision` が今の値 + 1 でなければ 409 `E2EE_STALE_REVISION`（`current_revision` 付き）。同じユーザーの 2 つの端末が同時に編集しても、同じ `revision` の版が 2 つできないようにするため。
   - 【決定】平文チャンネルでは `revision` を省略できる（後方互換）。既存のクライアントは `{"content"}` だけを送る（`backend/src/routes/messages.rs` の `UpdateMessageRequest`）ので、省略した要求は今までどおり受け付け、サーバーが `messages.revision` を 1 増やすだけにする（照合しない）。`revision` を送った場合だけ、暗号化チャンネルと同じ照合をする。クライアントとサーバーの更新が同時でなくても、更新前のクライアントの平文の編集が失敗しないようにするため。平文チャンネルで `ciphertext` と `epoch` を送ったときは、今までどおり 400 `E2EE_PLAINTEXT_FORBIDDEN`。
   - 409 を受けたクライアントは、最新の行を復号してから編集し直す。最新の行を復号できなければ、編集を止めてユーザーに表示する（復号できない版を上書きしない）。
@@ -953,7 +953,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - `user_ids` は UUID だけを受け付け（違えば 400）、200 件まで（暗号化チャンネルのメンバー数の上限と同じ。超えたら 400 `E2EE_LIMIT_EXCEEDED`、`limit` は `mentions`）。重複は 1 件の通知にまとめる。
   - 通知を作るのは、チャンネルのメンバーで、送信者自身でなく、Bot でも無効化済みでもないユーザーだけ（平文チャンネルの本文のメンションと同じ規則）。メンバーでない ID は黙って無視し、400 にしない（送信のあいだに退出した人がいても送信を止めないため）。`channel` と `here` は、平文チャンネルの `@channel` と `@here` と同じく、送信者以外のメンバー全員に通知する。
   - 平文チャンネルでは `mentions` を使わず、今までどおり本文から作る（送っても 400 にはせず、無視する）。
-  - 編集（`PATCH /api/messages/{id}`）は、平文チャンネルと同じく通知を作らないので、`mentions` を受け取らない。
+  - 編集（`PATCH /api/messages/{id}`）は、平文チャンネルと同じく通知を作らないので、`mentions` を受け取らない（`UpdateMessageRequest` にない項目なので、送っても無視する）。
 - `POST /api/attachments/presign`：暗号化チャンネルの `channel_id` なら 400 `E2EE_ATTACHMENTS_FORBIDDEN`（#358）。
 - App の API（`/api/apps/v1/*`）：【決定】暗号化チャンネルと DM の作成（`encrypted: true`。`/api/apps/v1/dms` と `create_channel`）も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のときも、App からの `encrypted: true` は `E2EE_APPS_FORBIDDEN` を返す（判定の順は、App かどうか、設定の順。App には、設定にかかわらず作成を許さないため）。暗号化チャンネルとそのメッセージへの読み書きを、委任トークン（`app_credentials.user_id` があり、ユーザーとして動くもの）を含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する（#358）。メッセージの作成（`/api/apps/v1/messages`）、ファイルの紐付け（`/api/apps/v1/messages/{id}/files`）、`blocks`、`unfurls` を含む。委任トークンはチャンネルに参加しないまま、そのユーザーの権限で動くので、App の参加の禁止だけでは止まらないため。
   - 【決定】（#358）拒否は `Principal::channel`（`Actor::channel` は App のトークンのとき、これを先に呼ぶ）で行う。メンバーでない（見えない）チャンネルは今までどおり 404 にし、見えるチャンネルが暗号化されているときだけ 403 にする（存在を推測させないため）。一覧の API（`/api/apps/v1/stars`、`assistant-sessions`、ファイルの共有先の解決）は、暗号化チャンネルの項目を 404 と同じく読み飛ばす。
