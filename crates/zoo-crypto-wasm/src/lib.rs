@@ -59,6 +59,7 @@ export interface DeviceKeysJson {
 }
 export interface SenderTrust { self_signing_key: string; signature?: string | null }
 export interface SessionRef { channel_id: string; sender_key: string; session_id: string }
+export interface PickledOlmSession { session_id: string; their_identity_key: string; pickle: string }
 export interface MessageContent { body: string; format: string; kind: string }
 export interface Mentions { user_ids: string[]; channel: boolean; here: boolean }
 export interface OutgoingMessage {
