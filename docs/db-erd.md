@@ -10,7 +10,7 @@ CI(`ci-db-erd`)が `infra/db/erd.sh --check` で更新漏れを検査します�
 
 | 図 | 内容 | テーブル数 |
 |---|---|---|
-| [core](db-erd/core.md) | コア(ユーザー、チャンネル、メッセージ、通知など) | 36 |
+| [core](db-erd/core.md) | コア(ユーザー、チャンネル、メッセージ、通知など) | 37 |
 | [apps](db-erd/apps.md) | アプリ連携(apps と app_*) | 22 |
 | [activitypub](db-erd/activitypub.md) | ActivityPub(apub_*) | 17 |
 | [e2ee](db-erd/e2ee.md) | E2EE(e2ee_*) | 16 |
