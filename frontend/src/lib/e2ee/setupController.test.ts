@@ -1,8 +1,12 @@
 import { readFileSync } from "node:fs";
 
 import {
+  BackupDecryptionKey,
   DeviceAccount,
   OutboundSession,
+  OwnSecrets,
+  RecoveryKey,
+  SecretStorage,
   initSync,
   verifyDeviceKeys,
   type JsonObject,
@@ -693,7 +697,7 @@ describe("初回設定と解錠", () => {
     const server = new FakeServer();
     const first = await device("first");
     const deps = first.deps(server);
-    const { keyId } = await beginSetup(deps, null);
+    const { recoveryKey, keyId } = await beginSetup(deps, null);
     await completeSetup(deps, keyId, TOKEN);
     await receiveRoomKey(first);
 
@@ -704,24 +708,27 @@ describe("初回設定と解錠", () => {
     await completeSetup(evil.deps(attacker), evilSetup.keyId, TOKEN);
     const original = server.versions[0]!;
     server.versions = [{ ...attacker.versions[0]!, version: "2" }];
-    const signatureFailure = await uploadKeyBackup(deps);
-    expect(signatureFailure.kind).toBe("rejected");
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "rejected", code: "MissingSignature" });
     expect(server.backupSessions).toHaveLength(0);
 
-    // 署名は今のマスター鍵のものでも、公開鍵が SSSS のバックアップ鍵と違う。
-    const authData = original.auth_data as Json;
+    // 今のマスター鍵で正しく署名されているが、公開鍵が SSSS のバックアップ鍵と違う版。
+    // 署名を作るため、SSSS をリカバリーキーで開いて本物のマスター鍵を取り出す。
+    const storage = SecretStorage.fromJson(USER, {
+      ...server.ssss,
+      secrets_revision: server.revision,
+    } as unknown as JsonObject)!;
+    const recovery = RecoveryKey.parse(recoveryKey);
+    const secrets = OwnSecrets.fromUnlocked(storage.unlockWithRecoveryKey(recovery));
+    const otherBackupKey = BackupDecryptionKey.generate();
     server.versions = [
       original,
       {
         ...original,
         version: "2",
-        auth_data: {
-          ...authData,
-          public_key: (attacker.versions[0]!.auth_data as Json).public_key,
-        },
+        auth_data: otherBackupKey.authData(secrets.crossSigning.master),
       },
     ];
-    expect((await uploadKeyBackup(deps)).kind).toBe("rejected");
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "rejected", code: "BackupKeyMismatch" });
     expect(server.backupSessions).toHaveLength(0);
     expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
 
@@ -793,5 +800,73 @@ describe("初回設定と解錠", () => {
     const posts = server.requests.filter((r) => r.path.startsWith("/api/e2ee/key_backup/keys"));
     expect(posts).toHaveLength(1);
     expect(server.backupSessions).toHaveLength(1);
+  });
+
+  it("再認証を待つ間に別の初回設定を始めたら、古い保存は新しい鍵を保存しない", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const a = await beginSetup(deps, null);
+    const b = await beginSetup(deps, null);
+    await expect(completeSetup(deps, a.keyId, TOKEN)).rejects.toMatchObject({
+      code: "Superseded",
+    });
+    expect(server.ssss).toBeNull();
+    await completeSetup(deps, b.keyId, TOKEN);
+    expect(server.ssss?.default_key_id).toBe(b.keyId);
+  });
+
+  it("同時にリセットした別の端末の SSSS があれば、クロス署名鍵と版を差し替えない", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const original = await beginSetup(first.deps(server), null);
+    await completeSetup(first.deps(server), original.keyId, TOKEN);
+
+    // 端末 A のリセットは、SSSS を保存したあと、クロス署名鍵の保存の前で止まった。
+    const a = await device("a");
+    const aStatus = await loadE2eeStatus(a.deps(server));
+    if (aStatus.kind !== "locked") throw new Error("unreachable");
+    const resetA = await beginSetup(a.deps(server), aStatus.storage);
+    server.fail = { path: "POST /api/e2ee/cross_signing/keys", when: "before" };
+    await expect(completeSetup(a.deps(server), resetA.keyId, TOKEN)).rejects.toThrow();
+    expect(server.ssss?.default_key_id).toBe(resetA.keyId);
+
+    // その間に端末 B がリセットを終えた。
+    const b = await device("b");
+    const bStatus = await loadE2eeStatus(b.deps(server));
+    if (bStatus.kind !== "locked") throw new Error("unreachable");
+    const resetB = await beginSetup(b.deps(server), bStatus.storage);
+    await completeSetup(b.deps(server), resetB.keyId, TOKEN);
+    const masterB = server.master;
+
+    // 端末 A が保存し直しても、B の鍵を A の鍵で差し替えない。
+    await expect(completeSetup(a.deps(server), resetA.keyId, TOKEN)).rejects.toBeInstanceOf(
+      SetupConflictError,
+    );
+    expect(server.master).toEqual(masterB);
+    expect(server.ssss?.default_key_id).toBe(resetB.keyId);
+    expect((await loadE2eeStatus(b.deps(server))).kind).toBe("unlocked");
+  });
+
+  it("版が変わったときに送信待ちへ戻せなくても、次の送信で戻して送り直す", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await receiveRoomKey(first);
+    await completeSetup(deps, keyId, TOKEN);
+    expect(server.backupSessions).toHaveLength(1);
+
+    // 同じ鍵の新しい版に変わった。送信待ちに戻す書き込みが 1 回失敗する。
+    server.versions.push({ ...server.versions[0]!, version: "2" });
+    const reset = first.backend.resetBackedUp.bind(first.backend);
+    let failures = 1;
+    first.backend.resetBackedUp = async () => {
+      if (failures-- > 0) throw new Error("storage down");
+      return reset();
+    };
+    await expect(uploadKeyBackup(deps)).rejects.toThrow("storage down");
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 1 });
+    expect(server.backupSessions).toHaveLength(2);
   });
 });

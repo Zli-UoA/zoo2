@@ -117,6 +117,8 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         } while (queue.again && leader.current === active);
       } finally {
         queue.running = false;
+        // 送っている間にリーダーが替わって頼まれた分は、今のリーダーで送り直す。
+        if (queue.again && leader.current) requestKeyBackupRef.current();
       }
     })();
   }, [client, userId]);
