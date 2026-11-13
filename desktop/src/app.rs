@@ -403,6 +403,9 @@ pub struct AppState {
     pub channel_creators_by_key: HashMap<String, (String, Option<String>)>,
     /// `Channels` シェイプのキーごとの `(チャンネル ID, posting_policy)`。
     pub channel_posting_policies_by_key: HashMap<String, (String, String)>,
+    /// 一度 `encrypted = true` を見たチャンネル。Channels の再同期で行が消えても暗号化として扱い、
+    /// 表示と送信をしない（ログアウトまで覚える）。
+    pub known_encrypted_channels: HashSet<String>,
     /// 開いているチャンネルの描画用キャッシュ。
     pub channel_cache: ChannelViewCache,
 
@@ -583,6 +586,7 @@ impl AppState {
             preserved_unauthorized_drafts: None,
             channel_creators_by_key: HashMap::new(),
             channel_posting_policies_by_key: HashMap::new(),
+            known_encrypted_channels: HashSet::new(),
             channel_cache: ChannelViewCache::default(),
             unread: HashSet::new(),
             last_read_marked: HashMap::new(),
@@ -1143,6 +1147,7 @@ impl AppState {
         self.in_flight_submissions.clear();
         self.channel_creators_by_key.clear();
         self.channel_posting_policies_by_key.clear();
+        self.known_encrypted_channels.clear();
         self.channel_cache = ChannelViewCache::default();
         self.unread.clear();
         self.last_read_marked.clear();
@@ -1656,6 +1661,12 @@ impl AppState {
                         match change {
                             Change::Upsert { key, row } => {
                                 if let Some(ch_id) = row.get("id").and_then(|v| v.as_str()) {
+                                    if row.get("encrypted").is_some_and(|v| {
+                                        v.as_bool() == Some(true)
+                                            || matches!(v.as_str(), Some("t" | "true"))
+                                    }) {
+                                        self.known_encrypted_channels.insert(ch_id.to_string());
+                                    }
                                     let creator = row
                                         .get("created_user_id")
                                         .and_then(|v| v.as_str())
@@ -2470,6 +2481,14 @@ impl AppState {
         if !self.window_active {
             return false;
         }
+        // 暗号化チャンネルは本文を表示しないので、見ていないメッセージを既読にしない。
+        if self
+            .current_channel
+            .as_deref()
+            .is_some_and(|id| self.is_encrypted_channel(id))
+        {
+            return false;
+        }
         let Some(me) = self.me.as_ref() else {
             return false;
         };
@@ -2811,12 +2830,37 @@ impl AppState {
             .unwrap_or("members")
     }
 
-    /// 指定チャンネルへ新規メッセージや返信を投稿可能か判定する。
     /// 暗号化チャンネルか。デスクトップ版は復号も暗号化もしないので、表示と送信をしない。
+    /// 再同期で行が消えても、一度暗号化と見たチャンネルは暗号化として扱う。
     pub fn is_encrypted_channel(&self, channel_id: &str) -> bool {
-        self.store.channel(channel_id).is_some_and(|c| c.encrypted)
+        self.known_encrypted_channels.contains(channel_id)
+            || self.store.channel(channel_id).is_some_and(|c| c.encrypted)
     }
 
+    /// 今 HTTP で送ってよいか（新規、返信、編集、添付）。チャンネルの行がない（再同期中で暗号化か
+    /// 分からない）あいだと、暗号化チャンネルには送らない。入力欄と下書きは
+    /// [`can_post_in_channel`](Self::can_post_in_channel) のとおり残す。
+    pub fn can_send_to_channel(&self, channel_id: &str) -> bool {
+        self.store.channel(channel_id).is_some() && !self.is_encrypted_channel(channel_id)
+    }
+
+    /// 今のチャンネルにファイルを添付してよいか（ファイルの中身をアップロードする前に確かめる）。
+    fn can_attach_now(&mut self) -> bool {
+        let Some(channel_id) = self.current_channel.clone() else {
+            return true;
+        };
+        if self.can_send_to_channel(&channel_id) {
+            return true;
+        }
+        self.notify(if self.is_encrypted_channel(&channel_id) {
+            "暗号化チャンネルには、このクライアントからは添付できません"
+        } else {
+            "チャンネルの情報を同期しています。少し待ってから添付してください"
+        });
+        false
+    }
+
+    /// 指定チャンネルへ新規メッセージや返信を投稿可能か判定する。
     pub fn can_post_in_channel(&self, channel_id: &str) -> bool {
         let Some(me) = self.me.as_ref() else {
             return false;
@@ -3635,6 +3679,16 @@ impl AppState {
             self.notify("アーカイブされたチャンネルには投稿できません");
             return false;
         }
+        // 暗号化かどうか分からない（再同期中で行がない）、または暗号化チャンネルなら、編集を含めて
+        // 送らない。下書きは消さずに残す。
+        if !self.can_send_to_channel(&channel_id) {
+            self.notify(if self.is_encrypted_channel(&channel_id) {
+                "暗号化チャンネルには、このクライアントからは送信できません"
+            } else {
+                "チャンネルの情報を同期しています。少し待ってから送ってください"
+            });
+            return false;
+        }
         if !matches!(self.target, Target::Edit(_)) && !self.can_post_in_channel(&channel_id) {
             self.notify("このチャンネルは管理者のみ投稿できます");
             return false;
@@ -3906,6 +3960,9 @@ impl AppState {
 
     /// ローカルファイルパスから添付ファイルを追加する。
     pub fn add_attachment_from_path(&mut self, path: std::path::PathBuf) {
+        if !self.can_attach_now() {
+            return;
+        }
         if matches!(self.target, Target::Edit(_)) {
             self.notify("メッセージの編集中はファイルを添付できません");
             return;
@@ -4072,6 +4129,9 @@ impl AppState {
         content_type: String,
         bytes: Vec<u8>,
     ) {
+        if !self.can_attach_now() {
+            return;
+        }
         if matches!(self.target, Target::Edit(_)) {
             self.notify("メッセージの編集中はファイルを添付できません");
             return;
@@ -4991,6 +5051,65 @@ pub(crate) mod tests {
         }
     }
     impl<T> Pipe for T {}
+
+    #[tokio::test]
+    async fn does_not_send_while_the_channel_row_is_missing_or_encrypted() {
+        let mut state = connected_state();
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c2",
+                json!({ "id": "c2", "channel_name": "secret", "is_private": "t", "encrypted": "t" }),
+            )]),
+        ));
+        state.open_channel("c1".into());
+        // Channels の再同期で行が消えたあいだは、暗号化か分からないので送らない（下書きは残す）。
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            Batch {
+                reset: true,
+                changes: vec![],
+                up_to_date: false,
+            },
+        ));
+        state.composer_draft = "再同期中の本文".into();
+        assert!(state.can_post_in_channel("c1"));
+        assert!(!state.can_send_to_channel("c1"));
+        assert!(!state.submit_message("再同期中の本文".into()));
+        assert_eq!(state.composer_draft, "再同期中の本文");
+        state.target = Target::Edit("r1".into());
+        assert!(!state.submit_message("編集".into()));
+        state.target = Target::Channel;
+        // 一度暗号化と見たチャンネルは、行が消えても暗号化として扱う。
+        assert!(state.is_encrypted_channel("c2"));
+        assert!(!state.can_send_to_channel("c2"));
+        // 平文のチャンネルの行が戻れば送れる。
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "general", "is_private": "f" }),
+            )]),
+        ));
+        assert!(state.can_send_to_channel("c1"));
+        assert!(state.submit_message("同期後の本文".into()));
+    }
+
+    #[test]
+    fn encrypted_channels_are_not_marked_read() {
+        let mut state = connected_state();
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "general", "is_private": "t", "encrypted": "t" }),
+            )]),
+        ));
+        state.window_active = true;
+        state.open_channel("c1".into());
+        // 本文を表示しない暗号化チャンネルでは、既読の API を呼ばない。
+        assert!(!state.mark_current_read());
+    }
 
     #[test]
     fn encrypted_channels_do_not_open_threads_or_edits() {
