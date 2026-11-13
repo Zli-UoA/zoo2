@@ -74,7 +74,7 @@ export function LogoutButton() {
 
   return (
     <>
-      <Button variant="outline" onClick={() => void handleLogout()}>
+      <Button variant="destructive" onClick={() => void handleLogout()}>
         {t("auth.logout")}
       </Button>
       <UnbackedKeysLogoutDialog
