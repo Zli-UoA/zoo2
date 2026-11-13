@@ -80,6 +80,7 @@ async fn serve(state: AppState, mut socket: WebSocket) {
     {
         return;
     }
+    let _ws_guard = crate::metrics::WsConnectionGuard::enter("home_live");
     let mut events = state.home_live.subscribe(state.config.database_url.clone());
     if socket.send(Message::Text("refresh".into())).await.is_err() {
         return;

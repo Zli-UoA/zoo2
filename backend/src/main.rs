@@ -1,18 +1,10 @@
 use std::net::SocketAddr;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // ロギング初期化 (RUST_LOG=info など)
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "backend=debug,tower_http=debug,info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let telemetry = backend::telemetry::init("zoo-backend", "backend=debug,tower_http=debug,info");
 
     // 設定読み込み
     let config = Config::from_env();
@@ -85,6 +77,24 @@ async fn main() -> anyhow::Result<()> {
     let e2ee_worker = tokio::spawn(backend::routes::e2ee::worker(state.clone()));
     let app = create_router(state);
 
+    let (metrics_stop_tx, mut metrics_stop_rx) = tokio::sync::watch::channel(false);
+    let metrics_server =
+        if let Some(metrics_addr) = backend::telemetry::metrics_bind_from_env(9464).await? {
+            Some(
+                backend::telemetry::spawn_metrics_server(metrics_addr, async move {
+                    while !*metrics_stop_rx.borrow_and_update() {
+                        if metrics_stop_rx.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                })
+                .await?,
+            )
+        } else {
+            tracing::info!("Metrics server disabled via METRICS_PORT");
+            None
+        };
+
     // サーバーバインド
     let addr: SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
     tracing::info!("Server listening on http://{}", addr);
@@ -101,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
 
+    let _ = metrics_stop_tx.send(true);
     display_worker.abort();
     emoji_worker.abort();
     e2ee_worker.abort();
@@ -119,7 +130,15 @@ async fn main() -> anyhow::Result<()> {
         worker.abort();
     }
     thread_archive_worker.abort();
+    if let Some(handle) = metrics_server
+        && tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .is_err()
+    {
+        tracing::warn!("Metrics server did not stop in time");
+    }
     tracing::info!("Server shut down gracefully");
+    telemetry.shutdown().await;
     Ok(())
 }
 

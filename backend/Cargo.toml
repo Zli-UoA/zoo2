@@ -17,7 +17,20 @@ jiff = { version = "0.2", features = ["serde"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-opentelemetry = "0.34"
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = [
+    "rt-tokio",
+    "experimental_trace_batch_span_processor_with_async_runtime",
+    "experimental_metrics_periodicreader_with_async_runtime",
+    "experimental_logs_batch_log_processor_with_async_runtime",
+] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-client", "reqwest-rustls", "trace", "metrics", "logs"] }
+opentelemetry-http = "0.33"
+opentelemetry-prometheus = "0.33"
+opentelemetry-appender-tracing = "0.33"
+prometheus = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dotenvy = "0.15"

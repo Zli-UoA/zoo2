@@ -199,121 +199,139 @@ pub(crate) const E2EE_DEVICES_SHAPE_COLUMNS: &str =
 /// Electric へのストリーミング Shape プロキシ実行
 async fn proxy_shape(
     state: &AppState,
-    table: &str,
+    table: &'static str,
     where_clause: Option<&str>,
     extra_params: &[(&str, &str)],
     raw_query: &HashMap<String, String>,
     is_user_scoped: bool,
     actor: &str,
 ) -> Result<Response, AppError> {
-    let mut params = filter_electric_params(raw_query);
-    params.push(("table".to_string(), table.to_string()));
-    if table == "messages"
-        && let Some(metadata_allowed) = raw_query.get("_app_metadata_allowed")
-    {
-        // App messages never include the UI projection: its joined profiles and
-        // attachments require scopes beyond messages:read (and metadata:read).
-        let mut columns = "id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".to_owned();
-        if metadata_allowed == "true" {
-            columns.push_str(",metadata");
-        }
-        params.push(("columns".into(), columns));
-    }
+    use tracing::Instrument;
 
-    if let Some(w) = where_clause {
-        params.push(("where".to_string(), w.to_string()));
-    }
-    for (k, v) in extra_params {
-        params.push((k.to_string(), v.to_string()));
-    }
-
-    let url = format!(
-        "{}/v1/shape",
-        state.config.electric_url.trim_end_matches('/')
-    );
-
-    let mut req = state.electric_client.get(&url).query(&params);
-
-    if let Some(ref secret) = state.config.electric_secret {
-        // Electric の API secret は Bearer ではなくクエリで渡す。
-        req = req.query(&[("secret", secret)]);
-    }
-
-    let upstream_resp = req.send().await.map_err(|err| {
-        // URL のクエリに含まれる API secret をログやエラー応答へ出さない。
-        let err = err.without_url();
-        tracing::error!("Failed to connect to Electric server at {url}: {err}");
-        AppError::Internal(anyhow::anyhow!(
-            "Failed to connect to Electric server: {err}"
-        ))
-    })?;
-
-    let status =
-        StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-
-    // 転送ヘッダの抽出
-    // - electric-* ヘッダーはすべて転送 (electric-up-to-date, electric-chunk-last-offset 含む)
-    // - content-encoding, content-length はクライアント解凍とストリーミングのため除外
-    let mut headers = HeaderMap::new();
-
-    for (key, value) in upstream_resp.headers() {
-        let key_str = key.as_str().to_lowercase();
-        let should_forward = key_str.starts_with("electric-")
-            || matches!(key_str.as_str(), "content-type" | "etag" | "cache-control");
-
-        if should_forward
-            && let Ok(name) = HeaderName::from_bytes(key.as_ref())
-            && let Ok(val) = HeaderValue::from_bytes(value.as_bytes())
+    let span = tracing::info_span!("electric_proxy", shape = table);
+    async move {
+        let mut params = filter_electric_params(raw_query);
+        params.push(("table".to_string(), table.to_string()));
+        if table == "messages"
+            && let Some(metadata_allowed) = raw_query.get("_app_metadata_allowed")
         {
-            headers.insert(name, val);
-        }
-    }
-
-    // ユーザー別認可フィルタが適用された Shape の場合、共有キャッシュによる情報漏洩を防止
-    if is_user_scoped {
-        headers.insert(
-            HeaderName::from_static("vary"),
-            HeaderValue::from_static("Authorization, X-Dev-User"),
-        );
-        headers.insert(
-            HeaderName::from_static("cache-control"),
-            HeaderValue::from_static("private, no-cache"),
-        );
-    }
-
-    // ストリーミングボディをバッファリングせず透過的に転送
-    use futures_util::StreamExt;
-    let mut db = state.db.clone();
-    let initial_guest = crate::apps::events::guest_in_db(&mut db, actor).await?;
-    let channel = raw_query.get("channel_id").cloned();
-    let stream = upstream_resp.bytes_stream().boxed();
-    let stream = futures_util::stream::unfold(
-        (
-            stream,
-            state.clone(),
-            actor.to_owned(),
-            initial_guest,
-            channel,
-        ),
-        |(mut upstream, state, actor, initial_guest, channel)| async move {
-            loop {
-                let mut db = state.db.clone();
-                let mut tx = db.transaction().await.ok()?;
-                let access=crate::apps::one(&mut tx,"SELECT json_build_object('ok',NOT u.is_deactivated AND u.is_guest=$2::boolean AND ($3='' OR EXISTS(SELECT 1 FROM channels c WHERE c.id=$3 AND c.deleted_at IS NULL AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=u.id)))))::text FROM users u WHERE u.id=$1",&[&actor,if initial_guest{"true"}else{"false"},channel.as_deref().unwrap_or("")]).await.ok()?;
-                if access["ok"] != true {
-                    return None;
-                }
-                drop(tx);
-                tokio::select! {chunk=upstream.next()=>return chunk.map(|chunk|(chunk,(upstream,state,actor,initial_guest,channel))),_=tokio::time::sleep(std::time::Duration::from_secs(1))=>{}}
+            // App messages never include the UI projection: its joined profiles and
+            // attachments require scopes beyond messages:read (and metadata:read).
+            let mut columns = "id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".to_owned();
+            if metadata_allowed == "true" {
+                columns.push_str(",metadata");
             }
-        },
-    );
-    let body = Body::from_stream(stream);
+            params.push(("columns".into(), columns));
+        }
 
-    let mut response = (status, body).into_response();
-    *response.headers_mut() = headers;
+        if let Some(w) = where_clause {
+            params.push(("where".to_string(), w.to_string()));
+        }
+        for (k, v) in extra_params {
+            params.push((k.to_string(), v.to_string()));
+        }
 
-    Ok(response)
+        let url = format!(
+            "{}/v1/shape",
+            state.config.electric_url.trim_end_matches('/')
+        );
+
+        let mut req = state.electric_client.get(&url).query(&params);
+
+        if let Some(ref secret) = state.config.electric_secret {
+            // Electric の API secret は Bearer ではなくクエリで渡す。
+            req = req.query(&[("secret", secret)]);
+        }
+
+        let upstream_resp = req.send().await.map_err(|err| {
+            // URL のクエリに含まれる API secret をログやエラー応答へ出さない。
+            let err = err.without_url();
+            tracing::error!("Failed to connect to Electric server at {url}: {err}");
+            crate::metrics::record_electric_proxy_request(table, 500);
+            AppError::Internal(anyhow::anyhow!(
+                "Failed to connect to Electric server: {err}"
+            ))
+        })?;
+
+        let status = StatusCode::from_u16(upstream_resp.status().as_u16())
+            .unwrap_or(StatusCode::BAD_GATEWAY);
+
+        // 転送ヘッダの抽出
+        // - electric-* ヘッダーはすべて転送 (electric-up-to-date, electric-chunk-last-offset 含む)
+        // - content-encoding, content-length はクライアント解凍とストリーミングのため除外
+        let mut headers = HeaderMap::new();
+
+        for (key, value) in upstream_resp.headers() {
+            let key_str = key.as_str().to_lowercase();
+            let should_forward = key_str.starts_with("electric-")
+                || matches!(key_str.as_str(), "content-type" | "etag" | "cache-control");
+
+            if should_forward
+                && let Ok(name) = HeaderName::from_bytes(key.as_ref())
+                && let Ok(val) = HeaderValue::from_bytes(value.as_bytes())
+            {
+                headers.insert(name, val);
+            }
+        }
+
+        // ユーザー別認可フィルタが適用された Shape の場合、共有キャッシュによる情報漏洩を防止
+        if is_user_scoped {
+            headers.insert(
+                HeaderName::from_static("vary"),
+                HeaderValue::from_static("Authorization, X-Dev-User"),
+            );
+            headers.insert(
+                HeaderName::from_static("cache-control"),
+                HeaderValue::from_static("private, no-cache"),
+            );
+        }
+
+        // ストリーミングボディをバッファリングせず透過的に転送
+        use futures_util::StreamExt;
+        let mut db = state.db.clone();
+        let initial_guest = match crate::apps::events::guest_in_db(&mut db, actor).await {
+            Ok(v) => v,
+            Err(e) => {
+                crate::metrics::record_electric_proxy_request(table, 500);
+                return Err(e);
+            }
+        };
+        crate::metrics::record_electric_proxy_request(table, status.as_u16());
+
+        let sse_guard = crate::metrics::SseConnectionGuard::enter(table);
+        let channel = raw_query.get("channel_id").cloned();
+        let stream = upstream_resp.bytes_stream().boxed();
+        let stream = futures_util::stream::unfold(
+            (
+                stream,
+                state.clone(),
+                actor.to_owned(),
+                initial_guest,
+                channel,
+                sse_guard,
+            ),
+            |(mut upstream, state, actor, initial_guest, channel, sse_guard)| async move {
+                loop {
+                    let mut db = state.db.clone();
+                    let mut tx = db.transaction().await.ok()?;
+                    let access=crate::apps::one(&mut tx,"SELECT json_build_object('ok',NOT u.is_deactivated AND u.is_guest=$2::boolean AND ($3='' OR EXISTS(SELECT 1 FROM channels c WHERE c.id=$3 AND c.deleted_at IS NULL AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=u.id)))))::text FROM users u WHERE u.id=$1",&[&actor,if initial_guest{"true"}else{"false"},channel.as_deref().unwrap_or("")]).await.ok()?;
+                    if access["ok"] != true {
+                        return None;
+                    }
+                    drop(tx);
+                    tokio::select! {chunk=upstream.next()=>return chunk.map(|chunk|(chunk,(upstream,state,actor,initial_guest,channel,sse_guard))),_=tokio::time::sleep(std::time::Duration::from_secs(1))=>{}}
+                }
+            },
+        );
+        let body = Body::from_stream(stream);
+
+        let mut response = (status, body).into_response();
+        *response.headers_mut() = headers;
+
+        Ok(response)
+    }
+    .instrument(span)
+    .await
 }
 
 /// Channels Shape
