@@ -24,6 +24,12 @@ import {
   markCryptoStoreDeletionPending,
   readPendingCryptoStoreDeletion,
 } from "../../lib/e2ee/identity";
+import {
+  type CryptoLockState,
+  describeStartFailure,
+  type E2eeStartFailure,
+  notReadyReason,
+} from "../../lib/e2ee/notReady";
 import { answerPushDecryptRequest } from "../../lib/e2ee/push/protocol";
 import { forgetPushRecipient, rememberPushRecipient } from "../../lib/e2ee/push/recipient";
 import { type StaleDevice, staleDevices } from "../../lib/e2ee/revocationApi";
@@ -95,6 +101,10 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [deviceLimit, setDeviceLimit] = useState<StaleDevice[] | null>(null);
   const [readyWorker, setReadyWorker] = useState<CryptoWorker | null>(null);
+  /** Web Locks の状態。ほかのタブが持っているあいだは、設定の画面でそう伝える。 */
+  const [lockState, setLockState] = useState<CryptoLockState>("idle");
+  /** 起動（開く、登録、補充）の直近の失敗。試し直して成功したら消す。 */
+  const [startFailure, setStartFailure] = useState<E2eeStartFailure | null>(null);
   const [roomKeysVersion, setRoomKeysVersion] = useState(0);
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const leader = useRef<ActiveStore | null>(null);
@@ -200,8 +210,14 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         resolveHeld();
       };
       releaseCurrent = release;
+      let granted = false;
+      /** ログアウトする別のタブにロックを奪われた（返されるまで、そのタブが持っている）。 */
+      let stolen = false;
+      setLockState("idle");
       navigator.locks
         .request(cryptoLockName(namespace), { signal: controller.signal }, async () => {
+          granted = true;
+          setLockState("held");
           const worker = startCryptoWorker();
           let active: ActiveStore | null = null;
           try {
@@ -215,13 +231,16 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
               leader.current = active;
               try {
                 await manager.start();
+                setStartFailure(null);
                 setDeviceId(manager.currentDeviceId);
                 setReadyWorker(worker);
                 // 解錠済みの端末は、起動時に自分の端末への署名を確かめ、なければ署名し直す
                 // （docs/e2ee.md の「初回設定と解錠の流れ」。止まった初回設定は暗号化タブで案内する）。
                 void runStartupCheck({ worker, client, userId, rpId: null }).catch(() => undefined);
                 break;
-              } catch {
+              } catch (error) {
+                // 設定の画面に、試し直している理由を出す（状態コードとエラーの名前だけ）。
+                if (!released) setStartFailure(describeStartFailure(error));
                 await manager.stop().catch(() => undefined);
                 await wait(delay, held);
                 delay = Math.min(delay * 2, START_RETRY_MAX_MS);
@@ -230,16 +249,35 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
             await held;
           } finally {
             setReadyWorker((current) => (current === worker ? null : current));
+            setStartFailure(null);
+            // 奪われたときは、`catch` が「ほかのタブが持っている」にしたのを残す（片付けはその後に来る）。
+            if (!stolen) setLockState("idle");
             if (leader.current === active) leader.current = null;
             await active?.manager.stop().catch(() => undefined);
             worker.terminate();
           }
         })
         // 中止（アンマウント）と、ログアウトする別のタブに奪われたときは、持っていた分を片付ける。
-        .catch(() => release())
+        .catch(() => {
+          // 奪われた。取りやめたタブがロックを返すまで、ほかのタブが持っている。
+          if (!controller.signal.aborted) {
+            stolen = true;
+            setLockState("otherTab");
+          }
+          release();
+        })
         .finally(() => {
           requesting = false;
         });
+      // すぐに取れなければ、ほかのタブが持っている。持ち主がいるかを確かめて、画面で伝える。
+      void navigator.locks
+        .query()
+        .then((snapshot) => {
+          const name = cryptoLockName(namespace);
+          if (!granted && !controller.signal.aborted && snapshot.held?.some((l) => l.name === name))
+            setLockState("otherTab");
+        })
+        .catch(() => undefined);
     };
 
     lead();
@@ -360,6 +398,16 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       status,
       deviceId,
       worker: status === "ready" ? readyWorker : null,
+      notReadyReason: notReadyReason({
+        supported,
+        userId: userId || null,
+        isOnline,
+        status,
+        ready: readyWorker !== null,
+        lockState,
+        deviceLimit: deviceLimit !== null,
+        startFailure,
+      }),
       userId: userId || null,
       deviceLimit,
       revocationPending: async () => {
@@ -424,11 +472,14 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     [
       deviceId,
       deviceLimit,
+      isOnline,
+      lockState,
       namespace,
       readyWorker,
       requestKeyBackup,
       roomKeysVersion,
       sas,
+      startFailure,
       status,
       storeForLogout,
       supported,

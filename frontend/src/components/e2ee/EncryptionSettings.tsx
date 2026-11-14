@@ -26,6 +26,7 @@ import {
 import { accountRevocationUrls } from "../../lib/oidc/accountUrl";
 import { deleteSelectedDevices, loadDevices } from "../../lib/e2ee/revocationController";
 import type { KeySlot } from "../../lib/e2ee/protocol";
+import { NOT_READY_STARTING as STARTING } from "../../lib/e2ee/notReady";
 import {
   type EncryptionErrorCode,
   type EncryptionSettingsHandlers,
@@ -86,7 +87,7 @@ function slotViews(storage: SecretStorageResponse): KeySlotView[] {
 
 /** 設定の「暗号化」タブ（初回設定と解錠。#360）。 */
 export function EncryptionSettings() {
-  const { worker, userId, deviceId } = useE2ee();
+  const { worker, userId, deviceId, notReadyReason } = useE2ee();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const rpId = passkeyRpId(config);
@@ -118,7 +119,7 @@ export function EncryptionSettings() {
     const seq = ++loadSeq.current;
     const latest = () => seq === loadSeq.current;
     if (!deps) {
-      setState({ step: "unavailable" });
+      setState({ step: "unavailable", reason: STARTING });
       return;
     }
     setState({ step: "loading" });
@@ -410,6 +411,13 @@ export function EncryptionSettings() {
   }
 
   // PRF に対応するかは非同期に分かる。状態を取り直さずに、表示のときに反映する。
-  const viewState = "passkeyAvailable" in state ? { ...state, passkeyAvailable } : state;
+  // 暗号ストアを開けていない理由は、開くまでのあいだにも変わる（ほかのタブが閉じた、試し直しが
+  // 失敗した）。状態を取り直さずに、表示のときに今の理由を入れる。
+  const viewState =
+    "passkeyAvailable" in state
+      ? { ...state, passkeyAvailable }
+      : state.step === "unavailable"
+        ? { ...state, reason: notReadyReason ?? STARTING }
+        : state;
   return <EncryptionSettingsView state={viewState} handlers={handlers} />;
 }
