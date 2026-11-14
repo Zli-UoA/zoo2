@@ -1159,6 +1159,7 @@
       "deleteFailed": "기기를 삭제하지 못했습니다. 다시 시도해 주세요.",
       "refreshFailed": "기기 목록을 다시 불러오지 못했습니다. 표시가 오래되었을 수 있습니다.",
       "revocationPending": "끝나지 않은 폐기가 있습니다. 먼저 '폐기 계속하기'에서 끝까지 저장하세요.",
+      "deviceOnlyUnavailable": "다른 기기가 SSSS 키를 다시 만들었으므로 기기만 폐기할 수 없습니다. 범위를 '패스키, 복구 키 또는 SSSS 키'로 바꾸었으니 확인하고 진행하세요.",
       "renameFailed": "기기 이름을 바꾸지 못했습니다. 다시 시도해 주세요.",
       "revocationFailed": "폐기를 끝까지 저장하지 못했습니다. 진행 상황은 이 기기에 남아 있습니다. ‘폐기 실행’을 다시 눌러 주세요.",
       "verifyFailed": "재검증을 저장하지 못했습니다. 다시 시도해 주세요."
@@ -1248,7 +1249,9 @@
         "not_confirmed": "확인하지 않은 기록만 있음",
         "pin_replaced": "서버의 기록이 달라 이 기기의 기록으로 바꿈",
         "signature_unverified": "서명을 확인하지 못함",
-        "master_key_mismatch": "서명한 키가 기록과 다름"
+        "master_key_mismatch": "서명한 키가 기록과 다름",
+        "stale_confirmation": "오래된 사용자 서명 키로 확인한 기록만 있음(재검증 필요)",
+        "pin_pending": "핀 등록이 끝나지 않음"
       },
       "versionsWithoutKey": "새 버전으로 옮길 수 없는 백업이 있습니다(버전 {{versions}}). 이 기기와 SSSS에 키가 없어 해당 메시지는 복원할 수 없습니다.",
       "executeDescription": "실행하면 다시 로그인해 본인 확인을 한 뒤, 키를 새로 만들어 저장합니다.",

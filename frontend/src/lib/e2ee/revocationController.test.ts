@@ -636,6 +636,23 @@ describe("失効の手順", () => {
     expect(await revocationStatus(deps)).toMatchObject({ revocation_id: second!.revocation_id });
   });
 
+  it("再開しようとした失効が別の失効に置き換わったら、続けない", async () => {
+    const { server, deps, recoveryKey } = await setUp();
+    await openSecretStorage(deps, { kind: "recovery", recoveryKey });
+    await beginRevocation(deps, "device_only", []);
+    let second: Awaited<ReturnType<typeof beginRevocation>> | null = null;
+    // 記録を読んでから続けるまでのあいだに、別の画面で A を捨てて B を始める。
+    server.after = {
+      route: "GET /api/e2ee/secret_storage",
+      run: async () => {
+        await abandonRevocation(deps);
+        second = await beginRevocation(deps, "device_only", []);
+      },
+    };
+    await expect(resumeRevocation(deps)).rejects.toBeInstanceOf(RevocationChangedError);
+    expect(await revocationStatus(deps)).toMatchObject({ revocation_id: second!.revocation_id });
+  });
+
   it("捨てる失効を指定したら、その失効の記録だけを捨てる", async () => {
     const { deps, recoveryKey } = await setUp();
     await openSecretStorage(deps, { kind: "recovery", recoveryKey });

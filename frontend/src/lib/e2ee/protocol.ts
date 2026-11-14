@@ -79,7 +79,7 @@ export type CryptoOperation =
   // 失効の手順と、他のユーザーの検証（#362）。
   | { op: "revocationStatus" }
   | ({ op: "revocationBegin" } & RevocationBeginInput)
-  | { op: "revocationResume"; secretStorage: JsonObject }
+  | { op: "revocationResume"; secretStorage: JsonObject; expectedId?: string }
   | { op: "revocationNewRecoveryKey" }
   | ({ op: "revocationAddPasskeySlot" } & PasskeySlotInput)
   | { op: "revocationSecretStorageRequest"; revocationId: string }
@@ -87,6 +87,7 @@ export type CryptoOperation =
   | { op: "revocationCrossSigningRequest"; revocationId: string }
   | { op: "revocationCrossSigningSaved"; revocationId: string; secretsRevision: number | null }
   | { op: "revocationSignatures"; revocationId: string }
+  | { op: "revocationDropStaleMasterKeys"; revocationId: string; masterKeys: JsonObject }
   | { op: "revocationAdvance"; revocationId: string; stage: RevocationStage }
   | { op: "revocationBackupVersionRequest"; revocationId: string }
   | { op: "revocationBackupCreated"; revocationId: string; version: string }
@@ -170,6 +171,7 @@ export interface CryptoResults {
   revocationBackupVersionRequest: JsonObject;
   revocationBackupCreated: null;
   revocationVersionsToMigrate: string[];
+  revocationDropStaleMasterKeys: string[];
   revocationReencrypt: { rows: JsonObject[]; dropped: number };
   revocationVerify: null;
   revocationAbandon: null;

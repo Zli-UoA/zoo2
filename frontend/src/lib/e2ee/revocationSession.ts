@@ -100,7 +100,18 @@ export class RevocationSession {
   }
 
   /** 保存した失効を、開け直した SSSS で続ける。2〜5 を SSSS の保存の前に止めたら `RevocationRestart`。 */
-  async resume(store: CryptoStore, secretStorage: JsonObject): Promise<RevocationSummary> {
+  async resume(
+    store: CryptoStore,
+    secretStorage: JsonObject,
+    /** 続ける失効。暗号ストアの記録が別の失効なら、何も変えずに `RevocationChanged`。 */
+    expectedId?: string,
+  ): Promise<RevocationSummary> {
+    if (expectedId !== undefined) {
+      const stored = await store.revocationSummary();
+      if (stored && stored.revocation_id !== expectedId) {
+        throw coded(REVOCATION_CHANGED, "続けようとした失効が、別の失効に置き換わりました");
+      }
+    }
     this.discard();
     const unlocked = this.setup.unlockedStorage(secretStorage);
     try {
@@ -177,6 +188,14 @@ export class RevocationSession {
 
   signatures(store: CryptoStore): RevocationSignatures {
     return this.require().signatures(store.deviceKeys());
+  }
+
+  /** 作り直された相手のマスター鍵への署名を外し、外したら保存する（外した相手を返す）。 */
+  async dropStaleMasterKeys(store: CryptoStore, masterKeys: JsonObject): Promise<string[]> {
+    const revocation = this.require();
+    const dropped = revocation.dropStaleMasterKeys(masterKeys);
+    if (dropped.length > 0) await store.saveRevocation(revocation);
+    return dropped;
   }
 
   async advance(store: CryptoStore, stage: RevocationStage): Promise<void> {

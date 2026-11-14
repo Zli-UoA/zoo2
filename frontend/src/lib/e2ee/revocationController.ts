@@ -209,27 +209,48 @@ export type ResumeResult =
    * 2〜5 を SSSS の保存の前に止めたので、最初からやり直す。記録は捨てたが、範囲と削除した端末は
    * 引き継ぐ（範囲を黙って端末だけに縮めないため）。
    */
-  | { kind: "restart"; scope: RevocationScope; deletedDevices: string[] };
+  | { kind: "restart"; scope: RevocationScope; deletedDevices: string[] }
+  /**
+   * 別の端末が SSSS を作り直したので続けられない。記録は残る。「やり直す」では、この失効
+   * （`revocationId`）の記録だけを捨ててから、同じ範囲と端末で始め直す。
+   */
+  | {
+      kind: "conflict";
+      revocationId: string;
+      scope: RevocationScope;
+      deletedDevices: string[];
+    };
 
 /** 止まった失効を、開け直した SSSS で続ける。 */
 export async function resumeRevocation(deps: E2eeSetupDeps): Promise<ResumeResult> {
   // やり直しになったら記録を捨てるので、その前に範囲と削除した端末を読んでおく。
   const saved = await deps.worker.request({ op: "revocationStatus" });
   if (!saved) throw new Error("続ける失効がありません");
+  // 読んだ失効だけを続ける（読んでから続けるまでに、別の画面で別の失効に置き換わっていたら止める）。
+  const revocationId = saved.revocation_id;
   const secretStorage = await getSecretStorage(deps.client);
   try {
     const summary = await deps.worker.request({
       op: "revocationResume",
       secretStorage: secretStorage as unknown as JsonObject,
+      expectedId: revocationId,
     });
     return { kind: "resumed", summary };
   } catch (error) {
-    const code = (error as { code?: unknown } | null)?.code;
+    const code = codeOf(error);
     if (code === "RevocationRestart") {
-      await deps.worker.request({ op: "revocationAbandon" });
+      await deps.worker.request({ op: "revocationAbandon", expectedId: revocationId });
       return { kind: "restart", scope: saved.scope, deletedDevices: saved.deleted_devices };
     }
-    if (code === "ServerKeyMismatch") throw new ServerKeyMismatchError((error as Error).message);
+    if (code === "ServerKeyMismatch") {
+      return {
+        kind: "conflict",
+        revocationId,
+        scope: saved.scope,
+        deletedDevices: saved.deleted_devices,
+      };
+    }
+    if (code === REVOCATION_CHANGED) throw new RevocationChangedError();
     throw error;
   }
 }
@@ -385,14 +406,33 @@ async function runRevocation(
   }
 
   if (!stageAtLeast(summary, "signatures_saved")) {
-    const signatures = await worker.request({ op: "revocationSignatures", revocationId });
-    await guarded(() =>
-      uploadSignaturesWithReauth(
-        deps.client,
-        [signatures.device, ...signatures.master_keys],
-        reauth,
-      ),
-    );
+    // 今の端末への自己署名は、相手のマスター鍵への署名と分けて先に送る（相手の都合で止めない）。
+    const own = await worker.request({ op: "revocationSignatures", revocationId });
+    await guarded(() => uploadSignaturesWithReauth(deps.client, [own.device], reauth));
+    // 失効を始めてから相手がマスター鍵を作り直していると、その署名はサーバーが 404 で拒む。送る前に
+    // 今のマスター鍵と照合して外し（注記に回す）、照合と送信のあいだに作り直されたら照合し直す。
+    let signatures = own;
+    for (let attempt = 0; ; attempt += 1) {
+      const targets = summary.resigned_master_keys;
+      if (targets.length > 0) {
+        const current = await queryKeys(deps.client, targets);
+        await worker.request({
+          op: "revocationDropStaleMasterKeys",
+          revocationId,
+          masterKeys: (current.master_keys ?? {}) as JsonObject,
+        });
+        await progress();
+        signatures = await worker.request({ op: "revocationSignatures", revocationId });
+      }
+      try {
+        await guarded(() =>
+          uploadSignaturesWithReauth(deps.client, signatures.master_keys, reauth),
+        );
+        break;
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 404) || attempt >= 2) throw error;
+      }
+    }
     if (signatures.pins.length > 0) {
       await guarded(() => uploadPins(deps.client, signatures.pins, true, reauth));
     }

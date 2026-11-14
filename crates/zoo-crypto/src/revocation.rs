@@ -88,7 +88,14 @@ pub enum ResignNote {
     /// マスター鍵への署名を、暗号ストアの古いユーザー署名鍵で検証できなかった。署名し直さない。
     SignatureUnverified,
     /// マスター鍵への署名は検証できたが、記録と違うマスター鍵への署名だった。署名し直さない。
+    /// 署名の保存の前に、相手がマスター鍵を作り直していたときも、これにする。
     MasterKeyMismatch,
+    /// 記録の `confirmed_usk` が、古いユーザー署名鍵かサーバーの今のユーザー署名鍵と違う（別の端末の
+    /// 失効でユーザー署名鍵が変わり、再検証が必要になっている記録）。署名し直さない。
+    StaleConfirmation,
+    /// TOFU のピンの登録が済んでいない記録（`pin_pending`）。別の端末のピンを上書きしないよう、
+    /// 署名し直さない。
+    PinPending,
 }
 
 /// 新しいユーザー署名鍵で作り直すピン（記録のマスター鍵）。
@@ -160,9 +167,18 @@ impl ResignPlan {
             server_pins.insert(target.to_owned(), verified_pin(pin, me, target, &old_usk));
         }
 
+        // 署名し直すのは、古いユーザー署名鍵で確認し、ピンの登録も済んだ記録だけ。
+        let old_usk_b64 = old_usk.to_base64();
+        let ineligible = |record: &crate::TrustRecord| match record.confirmed_usk.as_deref() {
+            None => Some(ResignNote::NotConfirmed),
+            Some(usk) if usk != old_usk_b64 => Some(ResignNote::StaleConfirmation),
+            Some(_) if record.pin_pending => Some(ResignNote::PinPending),
+            Some(_) => None,
+        };
+
         for (target, record) in trust.records() {
-            if record.confirmed_usk.is_none() {
-                note(&mut plan, target, ResignNote::NotConfirmed);
+            if let Some(reason) = ineligible(record) {
+                note(&mut plan, target, reason);
                 continue;
             }
             plan.pins.push(ResignPin {
@@ -213,8 +229,10 @@ impl ResignPlan {
             };
             match trust.record(target) {
                 None => note(&mut plan, target, ResignNote::NoRecord),
-                Some(record) if record.confirmed_usk.is_none() => {
-                    note(&mut plan, target, ResignNote::NotConfirmed)
+                Some(record) if ineligible(record).is_some() => {
+                    if let Some(reason) = ineligible(record) {
+                        note(&mut plan, target, reason);
+                    }
                 }
                 Some(record) if record.master_key != key.to_base64() => {
                     note(&mut plan, target, ResignNote::MasterKeyMismatch)
@@ -230,6 +248,70 @@ impl ResignPlan {
             }
         }
         Ok(plan)
+    }
+
+    /// 記録の `confirmed_usk` が `current_user_signing`（サーバーの今のユーザー署名鍵）と違う相手を、
+    /// 署名し直す一覧から外して [`ResignNote::StaleConfirmation`] に回す。暗号ストアの古いユーザー署名鍵が
+    /// サーバーより古い（別の端末の失効のあとで解錠し直していない）ときに、再検証が必要な記録から
+    /// ピンを作らないため。
+    pub fn exclude_stale_confirmations(
+        &mut self,
+        trust: &TrustStore,
+        current_user_signing: Option<&str>,
+    ) {
+        let stale = |target: &str| {
+            trust
+                .record(target)
+                .is_none_or(|r| r.confirmed_usk.as_deref() != current_user_signing)
+        };
+        let mut dropped: BTreeSet<String> = BTreeSet::new();
+        self.pins.retain(|pin| {
+            let keep = !stale(&pin.target_user_id);
+            if !keep {
+                dropped.insert(pin.target_user_id.clone());
+            }
+            keep
+        });
+        self.master_keys.retain(|entry| {
+            let keep = !stale(&entry.target_user_id);
+            if !keep {
+                dropped.insert(entry.target_user_id.clone());
+            }
+            keep
+        });
+        for target in dropped {
+            let notes = self.notes.entry(target).or_default();
+            // 記録で置き換えるつもりだった注記は、置き換えないので外す。
+            notes.remove(&ResignNote::PinReplaced);
+            notes.insert(ResignNote::StaleConfirmation);
+        }
+    }
+
+    /// 署名し直すマスター鍵のうち、`current_master_keys`（`keys/query` の `master_keys`）の今の鍵と
+    /// 違う相手を外して [`ResignNote::MasterKeyMismatch`] に回し、外した相手を返す。失効を始めてから
+    /// 署名を保存するまでに相手がマスター鍵を作り直すと、サーバーはその署名を 404 で拒み、失効が
+    /// 先に進めなくなるため。ピンは外さない（記録のマスター鍵のピンなので、次の判定で再検証になる）。
+    pub fn drop_stale_master_keys(
+        &mut self,
+        current_master_keys: &BTreeMap<String, Value>,
+    ) -> Vec<String> {
+        let mut dropped = Vec::new();
+        self.master_keys.retain(|entry| {
+            let keep = current_master_keys
+                .get(&entry.target_user_id)
+                .is_some_and(|current| current["keys"] == entry.master_key["keys"]);
+            if !keep {
+                dropped.push(entry.target_user_id.clone());
+            }
+            keep
+        });
+        for target in &dropped {
+            self.notes
+                .entry(target.clone())
+                .or_default()
+                .insert(ResignNote::MasterKeyMismatch);
+        }
+        dropped
     }
 
     /// 新しいユーザー署名鍵で、ピン（`replace: true` で送る）とマスター鍵への署名を作る。
@@ -503,13 +585,14 @@ impl Revocation {
         let old_user_signing = input
             .old_user_signing
             .unwrap_or(&old.cross_signing.user_signing);
-        let resign = ResignPlan::collect(
+        let mut resign = ResignPlan::collect(
             input.trust,
             old_user_signing,
             input.pins,
             input.signatures,
             input.master_keys,
         )?;
+        resign.exclude_stale_confirmations(input.trust, expected_keys.user_signing.as_deref());
 
         let master = match input.scope {
             RevocationScope::Full => CrossSigningKeyPair::generate(&user_id, KeyUsage::Master)?,
@@ -740,6 +823,18 @@ impl Revocation {
         if let Some(revision) = self.state.secrets_revision {
             body["expected_secrets_revision"] = json!(revision);
         }
+    }
+
+    /// 署名の保存の前に、相手の今のマスター鍵（`keys/query` の `master_keys`）と照合し、作り直された
+    /// 相手のマスター鍵への署名を外す（[`ResignPlan::drop_stale_master_keys`]）。外した相手を返す。
+    /// 外したら、この状態を暗号ストアに保存する。
+    pub fn drop_stale_master_keys(
+        &mut self,
+        current_master_keys: &BTreeMap<String, Value>,
+    ) -> Vec<String> {
+        self.state
+            .resign
+            .drop_stale_master_keys(current_master_keys)
     }
 
     /// 新しい自己署名鍵による今の端末への署名（`POST /api/e2ee/cross_signing/signatures`）と、

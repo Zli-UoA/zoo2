@@ -246,7 +246,14 @@ it("discards only the revocation that could not be resumed before starting over"
     ...(summary("device_only", "secret_storage_saved") as object),
     revocation_id: "stale",
   } as never);
-  mocked.resumeRevocation.mockRejectedValue(new ServerKeyMismatchError("mismatch"));
+  mocked.resumeRevocation.mockImplementation(async () => {
+    // 再開に失敗したあと、別の画面で失効 A を捨てて失効 B を始めた（記録は B に置き換わった）。
+    mocked.revocationStatus.mockResolvedValue({
+      ...(summary("full", "prepared") as object),
+      revocation_id: "other",
+    } as never);
+    return { kind: "conflict", revocationId: "stale", scope: "device_only", deletedDevices: [] };
+  });
   mocked.abandonRevocation.mockImplementation(async () => {
     mocked.revocationStatus.mockResolvedValue(null);
   });
@@ -255,7 +262,19 @@ it("discards only the revocation that could not be resumed before starting over"
   await userEvent.type(screen.getByLabelText("リカバリーキー"), "key");
   await userEvent.click(screen.getByRole("button", { name: "リカバリーキーで解錠" }));
   await userEvent.click(await screen.findByRole("button", { name: "やり直す" }));
+  // 読み直した B ではなく、再開しようとした A を指定して捨てる（記録が B なら Worker が拒む）。
   expect(mocked.abandonRevocation).toHaveBeenCalledWith(expect.anything(), "stale");
   // 記録を捨てたので、始め直せる（解錠の段に戻る）。
   expect(await screen.findByRole("button", { name: "リカバリーキーで解錠" })).toBeVisible();
+});
+
+it("switches to a full revocation when a device-only revocation cannot start", async () => {
+  // 別の端末の 1〜5 が SSSS の保存の直後で止まり、SSSS のマスター鍵がサーバーと違う。
+  mocked.beginRevocation.mockRejectedValue(new ServerKeyMismatchError("mismatch"));
+  renderPanel();
+  await startRevocation("device_only");
+  expect(await screen.findByText(/端末だけの失効は行えません/)).toBeVisible();
+  // 同じ失敗を繰り返さないよう、範囲を全体に切り替えて選び直してもらう。
+  expect(screen.getByRole("radio", { name: /パスキー、リカバリーキー/ })).toBeChecked();
+  expect(screen.getByRole("button", { name: "次へ" })).toBeVisible();
 });

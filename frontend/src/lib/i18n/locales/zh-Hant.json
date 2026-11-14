@@ -1159,6 +1159,7 @@
       "deleteFailed": "無法刪除裝置。請再試一次。",
       "refreshFailed": "無法重新載入裝置清單。顯示的內容可能不是最新的。",
       "revocationPending": "有未完成的撤銷。請先透過「繼續撤銷」儲存到最後。",
+      "deviceOnlyUnavailable": "另一台裝置重新產生了 SSSS 金鑰，因此無法只撤銷裝置。範圍已切換為「通行金鑰、復原金鑰或 SSSS 金鑰」，請確認後繼續。",
       "renameFailed": "無法變更裝置名稱。請再試一次。",
       "revocationFailed": "無法完成撤銷的儲存。進度保留在此裝置上。請再按一次「執行撤銷」。",
       "verifyFailed": "無法儲存重新驗證。請再試一次。"
@@ -1248,7 +1249,9 @@
         "not_confirmed": "只有未確認的紀錄",
         "pin_replaced": "伺服器的紀錄不同，將以此裝置的紀錄取代",
         "signature_unverified": "無法驗證簽章",
-        "master_key_mismatch": "簽署的金鑰與紀錄不同"
+        "master_key_mismatch": "簽署的金鑰與紀錄不同",
+        "stale_confirmation": "只有用舊的使用者簽署金鑰確認的記錄（需要重新驗證）",
+        "pin_pending": "釘選尚未登記完成"
       },
       "versionsWithoutKey": "有無法移到新版本的備份（版本 {{versions}}）。此裝置與 SSSS 都沒有它們的金鑰，這些訊息無法復原。",
       "executeDescription": "執行後，你需要重新登入確認身分，然後產生並儲存新金鑰。",

@@ -608,6 +608,21 @@ async fn finish(
     }
 
     if revocation.state().stage < RevocationStage::SignaturesSaved {
+        // クライアントと同じく、署名の前に相手の今のマスター鍵と照合し、作り直された相手を外す。
+        let targets: Vec<String> = revocation
+            .state()
+            .resign
+            .master_keys
+            .iter()
+            .map(|m| m.target_user_id.clone())
+            .collect();
+        if !targets.is_empty() {
+            let refs: Vec<&str> = targets.iter().map(String::as_str).collect();
+            let current = env.keys_query(&user, &refs).await;
+            let masters: BTreeMap<String, Value> =
+                serde_json::from_value(current["master_keys"].clone()).unwrap_or_default();
+            revocation.drop_stale_master_keys(&masters);
+        }
         let signatures = revocation
             .signatures(&device.account.device_keys())
             .unwrap();
@@ -1300,6 +1315,67 @@ async fn revocation_stops_when_another_device_replaced_secret_storage() {
         .unwrap();
         first.unlock(&env, &alice).await.unwrap();
     }
+}
+
+/// 失効を始めてから署名を保存するまでに相手がマスター鍵を作り直しても、失効は最後まで終わり、
+/// その相手は署名し直さずに一覧（`master_key_mismatch`）に出て、再検証が必要になる。
+#[tokio::test]
+async fn master_key_replaced_during_revocation_is_skipped() {
+    let env = env().await;
+    let (mut alice, mut device) = setup(&env).await;
+    let (mut bob_account, mut bob) = setup(&env).await;
+    env.encrypted_channel(&[&alice.id, &bob.user]).await;
+    device.evaluate(&env, &[&bob.user]).await;
+    device.reverify(&env, &bob.user).await;
+    let bob_user = bob.user.clone();
+
+    let mut revocation = prepare(&env, &alice, &device, RevocationScope::DeviceOnly, &[]).await;
+    assert!(
+        revocation
+            .state()
+            .resign
+            .master_keys
+            .iter()
+            .any(|m| m.target_user_id == bob_user)
+    );
+    finish(
+        &env,
+        &mut alice,
+        &mut device,
+        &mut revocation,
+        RevocationStage::CrossSigningSaved,
+    )
+    .await
+    .unwrap();
+    // bob が 1〜5 の失効でマスター鍵を作り直す。
+    revoke(
+        &env,
+        &mut bob_account,
+        &mut bob,
+        RevocationScope::Full,
+        &[],
+        RevocationStage::Verified,
+    )
+    .await;
+
+    finish(
+        &env,
+        &mut alice,
+        &mut device,
+        &mut revocation,
+        RevocationStage::Verified,
+    )
+    .await
+    .unwrap();
+    assert!(
+        revocation.state().resign.notes[&bob_user]
+            .contains(&zoo_crypto::ResignNote::MasterKeyMismatch)
+    );
+    let after = device.evaluate(&env, &[&bob_user]).await;
+    assert_eq!(
+        state(&after, &bob_user),
+        UserState::NeedsReverification(ReverificationReason::MasterKeyChanged)
+    );
 }
 
 /// 暗号化チャンネルを抜けた相手に受け入れで署名していても、失効のあとで署名が付け直される。

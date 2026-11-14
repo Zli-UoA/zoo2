@@ -1159,6 +1159,7 @@
       "deleteFailed": "Could not delete the device. Please try again.",
       "refreshFailed": "Couldn't reload the device list. What you see may be out of date.",
       "revocationPending": "An unfinished revocation exists. Continue it with “Continue revocation” first.",
+      "deviceOnlyUnavailable": "Another device replaced the Secret Storage key, so a device-only revocation isn't possible. The scope has been switched to “passkeys, recovery key, or Secret Storage key”; check it and continue.",
       "renameFailed": "Could not rename the device. Please try again.",
       "revocationFailed": "Could not finish saving the revocation. Its progress is kept on this device. Press “Revoke” again.",
       "verifyFailed": "Could not save the verification. Please try again."
@@ -1248,7 +1249,9 @@
         "not_confirmed": "only an unconfirmed record",
         "pin_replaced": "the server's record differed and will be replaced with this device's record",
         "signature_unverified": "the signature could not be verified",
-        "master_key_mismatch": "the signed key differs from the record"
+        "master_key_mismatch": "the signed key differs from the record",
+        "stale_confirmation": "Confirmed with an older user-signing key (needs re-verification)",
+        "pin_pending": "Its pin isn't registered yet"
       },
       "versionsWithoutKey": "Some backups cannot be moved to the new version (versions {{versions}}). Neither this device nor Secret Storage has their keys, so their messages cannot be restored.",
       "executeDescription": "You will sign in again to confirm it is you, then new keys are created and saved.",

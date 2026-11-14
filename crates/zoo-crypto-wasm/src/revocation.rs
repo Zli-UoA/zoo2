@@ -1,5 +1,7 @@
 //! 失効の手順（#362）。
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
@@ -33,7 +35,9 @@ export type ResignNote =
   | "not_confirmed"
   | "pin_replaced"
   | "signature_unverified"
-  | "master_key_mismatch";
+  | "master_key_mismatch"
+  | "stale_confirmation"
+  | "pin_pending";
 
 /** `Revocation.begin` に渡すサーバーの値。 */
 export interface RevocationInput {
@@ -301,6 +305,17 @@ impl Revocation {
         let rows: Vec<core::BackupRow> = from_js(&rows, "rows")?;
         let (rows, dropped) = self.inner.reencrypt_rows(&old_key.inner, &rows);
         to_js(&json!({ "rows": rows, "dropped": dropped }))
+    }
+
+    /// 署名の保存の前に、相手の今のマスター鍵（`keys/query` の `master_keys`）と照合し、作り直された
+    /// 相手のマスター鍵への署名を外す。外した相手を返す（外したら暗号ストアに保存する）。
+    #[wasm_bindgen(js_name = dropStaleMasterKeys, unchecked_return_type = "string[]")]
+    pub fn drop_stale_master_keys(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "JsonObject")] master_keys: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let master_keys: BTreeMap<String, Value> = from_js(&master_keys, "masterKeys")?;
+        to_js(&self.inner.drop_stale_master_keys(&master_keys))
     }
 
     /// 古い版 `version` で捨てた行の数を記録する（同じ版は置き換える）。古い版を消す前に保存する。

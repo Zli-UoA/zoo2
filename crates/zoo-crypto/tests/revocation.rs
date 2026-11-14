@@ -591,15 +591,25 @@ fn revoking_device_updates_its_own_trust_records() {
     ));
 }
 
+/// 記録の JSON を書き換えた暗号ストア（登録待ちや、古いユーザー署名鍵で確認した記録を作る）。
+fn trust_with_patched_record(
+    secrets: &OwnSecrets,
+    bob: &CrossSigningKeyPair,
+    patch: impl FnOnce(&mut Value),
+) -> TrustStore {
+    let mut json: Value =
+        serde_json::from_str(&trust_with_records(secrets, bob).to_json()).unwrap();
+    patch(&mut json["records"][BOB]);
+    TrustStore::from_json(&json.to_string(), ALICE).unwrap()
+}
+
 #[test]
-fn revocation_keeps_pending_pins_pending_until_they_are_saved() {
+fn pending_pins_are_not_resigned() {
     let (_alice, secrets) = Alice::new();
     let bob = master(BOB);
     // TOFU のピンの登録に失敗した記録（confirmed_usk があり、登録待ち）。
-    let mut json: Value =
-        serde_json::from_str(&trust_with_records(&secrets, &bob).to_json()).unwrap();
-    json["records"][BOB]["pin_pending"] = json!(true);
-    let mut trust = TrustStore::from_json(&json.to_string(), ALICE).unwrap();
+    let mut trust = trust_with_patched_record(&secrets, &bob, |r| r["pin_pending"] = json!(true));
+    let before = trust.record(BOB).unwrap().clone();
     let new_usk = CrossSigningKeyPair::generate(ALICE, KeyUsage::UserSigning).unwrap();
     let plan = zoo_crypto::ResignPlan::collect(
         &trust,
@@ -609,15 +619,88 @@ fn revocation_keeps_pending_pins_pending_until_they_are_saved() {
         &BTreeMap::new(),
     )
     .unwrap();
-    assert_eq!(plan.pins.len(), 1);
+    // 別の端末のピンを上書きしないよう、署名し直さずに一覧に出す。
+    assert!(plan.pins.is_empty());
+    assert!(plan.notes[BOB].contains(&ResignNote::PinPending));
     trust
         .apply_revocation(&secrets.cross_signing.master, &new_usk, &plan)
         .unwrap();
-    let record = trust.record(BOB).unwrap();
+    // 記録は変えない（新しいユーザー署名鍵とは違うので、次の判定で再検証になる）。
+    assert_eq!(trust.record(BOB).unwrap(), &before);
+}
+
+#[test]
+fn records_confirmed_with_an_older_user_signing_key_are_not_resigned() {
+    let (_alice, secrets) = Alice::new();
+    let bob = master(BOB);
+    let older = CrossSigningKeyPair::generate(ALICE, KeyUsage::UserSigning).unwrap();
+    // 別の端末の失効の前のユーザー署名鍵で確認した記録（今は再検証が必要）。
+    let trust = trust_with_patched_record(&secrets, &bob, |r| {
+        r["confirmed_usk"] = json!(older.public_key().to_base64())
+    });
+    let plan = zoo_crypto::ResignPlan::collect(
+        &trust,
+        &secrets.cross_signing.user_signing,
+        &[],
+        &[],
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(plan.pins.is_empty());
+    assert!(plan.notes[BOB].contains(&ResignNote::StaleConfirmation));
+}
+
+#[test]
+fn records_not_confirmed_with_the_servers_user_signing_key_are_excluded() {
+    let (_alice, secrets) = Alice::new();
+    let bob = master(BOB);
+    let trust = trust_with_records(&secrets, &bob);
+    let mut plan = zoo_crypto::ResignPlan::collect(
+        &trust,
+        &secrets.cross_signing.user_signing,
+        &[],
+        &[],
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(plan.pins.len(), 1);
+    // 暗号ストアの鍵はサーバーより古い（別の端末の失効のあとで解錠し直していない）。
+    let server_usk = CrossSigningKeyPair::generate(ALICE, KeyUsage::UserSigning).unwrap();
+    plan.exclude_stale_confirmations(&trust, Some(&server_usk.public_key().to_base64()));
+    assert!(plan.pins.is_empty());
+    assert!(plan.notes[BOB].contains(&ResignNote::StaleConfirmation));
+}
+
+#[test]
+fn master_keys_replaced_before_signing_are_dropped() {
+    let bob = master(BOB);
+    let carol = master(CAROL);
+    let mut plan = zoo_crypto::ResignPlan {
+        master_keys: vec![
+            zoo_crypto::ResignMasterKey {
+                target_user_id: BOB.into(),
+                master_key: bob.public_key_json(),
+            },
+            zoo_crypto::ResignMasterKey {
+                target_user_id: CAROL.into(),
+                master_key: carol.public_key_json(),
+            },
+        ],
+        ..Default::default()
+    };
+    // bob はマスター鍵を作り直した。carol は変わらない。
+    let current: BTreeMap<String, Value> = [
+        (BOB.to_owned(), master(BOB).public_key_json()),
+        (CAROL.to_owned(), carol.public_key_json()),
+    ]
+    .into();
+    assert_eq!(plan.drop_stale_master_keys(&current), [BOB.to_owned()]);
+    assert_eq!(plan.master_keys.len(), 1);
+    assert_eq!(plan.master_keys[0].target_user_id, CAROL);
+    assert!(plan.notes[BOB].contains(&ResignNote::MasterKeyMismatch));
+    // 問い合わせに出てこない相手（消えた相手）も外す。
     assert_eq!(
-        record.confirmed_usk.as_deref(),
-        Some(new_usk.public_key().to_base64().as_str())
+        plan.drop_stale_master_keys(&BTreeMap::new()),
+        [CAROL.to_owned()]
     );
-    // 署名し直したピンを保存できるまでは、登録待ちのまま（配らない）。
-    assert!(record.pin_pending);
 }

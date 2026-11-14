@@ -165,7 +165,7 @@ export class CryptoOperations {
         return this.revocation.begin(this.opened(), input);
       }
       case "revocationResume":
-        return this.revocation.resume(this.opened(), request.secretStorage);
+        return this.revocation.resume(this.opened(), request.secretStorage, request.expectedId);
       case "revocationNewRecoveryKey":
         return this.revocation.newRecoveryKey();
       case "revocationAddPasskeySlot":
@@ -183,6 +183,8 @@ export class CryptoOperations {
         return null;
       case "revocationSignatures":
         return this.revocation.signatures(this.opened());
+      case "revocationDropStaleMasterKeys":
+        return this.revocation.dropStaleMasterKeys(this.opened(), request.masterKeys);
       case "revocationAdvance":
         await this.revocation.advance(this.opened(), request.stage);
         return null;

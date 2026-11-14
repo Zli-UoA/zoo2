@@ -1159,6 +1159,7 @@
       "deleteFailed": "无法删除设备。请重试。",
       "refreshFailed": "无法重新加载设备列表。显示的内容可能不是最新的。",
       "revocationPending": "有未完成的吊销。请先通过“继续吊销”保存到最后。",
+      "deviceOnlyUnavailable": "另一台设备重新生成了 SSSS 密钥，因此无法只吊销设备。范围已切换为“通行密钥、恢复密钥或 SSSS 密钥”，请确认后继续。",
       "renameFailed": "无法修改设备名称。请重试。",
       "revocationFailed": "无法完成吊销的保存。进度保留在此设备上。请再次点击“执行吊销”。",
       "verifyFailed": "无法保存重新验证。请重试。"
@@ -1248,7 +1249,9 @@
         "not_confirmed": "只有未确认的记录",
         "pin_replaced": "服务器的记录不同，将用此设备的记录替换",
         "signature_unverified": "无法验证签名",
-        "master_key_mismatch": "签名的密钥与记录不同"
+        "master_key_mismatch": "签名的密钥与记录不同",
+        "stale_confirmation": "只有用旧的用户签名密钥确认的记录（需要重新验证）",
+        "pin_pending": "固定尚未登记完成"
       },
       "versionsWithoutKey": "有无法迁移到新版本的备份（版本 {{versions}}）。此设备和 SSSS 中都没有它们的密钥，这些消息无法恢复。",
       "executeDescription": "执行后，你需要重新登录确认身份，然后生成并保存新密钥。",

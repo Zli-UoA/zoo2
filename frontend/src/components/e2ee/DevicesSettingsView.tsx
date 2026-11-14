@@ -86,6 +86,8 @@ export type DevicesErrorCode =
   | "refreshFailed"
   /** 終わっていない失効があるので、新しい失効を始めなかった。 */
   | "revocationPending"
+  /** 別の端末が SSSS の鍵を作り直したので、端末だけの失効は行えない（範囲を全体に切り替えた）。 */
+  | "deviceOnlyUnavailable"
   | "renameFailed"
   | "revocationFailed"
   | "verifyFailed";

@@ -336,9 +336,17 @@ function DevicesPanel() {
         setPhase({ phase: "confirm", ...notesRef.current });
         return;
       }
-      // 2〜5 を SSSS の保存の前に止めた。記録した範囲と端末で最初からやり直す（ページを読み込み
-      // 直したあとでも、範囲を端末だけに縮めない）。
+      // 範囲と削除した端末は、再開した記録から引き継ぐ（ページを読み込み直したあとでも、範囲を
+      // 端末だけに縮めない）。
       planRef.current = { scope: resumed.scope, selected: resumed.deletedDevices };
+      if (resumed.kind === "conflict") {
+        // 別の端末が SSSS を作り直したので続けられない。「やり直す」では、再開しようとしたこの失効の
+        // 記録だけを捨てる（あとで読み直すと、そのあいだに始めた別の失効を捨てかねないため）。
+        conflictRef.current = resumed.revocationId;
+        setPhase({ phase: "conflict" });
+        return;
+      }
+      // 2〜5 を SSSS の保存の前に止めた。記録した範囲と端末で最初からやり直す。
       resumeRef.current = false;
     }
     const { scope, selected } = planRef.current;
@@ -364,12 +372,16 @@ function DevicesPanel() {
         await afterUnlock();
       } catch (error) {
         if (error instanceof ServerKeyMismatchError) {
-          // 再開できない失効（別の端末が SSSS を作り直した）の記録は残る。「やり直す」で、この失効だけを
-          // 捨ててから始め直す。
-          const stale = await revocationStatus(deps).catch(() => null);
-          conflictRef.current = stale?.revocation_id ?? null;
-          // 始め直すときも、記録した範囲と端末を引き継ぐ（端末だけに縮めない）。
-          if (stale) planRef.current = { scope: stale.scope, selected: stale.deleted_devices };
+          // 失効を始めたところで、SSSS のマスター鍵がサーバーと違った（別の端末の 1〜5 が SSSS の
+          // 保存の直後で止まった。再開の不一致は `resumeRevocation` が `conflict` で返す）。記録は
+          // 作っていない。端末だけの失効はやり直しても同じなので、範囲を全体に切り替えて選び直す。
+          conflictRef.current = null;
+          if (planRef.current.scope === "device_only") {
+            const selected = planRef.current.selected;
+            planRef.current = { scope: "full", selected };
+            setPhase({ phase: "select", scope: "full", selected }, "deviceOnlyUnavailable");
+            return;
+          }
           setPhase({ phase: "conflict" });
           return;
         }
