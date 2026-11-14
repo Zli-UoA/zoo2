@@ -1,7 +1,7 @@
 import { sidebarItemClassName } from "./sidebarStyles";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
-import { UsersIcon } from "lucide-react";
+import { LockKeyholeIcon, UsersIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { ChannelRow } from "../../lib/electric/types";
@@ -46,6 +46,17 @@ export function DmListItem({
         <AppAvatar label={label} src={avatarUrl} size="sm" aria-hidden />
       )}
       <span className="min-w-0 flex-1 truncate">{label}</span>
+      {channel.encrypted ? (
+        // 同じ相手との平文の DM と暗号化 DM は別の項目になるので、開く前に区別できるようにする。
+        <span
+          role="img"
+          aria-label={t("e2ee.badge")}
+          title={t("e2ee.badge")}
+          className="shrink-0 text-muted-foreground"
+        >
+          <LockKeyholeIcon className="size-3.5" aria-hidden="true" />
+        </span>
+      ) : null}
       {unread ? (
         <span
           role="img"

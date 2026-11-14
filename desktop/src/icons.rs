@@ -95,6 +95,7 @@ icons! {
     Send => "send",
     Settings => "settings",
     Settings2 => "settings-2",
+    ShieldAlert => "shield-alert",
     ShieldCheck => "shield-check",
     SmilePlus => "smile-plus",
     SquareArrowOutUpRight => "square-arrow-out-up-right",

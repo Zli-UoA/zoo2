@@ -27,6 +27,8 @@ export interface ThreadPaneProps {
   isMember?: boolean;
   /** オフラインか。返信がないときの案内と composer を切り替える。 */
   isOffline?: boolean;
+  /** 返信を送れない理由（暗号化チャンネルで暗号化の送信がまだ使えない、など）。指定すると入力欄を止める。 */
+  composeDisabledReason?: string;
   typingUsers?: TypingUser[];
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
@@ -84,6 +86,7 @@ export function ThreadPane({
   mentionMemberIds,
   isMember = true,
   isOffline = false,
+  composeDisabledReason,
   typingUsers = [],
   onTyping,
   root,
@@ -337,11 +340,14 @@ export function ThreadPane({
             onRequestCommands={onRequestCommands}
             mentionUsers={mentionUsers}
             mentionMemberIds={mentionMemberIds}
-            disabled={!isMember || isOffline}
+            disabled={!isMember || isOffline || composeDisabledReason !== undefined}
             onTyping={onTyping}
             onSend={onSendReply}
             onUploadAttachment={onUploadAttachment}
-            placeholder={isOffline ? t("offline.composeDisabled") : t("threads.compose")}
+            placeholder={
+              composeDisabledReason ??
+              (isOffline ? t("offline.composeDisabled") : t("threads.compose"))
+            }
             ariaLabel={t("threads.compose")}
           />
         </>

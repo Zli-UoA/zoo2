@@ -1151,9 +1151,39 @@
       "passkeyNoPrf": "呢條通行金鑰解唔到鎖（唔支援 PRF）。如果係安全金鑰，喺 AuthZ 重新註冊之後可能用得。請用復原金鑰解鎖。",
       "passkeyOriginNotAllowed": "呢個頁面用唔到通行金鑰，請用復原金鑰解鎖。",
       "passkeyNoSlot": "揀咗嘅通行金鑰未註冊做加密解鎖方式。",
-      "lastSlot": "最後一個解鎖方式唔可以刪除。"
+      "lastSlot": "最後一個解鎖方式唔可以刪除。",
+      "disabled": "呢部伺服器暫時用唔到加密頻道。",
+      "publicForbidden": "只有私人頻道先可以加密。"
     },
     "reunlockToAdd": "重新解鎖嚟加通行金鑰",
-    "reunlockToAddDescription": "要加通行金鑰，請用通行金鑰或者復原金鑰再解鎖一次。呢部裝置嘅解鎖狀態唔會變。"
+    "reunlockToAddDescription": "要加通行金鑰，請用通行金鑰或者復原金鑰再解鎖一次。呢部裝置嘅解鎖狀態唔會變。",
+    "badge": "已加密",
+    "encryptChannel": "端對端加密",
+    "encryptChannelHelp": "只有成員已驗證嘅裝置先睇到訊息。加密之後唔可以取消，暫時亦都唔可以傳附件。",
+    "encryptChannelPrivateOnly": "只有私人頻道先可以加密。",
+    "encryptDm": "端對端加密",
+    "encryptDmHelp": "只有參與者已驗證嘅裝置先睇到訊息。加密之後唔可以取消，暫時亦都唔可以傳附件。",
+    "undecryptable": {
+      "keyMissing": "解密呢條訊息嘅鑰匙仲未到。",
+      "locked": "喺呢部裝置解鎖加密之後就睇到呢條訊息。",
+      "staleEpoch": "呢條訊息係為之前嘅成員加密嘅，睇唔到。",
+      "invalid": "呢條訊息驗證失敗，所以唔顯示。",
+      "failed": "解密唔到呢條訊息。"
+    },
+    "sender": {
+      "unverified": "未驗證嘅發送者",
+      "unauthenticated": "確認唔到發送者"
+    },
+    "undeliverable": {
+      "title": "以下嘅人睇唔到新訊息",
+      "notSetUp": "{{name}} 未設定加密",
+      "needsReverification": "{{name}} 需要重新驗證"
+    },
+    "loadPreviews": "載入連結預覽",
+    "desktopUnsupported": {
+      "title": "加密頻道",
+      "description": "呢個客戶端顯示唔到加密頻道。請用網頁版或者手機 app 開。"
+    },
+    "sendUnavailable": "呢個版本暫時未可以喺加密頻道傳訊息。"
   }
 }

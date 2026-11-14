@@ -39,7 +39,10 @@ impl WorkspaceView {
             let is_unread = unread.contains(&ch_id);
             let is_member = state.store.is_member(&ch_id, &me_id);
             let mut label = state.store.channel_label(ch, &me_id);
-            if ch.is_private && !ch.is_dm {
+            if ch.encrypted {
+                // 暗号化チャンネル（このクライアントでは開いても表示しない）。
+                label.push_str(" 🔐");
+            } else if ch.is_private && !ch.is_dm {
                 label.push_str(" 🔒");
             }
             if ch.archive_at.is_some() {

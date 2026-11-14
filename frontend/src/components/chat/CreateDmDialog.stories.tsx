@@ -60,3 +60,10 @@ export const UserAvatar: Story = {
     );
   }),
 };
+export const Encrypted: Story = {
+  play: playForImplementation(async () => {
+    const checkbox = await screen.findByRole("checkbox", { name: "エンドツーエンドで暗号化する" });
+    await userEvent.click(checkbox);
+    await expect(checkbox).toBeChecked();
+  }),
+};

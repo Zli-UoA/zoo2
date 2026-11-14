@@ -5,6 +5,7 @@
 //! - `toast`: OS の通知の表示。
 //! - `window`: ウィンドウ、トレイ、単一インスタンス。
 //! - `update`: アプリの自動更新。
+//! - `updater_window`: 更新のウィンドウ (アイコン、状態、進捗バー)。
 
 mod commands;
 #[cfg(test)]
@@ -12,6 +13,7 @@ mod commands_list;
 mod core;
 mod toast;
 mod update;
+mod updater_window;
 mod window;
 
 use std::sync::Arc;
@@ -82,6 +84,8 @@ pub fn run() {
             window::add_remote_capability(app, &core)?;
             window::create_main(app, &core)?;
             window::create_tray(app)?;
+            #[cfg(target_os = "macos")]
+            window::create_app_menu(app)?;
             update::spawn(app.handle(), check_updates);
             core.start();
             Ok(())
