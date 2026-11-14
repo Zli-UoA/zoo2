@@ -26,10 +26,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 use zoo_crypto::{
-    BackupUpload, BackupUploadState, DeviceAccount, Ed25519PublicKey, InboundSessionStore,
-    KeyUsage, ListedDevice, OlmSession, OwnKeys, OwnSecrets, ServerKeyState, SessionRef,
-    StartupCheck, TrustStore, VersionChange, cross_signing_key_id, verify_cross_signing_key,
-    verify_json_signature,
+    BackupUpload, BackupUploadState, DeviceAccount, InboundSessionStore, KeySnapshot, ListedDevice,
+    OlmSession, OwnKeys, OwnSecrets, ServerKeyState, SessionRef, StartupCheck, TrustStore,
+    VersionChange,
 };
 
 mod megolm;
@@ -621,31 +620,30 @@ impl CryptoStore {
         self.process_to_device_with_keys(rows, &serde_json::json!({ "device_keys": device_keys }))
     }
 
-    /// to-device メッセージを処理する。`query` は送信ユーザーの `keys/query` の応答（`device_keys`、
-    /// `master_keys`、`self_signing_keys`、`signatures`）。
+    /// to-device メッセージを処理する。`query` は送信ユーザーと自分の `keys/query` の応答（`device_keys`、
+    /// `master_keys`、`self_signing_keys`、`user_signing_keys`、`signatures`、`tofu_pins`）。他のユーザーの
+    /// マスター鍵の判定には、自分のマスター鍵とユーザー署名鍵が要る。
     ///
     /// 1 件ごとに、変わった状態と処理済みの印を保存してから次に進む。ack の前に終了しても、
-    /// 同じメッセージを 2 回復号しない。送信端末の検証（受信時の検証の手順 4）には、送信ユーザーの
-    /// 信頼した自己署名鍵（[`sender_trust`](Self::sender_trust)）を使う。
+    /// 同じメッセージを 2 回復号しない。送信端末の検証（受信時の検証の手順 4）には、
+    /// `TrustStore::sender_trust` が返す送信ユーザーの信頼した自己署名鍵を使う。
     pub fn process_to_device_with_keys(
         &mut self,
         rows: &[ToDeviceRow],
         query: &Value,
     ) -> Result<ToDeviceResult> {
-        // 解錠し直しが要るあいだは、暗号ストアの鍵（自分の自己署名鍵）を使わない（#360 の決まり）。
-        let own_self_signing = if self.needs_unlock() {
+        // 手順 4 の判定（`TrustStore::sender_trust`）に使う、送信ユーザーと自分の `keys/query`。
+        // 解錠し直しが要るあいだは、暗号ストアの記録で送信端末を検証済みにしない（#360 の決まり）。
+        let snapshot = if self.needs_unlock() {
             None
         } else {
-            self.own_keys()
-                .ok()
-                .flatten()
-                .map(|own| own.self_signing.public_key())
+            KeySnapshot::from_json(query).ok()
         };
         let mut result = ToDeviceResult::default();
         for row in rows {
             if !self.state.processed_to_device.contains(&row.id) {
                 if row.r#type == "m.room.encrypted" {
-                    self.process_encrypted(row, query, own_self_signing, &mut result)?;
+                    self.process_encrypted(row, query, snapshot.as_ref(), &mut result)?;
                 } else {
                     result.dropped += 1;
                 }
@@ -661,7 +659,7 @@ impl CryptoStore {
         &mut self,
         row: &ToDeviceRow,
         query: &Value,
-        own_self_signing: Option<Ed25519PublicKey>,
+        snapshot: Option<&KeySnapshot>,
         result: &mut ToDeviceResult,
     ) -> Result<()> {
         let device_keys = &query["device_keys"];
@@ -705,14 +703,24 @@ impl CryptoStore {
             Some(keys) => ListedDevice::Listed(keys),
             None => ListedDevice::NotListed,
         };
-        let trust = decrypted.sender().and_then(|user_id| {
-            self.sender_trust(
-                user_id,
-                decrypted.sender_device().unwrap_or_default(),
-                query,
-                own_self_signing,
-            )
-        });
+        // 送信ユーザーの信頼した自己署名鍵（受信時の検証の手順 4。Web と同じ `TrustStore::sender_trust`）。
+        // 規則 3 の署名や共有ピンの採用で記録が変わったら、処理済みの印と同じ書き込みで保存する。
+        let trust = match (snapshot, decrypted.sender()) {
+            (Some(snapshot), Some(sender)) => {
+                let before = self.trust.to_json();
+                let trust = self.trust.sender_trust(
+                    snapshot,
+                    sender,
+                    decrypted.sender_device().unwrap_or_default(),
+                );
+                if self.trust.to_json() != before {
+                    self.state.trust_store =
+                        Some(self.trust.pickle(&self.account, &self.storage_key));
+                }
+                trust
+            }
+            _ => None,
+        };
         let Ok(room_key) = decrypted.verify_room_key(&self.account, listed, trust.as_ref()) else {
             result.dropped += 1;
             return Ok(());
@@ -740,71 +748,6 @@ impl CryptoStore {
             result.room_keys += 1;
         }
         Ok(())
-    }
-
-    /// 送信ユーザーの、信頼したマスター鍵で署名された自己署名鍵（受信時の検証の手順 4）。信頼できなければ
-    /// `None`（送信端末は「未検証の送信者」になる）。マスター鍵と自己署名鍵は `keys/query` の応答から取り、
-    /// `sender_device_keys` からは取らない。
-    ///
-    /// - 自分：解錠済みなら、暗号ストアの自分の自己署名鍵（`own_self_signing`）。
-    /// - 他のユーザー：配布先の判定の記録（TOFU のピンか、ユーザー署名鍵の署名で信頼したマスター鍵）が
-    ///   あり、登録待ちでなく、今の自分のユーザー署名鍵のもとで確認した記録で、サーバーのマスター鍵が
-    ///   記録と一致し、自己署名鍵がそのマスター鍵で署名されているとき。記録のない相手は、受信の処理では
-    ///   信頼しない（ピンを作るのは送信の判定だけ）。
-    fn sender_trust(
-        &self,
-        user_id: &str,
-        device_id: &str,
-        query: &Value,
-        own_self_signing: Option<Ed25519PublicKey>,
-    ) -> Option<zoo_crypto::SenderTrust> {
-        let self_signing_key = if user_id == self.user_id() {
-            own_self_signing?
-        } else {
-            let record = self.trust.record(user_id)?;
-            let current_usk = self.trust.user_signing_key_history().last()?;
-            if record.pin_pending || record.confirmed_usk.as_ref() != Some(current_usk) {
-                return None;
-            }
-            let master = verify_cross_signing_key(
-                query["master_keys"].get(user_id)?,
-                user_id,
-                KeyUsage::Master,
-            )
-            .ok()?;
-            if master.to_base64() != record.master_key {
-                return None;
-            }
-            let self_signing_json = query["self_signing_keys"].get(user_id)?;
-            let self_signing =
-                verify_cross_signing_key(self_signing_json, user_id, KeyUsage::SelfSigning).ok()?;
-            verify_json_signature(
-                self_signing_json,
-                user_id,
-                &cross_signing_key_id(&master),
-                &master,
-            )
-            .ok()?;
-            self_signing
-        };
-        // `e2ee_key_signatures` の、自己署名鍵による端末鍵への署名（端末鍵の JSON に署名がないとき使う）。
-        let signer_key_id = cross_signing_key_id(&self_signing_key);
-        let signature = query["signatures"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|row| {
-                row["signer_user_id"] == user_id
-                    && row["target_user_id"] == user_id
-                    && row["target_key_id"] == device_id
-                    && row["signer_key_id"] == signer_key_id.as_str()
-            })
-            .and_then(|row| row["signature"].as_str())
-            .map(str::to_owned);
-        Some(zoo_crypto::SenderTrust {
-            self_signing_key,
-            signature,
-        })
     }
 
     /// 鍵バックアップからの取り込みを始める（docs/e2ee.md の「新しい端末での解錠」の手順 5。Web の
