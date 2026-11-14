@@ -315,7 +315,8 @@ async fn encrypted_cannot_be_changed_and_encrypted_channels_stay_private() {
         .await;
     assert_eq!(status, StatusCode::OK, "{res}");
 
-    // トリガーと CHECK も直接の更新を拒否する。
+    // トリガーと CHECK も直接の更新を拒否する（plain は上で公開にしたので、暗号化は CHECK が拒否する。
+    // 非公開チャンネルの false から true への切り替えは #367 で認めた。e2ee_convert_test.rs）。
     assert!(
         env.exec(
             "UPDATE channels SET encrypted = true WHERE id = $1",

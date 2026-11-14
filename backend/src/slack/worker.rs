@@ -1088,6 +1088,8 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             archive = returned;
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
+            // 取り込みの途中で取り込み先が暗号化に切り替わったら (#367)、ここで止める (ジョブは失敗になる)
+            ensure_plaintext_allowed(&mut tx, channel_id).await?;
             // 編集・削除の履歴を含むエクスポートの記録 (`message_changed` / `message_deleted`) は、投稿として取り込まない。
             // 以前の取り込みで、これらを投稿として入れてしまった分 (編集した日時の重複した投稿、編集してから削除した
             // 投稿の本文) と、削除された元の投稿 (記録はエクスポートに残らない) は、ここで論理削除する。
@@ -1239,12 +1241,14 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     Ok(())
 }
 
-/// 開始のあとに暗号化チャンネルになった場合 (#367) も、ジョブの実行時に書き込みを止める (#358)
-async fn ensure_plaintext_allowed(
+/// 開始のあとに暗号化チャンネルになった場合 (#367) も、ジョブの実行時に書き込みを止める (#358)。
+/// チャンネルの行を `FOR KEY SHARE` で読むので、暗号化への切り替え (行を `FOR UPDATE` でロックする) と直列になり、
+/// 同じトランザクションのあとの書き込みが、切り替えのあとに平文を入れることはない
+pub(super) async fn ensure_plaintext_allowed(
     tx: &mut toasty::Transaction<'_>,
     channel_id: &str,
 ) -> Result<(), AppError> {
-    if crate::routes::e2ee_channels::is_encrypted_channel(tx, channel_id).await? {
+    if crate::routes::e2ee_channels::lock_encryption(tx, channel_id).await? {
         return Err(crate::routes::e2ee_channels::plaintext_forbidden());
     }
     Ok(())
@@ -1671,6 +1675,8 @@ async fn record_file_result(
     file: &PendingFile,
     status: &str,
 ) -> Result<(), AppError> {
+    // 暗号化に切り替えたチャンネル (#367) の取り込み済みの投稿は、本文を変えない (DB のトリガーも、切り替える前の
+    // 平文の行に新しい本文を入れることを拒否する)。
     // 本文のファイル名は、取り込み時に補った行だけを `slack_files.in_content` で覚えて更新する。
     // 投稿者が書いた本文 (ファイル名と同じ文字列でも) には触れない。取り込み本体と同じく、過去ログの更新を
     // App へ配信しない
@@ -1683,6 +1689,7 @@ async fn record_file_result(
             "UPDATE messages m SET content=CASE WHEN m.content='' THEN f.name ELSE m.content||E'\\n'||f.name END,\
              updated_at=m.updated_at FROM slack_files f \
              WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND NOT f.in_content AND m.id=$2 \
+             AND NOT EXISTS(SELECT 1 FROM channels c WHERE c.id=m.channel_id AND c.encrypted) \
              AND (m.content='' OR EXISTS(SELECT 1 FROM slack_files o WHERE o.team_id=$1 AND o.message_id=$2 AND o.in_content)) \
              RETURNING json_build_object('ok',true)::text",
             &[&file.team_id, &file.message_id, &file.slack_file_id],
@@ -1709,7 +1716,8 @@ async fn record_file_result(
              WHERE t.n<>COALESCE((SELECT min(u.n) FROM unnest(string_to_array(m.content,E'\\n')) WITH ORDINALITY AS u(l,n) \
              WHERE u.l=f.name),0)),''),\
              updated_at=m.updated_at FROM slack_files f \
-             WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND f.in_content AND m.id=$2",
+             WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND f.in_content AND m.id=$2 \
+             AND NOT EXISTS(SELECT 1 FROM channels c WHERE c.id=m.channel_id AND c.encrypted)",
             &[&file.team_id, &file.message_id, &file.slack_file_id],
         )
         .await?;
@@ -2462,6 +2470,19 @@ async fn fetch_one(
     if crate::routes::attachments::validate_upload_mime(&file.mimetype).is_err() {
         return Ok(FileOutcome::Skipped("Unsupported content type".into()));
     }
+    // 取り込みのあとに暗号化へ切り替えたチャンネル (#367) には、平文の添付を置かない (行単位の取得は、
+    // 取る行を選ぶときにも外している)。取得の途中で切り替わったら、添付の INSERT を DB のトリガーが拒否し、
+    // 次の試行でここに来る
+    {
+        let mut db = s.db.clone();
+        let mut tx = db.transaction().await?;
+        let encrypted =
+            crate::routes::e2ee_channels::is_encrypted_channel(&mut tx, &file.channel_id).await?;
+        tx.commit().await?;
+        if encrypted {
+            return Ok(FileOutcome::Skipped("Encrypted channel".into()));
+        }
+    }
 
     let mut transient = None;
     let mut found = None;
@@ -2547,6 +2568,37 @@ async fn fetch_one(
 
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    // 取得の途中で取り込み先が暗号化に切り替わっていたら (#367)、平文の添付の行を作らず、置いたオブジェクトも消す。
+    // チャンネルの行を FOR KEY SHARE で読むので、この確認から INSERT までが切り替えと直列になる。
+    // 保存先のキーは同じファイルなら同じなので、前の取得が切り替えの前に行を作っていたら (取り直し)、その添付の
+    // 実体を消さず、その行を結果にする (切り替える前の添付は残す)
+    if crate::routes::e2ee_channels::lock_encryption(&mut tx, &file.channel_id).await? {
+        let registered = !query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM attachments WHERE id=$1",
+            &[&attachment],
+        )
+        .await?
+        .is_empty();
+        tx.rollback().await?;
+        if registered {
+            return Ok(FileOutcome::Done(attachment));
+        }
+        if let Err(e) = s
+            .s3_client
+            .delete_object()
+            .bucket(&s.config.s3.bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            tracing::warn!(
+                key,
+                "Failed to remove a Slack file stored for an encrypted channel: {e}"
+            );
+        }
+        return Ok(FileOutcome::Skipped("Encrypted channel".into()));
+    }
     exec(
         &mut tx,
         "INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at,is_sensitive) \

@@ -233,6 +233,59 @@ pub fn webhooks_forbidden() -> AppError {
     )
 }
 
+/// 既存のチャンネルを暗号化に切り替えられない理由がある（#367）。`blockers` は `apps`（許可のない App（Bot）
+/// か Webhook のユーザーがメンバーにいる）、`webhooks`（Incoming Webhook がある）、`encrypted_dm`（同じ 2 人の
+/// 暗号化 DM がすでにある）。
+pub fn conversion_blocked(blockers: &[&str]) -> AppError {
+    coded(
+        StatusCode::CONFLICT,
+        "E2EE_CONVERSION_BLOCKED",
+        "Remove what blocks encryption before encrypting this channel",
+        json!({ "blockers": blockers }),
+    )
+}
+
+/// 暗号化に切り替える前の平文のメッセージを編集しようとした（#367）。
+pub fn legacy_immutable() -> AppError {
+    coded(
+        StatusCode::CONFLICT,
+        "E2EE_LEGACY_IMMUTABLE",
+        "Messages sent before the channel was encrypted cannot be edited",
+        Value::Null,
+    )
+}
+
+/// 平文の経路（メンバーの変更、平文の送信など）で、チャンネルの行を `FOR KEY SHARE` で読み、`encrypted` を返す
+/// （ないチャンネルは false）。暗号化への切り替え（#367）は行を `FOR UPDATE` でロックするので、これと直列になる。
+/// `FOR KEY SHARE` は `FOR UPDATE` とだけ衝突し、外部キーの検査と同じ強さなので、ほかの書き込みを待たせない。
+/// `WHERE` に `encrypted` を入れない（条件に合わない版の行はロックされず、切り替えを待たない）。
+pub async fn lock_encryption(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+) -> Result<bool, AppError> {
+    Ok(first(
+        tx,
+        "SELECT json_build_object('encrypted', encrypted)::text FROM channels WHERE id = $1 FOR KEY SHARE",
+        &[channel_id],
+    )
+    .await?
+    .is_some_and(|row| row["encrypted"] == true))
+}
+
+/// ロックなしで平文と判定したあとの、メンバーの変更の経路で呼ぶ。そのあいだに暗号化へ切り替わっていたら 409
+/// にする（`membership_epoch` を増やさずにメンバーを変えないため）。クライアントは、やり直せば暗号化の経路を通る。
+pub async fn ensure_still_plaintext(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+) -> Result<(), AppError> {
+    if lock_encryption(tx, channel_id).await? {
+        return Err(AppError::Conflict(
+            "The channel was encrypted while changing its members; retry".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// チャンネルが暗号化チャンネルか（ないチャンネルは false）。
 pub async fn is_encrypted_channel(
     tx: &mut toasty::Transaction<'_>,

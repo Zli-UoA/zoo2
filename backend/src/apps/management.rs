@@ -292,8 +292,8 @@ async fn add_channel(
     }
     let bot = a["bot"].as_str().unwrap_or_default().to_owned();
     // 暗号化チャンネルでは、Bot のメンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、
-    // チャンネルの行より前に取る（routes/channels.rs の add_user_to_channel と同じ順）。encrypted は変わらない
-    // ので、ロックなしで読んで判定できる。
+    // チャンネルの行より前に取る（routes/channels.rs の add_user_to_channel と同じ順）。encrypted は true から
+    // false に戻らないので、true と読めばそのまま判定できる。false と読んだら、暗号化への切り替え（#367）と直列にする。
     let encrypted = query(
         &mut tx,
         "SELECT json_build_object('encrypted', encrypted)::text FROM channels WHERE id = $1",
@@ -308,6 +308,8 @@ async fn add_channel(
             .bind(channel.as_str())
             .exec(&mut tx)
             .await?;
+    } else {
+        crate::routes::e2ee_channels::ensure_still_plaintext(&mut tx, &channel).await?;
     }
     let c = crate::models::Channel::get_by_id(&mut tx, channel.as_str()).await?;
     let admin =
@@ -426,6 +428,9 @@ async fn remove_channel(
             .bind(channel.as_str())
             .exec(&mut tx)
             .await?;
+    } else {
+        // 平文と読んだあとに暗号化へ切り替わっていたら (#367)、epoch を増やさずに外さない
+        crate::routes::e2ee_channels::ensure_still_plaintext(&mut tx, &channel).await?;
     }
     let c = crate::models::Channel::get_by_id(&mut tx, channel.as_str()).await?;
     let admin =

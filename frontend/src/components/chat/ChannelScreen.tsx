@@ -103,6 +103,8 @@ export function ChannelScreen({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ChannelHeader
+        // チャンネルごとに作り直し、開いていた確認の画面（暗号化への切り替えなど）を移動先に持ち越さない。
+        key={channel.id}
         channel={channel}
         title={dm?.title}
         subtitle={

@@ -188,6 +188,9 @@ struct Task {
     channel_id: String,
     private: bool,
     deleted: bool,
+    /// 取り込み先が暗号化に切り替わったか (#367)。切り替えたチャンネルには、Slack の投稿を入れない
+    #[serde(default)]
+    encrypted: bool,
     last_ts: Option<String>,
     /// 一度でも同期が終わったことがあるか
     synced: bool,
@@ -313,7 +316,7 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
              WHERE t.team_id=c.team_id AND t.slack_channel_id=c.slack_channel_id \
              AND sc.team_id=t.team_id AND sc.slack_channel_id=t.slack_channel_id AND ch.id=sc.channel_id \
              RETURNING json_build_object('team_id',t.team_id,'slack_channel_id',t.slack_channel_id,\
-             'channel_id',ch.id,'private',ch.is_private,'deleted',ch.deleted_at IS NOT NULL,\
+             'channel_id',ch.id,'private',ch.is_private,'deleted',ch.deleted_at IS NOT NULL,'encrypted',ch.encrypted,\
              'last_ts',sc.last_ts,'synced',t.last_synced_at IS NOT NULL,'token',t.lease_token,'attempts',t.attempts,'running',t.running,\
              'phase',t.phase,'run_oldest',t.run_oldest,'run_max_ts',t.run_max_ts,\
              'page_cursor',t.page_cursor,'pending_threads',t.pending_threads,\
@@ -640,6 +643,9 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
     if task.deleted {
         return Ok(Step::Park(86_400, "channel_deleted".into()));
     }
+    if task.encrypted {
+        return Ok(Step::Park(86_400, "encrypted_channel".into()));
+    }
     let tokens = load_tokens(s, task).await?;
     if tokens.is_empty() {
         return Ok(Step::Park(
@@ -960,6 +966,8 @@ async fn store(
     if saved.is_empty() {
         return Err(SyncError::LeaseLost);
     }
+    // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を入れずに止める。次に取ったときに休ませる
+    super::worker::ensure_plaintext_allowed(&mut tx, &task.channel_id).await?;
     // 同じ区間をほかのトランザクションが同時に取り込んでも、決定的 ID で重複しない
     for message in importable {
         insert_message(
@@ -1116,10 +1124,15 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
     if done.is_empty() {
         return Err(SyncError::LeaseLost);
     }
-    if relinked {
-        super::link::reconcile_team(&mut tx, &task.team_id).await?;
-    }
     tx.commit().await.map_err(AppError::from)?;
+    // 付け替えは別のトランザクションで行う (ZIP の取り込みと同じ)。上の既読の行の書き込みがチャンネルの行を
+    // 外部キーで読むので、同じトランザクションだと、そのあとでメンバー単位のロックを取ることになり、
+    // ロックの順 (メンバー単位、チャンネルの行。#367) が逆になる
+    if relinked {
+        let mut tx = db.transaction().await.map_err(AppError::from)?;
+        super::link::reconcile_team(&mut tx, &task.team_id).await?;
+        tx.commit().await.map_err(AppError::from)?;
+    }
     Ok(Step::Done)
 }
 

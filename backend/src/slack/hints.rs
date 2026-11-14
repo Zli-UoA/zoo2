@@ -347,6 +347,8 @@ async fn apply(
     if leased.is_empty() {
         return Err(SyncError::LeaseLost);
     }
+    // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
+    super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
     // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は Zoo が正なので、
     // Slack での編集・削除は反映しない。Slack からのリアクションと返信は、その投稿に付ける
     let (id, zoo_origin) = match mapped(&mut tx, team, slack_channel, ts).await? {
