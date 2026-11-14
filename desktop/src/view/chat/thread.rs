@@ -114,16 +114,20 @@ impl WorkspaceView {
                     .child(i18n.t("threads.rootDeleted"))
                     .into_any_element(),
             );
-        } else if replies.is_empty() {
-            items.push(
-                div()
-                    .p(px(12.0))
-                    .text_size(xs.size())
-                    .line_height(xs.line())
-                    .text_color(t.muted_foreground)
-                    .child(i18n.t("threads.empty"))
-                    .into_any_element(),
-            );
+        }
+        // 親が消えても、残っている返信は出す。
+        if replies.is_empty() {
+            if root_message.is_some() {
+                items.push(
+                    div()
+                        .p(px(12.0))
+                        .text_size(xs.size())
+                        .line_height(xs.line())
+                        .text_color(t.muted_foreground)
+                        .child(i18n.t("threads.empty"))
+                        .into_any_element(),
+                );
+            }
         } else {
             let (rows, target) = self.render_message_rows(
                 RowList {

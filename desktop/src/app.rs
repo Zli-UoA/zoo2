@@ -412,6 +412,10 @@ pub struct AppState {
     /// 直近の ReadStates で知った `last_read_at` (チャンネルごと、未読でないものも含む)。
     /// チャンネルを開くとき、ポーリングを待たずに未読の線の位置を決めるのに使う。
     last_read_known: HashMap<String, jiff::civil::DateTime>,
+    /// このセッションで ReadStates の取得を一度終えたか (成否を問わない)。
+    /// 終えるまでは自動既読にしない。先に既読にすると、サーバーが `has_unread: false` を返し、
+    /// 開いた時点の `last_read_at` (未読の線の位置) が分からなくなるため。
+    read_states_loaded: bool,
     pub last_read_marked: HashMap<String, String>,
     pub read_mark_in_flight: HashMap<String, String>,
     pub read_mark_backoff_until: HashMap<String, (String, Instant)>,
@@ -591,6 +595,7 @@ impl AppState {
             unread: HashSet::new(),
             read_boundary: HashMap::new(),
             last_read_known: HashMap::new(),
+            read_states_loaded: false,
             last_read_marked: HashMap::new(),
             read_mark_in_flight: HashMap::new(),
             read_mark_backoff_until: HashMap::new(),
@@ -1152,6 +1157,7 @@ impl AppState {
         self.unread.clear();
         self.read_boundary.clear();
         self.last_read_known.clear();
+        self.read_states_loaded = false;
         self.last_read_marked.clear();
         self.read_mark_in_flight.clear();
         self.read_mark_backoff_until.clear();
@@ -2209,6 +2215,7 @@ impl AppState {
                 true
             }
             AppEvent::ReadStates(states) => {
+                self.read_states_loaded = true;
                 self.update_read_boundaries(&states);
                 let next_unread: HashSet<String> = states
                     .into_iter()
@@ -2268,7 +2275,10 @@ impl AppState {
             }
             AppEvent::ReadStatesPollFinished => {
                 self.read_poll.finish(Instant::now(), true);
-                false
+                // 取得に失敗しても、自動既読をいつまでも止めないように、試した時点で解除する。
+                let first = !self.read_states_loaded;
+                self.read_states_loaded = true;
+                first && self.mark_current_read()
             }
             AppEvent::EmojiPollFinished => {
                 self.emoji_poll.finish(Instant::now(), true);
@@ -2531,7 +2541,7 @@ impl AppState {
     }
 
     pub fn mark_current_read(&mut self) -> bool {
-        if !self.window_active {
+        if !self.window_active || !self.read_states_loaded {
             return false;
         }
         // 暗号化チャンネルは本文を表示しないので、見ていないメッセージを既読にしない。チャンネルの行が
@@ -5092,6 +5102,8 @@ pub(crate) mod tests {
                 ),
             ]),
         ));
+        // ReadStates の初回の取得は終えたものとする (終えるまでは自動既読にしないため)。
+        state.read_states_loaded = true;
         state
     }
 
@@ -5171,6 +5183,58 @@ pub(crate) mod tests {
         assert!(!state.mark_current_read());
         assert!(state.unread.contains("c1"));
         assert!(!state.last_read_marked.contains_key("c1"));
+    }
+
+    #[tokio::test]
+    async fn waits_for_the_first_read_states_before_marking_read() {
+        let mut state = connected_state();
+        state.read_states_loaded = false;
+        state.window_active = true;
+        // 接続の直後、ReadStates より先にメッセージの同期が終わったチャンネルを開いた。
+        state.open_channel("c1".into());
+        state.unread.insert("c1".into());
+        assert!(!state.mark_current_read());
+        assert!(!state.last_read_marked.contains_key("c1"));
+
+        // 届いた `last_read_at` で未読の線を置いてから既読にする。
+        state.on_app_event(AppEvent::ReadStates(vec![ReadState {
+            channel_id: "c1".into(),
+            has_unread: true,
+            last_read_at: Some("2026-11-01T02:00:00".into()),
+        }]));
+        assert_eq!(
+            state.read_boundary.get("c1"),
+            Some(&"2026-11-01T02:00:00".parse().unwrap())
+        );
+        assert_eq!(
+            state.last_read_marked.get("c1").map(String::as_str),
+            Some("m1")
+        );
+        // 既読にしたあとの `has_unread: false` でも、線は残る。
+        state.on_app_event(AppEvent::ReadStates(vec![ReadState {
+            channel_id: "c1".into(),
+            has_unread: false,
+            last_read_at: Some("2026-11-01T03:00:00".into()),
+        }]));
+        assert_eq!(
+            state.read_boundary.get("c1"),
+            Some(&"2026-11-01T02:00:00".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_first_read_states_poll_does_not_block_marking_read() {
+        let mut state = connected_state();
+        state.read_states_loaded = false;
+        state.window_active = true;
+        state.open_channel("c1".into());
+        state.unread.insert("c1".into());
+        assert!(!state.mark_current_read());
+        state.on_app_event(AppEvent::ReadStatesPollFinished);
+        assert_eq!(
+            state.last_read_marked.get("c1").map(String::as_str),
+            Some("m1")
+        );
     }
 
     #[tokio::test]

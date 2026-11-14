@@ -11,8 +11,8 @@
 use std::{collections::HashMap, rc::Rc};
 
 use gpui::{
-    AnyElement, Context, ElementId, Focusable, MouseButton, MouseUpEvent, ParentElement,
-    SharedString, Styled, div, prelude::*, px,
+    AnyElement, Context, ElementId, FocusHandle, Focusable, MouseButton, MouseUpEvent,
+    ParentElement, SharedString, Styled, div, prelude::*, px,
 };
 use zoo2_client_core::{
     electric::rows::{Attachment, Message, parse_message_cards},
@@ -85,11 +85,15 @@ pub fn render_unread_line(label: &str, t: &Tokens) -> AnyElement {
 
 /// ホバーのツールバーのアイコンボタン (`Button variant="ghost" size="icon-xs"`)。
 /// 削除だけは `text-destructive hover:bg-destructive/10`。
+/// キーボードでも押せるように、フォーカスとクリックを同じ要素に付ける (Enter / Space で押せる)。
+#[allow(clippy::too_many_arguments)]
 fn toolbar_button(
     id: String,
     icon: Icon,
     label: String,
     destructive: bool,
+    focus: &FocusHandle,
+    focused: bool,
     t: &Tokens,
     on_click: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
@@ -100,6 +104,11 @@ fn toolbar_button(
     };
     div()
         .id(ElementId::Name(SharedString::from(id)))
+        .track_focus(focus)
+        // `focus-visible:ring-[3px] focus-visible:ring-ring/50`
+        .when(focused, |d| {
+            d.bg(hover_bg).shadow(vec![ring(alpha(t.ring, 0.5), 3.0)])
+        })
         .flex()
         .flex_none()
         .items_center()
@@ -109,7 +118,7 @@ fn toolbar_button(
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
         .tooltip(tooltip_view(label))
-        .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+        .on_click(move |_, window, cx| {
             cx.stop_propagation();
             on_click(window, cx)
         })
@@ -348,6 +357,29 @@ impl WorkspaceView {
                 )
         };
 
+        // 編集済みの印 (`EditedIndicator`)。グループの先頭では名前の行に、連投の行では本文の後ろに置く。
+        let edited_marker = || {
+            div()
+                .id(ElementId::Name(SharedString::from(format!(
+                    "{pane_prefix}-edited-{msg_id}"
+                ))))
+                .flex_none()
+                .tooltip(tooltip_view(i18n.t("messages.edited")))
+                .child(icon_colored(
+                    Icon::Pencil,
+                    12.0,
+                    alpha(t.muted_foreground, 0.8),
+                ))
+        };
+        let edited_in_header = (is_edited && item.is_group_start).then(edited_marker);
+        let edited_after_body = (is_edited && !item.is_group_start).then(edited_marker);
+        // カードの行は本文を出さないので、カードの後ろに置く。
+        let (edited_after_body, edited_after_cards) = if cards.is_empty() {
+            (edited_after_body, None)
+        } else {
+            (None, edited_after_body)
+        };
+
         // --- 名前の行 ---
         let header = item.is_group_start.then(|| {
             // `flex flex-wrap items-center gap-2`
@@ -393,21 +425,7 @@ impl WorkspaceView {
                         .text_color(t.muted_foreground)
                         .child(time_str.clone()),
                 )
-                .when(is_edited, |d| {
-                    // 編集済みの印 (`EditedIndicator`)。本文の行末ではなく名前の行に置く。
-                    d.child(
-                        div()
-                            .id(ElementId::Name(SharedString::from(format!(
-                                "{pane_prefix}-edited-{msg_id}"
-                            ))))
-                            .tooltip(tooltip_view(i18n.t("messages.edited")))
-                            .child(icon_colored(
-                                Icon::Pencil,
-                                12.0,
-                                alpha(t.muted_foreground, 0.8),
-                            )),
-                    )
-                })
+                .children(edited_in_header)
         });
 
         // --- スレッドのピル (`ReplyLink`) ---
@@ -531,6 +549,24 @@ impl WorkspaceView {
                     }),
             );
         }
+        // ツールバーのボタンのフォーカス。描画をまたいで同じものを使う。
+        let row_key = format!("{pane_prefix}:{msg_id}");
+        let toolbar_focus = |action: &str, cx: &mut Context<Self>| -> (FocusHandle, bool) {
+            let key = format!("{row_key}:{action}");
+            let focused = self.focused_toolbar_key.as_deref() == Some(key.as_str());
+            let handle = self
+                .toolbar_focus_handles
+                .borrow_mut()
+                .entry(key)
+                .or_insert_with(|| cx.focus_handle().tab_stop(true))
+                .clone();
+            (handle, focused)
+        };
+        let toolbar_row_focused = self
+            .focused_toolbar_key
+            .as_deref()
+            .and_then(|k| k.rsplit_once(':'))
+            .is_some_and(|(row, _)| row == row_key);
         let reactions_view = (!chips.is_empty()).then(|| {
             // `flex flex-wrap items-center gap-1 py-1`
             h_flex()
@@ -540,11 +576,14 @@ impl WorkspaceView {
                 .children(chips)
                 .when(!is_archived, |d| {
                     let open = open_reaction_picker.clone();
+                    let (focus, focused) = toolbar_focus("react-add", cx);
                     d.child(toolbar_button(
                         format!("{pane_prefix}-btn-react-add-{msg_id}"),
                         Icon::SmilePlus,
                         i18n.t("reactions.add"),
                         false,
+                        &focus,
+                        focused,
                         &t,
                         move |window, cx| open(&(), window, cx),
                     ))
@@ -591,11 +630,14 @@ impl WorkspaceView {
         let toolbar = (!is_archived && !is_editing).then(|| {
             let mut buttons: Vec<AnyElement> = Vec::new();
             let open = open_reaction_picker.clone();
+            let (focus, focused) = toolbar_focus("react", cx);
             buttons.push(toolbar_button(
                 format!("{pane_prefix}-btn-react-{msg_id}"),
                 Icon::SmilePlus,
                 i18n.t("reactions.add"),
                 false,
+                &focus,
+                focused,
                 &t,
                 move |window, cx| open(&(), window, cx),
             ));
@@ -603,12 +645,16 @@ impl WorkspaceView {
                 // 返信ボタン。スレッドを開いて入力欄を返信先にする。
                 // frontend の `ThreadPane` も行に `onOpenThread` を渡すので、スレッドの行にも出す。
                 let view = cx.entity().clone();
-                let root = msg_id.clone();
+                // スレッドの返信の行では、返信の ID ではなく親 (スレッドのルート) を開く。
+                let root = message.parent_id.clone().unwrap_or_else(|| msg_id.clone());
+                let (focus, focused) = toolbar_focus("reply", cx);
                 buttons.push(toolbar_button(
                     format!("{pane_prefix}-btn-reply-{msg_id}"),
                     Icon::MessageSquarePlus,
                     i18n.t("threads.open"),
                     false,
+                    &focus,
+                    focused,
                     &t,
                     move |window, cx| {
                         view.update(cx, |this, cx| {
@@ -625,11 +671,14 @@ impl WorkspaceView {
             if is_mine {
                 let view = cx.entity().clone();
                 let id = msg_id.clone();
+                let (focus, focused) = toolbar_focus("edit", cx);
                 buttons.push(toolbar_button(
                     format!("{pane_prefix}-btn-edit-{msg_id}"),
                     Icon::Pencil,
                     i18n.t("messages.edit"),
                     false,
+                    &focus,
+                    focused,
                     &t,
                     move |window, cx| {
                         view.update(cx, |this, cx| {
@@ -644,11 +693,14 @@ impl WorkspaceView {
                 ));
                 let view = cx.entity().clone();
                 let id = msg_id.clone();
+                let (focus, focused) = toolbar_focus("delete", cx);
                 buttons.push(toolbar_button(
                     format!("{pane_prefix}-btn-delete-{msg_id}"),
                     Icon::Trash,
                     i18n.t("messages.delete"),
                     true,
+                    &focus,
+                    focused,
                     &t,
                     move |_, cx| {
                         view.update(cx, |this, cx| {
@@ -673,8 +725,10 @@ impl WorkspaceView {
                 .border_color(t.border)
                 .bg(t.popover)
                 .shadow(shadow_sm())
-                .opacity(0.0)
-                .group_hover(group.clone(), |s| s.opacity(1.0))
+                .when(!toolbar_row_focused, |d| {
+                    d.opacity(0.0)
+                        .group_hover(group.clone(), |s| s.opacity(1.0))
+                })
                 .children(buttons)
         });
 
@@ -711,8 +765,18 @@ impl WorkspaceView {
                 .flex_1()
                 .min_w_0()
                 .children(header)
-                .when(cards.is_empty(), |d| d.child(body))
+                .when(cards.is_empty(), |d| match edited_after_body {
+                    Some(marker) => d.child(
+                        h_flex()
+                            .items_start()
+                            .gap(px(4.0))
+                            .child(div().flex_1().min_w_0().child(body))
+                            .child(div().mt(px(5.0)).child(marker)),
+                    ),
+                    None => d.child(body),
+                })
                 .children(card_views)
+                .children(edited_after_cards)
                 .children(attachments_view)
                 .children(reply_pill)
                 .children(reactions_view)

@@ -54,6 +54,11 @@ pub struct WorkspaceView {
     pub card_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     pub attachment_focus_handles:
         std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
+    /// メッセージのツールバーのボタンのフォーカス (キーは `{pane}:{msg}:{action}`)。
+    pub toolbar_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
+    /// この描画でフォーカスがあるツールバーのボタン (`{pane}:{msg}:{action}`)。
+    /// その行はツールバーを出したままにする。
+    pub focused_toolbar_key: Option<String>,
     focus_handle: FocusHandle,
     login_primary_focus: FocusHandle,
     login_secondary_focus: FocusHandle,
@@ -506,6 +511,8 @@ impl WorkspaceView {
             expanded_cards: std::collections::HashSet::new(),
             card_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             attachment_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
+            toolbar_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
+            focused_toolbar_key: None,
             focus_handle: cx.focus_handle(),
             login_primary_focus: cx.focus_handle(),
             login_secondary_focus: cx.focus_handle(),
@@ -563,6 +570,13 @@ impl Render for WorkspaceView {
             .state
             .update(cx, |s, _| s.pending_scroll_to_message_id.take());
 
+        self.focused_toolbar_key = self
+            .toolbar_focus_handles
+            .borrow()
+            .iter()
+            .find(|(_, h)| h.is_focused(window))
+            .map(|(key, _)| key.clone());
+
         let channels = self.channel_links(cx);
         let (timeline_div, timeline_scroll_target, timeline_placeholder) =
             self.render_timeline_view(pending_scroll_id.as_deref(), channels.clone(), cx);
@@ -573,8 +587,13 @@ impl Render for WorkspaceView {
             });
         } else if scroll_to_bottom {
             self.timeline_scroll.scroll_to_bottom();
-            self.state
-                .update(cx, |s, _| s.update_timeline_view_state(window_active, true));
+            self.state.update(cx, |s, _| {
+                // placeholder の間は一覧がなく動かせないので、要求を次の描画へ戻す。
+                if timeline_placeholder {
+                    s.pending_scroll_to_bottom = true;
+                }
+                s.update_timeline_view_state(window_active, true)
+            });
         } else if pending_scroll_id.is_some() {
             // 返信へ移る途中。タイムラインの古いスクロール位置から最下部と判定して既読にしない。
             self.state.update(cx, |s, _| {
