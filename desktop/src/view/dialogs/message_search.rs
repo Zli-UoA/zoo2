@@ -57,7 +57,11 @@ impl WorkspaceView {
     /// チャンネル内のメッセージ検索。Web 版には対応する画面がない。
     /// 一致したメッセージをタイムラインで見ながら操作するので、ダイアログにはせず、
     /// タイムラインの上の帯に出す。部品と寸法は `ChannelBrowserDialog.tsx` の検索欄に合わせる。
-    pub(in crate::view) fn render_message_search_bar(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::view) fn render_message_search_bar(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let p = palette(cx);
         let t = p.t;
         let i18n = self.i18n;
@@ -90,7 +94,11 @@ impl WorkspaceView {
                     .min_w_0()
                     .child(
                         Input::new()
-                            .focus_handle(&self.message_search_input.focus_handle(cx))
+                            .focused(
+                                self.message_search_input
+                                    .focus_handle(cx)
+                                    .is_focused(window),
+                            )
                             .pl(px(32.0))
                             .child(self.message_search_input.clone()),
                     )

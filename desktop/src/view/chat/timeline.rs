@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, rc::Rc};
 
-use gpui::{AnyElement, Context, Div, ParentElement, Styled, div, prelude::*, px};
+use gpui::{AnyElement, Context, Div, ParentElement, Styled, Window, div, prelude::*, px};
 use zoo2_client_core::electric::ShapeId;
 
 use crate::i18n::I18n;
@@ -22,6 +22,7 @@ impl WorkspaceView {
         &self,
         pending_scroll_id: Option<&str>,
         channels: Rc<HashMap<String, String>>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> (Div, Option<usize>, bool) {
         if self.state.read(cx).current_channel.is_none() {
@@ -276,7 +277,7 @@ impl WorkspaceView {
             })
             // 検索バー
             .when(is_searching, |d| {
-                d.child(self.render_message_search_bar(cx))
+                d.child(self.render_message_search_bar(window, cx))
             })
             // タイムライン本体
             .child(
@@ -319,7 +320,7 @@ impl WorkspaceView {
                     ),
             )
             // 下部入力欄
-            .child(self.render_composer_view(cx));
+            .child(self.render_composer_view(window, cx));
 
         (
             timeline_view,

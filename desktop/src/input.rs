@@ -104,6 +104,13 @@ pub fn bind_input_keys(cx: &mut App) {
         KeyBinding::new("ctrl-c", Copy, ctx),
         KeyBinding::new("ctrl-x", Cut, ctx),
     ]);
+    // macOS では、Web の `shouldSendFromKey` が送信しない組み合わせ (Ctrl+Enter と Shift+Cmd+Enter)
+    // を改行にする。それ以外の OS では、Ctrl+Enter が送信になる。
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("ctrl-enter", Newline, ctx),
+        KeyBinding::new("shift-cmd-enter", Newline, ctx),
+    ]);
 }
 
 /// 送信のキー。`frontend` の `shouldSendFromKey` に合わせる。
@@ -149,20 +156,28 @@ pub struct TextInput {
 }
 
 /// `bare` のときの、カーソル・選択・プレースホルダーの色 (`textarea.tsx` / `input.tsx` に合わせる)。
+/// 1 行の入力欄は `input.tsx`、複数行の入力欄 (Composer と説明欄) は `textarea.tsx` の色にする。
 struct BareColors {
     placeholder: gpui::Hsla,
     cursor: gpui::Rgba,
     selection: gpui::Hsla,
 }
 
-fn bare_colors(cx: &App) -> Option<BareColors> {
+fn bare_colors(cx: &App, multiline: bool) -> Option<BareColors> {
     let p = cx.try_global::<Palette>()?;
     let t = p.t;
     Some(BareColors {
-        // `placeholder:text-muted-foreground`
-        placeholder: t.muted_foreground.into(),
+        placeholder: if multiline {
+            // `textarea.tsx`: `placeholder:text-muted-foreground`
+            t.muted_foreground.into()
+        } else {
+            // `input.tsx`: Tailwind v4 の placeholder は `currentcolor` の 50% (`ui/input.rs` と同じ)。
+            alpha(t.foreground, 0.5).into()
+        },
         // ブラウザのキャレットは文字色。
         cursor: t.foreground,
+        // Web は `::selection` を上書きせず、ブラウザ既定の青い選択色を使う。
+        // 同梱のトークンに選択色はないので、既定の青に近い `link` の 30% で近似する。
         selection: alpha(t.link, 0.3).into(),
     })
 }
@@ -186,7 +201,9 @@ impl TextInput {
 
     fn new(cx: &mut Context<Self>, placeholder: impl Into<SharedString>, multiline: bool) -> Self {
         Self {
-            focus_handle: cx.focus_handle(),
+            // Tab で入力欄に戻れるよう tab stop にする。`intercept_tab` が立っている間は
+            // `tab` が `InputEvent::Tab` を出すだけで、フォーカスは動かさない。
+            focus_handle: cx.focus_handle().tab_stop(true),
             content: String::new(),
             placeholder: placeholder.into(),
             multiline,
@@ -454,7 +471,13 @@ impl TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.request_submit(cx);
+        // ⌘/Ctrl+Enter が送信になるのは `enter_inserts_newline` の入力欄だけ。
+        // 1 行の入力欄は Enter で送信するので、ここでは何もせず、親に任せる。
+        if self.enter_inserts_newline {
+            self.request_submit(cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     /// カーソル位置に改行を入れる (複数行の入力欄だけ)。`InputEvent::Enter` の受け手が使う。
@@ -796,7 +819,11 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        let bare = if input.bare { bare_colors(cx) } else { None };
+        let bare = if input.bare {
+            bare_colors(cx, input.multiline)
+        } else {
+            None
+        };
         let content = input.content.clone();
         let multiline = input.multiline;
         let selected_range = input.selected_range.clone();
@@ -1303,5 +1330,171 @@ mod tests {
             compute_visible_scroll_x(px(40.0), px(40.0), px(120.0), px(100.0)),
             px(0.0)
         );
+    }
+
+    /// `Enter` / ⌘/Ctrl+Enter と `InputEvent` の対応を、実際のキー入力で確かめる。
+    mod keys {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use gpui::{Context, TestAppContext};
+
+        use super::super::*;
+
+        type Events = Rc<RefCell<Vec<InputEvent>>>;
+
+        struct Root {
+            input: Entity<TextInput>,
+        }
+
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(self.input.clone())
+            }
+        }
+
+        /// 入力欄を 1 つ置いたウィンドウを作り、フォーカスして、出たイベントを `Events` に集める。
+        fn setup(
+            cx: &mut TestAppContext,
+            multiline: bool,
+            enter_inserts_newline: bool,
+        ) -> (Entity<TextInput>, Events, &mut gpui::VisualTestContext) {
+            cx.update(bind_input_keys);
+            let events: Events = Rc::default();
+            let sink = events.clone();
+            let (root, vcx) = cx.add_window_view(move |_, cx| {
+                let input = cx.new(|cx| {
+                    let mut i = if multiline {
+                        TextInput::new_multiline(cx, "")
+                    } else {
+                        TextInput::new_single_line(cx, "")
+                    };
+                    i.enter_inserts_newline = enter_inserts_newline;
+                    i
+                });
+                cx.subscribe(&input, move |_, _, ev: &InputEvent, _| {
+                    sink.borrow_mut().push(ev.clone());
+                })
+                .detach();
+                Root { input }
+            });
+            let input = root.read_with(vcx, |r, _| r.input.clone());
+            let handle = input.read_with(vcx, |i, _| i.focus_handle.clone());
+            vcx.update(|window, _| window.focus(&handle));
+            vcx.run_until_parked();
+            (input, events, vcx)
+        }
+
+        fn press(vcx: &mut gpui::VisualTestContext, key: &str) {
+            vcx.simulate_keystrokes(key);
+        }
+
+        fn taken(events: &Events) -> Vec<InputEvent> {
+            events.borrow_mut().drain(..).collect()
+        }
+
+        #[test]
+        fn enter_emits_enter_not_submit_when_enter_inserts_newline() {
+            let mut cx = TestAppContext::single();
+            let (_input, events, vcx) = setup(&mut cx, true, true);
+            press(vcx, "enter");
+            assert_eq!(taken(&events), vec![InputEvent::Enter]);
+        }
+
+        #[test]
+        fn modifier_enter_submits_when_enter_inserts_newline() {
+            let mut cx = TestAppContext::single();
+            let (input, events, vcx) = setup(&mut cx, true, true);
+            input.update(vcx, |i, cx| i.set_text("本文", cx));
+            taken(&events);
+            press(vcx, MODIFIER_SUBMIT_KEY);
+            assert_eq!(taken(&events), vec![InputEvent::Submit("本文".into())]);
+        }
+
+        #[test]
+        fn enter_submits_in_single_line_input() {
+            let mut cx = TestAppContext::single();
+            let (input, events, vcx) = setup(&mut cx, false, false);
+            input.update(vcx, |i, cx| i.set_text("name", cx));
+            taken(&events);
+            press(vcx, "enter");
+            assert_eq!(taken(&events), vec![InputEvent::Submit("name".into())]);
+        }
+
+        #[test]
+        fn modifier_enter_does_not_submit_plain_input() {
+            let mut cx = TestAppContext::single();
+            let (input, events, vcx) = setup(&mut cx, false, false);
+            input.update(vcx, |i, cx| i.set_text("name", cx));
+            taken(&events);
+            press(vcx, MODIFIER_SUBMIT_KEY);
+            assert_eq!(taken(&events), vec![]);
+        }
+
+        #[test]
+        fn marked_text_swallows_enter_and_modifier_enter() {
+            let mut cx = TestAppContext::single();
+            let (input, events, vcx) = setup(&mut cx, true, true);
+            // IME の変換中 (`marked_range` あり)。
+            vcx.update(|window, app| {
+                input.update(app, |i, cx| {
+                    i.replace_and_mark_text_in_range(None, "あ", None, window, cx)
+                });
+            });
+            assert!(input.read_with(vcx, |i, _| i.marked_range.is_some()));
+            taken(&events);
+            press(vcx, "enter");
+            press(vcx, MODIFIER_SUBMIT_KEY);
+            assert_eq!(taken(&events), vec![]);
+        }
+
+        #[test]
+        fn intercepted_tab_emits_tab_event() {
+            let mut cx = TestAppContext::single();
+            let (input, events, vcx) = setup(&mut cx, true, true);
+            // 補完の候補が開いているとき (`intercept_tab`) は、Tab は `InputEvent::Tab` になる。
+            input.update(vcx, |i, _| i.intercept_tab = true);
+            press(vcx, "tab");
+            assert_eq!(taken(&events), vec![InputEvent::Tab]);
+            // 立っていないときは親 (フォーカス移動) に渡す。ここでは親がいないので検証しない。
+        }
+
+        #[test]
+        fn input_focus_handle_is_a_tab_stop() {
+            let mut cx = TestAppContext::single();
+            let (input, _, vcx) = setup(&mut cx, true, true);
+            assert!(input.read_with(vcx, |i, _| i.focus_handle.tab_stop));
+        }
+
+        #[test]
+        fn insert_newline_replaces_the_selection() {
+            let mut cx = TestAppContext::single();
+            let (input, events, vcx) = setup(&mut cx, true, true);
+            input.update(vcx, |i, cx| {
+                i.set_text("hello", cx);
+                // "ell" を選ぶ。
+                i.selected_range = 1..4;
+                i.insert_newline(cx);
+            });
+            input.read_with(vcx, |i, _| {
+                assert_eq!(i.text(), "h\no");
+                assert_eq!(i.selected_range(), 2..2);
+            });
+            assert_eq!(
+                taken(&events).last(),
+                Some(&InputEvent::Changed("h\no".into()))
+            );
+        }
+
+        #[test]
+        fn insert_newline_is_ignored_in_single_line_input() {
+            let mut cx = TestAppContext::single();
+            let (input, _, vcx) = setup(&mut cx, false, false);
+            input.update(vcx, |i, cx| {
+                i.set_text("ab", cx);
+                i.insert_newline(cx);
+            });
+            input.read_with(vcx, |i, _| assert_eq!(i.text(), "ab"));
+        }
     }
 }

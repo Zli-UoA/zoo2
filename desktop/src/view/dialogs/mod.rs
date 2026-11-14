@@ -75,7 +75,7 @@ impl WorkspaceView {
         if create {
             Some(overlay(self.render_create_channel_modal(window, cx)))
         } else if switcher {
-            Some(overlay(self.render_quick_switcher_modal(cx)))
+            Some(overlay(self.render_quick_switcher_modal(window, cx)))
         } else if emoji {
             Some(overlay(self.render_emoji_picker(window, cx)))
         } else if delete {

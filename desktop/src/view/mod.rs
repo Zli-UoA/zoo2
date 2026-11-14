@@ -114,13 +114,16 @@ impl WorkspaceView {
             input
         });
         let create_channel_desc_input = cx.new(|cx| {
-            let mut input =
-                TextInput::new_single_line(cx, i18n.t("channels.descriptionPlaceholder"));
+            // Web の説明欄は複数行 (`Textarea`)。Enter は改行、⌘/Ctrl+Enter で作成する。
+            let mut input = TextInput::new_multiline(cx, i18n.t("channels.descriptionPlaceholder"));
             input.bare = true;
+            input.enter_inserts_newline = true;
             input
         });
         let quick_switcher_input = cx.new(|cx| {
-            let mut input = TextInput::new_single_line(cx, i18n.t("channels.browseSearch"));
+            // 候補には DM とメンバーも出るので、チャンネル名だけとは書かない。
+            // locales にチャンネルとメンバーを両方含む検索の文言はないので、以前の文言のままにする。
+            let mut input = TextInput::new_single_line(cx, "チャンネル名またはメンバー名…");
             input.intercept_vertical_arrows = true;
             input.bare = true;
             input
@@ -406,12 +409,16 @@ impl WorkspaceView {
                         cx.notify();
                     });
                 }
+                InputEvent::Enter => {
+                    // 説明欄は複数行。Enter は改行にする。
+                    this.create_channel_desc_input
+                        .update(cx, |input, cx| input.insert_newline(cx));
+                }
                 InputEvent::Up
                 | InputEvent::Down
                 | InputEvent::Left
                 | InputEvent::Right
                 | InputEvent::Tab
-                | InputEvent::Enter
                 | InputEvent::CursorMoved(_) => {}
             },
         )
@@ -649,7 +656,7 @@ impl Render for WorkspaceView {
 
         let channels = self.channel_links(cx);
         let (timeline_div, timeline_scroll_target, timeline_placeholder) =
-            self.render_timeline_view(pending_scroll_id.as_deref(), channels.clone(), cx);
+            self.render_timeline_view(pending_scroll_id.as_deref(), channels.clone(), window, cx);
         if let Some(target_idx) = timeline_scroll_target {
             self.timeline_scroll.scroll_to_item(target_idx);
             self.state.update(cx, |s, _| {

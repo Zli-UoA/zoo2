@@ -2,7 +2,8 @@
 
 use gpui::{
     Context, Div, ElementId, Focusable, KeyDownEvent, MouseButton, MouseUpEvent, ParentElement,
-    PathPromptOptions, SharedString, StatefulInteractiveElement, Styled, div, prelude::*, px,
+    PathPromptOptions, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*,
+    px,
 };
 use zoo2_client_core::electric::ShapeId;
 
@@ -53,19 +54,21 @@ pub fn mention_option_parts(candidate: &MentionCandidate) -> (String, String) {
     (name, label)
 }
 
-/// `canSubmitComposer`: 空白だけでも添付があれば送れる。アップロード中は送れない。
-pub fn can_submit_composer(draft_empty: bool, attachment_count: usize, uploading: bool) -> bool {
-    !uploading && (!draft_empty || attachment_count > 0)
+/// `canSubmitComposer`: `value.trim().length > 0` か添付があれば送れる (空白や改行だけでは送れない)。
+/// アップロード中は送れない。
+pub fn can_submit_composer(draft: &str, attachment_count: usize, uploading: bool) -> bool {
+    !uploading && (!draft.trim().is_empty() || attachment_count > 0)
 }
 
 /// `ComposerField`: `flex items-end gap-2 rounded-xl border border-input bg-background p-1.5
 /// focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 dark:bg-input/30`。
-/// `focus_handle` が入力欄のハンドルなら、入力中は枠の色と輪が変わる (`focus-within`)。
-pub fn composer_field_frame(p: &crate::ui::Palette, focus_handle: &gpui::FocusHandle) -> Div {
+/// `focus_within` は、枠の中 (入力欄、添付、絵文字、送信) のどれかにフォーカスがあるか。
+/// 呼び出し側が render で調べて渡す。枠は FocusHandle を持たない (入力欄の FocusHandle を
+/// 枠でも `track_focus` すると、フォーカスの経路が二重になる)。
+pub fn composer_field_frame(p: &crate::ui::Palette, focus_within: bool) -> Div {
     let t = p.t;
     let focus_ring = ring(alpha(t.ring, 0.3), 3.0);
     div()
-        .track_focus(focus_handle)
         .flex()
         .flex_row()
         .items_end()
@@ -75,7 +78,9 @@ pub fn composer_field_frame(p: &crate::ui::Palette, focus_handle: &gpui::FocusHa
         .border_1()
         .border_color(t.input)
         .bg(p.pick(t.background, alpha(t.input, 0.3)))
-        .focus(move |s| s.border_color(t.ring).shadow(vec![focus_ring]))
+        .when(focus_within, |d| {
+            d.border_color(t.ring).shadow(vec![focus_ring])
+        })
 }
 
 impl WorkspaceView {
@@ -113,13 +118,22 @@ impl WorkspaceView {
         .detach();
     }
 
-    pub(in crate::view) fn render_composer_view(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::view) fn render_composer_view(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let p = palette(cx);
         let t = p.t;
         let i18n = self.i18n;
         let xs = TextSpec::XS;
         let sm = TextSpec::SM;
-        let draft_empty = self.composer_input.read(cx).is_empty();
+        let composer_focus = self.composer_input.focus_handle(cx);
+        // `focus-within`: 枠の中のどれかにフォーカスがあれば、枠の色と輪を出す。
+        let focus_within = composer_focus.is_focused(window)
+            || self.composer_attach_focus.is_focused(window)
+            || self.composer_emoji_focus.is_focused(window)
+            || self.composer_send_focus.is_focused(window);
         let state = self.state.read(cx);
         let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
         let is_synced = state.store.is_synced(&ShapeId::Channels)
@@ -179,7 +193,11 @@ impl WorkspaceView {
                 atts.iter().any(|a| a.is_uploading),
             )
         };
-        let can_submit = can_submit_composer(draft_empty, attachment_count, uploading);
+        let can_submit = can_submit_composer(
+            self.composer_input.read(cx).text(),
+            attachment_count,
+            uploading,
+        );
 
         let pending_attachments_bar = self.render_pending_attachments_bar(cx);
         let suggestions = self.render_mention_autocomplete(cx);
@@ -264,7 +282,7 @@ impl WorkspaceView {
                         )
                     })
                     .child(
-                        composer_field_frame(&p, &self.composer_input.focus_handle(cx))
+                        composer_field_frame(&p, focus_within)
                             .when(!is_editing, |d| {
                                 d.child(
                                     Button::new("btn-attach-file")
@@ -644,9 +662,20 @@ mod tests {
 
     #[test]
     fn submit_needs_text_or_attachment_and_no_upload() {
-        assert!(!can_submit_composer(true, 0, false));
-        assert!(can_submit_composer(false, 0, false));
-        assert!(can_submit_composer(true, 1, false));
-        assert!(!can_submit_composer(false, 1, true));
+        assert!(!can_submit_composer("", 0, false));
+        assert!(can_submit_composer("a", 0, false));
+        assert!(can_submit_composer("", 1, false));
+        assert!(!can_submit_composer("a", 1, true));
+    }
+
+    #[test]
+    fn whitespace_only_draft_cannot_submit() {
+        // `value.trim().length > 0`: 空白、改行、全角空白だけでは送れない。
+        assert!(!can_submit_composer("   ", 0, false));
+        assert!(!can_submit_composer("\n\n", 0, false));
+        assert!(!can_submit_composer(" \u{3000}\n\t", 0, false));
+        assert!(can_submit_composer(" a \n", 0, false));
+        // 添付があれば、本文が空白だけでも送れる。
+        assert!(can_submit_composer("  ", 1, false));
     }
 }

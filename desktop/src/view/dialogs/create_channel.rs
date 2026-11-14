@@ -58,14 +58,22 @@ impl WorkspaceView {
     }
 
     /// Tab で回る順 (名前、説明、非公開、取り消し、作成)。
-    fn create_channel_focus_order(&self, cx: &Context<Self>) -> Vec<FocusHandle> {
-        vec![
+    /// 作成ボタンが無効なあいだは、`Button` が tab stop にしないので、巡回からも外す。
+    fn create_channel_focus_order(
+        &self,
+        submit_enabled: bool,
+        cx: &Context<Self>,
+    ) -> Vec<FocusHandle> {
+        let mut order = vec![
             self.create_channel_name_input.focus_handle(cx),
             self.create_channel_desc_input.focus_handle(cx),
             self.create_channel_private_focus.clone(),
             self.create_cancel_focus.clone(),
-            self.create_submit_focus.clone(),
-        ]
+        ];
+        if submit_enabled {
+            order.push(self.create_submit_focus.clone());
+        }
+        order
     }
 
     pub(in crate::view) fn render_create_channel_modal(
@@ -87,13 +95,21 @@ impl WorkspaceView {
         let desc_count = modal.description.trim().chars().count();
         let desc_too_long = desc_count > MAX_DESCRIPTION;
         let is_private_focused = self.create_channel_private_focus.is_focused(window);
-        let order = self.create_channel_focus_order(cx);
+        let submit_disabled = in_flight || name_empty || desc_too_long;
+        let order = self.create_channel_focus_order(!submit_disabled, cx);
         let order_prev = order.clone();
         let order_key = order.clone();
         let max = MAX_DESCRIPTION.to_string();
         let length = desc_count.to_string();
-        let name_focus = self.create_channel_name_input.focus_handle(cx);
-        let desc_focus = self.create_channel_desc_input.focus_handle(cx);
+        // 枠は FocusHandle を持たず、中の入力欄にフォーカスがあるかで見た目を切り替える。
+        let name_focused = self
+            .create_channel_name_input
+            .focus_handle(cx)
+            .is_focused(window);
+        let desc_focused = self
+            .create_channel_desc_input
+            .focus_handle(cx)
+            .is_focused(window);
 
         let counter = i18n.t_with(
             "channels.descriptionCounter",
@@ -113,7 +129,7 @@ impl WorkspaceView {
             .gap(px(12.0))
             .child(
                 Input::new()
-                    .focus_handle(&name_focus)
+                    .focused(name_focused)
                     .child(self.create_channel_name_input.clone()),
             )
             .child(
@@ -145,7 +161,7 @@ impl WorkspaceView {
                     .child(
                         Textarea::new()
                             .invalid(desc_too_long)
-                            .focus_handle(&desc_focus)
+                            .focused(desc_focused)
                             .child(self.create_channel_desc_input.clone()),
                     )
                     .child(
@@ -221,7 +237,7 @@ impl WorkspaceView {
                 Button::new("create-channel-submit")
                     .focus_handle(&self.create_submit_focus)
                     .label(submit_label)
-                    .disabled(in_flight || name_empty || desc_too_long)
+                    .disabled(submit_disabled)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.state.update(cx, |s, cx| {
                             s.submit_create_channel();
@@ -240,6 +256,22 @@ impl WorkspaceView {
             }))
             // 入力欄の外 (チェックボックスとボタン) の Tab。入力欄の Tab は上の action が受ける。
             .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
+                // ボタンやチェックボックスにフォーカスがあっても Esc で閉じる (削除確認と同じ方式)。
+                // 閉じる処理と、閉じたあとのフォーカスの戻し先は、`app_shell.rs` の Esc と同じ。
+                if ev.keystroke.key == "escape" {
+                    this.create_channel_name_input
+                        .update(cx, |i, cx| i.clear(cx));
+                    this.create_channel_desc_input
+                        .update(cx, |i, cx| i.clear(cx));
+                    this.state.update(cx, |s, cx| {
+                        s.close_create_channel_modal();
+                        cx.notify();
+                    });
+                    window.focus(&this.composer_input.focus_handle(cx));
+                    // 上のルートの Esc 処理 (スレッドを閉じるなど) まで届かせない。
+                    cx.stop_propagation();
+                    return;
+                }
                 if ev.keystroke.key == "tab"
                     && !this
                         .create_channel_name_input

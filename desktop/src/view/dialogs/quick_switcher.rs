@@ -49,7 +49,11 @@ impl WorkspaceView {
     }
 
     /// ⌘K のスイッチャー。Web 版にはなく、見た目は `ChannelBrowserDialog.tsx` に合わせる。
-    pub(in crate::view) fn render_quick_switcher_modal(&self, cx: &mut Context<Self>) -> Div {
+    pub(in crate::view) fn render_quick_switcher_modal(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let should_scroll = self
             .state
             .update(cx, |s, _| s.take_pending_quick_switcher_scroll());
@@ -91,6 +95,7 @@ impl WorkspaceView {
                 // `flex min-h-14 items-center gap-3 rounded-lg py-2 pl-3 pr-3 hover:bg-muted`
                 h_flex()
                     .w_full()
+                    .flex_none()
                     .min_h(px(ROW_HEIGHT))
                     .gap(px(12.0))
                     .rounded(radius::LG)
@@ -156,7 +161,11 @@ impl WorkspaceView {
             .relative()
             .child(
                 Input::new()
-                    .focus_handle(&self.quick_switcher_input.focus_handle(cx))
+                    .focused(
+                        self.quick_switcher_input
+                            .focus_handle(cx)
+                            .is_focused(window),
+                    )
                     .pl(px(32.0))
                     .child(self.quick_switcher_input.clone()),
             )
@@ -198,7 +207,10 @@ impl WorkspaceView {
                 ScrollArea::new("quick-switcher-list")
                     .scroll_handle(&self.quick_switcher_scroll)
                     .size_full()
-                    .child(v_flex().gap(px(2.0)).pr(px(8.0)).children(items))
+                    // 行を直接の子にする (`scroll_to_item` は直下の子を番号で引く)。
+                    .content_gap(2.0)
+                    .content_pr(8.0)
+                    .children(items)
                     .into_any_element()
             });
 

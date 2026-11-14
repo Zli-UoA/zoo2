@@ -13,7 +13,7 @@ use crate::fonts;
 use crate::icons::Icon;
 use crate::tokens::radius;
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
-use crate::ui::dialog::{description_text, panel_frame, title_text};
+use crate::ui::dialog::{panel_frame, title_text};
 use crate::ui::scroll_area::ScrollArea;
 use crate::ui::{TextSpec, h_flex, palette, shadow_sm, v_flex};
 use crate::view::WorkspaceView;
@@ -58,6 +58,7 @@ impl WorkspaceView {
                 // `flex w-full gap-1 px-1`
                 h_flex()
                     .w_full()
+                    .flex_none()
                     .gap(px(4.0))
                     .px(px(4.0))
                     .children(chunk.iter().enumerate().map(|(col, e)| {
@@ -135,7 +136,10 @@ impl WorkspaceView {
             ScrollArea::new("emoji-picker-list")
                 .scroll_handle(&self.emoji_picker_scroll)
                 .size_full()
-                .child(v_flex().gap(px(4.0)).py(px(4.0)).children(rows))
+                // 行 (`COLUMNS` 個ずつ) を直接の子にする。`scroll_to_item` は行の番号で引く。
+                .content_gap(4.0)
+                .content_py(4.0)
+                .children(rows)
                 .into_any_element()
         });
 
@@ -152,8 +156,9 @@ impl WorkspaceView {
                     .flex_none()
                     .gap(px(8.0))
                     .pr(px(32.0))
-                    .child(title_text(i18n.t("reactions.add"), 16.0))
-                    .child(description_text(&p, i18n.t("reactions.emojiDescription"))),
+                    // Composer に挿入する絵文字の一覧。リアクション用の文言 (`reactions.add` と
+                    // `reactions.emojiDescription`) は動作に合わないので使わず、タブと同じ「絵文字」にする。
+                    .child(title_text(i18n.t("reactions.tabEmoji"), 16.0)),
             )
             .child(tabs)
             .child(
