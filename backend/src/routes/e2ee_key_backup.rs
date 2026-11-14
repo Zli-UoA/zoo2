@@ -598,6 +598,18 @@ async fn upload_sessions(
     if now.is_none() || now.map(|v| v.to_string()).as_deref() != Some(version) {
         return Err(wrong_version(now));
     }
+    // 上限の判定の「書く前」の数を、同じ版への並行したアップロードの変更と分けて読むため、版の行を先に
+    // ロックする。ロックしないと、ほかのアップロードの縮小が「書く前」と「書いたあと」の間にコミットし、
+    // 上限を超える増加が隠れる。トリガーも同じ行を更新するので、同じ版のアップロードはもともとここで並ぶ。
+    // FOR NO KEY UPDATE にして、セッションの行の外部キーの検査（FOR KEY SHARE）とは衝突させない。
+    first(
+        &mut tx,
+        "SELECT '{}'::text FROM e2ee_key_backup_versions
+         WHERE user_id = $1 AND version = $2::bigint FOR NO KEY UPDATE",
+        &[&actor.id, version],
+    )
+    .await?
+    .ok_or_else(|| wrong_version(now))?;
     let ssss = default_key(&mut tx, &actor.id).await?;
     if ssss.as_ref().and_then(|k| k["secrets_revision"].as_i64()) != Some(secrets_revision) {
         return Err(coded(

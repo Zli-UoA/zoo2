@@ -1879,6 +1879,84 @@ async fn backup_totals_are_counted_and_capped_per_version_and_user() {
     assert_eq!(totals("2").await.0, 2);
 }
 
+#[tokio::test]
+async fn a_concurrent_shrink_does_not_hide_an_increase_past_the_cap() {
+    // レビューの再現の順：上限を超えた版で、A（新しい行）が「書く前」を読むのと、B（縮小）のコミットが
+    // 入れ違う。B は版の行をロックしたまま縮小し、A が待っているあいだにコミットする。A は版の行のロックの
+    // あとに「書く前」を読むので、縮小のあとの数と比べて上限を超える増加を拒否する。
+    let env = env().await;
+    let alice = env.identity().await;
+    let user = alice.user.clone();
+    env.ssss(&user, json!([recovery_slot()])).await;
+    let revision = env.revision(&user).await;
+    let body = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key())});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, false, body)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let max = backend::routes::e2ee_key_backup::MAX_BACKUP_VERSION_BYTES;
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_bytes = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &(max + 1024).to_string()],
+    )
+    .await;
+
+    // B：版の行をロックして 2048 バイト縮める（コミットはまだ）。
+    let mut db = env.db.clone();
+    let mut shrink = db.transaction().await.unwrap();
+    backend::apps::query(
+        &mut shrink,
+        "UPDATE e2ee_key_backup_versions SET session_bytes = session_bytes - 2048
+         WHERE user_id = $1 AND version = 1 RETURNING '{}'::text",
+        &[&user],
+    )
+    .await
+    .unwrap();
+
+    // A：1.5 KiB ほどの新しい行。縮小のあとでも上限を超える。
+    let mut big = session("c", "k", "grow", false, 0);
+    big["session_data"]["ciphertext"] = json!("a".repeat(1500));
+    let app = env.app.clone();
+    let (upload_user, path) = (
+        user.clone(),
+        format!("/api/e2ee/key_backup/keys?version=1&secrets_revision={revision}"),
+    );
+    let upload = tokio::spawn(async move {
+        send(
+            &app,
+            "POST",
+            &path,
+            &upload_user,
+            None,
+            json!({"sessions": [big]}),
+        )
+        .await
+    });
+    // A が版の行のロックで待つまで進める（先に B がコミットしても、A は縮小のあとの数を読むので結果は同じ）。
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    shrink.commit().await.unwrap();
+
+    let (status, res) = upload.await.unwrap();
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_version_size")
+        ),
+        "{res}"
+    );
+    assert_eq!(
+        env.count(
+            "SELECT 1 FROM e2ee_key_backup_sessions WHERE user_id = $1 AND session_id = 'grow'",
+            &[&user]
+        )
+        .await,
+        0
+    );
+}
+
 /// `X-Zoo-Backup-Proof` を付けたアップロード（`proof` が `None` なら付けない）。
 async fn upload_with_proof(
     env: &Env,
