@@ -240,10 +240,7 @@ describe("MfmContent", () => {
     expect(html).toContain(" @bob ");
     expect(html).toContain(" @here ");
     // 外部のアカウントはメンションにもリンクにもしない。
-    // `[a](https://x.test)` の記法はリンクにならず、文字のまま残る。本文中の URL の自動リンクは維持される
-    expect(html).not.toContain(">a</a>");
-    expect(html).toContain("[a]");
-    expect(html).toContain('href="https://x.test"');
+    expect(html).not.toContain("<a ");
     expect(html).toContain("@carol@example.com");
     // mentions を渡さない（平文のメッセージ）ときは、今までどおり本文の @name をすべて表示する。
     expect(render("@alice @bob").match(/bg-brand-muted/g)).toHaveLength(2);

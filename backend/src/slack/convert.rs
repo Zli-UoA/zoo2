@@ -30,28 +30,34 @@ pub fn mrkdwn_to_text(text: &str, resolver: &impl Resolver) -> String {
     convert(text, resolver, true)
 }
 
-/// 書式の変換に渡す本文の最大文字数。取り込みの JSON は 1 ファイル 64 MiB まで読めて、本文に長さの制限がないので、
-/// 変換の前に切って、文字ごとの `Tok` がメモリを使いすぎないようにする。変換後の本文は
-/// `MAX_MESSAGE_CONTENT_LENGTH` で切るので、余裕を持たせた上限にしている。
-const MAX_FORMAT_INPUT_CHARS: usize = MAX_MESSAGE_CONTENT_LENGTH * 4;
+/// 書式の変換で展開する文字数の上限 (変換後の文字数)。取り込みの JSON は 1 ファイル 64 MiB まで読めて、本文に
+/// 長さの制限がないので、文字ごとの `Tok` に展開する量を制限する。変換後の本文は `MAX_MESSAGE_CONTENT_LENGTH` で
+/// 切るので、その 2 倍まで (書式の記号が上限の少し先で閉じるものまで) 見る。入力の長さではなく、`&amp;` などを戻した
+/// 後の長さで数えるので、変換後に上限へ収まる本文は欠けない。
+const MAX_FORMAT_CHARS: usize = MAX_MESSAGE_CONTENT_LENGTH * 2;
 
-/// 本文を、`<...>` の外側の文字 (unescape 済み) と、`<...>` を変換した文字列に分けて順に渡す
+/// 本文を、`<...>` の外側の文字 (unescape 済み) と、`<...>` を変換した文字列に分けて順に渡す。
+/// 渡した先が `false` を返したら、そこで止める
 fn scan(
     text: &str,
     resolver: &impl Resolver,
     plain: bool,
-    mut on_text: impl FnMut(&str),
-    mut on_atom: impl FnMut(String),
+    mut on_text: impl FnMut(&str) -> bool,
+    mut on_atom: impl FnMut(String) -> bool,
 ) {
     let mut rest = text;
     while let Some(start) = rest.find('<') {
-        on_text(&unescape(&rest[..start]));
+        if !on_text(&unescape(&rest[..start])) {
+            return;
+        }
         let after = &rest[start + 1..];
         let Some(end) = after.find('>') else {
             on_text(&unescape(&rest[start..]));
             return;
         };
-        on_atom(convert_token(&after[..end], resolver, plain));
+        if !on_atom(convert_token(&after[..end], resolver, plain)) {
+            return;
+        }
         rest = &after[end + 1..];
     }
     on_text(&unescape(rest));
@@ -65,25 +71,42 @@ fn convert(text: &str, resolver: &impl Resolver, plain: bool) -> String {
             text,
             resolver,
             true,
-            |t| out.borrow_mut().push_str(t),
-            |a| out.borrow_mut().push_str(&a),
+            |t| {
+                out.borrow_mut().push_str(t);
+                true
+            },
+            |a| {
+                out.borrow_mut().push_str(&a);
+                true
+            },
         );
         return out.into_inner();
     }
-    let text = match text.char_indices().nth(MAX_FORMAT_INPUT_CHARS) {
-        Some((end, _)) => &text[..end],
-        None => text,
-    };
     let toks = std::cell::RefCell::new(Vec::<Tok>::new());
+    // 残りの文字数。0 になったら、そこで止める
+    let budget = std::cell::Cell::new(MAX_FORMAT_CHARS);
     scan(
         text,
         resolver,
         false,
-        |t| push_text(&mut toks.borrow_mut(), t),
-        |a| toks.borrow_mut().push(Tok::Atom(a)),
+        |t| {
+            for c in t.chars() {
+                if budget.get() == 0 {
+                    return false;
+                }
+                toks.borrow_mut().push(Tok::Ch(c));
+                budget.set(budget.get() - 1);
+            }
+            true
+        },
+        |a| {
+            budget.set(budget.get().saturating_sub(a.chars().count()));
+            toks.borrow_mut().push(Tok::Atom(a));
+            budget.get() > 0
+        },
     );
     let toks = toks.into_inner();
-    let mut out = String::with_capacity(text.len() + 16);
+    let mut out = String::with_capacity(toks.len() + 16);
     format(&toks, 0, &mut out);
     out
 }
@@ -244,7 +267,8 @@ fn format(toks: &[Tok], depth: usize, out: &mut String) {
 
 /// `toks[open]` の記号 `mark` に対応する閉じる記号の位置。見つからなければ、探索を止めた位置 (行末か末尾)
 fn closing(toks: &[Tok], open: usize, mark: char) -> Result<usize, usize> {
-    let mut j = open + 2;
+    // 開き記号の直後からコードが始まる場合も、コードを飛ばす
+    let mut j = open + 1;
     while j < toks.len() {
         if is_char(toks.get(j), '\n') {
             return Err(j);
@@ -558,6 +582,10 @@ mod tests {
         assert_eq!(mfm("~a `b~ c` d~"), "~~a `b~ c` d~~");
         assert_eq!(mfm("_a `b_ c` d_"), "<i>a `b_ c` d</i>");
         assert_eq!(mfm("*a ```b* c``` d*"), "**a ```b* c``` d**");
+        // 開き記号の直後からコードが始まる場合も、コードの中を終わりにしない
+        assert_eq!(mfm("*`b* c` d*"), "**`b* c` d**");
+        assert_eq!(mfm("~`b~ c` d~"), "~~`b~ c` d~~");
+        assert_eq!(mfm("_`b_ c` d_"), "<i>`b_ c` d</i>");
         assert_eq!(mfm("a ` b *c*"), "a ` b **c**");
         assert_eq!(mfm("```*x"), "```*x");
     }
@@ -639,12 +667,25 @@ mod tests {
     }
 
     #[test]
-    fn clips_huge_input_before_expanding_it() {
-        let huge = "あ*a* ".repeat(MAX_FORMAT_INPUT_CHARS);
+    fn bounds_the_expanded_text_by_output_length() {
+        let huge = "あ*a* ".repeat(MAX_FORMAT_CHARS);
         let out = mfm(&huge);
         assert_eq!(out.chars().count(), MAX_MESSAGE_CONTENT_LENGTH);
         // カードの説明は切らない
         assert_eq!(mrkdwn_to_text(&huge, &Map), huge);
+        // 入力が長くても、戻したあとの本文が上限に収まるなら、欠けない
+        assert_eq!(
+            mfm(&"&amp;".repeat(MAX_MESSAGE_CONTENT_LENGTH)),
+            "&".repeat(MAX_MESSAGE_CONTENT_LENGTH)
+        );
+        assert_eq!(
+            mfm(&"&amp;".repeat(MAX_MESSAGE_CONTENT_LENGTH * 10))
+                .chars()
+                .count(),
+            MAX_MESSAGE_CONTENT_LENGTH
+        );
+        let links = "<@U1>".repeat(MAX_MESSAGE_CONTENT_LENGTH);
+        assert_eq!(mfm(&links).chars().count(), MAX_MESSAGE_CONTENT_LENGTH);
     }
 
     #[test]
