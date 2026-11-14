@@ -358,10 +358,19 @@ async fn database_keeps_earlier_rows_from_gaining_plaintext() {
     )
     .await
     .unwrap();
+    // 切り替えの前に presign して、まだ紐付けていない添付の行は、切り替えで消える（発行済みの URL への PUT が
+    // あとで終わっても、メッセージに紐付けられない）。紐付けた平文の添付の紐付けも変えられない。
+    let left = env
+        .query(
+            "SELECT json_build_object('n', count(*))::text FROM attachments WHERE id = $1",
+            &[&other],
+        )
+        .await;
+    assert_eq!(left[0]["n"], 0);
     assert!(
         env.exec(
-            "UPDATE attachments SET message_id = $2 WHERE id = $1",
-            &[&other, &before]
+            "UPDATE attachments SET message_id = NULL WHERE id = $1",
+            &[&attachment]
         )
         .await
         .is_err()
@@ -651,4 +660,46 @@ async fn plaintext_writes_wait_for_the_switch() {
         )
         .await;
     assert_eq!(epoch[0], 2);
+}
+
+#[tokio::test]
+async fn moving_a_slack_placeholder_into_an_encrypted_channel_bumps_the_epoch() {
+    let env = env().await;
+    let alice = env.user().await;
+    let placeholder = env.user().await;
+    let person = env.user().await;
+    let channel = env.channel(&alice, true, &[&placeholder]).await;
+    assert_eq!(env.encrypt(&channel, &alice).await.0, StatusCode::OK);
+    let epoch = |rows: Vec<Value>| rows[0].as_i64().unwrap();
+    let before = epoch(
+        env.query(
+            "SELECT membership_epoch::text FROM channels WHERE id = $1",
+            &[&channel],
+        )
+        .await,
+    );
+
+    // Slack の連携で、プレースホルダの参加チャンネルを本人へ移す。
+    let mut db = env.db.clone();
+    let mut tx = db.transaction().await.unwrap();
+    backend::slack::link::move_content(&mut tx, &placeholder, &person)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let after = epoch(
+        env.query(
+            "SELECT membership_epoch::text FROM channels WHERE id = $1",
+            &[&channel],
+        )
+        .await,
+    );
+    assert_eq!(after, before + 1);
+    let members = env
+        .query(
+            "SELECT json_build_object('n', count(*))::text FROM channel_user WHERE channel_id = $1 AND user_id = $2",
+            &[&channel, &person],
+        )
+        .await;
+    assert_eq!(members[0]["n"], 1);
 }

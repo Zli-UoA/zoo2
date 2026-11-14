@@ -215,10 +215,54 @@ async fn try_encrypt(
     .exec(&mut tx)
     .await?;
 
+    // 切り替える前に presign した、まだメッセージに紐付けていない添付の行を消す（チャンネルの行を FOR UPDATE で
+    // ロックしているので、今ある行はすべて切り替えの前に平文のチャンネルとして presign したもの）。発行済みの署名付き URL への
+    // PUT が切り替えのあとに終わると、平文の本体がストレージに残るため（紐付けは DB のトリガーが拒否するので、
+    // メッセージには入らない）。オブジェクトはコミットのあとに消し、署名付き URL の期限が切れたあとにもう一度消す。
+    let orphans: Vec<String> = rows(
+        &mut tx,
+        "DELETE FROM attachments
+         WHERE channel_id = $1 AND message_id IS NULL
+         RETURNING json_build_object('key', storage_key)::text",
+        &[id],
+    )
+    .await?
+    .into_iter()
+    .filter_map(|row| row["key"].as_str().map(str::to_owned))
+    .collect();
+
     let channel = Channel::get_by_id(&mut tx, id).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
+    if !orphans.is_empty() {
+        remove_orphan_objects(state, orphans);
+    }
     Ok(Some(ApiResponse::new(ChannelResponse::from(channel), txid)))
+}
+
+/// 切り替えで消した、紐付けていない平文の添付のオブジェクトを消す。すぐに 1 回消し、進行中の PUT が終わりうる
+/// あいだ（署名付き URL の期限と余裕）を待ってから、もう一度消す。期限が切れた URL では PUT できないので、
+/// 2 回目のあとに残ることはない（その前に backend が止まった場合を除く。そのオブジェクトは DB の行がなく、
+/// API からは読めない）。
+fn remove_orphan_objects(state: &AppState, keys: Vec<String>) {
+    let client = state.s3_client.clone();
+    let bucket = state.config.s3.bucket.clone();
+    let wait = std::time::Duration::from_secs(state.config.s3.presigned_put_expiry_secs + 60);
+    tokio::spawn(async move {
+        for round in 0..2 {
+            if round == 1 {
+                tokio::time::sleep(wait).await;
+            }
+            for key in &keys {
+                if let Err(e) = client.delete_object().bucket(&bucket).key(key).send().await {
+                    tracing::warn!(
+                        key,
+                        "Failed to remove an unattached attachment of an encrypted channel: {e}"
+                    );
+                }
+            }
+        }
+    });
 }
 
 /// チャンネルのメンバーの `user_id`（昇順）。

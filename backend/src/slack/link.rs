@@ -557,6 +557,29 @@ pub async fn move_content(
     )
     .await?["guest"]
         == true;
+    if !guest {
+        // 参加チャンネルを移すので、暗号化チャンネル (#367 で切り替えたもの) では、人の追加と退出と同じく
+        // membership_epoch を増やす。ロックの順 (docs/e2ee.md の「membership_epoch と送信の順序」) を守るため、
+        // 投稿の付け替え (トリガーがチャンネルの行を読む) より前に、メンバー単位のロック、チャンネルの行の順で取る。
+        // チャンネルの行は FOR NO KEY UPDATE で取るので、暗号化への切り替え (FOR UPDATE) とも直列になる。
+        crate::routes::e2ee_channels::lock_members(tx, &[from, to]).await?;
+        query(
+            tx,
+            "SELECT json_build_object('id',id)::text FROM channels \
+             WHERE id IN (SELECT channel_id FROM channel_user WHERE user_id=$1) \
+             ORDER BY id FOR NO KEY UPDATE",
+            &[from],
+        )
+        .await?;
+        exec(
+            tx,
+            "UPDATE channels SET membership_epoch=membership_epoch+1 \
+             WHERE encrypted AND deleted_at IS NULL \
+             AND id IN (SELECT channel_id FROM channel_user WHERE user_id=$1)",
+            &[from],
+        )
+        .await?;
+    }
     let mut statements = vec![
         "UPDATE messages SET user_id=$2 WHERE user_id=$1",
         // 本人が同じ絵文字を付けていれば重複を消してから移す
