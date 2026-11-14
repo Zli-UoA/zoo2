@@ -7,6 +7,7 @@ import { cryptoDatabaseName, cryptoLockName } from "../lib/e2ee/identity";
 import { answerPushDecryptRequest, type PushDecryptWorker } from "../lib/e2ee/push/protocol";
 import { startCryptoWorker } from "../lib/e2ee/cryptoWorker";
 import { exchange, sqliteFile } from "../lib/e2ee/push/pushTestKit";
+import { forgetPushRecipient, rememberPushRecipient } from "../lib/e2ee/push/recipient";
 import { openSnapshotBackend, readCryptoDatabaseFiles } from "../lib/e2ee/push/snapshotBackend";
 import { indexedDbWrappingKeys } from "../lib/e2ee/store/storageKey";
 
@@ -73,6 +74,8 @@ beforeAll(async () => {
   row = result.row;
   const sqlite = await SQLiteESMFactory({ locateFile: () => sqliteWasmUrl });
   await writeOpfsFile(DB, await sqliteFile(sqlite, result.bob.backend));
+  // タブ（E2eeProvider）が置く、今ログインしているユーザー
+  await rememberPushRecipient(BOB);
 });
 
 afterAll(async () => {
@@ -80,12 +83,22 @@ afterAll(async () => {
   const root = await navigator.storage.getDirectory();
   await root.removeEntry(DB).catch(() => undefined);
   await indexedDbWrappingKeys.delete(DB);
+  await forgetPushRecipient();
+  await caches.delete("zoo-push-wasm-v1");
 });
 
 describe("sw-push（Service Worker での Push の復号）", () => {
   it("開いているタブがなければ、Service Worker が暗号ストアを読んで復号する", async () => {
     const worker = await activeWorker();
     expect(await decryptInWorker(worker, { recipient_id: BOB, message: row })).toBe(SECRET);
+    // wasm は、デプロイで名前が変わっても読めるよう、専用のキャッシュに置いてある
+    const cached = await (await caches.open("zoo-push-wasm-v1")).keys();
+    expect(cached.map((request) => new URL(request.url).pathname.split("/").pop())).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/zoo_crypto_wasm_bg.*\.wasm$/),
+        expect.stringMatching(/wa-sqlite.*\.wasm$/),
+      ]),
+    );
     // 同時に届いた Push も、前の Push がロックを持つあいだタブに頼まず、順に復号する
     const pushes = await Promise.all(
       [1, 2, 3].map(() => decryptInWorker(worker, { recipient_id: BOB, message: row })),
@@ -95,6 +108,18 @@ describe("sw-push（Service Worker での Push の復号）", () => {
     expect(
       await decryptInWorker(worker, { recipient_id: BOB, message: { ...row, message_id: "x" } }),
     ).toBeNull();
+  });
+
+  it("宛先が今ログインしているユーザーでなければ、暗号ストアがあっても復号しない", async () => {
+    const worker = await activeWorker();
+    try {
+      await rememberPushRecipient(crypto.randomUUID());
+      expect(await decryptInWorker(worker, { recipient_id: BOB, message: row })).toBeNull();
+      await forgetPushRecipient();
+      expect(await decryptInWorker(worker, { recipient_id: BOB, message: row })).toBeNull();
+    } finally {
+      await rememberPushRecipient(BOB);
+    }
   });
 
   it("暗号ストアを開いているタブがあれば、そのタブの答えを使う", async () => {
