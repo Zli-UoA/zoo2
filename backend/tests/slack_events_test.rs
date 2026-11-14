@@ -782,3 +782,31 @@ async fn test_light_sync_keeps_the_cursor_so_a_later_full_sync_gets_earlier_repl
     assert_eq!(last_ts(&f.state, &f.team).await, f.ts_new);
     Ok(())
 }
+
+#[tokio::test]
+async fn test_light_syncs_do_not_refetch_replies_of_threads_they_already_fetched()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET)).await?;
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET swept_at=now()-interval '1 minute' WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    for round in 0..3 {
+        let (status, _) = post_event(
+            &f.app,
+            SECRET,
+            now_secs(),
+            &message_event(&f.team, "C1", &f.ts_new, None),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        sync_now(&f).await?;
+        // カーソルは進まないので、履歴は毎回 M を返す。M の返信は、最初の軽い同期で 1 回取るだけ
+        assert_eq!(replies_for(&f.slack, &f.ts_new).await, 1, "round {round}");
+        assert_eq!(history_calls(&f.slack).await, round + 1);
+    }
+    Ok(())
+}
