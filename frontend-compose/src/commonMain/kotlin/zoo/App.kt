@@ -66,7 +66,8 @@ fun ZooApp(app: Session) {
     val channels = visibleChannels(channelRows)
     val users by app.repo.users.rows.collectAsState()
     val members by app.repo.members.rows.collectAsState()
-    val notifications by app.repo.notifications.rows.collectAsState()
+    val allNotifications by app.repo.notifications.rows.collectAsState()
+    val notifications = androidNotificationRows(allNotifications)
     val loading by app.repo.channels.loading.collectAsState()
     val channel = channels.find { it.text("id") == app.channelId }
     val isHome = isHomePath(app.env.path)
@@ -328,7 +329,7 @@ internal fun Rail(app: Session, unread: Int, narrow: Boolean) {
         }
         RailLink(app, "/home", "home", app.t("home.title"))
         RailLink(app, "/", "hash", app.t("channels.title"))
-        NotificationsButton(app, unread + app.activityPubNotifications.unreadCount - unifiedNotificationFeed(app.repo.notifications.rows.value, app.activityPubNotifications.items).duplicateUnreadCount)
+        NotificationsButton(app, unread + app.activityPubNotifications.unreadCount - unifiedNotificationFeed(androidNotificationRows(app.repo.notifications.rows.value), app.activityPubNotifications.items).duplicateUnreadCount)
         RailLink(app, "/bubble", "message-circle-more", app.t("bubbleChat.title"))
         if (app.env.development) RailLink(app, "/realtime", "activity", app.t("sync.title"))
         Spacer(Modifier.weight(1f))

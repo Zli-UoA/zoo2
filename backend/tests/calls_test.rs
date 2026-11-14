@@ -1896,3 +1896,65 @@ async fn test_sweep_records_the_join_of_an_accepted_invitee_who_is_in_the_room()
     }
     anyhow::bail!("sweep did not record the join")
 }
+
+#[tokio::test]
+async fn test_join_waits_for_a_concurrent_accept_and_then_records_the_join() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob) = (w.alice.clone(), w.bob.clone());
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob]).await?;
+    let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+
+    // 応答の更新が、招待の行のロックを持っている間に、入室を始める（入室は、ロックを待つ）
+    let mut accept_db = w.state.db.clone();
+    let mut accept_tx = accept_db.transaction().await?;
+    toasty::sql::statement(
+        "UPDATE call_invites SET status = 'accepted', responded_at = statement_timestamp()
+         WHERE id = $1::uuid",
+    )
+    .bind(id.as_str())
+    .exec(&mut accept_tx)
+    .await?;
+    let (mut join_db, channel, invitee) = (w.state.db.clone(), w.public_ch.clone(), bob.clone());
+    let join = tokio::spawn(async move {
+        backend::call_invites::accept_on_join(&mut join_db, &channel, &invitee).await
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!join.is_finished(), "the join should wait for the row lock");
+
+    // 応答が確定すると、入室は、応答済みの招待として入室を記録する（応答の通知は、すでに閉じている）
+    accept_tx.commit().await?;
+    let ended = join.await??;
+    assert!(ended.is_empty());
+    assert_eq!(invite_status(&mut w.db, &id).await?, "accepted");
+    let rows = toasty::sql::query(
+        "SELECT (joined_at IS NOT NULL)::text FROM call_invites WHERE id = $1::uuid",
+    )
+    .bind(id.as_str())
+    .exec(&mut w.db)
+    .await?;
+    let joined = rows.into_iter().next().is_some_and(|row| {
+        matches!(row, toasty::stmt::Value::Record(r)
+            if matches!(r.fields.first(), Some(toasty::stmt::Value::String(s)) if s == "true"))
+    });
+    assert!(joined);
+
+    // 入室が先の順序（別の人で）: 入室してから応答すると、応答は「すでに終わっている」（409）になり、入室は記録されている
+    let carol = w.carol.clone();
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&carol]).await?;
+    let carol_invite = body["invites"][0]["id"].as_str().unwrap().to_string();
+    let mut join_db = w.state.db.clone();
+    let ended =
+        backend::call_invites::accept_on_join(&mut join_db, &w.public_ch.clone(), &carol).await?;
+    assert_eq!(ended.len(), 1);
+    let (status, _) = request(
+        &w.app,
+        &carol,
+        "POST",
+        &format!("/api/call-invites/{carol_invite}/accept"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CONFLICT);
+    Ok(())
+}
