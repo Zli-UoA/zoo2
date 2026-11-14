@@ -352,7 +352,9 @@ jobs:
           LEG: ${{ matrix.leg }}
         run: |
           # leg slack のテスト。ここに書いたもの以外は、すべて leg core で実行する。
+          # 所要時間をそろえるため、最も長い app_event_sources_test（約 83 秒）もここに置く。
           slack_tests=(
+            app_event_sources_test
             activitypub_test
             slack_api_import_test
             slack_files_test
