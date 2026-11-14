@@ -864,7 +864,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 【決定】自己署名鍵を変えたときも、同じように `membership_epoch` を増やす。漏れた自己署名鍵で署名された端末に、今のセッションの続きが届かないようにするため（#356 の「マスター鍵の変更」に加える。この増加も #357 で足す）。
   - 【決定】すでにあるマスター鍵を差し替えるときは、直前の再認証を求める。盗んだトークンだけでマスター鍵を差し替えられないようにするため。
   - 【決定】初めてマスター鍵を登録するとき（初回設定）にも、同じ直前の再認証を求める。E2EE の初回設定が済んでいないアカウントのトークンを盗んだ者が、利用者より先にマスター鍵、自己署名鍵、自分だけが開けられる SSSS を登録すると、他のユーザーはそのマスター鍵を TOFU で信頼し、その者の端末に鍵を配ってしまう。利用者はその SSSS を開けられないので、初回設定を続けることもできない。初回設定ではパスキーかリカバリーキーを作るので、再認証の手間は小さい。SSSS の最初の作成（`POST /api/e2ee/secret_storage/keys`）にも同じく求める。最初のバックアップの版は、サーバーが今のマスター鍵の署名を検証するので、再認証は求めない。
-  - 【決定】再認証の確かめ方：クライアントは `max_age=0` を付けて AuthZ の認可リクエストを送り直し（AuthZ でログインし直す）、受け取った ID トークンを、再認証が要る要求のヘッダー `X-Zoo-Reauth` に入れる。サーバーは、その ID トークンの署名（AuthZ の JWKS）、`iss`、`aud`（zoo2 のクライアント ID の一覧。Web、Android、TUI の ID を、`OIDC_AUDIENCE` とは別の設定キー `OIDC_REAUTH_AUDIENCES`（カンマ区切り）で持ち、zoo2-infra の ConfigMap `zoo2-oidc` に値を足す。【決定】（#356）キーがない、または空でも backend は起動し、起動時に警告を出したうえで、再認証が要る要求をすべて 403 `E2EE_REAUTH_REQUIRED` にする。#357 で暗号化チャンネルを有効にするまでは E2EE を使わないので、ConfigMap より先に backend を配備しても止まらないようにするため。`OIDC` の設定がない開発環境（`DEV_AUTH_ENABLED`）では再認証を確かめない）、`exp` を検証し、`sub` がアクセストークンのユーザーと同じで、AuthZ がパスキーなどで直前に認証した時刻（下の `authenticated_at`）が 5 分以内であることを確かめる。満たさなければ 403 `E2EE_REAUTH_REQUIRED`。アクセストークンを使わないのは、AuthZ（`@better-auth/oauth-provider` 1.7.12）の JWT のアクセストークンには `auth_time` が入らないため。ID トークンには `auth_time` が入り、認可リクエストの `max_age` にも対応している（`max_age=0` なら必ずログインし直させる）。どちらも AuthZ のソースで確かめた。実際の AuthZ で `max_age=0` が再ログインになり、ID トークンに `authenticated_at` が入ること（QR のセッションとリフレッシュでは入らないこと）は、AuthZ#102 の E2E（`tests/e2e/reauth.spec.ts`）で確かめた。#356 の結合テストは、テストの鍵で署名した ID トークンで、claim がない、古い、`sub` が違う、`aud` が zoo2 のクライアントでない、アクセストークン（`typ: at+jwt`）のときに 403 になることを確かめる。
+  - 【決定】再認証の確かめ方：クライアントは `max_age=0` を付けて AuthZ の認可リクエストを送り直し（AuthZ でログインし直す）、受け取った ID トークンを、再認証が要る要求のヘッダー `X-Zoo-Reauth` に入れる。サーバーは、その ID トークンの署名（AuthZ の JWKS）、`iss`、`aud`（zoo2 のクライアント ID の一覧。Web、Android、TUI の ID を、`OIDC_AUDIENCE` とは別の設定キー `OIDC_REAUTH_AUDIENCES`（カンマ区切り）で持ち、zoo2-infra の production の `backend.yaml` の `env` に置く（[有効化と運用](#有効化と運用)）。【決定】（#356）キーがない、または空でも backend は起動し、起動時に警告を出したうえで、再認証が要る要求をすべて 403 `E2EE_REAUTH_REQUIRED` にする。#357 で暗号化チャンネルを有効にするまでは E2EE を使わないので、ConfigMap より先に backend を配備しても止まらないようにするため。`OIDC` の設定がない開発環境（`DEV_AUTH_ENABLED`）では再認証を確かめない）、`exp` を検証し、`sub` がアクセストークンのユーザーと同じで、AuthZ がパスキーなどで直前に認証した時刻（下の `authenticated_at`）が 5 分以内であることを確かめる。満たさなければ 403 `E2EE_REAUTH_REQUIRED`。アクセストークンを使わないのは、AuthZ（`@better-auth/oauth-provider` 1.7.12）の JWT のアクセストークンには `auth_time` が入らないため。ID トークンには `auth_time` が入り、認可リクエストの `max_age` にも対応している（`max_age=0` なら必ずログインし直させる）。どちらも AuthZ のソースで確かめた。実際の AuthZ で `max_age=0` が再ログインになり、ID トークンに `authenticated_at` が入ること（QR のセッションとリフレッシュでは入らないこと）は、AuthZ#102 の E2E（`tests/e2e/reauth.spec.ts`）で確かめた。#356 の結合テストは、テストの鍵で署名した ID トークンで、claim がない、古い、`sub` が違う、`aud` が zoo2 のクライアントでない、アクセストークン（`typ: at+jwt`）のときに 403 になることを確かめる。
   - 【決定】`auth_time` だけでは足りない。ID トークンの `auth_time` は AuthZ のセッションの作成時刻なので、QR でのログイン（`/login/qr`）で作ったセッションも新しい時刻になる。AuthZ は QR で作ったセッションの `authenticatedAt` を空にし、「元の端末の認証時刻を移さず、重要な操作には受け取った端末でのパスキーの再認証を求める」としている（AuthZ の main の `src/lib/auth.ts`、`docs/architecture.md`）。zoo2 もこれにそろえ、QR で作ったセッションを再認証として認めない。そのために、AuthZ が ID トークンに、セッションの `authenticatedAt` を表す独自の claim（ここでは `authenticated_at` と呼ぶ。名前は [AuthZ#97](https://github.com/Zli-UoA/AuthZ/issues/97) で決める）を足す。`auth_time`、`acr`、`amr` は採用版で上書きできない予約済みの名前なので、別の名前にする。zoo2 はこの claim がない、または 5 分より前なら 403 `E2EE_REAUTH_REQUIRED` を返す。
     - 足し方：採用版の `customIdTokenClaims` にはセッションが渡らないので使えない。`OAuthProviderExtension` の `claims.idToken`（`sessionId` が渡る）でセッションを読み、`authenticatedAt` を入れる。
     - claim を入れるのは、認可コードのグラント（`grantType === 'authorization_code'`）で発行する ID トークンだけにする。リフレッシュトークンのグラントで発行する ID トークンには入れない。リフレッシュのたびに今のセッションを読んで入れると、盗んだリフレッシュトークンで、利用者が別の場所で直前に認証した時刻の付いた ID トークンを取れてしまうため。
@@ -1844,16 +1844,11 @@ A が B に検証を求める場合です。
 - `ciphertext` を扱えない旧イメージ（#357 より前）にはロールバックしない。旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる。設定を false に戻すのは、#358 以降のイメージのあいだで行う。
 - 止め方と注意は、zoo2-infra の `docs/zoo2-app.md` の「E2EE の暗号化チャンネル」にも書いた。
 
-【決定】再認証の `OIDC_REAUTH_AUDIENCES`（[クロス署名](#クロス署名356)の「再認証の確かめ方」）は OIDC の設定なので、`OIDC_ISSUER` や `OIDC_AUDIENCE` と同じく、手動で作る ConfigMap `zoo2-oidc` に置きます（zoo2-infra の `docs/installation.md`）。値は Web、Android、TUI の zoo2 のクライアント ID をカンマで区切ったもので、秘密情報ではありません。ないと、再認証が要る操作（初回設定の保存、失効など）がすべて 403 `E2EE_REAUTH_REQUIRED` になり、backend は起動時に警告を出します。各拠点（`$CTX`）で、既存のキーを残す `patch` で足し、backend を再起動します。
+【決定】再認証の `OIDC_REAUTH_AUDIENCES`（[クロス署名](#クロス署名356)の「再認証の確かめ方」）も、zoo2-infra の production の overlay の `kubernetes/apps/zoo2/overlays/production/app/backend.yaml` の `env` に置き、Git で管理します（同じ [Zli-UoA/zoo2-infra#194](https://github.com/Zli-UoA/zoo2-infra/pull/194)）。値は zoo2 のクライアント ID をカンマで区切ったもので、公開情報です。OIDC の設定ですが、手動で作る ConfigMap `zoo2-oidc` には置きません（`env` は `envFrom` の `zoo2-oidc` より優先されます）。ないと、再認証が要る操作（初回設定の保存、失効など）がすべて 403 `E2EE_REAUTH_REQUIRED` になり、backend は起動時に `OIDC_REAUTH_AUDIENCES is not set` の警告を出します。
 
-```sh
-kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge \
-  -p '{"data":{"OIDC_REAUTH_AUDIENCES":"<Web のクライアント ID>,<Android のクライアント ID>,<TUI のクライアント ID>"}}'
-kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
-```
-
-- `kubectl create configmap ... --dry-run=client -o yaml | kubectl apply -f -` は使わない。zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるため。
-- 足したかは、backend の起動時のログに `OIDC_REAUTH_AUDIENCES is not set` の警告が出ないことで確かめる。
+- 今の値は、Web と TUI の共通の public client だけ（`client-core` の TUI の既定のクライアント ID と同じ）。Android のアプリは、ログインの画面で利用者がクライアント ID を入れる作りで、決まった ID がない。Android の再認証（#360）でクライアントを決めたら、zoo2-infra の PR でこの値に足す。
+- preview は OIDC を使わないので、置かない。
+- 変えるときも zoo2-infra の PR で行い、`kubectl patch` や `kubectl set env` でクラスタを直接変えない。
 
 ## クライアントの構成
 
