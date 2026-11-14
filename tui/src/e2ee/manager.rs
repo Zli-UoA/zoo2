@@ -196,8 +196,11 @@ pub async fn retry_pending_device_deletion(
     let Ok(all) = read_pending_device_deletions(root) else {
         return;
     };
+    // 同じ端末の記録が重なっていても（前の形式や手で直したファイル）、1 回だけ消し直す。先の記録で
+    // 削除を終えたあとに、後の記録で削除待ちに足し直さないため。
+    let mut seen = BTreeSet::new();
     for pending in all {
-        if pending.user_id == user_id {
+        if pending.user_id == user_id && seen.insert(pending.device_id.clone()) {
             delete_device_or_remember(api, root, &pending, counted).await;
         }
     }

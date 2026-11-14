@@ -648,6 +648,33 @@ async fn a_broken_pending_list_is_neither_retried_nor_overwritten() {
     assert_eq!(std::fs::read(&file).unwrap(), b"{broken");
 }
 
+#[tokio::test]
+async fn duplicated_pending_entries_are_retried_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let entry = json!({ "user_id": BOB, "device_id": "d", "unconfirmed": true, "not_found": 2 });
+    std::fs::write(
+        root.join("pending-device-delete.json"),
+        serde_json::to_vec(&json!([entry, entry])).unwrap(),
+    )
+    .unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    // 3 回目の 404 で済んだものとし、重なった後の記録で足し直さない。
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
+    assert!(
+        store::read_pending_device_deletions(&root)
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[test]
 fn reads_pending_deletions_of_the_previous_format_as_confirmed() {
     let dir = tempfile::tempdir().unwrap();

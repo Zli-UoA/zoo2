@@ -534,7 +534,12 @@ export async function retryPendingDeviceDeletion(
     // 一覧を読めなければ、何も消さない（一覧はそのまま残す）。
     return;
   }
+  // 同じ端末の記録が重なっていても（前の形式や手で直した値）、1 回だけ消し直す。先の記録で削除を
+  // 終えたあとに、後の記録で削除待ちを書き戻さないため。
+  const seen = new Set<string>();
   for (const pending of all) {
-    if (pending.userId === userId) await deleteOrKeep(client, pending, counted);
+    if (pending.userId !== userId || seen.has(pending.deviceId)) continue;
+    seen.add(pending.deviceId);
+    await deleteOrKeep(client, pending, counted);
   }
 }

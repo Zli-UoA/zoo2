@@ -821,6 +821,19 @@ describe("E2eeDeviceManager", () => {
     expect(window.localStorage.getItem(CRYPTO_PENDING_DEVICE_DELETE_KEY)).toBe("{broken");
   });
 
+  it("同じ端末の削除待ちが重なっていても、1 回だけ消し直して足し直さない", async () => {
+    const entry = { userId: USER, deviceId: DEVICE, unconfirmed: true, notFound: 2 };
+    window.localStorage.setItem(CRYPTO_PENDING_DEVICE_DELETE_KEY, JSON.stringify([entry, entry]));
+    const { client, requests } = fakeClient({
+      [`DELETE /api/e2ee/devices/${DEVICE}`]: () => {
+        throw new ApiError(404, "not found");
+      },
+    });
+    await retryPendingDeviceDeletion(client, USER, new Set());
+    expect(requests.filter((r) => r.method === "DELETE")).toHaveLength(1);
+    expect(readPendingDeviceDeletions()).toEqual([]);
+  });
+
   it("前の形式の削除待ち（unconfirmed なし）は、登録済みの端末として扱う", async () => {
     window.localStorage.setItem(
       CRYPTO_PENDING_DEVICE_DELETE_KEY,
