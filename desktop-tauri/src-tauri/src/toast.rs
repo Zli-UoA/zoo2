@@ -158,6 +158,18 @@ fn close_handle(_handle: &notify_rust::NotificationHandle) {}
 
 /// 着信のトーストを出す。Linux は「応答」「拒否」のボタン付きで、閉じるまで出し続ける
 /// （GNOME は、通常の通知を数秒で一覧にしまうため）。mac は出すだけで、クリックは受け取れない。
+/// ボタンを持てない環境（macOS など）で、受け取った操作を使わずに捨てる。
+/// フィールドを読むので、`-D warnings` の lint（未使用のフィールド）に掛からない。
+#[cfg(any(target_os = "macos", not(unix)))]
+fn drop_unused_actions(actions: CallActions) {
+    let CallActions {
+        accept,
+        decline,
+        open,
+    } = actions;
+    drop((accept, decline, open));
+}
+
 /// 先に作っておいた `CallToast` に預かる。招待が終わったら、その `close` で閉じる（出す前でもよい）。
 pub fn show_call_invite(toast: &CallToast, title: &str, body: &str, actions: CallActions) {
     let mut notification = notify_rust::Notification::new();
@@ -221,7 +233,8 @@ pub fn show_call_invite(toast: &CallToast, title: &str, body: &str, actions: Cal
     #[cfg(target_os = "macos")]
     {
         let shared = toast.clone();
-        let _ = actions;
+        // ボタンを持てない環境では、操作を使わない（フィールドを読んで捨てる）。
+        drop_unused_actions(actions);
         std::thread::spawn(move || {
             match tauri::async_runtime::block_on(notification.show_async()) {
                 Ok(handle) => {
@@ -234,7 +247,8 @@ pub fn show_call_invite(toast: &CallToast, title: &str, body: &str, actions: Cal
 
     #[cfg(not(unix))]
     {
-        let _ = actions;
+        // ボタンを持てない環境では、操作を使わない（フィールドを読んで捨てる）。
+        drop_unused_actions(actions);
         let _ = notification.show();
     }
 }
