@@ -26,6 +26,7 @@ mod megolm;
 mod revocation;
 mod secret_storage;
 mod setup;
+mod verification;
 
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
@@ -42,6 +43,7 @@ pub use megolm::{BackupSession, InboundSessionStore, OutboundSession, RoomKey};
 pub use revocation::Revocation;
 pub use secret_storage::{RecoveryKey, SecretStorage, SsssKey, UnlockedSecretStorage};
 pub use setup::{OwnKeys, OwnSecrets};
+pub use verification::SasVerification;
 
 use convert::{IntoJs, ed25519, from_js, to_js};
 
@@ -134,7 +136,46 @@ export interface SignatureUpload {
 }
 export interface TrustRecord { master_key: string; confirmed_usk: string | null; pin_pending: boolean }
 export interface NewTofuPin { target_user_id: string; master_key: string; pin: JsonObject }
-export interface AcceptedMasterKey { pin: JsonObject; signature: SignatureUpload }
+export interface AcceptedMasterKey {
+  target_user_id: string;
+  master_key: string;
+  pin: JsonObject;
+  signature: SignatureUpload;
+}
+/** 受信時の検証を通った、絵文字 SAS の検証のメッセージ（#368）。 */
+export interface VerificationMessage {
+  sender_user_id: string;
+  sender_device: DeviceKeysJson;
+  type: string;
+  content: JsonObject;
+}
+/** 送る検証のメッセージ。`devices` のそれぞれに暗号化して送る。 */
+export interface VerificationOutgoing {
+  devices: DeviceKeysJson[];
+  type: string;
+  content: JsonObject;
+}
+export type SasPhase =
+  | "requested"
+  | "incoming"
+  | "exchanging"
+  | "compare"
+  | "confirmed"
+  | "done"
+  | "cancelled";
+export interface SasView {
+  transaction_id: string;
+  their_user_id: string;
+  their_device_id: string | null;
+  we_requested: boolean;
+  started_at: number;
+  phase: SasPhase;
+  /** Matrix の SAS の絵文字の表の番号（0〜63）を 7 つ。絵文字を見せる段階でなければ `null`。 */
+  emoji: number[] | null;
+  cancel: { code: string; by_us: boolean } | null;
+  verified_master_key: string | null;
+}
+export interface SasRequest { verification: SasVerification; outgoing: VerificationOutgoing[] }
 export type UserState =
   | {
       state: "trusted";
@@ -228,6 +269,7 @@ export interface ZooCryptoConstants {
   ENCRYPTED_ATTACHMENT_FILE_NAME: string;
   ENCRYPTED_ATTACHMENT_CONTENT_TYPE: string;
   MAX_ATTACHMENTS: number;
+  VERIFICATION_TIMEOUT_MS: number;
 }
 "#;
 
@@ -255,6 +297,7 @@ pub fn constants() -> Result<JsValue, JsValue> {
         "ENCRYPTED_ATTACHMENT_FILE_NAME": core::ENCRYPTED_ATTACHMENT_FILE_NAME,
         "ENCRYPTED_ATTACHMENT_CONTENT_TYPE": core::ENCRYPTED_ATTACHMENT_CONTENT_TYPE,
         "MAX_ATTACHMENTS": core::MAX_ATTACHMENTS,
+        "VERIFICATION_TIMEOUT_MS": core::VERIFICATION_TIMEOUT_MS,
     }))
 }
 

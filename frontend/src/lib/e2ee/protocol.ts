@@ -12,6 +12,8 @@ import type {
   RevocationStage,
   RevocationSummary,
   StartupCheck,
+  VerificationMessage,
+  VerificationOutgoing,
 } from "@zoo/crypto-wasm";
 
 import type { RevocationBeginInput, TrustEvaluation } from "./revocationSession";
@@ -25,6 +27,7 @@ import type {
 
 import type { PasskeySlotInput, ResetExpectation, UnlockSecret } from "./setupSession";
 import type { BackupUploadRequest } from "./store/cryptoStore";
+import type { SasEncrypted, SasUpdate } from "./store/verification";
 
 import type {
   DeviceKeysByUser,
@@ -38,6 +41,7 @@ export type { DeviceKeysByUser, KeyUpload, RegistrationRequest, ToDeviceResult, 
 export type { ClaimedKeys, DecryptOutcome, RecipientSummary, SharePlan, ShareResult };
 export type { KeySlot, PasskeySlotInput, ResetExpectation, ResumePlan, StartupCheck, UnlockSecret };
 export type { RevocationBeginInput, TrustEvaluation };
+export type { SasEncrypted, SasUpdate };
 
 /**
  * 暗号の Worker（`crypto.worker.ts`）とのやり取りの型。
@@ -116,6 +120,18 @@ export type CryptoOperation =
   | { op: "trustEvaluate"; keysQuery: JsonObject; userIds: string[] }
   | { op: "trustPinResult"; pin: NewTofuPin; registered: boolean }
   | { op: "acceptMasterKey"; targetUserId: string; masterKey: JsonObject }
+  | { op: "confirmAcceptedMasterKey"; targetUserId: string; masterKey: string }
+  // 他のユーザーの絵文字 SAS 検証（#368）。検証は Worker のメモリーにだけ置く。
+  | { op: "sasRequest"; targetUserId: string; keysQuery: JsonObject; now: number }
+  | { op: "sasReceive"; message: VerificationMessage; keysQuery: JsonObject; now: number }
+  | { op: "sasAccept"; txnId: string }
+  | { op: "sasConfirm"; txnId: string }
+  | { op: "sasMismatch"; txnId: string }
+  | { op: "sasCancel"; txnId: string }
+  | { op: "sasExpire"; now: number }
+  | { op: "sasForget"; txnId: string }
+  | { op: "sasSign"; txnId: string; masterKey: JsonObject }
+  | { op: "sasEncrypt"; outgoing: VerificationOutgoing[]; claimed: ClaimedKeys | null }
   // Megolm の送信と復号（#361）。
   | { op: "megolmNeedsSnapshot"; channelId: string; epoch: number }
   | { op: "megolmEvaluate"; channelId: string; pages: JsonObject[] }
@@ -206,6 +222,17 @@ export interface CryptoResults {
   trustEvaluate: TrustEvaluation;
   trustPinResult: null;
   acceptMasterKey: AcceptedMasterKey;
+  confirmAcceptedMasterKey: null;
+  sasRequest: SasUpdate;
+  sasReceive: SasUpdate | null;
+  sasAccept: SasUpdate;
+  sasConfirm: SasUpdate;
+  sasMismatch: SasUpdate;
+  sasCancel: SasUpdate | null;
+  sasExpire: SasUpdate[];
+  sasForget: null;
+  sasSign: AcceptedMasterKey;
+  sasEncrypt: SasEncrypted;
   megolmNeedsSnapshot: boolean;
   megolmEvaluate: RecipientSummary;
   megolmSettlePins: null;

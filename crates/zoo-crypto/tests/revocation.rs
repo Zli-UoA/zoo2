@@ -176,13 +176,15 @@ fn trust_with_records(secrets: &OwnSecrets, bob_master: &CrossSigningKeyPair) ->
         .record_own_user_signing_key(&secrets.cross_signing.user_signing)
         .unwrap();
     // bob を受け入れて（再検証）、記録と confirmed_usk を作る。
-    trust
+    let accepted = trust
         .accept_master_key(
             &secrets.cross_signing.user_signing,
             BOB,
             &bob_master.public_key_json(),
         )
         .unwrap();
+    // ピンと署名を保存できた。
+    trust.confirm_accepted_master_key(&accepted.target_user_id, &accepted.master_key);
     trust
 }
 

@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { createConfiguredApiClient } from "../../lib/api/client";
-import type { AppConfig } from "../../lib/config";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useE2ee } from "../../lib/e2ee/e2ee-context";
 import { PasskeyError, passkeyPrfSupported, passkeyRpId } from "../../lib/e2ee/passkey";
-import { ReauthError, openReauthWindow, reauthenticate } from "../../lib/e2ee/reauth";
+import { ReauthError, startReauth } from "../../lib/e2ee/reauth";
 import type { SecretStorageResponse } from "../../lib/e2ee/secretStorageApi";
 import {
   type E2eeSetupDeps,
@@ -25,7 +24,6 @@ import {
   unlock,
 } from "../../lib/e2ee/setupController";
 import { accountRevocationUrls } from "../../lib/oidc/accountUrl";
-import { getOidcClient } from "../../lib/oidc/session";
 import { deleteSelectedDevices, loadDevices } from "../../lib/e2ee/revocationController";
 import type { KeySlot } from "../../lib/e2ee/protocol";
 import {
@@ -84,17 +82,6 @@ function slotViews(storage: SecretStorageResponse): KeySlotView[] {
     createdAt: slot.created_at ?? null,
     lastUsedAt: slot.last_used_at ?? null,
   }));
-}
-
-/**
- * 再認証して ID トークンを返す。別のウィンドウはクリックの中で同期的に開く。
- * OIDC を設定していない開発環境では、サーバーも再認証を確かめないので `null` を返す。
- */
-function startReauth(config: AppConfig): () => Promise<string | null> {
-  const oidc = getOidcClient(config);
-  if (!oidc) return async () => null;
-  const popup = openReauthWindow();
-  return () => reauthenticate({ oidc, popup });
 }
 
 /** 設定の「暗号化」タブ（初回設定と解錠。#360）。 */

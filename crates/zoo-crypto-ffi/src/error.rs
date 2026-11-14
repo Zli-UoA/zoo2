@@ -95,6 +95,9 @@ pub enum ZooCryptoError {
     /// SSSS を保存する前に止まった 2〜5 の失効は続けられない。最初からやり直す（#362）。
     #[error("{reason}")]
     RevocationRestart { reason: String },
+    /// 絵文字 SAS の検証（#368）を、今の状態では行えない。
+    #[error("{reason}")]
+    Verification { reason: String },
     /// 鍵バックアップの版が巻き戻った。
     #[error("{reason}")]
     BackupVersionRollback {
@@ -200,6 +203,7 @@ impl From<CryptoError> for ZooCryptoError {
             CryptoError::ServerKeyMismatch(_) => Self::ServerKeyMismatch { reason },
             CryptoError::AttachmentDecryption(_) => Self::AttachmentDecryption { reason },
             CryptoError::RevocationRestart => Self::RevocationRestart { reason },
+            CryptoError::Verification(_) => Self::Verification { reason },
             CryptoError::BackupVersionRollback { max_seen, received } => {
                 Self::BackupVersionRollback {
                     reason,
