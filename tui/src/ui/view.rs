@@ -2683,6 +2683,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn encrypted_channels_are_recorded_right_away() {
+        let mut app = app();
+        let me = "00000000-0000-4000-8000-0000000000b0";
+        app.me.id = me.into();
+        let dir = tempfile::tempdir().unwrap();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: Some(dir.path().to_owned()),
+        });
+        // 暗号ストアがまだ開いていなくても、`encrypted = true` を見たらその場で記録する。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c3",
+                json!({ "id": "c3", "channel_name": "secret-e2ee", "is_private": "t", "encrypted": "t" }),
+            )]),
+        ));
+        assert_eq!(
+            crate::e2ee::store::read_encrypted_channels(dir.path(), me).unwrap(),
+            vec!["c3".to_owned()]
+        );
+    }
+
+    #[tokio::test]
     async fn plaintext_is_held_back_while_the_records_are_unreadable() {
         let mut app = app();
         let me = "00000000-0000-4000-8000-0000000000b0";
