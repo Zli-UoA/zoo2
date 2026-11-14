@@ -43,6 +43,9 @@ describe("assertSafeApiPath", () => {
     "/api/channels/a#b",
     "/api/channels/a?x=1#b",
     "/api//channels",
+    "/api/channels/.\t./apps/x",
+    "/api/channels/.\n./apps/x",
+    "/api/channels/.\r./apps/x",
   ])("rejects %s", (path) => {
     expect(() => assertSafeApiPath(path)).toThrow(UnsafeApiPathError);
   });

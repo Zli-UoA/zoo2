@@ -41,6 +41,7 @@ export function assertSafeApiPath(path: string): void {
     pathname.startsWith("//") ||
     pathname.includes("//") ||
     pathname.includes("\\") ||
+    /[\t\n\r]/.test(path) ||
     pathname.includes("#") ||
     path.includes("#") ||
     /%(2f|5c)/i.test(pathname) ||
