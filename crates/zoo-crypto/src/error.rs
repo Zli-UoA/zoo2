@@ -148,6 +148,10 @@ pub enum CryptoError {
     #[error("鍵バックアップのセッションを復号できません: {0}")]
     BackupDecryption(String),
 
+    /// 暗号化した添付を復号できない（暗号文のハッシュが合わない）。
+    #[error("添付を復号できません: {0}")]
+    AttachmentDecryption(String),
+
     /// 受信時の検証に失敗した。呼び出し側は破棄する。
     #[error("受信時の検証に失敗しました: {0}")]
     Rejected(Rejection),
@@ -157,6 +161,11 @@ pub enum CryptoError {
     /// 「新しい端末での解錠」の【決定】）。サーバーに鍵や版が「ない」だけなら、このエラーにはならない。
     #[error("サーバーの鍵が SSSS の鍵と一致しません: {0}")]
     ServerKeyMismatch(String),
+
+    /// SSSS を保存する前に止まった 2〜5 の失効は続けられない（マスター鍵と SSSS 鍵を保存しないため）。
+    /// 最初からやり直す（docs/e2ee.md の「失効の手順」。#362）。
+    #[error("失効を最初からやり直してください")]
+    RevocationRestart,
 }
 
 /// 受信時の検証で破棄する理由（docs/e2ee.md の「受信時の検証」）。

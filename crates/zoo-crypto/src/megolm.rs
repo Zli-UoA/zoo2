@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use vodozemac::megolm::{GroupSession, SessionConfig};
 
+use crate::attachment::{AttachmentInfo, MAX_ATTACHMENTS};
 use crate::device::{DeviceAccount, MEGOLM_ALGORITHM};
 use crate::olm::RoomKey;
 use crate::{CryptoError, to_canonical_json};
@@ -64,6 +65,9 @@ pub struct MessagePayload {
     pub content: MessageContent,
     /// メンション。
     pub mentions: Mentions,
+    /// 暗号化した添付（#364）。添付がなければ JSON から省く（#364 より前の平文と同じ形にするため）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AttachmentInfo>,
 }
 
 impl MessagePayload {
@@ -90,6 +94,21 @@ impl MessagePayload {
             return Err(CryptoError::InvalidPayload(format!(
                 "content.body が {MAX_BODY_CHARS} 文字を超えています"
             )));
+        }
+        if self.attachments.len() > MAX_ATTACHMENTS {
+            return Err(CryptoError::InvalidPayload(format!(
+                "attachments が {MAX_ATTACHMENTS} 個を超えています"
+            )));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for attachment in &self.attachments {
+            attachment.validate()?;
+            if !seen.insert(attachment.attachment_id.as_str()) {
+                return Err(CryptoError::InvalidPayload(format!(
+                    "attachments に同じ attachment_id があります: {}",
+                    attachment.attachment_id
+                )));
+            }
         }
         Ok(())
     }
@@ -128,6 +147,8 @@ pub struct OutgoingMessage {
     pub content: MessageContent,
     /// メンション。
     pub mentions: Mentions,
+    /// 暗号化した添付（#364）。編集では、元の版の添付をそのまま入れる。
+    pub attachments: Vec<AttachmentInfo>,
 }
 
 /// チャンネルごとの Megolm の送信用セッション。
@@ -227,10 +248,11 @@ impl OutboundSession {
             revision: message.revision,
             content: message.content.clone(),
             mentions: message.mentions.clone(),
+            attachments: message.attachments.clone(),
         };
         payload.validate()?;
         let plaintext = serde_json::to_vec(&payload)
-            .expect("文字列、整数、真偽値だけの構造体は必ず JSON にできる");
+            .expect("文字列、整数、真偽値、配列と map だけの構造体は必ず JSON にできる");
         let ciphertext = self.session.encrypt(plaintext);
         self.message_count += 1;
         Ok(json!({

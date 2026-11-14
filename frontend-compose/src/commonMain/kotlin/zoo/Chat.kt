@@ -567,6 +567,26 @@ internal fun MessageList(
     }
 }
 
+/**
+ * メッセージの下に並べる添付の行。
+ *
+ * 暗号化チャンネルの添付（#364）は、サーバーの行が暗号文（`encrypted.bin`）なので表示しない。本当のファイル名と
+ * 鍵は Megolm で暗号化した本文にあり、Android で Megolm を受信できるようになるまでは出さない。
+ */
+internal fun visibleMessageAttachments(
+    channel: Row,
+    message: Row,
+    display: Row?,
+    attachmentRows: List<Row>,
+): List<Row> {
+    val ciphertext = message["ciphertext"]
+    if (channel.flag("encrypted") || (ciphertext != null && ciphertext != JsonNull)) return emptyList()
+    val id = message.text("id")
+    return (display?.array("attachments")?.rows() ?: attachmentRows)
+        .filter { it.text("message_id") == id }
+        .sortedBy { it.text("created_at") }
+}
+
 class MessageCallbacks(
     val startEdit: (() -> Unit)? = null,
     val cancelEdit: (() -> Unit)? = null,
@@ -620,9 +640,8 @@ internal fun Message(
     }
     val joined = remember(display) { display?.let(::joinedEmojis) }
     val attachmentRows = LocalAttachments.current
-    val messageAttachments = remember(display, attachmentRows, id) {
-        (display?.array("attachments")?.rows() ?: attachmentRows)
-            .filter { it.text("message_id") == id }.sortedBy { it.text("created_at") }
+    val messageAttachments = remember(channel, message, display, attachmentRows) {
+        visibleMessageAttachments(channel, message, display, attachmentRows)
     }
     val replyCount = remember(display, all, id) {
         display?.text("reply_count")?.toIntOrNull() ?:

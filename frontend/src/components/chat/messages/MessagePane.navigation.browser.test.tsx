@@ -88,6 +88,7 @@ vi.mock("../../../hooks/useRealtime", () => ({
 vi.mock("../../../hooks/useAttachments", () => ({
   useMessageAttachments: () => ({ data: fixture.empty }),
   useAttachmentUpload: () => vi.fn(),
+  useEncryptedAttachmentUpload: () => vi.fn(),
 }));
 vi.mock("../../../hooks/useThread", () => ({
   useMessageById: () => ({ data: fixture.targetRows, isLoading: false }),

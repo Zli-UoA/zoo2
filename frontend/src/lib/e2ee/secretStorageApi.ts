@@ -67,6 +67,12 @@ export async function createSecretStorageKey(
   return typeof data?.secrets_revision === "number" ? data.secrets_revision : null;
 }
 
+/**
+ * `POST /api/e2ee/secret_storage/slots`。`key_id` は、スロットを包んだ SSSS 鍵の ID（`slot.key_id`）を
+ * 送る。サーバーは今の既定の鍵と同じトランザクションで照合し、違えば 409 `E2EE_SSSS_CONFLICT` にする。
+ * 画面が読み直した既定の鍵の ID で上書きすると、別の端末が SSSS を作り直したあとに、メモリーの古い
+ * 鍵で包んだスロットで、有効なスロットを置き換えてしまうため。`keyId` は `slot.key_id` がないときだけ使う。
+ */
 export async function addKeySlot(
   client: ApiClient,
   keyId: string,
@@ -77,7 +83,7 @@ export async function addKeySlot(
   const { label, ...rest } = slot;
   await client.post(
     "/api/e2ee/secret_storage/slots",
-    { ...rest, key_id: keyId, ...(label ? { label } : {}) },
+    { ...rest, key_id: slot.key_id || keyId, ...(label ? { label } : {}) },
     { headers: reauthHeaders(reauth) },
   );
 }

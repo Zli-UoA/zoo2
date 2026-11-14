@@ -5,13 +5,17 @@ import {
   InboundSessionStore,
   OlmSessions,
   OwnKeys,
+  Revocation,
   TrustStore,
   type OwnSecrets,
+  type RevocationSummary,
+  type UnlockedSecretStorage,
   type JsonObject,
   type SessionRef,
 } from "@zoo/crypto-wasm";
 
 import { inboundSessionKey, type CryptoBackend, type CryptoStoreWrite } from "./backend";
+import { MegolmChannels } from "./megolm";
 import {
   StorageKeyUnavailableError,
   WRAPPED_STORAGE_KEY_META,
@@ -31,6 +35,13 @@ const META_REGISTERED = "registered";
 const META_OWN_KEYS = "own_keys";
 /** 最後に解錠したときの SSSS の `secrets_revision`（鍵バックアップへのアップロードに付ける）。 */
 const META_SECRETS_REVISION = "secrets_revision";
+/**
+ * 終わっていない失効の進み具合（#362）。値は `Revocation.pickle` の封筒（保存鍵で暗号化したもの）。
+ * 新しい自己署名鍵、ユーザー署名鍵、バックアップ鍵と古いバックアップ鍵を含み、マスター鍵と SSSS 鍵は
+ * 含まない。
+ */
+const META_REVOCATION = "revocation";
+
 /**
  * 鍵バックアップのアップロードの状態（`BackupUploadState.toJson`。見た版の最大を持ち、版の
  * 巻き戻りに気付くため）。秘密は入らない。
@@ -129,6 +140,7 @@ export class CryptoStore {
   >();
   private nextUploadId = 0;
   private broken = false;
+  private megolmChannels: MegolmChannels | null = null;
 
   private constructor(
     private readonly backend: CryptoBackend,
@@ -275,6 +287,21 @@ export class CryptoStore {
 
   get isRegistered(): boolean {
     return this.registered;
+  }
+
+  /** Megolm の送信と復号（#361）。 */
+  get megolm(): MegolmChannels {
+    this.megolmChannels ??= new MegolmChannels({
+      account: this.account,
+      inbound: this.inbound,
+      trust: () => this.trust,
+      storageKey: this.storageKey,
+      loadInboundSession: (ref) => this.loadInboundSession(ref),
+      write: (changes) => this.write(changes),
+      readMeta: async () => (await this.backend.read()).meta,
+      ownKeys: () => this.ownKeys(),
+    });
+    return this.megolmChannels;
   }
 
   /** 次に保存する配布先の判定の記録（#361 以降が使う）。 */
@@ -645,6 +672,73 @@ export class CryptoStore {
     await this.write({ trustStore: this.trust.pickle(this.account, this.storageKey) });
   }
 
+  /**
+   * 利用者が相手の今のマスター鍵を受け入れた（再検証。#362）。記録を今のユーザー署名鍵で確認したものに
+   * 置き換えて保存し、`replace: true` で送るピンと、マスター鍵への署名を返す。解錠していなければ投げる。
+   */
+  async acceptMasterKey(targetUserId: string, masterKey: JsonObject) {
+    const own = await this.ownKeys();
+    if (!own) throw new Error("解錠していません");
+    const userSigning = own.keys.userSigning;
+    try {
+      const accepted = this.trust.acceptMasterKey(userSigning, targetUserId, masterKey);
+      await this.saveTrustStore();
+      return accepted;
+    } finally {
+      userSigning.free();
+      own.keys.free();
+    }
+  }
+
+  /** 終わっていない失効の進み具合（秘密鍵を除く）。なければ `null`。 */
+  async revocationSummary(): Promise<RevocationSummary | null> {
+    const { meta } = await this.backend.read();
+    const sealed = meta[META_REVOCATION];
+    return sealed ? Revocation.peek(sealed, this.account, this.storageKey) : null;
+  }
+
+  /** 失効の進み具合を保存する（保存が 1 つ済むたびに呼ぶ）。 */
+  async saveRevocation(revocation: Revocation): Promise<void> {
+    await this.write({
+      meta: { [META_REVOCATION]: revocation.pickle(this.account, this.storageKey) },
+    });
+  }
+
+  /** 保存した失効を、開け直した SSSS で続ける。 */
+  async resumeRevocation(unlocked: UnlockedSecretStorage): Promise<Revocation | null> {
+    const { meta } = await this.backend.read();
+    const sealed = meta[META_REVOCATION];
+    return sealed ? Revocation.resume(sealed, this.account, this.storageKey, unlocked) : null;
+  }
+
+  /** 失効の進み具合を消す（終えたとき、やり直すとき）。 */
+  async clearRevocation(): Promise<void> {
+    await this.write({ meta: { [META_REVOCATION]: null } });
+  }
+
+  /**
+   * 失効を行う端末が、クロス署名鍵を保存したあとに、記録を新しい鍵にそろえる。新しい鍵の
+   * `secrets_revision` も記録する（次の起動で SSSS が書き換えられたと誤って判定しないため）。
+   */
+  async applyRevocation(revocation: Revocation, secretsRevision: number | null): Promise<void> {
+    revocation.applyToTrust(this.trust);
+    const secrets = revocation.ownSecrets();
+    const keys = secrets.ownKeys();
+    try {
+      await this.write({
+        meta: {
+          [META_OWN_KEYS]: keys.pickle(this.account, this.storageKey),
+          [META_SECRETS_REVISION]: secretsRevision === null ? null : String(secretsRevision),
+          [META_REVOCATION]: revocation.pickle(this.account, this.storageKey),
+        },
+        trustStore: this.trust.pickle(this.account, this.storageKey),
+      });
+    } finally {
+      keys.free();
+      secrets.free();
+    }
+  }
+
   /** 鍵バックアップにまだ送っていない受信用セッションの数（ログアウトの確認に使う）。 */
   pendingBackupCount(): Promise<number> {
     return this.backend.pendingBackupCount();
@@ -669,6 +763,8 @@ export class CryptoStore {
 
   private free(): void {
     // 秘密鍵を持つ wasm 側のメモリーをすぐに返す。
+    this.megolmChannels?.free();
+    this.megolmChannels = null;
     this.account.free();
     this.olmSessions.free();
     this.inbound.free();
