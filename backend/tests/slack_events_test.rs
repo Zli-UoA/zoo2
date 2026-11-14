@@ -877,6 +877,68 @@ async fn test_light_syncs_stop_fetching_candidates_that_cannot_be_kept() -> anyh
     Ok(())
 }
 
+/// このワークスペース以外の同期の項目の `available_at` を、1 日先へ延ばす。元の値を返す (`restore_other_teams` で戻す)
+async fn defer_other_teams(state: &AppState, team: &str) -> anyhow::Result<Vec<Value>> {
+    // 保存と更新を 1 つのトランザクションにまとめる。途中で失敗したら、ロールバックされ、共有の DB に変更が残らない
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let mut saved = query(
+        &mut tx,
+        "SELECT json_build_object('team',team_id,'channel',slack_channel_id,'at',available_at::text)::text \
+         FROM slack_channel_syncs WHERE team_id<>$1",
+        &[team],
+    )
+    .await?;
+    query(
+        &mut tx,
+        "UPDATE slack_channel_syncs SET available_at=now()+interval '1 day' WHERE team_id<>$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[team],
+    )
+    .await?;
+    // 前のテストが残した、熟した合図 (`slack_channel_wakes`) も、先に取られるので、一時的に先へ延ばす
+    let mut wakes = query(
+        &mut tx,
+        "SELECT json_build_object('team',team_id,'channel',slack_channel_id,'at',first_at::text,'wake',true)::text \
+         FROM slack_channel_wakes WHERE team_id<>$1",
+        &[team],
+    )
+    .await?;
+    query(
+        &mut tx,
+        "UPDATE slack_channel_wakes SET first_at=now()+interval '1 day' WHERE team_id<>$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[team],
+    )
+    .await?;
+    tx.commit().await?;
+    saved.append(&mut wakes);
+    Ok(saved)
+}
+
+async fn restore_other_teams(state: &AppState, saved: &[Value]) -> anyhow::Result<()> {
+    for row in saved {
+        let statement = if row["wake"] == true {
+            "UPDATE slack_channel_wakes SET first_at=$3::timestamptz WHERE team_id=$1 AND slack_channel_id=$2 \
+             RETURNING json_build_object('ok',true)::text"
+        } else {
+            "UPDATE slack_channel_syncs SET available_at=$3::timestamptz WHERE team_id=$1 AND slack_channel_id=$2 \
+             RETURNING json_build_object('ok',true)::text"
+        };
+        sql(
+            state,
+            statement,
+            &[
+                row["team"].as_str().unwrap(),
+                row["channel"].as_str().unwrap(),
+                row["at"].as_str().unwrap(),
+            ],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_woken_channels_are_claimed_before_channels_that_are_merely_due() -> anyhow::Result<()>
 {
@@ -933,14 +995,12 @@ async fn test_woken_channels_are_claimed_before_channels_that_are_merely_due() -
     .await?;
     assert_eq!(status, StatusCode::OK);
     age_wake(&f.state, &f.team, "10 seconds").await?;
-    // 1 つだけ取る (ほかのテストが残した項目が先に来ないよう、この ワークスペースの項目だけを残す)
-    sql(
-        &f.state,
-        "UPDATE slack_channel_syncs SET available_at=now()+interval '1 day' WHERE team_id<>$1 RETURNING json_build_object('ok',true)::text",
-        &[&f.team],
-    )
-    .await?;
-    assert!(sync::run_once(&f.state).await?);
+    // 1 つだけ取る (ほかのテストが残した項目が先に来ないよう、このワークスペース以外の項目を、一時的に先へ延ばす。
+    // 共有の DB に変更を残さないよう、`run_once` が失敗しても、あとで元の値に戻す)
+    let saved = defer_other_teams(&f.state, &f.team).await?;
+    let claimed = sync::run_once(&f.state).await;
+    restore_other_teams(&f.state, &saved).await?;
+    assert!(claimed?);
     let first = f
         .slack
         .received_requests()
@@ -1021,14 +1081,12 @@ async fn test_a_running_channel_with_a_ripe_wake_is_not_put_first() -> anyhow::R
         &[&f.team, &cursor],
     )
     .await?;
-    // 1 つだけ取る (ほかのテストが残した項目が先に来ないよう、この ワークスペースの項目だけを残す)
-    sql(
-        &f.state,
-        "UPDATE slack_channel_syncs SET available_at=now()+interval '1 day' WHERE team_id<>$1 RETURNING json_build_object('ok',true)::text",
-        &[&f.team],
-    )
-    .await?;
-    assert!(sync::run_once(&f.state).await?);
+    // 1 つだけ取る (ほかのテストが残した項目が先に来ないよう、このワークスペース以外の項目を、一時的に先へ延ばす。
+    // 共有の DB に変更を残さないよう、`run_once` が失敗しても、あとで元の値に戻す)
+    let saved = defer_other_teams(&f.state, &f.team).await?;
+    let claimed = sync::run_once(&f.state).await;
+    restore_other_teams(&f.state, &saved).await?;
+    assert!(claimed?);
     let first = f
         .slack
         .received_requests()
