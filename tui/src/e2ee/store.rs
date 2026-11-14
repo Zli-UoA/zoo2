@@ -106,6 +106,9 @@ pub struct CryptoStore {
 pub struct Opened {
     pub store: CryptoStore,
     pub replaced_device_id: Option<String>,
+    /// 前の端末の登録が済んでいたか（`replaced_device_id` がないときは `false`）。済んでいなければ、
+    /// 削除 API の 404 でもすぐには消えたものとしない（登録の応答をなくしただけかもしれない）。
+    pub replaced_registered: bool,
 }
 
 /// 暗号ストアの置き場所（`<設定ディレクトリー>/crypto`）。
@@ -234,6 +237,7 @@ impl CryptoStore {
             Err(err) => return Err(err.into()),
         };
         let mut replaced_device_id = None;
+        let mut replaced_registered = false;
         if let Some(state) = state {
             if state.version != STATE_VERSION {
                 bail!("暗号ストアの版 {} には対応していません", state.version);
@@ -246,6 +250,7 @@ impl CryptoStore {
                 return Ok(Opened {
                     store,
                     replaced_device_id,
+                    replaced_registered,
                 });
             }
             // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
@@ -253,11 +258,9 @@ impl CryptoStore {
             // 失敗しても、次の起動で前の端末を消せるようにする。
             mark_device_deletion_pending(
                 root,
-                &PendingDeviceDeletion {
-                    user_id: user_id.to_owned(),
-                    device_id: state.device_id.clone(),
-                },
+                &PendingDeviceDeletion::new(user_id, &state.device_id, !state.registered),
             )?;
+            replaced_registered = state.registered;
             replaced_device_id = Some(state.device_id);
             fs::remove_file(&state_path)?;
         }
@@ -293,6 +296,7 @@ impl CryptoStore {
         Ok(Opened {
             store,
             replaced_device_id,
+            replaced_registered,
         })
     }
 
@@ -571,10 +575,37 @@ pub fn stored_user_ids(root: &Path) -> Result<Vec<String>> {
 }
 
 /// 削除 API が失敗した端末。同じユーザーの次の起動で消し直す。
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingDeviceDeletion {
     pub user_id: String,
     pub device_id: String,
+    /// 登録できたかを確かめられていない（登録の要求の結果を受け取っていない）。この端末の 404 は、
+    /// あとから届いた登録で端末ができうるので、すぐには消えたものとしない。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unconfirmed: bool,
+    /// `unconfirmed` の端末で、続けて 404 を受け取った回数。
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub not_found: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+impl PendingDeviceDeletion {
+    pub fn new(user_id: &str, device_id: &str, unconfirmed: bool) -> Self {
+        Self {
+            user_id: user_id.to_owned(),
+            device_id: device_id.to_owned(),
+            unconfirmed,
+            not_found: 0,
+        }
+    }
+
+    /// 同じ端末かどうか（記録の状態は比べない）。
+    pub fn same_device(&self, other: &Self) -> bool {
+        self.user_id == other.user_id && self.device_id == other.device_id
+    }
 }
 
 const PENDING_FILE: &str = "pending-device-delete.json";
@@ -592,31 +623,60 @@ fn with_pending_lock<T>(root: &Path, f: impl FnOnce() -> Result<T>) -> Result<T>
 }
 
 /// 削除待ちに足す。ユーザーと端末の組ごとに残し、別のユーザーの削除待ちを上書きしない。
+/// 同じ端末があれば、`unconfirmed` を合わせ（どちらかが真なら真）、404 の回数は保つ。
+///
+/// 一覧を読めなければエラーにし、ファイルを変えない（空の一覧で上書きして、ほかの削除待ちを
+/// 失わないため）。
 pub fn mark_device_deletion_pending(root: &Path, pending: &PendingDeviceDeletion) -> Result<()> {
     with_pending_lock(root, || {
-        let mut all = read_pending_device_deletions(root);
-        all.retain(|entry| entry != pending);
-        all.push(PendingDeviceDeletion {
-            user_id: pending.user_id.clone(),
-            device_id: pending.device_id.clone(),
-        });
+        let mut all = read_pending_device_deletions(root)?;
+        if let Some(existing) = all.iter_mut().find(|entry| entry.same_device(pending)) {
+            if existing.unconfirmed || !pending.unconfirmed {
+                return Ok(());
+            }
+            existing.unconfirmed = true;
+        } else {
+            all.push(PendingDeviceDeletion {
+                not_found: 0,
+                ..pending.clone()
+            });
+        }
         write_private(&root.join(PENDING_FILE), &serde_json::to_vec(&all)?)
     })
 }
 
-/// 削除待ちの端末（全ユーザー分）。
-pub fn read_pending_device_deletions(root: &Path) -> Vec<PendingDeviceDeletion> {
-    fs::read(root.join(PENDING_FILE))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+/// 同じ端末の記録を `pending` に置き換える（404 の回数を数えるため）。なければ何もしない。
+pub fn update_pending_device_deletion(root: &Path, pending: &PendingDeviceDeletion) -> Result<()> {
+    with_pending_lock(root, || {
+        let mut all = read_pending_device_deletions(root)?;
+        let Some(existing) = all.iter_mut().find(|entry| entry.same_device(pending)) else {
+            return Ok(());
+        };
+        *existing = pending.clone();
+        write_private(&root.join(PENDING_FILE), &serde_json::to_vec(&all)?)
+    })
 }
 
-/// 消せた端末を、削除待ちから外す。
+/// 削除待ちの端末（全ユーザー分）。ファイルがなければ空。読めない、形式が違うときはエラー。
+pub fn read_pending_device_deletions(root: &Path) -> Result<Vec<PendingDeviceDeletion>> {
+    let path = root.join(PENDING_FILE);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
+    };
+    serde_json::from_slice(&bytes).with_context(|| format!("{} を読めません", path.display()))
+}
+
+/// 消せた端末を、削除待ちから外す。一覧を読めなければエラーにし、ファイルを変えない。
 pub fn clear_pending_device_deletion(root: &Path, done: &PendingDeviceDeletion) -> Result<()> {
     with_pending_lock(root, || {
-        let mut rest = read_pending_device_deletions(root);
-        rest.retain(|entry| entry != done);
+        let mut rest = read_pending_device_deletions(root)?;
+        let before = rest.len();
+        rest.retain(|entry| !entry.same_device(done));
+        if rest.len() == before {
+            return Ok(());
+        }
         if rest.is_empty() {
             match fs::remove_file(root.join(PENDING_FILE)) {
                 Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),

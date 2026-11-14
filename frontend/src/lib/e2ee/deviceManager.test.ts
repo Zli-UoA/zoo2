@@ -3,8 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { ApiError, type ApiClient } from "../api/client";
 import { resolveConfig } from "../config";
 import type { CryptoWorker } from "./cryptoWorker";
-import { E2eeDeviceManager, retryPendingDeviceDeletion } from "./deviceManager";
-import { markDeviceDeletionPending, readPendingDeviceDeletions } from "./identity";
+import { E2eeDeviceManager, MAX_NOT_FOUND, retryPendingDeviceDeletion } from "./deviceManager";
+import {
+  CRYPTO_PENDING_DEVICE_DELETE_KEY,
+  markDeviceDeletionPending,
+  readPendingDeviceDeletions,
+  updatePendingDeviceDeletion,
+} from "./identity";
 import type { CryptoOperation, ToDeviceRow } from "./protocol";
 
 const USER = "00000000-0000-4000-8000-00000000000a";
@@ -360,7 +365,9 @@ describe("E2eeDeviceManager", () => {
     );
     await instance.destroy();
     expect(requests.some((request) => request.method === "DELETE")).toBe(false);
-    expect(readPendingDeviceDeletions()).toEqual([{ userId: USER, deviceId: DEVICE }]);
+    expect(readPendingDeviceDeletions()).toEqual([
+      { userId: USER, deviceId: DEVICE, unconfirmed: true },
+    ]);
   });
 
   it("ログアウトの確認で止めるときは、通信中の要求を中止する", async () => {
@@ -405,7 +412,11 @@ describe("E2eeDeviceManager", () => {
     const { client, requests } = fakeClient();
     const instance = manager(worker, client);
     await instance.attach();
-    expect(readPendingDeviceDeletions()).toContainEqual({ userId: USER, deviceId: OLD });
+    expect(readPendingDeviceDeletions()).toContainEqual({
+      userId: USER,
+      deviceId: OLD,
+      unconfirmed: true,
+    });
     await instance.destroy();
     const deleted = requests.filter((r) => r.method === "DELETE").map((r) => r.path);
     expect(deleted).toEqual([`/api/e2ee/devices/${DEVICE}`, `/api/e2ee/devices/${OLD}`]);
@@ -573,5 +584,166 @@ describe("E2eeDeviceManager", () => {
     await retryPendingDeviceDeletion(client, USER);
     expect(requests).toEqual([]);
     expect(readPendingDeviceDeletions()).toHaveLength(1);
+  });
+
+  describe("削除 API の 404", () => {
+    const notFound = () => {
+      throw new ApiError(404, "not found");
+    };
+
+    it("登録済みと分かっている端末の 404 は、済んだものとする", async () => {
+      const { worker } = fakeWorker({
+        open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      });
+      const { client } = fakeClient({ [`DELETE /api/e2ee/devices/${DEVICE}`]: notFound });
+      const instance = manager(worker, client);
+      await instance.start();
+      await instance.destroy();
+      expect(readPendingDeviceDeletions()).toEqual([]);
+    });
+
+    it("このログインで登録できた端末の 404 は、済んだものとする", async () => {
+      // open は registered: false。登録の応答を受け取ったので、登録できたと分かっている。
+      const { worker } = fakeWorker();
+      const { client } = fakeClient({ [`DELETE /api/e2ee/devices/${DEVICE}`]: notFound });
+      const instance = manager(worker, client);
+      await instance.start();
+      await instance.destroy();
+      expect(readPendingDeviceDeletions()).toEqual([]);
+    });
+
+    it("登録の応答をなくした端末の 404 は削除待ちに残し、続けて 3 回 404 なら済んだものとする", async () => {
+      const { worker } = fakeWorker();
+      const { client, requests } = fakeClient({
+        "POST /api/e2ee/devices": () => {
+          throw new TypeError("Failed to fetch");
+        },
+        [`DELETE /api/e2ee/devices/${DEVICE}`]: notFound,
+      });
+      const instance = manager(worker, client);
+      await instance.start().catch(() => undefined);
+      await instance.destroy();
+      expect(requests.filter((r) => r.method === "DELETE")).toHaveLength(1);
+      expect(readPendingDeviceDeletions()).toEqual([
+        { userId: USER, deviceId: DEVICE, unconfirmed: true, notFound: 1 },
+      ]);
+
+      // 次のログインごとに消し直す。
+      await retryPendingDeviceDeletion(client, USER);
+      expect(readPendingDeviceDeletions()).toEqual([
+        { userId: USER, deviceId: DEVICE, unconfirmed: true, notFound: 2 },
+      ]);
+      await retryPendingDeviceDeletion(client, USER);
+      expect(MAX_NOT_FOUND).toBe(3);
+      expect(readPendingDeviceDeletions()).toEqual([]);
+    });
+
+    it("あとから登録が届いた端末は、次のログインで消す", async () => {
+      // ログアウトのために開いた（登録の応答をなくしていた）端末。
+      const { worker } = fakeWorker();
+      let registeredLate = false;
+      const { client } = fakeClient({
+        [`DELETE /api/e2ee/devices/${DEVICE}`]: () => {
+          if (!registeredLate) notFound();
+          return {};
+        },
+      });
+      const instance = manager(worker, client);
+      await instance.attach();
+      await instance.destroy();
+      expect(readPendingDeviceDeletions()).toEqual([
+        { userId: USER, deviceId: DEVICE, unconfirmed: true, notFound: 1 },
+      ]);
+      registeredLate = true;
+      await retryPendingDeviceDeletion(client, USER);
+      expect(readPendingDeviceDeletions()).toEqual([]);
+    });
+
+    it("作り直した前の端末は、登録済みでなければ 404 でも残す", async () => {
+      const OLD = "00000000-0000-4000-8000-0000000000d0";
+      const REGISTERED_OLD = "00000000-0000-4000-8000-0000000000d2";
+      const unregistered = fakeWorker({
+        open: {
+          userId: USER,
+          deviceId: DEVICE,
+          registered: true,
+          replacedDeviceId: OLD,
+          replacedRegistered: false,
+        },
+      });
+      const { client } = fakeClient({
+        [`DELETE /api/e2ee/devices/${OLD}`]: notFound,
+        [`DELETE /api/e2ee/devices/${REGISTERED_OLD}`]: notFound,
+      });
+      const first = manager(unregistered.worker, client);
+      await first.start();
+      await first.stop();
+      expect(readPendingDeviceDeletions()).toEqual([
+        { userId: USER, deviceId: OLD, unconfirmed: true, notFound: 1 },
+      ]);
+
+      const registered = fakeWorker({
+        open: {
+          userId: USER,
+          deviceId: DEVICE,
+          registered: true,
+          replacedDeviceId: REGISTERED_OLD,
+          replacedRegistered: true,
+        },
+      });
+      const second = manager(registered.worker, client);
+      await second.start();
+      await second.stop();
+      // 登録済みだった前の端末は、404 で済んだものとする（OLD は 2 回目の 404）。
+      expect(readPendingDeviceDeletions()).toEqual([
+        { userId: USER, deviceId: OLD, unconfirmed: true, notFound: 2 },
+      ]);
+    });
+
+    it("同じ端末を登録済みとして足し直しても、unconfirmed と回数を保つ", () => {
+      markDeviceDeletionPending({ userId: USER, deviceId: DEVICE, unconfirmed: true });
+      updatePendingDeviceDeletion({
+        userId: USER,
+        deviceId: DEVICE,
+        unconfirmed: true,
+        notFound: 2,
+      });
+      markDeviceDeletionPending({ userId: USER, deviceId: DEVICE });
+      expect(readPendingDeviceDeletions()).toEqual([
+        { userId: USER, deviceId: DEVICE, unconfirmed: true, notFound: 2 },
+      ]);
+    });
+  });
+
+  it("削除待ちの一覧が壊れていたら、消し直さず、空の一覧で上書きしない", async () => {
+    window.localStorage.setItem(CRYPTO_PENDING_DEVICE_DELETE_KEY, "{broken");
+    const { client, requests } = fakeClient();
+    await retryPendingDeviceDeletion(client, USER);
+    expect(requests).toEqual([]);
+    expect(() => readPendingDeviceDeletions()).toThrow();
+    markDeviceDeletionPending({ userId: USER, deviceId: DEVICE });
+    expect(window.localStorage.getItem(CRYPTO_PENDING_DEVICE_DELETE_KEY)).toBe("{broken");
+
+    const { worker } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    await instance.destroy();
+    expect(window.localStorage.getItem(CRYPTO_PENDING_DEVICE_DELETE_KEY)).toBe("{broken");
+  });
+
+  it("前の形式の削除待ち（unconfirmed なし）は、登録済みの端末として扱う", async () => {
+    window.localStorage.setItem(
+      CRYPTO_PENDING_DEVICE_DELETE_KEY,
+      JSON.stringify({ userId: USER, deviceId: DEVICE }),
+    );
+    const { client } = fakeClient({
+      [`DELETE /api/e2ee/devices/${DEVICE}`]: () => {
+        throw new ApiError(404, "not found");
+      },
+    });
+    await retryPendingDeviceDeletion(client, USER);
+    expect(readPendingDeviceDeletions()).toEqual([]);
   });
 });

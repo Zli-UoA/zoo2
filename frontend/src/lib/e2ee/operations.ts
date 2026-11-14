@@ -91,12 +91,12 @@ export class CryptoOperations {
         const name = cryptoDatabaseName(request.namespace);
         if (this.store) {
           if (this.storeName === name && this.store.userId === request.userId) {
-            return this.describe(null);
+            return this.describe(null, false);
           }
           await this.store.close();
           this.store = null;
         }
-        const { store, replacedDeviceId } = await CryptoStore.open({
+        const { store, replacedDeviceId, replacedRegistered } = await CryptoStore.open({
           backend: await this.backends.open(name),
           name,
           userId: request.userId,
@@ -110,7 +110,7 @@ export class CryptoOperations {
         this.storeName = name;
         this.lastOpen = { namespace: request.namespace, userId: request.userId };
         this.reopenPending = false;
-        return this.describe(replacedDeviceId);
+        return this.describe(replacedDeviceId, replacedRegistered);
       }
       case "registrationRequest":
         return this.opened().registrationRequest();
@@ -333,13 +333,14 @@ export class CryptoOperations {
     return this.store;
   }
 
-  private describe(replacedDeviceId: string | null) {
+  private describe(replacedDeviceId: string | null, replacedRegistered: boolean) {
     const store = this.opened();
     return {
       userId: store.userId,
       deviceId: store.deviceId,
       registered: store.isRegistered,
       replacedDeviceId,
+      replacedRegistered,
     };
   }
 }
