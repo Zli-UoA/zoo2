@@ -281,6 +281,11 @@ pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
     Ok(true)
 }
 
+/// 順番待ちの先頭を取る。**イベントの合図が熟した (デバウンスが過ぎた) チャンネルを、期限の来た順より先に取る。**
+/// 対応付けたチャンネルが多いと (本番は 400 件ほど)、期限の来た順に並ぶだけでは、合図の同期が、全チャンネルの一巡 (数分) の
+/// 後ろに回ってしまう。合図の同期は、チャンネルごとに最短 30 秒の間隔 (`WAKE_MIN_INTERVAL`) と、デバウンスがあるので、先に取っても、
+/// ほかのチャンネルを飢えさせない。実行中の続き (`running`) は、先にしない (ページの多いチャンネルが、続けて取られて、
+/// 期限の来たほかのチャンネルを止めないため。続きは、これまでどおり期限の順)。
 async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
@@ -303,7 +308,9 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
              AND (sc.last_ts IS NOT NULL OR ch.slack_imported_at IS NOT NULL) \
              AND NOT EXISTS(SELECT 1 FROM slack_import_jobs j WHERE j.team_id=t.team_id \
                AND j.status IN ('analyzing','importing')) \
-             ORDER BY t.available_at,t.team_id,t.slack_channel_id FOR UPDATE OF t SKIP LOCKED LIMIT 1) \
+             ORDER BY (NOT t.running AND EXISTS(SELECT 1 FROM slack_channel_wakes w WHERE w.team_id=t.team_id \
+               AND w.slack_channel_id=t.slack_channel_id AND w.first_at<=now()-{WAKE_DEBOUNCE})) DESC,\
+               t.available_at,t.team_id,t.slack_channel_id FOR UPDATE OF t SKIP LOCKED LIMIT 1) \
              UPDATE slack_channel_syncs t SET lease_until=now()+{LEASE_SQL},lease_token=$1,updated_at=now() \
              FROM c, slack_channels sc, channels ch \
              WHERE t.team_id=c.team_id AND t.slack_channel_id=c.slack_channel_id \
@@ -425,6 +432,16 @@ impl Slack {
             tokens: vec![(user.to_string(), enc.to_string())],
             index: 0,
         })
+    }
+
+    /// 今使っているトークンの位置。`NoAccess` で全トークンを試し切ると、位置が末尾まで進み、後続の呼び出しが
+    /// `no_usable_token` で失敗する。チャンネル全体の失敗ではない呼び出し (補完の取得など) は、前後で保存・復元する
+    pub(super) fn position(&self) -> usize {
+        self.index
+    }
+
+    pub(super) fn set_position(&mut self, index: usize) {
+        self.index = index;
     }
 
     fn user(&self) -> Option<&str> {
