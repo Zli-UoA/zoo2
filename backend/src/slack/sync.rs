@@ -305,8 +305,8 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
              AND (sc.last_ts IS NOT NULL OR ch.slack_imported_at IS NOT NULL) \
              AND NOT EXISTS(SELECT 1 FROM slack_import_jobs j WHERE j.team_id=t.team_id \
                AND j.status IN ('analyzing','importing')) \
-             ORDER BY EXISTS(SELECT 1 FROM slack_channel_wakes w WHERE w.team_id=t.team_id \
-               AND w.slack_channel_id=t.slack_channel_id AND w.first_at<=now()-{WAKE_DEBOUNCE}) DESC,\
+             ORDER BY (NOT t.running AND EXISTS(SELECT 1 FROM slack_channel_wakes w WHERE w.team_id=t.team_id \
+               AND w.slack_channel_id=t.slack_channel_id AND w.first_at<=now()-{WAKE_DEBOUNCE})) DESC,\
                t.available_at,t.team_id,t.slack_channel_id FOR UPDATE OF t SKIP LOCKED LIMIT 1) \
              UPDATE slack_channel_syncs t SET lease_until=now()+{LEASE_SQL},lease_token=$1,updated_at=now() \
              FROM c, slack_channels sc, channels ch \
