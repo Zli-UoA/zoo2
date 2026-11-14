@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { ApiError, type ApiClient } from "../api/client";
 import {
   EncryptedSendError,
+  editAlreadyApplied,
   editEncryptedMessage,
   resetKnownEpochs,
   sendEncryptedMessage,
@@ -10,6 +11,7 @@ import {
 } from "./channelSend";
 import type { CryptoWorker } from "./cryptoWorker";
 import type { CryptoOperation } from "./protocol";
+import type { RecipientSummary } from "./store/megolm";
 
 const CHANNEL = "channel-1";
 const NO_MENTIONS = { user_ids: [], channel: false, here: false };
@@ -30,8 +32,11 @@ function staleEpochError(current: number) {
 }
 
 /** 送信用セッションの epoch と、呼ばれた操作を記録する偽の Worker。 */
-function fakeWorker() {
+function fakeWorker(options: { pendingPins?: number } = {}) {
   const ops: CryptoOperation[] = [];
+  // ピンを置くまで配布先に入らない、初めて見た相手の数。
+  let pendingPins = options.pendingPins ?? 0;
+  let previousUserIds: string[] | null = null;
   let sessionEpoch: number | null = null;
   let pendingEpoch = 0;
   let shared = false;
@@ -45,9 +50,13 @@ function fakeWorker() {
           pendingEpoch = Number(operation.pages[0]!.membership_epoch);
           return {
             epoch: pendingEpoch,
-            newPins: [],
+            newPins: Array.from({ length: pendingPins }, (_, index) => ({
+              target_user_id: `new-${index}`,
+              master_key: "master",
+              pin: { pin: index },
+            })),
             undeliverable: [],
-            deviceCount: 1,
+            deviceCount: 1 + (options.pendingPins ?? 0) - pendingPins,
             userCount: 2,
             userIds: ["alice", "bob"],
           };
@@ -57,6 +66,16 @@ function fakeWorker() {
           return shared
             ? { claim: {}, pending: 0 }
             : { claim: { bob: { "bob-device": "signed_curve25519" } }, pending: 1 };
+        case "megolmSettlePins":
+          pendingPins -= operation.confirmed.length;
+          return null;
+        case "megolmNoteRecipients": {
+          const added = previousUserIds
+            ? operation.userIds.filter((id) => !previousUserIds!.includes(id))
+            : [];
+          previousUserIds = operation.userIds;
+          return added;
+        }
         case "megolmMarkShared":
           if (operation.devices.length > 0) shared = true;
           return null;
@@ -104,6 +123,7 @@ function fakeClient(
       };
     }
     if (path === "/api/e2ee/keys/claim") return { data: { one_time_keys: {} }, txid: null };
+    if (path === "/api/e2ee/tofu_pins") return { data: null, txid: null };
     if (path === "/api/e2ee/to_device") {
       const result = toDeviceResults.shift() ?? null;
       if (result) throw result;
@@ -372,6 +392,54 @@ describe("sendEncryptedMessage", () => {
     expect(calls.filter((call) => call.path === "/api/e2ee/to_device")).toHaveLength(2);
   });
 
+  it("初めて見た相手のピンを置けたら、同じスナップショットで判定し直してその端末に配る", async () => {
+    const { worker, ops } = fakeWorker({ pendingPins: 1 });
+    const { client, calls } = fakeClient([null], [3]);
+    const summaries: RecipientSummary[] = [];
+    await sendEncryptedMessage(
+      { ...deps(worker, client), onRecipients: (_, summary) => summaries.push(summary) },
+      {
+        channelId: CHANNEL,
+        shapeEpoch: "3",
+        messageId: "m1",
+        parentId: null,
+        body: "hello",
+        mentions: NO_MENTIONS,
+      },
+    );
+    expect(calls.filter((call) => call.path.endsWith("/recipients"))).toHaveLength(1);
+    expect(calls.filter((call) => call.path === "/api/e2ee/tofu_pins")).toHaveLength(1);
+    const evaluations = ops.filter((op) => op.op === "megolmEvaluate");
+    expect(evaluations).toHaveLength(2);
+    // 配布先は、ピンを置いた相手の端末を入れた 2 回目の判定。
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ newPins: [], deviceCount: 2 });
+    const evaluated = ops.findIndex((op) => op === evaluations[1]);
+    const started = ops.findIndex((op) => op.op === "megolmStart");
+    expect(started).toBeGreaterThan(evaluated);
+  });
+
+  it("前回の判定から増えたメンバーを、配布先の表示に渡す", async () => {
+    const { worker } = fakeWorker();
+    const summaries: RecipientSummary[] = [];
+    const send = async (epoch: number, messageId: string) => {
+      const { client } = fakeClient([null], [epoch]);
+      await sendEncryptedMessage(
+        { ...deps(worker, client), onRecipients: (_, summary) => summaries.push(summary) },
+        {
+          channelId: CHANNEL,
+          shapeEpoch: String(epoch),
+          messageId,
+          parentId: null,
+          body: "hello",
+          mentions: NO_MENTIONS,
+        },
+      );
+    };
+    await send(3, "m1");
+    expect(summaries[0]!.addedUserIds).toEqual([]);
+  });
+
   it("3 回続けて E2EE_STALE_EPOCH なら諦める", async () => {
     const { worker } = fakeWorker();
     const { client, calls } = fakeClient(
@@ -434,5 +502,35 @@ describe("editEncryptedMessage", () => {
     expect(ops.find((op) => op.op === "megolmEncrypt")).toMatchObject({
       message: { message_id: "m1", revision: 2, content: { body: "edited secret" } },
     });
+  });
+});
+
+describe("editAlreadyApplied", () => {
+  const stale = (current: number) =>
+    new ApiError(
+      409,
+      "stale",
+      { error: "stale", code: "E2EE_STALE_REVISION", current_revision: current },
+      { path: "/api/messages/m1", method: "PATCH" },
+    );
+  const shown = (rowRevision: number, body: string) =>
+    ({ status: "decrypted", body, kind: "message", sender: "verified", rowRevision }) as const;
+
+  it("今の版が自分の送った本文なら、応答をなくしただけとして済んだものにする", () => {
+    expect(editAlreadyApplied(stale(2), shown(2, "edited"), "edited")).toBe(true);
+  });
+
+  it("本文や版が違う、版の警告がある、ほかのエラーなら、済んだものにしない", () => {
+    expect(editAlreadyApplied(stale(2), shown(2, "other"), "edited")).toBe(false);
+    expect(editAlreadyApplied(stale(2), shown(1, "edited"), "edited")).toBe(false);
+    expect(
+      editAlreadyApplied(
+        stale(2),
+        { ...shown(2, "edited"), revisionWarning: "conflict" },
+        "edited",
+      ),
+    ).toBe(false);
+    expect(editAlreadyApplied(staleEpochError(3), shown(2, "edited"), "edited")).toBe(false);
+    expect(editAlreadyApplied(stale(2), undefined, "edited")).toBe(false);
   });
 });

@@ -265,6 +265,7 @@
         "EncryptedDecrypted",
         "EncryptedUnverifiedSender",
         "EncryptedStaleRevision",
+        "EncryptedUnencryptedRow",
         "EncryptedBackupSender",
         "EncryptedKeyMissing",
         "EncryptedLocked",
@@ -693,7 +694,7 @@
     },
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
-      "states": ["Default", "Undeliverable"]
+      "states": ["Default", "Undeliverable", "AddedRecipients"]
     }
   ],
   "modules": [

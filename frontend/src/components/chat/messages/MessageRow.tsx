@@ -498,7 +498,8 @@ export function MessageRow({
                   />
                 </>
               )}
-              <MessageAttachments attachments={attachments} />
+              {/* 暗号化の行の添付はサーバーの値で、暗号文で確かめられないので出さない。 */}
+              {resolvedDecryption ? null : <MessageAttachments attachments={attachments} />}
               {resolvedDecryption ? null : <MessageAppContent message={message} />}
               {!resolvedDecryption && message.updated_at && hasCardBlocks(message.app_blocks) ? (
                 <EditedIndicator at={message.updated_at} />
