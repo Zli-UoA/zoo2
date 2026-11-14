@@ -100,9 +100,15 @@ fn convert(text: &str, resolver: &impl Resolver, plain: bool) -> String {
             true
         },
         |a| {
-            // 空の文字列になる参照 (`<!x>`) も、1 文字として数える (トークンが際限なく増えないように)
-            budget.set(budget.get().saturating_sub(a.chars().count().max(1)));
-            toks.borrow_mut().push(Tok::Atom(a));
+            let n = a.chars().count();
+            let mut toks = toks.borrow_mut();
+            // 空の文字列になる参照 (`<!x>`) は、書式の区切りとして 1 個だけ残し、連続する分は積まない
+            // (トークンが際限なく増えないように。変換後の文字数は増えないので、予算も使わない)
+            if n == 0 && matches!(toks.last(), Some(Tok::Atom(s)) if s.is_empty()) {
+                return true;
+            }
+            budget.set(budget.get().saturating_sub(n));
+            toks.push(Tok::Atom(a));
             budget.get() > 0
         },
     );
@@ -604,6 +610,15 @@ mod tests {
         );
         // 空になる参照だけの本文でも、トークンは際限なく増えない
         assert_eq!(mfm(&"<!x>".repeat(MAX_MESSAGE_CONTENT_LENGTH * 10)), "");
+        // 空の参照が上限より多く続いても、後ろの本文は欠けない
+        assert_eq!(
+            mfm(&format!("{}END", "<!x>".repeat(MAX_FORMAT_CHARS * 2))),
+            "END"
+        );
+        assert_eq!(
+            mfm(&format!("{}*END*", "<>".repeat(MAX_FORMAT_CHARS * 2))),
+            "**END**"
+        );
         let links = "<@U1>".repeat(MAX_MESSAGE_CONTENT_LENGTH);
         assert_eq!(mfm(&links).chars().count(), MAX_MESSAGE_CONTENT_LENGTH);
     }
