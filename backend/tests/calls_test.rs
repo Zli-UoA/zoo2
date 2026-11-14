@@ -1089,6 +1089,28 @@ async fn sweep_until(db: &mut toasty::Db, id: &str, status: &str) -> anyhow::Res
     anyhow::bail!("invite {id} did not become {status}")
 }
 
+/// `call_invites` の行ロックを待っている問い合わせが、データベースに現れるまで待つ（`pg_blocking_pids`）。
+async fn wait_until_blocked_on_call_invites(db: &mut toasty::Db) -> anyhow::Result<()> {
+    for _ in 0..50 {
+        let rows = toasty::sql::query(
+            "SELECT count(*)::text FROM pg_stat_activity
+             WHERE datname = current_database() AND pid <> pg_backend_pid()
+               AND cardinality(pg_blocking_pids(pid)) > 0 AND query ILIKE '%call_invites%'",
+        )
+        .exec(&mut *db)
+        .await?;
+        let blocked = rows.into_iter().next().is_some_and(|row| {
+            matches!(row, toasty::stmt::Value::Record(r)
+                if matches!(r.fields.first(), Some(toasty::stmt::Value::String(s)) if s != "0"))
+        });
+        if blocked {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("no query is waiting for a call_invites row lock")
+}
+
 async fn invite(
     w: &InviteWorld,
     actor: &str,
@@ -1919,7 +1941,7 @@ async fn test_join_waits_for_a_concurrent_accept_and_then_records_the_join() -> 
     let join = tokio::spawn(async move {
         backend::call_invites::accept_on_join(&mut join_db, &channel, &invitee).await
     });
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    wait_until_blocked_on_call_invites(&mut w.db).await?;
     assert!(!join.is_finished(), "the join should wait for the row lock");
 
     // 応答が確定すると、入室は、応答済みの招待として入室を記録する（応答の通知は、すでに閉じている）
@@ -1939,22 +1961,46 @@ async fn test_join_waits_for_a_concurrent_accept_and_then_records_the_join() -> 
     });
     assert!(joined);
 
-    // 入室が先の順序（別の人で）: 入室してから応答すると、応答は「すでに終わっている」（409）になり、入室は記録されている
+    // 入室が先の順序（別の人で）: 入室が招待の行のロックを持っている間に、応答が待つ。
+    // 入室が確定すると、応答は「すでに終わっている」（409）になり、入室は記録されている
     let carol = w.carol.clone();
     let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&carol]).await?;
     let carol_invite = body["invites"][0]["id"].as_str().unwrap().to_string();
     let mut join_db = w.state.db.clone();
-    let ended =
-        backend::call_invites::accept_on_join(&mut join_db, &w.public_ch.clone(), &carol).await?;
-    assert_eq!(ended.len(), 1);
-    let (status, _) = request(
-        &w.app,
-        &carol,
-        "POST",
-        &format!("/api/call-invites/{carol_invite}/accept"),
-        None,
+    let mut join_tx = join_db.transaction().await?;
+    toasty::sql::statement(
+        "UPDATE call_invites SET status = 'accepted', responded_at = statement_timestamp(),
+                joined_at = statement_timestamp()
+         WHERE id = $1::uuid",
     )
+    .bind(carol_invite.as_str())
+    .exec(&mut join_tx)
     .await?;
+    let (app, accept_path) = (
+        w.app.clone(),
+        format!("/api/call-invites/{carol_invite}/accept"),
+    );
+    let carol_id = carol.clone();
+    let accept =
+        tokio::spawn(async move { request(&app, &carol_id, "POST", &accept_path, None).await });
+    wait_until_blocked_on_call_invites(&mut w.db).await?;
+    assert!(
+        !accept.is_finished(),
+        "the accept should wait for the row lock"
+    );
+    join_tx.commit().await?;
+    let (status, _) = accept.await??;
     assert_eq!(status, StatusCode::CONFLICT);
+    let rows = toasty::sql::query(
+        "SELECT (joined_at IS NOT NULL)::text FROM call_invites WHERE id = $1::uuid",
+    )
+    .bind(carol_invite.as_str())
+    .exec(&mut w.db)
+    .await?;
+    let joined = rows.into_iter().next().is_some_and(|row| {
+        matches!(row, toasty::stmt::Value::Record(r)
+            if matches!(r.fields.first(), Some(toasty::stmt::Value::String(s)) if s == "true"))
+    });
+    assert!(joined);
     Ok(())
 }
