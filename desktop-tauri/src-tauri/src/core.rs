@@ -799,7 +799,7 @@ impl Core {
     }
 
     /// セッションを捨て、保存したトークンを消す。セッションの `TokenManager` を
-    /// `sign_out` するので、コマンドが持っている `ApiClient` で進行中だった更新が
+    /// `sign_out_and_revoke` するので、コマンドが持っている `ApiClient` で進行中だった更新が
     /// 後から終わっても、`token.json` は作り直されない。
     fn prepare_end_session(&self, inner: &mut Inner) -> Result<EndingSession> {
         let oidc = matches!(
@@ -839,7 +839,8 @@ impl Core {
 
     async fn finish_end_session(&self, ending: EndingSession) -> Result<()> {
         if let Some(tokens) = ending.tokens {
-            tokens.sign_out().await?;
+            // refresh token は IdP に失効を要求してから、保存済みのトークンを消す。
+            tokens.sign_out_and_revoke().await?;
         } else if let Some((path, expected)) = ending.fallback {
             tokio::task::spawn_blocking(move || {
                 token::delete_if_unchanged(&path, expected.as_ref())

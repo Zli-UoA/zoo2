@@ -57,7 +57,7 @@ ENV VITE_OIDC_REDIRECT_URI=$VITE_OIDC_REDIRECT_URI
 ENV VITE_OIDC_SCOPE=$VITE_OIDC_SCOPE
 ENV VITE_OIDC_RESOURCE=$VITE_OIDC_RESOURCE
 ENV VITE_OIDC_POST_LOGOUT_REDIRECT_URI=$VITE_OIDC_POST_LOGOUT_REDIRECT_URI
-RUN pnpm build
+RUN pnpm build && rm -f dist/client/mockServiceWorker.js
 # CSP の script-src 用に、index.html に埋め込まれたインライン script の
 # SHA-256 を列挙する。index.html と同時に生成するため常に一致する。
 COPY infra/csp-hashes.mjs /tmp/csp-hashes.mjs

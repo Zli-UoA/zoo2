@@ -585,11 +585,29 @@ describe("OidcClient.handleCallback", () => {
     expect(harness.tokenCalls).toHaveLength(1);
   });
 
-  it("rejects an authorize error response", async () => {
+  it("shows the provider error only when state matches the pending request", async () => {
     const harness = createHarness();
+    await harness.client.login("/channels/new");
+    const pending = takePending(harness.storage, 1_000_001)!;
+    savePending(harness.storage, pending);
     await expect(
-      harness.client.handleCallback(`${CALLBACK_URL}?error=access_denied&error_description=denied`),
-    ).rejects.toMatchObject({ code: "access_denied" });
+      harness.client.handleCallback(
+        `${CALLBACK_URL}?error=access_denied&error_description=denied&state=${pending.state}`,
+      ),
+    ).rejects.toMatchObject({ code: "access_denied", message: "denied", source: "provider" });
+  });
+
+  it("does not show provider strings from an error response without a matching state", async () => {
+    const harness = createHarness();
+    const error = await harness.client
+      .handleCallback(`${CALLBACK_URL}?error=x&error_description=locked`)
+      .catch((cause: unknown) => cause);
+    expect(error).toMatchObject({
+      code: "authorization_failed",
+      source: "client",
+      reason: "authorization_failed",
+    });
+    expect((error as Error).message).not.toContain("locked");
   });
 
   it("keeps the new pending request when an old authorization error arrives", async () => {
