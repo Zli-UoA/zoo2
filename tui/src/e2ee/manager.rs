@@ -402,6 +402,8 @@ async fn process(
     rows: &[ToDeviceRow],
 ) -> Result<Vec<String>> {
     let mut senders: Vec<String> = rows.iter().map(|row| row.sender_user_id.clone()).collect();
+    // 手順 4 で他のユーザーのマスター鍵を判定するには、自分のマスター鍵とユーザー署名鍵が要る（Web と同じ）。
+    senders.push(store.lock().await.user_id().to_owned());
     senders.sort();
     senders.dedup();
     let response = api.e2ee_query_keys(&senders).await?;
