@@ -1543,6 +1543,13 @@
         "62": "Folder",
         "63": "Pin"
       }
+    },
+    "android": {
+      "saveDescription": "Before saving, you will sign in again. A browser opens, and you return to this screen when you finish signing in.",
+      "continueDescription": "Sign in again to save the rest of the interrupted setup. A browser will open.",
+      "reauthWaiting": "Waiting for you to sign in again in the browser…",
+      "reauthCancel": "Stop signing in",
+      "browserUnavailable": "Could not open a browser to sign in. Install or enable a browser and press again."
     }
   }
 }
