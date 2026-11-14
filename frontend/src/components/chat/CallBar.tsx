@@ -11,7 +11,7 @@ import {
   UserPlusIcon,
   XIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useCallInviteApi, useCallInvites } from "../../hooks/useCallInvites";
@@ -64,6 +64,11 @@ export function CallBar({ channels = [] }: CallBarProps) {
   const inviteApi = useCallInviteApi();
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
+
+  // 通話が変わったら、前の通話の招待の失敗は消す。
+  useEffect(() => {
+    setInviteError(null);
+  }, [currentChannelId]);
 
   const channel = channels.find((c) => c.id === currentChannelId);
   const channelOutgoing = outgoing.filter((invite) => invite.channel_id === currentChannelId);
@@ -231,7 +236,7 @@ export function CallBar({ channels = [] }: CallBarProps) {
 
       <div className="flex shrink-0 items-center gap-1.5">
         {channel && !channel.is_dm ? (
-          <Popover.Root>
+          <Popover.Root onOpenChange={(open) => !open && setInviteError(null)}>
             <Popover.Trigger
               render={
                 <Button

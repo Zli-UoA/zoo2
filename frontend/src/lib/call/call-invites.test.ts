@@ -9,6 +9,7 @@ import {
   callInviteDurationMs,
   callInviteExpiresAt,
   consumeCallAcceptMark,
+  consumeCallMark,
   cancelCallInvite,
   declineCallInvite,
   inviteToCall,
@@ -159,6 +160,14 @@ describe("応答の印（Service Worker が残す）", () => {
     stubCaches(entries);
     expect(await consumeCallAcceptMark(id, 1_500)).toBe(true);
     expect(await consumeCallAcceptMark(id, 1_500)).toBe(false);
+  });
+
+  it("拒否の印は、応答の印とは別に扱う", async () => {
+    const entries = new Map([["/__call-decline/" + id, String(1_000)]]);
+    stubCaches(entries);
+    expect(await consumeCallMark("accept", id, 1_500)).toBe(false);
+    expect(await consumeCallMark("decline", id, 1_500)).toBe(true);
+    expect(await consumeCallMark("decline", id, 1_500)).toBe(false);
   });
 
   it("印がなければ（URL を開いただけでは）false", async () => {

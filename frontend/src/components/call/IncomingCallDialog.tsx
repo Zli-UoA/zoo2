@@ -9,7 +9,7 @@ import {
   CALL_ACCEPT_REQUEST_EVENT,
   acceptCallInvite,
   closeCallInviteNotification,
-  consumeCallAcceptMark,
+  consumeCallMark,
   declineCallInvite,
   parseCallInviteLaunch,
   stripCallInviteLaunch,
@@ -117,10 +117,12 @@ export function IncomingCallDialog() {
       "",
       stripCallInviteLaunch(window.location.href),
     );
-    void consumeCallAcceptMark(inviteId).then((marked) => {
-      if (marked) void accept(inviteId);
-    });
-  }, [accept, currentUserId]);
+    // 通知のボタンを押した印があるときだけ、応答か拒否をする（URL だけでは何もしない）。
+    void (async () => {
+      if (await consumeCallMark("accept", inviteId)) await accept(inviteId);
+      else if (await consumeCallMark("decline", inviteId)) await decline(inviteId);
+    })();
+  }, [accept, decline, currentUserId]);
 
   // デスクトップ版のトーストの「応答」。印を Rust 側から取れた `DesktopBridge` が頼んでくる。
   useEffect(() => {
@@ -141,7 +143,7 @@ export function IncomingCallDialog() {
       const inviteId = data.inviteId;
       if (data.action === "decline") void decline(inviteId);
       else if (data.action === "accept") {
-        void consumeCallAcceptMark(inviteId).then((marked) => {
+        void consumeCallMark("accept", inviteId).then((marked) => {
           if (marked) void accept(inviteId);
         });
       }

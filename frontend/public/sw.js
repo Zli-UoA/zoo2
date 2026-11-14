@@ -533,9 +533,9 @@ self.addEventListener("fetch", (event) => {
 const CALL_ACCEPT_CACHE = "zoo-call-accept";
 
 // 通知の「応答」を押した印。画面（`IncomingCallDialog`）が一度だけ読んで消し、あれば応答して通話に入る。
-async function markCallAccept(inviteId) {
+async function markCall(kind, inviteId) {
   const cache = await caches.open(CALL_ACCEPT_CACHE);
-  await cache.put(`/__call-accept/${inviteId}`, new Response(String(Date.now())));
+  await cache.put(`/__call-${kind}/${inviteId}`, new Response(String(Date.now())));
 }
 
 async function closeCallInvite(tag) {
@@ -642,16 +642,23 @@ self.addEventListener("notificationclick", (event) => {
           (client) => new URL(client.url).origin === self.location.origin,
         );
         if (event.action === "decline") {
-          // Service Worker は API のトークンを持たないので、開いているタブに拒否を頼む。
-          // タブがなければ通知を閉じるだけで、期限が来ると不在着信になる。
+          // Service Worker は API のトークンを持たないので、画面に拒否を頼む。
+          // 開いているタブがあれば postMessage、なければ印を残して画面を開く（画面が印を読んで拒否する）。
           for (const client of appWindows) {
             client.postMessage({ type: "zoo-call-invite", action: "decline", inviteId });
+          }
+          if (appWindows.length === 0) {
+            await markCall("decline", inviteId);
+            const url = new URL(event.notification.data?.url || "/", self.location.origin);
+            if (url.origin === self.location.origin && url.pathname.startsWith("/channels/")) {
+              await self.clients.openWindow(url.href);
+            }
           }
           return;
         }
         if (event.action === "accept") {
           // URL だけで応答させないよう、「応答を押した」印をここで残し、画面が一度だけ読んで消す。
-          await markCallAccept(inviteId);
+          await markCall("accept", inviteId);
           for (const client of appWindows) {
             client.postMessage({ type: "zoo-call-invite", action: "accept", inviteId });
           }

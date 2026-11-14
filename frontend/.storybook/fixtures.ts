@@ -11,6 +11,7 @@ import type {
   MessageRow,
   NotificationRow,
   UserRow,
+  CallInviteRow,
 } from "../src/lib/electric/types";
 
 export interface StoryCollectionsInput {
@@ -19,6 +20,7 @@ export interface StoryCollectionsInput {
   channels?: ChannelRow[];
   channelUsers?: ChannelUserRow[];
   channelLeaves?: ChannelLeaveRow[];
+  callInvites?: CallInviteRow[];
   messages?: MessageRow[];
   reactions?: MessageReactionRow[];
   notifications?: NotificationRow[];
@@ -130,6 +132,7 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
 
   const notificationsByUser = groupBy(input.notifications ?? [], (row) => row.user_id);
   const notificationCache = new Map<string, ReturnType<typeof createStoryNotificationCollection>>();
+  const callInviteCache = new Map<string, ReturnType<typeof rowsCollection<CallInviteRow>>>();
   for (const userId of new Set((input.notifications ?? []).map((row) => row.user_id))) {
     notificationCache.set(
       userId,
@@ -142,6 +145,21 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
     channels,
     users,
     channelUsers,
+    // ユーザーごとに同じコレクションを返す（`useCallInvites` が購読する）。
+    callInvites: (userId: string) => {
+      let collection = callInviteCache.get(userId);
+      if (!collection) {
+        collection = rowsCollection<CallInviteRow>(
+          "callInvites",
+          (row) => row.id,
+          (input.callInvites ?? []).filter(
+            (row) => row.invitee_id === userId || row.inviter_id === userId,
+          ),
+        );
+        callInviteCache.set(userId, collection);
+      }
+      return collection as unknown as ReturnType<CollectionsBundle["callInvites"]>;
+    },
     channelLeaves: (userId: string) =>
       createStoryChannelLeaveCollection(
         (input.channelLeaves ?? []).filter((row) => row.user_id === userId),

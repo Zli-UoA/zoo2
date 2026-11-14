@@ -1573,3 +1573,46 @@ async fn test_expired_invite_for_someone_already_in_the_room_is_not_missed() -> 
     assert!(missed.is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn test_pending_invite_keeps_a_seat_for_the_invitee() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
+    w.state.call_registry.set_listening(true);
+    // 在室 5 人（定員 6）。bob を呼ぶと、最後の席は bob のもの
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    for i in 0..4 {
+        let filler = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(filler.as_str())
+        .bind(format!("Filler{i}"))
+        .exec(&mut w.db)
+        .await?;
+        put_presence(&mut w.db, &w.public_ch.clone(), &filler).await?;
+    }
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob]).await?;
+    assert_eq!(body["invites"].as_array().unwrap().len(), 1);
+
+    let open = |actor: &str| {
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/channels/{}/call/stream?session_id={}",
+                w.public_ch,
+                uuid::Uuid::new_v4()
+            ))
+            .header("X-Dev-User", actor.to_string())
+            .body(Body::empty());
+        let app = w.app.clone();
+        async move { anyhow::Ok(app.oneshot(req?).await?) }
+    };
+    // 呼ばれていない carol は、その席には入れない。呼ばれた bob は入れる
+    let carol_response = open(&carol).await?;
+    assert_eq!(carol_response.status(), StatusCode::CONFLICT);
+    let bob_response = open(&bob).await?;
+    assert_eq!(bob_response.status(), StatusCode::OK);
+    drop((carol_response, bob_response));
+    Ok(())
+}
