@@ -112,6 +112,19 @@ export const Private: Story = {
   },
 };
 
+/** 非公開チャンネルの設定から、暗号化に切り替える（#367）。公開チャンネルと暗号化済みのチャンネルには出さない。 */
+export const PrivateEncryptSetting: Story = {
+  args: {
+    channel: secret,
+    memberCount: memberCount(secret.id),
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    await userEvent.click(await screen.findByRole("button", { name: "暗号化を有効にする" }));
+    await expect(await screen.findByText("このチャンネルを暗号化しますか？")).toBeInTheDocument();
+  }),
+};
+
 export const Archived: Story = {
   parameters: { a11y: { test: "todo" } },
   args: {
