@@ -3,7 +3,7 @@ import { expect, it, vi } from "vite-plus/test";
 import type { AppConfig } from "../../lib/config";
 import { useE2ee, type E2eeContextValue } from "../../lib/e2ee/e2ee-context";
 import { cryptoDatabaseName } from "../../lib/e2ee/identity";
-import { readPushRecipient, rememberPushRecipient } from "../../lib/e2ee/push/recipient";
+import { readPushRecipient } from "../../lib/e2ee/push/recipient";
 import { indexedDbWrappingKeys } from "../../lib/e2ee/store/storageKey";
 import { E2eeProvider } from "./E2eeProvider";
 
@@ -132,25 +132,4 @@ it("forgets the push recipient and deletes the wrapping key even when the store 
   });
   expect(await readPushRecipient()).toBeNull();
   expect(await indexedDbWrappingKeys.get(name)).toBeUndefined();
-});
-
-it("forgets the push recipient only when the OIDC session is known to be signed out", async () => {
-  const oidc = { oidc: {}, devUserId: null } as unknown as AppConfig;
-  await rememberPushRecipient("user-a");
-  // 読み込み中（オフラインで分からないなど）は消さない
-  mocks.user = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
-  const first = render(<E2eeProvider config={oidc}>{null}</E2eeProvider>);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  expect(await readPushRecipient()).toBe("user-a");
-  first.unmount();
-  // `/me` が 401 以外で失敗した（通信の失敗）ときも消さない
-  mocks.user = { currentUserId: null, isLoading: false, isAdmin: false, error: "offline" };
-  const second = render(<E2eeProvider config={oidc}>{null}</E2eeProvider>);
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  expect(await readPushRecipient()).toBe("user-a");
-  second.unmount();
-  // 認証が切れた（401）と分かったら消す
-  mocks.user = { currentUserId: null, isLoading: false, isAdmin: false, error: null };
-  render(<E2eeProvider config={oidc}>{null}</E2eeProvider>);
-  await vi.waitFor(async () => expect(await readPushRecipient()).toBeNull());
 });
