@@ -475,16 +475,17 @@ export function MessageRow({
                   <MessageBody
                     emojis={message.display_data?.emojis}
                     content={bodyText}
-                    card={message.card}
-                    appBlocks={message.app_blocks}
+                    // 暗号化の行のカードと App の表示は暗号文で確かめられないので、本文の代わりにしない。
+                    card={resolvedDecryption ? null : message.card}
+                    appBlocks={resolvedDecryption ? null : message.app_blocks}
                     editedAt={message.updated_at}
                     previews={resolvedDecryption ? "manual" : "auto"}
                   />
                 </>
               )}
               <MessageAttachments attachments={attachments} />
-              <MessageAppContent message={message} />
-              {message.updated_at && hasCardBlocks(message.app_blocks) ? (
+              {resolvedDecryption ? null : <MessageAppContent message={message} />}
+              {!resolvedDecryption && message.updated_at && hasCardBlocks(message.app_blocks) ? (
                 <EditedIndicator at={message.updated_at} />
               ) : null}
             </>

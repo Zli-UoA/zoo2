@@ -272,6 +272,11 @@ export function MessagePane({
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  // 暗号化チャンネルで編集を始めたときの版。保存はこの次の版で送り、ほかで編集されていれば 409 にする。
+  const [editingRevision, setEditingRevision] = useState(0);
+  const savingEdit = useRef(false);
+  const editingIdRef = useRef(editingId);
+  editingIdRef.current = editingId;
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
 
@@ -638,12 +643,13 @@ export function MessagePane({
         if (decrypted?.status !== "decrypted") return;
         setEditingId(id);
         setEditingText(decrypted.body);
+        setEditingRevision(messagesCollection.get(id)?.revision ?? 0);
         return;
       }
       setEditingId(id);
       setEditingText(content);
     },
-    [sendBlocked, encrypted, decryptions],
+    [sendBlocked, encrypted, decryptions, messagesCollection],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -657,28 +663,37 @@ export function MessagePane({
     if (!id || !content || isArchivedMessage(id) || sendBlocked) {
       return;
     }
-    setEditingId(null);
-    setEditingText("");
     if (cryptoDeps) {
       const row = messagesCollection.get(id);
       const decrypted = decryptions.get(id);
-      if (!row || decrypted?.status !== "decrypted") return;
+      if (!row || decrypted?.status !== "decrypted" || savingEdit.current) return;
+      // 送れるまで編集中の本文を残す（失敗したら、そのまま直して保存し直せる）。
+      savingEdit.current = true;
       try {
         await editEncryptedMessage(cryptoDeps, {
           channelId,
           shapeEpoch: membershipEpoch,
           messageId: id,
           parentId: row.parent_id,
-          revision: (row.revision ?? 0) + 1,
+          revision: editingRevision + 1,
           body: content,
           kind: decrypted.kind,
           mentions: encryptedMentions(content, usersQuery.data ?? []),
         });
+        // 保存中に別のメッセージの編集を始めていたら、そちらは閉じない。
+        if (editingIdRef.current === id) {
+          setEditingId(null);
+          setEditingText("");
+        }
       } catch (cause) {
         reportEncryptedFailure(cause);
+      } finally {
+        savingEdit.current = false;
       }
       return;
     }
+    setEditingId(null);
+    setEditingText("");
     await run(() =>
       messagesCollection.update(id, (message) => {
         message.content = content;
@@ -687,6 +702,7 @@ export function MessagePane({
   }, [
     editingId,
     editingText,
+    editingRevision,
     run,
     messagesCollection,
     isArchivedMessage,

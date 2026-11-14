@@ -5,13 +5,6 @@ import { useE2ee } from "../lib/e2ee/e2ee-context";
 import type { MessageDecryption } from "../lib/e2ee/messageDecryption";
 import type { EncryptedMessage } from "@zoo/crypto-wasm";
 
-/** 暗号文の行を見分けるキー。版や暗号文が変われば（編集）、復号し直す。 */
-function rowKey(message: FeedMessage): string | null {
-  const ciphertext = message.ciphertext;
-  if (!ciphertext) return null;
-  return `${message.id}\u0000${message.revision ?? 0}\u0000${ciphertext.session_id}\u0000${ciphertext.ciphertext}`;
-}
-
 function toEncryptedMessage(message: FeedMessage, channelId: string): EncryptedMessage {
   return {
     channel_id: channelId,
@@ -23,6 +16,16 @@ function toEncryptedMessage(message: FeedMessage, channelId: string): EncryptedM
     revision: message.revision ?? 0,
     ciphertext: message.ciphertext as unknown as EncryptedMessage["ciphertext"],
   };
+}
+
+/**
+ * 暗号文の行を見分けるキー。Worker が照合する値（チャンネル、行、親、送信者、種別、epoch、版、
+ * 暗号文の送信端末とセッション）をすべて入れる。どれかが変われば（編集や同期元の書き換え）、前の
+ * 結果を使わずに復号と照合をやり直す。
+ */
+function rowKey(message: FeedMessage, channelId: string): string | null {
+  if (!message.ciphertext) return null;
+  return JSON.stringify(toEncryptedMessage(message, channelId));
 }
 
 /**
@@ -57,13 +60,13 @@ export function useMessageDecryptions(
       }
     }
     const pending = messages.filter((message) => {
-      const key = rowKey(message);
+      const key = rowKey(message, channelId);
       return key !== null && !cache.current.has(key);
     });
     const publish = () => {
       const next = new Map<string, MessageDecryption>();
       for (const message of messages) {
-        const key = rowKey(message);
+        const key = rowKey(message, channelId);
         const value = key ? cache.current.get(key) : undefined;
         if (value) next.set(message.id, value);
       }
@@ -82,7 +85,7 @@ export function useMessageDecryptions(
       .then((outcomes) => {
         pending.forEach((message, index) => {
           const outcome = outcomes[index];
-          const key = rowKey(message);
+          const key = rowKey(message, channelId);
           if (!outcome || !key) return;
           cache.current.set(
             key,

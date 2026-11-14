@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  ENCRYPTED_CHANNELS_STORAGE_KEY,
   encryptionSendState,
   noteEncryptedChannel,
   resetSeenEncryptedChannels,
@@ -9,6 +10,19 @@ import {
 const base = { channelId: "c1", hasCiphertext: false } as const;
 
 beforeEach(() => resetSeenEncryptedChannels());
+afterEach(() => vi.unstubAllGlobals());
+
+/** `window.localStorage` を Map で置き換える。 */
+function stubLocalStorage() {
+  const values = new Map<string, string>();
+  vi.stubGlobal("window", {
+    localStorage: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    },
+  });
+  return values;
+}
 
 describe("encryptionSendState", () => {
   it("暗号化チャンネルは格下げでも確認中でもない", () => {
@@ -26,6 +40,22 @@ describe("encryptionSendState", () => {
         checking: false,
       });
     }
+  });
+
+  it("暗号化と見たチャンネルは、開き直したあと暗号ストアのないタブでも格下げとして扱う", () => {
+    const values = stubLocalStorage();
+    noteEncryptedChannel("c1");
+    expect(JSON.parse(values.get(ENCRYPTED_CHANNELS_STORAGE_KEY)!)).toEqual(["c1"]);
+    // 開き直した（メモリーの記録はない）。暗号ストアの記録も問い合わせられない。
+    resetSeenEncryptedChannels();
+    expect(encryptionSendState({ ...base, encrypted: false, known: "unavailable" })).toEqual({
+      downgraded: true,
+      checking: false,
+    });
+    expect(
+      encryptionSendState({ ...base, channelId: "c2", encrypted: false, known: "unavailable" })
+        .downgraded,
+    ).toBe(false);
   });
 
   it("記録、edm: の名前、暗号文のある行のどれかで格下げとして扱う", () => {
@@ -46,7 +76,7 @@ describe("encryptionSendState", () => {
       checking: true,
     });
     expect(encryptionSendState({ ...base, encrypted: false, known: "failed" }).checking).toBe(true);
-    // 暗号ストアがないタブは問い合わせられないので、ほかの手がかりだけで判定する。
+    // 暗号ストアがないタブは問い合わせられないので、ほかの手がかり（localStorage の記録を含む）だけで判定する。
     expect(encryptionSendState({ ...base, encrypted: false, known: "unavailable" })).toEqual({
       downgraded: false,
       checking: false,
