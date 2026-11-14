@@ -119,6 +119,9 @@ pub struct SlackConfig {
     pub import_tmp_dir: std::path::PathBuf,
     /// Slack アプリの Signing Secret (#293 Events API の署名の検証)。未設定なら受信口は無効 (404)
     pub signing_secret: Option<String>,
+    /// この Slack アプリの ID (`A…`)。任意。設定すると、このアプリが投稿したメッセージ (#294 のブリッジの投稿)
+    /// を Slack から取り込まず (ループ防止)、別のアプリ宛てのイベントを無視する
+    pub app_id: Option<String>,
 }
 
 impl Default for SlackConfig {
@@ -136,6 +139,7 @@ impl Default for SlackConfig {
             api_base_url: DEFAULT_SLACK_API_BASE_URL.to_string(),
             import_tmp_dir: std::env::temp_dir(),
             signing_secret: None,
+            app_id: None,
         }
     }
 }
@@ -163,6 +167,7 @@ impl fmt::Debug for SlackConfig {
             )
             .field("api_base_url", &self.api_base_url)
             .field("import_tmp_dir", &self.import_tmp_dir)
+            .field("app_id", &self.app_id)
             .field(
                 "signing_secret",
                 &self.signing_secret.as_ref().map(|_| "[REDACTED]"),
@@ -272,6 +277,7 @@ impl SlackConfig {
                 .unwrap_or_else(|| DEFAULT_SLACK_API_BASE_URL.to_string()),
             import_tmp_dir,
             signing_secret: optional("SLACK_SIGNING_SECRET").map(|v| v.trim().to_string()),
+            app_id: optional("SLACK_APP_ID").map(|v| v.trim().to_string()),
         }
     }
 }

@@ -93,7 +93,8 @@ pub async fn worker(s: AppState) {
                 query(
                     &mut tx,
                     "WITH w AS (DELETE FROM slack_channel_wakes WHERE last_at<now()-interval '1 day' RETURNING 1), \
-                     h AS (DELETE FROM slack_message_hints WHERE created_at<now()-interval '1 day' OR attempts>=5 RETURNING 1) \
+                     h AS (DELETE FROM slack_message_hints WHERE created_at<now()-interval '1 day' OR attempts>=5 RETURNING 1), \
+                     m AS (DELETE FROM slack_message_map WHERE origin='slack' AND created_at<now()-interval '3 days' RETURNING 1) \
                      SELECT json_build_object('ok',true)::text",
                     &[],
                 )
@@ -206,6 +207,9 @@ struct Task {
     /// 実行中の同期が、スレッドの総なめを省く同期か (終わっても同期カーソルを進めない)
     #[serde(default)]
     run_light: bool,
+    /// 直近 24 時間の履歴の再確認の時期か (最後に確認してから 30 分以上たった)
+    #[serde(default)]
+    recheck_due: bool,
 }
 
 /// 1 回の処理の結果
@@ -308,7 +312,8 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
              'page_cursor',t.page_cursor,'pending_threads',t.pending_threads,\
              'known_threads',t.known_threads,'token_user_id',t.token_user_id,\
              'swept_recent',(t.swept_at IS NOT NULL AND t.swept_at>now()-interval '5 minutes'),\
-             'run_light',t.run_light)::text"
+             'run_light',t.run_light,\
+             'recheck_due',(t.rechecked_at IS NULL OR t.rechecked_at<now()-interval '30 minutes'))::text"
         ),
         &[&token],
     )
@@ -688,6 +693,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
         profiles: HashMap::new(),
         channel_names: HashMap::new(),
         files: FilePolicy::new(s),
+        app_id: s.config.slack.app_id.clone(),
     };
     // 同期した投稿の添付は、ここでは取得しない (同期のリースを塞がないため)。取得できるまでファイル名を本文に補い、
     // `slack_files` の行 (`job_id` なし) を残す。取得は `worker::orphan_files_worker` が行い、取得できたら補った名前を外す
@@ -716,6 +722,20 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
     // 1 件ずつ取り直して反映する。新しい同期の始まりで 1 回だけ行う (最初の同期は、全部取るので省く)
     if !task.running && task.synced && !is_initial(task) {
         super::hints::process(
+            &mut slack,
+            &mut ctx,
+            task.team_id.as_str(),
+            task.slack_channel_id.as_str(),
+            task.channel_id.as_str(),
+            task.token.as_str(),
+            &mut db,
+        )
+        .await?;
+    }
+
+    // 直近 24 時間の履歴を、30 分に 1 回、取り直して突き合わせる (取りこぼした編集・削除の保険)
+    if !task.running && task.synced && !is_initial(task) && task.recheck_due {
+        super::recheck::run(
             &mut slack,
             &mut ctx,
             task.team_id.as_str(),

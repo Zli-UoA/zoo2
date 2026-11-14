@@ -7,6 +7,7 @@ pub mod export;
 pub mod hints;
 pub mod import;
 pub mod link;
+pub mod recheck;
 pub mod sync;
 pub mod worker;
 

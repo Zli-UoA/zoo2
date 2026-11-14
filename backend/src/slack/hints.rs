@@ -25,7 +25,9 @@ use super::{
     convert::reaction_emoji,
     export::{SlackMessage, SlackReaction},
     sync::{Slack, SyncError, lookup_profiles, parse_messages},
-    worker::{Context, insert_message, insert_reactions, render_message, suppress_app_events},
+    worker::{
+        Context, insert_message, insert_reactions, mapped, render_message, suppress_app_events,
+    },
 };
 use crate::{apps::query, error::AppError};
 
@@ -257,7 +259,6 @@ async fn apply(
     let fetched = fetch_message(slack, slack_channel, ts, thread_ts).await?;
     // tombstone (返信のある親の削除) は、ヒントの種類によらず、削除として扱う
     let message = fetched.filter(|m| m.subtype.as_deref() != Some("tombstone"));
-    let id = super::message_id(team, slack_channel, ts);
 
     // リアクションの削除を反映してよいか。API の状態で、その人のリアクションがないことを確かめる (API の呼び出しは、
     // トランザクションの外で行う)
@@ -342,6 +343,12 @@ async fn apply(
     if leased.is_empty() {
         return Err(SyncError::LeaseLost);
     }
+    // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は Zoo が正なので、
+    // Slack での編集・削除は反映しない。Slack からのリアクションと返信は、その投稿に付ける
+    let (id, zoo_origin) = match mapped(&mut tx, team, slack_channel, ts).await? {
+        Some((id, origin)) => (id, origin == "zoo"),
+        None => (super::message_id(team, slack_channel, ts), false),
+    };
     let existing = query(
         &mut tx,
         "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''))::text \
@@ -356,7 +363,10 @@ async fn apply(
     match (&message, &existing) {
         // Slack にもうない。削除のヒントなら (または tombstone)、Zoo のメッセージを論理削除する
         (None, Some(row)) => {
-            if row["deleted"] != true && (has("deleted") || has("changed") || has("reaction")) {
+            if !zoo_origin
+                && row["deleted"] != true
+                && (has("deleted") || has("changed") || has("reaction"))
+            {
                 // `changed` / `reaction` のヒントで、メッセージが見つからないのは、取り直した時点で消えていたとき。
                 // 同じく削除として扱う (API が成功して「ない」と答えている)
                 exec_delete(&mut tx, &id, zoo_channel).await?;
@@ -365,7 +375,7 @@ async fn apply(
         (None, None) => {}
         // Slack にまだある
         (Some(message), existing) => {
-            if has("deleted") {
+            if has("deleted") && !zoo_origin {
                 // 削除のイベントが来たのに、まだ返る。あとで取り直す
                 keep.extend(group.iter().filter(|r| r.kind == "deleted"));
             }
@@ -378,7 +388,7 @@ async fn apply(
                 }
                 Some(row) if row["deleted"] == true => {}
                 Some(row) => {
-                    if has("changed") && message.is_importable() {
+                    if has("changed") && !zoo_origin && message.is_importable() {
                         edit(&mut tx, ctx, &id, message, row).await?;
                     }
                     if has("reaction") || has("changed") {
@@ -450,7 +460,7 @@ async fn apply(
     Ok(())
 }
 
-async fn exec_delete(
+pub(super) async fn exec_delete(
     tx: &mut toasty::Transaction<'_>,
     id: &str,
     zoo_channel: &str,
@@ -468,7 +478,7 @@ async fn exec_delete(
 }
 
 /// 編集の反映。本文とカードを、取り込みと同じ変換で作り直し、違うときだけ更新する
-async fn edit(
+pub(super) async fn edit(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
     id: &str,

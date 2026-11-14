@@ -94,6 +94,9 @@ pub struct SlackMessage {
     pub user: Option<String>,
     #[serde(default)]
     pub bot_id: Option<String>,
+    /// この投稿をしたアプリの ID。自分のアプリ (`SLACK_APP_ID`) の投稿は、取り込まない (ループ防止)
+    #[serde(default)]
+    pub app_id: Option<String>,
     #[serde(default)]
     pub username: Option<String>,
     #[serde(default)]
