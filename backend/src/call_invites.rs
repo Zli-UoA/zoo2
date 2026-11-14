@@ -254,6 +254,17 @@ pub async fn sweep(db: &mut toasty::Db) -> Result<(), AppError> {
     .exec(db)
     .await?;
     push::dispatch_call_invite_ends(db.clone(), parse_rows(rows));
+    // 応答してから入った人で、入室の記録（`joined_at`）が残らなかったもの（記録の更新が失敗したときなど）を補う。
+    // 残らないと、入室して退出したあとに、席の予約が戻ってしまう。`responded_at` は変えない。
+    toasty::sql::statement(
+        "UPDATE call_invites c SET joined_at = statement_timestamp()
+         WHERE c.status = 'accepted' AND c.joined_at IS NULL AND EXISTS (
+             SELECT 1 FROM call_presence p
+             WHERE p.channel_id = c.channel_id AND p.user_id = c.invitee_id
+               AND p.expires_at > statement_timestamp())",
+    )
+    .exec(db)
+    .await?;
     let rows = toasty::sql::query(
         "WITH due AS (
              SELECT i.id FROM call_invites i
