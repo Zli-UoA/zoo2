@@ -687,6 +687,9 @@ export function MessagePane({
         if (editingIdRef.current === id && editingTextRef.current.trim() === content) {
           setEditingId(null);
           setEditingText("");
+        } else if (editingIdRef.current === id) {
+          // 書き足した本文を保存し直すときは、今送った版の次の版で送る。
+          setEditingRevision(editingRevision + 1);
         }
       } catch (cause) {
         reportEncryptedFailure(cause);
