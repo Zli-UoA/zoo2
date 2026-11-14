@@ -11,8 +11,20 @@ import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { CryptoOperations } from "../operations";
 import { MemoryCryptoBackend, type CryptoStoreWrite } from "./backend";
-import { CryptoStore } from "./cryptoStore";
+import { CryptoStore, type KeysQueryResponse } from "./cryptoStore";
 import type { WrappingKeyStore } from "./storageKey";
+
+/** 端末鍵だけの `keys/query` の応答（クロス署名鍵がないので、送信端末は検証済みにならない）。 */
+function keysQueryOf(deviceKeys: Record<string, Record<string, JsonObject>>): KeysQueryResponse {
+  return {
+    device_keys: deviceKeys,
+    master_keys: {},
+    self_signing_keys: {},
+    user_signing_keys: {},
+    tofu_pins: {},
+    signatures: [],
+  };
+}
 
 beforeAll(() => {
   const wasm = readFileSync(
@@ -247,7 +259,7 @@ describe("CryptoStore", () => {
       type: "m.room.encrypted",
       content,
     };
-    const deviceKeys = { [ALICE]: { [alice.deviceId]: alice.deviceKeys() } };
+    const deviceKeys = keysQueryOf({ [ALICE]: { [alice.deviceId]: alice.deviceKeys() } });
 
     const result = await store.processToDevice([row], deviceKeys);
     expect(result).toEqual({
@@ -337,15 +349,17 @@ describe("CryptoStore", () => {
       type: "m.room.encrypted",
       content,
     };
-    const deviceKeys = { [ALICE]: { [alice.deviceId]: alice.deviceKeys() } };
+    const deviceKeys = keysQueryOf({ [ALICE]: { [alice.deviceId]: alice.deviceKeys() } });
 
     if (failure === "write") backend.failNextWrite = true;
     else backend.failNextRead = true;
     await expect(
-      operations.run({ op: "processToDevice", rows: [row], deviceKeys }),
+      operations.run({ op: "processToDevice", rows: [row], keysQuery: deviceKeys }),
     ).rejects.toThrow("I/O error");
     // 復号で進んだメモリーの状態は捨ててあるので、同じメッセージをもう一度復号できる。
-    expect(await operations.run({ op: "processToDevice", rows: [row], deviceKeys })).toEqual({
+    expect(
+      await operations.run({ op: "processToDevice", rows: [row], keysQuery: deviceKeys }),
+    ).toEqual({
       processed: ["7"],
       roomKeys: 1,
       dropped: 0,

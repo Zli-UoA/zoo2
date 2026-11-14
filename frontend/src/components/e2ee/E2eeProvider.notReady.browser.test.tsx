@@ -19,6 +19,7 @@ vi.mock("../../lib/e2ee/cryptoWorker", () => ({
 }));
 
 vi.mock("../../lib/e2ee/deviceManager", () => ({
+  loginNotFoundCounter: () => new Set<string>(),
   E2eeDeviceManager: class {
     currentDeviceId = "00000000-0000-4000-8000-0000000000d1";
     private readonly onStatus: OnStatus;
@@ -46,8 +47,9 @@ vi.mock("../../lib/e2ee/sasController", () => ({
 }));
 
 vi.mock("../../lib/e2ee/setupController", () => ({
-  runStartupCheck: async () => {},
+  runStartupCheck: async () => false,
   uploadKeyBackup: async () => {},
+  importKeyBackup: async () => {},
 }));
 
 vi.mock("../../lib/e2ee/push/recipient", () => ({

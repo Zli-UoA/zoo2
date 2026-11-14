@@ -1,103 +1,15 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent, within } from "storybook/test";
 
-import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import {
-  DeviceLimitView,
-  DevicesSettingsView,
-  type DeviceRowView,
-  type DevicesSettingsHandlers,
-  type DevicesViewState,
-} from "./DevicesSettingsView";
-
-const RECOVERY_KEY = "EsTc 5rJ7 kQ2m 8NvP x3Lw 9aHd 4ZfY 6bGs 2CtR 7uWe 1MnK pXqV";
-const LOST = "9c3e2b1a-7d6f-4a5b-8c9d-0e1f2a3b4c5d";
-
-const handlers = (): DevicesSettingsHandlers => ({
-  onRetry: fn(),
-  onRename: fn(),
-  onDelete: fn(),
-  onStartRevocation: fn(),
-  onSelectionChange: fn(),
-  onScopeChange: fn(),
-  onConfirmSelection: fn(),
-  onResumeRevocation: fn(),
-  onUnlockWithPasskey: fn(),
-  onUnlockWithRecoveryKey: fn(),
-  onAddRevocationPasskey: fn(),
-  onRecoveryKeySaved: fn(),
-  onExecute: fn(),
-  onRestart: fn(),
-  onCancelRevocation: fn(),
-  onFinish: fn(),
-  onReverify: fn(),
-  onSasVerify: fn(),
-});
-
-const devices: DeviceRowView[] = [
-  {
-    deviceId: "1a8a1c2e-5b7d-4e9f-a1b2-c3d4e5f60718",
-    displayName: "Firefox（Linux）",
-    createdAt: "2026-10-20T09:00:00Z",
-    lastSeenAt: "2026-11-13T08:00:00Z",
-    current: true,
-    signed: true,
-  },
-  {
-    deviceId: "5b7d1a8a-1c2e-4e9f-a1b2-c3d4e5f60718",
-    displayName: "Pixel 9",
-    createdAt: "2026-11-01T09:00:00Z",
-    lastSeenAt: "2026-11-12T22:10:00Z",
-    current: false,
-    signed: true,
-  },
-  {
-    deviceId: LOST,
-    displayName: "Pixel 9",
-    createdAt: "2026-11-13T03:00:00Z",
-    lastSeenAt: "2026-11-13T03:05:00Z",
-    current: false,
-    signed: false,
-  },
-];
-
-const ready: Extract<DevicesViewState, { step: "ready" }> = {
-  step: "ready",
-  devices,
-  verifications: [
-    {
-      userId: "00000000-0000-4000-8000-0000000000b1",
-      name: "伊藤さくら",
-      state: { state: "needs_reverification", reason: "master_key_changed" },
-    },
-    {
-      userId: "00000000-0000-4000-8000-0000000000b2",
-      name: "佐藤ひろし",
-      state: { state: "trusted", basis: "user_signing_signature" },
-    },
-    {
-      userId: "00000000-0000-4000-8000-0000000000b3",
-      name: "山田はな",
-      state: { state: "trusted", basis: "record" },
-    },
-    {
-      userId: "00000000-0000-4000-8000-0000000000b4",
-      name: "鈴木けん",
-      state: { state: "no_cross_signing_keys" },
-    },
-  ],
-  warnings: [],
-  unlocked: true,
-  pendingRevocation: null,
-  accountUrls: {
-    security: "https://account.zli.works/settings/security",
-    services: "https://account.zli.works/settings/services",
-  },
-  revocation: null,
-  passkeyAvailable: true,
-  busy: null,
-  error: null,
-};
+  E2EE_RECOVERY_KEY as RECOVERY_KEY,
+  LOST_DEVICE_ID as LOST,
+  deviceRows as devices,
+  devicesHandlers as handlers,
+  devicesReady as ready,
+} from "../../../.storybook/e2ee-fixtures";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
+import { DeviceLimitView, DevicesSettingsView } from "./DevicesSettingsView";
 
 const notes = [
   {
@@ -129,16 +41,6 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Loading: Story = {};
-
-/** このタブで暗号ストアを開けていない。サーバーにつながらず、試し直している。 */
-export const Unavailable: Story = {
-  args: {
-    state: { step: "unavailable", reason: { kind: "failed", failure: { source: "network" } } },
-  },
-  play: playForImplementation(async () => {
-    await expect(await screen.findByText(/サーバーにつながらず/)).toBeVisible();
-  }),
-};
 
 export const LoadFailed: Story = {
   args: { state: { step: "loadFailed" }, handlers: handlers() },

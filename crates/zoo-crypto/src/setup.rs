@@ -619,6 +619,31 @@ impl SetupSession {
         &self.slots
     }
 
+    /// 初回設定にパスキー（PRF）のスロットを足す（Web の `setupSession.ts` の `addPasskeySlot` と同じ）。
+    /// 同じパスキー（credential ID）のスロットがあれば置き換える。解錠で取り出した鍵には足さない
+    /// （[`CryptoError::InvalidSecretStorage`]。解錠のあとのスロットの追加は `POST /api/e2ee/secret_storage/slots`）。
+    pub fn add_passkey_slot(
+        &mut self,
+        credential_id: &str,
+        prf_salt: &[u8; 32],
+        prf_output: &[u8; 32],
+        label: Option<String>,
+    ) -> Result<(), CryptoError> {
+        if !self.created {
+            return Err(CryptoError::InvalidSecretStorage(
+                "初回設定を始めていません".into(),
+            ));
+        }
+        let user_id = self.secrets.cross_signing.master.user_id().to_owned();
+        let mut slot =
+            KeySlot::new_passkey(&user_id, &self.ssss, credential_id, prf_salt, prf_output)?;
+        slot.label = label;
+        self.slots
+            .retain(|existing| existing.credential_id.as_deref() != Some(credential_id));
+        self.slots.push(slot);
+        Ok(())
+    }
+
     /// 初回設定の `POST /api/e2ee/secret_storage/keys` の本文（`expected_default_key_id: null`）。
     /// 解錠で取り出した鍵では作らない（[`CryptoError::InvalidSecretStorage`]）。
     pub fn secret_storage_request(&self) -> Result<Value, CryptoError> {

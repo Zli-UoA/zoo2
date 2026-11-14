@@ -133,7 +133,7 @@ pub struct AcceptedMasterKey {
 /// 配布先の判定に使う記録（[`core::TrustStore`]）。
 #[derive(uniffi::Object)]
 pub struct TrustStore {
-    inner: Mutex<core::TrustStore>,
+    pub(crate) inner: Mutex<core::TrustStore>,
 }
 
 #[uniffi::export]

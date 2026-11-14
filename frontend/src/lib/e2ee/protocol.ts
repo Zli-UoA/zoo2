@@ -26,18 +26,26 @@ import type {
 } from "./store/megolm";
 
 import type { PasskeySlotInput, ResetExpectation, UnlockSecret } from "./setupSession";
-import type { BackupUploadRequest } from "./store/cryptoStore";
+import type { BackupImportStart, BackupUploadRequest } from "./store/cryptoStore";
 import type { SasEncrypted, SasUpdate } from "./store/verification";
 
 import type {
   DeviceKeysByUser,
   KeyUpload,
+  KeysQueryResponse,
   RegistrationRequest,
   ToDeviceResult,
   ToDeviceRow,
 } from "./store/cryptoStore";
 
-export type { DeviceKeysByUser, KeyUpload, RegistrationRequest, ToDeviceResult, ToDeviceRow };
+export type {
+  DeviceKeysByUser,
+  KeyUpload,
+  KeysQueryResponse,
+  RegistrationRequest,
+  ToDeviceResult,
+  ToDeviceRow,
+};
 export type { ClaimedKeys, DecryptOutcome, RecipientSummary, SharePlan, ShareResult };
 export type { KeySlot, PasskeySlotInput, ResetExpectation, ResumePlan, StartupCheck, UnlockSecret };
 export type { RevocationBeginInput, TrustEvaluation };
@@ -67,7 +75,7 @@ export type CryptoOperation =
   | { op: "markRegistered" }
   | { op: "prepareKeyUpload"; oneTimeKeyCount: number; hasUnusedFallbackKey: boolean }
   | { op: "markKeysPublished" }
-  | { op: "processToDevice"; rows: ToDeviceRow[]; deviceKeys: DeviceKeysByUser }
+  | { op: "processToDevice"; rows: ToDeviceRow[]; keysQuery: KeysQueryResponse }
   | { op: "acknowledged"; ids: string[] }
   | { op: "pendingBackupCount" }
   | { op: "close" }
@@ -89,6 +97,8 @@ export type CryptoOperation =
   | { op: "prepareBackupUpload"; currentVersion: JsonObject | null; limit: number }
   | { op: "backupUploaded"; uploadId: number }
   | { op: "backupUploadFailed"; uploadId: number }
+  | { op: "beginBackupImport"; currentVersion: JsonObject | null }
+  | { op: "importBackupPage"; version: string; rows: JsonObject[]; next: string | null }
   | { op: "discardSecrets" }
   | { op: "forgetOwnKeys" }
   // 失効の手順と、他のユーザーの検証（#362）。
@@ -200,6 +210,8 @@ export interface CryptoResults {
   prepareBackupUpload: BackupUploadRequest;
   backupUploaded: null;
   backupUploadFailed: null;
+  beginBackupImport: BackupImportStart;
+  importBackupPage: { imported: number; dropped: number };
   discardSecrets: null;
   forgetOwnKeys: null;
   revocationStatus: RevocationSummary | null;
