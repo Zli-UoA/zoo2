@@ -542,12 +542,7 @@ impl CryptoStore {
             session_id: room_key.session_id(),
         };
         let key = inbound_key(&session_ref);
-        if self.loaded_inbound.insert(key.clone())
-            && let Some(stored) = self.state.inbound_sessions.get(&key)
-        {
-            self.inbound
-                .restore_session(&stored.pickle, &self.account, &self.storage_key)?;
-        }
+        self.load_inbound(&key)?;
         if self.inbound.add_room_key(room_key) != zoo_crypto::AddOutcome::Kept
             && let Some(pickle) =
                 self.inbound
@@ -664,13 +659,17 @@ impl CryptoStore {
         }
     }
 
+    /// 保存した受信用セッションを、まだなら読み込む。読み込めたときだけ読み込み済みにする（壊れた
+    /// pickle は、次の試行でもエラーになる。読めないセッションを送ったことにしない）。
     fn load_inbound(&mut self, key: &str) -> Result<()> {
-        if self.loaded_inbound.insert(key.to_owned())
-            && let Some(stored) = self.state.inbound_sessions.get(key)
-        {
+        if self.loaded_inbound.contains(key) {
+            return Ok(());
+        }
+        if let Some(stored) = self.state.inbound_sessions.get(key) {
             self.inbound
                 .restore_session(&stored.pickle, &self.account, &self.storage_key)?;
         }
+        self.loaded_inbound.insert(key.to_owned());
         Ok(())
     }
 
@@ -685,6 +684,9 @@ impl CryptoStore {
         current_version: Option<&Value>,
         limit: usize,
     ) -> Result<BackupUploadRequest> {
+        // 送信は 1 つずつ（`setup::upload_key_backup`）なので、ここで残っている要求は、送っている途中で
+        // 捨てられたもの。記録を捨てる（入れたセッションは送信待ちのまま）。
+        self.pending_uploads.clear();
         let Some(own) = self.own_keys()? else {
             return Ok(BackupUploadRequest::None);
         };
@@ -796,6 +798,11 @@ impl CryptoStore {
         if conflict && let Some(backup) = &mut self.backup_state {
             backup.suspend();
         }
+    }
+
+    /// 送っている途中（応答を待っている）の鍵バックアップの要求の数。
+    pub fn uploads_in_flight(&self) -> usize {
+        self.pending_uploads.len()
     }
 
     /// 鍵バックアップにまだ送っていない受信用セッションの数。

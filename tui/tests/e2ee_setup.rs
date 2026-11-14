@@ -606,3 +606,104 @@ async fn backs_up_room_keys_only_after_unlocking_and_checks_the_version() {
         BackupUploadResult::Rejected(_)
     ));
 }
+
+#[tokio::test]
+async fn a_changed_secrets_revision_asks_to_unlock_again_and_stops_backups() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let (_server, backend, api) = backend().await;
+    let store = open(&root);
+    let (session, recovery_key) = zoo_crypto::SetupSession::begin(BOB).unwrap();
+    setup::complete_setup(&api, &store, BOB, &session, Some(FRESH))
+        .await
+        .unwrap();
+    // 別の端末の失効などで、SSSS の秘密が書き換えられた（同じ鍵のまま `secrets_revision` だけが進んだ）。
+    backend.0.lock().unwrap().ssss.as_mut().unwrap()["secrets_revision"] = json!(2);
+    assert_eq!(
+        setup::load_status(&api, &store, BOB).await.unwrap(),
+        E2eeStatus::Locked(LockReason::Mismatch)
+    );
+    // 解錠し直すまで、古い値で鍵バックアップに送らない。
+    receive_room_key(&store).await;
+    assert_eq!(
+        setup::run_startup_check(&api, &store, BOB).await.unwrap(),
+        E2eeStatus::Locked(LockReason::Mismatch)
+    );
+    assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 0);
+    // リカバリーキーで解錠し直すと、新しい値を記録して送る。
+    setup::unlock(&api, &store, BOB, &recovery_key)
+        .await
+        .unwrap();
+    assert_eq!(store.lock().await.secrets_revision(), Some(2));
+    assert_eq!(
+        setup::load_status(&api, &store, BOB).await.unwrap(),
+        E2eeStatus::Unlocked
+    );
+    assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 1);
+}
+
+#[tokio::test]
+async fn an_unreadable_session_is_never_marked_as_backed_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let (_server, backend, api) = backend().await;
+    let store = open(&root);
+    let (session, _) = zoo_crypto::SetupSession::begin(BOB).unwrap();
+    setup::complete_setup(&api, &store, BOB, &session, Some(FRESH))
+        .await
+        .unwrap();
+    receive_room_key(&store).await;
+    // 送信待ちのセッションの pickle を壊して、開き直す。
+    drop(Arc::try_unwrap(store).ok().expect("ほかに持ち主がいない"));
+    let path = root.join(BOB).join("state.json");
+    let mut state: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for session in state["inbound_sessions"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+    {
+        if session["backed_up"] == false {
+            session["pickle"] = json!("broken");
+        }
+    }
+    std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let store = open(&root);
+    // 2 回試しても、どちらも失敗し、送ったことにならない。
+    for _ in 0..2 {
+        assert!(setup::upload_key_backup(&api, &store).await.is_err());
+        assert_eq!(store.lock().await.pending_backup_count(), 1);
+    }
+    assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 0);
+}
+
+#[tokio::test]
+async fn an_abandoned_upload_is_forgotten_by_the_next_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let (_server, backend, api) = backend().await;
+    let store = open(&root);
+    let (session, _) = zoo_crypto::SetupSession::begin(BOB).unwrap();
+    setup::complete_setup(&api, &store, BOB, &session, Some(FRESH))
+        .await
+        .unwrap();
+    receive_room_key(&store).await;
+    let current = backend.0.lock().unwrap().current_version().cloned();
+    // 要求を作ったまま、送らずに捨てた（送っている途中で処理を止めた）。
+    let first = store
+        .lock()
+        .await
+        .prepare_backup_upload(current.as_ref(), setup::BACKUP_UPLOAD_BATCH)
+        .unwrap();
+    assert!(matches!(
+        first,
+        store::BackupUploadRequest::Upload { count: 1, .. }
+    ));
+    assert_eq!(store.lock().await.uploads_in_flight(), 1);
+    // 次の送信は、捨てた要求の記録を残さずに、同じセッションを送る。
+    assert_eq!(
+        setup::upload_key_backup(&api, &store).await.unwrap(),
+        BackupUploadResult::Done { uploaded: 1 }
+    );
+    assert_eq!(store.lock().await.uploads_in_flight(), 0);
+    assert_eq!(store.lock().await.pending_backup_count(), 0);
+}

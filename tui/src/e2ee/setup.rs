@@ -113,11 +113,32 @@ pub async fn load_status(
     user_id: &str,
 ) -> Result<E2eeStatus> {
     let storage = api.e2ee_secret_storage().await?;
-    if !has_secret_storage(&storage) {
+    startup_status(api, store, user_id, &storage).await
+}
+
+/// `GET /api/e2ee/secret_storage` の応答と暗号ストアから状態を決め、要るなら自分の端末に署名し直す。
+///
+/// 解錠済みの端末でも、最後に解錠したときの `secrets_revision` がサーバーの値と違えば、SSSS の秘密が
+/// 書き換えられた（失効など）ので、暗号ストアの鍵を使わずに解錠し直しを求める（docs/e2ee.md の
+/// 「鍵バックアップ」の `secrets_revision` の確認）。古い値のまま鍵バックアップに送り続けないため。
+async fn startup_status(
+    api: &ApiClient,
+    store: &SharedStore,
+    user_id: &str,
+    storage: &Value,
+) -> Result<E2eeStatus> {
+    if !has_secret_storage(storage) {
         return Ok(E2eeStatus::NotSetUp);
     }
-    if !store.lock().await.has_own_keys() {
-        return Ok(E2eeStatus::Locked(LockReason::New));
+    let recorded = {
+        let store = store.lock().await;
+        if !store.has_own_keys() {
+            return Ok(E2eeStatus::Locked(LockReason::New));
+        }
+        store.secrets_revision()
+    };
+    if storage.get("secrets_revision").and_then(Value::as_u64) != recorded {
+        return Ok(E2eeStatus::Locked(LockReason::Mismatch));
     }
     let server = server_state(api, user_id).await?;
     let check = store.lock().await.startup_check(&server)?;
@@ -135,23 +156,21 @@ pub async fn load_status(
 
 /// 起動時の確認（docs/e2ee.md の「初回設定と解錠の流れ」）。解錠済みの端末だけが、自分の端末への
 /// 署名を確かめ、なければ署名し直し、送信待ちのセッションを鍵バックアップに送る。まだ解錠していない
-/// 端末は、何も取得しない。
-pub async fn run_startup_check(api: &ApiClient, store: &SharedStore, user_id: &str) -> Result<()> {
+/// 端末は、何も取得しない。解錠し直しが要る端末（`secrets_revision` が変わった、鍵が違う）は送らない。
+pub async fn run_startup_check(
+    api: &ApiClient,
+    store: &SharedStore,
+    user_id: &str,
+) -> Result<E2eeStatus> {
     if !store.lock().await.has_own_keys() {
-        return Ok(());
+        return Ok(E2eeStatus::Locked(LockReason::New));
     }
-    let server = server_state(api, user_id).await?;
-    let check = store.lock().await.startup_check(&server)?;
-    if let Some(StartupCheck::SignDevice(signature)) = &check {
-        api.e2ee_upload_signatures(json!([signature])).await?;
-    }
-    if matches!(
-        check,
-        Some(StartupCheck::Ready | StartupCheck::SignDevice(_))
-    ) {
+    let storage = api.e2ee_secret_storage().await?;
+    let status = startup_status(api, store, user_id, &storage).await?;
+    if status == E2eeStatus::Unlocked {
         upload_key_backup(api, store).await?;
     }
-    Ok(())
+    Ok(status)
 }
 
 /// [`upload_key_backup`] の結果。
@@ -171,6 +190,9 @@ static BACKUP_UPLOAD: Mutex<()> = Mutex::const_new(());
 
 /// 鍵バックアップの送信待ちのセッションを、今の版に送る（docs/e2ee.md の「鍵バックアップ」）。
 /// 解錠していない端末と、今の版がない場合は何もしない。
+///
+/// 送信は 1 つずつ行う（[`BACKUP_UPLOAD`]）。送っている途中でこの future が捨てられても（画面を閉じて
+/// 処理を止めたなど）、次の送信の準備で、その要求の記録を捨てる（セッションは送信待ちのまま残る）。
 pub async fn upload_key_backup(api: &ApiClient, store: &SharedStore) -> Result<BackupUploadResult> {
     let _serial = BACKUP_UPLOAD.lock().await;
     if !store.lock().await.has_own_keys() {
