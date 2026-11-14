@@ -285,12 +285,24 @@ function dbNow(): string {
   return sql("SELECT now()")[0]!;
 }
 
-function toDeviceCountSince(recipientDeviceIds: string[], since: string): number {
+/**
+ * 端末あてに送った to-device の数。受信の ack で消える `e2ee_to_device_messages` ではなく、送信と同じ
+ * トランザクションで保存し、ack では消えない送信の記録（`e2ee_to_device_txns`、30 日残る）を数える。
+ * 宛先の端末が受け取って ack したあとでも、配ったことを見逃さないため。
+ */
+function toDeviceSentCount(
+  recipientDeviceIds: string[],
+  range: { after: string } | { before: string },
+): number {
   const ids = recipientDeviceIds.map(literal).join(", ");
+  const time =
+    "after" in range
+      ? `created_at > ${literal(range.after)}::timestamptz`
+      : `created_at <= ${literal(range.before)}::timestamptz`;
   return Number(
     sql(
-      `SELECT count(*) FROM e2ee_to_device_messages
-         WHERE recipient_device_id IN (${ids}) AND created_at > ${literal(since)}::timestamptz`,
+      `SELECT count(*) FROM e2ee_to_device_txns
+         WHERE recipient_device_id IN (${ids}) AND ${time}`,
     )[0],
   );
 }
@@ -461,7 +473,9 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     const replyAfterRevocation = secret("replyafterrevocation");
     await send(a1, replyAfterRevocation);
     await expectDecrypted(b1, replyAfterRevocation);
-    expect(toDeviceCountSince([revokedDeviceId], revokedAt)).toBe(0);
+    // 失効の前は、失効した端末にも鍵を配っていた（数え方が配布を見つけられることの確認）。
+    expect(toDeviceSentCount([revokedDeviceId], { before: revokedAt })).toBeGreaterThan(0);
+    expect(toDeviceSentCount([revokedDeviceId], { after: revokedAt })).toBe(0);
     // 失効した端末には鍵が届かず、失効のあとの 2 件は復号できない（失効の前のメッセージは読める）。
     await expect(
       a2.page.getByText("このメッセージを復号する鍵がまだ届いていません。", { exact: true }),
@@ -488,12 +502,16 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     const leftAt = dbNow();
     const afterLeave = secret("afterleave");
     await send(a1, afterLeave);
-    expect(
-      toDeviceCountSince(
-        bobDevices.map((d) => d.deviceId),
-        leftAt,
-      ),
-    ).toBe(0);
+    const bobDeviceIds = bobDevices.map((d) => d.deviceId);
+    expect(toDeviceSentCount(bobDeviceIds, { before: leftAt })).toBeGreaterThan(0);
+    expect(toDeviceSentCount(bobDeviceIds, { after: leftAt })).toBe(0);
+    // Bob の端末には、退出のあとのメッセージが出ない（DM の一覧からも消える）。
+    await expect(
+      b2.page.getByRole("link", { name: new RegExp(alice.name) }),
+    ).toHaveCount(0);
+    for (const device of [b1, b2]) {
+      await expect(device.page.getByText(afterLeave, { exact: true })).toHaveCount(0);
+    }
     await a1.page.screenshot({ path: testInfo.outputPath("alice-1-08-after-leave.png") });
 
     // 退出でメンバーの epoch が進み、Alice は新しい Megolm セッションで送った。
