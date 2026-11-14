@@ -471,9 +471,11 @@ fn prepare_scenario(
             composer.update(cx, |i, cx| {
                 i.set_text_and_cursor(text.to_string(), text.len(), cx)
             });
-            state.update(cx, |s, _| {
+            // WorkspaceView の observe (補完中の ↑↓ と Tab の横取り) を動かすため通知する。
+            state.update(cx, |s, cx| {
                 s.on_composer_changed(text.to_string());
                 s.update_mention_autocomplete(text, text.len());
+                cx.notify();
             });
             window.focus(&composer.focus_handle(cx));
         }

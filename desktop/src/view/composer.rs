@@ -182,8 +182,14 @@ impl WorkspaceView {
         let notice = state.notice.as_ref().map(|(msg, _)| msg.clone());
         let invalid_rows = state.store.invalid_rows;
         let update_available = state.update_available.clone();
-        let (attachment_count, uploading) = if is_editing {
-            (0, false)
+        let (attachment_count, uploading) = if let Target::Edit(msg_id) = &state.target {
+            // 編集では、元の投稿の添付が残るので本文が空でも保存できる (`submit_message` と同じ判定)。
+            let existing = state
+                .current_channel
+                .as_ref()
+                .map(|ch| state.store.attachments_for_message(ch, msg_id).len())
+                .unwrap_or(0);
+            (existing, false)
         } else {
             let atts = state.current_channel_attachments();
             (
