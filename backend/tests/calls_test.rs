@@ -1685,3 +1685,65 @@ async fn test_accepted_invite_keeps_its_seat_until_the_invitee_joins() -> anyhow
     drop((carol_response, bob_response));
     Ok(())
 }
+
+#[tokio::test]
+async fn test_seat_is_not_reserved_again_after_the_invitee_joined_and_left() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
+    w.state.call_registry.set_listening(true);
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    for i in 0..4 {
+        let filler = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(filler.as_str())
+        .bind(format!("Filler{i}"))
+        .exec(&mut w.db)
+        .await?;
+        put_presence(&mut w.db, &w.public_ch.clone(), &filler).await?;
+    }
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob]).await?;
+    let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/call-invites/{id}/accept"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let bob_session = uuid::Uuid::new_v4();
+    let stream = |actor: &str, session: uuid::Uuid| {
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/channels/{}/call/stream?session_id={session}",
+                w.public_ch
+            ))
+            .header("X-Dev-User", actor.to_string())
+            .body(Body::empty());
+        let app = w.app.clone();
+        async move { anyhow::Ok(app.oneshot(req?).await?) }
+    };
+    // 応答済みの bob が入り、すぐ退出する（60 秒以内）
+    let bob_response = stream(&bob, bob_session).await?;
+    assert_eq!(bob_response.status(), StatusCode::OK);
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/channels/{}/call/leave", w.public_ch),
+        Some(serde_json::json!({ "session_id": bob_session })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    drop(bob_response);
+    // bob の席は使い終えている。空いた席には、別の人が入れる
+    let carol_response = stream(&carol, uuid::Uuid::new_v4()).await?;
+    assert_eq!(carol_response.status(), StatusCode::OK);
+    drop(carol_response);
+    Ok(())
+}
