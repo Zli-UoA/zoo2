@@ -316,3 +316,39 @@ test("one-time keys made while replenishing survive a restart", async () => {
   assert.equal((await restored.decryptEvent(zoo.botEvents[0]!))?.body, "uses a replenished key");
   restored.close();
 });
+
+test("keys replenished while a to-device message is being verified are kept", async () => {
+  const zoo = new FakeZoo(randomUUID());
+  let during: (() => Promise<void>) | null = null;
+  const app = new ZooApp({
+    baseUrl: "https://zoo.example",
+    credentials: { access_token: "a", refresh_token: "r" },
+    fetch: async (input, init) => {
+      // Replenish while the bot reads the channel's snapshot for a received key.
+      if (during && String(input).includes("/recipients")) {
+        const run = during;
+        during = null;
+        await run();
+      }
+      return zoo.fetch(input, init);
+    },
+  });
+  const store = memoryStore();
+  const bot = await openBot(zoo, app, store);
+  const alice = new HumanDevice(crypto, zoo);
+  const channel = zoo.channel([alice.userId, zoo.botUserId]);
+  alice.send(channel, "first");
+  during = async () => {
+    zoo.oneTimeKeys.get(`${zoo.botUserId}|${bot.deviceId}`)!.clear();
+    zoo.fallbackKeys.delete(`${zoo.botUserId}|${bot.deviceId}`);
+    await bot.replenishKeys();
+  };
+  assert.equal((await bot.decryptEvent(zoo.botEvents[0]!))?.body, "first");
+  bot.close();
+  const restored = await openBot(zoo, app, store);
+  const bob = new HumanDevice(crypto, zoo);
+  const other = zoo.channel([bob.userId, zoo.botUserId]);
+  bob.send(other, "uses a key made during the first sync");
+  assert.equal((await restored.decryptEvent(zoo.botEvents[1]!))?.body, "uses a key made during the first sync");
+  restored.close();
+});

@@ -427,9 +427,8 @@ export class ZooE2ee {
     }
     // Decryption advanced the account and the Olm sessions. Their pickles go into the stored state
     // only together with the processed mark and the session key (the `finally` below, which runs
-    // without awaiting), so a save from a concurrent send never stores one without the others.
-    const account = this.account.pickle(storageKey);
-    const pickled = this.olm.pickleSessions(this.account, storageKey, decrypted.senderKey) as StoredState["olm_sessions"];
+    // without awaiting), so a save from a concurrent send never stores one without the others. They
+    // are taken there, not here: keys that `replenishKeys` makes during the awaits must not be lost.
     let inbound: [string, string] | null = null;
     try {
       const sender = decrypted.sender;
@@ -482,7 +481,8 @@ export class ZooE2ee {
     } finally {
       const senderKey = decrypted.senderKey;
       decrypted.free();
-      this.state.account = account;
+      this.state.account = this.account.pickle(storageKey);
+      const pickled = this.olm.pickleSessions(this.account, storageKey, senderKey) as StoredState["olm_sessions"];
       this.state.olm_sessions = [...this.state.olm_sessions.filter((session) => session.their_identity_key !== senderKey), ...pickled];
       if (inbound) this.state.inbound[inbound[0]] = inbound[1];
       this.markProcessed(row.id);
