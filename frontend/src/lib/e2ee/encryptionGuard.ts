@@ -21,12 +21,35 @@ function storageKey(channelId: string): string {
   return `${ENCRYPTED_CHANNEL_STORAGE_PREFIX}${channelId}`;
 }
 
-/** `encrypted = true` を見た。描画の中で呼んでよい（同じ値を足すだけ）。 */
+/** 新しく覚えたチャンネルを知らせる先（`useSyncExternalStore` の購読）。 */
+const listeners = new Set<() => void>();
+let version = 0;
+
+/**
+ * 覚えたチャンネルが増えたら呼ぶ。暗号化への切り替え（#367）を API で終えたとき、Shape の反映を待たずに、
+ * 表示中の `MessagePane` が送信を止められるようにするため。
+ */
+export function subscribeEncryptedChannels(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/** 覚えたチャンネルの集合の版（増えるたびに変わる）。 */
+export function encryptedChannelsVersion(): number {
+  return version;
+}
+
+/** `encrypted = true` を見た。描画の中で呼んでよい（同じ値を足すだけ。知らせるのは描画のあと）。 */
 export function noteEncryptedChannel(channelId: string): void {
   if (seenEncrypted.has(channelId)) return;
   seenEncrypted.add(channelId);
   if (readStorageValue(storageKey(channelId)) !== "1")
     writeStorageValue(storageKey(channelId), "1");
+  version += 1;
+  // 描画の中で呼ばれても、ほかの部品の更新をその描画の中で起こさない。
+  queueMicrotask(() => {
+    for (const listener of listeners) listener();
+  });
 }
 
 function seenAsEncrypted(channelId: string): boolean {

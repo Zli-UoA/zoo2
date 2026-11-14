@@ -51,6 +51,7 @@ import {
 } from "../ui/dropdown-menu";
 import { normalizeChannelDescription } from "./channelDescription";
 import { RenameChannelDialog } from "./RenameChannelDialog";
+import { EncryptChannelDialog } from "./EncryptChannelDialog";
 import { isGroupDm } from "./dm";
 import { PaneHeader } from "../layout/PaneHeader";
 
@@ -81,6 +82,9 @@ export function ChannelHeader({
   const [webhooksOpen, setWebhooksOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [encryptOpen, setEncryptOpen] = useState(false);
+  // 既存の非公開チャンネルは、管理できる人が暗号化に切り替えられる（#367）。
+  const canEncrypt = canManage && channel.is_private && !channel.encrypted && !isArchived;
 
   const call = useCall();
   const isInThisCall = call.currentChannelId === channel.id;
@@ -232,6 +236,10 @@ export function ChannelHeader({
         <ChannelWebhooksDialog key={channel.id} channel={channel} onOpenChange={setWebhooksOpen} />
       ) : null}
 
+      {canEncrypt ? (
+        <EncryptChannelDialog channel={channel} open={encryptOpen} onOpenChange={setEncryptOpen} />
+      ) : null}
+
       {renameOpen && canManage && !isArchived ? (
         <RenameChannelDialog key={channel.id} channel={channel} onOpenChange={setRenameOpen} />
       ) : null}
@@ -300,6 +308,23 @@ export function ChannelHeader({
                 {t("messages.edit")}
               </Button>
             </SettingRow>
+            {canEncrypt ? (
+              <SettingRow
+                label={t("e2ee.convert.action")}
+                description={t("e2ee.convert.settingHelp")}
+              >
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSettingsOpen(false);
+                    setEncryptOpen(true);
+                  }}
+                >
+                  <LockKeyholeIcon />
+                  {t("e2ee.convert.start")}
+                </Button>
+              </SettingRow>
+            ) : null}
             <SettingRow label={t("webhooks.title")}>
               <Button
                 variant="outline"
@@ -343,6 +368,7 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
   const { channelUsers } = useCollections();
   const { currentUserId } = useCurrentUser();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [encryptOpen, setEncryptOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -384,6 +410,13 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
           <MoreHorizontalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {!channel.encrypted ? (
+            // 既存の DM も、参加者なら暗号化に切り替えられる（#367）。
+            <DropdownMenuItem className="min-h-11" onClick={() => setEncryptOpen(true)}>
+              <LockKeyholeIcon />
+              {t("e2ee.convert.actionDm")}
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem
             variant="destructive"
             className="min-h-11"
@@ -398,6 +431,10 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {!channel.encrypted ? (
+        <EncryptChannelDialog channel={channel} open={encryptOpen} onOpenChange={setEncryptOpen} />
+      ) : null}
 
       <AlertDialog open={confirmOpen} onOpenChange={handleOpenChange}>
         <AlertDialogContent>

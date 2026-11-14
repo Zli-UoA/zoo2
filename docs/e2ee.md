@@ -30,19 +30,20 @@
 12. [受信時の検証](#受信時の検証)
 13. [失効と復旧](#失効と復旧)
 14. [機能ごとの扱い](#機能ごとの扱い)
-15. [Bot の端末](#bot-の端末)
-16. [有効化と運用](#有効化と運用)
-17. [クライアントの構成](#クライアントの構成)
-18. [脅威モデル](#脅威モデル)
-19. [ロードマップ](#ロードマップ)
-20. [未決と未検証の一覧](#未決と未検証の一覧)
-21. [参考](#参考)
+15. [既存のチャンネルの暗号化](#既存のチャンネルの暗号化)
+16. [Bot の端末](#bot-の端末)
+17. [有効化と運用](#有効化と運用)
+18. [クライアントの構成](#クライアントの構成)
+19. [脅威モデル](#脅威モデル)
+20. [ロードマップ](#ロードマップ)
+21. [未決と未検証の一覧](#未決と未検証の一覧)
+22. [参考](#参考)
 
 ## 決めたこと
 
 【決定】#321 で 2026-11-03 に決めたことと、#321 のレビューで反映した 5 点です。
 
-- 暗号化は、チャンネルと DM の**作成時にオプトイン**で指定する。新しい DM でも既定では有効にしない。一度有効にしたら元に戻せない（Matrix の `m.room.encryption` と同じ）。
+- 暗号化は、チャンネルと DM の**作成時にオプトイン**で指定する。新しい DM でも既定では有効にしない。一度有効にしたら元に戻せない（Matrix の `m.room.encryption` と同じ）。【決定】（#367）既存の非公開チャンネルと DM も、あとから暗号化に切り替えられる。対象は切り替えたあとのメッセージだけで、元には戻せない（[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)）。
 - 暗号化できるのは DM とプライベートチャンネルだけ。公開チャンネルは対象外にする（誰でも参加できるので、暗号化しても守れるものがない）。
 - 新しく参加したメンバーに、**参加前の履歴は共有しない**。参加後のメッセージだけを復号できる。
 - **リアクションは平文**のままにする。
@@ -741,7 +742,9 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | HTTP | `code` | 条件 | 追加のフィールド |
 | --- | --- | --- | --- |
 | 409 | `E2EE_STALE_EPOCH` | 送信や編集の `epoch` が今の `membership_epoch` より小さい。または、`recipients` の続きのページの `epoch` が今の `membership_epoch` と違う | `current_epoch` |
-| 409 | `E2EE_ENCRYPTED_IMMUTABLE` | チャンネルの `encrypted` を変えようとした（false から true も、true から false も）、または暗号化チャンネルを公開にしようとした | |
+| 409 | `E2EE_ENCRYPTED_IMMUTABLE` | `PATCH /api/channels/{id}` でチャンネルの `encrypted` を変えようとした（false から true も、true から false も）、または暗号化チャンネルを公開にしようとした。【決定】（#367）false から true への切り替えは `POST /api/channels/{id}/encrypt` だけで行う（[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)） | |
+| 409 | `E2EE_CONVERSION_BLOCKED` | 【決定】（#367）既存のチャンネルの暗号化（`POST /api/channels/{id}/encrypt`）を止めるものがある：許可のない App（Bot）か Webhook のユーザーがメンバーにいる（`apps`）、Incoming Webhook がある（`webhooks`）、1 対 1 の DM で同じ 2 人の暗号化 DM（`edm:` の名前）がすでにある（`encrypted_dm`） | `blockers`（左の名前の配列） |
+| 409 | `E2EE_LEGACY_IMMUTABLE` | 【決定】（#367）暗号化に切り替える前の平文のメッセージ（`epoch` と `ciphertext` のない行）を、切り替えたあとに編集しようとした（平文でも暗号文でも） | |
 | 409 | `E2EE_ENCRYPTED_MISMATCH` | 暗号化 DM の行が `encrypted = false` だった（不整合） | |
 | 409 | `E2EE_WRONG_BACKUP_VERSION` | 鍵バックアップの書き込み先が今の版ではない。版の作成で `expected_current_version` が今の版と違う | `current_version` |
 | 409 | `E2EE_CROSS_SIGNING_CONFLICT` | クロス署名鍵の差し替えで、`expected_keys` が今の鍵と違う | 今の公開鍵 |
@@ -749,7 +752,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_DEVICE_EXISTS` | 同じ `device_id` の端末が削除済み（墓標を含む。登録は `e2ee_devices` と `e2ee_deleted_device_ids` を 1 つの文で確かめる）、または同じ `device_id` で `device_keys` の内容が違う（削除されていない同じ内容の再送は 200） | |
 | 400 | `E2EE_SLOTS_REQUIRED` | `POST /api/e2ee/secret_storage/keys` の `slots` が空、または最後のスロットを削除しようとした | |
 | 429 | `E2EE_RATE_LIMITED` | 端末の登録が 1 ユーザーにつき 1 時間に 30 回を超えた【決定】（#354） | `retry_after`（秒） |
-| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号化チャンネルのメンバー数（200 人）、暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、送信の `mentions.user_ids` の数（200 件）、`keys/query` の応答の合計サイズ（8 MiB）、`recipients` の 1 人分の応答（4 MiB）、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）、ピンの件数（1 回 1000 件）、SSSS の秘密の暗号文（64 KiB）、鍵バックアップの `session_data`（8 KiB）が上限を超えた。すべて同じコードで返す。【決定】#354 の `limit` の値は、端末の数が `devices`、ワンタイム鍵とフォールバック鍵の数が `one_time_keys`、署名の件数が `signatures`、鍵の JSON のサイズが `key_size`、`keys/query` のユーザー数が `query_users`、応答の合計サイズが `response_size`、`keys/claim` の宛先の数が `claim_devices`。【決定】#355 の `limit` の値は、to-device の宛先の数が `to_device_recipients`、`content` の大きさが `to_device_content`、`to_device/ack` の件数が `to_device_ack`。【決定】#356 の `limit` の値は、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）が `slots`、ピンの件数（1 回 1000 件）が `pins`、SSSS の秘密の暗号文（64 KiB）が `secret_size`、鍵バックアップの `session_data`（8 KiB）が `session_size`、`key_backup/keys` の件数が `backup_sessions`。クロス署名鍵、`auth_data`、ピンの JSON（8 KiB）は `key_size`、`cross_signing/signatures` の件数とクロス署名鍵の署名の数（1000 件）は `signatures`。【決定】#357 の `limit` の値は、暗号文のサイズ（256 KiB）が `ciphertext_size`、`recipients` の 1 人分の応答（4 MiB）が `response_size`、暗号化チャンネルのメンバー数（200 人）が `members`。【決定】#358 の `limit` の値は、送信の `mentions.user_ids` の数（200 件）が `mentions` | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
+| 400 | `E2EE_LIMIT_EXCEEDED` | 暗号化チャンネルのメンバー数（200 人）、暗号文のサイズ（256 KiB）、`keys/query` のユーザー数（100 人）、端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）、送信の `mentions.user_ids` の数（200 件）、`keys/query` の応答の合計サイズ（8 MiB）、`recipients` の 1 人分の応答（4 MiB）、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）、ピンの件数（1 回 1000 件）、SSSS の秘密の暗号文（64 KiB）、鍵バックアップの `session_data`（8 KiB）が上限を超えた。すべて同じコードで返す。【決定】#354 の `limit` の値は、端末の数が `devices`、ワンタイム鍵とフォールバック鍵の数が `one_time_keys`、署名の件数が `signatures`、鍵の JSON のサイズが `key_size`、`keys/query` のユーザー数が `query_users`、応答の合計サイズが `response_size`、`keys/claim` の宛先の数が `claim_devices`。【決定】#355 の `limit` の値は、to-device の宛先の数が `to_device_recipients`、`content` の大きさが `to_device_content`、`to_device/ack` の件数が `to_device_ack`。【決定】#356 の `limit` の値は、パスキーの鍵スロットの数（SSSS 鍵ごとに 20 個）が `slots`、ピンの件数（1 回 1000 件）が `pins`、SSSS の秘密の暗号文（64 KiB）が `secret_size`、鍵バックアップの `session_data`（8 KiB）が `session_size`、`key_backup/keys` の件数が `backup_sessions`。クロス署名鍵、`auth_data`、ピンの JSON（8 KiB）は `key_size`、`cross_signing/signatures` の件数とクロス署名鍵の署名の数（1000 件）は `signatures`。【決定】#357 の `limit` の値は、暗号文のサイズ（256 KiB）が `ciphertext_size`、`recipients` の 1 人分の応答（4 MiB）が `response_size`、暗号化チャンネルのメンバー数（200 人）が `members`。【決定】#358 の `limit` の値は、送信の `mentions.user_ids` の数（200 件）が `mentions`。【決定】（#367）既存のチャンネルの暗号化で、メンバーが 200 人を超えるときも `members` | `limit`（超えた上限の名前）。端末の数のときは `stale_devices`（`device_id`、`last_seen_at`） |
 | 409 | `E2EE_KEY_EXISTS` | 同じ鍵 ID で内容が違うワンタイム鍵をアップロードした | |
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない（暗号化チャンネルで必須。平文チャンネルでは、送ったときだけ） | `current_revision` |
 | 409 | `E2EE_PIN_CONFLICT` | `replace: false` で、同じ相手に、違うマスター鍵の TOFU のピンがすでにあり、そのピンを今のユーザー署名鍵で検証できる | `pin` |
@@ -978,7 +981,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 【決定】クライアントは、応答の `encrypted` が true であることを確かめてから送信する。サーバーが平文の DM を返しても、平文で送らない。
   - React の `frontend/src/components/chat/dm.ts`（`parseOneToOneDmIds`）と Compose の `Channels.kt` は `dm:` の名前を解析しているので、`edm:` も 1 対 1 の DM として扱うよう直す（#357 か #361）。TUI はメンバーから名前を作るので影響しない。
 - 【決定】`channels.membership_epoch` と `messages.epoch` は `bigint` のままにするが、Electric は `int8` を文字列で配る（`frontend/src/lib/electric/schema.ts` の `int8` は数値型に入らない）ので、クライアントは、比較の前に正準な整数（`BigInt` など）に変えてから比べる。`ChannelRow` と `MessageRow` の型に、この列を文字列として足す。
-- `PATCH /api/channels/{id}`：`encrypted` を変えようとしたとき（平文チャンネルを true にする場合も、暗号化チャンネルを false にする場合も。同じ値なら何もしない）と、暗号化チャンネルで `is_private: false` にしようとしたときは 409 `E2EE_ENCRYPTED_IMMUTABLE`。平文の非公開チャンネルを公開にすることは、今までどおりできる。
+- `PATCH /api/channels/{id}`：`encrypted` を変えようとしたとき（平文チャンネルを true にする場合も、暗号化チャンネルを false にする場合も。同じ値なら何もしない）と、暗号化チャンネルで `is_private: false` にしようとしたときは 409 `E2EE_ENCRYPTED_IMMUTABLE`。平文の非公開チャンネルを公開にすることは、今までどおりできる。【決定】（#367）平文の非公開チャンネルと DM を暗号化に切り替えるのは、`POST /api/channels/{id}/encrypt` だけ（[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)）。`PATCH` で切り替えないのは、DM の `PATCH` は今も 403 で、DM の名前の付け替えとメンバーの検査を 1 か所にまとめるため。
 - チャンネルの応答（`ChannelResponse`）に `encrypted` と `membership_epoch` を足す。
 - 【決定】暗号化チャンネルでは、メンバーの追加（`POST /api/channels/{id}/users`）ができるのを、現在のメンバーだけにする。既存の規則では、ワークスペースの管理者がメンバーでなくても非公開チャンネルにメンバーを足せる（`backend/src/routes/channels.rs` の `add_channel_user` と `can_add_member`）ので、管理者が自分自身を足して、それ以降のセッションを受け取れてしまう。暗号化チャンネルでは、作成者も `channel_user` の実際の行で判定し（既存の `is_creator` を `is_actor_member = true` とみなす扱いと、`can_add_member` の作成者の無条件の許可は使わない）、メンバーでない管理者と、退出した作成者の追加は 403 `E2EE_ADD_FORBIDDEN` にする（キックは今までどおり）。
 - `POST /api/channels/{id}/join`、`/leave`、`/users`、`DELETE /api/channels/{id}/users/{user_id}` と DM の再参加は、暗号化チャンネルなら同じトランザクションで `membership_epoch` を増やす。ただし、増やすのは `channel_user` の行が実際に変わったとき（入った、または消えた行が 1 以上）だけで、すでにメンバーの `join` や `/users`、何もしない `leave` は増やさない（[membership_epoch と送信の順序](#membership_epoch-と送信の順序)）。端末の削除などほかの処理での増加は、その節の表のとおり。
@@ -1286,6 +1289,9 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 【決定】（#366）`app_message_events_v2` は、暗号化チャンネルのメッセージを、許可のある Bot の `e2ee:device` を持つインストールにだけ、暗号文と照合の列だけのイベントにする（[Bot の端末](#bot-の端末)の API）。
   - 【決定】（#358）`app_message_events_v2` は、暗号化チャンネルのメッセージ（INSERT、UPDATE、DELETE）を App のイベントにしない。本文を解析する `is_mention`（`app.mentioned`）と `link.shared` もここで止まる。`sync_channel_home_post` の対象にも `NOT c.encrypted` を足す（暗号化チャンネルは非公開なので、もともと対象外だが明示する）。
 - 【決定】`channels.encrypted` は作成時だけ指定でき、トリガーで `OLD.encrypted IS DISTINCT FROM NEW.encrypted` の更新（両方向）を拒否する。平文のメッセージを持つチャンネルが暗号化チャンネルとして扱われ、履歴を復号できず平文と暗号文が混在するのを防ぐため（既存チャンネルの暗号化は初期版ではできない）。`is_private` も false にできないようにする。
+  - 【決定】（#367）false から true への更新は認める（関数 `e2ee_protect_channel_encryption` は、true から false だけを拒否する）。true にするときは、許可のない Bot と Webhook のユーザーがメンバーにいないこと、`channel_webhooks` の行がないことを求める（SQLSTATE `23514`）。切り替える前の平文の行の扱いは、下の #367 の項目と[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)。
+- 【決定】（#367）暗号化に切り替える前の平文の行（`epoch` と `ciphertext` のない行）は、`e2ee_reject_plaintext_messages` で次のように扱う。例外は同じチャンネルの中の更新だけで、別のチャンネルから `channel_id` を変えて移した行は、新しい行と同じく暗号文を求める。例外に当たらない行は、削除済みでも本文を空にすることを求める（#358 では削除済みの行の本文を見ていなかったので、削除済みの平文の行を移すと本文を持ち込めた。暗号化チャンネルで送った行は、もともと本文が空）。本文と平文の列（`content`、`app_attachments`、`app_blocks`、`app_unfurls`、`metadata`、`card`、`home_post_id`、`apub`）は、そのままにするか消すだけの更新を認め、新しい値を入れる更新と、`ciphertext` や `epoch` を入れる更新（暗号文への書き換え）は拒否する。リアクションの表示（`display_data`）、論理削除、投稿者の付け替え（Slack の連携）、スレッドの列などの更新は通る。新しい行（INSERT）は、今までどおり暗号文だけを認める。`e2ee_reject_plaintext_attachments` も、切り替える前の平文の添付には、ファイル名、Content-Type、画像の情報、保存先、`message_id`、`channel_id` を変えない更新（センシティブの印など）だけを認める。紐付けていない平文の添付を、切り替えたあとのメッセージに紐付けることはできない。
+- 【決定】（#367）暗号化チャンネルの判定に使うトリガー（`e2ee_reject_plaintext_messages`、`e2ee_reject_plaintext_attachments`、`e2ee_reject_bot_members`、`e2ee_reject_channel_webhooks`）は、`channels` の行を `SELECT encrypted ... WHERE id = $1 FOR KEY SHARE` で読む。切り替えは行を `FOR UPDATE` でロックするので、平文の書き込みは切り替えの前か後のどちらかに並ぶ（切り替えの途中に読んだ古い `encrypted = false` で、切り替えのあとに平文が入らない）。`WHERE` に `encrypted` を入れると、条件に合わない古い版の行はロックされず、切り替えを待たないので入れない。`FOR KEY SHARE` は `FOR UPDATE` とだけ衝突し、`INSERT` の外部キーの検査と同じ強さなので、ほかの書き込みを新しく待たせない。`channel_webhooks` の `BEFORE INSERT OR UPDATE OF channel_id` のトリガー `channel_webhooks_e2ee_reject` は、暗号化チャンネルへの Incoming Webhook の作成を拒否する（API の 403 `E2EE_WEBHOOKS_FORBIDDEN` の最後の防御）。
 - 【決定】送信と編集のトランザクションは `channels` の行を `FOR SHARE` で読んで `epoch` を比べる。`membership_epoch` を増やす処理は `UPDATE`（行ロック）なので、epoch の比較と増加が直列になる。
 
 ## Electric の Shape
@@ -1314,7 +1320,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 
 【決定】ロックの順は、本書のすべての書き込みで次にそろえる：`users` の行（`FOR SHARE`、無効化は `FOR NO KEY UPDATE`。無効化はキー列を変えないので、to-device の `sender_user_id` や `keys/claim` の `claimer_user_id` の外部キーが取る `FOR KEY SHARE` とは衝突せず、登録系の `FOR SHARE` とは直列になる。`FOR UPDATE` にすると、無効化が `users` を持ったまま端末単位のロックを待ち、端末単位のロックを持つ to-device や `keys/claim` が外部キーで `users` を待つ循環になる）、ユーザー単位の advisory lock `(1, …)`、端末単位の advisory lock `(2, …)`（`(user_id, device_id)` の昇順）、メンバー単位の advisory lock `(3, hashtext(user_id))`（`user_id` の昇順）、`channels` の行（`id` の昇順）、`e2ee_devices` の行。逆の順で取る経路を作らない（行き詰まりを避けるため）。
 
-【決定】（#357 のレビュー）メンバー単位のロック `(3, …)` は、`membership_epoch` の一括の増加（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）が参加先を読む前に取り、暗号化チャンネルへのメンバーの追加（作成、`join`、`POST /api/channels/{id}/users`、DM の作成と再参加）が追加する人について `channel_user` に書く前に取る。一括の増加が参加先を確定してからコミットするまでに新しい所属が確定すると、追加されたチャンネルの epoch が増えず、削除した端末に配った鍵で削除のあとの送信が通るため。メンバーの追加は、チャンネルの行を `FOR NO KEY UPDATE` で読む（epoch の `UPDATE` と送信の `FOR SHARE` とは直列になり、外部キーの検査の `FOR KEY SHARE` とは衝突しないので、そのチャンネルへの投稿を待たせない）。送信と編集は、チャンネルの行を `FOR SHARE` で読んだあとに、メンバーであることを確かめ直す（ロックより前の確認のあとに退出、キックが確定していたら 404）。
+【決定】（#357 のレビュー）メンバー単位のロック `(3, …)` は、`membership_epoch` の一括の増加（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）が参加先を読む前に取り、暗号化チャンネルへのメンバーの追加（作成、`join`、`POST /api/channels/{id}/users`、DM の作成と再参加）が追加する人について `channel_user` に書く前に取る。一括の増加が参加先を確定してからコミットするまでに新しい所属が確定すると、追加されたチャンネルの epoch が増えず、削除した端末に配った鍵で削除のあとの送信が通るため。メンバーの追加は、チャンネルの行を `FOR NO KEY UPDATE` で読む（epoch の `UPDATE` と送信の `FOR SHARE` とは直列になり、外部キーの検査の `FOR KEY SHARE` とは衝突しないので、そのチャンネルへの投稿を待たせない）。送信と編集は、チャンネルの行を `FOR SHARE` で読んだあとに、メンバーであることを確かめ直す（ロックより前の確認のあとに退出、キックが確定していたら 404）。【決定】（#367）既存のチャンネルの暗号化は、今のメンバー全員のメンバー単位のロックのあとに、チャンネルの行を `FOR UPDATE` で読む。平文の経路は行を `FOR KEY SHARE` で読んで切り替えと直列にする（[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)）。
 
 【決定】複数のチャンネルの `membership_epoch` を一度に増やす処理（端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成）は、最初に `SELECT id FROM channels WHERE encrypted AND deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1) ORDER BY id FOR NO KEY UPDATE` でそのユーザーの暗号化チャンネルをまとめて `id` の昇順にロックしてから、同じ条件で `UPDATE` する。削除済みのチャンネルは増やさない。単独のチャンネルの変更（参加、退出、キック、送信）はこの対象ではない。同じユーザーの別の処理（端末の削除と、クロス署名鍵の変更）も、このロックで直列になる。
 
@@ -1332,6 +1338,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 | マスター鍵、自己署名鍵、ユーザー署名鍵の変更 | その持ち主が参加しているすべての暗号化チャンネル | #357（#356 のクロス署名 API に足す） |
 | 鍵バックアップの版の作成（そのユーザーの最初の版を除く） | その持ち主が参加しているすべての暗号化チャンネル | #357（#356 の鍵バックアップ API に足す） |
 | アカウントの無効化（`users.is_deactivated` が true になる） | そのユーザーが参加しているすべての暗号化チャンネル | #357（#354 の端末の削除に足す。[アカウントの無効化](#アカウントの無効化)） |
+| 既存のチャンネルの暗号化（`POST /api/channels/{id}/encrypt`） | そのチャンネル | #367 |
 
 `membership_epoch` の列を足すのは #357 なので、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えで epoch を増やす処理も #357 で足します。#354 と #356 の本文にある「epoch を増やす（#357 のあと）」はこれに当たります。このため、[ロードマップ](#ロードマップ)では #357 を #354 と #356 のあとに置きます。
 
@@ -1418,7 +1425,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | epoch | ペイロードの `epoch` = 行の `epoch` = セッションの `epoch` | 破棄 |
 | リプレイ | `(session_id, message_index)` ごとに最初に復号した `message_id` を記録し、記録と同じ | 別の `message_id` なら破棄（リプレイ）。同じ `message_id` の再取得と再復号は通す |
 | 版 | ペイロードの `revision` = 行の `revision`。`message_id` ごとに見た最大の `revision` を記録し、それ以上 | 行と違えば破棄。記録より小さければ表示は最大の版のままにし、「サーバーが古い版を返した」と警告する。同じ `revision` で中身が違えば（サーバーが単調増加を守っていれば起きない）、先に見た方を表示したまま警告する |
-| 暗号文の有無 | 暗号化チャンネルの削除されていない行は `ciphertext` を持つ（正しいサーバーは DB のトリガーで、暗号文のない行を作れない） | 【決定】（#361）本文、カード、App の表示、添付を出さず、「暗号化されていないため表示しない」と表示する |
+| 暗号文の有無 | 暗号化チャンネルの削除されていない行は `ciphertext` を持つ（正しいサーバーは DB のトリガーで、暗号文のない行を作れない）。【決定】（#367）例外は、暗号化に切り替える前の平文の行（`ciphertext` も `epoch` もない行） | 【決定】（#361）本文、カード、App の表示、添付を出さず、「暗号化されていないため表示しない」と表示する。【決定】（#367）`ciphertext` も `epoch` もない行は、切り替える前の平文のメッセージとして本文を出し、「暗号化前」の印を付ける（[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)） |
 | 送信者の検証状態 | セッションの送信端末が検証済み（Olm 由来のセッションだけで判定する） | 「未検証の送信者」と表示する（破棄はしない） |
 | 入手経路 | 復号に使ったセッションが Olm 由来 | バックアップ由来のセッションで復号したなら「送信者を確かめられない」の印を付ける（破棄はしない） |
 
@@ -1630,10 +1637,77 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | Home/LTL への同期 | 止める（`sync_channel_home_post` の対象外。DB のトリガーで `home_post_id` を NULL に保つ） |
 | ActivityPub の連合 | 止める（DB のトリガーで `apub` を false に保つ。Home の投稿は公開チャンネルにしか置けないので、暗号化チャンネルからは連合しない） |
 | App（Bot） | 参加を禁止し（403 `E2EE_APPS_FORBIDDEN`。強制する場所は、`backend/src/apps/management.rs` の `add_channel`、`POST /api/dms` の対象（`is_bot`）、DB の `channel_user` の挿入前のトリガー（ボットの参加を、暗号化チャンネルでは拒否する。`app_guest_membership_rules` と同じ形）、読み書きの入口の `Principal::channel` と `Actor::channel`（委任トークンとボットのトークンを 403 にする。`/api/apps/v1/shapes/*` と Actor 経由のピン、履歴、メタデータも対象）の 4 か所）、App からの `encrypted: true` のチャンネルと DM の作成も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` にする。理由は 2 つある。`backend/src/apps/api.rs` の `create_channel` は `c::create_channel` を呼ぶので、App が暗号化チャンネルを作って作成者として参加できてしまう。`/api/apps/v1/dms` は `dms::create_or_get_dm` を呼び、`create_channel` を通らずにチャンネルと参加者を直接作る。拒否は、`create_channel` 側と、`apps/api.rs` の `dm`（`Principal` を見て判定する。`dms::create_or_get_dm` は人間の `POST /api/dms` と共用で `Principal` を受け取らない）で行う。`app_message_events_v2` のイベントと App の履歴 API の対象から外す。`/api/apps/v1/*` は、委任トークン（ユーザーとして動くもの）を含めて、暗号化チャンネルへの読み書きと添付（`files`、`messages/{id}/files`、`blocks`、`unfurls`）を拒否する。DB のトリガーで、暗号化チャンネルの行の `app_attachments`、`app_blocks`、`app_unfurls`、`metadata` を空に保つ（[DB](#db)）。担当は #358。ただし、App からの暗号化チャンネルと DM の作成の拒否は #357 の作業（作成 API の入口）。【決定】（#366）メンバーが明示的に許可した、`e2ee:device` を持つ Bot だけは、端末として参加できる。サーバーが平文を受け取る経路は開かない（[Bot の端末](#bot-の端末)） |
-| Slack 取り込み | 暗号化チャンネルへの取り込みを禁止する。取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで、既存のチャンネル（`MappingAction::Existing`）として暗号化チャンネルを指定したら 400 `E2EE_PLAINTEXT_FORBIDDEN`（`backend/src/slack/import.rs` の `MappingAction::Existing` と worker は平文の `content` を `messages` に入れるため。添付も取り込めない）（#358） Slack 取り込みのコードは #300 で入った。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のあいだは暗号化チャンネルを作れないので、#357 より前の拒否は設定で足りる（Slack 取り込みの拒否は #358 で入れ、#358 のあとに設定を true にする）。`docs/slack-import.md` にも書いた。worker も、ジョブの実行時に暗号化チャンネルへの書き込みを検査する（#367 で既存のチャンネルを暗号化できるようになると、開始のあとにチャンネルが暗号化されうるため。#367 の条件にも書く）。 |
-| Incoming Webhook | 作成を禁止する（403 `E2EE_WEBHOOKS_FORBIDDEN`）。Webhook のユーザーは Bot なので、DB のトリガーでも参加できない。既存の Webhook は、暗号化チャンネルを後から作れない（[既存チャンネルの暗号化](#機能ごとの扱い)は初期版ではできない）ので存在しない（#358） |
+| Slack 取り込み | 暗号化チャンネルへの取り込みを禁止する。取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで、既存のチャンネル（`MappingAction::Existing`）として暗号化チャンネルを指定したら 400 `E2EE_PLAINTEXT_FORBIDDEN`（`backend/src/slack/import.rs` の `MappingAction::Existing` と worker は平文の `content` を `messages` に入れるため。添付も取り込めない）（#358） Slack 取り込みのコードは #300 で入った。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のあいだは暗号化チャンネルを作れないので、#357 より前の拒否は設定で足りる（Slack 取り込みの拒否は #358 で入れ、#358 のあとに設定を true にする）。`docs/slack-import.md` にも書いた。worker も、ジョブの実行時に暗号化チャンネルへの書き込みを検査する（#367 で既存のチャンネルを暗号化できるようになると、開始のあとにチャンネルが暗号化されうるため。#367 の条件にも書く）。【決定】（#367）検査は worker 側で行い、切り替えでは取り込みを止めない（[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)の「Slack」）。 |
+| Incoming Webhook | 作成を禁止する（403 `E2EE_WEBHOOKS_FORBIDDEN`）。Webhook のユーザーは Bot なので、DB のトリガーでも参加できない。既存の Webhook は、暗号化チャンネルを後から作れない（[既存チャンネルの暗号化](#機能ごとの扱い)は初期版ではできない）ので存在しない（#358）。【決定】（#367）既存のチャンネルを暗号化に切り替えるときは、Incoming Webhook が残っていれば 409 `E2EE_CONVERSION_BLOCKED`（`webhooks`）で止める。DB のトリガー `channel_webhooks_e2ee_reject` も、暗号化チャンネルへの作成を拒否する |
 | 通話 | 本書の対象外。通話のシグナリングとメディアは今の仕組みのまま |
-| 既存チャンネルの暗号化 | 初期版ではできない。後続（[#367](https://github.com/Zli-UoA/zoo2/issues/367)） |
+| 既存チャンネルの暗号化 | 【決定】（[#367](https://github.com/Zli-UoA/zoo2/issues/367)）非公開チャンネルと DM を切り替えられる（[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)）。#367 より前はできなかった |
+
+## 既存のチャンネルの暗号化
+
+【決定】（[#367](https://github.com/Zli-UoA/zoo2/issues/367)）既存の非公開チャンネルと DM（1 対 1 とグループ）を、あとから暗号化に切り替えられます。Matrix で、平文のルームにあとから `m.room.encryption` を送るのと同じ考え方です。切り替えたあとのメッセージだけを暗号化し、切り替える前のメッセージは平文のまま残ります。元には戻せません。
+
+### API
+
+- 【決定】`POST /api/channels/{id}/encrypt`（本文なし）。応答は `{"data": <ChannelResponse>, "txid": ...}`。`channels.encrypted` を true にし、同じトランザクションで `membership_epoch` を 1 増やす（Shape で見ていた古い epoch のまま送信の準備を進めないため）。すでに暗号化されていれば何もせずに今の行を返す（`txid` は `null`。応答をなくした再送）。
+- 【決定】判定の順：チャンネルがない、削除済み、または非公開チャンネルと DM でメンバーでない（`channel_user` の実際の行で判定する。メンバーでないワークスペースの管理者と、退出した作成者も含む）なら 404。App（Bot）のトークンは 403 `E2EE_APPS_FORBIDDEN`。公開チャンネルは 400 `E2EE_PUBLIC_FORBIDDEN`。すでに暗号化されていれば 200。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false なら 403 `E2EE_DISABLED`。非公開チャンネルは、チャンネルを管理できる人（作成者かワークスペースの管理者で、メンバーであること）だけで、ほかのメンバーは 403。DM とグループ DM は、メンバーなら誰でも切り替えられる（DM には管理者がいないため）。アーカイブ済みは 400。メンバーが 200 人を超えれば 400 `E2EE_LIMIT_EXCEEDED`（`limit` は `members`）。止めるものがあれば 409 `E2EE_CONVERSION_BLOCKED`（下の「App と Webhook」と「DM」）。
+- 【決定】直前の再認証は求めない。鍵の操作ではなく、切り替えで読めるようになる人は増えない（読める人は、今のメンバーの検証済みの端末に限られる）ため。
+- 【決定】`PATCH /api/channels/{id}` の `encrypted` は、今までどおり 409 `E2EE_ENCRYPTED_IMMUTABLE`（[暗号化チャンネル](#暗号化チャンネル357)）。
+
+### ロックと直列化
+
+- 【決定】ロックの順は[membership_epoch と送信の順序](#membership_epoch-と送信の順序)のとおり：今のメンバー全員のメンバー単位のロック `(3, …)`（`user_id` の昇順）、`channels` の行（`FOR UPDATE`）。メンバー単位のロックで、端末の削除などの一括の epoch の増加（平文のチャンネルは対象外）と直列にする。一括の増加が参加先を確定してから、切り替えのあとにコミットすると、削除した端末が切り替えのあとのスナップショットに残るため。
+- 【決定】ロックの前に読んだメンバーと、行をロックしたあとに読み直したメンバーが違えば（そのあいだに平文の経路で参加、退出した人がいる）、ロールバックして最初からやり直す（3 回まで。超えたら `code` のない 409）。
+- 【決定】`FOR UPDATE` は、平文の経路が取る `FOR KEY SHARE`（外部キーの検査、DB のトリガー、`e2ee_channels::lock_encryption`）と衝突する。平文の書き込みは、切り替えの前か後のどちらかに並ぶ。
+  - 平文の送信（`POST /api/messages`）は、行を `FOR KEY SHARE` で読み直し、切り替わっていれば 400 `E2EE_PLAINTEXT_FORBIDDEN`。編集は今までどおり `FOR SHARE` で読む。
+  - メンバーの変更は、平文と読んだ経路だけ、行を `FOR KEY SHARE` で読み直す。`join` と App の `add_channel` は、切り替わっていれば `code` のない 409（やり直せば暗号化チャンネルの経路を通り、epoch が増える）。`POST /api/channels/{id}/users` は、行を `FOR NO KEY UPDATE` で読んだあとの `encrypted` が、ロックなしで読んだ値と違えば 409。`leave` とキックは、もともと最初に行を `FOR UPDATE` で読む。1 対 1 の DM の再参加は、切り替わっていれば最初からやり直す（`dm:` の名前では見つからず、新しい平文の DM を作る）。
+  - `encrypted` は true から false に戻らないので、ロックなしで true と読んだ経路は、今までどおりそのまま暗号化チャンネルとして扱える。
+
+### 切り替える前のメッセージ
+
+- 【決定】切り替える前のメッセージ（`ciphertext` も `epoch` もない行）は、平文のままサーバーに残り、メンバーは今までどおり読める。暗号化し直さない（過去の平文はすでにサーバーにあり、暗号化し直しても守れるものがない。Matrix も同じ）。
+- 【決定】切り替えたあとは、切り替える前のメッセージを編集できない（平文でも暗号文でも 409 `E2EE_LEGACY_IMMUTABLE`）。平文で上書きすると暗号化チャンネルに新しい平文が入り、暗号文に置き換えても、元の平文は Home、ActivityPub、通知などに残り、暗号化したように見えて守れないため。削除、リアクション、スレッドへの返信（返信は暗号化する）はできる。DB のトリガーも、新しい平文の追加と暗号文への書き換えを拒否する（[DB](#db)）。
+- 【決定】通知の一覧やスレッドの一覧などの、平文の `content` を読む表示は、切り替える前の行を今までどおり扱う（平文なので変えない）。チャンネル単位で決まる扱い（App の API と Shape からの除外、URL カードを押したときだけ取得するなど）は、切り替えたあとはチャンネル全体に暗号化チャンネルの規則（[機能ごとの扱い](#機能ごとの扱い)）を当てる。切り替える前の行も、App からは読めなくなる。
+- 【決定】Web は、切り替える前の行の本文をそのまま出し、「暗号化前」の印を付け、編集の操作を出さない。暗号化したメッセージとの境目に「ここから暗号化されています」の区切りを出す。暗号文がなく `epoch` だけがある行は、今までどおり「暗号化されていないため表示しない」（正しいサーバーはこの行を作れない）。編集中に切り替わったら、切り替える前の行の編集をやめる。
+
+### 紐付けていない添付
+
+- 【決定】切り替えでは、同じトランザクションで、そのチャンネルのまだメッセージに紐付けていない添付の行（`message_id IS NULL`）を消す。チャンネルの行を `FOR UPDATE` でロックしているので、消すのは平文のチャンネルとして presign した行だけ。発行済みの署名付き URL への PUT が切り替えのあとに終わると、平文の本体がストレージに残るため（行が残っていても、紐付けは DB のトリガーが拒否するのでメッセージには入らない）。
+- 【決定】オブジェクトはコミットのあとにすぐ消し、署名付き URL の期限（`ATTACHMENT_PRESIGNED_PUT_EXPIRY_SECS`）と 60 秒を待ってから、もう一度消す。期限が切れた URL では PUT できないので、2 回目のあとに残ることはない。その前に backend が止まると、進行中だった PUT の本体が残ることがある（DB の行がないので、API からは読めない）。
+
+### Home と ActivityPub
+
+- 【決定】Home と ActivityPub に連合済みの投稿があるチャンネルも切り替えられる。連合済みの投稿は取り消さず、そのまま残す。公開チャンネルの投稿として一度公開したもので、ほかのサーバーに届いた写しは取り消せず、zoo の側だけ消しても守れるものがないため。投稿者が消したければ、今までどおり削除できる（削除は Home と ActivityPub にも伝わる）。
+- 【決定】切り替えたあとは、新しいメッセージを Home と ActivityPub に同期しない（暗号化チャンネルは非公開で、DB のトリガーで `home_post_id` と `apub` を保つ。[機能ごとの扱い](#機能ごとの扱い)）。Home の投稿は公開チャンネルにしか置けず、連合済みの投稿があるのは、公開チャンネルを非公開にしたチャンネルだけ。切り替える前の行の `home_post_id` と `apub` は、そのままにするか消すだけを認める。
+- 【決定】切り替える前の行は編集できないので、連合済みの投稿に、切り替えたあとの本文が `Update` として流れることはない。
+- Web の確認の画面で、Home や ActivityPub にすでに出した投稿は取り消されないことを示す。
+
+### Slack
+
+- 【決定】Slack の取り込みが暗号化したチャンネルに平文を書かないことは、worker 側の検査で守る。切り替えでは、進行中の取り込みを止めない（取り込みのジョブはワークスペース単位で、チャンネルごとに止める仕組みがなく、チャンネルの管理者がほかのチャンネルの取り込みを止められるようにしないため）。
+  - 取り込みのジョブ（`backend/src/slack/worker.rs`）は、メンバーを足すトランザクションと、日付ファイルごとに投稿を入れるトランザクションの最初に、取り込み先の行を `FOR KEY SHARE` で読み、暗号化されていれば 400 `E2EE_PLAINTEXT_FORBIDDEN` でジョブを止める（ジョブは失敗になる）。
+  - 添付の取得は、取り込み先が暗号化されていれば `skipped`（`Encrypted channel`）にする。取得の途中で切り替わったら、添付の INSERT を DB のトリガーが拒否し、次の試行で `skipped` になる。行単位の取得は、取る行を選ぶときにも暗号化チャンネルを外している（#364）。取得の結果で、取り込み済みの投稿の本文（補ったファイル名）は変えない。
+  - 同期（`backend/src/slack/sync.rs`）は、暗号化チャンネルを取らない（取る行を選ぶ条件で外す。#293）。取ったあとに暗号化されていれば、そのチャンネルの同期を 1 日休ませる（`encrypted_channel`）。1 ページを保存するトランザクションと、イベントで知らせた編集・削除・リアクション・返信を反映するトランザクション（`backend/src/slack/hints.rs`）と、取り込み済みの投稿を取り直すトランザクション（`backend/src/slack/recheck.rs`）でも、行を `FOR KEY SHARE` で読み、切り替わっていれば書かない。
+  - 取り込みの開始で、暗号化チャンネルを取り込み先にすると 400（#358 のまま）。
+  - 添付の取得は、添付の行の INSERT と同じトランザクションでも取り込み先を `FOR KEY SHARE` で確かめ、切り替わっていれば行を作らず、置いた S3 のオブジェクトを消して `skipped` にする。取り込み済みの投稿を取り直す処理（`recheck.rs`）は、Slack にない投稿を消す最後のトランザクションでも確かめる。
+  - Slack のアカウントの連携で、プレースホルダの参加チャンネルを本人へ移す処理（`link.rs` の `move_content`）は、暗号化チャンネルの `membership_epoch` を増やす（人の追加と退出と同じ）。ロックは、プレースホルダと本人のメンバー単位のロック、プレースホルダの参加チャンネルの行（`FOR NO KEY UPDATE`）の順で、投稿の付け替えより前に取る（`lock_moves`）。何人分も続けて付け替える `reconcile_team` は、全員分を最初に 1 回で取る。差分同期の終わり（`sync.rs` の `finish`）は、既読の行を書いたトランザクションとは別のトランザクションで付け替える（既読の行の外部キーがチャンネルの行を読むので、同じトランザクションだと順が逆になる）。
+  - Slack のアカウントの連携で、プレースホルダへのメンションを本人の名前に書き換える処理（`link.rs` の `rewrite_mentions`）は、暗号化チャンネルの投稿を書き換えない（チャンネルの行を `FOR KEY SHARE` でロックして条件を読み直す）。投稿者の付け替えは本文を変えないので、今までどおり行う。
+- 切り替える前に取り込んだ投稿は、ほかの平文のメッセージと同じく残る。
+
+### App と Webhook
+
+- 【決定】許可のない App（Bot）か Webhook のユーザーがメンバーにいる、または Incoming Webhook があるチャンネルは切り替えない（409 `E2EE_CONVERSION_BLOCKED`、`blockers` に `apps` と `webhooks`）。自動では外さない（チャンネルの連携を黙って止めないため）。Web の確認の画面と、409 の文言で、先に外すよう示す。暗号化したあとに Bot を入れるときは、[Bot の端末](#bot-の端末)の許可の手順を使う。DB のトリガーも同じ条件で切り替えを拒否する（[DB](#db)）。
+
+### DM
+
+- 【決定】1 対 1 の平文の DM（`dm:{user_a}:{user_b}`）を切り替えると、名前を暗号化 DM の `edm:{user_a}:{user_b}` に変える。`POST /api/dms` は、平文を求めると `dm:` の名前で探すので、切り替えた DM を返さず、新しい平文の DM を作る。暗号化を求めると、切り替えた DM を返す（同じ 2 人に平文の DM と暗号化 DM が 1 つずつある状態を認める、[暗号化チャンネル](#暗号化チャンネル357)の規則と同じ）。同じ 2 人の暗号化 DM がすでにあれば、409 `E2EE_CONVERSION_BLOCKED`（`encrypted_dm`）。名前の `edm:` は、クライアントの格下げの検出にも使う（[暗号化の格下げを防ぐ](#暗号化の格下げを防ぐ)）。
+- 【決定】グループ DM（`dm:group:{UUID}`）は名前を変えない。
+
+### クライアント
+
+- 【決定】Web は、API の応答で `encrypted = true` を確かめたら、Shape の反映を待たずに、そのチャンネルを「暗号化を見たチャンネル」として覚える（[暗号化の格下げを防ぐ](#暗号化の格下げを防ぐ)）。Shape の反映が遅れたり、待ちが失敗したりしても、表示中の `MessagePane` が描き直して平文の送信を止める（Shape に `encrypted = true` が届くまでは、格下げの警告と同じ表示になる）。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。
+- 【決定】確認の画面は、開いたときのチャンネルに固定する。開いたまま表示するチャンネルが変わったら閉じる（`ChannelScreen` は `ChannelHeader` をチャンネルごとに作り直す）。確認の画面にはチャンネル名を出さないので、移動先を確かめずに戻せない形で切り替えないため。
+- 【決定】Web（React）は、非公開チャンネルの「チャンネル設定」と、DM のメニューから切り替える。確認の画面で、これからのメッセージだけを暗号化すること、これまでのメッセージは平文のまま残り編集できなくなること、Home と ActivityPub に出した投稿は取り消されないこと、Slack の取り込みと同期が止まり、App と Webhook は先に外すこと（チャンネルだけ）、元に戻せないことを示す。切り替えのあと、端末の暗号化の準備ができていなければ、送信の欄は今までどおり止まる（作成した暗号化チャンネルと同じ）。
+- 【決定】Compose Android と TUI は、ほかの E2EE の PR と同じく、暗号化チャンネルの送受信をまだ持たないので、この PR では切り替えの操作を足さない（[未決と未検証の一覧](#未決と未検証の一覧)）。
 
 ## Bot の端末
 
@@ -1921,6 +1995,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 - **古いクロス署名鍵への巻き戻し**：端末だけの失効ではマスター鍵を残すので、古い自己署名鍵とユーザー署名鍵には、マスター鍵の有効な署名が残る。トークンを持つだけの攻撃者による登録し直しはサーバーが拒否するが（[クロス署名の API](#クロス署名356)）、サーバーや DB を乗っ取った攻撃者は、他のユーザーに古い自己署名鍵を見せて、失った端末の鍵で署名した端末に鍵を配らせられる。これを防ぐには、端末をなくしただけでもマスター鍵を作り直す（[失効の手順](#失効の手順)の 1〜5 のすべて）。【提案】クライアントは、ユーザーごとに同じマスター鍵の下で見た自己署名鍵を暗号ストアに記録し、一度置き換わった自己署名鍵に戻ったら、そのユーザーへの配布を止めて警告する（#362）。置き換わる前の鍵を見ていない端末は気付けない。
 - **通知に出した本文**：Service Worker が復号した本文は OS の通知に出るので、ロック画面や通知の履歴に残る（平文チャンネルの通知と同じ）。Push サービス（FCM など）には、RFC 8291 で暗号化した Push の長さと時刻が見える。暗号化チャンネルの Push には暗号文が入るので、その長さはおおよそ本文の長さを示す（上限を超えて暗号文を外した Push は、外したことが分かる）。
 - **平文の `mentions` による通知**：送信者は、本文と関係のない相手に通知を送れる（平文チャンネルと同じ程度の問題）。表示には復号した `mentions` だけを使う。
+- **暗号化に切り替える前のメッセージ**（#367）：平文のままサーバーに残るので、サーバーは読めるうえ、書き換えたり、`ciphertext` と `epoch` のない行として新しく足したりもできる（作成時から暗号化したチャンネルにも足せる）。クライアントは、その行に「暗号化前」の印を付けて、暗号化したメッセージと区別する（Matrix で、暗号化したルームの平文のイベントに印を付けるのと同じ）。Home と ActivityPub に連合済みの投稿も取り消せない。
 - **取得済みのデータ**：[取り消せないもの](#取り消せないもの)を参照。
 - **すべての端末、パスキー、リカバリーキーを失った場合**：過去ログは復元できない。
 
@@ -1955,7 +2030,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 | [#365](https://github.com/Zli-UoA/zoo2/issues/365) | Push 通知を Service Worker で復号する | #361 |
 | [#510](https://github.com/Zli-UoA/zoo2/issues/510) | Android の Push 通知を復号する（#365 から分けた） | #359、#365 |
 | [#366](https://github.com/Zli-UoA/zoo2/issues/366) | Bot を端末として参加させる（メンバーの許可、`e2ee:device`、`/api/apps/v1/e2ee/...`、`sdk/src/e2ee.ts`、`examples/e2ee-echo-bot`。[Bot の端末](#bot-の端末)） | #361 |
-| [#367](https://github.com/Zli-UoA/zoo2/issues/367) | 既存のプライベートチャンネルを暗号化に切り替える。Slack 取り込みの worker が、暗号化されたチャンネルへ平文を書かないようにする（worker 側の検査、または切り替え時に進行中の取り込みを止める） | #361 |
+| [#367](https://github.com/Zli-UoA/zoo2/issues/367) | 既存のプライベートチャンネルを暗号化に切り替える。Slack 取り込みの worker が、暗号化されたチャンネルへ平文を書かないようにする（【決定】worker 側の検査。[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)） | #361 |
 | [#368](https://github.com/Zli-UoA/zoo2/issues/368) | 他のユーザーの絵文字 SAS 検証 | #362 |
 | [#369](https://github.com/Zli-UoA/zoo2/issues/369) | 対象環境での PRF と ROR の動作確認（実機） | AuthZ#94、#360 |
 
@@ -1994,6 +2069,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 | Compose Android と TUI で、暗号化チャンネルに Bot を入れる許可の画面（暗号化チャンネルの送受信が先に要る） | 未決 | 後続 |
 | Bot が暗号化した添付を送受信する（Bot の presign の API と、イベントへの添付の行。#364 の上に足す） | 未決 | 後続 |
 | Bot のリプレイと版の記録を Bot の暗号ストアに保存する（Web と同じく、今はメモリーにだけ持つ） | 【提案】 | 後続 |
+| Compose Android と TUI で、既存のチャンネルを暗号化に切り替える操作と、切り替える前のメッセージの印（暗号化チャンネルの送受信が先に要る） | 未決 | #367 の続き |
 
 ## 参考
 

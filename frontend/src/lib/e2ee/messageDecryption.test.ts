@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import type { MegolmCiphertext } from "../electric/types";
 import {
   isEncryptedMessage,
+  isPlaintextBeforeEncryption,
   resolveMessageDecryption,
   applyRevision,
   type LatestRevisions,
@@ -58,6 +59,16 @@ describe("resolveMessageDecryption", () => {
         },
       ),
     ).toBeNull();
+  });
+});
+
+describe("isPlaintextBeforeEncryption", () => {
+  it("暗号文も epoch もない行だけを、暗号化に切り替える前の平文のメッセージとみなす", () => {
+    expect(isPlaintextBeforeEncryption({ ciphertext: null, epoch: null })).toBe(true);
+    expect(isPlaintextBeforeEncryption({})).toBe(true);
+    // 暗号化チャンネルとして送った行は、削除して暗号文が消えても epoch が残る。
+    expect(isPlaintextBeforeEncryption({ ciphertext: null, epoch: "2" })).toBe(false);
+    expect(isPlaintextBeforeEncryption({ ciphertext, epoch: "2" })).toBe(false);
   });
 });
 
