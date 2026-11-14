@@ -38,6 +38,12 @@ export interface E2eeContextValue {
    * （送信用セッションの写しを含む）に呼ぶ。解錠していない端末では何もしない。
    */
   requestKeyBackup(): void;
+  /**
+   * 鍵バックアップの今の版から、過去のセッションを取り込む（docs/e2ee.md の「新しい端末での解錠」の
+   * 手順 5）。解錠を終えたときに呼ぶ。取り込んだら `roomKeysVersion` を進める。解錠していない端末と、
+   * 暗号ストアを開いていないタブでは何もしない。
+   */
+  requestKeyBackupImport: () => void;
   /** ログアウト：暗号ストアを消し、端末を削除する（失敗したら次のログインで消し直す）。 */
   clearForLogout(): Promise<void>;
   /** 他のユーザーの絵文字 SAS 検証（#368）。暗号ストアを開いたタブで、端末の登録が済んだときだけ。 */
@@ -55,6 +61,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   deviceLimit: null,
   cancelLogout: () => {},
   requestKeyBackup: () => {},
+  requestKeyBackupImport: () => {},
   clearForLogout: async () => {},
   sas: null,
 });

@@ -2,7 +2,7 @@ import type { VerificationMessage } from "@zoo/crypto-wasm";
 
 import { ApiError, type ApiClient } from "../api/client";
 import type { AppConfig } from "../config";
-import { deleteDevice, queryDeviceKeys, registerDevice, uploadKeys, ackToDevice } from "./api";
+import { deleteDevice, queryKeys, registerDevice, uploadKeys, ackToDevice } from "./api";
 import type { KeyCounts } from "./api";
 import type { CryptoWorker } from "./cryptoWorker";
 import {
@@ -305,10 +305,14 @@ export class E2eeDeviceManager {
     let rowsFailure: unknown = null;
     if (rows.length > 0) {
       try {
-        const senders = [...new Set(rows.map((row) => row.sender_user_id))].sort();
-        const deviceKeys = await queryDeviceKeys(client, senders, signal);
+        // 送信ユーザーの端末鍵とクロス署名鍵（受信時の検証の手順 1 と 4）。他のユーザーのマスター鍵を
+        // 信頼できるかを確かめるため、自分のマスター鍵とユーザー署名鍵も問い合わせる。
+        const users = [
+          ...new Set([...rows.map((row) => row.sender_user_id), this.options.userId]),
+        ].sort();
+        const keysQuery = await queryKeys(client, users, signal);
         if (this.stopped) return;
-        const result = await worker.request({ op: "processToDevice", rows, deviceKeys });
+        const result = await worker.request({ op: "processToDevice", rows, keysQuery });
         if (result.newOlmSessions > 0) this.needsReplenish = true;
         if (result.roomKeys > 0) this.options.onRoomKeys?.();
         if (result.verifications.length > 0) this.options.onVerifications?.(result.verifications);

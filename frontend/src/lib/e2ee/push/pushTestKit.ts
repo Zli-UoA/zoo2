@@ -76,7 +76,14 @@ export async function exchange(
         content: messages[BOB]![bob.store.deviceId] as JsonObject,
       },
     ],
-    { [ALICE]: { [alice.store.deviceId]: alice.store.deviceKeys() } },
+    {
+      device_keys: { [ALICE]: { [alice.store.deviceId]: alice.store.deviceKeys() } },
+      master_keys: {},
+      self_signing_keys: {},
+      user_signing_keys: {},
+      tofu_pins: {},
+      signatures: [],
+    },
   );
   const encrypted = alice.store.megolm.encrypt(CHANNEL, {
     message_id: "m1",

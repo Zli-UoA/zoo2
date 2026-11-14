@@ -86,7 +86,7 @@ function slotViews(storage: SecretStorageResponse): KeySlotView[] {
 
 /** 設定の「暗号化」タブ（初回設定と解錠。#360）。 */
 export function EncryptionSettings() {
-  const { worker, userId, deviceId } = useE2ee();
+  const { worker, userId, deviceId, requestKeyBackupImport } = useE2ee();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const rpId = passkeyRpId(config);
@@ -105,8 +105,11 @@ export function EncryptionSettings() {
   const loadSeq = useRef(0);
 
   const deps: E2eeSetupDeps | null = useMemo(
-    () => (worker && userId ? { worker, client, userId, rpId } : null),
-    [worker, userId, client, rpId],
+    () =>
+      worker && userId
+        ? { worker, client, userId, rpId, onUnlocked: requestKeyBackupImport }
+        : null,
+    [worker, userId, client, rpId, requestKeyBackupImport],
   );
   const passkeyAvailable = rpId !== null && prfSupported;
 

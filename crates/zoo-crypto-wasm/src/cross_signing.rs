@@ -511,6 +511,28 @@ impl TrustStore {
             Some(&user_signing.inner),
         ))
     }
+
+    /// 受信時の検証の手順 4 に渡す、送信ユーザーの信頼した自己署名鍵 `{self_signing_key, signature}`
+    /// （`DecryptedToDevice.verifyRoomKey` の `trust`）。信頼できなければ `null`。
+    /// `snapshot` は送信ユーザーと自分の `keys/query`。記録が変わることがあるので、呼んだあとは保存し直す。
+    #[wasm_bindgen(js_name = senderTrust, unchecked_return_type = "SenderTrust | null")]
+    pub fn sender_trust(
+        &mut self,
+        snapshot: &KeySnapshot,
+        sender: &str,
+        sender_device: &str,
+    ) -> Result<JsValue, JsValue> {
+        match self
+            .inner
+            .sender_trust(&snapshot.inner, sender, sender_device)
+        {
+            Some(trust) => to_js(&json!({
+                "self_signing_key": trust.self_signing_key.to_base64(),
+                "signature": trust.signature,
+            })),
+            None => Ok(JsValue::NULL),
+        }
+    }
 }
 
 fn distribution_to_js(distribution: core::Distribution) -> Result<JsValue, JsValue> {

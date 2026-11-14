@@ -1,7 +1,6 @@
 import type { JsonObject, SignatureUpload } from "@zoo/crypto-wasm";
 
 import { ApiError, type ApiClient } from "../api/client";
-import { KEYS_QUERY_BATCH } from "./api";
 import { REAUTH_HEADER, errorCode } from "./secretStorageApi";
 
 /**
@@ -117,31 +116,7 @@ export async function uploadSignaturesWithReauth(
   }
 }
 
-/** `keys/query`（50 人ずつ）。`master_keys`、`signatures` などをまとめる。 */
-export async function queryKeys(client: ApiClient, userIds: string[]): Promise<JsonObject> {
-  const merged: Record<string, unknown> = {
-    device_keys: {},
-    master_keys: {},
-    self_signing_keys: {},
-    user_signing_keys: {},
-    tofu_pins: {},
-    signatures: [],
-  };
-  for (let start = 0; start < userIds.length; start += KEYS_QUERY_BATCH) {
-    const page = await client.request<Record<string, unknown>>("/api/e2ee/keys/query", {
-      method: "POST",
-      body: { user_ids: userIds.slice(start, start + KEYS_QUERY_BATCH) },
-    });
-    for (const key of Object.keys(merged)) {
-      if (key === "signatures") {
-        (merged.signatures as unknown[]).push(...((page.signatures as unknown[]) ?? []));
-      } else {
-        Object.assign(merged[key] as object, (page[key] as object) ?? {});
-      }
-    }
-  }
-  return merged as JsonObject;
-}
+export { queryKeys } from "./api";
 
 /** `POST /api/e2ee/secret_storage/secrets`（端末だけの失効）。増やしたあとの `secrets_revision`。 */
 export async function putSecrets(

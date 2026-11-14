@@ -30,6 +30,7 @@ function e2ee(
     deviceLimit: null,
     cancelLogout,
     requestKeyBackup: vi.fn(),
+    requestKeyBackupImport: vi.fn(),
     clearForLogout,
     sas: null,
   };

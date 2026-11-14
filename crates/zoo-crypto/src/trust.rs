@@ -17,9 +17,9 @@ use crate::cross_signing::{SignatureCheck, check_signature};
 use crate::device::{DeviceAccount, validate_uuid};
 use crate::store::{self, StoreKind};
 use crate::{
-    CrossSigningKeyPair, CryptoError, DeviceKeys, KeySignature, KeyUsage, SignatureUpload,
-    TOFU_PIN_TYPE, cross_signing_key_id, verify_cross_signing_key, verify_device_keys,
-    verify_json_signature,
+    CrossSigningKeyPair, CryptoError, DeviceKeys, KeySignature, KeyUsage, SenderTrust,
+    SignatureUpload, TOFU_PIN_TYPE, cross_signing_key_id, verify_cross_signing_key,
+    verify_device_keys, verify_json_signature,
 };
 use zeroize::Zeroizing;
 
@@ -538,6 +538,56 @@ impl TrustStore {
         out
     }
 
+    /// 受信時の検証の手順 4 に渡す、送信ユーザーの信頼した自己署名鍵（docs/e2ee.md の「受信時の検証」）。
+    ///
+    /// マスター鍵を信頼するかは、配布先の判定と同じ規則で決める（自分は規則 1、他のユーザーは
+    /// 規則 3〜6）。信頼したマスター鍵で署名された自己署名鍵と、`snapshot.signatures` にある
+    /// その自己署名鍵による `sender_device` への署名を返す。次のときは `None`。
+    ///
+    /// - 自分のマスター鍵をまだ信頼していない（未解錠）か、サーバーの自分のマスター鍵が変わった。
+    /// - 送信ユーザーのマスター鍵を信頼できない（クロス署名鍵がない、再検証待ち、TOFU のピンの登録待ち、
+    ///   初めて見た相手）。初めて見た相手のピンは作らない。作るのは配布先の判定だけ。
+    /// - 自己署名鍵がない、壊れている、マスター鍵で署名されていない。
+    ///
+    /// `snapshot` は送信ユーザーと自分の `keys/query`（他のユーザーを判定するには、自分のマスター鍵と
+    /// ユーザー署名鍵が要る）。規則 3 や共有ピンの採用で記録が変わることがあるので、呼んだあとは保存する。
+    pub fn sender_trust(
+        &mut self,
+        snapshot: &KeySnapshot,
+        sender: &str,
+        sender_device: &str,
+    ) -> Option<SenderTrust> {
+        let mut scratch = Distribution::default();
+        let own_master = self.check_own_master(snapshot, &mut scratch.warnings)?;
+        let master = if sender == self.user_id {
+            own_master
+        } else {
+            let usk = self.check_own_usk(snapshot, &own_master, &mut scratch);
+            let trust = self.evaluate_other(snapshot, sender, usk, None, &mut scratch);
+            if !matches!(trust.state, UserState::Trusted(_)) {
+                return None;
+            }
+            verify_cross_signing_key(snapshot.master_keys.get(sender)?, sender, KeyUsage::Master)
+                .ok()?
+        };
+        let self_signing = trusted_self_signing_key(snapshot, sender, &master)?;
+        let key_id = cross_signing_key_id(&self_signing);
+        let signature = snapshot
+            .signatures
+            .iter()
+            .find(|row| {
+                row.signer_user_id == sender
+                    && row.signer_key_id == key_id
+                    && row.target_user_id == sender
+                    && row.target_key_id == sender_device
+            })
+            .map(|row| row.signature.clone());
+        Some(SenderTrust {
+            self_signing_key: self_signing,
+            signature,
+        })
+    }
+
     /// 他のユーザー（規則 2〜6）。
     fn evaluate_other(
         &mut self,
@@ -729,18 +779,7 @@ impl TrustStore {
         devices: &mut Vec<DeviceKeys>,
     ) -> UserTrust {
         let mut excluded = BTreeMap::new();
-        let self_signing = snapshot.self_signing_keys.get(user_id).and_then(|json| {
-            let key = verify_cross_signing_key(json, user_id, KeyUsage::SelfSigning).ok()?;
-            (check_signature(
-                json,
-                user_id,
-                &key.to_base64(),
-                user_id,
-                master,
-                &snapshot.signatures,
-            ) == SignatureCheck::Valid)
-                .then_some(key)
-        });
+        let self_signing = trusted_self_signing_key(snapshot, user_id, master);
         for (device_id, json) in snapshot.device_keys.get(user_id).into_iter().flatten() {
             let reason = if skip_device == Some(device_id.as_str()) {
                 Some(DeviceExclusion::CurrentDevice)
@@ -862,6 +901,25 @@ impl TrustStore {
         }
         Ok(())
     }
+}
+
+/// `user_id` の自己署名鍵のうち、信頼したマスター鍵 `master` で署名されたもの（規則 1、6）。
+fn trusted_self_signing_key(
+    snapshot: &KeySnapshot,
+    user_id: &str,
+    master: &Ed25519PublicKey,
+) -> Option<Ed25519PublicKey> {
+    let json = snapshot.self_signing_keys.get(user_id)?;
+    let key = verify_cross_signing_key(json, user_id, KeyUsage::SelfSigning).ok()?;
+    (check_signature(
+        json,
+        user_id,
+        &key.to_base64(),
+        user_id,
+        master,
+        &snapshot.signatures,
+    ) == SignatureCheck::Valid)
+        .then_some(key)
 }
 
 fn untrusted(state: UserState) -> UserTrust {
