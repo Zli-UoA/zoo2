@@ -414,14 +414,16 @@ fn backup_version_number_is_signed() {
         Err(CryptoError::InvalidBackup(_))
     ));
     assert!(state.current_version().is_none());
-    // 方式を省いても通らない。
-    let mut without_algorithm = relabeled.clone();
+    // 版に方式がなければ通らない。ほかの検査（署名した番号、見た番号の最大）では落ちない入力
+    // （署名と同じ番号の版 1 を、見た番号の最大がない検証）で、方式の検査だけを確かめる。
+    let mut without_algorithm = version("1", &old_auth);
     without_algorithm
         .as_object_mut()
         .unwrap()
         .remove("algorithm");
+    assert!(verify_backup_version(&version("1", &old_auth), ALICE, &master, &old_key).is_ok());
     assert!(matches!(
-        state.accept_current_version(&without_algorithm, &master, &old_key),
+        verify_backup_version(&without_algorithm, ALICE, &master, &old_key),
         Err(CryptoError::InvalidBackup(_))
     ));
     // 新しい端末（見た番号の最大がない）でも、署名と違う番号の版は通らない。
