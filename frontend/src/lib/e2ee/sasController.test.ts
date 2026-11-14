@@ -449,6 +449,31 @@ describe("絵文字 SAS 検証", () => {
     expect(only(bob).view.phase).toBe("done");
   });
 
+  it("鍵を取れない要求があっても、比べている最中の別の検証は止まらない", async () => {
+    const server = new FakeServer();
+    const alice = await join(server, ALICE);
+    const bob = await join(server, BOB);
+    const carol = await join(server, "00000000-0000-4000-8000-00000000000c");
+    const txnId = await startVerification(server, alice, bob);
+    // Carol から Bob への要求を、Bob は keys/query を取れずに処理できない。
+    const carolTxn = await carol.sas.request(BOB);
+    server.failKeysQuery = 1_000;
+    await server.pump();
+    expect(bob.sas.getSnapshot().map((e) => e.view.transaction_id)).toEqual([txnId]);
+    // Alice との検証は、その後ろに届いたメッセージも処理して終わる。
+    await alice.sas.confirm(txnId, Promise.resolve(TOKEN));
+    await bob.sas.confirm(txnId, Promise.resolve(TOKEN));
+    await server.pump();
+    expect(only(alice).view.phase).toBe("done");
+    expect(only(bob).view.phase).toBe("done");
+    // 通信が戻れば、残した要求を試し直して出す。
+    server.failKeysQuery = 0;
+    await bob.sas.expire();
+    expect(bob.sas.getSnapshot().find((e) => e.view.transaction_id === carolTxn)?.view.phase).toBe(
+      "incoming",
+    );
+  });
+
   it("相手の端末に届けられなければ、送れなかったと出す", async () => {
     const server = new FakeServer();
     const alice = await join(server, ALICE);

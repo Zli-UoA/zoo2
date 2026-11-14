@@ -140,32 +140,51 @@ export class SasController {
   }
 
   /**
-   * 届いたメッセージを、届いた順に Worker に渡す。`keys/query` を取れなければ、そのメッセージと
-   * あとのメッセージを残して止める（順を変えない）。残したものは、期限の確認のたびに試し直す。
+   * 届いたメッセージを、届いた順に Worker に渡す。`keys/query` を取れなければ、その検証
+   * （`transaction_id`）のメッセージだけを、順を変えずに残す。ほかの検証のメッセージは処理を続ける
+   * （鍵を取れない要求が、比べている最中の検証を止めないように）。残したものは、期限の確認の
+   * たびに試し直す。
    */
   private drain(): Promise<void> {
     return this.serial(async () => {
-      // 送信ユーザーの `keys/query` は、この回の中では使い回す。
+      // 送信ユーザーの `keys/query` は、この回の中では使い回す。失敗した送信ユーザーは、この回では
+      // 取り直さない。
       const keys = new Map<string, JsonObject>();
-      while (this.inbox.length > 0) {
-        const { message, receivedAt } = this.inbox[0]!;
+      const failedSenders = new Set<string>();
+      /** この回で `keys/query` を取れず、メッセージを残した検証。 */
+      const held = new Set<string>();
+      const remaining: typeof this.inbox = [];
+      const pending = this.inbox;
+      this.inbox = remaining;
+      for (const item of pending) {
+        const { message, receivedAt } = item;
         const txnId = message.content.transaction_id;
-        if (this.now() - receivedAt > SAS_TIMEOUT_MS) {
-          this.inbox.shift();
+        if (typeof txnId !== "string" || this.now() - receivedAt > SAS_TIMEOUT_MS) continue;
+        // 同じ検証の前のメッセージを残したなら、順を守るため、これも残す。
+        if (held.has(txnId)) {
+          remaining.push(item);
           continue;
         }
         let keysQuery: JsonObject = {};
         if (NEEDS_KEYS.has(message.type)) {
           const sender = message.sender_user_id;
-          try {
-            keysQuery = keys.get(sender) ?? (await queryKeys(this.deps.client, [sender]));
-          } catch {
-            if (typeof txnId === "string") this.patch(txnId, { error: "receiveFailed" });
-            return;
+          let cached = keys.get(sender);
+          if (!cached && !failedSenders.has(sender)) {
+            try {
+              cached = await queryKeys(this.deps.client, [sender]);
+              keys.set(sender, cached);
+            } catch {
+              failedSenders.add(sender);
+            }
           }
-          keys.set(sender, keysQuery);
+          if (!cached) {
+            held.add(txnId);
+            remaining.push(item);
+            this.patch(txnId, { error: "receiveFailed" });
+            continue;
+          }
+          keysQuery = cached;
         }
-        this.inbox.shift();
         try {
           const update = await this.deps.worker.request({
             op: "sasReceive",
