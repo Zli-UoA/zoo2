@@ -99,18 +99,39 @@ function randomChallenge(): Uint8Array<ArrayBuffer> {
 }
 
 interface PrfExtensionResults {
-  prf?: { enabled?: boolean; results?: { first?: BufferSource } };
+  prf?: { enabled?: boolean; results?: { first?: unknown } };
+}
+
+/**
+ * PRF の結果（`results.first`）をバイト列にする。32 バイトでなければ `null`。
+ *
+ * 仕様では `ArrayBuffer` か `ArrayBufferView` だが、次の形も読む。
+ * - 拡張機能が別の実行環境（realm）で作った `ArrayBuffer`。`instanceof ArrayBuffer` では見分けられない
+ *   ので、`ArrayBuffer.isView` と型のタグで見分ける。
+ * - 0〜255 の整数の配列。1Password のブラウザー拡張（Chrome、Firefox）が返す、仕様に合わない形
+ *   （1Password の課題 FS-5593）。
+ */
+export function prfBytes(value: unknown): Uint8Array | null {
+  let bytes: Uint8Array;
+  if (ArrayBuffer.isView(value)) {
+    bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  } else if (Object.prototype.toString.call(value) === "[object ArrayBuffer]") {
+    bytes = new Uint8Array(value as ArrayBuffer);
+  } else if (
+    Array.isArray(value) &&
+    value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
+  ) {
+    bytes = Uint8Array.from(value as number[]);
+  } else {
+    return null;
+  }
+  // 呼び出し側の元のバッファーを共有しないよう、写しを返す。
+  return bytes.length === 32 ? new Uint8Array(bytes) : null;
 }
 
 function prfFirst(credential: PublicKeyCredential): Uint8Array | null {
   const results = credential.getClientExtensionResults() as PrfExtensionResults;
-  const first = results.prf?.results?.first;
-  if (!first) return null;
-  const bytes =
-    first instanceof ArrayBuffer
-      ? new Uint8Array(first)
-      : new Uint8Array(first.buffer, first.byteOffset, first.byteLength);
-  return bytes.length === 32 ? new Uint8Array(bytes) : null;
+  return prfBytes(results.prf?.results?.first);
 }
 
 function toPasskeyError(error: unknown): PasskeyError {
