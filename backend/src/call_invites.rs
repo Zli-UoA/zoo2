@@ -19,6 +19,24 @@ use crate::{
     state::AppState,
 };
 
+/// 応答（`accept`）してから通話に入るまで、席を保持する秒数。応答の API のあと、マイクの許可などで
+/// 入室まで時間がかかっても、別の人に席を取られないようにする。
+pub const ACCEPTED_SEAT_HOLD_SECONDS: u32 = 60;
+
+/// 席を予約している招待の条件（招待の別名は `i`）。呼び出し中、または応答してから日が浅くて、
+/// まだ入室していない人。入室済みの人は、在室の人数に数えるので、ここでは数えない。
+pub fn reserved_seat_condition() -> String {
+    format!(
+        "((i.status = 'pending' AND i.expires_at > statement_timestamp())
+           OR (i.status = 'accepted'
+               AND i.responded_at > statement_timestamp() - interval '{ACCEPTED_SEAT_HOLD_SECONDS} seconds'))
+         AND NOT EXISTS (
+             SELECT 1 FROM call_presence p
+             WHERE p.channel_id = i.channel_id AND p.user_id = i.invitee_id
+               AND p.expires_at > statement_timestamp())"
+    )
+}
+
 /// 1 回の招待で呼べる人数の上限（通話の定員から、呼ぶ本人を除いた数）。
 const MAX_INVITEES_PER_REQUEST: usize = MAX_CALL_PARTICIPANTS - 1;
 /// 重複を含めた、1 回の要求の `user_ids` の上限。
@@ -88,13 +106,14 @@ async fn insert_invites(
         .bind(channel_id.to_string())
         .exec(&mut tx)
         .await?;
+    let reserved = reserved_seat_condition();
     let rows = toasty::sql::query(format!(
         "WITH slots AS (
              SELECT greatest(0, {MAX_CALL_PARTICIPANTS}
                - (SELECT count(*) FROM call_presence
                   WHERE channel_id = $1 AND expires_at > statement_timestamp())
-               - (SELECT count(*) FROM call_invites
-                  WHERE channel_id = $1 AND status = 'pending'))::int AS n
+               - (SELECT count(*) FROM call_invites i
+                  WHERE i.channel_id = $1 AND {reserved}))::int AS n
          ),
          candidates AS (
              SELECT u.id AS user_id, row_number() OVER (ORDER BY u.id) AS rn
@@ -107,7 +126,11 @@ async fn insert_invites(
                      AND p.expires_at > statement_timestamp())
                AND NOT EXISTS (
                    SELECT 1 FROM call_invites i
-                   WHERE i.channel_id = $1 AND i.invitee_id = u.id AND i.status = 'pending')
+                   WHERE i.channel_id = $1 AND i.invitee_id = u.id
+                     AND (i.status = 'pending'
+                          OR (i.status = 'accepted'
+                              AND i.responded_at > statement_timestamp()
+                                  - interval '{ACCEPTED_SEAT_HOLD_SECONDS} seconds')))
          )
          INSERT INTO call_invites (channel_id, inviter_id, invitee_id, expires_at)
          SELECT $1::text, $2::text, candidates.user_id,

@@ -1076,6 +1076,19 @@ async fn invite_status(db: &mut toasty::Db, id: &str) -> anyhow::Result<String> 
     anyhow::bail!("invite {id} not found")
 }
 
+/// 定期処理（`sweep`）を走らせ、招待が `status` になるまで待つ。テストのプロセスには、各 `AppState` の
+/// 定期処理も動いていて、同じ行を同時に処理中だと `SKIP LOCKED` で飛ばされることがあるため、何度か試す。
+async fn sweep_until(db: &mut toasty::Db, id: &str, status: &str) -> anyhow::Result<()> {
+    for _ in 0..30 {
+        backend::call_invites::sweep(db).await?;
+        if invite_status(db, id).await? == status {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("invite {id} did not become {status}")
+}
+
 async fn invite(
     w: &InviteWorld,
     actor: &str,
@@ -1209,6 +1222,13 @@ async fn test_call_invite_lifecycle_and_permissions() -> anyhow::Result<()> {
     assert_eq!(body["channel_id"], public_ch.as_str());
     assert_eq!(invite_status(&mut w.db, &id3).await?, "accepted");
 
+    // 応答してまだ入室していない間は、同じ人を呼び直せない（席の保持）。保持の時間が過ぎたら呼び直せる
+    let (_, body) = invite(&w, &alice, &public_ch, &[&bob]).await?;
+    assert_eq!(body["invites"].as_array().unwrap().len(), 0);
+    toasty::sql::statement("UPDATE call_invites SET responded_at = statement_timestamp() - interval '2 minutes' WHERE id = $1::uuid")
+        .bind(id3.as_str())
+        .exec(&mut w.db)
+        .await?;
     let (_, body) = invite(&w, &alice, &public_ch, &[&bob]).await?;
     let id4 = body["invites"][0]["id"].as_str().unwrap().to_string();
     toasty::sql::statement("UPDATE call_invites SET expires_at = statement_timestamp() - interval '1 second' WHERE id = $1::uuid")
@@ -1243,10 +1263,9 @@ async fn test_expired_call_invite_becomes_missed_call_notification() -> anyhow::
         .bind(id.as_str())
         .exec(&mut w.db)
         .await?;
-    // 2 回走らせても、不在着信は 1 件だけ
+    // 何回走らせても、不在着信は 1 件だけ
+    sweep_until(&mut w.db, &id, "missed").await?;
     backend::call_invites::sweep(&mut w.db).await?;
-    backend::call_invites::sweep(&mut w.db).await?;
-    assert_eq!(invite_status(&mut w.db, &id).await?, "missed");
 
     let rows = toasty::sql::query(
         "SELECT json_build_object('id', id, 'actor_id', actor_id, 'is_read', is_read,
@@ -1470,8 +1489,7 @@ async fn test_sweep_accepts_an_invite_for_someone_already_in_the_room() -> anyho
     let id = body["invites"][0]["id"].as_str().unwrap().to_string();
     // 呼び出しと入室が同時に起きて、入室済みの人に pending が残った状態
     put_presence(&mut w.db, &w.public_ch.clone(), &bob).await?;
-    backend::call_invites::sweep(&mut w.db).await?;
-    assert_eq!(invite_status(&mut w.db, &id).await?, "accepted");
+    sweep_until(&mut w.db, &id, "accepted").await?;
     Ok(())
 }
 
@@ -1562,8 +1580,7 @@ async fn test_expired_invite_for_someone_already_in_the_room_is_not_missed() -> 
         .bind(id.as_str())
         .exec(&mut w.db)
         .await?;
-    backend::call_invites::sweep(&mut w.db).await?;
-    assert_eq!(invite_status(&mut w.db, &id).await?, "accepted");
+    sweep_until(&mut w.db, &id, "accepted").await?;
     let missed = toasty::sql::query(
         "SELECT 1 FROM notification_events WHERE user_id = $1 AND notification_type = 'missed_call'",
     )
@@ -1609,6 +1626,58 @@ async fn test_pending_invite_keeps_a_seat_for_the_invitee() -> anyhow::Result<()
         async move { anyhow::Ok(app.oneshot(req?).await?) }
     };
     // 呼ばれていない carol は、その席には入れない。呼ばれた bob は入れる
+    let carol_response = open(&carol).await?;
+    assert_eq!(carol_response.status(), StatusCode::CONFLICT);
+    let bob_response = open(&bob).await?;
+    assert_eq!(bob_response.status(), StatusCode::OK);
+    drop((carol_response, bob_response));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_accepted_invite_keeps_its_seat_until_the_invitee_joins() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
+    w.state.call_registry.set_listening(true);
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    for i in 0..4 {
+        let filler = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(filler.as_str())
+        .bind(format!("Filler{i}"))
+        .exec(&mut w.db)
+        .await?;
+        put_presence(&mut w.db, &w.public_ch.clone(), &filler).await?;
+    }
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob]).await?;
+    let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+    // Web の順序: 先に応答の API、そのあと入室（マイクの許可を待つ間は、まだ入室していない）
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/call-invites/{id}/accept"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let open = |actor: &str| {
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/channels/{}/call/stream?session_id={}",
+                w.public_ch,
+                uuid::Uuid::new_v4()
+            ))
+            .header("X-Dev-User", actor.to_string())
+            .body(Body::empty());
+        let app = w.app.clone();
+        async move { anyhow::Ok(app.oneshot(req?).await?) }
+    };
+    // 応答済みで未入室の bob の席は、別の人に取られない
     let carol_response = open(&carol).await?;
     assert_eq!(carol_response.status(), StatusCode::CONFLICT);
     let bob_response = open(&bob).await?;
