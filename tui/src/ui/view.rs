@@ -2577,6 +2577,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edits_are_not_sent_when_another_device_edited_after_starting() {
+        use crate::e2ee::store::{Decrypted, Decryption, SenderTrust};
+        let mut app = encrypted_app("secret-e2ee", true);
+        let feed = |app: &mut App, revision: u64, body: &str| {
+            let (id, mut row) = encrypted_row("e1", "2026-11-01 04:00:00", true, Some(1));
+            row["user_id"] = json!("u1");
+            row["revision"] = json!(revision.to_string());
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages("c3".into()),
+                batch(vec![(id.as_str(), row)]),
+            ));
+            let key =
+                crate::ui::e2ee_chat::RowKey::of(app.store.message("c3", "e1").expect("行がある"));
+            app.on_app_event(AppEvent::Decrypted {
+                channel_id: "c3".into(),
+                results: vec![(
+                    "e1".into(),
+                    key,
+                    Decryption::Decrypted(Decrypted {
+                        body: body.into(),
+                        kind: "message".into(),
+                        mentions: Default::default(),
+                        sender: SenderTrust::Verified,
+                        revision: zoo_crypto::RevisionStatus::Latest,
+                        attachments: Vec::new(),
+                    }),
+                )],
+                generation: Some(1),
+            });
+        };
+        feed(&mut app, 0, "元の本文");
+        app.selected = Some("e1".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.composer.lines(), ["元の本文"]);
+        app.composer.insert_str("（直した）");
+        // 編集しているあいだに、別の端末の編集（版 1）が届いた。
+        feed(&mut app, 1, "別の端末で直した本文");
+        press(&mut app, KeyCode::Enter);
+        // 版 1 を基準に送り直さず、下書きを残して知らせる。
+        assert_eq!(app.composer.lines(), ["元の本文（直した）"]);
+        assert_eq!(app.target, Target::Edit("e1".into()));
+        assert!(
+            render_sized(&mut app, 140, 40).contains("ほかの場所で編集されました"),
+            "競合を知らせる"
+        );
+    }
+
+    #[tokio::test]
     async fn downgraded_channels_warn_and_keep_the_draft() {
         let mut app = encrypted_app("edm:u1:u2", false);
         let screen = render_sized(&mut app, 140, 30);

@@ -248,6 +248,8 @@ pub struct App {
     pub recipients: HashMap<String, RecipientSummary>,
     /// 暗号化チャンネルへの送信の直列化と、知っている epoch（#361）。
     channel_sender: ChannelSender,
+    /// 暗号化したメッセージの編集を始めたときの版（メッセージ ID ごと。#361）。
+    edit_bases: HashMap<String, u64>,
     /// 暗号ストアに記録していない、`encrypted = true` を見たチャンネル（#361）。
     unrecorded_encrypted: HashSet<String>,
     /// 暗号ストアの記録を読んだか。
@@ -322,6 +324,7 @@ impl App {
             decryptions: Decryptions::default(),
             recipients: HashMap::new(),
             channel_sender: ChannelSender::default(),
+            edit_bases: HashMap::new(),
             unrecorded_encrypted: HashSet::new(),
             known_encrypted_loaded: false,
             known_encrypted_store: None,
@@ -1841,7 +1844,12 @@ impl App {
                 return;
             }
             Shown::Decrypted { warning: None, .. } => match self.decryptions.editable(message) {
-                Some((decrypted, _)) => decrypted.body.clone(),
+                Some((decrypted, revision)) => {
+                    // 編集を始めた版を覚え、送るときに版が進んでいたら送らない（別の端末の編集を、
+                    // 古い版から作った本文で上書きしないため）。
+                    self.edit_bases.insert(message_id.clone(), revision);
+                    decrypted.body.clone()
+                }
                 None => return,
             },
             Shown::Decrypted { .. } | Shown::Undecryptable(_) => {
@@ -2122,6 +2130,32 @@ impl App {
         let Some(channel_id) = self.current.clone() else {
             return;
         };
+        // 編集は、始めたときの版を基準にする。そのあとに版が進んでいたら（別の端末で編集された）、
+        // 下書きを残したまま知らせ、送らない。
+        if let Target::Edit(message_id) = &self.target {
+            let current = self
+                .store
+                .message(&channel_id, message_id)
+                .and_then(|message| self.decryptions.editable(message))
+                .map(|(_, revision)| revision);
+            match (self.edit_bases.get(message_id), current) {
+                (Some(base), Some(current)) if *base == current => {}
+                (None, _) => {
+                    self.notify("編集を始めた版が分かりません。e で編集し直してください");
+                    return;
+                }
+                (Some(_), None) => {
+                    self.notify("復号できていないメッセージは編集できません");
+                    return;
+                }
+                (Some(_), Some(_)) => {
+                    self.notify(
+                        "このメッセージはほかの場所で編集されました。読み込み直してから編集してください",
+                    );
+                    return;
+                }
+            }
+        }
         let Some((_, store)) = self.encryption.store() else {
             self.notify(
                 "この端末では、まだ暗号化の準備ができていません。少し待ってから送ってください",
