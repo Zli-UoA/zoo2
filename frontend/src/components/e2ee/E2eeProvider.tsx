@@ -92,6 +92,12 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const takeover = useRef<{ store: Promise<ActiveStore>; release: () => void } | null>(null);
   /** ログアウトの確認中。起動の再試行で作り直す manager も、to-device を止めたままにする。 */
   const logoutSuspended = useRef(false);
+  /**
+   * ログアウト操作の世代。`cancelLogout` で進める。件数の確認は始めた時点の世代を覚え、
+   * ストアが開くのを待つ間に取りやめられていたら、to-device を止めずに終える
+   * （遅れて開いたストアで、取りやめ済みの停止状態を立て直さない）。
+   */
+  const logoutEpoch = useRef(0);
   const namespaceRef = useRef(namespace);
   namespaceRef.current = namespace;
 
@@ -286,14 +292,23 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       worker: status === "ready" ? readyWorker : null,
       userId: userId || null,
       pendingBackupCount: async () => {
+        const epoch = logoutEpoch.current;
         const store = await storeForLogout();
         if (!store) return 0;
+        // ストアを開く間に取りやめられた。奪ったロックは `cancelLogout` が返している。
+        if (epoch !== logoutEpoch.current) throw new Error("logout cancelled");
         // 数えたあとで鍵が増えないよう、to-device の処理を止めてから数える。
         logoutSuspended.current = true;
         await store.manager.suspend();
+        if (epoch !== logoutEpoch.current) {
+          // 止めている間に取りやめられた。`cancelLogout` の resume より後に止まった分を戻す。
+          if (!logoutSuspended.current) store.manager.resume();
+          throw new Error("logout cancelled");
+        }
         return store.manager.pendingBackupCount();
       },
       cancelLogout: () => {
+        logoutEpoch.current += 1;
         // このタブが開いていたなら、止めていた to-device の処理に戻る。
         logoutSuspended.current = false;
         leader.current?.manager.resume();

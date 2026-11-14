@@ -9,6 +9,7 @@ import {
   ArrowLeftIcon,
   BellIcon,
   LanguagesIcon,
+  LogOutIcon,
   PaletteIcon,
   SearchIcon,
   Volume2Icon,
@@ -35,6 +36,7 @@ import { useShell } from "./shell-context";
 import { joinUrl } from "../../lib/config";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { PaneHeader } from "./PaneHeader";
+import { LogoutButton } from "../auth/LogoutSetting";
 
 const ADMIN_TABS: readonly SettingsTab[] = ["slack-import"];
 
@@ -45,6 +47,7 @@ export function ZooSettings() {
   const search = useRouterState({
     select: (state) => state.location.search as { tab?: SettingsTab; channel?: string },
   });
+  const { config } = useCollections();
   const { isAdmin } = useCurrentUser();
   // 管理者向けのタブは、権限がなければ一般タブに戻す
   const tab: SettingsTab =
@@ -127,6 +130,13 @@ export function ZooSettings() {
                 <PwaControls presentation="select" />
               </SettingRow>
             </div>
+            {config.oidc ? (
+              <div className="mt-6 overflow-hidden rounded-lg border border-destructive/50">
+                <SettingRow icon={<LogOutIcon />} label={t("auth.logout")}>
+                  <LogoutButton />
+                </SettingRow>
+              </div>
+            ) : null}
           </Tabs.Panel>
           <Tabs.Panel value="call" className="min-h-0">
             <h2 className="sr-only">{t("call.settingsTab")}</h2>
