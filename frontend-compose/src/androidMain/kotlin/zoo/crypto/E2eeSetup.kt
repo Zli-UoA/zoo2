@@ -188,7 +188,14 @@ class E2eeSetup(
     private suspend fun startupStatus(store: CryptoStore, storage: JsonObject): E2eeStatus {
         if (!hasSecretStorage(storage)) return E2eeStatus.NotSetUp
         if (!store.hasOwnKeys) return E2eeStatus.Locked(LockReason.NEW, storage)
-        if (storage.secretsRevision() != store.secretsRevision) return E2eeStatus.Locked(LockReason.MISMATCH, storage)
+        // 解錠し直しが要ると分かったら、記録した secrets_revision を消して、暗号ストアの自分の鍵（自己署名鍵による
+        // 送信端末の検証、署名し直し、鍵バックアップの送信）を、解錠し直すまで使わない。ロックの判定と鍵を使えるかを、
+        // 同じ記録で決める。
+        suspend fun mismatch(): E2eeStatus {
+            store.secretsRevision?.let { recorded -> withContext(io) { store.forgetSecretsRevision(recorded) } }
+            return E2eeStatus.Locked(LockReason.MISMATCH, storage)
+        }
+        if (storage.secretsRevision() != store.secretsRevision) return mismatch()
         val (keys, versions) = serverState()
         return when (val check = withContext(io) { store.startupCheck(keys, versions) }) {
             null -> E2eeStatus.Locked(LockReason.NEW, storage)
@@ -198,7 +205,7 @@ class E2eeSetup(
                 E2eeStatus.Unlocked(storage)
             }
             is StartupCheck.ResumeSetup -> E2eeStatus.Locked(LockReason.RESUME, storage)
-            is StartupCheck.Unlock -> E2eeStatus.Locked(LockReason.MISMATCH, storage)
+            is StartupCheck.Unlock -> mismatch()
         }
     }
 

@@ -345,6 +345,22 @@ class E2eeSetupTest {
     }
 
     @Test
+    fun detectedMismatchStopsUsingTheStoredKeys() = runBlocking<Unit> {
+        val device = Device("a")
+        val start = device.setup.begin()
+        device.setup.completeSetup(start.session, "t")
+        start.session.close()
+        // 別の端末が SSSS の秘密を書き換えた（失効など）。起動時の確認で、暗号ストアの鍵を使うのをやめる。
+        server.revision += 1
+        assertEquals(LockReason.MISMATCH, (device.setup.loadStatus() as E2eeStatus.Locked).reason)
+        assertNull(device.store.secretsRevision)
+        assertNull(device.setup.runStartupCheck().let { (it as? E2eeStatus.Unlocked) })
+        // 解錠し直すと、また使う。
+        device.setup.unlock(UnlockMethod.Recovery(start.recoveryKey)).session.close()
+        assertEquals(2L, device.store.secretsRevision)
+    }
+
+    @Test
     fun setupAndUnlockWithPasskey() = runBlocking<Unit> {
         val passkey = FakePasskey()
         val first = Device("first")
