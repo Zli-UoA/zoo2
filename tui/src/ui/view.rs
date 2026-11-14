@@ -2144,6 +2144,7 @@ mod tests {
             channel_id: channel_id.into(),
             target: Target::Edit("r1".into()),
             content: "直した返信".into(),
+            edit_base: None,
         };
 
         // 別のチャンネルの失敗は入力欄に入れず、保存しておく。
@@ -2172,6 +2173,7 @@ mod tests {
             channel_id: "c1".into(),
             target: Target::Channel,
             content: "先の本文".into(),
+            edit_base: None,
         });
         assert_eq!(app.composer.lines(), ["次の本文"]);
         assert_eq!(app.failed_drafts.len(), 1);
@@ -2623,6 +2625,89 @@ mod tests {
             render_sized(&mut app, 140, 40).contains("ほかの場所で編集されました"),
             "競合を知らせる"
         );
+    }
+
+    #[tokio::test]
+    async fn a_restored_edit_draft_keeps_the_revision_it_started_from() {
+        use crate::e2ee::store::{Decrypted, Decryption, SenderTrust};
+        let mut app = encrypted_app("secret-e2ee", true);
+        let feed = |app: &mut App, revision: u64, body: &str| {
+            let (id, mut row) = encrypted_row("e1", "2026-11-01 04:00:00", true, Some(1));
+            row["user_id"] = json!("u1");
+            row["revision"] = json!(revision.to_string());
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages("c3".into()),
+                batch(vec![(id.as_str(), row)]),
+            ));
+            let key =
+                crate::ui::e2ee_chat::RowKey::of(app.store.message("c3", "e1").expect("行がある"));
+            app.on_app_event(AppEvent::Decrypted {
+                channel_id: "c3".into(),
+                results: vec![(
+                    "e1".into(),
+                    key,
+                    Decryption::Decrypted(Decrypted {
+                        body: body.into(),
+                        kind: "message".into(),
+                        mentions: Default::default(),
+                        sender: SenderTrust::Verified,
+                        revision: zoo_crypto::RevisionStatus::Latest,
+                        attachments: Vec::new(),
+                    }),
+                )],
+                generation: Some(1),
+            });
+        };
+        feed(&mut app, 0, "元の本文");
+        // 版 0 から始めた編集が送れずに、失敗した下書きとして残った。
+        app.composer.insert_str("書きかけ");
+        app.on_app_event(AppEvent::RestoreDraft {
+            channel_id: "c3".into(),
+            target: Target::Edit("e1".into()),
+            content: "版 0 から直した本文".into(),
+            edit_base: Some(0),
+        });
+        assert_eq!(app.failed_drafts.len(), 1);
+        app.composer = tui_textarea::TextArea::default();
+        // 別の端末の版 1 が届き、版 1 から編集を始めてからやめる。
+        feed(&mut app, 1, "別の端末で直した本文");
+        app.selected = Some("e1".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Insert);
+        press(&mut app, KeyCode::Esc);
+        app.composer = tui_textarea::TextArea::default();
+        app.target = Target::Channel;
+        // 版 0 の下書きを戻して送ると、版 1 を上書きせずに知らせる。
+        press(&mut app, KeyCode::Char('R'));
+        assert_eq!(app.composer.lines(), ["版 0 から直した本文"]);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["版 0 から直した本文"]);
+        assert!(
+            render_sized(&mut app, 140, 40).contains("ほかの場所で編集されました"),
+            "競合を知らせる"
+        );
+    }
+
+    #[tokio::test]
+    async fn plaintext_is_held_back_while_the_records_are_unreadable() {
+        let mut app = app();
+        let me = "00000000-0000-4000-8000-0000000000b0";
+        app.me.id = me.into();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(me)).unwrap();
+        std::fs::write(dir.path().join(me).join("state.json"), b"{broken").unwrap();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: Some(dir.path().to_owned()),
+        });
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('i'));
+        app.composer.insert_str("平文");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["平文"]);
+        assert!(render_sized(&mut app, 140, 30).contains("記録を読めないため"));
     }
 
     #[tokio::test]

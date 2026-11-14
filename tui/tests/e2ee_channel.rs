@@ -778,10 +778,14 @@ async fn remembers_encrypted_channels_across_restarts() {
     );
     // 画面は、暗号ストアを開く前（ほかが開いているあいだ）にも記録を読める。
     assert_eq!(
-        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE),
+        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE).unwrap(),
         vec![CHANNEL.to_owned()]
     );
-    assert!(zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), BOB).is_empty());
+    assert!(
+        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), BOB)
+            .unwrap()
+            .is_empty()
+    );
 
     // 保存できなければ記録に入れない（次の機会に記録し直せるように）。
     #[cfg(unix)]
@@ -798,6 +802,49 @@ async fn remembers_encrypted_channels_across_restarts() {
         store.remember_encrypted_channel(OTHER).unwrap();
         assert!(store.known_encrypted_channels().any(|id| id == OTHER));
     }
+
+    // 保存鍵を失って作り直しても、記録は残る。
+    drop(store);
+    std::fs::remove_file(dir.path().join(ALICE).join("storage.key")).unwrap();
+    let opened = CryptoStore::open(dir.path(), ALICE).unwrap();
+    assert!(opened.replaced_device_id.is_some(), "端末は作り直す");
+    assert!(
+        opened
+            .store
+            .known_encrypted_channels()
+            .any(|id| id == CHANNEL)
+    );
+    drop(opened);
+
+    // 記録のファイルを読めなければ、記録がないものとせずにエラーにする。
+    std::fs::write(dir.path().join(ALICE).join("state.json"), b"{broken").unwrap();
+    assert!(zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE).is_err());
+}
+
+#[tokio::test]
+async fn the_previous_recipients_are_kept_when_saving_fails() {
+    let (_server, backend, alice, _bob) = setup().await;
+    send::send_encrypted_message(&alice.ctx(), &message("2 人"), &mut None)
+        .await
+        .unwrap();
+    const CAROL: &str = "00000000-0000-4000-8000-00000000000c";
+    let mut store = alice.store.lock().await;
+    let members = vec![ALICE.to_owned(), BOB.to_owned(), CAROL.to_owned()];
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let user_dir = alice._dir.path().join(ALICE);
+        std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = store.megolm_note_recipients(CHANNEL, &members);
+        std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(failed.is_err() || failed.as_ref().unwrap() == &vec![CAROL.to_owned()]);
+    }
+    // 保存できなかったときも、次の判定で増えた人をもう一度出す。
+    assert_eq!(
+        store.megolm_note_recipients(CHANNEL, &members).unwrap(),
+        vec![CAROL.to_owned()]
+    );
+    let _ = backend;
 }
 
 fn sender_of(decryption: &Decryption) -> SenderTrust {

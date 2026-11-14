@@ -50,6 +50,8 @@ pub enum AppEvent {
         channel_id: String,
         target: Target,
         content: String,
+        /// 暗号化したメッセージの編集を始めたときの版（#361）。下書きと一緒に戻す。
+        edit_base: Option<u64>,
     },
     ReadStates(Vec<ReadState>),
     Threads {
@@ -107,6 +109,7 @@ pub enum AppEvent {
         message_id: String,
         current_revision: u64,
         content: String,
+        edit_base: Option<u64>,
     },
     /// チャンネルか DM を作った（#361）。開く。`encrypted` は応答の値。
     Created {
@@ -167,6 +170,8 @@ pub struct FailedDraft {
     pub channel_id: String,
     pub target: Target,
     pub content: String,
+    /// 暗号化したメッセージの編集を始めたときの版（#361）。戻したときの競合の確かめに使う。
+    pub edit_base: Option<u64>,
 }
 
 pub struct ThreadView {
@@ -248,8 +253,11 @@ pub struct App {
     pub recipients: HashMap<String, RecipientSummary>,
     /// 暗号化チャンネルへの送信の直列化と、知っている epoch（#361）。
     channel_sender: ChannelSender,
-    /// 暗号化したメッセージの編集を始めたときの版（メッセージ ID ごと。#361）。
-    edit_bases: HashMap<String, u64>,
+    /// 入力欄の暗号化したメッセージの編集を始めたときの版（メッセージ ID と版。#361）。下書きを
+    /// 戻すときは、下書きと一緒に保存した版に戻す。
+    edit_base: Option<(String, u64)>,
+    /// `state.json` の暗号化チャンネルの記録を読めなかった（暗号ストアから読むまで平文で送らない）。
+    known_encrypted_unreadable: bool,
     /// 暗号ストアに記録していない、`encrypted = true` を見たチャンネル（#361）。
     unrecorded_encrypted: HashSet<String>,
     /// 暗号ストアの記録を読んだか。
@@ -324,7 +332,8 @@ impl App {
             decryptions: Decryptions::default(),
             recipients: HashMap::new(),
             channel_sender: ChannelSender::default(),
-            edit_bases: HashMap::new(),
+            edit_base: None,
+            known_encrypted_unreadable: false,
             unrecorded_encrypted: HashSet::new(),
             known_encrypted_loaded: false,
             known_encrypted_store: None,
@@ -569,6 +578,7 @@ impl App {
                 message_id,
                 current_revision,
                 content,
+                edit_base,
             } => {
                 let applied = self
                     .store
@@ -585,6 +595,7 @@ impl App {
                         channel_id,
                         target: Target::Edit(message_id),
                         content,
+                        edit_base,
                     });
                 }
             }
@@ -723,17 +734,20 @@ impl App {
                 channel_id,
                 target,
                 content,
+                edit_base,
             } => {
                 // 入力欄に書きかけの本文があるか別のチャンネルにいるときは、上書きせずに取っておく。
                 if self.current.as_deref() == Some(channel_id.as_str()) && self.composer.is_empty()
                 {
                     self.composer = composer_with(&content);
+                    self.set_edit_base(&target, edit_base);
                     self.target = target;
                 } else {
                     self.failed_drafts.push(FailedDraft {
                         channel_id,
                         target,
                         content,
+                        edit_base,
                     });
                     self.notify(format!(
                         "送れなかった本文を保存しました ({}件)。R で入力欄に戻せます",
@@ -777,12 +791,13 @@ impl App {
     /// 端末の管理のタスクと OIDC の設定を、暗号化の画面につなぐ（#360）。
     pub fn attach_encryption(&mut self, context: super::encryption::E2eeContext) {
         // 暗号ストアを開く前から、記録した暗号化チャンネルを暗号化として扱う（開くまでの平文の送信を止める）。
+        // 記録を読めなかったときは、暗号ストアから読めるまで平文で送らない（記録がないものとして送ると、
+        // 暗号化チャンネルの格下げを見逃すため）。
         if let Some(root) = &context.crypto_root {
-            self.known_encrypted_channels
-                .extend(crate::e2ee::store::read_encrypted_channels(
-                    root,
-                    &self.me.id,
-                ));
+            match crate::e2ee::store::read_encrypted_channels(root, &self.me.id) {
+                Ok(ids) => self.known_encrypted_channels.extend(ids),
+                Err(_) => self.known_encrypted_unreadable = true,
+            }
         }
         self.encryption.attach(context);
     }
@@ -1805,8 +1820,17 @@ impl App {
             self.focus = Focus::Messages;
         }
         self.composer = composer_with(&draft.content);
+        self.set_edit_base(&draft.target, draft.edit_base);
         self.target = draft.target;
         self.mode = Mode::Insert;
+    }
+
+    /// 戻した下書きの、編集を始めたときの版を入力欄に戻す（ほかの下書きの版で確かめないため）。
+    fn set_edit_base(&mut self, target: &Target, edit_base: Option<u64>) {
+        self.edit_base = match (target, edit_base) {
+            (Target::Edit(message_id), Some(revision)) => Some((message_id.clone(), revision)),
+            _ => None,
+        };
     }
 
     /// フォーカス中のペインで選択しているメッセージ。
@@ -1847,7 +1871,7 @@ impl App {
                 Some((decrypted, revision)) => {
                     // 編集を始めた版を覚え、送るときに版が進んでいたら送らない（別の端末の編集を、
                     // 古い版から作った本文で上書きしないため）。
-                    self.edit_bases.insert(message_id.clone(), revision);
+                    self.edit_base = Some((message_id.clone(), revision));
                     decrypted.body.clone()
                 }
                 None => return,
@@ -2069,6 +2093,13 @@ impl App {
             self.submit_encrypted();
             return;
         }
+        // 暗号化チャンネルの記録を読めなかったあいだは、暗号ストアから読めるまで平文で送らない。
+        if self.known_encrypted_unreadable && !self.known_encrypted_loaded {
+            self.notify(
+                "暗号化チャンネルの記録を読めないため、確かめられるまで送信を止めています。少し待ってから送ってください",
+            );
+            return;
+        }
         if let Target::Edit(message_id) = self.target.clone()
             && !self.can_change_message(&message_id)
         {
@@ -2107,6 +2138,7 @@ impl App {
                     channel_id,
                     target,
                     content,
+                    edit_base: None,
                 });
             } else {
                 let reopened = match target {
@@ -2141,8 +2173,13 @@ impl App {
                 .message(&channel_id, message_id)
                 .and_then(|message| self.decryptions.editable(message))
                 .map(|(_, revision)| revision);
-            match (self.edit_bases.get(message_id), current) {
-                (Some(base), Some(current)) if *base == current => {}
+            let base = self
+                .edit_base
+                .as_ref()
+                .filter(|(id, _)| id == message_id)
+                .map(|(_, revision)| *revision);
+            match (base, current) {
+                (Some(base), Some(current)) if base == current => {}
                 (None, _) => {
                     self.notify("編集を始めた版が分かりません。e で編集し直してください");
                     return;
@@ -2177,6 +2214,10 @@ impl App {
                 .map(|user| (user.id.as_str(), user.user_name.as_str())),
         );
         let target = self.target.clone();
+        let edit_base = match &target {
+            Target::Edit(_) => self.edit_base.as_ref().map(|(_, revision)| *revision),
+            _ => None,
+        };
         // 編集は、復号できた最新の版を基準にする（行が先に進んでいれば 409 になる）。
         let edit = match &target {
             Target::Edit(message_id) => {
@@ -2257,6 +2298,7 @@ impl App {
                             message_id: message_id.clone(),
                             current_revision,
                             content,
+                            edit_base,
                         });
                         return;
                     }
@@ -2265,6 +2307,7 @@ impl App {
                         channel_id,
                         target,
                         content,
+                        edit_base,
                     });
                 }
             }

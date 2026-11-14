@@ -318,7 +318,20 @@ impl CryptoStore {
             self.state
                 .recipients
                 .insert(channel_id.to_owned(), next.clone());
-            self.save()?;
+            if let Err(error) = self.save() {
+                // 保存できなければ前の記録に戻す（次の判定で、増えた人をもう一度出して保存し直す）。
+                match &previous {
+                    Some(previous) => {
+                        self.state
+                            .recipients
+                            .insert(channel_id.to_owned(), previous.clone());
+                    }
+                    None => {
+                        self.state.recipients.remove(channel_id);
+                    }
+                }
+                return Err(error);
+            }
         }
         let Some(previous) = previous else {
             return Ok(Vec::new());

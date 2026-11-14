@@ -317,7 +317,10 @@ impl CryptoStore {
         };
         let mut replaced_device_id = None;
         let mut replaced_registered = false;
-        if let Some(state) = state {
+        // 保存鍵を失って作り直すときも、暗号化チャンネルの記録と前回の配布先は引き継ぐ（どちらも
+        // 暗号化していない ID で、捨てると格下げを見つけられなくなる）。
+        let mut kept = (BTreeSet::new(), BTreeMap::new());
+        if let Some(mut state) = state {
             if state.version != STATE_VERSION {
                 bail!("暗号ストアの版 {} には対応していません", state.version);
             }
@@ -342,6 +345,10 @@ impl CryptoStore {
                 return Err(err);
             }
             replaced_registered = state.registered;
+            kept = (
+                std::mem::take(&mut state.encrypted_channels),
+                std::mem::take(&mut state.recipients),
+            );
             replaced_device_id = Some(state.device_id);
             fs::remove_file(&state_path)?;
         }
@@ -360,6 +367,8 @@ impl CryptoStore {
             registered: false,
             account: account.pickle(&storage_key),
             trust_store: Some(trust.pickle(&account, &storage_key)),
+            encrypted_channels: kept.0,
+            recipients: kept.1,
             ..Default::default()
         };
         let mut store = Self {
@@ -1046,8 +1055,9 @@ impl CryptoStore {
 
 /// 暗号ストアを開かずに、暗号化チャンネルとして記録したチャンネルを読む（#361）。起動の直後、端末の管理の
 /// タスクが暗号ストアを開くより前から、格下げを見つけて平文の送信を止めるため。`state.json` は `rename` で
-/// 置き換えるので、ロックを持たずに読んでも、書きかけを読むことはない。読めなければ空。
-pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Vec<String> {
+/// 置き換えるので、ロックを持たずに読んでも、書きかけを読むことはない。まだ暗号ストアがなければ空。
+/// ファイルを読めない、形式が壊れているときはエラーにする（記録がないものとして扱わない）。
+pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Result<Vec<String>> {
     #[derive(Deserialize)]
     struct Partial {
         #[serde(default)]
@@ -1055,15 +1065,18 @@ pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Vec<String> {
         #[serde(default)]
         encrypted_channels: BTreeSet<String>,
     }
-    let Ok(dir) = user_dir(root, user_id) else {
-        return Vec::new();
+    let path = user_dir(root, user_id)?.join(STATE_FILE);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err).with_context(|| format!("{} を読めません", path.display())),
     };
-    fs::read(dir.join(STATE_FILE))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Partial>(&bytes).ok())
-        .filter(|state| state.user_id == user_id)
-        .map(|state| state.encrypted_channels.into_iter().collect())
-        .unwrap_or_default()
+    let state: Partial = serde_json::from_slice(&bytes)
+        .with_context(|| format!("{} を読めません", path.display()))?;
+    if state.user_id != user_id {
+        bail!("暗号ストアが別のユーザーのものです");
+    }
+    Ok(state.encrypted_channels.into_iter().collect())
 }
 
 /// `root` にある暗号ストアのユーザー ID（ログアウトで消すものを探す）。
