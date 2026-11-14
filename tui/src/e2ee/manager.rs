@@ -182,13 +182,9 @@ pub fn spawn(
             )
             .await;
             // 画面が操作の途中で持っている暗号ストアを手放すまで待つ。同じプロセスでも、開いたままの
-            // ストアがあるとロックを取れず、開き直せないため（画面の操作は要求の期限で終わる）。
+            // ストアがあるとロックを取れず、開き直せないため。
             if let Some((_, previous)) = store_tx.send_replace(None) {
-                let previous = Arc::downgrade(&previous);
-                let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
-                while previous.strong_count() > 0 && tokio::time::Instant::now() < deadline {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
+                wait_until_released(previous).await;
             }
             match result {
                 // ほかの zoo2-tui が開いているなど、試し直しても変わらないときは止める。
@@ -201,6 +197,19 @@ pub fn spawn(
         }
     });
     (task, store_rx)
+}
+
+/// 暗号ストアの最後の持ち主が手放すまで待つ（`store` は手放してから待つ）。
+///
+/// 期限は設けない。画面の操作は、要求ごとの期限（30 秒）で終わり、再認証を待つ間はストアを持たない。
+/// 期限で打ち切って開き直すと、同じプロセスが持つロックで失敗し、ほかの zoo2-tui が開いているときと
+/// 区別できずに端末の管理が止まってしまう。待ち終えたあとのロックの失敗は、ほかのプロセスのものになる。
+pub async fn wait_until_released(store: SharedStore) {
+    let weak = Arc::downgrade(&store);
+    drop(store);
+    while weak.strong_count() > 0 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// 試し直すまでに待つ時間と、その次の間隔を返す。登録と補充を終えて Shape を受け取れていた

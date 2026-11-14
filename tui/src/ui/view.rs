@@ -461,7 +461,7 @@ fn draw_help(frame: &mut Frame) {
 }
 
 /// 暗号化の画面（#360）。
-fn draw_encryption(frame: &mut Frame, app: &App) {
+fn draw_encryption(frame: &mut Frame, app: &mut App) {
     let encryption = &app.encryption;
     let key = |text: &str| Span::styled(text.to_owned(), Style::new().fg(ACCENT));
     let warn = |text: String| Line::styled(text, Style::new().fg(Color::Yellow));
@@ -641,19 +641,30 @@ fn draw_encryption(frame: &mut Frame, app: &App) {
             ]));
         }
     }
-    draw_popup_sized(frame, "暗号化", lines, 76);
+    // リカバリーキーを全部表示できない（端末が小さい）ときは、キーを出さずに広げるよう求め、保存にも
+    // 進めない（見えていないキーを控えたことにしない）。
+    if matches!(app.encryption.screen, Screen::RecoveryKey(_)) {
+        let width = ENCRYPTION_POPUP_WIDTH.min(frame.area().width);
+        let fits = popup_rows(&lines, width) + 2 <= usize::from(frame.area().height);
+        app.encryption.recovery_key_shown = fits;
+        if !fits {
+            lines = vec![
+                error("端末が小さいため、リカバリーキーを全部表示できません。".into()),
+                Line::from("端末を広げてください（広げるまで保存には進めません）。"),
+                Line::from(vec![key("Esc"), Span::raw(": やめる")]),
+            ];
+        }
+    }
+    draw_popup_sized(frame, "暗号化", lines, ENCRYPTION_POPUP_WIDTH);
 }
 
-fn draw_popup(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>) {
-    draw_popup_sized(frame, title, lines, 56);
-}
+const ENCRYPTION_POPUP_WIDTH: u16 = 76;
 
-fn draw_popup_sized(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, width: u16) {
-    let width = width.min(frame.area().width);
-    // 折り返す行（再認証の URL など）も入る高さにする。単語の区切りで折り返すと 1 行増えうるので、
-    // 折り返す行には 1 行足す。
+/// 幅 `width` の枠に入れたときの行数（枠を除く）。単語の区切りで折り返すと 1 行増えうるので、
+/// 折り返す行には 1 行足す。
+fn popup_rows(lines: &[Line<'_>], width: u16) -> usize {
     let inner = usize::from(width.saturating_sub(2)).max(1);
-    let rows: usize = lines
+    lines
         .iter()
         .map(|line| {
             let width = line.width();
@@ -663,7 +674,17 @@ fn draw_popup_sized(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, w
                 width.div_ceil(inner) + 1
             }
         })
-        .sum();
+        .sum()
+}
+
+fn draw_popup(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>) {
+    draw_popup_sized(frame, title, lines, 56);
+}
+
+fn draw_popup_sized(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, width: u16) {
+    let width = width.min(frame.area().width);
+    // 折り返す行（再認証の URL など）も入る高さにする。
+    let rows = popup_rows(&lines, width);
     let height = (rows as u16).saturating_add(2).min(frame.area().height);
     let area = Rect {
         x: frame.area().width.saturating_sub(width) / 2,
@@ -2169,5 +2190,32 @@ mod tests {
         assert_eq!(app.mode, Mode::Normal);
         // 閉じても、解錠が要ることをステータス行に出す。
         assert!(render_sized(&mut app, 100, 30).contains("暗号化: 解錠が必要 (E)"));
+    }
+
+    #[tokio::test]
+    async fn a_recovery_key_that_does_not_fit_cannot_be_confirmed() {
+        let mut app = app();
+        app.me.id = "00000000-0000-4000-8000-00000000000b".into();
+        app.encryption.over_ssh = true;
+        press(&mut app, KeyCode::Char('E'));
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::NotSetUp),
+        });
+        press(&mut app, KeyCode::Enter);
+        let Screen::RecoveryKey(key) = &app.encryption.screen else {
+            panic!("リカバリーキーを表示していない");
+        };
+        let key = key.as_str().to_owned();
+        // 表示中に端末を縮めると、キーを出さずに広げるよう求め、y では保存に進まない。
+        let screen = render_sized(&mut app, 100, 8);
+        assert!(screen.contains("端末を広げてください"), "{screen}");
+        assert!(!screen.contains(&key));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.encryption.screen, Screen::RecoveryKey(_)));
+        // 広げてキー全体が見えたら、保存に進める。
+        assert!(render_sized(&mut app, 100, 30).contains(&key));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(!matches!(app.encryption.screen, Screen::RecoveryKey(_)));
     }
 }

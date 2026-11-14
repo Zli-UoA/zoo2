@@ -149,6 +149,8 @@ pub struct Encryption {
     task: Option<JoinHandle<()>>,
     generation: u64,
     pub over_ssh: bool,
+    /// 直近の描画でリカバリーキーを全部表示できたか。表示できていなければ、控えたこと（`y`）にしない。
+    pub recovery_key_shown: bool,
 }
 
 impl Encryption {
@@ -166,6 +168,7 @@ impl Encryption {
             task: None,
             generation: 0,
             over_ssh: reauth::over_ssh(),
+            recovery_key_shown: false,
         }
     }
 
@@ -374,7 +377,9 @@ impl Encryption {
         }
         match &mut self.screen {
             Screen::NotSetUp if key.code == KeyCode::Enter => self.begin(user_id),
-            Screen::RecoveryKey(_) if matches!(key.code, KeyCode::Char('y' | 'Y')) => {
+            Screen::RecoveryKey(_)
+                if self.recovery_key_shown && matches!(key.code, KeyCode::Char('y' | 'Y')) =>
+            {
                 self.save = Save::Setup;
                 self.reauth_and_save();
             }
@@ -427,6 +432,7 @@ impl Encryption {
             Ok((session, recovery_key)) => {
                 self.next_generation();
                 self.session = Some(SessionHandle(Arc::new(session)));
+                self.recovery_key_shown = false;
                 self.screen = Screen::RecoveryKey(recovery_key);
             }
             Err(error) => {
