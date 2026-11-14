@@ -11,6 +11,12 @@ use std::{
 /// 1 アカウントが同時に開けるストリームの数。通常の利用では、接続中のクライアント 1 つが 10〜15 本を持つ。
 pub const MAX_SHAPE_STREAMS_PER_USER: usize = 100;
 
+tokio::task_local! {
+    /// App の資格情報など、利用者本人とは別に数えたい要求が、枠のキーを指定する。
+    /// 指定がなければ、認可したユーザーの ID で数える。
+    pub static SHAPE_LIMIT_KEY: String;
+}
+
 #[derive(Clone)]
 pub struct ShapeStreamLimiter {
     max: usize,

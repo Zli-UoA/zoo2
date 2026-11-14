@@ -271,7 +271,10 @@ async fn proxy_shape(
     let span = tracing::info_span!("electric_proxy", shape = table);
     async move {
         // 1 アカウントが開けるストリームの数を制限する（開いている間、枠を持つ）。
-        let permit = state.shape_streams.try_acquire(actor).ok_or_else(|| {
+        let limit_key = crate::routes::shape_limit::SHAPE_LIMIT_KEY
+            .try_with(|key| key.clone())
+            .unwrap_or_else(|_| actor.to_owned());
+        let permit = state.shape_streams.try_acquire(&limit_key).ok_or_else(|| {
             crate::metrics::record_electric_proxy_request(table, 429);
             AppError::RateLimited
         })?;
