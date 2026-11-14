@@ -7,11 +7,15 @@
 //! ログインやログアウトのたびに `generation` を進める。古い世代のタスクが遅れて
 //! 終わっても、今の状態を書き換えないようにするため。
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Result, anyhow};
 use jiff::{civil::DateTime, tz::TimeZone};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     sync::{Mutex, mpsc},
     task::JoinHandle,
@@ -38,10 +42,20 @@ use zoo2_client_types::{
     store::Store,
 };
 
-use crate::{APP_NAME, toast};
+use crate::{
+    APP_NAME,
+    toast::{self, CallActions, CallToast},
+    window::MAIN,
+};
 
 /// DND (`dnd_until`) を取り直す間隔。
 const DND_REFRESH: Duration = Duration::from_secs(5 * 60);
+
+/// 「応答」の印の有効な長さ。
+const CALL_ACCEPT_TTL: Duration = Duration::from_secs(60);
+
+/// 招待の期限から、この時間だけ待っても Shape から消えなければ、トーストを閉じる（保険）。
+const CALL_TOAST_GRACE: Duration = Duration::from_secs(3);
 
 pub struct Core {
     app: AppHandle,
@@ -66,6 +80,12 @@ struct Inner {
     /// ログインしてから、DND を 1 回は取りに行ったか。それまでは通知を出さない
     /// (DND の間に起動したとき、取れる前に届いた通知を出さないため)。
     dnd_checked: bool,
+    /// 出している着信のトースト（招待の ID → トースト）。
+    call_toasts: HashMap<String, CallToast>,
+    /// 着信のトーストを一度出した（または出さないと決めた）招待。前面と背面を行き来しても出し直さない。
+    call_toast_seen: HashSet<String>,
+    /// トーストの「応答」を押した招待。Rust 側だけが残す印で、WebView が一度だけ取る。
+    pending_accept: Option<(String, Instant)>,
 }
 
 /// ログインしている間だけある状態。捨てるとすべてのタスクが止まる。
@@ -115,6 +135,9 @@ impl Core {
                 window_focused: true,
                 dnd_until: None,
                 dnd_checked: false,
+                call_toasts: HashMap::new(),
+                call_toast_seen: HashSet::new(),
+                pending_accept: None,
             }),
         }
     }
@@ -302,22 +325,26 @@ impl Core {
             replica: Replica::default(),
             store: Store::default(),
         };
-        // (b) React では Shape を WebView 側が購読するので、Rust 側は購読しない。
+        // 着信のトーストのために、通話の招待はどちらの画面でも Rust 側が購読する（WebView は、
+        // 表示のための購読を別に持つ。招待の行は通常 0〜数行）。
+        // (b) React では、それ以外の Shape を WebView 側が購読するので、Rust 側は購読しない。
+        let mut shapes = vec![ShapeId::CallInvites];
         if self.ui == UiMode::Leptos {
-            for id in [
+            shapes.extend([
                 ShapeId::Channels,
                 ShapeId::Users,
                 ShapeId::ChannelUsers,
                 ShapeId::Notifications,
-            ] {
-                session.tasks.push(electric::spawn(
-                    self.http.clone(),
-                    &base,
-                    credentials.clone(),
-                    id,
-                    events.clone(),
-                ));
-            }
+            ]);
+        }
+        for id in shapes {
+            session.tasks.push(electric::spawn(
+                self.http.clone(),
+                &base,
+                credentials.clone(),
+                id,
+                events.clone(),
+            ));
         }
         session
             .tasks
@@ -345,6 +372,8 @@ impl Core {
                         tokio::spawn(async move { core.expire_session(generation).await });
                         return;
                     }
+                    // 古い backend など、通話の招待の購読だけが失敗しても、画面にはエラーを出さない。
+                    ShapeEvent::Failed(ShapeId::CallInvites, _) => {}
                     ShapeEvent::Failed(id, message) => {
                         let _ = core
                             .app
@@ -381,6 +410,20 @@ impl Core {
 
     /// Shape のバッチを 1 つ処理する。(b) の `zoo_notifications_observed` もここを通る。
     pub async fn handle_batch(&self, generation: u64, id: ShapeId, batch: Batch) {
+        if id == ShapeId::CallInvites {
+            let mut inner = self.inner.lock().await;
+            if inner.generation != generation {
+                return;
+            }
+            let Some(session) = inner.session.as_mut() else {
+                return;
+            };
+            // 同期が済んだあとの差分は、届いたばかりの招待。初回と reset の行は、古いかもしれない。
+            let fresh = session.store.is_synced(&id) && !batch.reset;
+            session.store.apply(&id, batch);
+            self.reconcile_call_toasts(&mut inner, fresh);
+            return;
+        }
         let toasts = {
             let mut inner = self.inner.lock().await;
             if inner.generation != generation {
@@ -423,6 +466,149 @@ impl Core {
         };
         for toast in toasts {
             self.show_toast(toast);
+        }
+    }
+
+    /// 前面にあるか（表示されていて、フォーカスがある）。前面なら、React のダイアログに任せる。
+    fn window_in_front(&self, inner: &Inner) -> bool {
+        match self.app.get_webview_window(MAIN) {
+            Some(window) => {
+                window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
+            }
+            None => inner.window_focused,
+        }
+    }
+
+    /// 呼ばれている招待の集合を正として、出ているトーストと突き合わせる。
+    /// 集合から消えた招待（応答・拒否・取り消し・不在）のトーストは閉じ、新しい招待は、条件を満たせば出す。
+    /// 条件: 通知がオン、DND でない（Web Push と同じく、DND の間は出さず、あとから出すこともしない）、
+    /// ウィンドウが前面にない。
+    fn reconcile_call_toasts(&self, inner: &mut Inner, fresh: bool) {
+        let Some(session) = inner.session.as_ref() else {
+            return;
+        };
+        let me = session.me.id.clone();
+        let now = now_utc();
+        let current: HashSet<String> = session
+            .store
+            .call_invites()
+            .into_iter()
+            .filter(|invite| invite.invitee_id == me && invite.status == "pending")
+            .map(|invite| invite.id.clone())
+            .collect();
+        let candidates: Vec<_> = notify::pending_call_invites(&session.store, &me, now, fresh)
+            .into_iter()
+            .map(|invite| notify::call_invite_toast(&session.store, invite))
+            .collect();
+
+        inner.call_toasts.retain(|id, toast| {
+            let keep = current.contains(id);
+            if !keep {
+                toast.close();
+            }
+            keep
+        });
+        inner.call_toast_seen.retain(|id| current.contains(id));
+
+        if !self.notification_settings().enabled || !inner.dnd_checked {
+            // 設定がオフのときは、出さないと決める。DND を取る前は、あとで判定し直す。
+            if inner.dnd_checked {
+                inner
+                    .call_toast_seen
+                    .extend(candidates.iter().map(|toast| toast.invite_id.clone()));
+            }
+            return;
+        }
+        let in_dnd = NotifyContext {
+            me: me.clone(),
+            enabled: true,
+            now: Some(now),
+            dnd_until: inner.dnd_until,
+            focused_channel: None,
+        }
+        .in_dnd();
+        let in_front = self.window_in_front(inner);
+        for toast in candidates {
+            if inner.call_toast_seen.contains(&toast.invite_id) {
+                continue;
+            }
+            inner.call_toast_seen.insert(toast.invite_id.clone());
+            if in_dnd || in_front {
+                continue;
+            }
+            let handle = self.show_call_toast(&toast);
+            inner.call_toasts.insert(toast.invite_id.clone(), handle);
+        }
+    }
+
+    fn show_call_toast(&self, invite: &notify::CallInviteToast) -> CallToast {
+        let core = self.app.state::<Arc<Core>>().inner().clone();
+        let id = invite.invite_id.clone();
+        let decline_core = core.clone();
+        let decline_id = id.clone();
+        let accept = (self.ui == UiMode::Remote).then(|| {
+            let core = core.clone();
+            let id = id.clone();
+            Box::new(move || {
+                tauri::async_runtime::spawn(async move { core.accept_call_invite(id).await });
+            }) as Box<dyn FnOnce() + Send>
+        });
+        let app = self.app.clone();
+        let handle = toast::show_call_invite(
+            &invite.title,
+            &invite.body,
+            CallActions {
+                accept,
+                decline: Some(Box::new(move || {
+                    tauri::async_runtime::spawn(async move {
+                        decline_core.decline_call_invite(&decline_id).await;
+                    });
+                })),
+                open: Box::new(move || crate::window::show_main(&app)),
+            },
+        );
+        // Shape から消えなかったときの保険。受け取った時刻 + 招待の長さ + 数秒で閉じる。
+        if let Some(ms) = invite.duration_ms.filter(|ms| *ms > 0) {
+            let guard = core;
+            let id = id.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(ms as u64) + CALL_TOAST_GRACE).await;
+                guard.close_call_toast(&id).await;
+            });
+        }
+        handle
+    }
+
+    async fn close_call_toast(&self, invite_id: &str) {
+        if let Some(toast) = self.inner.lock().await.call_toasts.remove(invite_id) {
+            toast.close();
+        }
+    }
+
+    fn close_all_call_toasts(inner: &mut Inner) {
+        for (_, toast) in inner.call_toasts.drain() {
+            toast.close();
+        }
+    }
+
+    /// トーストの「応答」。ウィンドウを前に出し、WebView に印を取りに来る合図を送る。
+    /// 応答そのもの（API と通話への参加）は、印を取った WebView が行う。このイベントだけでは応答しない。
+    async fn accept_call_invite(&self, invite_id: String) {
+        self.inner.lock().await.pending_accept = Some((invite_id, Instant::now()));
+        crate::window::show_main(&self.app);
+        let _ = self.app.emit_to(MAIN, event::CALL_ACCEPT, ());
+    }
+
+    /// 「応答」の印を、一度だけ返す。60 秒を過ぎた印は捨てる。
+    pub async fn take_call_accept(&self) -> Option<String> {
+        let (invite_id, at) = self.inner.lock().await.pending_accept.take()?;
+        (at.elapsed() < CALL_ACCEPT_TTL).then_some(invite_id)
+    }
+
+    /// トーストの「拒否」。すでに終わっていても、失敗しても、期限で呼び出しは終わる。
+    async fn decline_call_invite(&self, invite_id: &str) {
+        if let Ok(api) = self.api().await {
+            let _ = api.decline_call_invite(invite_id).await;
         }
     }
 
@@ -578,6 +764,9 @@ impl Core {
         inner.focus = FocusState::default();
         inner.dnd_until = None;
         inner.dnd_checked = false;
+        Self::close_all_call_toasts(inner);
+        inner.call_toast_seen.clear();
+        inner.pending_accept = None;
         Ok(EndingSession {
             tokens: session.and_then(|session| session.tokens.clone()),
             fallback,
@@ -603,7 +792,12 @@ impl Core {
     }
 
     pub async fn set_window_focused(&self, focused: bool) {
-        self.inner.lock().await.window_focused = focused;
+        let mut inner = self.inner.lock().await;
+        inner.window_focused = focused;
+        // 前面に来たら、着信は React のダイアログに任せて、トーストを閉じる。
+        if focused {
+            Self::close_all_call_toasts(&mut inner);
+        }
     }
 
     pub async fn open_channel(&self, channel_id: String) -> Result<(), IpcError> {

@@ -161,6 +161,23 @@ impl ApiClient {
         Ok(envelope.txid)
     }
 
+    /// 通話の招待を拒否する（`POST /api/call-invites/{id}/decline`）。すでに終わっていた招待
+    /// （404・409）は、拒否できたのと同じに扱う。
+    pub async fn decline_call_invite(&self, invite_id: &str) -> Result<()> {
+        let path = format!("/api/call-invites/{invite_id}/decline");
+        match self.send(Method::POST, &path, None).await {
+            Ok(_) => Ok(()),
+            Err(err) => match err.downcast_ref::<crate::http::HttpError>() {
+                Some(crate::http::HttpError::Status { status, .. })
+                    if matches!(status.as_u16(), 404 | 409) =>
+                {
+                    Ok(())
+                }
+                _ => Err(err),
+            },
+        }
+    }
+
     pub async fn account_profiles(&self) -> Result<zoo2_client_types::accounts::AccountProfiles> {
         let value: Value = self.get("/api/emoji-accounts").await?;
         let profiles: Vec<zoo2_client_types::accounts::AccountProfile> =

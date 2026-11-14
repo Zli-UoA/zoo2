@@ -2,10 +2,13 @@ import { useRouter } from "@tanstack/react-router";
 import { useEffect } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { requestAcceptCallInvite } from "../../lib/call/call-invites";
 import {
+  DESKTOP_CALL_ACCEPT_EVENT,
   desktopListen,
   desktopReportNotifications,
   desktopSetFocus,
+  desktopTakeCallAccept,
   isDesktopSession,
   type DesktopChange,
   type DesktopOpenTarget,
@@ -97,6 +100,27 @@ function DesktopBridgeInner({ channelId }: { channelId: string | null }) {
       stop?.();
     };
   }, [router]);
+
+  // 着信のトーストの「応答」。イベントは「印を取りに来て」の合図にすぎず、応答するのは、Rust 側の
+  // 印（`zoo_take_call_accept`）を一度だけ取れたときだけ。起動の直後にも、押されたまま残った印を取る。
+  useEffect(() => {
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    const take = () => {
+      void desktopTakeCallAccept().then((inviteId) => {
+        if (inviteId && !cancelled) requestAcceptCallInvite(inviteId);
+      });
+    };
+    take();
+    void desktopListen<null>(DESKTOP_CALL_ACCEPT_EVENT, take).then((unlisten) => {
+      if (cancelled) unlisten();
+      else stop = unlisten;
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
 
   return null;
 }

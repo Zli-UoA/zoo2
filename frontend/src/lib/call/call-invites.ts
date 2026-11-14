@@ -157,6 +157,16 @@ export async function consumeCallAcceptMark(
   }
 }
 
+/**
+ * 応答を画面に頼むイベント。デスクトップ版（Tauri）が、トーストの「応答」の印を Rust 側から
+ * 取れたときに出す（`DesktopBridge`）。`IncomingCallDialog` が受けて、応答して通話に入る。
+ */
+export const CALL_ACCEPT_REQUEST_EVENT = "zoo:call-invite-accept";
+
+export function requestAcceptCallInvite(inviteId: string): void {
+  window.dispatchEvent(new CustomEvent<string>(CALL_ACCEPT_REQUEST_EVENT, { detail: inviteId }));
+}
+
 /** 出ている着信の通知（Web Push）を閉じる。応答・拒否のあと、他の端末の通知は `call_invite_end` が閉じる。 */
 export async function closeCallInviteNotification(inviteId: string): Promise<void> {
   try {

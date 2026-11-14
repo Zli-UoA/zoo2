@@ -57,6 +57,82 @@ pub fn parse_dnd_until(value: &str) -> Option<DateTime> {
     Some(timestamp.to_zoned(TimeZone::UTC).datetime())
 }
 
+/// Electric の `timestamptz`（`2026-11-14 10:00:00.123+00`）を UTC の時刻にする。読めなければ None。
+pub fn parse_timestamptz(value: &str) -> Option<DateTime> {
+    let mut normalized = value.trim().replacen(' ', "T", 1);
+    // `+00` のように、時だけのオフセットは `+00:00` にそろえる。
+    let tail = normalized.len().saturating_sub(3);
+    if normalized.is_char_boundary(tail)
+        && matches!(normalized.as_bytes().get(tail), Some(b'+' | b'-'))
+        && normalized[tail + 1..].bytes().all(|b| b.is_ascii_digit())
+    {
+        normalized.push_str(":00");
+    }
+    parse_dnd_until(&normalized)
+}
+
+/// 着信のトースト（通話の招待）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallInviteToast {
+    pub invite_id: String,
+    pub channel_id: String,
+    pub title: String,
+    pub body: String,
+    /// 招待の有効な長さ（`expires_at` - `created_at`）。受け取った時刻から数えて、この時間で閉じる。
+    /// 端末の時計に頼らないための値。読めなければ None。
+    pub duration_ms: Option<i64>,
+}
+
+/// 呼ばれている、呼び出し中の招待。`fresh` が偽（初回の同期や再接続の `reset`）のときは、
+/// 期限（`expires_at`）が `now` より前のものを除く。そのときに届いた行は、古いかもしれないため。
+/// 差分で届いた行は届いたばかりなので、端末の時計がずれていても出す。
+pub fn pending_call_invites<'a>(
+    store: &'a Store,
+    me: &str,
+    now: DateTime,
+    fresh: bool,
+) -> Vec<&'a crate::rows::CallInvite> {
+    store
+        .call_invites()
+        .into_iter()
+        .filter(|invite| invite.invitee_id == me && invite.status == "pending")
+        .filter(|invite| {
+            fresh || parse_timestamptz(&invite.expires_at).is_some_and(|expires| expires > now)
+        })
+        .collect()
+}
+
+/// 着信のトーストの中身。DM は相手の名前だけ、チャンネルは「名前 (#チャンネル)」。
+pub fn call_invite_toast(store: &Store, invite: &crate::rows::CallInvite) -> CallInviteToast {
+    let actor = store.display_name(&invite.inviter_id);
+    let channel = store.channel(&invite.channel_id);
+    let (title, body) = match channel {
+        Some(channel) if !channel.is_dm => (
+            format!("{actor} (#{})", channel.channel_name),
+            "通話に招待されています".to_string(),
+        ),
+        _ => (actor, "着信".to_string()),
+    };
+    let duration_ms = match (
+        parse_timestamptz(&invite.created_at),
+        parse_timestamptz(&invite.expires_at),
+    ) {
+        (Some(created), Some(expires)) if expires > created => created
+            .until(expires)
+            .ok()
+            .and_then(|span| span.total(jiff::Unit::Millisecond).ok())
+            .map(|ms| ms as i64),
+        _ => None,
+    };
+    CallInviteToast {
+        invite_id: invite.id.clone(),
+        channel_id: invite.channel_id.clone(),
+        title,
+        body,
+        duration_ms,
+    }
+}
+
 /// 出す通知の中身。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Toast {
@@ -344,5 +420,79 @@ mod tests {
         assert_eq!(short.chars().count(), 241);
         assert!(short.ends_with('…'));
         assert_eq!(excerpt("短い"), "短い");
+    }
+
+    fn invite_batch(id: &str, invitee: &str, status: &str, expires: &str) -> Batch {
+        Batch {
+            reset: false,
+            up_to_date: true,
+            changes: vec![Change::Upsert {
+                key: id.into(),
+                row: json!({
+                    "id": id, "channel_id": "c1", "inviter_id": "u2", "invitee_id": invitee,
+                    "status": status,
+                    "created_at": "2026-11-14 10:00:00.000+00", "expires_at": expires,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            }],
+        }
+    }
+
+    #[test]
+    fn parses_electric_timestamptz() {
+        let expected = parse_dnd_until("2026-11-14T10:00:30Z");
+        assert!(expected.is_some());
+        assert_eq!(parse_timestamptz("2026-11-14 10:00:30+00"), expected);
+        assert_eq!(parse_timestamptz("2026-11-14 10:00:30.000+00"), expected);
+        assert_eq!(parse_timestamptz("2026-11-14T10:00:30Z"), expected);
+        assert_eq!(parse_timestamptz("2026-11-14 19:00:30+09:00"), expected);
+        assert_eq!(parse_timestamptz("nonsense"), None);
+    }
+
+    #[test]
+    fn call_invites_are_for_me_pending_and_unexpired() {
+        let mut store = Store::default();
+        store.apply(
+            &ShapeId::CallInvites,
+            invite_batch("i1", "me", "pending", "2026-11-14 10:00:30+00"),
+        );
+        store.apply(
+            &ShapeId::CallInvites,
+            invite_batch("i2", "other", "pending", "2026-11-14 10:00:30+00"),
+        );
+        store.apply(
+            &ShapeId::CallInvites,
+            invite_batch("i3", "me", "declined", "2026-11-14 10:00:30+00"),
+        );
+        let now = parse_dnd_until("2026-11-14T10:00:10Z").unwrap();
+        let later = parse_dnd_until("2026-11-14T10:01:00Z").unwrap();
+        let ids = |invites: Vec<&crate::rows::CallInvite>| {
+            invites
+                .into_iter()
+                .map(|i| i.id.clone())
+                .collect::<Vec<_>>()
+        };
+        // 差分で届いた行は、端末の時計が進んでいても出す
+        assert_eq!(ids(pending_call_invites(&store, "me", later, true)), ["i1"]);
+        // 初回の同期や reset で届いた行は、期限が過ぎていれば出さない
+        assert_eq!(ids(pending_call_invites(&store, "me", now, false)), ["i1"]);
+        assert!(pending_call_invites(&store, "me", later, false).is_empty());
+    }
+
+    #[test]
+    fn call_invite_toast_names_the_caller_and_channel() {
+        let mut store = Store::default();
+        store.apply(
+            &ShapeId::CallInvites,
+            invite_batch("i1", "me", "pending", "2026-11-14 10:00:30+00"),
+        );
+        let invite = store.call_invites()[0].clone();
+        let toast = call_invite_toast(&store, &invite);
+        assert_eq!(toast.invite_id, "i1");
+        assert_eq!(toast.channel_id, "c1");
+        assert_eq!(toast.duration_ms, Some(30_000));
+        assert!(!toast.title.is_empty());
     }
 }

@@ -46,7 +46,7 @@
 | --- | --- |
 | Web のタブ | Electric の Shape `GET /api/shapes/call_invites`（呼ばれた人と呼んだ人の `pending` だけ。where はサーバーで固定）。ダイアログと呼び出し音を出す |
 | Web Push | `notificationType: "call_invite"`。`TTL: 30`、`Urgency: high`。`tag` は `zoo-call-{招待の ID}` |
-| デスクトップ版 | Shape を購読してトーストを出す（デスクトップ版の PR で追加） |
+| デスクトップ版 | Rust 側が Shape を購読してトーストを出す（下の「デスクトップ版の動き」） |
 
 - 招待が終わったら（応答・拒否・取り消し・不在）、同じ `tag` の `call_invite_end` を Web Push で送り、端末に出ている着信の通知を閉じさせる。
 - 応答不可（DND）のユーザーには、着信の Web Push も、その取り消し（`call_invite_end`）も送らない。不在着信の通知（`notification_events` の行）は DND でも残る（Web Push の送信だけ、他の通知と同じく DND に従う）。
@@ -56,7 +56,7 @@
 ## クライアントごとの範囲
 
 - Web（React）: 着信ダイアログ・呼び出し音・招待の UI・Web Push の応答/拒否ボタン（下の「Web の動き」）。バックエンドの PR で、通知一覧の「不在着信」のカードと、Service Worker の `call_invite_end`（出ている通知を閉じる）を先に入れてある。
-- デスクトップ版（Tauri）: トースト。Linux は応答/拒否のボタン付き。GPUI 版（`desktop/`）は、`Toast.message_id` が `Option` になったことに合わせて直しただけで、通話の着信は出さない。
+- デスクトップ版（Tauri）: トースト。Linux は応答/拒否のボタン付き（下の「デスクトップ版の動き」）。GPUI 版（`desktop/`）は、`Toast.message_id` が `Option` になったことに合わせて直しただけで、通話の着信は出さない。
 - TUI: 通話の機能がないので、呼び出しも扱わない。`message_id` が NULL の行（不在着信）を読み飛ばさず扱えるよう、`client-types` の型だけ合わせた。
 - Compose: 反映しない（通話関連の変更は docs と PR 本文に記録して済ませる方針）。
 
@@ -75,3 +75,17 @@
   - 「拒否」は、開いているタブへ `postMessage`（`action: "decline"`）で依頼する。Service Worker は API のトークンを持たないため、依頼を受けられる画面（`routes/_shell.tsx` の下）を開いたタブがなければ通知を閉じるだけで、期限が来ると不在着信になる。
   - `call_invite_end` は、同じ `tag` の通知を閉じる（通知がなければ、同じ `tag` で出してすぐ閉じる）。
 - **不在着信**: 通知一覧の `NotificationCard` に「〇〇さんからの不在着信」を出し、チャンネルへのリンクを付ける（`message_id` は NULL）。
+
+## デスクトップ版の動き
+
+Tauri 版（`desktop-tauri/`）は、ウィンドウが前面にないときだけ、OS のトーストで着信を知らせる。前面にあるときは、画面（Web）の着信ダイアログに任せる。
+
+- **購読**: 通話の招待の Shape（`ShapeId::CallInvites`）だけは、どちらの画面（Leptos・React）でも、Rust 側が購読する（WebView 側の購読とは別。行は通常 0〜数行）。この購読だけが失敗しても（古い backend など）、画面にはエラーを出さない。
+- **出す条件**: 自分あての `pending` で、通知の設定がオン、DND でなく（DND の間は出さず、あとから出すこともしない）、ウィンドウが前面にない（表示されていて、フォーカスがある）とき。同じ招待のトーストは 1 回だけ。初回の同期や `reset` で届いた行は、期限（`expires_at`）が過ぎていれば出さない。同期が済んだあとの差分で届いた行は、端末の時計がずれていても出す。
+- **閉じる**: Shape から招待が消えたら（応答・拒否・取り消し・不在）、出ているトーストを閉じる。ウィンドウが前面に来たときと、ログアウトでも閉じる。Shape から消えなかったときの保険として、受け取った時刻 + 招待の長さ + 3 秒でも閉じる。
+- **Linux**: 「応答」「拒否」のボタン付きで、閉じるまで出し続ける（`Urgency::Critical`、`Timeout::Never`。GNOME は通常の通知を数秒で一覧にしまうため）。本文のクリックは、ウィンドウを前に出すだけで、応答はしない。
+  - 「拒否」: Rust 側の API クライアントで `POST /api/call-invites/{id}/decline`。
+  - 「応答」: Rust 側が「応答の印」（招待の ID と時刻。60 秒で無効）を残し、ウィンドウを前に出して、`zoo://call-accept` を送る。このイベントは「印を取りに来て」の合図にすぎない。React（`DesktopBridge`）は、`zoo_take_call_accept` で印を一度だけ取れたときだけ、`IncomingCallDialog` に応答を頼む（API の accept と `joinCall`）。起動の直後にも、残った印を取る。Web Push の「応答」の印（Cache）と同じ考え方で、イベントや URL だけでは応答しない。`zoo://open` は招待を扱わない。
+  - Leptos の画面には通話の UI がなく、マイクの許可もないので、「応答」のボタンは出さず、「拒否」だけにする。
+- **mac**: トーストを出し、招待が終わったら閉じる。クリックは受け取れない（他の通知と同じ）ので、ボタンはなく、応答は画面（ダイアログ）で行う。
+- **古い版との組み合わせ**: 古い Web と新しいアプリ: 合図は無視されるが、ウィンドウが前に出て、ダイアログで応答できる。新しい Web と古いアプリ: `zoo_take_call_accept` がなく、何もしない。`PROTOCOL_VERSION` は上げない。

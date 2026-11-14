@@ -5,6 +5,7 @@ import {
   desktopAccessToken,
   desktopNotificationSettings,
   desktopSetNotifications,
+  desktopTakeCallAccept,
   detectDesktop,
   hasDesktopBridge,
   isDesktopSession,
@@ -79,6 +80,30 @@ describe("desktopNotificationSettings", () => {
     });
     await detectDesktop();
     await expect(desktopNotificationSettings()).resolves.toBeNull();
+  });
+});
+
+describe("desktopTakeCallAccept", () => {
+  it("returns the invite id the toast's accept button left, and null otherwise", async () => {
+    let next: unknown = "00000000-0000-4000-8000-000000000001";
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      if (cmd === "zoo_take_call_accept") return next;
+      return undefined;
+    });
+    await detectDesktop();
+    await expect(desktopTakeCallAccept()).resolves.toBe("00000000-0000-4000-8000-000000000001");
+    next = null;
+    await expect(desktopTakeCallAccept()).resolves.toBeNull();
+  });
+
+  it("is null when an older app does not have the command", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw new Error("command zoo_take_call_accept not found");
+    });
+    await detectDesktop();
+    await expect(desktopTakeCallAccept()).resolves.toBeNull();
   });
 });
 

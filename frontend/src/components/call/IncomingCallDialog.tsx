@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { useCallInviteApi, useCallInvites } from "../../hooks/useCallInvites";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import {
+  CALL_ACCEPT_REQUEST_EVENT,
   acceptCallInvite,
   closeCallInviteNotification,
   consumeCallAcceptMark,
@@ -120,6 +121,16 @@ export function IncomingCallDialog() {
       if (marked) void accept(inviteId);
     });
   }, [accept, currentUserId]);
+
+  // デスクトップ版のトーストの「応答」。印を Rust 側から取れた `DesktopBridge` が頼んでくる。
+  useEffect(() => {
+    const onRequest = (event: Event) => {
+      const inviteId = (event as CustomEvent<unknown>).detail;
+      if (typeof inviteId === "string") void accept(inviteId);
+    };
+    window.addEventListener(CALL_ACCEPT_REQUEST_EVENT, onRequest);
+    return () => window.removeEventListener(CALL_ACCEPT_REQUEST_EVENT, onRequest);
+  }, [accept]);
 
   // Web Push の「応答」「拒否」（Service Worker が、開いているタブへ依頼する）。
   useEffect(() => {
