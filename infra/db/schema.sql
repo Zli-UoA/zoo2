@@ -224,6 +224,7 @@ CREATE TABLE channel_notes (
 CREATE INDEX idx_channel_notes_channel_updated ON channel_notes (channel_id, updated_at DESC, id);
 CREATE INDEX idx_channel_notes_channel_position ON channel_notes (channel_id, position) WHERE deleted_at IS NULL;
 CREATE INDEX idx_channel_notes_deleted_at ON channel_notes (channel_id, deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_channel_notes_expired ON channel_notes (deleted_at, id) WHERE deleted_at IS NOT NULL;
 -- Structured integration cards are separate from user-controlled message content.
 ALTER TABLE messages ADD COLUMN card text;
 ALTER TABLE users ADD COLUMN is_bot boolean NOT NULL DEFAULT false;
@@ -2078,6 +2079,7 @@ ALTER TABLE notification_events REPLICA IDENTITY FULL;
 -- Match the existing ElectricSQL identities established by earlier migrations.
 ALTER TABLE attachments REPLICA IDENTITY FULL;
 ALTER TABLE channel_user REPLICA IDENTITY FULL;
+ALTER TABLE channel_leave REPLICA IDENTITY FULL;
 ALTER TABLE channels REPLICA IDENTITY FULL;
 ALTER TABLE message_reactions REPLICA IDENTITY FULL;
 ALTER TABLE messages REPLICA IDENTITY FULL;

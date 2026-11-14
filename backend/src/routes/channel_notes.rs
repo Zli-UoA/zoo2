@@ -98,6 +98,33 @@ pub fn router() -> Router<AppState> {
         ))
 }
 
+/// Delete only expired tombstones, in bounded batches shared safely by workers.
+pub async fn purge_expired_notes(db: &toasty::Db) -> Result<u64, AppError> {
+    let mut db = db.clone();
+    let count = toasty::sql::statement(
+        "DELETE FROM channel_notes WHERE id IN (
+            SELECT id FROM channel_notes
+            WHERE deleted_at < statement_timestamp() - interval '24 hours'
+            ORDER BY deleted_at, id
+            LIMIT 100 FOR UPDATE SKIP LOCKED
+        )",
+    )
+    .exec(&mut db)
+    .await?;
+    Ok(count)
+}
+
+pub async fn cleanup_worker(db: toasty::Db) {
+    let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        timer.tick().await;
+        if let Err(error) = purge_expired_notes(&db).await {
+            tracing::warn!(%error, "Expired channel note cleanup failed; will retry");
+        }
+    }
+}
+
 async fn authorize(
     tx: &mut toasty::Transaction<'_>,
     actor: &str,

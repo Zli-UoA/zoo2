@@ -150,6 +150,80 @@ async fn notes_cannot_store_plaintext_in_encrypted_channels() -> anyhow::Result<
 }
 
 #[tokio::test]
+async fn expired_notes_are_purged_without_touching_live_recent_or_locked_notes()
+-> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(&app, "POST", "/api/channels", &owner, json!({
+        "id":channel,"channel_name":format!("purge_{}", Uuid::new_v4().simple()),"is_private":false
+    })).await;
+    assert_eq!(created.0, StatusCode::OK);
+    let collection = format!("/api/channels/{channel}/notes");
+    let mut ids = Vec::new();
+    for title in ["active", "recent", "expired", "locked"] {
+        let (status, value) = request(
+            &app,
+            "POST",
+            &collection,
+            &owner,
+            json!({"title":title,"content":"text"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        ids.push(value["data"]["id"].as_str().unwrap().to_owned());
+    }
+    for id in &ids[1..] {
+        assert_eq!(
+            request(
+                &app,
+                "DELETE",
+                &format!("{collection}/{id}"),
+                &owner,
+                json!({"version":1})
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+    let (mut connection, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    connection.execute("UPDATE channel_notes SET deleted_at = statement_timestamp() - interval '25 hours' WHERE id = ANY($1)", &[&&ids[2..]]).await?;
+    let locked = connection.transaction().await?;
+    locked
+        .query_one(
+            "SELECT id FROM channel_notes WHERE id = $1 FOR UPDATE",
+            &[&ids[3]],
+        )
+        .await?;
+    backend::routes::channel_notes::purge_expired_notes(&db).await?;
+    let rows = locked
+        .query("SELECT id FROM channel_notes WHERE id = ANY($1)", &[&ids])
+        .await?;
+    let remaining: Vec<String> = rows.iter().map(|row| row.get(0)).collect();
+    assert!(remaining.contains(&ids[0]));
+    assert!(remaining.contains(&ids[1]));
+    assert!(!remaining.contains(&ids[2]));
+    assert!(remaining.contains(&ids[3]));
+    locked.commit().await?;
+    backend::routes::channel_notes::purge_expired_notes(&db).await?;
+    assert!(
+        connection
+            .query_opt("SELECT id FROM channel_notes WHERE id=$1", &[&ids[3]])
+            .await?
+            .is_none()
+    );
+    backend::routes::channel_notes::purge_expired_notes(&db).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn channel_notes_wait_for_channel_and_membership_changes_before_authorizing()
 -> anyhow::Result<()> {
     let mut config = Config::from_env();
