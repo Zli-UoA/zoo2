@@ -582,12 +582,42 @@ self.addEventListener("push", (event) => {
               ? "回應: "
               : "Reaction: ") + body;
       }
+      const isCallInvite =
+        payload.notificationType === "call_invite" && typeof payload.inviteId === "string";
       await self.registration.showNotification(title, {
         body,
         icon: "/icons/icon-192.png",
         badge: "/icons/badge-96.png",
         tag: typeof payload.tag === "string" ? payload.tag : "zoo-activity",
-        data: { url: typeof payload.url === "string" ? payload.url : "/" },
+        data: {
+          url: typeof payload.url === "string" ? payload.url : "/",
+          ...(isCallInvite ? { inviteId: payload.inviteId } : {}),
+        },
+        // 着信は、応答するか拒否するまで出し続ける（期限が来たら call_invite_end で閉じる）。
+        ...(isCallInvite
+          ? {
+              requireInteraction: true,
+              renotify: true,
+              actions: [
+                {
+                  action: "accept",
+                  title: language.startsWith("ja")
+                    ? "応答"
+                    : language.startsWith("zh")
+                      ? "接聽"
+                      : "Accept",
+                },
+                {
+                  action: "decline",
+                  title: language.startsWith("ja")
+                    ? "拒否"
+                    : language.startsWith("zh")
+                      ? "拒絕"
+                      : "Decline",
+                },
+              ],
+            }
+          : {}),
       });
     })(),
   );
@@ -595,12 +625,27 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  const inviteId = event.notification.data?.inviteId;
   event.waitUntil(
     (async () => {
+      if (event.action === "decline" && typeof inviteId === "string") {
+        // Service Worker は API のトークンを持たないので、開いているタブに拒否を頼む。
+        // タブがなければ通知を閉じるだけで、期限が来ると不在着信になる。
+        const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+        for (const client of windows) {
+          client.postMessage({ type: "zoo-call-invite", action: "decline", inviteId });
+        }
+        return;
+      }
       let target = "/";
       try {
         const url = new URL(event.notification.data?.url || "/", self.location.origin);
         if (url.origin === self.location.origin && url.pathname.startsWith("/channels/")) {
+          // 「応答」は、画面側で応答して通話に入る（`IncomingCallDialog`）。
+          if (event.action === "accept" && typeof inviteId === "string") {
+            url.searchParams.set("call_invite", inviteId);
+            url.searchParams.set("call_action", "accept");
+          }
           target = url.href;
         }
       } catch {

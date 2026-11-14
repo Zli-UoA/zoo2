@@ -6,6 +6,7 @@ import { AppShell } from "../components/layout/AppShell";
 import { OfflineProvider } from "../components/offline/OfflineProvider";
 import { E2eeProvider } from "../components/e2ee/E2eeProvider";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
+import { IncomingCallDialog } from "../components/call/IncomingCallDialog";
 import { CallProvider } from "../lib/call/call-context";
 import { NotificationsProvider } from "../hooks/useUnifiedNotifications";
 import { resolveConfig } from "../lib/config";
@@ -34,6 +35,7 @@ function ShellLayout() {
               <AppShell>
                 <Outlet />
               </AppShell>
+              <IncomingCallDialog />
             </NotificationsProvider>
           </HomeLiveProvider>
         </CallProvider>

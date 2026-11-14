@@ -44,6 +44,14 @@ let mockCallState = {
   leaveCall: vi.fn(),
 };
 
+const mockInviteRequest = vi.fn().mockResolvedValue({ ok: true });
+let mockOutgoing: Array<Record<string, string>> = [];
+
+vi.mock("../../hooks/useCallInvites", () => ({
+  useCallInvites: () => ({ incoming: [], outgoing: mockOutgoing }),
+  useCallInviteApi: () => ({ request: mockInviteRequest }),
+}));
+
 vi.mock("../../lib/call/call-context", () => ({
   useCall: () => mockCallState,
 }));
@@ -264,5 +272,68 @@ describe("CallBar browser tests", () => {
     expect(leaveBtn).toBeDefined();
     await user.click(leaveBtn);
     expect(mockCallState.leaveCall).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("CallBar の招待", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem("zoo-locale", "ja");
+    mockInviteRequest.mockClear();
+    mockOutgoing = [];
+    mockCallState = {
+      currentChannelId: "ch-1",
+      connectionState: "connected",
+      isMuted: false,
+      participants: [],
+      speakingUserIds: new Set<string>(),
+      toggleMute: vi.fn(),
+      leaveCall: vi.fn(),
+    };
+  });
+
+  it("チャンネルの通話には招待のボタンが出る", () => {
+    renderCallBar();
+    expect(screen.getByRole("button", { name: "メンバーを招待" })).toBeTruthy();
+  });
+
+  it("DM の通話には招待のボタンが出ない（相手は自動で呼ばれる）", () => {
+    mockCallState.currentChannelId = "ch-dm";
+    renderCallBar();
+    expect(screen.queryByRole("button", { name: "メンバーを招待" })).toBeNull();
+  });
+
+  it("呼び出し中の相手を表示し、取り消せる", async () => {
+    mockCallState.currentChannelId = "ch-dm";
+    mockOutgoing = [
+      {
+        id: "00000000-0000-4000-8000-000000000001",
+        channel_id: "ch-dm",
+        inviter_id: "user-alice",
+        invitee_id: "user-bob",
+        status: "pending",
+      },
+    ];
+    renderCallBar();
+    expect(screen.getByText("Bob さんを呼び出し中…")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Bob さんの呼び出しを取り消す" }));
+    expect(mockInviteRequest).toHaveBeenCalledWith(
+      "/api/call-invites/00000000-0000-4000-8000-000000000001/cancel",
+      { method: "POST" },
+    );
+  });
+
+  it("別のチャンネルへの呼び出しは表示しない", () => {
+    mockOutgoing = [
+      {
+        id: "00000000-0000-4000-8000-000000000002",
+        channel_id: "ch-dm",
+        inviter_id: "user-alice",
+        invitee_id: "user-bob",
+        status: "pending",
+      },
+    ];
+    renderCallBar();
+    expect(screen.queryByText("Bob さんを呼び出し中…")).toBeNull();
   });
 });
