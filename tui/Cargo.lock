@@ -2837,6 +2837,7 @@ name = "zoo2-client-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "directories",
  "futures-util",
  "jiff",
@@ -2866,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "zoo2-tui"
-version = "0.8.1"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "crossterm",

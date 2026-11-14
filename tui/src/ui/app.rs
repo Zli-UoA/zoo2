@@ -72,6 +72,8 @@ pub enum AppEvent {
         parent_id: Option<String>,
         users: Vec<TypingUser>,
     },
+    /// 暗号化の画面の裏の処理の結果（#360）。
+    Encryption(super::encryption::EncryptionEvent),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +107,8 @@ pub enum Mode {
     /// チャンネル名で絞り込む。
     Search(String),
     Help,
+    /// 暗号化の画面（初回設定と解錠。#360）。
+    Encryption,
 }
 
 /// 入力欄の送り先。
@@ -194,6 +198,8 @@ pub struct App {
     read_poll: PollGate,
     emoji_poll: PollGate,
     typing_poll: PollGate,
+    /// 暗号化の画面と、その裏の処理。
+    pub encryption: super::encryption::Encryption,
 }
 
 impl App {
@@ -207,7 +213,10 @@ impl App {
         app_tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Self {
         crate::mfm::set_emoji_catalog(HashMap::new(), HashSet::new());
+        let encryption =
+            super::encryption::Encryption::new(api.clone(), http.clone(), app_tx.clone());
         let mut app = Self {
+            encryption,
             api,
             http,
             api_base_url,
@@ -459,6 +468,7 @@ impl App {
             AppEvent::AccountProfiles(profiles) => {
                 self.store.account_profiles = profiles;
             }
+            AppEvent::Encryption(event) => self.encryption.on_event(event),
             AppEvent::Threads {
                 requested_at,
                 threads,
@@ -628,7 +638,13 @@ impl App {
         }
     }
 
+    /// 端末の管理のタスクと OIDC の設定を、暗号化の画面につなぐ（#360）。
+    pub fn attach_encryption(&mut self, context: super::encryption::E2eeContext) {
+        self.encryption.attach(context);
+    }
+
     pub fn on_tick(&mut self) {
+        self.encryption.on_tick(self.mode == Mode::Encryption);
         if self.terminal_active {
             for archived in [false, true] {
                 let scope = usize::from(archived);
@@ -1099,6 +1115,12 @@ impl App {
             Mode::Search(query) => self.on_search_key(key, query),
             Mode::React { message_id, input } => self.on_react_key(key, message_id, input),
             Mode::Help => self.mode = Mode::Normal,
+            Mode::Encryption => {
+                let user_id = self.me.id.clone();
+                if !self.encryption.on_key(key, &user_id) {
+                    self.mode = Mode::Normal;
+                }
+            }
         }
     }
 
@@ -1106,6 +1128,10 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('E') => {
+                self.mode = Mode::Encryption;
+                self.encryption.open();
+            }
             KeyCode::Tab => self.cycle_focus(true),
             KeyCode::BackTab => self.cycle_focus(false),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
@@ -1168,6 +1194,10 @@ impl App {
     /// 貼り付けは改行を含めて入力欄に入れ、送信はしない。入力中でなければ、キー操作と
     /// 取り違えないよう無視する。
     fn on_paste(&mut self, text: &str) {
+        if self.mode == Mode::Encryption {
+            self.encryption.on_paste(text);
+            return;
+        }
         if self.mode != Mode::Insert {
             return;
         }
