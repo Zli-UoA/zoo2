@@ -1,4 +1,4 @@
-//! アプリシェルの確認画面 (`zoo2-desktop gallery shell [loading|welcome]`)。
+//! アプリシェルの確認画面 (`zoo2-desktop gallery shell [loading|welcome|thread]`)。
 //!
 //! サーバーなしでワークスペースを描くため、固定のデータで `AppState` を作る。
 //! データは `frontend/.storybook/fixtures.ts` (`ChannelSidebar.stories.tsx` と VRT のカタログ) に合わせてある。
@@ -30,6 +30,8 @@ pub enum Scenario {
     Loading,
     /// チャンネルを選んでいない状態 (`WelcomePanel`)。
     Welcome,
+    /// チャンネルを開き、右にスレッドペインも開いた状態。
+    Thread,
 }
 
 impl Scenario {
@@ -38,6 +40,7 @@ impl Scenario {
             None | Some("workspace") => Some(Self::Workspace),
             Some("loading") => Some(Self::Loading),
             Some("welcome") => Some(Self::Welcome),
+            Some("thread") => Some(Self::Thread),
             Some(_) => None,
         }
     }
@@ -65,6 +68,13 @@ fn user(id: &str, user_name: &str, display_name: &str) -> (String, Value) {
     (
         id.to_string(),
         json!({"id": id, "user_name": user_name, "display_name": display_name}),
+    )
+}
+
+fn bot(id: &str, user_name: &str, display_name: &str) -> (String, Value) {
+    (
+        id.to_string(),
+        json!({"id": id, "user_name": user_name, "display_name": display_name, "is_bot": true}),
     )
 }
 
@@ -96,13 +106,64 @@ fn member(user_id: &str, channel_id: &str) -> (String, Value) {
 }
 
 fn message(id: &str, user_id: &str, channel_id: &str, content: &str, at: &str) -> (String, Value) {
+    message_with(id, user_id, channel_id, content, at, None, None)
+}
+
+/// 返信先 (`parent_id`) や連携カード (`card`) を持つメッセージ。
+fn message_with(
+    id: &str,
+    user_id: &str,
+    channel_id: &str,
+    content: &str,
+    at: &str,
+    parent_id: Option<&str>,
+    card: Option<&str>,
+) -> (String, Value) {
     (
         id.to_string(),
         json!({
             "id": id, "user_id": user_id, "channel_id": channel_id, "content": content,
-            "created_at": at, "updated_at": null, "deleted_at": null, "parent_id": null,
+            "card": card,
+            "created_at": at, "updated_at": null, "deleted_at": null, "parent_id": parent_id,
         }),
     )
+}
+
+fn reaction(id: &str, message_id: &str, user_id: &str, emoji: &str, at: &str) -> (String, Value) {
+    (
+        id.to_string(),
+        json!({
+            "id": id, "message_id": message_id, "user_id": user_id, "emoji": emoji, "created_at": at,
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn attachment(
+    id: &str,
+    message_id: &str,
+    channel_id: &str,
+    file_name: &str,
+    file_size: i64,
+    content_type: &str,
+    at: &str,
+) -> (String, Value) {
+    (
+        id.to_string(),
+        json!({
+            "id": id, "message_id": message_id, "uploader_id": "user-alice", "channel_id": channel_id,
+            "file_name": file_name, "file_size": file_size, "content_type": content_type,
+            "storage_key": format!("fixtures/{id}"), "is_sensitive": false, "created_at": at,
+        }),
+    )
+}
+
+/// `now` から `minutes` 分前の UTC の日時 (Electric の形)。「今日」の区切りを出すのに使う。
+fn minutes_ago(minutes: i64) -> String {
+    let at = jiff::Timestamp::now() - jiff::SignedDuration::from_mins(minutes);
+    at.to_zoned(jiff::tz::TimeZone::UTC)
+        .strftime("%Y-%m-%d %H:%M:%S")
+        .to_string()
 }
 
 /// 固定データの `AppState`。`frontend/.storybook/fixtures.ts` の人とチャンネルに、DM と未読を足したもの。
@@ -136,6 +197,7 @@ pub fn fixture_state(scenario: Scenario, mode: ThemeMode) -> AppState {
             user("user-carol", "carol", "Carol"),
             user("user-dave", "dave", "Dave"),
             user("user-admin", "admin", "Admin"),
+            bot("user-deploy-bot", "deploy-bot", "Deploy Bot"),
         ]),
     );
     state.store.apply(
@@ -227,6 +289,20 @@ pub fn fixture_state(scenario: Scenario, mode: ThemeMode) -> AppState {
         }
     }
     state.store.apply(&ShapeId::ChannelUsers, batch(members));
+    // 前日のやりとり (連投のまとめ、メンション、リンク)、今日の投稿 (スレッド、リアクション、添付、連携カード)。
+    let card = json!({
+        "title": "Deploy complete",
+        "description": "production へのデプロイが完了しました。",
+        "url": "https://example.com/deploys/42",
+        "source": "Deployment service",
+        "badge": "success",
+        "color": "good",
+        "fields": [
+            {"title": "Environment", "value": "production", "short": true},
+            {"title": "Commit", "value": "79aba0ee", "short": true, "code": true},
+        ],
+    })
+    .to_string();
     state.store.apply(
         &ShapeId::Messages("channel-general".to_string()),
         batch(vec![
@@ -238,18 +314,121 @@ pub fn fixture_state(scenario: Scenario, mode: ThemeMode) -> AppState {
                 "2025-01-02 09:00:00",
             ),
             message(
+                "message-hello-2",
+                "user-alice",
+                "channel-general",
+                "リリースノートの下書きは https://example.com/release-notes にあります。",
+                "2025-01-02 09:01:00",
+            ),
+            message(
                 "message-bob-reply",
                 "user-bob",
                 "channel-general",
                 "了解です！デプロイ後に確認します",
                 "2025-01-02 09:02:00",
             ),
+            message(
+                "message-carol-mention",
+                "user-carol",
+                "channel-general",
+                "@alice さん、リリース前にレビューをお願いします。@bob も見てください。",
+                "2025-01-02 09:20:00",
+            ),
+            message(
+                "message-deploy",
+                "user-bob",
+                "channel-general",
+                "デプロイが完了しました 🎉",
+                &minutes_ago(30),
+            ),
+            message_with(
+                "message-reply-1",
+                "user-carol",
+                "channel-general",
+                "リリースノートの下書きを共有しました。レビューをお願いします。",
+                &minutes_ago(25),
+                Some("message-deploy"),
+                None,
+            ),
+            message_with(
+                "message-reply-2",
+                "user-bob",
+                "channel-general",
+                "確認しました。2 点だけコメントしました。",
+                &minutes_ago(24),
+                Some("message-deploy"),
+                None,
+            ),
+            message_with(
+                "message-reply-3",
+                "user-alice",
+                "channel-general",
+                "ありがとうございます。修正して再共有します。",
+                &minutes_ago(23),
+                Some("message-deploy"),
+                None,
+            ),
+            message(
+                "message-own",
+                "user-alice",
+                "channel-general",
+                "リリースノートの最終版です。",
+                &minutes_ago(20),
+            ),
+            message_with(
+                "message-bot",
+                "user-deploy-bot",
+                "channel-general",
+                "Deploy complete",
+                &minutes_ago(10),
+                None,
+                Some(card.as_str()),
+            ),
         ]),
+    );
+    state.store.apply(
+        &ShapeId::Reactions("channel-general".to_string()),
+        batch(vec![
+            reaction("r1", "message-deploy", "user-alice", "👍", &minutes_ago(29)),
+            reaction("r2", "message-deploy", "user-bob", "👍", &minutes_ago(29)),
+            reaction("r3", "message-deploy", "user-carol", "👍", &minutes_ago(28)),
+            reaction("r4", "message-deploy", "user-dave", "🎉", &minutes_ago(28)),
+            reaction(
+                "r5",
+                "message-carol-mention",
+                "user-bob",
+                "👀",
+                "2025-01-02 09:21:00",
+            ),
+        ]),
+    );
+    state.store.apply(
+        &ShapeId::Attachments("channel-general".to_string()),
+        batch(vec![attachment(
+            "attachment-notes",
+            "message-own",
+            "channel-general",
+            "release-notes.pdf",
+            1_258_291,
+            "application/pdf",
+            &minutes_ago(20),
+        )]),
+    );
+    // 前日までは読んだ。今日の最初の他人の投稿から未読。
+    state.read_boundary.insert(
+        "channel-general".to_string(),
+        "2025-01-02T09:30:00".parse().unwrap(),
     );
     state.unread.insert("channel-design".to_string());
     state.unread.insert("channel-dm".to_string());
-    if scenario == Scenario::Workspace {
+    if matches!(scenario, Scenario::Workspace | Scenario::Thread) {
         state.current_channel = Some("channel-general".to_string());
+    }
+    if scenario == Scenario::Thread {
+        state.thread = Some(crate::app::ThreadState {
+            root_id: "message-deploy".to_string(),
+            selected: None,
+        });
     }
     state
 }

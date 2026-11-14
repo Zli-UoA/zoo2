@@ -21,7 +21,7 @@ mod shell;
 
 pub use chat::{
     CARD_DESC_MAX_CHARS, CARD_DESC_MAX_LINES, format_file_size, is_ogp_description_long,
-    render_attachment_item, render_ogp_card, truncate_ogp_description,
+    render_message_attachments, render_ogp_card, truncate_ogp_description,
 };
 
 /// 3 ペインの枠 (`ShellSkeleton`) だけを出すか。自分の情報が届くまで。
@@ -563,8 +563,9 @@ impl Render for WorkspaceView {
             .state
             .update(cx, |s, _| s.pending_scroll_to_message_id.take());
 
-        let (timeline_div, timeline_scroll_target) =
-            self.render_timeline_view(pending_scroll_id.as_deref(), cx);
+        let channels = self.channel_links(cx);
+        let (timeline_div, timeline_scroll_target, timeline_placeholder) =
+            self.render_timeline_view(pending_scroll_id.as_deref(), channels.clone(), cx);
         if let Some(target_idx) = timeline_scroll_target {
             self.timeline_scroll.scroll_to_item(target_idx);
             self.state.update(cx, |s, _| {
@@ -580,16 +581,25 @@ impl Render for WorkspaceView {
                 s.update_timeline_view_state(window_active, false);
             });
         } else {
-            let max_y = self.timeline_scroll.max_offset().height;
-            let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));
-            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
+            // placeholder 表示中は ScrollArea がなく、スクロールの値は前のチャンネルのまま。最下部として扱う。
+            let at_bottom = timeline_placeholder || {
+                let max_y = self.timeline_scroll.max_offset().height;
+                let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));
+                max_y <= px(4.0) || (max_y - cur_y) <= px(24.0)
+            };
             self.state.update(cx, |s, _| {
                 s.update_timeline_view_state(window_active, at_bottom)
             });
         }
 
         let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
-            let (div, target) = self.render_thread_view(root_id, pending_scroll_id.as_deref(), cx);
+            let (div, target) = self.render_thread_view(
+                root_id,
+                pending_scroll_id.as_deref(),
+                channels,
+                window,
+                cx,
+            );
             (Some(div), target)
         } else {
             (None, None)

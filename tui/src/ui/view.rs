@@ -1639,6 +1639,7 @@ mod tests {
         app.on_app_event(AppEvent::ReadStates(vec![ReadState {
             channel_id: "c2".into(),
             has_unread: true,
+            last_read_at: None,
         }]));
         assert!(render(&mut app).contains("● #secret"));
 
@@ -1669,6 +1670,7 @@ mod tests {
         app.on_app_event(AppEvent::ReadStates(vec![ReadState {
             channel_id: "c1".into(),
             has_unread: true,
+            last_read_at: None,
         }]));
         press(&mut app, KeyCode::Enter);
         // まだ描画していないので、最新を見たとは言えない。
@@ -1684,6 +1686,7 @@ mod tests {
         app.on_app_event(AppEvent::ReadStates(vec![ReadState {
             channel_id: "c1".into(),
             has_unread: true,
+            last_read_at: None,
         }]));
         assert!(app.unread.contains("c1"));
     }

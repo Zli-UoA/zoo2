@@ -5,8 +5,9 @@ use gpui::{
     prelude::*, px,
 };
 
-use super::{Palette, TextSpec, palette, ring};
+use super::{Palette, TextSpec, icon_colored, palette, ring};
 use crate::fonts;
+use crate::icons::Icon;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AvatarSize {
@@ -49,6 +50,8 @@ impl AvatarSize {
 pub struct Avatar {
     size: AvatarSize,
     initials: Option<SharedString>,
+    /// 文字の代わりに出すアイコン (bot の `BotIcon`)。
+    icon: Option<Icon>,
     image: Option<ImageSource>,
     badge: bool,
     /// `AvatarGroup` の中で付く `ring-2 ring-background`。
@@ -60,6 +63,7 @@ impl Avatar {
         Self {
             size: AvatarSize::Default,
             initials: None,
+            icon: None,
             image: None,
             badge: false,
             ringed: false,
@@ -73,6 +77,11 @@ impl Avatar {
 
     pub fn initials(mut self, initials: impl Into<SharedString>) -> Self {
         self.initials = Some(initials.into());
+        self
+    }
+
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
         self
     }
 
@@ -93,7 +102,12 @@ impl Avatar {
     }
 }
 
-fn fallback(p: &Palette, size: AvatarSize, initials: Option<SharedString>) -> AnyElement {
+fn fallback(
+    p: &Palette,
+    size: AvatarSize,
+    initials: Option<SharedString>,
+    icon: Option<Icon>,
+) -> AnyElement {
     let text = size.text();
     // `flex size-full items-center justify-center rounded-full bg-muted text-sm text-muted-foreground`
     div()
@@ -107,7 +121,11 @@ fn fallback(p: &Palette, size: AvatarSize, initials: Option<SharedString>) -> An
         .text_size(text.size())
         .line_height(text.line())
         .font(fonts::sans(400.0))
-        .children(initials)
+        .children(match icon {
+            // `size-4`
+            Some(icon) => Some(icon_colored(icon, 16.0, p.t.muted_foreground).into_any_element()),
+            None => initials.map(IntoElement::into_any_element),
+        })
         .into_any_element()
 }
 
@@ -120,14 +138,15 @@ impl RenderOnce for Avatar {
         let content: AnyElement = match self.image {
             Some(source) => {
                 let initials = self.initials.clone();
+                let icon = self.icon;
                 img(source)
                     .size_full()
                     .rounded_full()
                     .object_fit(ObjectFit::Cover)
-                    .with_fallback(move || fallback(&p, size, initials.clone()))
+                    .with_fallback(move || fallback(&p, size, initials.clone(), icon))
                     .into_any_element()
             }
-            None => fallback(&p, size, self.initials),
+            None => fallback(&p, size, self.initials, self.icon),
         };
         // `relative flex size-8 shrink-0 rounded-full`。
         // `after:border-border` の枠は画像の上に重ねる (`mix-blend` は GPUI に無い)。
