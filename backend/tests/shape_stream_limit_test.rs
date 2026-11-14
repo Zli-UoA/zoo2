@@ -66,3 +66,64 @@ async fn shape_streams_are_limited_per_account() -> anyhow::Result<()> {
     drop(second);
     Ok(())
 }
+
+/// Electric の応答を待っている間にアカウントが無効になったら、最初のチャンクも転送しない。
+#[tokio::test]
+async fn first_chunk_is_not_sent_after_access_is_lost() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let electric = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/shape"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(1500))
+                .set_body_string("[{\"value\":\"secret\"}]"),
+        )
+        .mount(&electric)
+        .await;
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.electric_url = electric.uri();
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+
+    let user = uuid::Uuid::new_v4().to_string();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/users")
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &user)
+                .body(Body::from(
+                    serde_json::json!({"id": user, "user_name": format!("first_{}", uuid::Uuid::new_v4().simple()), "display_name": "First"})
+                        .to_string(),
+                ))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let pending = tokio::spawn({
+        let app = app.clone();
+        let user = user.clone();
+        async move { open(&app, &user).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    let mut tx = db.transaction().await?;
+    backend::apps::query(
+        &mut tx,
+        "UPDATE users SET is_deactivated = true WHERE id = $1 RETURNING json_build_object('ok', true)::text",
+        &[&user],
+    )
+    .await?;
+    tx.commit().await?;
+
+    let response = pending.await??;
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await?;
+    assert!(body.is_empty(), "{}", String::from_utf8_lossy(&body));
+    Ok(())
+}
