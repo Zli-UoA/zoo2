@@ -1572,6 +1572,7 @@ pub(super) async fn insert_message(
          ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
          WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
          AND messages.channel_id=EXCLUDED.channel_id \
+         AND ($10='' OR messages.created_at=EXCLUDED.created_at) \
          AND NOT EXISTS(SELECT 1 FROM messages r WHERE r.parent_id=messages.id)",
         &[
             &id,
@@ -1583,6 +1584,8 @@ pub(super) async fn insert_message(
             &parent,
             &card,
             parent_ts,
+            // 決定的な ID の行は、作成日時が同じ行だけを更新する (Zoo の投稿との対応 `slack_message_map` がある行は除く)
+            if derived { "1" } else { "" },
         ],
     )
     .await?;
