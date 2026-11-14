@@ -73,6 +73,7 @@
   - 「応答」: URL だけでは応答しない（リンクを開かせるだけで通話に入れてしまうため）。Service Worker が Cache（`zoo-call-accept`）に「応答を押した」印（招待の ID と時刻）を残し、画面（`IncomingCallDialog`）が、印を一度だけ読んで消せたときだけ、応答して通話に入る。印は 60 秒で無効。
     - 開いているタブがあれば、移動（再読み込み）せずに前へ出し、`postMessage`（`{ type: "zoo-call-invite", action: "accept", inviteId }`）で依頼する。複数のタブのうち、印を先に消せた 1 つだけが応答する。
     - タブがなければ `/channels/{id}?call_invite={招待の ID}` を開く。画面は、URL の `call_invite` を外してから、印があれば応答する。印がなければ（外部のリンクなどで開かれた場合）何もしない。
-  - 「拒否」は、開いているタブへ `postMessage`（`action: "decline"`）で依頼する。Service Worker は API のトークンを持たないため、依頼を受けられる画面（`routes/_shell.tsx` の下）を開いたタブがなければ通知を閉じるだけで、期限が来ると不在着信になる。
+  - 「拒否」: Service Worker は API のトークンを持たないので、画面に頼む。開いているタブがあれば `postMessage`（`action: "decline"`）で依頼する。タブがなければ、「拒否を押した」印（Cache）を残してチャンネルを開き、画面が印を一度だけ読んで拒否する（URL だけでは拒否しない）。
   - `call_invite_end` は、同じ `tag` の通知を閉じる（通知がなければ、同じ `tag` で出してすぐ閉じる）。
+- **応答不可（DND）**: 着信の Web Push は DND の人に送らないが、開いているタブの着信ダイアログと着信音は、DND の状態を見ずに出す（画面を見ている人に隠さない）。DND でも鳴らしたくない場合は、DND の状態をフロントエンドで読む変更が別に要る。
 - **不在着信**: 通知一覧の `NotificationCard` に「〇〇さんからの不在着信」を出し、チャンネルへのリンクを付ける（`message_id` は NULL）。

@@ -8,7 +8,7 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import {
   acceptCallInvite,
   closeCallInviteNotification,
-  consumeCallAcceptMark,
+  consumeCallMark,
   declineCallInvite,
   parseCallInviteLaunch,
   stripCallInviteLaunch,
@@ -116,10 +116,12 @@ export function IncomingCallDialog() {
       "",
       stripCallInviteLaunch(window.location.href),
     );
-    void consumeCallAcceptMark(inviteId).then((marked) => {
-      if (marked) void accept(inviteId);
-    });
-  }, [accept, currentUserId]);
+    // 通知のボタンを押した印があるときだけ、応答か拒否をする（URL だけでは何もしない）。
+    void (async () => {
+      if (await consumeCallMark("accept", inviteId)) await accept(inviteId);
+      else if (await consumeCallMark("decline", inviteId)) await decline(inviteId);
+    })();
+  }, [accept, decline, currentUserId]);
 
   // Web Push の「応答」「拒否」（Service Worker が、開いているタブへ依頼する）。
   useEffect(() => {
@@ -130,7 +132,7 @@ export function IncomingCallDialog() {
       const inviteId = data.inviteId;
       if (data.action === "decline") void decline(inviteId);
       else if (data.action === "accept") {
-        void consumeCallAcceptMark(inviteId).then((marked) => {
+        void consumeCallMark("accept", inviteId).then((marked) => {
           if (marked) void accept(inviteId);
         });
       }

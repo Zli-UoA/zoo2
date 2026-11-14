@@ -135,18 +135,26 @@ function isGone(err: unknown): boolean {
 export const CALL_ACCEPT_CACHE = "zoo-call-accept";
 export const CALL_ACCEPT_MARK_TTL_MS = 60_000;
 
-export function callAcceptMarkPath(inviteId: string): string {
-  return `/__call-accept/${inviteId}`;
+/** 通知のボタン。印は、押したボタンごとに別に残す。 */
+export type CallMarkKind = "accept" | "decline";
+
+export function callMarkPath(kind: CallMarkKind, inviteId: string): string {
+  return `/__call-${kind}/${inviteId}`;
 }
 
-/** 応答の印があれば、消して `true` を返す（複数のタブのうち、先に読んだ 1 つだけが `true`）。 */
-export async function consumeCallAcceptMark(
+export function callAcceptMarkPath(inviteId: string): string {
+  return callMarkPath("accept", inviteId);
+}
+
+/** 印があれば、消して `true` を返す（複数のタブのうち、先に読んだ 1 つだけが `true`）。 */
+export async function consumeCallMark(
+  kind: CallMarkKind,
   inviteId: string,
   now: number = Date.now(),
 ): Promise<boolean> {
   try {
     const cache = await caches.open(CALL_ACCEPT_CACHE);
-    const path = callAcceptMarkPath(inviteId);
+    const path = callMarkPath(kind, inviteId);
     const response = await cache.match(path);
     if (!response) return false;
     const removed = await cache.delete(path);
@@ -155,6 +163,11 @@ export async function consumeCallAcceptMark(
   } catch {
     return false;
   }
+}
+
+/** 「応答」の印を、一度だけ読む。 */
+export function consumeCallAcceptMark(inviteId: string, now?: number): Promise<boolean> {
+  return consumeCallMark("accept", inviteId, now);
 }
 
 /** 出ている着信の通知（Web Push）を閉じる。応答・拒否のあと、他の端末の通知は `call_invite_end` が閉じる。 */
