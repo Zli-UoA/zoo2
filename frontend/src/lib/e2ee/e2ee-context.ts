@@ -17,7 +17,7 @@ export interface E2eeContextValue {
   worker: CryptoWorker | null;
   /**
    * `worker` がない理由（ほかのタブが開いている、登録に失敗して試し直している、など）。
-   * 設定の「暗号化」「端末」タブが、準備できていないことの説明に使う。開けていれば `null`。
+   * 設定の「暗号化」タブが、準備できていないことの説明に使う。開けていれば `null`。
    */
   notReadyReason: E2eeNotReadyReason | null;
   userId: string | null;

@@ -30,7 +30,6 @@ import {
 } from "../../lib/e2ee/revocationController";
 import { type E2eeSetupDeps, ServerKeyMismatchError } from "../../lib/e2ee/setupController";
 import { accountRevocationUrls } from "../../lib/oidc/accountUrl";
-import { NOT_READY_STARTING as STARTING } from "../../lib/e2ee/notReady";
 import {
   DeviceLimitView,
   type DevicesErrorCode,
@@ -77,15 +76,11 @@ function toDevicesError(error: unknown, fallback: DevicesErrorCode): DevicesErro
   return code === "saveFailed" ? fallback : code;
 }
 
-/** 設定の「端末」タブ（端末一覧、失効、他のユーザーの検証。#362）。 */
-export function DevicesSettings() {
-  const { deviceLimit } = useE2ee();
-  if (deviceLimit) return <DeviceLimit staleIds={deviceLimit.map((d) => d.device_id)} />;
-  return <DevicesPanel />;
-}
-
-/** 20 台の上限でこの端末を登録できなかったときに、削除する端末を選んでもらう。 */
-function DeviceLimit({ staleIds }: { staleIds: string[] }) {
+/**
+ * 20 台の上限でこの端末を登録できなかったときに、削除する端末を選んでもらう。暗号ストアを開けて
+ * いないので、`EncryptionTab` が理由のすぐ下に出す。
+ */
+export function DeviceLimit({ staleIds }: { staleIds: string[] }) {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [devices, setDevices] = useState<DevicesViewState | null>(null);
@@ -154,7 +149,11 @@ function DeviceLimit({ staleIds }: { staleIds: string[] }) {
   );
 }
 
-function DevicesPanel() {
+/**
+ * 設定の「暗号化」タブの、端末（一覧、削除、失効）と他のユーザーの検証のセクション（#362）。暗号
+ * ストアを開いてから出す。
+ */
+export function DevicesSettings() {
   const e2ee = useE2ee();
   const { worker, userId, deviceId, sas } = e2ee;
   const { config } = useCollections();
@@ -220,10 +219,8 @@ function DevicesPanel() {
   const load = useCallback(
     async (): Promise<boolean> => {
       const seq = ++loadSeq.current;
-      if (!deps) {
-        setState({ step: "unavailable", reason: STARTING });
-        return true;
-      }
+      // 暗号ストアを開くまでは、`EncryptionTab` がこの画面を出さない。
+      if (!deps) return true;
       try {
         const [devices, unlocked, pending] = await Promise.all([
           loadDevices(deps, deviceId),
@@ -555,12 +552,7 @@ function DevicesPanel() {
       : undefined,
   };
 
-  // 暗号ストアを開けていない理由は、開くまでのあいだにも変わる。表示のときに今の理由を入れる。
   const viewState =
-    state.step === "ready"
-      ? { ...state, passkeyAvailable: rpId !== null && prfSupported }
-      : state.step === "unavailable"
-        ? { ...state, reason: e2ee.notReadyReason ?? STARTING }
-        : state;
+    state.step === "ready" ? { ...state, passkeyAvailable: rpId !== null && prfSupported } : state;
   return <DevicesSettingsView state={viewState} handlers={handlers} />;
 }
