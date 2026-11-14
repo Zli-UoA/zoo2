@@ -3348,9 +3348,9 @@ async fn test_slack_import_same_name_hides_channels_the_admin_cannot_see() -> an
     let analyzed = upload(&state, &app, &admin, &zip).await;
     let id = analyzed["id"].as_str().unwrap().to_string();
 
-    // (名前, 作る人, 非公開, 暗号化, 候補に ID が出るか)
+    // (名前, 作る人, 非公開, 暗号化, 候補に ID が出るか)。暗号化は管理者がメンバーでも出さない
     let cases = [
-        (&names[0], &other, true, true, false),
+        (&names[0], &admin, true, true, false),
         (&names[1], &other, true, false, false),
         (&names[2], &admin, true, false, true),
         (&names[3], &other, false, false, true),
