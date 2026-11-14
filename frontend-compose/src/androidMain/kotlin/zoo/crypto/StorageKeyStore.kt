@@ -82,7 +82,7 @@ class StorageKeyUnavailableException(message: String, cause: Throwable? = null) 
  * 0x01 ‖ IV（12 バイト） ‖ AES-256-GCM(保存鍵) と タグ（32 + 16 バイト）
  * ```
  *
- * AAD は `zoo e2ee storage key v1`。ファイルの置き場所（ユーザーや端末ごとに分けるか）は #359 で決める。
+ * AAD は `zoo e2ee storage key v1`。ファイルは暗号ストアごとに置く（[CryptoStore]、#359）。
  */
 class StorageKeyStore(
     private val file: File,
@@ -97,6 +97,13 @@ class StorageKeyStore(
      */
     @Synchronized
     fun loadOrCreate(): ByteArray = if (file.exists()) load() else create()
+
+    /**
+     * 保存鍵を読む。ファイルがなければ `null`（作らない）。暗号ストアの状態はあるのに保存鍵がない
+     * ときに、新しい鍵を作って取り違えないために使う。例外は [loadOrCreate] と同じ。
+     */
+    @Synchronized
+    fun loadExisting(): ByteArray? = if (file.exists()) load() else null
 
     /** 保存鍵を消す（ログアウトで暗号ストアを消すとき）。包む鍵は消さない。 */
     @Synchronized

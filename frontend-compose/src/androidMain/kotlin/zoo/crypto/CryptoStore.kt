@@ -1,0 +1,541 @@
+package zoo.crypto
+
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.channels.FileChannel
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.security.MessageDigest
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import zoo.crypto.ffi.AddOutcome
+import zoo.crypto.ffi.DeviceAccount
+import zoo.crypto.ffi.InboundSessionStore
+import zoo.crypto.ffi.OlmSessionStore
+import zoo.crypto.ffi.SessionRef
+import zoo.crypto.ffi.TrustStore
+import zoo.crypto.ffi.ZooCryptoException
+
+/**
+ * 暗号ストアの置き場所（docs/e2ee.md の「暗号ストア」、#359）。
+ *
+ * Android では、接続先とユーザーごとに、アプリの内部ストレージのうち自動バックアップと端末間の
+ * 転送に入らない `noBackupFilesDir/e2ee/<ID>/` に置く（[android]）。保存鍵を包む Keystore の鍵も
+ * 暗号ストアごとに分け、ログアウトでは包む鍵から消す。
+ */
+class CryptoStoreFiles(
+    /** `state.json`（暗号ストアの状態）と `storage.key`（包んだ保存鍵）を置くディレクトリー。 */
+    val directory: File,
+    /** 保存鍵を包む鍵。 */
+    val wrappingKey: WrappingKeyProvider,
+    /** 包む鍵を消す。消すと、包んだ保存鍵はもう開けない。 */
+    val deleteWrappingKey: () -> Unit,
+) {
+    companion object {
+        /** `noBackupFilesDir/e2ee`。削除待ちの一覧（[PendingDeviceDeletions]）もここに置く。 */
+        fun root(context: android.content.Context): File = File(context.noBackupFilesDir, "e2ee")
+
+        /** 接続先 `server` のユーザー `userId` の暗号ストア。 */
+        fun android(context: android.content.Context, server: String, userId: String): CryptoStoreFiles {
+            val id = storeId(server, userId)
+            val key = AndroidKeystoreWrappingKey("${AndroidKeystoreWrappingKey.DEFAULT_ALIAS}:$id")
+            return CryptoStoreFiles(File(root(context), id), key, key::delete)
+        }
+
+        /** 接続先とユーザーから作る、ディレクトリー名と Keystore の別名に使う ID。 */
+        fun storeId(server: String, userId: String): String =
+            MessageDigest.getInstance("SHA-256")
+                .digest("$server\n$userId".encodeToByteArray())
+                .joinToString("") { "%02x".format(it) }
+                .take(32)
+    }
+}
+
+/** 同じ暗号ストアを、ほかの場所（前の画面のセッションなど）が開いている。少し待って試し直す。 */
+class CryptoStoreBusyException : IOException("暗号ストアをほかの処理が使っています")
+
+/** to-device の Shape の行のうち、処理に使う列。 */
+data class ToDeviceRow(
+    val id: String,
+    val senderUserId: String,
+    val type: String,
+    val content: JsonElement,
+)
+
+/** [CryptoStore.processToDevice] の結果。 */
+data class ToDeviceResult(
+    /** 処理を終えた（保存した、または捨てた）ID。ack を送ってよい。 */
+    val processed: List<String>,
+    val roomKeys: Int,
+    val dropped: Int,
+    /** 新しく作った Olm セッションの数（ワンタイム鍵を使われたので補充する）。 */
+    val newOlmSessions: Int,
+)
+
+/** `POST /api/e2ee/keys/upload` に送る鍵。 */
+class KeyUpload(val oneTimeKeys: JsonObject, val fallbackKeys: JsonObject)
+
+@Serializable
+internal class StoredOlmSession(
+    @SerialName("their_identity_key") val theirIdentityKey: String,
+    @SerialName("session_id") val sessionId: String,
+    val pickle: String,
+)
+
+@Serializable
+internal class StoredInboundSession(
+    val pickle: String,
+    /** 鍵バックアップに送ったか。送っていないものの数を、ログアウトの前に見せる。 */
+    @SerialName("backed_up") val backedUp: Boolean = false,
+)
+
+/**
+ * `state.json` の中身。値はどれも保存鍵で暗号化してある（`account` は `DeviceAccount.pickle`、
+ * ほかは zoo-crypto の保存用の封筒）。`user_id`、`device_id`、登録済みか、処理済みの to-device の ID
+ * だけが平文で、秘密ではない（TUI の `state.json` と同じ形）。
+ */
+@Serializable
+internal class StoreState(
+    val version: Int,
+    @SerialName("user_id") val userId: String,
+    @SerialName("device_id") val deviceId: String,
+    var registered: Boolean = false,
+    var account: String,
+    @SerialName("olm_sessions") var olmSessions: List<StoredOlmSession> = emptyList(),
+    @SerialName("inbound_sessions") var inboundSessions: Map<String, StoredInboundSession> = emptyMap(),
+    @SerialName("trust_store") var trustStore: String? = null,
+    /** 処理を終えて、まだ ack を送れていない to-device の ID。 */
+    @SerialName("processed_to_device") var processedToDevice: Set<String> = emptySet(),
+)
+
+/**
+ * Android の暗号ストア（docs/e2ee.md の「暗号ストア」、#359）。1 つのユーザーの端末アカウント、
+ * Olm セッション、受信用セッション、配布先の判定の記録を持つ。
+ *
+ * - `state.json` は一時ファイルに書いて `fsync` してから置き換えるので、書いている途中で終了しても、
+ *   前の状態か次の状態のどちらかが残る。
+ * - 保存鍵（32 バイト）は [StorageKeyStore] で Android Keystore の鍵で包み、`storage.key` に置く。
+ * - 同じ暗号ストアを同時に 2 つ開かない（Olm のメッセージは 2 回は復号できないため）。開いているあいだは
+ *   [CryptoStoreBusyException] で断る。
+ *
+ * どのメソッドも、保存（`state.json` の書き込み）に失敗したら例外を投げる。そのときはメモリーの状態が
+ * 保存より先に進んでいるので、呼び出し側は閉じて開き直してから続ける（[E2eeDeviceManager]）。
+ */
+class CryptoStore private constructor(
+    private val directory: File,
+    private val storageKey: ByteArray,
+    private val account: DeviceAccount,
+    private val olmSessions: OlmSessionStore,
+    private val inbound: InboundSessionStore,
+    private val trust: TrustStore,
+    private val state: StoreState,
+    private val deleteWrappingKey: () -> Unit,
+) : AutoCloseable {
+    private val loadedInbound = mutableSetOf<String>()
+    private var closed = false
+
+    val userId: String get() = state.userId
+    val deviceId: String get() = state.deviceId
+    @get:Synchronized
+    val isRegistered: Boolean get() = state.registered
+
+    /** 開いた結果。保存鍵を失って作り直したら、前の端末の ID を返す（サーバーから消す）。 */
+    class Opened(val store: CryptoStore, val replacedDeviceId: String?)
+
+    /** `POST /api/e2ee/devices` の本文（`display_name` を除く）。応答をなくしても同じ鍵で送り直す。 */
+    @Synchronized
+    fun registrationRequest(): JsonObject = buildJsonObject {
+        put("device_keys", json.parseToJsonElement(account.deviceKeys()))
+        put("one_time_keys", json.parseToJsonElement(account.oneTimeKeys()))
+        put("fallback_keys", json.parseToJsonElement(account.fallbackKeys()))
+    }
+
+    @Synchronized
+    fun markRegistered() {
+        account.markKeysAsPublished()
+        state.account = account.pickle(storageKey)
+        state.registered = true
+        save()
+    }
+
+    /**
+     * サーバーのワンタイム鍵を最大数に戻し、使われたフォールバック鍵を作り直す。送るものがなければ
+     * `null`。まだ公開していない鍵（応答をなくした送信の分）も入れる。
+     */
+    @Synchronized
+    fun prepareKeyUpload(oneTimeKeyCount: Int, hasUnusedFallbackKey: Boolean): KeyUpload? {
+        val unpublished = json.parseToJsonElement(account.oneTimeKeys()) as JsonObject
+        val max = account.maxNumberOfOneTimeKeys().toLong()
+        var changed = false
+        val missing = max - oneTimeKeyCount - unpublished.size
+        if (missing > 0) {
+            account.generateOneTimeKeys(missing.toULong())
+            changed = true
+        }
+        if (!hasUnusedFallbackKey && (json.parseToJsonElement(account.fallbackKeys()) as JsonObject).isEmpty()) {
+            account.generateFallbackKey()
+            changed = true
+        }
+        if (changed) {
+            state.account = account.pickle(storageKey)
+            save()
+        }
+        val oneTimeKeys = json.parseToJsonElement(account.oneTimeKeys()) as JsonObject
+        val fallbackKeys = json.parseToJsonElement(account.fallbackKeys()) as JsonObject
+        if (oneTimeKeys.isEmpty() && fallbackKeys.isEmpty()) return null
+        return KeyUpload(oneTimeKeys, fallbackKeys)
+    }
+
+    @Synchronized
+    fun markKeysPublished() {
+        account.markKeysAsPublished()
+        state.account = account.pickle(storageKey)
+        save()
+    }
+
+    /**
+     * to-device メッセージを処理する（React の `CryptoStore.processToDevice`、TUI と同じ規則）。
+     *
+     * 1 件ごとに、変わった状態と処理済みの印を保存してから次に進む。ack の前に終了しても、同じ
+     * メッセージを 2 回復号しない。`deviceKeys` は送信ユーザーの `keys/query` の応答の `device_keys`。
+     * 送信端末の検証（受信時の検証の手順 4）は #360 以降で足す。
+     */
+    @Synchronized
+    fun processToDevice(rows: List<ToDeviceRow>, deviceKeys: JsonObject): ToDeviceResult {
+        val processed = mutableListOf<String>()
+        var roomKeys = 0
+        var dropped = 0
+        var newOlmSessions = 0
+        for (row in rows) {
+            if (row.id !in state.processedToDevice) {
+                if (row.type == "m.room.encrypted") {
+                    when (val outcome = processEncrypted(row, deviceKeys)) {
+                        is Encrypted.Dropped -> dropped++
+                        is Encrypted.Decrypted -> {
+                            newOlmSessions += outcome.newOlmSessions
+                            if (outcome.roomKey) roomKeys++ else if (outcome.rejected) dropped++
+                        }
+                    }
+                } else {
+                    dropped++
+                }
+                state.processedToDevice = state.processedToDevice + row.id
+                save()
+            }
+            processed += row.id
+        }
+        return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions)
+    }
+
+    private sealed interface Encrypted {
+        data object Dropped : Encrypted
+        data class Decrypted(val newOlmSessions: Int, val roomKey: Boolean, val rejected: Boolean) : Encrypted
+    }
+
+    private fun processEncrypted(row: ToDeviceRow, deviceKeys: JsonObject): Encrypted {
+        val before = olmSessions.len()
+        val decrypted =
+            try {
+                account.decryptToDevice(olmSessions, row.content.toString())
+            } catch (_: ZooCryptoException) {
+                // 復号できないメッセージは何度試しても読めない。捨てて ack する。
+                return Encrypted.Dropped
+            }
+        decrypted.use {
+            // 復号できたら、セッションの状態が進んでいる。検証の結果に関わらず保存する。
+            val created = (olmSessions.len() - before).toInt()
+            state.account = account.pickle(storageKey)
+            val senderKey = decrypted.senderKey()
+            val changed = olmSessions.pickleSessions(account, storageKey, senderKey)
+            state.olmSessions =
+                state.olmSessions.filterNot { stored ->
+                    changed.any { it.sessionId == stored.sessionId && it.theirIdentityKey == stored.theirIdentityKey }
+                } + changed.map { StoredOlmSession(it.theirIdentityKey, it.sessionId, it.pickle) }
+            val listed =
+                decrypted.sender()?.let { user ->
+                    decrypted.senderDevice()?.let { device -> (deviceKeys[user] as? JsonObject)?.get(device) }
+                }
+            val roomKey =
+                try {
+                    decrypted.verifyRoomKey(account, listed?.toString(), null)
+                } catch (_: ZooCryptoException) {
+                    return Encrypted.Decrypted(created, roomKey = false, rejected = true)
+                }
+            roomKey.use {
+                val ref = SessionRef(roomKey.channelId(), roomKey.senderKey(), roomKey.sessionId())
+                val key = inboundKey(ref)
+                if (loadedInbound.add(key)) {
+                    state.inboundSessions[key]?.let { inbound.restoreSession(account, it.pickle, storageKey) }
+                }
+                if (inbound.addRoomKey(roomKey) == AddOutcome.KEPT) {
+                    return Encrypted.Decrypted(created, roomKey = false, rejected = false)
+                }
+                val pickle =
+                    inbound.pickleSession(account, ref, storageKey)
+                        ?: return Encrypted.Decrypted(created, roomKey = false, rejected = false)
+                state.inboundSessions = state.inboundSessions + (key to StoredInboundSession(pickle, backedUp = false))
+                return Encrypted.Decrypted(created, roomKey = true, rejected = false)
+            }
+        }
+    }
+
+    /** ack を送れた ID を、処理済みの印から外す。 */
+    @Synchronized
+    fun acknowledged(ids: List<String>) {
+        if (ids.isEmpty()) return
+        state.processedToDevice = state.processedToDevice - ids.toSet()
+        save()
+    }
+
+    /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
+    @Synchronized
+    fun pendingBackupCount(): Int = state.inboundSessions.values.count { !it.backedUp }
+
+    /** 配布先の判定の記録（#361 以降が使う）。変えたら [saveTrustStore] で保存し直す。 */
+    val trustStore: TrustStore get() = trust
+
+    @Synchronized
+    fun saveTrustStore() {
+        state.trustStore = trust.pickle(account, storageKey)
+        save()
+    }
+
+    /**
+     * 暗号ストアを消す（ログアウト）。先に保存鍵を包む鍵を消し、失敗してもファイルの削除を試す
+     * （React の `destroyCryptoStore` と同じ順）。消し切れなかったら最初の例外を投げる。
+     */
+    @Synchronized
+    fun destroy() {
+        close()
+        destroyFiles(directory, deleteWrappingKey)
+    }
+
+    @Synchronized
+    override fun close() {
+        if (closed) return
+        closed = true
+        storageKey.fill(0)
+        account.close()
+        olmSessions.close()
+        inbound.close()
+        trust.close()
+        openDirectories.remove(directory.canonicalPath)
+    }
+
+    private fun save() {
+        check(!closed) { "暗号ストアは閉じています" }
+        writeAtomically(File(directory, STATE_FILE), json.encodeToString(StoreState.serializer(), state).encodeToByteArray())
+    }
+
+    companion object {
+        private const val STATE_VERSION = 1
+        private const val STATE_FILE = "state.json"
+        private const val KEY_FILE = "storage.key"
+        internal val json = Json {
+            ignoreUnknownKeys = true
+            encodeDefaults = true
+        }
+
+        /** 開いている暗号ストアのディレクトリー（プロセスの中で同時に 2 つ開かないため）。 */
+        private val openDirectories: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+        /**
+         * `userId` の暗号ストアを開く。なければ（`create` が真なら）端末を作る（`device_id` は UUID v4）。
+         * `create` が偽でなければ `null` を返す（ログアウトで、なければ作らずに済ませるため）。
+         *
+         * 保存鍵を失った（ファイルがない、包む鍵が消えた・失効した、壊れた）ときは、どの値も読めないので
+         * 作り直して新しい端末にする。前の端末の ID は `state.json` にしかないので、消す前に
+         * [rememberReplaced] に渡す（削除待ちに残し、作り直しが途中で失敗しても消せるように）。
+         *
+         * Keystore の一時的な失敗はそのまま投げる（作り直すと、Olm セッションや、まだバックアップして
+         * いない受信用セッションが消えるため）。
+         */
+        fun open(
+            files: CryptoStoreFiles,
+            userId: String,
+            create: Boolean = true,
+            rememberReplaced: (String) -> Unit = {},
+        ): Opened? {
+            val path = files.directory.canonicalPath
+            if (!openDirectories.add(path)) throw CryptoStoreBusyException()
+            try {
+                return openUnlocked(files, userId, create, rememberReplaced).also {
+                    if (it == null) openDirectories.remove(path)
+                }
+            } catch (failure: Throwable) {
+                openDirectories.remove(path)
+                throw failure
+            }
+        }
+
+        private fun openUnlocked(
+            files: CryptoStoreFiles,
+            userId: String,
+            create: Boolean,
+            rememberReplaced: (String) -> Unit,
+        ): Opened? {
+            val directory = files.directory
+            val stateFile = File(directory, STATE_FILE)
+            val keyFile = File(directory, KEY_FILE)
+            val keys = StorageKeyStore(keyFile, files.wrappingKey)
+            var replaced: String? = null
+            val stored = readState(stateFile)
+            if (stored != null) {
+                check(stored.version == STATE_VERSION) { "暗号ストアの版 ${stored.version} には対応していません" }
+                check(stored.userId == userId) { "暗号ストアが別のユーザーのものです" }
+                val key =
+                    try {
+                        keys.loadExisting()
+                    } catch (_: StorageKeyUnavailableException) {
+                        null
+                    }
+                if (key != null) return Opened(restore(files, key, stored), null)
+                // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
+                rememberReplaced(stored.deviceId)
+                replaced = stored.deviceId
+                if (!stateFile.delete() && stateFile.exists()) throw IOException("暗号ストアを消せません")
+                discardStorageKey(keyFile, files)
+            }
+            if (!create) return null
+            directory.mkdirs()
+            val storageKey =
+                try {
+                    keys.loadOrCreate()
+                } catch (_: StorageKeyUnavailableException) {
+                    // 状態はなく、開けない保存鍵だけが残っている。作り直す。
+                    discardStorageKey(keyFile, files)
+                    keys.loadOrCreate()
+                }
+            val opened = mutableListOf<AutoCloseable>()
+            try {
+                val account = DeviceAccount(userId, UUID.randomUUID().toString()).also(opened::add)
+                account.generateOneTimeKeys(account.maxNumberOfOneTimeKeys())
+                account.generateFallbackKey()
+                val trust = TrustStore(userId).also(opened::add)
+                val state =
+                    StoreState(
+                        version = STATE_VERSION,
+                        userId = userId,
+                        deviceId = account.deviceId(),
+                        account = account.pickle(storageKey),
+                        trustStore = trust.pickle(account, storageKey),
+                    )
+                val store =
+                    CryptoStore(
+                        directory, storageKey, account, OlmSessionStore().also(opened::add),
+                        InboundSessionStore().also(opened::add), trust, state, files.deleteWrappingKey,
+                    )
+                store.save()
+                return Opened(store, replaced)
+            } catch (failure: Throwable) {
+                opened.forEach { it.close() }
+                storageKey.fill(0)
+                throw failure
+            }
+        }
+
+        private fun restore(files: CryptoStoreFiles, storageKey: ByteArray, state: StoreState): CryptoStore {
+            val opened = mutableListOf<AutoCloseable>()
+            try {
+                val account =
+                    DeviceAccount.fromPickle(state.account, storageKey, state.userId, state.deviceId).also(opened::add)
+                val olmSessions = OlmSessionStore().also(opened::add)
+                state.olmSessions.forEach { olmSessions.restoreSession(account, it.pickle, storageKey) }
+                val trust =
+                    (state.trustStore?.let { TrustStore.fromPickle(it, account, storageKey) } ?: TrustStore(state.userId))
+                        .also(opened::add)
+                return CryptoStore(
+                    files.directory, storageKey, account, olmSessions, InboundSessionStore(), trust, state, files.deleteWrappingKey,
+                )
+            } catch (failure: Throwable) {
+                opened.forEach { it.close() }
+                storageKey.fill(0)
+                throw failure
+            }
+        }
+
+        private fun readState(file: File): StoreState? {
+            if (!file.exists()) return null
+            return json.decodeFromString(StoreState.serializer(), file.readText())
+        }
+
+        private fun discardStorageKey(keyFile: File, files: CryptoStoreFiles) {
+            if (!keyFile.delete() && keyFile.exists()) throw IOException("保存鍵のファイルを消せません")
+            // 失効した Keystore の鍵が残ると、作り直しても同じ鍵で包んでしまうので消す。
+            files.deleteWrappingKey()
+        }
+
+        /**
+         * 平文の `device_id` を読む（暗号ストアを開けないときでも、ログアウトでサーバーから消すため）。
+         * なければ、または別のユーザーのものなら `null`。
+         */
+        fun storedDeviceId(files: CryptoStoreFiles, userId: String): String? =
+            try {
+                readState(File(files.directory, STATE_FILE))?.takeIf { it.userId == userId }?.deviceId
+            } catch (_: Exception) {
+                null
+            }
+
+        /**
+         * 開けなかった暗号ストアを消す（ログアウト）。開いているあいだは [CryptoStoreBusyException]。
+         */
+        fun destroy(files: CryptoStoreFiles) {
+            val path = files.directory.canonicalPath
+            if (!openDirectories.add(path)) throw CryptoStoreBusyException()
+            try {
+                destroyFiles(files.directory, files.deleteWrappingKey)
+            } finally {
+                openDirectories.remove(path)
+            }
+        }
+
+        private fun destroyFiles(directory: File, deleteWrappingKey: () -> Unit) {
+            var failure: Throwable? = null
+            try {
+                deleteWrappingKey()
+            } catch (e: Exception) {
+                failure = e
+            }
+            if (!directory.deleteRecursively()) {
+                val error = IOException("暗号ストアを消せません")
+                failure?.addSuppressed(error) ?: run { failure = error }
+            }
+            failure?.let { throw it }
+        }
+
+        /** 受信用セッションのキーを 1 つの文字列にする（TUI と同じ形）。 */
+        internal fun inboundKey(ref: SessionRef): String =
+            JsonArray(listOf(JsonPrimitive(ref.channelId), JsonPrimitive(ref.senderKey), JsonPrimitive(ref.sessionId)))
+                .toString()
+
+        /** 一時ファイルに書いて `fsync` してから置き換える。 */
+        internal fun writeAtomically(target: File, bytes: ByteArray) {
+            target.parentFile?.mkdirs()
+            val temporary = File(target.parentFile, "${target.name}.tmp")
+            FileOutputStream(temporary).use { output ->
+                output.write(bytes)
+                output.fd.sync()
+            }
+            Files.move(
+                temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING,
+            )
+            // rename したディレクトリーのエントリーも書き出す（停電で前の状態に戻らないように）。
+            // ディレクトリーを開けない環境では諦める（ファイル自体は書き出してある）。
+            try {
+                FileChannel.open(target.parentFile!!.toPath(), StandardOpenOption.READ).use { it.force(true) }
+            } catch (_: IOException) {
+            }
+        }
+    }
+}
