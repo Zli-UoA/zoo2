@@ -673,6 +673,21 @@ mod tests {
         );
     }
 
+    /// Slack の取り込み (`backend/src/slack/convert.rs`) が出す書式が、TUI でも書式になる
+    #[test]
+    fn styles_what_the_slack_import_produces() {
+        let styled = spans("これは**太字**で~~消し~~と<i>斜め</i>");
+        assert!(styled.contains(&("太字".into(), Style::new().bold())));
+        assert!(styled.contains(&("消し".into(), Style::new().crossed_out())));
+        assert!(styled.contains(&("斜め".into(), Style::new().italic())));
+        // U+200B で無効にした記法は、書式にならない
+        assert_eq!(
+            texts("*\u{200b}*\u{200b}x*\u{200b}*"),
+            ["*\u{200b}*\u{200b}x*\u{200b}*"]
+        );
+        assert_eq!(texts("<\u{200b}b>y"), ["<\u{200b}b>y"]);
+    }
+
     #[test]
     fn renders_code_blocks_and_quotes_per_line() {
         assert_eq!(
