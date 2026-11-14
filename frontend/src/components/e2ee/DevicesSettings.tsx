@@ -14,6 +14,7 @@ import { listDevices, renameDevice } from "../../lib/e2ee/revocationApi";
 import {
   RevocationChangedError,
   RevocationConflictError,
+  RevocationPendingError,
   type RevocationResult,
   abandonRevocation,
   addRevocationPasskey,
@@ -78,6 +79,7 @@ function useEncryptedPeers(userId: string | null): string[] {
 
 function toDevicesError(error: unknown, fallback: DevicesErrorCode): DevicesErrorCode {
   if (error instanceof RevocationConflictError) return "mismatch";
+  if (error instanceof RevocationPendingError) return "revocationPending";
   const code = toEncryptionError(error, "saveFailed");
   return code === "saveFailed" ? fallback : code;
 }
@@ -336,6 +338,8 @@ function DevicesPanel() {
       resumeRef.current = false;
     }
     const { scope, selected } = planRef.current;
+    // 終わっていない失効があれば、端末を消す前に止める（Worker の `begin` も拒む）。
+    if (await revocationStatus(deps)) throw new RevocationPendingError();
     await deleteSelectedDevices(deps, selected);
     const summary = await beginRevocation(deps, scope, selected);
     notesRef.current = notesOf(summary);
@@ -357,6 +361,12 @@ function DevicesPanel() {
       } catch (error) {
         if (error instanceof ServerKeyMismatchError) {
           setPhase({ phase: "conflict" });
+          return;
+        }
+        if (error instanceof RevocationPendingError) {
+          // 一覧に戻し、「失効を続ける」を出す。
+          setPhase(null, "revocationPending");
+          void load();
           return;
         }
         ready((current) => ({

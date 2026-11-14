@@ -84,6 +84,8 @@ export type DevicesErrorCode =
   | "deleteFailed"
   /** 操作のあとで一覧を読み直せなかった（表示は残し、読み直しを出す）。 */
   | "refreshFailed"
+  /** 終わっていない失効があるので、新しい失効を始めなかった。 */
+  | "revocationPending"
   | "renameFailed"
   | "revocationFailed"
   | "verifyFailed";
@@ -313,9 +315,10 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
       </ul>
       <p className="text-xs text-muted-foreground">{t("e2ee.devices.deleteIsNotRevocation")}</p>
       {state.unlocked ? (
+        // 終わっていない失効があれば、新しい失効は始めない（上の「失効を続ける」から続ける）。
         <Button
           variant="destructive"
-          disabled={busy}
+          disabled={busy || state.pendingRevocation !== null}
           onClick={() => handlers.onStartRevocation([])}
         >
           <ShieldAlertIcon />

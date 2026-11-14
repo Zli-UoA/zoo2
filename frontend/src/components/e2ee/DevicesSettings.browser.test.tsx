@@ -42,6 +42,7 @@ vi.mock("../../lib/oidc/session", () => ({ getOidcClient: () => null }));
 vi.mock("../../lib/e2ee/revocationController", () => ({
   RevocationConflictError: class RevocationConflictError extends Error {},
   RevocationChangedError: class RevocationChangedError extends Error {},
+  RevocationPendingError: class RevocationPendingError extends Error {},
   loadDevices: vi.fn(),
   revocationStatus: vi.fn(),
   loadVerifications: vi.fn(),
@@ -158,10 +159,10 @@ it("keeps the new recovery key on screen when Electric rows change", async () =>
 it("keeps the recovery key of a resumed full revocation when Electric rows change", async () => {
   // 1〜5 を SSSS の保存の前に止めた失効を、記録した範囲で最初からやり直す。
   mocked.revocationStatus.mockResolvedValue(summary("full"));
-  mocked.resumeRevocation.mockResolvedValue({
-    kind: "restart",
-    scope: "full",
-    deletedDevices: ["lost"],
+  // 本物の `resumeRevocation` と同じく、やり直すときは記録を消す。
+  mocked.resumeRevocation.mockImplementation(async () => {
+    mocked.revocationStatus.mockResolvedValue(null);
+    return { kind: "restart", scope: "full", deletedDevices: ["lost"] };
   });
   const panel = renderPanel();
   await userEvent.click(await screen.findByRole("button", { name: "失効を続ける" }));

@@ -1158,6 +1158,7 @@
       "publicForbidden": "只有私密频道可以加密。",
       "deleteFailed": "无法删除设备。请重试。",
       "refreshFailed": "无法重新加载设备列表。显示的内容可能不是最新的。",
+      "revocationPending": "有未完成的吊销。请先通过“继续吊销”保存到最后。",
       "renameFailed": "无法修改设备名称。请重试。",
       "revocationFailed": "无法完成吊销的保存。进度保留在此设备上。请再次点击“执行吊销”。",
       "verifyFailed": "无法保存重新验证。请重试。"

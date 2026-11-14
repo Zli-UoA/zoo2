@@ -82,18 +82,19 @@ export type CryptoOperation =
   | { op: "revocationResume"; secretStorage: JsonObject }
   | { op: "revocationNewRecoveryKey" }
   | ({ op: "revocationAddPasskeySlot" } & PasskeySlotInput)
-  | { op: "revocationSecretStorageRequest" }
-  | { op: "revocationSecretStorageSaved"; secretsRevision: number | null }
-  | { op: "revocationCrossSigningRequest" }
-  | { op: "revocationCrossSigningSaved"; secretsRevision: number | null }
-  | { op: "revocationSignatures" }
-  | { op: "revocationAdvance"; stage: RevocationStage }
-  | { op: "revocationBackupVersionRequest" }
-  | { op: "revocationBackupCreated"; version: string }
-  | { op: "revocationVersionsToMigrate"; versions: JsonObject }
-  | { op: "revocationReencrypt"; version: string; rows: JsonObject[] }
+  | { op: "revocationSecretStorageRequest"; revocationId: string }
+  | { op: "revocationSecretStorageSaved"; revocationId: string; secretsRevision: number | null }
+  | { op: "revocationCrossSigningRequest"; revocationId: string }
+  | { op: "revocationCrossSigningSaved"; revocationId: string; secretsRevision: number | null }
+  | { op: "revocationSignatures"; revocationId: string }
+  | { op: "revocationAdvance"; revocationId: string; stage: RevocationStage }
+  | { op: "revocationBackupVersionRequest"; revocationId: string }
+  | { op: "revocationBackupCreated"; revocationId: string; version: string }
+  | { op: "revocationVersionsToMigrate"; revocationId: string; versions: JsonObject }
+  | { op: "revocationReencrypt"; revocationId: string; version: string; rows: JsonObject[] }
   | {
       op: "revocationVerify";
+      revocationId: string;
       secretStorage: JsonObject;
       keysQuery: JsonObject;
       currentVersion: JsonObject;
@@ -179,6 +180,11 @@ export interface CryptoResults {
 }
 
 export type CryptoRequest = CryptoOperation & { id: number };
+
+/** 失効の要求の `revocationId` が、Worker が今持つ失効と違う（`CryptoFailure.code`）。何も保存していない。 */
+export const REVOCATION_CHANGED = "RevocationChanged";
+/** 終わっていない失効の記録があるのに、新しい失効を始めようとした（`CryptoFailure.code`）。 */
+export const REVOCATION_PENDING = "RevocationPending";
 
 export interface CryptoFailure {
   name: string;

@@ -1158,6 +1158,7 @@
       "publicForbidden": "Only private channels can be encrypted.",
       "deleteFailed": "Could not delete the device. Please try again.",
       "refreshFailed": "Couldn't reload the device list. What you see may be out of date.",
+      "revocationPending": "An unfinished revocation exists. Continue it with “Continue revocation” first.",
       "renameFailed": "Could not rename the device. Please try again.",
       "revocationFailed": "Could not finish saving the revocation. Its progress is kept on this device. Press “Revoke” again.",
       "verifyFailed": "Could not save the verification. Please try again."

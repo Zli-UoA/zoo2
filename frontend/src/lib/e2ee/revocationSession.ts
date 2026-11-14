@@ -14,6 +14,7 @@ import {
   newRecoverySlot,
 } from "@zoo/crypto-wasm";
 
+import { REVOCATION_CHANGED, REVOCATION_PENDING } from "./protocol";
 import type { PasskeySlotInput, SetupSession } from "./setupSession";
 import type { CryptoStore } from "./store/cryptoStore";
 
@@ -32,6 +33,10 @@ export interface RevocationBeginInput {
   targetsQuery: JsonObject;
   /** 手順 1 で削除した端末。 */
   deletedDevices: string[];
+}
+
+function coded(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
 }
 
 /** `trustEvaluate` の結果（端末の一覧は返さない。送信は #361 の配布で行う）。 */
@@ -63,6 +68,11 @@ export class RevocationSession {
 
   /** 失効を始める。SSSS を開けてあること（`unlock`）が前提。 */
   async begin(store: CryptoStore, input: RevocationBeginInput): Promise<RevocationSummary> {
+    // 終わっていない失効を黙って捨てない（実行中の続きが、新しい失効に保存を当ててしまうため）。
+    // やり直すときは、先に `abandon` するか、`resume` で続ける。
+    if (await store.revocationSummary()) {
+      throw coded(REVOCATION_PENDING, "終わっていない失効があります");
+    }
     this.discard();
     const unlocked = this.setup.unlockedStorage(input.secretStorage);
     const own = await store.ownKeys();
@@ -236,6 +246,16 @@ export class RevocationSession {
 
   summary(): RevocationSummary {
     return this.require().summary();
+  }
+
+  /**
+   * 保存と段の更新の要求が、今持つ失効へのものかを確かめる。画面を離れて別の失効を始めたあとに、
+   * 前の実行の応答が、新しい失効の段を進めないようにするため。違えば何も変えずに `RevocationChanged`。
+   */
+  check(revocationId: string): void {
+    if (this.revocation?.summary().revocation_id !== revocationId) {
+      throw coded(REVOCATION_CHANGED, "実行を始めた失効が、別の失効に置き換わりました");
+    }
   }
 
   discard(): void {

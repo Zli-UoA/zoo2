@@ -1158,6 +1158,7 @@
       "publicForbidden": "只有私人頻道先可以加密。",
       "deleteFailed": "刪唔到裝置。請再試一次。",
       "refreshFailed": "重新載入唔到裝置清單。顯示嘅內容可能唔係最新。",
+      "revocationPending": "有未完成嘅撤銷。請先喺「繼續撤銷」度儲存晒佢。",
       "renameFailed": "改唔到裝置名稱。請再試一次。",
       "revocationFailed": "撤銷未能夠儲存晒。進度留咗喺呢部裝置。請再撳一次「執行撤銷」。",
       "verifyFailed": "儲存唔到重新驗證。請再試一次。"

@@ -17,6 +17,8 @@ import type { CryptoOperation } from "./protocol";
 import {
   RevocationChangedError,
   RevocationConflictError,
+  RevocationPendingError,
+  abandonRevocation,
   beginRevocation,
   continueRevocation,
   deleteSelectedDevices,
@@ -68,6 +70,8 @@ class FakeServer {
   devices: Json[] = [];
   pins: Json[] = [];
   fail: string | null = null;
+  /** 指定した要求をサーバーに反映したあと、応答を返す前に `run` を待つ（割り込みを作るため）。 */
+  after: { route: string; run: () => Promise<void> } | null = null;
   requests: { method: string; path: string; reauth: boolean }[] = [];
 
   client(): ApiClient {
@@ -80,7 +84,13 @@ class FakeServer {
         this.fail = null;
         throw new TypeError("network error");
       }
-      return this.respond(method, url, options.body as Json, reauth);
+      const result = this.respond(method, url, options.body as Json, reauth);
+      if (this.after?.route === `${method} ${url.pathname}`) {
+        const { run } = this.after;
+        this.after = null;
+        await run();
+      }
+      return result;
     };
     const envelope = async (path: string, options: RequestOptions) => ({
       data: await handle(path, options),
@@ -597,7 +607,8 @@ describe("失効の手順", () => {
     const { server, deps, recoveryKey } = await setUp();
     await openSecretStorage(deps, { kind: "recovery", recoveryKey });
     const first = await beginRevocation(deps, "device_only", []);
-    // 画面を離れて、別の失効を始め直した。
+    // 画面を離れて、失効を捨ててから別の失効を始め直した。
+    await abandonRevocation(deps);
     await beginRevocation(deps, "device_only", []);
     const before = server.requests.length;
     await expect(
@@ -606,5 +617,41 @@ describe("失効の手順", () => {
     expect(server.requests.slice(before).filter((r) => r.method !== "GET")).toEqual([]);
     // 今の失効は捨てていない。
     expect(await revocationStatus(deps)).not.toBeNull();
+  });
+
+  it("終わっていない失効があれば、新しい失効を始めない", async () => {
+    const { server, deps, recoveryKey } = await setUp();
+    await openSecretStorage(deps, { kind: "recovery", recoveryKey });
+    const first = await beginRevocation(deps, "device_only", []);
+    const before = server.requests.length;
+    await expect(beginRevocation(deps, "full", [])).rejects.toBeInstanceOf(RevocationPendingError);
+    // 前の失効はそのまま残り、サーバーには何も書かない（読むだけ）。
+    expect(await revocationStatus(deps)).toMatchObject({ revocation_id: first.revocation_id });
+    expect(
+      server.requests
+        .slice(before)
+        .filter((r) => r.method !== "GET" && r.path !== "/api/e2ee/keys/query"),
+    ).toEqual([]);
+  });
+
+  it("保存の応答を待つあいだに別の失効に置き換わったら、新しい失効の段を進めない", async () => {
+    const { server, deps, recoveryKey } = await setUp();
+    await openSecretStorage(deps, { kind: "recovery", recoveryKey });
+    await beginRevocation(deps, "device_only", []);
+    let second: Awaited<ReturnType<typeof beginRevocation>> | null = null;
+    // A の SSSS の保存がサーバーに届いたあと、応答が返る前に、画面を離れて A を捨て、B を始める。
+    server.after = {
+      route: "POST /api/e2ee/secret_storage/secrets",
+      run: async () => {
+        await abandonRevocation(deps);
+        second = await beginRevocation(deps, "device_only", []);
+      },
+    };
+    await expect(continueRevocation(deps, TOKEN)).rejects.toBeInstanceOf(RevocationChangedError);
+    // B は始めたときの段のまま（A の応答で SSSS の保存を飛ばさない）。
+    expect(await revocationStatus(deps)).toMatchObject({
+      revocation_id: second!.revocation_id,
+      stage: "prepared",
+    });
   });
 });

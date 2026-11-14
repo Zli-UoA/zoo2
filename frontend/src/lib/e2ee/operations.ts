@@ -69,6 +69,8 @@ export class CryptoOperations {
   }
 
   private async dispatch(request: CryptoOperation): Promise<CryptoResults[Op]> {
+    // 失効の保存と段の更新は、実行を始めた失効にだけ当てる（#362）。
+    if ("revocationId" in request) this.revocation.check(request.revocationId);
     switch (request.op) {
       case "generateDeviceKeys":
         return generateDeviceKeys(request.userId, request.deviceId);

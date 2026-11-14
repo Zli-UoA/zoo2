@@ -9,6 +9,7 @@ import type {
 
 import { ApiError } from "../api/client";
 import { deleteDevice } from "./api";
+import { REVOCATION_CHANGED, REVOCATION_PENDING } from "./protocol";
 import { PasskeyError, evaluatePrfForNewSlot, evaluatePrfForUnlock } from "./passkey";
 import {
   type OwnDevice,
@@ -186,8 +187,13 @@ export async function beginRevocation(
     if ((error as { code?: unknown } | null)?.code === "ServerKeyMismatch") {
       throw new ServerKeyMismatchError((error as Error).message);
     }
+    if (codeOf(error) === REVOCATION_PENDING) throw new RevocationPendingError();
     throw error;
   }
+}
+
+function codeOf(error: unknown): unknown {
+  return (error as { code?: unknown } | null)?.code;
 }
 
 /** 暗号化チャンネルを共有する相手として記録した相手（失効の候補を集めるため）。 */
@@ -253,6 +259,14 @@ export class RevocationChangedError extends Error {
   }
 }
 
+/** 終わっていない失効があるので、新しい失効を始めない。「失効を続ける」から続けるか、捨ててから始める。 */
+export class RevocationPendingError extends Error {
+  constructor() {
+    super("終わっていない失効があります");
+    this.name = "RevocationPendingError";
+  }
+}
+
 export class RevocationConflictError extends Error {
   constructor(readonly code: string) {
     super(`別の端末の失効と入り混じりました（${code}）`);
@@ -310,20 +324,39 @@ export async function continueRevocation(
   /** 実行を始めたときの失効（`revocation_id`）。違えば何も保存せずに {@link RevocationChangedError}。 */
   expectedId?: string,
 ): Promise<RevocationResult> {
+  try {
+    return await runRevocation(deps, reauth, onProgress, expectedId);
+  } catch (error) {
+    // Worker は、保存と段の更新の要求ごとに失効 ID を照合する。途中で別の失効に置き換わったら止まる。
+    if (codeOf(error) === REVOCATION_CHANGED) throw new RevocationChangedError();
+    throw error;
+  }
+}
+
+async function runRevocation(
+  deps: E2eeSetupDeps,
+  reauth: string | null,
+  onProgress: ((summary: RevocationSummary) => void) | undefined,
+  expectedId: string | undefined,
+): Promise<RevocationResult> {
   const worker = deps.worker;
   let summary = await worker.request({ op: "revocationStatus" });
   if (!summary) throw new Error("続ける失効がありません");
   if (expectedId !== undefined && summary.revocation_id !== expectedId) {
     throw new RevocationChangedError();
   }
+  // 以降の Worker への保存と段の更新には、この失効の ID を付ける（Worker が照合する）。
+  const revocationId = summary.revocation_id;
   const progress = async () => {
-    summary = (await worker.request({ op: "revocationStatus" })) ?? summary;
+    const next = await worker.request({ op: "revocationStatus" });
+    if (next && next.revocation_id !== revocationId) throw new RevocationChangedError();
+    summary = next ?? summary;
     if (summary) onProgress?.(summary);
   };
   let secretsRevision: number | null = null;
 
   if (!stageAtLeast(summary, "secret_storage_saved")) {
-    const body = await worker.request({ op: "revocationSecretStorageRequest" });
+    const body = await worker.request({ op: "revocationSecretStorageRequest", revocationId });
     try {
       secretsRevision = await guarded(() =>
         summary?.scope === "full"
@@ -337,7 +370,7 @@ export async function continueRevocation(
       if (summary.scope !== "full" || current.default_key_id !== summary.key_id) throw error;
       secretsRevision = current.secrets_revision;
     }
-    await worker.request({ op: "revocationSecretStorageSaved", secretsRevision });
+    await worker.request({ op: "revocationSecretStorageSaved", revocationId, secretsRevision });
     await progress();
   }
   if (secretsRevision === null) {
@@ -345,14 +378,14 @@ export async function continueRevocation(
   }
 
   if (!stageAtLeast(summary, "cross_signing_saved")) {
-    const body = await worker.request({ op: "revocationCrossSigningRequest" });
+    const body = await worker.request({ op: "revocationCrossSigningRequest", revocationId });
     await guarded(() => uploadCrossSigningKeys(deps.client, body, reauth));
-    await worker.request({ op: "revocationCrossSigningSaved", secretsRevision });
+    await worker.request({ op: "revocationCrossSigningSaved", revocationId, secretsRevision });
     await progress();
   }
 
   if (!stageAtLeast(summary, "signatures_saved")) {
-    const signatures = await worker.request({ op: "revocationSignatures" });
+    const signatures = await worker.request({ op: "revocationSignatures", revocationId });
     await guarded(() =>
       uploadSignaturesWithReauth(
         deps.client,
@@ -363,15 +396,15 @@ export async function continueRevocation(
     if (signatures.pins.length > 0) {
       await guarded(() => uploadPins(deps.client, signatures.pins, true, reauth));
     }
-    await worker.request({ op: "revocationAdvance", stage: "signatures_saved" });
+    await worker.request({ op: "revocationAdvance", revocationId, stage: "signatures_saved" });
     await progress();
   }
 
   if (!stageAtLeast(summary, "backup_created")) {
-    const body = await worker.request({ op: "revocationBackupVersionRequest" });
+    const body = await worker.request({ op: "revocationBackupVersionRequest", revocationId });
     const version = await guarded(() => createBackupVersion(deps.client, body, reauth));
     if (!version) throw new Error("版の番号が返りませんでした");
-    await worker.request({ op: "revocationBackupCreated", version });
+    await worker.request({ op: "revocationBackupCreated", revocationId, version });
     await progress();
   }
 
@@ -379,20 +412,29 @@ export async function continueRevocation(
     const newVersion = summary.new_backup_version;
     if (!newVersion) throw new Error("新しい版がありません");
     const versions = await listBackupVersions(deps.client);
-    const migrate = await worker.request({ op: "revocationVersionsToMigrate", versions });
+    const migrate = await worker.request({
+      op: "revocationVersionsToMigrate",
+      revocationId,
+      versions,
+    });
     for (const version of migrate) {
       const rows = await listBackupSessions(deps.client, version);
       // 別の端末が先に移行を終えて消した。
       if (rows === null) continue;
       // 捨てた行の数は、失効の記録に版ごとに残る（古い版を消したあとで止まっても数え直せないため）。
-      const result = await worker.request({ op: "revocationReencrypt", version, rows });
+      const result = await worker.request({
+        op: "revocationReencrypt",
+        revocationId,
+        version,
+        rows,
+      });
       await guarded(() =>
         uploadBackupSessions(deps.client, newVersion, secretsRevision as number, result.rows),
       );
       // 今の版ではないので、再認証は要らない。
       await deleteBackupVersion(deps.client, version, null);
     }
-    await worker.request({ op: "revocationAdvance", stage: "migrated" });
+    await worker.request({ op: "revocationAdvance", revocationId, stage: "migrated" });
     await progress();
   }
 
@@ -408,6 +450,7 @@ export async function continueRevocation(
   try {
     await worker.request({
       op: "revocationVerify",
+      revocationId,
       secretStorage: secretStorage as unknown as JsonObject,
       keysQuery,
       currentVersion: current ?? {},
