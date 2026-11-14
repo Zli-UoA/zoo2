@@ -112,11 +112,29 @@ async fn deleted_messages_keep_no_body_or_projection() -> anyhow::Result<()> {
         sql(
             &mut db,
             "UPDATE messages SET card='card body', app_blocks='[{\"text\":\"block\"}]', \
-             app_unfurls='[]' WHERE id=$1",
+             app_unfurls='[]', app_attachments='[{\"title\":\"a\"}]', \
+             metadata='{\"event_type\":\"x\",\"event_payload\":{}}' WHERE id=$1",
             &[&id],
         )
         .await?;
         ids.push(id);
+    }
+
+    // 消去を確かめる列は、削除前に値が入っている。
+    for id in &ids {
+        let row = tombstone(&mut db, id).await?;
+        for column in [
+            "card",
+            "metadata",
+            "app_blocks",
+            "app_attachments",
+            "app_unfurls",
+        ] {
+            assert!(
+                !row[column].is_null(),
+                "{column} must be set before delete: {row}"
+            );
+        }
     }
 
     // DELETE /api/messages/{id}
