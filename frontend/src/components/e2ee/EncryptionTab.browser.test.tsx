@@ -50,6 +50,7 @@ function context(patch: Partial<E2eeContextValue>): E2eeContextValue {
     deviceLimit: null,
     cancelLogout: () => {},
     requestKeyBackup: () => {},
+    requestKeyBackupImport: () => {},
     clearForLogout: async () => {},
     sas: null,
     ...patch,

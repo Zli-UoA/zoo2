@@ -625,8 +625,10 @@ describe("鍵バックアップからの取り込み（新しい端末での解�
       kind: "import",
       version: "1",
       after: null,
-      pages: 1,
+      pages: 0,
     });
+    // 空のまま何度読み直しても、ページの上限には届かない。
+    for (let i = 0; i < 1001; i += 1) await deviceB.store.importBackupPage("1", [], null);
     // 正しく返るようになったら取り込める。
     expect(await deviceB.store.importBackupPage("1", rows, null)).toEqual({
       imported: 1,

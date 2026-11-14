@@ -848,12 +848,15 @@ export class CryptoStore {
       own.keys.free();
     }
     const total = counted.rows + rows.length;
+    // 1 行も読まずに最後のページまで来たら、次は始めから読み直すので、ページの数も 0 に戻す
+    // （空の版を何度読み直しても、ページの上限に届かないように）。
+    const emptyVersion = next === null && total === 0;
     const progress: BackupImportProgress = {
       version,
       after: next,
       done: next === null && total > 0,
       rows: total,
-      pages: counted.pages + 1,
+      pages: emptyVersion ? 0 : counted.pages + 1,
     };
     await this.write({
       meta: { [META_BACKUP_IMPORT]: JSON.stringify(progress) },
