@@ -147,62 +147,77 @@ export class SasController {
    */
   private drain(): Promise<void> {
     return this.serial(async () => {
-      // 送信ユーザーの `keys/query` は、この回の中では使い回す。失敗した送信ユーザーは、この回では
-      // 取り直さない。
-      const keys = new Map<string, JsonObject>();
-      const failedSenders = new Set<string>();
-      /** この回で `keys/query` を取れず、メッセージを残した検証。 */
-      const held = new Set<string>();
+      // 処理する分を取り出す。待つあいだに届いたメッセージは `this.inbox` に入るので、最後に、
+      // 残した分をその前に戻す（同じ検証のメッセージの届いた順を守る）。
       const remaining: typeof this.inbox = [];
       const pending = this.inbox;
-      this.inbox = remaining;
-      for (const item of pending) {
-        const { message, receivedAt } = item;
-        const txnId = message.content.transaction_id;
-        if (typeof txnId !== "string" || this.now() - receivedAt > SAS_TIMEOUT_MS) continue;
-        // 同じ検証の前のメッセージを残したなら、順を守るため、これも残す。
-        if (held.has(txnId)) {
-          remaining.push(item);
-          continue;
-        }
-        let keysQuery: JsonObject = {};
-        if (NEEDS_KEYS.has(message.type)) {
-          const sender = message.sender_user_id;
-          let cached = keys.get(sender);
-          if (!cached && !failedSenders.has(sender)) {
-            try {
-              cached = await queryKeys(this.deps.client, [sender]);
-              keys.set(sender, cached);
-            } catch {
-              failedSenders.add(sender);
-            }
-          }
-          if (!cached) {
-            held.add(txnId);
-            remaining.push(item);
-            this.patch(txnId, { error: "receiveFailed" });
-            continue;
-          }
-          keysQuery = cached;
-        }
-        try {
-          const update = await this.deps.worker.request({
-            op: "sasReceive",
-            message,
-            keysQuery,
-            now: this.now(),
-          });
-          if (update) {
-            if (this.entries.get(update.view.transaction_id)?.error === "receiveFailed") {
-              this.patch(update.view.transaction_id, { error: null });
-            }
-            await this.apply(update);
-          }
-        } catch {
-          // Worker が受け付けないメッセージは、試し直しても通らない。捨てて続きを処理する。
-        }
+      this.inbox = [];
+      try {
+        await this.drainBatch(pending, remaining);
+      } finally {
+        this.inbox = [...remaining, ...this.inbox];
       }
     });
+  }
+
+  /**
+   * 取り出した分を処理する。送信ユーザーの `keys/query` は、この回の中では使い回し、失敗した
+   * 送信ユーザーは、この回では取り直さない。残すメッセージは `remaining` に届いた順に入れる。
+   */
+  private async drainBatch(
+    pending: SasController["inbox"],
+    remaining: SasController["inbox"],
+  ): Promise<void> {
+    const keys = new Map<string, JsonObject>();
+    const failedSenders = new Set<string>();
+    /** この回で `keys/query` を取れず、メッセージを残した検証。 */
+    const held = new Set<string>();
+    for (const item of pending) {
+      const { message, receivedAt } = item;
+      const txnId = message.content.transaction_id;
+      if (typeof txnId !== "string" || this.now() - receivedAt > SAS_TIMEOUT_MS) continue;
+      // 同じ検証の前のメッセージを残したなら、順を守るため、これも残す。
+      if (held.has(txnId)) {
+        remaining.push(item);
+        continue;
+      }
+      let keysQuery: JsonObject = {};
+      if (NEEDS_KEYS.has(message.type)) {
+        const sender = message.sender_user_id;
+        let cached = keys.get(sender);
+        if (!cached && !failedSenders.has(sender)) {
+          try {
+            cached = await queryKeys(this.deps.client, [sender]);
+            keys.set(sender, cached);
+          } catch {
+            failedSenders.add(sender);
+          }
+        }
+        if (!cached) {
+          held.add(txnId);
+          remaining.push(item);
+          this.patch(txnId, { error: "receiveFailed" });
+          continue;
+        }
+        keysQuery = cached;
+      }
+      try {
+        const update = await this.deps.worker.request({
+          op: "sasReceive",
+          message,
+          keysQuery,
+          now: this.now(),
+        });
+        if (update) {
+          if (this.entries.get(update.view.transaction_id)?.error === "receiveFailed") {
+            this.patch(update.view.transaction_id, { error: null });
+          }
+          await this.apply(update);
+        }
+      } catch {
+        // Worker が受け付けないメッセージは、試し直しても通らない。捨てて続きを処理する。
+      }
+    }
   }
 
   accept(txnId: string): Promise<void> {

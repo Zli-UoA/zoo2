@@ -67,6 +67,8 @@ class FakeServer {
   requests: { user: string; route: string; reauth: boolean }[] = [];
   /** この回数だけ、`keys/query` を 503 にする。 */
   failKeysQuery = 0;
+  /** 次の `keys/query` の応答の前に 1 回だけ呼ぶ（割り込みを作るため）。 */
+  beforeKeysQuery: (() => Promise<void>) | null = null;
   /** この端末あての to-device を、キューに入れずに `undelivered` で返す。 */
   undeliver = new Set<string>();
 
@@ -76,6 +78,11 @@ class FakeServer {
       const reauth = options.headers?.[REAUTH_HEADER] === TOKEN;
       const route = `${method} ${new URL(path, "http://zoo.test").pathname}`;
       this.requests.push({ user: userId, route, reauth });
+      if (route === "POST /api/e2ee/keys/query" && this.beforeKeysQuery) {
+        const hook = this.beforeKeysQuery;
+        this.beforeKeysQuery = null;
+        await hook();
+      }
       return this.respond(userId, route, (options.body ?? {}) as Json, reauth);
     };
     const envelope = async (path: string, options: RequestOptions) => ({
@@ -472,6 +479,34 @@ describe("絵文字 SAS 検証", () => {
     expect(bob.sas.getSnapshot().find((e) => e.view.transaction_id === carolTxn)?.view.phase).toBe(
       "incoming",
     );
+  });
+
+  it("鍵を待つあいだに届いたメッセージより、残した元のメッセージを先に処理する", async () => {
+    const server = new FakeServer();
+    const alice = await join(server, ALICE);
+    const bob = await join(server, BOB);
+    const txnId = await alice.sas.request(BOB);
+    // Bob が要求の keys/query を待つあいだに、Alice が取りやめ、その cancel が Bob に届く。
+    // そのあと keys/query は失敗する（次の回も 1 回失敗する）。
+    server.beforeKeysQuery = async () => {
+      await alice.sas.cancel(txnId);
+      const rows = server.queue.splice(0);
+      const deviceKeys = server.keysQuery(BOB, [ALICE]).device_keys as Record<
+        string,
+        Record<string, JsonObject>
+      >;
+      const result = await bob.worker.request({ op: "processToDevice", rows, deviceKeys });
+      void bob.sas.handleMessages(result.verifications);
+      server.failKeysQuery = 2;
+    };
+    await server.pump();
+    // 通信が戻ったら、要求、取りやめの順に処理する（取り消した要求を出さない）。
+    await bob.sas.expire();
+    expect(only(bob).view).toMatchObject({
+      transaction_id: txnId,
+      phase: "cancelled",
+      cancel: { code: "m.user", by_us: false },
+    });
   });
 
   it("相手の端末に届けられなければ、送れなかったと出す", async () => {
