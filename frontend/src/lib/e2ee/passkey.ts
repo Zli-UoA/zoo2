@@ -117,11 +117,17 @@ export function prfBytes(value: unknown): Uint8Array | null {
     bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   } else if (Object.prototype.toString.call(value) === "[object ArrayBuffer]") {
     bytes = new Uint8Array(value as ArrayBuffer);
-  } else if (
-    Array.isArray(value) &&
-    value.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)
-  ) {
-    bytes = Uint8Array.from(value as number[]);
+  } else if (Array.isArray(value)) {
+    // `every` は欠けた要素（`new Array(32)` など）を飛ばすので、すべての位置を見る。
+    if (value.length !== 32) return null;
+    const items: unknown[] = Array.from(value);
+    if (
+      !items.every(
+        (byte) => Number.isInteger(byte) && (byte as number) >= 0 && (byte as number) <= 255,
+      )
+    )
+      return null;
+    bytes = Uint8Array.from(items as number[]);
   } else {
     return null;
   }

@@ -34,6 +34,13 @@ describe("prfBytes", () => {
     expect(prfBytes([...OUTPUT.slice(0, 31), 1.5])).toBeNull();
     expect(prfBytes([...OUTPUT.slice(0, 31), "1"])).toBeNull();
     expect(prfBytes("AAAA")).toBeNull();
+    // 欠けた要素のある配列（`Uint8Array.from` は 0 に変える）は読まない。
+    const holes: number[] = [];
+    holes.length = 32;
+    expect(prfBytes(holes)).toBeNull();
+    const sparse = OUTPUT.slice(0, 5);
+    sparse[31] = 1;
+    expect(prfBytes(sparse)).toBeNull();
     expect(prfBytes(undefined)).toBeNull();
     expect(prfBytes(null)).toBeNull();
   });
