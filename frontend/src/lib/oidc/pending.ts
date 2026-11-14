@@ -51,6 +51,35 @@ export function takePending(
 ): PendingAuthorization | null {
   const raw = storage.getItem(PENDING_KEY);
   storage.removeItem(PENDING_KEY);
+  return parsePending(raw, now);
+}
+
+export type PendingAuthorizationTake =
+  | { kind: "missing" }
+  | { kind: "state_mismatch" }
+  | { kind: "taken"; pending: PendingAuthorization };
+
+/**
+ * State を確認してから pending を使い切る。別の認可要求用の pending が
+ * 保存されている場合は削除せず、後続する正しい callback に残す。
+ */
+export function takePendingForState(
+  storage: AuthStorage,
+  state: string,
+  now: number = Date.now(),
+): PendingAuthorizationTake {
+  const raw = storage.getItem(PENDING_KEY);
+  const pending = parsePending(raw, now);
+  if (!pending) {
+    if (raw !== null) storage.removeItem(PENDING_KEY);
+    return { kind: "missing" };
+  }
+  if (pending.state !== state) return { kind: "state_mismatch" };
+  storage.removeItem(PENDING_KEY);
+  return { kind: "taken", pending };
+}
+
+function parsePending(raw: string | null, now: number): PendingAuthorization | null {
   if (!raw) {
     return null;
   }
@@ -124,6 +153,11 @@ export function clearRedirectAttempts(storage: AuthStorage): void {
  */
 export function markRedirectStarted(storage: AuthStorage, now: number = Date.now()): void {
   storage.setItem(LAST_REDIRECT_KEY, String(now));
+}
+
+/** Remove a redirect marker when login failed before the browser navigated. */
+export function clearRedirectStarted(storage: AuthStorage): void {
+  storage.removeItem(LAST_REDIRECT_KEY);
 }
 
 export function readLastRedirectAt(storage: AuthStorage): number | null {

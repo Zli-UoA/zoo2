@@ -1,4 +1,4 @@
-h1:NwhU5v/Wai6JiGX+dOgVZst5AgkyMMo3mH935iaHqso=
+h1:iwB/i/7uJVDvm96cnoV2UiMAl51fId7keVITs723HVs=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -74,5 +74,6 @@ h1:NwhU5v/Wai6JiGX+dOgVZst5AgkyMMo3mH935iaHqso=
 20261122000100_channel_leave_replica_identity.sql h1:+S5iv9g+nbf7HBDKt+fwfOuqc71rv6kBoDc0dvUjLo8=
 20261122000200_create_channel_notes.sql h1:tVx44H9LXinJ2/PrcW1gvBrhZCyI8Kml+DmQKkvCHys=
 20261123000000_slack_files_lease.sql h1:TJgpc4fjwvDFZTyoGzedup7wTJtWNQs1TjmvyNk3Oag=
-20261124000000_slack_event_wakes.sql h1:HdoIXOFSDVqPTE22VNmbBjaphnJ6NUFCZ5m+5MvwPhA=
-20261124001000_slack_message_hints.sql h1:4cbwH3MEkzbp/RTmnn8tCrmWsL/d98/29TrBnvwCU2M=
+20261123100000_e2ee_encrypted_attachments.sql h1:VKs9vdSZMsqfbJ9j7x3jWFfP9wS5Jg+pSbZv/VxyYgQ=
+20261124000000_slack_event_wakes.sql h1:LF6EQiFALCG0qRDDS/OCCa9uK9kbV9NoCbwaW/5XqQQ=
+20261124001000_slack_message_hints.sql h1:TC5YIxoPuJJU8hQEP2PHN5oIivQkswFxcGLNEDnhMZU=

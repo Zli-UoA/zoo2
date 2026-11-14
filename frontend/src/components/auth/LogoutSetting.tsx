@@ -10,6 +10,7 @@ import { useOfflineStatus } from "../../lib/offline/offline-context";
 import { disablePush } from "../../lib/pwa/push";
 import { UnbackedKeysLogoutDialog } from "../e2ee/UnbackedKeysLogoutDialog";
 import { Button } from "../ui/button";
+import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 
 /**
  * 設定画面のログアウト。OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）を行う。
@@ -24,6 +25,10 @@ export function LogoutButton() {
   // null は閉じている、-1 は数えられなかった。
   const [unbackedKeys, setUnbackedKeys] = useState<number | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  // 終わっていない失効があるときの、ログアウトの確認（#362）。
+  const [revocationWarning, setRevocationWarning] = useState(false);
+  // 確認でダイアログが閉じたときに、ログアウトを取りやめたと扱わない。
+  const revocationConfirmed = useRef(false);
   // 件数の確認で奪った鍵の受信処理の停止を、まだ返していない間は true。
   // 設定画面を離れて unmount されたら、未確定のログアウトを取りやめて停止を戻す。
   const holdsLock = useRef(false);
@@ -42,6 +47,19 @@ export function LogoutButton() {
   }, []);
 
   const handleLogout = async () => {
+    holdsLock.current = true;
+    // 失効の進み具合は暗号ストアにしかない。消す前に確かめる（docs/e2ee.md の「失効の手順」）。
+    // 確かめられなかったら、終わっていない失効がないとは扱わず、警告を出して確かめる。
+    const revoking = await e2ee.revocationPending().catch(() => true);
+    if (!mounted.current) return;
+    if (revoking) {
+      setRevocationWarning(true);
+      return;
+    }
+    await continueLogout();
+  };
+
+  const continueLogout = async () => {
     // 暗号ストアを消すと、この端末にだけある鍵を失う。送れていない鍵があれば先に確かめる
     // （docs/e2ee.md の「ログアウトと端末の削除」）。
     // 数えられなかったら、送れていない鍵がないとは扱わず、分からないまま確かめる。
@@ -98,6 +116,29 @@ export function LogoutButton() {
       <Button variant="destructive" onClick={() => void handleLogout()}>
         {t("auth.logout")}
       </Button>
+      <ConfirmActionDialog
+        open={revocationWarning}
+        onOpenChange={(open) => {
+          if (open) return;
+          setRevocationWarning(false);
+          if (!revocationConfirmed.current) {
+            holdsLock.current = false;
+            e2ee.cancelLogout();
+          }
+        }}
+        title={t("e2ee.logout.revocationTitle")}
+        description={t("e2ee.logout.revocationDescription")}
+        confirmLabel={t("e2ee.logout.revocationConfirm")}
+        onConfirm={async () => {
+          revocationConfirmed.current = true;
+          setRevocationWarning(false);
+          try {
+            await continueLogout();
+          } finally {
+            revocationConfirmed.current = false;
+          }
+        }}
+      />
       <UnbackedKeysLogoutDialog
         count={unbackedKeys}
         pending={loggingOut}

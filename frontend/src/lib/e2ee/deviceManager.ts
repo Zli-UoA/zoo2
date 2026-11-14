@@ -27,7 +27,10 @@ export interface E2eeDeviceManagerOptions {
   /** ログアウトで、処理中のもの（登録の要求など）を待つ時間。 */
   settleTimeoutMs?: number;
   onStatus?: (status: E2eeDeviceStatus, error?: unknown) => void;
-  /** Megolm セッションの鍵を受け取って保存した（鍵バックアップに送る。#360）。 */
+  /**
+   * Megolm のセッション鍵を受け取って保存した。鍵バックアップに送り（#360）、「鍵がまだ届いていない」
+   * メッセージを復号し直す（#361）。
+   */
   onRoomKeys?: () => void;
 }
 
@@ -297,6 +300,11 @@ export class E2eeDeviceManager {
     } finally {
       this.restarting = false;
     }
+  }
+
+  /** 終わっていない失効があるか（#362）。 */
+  async revocationPending(): Promise<boolean> {
+    return (await this.options.worker.request({ op: "revocationStatus" })) !== null;
   }
 
   /** 鍵バックアップにまだ送っていない受信用セッションの数。 */

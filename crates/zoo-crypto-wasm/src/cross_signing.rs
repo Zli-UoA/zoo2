@@ -342,7 +342,7 @@ fn trust_warning(warning: core::TrustWarning) -> &'static str {
 /// 配布先の判定に使う、暗号ストアの記録（TOFU、`confirmed_usk`、ユーザー署名鍵の履歴）。
 #[wasm_bindgen]
 pub struct TrustStore {
-    inner: core::TrustStore,
+    pub(crate) inner: core::TrustStore,
 }
 
 #[wasm_bindgen]
@@ -412,6 +412,12 @@ impl TrustStore {
             Some(record) => to_js(record),
             None => Ok(JsValue::UNDEFINED),
         }
+    }
+
+    /// 記録がある相手の一覧（失効の手順 4 の候補を集める。#362）。
+    #[wasm_bindgen(js_name = recordedUsers)]
+    pub fn recorded_users(&self) -> Vec<String> {
+        self.inner.records().map(|(user, _)| user.clone()).collect()
     }
 
     /// 自分のマスター鍵を信頼する（SSSS で解錠したあと）。

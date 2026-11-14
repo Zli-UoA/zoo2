@@ -20,6 +20,7 @@ fn message(body: &str) -> OutgoingMessage {
             kind: "message".into(),
         },
         mentions: Mentions::default(),
+        attachments: Vec::new(),
     }
 }
 
@@ -68,6 +69,48 @@ fn megolm_own_message_round_trip() {
     assert_eq!(decrypted.message_index, 0);
     assert_eq!(decrypted.origin, SessionOrigin::Olm);
     assert_eq!(decrypted.revision, RevisionStatus::Latest);
+}
+
+#[test]
+fn encrypted_attachment_round_trip_through_megolm() {
+    let plaintext = b"attachment bytes".to_vec();
+    let encrypted = encrypt_attachment(plaintext.clone());
+    assert_ne!(encrypted.ciphertext, plaintext);
+
+    let account = DeviceAccount::new(ALICE.into(), ALICE_DEVICE.into()).unwrap();
+    let outbound = OutboundSession::new(CHANNEL.into(), 1, 0);
+    let inbound = InboundSessionStore::new();
+    inbound.add_outbound(&account, &outbound);
+    let mut outgoing = message("");
+    outgoing.attachments.push(AttachmentInfo {
+        attachment_id: "00000000-0000-4000-8000-0000000000e1".into(),
+        name: "a.bin".into(),
+        mimetype: "application/octet-stream".into(),
+        size: plaintext.len() as u64,
+        width: None,
+        height: None,
+        sensitive: false,
+        file: encrypted.file.clone(),
+    });
+    let ciphertext = outbound.encrypt(&account, outgoing).unwrap();
+    let decrypted = inbound.decrypt(row(ciphertext)).unwrap();
+    let attachment = &decrypted.payload.attachments[0];
+    assert_eq!(attachment.name, "a.bin");
+    assert_eq!(
+        decrypt_attachment(attachment.file.clone(), encrypted.ciphertext.clone()).unwrap(),
+        plaintext
+    );
+
+    let mut tampered = encrypted.ciphertext;
+    tampered[0] ^= 1;
+    assert!(matches!(
+        decrypt_attachment(attachment.file.clone(), tampered),
+        Err(ZooCryptoError::AttachmentDecryption { .. })
+    ));
+    assert!(matches!(
+        decrypt_attachment("{}".into(), vec![]),
+        Err(ZooCryptoError::InvalidPayload { .. })
+    ));
 }
 
 #[test]

@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   DESKTOP_PROTOCOL_VERSION,
   desktopAccessToken,
+  desktopNotificationSettings,
+  desktopSetNotifications,
   detectDesktop,
   hasDesktopBridge,
   isDesktopSession,
@@ -52,6 +54,31 @@ describe("detectDesktop", () => {
     resetDesktopForTest();
     install(() => session(DESKTOP_PROTOCOL_VERSION, "leptos"));
     await expect(detectDesktop()).resolves.toBe(false);
+  });
+});
+
+describe("desktopNotificationSettings", () => {
+  it("reads and writes the app's notification setting", async () => {
+    const internals = install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      if (cmd === "zoo_notification_settings") return { enabled: false };
+      return undefined;
+    });
+    await detectDesktop();
+    await expect(desktopNotificationSettings()).resolves.toEqual({ enabled: false });
+    await desktopSetNotifications(true);
+    expect(internals.invoke).toHaveBeenCalledWith("zoo_set_notifications", {
+      settings: { enabled: true },
+    });
+  });
+
+  it("is null when an older app does not have the command", async () => {
+    install((cmd) => {
+      if (cmd === "zoo_session") return session(DESKTOP_PROTOCOL_VERSION, "remote");
+      throw new Error("command zoo_notification_settings not found");
+    });
+    await detectDesktop();
+    await expect(desktopNotificationSettings()).resolves.toBeNull();
   });
 });
 

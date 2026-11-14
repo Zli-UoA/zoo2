@@ -89,6 +89,12 @@ pub enum ZooCryptoError {
     /// サーバーのクロス署名鍵や鍵バックアップの今の版が、SSSS の鍵と違う。
     #[error("{reason}")]
     ServerKeyMismatch { reason: String },
+    /// 暗号化した添付を復号できない（暗号文のハッシュが合わない。#364）。
+    #[error("{reason}")]
+    AttachmentDecryption { reason: String },
+    /// SSSS を保存する前に止まった 2〜5 の失効は続けられない。最初からやり直す（#362）。
+    #[error("{reason}")]
+    RevocationRestart { reason: String },
     /// 鍵バックアップの版が巻き戻った。
     #[error("{reason}")]
     BackupVersionRollback {
@@ -192,6 +198,8 @@ impl From<CryptoError> for ZooCryptoError {
             CryptoError::InvalidBackup(_) => Self::InvalidBackup { reason },
             CryptoError::BackupKeyMismatch => Self::BackupKeyMismatch { reason },
             CryptoError::ServerKeyMismatch(_) => Self::ServerKeyMismatch { reason },
+            CryptoError::AttachmentDecryption(_) => Self::AttachmentDecryption { reason },
+            CryptoError::RevocationRestart => Self::RevocationRestart { reason },
             CryptoError::BackupVersionRollback { max_seen, received } => {
                 Self::BackupVersionRollback {
                     reason,

@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 
 import type { CryptoWorker } from "./cryptoWorker";
 import type { E2eeDeviceStatus } from "./deviceManager";
+import type { StaleDevice } from "./revocationApi";
 
 export interface E2eeContextValue {
   /** `unsupported` は暗号ストアを置けないブラウザー（OPFS、Worker、Web Locks がない）。 */
@@ -13,12 +14,22 @@ export interface E2eeContextValue {
    */
   worker: CryptoWorker | null;
   userId: string | null;
+  /** Megolm のセッション鍵を受け取るたびに増える（復号できなかったメッセージを試し直す。#361）。 */
+  roomKeysVersion: number;
   /**
    * ログアウトの前に、鍵バックアップにまだ送っていない受信用セッションの数を返す。
    * 暗号ストアがなければ 0。数える前に to-device の処理を止める（取りやめたら `cancelLogout`）。
    * 数えられなければ投げる。
    */
   pendingBackupCount(): Promise<number>;
+  /**
+   * 終わっていない失効があるか（#362）。ログアウトの前に確かめ、あれば警告する。暗号ストアがなければ
+   * false。`pendingBackupCount` と同じく、確かめるためにロックを奪うことがある（取りやめたら
+   * `cancelLogout`）。
+   */
+  revocationPending(): Promise<boolean>;
+  /** 端末の登録が 20 台の上限で拒否されたときの `stale_devices`。なければ `null`。 */
+  deviceLimit: StaleDevice[] | null;
   /** ログアウトを取りやめた。件数の確認のために奪ったロックを返す。 */
   cancelLogout(): void;
   /**
@@ -35,7 +46,10 @@ export const E2eeContext = createContext<E2eeContextValue>({
   deviceId: null,
   worker: null,
   userId: null,
+  roomKeysVersion: 0,
   pendingBackupCount: async () => 0,
+  revocationPending: async () => false,
+  deviceLimit: null,
   cancelLogout: () => {},
   requestKeyBackup: () => {},
   clearForLogout: async () => {},

@@ -350,6 +350,42 @@ impl TrustStore {
         self.records.get(target_user_id)
     }
 
+    /// すべての相手の記録（`user_id` の順）。
+    pub fn records(&self) -> impl Iterator<Item = (&String, &TrustRecord)> {
+        self.records.iter()
+    }
+
+    /// 失効を行った端末が、クロス署名鍵を保存したあとに呼ぶ（#362）。
+    ///
+    /// 新しいマスター鍵（2〜5 のとき）を信頼し、新しいユーザー署名鍵を履歴に足し、署名し直したピンの
+    /// 相手（記録があり `confirmed_usk` もある相手）の `confirmed_usk` を新しい鍵にする。
+    /// 署名し直さなかった相手の記録は変えない（次の判定で再検証が必要になる）。
+    ///
+    /// ピンの登録待ち（`pin_pending`）は外さない。署名し直したピンの保存はこのあとなので、保存に
+    /// 失敗しても配らないようにするため。保存できたら、次の判定でサーバーのピンと照合して外れる。
+    pub fn apply_revocation(
+        &mut self,
+        master: &CrossSigningKeyPair,
+        user_signing: &CrossSigningKeyPair,
+        resigned: &crate::ResignPlan,
+    ) -> Result<(), CryptoError> {
+        self.require_own_key(master, KeyUsage::Master)?;
+        self.require_own_key(user_signing, KeyUsage::UserSigning)?;
+        let usk = user_signing.public_key().to_base64();
+        self.push_usk(usk.clone())?;
+        self.own_master_key = Some(master.public_key().to_base64());
+        for pin in &resigned.pins {
+            if let Some(record) = self
+                .records
+                .get_mut(&pin.target_user_id)
+                .filter(|r| r.confirmed_usk.is_some() && r.master_key == pin.master_key)
+            {
+                record.confirmed_usk = Some(usk.clone());
+            }
+        }
+        Ok(())
+    }
+
     /// 自分のマスター鍵を信頼する。初回設定で作ったとき、または SSSS から取り出した秘密鍵を
     /// 渡す（秘密鍵を持っていることが、そのマスター鍵が自分のものだという確認になる）。
     pub fn trust_own_master_key(
@@ -814,7 +850,12 @@ fn untrusted(state: UserState) -> UserTrust {
 }
 
 /// 今のユーザー署名鍵で署名を検証できるピンなら、そのマスター鍵（正規化した base64）を返す。
-fn verified_pin(pin: &Value, me: &str, target: &str, usk: &Ed25519PublicKey) -> Option<String> {
+pub(crate) fn verified_pin(
+    pin: &Value,
+    me: &str,
+    target: &str,
+    usk: &Ed25519PublicKey,
+) -> Option<String> {
     let field = |name: &str| pin.get(name).and_then(Value::as_str);
     if field("type") != Some(TOFU_PIN_TYPE)
         || field("user_id") != Some(me)

@@ -290,20 +290,32 @@ pub(crate) async fn default_key(
     .await
 }
 
-/// クロス署名鍵と鍵バックアップの版の保存の前提にした既定の SSSS 鍵（`expected_default_key_id`）を、
-/// ユーザー単位のロックのあとの同じトランザクションで照合する（#360）。違えば 409
-/// `E2EE_SSSS_CONFLICT`。初回設定とリセットで、別の端末が同時に SSSS を作り直したときに、SSSS と
-/// サーバーの公開鍵の世代がずれないようにするため。省略したら照合しない。
+/// クロス署名鍵と鍵バックアップの版の保存の前提にした既定の SSSS 鍵（`expected_default_key_id`）と
+/// `secrets_revision`（`expected_secrets_revision`）を、ユーザー単位のロックのあとの同じトランザクション
+/// で照合する（#360、#362）。違えば 409 `E2EE_SSSS_CONFLICT`。初回設定、リセット、失効で、別の端末が
+/// 同時に SSSS を作り直した（または同じ鍵のまま秘密だけを書き換えた）ときに、SSSS とサーバーの公開鍵の
+/// 世代がずれないようにするため。省略したものは照合しない。
 pub(crate) async fn check_expected_default_key(
     tx: &mut toasty::Transaction<'_>,
     user_id: &str,
     expected: Option<&str>,
+    expected_secrets_revision: Option<i64>,
 ) -> Result<(), AppError> {
-    let Some(expected) = expected else {
+    if expected.is_none() && expected_secrets_revision.is_none() {
         return Ok(());
-    };
+    }
     let current = default_key(tx, user_id).await?;
-    if current.as_ref().and_then(|c| c["key_id"].as_str()) != Some(expected) {
+    if let Some(expected) = expected
+        && current.as_ref().and_then(|c| c["key_id"].as_str()) != Some(expected)
+    {
+        return Err(ssss_conflict(current.as_ref()));
+    }
+    if let Some(revision) = expected_secrets_revision
+        && current
+            .as_ref()
+            .and_then(|c| c["secrets_revision"].as_i64())
+            != Some(revision)
+    {
         return Err(ssss_conflict(current.as_ref()));
     }
     Ok(())

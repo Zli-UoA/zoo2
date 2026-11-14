@@ -16,6 +16,7 @@ import { Input } from "../ui/input";
 import { SettingsSection } from "../ui/control-panel";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { Spinner } from "../ui/spinner";
+import { AuthzSteps, DeviceSummary, type DeviceRowView } from "./DevicesSettingsView";
 
 /** 画面に出す誤り。文言は `e2ee.errors.<code>`。 */
 export type EncryptionErrorCode =
@@ -57,6 +58,13 @@ export type EncryptionViewState =
       passkeyAdded: boolean;
       busy: "passkey" | "saving" | null;
       error: EncryptionErrorCode | null;
+      /**
+       * リセットで、利用者に選んでもらう自分の端末（今の端末を除く。#362）。見覚えのない端末を
+       * 削除してからでないと、リセットを終えられない。初回設定では `null`。
+       */
+      resetDevices?: DeviceRowView[] | null;
+      /** AuthZ のセッションとサービス接続の画面（リセットで案内する）。 */
+      accountUrls?: { security: string; services: string } | null;
     }
   | {
       step: "locked";
@@ -68,6 +76,13 @@ export type EncryptionViewState =
       passkeyAvailable: boolean;
       hasPasskeySlots: boolean;
       busy: "passkey" | "recovery" | null;
+      error: EncryptionErrorCode | null;
+    }
+  /** 解錠済みの端末で、リカバリーキーを作り直す（#362）。保存するまでサーバーは変えない。 */
+  | {
+      step: "newRecoveryKey";
+      recoveryKey: string;
+      busy: boolean;
       error: EncryptionErrorCode | null;
     }
   /** 解錠したが、続きの保存（初回設定の再開）に再認証が要る。 */
@@ -86,8 +101,11 @@ export interface EncryptionSettingsHandlers {
   onRetry: () => void;
   onStart: () => void;
   onAddSetupPasskey: () => void;
-  /** クリックの中で同期的に呼ぶ（再認証の別ウィンドウを開くため）。 */
-  onSave: () => void;
+  /**
+   * クリックの中で同期的に呼ぶ（再認証の別ウィンドウを開くため）。`deleteDevices` はリセットで
+   * 削除する自分の端末。
+   */
+  onSave: (deleteDevices: string[]) => void;
   onUnlockWithPasskey: () => void;
   onUnlockWithRecoveryKey: (recoveryKey: string) => void;
   onContinue: () => void;
@@ -98,6 +116,11 @@ export interface EncryptionSettingsHandlers {
   onCancelReunlock: () => void;
   onRemoveSlot: (slotId: string) => void;
   onReset: () => void;
+  /** リカバリーキーを作り直す（なければ作る）。SSSS 鍵がメモリーにあるときだけ。 */
+  onRegenerateRecoveryKey: () => void;
+  /** 作り直したリカバリーキーを保存する（置き換えには再認証が要る）。クリックの中で同期的に呼ぶ。 */
+  onSaveRecoveryKey: () => void;
+  onCancelRecoveryKey: () => void;
 }
 
 function formatDate(value: string | null, locale: string): string | null {
@@ -184,6 +207,8 @@ function StepContent({
       );
     case "recoveryKey":
       return <RecoveryKeyStep state={state} handlers={handlers} />;
+    case "newRecoveryKey":
+      return <NewRecoveryKeyStep state={state} handlers={handlers} />;
     case "locked":
       return <LockedStep state={state} handlers={handlers} />;
     case "needsReauth":
@@ -214,6 +239,9 @@ function RecoveryKeyStep({
 }) {
   const { t } = useTranslation();
   const [confirmed, setConfirmed] = useState(false);
+  const [deleteDevices, setDeleteDevices] = useState<string[]>([]);
+  const [devicesChecked, setDevicesChecked] = useState(false);
+  const devicesId = useId();
   const [copied, setCopied] = useState(false);
   const confirmId = useId();
   const copy = async () => {
@@ -286,13 +314,60 @@ function RecoveryKeyStep({
           </Button>
         )}
       </SettingsSection>
+      {state.resetDevices ? (
+        <SettingsSection
+          title={t("e2ee.resetDevicesTitle")}
+          description={t("e2ee.resetDevicesDescription")}
+        >
+          {state.resetDevices.length > 0 ? (
+            <ul className="divide-y rounded-md border">
+              {state.resetDevices.map((device) => (
+                <li key={device.deviceId} className="p-3">
+                  <label className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      className="mt-1 size-4"
+                      checked={deleteDevices.includes(device.deviceId)}
+                      onChange={(event) =>
+                        setDeleteDevices((current) =>
+                          event.target.checked
+                            ? [...current, device.deviceId]
+                            : current.filter((id) => id !== device.deviceId),
+                        )
+                      }
+                    />
+                    <DeviceSummary device={device} />
+                  </label>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <label htmlFor={devicesId} className="flex items-center gap-2 text-sm">
+            <input
+              id={devicesId}
+              type="checkbox"
+              className="size-4"
+              checked={devicesChecked}
+              onChange={(event) => setDevicesChecked(event.target.checked)}
+            />
+            {t("e2ee.resetDevicesConfirm")}
+          </label>
+          <AuthzSteps urls={state.accountUrls ?? null} after={false} />
+          <AuthzSteps urls={state.accountUrls ?? null} after />
+        </SettingsSection>
+      ) : null}
       <SettingsSection>
         <p className="text-xs text-muted-foreground">{t("e2ee.saveDescription")}</p>
         <ErrorMessage code={state.error} />
         {state.busy === "saving" ? (
           <Busy label={t("e2ee.saving")} />
         ) : (
-          <Button disabled={!confirmed || state.busy !== null} onClick={handlers.onSave}>
+          <Button
+            disabled={
+              !confirmed || state.busy !== null || (Boolean(state.resetDevices) && !devicesChecked)
+            }
+            onClick={() => handlers.onSave(deleteDevices)}
+          >
             {state.reset ? t("e2ee.saveReset") : t("e2ee.save")}
           </Button>
         )}
@@ -418,7 +493,17 @@ function UnlockedStep({
                     </p>
                   </div>
                 </div>
-                {slot.kind === "passkey" ? (
+                <div className="flex shrink-0 gap-1">
+                  {slot.kind === "recovery" && state.canAddPasskey ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy}
+                      onClick={handlers.onRegenerateRecoveryKey}
+                    >
+                      {t("e2ee.recovery.regenerate")}
+                    </Button>
+                  ) : null}
                   <Button
                     variant="ghost"
                     size="icon-sm"
@@ -428,27 +513,41 @@ function UnlockedStep({
                   >
                     <Trash2Icon />
                   </Button>
-                ) : null}
+                </div>
               </li>
             );
           })}
         </ul>
-        {state.passkeyAvailable ? (
-          state.canAddPasskey ? (
+        {state.canAddPasskey && !state.slots.some((slot) => slot.kind === "recovery") ? (
+          <Button variant="outline" disabled={busy} onClick={handlers.onRegenerateRecoveryKey}>
+            <KeyRoundIcon />
+            {t("e2ee.recovery.create")}
+          </Button>
+        ) : null}
+        {state.canAddPasskey ? (
+          state.passkeyAvailable ? (
             <Button variant="outline" disabled={busy} onClick={handlers.onAddPasskey}>
               <FingerprintIcon />
               {t("e2ee.addPasskey")}
             </Button>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">{t("e2ee.addPasskeyNeedsUnlock")}</p>
-              <Button variant="outline" disabled={busy} onClick={handlers.onReunlock}>
-                <FingerprintIcon />
-                {t("e2ee.reunlockToAdd")}
-              </Button>
-            </div>
-          )
-        ) : null}
+          ) : null
+        ) : (
+          // 解錠に使った鍵がメモリーにない（ページを読み込み直した）。パスキーに対応していない環境でも、
+          // リカバリーキーで開け直せば、リカバリーキーを作り直せる。
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              {t(
+                state.passkeyAvailable
+                  ? "e2ee.addPasskeyNeedsUnlock"
+                  : "e2ee.manageSlotsNeedsUnlock",
+              )}
+            </p>
+            <Button variant="outline" disabled={busy} onClick={handlers.onReunlock}>
+              {state.passkeyAvailable ? <FingerprintIcon /> : <KeyRoundIcon />}
+              {t(state.passkeyAvailable ? "e2ee.reunlockToAdd" : "e2ee.reunlockToManage")}
+            </Button>
+          </div>
+        )}
         {state.busy === "passkey" || state.busy === "remove" ? (
           <Busy label={t("e2ee.saving")} />
         ) : null}
@@ -459,7 +558,11 @@ function UnlockedStep({
           if (!open) setRemoving(null);
         }}
         title={t("e2ee.removeSlotConfirmTitle")}
-        description={t("e2ee.removeSlotConfirmDescription")}
+        description={
+          removing?.kind === "recovery"
+            ? t("e2ee.recovery.removeDescription")
+            : t("e2ee.removeSlotConfirmDescription")
+        }
         confirmLabel={t("e2ee.removeSlotConfirm")}
         onConfirm={() => {
           if (removing) handlers.onRemoveSlot(removing.id);
@@ -467,6 +570,68 @@ function UnlockedStep({
         }}
       />
     </div>
+  );
+}
+
+function NewRecoveryKeyStep({
+  state,
+  handlers,
+}: {
+  state: Extract<EncryptionViewState, { step: "newRecoveryKey" }>;
+  handlers: EncryptionSettingsHandlers;
+}) {
+  const { t } = useTranslation();
+  const [confirmed, setConfirmed] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const confirmId = useId();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(state.recoveryKey);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <SettingsSection
+      title={t("e2ee.recovery.newTitle")}
+      description={t("e2ee.recovery.newDescription")}
+    >
+      <p
+        aria-label={t("e2ee.recoveryKeyTitle")}
+        className="select-all break-words rounded-md bg-muted p-3 font-mono text-sm tracking-wide"
+        translate="no"
+      >
+        {state.recoveryKey}
+      </p>
+      <Button variant="outline" size="sm" onClick={() => void copy()}>
+        {copied ? <CheckIcon /> : <CopyIcon />}
+        {copied ? t("e2ee.copied") : t("e2ee.copy")}
+      </Button>
+      <label htmlFor={confirmId} className="flex items-center gap-2 text-sm">
+        <input
+          id={confirmId}
+          type="checkbox"
+          className="size-4"
+          checked={confirmed}
+          onChange={(event) => setConfirmed(event.target.checked)}
+        />
+        {t("e2ee.recoveryKeyConfirm")}
+      </label>
+      <ErrorMessage code={state.error} />
+      {state.busy ? (
+        <Busy label={t("e2ee.saving")} />
+      ) : (
+        <div className="flex gap-2">
+          <Button disabled={!confirmed} onClick={handlers.onSaveRecoveryKey}>
+            {t("e2ee.recovery.save")}
+          </Button>
+          <Button variant="ghost" onClick={handlers.onCancelRecoveryKey}>
+            {t("common.cancel")}
+          </Button>
+        </div>
+      )}
+    </SettingsSection>
   );
 }
 
