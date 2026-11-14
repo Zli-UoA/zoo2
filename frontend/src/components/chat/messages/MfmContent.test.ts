@@ -89,6 +89,22 @@ describe("MfmContent", () => {
     expect(html).toContain("animation-duration:2s");
     expect(html).toContain("<strong>🎉</strong>");
   });
+  // Slack の本文を変換した結果 (backend/src/slack/convert.rs) が、Web で書式として描画される
+  it("renders the formatting that the Slack import produces", () => {
+    expect(render("これは**太字**です")).toContain("<strong>太字</strong>");
+    expect(render("今度一緒に~~ご範囲効果~~ご飯")).toContain("<del>ご範囲効果</del>");
+    expect(render("かなり<i>斜め</i>だ")).toContain("<em>斜め</em>");
+    expect(render("**bold ~~and gone~~**")).toContain("<strong>bold <del>and gone</del></strong>");
+    expect(render("`**x**`")).toContain("<code");
+  });
+  it("shows MFM syntax that Slack displays as text, once the import breaks it with U+200B", () => {
+    const html = render("*\u200b*\u200bx*\u200b* $\u200b[spin x] <\u200bb>y<\u200b/b> [a]\u200b(https://x.test)");
+    expect(html).not.toContain("<strong>");
+    expect(html).not.toContain("<em>");
+    expect(render("5 *\u200b 3 * 4")).not.toContain("<em>");
+    expect(html).not.toContain("mfm-spin");
+    expect(html).not.toContain("<a ");
+  });
   it("accepts time units, negative delay and spin axes/direction", () => {
     const html = render("$[spin.x,left,speed=2500ms,delay=-1s 🐱]");
     expect(html).toContain("animation-duration:2.5s");
