@@ -39,6 +39,10 @@ use crate::{apps::query, error::AppError, state::AppState};
 /// 1 回の同期が終わってから、同じチャンネルをもう一度同期するまでの間隔
 const SYNC_INTERVAL_SECS: u64 = 300;
 const LEASE_SQL: &str = "interval '5 minutes'";
+/// イベント (#293) の合図で起こすときの、最初の合図からの待ち。続けて届くイベントを 1 回の同期にまとめる
+const WAKE_DEBOUNCE: &str = "interval '3 seconds'";
+/// 合図で起こす同期どうしの最短間隔 (前回の同期の終わりから)。同じチャンネルを何度も取り直さない
+const WAKE_MIN_INTERVAL: &str = "interval '30 seconds'";
 /// 1 回の `conversations.history` / `replies` で求める件数
 const PAGE_LIMIT: &str = "200";
 /// 1 回のキューの処理で進めるページ数。これを超えたら、ほかのチャンネルに順番を譲る
@@ -84,6 +88,14 @@ pub async fn worker(s: AppState) {
                 let mut db = s.db.clone();
                 let mut tx = db.transaction().await?;
                 enqueue(&mut tx, "", false).await?;
+                // 取り込めずに残った合図 (同期の対象にならないチャンネルなど) は、1 日で捨てる
+                query(
+                    &mut tx,
+                    "DELETE FROM slack_channel_wakes WHERE last_at<now()-interval '1 day' \
+                     RETURNING json_build_object('ok',true)::text",
+                    &[],
+                )
+                .await?;
                 tx.commit().await?;
                 Ok::<_, AppError>(())
             }
@@ -266,7 +278,12 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
             "WITH c AS (SELECT t.team_id,t.slack_channel_id FROM slack_channel_syncs t \
              JOIN slack_channels sc ON sc.team_id=t.team_id AND sc.slack_channel_id=t.slack_channel_id \
              JOIN channels ch ON ch.id=sc.channel_id \
-             WHERE t.available_at<=now() AND (t.lease_until IS NULL OR t.lease_until<now()) \
+             WHERE (t.available_at<=now() OR (NOT t.running \
+               AND (t.not_before IS NULL OR t.not_before<=now()) \
+               AND (t.last_synced_at IS NULL OR t.last_synced_at<=now()-{WAKE_MIN_INTERVAL}) \
+               AND EXISTS(SELECT 1 FROM slack_channel_wakes w WHERE w.team_id=t.team_id \
+                 AND w.slack_channel_id=t.slack_channel_id AND w.first_at<=now()-{WAKE_DEBOUNCE}))) \
+             AND (t.lease_until IS NULL OR t.lease_until<now()) \
              AND (sc.last_ts IS NOT NULL OR ch.slack_imported_at IS NOT NULL) \
              AND NOT EXISTS(SELECT 1 FROM slack_import_jobs j WHERE j.team_id=t.team_id \
                AND j.status IN ('analyzing','importing')) \
@@ -285,11 +302,25 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
         &[&token],
     )
     .await?;
-    tx.commit().await?;
-    rows.into_iter()
+    let task: Option<Task> = rows
+        .into_iter()
         .next()
         .map(|v| serde_json::from_value(v).map_err(|e| AppError::Internal(e.into())))
-        .transpose()
+        .transpose()?;
+    // 新しい同期を始めるときだけ、合図を消す (これから読む履歴に、合図の投稿は含まれる)。
+    // 続きの再開 (`running`) では消さない。途中のページより新しい投稿は、その同期には入らないので、
+    // 同期が終わったあとの次の同期で取る
+    if let Some(task) = task.as_ref().filter(|t| !t.running) {
+        query(
+            &mut tx,
+            "DELETE FROM slack_channel_wakes WHERE team_id=$1 AND slack_channel_id=$2 \
+             RETURNING json_build_object('ok',true)::text",
+            &[&task.team_id, &task.slack_channel_id],
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(task)
 }
 
 /// リースを手放し、`secs` 秒後に次の処理を行う。`bump` なら試行回数を増やす (増えるほど待ちが延びる)
@@ -306,6 +337,7 @@ async fn release(
         &mut tx,
         "UPDATE slack_channel_syncs SET lease_until=NULL,lease_token=NULL,\
          available_at=now()+make_interval(secs=>$3::integer),last_error=NULLIF($4,''),\
+         not_before=CASE WHEN $3::integer>0 THEN now()+make_interval(secs=>$3::integer) ELSE NULL END,\
          attempts=CASE WHEN $5::boolean THEN attempts+1 ELSE 0 END,updated_at=now() \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$6 \
          RETURNING json_build_object('ok',true)::text",
@@ -961,7 +993,7 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
         &mut tx,
         "UPDATE slack_channel_syncs SET running=false,phase='history',run_oldest=NULL,run_max_ts=NULL,\
          page_cursor=NULL,pending_threads='[]',known_threads=$3,attempts=0,last_error=NULL,\
-         last_synced_at=now(),available_at=now()+make_interval(secs=>$4::integer),\
+         last_synced_at=now(),available_at=now()+make_interval(secs=>$4::integer),not_before=NULL,\
          lease_until=NULL,lease_token=NULL,updated_at=now() \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$5 \
          RETURNING json_build_object('ok',true)::text",

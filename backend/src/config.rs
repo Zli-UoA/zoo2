@@ -117,6 +117,8 @@ pub struct SlackConfig {
     pub api_base_url: String,
     /// ZIP を展開のために一時保存するディレクトリ。読み取り専用のルートでは書き込める場所を指定する
     pub import_tmp_dir: std::path::PathBuf,
+    /// Slack アプリの Signing Secret (#293 Events API の署名の検証)。未設定なら受信口は無効 (404)
+    pub signing_secret: Option<String>,
 }
 
 impl Default for SlackConfig {
@@ -133,6 +135,7 @@ impl Default for SlackConfig {
             token_encryption_key: None,
             api_base_url: DEFAULT_SLACK_API_BASE_URL.to_string(),
             import_tmp_dir: std::env::temp_dir(),
+            signing_secret: None,
         }
     }
 }
@@ -160,6 +163,10 @@ impl fmt::Debug for SlackConfig {
             )
             .field("api_base_url", &self.api_base_url)
             .field("import_tmp_dir", &self.import_tmp_dir)
+            .field(
+                "signing_secret",
+                &self.signing_secret.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -195,7 +202,19 @@ impl SlackConfig {
             .ok()
     }
 
+    /// Slack の Events API の受信口を使うか。Signing Secret があり、差分同期 (アカウント連携) も有効なとき
+    pub fn events_enabled(&self) -> bool {
+        self.signing_secret.is_some() && self.oauth_enabled()
+    }
+
     fn validate(&self, environment: &str) -> Result<(), String> {
+        // 受信口は、合図で差分同期を起こすだけ。連携の設定がないと同期が動かないので、設定ミスとして止める
+        if self.signing_secret.is_some() && !self.oauth_enabled() {
+            return Err(
+                "SLACK_SIGNING_SECRET requires SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_OAUTH_REDIRECT_URL and a base64 32-byte SLACK_TOKEN_ENCRYPTION_KEY"
+                    .to_string(),
+            );
+        }
         let any = self.client_id.is_some()
             || self.client_secret.is_some()
             || self.oauth_redirect_url.is_some()
@@ -252,6 +271,7 @@ impl SlackConfig {
                 .map(|v| v.trim_end_matches('/').to_string())
                 .unwrap_or_else(|| DEFAULT_SLACK_API_BASE_URL.to_string()),
             import_tmp_dir,
+            signing_secret: optional("SLACK_SIGNING_SECRET").map(|v| v.trim().to_string()),
         }
     }
 }
@@ -668,6 +688,23 @@ mod tests {
         slack.team_id = Some("T1".into());
         assert!(slack.team_allowed("T1"));
         assert!(!slack.team_allowed("T2"));
+    }
+
+    #[test]
+    fn slack_signing_secret_requires_the_oauth_settings() {
+        let mut slack = SlackConfig::default();
+        assert!(!slack.events_enabled());
+        assert!(slack.validate("production").is_ok());
+        slack.signing_secret = Some("s3cr3t-value".into());
+        assert!(slack.validate("production").is_err());
+        assert!(!slack.events_enabled());
+        slack.client_id = Some("id".into());
+        slack.client_secret = Some("secret".into());
+        slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+        slack.token_encryption_key = Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into());
+        assert!(slack.validate("production").is_ok());
+        assert!(slack.events_enabled());
+        assert!(!format!("{slack:?}").contains("s3cr3t-value"));
     }
 
     fn dummy_s3_config() -> S3Config {
