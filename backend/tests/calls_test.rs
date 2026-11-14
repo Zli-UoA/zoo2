@@ -1089,14 +1089,31 @@ async fn sweep_until(db: &mut toasty::Db, id: &str, status: &str) -> anyhow::Res
     anyhow::bail!("invite {id} did not become {status}")
 }
 
-/// `call_invites` の行ロックを待っている問い合わせが、データベースに現れるまで待つ（`pg_blocking_pids`）。
-async fn wait_until_blocked_on_call_invites(db: &mut toasty::Db) -> anyhow::Result<()> {
+/// ロックを持つトランザクションの接続の PID を返す（待っている問い合わせを、この PID に結び付けるため）。
+async fn backend_pid(tx: &mut toasty::Transaction<'_>) -> anyhow::Result<String> {
+    let rows = toasty::sql::query("SELECT pg_backend_pid()::text")
+        .exec(tx)
+        .await?;
+    for row in rows {
+        if let toasty::stmt::Value::Record(rec) = row
+            && let Some(toasty::stmt::Value::String(pid)) = rec.fields.into_iter().next()
+        {
+            return Ok(pid);
+        }
+    }
+    anyhow::bail!("pg_backend_pid returned no row")
+}
+
+/// `call_invites` の行ロックを待っている問い合わせが、`holder_pid` の接続に止められている状態になるまで
+/// 待つ（`pg_blocking_pids`）。別のテストの待機とは、PID で区別する。
+async fn wait_until_blocked_by(db: &mut toasty::Db, holder_pid: &str) -> anyhow::Result<()> {
     for _ in 0..50 {
         let rows = toasty::sql::query(
             "SELECT count(*)::text FROM pg_stat_activity
              WHERE datname = current_database() AND pid <> pg_backend_pid()
-               AND cardinality(pg_blocking_pids(pid)) > 0 AND query ILIKE '%call_invites%'",
+               AND $1::int = ANY(pg_blocking_pids(pid)) AND query ILIKE '%call_invites%'",
         )
+        .bind(holder_pid.to_string())
         .exec(&mut *db)
         .await?;
         let blocked = rows.into_iter().next().is_some_and(|row| {
@@ -1108,7 +1125,7 @@ async fn wait_until_blocked_on_call_invites(db: &mut toasty::Db) -> anyhow::Resu
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    anyhow::bail!("no query is waiting for a call_invites row lock")
+    anyhow::bail!("no query is blocked by pid {holder_pid} on a call_invites row lock")
 }
 
 async fn invite(
@@ -1937,11 +1954,12 @@ async fn test_join_waits_for_a_concurrent_accept_and_then_records_the_join() -> 
     .bind(id.as_str())
     .exec(&mut accept_tx)
     .await?;
+    let accept_pid = backend_pid(&mut accept_tx).await?;
     let (mut join_db, channel, invitee) = (w.state.db.clone(), w.public_ch.clone(), bob.clone());
     let join = tokio::spawn(async move {
         backend::call_invites::accept_on_join(&mut join_db, &channel, &invitee).await
     });
-    wait_until_blocked_on_call_invites(&mut w.db).await?;
+    wait_until_blocked_by(&mut w.db, &accept_pid).await?;
     assert!(!join.is_finished(), "the join should wait for the row lock");
 
     // 応答が確定すると、入室は、応答済みの招待として入室を記録する（応答の通知は、すでに閉じている）
@@ -1976,6 +1994,7 @@ async fn test_join_waits_for_a_concurrent_accept_and_then_records_the_join() -> 
     .bind(carol_invite.as_str())
     .exec(&mut join_tx)
     .await?;
+    let join_pid = backend_pid(&mut join_tx).await?;
     let (app, accept_path) = (
         w.app.clone(),
         format!("/api/call-invites/{carol_invite}/accept"),
@@ -1983,7 +2002,7 @@ async fn test_join_waits_for_a_concurrent_accept_and_then_records_the_join() -> 
     let carol_id = carol.clone();
     let accept =
         tokio::spawn(async move { request(&app, &carol_id, "POST", &accept_path, None).await });
-    wait_until_blocked_on_call_invites(&mut w.db).await?;
+    wait_until_blocked_by(&mut w.db, &join_pid).await?;
     assert!(
         !accept.is_finished(),
         "the accept should wait for the row lock"
