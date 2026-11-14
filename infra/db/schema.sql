@@ -1374,7 +1374,9 @@ CREATE TABLE call_invites (
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','declined','cancelled','missed')),
   created_at timestamptz NOT NULL DEFAULT now(),
   expires_at timestamptz NOT NULL,
-  responded_at timestamptz
+  responded_at timestamptz,
+  -- 呼ばれた人が通話に入った時刻。入室で席の予約を使い終えたことを表す（退出しても、予約は戻らない）。
+  joined_at timestamptz
 );
 CREATE UNIQUE INDEX call_invites_pending_unique ON call_invites (channel_id, invitee_id) WHERE status = 'pending';
 CREATE INDEX call_invites_invitee_pending ON call_invites (invitee_id) WHERE status = 'pending';
