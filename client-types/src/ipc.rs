@@ -41,6 +41,11 @@ pub mod command {
     pub const LOGOUT: &str = "zoo_logout";
     /// [`super::FocusState`]。通知を抑えるために、前面かどうかと表示中のチャンネルを知らせる。
     pub const SET_FOCUS: &str = "zoo_set_focus";
+    /// 引数なし。[`super::NotificationSettings`] を返す。アプリが OS の通知を出すかどうか。
+    /// 古い版のアプリにはないので、呼べなかったら設定を出さない (`PROTOCOL_VERSION` は上げない)。
+    pub const NOTIFICATION_SETTINGS: &str = "zoo_notification_settings";
+    /// `{ settings: NotificationSettings }`。OS の通知を出すかどうかを変えて、保存する。
+    pub const SET_NOTIFICATIONS: &str = "zoo_set_notifications";
 
     // (a) Leptos だけ
     /// [`super::OpenChannel`]。そのチャンネルのメッセージの Shape に購読を切り替える。
@@ -117,6 +122,18 @@ pub struct DeviceLogin {
     pub verification_uri_complete: Option<String>,
     /// UNIX 秒。これを過ぎたらやり直す。
     pub expires_at: i64,
+}
+
+/// アプリが OS の通知 (投稿の通知) を出すかどうか。既定は出す。更新の知らせは、これに関係なく出す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationSettings {
+    pub enabled: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
