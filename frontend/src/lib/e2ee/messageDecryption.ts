@@ -36,6 +36,11 @@ export type MessageDecryption =
        * 見た方のまま）。どちらもなければ省く。
        */
       revisionWarning?: "stale" | "conflict";
+      /**
+       * この結果を出した行の `revision`。行の新しい版を復号し終えるまでは前の版の結果が残るので、
+       * 編集はこの版を基準に送る（行が先に進んでいれば 409 になる）。
+       */
+      rowRevision?: number;
     }
   | { status: "undecryptable"; reason: UndecryptableReason };
 

@@ -646,7 +646,9 @@ export function MessagePane({
         if (decrypted?.status !== "decrypted" || decrypted.revisionWarning) return;
         setEditingId(id);
         setEditingText(decrypted.body);
-        setEditingRevision(messagesCollection.get(id)?.revision ?? 0);
+        // 表示している本文の版を基準にする。行が新しい版に進んでいて、その復号がまだなら、保存は
+        // 409 になり、ほかで編集されたと知らせる（新しい版を古い本文で上書きしない）。
+        setEditingRevision(decrypted.rowRevision ?? messagesCollection.get(id)?.revision ?? 0);
         return;
       }
       setEditingId(id);
