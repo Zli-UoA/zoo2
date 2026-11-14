@@ -100,7 +100,8 @@ fn convert(text: &str, resolver: &impl Resolver, plain: bool) -> String {
             true
         },
         |a| {
-            budget.set(budget.get().saturating_sub(a.chars().count()));
+            // 空の文字列になる参照 (`<!x>`) も、1 文字として数える (トークンが際限なく増えないように)
+            budget.set(budget.get().saturating_sub(a.chars().count().max(1)));
             toks.borrow_mut().push(Tok::Atom(a));
             budget.get() > 0
         },
@@ -691,6 +692,8 @@ mod tests {
                 .count(),
             MAX_MESSAGE_CONTENT_LENGTH
         );
+        // 空になる参照だけの本文でも、トークンは際限なく増えない
+        assert_eq!(mfm(&"<!x>".repeat(MAX_MESSAGE_CONTENT_LENGTH * 10)), "");
         let links = "<@U1>".repeat(MAX_MESSAGE_CONTENT_LENGTH);
         assert_eq!(mfm(&links).chars().count(), MAX_MESSAGE_CONTENT_LENGTH);
     }
