@@ -50,6 +50,12 @@ export interface E2eeContextValue {
    * 暗号ストアを開いていないタブでは何もしない。
    */
   requestKeyBackupImport: () => void;
+  /**
+   * 復号で「未検証の送信者」になったセッションの送信端末を、`keys/query` で判定し直す
+   * （docs/e2ee.md の「受信時の検証」）。検証済みに上げたら `roomKeysVersion` を進める。同じ
+   * セッションは間隔をあけてしか問い合わせない。暗号ストアを開いていないタブでは何もしない。
+   */
+  requestSenderReverify: () => void;
   /** ログアウト：暗号ストアを消し、端末を削除する（失敗したら次のログインで消し直す）。 */
   clearForLogout(): Promise<void>;
   /** 他のユーザーの絵文字 SAS 検証（#368）。暗号ストアを開いたタブで、端末の登録が済んだときだけ。 */
@@ -69,6 +75,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   cancelLogout: () => {},
   requestKeyBackup: () => {},
   requestKeyBackupImport: () => {},
+  requestSenderReverify: () => {},
   clearForLogout: async () => {},
   sas: null,
 });

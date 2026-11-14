@@ -187,6 +187,31 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const requestKeyBackupImportRef = useRef(requestKeyBackupImport);
   requestKeyBackupImportRef.current = requestKeyBackupImport;
 
+  // 「未検証の送信者」のセッションの判定し直し。暗号ストアを開いたタブで 1 つずつ行い、行っている間に
+  // 頼まれたら、終わったあとにもう一度行う（候補がなければ Worker が空を返し、問い合わせない）。
+  const reverifyQueue = useRef({ running: false, again: false });
+  const requestSenderReverify = useCallback(() => {
+    const active = leader.current;
+    if (!active) return;
+    const queue = reverifyQueue.current;
+    if (queue.running) {
+      queue.again = true;
+      return;
+    }
+    queue.running = true;
+    void (async () => {
+      try {
+        do {
+          queue.again = false;
+          const upgraded = await active.manager.reverifySenders().catch(() => 0);
+          if (upgraded > 0) setRoomKeysVersion((version) => version + 1);
+        } while (queue.again && leader.current === active);
+      } finally {
+        queue.running = false;
+      }
+    })();
+  }, []);
+
   // 絵文字 SAS の検証（#368）。検証のメッセージは、コントローラーを作る前に届いたら溜めておく。
   const [sas, setSas] = useState<SasController | null>(null);
   const sasRef = useRef<SasController | null>(null);
@@ -557,6 +582,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       },
       requestKeyBackup,
       requestKeyBackupImport,
+      requestSenderReverify,
       sas,
     }),
     [
@@ -569,6 +595,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       readyWorker,
       requestKeyBackup,
       requestKeyBackupImport,
+      requestSenderReverify,
       roomKeysVersion,
       sas,
       startFailure,

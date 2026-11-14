@@ -127,6 +127,10 @@ export class CryptoOperations {
       case "acknowledged":
         await this.opened().acknowledged(request.ids);
         return null;
+      case "reverifyCandidateUsers":
+        return this.opened().reverifyCandidateUsers();
+      case "reverifySenders":
+        return this.opened().reverifySenders(request.keysQuery);
       case "pendingBackupCount":
         return this.opened().pendingBackupCount();
       case "setupBegin":

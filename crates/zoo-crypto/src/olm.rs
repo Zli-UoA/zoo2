@@ -674,7 +674,11 @@ fn sender_device_keys<'a>(
 }
 
 /// 端末鍵が、送信ユーザーの自己署名鍵で署名されているか（手順 4）。
-fn signed_by_self_signing_key(device_json: &Value, user_id: &str, trust: &SenderTrust) -> bool {
+pub(crate) fn signed_by_self_signing_key(
+    device_json: &Value,
+    user_id: &str,
+    trust: &SenderTrust,
+) -> bool {
     let key_id = format!("ed25519:{}", trust.self_signing_key.to_base64());
     if verify_json_signature(device_json, user_id, &key_id, &trust.self_signing_key).is_ok() {
         return true;

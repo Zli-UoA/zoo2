@@ -118,6 +118,7 @@ function renderPanel() {
     cancelLogout: vi.fn(),
     requestKeyBackup: vi.fn(),
     requestKeyBackupImport: vi.fn(),
+    requestSenderReverify: vi.fn(),
     clearForLogout: async () => {},
     sas: null,
   };

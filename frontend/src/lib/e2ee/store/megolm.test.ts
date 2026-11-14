@@ -435,6 +435,76 @@ describe("受信時の検証の手順 4（送信端末を検証済みにする�
     await locked.store.close();
   });
 
+  it("受け取ったときに検証できなかったセッションは、あとで判定し直して検証済みに上げ、保存する", async () => {
+    const me = identity(BOB);
+    const other = await openStore(BOB);
+    const backend = new MemoryCryptoBackend();
+    const keys = memoryKeys();
+    const openCurrent = async () =>
+      (
+        await CryptoStore.open({
+          backend,
+          name: "zoo-crypto-current.sqlite",
+          userId: BOB,
+          keys,
+          reset: async () => backend,
+        })
+      ).store;
+    // 解錠する前（または #545 より前の版）に鍵を受け取ったので、「未検証の送信者」になった。
+    const current = await openCurrent();
+    const query = keysQueryWith(BOB, { [BOB]: me }, [other.store], [me.signDevice(other.store)]);
+    const device = recipient(current);
+    other.store.megolm.setDistribution(CHANNEL, 1, [device.device()]);
+    await other.store.megolm.start(CHANNEL);
+    const { messages } = await other.store.megolm.share(CHANNEL, device.claimed);
+    other.store.megolm.markShared(CHANNEL, [{ userId: BOB, deviceId: current.deviceId }]);
+    await deliver(other.store, current, messages, "1", query);
+    const message = row(
+      other.store,
+      "m1",
+      other.store.megolm.encrypt(CHANNEL, outgoing("m1", "hello")),
+    );
+    expect(await current.megolm.decrypt([message])).toMatchObject([{ sender: "unverified" }]);
+    expect(current.reverifyCandidateUsers()).toEqual([BOB]);
+
+    // 解錠していなければ判定できない。候補は残す。
+    expect(await current.reverifySenders(query)).toBe(0);
+    expect(current.reverifyCandidateUsers()).toEqual([BOB]);
+
+    // 解錠したあとは、同じ端末鍵が自己署名鍵で署名されているので、検証済みに上げる。
+    await current.saveOwnKeys(me.secrets, 1);
+    expect(await current.reverifySenders(query)).toBe(1);
+    expect(current.reverifyCandidateUsers()).toEqual([]);
+    expect(await current.megolm.decrypt([message])).toMatchObject([{ sender: "verified" }]);
+
+    // 開き直しても検証済みのまま（保存した）。
+    await current.close();
+    const reopened = await openCurrent();
+    expect(await reopened.megolm.decrypt([message])).toMatchObject([{ sender: "verified" }]);
+    expect(reopened.reverifyCandidateUsers()).toEqual([]);
+    await reopened.close();
+    await other.store.close();
+  });
+
+  it("判定し直しても確かめられないセッションは、間隔をあけるまで問い合わせ直さない", async () => {
+    const me = identity(BOB);
+    const other = await openStore(BOB);
+    const current = await openStore(BOB);
+    await current.store.saveOwnKeys(me.secrets, 1);
+    // 署名の行がない（自己署名鍵で署名されていない端末）。
+    const unsigned = keysQueryWith(BOB, { [BOB]: me }, [other.store], []);
+    const received = await sendAndDecrypt(other.store, current.store, unsigned);
+    expect(received).toMatchObject({ sender: "unverified" });
+    expect(current.store.reverifyCandidateUsers()).toEqual([BOB]);
+    expect(await current.store.reverifySenders(unsigned)).toBe(0);
+    // もう一度表示して復号しても、すぐには候補に戻さない。
+    const encrypted = other.store.megolm.encrypt(CHANNEL, outgoing("m2", "again"));
+    await current.store.megolm.decrypt([row(other.store, "m2", encrypted)]);
+    expect(current.store.reverifyCandidateUsers()).toEqual([]);
+    await other.store.close();
+    await current.store.close();
+  });
+
   /** Bob が Alice のマスター鍵を TOFU で信頼した（ピンを置けた）状態を作る。 */
   async function tofuTrusted() {
     const aliceId = identity(ALICE);

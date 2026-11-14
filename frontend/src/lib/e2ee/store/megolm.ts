@@ -118,6 +118,11 @@ export interface MegolmContext {
   write(changes: CryptoStoreWrite): Promise<void>;
   readMeta(): Promise<Record<string, string>>;
   ownKeys(): Promise<{ keys: OwnKeys } | null>;
+  /**
+   * Olm 由来のセッションで復号したが、送信端末が検証済みでなかった（「未検証の送信者」）。あとで
+   * 送信端末を判定し直す候補にする（`CryptoStore.reverifySenders`）。
+   */
+  onUnverified?(ref: SessionRef): void;
 }
 
 interface Outbound {
@@ -408,13 +413,17 @@ export class MegolmChannels {
         results.push({ status: "undecryptable", reason: "invalid" });
         continue;
       }
-      await this.ctx.loadInboundSession({
+      const ref: SessionRef = {
         channel_id: row.channel_id,
         sender_key: ciphertext.sender_key,
         session_id: ciphertext.session_id,
-      });
+      };
+      await this.ctx.loadInboundSession(ref);
       try {
         const decrypted = this.ctx.inbound.decrypt(row);
+        if (decrypted.origin !== "backup" && !decrypted.sender_verified) {
+          this.ctx.onUnverified?.(ref);
+        }
         const kind = decrypted.payload.content.kind === "emote" ? "emote" : "message";
         results.push({
           status: "decrypted",

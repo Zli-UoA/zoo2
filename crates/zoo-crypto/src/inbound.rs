@@ -17,9 +17,9 @@ use vodozemac::megolm::{
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey};
 
 use crate::backup::BackedUpSessionData;
-use crate::device::{DeviceAccount, MEGOLM_ALGORITHM};
+use crate::device::{DeviceAccount, MEGOLM_ALGORITHM, verify_device_keys};
 use crate::megolm::{MessagePayload, OutboundSession};
-use crate::olm::ReceivedRoomKey;
+use crate::olm::{ReceivedRoomKey, SenderTrust, signed_by_self_signing_key};
 use crate::store::{self, StoreKind};
 use crate::{CryptoError, Rejection};
 use zeroize::Zeroizing;
@@ -374,6 +374,65 @@ impl InboundSessionStore {
     /// （[`BackupUploadState::enqueue_all`](crate::BackupUploadState::enqueue_all)）。
     pub fn session_refs(&self) -> Vec<SessionRef> {
         self.sessions.keys().cloned().collect()
+    }
+
+    /// Olm 由来で、送信端末を検証済みにできていないセッションの送信者 `(sender_user_id, sender_device_id)`。
+    /// セッションがない、Olm 由来がない、検証済みのときは `None`。
+    ///
+    /// [`reverify_olm_session`](Self::reverify_olm_session) に渡す端末鍵と自己署名鍵を問い合わせるのに使う。
+    pub fn unverified_olm_sender(&self, key: &SessionRef) -> Option<(&str, &str)> {
+        let stored = self.sessions.get(key)?.olm.as_ref()?;
+        (!stored.sender_verified).then_some((
+            stored.sender_user_id.as_str(),
+            stored.sender_device_id.as_str(),
+        ))
+    }
+
+    /// 受け取ったときに送信端末を検証済みにできなかった Olm 由来のセッションを、今の端末鍵と
+    /// 送信ユーザーの自己署名鍵で判定し直す（docs/e2ee.md の「受信時の検証」の手順 4 のやり直し）。
+    ///
+    /// - `device_json` は `keys/query` の、送信ユーザーの送信端末の端末鍵。
+    /// - `trust` は [`TrustStore::sender_trust`](crate::TrustStore::sender_trust) の結果（信頼した
+    ///   マスター鍵で署名された、送信ユーザーの自己署名鍵）。
+    ///
+    /// 端末鍵が受け取ったときの送信端末と同じ（ユーザー、端末 ID、識別鍵 `key.sender_key`、
+    /// 署名鍵）で、自己署名が正しく、`trust` の自己署名鍵で署名されていれば、検証済みに上げて
+    /// `true` を返す。呼び出し側は、`true` なら暗号ストアに保存し直す。それ以外（もともと検証済み、
+    /// Olm 由来がない、鍵が違う、署名がない）は何も変えずに `false`。バックアップ由来は上げない。
+    pub fn reverify_olm_session(
+        &mut self,
+        key: &SessionRef,
+        device_json: &Value,
+        trust: &SenderTrust,
+    ) -> bool {
+        let Some(stored) = self
+            .sessions
+            .get_mut(key)
+            .and_then(|slot| slot.olm.as_mut())
+        else {
+            return false;
+        };
+        if stored.sender_verified {
+            return false;
+        }
+        let Ok(keys) = verify_device_keys(
+            device_json,
+            &stored.sender_user_id,
+            &stored.sender_device_id,
+        ) else {
+            return false;
+        };
+        // 受け取ったとき（手順 1、2）の送信端末と同じ鍵でなければ、別の端末の判定になる。
+        if keys.curve25519.to_base64() != key.sender_key
+            || keys.ed25519 != stored.sender_signing_key
+        {
+            return false;
+        }
+        if !signed_by_self_signing_key(device_json, &stored.sender_user_id, trust) {
+            return false;
+        }
+        stored.sender_verified = true;
+        true
     }
 
     /// 1 つのキーのセッション（Olm 由来とバックアップ由来）を、暗号ストアに置く文字列にする
