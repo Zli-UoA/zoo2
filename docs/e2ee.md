@@ -1837,18 +1837,23 @@ A が B に検証を求める場合です。
 
 【決定】（#358）暗号化チャンネルの作成は、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` で切り替えます（既定は false）。#358 の拒否（API と DB のトリガー）が本番に入ってから、#361（クライアントの作成と送受信）の前に true にします。
 
-zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読みます。各拠点（`$CTX`）で、既存のキーを残す `patch` で足し、backend を再起動します。
+【決定】この設定は、zoo2-infra の base の `kubernetes/apps/zoo2/base/app/backend.yaml` の `env` に置き、Git で管理します（[Zli-UoA/zoo2-infra#194](https://github.com/Zli-UoA/zoo2-infra/pull/194)）。production と preview の両方で `"true"` です。機能の切り替えなので、`APP_HTTP_DELIVERY_WORKER` などと同じく `env` に置き、手動で作る ConfigMap `zoo2-oidc` には入れません。Flux が配備すると backend が入れ替わり、新しい値を読みます。
+
+- 戻すときは、zoo2-infra の PR で `"false"` にする。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルと DM の作成だけが 403 `E2EE_DISABLED` になる。送受信、メンバーの変更、鍵の配布は続けられる。
+- 急ぎで止めるときも、`kubectl set env` などでクラスタを直接変えない。Flux の次の reconcile で Git の値に戻るため。
+- `ciphertext` を扱えない旧イメージ（#357 より前）にはロールバックしない。旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる。設定を false に戻すのは、#358 以降のイメージのあいだで行う。
+- 止め方と注意は、zoo2-infra の `docs/zoo2-app.md` の「E2EE の暗号化チャンネル」にも書いた。
+
+【決定】再認証の `OIDC_REAUTH_AUDIENCES`（[クロス署名](#クロス署名356)の「再認証の確かめ方」）は OIDC の設定なので、`OIDC_ISSUER` や `OIDC_AUDIENCE` と同じく、手動で作る ConfigMap `zoo2-oidc` に置きます（zoo2-infra の `docs/installation.md`）。値は Web、Android、TUI の zoo2 のクライアント ID をカンマで区切ったもので、秘密情報ではありません。ないと、再認証が要る操作（初回設定の保存、失効など）がすべて 403 `E2EE_REAUTH_REQUIRED` になり、backend は起動時に警告を出します。各拠点（`$CTX`）で、既存のキーを残す `patch` で足し、backend を再起動します。
 
 ```sh
 kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge \
-  -p '{"data":{"E2EE_ENCRYPTED_CHANNELS_ENABLED":"true"}}'
+  -p '{"data":{"OIDC_REAUTH_AUDIENCES":"<Web のクライアント ID>,<Android のクライアント ID>,<TUI のクライアント ID>"}}'
 kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 ```
 
 - `kubectl create configmap ... --dry-run=client -o yaml | kubectl apply -f -` は使わない。zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるため。
-- 戻すときは、同じ `patch` で `"false"` にして、同じく再起動する。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルと DM の作成だけが 403 `E2EE_DISABLED` になる。送受信、メンバーの変更、鍵の配布は続けられる。
-- `ciphertext` を扱えない旧イメージ（#357 より前）にはロールバックしない。旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる。設定を false に戻すのは、#358 以降のイメージのあいだで行う。
-- zoo2-infra の運用の文書（`docs/operations.md` など）にこの手順を書くかは、zoo2-infra 側で決める。本書を正とする。
+- 足したかは、backend の起動時のログに `OIDC_REAUTH_AUDIENCES is not set` の警告が出ないことで確かめる。
 
 ## クライアントの構成
 
@@ -2096,7 +2101,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 | [#355](https://github.com/Zli-UoA/zoo2/issues/355) | to-device メッセージ | #354 |
 | [#356](https://github.com/Zli-UoA/zoo2/issues/356) | クロス署名（TOFU のピンと `GET /api/e2ee/tofu_pins` を含む）、クロス署名鍵と署名の Shape、Secret Storage、鍵バックアップの保存 API | #354、AuthZ#97（再認証の正常系の結合テスト） |
 | [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` の読み取りと 403 `E2EE_DISABLED` の判定、App からの作成の拒否（403 `E2EE_APPS_FORBIDDEN`）、メンバーでない管理者と退出した作成者の追加の拒否（403 `E2EE_ADD_FORBIDDEN`）、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えでの epoch の増加、配布先のスナップショット | #354、#356 |
-| [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否。#358 の拒否が入ってから、`E2EE_ENCRYPTED_CHANNELS_ENABLED` を true にする（#361 の前に行う。zoo2 の backend は ConfigMap `zoo2-oidc` を `envFrom` で読むので、`zoo2-oidc` に足して各拠点で、既存のキーを残す `kubectl --context "$CTX" -n zoo2 patch configmap zoo2-oidc --type merge -p '{"data":{"<キー>":"<値>"}}'` で足す（`create ... --dry-run=client -o yaml \| apply` は、zoo2-infra の `docs/installation.md` が付けた last-applied との差分で、既存の `OIDC_ISSUER`、`OIDC_AUDIENCE`、`CSP_CONNECT_SRC` を消し、次の再起動で backend が起動できなくなり、フロントの CSP も壊れるので使わない）。そのあと `kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend` で backend を再起動する。戻すときは false にして、同じく再起動する。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルの作成だけが 403 になる。`ciphertext` を扱えない旧イメージにはロールバックしない（旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる）。手順は[有効化と運用](#有効化と運用)） | #357 |
+| [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否。#358 の拒否が入ってから、`E2EE_ENCRYPTED_CHANNELS_ENABLED` を true にする（#361 の前に行う。zoo2-infra の base の `backend.yaml` の `env` に置き、Git で管理する。[Zli-UoA/zoo2-infra#194](https://github.com/Zli-UoA/zoo2-infra/pull/194)。`ciphertext` を扱えない旧イメージにはロールバックしない。手順は[有効化と運用](#有効化と運用)） | #357 |
 | [#359](https://github.com/Zli-UoA/zoo2/issues/359) | 暗号ストアと端末の登録（React、Compose Android、TUI） | #352、#353、#354、#355 |
 | [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー）。各クライアントの再認証（Web は `max_age=0`、Android は Custom Tabs と App Links、TUI はループバック）と、zli.chat の `assetlinks.json` もここで作る | #359、#356、AuthZ#94、AuthZ#96、AuthZ#97 |
 | [#361](https://github.com/Zli-UoA/zoo2/issues/361) | 暗号化チャンネルと DM の作成と送受信 | #360、#357、#358 |
