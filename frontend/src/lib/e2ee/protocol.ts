@@ -91,6 +91,7 @@ export type CryptoOperation =
   | { op: "megolmDecrypt"; rows: EncryptedMessage[] }
   | { op: "megolmRememberEncrypted"; channelId: string }
   | { op: "megolmIsKnownEncrypted"; channelId: string }
+  | { op: "megolmNoteRecipients"; channelId: string; userIds: string[] }
   | {
       /** 暗号ストアを消す。開いていなくても、`namespace` のファイルと保存鍵を消す。 */
       op: "destroy";
@@ -153,6 +154,7 @@ export interface CryptoResults {
   megolmDecrypt: DecryptOutcome[];
   megolmRememberEncrypted: null;
   megolmIsKnownEncrypted: boolean;
+  megolmNoteRecipients: string[];
 }
 
 export type CryptoRequest = CryptoOperation & { id: number };

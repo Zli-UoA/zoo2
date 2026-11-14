@@ -55,3 +55,17 @@ export const Undeliverable: Story = {
     ).toBeVisible();
   }),
 };
+
+export const AddedRecipients: Story = {
+  args: {
+    summary: {
+      epoch: 4,
+      newPins: [],
+      undeliverable: [],
+      deviceCount: 5,
+      userCount: 3,
+      userIds: [alice!.id, bob!.id, carol!.id],
+      addedUserIds: [carol!.id],
+    },
+  },
+};

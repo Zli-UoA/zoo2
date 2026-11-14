@@ -1180,7 +1180,8 @@
       "locked": "Unlock encryption on this device to read this message.",
       "staleEpoch": "This message was encrypted for an earlier member list and can't be read.",
       "invalid": "This message failed verification and isn't shown.",
-      "failed": "This message couldn't be decrypted."
+      "failed": "This message couldn't be decrypted.",
+      "unencrypted": "This message isn't encrypted, so it isn't shown."
     },
     "sender": {
       "unverified": "Unverified sender",

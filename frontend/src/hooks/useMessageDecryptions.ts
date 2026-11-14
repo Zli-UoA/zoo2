@@ -82,15 +82,16 @@ export function useMessageDecryptions(
         const key = rowKey(message, channelId);
         const entry = key ? cache.current.get(key) : undefined;
         if (!entry) continue;
+        const value = applyRevision(
+          latest.current,
+          message.id,
+          message.revision ?? 0,
+          entry.value,
+          entry.check,
+        );
         next.set(
           message.id,
-          applyRevision(
-            latest.current,
-            message.id,
-            message.revision ?? 0,
-            entry.value,
-            entry.check,
-          ),
+          value.status === "decrypted" ? { ...value, rowRevision: message.revision ?? 0 } : value,
         );
       }
       setResults(next);

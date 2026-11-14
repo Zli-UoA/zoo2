@@ -40,6 +40,18 @@ describe("resolveMessageDecryption", () => {
     } as const;
     expect(resolveMessageDecryption({ ciphertext }, decrypted)).toBe(decrypted);
   });
+
+  it("暗号化チャンネルの暗号文のない行は unencrypted のまま出す（本文を出さない）", () => {
+    const unencrypted: MessageDecryption = { status: "undecryptable", reason: "unencrypted" };
+    expect(resolveMessageDecryption({ ciphertext: null }, unencrypted)).toBe(unencrypted);
+    // 暗号文のない行に、ほかの復号の結果は当てない。
+    expect(
+      resolveMessageDecryption(
+        { ciphertext: null },
+        { status: "decrypted", body: "x", kind: "message", sender: "verified" },
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("applyRevision", () => {

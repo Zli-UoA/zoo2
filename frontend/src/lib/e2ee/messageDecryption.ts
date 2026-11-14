@@ -10,8 +10,16 @@ import type { MessageRow } from "../electric/types";
  * - `staleEpoch`：セッションと行の `epoch` が合わない。
  * - `invalid`：チャンネル、行、種別、送信者、リプレイ、版のどれかの照合に失敗して破棄した。
  * - `failed`：上のどれにも当たらない復号の失敗。
+ * - `unencrypted`：暗号化チャンネルなのに暗号文がない（削除されていない）行。正しいサーバーは DB の
+ *   トリガーでこの行を作れないので、サーバーや同期元が書き換えたものとして本文を出さない。
  */
-export type UndecryptableReason = "keyMissing" | "locked" | "staleEpoch" | "invalid" | "failed";
+export type UndecryptableReason =
+  | "keyMissing"
+  | "locked"
+  | "staleEpoch"
+  | "invalid"
+  | "failed"
+  | "unencrypted";
 
 /**
  * 送信者の確かさ。
@@ -36,6 +44,11 @@ export type MessageDecryption =
        * 見た方のまま）。どちらもなければ省く。
        */
       revisionWarning?: "stale" | "conflict";
+      /**
+       * この結果を出した行の `revision`。行の新しい版を復号し終えるまでは前の版の結果が残るので、
+       * 編集はこの版を基準に送る（行が先に進んでいれば 409 になる）。
+       */
+      rowRevision?: number;
     }
   | { status: "undecryptable"; reason: UndecryptableReason };
 
@@ -92,7 +105,12 @@ export function resolveMessageDecryption(
   message: Pick<MessageRow, "ciphertext">,
   decryption: MessageDecryption | undefined,
 ): MessageDecryption | null {
-  if (!isEncryptedMessage(message)) return null;
+  if (!isEncryptedMessage(message)) {
+    // 暗号化チャンネルの、暗号文のない行（`MessagePane` が `unencrypted` を渡す）。
+    return decryption?.status === "undecryptable" && decryption.reason === "unencrypted"
+      ? decryption
+      : null;
+  }
   return decryption ?? { status: "undecryptable", reason: "locked" };
 }
 

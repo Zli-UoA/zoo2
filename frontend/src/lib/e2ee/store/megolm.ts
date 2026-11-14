@@ -33,6 +33,13 @@ export const OUTBOUND_OLM_META_PREFIX = "outbound_olm:";
  */
 export const ENCRYPTED_CHANNEL_META_PREFIX = "encrypted_channel:";
 
+/**
+ * チャンネルごとに、前回判定した配布先のメンバー（`user_id` の JSON 配列）を置く `meta` のキーの接頭辞。
+ * チャンネルを切り替えても、開き直しても、前回から増えた人を表示できるようにする（docs/e2ee.md の
+ * 「鍵の配布先の判定」の、サーバーによるメンバーの追加に気付けるようにする緩和策）。
+ */
+export const RECIPIENTS_META_PREFIX = "recipients:";
+
 /** 配れない相手の理由（送信画面に出す。docs/e2ee.md の「鍵の配布先の判定」）。 */
 export type UndeliverableReason =
   | "notSetUp"
@@ -52,8 +59,13 @@ export interface RecipientSummary {
   deviceCount: number;
   /** 配るユーザーの数（自分を含む）。 */
   userCount: number;
-  /** スナップショットのメンバー（`user_id` の昇順）。前回の送信から増えた人を表示するのに使う。 */
+  /** スナップショットのメンバー（`user_id` の昇順）。 */
   userIds: string[];
+  /**
+   * 前回判定した配布先から増えたメンバー（`user_id` の昇順）。{@link MegolmChannels.noteRecipients}
+   * が入れる。初めて判定したチャンネルでは空。
+   */
+  addedUserIds?: string[];
 }
 
 /** `keys/claim` の要求の `one_time_keys`（`{user_id: {device_id: "signed_curve25519"}}`）。 */
@@ -339,6 +351,31 @@ export class MegolmChannels {
     const key = ENCRYPTED_CHANNEL_META_PREFIX + channelId;
     if ((await this.ctx.readMeta())[key]) return;
     await this.ctx.write({ meta: { [key]: "1" } });
+  }
+
+  /**
+   * 配布先のメンバーを記録し、前回記録したメンバーから増えた人を返す。初めて記録するチャンネルは空
+   * （全員を「増えた」と出さない）。
+   */
+  async noteRecipients(channelId: string, userIds: string[]): Promise<string[]> {
+    const key = RECIPIENTS_META_PREFIX + channelId;
+    const stored = (await this.ctx.readMeta())[key];
+    let previous: string[] | null = null;
+    if (stored) {
+      try {
+        const value: unknown = JSON.parse(stored);
+        if (Array.isArray(value))
+          previous = value.filter((id): id is string => typeof id === "string");
+      } catch {
+        previous = null;
+      }
+    }
+    const next = [...userIds].sort();
+    const serialized = JSON.stringify(next);
+    if (serialized !== stored) await this.ctx.write({ meta: { [key]: serialized } });
+    if (!previous) return [];
+    const known = new Set(previous);
+    return next.filter((id) => !known.has(id));
   }
 
   /** 暗号化チャンネルとして記録したことがあるか。 */
