@@ -44,10 +44,10 @@ export const Welcome: Story = {
 
 export const Channel: Story = {
   args: {
-    children: <ChannelScreen channelId="channel-general" />,
+    children: <ChannelScreen channelId="00000000-0000-4000-8000-000000000001" />,
   },
   parameters: {
-    router: { initialEntries: ["/channels/channel-general"] },
+    router: { initialEntries: ["/channels/00000000-0000-4000-8000-000000000001"] },
   },
   play: playForImplementation(async () => {
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
@@ -59,10 +59,10 @@ export const Channel: Story = {
 export const MobileChannel: Story = {
   globals: { viewport: { value: "mobile" } },
   args: {
-    children: <ChannelScreen channelId="channel-general" />,
+    children: <ChannelScreen channelId="00000000-0000-4000-8000-000000000001" />,
   },
   parameters: {
-    router: { initialEntries: ["/channels/channel-general"] },
+    router: { initialEntries: ["/channels/00000000-0000-4000-8000-000000000001"] },
   },
   play: playForImplementation(async () => {
     await screen.findByRole("heading", { name: "general" });
@@ -164,11 +164,11 @@ export const MobileBubbleChat: Story = {
 };
 
 export const MobileMembers: Story = {
-  args: { children: <ChannelScreen channelId="channel-general" /> },
+  args: { children: <ChannelScreen channelId="00000000-0000-4000-8000-000000000001" /> },
   globals: { viewport: { value: "mobile" } },
   parameters: {
     a11y: { test: "error" },
-    router: { initialEntries: ["/channels/channel-general?members=true"] },
+    router: { initialEntries: ["/channels/00000000-0000-4000-8000-000000000001?members=true"] },
   },
   play: playForImplementation(async () => {
     await expect(await screen.findByRole("heading", { name: "メンバー", level: 1 })).toBeVisible();

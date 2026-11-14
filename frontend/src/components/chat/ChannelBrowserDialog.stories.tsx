@@ -6,7 +6,11 @@ import { StoryShell } from "../../../.storybook/shell";
 import { storyChannels } from "../../../.storybook/fixtures";
 import { ChannelBrowserDialog } from "./ChannelBrowserDialog";
 
-const joined = new Set(["channel-general", "channel-design", "channel-secret"]);
+const joined = new Set([
+  "00000000-0000-4000-8000-000000000001",
+  "channel-design",
+  "channel-secret",
+]);
 
 const meta = {
   title: "Features/Channels/Discovery",

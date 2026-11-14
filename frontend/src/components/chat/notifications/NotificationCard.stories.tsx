@@ -54,7 +54,7 @@ const meta = {
   },
   args: {
     group: group("notification-mention"),
-    channel: channels.get("channel-general"),
+    channel: channels.get("00000000-0000-4000-8000-000000000001"),
     users,
     onRead: fn(),
     scrollRoot: { current: null },

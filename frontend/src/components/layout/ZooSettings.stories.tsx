@@ -24,7 +24,7 @@ const meta = {
   component: ZooSettings,
   parameters: {
     a11y: { test: "error" },
-    router: { initialEntries: ["/settings?channel=channel-general"] },
+    router: { initialEntries: ["/settings?channel=00000000-0000-4000-8000-000000000001"] },
     msw: {
       handlers: appHandlers,
     },

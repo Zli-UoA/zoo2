@@ -11,7 +11,7 @@ import { MessagePane } from "./MessagePane";
 
 function PaneFrame({ children }: { children: ReactNode }) {
   return (
-    <StoryShell selectedChannelId="channel-general">
+    <StoryShell selectedChannelId="00000000-0000-4000-8000-000000000001">
       <div className="flex h-[720px] min-w-0 flex-1 bg-background">
         <div className="flex min-w-0 flex-1 flex-col">{children}</div>
       </div>
@@ -28,7 +28,7 @@ const meta = {
     isMember: { control: "boolean" },
   },
   args: {
-    channelId: "channel-general",
+    channelId: "00000000-0000-4000-8000-000000000001",
     isMember: true,
   },
   render: (args) => (
