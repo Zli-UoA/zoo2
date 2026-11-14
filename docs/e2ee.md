@@ -1703,13 +1703,22 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
   - `message` は zoo-crypto の `EncryptedMessage` と同じ形で、Push を送るときに読んだ `messages` の行の値（編集されていれば、そのときの版）。どれもサーバーが元から持つ値で、Push のために新しくサーバーに渡る値はない。削除されたメッセージ（`ciphertext` が NULL）の通知は、今までどおり送らない。
   - `recipient_id` は、Service Worker が暗号ストア（`cryptoDatabaseName`。名前空間は `user-<id>`、開発用のログインは `dev-<id>` で、順に探す）を選ぶのに使う。
 - 上限：RFC 8291 で暗号化したあとの長さが 4096 バイト（RFC 8030 が Push サービスに求める上限。今までと同じ検査）を超えるなら、`e2ee` を外して送る（`push.rs` の `encrypt_fitting`）。本文がおよそ 1.7 KB（UTF-8。日本語でおよそ 600 字。タイトルやメンションの長さで変わる）を超えると外れる。Service Worker は API のトークンを持たないので、外れた暗号文を後から取りに行くことはしない。
-- 戻し方：`e2ee` がない Push、復号できない Push（鍵が届いていない、照合に失敗した、暗号ストアを開けない、どれにも答えがない）は、「新しいメッセージ」のまま出す。前の Push を待つ時間も含めて 10 秒を超えたときも同じ（前の Push が 10 秒で終わらなければ、次の Push はそれ以上待たずに始める）。
-- 復号の順（`frontend/src/sw/push.ts`、`frontend/src/lib/e2ee/push/`）。同時に届いた Push は、Service Worker の中で 1 件ずつ復号する（`serializeDecryption`）。並べると、後の Push が、前の Push の持つロックを、開いているタブのものと取り違えるため。
+- 戻し方：`e2ee` がない Push、復号できない Push（鍵が届いていない、照合に失敗した、暗号ストアを開けない、宛先が今のユーザーでない、どれにも答えがない）は、「新しいメッセージ」のまま出す。前の Push を待つ時間も含めて 10 秒を超えたときも同じ。
+- 宛先の確認：タブ（`E2eeProvider`）は、今ログインしているユーザーを IndexedDB（`zoo-push`。`frontend/src/lib/e2ee/push/recipient.ts`）に置き、ログアウトで消す。Service Worker は、`recipient_id` がこれと一致するときだけ復号する。ログアウトせずに別のユーザーでログインし直したあとに前のユーザー宛ての Push が届いても、前のユーザーの暗号ストアで本文を出さない。
+- 復号の順（`frontend/src/sw/push.ts`、`frontend/src/lib/e2ee/push/`）。同時に届いた Push は、Service Worker の中で 1 件ずつ復号する（`serializeDecryption`）。並べると、後の Push が、前の Push の持つロックを、開いているタブのものと取り違えるため。次の Push は、前の Push が上限で諦められても、実際に終わるまで（ただし前の Push を始めてから 10 秒まで）待ち、待つうちに上限を過ぎた Push は復号を始めない。
   1. Service Worker は、暗号ストアのロック（`zoo-crypto:<DB 名>`、[暗号ストア](#暗号ストア)）を `ifAvailable` で取ろうとする。
-  2. 取れたら、暗号ストアを開いているタブはない。ロックを持ったまま、OPFS の暗号ストアのファイル（残っていれば `-journal` も）を読み、wa-sqlite のメモリーの VFS で開く。Service Worker では、暗号ストアの Worker が使う `OPFSCoopSyncVFS`（OPFS の同期のハンドルは専用の Worker にしかない）を使えないため。IndexedDB の鍵で保存鍵を開き、端末アカウントと受信用セッションを戻し、zoo-crypto の受信時の検証を通して復号する。写しは OPFS に書き戻さず、受信用セッションの照合の記録（リプレイと版）もメモリーにだけ置いて捨てる。保存鍵を開けなくても、暗号ストアを作り直さない。Service Worker はログアウトの削除待ち（localStorage）を読めないので、ログアウトで消し切れなかった暗号ストアから本文を出さないよう、暗号ストアを消すときは保存鍵を包む鍵（IndexedDB）を先に消し、失敗してもファイルの削除を試す（`destroyCryptoStore`）。ファイルだけが残っても、保存鍵を開けないので復号しない。ロックを持つあいだに開こうとしたタブは、読み終わるまで待つ。
+  2. 取れたら、暗号ストアを開いているタブはない。ロックを持つあいだは、OPFS の暗号ストアのファイル（残っていれば `-journal` も）を読むだけにし、すぐにロックを返す（wasm の読み込みのあいだ、通知から開いたタブを待たせない）。読んだ写しを wa-sqlite のメモリーの VFS で開く。Service Worker では、暗号ストアの Worker が使う `OPFSCoopSyncVFS`（OPFS の同期のハンドルは専用の Worker にしかない）を使えないため。journal が残っていれば（書き込みの途中で終了した）、SQLite が写しの上でロールバックする。IndexedDB の鍵で保存鍵を開き、端末アカウントと受信用セッションを戻し、zoo-crypto の受信時の検証を通して復号する。写しは OPFS に書き戻さず、受信用セッションの照合の記録（リプレイと版）もメモリーにだけ置いて捨てる。保存鍵を開けなくても、暗号ストアを作り直さない。
   3. 取れなければ、暗号ストアを開いているタブがある。Service Worker は、すべてのウィンドウに `zoo-e2ee-push-decrypt` を MessageChannel で送る。その名前空間の暗号ストアを開いているタブ（`E2eeProvider`）が、画面の表示と同じ `megolmDecrypt` で復号して本文を返し、ほかのタブは `null` を返す。3 秒で答えがなければ諦める。
   4. 通知の本文は、復号した `content.body` の先頭 240 文字（コードポイントで数える。平文チャンネルと同じ）。リアクションの通知は、今までどおり「リアクション: 」を前に付ける。送信者の確かさ（未検証の送信者、バックアップ由来）は通知には出さず、通知から開いた画面で示す。
-- `sw-push.js` は、`pnpm build` が `frontend/vite.sw-push.config.ts` で `dist/client` に作る classic script（IIFE）で、`public/sw.js` が起動時に `importScripts` で読む。Service Worker では `import()` を使えず、`importScripts` は起動時と install のあいだにしか読めないので、名前を固定にする。wasm（zoo-crypto と wa-sqlite）は、Push を受けたときに初めて `assets/` から読む。dev サーバーには `sw-push.js` がないので、復号せずに出す。
+- ログアウトとの関係：Service Worker はログアウトの削除待ち（localStorage）を読めないので、ログアウトで消し切れなかった暗号ストアから本文を出さないよう、保存鍵を包む鍵（IndexedDB）を先に消す。
+  - 暗号ストアを消すときは、包む鍵を先に消し、失敗してもファイルの削除を試す（`destroyCryptoStore`）。
+  - ログアウトで暗号ストアを開けなかったときも、メインスレッドから包む鍵を消す（開く前に消すと、開くときに作り直すので、開いたあと、または開けなかったあとに消す）。
+  - ファイルだけが残っても、保存鍵を開けないので復号しない。
+- `sw-push.js` の配信。
+  - `pnpm build` が `frontend/vite.sw-push.config.ts` で `dist/client` に作る classic script（IIFE）で、`public/sw.js` が起動時に `importScripts` で読む。Service Worker では `import()` を使えず、`importScripts` は起動時と install のあいだにしか読めないので、名前を固定にする。ビルドは、出来上がった `sw-push.js` に `import.meta` と `import(` が残っていないこと、指す wasm が出力にあることを確かめ、崩れていれば止まる。
+  - dev サーバーでは、何もしない `public/sw-push.js` を返す（`pnpm build` が本物で置き換える）。
+  - `importScripts` の失敗は握りつぶさず、install を失敗させる。読めたスクリプトだけが更新の検査の対象になるので、握りつぶすと、復号できない Service Worker が `sw.js` の次の変更まで残るため（ローリング更新で、古い Pod が `/sw-push.js` に HTML を返したときなど）。失敗した install は、次の登録や更新の検査でやり直す。
+  - wasm（zoo-crypto と wa-sqlite）は、install で専用のキャッシュ（`zoo-push-wasm-v1`）に保存し、Push を受けたときに初めてコンパイルする。デプロイで wasm の名前（ハッシュ）が変わっても、動いている Service Worker の `sw-push.js` が指す wasm を返せる。新しい Service Worker の activate で、今の 2 つ以外を消す。キャッシュになければ取りに行き、1 つ 8 秒で諦める。nginx は wasm も gzip で圧縮する（`infra/frontend-nginx.conf`）。
 - 本物の Service Worker での確かめは `frontend/src/sw/push.browser.test.ts`（Chromium）。
 - 【決定】（#365）Android は、まだ Push の受信（FCM）も、暗号ストアと端末の登録（#359 の残り）もないので、#365 では扱わない。Android で Push を受けるようにするときは、同じ `e2ee` を受け取り、Android の暗号ストアの受信用セッション（UniFFI の `InboundSessionStore`）で、Web と同じく書き戻さずに復号する。
 
