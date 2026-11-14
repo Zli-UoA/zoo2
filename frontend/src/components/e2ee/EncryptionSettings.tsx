@@ -174,12 +174,20 @@ export function EncryptionSettings({
     void load();
   }, [load]);
 
+  // 読み直しは、利用者が途中の手順（初回設定やリカバリーキーの作り直しで、保存前のリカバリーキーを
+  // 表示している、パスキーを足すために開け直している、保存や削除の最中など）にいないときだけ行う。途中なら、その手順を
+  // 終えて落ち着いた段に戻ってから読み直す（読み直すと、保存前のリカバリーキーと操作が消えるため）。
   const loadedKey = useRef(refreshKey);
+  const idle =
+    (state.step === "unlocked" && state.busy === null) ||
+    (state.step === "notSetUp" && !state.busy) ||
+    state.step === "loadFailed" ||
+    (state.step === "locked" && state.reason !== "addPasskey" && state.busy === null);
   useEffect(() => {
-    if (refreshKey === loadedKey.current) return;
+    if (refreshKey === loadedKey.current || !idle) return;
     loadedKey.current = refreshKey;
     void load();
-  }, [refreshKey, load]);
+  }, [refreshKey, idle, load]);
 
   /** 最後に落ち着いた（読み込み中でない）段。解錠したことを、段の移り変わりで見分ける。 */
   const settledStep = useRef<EncryptionViewState["step"] | null>(null);
