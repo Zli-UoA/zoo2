@@ -1747,3 +1747,67 @@ async fn test_seat_is_not_reserved_again_after_the_invitee_joined_and_left() -> 
     drop(carol_response);
     Ok(())
 }
+
+#[tokio::test]
+async fn test_accept_on_join_records_the_join_whether_the_invite_was_pending_or_accepted()
+-> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob, &carol]).await?;
+    assert_eq!(body["invites"].as_array().unwrap().len(), 2);
+    let bob_invite = body["invites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["invitee_id"] == bob.as_str())
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // bob は先に応答している。carol は応答せずに入る
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/call-invites/{bob_invite}/accept"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let joined = |db: &mut toasty::Db, id: String| {
+        let mut db = db.clone();
+        async move {
+            let rows = toasty::sql::query(
+                "SELECT (joined_at IS NOT NULL)::text FROM call_invites WHERE id = $1::uuid",
+            )
+            .bind(id)
+            .exec(&mut db)
+            .await?;
+            let value = rows.into_iter().next();
+            anyhow::Ok(
+                matches!(value, Some(toasty::stmt::Value::Record(r)) if matches!(r.fields.first(), Some(toasty::stmt::Value::String(s)) if s == "true")),
+            )
+        }
+    };
+    assert!(!joined(&mut w.db, bob_invite.clone()).await?);
+    // 応答済みの bob の入室: 終わった招待としては返さない（応答のときに、通知は閉じている）が、入室を記録する
+    let ended =
+        backend::call_invites::accept_on_join(&mut w.db, &w.public_ch.clone(), &bob).await?;
+    assert!(ended.is_empty());
+    assert!(joined(&mut w.db, bob_invite).await?);
+    // 応答していない carol の入室: 終わった招待として返し、入室を記録する
+    let ended =
+        backend::call_invites::accept_on_join(&mut w.db, &w.public_ch.clone(), &carol).await?;
+    assert_eq!(ended.len(), 1);
+    assert!(joined(&mut w.db, ended[0].id.clone()).await?);
+    assert_eq!(invite_status(&mut w.db, &ended[0].id).await?, "accepted");
+    // 2 回目は何もしない
+    assert!(
+        backend::call_invites::accept_on_join(&mut w.db, &w.public_ch.clone(), &carol)
+            .await?
+            .is_empty()
+    );
+    Ok(())
+}
