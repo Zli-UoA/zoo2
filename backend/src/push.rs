@@ -121,19 +121,65 @@ impl SubscriptionKeys {
     fn encrypt(&self, payload: &NotificationPayload) -> anyhow::Result<Vec<u8>> {
         let (public, auth) = self.decode()?;
         let body = ece::encrypt(&public, &auth, &serde_json::to_vec(payload)?)?;
-        anyhow::ensure!(body.len() <= 4096, "Push payload is too large");
+        anyhow::ensure!(body.len() <= MAX_PUSH_BYTES, "Push payload is too large");
         Ok(body)
+    }
+
+    /// 暗号化チャンネルの通知で、暗号文を入れると上限を超えるなら、暗号文を外して送る。
+    /// Service Worker は暗号文がなければ「新しいメッセージ」のまま出す（docs/e2ee.md の「Web Push」）。
+    fn encrypt_fitting(&self, payload: &NotificationPayload) -> anyhow::Result<Vec<u8>> {
+        match self.encrypt(payload) {
+            Err(_) if payload.e2ee.is_some() => self.encrypt(&payload.without_ciphertext()),
+            result => result,
+        }
     }
 }
 
-#[derive(Serialize)]
-struct NotificationPayload {
+/// 暗号化した Push の本文の上限（RFC 8030 の 4096 バイト。RFC 8291 の暗号化のあとの長さ）。
+pub const MAX_PUSH_BYTES: usize = 4096;
+
+#[derive(Clone, Serialize)]
+pub struct NotificationPayload {
     title: String,
     body: String,
     url: String,
     tag: String,
     #[serde(rename = "notificationType")]
     notification_type: String,
+    /// 暗号化チャンネルの通知だけに付ける。Service Worker がこれを復号して本文を出す (#365)。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    e2ee: Option<EncryptedPush>,
+}
+
+/// 暗号化チャンネルの通知に付ける、受信端末が復号に使う値。どれもサーバーが元から持つ値で、
+/// 平文を含まない（`ciphertext` は Megolm の暗号文のまま）。
+#[derive(Clone, Serialize)]
+pub struct EncryptedPush {
+    /// 通知の宛先。Service Worker が、このユーザーの暗号ストアを選ぶのに使う。
+    recipient_id: String,
+    /// zoo-crypto の `EncryptedMessage` と同じ形の、メッセージの行（受信時の検証の照合に使う）。
+    message: EncryptedRow,
+}
+
+#[derive(Clone, Serialize)]
+pub struct EncryptedRow {
+    channel_id: String,
+    message_id: String,
+    parent_id: Option<String>,
+    user_id: String,
+    message_kind: String,
+    epoch: i64,
+    revision: i64,
+    ciphertext: serde_json::Value,
+}
+
+impl NotificationPayload {
+    fn without_ciphertext(&self) -> Self {
+        Self {
+            e2ee: None,
+            ..self.clone()
+        }
+    }
 }
 
 /// 暗号化チャンネルの Web Push の本文。
@@ -161,8 +207,8 @@ fn notification_payload(
                 channel_name
             )
         },
-        // 暗号化チャンネルの本文はサーバーで読めないので、「新しいメッセージ」だけを送る (#358)。
-        // Service Worker での復号は後続 (#365)。
+        // 暗号化チャンネルの本文はサーバーで読めないので、「新しいメッセージ」を送り、暗号文を
+        // `e2ee` に付ける (#358、#365)。Service Worker が復号できたら本文に置き換える。
         body: if channel.encrypted {
             ENCRYPTED_MESSAGE_BODY.to_string()
         } else {
@@ -171,7 +217,80 @@ fn notification_payload(
         url: format!("/channels/{}?message={}", channel.id, message.id),
         tag: format!("zoo-{}", notification.id),
         notification_type: notification.notification_type.clone(),
+        e2ee: None,
     }
+}
+
+/// 暗号化チャンネルのメッセージの、受信端末が復号に使う列を読む。暗号文がない（削除済みなど）なら `None`。
+async fn encrypted_push(
+    db: &mut toasty::Db,
+    notification: &Notification,
+    message: &Message,
+) -> anyhow::Result<Option<EncryptedPush>> {
+    let mut tx = db.transaction().await?;
+    let row = crate::apps::query(
+        &mut tx,
+        "SELECT json_build_object('ciphertext', ciphertext, 'epoch', epoch, 'revision', revision,
+            'message_kind', message_kind)::text
+         FROM messages WHERE id = $1 AND deleted_at IS NULL AND ciphertext IS NOT NULL",
+        &[&message.id],
+    )
+    .await?
+    .into_iter()
+    .next();
+    tx.commit().await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    Ok(Some(EncryptedPush {
+        recipient_id: notification.user_id.clone(),
+        message: EncryptedRow {
+            channel_id: message.channel_id.clone(),
+            message_id: message.id.clone(),
+            parent_id: message.parent_id.clone(),
+            user_id: message.user_id.clone(),
+            message_kind: row["message_kind"].as_str().unwrap_or("message").to_owned(),
+            epoch: row["epoch"].as_i64().unwrap_or(0),
+            revision: row["revision"].as_i64().unwrap_or(0),
+            ciphertext: row["ciphertext"].clone(),
+        },
+    }))
+}
+
+/// 通知から、Web Push で送る内容を作る。メッセージが消えていれば `None`。
+async fn build_payload(
+    db: &mut toasty::Db,
+    notification: &Notification,
+) -> anyhow::Result<Option<NotificationPayload>> {
+    let Some(message) =
+        Message::filter(Message::fields().id().eq(notification.message_id.as_str()))
+            .first()
+            .exec(db)
+            .await?
+    else {
+        return Ok(None);
+    };
+    if message.deleted_at.is_some() {
+        return Ok(None);
+    }
+    let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
+    let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
+    let mut payload = notification_payload(notification, &actor, &channel, &message);
+    if channel.encrypted {
+        payload.e2ee = encrypted_push(db, notification, &message).await?;
+    }
+    Ok(Some(payload))
+}
+
+/// 通知 `notification` について、Web Push の暗号化（RFC 8291）の前の本文の JSON を返す（結合テスト用）。
+/// 送る本文は、これを購読ごとに暗号化したもの（上限を超えるなら `e2ee` を外す。`encrypt_fitting`）。
+pub async fn payload_json(
+    db: &mut toasty::Db,
+    notification: &Notification,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    Ok(build_payload(db, notification)
+        .await?
+        .map(|payload| serde_json::to_value(payload).expect("文字列と JSON だけの構造体")))
 }
 
 /// Run only after commit. Delivery errors must never roll back a message or expose endpoint URLs.
@@ -196,24 +315,13 @@ async fn deliver(state: &AppState, notifications: Vec<Notification>) -> anyhow::
         .build()?;
     let mut db = state.db.clone();
     for notification in notifications {
-        let Some(message) =
-            Message::filter(Message::fields().id().eq(notification.message_id.as_str()))
-                .first()
-                .exec(&mut db)
-                .await?
-        else {
+        let Some(payload) = build_payload(&mut db, &notification).await? else {
             continue;
         };
-        if message.deleted_at.is_some() {
-            continue;
-        }
-        let actor = User::get_by_id(&mut db, notification.actor_id.as_str()).await?;
-        let channel = Channel::get_by_id(&mut db, notification.channel_id.as_str()).await?;
         {
             let mut tx = db.transaction().await?;
             if crate::apps::one(&mut tx,"SELECT json_build_object('quiet',EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=$1 AND dnd_until>now()))::text",&[&notification.user_id]).await?["quiet"]==true{continue;}
         }
-        let payload = notification_payload(&notification, &actor, &channel, &message);
         let subscriptions = PushSubscription::filter(
             PushSubscription::fields()
                 .user_id()
@@ -227,7 +335,7 @@ async fn deliver(state: &AppState, notifications: Vec<Notification>) -> anyhow::
             };
             let body = match (subscription.p256dh, subscription.auth_secret) {
                 (Some(p256dh), Some(auth)) => {
-                    match (SubscriptionKeys { p256dh, auth }).encrypt(&payload) {
+                    match (SubscriptionKeys { p256dh, auth }).encrypt_fitting(&payload) {
                         Ok(body) => Some(body),
                         Err(_) => {
                             tracing::warn!("Invalid Web Push encryption keys");
@@ -440,6 +548,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             url: "/channels/123?message=456".into(),
             tag: "zoo-notification".into(),
             notification_type: "mention".into(),
+            e2ee: None,
         };
         let encrypted = keys.encrypt(&payload).unwrap();
         let server = MockServer::start().await;
@@ -530,5 +639,133 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             notification_payload(&notification, &actor, &channel, &message).body,
             ENCRYPTED_MESSAGE_BODY
         );
+    }
+
+    fn encrypted_payload(ciphertext_len: usize) -> NotificationPayload {
+        NotificationPayload {
+            title: "Alice · #secret".into(),
+            body: ENCRYPTED_MESSAGE_BODY.into(),
+            url: "/channels/c?message=m".into(),
+            tag: "zoo-n".into(),
+            notification_type: "mention".into(),
+            e2ee: Some(EncryptedPush {
+                recipient_id: "00000000-0000-4000-8000-000000000001".into(),
+                message: EncryptedRow {
+                    channel_id: "00000000-0000-4000-8000-000000000002".into(),
+                    message_id: "00000000-0000-4000-8000-000000000003".into(),
+                    parent_id: None,
+                    user_id: "00000000-0000-4000-8000-000000000004".into(),
+                    message_kind: "message".into(),
+                    epoch: 3,
+                    revision: 0,
+                    ciphertext: serde_json::json!({
+                        "algorithm": "m.megolm.v1.aes-sha2",
+                        "sender_key": "k".repeat(43),
+                        "device_id": "00000000-0000-4000-8000-000000000005",
+                        "session_id": "s".repeat(43),
+                        "ciphertext": "c".repeat(ciphertext_len),
+                    }),
+                },
+            }),
+        }
+    }
+
+    fn decrypt_push(
+        receiver: &ece::EcKeyComponents,
+        auth: &[u8],
+        body: &[u8],
+    ) -> serde_json::Value {
+        assert!(body.len() <= MAX_PUSH_BYTES);
+        serde_json::from_slice(&ece::decrypt(receiver, auth, body).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn encrypted_channels_send_the_ciphertext_only_while_it_fits() {
+        let (receiver, auth) = ece::generate_keypair_and_auth_secret().unwrap();
+        let keys = SubscriptionKeys {
+            p256dh: URL_SAFE_NO_PAD.encode(receiver.pub_as_raw().unwrap()),
+            auth: URL_SAFE_NO_PAD.encode(auth),
+        };
+        let components = receiver.raw_components().unwrap();
+
+        // 収まるなら暗号文を付けて送る（本文は「新しいメッセージ」のまま）
+        let small = encrypted_payload(1000);
+        let sent = decrypt_push(&components, &auth, &keys.encrypt_fitting(&small).unwrap());
+        assert_eq!(sent["body"], ENCRYPTED_MESSAGE_BODY);
+        assert_eq!(
+            sent["e2ee"]["recipient_id"],
+            "00000000-0000-4000-8000-000000000001"
+        );
+        assert_eq!(sent["e2ee"]["message"]["epoch"], 3);
+        assert_eq!(sent["e2ee"]["message"]["message_kind"], "message");
+        assert_eq!(
+            sent["e2ee"]["message"]["parent_id"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            sent["e2ee"]["message"]["ciphertext"],
+            small.e2ee.as_ref().unwrap().message.ciphertext
+        );
+
+        // 上限を超えるなら、暗号文を外して「新しいメッセージ」だけを送る
+        let large = encrypted_payload(4000);
+        assert!(keys.encrypt(&large).is_err());
+        let sent = decrypt_push(&components, &auth, &keys.encrypt_fitting(&large).unwrap());
+        assert_eq!(sent["body"], ENCRYPTED_MESSAGE_BODY);
+        assert!(sent.get("e2ee").is_none(), "{sent}");
+
+        // 平文チャンネルは e2ee を付けない
+        let mut plain = encrypted_payload(0);
+        plain.e2ee = None;
+        let sent = decrypt_push(&components, &auth, &keys.encrypt_fitting(&plain).unwrap());
+        assert!(sent.get("e2ee").is_none(), "{sent}");
+    }
+
+    /// 本物の Megolm の暗号文で、どのくらいの本文まで暗号文を付けて送れるか（docs/e2ee.md の
+    /// 「Web Push の復号」の目安。長いタイトルと、メンション 1 人のとき）。
+    #[test]
+    fn megolm_ciphertext_fits_bodies_up_to_about_600_japanese_characters() {
+        use zoo_crypto::{
+            DeviceAccount, Mentions, MessageContent, OutboundSession, OutgoingMessage,
+        };
+        let account = DeviceAccount::new(
+            "00000000-0000-4000-8000-000000000004",
+            "00000000-0000-4000-8000-000000000005",
+        )
+        .unwrap();
+        let (receiver, auth) = ece::generate_keypair_and_auth_secret().unwrap();
+        let keys = SubscriptionKeys {
+            p256dh: URL_SAFE_NO_PAD.encode(receiver.pub_as_raw().unwrap()),
+            auth: URL_SAFE_NO_PAD.encode(auth),
+        };
+        let fits = |chars: usize| {
+            let mut outbound = OutboundSession::new("00000000-0000-4000-8000-000000000002", 3, 0);
+            let ciphertext = outbound
+                .encrypt(
+                    &account,
+                    &OutgoingMessage {
+                        message_id: "00000000-0000-4000-8000-000000000003".into(),
+                        parent_id: None,
+                        revision: 0,
+                        content: MessageContent {
+                            body: "あ".repeat(chars),
+                            format: "mfm".into(),
+                            kind: "message".into(),
+                        },
+                        mentions: Mentions {
+                            user_ids: vec!["00000000-0000-4000-8000-000000000001".into()],
+                            ..Mentions::default()
+                        },
+                        attachments: Vec::new(),
+                    },
+                )
+                .unwrap();
+            let mut payload = encrypted_payload(0);
+            payload.title = format!("{} · #{}", "名".repeat(60), "チ".repeat(60));
+            payload.e2ee.as_mut().unwrap().message.ciphertext = ciphertext;
+            keys.encrypt(&payload).is_ok()
+        };
+        assert!(fits(550));
+        assert!(!fits(700));
     }
 }

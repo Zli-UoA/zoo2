@@ -24,8 +24,8 @@ import {
   type WrappingKeyStore,
 } from "./storageKey";
 
-const META_USER_ID = "user_id";
-const META_DEVICE_ID = "device_id";
+export const META_USER_ID = "user_id";
+export const META_DEVICE_ID = "device_id";
 /** サーバーへの登録が済んだか（`"1"`）。応答をなくしたら、同じ鍵で登録し直す（冪等）。 */
 const META_REGISTERED = "registered";
 /**
@@ -751,14 +751,16 @@ export class CryptoStore {
     await this.backend.close();
   }
 
-  /** 暗号ストアを消す（ログアウト）。保存鍵を包む鍵も消す。 */
+  /** 暗号ストアを消す（ログアウト）。保存鍵を包む鍵も消す（{@link destroyCryptoStore}）。 */
   async destroy(): Promise<void> {
     if (!this.closed) {
       this.closed = true;
       this.free();
     }
-    await this.backend.destroy();
-    await this.keys.delete(this.name);
+    await destroyCryptoStore({
+      removeFiles: () => this.backend.destroy(),
+      deleteWrappingKey: () => this.keys.delete(this.name),
+    });
   }
 
   private free(): void {
@@ -773,4 +775,30 @@ export class CryptoStore {
     this.backupState?.free();
     this.backupState = null;
   }
+}
+
+/**
+ * 暗号ストアを消す。保存鍵を包む鍵を先に消し、失敗してもファイルの削除を試す。
+ *
+ * ファイルの削除だけが失敗して残っても、包む鍵がなければ保存鍵を開けないので、どの値も読めない。
+ * Push を復号する Service Worker（`lib/e2ee/push/`）は、ログアウトの削除待ち（localStorage）を
+ * 読めないので、残ったファイルからログアウトしたユーザーの本文を復号しないよう、この順にする。
+ * 次に同じユーザーで開くと、保存鍵を開けない暗号ストアとして作り直す（`CryptoStore.open`）。
+ */
+export async function destroyCryptoStore(steps: {
+  removeFiles: () => Promise<void>;
+  deleteWrappingKey: () => Promise<void>;
+}): Promise<void> {
+  let failure: unknown = null;
+  try {
+    await steps.deleteWrappingKey();
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    await steps.removeFiles();
+  } catch (error) {
+    failure ??= error;
+  }
+  if (failure !== null) throw failure;
 }
