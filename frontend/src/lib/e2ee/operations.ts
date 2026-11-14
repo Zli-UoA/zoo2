@@ -232,6 +232,34 @@ export class CryptoOperations {
         return null;
       case "acceptMasterKey":
         return this.opened().acceptMasterKey(request.targetUserId, request.masterKey);
+      case "confirmAcceptedMasterKey":
+        await this.opened().confirmAcceptedMasterKey(request.targetUserId, request.masterKey);
+        return null;
+      case "sasRequest":
+        return this.opened().verification.request(
+          request.targetUserId,
+          request.keysQuery,
+          request.now,
+        );
+      case "sasReceive":
+        return this.opened().verification.receive(request.message, request.keysQuery, request.now);
+      case "sasAccept":
+        return this.opened().verification.accept(request.txnId);
+      case "sasConfirm":
+        return this.opened().verification.confirm(request.txnId);
+      case "sasMismatch":
+        return this.opened().verification.mismatch(request.txnId);
+      case "sasCancel":
+        return this.opened().verification.cancel(request.txnId);
+      case "sasExpire":
+        return this.opened().verification.expire(request.now);
+      case "sasForget":
+        this.opened().verification.forget(request.txnId);
+        return null;
+      case "sasSign":
+        return this.opened().verification.sign(request.txnId, request.masterKey);
+      case "sasEncrypt":
+        return this.opened().verification.encrypt(request.outgoing, request.claimed);
       case "megolmNeedsSnapshot":
         return this.opened().megolm.needsSnapshot(request.channelId, request.epoch);
       case "megolmEvaluate":
