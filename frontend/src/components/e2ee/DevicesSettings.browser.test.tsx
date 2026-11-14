@@ -145,6 +145,27 @@ it("keeps the new recovery key on screen when Electric rows change", async () =>
   expect(screen.getByText(NEW_RECOVERY_KEY)).toBeVisible();
 });
 
+it("keeps the recovery key of a resumed full revocation when Electric rows change", async () => {
+  // 1〜5 を SSSS の保存の前に止めた失効を、記録した範囲で最初からやり直す。
+  mocked.revocationStatus.mockResolvedValue(summary("full"));
+  mocked.resumeRevocation.mockResolvedValue({
+    kind: "restart",
+    scope: "full",
+    deletedDevices: ["lost"],
+  });
+  const panel = renderPanel();
+  await userEvent.click(await screen.findByRole("button", { name: "失効を続ける" }));
+  await userEvent.type(screen.getByLabelText("リカバリーキー"), "old key");
+  await userEvent.click(screen.getByRole("button", { name: "リカバリーキーで解錠" }));
+  expect(await screen.findByText(NEW_RECOVERY_KEY)).toBeVisible();
+  expect(mocked.beginRevocation).toHaveBeenCalledWith(expect.anything(), "full", ["lost"]);
+
+  // useUsers の行を新しい配列に替え、背景の読み直しが終わるのを待つ。
+  await panel.changeRows();
+  await settle();
+  expect(screen.getByText(NEW_RECOVERY_KEY)).toBeVisible();
+});
+
 it("does not offer to resume a revocation that is still running when rows change", async () => {
   let finish!: (result: Awaited<ReturnType<typeof controller.continueRevocation>>) => void;
   mocked.continueRevocation.mockImplementation(() => new Promise((resolve) => (finish = resolve)));
