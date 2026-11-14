@@ -26,7 +26,6 @@ import {
 import { accountRevocationUrls } from "../../lib/oidc/accountUrl";
 import { deleteSelectedDevices, loadDevices } from "../../lib/e2ee/revocationController";
 import type { KeySlot } from "../../lib/e2ee/protocol";
-import { NOT_READY_STARTING as STARTING } from "../../lib/e2ee/notReady";
 import {
   type EncryptionErrorCode,
   type EncryptionSettingsHandlers,
@@ -85,9 +84,25 @@ function slotViews(storage: SecretStorageResponse): KeySlotView[] {
   }));
 }
 
-/** 設定の「暗号化」タブ（初回設定と解錠。#360）。 */
-export function EncryptionSettings() {
-  const { worker, userId, deviceId, notReadyReason } = useE2ee();
+/**
+ * 設定の「暗号化」タブの、状態と解錠、鍵のセクション（初回設定と解錠。#360）。暗号ストアを開いてから
+ * 出す（開けていない理由は、タブの上に `EncryptionTab` が出す）。
+ *
+ * 同じタブの端末のセクションとは `EncryptionTab` を通して知らせ合う。`onUnlocked` は、解錠か初回設定
+ * （リセットを含む）を終えたとき（最初の読み込みで解錠済みだったときは呼ばない）。`refreshKey` が
+ * 変わったら（端末のセクションで失効を終え、鍵スロットが変わったとき）、状態を読み直す。
+ * `onSettled` は、読み込み中でなくなったか。
+ */
+export function EncryptionSettings({
+  refreshKey = 0,
+  onUnlocked,
+  onSettled,
+}: {
+  refreshKey?: number;
+  onUnlocked?: () => void;
+  onSettled?: (settled: boolean) => void;
+} = {}) {
+  const { worker, userId, deviceId } = useE2ee();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const rpId = passkeyRpId(config);
@@ -118,10 +133,8 @@ export function EncryptionSettings() {
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
     const latest = () => seq === loadSeq.current;
-    if (!deps) {
-      setState({ step: "unavailable", reason: STARTING });
-      return;
-    }
+    // 暗号ストアを開くまでは、`EncryptionTab` がこの画面を出さない。
+    if (!deps) return;
     setState({ step: "loading" });
     try {
       const status = await loadE2eeStatus(deps);
@@ -160,6 +173,23 @@ export function EncryptionSettings() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadedKey = useRef(refreshKey);
+  useEffect(() => {
+    if (refreshKey === loadedKey.current) return;
+    loadedKey.current = refreshKey;
+    void load();
+  }, [refreshKey, load]);
+
+  /** 最後に落ち着いた（読み込み中でない）段。解錠したことを、段の移り変わりで見分ける。 */
+  const settledStep = useRef<EncryptionViewState["step"] | null>(null);
+  useEffect(() => {
+    onSettled?.(state.step !== "loading");
+    if (state.step === "loading") return;
+    const previous = settledStep.current;
+    settledStep.current = state.step;
+    if (state.step === "unlocked" && previous !== null && previous !== "unlocked") onUnlocked?.();
+  }, [state.step, onSettled, onUnlocked]);
 
   const begin = useCallback(
     async (resetFrom: SecretStorageResponse | null) => {
@@ -411,13 +441,6 @@ export function EncryptionSettings() {
   }
 
   // PRF に対応するかは非同期に分かる。状態を取り直さずに、表示のときに反映する。
-  // 暗号ストアを開けていない理由は、開くまでのあいだにも変わる（ほかのタブが閉じた、試し直しが
-  // 失敗した）。状態を取り直さずに、表示のときに今の理由を入れる。
-  const viewState =
-    "passkeyAvailable" in state
-      ? { ...state, passkeyAvailable }
-      : state.step === "unavailable"
-        ? { ...state, reason: notReadyReason ?? STARTING }
-        : state;
+  const viewState = "passkeyAvailable" in state ? { ...state, passkeyAvailable } : state;
   return <EncryptionSettingsView state={viewState} handlers={handlers} />;
 }
