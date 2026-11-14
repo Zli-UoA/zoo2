@@ -192,7 +192,7 @@ Slack の配布アプリ（Marketplace の審査を通っていないもの）�
 | `SLACK_TOKEN_ENCRYPTION_KEY` | ユーザートークンの暗号化と state の署名に使う 32 バイトの鍵（base64）。`openssl rand -base64 32` などで作ります |
 | `SLACK_TEAM_ID` | 連携を許可する Slack ワークスペースの ID（`T…`）。任意ですが設定を推奨します。設定・変更する前に別のワークスペースで連携したアカウントは、連携済みとして表示されますが、チャンネルの取り込みには使えません（403 `team_mismatch`）。設定画面の案内に従って解除し、連携し直してもらってください。変更する前に始まった取り込みは、そのまま進みます |
 | `SLACK_FRONTEND_URL` | 連携後に戻るフロントエンドのオリジン。フロントとバックエンドが同一オリジンなら不要です |
-| `SLACK_APP_ID` | 任意。この Slack アプリの ID（`A…`。「Basic Information」の「App ID」。Secret ではありません）。設定すると、このアプリが投稿したメッセージ（#294 の Zoo → Slack のブリッジの投稿）を Slack から取り込まず、別のアプリ宛てのイベント（`api_app_id` が違うもの）を無視します。未設定なら、`slack_message_map`（下の「ループ防止」）だけで防ぎます |
+| `SLACK_APP_ID` | 任意。この Slack アプリの ID（`A…`。「Basic Information」の「App ID」。Secret ではありません）。設定すると、受信口（`POST /api/slack/events`）は、`api_app_id` が違うイベントを、200 を返して何もせずに無視し、取り込み（差分同期・イベント・ZIP）は、`app_id` が一致するメッセージ（このアプリが投稿したもの）を取り込みません。**Slack アプリを作り直して ID が変わったときは、更新してください**（古い値のままだと、新しいアプリのイベントが、エラーなしに無視され、リアルタイムの同期が止まったように見えます）。未設定なら、どちらも行いません |
 | `SLACK_SIGNING_SECRET` | 任意。Slack アプリの Signing Secret（「Basic Information」の「App Credentials」）。設定すると、Slack の Events API の受信口（`POST /api/slack/events`）が有効になります（後述の「Events API で、投稿をすぐに同期する」）。未設定なら受信口は 404 で、これまでどおりです。上の 4 つが未設定のまま、これだけを設定すると、設定ミスとして起動時にエラーになります（`zoo_slack_worker` も同じ検査をします） |
 
 `SLACK_CLIENT_ID`・`SLACK_CLIENT_SECRET`・`SLACK_OAUTH_REDIRECT_URL`・`SLACK_TOKEN_ENCRYPTION_KEY` は 4 つそろえて設定してください。一部だけだと起動時にエラーになり、バックエンドが起動しません。デプロイは、マイグレーションを適用する → 4 つの環境変数を同時に設定する → バックエンドを再起動する、の順に行います。
@@ -323,14 +323,9 @@ Slack の Events API は、「このチャンネルを今すぐ同期して」�
 
 マイグレーション `20261125003000_slack_recheck.sql`（`slack_channel_syncs.rechecked_at`）を適用してください。
 
-### ループ防止と、#294（Zoo → Slack）との境界
+### 取り込んだ投稿の対応表（`slack_message_map`）
 
-Zoo の投稿を Slack に出すブリッジ（#294）が投稿した内容を、差分同期やイベントが Slack から取り込み直すと、同じ投稿が二重になります。次の 2 つで防ぎます（取り込みの共通部分 `insert_message` に置くので、ポーリングにもイベントにも、ZIP の取り込みにも効きます）。
-
-- **`app_id`**: 取り込むメッセージの `app_id` が `SLACK_APP_ID` と同じなら、取り込みません。
-- **対応表 `slack_message_map`**（`team_id`・`slack_channel_id`・`ts`・`message_id`・`origin`）: Slack の `ts` と Zoo のメッセージ ID を結び付けます。`origin='zoo'`（Zoo で作った投稿を Slack に出したもの）の `ts` は、取り込まず、Slack での編集・削除も反映しません（Zoo が正です）。その投稿への Slack の**返信**は、その Zoo の投稿を親にして取り込み、**リアクション**はその投稿に付けます。`message_id` は一意で、投稿が消えると行も消えます。
-
-境界: **この表を読むのは #293（この変更）で、書くのは #294 です。** #294 は、`chat.postMessage` が返した `ts` を、Zoo のメッセージ ID と一緒にこの表に書きます（`origin='zoo'`）。書く前にイベントが届く競合は、イベントのデバウンス（3 秒）で、たいていは避けられます。ただし、デバウンスは書き込みを保証しません。#294 の書き込みが 3 秒より遅れると、イベントによる同期も、記録の前にその投稿を読むので、イベントの経路も、`app_id` の判定（`SLACK_APP_ID` を設定し、#294 の投稿に同じ `app_id` が付くこと）に頼ります。定期の同期（5 分ごと）が、#294 の `chat.postMessage` が成功してから対応表に書くまでの間に、その投稿を読む競合は、`SLACK_APP_ID` を設定し、かつ #294 の投稿に同じ `app_id` が付く場合に限り、`app_id` の判定で防げます（**ブリッジを有効にするときは、`SLACK_APP_ID` を設定し、#294 の投稿に `app_id` が付くかを、実機で確認してください**）。`SLACK_APP_ID` がないと、#294 が割り当てた Zoo の ID が決定的 ID と違うとき、同じ投稿が二重になる可能性があります。#294 は、`chat.postMessage` の応答のあと、すぐに対応表へ書いてください（排他や、取り込み時の統合は、この変更では行いません）。#294 は、同期の書き込み（Slack から取り込んだ内容）を、Slack へ送り返す契機にしないでください（Slack の編集が Zoo に入り、それがまた Slack へ送られると、ループします）。#294 の投稿の `app_id` が付くか（特に、ユーザートークンで投稿したもの）は、実機で確かめます。
+差分同期・イベントで取り込んだ Slack の投稿を、`slack_message_map`（`team_id`・`slack_channel_id`・`ts`・`message_id`・`origin`）に残します。上の「直近 24 時間の再確認」が、Slack の履歴から消えた投稿を見つけるのに使います（Slack でスレッドの返信でない投稿だけを残し、3 日で掃除します。ZIP の取り込みは残しません）。`message_id` は一意で、投稿が消えると行も消えます。
 
 マイグレーション `20261125002000_slack_message_map.sql`（`slack_message_map`）を適用してください。
 

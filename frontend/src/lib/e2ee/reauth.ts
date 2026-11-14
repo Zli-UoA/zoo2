@@ -1,4 +1,6 @@
+import type { AppConfig } from "../config";
 import type { OidcClient, ReauthRequest } from "../oidc/client";
+import { getOidcClient } from "../oidc/session";
 
 /**
  * E2EE の直前の再認証（docs/e2ee.md の「初回設定と解錠の流れ」の 7。#360）。
@@ -156,4 +158,16 @@ export async function reauthenticate(options: {
     }
   });
   return oidc.exchangeReauthCode(request, code);
+}
+
+/**
+ * 再認証して ID トークンを返す関数を作る。別のウィンドウは、ボタンのクリックの中で、この関数を
+ * 呼んだときに同期的に開く。OIDC を設定していない開発環境では、サーバーも再認証を確かめないので
+ * `null` を返す。
+ */
+export function startReauth(config: AppConfig): () => Promise<string | null> {
+  const oidc = getOidcClient(config);
+  if (!oidc) return async () => null;
+  const popup = openReauthWindow();
+  return () => reauthenticate({ oidc, popup });
 }

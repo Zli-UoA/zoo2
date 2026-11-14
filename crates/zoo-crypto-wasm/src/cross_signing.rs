@@ -238,7 +238,7 @@ pub fn cross_signing_key_id(public_key: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 #[derive(Default)]
 pub struct KeySnapshot {
-    inner: core::KeySnapshot,
+    pub(crate) inner: core::KeySnapshot,
 }
 
 #[wasm_bindgen]
@@ -450,7 +450,14 @@ impl TrustStore {
             .inner
             .accept_master_key(&user_signing.inner, target_user_id, &master_key)
             .js()?;
-        to_js(&json!({"pin": accepted.pin, "signature": accepted.signature}))
+        accepted_js(&accepted)
+    }
+
+    /// 受け入れ（#362）か SAS（#368）のピンと署名をサーバーに保存できた。記録の登録待ちを外す。
+    #[wasm_bindgen(js_name = confirmAcceptedMasterKey)]
+    pub fn confirm_accepted_master_key(&mut self, target_user_id: &str, master_key: &str) {
+        self.inner
+            .confirm_accepted_master_key(target_user_id, master_key);
     }
 
     /// TOFU のピンをサーバーに置けた。
@@ -541,4 +548,14 @@ fn distribution_to_js(distribution: core::Distribution) -> Result<JsValue, JsVal
     }
     set(&out, "devices", &devices)?;
     Ok(out)
+}
+
+/// [`core::AcceptedMasterKey`] を `{target_user_id, master_key, pin, signature}` にする。
+pub(crate) fn accepted_js(accepted: &core::AcceptedMasterKey) -> Result<JsValue, JsValue> {
+    to_js(&json!({
+        "target_user_id": accepted.target_user_id,
+        "master_key": accepted.master_key,
+        "pin": accepted.pin,
+        "signature": accepted.signature,
+    }))
 }

@@ -365,7 +365,7 @@ impl OlmSessions {
 /// 復号しただけで、まだ検証していない to-device メッセージ。
 #[wasm_bindgen]
 pub struct OlmDecrypted {
-    inner: core::OlmDecrypted,
+    pub(crate) inner: core::OlmDecrypted,
 }
 
 #[wasm_bindgen]

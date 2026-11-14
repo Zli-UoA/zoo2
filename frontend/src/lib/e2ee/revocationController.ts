@@ -1,4 +1,5 @@
 import type {
+  AcceptedMasterKey,
   JsonObject,
   RevocationScope,
   RevocationStage,
@@ -574,7 +575,8 @@ export async function loadVerifications(
 
 /**
  * 利用者が相手の今のマスター鍵を受け入れる（再検証。TOFU を受け入れ直す）。`replace: true` のピンと
- * マスター鍵への署名には、直前の再認証が要る。
+ * マスター鍵への署名には、直前の再認証が要る。記録は、ピンと署名を保存できてから登録待ちを外す
+ * （保存できなければ、ピンも署名もないまま記録だけで配ることはない）。
  */
 export async function reverifyUser(
   deps: E2eeSetupDeps,
@@ -591,6 +593,23 @@ export async function reverifyUser(
     targetUserId,
     masterKey,
   });
+  await saveAcceptedMasterKey(deps, accepted, reauth);
+}
+
+/**
+ * 受け入れ（#362）か SAS（#368）で作った `replace: true` のピンとマスター鍵への署名を保存し、
+ * 保存できたら記録の登録待ちを外す。
+ */
+export async function saveAcceptedMasterKey(
+  deps: Pick<E2eeSetupDeps, "worker" | "client">,
+  accepted: AcceptedMasterKey,
+  reauth: string | null,
+): Promise<void> {
   await guarded(() => uploadPins(deps.client, [accepted.pin], true, reauth));
   await guarded(() => uploadSignaturesWithReauth(deps.client, [accepted.signature], reauth));
+  await deps.worker.request({
+    op: "confirmAcceptedMasterKey",
+    targetUserId: accepted.target_user_id,
+    masterKey: accepted.master_key,
+  });
 }

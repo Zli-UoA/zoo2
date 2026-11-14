@@ -12,10 +12,12 @@ import {
   type UnlockedSecretStorage,
   type JsonObject,
   type SessionRef,
+  type VerificationMessage,
 } from "@zoo/crypto-wasm";
 
 import { inboundSessionKey, type CryptoBackend, type CryptoStoreWrite } from "./backend";
 import { MegolmChannels } from "./megolm";
+import { SasVerifications } from "./verification";
 import {
   StorageKeyUnavailableError,
   WRAPPED_STORAGE_KEY_META,
@@ -100,7 +102,15 @@ export interface ToDeviceResult {
   dropped: number;
   /** 新しく作った Olm セッションの数（ワンタイム鍵を使ったので、補充する）。 */
   newOlmSessions: number;
+  /**
+   * 受信時の検証（手順 1〜3）を通った、絵文字 SAS の検証のメッセージ（#368）。画面のスレッドが
+   * 送信ユーザーの `keys/query` を取ってから、`sasReceive` で検証を進める。
+   */
+  verifications: VerificationMessage[];
 }
+
+/** 絵文字 SAS の検証のメッセージの `type` の接頭辞。 */
+const VERIFICATION_TYPE_PREFIX = "m.key.verification.";
 
 export interface OpenedStore {
   store: CryptoStore;
@@ -141,6 +151,7 @@ export class CryptoStore {
   private nextUploadId = 0;
   private broken = false;
   private megolmChannels: MegolmChannels | null = null;
+  private sasVerifications: SasVerifications | null = null;
 
   private constructor(
     private readonly backend: CryptoBackend,
@@ -304,6 +315,20 @@ export class CryptoStore {
     return this.megolmChannels;
   }
 
+  /** 他のユーザーの絵文字 SAS 検証（#368）。検証はメモリーにだけ置く。 */
+  get verification(): SasVerifications {
+    this.sasVerifications ??= new SasVerifications({
+      account: this.account,
+      trust: () => this.trust,
+      storageKey: this.storageKey,
+      write: (changes) => this.write(changes),
+      readMeta: async () => (await this.backend.read()).meta,
+      ownKeys: () => this.ownKeys(),
+      saveTrustStore: () => this.saveTrustStore(),
+    });
+    return this.sasVerifications;
+  }
+
   /** 次に保存する配布先の判定の記録（#361 以降が使う）。 */
   get trustStore(): TrustStore {
     return this.trust;
@@ -381,7 +406,13 @@ export class CryptoStore {
     rows: ToDeviceRow[],
     deviceKeys: DeviceKeysByUser,
   ): Promise<ToDeviceResult> {
-    const result: ToDeviceResult = { processed: [], roomKeys: 0, dropped: 0, newOlmSessions: 0 };
+    const result: ToDeviceResult = {
+      processed: [],
+      roomKeys: 0,
+      dropped: 0,
+      newOlmSessions: 0,
+      verifications: [],
+    };
     for (const row of rows) {
       if (this.processedToDevice.has(row.id)) {
         result.processed.push(row.id);
@@ -436,6 +467,17 @@ export class CryptoStore {
       const sender = decrypted.sender;
       const senderDevice = decrypted.senderDevice;
       const listed = sender && senderDevice ? deviceKeys[sender]?.[senderDevice] : undefined;
+      const type = decrypted.plaintext.type;
+      if (typeof type === "string" && type.startsWith(VERIFICATION_TYPE_PREFIX)) {
+        // 絵文字 SAS の検証（#368）。Olm のメッセージは 2 回は復号できないので、ここで受信時の検証を
+        // 通したものを返し、検証を進めるのは画面のスレッドに任せる。
+        try {
+          result.verifications.push(decrypted.verifyVerification(this.account, listed ?? null));
+        } catch {
+          result.dropped += 1;
+        }
+        return;
+      }
       let roomKey;
       try {
         roomKey = decrypted.verifyRoomKey(this.account, listed ?? null, null);
@@ -674,8 +716,18 @@ export class CryptoStore {
 
   /**
    * 利用者が相手の今のマスター鍵を受け入れた（再検証。#362）。記録を今のユーザー署名鍵で確認したものに
-   * 置き換えて保存し、`replace: true` で送るピンと、マスター鍵への署名を返す。解錠していなければ投げる。
+   * 置き換えて（ピンを保存できるまでは登録待ちで）保存し、`replace: true` で送るピンと、マスター鍵への
+   * 署名を返す。保存できたら {@link confirmAcceptedMasterKey} を呼ぶ。解錠していなければ投げる。
    */
+  /**
+   * 受け入れ（#362）か SAS（#368）のピンと署名をサーバーに保存できた。記録の登録待ちを外して保存する
+   * （ピンを置けるまでは、記録だけで配らない）。
+   */
+  async confirmAcceptedMasterKey(targetUserId: string, masterKey: string): Promise<void> {
+    this.trust.confirmAcceptedMasterKey(targetUserId, masterKey);
+    await this.saveTrustStore();
+  }
+
   async acceptMasterKey(targetUserId: string, masterKey: JsonObject) {
     const own = await this.ownKeys();
     if (!own) throw new Error("解錠していません");
@@ -766,6 +818,7 @@ export class CryptoStore {
   private free(): void {
     // 秘密鍵を持つ wasm 側のメモリーをすぐに返す。
     this.megolmChannels?.free();
+    this.sasVerifications?.close();
     this.megolmChannels = null;
     this.account.free();
     this.olmSessions.free();

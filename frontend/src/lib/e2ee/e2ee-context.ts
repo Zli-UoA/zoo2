@@ -3,6 +3,7 @@ import { createContext, useContext } from "react";
 import type { CryptoWorker } from "./cryptoWorker";
 import type { E2eeDeviceStatus } from "./deviceManager";
 import type { StaleDevice } from "./revocationApi";
+import type { SasController } from "./sasController";
 
 export interface E2eeContextValue {
   /** `unsupported` は暗号ストアを置けないブラウザー（OPFS、Worker、Web Locks がない）。 */
@@ -39,6 +40,8 @@ export interface E2eeContextValue {
   requestKeyBackup(): void;
   /** ログアウト：暗号ストアを消し、端末を削除する（失敗したら次のログインで消し直す）。 */
   clearForLogout(): Promise<void>;
+  /** 他のユーザーの絵文字 SAS 検証（#368）。暗号ストアを開いたタブで、端末の登録が済んだときだけ。 */
+  sas: SasController | null;
 }
 
 export const E2eeContext = createContext<E2eeContextValue>({
@@ -53,6 +56,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   cancelLogout: () => {},
   requestKeyBackup: () => {},
   clearForLogout: async () => {},
+  sas: null,
 });
 
 export function useE2ee(): E2eeContextValue {
