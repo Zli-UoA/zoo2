@@ -98,7 +98,9 @@ describe("MfmContent", () => {
     expect(render("`**x**`")).toContain("<code");
   });
   it("shows MFM syntax that Slack displays as text, once the import breaks it with U+200B", () => {
-    const html = render("*\u200b*\u200bx*\u200b* $\u200b[spin x] <\u200bb>y<\u200b/b> [a]\u200b(https://x.test)");
+    const html = render(
+      "*\u200b*\u200bx*\u200b* $\u200b[spin x] <\u200bb>y<\u200b/b> [a]\u200b(https://x.test)",
+    );
     expect(html).not.toContain("<strong>");
     expect(html).not.toContain("<em>");
     expect(render("5 *\u200b 3 * 4")).not.toContain("<em>");
