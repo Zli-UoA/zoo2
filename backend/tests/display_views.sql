@@ -89,6 +89,6 @@ UPDATE messages SET deleted_at=now() WHERE id='view-m';
 DO $$ BEGIN
  IF (SELECT display_data->'message' FROM notification_events WHERE id='view-n') IS DISTINCT FROM 'null'::jsonb THEN RAISE EXCEPTION 'removed message leaked'; END IF;
  IF (SELECT display_data->'reactions' FROM notification_events WHERE id='view-n') IS DISTINCT FROM '[]'::jsonb THEN RAISE EXCEPTION 'removed reactions leaked'; END IF;
- IF (SELECT display_data->'emojis' FROM messages WHERE id='view-m') IS DISTINCT FROM '{}'::jsonb THEN RAISE EXCEPTION 'deleted emoji'; END IF;
+ IF (SELECT display_data FROM messages WHERE id='view-m') IS DISTINCT FROM '{}'::jsonb THEN RAISE EXCEPTION 'deleted emoji'; END IF;
 END $$;
 ROLLBACK;

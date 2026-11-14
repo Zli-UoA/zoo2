@@ -2280,8 +2280,11 @@ CREATE FUNCTION refresh_message_display(target text) RETURNS void LANGUAGE plpgs
 BEGIN
   -- Serialize writers for this read model before taking the aggregate snapshot.
   PERFORM 1 FROM messages WHERE id=target FOR NO KEY UPDATE;
-  UPDATE messages m SET display_data=v.display_data FROM message_display v
-    WHERE m.id=target AND v.id=m.id AND m.display_data IS DISTINCT FROM v.display_data;
+  -- 論理削除した行は、投影した内容（投稿者、添付、リアクション）も残さない。
+  UPDATE messages m SET display_data=CASE WHEN m.deleted_at IS NULL THEN v.display_data ELSE '{}'::jsonb END
+    FROM message_display v
+    WHERE m.id=target AND v.id=m.id
+      AND m.display_data IS DISTINCT FROM CASE WHEN m.deleted_at IS NULL THEN v.display_data ELSE '{}'::jsonb END;
 END;
 $$;
 
@@ -3005,6 +3008,25 @@ CREATE TRIGGER messages_clear_deleted_ciphertext BEFORE INSERT OR UPDATE ON mess
   FOR EACH ROW WHEN (NEW.deleted_at IS NOT NULL AND NEW.ciphertext IS NOT NULL)
   EXECUTE FUNCTION e2ee_clear_deleted_ciphertext();
 
+-- 論理削除した行（DELETE /api/messages/{id} と履歴の消去）の本文と付随データも残さない。行は墓石として残す
+-- ので、Electric の shape から消える動き（move-out）は変わらない。
+CREATE FUNCTION messages_clear_deleted_content() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.content := '';
+  NEW.card := NULL;
+  NEW.metadata := NULL;
+  NEW.display_data := '{}'::jsonb;
+  NEW.app_blocks := NULL;
+  NEW.app_attachments := NULL;
+  NEW.app_unfurls := NULL;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER messages_clear_deleted_content BEFORE INSERT OR UPDATE ON messages
+  FOR EACH ROW WHEN (NEW.deleted_at IS NOT NULL AND (
+    NEW.content <> '' OR NEW.card IS NOT NULL OR NEW.metadata IS NOT NULL OR NEW.display_data <> '{}'::jsonb
+    OR NEW.app_blocks IS NOT NULL OR NEW.app_attachments IS NOT NULL OR NEW.app_unfurls IS NOT NULL))
+  EXECUTE FUNCTION messages_clear_deleted_content();
+
 -- そのユーザーが参加しているすべての暗号化チャンネル（削除済みを除く）の membership_epoch を 1 増やす。
 -- 端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の作成で使う。
 -- 行は id の昇順にまとめてロックし、ロックした行だけを更新する（並行した一括更新と行き詰まらない）。
@@ -3359,19 +3381,24 @@ BEGIN
        OR (NULLIF(NEW.metadata, '') IS DISTINCT FROM NULLIF(OLD.metadata, '') AND NULLIF(NEW.metadata, '') IS NOT NULL)
        OR (NULLIF(NEW.card, '') IS DISTINCT FROM NULLIF(OLD.card, '') AND NULLIF(NEW.card, '') IS NOT NULL)
        OR (NEW.home_post_id IS DISTINCT FROM OLD.home_post_id AND NEW.home_post_id IS NOT NULL)
-       OR (NEW.apub AND NOT OLD.apub) THEN
+       OR (NEW.apub AND NOT OLD.apub)
+       OR (OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL) THEN
       RAISE EXCEPTION 'messages written before the channel was encrypted cannot be changed to carry new content' USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
   END IF;
-  -- 削除済みの行も本文は空にする（#367）。別のチャンネルから削除済みの平文の行を移して、本文を持ち込ませない。
-  -- 暗号化チャンネルで送った行は、もともと本文が空なので、削除しても違反しない。
-  IF NEW.content <> '' OR (NEW.deleted_at IS NULL AND NEW.ciphertext IS NULL) THEN
+  -- 削除済みの行は本文が空になる（messages_clear_deleted_content）。それでも、別のチャンネルから暗号文のない
+  -- 行を移してくることは、削除済みかどうかにかかわらず認めない。
+  IF NEW.content <> '' OR (NEW.deleted_at IS NULL AND NEW.ciphertext IS NULL)
+     OR (TG_OP = 'UPDATE' AND OLD.channel_id IS DISTINCT FROM NEW.channel_id AND NEW.ciphertext IS NULL) THEN
     RAISE EXCEPTION 'messages in an encrypted channel require ciphertext and empty content' USING ERRCODE = '23514';
   END IF;
   IF NULLIF(NEW.app_attachments, '') IS NOT NULL OR NULLIF(NEW.app_blocks, '') IS NOT NULL
      OR NULLIF(NEW.app_unfurls, '') IS NOT NULL OR NULLIF(NEW.metadata, '') IS NOT NULL
-     OR NULLIF(NEW.card, '') IS NOT NULL OR NEW.home_post_id IS NOT NULL OR NEW.apub THEN
+     OR NULLIF(NEW.card, '') IS NOT NULL
+     -- Home との同期（sync_home_post）は、削除済みの行を INSERT ... ON CONFLICT で書き戻す。削除済みの行は本文が空なので、
+     -- Home との紐付けだけは認める。
+     OR (NEW.deleted_at IS NULL AND (NEW.home_post_id IS NOT NULL OR NEW.apub)) THEN
     RAISE EXCEPTION 'messages in an encrypted channel cannot carry plaintext fields' USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
