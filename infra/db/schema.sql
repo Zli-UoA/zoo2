@@ -1836,6 +1836,7 @@ CREATE TABLE slack_channel_syncs (
   updated_at timestamptz NOT NULL DEFAULT now(),
   not_before timestamptz,
   swept_at timestamptz,
+  run_light boolean NOT NULL DEFAULT false,
   PRIMARY KEY (team_id, slack_channel_id),
   CONSTRAINT slack_channel_syncs_phase_check CHECK (phase IN ('history', 'threads')),
   CONSTRAINT slack_channel_syncs_channel_fkey

@@ -9,6 +9,9 @@ UPDATE slack_channel_syncs SET not_before=available_at WHERE available_at>now();
 -- 監視中のスレッドを全部取り直す同期 (定期の実行) を、最後に始めた日時。合図で起きる同期は、直近 5 分以内に
 -- 取り直していれば、スレッドの総なめを省く (Slack の API の呼び出しを抑える)
 ALTER TABLE slack_channel_syncs ADD COLUMN swept_at timestamptz;
+-- 実行中の同期が、スレッドの総なめを省く同期 (軽い同期) か。軽い同期は、監視中のスレッドの返信を取らないので、
+-- 終わっても同期カーソル (slack_channels.last_ts) を進めない (次の全部取り直しが、返信を `oldest=カーソル` で取れるようにする)
+ALTER TABLE slack_channel_syncs ADD COLUMN run_light boolean NOT NULL DEFAULT false;
 
 -- 受信口は、この表にだけ書く。slack_channel_syncs の行は、同期のトランザクションが長く握る。
 CREATE TABLE slack_channel_wakes (

@@ -677,3 +677,107 @@ async fn test_wake_sync_skips_the_thread_sweep_when_one_ran_recently() -> anyhow
     assert_eq!(rows[0]["fresh"], true);
     Ok(())
 }
+
+/// 合図のデバウンスと最短間隔を過ぎた状態にして、同期を回す
+async fn sync_now(f: &Fixture) -> anyhow::Result<()> {
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    set_sync_state(&f.state, &f.team, "1 hour", "1 hour").await?;
+    drain(&f.state).await;
+    Ok(())
+}
+
+async fn last_ts(state: &AppState, team: &str) -> String {
+    sql(
+        state,
+        "SELECT json_build_object('ts',last_ts)::text FROM slack_channels WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[team],
+    )
+    .await
+    .unwrap()[0]["ts"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn test_light_sync_keeps_the_cursor_so_a_later_full_sync_gets_earlier_replies()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET)).await?;
+    let cursor0 = last_ts(&f.state, &f.team).await;
+    // 監視中のスレッド X に、カーソルのあと・新しい投稿 M より前に、返信 R が付いた
+    let thread = format!("{}.000200", now_secs() - 3600);
+    let reply = format!("{}.000300", now_secs() - 1800);
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET known_threads=$2,swept_at=now()-interval '1 minute' WHERE team_id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&f.team, &json!([thread]).to_string()],
+    )
+    .await?;
+    // 起点がカーソルのままのときだけ、R を返す (起点が新しいカーソルに進んでいたら、返らない)
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("ts", thread.as_str()))
+        .and(query_param("oldest", cursor0.as_str()))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"ok": true, "messages": [
+            {"type":"message","ts":&thread,"user":"UA","text":"parent","thread_ts":&thread},
+            {"type":"message","ts":&reply,"user":"UA","text":"reply R","thread_ts":&thread}],
+            "has_more": false})),
+        )
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+
+    // 1 分前に全部取り直した直後の合図 (軽い同期): M は取るが、スレッドは取らず、カーソルは進めない
+    let (status, _) = post_event(
+        &f.app,
+        SECRET,
+        now_secs(),
+        &message_event(&f.team, "C1", &f.ts_new, None),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    sync_now(&f).await?;
+    assert_eq!(
+        count_messages(&f.state, &f.channel).await,
+        1,
+        "M is imported"
+    );
+    assert_eq!(replies_for(&f.slack, &thread).await, 0, "light: no sweep");
+    assert_eq!(
+        last_ts(&f.state, &f.team).await,
+        cursor0,
+        "light: the cursor stays"
+    );
+
+    // 次の全部取り直し (5 分以上あと) は、カーソルのままの起点で X を取るので、R が入る
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET swept_at=now()-interval '10 minutes' WHERE team_id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    let (status, _) = post_event(
+        &f.app,
+        SECRET,
+        now_secs(),
+        &message_event(&f.team, "C1", &f.ts_new, None),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    sync_now(&f).await?;
+    assert_eq!(replies_for(&f.slack, &thread).await, 1, "full sweep");
+    let rows = sql(
+        &f.state,
+        "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(&f.team, "C1", &reply)],
+    )
+    .await?;
+    assert_eq!(rows[0]["content"], "reply R");
+    // 全部取り直した同期は、カーソルを進める
+    assert_eq!(last_ts(&f.state, &f.team).await, f.ts_new);
+    Ok(())
+}

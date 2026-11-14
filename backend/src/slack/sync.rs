@@ -202,6 +202,9 @@ struct Task {
     /// 直近 5 分以内に、監視中のスレッドを全部取り直す同期を始めたか (合図で起きる同期の呼び出しを抑える)
     #[serde(default)]
     swept_recent: bool,
+    /// 実行中の同期が、スレッドの総なめを省く同期か (終わっても同期カーソルを進めない)
+    #[serde(default)]
+    run_light: bool,
 }
 
 /// 1 回の処理の結果
@@ -302,7 +305,8 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
              'phase',t.phase,'run_oldest',t.run_oldest,'run_max_ts',t.run_max_ts,\
              'page_cursor',t.page_cursor,'pending_threads',t.pending_threads,\
              'known_threads',t.known_threads,'token_user_id',t.token_user_id,\
-             'swept_recent',(t.swept_at IS NOT NULL AND t.swept_at>now()-interval '5 minutes'))::text"
+             'swept_recent',(t.swept_at IS NOT NULL AND t.swept_at>now()-interval '5 minutes'),\
+             'run_light',t.run_light)::text"
         ),
         &[&token],
     )
@@ -367,7 +371,7 @@ async fn reset_run(s: &AppState, task: &Task) -> Result<(), AppError> {
         &mut tx,
         "UPDATE slack_channel_syncs SET running=false,phase='history',run_oldest=NULL,run_max_ts=NULL,\
          page_cursor=NULL,pending_threads='[]',lease_until=NULL,lease_token=NULL,available_at=now(),\
-         swept_at=NULL,last_error='invalid_cursor',updated_at=now() \
+         swept_at=NULL,run_light=false,last_error='invalid_cursor',updated_at=now() \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
          RETURNING json_build_object('ok',true)::text",
         &[&task.team_id, &task.slack_channel_id, &task.token],
@@ -566,6 +570,8 @@ struct Progress {
     known: Vec<String>,
     /// このページで、監視中のスレッドを全部取り直す同期に切り替わった (`swept_at` を今にする)
     swept_now: bool,
+    /// この同期は、スレッドの総なめを省く (軽い同期)。終わっても、同期カーソルを進めない
+    light: bool,
 }
 
 async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>, AppError> {
@@ -659,6 +665,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             pending: serde_json::from_str(&task.pending_threads).unwrap_or_default(),
             known,
             swept_now: false,
+            light: task.run_light,
         }
     } else {
         Progress {
@@ -669,6 +676,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             pending: Vec::new(),
             known,
             swept_now: false,
+            light: false,
         }
     };
 
@@ -755,6 +763,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                 // 最初の同期は、いつも全部取る。全部取り直す同期は、5 分に 1 回は必ず起きる
                 let light = task.synced && !initial && task.swept_recent;
                 progress.swept_now = !light;
+                progress.light = light;
                 // 前回までに見つけたスレッドにも、新しい返信がないか確かめる
                 if !light {
                     for ts in progress.known.clone() {
@@ -866,7 +875,7 @@ async fn store(
         "UPDATE slack_channel_syncs SET running=true,phase=$3,run_oldest=$4,run_max_ts=NULLIF($5,''),\
          page_cursor=NULLIF($6,''),pending_threads=$7,token_user_id=COALESCE(NULLIF($8,''),token_user_id),\
          known_threads=$10,attempts=0,last_error=NULL,lease_until=now()+interval '5 minutes',updated_at=now(),\
-         swept_at=CASE WHEN $11::boolean THEN now() ELSE swept_at END \
+         swept_at=CASE WHEN $11::boolean THEN now() ELSE swept_at END,run_light=$12::boolean \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$9 \
          RETURNING json_build_object('ok',true)::text",
         &[
@@ -881,6 +890,7 @@ async fn store(
             &task.token,
             &serde_json::to_string(&progress.known).unwrap_or_else(|_| "[]".into()),
             if progress.swept_now { "true" } else { "false" },
+            if progress.light { "true" } else { "false" },
         ],
     )
     .await?;
@@ -970,8 +980,10 @@ async fn lookup_profiles(
 async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, SyncError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await.map_err(AppError::from)?;
-    // 新しい投稿があったときだけ、カーソルを進める (逆戻りはしない)
-    if let Some(ts) = progress.max_ts.as_deref() {
+    // 新しい投稿があったときだけ、カーソルを進める (逆戻りはしない)。軽い同期 (監視中のスレッドの返信を取っていない)
+    // は進めない。進めると、次の全部取り直しが、スレッドの返信を新しいカーソルから取るので、その前に付いた返信が
+    // 範囲から外れる。履歴の取り直しは、決定的 ID で重複しない
+    if let Some(ts) = progress.max_ts.as_deref().filter(|_| !progress.light) {
         query(
             &mut tx,
             "UPDATE slack_channels SET last_ts=$3,updated_at=now() WHERE team_id=$1 AND slack_channel_id=$2 \
@@ -1025,7 +1037,7 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
         &mut tx,
         "UPDATE slack_channel_syncs SET running=false,phase='history',run_oldest=NULL,run_max_ts=NULL,\
          page_cursor=NULL,pending_threads='[]',known_threads=$3,attempts=0,last_error=NULL,\
-         last_synced_at=now(),available_at=now()+make_interval(secs=>$4::integer),not_before=NULL,\
+         last_synced_at=now(),available_at=now()+make_interval(secs=>$4::integer),not_before=NULL,run_light=false,\
          lease_until=NULL,lease_token=NULL,updated_at=now() \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$5 \
          RETURNING json_build_object('ok',true)::text",
