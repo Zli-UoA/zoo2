@@ -744,7 +744,7 @@ describe("初回設定と解錠", () => {
       {
         ...original,
         version: "2",
-        auth_data: otherBackupKey.authData(secrets.crossSigning.master),
+        auth_data: otherBackupKey.authData(secrets.crossSigning.master, 2),
       },
     ];
     expect(await uploadKeyBackup(deps)).toEqual({ kind: "rejected", code: "BackupKeyMismatch" });
@@ -871,13 +871,25 @@ describe("初回設定と解錠", () => {
     const server = new FakeServer();
     const first = await device("first");
     const deps = first.deps(server);
-    const { keyId } = await beginSetup(deps, null);
+    const { keyId, recoveryKey } = await beginSetup(deps, null);
     await receiveRoomKey(first);
     await completeSetup(deps, keyId, TOKEN);
     expect(server.backupSessions).toHaveLength(1);
 
-    // 同じ鍵の新しい版に変わった。送信待ちに戻す書き込みが 1 回失敗する。
-    server.versions.push({ ...server.versions[0]!, version: "2" });
+    // 同じ鍵の新しい版に変わった。送信待ちに戻す書き込みが 1 回失敗する。版の番号は auth_data の
+    // 署名に入るので、本物のマスター鍵で版 2 の auth_data に署名し直す。
+    const storage = SecretStorage.fromJson(USER, {
+      ...server.ssss,
+      secrets_revision: server.revision,
+    } as unknown as JsonObject)!;
+    const secrets = OwnSecrets.fromUnlocked(
+      storage.unlockWithRecoveryKey(RecoveryKey.parse(recoveryKey)),
+    );
+    server.versions.push({
+      ...server.versions[0]!,
+      version: "2",
+      auth_data: secrets.backupKey.authData(secrets.crossSigning.master, 2),
+    });
     const reset = first.backend.resetBackedUp.bind(first.backend);
     let failures = 1;
     first.backend.resetBackedUp = async () => {
