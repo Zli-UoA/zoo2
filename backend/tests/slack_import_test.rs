@@ -3295,6 +3295,106 @@ async fn test_slack_import_rejects_encrypted_channels() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 同じ名前のチャンネルの候補は、暗号化チャンネルと、画面を見ている管理者がメンバーでない非公開チャンネルの ID を返さない
+#[tokio::test]
+async fn test_slack_import_same_name_hides_channels_the_admin_cannot_see() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.e2ee_encrypted_channels_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_samename").await?;
+    let other = create_user(&app, "slack_other_samename").await?;
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::create!(UserRole {
+            user_id: admin.as_str(),
+            role_id: "role_admin",
+        })
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let names: Vec<String> = ["enc", "foreign", "own", "open"]
+        .iter()
+        .map(|k| format!("{k}-{suffix}"))
+        .collect();
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!(
+                names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| json!({"id": format!("C{i}"), "name": n, "members": ["U1"]}))
+                    .collect::<Vec<_>>()
+            ),
+        ),
+        ("groups.json".into(), json!([])),
+    ]);
+    let analyzed = upload(&state, &app, &admin, &zip).await;
+    let id = analyzed["id"].as_str().unwrap().to_string();
+
+    // (名前, 作る人, 非公開, 暗号化, 候補に ID が出るか)
+    let cases = [
+        (&names[0], &other, true, true, false),
+        (&names[1], &other, true, false, false),
+        (&names[2], &admin, true, false, true),
+        (&names[3], &other, false, false, true),
+    ];
+    let mut ids = Vec::new();
+    for (name, creator, private, encrypted, _) in &cases {
+        let channel = uuid::Uuid::new_v4().to_string();
+        let (status, body) = request(
+            &app,
+            "POST",
+            "/api/channels",
+            creator,
+            Some(json!({"id": channel, "channel_name": name,
+                "is_private": private, "encrypted": encrypted})),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        ids.push(channel);
+    }
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        &format!("/api/admin/slack-imports/{id}"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let channels = body["analysis"]["channels"].as_array().unwrap();
+    for (i, (name, _, _, _, visible)) in cases.iter().enumerate() {
+        let entry = channels
+            .iter()
+            .find(|c| c["name"] == name.as_str())
+            .unwrap_or_else(|| panic!("{name} is missing: {body}"));
+        if *visible {
+            assert_eq!(entry["same_name_channel"]["id"], ids[i], "{name}: {body}");
+        } else {
+            assert!(entry["same_name_channel"].is_null(), "{name}: {body}");
+        }
+    }
+    Ok(())
+}
+
 /// ユーザーが自分で取り込む方式 (ZIP) をやめたので、管理者でない人が作ったジョブ (廃止前に作られて残っているもの、
 /// 管理者でなくなった人のもの) は、権限の確認なしでは実行せず、失敗にする
 #[tokio::test]
