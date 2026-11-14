@@ -115,6 +115,14 @@ pub struct CallToast {
 }
 
 impl CallToast {
+    /// すでに閉じる指示が出ているか。出ていれば、OS に通知を出さない。
+    pub fn is_closed(&self) -> bool {
+        matches!(
+            *self.state.lock().unwrap_or_else(PoisonError::into_inner),
+            CallToastState::Closed
+        )
+    }
+
     /// 閉じる。出す前なら、出した直後に閉じる。何度呼んでもよい。
     pub fn close(&self) {
         let previous = std::mem::replace(
@@ -172,6 +180,10 @@ fn drop_unused_actions(actions: CallActions) {
 
 /// 先に作っておいた `CallToast` に預かる。招待が終わったら、その `close` で閉じる（出す前でもよい）。
 pub fn show_call_invite(toast: &CallToast, title: &str, body: &str, actions: CallActions) {
+    // 閉じる指示が先に届いていたら、OS に通知を出さない（一瞬でも、ポップアップや通知音が出ないように）。
+    if toast.is_closed() {
+        return;
+    }
     let mut notification = notify_rust::Notification::new();
     notification.appname("zoo2").summary(title).body(body);
 
@@ -195,6 +207,10 @@ pub fn show_call_invite(toast: &CallToast, title: &str, body: &str, actions: Cal
             let markup = notify_rust::get_capabilities()
                 .is_ok_and(|caps| caps.iter().any(|cap| cap == "body-markup"));
             notification.body(&zoo2_client_types::notify::body_for_server(&body, markup));
+            // 能力の問い合わせの間に閉じる指示が届いていたら、出さない。
+            if shared.is_closed() {
+                return;
+            }
             let Ok(handle) = notification.show() else {
                 return;
             };
@@ -236,6 +252,9 @@ pub fn show_call_invite(toast: &CallToast, title: &str, body: &str, actions: Cal
         // ボタンを持てない環境では、操作を使わない（フィールドを読んで捨てる）。
         drop_unused_actions(actions);
         std::thread::spawn(move || {
+            if shared.is_closed() {
+                return;
+            }
             match tauri::async_runtime::block_on(notification.show_async()) {
                 Ok(handle) => {
                     let _ = shared.shown(handle);

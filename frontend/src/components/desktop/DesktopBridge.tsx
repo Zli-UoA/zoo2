@@ -112,10 +112,15 @@ function DesktopBridgeInner({ channelId }: { channelId: string | null }) {
         if (inviteId) requestAcceptCallInvite(inviteId);
       });
     };
-    take();
+    // 合図を受けられるようになってから、押されたまま残った印を取る。先に取ると、取ってから購読が
+    // 有効になるまでの間に押された「応答」を、取りこぼす（購読の登録は非同期の IPC）。
     void desktopListen<null>(DESKTOP_CALL_ACCEPT_EVENT, take).then((unlisten) => {
-      if (cancelled) unlisten();
-      else stop = unlisten;
+      if (cancelled) {
+        unlisten();
+        return;
+      }
+      stop = unlisten;
+      take();
     });
     return () => {
       cancelled = true;

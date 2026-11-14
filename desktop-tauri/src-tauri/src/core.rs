@@ -551,11 +551,17 @@ impl Core {
             inner
                 .call_toasts
                 .insert(toast.invite_id.clone(), handle.clone());
-            self.show_call_toast(&toast, handle, api.clone());
+            self.show_call_toast(&toast, handle, api.clone(), inner.generation);
         }
     }
 
-    fn show_call_toast(&self, invite: &notify::CallInviteToast, handle: CallToast, api: ApiClient) {
+    fn show_call_toast(
+        &self,
+        invite: &notify::CallInviteToast,
+        handle: CallToast,
+        api: ApiClient,
+        generation: u64,
+    ) {
         let core = self.app.state::<Arc<Core>>().inner().clone();
         let id = invite.invite_id.clone();
         let decline_core = core.clone();
@@ -564,7 +570,9 @@ impl Core {
             let core = core.clone();
             let id = id.clone();
             Box::new(move || {
-                tauri::async_runtime::spawn(async move { core.accept_call_invite(id).await });
+                tauri::async_runtime::spawn(async move {
+                    core.accept_call_invite(generation, id).await
+                });
             }) as Box<dyn FnOnce() + Send>
         });
         let app = self.app.clone();
@@ -585,6 +593,9 @@ impl Core {
             let (inviter_id, channel_id) = (invite.inviter_id.clone(), invite.channel_id.clone());
             let (title, body) = (invite.title.clone(), invite.body.clone());
             tauri::async_runtime::spawn(async move {
+                if handle.is_closed() {
+                    return;
+                }
                 let name = tokio::time::timeout(
                     Duration::from_secs(3),
                     api.call_participant_name(&channel_id, &inviter_id),
@@ -624,12 +635,27 @@ impl Core {
 
     /// トーストの「応答」。ウィンドウを前に出し、WebView に印を取りに来る合図を送る。
     /// 応答そのもの（API と通話への参加）は、印を取った WebView が行う。このイベントだけでは応答しない。
-    async fn accept_call_invite(&self, invite_id: String) {
+    async fn accept_call_invite(&self, generation: u64, invite_id: String) {
         {
             let mut inner = self.inner.lock().await;
-            // ログアウトのあとや、閉じたトーストの action では、印を残さない（別のユーザーのログインに残らないように）。
-            if inner.session.is_none() || !inner.call_toasts.contains_key(&invite_id) {
+            // ログアウトのあと（世代が違う）や、すでに終わった招待では、印を残さない（別のユーザーのログインに
+            // 残らないように）。ウィンドウが前面に来てトーストを閉じた直後でも、招待が呼び出し中なら残す。
+            if inner.generation != generation {
                 return;
+            }
+            let Some(session) = inner.session.as_ref() else {
+                return;
+            };
+            let me = session.me.id.as_str();
+            let pending = session.store.call_invites().into_iter().any(|invite| {
+                invite.id == invite_id && invite.invitee_id == me && invite.status == "pending"
+            });
+            if !pending {
+                return;
+            }
+            // 出ているトーストは、応答を受け付けた時点で閉じる（前面化の通知が遅れる環境でも閉じる）。
+            if let Some(toast) = inner.call_toasts.remove(&invite_id) {
+                toast.close();
             }
             inner.pending_accept = Some((invite_id, Instant::now()));
         }
