@@ -663,3 +663,31 @@ fn reads_pending_deletions_of_the_previous_format_as_confirmed() {
         vec![store::PendingDeviceDeletion::new(BOB, "d", false)]
     );
 }
+
+#[tokio::test]
+async fn waits_only_while_the_screen_still_holds_the_store() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let open = || {
+        Arc::new(tokio::sync::Mutex::new(
+            CryptoStore::open(&root, BOB).unwrap().store,
+        ))
+    };
+    // ほかに持ち主がいなければ、待たずに戻る。
+    tokio::time::timeout(Duration::from_secs(1), manager::wait_until_released(open()))
+        .await
+        .expect("持ち主がいないのに待ち続けた");
+    // 画面が持っている間は待ち、手放したら開き直せる。
+    let store = open();
+    let held = store.clone();
+    let started = Instant::now();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(held);
+    });
+    manager::wait_until_released(store).await;
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert!(CryptoStore::open(&root, BOB).is_ok());
+}

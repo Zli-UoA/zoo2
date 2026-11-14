@@ -23,7 +23,10 @@ use crate::cross_signing::{
     check_signature, verify_cross_signing_key,
 };
 use crate::device::DeviceAccount;
-use crate::secret_storage::{UnlockedSecretStorage, decode_fixed};
+use crate::recovery_key::RecoveryKey;
+use crate::secret_storage::{
+    KeySlot, SecretStorage, SecretStorageKeysRequest, SsssKey, UnlockedSecretStorage, decode_fixed,
+};
 use crate::store::{self, StoreKind};
 
 /// SSSS から取り出した（または初回設定で作った）自分の秘密鍵。
@@ -514,5 +517,127 @@ pub fn startup_check(
         Ok(StartupCheck::SignDevice(
             own.self_signing.sign_device(device_keys)?,
         ))
+    }
+}
+
+/// 初回設定と解錠のあいだ、メモリーにだけ置く秘密（マスター鍵の秘密鍵と SSSS 鍵）。
+///
+/// Web の `setupSession.ts`（Worker の中）と同じ役割で、TUI と Android はこれを使う。マスター鍵の
+/// 秘密鍵と SSSS 鍵は暗号ストアに保存しない。アプリを閉じたら消え、続きは SSSS を開け直して行う
+/// （初回設定の再開）。
+#[derive(Debug)]
+pub struct SetupSession {
+    secrets: OwnSecrets,
+    ssss: SsssKey,
+    /// 初回設定で作ったスロット。解錠では空。
+    slots: Vec<KeySlot>,
+    /// 初回設定で作った鍵か（解錠で取り出した鍵ではない）。
+    created: bool,
+    /// 解錠したときの `secrets_revision`（初回設定では `None`）。
+    secrets_revision: Option<u64>,
+}
+
+impl SetupSession {
+    /// 初回設定を始める。クロス署名鍵、バックアップ鍵、SSSS 鍵、リカバリーキーを作り、リカバリーキーの
+    /// スロットを作る。返したリカバリーキー（表示用）を利用者に控えてもらう。
+    pub fn begin(user_id: &str) -> Result<(Self, Zeroizing<String>), CryptoError> {
+        let secrets = OwnSecrets {
+            cross_signing: CrossSigningKeys::generate(user_id)?,
+            backup_key: BackupDecryptionKey::generate(),
+        };
+        let ssss = SsssKey::generate();
+        let recovery = RecoveryKey::generate();
+        let slot = KeySlot::new_recovery(user_id, &ssss, &recovery)?;
+        Ok((
+            Self {
+                secrets,
+                ssss,
+                slots: vec![slot],
+                created: true,
+                secrets_revision: None,
+            },
+            recovery.to_display(),
+        ))
+    }
+
+    /// `GET /api/e2ee/secret_storage` の応答を、リカバリーキー（利用者が打ち込んだ文字列）で開ける。
+    ///
+    /// SSSS がまだなければ `Ok(None)`。打ち間違い（形式の誤り）は [`CryptoError::InvalidRecoveryKey`]、
+    /// 鍵が違えば [`CryptoError::KeySlotUnlock`]、リカバリーキーのスロットがなければ
+    /// [`CryptoError::NoKeySlot`]。
+    pub fn unlock_with_recovery_key(
+        user_id: &str,
+        response: &Value,
+        recovery_key: &str,
+    ) -> Result<Option<Self>, CryptoError> {
+        let Some(storage) = SecretStorage::from_json(user_id, response)? else {
+            return Ok(None);
+        };
+        let recovery = RecoveryKey::parse(recovery_key)?;
+        let unlocked = storage.unlock_with_recovery_key(&recovery)?;
+        Ok(Some(Self::from_unlocked(&unlocked)?))
+    }
+
+    /// 開けた SSSS から作る（パスキーで開けたときなど）。
+    pub fn from_unlocked(unlocked: &UnlockedSecretStorage) -> Result<Self, CryptoError> {
+        Ok(Self {
+            secrets: OwnSecrets::from_unlocked(unlocked)?,
+            ssss: unlocked.key().clone(),
+            slots: Vec::new(),
+            created: false,
+            secrets_revision: unlocked.secrets_revision(),
+        })
+    }
+
+    /// SSSS 鍵の ID。初回設定の保存と続きの保存の `expected_default_key_id` に入れる。
+    pub fn key_id(&self) -> &str {
+        self.ssss.key_id()
+    }
+
+    /// 初回設定で作った鍵か。
+    pub fn is_created(&self) -> bool {
+        self.created
+    }
+
+    /// 解錠したときの `secrets_revision`（初回設定では `None`）。
+    pub fn secrets_revision(&self) -> Option<u64> {
+        self.secrets_revision
+    }
+
+    /// 自分の秘密鍵（暗号ストアに保存するのは [`OwnSecrets::own_keys`] だけ）。
+    pub fn secrets(&self) -> &OwnSecrets {
+        &self.secrets
+    }
+
+    /// 初回設定で作ったスロット（保存の再試行で、サーバーにないものを足す）。
+    pub fn pending_slots(&self) -> &[KeySlot] {
+        &self.slots
+    }
+
+    /// 初回設定の `POST /api/e2ee/secret_storage/keys` の本文（`expected_default_key_id: null`）。
+    /// 解錠で取り出した鍵では作らない（[`CryptoError::InvalidSecretStorage`]）。
+    pub fn secret_storage_request(&self) -> Result<Value, CryptoError> {
+        if !self.created {
+            return Err(CryptoError::InvalidSecretStorage(
+                "初回設定を始めていません".into(),
+            ));
+        }
+        self.ssss.keys_request(&SecretStorageKeysRequest {
+            expected_default_key_id: None,
+            expected_secrets_revision: None,
+            cross_signing: &self.secrets.cross_signing,
+            backup_key: &self.secrets.backup_key,
+            previous_backup_keys: &[],
+            slots: &self.slots,
+        })
+    }
+
+    /// サーバーの状態と比べ、続きに送る要求を決める（[`plan_resume`]）。
+    pub fn plan(
+        &self,
+        server: &ServerKeyState,
+        device_keys: &Value,
+    ) -> Result<ResumePlan, CryptoError> {
+        plan_resume(&self.secrets, server, device_keys)
     }
 }

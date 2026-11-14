@@ -1,4 +1,7 @@
 //! ログイン後の端末の登録、鍵の補充、to-device の処理（#359。React の `deviceManager.ts` と同じ流れ）。
+//!
+//! 登録を終えたら、開いた暗号ストアを画面（暗号化の画面。#360）と共有し、解錠済みの端末では
+//! 起動時の確認（署名し直しと鍵バックアップの送信）を行う。
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -7,13 +10,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::Value;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 
 use crate::api::ApiClient;
 use crate::electric::{Change, ShapeStream};
 use crate::http::{Credentials, HttpError};
 
+use super::setup::{self, SharedStore};
 use super::store::{
     self, CryptoStore, PendingDeviceDeletion, ToDeviceRow, clear_pending_device_deletion,
     mark_device_deletion_pending, read_pending_device_deletions, update_pending_device_deletion,
@@ -199,9 +203,13 @@ pub async fn retry_pending_device_deletion(
     }
 }
 
+/// 端末の管理のタスクが開いている暗号ストア。登録を終えるまでと、作り直している間は `None`。
+pub type StoreWatch = watch::Receiver<Option<(String, SharedStore)>>;
+
 /// 暗号ストアを開き、端末を登録して、to-device を処理し続けるタスクを起動する。
 ///
-/// TUI は全画面なので、失敗は表示せずに間隔をあけて試し直す。
+/// TUI は全画面なので、失敗は表示せずに間隔をあけて試し直す。登録を終えた暗号ストアは、
+/// 返した [`StoreWatch`] で画面に渡す（ユーザー ID と組にする）。
 pub fn spawn(
     http: reqwest::Client,
     api_base_url: String,
@@ -209,8 +217,9 @@ pub fn spawn(
     api: ApiClient,
     root: std::path::PathBuf,
     user_id: Option<String>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
+) -> (JoinHandle<()>, StoreWatch) {
+    let (store_tx, store_rx) = watch::channel(None);
+    let task = tokio::spawn(async move {
         let mut backoff = Duration::from_secs(5);
         let mut user_id = user_id;
         let mut state = RunState::default();
@@ -224,7 +233,7 @@ pub fn spawn(
                 continue;
             };
             state.connected = false;
-            match run(
+            let result = run(
                 &http,
                 &api_base_url,
                 &credentials,
@@ -232,9 +241,15 @@ pub fn spawn(
                 &root,
                 user_id,
                 &mut state,
+                &store_tx,
             )
-            .await
-            {
+            .await;
+            // 画面が操作の途中で持っている暗号ストアを手放すまで待つ。同じプロセスでも、開いたままの
+            // ストアがあるとロックを取れず、開き直せないため。
+            if let Some((_, previous)) = store_tx.send_replace(None) {
+                wait_until_released(previous).await;
+            }
+            match result {
                 // ほかの zoo2-tui が開いているなど、試し直しても変わらないときは止める。
                 Err(err) if err.to_string().contains("ほかの zoo2-tui") => return,
                 _ => {}
@@ -243,7 +258,21 @@ pub fn spawn(
             tokio::time::sleep(delay).await;
             backoff = next;
         }
-    })
+    });
+    (task, store_rx)
+}
+
+/// 暗号ストアの最後の持ち主が手放すまで待つ（`store` は手放してから待つ）。
+///
+/// 期限は設けない。画面の操作は、要求ごとの期限（30 秒）で終わり、再認証を待つ間はストアを持たない。
+/// 期限で打ち切って開き直すと、同じプロセスが持つロックで失敗し、ほかの zoo2-tui が開いているときと
+/// 区別できずに端末の管理が止まってしまう。待ち終えたあとのロックの失敗は、ほかのプロセスのものになる。
+pub async fn wait_until_released(store: SharedStore) {
+    let weak = Arc::downgrade(&store);
+    drop(store);
+    while weak.strong_count() > 0 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// 試し直すまでに待つ時間と、その次の間隔を返す。登録と補充を終えて Shape を受け取れていた
@@ -264,6 +293,7 @@ struct RunState {
     counted_not_found: BTreeSet<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     http: &reqwest::Client,
     api_base_url: &str,
@@ -272,6 +302,7 @@ async fn run(
     root: &Path,
     user_id: &str,
     state: &mut RunState,
+    store_tx: &watch::Sender<Option<(String, SharedStore)>>,
 ) -> Result<()> {
     retry_pending_device_deletion(api, root, user_id, &mut state.counted_not_found).await;
     let opened = CryptoStore::open(root, user_id)?;
@@ -294,6 +325,10 @@ async fn run(
         Err(err) => return Err(err),
     };
     replenish(api, &store, counts).await?;
+    store_tx.send_replace(Some((user_id.to_owned(), store.clone())));
+    // 解錠済みの端末は、署名を確かめて、送信待ちを鍵バックアップに送る。失敗しても to-device は止めない
+    // （次の起動か、次に鍵を受け取ったときに送り直す）。
+    let _ = setup::run_startup_check(api, &store, user_id).await;
 
     let device_id = store.lock().await.device_id().to_owned();
     let url = format!(
@@ -359,7 +394,7 @@ pub fn to_device_row(row: &crate::electric::Row) -> ToDeviceRow {
 /// 行を処理して ack を送り、ack を送れた ID を返す。
 async fn process(
     api: &ApiClient,
-    store: &Mutex<CryptoStore>,
+    store: &SharedStore,
     device_id: &str,
     rows: &[ToDeviceRow],
 ) -> Result<Vec<String>> {
@@ -374,6 +409,11 @@ async fn process(
     if !result.processed.is_empty() {
         api.e2ee_ack_to_device(device_id, &result.processed).await?;
         store.lock().await.acknowledged(&result.processed)?;
+    }
+    if result.room_keys > 0 {
+        // 受け取った鍵を鍵バックアップに送る（解錠済みの端末だけ）。失敗しても ack は済んでいるので、
+        // 送信待ちに残して次の機会に送る。
+        let _ = setup::upload_key_backup(api, store).await;
     }
     if result.new_olm_sessions > 0 {
         let value = api

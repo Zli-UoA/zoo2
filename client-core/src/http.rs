@@ -104,3 +104,65 @@ pub async fn error_for_status(response: reqwest::Response) -> Result<reqwest::Re
         .unwrap_or(body);
     Err(HttpError::Status { status, message }.into())
 }
+
+/// E2EE の API のエラー応答（`{"error": 本文, "code": コード, ...追加のフィールド}`）。
+///
+/// 初回設定と解錠（#360）は、`E2EE_REAUTH_REQUIRED`、`E2EE_SSSS_CONFLICT` などのコードで分岐するので、
+/// 本文全体を持つ。ほかの API は [`HttpError`] のまま。
+#[derive(Debug, thiserror::Error)]
+#[error("{status}: {message}")]
+pub struct ApiError {
+    pub status: reqwest::StatusCode,
+    pub code: Option<String>,
+    pub message: String,
+    pub body: serde_json::Value,
+}
+
+impl ApiError {
+    /// `error` が [`ApiError`] で、そのコードが `code` か。
+    pub fn has_code(error: &anyhow::Error, code: &str) -> bool {
+        error
+            .downcast_ref::<ApiError>()
+            .is_some_and(|e| e.code.as_deref() == Some(code))
+    }
+
+    /// `error` の HTTP の状態（[`ApiError`] か [`HttpError::Status`] のとき）。
+    pub fn status_of(error: &anyhow::Error) -> Option<reqwest::StatusCode> {
+        if let Some(e) = error.downcast_ref::<ApiError>() {
+            return Some(e.status);
+        }
+        match error.downcast_ref::<HttpError>() {
+            Some(HttpError::Status { status, .. }) => Some(*status),
+            _ => None,
+        }
+    }
+}
+
+/// [`error_for_status`] と同じだが、401 以外のエラーを [`ApiError`] にする。
+pub async fn error_for_status_coded(response: reqwest::Response) -> Result<reqwest::Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(HttpError::Unauthorized.into());
+    }
+    let text = response.text().await.unwrap_or_default();
+    let body = serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::Value::Null);
+    let message = body
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or(text);
+    let code = body
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    Err(ApiError {
+        status,
+        code,
+        message,
+        body,
+    }
+    .into())
+}

@@ -86,7 +86,7 @@ async fn run() -> Result<()> {
         }
     };
     // 端末の登録と to-device の処理は、画面と並行して裏で行う（#359）。
-    let crypto_task = config::config_dir().map(|dir| {
+    let crypto = config::config_dir().map(|dir| {
         let user_id = match &credentials {
             Credentials::Dev(user_id) => Some(user_id.clone()),
             Credentials::Bearer(_) => None,
@@ -100,7 +100,28 @@ async fn run() -> Result<()> {
             user_id,
         )
     });
-    let result = ui::run(http, config.api_base_url, credentials, config.check_updates).await;
+    let (crypto_task, e2ee) = match crypto {
+        Some((task, stores)) => {
+            // 初回設定と解錠の再認証（#360）。dev モードではサーバーも再認証を確かめない。
+            let oidc = match &config.auth {
+                AuthConfig::Oidc(oidc) => Some(oidc.clone()),
+                AuthConfig::Dev { .. } => None,
+            };
+            (
+                Some(task),
+                Some(ui::encryption::E2eeContext { oidc, stores }),
+            )
+        }
+        None => (None, None),
+    };
+    let result = ui::run(
+        http,
+        config.api_base_url,
+        credentials,
+        config.check_updates,
+        e2ee,
+    )
+    .await;
     if let Some(task) = crypto_task {
         task.abort();
     }

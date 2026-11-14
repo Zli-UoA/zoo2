@@ -5807,6 +5807,7 @@ name = "zoo2-client-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "directories",
  "futures-util",
  "jiff",

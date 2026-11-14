@@ -1,6 +1,7 @@
 //! AuthZ の OAuth 2.0 デバイス認可グラント (RFC 8628) によるログインと、トークンの保存・更新。
 
 pub mod device;
+pub mod reauth;
 pub mod token;
 
 use anyhow::{Context, Result, bail};
@@ -13,6 +14,9 @@ use crate::config::OidcConfig;
 pub struct Discovery {
     pub issuer: String,
     pub token_endpoint: String,
+    /// 認可コードフローのエンドポイント（E2EE の再認証だけで使う）。
+    #[serde(default)]
+    pub authorization_endpoint: Option<String>,
     pub device_authorization_endpoint: Option<String>,
     pub revocation_endpoint: Option<String>,
 }
@@ -47,6 +51,9 @@ pub struct TokenResponse {
     pub access_token: String,
     pub expires_in: Option<i64>,
     pub refresh_token: Option<String>,
+    /// 認可コードフロー（E2EE の再認証）の ID トークン。デバイスコードでは使わない。
+    #[serde(default)]
+    pub id_token: Option<String>,
 }
 
 /// トークンエンドポイントのエラー応答 (RFC 6749 5.2)。
