@@ -10,6 +10,14 @@
       "states": ["Proxy", "Direct", "Oidc"]
     },
     {
+      "file": "src/components/call/CallInvitePicker.stories.tsx",
+      "states": ["SelectAndInvite", "LimitedSlots", "Full", "Nobody", "Failed", "Sending"]
+    },
+    {
+      "file": "src/components/call/IncomingCallCard.stories.tsx",
+      "states": ["DirectMessage", "ChannelInvite", "LongNames", "Busy", "Ended"]
+    },
+    {
       "file": "src/components/chat/AppBlocks.stories.tsx",
       "states": ["Default", "Pending", "Failed", "InvalidBlocks", "Card"]
     },
@@ -808,6 +816,19 @@
       "checks": ["src/lib/call/call-devices.test.ts"]
     },
     {
+      "file": "src/components/call/CallInvitePicker.tsx",
+      "story": "src/components/call/CallInvitePicker.stories.tsx"
+    },
+    {
+      "file": "src/components/call/IncomingCallCard.tsx",
+      "story": "src/components/call/IncomingCallCard.stories.tsx"
+    },
+    {
+      "file": "src/components/call/IncomingCallDialog.tsx",
+      "reason": "着信の表示（IncomingCallCard）と、招待の購読・応答・拒否・着信音・Web Push からの起動を結ぶ制御層。表示と操作は IncomingCallCard のStoryで確認し、招待の絞り込み・期限・API・起動パラメーターは call-invites.test.ts、着信音は call-sounds.test.ts で検証する。",
+      "checks": ["src/lib/call/call-invites.test.ts", "src/lib/call/call-sounds.test.ts"]
+    },
+    {
       "file": "src/components/call/CallSettingsDevices.tsx",
       "reason": "設定の通話タブで CallDeviceSelects を通話コンテキストへ接続する薄い層。選択値の保存は call-devices.test.ts で検証する。",
       "checks": ["src/lib/call/call-devices.test.ts"]
@@ -824,7 +845,7 @@
     },
     {
       "file": "src/components/chat/CallBar.tsx",
-      "reason": "通話バーのWebRTCシグナリングおよびUI制御層。UI表示状態（idle, connecting, connected, DM表示名, ミュート切替, 発話リング, アバター）はCallBar.browser.test.tsxで検証し、マイク操作とPeerライフサイクルはcall-context.test.tsで検証する。",
+      "reason": "通話バーのWebRTCシグナリングおよびUI制御層。UI表示状態（idle, connecting, connected, DM表示名, ミュート切替, 発話リング, アバター, 招待ボタンと呼び出し中の表示・取り消し）はCallBar.browser.test.tsxで検証し、マイク操作とPeerライフサイクルはcall-context.test.tsで検証する。",
       "checks": [
         "src/components/chat/CallBar.browser.test.tsx",
         "src/lib/call/call-context.test.ts",

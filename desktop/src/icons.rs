@@ -88,6 +88,7 @@ icons! {
     Palette => "palette",
     Paperclip => "paperclip",
     Pencil => "pencil",
+    Phone => "phone",
     PhoneMissed => "phone-missed",
     PhoneOff => "phone-off",
     Plus => "plus",

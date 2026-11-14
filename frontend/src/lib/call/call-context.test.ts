@@ -17,6 +17,11 @@ vi.mock("../../hooks/useCurrentUser", () => ({
   }),
 }));
 
+vi.mock("../../hooks/useCallInvites", () => ({
+  useCallInvites: () => ({ incoming: [], outgoing: [] }),
+  useCallInviteApi: () => ({ request: vi.fn() }),
+}));
+
 vi.mock("../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: [], isLoading: false, isError: false }),
 }));
