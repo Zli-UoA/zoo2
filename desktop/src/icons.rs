@@ -70,6 +70,7 @@ icons! {
     LoaderCircle => "loader-circle",
     Lock => "lock",
     LockKeyhole => "lock-keyhole",
+    LockKeyholeOpen => "lock-keyhole-open",
     LogOut => "log-out",
     MessageCircle => "message-circle",
     MessageCircleMore => "message-circle-more",

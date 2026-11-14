@@ -56,6 +56,12 @@ async fn try_create_or_get_1on1_dm(
         if existing_channel.encrypted != encrypted {
             return Err(e2ee_channels::encrypted_mismatch());
         }
+        // 平文の DM は、ロックなしで読んだあとに暗号化へ切り替わっている（名前も edm: に変わる。#367）ことがある。
+        // 切り替えと直列にし、切り替わっていたら最初からやり直す（dm: の名前では見つからず、新しい平文の DM を作る）。
+        if !encrypted && e2ee_channels::lock_encryption(&mut tx, &existing_channel.id).await? {
+            let _ = tx.rollback().await;
+            return Ok(None);
+        }
         let mut added_any = false;
         let now = crate::models::now_utc_millis();
 

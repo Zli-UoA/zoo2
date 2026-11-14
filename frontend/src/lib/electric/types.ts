@@ -43,7 +43,7 @@ export type ChannelRow = {
   slack_import_kind: "created" | "existing" | null;
   /** 最後に Slack から取り込んだ日時 */
   slack_imported_at: TimestampString | null;
-  /** 暗号化チャンネル（作成時だけ指定でき、変わらない。docs/e2ee.md） */
+  /** 暗号化チャンネル（作成時に指定するか、`POST /api/channels/{id}/encrypt` で切り替える。true から false には戻らない。docs/e2ee.md） */
   encrypted?: boolean;
   /**
    * 暗号化チャンネルのメンバーと端末の世代。Electric は int8 を文字列で配るので、比べる前に BigInt などの

@@ -41,6 +41,10 @@
       "states": ["Default", "Pending", "NotReady", "Unsupported", "Mobile"]
     },
     {
+      "file": "src/components/chat/EncryptChannelDialog.stories.tsx",
+      "states": ["Channel", "Dm", "Pending", "Blocked", "Mobile"]
+    },
+    {
       "file": "src/components/chat/AppsDialog.stories.tsx",
       "states": [
         "Default",
@@ -255,6 +259,7 @@
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
       "states": [
         "Default",
+        "EncryptedBeforeEncryptionRow",
         "OwnMessage",
         "HoverActions",
         "WithReactions",
@@ -796,6 +801,10 @@
     {
       "file": "src/components/chat/AppEncryptedChannelConsent.tsx",
       "story": "src/components/chat/AppEncryptedChannelConsent.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/EncryptChannelDialog.tsx",
+      "story": "src/components/chat/EncryptChannelDialog.stories.tsx"
     },
     {
       "file": "src/components/chat/AppsDialog.tsx",

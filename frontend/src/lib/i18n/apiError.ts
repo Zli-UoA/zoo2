@@ -1,6 +1,7 @@
 import type { TFunction } from "i18next";
 
 import { ApiError } from "../api/client";
+import { conversionBlockers } from "../api/encryptChannel";
 
 /**
  * チャンネル名の一意制約に当たった書き込みか。
@@ -46,6 +47,18 @@ export function localizeApiError(cause: unknown, t: TFunction): string {
         return t("e2ee.errors.disabled");
       case "E2EE_PUBLIC_FORBIDDEN":
         return t("e2ee.errors.publicForbidden");
+      case "E2EE_CONVERSION_BLOCKED": {
+        const blockers = conversionBlockers(cause.body);
+        if (blockers.length === 0) return t("common.errors.conflict");
+        return blockers.map((blocker) => t(`e2ee.convert.blockers.${blocker}`)).join(" ");
+      }
+      case "E2EE_LEGACY_IMMUTABLE":
+        return t("e2ee.legacy.editForbidden");
+      case "E2EE_LIMIT_EXCEEDED":
+        if ((cause.body as { limit?: unknown } | null)?.limit === "members") {
+          return t("e2ee.errors.tooManyMembers");
+        }
+        break;
     }
     switch (cause.status) {
       case 400:
