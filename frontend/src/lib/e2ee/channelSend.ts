@@ -67,12 +67,14 @@ export function resetKnownEpochs(): void {
 }
 
 /**
- * チャンネルごとの送信用セッションの用意を直列にする。続けて送ったときに、両方が同時に
- * スナップショットを取り、同じ端末に鍵を 2 回配らないようにする（暗号化と送信は並べてよい）。
+ * チャンネルごとの送信用セッションの用意と暗号化を直列にする。続けて送ったときに、両方が同時に
+ * スナップショットを取り、同じ端末に鍵を 2 回配らないようにする。送信用セッションを捨てる処理
+ * （配布の失敗、作り直し）もこの中でだけ行うので、用意したセッションが暗号化の前に捨てられることは
+ * ない（送信の要求は並べてよい）。
  */
-const preparing = new Map<string, Promise<void>>();
+const preparing = new Map<string, Promise<unknown>>();
 
-function serialized(channelId: string, task: () => Promise<void>): Promise<void> {
+function serialized<T>(channelId: string, task: () => Promise<T>): Promise<T> {
   const previous = preparing.get(channelId) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(task);
   preparing.set(channelId, next);
@@ -188,11 +190,10 @@ async function encryptAndSubmit(
 ): Promise<void> {
   let minEpoch: bigint | null = null;
   for (let attempt = 0; attempt < STALE_EPOCH_ATTEMPTS; attempt += 1) {
-    await ensureOutboundSession(deps, channelId, shapeEpoch, minEpoch);
-    const { ciphertext, epoch } = await deps.worker.request({
-      op: "megolmEncrypt",
-      channelId,
-      message,
+    // 用意から暗号化までを、同じチャンネルのほかの送信の用意と重ねない。
+    const { ciphertext, epoch } = await serialized(channelId, async () => {
+      await prepareOutboundSession(deps, channelId, shapeEpoch, minEpoch);
+      return deps.worker.request({ op: "megolmEncrypt", channelId, message });
     });
     try {
       await submit(ciphertext, epoch);
@@ -200,8 +201,9 @@ async function encryptAndSubmit(
     } catch (error) {
       const current = staleEpoch(error);
       if (current === null) throw error;
-      // 古いセッションでは送らない。新しい epoch で作り直す。
-      await deps.worker.request({ op: "megolmDiscard", channelId });
+      // 古いセッションでは送らない。`current_epoch` 以上のスナップショットで判定し直すと、epoch の
+      // 違う送信用セッションは `megolmStart` が捨てて作り直す。ここで捨てないのは、同じチャンネルの
+      // ほかの送信がすでに新しい epoch で用意したセッションを、暗号化の前に捨てないため。
       minEpoch = noteEpoch(channelId, current);
     }
   }

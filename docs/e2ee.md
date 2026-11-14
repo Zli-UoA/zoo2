@@ -1344,7 +1344,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 一度 `encrypted = true` を見たチャンネルの ID を、暗号ストアに記録する。以後は Shape や API の値にかかわらず、そのチャンネルには暗号化して送る。
 - 記録したチャンネルで `encrypted = false` が届いたら、送信を止め、警告を出す。平文で送り直すことはしない。
 - `ciphertext` のある行を含むチャンネル、名前が `edm:` で始まるチャンネルも、`encrypted = false` が届いたら同じように扱う。
-- 担当は #361。【決定】（#361）Web は、記録を暗号ストアの `meta`（`encrypted_channel:<channel_id>`）に置き、判定は `MessagePane` で行う（記録がある、名前が `edm:`、`ciphertext` のある行がある、のどれかで `encrypted = false` なら、送信を止めて警告し、表示と添付の扱いは暗号化チャンネルのままにする）。判定は数行の条件なので、`crates/zoo-crypto` には置かず、Android と TUI の対応でそれぞれ同じ条件を入れる。
+- 担当は #361。【決定】（#361）Web は、記録を暗号ストアの `meta`（`encrypted_channel:<channel_id>`）に置き、同じチャンネルの ID を `localStorage`（`zoo.e2ee.encryptedChannels`）にも置く（暗号ストアを開いていないタブは `meta` を読めないため。ID はサーバーも知っている値なので暗号化しない）。判定は `MessagePane` で行う（記録がある、名前が `edm:`、`ciphertext` のある行がある、のどれかで `encrypted = false` なら、送信を止めて警告し、表示と添付の扱いは暗号化チャンネルのままにする）。判定は数行の条件なので、`crates/zoo-crypto` には置かず、Android と TUI の対応でそれぞれ同じ条件を入れる。
 
 ## 鍵の配布先の判定
 
@@ -1837,7 +1837,8 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 | リプレイと版の記録（`(session_id, message_index)` ごとの `message_id`、`message_id` ごとの最大の `revision`）を暗号ストアに保存する。初期版の Web は Worker のメモリーにだけ持ち、開き直すと忘れる | 【提案】 | 後続 |
 | 送信待ちの平文を暗号ストアに置く（[送信の手順](#membership_epoch-と送信の順序)の 1）。初期版の Web は、送れなかった本文を入力欄の下書きに戻すだけで、保存しない | 【提案】 | 後続 |
 | 増えた端末に今のセッションを今のインデックスから配る（epoch を変えない端末の追加） | 【提案】 | 後続 |
-| 鍵がまだ届いていないメッセージの送り直し（to-device の `undelivered` の送り直しを含む） | 未決 | 後続 |
+| 次の送信の前に、配り終えていない端末（払い出されなかった端末と、to-device の `undelivered` の端末）へ鍵を配り直す | 【決定】初期版の Web にある。配ったかどうかは Worker のメモリーにだけ置き、保存しない | #361 |
+| 鍵がまだ届いていない端末への、送信を待たない送り直し（暗号ストアの送信待ちに保存し、間隔をあけて自動で送り直す） | 未決 | 後続 |
 | Android と TUI の暗号化の送受信（それぞれの暗号ストアと端末の登録が先に要る） | 未決 | #361 の続き |
 | クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。`max_age=0` で取り直した ID トークンの `authenticated_at` で確かめる（[クロス署名の API](#クロス署名356)） | 【決定】（実際の AuthZ での動きは AuthZ#102 の E2E で確かめた） | #356 |
 | AuthZ で、すべてのセッションとトークンを 1 回で失効し、パスキーの削除と同時にも行える機能（今は、パスキーの削除はセッションもトークンも失効しない） | 【決定】AuthZ に頼む（AuthZ#100） | #362、AuthZ#100 |

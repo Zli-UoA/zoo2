@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { ApiError, type ApiClient } from "../api/client";
 import {
@@ -63,6 +63,8 @@ function fakeWorker() {
         case "megolmShare":
           return { messages: { bob: { "bob-device": { ciphertext: "room-key" } } }, missing: [] };
         case "megolmEncrypt":
+          if (sessionEpoch === null)
+            throw Object.assign(new Error("no"), { code: "NoOutboundSession" });
           return { ciphertext: { ciphertext: "opaque", session_id: "s" }, epoch: sessionEpoch };
         case "megolmDiscard":
           sessionEpoch = null;
@@ -200,7 +202,8 @@ describe("sendEncryptedMessage", () => {
     expect(posts.map((call) => (call.body as { id: string; epoch: number }).epoch)).toEqual([3, 4]);
     expect(posts.every((call) => (call.body as { id: string }).id === "m1")).toBe(true);
     expect(posts[1]!.body).toMatchObject({ parent_id: "root" });
-    expect(ops.some((op) => op.op === "megolmDiscard")).toBe(true);
+    // 判定をやり直し、新しい epoch のセッションを作った。
+    expect(ops.filter((op) => op.op === "megolmEvaluate")).toHaveLength(2);
 
     // 遅れた Shape の epoch（3）で、次の送信のたびに作り直さない。
     calls.length = 0;
@@ -288,6 +291,62 @@ describe("sendEncryptedMessage", () => {
       "/api/e2ee/to_device",
       "/api/messages",
     ]);
+  });
+
+  it("409 での作り直しは、同じチャンネルのほかの送信が配っている途中のセッションを捨てない", async () => {
+    const { worker } = fakeWorker();
+    const first = fakeClient([null], [3]);
+    const send = (client: ApiClient, messageId: string) =>
+      sendEncryptedMessage(deps(worker, client), {
+        channelId: CHANNEL,
+        shapeEpoch: "3",
+        messageId,
+        parentId: null,
+        body: "hello",
+        mentions: NO_MENTIONS,
+      });
+    await send(first.client, "m0");
+
+    // A の POST は応答を保留し、B の to_device も保留する。
+    let rejectA!: (error: Error) => void;
+    let releaseToDevice!: () => void;
+    const toDeviceHeld = new Promise<void>((resolve) => {
+      releaseToDevice = resolve;
+    });
+    let toDeviceCalls = 0;
+    const posts: { epoch: number }[] = [];
+    const client = {
+      request: async () => ({
+        channel_id: CHANNEL,
+        membership_epoch: 4,
+        user_ids: ["alice", "bob"],
+        next_after: null,
+      }),
+      post: async (path: string, body: unknown) => {
+        if (path === "/api/e2ee/keys/claim") return { data: { one_time_keys: {} }, txid: null };
+        if (path === "/api/e2ee/to_device") {
+          toDeviceCalls += 1;
+          await toDeviceHeld;
+          return { data: { undelivered: [] }, txid: null };
+        }
+        posts.push(body as { epoch: number });
+        if (posts.length === 1) return new Promise((_, reject) => (rejectA = reject));
+        return { data: {}, txid: "1" };
+      },
+    } as unknown as ApiClient;
+
+    const a = send(client, "a");
+    await vi.waitFor(() => expect(posts).toHaveLength(1));
+    // B は、配り終えていない端末に鍵を配っている途中で止まる。
+    (worker as unknown as { markUnshared: () => void }).markUnshared();
+    const b = send(client, "b");
+    await vi.waitFor(() => expect(toDeviceCalls).toBe(1));
+    // そのあいだに A が 409 を受けても、B が用意したセッションは暗号化まで残る。
+    rejectA(staleEpochError(4));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseToDevice();
+    await Promise.all([a, b]);
+    expect(posts.map((post) => post.epoch)).toEqual([3, 3, 4]);
   });
 
   it("3 回続けて E2EE_STALE_EPOCH なら諦める", async () => {
