@@ -1,6 +1,7 @@
 pub mod activitypub;
 pub mod apps;
 pub mod auth;
+pub mod call_invites;
 pub mod cards;
 pub mod config;
 pub mod db;

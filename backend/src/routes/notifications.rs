@@ -33,7 +33,8 @@ pub struct NotificationResponse {
     pub user_id: String,
     pub actor_id: String,
     pub channel_id: String,
-    pub message_id: String,
+    /// 不在着信 (`missed_call`) にはメッセージがない。
+    pub message_id: Option<String>,
     pub notification_type: String,
     pub is_read: bool,
     pub created_at: String,
@@ -138,21 +139,24 @@ async fn notification_context(
             return Err(unavailable());
         }
     }
-    let message = Message::filter(
-        Message::fields()
-            .id()
-            .eq(notification.message_id.as_str())
-            .and(Message::fields().channel_id().eq(channel.id.as_str())),
-    )
-    .first()
-    .exec(&mut tx)
-    .await?
-    .filter(|message| message.deleted_at.is_none());
+    let message = match notification.message_id.as_deref() {
+        Some(message_id) => Message::filter(
+            Message::fields()
+                .id()
+                .eq(message_id)
+                .and(Message::fields().channel_id().eq(channel.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?
+        .filter(|message| message.deleted_at.is_none()),
+        None => None,
+    };
     let reactions = if message.is_some() && notification.notification_type == "reaction" {
         let mut reactions = MessageReaction::filter(
             MessageReaction::fields()
                 .message_id()
-                .eq(notification.message_id.as_str()),
+                .eq(notification.message_id.as_deref().unwrap_or_default()),
         )
         .exec(&mut tx)
         .await?;

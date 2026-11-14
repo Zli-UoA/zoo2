@@ -88,14 +88,14 @@ pub struct Attachment {
 }
 
 /// 自分あての通知。プロキシが `notification_events` の `source = 'channel'` だけを返すので、
-/// チャンネルとメッセージは必ずある。
+/// チャンネルは必ずある。メッセージは、不在着信 (`missed_call`) だけない。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notification {
     pub id: String,
     pub user_id: String,
     pub actor_id: String,
     pub channel_id: String,
-    pub message_id: String,
+    pub message_id: Option<String>,
     /// `mention`、`reply`、`dm`、`reaction` など。backend の `notifications.rs` を参照。
     pub notification_type: String,
     pub is_read: bool,
@@ -291,7 +291,7 @@ impl FromRow for Notification {
             user_id: text(row, "user_id")?,
             actor_id: text(row, "actor_id")?,
             channel_id: text(row, "channel_id")?,
-            message_id: text(row, "message_id")?,
+            message_id: opt_text(row, "message_id"),
             notification_type: text(row, "notification_type")?,
             is_read: opt_boolean(row, "is_read")?.unwrap_or(false),
             created_at: time(row, "created_at")?,

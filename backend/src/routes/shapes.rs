@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/shapes/channel_leaves", get(channel_leaves_shape))
         .route("/api/shapes/channel_users", get(channel_users_shape))
         .route("/api/shapes/notifications", get(notifications_shape))
+        .route("/api/shapes/call_invites", get(call_invites_shape))
         .route("/api/shapes/attachments", get(attachments_shape))
         .route("/api/shapes/e2ee_devices", get(e2ee_devices_shape))
         .route(
@@ -87,6 +88,19 @@ pub(crate) fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str,
 pub(crate) fn notifications_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
         "source = 'channel' AND user_id = $1 AND message_deleted = false AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)))"
+            .to_string(),
+        vec![("params[1]", user_id)],
+    )
+}
+
+/// 通話の招待の Shape の where 句とパラメータ。
+///
+/// 呼ばれた人と呼んだ人の、呼び出し中 (`pending`) の招待だけ。`e2ee_to_device` と同じく、
+/// クライアントの where は使わずサーバーで固定する。いま閲覧できるチャンネルの招待に限り、
+/// 脱退や削除では Electric の move-out で消える。終わった招待も `status` の変化で shape から外れる。
+pub(crate) fn call_invites_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
+    (
+        "(invitee_id = $1 OR inviter_id = $1) AND status = 'pending' AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)))"
             .to_string(),
         vec![("params[1]", user_id)],
     )
@@ -633,6 +647,33 @@ async fn notifications_shape(
     .await
 }
 
+/// 通話の招待の Shape（ユーザー別の認可・配信）
+async fn call_invites_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (mut where_clause, mut extra_params) = call_invites_shape_where(auth_user.id.as_str());
+    extra_params.push((
+        "columns",
+        "id,channel_id,inviter_id,invitee_id,status,created_at,expires_at",
+    ));
+    let mut db = state.db.clone();
+    if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+        where_clause = where_clause.replace("is_private = false OR ", "");
+    }
+    proxy_shape(
+        &state,
+        "call_invites",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
 /// E2EE の端末の Shape（ユーザー別の認可・配信）
 async fn e2ee_devices_shape(
     State(state): State<AppState>,
@@ -857,6 +898,14 @@ mod tests {
         assert_eq!(params, vec![("params[1]", "user-123")]);
         assert!(!E2EE_DEVICES_SHAPE_COLUMNS.contains("display_name"));
         assert!(!E2EE_DEVICES_SHAPE_COLUMNS.contains("last_seen_at"));
+    }
+
+    #[test]
+    fn test_call_invites_shape_where() {
+        let (clause, params) = call_invites_shape_where("user-1");
+        assert!(clause.contains("(invitee_id = $1 OR inviter_id = $1)"));
+        assert!(clause.contains("status = 'pending'"));
+        assert_eq!(params, vec![("params[1]", "user-1")]);
     }
 
     #[test]

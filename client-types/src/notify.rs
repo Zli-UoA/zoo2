@@ -62,7 +62,8 @@ pub fn parse_dnd_until(value: &str) -> Option<DateTime> {
 pub struct Toast {
     pub notification_id: String,
     pub channel_id: String,
-    pub message_id: String,
+    /// 不在着信 (`missed_call`) にはない。
+    pub message_id: Option<String>,
     pub notification_type: String,
     pub title: String,
     pub body: String,
@@ -151,6 +152,7 @@ fn toast(store: &Store, notification: Notification) -> Toast {
     };
     let body = match notification.notification_type.as_str() {
         "reaction" => "リアクションしました".to_string(),
+        "missed_call" => "不在着信".to_string(),
         _ => display
             .and_then(|data| data.get("message"))
             .and_then(|message| text(message, "content"))
@@ -269,7 +271,7 @@ mod tests {
         assert_eq!(toasts[0].title, "Alice (#general)");
         assert_eq!(toasts[0].body, "hi @me");
         assert_eq!(toasts[0].channel_id, "c1");
-        assert_eq!(toasts[0].message_id, "m-n1");
+        assert_eq!(toasts[0].message_id.as_deref(), Some("m-n1"));
     }
 
     #[test]

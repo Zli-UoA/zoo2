@@ -50,6 +50,11 @@ tail -c 65 vapid-public.der | openssl base64 -A | tr '+/' '-_' | tr -d '='
 
 受信登録はユーザーごとに DB に保存する。端末で許可を取り消すか、レールのベルで無効にする。アプリ内ログアウトでは認証情報を消す前に受信登録を解除する。HTTP 404 / 410 を返した失効 endpoint はサーバーから削除する。
 
+通話の呼び出し（[音声通話と呼び出し](calls.md)）は、通常の通知と別の形で送る。
+- 着信（`notificationType: "call_invite"`）は `TTL: 30` と `Urgency: high` で送る。`tag` は `zoo-call-{招待の ID}`、`inviteId` に招待の ID を入れる。DND 中は送らない。
+- 招待が終わったら（応答・拒否・取り消し・不在）、同じ `tag` で `call_invite_end` を送り、出ている通知を閉じさせる。DND 中でも送る。
+- 不在着信（`missed_call`）は、通常の通知と同じく 5 分の TTL で送り、本文は「不在着信」になる。メッセージは持たない。
+
 配信はベストエフォートで、メッセージ投稿の成功とは独立している。プロセス終了・サービス障害時の再送キューはなく、通知の到達は保証しない。通知は5分で失効し、通知レコードごとに表示する。アプリ内の通知レコードは従来どおり保存・同期される。
 
 Service Worker は静的 app shell（`/index.html`、ビルド済みの `/assets/`、アイコン）を保存する。API、OIDC コールバック、cross-origin の認証リクエストはキャッシュしない。チャットデータは Service Worker ではなく、TanStack DB がユーザー単位の OPFS SQLite に保存する。

@@ -13,8 +13,10 @@ use uuid::Uuid;
 
 use crate::{
     auth::AuthUser,
+    call_invites,
     error::AppError,
     models::{Channel, ChannelUser},
+    push,
     state::AppState,
 };
 
@@ -320,6 +322,7 @@ impl CallRegistry {
     pub fn start_sweeper(&self, mut db: toasty::Db) {
         let registry = self.clone();
         let db_for_set = db.clone();
+        let db_for_invites = db.clone();
         tokio::spawn(async move {
             registry.set_db(db_for_set).await;
             let mut interval = tokio::time::interval(Duration::from_secs(10));
@@ -327,6 +330,17 @@ impl CallRegistry {
                 interval.tick().await;
                 if let Err(e) = Self::sweep_stale_presence(&mut db).await {
                     tracing::warn!("Failed to sweep stale call presence: {e}");
+                }
+            }
+        });
+        // 招待の期限は 30 秒と短いので、presence より短い間隔で見る。
+        let mut invite_db = db_for_invites;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(3));
+            loop {
+                interval.tick().await;
+                if let Err(e) = call_invites::sweep(&mut invite_db).await {
+                    tracing::warn!("Failed to sweep call invites: {e}");
                 }
             }
         });
@@ -872,6 +886,8 @@ impl SessionGuard {
         {
             tracing::error!("Failed to delete call_presence and notify during cleanup: {e}");
         }
+        // 呼んだ人が抜けて部屋が空になったら、呼び出しをやめる。
+        call_invites::cancel_orphaned(&mut db, &channel_id).await;
     }
 }
 
@@ -909,9 +925,19 @@ pub fn router() -> Router<AppState> {
         .route("/api/channels/{id}/call/heartbeat", post(heartbeat))
         .route("/api/channels/{id}/call/leave", post(leave_call))
         .route("/api/calls/active", get(list_active_calls))
+        .route(
+            "/api/channels/{id}/call/invites",
+            post(call_invites::create),
+        )
+        .route("/api/call-invites/{id}/accept", post(call_invites::accept))
+        .route(
+            "/api/call-invites/{id}/decline",
+            post(call_invites::decline),
+        )
+        .route("/api/call-invites/{id}/cancel", post(call_invites::cancel))
 }
 
-async fn authorize_call_access(
+pub(crate) async fn authorize_call_access(
     db: &mut toasty::Db,
     channel_id: &str,
     user: &AuthUser,
@@ -1053,6 +1079,7 @@ async fn call_stream(
     #[derive(Deserialize)]
     struct ChannelLockRow {
         is_private: bool,
+        is_dm: bool,
         deleted_at: Option<String>,
         archive_at: Option<String>,
     }
@@ -1060,6 +1087,7 @@ async fn call_stream(
     let lock_rows = toasty::sql::query(
         "SELECT json_build_object(
             'is_private', is_private,
+            'is_dm', is_dm,
             'deleted_at', deleted_at,
             'archive_at', archive_at
          )::text
@@ -1267,6 +1295,9 @@ async fn call_stream(
         }
     }
 
+    // チャンネル行のロックで参加は直列化されるので、自分だけなら空の部屋に最初に入った 1 人。
+    let first_in_room = participants.len() == 1;
+
     if let Err(e) = tx.commit().await {
         state
             .call_registry
@@ -1338,6 +1369,19 @@ async fn call_stream(
                 guard.cleanup().await;
                 return Err(AppError::from(e));
             }
+        }
+    }
+
+    // 招待の更新 (失敗しても通話への参加は妨げない)。
+    // 呼ばれた人が入ったら、その招待は応答済み。DM は、空の部屋に最初の 1 人が入ったら相手を呼ぶ。
+    match call_invites::accept_on_join(&mut db, &channel_id, &user.id).await {
+        Ok(ended) => push::dispatch_call_invite_ends(state.db.clone(), ended),
+        Err(e) => tracing::warn!("Failed to mark call invites accepted on join: {e}"),
+    }
+    if ch.is_dm && first_in_room {
+        match call_invites::create_dm_invites(&mut db, &channel_id, &user.id).await {
+            Ok(created) => push::dispatch_call_invites(state.db.clone(), created),
+            Err(e) => tracing::warn!("Failed to create DM call invites: {e}"),
         }
     }
 
@@ -1641,6 +1685,7 @@ async fn leave_call(
         .call_registry
         .unregister_local_session(&body.session_id)
         .await;
+    call_invites::cancel_orphaned(&mut db, &channel_id).await;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
