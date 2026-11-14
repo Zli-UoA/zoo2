@@ -515,59 +515,67 @@ async fn deliver_call_invites(
     let client = push_client()?;
     let started = std::time::Instant::now();
     for invite in invites {
-        let payload = if end {
-            NotificationPayload {
-                title: String::new(),
-                body: String::new(),
-                url: format!("/channels/{}", invite.channel_id),
-                tag: call_invite_tag(&invite.id),
-                notification_type: "call_invite_end".into(),
-                e2ee: None,
-                invite_id: Some(invite.id.clone()),
-            }
-        } else {
-            let actor = User::get_by_id(&mut db, invite.inviter_id.as_str()).await?;
-            let channel = Channel::get_by_id(&mut db, invite.channel_id.as_str()).await?;
-            let name = display_name(&actor);
-            NotificationPayload {
-                title: if channel.is_dm {
-                    name
-                } else {
-                    format!(
-                        "{name} · #{}",
-                        channel.channel_name.chars().take(60).collect::<String>()
-                    )
-                },
-                body: if channel.is_dm {
-                    "着信".into()
-                } else {
-                    "通話に招待されています".into()
-                },
-                url: format!("/channels/{}?call_invite={}", channel.id, invite.id),
-                tag: call_invite_tag(&invite.id),
-                notification_type: "call_invite".into(),
-                e2ee: None,
-                invite_id: Some(invite.id.clone()),
-            }
-        };
-        let delivery = Delivery {
-            ttl: if end { 60 } else { CALL_INVITE_TTL_SECONDS },
-            urgent: true,
-            respect_dnd: true,
-            // 着信は、招待の期限までに送れた購読にだけ送る（期限の過ぎた着信を、あとから出さない）。
-            expires: (!end).then_some(
-                started + std::time::Duration::from_secs(u64::from(CALL_INVITE_TTL_SECONDS)),
-            ),
-        };
-        push_to_user(
-            &client,
-            &config,
-            &mut db,
-            &invite.invitee_id,
-            &payload,
-            &delivery,
-        )
-        .await?;
+        // 1 件の失敗（ユーザーやチャンネルが引けない、送信のエラー）で、後続の招待を止めない。
+        let result: anyhow::Result<()> = async {
+            let payload = if end {
+                NotificationPayload {
+                    title: String::new(),
+                    body: String::new(),
+                    url: format!("/channels/{}", invite.channel_id),
+                    tag: call_invite_tag(&invite.id),
+                    notification_type: "call_invite_end".into(),
+                    e2ee: None,
+                    invite_id: Some(invite.id.clone()),
+                }
+            } else {
+                let actor = User::get_by_id(&mut db, invite.inviter_id.as_str()).await?;
+                let channel = Channel::get_by_id(&mut db, invite.channel_id.as_str()).await?;
+                let name = display_name(&actor);
+                NotificationPayload {
+                    title: if channel.is_dm {
+                        name
+                    } else {
+                        format!(
+                            "{name} · #{}",
+                            channel.channel_name.chars().take(60).collect::<String>()
+                        )
+                    },
+                    body: if channel.is_dm {
+                        "着信".into()
+                    } else {
+                        "通話に招待されています".into()
+                    },
+                    url: format!("/channels/{}?call_invite={}", channel.id, invite.id),
+                    tag: call_invite_tag(&invite.id),
+                    notification_type: "call_invite".into(),
+                    e2ee: None,
+                    invite_id: Some(invite.id.clone()),
+                }
+            };
+            let delivery = Delivery {
+                ttl: if end { 60 } else { CALL_INVITE_TTL_SECONDS },
+                urgent: true,
+                respect_dnd: true,
+                // 着信は、招待の期限までに送れた購読にだけ送る（期限の過ぎた着信を、あとから出さない）。
+                expires: (!end).then_some(
+                    started + std::time::Duration::from_secs(u64::from(CALL_INVITE_TTL_SECONDS)),
+                ),
+            };
+            push_to_user(
+                &client,
+                &config,
+                &mut db,
+                &invite.invitee_id,
+                &payload,
+                &delivery,
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        if result.is_err() {
+            tracing::warn!("Web Push call invite delivery failed for one invite");
+        }
     }
     Ok(())
 }
