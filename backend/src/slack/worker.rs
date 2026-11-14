@@ -1735,9 +1735,11 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     Ok(FileOutcome::RetryLater(_)) => Err(AppError::BadGateway(
                         "Slack file download returned 429 Too Many Requests".into(),
                     )),
-                    Ok(FileOutcome::Denied) => Err(AppError::BadGateway(format!(
-                        "Slack file download failed: {DENIED_NOTE}"
-                    ))),
+                    // 従来と同じ文言にする (再取得の SQL が、この文言で行を選ぶ)
+                    Ok(FileOutcome::Denied) => Err(AppError::BadGateway(
+                        "Slack file download failed: redirected to a URL that is not allowed"
+                            .into(),
+                    )),
                     other => other,
                 };
                 let (status, attachment, error) = match outcome {
@@ -1838,6 +1840,8 @@ struct FileTokens {
     tokens: Vec<String>,
     /// `tokens` のうち、先頭から数えたユーザーのトークンの数 (残りは Bot)
     users: usize,
+    /// ユーザーのトークンを使える行か。連携が増えれば取れる見込みがあるのは、この行だけ
+    eligible: bool,
 }
 
 /// 行の URL が、この行のファイルのものか。ユーザーのトークンは、このパスにだけ付けて送る。
@@ -1851,24 +1855,26 @@ fn is_own_file_url(url: &str, team: &str, file_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 行の取得に使うトークンを集める。ユーザーは、同じワークスペースの連携のうち、`files:read` を持つ人。
+/// 行の取得に使うトークンを集める。ユーザーのトークンは、差分同期の行 (`job_id` なし) だけに使う。
+/// ZIP の取り込みの行は、ファイル ID と URL を ZIP の提供者が決めるので、ユーザーの権限で取らせない (Bot だけ)。
+/// ユーザーは、同じワークスペースの連携のうち、`files:read` を持つ人。
 /// 非公開チャンネルは、そのメンバーだけ。前回その Slack チャンネルを読めた人、メンバー、新しい連携の順。
 /// 人数では切らない (先頭の人が見えなくても、残りの人で取れるように)。
 async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, AppError> {
     let mut tokens = Vec::new();
-    let own_url = file.url.as_deref().is_some_and(|u| {
-        allowed_file_url(u, &s.config.slack.files_base_url)
-            && is_own_file_url(u, &file.team_id, &file.slack_file_id)
-    });
-    if own_url
-        && s.config.slack.team_allowed(&file.team_id)
-        && let Some(key) = s
-            .config
-            .slack
-            .oauth_enabled()
-            .then(|| s.config.slack.encryption_key())
-            .flatten()
-    {
+    let own_url = file.job_id.is_none()
+        && file.url.as_deref().is_some_and(|u| {
+            allowed_file_url(u, &s.config.slack.files_base_url)
+                && is_own_file_url(u, &file.team_id, &file.slack_file_id)
+        });
+    let key = s
+        .config
+        .slack
+        .oauth_enabled()
+        .then(|| s.config.slack.encryption_key())
+        .flatten();
+    let eligible = own_url && s.config.slack.team_allowed(&file.team_id) && key.is_some();
+    if eligible && let Some(key) = key {
         let mut db = s.db.clone();
         let mut tx = db.transaction().await?;
         let rows = query(
@@ -1878,9 +1884,9 @@ async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, App
              WHERE l.team_id=$1 AND 'files:read'=ANY(string_to_array(replace(l.scopes,' ',''),',')) \
              AND (NOT ch.is_private OR EXISTS(SELECT 1 FROM channel_user cu \
                   WHERE cu.channel_id=ch.id AND cu.user_id=l.user_id)) \
-             ORDER BY (l.user_id=COALESCE((SELECT sy.token_user_id FROM slack_channels sc \
+             ORDER BY EXISTS(SELECT 1 FROM slack_channels sc \
                   JOIN slack_channel_syncs sy ON sy.team_id=sc.team_id AND sy.slack_channel_id=sc.slack_channel_id \
-                  WHERE sc.team_id=$1 AND sc.channel_id=$2),'')) DESC,\
+                  WHERE sc.team_id=$1 AND sc.channel_id=$2 AND sy.token_user_id=l.user_id) DESC,\
              EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=ch.id AND cu.user_id=l.user_id) DESC,\
              l.updated_at DESC,l.user_id",
             &[&file.team_id, &file.channel_id],
@@ -1901,7 +1907,11 @@ async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, App
     if let Some(bot) = s.config.slack.import_bot_token.as_deref() {
         tokens.push(bot.to_string());
     }
-    Ok(FileTokens { tokens, users })
+    Ok(FileTokens {
+        tokens,
+        users,
+        eligible,
+    })
 }
 
 /// 行単位の取得のワーカー。取得に使えるトークンがなければ何もせず戻る (呼び出し側で、使えるときだけ起動する)。
@@ -2017,9 +2027,12 @@ async fn claim_file(
     s: &AppState,
     team: &str,
     token: &str,
+    bot: bool,
 ) -> Result<Option<PendingFile>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    // Bot トークンがなければ、差分同期の行 (`job_id` なし) だけを取る。ジョブの行は、ユーザーのトークンでは取らない
+    // (Bot を設定するまで、未取得のまま残す)。
     // 削除済みと暗号化 (平文の添付を置けない) チャンネルの行は取らない。リースが切れた行と、失敗後の待ちが終わった行を取る。
     // ジョブの行はロックしない (ハートビートと競合しないよう、`FOR UPDATE OF f`)
     let rows = query(
@@ -2030,6 +2043,7 @@ async fn claim_file(
              WHERE f.status='pending' AND ($1='' OR f.team_id=$1) AND f.attempts<$3::integer \
              AND (f.lease_until IS NULL OR f.lease_until<now()) \
              AND ch.deleted_at IS NULL AND NOT COALESCE(ch.encrypted,false) \
+             AND ($4::boolean OR f.job_id IS NULL) \
              AND (f.job_id IS NULL OR EXISTS(SELECT 1 FROM slack_import_jobs j WHERE j.id=f.job_id \
                   AND j.status IN ('completed','failed','cancelled'))) \
              ORDER BY f.created_at,f.slack_file_id,f.message_id LIMIT 1 FOR UPDATE OF f SKIP LOCKED) \
@@ -2040,7 +2054,12 @@ async fn claim_file(
              'mimetype',f.mimetype,'size',f.size,'url',f.url_private_download,'attempts',f.attempts,\
              'job_id',f.job_id,'lease_token',f.lease_token)::text"
         ),
-        &[team, token, &MAX_FILE_ATTEMPTS.to_string()],
+        &[
+            team,
+            token,
+            &MAX_FILE_ATTEMPTS.to_string(),
+            if bot { "true" } else { "false" },
+        ],
     )
     .await?;
     tx.commit().await?;
@@ -2094,15 +2113,17 @@ async fn orphan_files_step(
     }
     fail_exhausted_files(s, team).await?;
     let lease_token = uuid::Uuid::new_v4().to_string();
-    let Some(file) = claim_file(s, team, &lease_token).await? else {
+    let Some(file) = claim_file(
+        s,
+        team,
+        &lease_token,
+        s.config.slack.import_bot_token.is_some(),
+    )
+    .await?
+    else {
         return Ok(FileStep::Idle);
     };
     let tokens = file_tokens(s, &file).await?;
-    // 使えるトークンがない (Bot なし、連携した人もまだいない)。試行に数えず、しばらく待ってから取り直す
-    if tokens.tokens.is_empty() {
-        release_file(s, &file, true, NO_USER_TOKEN_WAIT_SECS, NO_USER_TOKEN_NOTE).await?;
-        return Ok(FileStep::Done);
-    }
     // 取得の途中で合図を受けたら、取得を捨てて行を手放す (添付は決定的 ID で作るので、取り直しても重複しない)
     let outcome = tokio::select! {
         outcome = fetch_one(s, client, &tokens.tokens, &file) => outcome,
@@ -2119,9 +2140,10 @@ async fn orphan_files_step(
         }
         Ok(FileOutcome::Done(attachment)) => ("done", attachment, String::new()),
         Ok(FileOutcome::Skipped(reason)) => ("skipped", String::new(), reason),
-        // どのトークンにも見えなかった。Bot しか試していなくて、連携した人がこれから増えるなら (再連携が進むまで)、
-        // 試行に数えず待つ。ユーザーも試したなら、取り直しても変わらないので、すぐ `failed` にする
-        Ok(FileOutcome::Denied) if tokens.users == 0 && user_tokens_enabled(s) => {
+        // どのトークンにも見えなかった。ユーザーのトークンを使える行で、連携した人がこれから増えるなら (再連携が進むまで)、
+        // 試行に数えず待つ。ユーザーも試した、またはユーザーのトークンを使えない行は、取り直しても変わらないので、
+        // すぐ `failed` にする
+        Ok(FileOutcome::Denied) if tokens.eligible && tokens.users == 0 => {
             release_file(s, &file, true, NO_USER_TOKEN_WAIT_SECS, NO_USER_TOKEN_NOTE).await?;
             return Ok(FileStep::Done);
         }

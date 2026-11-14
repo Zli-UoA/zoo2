@@ -78,21 +78,23 @@ Slack のエクスポート ZIP には、添付ファイルの実体が入って
   - 行単位の取得は、`SLACK_IMPORT_BOT_TOKEN` があるか、Slack 連携（OAuth と `SLACK_TOKEN_ENCRYPTION_KEY`）が有効なワーカー（`zoo_slack_worker`、または `SLACK_IMPORT_WORKER` が有効な backend）だけが動かします。管理画面の「添付ファイルを取得」は、ジョブの添付だけを対象にします。
   - **取得に使うトークン**: 連携したユーザーのトークン（`files:read` を持つ人）→ Bot トークンの順に、1 件ずつ試します。Bot がチャンネルに参加していないと、Slack は Bot にログイン画面（`*.slack.com` へのリダイレクト）を返し、ファイルは見えません。ユーザーのトークンは、そのチャンネルを読める人の権限で取れます。
     - ユーザーのトークンは、同じワークスペースの連携のうち、`slack_user_links.scopes` に `files:read` がある人だけです。非公開チャンネルは、そのチャンネルのメンバーだけ。前回その Slack チャンネルを読めた人、メンバー、新しい連携の順で、人数では切らずに試します。
-    - ユーザーのトークンは、行の URL が `/files-pri/<team>-<file>/` の下（その行のファイル自身）のときだけ使います。ZIP の取り込みの URL は管理者が上げたものなので、別のファイルの URL にはユーザーの権限を使いません。トークンは、許可した URL（`SLACK_FILES_BASE_URL`）にだけ送ります。この許可は広げません。
+    - ユーザーのトークンは、**差分同期の行（`job_id` なし）だけ**に使います。ファイル ID と URL が Slack API の応答に由来するためです。ZIP の取り込みの行は、ファイル ID と URL を ZIP の提供者が決めるので、ユーザーの権限では取らず、Bot トークンだけで取ります（Bot が見えないファイルは取れません。Bot をチャンネルに招待してから取り直します）。差分同期の行でも、URL が `/files-pri/<team>-<file>/` の下（その行のファイル自身）のときだけ使います。トークンは、許可した URL（`SLACK_FILES_BASE_URL`）にだけ送ります。この許可は広げません。
+    - Bot トークンがない環境では、ジョブの行は取らず、Bot を設定するまで未取得のまま残します（差分同期の行だけを、ユーザーのトークンで取ります）。
     - 全部のトークンにログイン画面が返ったら、取り直しても変わらないので、1 回で `failed`（`Slack file is not visible to any linked user or the bot`）にします。通信エラーや 5xx が混じるときは、これまでどおり取り直します。429 は、残りのトークンを試さずに待ちます。
-    - `files:read` を持つユーザーが、まだ 1 人もいない間（再連携が進むまで）は、Bot で見えないファイルを `failed` にせず、試行に数えないで、3 時間ごとに取り直します（`error` に `no linked user with files:read yet` が残ります）。
+    - `files:read` を持つユーザーが、まだ 1 人もいない間（再連携が進むまで）は、差分同期の行のうち Bot で見えないものを `failed` にせず、試行に数えないで、3 時間ごとに取り直します（`error` に `no linked user with files:read yet` が残ります）。ユーザーのトークンを使えない行（ZIP の行、URL が別のファイルの行、許可していないワークスペースの行）は、待たずに `failed` にします。
   - ジョブに紐づかない `failed` の行を取り直すには、次の SQL でリースごと戻します。
     ```sql
     UPDATE slack_files SET status='pending',attempts=0,error=NULL,lease_until=NULL,lease_token=NULL
     WHERE status='failed' AND job_id IS NULL;
     ```
-    終わったジョブ（`completed`・`failed`・`cancelled`）の行（`job_id` あり）は、次の SQL で戻します。`error` が、Bot にログイン画面を返された失敗のものだけを対象にし、行単位の取得が拾わない行（削除済みか暗号化チャンネル）は戻しません（戻しても、永久に `pending` のままになるため）。管理画面の「添付ファイルを取得」は、ジョブを `fetching_files` に戻し、その間は Bot のトークンだけで取るので、この SQL で戻した行には使わないでください。
+    終わったジョブ（`completed`・`failed`・`cancelled`）の行（`job_id` あり）は、ユーザーのトークンでは取れないので、**Bot をそのチャンネルに招待してから**、次の SQL で戻します。Bot が見えないままだと、また `failed` になります。`error` が、Bot にログイン画面を返された失敗のものだけを対象にし、行単位の取得が拾わない行（削除済みか暗号化チャンネル）は戻しません（戻しても、永久に `pending` のままになるため）。管理画面の「添付ファイルを取得」は、ジョブを `fetching_files` に戻し、その間は Bot のトークンだけで取るので、同じ Bot の招待が済んでいれば使えます。
     ```sql
     UPDATE slack_files f SET status='pending',attempts=0,error=NULL,lease_until=NULL,lease_token=NULL
     FROM slack_import_jobs j, channels c
     WHERE f.status='failed' AND f.job_id=j.id AND j.status IN ('completed','failed','cancelled')
       AND c.id=f.channel_id AND c.deleted_at IS NULL AND NOT COALESCE(c.encrypted,false)
-      AND (f.error LIKE '%redirected to a URL that is not allowed%' OR f.error LIKE '%login page%');
+      AND (f.error LIKE '%redirected to a URL that is not allowed%' OR f.error LIKE '%login page%'
+           OR f.error LIKE '%not visible to any linked user%');
     ```
     順序は、**Slack アプリの manifest を更新（ユーザースコープに `files:read`）→ デプロイ → ユーザーが連携し直す → `slack_user_links.scopes` に `files:read` を持つ人がいることを確認 → SQL** です。連携し直す前に戻しても、取得できません。
 

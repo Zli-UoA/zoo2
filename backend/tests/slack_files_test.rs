@@ -956,17 +956,34 @@ async fn test_orphan_files_use_only_members_for_private_channels_and_try_every_m
 }
 
 #[tokio::test]
-async fn test_orphan_files_do_not_send_user_tokens_to_urls_of_other_files() -> anyhow::Result<()> {
+async fn test_orphan_files_never_use_user_tokens_for_zip_rows_or_other_files_urls()
+-> anyhow::Result<()> {
     let _serial = SERIAL.lock().await;
     let files = MockServer::start().await;
     let f = fixture(&files, with_links(&files)).await?;
     f.link(&f.user, "xoxp-alice", "files:read", None).await?;
-    // 終わったジョブの行でも、URL がこの行のファイルのものでなければ、ユーザーのトークンは使わない
+    // ZIP の取り込みの行は、ファイル ID と URL が一致していても、ユーザーのトークンでは取らない (Bot だけ)
     let job = f.job("completed").await?;
+    f.add_pri("FZIP", &job).await?;
+    mount_pri(&files, &f, "FZIP", "xoxb-test", login_redirect()).await;
+    Mock::given(method("GET"))
+        .and(path(f.pri_path("FZIP")))
+        .and(header("authorization", "Bearer xoxp-alice"))
+        .respond_with(body(b"no"))
+        .expect(0)
+        .mount(&files)
+        .await;
+    assert!(f.once().await);
+    let row = f.file("FZIP").await;
+    // 連携が増えても取れないので、待たずに確定する
+    assert_eq!(row["status"], "failed");
+    assert_eq!(row["attempts"], 1);
+
+    // 差分同期の行でも、URL がその行のファイルのものでなければ、ユーザーのトークンは使わない
     f.add_url(
         Row {
             file: "F1",
-            job: &job,
+            job: "",
             content: "",
             in_content: false,
             size: 1,
@@ -990,17 +1007,67 @@ async fn test_orphan_files_do_not_send_user_tokens_to_urls_of_other_files() -> a
         .respond_with(login_redirect())
         .mount(&files)
         .await;
-
     assert!(f.once().await);
-    // ユーザーのトークンを試していないので、Bot だけ。連携が増える余地があるので、待つ
-    assert_eq!(f.file("F1").await["status"], "pending");
-    assert_eq!(f.file("F1").await["attempts"], 0);
+    assert_eq!(f.file("F1").await["status"], "failed");
+    Ok(())
+}
 
-    // 同じジョブの、自分のファイルの URL の行は、ユーザーのトークンで取れる
-    f.add_pri("F2", &job).await?;
-    mount_pri(&files, &f, "F2", "xoxb-test", login_redirect()).await;
-    mount_pri(&files, &f, "F2", "xoxp-alice", body(b"ok")).await;
+#[tokio::test]
+async fn test_orphan_files_skip_rows_of_jobs_without_a_bot_token() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let mut links = with_links(&files);
+    let f = fixture(&files, move |c| {
+        links(c);
+        c.slack.import_bot_token = None;
+    })
+    .await?;
+    f.link(&f.user, "xoxp-alice", "files:read", None).await?;
+    // Bot なしで完了したジョブの行は、Bot を設定するまで未取得のまま残す (取らない、数えない)
+    let job = f.job("completed").await?;
+    f.add_pri("FZIP", &job).await?;
+    assert!(!f.once().await);
+    let row = f.file("FZIP").await;
+    assert_eq!(
+        (row["status"].as_str(), row["attempts"].as_i64()),
+        (Some("pending"), Some(0))
+    );
+
+    // 差分同期の行は、ユーザーのトークンだけで取れる
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxp-alice", body(b"ok")).await;
     assert!(f.once().await);
-    assert_eq!(f.file("F2").await["status"], "done");
+    assert_eq!(f.file("F1").await["status"], "done");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_accept_several_sync_sources_for_one_channel() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    f.link(&f.user, "xoxp-alice", "files:read", None).await?;
+    // 同じ Zoo チャンネルに、Slack チャンネルが 2 つ対応し、どちらにも同期の行がある
+    for slack in ["C1", "C2"] {
+        sql(
+            &f.state,
+            "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES($1,$2,$3) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&f.team, slack, &f.channel],
+        )
+        .await?;
+        sql(
+            &f.state,
+            "INSERT INTO slack_channel_syncs(team_id,slack_channel_id,token_user_id) VALUES($1,$2,$3) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&f.team, slack, &f.user],
+        )
+        .await?;
+    }
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+    mount_pri(&files, &f, "F1", "xoxp-alice", body(b"ok")).await;
+    assert!(f.once().await);
+    assert_eq!(f.file("F1").await["status"], "done");
     Ok(())
 }
