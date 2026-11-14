@@ -80,6 +80,11 @@ export type MessageRow = {
   epoch?: string | null;
   /** 編集の版（暗号化チャンネルでは編集のたびに 1 増える）。 */
   revision?: number;
+  /**
+   * `message`（通常）か `emote`。暗号化チャンネルでは、復号したペイロードの `content.kind` と照合する
+   * （docs/e2ee.md の「受信時の検証」）。
+   */
+  message_kind?: string | null;
 };
 
 export type MessageReactionRow = {

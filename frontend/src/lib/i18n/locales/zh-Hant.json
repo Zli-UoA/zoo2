@@ -1148,9 +1148,39 @@
       "passkeyNoPrf": "此通行金鑰無法解鎖（不支援 PRF）。若是安全金鑰，在 AuthZ 重新註冊後可能可以使用。請使用復原金鑰解鎖。",
       "passkeyOriginNotAllowed": "無法從此頁面使用通行金鑰，請使用復原金鑰解鎖。",
       "passkeyNoSlot": "所選的通行金鑰未註冊為加密解鎖方式。",
-      "lastSlot": "無法刪除最後一個解鎖方式。"
+      "lastSlot": "無法刪除最後一個解鎖方式。",
+      "disabled": "此伺服器尚不支援加密頻道。",
+      "publicForbidden": "只有私人頻道可以加密。"
     },
     "reunlockToAdd": "重新解鎖以新增通行金鑰",
-    "reunlockToAddDescription": "若要新增通行金鑰，請使用通行金鑰或復原金鑰重新解鎖。此裝置的解鎖狀態不會改變。"
+    "reunlockToAddDescription": "若要新增通行金鑰，請使用通行金鑰或復原金鑰重新解鎖。此裝置的解鎖狀態不會改變。",
+    "badge": "已加密",
+    "encryptChannel": "端對端加密",
+    "encryptChannelHelp": "只有成員已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",
+    "encryptChannelPrivateOnly": "只有私人頻道可以加密。",
+    "encryptDm": "端對端加密",
+    "encryptDmHelp": "只有參與者已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",
+    "undecryptable": {
+      "keyMissing": "解密此訊息的金鑰尚未送達。",
+      "locked": "在此裝置上解鎖加密後即可讀取此訊息。",
+      "staleEpoch": "此訊息是為先前的成員加密的，無法讀取。",
+      "invalid": "此訊息驗證失敗，因此不顯示。",
+      "failed": "無法解密此訊息。"
+    },
+    "sender": {
+      "unverified": "未驗證的傳送者",
+      "unauthenticated": "無法確認傳送者"
+    },
+    "undeliverable": {
+      "title": "以下使用者無法讀取新訊息",
+      "notSetUp": "{{name}} 尚未設定加密",
+      "needsReverification": "需要重新驗證 {{name}}"
+    },
+    "loadPreviews": "載入連結預覽",
+    "desktopUnsupported": {
+      "title": "加密頻道",
+      "description": "此用戶端無法顯示加密頻道。請在網頁版或行動應用程式中開啟。"
+    },
+    "sendUnavailable": "此版本尚不能向加密頻道傳送訊息。"
   }
 }

@@ -138,6 +138,8 @@ pub struct App {
     credentials: Credentials,
     pub me: Me,
     pub store: Store,
+    /// 一度 `encrypted = true` を見たチャンネル。Channels の再同期で行が消えても暗号化として扱う。
+    known_encrypted_channels: HashSet<String>,
     pub(super) subscriptions: HashMap<ShapeId, JoinHandle<()>>,
     shape_tx: mpsc::UnboundedSender<ShapeEvent>,
     app_tx: mpsc::UnboundedSender<AppEvent>,
@@ -212,6 +214,7 @@ impl App {
             credentials,
             me,
             store: Store::default(),
+            known_encrypted_channels: HashSet::new(),
             subscriptions: HashMap::new(),
             shape_tx,
             app_tx,
@@ -366,7 +369,17 @@ impl App {
             _ => None,
         };
         match event {
-            ShapeEvent::Batch(id, batch) => self.store.apply(&id, batch),
+            ShapeEvent::Batch(id, batch) => {
+                let is_channels = matches!(id, ShapeId::Channels);
+                self.store.apply(&id, batch);
+                if is_channels {
+                    for channel in self.store.channels() {
+                        if channel.encrypted {
+                            self.known_encrypted_channels.insert(channel.id.clone());
+                        }
+                    }
+                }
+            }
             ShapeEvent::Failed(id, err) => {
                 self.notify(format!("同期を停止しました ({id:?}): {err}"));
             }
@@ -1591,7 +1604,32 @@ impl App {
         }
     }
 
+    /// 暗号化チャンネルか。TUI はまだ Megolm で暗号化して送れないので、平文を送らないために使う。
+    fn is_encrypted_channel(&self, channel_id: &str) -> bool {
+        self.known_encrypted_channels.contains(channel_id)
+            || self.store.channel(channel_id).is_some_and(|c| c.encrypted)
+    }
+
     fn submit(&mut self) {
+        // 暗号化チャンネルには、暗号化の送信を入れるまで投稿、返信、編集を送らない（docs/e2ee.md、#361）。
+        // サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため、ここで止める。下書きは残す。
+        if self
+            .current
+            .as_deref()
+            .is_some_and(|id| self.is_encrypted_channel(id))
+        {
+            self.notify("暗号化チャンネルには、このバージョンの TUI からはまだ送信できません");
+            return;
+        }
+        // Channels の再同期でチャンネルの行がないあいだは、暗号化か分からないので送らない（下書きは残す）。
+        if self
+            .current
+            .as_deref()
+            .is_some_and(|id| self.store.channel(id).is_none())
+        {
+            self.notify("チャンネルの情報を同期しています。少し待ってから送ってください");
+            return;
+        }
         if let Target::Edit(message_id) = self.target.clone()
             && !self.can_change_message(&message_id)
         {
@@ -1989,6 +2027,92 @@ mod tests {
                 .await
                 .is_err()
         );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.method == "GET")
+        );
+    }
+
+    #[tokio::test]
+    async fn encrypted_channels_do_not_send_plaintext() {
+        let server = wiremock::MockServer::start().await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            Batch {
+                changes: vec![electric::Change::Upsert {
+                    key: "c1".into(),
+                    row: serde_json::json!({
+                        "id":"c1", "channel_name":"secret", "is_private":"t", "encrypted":"t"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                }],
+                ..Default::default()
+            },
+        ));
+        app.current = Some("c1".into());
+        for target in [
+            Target::Channel,
+            Target::Reply("root".into()),
+            Target::Edit("root".into()),
+        ] {
+            app.mode = Mode::Insert;
+            app.target = target;
+            app.composer = composer_with("secret text");
+            app.submit();
+            // 下書きは消さずに残す。
+            assert_eq!(app.composer.lines().join("\n"), "secret text");
+        }
+        // Channels の再同期で行が消えても、暗号化として扱い続ける。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            Batch {
+                reset: true,
+                ..Default::default()
+            },
+        ));
+        assert!(app.store.channel("c1").is_none());
+        for target in [
+            Target::Channel,
+            Target::Reply("root".into()),
+            Target::Edit("root".into()),
+        ] {
+            app.mode = Mode::Insert;
+            app.target = target;
+            app.composer = composer_with("secret after reset");
+            app.submit();
+            assert_eq!(app.composer.lines().join("\n"), "secret after reset");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|request| request.method == "GET")
+        );
+        assert!(app.notice.is_some());
+    }
+
+    #[tokio::test]
+    async fn channels_without_a_row_do_not_send_until_synced() {
+        let server = wiremock::MockServer::start().await;
+        let (mut app, _rx) = api_test_app(&server.uri());
+        // 暗号化か分からないチャンネル（再同期中で行がない）には送らない。
+        app.current = Some("c9".into());
+        app.mode = Mode::Insert;
+        app.target = Target::Channel;
+        app.composer = composer_with("unknown channel");
+        app.submit();
+        assert_eq!(app.composer.lines().join("\n"), "unknown channel");
+        tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(
             server
                 .received_requests()

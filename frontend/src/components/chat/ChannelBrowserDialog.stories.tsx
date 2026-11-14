@@ -1,6 +1,6 @@
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { storyChannels } from "../../../.storybook/fixtures";
@@ -81,6 +81,8 @@ export const SortByName: Story = {
     await userEvent.click(screen.getByRole("button", { name: /並び替え/ }));
     await userEvent.click(await screen.findByRole("menuitemradio", { name: /A → Z/ }));
     await expect((await rows())[0]).toContain("old-announcements");
+    // 閉じるアニメーションの途中（pointer-events: none）のメニューを押さないよう、閉じるのを待つ。
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
     await userEvent.click(screen.getByRole("button", { name: /並び替え/ }));
     await userEvent.click(await screen.findByRole("menuitemradio", { name: /Z → A/ }));
     await expect((await rows())[0]).toContain("random");

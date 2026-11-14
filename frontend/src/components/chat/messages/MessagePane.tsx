@@ -76,12 +76,15 @@ export function MessagePane({
   isMember,
   canModerate = false,
   readOnly = false,
+  encrypted = false,
   targetMessageId,
 }: {
   channelId: string;
   isMember: boolean;
   canModerate?: boolean;
   readOnly?: boolean;
+  /** 暗号化チャンネル。初期版では添付できないので、添付ボタンを出さない（docs/e2ee.md）。 */
+  encrypted?: boolean;
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
@@ -102,7 +105,14 @@ export function MessagePane({
   const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
-  const uploadAttachment = useAttachmentUpload(channelId);
+  const channelUpload = useAttachmentUpload(channelId);
+  // 暗号化チャンネルでは、Megolm の暗号化（#361 の続く PR）を入れるまで、投稿、返信、編集、コマンドを
+  // 送らない。サーバーは平文を 400 E2EE_PLAINTEXT_FORBIDDEN で拒否するが、拒否の前に本文がサーバーに
+  // 届いてしまうため、クライアントで止める。
+  const sendBlocked = encrypted;
+  // 暗号化チャンネルでは添付を送らない（サーバーも 400 E2EE_ATTACHMENTS_FORBIDDEN で拒否する）。
+  // 暗号化した添付（#364）を入れたら外す。
+  const uploadAttachment = encrypted ? undefined : channelUpload;
   const { currentUserId } = useCurrentUser();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
@@ -364,6 +374,7 @@ export function MessagePane({
       attachmentIds: string[] = [],
       sensitiveAttachmentIds: string[] = [],
     ): Promise<boolean> => {
+      if (sendBlocked) return false;
       if (attachmentIds.length === 0) {
         const commandResult = await runCommand(content, commandAppId);
         if (commandResult !== null) return commandResult;
@@ -397,7 +408,7 @@ export function MessagePane({
       // 成否を判定する（Composer が失敗時に下書きを復元できるようにする）。
       return messagesCollection.get(id) !== undefined;
     },
-    [run, messagesCollection, currentUserId, channelId, runCommand],
+    [run, messagesCollection, currentUserId, channelId, runCommand, sendBlocked],
   );
 
   const handleSendReply = useCallback(
@@ -407,6 +418,7 @@ export function MessagePane({
       attachmentIds: string[] = [],
       sensitiveAttachmentIds: string[] = [],
     ): Promise<boolean> => {
+      if (sendBlocked) return false;
       if (readOnly || !isMember) {
         toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
         return false;
@@ -456,13 +468,19 @@ export function MessagePane({
       readOnly,
       t,
       runCommand,
+      sendBlocked,
     ],
   );
 
-  const handleStartEdit = useCallback((id: string, content: string) => {
-    setEditingId(id);
-    setEditingText(content);
-  }, []);
+  const handleStartEdit = useCallback(
+    (id: string, content: string) => {
+      // 暗号化チャンネルの編集も、暗号化して送れるようになるまで始めない。
+      if (sendBlocked) return;
+      setEditingId(id);
+      setEditingText(content);
+    },
+    [sendBlocked],
+  );
 
   const handleCancelEdit = useCallback(() => {
     setEditingId(null);
@@ -472,7 +490,7 @@ export function MessagePane({
   const handleSaveEdit = useCallback(async () => {
     const id = editingId;
     const content = editingText.trim();
-    if (!id || !content || isArchivedMessage(id)) {
+    if (!id || !content || isArchivedMessage(id) || sendBlocked) {
       return;
     }
     setEditingId(null);
@@ -482,7 +500,7 @@ export function MessagePane({
         message.content = content;
       }),
     );
-  }, [editingId, editingText, run, messagesCollection, isArchivedMessage]);
+  }, [editingId, editingText, run, messagesCollection, isArchivedMessage, sendBlocked]);
 
   const handleConfirmDelete = useCallback(async () => {
     const id = pendingDeleteId;
@@ -575,8 +593,14 @@ export function MessagePane({
               onTyping={typing.onTyping}
               // 最初のページが届く前の書き込みは、確認 (txid) を待つ間、永続化層が
               // 最初のページの取得を止めるため、互いに待ち合って失敗する。
-              disabled={readOnly || !isOnline || messagesQuery.isLoading}
-              placeholder={isOnline ? undefined : t("offline.composeDisabled")}
+              disabled={readOnly || sendBlocked || !isOnline || messagesQuery.isLoading}
+              placeholder={
+                sendBlocked
+                  ? t("e2ee.sendUnavailable")
+                  : isOnline
+                    ? undefined
+                    : t("offline.composeDisabled")
+              }
             />
           </>
         ) : (
@@ -630,6 +654,7 @@ export function MessagePane({
           onSaveEdit={handleSaveEdit}
           onRequestDelete={setPendingDeleteId}
           onSendReply={handleSendReply}
+          composeDisabledReason={sendBlocked ? t("e2ee.sendUnavailable") : undefined}
           hasOlder={threadQuery.hasOlder}
           isLoadingOlder={threadQuery.isLoadingOlder}
           onLoadOlder={() => void threadQuery.loadOlder()}

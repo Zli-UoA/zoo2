@@ -1,5 +1,5 @@
 import { MENTION_PATTERN } from "./mentions";
-import type { MessageDisplayData } from "../../../lib/electric/types";
+import type { MegolmCiphertext, MessageDisplayData } from "../../../lib/electric/types";
 import type { TFunction } from "i18next";
 import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../../lib/i18n/locale";
 import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
@@ -28,6 +28,12 @@ export interface FeedMessage {
   /** 返信先のルートメッセージ。`null` はチャンネル直下。 */
   parent_id: string | null;
   thread_archive_at?: string | null;
+  /** 暗号化チャンネルの暗号文。平文の行は `null`（docs/e2ee.md）。 */
+  ciphertext?: MegolmCiphertext | null;
+  /** 暗号化したセッションの `membership_epoch`（int8 なので文字列）。 */
+  epoch?: string | null;
+  revision?: number;
+  message_kind?: string | null;
   user_name?: string | null;
   display_name?: string | null;
 }

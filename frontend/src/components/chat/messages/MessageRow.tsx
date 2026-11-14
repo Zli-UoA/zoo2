@@ -1,5 +1,5 @@
 import { ActivityPubBadge } from "../../home/ActivityPubBadge";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -7,6 +7,7 @@ import { cn } from "cn";
 import {
   BotIcon,
   CopyIcon,
+  LockKeyholeIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MoreHorizontalIcon,
@@ -14,9 +15,11 @@ import {
   SmilePlusIcon,
   TrashIcon,
   UsersRoundIcon,
+  ShieldAlertIcon,
 } from "lucide-react";
 import { MfmContent } from "./MfmContent";
 import { LinkPreviews } from "./LinkPreviews.tsx";
+import { previewUrls } from "./linkPreviews";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
@@ -41,6 +44,12 @@ import type { MessageItem } from "./messageGrouping";
 import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
 import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
+import {
+  resolveMessageDecryption,
+  type MessageDecryption,
+  type SenderTrust,
+  type UndecryptableReason,
+} from "../../../lib/e2ee/messageDecryption";
 
 export interface MessageRowProps {
   item: MessageItem;
@@ -63,6 +72,11 @@ export interface MessageRowProps {
   /** スレッドペインを開く。返信行では未指定。 */
   onOpenThread?: () => void;
   attachments?: AttachmentRow[];
+  /**
+   * 暗号化チャンネルのメッセージを復号した結果。暗号文のある行で未指定なら、この端末では読めない
+   * ものとして表示する（docs/e2ee.md の「受信時の検証」）。
+   */
+  decryption?: MessageDecryption;
 }
 
 function EditedIndicator({ at }: { at: string }) {
@@ -90,6 +104,30 @@ function EditedIndicator({ at }: { at: string }) {
   );
 }
 
+/**
+ * 暗号化チャンネルの URL カードは、押したときだけ読み込む。カードの取得で、Summaly と画像プロクシの
+ * 運用者に URL が見えるため（docs/e2ee.md の「機能ごとの扱い」）。
+ */
+function ManualLinkPreviews({ content }: { content: string }) {
+  const { t } = useTranslation();
+  // 押したときの本文にだけ許可する。編集で本文（URL）が変わったら、もう一度押すまで取得しない。
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const hasUrls = useMemo(() => previewUrls(content).length > 0, [content]);
+  if (!hasUrls) return null;
+  if (loadedFor === content) return <LinkPreviews content={content} />;
+  return (
+    <Button
+      type="button"
+      variant="link"
+      size="sm"
+      className="h-auto min-h-8 px-0 text-xs text-muted-foreground"
+      onClick={() => setLoadedFor(content)}
+    >
+      {t("e2ee.loadPreviews")}
+    </Button>
+  );
+}
+
 /** 通常投稿は MFM、連携カードは専用の描画を使う。 */
 export function MessageBody({
   content,
@@ -97,12 +135,15 @@ export function MessageBody({
   appBlocks,
   editedAt,
   emojis,
+  previews = "auto",
 }: {
   emojis?: Record<string, DisplayEmoji>;
   editedAt?: string | null;
   content: string;
   card?: string | null;
   appBlocks?: string | null;
+  /** `manual` は、押したときだけ URL カードを読み込む（暗号化チャンネル）。 */
+  previews?: "auto" | "manual";
 }) {
   if (hasCardBlocks(appBlocks)) return null;
   const cards = parseMessageCards(data);
@@ -121,8 +162,35 @@ export function MessageBody({
         <MfmContent content={content} emojis={emojis} />
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
-      <LinkPreviews content={content} />
+      {previews === "manual" ? (
+        <ManualLinkPreviews content={content} />
+      ) : (
+        <LinkPreviews content={content} />
+      )}
     </>
+  );
+}
+
+/** 復号できない暗号化メッセージの代わりに出す行。理由ごとに文言を変える。 */
+export function UndecryptableMessage({ reason }: { reason: UndecryptableReason }) {
+  const { t } = useTranslation();
+  return (
+    <p className="flex items-center gap-1.5 text-sm italic text-muted-foreground">
+      <LockKeyholeIcon className="size-3.5 shrink-0" aria-hidden="true" />
+      <span>{t(`e2ee.undecryptable.${reason}`)}</span>
+    </p>
+  );
+}
+
+/** 検証済みでない送信者の印。検証済みなら何も出さない。 */
+export function SenderTrustBadge({ trust }: { trust: SenderTrust }) {
+  const { t } = useTranslation();
+  if (trust === "verified") return null;
+  return (
+    <span className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300">
+      <ShieldAlertIcon className="size-3" aria-hidden="true" />
+      {t(trust === "unverified" ? "e2ee.sender.unverified" : "e2ee.sender.unauthenticated")}
+    </span>
   );
 }
 
@@ -184,14 +252,21 @@ export function MessageRow({
   replyCount = 0,
   onOpenThread,
   attachments = [],
+  decryption,
 }: MessageRowProps) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
+  const resolvedDecryption = resolveMessageDecryption(message, decryption);
+  // 暗号化チャンネルの行の `content` は空なので、復号した本文を使う。
+  const bodyText =
+    resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
 
   async function copyRawMessage() {
+    // メニューを出さない状態でも、ほかの経路から呼ばれたときに空文字列で上書きしない。
+    if (resolvedDecryption?.status === "undecryptable") return;
     try {
-      await navigator.clipboard.writeText(message.content);
+      await navigator.clipboard.writeText(bodyText);
       toast.success(t("messages.copied"));
     } catch {
       toast.error(t("messages.copyFailed"));
@@ -388,13 +463,23 @@ export function MessageRow({
             </form>
           ) : (
             <>
-              <MessageBody
-                emojis={message.display_data?.emojis}
-                content={message.content}
-                card={message.card}
-                appBlocks={message.app_blocks}
-                editedAt={message.updated_at}
-              />
+              {resolvedDecryption?.status === "undecryptable" ? (
+                <UndecryptableMessage reason={resolvedDecryption.reason} />
+              ) : (
+                <>
+                  {resolvedDecryption?.status === "decrypted" ? (
+                    <SenderTrustBadge trust={resolvedDecryption.sender} />
+                  ) : null}
+                  <MessageBody
+                    emojis={message.display_data?.emojis}
+                    content={bodyText}
+                    card={message.card}
+                    appBlocks={message.app_blocks}
+                    editedAt={message.updated_at}
+                    previews={resolvedDecryption ? "manual" : "auto"}
+                  />
+                </>
+              )}
               <MessageAttachments attachments={attachments} />
               <MessageAppContent message={message} />
               {message.updated_at && hasCardBlocks(message.app_blocks) ? (
@@ -565,10 +650,13 @@ export function MessageRow({
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => void copyRawMessage()}>
-                  <CopyIcon />
-                  {t("messages.copyRaw")}
-                </DropdownMenuItem>
+                {/* 復号できない暗号化メッセージは本文がないので、空文字列をコピーしないようメニューを出さない。 */}
+                {resolvedDecryption?.status === "undecryptable" ? null : (
+                  <DropdownMenuItem onClick={() => void copyRawMessage()}>
+                    <CopyIcon />
+                    {t("messages.copyRaw")}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
                   onClick={() =>
                     window.dispatchEvent(

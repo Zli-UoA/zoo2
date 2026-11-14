@@ -129,6 +129,7 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     ciphertext: "jsonb",
     epoch: "int8",
     revision: "int4",
+    message_kind: "text",
   },
 };
 
