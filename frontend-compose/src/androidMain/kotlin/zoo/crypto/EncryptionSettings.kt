@@ -105,7 +105,6 @@ fun EncryptionSettings(app: Session, host: E2eeSettingsHost) {
 
     LaunchedEffect(revision) {
         replace(Phase.Loading)
-        error = ""
         try {
             replace(Phase.Status(withTimeout(30.seconds) { host.setup.loadStatus() }))
         } catch (_: TimeoutCancellationException) {
@@ -118,7 +117,9 @@ fun EncryptionSettings(app: Session, host: E2eeSettingsHost) {
         }
     }
 
+    /** 状態を読み直す。表示中の誤りは消す（読み直しの理由を示すときは、呼んだあとで入れる）。 */
     fun reload() {
+        error = ""
         confirmed = false
         passkeyAdded = false
         recoveryInput = ""
@@ -214,7 +215,7 @@ fun EncryptionSettings(app: Session, host: E2eeSettingsHost) {
                             if (passkeyReady) {
                                 Button(t("unlockWithPasskey"), primary = true, enabled = busy == null) {
                                     run(t("unlocking")) {
-                                        val unlocked = host.setup.unlock(UnlockMethod.Passkey(host.passkeys!!, host.rpId!!))
+                                        val unlocked = host.setup.unlock(UnlockMethod.Passkey(host.passkeys, host.rpId))
                                         if (unlocked.needsReauth) replace(Phase.Continue(unlocked))
                                         else {
                                             unlocked.session.close()

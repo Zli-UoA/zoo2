@@ -237,7 +237,7 @@ class E2eeSetup(
                         // SSSS の秘密が書き換えられた（失効など）。解錠し直すまで送らない。
                         if (code == "E2EE_SSSS_CONFLICT") store.forgetSecretsRevision()
                     }
-                    if (conflict) return@withLock BackupUploadResult.Conflict(code!!)
+                    if (conflict) return@withLock BackupUploadResult.Conflict(code)
                     throw failure
                 }
                 withContext(io) { store.backupUploaded(request.id) }

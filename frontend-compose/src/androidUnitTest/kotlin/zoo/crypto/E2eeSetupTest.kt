@@ -72,7 +72,7 @@ class E2eeSetupTest {
     }
 
     @Test
-    fun firstSetupSavesEverythingAfterReauth() = runBlocking {
+    fun firstSetupSavesEverythingAfterReauth() = runBlocking<Unit> {
         val device = Device("a")
         assertEquals(E2eeStatus.NotSetUp, device.setup.loadStatus())
         val start = device.setup.begin()
@@ -95,7 +95,7 @@ class E2eeSetupTest {
     }
 
     @Test
-    fun resumesFromEveryStopWithTheRecoveryKey() = runBlocking {
+    fun resumesFromEveryStopWithTheRecoveryKey() = runBlocking<Unit> {
         for (stop in listOf("cross_signing", "signatures", "versions")) {
             server.reset()
             val device = Device("resume-$stop")
@@ -118,7 +118,7 @@ class E2eeSetupTest {
     }
 
     @Test
-    fun anotherDeviceUnlocksAndSignsItself() = runBlocking {
+    fun anotherDeviceUnlocksAndSignsItself() = runBlocking<Unit> {
         val first = Device("first")
         val start = first.setup.begin()
         first.setup.completeSetup(start.session, "t")
@@ -141,7 +141,7 @@ class E2eeSetupTest {
     }
 
     @Test
-    fun concurrentSetupLosesToTheFirstSave() = runBlocking {
+    fun concurrentSetupLosesToTheFirstSave() = runBlocking<Unit> {
         val first = Device("first")
         val second = Device("second")
         val a = first.setup.begin()
@@ -158,7 +158,7 @@ class E2eeSetupTest {
     }
 
     @Test
-    fun lostSecretStorageResponseIsReadBack() = runBlocking {
+    fun lostSecretStorageResponseIsReadBack() = runBlocking<Unit> {
         val device = Device("a")
         val start = device.setup.begin()
         // SSSS は保存されたが、応答をなくした。送り直すと 409 になるので、読み直して続ける。
@@ -171,7 +171,7 @@ class E2eeSetupTest {
     }
 
     @Test
-    fun differentServerKeysAreAMismatch() = runBlocking {
+    fun differentServerKeysAreAMismatch() = runBlocking<Unit> {
         val device = Device("a")
         val start = device.setup.begin()
         server.failNext += "cross_signing"
@@ -190,7 +190,7 @@ class E2eeSetupTest {
     }
 
     @Test
-    fun uploadsBackupOnlyAfterUnlockAndChecksTheVersion() = runBlocking {
+    fun uploadsBackupOnlyAfterUnlockAndChecksTheVersion() = runBlocking<Unit> {
         val first = Device("first")
         val start = first.setup.begin()
         first.setup.completeSetup(start.session, "t")
@@ -230,7 +230,7 @@ class E2eeSetupTest {
     }
 
     @Test
-    fun conflictingBackupUploadStopsUntilUnlocked() = runBlocking {
+    fun conflictingBackupUploadStopsUntilUnlocked() = runBlocking<Unit> {
         val device = Device("a")
         val start = device.setup.begin()
         device.setup.completeSetup(start.session, "t")
@@ -245,7 +245,7 @@ class E2eeSetupTest {
     }
 
     @Test
-    fun setupAndUnlockWithPasskey() = runBlocking {
+    fun setupAndUnlockWithPasskey() = runBlocking<Unit> {
         val passkey = FakePasskey()
         val first = Device("first")
         val start = first.setup.begin()
