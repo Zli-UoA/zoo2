@@ -18,6 +18,7 @@ CREATE UNIQUE INDEX call_invites_pending_unique ON call_invites (channel_id, inv
 CREATE INDEX call_invites_invitee_pending ON call_invites (invitee_id) WHERE status = 'pending';
 CREATE INDEX call_invites_inviter_pending ON call_invites (inviter_id) WHERE status = 'pending';
 CREATE INDEX call_invites_expiry_pending ON call_invites (expires_at) WHERE status = 'pending';
+CREATE INDEX call_invites_accepted_unjoined ON call_invites (channel_id, invitee_id) WHERE status = 'accepted' AND joined_at IS NULL;
 ALTER TABLE call_invites REPLICA IDENTITY FULL;
 
 -- Relax the inbox CHECK so a channel notification may omit message_id when it is a missed call.
