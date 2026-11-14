@@ -183,3 +183,79 @@ test("re-shares with a new session when the membership epoch changes during a se
   other.close();
   bot.close();
 });
+
+/** A ZooApp whose requests matching `fail` get a 503 while `failures()` returns true. */
+function flakyApp(zoo: FakeZoo, fail: (url: string, method: string) => boolean) {
+  return new ZooApp({
+    baseUrl: "https://zoo.example",
+    credentials: { access_token: "a", refresh_token: "r" },
+    fetch: async (input, init) => (fail(String(input), init?.method ?? "GET") ? Response.json({ error: "unavailable" }, { status: 503 }) : zoo.fetch(input, init)),
+  });
+}
+
+test("keeps a received session key when the channel's snapshot fails after decryption", async () => {
+  const zoo = new FakeZoo(randomUUID());
+  let failures = 0;
+  const app = flakyApp(zoo, (url) => url.includes("/recipients") && failures-- > 0);
+  const bot = await openBot(zoo, app);
+  const alice = new HumanDevice(crypto, zoo);
+  const channel = zoo.channel([alice.userId, zoo.botUserId]);
+
+  // A short outage: retried, and the sender is still verified.
+  failures = 2;
+  alice.send(channel, "one");
+  const first = await bot.decryptEvent(zoo.botEvents[0]!);
+  assert.deepEqual([first?.body, first?.senderVerified], ["one", true]);
+
+  // A longer outage: the key is kept (never lost to a decrypt-once Olm message), as unverified.
+  zoo.bumpEpoch(channel);
+  failures = 100;
+  alice.send(channel, "two");
+  const second = await bot.decryptEvent(zoo.botEvents[1]!);
+  assert.deepEqual([second?.body, second?.senderVerified], ["two", false]);
+  assert.equal(zoo.toDevice.length, 0);
+  bot.close();
+});
+
+test("leaves a to-device message queued when a request before decryption fails", async () => {
+  const zoo = new FakeZoo(randomUUID());
+  let down = false;
+  const app = flakyApp(zoo, (url) => down && url.endsWith("/e2ee/keys/query"));
+  const bot = await openBot(zoo, app);
+  const alice = new HumanDevice(crypto, zoo);
+  const channel = zoo.channel([alice.userId, zoo.botUserId]);
+  alice.send(channel, "queued");
+  down = true;
+  await assert.rejects(bot.syncToDevice());
+  assert.equal(zoo.toDevice.length, 1, "not acknowledged");
+  down = false;
+  assert.equal((await bot.decryptEvent(zoo.botEvents[0]!))?.body, "queued");
+  bot.close();
+});
+
+test("stops without acknowledging when the store cannot be saved, and a reopened device reads the key", async () => {
+  const zoo = new FakeZoo(randomUUID());
+  const app = new ZooApp({ baseUrl: "https://zoo.example", credentials: { access_token: "a", refresh_token: "r" }, fetch: zoo.fetch });
+  const backing = memoryStore();
+  let readOnly = false;
+  const store: E2eeStore = {
+    load: () => backing.load(),
+    save: async (data) => {
+      if (readOnly) throw new Error("disk full");
+      await backing.save(data);
+    },
+  };
+  const bot = await openBot(zoo, app, store);
+  const alice = new HumanDevice(crypto, zoo);
+  const channel = zoo.channel([alice.userId, zoo.botUserId]);
+  alice.send(channel, "after the disk is fixed");
+  readOnly = true;
+  await assert.rejects(bot.syncToDevice(), /disk full/);
+  assert.equal(zoo.toDevice.length, 1, "not acknowledged");
+  await assert.rejects(bot.syncToDevice(), /open the device again/);
+  bot.close();
+  readOnly = false;
+  const reopened = await openBot(zoo, app, store);
+  assert.equal((await reopened.decryptEvent(zoo.botEvents[0]!))?.body, "after the disk is fixed");
+  reopened.close();
+});

@@ -52,6 +52,8 @@ const TO_DEVICE_BATCH = 100;
 const TO_DEVICE_PAGE = 100;
 /** How many processed to-device ids to remember (to ACK again without decrypting twice). */
 const PROCESSED_TO_DEVICE_MEMORY = 1000;
+/** Waits before reading a channel's snapshot again while verifying a received session key. */
+const EVALUATE_RETRY_MS = [200, 1000, 3000];
 /** Waits before retrying a message whose room key has not arrived yet. */
 const KEY_WAIT_MS = [200, 500, 1000, 2000];
 
@@ -196,6 +198,8 @@ export class ZooE2ee {
   private readonly processed: Set<string>;
   private readonly loadedInbound = new Set<string>();
   private syncing: Promise<number> | undefined;
+  /** The store could not be saved after the memory moved ahead; the device must be opened again. */
+  private broken = false;
   private saving: Promise<void> = Promise.resolve();
 
   private readonly options: E2eeOptions;
@@ -356,6 +360,7 @@ export class ZooE2ee {
 
   private async runSync(): Promise<number> {
     const { app } = this.options;
+    if (this.broken) throw new Error("The E2EE store could not be saved; open the device again");
     let stored = 0;
     let newOlmSessions = false;
     for (;;) {
@@ -368,7 +373,16 @@ export class ZooE2ee {
         if (this.olm.length > before) newOlmSessions = true;
         this.processed.add(row.id);
         this.state.processed_to_device = [...this.processed].slice(-PROCESSED_TO_DEVICE_MEMORY);
-        await this.save();
+        try {
+          // The advanced Olm state, the session key and the processed mark are saved together.
+          await this.save();
+        } catch (error) {
+          // The memory is ahead of the store. Continuing would ACK a message whose Olm state was never
+          // saved; after a restart from the store the message can be decrypted again (as the web
+          // client's crypto store does, frontend/src/lib/e2ee/store/cryptoStore.ts).
+          this.broken = true;
+          throw error;
+        }
       }
       await app.request("POST", "/e2ee/to_device/ack", { device_id: this.deviceId, ids: messages.map((row) => row.id) });
       if (messages.length < TO_DEVICE_PAGE) break;
@@ -378,9 +392,20 @@ export class ZooE2ee {
     return stored;
   }
 
+  /**
+   * Decrypt and verify one to-device message and keep its session key in memory (the caller saves).
+   *
+   * An Olm message can be decrypted only once, so nothing after `decryptToDevice` may throw:
+   * network requests that can fail come first (the sender's keys from `keys/query`), and when the
+   * channel's snapshot cannot be read after a few attempts, the key is kept with an unverified sender
+   * instead of being lost.
+   */
   private async processToDevice(row: ToDeviceRow): Promise<number> {
     if (row.type !== "m.room.encrypted") return 0;
     const { storageKey } = this.options;
+    // Before decrypting: the device keys of the sender the server reports (errors leave the message
+    // in the queue for the next sync).
+    const query = await this.options.app.request<{ device_keys?: Record<string, Record<string, JsonObject>> }>("POST", "/e2ee/keys/query", { user_ids: [row.sender_user_id] });
     let decrypted;
     try {
       decrypted = this.account.decryptToDevice(this.olm, row.content);
@@ -388,7 +413,7 @@ export class ZooE2ee {
       return 0; // An undecryptable message never becomes readable; drop it.
     }
     try {
-      // Decryption advanced the account and the Olm sessions: save them whatever the outcome.
+      // Decryption advanced the account and the Olm sessions: keep them whatever the outcome.
       this.state.account = this.account.pickle(storageKey);
       const pickled = this.olm.pickleSessions(this.account, storageKey, decrypted.senderKey) as StoredState["olm_sessions"];
       const others = this.state.olm_sessions.filter((session) => session.their_identity_key !== decrypted.senderKey);
@@ -398,21 +423,28 @@ export class ZooE2ee {
       const plaintext = decrypted.plaintext as { content?: { channel_id?: unknown } };
       const channelId = plaintext.content?.channel_id;
       if (!sender || !senderDevice || typeof channelId !== "string") return 0;
-      // The sender's keys from the channel's snapshot (members only), as `keys/query` would return.
-      let listed: JsonObject | null = null;
+      let listed: JsonObject | null = sender === row.sender_user_id ? (query.device_keys?.[sender]?.[senderDevice] ?? null) : null;
+      // The sender's trust from the channel's snapshot (members only), with retries.
       let trust: { self_signing_key: string; signature: string | null } | null = null;
-      try {
-        const evaluation = await this.evaluate(channelId, null);
+      const sleep = this.options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+      for (let attempt = 0; ; attempt += 1) {
         try {
-          listed = deviceKeysOf(evaluation.pages, sender, senderDevice);
-          if (evaluation.trusted.has(sender)) trust = senderTrust(evaluation.pages, sender, senderDevice);
-        } finally {
-          freeEvaluation(evaluation);
+          // Not saved here: the caller saves the Olm state, the key and the processed mark together.
+          const evaluation = await this.evaluate(channelId, null, false);
+          try {
+            listed = deviceKeysOf(evaluation.pages, sender, senderDevice) ?? listed;
+            if (evaluation.trusted.has(sender)) trust = senderTrust(evaluation.pages, sender, senderDevice);
+          } finally {
+            freeEvaluation(evaluation);
+          }
+          break;
+        } catch (error) {
+          // Not a member (anymore, or not allowed): the key is useless.
+          if (error instanceof ZooError && (error.status === 403 || error.status === 404)) return 0;
+          // Keep the key with an unverified sender rather than lose it.
+          if (attempt >= EVALUATE_RETRY_MS.length) break;
+          await sleep(EVALUATE_RETRY_MS[attempt]!);
         }
-      } catch (error) {
-        // Not a member (anymore): the key is useless. Other errors are retried later.
-        if (error instanceof ZooError && (error.status === 403 || error.status === 404)) return 0;
-        throw error;
       }
       let roomKey;
       try {
@@ -640,7 +672,7 @@ export class ZooE2ee {
    * (docs/e2ee.md, "鍵の配布先の判定"): TOFU for members seen for the first time, nothing for members
    * whose master key changed. New TOFU pins are stored on the server.
    */
-  private async evaluate(channelId: string, minEpoch: number | null): Promise<Evaluation> {
+  private async evaluate(channelId: string, minEpoch: number | null, persist = true): Promise<Evaluation> {
     const { crypto } = this.options;
     let pages: JsonObject[] | null = null;
     for (let round = 0; ; round += 1) {
@@ -674,7 +706,7 @@ export class ZooE2ee {
         }
       }
       this.state.trust = this.trust.pickle(this.account, this.options.storageKey);
-      await this.save();
+      if (persist) await this.save();
       if (newPins && round < 2) {
         for (const device of distribution.devices) device.free();
         // A conflicting pin (another device of the bot stored one first) needs a fresh snapshot.

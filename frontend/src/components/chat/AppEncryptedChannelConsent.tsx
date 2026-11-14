@@ -88,7 +88,14 @@ export function AppEncryptedChannelConsent({
           </p>
         ) : null}
         <DialogFooter>
-          <Button variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
+          <Button
+            variant="outline"
+            disabled={pending}
+            onClick={() => {
+              setAgreed(false);
+              onOpenChange(false);
+            }}
+          >
             {supported ? t("common.cancel") : t("apps.close")}
           </Button>
           {supported ? (

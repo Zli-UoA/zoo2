@@ -607,9 +607,12 @@ function UserAppsDialog({
           )}
         </div>
       </div>
-      {app && targetChannel ? (
+      {app && targetChannel && consent ? (
+        // Mounted only while open and keyed by App and channel, so the consent checkbox always starts
+        // unchecked: an earlier tick (cancelled, or for another App) never carries over.
         <AppEncryptedChannelConsent
-          open={consent !== null}
+          key={`${app.id}:${targetChannel.id}`}
+          open
           appName={app.name}
           channelName={targetChannel.channel_name}
           supported={Boolean(app.manifest.scopes?.includes("e2ee:device"))}
