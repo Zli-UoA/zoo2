@@ -653,6 +653,8 @@ pub(super) struct Context {
     pub(super) profiles: HashMap<String, SlackUser>,
     pub(super) channel_names: HashMap<String, String>,
     pub(super) files: FilePolicy,
+    /// この Slack アプリの ID (`SLACK_APP_ID`)。このアプリが投稿したメッセージは取り込まない
+    pub(super) app_id: Option<String>,
 }
 
 /// 添付ファイルを取得して添付にできるかを、取り込みの時点で判定する (`fetch_one` と同じ条件)
@@ -878,6 +880,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             .collect(),
         channel_names: HashMap::new(),
         files: FilePolicy::new(s),
+        app_id: s.config.slack.app_id.clone(),
     };
     let mut db = s.db.clone();
     let admin = {
@@ -1452,6 +1455,28 @@ pub(super) async fn render_message(
     })
 }
 
+/// Slack の `ts` に結び付いた Zoo のメッセージ (`slack_message_map`)。(メッセージ ID, 出どころ `zoo` / `slack`)
+pub(super) async fn mapped(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    slack_channel: &str,
+    ts: &str,
+) -> Result<Option<(String, String)>, AppError> {
+    let rows = query(
+        tx,
+        "SELECT json_build_object('id',message_id,'origin',origin)::text FROM slack_message_map \
+         WHERE team_id=$1 AND slack_channel_id=$2 AND ts=$3",
+        &[team, slack_channel, ts],
+    )
+    .await?;
+    Ok(rows.first().and_then(|r| {
+        Some((
+            r["id"].as_str()?.to_string(),
+            r["origin"].as_str()?.to_string(),
+        ))
+    }))
+}
+
 pub(super) async fn insert_message(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
@@ -1460,6 +1485,15 @@ pub(super) async fn insert_message(
     job_id: &str,
     message: &SlackMessage,
 ) -> Result<(), AppError> {
+    // ループ防止: このアプリが投稿したメッセージ (#294 のブリッジが Zoo から Slack へ出したもの) は、取り込まない
+    if ctx.app_id.is_some() && message.app_id == ctx.app_id {
+        return Ok(());
+    }
+    // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は、Slack から取り込まない
+    let own = mapped(tx, &ctx.team, slack_channel, &message.ts).await?;
+    if own.as_ref().is_some_and(|(_, origin)| origin == "zoo") {
+        return Ok(());
+    }
     let author = message.author().unwrap_or_default();
     let fallback = message
         .username
@@ -1467,11 +1501,17 @@ pub(super) async fn insert_message(
         .or(message.bot_profile.as_ref().map(|b| b.name.as_str()))
         .filter(|n| !n.is_empty());
     let user = ctx.user(tx, author, fallback).await?;
-    let id = super::message_id(&ctx.team, slack_channel, &message.ts);
-    let parent = message
-        .parent_ts()
-        .map(|ts| super::message_id(&ctx.team, slack_channel, ts))
-        .unwrap_or_default();
+    let id = own
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| super::message_id(&ctx.team, slack_channel, &message.ts));
+    // スレッドの親が Zoo で作った投稿 (`slack_message_map`) なら、その Zoo のメッセージが親になる
+    let parent = match message.parent_ts() {
+        Some(ts) => match mapped(tx, &ctx.team, slack_channel, ts).await? {
+            Some((id, _)) => id,
+            None => super::message_id(&ctx.team, slack_channel, ts),
+        },
+        None => String::new(),
+    };
     let edited = message
         .edited
         .as_ref()
@@ -1507,6 +1547,19 @@ pub(super) async fn insert_message(
         ],
     )
     .await?;
+    // 差分同期・イベントで取り込んだ投稿は、`slack_message_map` に `slack` で残す (直近 24 時間の再確認が、
+    // Slack から消えた投稿を見つけるのに使う。ZIP の取り込みは、件数が多いので残さない。古い行は掃除が消す)
+    // スレッドの返信 (`thread_ts` が自分の `ts` と違う) は残さない。履歴 (`conversations.history`) は返信を返さないので、
+    // 再確認が「消えた」と誤って判定する。親を Zoo で結び付けられたか (`parent_id`) とは別に、Slack での種類で決める
+    if job_id.is_empty() && message.parent_ts().is_none() {
+        exec(
+            tx,
+            "INSERT INTO slack_message_map(team_id,slack_channel_id,ts,message_id,origin) \
+             SELECT $1,$2,$3,$4,'slack' WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) ON CONFLICT DO NOTHING",
+            &[&ctx.team, slack_channel, &message.ts, &id],
+        )
+        .await?;
+    }
 
     // 親だけを後から取り込んだときも、先に入っていた返信をスレッドに戻す
     if parent.is_empty() && !message.replies.is_empty() {

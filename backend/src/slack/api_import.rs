@@ -399,6 +399,7 @@ async fn start(
             profiles: HashMap::new(),
             channel_names: HashMap::new(),
             files: FilePolicy::new(&s),
+            app_id: s.config.slack.app_id.clone(),
         };
         load_profiles(&mut db, &mut slack, &mut ctx, &member_ids).await?;
 
