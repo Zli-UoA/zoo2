@@ -7,7 +7,8 @@
 //!   解錠したあとの自分の鍵（`OwnKeys::pickle`。#360）も同じく暗号化して置く。
 //!   `user_id`、`device_id`、登録済みか、処理済みの to-device の ID、最後に解錠したときの
 //!   `secrets_revision`、鍵バックアップの送信の状態（`BackupUploadState::to_json`。版の番号と送信待ちの
-//!   セッションの ID だけ）は平文で、秘密ではない。
+//!   セッションの ID だけ）、暗号化チャンネルとして記録したチャンネルの ID と、前回判定した配布先の
+//!   ユーザー ID（#361）は平文で、秘密ではない。送信用の Olm セッション（#361）は保存鍵で暗号化してある。
 //! - `storage.key`：32 バイトの保存鍵。
 //! - `../<user_id>.lock`：同じユーザーの暗号ストアを 2 つのプロセスで開かないためのロック
 //!   （ディレクトリーの外に置き、消しているあいだも持ち続ける）。
@@ -27,6 +28,12 @@ use zeroize::Zeroizing;
 use zoo_crypto::{
     BackupUpload, BackupUploadState, DeviceAccount, InboundSessionStore, ListedDevice, OlmSession,
     OwnKeys, OwnSecrets, ServerKeyState, SessionRef, StartupCheck, TrustStore, VersionChange,
+};
+
+mod megolm;
+pub use megolm::{
+    Decrypted, Decryption, EncryptedRow, MegolmError, RecipientSummary, SenderTrust, SharePlan,
+    ShareResult, UndecryptableReason, UndeliverableReason,
 };
 
 const STATE_VERSION: u32 = 1;
@@ -60,6 +67,16 @@ struct State {
     /// 鍵バックアップの送信の状態（`BackupUploadState::to_json`）。
     #[serde(default)]
     backup_upload: Option<String>,
+    /// 送信用の Olm セッション（相手の端末の識別鍵 → `OlmSession::pickle`。#361）。受信で作った
+    /// セッションとは分けて置く。
+    #[serde(default)]
+    outbound_olm: BTreeMap<String, String>,
+    /// 一度 `encrypted = true` を見たチャンネル（docs/e2ee.md の「暗号化の格下げを防ぐ」。#361）。
+    #[serde(default)]
+    encrypted_channels: BTreeSet<String>,
+    /// チャンネルごとに、前回判定した配布先のメンバー（`user_id` の昇順。#361）。
+    #[serde(default)]
+    recipients: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -140,6 +157,12 @@ pub struct CryptoStore {
     backup_state: Option<BackupUploadState>,
     pending_uploads: BTreeMap<u64, PendingUpload>,
     next_upload_id: u64,
+    /// チャンネルごとの送信用の Megolm セッション（メモリーにだけ置く。#361）。
+    outbound: BTreeMap<String, megolm::Outbound>,
+    /// チャンネルごとの、判定した配布先。
+    pending: BTreeMap<String, megolm::PendingDistribution>,
+    /// 受信用セッションが増えた回数。
+    inbound_generation: u64,
 }
 
 /// 開いた結果。保存鍵を失って作り直したら、前の端末の ID を返す（サーバーから消す）。
@@ -350,6 +373,9 @@ impl CryptoStore {
             backup_state: None,
             pending_uploads: BTreeMap::new(),
             next_upload_id: 0,
+            outbound: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            inbound_generation: 0,
         };
         store.save()?;
         Ok(Opened {
@@ -393,6 +419,9 @@ impl CryptoStore {
             backup_state: None,
             pending_uploads: BTreeMap::new(),
             next_upload_id: 0,
+            outbound: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            inbound_generation: 0,
         })
     }
 
@@ -575,6 +604,7 @@ impl CryptoStore {
                     backed_up: false,
                 },
             );
+            self.inbound_generation += 1;
             result.room_keys += 1;
         }
         Ok(())

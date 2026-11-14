@@ -11,6 +11,7 @@ use ratatui::{
 
 use super::{
     app::{App, Focus, Mode, SidebarItem, Target},
+    e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind},
     encryption::Screen,
     timeline::{self, Context},
 };
@@ -23,12 +24,17 @@ const DIM: Style = Style::new().fg(Color::DarkGray);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
-    let [main, composer, status] = Layout::vertical([
+    let notice = encryption_notice(app);
+    let [main, notice_area, composer, status] = Layout::vertical([
         Constraint::Min(5),
+        Constraint::Length(notice.len() as u16),
         Constraint::Length(composer_height),
         Constraint::Length(1),
     ])
     .areas(frame.area());
+    if !notice.is_empty() {
+        frame.render_widget(Paragraph::new(notice), notice_area);
+    }
 
     let sidebar_width = (main.width / 4).clamp(18, 32);
     let [sidebar, rest] =
@@ -58,8 +64,114 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ],
         ),
         Mode::Encryption => draw_encryption(frame, app),
+        Mode::Create(form) => draw_create(frame, form),
         _ => {}
     }
+}
+
+/// 暗号化チャンネルの送信画面の表示（docs/e2ee.md の「鍵の配布先の判定」。React の
+/// `EncryptionRecipientsNotice` と同じ）。入力欄の上に、配布先の数、前回から増えた配布先、鍵を配れない
+/// 相手と理由を出す。格下げを見つけたら、送らないことを出す。平文のチャンネルでは何も出さない。
+fn encryption_notice(app: &App) -> Vec<Line<'static>> {
+    let Some(channel_id) = app.current.as_deref() else {
+        return Vec::new();
+    };
+    let warn = Style::new().fg(Color::Yellow);
+    match app.channel_encryption(channel_id) {
+        ChannelEncryption::Plain => return Vec::new(),
+        ChannelEncryption::Downgraded => {
+            return vec![Line::styled(
+                format!(" ⚠ {}", e2ee_chat::DOWNGRADED),
+                Style::new().fg(Color::Red),
+            )];
+        }
+        ChannelEncryption::Encrypted => {}
+    }
+    let name = |id: &str| app.store.display_name(id);
+    let Some(summary) = app.recipients.get(channel_id) else {
+        let text = match app.encryption.status {
+            Some(E2eeStatus::Unlocked) => {
+                " 🔒 暗号化チャンネルです。送ると、メンバーの検証済みの端末あてに暗号化します"
+            }
+            _ => " 🔒 暗号化チャンネルに送るには、この端末で暗号化を解錠してください (E)",
+        };
+        return vec![Line::styled(text, DIM)];
+    };
+    let mut lines = vec![Line::styled(
+        format!(
+            " 🔒 {} 人の {} 台の端末あてに暗号化しています。",
+            summary.user_count, summary.device_count
+        ),
+        DIM,
+    )];
+    if !summary.added_user_ids.is_empty() {
+        let names: Vec<String> = summary.added_user_ids.iter().map(|id| name(id)).collect();
+        lines.push(Line::styled(
+            format!(" 前回の送信から増えた配布先：{}", names.join(", ")),
+            Style::new().add_modifier(Modifier::BOLD),
+        ));
+    }
+    if !summary.undeliverable.is_empty() {
+        let reasons: Vec<String> = summary
+            .undeliverable
+            .iter()
+            .map(|(id, reason)| reason.describe(&name(id)))
+            .collect();
+        lines.push(Line::styled(
+            format!(
+                " 次の人は新しいメッセージを読めません：{}",
+                reasons.join("、")
+            ),
+            warn,
+        ));
+    }
+    lines
+}
+
+/// チャンネルか DM の作成の入力欄（#361）。
+fn draw_create(frame: &mut Frame, form: &CreateForm) {
+    let accent = Style::new().fg(ACCENT);
+    let (title, label) = match form.kind {
+        CreateKind::Channel => ("新しいチャンネル", "名前: "),
+        CreateKind::Dm => ("新しい DM", "相手 (@ユーザー名を空白区切り): "),
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(label, accent),
+        Span::raw(form.input.clone()),
+        Span::styled("▏", accent),
+    ])];
+    lines.push(Line::from(""));
+    match form.kind {
+        CreateKind::Channel => lines.push(Line::from(vec![
+            Span::styled("公開範囲: ", accent),
+            Span::raw(form.visibility.label()),
+        ])),
+        CreateKind::Dm => lines.push(Line::from(vec![
+            Span::styled("暗号化: ", accent),
+            Span::raw(if form.encrypted() {
+                "エンドツーエンドで暗号化する"
+            } else {
+                "しない"
+            }),
+        ])),
+    }
+    if form.encrypted() {
+        let help = match form.kind {
+            CreateKind::Channel => {
+                "メッセージはメンバーの検証済みの端末だけが読めます。暗号化はあとから解除できません。"
+            }
+            CreateKind::Dm => {
+                "メッセージは参加者の検証済みの端末だけが読めます。暗号化はあとから解除できません。"
+            }
+        };
+        lines.push(Line::styled(help, DIM));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "Tab: 切り替え / Enter: 作る / Esc: やめる",
+        DIM,
+    ));
+    draw_popup(frame, title, lines);
 }
 
 fn pane(title: Line<'static>, focused: bool) -> Block<'static> {
@@ -215,6 +327,14 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             .unwrap_or_default(),
         Style::new().add_modifier(Modifier::BOLD),
     ));
+    match app.channel_encryption(&channel_id) {
+        ChannelEncryption::Encrypted => title.push(Span::styled(" 🔒 暗号化", DIM)),
+        ChannelEncryption::Downgraded => title.push(Span::styled(
+            " ⚠ 暗号化の状態が変わりました",
+            Style::new().fg(Color::Red),
+        )),
+        ChannelEncryption::Plain => {}
+    }
     if let Some(description) = channel
         .and_then(|c| c.description.as_deref())
         .filter(|d| !d.is_empty())
@@ -244,9 +364,13 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let reactions = app
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
+    let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
+        me_id: &app.me.id,
+        decryptions: &app.decryptions,
+        encrypted,
         selected: app.selected.as_deref(),
         reply_counts: Some(&counts),
         reactions: &reactions,
@@ -302,9 +426,13 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let reactions = app
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
+    let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
+        me_id: &app.me.id,
+        decryptions: &app.decryptions,
+        encrypted,
         selected: thread.selected.as_deref(),
         reply_counts: None,
         reactions: &reactions,
@@ -442,6 +570,7 @@ const HELP: &[(&str, &str)] = &[
     ("J / L", "チャンネルに参加 / 退出"),
     ("/", "チャンネル・スレッドを検索"),
     ("u", "選択中のスレッドを再開"),
+    ("c / m", "チャンネル / DM を作る (Tab で暗号化)"),
     ("R", "送れなかった本文を入力欄に戻す"),
     ("E", "暗号化（初回設定・解錠）"),
     ("q / Ctrl+C", "終了"),
@@ -2255,5 +2384,211 @@ mod tests {
         );
         assert!(screen.contains("暗号化: 解錠が必要 (E)"), "{screen}");
         drop(tx);
+    }
+
+    /// 暗号化チャンネル `c3`（メンバーは自分と Bob）と、その行を入れる。
+    fn encrypted_app(name: &str, encrypted: bool) -> App {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c3",
+                json!({ "id": "c3", "channel_name": name, "is_private": "t",
+                        "encrypted": if encrypted { "t" } else { "f" }, "membership_epoch": "1" }),
+            )]),
+        ));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![
+                ("m31", json!({ "user_id": "u1", "channel_id": "c3" })),
+                ("m32", json!({ "user_id": "u2", "channel_id": "c3" })),
+            ]),
+        ));
+        app.focus = Focus::Messages;
+        app.open_channel("c3".into());
+        app
+    }
+
+    fn encrypted_row(id: &str, at: &str, ciphertext: bool, epoch: Option<u64>) -> (String, Value) {
+        let mut row = json!({ "id": id, "user_id": "u2", "channel_id": "c3", "content": "",
+                              "created_at": at, "revision": "0" });
+        if ciphertext {
+            row["ciphertext"] = json!(
+                r#"{"algorithm":"m.megolm.v1.aes-sha2","sender_key":"k","device_id":"d","session_id":"s","ciphertext":"x"}"#
+            );
+        }
+        if let Some(epoch) = epoch {
+            row["epoch"] = json!(epoch.to_string());
+        }
+        (id.to_owned(), row)
+    }
+
+    #[tokio::test]
+    async fn shows_decrypted_and_undecryptable_messages_in_encrypted_channels() {
+        use crate::e2ee::store::{Decrypted, Decryption, SenderTrust, UndecryptableReason};
+        let mut app = encrypted_app("secret-e2ee", true);
+        let rows = [
+            encrypted_row("e1", "2026-11-01 04:00:00", true, Some(1)),
+            encrypted_row("e2", "2026-11-01 04:01:00", true, Some(1)),
+            encrypted_row("e3", "2026-11-01 04:02:00", true, Some(1)),
+            encrypted_row("e4", "2026-11-01 04:03:00", false, Some(1)),
+            {
+                let (id, mut row) = encrypted_row("e5", "2026-11-01 03:59:00", false, None);
+                row["content"] = json!("切り替える前の本文");
+                (id, row)
+            },
+        ];
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c3".into()),
+            batch(
+                rows.iter()
+                    .map(|(id, row)| (id.as_str(), row.clone()))
+                    .collect(),
+            ),
+        ));
+        app.on_app_event(AppEvent::Decrypted {
+            results: vec![
+                (
+                    "e1".into(),
+                    0,
+                    Decryption::Decrypted(Decrypted {
+                        body: "復号した本文".into(),
+                        kind: "message".into(),
+                        mentions: Default::default(),
+                        sender: SenderTrust::Unverified,
+                        revision: zoo_crypto::RevisionStatus::Latest,
+                        attachments: vec!["plan.pdf".into()],
+                    }),
+                ),
+                (
+                    "e2".into(),
+                    0,
+                    Decryption::Undecryptable(UndecryptableReason::KeyMissing),
+                ),
+            ],
+            generation: Some(1),
+        });
+        let screen = render_sized(&mut app, 140, 40);
+        assert!(screen.contains("🔒 暗号化"), "{screen}");
+        assert!(screen.contains("復号した本文"), "{screen}");
+        assert!(screen.contains("[未検証の送信者]"), "{screen}");
+        assert!(screen.contains("plan.pdf"), "{screen}");
+        assert!(screen.contains("鍵がまだ届いていません"), "{screen}");
+        // まだ結果のない行は、本文（空）を出さずに待つ。
+        assert!(screen.contains("準備ができると"), "{screen}");
+        assert!(
+            screen.contains("暗号化されていないため表示しません"),
+            "{screen}"
+        );
+        assert!(screen.contains("切り替える前の本文"), "{screen}");
+        assert!(screen.contains("[暗号化前]"), "{screen}");
+        // 解錠していない端末には、送る前に解錠を案内する。
+        assert!(screen.contains("暗号化を解錠してください"), "{screen}");
+
+        // 配布先を判定したら、入力欄の上に数と、増えた人、配れない人を出す。
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: crate::e2ee::store::RecipientSummary {
+                epoch: 1,
+                user_count: 1,
+                device_count: 2,
+                user_ids: vec!["u1".into(), "u2".into()],
+                added_user_ids: vec!["u2".into()],
+                undeliverable: vec![(
+                    "u2".into(),
+                    crate::e2ee::store::UndeliverableReason::NotSetUp,
+                )],
+                new_pins: Vec::new(),
+            },
+        });
+        let screen = render_sized(&mut app, 140, 40);
+        assert!(
+            screen.contains("1 人の 2 台の端末あてに暗号化しています"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("前回の送信から増えた配布先：Bob"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("Bob さんは暗号化を設定していません"),
+            "{screen}"
+        );
+
+        // 暗号化前のメッセージと、復号できていないメッセージは編集できない（自分のメッセージにして試す）。
+        let mut mine = rows[4].1.clone();
+        mine["user_id"] = json!("u1");
+        let mut missing = rows[1].1.clone();
+        missing["user_id"] = json!("u1");
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c3".into()),
+            batch(vec![("e5", mine), ("e2", missing)]),
+        ));
+        app.selected = Some("e5".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(render_sized(&mut app, 140, 40).contains("暗号化前のメッセージは編集できません"));
+        app.selected = Some("e2".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(
+            render_sized(&mut app, 140, 40).contains("復号できていないメッセージは編集できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn downgraded_channels_warn_and_keep_the_draft() {
+        let mut app = encrypted_app("edm:u1:u2", false);
+        let screen = render_sized(&mut app, 140, 30);
+        assert!(screen.contains("暗号化の状態が変わりました"), "{screen}");
+        assert!(screen.contains("平文では送信しません"), "{screen}");
+        press(&mut app, KeyCode::Char('i'));
+        app.composer.insert_str("送らない本文");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["送らない本文"]);
+    }
+
+    #[tokio::test]
+    async fn creates_encrypted_channels_and_dms_from_the_dialog() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('c'));
+        for ch in "proj".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        let screen = render_sized(&mut app, 120, 30);
+        assert!(screen.contains("新しいチャンネル"), "{screen}");
+        assert!(screen.contains("名前: proj"), "{screen}");
+        assert!(
+            screen.contains("非公開・エンドツーエンドで暗号化する"),
+            "{screen}"
+        );
+        assert!(screen.contains("あとから解除できません"), "{screen}");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+
+        // DM は、知らないユーザー名なら作らない。
+        press(&mut app, KeyCode::Char('m'));
+        for ch in "@nobody".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Tab);
+        assert!(render_sized(&mut app, 120, 30).contains("エンドツーエンドで暗号化する"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(render_sized(&mut app, 120, 30).contains("ユーザーが見つかりません: @nobody"));
+
+        // 暗号化を求めたのに平文のチャンネルが返ったら、送らない。
+        app.on_app_event(AppEvent::Created {
+            channel_id: "c2".into(),
+            requested_encryption: true,
+            encrypted: false,
+        });
+        assert_eq!(app.current.as_deref(), Some("c2"));
+        assert_eq!(
+            app.channel_encryption("c2"),
+            crate::ui::e2ee_chat::ChannelEncryption::Downgraded
+        );
     }
 }

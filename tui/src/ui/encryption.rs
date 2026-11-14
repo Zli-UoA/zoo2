@@ -178,7 +178,9 @@ impl Encryption {
         self.stores = Some(context.stores);
     }
 
-    fn store(&self) -> Option<(String, SharedStore)> {
+    /// 端末の管理のタスクが開いた暗号ストア（ユーザー ID と組）。登録を終えるまでと、作り直している
+    /// あいだは `None`。手放さずに持ち続けると、端末の管理のタスクが開き直せないので、使い終えたら捨てる。
+    pub(crate) fn store(&self) -> Option<(String, SharedStore)> {
         self.stores.as_ref().and_then(|rx| rx.borrow().clone())
     }
 

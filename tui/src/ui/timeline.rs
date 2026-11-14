@@ -11,7 +11,9 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use super::e2ee_chat::{Decryptions, Shown};
 use crate::{
+    e2ee::store::SenderTrust,
     electric::rows::Message,
     mfm,
     store::{ReactionGroup, Store},
@@ -22,6 +24,7 @@ const SELECTED: Style = Style::new().bg(Color::Rgb(40, 44, 52));
 const MARKER: Style = Style::new().fg(Color::Cyan);
 const DIM: Style = Style::new().fg(Color::DarkGray);
 const MINE: Style = Style::new().fg(Color::Cyan).bg(Color::Rgb(24, 48, 56));
+const WARN: Style = Style::new().fg(Color::Yellow);
 
 pub struct Timeline {
     pub lines: Vec<Line<'static>>,
@@ -41,6 +44,12 @@ impl Timeline {
 pub struct Context<'a> {
     pub store: &'a Store,
     pub me_name: &'a str,
+    /// 自分のユーザー ID（復号した `mentions` で、自分あてのメンションかを決める）。
+    pub me_id: &'a str,
+    /// 暗号化したメッセージの復号の結果（#361）。
+    pub decryptions: &'a Decryptions,
+    /// 暗号化チャンネルとして表示するか（格下げの検出を含む）。
+    pub encrypted: bool,
     pub selected: Option<&'a str>,
     /// タイムラインでは返信数を出し、スレッドでは出さない。
     pub reply_counts: Option<&'a HashMap<String, usize>>,
@@ -98,13 +107,56 @@ fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> V
     if message.updated_at.is_some() {
         header.push(Span::styled(" (編集済み)", DIM));
     }
+    let shown = ctx.decryptions.shown(message, ctx.encrypted);
+    match shown {
+        Shown::Decrypted { message: d, .. } => {
+            header.push(Span::styled(" 🔒", DIM));
+            match d.sender {
+                SenderTrust::Verified => {}
+                SenderTrust::Unverified => header.push(Span::styled(" [未検証の送信者]", WARN)),
+                SenderTrust::Unauthenticated => {
+                    header.push(Span::styled(" [送信者を確かめられません]", WARN))
+                }
+            }
+        }
+        Shown::BeforeEncryption => header.push(Span::styled(" [暗号化前]", DIM)),
+        Shown::Plain | Shown::Undecryptable(_) => {}
+    }
 
     let mut lines = vec![Line::from(header)];
-    lines.extend(mfm::render_with_accounts(
-        &message.content,
-        Some(ctx.me_name),
-        &ctx.store.account_profiles,
-    ));
+    match shown {
+        Shown::Plain | Shown::BeforeEncryption => lines.extend(mfm::render_with_accounts(
+            &message.content,
+            Some(ctx.me_name),
+            &ctx.store.account_profiles,
+        )),
+        Shown::Decrypted {
+            message: d,
+            warning,
+        } => {
+            // 自分あての強調は、復号した `mentions` で決める（本文の `@name` は使わない）。
+            let mentions_me = d.mentions.user_ids.iter().any(|id| id == ctx.me_id)
+                || d.mentions.channel
+                || d.mentions.here;
+            lines.extend(mfm::render_with_accounts(
+                &d.body,
+                mentions_me.then_some(ctx.me_name),
+                &ctx.store.account_profiles,
+            ));
+            for name in &d.attachments {
+                lines.push(Line::styled(
+                    format!("📎 {name}（暗号化した添付。TUI では開けません）"),
+                    DIM,
+                ));
+            }
+            if let Some(warning) = warning {
+                lines.push(Line::styled(format!("⚠ {}", warning.describe()), WARN));
+            }
+        }
+        Shown::Undecryptable(reason) => {
+            lines.push(Line::styled(format!("🔒 {}", reason.describe()), DIM));
+        }
+    }
 
     let reactions = ctx
         .reactions
@@ -285,9 +337,13 @@ mod tests {
         );
         let messages = store.root_messages("c1");
         let counts = HashMap::from([("m2".to_string(), 3)]);
+        let decryptions = Decryptions::default();
         let ctx = Context {
             store: &store,
             me_name: "alice",
+            me_id: "u1",
+            decryptions: &decryptions,
+            encrypted: false,
             selected: Some("m2"),
             reply_counts: Some(&counts),
             reactions: &HashMap::new(),
