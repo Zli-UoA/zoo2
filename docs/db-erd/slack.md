@@ -52,6 +52,8 @@ erDiagram
       text error
       integer attempts
       boolean in_content
+      timestamptz lease_until
+      text lease_token
       timestamptz created_at
       timestamptz updated_at
     }

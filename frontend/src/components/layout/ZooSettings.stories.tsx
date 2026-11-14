@@ -53,6 +53,27 @@ export const General: Story = {
     await expect(screen.getByRole("combobox", { name: "プッシュ通知" })).toBeDisabled();
   }),
 };
+/** OIDC ログイン中は、一般タブにログアウトが出る（左レールにはない）。 */
+export const GeneralWithLogout: Story = {
+  parameters: {
+    collections: {
+      config: {
+        devUserId: null,
+        oidc: {
+          issuer: "https://id.example",
+          clientId: "zoo",
+          redirectUri: null,
+          scope: "openid profile",
+          resource: null,
+          postLogoutRedirectUri: null,
+        },
+      },
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("button", { name: "ログアウト" })).toBeVisible();
+  }),
+};
 export const Apps: Story = {
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("tab", { name: "App・連携" }));

@@ -1127,6 +1127,14 @@ pub(crate) async fn update_message(
         .bind(now.to_string())
         .exec(&mut tx)
         .await?;
+        // 本文を書き換えたので、Slack の同期が補ったファイル名の行も投稿者の文字として扱い、
+        // 添付を取得できたときに本文から外さない
+        toasty::sql::statement(
+            "UPDATE slack_files SET in_content = false WHERE message_id = $1 AND in_content",
+        )
+        .bind(id.as_str())
+        .exec(&mut tx)
+        .await?;
     }
 
     let updated_message = Message::get_by_id(&mut tx, id.as_str()).await?;

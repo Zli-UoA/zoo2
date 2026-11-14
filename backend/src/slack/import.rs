@@ -644,7 +644,7 @@ async fn fetch_files(
     // トークンの権限を直した後などに備え、失敗した添付も試行回数を戻して再取得する。サイズの上限や取得を許可する
     // URL の設定を直した後に備え、それらが理由でスキップした添付も戻す (形式の非対応など、設定で変わらないものは戻さない)
     toasty::sql::statement(
-        "UPDATE slack_files SET status='pending',attempts=0,error=NULL,updated_at=now() WHERE job_id=$1 AND (status='failed' \
+        "UPDATE slack_files SET status='pending',attempts=0,error=NULL,lease_until=NULL,lease_token=NULL,updated_at=now() WHERE job_id=$1 AND (status='failed' \
          OR (status='skipped' AND (error LIKE 'File exceeds%' OR error='Unsupported file URL')))",
     )
     .bind(id.as_str())

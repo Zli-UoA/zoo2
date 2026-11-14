@@ -706,6 +706,12 @@
       "checks": ["e2e/oidc.spec.ts", "src/components/auth/AuthGate.browser.test.tsx"]
     },
     {
+      "file": "src/components/auth/LogoutSetting.tsx",
+      "story": "src/components/layout/ZooSettings.stories.tsx",
+      "composed": true,
+      "reason": "OIDC ログイン中の設定画面（一般タブ）にログアウトとして表示する。未バックアップ鍵の確認は UnbackedKeysLogoutDialog のストーリーで確認する。"
+    },
+    {
       "file": "src/components/auth/PreviewUserSwitcher.tsx",
       "reason": "プレビュー専用ビルドフラグとページ再読込を伴う開発補助UI。通常カタログの環境では表示されない。",
       "checks": ["src/lib/preview.test.ts", "e2e/oidc.spec.ts"]

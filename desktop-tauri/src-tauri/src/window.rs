@@ -187,6 +187,35 @@ fn enable_webrtc(window: &tauri::WebviewWindow) {
     });
 }
 
+/// macOS のメニューバー。Tauri の既定のメニュー (アプリ、編集、表示、ウィンドウなど) の、
+/// アプリのメニューの「zoo2 について」の下に「アップデートを確認…」を足す。
+#[cfg(target_os = "macos")]
+pub fn create_app_menu(app: &App) -> tauri::Result<()> {
+    use tauri::menu::{MenuItemKind, PredefinedMenuItem};
+
+    let menu = Menu::default(app.handle())?;
+    let item = MenuItem::with_id(
+        app,
+        crate::update::CHECK_MENU_ID,
+        "アップデートを確認…",
+        true,
+        None::<&str>,
+    )?;
+    // 既定のアプリのメニューは「について、区切り、サービス、…」。区切りの後ろに、項目と区切りを入れる。
+    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+        app_menu.insert(&item, 2)?;
+        app_menu.insert(&PredefinedMenuItem::separator(app)?, 3)?;
+    }
+    app.set_menu(menu)?;
+    app.on_menu_event(|app, event| {
+        if event.id.as_ref() == crate::update::CHECK_MENU_ID {
+            crate::update::check_now(app);
+        }
+    });
+    app.manage(crate::update::CheckMenuItem(item));
+    Ok(())
+}
+
 pub fn create_tray(app: &App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "開く", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "終了", true, None::<&str>)?;
