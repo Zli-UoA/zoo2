@@ -1221,6 +1221,12 @@
     "reunlockToAdd": "重新解鎖嚟加通行金鑰",
     "reunlockToAddDescription": "要加通行金鑰或者重新整復原金鑰，請用通行金鑰或者復原金鑰再解鎖一次。呢部裝置嘅解鎖狀態唔會變。",
     "badge": "已加密",
+    "memberUnreadable": {
+      "notSetUp": "未設定加密",
+      "notSetUpDescription": "未設定加密，所以讀唔到呢個頻道嘅新訊息。",
+      "noDevices": "冇裝置",
+      "noDevicesDescription": "冇可以用嚟加密嘅裝置，所以讀唔到呢個頻道嘅新訊息。"
+    },
     "encryptChannel": "端對端加密",
     "encryptChannelHelp": "只有成員已驗證嘅裝置先睇到訊息。加密之後唔可以取消。",
     "encryptChannelPrivateOnly": "只有私人頻道先可以加密。",

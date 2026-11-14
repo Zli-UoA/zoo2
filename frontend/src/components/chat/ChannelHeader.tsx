@@ -139,11 +139,9 @@ export function ChannelHeader({
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-sm font-semibold">{displayTitle}</h2>
           {channel.encrypted ? (
-            // 送信の前に、このチャンネルや DM が暗号化されているかを確かめられるようにする。
-            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-              <LockKeyholeIcon className="size-3" aria-hidden="true" />
-              {t("e2ee.badge")}
-            </span>
+            // 見た目の印は左のアイコンだけにし、印の文字はチャンネル設定に出す。読み上げでは、
+            // 送信の前に暗号化されているかを確かめられるよう、見出しの隣で伝える。
+            <span className="sr-only">{t("e2ee.badge")}</span>
           ) : null}
           {channel.is_nsfw ? (
             <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
@@ -288,10 +286,20 @@ export function ChannelHeader({
               <DialogTitle>{t("settings.channelTitle")}</DialogTitle>
               <DialogDescription>{displayTitle}</DialogDescription>
             </DialogHeader>
-            {channel.imported_from_slack ? (
-              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                {slackImportBadge(channel, t, i18n.language)}
-              </span>
+            {channel.encrypted || channel.imported_from_slack ? (
+              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                {channel.encrypted ? (
+                  <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                    <LockKeyholeIcon className="size-3" aria-hidden="true" />
+                    {t("e2ee.badge")}
+                  </span>
+                ) : null}
+                {channel.imported_from_slack ? (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                    {slackImportBadge(channel, t, i18n.language)}
+                  </span>
+                ) : null}
+              </div>
             ) : null}
           </div>
           <div className="divide-y rounded-lg border">

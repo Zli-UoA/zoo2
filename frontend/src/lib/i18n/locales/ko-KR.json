@@ -1221,6 +1221,12 @@
     "reunlockToAdd": "다시 잠금 해제하고 패스키 추가",
     "reunlockToAddDescription": "패스키를 추가하거나 복구 키를 다시 만들려면 패스키 또는 복구 키로 다시 잠금을 해제하세요. 이 기기의 잠금 해제 상태는 바뀌지 않습니다.",
     "badge": "암호화됨",
+    "memberUnreadable": {
+      "notSetUp": "암호화 미설정",
+      "notSetUpDescription": "암호화를 설정하지 않아 이 채널의 새 메시지를 읽을 수 없습니다.",
+      "noDevices": "기기 없음",
+      "noDevicesDescription": "암호화에 쓸 수 있는 기기가 없어 이 채널의 새 메시지를 읽을 수 없습니다."
+    },
     "encryptChannel": "종단 간 암호화",
     "encryptChannelHelp": "멤버의 확인된 기기만 메시지를 읽을 수 있습니다. 암호화는 나중에 해제할 수 없습니다.",
     "encryptChannelPrivateOnly": "비공개 채널만 암호화할 수 있습니다.",

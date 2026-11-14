@@ -187,6 +187,10 @@ export const Encrypted: Story = {
     memberCount: memberCount(secret.id),
   },
   play: playForImplementation(async () => {
-    await expect(await screen.findByText("暗号化")).toBeVisible();
+    // ヘッダーには印を出さず（読み上げ用の文字だけ）、チャンネル設定に「暗号化」の印を出す。
+    await expect(await screen.findByText("暗号化")).toHaveClass("sr-only");
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    const dialog = await screen.findByRole("dialog");
+    await expect(within(dialog).getByText("暗号化")).toBeVisible();
   }),
 };
