@@ -16,16 +16,14 @@
 
 use super::*;
 use crate::routes::{
-    e2ee as keys,
-    e2ee::to_device,
-    e2ee_channels, e2ee_cross_signing as cross_signing,
+    e2ee as keys, e2ee::to_device, e2ee_channels, e2ee_cross_signing as cross_signing,
     response::ApiResponse,
 };
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
-    response::Response,
     http::HeaderMap,
+    response::Response,
     routing::{get, post},
 };
 

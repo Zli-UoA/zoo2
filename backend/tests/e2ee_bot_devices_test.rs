@@ -201,7 +201,12 @@ impl Env {
             .token(
                 app,
                 None,
-                &["messages:read", "messages:write", "channels:manage", "e2ee:device"],
+                &[
+                    "messages:read",
+                    "messages:write",
+                    "channels:manage",
+                    "e2ee:device",
+                ],
             )
             .await;
         let mut account = DeviceAccount::new(&app.bot, &Uuid::new_v4().to_string()).unwrap();
@@ -229,7 +234,10 @@ impl Env {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        let signature = keys.self_signing.sign_device(&account.device_keys()).unwrap();
+        let signature = keys
+            .self_signing
+            .sign_device(&account.device_keys())
+            .unwrap();
         let (status, body) = self
             .call(
                 "POST",
@@ -242,7 +250,13 @@ impl Env {
         BotDevice { token, account }
     }
 
-    async fn add(&self, app: &TestApp, channel: &str, actor: &str, body: Value) -> (StatusCode, Value) {
+    async fn add(
+        &self,
+        app: &TestApp,
+        channel: &str,
+        actor: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
         self.call(
             "POST",
             &format!("/api/apps/{}/channels/{channel}", app.id),
@@ -273,7 +287,12 @@ fn ciphertext(account: &DeviceAccount) -> Value {
     })
 }
 
-const E2EE_SCOPES: &[&str] = &["messages:read", "messages:write", "channels:manage", "e2ee:device"];
+const E2EE_SCOPES: &[&str] = &[
+    "messages:read",
+    "messages:write",
+    "channels:manage",
+    "e2ee:device",
+];
 
 // ---------------------------------------------------------------------------
 // 参加の許可
@@ -322,7 +341,11 @@ async fn an_encrypted_channel_accepts_only_an_explicitly_allowed_bot_device() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(env.granted(&channel, &app.bot).await);
-    assert_eq!(env.epoch(&channel).await, before + 1, "the bot's join bumps the epoch");
+    assert_eq!(
+        env.epoch(&channel).await,
+        before + 1,
+        "the bot's join bumps the epoch"
+    );
     // もう一度入れても epoch は増えない。
     let (status, body) = env
         .add(&app, &channel, &alice, json!({"e2ee_allowed": true}))
@@ -415,7 +438,12 @@ async fn bot_device_routes_need_the_bots_own_token_with_the_scope() {
 
     let device = env.bot_device(&app).await;
     let (status, body) = env
-        .call("GET", "/api/apps/v1/e2ee/devices", &device.token, Value::Null)
+        .call(
+            "GET",
+            "/api/apps/v1/e2ee/devices",
+            &device.token,
+            Value::Null,
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body[0]["device_id"], device.account.device_id());
@@ -475,7 +503,10 @@ async fn an_allowed_bot_exchanges_keys_and_ciphertext_but_no_plaintext() {
     // スナップショットに、人間と Bot の端末とクロス署名鍵が入る。
     let (status, page) = env.call("GET", &recipients, &bot.token, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{page}");
-    assert_eq!(page["membership_epoch"].as_i64(), Some(env.epoch(&channel).await));
+    assert_eq!(
+        page["membership_epoch"].as_i64(),
+        Some(env.epoch(&channel).await)
+    );
     assert!(page["device_keys"][&alice][human.device_id()].is_object());
     assert!(page["device_keys"][&app.bot][bot.account.device_id()].is_object());
     assert!(page["master_keys"][&app.bot].is_object());
@@ -493,21 +524,22 @@ async fn an_allowed_bot_exchanges_keys_and_ciphertext_but_no_plaintext() {
     assert!(query["self_signing_keys"][&app.bot].is_object());
 
     // 人間の端末から Bot の端末への to-device を、Bot は GET で受け取り、ack で消す。
-    let content = json!({"algorithm": "m.olm.v1.curve25519-aes-sha2", "sender_key": "k", "ciphertext": {}});
+    let content =
+        json!({"algorithm": "m.olm.v1.curve25519-aes-sha2", "sender_key": "k", "ciphertext": {}});
     let (status, body) = env
         .call(
             "POST",
             "/api/e2ee/to_device",
             &alice,
             json!({"device_id": human.device_id(), "txn_id": Uuid::new_v4().to_string(),
-                "type": "m.room.encrypted",
-                "messages": Value::Object(
-                    [(app.bot.clone(), Value::Object(
-                        [(bot.account.device_id().to_owned(), content.clone())].into_iter().collect(),
-                    ))]
-                    .into_iter()
-                    .collect(),
-                )}),
+            "type": "m.room.encrypted",
+            "messages": Value::Object(
+                [(app.bot.clone(), Value::Object(
+                    [(bot.account.device_id().to_owned(), content.clone())].into_iter().collect(),
+                ))]
+                .into_iter()
+                .collect(),
+            )}),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -534,7 +566,10 @@ async fn an_allowed_bot_exchanges_keys_and_ciphertext_but_no_plaintext() {
     let (_, body) = env.call("GET", &inbox, &bot.token, Value::Null).await;
     assert_eq!(body["messages"], json!([]));
     // 他の端末の受信箱は読めない。
-    let other = format!("/api/apps/v1/e2ee/to_device?device_id={}", human.device_id());
+    let other = format!(
+        "/api/apps/v1/e2ee/to_device?device_id={}",
+        human.device_id()
+    );
     let (status, _) = env.call("GET", &other, &bot.token, Value::Null).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
