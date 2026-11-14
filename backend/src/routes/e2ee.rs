@@ -535,7 +535,7 @@ pub struct RegisterRequest {
 }
 
 /// `POST /api/e2ee/devices`：端末を登録する。
-async fn register_device(
+pub(crate) async fn register_device(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<RegisterRequest>,
@@ -699,7 +699,7 @@ async fn register_device(
 }
 
 /// `GET /api/e2ee/devices`：自分の端末の一覧（削除済みを除く）。
-async fn list_devices(
+pub(crate) async fn list_devices(
     State(state): State<AppState>,
     actor: AuthUser,
 ) -> Result<Json<Vec<Value>>, AppError> {
@@ -752,7 +752,7 @@ async fn rename_device(
 ///
 /// 削除は失効ではない（削除された端末は鍵を持ったまま）。持ち主が参加しているすべての暗号化チャンネルの
 /// `membership_epoch` を同じトランザクションで増やす（削除済みの端末への再試行では増やさない）。
-async fn delete_device(
+pub(crate) async fn delete_device(
     State(state): State<AppState>,
     actor: AuthUser,
     Path(device_id): Path<String>,
@@ -834,7 +834,7 @@ pub struct UploadRequest {
 }
 
 /// `POST /api/e2ee/keys/upload`：ワンタイム鍵とフォールバック鍵を足す。
-async fn upload_keys(
+pub(crate) async fn upload_keys(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<UploadRequest>,
@@ -900,7 +900,7 @@ pub struct QueryRequest {
 ///
 /// 対象は自分と、暗号化チャンネルを共有しているユーザー。範囲外のユーザーは応答から黙って除く。
 /// 例外として、自分がピンか署名を持つ相手は、マスター鍵だけを返す。
-async fn query_keys(
+pub(crate) async fn query_keys(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<QueryRequest>,
@@ -978,7 +978,7 @@ pub struct ClaimRequest {
 ///
 /// 呼び出したユーザーと宛先の端末の組ごとに、1 日に `MAX_CLAIMS_PER_DAY` 回まで。超えたらエラーにせず、
 /// フォールバック鍵を返す。範囲外の端末は黙って応答から除く。
-async fn claim_keys(
+pub(crate) async fn claim_keys(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<ClaimRequest>,

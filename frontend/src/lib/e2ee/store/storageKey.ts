@@ -85,6 +85,33 @@ function fromBase64(value: string): Uint8Array<ArrayBuffer> {
 }
 
 /**
+ * 包んだ保存鍵を開く。作り直しも書き込みもしない（Push を復号する Service Worker は、暗号ストアの
+ * 写しを読むだけなので、こちらを使う）。開けなければ {@link StorageKeyUnavailableError}。
+ */
+export async function openStorageKey(options: {
+  name: string;
+  wrapped: string;
+  keys?: WrappingKeyStore;
+}): Promise<Uint8Array> {
+  const wrappingKey = await (options.keys ?? indexedDbWrappingKeys).get(options.name);
+  if (!wrappingKey) {
+    throw new StorageKeyUnavailableError("保存鍵を包む鍵がありません");
+  }
+  try {
+    // base64 が壊れていても（atob が投げる）、開けない保存鍵として作り直させる。
+    const packed = fromBase64(options.wrapped);
+    const raw = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: packed.subarray(0, 12), additionalData: WRAP_AAD },
+      wrappingKey,
+      packed.subarray(12),
+    );
+    return new Uint8Array(raw);
+  } catch {
+    throw new StorageKeyUnavailableError("保存鍵を開けません");
+  }
+}
+
+/**
  * 暗号ストアの保存鍵を取り出す。なければ作り、包んだものを `saveWrapped` で `meta` に置く。
  *
  * - 包んだ保存鍵も包む鍵もない：新しく作る（新しい暗号ストア）。
@@ -98,24 +125,10 @@ export async function loadStorageKey(options: {
   keys?: WrappingKeyStore;
 }): Promise<Uint8Array> {
   const keys = options.keys ?? indexedDbWrappingKeys;
-  let wrappingKey = await keys.get(options.name);
   if (options.wrapped) {
-    if (!wrappingKey) {
-      throw new StorageKeyUnavailableError("保存鍵を包む鍵がありません");
-    }
-    try {
-      // base64 が壊れていても（atob が投げる）、開けない保存鍵として作り直させる。
-      const packed = fromBase64(options.wrapped);
-      const raw = await crypto.subtle.decrypt(
-        { name: "AES-GCM", iv: packed.subarray(0, 12), additionalData: WRAP_AAD },
-        wrappingKey,
-        packed.subarray(12),
-      );
-      return new Uint8Array(raw);
-    } catch {
-      throw new StorageKeyUnavailableError("保存鍵を開けません");
-    }
+    return openStorageKey({ name: options.name, wrapped: options.wrapped, keys });
   }
+  let wrappingKey = await keys.get(options.name);
   if (!wrappingKey) {
     wrappingKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
       "encrypt",

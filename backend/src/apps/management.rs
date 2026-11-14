@@ -224,6 +224,10 @@ async fn action(
   json!({"status":"installed"})
  },
  "delete" | "disable"=>{
+  // The bot leaves every channel below. In encrypted channels it may have joined as an E2EE device
+  // (#366): bump their membership_epoch first, so members stop using sessions it holds. The bulk bump
+  // takes the bot's member lock and then the channel rows (the lock order in routes/e2ee.rs).
+  crate::routes::e2ee_channels::bump_user_epochs(&mut tx,app["bot_user_id"].as_str().unwrap()).await?;
   invalidate_ui(&mut tx,&id).await?;
   toasty::sql::statement("UPDATE app_files SET public_token_hash=NULL WHERE installation_id IN(SELECT id FROM app_installations WHERE app_id=$1)").bind(id.as_str()).exec(&mut tx).await?;
   if action=="delete" {toasty::sql::statement("UPDATE apps SET deleted_at=now() WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;}
@@ -254,19 +258,56 @@ async fn action(
     tx.commit().await?;
     Ok(Json(result))
 }
+/// `POST /api/apps/{id}/channels/{channel}` の本文（省略できる）。
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddChannelRequest {
+    /// 暗号化チャンネルに入れるときの明示的な許可（#366）。`true` でなければ暗号化チャンネルには入れない。
+    #[serde(default)]
+    e2ee_allowed: bool,
+}
+
 async fn add_channel(
     State(state): State<AppState>,
     actor: AuthUser,
     Path((id, channel)): Path<(String, String)>,
+    body: axum::body::Bytes,
 ) -> Result<Json<Value>, AppError> {
+    // 本文は省略できる（今までのクライアントは本文なしで送る）。`null` も省略と同じに扱う。
+    let req: AddChannelRequest = if body.iter().all(u8::is_ascii_whitespace) {
+        AddChannelRequest::default()
+    } else {
+        serde_json::from_slice::<Option<AddChannelRequest>>(&body)
+            .map_err(|e| AppError::BadRequest(e.to_string()))?
+            .unwrap_or_default()
+    };
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     human(&mut tx, &actor).await?;
-    let a=one(&mut tx,"SELECT json_build_object('bot',bot_user_id,'manifest',manifest::jsonb)::text FROM apps WHERE id=$1 AND status='installed'",&[&id]).await?;
+    let a=one(&mut tx,"SELECT json_build_object('bot',a.bot_user_id,'manifest',a.manifest::jsonb,'e2ee',EXISTS(SELECT 1 FROM app_installations i WHERE i.app_id=a.id AND i.active AND i.scopes::jsonb ? $2))::text FROM apps a WHERE a.id=$1 AND a.status='installed'",&[&id,E2EE_DEVICE_SCOPE]).await?;
     if a["manifest"]["notification_only"] == true {
         return Err(AppError::BadRequest(
             "Manage notification-only apps through webhook settings".into(),
         ));
+    }
+    let bot = a["bot"].as_str().unwrap_or_default().to_owned();
+    // 暗号化チャンネルでは、Bot のメンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、
+    // チャンネルの行より前に取る（routes/channels.rs の add_user_to_channel と同じ順）。encrypted は変わらない
+    // ので、ロックなしで読んで判定できる。
+    let encrypted = query(
+        &mut tx,
+        "SELECT json_build_object('encrypted', encrypted)::text FROM channels WHERE id = $1",
+        &[channel.as_str()],
+    )
+    .await?
+    .first()
+    .is_some_and(|row| row["encrypted"] == true);
+    if encrypted {
+        crate::routes::e2ee_channels::lock_members(&mut tx, &[bot.as_str()]).await?;
+        toasty::sql::statement("SELECT 1 FROM channels WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
     }
     let c = crate::models::Channel::get_by_id(&mut tx, channel.as_str()).await?;
     let admin =
@@ -275,9 +316,6 @@ async fn add_channel(
     if c.is_dm || c.deleted_at.is_some() || c.archive_at.is_some() {
         return Err(AppError::BadRequest("Unavailable channel".into()));
     }
-    // 暗号化チャンネルには App（Bot）を入れない（#358）。非公開チャンネルの存在を漏らさないよう、
-    // 下のメンバーの確認のあとで判定する。
-    let encrypted = c.encrypted;
     let member = crate::models::ChannelUser::filter(
         crate::models::ChannelUser::fields()
             .channel_id()
@@ -306,11 +344,55 @@ async fn add_channel(
             "Cannot add an app to this channel".into(),
         ));
     }
-    if encrypted {
-        return Err(crate::routes::e2ee_channels::apps_forbidden());
+    // 暗号化チャンネルに入れられるのは、E2EE の端末を持つ Bot（e2ee:device を認めたインストール）だけで、
+    // チャンネルのメンバーが明示的に許可したときだけ（#366）。非公開チャンネルの存在を漏らさないよう、
+    // 上のメンバーの確認のあとで判定する。
+    if c.encrypted {
+        if a["e2ee"] != true {
+            return Err(crate::routes::e2ee_channels::apps_forbidden());
+        }
+        if !req.e2ee_allowed {
+            return Err(crate::routes::e2ee_channels::bot_consent_required());
+        }
+        crate::routes::e2ee_channels::require_bot_device(&mut tx, &bot).await?;
     }
-    toasty::sql::statement("INSERT INTO channel_user(channel_id,user_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING").bind(channel.as_str()).bind(a["bot"].as_str().unwrap()).exec(&mut tx).await?;
-    audit(&mut tx, &id, &actor.id, "channel.added").await?;
+    let already = crate::models::ChannelUser::filter(
+        crate::models::ChannelUser::fields()
+            .channel_id()
+            .eq(channel.as_str())
+            .and(
+                crate::models::ChannelUser::fields()
+                    .user_id()
+                    .eq(bot.as_str()),
+            ),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?
+    .is_some();
+    if !already {
+        if c.encrypted {
+            crate::routes::e2ee_channels::check_member_limit(&mut tx, &channel, 1).await?;
+            // 許可は channel_user の行より先に置く（DB のトリガー `e2ee_reject_bot_members` が見る）。
+            toasty::sql::statement("INSERT INTO e2ee_bot_grants(channel_id,bot_user_id,granted_by) VALUES($1,$2,$3) ON CONFLICT (channel_id,bot_user_id) DO UPDATE SET granted_by=EXCLUDED.granted_by,created_at=now()").bind(channel.as_str()).bind(bot.as_str()).bind(actor.id.as_str()).exec(&mut tx).await?;
+        }
+        toasty::sql::statement("INSERT INTO channel_user(channel_id,user_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING").bind(channel.as_str()).bind(bot.as_str()).exec(&mut tx).await?;
+        // メンバーが実際に増えたときだけ増やす（参加した Bot の端末は、これ以降のセッションだけを受け取る）。
+        if c.encrypted {
+            crate::routes::e2ee_channels::bump_channel_epoch(&mut tx, &channel).await?;
+        }
+    }
+    audit(
+        &mut tx,
+        &id,
+        &actor.id,
+        if c.encrypted {
+            "channel.added_e2ee"
+        } else {
+            "channel.added"
+        },
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
@@ -322,6 +404,29 @@ async fn remove_channel(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     human(&mut tx, &actor).await?;
+    let encrypted = query(
+        &mut tx,
+        "SELECT json_build_object('encrypted', encrypted)::text FROM channels WHERE id = $1",
+        &[channel.as_str()],
+    )
+    .await?
+    .first()
+    .is_some_and(|row| row["encrypted"] == true);
+    if encrypted {
+        // 退出と同じく、Bot のメンバー単位のロック、チャンネルの行の順に取る。
+        let bots = query(
+            &mut tx,
+            "SELECT to_json(bot_user_id)::text FROM apps WHERE id = $1",
+            &[id.as_str()],
+        )
+        .await?;
+        let bots: Vec<&str> = bots.iter().filter_map(Value::as_str).collect();
+        crate::routes::e2ee_channels::lock_members(&mut tx, &bots).await?;
+        toasty::sql::statement("SELECT 1 FROM channels WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+    }
     let c = crate::models::Channel::get_by_id(&mut tx, channel.as_str()).await?;
     let admin =
         crate::auth::rbac::is_workspace_admin(&mut tx, &actor.id, state.config.dev_auth_enabled)
@@ -329,7 +434,12 @@ async fn remove_channel(
     if !crate::auth::rbac::can_manage_channel(&c.created_user_id, &actor.id, admin, c.is_dm) {
         return Err(AppError::Forbidden("Channel manager required".into()));
     }
-    toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1 AND user_id IN(SELECT bot_user_id FROM apps WHERE id=$2)").bind(channel.as_str()).bind(id.as_str()).exec(&mut tx).await?;
+    // Bot の許可（e2ee_bot_grants）は、channel_user の行の削除のトリガーで消える（#366）。
+    let removed = toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1 AND user_id IN(SELECT bot_user_id FROM apps WHERE id=$2)").bind(channel.as_str()).bind(id.as_str()).exec(&mut tx).await?;
+    // 暗号化チャンネルでは、外した Bot の端末にそれ以降のセッションを配らないよう、epoch を増やす。
+    if c.encrypted && removed > 0 {
+        crate::routes::e2ee_channels::bump_channel_epoch(&mut tx, &channel).await?;
+    }
     audit(&mut tx, &id, &actor.id, "channel.removed").await?;
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))

@@ -77,3 +77,45 @@ export function encryptedMentions(
   }
   return { user_ids: [...userIds].sort(), channel, here };
 }
+
+/**
+ * 暗号化メッセージで、メンションとして表示してよい `@name`。復号した `mentions` から作る
+ * （{@link decryptedMentionAllowlist}）。本文に `@name` があっても、ここにないものはメンションとして
+ * 表示しない（docs/e2ee.md の「Megolm の平文」と「機能ごとの扱い」のメンション通知）。
+ */
+export interface MentionAllowlist {
+  /** メンションしたユーザーのユーザー名。 */
+  userNames: ReadonlySet<string>;
+  channel: boolean;
+  here: boolean;
+}
+
+/**
+ * 復号した `mentions` を、本文の `@name` と突き合わせられる形にする。`userNames` はユーザー ID から
+ * ユーザー名を引く表で、引けない ID（ユーザー一覧にまだない、削除された）は表示に使わない。
+ */
+export function decryptedMentionAllowlist(
+  mentions: { user_ids: readonly string[]; channel: boolean; here: boolean },
+  userNames: ReadonlyMap<string, string>,
+): MentionAllowlist {
+  const names = new Set<string>();
+  for (const id of mentions.user_ids) {
+    const name = userNames.get(id);
+    if (name) names.add(name);
+  }
+  return { userNames: names, channel: mentions.channel, here: mentions.here };
+}
+
+/**
+ * 本文の `@name`（先頭の `@` を含む）が、`allowlist` のメンションに当たるか。送信側の
+ * {@link encryptedMentions} と同じく、`@channel` と `@here` は大文字と小文字を区別せず、ユーザー名は
+ * 語のまま、なければ末尾の句読点を外して引く。
+ */
+export function isAllowedMention(token: string, allowlist: MentionAllowlist): boolean {
+  const raw = token.startsWith("@") ? token.slice(1) : token;
+  const trimmed = raw.replace(MENTION_PUNCTUATION, "");
+  const lower = trimmed.toLowerCase();
+  if (lower === "channel") return allowlist.channel;
+  if (lower === "here") return allowlist.here;
+  return allowlist.userNames.has(raw) || allowlist.userNames.has(trimmed);
+}

@@ -162,6 +162,50 @@ pub fn apps_forbidden() -> AppError {
     )
 }
 
+/// 暗号化チャンネルに Bot を入れるのに、メンバーの明示的な許可（`e2ee_allowed: true`）がない（#366）。
+pub fn bot_consent_required() -> AppError {
+    coded(
+        StatusCode::BAD_REQUEST,
+        "E2EE_BOT_CONSENT_REQUIRED",
+        "Adding an app to an encrypted channel requires explicit consent",
+        Value::Null,
+    )
+}
+
+/// Bot がまだ E2EE の端末を用意していない（クロス署名鍵と、自己署名鍵で署名した端末がない。#366）。
+pub fn bot_not_ready() -> AppError {
+    coded(
+        StatusCode::CONFLICT,
+        "E2EE_BOT_NOT_READY",
+        "The app has not set up an end-to-end encryption device",
+        Value::Null,
+    )
+}
+
+/// Bot が、マスター鍵、自己署名鍵と、今の自己署名鍵で署名した削除されていない端末を持つかを確かめる（#366）。
+/// 持たなければ 409 `E2EE_BOT_NOT_READY`。入れても鍵を受け取れない Bot を、メンバーに数えないため。
+pub async fn require_bot_device(
+    tx: &mut toasty::Transaction<'_>,
+    bot_user_id: &str,
+) -> Result<(), AppError> {
+    let ready = first(
+        tx,
+        "SELECT '{}'::text FROM e2ee_cross_signing_keys m
+         JOIN e2ee_cross_signing_keys ss ON ss.user_id = m.user_id AND ss.usage = 'self_signing'
+         JOIN e2ee_key_signatures s ON s.signer_user_id = m.user_id AND s.target_user_id = m.user_id
+           AND s.signer_key_id = 'ed25519:' || ss.public_key
+         JOIN e2ee_devices d ON d.user_id = m.user_id AND d.device_id = s.target_key_id AND d.deleted_at IS NULL
+         WHERE m.user_id = $1 AND m.usage = 'master'
+         LIMIT 1",
+        &[bot_user_id],
+    )
+    .await?;
+    if ready.is_none() {
+        return Err(bot_not_ready());
+    }
+    Ok(())
+}
+
 pub fn add_forbidden() -> AppError {
     coded(
         StatusCode::FORBIDDEN,
@@ -494,7 +538,7 @@ pub struct RecipientsQuery {
 ///
 /// 各ページは 1 つの `REPEATABLE READ READ ONLY` のトランザクションで作る。続きのページは、最初のページの
 /// `membership_epoch` を `epoch` に入れて取り、今の epoch と違えば 409 `E2EE_STALE_EPOCH`。
-async fn get_recipients(
+pub(crate) async fn get_recipients(
     State(state): State<AppState>,
     actor: AuthUser,
     Path(channel_id): Path<String>,

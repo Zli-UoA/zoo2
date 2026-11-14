@@ -6,6 +6,15 @@ E2EE(e2ee_*)。[一覧に戻る](../db-erd.md)
 
 ```mermaid
 erDiagram
+    e2ee_bot_grants {
+      text channel_id PK,FK
+      text bot_user_id PK,FK
+      text granted_by FK
+      timestamptz created_at
+    }
+    e2ee_bot_grants }o--o| users : e2ee_bot_grants_bot_user_id_fkey
+    e2ee_bot_grants }o--o| channels : e2ee_bot_grants_channel_id_fkey
+    e2ee_bot_grants }o--o| users : e2ee_bot_grants_granted_by_fkey
     e2ee_cross_signing_key_changes {
       bigint id PK
       text user_id FK

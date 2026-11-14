@@ -31,6 +31,13 @@ const SHELL = [
 ];
 const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
 
+// 暗号化チャンネルの Push の復号（#365。docs/e2ee.md の「Web Push の復号」）。`pnpm build` が
+// src/sw/push.ts から作る /sw-push.js が `self.zooDecryptPush` を置く（dev サーバーでは、何もしない
+// public/sw-push.js を返す）。importScripts は起動時と install のあいだにしか読めず、読めたスクリプト
+// だけが更新の検査の対象になる。そのため失敗を握りつぶさず、install を失敗させて、次の登録や更新の
+// 検査で読み直させる（握りつぶすと、復号できない Service Worker が sw.js の次の変更まで残る）。
+if (typeof importScripts === "function") importScripts("/sw-push.js");
+
 function isPrivatePath(pathname) {
   return pathname.startsWith("/api/") || pathname.startsWith("/auth/");
 }
@@ -538,23 +545,34 @@ self.addEventListener("push", (event) => {
       ? "你有新通知。請開啟 Zoo 查看。"
       : "You have a new notification. Open Zoo to view it.";
   const title = typeof payload.title === "string" ? payload.title : "Zoo";
-  let body = typeof payload.body === "string" ? payload.body : fallback;
-  if (payload.notificationType === "reaction") {
-    body =
-      (language.startsWith("ja")
-        ? "リアクション: "
-        : language.startsWith("zh")
-          ? "回應: "
-          : "Reaction: ") + body;
-  }
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: "/icons/icon-192.png",
-      badge: "/icons/badge-96.png",
-      tag: typeof payload.tag === "string" ? payload.tag : "zoo-activity",
-      data: { url: typeof payload.url === "string" ? payload.url : "/" },
-    }),
+    (async () => {
+      let body = typeof payload.body === "string" ? payload.body : fallback;
+      // 暗号化チャンネルは、手元の暗号ストアで復号できたら本文に置き換える。
+      if (payload.e2ee && typeof self.zooDecryptPush === "function") {
+        try {
+          const decrypted = await self.zooDecryptPush(payload.e2ee);
+          if (typeof decrypted === "string") body = decrypted;
+        } catch {
+          /* Keep the generic body. */
+        }
+      }
+      if (payload.notificationType === "reaction") {
+        body =
+          (language.startsWith("ja")
+            ? "リアクション: "
+            : language.startsWith("zh")
+              ? "回應: "
+              : "Reaction: ") + body;
+      }
+      await self.registration.showNotification(title, {
+        body,
+        icon: "/icons/icon-192.png",
+        badge: "/icons/badge-96.png",
+        tag: typeof payload.tag === "string" ? payload.tag : "zoo-activity",
+        data: { url: typeof payload.url === "string" ? payload.url : "/" },
+      });
+    })(),
   );
 });
 

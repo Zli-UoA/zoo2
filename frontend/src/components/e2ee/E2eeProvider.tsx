@@ -17,11 +17,15 @@ import { deviceDisplayName } from "../../lib/e2ee/displayName";
 import { E2eeContext, type E2eeContextValue } from "../../lib/e2ee/e2ee-context";
 import {
   clearPendingCryptoStoreDeletion,
+  cryptoDatabaseName,
   cryptoLockName,
   markCryptoStoreDeletionPending,
   readPendingCryptoStoreDeletion,
 } from "../../lib/e2ee/identity";
+import { answerPushDecryptRequest } from "../../lib/e2ee/push/protocol";
+import { forgetPushRecipient, rememberPushRecipient } from "../../lib/e2ee/push/recipient";
 import { type StaleDevice, staleDevices } from "../../lib/e2ee/revocationApi";
+import { indexedDbWrappingKeys } from "../../lib/e2ee/store/storageKey";
 import { runStartupCheck, uploadKeyBackup } from "../../lib/e2ee/setupController";
 import { supportsCryptoStore } from "../../lib/e2ee/support";
 import { readLastOfflineUserId } from "../../lib/offline/identity";
@@ -240,6 +244,31 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     };
   }, [client, createManager, isOnline, namespace, supported, userId]);
 
+  // Service Worker が Push を復号してよい宛先（今ログインしているユーザー）を置く（#365）。
+  // 消すのは、ログアウト（clearForLogout）と、認証が切れたとき（AuthGate の 401 の処理）。
+  // 読み込み中やオフラインでユーザーが分からないあいだは消さない（オフラインでも本文を出せるように）。
+  useEffect(() => {
+    if (!userId || typeof indexedDB === "undefined") return;
+    void rememberPushRecipient(userId).catch(() => undefined);
+  }, [userId]);
+
+  // Service Worker が Push の復号を頼んできたら、このタブが開いている暗号ストアで復号して返す
+  // （#365。docs/e2ee.md の「Web Push の復号」）。開いていないタブも、待たせないよう断りを返す。
+  const pushTarget = useRef<{ worker: CryptoWorker | null; namespace: string }>({
+    worker: null,
+    namespace,
+  });
+  pushTarget.current = { worker: readyWorker, namespace };
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const container = navigator.serviceWorker;
+    const onMessage = (event: MessageEvent) => {
+      answerPushDecryptRequest(event.data, event.ports[0], pushTarget.current);
+    };
+    container.addEventListener("message", onMessage);
+    return () => container.removeEventListener("message", onMessage);
+  }, []);
+
   // アンマウントしたら（ログアウトの確認中にオンラインに戻り、OfflineProvider が子を作り直した
   // ときなど）、ログアウトのために奪ったロックを返し、ほかのタブに知らせる。
   useEffect(
@@ -344,10 +373,20 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         channel?.close();
       },
       clearForLogout: async () => {
+        // Service Worker が、ログアウトしたユーザー宛ての Push を復号しないようにする（#365）。
+        await forgetPushRecipient().catch(() => undefined);
         if (!supported || namespace === "anonymous") return;
         // 消し切れなければ（開けない、ユーザーが分からない）、次の起動で消し直す。
         markCryptoStoreDeletionPending(namespace);
-        const store = await storeForLogout();
+        let store: ActiveStore | null;
+        try {
+          store = await storeForLogout();
+        } finally {
+          // 暗号ストアを開けなくても（Worker を起動できないなど）、保存鍵を包む鍵は消す。残った
+          // ファイルからは何も読めなくなる（docs/e2ee.md の「Web Push の復号」）。開く前に消すと、
+          // 開くときに作り直してしまうので、開いたあと（開けなかったあと）に消す。
+          await indexedDbWrappingKeys.delete(cryptoDatabaseName(namespace)).catch(() => undefined);
+        }
         if (!store) return;
         await store.manager.destroy();
         clearPendingCryptoStoreDeletion();

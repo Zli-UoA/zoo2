@@ -4,6 +4,7 @@ pub mod circuit;
 pub mod delivery;
 pub mod dispatch_metrics;
 pub mod dispatcher_api;
+pub mod e2ee;
 pub mod events;
 pub mod files;
 pub mod management;
@@ -53,7 +54,10 @@ pub const SCOPES: &[&str] = &[
     "metadata:write",
     "assistant:write",
     "functions:execute",
+    "e2ee:device",
 ];
+/// Bot が E2EE の端末として暗号化チャンネルに参加するための scope（#366。docs/e2ee.md の「Bot の端末」）。
+pub const E2EE_DEVICE_SCOPE: &str = "e2ee:device";
 pub const EVENTS: &[&str] = &[
     "message.created",
     "message.updated",
@@ -452,14 +456,45 @@ impl Principal {
         id: &str,
         write: bool,
     ) -> Result<(), AppError> {
-        let value=one(tx,"SELECT json_build_object('allowed',EXISTS(SELECT 1 FROM channels c JOIN channel_user cu ON cu.channel_id=c.id WHERE c.id=$1 AND c.deleted_at IS NULL AND (NOT $3::boolean OR c.archive_at IS NULL) AND cu.user_id=$2),'encrypted',EXISTS(SELECT 1 FROM channels WHERE id=$1 AND encrypted))::text",&[id,&self.user_id,if write {"true"} else {"false"}]).await?;
+        self.channel_with(tx, id, write, false).await
+    }
+    /// [`Principal::channel`] と同じだが、暗号化チャンネルでも、メンバーが許可した Bot の端末
+    /// （委任でない、`e2ee:device` を持つボットのトークン）には通す（#366）。
+    ///
+    /// 暗号文だけを扱う経路（メッセージの作成、編集、削除、リアクション、退出）だけが使う。
+    /// 平文の要求は、その先の暗号化チャンネルの検証（`E2EE_PLAINTEXT_FORBIDDEN` など）と DB のトリガーで止まる。
+    pub async fn e2ee_channel(
+        &self,
+        tx: &mut toasty::Transaction<'_>,
+        id: &str,
+        write: bool,
+    ) -> Result<(), AppError> {
+        self.channel_with(tx, id, write, true).await
+    }
+    /// 委任でない、`e2ee:device` を持つボットのトークンか（#366）。
+    pub fn is_bot_device(&self) -> bool {
+        !self.delegated
+            && self.user_id == self.bot_user_id
+            && self.scopes.iter().any(|s| s == E2EE_DEVICE_SCOPE)
+    }
+    async fn channel_with(
+        &self,
+        tx: &mut toasty::Transaction<'_>,
+        id: &str,
+        write: bool,
+        allow_bot_device: bool,
+    ) -> Result<(), AppError> {
+        let value=one(tx,"SELECT json_build_object('allowed',EXISTS(SELECT 1 FROM channels c JOIN channel_user cu ON cu.channel_id=c.id WHERE c.id=$1 AND c.deleted_at IS NULL AND (NOT $3::boolean OR c.archive_at IS NULL) AND cu.user_id=$2),'encrypted',EXISTS(SELECT 1 FROM channels WHERE id=$1 AND encrypted),'granted',EXISTS(SELECT 1 FROM e2ee_bot_grants WHERE channel_id=$1 AND bot_user_id=$2))::text",&[id,&self.user_id,if write {"true"} else {"false"}]).await?;
         if value["allowed"] != true {
             return Err(AppError::NotFound("Channel not found".into()));
         }
         // 暗号化チャンネルは、ボットのトークンも委任トークンも読み書きできない（#358）。
         // 委任トークンはチャンネルに参加しないままユーザーの権限で動くので、参加の禁止だけでは止まらない。
         // 存在を隠すため、見えるチャンネルのときだけ 403 にする。
-        if value["encrypted"] == true {
+        // 例外は、メンバーが許可して参加した Bot の端末の、暗号文だけを扱う経路（#366）。
+        if value["encrypted"] == true
+            && !(allow_bot_device && self.is_bot_device() && value["granted"] == true)
+        {
             return Err(crate::routes::e2ee_channels::apps_forbidden());
         }
         Ok(())
