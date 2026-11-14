@@ -80,6 +80,8 @@ erDiagram
       jsonb auth_data
       timestamptz created_at
       timestamptz deleted_at
+      bigint session_count
+      bigint session_bytes
     }
     e2ee_key_backup_versions }o--o| users : e2ee_key_backup_versions_user_id_fkey
     e2ee_key_signatures {

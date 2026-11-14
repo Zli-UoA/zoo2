@@ -2907,6 +2907,10 @@ CREATE TABLE e2ee_key_backup_versions (
   created_at timestamptz NOT NULL DEFAULT now(),
   -- 消した版も行を残し、番号と公開鍵の再利用の判定に使う。
   deleted_at timestamptz,
+  -- この版のセッションの行の数と、session_data の JSON の大きさ（バイト）の合計。
+  -- e2ee_key_backup_sessions のトリガーが保ち、アップロードの上限の判定に使う（docs/e2ee.md の鍵バックアップの API）。
+  session_count bigint NOT NULL DEFAULT 0,
+  session_bytes bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, version)
 );
 -- 過去の版と同じ公開鍵の拒否（E2EE_KEY_REUSED）に使う。
@@ -2928,6 +2932,39 @@ CREATE TABLE e2ee_key_backup_sessions (
   PRIMARY KEY (user_id, version, channel_id, sender_key, session_id),
   FOREIGN KEY (user_id, version) REFERENCES e2ee_key_backup_versions ON DELETE CASCADE
 );
+
+-- e2ee_key_backup_versions の session_count と session_bytes を、文ごとにまとめて保つ。
+-- アップロードの INSERT ... ON CONFLICT DO UPDATE では、INSERT と UPDATE の両方のトリガーが動く。
+CREATE FUNCTION e2ee_key_backup_session_totals() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE e2ee_key_backup_versions v
+    SET session_count = v.session_count + d.n, session_bytes = v.session_bytes + d.bytes
+    FROM (SELECT user_id, version, count(*) AS n, sum(octet_length(session_data::text)) AS bytes
+          FROM new_rows GROUP BY user_id, version) d
+    WHERE v.user_id = d.user_id AND v.version = d.version;
+  ELSIF TG_OP = 'UPDATE' THEN
+    UPDATE e2ee_key_backup_versions v
+    SET session_count = v.session_count + d.n, session_bytes = v.session_bytes + d.bytes
+    FROM (SELECT user_id, version, sum(n) AS n, sum(bytes) AS bytes
+          FROM (SELECT user_id, version, 1 AS n, octet_length(session_data::text) AS bytes FROM new_rows
+                UNION ALL
+                SELECT user_id, version, -1, -octet_length(session_data::text) FROM old_rows) x
+          GROUP BY user_id, version) d
+    WHERE v.user_id = d.user_id AND v.version = d.version AND (d.n <> 0 OR d.bytes <> 0);
+  ELSE
+    UPDATE e2ee_key_backup_versions v
+    SET session_count = v.session_count - d.n, session_bytes = v.session_bytes - d.bytes
+    FROM (SELECT user_id, version, count(*) AS n, sum(octet_length(session_data::text)) AS bytes
+          FROM old_rows GROUP BY user_id, version) d
+    WHERE v.user_id = d.user_id AND v.version = d.version;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER e2ee_key_backup_sessions_insert_totals AFTER INSERT ON e2ee_key_backup_sessions REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION e2ee_key_backup_session_totals();
+CREATE TRIGGER e2ee_key_backup_sessions_update_totals AFTER UPDATE ON e2ee_key_backup_sessions REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION e2ee_key_backup_session_totals();
+CREATE TRIGGER e2ee_key_backup_sessions_delete_totals AFTER DELETE ON e2ee_key_backup_sessions REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION e2ee_key_backup_session_totals();
 
 -- Keep message visibility on the small inbox, rather than replicating every
 -- undeleted message ID into Electric's notification dependency Shape.

@@ -1099,10 +1099,17 @@ async fn secret_storage_checks_revisions_slots_and_reauth() {
     let (status, _) = env.post(keys, &alice, true, missing).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 秘密を足すだけなら再認証は要らない。置き換えには要る。
+    // 秘密は、足すにも置き換えるにも再認証が要る（M-3。トークンだけで開けない秘密を足して
+    // secrets_revision を進めさせない）。拒否したときは revision も変わらない。
     let secrets = "/api/e2ee/secret_storage/secrets";
     let add = json!({"key_id": first_key, "expected_secrets_revision": 1, "secrets": {"zoo.megolm_backup.previous": secret()}});
-    let (status, res) = env.post(secrets, &alice, false, add).await;
+    let (status, res) = env.post(secrets, &alice, false, add.clone()).await;
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::FORBIDDEN, "E2EE_REAUTH_REQUIRED")
+    );
+    assert_eq!(env.revision(&alice).await, 1);
+    let (status, res) = env.post(secrets, &alice, true, add).await;
     assert_eq!(status, StatusCode::OK, "{res}");
     assert_eq!(res["data"]["secrets_revision"], 2);
     let old_ciphertext = env
@@ -1199,25 +1206,42 @@ async fn slots_are_capped_replaced_with_reauth_and_never_drop_to_zero() {
     );
     assert_eq!(res["default_key_id"], key_id);
 
-    // パスキーのスロットは 20 個まで（足すだけなら再認証は要らない）。
+    // スロットを足すにも再認証が要る（M-3。トークンだけで開けないスロットを上限まで足させない）。
+    let (status, res) = env
+        .post(path, &alice, false, with_key(passkey_slot("cred-0")))
+        .await;
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::FORBIDDEN, "E2EE_REAUTH_REQUIRED")
+    );
+    assert_eq!(
+        env.count(
+            "SELECT 1 FROM e2ee_secret_storage_key_slots WHERE user_id = $1",
+            &[&alice]
+        )
+        .await,
+        1
+    );
+
+    // パスキーのスロットは 20 個まで。
     let mut first_slot = Value::Null;
     for i in 0..20 {
         let slot = with_key(passkey_slot(&format!("cred-{i}")));
-        let (status, res) = env.post(path, &alice, false, slot.clone()).await;
+        let (status, res) = env.post(path, &alice, true, slot.clone()).await;
         assert_eq!(status, StatusCode::OK, "{res}");
         if i == 0 {
             first_slot = slot;
         }
     }
     let (status, res) = env
-        .post(path, &alice, false, with_key(passkey_slot("cred-20")))
+        .post(path, &alice, true, with_key(passkey_slot("cred-20")))
         .await;
     assert_eq!(
         (status, code(&res)),
         (StatusCode::BAD_REQUEST, "E2EE_LIMIT_EXCEEDED")
     );
     assert_eq!(res["limit"], "slots");
-    // 同じスロットの再送は 200。
+    // 同じスロットの再送は、再認証なしでも 200（何も変えない）。
     let (status, _) = env.post(path, &alice, false, first_slot.clone()).await;
     assert_eq!(status, StatusCode::OK);
     // 同じ credential ID の置き換えは、20 個に達していても通るが、再認証が要る。
@@ -1606,6 +1630,252 @@ async fn backup_sessions_page_past_one_thousand() {
         .await;
     assert_eq!(page["sessions"].as_array().unwrap().len(), 750);
     assert!(page["next"].is_null());
+}
+
+#[tokio::test]
+async fn backup_totals_are_counted_and_capped_per_version_and_user() {
+    let env = env().await;
+    let alice = env.identity().await;
+    let user = alice.user.clone();
+    env.ssss(&user, json!([recovery_slot()])).await;
+    let revision = env.revision(&user).await;
+    let body = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key())});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, false, body)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let upload = |version: &str| {
+        format!("/api/e2ee/key_backup/keys?version={version}&secrets_revision={revision}")
+    };
+    let totals = |version: &'static str| {
+        let (env, user) = (&env, user.clone());
+        async move {
+            let row = env
+                .query(
+                    "SELECT json_build_object('count', session_count, 'bytes', session_bytes,
+                       'real_count', (SELECT count(*) FROM e2ee_key_backup_sessions s
+                                      WHERE s.user_id = v.user_id AND s.version = v.version),
+                       'real_bytes', (SELECT coalesce(sum(octet_length(session_data::text)), 0)
+                                      FROM e2ee_key_backup_sessions s
+                                      WHERE s.user_id = v.user_id AND s.version = v.version))::text
+                     FROM e2ee_key_backup_versions v WHERE user_id = $1 AND version = $2::bigint",
+                    &[&user, version],
+                )
+                .await;
+            let row = row[0].clone();
+            // トリガーが保つ数は、実際の行の数と大きさと一致する。
+            assert_eq!(row["count"], row["real_count"], "{row}");
+            assert_eq!(row["bytes"], row["real_bytes"], "{row}");
+            (
+                row["count"].as_i64().unwrap(),
+                row["bytes"].as_i64().unwrap(),
+            )
+        }
+    };
+
+    // 足す、よい行で置き換える、同じ要求で重複する、のどれでも数がずれない。
+    let sessions: Vec<Value> = (0..5)
+        .map(|i| session("c", "k", &format!("s{i}"), false, 3))
+        .collect();
+    let (status, res) = env
+        .post(&upload("1"), &user, false, json!({"sessions": sessions}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(res["data"]["count"], 5);
+    assert_eq!(totals("1").await.0, 5);
+    let mut bigger = session("c", "k", "s0", true, 0);
+    bigger["session_data"]["ciphertext"] = json!(random_b64(600));
+    let (status, res) = env
+        .post(
+            &upload("1"),
+            &user,
+            false,
+            json!({"sessions": [bigger, session("c", "k", "s5", false, 0), session("c", "k", "s1", false, 9)]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(res["data"]["count"], 6);
+    let (count, bytes) = totals("1").await;
+    assert_eq!(count, 6);
+    let (_, current) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    assert_eq!(current["count"], 6);
+
+    // 版の上限：数を増やすアップロードは 400 で、行も数も変わらない。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = session_count + $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[
+            &user,
+            &(backend::routes::e2ee_key_backup::MAX_BACKUP_VERSION_SESSIONS - count).to_string(),
+        ],
+    )
+    .await;
+    let (status, res) = env
+        .post(
+            &upload("1"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "over", false, 0)]}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_version_sessions")
+        )
+    );
+    assert_eq!(
+        env.count(
+            "SELECT 1 FROM e2ee_key_backup_sessions WHERE user_id = $1 AND session_id = 'over'",
+            &[&user]
+        )
+        .await,
+        0
+    );
+    // 上限に達していても、数を増やさないアップロード（同じ行の再送、よい行での置き換え）は通る。
+    let (status, res) = env
+        .post(
+            &upload("1"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s2", false, 0)]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &count.to_string()],
+    )
+    .await;
+
+    // 版の大きさの上限。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_bytes = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[
+            &user,
+            &backend::routes::e2ee_key_backup::MAX_BACKUP_VERSION_BYTES.to_string(),
+        ],
+    )
+    .await;
+    let (status, res) = env
+        .post(
+            &upload("1"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "big", false, 0)]}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_version_size")
+        )
+    );
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_bytes = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &bytes.to_string()],
+    )
+    .await;
+    assert_eq!(totals("1").await, (count, bytes));
+
+    // ユーザーの上限は、消していないすべての版の合計で数える。版 1 を古い版として残したまま、
+    // 版 2 に上げる（失効のあとの移行と同じ形）。
+    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key()), "expected_current_version": "1"});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, true, create)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let (status, res) = env
+        .post(
+            &upload("2"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s0", false, 0)]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[
+            &user,
+            &backend::routes::e2ee_key_backup::MAX_BACKUP_USER_SESSIONS.to_string(),
+        ],
+    )
+    .await;
+    let (status, res) = env
+        .post(
+            &upload("2"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s1", false, 0)]}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_user_sessions")
+        )
+    );
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = $2::bigint, session_bytes = $3::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[
+            &user,
+            &count.to_string(),
+            &backend::routes::e2ee_key_backup::MAX_BACKUP_USER_BYTES.to_string(),
+        ],
+    )
+    .await;
+    let (status, res) = env
+        .post(
+            &upload("2"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s1", false, 0)]}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_user_size")
+        )
+    );
+    // 古い版を消すと、その版は合計に入らない（行も数も消える）。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_bytes = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &bytes.to_string()],
+    )
+    .await;
+    let (status, res) = env
+        .delete("/api/e2ee/key_backup/versions/1", &user, false)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(totals("1").await, (0, 0));
+    let (status, res) = env
+        .post(
+            &upload("2"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s1", false, 0)]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(totals("2").await.0, 2);
 }
 
 #[tokio::test]

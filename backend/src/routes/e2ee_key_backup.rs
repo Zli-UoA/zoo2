@@ -43,6 +43,15 @@ pub const MAX_SESSION_DATA_BYTES: usize = 8 * 1024;
 const MAX_UPLOAD_BODY_BYTES: usize = 10 * 1024 * 1024;
 /// `channel_id`、`sender_key`、`session_id` の長さの上限。
 const MAX_ID_CHARS: usize = 128;
+/// 1 つの版のセッションの数の上限（`limit` は `backup_version_sessions`）。根拠は docs/e2ee.md の鍵バックアップの API。
+pub const MAX_BACKUP_VERSION_SESSIONS: i64 = 500_000;
+/// 1 つの版の `session_data` の JSON の大きさの合計の上限（`limit` は `backup_version_size`）。
+pub const MAX_BACKUP_VERSION_BYTES: i64 = 512 * 1024 * 1024;
+/// 1 人の、消していないすべての版のセッションの数の上限（`limit` は `backup_user_sessions`）。
+/// 失効のあとの移行で、古い版と今の版に同じセッションが並ぶので、版ごとの上限の 2 倍にする。
+pub const MAX_BACKUP_USER_SESSIONS: i64 = 2 * MAX_BACKUP_VERSION_SESSIONS;
+/// 1 人の、消していないすべての版の `session_data` の大きさの合計の上限（`limit` は `backup_user_size`）。
+pub const MAX_BACKUP_USER_BYTES: i64 = 2 * MAX_BACKUP_VERSION_BYTES;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -313,12 +322,14 @@ async fn version_json(
     first(
         tx,
         "SELECT json_build_object('version', v.version::text, 'algorithm', v.algorithm,
-           'auth_data', v.auth_data, 'count', CASE WHEN $3::boolean THEN
-             (SELECT count(*) FROM e2ee_key_backup_sessions s WHERE s.user_id = v.user_id AND s.version = v.version)
-           END)::text
+           'auth_data', v.auth_data, 'count', CASE WHEN $3::boolean THEN v.session_count END)::text
          FROM e2ee_key_backup_versions v
          WHERE v.user_id = $1 AND v.version = $2::bigint AND v.deleted_at IS NULL",
-        &[user_id, &version.to_string(), if with_count { "true" } else { "false" }],
+        &[
+            user_id,
+            &version.to_string(),
+            if with_count { "true" } else { "false" },
+        ],
     )
     .await?
     .map(|mut v| {
@@ -540,6 +551,7 @@ async fn upload_sessions(
             }),
         ));
     }
+    let before = backup_totals(&mut tx, &actor.id, version).await?;
     if !best.is_empty() {
         // 読んでから書くと、並行した同じセッションのアップロードがよい行を上書きしたり、主キーの衝突（500）に
         // なったりするので、1 つの文で決める。
@@ -568,15 +580,83 @@ async fn upload_sessions(
         )
         .await?;
     }
-    let count = first(
-        &mut tx,
-        "SELECT count(*)::text FROM e2ee_key_backup_sessions WHERE user_id = $1 AND version = $2::bigint",
-        &[&actor.id, version],
+    let after = backup_totals(&mut tx, &actor.id, version).await?;
+    // 増やした上限だけを拒否する（上限を下げたあとも、行を減らすか変えないアップロードは通す）。
+    // 拒否したら、コミットせずにトランザクションを捨てるので、行も数も戻る。
+    for (limit, max, before, after) in [
+        (
+            "backup_version_sessions",
+            MAX_BACKUP_VERSION_SESSIONS,
+            before.version_sessions,
+            after.version_sessions,
+        ),
+        (
+            "backup_version_size",
+            MAX_BACKUP_VERSION_BYTES,
+            before.version_bytes,
+            after.version_bytes,
+        ),
+        (
+            "backup_user_sessions",
+            MAX_BACKUP_USER_SESSIONS,
+            before.user_sessions,
+            after.user_sessions,
+        ),
+        (
+            "backup_user_size",
+            MAX_BACKUP_USER_BYTES,
+            before.user_bytes,
+            after.user_bytes,
+        ),
+    ] {
+        if after > max && after > before {
+            return Err(limit_exceeded(limit));
+        }
+    }
+    tx.commit().await?;
+    Ok(Json(ApiResponse::new(
+        json!({"count": after.version_sessions}),
+        None,
+    )))
+}
+
+/// 版とユーザーのセッションの数と大きさ（`e2ee_key_backup_versions` の、トリガーが保つ列）。
+struct BackupTotals {
+    version_sessions: i64,
+    version_bytes: i64,
+    user_sessions: i64,
+    user_bytes: i64,
+}
+
+async fn backup_totals(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+    version: &str,
+) -> Result<BackupTotals, AppError> {
+    let row = first(
+        tx,
+        "SELECT json_build_object(
+           'version_sessions', v.session_count, 'version_bytes', v.session_bytes,
+           'user_sessions', u.sessions, 'user_bytes', u.bytes)::text
+         FROM e2ee_key_backup_versions v,
+           (SELECT coalesce(sum(session_count), 0) AS sessions, coalesce(sum(session_bytes), 0) AS bytes
+            FROM e2ee_key_backup_versions WHERE user_id = $1 AND deleted_at IS NULL) u
+         WHERE v.user_id = $1 AND v.version = $2::bigint",
+        &[user_id, version],
     )
     .await?
-    .unwrap_or(Value::Null);
-    tx.commit().await?;
-    Ok(Json(ApiResponse::new(json!({"count": count}), None)))
+    .ok_or_else(version_not_found)?;
+    let field = |name: &str| {
+        row[name]
+            .as_i64()
+            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("invalid backup totals: {name}")))
+    };
+    Ok(BackupTotals {
+        version_sessions: field("version_sessions")?,
+        version_bytes: field("version_bytes")?,
+        user_sessions: field("user_sessions")?,
+        user_bytes: field("user_bytes")?,
+    })
 }
 
 #[derive(Deserialize)]
