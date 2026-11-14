@@ -446,6 +446,9 @@
     {
       "file": "src/components/layout/ZooSettings.stories.tsx",
       "states": [
+        "Encryption",
+        "EncryptionMobile",
+        "LegacyDevicesLink",
         "General",
         "Apps",
         "AppsMobile",
@@ -701,7 +704,6 @@
       "file": "src/components/e2ee/EncryptionSettingsView.stories.tsx",
       "states": [
         "Loading",
-        "Unavailable",
         "LoadFailed",
         "NotSetUp",
         "RecoveryKey",
@@ -760,6 +762,21 @@
         "Conflict",
         "Done",
         "DeviceLimit"
+      ]
+    },
+    {
+      "file": "src/components/e2ee/EncryptionTabView.stories.tsx",
+      "states": [
+        "Unlocked",
+        "UnlockedMobile",
+        "Locked",
+        "NotReadyStarting",
+        "NotReadyOtherTab",
+        "NotReadyRegistrationFailed",
+        "NotReadyNetwork",
+        "NotReadyUnsupported",
+        "DeviceLimit",
+        "DeviceLimitMobile"
       ]
     },
     {
@@ -1349,7 +1366,7 @@
     },
     {
       "file": "src/components/e2ee/EncryptionSettings.tsx",
-      "reason": "暗号化タブの状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はEncryptionSettingsViewのストーリーで、手順は単体テストで確認する。",
+      "reason": "暗号化タブの状態と解錠、鍵のセクションの状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はEncryptionSettingsViewのストーリーで、手順は単体テストで確認する。",
       "checks": [
         "src/lib/e2ee/setupController.test.ts",
         "src/lib/e2ee/reauth.test.ts",
@@ -1357,12 +1374,22 @@
       ]
     },
     {
+      "file": "src/components/e2ee/EncryptionTabView.tsx",
+      "story": "src/components/e2ee/EncryptionTabView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/EncryptionTab.tsx",
+      "story": "src/components/layout/ZooSettings.stories.tsx",
+      "composed": true,
+      "reason": "暗号ストアを開いたかで、理由か各セクションかを選び、20 台の上限の画面、セクション間の読み直し（解錠と失効）、古い ?tab=devices のリンクからの移動をつなぐ。並びと理由の表示は EncryptionTabView のストーリーで、タブの開き方は ZooSettings の Encryption と LegacyDevicesLink で、セクション間の読み直しと移る時機は EncryptionTab.browser.test.tsx で確かめる。"
+    },
+    {
       "file": "src/components/e2ee/DevicesSettingsView.tsx",
       "story": "src/components/e2ee/DevicesSettingsView.stories.tsx"
     },
     {
       "file": "src/components/e2ee/DevicesSettings.tsx",
-      "reason": "端末タブ（端末一覧、失効、他のユーザーの検証）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
+      "reason": "暗号化タブの端末と他のユーザーの検証のセクション（端末一覧、失効、20 台の上限）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
       "checks": ["src/lib/e2ee/revocationController.test.ts"]
     },
     {
