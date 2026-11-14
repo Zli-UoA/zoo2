@@ -277,6 +277,10 @@ fn closing(toks: &[Tok], open: usize, mark: char) -> Result<usize, usize> {
         if is_char(toks.get(j), '`')
             && let Some(end) = code_end(toks, j)
         {
+            // コードが改行をまたぐなら、そこで探索を終える (改行をまたぐ記号は書式にしない)
+            if let Some(newline) = toks[j..end].iter().position(|t| is_char(Some(t), '\n')) {
+                return Err(j + newline);
+            }
             j = end;
             continue;
         }
@@ -584,6 +588,9 @@ mod tests {
         assert_eq!(mfm("*a ```b* c``` d*"), "**a ```b* c``` d**");
         // 開き記号の直後からコードが始まる場合も、コードの中を終わりにしない
         assert_eq!(mfm("*`b* c` d*"), "**`b* c` d**");
+        // 改行をまたぐコードの後ろの記号は、閉じ記号にしない
+        assert_eq!(mfm("~a ```\nb\n``` c~"), "~a ```\nb\n``` c~");
+        assert_eq!(mfm("*a ```\nb\n``` c*"), "*a ```\nb\n``` c*");
         assert_eq!(mfm("~`b~ c` d~"), "~~`b~ c` d~~");
         assert_eq!(mfm("_`b_ c` d_"), "<i>`b_ c` d</i>");
         assert_eq!(mfm("a ` b *c*"), "a ` b **c**");
