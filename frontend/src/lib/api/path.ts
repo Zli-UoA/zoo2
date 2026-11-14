@@ -1,4 +1,11 @@
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HEX = "[0-9a-f]";
+const HYPHENATED = `${HEX}{8}-${HEX}{4}-${HEX}{4}-${HEX}{4}-${HEX}{12}`;
+// バックエンドの `Uuid::parse_str` が受け付ける 4 つの形（ハイフン付き、ハイフンなし、
+// `{...}`、`urn:uuid:...`）に合わせる。
+const UUID_PATTERN = new RegExp(
+  `^(?:${HYPHENATED}|${HEX}{32}|\\{${HYPHENATED}\\}|urn:uuid:${HYPHENATED})$`,
+  "i",
+);
 
 /** ルートのパラメーターなどが UUID の形かどうかを返す。 */
 export function isUuid(value: unknown): value is string {

@@ -6,7 +6,12 @@ import { apiPath, assertSafeApiPath, isUuid, UnsafeApiPathError } from "./path";
 describe("isUuid", () => {
   it("accepts a UUID and rejects other shapes", () => {
     expect(isUuid("123e4567-e89b-12d3-a456-426614174000")).toBe(true);
+    expect(isUuid("123e4567e89b12d3a456426614174000")).toBe(true);
+    expect(isUuid("{123e4567-e89b-12d3-a456-426614174000}")).toBe(true);
+    expect(isUuid("urn:uuid:123e4567-e89b-12d3-a456-426614174000")).toBe(true);
     expect(isUuid("123e4567-e89b-12d3-a456-426614174000/leave?")).toBe(false);
+    expect(isUuid("123e4567e89b12d3a45642661417400")).toBe(false);
+    expect(isUuid("{123e4567-e89b-12d3-a456-426614174000")).toBe(false);
     expect(isUuid("../apps/x")).toBe(false);
     expect(isUuid("")).toBe(false);
     expect(isUuid(undefined)).toBe(false);
@@ -14,6 +19,10 @@ describe("isUuid", () => {
 });
 
 describe("apiPath", () => {
+  it("keeps braces and colons of a UUID form inside one segment", () => {
+    expect(apiPath`/api/channels/${"urn:uuid:x"}/view`).toBe("/api/channels/urn%3Auuid%3Ax/view");
+  });
+
   it("encodes interpolated values as a single path segment", () => {
     expect(apiPath`/api/channels/${"abc"}/view`).toBe("/api/channels/abc/view");
     expect(apiPath`/api/channels/${"a/b?c#d"}/view`).toBe("/api/channels/a%2Fb%3Fc%23d/view");
