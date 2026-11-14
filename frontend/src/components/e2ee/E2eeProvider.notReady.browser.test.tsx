@@ -14,11 +14,15 @@ const mocks = vi.hoisted(() => ({
   startCryptoWorker: vi.fn(),
 }));
 
-vi.mock("../../lib/e2ee/cryptoWorker", () => ({
+// 元のモジュールの書き出しを引き継ぎ、差し替える物だけを上書きする（Provider が新しい書き出しを使っても
+// 読み込みで落ちないように）。
+vi.mock("../../lib/e2ee/cryptoWorker", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   startCryptoWorker: () => mocks.startCryptoWorker(),
 }));
 
-vi.mock("../../lib/e2ee/deviceManager", () => ({
+vi.mock("../../lib/e2ee/deviceManager", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   E2eeDeviceManager: class {
     currentDeviceId = "00000000-0000-4000-8000-0000000000d1";
     private readonly onStatus: OnStatus;
@@ -38,26 +42,30 @@ vi.mock("../../lib/e2ee/deviceManager", () => ({
   },
 }));
 
-vi.mock("../../lib/e2ee/sasController", () => ({
+vi.mock("../../lib/e2ee/sasController", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   SasController: class {
     async handleMessages() {}
     dispose() {}
   },
 }));
 
-vi.mock("../../lib/e2ee/setupController", () => ({
+vi.mock("../../lib/e2ee/setupController", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   runStartupCheck: async () => {},
   uploadKeyBackup: async () => {},
 }));
 
-vi.mock("../../lib/e2ee/push/recipient", () => ({
+vi.mock("../../lib/e2ee/push/recipient", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   rememberPushRecipient: async () => {},
   forgetPushRecipient: async () => {},
 }));
 
 const USER = "00000000-0000-4000-8000-00000000000a";
 const userState = { currentUserId: USER, isAdmin: false, error: null };
-vi.mock("../../lib/currentUser", () => ({
+vi.mock("../../lib/currentUser", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   getCurrentUserStore: () => ({ subscribe: () => () => {}, getState: () => userState }),
 }));
 
