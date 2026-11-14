@@ -736,12 +736,14 @@ async fn encrypted_messages_require_ciphertext_and_the_current_epoch() {
         (status, code(&body)),
         (StatusCode::BAD_REQUEST, "E2EE_CIPHERTEXT_REQUIRED")
     );
-    let mut with_attachment = message(&channel, &Uuid::new_v4().to_string(), &device, epoch, "c");
-    with_attachment["attachment_ids"] = json!([Uuid::new_v4().to_string()]);
-    let (status, body) = send(with_attachment).await;
+    // 添付は暗号化したものを紐付けられる（#364。e2ee_attachments_test.rs）が、センシティブの印は
+    // 暗号化した本文に入れるので、平文の項目では受け付けない。
+    let mut sensitive = message(&channel, &Uuid::new_v4().to_string(), &device, epoch, "c");
+    sensitive["sensitive"] = json!(true);
+    let (status, body) = send(sensitive).await;
     assert_eq!(
         (status, code(&body)),
-        (StatusCode::BAD_REQUEST, "E2EE_ATTACHMENTS_FORBIDDEN")
+        (StatusCode::BAD_REQUEST, "E2EE_PLAINTEXT_FORBIDDEN")
     );
     let (status, body) = send(message(
         &channel,

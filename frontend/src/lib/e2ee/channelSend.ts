@@ -1,4 +1,4 @@
-import type { JsonObject, Mentions, OutgoingMessage } from "@zoo/crypto-wasm";
+import type { AttachmentInfo, JsonObject, Mentions, OutgoingMessage } from "@zoo/crypto-wasm";
 
 import type { ApiClient } from "../api/client";
 import type { CryptoWorker } from "./cryptoWorker";
@@ -42,6 +42,8 @@ export interface EncryptedMessageRequest {
   revision: 0;
   ciphertext: JsonObject;
   mentions: Mentions;
+  /** 暗号化した添付の `attachments.id`（#364）。鍵などは暗号化した本文の `attachments` に入れる。 */
+  attachment_ids?: string[];
 }
 
 /** ピンを置いたあとに判定し直す回数の上限。 */
@@ -239,15 +241,19 @@ export async function sendEncryptedMessage(
     parentId: string | null;
     body: string;
     mentions: Mentions;
+    /** 暗号化して上げた添付（#364。`uploadEncryptedAttachment` の結果）。 */
+    attachments?: AttachmentInfo[];
   },
 ): Promise<void> {
   const { channelId, messageId, parentId, mentions } = options;
+  const attachments = options.attachments ?? [];
   const message: OutgoingMessage = {
     message_id: messageId,
     parent_id: parentId,
     revision: 0,
     content: { body: options.body, format: "mfm", kind: "message" },
     mentions,
+    ...(attachments.length ? { attachments } : {}),
   };
   await encryptAndSubmit(
     deps,
@@ -265,6 +271,9 @@ export async function sendEncryptedMessage(
         ciphertext,
         mentions,
         ...(parentId ? { parent_id: parentId } : {}),
+        ...(attachments.length
+          ? { attachment_ids: attachments.map((attachment) => attachment.attachment_id) }
+          : {}),
       };
       await deps.client.post("/api/messages", request, { signal: deps.signal });
     },
@@ -287,15 +296,19 @@ export async function editEncryptedMessage(
     body: string;
     kind: "message" | "emote";
     mentions: Mentions;
+    /** 元の版の添付（#364）。編集では添付を変えられないので、そのまま入れる。 */
+    attachments?: AttachmentInfo[];
   },
 ): Promise<void> {
   const { channelId, messageId, revision } = options;
+  const attachments = options.attachments ?? [];
   const message: OutgoingMessage = {
     message_id: messageId,
     parent_id: options.parentId,
     revision,
     content: { body: options.body, format: "mfm", kind: options.kind },
     mentions: options.mentions,
+    ...(attachments.length ? { attachments } : {}),
   };
   await encryptAndSubmit(
     deps,

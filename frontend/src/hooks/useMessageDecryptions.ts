@@ -118,6 +118,7 @@ export function useMessageDecryptions(
                   body: outcome.body,
                   kind: outcome.kind,
                   sender: outcome.sender,
+                  attachments: outcome.attachments,
                 }
               : { status: "undecryptable", reason: outcome.reason };
           const check = outcome.status === "decrypted" ? outcome.revision.status : "latest";

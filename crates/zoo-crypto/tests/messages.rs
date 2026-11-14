@@ -104,6 +104,7 @@ fn message(message_id: &str, revision: u64, body: &str) -> OutgoingMessage {
             kind: "message".to_owned(),
         },
         mentions: Mentions::default(),
+        attachments: Vec::new(),
     }
 }
 
