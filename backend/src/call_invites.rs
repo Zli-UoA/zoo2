@@ -29,6 +29,7 @@ pub fn reserved_seat_condition() -> String {
     format!(
         "((i.status = 'pending' AND i.expires_at > statement_timestamp())
            OR (i.status = 'accepted'
+               AND i.joined_at IS NULL
                AND i.responded_at > statement_timestamp() - interval '{ACCEPTED_SEAT_HOLD_SECONDS} seconds'))
          AND NOT EXISTS (
              SELECT 1 FROM call_presence p
@@ -128,7 +129,7 @@ async fn insert_invites(
                    SELECT 1 FROM call_invites i
                    WHERE i.channel_id = $1 AND i.invitee_id = u.id
                      AND (i.status = 'pending'
-                          OR (i.status = 'accepted'
+                          OR (i.status = 'accepted' AND i.joined_at IS NULL
                               AND i.responded_at > statement_timestamp()
                                   - interval '{ACCEPTED_SEAT_HOLD_SECONDS} seconds')))
          )
@@ -154,8 +155,18 @@ pub async fn accept_on_join(
     channel_id: &str,
     user_id: &str,
 ) -> Result<Vec<CallInvitePush>, AppError> {
+    // 先に応答していた人が入った。席の予約は、ここで使い終える（このあと退出しても、戻さない）。
+    toasty::sql::statement(
+        "UPDATE call_invites SET joined_at = statement_timestamp()
+         WHERE channel_id = $1 AND invitee_id = $2 AND status = 'accepted' AND joined_at IS NULL",
+    )
+    .bind(channel_id.to_string())
+    .bind(user_id.to_string())
+    .exec(&mut *db)
+    .await?;
     let rows = toasty::sql::query(format!(
-        "UPDATE call_invites SET status = 'accepted', responded_at = statement_timestamp()
+        "UPDATE call_invites SET status = 'accepted', responded_at = statement_timestamp(),
+                joined_at = statement_timestamp()
          WHERE channel_id = $1 AND invitee_id = $2 AND status = 'pending'
          {RETURNING_INVITE}"
     ))
@@ -209,7 +220,8 @@ struct MissedRow {
 pub async fn sweep(db: &mut toasty::Db) -> Result<(), AppError> {
     // 参加と呼び出しが同時に起きて、入室済みの人に `pending` が残ったものを応答済みにする。
     let rows = toasty::sql::query(format!(
-        "UPDATE call_invites c SET status = 'accepted', responded_at = statement_timestamp()
+        "UPDATE call_invites c SET status = 'accepted', responded_at = statement_timestamp(),
+                joined_at = statement_timestamp()
          WHERE c.status = 'pending' AND EXISTS (
              SELECT 1 FROM call_presence p
              WHERE p.channel_id = c.channel_id AND p.user_id = c.invitee_id

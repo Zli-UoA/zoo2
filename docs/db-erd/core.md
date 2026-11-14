@@ -64,6 +64,7 @@ erDiagram
       timestamptz created_at
       timestamptz expires_at
       timestamptz responded_at
+      timestamptz joined_at
     }
     call_invites }o--o| channels : call_invites_channel_id_fkey
     call_invites }o--o| users : call_invites_invitee_id_fkey
