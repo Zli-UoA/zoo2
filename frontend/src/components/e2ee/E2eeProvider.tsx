@@ -167,10 +167,16 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         onStatus: (next, error) => {
           setStatus(next);
           if (next === "stopped") setDeviceId(null);
-          // 20 台の上限で登録できなかった。設定の「端末」タブで、削除する端末を選んでもらう。
-          if (next === "error") setDeviceLimit(staleDevices(error));
+          if (next === "error") {
+            // 20 台の上限で登録できなかった。設定の「端末」タブで、削除する端末を選んでもらう。
+            setDeviceLimit(staleDevices(error));
+            // 設定の画面に、試し直している理由を出す（状態コードとエラーの名前だけ）。起動のほか、
+            // 別の端末から消されたあとの登録し直し（`reregister`）の失敗もここに来る。
+            setStartFailure(describeStartFailure(error));
+          }
           if (next === "ready") {
             setDeviceLimit(null);
+            setStartFailure(null);
             // 別の端末から消されて登録し直したら（`reregister`）、端末 ID が変わる。
             setDeviceId(manager.currentDeviceId);
           }
@@ -197,6 +203,9 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(LOCK_CHANNEL);
     let requesting = false;
     let releaseCurrent: () => void = () => {};
+    /** Worker を作れなかったときに、間隔をあけて試し直すタイマーと、その間隔。 */
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let workerRetryDelay = START_RETRY_MS;
 
     const lead = () => {
       requesting = true;
@@ -213,12 +222,22 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       let granted = false;
       /** ログアウトする別のタブにロックを奪われた（返されるまで、そのタブが持っている）。 */
       let stolen = false;
+      /** Worker を作れなかった（CSP などで投げた）。ロックの拒否と区別する。 */
+      let workerFailed = false;
       setLockState("idle");
       navigator.locks
         .request(cryptoLockName(namespace), { signal: controller.signal }, async () => {
           granted = true;
           setLockState("held");
-          const worker = startCryptoWorker();
+          let worker: CryptoWorker;
+          try {
+            worker = startCryptoWorker();
+          } catch (error) {
+            workerFailed = true;
+            setStartFailure(describeStartFailure(error));
+            throw error;
+          }
+          workerRetryDelay = START_RETRY_MS;
           let active: ActiveStore | null = null;
           try {
             await retryPendingStoreDeletion(worker, namespace).catch(() => undefined);
@@ -231,16 +250,14 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
               leader.current = active;
               try {
                 await manager.start();
-                setStartFailure(null);
                 setDeviceId(manager.currentDeviceId);
                 setReadyWorker(worker);
                 // 解錠済みの端末は、起動時に自分の端末への署名を確かめ、なければ署名し直す
                 // （docs/e2ee.md の「初回設定と解錠の流れ」。止まった初回設定は暗号化タブで案内する）。
                 void runStartupCheck({ worker, client, userId, rpId: null }).catch(() => undefined);
                 break;
-              } catch (error) {
-                // 設定の画面に、試し直している理由を出す（状態コードとエラーの名前だけ）。
-                if (!released) setStartFailure(describeStartFailure(error));
+              } catch {
+                // 失敗の理由は `onStatus("error")` で記録している。
                 await manager.stop().catch(() => undefined);
                 await wait(delay, held);
                 delay = Math.min(delay * 2, START_RETRY_MAX_MS);
@@ -259,8 +276,25 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         })
         // 中止（アンマウント）と、ログアウトする別のタブに奪われたときは、持っていた分を片付ける。
         .catch(() => {
-          // 奪われた。取りやめたタブがロックを返すまで、ほかのタブが持っている。
-          if (!controller.signal.aborted) {
+          if (controller.signal.aborted) {
+            release();
+            return;
+          }
+          if (workerFailed) {
+            // Worker を作れなかった。ロックは返したので、間隔をあけて取り直し、作り直す。
+            setLockState("idle");
+            release();
+            const delay = workerRetryDelay;
+            workerRetryDelay = Math.min(workerRetryDelay * 2, START_RETRY_MAX_MS);
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              if (!controller.signal.aborted && !requesting) lead();
+            }, delay);
+            return;
+          }
+          // ロックを持っていたのに拒否された。ログアウトする別のタブに奪われ、取りやめたタブが
+          // ロックを返すまで、そのタブが持っている。
+          if (granted) {
             stolen = true;
             setLockState("otherTab");
           }
@@ -289,6 +323,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     }
     return () => {
       controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
       releaseCurrent();
       channel?.close();
     };

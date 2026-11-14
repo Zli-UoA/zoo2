@@ -81,12 +81,15 @@ export const Apps: Story = {
     await expect(screen.getByRole("button", { name: "メッセージ" })).toBeVisible();
   }),
 };
-/** 暗号化タブ。暗号ストアを開いていない（Worker がない）ときは、準備ができていないと出す。 */
+/**
+ * 暗号化タブ。暗号ストアを開いていない（Worker がない）ときは、その理由を出す。ここでは E2EE の
+ * Provider がないので、既定の「準備をしています」になる。
+ */
 export const Encryption: Story = {
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("tab", { name: "暗号化" }));
     await expect(await screen.findByText("エンドツーエンド暗号化")).toBeVisible();
-    await expect(screen.getByText(/まだ暗号化の準備ができていません/)).toBeVisible();
+    await expect(screen.getByText(/暗号化の準備をしています/)).toBeVisible();
   }),
 };
 export const AppsMobile: Story = { ...Apps, globals: { viewport: { value: "mobile" } } };
