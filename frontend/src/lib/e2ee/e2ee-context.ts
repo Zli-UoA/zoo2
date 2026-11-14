@@ -13,6 +13,8 @@ export interface E2eeContextValue {
    */
   worker: CryptoWorker | null;
   userId: string | null;
+  /** Megolm のセッション鍵を受け取るたびに増える（復号できなかったメッセージを試し直す。#361）。 */
+  roomKeysVersion: number;
   /**
    * ログアウトの前に、鍵バックアップにまだ送っていない受信用セッションの数を返す。
    * 暗号ストアがなければ 0。数える前に to-device の処理を止める（取りやめたら `cancelLogout`）。
@@ -35,6 +37,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   deviceId: null,
   worker: null,
   userId: null,
+  roomKeysVersion: 0,
   pendingBackupCount: async () => 0,
   cancelLogout: () => {},
   requestKeyBackup: () => {},

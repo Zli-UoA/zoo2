@@ -1,4 +1,21 @@
-import type { IdentityKeys, JsonObject, KeySlot, ResumePlan, StartupCheck } from "@zoo/crypto-wasm";
+import type {
+  EncryptedMessage,
+  IdentityKeys,
+  JsonObject,
+  KeySlot,
+  NewTofuPin,
+  OutgoingMessage,
+  ResumePlan,
+  StartupCheck,
+} from "@zoo/crypto-wasm";
+
+import type {
+  ClaimedKeys,
+  DecryptOutcome,
+  RecipientSummary,
+  SharePlan,
+  ShareResult,
+} from "./store/megolm";
 
 import type { PasskeySlotInput, ResetExpectation, UnlockSecret } from "./setupSession";
 import type { BackupUploadRequest } from "./store/cryptoStore";
@@ -12,6 +29,7 @@ import type {
 } from "./store/cryptoStore";
 
 export type { DeviceKeysByUser, KeyUpload, RegistrationRequest, ToDeviceResult, ToDeviceRow };
+export type { ClaimedKeys, DecryptOutcome, RecipientSummary, SharePlan, ShareResult };
 export type { KeySlot, PasskeySlotInput, ResetExpectation, ResumePlan, StartupCheck, UnlockSecret };
 
 /**
@@ -61,6 +79,19 @@ export type CryptoOperation =
   | { op: "backupUploadFailed"; uploadId: number }
   | { op: "discardSecrets" }
   | { op: "forgetOwnKeys" }
+  // Megolm の送信と復号（#361）。
+  | { op: "megolmNeedsSnapshot"; channelId: string; epoch: number }
+  | { op: "megolmEvaluate"; channelId: string; pages: JsonObject[] }
+  | { op: "megolmSettlePins"; confirmed: NewTofuPin[]; discarded: NewTofuPin[] }
+  | { op: "megolmStart"; channelId: string }
+  | { op: "megolmShare"; channelId: string; claimed: ClaimedKeys }
+  | { op: "megolmMarkShared"; channelId: string; devices: { userId: string; deviceId: string }[] }
+  | { op: "megolmEncrypt"; channelId: string; message: OutgoingMessage }
+  | { op: "megolmDiscard"; channelId: string }
+  | { op: "megolmDecrypt"; rows: EncryptedMessage[] }
+  | { op: "megolmRememberEncrypted"; channelId: string }
+  | { op: "megolmIsKnownEncrypted"; channelId: string }
+  | { op: "megolmNoteRecipients"; channelId: string; userIds: string[] }
   | {
       /** 暗号ストアを消す。開いていなくても、`namespace` のファイルと保存鍵を消す。 */
       op: "destroy";
@@ -112,6 +143,18 @@ export interface CryptoResults {
   backupUploadFailed: null;
   discardSecrets: null;
   forgetOwnKeys: null;
+  megolmNeedsSnapshot: boolean;
+  megolmEvaluate: RecipientSummary;
+  megolmSettlePins: null;
+  megolmStart: SharePlan;
+  megolmShare: ShareResult;
+  megolmMarkShared: null;
+  megolmEncrypt: { ciphertext: JsonObject; epoch: number };
+  megolmDiscard: null;
+  megolmDecrypt: DecryptOutcome[];
+  megolmRememberEncrypted: null;
+  megolmIsKnownEncrypted: boolean;
+  megolmNoteRecipients: string[];
 }
 
 export type CryptoRequest = CryptoOperation & { id: number };

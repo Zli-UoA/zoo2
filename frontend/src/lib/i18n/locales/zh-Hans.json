@@ -1171,22 +1171,40 @@
       "locked": "在此设备上解锁加密后即可读取此消息。",
       "staleEpoch": "此消息是为之前的成员加密的，无法读取。",
       "invalid": "此消息验证失败，因此不显示。",
-      "failed": "无法解密此消息。"
+      "failed": "无法解密此消息。",
+      "unencrypted": "此消息未加密，因此不显示。"
     },
     "sender": {
       "unverified": "未验证的发送者",
       "unauthenticated": "无法确认发送者"
     },
+    "revision": {
+      "stale": "服务器返回了旧版本。正在显示最新版本",
+      "conflict": "收到了版本相同但内容不同的消息。正在显示先收到的那条"
+    },
     "undeliverable": {
       "title": "以下用户无法读取新消息",
       "notSetUp": "{{name}} 尚未设置加密",
-      "needsReverification": "需要重新验证 {{name}}"
+      "needsReverification": "需要重新验证 {{name}}",
+      "invalidKeys": "{{name}} 的加密密钥无效",
+      "pinPending": "正在确认 {{name}} 的密钥",
+      "blocked": "目前无法向 {{name}} 分发密钥"
     },
     "loadPreviews": "加载链接预览",
     "desktopUnsupported": {
       "title": "加密频道",
       "description": "此客户端无法显示加密频道。请在网页版或移动应用中打开。"
     },
-    "sendUnavailable": "此版本尚不能向加密频道发送消息。"
+    "sendUnavailable": "此版本尚不能向加密频道发送消息。",
+    "deviceNotReady": "此设备（标签页）上的加密尚未就绪。请检查加密设置和解锁状态，并关闭其他 zoo 标签页。",
+    "sendNeedsUnlock": "要向加密频道发送消息，请先在此设备上解锁加密。",
+    "sendStaleEpoch": "成员一直在变化，消息未能发送。请重试。",
+    "editConflict": "此消息已在其他地方被编辑。请重新加载后再编辑。",
+    "recipients": {
+      "summary": "正在为 {{users}} 人的 {{devices}} 台设备加密。",
+      "added": "自上次发送以来新增的接收者：{{names}}"
+    },
+    "downgraded": "此频道曾经加密，但服务器现在表示未加密。不会以明文发送消息。",
+    "checking": "正在确认此频道的加密状态…"
   }
 }

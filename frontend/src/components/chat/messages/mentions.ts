@@ -49,3 +49,31 @@ export function insertMention(value: string, range: { start: number; end: number
     caret: range.start + inserted.length,
   };
 }
+
+const MENTION_PUNCTUATION = /[.,!?:;。、！？]+$/u;
+
+/**
+ * 暗号化チャンネルの送信に付ける平文の `mentions`（docs/e2ee.md の「メッセージ」）。サーバーは本文を
+ * 読めないので、平文チャンネルでサーバーが本文から作るのと同じ規則（`backend/src/notifications.rs` の
+ * `extract_mentions`）で、送信側が作る。ユーザー名は、語のまま、なければ末尾の句読点を外して引く。
+ */
+export function encryptedMentions(
+  content: string,
+  users: readonly Pick<UserRow, "id" | "user_name">[],
+): { user_ids: string[]; channel: boolean; here: boolean } {
+  const byName = new Map(users.map((user) => [user.user_name, user.id]));
+  const userIds = new Set<string>();
+  let channel = false;
+  let here = false;
+  for (const match of content.matchAll(MENTION_PATTERN)) {
+    const raw = match[2]!.slice(1);
+    const trimmed = raw.replace(MENTION_PUNCTUATION, "");
+    if (trimmed.toLowerCase() === "channel") channel = true;
+    else if (trimmed.toLowerCase() === "here") here = true;
+    else {
+      const id = byName.get(raw) ?? byName.get(trimmed);
+      if (id) userIds.add(id);
+    }
+  }
+  return { user_ids: [...userIds].sort(), channel, here };
+}

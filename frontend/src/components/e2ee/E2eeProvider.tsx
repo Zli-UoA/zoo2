@@ -87,6 +87,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   );
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [readyWorker, setReadyWorker] = useState<CryptoWorker | null>(null);
+  const [roomKeysVersion, setRoomKeysVersion] = useState(0);
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const leader = useRef<ActiveStore | null>(null);
   const takeover = useRef<{ store: Promise<ActiveStore>; release: () => void } | null>(null);
@@ -144,7 +145,10 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
           setStatus(next);
           if (next === "stopped") setDeviceId(null);
         },
-        onRoomKeys: () => requestKeyBackupRef.current(),
+        onRoomKeys: () => {
+          requestKeyBackupRef.current();
+          setRoomKeysVersion((version) => version + 1);
+        },
       }),
     [client, config, namespace],
   );
@@ -291,6 +295,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       deviceId,
       worker: status === "ready" ? readyWorker : null,
       userId: userId || null,
+      roomKeysVersion,
       pendingBackupCount: async () => {
         const epoch = logoutEpoch.current;
         const store = await storeForLogout();
@@ -333,7 +338,17 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       },
       requestKeyBackup,
     }),
-    [deviceId, namespace, readyWorker, requestKeyBackup, status, storeForLogout, supported, userId],
+    [
+      deviceId,
+      namespace,
+      readyWorker,
+      requestKeyBackup,
+      roomKeysVersion,
+      status,
+      storeForLogout,
+      supported,
+      userId,
+    ],
   );
 
   return <E2eeContext.Provider value={value}>{children}</E2eeContext.Provider>;

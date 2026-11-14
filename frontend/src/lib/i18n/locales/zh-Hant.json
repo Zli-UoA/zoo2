@@ -1171,22 +1171,40 @@
       "locked": "在此裝置上解鎖加密後即可讀取此訊息。",
       "staleEpoch": "此訊息是為先前的成員加密的，無法讀取。",
       "invalid": "此訊息驗證失敗，因此不顯示。",
-      "failed": "無法解密此訊息。"
+      "failed": "無法解密此訊息。",
+      "unencrypted": "此訊息未加密，因此不顯示。"
     },
     "sender": {
       "unverified": "未驗證的傳送者",
       "unauthenticated": "無法確認傳送者"
     },
+    "revision": {
+      "stale": "伺服器傳回了舊版本。正在顯示最新版本",
+      "conflict": "收到了版本相同但內容不同的訊息。正在顯示先收到的那則"
+    },
     "undeliverable": {
       "title": "以下使用者無法讀取新訊息",
       "notSetUp": "{{name}} 尚未設定加密",
-      "needsReverification": "需要重新驗證 {{name}}"
+      "needsReverification": "需要重新驗證 {{name}}",
+      "invalidKeys": "{{name}} 的加密金鑰無效",
+      "pinPending": "正在確認 {{name}} 的金鑰",
+      "blocked": "目前無法將金鑰分發給 {{name}}"
     },
     "loadPreviews": "載入連結預覽",
     "desktopUnsupported": {
       "title": "加密頻道",
       "description": "此用戶端無法顯示加密頻道。請在網頁版或行動應用程式中開啟。"
     },
-    "sendUnavailable": "此版本尚不能向加密頻道傳送訊息。"
+    "sendUnavailable": "此版本尚不能向加密頻道傳送訊息。",
+    "deviceNotReady": "此裝置（分頁）上的加密尚未就緒。請檢查加密設定與解鎖狀態，並關閉其他 zoo 分頁。",
+    "sendNeedsUnlock": "要傳送到加密頻道，請先在此裝置上解鎖加密。",
+    "sendStaleEpoch": "成員持續變動，訊息未能傳送。請再試一次。",
+    "editConflict": "此訊息已在其他地方被編輯。請重新載入後再編輯。",
+    "recipients": {
+      "summary": "正在為 {{users}} 人的 {{devices}} 台裝置加密。",
+      "added": "自上次傳送以來新增的接收者：{{names}}"
+    },
+    "downgraded": "此頻道曾經加密，但伺服器現在表示未加密。不會以明文傳送訊息。",
+    "checking": "正在確認此頻道的加密狀態…"
   }
 }

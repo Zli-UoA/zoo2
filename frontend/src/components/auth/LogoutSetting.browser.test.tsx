@@ -20,6 +20,7 @@ function e2ee(pendingBackupCount: E2eeContextValue["pendingBackupCount"]) {
     status: "idle",
     deviceId: null,
     worker: null,
+    roomKeysVersion: 0,
     userId: null,
     pendingBackupCount,
     cancelLogout,

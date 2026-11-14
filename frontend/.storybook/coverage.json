@@ -229,7 +229,15 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.stories.tsx",
-      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile", "FederatedReactions", "Encrypted"]
+      "states": [
+        "Default",
+        "ThreadOpen",
+        "NotJoined",
+        "Mobile",
+        "FederatedReactions",
+        "Encrypted",
+        "EncryptionDowngraded"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
@@ -256,6 +264,8 @@
         "SensitiveAttachments",
         "EncryptedDecrypted",
         "EncryptedUnverifiedSender",
+        "EncryptedStaleRevision",
+        "EncryptedUnencryptedRow",
         "EncryptedBackupSender",
         "EncryptedKeyMissing",
         "EncryptedLocked",
@@ -685,6 +695,10 @@
         "NeedsReauth",
         "Unlocked"
       ]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
+      "states": ["Default", "Undeliverable", "AddedRecipients"]
     }
   ],
   "modules": [
@@ -1246,6 +1260,10 @@
         "src/lib/e2ee/reauth.test.ts",
         "src/lib/oidc/reauth.test.ts"
       ]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",
+      "story": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx"
     }
   ]
 }
