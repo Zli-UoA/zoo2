@@ -191,7 +191,8 @@ export const Encrypted: Story = {
     await expect(await screen.findByText("暗号化")).toHaveClass("sr-only");
     await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
     const dialog = await screen.findByRole("dialog");
-    await expect(within(dialog).getByText("暗号化")).toBeVisible();
+    // 開くときのアニメーションの途中は、中身がまだ見えないことがあるので、見えるまで待つ。
+    await waitFor(() => expect(within(dialog).getByText("暗号化")).toBeVisible());
   }),
 };
 
