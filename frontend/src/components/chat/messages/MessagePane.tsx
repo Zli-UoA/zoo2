@@ -277,6 +277,8 @@ export function MessagePane({
   const savingEdit = useRef(false);
   const editingIdRef = useRef(editingId);
   editingIdRef.current = editingId;
+  const editingTextRef = useRef(editingText);
+  editingTextRef.current = editingText;
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
 
@@ -640,7 +642,8 @@ export function MessagePane({
       if (encrypted) {
         // 行の `content` は空なので、復号した本文から始める。復号できない版は上書きしない。
         const decrypted = decryptions.get(id);
-        if (decrypted?.status !== "decrypted") return;
+        // 版の照合で警告した行（表示と行の版が違う）からは編集を始めない。
+        if (decrypted?.status !== "decrypted" || decrypted.revisionWarning) return;
         setEditingId(id);
         setEditingText(decrypted.body);
         setEditingRevision(messagesCollection.get(id)?.revision ?? 0);
@@ -680,8 +683,8 @@ export function MessagePane({
           kind: decrypted.kind,
           mentions: encryptedMentions(content, usersQuery.data ?? []),
         });
-        // 保存中に別のメッセージの編集を始めていたら、そちらは閉じない。
-        if (editingIdRef.current === id) {
+        // 保存中に別のメッセージの編集を始めた、または本文を書き足したら、編集欄を閉じない。
+        if (editingIdRef.current === id && editingTextRef.current.trim() === content) {
           setEditingId(null);
           setEditingText("");
         }

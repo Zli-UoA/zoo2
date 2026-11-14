@@ -1171,6 +1171,10 @@
       "unverified": "未驗證的傳送者",
       "unauthenticated": "無法確認傳送者"
     },
+    "revision": {
+      "stale": "伺服器傳回了舊版本。正在顯示最新版本",
+      "conflict": "收到了版本相同但內容不同的訊息。正在顯示先收到的那則"
+    },
     "undeliverable": {
       "title": "以下使用者無法讀取新訊息",
       "notSetUp": "{{name}} 尚未設定加密",

@@ -1171,6 +1171,10 @@
       "unverified": "未驗證嘅發送者",
       "unauthenticated": "確認唔到發送者"
     },
+    "revision": {
+      "stale": "伺服器俾咗舊版本返嚟。而家顯示緊最新版本",
+      "conflict": "收到版本一樣但內容唔同嘅訊息。而家顯示緊先收到嗰條"
+    },
     "undeliverable": {
       "title": "以下嘅人睇唔到新訊息",
       "notSetUp": "{{name}} 未設定加密",

@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 
 import type { FeedMessage } from "../components/chat/messages/messageFormat";
 import { useE2ee } from "../lib/e2ee/e2ee-context";
-import type { MessageDecryption } from "../lib/e2ee/messageDecryption";
+import {
+  applyRevision,
+  type LatestRevisions,
+  type MessageDecryption,
+  type RevisionCheck,
+} from "../lib/e2ee/messageDecryption";
 import type { EncryptedMessage } from "@zoo/crypto-wasm";
 
 function toEncryptedMessage(message: FeedMessage, channelId: string): EncryptedMessage {
@@ -40,9 +45,17 @@ export function useMessageDecryptions(
   messages: readonly FeedMessage[],
 ): ReadonlyMap<string, MessageDecryption> {
   const { worker, roomKeysVersion } = useE2ee();
-  const cache = useRef(new Map<string, MessageDecryption>());
+  // 行ごとの復号の結果と、Worker の版の照合の結果。
+  const cache = useRef(new Map<string, { value: MessageDecryption; check: RevisionCheck }>());
+  // メッセージごとに見た最新の版。キャッシュを使い回したときも、古い版の行を最新として出さない。
+  // Worker の版の記録と同じく、チャンネルを切り替えても忘れない（Worker が変われば忘れる）。
+  const latest = useRef<LatestRevisions>(new Map());
   const [results, setResults] = useState<ReadonlyMap<string, MessageDecryption>>(new Map());
   const retried = useRef(roomKeysVersion);
+
+  useEffect(() => {
+    latest.current.clear();
+  }, [worker]);
 
   useEffect(() => {
     cache.current.clear();
@@ -53,7 +66,7 @@ export function useMessageDecryptions(
     if (!worker) return;
     if (retried.current !== roomKeysVersion) {
       retried.current = roomKeysVersion;
-      for (const [key, value] of cache.current) {
+      for (const [key, { value }] of cache.current) {
         if (value.status === "undecryptable" && value.reason === "keyMissing") {
           cache.current.delete(key);
         }
@@ -67,8 +80,18 @@ export function useMessageDecryptions(
       const next = new Map<string, MessageDecryption>();
       for (const message of messages) {
         const key = rowKey(message, channelId);
-        const value = key ? cache.current.get(key) : undefined;
-        if (value) next.set(message.id, value);
+        const entry = key ? cache.current.get(key) : undefined;
+        if (!entry) continue;
+        next.set(
+          message.id,
+          applyRevision(
+            latest.current,
+            message.id,
+            message.revision ?? 0,
+            entry.value,
+            entry.check,
+          ),
+        );
       }
       setResults(next);
     };
@@ -87,8 +110,7 @@ export function useMessageDecryptions(
           const outcome = outcomes[index];
           const key = rowKey(message, channelId);
           if (!outcome || !key) return;
-          cache.current.set(
-            key,
+          const value: MessageDecryption =
             outcome.status === "decrypted"
               ? {
                   status: "decrypted",
@@ -96,8 +118,11 @@ export function useMessageDecryptions(
                   kind: outcome.kind,
                   sender: outcome.sender,
                 }
-              : { status: "undecryptable", reason: outcome.reason },
-          );
+              : { status: "undecryptable", reason: outcome.reason };
+          const check = outcome.status === "decrypted" ? outcome.revision.status : "latest";
+          cache.current.set(key, { value, check });
+          // 表示しなくても（チャンネルを離れた）、最新の版は覚えておく。
+          applyRevision(latest.current, message.id, message.revision ?? 0, value, check);
         });
         if (active) publish();
       })

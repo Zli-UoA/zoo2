@@ -3,7 +3,7 @@ import { configure } from "storybook/test";
 
 import "../src/styles.css";
 import {
-  ENCRYPTED_CHANNELS_STORAGE_KEY,
+  ENCRYPTED_CHANNEL_STORAGE_PREFIX,
   resetSeenEncryptedChannels,
 } from "../src/lib/e2ee/encryptionGuard";
 import { startStorybookWorker, withCollections, withMsw, withProviders } from "./decorators";
@@ -24,7 +24,9 @@ const preview: Preview = {
     // （同じチャンネル ID の平文チャンネルが格下げと判定され、送信が止まる）。
     resetSeenEncryptedChannels();
     try {
-      localStorage.removeItem(ENCRYPTED_CHANNELS_STORAGE_KEY);
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith(ENCRYPTED_CHANNEL_STORAGE_PREFIX)) localStorage.removeItem(key);
+      }
     } catch {
       // localStorage を使えない環境では、覚えてもいない。
     }
