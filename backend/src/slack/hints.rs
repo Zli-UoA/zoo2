@@ -161,9 +161,17 @@ async fn bump(
         query(
             &mut tx,
             "UPDATE slack_message_hints SET attempts=attempts+1 WHERE team_id=$1 AND slack_channel_id=$2 \
-             AND message_ts=$3 AND kind=$4 AND slack_user_id=$5 AND reaction=$6 \
+             AND message_ts=$3 AND kind=$4 AND slack_user_id=$5 AND reaction=$6 AND updated_at<=$7::timestamptz \
              RETURNING json_build_object('ok',true)::text",
-            &[team, slack_channel, &row.ts, &row.kind, &row.user, &row.reaction],
+            &[
+                team,
+                slack_channel,
+                &row.ts,
+                &row.kind,
+                &row.user,
+                &row.reaction,
+                &row.updated_at,
+            ],
         )
         .await?;
     }
