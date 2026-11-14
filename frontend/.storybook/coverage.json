@@ -1088,7 +1088,8 @@
         "src/lib/e2ee/cryptoWorker.browser.test.ts",
         "src/lib/e2ee/store/cryptoStore.test.ts",
         "src/lib/e2ee/deviceManager.test.ts",
-        "src/components/e2ee/E2eeProvider.browser.test.tsx"
+        "src/components/e2ee/E2eeProvider.browser.test.tsx",
+        "src/components/e2ee/E2eeProvider.notReady.browser.test.tsx"
       ]
     },
     {
