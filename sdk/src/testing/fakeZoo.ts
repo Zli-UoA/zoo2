@@ -308,6 +308,8 @@ export class FakeZoo {
     const channel = this.channels.get(body.channel_id as string);
     if (!channel?.members.has(sender)) throw new HttpError(404, { error: "Channel not found" });
     if (body.content !== "" || !body.ciphertext) throw new HttpError(400, { error: "plaintext", code: "E2EE_PLAINTEXT_FORBIDDEN" });
+    // A supplied id is the idempotency key (backend: check_idempotent_existing_message).
+    if (this.messages.some((m) => m.id === body.id && m.user_id === sender)) return { id: body.id as string };
     if (Number(body.epoch) !== channel.epoch) throw new HttpError(409, { error: "stale", code: "E2EE_STALE_EPOCH", current_epoch: channel.epoch });
     const message: StoredMessage = {
       id: body.id as string,

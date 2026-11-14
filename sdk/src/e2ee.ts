@@ -344,6 +344,9 @@ export class ZooE2ee {
     if (missing <= 0 && !needsFallback) return;
     if (missing > 0) this.account.generateOneTimeKeys(missing);
     if (needsFallback) this.account.generateFallbackKey();
+    // Save the private keys before their public halves reach the server: a restart must still be able
+    // to decrypt Olm messages that use them.
+    this.state.account = this.account.pickle(this.options.storageKey);
     await this.save();
     await this.options.app.request("POST", "/e2ee/keys/upload", {
       device_id: this.deviceId,
@@ -351,6 +354,7 @@ export class ZooE2ee {
       fallback_keys: needsFallback ? this.account.fallbackKeys() : {},
     });
     this.account.markKeysAsPublished();
+    this.state.account = this.account.pickle(this.options.storageKey);
     await this.save();
   }
 

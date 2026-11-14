@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { ZooApp } from "../../sdk/src/index.ts";
 import { ZooE2ee, loadZooCrypto, memoryStore } from "../../sdk/src/e2ee.ts";
 import { FakeZoo, HumanDevice } from "../../sdk/src/testing/fakeZoo.ts";
-import { handleEvent, replyFor } from "./echo.ts";
+import { handleEvent, replyFor, replyId } from "./echo.ts";
 
 const crypto = await loadZooCrypto();
 
@@ -55,4 +55,17 @@ test("replyFor", () => {
   assert.equal(replyFor({ ...base, body: "hi" }, "bot"), null);
   assert.equal(replyFor({ ...base, body: "!echo hi", userId: "bot" }, "bot"), null);
   assert.equal(replyFor({ ...base, body: "!echo hi", senderVerified: false }, "bot"), null);
+});
+
+test("a redelivered event does not post a second reply", async () => {
+  const { zoo, bot, alice, channel } = await start();
+  alice.send(channel, "!echo once");
+  const first = await handleEvent(bot, zoo.botEvents[0]!);
+  const second = await handleEvent(bot, zoo.botEvents[0]!);
+  assert.equal(second, first);
+  assert.equal(zoo.messages.filter((m) => m.user_id === zoo.botUserId).length, 1);
+  assert.match(replyId("event"), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(replyId("event"), replyId("event"));
+  assert.notEqual(replyId("event"), replyId("other"));
+  bot.close();
 });

@@ -299,3 +299,20 @@ test("fileStore writes the state atomically and reads it back", async () => {
     await rm(dir, { recursive: true });
   }
 });
+
+test("one-time keys made while replenishing survive a restart", async () => {
+  const { zoo, app } = setup();
+  const store = memoryStore();
+  const bot = await openBot(zoo, app, store);
+  // The server ran out of the bot's one-time keys (claimed by other devices).
+  zoo.oneTimeKeys.get(`${zoo.botUserId}|${bot.deviceId}`)!.clear();
+  zoo.fallbackKeys.delete(`${zoo.botUserId}|${bot.deviceId}`);
+  await bot.replenishKeys();
+  bot.close();
+  const restored = await openBot(zoo, app, store);
+  const alice = new HumanDevice(crypto, zoo);
+  const channel = zoo.channel([alice.userId, zoo.botUserId]);
+  alice.send(channel, "uses a replenished key");
+  assert.equal((await restored.decryptEvent(zoo.botEvents[0]!))?.body, "uses a replenished key");
+  restored.close();
+});
