@@ -52,10 +52,15 @@ describe("assertSafeApiPath", () => {
 });
 
 describe("createApiClient path check", () => {
-  it("does not call fetch for an unsafe path", async () => {
+  it.each([
+    "/api/channels/x/../y/view",
+    "/api/channels/.\t./apps/x",
+    "/api/channels/.\n./apps/x",
+    "/api/channels/.\r./apps/x",
+  ])("does not call fetch for an unsafe path %j", async (path) => {
     const fetchMock = vi.fn();
     const client = createApiClient({ baseUrl: "https://api.test", fetch: fetchMock });
-    await expect(client.post("/api/channels/x/../y/view")).rejects.toThrow(UnsafeApiPathError);
+    await expect(client.post(path)).rejects.toThrow(UnsafeApiPathError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
