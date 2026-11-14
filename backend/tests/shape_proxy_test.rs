@@ -558,3 +558,81 @@ async fn test_shape_proxy_electric_secret_query() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// 共有キャッシュに載せない `cache-control` は、プロキシに頼らずバックエンドが付ける。
+/// 配る列を絞った shape は、同じ列を `queryable_columns` として Electric に渡す。
+#[tokio::test]
+async fn test_shape_proxy_sets_private_cache_and_queryable_columns() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mock_electric = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/shape"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("cache-control", "public, max-age=60")
+                .set_body_string("[]"),
+        )
+        .mount(&mock_electric)
+        .await;
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.electric_url = mock_electric.uri();
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config));
+
+    for uri in [
+        "/api/shapes/users?offset=-1",
+        "/api/shapes/e2ee_devices?offset=-1",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header("X-Dev-User", "00000000-0000-0000-0000-000000000001")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+        let cache_control = resp
+            .headers()
+            .get_all("cache-control")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_lowercase())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            cache_control.contains("private") && !cache_control.contains("public"),
+            "{uri}: {cache_control}"
+        );
+        assert!(
+            cache_control.contains("no-store") || cache_control.contains("no-cache"),
+            "{uri}: {cache_control}"
+        );
+    }
+
+    let requests = mock_electric.received_requests().await.unwrap();
+    let devices = requests
+        .iter()
+        .find(|r| {
+            r.url
+                .query_pairs()
+                .any(|(k, v)| k == "table" && v == "e2ee_devices")
+        })
+        .expect("e2ee_devices request");
+    let pairs: Vec<_> = devices.url.query_pairs().collect();
+    let columns = pairs
+        .iter()
+        .find(|(k, _)| k == "columns")
+        .map(|(_, v)| v.clone());
+    let queryable = pairs
+        .iter()
+        .find(|(k, _)| k == "queryable_columns")
+        .map(|(_, v)| v.clone());
+    assert!(columns.is_some());
+    assert_eq!(columns, queryable);
+    Ok(())
+}

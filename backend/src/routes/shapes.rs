@@ -298,6 +298,12 @@ async fn proxy_shape(
         for (k, v) in extra_params {
             params.push((k.to_string(), v.to_string()));
         }
+        // 配る列を絞った shape では、クライアントの `subset__where` と `subset__order_by` も、同じ列だけに
+        // 限る（配っていない列の値を、条件で推測させない）。shape 自身の where には影響しない。
+        if let Some((_, columns)) = params.iter().find(|(k, _)| k == "columns") {
+            let columns = columns.clone();
+            params.push(("queryable_columns".to_string(), columns));
+        }
 
         let url = format!(
             "{}/v1/shape",
@@ -342,15 +348,20 @@ async fn proxy_shape(
             }
         }
 
+        // 応答は認可したユーザーごとの内容なので、プロキシや CDN の設定に頼らず、共有キャッシュに載せない。
+        headers.insert(
+            HeaderName::from_static("cache-control"),
+            HeaderValue::from_static(if is_user_scoped {
+                "private, no-cache"
+            } else {
+                "private, no-store"
+            }),
+        );
         // ユーザー別認可フィルタが適用された Shape の場合、共有キャッシュによる情報漏洩を防止
         if is_user_scoped {
             headers.insert(
                 HeaderName::from_static("vary"),
                 HeaderValue::from_static("Authorization, X-Dev-User"),
-            );
-            headers.insert(
-                HeaderName::from_static("cache-control"),
-                HeaderValue::from_static("private, no-cache"),
             );
         }
 
