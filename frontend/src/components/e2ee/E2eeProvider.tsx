@@ -13,7 +13,7 @@ import { createConfiguredApiClient } from "../../lib/api/client";
 import type { AppConfig } from "../../lib/config";
 import { getCurrentUserStore } from "../../lib/currentUser";
 import { startCryptoWorker, type CryptoWorker } from "../../lib/e2ee/cryptoWorker";
-import { E2eeDeviceManager } from "../../lib/e2ee/deviceManager";
+import { E2eeDeviceManager, loginNotFoundCounter } from "../../lib/e2ee/deviceManager";
 import { SasController } from "../../lib/e2ee/sasController";
 import { deviceDisplayName } from "../../lib/e2ee/displayName";
 import { E2eeContext, type E2eeContextValue } from "../../lib/e2ee/e2ee-context";
@@ -154,6 +154,8 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         userId: managerUserId,
         namespace,
         displayName: deviceDisplayName(),
+        // 起動の試し直しで manager を作り直しても、削除 API の 404 をこのログインで 1 回だけ数える。
+        countedNotFound: loginNotFoundCounter(managerUserId),
         onStatus: (next, error) => {
           setStatus(next);
           if (next === "stopped") setDeviceId(null);

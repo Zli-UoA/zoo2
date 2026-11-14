@@ -104,7 +104,23 @@ describe("CryptoStore", () => {
     keys.keys.clear();
     const second = await open(backend, keys);
     expect(second.replacedDeviceId).toBe(deviceId);
+    // 登録していなかった前の端末は、削除 API の 404 でもすぐには消えたものとしない。
+    expect(second.replacedRegistered).toBe(false);
     expect(second.store.deviceId).not.toBe(deviceId);
+    await second.store.close();
+  });
+
+  it("作り直した前の端末が登録済みだったかを知らせる", async () => {
+    const backend = new MemoryCryptoBackend();
+    const keys = memoryKeys();
+    const first = await open(backend, keys);
+    const deviceId = first.store.deviceId;
+    await first.store.markRegistered();
+    await first.store.close();
+    keys.keys.clear();
+    const second = await open(backend, keys);
+    expect(second.replacedDeviceId).toBe(deviceId);
+    expect(second.replacedRegistered).toBe(true);
     await second.store.close();
   });
 

@@ -3,6 +3,7 @@
 //! 登録を終えたら、開いた暗号ストアを画面（暗号化の画面。#360）と共有し、解錠済みの端末では
 //! 起動時の確認（署名し直しと鍵バックアップの送信）を行う。
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,11 +20,15 @@ use crate::http::{Credentials, HttpError};
 use super::setup::{self, SharedStore};
 use super::store::{
     self, CryptoStore, PendingDeviceDeletion, ToDeviceRow, clear_pending_device_deletion,
-    mark_device_deletion_pending, read_pending_device_deletions,
+    mark_device_deletion_pending, read_pending_device_deletions, update_pending_device_deletion,
 };
 
 /// ログアウトで端末の削除 API を待つ時間。オフラインならすぐ諦め、次の起動で消し直す。
 const DELETE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 登録できたか分からない端末を、404 が続いたら消えたものとする回数（次の起動ごとに 1 回）。
+/// React の `MAX_NOT_FOUND`、Android の `E2eeDeviceManager.MAX_NOT_FOUND` と同じ。
+pub const MAX_NOT_FOUND: u32 = 3;
 
 /// 端末名（`display_name`）。本人の端末一覧（#362）にだけ出る。
 pub fn display_name() -> String {
@@ -108,35 +113,95 @@ async fn replenish(api: &ApiClient, store: &Mutex<CryptoStore>, counts: Counts) 
     store.lock().await.mark_keys_published()
 }
 
+enum DeleteOutcome {
+    Deleted,
+    NotFound,
+    Failed,
+}
+
 /// 端末を消す。失敗したら印を残し、同じユーザーの次の起動で消し直す。
+///
+/// 404 は、登録できたと分かっている端末なら、消すものがないので済んだものとする。登録できたか
+/// 分からない端末（`unconfirmed`）は、あとから届いた登録で端末ができうるので残し、続けて
+/// [`MAX_NOT_FOUND`] 回 404 なら済んだものとする。404 以外の失敗では、回数を 0 に戻す。
+///
+/// `counted` は、この起動で 404 を数えた端末。同じ端末の 404 は起動ごとに 1 回だけ数える
+/// （`spawn` のループの試し直しで上限に達して、削除待ちを早く外さないため）。
 pub async fn delete_device_or_remember(
     api: &ApiClient,
     root: &Path,
-    user_id: &str,
-    device_id: &str,
+    target: &PendingDeviceDeletion,
+    counted: &mut BTreeSet<String>,
 ) {
-    let pending = PendingDeviceDeletion {
-        user_id: user_id.to_owned(),
-        device_id: device_id.to_owned(),
-    };
-    let _ = mark_device_deletion_pending(root, &pending);
-    match tokio::time::timeout(DELETE_TIMEOUT, api.e2ee_delete_device(device_id)).await {
-        Ok(Ok(())) => {
-            let _ = clear_pending_device_deletion(root, &pending);
+    let _ = mark_device_deletion_pending(root, target);
+    let outcome =
+        match tokio::time::timeout(DELETE_TIMEOUT, api.e2ee_delete_device(&target.device_id)).await
+        {
+            Ok(Ok(())) => DeleteOutcome::Deleted,
+            Ok(Err(err)) if status_of(&err) == Some(reqwest::StatusCode::NOT_FOUND) => {
+                DeleteOutcome::NotFound
+            }
+            _ => DeleteOutcome::Failed,
+        };
+    let current = read_pending_device_deletions(root)
+        .ok()
+        .and_then(|all| all.into_iter().find(|entry| entry.same_device(target)))
+        .unwrap_or_else(|| target.clone());
+    match outcome {
+        // 404 が続いていない。数え直す（間に失敗をはさんだ 404 は、続けて受けたものとしない）。
+        DeleteOutcome::Failed if current.not_found > 0 => {
+            let _ = update_pending_device_deletion(
+                root,
+                &PendingDeviceDeletion {
+                    not_found: 0,
+                    ..current
+                },
+            );
         }
-        // 404 はサーバーに端末がない（登録の前に止まった）。消すものがない。
-        Ok(Err(err)) if status_of(&err) == Some(reqwest::StatusCode::NOT_FOUND) => {
-            let _ = clear_pending_device_deletion(root, &pending);
+        DeleteOutcome::Failed => {}
+        DeleteOutcome::Deleted => {
+            let _ = clear_pending_device_deletion(root, &current);
         }
-        _ => {}
+        DeleteOutcome::NotFound if !current.unconfirmed => {
+            let _ = clear_pending_device_deletion(root, &current);
+        }
+        DeleteOutcome::NotFound => {
+            if !counted.insert(current.device_id.clone()) {
+                return;
+            }
+            let not_found = current.not_found + 1;
+            if not_found >= MAX_NOT_FOUND {
+                let _ = clear_pending_device_deletion(root, &current);
+            } else {
+                let _ = update_pending_device_deletion(
+                    root,
+                    &PendingDeviceDeletion {
+                        not_found,
+                        ..current
+                    },
+                );
+            }
+        }
     }
 }
 
-/// 前のログアウトで消せなかった端末を、同じユーザーで消し直す。
-pub async fn retry_pending_device_deletion(api: &ApiClient, root: &Path, user_id: &str) {
-    for pending in read_pending_device_deletions(root) {
-        if pending.user_id == user_id {
-            delete_device_or_remember(api, root, &pending.user_id, &pending.device_id).await;
+/// 前のログアウトで消せなかった端末を、同じユーザーで消し直す。一覧を読めなければ何もしない
+/// （ファイルはそのまま残す）。`counted` は [`delete_device_or_remember`] と同じ。
+pub async fn retry_pending_device_deletion(
+    api: &ApiClient,
+    root: &Path,
+    user_id: &str,
+    counted: &mut BTreeSet<String>,
+) {
+    let Ok(all) = read_pending_device_deletions(root) else {
+        return;
+    };
+    // 同じ端末の記録が重なっていても（前の形式や手で直したファイル）、1 回だけ消し直す。先の記録で
+    // 削除を終えたあとに、後の記録で削除待ちに足し直さないため。
+    let mut seen = BTreeSet::new();
+    for pending in all {
+        if pending.user_id == user_id && seen.insert(pending.device_id.clone()) {
+            delete_device_or_remember(api, root, &pending, counted).await;
         }
     }
 }
@@ -160,6 +225,7 @@ pub fn spawn(
     let task = tokio::spawn(async move {
         let mut backoff = Duration::from_secs(5);
         let mut user_id = user_id;
+        let mut state = RunState::default();
         loop {
             if user_id.is_none() {
                 user_id = api.me().await.ok().map(|me| me.id);
@@ -169,7 +235,7 @@ pub fn spawn(
                 backoff = (backoff * 2).min(Duration::from_secs(300));
                 continue;
             };
-            let mut connected = false;
+            state.connected = false;
             let result = run(
                 &http,
                 &api_base_url,
@@ -177,7 +243,7 @@ pub fn spawn(
                 &api,
                 &root,
                 user_id,
-                &mut connected,
+                &mut state,
                 &store_tx,
             )
             .await;
@@ -191,7 +257,7 @@ pub fn spawn(
                 Err(err) if err.to_string().contains("ほかの zoo2-tui") => return,
                 _ => {}
             }
-            let (delay, next) = retry_delay(backoff, connected);
+            let (delay, next) = retry_delay(backoff, state.connected);
             tokio::time::sleep(delay).await;
             backoff = next;
         }
@@ -221,6 +287,15 @@ pub fn retry_delay(backoff: Duration, connected: bool) -> (Duration, Duration) {
     (delay, (delay * 2).min(Duration::from_secs(300)))
 }
 
+/// `spawn` のループが試し直しをまたいで持つ状態。
+#[derive(Default)]
+struct RunState {
+    /// この回で、登録と補充を終えて Shape を受け取れた（[`retry_delay`]）。回ごとに戻す。
+    connected: bool,
+    /// この起動で 404 を数えた削除待ちの端末（試し直しのたびに数えないため）。
+    counted_not_found: BTreeSet<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run(
     http: &reqwest::Client,
@@ -229,13 +304,14 @@ async fn run(
     api: &ApiClient,
     root: &Path,
     user_id: &str,
-    connected: &mut bool,
+    state: &mut RunState,
     store_tx: &watch::Sender<Option<(String, SharedStore)>>,
 ) -> Result<()> {
-    retry_pending_device_deletion(api, root, user_id).await;
+    retry_pending_device_deletion(api, root, user_id, &mut state.counted_not_found).await;
     let opened = CryptoStore::open(root, user_id)?;
     if let Some(replaced) = &opened.replaced_device_id {
-        delete_device_or_remember(api, root, user_id, replaced).await;
+        let target = PendingDeviceDeletion::new(user_id, replaced, !opened.replaced_registered);
+        delete_device_or_remember(api, root, &target, &mut state.counted_not_found).await;
     }
     let mut store = Arc::new(Mutex::new(opened.store));
     let counts = match ensure_registered(api, &store).await {
@@ -272,7 +348,7 @@ async fn run(
     loop {
         let batch = stream.next_batch().await?;
         // Shape を受け取れた。このあとの切断は、最初の間隔から試し直す。
-        *connected = true;
+        state.connected = true;
         if batch.reset {
             rows.clear();
         }
@@ -361,6 +437,8 @@ pub struct LogoutTarget {
     pub pending_backup: usize,
     /// 保存鍵を失って作り直したときの、前の端末（これも消す）。
     pub replaced_device_id: Option<String>,
+    /// 前の端末の登録が済んでいたか。
+    pub replaced_registered: bool,
 }
 
 /// ログアウトで消す暗号ストアを開く（`root` にあるもの全部）。
@@ -368,12 +446,13 @@ pub fn open_for_logout(root: &Path) -> Result<Vec<LogoutTarget>> {
     store::stored_user_ids(root)?
         .into_iter()
         .map(|user_id| {
-            let opened = CryptoStore::open(root, &user_id)?;
+            let opened = CryptoStore::open_for_logout(root, &user_id)?;
             let pending_backup = opened.store.pending_backup_count();
             Ok(LogoutTarget {
                 store: opened.store,
                 pending_backup,
                 replaced_device_id: opened.replaced_device_id,
+                replaced_registered: opened.replaced_registered,
             })
         })
         .collect()
@@ -381,8 +460,9 @@ pub fn open_for_logout(root: &Path) -> Result<Vec<LogoutTarget>> {
 
 /// ログアウト：暗号ストアを消してから、端末の削除 API を呼ぶ（docs/e2ee.md の「ログアウトと端末の削除」）。
 ///
-/// 登録の応答をなくして手元では未登録のままの端末も、サーバーにはあるかもしれないので消す
-/// （なければ 404 で、消すものがないと分かる）。
+/// 登録の応答をなくして手元では未登録のままの端末も、サーバーにはあるかもしれないので消す。
+/// ただし、登録できたか分からないので、404 でもすぐには消えたものとせず（`unconfirmed`）、
+/// 削除待ちに残して次の起動で消し直す。
 ///
 /// `signed_in_user` は、`api` のトークンのユーザー（`/api/users/me`）。暗号ストアが別のユーザーのもの
 /// （そのユーザーでログアウトせずに、別のユーザーでログインし直した）か、ユーザーが分からない
@@ -395,31 +475,30 @@ pub async fn destroy_for_logout(
     signed_in_user: Option<&str>,
 ) -> Result<()> {
     let user_id = target.store.user_id().to_owned();
-    let device_id = target.store.device_id().to_owned();
-    // 消し切る前に印を残す。API の結果を待たずに、先に暗号ストアを消す。
-    mark_device_deletion_pending(
-        root,
-        &PendingDeviceDeletion {
-            user_id: user_id.clone(),
-            device_id: device_id.clone(),
-        },
-    )?;
-    if let Some(replaced) = &target.replaced_device_id {
-        mark_device_deletion_pending(
-            root,
-            &PendingDeviceDeletion {
-                user_id: user_id.clone(),
-                device_id: replaced.clone(),
-            },
-        )?;
+    // 登録できたと分かっていなければ、404 でもすぐには消えたものとしない。
+    let current = PendingDeviceDeletion::new(
+        &user_id,
+        target.store.device_id(),
+        !target.store.is_registered(),
+    );
+    let replaced = target.replaced_device_id.as_deref().map(|replaced| {
+        PendingDeviceDeletion::new(&user_id, replaced, !target.replaced_registered)
+    });
+    // 消し切る前に印を残す。API の結果を待たずに、先に暗号ストアを消す。記録できなくても
+    // （一覧が壊れているなど）、暗号ストアは消す。
+    for pending in std::iter::once(&current).chain(replaced.as_ref()) {
+        if let Err(err) = mark_device_deletion_pending(root, pending) {
+            eprintln!("削除待ちの端末を記録できません: {err:#}");
+        }
     }
     target.store.destroy()?;
     if signed_in_user != Some(user_id.as_str()) {
         return Ok(());
     }
-    delete_device_or_remember(api, root, &user_id, &device_id).await;
-    if let Some(replaced) = &target.replaced_device_id {
-        delete_device_or_remember(api, root, &user_id, replaced).await;
+    let mut counted = BTreeSet::new();
+    delete_device_or_remember(api, root, &current, &mut counted).await;
+    if let Some(replaced) = &replaced {
+        delete_device_or_remember(api, root, replaced, &mut counted).await;
     }
     Ok(())
 }
