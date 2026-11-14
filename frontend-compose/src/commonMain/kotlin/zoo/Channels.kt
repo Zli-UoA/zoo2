@@ -1020,6 +1020,13 @@ fun Members(
     }
 }
 
+/**
+ * 暗号化チャンネルか（Channels の Shape の行の `encrypted`）。Android はまだ Megolm で暗号化して
+ * 送れないので、暗号化チャンネルには本文を送らない（docs/e2ee.md、#361）。
+ */
+fun isEncryptedChannel(channels: List<Row>, channel: String): Boolean =
+    channels.any { it.text("id") == channel && it.flag("encrypted") }
+
 /** 1 対 1 の DM（`dm:` と、暗号化 DM の `edm:`）の名前から 2 人の ID を取り出す。グループ DM などは null。 */
 fun oneToOneDmIds(name: String): List<String>? {
     val rest = name.removePrefix("e").takeIf { it.startsWith("dm:") } ?: return null

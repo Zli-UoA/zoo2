@@ -229,6 +229,8 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
         description: row.description,
         is_private: row.is_private,
         ...(row.is_nsfw !== undefined ? { is_nsfw: row.is_nsfw } : {}),
+        // 暗号化はオプトイン。平文のチャンネルでは、今までどおり `encrypted` を送らない。
+        ...(row.encrypted ? { encrypted: true } : {}),
       };
       const { txid } = await client.post<ChannelRow>("/api/channels", body);
       await syncTxid({

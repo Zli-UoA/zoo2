@@ -592,6 +592,14 @@ impl Render for WorkspaceView {
             });
         }
 
+        // 暗号化チャンネルではスレッドペインも描画しない（本文を表示できないため）。
+        let thread_root = thread_root.filter(|_| {
+            let state = self.state.read(cx);
+            !state
+                .current_channel
+                .as_deref()
+                .is_some_and(|id| state.is_encrypted_channel(id))
+        });
         let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
             let (div, target) = self.render_thread_view(
                 root_id,

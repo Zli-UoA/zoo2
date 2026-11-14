@@ -133,7 +133,11 @@ fun Chat(
     val nativeReactions by app.repo.reactions(id).rows.collectAsState()
     val reactions = nativeReactions
     val joined = membershipOverride ?: isMember(members, id, app.config.userId)
-    val canPost = joined && !channel.present("archive_at") && app.env.online
+    // 暗号化チャンネルには、Megolm で暗号化して送れるようになるまで投稿、返信、編集を送らない
+    // （docs/e2ee.md、#361）。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。
+    val encrypted = channel.flag("encrypted")
+    val canPost = joined && !channel.present("archive_at") && app.env.online && !encrypted
+    val composerPlaceholder = if (encrypted) app.t("e2ee.sendUnavailable") else null
     LaunchedEffect(id, app.env.visible, app.env.online) {
         if (app.env.online && app.env.visible) {
             try {
@@ -197,7 +201,7 @@ fun Chat(
                                 muted = true,
                             )
                         !joined -> JoinToPostPrompt(app, channel)
-                        else -> Composer(app, id, null, users, canPost)
+                        else -> Composer(app, id, null, users, canPost, placeholder = composerPlaceholder)
                     }
                 }
             app.thread?.let { parent ->
@@ -241,7 +245,7 @@ fun Chat(
                     },
                     composer =
                         if (joined && !channel.present("archive_at")) {
-                            { Composer(app, id, parent, users, canPost) }
+                            { Composer(app, id, parent, users, canPost, placeholder = composerPlaceholder) }
                         } else null,
                 )
             }
@@ -652,7 +656,10 @@ internal fun Message(
         else app.openThread(id, wide)
     }
     val startEdit = {
-        if (callbacks?.startEdit != null) callbacks.startEdit.invoke() else editing = true
+        // 暗号化チャンネルでは、暗号化して送れるようになるまで編集を始めない（保存も送らない）。
+        if (channel.flag("encrypted")) app.toast = app.t("e2ee.sendUnavailable")
+        else if (callbacks?.startEdit != null) callbacks.startEdit.invoke()
+        else editing = true
     }
     val requestDelete = {
         if (callbacks?.requestDelete != null) callbacks.requestDelete.invoke() else deleting = true
@@ -781,6 +788,8 @@ internal fun Message(
                             var editComposing by remember { mutableStateOf(false) }
                             val saveEdit: () -> Unit = {
                                 if (callbacks?.saveEdit != null) callbacks.saveEdit.invoke()
+                                // 暗号化チャンネルの編集も、暗号化して送れるようになるまで送らない。
+                                else if (channel.flag("encrypted")) editing = false
                                 else
                                     app.run("edit:$id") {
                                         val row =

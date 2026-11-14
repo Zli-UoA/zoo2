@@ -201,6 +201,7 @@ struct Row {
     is_dm: bool,
     is_group: bool,
     is_private: bool,
+    is_encrypted: bool,
     is_nsfw: bool,
     is_archived: bool,
     active: bool,
@@ -231,6 +232,7 @@ impl WorkspaceView {
                 is_dm: ch.is_dm,
                 is_group: ch.is_dm && is_group_dm(&ch.channel_name),
                 is_private: ch.is_private,
+                is_encrypted: ch.encrypted,
                 is_nsfw: ch.is_nsfw,
                 is_archived: ch.archive_at.is_some(),
                 active: current_channel.as_deref() == Some(ch.id.as_str()),
@@ -493,6 +495,9 @@ impl WorkspaceView {
                     .initials(initials(&row.label))
                     .into_any_element()
             }
+        } else if row.is_encrypted {
+            // 暗号化チャンネル。デスクトップ版では開いても本文を表示しない。
+            icon_colored(Icon::LockKeyhole, 16.0, style.fg).into_any_element()
         } else if row.is_private {
             icon_colored(Icon::Lock, 16.0, style.fg).into_any_element()
         } else {

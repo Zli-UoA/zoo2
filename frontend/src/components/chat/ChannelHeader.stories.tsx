@@ -165,3 +165,13 @@ export const WebhookSettingsOpen: Story = {
     });
   }),
 };
+
+export const Encrypted: Story = {
+  args: {
+    channel: { ...secret, encrypted: true, membership_epoch: "1" },
+    memberCount: memberCount(secret.id),
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText("暗号化")).toBeVisible();
+  }),
+};

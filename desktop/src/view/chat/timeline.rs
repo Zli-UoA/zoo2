@@ -5,11 +5,12 @@ use std::{collections::HashMap, rc::Rc};
 use gpui::{AnyElement, Context, Div, ParentElement, Styled, div, prelude::*, px};
 use zoo2_client_core::electric::ShapeId;
 
+use crate::i18n::I18n;
 use crate::icons::Icon;
 use crate::ui::button::{Button, ButtonSize, ButtonVariant};
 use crate::ui::scroll_area::ScrollArea;
 use crate::ui::skeleton::Skeleton;
-use crate::ui::{TextSpec, h_flex, palette, shadow_md, v_flex};
+use crate::ui::{Palette, TextSpec, h_flex, icon_colored, palette, shadow_md, v_flex};
 use crate::view::WorkspaceView;
 use crate::view::chat::channel_header::ChannelHeaderInfo;
 use crate::view::chat::message::RowList;
@@ -129,9 +130,18 @@ impl WorkspaceView {
             )
         };
 
-        let hidden_before = start_idx;
-        let hidden_after = all_root_messages.len().saturating_sub(end_idx);
-        let visible_roots = &all_root_messages[start_idx..end_idx];
+        // デスクトップ版は E2EE の対象外。暗号化チャンネルでは、ヘッダー（退出などの操作）は残し、
+        // メッセージの一覧の代わりに「表示できない」と出す。
+        let is_encrypted = self.state.read(cx).is_encrypted_channel(&channel_id);
+        let (hidden_before, hidden_after, visible_roots) = if is_encrypted {
+            (0, 0, &all_root_messages[..0])
+        } else {
+            (
+                start_idx,
+                all_root_messages.len().saturating_sub(end_idx),
+                &all_root_messages[start_idx..end_idx],
+            )
+        };
 
         let p = palette(cx);
         let t = p.t;
@@ -225,6 +235,11 @@ impl WorkspaceView {
         };
 
         let scroll_area = match placeholder {
+            _ if is_encrypted => div()
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .child(render_encrypted_unsupported(i18n, &p)),
             Some(p) => div().relative().flex_1().min_h_0().child(p),
             None => div().relative().flex_1().min_h_0().child(
                 ScrollArea::new("timeline-scroll-area")
@@ -275,7 +290,8 @@ impl WorkspaceView {
                 scroll_area
                     // 最新へ戻るボタン (`absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-md`)
                     .when(
-                        placeholder_kind == Placeholder::None
+                        !is_encrypted
+                            && placeholder_kind == Placeholder::None
                             && (!timeline_at_bottom || hidden_after > 0),
                         |d| {
                             let label = if hidden_after > 0 {
@@ -377,6 +393,35 @@ pub(super) fn render_message_skeleton() -> Div {
         );
     }
     list
+}
+
+/// 暗号化チャンネルを開いたときの表示。デスクトップ版は E2EE の対象外なので、本文も入力欄も出さない
+/// （docs/e2ee.md の「クライアントの構成」、#361）。
+fn render_encrypted_unsupported(i18n: I18n, p: &Palette) -> Div {
+    let t = p.t;
+    let sm = TextSpec::SM;
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .gap(px(8.0))
+        .p(px(24.0))
+        .child(icon_colored(Icon::LockKeyhole, 24.0, t.muted_foreground))
+        .child(
+            div()
+                .text_size(TextSpec::BASE.size())
+                .line_height(TextSpec::BASE.line())
+                .font(crate::fonts::sans(600.0))
+                .text_color(t.foreground)
+                .child(i18n.t("e2ee.desktopUnsupported.title")),
+        )
+        .child(
+            div()
+                .text_size(sm.size())
+                .line_height(sm.line())
+                .text_color(t.muted_foreground)
+                .child(i18n.t("e2ee.desktopUnsupported.description")),
+        )
 }
 
 #[cfg(test)]

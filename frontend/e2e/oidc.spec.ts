@@ -170,9 +170,7 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
     .click();
   await expect(page.locator("html")).not.toHaveClass(/dark/);
 
-  await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
-
-  // 別ユーザーへ切り替えてログアウト → 再ログインする。
+  // 別ユーザーへ切り替えてログアウト（ログアウトは設定画面の一般タブにある） → 再ログインする。
   await page.request.post(`${mockIdpOrigin}/__mock/user`, {
     data: { sub: "user-b", preferredUsername: "bee", name: "Bee", email: "bee@example.com" },
   });

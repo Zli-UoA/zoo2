@@ -1148,9 +1148,39 @@
       "passkeyNoPrf": "This passkey can't unlock encryption (no PRF support). Security keys may work after you register them again in AuthZ. Use your recovery key.",
       "passkeyOriginNotAllowed": "Passkeys can't be used from this page. Use your recovery key.",
       "passkeyNoSlot": "The selected passkey isn't registered for unlocking encryption.",
-      "lastSlot": "You can't remove the last way to unlock."
+      "lastSlot": "You can't remove the last way to unlock.",
+      "disabled": "Encrypted channels aren't available on this server yet.",
+      "publicForbidden": "Only private channels can be encrypted."
     },
     "reunlockToAdd": "Unlock again to add a passkey",
-    "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey. This device stays unlocked either way."
+    "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey. This device stays unlocked either way.",
+    "badge": "Encrypted",
+    "encryptChannel": "Encrypt end-to-end",
+    "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "encryptChannelPrivateOnly": "Only private channels can be encrypted.",
+    "encryptDm": "Encrypt end-to-end",
+    "encryptDmHelp": "Only participants' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "undecryptable": {
+      "keyMissing": "Waiting for the key to decrypt this message.",
+      "locked": "Unlock encryption on this device to read this message.",
+      "staleEpoch": "This message was encrypted for an earlier member list and can't be read.",
+      "invalid": "This message failed verification and isn't shown.",
+      "failed": "This message couldn't be decrypted."
+    },
+    "sender": {
+      "unverified": "Unverified sender",
+      "unauthenticated": "Sender can't be confirmed"
+    },
+    "undeliverable": {
+      "title": "These people can't read new messages",
+      "notSetUp": "{{name}} hasn't set up encryption",
+      "needsReverification": "{{name}} needs to be verified again"
+    },
+    "loadPreviews": "Load link previews",
+    "desktopUnsupported": {
+      "title": "Encrypted channel",
+      "description": "This client can't show encrypted channels. Open it in the web or mobile app."
+    },
+    "sendUnavailable": "Sending to encrypted channels isn't available in this version yet."
   }
 }

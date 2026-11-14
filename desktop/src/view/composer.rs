@@ -81,9 +81,14 @@ impl WorkspaceView {
         };
 
         let is_editing = matches!(state.target, Target::Edit(_));
+        // 暗号化チャンネルはタイムラインに「表示できない」と出すので、入力欄も制限の案内も出さない。
+        let is_encrypted = state
+            .current_channel
+            .as_deref()
+            .is_some_and(|id| state.is_encrypted_channel(id));
         let is_posting_restricted =
-            is_synced && has_channel && !is_archived && !can_post && !is_editing;
-        let show_composer = !is_archived && (can_post || is_editing);
+            is_synced && has_channel && !is_archived && !is_encrypted && !can_post && !is_editing;
+        let show_composer = !is_archived && !is_encrypted && (can_post || is_editing);
         let typing_text = state.typing_text(&typing_scope);
         let notice = state.notice.as_ref().map(|(msg, _)| msg.clone());
         let invalid_rows = state.store.invalid_rows;

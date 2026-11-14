@@ -40,3 +40,14 @@ export const Closed: Story = {
     open: false,
   },
 };
+
+export const Encrypted: Story = {
+  play: playForImplementation(async () => {
+    const encrypt = await screen.findByRole("checkbox", { name: "エンドツーエンドで暗号化する" });
+    // 公開チャンネルは暗号化できない。
+    await expect(encrypt).toBeDisabled();
+    await userEvent.click(screen.getByRole("checkbox", { name: "非公開にする" }));
+    await userEvent.click(encrypt);
+    await expect(encrypt).toBeChecked();
+  }),
+};

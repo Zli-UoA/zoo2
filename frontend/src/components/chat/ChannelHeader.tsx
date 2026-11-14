@@ -10,6 +10,7 @@ import {
   HashIcon,
   HeadphonesIcon,
   LockIcon,
+  LockKeyholeIcon,
   LogOutIcon,
   MessagesSquareIcon,
   MoreHorizontalIcon,
@@ -122,6 +123,8 @@ export function ChannelHeader({
           ) : (
             <MessagesSquareIcon className="size-4" aria-hidden="true" />
           )
+        ) : channel.encrypted ? (
+          <LockKeyholeIcon className="size-4" aria-hidden="true" />
         ) : channel.is_private ? (
           <LockIcon className="size-4" aria-hidden="true" />
         ) : (
@@ -131,6 +134,13 @@ export function ChannelHeader({
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-sm font-semibold">{displayTitle}</h2>
+          {channel.encrypted ? (
+            // 送信の前に、このチャンネルや DM が暗号化されているかを確かめられるようにする。
+            <span className="inline-flex shrink-0 items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+              <LockKeyholeIcon className="size-3" aria-hidden="true" />
+              {t("e2ee.badge")}
+            </span>
+          ) : null}
           {channel.is_nsfw ? (
             <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
           ) : null}

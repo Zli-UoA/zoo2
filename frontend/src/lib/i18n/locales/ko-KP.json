@@ -1148,9 +1148,39 @@
       "passkeyNoPrf": "이 패스키로는 잠금을 해제할 수 없습니다(PRF 미지원). 보안 키라면 AuthZ에서 다시 등록하면 쓸 수 있을 수 있습니다. 복구 키로 잠금을 해제하십시오.",
       "passkeyOriginNotAllowed": "이 페이지에서는 패스키를 사용할 수 없습니다. 복구 키로 잠금을 해제하십시오.",
       "passkeyNoSlot": "선택한 패스키는 암호화 잠금 해제용으로 등록되지 않았습니다.",
-      "lastSlot": "마지막 잠금 해제 수단은 삭제할 수 없습니다."
+      "lastSlot": "마지막 잠금 해제 수단은 삭제할 수 없습니다.",
+      "disabled": "이 봉사기에서는 암호화된 통로를 아직 쓸수 없습니다.",
+      "publicForbidden": "비공개 통로만 암호화할수 있습니다."
     },
     "reunlockToAdd": "다시 잠금 해제하고 패스키 추가",
-    "reunlockToAddDescription": "패스키를 추가하려면 패스키 또는 복구 키로 다시 잠금을 해제하십시오. 이 장치의 잠금 해제 상태는 바뀌지 않습니다."
+    "reunlockToAddDescription": "패스키를 추가하려면 패스키 또는 복구 키로 다시 잠금을 해제하십시오. 이 장치의 잠금 해제 상태는 바뀌지 않습니다.",
+    "badge": "암호화됨",
+    "encryptChannel": "종단간 암호화하기",
+    "encryptChannelHelp": "성원의 확인된 장치만 통보문을 읽을수 있습니다. 암호화는 후에 해제할수 없으며 첨부는 아직 보낼수 없습니다.",
+    "encryptChannelPrivateOnly": "비공개 통로만 암호화할수 있습니다.",
+    "encryptDm": "종단간 암호화하기",
+    "encryptDmHelp": "참가자의 확인된 장치만 통보문을 읽을수 있습니다. 암호화는 후에 해제할수 없으며 첨부는 아직 보낼수 없습니다.",
+    "undecryptable": {
+      "keyMissing": "이 통보문을 해독할 열쇠가 아직 오지 않았습니다.",
+      "locked": "이 장치에서 암호화를 열면 이 통보문을 읽을수 있습니다.",
+      "staleEpoch": "이전 성원구성으로 암호화된 통보문이므로 읽을수 없습니다.",
+      "invalid": "이 통보문은 검증에 실패하여 표시하지 않습니다.",
+      "failed": "이 통보문을 해독하지 못했습니다."
+    },
+    "sender": {
+      "unverified": "확인되지 않은 발신자",
+      "unauthenticated": "발신자를 확인할수 없음"
+    },
+    "undeliverable": {
+      "title": "다음 사람은 새 통보문을 읽을수 없습니다",
+      "notSetUp": "{{name}}님은 암호화를 설정하지 않았습니다",
+      "needsReverification": "{{name}}님을 다시 확인해야 합니다"
+    },
+    "loadPreviews": "련결 미리보기 불러오기",
+    "desktopUnsupported": {
+      "title": "암호화된 통로",
+      "description": "이 의뢰기에서는 암호화된 통로를 표시할수 없습니다. 웨브판이나 이동앱에서 여십시오."
+    },
+    "sendUnavailable": "이 판에서는 아직 암호화된 통로에 보낼수 없습니다."
   }
 }

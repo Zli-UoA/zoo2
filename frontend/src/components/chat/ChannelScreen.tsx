@@ -145,6 +145,7 @@ export function ChannelScreen({
                 isMember={access.isMember}
                 canModerate={!channel.is_dm && access.canManageChannel}
                 readOnly={access.isArchived}
+                encrypted={channel.encrypted === true}
               />
             </div>
           </>
