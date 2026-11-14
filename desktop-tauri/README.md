@@ -182,7 +182,7 @@ Nix で入れた版は、アプリの中からは更新しません (「[更新]
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | AuthZ の「Zoo for Desktop」の ID | AuthZ に登録したデスクトップ版の public client の ID |
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
-| `check_updates` | `ZOO_CHECK_UPDATES` | `true` | `false` にすると、新しい版を確かめない (「[更新](#更新)」) |
+| `check_updates` | `ZOO_CHECK_UPDATES` | `true` | `false` にすると、新しい版を自動では確かめない (「[更新](#更新)」) |
 | `desktop_ui` | `ZOO_DESKTOP_UI` | `remote` (`dev_user` を指定したときは `leptos`) | 画面の種類。`remote` は `api_base_url` の Web 版の画面 (通話もできる)、`leptos` はアプリに入っている最小限の画面。ほかの値は設定のエラーになる |
 
 ログインで得たトークンは、そのときの接続先 (`api_base_url`) にだけ送ります。接続先や OIDC の設定を変えたら、ログインし直してください。
@@ -194,6 +194,8 @@ GitHub Releases から入れたアプリは、自分で新しい版を確かめ�
 1. 新しい版があると、裏でダウンロードし、署名を確かめておきます。
 2. 準備ができると、「zoo2 を更新できます」という通知が出て、トレイのメニューに「更新して再起動 (v<版>)」が増えます。
 3. 通知かメニューを押すと、新しい版に入れ替えて、アプリを再起動します。押すまでは、いまの版のまま動きます。
+
+macOS では、メニューバーの「zoo2」→「アップデートを確認…」からも更新できます。押すと更新のウィンドウが開き、その場で確かめます。新しい版があれば、ダウンロードの進み具合を出しながら取得し、入れ替えてアプリを再起動します。新しい版がないときは「zoo2 は最新です」と出して、少し後に閉じます。トレイや通知の「更新して再起動」を押したときも、同じウィンドウにインストールの様子を出します。準備ができた更新があるときは、この項目が「更新して再起動 (v<版>)…」に変わります。
 
 | 入れ方 | 入れ替えるとき |
 |---|---|
@@ -212,7 +214,7 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 | `nix profile` | `nix profile upgrade zoo2-desktop-tauri` |
 | NixOS の flake | `nix flake update zoo2` してから、`nixos-rebuild switch` (Home Manager なら `home-manager switch`) |
 
-更新を確かめたくないときは、設定の `check_updates = false` (環境変数なら `ZOO_CHECK_UPDATES=false`) にします。TUI と同じ設定です。
+自動で更新を確かめたくないときは、設定の `check_updates = false` (環境変数なら `ZOO_CHECK_UPDATES=false`) にします。TUI と同じ設定です。この設定でも、macOS のメニューバーの「アップデートを確認…」は使えます。
 
 画面の種類によって、更新が要る範囲が違います。
 
