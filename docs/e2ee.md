@@ -1839,7 +1839,7 @@ A が B に検証を求める場合です。
 
 【決定】この設定は、zoo2-infra の base の `kubernetes/apps/zoo2/base/app/backend.yaml` の `env` に置き、Git で管理します（[Zli-UoA/zoo2-infra#194](https://github.com/Zli-UoA/zoo2-infra/pull/194)）。production と preview の両方で `"true"` です。機能の切り替えなので、`APP_HTTP_DELIVERY_WORKER` などと同じく `env` に置き、手動で作る ConfigMap `zoo2-oidc` には入れません。Flux が配備すると backend が入れ替わり、新しい値を読みます。
 
-- 戻すときは、zoo2-infra の PR で `"false"` にする。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残り、新しい暗号化チャンネルと DM の作成だけが 403 `E2EE_DISABLED` になる。送受信、メンバーの変更、鍵の配布は続けられる。
+- 戻すときは、zoo2-infra の PR で `"false"` にする。false に戻しても、すでに作られた暗号化チャンネルは暗号化のまま残る。新しい暗号化チャンネルと DM の作成は 403 `E2EE_DISABLED` になる。`POST /api/dms`（`encrypted: true`）は、既存の DM を探す前にこの設定を確かめるので、既存の暗号化 DM を開く要求と、退出したメンバーがこの経路で DM に戻る要求も 403 `E2EE_DISABLED` になる。すでにメンバーの人の送受信、`POST /api/dms` 以外でのメンバーの変更、鍵の配布は続けられる。
 - 急ぎで止めるときも、`kubectl set env` などでクラスタを直接変えない。Flux の次の reconcile で Git の値に戻るため。
 - `ciphertext` を扱えない旧イメージ（#357 より前）にはロールバックしない。旧 backend は暗号化チャンネルへの送信を DB のトリガーに拒否され、受信は `content` が空のまま表示される。データは失われないが、使えなくなる。設定を false に戻すのは、#358 以降のイメージのあいだで行う。
 - 止め方と注意は、zoo2-infra の `docs/zoo2-app.md` の「E2EE の暗号化チャンネル」にも書いた。
@@ -1849,6 +1849,7 @@ A が B に検証を求める場合です。
 - 今の値は、Web と TUI の共通の public client だけ（`client-core` の TUI の既定のクライアント ID と同じ）。Android のアプリは、ログインの画面で利用者がクライアント ID を入れる作りで、決まった ID がない。Android の再認証（#360）でクライアントを決めたら、zoo2-infra の PR でこの値に足す。
 - preview は OIDC を使わないので、置かない。
 - 変えるときも zoo2-infra の PR で行い、`kubectl patch` や `kubectl set env` でクラスタを直接変えない。
+- 確かめ方：起動時の警告が出ないことだけでは足りない（Web の ID だけでも警告は出ないが、ほかのクライアントの再認証は 403 になる）。zoo2-infra の `backend.yaml` の値に、各クライアントの ID がすべて入っているかを照らし合わせる。Web は GitHub Actions の変数 `VITE_OIDC_CLIENT_ID`（`cd-images.yaml` が frontend のビルドに渡す）、TUI は `client-core/src/config.rs` の `TUI_DEFAULT_OIDC_CLIENT_ID`、Android は決めたクライアントの ID。配備された値は、読み取りだけの `kubectl -n zoo2 get deployment backend -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OIDC_REAUTH_AUDIENCES")].value}'` で確かめられる。
 
 ## クライアントの構成
 
