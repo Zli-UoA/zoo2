@@ -1,4 +1,4 @@
-import type { EncryptedMessage, JsonObject } from "@zoo/crypto-wasm";
+import type { EncryptedMessage, JsonObject, RevisionStatus } from "@zoo/crypto-wasm";
 
 /**
  * 暗号化チャンネルの Web Push を Service Worker で復号する（docs/e2ee.md の「Web Push の復号」、#365）。
@@ -114,7 +114,12 @@ export interface PushDecryptWorker {
   request(operation: {
     op: "megolmDecrypt";
     rows: EncryptedMessage[];
-  }): Promise<readonly ({ status: "decrypted"; body: string } | { status: "undecryptable" })[]>;
+  }): Promise<
+    readonly (
+      | { status: "decrypted"; body: string; revision: RevisionStatus }
+      | { status: "undecryptable" }
+    )[]
+  >;
 }
 
 /**
@@ -142,7 +147,13 @@ export function answerPushDecryptRequest(
   void current.worker
     .request({ op: "megolmDecrypt", rows: [message] })
     .then(([outcome]) =>
-      reply(outcome?.status === "decrypted" ? notificationBody(outcome.body) : null),
+      // タブは版の記録を持つ。Push の版より新しい版を見ている（サーバーが古い版を入れた）、同じ版で
+      // 中身が違う、のどちらでも、その本文は通知に出さない（docs/e2ee.md の「Web Push の復号」）。
+      reply(
+        outcome?.status === "decrypted" && outcome.revision.status === "latest"
+          ? notificationBody(outcome.body)
+          : null,
+      ),
     )
     .catch(() => reply(null));
   return true;

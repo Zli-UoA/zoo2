@@ -65,13 +65,15 @@ describe("notificationBody", () => {
   });
 });
 
+const LATEST = { status: "latest" } as const;
+
 describe("answerPushDecryptRequest", () => {
   const request = { type: PUSH_DECRYPT_REQUEST, namespace: `user-${BOB}`, message: MESSAGE };
 
   it("暗号ストアを開いているタブは、Worker で復号して本文を返す", async () => {
     const { port: reply, replies } = port();
     const decryptRows = vi.fn(async () => [
-      { status: "decrypted" as const, body: "あ".repeat(300) },
+      { status: "decrypted" as const, body: "あ".repeat(300), revision: LATEST },
     ]);
     const worker: PushDecryptWorker = { request: decryptRows };
     expect(answerPushDecryptRequest(request, reply, { worker, namespace: `user-${BOB}` })).toBe(
@@ -81,7 +83,7 @@ describe("answerPushDecryptRequest", () => {
     expect(decryptRows).toHaveBeenCalledWith({ op: "megolmDecrypt", rows: [MESSAGE] });
   });
 
-  it("開いていない、別のユーザー、復号できないときは null を返して待たせない", async () => {
+  it("開いていない、別のユーザー、復号できない、版が最新でないときは null を返して待たせない", async () => {
     const undecryptable: PushDecryptWorker = {
       request: async () => [{ status: "undecryptable" as const }],
     };
@@ -90,7 +92,20 @@ describe("answerPushDecryptRequest", () => {
         throw new Error("closed");
       },
     };
+    // タブの版の記録で、Push の版が古い、または同じ版で中身が違うと分かった
+    const stale: PushDecryptWorker = {
+      request: async () => [
+        { status: "decrypted" as const, body: "古い版", revision: { status: "stale", latest: 2 } },
+      ],
+    };
+    const conflict: PushDecryptWorker = {
+      request: async () => [
+        { status: "decrypted" as const, body: "違う中身", revision: { status: "conflict" } },
+      ],
+    };
     const cases = [
+      { worker: stale, namespace: `user-${BOB}` },
+      { worker: conflict, namespace: `user-${BOB}` },
       { worker: null, namespace: `user-${BOB}` },
       { worker: undecryptable, namespace: "user-other" },
       { worker: undecryptable, namespace: `user-${BOB}` },

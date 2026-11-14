@@ -128,7 +128,9 @@ describe("sw-push（Service Worker での Push の復号）", () => {
     const tabWorker: PushDecryptWorker = {
       request: async (operation) => {
         requests.push(operation);
-        return [{ status: "decrypted", body: "タブで復号した本文" }];
+        return [
+          { status: "decrypted", body: "タブで復号した本文", revision: { status: "latest" } },
+        ];
       },
     };
     const onMessage = (event: MessageEvent) =>
