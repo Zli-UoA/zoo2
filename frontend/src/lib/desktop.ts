@@ -150,6 +150,22 @@ export async function desktopSetNotifications(enabled: boolean): Promise<void> {
   await invoke("zoo_set_notifications", { settings: { enabled } });
 }
 
+/** 着信のトーストの「応答」を押した、と Rust 側が知らせるイベント（中身なし）。印は `desktopTakeCallAccept` で取る。 */
+export const DESKTOP_CALL_ACCEPT_EVENT = "zoo://call-accept";
+
+/**
+ * トーストの「応答」を押した招待の ID を、一度だけ受け取る（なければ null）。Rust 側だけが残す印で、
+ * イベントや URL だけでは応答しない。古い版のアプリにはこのコマンドがないので、呼べなかったら null。
+ */
+export async function desktopTakeCallAccept(): Promise<string | null> {
+  try {
+    const inviteId = await invoke<string | null>("zoo_take_call_accept");
+    return typeof inviteId === "string" ? inviteId : null;
+  } catch {
+    return null;
+  }
+}
+
 export function desktopReportNotifications(batch: DesktopBatch): void {
   void invoke("zoo_notifications_observed", { observed: { batch } }).catch(() => {});
 }

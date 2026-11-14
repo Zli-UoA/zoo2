@@ -161,6 +161,48 @@ impl ApiClient {
         Ok(envelope.txid)
     }
 
+    /// 通話の参加者から、ユーザーの表示名を引く（`GET /api/channels/{id}/call`）。呼んだ人は通話に
+    /// 入っているので、users の Shape を購読していないクライアントが、着信の相手の名前を知るために使う。
+    /// 見つからなければ `None`。
+    pub async fn call_participant_name(
+        &self,
+        channel_id: &str,
+        user_id: &str,
+    ) -> Result<Option<String>> {
+        let value: Value = self
+            .get(&format!("/api/channels/{}/call", segment(channel_id)))
+            .await?;
+        Ok(value["participants"].as_array().and_then(|participants| {
+            participants
+                .iter()
+                .find(|p| p["user_id"].as_str() == Some(user_id))
+                .and_then(|p| {
+                    ["display_name", "user_name"]
+                        .iter()
+                        .filter_map(|key| p[*key].as_str())
+                        .find(|name| !name.is_empty())
+                        .map(str::to_string)
+                })
+        }))
+    }
+
+    /// 通話の招待を拒否する（`POST /api/call-invites/{id}/decline`）。すでに終わっていた招待
+    /// （404・409）は、拒否できたのと同じに扱う。
+    pub async fn decline_call_invite(&self, invite_id: &str) -> Result<()> {
+        let path = format!("/api/call-invites/{invite_id}/decline");
+        match self.send(Method::POST, &path, None).await {
+            Ok(_) => Ok(()),
+            Err(err) => match err.downcast_ref::<crate::http::HttpError>() {
+                Some(crate::http::HttpError::Status { status, .. })
+                    if matches!(status.as_u16(), 404 | 409) =>
+                {
+                    Ok(())
+                }
+                _ => Err(err),
+            },
+        }
+    }
+
     pub async fn account_profiles(&self) -> Result<zoo2_client_types::accounts::AccountProfiles> {
         let value: Value = self.get("/api/emoji-accounts").await?;
         let profiles: Vec<zoo2_client_types::accounts::AccountProfile> =
@@ -692,6 +734,53 @@ mod tests {
                 .as_deref(),
             Some("43")
         );
+    }
+
+    #[tokio::test]
+    async fn call_invite_calls() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/channels/c1/call"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "participants": [
+                    {"user_id": "u2", "user_name": "bob", "display_name": "Bob"},
+                    {"user_id": "u3", "user_name": "carol", "display_name": ""},
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/call-invites/i1/decline"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/call-invites/i2/decline"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({"error": "gone"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        assert_eq!(
+            api.call_participant_name("c1", "u2")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Bob")
+        );
+        // 表示名が空なら、user_name
+        assert_eq!(
+            api.call_participant_name("c1", "u3")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("carol")
+        );
+        assert_eq!(api.call_participant_name("c1", "u9").await.unwrap(), None);
+        api.decline_call_invite("i1").await.unwrap();
+        // すでに終わっていた招待（409）は、拒否できたのと同じ
+        api.decline_call_invite("i2").await.unwrap();
     }
 
     #[tokio::test]

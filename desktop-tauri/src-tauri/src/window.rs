@@ -91,6 +91,7 @@ const REMOTE_COMMANDS: &[&str] = &[
     command::SET_NOTIFICATIONS,
     command::ACCESS_TOKEN,
     command::NOTIFICATIONS_OBSERVED,
+    command::TAKE_CALL_ACCEPT,
 ];
 
 /// (b) のときだけ、リモートのオリジンに IPC を許す capability を足す。
