@@ -10,7 +10,8 @@ import {
   type SplitCallInvites,
 } from "../lib/call/call-invites";
 import type { CallInviteRow } from "../lib/electric/types";
-import { useCollections, useOptionalCollections } from "../lib/electric/collections-context";
+import { useOptionalCollections } from "../lib/electric/collections-context";
+import { resolveConfig } from "../lib/config";
 import { useCurrentUser } from "./useCurrentUser";
 
 /**
@@ -59,16 +60,17 @@ export function useCallInvites(): SplitCallInvites {
 /**
  * 招待の API を呼ぶクライアント（設定ごとに 1 つ）。
  *
- * クライアントは、最初のリクエストのときに作る。`CallBar` は通話していないときも、このフックを呼ぶ。
- * 描画のたびに作ると、開発用のユーザー ID などがない設定（テストなど）で、描画だけが失敗する。
+ * `CallBar` は通話していないときも、このフックを呼ぶ。そのため、描画では設定を解決しない
+ * （`useOptionalCollections` は Provider がなくても例外を投げず、クライアントは最初のリクエストのときに作る）。
+ * 描画で解決すると、開発用のユーザー ID などがない設定（テストなど）で、描画だけが失敗する。
  */
 export function useCallInviteApi(): { request: ApiClient["request"] } {
-  const { config } = useCollections();
+  const config = useOptionalCollections()?.config ?? null;
   return useMemo(() => {
     let client: ApiClient | null = null;
     return {
       request: ((path: string, options?: RequestOptions) =>
-        (client ??= createConfiguredApiClient(config)).request(
+        (client ??= createConfiguredApiClient(config ?? resolveConfig())).request(
           path,
           options,
         )) as ApiClient["request"],
