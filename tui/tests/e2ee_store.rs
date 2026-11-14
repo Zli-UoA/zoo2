@@ -484,6 +484,66 @@ async fn not_found_is_counted_once_per_start() {
 }
 
 #[tokio::test]
+async fn a_failure_between_not_founds_restarts_the_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    store::mark_device_deletion_pending(&root, &store::PendingDeviceDeletion::new(BOB, "d", true))
+        .unwrap();
+    let server = MockServer::start().await;
+    let api = api_for(&server);
+    let mut counts = Vec::new();
+    // 次の起動ごとに 1 回ずつ消し直す（404 → 404 → 503 → 404）。
+    for status in [404, 404, 503, 404] {
+        server.reset().await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
+        counts.push(store::read_pending_device_deletions(&root).unwrap()[0].not_found);
+    }
+    assert_eq!(counts, vec![1, 2, 0, 1]);
+}
+
+#[tokio::test]
+async fn logout_destroys_the_store_without_a_storage_key_even_if_the_pending_list_is_broken() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let mut bob = CryptoStore::open(&root, BOB).unwrap().store;
+    bob.mark_registered().unwrap();
+    let old_device = bob.device_id().to_owned();
+    drop(bob);
+    std::fs::remove_file(root.join(BOB).join("storage.key")).unwrap();
+    let file = root.join("pending-device-delete.json");
+    std::fs::write(&file, b"{broken").unwrap();
+    // 起動では、前の端末を記録できなければ開かない。
+    assert!(CryptoStore::open(&root, BOB).is_err());
+
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {}, "txid": null })))
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    // ログアウトでは開いて消し、前の端末も削除 API で消す。一覧は書き換えない。
+    for target in manager::open_for_logout(&root).unwrap() {
+        manager::destroy_for_logout(&api, &root, target, Some(BOB))
+            .await
+            .unwrap();
+    }
+    assert!(!root.join(BOB).exists());
+    let deleted: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect();
+    assert!(deleted.contains(&format!("/api/e2ee/devices/{old_device}")));
+    assert_eq!(std::fs::read(&file).unwrap(), b"{broken");
+}
+
+#[tokio::test]
 async fn an_unconfirmed_device_registered_late_is_deleted_on_the_next_start() {
     let dir = tempfile::tempdir().unwrap();
     let root = store::crypto_root(dir.path());

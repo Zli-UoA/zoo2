@@ -119,7 +119,7 @@ enum DeleteOutcome {
 ///
 /// 404 は、登録できたと分かっている端末なら、消すものがないので済んだものとする。登録できたか
 /// 分からない端末（`unconfirmed`）は、あとから届いた登録で端末ができうるので残し、続けて
-/// [`MAX_NOT_FOUND`] 回 404 なら済んだものとする。
+/// [`MAX_NOT_FOUND`] 回 404 なら済んだものとする。404 以外の失敗では、回数を 0 に戻す。
 ///
 /// `counted` は、この起動で 404 を数えた端末。同じ端末の 404 は起動ごとに 1 回だけ数える
 /// （`spawn` のループの試し直しで上限に達して、削除待ちを早く外さないため）。
@@ -144,6 +144,16 @@ pub async fn delete_device_or_remember(
         .and_then(|all| all.into_iter().find(|entry| entry.same_device(target)))
         .unwrap_or_else(|| target.clone());
     match outcome {
+        // 404 が続いていない。数え直す（間に失敗をはさんだ 404 は、続けて受けたものとしない）。
+        DeleteOutcome::Failed if current.not_found > 0 => {
+            let _ = update_pending_device_deletion(
+                root,
+                &PendingDeviceDeletion {
+                    not_found: 0,
+                    ..current
+                },
+            );
+        }
         DeleteOutcome::Failed => {}
         DeleteOutcome::Deleted => {
             let _ = clear_pending_device_deletion(root, &current);
@@ -393,7 +403,7 @@ pub fn open_for_logout(root: &Path) -> Result<Vec<LogoutTarget>> {
     store::stored_user_ids(root)?
         .into_iter()
         .map(|user_id| {
-            let opened = CryptoStore::open(root, &user_id)?;
+            let opened = CryptoStore::open_for_logout(root, &user_id)?;
             let pending_backup = opened.store.pending_backup_count();
             Ok(LogoutTarget {
                 store: opened.store,

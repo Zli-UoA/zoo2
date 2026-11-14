@@ -221,7 +221,21 @@ fn inbound_key(session: &SessionRef) -> String {
 
 impl CryptoStore {
     /// `user_id` の暗号ストアを開く。なければ端末を作る（`device_id` は UUID v4）。
+    ///
+    /// 保存鍵を失っていて、前の端末を削除待ちに記録できない（一覧が壊れているなど）ときは開かない
+    /// （前の端末の ID を失わないため）。
     pub fn open(root: &Path, user_id: &str) -> Result<Opened> {
+        Self::open_with(root, user_id, false)
+    }
+
+    /// ログアウトのために開く。[`CryptoStore::open`] と違い、前の端末を削除待ちに記録できなくても
+    /// 開く。このあとすぐに暗号ストアを消し、前の端末も削除 API で消す（`destroy_for_logout`）ので、
+    /// 記録できないためにログアウトできなくなる（暗号ストアとトークンが残る）よりよい。
+    pub fn open_for_logout(root: &Path, user_id: &str) -> Result<Opened> {
+        Self::open_with(root, user_id, true)
+    }
+
+    fn open_with(root: &Path, user_id: &str, for_logout: bool) -> Result<Opened> {
         let dir = user_dir(root, user_id)?;
         create_private_dir(root)?;
         let lock = lock_user(root, user_id)?;
@@ -256,10 +270,12 @@ impl CryptoStore {
             // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
             // 前の端末の ID は state.json にしかない。消す前に削除待ちに残し、作り直しが途中で
             // 失敗しても、次の起動で前の端末を消せるようにする。
-            mark_device_deletion_pending(
-                root,
-                &PendingDeviceDeletion::new(user_id, &state.device_id, !state.registered),
-            )?;
+            let replaced = PendingDeviceDeletion::new(user_id, &state.device_id, !state.registered);
+            if let Err(err) = mark_device_deletion_pending(root, &replaced)
+                && !for_logout
+            {
+                return Err(err);
+            }
             replaced_registered = state.registered;
             replaced_device_id = Some(state.device_id);
             fs::remove_file(&state_path)?;

@@ -468,7 +468,7 @@ type DeleteOutcome = "deleted" | "notFound" | "failed";
  *
  * 404 は、登録できたと分かっている端末なら、消すものがないので済んだものとする。登録できたか
  * 分からない端末（`unconfirmed`）は、あとから届いた登録で端末ができうるので残し、続けて
- * `MAX_NOT_FOUND` 回 404 なら済んだものとする。`counted`（ログインごとの集合）を渡したときは、
+ * `MAX_NOT_FOUND` 回 404 なら済んだものとする。404 以外の失敗では、回数を 0 に戻す。`counted`（ログインごとの集合）を渡したときは、
  * 同じ端末の 404 をそのログインで 1 回だけ数える。
  */
 async function deleteOrKeep(
@@ -487,8 +487,12 @@ async function deleteOrKeep(
   } finally {
     clearTimeout(timer);
   }
-  if (outcome === "failed") return;
   const current = findPendingDeviceDeletion(target) ?? target;
+  if (outcome === "failed") {
+    // 404 が続いていない。数え直す（間に失敗をはさんだ 404 は、続けて受けたものとしない）。
+    if ((current.notFound ?? 0) > 0) updatePendingDeviceDeletion({ ...current, notFound: 0 });
+    return;
+  }
   if (outcome === "deleted" || !current.unconfirmed) {
     clearPendingDeviceDeletion(current);
     return;

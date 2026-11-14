@@ -705,6 +705,27 @@ describe("E2eeDeviceManager", () => {
       expect(loginNotFoundCounter(USER)).not.toBe(loginNotFoundCounter("other"));
     });
 
+    it("404 以外の失敗をはさんだら、404 の回数を数え直す", async () => {
+      markDeviceDeletionPending({ userId: USER, deviceId: DEVICE, unconfirmed: true });
+      const responses = [404, 404, 503, 404];
+      const { client } = fakeClient({
+        [`DELETE /api/e2ee/devices/${DEVICE}`]: () => {
+          const status = responses.shift()!;
+          throw new ApiError(status, "failed");
+        },
+      });
+      const notFounds: (number | undefined)[] = [];
+      // 次のログインごとに 1 回ずつ消し直す（404 → 404 → 503 → 404）。
+      for (let login = 0; login < 4; login += 1) {
+        await retryPendingDeviceDeletion(client, USER, new Set());
+        notFounds.push(readPendingDeviceDeletions()[0]?.notFound);
+      }
+      expect(notFounds).toEqual([1, 2, undefined, 1]);
+      expect(readPendingDeviceDeletions()).toEqual([
+        { userId: USER, deviceId: DEVICE, unconfirmed: true, notFound: 1 },
+      ]);
+    });
+
     it("あとから登録が届いた端末は、次のログインで消す", async () => {
       // ログアウトのために開いた（登録の応答をなくしていた）端末。
       const { worker } = fakeWorker();
