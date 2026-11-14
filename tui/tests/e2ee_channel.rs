@@ -1014,6 +1014,36 @@ fn records_survive_a_failed_rebuild_after_losing_the_storage_key() {
     assert!(!user_dir.join("state.replaced.json").exists());
 }
 
+#[test]
+fn reading_records_while_the_store_is_rebuilt_keeps_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let user_dir = dir.path().join(ALICE);
+    {
+        let mut store = CryptoStore::open(dir.path(), ALICE).unwrap().store;
+        store.remember_encrypted_channel(CHANNEL).unwrap();
+    }
+    // 保存鍵を失った作り直しが、前の `state.json` を退避したところで止まっている。
+    std::fs::remove_file(user_dir.join("storage.key")).unwrap();
+    std::fs::create_dir(user_dir.join("state.tmp")).unwrap();
+    assert!(CryptoStore::open(dir.path(), ALICE).is_err());
+    assert!(!user_dir.join("state.json").exists());
+    assert!(user_dir.join("state.replaced.json").exists());
+    // 読み取りが `state.json` を見つけられなかった直後に止まり、そのあいだに作り直しが終わる（退避した
+    // ファイルは消える）。その場の記録にも頼らないよう、それも消しておく。
+    let root = dir.path().to_owned();
+    let channels =
+        zoo2_tui::e2ee::store::read_encrypted_channels_pausing(dir.path(), ALICE, || {
+            std::fs::remove_file(user_dir.join("encrypted-channels.json")).unwrap();
+            std::fs::remove_dir(user_dir.join("state.tmp")).unwrap();
+            let opened = CryptoStore::open(&root, ALICE).unwrap();
+            assert!(!user_dir.join("state.replaced.json").exists());
+            drop(opened);
+        })
+        .unwrap();
+    // 読み直した新しい `state.json` に引き継がれた記録を読む（画面はこれで格下げを見つけ、平文で送らない）。
+    assert_eq!(channels, vec![CHANNEL.to_owned()]);
+}
+
 #[tokio::test]
 async fn the_previous_recipients_are_kept_when_saving_fails() {
     let (_server, backend, alice, _bob) = setup().await;

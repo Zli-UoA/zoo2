@@ -1222,15 +1222,33 @@ impl CryptoStore {
 /// 置き換えるので、ロックを持たずに読んでも、書きかけを読むことはない。まだ暗号ストアがなければ空。
 /// ファイルを読めない、形式が壊れているときはエラーにする（記録がないものとして扱わない）。
 pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Result<Vec<String>> {
+    read_encrypted_channels_pausing(root, user_id, || {})
+}
+
+/// [`read_encrypted_channels`] と同じ。最初に `state.json` が見つからなかった直後に `paused` を呼ぶ
+/// （作り直しと読み取りが重なる順を、テストで作るため）。
+#[doc(hidden)]
+pub fn read_encrypted_channels_pausing(
+    root: &Path,
+    user_id: &str,
+    paused: impl FnOnce(),
+) -> Result<Vec<String>> {
     let dir = user_dir(root, user_id)?;
-    // 保存鍵を失って作り直しているあいだ（`state.json` がない）は、置いておいた前の記録を読む。
-    // 読むあいだに作り直しを終えて前の記録を消したときは、新しい `state.json` を読み直す。
+    let mut paused = Some(paused);
+    let mut pause = || {
+        if let Some(paused) = paused.take() {
+            paused();
+        }
+    };
     let records = match read_kept_records(&dir.join(STATE_FILE), user_id)? {
         Some(records) => Some(records),
-        None => match read_kept_records(&dir.join(REPLACED_STATE_FILE), user_id)? {
-            Some(records) => Some(records),
-            None => read_kept_records(&dir.join(STATE_FILE), user_id)?,
-        },
+        None => {
+            pause();
+            match read_kept_records(&dir.join(REPLACED_STATE_FILE), user_id)? {
+                Some(records) => Some(records),
+                None => read_kept_records(&dir.join(STATE_FILE), user_id)?,
+            }
+        }
     };
     // その場の記録は、`state.json` を読んだあとに読む。作り直しは、`state.json` を移す前に記録をここへ
     // 写すので、`state.json` が見えなかったときは、写し終えたあとのこのファイルを読むことになる
