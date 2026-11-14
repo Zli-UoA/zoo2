@@ -74,7 +74,8 @@ jobs:
       - name: Upload wasm package
         uses: actions/upload-artifact@v7
         with:
-          name: zoo-crypto-wasm
+          # マージキューでは ci-frontend などと同じ run で呼ばれるので、artifact の名前を分ける。
+          name: zoo-crypto-wasm-auth-e2e
           path: crates/zoo-crypto-wasm/pkg
           if-no-files-found: error
           retention-days: 1
@@ -131,7 +132,7 @@ jobs:
       - name: Download wasm package
         uses: actions/download-artifact@v8
         with:
-          name: zoo-crypto-wasm
+          name: zoo-crypto-wasm-auth-e2e
           path: crates/zoo-crypto-wasm/pkg
 
       - name: Install dependencies
