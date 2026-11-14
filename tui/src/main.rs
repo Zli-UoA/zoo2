@@ -167,7 +167,8 @@ async fn login() -> Result<()> {
         .context("ログインはできましたが、zoo2 がトークンを受け付けませんでした")?;
     println!(
         "{} (@{}) としてログインしました。",
-        me.display_name, me.user_name
+        zoo2_client_core::text::sanitize_display(&me.display_name),
+        zoo2_client_core::text::sanitize_display(&me.user_name)
     );
     Ok(())
 }
