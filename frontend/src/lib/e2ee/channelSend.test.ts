@@ -349,6 +349,29 @@ describe("sendEncryptedMessage", () => {
     expect(posts.map((post) => post.epoch)).toEqual([3, 3, 4]);
   });
 
+  it("続けて送った 2 件がどちらも 409 を受けても、作り直したセッションは 1 つで、両方送れる", async () => {
+    const { worker, ops } = fakeWorker();
+    const { client, calls } = fakeClient(
+      [staleEpochError(4), staleEpochError(4), null, null],
+      [3, 4],
+    );
+    const send = (messageId: string) =>
+      sendEncryptedMessage(deps(worker, client), {
+        channelId: CHANNEL,
+        shapeEpoch: "3",
+        messageId,
+        parentId: null,
+        body: "hello",
+        mentions: NO_MENTIONS,
+      });
+    await Promise.all([send("a"), send("b")]);
+    const posts = calls.filter((call) => call.path === "/api/messages");
+    expect(posts.map((call) => (call.body as { epoch: number }).epoch)).toEqual([3, 3, 4, 4]);
+    // 後から 409 を受けた送信は、先の送信が作り直した epoch 4 のセッションを捨てずに使う。
+    expect(ops.some((op) => op.op === "megolmDiscard")).toBe(false);
+    expect(calls.filter((call) => call.path === "/api/e2ee/to_device")).toHaveLength(2);
+  });
+
   it("3 回続けて E2EE_STALE_EPOCH なら諦める", async () => {
     const { worker } = fakeWorker();
     const { client, calls } = fakeClient(
