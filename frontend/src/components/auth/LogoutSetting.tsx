@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
@@ -24,12 +24,31 @@ export function LogoutButton() {
   // null は閉じている、-1 は数えられなかった。
   const [unbackedKeys, setUnbackedKeys] = useState<number | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
+  // 件数の確認で奪った鍵の受信処理の停止を、まだ返していない間は true。
+  // 設定画面を離れて unmount されたら、未確定のログアウトを取りやめて停止を戻す。
+  const holdsLock = useRef(false);
+  const mounted = useRef(false);
+  const e2eeRef = useRef(e2ee);
+  e2eeRef.current = e2ee;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (holdsLock.current) {
+        holdsLock.current = false;
+        e2eeRef.current.cancelLogout();
+      }
+    };
+  }, []);
 
   const handleLogout = async () => {
     // 暗号ストアを消すと、この端末にだけある鍵を失う。送れていない鍵があれば先に確かめる
     // （docs/e2ee.md の「ログアウトと端末の削除」）。
     // 数えられなかったら、送れていない鍵がないとは扱わず、分からないまま確かめる。
+    holdsLock.current = true;
     const pending = await e2ee.pendingBackupCount().catch(() => -1);
+    // 確認中に画面を離れていたら、遅れて返った結果は捨てる（停止は unmount で戻している）。
+    if (!mounted.current) return;
     if (pending !== 0) {
       setUnbackedKeys(pending);
       return;
@@ -41,6 +60,8 @@ export function LogoutButton() {
     e2ee.clearForLogout().catch(() => toast.error(t("e2ee.logout.deleteFailed")));
 
   const performLogout = async () => {
+    // ここからは performLogout が停止の扱い（続行か取りやめ）を決める。
+    holdsLock.current = false;
     // デスクトップ版では Rust 側がトークンを持つ。消すとログイン画面へ戻る。
     if (isDesktopSession()) {
       await clearEncryptionData();
@@ -81,6 +102,7 @@ export function LogoutButton() {
         count={unbackedKeys}
         pending={loggingOut}
         onCancel={() => {
+          holdsLock.current = false;
           setUnbackedKeys(null);
           e2ee.cancelLogout();
         }}
