@@ -161,6 +161,16 @@ impl ApiClient {
             .map(str::to_owned))
     }
 
+    /// `GET /api/e2ee/key_backup/keys?version=<版>&after=<前のページの next>`（1000 件ずつ）。
+    /// `{"sessions": [...], "next": <続きのカーソルか null>}` を返す。
+    pub async fn e2ee_backup_keys(&self, version: &str, after: Option<&str>) -> Result<Value> {
+        let mut path = format!("/api/e2ee/key_backup/keys?version={}", urlencode(version));
+        if let Some(after) = after {
+            path.push_str(&format!("&after={}", urlencode(after)));
+        }
+        self.e2ee_json(Method::GET, &path, None).await
+    }
+
     /// `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`。
     pub async fn e2ee_upload_backup_keys(
         &self,
@@ -174,6 +184,215 @@ impl ApiClient {
         );
         self.e2ee_write(&path, body, None).await?;
         Ok(())
+    }
+}
+
+/// to-device の宛先の端末（キューの上限で入れなかった宛先など）。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DeviceTarget {
+    pub user_id: String,
+    pub device_id: String,
+}
+
+/// `keys/claim` で一度に払い出す端末の数（サーバーの上限）。
+pub const KEYS_CLAIM_BATCH: usize = 1000;
+/// `to_device` の 1 回の宛先の数（サーバーの上限）。
+pub const TO_DEVICE_BATCH: usize = 100;
+
+/// 暗号化チャンネルの送信に使う API（docs/e2ee.md の「配布先のスナップショット」「端末とワンタイム鍵」
+/// 「to-device メッセージ」「クロス署名」「メッセージ」。#361）。React の `megolmApi.ts` と同じ。
+impl ApiClient {
+    /// `GET /api/e2ee/channels/{channel_id}/recipients` の 1 ページ（封筒なしの JSON）。
+    /// 続きは `after`（前のページの `next_after`）と `epoch`（最初のページの `membership_epoch`）で取る。
+    /// ページの途中で `membership_epoch` が変わると 409 `E2EE_STALE_EPOCH`。
+    pub async fn e2ee_channel_recipients(
+        &self,
+        channel_id: &str,
+        after: Option<&str>,
+        epoch: Option<&str>,
+    ) -> Result<Value> {
+        let mut query = Vec::new();
+        if let Some(after) = after {
+            query.push(format!("after={}", urlencode(after)));
+        }
+        if let Some(epoch) = epoch {
+            query.push(format!("epoch={}", urlencode(epoch)));
+        }
+        let query = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", query.join("&"))
+        };
+        let path = format!(
+            "/api/e2ee/channels/{}/recipients{query}",
+            urlencode(channel_id)
+        );
+        self.e2ee_json(Method::GET, &path, None).await
+    }
+
+    /// `POST /api/e2ee/tofu_pins`（`replace: false`）でピンを 1 件置く。409 `E2EE_PIN_CONFLICT`
+    /// （別の端末が先に置いた）なら `false`。
+    pub async fn e2ee_post_tofu_pin(&self, pin: &Value) -> Result<bool> {
+        match self
+            .e2ee_write(
+                "/api/e2ee/tofu_pins",
+                json!({ "pins": [pin], "replace": false }),
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(error) if ApiError::has_code(&error, "E2EE_PIN_CONFLICT") => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// `POST /api/e2ee/keys/claim`（[`KEYS_CLAIM_BATCH`] 台ずつ）。`claim` は
+    /// `{user_id: [device_id]}`。応答の `one_time_keys`（`{user_id: {device_id: {key_id: 鍵}}}`）をまとめて返す。
+    pub async fn e2ee_claim_keys(
+        &self,
+        claim: &std::collections::BTreeMap<String, Vec<String>>,
+    ) -> Result<serde_json::Map<String, Value>> {
+        let entries: Vec<(&String, &String)> = claim
+            .iter()
+            .flat_map(|(user_id, devices)| devices.iter().map(move |device| (user_id, device)))
+            .collect();
+        let mut claimed = serde_json::Map::new();
+        for chunk in entries.chunks(KEYS_CLAIM_BATCH) {
+            let mut batch = serde_json::Map::new();
+            for (user_id, device_id) in chunk {
+                let devices = batch
+                    .entry((*user_id).clone())
+                    .or_insert_with(|| Value::Object(Default::default()));
+                devices[device_id.as_str()] = json!("signed_curve25519");
+            }
+            let data = self
+                .e2ee_write(
+                    "/api/e2ee/keys/claim",
+                    json!({ "one_time_keys": batch }),
+                    None,
+                )
+                .await?;
+            if let Some(Value::Object(users)) = data.get("one_time_keys") {
+                for (user_id, devices) in users {
+                    let Value::Object(devices) = devices else {
+                        continue;
+                    };
+                    let entry = claimed
+                        .entry(user_id.clone())
+                        .or_insert_with(|| Value::Object(Default::default()));
+                    if let Value::Object(entry) = entry {
+                        entry.extend(devices.clone());
+                    }
+                }
+            }
+        }
+        Ok(claimed)
+    }
+
+    /// `POST /api/e2ee/to_device`（[`TO_DEVICE_BATCH`] 端末ずつ、要求ごとに別の `txn_id`）。`messages` は
+    /// `{user_id: {device_id: content}}`。キューの上限で入れなかった宛先（`undelivered`）を返す。
+    pub async fn e2ee_send_to_device(
+        &self,
+        device_id: &str,
+        messages: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, Value>>,
+    ) -> Result<Vec<DeviceTarget>> {
+        let entries: Vec<(&String, &String, &Value)> = messages
+            .iter()
+            .flat_map(|(user_id, devices)| {
+                devices
+                    .iter()
+                    .map(move |(target, content)| (user_id, target, content))
+            })
+            .collect();
+        let mut undelivered = Vec::new();
+        for chunk in entries.chunks(TO_DEVICE_BATCH) {
+            let mut batch = serde_json::Map::new();
+            for (user_id, target, content) in chunk {
+                let devices = batch
+                    .entry((*user_id).clone())
+                    .or_insert_with(|| Value::Object(Default::default()));
+                devices[target.as_str()] = (*content).clone();
+            }
+            let data = self
+                .e2ee_write(
+                    "/api/e2ee/to_device",
+                    json!({
+                        "device_id": device_id,
+                        "txn_id": uuid::Uuid::new_v4().to_string(),
+                        "type": "m.room.encrypted",
+                        "messages": batch,
+                    }),
+                    None,
+                )
+                .await?;
+            for target in data
+                .get("undelivered")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let (Some(user_id), Some(device_id)) = (
+                    target.get("user_id").and_then(Value::as_str),
+                    target.get("device_id").and_then(Value::as_str),
+                ) {
+                    undelivered.push(DeviceTarget {
+                        user_id: user_id.to_owned(),
+                        device_id: device_id.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(undelivered)
+    }
+
+    /// 暗号化チャンネルにメッセージを送る（`POST /api/messages`。`content` は空、`ciphertext` に暗号文）。
+    /// `body` は要求の全体。エラーは [`ApiError`]（409 `E2EE_STALE_EPOCH` の `current_epoch` を読むため）。
+    pub async fn send_encrypted_message(&self, body: Value) -> Result<Option<String>> {
+        let envelope: Envelope = self
+            .send_e2ee(Method::POST, "/api/messages", Some(body), None)
+            .await?
+            .json()
+            .await?;
+        Ok(envelope.txid)
+    }
+
+    /// 暗号化チャンネルのメッセージを編集する（`PATCH /api/messages/{id}`。`{content: "", epoch, revision, ciphertext}`）。
+    pub async fn edit_encrypted_message(&self, id: &str, body: Value) -> Result<Option<String>> {
+        let path = format!("/api/messages/{}", urlencode(id));
+        let envelope: Envelope = self
+            .send_e2ee(Method::PATCH, &path, Some(body), None)
+            .await?
+            .json()
+            .await?;
+        Ok(envelope.txid)
+    }
+}
+
+/// 409 `E2EE_STALE_EPOCH` の `current_epoch`。違うエラーなら `None`。
+pub fn stale_epoch(error: &anyhow::Error) -> Option<u64> {
+    let api = error.downcast_ref::<ApiError>()?;
+    if api.code.as_deref() != Some("E2EE_STALE_EPOCH") {
+        return None;
+    }
+    json_u64(api.body.get("current_epoch")?)
+}
+
+/// 409 `E2EE_STALE_REVISION` の `current_revision`。違うエラーなら `None`。
+pub fn stale_revision(error: &anyhow::Error) -> Option<u64> {
+    let api = error.downcast_ref::<ApiError>()?;
+    if api.code.as_deref() != Some("E2EE_STALE_REVISION") {
+        return None;
+    }
+    json_u64(api.body.get("current_revision")?)
+}
+
+/// 数か、数の文字列（int8 は文字列で届くことがある）。
+pub fn json_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.parse().ok(),
+        _ => None,
     }
 }
 
