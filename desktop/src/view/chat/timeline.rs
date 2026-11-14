@@ -159,6 +159,7 @@ impl WorkspaceView {
                     .py_1()
                     .child(
                         Button::new("btn-load-older-messages")
+                            .focus_handle(&self.load_older_focus)
                             .variant(ButtonVariant::Outline)
                             .size(ButtonSize::Sm)
                             .label(format!("過去のメッセージを表示 (残り {hidden_before} 件)"))
@@ -308,6 +309,7 @@ impl WorkspaceView {
                                     .justify_center()
                                     .child(
                                         Button::new("btn-jump-to-latest")
+                                            .focus_handle(&self.jump_to_latest_focus)
                                             .size(ButtonSize::Sm)
                                             .icon_start(Icon::ArrowDown)
                                             .label(label)

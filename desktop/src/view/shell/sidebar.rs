@@ -300,6 +300,7 @@ impl WorkspaceView {
                     .child(
                         h_flex().child(
                             Button::new("btn-sidebar-retry-sync")
+                                .focus_handle(&self.retry_sync_focus)
                                 .variant(ButtonVariant::Outline)
                                 .size(ButtonSize::Sm)
                                 .label(i18n.t("offline.retry"))
