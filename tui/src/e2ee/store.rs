@@ -433,8 +433,13 @@ impl CryptoStore {
                 std::mem::take(&mut state.recipients),
             );
             replaced_device_id = Some(state.device_id);
+            // 暗号化チャンネルの記録は、作り直しで消さないその場の記録（`encrypted-channels.json`）にも
+            // 先に写す。作り直しのあいだに記録を読んでも（`state.json` がない、退避したものも消えた、の
+            // どの順に当たっても）、必ずそこから読める。写せなければ作り直さない。
+            let channels: Vec<String> = kept.0.iter().cloned().collect();
+            record_encrypted_channels(root, user_id, &channels)?;
             // 新しい保存鍵で読めない `state.json` を残さないよう、前のものは別の名前に移す（消さない。
-            // 新しい `state.json` を保存し終えるまで、記録をここから読めるようにする）。
+            // 新しい `state.json` を保存し終えるまで、前回の配布先もここから引き継げるようにする）。
             fs::rename(&state_path, &replaced_path).with_context(|| {
                 format!(
                     "{} を {} に移せません",
@@ -1285,6 +1290,12 @@ pub fn record_encrypted_channels(root: &Path, user_id: &str, ids: &[String]) -> 
     }
     let dir = user_dir(root, user_id)?;
     let path = dir.join(ENCRYPTED_CHANNELS_FILE);
+    // 同じユーザーの zoo2-tui が 2 つ動いていても、読んでから書き戻すまでを 1 つずつにする（後の書き込みが
+    // 先に足した ID を消さないため）。暗号ストアのロックとは別のロックで、短いあいだだけ待つ。
+    create_private_dir(root)?;
+    let lock = open_lock_file(&root.join(format!("{user_id}.records.lock")))?;
+    lock.lock()
+        .context("暗号化チャンネルの記録のロックを取れません")?;
     let mut all = read_kept_records(&path, user_id)?
         .map(|records| records.encrypted_channels)
         .unwrap_or_default();

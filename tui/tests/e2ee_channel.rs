@@ -890,6 +890,33 @@ fn records_written_before_the_store_opens_are_read_back() {
 }
 
 #[test]
+fn concurrent_records_keep_every_channel() {
+    // 同じユーザーの zoo2-tui が 2 つ動いていて、同時に別のチャンネルを記録しても、どれも消えない。
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_owned();
+    let ids: Vec<String> = (0..16)
+        .map(|i| format!("00000000-0000-4000-8000-{i:012}"))
+        .collect();
+    let threads: Vec<_> = ids
+        .iter()
+        .cloned()
+        .map(|id| {
+            let root = root.clone();
+            std::thread::spawn(move || {
+                zoo2_tui::e2ee::store::record_encrypted_channels(&root, ALICE, &[id]).unwrap();
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert_eq!(
+        zoo2_tui::e2ee::store::read_encrypted_channels(&root, ALICE).unwrap(),
+        ids
+    );
+}
+
+#[test]
 fn records_survive_a_failed_rebuild_after_losing_the_storage_key() {
     let dir = tempfile::tempdir().unwrap();
     let user_dir = dir.path().join(ALICE);
@@ -908,6 +935,17 @@ fn records_survive_a_failed_rebuild_after_losing_the_storage_key() {
             .unwrap()
             .contains(&CHANNEL.to_owned())
     );
+    // 作り直しの前に、その場の記録（作り直しで消さない）にも写してある。`state.json` も退避したものも
+    // 見えない順に当たっても（退避したものを消したあとに読んだときと同じ）、記録を読める。
+    let replaced = std::fs::read(user_dir.join("state.replaced.json")).unwrap();
+    std::fs::remove_file(user_dir.join("state.replaced.json")).unwrap();
+    assert!(!user_dir.join("state.json").exists());
+    assert!(
+        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE)
+            .unwrap()
+            .contains(&CHANNEL.to_owned())
+    );
+    std::fs::write(user_dir.join("state.replaced.json"), replaced).unwrap();
     // 次に作り直せたら、記録を引き継ぎ、前のものを消す。
     std::fs::remove_dir(user_dir.join("state.tmp")).unwrap();
     let opened = CryptoStore::open(dir.path(), ALICE).unwrap();
@@ -1233,11 +1271,17 @@ async fn a_new_device_imports_past_sessions_from_the_key_backup() {
             .await
             .is_err()
     );
-    // 1 ページ目は取り込めている。
-    assert_eq!(
-        body_of(&tablet.decrypt(&backend, &first.message_id).await),
-        "新しい端末を足す前 1"
-    );
+    // 1 ページ目（どちらのセッションかは行の並びによる）は取り込めている。
+    let mut readable = 0;
+    for sent in [&first, &second] {
+        if matches!(
+            tablet.decrypt(&backend, &sent.message_id).await,
+            Decryption::Decrypted(_)
+        ) {
+            readable += 1;
+        }
+    }
+    assert_eq!(readable, 1);
     assert_eq!(
         setup::import_key_backup(&tablet.api, &tablet.store)
             .await
@@ -1249,8 +1293,13 @@ async fn a_new_device_imports_past_sessions_from_the_key_backup() {
         vec![None, Some("1".into()), Some("1".into())],
         "止まったページから読み直す"
     );
-    assert_eq!(
-        body_of(&tablet.decrypt(&backend, &second.message_id).await),
-        "新しい端末を足す前 2"
-    );
+    for (sent, body) in [
+        (&first, "新しい端末を足す前 1"),
+        (&second, "新しい端末を足す前 2"),
+    ] {
+        assert_eq!(
+            body_of(&tablet.decrypt(&backend, &sent.message_id).await),
+            body
+        );
+    }
 }
