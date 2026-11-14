@@ -154,6 +154,10 @@ pub enum Mode {
     Encryption,
     /// チャンネルか DM を作る（#361）。
     Create(CreateForm),
+    /// 暗号化チャンネルの配布先の詳細（#361）。`scroll` 行目から出す。
+    Recipients {
+        scroll: usize,
+    },
 }
 
 /// 入力欄の送り先。
@@ -1305,6 +1309,22 @@ impl App {
                 }
             }
             Mode::Create(form) => self.on_create_key(key, form),
+            Mode::Recipients { scroll } => {
+                let last = super::view::recipient_details(self)
+                    .map_or(0, |lines| lines.len().saturating_sub(1));
+                self.mode = match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => Mode::Recipients {
+                        scroll: (scroll + 1).min(last),
+                    },
+                    KeyCode::Char('k') | KeyCode::Up => Mode::Recipients {
+                        scroll: scroll.saturating_sub(1),
+                    },
+                    KeyCode::Char('g') | KeyCode::Home => Mode::Recipients { scroll: 0 },
+                    KeyCode::Char('G') | KeyCode::End => Mode::Recipients { scroll: last },
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('V') => Mode::Normal,
+                    _ => Mode::Recipients { scroll },
+                };
+            }
         }
     }
 
@@ -1352,6 +1372,17 @@ impl App {
             KeyCode::Char('u') => self.reopen_thread(),
             KeyCode::Char('c') => self.mode = Mode::Create(CreateForm::channel()),
             KeyCode::Char('m') => self.mode = Mode::Create(CreateForm::dm()),
+            KeyCode::Char('V') => {
+                if self
+                    .current
+                    .as_ref()
+                    .is_some_and(|id| self.recipients.contains_key(id))
+                {
+                    self.mode = Mode::Recipients { scroll: 0 };
+                } else {
+                    self.notify("まだ配布先を判定していません。暗号化チャンネルに送ると判定します");
+                }
+            }
             _ => {}
         }
     }
