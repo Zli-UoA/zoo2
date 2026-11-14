@@ -92,7 +92,7 @@ impl Server {
 fn setup_unlock_and_startup_check() {
     let account = DeviceAccount::new(ALICE.into(), DEVICE.into()).unwrap();
     let storage_key = vec![9u8; 32];
-    let start = SetupSession::begin(ALICE.into()).unwrap();
+    let start = begin_setup(ALICE.into()).unwrap();
     let created = start.session;
     assert!(created.is_created());
     assert_eq!(created.user_id(), ALICE);
@@ -102,7 +102,7 @@ fn setup_unlock_and_startup_check() {
 
     // 保存したあとで止めて再起動し、控えたリカバリーキーで開け直す。
     let unlocked =
-        SetupSession::unlock_with_recovery_key(ALICE.into(), response.clone(), start.recovery_key)
+        unlock_setup_with_recovery_key(ALICE.into(), response.clone(), start.recovery_key)
             .unwrap()
             .unwrap();
     assert!(!unlocked.is_created());
@@ -196,7 +196,7 @@ fn setup_unlock_and_startup_check() {
 
 #[test]
 fn passkey_slot_and_key_mismatch() {
-    let start = SetupSession::begin(ALICE.into()).unwrap();
+    let start = begin_setup(ALICE.into()).unwrap();
     let created = start.session;
     created
         .add_passkey_slot("Y3JlZA".into(), vec![1u8; 32], vec![2u8; 32], None)
@@ -221,7 +221,7 @@ fn passkey_slot_and_key_mismatch() {
 
     // ほかの鍵の初回設定が保存したクロス署名鍵は、違う鍵として扱う。
     let account = DeviceAccount::new(ALICE.into(), DEVICE.into()).unwrap();
-    let other = SetupSession::begin(ALICE.into()).unwrap().session;
+    let other = begin_setup(ALICE.into()).unwrap().session;
     let mut server = Server::default();
     server.apply(
         &other
@@ -241,7 +241,7 @@ fn passkey_slot_and_key_mismatch() {
         Err(ZooCryptoError::ServerKeyMismatch { .. })
     ));
     assert!(matches!(
-        SetupSession::unlock_with_recovery_key(ALICE.into(), "{}".into(), "abcd".into()),
+        unlock_setup_with_recovery_key(ALICE.into(), "{}".into(), "abcd".into()),
         Ok(None) | Err(_)
     ));
 }

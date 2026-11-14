@@ -183,6 +183,46 @@ jobs:
             exit 1
           fi
 
+      # Android の E2EE の再認証（#360）の App Links。docs/e2ee.md の「クロス署名」の再認証の確かめ方。
+      - name: Android App Links (assetlinks.json and the reauth callback page)
+        run: |
+          # 指紋を設定していなければ 404（SPA の index.html を 200 で返さない）。
+          if docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            wget -q -O /dev/null http://127.0.0.1:3000/.well-known/assetlinks.json; then
+            echo "assetlinks.json without fingerprints must not be served" >&2
+            exit 1
+          fi
+          page=$(docker compose --project-directory . -f infra/compose.stack.yaml exec -T frontend \
+            wget -S -O - "http://127.0.0.1:3000/android/reauth-callback?code=c&state=s" 2>&1)
+          printf "%s" "$page" | grep -qi "Referrer-Policy: no-referrer"
+          printf "%s" "$page" | grep -qi "Cache-Control: no-store"
+          printf "%s" "$page" | grep -qi "Content-Security-Policy: default-src 'none'"
+          printf "%s" "$page" | grep -q "Zoo アプリ"
+          case "$page" in *"<script"*) echo "the reauth callback page must not run scripts" >&2; exit 1 ;; esac
+          # ダミーの指紋で起動すると、application/json で返す。
+          image=$(docker compose --project-directory . -f infra/compose.stack.yaml images -q frontend)
+          name="zoo2-assetlinks-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker rm -f "$name" >/dev/null' EXIT
+          fingerprint="$(printf 'AB:%.0s' $(seq 1 31))CD"
+          docker run -d --name "$name" -e ANDROID_APP_CERT_SHA256="$(printf '%s' "$fingerprint" | tr 'A-F' 'a-f')" "$image"
+          for attempt in $(seq 1 30); do
+            if docker exec "$name" wget -Y off -q -O /dev/null http://127.0.0.1:3000/; then break; fi
+            sleep 1
+          done
+          headers=$(docker exec "$name" wget -Y off -S -O /dev/null http://127.0.0.1:3000/.well-known/assetlinks.json 2>&1)
+          printf "%s" "$headers" | grep -qi "Content-Type: application/json"
+          docker exec "$name" wget -Y off -q -O - http://127.0.0.1:3000/.well-known/assetlinks.json |
+            FINGERPRINT="$fingerprint" python3 -c 'import json, os, sys
+          links = json.load(sys.stdin)
+          assert links[0]["relation"] == ["delegate_permission/common.handle_all_urls"], links
+          target = links[0]["target"]
+          assert target == {"namespace": "android_app", "package_name": "works.zli.zoo", "sha256_cert_fingerprints": [os.environ["FINGERPRINT"]]}, target'
+          # 指紋の形式が違えば、起動しない（設定の誤りを見逃さない）。
+          if timeout 60 docker run --rm -e ANDROID_APP_CERT_SHA256=AA:BB "$image" nginx -t; then
+            echo "an invalid ANDROID_APP_CERT_SHA256 must stop the container" >&2
+            exit 1
+          fi
+
       # compose はホストにポートを公開しないため、検証用に同じイメージを 3100 で起動する。
       - name: Start frontend for CSP browser test
         run: |

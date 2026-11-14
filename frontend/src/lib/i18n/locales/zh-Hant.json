@@ -1530,6 +1530,13 @@
         "62": "資料夾",
         "63": "圖釘"
       }
+    },
+    "android": {
+      "saveDescription": "儲存前需要重新登入。瀏覽器會開啟，登入完成後會回到此畫面。",
+      "continueDescription": "請重新登入，以儲存中斷的初始設定的其餘部分。瀏覽器將會開啟。",
+      "reauthWaiting": "正在等待你在瀏覽器中重新登入…",
+      "reauthCancel": "停止登入",
+      "browserUnavailable": "無法開啟用於登入的瀏覽器。請安裝或啟用瀏覽器後再按一次。"
     }
   }
 }

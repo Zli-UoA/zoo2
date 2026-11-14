@@ -23,8 +23,12 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -41,6 +45,8 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import io.ktor.http.encodeURLParameter
+import io.ktor.http.encodeURLPathPart
 import zoo.ApiException
 import zoo.Config
 import zoo.Platform
@@ -80,10 +86,73 @@ suspend fun <T> withRequestTimeout(timeout: Duration, block: suspend () -> T): T
         throw E2eeRequestTimeoutException(failure)
     }
 
-/** [ZooApi] で呼ぶ [E2eeApi]。E2EE の API には 30 秒の期限を付ける（TUI と同じ）。 */
-class ZooE2eeApi(private val api: ZooApi) : E2eeApi {
-    private suspend fun call(path: String, method: String, body: JsonElement? = null): JsonElement =
-        withRequestTimeout(TIMEOUT) { api.request(path, method, body) }
+/** [ZooApi] で呼ぶ [E2eeApi] と [E2eeSetupApi]。E2EE の API には 30 秒の期限を付ける（TUI と同じ）。 */
+class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi {
+    private suspend fun call(
+        path: String,
+        method: String,
+        body: JsonElement? = null,
+        reauth: String? = null,
+    ): JsonElement =
+        withRequestTimeout(TIMEOUT) {
+            api.request(path, method, body, reauth?.let { mapOf(REAUTH_HEADER to it) }.orEmpty())
+        }
+
+    private fun obj(response: JsonElement): JsonObject = response as? JsonObject ?: JsonObject(emptyMap())
+
+    override suspend fun secretStorage() = obj(call("/api/e2ee/secret_storage", "GET"))
+
+    override suspend fun createSecretStorageKey(body: JsonObject, reauth: String?): Long? =
+        (data(call("/api/e2ee/secret_storage/keys", "POST", body, reauth))["secrets_revision"] as? JsonPrimitive)
+            ?.longOrNull
+
+    override suspend fun addKeySlot(slot: JsonObject, reauth: String?) {
+        // サーバーは `label: null` を受け付けないので、ないときは送らない。
+        val body = if (slot["label"] == JsonNull) JsonObject(slot - "label") else slot
+        call("/api/e2ee/secret_storage/slots", "POST", body, reauth)
+    }
+
+    override suspend fun markKeySlotUsed(slotId: String) {
+        try {
+            call("/api/e2ee/secret_storage/slots/${slotId.encodeURLPathPart()}/used", "POST", JsonObject(emptyMap()))
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (_: Exception) {
+            // 表示用の記録なので、失敗しても解錠は止めない。
+        }
+    }
+
+    override suspend fun queryOwnKeys(userId: String) =
+        obj(call("/api/e2ee/keys/query", "POST", buildJsonObject { put("user_ids", JsonArray(listOf(JsonPrimitive(userId)))) }))
+
+    override suspend fun backupVersions() = obj(call("/api/e2ee/key_backup/versions", "GET"))
+
+    override suspend fun currentBackupVersion(): JsonObject? =
+        try {
+            obj(call("/api/e2ee/key_backup/versions/current", "GET"))
+        } catch (failure: ApiException) {
+            if (failure.status == 404) null else throw failure
+        }
+
+    override suspend fun uploadCrossSigningKeys(body: JsonObject, reauth: String?) {
+        call("/api/e2ee/cross_signing/keys", "POST", body, reauth)
+    }
+
+    override suspend fun uploadSignatures(signatures: JsonArray) {
+        call("/api/e2ee/cross_signing/signatures", "POST", buildJsonObject { put("signatures", signatures) })
+    }
+
+    override suspend fun createBackupVersion(body: JsonObject, reauth: String?) {
+        call("/api/e2ee/key_backup/versions", "POST", body, reauth)
+    }
+
+    override suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject) {
+        call(
+            "/api/e2ee/key_backup/keys?version=${version.encodeURLParameter()}&secrets_revision=$secretsRevision",
+            "POST",
+            body,
+        )
+    }
 
     /** 書き込みの応答は `{"data": ...}` の封筒に入っている。 */
     private fun data(response: JsonElement): JsonObject =
@@ -132,8 +201,11 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi {
         call("/api/e2ee/devices/$deviceId", "DELETE")
     }
 
-    private companion object {
-        val TIMEOUT = 30.seconds
+    companion object {
+        private val TIMEOUT = 30.seconds
+
+        /** 直前の再認証の ID トークンを入れるヘッダー。 */
+        const val REAUTH_HEADER = "X-Zoo-Reauth"
     }
 }
 
@@ -228,6 +300,11 @@ class E2eeDeviceManager(
     private val settleTimeout: Duration = 5.seconds,
     /** 失敗の通知（ログに出す）。秘密は入らない。 */
     private val onError: (Throwable) -> Unit = {},
+    /**
+     * 初回設定と解錠の API（#360）。渡すと、端末の登録のあとに起動時の確認（署名し直し）と鍵バックアップへの
+     * 送信を行い、to-device で Megolm セッションの鍵を受け取るたびに鍵バックアップへ送る（解錠済みの端末だけ）。
+     */
+    setupApi: E2eeSetupApi? = null,
 ) {
     private val background = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
     private val control = Mutex()
@@ -236,6 +313,16 @@ class E2eeDeviceManager(
     /** 処理に使っている暗号ストア。処理のコルーチン（[loop]）だけが触り、止まるときに閉じる。 */
     @Volatile
     private var store: CryptoStore? = null
+
+    /** 登録を終えて使える暗号ストア（初回設定と解錠の画面と共有する）。止まるときに `null` に戻す。 */
+    private val ready = MutableStateFlow<CryptoStore?>(null)
+
+    /** 登録を終えた暗号ストアがあるか（画面の表示に使う）。 */
+    val readyStore: StateFlow<CryptoStore?> get() = ready
+
+    /** 初回設定と解錠（#360）。[readyStore] を待って使う。 */
+    val setup: E2eeSetup? =
+        setupApi?.let { api -> E2eeSetup(api, userId, store = { ready.filterNotNull().first() }, io = io) }
 
     /** ログアウトのために開いた暗号ストア。 */
     @Volatile
@@ -292,6 +379,7 @@ class E2eeDeviceManager(
             } catch (failure: Exception) {
                 onError(failure)
             } finally {
+                ready.value = null
                 store?.close()
                 store = null
             }
@@ -334,6 +422,9 @@ class E2eeDeviceManager(
                 ensureRegistered(store)
             }
         replenish(store, counts)
+        ready.value = store
+        // 解錠済みの端末は、署名を確かめて鍵バックアップへ送る（失敗しても to-device の処理は続ける）。
+        background { setup?.runStartupCheck() }
         val deviceId = store.deviceId
         // ack を送れた行は、Shape から消えるまで処理し直さない（ack より先に次の一覧が届くため）。
         val acknowledged = mutableSetOf<String>()
@@ -376,6 +467,8 @@ class E2eeDeviceManager(
             withContext(io) { store.acknowledged(result.processed) }
         }
         if (result.newOlmSessions > 0) replenish(store, KeyCounts(api.uploadKeys(deviceId, EMPTY, EMPTY)))
+        // 受け取った Megolm セッションの鍵を、鍵バックアップに送る（解錠済みの端末だけ。E2eeSetup が確かめる）。
+        if (result.roomKeys > 0) background { setup?.uploadKeyBackup() }
         return result.processed
     }
 
@@ -460,6 +553,18 @@ class E2eeDeviceManager(
                 logoutStore = null
                 background.coroutineContext[Job]?.cancel()
             }
+        }
+    }
+
+    /** 失敗しても処理を止めない補助の処理（起動時の確認、鍵バックアップへの送信）。失敗は通知だけする。 */
+    private suspend fun background(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (failure: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            onError(failure)
+        } catch (failure: Exception) {
+            onError(failure)
         }
     }
 

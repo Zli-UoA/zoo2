@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>zoo</title>
+  </head>
+  <body style="font-family: system-ui, sans-serif; padding: 2rem; text-align: center">
+    <!--
+      Android の E2EE の再認証（docs/e2ee.md、#360）のリダイレクト先。ふだんは App Links でアプリが受け取るので、
+      このページは出ない。出たときは、App Links の検証（/.well-known/assetlinks.json）が済んでいない。
+      認可コードはどこにも送らない（script を持たない）。
+    -->
+    <p>ログインし直しました。このページを閉じて、Zoo アプリに戻ってください。</p>
+    <p>アプリに戻らないときは、アプリで「ログインをやめる」を押し、少し待ってからもう一度試してください。</p>
+    <p lang="en">Close this page and return to the Zoo app. If the app does not continue, press “Stop signing in” in the app and try again later.</p>
+  </body>
+</html>

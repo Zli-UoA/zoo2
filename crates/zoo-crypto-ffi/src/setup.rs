@@ -101,33 +101,6 @@ impl SetupSession {
 
 #[uniffi::export]
 impl SetupSession {
-    /// 初回設定を始める。クロス署名鍵、バックアップ鍵、SSSS 鍵、リカバリーキーを作り、リカバリーキーの
-    /// スロットを作る。
-    #[uniffi::constructor]
-    pub fn begin(user_id: String) -> Result<SetupStart> {
-        let (session, recovery_key) = core::SetupSession::begin(&user_id)?;
-        Ok(SetupStart {
-            session: Self::wrap(session),
-            recovery_key: recovery_key.to_string(),
-        })
-    }
-
-    /// `GET /api/e2ee/secret_storage` の応答（JSON）を、利用者が打ち込んだリカバリーキーで開ける。
-    /// SSSS がまだなければ `null`。打ち間違いは `InvalidRecoveryKey`、鍵が違えば `KeySlotUnlock`。
-    #[uniffi::constructor]
-    pub fn unlock_with_recovery_key(
-        user_id: String,
-        response: String,
-        recovery_key: String,
-    ) -> Result<Option<Arc<Self>>> {
-        let response = parse_json("response", &response)?;
-        let recovery_key = zeroize::Zeroizing::new(recovery_key);
-        Ok(
-            core::SetupSession::unlock_with_recovery_key(&user_id, &response, &recovery_key)?
-                .map(Self::wrap),
-        )
-    }
-
     /// 開けた SSSS から作る（パスキーで開けたとき。`SecretStorage.unlock_with_passkey` の結果）。
     #[uniffi::constructor]
     pub fn from_unlocked(unlocked: &UnlockedSecretStorage) -> Result<Arc<Self>> {
@@ -212,6 +185,33 @@ impl SetupSession {
         trust.record_own_user_signing_key(&keys.user_signing)?;
         Ok(())
     }
+}
+
+/// 初回設定を始める。クロス署名鍵、バックアップ鍵、SSSS 鍵、リカバリーキーを作り、リカバリーキーの
+/// スロットを作る（UniFFI のコンストラクターは自分しか返せないので関数にする）。
+#[uniffi::export]
+pub fn begin_setup(user_id: String) -> Result<SetupStart> {
+    let (session, recovery_key) = core::SetupSession::begin(&user_id)?;
+    Ok(SetupStart {
+        session: SetupSession::wrap(session),
+        recovery_key: recovery_key.to_string(),
+    })
+}
+
+/// `GET /api/e2ee/secret_storage` の応答（JSON）を、利用者が打ち込んだリカバリーキーで開ける。
+/// SSSS がまだなければ `null`。打ち間違いは `InvalidRecoveryKey`、鍵が違えば `KeySlotUnlock`。
+#[uniffi::export]
+pub fn unlock_setup_with_recovery_key(
+    user_id: String,
+    response: String,
+    recovery_key: String,
+) -> Result<Option<Arc<SetupSession>>> {
+    let response = parse_json("response", &response)?;
+    let recovery_key = zeroize::Zeroizing::new(recovery_key);
+    Ok(
+        core::SetupSession::unlock_with_recovery_key(&user_id, &response, &recovery_key)?
+            .map(SetupSession::wrap),
+    )
 }
 
 /// 暗号ストアに置いた自分の鍵（[`core::OwnKeys`]）。

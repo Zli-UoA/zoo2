@@ -27,5 +27,24 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!--
+            E2EE の直前の再認証（#360）のリダイレクト先。App Links で受け取り、MainActivity に渡してすぐ閉じる。
+            検証には https://zli.chat/.well-known/assetlinks.json（infra/frontend-nginx.conf）が要る。
+        -->
+        <activity
+            android:name="zoo.android.ReauthCallbackActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="zli.chat" />
+                <data android:path="/android/reauth-callback" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

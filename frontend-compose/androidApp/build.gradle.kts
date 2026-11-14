@@ -48,6 +48,10 @@ dependencies {
     implementation("io.ktor:ktor-client-okhttp:3.1.3")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.0")
+    // E2EE の初回設定と解錠（#360）。パスキーの PRF は Credential Manager、再認証は Custom Tabs。
+    implementation("androidx.credentials:credentials:1.5.0")
+    implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
+    implementation("androidx.browser:browser:1.8.0")
 }
 
 val translations by
