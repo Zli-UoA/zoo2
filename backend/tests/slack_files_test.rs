@@ -105,6 +105,14 @@ struct Row<'a> {
 impl Fixture {
     /// 投稿と `slack_files` の行を作る。`url` は `/files/<file>/<file>.txt`。投稿の ID を返す
     async fn add(&self, row: Row<'_>) -> anyhow::Result<String> {
+        let url = format!(
+            "{}{}/{}.txt",
+            self.state.config.slack.files_base_url, row.file, row.file
+        );
+        self.add_url(row, &url).await
+    }
+
+    async fn add_url(&self, row: Row<'_>, url: &str) -> anyhow::Result<String> {
         let message = uuid::Uuid::new_v4().to_string();
         sql(
             &self.state,
@@ -113,10 +121,6 @@ impl Fixture {
             &[&message, &self.user, &self.channel, row.content],
         )
         .await?;
-        let url = format!(
-            "{}{}/{}.txt",
-            self.state.config.slack.files_base_url, row.file, row.file
-        );
         sql(
             &self.state,
             "INSERT INTO slack_files(team_id,slack_file_id,job_id,message_id,channel_id,uploader_id,name,mimetype,size,\
@@ -131,7 +135,7 @@ impl Fixture {
                 &self.user,
                 &format!("{}.txt", row.file),
                 &row.size.to_string(),
-                &url,
+                url,
                 if row.in_content { "true" } else { "false" },
             ],
         )
@@ -649,5 +653,459 @@ async fn test_orphan_files_update_processed_files_when_giving_up_stopped_rows() 
     )
     .await?;
     assert_eq!(jobs[0]["n"], 1);
+    Ok(())
+}
+
+// ---- ユーザートークンでの取得 (Bot に見えないファイル) ----
+
+const USER_KEY: [u8; 32] = [7u8; 32];
+
+/// OAuth と暗号化キーを入れ、許可 URL を `<サーバー>/` にする (Slack の本物の URL と同じ `/files-pri/…` を使うため)
+fn with_links(files: &MockServer) -> impl FnMut(&mut Config) + use<> {
+    use base64::Engine;
+    let uri = files.uri();
+    move |c| {
+        c.slack.files_base_url = format!("{uri}/");
+        c.slack.client_id = Some("cid".into());
+        c.slack.client_secret = Some("sec".into());
+        c.slack.team_id = None;
+        c.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+        c.slack.token_encryption_key =
+            Some(base64::engine::general_purpose::STANDARD.encode(USER_KEY));
+    }
+}
+
+impl Fixture {
+    /// Slack の `url_private_download` と同じ形 (`/files-pri/<team>-<file>/download/<file>.txt`) の行を作る
+    async fn add_pri(&self, file: &str, job: &str) -> anyhow::Result<String> {
+        let url = self.pri_url(file);
+        self.add_url(
+            Row {
+                file,
+                job,
+                content: "",
+                in_content: false,
+                size: 1,
+            },
+            &url,
+        )
+        .await
+    }
+
+    fn pri_url(&self, file: &str) -> String {
+        format!(
+            "{}files-pri/{}-{file}/download/{file}.txt",
+            self.state.config.slack.files_base_url, self.team
+        )
+    }
+
+    fn pri_path(&self, file: &str) -> String {
+        format!("/files-pri/{}-{file}/download/{file}.txt", self.team)
+    }
+
+    async fn extra_user(&self) -> anyhow::Result<String> {
+        let app = create_router(self.state.clone());
+        let user = uuid::Uuid::new_v4().to_string();
+        let status = request(
+            &app,
+            "/api/users",
+            &user,
+            json!({"id": user, "user_name": format!("files_{}", uuid::Uuid::new_v4().simple()), "display_name": "files"}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(user)
+    }
+
+    /// 連携を作る。`team` は、別のワークスペースの連携を作るときに指定する
+    async fn link(
+        &self,
+        user: &str,
+        token: &str,
+        scopes: &str,
+        team: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let enc = backend::slack::crypto::encrypt(&USER_KEY, token)?;
+        sql(
+            &self.state,
+            "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc,scopes) \
+             VALUES($1,$2,$3,$4,$5) RETURNING json_build_object('ok',true)::text",
+            &[
+                user,
+                team.unwrap_or(&self.team),
+                &format!("U{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
+                &enc,
+                scopes,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+fn login_redirect() -> ResponseTemplate {
+    ResponseTemplate::new(302).insert_header(
+        "location",
+        "https://zliworkspace.slack.com/?redir=%2Ffiles-pri%2FT-F%2Fdownload%2Fx",
+    )
+}
+
+async fn mount_pri(
+    files: &MockServer,
+    f: &Fixture,
+    file: &str,
+    token: &str,
+    resp: ResponseTemplate,
+) {
+    Mock::given(method("GET"))
+        .and(path(f.pri_path(file)))
+        .and(header("authorization", format!("Bearer {token}").as_str()))
+        .respond_with(resp)
+        .mount(files)
+        .await;
+}
+
+fn body(content: &[u8]) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/plain")
+        .set_body_bytes(content.to_vec())
+}
+
+#[tokio::test]
+async fn test_orphan_files_use_the_linked_user_token_when_the_bot_cannot_see_the_file()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    f.link(&f.user, "xoxp-alice", "channels:history,files:read", None)
+        .await?;
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+    mount_pri(&files, &f, "F1", "xoxp-alice", body(b"hello")).await;
+
+    assert!(f.once().await);
+    let row = f.file("F1").await;
+    assert_eq!(row["status"], "done");
+    assert!(row["attachment"].is_string());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_fail_at_once_when_no_token_can_see_the_file() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    f.link(&f.user, "xoxp-alice", "files:read", None).await?;
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+    mount_pri(&files, &f, "F1", "xoxp-alice", login_redirect()).await;
+
+    assert!(f.once().await);
+    let row = f.file("F1").await;
+    // 取り直しても変わらないので、3 回試さずに確定する
+    assert_eq!(row["status"], "failed");
+    assert_eq!(row["attempts"], 1);
+    assert!(
+        row["error"]
+            .as_str()
+            .unwrap()
+            .contains("not visible to any linked user")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_retry_when_a_token_was_denied_and_another_failed() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    f.link(&f.user, "xoxp-alice", "files:read", None).await?;
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+    mount_pri(&files, &f, "F1", "xoxp-alice", ResponseTemplate::new(503)).await;
+
+    assert!(f.once().await);
+    let row = f.file("F1").await;
+    // 一時的な失敗が混じるときは、確定させない
+    assert_eq!(row["status"], "pending");
+    assert_eq!(row["attempts"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_wait_without_counting_while_no_user_has_files_read() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    // `files:read` がない連携 (`remote_files:read` は別のスコープ) と、別のワークスペースの連携は、使わない
+    f.link(
+        &f.user,
+        "xoxp-alice",
+        "channels:history,remote_files:read",
+        None,
+    )
+    .await?;
+    let other = f.extra_user().await?;
+    f.link(&other, "xoxp-other", "files:read", Some("TOTHER"))
+        .await?;
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+    mount_pri(&files, &f, "F1", "xoxp-alice", body(b"no")).await;
+    mount_pri(&files, &f, "F1", "xoxp-other", body(b"no")).await;
+
+    assert!(f.once().await);
+    let row = f.file("F1").await;
+    assert_eq!(row["status"], "pending");
+    assert_eq!(row["attempts"], 0);
+    assert_eq!(row["waiting"], true);
+    assert!(
+        row["error"]
+            .as_str()
+            .unwrap()
+            .contains("no linked user with files:read")
+    );
+    // 再連携 (files:read が付く) して待ちが終われば、取れる
+    sql(
+        &f.state,
+        "UPDATE slack_user_links SET scopes='files:read' WHERE user_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.user],
+    )
+    .await?;
+    f.expire_wait().await;
+    assert!(f.once().await);
+    assert_eq!(f.file("F1").await["status"], "done");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_fail_a_bot_only_denial_when_links_are_not_enabled() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let uri = files.uri();
+    let f = fixture(&files, move |c| {
+        c.slack.files_base_url = format!("{uri}/");
+        c.slack.client_id = None;
+    })
+    .await?;
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+
+    assert!(f.once().await);
+    let row = f.file("F1").await;
+    assert_eq!(row["status"], "failed");
+    assert_eq!(row["attempts"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_use_only_members_for_private_channels_and_try_every_member()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    sql(
+        &f.state,
+        "UPDATE channels SET is_private=true WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.channel],
+    )
+    .await?;
+    // メンバーでない連携は使わない (取れる応答があっても)
+    let outsider = f.extra_user().await?;
+    f.link(&outsider, "xoxp-outsider", "files:read", None)
+        .await?;
+    f.add_pri("F0", "").await?;
+    mount_pri(&files, &f, "F0", "xoxb-test", login_redirect()).await;
+    mount_pri(&files, &f, "F0", "xoxp-outsider", body(b"no")).await;
+    assert!(f.once().await);
+    // ワークスペースに連携はあるが、このチャンネルのメンバーではない。待っても変わらないので、確定する
+    let row = f.file("F0").await;
+    assert_eq!(
+        (row["status"].as_str(), row["attempts"].as_i64()),
+        (Some("failed"), Some(1))
+    );
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+
+    // メンバーが 4 人いて、先頭の 3 人に見えなくても、4 人目で取れる (人数で切らない)
+    let mut members = vec![f.user.clone()];
+    for _ in 0..3 {
+        let m = f.extra_user().await?;
+        sql(
+            &f.state,
+            "INSERT INTO channel_user(channel_id,user_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&f.channel, &m],
+        )
+        .await?;
+        members.push(m);
+    }
+    for (i, m) in members.iter().enumerate() {
+        let token = format!("xoxp-m{i}");
+        f.link(m, &token, "files:read", None).await?;
+        // 連携が新しい順に試すので、いちばん古い (先頭の) メンバーが最後。ほかの 3 人は、1 回ずつ拒否される
+        let resp = if i == 0 {
+            body(b"found")
+        } else {
+            login_redirect()
+        };
+        Mock::given(method("GET"))
+            .and(path(f.pri_path("F1")))
+            .and(header("authorization", format!("Bearer {token}").as_str()))
+            .respond_with(resp)
+            .expect(1)
+            .mount(&files)
+            .await;
+    }
+    f.expire_wait().await;
+    assert!(f.once().await);
+    assert_eq!(f.file("F1").await["status"], "done");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_never_use_user_tokens_for_zip_rows_or_other_files_urls()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    f.link(&f.user, "xoxp-alice", "files:read", None).await?;
+    // ZIP の取り込みの行は、ファイル ID と URL が一致していても、ユーザーのトークンでは取らない (Bot だけ)
+    let job = f.job("completed").await?;
+    f.add_pri("FZIP", &job).await?;
+    mount_pri(&files, &f, "FZIP", "xoxb-test", login_redirect()).await;
+    Mock::given(method("GET"))
+        .and(path(f.pri_path("FZIP")))
+        .and(header("authorization", "Bearer xoxp-alice"))
+        .respond_with(body(b"no"))
+        .expect(0)
+        .mount(&files)
+        .await;
+    assert!(f.once().await);
+    let row = f.file("FZIP").await;
+    // 連携が増えても取れないので、待たずに確定する
+    assert_eq!(row["status"], "failed");
+    assert_eq!(row["attempts"], 1);
+
+    // 差分同期の行でも、URL がその行のファイルのものでなければ、ユーザーのトークンは使わない
+    f.add_url(
+        Row {
+            file: "F1",
+            job: "",
+            content: "",
+            in_content: false,
+            size: 1,
+        },
+        &format!(
+            "{}files-pri/{}-OTHER/download/x.txt",
+            f.state.config.slack.files_base_url, f.team
+        ),
+    )
+    .await?;
+    Mock::given(method("GET"))
+        .and(path(format!("/files-pri/{}-OTHER/download/x.txt", f.team)))
+        .and(header("authorization", "Bearer xoxp-alice"))
+        .respond_with(body(b"no"))
+        .expect(0)
+        .mount(&files)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/files-pri/{}-OTHER/download/x.txt", f.team)))
+        .and(header("authorization", "Bearer xoxb-test"))
+        .respond_with(login_redirect())
+        .mount(&files)
+        .await;
+    assert!(f.once().await);
+    assert_eq!(f.file("F1").await["status"], "failed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_skip_rows_of_jobs_without_a_bot_token() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let mut links = with_links(&files);
+    let f = fixture(&files, move |c| {
+        links(c);
+        c.slack.import_bot_token = None;
+    })
+    .await?;
+    f.link(&f.user, "xoxp-alice", "files:read", None).await?;
+    // Bot なしで完了したジョブの行は、Bot を設定するまで未取得のまま残す (取らない、数えない)
+    let job = f.job("completed").await?;
+    f.add_pri("FZIP", &job).await?;
+    assert!(!f.once().await);
+    let row = f.file("FZIP").await;
+    assert_eq!(
+        (row["status"].as_str(), row["attempts"].as_i64()),
+        (Some("pending"), Some(0))
+    );
+
+    // 差分同期の行は、ユーザーのトークンだけで取れる
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxp-alice", body(b"ok")).await;
+    assert!(f.once().await);
+    assert_eq!(f.file("F1").await["status"], "done");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_accept_several_sync_sources_for_one_channel() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    f.link(&f.user, "xoxp-alice", "files:read", None).await?;
+    // 同じ Zoo チャンネルに、Slack チャンネルが 2 つ対応し、どちらにも同期の行がある
+    for slack in ["C1", "C2"] {
+        sql(
+            &f.state,
+            "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES($1,$2,$3) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&f.team, slack, &f.channel],
+        )
+        .await?;
+        sql(
+            &f.state,
+            "INSERT INTO slack_channel_syncs(team_id,slack_channel_id,token_user_id) VALUES($1,$2,$3) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&f.team, slack, &f.user],
+        )
+        .await?;
+    }
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+    mount_pri(&files, &f, "F1", "xoxp-alice", body(b"ok")).await;
+    assert!(f.once().await);
+    assert_eq!(f.file("F1").await["status"], "done");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_do_not_confirm_a_denial_when_a_token_cannot_be_decrypted()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    // キーが合わず、復号できない連携 (ユーザーのトークンを試せていない)
+    let bad = backend::slack::crypto::encrypt(&[9u8; 32], "xoxp-alice")?;
+    sql(
+        &f.state,
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc,scopes) \
+         VALUES($1,$2,'UBAD',$3,'files:read') RETURNING json_build_object('ok',true)::text",
+        &[&f.user, &f.team, &bad],
+    )
+    .await?;
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+
+    assert!(f.once().await);
+    let row = f.file("F1").await;
+    // 権限なしと確定せず、取り直す
+    assert_eq!(
+        (row["status"].as_str(), row["attempts"].as_i64()),
+        (Some("pending"), Some(1))
+    );
     Ok(())
 }

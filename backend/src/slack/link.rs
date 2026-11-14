@@ -53,6 +53,8 @@ const STATE_TTL_SECS: i64 = 600;
 /// - `reactions:read`: `reaction_added` / `reaction_removed` (#293)
 /// - `reactions:write`: Zoo のリアクションを本人として Slack に反映する (#294)
 /// - `chat:write`: Zoo の投稿・編集・削除を本人として Slack に反映する (#294)
+/// - `files:read`: 添付ファイルの取得。Bot が入っていないチャンネルのファイルは、Bot には見えないので、
+///   そのチャンネルを読める連携ユーザーのトークンで取る
 pub const USER_SCOPES: &[&str] = &[
     "users:read",
     "channels:history",
@@ -66,6 +68,7 @@ pub const USER_SCOPES: &[&str] = &[
     "reactions:read",
     "reactions:write",
     "chat:write",
+    "files:read",
 ];
 /// manifest の bot_user に付けるスコープ。
 ///
@@ -1141,6 +1144,7 @@ mod tests {
             "reactions:write",
             "chat:write",
             "users:read",
+            "files:read",
         ] {
             assert!(USER_SCOPES.contains(&scope), "missing user scope {scope}");
         }
