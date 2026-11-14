@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 import { useCurrentUser } from "./useCurrentUser";
+import { apiPath, isUuid } from "../lib/api/path";
 
 /** Only a visible authenticated client renews the short presence lease. */
 export function usePresence() {
@@ -37,14 +38,17 @@ export function useConversationView(channelId: string | null) {
   const { currentUserId } = useCurrentUser();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   useEffect(() => {
-    if (!channelId || !currentUserId) return;
+    if (!isUuid(channelId) || !currentUserId) return;
     void client
-      .request(`/api/channels/${channelId}/view`, { method: "POST", body: { open: true } })
+      .request(apiPath`/api/channels/${channelId}/view`, { method: "POST", body: { open: true } })
       .catch(() => {});
     // Closing the screen does not remove membership or channel access.
     return () => {
       void client
-        .request(`/api/channels/${channelId}/view`, { method: "POST", body: { open: false } })
+        .request(apiPath`/api/channels/${channelId}/view`, {
+          method: "POST",
+          body: { open: false },
+        })
         .catch(() => {});
     };
   }, [channelId, client, currentUserId]);

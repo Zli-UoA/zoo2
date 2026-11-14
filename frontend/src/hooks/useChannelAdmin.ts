@@ -8,6 +8,7 @@ import { useCollections } from "../lib/electric/collections-context";
 import { changeMessageMatcher, syncTxid } from "../lib/electric/txid";
 import type { ChannelRow, ChannelUserRow } from "../lib/electric/types";
 import { useChannelAccess, type ChannelAccess } from "./useRealtime";
+import { apiPath } from "../lib/api/path";
 
 /** Shape 反映待ちの上限。届かなくても操作自体は成功しているので致命的扱いにしない。 */
 const SHAPE_SYNC_TIMEOUT_MS = 5000;
@@ -122,7 +123,7 @@ export function useChannelAdmin(channel: ChannelRow | null): ChannelAdmin {
         archived ? "archive" : "unarchive",
         async () => {
           const response = await client.post<ChannelRow>(
-            `/api/channels/${channelId}/${archived ? "archive" : "unarchive"}`,
+            apiPath`/api/channels/${channelId}/${archived ? "archive" : "unarchive"}`,
           );
           await waitForShape(() =>
             syncTxid({
@@ -151,7 +152,7 @@ export function useChannelAdmin(channel: ChannelRow | null): ChannelAdmin {
         "kick",
         async () => {
           const response = await client.delete<ChannelUserRow>(
-            `/api/channels/${channelId}/users/${userId}`,
+            apiPath`/api/channels/${channelId}/users/${userId}`,
           );
           await waitForShape(() =>
             syncTxid({
