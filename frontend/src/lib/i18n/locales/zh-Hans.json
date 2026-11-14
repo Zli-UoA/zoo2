@@ -1171,6 +1171,10 @@
       "unverified": "未验证的发送者",
       "unauthenticated": "无法确认发送者"
     },
+    "revision": {
+      "stale": "服务器返回了旧版本。正在显示最新版本",
+      "conflict": "收到了版本相同但内容不同的消息。正在显示先收到的那条"
+    },
     "undeliverable": {
       "title": "以下用户无法读取新消息",
       "notSetUp": "{{name}} 尚未设置加密",

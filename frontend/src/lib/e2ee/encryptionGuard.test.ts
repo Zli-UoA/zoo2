@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
-  ENCRYPTED_CHANNELS_STORAGE_KEY,
+  ENCRYPTED_CHANNEL_STORAGE_PREFIX,
   encryptionSendState,
   noteEncryptedChannel,
   resetSeenEncryptedChannels,
@@ -45,7 +45,7 @@ describe("encryptionSendState", () => {
   it("暗号化と見たチャンネルは、開き直したあと暗号ストアのないタブでも格下げとして扱う", () => {
     const values = stubLocalStorage();
     noteEncryptedChannel("c1");
-    expect(JSON.parse(values.get(ENCRYPTED_CHANNELS_STORAGE_KEY)!)).toEqual(["c1"]);
+    expect(values.get(`${ENCRYPTED_CHANNEL_STORAGE_PREFIX}c1`)).toBe("1");
     // 開き直した（メモリーの記録はない）。暗号ストアの記録も問い合わせられない。
     resetSeenEncryptedChannels();
     expect(encryptionSendState({ ...base, encrypted: false, known: "unavailable" })).toEqual({

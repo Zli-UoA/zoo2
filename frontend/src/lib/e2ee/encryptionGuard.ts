@@ -10,31 +10,29 @@ import { readStorageValue, writeStorageValue } from "../storage";
  */
 const seenEncrypted = new Set<string>();
 
-export const ENCRYPTED_CHANNELS_STORAGE_KEY = "zoo.e2ee.encryptedChannels";
+/**
+ * チャンネルごとのキーの接頭辞。チャンネルごとに別のキーに置くのは、2 つのタブが別のチャンネルを
+ * 同時に覚えたときに、一覧を読んで書き戻すと片方の記録が消えるため（`localStorage` には読み書きの
+ * 排他がない）。値は消さないので、どの順で書いても記録は残る。
+ */
+export const ENCRYPTED_CHANNEL_STORAGE_PREFIX = "zoo.e2ee.encryptedChannel:";
 
-function storedEncryptedChannels(): string[] {
-  try {
-    const value: unknown = JSON.parse(readStorageValue(ENCRYPTED_CHANNELS_STORAGE_KEY) ?? "[]");
-    return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
-  } catch {
-    return [];
-  }
+function storageKey(channelId: string): string {
+  return `${ENCRYPTED_CHANNEL_STORAGE_PREFIX}${channelId}`;
 }
 
 /** `encrypted = true` を見た。描画の中で呼んでよい（同じ値を足すだけ）。 */
 export function noteEncryptedChannel(channelId: string): void {
   if (seenEncrypted.has(channelId)) return;
   seenEncrypted.add(channelId);
-  const stored = storedEncryptedChannels();
-  if (!stored.includes(channelId)) {
-    writeStorageValue(ENCRYPTED_CHANNELS_STORAGE_KEY, JSON.stringify([...stored, channelId]));
-  }
+  if (readStorageValue(storageKey(channelId)) !== "1")
+    writeStorageValue(storageKey(channelId), "1");
 }
 
 function seenAsEncrypted(channelId: string): boolean {
   if (seenEncrypted.has(channelId)) return true;
   // ほかのタブや、開き直す前に覚えたもの。
-  if (!storedEncryptedChannels().includes(channelId)) return false;
+  if (readStorageValue(storageKey(channelId)) !== "1") return false;
   seenEncrypted.add(channelId);
   return true;
 }

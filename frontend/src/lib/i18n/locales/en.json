@@ -1171,6 +1171,10 @@
       "unverified": "Unverified sender",
       "unauthenticated": "Sender can't be confirmed"
     },
+    "revision": {
+      "stale": "The server returned an older version. Showing the latest version",
+      "conflict": "A different message arrived with the same version. Showing the one received first"
+    },
     "undeliverable": {
       "title": "These people can't read new messages",
       "notSetUp": "{{name}} hasn't set up encryption",

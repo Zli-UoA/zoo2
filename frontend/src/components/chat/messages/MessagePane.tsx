@@ -316,6 +316,8 @@ export function MessagePane({
   const savingEdit = useRef(false);
   const editingIdRef = useRef(editingId);
   editingIdRef.current = editingId;
+  const editingTextRef = useRef(editingText);
+  editingTextRef.current = editingText;
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
 
@@ -687,10 +689,13 @@ export function MessagePane({
       if (encrypted) {
         // 行の `content` は空なので、復号した本文から始める。復号できない版は上書きしない。
         const decrypted = decryptions.get(id);
-        if (decrypted?.status !== "decrypted") return;
+        // 版の照合で警告した行（表示と行の版が違う）からは編集を始めない。
+        if (decrypted?.status !== "decrypted" || decrypted.revisionWarning) return;
         setEditingId(id);
         setEditingText(decrypted.body);
-        setEditingRevision(messagesCollection.get(id)?.revision ?? 0);
+        // 表示している本文の版を基準にする。行が新しい版に進んでいて、その復号がまだなら、保存は
+        // 409 になり、ほかで編集されたと知らせる（新しい版を古い本文で上書きしない）。
+        setEditingRevision(decrypted.rowRevision ?? messagesCollection.get(id)?.revision ?? 0);
         return;
       }
       setEditingId(id);
@@ -729,10 +734,13 @@ export function MessagePane({
           // 編集では添付を変えられないので、元の版の添付をそのまま入れる（#364）。
           attachments: decrypted.attachments,
         });
-        // 保存中に別のメッセージの編集を始めていたら、そちらは閉じない。
-        if (editingIdRef.current === id) {
+        // 保存中に別のメッセージの編集を始めた、または本文を書き足したら、編集欄を閉じない。
+        if (editingIdRef.current === id && editingTextRef.current.trim() === content) {
           setEditingId(null);
           setEditingText("");
+        } else if (editingIdRef.current === id) {
+          // 書き足した本文を保存し直すときは、今送った版の次の版で送る。
+          setEditingRevision(editingRevision + 1);
         }
       } catch (cause) {
         reportEncryptedFailure(cause);

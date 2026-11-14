@@ -446,6 +446,24 @@ export const EncryptedUnverifiedSender: Story = {
   }),
 };
 
+export const EncryptedStaleRevision: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "編集したあとの本文です。",
+      kind: "message",
+      sender: "verified",
+      revisionWarning: "stale",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByText("サーバーが古い版を返しました。最新の版を表示しています"),
+    ).toBeVisible();
+  }),
+};
+
 export const EncryptedBackupSender: Story = {
   args: {
     item: encryptedItem,
