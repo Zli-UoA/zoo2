@@ -903,7 +903,7 @@ async fn a_reopened_store_starts_its_own_import_while_the_old_one_waits() {
         state.backup_version = Some(json!({
             "version": "1",
             "algorithm": zoo_crypto::BACKUP_ALGORITHM,
-            "auth_data": alice.secrets.backup_key.auth_data(&alice.secrets.cross_signing.master).unwrap(),
+            "auth_data": alice.secrets.backup_key.auth_data(&alice.secrets.cross_signing.master, 1).unwrap(),
         }));
         state.fail_backup_reads = true;
     }
@@ -1247,7 +1247,7 @@ async fn a_new_device_imports_past_sessions_from_the_key_backup() {
     backend.0.lock().unwrap().backup_version = Some(json!({
         "version": "1",
         "algorithm": zoo_crypto::BACKUP_ALGORITHM,
-        "auth_data": alice.secrets.backup_key.auth_data(&alice.secrets.cross_signing.master).unwrap(),
+        "auth_data": alice.secrets.backup_key.auth_data(&alice.secrets.cross_signing.master, 1).unwrap(),
     }));
     let first = message("新しい端末を足す前 1");
     let second = message("新しい端末を足す前 2");

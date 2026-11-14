@@ -531,7 +531,7 @@ describe("鍵バックアップからの取り込み（新しい端末での解�
     const backupKey = me.secrets.backupKey;
     const cs = me.secrets.crossSigning;
     const master = cs.master;
-    const request = backupKey.createVersionRequest(master, null);
+    const request = backupKey.createVersionRequest(master, null, 1);
     master.free();
     cs.free();
     backupKey.free();
