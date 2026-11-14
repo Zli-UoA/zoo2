@@ -1052,7 +1052,7 @@ async fn put_presence(db: &mut toasty::Db, channel: &str, user: &str) -> anyhow:
     toasty::sql::statement(
         "INSERT INTO call_presence (
             channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
-         ) VALUES ($1, gen_random_uuid(), $2, $2, $2, false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+         ) VALUES ($1, gen_random_uuid(), $2, $2, $2, false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '10 minutes')",
     )
     .bind(channel)
     .bind(user)
@@ -1377,5 +1377,100 @@ async fn test_dm_call_rings_the_other_member_and_join_accepts() -> anyhow::Resul
         .len();
     assert_eq!(count, 1);
     drop((alice_stream, bob_stream));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_call_invites_never_exceed_the_room_capacity() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
+    // 在室 5 人（定員 6）。空きは 1 つだけ
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    for i in 0..4 {
+        let filler = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(filler.as_str())
+        .bind(format!("Filler{i}"))
+        .exec(&mut w.db)
+        .await?;
+        put_presence(&mut w.db, &w.public_ch.clone(), &filler).await?;
+    }
+    let (status, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob, &carol]).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["invites"].as_array().unwrap().len(), 1);
+    // 満室なら、新しくは呼ばない
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&carol, &bob]).await?;
+    assert_eq!(body["invites"].as_array().unwrap().len(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_call_invite_rejects_bots_and_deactivated_users() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    toasty::sql::statement("UPDATE users SET is_bot = true WHERE id = $1")
+        .bind(bob.as_str())
+        .exec(&mut w.db)
+        .await?;
+    toasty::sql::statement("UPDATE users SET is_deactivated = true WHERE id = $1")
+        .bind(carol.as_str())
+        .exec(&mut w.db)
+        .await?;
+    for target in [&bob, &carol] {
+        let (status, _) = invite(&w, &alice, &w.public_ch.clone(), &[target]).await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_dm_rings_even_when_a_stale_session_of_the_caller_remains() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob) = (w.alice.clone(), w.bob.clone());
+    w.state.call_registry.set_listening(true);
+    // 切断に気づく前の、自分の古いセッション
+    put_presence(&mut w.db, &w.dm_ch.clone(), &alice).await?;
+    let response = w
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/api/channels/{}/call/stream?session_id={}",
+                    w.dm_ch,
+                    uuid::Uuid::new_v4()
+                ))
+                .header("X-Dev-User", alice.as_str())
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let rows = toasty::sql::query(
+        "SELECT 1 FROM call_invites WHERE channel_id = $1 AND invitee_id = $2 AND status = 'pending'",
+    )
+    .bind(w.dm_ch.as_str())
+    .bind(bob.as_str())
+    .exec(&mut w.db)
+    .await?;
+    assert_eq!(rows.len(), 1);
+    drop(response);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sweep_accepts_an_invite_for_someone_already_in_the_room() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob) = (w.alice.clone(), w.bob.clone());
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob]).await?;
+    let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+    // 呼び出しと入室が同時に起きて、入室済みの人に pending が残った状態
+    put_presence(&mut w.db, &w.public_ch.clone(), &bob).await?;
+    backend::call_invites::sweep(&mut w.db).await?;
+    assert_eq!(invite_status(&mut w.db, &id).await?, "accepted");
     Ok(())
 }

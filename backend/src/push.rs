@@ -353,7 +353,8 @@ fn push_client() -> anyhow::Result<reqwest::Client> {
 struct Delivery {
     ttl: u32,
     urgent: bool,
-    /// 応答不可 (DND) のユーザーには送らない。取り消しの通知は DND でも送る。
+    /// 応答不可 (DND) のユーザーには送らない。着信を送らなかった人に取り消しだけが届かないよう、
+    /// 取り消し (`call_invite_end`) も同じ。
     respect_dnd: bool,
 }
 
@@ -537,7 +538,7 @@ async fn deliver_call_invites(
         let delivery = Delivery {
             ttl: if end { 60 } else { CALL_INVITE_TTL_SECONDS },
             urgent: true,
-            respect_dnd: !end,
+            respect_dnd: true,
         };
         push_to_user(
             &client,

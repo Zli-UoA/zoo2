@@ -358,6 +358,8 @@
     "mentionContext": "멘션",
     "replyContext": "스레드 답글",
     "reactionContext": "반응",
+    "missedCall": "{{actor}}님의 부재중 전화",
+    "missedCallContext": "부재중 전화",
     "dmContext": "다이렉트 메시지",
     "unreadStatus": "읽지 않음",
     "readStatus": "읽음",

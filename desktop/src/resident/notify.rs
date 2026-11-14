@@ -134,7 +134,7 @@ pub fn show(toast: &Toast, user_id: &str) {
                 if slot.is_some() {
                     let open = ResidentEvent::Open {
                         channel_id: toast.channel_id.clone(),
-                        message_id: Some(toast.message_id.clone()).filter(|id| !id.is_empty()),
+                        message_id: toast.message_id.clone().filter(|id| !id.is_empty()),
                         user_id: user_id.to_string(),
                     };
                     handle.wait_for_action(|action| {
@@ -284,7 +284,7 @@ mod tests {
             &Toast {
                 notification_id: "n".into(),
                 channel_id: "c1".into(),
-                message_id: "m".into(),
+                message_id: Some("m".into()),
                 notification_type: "mention".into(),
                 title: "Alice (#general)".into(),
                 body: "こんにちは".into(),

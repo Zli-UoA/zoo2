@@ -358,6 +358,8 @@
     "mentionContext": "メンション",
     "replyContext": "スレッドへの返信",
     "reactionContext": "リアクション",
+    "missedCall": "{{actor}} さんからの不在着信",
+    "missedCallContext": "不在着信",
     "dmContext": "ダイレクトメッセージ",
     "unreadStatus": "未読",
     "readStatus": "既読",

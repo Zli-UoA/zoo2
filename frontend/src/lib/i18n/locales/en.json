@@ -358,6 +358,8 @@
     "mentionContext": "Mention",
     "replyContext": "Thread reply",
     "reactionContext": "Reaction",
+    "missedCall": "Missed call from {{actor}}",
+    "missedCallContext": "Missed call",
     "dmContext": "Direct message",
     "unreadStatus": "Unread",
     "readStatus": "Read",

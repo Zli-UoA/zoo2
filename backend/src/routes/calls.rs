@@ -1295,8 +1295,8 @@ async fn call_stream(
         }
     }
 
-    // チャンネル行のロックで参加は直列化されるので、自分だけなら空の部屋に最初に入った 1 人。
-    let first_in_room = participants.len() == 1;
+    // 自分以外に誰もいなければ、空の部屋に最初に入った人。自分の古いセッション（切断に気づく前）が残っていても数えない。
+    let first_in_room = participants.iter().all(|p| p.user_id == user.id);
 
     if let Err(e) = tx.commit().await {
         state

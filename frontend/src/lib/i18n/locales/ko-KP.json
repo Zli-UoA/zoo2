@@ -358,6 +358,8 @@
     "mentionContext": "지명",
     "replyContext": "타래에 대한 회답",
     "reactionContext": "반응",
+    "missedCall": "{{actor}} 님의 못 받은 전화",
+    "missedCallContext": "못 받은 전화",
     "dmContext": "직접통보문",
     "unreadStatus": "안읽음",
     "readStatus": "읽음",

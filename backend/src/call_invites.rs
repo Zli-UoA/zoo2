@@ -115,6 +115,8 @@ struct MissedRow {
     inviter_id: String,
     invitee_id: String,
     notification_id: String,
+    /// 通知を作ったか（チャンネルが削除済みなどで作らなかった招待には、push も送らない）。
+    notified: bool,
 }
 
 /// 定期処理。期限を過ぎた `pending` を `missed` にして不在着信の通知を作り、空の部屋の招待を取り消す。
@@ -122,6 +124,18 @@ struct MissedRow {
 /// 複数のレプリカが同時に走っても、`FOR UPDATE SKIP LOCKED` で同じ招待を二重に処理しない。
 /// 通知の id は招待から決まる値なので、やり直しても重複しない。
 pub async fn sweep(db: &mut toasty::Db) -> Result<(), AppError> {
+    // 参加と呼び出しが同時に起きて、入室済みの人に `pending` が残ったものを応答済みにする。
+    let rows = toasty::sql::query(format!(
+        "UPDATE call_invites c SET status = 'accepted', responded_at = statement_timestamp()
+         WHERE c.status = 'pending' AND EXISTS (
+             SELECT 1 FROM call_presence p
+             WHERE p.channel_id = c.channel_id AND p.user_id = c.invitee_id
+               AND p.expires_at > statement_timestamp())
+         {RETURNING_INVITE}"
+    ))
+    .exec(db)
+    .await?;
+    push::dispatch_call_invite_ends(db.clone(), parse_rows(rows));
     let rows = toasty::sql::query(
         "WITH due AS (
              SELECT id FROM call_invites
@@ -144,7 +158,9 @@ pub async fn sweep(db: &mut toasty::Db) -> Result<(), AppError> {
          SELECT json_build_object(
              'id', m.id, 'channel_id', m.channel_id, 'inviter_id', m.inviter_id,
              'invitee_id', m.invitee_id,
-             'notification_id', md5('missed_call:' || m.id::text)::uuid::text)::text
+             'notification_id', md5('missed_call:' || m.id::text)::uuid::text,
+             'notified', EXISTS (
+                 SELECT 1 FROM notified n WHERE n.id = md5('missed_call:' || m.id::text)::uuid::text))::text
          FROM missed m",
     )
     .exec(db)
@@ -154,6 +170,7 @@ pub async fn sweep(db: &mut toasty::Db) -> Result<(), AppError> {
         let now = now_utc_millis();
         let notifications = missed
             .iter()
+            .filter(|m| m.notified)
             .map(|m| Notification {
                 id: m.notification_id.clone(),
                 user_id: m.invitee_id.clone(),
@@ -269,18 +286,26 @@ pub async fn create(
     }
 
     let ids_json = serde_json::json!(ids).to_string();
+    // 空きの数（定員 - 在室 - 呼び出し中）までしか作らない。1 回の要求の中でも累積させる。
     let rows = toasty::sql::query(format!(
-        "INSERT INTO call_invites (channel_id, inviter_id, invitee_id, expires_at)
-         SELECT $1::text, $2::text, x,
+        "WITH slots AS (
+             SELECT greatest(0, {MAX_CALL_PARTICIPANTS}
+               - (SELECT count(*) FROM call_presence
+                  WHERE channel_id = $1 AND expires_at > statement_timestamp())
+               - (SELECT count(*) FROM call_invites
+                  WHERE channel_id = $1 AND status = 'pending'))::int AS n
+         ),
+         candidates AS (
+             SELECT x, row_number() OVER () AS rn
+             FROM jsonb_array_elements_text($3::jsonb) AS x
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM call_presence p
+                 WHERE p.channel_id = $1 AND p.user_id = x AND p.expires_at > statement_timestamp())
+         )
+         INSERT INTO call_invites (channel_id, inviter_id, invitee_id, expires_at)
+         SELECT $1::text, $2::text, candidates.x,
                 statement_timestamp() + interval '{CALL_INVITE_TTL_SECONDS} seconds'
-         FROM jsonb_array_elements_text($3::jsonb) AS x
-         WHERE NOT EXISTS (
-             SELECT 1 FROM call_presence p
-             WHERE p.channel_id = $1 AND p.user_id = x AND p.expires_at > statement_timestamp())
-           AND (SELECT count(*) FROM call_presence
-                WHERE channel_id = $1 AND expires_at > statement_timestamp())
-             + (SELECT count(*) FROM call_invites
-                WHERE channel_id = $1 AND status = 'pending') < {MAX_CALL_PARTICIPANTS}
+         FROM candidates, slots WHERE candidates.rn <= slots.n
          ON CONFLICT (channel_id, invitee_id) WHERE status = 'pending' DO NOTHING
          {RETURNING_INVITE}"
     ))

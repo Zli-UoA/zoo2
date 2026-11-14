@@ -358,6 +358,8 @@
     "mentionContext": "提及",
     "replyContext": "帖子回复",
     "reactionContext": "表情回应",
+    "missedCall": "{{actor}} 的未接来电",
+    "missedCallContext": "未接来电",
     "dmContext": "私信",
     "unreadStatus": "未读",
     "readStatus": "已读",

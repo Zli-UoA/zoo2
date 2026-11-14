@@ -530,6 +530,18 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
+async function closeCallInvite(tag) {
+  const open = await self.registration.getNotifications({ tag });
+  for (const notification of open) notification.close();
+  if (open.length === 0) {
+    // 通知を出さない push は、ブラウザーが代わりの通知を出すことがある。同じ tag で出してすぐ閉じる。
+    await self.registration.showNotification("Zoo", { tag, silent: true });
+    for (const notification of await self.registration.getNotifications({ tag })) {
+      notification.close();
+    }
+  }
+}
+
 self.addEventListener("push", (event) => {
   let payload = {};
   try {
@@ -545,6 +557,11 @@ self.addEventListener("push", (event) => {
       ? "你有新通知。請開啟 Zoo 查看。"
       : "You have a new notification. Open Zoo to view it.";
   const title = typeof payload.title === "string" ? payload.title : "Zoo";
+  if (payload.notificationType === "call_invite_end" && typeof payload.tag === "string") {
+    // 通話の招待が終わった（応答・拒否・取り消し・不在）。出ている着信の通知を閉じる。
+    event.waitUntil(closeCallInvite(payload.tag));
+    return;
+  }
   event.waitUntil(
     (async () => {
       let body = typeof payload.body === "string" ? payload.body : fallback;

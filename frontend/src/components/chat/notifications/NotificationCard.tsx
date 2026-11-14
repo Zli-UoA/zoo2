@@ -17,6 +17,7 @@ import {
   UsersIcon,
   CheckCheckIcon,
   ArrowUpRightIcon,
+  PhoneMissedIcon,
 } from "lucide-react";
 
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
@@ -105,24 +106,31 @@ export function NotificationCard({
     return user?.display_name || user?.user_name || id;
   };
   const actor = name(group.actorIds[0]!);
+  // 不在着信にはメッセージがない。チャンネルへのリンクだけを出す。
+  const isMissedCall = notification.notification_type === "missed_call";
   const label =
     isReaction && group.actorIds.length > 1
       ? t("notifications.reactionGroup", { actor, count: group.actorIds.length - 1 })
       : t(
           isReaction
             ? "notifications.reaction"
-            : notification.notification_type === "mention"
-              ? "notifications.mention"
-              : notification.notification_type === "dm"
-                ? "notifications.dm"
-                : "notifications.reply",
+            : isMissedCall
+              ? "notifications.missedCall"
+              : notification.notification_type === "mention"
+                ? "notifications.mention"
+                : notification.notification_type === "dm"
+                  ? "notifications.dm"
+                  : "notifications.reply",
           { actor },
         );
   const Icon = isReaction
     ? SmilePlusIcon
-    : notification.notification_type === "mention"
-      ? AtSignIcon
-      : MessageCircleIcon;
+    : isMissedCall
+      ? PhoneMissedIcon
+      : notification.notification_type === "mention"
+        ? AtSignIcon
+        : MessageCircleIcon;
+  const canOpen = Boolean(channel && (message || isMissedCall));
 
   const channelLabel = channel?.is_dm
     ? formatDmDisplayName(
@@ -143,11 +151,13 @@ export function NotificationCard({
   const contextLabel = t(
     isReaction
       ? "notifications.reactionContext"
-      : notification.notification_type === "mention"
-        ? "notifications.mentionContext"
-        : notification.notification_type === "dm"
-          ? "notifications.dmContext"
-          : "notifications.replyContext",
+      : isMissedCall
+        ? "notifications.missedCallContext"
+        : notification.notification_type === "mention"
+          ? "notifications.mentionContext"
+          : notification.notification_type === "dm"
+            ? "notifications.dmContext"
+            : "notifications.replyContext",
   );
   const actorSummary =
     group.actorIds.length > 1
@@ -156,8 +166,7 @@ export function NotificationCard({
   function openFromRow(event: ReactMouseEvent<HTMLLIElement>) {
     // The real link remains the keyboard target; text selection and nested controls keep native behavior.
     if (
-      !channel ||
-      !message ||
+      !canOpen ||
       event.defaultPrevented ||
       !(event.target instanceof Element) ||
       event.target.closest("a, button, input, textarea, select, summary, [tabindex]") ||
@@ -191,7 +200,7 @@ export function NotificationCard({
     <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
       <ContextIcon className="size-4 shrink-0" aria-hidden="true" />
       <span className="min-w-0 truncate font-medium">{channelLabel}</span>
-      {channel && message ? (
+      {canOpen ? (
         <ArrowUpRightIcon className="size-3.5 shrink-0" aria-hidden="true" />
       ) : null}
     </p>
@@ -202,7 +211,7 @@ export function NotificationCard({
       aria-label={label}
       data-unread={unreadIds.length > 0 || undefined}
       onClick={openFromRow}
-      className={channel && message ? "cursor-pointer" : ""}
+      className={canOpen ? "cursor-pointer" : ""}
     >
       <div className="flex items-start gap-3">
         <NotificationAvatar
@@ -249,7 +258,7 @@ export function NotificationCard({
               ) : null}
             </div>
           </NotificationCardHeader>
-          {channel && message ? (
+          {isMissedCall ? null : channel && message ? (
             <blockquote>
               <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
                 <MfmContent content={quotePreview(message.content)} emojis={message.emojis} />
@@ -262,15 +271,15 @@ export function NotificationCard({
                 : t("notifications.messageUnavailable")}
             </p>
           )}
-          {channel && message ? (
+          {canOpen ? (
             <Link
               ref={destinationRef}
               to="/channels/$channelId"
               params={{ channelId: notification.channel_id }}
-              search={{ message: notification.message_id ?? undefined }}
+              search={{ message: message ? (notification.message_id ?? undefined) : undefined }}
               onClick={() => shell.showChat()}
               title={channelLabel}
-              aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}: ${quotePreview(message.content)}`}
+              aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}${message ? `: ${quotePreview(message.content)}` : ""}`}
               className="block w-fit max-w-full rounded-sm outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               {destination}

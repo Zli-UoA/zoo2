@@ -4,10 +4,10 @@
 
 ## 呼び出しの流れ
 
-- **DM**: 空の部屋に最初の 1 人が入ると、DM の相手（有効な人間のユーザー）を自動で呼ぶ。
+- **DM**: 空の部屋に最初の人が入ると（自分以外に誰もいなければ。切断に気づく前の自分の古いセッションは数えない）、DM の相手（有効な人間のユーザー）を自動で呼ぶ。
 - **チャンネル**: 通話に入っている人が、`POST /api/channels/{id}/call/invites`（`{ "user_ids": [...] }`）でメンバーを選んで呼ぶ。DM では使えない（400）。
   - 呼べるのは、そのチャンネルを見られる人だけ（非公開チャンネルと guest はメンバーのみ）。見られない人と存在しない人は、区別のつかない 404 にする。
-  - すでに通話にいる人と、呼び出し中の人は、新しく呼ばない（`invites` に入らない）。通話の定員（`MAX_CALL_PARTICIPANTS`）を超える呼び出しはしない。
+  - すでに通話にいる人と、呼び出し中の人は、新しく呼ばない（`invites` に入らない）。通話の定員（`MAX_CALL_PARTICIPANTS`）を超える呼び出しはしない。空きの数（定員 - 在室 - 呼び出し中）までしか作らず、1 回の要求で多く指定しても、空きを超えた分は作られない。
 - 呼ばれた人は応答するか拒否する。呼んだ人は取り消せる。
   - `POST /api/call-invites/{id}/accept`、`/decline`: 呼ばれた本人だけ。
   - `POST /api/call-invites/{id}/cancel`: 呼んだ本人だけ。
@@ -28,7 +28,7 @@
 
 同じ人を同じチャンネルで同時に呼べるのは 1 件だけ（`(channel_id, invitee_id) WHERE status = 'pending'` の部分一意インデックス）。
 
-定期処理（`call_invites::sweep`。3 秒ごと。複数のレプリカが走っても `FOR UPDATE SKIP LOCKED` で二重に処理しない）が、期限を過ぎた `pending` を `missed` にして、同じ文で不在着信の通知を作る。空の部屋の `pending` の取り消しも、ここで拾う（通話を抜けたとき、`leave` や SSE の切断でも即時に行う）。
+定期処理（`call_invites::sweep`。3 秒ごと。複数のレプリカが走っても `FOR UPDATE SKIP LOCKED` で二重に処理しない）が、期限を過ぎた `pending` を `missed` にして、同じ文で不在着信の通知を作る（通知を作ったものにだけ push も送る）。呼び出しと入室が同時に起きて、入室済みの人に `pending` が残ったときも、ここで `accepted` にする。空の部屋の `pending` の取り消しも、ここで拾う（通話を抜けたとき、`leave` や SSE の切断でも即時に行う）。
 
 ## 不在着信
 
@@ -49,12 +49,13 @@
 | デスクトップ版 | Shape を購読してトーストを出す（デスクトップ版の PR で追加） |
 
 - 招待が終わったら（応答・拒否・取り消し・不在）、同じ `tag` の `call_invite_end` を Web Push で送り、端末に出ている着信の通知を閉じさせる。
-- 応答不可（DND）のユーザーには、着信の Web Push を送らない。不在着信の通知は DND でも残る（Web Push の送信だけ、他の通知と同じく DND に従う）。取り消し（`call_invite_end`）は DND でも送る。
+- 応答不可（DND）のユーザーには、着信の Web Push も、その取り消し（`call_invite_end`）も送らない。不在着信の通知（`notification_events` の行）は DND でも残る（Web Push の送信だけ、他の通知と同じく DND に従う）。
+- `call_invite_end` の TTL は 60 秒。Service Worker は、同じ `tag` の通知を閉じる。
 - Shape の where: `(invitee_id = $me OR inviter_id = $me) AND status = 'pending'` に加え、いま見られるチャンネルに限る。クライアントの where は使わない。
 
 ## クライアントごとの範囲
 
-- Web（React）: 着信ダイアログ・呼び出し音・招待の UI・Web Push の応答/拒否ボタン。
-- デスクトップ版（Tauri）: トースト。Linux は応答/拒否のボタン付き。
+- Web（React）: 着信ダイアログ・呼び出し音・招待の UI・Web Push の応答/拒否ボタン。バックエンドの PR で、通知一覧の「不在着信」のカードと、Service Worker の `call_invite_end`（出ている通知を閉じる）を先に入れてある。
+- デスクトップ版（Tauri）: トースト。Linux は応答/拒否のボタン付き。GPUI 版（`desktop/`）は、`Toast.message_id` が `Option` になったことに合わせて直しただけで、通話の着信は出さない。
 - TUI: 通話の機能がないので、呼び出しも扱わない。`message_id` が NULL の行（不在着信）を読み飛ばさず扱えるよう、`client-types` の型だけ合わせた。
 - Compose: 反映しない（通話関連の変更は docs と PR 本文に記録して済ませる方針）。
