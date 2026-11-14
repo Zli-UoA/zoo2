@@ -78,6 +78,9 @@
     "login": "ログイン",
     "failed": "ログインできませんでした",
     "retry": "再ログイン",
+    "logoutStorageFailed": "ログアウトを完了できません",
+    "logoutStorageFailedHelp": "メモリ上のセッションは破棄しましたが、ブラウザーに保存された認証情報を無効化できませんでした。保存領域が使える状態に戻してから、この画面で再試行してください。",
+    "retryLogout": "ログアウトを再試行",
     "unauthorizedLoop": "API が 401 を返し続けたため、再ログインを停止しました。OIDC の設定（audience / typ / JWKS）とバックエンドのログを確認してください。",
     "errorWithCode": "{{message}}（{{code}}）",
     "oidcErrors": {
@@ -412,7 +415,10 @@
     "on": "有効",
     "off": "無効",
     "unavailable": "利用不可",
-    "title": "プッシュ通知"
+    "title": "プッシュ通知",
+    "desktopTitle": "通知",
+    "desktopValue": "OS の通知",
+    "desktopDescription": "メンションや DM を、アプリが OS の通知で知らせます。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。"
   },
   "mfm": {
     "suggestions": "MFMの候補",

@@ -78,6 +78,9 @@
     "login": "登录",
     "failed": "无法登录",
     "retry": "重新登录",
+    "logoutStorageFailed": "无法完成退出登录",
+    "logoutStorageFailedHelp": "内存中的会话已清除，但浏览器无法使已保存的登录数据失效。请恢复存储访问权限，并在离开此页面前重试。",
+    "retryLogout": "重试退出登录",
     "unauthorizedLoop": "API 持续返回 401，已停止自动重新登录。请检查 OIDC 设置（audience / typ / JWKS）与后端日志。",
     "errorWithCode": "{{message}} ({{code}})",
     "oidcErrors": {
@@ -412,7 +415,10 @@
     "on": "启用",
     "off": "停用",
     "unavailable": "不可用",
-    "title": "推送通知"
+    "title": "推送通知",
+    "desktopTitle": "通知",
+    "desktopValue": "系统通知",
+    "desktopDescription": "应用会通过系统通知提醒你被提及和收到私信。如果在系统设置中关闭了 zoo2 的通知，请在那里也将其打开。"
   },
   "mfm": {
     "suggestions": "MFM 候选",

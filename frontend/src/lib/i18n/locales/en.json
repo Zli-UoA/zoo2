@@ -78,6 +78,9 @@
     "login": "Log in",
     "failed": "Unable to log in",
     "retry": "Log in again",
+    "logoutStorageFailed": "Logout could not be completed",
+    "logoutStorageFailedHelp": "Your session has been cleared from memory, but this browser could not invalidate saved sign-in data. Restore storage access and retry on this page before leaving it.",
+    "retryLogout": "Retry logout",
     "unauthorizedLoop": "Automatic login stopped because the API repeatedly returned 401. Check the OIDC settings (audience / typ / JWKS) and backend logs.",
     "errorWithCode": "{{message}} ({{code}})",
     "oidcErrors": {
@@ -412,7 +415,10 @@
     "on": "On",
     "off": "Off",
     "unavailable": "Unavailable",
-    "title": "Push notifications"
+    "title": "Push notifications",
+    "desktopTitle": "Notifications",
+    "desktopValue": "System notifications",
+    "desktopDescription": "The app shows mentions and DMs as system notifications. If notifications for zoo2 are turned off in your system settings, turn them on there as well."
   },
   "mfm": {
     "suggestions": "MFM suggestions",
