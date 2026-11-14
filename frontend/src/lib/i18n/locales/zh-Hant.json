@@ -1083,7 +1083,10 @@
       "unbackedDescription_other": "有 {{count}} 個金鑰尚未備份。登出後，只有此裝置能解密的過去訊息將無法閱讀。",
       "unknownDescription": "無法確認金鑰是否已備份。登出後，只有此裝置能解密的過去訊息可能無法閱讀。",
       "confirm": "登出",
-      "deleteFailed": "無法刪除此裝置的加密金鑰。下次開啟時會再次刪除。"
+      "deleteFailed": "無法刪除此裝置的加密金鑰。下次開啟時會再次刪除。",
+      "revocationTitle": "撤銷尚未完成",
+      "revocationDescription": "登出會刪除此裝置上保留的撤銷進度。你需要在其他裝置上重新解鎖 SSSS 並重新撤銷。",
+      "revocationConfirm": "登出"
     },
     "tab": "加密",
     "title": "端對端加密",
@@ -1135,6 +1138,8 @@
     "removeSlotConfirmDescription": "刪除後將無法使用此通行金鑰解鎖。刪除前需要重新登入。",
     "removeSlotConfirm": "刪除",
     "addPasskeyNeedsUnlock": "若要新增通行金鑰，請在此頁重新解鎖一次（重新載入頁面後，解鎖用的金鑰會從記憶體中清除）。",
+    "manageSlotsNeedsUnlock": "若要重新產生復原金鑰，請在此頁重新解鎖一次（重新載入頁面後，解鎖用的金鑰會從記憶體中清除）。",
+    "reunlockToManage": "重新解鎖",
     "resetTitle": "重設加密",
     "resetDescription": "在通行金鑰與復原金鑰都遺失，或看到不明的設定時，以新金鑰重新建立。",
     "reset": "重設",
@@ -1156,10 +1161,17 @@
       "passkeyNoSlot": "所選的通行金鑰未註冊為加密解鎖方式。",
       "lastSlot": "無法刪除最後一個解鎖方式。",
       "disabled": "此伺服器尚不支援加密頻道。",
-      "publicForbidden": "只有私人頻道可以加密。"
+      "publicForbidden": "只有私人頻道可以加密。",
+      "deleteFailed": "無法刪除裝置。請再試一次。",
+      "refreshFailed": "無法重新載入裝置清單。顯示的內容可能不是最新的。",
+      "revocationPending": "有未完成的撤銷。請先透過「繼續撤銷」儲存到最後。",
+      "deviceOnlyUnavailable": "另一台裝置重新產生了 SSSS 金鑰，因此無法只撤銷裝置。範圍已切換為「通行金鑰、復原金鑰或 SSSS 金鑰」，請確認後繼續。",
+      "renameFailed": "無法變更裝置名稱。請再試一次。",
+      "revocationFailed": "無法完成撤銷的儲存。進度保留在此裝置上。請再按一次「執行撤銷」。",
+      "verifyFailed": "無法儲存重新驗證。請再試一次。"
     },
     "reunlockToAdd": "重新解鎖以新增通行金鑰",
-    "reunlockToAddDescription": "若要新增通行金鑰，請使用通行金鑰或復原金鑰重新解鎖。此裝置的解鎖狀態不會改變。",
+    "reunlockToAddDescription": "若要新增通行金鑰或重新產生復原金鑰，請使用通行金鑰或復原金鑰重新解鎖。此裝置的解鎖狀態不會改變。",
     "badge": "已加密",
     "encryptChannel": "端對端加密",
     "encryptChannelHelp": "只有成員已驗證的裝置才能讀取訊息。加密之後無法取消。",
@@ -1206,6 +1218,144 @@
     },
     "downgraded": "此頻道曾經加密，但伺服器現在表示未加密。不會以明文傳送訊息。",
     "checking": "正在確認此頻道的加密狀態…",
+    "devicesTab": "裝置",
+    "devices": {
+      "title": "裝置",
+      "description": "持有加密金鑰的裝置清單。任何人都能設定裝置名稱，請依加入時間與最後使用時間辨別。",
+      "unnamed": "未命名的裝置",
+      "current": "此裝置",
+      "unsigned": "未簽署",
+      "created": "加入於 {{date}}",
+      "lastSeen": "最後使用 {{date}}",
+      "name": "裝置名稱",
+      "rename": "變更裝置名稱",
+      "delete": "刪除裝置",
+      "deleteIsNotRevocation": "刪除裝置不等於撤銷。被刪除的裝置仍可用其持有的金鑰讀取目前的備份。遺失或陌生的裝置，請從「開始撤銷」刪除。",
+      "deleteConfirmTitle": "要刪除此裝置嗎？",
+      "deleteConfirmDescription": "刪除不等於撤銷。若是遺失或陌生的裝置，請取消並從「開始撤銷」刪除。",
+      "deleteOnly": "只刪除",
+      "limitTitle": "已達裝置上限（20 台）",
+      "limitDescription": "無法登錄此裝置。請選擇不再使用的裝置並刪除。刪除不等於撤銷，若有遺失的裝置，請在此裝置登錄後再進行撤銷。",
+      "limitStale": "30 天以上未使用的裝置",
+      "limitDelete": "刪除所選裝置",
+      "limitDeleted": "已刪除。稍後將重新登錄此裝置。"
+    },
+    "revocation": {
+      "pendingTitle": "撤銷尚未完成",
+      "pendingDescription": "先前開始的撤銷還沒完成。請重新解鎖 SSSS 並儲存其餘部分。",
+      "resume": "繼續撤銷",
+      "start": "開始撤銷",
+      "needsUnlock": "撤銷與重新驗證只能在已解鎖加密的裝置上進行。",
+      "title": "撤銷裝置與金鑰",
+      "description": "刪除遺失或陌生的裝置，並重新產生金鑰。你的其他裝置在重新解鎖前不會收到金鑰。",
+      "selectTitle": "要刪除的裝置",
+      "selectDescription": "請選擇遺失與陌生的裝置。不要依據裝置名稱，請以加入時間與最後使用時間確認。",
+      "scopeTitle": "可能外洩的項目",
+      "scope": {
+        "device_only": "只有裝置",
+        "full": "通行金鑰、復原金鑰或 SSSS 金鑰"
+      },
+      "scopeDescription": {
+        "device_only": "重新產生自我簽署金鑰、使用者簽署金鑰與備份金鑰。保留主金鑰與復原金鑰。",
+        "full": "也會重新產生主金鑰、SSSS 金鑰與復原金鑰。其他使用者需要重新驗證你。若不確定，請選擇此項。"
+      },
+      "irreversible": "撤銷無法撤回已取得的過去訊息、舊備份的內容，以及被刪除裝置持有的金鑰。",
+      "next": "下一步",
+      "unlockDescription": "開始前，請用通行金鑰或復原金鑰重新解鎖 SSSS。",
+      "unlockResume": "要繼續未完成的撤銷，請用通行金鑰或復原金鑰重新解鎖 SSSS。若完整撤銷已產生新的復原金鑰，請使用新的那一把。",
+      "newRecoveryKey": "這是新的復原金鑰。請記下後再執行。撤銷後，舊的復原金鑰與通行金鑰將無法解鎖。",
+      "passkeyDescription": "讓此裝置的通行金鑰可以解鎖（其他通行金鑰請之後在「加密」中新增）。",
+      "fullWarning": "在頻道的其他成員重新驗證你之前，他們不會把金鑰發送給你的新裝置。",
+      "notesTitle": "不會重新簽署的使用者",
+      "notesDescription": "此裝置上沒有這些使用者的確認紀錄。撤銷後，在你重新驗證前不會發送金鑰給他們。",
+      "note": {
+        "no_record": "此裝置上沒有紀錄",
+        "not_confirmed": "只有未確認的紀錄",
+        "pin_replaced": "伺服器的紀錄不同，將以此裝置的紀錄取代",
+        "signature_unverified": "無法驗證簽章",
+        "master_key_mismatch": "簽署的金鑰與紀錄不同",
+        "stale_confirmation": "只有用舊的使用者簽署金鑰確認的記錄（需要重新驗證）",
+        "pin_pending": "釘選尚未登記完成"
+      },
+      "versionsWithoutKey": "有無法移到新版本的備份（版本 {{versions}}）。此裝置與 SSSS 都沒有它們的金鑰，這些訊息無法復原。",
+      "executeDescription": "執行後，你需要重新登入確認身分，然後產生並儲存新金鑰。",
+      "execute": "執行撤銷",
+      "stage": {
+        "prepared": "正在儲存 SSSS…",
+        "secret_storage_saved": "正在儲存交叉簽署金鑰…",
+        "cross_signing_saved": "正在重新簽署…",
+        "signatures_saved": "正在建立新的金鑰備份版本…",
+        "backup_created": "正在把舊備份移到新版本…",
+        "migrated": "正在確認儲存的金鑰…",
+        "verified": "已完成"
+      },
+      "conflict": "與其他裝置上的撤銷混在一起了。請重新解鎖 SSSS 並重新撤銷（未刪除備份的金鑰會被繼承）。",
+      "restart": "重新開始",
+      "done": "撤銷已完成。",
+      "unsignedTitle": "未以新金鑰簽署的裝置",
+      "unsignedDescription": "這些裝置在以通行金鑰或復原金鑰重新解鎖前不會收到金鑰。若有陌生裝置，請刪除。",
+      "droppedSessions_one": "舊備份中有 {{count}} 筆無法移動。",
+      "droppedSessions_other": "舊備份中有 {{count}} 筆無法移動。",
+      "finish": "關閉"
+    },
+    "verification": {
+      "title": "驗證其他使用者",
+      "description": "與你共用加密頻道的使用者的金鑰狀態。金鑰變更的使用者，在你重新驗證前不會收到金鑰。",
+      "empty": "你沒有與任何人共用加密頻道。",
+      "trusted": {
+        "own": "你自己",
+        "user_signing_signature": "已驗證",
+        "shared_pin": "信任首次看到的金鑰（你其他裝置的紀錄）",
+        "record": "信任首次看到的金鑰"
+      },
+      "reason": {
+        "master_key_changed": "對方的金鑰已變更。在你重新驗證前不會發送金鑰。",
+        "not_confirmed": "對方的金鑰未確認。在你重新驗證前不會發送金鑰。",
+        "user_signing_key_changed": "你的簽署金鑰已變更，需要重新確認。"
+      },
+      "state": {
+        "no_cross_signing_keys": "尚未設定加密",
+        "invalid_cross_signing_keys": "金鑰已損壞",
+        "needs_unlock": "解鎖後可確認",
+        "pin_pending": "正在確認",
+        "blocked": "無法確認你自己的金鑰，因此未發送"
+      },
+      "reverify": "重新驗證",
+      "confirmTitle": "要信任 {{name}} 目前的金鑰嗎？",
+      "confirmDescription": "請在頻道之外（當面或其他聯絡方式）確認對方確實重新產生了金鑰後再信任。儲存前需要重新登入確認身分。",
+      "warning": {
+        "own_identity_unknown": "尚未確認你的主金鑰。解鎖後即可確認。",
+        "own_master_key_changed": "伺服器上的主金鑰與此裝置確認過的不同。在重新解鎖前不會發送金鑰給任何裝置。",
+        "untrusted_user_signing_key": "無法確認你的使用者簽署金鑰。不會發送金鑰給其他使用者。",
+        "user_signing_key_rollback": "你的使用者簽署金鑰被退回到曾被取代的舊金鑰。伺服器可能遭到竄改，因此不會發送金鑰給其他使用者。",
+        "user_signing_key_changed": "你的使用者簽署金鑰已變更。未重新簽署的使用者需要重新驗證。"
+      }
+    },
+    "authz": {
+      "beforeTitle": "開始前在 AuthZ 要做的事",
+      "afterTitle": "完成後在 AuthZ 要做的事",
+      "revokeSessions": "在「安全性」中，登出此裝置以外的所有工作階段（重新登入後 5 分鐘內）。",
+      "disconnect": "在「服務連線」中，停止 zoo（Web、Android、TUI）的所有連線。",
+      "disconnectAgain": "在「服務連線」中，再次停止 zoo 的所有連線（撤銷途中的身分確認會發放權杖）。",
+      "signOut": "最後，在此裝置上也登出，然後重新登入。",
+      "note": "只刪除裝置不會結束登入工作階段與權杖。已發放的權杖在到期前仍可使用，若強烈懷疑帳號遭盜用，請一併請管理員停用帳號。",
+      "open": {
+        "security": "開啟 AuthZ 的安全性",
+        "services": "開啟 AuthZ 的服務連線"
+      },
+      "acknowledge": "我已在 AuthZ 結束工作階段並停止服務連線"
+    },
+    "recovery": {
+      "regenerate": "重新產生復原金鑰",
+      "create": "產生復原金鑰",
+      "newTitle": "新的復原金鑰",
+      "newDescription": "儲存後，舊的復原金鑰將無法解鎖。刪除或重建金鑰槽不等於撤銷；若舊的復原金鑰可能已外洩，請在「裝置」中進行撤銷。",
+      "save": "儲存",
+      "removeDescription": "將無法再用此復原金鑰解鎖。已取得的金鑰不會失效。若可能已外洩，請進行撤銷。"
+    },
+    "resetDevicesTitle": "選擇要刪除的裝置",
+    "resetDevicesDescription": "請選擇陌生的裝置並刪除。若有他人為你的帳號設定了加密，必須完成此選擇才能完成重設，以免留下攻擊者的裝置。",
+    "resetDevicesConfirm": "我已選擇陌生的裝置（若沒有，已確認）",
     "attachments": {
       "encrypted": "已加密",
       "decryptFailed": "無法解密附件。內容可能已被更改。",

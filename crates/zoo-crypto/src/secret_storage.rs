@@ -725,6 +725,21 @@ impl SecretStorage {
         self.unlock(slot, SlotSecret::Recovery(recovery_key))
     }
 
+    /// メモリーにある SSSS 鍵で開ける（失効を行う端末が、保存のあとの読み直しで秘密を確かめる）。
+    /// 既定の鍵でない、または確認値と合わなければ [`CryptoError::SsssKeyMismatch`]。
+    pub fn unlock_with_key(&self, key: &SsssKey) -> Result<UnlockedSecretStorage, CryptoError> {
+        if key.key_id() != self.default_key_id {
+            return Err(CryptoError::SsssKeyMismatch);
+        }
+        key.check(&self.description)?;
+        Ok(UnlockedSecretStorage {
+            user_id: self.user_id.clone(),
+            key: key.clone(),
+            secrets: self.secrets.clone(),
+            secrets_revision: self.secrets_revision,
+        })
+    }
+
     fn unlock(
         &self,
         slot: &KeySlot,

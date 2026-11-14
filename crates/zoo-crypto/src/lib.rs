@@ -58,6 +58,7 @@ mod inbound;
 mod megolm;
 mod olm;
 mod recovery_key;
+mod revocation;
 mod secret_storage;
 mod setup;
 mod signing;
@@ -98,6 +99,10 @@ pub use olm::{
     ListedDevice, OlmDecrypted, OlmSession, ROOM_KEY_TYPE, ReceivedRoomKey, RoomKey, SenderTrust,
 };
 pub use recovery_key::{RECOVERY_KEY_CHARS, RecoveryKey};
+pub use revocation::{
+    PublicCrossSigningKeys, ResignMasterKey, ResignNote, ResignPin, ResignPlan, Revocation,
+    RevocationInput, RevocationScope, RevocationSignatures, RevocationStage, RevocationState,
+};
 pub use secret_storage::{
     EncryptedSecret, KeySlot, REQUIRED_SECRETS, SECRET_MEGOLM_BACKUP,
     SECRET_PREVIOUS_MEGOLM_BACKUP, SSSS_ALGORITHM, SecretStorage, SecretStorageKeysRequest,

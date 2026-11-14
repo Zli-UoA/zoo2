@@ -23,6 +23,7 @@ mod convert;
 mod cross_signing;
 mod device;
 mod megolm;
+mod revocation;
 mod secret_storage;
 mod setup;
 
@@ -38,6 +39,7 @@ pub use device::{
     DeviceAccount, DeviceKeys, OlmDecrypted, OlmSession, OlmSessions, ReceivedRoomKey,
 };
 pub use megolm::{BackupSession, InboundSessionStore, OutboundSession, RoomKey};
+pub use revocation::Revocation;
 pub use secret_storage::{RecoveryKey, SecretStorage, SsssKey, UnlockedSecretStorage};
 pub use setup::{OwnKeys, OwnSecrets};
 
