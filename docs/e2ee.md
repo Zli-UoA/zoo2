@@ -1632,9 +1632,9 @@ A が B に検証を求める場合です。
 3. A は最初に `ready` を返した端末（その時点の `keys/query` でたどれるもの）を相手に決め、`start` を送ります。要求を送ったほかの B の端末には `cancel`（`m.accepted`）を送ります。
 4. B は `accept` を返します。`commitment` は `base64(SHA-256(<B の一時公開鍵の base64> || <start の content の Canonical JSON>))` です。A は自分の一時公開鍵を `key` で送り、B も `key` を返します。A は B の鍵がコミットメントと合うかを確かめます（合わなければ `m.mismatched_commitment`）。
 5. 双方が、一時鍵の Diffie-Hellman で導いた 6 バイト（`info` は Matrix と同じ `MATRIX_KEY_VERIFICATION_SAS|<start の送信者>|<端末>|<鍵>|<accept の送信者>|<端末>|<鍵>|<transaction_id>`）から 7 つの絵文字を出し、利用者がチャンネルの外で見比べます。一致しないと答えたら `m.mismatched_sas` で取りやめます。
-6. 一致すると答えたら、自分の端末の署名鍵（`ed25519:<device_id>`）と自分のマスター鍵（`ed25519:<公開鍵>`）の MAC（`hkdf-hmac-sha256.v2`）を `mac` で送ります。相手の MAC は、自分が一致すると答えてから確かめます。相手の MAC が含めてよいのは、相手の端末の署名鍵と、`keys/query` で見た相手の今のマスター鍵だけで、マスター鍵を必ず含みます。合わなければ `m.key_mismatch` で取りやめ、合えば `done` を送ります。
+6. 一致すると答えたら、自分の端末の署名鍵（`ed25519:<device_id>`）と自分のマスター鍵（`ed25519:<公開鍵>`）の MAC（`hkdf-hmac-sha256.v2`）を `mac` で送ります。相手の MAC は、自分が一致すると答えてから確かめます。相手の MAC は、相手の端末の署名鍵と、`keys/query` で見た相手の今のマスター鍵の 2 つをどちらも含み、ほかの鍵を含まないものだけを受け付けます。合わなければ `m.key_mismatch` で取りやめ、合えば `done` を送ります。
 7. 相手の MAC を確かめ、相手の `done` も届いたら検証済みです（相手も自分の MAC を確かめたことになる）。署名の直前にもう一度 `keys/query` を取り、相手のマスター鍵が SAS で確かめた鍵と同じときだけ署名します（違えば署名しない）。
-8. 要求から 10 分で終わらなければ `m.timeout` で取りやめます（Matrix の推奨と同じ）。
+8. 要求から 10 分で終わらなければ `m.timeout` で取りやめます（Matrix の推奨と同じ）。要求を受けた側も、受け取った時刻ではなく要求の `timestamp` から数えます（先の時刻の要求は、受け取った時刻から）。
 
 ### 署名とピンの保存
 
@@ -1649,7 +1649,10 @@ A が B に検証を求める場合です。
 
 ### Web の実装（#368）
 
-- 受信は、Worker の `CryptoStore.processToDevice` が受信時の検証を通したメッセージを返し（Olm のメッセージは 2 回は復号できないため）、画面のスレッドの `SasController`（`frontend/src/lib/e2ee/sasController.ts`）が送信ユーザーの `keys/query` を取ってから Worker の `SasVerifications`（`frontend/src/lib/e2ee/store/verification.ts`）で進めます。Worker の処理と送信は 1 つずつ順に行います。
+- 受信は、Worker の `CryptoStore.processToDevice` が受信時の検証を通したメッセージを返し（Olm のメッセージは 2 回は復号できないため）、画面のスレッドの `SasController`（`frontend/src/lib/e2ee/sasController.ts`）が Worker の `SasVerifications`（`frontend/src/lib/e2ee/store/verification.ts`）で進めます。Worker の処理と送信は 1 つずつ順に行います。
+  - 送信ユーザーの `keys/query` を取るのは、送信端末をたどる `request` と `ready` のときだけです（同じ回の中では使い回す）。ほかのメッセージは相手の端末が決まったあとなので、鍵を取りません。
+  - `keys/query` を一時的に取れなければ、そのメッセージとあとのメッセージを捨てずに届いた順のまま残し、画面に「処理できなかった」と出して、期限の確認（5 秒ごと）のたびに試し直します。10 分より古いものは捨てます。
+  - to-device の `undelivered` に入った端末（削除された端末など）と、ワンタイム鍵を払い出されなかった端末があれば、「送れなかった」と出します。
 - 送信用の Olm セッションは、Megolm の鍵の配布と同じ `outbound_olm:<識別鍵>` を使い回し、なければ `keys/claim` で作ります。1 つの to-device の要求には 1 つの端末あてに 1 件しか入らないので、メッセージごとに要求を分け、順に送ります。
 - 画面は、シェルのどこにでも出るダイアログ（`SasVerificationHost`）です。検証は、設定の「端末」タブの他のユーザーの検証の「絵文字で検証」から始めます（鍵が変わった相手と、最初に見た鍵を信頼している相手に出す）。保存できたら、端末タブの検証状態を読み直して「検証済み」にします。
 - 暗号ストアを開いているタブ（Web Locks を取ったタブ）だけが検証のメッセージを受け取り、ダイアログを出します。

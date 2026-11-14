@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 import type { SasView } from "@zoo/crypto-wasm";
 
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
@@ -82,7 +82,10 @@ export const Compare: Story = {
   play: playForImplementation(async ({ args }) => {
     const list = await screen.findByRole("list", { name: "検証の絵文字" });
     await expect(list.querySelectorAll("li")).toHaveLength(7);
-    await expect(screen.getByText("鍵")).toBeInTheDocument();
+    // 同じ絵文字は何度でも出る（3 番目と 4 番目がどちらも「鍵」）。
+    const items = within(list).getAllByRole("listitem");
+    await expect(within(items[2]).getByText("鍵")).toBeInTheDocument();
+    await expect(within(items[3]).getByText("鍵")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "一致する" }));
     await expect(args.handlers.onMatch).toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "一致しない" }));
@@ -113,7 +116,12 @@ export const Saved: Story = {
   args: { entry: entry({ phase: "done" }, { save: "saved" }), handlers: handlers() },
   play: playForImplementation(async ({ args }) => {
     await expect(await screen.findByText("伊藤さくら さんを検証しました")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "閉じる" }));
+    // ダイアログ右上の閉じるボタンも同じ名前なので、フッターのボタンを押す。
+    const footer = screen
+      .getAllByRole("button", { name: "閉じる" })
+      .find((button) => button.closest('[data-slot="dialog-footer"]'));
+    await expect(footer).toBeDefined();
+    await userEvent.click(footer!);
     await expect(args.handlers.onClose).toHaveBeenCalled();
   }),
 };

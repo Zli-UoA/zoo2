@@ -1411,6 +1411,7 @@
       },
       "needsUnlock": "This device isn't unlocked, so it can't verify. Unlock it under Settings → Encryption.",
       "sendFailed": "We couldn't reach them. Check your connection and try again.",
+      "receiveFailed": "We couldn't process their reply. We'll try again automatically; check your connection.",
       "failed": "The verification couldn't continue.",
       "cancel": "Stop",
       "close": "Close",

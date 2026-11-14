@@ -536,6 +536,27 @@ fn requests_from_devices_without_cross_signing_are_ignored() {
     ));
 }
 
+/// 遅れて届いた要求の期限は、受け取った時刻ではなく要求の時刻から 10 分。
+#[test]
+fn late_request_expires_ten_minutes_after_its_timestamp() {
+    let mut alice = User::new(ALICE, 1);
+    let mut bob = User::new(BOB, 1);
+    let alice_view = honest(&alice, &[&alice, &bob]);
+    let bob_view = honest(&bob, &[&alice, &bob]);
+    let (_, request) = SasVerification::request(alice.identity(0), &alice_view, BOB, NOW).unwrap();
+    let request = only(deliver(&mut alice, 0, &mut bob, &request));
+    let received = NOW + 9 * 60 * 1000;
+    let mut b =
+        SasVerification::from_request(bob.identity(0), &request, &bob_view, received).unwrap();
+    assert_eq!(b.started_at_ms(), NOW);
+    assert!(b.expire(NOW + VERIFICATION_TIMEOUT_MS - 1).is_empty());
+    let cancel = single(
+        b.expire(NOW + VERIFICATION_TIMEOUT_MS),
+        VERIFICATION_CANCEL_TYPE,
+    );
+    assert_eq!(cancel.content["code"], cancel_code::TIMEOUT);
+}
+
 #[test]
 fn verification_times_out_after_ten_minutes() {
     let alice = User::new(ALICE, 1);

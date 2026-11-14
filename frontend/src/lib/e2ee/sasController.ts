@@ -14,8 +14,17 @@ import { saveAcceptedMasterKey } from "./revocationController";
 import { ReauthRequiredError } from "./setupController";
 import { SAS_NEEDS_UNLOCK } from "./store/verification";
 
-/** 期限切れを確かめる間隔（ミリ秒）。検証の期限は 10 分（`VERIFICATION_TIMEOUT_MS`）。 */
+/** 期限切れを確かめ、処理できなかったメッセージを試し直す間隔（ミリ秒）。 */
 export const SAS_EXPIRE_INTERVAL_MS = 5_000;
+/** 検証の期限（`VERIFICATION_TIMEOUT_MS` と同じ 10 分）。これより古い未処理のメッセージは捨てる。 */
+const SAS_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * 処理に送信ユーザーの `keys/query` が要るメッセージ（送信端末が相手のマスター鍵からたどれるかを
+ * 確かめる、`SasVerification::from_request` と `ready`）。ほかのメッセージは、相手の端末が決まった
+ * あとなので鍵を使わない。
+ */
+const NEEDS_KEYS = new Set(["m.key.verification.request", "m.key.verification.ready"]);
 
 /** 検証が終わったあと、相手のマスター鍵への署名とピンの保存の状態。 */
 export type SasSaveState =
@@ -33,6 +42,8 @@ export type SasErrorCode =
   | "needsUnlock"
   /** 相手に送れなかった。 */
   | "sendFailed"
+  /** 相手からのメッセージを処理するための鍵を取れなかった（あとで試し直す）。 */
+  | "receiveFailed"
   | "failed";
 
 export interface SasEntry {
@@ -76,6 +87,11 @@ export class SasController {
   /** 「一致する」を押したときに始めた再認証（検証が終わったら、その ID トークンで保存する）。 */
   private readonly reauths = new Map<string, Promise<string | null>>();
   private snapshot: SasEntry[] = [];
+  /**
+   * 届いたが、まだ Worker に渡していないメッセージ（届いた順）。Olm のメッセージは 2 回は復号
+   * できないので、`keys/query` が一時的に失敗しても捨てずに残し、次の確認で試し直す。
+   */
+  private inbox: { message: VerificationMessage; receivedAt: number }[] = [];
   private queue: Promise<unknown> = Promise.resolve();
   private timer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
@@ -118,19 +134,53 @@ export class SasController {
 
   /** to-device で届いた検証のメッセージ（`E2eeDeviceManager` の `onVerifications`）。 */
   handleMessages(messages: VerificationMessage[]): Promise<void> {
+    const receivedAt = this.now();
+    for (const message of messages) this.inbox.push({ message, receivedAt });
+    return this.drain();
+  }
+
+  /**
+   * 届いたメッセージを、届いた順に Worker に渡す。`keys/query` を取れなければ、そのメッセージと
+   * あとのメッセージを残して止める（順を変えない）。残したものは、期限の確認のたびに試し直す。
+   */
+  private drain(): Promise<void> {
     return this.serial(async () => {
-      for (const message of messages) {
+      // 送信ユーザーの `keys/query` は、この回の中では使い回す。
+      const keys = new Map<string, JsonObject>();
+      while (this.inbox.length > 0) {
+        const { message, receivedAt } = this.inbox[0]!;
+        const txnId = message.content.transaction_id;
+        if (this.now() - receivedAt > SAS_TIMEOUT_MS) {
+          this.inbox.shift();
+          continue;
+        }
+        let keysQuery: JsonObject = {};
+        if (NEEDS_KEYS.has(message.type)) {
+          const sender = message.sender_user_id;
+          try {
+            keysQuery = keys.get(sender) ?? (await queryKeys(this.deps.client, [sender]));
+          } catch {
+            if (typeof txnId === "string") this.patch(txnId, { error: "receiveFailed" });
+            return;
+          }
+          keys.set(sender, keysQuery);
+        }
+        this.inbox.shift();
         try {
-          const keysQuery = await queryKeys(this.deps.client, [message.sender_user_id]);
           const update = await this.deps.worker.request({
             op: "sasReceive",
             message,
             keysQuery,
             now: this.now(),
           });
-          if (update) await this.apply(update);
+          if (update) {
+            if (this.entries.get(update.view.transaction_id)?.error === "receiveFailed") {
+              this.patch(update.view.transaction_id, { error: null });
+            }
+            await this.apply(update);
+          }
         } catch {
-          // 1 件を処理できなくても、続きのメッセージは処理する（相手には 10 分で取りやめになる）。
+          // Worker が受け付けないメッセージは、試し直しても通らない。捨てて続きを処理する。
         }
       }
     });
@@ -182,8 +232,9 @@ export class SasController {
   }
 
   /** 10 分を過ぎた検証を取りやめる（`m.timeout`）。 */
-  expire(): Promise<void> {
-    if (this.entries.size === 0) return Promise.resolve();
+  async expire(): Promise<void> {
+    if (this.inbox.length > 0) await this.drain();
+    if (this.entries.size === 0) return;
     return this.serial(async () => {
       const updates = await this.deps.worker.request({ op: "sasExpire", now: this.now() });
       for (const update of updates) await this.apply(update);
@@ -246,10 +297,12 @@ export class SasController {
       const claimed = await claimKeys(client, encrypted.claim);
       encrypted = await worker.request({ op: "sasEncrypt", outgoing, claimed });
     }
+    const undelivered = [...encrypted.missing];
     for (const batch of encrypted.batches) {
-      await sendToDevice(client, deviceId, batch);
+      undelivered.push(...(await sendToDevice(client, deviceId, batch)));
     }
-    if (encrypted.missing.length > 0) throw new Error("送れなかった端末があります");
+    // 鍵を払い出されなかった端末と、サーバーのキューに入れられなかった端末（削除された端末など）。
+    if (undelivered.length > 0) throw new Error("送れなかった端末があります");
   }
 
   private async save(txnId: string): Promise<void> {

@@ -217,7 +217,9 @@ export function SasVerificationView({
           ? "e2ee.sas.needsUnlock"
           : entry.error === "sendFailed"
             ? "e2ee.sas.sendFailed"
-            : "e2ee.sas.failed",
+            : entry.error === "receiveFailed"
+              ? "e2ee.sas.receiveFailed"
+              : "e2ee.sas.failed",
       )
     : null;
 

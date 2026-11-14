@@ -429,7 +429,9 @@ impl SasVerification {
             we_requested: false,
             requested_devices: Vec::new(),
             peer: Some(peer),
-            started_at_ms: now_ms,
+            // 期限は受け取った時刻ではなく、要求の時刻から数える（Matrix と同じく、要求の
+            // `timestamp` から 10 分で閉じる）。少し先の時刻の要求は、受け取った時刻から数える。
+            started_at_ms: timestamp.min(now_ms),
             state: State::Incoming,
         })
     }
@@ -454,7 +456,7 @@ impl SasVerification {
         self.we_requested
     }
 
-    /// 要求した（受けた）時刻（Unix 時間のミリ秒）。
+    /// 期限を数え始める時刻（Unix 時間のミリ秒）。要求した側は要求した時刻、受けた側は要求の `timestamp`。
     pub fn started_at_ms(&self) -> u64 {
         self.started_at_ms
     }
@@ -1083,7 +1085,8 @@ fn verify_their_mac(
     let device_key_id = format!("ed25519:{}", peer.device.device_id);
     let master_b64 = peer.master_key.to_base64();
     let master_key_id = format!("ed25519:{master_b64}");
-    if !mac.contains_key(&master_key_id) {
+    // 端末の署名鍵とマスター鍵の両方の MAC がそろっていなければ受け付けない。
+    if !mac.contains_key(&master_key_id) || !mac.contains_key(&device_key_id) {
         return Err(());
     }
     for (key_id, tag) in mac {
@@ -1103,4 +1106,79 @@ fn verify_their_mac(
             .map_err(|_| ())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use vodozemac::Ed25519SecretKey;
+
+    use super::*;
+    use crate::verify_device_keys;
+
+    const ALICE: &str = "00000000-0000-0000-0000-00000000000a";
+    const ALICE_DEVICE: &str = "1a8a1c2e-5b7d-4e9f-a1b2-c3d4e5f60718";
+    const BOB: &str = "00000000-0000-0000-0000-00000000000b";
+    const BOB_DEVICE: &str = "2b8a1c2e-5b7d-4e9f-a1b2-c3d4e5f60718";
+    const TXN: &str = "6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+
+    fn party(user: &str, device: &str) -> (VerificationIdentity, Peer) {
+        let account = DeviceAccount::new(user, device).unwrap();
+        let master = Ed25519SecretKey::new().public_key();
+        let keys = verify_device_keys(&account.device_keys(), user, device).unwrap();
+        (
+            VerificationIdentity {
+                user_id: user.to_owned(),
+                device_id: device.to_owned(),
+                device_ed25519: keys.ed25519,
+                master_key: master,
+            },
+            Peer {
+                device: keys,
+                master_key: master,
+            },
+        )
+    }
+
+    fn compare(established: EstablishedSas) -> Compare {
+        let bytes = established.bytes("test");
+        Compare {
+            established,
+            bytes,
+            confirmed: true,
+            their_mac: None,
+            mac_verified: false,
+            their_done: false,
+        }
+    }
+
+    /// 端末の署名鍵の MAC を外し、鍵の一覧の MAC を正しく作り直しても受け付けない。
+    #[test]
+    fn mac_must_cover_the_device_key() {
+        let (alice, alice_peer) = party(ALICE, ALICE_DEVICE);
+        let (bob, bob_peer) = party(BOB, BOB_DEVICE);
+        let (alice_sas, bob_sas) = (Sas::new(), Sas::new());
+        let (alice_key, bob_key) = (alice_sas.public_key(), bob_sas.public_key());
+        let alice_established = alice_sas.diffie_hellman(bob_key).unwrap();
+        let bob_compare = compare(bob_sas.diffie_hellman(alice_key).unwrap());
+
+        let full = own_mac(&bob, ALICE, Some(&alice_peer), TXN, &bob_compare).unwrap();
+        assert!(verify_their_mac(&alice, &bob_peer, TXN, &alice_established, &full).is_ok());
+
+        let base = mac_info_base(BOB, BOB_DEVICE, ALICE, ALICE_DEVICE, TXN);
+        let master_key_id = format!("ed25519:{}", bob.master_key.to_base64());
+        let mut master_only = full.clone();
+        master_only["mac"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&format!("ed25519:{BOB_DEVICE}"));
+        master_only["keys"] = json!(
+            bob_compare
+                .established
+                .calculate_mac(&master_key_id, &format!("{base}KEY_IDS"))
+                .to_base64()
+        );
+        assert!(
+            verify_their_mac(&alice, &bob_peer, TXN, &alice_established, &master_only).is_err()
+        );
+    }
 }

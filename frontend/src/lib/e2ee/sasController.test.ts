@@ -65,6 +65,10 @@ class FakeServer {
   pins = new Map<string, Map<string, Json>>();
   nextId = 1;
   requests: { user: string; route: string; reauth: boolean }[] = [];
+  /** この回数だけ、`keys/query` を 503 にする。 */
+  failKeysQuery = 0;
+  /** この端末あての to-device を、キューに入れずに `undelivered` で返す。 */
+  undeliver = new Set<string>();
 
   client(userId: string): ApiClient {
     const handle = async (path: string, options: RequestOptions = {}) => {
@@ -92,6 +96,10 @@ class FakeServer {
   private respond(caller: string, route: string, body: Json, reauth: boolean): unknown {
     switch (route) {
       case "POST /api/e2ee/keys/query":
+        if (this.failKeysQuery > 0) {
+          this.failKeysQuery -= 1;
+          throw new ApiError(503, "UNAVAILABLE", { error: "unavailable" });
+        }
         return this.keysQuery(caller, body.user_ids as string[]);
       case "POST /api/e2ee/keys/claim": {
         const out: Json = {};
@@ -107,10 +115,15 @@ class FakeServer {
         return { one_time_keys: out };
       }
       case "POST /api/e2ee/to_device": {
+        const undelivered: Json[] = [];
         for (const [user, devices] of Object.entries(
           body.messages as Record<string, Record<string, JsonObject>>,
         )) {
           for (const [device, content] of Object.entries(devices)) {
+            if (this.undeliver.has(device)) {
+              undelivered.push({ user_id: user, device_id: device });
+              continue;
+            }
             this.queue.push({
               id: String(this.nextId++),
               recipient_user_id: user,
@@ -122,7 +135,7 @@ class FakeServer {
             });
           }
         }
-        return { undelivered: [] };
+        return { undelivered };
       }
       case "POST /api/e2ee/tofu_pins": {
         if (body.replace && !reauth) this.reauthRequired();
@@ -407,6 +420,43 @@ describe("絵文字 SAS 検証", () => {
     await server.pump();
     // 解錠していない端末は自分のマスター鍵を確かめていないので、要求を受け付けない（何も出さない）。
     expect(server.parties.get(BOB)!.sas.getSnapshot()).toEqual([]);
+  });
+
+  it("鍵が要らないメッセージでは keys/query を取らず、取れないときは捨てずに試し直す", async () => {
+    const server = new FakeServer();
+    const alice = await join(server, ALICE);
+    const bob = await join(server, BOB);
+    const txnId = await alice.sas.request(BOB);
+    await server.pump();
+    // Bob の ready を Alice が処理するときの keys/query が失敗する。
+    await bob.sas.accept(txnId);
+    server.failKeysQuery = 1;
+    await server.pump();
+    expect(only(alice).view.phase).toBe("requested");
+    expect(only(alice).error).toBe("receiveFailed");
+    // 期限の確認で試し直すと進む。
+    await alice.sas.expire();
+    await server.pump();
+    expect(only(alice).view.phase).toBe("compare");
+    expect(only(alice).error).toBeNull();
+
+    // key、mac、done の処理では keys/query を取らないので、失敗していても検証は終わる。
+    server.failKeysQuery = 1_000;
+    await alice.sas.confirm(txnId, Promise.resolve(TOKEN));
+    await bob.sas.confirm(txnId, Promise.resolve(TOKEN));
+    await server.pump();
+    expect(only(alice).view.phase).toBe("done");
+    expect(only(bob).view.phase).toBe("done");
+  });
+
+  it("相手の端末に届けられなければ、送れなかったと出す", async () => {
+    const server = new FakeServer();
+    const alice = await join(server, ALICE);
+    const bob = await join(server, BOB);
+    server.undeliver.add(bob.deviceId);
+    await alice.sas.request(BOB);
+    expect(only(alice).error).toBe("sendFailed");
+    expect(server.queue).toEqual([]);
   });
 
   it("10 分たつと取りやめ、相手にも知らせる", async () => {
