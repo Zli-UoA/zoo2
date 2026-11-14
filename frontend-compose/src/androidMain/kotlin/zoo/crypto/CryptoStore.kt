@@ -375,9 +375,8 @@ class CryptoStore private constructor(
                 val verified = roomKey.senderVerified()
                 val ref = SessionRef(roomKey.channelId(), roomKey.senderKey(), roomKey.sessionId())
                 val key = inboundKey(ref)
-                if (loadedInbound.add(key)) {
-                    state.inboundSessions[key]?.let { inbound.restoreSession(account, it.pickle, storageKey) }
-                }
+                // 読み込めたときだけ読み込み済みにする（失敗したら次の試行で読み直す）。
+                loadInbound(key)
                 if (inbound.addRoomKey(roomKey) == AddOutcome.KEPT) {
                     return Encrypted.Decrypted(created, roomKey = false, rejected = false)
                 }
@@ -672,10 +671,11 @@ class CryptoStore private constructor(
                 state.backupUpload = it.toJson()
             }
         }
+        val sentPickles = pending.sessions.toMap()
         state.inboundSessions =
             state.inboundSessions.mapValues { (key, session) ->
                 // 送ったあとに書き換わった（pickle が違う）セッションは、送信待ちのまま残す。
-                if (pending.sessions.any { it.first == key && it.second == session.pickle }) {
+                if (sentPickles[key] == session.pickle) {
                     StoredInboundSession(session.pickle, backedUp = true)
                 } else session
             }
