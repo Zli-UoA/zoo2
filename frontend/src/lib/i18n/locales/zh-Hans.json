@@ -1221,6 +1221,12 @@
     "reunlockToAdd": "重新解锁以添加通行密钥",
     "reunlockToAddDescription": "要添加通行密钥或重新生成恢复密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。",
     "badge": "已加密",
+    "memberUnreadable": {
+      "notSetUp": "未设置加密",
+      "notSetUpDescription": "尚未设置加密，因此无法读取此频道的新消息。",
+      "noDevices": "无设备",
+      "noDevicesDescription": "没有可用于加密的设备，因此无法读取此频道的新消息。"
+    },
     "encryptChannel": "端到端加密",
     "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消。",
     "encryptChannelPrivateOnly": "只有私密频道可以加密。",

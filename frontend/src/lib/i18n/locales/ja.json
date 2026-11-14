@@ -1221,6 +1221,12 @@
     "reunlockToAdd": "解錠し直してパスキーを追加",
     "reunlockToAddDescription": "パスキーの追加やリカバリーキーの作り直しのために、パスキーかリカバリーキーで SSSS を開け直してください。この端末の解錠の状態は変わりません。",
     "badge": "暗号化",
+    "memberUnreadable": {
+      "notSetUp": "暗号化未設定",
+      "notSetUpDescription": "暗号化を設定していないので、このチャンネルの新しいメッセージを読めません。",
+      "noDevices": "端末なし",
+      "noDevicesDescription": "暗号化に使える端末がないので、このチャンネルの新しいメッセージを読めません。"
+    },
     "encryptChannel": "エンドツーエンドで暗号化する",
     "encryptChannelHelp": "メッセージはメンバーの検証済みの端末だけが読めます。暗号化はあとから解除できません。",
     "encryptChannelPrivateOnly": "暗号化できるのは非公開チャンネルだけです。",
