@@ -71,6 +71,8 @@ struct State {
     backup_reads: Vec<Option<String>>,
     /// この `after` のページを読まれたら、1 回だけ 500 にする。
     fail_backup_read: Option<Option<String>>,
+    /// ページを読まれたら、いつも 500 にする。
+    fail_backup_reads: bool,
 }
 
 #[derive(Clone, Default)]
@@ -273,6 +275,9 @@ impl Respond for Backend {
                     .find(|(key, _)| key == "after")
                     .map(|(_, value)| value.into_owned());
                 state.backup_reads.push(after.clone());
+                if state.fail_backup_reads {
+                    return ResponseTemplate::new(500);
+                }
                 if state.fail_backup_read.as_ref() == Some(&after) {
                     state.fail_backup_read = None;
                     return ResponseTemplate::new(500);
@@ -887,6 +892,45 @@ fn records_written_before_the_store_opens_are_read_back() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn a_reopened_store_starts_its_own_import_while_the_old_one_waits() {
+    use zoo2_tui::e2ee::setup;
+    let (server, backend, alice, _bob) = setup().await;
+    {
+        let mut state = backend.0.lock().unwrap();
+        state.backup_version = Some(json!({
+            "version": "1",
+            "algorithm": zoo_crypto::BACKUP_ALGORITHM,
+            "auth_data": alice.secrets.backup_key.auth_data(&alice.secrets.cross_signing.master).unwrap(),
+        }));
+        state.fail_backup_reads = true;
+    }
+    let reads = |backend: &Backend| backend.0.lock().unwrap().backup_reads.len();
+    async fn wait_for(backend: &Backend, count: usize) {
+        for _ in 0..200 {
+            if backend.0.lock().unwrap().backup_reads.len() >= count {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+    // 古い暗号ストアの取り込みが失敗して、試し直しを待っている。
+    let old = other_device(&server, &backend, &alice);
+    setup::spawn_backup_import(old.api.clone(), &old.store);
+    wait_for(&backend, 1).await;
+    assert_eq!(reads(&backend), 1);
+    // 古い暗号ストアを手放し、開き直した暗号ストアで取り込みを頼む。
+    drop(old);
+    let reopened = other_device(&server, &backend, &alice);
+    setup::spawn_backup_import(reopened.api.clone(), &reopened.store);
+    wait_for(&backend, 2).await;
+    assert_eq!(reads(&backend), 2, "開き直した暗号ストアの取り込みを始める");
+    // 同じ暗号ストアには重ねない。
+    setup::spawn_backup_import(reopened.api.clone(), &reopened.store);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(reads(&backend), 2);
 }
 
 #[test]

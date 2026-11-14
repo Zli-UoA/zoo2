@@ -28,11 +28,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // 折り返し、その行数を高さにする（画面の半分まで）。`Paragraph` の語ごとの折り返しでは、行数が
     // 表示幅から計算した数より増えて、末尾が切れることがあるため。収まらなければ人数だけを出し、
     // 全員は `V` の詳細の画面で確かめる。
-    let notice = encryption_notice(
-        app,
-        usize::from(frame.area().width),
-        usize::from(frame.area().height / 2),
-    );
+    // 入れられる行数は、画面の半分と、タイムライン（5 行）、入力欄、状態表示を残した残りの少ない方。
+    let room = frame
+        .area()
+        .height
+        .saturating_sub(5 + composer_height + 1)
+        .min(frame.area().height / 2);
+    let notice = encryption_notice(app, usize::from(frame.area().width), usize::from(room));
     let notice_height = notice.len() as u16;
     let [main, notice_area, composer, status] = Layout::vertical([
         Constraint::Min(5),
@@ -174,9 +176,29 @@ fn encryption_notice(app: &App, width: usize, max_lines: usize) -> Vec<Line<'sta
             warn,
         ));
     }
-    let mut compact = wrap(compact);
-    compact.truncate(max_lines.max(1));
-    compact
+    let compact = wrap(compact);
+    if compact.len() <= max_lines {
+        return compact;
+    }
+    // それでも収まらない小さな端末では、両方の人数を 1 行にまとめる（配れない人を先に出す）。
+    let mut counts = Vec::new();
+    if !summary.undeliverable.is_empty() {
+        counts.push(format!("読めない人 {} 人", summary.undeliverable.len()));
+    }
+    if !summary.added_user_ids.is_empty() {
+        counts.push(format!("増えた配布先 {} 人", summary.added_user_ids.len()));
+    }
+    let style = if summary.undeliverable.is_empty() {
+        added_style
+    } else {
+        warn
+    };
+    let mut minimal = wrap(vec![Line::styled(
+        format!(" 🔒 {}（V で詳細）", counts.join("・")),
+        style,
+    )]);
+    minimal.truncate(max_lines.max(1));
+    minimal
 }
 
 /// 配布先の詳細（`V`）。増えた配布先と、鍵を配れない相手と理由を、1 人 1 行で全員出す。
@@ -2883,6 +2905,11 @@ mod tests {
             screen.contains("次の人は新しいメッセージを読めません：5人（Vで一覧）"),
             "{screen}"
         );
+
+        // とても小さな端末でも、両方の人数を出す。
+        let screen = squash(render_sized(&mut app, 40, 12));
+        assert!(screen.contains("読めない人5人"), "{screen}");
+        assert!(screen.contains("増えた配布先30人"), "{screen}");
 
         // `V` の詳細の画面では、スクロールして全員を確かめられる。
         app.focus = Focus::Messages;
