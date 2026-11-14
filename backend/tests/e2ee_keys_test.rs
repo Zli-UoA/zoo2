@@ -1905,6 +1905,10 @@ async fn a_concurrent_shrink_does_not_hide_an_increase_past_the_cap() {
     // B：版の行をロックして 2048 バイト縮める（コミットはまだ）。
     let mut db = env.db.clone();
     let mut shrink = db.transaction().await.unwrap();
+    let shrink_pid = backend::apps::query(&mut shrink, "SELECT pg_backend_pid()::text", &[])
+        .await
+        .unwrap()[0]
+        .to_string();
     backend::apps::query(
         &mut shrink,
         "UPDATE e2ee_key_backup_versions SET session_bytes = session_bytes - 2048
@@ -1933,8 +1937,25 @@ async fn a_concurrent_shrink_does_not_hide_an_increase_past_the_cap() {
         )
         .await
     });
-    // A が版の行のロックで待つまで進める（先に B がコミットしても、A は縮小のあとの数を読むので結果は同じ）。
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // A が B のロックで待っていることを DB で確かめてから B をコミットする。修正の前の実装では、A は
+    // 「書く前」を読んだあと、トリガーの版の行の更新で B を待つので、この順を確実に作れる。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let blocked = env
+            .count(
+                "SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))",
+                &[&shrink_pid],
+            )
+            .await;
+        if blocked > 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the upload never waited for the shrinking transaction"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     shrink.commit().await.unwrap();
 
     let (status, res) = upload.await.unwrap();
