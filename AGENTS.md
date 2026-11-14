@@ -62,6 +62,15 @@
 - main を取り込んで `atlas.sum` が衝突したら、自分のマイグレーションのファイル名のタイムスタンプを main の最新より後に付け直し、`atlas migrate hash --dir file://infra/db/migrations` で `atlas.sum` を作り直す。本番に適用済みのものより古いタイムスタンプのファイルは、Atlas が適用を拒否する。
 - main へはマージキューから入れる。PRをmainの最新に追従させる必要はない。キューがmainと合わせた状態でCIを実行し、通ったものだけをmainに入れる。
 
+# 環境変数・Secret の管理とクラスタの操作
+
+- 本番と preview の環境変数（Deployment の `env`、ConfigMap）と Secret は、すべて Git で管理する。置き場所は `Zli-UoA/zoo2-infra` で、Secret は下の「Secret」のとおり sops で暗号化して置く。
+- クラスタを直接変えない。`kubectl patch`、`kubectl edit`、`kubectl set env`、`kubectl create`、`kubectl apply`、`kubectl scale`、`kubectl delete` などで、設定やリソースを手で変える作業はしない。変更は zoo2-infra の PR にし、Flux で反映する（手で変えても、Flux が Git の値に戻すか、Git とクラスタが食い違う）。
+- 調べるための読み取り（`kubectl get`、`kubectl describe`、`kubectl logs`）はしてよい。Secret の値は画面・ログ・履歴に出さない。
+- 今は手動で作っているもの（ConfigMap `zoo2-oidc`、zoo2-infra の `docs/operations.md`「秘密情報」の表で手動のものなど）に値を足したり変えたりする必要が出たら、手で patch せず、Git に移す PR を出す。
+- 例外は、Git に置けないものだけ：sops の復号鍵（`sops-age`）と、CNPG などが生成するもの（`zoo2-db-app` など）。
+- docs と PR 本文にも、`kubectl patch` などでクラスタを手で変える手順を書かない。必要な設定は、zoo2-infra の PR を示す。
+
 # Secret
 
 - 新しく追加するアプリの Kubernetes Secret（API キー、トークン、パスワード、暗号化キーなど）は、sops（age）で暗号化した `*.sops.yaml` として、`Zli-UoA/zoo2-infra` に置いて入れる。置き場所と書き方は、zoo2-infra の既存の `*.sops.yaml`、`.sops.yaml`、`docs/secrets.md` に合わせる。
