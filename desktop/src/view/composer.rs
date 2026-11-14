@@ -18,6 +18,12 @@ use crate::view::format_file_size;
 use crate::view::{WorkspaceView, is_activate_key};
 
 /// `ComposerField` の外枠の寸法 (`rounded-xl p-1.5`)。
+/// 送信キーのヒント (`composerSendHint`)。送信キーは `input.rs` の `MODIFIER_SUBMIT_KEY`。
+#[cfg(target_os = "macos")]
+const SEND_HINT_KEY: &str = "composer.mac";
+#[cfg(not(target_os = "macos"))]
+const SEND_HINT_KEY: &str = "composer.ctrl";
+
 const FIELD_PADDING: f32 = 6.0;
 /// 入力欄の左右・上下の余白 (`px-2 py-2.5`) と、1 行の高さ (`text-sm leading-6`)。
 const INPUT_PADDING_X: f32 = 8.0;
@@ -314,7 +320,7 @@ impl WorkspaceView {
                             .text_size(px(11.0))
                             .line_height(xs.line())
                             .text_color(t.muted_foreground)
-                            .child("Enter: 送信 / Shift+Enter: 改行"),
+                            .child(i18n.t(SEND_HINT_KEY)),
                     )
             })
             // ステータス通知行

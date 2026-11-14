@@ -100,6 +100,8 @@ impl WorkspaceView {
         let composer_input = cx.new(|cx| {
             let mut input = TextInput::new_multiline(cx, i18n.t("messages.compose"));
             input.bare = true;
+            // Web の Composer と同じく、Enter は改行、⌘/Ctrl+Enter で送信する。
+            input.enter_inserts_newline = true;
             input
         });
         let reaction_input = cx.new(|cx| {
@@ -232,7 +234,7 @@ impl WorkspaceView {
                         cx.notify();
                     }
                 }
-                InputEvent::Submit(text) => {
+                InputEvent::Enter => {
                     let sel = this.composer_input.read(cx).selected_range();
                     if this.state.read(cx).emoji_picker_open {
                         this.state.update(cx, |state, cx| {
@@ -258,6 +260,16 @@ impl WorkspaceView {
                     if mention_handled {
                         return;
                     }
+                    // 補完が開いていなければ改行する (Web の Composer と同じ)。
+                    this.composer_input
+                        .update(cx, |input, cx| input.insert_newline(cx));
+                }
+                InputEvent::Submit(text) => {
+                    // ⌘/Ctrl+Enter は補完が開いていても送信する (Web の `!event.metaKey && !event.ctrlKey`)。
+                    this.state.update(cx, |state, cx| {
+                        state.close_mention_autocomplete();
+                        cx.notify();
+                    });
                     let submitted = this.state.update(cx, |state, cx| {
                         let ok = state.submit_message(text.clone());
                         cx.notify();
@@ -323,6 +335,7 @@ impl WorkspaceView {
                 | InputEvent::Left
                 | InputEvent::Right
                 | InputEvent::Tab
+                | InputEvent::Enter
                 | InputEvent::CursorMoved(_) => {}
             },
         )
@@ -360,6 +373,7 @@ impl WorkspaceView {
                 | InputEvent::Left
                 | InputEvent::Right
                 | InputEvent::Tab
+                | InputEvent::Enter
                 | InputEvent::CursorMoved(_) => {}
             },
         )
@@ -397,6 +411,7 @@ impl WorkspaceView {
                 | InputEvent::Left
                 | InputEvent::Right
                 | InputEvent::Tab
+                | InputEvent::Enter
                 | InputEvent::CursorMoved(_) => {}
             },
         )
@@ -441,6 +456,7 @@ impl WorkspaceView {
                 InputEvent::Tab
                 | InputEvent::Left
                 | InputEvent::Right
+                | InputEvent::Enter
                 | InputEvent::CursorMoved(_) => {}
             },
         )
@@ -476,6 +492,7 @@ impl WorkspaceView {
                 InputEvent::Tab
                 | InputEvent::Left
                 | InputEvent::Right
+                | InputEvent::Enter
                 | InputEvent::CursorMoved(_) => {}
             },
         )

@@ -34,6 +34,7 @@ actions!(
         Cut,
         Copy,
         Submit,
+        ModifierSubmit,
         Newline,
         Cancel,
         Tab,
@@ -46,8 +47,11 @@ actions!(
 pub enum InputEvent {
     /// テキスト内容が変化した (IME 確定・文字入力・削除・貼り付け)。
     Changed(String),
-    /// `Enter` で確定・送信された。
+    /// 送信された。通常の入力欄は `Enter`、`enter_inserts_newline` の入力欄は ⌘/Ctrl+Enter。
     Submit(String),
+    /// `enter_inserts_newline` の入力欄で、修飾キーなしの `Enter` が押された。
+    /// 受け手が補完の確定か改行 (`insert_newline`) かを決める。
+    Enter,
     /// `Tab` キーが押下された。
     Tab,
     /// `Esc` でキャンセルされた。
@@ -79,6 +83,8 @@ pub fn bind_input_keys(cx: &mut App) {
         KeyBinding::new("home", Home, ctx),
         KeyBinding::new("end", End, ctx),
         KeyBinding::new("enter", Submit, ctx),
+        // Web の Composer (`shouldSendFromKey`) と同じく、macOS は Cmd+Enter、それ以外は Ctrl+Enter で送信する。
+        KeyBinding::new(MODIFIER_SUBMIT_KEY, ModifierSubmit, ctx),
         KeyBinding::new("tab", Tab, ctx),
         KeyBinding::new("shift-tab", TabPrev, ctx),
         KeyBinding::new("shift-enter", Newline, ctx),
@@ -99,6 +105,12 @@ pub fn bind_input_keys(cx: &mut App) {
         KeyBinding::new("ctrl-x", Cut, ctx),
     ]);
 }
+
+/// 送信のキー。`frontend` の `shouldSendFromKey` に合わせる。
+#[cfg(target_os = "macos")]
+const MODIFIER_SUBMIT_KEY: &str = "cmd-enter";
+#[cfg(not(target_os = "macos"))]
+const MODIFIER_SUBMIT_KEY: &str = "ctrl-enter";
 
 const MAX_VISIBLE_LINES: usize = 8;
 
@@ -131,6 +143,9 @@ pub struct TextInput {
     /// 文字の大きさと色は親から引き継ぎ、カーソル・選択・プレースホルダーの色は `Palette` から取る。
     /// 入力の処理 (IME など) は変わらない。
     pub bare: bool,
+    /// true なら `Enter` は改行の扱い (`InputEvent::Enter`) になり、送信は ⌘/Ctrl+Enter だけになる。
+    /// Composer 用 (Web の Composer と同じ)。
+    pub enter_inserts_newline: bool,
 }
 
 /// `bare` のときの、カーソル・選択・プレースホルダーの色 (`textarea.tsx` / `input.tsx` に合わせる)。
@@ -189,6 +204,7 @@ impl TextInput {
             intercept_tab: false,
             theme: theme::Theme::dark(),
             bare: false,
+            enter_inserts_newline: false,
         }
     }
 
@@ -422,7 +438,38 @@ impl TextInput {
     }
 
     fn submit(&mut self, _: &Submit, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.enter_inserts_newline {
+            // IME 変換中の Enter は確定に使う。
+            if self.marked_range.is_none() {
+                cx.emit(InputEvent::Enter);
+            }
+            return;
+        }
         self.request_submit(cx);
+    }
+
+    fn modifier_submit(
+        &mut self,
+        _: &ModifierSubmit,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.request_submit(cx);
+    }
+
+    /// カーソル位置に改行を入れる (複数行の入力欄だけ)。`InputEvent::Enter` の受け手が使う。
+    /// 選択範囲を改行で置き換える (`replace_text_in_range` と同じ処理。window は使わない)。
+    pub fn insert_newline(&mut self, cx: &mut Context<Self>) {
+        if !self.multiline || self.marked_range.is_some() {
+            return;
+        }
+        let range = self.selected_range.clone();
+        self.content.replace_range(range.clone(), "\n");
+        let cursor = range.start + 1;
+        self.selected_range = cursor..cursor;
+        self.selection_reversed = false;
+        cx.emit(InputEvent::Changed(self.content.clone()));
+        cx.notify();
     }
 
     fn tab(&mut self, _: &Tab, _window: &mut Window, cx: &mut Context<Self>) {
@@ -995,6 +1042,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::modifier_submit))
             .on_action(cx.listener(Self::tab))
             .on_action(cx.listener(Self::tab_prev))
             .on_action(cx.listener(Self::newline))
