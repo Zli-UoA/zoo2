@@ -186,6 +186,8 @@ async fn fixture(signing_secret: Option<&str>) -> anyhow::Result<Fixture> {
     config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
     config.slack.api_base_url = slack.uri();
     config.slack.signing_secret = signing_secret.map(str::to_string);
+    // 環境変数 SLACK_APP_ID に依らない (`message_event` の api_app_id と食い違うと、受信口がイベントを無視する)
+    config.slack.app_id = None;
     let db = init_db(&config.database_url).await?;
     let state = AppState::new(db, config);
     let app = create_router(state.clone());
@@ -863,5 +865,45 @@ async fn test_additions_use_the_full_reaction_list_when_users_were_truncated() -
     .await?;
     // 省略された UC も、完全な一覧から入る (UB・UC・UA の 3 行)
     assert_eq!(reactions_of(&f, &ts).await, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_missing_reactions_scope_does_not_stop_the_channel_sync() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let ts = f.ts_new.clone();
+    // users が一部 (count のほうが多い) で、補完の reactions.get が missing_scope になる
+    mock_fetch(
+        &f,
+        &ts,
+        json!([{"type":"message","ts":&ts,"user":"UA","text":"new post",
+        "reactions":[{"name":"thumbsup","users":["UB"],"count":3}]}]),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/reactions.get"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": false, "error": "missing_scope"})),
+        )
+        .mount(&f.slack)
+        .await;
+    deliver(
+        &f,
+        &reaction_event(&f.team, "C1", &ts, "UA", "thumbsup", false),
+    )
+    .await?;
+    // 確かめられないので、ヒントは残る。同期は止まらず、最後まで終わる (終わった時刻が入り、エラーがない)
+    assert_eq!(hints(&f).await.len(), 1);
+    let rows = sql(
+        &f.state,
+        "SELECT json_build_object('recent',last_synced_at>now()-interval '1 minute','error',last_error)::text \
+         FROM slack_channel_syncs WHERE team_id=$1",
+        &[&f.team],
+    )
+    .await?;
+    assert_eq!(rows[0]["recent"], true, "{}", rows[0]);
+    assert!(rows[0]["error"].is_null(), "{}", rows[0]);
     Ok(())
 }

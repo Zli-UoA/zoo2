@@ -40,7 +40,56 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// 再確認。失敗しても、通常の同期は止めない (再確認が 429 などで失敗し続けても、新しい投稿の取り込みを妨げない)。
+/// 失敗したら、5 分後にもう一度試す (`rechecked_at` を、30 分の間隔の 5 分前にする)。リースを失ったときだけは、そのまま返す
 pub(super) async fn run(
+    slack: &mut Slack,
+    ctx: &mut Context,
+    team: &str,
+    slack_channel: &str,
+    zoo_channel: &str,
+    lease_token: &str,
+    db: &mut toasty::Db,
+) -> Result<(), SyncError> {
+    let position = slack.position();
+    match run_inner(
+        slack,
+        ctx,
+        team,
+        slack_channel,
+        zoo_channel,
+        lease_token,
+        db,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(SyncError::LeaseLost) => Err(SyncError::LeaseLost),
+        Err(error) => {
+            let reason = match &error {
+                SyncError::RateLimited(secs) => format!("rate limited ({secs}s)"),
+                SyncError::NoAccess(e) | SyncError::Failed(e) => e.clone(),
+                _ => "invalid cursor".to_string(),
+            };
+            tracing::warn!(team, channel = slack_channel, %reason, "Slack recheck failed; the sync goes on");
+            // 全トークンを試し切った位置を戻す (後続の通常の同期の呼び出しが、トークンなしで失敗しないように)
+            slack.set_position(position);
+            let mut tx = db.transaction().await.map_err(AppError::from)?;
+            query(
+                &mut tx,
+                "UPDATE slack_channel_syncs SET rechecked_at=now()-interval '25 minutes' \
+                 WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
+                 RETURNING json_build_object('ok',true)::text",
+                &[team, slack_channel, lease_token],
+            )
+            .await?;
+            tx.commit().await.map_err(AppError::from)?;
+            Ok(())
+        }
+    }
+}
+
+async fn run_inner(
     slack: &mut Slack,
     ctx: &mut Context,
     team: &str,
@@ -53,6 +102,9 @@ pub(super) async fn run(
     let mut messages: Vec<SlackMessage> = Vec::new();
     let mut cursor: Option<String> = None;
     let mut complete = false;
+    // 応答の投稿を、すべて解析できたか。解析に失敗した投稿 (`parse_messages` が黙って捨てる) があると、
+    // その投稿を「履歴にない」と誤って判定するので、その回は削除しない
+    let mut intact = true;
     for _ in 0..MAX_PAGES {
         let mut params = vec![
             ("channel", slack_channel),
@@ -63,16 +115,24 @@ pub(super) async fn run(
             params.push(("cursor", cursor));
         }
         let page = slack.get("conversations.history", &params).await?;
-        messages.extend(parse_messages(&page));
+        let raw = page["messages"].as_array().map_or(0, Vec::len);
+        let parsed = parse_messages(&page);
+        if parsed.len() != raw {
+            intact = false;
+        }
+        messages.extend(parsed);
         let next = page["response_metadata"]["next_cursor"]
             .as_str()
             .filter(|c| !c.is_empty())
             .map(str::to_string);
-        if page["has_more"] == true && next.is_some() {
-            cursor = next;
-        } else {
+        if page["has_more"] != true {
             complete = true;
             break;
+        }
+        // `has_more` なのに、次のカーソルがない応答は、最後まで取れていない (削除は判定しない)
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
         }
     }
     let importable: Vec<SlackMessage> = messages
@@ -97,7 +157,7 @@ pub(super) async fn run(
 
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
-    if complete {
+    if complete && intact {
         let present: HashSet<&str> = messages.iter().map(|m| m.ts.as_str()).collect();
         let candidates = query(
             &mut tx,

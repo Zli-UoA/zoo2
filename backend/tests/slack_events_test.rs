@@ -187,6 +187,8 @@ async fn fixture(signing_secret: Option<&str>) -> anyhow::Result<Fixture> {
     config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
     config.slack.api_base_url = slack.uri();
     config.slack.signing_secret = signing_secret.map(str::to_string);
+    // 環境変数 SLACK_APP_ID に依らない (`message_event` の api_app_id と食い違うと、受信口がイベントを無視する)
+    config.slack.app_id = None;
     let db = init_db(&config.database_url).await?;
     let state = AppState::new(db, config);
     let app = create_router(state.clone());

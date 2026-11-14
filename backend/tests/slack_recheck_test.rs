@@ -578,3 +578,92 @@ async fn test_recheck_does_not_delete_a_reply_whose_parent_was_never_imported() 
     assert_eq!(row(&f, &id).await["deleted"], false);
     Ok(())
 }
+
+#[tokio::test]
+async fn test_recheck_does_not_delete_when_the_history_is_incomplete() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    let (t1, t2, t3) = (ts_at(10), ts_at(20), ts_at(30));
+    history(&f, json!([m(&t1, "a"), m(&t2, "b"), m(&t3, "c")])).await;
+    deliver(&f, &message_event(&f.team, "C1", &t1, None)).await?;
+    assert_eq!(count_messages(&f.state, &f.channel).await, 3);
+
+    // `has_more` なのに、次のカーソルがない: 最後まで取れていないので、t2・t3 が見えなくても、削除しない
+    f.slack.reset().await;
+    mount_basics(&f).await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [m(&t1, "a")], "has_more": true})),
+        )
+        .with_priority(2)
+        .mount(&f.slack)
+        .await;
+    trigger(&f, true).await?;
+    assert_eq!(count_messages(&f.state, &f.channel).await, 3);
+
+    // 解析できない投稿 (reactions が null) がある: その投稿を「履歴にない」と誤判定しない。t3 も、この回は削除しない
+    history(
+        &f,
+        json!([m(&t1, "a"), {"type":"message","ts":&t2,"user":"UA","text":"b","reactions":null}]),
+    )
+    .await;
+    trigger(&f, true).await?;
+    assert_eq!(count_messages(&f.state, &f.channel).await, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_a_failing_recheck_does_not_stop_the_normal_sync() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    // 再確認の履歴の取得 (最初の履歴の呼び出し) が 429 になっても、通常の同期は、新しい投稿を取り込む
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&f.slack)
+        .await;
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET rechecked_at=now()-interval '1 hour' WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    // `trigger` は、再確認の時期を戻すので使わず、合図だけ送る
+    let (status, _) = post_event(
+        &f.app,
+        SECRET,
+        now_secs(),
+        &message_event(&f.team, "C1", &f.ts_new, None),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET available_at=now()+interval '1 hour',last_synced_at=now()-interval '1 hour',not_before=NULL WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    drain(&f.state).await;
+    assert_eq!(
+        count_messages(&f.state, &f.channel).await,
+        1,
+        "the new post is imported"
+    );
+    // 再確認は、5 分後にもう一度試す (30 分の間隔の 5 分前)。30 分あとではない
+    let rows = sql(
+        &f.state,
+        "SELECT json_build_object('retry_in_minutes',extract(epoch FROM (rechecked_at+interval '30 minutes'-now()))/60)::text \
+         FROM slack_channel_syncs WHERE team_id=$1",
+        &[&f.team],
+    )
+    .await?;
+    let minutes = rows[0]["retry_in_minutes"].as_f64().unwrap();
+    assert!((3.0..=6.0).contains(&minutes), "{minutes}");
+    Ok(())
+}
