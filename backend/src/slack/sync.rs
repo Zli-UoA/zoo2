@@ -742,7 +742,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                     recent || message.reply_count.unwrap_or(0) > 0
                 } else {
                     // 軽い同期 (スレッドの総なめを省く) は、前回までの同期で返信を取った (`known`) スレッドの親が、カーソルを
-                    // 進めないせいで履歴に何度も出てきても、取り直さない。新しい返信は、次の全部取り直しか、イベントで取る
+                    // 進めないせいで履歴に何度も出てきても、取り直さない。新しい返信は、次の全部取り直しで取る (イベントでの取り込みは後続の変更)
                     recent
                         && progress.pending.len() < MAX_CANDIDATES
                         && !(light_now && progress.known.contains(&message.ts))
