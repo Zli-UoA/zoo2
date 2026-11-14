@@ -10,7 +10,8 @@ const select = new AsyncFunction('core', 'context', 'github', script);
 const K = 'zli-kubecamp-no-docker';
 const A = 'zli-k8s';
 const H = 'ubuntu-latest';
-const arc = (name = 'a', state = {}) => ({name: `zli-k8s-${name}`, status: 'online', busy: false, labels: [{name: A}], ...state});
+// ARC reports its runners by name; the scale set name is not one of their labels.
+const arc = (name = 'a', state = {}) => ({name: `zli-k8s-${name}`, status: 'online', busy: false, labels: [{name: 'self-hosted'}, {name: 'Linux'}, {name: 'X64'}], ...state});
 const camp = (state = {}) => ({name: 'kubecamp-runner-no-docker-1', status: 'online', busy: false, labels: [{name: K}], ...state});
 const pull = repo => ({pull_request: {head: {repo: {full_name: repo}}}});
 const PRICES = {'Actions Linux': 0.006, 'Actions Windows': 0.01, 'Actions storage': 0.00033602};
@@ -22,15 +23,16 @@ const privateRepo = {repository: {private: true}};
 const privateRepos = [{name: 'AuthZ'}, {name: 'repo'}];
 
 const cases = [
-  ['kubecamp first', {runners: [camp(), arc()]}, K, H],
-  ['busy kubecamp falls back to hosted before ARC', {runners: [camp({busy: true}), arc()]}, H, H],
-  ['offline kubecamp is ignored', {runners: [camp({status: 'offline'}), arc()]}, H, H],
+  ['kubecamp first', {runners: [camp(), arc()]}, K, H, A],
+  ['busy kubecamp falls back to hosted before ARC', {runners: [camp({busy: true}), arc()]}, H, H, A],
+  ['offline kubecamp is ignored', {runners: [camp({status: 'offline'}), arc()]}, H, H, A],
   ['no runners', {runners: []}, H, H],
   ['kubecamp name needs its routing label', {runners: [camp({labels: []})]}, H, H],
   ['kubecamp label matches another name', {runners: [camp({name: 'another'})]}, K, H],
   ['missing labels are safe', {runners: [camp({labels: undefined})]}, H, H],
-  ['API error keeps kubecamp', {error: true}, K, H],
-  ['missing token keeps kubecamp', {token: false}, K, H],
+  ['API error keeps kubecamp and uses hosted for Docker', {error: true}, K, H],
+  ['API error with hosted unavailable queues Docker on ARC', {payload: privateRepo, error: true, usage: [usage('repo', 1900)]}, K, A],
+  ['missing token keeps kubecamp and uses hosted for Docker', {token: false}, K, H],
   ['fork PR is hosted', {event: 'pull_request', payload: pull('someone/repo')}, H, H],
   ['same-repo PR prefers kubecamp', {event: 'pull_request', payload: {...pull('Zli-UoA/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
   ['trusted pull_request_target can use kubecamp', {event: 'pull_request_target', payload: {...pull('someone/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
@@ -45,8 +47,22 @@ const cases = [
     warning: 'Hosted minutes unavailable: GET /organizations/{org}/settings/billing/usage (403; accepted permissions: administration=read)'}, A, A],
   ['repository list error names the call', {payload: privateRepo, reposError: true, warning: 'Hosted minutes unavailable: GET /orgs/{org}/repos (403)'}, A, A],
   ['private without token uses ARC', {payload: privateRepo, token: false}, K, A],
+  ['idle ARC is preferred over hosted for Docker only', {runners: [arc()]}, H, H, A],
+  ['busy ARC falls back to hosted for Docker', {runners: [arc('a', {busy: true})]}, H, H],
+  ['offline ARC is ignored', {runners: [arc('a', {status: 'offline'})]}, H, H],
+  ['one idle ARC runner among busy ones is enough', {runners: [arc('a', {busy: true}), arc('b')]}, H, H, A],
+  ['ARC runner without labels is identified by its scale set name', {runners: [arc('a', {labels: []})]}, H, H, A],
+  ['missing ARC labels fall back to the name', {runners: [arc('a', {labels: undefined})]}, H, H, A],
+  ['ARC runner with the label is found under another name', {runners: [arc('a', {name: 'other-1', labels: [{name: A}]})]}, H, H, A],
+  ['runner with neither the name nor the label is not ARC', {runners: [arc('a', {name: 'other-1', labels: []})]}, H, H],
+  ['kubecamp runners are not ARC', {runners: [camp()]}, K, H],
+  ['busy unlabeled ARC runner is not idle', {runners: [arc('a', {labels: [], busy: true})]}, H, H],
+  ['idle ARC while private repository is out of minutes', {payload: privateRepo, runners: [arc()], usage: [usage('AuthZ', 1900)]}, A, A],
+  ['busy ARC and no minutes queues on ARC', {payload: privateRepo, runners: [arc('a', {busy: true})], usage: [usage('AuthZ', 1900)]}, A, A],
+  ['kubecamp and ARC are chosen independently', {runners: [camp({busy: true}), arc('a', {busy: true})]}, H, H],
+  ['fork PR stays hosted even with an idle ARC', {event: 'pull_request', payload: pull('someone/repo'), runners: [arc()]}, H, H],
 ];
-for (const [name, input, expected, hostedExpected] of cases) {
+for (const [name, input, expected, hostedExpected, dockerExpected = hostedExpected] of cases) {
   test(`select-runner: ${name}`, async () => {
     const outputs = {};
     const calls = {runners: 0, repos: 0, billing: 0};
@@ -78,7 +94,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
         if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403, response: {headers: {'x-accepted-github-permissions': 'administration=read'}}});
         return {data: {usageItems: input.usage || []}};
       }});
-    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': hostedExpected});
+    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': dockerExpected, 'large-runs-on': hostedExpected});
     const checksMinutes = !fork && input.token !== false && payload.repository?.private !== false;
     assert.deepEqual(calls, {
       runners: fork || input.token === false ? 0 : 1,
@@ -133,7 +149,7 @@ test('every workload uses the right output and protects fork PRs', () => {
       }
       const docker = (dockerJobs[file] || []).includes(id);
       const large = (file === 'ci-frontend.yaml' && id === 'browser-test') ||
-        (file === 'ci-backend.yaml' && id === 'check');
+        (file === 'ci-backend.yaml' && (id === 'check' || id === 'e2e'));
       const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);
       const mac = (macJobs[file] || []).includes(id);
@@ -152,7 +168,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
       } else {
         assert.ok(block.includes(`needs.runner.outputs.${large ? 'large-runs-on' : docker ? 'docker-runs-on' : 'runs-on'}`), `${file}/${id}: wrong pool`);
-        if (docker) {
+        if (docker && !large) {
           assert.ok(block.includes(`docker-runs-on || '"${H}"'`), `${file}/${id}: Docker fallback must be hosted`);
         }
       }
