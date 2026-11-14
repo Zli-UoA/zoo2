@@ -6,6 +6,7 @@ import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
+import { MentionUserNamesContext } from "../../../lib/e2ee/messageDecryption";
 import { storyAttachments } from "../../../../.storybook/attachment-fixtures";
 import { MessageRow } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
@@ -427,6 +428,38 @@ export const EncryptedDecrypted: Story = {
     await expect(
       canvas.getByRole("button", { name: "リンクのプレビューを読み込む" }),
     ).toBeVisible();
+  }),
+};
+
+const storyUserNames = new Map(storyUsers.map((user) => [user.id, user.user_name]));
+
+/**
+ * 暗号化メッセージのメンションは、復号した `mentions` だけで表示する。本文に `@bob` や `@channel` が
+ * あっても、`mentions` になければメンションとして表示しない（docs/e2ee.md の「Megolm の平文」）。
+ */
+export const EncryptedMentions: Story = {
+  decorators: [
+    (Story) => (
+      <MentionUserNamesContext.Provider value={storyUserNames}>
+        <Story />
+      </MentionUserNamesContext.Provider>
+    ),
+  ],
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "@alice さん、確認をお願いします。@bob さんと @channel にも共有します。",
+      kind: "message",
+      mentions: { user_ids: ["user-alice"], channel: false, here: false },
+      sender: "verified",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const body = canvasElement.querySelector(".mfm-body");
+    await expect(body?.querySelectorAll(".bg-brand-muted")).toHaveLength(1);
+    await expect(body?.querySelector(".bg-brand-muted")).toHaveTextContent("@alice");
+    await expect(body).toHaveTextContent("@bob さんと @channel にも共有します。");
   }),
 };
 
