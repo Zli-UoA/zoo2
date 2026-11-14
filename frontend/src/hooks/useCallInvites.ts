@@ -1,7 +1,7 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { createConfiguredApiClient } from "../lib/api/client";
+import { createConfiguredApiClient, type ApiClient, type RequestOptions } from "../lib/api/client";
 import {
   callInviteDurationMs,
   callInviteExpiresAt,
@@ -56,8 +56,22 @@ export function useCallInvites(): SplitCallInvites {
   );
 }
 
-/** 招待の API を呼ぶクライアント（設定ごとに 1 つ）。 */
-export function useCallInviteApi() {
+/**
+ * 招待の API を呼ぶクライアント（設定ごとに 1 つ）。
+ *
+ * クライアントは、最初のリクエストのときに作る。`CallBar` は通話していないときも、このフックを呼ぶ。
+ * 描画のたびに作ると、開発用のユーザー ID などがない設定（テストなど）で、描画だけが失敗する。
+ */
+export function useCallInviteApi(): { request: ApiClient["request"] } {
   const { config } = useCollections();
-  return useMemo(() => createConfiguredApiClient(config), [config]);
+  return useMemo(() => {
+    let client: ApiClient | null = null;
+    return {
+      request: ((path: string, options?: RequestOptions) =>
+        (client ??= createConfiguredApiClient(config)).request(
+          path,
+          options,
+        )) as ApiClient["request"],
+    };
+  }, [config]);
 }
