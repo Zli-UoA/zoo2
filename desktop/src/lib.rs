@@ -3,6 +3,7 @@ pub mod assets;
 pub mod fonts;
 pub mod gallery;
 pub mod gallery_components;
+pub mod gallery_shell;
 pub mod i18n;
 pub mod icons;
 pub mod input;

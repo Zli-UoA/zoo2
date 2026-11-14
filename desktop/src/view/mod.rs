@@ -8,7 +8,9 @@ use jiff::{Zoned, civil::DateTime, tz::TimeZone};
 
 use crate::{
     app::AppState,
+    i18n::I18n,
     input::{InputEvent, TextInput},
+    ui::Palette,
 };
 
 mod auth;
@@ -19,12 +21,18 @@ mod shell;
 
 pub use chat::{
     CARD_DESC_MAX_CHARS, CARD_DESC_MAX_LINES, format_file_size, is_ogp_description_long,
-    render_attachment_item, render_ogp_card, truncate_ogp_description,
+    render_message_attachments, render_ogp_card, truncate_ogp_description,
 };
+
+/// 3 ペインの枠 (`ShellSkeleton`) だけを出すか。自分の情報が届くまで。
+/// 同期のエラーが出ていれば通常のシェルを出し、サイドバーの再試行から進められるようにする。
+/// ネットワーク障害が静かに再試行されている間も、ログアウトやテーマの切り替えを塞がない。
+pub fn shows_shell_skeleton(me_loaded: bool, has_sync_error: bool) -> bool {
+    !me_loaded && !has_sync_error
+}
 
 pub struct WorkspaceView {
     pub state: Entity<AppState>,
-    pub search_input: Entity<TextInput>,
     pub composer_input: Entity<TextInput>,
     pub reaction_input: Entity<TextInput>,
     pub create_channel_name_input: Entity<TextInput>,
@@ -32,15 +40,28 @@ pub struct WorkspaceView {
     pub quick_switcher_input: Entity<TextInput>,
     pub message_search_input: Entity<TextInput>,
     pub timeline_scroll: ScrollHandle,
+    pub sidebar_scroll: ScrollHandle,
+    /// サイドバーの「チャンネル」「ダイレクトメッセージ」の開閉 (`CollapsibleSection` の `defaultOpen`)。
+    pub sidebar_channels_open: bool,
+    pub sidebar_dms_open: bool,
+    pub i18n: I18n,
     pub thread_scroll: ScrollHandle,
     pub quick_switcher_scroll: ScrollHandle,
     pub emoji_picker_scroll: ScrollHandle,
     pub create_channel_private_focus: FocusHandle,
     pub theme_toggle_focus: FocusHandle,
+    pub load_older_focus: FocusHandle,
+    pub jump_to_latest_focus: FocusHandle,
+    pub retry_sync_focus: FocusHandle,
     pub expanded_cards: std::collections::HashSet<String>,
     pub card_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     pub attachment_focus_handles:
         std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
+    /// メッセージのツールバーのボタンのフォーカス (キーは `{pane}:{msg}:{action}`)。
+    pub toolbar_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
+    /// この描画でフォーカスがあるツールバーのボタン (`{pane}:{msg}:{action}`)。
+    /// その行はツールバーを出したままにする。
+    pub focused_toolbar_key: Option<String>,
     focus_handle: FocusHandle,
     login_primary_focus: FocusHandle,
     login_secondary_focus: FocusHandle,
@@ -55,7 +76,6 @@ impl Focusable for WorkspaceView {
 
 impl WorkspaceView {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let search_input = cx.new(|cx| TextInput::new_single_line(cx, "チャンネル・DM を検索…"));
         let composer_input = cx.new(|cx| {
             TextInput::new_multiline(cx, "メッセージを入力 (Enter で送信、Shift+Enter で改行)…")
         });
@@ -76,41 +96,6 @@ impl WorkspaceView {
             input.intercept_vertical_arrows = true;
             input
         });
-
-        cx.subscribe(
-            &search_input,
-            |this: &mut Self, _, event: &InputEvent, cx| match event {
-                InputEvent::Changed(text) => {
-                    this.state.update(cx, |state, cx| {
-                        state.search_query = text.clone();
-                        cx.notify();
-                    });
-                }
-                InputEvent::Submit(_) => {
-                    this.state.update(cx, |state, cx| {
-                        if let Some(first) = state.filtered_channels().first().map(|c| c.id.clone())
-                        {
-                            state.open_channel(first);
-                            cx.notify();
-                        }
-                    });
-                }
-                InputEvent::Cancel => {
-                    this.search_input.update(cx, |input, cx| input.clear(cx));
-                    this.state.update(cx, |state, cx| {
-                        state.search_query.clear();
-                        cx.notify();
-                    });
-                }
-                InputEvent::Up
-                | InputEvent::Down
-                | InputEvent::Left
-                | InputEvent::Right
-                | InputEvent::Tab
-                | InputEvent::CursorMoved(_) => {}
-            },
-        )
-        .detach();
 
         cx.subscribe(
             &composer_input,
@@ -466,7 +451,6 @@ impl WorkspaceView {
         cx.observe(&state, |this, state, cx| {
             let (
                 pending_composer,
-                pending_search,
                 pending_open_url,
                 is_mention_active,
                 is_emoji_picker_open,
@@ -474,7 +458,6 @@ impl WorkspaceView {
             ) = state.update(cx, |s, _| {
                 (
                     s.pending_composer_text.take(),
-                    s.pending_search_text.take(),
                     s.pending_open_url.take(),
                     s.mention_autocomplete.is_some(),
                     s.emoji_picker_open,
@@ -490,10 +473,6 @@ impl WorkspaceView {
                     }
                 });
             }
-            if let Some(text) = pending_search {
-                this.search_input
-                    .update(cx, |input, cx| input.set_text(text, cx));
-            }
             if let Some(url) = pending_open_url {
                 cx.open_url(&url);
             }
@@ -502,7 +481,6 @@ impl WorkspaceView {
                 input.intercept_horizontal_arrows = is_emoji_picker_open;
                 input.intercept_tab = is_mention_active || is_emoji_picker_open;
             });
-            this.search_input.update(cx, |i, _| i.theme = theme);
             this.composer_input.update(cx, |i, _| i.theme = theme);
             this.reaction_input.update(cx, |i, _| i.theme = theme);
             this.create_channel_name_input
@@ -517,7 +495,6 @@ impl WorkspaceView {
 
         Self {
             state,
-            search_input,
             composer_input,
             reaction_input,
             create_channel_name_input,
@@ -525,14 +502,23 @@ impl WorkspaceView {
             quick_switcher_input,
             message_search_input,
             timeline_scroll: ScrollHandle::new(),
+            sidebar_scroll: ScrollHandle::new(),
+            sidebar_channels_open: true,
+            sidebar_dms_open: true,
+            i18n: I18n::detect(),
             thread_scroll: ScrollHandle::new(),
             quick_switcher_scroll: ScrollHandle::new(),
             emoji_picker_scroll: ScrollHandle::new(),
             create_channel_private_focus: cx.focus_handle().tab_stop(true),
             theme_toggle_focus: cx.focus_handle().tab_stop(true),
+            load_older_focus: cx.focus_handle().tab_stop(true),
+            jump_to_latest_focus: cx.focus_handle().tab_stop(true),
+            retry_sync_focus: cx.focus_handle().tab_stop(true),
             expanded_cards: std::collections::HashSet::new(),
             card_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             attachment_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
+            toolbar_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
+            focused_toolbar_key: None,
             focus_handle: cx.focus_handle(),
             login_primary_focus: cx.focus_handle(),
             login_secondary_focus: cx.focus_handle(),
@@ -543,11 +529,29 @@ impl WorkspaceView {
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 部品 (`ui/`) は `Palette` を読む。旧テーマのモードに合わせて入れ直す。
+        let mode = shell::left_rail::token_mode(self.state.read(cx).theme_mode);
+        if cx.try_global::<Palette>().map(|p| p.mode) != Some(mode) {
+            cx.set_global(Palette::new(mode));
+        }
+
         let login_phase = self.state.read(cx).login_phase.clone();
         if let Some(phase) = login_phase {
             return div()
                 .size_full()
                 .child(self.render_login_view(&phase, window, cx));
+        }
+
+        // 自分の情報がまだ無いあいだは、3 ペインの枠だけを出す (`ShellSkeleton`)。
+        // チャンネル一覧の読み込みは、通常のシェルのサイドバーが行の骨組みで受ける。
+        let loading_shell = {
+            let s = self.state.read(cx);
+            shows_shell_skeleton(s.me.is_some(), s.sync_error().is_some())
+        };
+        if loading_shell {
+            return div()
+                .size_full()
+                .child(shell::shell_skeleton::render_shell_skeleton(true, cx));
         }
 
         // ウィンドウのアクティブ状態とタイムライン・スレッドのスクロール位置を AppState に同期し、
@@ -572,8 +576,16 @@ impl Render for WorkspaceView {
             .state
             .update(cx, |s, _| s.pending_scroll_to_message_id.take());
 
-        let (timeline_div, timeline_scroll_target) =
-            self.render_timeline_view(pending_scroll_id.as_deref(), cx);
+        self.focused_toolbar_key = self
+            .toolbar_focus_handles
+            .borrow()
+            .iter()
+            .find(|(_, h)| h.is_focused(window))
+            .map(|(key, _)| key.clone());
+
+        let channels = self.channel_links(cx);
+        let (timeline_div, timeline_scroll_target, timeline_placeholder) =
+            self.render_timeline_view(pending_scroll_id.as_deref(), channels.clone(), cx);
         if let Some(target_idx) = timeline_scroll_target {
             self.timeline_scroll.scroll_to_item(target_idx);
             self.state.update(cx, |s, _| {
@@ -581,17 +593,25 @@ impl Render for WorkspaceView {
             });
         } else if scroll_to_bottom {
             self.timeline_scroll.scroll_to_bottom();
-            self.state
-                .update(cx, |s, _| s.update_timeline_view_state(window_active, true));
+            self.state.update(cx, |s, _| {
+                // placeholder の間は一覧がなく動かせないので、要求を次の描画へ戻す。
+                if timeline_placeholder {
+                    s.pending_scroll_to_bottom = true;
+                }
+                s.update_timeline_view_state(window_active, true)
+            });
         } else if pending_scroll_id.is_some() {
             // 返信へ移る途中。タイムラインの古いスクロール位置から最下部と判定して既読にしない。
             self.state.update(cx, |s, _| {
                 s.update_timeline_view_state(window_active, false);
             });
         } else {
-            let max_y = self.timeline_scroll.max_offset().height;
-            let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));
-            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
+            // placeholder 表示中は ScrollArea がなく、スクロールの値は前のチャンネルのまま。最下部として扱う。
+            let at_bottom = timeline_placeholder || {
+                let max_y = self.timeline_scroll.max_offset().height;
+                let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));
+                max_y <= px(4.0) || (max_y - cur_y) <= px(24.0)
+            };
             self.state.update(cx, |s, _| {
                 s.update_timeline_view_state(window_active, at_bottom)
             });
@@ -606,7 +626,13 @@ impl Render for WorkspaceView {
                 .is_some_and(|id| state.is_encrypted_channel(id))
         });
         let (thread_div, thread_scroll_target) = if let Some(root_id) = &thread_root {
-            let (div, target) = self.render_thread_view(root_id, pending_scroll_id.as_deref(), cx);
+            let (div, target) = self.render_thread_view(
+                root_id,
+                pending_scroll_id.as_deref(),
+                channels,
+                window,
+                cx,
+            );
             (Some(div), target)
         } else {
             (None, None)
@@ -632,7 +658,6 @@ impl Render for WorkspaceView {
         let has_quick_switcher = state_ref.quick_switcher.is_some();
         let has_emoji_picker = state_ref.emoji_picker_open;
         let has_message_search = state_ref.message_search.is_some();
-        let theme = state_ref.theme();
 
         let should_focus_composer = self
             .state
@@ -646,7 +671,7 @@ impl Render for WorkspaceView {
             window.focus(&self.composer_input.focus_handle(cx));
         }
 
-        let main_view = self.render_app_shell(timeline_div, thread_div, theme, cx);
+        let main_view = self.render_app_shell(timeline_div, thread_div, cx);
 
         if has_create_modal || has_quick_switcher || has_emoji_picker {
             div()
@@ -682,4 +707,21 @@ pub fn local_time_string(at: DateTime) -> String {
 
 fn is_activate_key(key: &str) -> bool {
     matches!(key, "enter" | "space" | " ")
+}
+
+#[cfg(test)]
+mod shell_skeleton_tests {
+    use super::shows_shell_skeleton;
+
+    #[test]
+    fn skeleton_only_until_me_is_loaded() {
+        assert!(shows_shell_skeleton(false, false));
+        assert!(!shows_shell_skeleton(true, false));
+        assert!(!shows_shell_skeleton(true, true));
+    }
+
+    #[test]
+    fn sync_error_opens_the_shell_for_retry() {
+        assert!(!shows_shell_skeleton(false, true));
+    }
 }

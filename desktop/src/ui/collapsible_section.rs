@@ -130,12 +130,11 @@ impl RenderOnce for CollapsibleSection {
                     .size(px(16.0))
                     .child(icon_colored(self.icon, 16.0, fg)),
             )
-            .child(div().truncate().child(self.title))
+            .child(div().flex_1().min_w_0().truncate().child(self.title))
             .when_some(self.count, |d, count| {
                 // `ml-auto shrink-0 px-1 font-normal tabular-nums`
                 d.child(
                     div()
-                        .ml_auto()
                         .flex_none()
                         .px(px(4.0))
                         .font(fonts::sans(400.0))

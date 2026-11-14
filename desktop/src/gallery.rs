@@ -217,6 +217,18 @@ impl Render for Gallery {
 /// ギャラリーのウィンドウを開く。モードは `tokens::initial_mode()` (`--theme`) に従う。
 /// `args` は `gallery` の後ろの引数。`components [ページ]` なら UI 部品のページを開く。
 pub fn run(args: &[String]) {
+    if args.first().map(String::as_str) == Some("shell") {
+        match crate::gallery_shell::Scenario::parse(args.get(1).map(String::as_str)) {
+            Some(scenario) => crate::gallery_shell::run(scenario),
+            None => {
+                eprintln!(
+                    "gallery shell の引数は workspace、loading、welcome、thread のどれかです"
+                );
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     let components_page = match args.first().map(String::as_str) {
         Some("components") => Some(
             args.get(1)
