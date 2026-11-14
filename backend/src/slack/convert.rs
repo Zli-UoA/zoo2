@@ -329,7 +329,7 @@ pub fn reformat_stored(content: &str) -> Option<String> {
     if content.contains(ZWSP) || ["**", "~~", "<i>"].iter().any(|m| content.contains(m)) {
         return None;
     }
-    let mut toks: Vec<Tok> = Vec::with_capacity(content.len().min(MAX_FORMAT_INPUT_CHARS));
+    let mut toks: Vec<Tok> = Vec::with_capacity(content.len().min(MAX_FORMAT_CHARS));
     let mut rest = content;
     let mut prev: Option<char> = None;
     while let Some(c) = rest.chars().next() {
