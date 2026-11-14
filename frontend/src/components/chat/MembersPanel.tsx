@@ -1,13 +1,14 @@
 import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
-import { ArrowLeftIcon, SearchIcon, UserMinusIcon } from "lucide-react";
+import { ArrowLeftIcon, SearchIcon, ShieldAlertIcon, UserMinusIcon } from "lucide-react";
 import { Fragment, useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { canKickChannelMember } from "../../hooks/channelPermissions";
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useChannelMembers, useUsers, useWorkspaceAdminIds } from "../../hooks/useRealtime";
+import { useUnreadableMembers } from "../../hooks/useUnreadableMembers";
 import { useWriteRunner } from "../../hooks/useWriteRunner";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
@@ -68,6 +69,8 @@ export function MembersPanel({
   const { locale } = useLocale();
   const { channelUsers } = useCollections();
   const membersQuery = useChannelMembers(channel.id);
+  // 暗号化チャンネルで、新しいメッセージを読めないメンバー（暗号化を設定していない、端末がない）。
+  const unreadable = useUnreadableMembers(channel);
   const usersQuery = useUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const { error, setError, run } = useWriteRunner();
@@ -299,6 +302,8 @@ export function MembersPanel({
                     const label = userNames.get(member.user_id) ?? member.user_id;
                     const isCreator = member.user_id === channel.created_user_id;
                     const isMe = member.user_id === currentUserId;
+                    // Bot は人の端末と鍵の作りが違う（#502）ので、ここでは警告を出さない。
+                    const unreadableReason = isBot ? undefined : unreadable.get(member.user_id);
                     const canKick =
                       !isArchived &&
                       !adminIdsLoading &&
@@ -322,6 +327,18 @@ export function MembersPanel({
                               label
                             )}
                           </span>
+                          {unreadableReason ? (
+                            <span
+                              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[0.65rem] font-medium text-amber-800 dark:text-amber-300"
+                              title={t(`e2ee.memberUnreadable.${unreadableReason}Description`)}
+                            >
+                              <ShieldAlertIcon className="size-3" aria-hidden="true" />
+                              {t(`e2ee.memberUnreadable.${unreadableReason}`)}
+                              <span className="sr-only">
+                                {t(`e2ee.memberUnreadable.${unreadableReason}Description`)}
+                              </span>
+                            </span>
+                          ) : null}
                           {isCreator ? (
                             <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
                               {t("members.creator")}

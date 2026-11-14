@@ -1,6 +1,7 @@
 import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { http, HttpResponse } from "msw";
 import { expect, screen, userEvent, waitFor } from "storybook/test";
 
 import { storyChannels, storyCollections, storyChannelUsers } from "../../../.storybook/fixtures";
@@ -72,5 +73,46 @@ export const UserAvatar: Story = {
       const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
       await expect(image?.naturalWidth).toBeGreaterThan(0);
     });
+  }),
+};
+
+/**
+ * 暗号化チャンネルで、新しいメッセージを読めないメンバーに警告を出す。user-alice は暗号化を設定して
+ * 端末があり、user-bob は暗号化を設定していない（配布先のスナップショットにクロス署名鍵がない）。
+ */
+export const EncryptedUnreadableMember: Story = {
+  args: { channel: { ...secret, encrypted: true, membership_epoch: "1" } },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/e2ee/channels/:id/recipients", () =>
+          HttpResponse.json({
+            channel_id: secret.id,
+            membership_epoch: "1",
+            user_ids: ["user-alice", "user-bob"],
+            device_keys: {
+              "user-alice": {
+                ALICE1: {
+                  device_id: "ALICE1",
+                  signatures: { "user-alice": { "ed25519:ALICESSK": "sig" } },
+                },
+              },
+              "user-bob": {},
+            },
+            master_keys: { "user-alice": { keys: { "ed25519:ALICEMSK": "ALICEMSK" } } },
+            self_signing_keys: { "user-alice": { keys: { "ed25519:ALICESSK": "ALICESSK" } } },
+            user_signing_keys: {},
+            signatures: [],
+            tofu_pins: {},
+            next_after: null,
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    const warnings = await screen.findAllByText("暗号化未設定");
+    await expect(warnings).toHaveLength(1);
+    await expect(warnings[0]).toBeVisible();
   }),
 };

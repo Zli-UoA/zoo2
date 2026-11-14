@@ -1222,6 +1222,12 @@
     "reunlockToAdd": "Unlock again to add a passkey",
     "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey or regenerate the recovery key. This device stays unlocked either way.",
     "badge": "Encrypted",
+    "memberUnreadable": {
+      "notSetUp": "No encryption",
+      "notSetUpDescription": "Hasn't set up encryption, so they can't read new messages in this channel.",
+      "noDevices": "No devices",
+      "noDevicesDescription": "Has no device for encryption, so they can't read new messages in this channel."
+    },
     "encryptChannel": "Encrypt end-to-end",
     "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later.",
     "encryptChannelPrivateOnly": "Only private channels can be encrypted.",
