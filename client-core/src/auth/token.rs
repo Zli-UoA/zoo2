@@ -1137,6 +1137,17 @@ impl TokenManager {
         ))
     }
 
+    /// ログアウトする。以後この manager は token を保存せず、保存済みの session の
+    /// refresh token は、IdP に失効を要求してから `token.json` を消す。
+    /// 失効の要求は期限付きで、IdP に届かなくてもローカルのログアウトは進む。
+    pub async fn sign_out_and_revoke(&self) -> Result<bool> {
+        *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        Ok(matches!(
+            logout(&self.path, &self.oidc, &self.http).await?,
+            DeleteOutcome::Deleted
+        ))
+    }
+
     fn signed_out(&self) -> bool {
         !*self.persist.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -3206,6 +3217,38 @@ mod tests {
         let err = manager.access_token().await.unwrap_err();
         assert!(err.downcast_ref::<HttpError>().is_none(), "{err}");
         delete(&path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sign_out_and_revoke_revokes_the_refresh_token_and_removes_the_file() {
+        let server = MockServer::start().await;
+        let issuer = format!("{}/api/auth", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/api/auth/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "issuer": issuer,
+                "token_endpoint": format!("{}/token", server.uri()),
+                "revocation_endpoint": format!("{}/revoke", server.uri())
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/revoke"))
+            .and(body_string_contains("token=old-refresh"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let config = oidc(&issuer);
+        let path = temp_path("sign-out-and-revoke");
+        let initial = tokens(&config, now() + 3600, Some("old-refresh"));
+        save(&path, &initial).unwrap();
+        let manager = TokenManager::new(reqwest::Client::new(), config, path.clone(), initial);
+
+        assert!(manager.sign_out_and_revoke().await.unwrap());
+        assert!(!path.exists());
+        assert!(manager.access_token().await.is_err());
     }
 
     #[tokio::test]

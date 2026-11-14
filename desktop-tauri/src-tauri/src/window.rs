@@ -32,13 +32,25 @@ pub enum Origin {
     Other,
 }
 
+/// 同梱の画面のオリジンか。プラットフォームごとに完全一致で判定する。
+///
+/// macOS と Linux は `tauri://localhost`、Windows は `http(s)://tauri.localhost` (ポートなし)。
+/// ほかのプラットフォームのオリジンや、ポート付きのループバックは同梱として扱わない。
+/// 開発中は trunk の dev サーバー (tauri.conf.json の devUrl)。
+fn is_bundled_url(url: &Url, windows: bool) -> bool {
+    let exact_host = |host: &str| url.host_str() == Some(host) && url.port().is_none();
+    let platform = if windows {
+        matches!(url.scheme(), "http" | "https") && exact_host("tauri.localhost")
+    } else {
+        url.scheme() == "tauri" && exact_host("localhost")
+    };
+    platform
+        || (cfg!(debug_assertions) && url.origin().ascii_serialization() == "http://localhost:1420")
+}
+
 pub fn classify(url: &Url, core: &Core) -> Origin {
     let origin = url.origin().ascii_serialization();
-    // 同梱の画面は、macOS と Linux では tauri://localhost、Windows では http(s)://tauri.localhost。
-    // 開発中は trunk の dev サーバー (tauri.conf.json の devUrl)。
-    let bundled = url.scheme() == "tauri"
-        || url.host_str() == Some("tauri.localhost")
-        || (cfg!(debug_assertions) && origin == "http://localhost:1420");
+    let bundled = is_bundled_url(url, cfg!(windows));
     if bundled {
         return Origin::Bundled;
     }
@@ -272,5 +284,30 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             });
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod bundled_origin_tests {
+    use super::*;
+
+    fn bundled(url: &str, windows: bool) -> bool {
+        is_bundled_url(&Url::parse(url).unwrap(), windows)
+    }
+
+    #[test]
+    fn bundled_origin_is_matched_exactly_per_platform() {
+        assert!(bundled("tauri://localhost/index.html", false));
+        assert!(bundled("http://tauri.localhost/index.html", true));
+        assert!(bundled("https://tauri.localhost/", true));
+        // 別のプラットフォームのオリジン
+        assert!(!bundled("http://tauri.localhost/", false));
+        assert!(!bundled("tauri://localhost/", true));
+        // ポート付きのループバックや、似たホスト名
+        assert!(!bundled("http://tauri.localhost:8123/x", false));
+        assert!(!bundled("http://tauri.localhost:8123/x", true));
+        assert!(!bundled("tauri://localhost:1/", false));
+        assert!(!bundled("http://evil.tauri.localhost/", true));
+        assert!(!bundled("ftp://tauri.localhost/", true));
     }
 }

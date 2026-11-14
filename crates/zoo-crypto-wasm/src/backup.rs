@@ -88,7 +88,8 @@ impl BackupDecryptionKey {
         })
     }
 
-    /// バックアップの行をまとめて取り込み、取り込めた数を返す（復号できない行は飛ばす）。
+    /// バックアップの行をまとめて取り込み、**捨てた行の数**を返す（取り込んだ数ではない）。
+    /// 復号できない行は飛ばす。0 なら、すべて取り込めた。
     #[wasm_bindgen(js_name = importRows)]
     pub fn import_rows(
         &self,

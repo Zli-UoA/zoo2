@@ -516,15 +516,19 @@ export class OidcClient {
     const error = params.get("error");
     if (error) {
       const state = params.get("state");
-      if (state) {
-        const pending = takePendingForState(
-          this.environment.storage,
-          state,
-          this.environment.now(),
-        );
-        if (pending.kind === "state_mismatch") {
-          throw new OidcError("state_mismatch", "state が一致しません");
-        }
+      const pending = state
+        ? takePendingForState(this.environment.storage, state, this.environment.now())
+        : null;
+      if (pending?.kind === "state_mismatch") {
+        throw new OidcError("state_mismatch", "state が一致しません");
+      }
+      if (pending?.kind !== "taken") {
+        // 保留中の認可リクエストと結び付かない error は、リンクで渡された文字列かもしれない。
+        // プロバイダーの文字列は表示せず、固定の文面にする。
+        throw new OidcError("authorization_failed", "認可に失敗しました", {
+          source: "client",
+          reason: "authorization_failed",
+        });
       }
       const description = params.get("error_description");
       throw new OidcError(error, description ?? `認可エラー: ${error}`, {

@@ -117,6 +117,22 @@ export function text(value: unknown, max = 1500): string {
     .slice(0, max)
     .join("");
 }
+// Wrap untrusted GitHub text so Zoo renders it as plain text, not MFM (links, mentions, etc.).
+// MFM is parsed per line, so each non-empty line is wrapped on its own. Any `<plain>` tag in the
+// input is removed first, so the text cannot close the wrapper early.
+export function plain(value: string): string {
+  return value
+    .split("\n")
+    .map((line) => {
+      let clean = line;
+      for (let prev = ""; prev !== clean; ) {
+        prev = clean;
+        clean = clean.replace(/<\/?plain>/gi, "");
+      }
+      return clean.trim() ? `<plain>${clean}</plain>` : clean;
+    })
+    .join("\n");
+}
 export function actor(event: AppEvent): string {
   if (!event.actor_id || !event.channel_id)
     throw new BotError("利用者とチャンネルを確認できません。");
