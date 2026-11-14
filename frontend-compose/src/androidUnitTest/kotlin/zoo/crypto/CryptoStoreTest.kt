@@ -183,6 +183,29 @@ class CryptoStoreTest {
     }
 
     @Test
+    fun resavesAlreadyProcessedRowsBeforeAck() {
+        val original = CryptoStore.directorySync
+        val synced = mutableListOf<File>()
+        val store = open()!!.store
+        val row = ToDeviceRow("30", ALICE, "m.other", JsonObject(emptyMap()))
+        try {
+            // rename のあとで同期に失敗した：保存の失敗になり、ID を返さない。
+            CryptoStore.directorySync = { throw java.io.IOException("sync failed") }
+            assertFailsWith<java.io.IOException> { store.processToDevice(listOf(row), JsonObject(emptyMap())) }
+            store.close()
+            // 開き直すと、新しい state.json の印は読める。それでも同期を確かめ直すまで ID を返さない。
+            val reopened = open()!!.store
+            assertFailsWith<java.io.IOException> { reopened.processToDevice(listOf(row), JsonObject(emptyMap())) }
+            CryptoStore.directorySync = { synced += it }
+            assertEquals(listOf("30"), reopened.processToDevice(listOf(row), JsonObject(emptyMap())).processed)
+            assertEquals(listOf(files.directory.absoluteFile), synced.map { it.absoluteFile })
+            reopened.close()
+        } finally {
+            CryptoStore.directorySync = original
+        }
+    }
+
+    @Test
     fun destroyRemovesFilesAndWrappingKey() {
         val store = open()!!.store
         store.destroy()

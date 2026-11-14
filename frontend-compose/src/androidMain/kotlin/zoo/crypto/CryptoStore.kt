@@ -217,8 +217,14 @@ class CryptoStore private constructor(
         var roomKeys = 0
         var dropped = 0
         var newOlmSessions = 0
+        // 前の処理で印を付けた行（ack の前に失敗した）。その保存の同期が済んだとは限らない（rename の
+        // あとで同期に失敗しても、開き直すと新しい state.json を読めることがある）ので、返す前に
+        // 保存し直して、同期を確かめてから ack させる。
+        var unsaved = false
         for (row in rows) {
-            if (row.id !in state.processedToDevice) {
+            if (row.id in state.processedToDevice) {
+                unsaved = true
+            } else {
                 if (row.type == "m.room.encrypted") {
                     when (val outcome = processEncrypted(row, deviceKeys)) {
                         is Encrypted.Dropped -> dropped++
@@ -232,9 +238,11 @@ class CryptoStore private constructor(
                 }
                 state.processedToDevice = state.processedToDevice + row.id
                 save()
+                unsaved = false
             }
             processed += row.id
         }
+        if (unsaved) save()
         return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions)
     }
 
@@ -551,13 +559,16 @@ class CryptoStore private constructor(
                 temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING,
             )
             // rename したディレクトリーのエントリーも書き出す（停電で前の状態に戻らないように）。
-            syncDirectory(target.parentFile!!)
+            directorySync(target.parentFile!!)
         }
 
         /**
          * ディレクトリーを `fsync` する。JVM（単体テスト）では `FileChannel` で開けるが、Android の
          * `FileChannel.open` はディレクトリーを開けない（EISDIR）ので、`android.system.Os` で開く。
          */
+        /** ディレクトリーの同期。単体テストで失敗を差し込むために差し替えられる。 */
+        internal var directorySync: (File) -> Unit = ::syncDirectory
+
         private fun syncDirectory(directory: File) {
             val channelFailure =
                 try {
