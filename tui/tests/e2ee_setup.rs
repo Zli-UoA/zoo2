@@ -707,3 +707,62 @@ async fn an_abandoned_upload_is_forgotten_by_the_next_one() {
     assert_eq!(store.lock().await.uploads_in_flight(), 0);
     assert_eq!(store.lock().await.pending_backup_count(), 0);
 }
+
+#[tokio::test]
+async fn a_conflict_while_running_stops_backups_until_unlocked_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let (_server, backend, api) = backend().await;
+    let store = open(&root);
+    let (session, recovery_key) = zoo_crypto::SetupSession::begin(BOB).unwrap();
+    setup::complete_setup(&api, &store, BOB, &session, Some(FRESH))
+        .await
+        .unwrap();
+
+    // 稼働中に今の版が変わってから鍵を受け取っても、新しい版を検証して、手元のセッションを送り直す。
+    {
+        let mut state = backend.0.lock().unwrap();
+        let version = state.versions[0].clone();
+        state.versions.push(json!({
+            "version": "2",
+            "algorithm": version["algorithm"],
+            "auth_data": version["auth_data"],
+            "deleted": false,
+        }));
+    }
+    receive_room_key(&store).await;
+    assert_eq!(
+        setup::upload_key_backup(&api, &store).await.unwrap(),
+        BackupUploadResult::Done { uploaded: 1 }
+    );
+
+    // 稼働中に SSSS の秘密だけが書き換えられ、鍵を受け取って送ると 409 になる。
+    backend.0.lock().unwrap().ssss.as_mut().unwrap()["secrets_revision"] = json!(2);
+    receive_room_key(&store).await;
+    assert_eq!(
+        setup::upload_key_backup(&api, &store).await.unwrap(),
+        BackupUploadResult::Conflict("E2EE_SSSS_CONFLICT".into())
+    );
+    assert!(store.lock().await.needs_unlock());
+    assert_eq!(
+        setup::load_status(&api, &store, BOB).await.unwrap(),
+        E2eeStatus::Locked(LockReason::Mismatch)
+    );
+    // 次に鍵を受け取っても、解錠し直すまで送らない（古い値で送り直さない）。
+    receive_room_key(&store).await;
+    let before = backend.0.lock().unwrap().uploaded_sessions;
+    assert_eq!(
+        setup::upload_key_backup(&api, &store).await.unwrap(),
+        BackupUploadResult::Done { uploaded: 0 }
+    );
+    assert_eq!(backend.0.lock().unwrap().uploaded_sessions, before);
+    assert_eq!(store.lock().await.pending_backup_count(), 2);
+
+    // リカバリーキーで解錠し直すと、送信待ちを送る。
+    setup::unlock(&api, &store, BOB, &recovery_key)
+        .await
+        .unwrap();
+    assert!(!store.lock().await.needs_unlock());
+    assert_eq!(store.lock().await.pending_backup_count(), 0);
+    assert_eq!(backend.0.lock().unwrap().uploaded_sessions, before + 2);
+}

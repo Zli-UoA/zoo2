@@ -225,7 +225,15 @@ pub async fn upload_key_backup(api: &ApiClient, store: &SharedStore) -> Result<B
             let conflict = ApiError::status_of(&error) == Some(reqwest::StatusCode::CONFLICT)
                 && (ApiError::has_code(&error, "E2EE_WRONG_BACKUP_VERSION")
                     || ApiError::has_code(&error, "E2EE_SSSS_CONFLICT"));
-            store.lock().await.backup_upload_failed(id, conflict);
+            {
+                let mut store = store.lock().await;
+                store.backup_upload_failed(id, conflict);
+                // SSSS の秘密が書き換えられた（失効など）。バックアップ鍵、自己署名鍵、ユーザー署名鍵を使う
+                // 処理を止め、解錠し直すまで送らない（docs/e2ee.md の `POST /api/e2ee/key_backup/keys`）。
+                if ApiError::has_code(&error, "E2EE_SSSS_CONFLICT") {
+                    store.forget_secrets_revision()?;
+                }
+            }
             if conflict {
                 let code = error
                     .downcast_ref::<ApiError>()

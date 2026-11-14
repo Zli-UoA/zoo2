@@ -596,6 +596,26 @@ impl CryptoStore {
         self.state.secrets_revision
     }
 
+    /// 解錠し直しが要るか（自分の鍵はあるが、SSSS の秘密が書き換えられたと分かった）。
+    pub fn needs_unlock(&self) -> bool {
+        self.has_own_keys() && self.state.secrets_revision.is_none()
+    }
+
+    /// 鍵バックアップの送信が 409 `E2EE_SSSS_CONFLICT` になった。記録した `secrets_revision` を消して、
+    /// 解錠し直すまで、暗号ストアの鍵を使う処理（署名し直し、鍵バックアップの送信）を止める。状態を読むと
+    /// サーバーの値と違うので、解錠し直しを求める。
+    pub fn forget_secrets_revision(&mut self) -> Result<()> {
+        if let Some(backup) = &mut self.backup_state {
+            backup.set_secrets_revision(None);
+            backup.suspend();
+        }
+        if self.state.secrets_revision.is_none() {
+            return Ok(());
+        }
+        self.state.secrets_revision = None;
+        self.save()
+    }
+
     /// 解錠した（または初回設定で作った）自分の鍵を保存する（#360。React の `saveOwnKeys` と同じ）。
     /// マスター鍵の秘密鍵は保存せず、自分のマスター鍵の公開鍵とユーザー署名鍵を、配布先の判定の
     /// 記録に入れる。

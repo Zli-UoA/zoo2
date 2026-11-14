@@ -196,6 +196,22 @@ impl Encryption {
                 self.reload();
             }
         }
+        // 端末の管理のタスクの鍵バックアップの送信で、SSSS の秘密が書き換えられたと分かったら、解錠し直しを
+        // 求める（ステータス行と、開いている解錠済みの画面）。
+        if self.status == Some(E2eeStatus::Unlocked)
+            && let Some((_, store)) = self.store()
+            && store.try_lock().is_ok_and(|store| store.needs_unlock())
+        {
+            let reason = LockReason::Mismatch;
+            self.status = Some(E2eeStatus::Locked(reason));
+            if matches!(self.screen, Screen::Unlocked) {
+                self.screen = Screen::Locked {
+                    reason,
+                    input: Zeroizing::new(String::new()),
+                    error: None,
+                };
+            }
+        }
     }
 
     /// 今の画面の世代（裏の処理の結果を照らし合わせる）。

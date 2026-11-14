@@ -2222,4 +2222,38 @@ mod tests {
         press(&mut app, KeyCode::Char('y'));
         assert!(!matches!(app.encryption.screen, Screen::RecoveryKey(_)));
     }
+
+    #[tokio::test]
+    async fn a_backup_conflict_while_running_asks_to_unlock_again() {
+        let user = "00000000-0000-4000-8000-00000000000b";
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::e2ee::store::crypto_root(dir.path());
+        let mut store = crate::e2ee::store::CryptoStore::open(&root, user)
+            .unwrap()
+            .store;
+        let (session, _) = zoo_crypto::SetupSession::begin(user).unwrap();
+        store.save_own_keys(session.secrets(), Some(1)).unwrap();
+        let store = std::sync::Arc::new(tokio::sync::Mutex::new(store));
+        let (tx, stores) = tokio::sync::watch::channel(Some((user.to_owned(), store.clone())));
+        let mut app = app();
+        app.me.id = user.into();
+        app.attach_encryption(crate::ui::encryption::E2eeContext { oidc: None, stores });
+        press(&mut app, KeyCode::Char('E'));
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::Unlocked),
+        });
+        app.on_tick();
+        assert!(render_sized(&mut app, 100, 30).contains("解錠済み"));
+        // 端末の管理のタスクが、鍵バックアップの送信で 409 E2EE_SSSS_CONFLICT を受けた。
+        store.lock().await.forget_secrets_revision().unwrap();
+        app.on_tick();
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(
+            screen.contains("リカバリーキーで解錠し直してください"),
+            "{screen}"
+        );
+        assert!(screen.contains("暗号化: 解錠が必要 (E)"), "{screen}");
+        drop(tx);
+    }
 }
