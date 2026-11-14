@@ -1382,6 +1382,7 @@ CREATE UNIQUE INDEX call_invites_pending_unique ON call_invites (channel_id, inv
 CREATE INDEX call_invites_invitee_pending ON call_invites (invitee_id) WHERE status = 'pending';
 CREATE INDEX call_invites_inviter_pending ON call_invites (inviter_id) WHERE status = 'pending';
 CREATE INDEX call_invites_expiry_pending ON call_invites (expires_at) WHERE status = 'pending';
+CREATE INDEX call_invites_accepted_unjoined ON call_invites (channel_id, invitee_id) WHERE status = 'accepted' AND joined_at IS NULL;
 ALTER TABLE call_invites REPLICA IDENTITY FULL;
 
 ALTER TABLE call_presence ADD CONSTRAINT call_presence_session_id_key UNIQUE (session_id);

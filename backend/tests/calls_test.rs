@@ -1811,3 +1811,88 @@ async fn test_accept_on_join_records_the_join_whether_the_invite_was_pending_or_
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn test_join_racing_with_accept_still_records_the_join() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let alice = w.alice.clone();
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    // 応答と入室を別々の接続で同時に進めて、どちらが先でも入室が記録されることを、何度か確かめる
+    for round in 0..15 {
+        let invitee = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(invitee.as_str())
+        .bind(format!("Racer{round}"))
+        .exec(&mut w.db)
+        .await?;
+        let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&invitee]).await?;
+        let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+        let channel = w.public_ch.clone();
+        let mut join_db = w.state.db.clone();
+        let accept_path = format!("/api/call-invites/{id}/accept");
+        let (accept, join) = tokio::join!(
+            request(&w.app, &invitee, "POST", &accept_path, None),
+            backend::call_invites::accept_on_join(&mut join_db, &channel, &invitee),
+        );
+        // 入室が先なら、応答は 409（すでに終わっている）。どちらでも、入室は記録される
+        let status = accept?.0;
+        assert!(
+            status == StatusCode::OK || status == StatusCode::CONFLICT,
+            "{status}"
+        );
+        join?;
+        let rows = toasty::sql::query(
+            "SELECT (joined_at IS NOT NULL)::text FROM call_invites WHERE id = $1::uuid",
+        )
+        .bind(id.as_str())
+        .exec(&mut w.db)
+        .await?;
+        let joined = rows.into_iter().next().is_some_and(|row| {
+            matches!(row, toasty::stmt::Value::Record(r)
+                if matches!(r.fields.first(), Some(toasty::stmt::Value::String(s)) if s == "true"))
+        });
+        assert!(joined, "round {round}: joined_at was not recorded");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_sweep_records_the_join_of_an_accepted_invitee_who_is_in_the_room()
+-> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob) = (w.alice.clone(), w.bob.clone());
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob]).await?;
+    let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/call-invites/{id}/accept"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    // 入室の記録の更新が失敗した状態（入室していて、joined_at が空のまま）
+    put_presence(&mut w.db, &w.public_ch.clone(), &bob).await?;
+    for _ in 0..30 {
+        backend::call_invites::sweep(&mut w.db).await?;
+        let rows = toasty::sql::query(
+            "SELECT (joined_at IS NOT NULL)::text FROM call_invites WHERE id = $1::uuid",
+        )
+        .bind(id.as_str())
+        .exec(&mut w.db)
+        .await?;
+        let joined = rows.into_iter().next().is_some_and(|row| {
+            matches!(row, toasty::stmt::Value::Record(r)
+                if matches!(r.fields.first(), Some(toasty::stmt::Value::String(s)) if s == "true"))
+        });
+        if joined {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    anyhow::bail!("sweep did not record the join")
+}
