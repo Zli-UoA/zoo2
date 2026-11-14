@@ -179,6 +179,11 @@ export type CryptoOperation =
       op: "replaceDevice";
       namespace: string;
       userId: string;
+      /**
+       * 消されたと確かめた端末。開いている暗号ストアがすでに別の端末なら（前の作り直しを保存したあと、
+       * 開き直しだけが失敗した）、作り直さずにその端末を返す。
+       */
+      deviceId: string;
     }
   // 暗号化した添付（#364）。暗号ストアを使わない。
   | { op: "encryptAttachment"; plaintext: Uint8Array }

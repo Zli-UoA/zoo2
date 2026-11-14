@@ -545,6 +545,60 @@ describe("E2eeDeviceManager", () => {
     await instance.stop();
   });
 
+  it("端末の作り直しが失敗したら、消された前の端末を渡して試し直す", async () => {
+    let replaceAttempts = 0;
+    const { worker, calls } = fakeWorker({
+      // 作り直しを保存できたあとは、新しい端末を開く。
+      open: () => ({
+        userId: USER,
+        deviceId: replaceAttempts >= 2 ? REPLACED_DEVICE : DEVICE,
+        registered: replaceAttempts < 2,
+        replacedDeviceId: null,
+      }),
+      processToDevice: {
+        processed: ["1"],
+        roomKeys: 0,
+        dropped: 0,
+        newOlmSessions: 0,
+        verifications: [],
+      },
+      replaceDevice: () => {
+        replaceAttempts += 1;
+        // 1 回目は、作り直しを保存したあとの開き直しに失敗する。
+        if (replaceAttempts === 1) throw new Error("storage down");
+        return {
+          userId: USER,
+          deviceId: REPLACED_DEVICE,
+          registered: false,
+          replacedDeviceId: null,
+        };
+      },
+    });
+    const { client } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw goneError();
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() => expect(instance.currentDeviceId).toBe(REPLACED_DEVICE));
+    // どちらの試行も、消されたと確かめた前の端末を渡す（Worker は保存済みの新しい端末を返す）。
+    expect(calls.filter((call) => call.op === "replaceDevice")).toEqual([
+      { op: "replaceDevice", namespace: `user-${USER}`, userId: USER, deviceId: DEVICE },
+      { op: "replaceDevice", namespace: `user-${USER}`, userId: USER, deviceId: DEVICE },
+    ]);
+    await instance.stop();
+  });
+
   it("受信中の ack の 404 でも、端末の一覧に今の端末があれば作り直さない", async () => {
     const { worker, calls } = fakeWorker({
       open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },

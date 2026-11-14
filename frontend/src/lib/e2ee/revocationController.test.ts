@@ -18,6 +18,7 @@ import {
   RevocationChangedError,
   RevocationConflictError,
   RevocationPendingError,
+  ReverifyKeyChangedError,
   abandonRevocation,
   beginRevocation,
   continueRevocation,
@@ -25,9 +26,12 @@ import {
   loadDevices,
   newRevocationRecoveryKey,
   openSecretStorage,
+  previewReverify,
   resumeRevocation,
   revocationStatus,
+  reverifyUser,
 } from "./revocationController";
+import { masterPublicKey } from "./masterKey";
 import { REAUTH_HEADER } from "./secretStorageApi";
 import {
   ReauthRequiredError,
@@ -697,5 +701,71 @@ describe("失効の手順", () => {
       revocation_id: second!.revocation_id,
       stage: "prepared",
     });
+  });
+});
+
+describe("再検証（セキュリティレビュー M-2）", () => {
+  const TARGET = "00000000-0000-4000-8000-0000000000b1";
+  const SHOWN = "nE7wKq3vXbT9yLm2Pd8sRf5hGj1cZa6uVo4eWi0kBnQ";
+  const SWAPPED = "Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4zAb7cDe0fGhI";
+  const masterKey = (key: string) => ({
+    user_id: TARGET,
+    usage: ["master"],
+    keys: { [`ed25519:${key}`]: key },
+  });
+
+  /** `keys/query` が `keys` の順に鍵を返す deps。Worker の要求を記録する。 */
+  function reverifyDeps(keys: string[]) {
+    const requests: CryptoOperation[] = [];
+    const client = {
+      request: async () => ({ master_keys: { [TARGET]: masterKey(keys.shift()!) } }),
+    } as unknown as ApiClient;
+    const worker = {
+      request: async (operation: CryptoOperation) => {
+        requests.push(operation);
+        if (operation.op === "trustRecord") return { master_key: SWAPPED, confirmed_usk: null };
+        throw new Error("stop");
+      },
+      terminate: () => {},
+    } as unknown as CryptoWorker;
+    return { deps: { client, worker, userId: "me", rpId: null }, requests };
+  }
+
+  it("確認の画面に、今の鍵と前に信頼した鍵を出す", async () => {
+    const { deps } = reverifyDeps([SHOWN]);
+    expect(await previewReverify(deps, TARGET)).toEqual({
+      masterKey: SHOWN,
+      previousMasterKey: SWAPPED,
+    });
+  });
+
+  it("確認のあとにサーバーの鍵が変わっていたら、署名しない", async () => {
+    const { deps, requests } = reverifyDeps([SWAPPED]);
+    await expect(reverifyUser(deps, TARGET, SHOWN, "token")).rejects.toBeInstanceOf(
+      ReverifyKeyChangedError,
+    );
+    expect(requests).toEqual([]);
+  });
+
+  it("見せた鍵と同じなら、その鍵を Worker に渡して署名させる", async () => {
+    const { deps, requests } = reverifyDeps([SHOWN]);
+    await expect(reverifyUser(deps, TARGET, SHOWN, "token")).rejects.toThrow("stop");
+    expect(requests).toEqual([
+      {
+        op: "acceptMasterKey",
+        targetUserId: TARGET,
+        masterKey: masterKey(SHOWN),
+        expectedMasterKey: SHOWN,
+      },
+    ]);
+  });
+
+  it("公開鍵は ed25519 の鍵がちょうど 1 つで、鍵 ID と値が合うときだけ取り出す", () => {
+    expect(masterPublicKey(masterKey(SHOWN))).toBe(SHOWN);
+    expect(masterPublicKey({ keys: { [`ed25519:${SHOWN}`]: SWAPPED } })).toBeNull();
+    expect(
+      masterPublicKey({ keys: { [`ed25519:${SHOWN}`]: SHOWN, [`ed25519:${SWAPPED}`]: SWAPPED } }),
+    ).toBeNull();
+    expect(masterPublicKey(undefined)).toBeNull();
   });
 });

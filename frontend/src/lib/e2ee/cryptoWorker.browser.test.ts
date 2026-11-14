@@ -55,7 +55,12 @@ describe("zoo-crypto Worker", () => {
     worker = startCryptoWorker();
     const first = await worker.request({ op: "open", namespace, userId: USER });
     await worker.request({ op: "markRegistered" });
-    const replaced = await worker.request({ op: "replaceDevice", namespace, userId: USER });
+    const replaced = await worker.request({
+      op: "replaceDevice",
+      namespace,
+      userId: USER,
+      deviceId: first.deviceId,
+    });
     expect(replaced).toMatchObject({ userId: USER, registered: false, replacedDeviceId: null });
     expect(replaced.deviceId).not.toBe(first.deviceId);
     const request = await worker.request({ op: "registrationRequest" });

@@ -175,7 +175,12 @@ export class E2eeDeviceManager {
         // セッションは引き継ぐ）、新しい端末として登録する。一覧にあれば、ふつうの失敗として試し直す。
         if (!(await this.deviceGone(opened.deviceId))) throw error;
         if (this.stopped) return;
-        opened = await worker.request({ op: "replaceDevice", namespace, userId });
+        opened = await worker.request({
+          op: "replaceDevice",
+          namespace,
+          userId,
+          deviceId: opened.deviceId,
+        });
         this.rememberOpened(opened);
         counts = await this.ensureRegistered(opened.registered, opened.deviceId);
       }
@@ -377,10 +382,13 @@ export class E2eeDeviceManager {
         if (deviceId && (await this.deviceGone(deviceId))) {
           if (this.stopped || this.suspended) return;
           const { namespace, userId } = this.options;
+          // 消されたと確かめた端末を渡す。前の試し直しで作り直しを保存できていれば、Worker はその新しい
+          // 端末を返す（もう一度は作り直さない）。
           const opened = await this.options.worker.request({
             op: "replaceDevice",
             namespace,
             userId,
+            deviceId,
           });
           this.rememberOpened(opened);
         }

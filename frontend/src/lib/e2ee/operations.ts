@@ -113,19 +113,29 @@ export class CryptoOperations {
         return this.describe(replacedDeviceId, replacedRegistered);
       }
       case "replaceDevice": {
-        const name = cryptoDatabaseName(request.namespace);
-        const store = this.opened();
-        if (this.storeName !== name || store.userId !== request.userId) {
-          throw new Error("作り直す暗号ストアが開いていません");
+        const { namespace, userId, deviceId } = request;
+        const name = cryptoDatabaseName(namespace);
+        // 開いていなければ（前の作り直しのあとで開き直せなかった、Worker を作り直したなど）、保存済みの
+        // 状態から開く。
+        if (!this.store || this.storeName !== name || this.store.userId !== userId) {
+          await this.dispatch({ op: "open", namespace, userId });
         }
+        const store = this.opened();
+        // 作り直しは、消されたと確かめた端末（`deviceId`）にだけ行う。保存済みの暗号ストアがすでに別の
+        // 端末なら、前の作り直しは保存できている（そのあとの開き直しだけが失敗した）。その端末を
+        // もう一度作り直さず、そのまま返して登録から続けさせる。
+        if (store.deviceId !== deviceId) return this.describe(null, false);
         this.revocation.discard();
         this.setup.discard();
         await store.replaceDevice();
-        // 新しい端末アカウントで読み直す（メモリーの古い端末の状態を使い続けない）。
+        // 新しい端末アカウントで読み直す（メモリーの古い端末の状態を使い続けない）。開き直しに失敗しても、
+        // 次の操作の前に開き直す（`reopenPending`）。
         await store.close();
         this.store = null;
         this.storeName = null;
-        return this.dispatch({ op: "open", namespace: request.namespace, userId: request.userId });
+        this.lastOpen = { namespace, userId };
+        this.reopenPending = true;
+        return this.dispatch({ op: "open", namespace, userId });
       }
       case "registrationRequest":
         return this.opened().registrationRequest();
