@@ -316,6 +316,17 @@ pub struct RevocationState {
     pub secrets_revision: Option<u64>,
     /// 作った新しい版。
     pub new_backup_version: Option<String>,
+    /// 古い版ごとの、新しい版に移せずに捨てた行の数（[`Revocation::record_dropped`]）。消した版は
+    /// 数え直せないので、再開しても完了の画面に出せるよう記録する。
+    #[serde(default)]
+    pub dropped_sessions: BTreeMap<String, u64>,
+}
+
+impl RevocationState {
+    /// 新しい版に移せずに捨てた行の数の合計。
+    pub fn dropped_total(&self) -> u64 {
+        self.dropped_sessions.values().sum()
+    }
 }
 
 impl std::fmt::Debug for RevocationState {
@@ -558,6 +569,7 @@ impl Revocation {
             resign,
             secrets_revision: None,
             new_backup_version: None,
+            dropped_sessions: BTreeMap::new(),
         };
         Ok(Self {
             state,
@@ -702,6 +714,9 @@ impl Revocation {
     /// `expected_default_key_id` には、この失効の SSSS 鍵（2〜5 では新しい鍵）を入れる。SSSS を
     /// 保存したあとで別の端末が SSSS だけを作り直した（リセットや失効を SSSS の保存の直後で止めた）
     /// ときに、その SSSS に対応しない公開鍵を書かないようにするため（409 `E2EE_SSSS_CONFLICT`）。
+    /// SSSS を保存した応答の `secrets_revision` があれば `expected_secrets_revision` にも入れる。端末だけの
+    /// 失効は SSSS の鍵を変えないので、別の端末の端末だけの失効が秘密だけを書き換えたことは、鍵 ID では
+    /// 見分けられないため。
     pub fn cross_signing_request(&self) -> Value {
         let upload = self.secrets.cross_signing.upload_json();
         let mut body = json!({
@@ -717,7 +732,14 @@ impl Revocation {
         if self.state.scope == RevocationScope::Full {
             body["master_key"] = upload["master_key"].clone();
         }
+        self.add_secrets_revision(&mut body);
         body
+    }
+
+    fn add_secrets_revision(&self, body: &mut Value) {
+        if let Some(revision) = self.state.secrets_revision {
+            body["expected_secrets_revision"] = json!(revision);
+        }
     }
 
     /// 新しい自己署名鍵による今の端末への署名（`POST /api/e2ee/cross_signing/signatures`）と、
@@ -737,14 +759,25 @@ impl Revocation {
     }
 
     /// `POST /api/e2ee/key_backup/versions` の本文（`expected_current_version` は始める前の今の版）。
-    /// 直前の再認証が要る。`expected_default_key_id` は [`Self::cross_signing_request`] と同じ。
+    /// 直前の再認証が要る。`expected_default_key_id` と `expected_secrets_revision` は
+    /// [`Self::cross_signing_request`] と同じ。
     pub fn backup_version_request(&self) -> Result<Value, CryptoError> {
         let mut body = self.secrets.backup_key.create_version_request(
             &self.secrets.cross_signing.master,
             self.state.expected_current_version.as_deref(),
         )?;
         body["expected_default_key_id"] = json!(self.state.key_id);
+        self.add_secrets_revision(&mut body);
         Ok(body)
+    }
+
+    /// 古い版 `version` の行を [`Self::reencrypt_rows`] で暗号化し直して、`dropped` 行を捨てた。
+    /// 同じ版を数え直したら置き換える（送れずにやり直したときに二重に数えない）。古い版を消す前に、
+    /// この状態を暗号ストアに保存する。
+    pub fn record_dropped(&mut self, version: &str, dropped: usize) {
+        self.state
+            .dropped_sessions
+            .insert(version.to_owned(), dropped as u64);
     }
 
     /// 新しい版を作った。

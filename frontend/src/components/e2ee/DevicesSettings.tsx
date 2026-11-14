@@ -12,6 +12,7 @@ import { passkeyPrfSupported, passkeyRpId } from "../../lib/e2ee/passkey";
 import { openReauthWindow, reauthenticate } from "../../lib/e2ee/reauth";
 import { listDevices, renameDevice } from "../../lib/e2ee/revocationApi";
 import {
+  RevocationChangedError,
   RevocationConflictError,
   type RevocationResult,
   abandonRevocation,
@@ -96,7 +97,8 @@ function DeviceLimit({ staleIds }: { staleIds: string[] }) {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<DevicesErrorCode | null>(null);
-  useEffect(() => {
+  const fetchDevices = useCallback(() => {
+    setDevices(null);
     void listDevices(client).then(
       (rows) =>
         setDevices({
@@ -122,11 +124,12 @@ function DeviceLimit({ staleIds }: { staleIds: string[] }) {
       () => setDevices({ step: "loadFailed" }),
     );
   }, [client]);
+  useEffect(fetchDevices, [fetchDevices]);
   if (!devices || devices.step !== "ready") {
     return (
       <DevicesSettingsView
         state={devices ?? { step: "loading" }}
-        handlers={{} as DevicesSettingsHandlers}
+        handlers={{ onRetry: fetchDevices } as DevicesSettingsHandlers}
       />
     );
   }
@@ -185,6 +188,13 @@ function DevicesPanel() {
     versionsWithoutKey: [],
   });
   const loadSeq = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const deps: E2eeSetupDeps | null = useMemo(
     () => (worker && userId ? { worker, client, userId, rpId } : null),
@@ -211,11 +221,11 @@ function DevicesPanel() {
    * 画面は残す（最初の読み込みだけ `loadFailed` にする）。
    */
   const load = useCallback(
-    async () => {
+    async (): Promise<boolean> => {
       const seq = ++loadSeq.current;
       if (!deps) {
         setState({ step: "unavailable" });
-        return;
+        return true;
       }
       try {
         const [devices, unlocked, pending] = await Promise.all([
@@ -226,7 +236,8 @@ function DevicesPanel() {
         const verifications = unlocked
           ? await loadVerifications(deps, peers)
           : { users: [], warnings: [] };
-        if (seq !== loadSeq.current) return;
+        // あとから始めた読み直しがある。結果はそちらに任せる。
+        if (seq !== loadSeq.current) return true;
         const data = {
           devices,
           verifications: verifications.users.map((row) => ({ ...row, name: nameOf(row.userId) })),
@@ -247,9 +258,11 @@ function DevicesPanel() {
                 error: null,
               },
         );
+        return true;
       } catch {
-        if (seq !== loadSeq.current) return;
+        if (seq !== loadSeq.current) return true;
         setState((current) => (current.step === "ready" ? current : { step: "loadFailed" }));
+        return false;
       }
     },
     // accountUrls は config から決まる。
@@ -281,7 +294,11 @@ function DevicesPanel() {
     ready((current) => ({ ...current, busy, error: null }));
     void task().then(
       // 読み直してから、操作を終えたことにする（古い一覧のまま押せないように）。
-      () => load().then(() => ready((current) => ({ ...current, busy: null }))),
+      // 読み直せなければ、表示は残したまま、エラーと読み直しを出す。
+      () =>
+        load().then((loaded) =>
+          ready((current) => ({ ...current, busy: null, error: loaded ? null : "refreshFailed" })),
+        ),
       (error) =>
         ready((current) => ({
           ...current,
@@ -304,6 +321,11 @@ function DevicesPanel() {
     if (resumeRef.current) {
       const resumed = await resumeRevocation(deps);
       if (resumed.kind === "resumed") {
+        // 409 などで「やり直す」を押したときも、記録した範囲と端末で始め直す。
+        planRef.current = {
+          scope: resumed.summary.scope,
+          selected: resumed.summary.deleted_devices,
+        };
         notesRef.current = notesOf(resumed.summary);
         setPhase({ phase: "confirm", ...notesRef.current });
         return;
@@ -347,7 +369,13 @@ function DevicesPanel() {
   };
 
   const handlers: DevicesSettingsHandlers = {
-    onRetry: () => void load(),
+    onRetry: () => {
+      // 一覧の画面の読み直し（`refreshFailed`）は、表示を残したまま読み直す。
+      ready((current) => ({ ...current, error: null }));
+      void load().then((loaded) => {
+        if (!loaded) ready((current) => ({ ...current, error: "refreshFailed" }));
+      });
+    },
     onRename: (id, name) => {
       if (!deps) return;
       run("rename", () => renameDevice(deps.client, id, name));
@@ -406,6 +434,7 @@ function DevicesPanel() {
           })),
       );
     },
+    onRecoveryKeySaved: () => setPhase({ phase: "confirm", ...notesRef.current }),
     onExecute: () => {
       if (!deps) return;
       const reauth = startReauth(config);
@@ -417,18 +446,31 @@ function DevicesPanel() {
       }));
       void (async () => {
         try {
+          // 再認証のあいだに画面を離れて別の失効を始めても、その失効を（キーの控えや実行の操作を
+          // 待たずに）保存しないよう、実行を始めた失効を固定する。
+          const target = (await revocationStatus(deps))?.revocation_id;
           const token = await reauth();
-          const result = await continueRevocation(deps, token, (summary) =>
-            ready((current) => ({
-              ...current,
-              revocation: { phase: "running", stage: summary.stage },
-            })),
+          if (!mounted.current) return;
+          const result = await continueRevocation(
+            deps,
+            token,
+            (summary) =>
+              ready((current) => ({
+                ...current,
+                revocation: { phase: "running", stage: summary.stage },
+              })),
+            target,
           );
           setPhase({ phase: "done", result: toResult(result) });
           // 手元の受信用セッションを、新しい版に送り直す（版が変わったので、すべて送り直す）。
           e2ee.requestKeyBackup();
           void load();
         } catch (error) {
+          if (error instanceof RevocationChangedError) {
+            setPhase(null);
+            void load();
+            return;
+          }
           if (error instanceof RevocationConflictError || error instanceof ServerKeyMismatchError) {
             await abandonRevocation(deps).catch(() => undefined);
             setPhase({ phase: "conflict" });

@@ -242,6 +242,17 @@ export async function addRevocationPasskey(deps: E2eeSetupDeps, label: string | 
 }
 
 /** 別の端末の失効と入り混じった（409）。SSSS を開け直して、失効をやり直す。 */
+/**
+ * 実行を始めた失効と、Worker が今持つ失効が違う（再認証のあいだに、画面を離れて別の失効を始めた）。
+ * 何も保存していない。今の失効は捨てずに、画面を読み直す。
+ */
+export class RevocationChangedError extends Error {
+  constructor() {
+    super("実行を始めた失効が、別の失効に置き換わりました");
+    this.name = "RevocationChangedError";
+  }
+}
+
 export class RevocationConflictError extends Error {
   constructor(readonly code: string) {
     super(`別の端末の失効と入り混じりました（${code}）`);
@@ -296,10 +307,15 @@ export async function continueRevocation(
   deps: E2eeSetupDeps,
   reauth: string | null,
   onProgress?: (summary: RevocationSummary) => void,
+  /** 実行を始めたときの失効（`revocation_id`）。違えば何も保存せずに {@link RevocationChangedError}。 */
+  expectedId?: string,
 ): Promise<RevocationResult> {
   const worker = deps.worker;
   let summary = await worker.request({ op: "revocationStatus" });
   if (!summary) throw new Error("続ける失効がありません");
+  if (expectedId !== undefined && summary.revocation_id !== expectedId) {
+    throw new RevocationChangedError();
+  }
   const progress = async () => {
     summary = (await worker.request({ op: "revocationStatus" })) ?? summary;
     if (summary) onProgress?.(summary);
@@ -359,7 +375,6 @@ export async function continueRevocation(
     await progress();
   }
 
-  let droppedSessions = 0;
   if (!stageAtLeast(summary, "migrated")) {
     const newVersion = summary.new_backup_version;
     if (!newVersion) throw new Error("新しい版がありません");
@@ -369,8 +384,8 @@ export async function continueRevocation(
       const rows = await listBackupSessions(deps.client, version);
       // 別の端末が先に移行を終えて消した。
       if (rows === null) continue;
+      // 捨てた行の数は、失効の記録に版ごとに残る（古い版を消したあとで止まっても数え直せないため）。
       const result = await worker.request({ op: "revocationReencrypt", version, rows });
-      droppedSessions += result.dropped;
       await guarded(() =>
         uploadBackupSessions(deps.client, newVersion, secretsRevision as number, result.rows),
       );
@@ -387,6 +402,9 @@ export async function continueRevocation(
     currentBackupVersion(deps.client),
   ]);
   const finished = summary;
+  // 一覧は、記録を消す（`revocationVerify`）前に読む。あとで読むと、読めなかったときに、終わった失効を
+  // 失敗として扱い、記録がないので続けられなくなる。
+  const devices = await loadDevices(deps, null);
   try {
     await worker.request({
       op: "revocationVerify",
@@ -397,11 +415,10 @@ export async function continueRevocation(
   } catch (error) {
     throw new ServerKeyMismatchError((error as Error).message);
   }
-  const devices = await loadDevices(deps, null);
   return {
     summary: { ...finished, stage: "verified" },
     unsignedDevices: devices.filter((device) => !device.signed),
-    droppedSessions,
+    droppedSessions: finished.dropped_sessions,
   };
 }
 

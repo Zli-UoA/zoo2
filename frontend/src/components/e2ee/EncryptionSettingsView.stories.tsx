@@ -274,6 +274,19 @@ export const UnlockedNeedsUnlockToAdd: Story = {
   }),
 };
 
+/** パスキーに対応していない環境で読み込み直したあと：リカバリーキーで開け直せば、作り直せる。 */
+export const UnlockedNeedsUnlockWithoutPasskey: Story = {
+  args: {
+    state: { ...unlocked, passkeyAvailable: false, canAddPasskey: false },
+    handlers: handlers(),
+  },
+  play: playForImplementation(async ({ args }) => {
+    await expect(screen.queryByRole("button", { name: "リカバリーキーを作り直す" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "解錠し直す" }));
+    await expect(args.handlers.onReunlock).toHaveBeenCalled();
+  }),
+};
+
 /** パスキーを足すために SSSS を開け直す。リセットは出さず、取り消せる。 */
 export const ReunlockToAddPasskey: Story = {
   args: { state: { ...locked, reason: "addPasskey" }, handlers: handlers() },

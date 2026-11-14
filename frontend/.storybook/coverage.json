@@ -682,7 +682,8 @@
         "Unlocked",
         "ResetChooseDevices",
         "NewRecoveryKey",
-        "UnlockedRegenerateRecoveryKey"
+        "UnlockedRegenerateRecoveryKey",
+        "UnlockedNeedsUnlockWithoutPasskey"
       ]
     },
     {

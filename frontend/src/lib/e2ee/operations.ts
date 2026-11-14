@@ -192,7 +192,7 @@ export class CryptoOperations {
       case "revocationVersionsToMigrate":
         return this.revocation.versionsToMigrate(request.versions);
       case "revocationReencrypt":
-        return this.revocation.reencrypt(request.version, request.rows);
+        return this.revocation.reencrypt(this.opened(), request.version, request.rows);
       case "revocationVerify":
         await this.revocation.verify(
           this.opened(),

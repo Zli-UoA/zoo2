@@ -49,7 +49,8 @@ export function LogoutButton() {
   const handleLogout = async () => {
     holdsLock.current = true;
     // 失効の進み具合は暗号ストアにしかない。消す前に確かめる（docs/e2ee.md の「失効の手順」）。
-    const revoking = await e2ee.revocationPending().catch(() => false);
+    // 確かめられなかったら、終わっていない失効がないとは扱わず、警告を出して確かめる。
+    const revoking = await e2ee.revocationPending().catch(() => true);
     if (!mounted.current) return;
     if (revoking) {
       setRevocationWarning(true);

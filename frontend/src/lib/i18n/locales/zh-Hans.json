@@ -1132,6 +1132,8 @@
     "removeSlotConfirmDescription": "删除后将无法使用此通行密钥解锁。删除前需要重新登录。",
     "removeSlotConfirm": "删除",
     "addPasskeyNeedsUnlock": "要添加通行密钥，请在此页重新解锁一次（重新加载页面后，解锁所用的密钥会从内存中清除）。",
+    "manageSlotsNeedsUnlock": "要重新生成恢复密钥，请在此页重新解锁一次（重新加载页面后，解锁所用的密钥会从内存中清除）。",
+    "reunlockToManage": "重新解锁",
     "resetTitle": "重置加密",
     "resetDescription": "在通行密钥和恢复密钥都丢失，或看到不认识的设置时，用新密钥重新创建。",
     "reset": "重置",
@@ -1155,12 +1157,13 @@
       "disabled": "此服务器尚不支持加密频道。",
       "publicForbidden": "只有私密频道可以加密。",
       "deleteFailed": "无法删除设备。请重试。",
+      "refreshFailed": "无法重新加载设备列表。显示的内容可能不是最新的。",
       "renameFailed": "无法修改设备名称。请重试。",
       "revocationFailed": "无法完成吊销的保存。进度保留在此设备上。请再次点击“执行吊销”。",
       "verifyFailed": "无法保存重新验证。请重试。"
     },
     "reunlockToAdd": "重新解锁以添加通行密钥",
-    "reunlockToAddDescription": "要添加通行密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。",
+    "reunlockToAddDescription": "要添加通行密钥或重新生成恢复密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。",
     "badge": "已加密",
     "encryptChannel": "端到端加密",
     "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消，目前也还不能发送附件。",
@@ -1322,7 +1325,7 @@
       "save": "保存",
       "removeDescription": "将无法再用此恢复密钥解锁。已获取的密钥不会失效。如可能已泄露，请进行吊销。"
     },
-    "resetDevicesTitle": "选择要保留的设备",
+    "resetDevicesTitle": "选择要删除的设备",
     "resetDevicesDescription": "请选择陌生的设备并删除。如果有他人为你的账号设置了加密，必须完成此选择才能完成重置，以免留下攻击者的设备。",
     "resetDevicesConfirm": "我已选择陌生的设备（如没有，已确认）"
   }

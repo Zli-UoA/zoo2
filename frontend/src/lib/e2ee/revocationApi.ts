@@ -24,6 +24,12 @@ export interface StaleDevice {
   last_seen_at: string | null;
 }
 
+/**
+ * 署名（`MAX_SIGNATURES_PER_UPLOAD`）とピン（`MAX_PINS_PER_REQUEST`）の 1 回の要求の上限。超える分は
+ * 分けて送る（どちらも同じものを送り直しても成功する）。
+ */
+export const UPLOAD_BATCH = 1000;
+
 function headers(reauth: string | null | undefined): Record<string, string> | undefined {
   return reauth ? { [REAUTH_HEADER]: reauth } : undefined;
 }
@@ -79,7 +85,13 @@ export async function uploadPins(
     master_key: pin.master_key,
     signatures: pin.signatures,
   }));
-  await client.post("/api/e2ee/tofu_pins", { pins: body, replace }, { headers: headers(reauth) });
+  for (let start = 0; start < body.length; start += UPLOAD_BATCH) {
+    await client.post(
+      "/api/e2ee/tofu_pins",
+      { pins: body.slice(start, start + UPLOAD_BATCH), replace },
+      { headers: headers(reauth) },
+    );
+  }
 }
 
 /** 409 `E2EE_PIN_CONFLICT` で返った、他の端末のピン。 */
@@ -96,12 +108,13 @@ export async function uploadSignaturesWithReauth(
   signatures: SignatureUpload[],
   reauth: string | null,
 ): Promise<void> {
-  if (signatures.length === 0) return;
-  await client.post(
-    "/api/e2ee/cross_signing/signatures",
-    { signatures },
-    { headers: headers(reauth) },
-  );
+  for (let start = 0; start < signatures.length; start += UPLOAD_BATCH) {
+    await client.post(
+      "/api/e2ee/cross_signing/signatures",
+      { signatures: signatures.slice(start, start + UPLOAD_BATCH) },
+      { headers: headers(reauth) },
+    );
+  }
 }
 
 /** `keys/query`（50 人ずつ）。`master_keys`、`signatures` などをまとめる。 */

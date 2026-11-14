@@ -134,8 +134,8 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   requestKeyBackupRef.current = requestKeyBackup;
 
   const createManager = useCallback(
-    (worker: CryptoWorker, managerUserId: string) =>
-      new E2eeDeviceManager({
+    (worker: CryptoWorker, managerUserId: string) => {
+      const manager: E2eeDeviceManager = new E2eeDeviceManager({
         config,
         client,
         worker,
@@ -147,10 +147,16 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
           if (next === "stopped") setDeviceId(null);
           // 20 台の上限で登録できなかった。設定の「端末」タブで、削除する端末を選んでもらう。
           if (next === "error") setDeviceLimit(staleDevices(error));
-          if (next === "ready") setDeviceLimit(null);
+          if (next === "ready") {
+            setDeviceLimit(null);
+            // 別の端末から消されて登録し直したら（`reregister`）、端末 ID が変わる。
+            setDeviceId(manager.currentDeviceId);
+          }
         },
         onRoomKeys: () => requestKeyBackupRef.current(),
-      }),
+      });
+      return manager;
+    },
     [client, config, namespace],
   );
 

@@ -15,6 +15,7 @@ import type { CryptoWorker } from "./cryptoWorker";
 import { CryptoOperations } from "./operations";
 import type { CryptoOperation } from "./protocol";
 import {
+  RevocationChangedError,
   RevocationConflictError,
   beginRevocation,
   continueRevocation,
@@ -100,11 +101,17 @@ class FakeServer {
     throw new ApiError(status, code, { error: code, code, ...extra });
   }
 
-  /** 実際のサーバーと同じく、前提にした既定の SSSS 鍵を照合する（省略したら照合しない）。 */
+  /**
+   * 実際のサーバーと同じく、前提にした既定の SSSS 鍵と `secrets_revision` を照合する（省略したものは
+   * 照合しない）。
+   */
   private checkExpectedDefaultKey(body: Json) {
-    if (body.expected_default_key_id === undefined) return;
     const current = (this.ssss?.default_key_id as string | undefined) ?? null;
-    if (body.expected_default_key_id !== current) {
+    if (
+      (body.expected_default_key_id !== undefined && body.expected_default_key_id !== current) ||
+      (body.expected_secrets_revision !== undefined &&
+        body.expected_secrets_revision !== (this.ssss ? this.revision : null))
+    ) {
       this.error(409, "E2EE_SSSS_CONFLICT", { default_key_id: current });
     }
   }
@@ -540,24 +547,26 @@ describe("失効の手順", () => {
    * A の 1〜5 の失効が SSSS を保存して `stop` の要求の前で止まったあと、B の 1〜5 の失効が SSSS だけを
    * 保存して止まる。A を続けても、B の SSSS に対応しない公開鍵や版を書かない。
    */
-  async function interleaveSecretStorage(stop: string) {
+  async function interleaveSecretStorage(stop: string, scope: "full" | "device_only" = "full") {
     const { server, deps, recoveryKey } = await setUp();
     const other = await device("other");
     other.register(server);
     const otherDeps = other.deps(server);
 
     await openSecretStorage(deps, { kind: "recovery", recoveryKey });
-    await beginRevocation(deps, "full", []);
-    const recoveryOfA = await newRevocationRecoveryKey(deps);
+    await beginRevocation(deps, scope, []);
+    const recoveryOfA = scope === "full" ? await newRevocationRecoveryKey(deps) : recoveryKey;
     server.fail = stop;
     await expect(continueRevocation(deps, TOKEN)).rejects.toThrow(TypeError);
 
     await openSecretStorage(otherDeps, { kind: "recovery", recoveryKey: recoveryOfA });
-    await beginRevocation(otherDeps, "full", []);
-    await newRevocationRecoveryKey(otherDeps);
+    await beginRevocation(otherDeps, scope, []);
+    if (scope === "full") await newRevocationRecoveryKey(otherDeps);
     server.fail = "POST /api/e2ee/cross_signing/keys";
     await expect(continueRevocation(otherDeps, TOKEN)).rejects.toThrow(TypeError);
     const keyOfB = server.ssss?.default_key_id;
+    const revisionOfB = server.revision;
+    const selfSigning = keyOf(server.selfSigning);
 
     const master = keyOf(server.master);
     const versions = server.versions.length;
@@ -567,6 +576,8 @@ describe("失効の手順", () => {
     expect(keyOf(server.master)).toBe(master);
     expect(server.versions).toHaveLength(versions);
     expect(server.ssss?.default_key_id).toBe(keyOfB);
+    expect(server.revision).toBe(revisionOfB);
+    expect(keyOf(server.selfSigning)).toBe(selfSigning);
   }
 
   it("SSSS の保存のあと別の端末が SSSS を作り直したら、クロス署名鍵を保存しない", async () => {
@@ -575,5 +586,25 @@ describe("失効の手順", () => {
 
   it("版を作る前に別の端末が SSSS を作り直したら、版を作らない", async () => {
     await interleaveSecretStorage("POST /api/e2ee/key_backup/versions");
+  });
+
+  it("端末だけの失効でも、別の端末が SSSS の秘密だけを書き換えたら、公開鍵と版を保存しない", async () => {
+    await interleaveSecretStorage("POST /api/e2ee/cross_signing/keys", "device_only");
+    await interleaveSecretStorage("POST /api/e2ee/key_backup/versions", "device_only");
+  });
+
+  it("再認証のあいだに別の失効に置き換わったら、何も保存しない", async () => {
+    const { server, deps, recoveryKey } = await setUp();
+    await openSecretStorage(deps, { kind: "recovery", recoveryKey });
+    const first = await beginRevocation(deps, "device_only", []);
+    // 画面を離れて、別の失効を始め直した。
+    await beginRevocation(deps, "device_only", []);
+    const before = server.requests.length;
+    await expect(
+      continueRevocation(deps, TOKEN, undefined, first.revocation_id),
+    ).rejects.toBeInstanceOf(RevocationChangedError);
+    expect(server.requests.slice(before).filter((r) => r.method !== "GET")).toEqual([]);
+    // 今の失効は捨てていない。
+    expect(await revocationStatus(deps)).not.toBeNull();
   });
 });

@@ -13,16 +13,25 @@ const live = vi.hoisted(() => ({
   users: [] as { id: string; display_name: string }[],
   /** チャンネルとメンバーの行（同じ配列を返し続け、`peers` を作り直さない）。 */
   empty: [] as never[],
+  /**
+   * `useCollections` の値。描画のたびに同じ参照を返す（新しい config を返すと、API クライアントと
+   * `load` が作り直され、描画のたびに読み直してしまい、意図した競合を確かめられない）。
+   */
+  collections: {
+    config: { oidc: null, apiBaseUrl: "", devUserId: null, telemetryEnabled: false },
+    channels: {},
+    channelUsers: {},
+  },
 }));
 
 vi.mock("@tanstack/react-db", () => ({ useLiveQuery: () => ({ data: live.empty }) }));
 vi.mock("../../hooks/useRealtime", () => ({ useUsers: () => ({ data: live.users }) }));
 vi.mock("../../lib/electric/collections-context", () => ({
-  useCollections: () => ({
-    config: { oidc: null, apiBaseUrl: "", devUserId: null, telemetryEnabled: false },
-    channels: {},
-    channelUsers: {},
-  }),
+  useCollections: () => live.collections,
+}));
+vi.mock("../../lib/e2ee/revocationApi", async (original) => ({
+  ...(await original<typeof import("../../lib/e2ee/revocationApi")>()),
+  renameDevice: vi.fn(async () => {}),
 }));
 vi.mock("../../lib/e2ee/passkey", async (original) => ({
   ...(await original<typeof import("../../lib/e2ee/passkey")>()),
@@ -32,6 +41,7 @@ vi.mock("../../lib/e2ee/passkey", async (original) => ({
 vi.mock("../../lib/oidc/session", () => ({ getOidcClient: () => null }));
 vi.mock("../../lib/e2ee/revocationController", () => ({
   RevocationConflictError: class RevocationConflictError extends Error {},
+  RevocationChangedError: class RevocationChangedError extends Error {},
   loadDevices: vi.fn(),
   revocationStatus: vi.fn(),
   loadVerifications: vi.fn(),
@@ -208,4 +218,22 @@ it("keeps the selection screen when a reload started earlier returns late or fai
   await panel.changeRows();
   await settle();
   expect(screen.getByRole("button", { name: "次へ" })).toBeVisible();
+});
+
+it("keeps the list and offers a retry when reloading after a rename fails", async () => {
+  renderPanel();
+  await userEvent.click(await screen.findByRole("button", { name: "端末名を変える" }));
+  const loads = mocked.loadDevices.mock.calls.length;
+  mocked.loadDevices.mockRejectedValueOnce(new TypeError("network error"));
+  await userEvent.clear(screen.getByLabelText("端末名"));
+  await userEvent.type(screen.getByLabelText("端末名"), "新しい名前");
+  await userEvent.click(screen.getByRole("button", { name: "保存" }));
+  expect(await screen.findByText(/端末の一覧を読み直せませんでした/)).toBeVisible();
+  // 一覧は残している。
+  expect(screen.getByRole("button", { name: "失効を始める" })).toBeVisible();
+  expect(mocked.loadDevices.mock.calls.length).toBe(loads + 1);
+
+  await userEvent.click(screen.getByRole("button", { name: "もう一度試す" }));
+  await waitFor(() => expect(screen.queryByText(/端末の一覧を読み直せませんでした/)).toBeNull());
+  expect(mocked.loadDevices.mock.calls.length).toBe(loads + 2);
 });

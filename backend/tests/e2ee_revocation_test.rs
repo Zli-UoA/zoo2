@@ -654,44 +654,52 @@ async fn finish(
         }
         revocation.backup_created(res["data"]["version"].as_str().unwrap().to_owned());
     }
-
-    // 古い版のセッションを新しい版に移し、古い版を消す。
-    let new_version = revocation.state().new_backup_version.clone().unwrap();
-    let versions = BackupVersionInfo::list_from_json(&env.versions(&user).await).unwrap();
-    let secrets_revision = env.secret_storage(&user).await["secrets_revision"]
-        .as_u64()
-        .unwrap();
-    for (version, key) in revocation.versions_to_migrate(&versions) {
-        let rows = env.backup_rows(&user, &version).await;
-        let (rows, dropped) = revocation.reencrypt_rows(&key, &rows);
-        assert_eq!(dropped, 0);
-        for chunk in rows.chunks(1000) {
-            env.ok(
-                "POST",
-                &format!(
-                    "/api/e2ee/key_backup/keys?version={new_version}&secrets_revision={secrets_revision}"
-                ),
-                &user,
-                false,
-                json!({ "sessions": chunk }),
-            )
-            .await;
-        }
-        let (status, res) = env
-            .send(
-                "DELETE",
-                &format!("/api/e2ee/key_backup/versions/{version}"),
-                &user,
-                false,
-                Value::Null,
-            )
-            .await;
-        assert!(
-            status == StatusCode::OK || status == StatusCode::NOT_FOUND,
-            "{status}: {res}"
-        );
+    if stop <= revocation.state().stage {
+        return Ok(());
     }
-    revocation.advance(RevocationStage::Migrated);
+
+    if revocation.state().stage < RevocationStage::Migrated {
+        // 古い版のセッションを新しい版に移し、古い版を消す。
+        let new_version = revocation.state().new_backup_version.clone().unwrap();
+        let versions = BackupVersionInfo::list_from_json(&env.versions(&user).await).unwrap();
+        let secrets_revision = env.secret_storage(&user).await["secrets_revision"]
+            .as_u64()
+            .unwrap();
+        for (version, key) in revocation.versions_to_migrate(&versions) {
+            let rows = env.backup_rows(&user, &version).await;
+            let (rows, dropped) = revocation.reencrypt_rows(&key, &rows);
+            assert_eq!(dropped, 0);
+            for chunk in rows.chunks(1000) {
+                env.ok(
+                    "POST",
+                    &format!(
+                        "/api/e2ee/key_backup/keys?version={new_version}&secrets_revision={secrets_revision}"
+                    ),
+                    &user,
+                    false,
+                    json!({ "sessions": chunk }),
+                )
+                .await;
+            }
+            let (status, res) = env
+                .send(
+                    "DELETE",
+                    &format!("/api/e2ee/key_backup/versions/{version}"),
+                    &user,
+                    false,
+                    Value::Null,
+                )
+                .await;
+            assert!(
+                status == StatusCode::OK || status == StatusCode::NOT_FOUND,
+                "{status}: {res}"
+            );
+        }
+        revocation.advance(RevocationStage::Migrated);
+    }
+    if stop <= revocation.state().stage {
+        return Ok(());
+    }
 
     // 読み直して確かめる。
     let current = env
@@ -1147,7 +1155,8 @@ async fn concurrent_revocations_keep_every_live_backup_key_in_ssss() {
     .unwrap();
     assert_live_backup_keys_in_ssss(&env, &alice).await;
 
-    // 1 台目は続きのクロス署名鍵の保存で 409 になり、開け直してやり直す。
+    // 1 台目は続きのクロス署名鍵の保存で 409 になり（SSSS の `secrets_revision` が変わった）、開け直して
+    // やり直す。
     let (status, res) = finish(
         &env,
         &mut alice,
@@ -1158,7 +1167,7 @@ async fn concurrent_revocations_keep_every_live_backup_key_in_ssss() {
     .await
     .unwrap_err();
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(code(&res), "E2EE_CROSS_SIGNING_CONFLICT");
+    assert_eq!(code(&res), "E2EE_SSSS_CONFLICT");
     let mut r1 = prepare(&env, &alice, &first, RevocationScope::DeviceOnly, &[]).await;
     finish(
         &env,
@@ -1225,16 +1234,25 @@ async fn revocation_stops_when_another_device_replaced_secret_storage() {
     let mut second = Device::register(&env, &alice.id).await;
     second.unlock(&env, &alice).await.unwrap();
 
-    for stop in [
-        RevocationStage::SecretStorageSaved,
-        RevocationStage::SignaturesSaved,
+    // 端末だけの失効は SSSS の鍵を変えないので、`expected_secrets_revision` で見分ける。
+    for (scope, stop) in [
+        (RevocationScope::Full, RevocationStage::SecretStorageSaved),
+        (RevocationScope::Full, RevocationStage::SignaturesSaved),
+        (
+            RevocationScope::DeviceOnly,
+            RevocationStage::SecretStorageSaved,
+        ),
+        (
+            RevocationScope::DeviceOnly,
+            RevocationStage::SignaturesSaved,
+        ),
     ] {
-        let mut r1 = prepare(&env, &alice, &first, RevocationScope::Full, &[]).await;
+        let mut r1 = prepare(&env, &alice, &first, scope, &[]).await;
         finish(&env, &mut alice, &mut first, &mut r1, stop)
             .await
             .unwrap();
         // 2 台目は 1 台目の SSSS を開けて失効を始め、SSSS だけを保存して止まる。
-        let mut r2 = prepare(&env, &alice, &second, RevocationScope::Full, &[]).await;
+        let mut r2 = prepare(&env, &alice, &second, scope, &[]).await;
         finish(
             &env,
             &mut alice,
@@ -1244,7 +1262,7 @@ async fn revocation_stops_when_another_device_replaced_secret_storage() {
         )
         .await
         .unwrap();
-        let ssss = env.secret_storage(&alice.id).await["default_key_id"].clone();
+        let ssss = env.secret_storage(&alice.id).await;
         let keys = env.keys_query(&alice.id, &[&alice.id]).await;
         let versions = env.versions(&alice.id).await;
 
@@ -1257,14 +1275,18 @@ async fn revocation_stops_when_another_device_replaced_secret_storage() {
         )
         .await
         .unwrap_err();
-        assert_eq!(status, StatusCode::CONFLICT, "{stop:?}");
-        assert_eq!(code(&res), "E2EE_SSSS_CONFLICT", "{stop:?}");
-        assert_eq!(env.secret_storage(&alice.id).await["default_key_id"], ssss);
+        assert_eq!(status, StatusCode::CONFLICT, "{scope:?} {stop:?}");
+        assert_eq!(code(&res), "E2EE_SSSS_CONFLICT", "{scope:?} {stop:?}");
+        assert_eq!(env.secret_storage(&alice.id).await, ssss);
         let after = env.keys_query(&alice.id, &[&alice.id]).await;
         for field in ["master_keys", "self_signing_keys", "user_signing_keys"] {
-            assert_eq!(after[field], keys[field], "{stop:?} {field}");
+            assert_eq!(after[field], keys[field], "{scope:?} {stop:?} {field}");
         }
-        assert_eq!(env.versions(&alice.id).await, versions, "{stop:?}");
+        assert_eq!(
+            env.versions(&alice.id).await,
+            versions,
+            "{scope:?} {stop:?}"
+        );
 
         // 2 台目が最後まで終えれば、SSSS と公開鍵と版がそろう。
         finish(

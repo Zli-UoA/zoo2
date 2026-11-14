@@ -1132,6 +1132,8 @@
     "removeSlotConfirmDescription": "삭제하면 이 패스키로 잠금을 해제할 수 없습니다. 삭제하기 전에 다시 로그인해야 합니다.",
     "removeSlotConfirm": "삭제",
     "addPasskeyNeedsUnlock": "패스키를 추가하려면 이 페이지에서 한 번 더 잠금을 해제하세요(페이지를 새로 고치면 잠금 해제에 쓴 키가 메모리에서 지워집니다).",
+    "manageSlotsNeedsUnlock": "복구 키를 다시 만들려면 이 페이지에서 한 번 더 잠금을 해제하세요(페이지를 새로 고치면 잠금 해제에 쓴 키가 메모리에서 지워집니다).",
+    "reunlockToManage": "다시 잠금 해제",
     "resetTitle": "암호화 재설정",
     "resetDescription": "패스키와 복구 키를 모두 잃어버렸거나 모르는 설정이 있을 때 새 키로 다시 만듭니다.",
     "reset": "재설정",
@@ -1155,12 +1157,13 @@
       "disabled": "이 서버에서는 아직 암호화된 채널을 사용할 수 없습니다.",
       "publicForbidden": "비공개 채널만 암호화할 수 있습니다.",
       "deleteFailed": "기기를 삭제하지 못했습니다. 다시 시도해 주세요.",
+      "refreshFailed": "기기 목록을 다시 불러오지 못했습니다. 표시가 오래되었을 수 있습니다.",
       "renameFailed": "기기 이름을 바꾸지 못했습니다. 다시 시도해 주세요.",
       "revocationFailed": "폐기를 끝까지 저장하지 못했습니다. 진행 상황은 이 기기에 남아 있습니다. ‘폐기 실행’을 다시 눌러 주세요.",
       "verifyFailed": "재검증을 저장하지 못했습니다. 다시 시도해 주세요."
     },
     "reunlockToAdd": "다시 잠금 해제하고 패스키 추가",
-    "reunlockToAddDescription": "패스키를 추가하려면 패스키 또는 복구 키로 다시 잠금을 해제하세요. 이 기기의 잠금 해제 상태는 바뀌지 않습니다.",
+    "reunlockToAddDescription": "패스키를 추가하거나 복구 키를 다시 만들려면 패스키 또는 복구 키로 다시 잠금을 해제하세요. 이 기기의 잠금 해제 상태는 바뀌지 않습니다.",
     "badge": "암호화됨",
     "encryptChannel": "종단 간 암호화",
     "encryptChannelHelp": "멤버의 확인된 기기만 메시지를 읽을 수 있습니다. 암호화는 나중에 해제할 수 없으며, 아직 첨부 파일을 보낼 수 없습니다.",
@@ -1322,7 +1325,7 @@
       "save": "저장",
       "removeDescription": "이 복구 키로 더 이상 잠금 해제할 수 없습니다. 이미 받은 키는 무효가 되지 않습니다. 유출되었을 수 있다면 폐기하세요."
     },
-    "resetDevicesTitle": "남길 기기 선택",
+    "resetDevicesTitle": "삭제할 기기 선택",
     "resetDevicesDescription": "모르는 기기를 골라 삭제하세요. 다른 사람이 내 계정의 암호화를 설정해 두었다면, 공격자의 기기가 남지 않도록 이 선택을 마쳐야 재설정을 끝낼 수 있습니다.",
     "resetDevicesConfirm": "모르는 기기를 골랐습니다(없으면 확인했습니다)"
   }

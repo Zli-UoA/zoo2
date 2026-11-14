@@ -148,6 +148,10 @@ export class RevocationSession {
     const revocation = this.require();
     revocation.secretStorageSaved(secretsRevision);
     await store.saveRevocation(revocation);
+    // 1〜5 では既定の SSSS 鍵が新しい鍵に変わった。解錠で持っている古い SSSS 鍵で、「暗号化」タブから
+    // スロットを作ると、新しい鍵を開けないスロットで既存のスロットを置き換えてしまう。捨てて、
+    // 開け直してもらう。
+    if (revocation.summary().scope === "full") this.setup.discard();
   }
 
   crossSigningRequest(): JsonObject {
@@ -190,11 +194,22 @@ export class RevocationSession {
     return [...this.migration.keys()];
   }
 
-  /** 古い版の行を、新しい版の公開鍵で暗号化し直す。 */
-  reencrypt(version: string, rows: JsonObject[]): { rows: JsonObject[]; dropped: number } {
+  /**
+   * 古い版の行を、新しい版の公開鍵で暗号化し直す。捨てた行の数を記録して保存する（古い版を消したあとで
+   * 止まっても、再開した完了の画面に出せるように）。
+   */
+  async reencrypt(
+    store: CryptoStore,
+    version: string,
+    rows: JsonObject[],
+  ): Promise<{ rows: JsonObject[]; dropped: number }> {
     const key = this.migration.get(version);
     if (!key) throw new Error(`版 ${version} の鍵がありません`);
-    return this.require().reencryptRows(key, rows);
+    const revocation = this.require();
+    const result = revocation.reencryptRows(key, rows);
+    revocation.recordDropped(version, result.dropped);
+    await store.saveRevocation(revocation);
+    return result;
   }
 
   /**

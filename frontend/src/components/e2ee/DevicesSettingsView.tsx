@@ -82,6 +82,8 @@ export type RevocationPhase =
 export type DevicesErrorCode =
   | EncryptionErrorCode
   | "deleteFailed"
+  /** 操作のあとで一覧を読み直せなかった（表示は残し、読み直しを出す）。 */
+  | "refreshFailed"
   | "renameFailed"
   | "revocationFailed"
   | "verifyFailed";
@@ -123,6 +125,8 @@ export interface DevicesSettingsHandlers {
   onUnlockWithPasskey: () => void;
   onUnlockWithRecoveryKey: (recoveryKey: string) => void;
   onAddRevocationPasskey: () => void;
+  /** 1〜5 の新しいリカバリーキーを控えた。実行の前の確認（署名し直さない相手など）に進む。 */
+  onRecoveryKeySaved: () => void;
   onExecute: () => void;
   onRestart: () => void;
   onCancelRevocation: () => void;
@@ -246,6 +250,11 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
   return (
     <SettingsSection title={t("e2ee.devices.title")} description={t("e2ee.devices.description")}>
       <ErrorMessage code={state.error} />
+      {state.error === "refreshFailed" ? (
+        <Button variant="outline" size="sm" disabled={busy} onClick={handlers.onRetry}>
+          {t("e2ee.retry")}
+        </Button>
+      ) : null}
       <ul className="divide-y rounded-md border">
         {state.devices.map((device) => (
           <li key={device.deviceId} className="flex items-start justify-between gap-3 p-3">
@@ -761,12 +770,8 @@ function RecoveryKeyPhase({
         )
       ) : null}
       <p className="text-xs text-muted-foreground">{t("e2ee.revocation.fullWarning")}</p>
-      <Button
-        variant="destructive"
-        disabled={!confirmed || state.busy !== null}
-        onClick={handlers.onExecute}
-      >
-        {t("e2ee.revocation.execute")}
+      <Button disabled={!confirmed || state.busy !== null} onClick={handlers.onRecoveryKeySaved}>
+        {t("e2ee.revocation.next")}
       </Button>
     </div>
   );

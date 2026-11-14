@@ -25,6 +25,7 @@ const handlers = (): DevicesSettingsHandlers => ({
   onUnlockWithPasskey: fn(),
   onUnlockWithRecoveryKey: fn(),
   onAddRevocationPasskey: fn(),
+  onRecoveryKeySaved: fn(),
   onExecute: fn(),
   onRestart: fn(),
   onCancelRevocation: fn(),
@@ -261,11 +262,13 @@ export const FullRecoveryKey: Story = {
   },
   play: playForImplementation(async ({ args, canvasElement }) => {
     const canvas = within(canvasElement);
-    const execute = canvas.getByRole("button", { name: "失効を実行" });
-    await expect(execute).toBeDisabled();
+    // 控えたら、実行の前の確認（署名し直さない相手など）に進む。ここでは実行しない。
+    const next = canvas.getByRole("button", { name: "次へ" });
+    await expect(next).toBeDisabled();
     await userEvent.click(canvas.getByRole("checkbox", { name: "リカバリーキーを控えました" }));
-    await userEvent.click(execute);
-    await expect(args.handlers.onExecute).toHaveBeenCalled();
+    await userEvent.click(next);
+    await expect(args.handlers.onRecoveryKeySaved).toHaveBeenCalled();
+    await expect(args.handlers.onExecute).not.toHaveBeenCalled();
   }),
 };
 

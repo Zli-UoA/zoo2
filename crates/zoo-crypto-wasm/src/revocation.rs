@@ -66,6 +66,13 @@ export interface RevocationSummary {
   /** 新しい既定の SSSS 鍵（2〜5）。 */
   key_id: string;
   new_backup_version: string | null;
+  /** 新しい版に移せずに捨てた行の数（移した版の合計。再開しても残る）。 */
+  dropped_sessions: number;
+  /**
+   * この失効を見分ける値（作った自己署名鍵の公開鍵。始めるたびに変わる）。再認証のあいだに別の失効に
+   * 置き換わっていないかを確かめるのに使う。
+   */
+  revocation_id: string;
 }
 
 /** `Revocation.signatures` の結果。 */
@@ -296,6 +303,12 @@ impl Revocation {
         to_js(&json!({ "rows": rows, "dropped": dropped }))
     }
 
+    /// 古い版 `version` で捨てた行の数を記録する（同じ版は置き換える）。古い版を消す前に保存する。
+    #[wasm_bindgen(js_name = recordDropped)]
+    pub fn record_dropped(&mut self, version: &str, dropped: u32) {
+        self.inner.record_dropped(version, dropped as usize);
+    }
+
     /// 保存のあとに読み直した値を、作った鍵と比べる。違えば `code` が `ServerKeyMismatch`。
     pub fn verify(
         &self,
@@ -344,5 +357,7 @@ fn summary(state: &core::RevocationState) -> Result<JsValue, JsValue> {
         "versions_without_key": state.versions_without_key,
         "key_id": state.key_id,
         "new_backup_version": state.new_backup_version,
+        "dropped_sessions": state.dropped_total(),
+        "revocation_id": state.new_keys.self_signing,
     }))
 }

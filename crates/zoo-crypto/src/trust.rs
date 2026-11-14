@@ -360,6 +360,9 @@ impl TrustStore {
     /// 新しいマスター鍵（2〜5 のとき）を信頼し、新しいユーザー署名鍵を履歴に足し、署名し直したピンの
     /// 相手（記録があり `confirmed_usk` もある相手）の `confirmed_usk` を新しい鍵にする。
     /// 署名し直さなかった相手の記録は変えない（次の判定で再検証が必要になる）。
+    ///
+    /// ピンの登録待ち（`pin_pending`）は外さない。署名し直したピンの保存はこのあとなので、保存に
+    /// 失敗しても配らないようにするため。保存できたら、次の判定でサーバーのピンと照合して外れる。
     pub fn apply_revocation(
         &mut self,
         master: &CrossSigningKeyPair,
@@ -378,7 +381,6 @@ impl TrustStore {
                 .filter(|r| r.confirmed_usk.is_some() && r.master_key == pin.master_key)
             {
                 record.confirmed_usk = Some(usk.clone());
-                record.pin_pending = false;
             }
         }
         Ok(())

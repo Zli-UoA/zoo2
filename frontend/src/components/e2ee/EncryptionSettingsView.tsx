@@ -524,22 +524,30 @@ function UnlockedStep({
             {t("e2ee.recovery.create")}
           </Button>
         ) : null}
-        {state.passkeyAvailable ? (
-          state.canAddPasskey ? (
+        {state.canAddPasskey ? (
+          state.passkeyAvailable ? (
             <Button variant="outline" disabled={busy} onClick={handlers.onAddPasskey}>
               <FingerprintIcon />
               {t("e2ee.addPasskey")}
             </Button>
-          ) : (
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">{t("e2ee.addPasskeyNeedsUnlock")}</p>
-              <Button variant="outline" disabled={busy} onClick={handlers.onReunlock}>
-                <FingerprintIcon />
-                {t("e2ee.reunlockToAdd")}
-              </Button>
-            </div>
-          )
-        ) : null}
+          ) : null
+        ) : (
+          // 解錠に使った鍵がメモリーにない（ページを読み込み直した）。パスキーに対応していない環境でも、
+          // リカバリーキーで開け直せば、リカバリーキーを作り直せる。
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              {t(
+                state.passkeyAvailable
+                  ? "e2ee.addPasskeyNeedsUnlock"
+                  : "e2ee.manageSlotsNeedsUnlock",
+              )}
+            </p>
+            <Button variant="outline" disabled={busy} onClick={handlers.onReunlock}>
+              {state.passkeyAvailable ? <FingerprintIcon /> : <KeyRoundIcon />}
+              {t(state.passkeyAvailable ? "e2ee.reunlockToAdd" : "e2ee.reunlockToManage")}
+            </Button>
+          </div>
+        )}
         {state.busy === "passkey" || state.busy === "remove" ? (
           <Busy label={t("e2ee.saving")} />
         ) : null}

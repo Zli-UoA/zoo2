@@ -346,6 +346,10 @@ fn save_all(alice: &mut Alice, revocation: &mut Revocation, slots: &[KeySlot]) {
     // 保存した SSSS の既定の鍵を前提にする（別の端末が SSSS だけを作り直したら 409）。
     let default_key_id = json!(revocation.state().key_id);
     assert_eq!(body["expected_default_key_id"], default_key_id);
+    assert_eq!(
+        body["expected_secrets_revision"],
+        json!(alice.storage.revision())
+    );
     alice.apply_cross_signing(&body);
     revocation.advance(RevocationStage::CrossSigningSaved);
     let device = DeviceAccount::new(ALICE, DEVICE).unwrap().device_keys();
@@ -355,6 +359,10 @@ fn save_all(alice: &mut Alice, revocation: &mut Revocation, slots: &[KeySlot]) {
     let version_body = revocation.backup_version_request().unwrap();
     assert_eq!(version_body["expected_current_version"], json!("1"));
     assert_eq!(version_body["expected_default_key_id"], default_key_id);
+    assert_eq!(
+        version_body["expected_secrets_revision"],
+        json!(alice.storage.revision())
+    );
     let version = alice.apply_version(&version_body);
     revocation.backup_created(version);
 }
@@ -509,7 +517,7 @@ fn state_is_sealed_in_the_crypto_store() {
 #[test]
 fn previous_backup_rows_are_reencrypted_for_the_new_version() {
     let (alice, secrets) = Alice::new();
-    let revocation = begin(&alice, &secrets, RevocationScope::DeviceOnly);
+    let mut revocation = begin(&alice, &secrets, RevocationScope::DeviceOnly);
     let sender = DeviceAccount::new(BOB, DEVICE).unwrap().identity_keys();
     let sender_key = sender.curve25519.to_base64();
     let data = BackedUpSessionData {
@@ -546,6 +554,12 @@ fn previous_backup_rows_are_reencrypted_for_the_new_version() {
     let decrypted = new_key.decrypt(&rows[0].session_data).unwrap();
     assert_eq!(decrypted.sender_user_id, BOB);
     assert!(secrets.backup_key.decrypt(&rows[0].session_data).is_err());
+
+    // 捨てた数は版ごとに記録し、同じ版を数え直しても二重に数えない。
+    revocation.record_dropped("1", dropped);
+    revocation.record_dropped("1", dropped);
+    revocation.record_dropped("2", 2);
+    assert_eq!(revocation.state().dropped_total(), 3);
 }
 
 #[test]
@@ -575,4 +589,35 @@ fn revoking_device_updates_its_own_trust_records() {
         trust.record_own_user_signing_key(&secrets.cross_signing.user_signing),
         Err(CryptoError::UserSigningKeyRollback(_))
     ));
+}
+
+#[test]
+fn revocation_keeps_pending_pins_pending_until_they_are_saved() {
+    let (_alice, secrets) = Alice::new();
+    let bob = master(BOB);
+    // TOFU のピンの登録に失敗した記録（confirmed_usk があり、登録待ち）。
+    let mut json: Value =
+        serde_json::from_str(&trust_with_records(&secrets, &bob).to_json()).unwrap();
+    json["records"][BOB]["pin_pending"] = json!(true);
+    let mut trust = TrustStore::from_json(&json.to_string(), ALICE).unwrap();
+    let new_usk = CrossSigningKeyPair::generate(ALICE, KeyUsage::UserSigning).unwrap();
+    let plan = zoo_crypto::ResignPlan::collect(
+        &trust,
+        &secrets.cross_signing.user_signing,
+        &[],
+        &[],
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(plan.pins.len(), 1);
+    trust
+        .apply_revocation(&secrets.cross_signing.master, &new_usk, &plan)
+        .unwrap();
+    let record = trust.record(BOB).unwrap();
+    assert_eq!(
+        record.confirmed_usk.as_deref(),
+        Some(new_usk.public_key().to_base64().as_str())
+    );
+    // 署名し直したピンを保存できるまでは、登録待ちのまま（配らない）。
+    assert!(record.pin_pending);
 }

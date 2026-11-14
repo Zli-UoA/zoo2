@@ -1132,6 +1132,8 @@
     "removeSlotConfirmDescription": "This passkey will no longer unlock encryption. You'll be asked to sign in again first.",
     "removeSlotConfirm": "Remove",
     "addPasskeyNeedsUnlock": "To add a passkey, unlock again on this page. (Reloading the page clears the unlocked key from memory.)",
+    "manageSlotsNeedsUnlock": "To regenerate the recovery key, unlock again on this page. (Reloading the page clears the unlocked key from memory.)",
+    "reunlockToManage": "Unlock again",
     "resetTitle": "Reset encryption",
     "resetDescription": "Create new keys if you've lost both your passkeys and recovery key, or if you see a setup you don't recognize.",
     "reset": "Reset",
@@ -1155,12 +1157,13 @@
       "disabled": "Encrypted channels aren't available on this server yet.",
       "publicForbidden": "Only private channels can be encrypted.",
       "deleteFailed": "Could not delete the device. Please try again.",
+      "refreshFailed": "Couldn't reload the device list. What you see may be out of date.",
       "renameFailed": "Could not rename the device. Please try again.",
       "revocationFailed": "Could not finish saving the revocation. Its progress is kept on this device. Press “Revoke” again.",
       "verifyFailed": "Could not save the verification. Please try again."
     },
     "reunlockToAdd": "Unlock again to add a passkey",
-    "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey. This device stays unlocked either way.",
+    "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey or regenerate the recovery key. This device stays unlocked either way.",
     "badge": "Encrypted",
     "encryptChannel": "Encrypt end-to-end",
     "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
@@ -1322,7 +1325,7 @@
       "save": "Save",
       "removeDescription": "This recovery key will no longer unlock. Keys already obtained stay valid. If it may have leaked, revoke."
     },
-    "resetDevicesTitle": "Choose devices to keep",
+    "resetDevicesTitle": "Choose devices to delete",
     "resetDevicesDescription": "Select unfamiliar devices to delete them. If someone else set up encryption for your account, you must finish this choice before the reset completes so the attacker's devices are not left behind.",
     "resetDevicesConfirm": "I selected unfamiliar devices (or confirmed there are none)"
   }

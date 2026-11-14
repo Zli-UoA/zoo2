@@ -1132,6 +1132,8 @@
     "removeSlotConfirmDescription": "刪除後將無法使用此通行金鑰解鎖。刪除前需要重新登入。",
     "removeSlotConfirm": "刪除",
     "addPasskeyNeedsUnlock": "若要新增通行金鑰，請在此頁重新解鎖一次（重新載入頁面後，解鎖用的金鑰會從記憶體中清除）。",
+    "manageSlotsNeedsUnlock": "若要重新產生復原金鑰，請在此頁重新解鎖一次（重新載入頁面後，解鎖用的金鑰會從記憶體中清除）。",
+    "reunlockToManage": "重新解鎖",
     "resetTitle": "重設加密",
     "resetDescription": "在通行金鑰與復原金鑰都遺失，或看到不明的設定時，以新金鑰重新建立。",
     "reset": "重設",
@@ -1155,12 +1157,13 @@
       "disabled": "此伺服器尚不支援加密頻道。",
       "publicForbidden": "只有私人頻道可以加密。",
       "deleteFailed": "無法刪除裝置。請再試一次。",
+      "refreshFailed": "無法重新載入裝置清單。顯示的內容可能不是最新的。",
       "renameFailed": "無法變更裝置名稱。請再試一次。",
       "revocationFailed": "無法完成撤銷的儲存。進度保留在此裝置上。請再按一次「執行撤銷」。",
       "verifyFailed": "無法儲存重新驗證。請再試一次。"
     },
     "reunlockToAdd": "重新解鎖以新增通行金鑰",
-    "reunlockToAddDescription": "若要新增通行金鑰，請使用通行金鑰或復原金鑰重新解鎖。此裝置的解鎖狀態不會改變。",
+    "reunlockToAddDescription": "若要新增通行金鑰或重新產生復原金鑰，請使用通行金鑰或復原金鑰重新解鎖。此裝置的解鎖狀態不會改變。",
     "badge": "已加密",
     "encryptChannel": "端對端加密",
     "encryptChannelHelp": "只有成員已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",
@@ -1322,7 +1325,7 @@
       "save": "儲存",
       "removeDescription": "將無法再用此復原金鑰解鎖。已取得的金鑰不會失效。若可能已外洩，請進行撤銷。"
     },
-    "resetDevicesTitle": "選擇要保留的裝置",
+    "resetDevicesTitle": "選擇要刪除的裝置",
     "resetDevicesDescription": "請選擇陌生的裝置並刪除。若有他人為你的帳號設定了加密，必須完成此選擇才能完成重設，以免留下攻擊者的裝置。",
     "resetDevicesConfirm": "我已選擇陌生的裝置（若沒有，已確認）"
   }
