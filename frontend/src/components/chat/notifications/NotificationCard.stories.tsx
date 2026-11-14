@@ -104,7 +104,9 @@ export const MissedCall: Story = {
     })(),
   },
   play: playForImplementation(async () => {
-    await expect(await screen.findByText(/不在着信|Missed call/)).toBeInTheDocument();
+    // 不在着信にはメッセージがないので、チャンネルへのリンクだけが出る。
+    const link = await screen.findByRole("link", { name: /不在着信|Missed call/ });
+    await expect(link).toHaveAttribute("href", expect.stringMatching(/^\/channels\/[^?]+$/));
   }),
 };
 

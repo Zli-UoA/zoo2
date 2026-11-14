@@ -52,7 +52,7 @@ tail -c 65 vapid-public.der | openssl base64 -A | tr '+/' '-_' | tr -d '='
 
 通話の呼び出し（[音声通話と呼び出し](calls.md)）は、通常の通知と別の形で送る。
 - 着信（`notificationType: "call_invite"`）は `TTL: 30` と `Urgency: high` で送る。`tag` は `zoo-call-{招待の ID}`、`inviteId` に招待の ID を入れる。DND 中は送らない。
-- 招待が終わったら（応答・拒否・取り消し・不在）、同じ `tag` で `call_invite_end` を送り、出ている通知を閉じさせる。着信を送らなかった人（DND 中）には、これも送らない。
+- 招待が終わったら（応答・拒否・取り消し・不在）、同じ `tag` で `call_invite_end` を送り、出ている通知を閉じさせる。着信を送らなかった人（DND 中）には、これも送らない（着信を送らなかったのに、取り消しだけが届かないようにするため）。
 - Service Worker は、着信を `requireInteraction` つきで「応答」「拒否」のボタン付きで出す。「応答」は `?call_invite=ID&call_action=accept` のつく URL を開き、「拒否」は開いているタブに依頼する（タブがなければ閉じるだけ）。
 - 不在着信（`missed_call`）は、通常の通知と同じく 5 分の TTL で送り、本文は「不在着信」になる。メッセージは持たない。
 

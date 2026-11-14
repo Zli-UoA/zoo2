@@ -40,28 +40,86 @@ fn parse_rows<T: DeserializeOwned>(rows: Vec<toasty::stmt::Value>) -> Vec<T> {
 }
 
 /// DM で、空の部屋に最初に入った人が、相手（DM の他のメンバー）を呼ぶ。すでに通話に入っている人は呼ばない。
+/// グループ DM でも、通話の空きの数までしか呼ばない。
 pub async fn create_dm_invites(
     db: &mut toasty::Db,
     channel_id: &str,
     inviter_id: &str,
 ) -> Result<Vec<CallInvitePush>, AppError> {
+    let rows = toasty::sql::query(
+        "SELECT user_id FROM channel_user WHERE channel_id = $1 AND user_id <> $2 ORDER BY user_id",
+    )
+    .bind(channel_id.to_string())
+    .bind(inviter_id.to_string())
+    .exec(&mut *db)
+    .await?;
+    let members: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| match row {
+            toasty::stmt::Value::Record(rec) => match rec.fields.into_iter().next() {
+                Some(toasty::stmt::Value::String(id)) => Some(id),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    if members.is_empty() {
+        return Ok(Vec::new());
+    }
+    insert_invites(db, channel_id, inviter_id, &members).await
+}
+
+/// 招待を作る。空きの数（定員 - 在室 - 呼び出し中）までしか作らず、1 回の要求の中でも累積させる。
+///
+/// 空きの確認から挿入までを、チャンネル行のロック（通話への参加と同じ）の下で行い、同時の要求や
+/// 入室と直列化する。そうしないと、別々の相手への 2 件の要求が同じ空きを読んで、定員を超える。
+/// 呼べないユーザー（bot・無効化）、すでに入室している人、すでに呼び出し中の人は、数える前に除く。
+async fn insert_invites(
+    db: &mut toasty::Db,
+    channel_id: &str,
+    inviter_id: &str,
+    invitee_ids: &[String],
+) -> Result<Vec<CallInvitePush>, AppError> {
+    let ids_json = serde_json::json!(invitee_ids).to_string();
+    let mut tx = db.transaction().await?;
+    toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
+        .bind(channel_id.to_string())
+        .exec(&mut tx)
+        .await?;
     let rows = toasty::sql::query(format!(
-        "INSERT INTO call_invites (channel_id, inviter_id, invitee_id, expires_at)
-         SELECT $1::text, $2::text, cu.user_id,
+        "WITH slots AS (
+             SELECT greatest(0, {MAX_CALL_PARTICIPANTS}
+               - (SELECT count(*) FROM call_presence
+                  WHERE channel_id = $1 AND expires_at > statement_timestamp())
+               - (SELECT count(*) FROM call_invites
+                  WHERE channel_id = $1 AND status = 'pending'))::int AS n
+         ),
+         candidates AS (
+             SELECT u.id AS user_id, row_number() OVER (ORDER BY u.id) AS rn
+             FROM users u
+             WHERE u.id IN (SELECT jsonb_array_elements_text($3::jsonb))
+               AND NOT u.is_bot AND NOT u.is_deactivated
+               AND NOT EXISTS (
+                   SELECT 1 FROM call_presence p
+                   WHERE p.channel_id = $1 AND p.user_id = u.id
+                     AND p.expires_at > statement_timestamp())
+               AND NOT EXISTS (
+                   SELECT 1 FROM call_invites i
+                   WHERE i.channel_id = $1 AND i.invitee_id = u.id AND i.status = 'pending')
+         )
+         INSERT INTO call_invites (channel_id, inviter_id, invitee_id, expires_at)
+         SELECT $1::text, $2::text, candidates.user_id,
                 statement_timestamp() + interval '{CALL_INVITE_TTL_SECONDS} seconds'
-         FROM channel_user cu JOIN users u ON u.id = cu.user_id
-         WHERE cu.channel_id = $1 AND cu.user_id <> $2
-           AND NOT u.is_bot AND NOT u.is_deactivated
-           AND NOT EXISTS (
-             SELECT 1 FROM call_presence p
-             WHERE p.channel_id = $1 AND p.user_id = cu.user_id AND p.expires_at > statement_timestamp())
+         FROM candidates, slots WHERE candidates.rn <= slots.n
          ON CONFLICT (channel_id, invitee_id) WHERE status = 'pending' DO NOTHING
          {RETURNING_INVITE}"
     ))
     .bind(channel_id.to_string())
     .bind(inviter_id.to_string())
-    .exec(db)
+    .bind(ids_json)
+    .exec(&mut tx)
     .await?;
+    tx.commit().await?;
     Ok(parse_rows(rows))
 }
 
@@ -138,9 +196,13 @@ pub async fn sweep(db: &mut toasty::Db) -> Result<(), AppError> {
     push::dispatch_call_invite_ends(db.clone(), parse_rows(rows));
     let rows = toasty::sql::query(
         "WITH due AS (
-             SELECT id FROM call_invites
-             WHERE status = 'pending' AND expires_at <= statement_timestamp()
-             ORDER BY expires_at LIMIT 100 FOR UPDATE SKIP LOCKED
+             SELECT i.id FROM call_invites i
+             WHERE i.status = 'pending' AND i.expires_at <= statement_timestamp()
+               AND NOT EXISTS (
+                   SELECT 1 FROM call_presence p
+                   WHERE p.channel_id = i.channel_id AND p.user_id = i.invitee_id
+                     AND p.expires_at > statement_timestamp())
+             ORDER BY i.expires_at LIMIT 100 FOR UPDATE OF i SKIP LOCKED
          ),
          missed AS (
              UPDATE call_invites c SET status = 'missed', responded_at = statement_timestamp()
@@ -285,36 +347,7 @@ pub async fn create(
         }
     }
 
-    let ids_json = serde_json::json!(ids).to_string();
-    // 空きの数（定員 - 在室 - 呼び出し中）までしか作らない。1 回の要求の中でも累積させる。
-    let rows = toasty::sql::query(format!(
-        "WITH slots AS (
-             SELECT greatest(0, {MAX_CALL_PARTICIPANTS}
-               - (SELECT count(*) FROM call_presence
-                  WHERE channel_id = $1 AND expires_at > statement_timestamp())
-               - (SELECT count(*) FROM call_invites
-                  WHERE channel_id = $1 AND status = 'pending'))::int AS n
-         ),
-         candidates AS (
-             SELECT x, row_number() OVER () AS rn
-             FROM jsonb_array_elements_text($3::jsonb) AS x
-             WHERE NOT EXISTS (
-                 SELECT 1 FROM call_presence p
-                 WHERE p.channel_id = $1 AND p.user_id = x AND p.expires_at > statement_timestamp())
-         )
-         INSERT INTO call_invites (channel_id, inviter_id, invitee_id, expires_at)
-         SELECT $1::text, $2::text, candidates.x,
-                statement_timestamp() + interval '{CALL_INVITE_TTL_SECONDS} seconds'
-         FROM candidates, slots WHERE candidates.rn <= slots.n
-         ON CONFLICT (channel_id, invitee_id) WHERE status = 'pending' DO NOTHING
-         {RETURNING_INVITE}"
-    ))
-    .bind(channel_id.clone())
-    .bind(user.id.clone())
-    .bind(ids_json)
-    .exec(&mut db)
-    .await?;
-    let created: Vec<CallInvitePush> = parse_rows(rows);
+    let created = insert_invites(&mut db, &channel_id, &user.id, &ids).await?;
     push::dispatch_call_invites(state.db.clone(), created.clone());
 
     Ok(Json(serde_json::json!({

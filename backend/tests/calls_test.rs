@@ -1474,3 +1474,102 @@ async fn test_sweep_accepts_an_invite_for_someone_already_in_the_room() -> anyho
     assert_eq!(invite_status(&mut w.db, &id).await?, "accepted");
     Ok(())
 }
+
+#[tokio::test]
+async fn test_group_dm_auto_invite_stops_at_the_room_capacity() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let alice = w.alice.clone();
+    let group = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO channels (id, channel_name, created_user_id, is_private, is_dm) VALUES ($1, $1, $2, true, true)",
+    )
+    .bind(group.as_str())
+    .bind(alice.as_str())
+    .exec(&mut w.db)
+    .await?;
+    let mut members = vec![alice.clone()];
+    for i in 0..8 {
+        let id = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(id.as_str())
+        .bind(format!("Member{i}"))
+        .exec(&mut w.db)
+        .await?;
+        members.push(id);
+    }
+    for member in &members {
+        toasty::sql::statement(
+            "INSERT INTO channel_user (user_id, channel_id, joined_at) VALUES ($1, $2, CURRENT_TIMESTAMP)",
+        )
+        .bind(member.as_str())
+        .bind(group.as_str())
+        .exec(&mut w.db)
+        .await?;
+    }
+    put_presence(&mut w.db, &group, &alice).await?;
+    // alice が入室済み。残りの空きは 5 つ（定員 6）。9 人のグループ DM でも、呼ぶのは 5 人まで
+    let created = backend::call_invites::create_dm_invites(&mut w.db, &group, &alice).await?;
+    assert_eq!(created.len(), 5);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_concurrent_invites_share_the_remaining_slots() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
+    // 在室 5 人。空きは 1 つだけ
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    for i in 0..4 {
+        let filler = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(filler.as_str())
+        .bind(format!("Filler{i}"))
+        .exec(&mut w.db)
+        .await?;
+        put_presence(&mut w.db, &w.public_ch.clone(), &filler).await?;
+    }
+    let channel = w.public_ch.clone();
+    let (bob_ids, carol_ids) = ([bob.as_str()], [carol.as_str()]);
+    let (first, second) = tokio::join!(
+        invite(&w, &alice, &channel, &bob_ids),
+        invite(&w, &alice, &channel, &carol_ids),
+    );
+    let total: usize = [first?, second?]
+        .iter()
+        .map(|(status, body)| {
+            assert_eq!(*status, StatusCode::OK);
+            body["invites"].as_array().unwrap().len()
+        })
+        .sum();
+    assert_eq!(total, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_expired_invite_for_someone_already_in_the_room_is_not_missed() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob) = (w.alice.clone(), w.bob.clone());
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob]).await?;
+    let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+    // 期限が来たのと同時に入室した（参加の処理が、まだ招待を更新していない）
+    put_presence(&mut w.db, &w.public_ch.clone(), &bob).await?;
+    toasty::sql::statement("UPDATE call_invites SET expires_at = statement_timestamp() - interval '1 second' WHERE id = $1::uuid")
+        .bind(id.as_str())
+        .exec(&mut w.db)
+        .await?;
+    backend::call_invites::sweep(&mut w.db).await?;
+    assert_eq!(invite_status(&mut w.db, &id).await?, "accepted");
+    let missed = toasty::sql::query(
+        "SELECT 1 FROM notification_events WHERE user_id = $1 AND notification_type = 'missed_call'",
+    )
+    .bind(bob.as_str())
+    .exec(&mut w.db)
+    .await?;
+    assert!(missed.is_empty());
+    Ok(())
+}
