@@ -40,8 +40,9 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// 再確認。失敗しても、通常の同期は止めない (再確認が 429 などで失敗し続けても、新しい投稿の取り込みを妨げない)。
-/// 失敗したら、5 分後にもう一度試す (`rechecked_at` を、30 分の間隔の 5 分前にする)。リースを失ったときだけは、そのまま返す
+/// 再確認。失敗しても、通常の同期は止めない (再確認が失敗し続けても、新しい投稿の取り込みを妨げない)。失敗したら、5 分後に
+/// もう一度試す (`rechecked_at` を、30 分の間隔の 5 分前にする)。ただし 429 は、`Retry-After` を守るため、そのまま返す
+/// (この回の通常の同期は、待ちのあと)。リースを失ったときも、そのまま返す
 pub(super) async fn run(
     slack: &mut Slack,
     ctx: &mut Context,
@@ -52,6 +53,8 @@ pub(super) async fn run(
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
     let position = slack.position();
+    // 失敗したトランザクションの中で作った利用者は、DB に残らない。キャッシュからも外す (続く通常の同期が、存在しない ID を使わない)
+    let known_users: HashSet<String> = ctx.users.keys().cloned().collect();
     match run_inner(
         slack,
         ctx,
@@ -72,6 +75,7 @@ pub(super) async fn run(
                 _ => "invalid cursor".to_string(),
             };
             tracing::warn!(team, channel = slack_channel, %reason, "Slack recheck failed; the sync goes on");
+            ctx.users.retain(|id, _| known_users.contains(id));
             // 全トークンを試し切った位置を戻す (後続の通常の同期の呼び出しが、トークンなしで失敗しないように)
             slack.set_position(position);
             let mut tx = db.transaction().await.map_err(AppError::from)?;
@@ -84,7 +88,13 @@ pub(super) async fn run(
             )
             .await?;
             tx.commit().await.map_err(AppError::from)?;
-            Ok(())
+            // 429 は、同じメソッド・ワークスペースの全トークンに待ちが掛かる。通常の同期へすぐ進んでも、同じ
+            // `conversations.history` が 429 になるので、`Retry-After` を守って、この回を終える
+            // (再確認は、上で 5 分後に回したので、待ちのあとの通常の同期は、再確認に妨げられない)
+            match error {
+                SyncError::RateLimited(_) => Err(error),
+                _ => Ok(()),
+            }
         }
     }
 }

@@ -614,14 +614,11 @@ async fn test_recheck_does_not_delete_when_the_history_is_incomplete() -> anyhow
     Ok(())
 }
 
-#[tokio::test]
-async fn test_a_failing_recheck_does_not_stop_the_normal_sync() -> anyhow::Result<()> {
-    let _serial = SERIAL.lock().await;
-    let f = fixture(Some(SECRET), None).await?;
-    // 再確認の履歴の取得 (最初の履歴の呼び出し) が 429 になっても、通常の同期は、新しい投稿を取り込む
+async fn failing_recheck(f: &Fixture, response: ResponseTemplate) -> anyhow::Result<()> {
+    // 再確認の履歴の取得 (最初の履歴の呼び出し) だけが失敗する
     Mock::given(method("GET"))
         .and(path("/conversations.history"))
-        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "60"))
+        .respond_with(response)
         .up_to_n_times(1)
         .with_priority(1)
         .expect(1)
@@ -650,20 +647,70 @@ async fn test_a_failing_recheck_does_not_stop_the_normal_sync() -> anyhow::Resul
     )
     .await?;
     drain(&f.state).await;
+    Ok(())
+}
+
+async fn retry_in_minutes(f: &Fixture) -> f64 {
+    sql(
+        &f.state,
+        "SELECT json_build_object('m',extract(epoch FROM (rechecked_at+interval '30 minutes'-now()))/60)::text \
+         FROM slack_channel_syncs WHERE team_id=$1",
+        &[&f.team],
+    )
+    .await
+    .unwrap()[0]["m"]
+        .as_f64()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_a_failing_recheck_does_not_stop_the_normal_sync() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    // 再確認が 429 以外で失敗しても、通常の同期は、同じ回に、新しい投稿を取り込む
+    failing_recheck(&f, ResponseTemplate::new(500)).await?;
     assert_eq!(
         count_messages(&f.state, &f.channel).await,
         1,
         "the new post is imported"
     );
     // 再確認は、5 分後にもう一度試す (30 分の間隔の 5 分前)。30 分あとではない
+    let minutes = retry_in_minutes(&f).await;
+    assert!((3.0..=6.0).contains(&minutes), "{minutes}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_a_rate_limited_recheck_waits_for_retry_after() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    // 再確認が 429 になったら、同じ `conversations.history` を、すぐには呼ばない (Retry-After を守る)
+    failing_recheck(
+        &f,
+        ResponseTemplate::new(429).insert_header("retry-after", "60"),
+    )
+    .await?;
+    assert_eq!(
+        count_messages(&f.state, &f.channel).await,
+        0,
+        "waits for Retry-After"
+    );
     let rows = sql(
         &f.state,
-        "SELECT json_build_object('retry_in_minutes',extract(epoch FROM (rechecked_at+interval '30 minutes'-now()))/60)::text \
-         FROM slack_channel_syncs WHERE team_id=$1",
+        "SELECT json_build_object('wait',extract(epoch FROM (not_before-now())))::text FROM slack_channel_syncs WHERE team_id=$1",
         &[&f.team],
     )
     .await?;
-    let minutes = rows[0]["retry_in_minutes"].as_f64().unwrap();
-    assert!((3.0..=6.0).contains(&minutes), "{minutes}");
+    assert!(rows[0]["wait"].as_f64().unwrap() > 40.0, "{}", rows[0]);
+    // 待ちのあとは、再確認に妨げられず、通常の同期が新しい投稿を取り込む (再確認は 5 分後に回っている)
+    assert!((3.0..=6.0).contains(&retry_in_minutes(&f).await));
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET available_at=now(),not_before=NULL WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    drain(&f.state).await;
+    assert_eq!(count_messages(&f.state, &f.channel).await, 1);
     Ok(())
 }
