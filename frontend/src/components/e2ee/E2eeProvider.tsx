@@ -21,6 +21,7 @@ import {
   markCryptoStoreDeletionPending,
   readPendingCryptoStoreDeletion,
 } from "../../lib/e2ee/identity";
+import { answerPushDecryptRequest } from "../../lib/e2ee/push/protocol";
 import { runStartupCheck, uploadKeyBackup } from "../../lib/e2ee/setupController";
 import { supportsCryptoStore } from "../../lib/e2ee/support";
 import { readLastOfflineUserId } from "../../lib/offline/identity";
@@ -228,6 +229,23 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       channel?.close();
     };
   }, [client, createManager, isOnline, namespace, supported, userId]);
+
+  // Service Worker が Push の復号を頼んできたら、このタブが開いている暗号ストアで復号して返す
+  // （#365。docs/e2ee.md の「Web Push の復号」）。開いていないタブも、待たせないよう断りを返す。
+  const pushTarget = useRef<{ worker: CryptoWorker | null; namespace: string }>({
+    worker: null,
+    namespace,
+  });
+  pushTarget.current = { worker: readyWorker, namespace };
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const container = navigator.serviceWorker;
+    const onMessage = (event: MessageEvent) => {
+      answerPushDecryptRequest(event.data, event.ports[0], pushTarget.current);
+    };
+    container.addEventListener("message", onMessage);
+    return () => container.removeEventListener("message", onMessage);
+  }, []);
 
   // アンマウントしたら（ログアウトの確認中にオンラインに戻り、OfflineProvider が子を作り直した
   // ときなど）、ログアウトのために奪ったロックを返し、ほかのタブに知らせる。

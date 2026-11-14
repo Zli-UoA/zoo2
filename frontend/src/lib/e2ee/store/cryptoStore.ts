@@ -21,8 +21,8 @@ import {
   type WrappingKeyStore,
 } from "./storageKey";
 
-const META_USER_ID = "user_id";
-const META_DEVICE_ID = "device_id";
+export const META_USER_ID = "user_id";
+export const META_DEVICE_ID = "device_id";
 /** サーバーへの登録が済んだか（`"1"`）。応答をなくしたら、同じ鍵で登録し直す（冪等）。 */
 const META_REGISTERED = "registered";
 /**
