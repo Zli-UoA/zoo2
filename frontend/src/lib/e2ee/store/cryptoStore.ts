@@ -15,6 +15,7 @@ import {
 } from "@zoo/crypto-wasm";
 
 import { inboundSessionKey, type CryptoBackend, type CryptoStoreWrite } from "./backend";
+import { MegolmChannels } from "./megolm";
 import {
   StorageKeyUnavailableError,
   WRAPPED_STORAGE_KEY_META,
@@ -139,6 +140,7 @@ export class CryptoStore {
   >();
   private nextUploadId = 0;
   private broken = false;
+  private megolmChannels: MegolmChannels | null = null;
 
   private constructor(
     private readonly backend: CryptoBackend,
@@ -285,6 +287,21 @@ export class CryptoStore {
 
   get isRegistered(): boolean {
     return this.registered;
+  }
+
+  /** Megolm の送信と復号（#361）。 */
+  get megolm(): MegolmChannels {
+    this.megolmChannels ??= new MegolmChannels({
+      account: this.account,
+      inbound: this.inbound,
+      trust: () => this.trust,
+      storageKey: this.storageKey,
+      loadInboundSession: (ref) => this.loadInboundSession(ref),
+      write: (changes) => this.write(changes),
+      readMeta: async () => (await this.backend.read()).meta,
+      ownKeys: () => this.ownKeys(),
+    });
+    return this.megolmChannels;
   }
 
   /** 次に保存する配布先の判定の記録（#361 以降が使う）。 */
@@ -746,6 +763,8 @@ export class CryptoStore {
 
   private free(): void {
     // 秘密鍵を持つ wasm 側のメモリーをすぐに返す。
+    this.megolmChannels?.free();
+    this.megolmChannels = null;
     this.account.free();
     this.olmSessions.free();
     this.inbound.free();

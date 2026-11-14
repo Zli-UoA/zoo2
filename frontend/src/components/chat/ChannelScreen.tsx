@@ -146,6 +146,8 @@ export function ChannelScreen({
                 canModerate={!channel.is_dm && access.canManageChannel}
                 readOnly={access.isArchived}
                 encrypted={channel.encrypted === true}
+                membershipEpoch={channel.membership_epoch ?? null}
+                channelName={channel.channel_name}
               />
             </div>
           </>

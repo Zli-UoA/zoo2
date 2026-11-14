@@ -78,6 +78,9 @@
     "login": "로그인",
     "failed": "로그인하지 못했습니다",
     "retry": "다시 로그인",
+    "logoutStorageFailed": "로그아웃을 완료할 수 없습니다",
+    "logoutStorageFailedHelp": "메모리의 세션은 삭제했지만 브라우저에 저장된 인증 정보를 무효화하지 못했습니다. 저장 공간을 사용할 수 있게 된 후 이 화면에서 다시 시도해 주세요.",
+    "retryLogout": "로그아웃 다시 시도",
     "unauthorizedLoop": "API가 401을 계속 돌려주어 다시 로그인하는것을 중지했습니다. OIDC 설정(audience / typ / JWKS)과 백엔드의 로그를 확인하십시오.",
     "errorWithCode": "{{message}}({{code}})",
     "oidcErrors": {
@@ -412,7 +415,10 @@
     "on": "켬",
     "off": "끔",
     "unavailable": "리용 불가",
-    "title": "푸시알림"
+    "title": "푸시알림",
+    "desktopTitle": "알림",
+    "desktopValue": "체계 알림",
+    "desktopDescription": "언급과 DM을 앱이 체계 알림으로 알려줍니다. 체계 설정에서 zoo2 알림을 꺼두었다면 그쪽도 켜주십시오."
   },
   "mfm": {
     "suggestions": "MFM 후보",
@@ -1177,16 +1183,24 @@
       "locked": "이 장치에서 암호화를 열면 이 통보문을 읽을수 있습니다.",
       "staleEpoch": "이전 성원구성으로 암호화된 통보문이므로 읽을수 없습니다.",
       "invalid": "이 통보문은 검증에 실패하여 표시하지 않습니다.",
-      "failed": "이 통보문을 해독하지 못했습니다."
+      "failed": "이 통보문을 해독하지 못했습니다.",
+      "unencrypted": "이 통보문은 암호화되여있지 않으므로 표시하지 않습니다."
     },
     "sender": {
       "unverified": "확인되지 않은 발신자",
       "unauthenticated": "발신자를 확인할수 없음"
     },
+    "revision": {
+      "stale": "봉사기가 이전 판을 돌려주었습니다. 최신 판을 표시합니다",
+      "conflict": "같은 판으로 내용이 다른 통보문이 도착했습니다. 먼저 받은 통보문을 표시합니다"
+    },
     "undeliverable": {
       "title": "다음 사람은 새 통보문을 읽을수 없습니다",
       "notSetUp": "{{name}}님은 암호화를 설정하지 않았습니다",
-      "needsReverification": "{{name}}님을 다시 확인해야 합니다"
+      "needsReverification": "{{name}}님을 다시 확인해야 합니다",
+      "invalidKeys": "{{name}}님의 암호화열쇠가 옳지 않습니다",
+      "pinPending": "{{name}}님의 열쇠를 확인하고 있습니다",
+      "blocked": "{{name}}님에게는 지금 열쇠를 보낼수 없습니다"
     },
     "loadPreviews": "련결 미리보기 불러오기",
     "desktopUnsupported": {
@@ -1194,6 +1208,16 @@
       "description": "이 의뢰기에서는 암호화된 통로를 표시할수 없습니다. 웨브판이나 이동앱에서 여십시오."
     },
     "sendUnavailable": "이 판에서는 아직 암호화된 통로에 보낼수 없습니다.",
+    "deviceNotReady": "이 장치(탭)에서는 아직 암호화가 준비되지 않았습니다. 암호화설정과 열기를 확인하고 다른 zoo 탭을 닫으십시오.",
+    "sendNeedsUnlock": "암호화된 통로에 보내려면 이 장치에서 암호화를 여십시오.",
+    "sendStaleEpoch": "성원이 계속 바뀌여 통보문을 보내지 못했습니다. 다시 보내십시오.",
+    "editConflict": "이 통보문은 다른 곳에서 편집되였습니다. 다시 불러온 다음 편집하십시오.",
+    "recipients": {
+      "summary": "{{users}}명의 장치 {{devices}}대에 맞추어 암호화합니다.",
+      "added": "지난번 송신이후 늘어난 수신자: {{names}}"
+    },
+    "downgraded": "이 통로는 암호화되여있었지만 봉사기가 암호화되지 않았다고 응답합니다. 암호화하지 않은 통보문은 보내지 않습니다.",
+    "checking": "이 통로의 암호화를 확인하고 있습니다…",
     "devicesTab": "장치",
     "devices": {
       "title": "장치",

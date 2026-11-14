@@ -78,6 +78,9 @@
     "login": "登入",
     "failed": "登入唔到",
     "retry": "再登入",
+    "logoutStorageFailed": "未能完成登出",
+    "logoutStorageFailedHelp": "記憶體內嘅工作階段已清除，但瀏覽器未能令已儲存嘅登入資料失效。請恢復儲存空間存取，並喺離開呢個頁面前重試。",
+    "retryLogout": "重試登出",
     "unauthorizedLoop": "API 一直傳返 401，所以已經停止自動登入。請檢查 OIDC 設定（audience / typ / JWKS）同後端日誌。",
     "errorWithCode": "{{message}} ({{code}})",
     "oidcErrors": {
@@ -412,7 +415,10 @@
     "on": "開啟",
     "off": "關閉",
     "unavailable": "未能使用",
-    "title": "推送通知"
+    "title": "推送通知",
+    "desktopTitle": "通知",
+    "desktopValue": "系統通知",
+    "desktopDescription": "App 會用系統通知話你知有人提及你同埋收到 DM。如果你喺系統設定度熄咗 zoo2 嘅通知，請喺嗰度都開返。"
   },
   "mfm": {
     "suggestions": "MFM 建議",
@@ -1177,16 +1183,24 @@
       "locked": "喺呢部裝置解鎖加密之後就睇到呢條訊息。",
       "staleEpoch": "呢條訊息係為之前嘅成員加密嘅，睇唔到。",
       "invalid": "呢條訊息驗證失敗，所以唔顯示。",
-      "failed": "解密唔到呢條訊息。"
+      "failed": "解密唔到呢條訊息。",
+      "unencrypted": "呢條訊息冇加密，所以唔顯示。"
     },
     "sender": {
       "unverified": "未驗證嘅發送者",
       "unauthenticated": "確認唔到發送者"
     },
+    "revision": {
+      "stale": "伺服器俾咗舊版本返嚟。而家顯示緊最新版本",
+      "conflict": "收到版本一樣但內容唔同嘅訊息。而家顯示緊先收到嗰條"
+    },
     "undeliverable": {
       "title": "以下嘅人睇唔到新訊息",
       "notSetUp": "{{name}} 未設定加密",
-      "needsReverification": "{{name}} 需要重新驗證"
+      "needsReverification": "{{name}} 需要重新驗證",
+      "invalidKeys": "{{name}} 嘅加密鑰匙唔正確",
+      "pinPending": "仲喺度確認緊 {{name}} 嘅鑰匙",
+      "blocked": "而家冇辦法將鑰匙交俾 {{name}}"
     },
     "loadPreviews": "載入連結預覽",
     "desktopUnsupported": {
@@ -1194,6 +1208,16 @@
       "description": "呢個客戶端顯示唔到加密頻道。請用網頁版或者手機 app 開。"
     },
     "sendUnavailable": "呢個版本暫時未可以喺加密頻道傳訊息。",
+    "deviceNotReady": "呢部裝置（分頁）暫時未準備好加密。請檢查加密設定同解鎖，再閂咗其他 zoo 分頁。",
+    "sendNeedsUnlock": "要傳去加密頻道，請喺呢部裝置解鎖加密。",
+    "sendStaleEpoch": "成員一直變緊，所以傳唔到訊息。請再傳一次。",
+    "editConflict": "呢條訊息喺其他地方改過。請重新載入再改。",
+    "recipients": {
+      "summary": "為 {{users}} 個人嘅 {{devices}} 部裝置加密。",
+      "added": "上次傳送之後新加嘅收件人：{{names}}"
+    },
+    "downgraded": "呢個頻道之前係加密嘅，但伺服器而家話冇加密。唔會用明文傳送。",
+    "checking": "確認緊呢個頻道嘅加密…",
     "devicesTab": "裝置",
     "devices": {
       "title": "裝置",

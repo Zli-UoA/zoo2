@@ -10,6 +10,7 @@ import {
 } from "./client";
 import { setAuthorizedHandler, setUnauthorizedHandler } from "../auth";
 import { resolveConfig } from "../config";
+import { OidcClient } from "../oidc/client";
 
 afterEach(() => {
   setUnauthorizedHandler(null);
@@ -176,6 +177,115 @@ describe("createApiClient", () => {
 
     await expect(client.get("/api/users/me")).rejects.toMatchObject({ status: 401 });
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a delayed 401 from before logout but handles a current-session 401", async () => {
+    let releaseOldResponse!: (response: Response) => void;
+    let oldRequestStarted!: () => void;
+    const oldStarted = new Promise<void>((resolve) => {
+      oldRequestStarted = resolve;
+    });
+    const fetchMock = vi.fn<FetchLike>(() => {
+      if (fetchMock.mock.calls.length === 1) {
+        oldRequestStarted();
+        return new Promise((resolve) => {
+          releaseOldResponse = resolve;
+        });
+      }
+      return Promise.resolve(new Response("", { status: 401 }));
+    });
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    const client = createApiClient({ getToken: () => "old-access-token", fetch: fetchMock });
+    const oldRequest = client.get("/api/old-session");
+    await oldStarted;
+
+    const logoutStorage = new Map<string, string>();
+    const oidcClient = new OidcClient({
+      issuer: "https://id.example",
+      clientId: "zoo",
+      environment: {
+        origin: "https://app.example",
+        href: "https://app.example/",
+        assign: () => {},
+        replaceUrl: () => {},
+        storage: {
+          getItem: (key) => logoutStorage.get(key) ?? null,
+          setItem: (key, value) => void logoutStorage.set(key, value),
+          removeItem: (key) => void logoutStorage.delete(key),
+        },
+        fetch: async () =>
+          jsonResponse({
+            issuer: "https://id.example",
+            authorization_endpoint: "https://id.example/authorize",
+            token_endpoint: "https://id.example/token",
+          }),
+        now: () => Date.now(),
+      },
+    });
+    await oidcClient.logout();
+    releaseOldResponse(new Response("", { status: 401 }));
+
+    await expect(oldRequest).rejects.toMatchObject({ status: 401 });
+    expect(handler).not.toHaveBeenCalled();
+    await expect(client.get("/api/current-session")).rejects.toMatchObject({ status: 401 });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a delayed success from before logout when notifying authorization", async () => {
+    let releaseOldResponse!: (response: Response) => void;
+    let oldRequestStarted!: () => void;
+    const oldStarted = new Promise<void>((resolve) => {
+      oldRequestStarted = resolve;
+    });
+    const fetchMock = vi.fn<FetchLike>(() => {
+      if (fetchMock.mock.calls.length === 1) {
+        oldRequestStarted();
+        return new Promise((resolve) => {
+          releaseOldResponse = resolve;
+        });
+      }
+      return Promise.resolve(new Response("", { status: 200 }));
+    });
+    const onAuthorized = vi.fn();
+    const client = createApiClient({
+      getToken: () => "old-access-token",
+      fetch: fetchMock,
+      onAuthorized,
+    });
+    const oldRequest = client.get("/api/old-session");
+    await oldStarted;
+
+    const logoutStorage = new Map<string, string>();
+    const oidcClient = new OidcClient({
+      issuer: "https://id.example",
+      clientId: "zoo",
+      environment: {
+        origin: "https://app.example",
+        href: "https://app.example/",
+        assign: () => {},
+        replaceUrl: () => {},
+        storage: {
+          getItem: (key) => logoutStorage.get(key) ?? null,
+          setItem: (key, value) => void logoutStorage.set(key, value),
+          removeItem: (key) => void logoutStorage.delete(key),
+        },
+        fetch: async () =>
+          jsonResponse({
+            issuer: "https://id.example",
+            authorization_endpoint: "https://id.example/authorize",
+            token_endpoint: "https://id.example/token",
+          }),
+        now: () => Date.now(),
+      },
+    });
+    await oidcClient.logout();
+    releaseOldResponse(new Response("", { status: 200 }));
+
+    await expect(oldRequest).resolves.toBeNull();
+    expect(onAuthorized).not.toHaveBeenCalled();
+    await expect(client.get("/api/current-session")).resolves.toBeNull();
+    expect(onAuthorized).toHaveBeenCalledTimes(1);
   });
 
   it("accepts an explicit unauthorized handler", async () => {

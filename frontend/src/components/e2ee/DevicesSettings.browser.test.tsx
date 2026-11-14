@@ -110,6 +110,7 @@ function renderPanel() {
     deviceId: DEVICE,
     worker,
     userId: "u0",
+    roomKeysVersion: 0,
     pendingBackupCount: async () => 0,
     revocationPending: async () => false,
     deviceLimit: null,

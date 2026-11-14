@@ -229,7 +229,15 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.stories.tsx",
-      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile", "FederatedReactions", "Encrypted"]
+      "states": [
+        "Default",
+        "ThreadOpen",
+        "NotJoined",
+        "Mobile",
+        "FederatedReactions",
+        "Encrypted",
+        "EncryptionDowngraded"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
@@ -256,6 +264,8 @@
         "SensitiveAttachments",
         "EncryptedDecrypted",
         "EncryptedUnverifiedSender",
+        "EncryptedStaleRevision",
+        "EncryptedUnencryptedRow",
         "EncryptedBackupSender",
         "EncryptedKeyMissing",
         "EncryptedLocked",
@@ -443,6 +453,10 @@
     {
       "file": "src/components/offline/OfflineBanner.stories.tsx",
       "states": ["Online", "Offline", "PersistenceError", "Mobile"]
+    },
+    {
+      "file": "src/components/desktop/DesktopNotificationSelect.stories.tsx",
+      "states": ["On", "TurnOff", "Off", "OlderApp"]
     },
     {
       "file": "src/components/pwa/PwaControls.stories.tsx",
@@ -709,6 +723,10 @@
         "Done",
         "DeviceLimit"
       ]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
+      "states": ["Default", "Undeliverable", "AddedRecipients"]
     }
   ],
   "modules": [
@@ -988,6 +1006,10 @@
     {
       "file": "src/components/layout/ZooSettings.tsx",
       "story": "src/components/layout/ZooSettings.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DesktopNotificationSelect.tsx",
+      "story": "src/components/desktop/DesktopNotificationSelect.stories.tsx"
     },
     {
       "file": "src/components/desktop/DesktopBridge.tsx",
@@ -1275,6 +1297,10 @@
       "file": "src/components/e2ee/DevicesSettings.tsx",
       "reason": "端末タブ（端末一覧、失効、他のユーザーの検証）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
       "checks": ["src/lib/e2ee/revocationController.test.ts"]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",
+      "story": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx"
     }
   ]
 }

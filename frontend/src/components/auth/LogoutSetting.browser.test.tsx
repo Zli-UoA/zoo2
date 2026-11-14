@@ -23,6 +23,7 @@ function e2ee(
     status: "idle",
     deviceId: null,
     worker: null,
+    roomKeysVersion: 0,
     userId: null,
     pendingBackupCount,
     revocationPending,

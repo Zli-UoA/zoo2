@@ -89,6 +89,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [deviceLimit, setDeviceLimit] = useState<StaleDevice[] | null>(null);
   const [readyWorker, setReadyWorker] = useState<CryptoWorker | null>(null);
+  const [roomKeysVersion, setRoomKeysVersion] = useState(0);
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const leader = useRef<ActiveStore | null>(null);
   const takeover = useRef<{ store: Promise<ActiveStore>; release: () => void } | null>(null);
@@ -153,7 +154,10 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
             setDeviceId(manager.currentDeviceId);
           }
         },
-        onRoomKeys: () => requestKeyBackupRef.current(),
+        onRoomKeys: () => {
+          requestKeyBackupRef.current();
+          setRoomKeysVersion((version) => version + 1);
+        },
       });
       return manager;
     },
@@ -308,6 +312,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         if (!store) return false;
         return store.manager.revocationPending();
       },
+      roomKeysVersion,
       pendingBackupCount: async () => {
         const epoch = logoutEpoch.current;
         const store = await storeForLogout();
@@ -356,6 +361,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       namespace,
       readyWorker,
       requestKeyBackup,
+      roomKeysVersion,
       status,
       storeForLogout,
       supported,
