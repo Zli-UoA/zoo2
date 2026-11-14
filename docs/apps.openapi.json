@@ -6518,6 +6518,412 @@
           }
         }
       }
+    },
+    "/api/apps/v1/e2ee/devices": {
+      "get": {
+        "operationId": "get_api_apps_v1_e2ee_devices",
+        "summary": "GET /api/apps/v1/e2ee/devices",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_e2ee_devices",
+        "summary": "POST /api/apps/v1/e2ee/devices",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/devices/{device_id}": {
+      "delete": {
+        "operationId": "delete_api_apps_v1_e2ee_devices_device_id",
+        "summary": "DELETE /api/apps/v1/e2ee/devices/{device_id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/keys/upload": {
+      "post": {
+        "operationId": "post_api_apps_v1_e2ee_keys_upload",
+        "summary": "POST /api/apps/v1/e2ee/keys/upload",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/keys/query": {
+      "post": {
+        "operationId": "post_api_apps_v1_e2ee_keys_query",
+        "summary": "POST /api/apps/v1/e2ee/keys/query",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/keys/claim": {
+      "post": {
+        "operationId": "post_api_apps_v1_e2ee_keys_claim",
+        "summary": "POST /api/apps/v1/e2ee/keys/claim",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/to_device": {
+      "get": {
+        "operationId": "get_api_apps_v1_e2ee_to_device",
+        "summary": "GET /api/apps/v1/e2ee/to_device",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_e2ee_to_device",
+        "summary": "POST /api/apps/v1/e2ee/to_device",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/to_device/ack": {
+      "post": {
+        "operationId": "post_api_apps_v1_e2ee_to_device_ack",
+        "summary": "POST /api/apps/v1/e2ee/to_device/ack",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/cross_signing/keys": {
+      "post": {
+        "operationId": "post_api_apps_v1_e2ee_cross_signing_keys",
+        "summary": "POST /api/apps/v1/e2ee/cross_signing/keys",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/cross_signing/signatures": {
+      "post": {
+        "operationId": "post_api_apps_v1_e2ee_cross_signing_signatures",
+        "summary": "POST /api/apps/v1/e2ee/cross_signing/signatures",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/tofu_pins": {
+      "get": {
+        "operationId": "get_api_apps_v1_e2ee_tofu_pins",
+        "summary": "GET /api/apps/v1/e2ee/tofu_pins",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_e2ee_tofu_pins",
+        "summary": "POST /api/apps/v1/e2ee/tofu_pins",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/e2ee/channels/{channel_id}/recipients": {
+      "get": {
+        "operationId": "get_api_apps_v1_e2ee_channels_channel_id_recipients",
+        "summary": "GET /api/apps/v1/e2ee/channels/{channel_id}/recipients",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -6577,7 +6983,8 @@
                 "metadata:read",
                 "metadata:write",
                 "assistant:write",
-                "functions:execute"
+                "functions:execute",
+                "e2ee:device"
               ]
             },
             "uniqueItems": true

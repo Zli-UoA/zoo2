@@ -649,7 +649,22 @@
       "connect": "Connect account",
       "disconnect": "Disconnect"
     },
-    "commandArguments": "Arguments"
+    "commandArguments": "Arguments",
+    "e2ee": {
+      "title": "Add {{app}} to the encrypted channel #{{channel}}",
+      "description": "Adding an app to an encrypted channel needs a member's explicit permission.",
+      "unsupported": "This app does not support encrypted channels (it lacks the e2ee:device permission).",
+      "readsAfterJoin": "{{app}} joins the channel as a device and can decrypt and read messages sent after it joins, and post encrypted messages.",
+      "noHistory": "It cannot read messages sent before it joined.",
+      "trustOperator": "The app's server holds the decryption keys. Allow this only if you trust whoever runs the app.",
+      "remove": "You can remove it from the channel at any time. After that, it cannot read new messages.",
+      "agree": "I understand, and I allow {{app}} to read this channel's messages",
+      "confirm": "Allow and add",
+      "adding": "Adding…",
+      "addEncrypted": "Add to the encrypted channel",
+      "notReady": "This app has not set up encryption (registered its device) yet. Start the app and try again.",
+      "encryptedHint": "Adding an app to an encrypted channel needs a member's permission."
+    }
   },
   "search": {
     "engine": "Search engine",

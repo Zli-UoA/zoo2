@@ -269,10 +269,13 @@ async fn add_channel(
     Path((id, channel)): Path<(String, String)>,
     body: axum::body::Bytes,
 ) -> Result<Json<Value>, AppError> {
+    // 本文は省略できる（今までのクライアントは本文なしで送る）。`null` も省略と同じに扱う。
     let req: AddChannelRequest = if body.iter().all(u8::is_ascii_whitespace) {
         AddChannelRequest::default()
     } else {
-        serde_json::from_slice(&body).map_err(|e| AppError::BadRequest(e.to_string()))?
+        serde_json::from_slice::<Option<AddChannelRequest>>(&body)
+            .map_err(|e| AppError::BadRequest(e.to_string()))?
+            .unwrap_or_default()
     };
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;

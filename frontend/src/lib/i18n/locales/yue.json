@@ -649,7 +649,22 @@
       "connect": "連接帳戶",
       "disconnect": "中斷連接"
     },
-    "commandArguments": "參數"
+    "commandArguments": "參數",
+    "e2ee": {
+      "title": "將 {{app}} 加入加密頻道 #{{channel}}",
+      "description": "將 App 加入加密頻道，要成員明確批准。",
+      "unsupported": "呢個 App 唔支援加密頻道（冇 e2ee:device 權限）。",
+      "readsAfterJoin": "{{app}} 會以裝置身份加入頻道，可以解密同睇到加入之後嘅訊息，亦可以發加密訊息。",
+      "noHistory": "佢睇唔到加入之前嘅訊息。",
+      "trustOperator": "解密嘅鎖匙由 App 嘅伺服器保管。只有信得過營運 App 嘅人先好批准。",
+      "remove": "你隨時都可以將佢移出頻道。移出之後，佢就睇唔到之後嘅訊息。",
+      "agree": "我明白，並批准 {{app}} 睇呢個頻道嘅訊息",
+      "confirm": "批准並加入",
+      "adding": "加緊…",
+      "addEncrypted": "加入加密頻道",
+      "notReady": "呢個 App 未準備好加密（未登記裝置）。請開咗 App 之後再試。",
+      "encryptedHint": "將 App 加入加密頻道，要成員批准。"
+    }
   },
   "search": {
     "engine": "搜尋引擎",
