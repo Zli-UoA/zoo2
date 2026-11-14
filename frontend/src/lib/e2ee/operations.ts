@@ -3,7 +3,7 @@ import { DeviceAccount } from "@zoo/crypto-wasm";
 import { cryptoDatabaseName } from "./identity";
 import { SetupSession } from "./setupSession";
 import type { CryptoBackend } from "./store/backend";
-import { CryptoStore } from "./store/cryptoStore";
+import { CryptoStore, destroyCryptoStore } from "./store/cryptoStore";
 import { indexedDbWrappingKeys, type WrappingKeyStore } from "./store/storageKey";
 import type { CryptoFailure, CryptoOperation, CryptoResults } from "./protocol";
 
@@ -191,8 +191,10 @@ export class CryptoOperations {
         if (this.store && this.storeName === name) {
           await this.store.destroy();
         } else {
-          await this.backends.remove(name);
-          await this.keys.delete(name);
+          await destroyCryptoStore({
+            removeFiles: () => this.backends.remove(name),
+            deleteWrappingKey: () => this.keys.delete(name),
+          });
         }
         if (this.storeName === name) {
           this.store = null;

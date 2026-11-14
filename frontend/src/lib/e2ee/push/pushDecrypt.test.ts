@@ -5,6 +5,9 @@ import { initSync, type EncryptedMessage, type JsonObject } from "@zoo/crypto-wa
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { cryptoDatabaseName } from "../identity";
+import { CryptoOperations } from "../operations";
+import { MemoryCryptoBackend } from "../store/backend";
+import { CryptoStore } from "../store/cryptoStore";
 import { PUSH_DECRYPT_REQUEST, type PushDecryptRequest } from "./protocol";
 import {
   decryptFromStore,
@@ -93,6 +96,62 @@ describe("decryptFromStore", () => {
     } finally {
       await snapshot.close();
     }
+  });
+});
+
+describe("ログアウトで消し切れなかった暗号ストア", () => {
+  function failingRemoval(backend: MemoryCryptoBackend) {
+    // ファイルの削除だけが失敗する（OPFS のファイルを別の接続が開いていた、など）。
+    backend.destroy = async () => {
+      throw new Error("NoModificationAllowedError");
+    };
+  }
+
+  it("CryptoStore.destroy でファイルが残っても、包む鍵を先に消すので復号しない", async () => {
+    const { row, bob } = await exchange("logged out secret");
+    const { store } = await CryptoStore.open({
+      backend: bob.backend,
+      name: BOB_DB,
+      userId: BOB,
+      keys: bob.keys,
+      reset: async () => bob.backend,
+    });
+    failingRemoval(bob.backend);
+    await expect(store.destroy()).rejects.toThrow("NoModificationAllowedError");
+    // DB は残っている
+    expect(bob.backend.inboundSessions.size).toBe(1);
+    expect(await bob.keys.get(BOB_DB)).toBeUndefined();
+    expect(
+      await decryptFromStore({
+        name: BOB_DB,
+        recipientId: BOB,
+        backend: bob.backend,
+        message: row,
+        keys: bob.keys,
+      }),
+    ).toBeNull();
+  });
+
+  it("開いていない暗号ストアを消す操作（destroy）でも、包む鍵を先に消す", async () => {
+    const { row, bob } = await exchange("logged out secret");
+    failingRemoval(bob.backend);
+    const operations = new CryptoOperations(
+      { open: async () => bob.backend, remove: () => bob.backend.destroy() },
+      bob.keys,
+    );
+    await expect(operations.run({ op: "destroy", namespace: `user-${BOB}` })).rejects.toThrow(
+      "NoModificationAllowedError",
+    );
+    expect(await bob.keys.get(BOB_DB)).toBeUndefined();
+    expect(
+      await decryptFromStore({
+        name: BOB_DB,
+        recipientId: BOB,
+        backend: bob.backend,
+        message: row,
+        keys: bob.keys,
+      }),
+    ).toBeNull();
   });
 });
 
