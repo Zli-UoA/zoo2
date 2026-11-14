@@ -2864,6 +2864,122 @@ async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id(
     Ok(())
 }
 
+/// 決定的な ID のメッセージを他人が先に作っていても、取り込みはその行に投稿・リアクションを結び付けない。
+/// 取り込みで作った行は、これまでどおり何度取り込んでも重複しない。
+#[tokio::test]
+async fn test_import_does_not_adopt_a_message_that_uses_the_deterministic_id() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.team_id = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_squat").await?;
+    let mallory = create_user(&app, "slack_mallory_squat").await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let name = format!("squat-{suffix}");
+    let zip = |messages: Value| {
+        build_zip(&[
+            (
+                "users.json".into(),
+                json!([{"id":"U1","team_id":team,"name":"alice"}]),
+            ),
+            (
+                "channels.json".into(),
+                json!([{"id":"C9","name":name,"members":["U1"]}]),
+            ),
+            (format!("{name}/2024-01-01.json"), messages),
+        ])
+    };
+    let first = json!({"ts":"1704070000.000100","user":"U1","text":"first"});
+    let second = json!({"ts":"1704070100.000200","user":"U1","text":"second",
+        "reactions":[{"name":"thumbsup","users":["U1"],"count":1}]});
+
+    let export = upload(&state, &app, &admin, &zip(json!([first]))).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C9","action":"create","name":name}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+
+    // 取り込み先に書ける人が、まだ取り込んでいない投稿の ID を先に使う
+    let channel = backend::slack::channel_id(&team, "C9");
+    let squatted = backend::slack::message_id(&team, "C9", "1704070100.000200");
+    sql(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1,$2,$3,'fake') \
+         RETURNING json_build_object('ok',true)::text",
+        &[&squatted, &mallory, &channel],
+    )
+    .await?;
+
+    let export = upload(&state, &app, &admin, &zip(json!([first, second]))).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C9","action":"create","name":name}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('content',content,'user_id',user_id)::text FROM messages WHERE id=$1",
+        &[&squatted],
+    )
+    .await?;
+    assert_eq!(rows[0]["content"], "fake");
+    assert_eq!(rows[0]["user_id"], mallory.as_str());
+    let reactions = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM message_reactions WHERE message_id=$1",
+        &[&squatted],
+    )
+    .await?;
+    assert_eq!(reactions[0]["n"], 0);
+    // 取り込みで作った最初の投稿は、再取り込みでも重複しない
+    let total = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1",
+        &[&channel],
+    )
+    .await?;
+    assert_eq!(total[0]["n"], 2, "{total:?}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_slack_import_labels_files_in_existing_nsfw_channel() -> anyhow::Result<()> {
     let _serial = SERIAL.lock().await;

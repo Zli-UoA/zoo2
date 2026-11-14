@@ -6,7 +6,7 @@ import { GitHubError } from "../src/github.ts";
 import { preview } from "../src/previews.ts";
 import { subscription, words, permits } from "../src/subscriptions.ts";
 import { ZooError } from "../../../sdk/src/index.ts";
-import type { Json } from "../src/types.ts";
+import { BotError, id, keyedId, type Json } from "../src/types.ts";
 
 test("GitHub repository writes are impossible, including Zoo thread replies and action events", async (t) => {
   const f = fixture();
@@ -679,4 +679,32 @@ test("a burst of Checks refreshes the canonical PR card once without replaying e
   assert.equal(f.zoo.messages.size, 1);
   assert.match(JSON.stringify([...f.zoo.messages.values()][0].blocks), /CI: success/);
   assert.ok(f.remote.readRequests.length < 10, `Unexpected API request count: ${f.remote.readRequests.length}`);
+});
+
+test("message IDs cannot be computed from public values", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  await f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue }));
+  const root = f.store.thread("channel", { repo: "acme/project", kind: "issue", number: "7" })!;
+  assert.notEqual(root.message, id("thread:channel:acme/project:issue:7"));
+  assert.equal(root.message, keyedId(f.config.encryptionKey, "thread:channel:acme/project:issue:7"));
+  assert.notEqual(
+    keyedId(f.config.encryptionKey, "thread:channel:acme/project:issue:7"),
+    keyedId(Buffer.alloc(32, 8), "thread:channel:acme/project:issue:7"),
+  );
+});
+
+test("a message that this bot did not publish under its ID fails the job instead of dropping the notice", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  const taken = keyedId(f.config.encryptionKey, "thread:channel:acme/project:issue:7");
+  f.zoo.messages.set(taken, { id: taken, channel_id: "other", content: "occupied" });
+  // The ID exists elsewhere, so POST conflicts and the follow-up edit is not found.
+  f.zoo.updateMessage = async () => {
+    throw new ZooError(404, "Message not found");
+  };
+  await assert.rejects(
+    f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue })),
+    (error) => error instanceof BotError && error.code === "message_id_conflict" && !error.retryable,
+  );
 });

@@ -1473,6 +1473,24 @@ pub(super) async fn mapped(
     }))
 }
 
+/// 決定的な ID の行が、取り込みで作った行ではないか。取り込みで作った行は、取り込み先のチャンネルにあり、
+/// 作成日時が Slack の投稿時刻と同じ (API で作る投稿の作成日時はサーバーが決めるので、これと一致させられない)。
+pub(super) async fn id_taken_by_other(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+    channel_id: &str,
+    ts: &str,
+) -> Result<bool, AppError> {
+    Ok(!query(
+        tx,
+        "SELECT json_build_object('id',id)::text FROM messages WHERE id=$1 \
+         AND (channel_id<>$2 OR created_at<>(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
+        &[id, channel_id, ts],
+    )
+    .await?
+    .is_empty())
+}
+
 pub(super) async fn insert_message(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
@@ -1497,14 +1515,31 @@ pub(super) async fn insert_message(
         .or(message.bot_profile.as_ref().map(|b| b.name.as_str()))
         .filter(|n| !n.is_empty());
     let user = ctx.user(tx, author, fallback).await?;
+    let derived = own.is_none();
     let id = own
         .map(|(id, _)| id)
         .unwrap_or_else(|| super::message_id(&ctx.team, slack_channel, &message.ts));
-    // スレッドの親が Zoo で作った投稿 (`slack_message_map`) なら、その Zoo のメッセージが親になる
+    // 決定的な ID の行がすでにあるのに、別のチャンネルの行か、Slack の投稿時刻と違う時刻の行なら、取り込みで作った行
+    // ではない (同じ ID を先に使われた)。その行には、投稿もリアクションも添付も結び付けず、この投稿を飛ばす
+    if derived && id_taken_by_other(tx, &id, channel_id, &message.ts).await? {
+        tracing::warn!(
+            message_id = %id,
+            slack_channel,
+            ts = %message.ts,
+            "A Slack message was not imported because its ID is already used by another message"
+        );
+        return Ok(());
+    }
+    // スレッドの親が Zoo で作った投稿 (`slack_message_map`) なら、その Zoo のメッセージが親になる。
+    // 決定的な ID の親は、Slack の投稿時刻の行だけを親にする (`parent_ts`)
+    let mut parent_ts = "";
     let parent = match message.parent_ts() {
         Some(ts) => match mapped(tx, &ctx.team, slack_channel, ts).await? {
             Some((id, _)) => id,
-            None => super::message_id(&ctx.team, slack_channel, ts),
+            None => {
+                parent_ts = ts;
+                super::message_id(&ctx.team, slack_channel, ts)
+            }
         },
         None => String::new(),
     };
@@ -1525,7 +1560,8 @@ pub(super) async fn insert_message(
         "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,card) \
          VALUES($1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
-         (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL),\
+         (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL \
+          AND ($9='' OR m.created_at=(to_timestamp($9::numeric) AT TIME ZONE 'UTC')::timestamp(3))),\
          NULLIF($8,'')) \
          ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
          WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
@@ -1540,6 +1576,7 @@ pub(super) async fn insert_message(
             edited,
             &parent,
             &card,
+            parent_ts,
         ],
     )
     .await?;
