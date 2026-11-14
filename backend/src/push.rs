@@ -149,6 +149,9 @@ pub struct NotificationPayload {
     /// 暗号化チャンネルの通知だけに付ける。Service Worker がこれを復号して本文を出す (#365)。
     #[serde(skip_serializing_if = "Option::is_none")]
     e2ee: Option<EncryptedPush>,
+    /// 通話の招待 (`call_invite` / `call_invite_end`) だけに付ける、招待の id。
+    #[serde(rename = "inviteId", skip_serializing_if = "Option::is_none")]
+    invite_id: Option<String>,
 }
 
 /// 暗号化チャンネルの通知に付ける、受信端末が復号に使う値。どれもサーバーが元から持つ値で、
@@ -218,6 +221,7 @@ fn notification_payload(
         tag: format!("zoo-{}", notification.id),
         notification_type: notification.notification_type.clone(),
         e2ee: None,
+        invite_id: None,
     }
 }
 
@@ -262,11 +266,17 @@ async fn build_payload(
     db: &mut toasty::Db,
     notification: &Notification,
 ) -> anyhow::Result<Option<NotificationPayload>> {
-    let Some(message) =
-        Message::filter(Message::fields().id().eq(notification.message_id.as_str()))
-            .first()
-            .exec(db)
-            .await?
+    let Some(message_id) = notification.message_id.as_deref() else {
+        // メッセージを持たない通知は不在着信だけ。
+        if notification.notification_type == "missed_call" {
+            return missed_call_payload(db, notification).await.map(Some);
+        }
+        return Ok(None);
+    };
+    let Some(message) = Message::filter(Message::fields().id().eq(message_id))
+        .first()
+        .exec(db)
+        .await?
     else {
         return Ok(None);
     };
@@ -295,82 +305,301 @@ pub async fn payload_json(
 
 /// Run only after commit. Delivery errors must never roll back a message or expose endpoint URLs.
 pub fn dispatch(state: AppState, notifications: Vec<Notification>) {
+    dispatch_db(state.db, notifications);
+}
+
+/// `dispatch` の、`AppState` を持たない呼び出し元 (定期処理) 向け。
+pub fn dispatch_db(db: toasty::Db, notifications: Vec<Notification>) {
     if notifications.is_empty() {
         return;
     }
     tokio::spawn(async move {
-        if deliver(&state, notifications).await.is_err() {
+        if deliver(db, notifications).await.is_err() {
             tracing::warn!("Web Push delivery failed");
         }
     });
 }
 
-async fn deliver(state: &AppState, notifications: Vec<Notification>) -> anyhow::Result<()> {
+async fn deliver(mut db: toasty::Db, notifications: Vec<Notification>) -> anyhow::Result<()> {
     let Some(config) = PushConfig::from_env()? else {
         return Ok(());
     };
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(10))
-        .build()?;
-    let mut db = state.db.clone();
+    let client = push_client()?;
     for notification in notifications {
         let Some(payload) = build_payload(&mut db, &notification).await? else {
             continue;
         };
-        {
-            let mut tx = db.transaction().await?;
-            if crate::apps::one(&mut tx,"SELECT json_build_object('quiet',EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=$1 AND dnd_until>now()))::text",&[&notification.user_id]).await?["quiet"]==true{continue;}
-        }
-        let subscriptions = PushSubscription::filter(
-            PushSubscription::fields()
-                .user_id()
-                .eq(notification.user_id.as_str()),
+        push_to_user(
+            &client,
+            &config,
+            &mut db,
+            &notification.user_id,
+            &payload,
+            &Delivery::NORMAL,
         )
-        .exec(&mut db)
         .await?;
-        for subscription in subscriptions {
-            let Ok(endpoint) = validate_endpoint(&subscription.endpoint) else {
-                continue;
-            };
-            let body = match (subscription.p256dh, subscription.auth_secret) {
-                (Some(p256dh), Some(auth)) => {
-                    match (SubscriptionKeys { p256dh, auth }).encrypt_fitting(&payload) {
-                        Ok(body) => Some(body),
-                        Err(_) => {
-                            tracing::warn!("Invalid Web Push encryption keys");
-                            continue;
-                        }
+    }
+    Ok(())
+}
+
+fn push_client() -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()?)
+}
+
+/// Web Push の送り方。通話の着信は、短い TTL と `Urgency: high` で送る。
+struct Delivery {
+    ttl: u32,
+    urgent: bool,
+    /// 応答不可 (DND) のユーザーには送らない。着信を送らなかった人に取り消しだけが届かないよう、
+    /// 取り消し (`call_invite_end`) も同じ。
+    respect_dnd: bool,
+    /// 送り終えていなければならない時刻。各購読への送信の直前に、残りの時間を TTL にする
+    /// （前の購読への送信に時間がかかっても、期限の過ぎた着信を届けないため）。
+    expires: Option<std::time::Instant>,
+}
+
+impl Delivery {
+    const NORMAL: Self = Self {
+        ttl: 300,
+        urgent: false,
+        respect_dnd: true,
+        expires: None,
+    };
+}
+
+/// 1 人のユーザーの、すべての購読へ送る。
+async fn push_to_user(
+    client: &reqwest::Client,
+    config: &PushConfig,
+    db: &mut toasty::Db,
+    user_id: &str,
+    payload: &NotificationPayload,
+    delivery: &Delivery,
+) -> anyhow::Result<()> {
+    if delivery.respect_dnd {
+        let mut tx = db.transaction().await?;
+        if crate::apps::one(&mut tx,"SELECT json_build_object('quiet',EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=$1 AND dnd_until>now()))::text",&[user_id]).await?["quiet"]==true{return Ok(());}
+    }
+    let subscriptions = PushSubscription::filter(PushSubscription::fields().user_id().eq(user_id))
+        .exec(db)
+        .await?;
+    for subscription in subscriptions {
+        let Ok(endpoint) = validate_endpoint(&subscription.endpoint) else {
+            continue;
+        };
+        let body = match (subscription.p256dh, subscription.auth_secret) {
+            (Some(p256dh), Some(auth)) => {
+                match (SubscriptionKeys { p256dh, auth }).encrypt_fitting(payload) {
+                    Ok(body) => Some(body),
+                    Err(_) => {
+                        tracing::warn!("Invalid Web Push encryption keys");
+                        continue;
                     }
                 }
-                // Older registrations receive a generic alert until the browser refreshes its keys.
-                _ => None,
-            };
-            let result = send(&client, &config, endpoint, body).await;
-            match result {
-                Ok(response)
-                    if response.status().as_u16() == 404 || response.status().as_u16() == 410 =>
-                {
-                    PushSubscription::filter(
-                        PushSubscription::fields().id().eq(subscription.id.as_str()),
-                    )
-                    .delete()
-                    .exec(&mut db)
-                    .await?;
-                }
-                Ok(response) if response.status().is_success() => {}
-                _ => tracing::warn!("Web Push provider did not accept delivery"),
             }
+            // Older registrations receive a generic alert until the browser refreshes its keys.
+            _ => None,
+        };
+        // 期限つきの送信は、残りの時間を TTL にする。残りがなければ、送らない。
+        let remaining = delivery.expires.map(|expires| {
+            expires
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs()
+        });
+        if remaining == Some(0) {
+            break;
+        }
+        let ttl = remaining.map_or(delivery.ttl, |secs| secs as u32);
+        let result = send_with(client, config, endpoint, body, delivery, ttl).await;
+        match result {
+            Ok(response)
+                if response.status().as_u16() == 404 || response.status().as_u16() == 410 =>
+            {
+                PushSubscription::filter(
+                    PushSubscription::fields().id().eq(subscription.id.as_str()),
+                )
+                .delete()
+                .exec(db)
+                .await?;
+            }
+            Ok(response) if response.status().is_success() => {}
+            _ => tracing::warn!("Web Push provider did not accept delivery"),
         }
     }
     Ok(())
 }
 
+fn display_name(user: &User) -> String {
+    let name = if user.display_name.is_empty() {
+        &user.user_name
+    } else {
+        &user.display_name
+    };
+    name.chars().take(60).collect()
+}
+
+/// 不在着信の Web Push の本文。
+async fn missed_call_payload(
+    db: &mut toasty::Db,
+    notification: &Notification,
+) -> anyhow::Result<NotificationPayload> {
+    let actor = User::get_by_id(db, notification.actor_id.as_str()).await?;
+    let channel = Channel::get_by_id(db, notification.channel_id.as_str()).await?;
+    let name = display_name(&actor);
+    Ok(NotificationPayload {
+        title: if channel.is_dm {
+            name
+        } else {
+            format!(
+                "{name} · #{}",
+                channel.channel_name.chars().take(60).collect::<String>()
+            )
+        },
+        body: "不在着信".into(),
+        url: format!("/channels/{}", channel.id),
+        tag: format!("zoo-{}", notification.id),
+        notification_type: "missed_call".into(),
+        e2ee: None,
+        invite_id: None,
+    })
+}
+
+/// 通話の招待の、Web Push に必要な値。
+#[derive(Debug, Clone, Deserialize)]
+pub struct CallInvitePush {
+    pub id: String,
+    pub channel_id: String,
+    pub inviter_id: String,
+    pub invitee_id: String,
+}
+
+/// 招待の着信を、呼ばれた人の Web Push へ送る。コミットの後に呼ぶ。失敗しても呼び出しは続く。
+pub fn dispatch_call_invites(db: toasty::Db, invites: Vec<CallInvitePush>) {
+    if invites.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        if deliver_call_invites(db, invites, false).await.is_err() {
+            tracing::warn!("Web Push call invite delivery failed");
+        }
+    });
+}
+
+/// 招待が終わった (応答・拒否・取り消し・不在) ことを、出ている通知を閉じるために送る。
+pub fn dispatch_call_invite_ends(db: toasty::Db, invites: Vec<CallInvitePush>) {
+    if invites.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        if deliver_call_invites(db, invites, true).await.is_err() {
+            tracing::warn!("Web Push call invite end delivery failed");
+        }
+    });
+}
+
+fn call_invite_tag(invite_id: &str) -> String {
+    format!("zoo-call-{invite_id}")
+}
+
+async fn deliver_call_invites(
+    mut db: toasty::Db,
+    invites: Vec<CallInvitePush>,
+    end: bool,
+) -> anyhow::Result<()> {
+    let Some(config) = PushConfig::from_env()? else {
+        return Ok(());
+    };
+    let client = push_client()?;
+    let started = std::time::Instant::now();
+    for invite in invites {
+        // 1 件の失敗（ユーザーやチャンネルが引けない、送信のエラー）で、後続の招待を止めない。
+        let result: anyhow::Result<()> = async {
+            let payload = if end {
+                NotificationPayload {
+                    title: String::new(),
+                    body: String::new(),
+                    url: format!("/channels/{}", invite.channel_id),
+                    tag: call_invite_tag(&invite.id),
+                    notification_type: "call_invite_end".into(),
+                    e2ee: None,
+                    invite_id: Some(invite.id.clone()),
+                }
+            } else {
+                let actor = User::get_by_id(&mut db, invite.inviter_id.as_str()).await?;
+                let channel = Channel::get_by_id(&mut db, invite.channel_id.as_str()).await?;
+                let name = display_name(&actor);
+                NotificationPayload {
+                    title: if channel.is_dm {
+                        name
+                    } else {
+                        format!(
+                            "{name} · #{}",
+                            channel.channel_name.chars().take(60).collect::<String>()
+                        )
+                    },
+                    body: if channel.is_dm {
+                        "着信".into()
+                    } else {
+                        "通話に招待されています".into()
+                    },
+                    url: format!("/channels/{}?call_invite={}", channel.id, invite.id),
+                    tag: call_invite_tag(&invite.id),
+                    notification_type: "call_invite".into(),
+                    e2ee: None,
+                    invite_id: Some(invite.id.clone()),
+                }
+            };
+            let delivery = Delivery {
+                ttl: if end { 60 } else { CALL_INVITE_TTL_SECONDS },
+                urgent: true,
+                respect_dnd: true,
+                // 着信は、招待の期限までに送れた購読にだけ送る（期限の過ぎた着信を、あとから出さない）。
+                expires: (!end).then_some(
+                    started + std::time::Duration::from_secs(u64::from(CALL_INVITE_TTL_SECONDS)),
+                ),
+            };
+            push_to_user(
+                &client,
+                &config,
+                &mut db,
+                &invite.invitee_id,
+                &payload,
+                &delivery,
+            )
+            .await?;
+            Ok(())
+        }
+        .await;
+        if result.is_err() {
+            tracing::warn!("Web Push call invite delivery failed for one invite");
+        }
+    }
+    Ok(())
+}
+
+/// 招待の有効な長さ。Web Push の TTL にも使い、期限の過ぎた着信が後から届かないようにする。
+pub const CALL_INVITE_TTL_SECONDS: u32 = 30;
+
+#[cfg(test)]
 async fn send(
     client: &reqwest::Client,
     config: &PushConfig,
     endpoint: Url,
     body: Option<Vec<u8>>,
+) -> anyhow::Result<reqwest::Response> {
+    send_with(client, config, endpoint, body, &Delivery::NORMAL, 300).await
+}
+
+async fn send_with(
+    client: &reqwest::Client,
+    config: &PushConfig,
+    endpoint: Url,
+    body: Option<Vec<u8>>,
+    delivery: &Delivery,
+    ttl: u32,
 ) -> anyhow::Result<reqwest::Response> {
     let claims = Claims {
         aud: endpoint.origin().ascii_serialization(),
@@ -384,7 +613,12 @@ async fn send(
             "Authorization",
             format!("vapid t={token}, k={}", config.public_key),
         )
-        .header("TTL", "300");
+        .header("TTL", ttl.to_string());
+    let request = if delivery.urgent {
+        request.header("Urgency", "high")
+    } else {
+        request
+    };
     let request = match body {
         Some(body) => request
             .header("Content-Encoding", "aes128gcm")
@@ -549,6 +783,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             tag: "zoo-notification".into(),
             notification_type: "mention".into(),
             e2ee: None,
+            invite_id: None,
         };
         let encrypted = keys.encrypt(&payload).unwrap();
         let server = MockServer::start().await;
@@ -648,6 +883,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             url: "/channels/c?message=m".into(),
             tag: "zoo-n".into(),
             notification_type: "mention".into(),
+            invite_id: None,
             e2ee: Some(EncryptedPush {
                 recipient_id: "00000000-0000-4000-8000-000000000001".into(),
                 message: EncryptedRow {

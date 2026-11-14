@@ -7,6 +7,7 @@ export type TableName =
   | "message_reactions"
   | "channel_user"
   | "channel_leave"
+  | "call_invites"
   | "notifications"
   | "attachments";
 
@@ -108,13 +109,26 @@ export type ChannelLeaveRow = {
   left_at: TimestampString;
 };
 
+/** 通話の招待（呼び出し）。呼び出し中（`pending`）の行だけが届く。docs/calls.md。 */
+export type CallInviteRow = {
+  id: string;
+  channel_id: string;
+  inviter_id: string;
+  invitee_id: string;
+  status: string;
+  created_at: TimestampString;
+  /** この時刻を過ぎたら呼び出しは終わり。サーバーが `missed` にするまでの数秒は、まだ shape に残る。 */
+  expires_at: TimestampString;
+};
+
 export type NotificationRow = {
   display_data?: NotificationDisplayData;
   id: string;
   user_id: string;
   actor_id: string;
   channel_id: string;
-  message_id: string;
+  /** 不在着信（`missed_call`）にはメッセージがない。 */
+  message_id: string | null;
   notification_type: string;
   is_read: boolean;
   created_at: TimestampString;
@@ -177,5 +191,6 @@ export type TableRowMap = {
   message_reactions: MessageReactionRow;
   channel_user: ChannelUserRow;
   channel_leave: ChannelLeaveRow;
+  call_invites: CallInviteRow;
   attachments: AttachmentRow;
 };

@@ -16,6 +16,7 @@ import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
 import type {
   AttachmentRow,
   ChannelRow,
+  CallInviteRow,
   ChannelLeaveRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -197,6 +198,21 @@ function channelLeavesCollection(userId: string, config: AppConfig) {
   return collection;
 }
 
+/**
+ * 自分が呼んだ・呼ばれた、呼び出し中の通話の招待。proxy ではバックエンドが where を固定する。
+ * 短命な行なので、永続化はしない。
+ */
+function callInvitesCollection(userId: string, config: AppConfig) {
+  return createCollection(
+    electricCollectionOptions<CallInviteRow>({
+      id: `call_invites:${userId}`,
+      getKey: (row) => row.id,
+      defaultIndexType: BasicIndex,
+      shapeOptions: shapeOptions("callInvites", config, { userId }),
+    }),
+  );
+}
+
 function messagesCollection(
   channelId: string,
   config: AppConfig,
@@ -296,6 +312,7 @@ export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
 export type ChannelLeavesCollection = ReturnType<typeof channelLeavesCollection>;
+export type CallInvitesCollection = ReturnType<typeof callInvitesCollection>;
 export type MessagesCollection = ReturnType<typeof messagesCollection>;
 export type ReactionsCollection = ReturnType<typeof reactionsCollection>;
 export type AttachmentsCollection = ReturnType<typeof attachmentsCollection>;
@@ -312,6 +329,8 @@ export interface CollectionsBundle {
   channelUsers: ChannelUsersCollection;
   /** 自分の退出日。ユーザー単位で生成しキャッシュする。 */
   channelLeaves: (userId: string) => ChannelLeavesCollection;
+  /** 自分が呼んだ・呼ばれた、呼び出し中の通話の招待。ユーザー単位で生成しキャッシュする。 */
+  callInvites: (userId: string) => CallInvitesCollection;
   /** `channel_id` 単位で生成しキャッシュした messages コレクションを返す。 */
   messages: (channelId: string) => MessagesCollection;
   /** `channel_id` 単位で生成しキャッシュした message_reactions コレクションを返す。 */
@@ -369,6 +388,7 @@ export function getCollections(
 
   const notificationCache = new Map<string, NotificationsCollection>();
   const channelLeaveCache = new Map<string, ChannelLeavesCollection>();
+  const callInviteCache = new Map<string, CallInvitesCollection>();
   const messageCache = new Map<string, MessagesCollection>();
   const reactionCache = new Map<string, ReactionsCollection>();
   const attachmentCache = new Map<string, AttachmentsCollection>();
@@ -401,6 +421,14 @@ export function getCollections(
       if (!collection) {
         collection = channelLeavesCollection(userId, resolved);
         channelLeaveCache.set(userId, collection);
+      }
+      return collection;
+    },
+    callInvites: (userId) => {
+      let collection = callInviteCache.get(userId);
+      if (!collection) {
+        collection = callInvitesCollection(userId, resolved);
+        callInviteCache.set(userId, collection);
       }
       return collection;
     },

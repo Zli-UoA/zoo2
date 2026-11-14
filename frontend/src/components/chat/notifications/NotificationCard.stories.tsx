@@ -83,6 +83,33 @@ export const Reaction: Story = {
   },
 };
 
+/** 不在着信。メッセージを持たないので、チャンネルへのリンクだけを出す。 */
+export const MissedCall: Story = {
+  args: {
+    group: (() => {
+      const base = storyNotifications.find((row) => row.id === "notification-reply")!;
+      const notification = {
+        ...base,
+        id: "notification-missed-call",
+        message_id: null,
+        notification_type: "missed_call",
+        display_data: undefined,
+      };
+      return {
+        key: notification.id,
+        latest: notification,
+        notifications: [notification],
+        actorIds: [notification.actor_id],
+      };
+    })(),
+  },
+  play: playForImplementation(async () => {
+    // 不在着信にはメッセージがないので、チャンネルへのリンクだけが出る。
+    const link = await screen.findByRole("link", { name: /不在着信|Missed call/ });
+    await expect(link).toHaveAttribute("href", expect.stringMatching(/^\/channels\/[^?]+$/));
+  }),
+};
+
 export const Read: Story = {
   args: {
     group: group("notification-reaction-read"),

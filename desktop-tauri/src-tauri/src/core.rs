@@ -432,7 +432,7 @@ impl Core {
         }
         let target = OpenTarget {
             channel_id: toast.channel_id.clone(),
-            message_id: Some(toast.message_id.clone()),
+            message_id: toast.message_id.clone(),
         };
         toast::show(&self.app, &toast.title, &toast.body, target);
     }

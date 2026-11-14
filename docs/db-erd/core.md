@@ -55,6 +55,20 @@ erDiagram
       timestamptz retention_until
     }
     bubble_chat_presence }o--o| users : bubble_chat_presence_user_id_fkey
+    call_invites {
+      uuid id PK
+      text channel_id FK
+      text inviter_id FK
+      text invitee_id FK
+      text status
+      timestamptz created_at
+      timestamptz expires_at
+      timestamptz responded_at
+      timestamptz joined_at
+    }
+    call_invites }o--o| channels : call_invites_channel_id_fkey
+    call_invites }o--o| users : call_invites_invitee_id_fkey
+    call_invites }o--o| users : call_invites_inviter_id_fkey
     call_presence {
       text channel_id PK,FK
       uuid session_id PK
