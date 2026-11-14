@@ -143,7 +143,7 @@ APIの失敗はHTTPステータスと `error` を返します。Appルートは 
 
 公式一覧との全件対応・例外理由は [Slack イベント対応表](slack-event-coverage.md)、機械可読の一覧は [slack-event-coverage.json](slack-event-coverage.json) です。`GET /api/apps/events` でも取得できます。Slack のイベント名も購読名として指定でき、対応する Zoo のイベント名で届きます。公開／非公開／DM／グループ DM の区別を保ちます。既存 Slack SDK のペイロードとは互換ではありません。
 
-新しい scope は `users:write`、`preferences:read/write`、`pins:read/write`、`stars:read/write`、`emoji:read/write`、`usergroups:read/write`、`workspace:read/write`、`apps:read`、`invites:read/write`、`reminders:read/write`、`files:share`、`metadata:read/write`、`assistant:write`、`functions:execute` です。管理操作には scope に加えて操作主体の管理者権限が必要です。Bot に管理者権限を自動付与しません。
+新しい scope は `users:write`、`preferences:read/write`、`pins:read/write`、`stars:read/write`、`emoji:read/write`、`usergroups:read/write`、`workspace:read/write`、`apps:read`、`invites:read/write`、`reminders:read/write`、`files:share`、`metadata:read/write`、`assistant:write`、`functions:execute`、`e2ee:device` です。`e2ee:device` は、Bot が E2EE の端末として、メンバーの明示的な許可のある暗号化チャンネルに参加するための scope です（`/api/apps/v1/e2ee/...`。仕様は [e2ee.md の「Bot の端末」](e2ee.md#bot-の端末)、Bot 側は `sdk/src/e2ee.ts` とサンプルの `examples/e2ee-echo-bot`）。管理操作には scope に加えて操作主体の管理者権限が必要です。Bot に管理者権限を自動付与しません。
 
 ### 状態を変更する API
 

@@ -17,6 +17,7 @@ import {
   hasDesktopBridge,
 } from "../../lib/desktop";
 import { resolveConfig, type AppConfig } from "../../lib/config";
+import { forgetPushRecipient } from "../../lib/e2ee/push/recipient";
 import { OidcClient, OidcError } from "../../lib/oidc/client";
 import {
   MAX_REDIRECT_ATTEMPTS,
@@ -247,6 +248,10 @@ function WebAuthGate({ children }: { children: ReactNode }) {
       });
       setUnauthorizedHandler(() => {
         if (logoutBlocked.current) return;
+        // 認証が切れたら、Service Worker が Push を復号してよい宛先を消す（docs/e2ee.md の「Web Push
+        // の復号」）。ログインし直すと、E2eeProvider がそのユーザーを置き直す。別のユーザーで
+        // ログインし直すまでのあいだに、前のユーザーの本文を通知に出さないため。
+        void forgetPushRecipient().catch(() => undefined);
         const now = Date.now();
         let redirectState: ReturnType<typeof readUnauthorizedRedirectState>;
         try {

@@ -8,28 +8,7 @@ import type {
   CryptoStoreWrite,
   InboundSessionKey,
 } from "./backend";
-
-/** 表の形を変えたら上げる。古い版の移行は、必要になった版で足す。 */
-const SCHEMA_VERSION = 1;
-
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS account (id INTEGER PRIMARY KEY CHECK (id = 1), pickle TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS olm_sessions (
-  their_identity_key TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  pickle TEXT NOT NULL,
-  PRIMARY KEY (their_identity_key, session_id)
-);
-CREATE TABLE IF NOT EXISTS inbound_sessions (
-  key TEXT PRIMARY KEY,
-  pickle TEXT NOT NULL,
-  backed_up INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS trust_store (id INTEGER PRIMARY KEY CHECK (id = 1), pickle TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS processed_to_device (id TEXT PRIMARY KEY);
-PRAGMA user_version = ${SCHEMA_VERSION};
-`;
+import { CRYPTO_SCHEMA, CRYPTO_SCHEMA_VERSION } from "./schema";
 
 type Row = Record<string, SQLiteCompatibleType | null>;
 
@@ -94,11 +73,11 @@ export async function openSqliteCryptoBackend(databaseName: string): Promise<Cry
   }
 
   const version = Number((await query("PRAGMA user_version"))[0]?.user_version ?? 0);
-  if (version > SCHEMA_VERSION) {
+  if (version > CRYPTO_SCHEMA_VERSION) {
     await sqlite3.close(db);
     throw new Error(`暗号ストアの版 ${version} は、このアプリより新しい`);
   }
-  await sqlite3.exec(db, SCHEMA);
+  await sqlite3.exec(db, CRYPTO_SCHEMA);
 
   let closed = false;
   const close = () =>

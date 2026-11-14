@@ -6,6 +6,8 @@ import { chromium } from "@playwright/test";
 
 const avatarOrigin = "https://avater.zliusercontent.com";
 const originalWorker = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
+// sw.js が importScripts で読む。読めないと install が失敗するので、dev サーバーと同じ空のものを返す。
+const pushDecryptScript = await readFile(new URL("../public/sw-push.js", import.meta.url), "utf8");
 const originalClient = stripTypeScriptTypes(
   await readFile(new URL("../src/lib/pwa/avatar-cache.ts", import.meta.url), "utf8"),
 );
@@ -53,6 +55,7 @@ const appServer = http.createServer((request, response) => {
   const path = new URL(request.url, "http://localhost").pathname;
   const resources = new Map([
     ["/sw.js", worker],
+    ["/sw-push.js", pushDecryptScript],
     ["/avatar-cache.js", client],
     ["/fixture.js", fixture],
     ["/", html],

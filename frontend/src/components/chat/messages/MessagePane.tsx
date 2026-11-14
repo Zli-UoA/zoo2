@@ -58,7 +58,7 @@ import {
 } from "../../../lib/e2ee/encryptionGuard";
 import { apiErrorCode } from "../../../lib/e2ee/megolmApi";
 import {
-  MessageDecryptionsContext,
+  MessageDecryptionsProvider,
   type MessageDecryption,
 } from "../../../lib/e2ee/messageDecryption";
 import type { RecipientSummary } from "../../../lib/e2ee/store/megolm";
@@ -131,6 +131,11 @@ export function MessagePane({
     (user) => !user.is_bot || user.bot_mentionable,
   );
   const members = useChannelMembers(channelId).data;
+  // 復号した `mentions.user_ids` を本文の `@name` と突き合わせるための、ユーザー ID からユーザー名への表。
+  const mentionUserNames = useMemo(
+    () => new Map((usersQuery.data ?? []).map((user) => [user.id, user.user_name])),
+    [usersQuery.data],
+  );
   const mentionMemberIds = useMemo(
     () => new Set((members ?? []).map((member) => member.user_id)),
     [members],
@@ -819,7 +824,7 @@ export function MessagePane({
   }, [pendingDeleteId, run, messagesCollection, isArchivedMessage]);
 
   return (
-    <MessageDecryptionsContext.Provider value={decryptions}>
+    <MessageDecryptionsProvider decryptions={decryptions} mentionUserNames={mentionUserNames}>
       <section className="relative flex h-full min-h-0">
         <div className="flex min-w-0 flex-1 flex-col">
           {reactionsQuery.isError ||
@@ -1018,6 +1023,6 @@ export function MessagePane({
           onConfirm={handleConfirmDelete}
         />
       </section>
-    </MessageDecryptionsContext.Provider>
+    </MessageDecryptionsProvider>
   );
 }
