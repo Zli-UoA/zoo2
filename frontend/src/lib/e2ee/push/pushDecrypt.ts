@@ -79,13 +79,23 @@ export async function decryptFromStore(options: {
 }
 
 /** Service Worker の外の世界（テストでは差し替える）。 */
-export interface PushDecryptEnvironment {
+export interface PushDecryptEnvironment<Files = unknown> {
   /** `navigator.locks.request(name, { ifAvailable: true }, callback)`。 */
   withLockIfAvailable<T>(name: string, callback: (held: boolean) => Promise<T>): Promise<T>;
-  /** 暗号ストアのファイルを読み、読むだけの保存先にする。ファイルがなければ `null`。 */
-  openSnapshot(name: string): Promise<SnapshotBackend | null>;
+  /**
+   * 暗号ストアのファイルを読む（ロックを持ったまま呼ぶ）。なければ `null`。ロックを持つ時間を
+   * 短くするため、ここではファイルを読むだけにし、wasm の読み込みや復号はしない。
+   */
+  readFiles(name: string): Promise<Files | null>;
+  /** 読んだファイルを、読むだけの保存先として開く（ロックを返したあとに呼ぶ）。 */
+  openSnapshot(files: Files): Promise<SnapshotBackend>;
   /** 暗号ストアを開いているタブに頼む。どのタブも復号できなければ `null`。 */
   askTabs(request: PushDecryptRequest): Promise<string | null>;
+  /**
+   * このブラウザーで今ログインしているユーザー（タブが置く。`recipient.ts`）。分からなければ
+   * `null`。Push の宛先と違えば復号しない。
+   */
+  currentUser(): Promise<string | null>;
   keys?: WrappingKeyStore;
 }
 
@@ -95,42 +105,41 @@ export interface SnapshotBackend extends Pick<CryptoBackend, "read" | "readInbou
 }
 
 /** Push の `e2ee` を復号して、通知の本文を返す。復号できなければ `null`。 */
-export async function decryptPush(
+export async function decryptPush<Files>(
   value: unknown,
-  env: PushDecryptEnvironment,
+  env: PushDecryptEnvironment<Files>,
 ): Promise<string | null> {
   const e2ee = parsePushE2ee(value);
   if (!e2ee) return null;
+  // ログアウトせずに別のユーザーでログインし直したあとに、前のユーザー宛ての Push が届いても、
+  // 前のユーザーの暗号ストアで本文を出さない。
+  if ((await env.currentUser().catch(() => null)) !== e2ee.recipientId) return null;
   for (const namespace of pushNamespaces(e2ee.recipientId)) {
     const name = cryptoDatabaseName(namespace);
     // 暗号ストアを開くタブと同じロック（`cryptoLockName`）。持っているあいだ、タブは開かずに待つ。
+    // ロックの中ではファイルを読むだけにする。写しは読んだ時点で閉じているので、復号はロックを
+    // 返したあとでよい（wasm の読み込みのあいだ、通知から開いたタブを待たせない）。
     const outcome = await env.withLockIfAvailable(
       `zoo-crypto:${name}`,
-      async (
-        held,
-      ): Promise<
-        { kind: "busy" } | { kind: "missing" } | { kind: "done"; body: string | null }
-      > => {
-        if (!held) return { kind: "busy" };
-        const backend = await env.openSnapshot(name);
-        if (!backend) return { kind: "missing" };
-        try {
-          const body = await decryptFromStore({
-            name,
-            recipientId: e2ee.recipientId,
-            backend,
-            message: e2ee.message,
-            keys: env.keys,
-          });
-          return { kind: "done", body };
-        } finally {
-          await backend.close().catch(() => undefined);
-        }
-      },
+      async (held): Promise<{ kind: "busy" } | { kind: "read"; files: Files | null }> =>
+        held ? { kind: "read", files: await env.readFiles(name) } : { kind: "busy" },
     );
-    if (outcome.kind === "missing") continue;
-    if (outcome.kind === "done") return outcome.body;
-    return env.askTabs({ type: PUSH_DECRYPT_REQUEST, namespace, message: e2ee.message });
+    if (outcome.kind === "busy") {
+      return env.askTabs({ type: PUSH_DECRYPT_REQUEST, namespace, message: e2ee.message });
+    }
+    if (!outcome.files) continue;
+    const backend = await env.openSnapshot(outcome.files);
+    try {
+      return await decryptFromStore({
+        name,
+        recipientId: e2ee.recipientId,
+        backend,
+        message: e2ee.message,
+        keys: env.keys,
+      });
+    } finally {
+      await backend.close().catch(() => undefined);
+    }
   }
   return null;
 }
@@ -140,24 +149,30 @@ export async function decryptPush(
  *
  * 同時に届いた Push を並べて動かすと、1 件目が暗号ストアのロックを持っているあいだ、2 件目は
  * ロックを取れず、開いているタブがあると取り違えてタブに頼む（タブがなければ「新しいメッセージ」の
- * まま出る）。前の処理を待ってから、ロックを取り直す。
+ * まま出る）。前の処理が終わるのを待ってから、ロックを取り直す。
  *
- * `timeoutMs` は、前の処理を待つ時間も含めた上限。過ぎたら `null` を返す。前の処理が上限を過ぎても
- * 終わらなければ、次の処理はそれ以上待たずに始める（止まった処理で、後の Push をすべて止めないため）。
+ * - `timeoutMs` は、前の処理を待つ時間も含めた上限。過ぎたら `null` を返す。
+ * - 待つうちに上限を過ぎた処理は、復号を始めない（結果を使わないので）。
+ * - 次の処理は、前の処理が上限で諦められても、実際に終わるまで待つ（まだロックを持っていることが
+ *   あるため）。ただし止まった処理で後をすべて止めないよう、待つのは前の処理を始めてから
+ *   `timeoutMs` まで。
  */
 export function serializeDecryption(
   decrypt: (e2ee: unknown) => Promise<string | null>,
   timeoutMs: number,
 ): (e2ee: unknown) => Promise<string | null> {
+  const delay = (ms: number) => new Promise<null>((resolve) => setTimeout(() => resolve(null), ms));
   let previous: Promise<unknown> = Promise.resolve();
   return (e2ee) => {
+    const deadline = Date.now() + timeoutMs;
+    const run = previous
+      .then(() => (Date.now() >= deadline ? null : decrypt(e2ee)))
+      .catch(() => null);
+    previous = previous.then(() => Promise.race([run, delay(timeoutMs)]));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), timeoutMs);
     });
-    const run = previous.then(() => decrypt(e2ee)).catch(() => null);
-    const result = Promise.race([run, timeout]).finally(() => clearTimeout(timer));
-    previous = result;
-    return result;
+    return Promise.race([run, timeout]).finally(() => clearTimeout(timer));
   };
 }

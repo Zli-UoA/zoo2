@@ -127,3 +127,44 @@ export async function sqliteFile(
   const file = vfs.mapNameToFile.get("/crypto.sqlite")!;
   return file.data.slice(0, file.size);
 }
+
+/**
+ * 書き込みの途中で終了した暗号ストアのファイル（DB と、残った hot journal）。
+ *
+ * `sqliteFile` と同じ中身をコミットしたあと、トランザクションの途中（受信用セッションを消し、`meta`
+ * を書き換え、キャッシュをあふれさせて DB のファイルにも書いた状態）で、ファイルを写す。
+ */
+export async function sqliteFileWithHotJournal(
+  module: unknown,
+  backend: MemoryCryptoBackend,
+): Promise<{ database: ArrayBuffer; journal: ArrayBuffer; committed: ArrayBuffer }> {
+  const committed = await sqliteFile(module, backend);
+  const sqlite3 = SQLite.Factory(module);
+  const vfs = await createMemoryVfs("crasher", module);
+  vfs.mapNameToFile.set("/crypto.sqlite", {
+    pathname: "/crypto.sqlite",
+    flags: SQLite.SQLITE_OPEN_MAIN_DB,
+    size: committed.byteLength,
+    data: committed.slice(0),
+  });
+  sqlite3.vfs_register(vfs, false);
+  const db = await sqlite3.open_v2("/crypto.sqlite", undefined, "crasher");
+  await sqlite3.exec(db, "PRAGMA journal_mode = DELETE; PRAGMA cache_size = 1;");
+  await sqlite3.exec(db, "BEGIN");
+  await sqlite3.exec(db, "DELETE FROM inbound_sessions");
+  await sqlite3.exec(db, "UPDATE meta SET value = 'someone-else' WHERE key = 'user_id'");
+  for (let index = 0; index < 50; index += 1) {
+    await sqlite3.exec(
+      db,
+      `INSERT INTO processed_to_device (id) VALUES ('${String(index).padStart(400, "x")}')`,
+    );
+  }
+  const copy = (path: string) => {
+    const file = vfs.mapNameToFile.get(path)!;
+    return file.data.slice(0, file.size);
+  };
+  const database = copy("/crypto.sqlite");
+  const journal = copy("/crypto.sqlite-journal");
+  // ここで終了した（コミットもロールバックもしない）。
+  return { database, journal, committed };
+}

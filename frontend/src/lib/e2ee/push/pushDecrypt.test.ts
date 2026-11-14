@@ -15,7 +15,13 @@ import {
   serializeDecryption,
   type PushDecryptEnvironment,
 } from "./pushDecrypt";
-import { ALICE, exchange as exchangeKeys, memoryKeys, sqliteFile } from "./pushTestKit";
+import {
+  ALICE,
+  exchange as exchangeKeys,
+  memoryKeys,
+  sqliteFile,
+  sqliteFileWithHotJournal,
+} from "./pushTestKit";
 import { openSnapshotBackend } from "./snapshotBackend";
 
 beforeAll(() => {
@@ -76,6 +82,31 @@ describe("decryptFromStore", () => {
     expect(await run({}, ALICE)).toBeNull();
     // 保存鍵を包む鍵がない（作り直さない）
     expect(await run({}, BOB, memoryKeys())).toBeNull();
+  });
+
+  it("書き込みの途中で終了した（hot journal が残った）写しは、SQLite が写しの上で戻して読む", async () => {
+    const { row, bob } = await exchange("before crash");
+    const module = await loadSqlite();
+    const { database, journal, committed } = await sqliteFileWithHotJournal(module, bob.backend);
+    expect(journal.byteLength).toBeGreaterThan(0);
+    // 書き込みの途中の変更が、DB のファイルにも出ている
+    expect(Buffer.from(database).equals(Buffer.from(committed))).toBe(false);
+    const snapshot = await openSnapshotBackend(module, { database, journal });
+    try {
+      // コミットしていない書き込み（受信用セッションの削除と meta の書き換え）は見えない
+      expect((await snapshot.read()).meta.user_id).toBe(BOB);
+      expect(
+        await decryptFromStore({
+          name: BOB_DB,
+          recipientId: BOB,
+          backend: snapshot,
+          message: row,
+          keys: bob.keys,
+        }),
+      ).toBe("before crash");
+    } finally {
+      await snapshot.close();
+    }
   });
 
   it("OPFS と同じ表の SQLite の写しを、メモリーの VFS で読んで復号する", async () => {
@@ -160,65 +191,97 @@ describe("decryptPush", () => {
     const { row, bob } = await exchange("push body");
     const e2ee = { recipient_id: BOB, message: row };
     const asked: PushDecryptRequest[] = [];
-    const locks: string[] = [];
-    const env = (held: Record<string, boolean>, files: string[]): PushDecryptEnvironment => ({
+    const events: string[] = [];
+    const env = (
+      held: Record<string, boolean>,
+      files: string[],
+      currentUser: string | null = BOB,
+    ): PushDecryptEnvironment<string> => ({
       withLockIfAvailable: async (name, callback) => {
-        locks.push(name);
-        return callback(held[name] ?? true);
+        events.push(`lock ${name}`);
+        try {
+          return await callback(held[name] ?? true);
+        } finally {
+          events.push(`unlock ${name}`);
+        }
       },
-      openSnapshot: async (name) =>
-        files.includes(name)
-          ? {
-              read: () => bob.backend.read(),
-              readInboundSession: (key) => bob.backend.readInboundSession(key),
-              close: async () => {},
-            }
-          : null,
+      readFiles: async (name) => {
+        events.push(`read ${name}`);
+        return files.includes(name) ? name : null;
+      },
+      openSnapshot: async (name) => {
+        events.push(`open ${name}`);
+        return {
+          read: () => bob.backend.read(),
+          readInboundSession: (key) => bob.backend.readInboundSession(key),
+          close: async () => {},
+        };
+      },
       askTabs: async (request) => {
         asked.push(request);
         return "from tab";
       },
+      currentUser: async () => currentUser,
       keys: bob.keys,
     });
-    return { e2ee, env, asked, locks };
+    return { e2ee, env, asked, events };
   }
 
-  it("暗号ストアを開いているタブがなければ、ロックを取って写しから復号する", async () => {
-    const { e2ee, env, asked, locks } = await setup();
+  it("暗号ストアを開いているタブがなければ、ロックの中でファイルだけを読み、返してから復号する", async () => {
+    const { e2ee, env, asked, events } = await setup();
     expect(await decryptPush(e2ee, env({}, [BOB_DB]))).toBe("push body");
-    expect(locks).toEqual([`zoo-crypto:${BOB_DB}`]);
+    // wasm の読み込みと復号（open）は、ロックを返したあと
+    expect(events).toEqual([
+      `lock zoo-crypto:${BOB_DB}`,
+      `read ${BOB_DB}`,
+      `unlock zoo-crypto:${BOB_DB}`,
+      `open ${BOB_DB}`,
+    ]);
     expect(asked).toEqual([]);
   });
 
   it("開いているタブがあれば、そのタブに頼む", async () => {
-    const { e2ee, env, asked } = await setup();
+    const { e2ee, env, asked, events } = await setup();
     const result = await decryptPush(e2ee, env({ [`zoo-crypto:${BOB_DB}`]: false }, [BOB_DB]));
     expect(result).toBe("from tab");
     expect(asked).toEqual([
       { type: PUSH_DECRYPT_REQUEST, namespace: `user-${BOB}`, message: e2ee.message },
     ]);
+    expect(events.some((event) => event.startsWith("read"))).toBe(false);
   });
 
   it("OIDC の暗号ストアがなければ、開発用のログインの暗号ストアを探す", async () => {
-    const { e2ee, env, locks } = await setup();
+    const { e2ee, env, events } = await setup();
     const dev = cryptoDatabaseName(`dev-${BOB}`);
     expect(await decryptPush(e2ee, env({}, []))).toBeNull();
-    expect(locks).toEqual([`zoo-crypto:${BOB_DB}`, `zoo-crypto:${dev}`]);
+    expect(events.filter((event) => event.startsWith("read"))).toEqual([
+      `read ${BOB_DB}`,
+      `read ${dev}`,
+    ]);
+  });
+
+  it("宛先が今ログインしているユーザーでなければ、ロックも取らずに復号しない", async () => {
+    const { e2ee, env, asked, events } = await setup();
+    for (const current of [null, ALICE]) {
+      expect(await decryptPush(e2ee, env({}, [BOB_DB], current))).toBeNull();
+    }
+    const failing = { ...env({}, [BOB_DB]), currentUser: () => Promise.reject(new Error("idb")) };
+    expect(await decryptPush(e2ee, failing)).toBeNull();
+    expect(events).toEqual([]);
+    expect(asked).toEqual([]);
   });
 
   it("形の違う e2ee は、ロックも取らずに復号しない", async () => {
-    const { e2ee, env, locks } = await setup();
-    const open = vi.fn();
+    const { e2ee, env, events } = await setup();
     for (const value of [
       null,
       { ...e2ee, recipient_id: "bob" },
       { ...e2ee, message: { ...e2ee.message, epoch: -1 } },
       { ...e2ee, message: { ...e2ee.message, ciphertext: { session_id: "s" } } },
     ]) {
-      expect(await decryptPush(value, { ...env({}, [BOB_DB]), openSnapshot: open })).toBeNull();
+      expect(await decryptPush(value, env({}, [BOB_DB]))).toBeNull();
     }
-    expect(locks).toEqual([]);
-    expect(open).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
   });
 });
 
@@ -244,29 +307,43 @@ describe("serializeDecryption", () => {
     expect(overlapped).toBe(false);
   });
 
-  it("上限は前の処理を待つ時間を含み、止まった処理のあとも次を始める", async () => {
+  it("上限は前の処理を待つ時間を含み、待つうちに上限を過ぎた処理は復号を始めない", async () => {
     vi.useFakeTimers();
     try {
-      const wait = (ms: number, value: string) =>
-        new Promise<string>((resolve) => setTimeout(() => resolve(value), ms));
+      const calls: string[] = [];
       const decrypt = serializeDecryption(async (e2ee) => {
-        if (e2ee === "slow") return wait(80, "slow");
-        if (e2ee === "work") return wait(50, "work");
-        return new Promise<string | null>(() => {});
+        calls.push(String(e2ee));
+        const ms = e2ee === "slow" ? 150 : 50;
+        return new Promise<string>((resolve) => setTimeout(() => resolve(String(e2ee)), ms));
       }, 100);
-      // 2 件目は 80 ms 待ってから 50 ms 掛かるので、100 ms の上限を過ぎる
+      // 1 件目は上限（100 ms）を過ぎて諦めるが、実際には 150 ms まで動く
       const slow = decrypt("slow");
-      const late = decrypt("work");
+      const waiting = decrypt("work");
       await vi.advanceTimersByTimeAsync(100);
-      expect(await slow).toBe("slow");
-      expect(await late).toBeNull();
-      // 止まった処理は上限（t = 200）で諦め、次の処理はそこから始める
+      expect(await slow).toBeNull();
+      expect(await waiting).toBeNull();
+      await vi.advanceTimersByTimeAsync(100);
+      // 2 件目は 1 件目が実際に終わるまで（ロックを返すまで）待ち、その時点で上限を過ぎていたので
+      // 復号を始めない
+      expect(calls).toEqual(["slow"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("止まった処理を待つのは上限までで、後から届いた Push は始められる", async () => {
+    vi.useFakeTimers();
+    try {
+      const decrypt = serializeDecryption(async (e2ee) => {
+        if (e2ee === "stuck") return new Promise<string | null>(() => {});
+        return new Promise<string>((resolve) => setTimeout(() => resolve("work"), 50));
+      }, 100);
       const stuck = decrypt("stuck");
-      await vi.advanceTimersByTimeAsync(80);
-      const next = decrypt("work");
       await vi.advanceTimersByTimeAsync(100);
       expect(await stuck).toBeNull();
-      expect(await next).toBe("work");
+      const later = decrypt("work");
+      await vi.advanceTimersByTimeAsync(60);
+      expect(await later).toBe("work");
       // 失敗は null にする
       const failing = serializeDecryption(async () => {
         throw new Error("x");
