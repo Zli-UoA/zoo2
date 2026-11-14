@@ -157,6 +157,12 @@ impl Core {
 
     /// 変えて保存する。保存できなかったら、変えない。
     pub fn set_notification_settings(&self, settings: NotificationSettings) -> Result<()> {
+        // 書き込み、置き換え、メモリの更新を同じロックの中で行う。同時に呼ばれても、
+        // ファイルとメモリの値が食い違わないように (一時ファイルの名前も 1 つで足りる)。
+        let mut current = self
+            .notifications
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = notification_settings_path()?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -170,10 +176,7 @@ impl Core {
             let _ = std::fs::remove_file(&tmp);
             return Err(err.into());
         }
-        *self
-            .notifications
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = settings;
+        *current = settings;
         Ok(())
     }
 
