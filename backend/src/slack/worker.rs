@@ -1545,7 +1545,9 @@ pub(super) async fn insert_message(
     .await?;
     // 差分同期・イベントで取り込んだ投稿は、`slack_message_map` に `slack` で残す (直近 24 時間の再確認が、
     // Slack から消えた投稿を見つけるのに使う。ZIP の取り込みは、件数が多いので残さない。古い行は掃除が消す)
-    if job_id.is_empty() {
+    // スレッドの返信 (`thread_ts` が自分の `ts` と違う) は残さない。履歴 (`conversations.history`) は返信を返さないので、
+    // 再確認が「消えた」と誤って判定する。親を Zoo で結び付けられたか (`parent_id`) とは別に、Slack での種類で決める
+    if job_id.is_empty() && message.parent_ts().is_none() {
         exec(
             tx,
             "INSERT INTO slack_message_map(team_id,slack_channel_id,ts,message_id,origin) \

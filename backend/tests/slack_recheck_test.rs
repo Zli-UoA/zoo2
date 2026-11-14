@@ -546,3 +546,35 @@ async fn test_recheck_treats_a_tombstone_as_a_delete() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn test_recheck_does_not_delete_a_reply_whose_parent_was_never_imported() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    // 4 日前の、取り込んでいない親への新しい返信を、イベントで取り込む (親が見つからず、Zoo では親なしになる)
+    let parent = format!("{}.000100", now_secs() - 4 * 86_400);
+    let reply = format!("{}.000900", now_secs() - 120);
+    history(&f, json!([])).await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .and(query_param("ts", parent.as_str()))
+        .and(query_param("latest", reply.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true,
+            "messages": [{"type":"message","ts":&reply,"user":"UA","text":"late reply","thread_ts":&parent}],
+            "has_more": false})))
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+    let event = json!({"type":"event_callback","team_id":&f.team,"event":{"type":"message",
+        "channel":"C1","user":"UA","ts":&reply,"thread_ts":&parent,"text":"late reply"}});
+    deliver(&f, &event).await?;
+    let id = backend::slack::message_id(&f.team, "C1", &reply);
+    let imported = row(&f, &id).await;
+    assert_eq!(imported["content"], "late reply");
+    assert_eq!(imported["deleted"], false);
+    // 履歴は返信を返さないが、再確認は、返信を「消えた」とは見なさない
+    trigger(&f, true).await?;
+    assert_eq!(row(&f, &id).await["deleted"], false);
+    Ok(())
+}
