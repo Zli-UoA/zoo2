@@ -1261,9 +1261,6 @@ impl CryptoStore {
 /// ファイルを読めない、形式が壊れているときはエラーにする（記録がないものとして扱わない）。
 pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Result<Vec<String>> {
     let dir = user_dir(root, user_id)?;
-    let recorded = read_kept_records(&dir.join(ENCRYPTED_CHANNELS_FILE), user_id)?
-        .map(|records| records.encrypted_channels)
-        .unwrap_or_default();
     // 保存鍵を失って作り直しているあいだ（`state.json` がない）は、置いておいた前の記録を読む。
     // 読むあいだに作り直しを終えて前の記録を消したときは、新しい `state.json` を読み直す。
     let records = match read_kept_records(&dir.join(STATE_FILE), user_id)? {
@@ -1273,6 +1270,12 @@ pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Result<Vec<String>
             None => read_kept_records(&dir.join(STATE_FILE), user_id)?,
         },
     };
+    // その場の記録は、`state.json` を読んだあとに読む。作り直しは、`state.json` を移す前に記録をここへ
+    // 写すので、`state.json` が見えなかったときは、写し終えたあとのこのファイルを読むことになる
+    // （読み取りと作り直しがどの順に重なっても、記録を失わない）。
+    let recorded = read_kept_records(&dir.join(ENCRYPTED_CHANNELS_FILE), user_id)?
+        .map(|records| records.encrypted_channels)
+        .unwrap_or_default();
     let mut all = records
         .map(|records| records.encrypted_channels)
         .unwrap_or_default();
