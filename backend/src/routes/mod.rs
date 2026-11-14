@@ -58,6 +58,7 @@ pub fn create_router(state: AppState) -> Router {
         ])
         // dev の `X-Dev-User`, Bearer の `Authorization`, JSON 書き込みの `Content-Type`,
         // E2EE の直前の再認証の `X-Zoo-Reauth`（docs/e2ee.md の「クロス署名」）,
+        // 鍵バックアップのアップロードの証明の `X-Zoo-Backup-Proof`（docs/e2ee.md の鍵バックアップの API）,
         // OpenTelemetry のトレースコンテキスト伝播 (`traceparent`, `tracestate`)
         .allow_headers([
             header::AUTHORIZATION,
@@ -65,6 +66,7 @@ pub fn create_router(state: AppState) -> Router {
             header::ACCEPT,
             HeaderName::from_static("x-dev-user"),
             HeaderName::from_static(e2ee_reauth::REAUTH_HEADER),
+            HeaderName::from_static("x-zoo-backup-proof"),
             HeaderName::from_static("traceparent"),
             HeaderName::from_static("tracestate"),
         ])

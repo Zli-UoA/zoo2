@@ -489,7 +489,7 @@ async fn cors_allows_the_reauth_header() {
                 .header("access-control-request-method", "POST")
                 .header(
                     "access-control-request-headers",
-                    "x-zoo-reauth,content-type",
+                    "x-zoo-reauth,x-zoo-backup-proof,content-type",
                 )
                 .body(Body::empty())
                 .unwrap(),
@@ -501,6 +501,7 @@ async fn cors_allows_the_reauth_header() {
         .unwrap()
         .to_ascii_lowercase();
     assert!(allowed.contains("x-zoo-reauth"), "{allowed}");
+    assert!(allowed.contains("x-zoo-backup-proof"), "{allowed}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1876,6 +1877,238 @@ async fn backup_totals_are_counted_and_capped_per_version_and_user() {
         .await;
     assert_eq!(status, StatusCode::OK, "{res}");
     assert_eq!(totals("2").await.0, 2);
+}
+
+/// `X-Zoo-Backup-Proof` を付けたアップロード（`proof` が `None` なら付けない）。
+async fn upload_with_proof(
+    env: &Env,
+    user: &str,
+    path: &str,
+    proof: Option<&str>,
+    sessions: Value,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", "application/json")
+        .header("X-Dev-User", user);
+    if let Some(proof) = proof {
+        builder = builder.header("X-Zoo-Backup-Proof", proof);
+    }
+    let response = env
+        .app
+        .clone()
+        .oneshot(
+            builder
+                .body(Body::from(json!({"sessions": sessions}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn backup_upload_proofs_block_preemption_and_overwrites() {
+    let env = env().await;
+    let alice = env.identity().await;
+    let user = alice.user.clone();
+    env.ssss(&user, json!([recovery_slot()])).await;
+    let revision = env.revision(&user).await;
+    let backup = zoo_crypto::BackupDecryptionKey::generate();
+    let body = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2",
+                      "auth_data": alice.auth_data(&backup.public_key().to_base64())});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, false, body)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let path = |version: &str| {
+        format!("/api/e2ee/key_backup/keys?version={version}&secrets_revision={revision}")
+    };
+
+    // 版の応答は、サーバーの公開鍵（upload_key）を返す。秘密鍵は返さず、版の一覧にも出さない。
+    let (_, current) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    let upload_key = current["upload_key"].as_str().unwrap().to_owned();
+    let (_, same) = env.get("/api/e2ee/key_backup/versions/1", &user).await;
+    assert_eq!(same["upload_key"], upload_key.as_str());
+    let (_, list) = env.get("/api/e2ee/key_backup/versions", &user).await;
+    assert!(list["versions"][0].get("upload_key").is_none(), "{list}");
+    let stored = env
+        .query(
+            "SELECT to_json(upload_key)::text FROM e2ee_key_backup_versions WHERE user_id = $1",
+            &[&user],
+        )
+        .await;
+    assert_ne!(stored[0], json!(upload_key));
+    let server_key = zoo_crypto::Curve25519PublicKey::from_base64(&upload_key).unwrap();
+    let proof = backup.upload_proof(&server_key, &user, "1").unwrap();
+    let row = |id: &'static str| {
+        let (env, user) = (&env, user.clone());
+        async move {
+            env.query(
+                "SELECT json_build_object('data', session_data, 'proven', proven, 'v', is_verified,
+                   'i', first_message_index)::text
+                 FROM e2ee_key_backup_sessions WHERE user_id = $1 AND session_id = $2",
+                &[&user, id],
+            )
+            .await[0]
+                .clone()
+        }
+    };
+
+    // 先取り：アクセストークンだけを持つ者が、いちばんよい順位の偽の行を先に入れても、
+    // 証明付きの正規の行（順位が低くても）が置き換える。
+    let forged = session("c", "k", "s1", true, 0);
+    let (status, res) =
+        upload_with_proof(&env, &user, &path("1"), None, json!([forged.clone()])).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let legit = session("c", "k", "s1", false, 4);
+    let (status, res) = upload_with_proof(
+        &env,
+        &user,
+        &path("1"),
+        Some(&proof),
+        json!([legit.clone()]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let saved = row("s1").await;
+    assert_eq!(saved["data"], legit["session_data"]);
+    assert_eq!(saved["proven"], true);
+
+    // 上書き：証明のない要求は、証明付きの行をどの順位でも置き換えられない（200 だが何も変えない）。
+    let (status, res) =
+        upload_with_proof(&env, &user, &path("1"), None, json!([forged.clone()])).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(row("s1").await, saved);
+
+    // 証明付きの行どうしは、今までどおりの順位で決める。
+    let worse = session("c", "k", "s1", false, 9);
+    upload_with_proof(&env, &user, &path("1"), Some(&proof), json!([worse])).await;
+    assert_eq!(row("s1").await, saved);
+    let better = session("c", "k", "s1", true, 0);
+    upload_with_proof(
+        &env,
+        &user,
+        &path("1"),
+        Some(&proof),
+        json!([better.clone()]),
+    )
+    .await;
+    assert_eq!(row("s1").await["data"], better["session_data"]);
+
+    // 証明を送らない古いクライアントの行は、今までどおりの規則で残す。
+    upload_with_proof(
+        &env,
+        &user,
+        &path("1"),
+        None,
+        json!([session("c", "k", "s2", false, 3)]),
+    )
+    .await;
+    let good = session("c", "k", "s2", false, 0);
+    upload_with_proof(&env, &user, &path("1"), None, json!([good.clone()])).await;
+    assert_eq!(row("s2").await["data"], good["session_data"]);
+    assert_eq!(row("s2").await["proven"], false);
+
+    // 正しくない証明は 403 で、何も書かない。別のバックアップ鍵、別のユーザー、別の版、形の崩れた値。
+    let other = zoo_crypto::BackupDecryptionKey::generate();
+    let bob = env.user().await;
+    for bad in [
+        other.upload_proof(&server_key, &user, "1").unwrap(),
+        backup.upload_proof(&server_key, &bob, "1").unwrap(),
+        backup.upload_proof(&server_key, &user, "2").unwrap(),
+        "!!".to_owned(),
+        String::new(),
+    ] {
+        let (status, res) = upload_with_proof(
+            &env,
+            &user,
+            &path("1"),
+            Some(&bad),
+            json!([session("c", "k", "bad", true, 0)]),
+        )
+        .await;
+        assert_eq!(
+            (status, code(&res)),
+            (StatusCode::FORBIDDEN, "E2EE_BACKUP_PROOF_INVALID"),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        env.count(
+            "SELECT 1 FROM e2ee_key_backup_sessions WHERE user_id = $1 AND session_id = 'bad'",
+            &[&user]
+        )
+        .await,
+        0
+    );
+
+    // 版ごとに鍵が違うので、前の版の証明は新しい版に使えない。
+    let next = zoo_crypto::BackupDecryptionKey::generate();
+    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2",
+                        "auth_data": alice.auth_data(&next.public_key().to_base64()),
+                        "expected_current_version": "1"});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, true, create)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let (_, current) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    let next_key = current["upload_key"].as_str().unwrap().to_owned();
+    assert_ne!(next_key, upload_key);
+    let (status, res) = upload_with_proof(
+        &env,
+        &user,
+        &path("2"),
+        Some(&proof),
+        json!([session("c", "k", "s1", false, 0)]),
+    )
+    .await;
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::FORBIDDEN, "E2EE_BACKUP_PROOF_INVALID")
+    );
+    let next_proof = next
+        .upload_proof(
+            &zoo_crypto::Curve25519PublicKey::from_base64(&next_key).unwrap(),
+            &user,
+            "2",
+        )
+        .unwrap();
+    let (status, res) = upload_with_proof(
+        &env,
+        &user,
+        &path("2"),
+        Some(&next_proof),
+        json!([session("c", "k", "s1", false, 0)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+
+    // 鍵のない版（この列より前に作った版）は、初めて要るときに鍵を作り、そのあとは変えない。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET upload_key = NULL WHERE user_id = $1 AND version = 2",
+        &[&user],
+    )
+    .await;
+    let (_, first_read) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    let (_, second_read) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    assert!(first_read["upload_key"].is_string());
+    assert_eq!(first_read["upload_key"], second_read["upload_key"]);
+    assert_ne!(first_read["upload_key"], json!(next_key));
 }
 
 #[tokio::test]

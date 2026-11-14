@@ -15,7 +15,7 @@ use axum::{
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use zoo_crypto::Curve25519PublicKey;
+use zoo_crypto::{BACKUP_PROOF_HEADER, BackupUploadKey, Curve25519PublicKey};
 
 use crate::{
     auth::AuthUser,
@@ -82,6 +82,61 @@ fn wrong_version(current: Option<i64>) -> AppError {
         "The backup version is not the current one",
         json!({"current_version": current.map(|v| v.to_string())}),
     )
+}
+
+fn proof_invalid() -> AppError {
+    coded(
+        StatusCode::FORBIDDEN,
+        "E2EE_BACKUP_PROOF_INVALID",
+        "The backup upload proof is invalid",
+        Value::Null,
+    )
+}
+
+/// 版のアップロードの証明を確かめる鍵（サーバーだけが持つ）。この列より前に作った版（古い backend が
+/// 作った版を含む）は NULL なので、初めて要るときに作る。並行して作っても、最初に書いた鍵だけが残る。
+async fn upload_key(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+    version: &str,
+) -> Result<BackupUploadKey, AppError> {
+    let select = "SELECT json_build_object('key', upload_key)::text FROM e2ee_key_backup_versions
+                  WHERE user_id = $1 AND version = $2::bigint";
+    let mut stored = first(tx, select, &[user_id, version])
+        .await?
+        .ok_or_else(version_not_found)?;
+    if stored["key"].is_null() {
+        let generated = BackupUploadKey::generate();
+        exec(
+            tx,
+            "UPDATE e2ee_key_backup_versions SET upload_key = $3
+             WHERE user_id = $1 AND version = $2::bigint AND upload_key IS NULL",
+            &[user_id, version, &generated.to_base64()],
+        )
+        .await?;
+        stored = first(tx, select, &[user_id, version])
+            .await?
+            .ok_or_else(version_not_found)?;
+    }
+    stored["key"]
+        .as_str()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("backup upload key is missing")))
+        .and_then(|key| {
+            BackupUploadKey::from_base64(key)
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid backup upload key: {e}")))
+        })
+}
+
+/// 版の応答に、アップロードの証明に使う公開鍵（`upload_key`）を足す。
+async fn with_upload_key(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+    version: i64,
+    mut body: Value,
+) -> Result<Value, AppError> {
+    let key = upload_key(tx, user_id, &version.to_string()).await?;
+    body["upload_key"] = json!(key.public_key().to_base64());
+    Ok(body)
 }
 
 fn version_not_found() -> AppError {
@@ -237,13 +292,14 @@ async fn create_version(
     let version = max.unwrap_or(0) + 1;
     exec(
         &mut tx,
-        "INSERT INTO e2ee_key_backup_versions (user_id, version, algorithm, auth_data)
-         VALUES ($1, $2::bigint, $3, $4::jsonb)",
+        "INSERT INTO e2ee_key_backup_versions (user_id, version, algorithm, auth_data, upload_key)
+         VALUES ($1, $2::bigint, $3, $4::jsonb, $5)",
         &[
             &actor.id,
             &version.to_string(),
             BACKUP_ALGORITHM,
             &req.auth_data.to_string(),
+            &BackupUploadKey::generate().to_base64(),
         ],
     )
     .await?;
@@ -309,6 +365,7 @@ async fn current_version(
         .and_then(|v| v["version"].as_i64())
         .ok_or_else(version_not_found)?;
     let body = version_json(&mut tx, &actor.id, version, true).await?;
+    let body = with_upload_key(&mut tx, &actor.id, version, body).await?;
     tx.commit().await?;
     Ok(Json(body))
 }
@@ -351,6 +408,7 @@ async fn get_version(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let body = version_json(&mut tx, &actor.id, version, false).await?;
+    let body = with_upload_key(&mut tx, &actor.id, version, body).await?;
     tx.commit().await?;
     Ok(Json(body))
 }
@@ -490,9 +548,11 @@ pub struct UploadRequest {
 }
 
 /// `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`：今の版にセッションを上げる。
+/// `X-Zoo-Backup-Proof`（任意）があれば確かめ、証明付きの行として書く。
 async fn upload_sessions(
     State(state): State<AppState>,
     actor: AuthUser,
+    headers: HeaderMap,
     Query(query): Query<UploadQuery>,
     Json(req): Json<UploadRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
@@ -533,9 +593,8 @@ async fn upload_sessions(
         &[&actor.id],
     )
     .await?;
-    let now = current(&mut tx, &actor.id)
-        .await?
-        .and_then(|v| v["version"].as_i64());
+    let current_row = current(&mut tx, &actor.id).await?;
+    let now = current_row.as_ref().and_then(|v| v["version"].as_i64());
     if now.is_none() || now.map(|v| v.to_string()).as_deref() != Some(version) {
         return Err(wrong_version(now));
     }
@@ -551,6 +610,27 @@ async fn upload_sessions(
             }),
         ));
     }
+    // アップロードの証明：バックアップ鍵を持つ端末だけが作れる。証明付きの行は証明のない行に必ず勝ち、
+    // 証明のない要求は証明付きの行を置き換えられない（アクセストークンだけを持つ者が、偽の行で先に埋めたり、
+    // 上書きしたりできないようにする。M-1）。送らない古いクライアントの行は、今までどおりの規則で残す。
+    let proven = match headers.get(BACKUP_PROOF_HEADER) {
+        None => false,
+        Some(proof) => {
+            let backup_key = current_row
+                .as_ref()
+                .and_then(|v| v["auth_data"]["public_key"].as_str())
+                .and_then(|k| Curve25519PublicKey::from_base64(k).ok())
+                .ok_or_else(|| AppError::Internal(anyhow::anyhow!("invalid backup public key")))?;
+            let key = upload_key(&mut tx, &actor.id, version).await?;
+            let valid = proof
+                .to_str()
+                .is_ok_and(|proof| key.verify_proof(&backup_key, &actor.id, version, proof));
+            if !valid {
+                return Err(proof_invalid());
+            }
+            true
+        }
+    };
     let before = backup_totals(&mut tx, &actor.id, version).await?;
     if !best.is_empty() {
         // 読んでから書くと、並行した同じセッションのアップロードがよい行を上書きしたり、主キーの衝突（500）に
@@ -559,9 +639,9 @@ async fn upload_sessions(
             &mut tx,
             "INSERT INTO e2ee_key_backup_sessions AS cur
                (user_id, version, channel_id, sender_key, session_id, first_message_index,
-                forwarded_count, is_verified, session_data)
+                forwarded_count, is_verified, session_data, proven)
              SELECT $1, $2::bigint, s.channel_id, s.sender_key, s.session_id, s.first_message_index,
-                    s.forwarded_count, s.is_verified, s.session_data
+                    s.forwarded_count, s.is_verified, s.session_data, $4::boolean
              FROM jsonb_to_recordset($3::jsonb) AS s(channel_id text, sender_key text, session_id text,
                first_message_index integer, forwarded_count integer, is_verified boolean, session_data jsonb)
              ON CONFLICT (user_id, version, channel_id, sender_key, session_id) DO UPDATE
@@ -569,13 +649,16 @@ async fn upload_sessions(
                  forwarded_count = EXCLUDED.forwarded_count,
                  is_verified = EXCLUDED.is_verified,
                  session_data = EXCLUDED.session_data,
+                 proven = EXCLUDED.proven,
                  updated_at = now()
-             WHERE (EXCLUDED.is_verified::int, -EXCLUDED.first_message_index, -EXCLUDED.forwarded_count)
-                 > (cur.is_verified::int, -cur.first_message_index, -cur.forwarded_count)",
+             WHERE (EXCLUDED.proven::int, EXCLUDED.is_verified::int, -EXCLUDED.first_message_index,
+                    -EXCLUDED.forwarded_count)
+                 > (cur.proven::int, cur.is_verified::int, -cur.first_message_index, -cur.forwarded_count)",
             &[
                 &actor.id,
                 version,
                 &Value::Array(best.values().map(BackupSession::json).collect()).to_string(),
+                if proven { "true" } else { "false" },
             ],
         )
         .await?;

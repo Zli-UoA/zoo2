@@ -2911,6 +2911,10 @@ CREATE TABLE e2ee_key_backup_versions (
   -- e2ee_key_backup_sessions のトリガーが保ち、アップロードの上限の判定に使う（docs/e2ee.md の鍵バックアップの API）。
   session_count bigint NOT NULL DEFAULT 0,
   session_bytes bigint NOT NULL DEFAULT 0,
+  -- アップロードの証明（X-Zoo-Backup-Proof）を確かめる、サーバーだけが持つ Curve25519 の秘密鍵
+  -- （パディングなしの base64）。公開鍵だけを版の応答の upload_key で返す。NULL の版（この列より前の版）は、
+  -- 初めて要るときに backend が作る。
+  upload_key text,
   PRIMARY KEY (user_id, version)
 );
 -- 過去の版と同じ公開鍵の拒否（E2EE_KEY_REUSED）に使う。
@@ -2928,6 +2932,9 @@ CREATE TABLE e2ee_key_backup_sessions (
   forwarded_count integer NOT NULL,
   is_verified boolean NOT NULL,
   session_data jsonb NOT NULL,
+  -- アップロードの証明（バックアップ鍵を持つ端末が上げた）付きで書いた行。証明のない要求は、この行を
+  -- 置き換えられない（docs/e2ee.md の鍵バックアップの API の「アップロードの証明」）。
+  proven boolean NOT NULL DEFAULT false,
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, version, channel_id, sender_key, session_id),
   FOREIGN KEY (user_id, version) REFERENCES e2ee_key_backup_versions ON DELETE CASCADE
