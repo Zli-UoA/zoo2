@@ -62,6 +62,10 @@ pub struct TrustStore {
     own_master_key: Option<String>,
     usk_history: Vec<String>,
     records: BTreeMap<String, TrustRecord>,
+    /// 規則 3 で記録を置き換えたが、まだ [`Distribution::signed_master_key_changes`] で返していない相手。
+    /// 受信時の検証（`sender_trust`）が先に置き換えても知らせを失わないよう、記録に残して次の
+    /// [`evaluate`](Self::evaluate) で返す。
+    pending_master_key_changes: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -71,6 +75,9 @@ struct TrustStoreJson {
     own_master_key: Option<String>,
     user_signing_key_history: Vec<String>,
     records: BTreeMap<String, TrustRecord>,
+    /// 後から足した項目なので、ない記録（以前の版で保存したもの）は空として読む。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_master_key_changes: Vec<String>,
 }
 
 /// 配布先のスナップショット（`GET /api/e2ee/channels/{channel_id}/recipients`）か
@@ -138,6 +145,7 @@ pub struct Distribution {
     /// 相手の user_id。自分の別の端末で受け入れた（#362）か SAS で検証した（#368）鍵なので配るが、
     /// 黙って置き換えないよう、「この相手の鍵が変わり、別の端末で確認済み」と利用者に知らせる。
     /// 置き換えた古い鍵は [`TrustRecord::replaced_master_keys`] に移り、以後その鍵には戻らない。
+    /// 受信時の検証（`sender_trust`）で置き換えた相手も、次の判定でここに返す（一度だけ）。
     pub signed_master_key_changes: Vec<String>,
 }
 
@@ -259,6 +267,7 @@ impl TrustStore {
             own_master_key: None,
             usk_history: Vec::new(),
             records: BTreeMap::new(),
+            pending_master_key_changes: Vec::new(),
         })
     }
 
@@ -270,6 +279,7 @@ impl TrustStore {
             own_master_key: self.own_master_key.clone(),
             user_signing_key_history: self.usk_history.clone(),
             records: self.records.clone(),
+            pending_master_key_changes: self.pending_master_key_changes.clone(),
         };
         serde_json::to_string(&json).expect("文字列だけの構造体は必ず JSON にできる")
     }
@@ -349,11 +359,16 @@ impl TrustStore {
                 },
             );
         }
+        let pending_master_key_changes = parsed.pending_master_key_changes;
+        for target in &pending_master_key_changes {
+            validate_uuid("user_id", target, false)?;
+        }
         Ok(Self {
             user_id: parsed.user_id,
             own_master_key,
             usk_history,
             records,
+            pending_master_key_changes,
         })
     }
 
@@ -552,6 +567,8 @@ impl TrustStore {
             };
             out.users.insert(user_id, trust);
         }
+        // 規則 3 で置き換えた相手（受信時の検証で先に置き換えたものを含む）を、一度だけ返す。
+        out.signed_master_key_changes = std::mem::take(&mut self.pending_master_key_changes);
         out
     }
 
@@ -572,6 +589,9 @@ impl TrustStore {
     ///
     /// `snapshot` は送信ユーザーと自分の `keys/query`（他のユーザーを判定するには、自分のマスター鍵と
     /// ユーザー署名鍵が要る）。規則 3 や共有ピンの採用で記録が変わることがあるので、呼んだあとは保存する。
+    ///
+    /// 規則 3 で記録を別のマスター鍵に置き換えたときの知らせは、ここでは返さず、次の
+    /// [`evaluate`](Self::evaluate) の [`Distribution::signed_master_key_changes`] で返す。
     pub fn sender_trust(
         &mut self,
         snapshot: &KeySnapshot,
@@ -663,7 +683,7 @@ impl TrustStore {
                 .get(user_id)
                 .is_some_and(|r| r.master_key != master_b64)
             {
-                out.signed_master_key_changes.push(user_id.to_owned());
+                push_unique(&mut self.pending_master_key_changes, user_id.to_owned());
             }
             self.replace_record(user_id, master_b64, Some(usk_b64), false);
             return self.trusted_devices(

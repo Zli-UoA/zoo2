@@ -239,6 +239,42 @@ fn rule3_reports_master_key_accepted_on_another_device() {
     assert!(out.devices.is_empty());
 }
 
+/// 受信時の検証（`sender_trust`）が先に記録を置き換えても、置き換えの知らせは失わず、保存し直しても
+/// 残り、次の判定で一度だけ返る。
+#[test]
+fn master_key_change_seen_by_sender_trust_is_reported_by_the_next_evaluation() {
+    let alice = CrossSigningKeys::generate(ALICE).unwrap();
+    let bob_old = CrossSigningKeys::generate(BOB).unwrap();
+    let bob_new = CrossSigningKeys::generate(BOB).unwrap();
+    let bob_device = DeviceAccount::new(BOB, BOB_DEVICE).unwrap();
+    let mut store = alice_store(&alice);
+    let first = store
+        .accept_master_key(&alice.user_signing, BOB, &bob_old.master.public_key_json())
+        .unwrap();
+    store.confirm_accepted_master_key(BOB, &first.master_key);
+    let mut other = alice_store(&alice);
+    let second = other
+        .accept_master_key(&alice.user_signing, BOB, &bob_new.master.public_key_json())
+        .unwrap();
+    let snap = snapshot(
+        &alice,
+        &bob_new,
+        &bob_device,
+        vec![row(ALICE, &second.signature)],
+        Some(&second.pin),
+    );
+
+    assert!(store.sender_trust(&snap, BOB, BOB_DEVICE, None).is_some());
+    assert_eq!(store.record(BOB).unwrap().master_key, b64(&bob_new));
+    // 保存して開き直しても、知らせは残る。
+    let mut store = TrustStore::from_json(&store.to_json(), ALICE).unwrap();
+    let out = store.evaluate(&snap, ALICE_DEVICE, Some(&alice.user_signing));
+    assert_eq!(out.signed_master_key_changes, vec![BOB.to_owned()]);
+    let out = store.evaluate(&snap, ALICE_DEVICE, Some(&alice.user_signing));
+    assert!(out.signed_master_key_changes.is_empty());
+    assert!(!store.to_json().contains("pending_master_key_changes"));
+}
+
 /// 履歴にある鍵でも、利用者が明示的に受け入れ直せば（#362、SAS）信頼し、履歴から外す。
 #[test]
 fn explicit_acceptance_removes_key_from_history() {
