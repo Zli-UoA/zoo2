@@ -826,6 +826,9 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                         known.retain(|ts| ts_key(ts).is_some_and(|(secs, _)| secs >= horizon));
                         known.sort_by_key(|ts| std::cmp::Reverse(ts_key(ts)));
                         known.truncate(MAX_THREADS);
+                        // 監視の上限 (`MAX_THREADS`) に残れない候補は、取らない。取っても `known` に残らず、カーソルを
+                        // 進めない軽い同期のたびに、同じ返信を取り直すことになる
+                        progress.pending.retain(|ts| known.contains(ts));
                         progress.known = known;
                     } else {
                         progress.known = progress.pending.clone();

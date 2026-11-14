@@ -98,7 +98,9 @@ pub(super) async fn process(
             break;
         }
         let group: Vec<&Row> = rows.iter().filter(|r| &r.ts == ts).collect();
-        match apply(
+        // 失敗するとトランザクションは捨てられ、その中で作った利用者は DB に残らない。キャッシュからも外す
+        let known_users: std::collections::HashSet<String> = ctx.users.keys().cloned().collect();
+        let applied = apply(
             slack,
             ctx,
             team,
@@ -109,8 +111,11 @@ pub(super) async fn process(
             &group,
             db,
         )
-        .await
-        {
+        .await;
+        if applied.is_err() {
+            ctx.users.retain(|id, _| known_users.contains(id));
+        }
+        match applied {
             Ok(()) => {}
             // 待つか、トークンが使えないか、リースを失ったときは、ここで止める (ヒントは残る)
             Err(
@@ -250,15 +255,25 @@ async fn apply(
     // トランザクションの外で行う)
     let mut removals: Vec<(String, String)> = Vec::new();
     let mut unverified = false;
+    let mut full_reactions: Option<Vec<SlackReaction>> = None;
     if let Some(message) = &message
         && has("reaction")
     {
         let mut reactions = message.reactions.clone();
-        let truncated = |rs: &[SlackReaction]| {
-            rs.iter()
-                .any(|r| r.count.is_some_and(|c| c > r.users.len() as i64))
+        // 削除を確かめる絵文字 (正規化したもの) ごとに、`users` が一部しか返らない (`count` のほうが多い) かを見る。
+        // 無関係な絵文字の省略で、削除できるリアクションの反映を止めない
+        let truncated = |rs: &[SlackReaction], emoji: &str| {
+            rs.iter().any(|r| {
+                reaction_emoji(&r.name).as_deref() == Some(emoji)
+                    && r.count.is_some_and(|c| c > r.users.len() as i64)
+            })
         };
-        if truncated(&reactions) {
+        let wanted: Vec<String> = group
+            .iter()
+            .filter(|r| r.kind == "reaction")
+            .filter_map(|r| reaction_emoji(&r.reaction))
+            .collect();
+        if wanted.iter().any(|emoji| truncated(&reactions, emoji)) {
             match slack
                 .get(
                     "reactions.get",
@@ -273,16 +288,18 @@ async fn apply(
                 Ok(value) => {
                     reactions = serde_json::from_value(value["message"]["reactions"].clone())
                         .unwrap_or(reactions);
+                    // 追加の処理にも、取り直した完全な一覧を使う (`users` が省略された追加者を取りこぼさない)
+                    full_reactions = Some(reactions.clone());
                 }
                 Err(e @ (SyncError::RateLimited(_) | SyncError::NoAccess(_))) => return Err(e),
                 Err(_) => {}
             }
         }
-        let complete = !truncated(&reactions);
         for row in group.iter().filter(|r| r.kind == "reaction") {
             let Some(emoji) = reaction_emoji(&row.reaction) else {
                 continue;
             };
+            let complete = !truncated(&reactions, &emoji);
             let present = reactions.iter().any(|r| {
                 reaction_emoji(&r.name).as_deref() == Some(emoji.as_str())
                     && r.users.contains(&row.user)
@@ -357,7 +374,16 @@ async fn apply(
                         edit(&mut tx, ctx, &id, message, row).await?;
                     }
                     if has("reaction") || has("changed") {
-                        insert_reactions(&mut tx, ctx, &id, message).await?;
+                        match &full_reactions {
+                            Some(reactions) => {
+                                let full = SlackMessage {
+                                    reactions: reactions.clone(),
+                                    ..message.clone()
+                                };
+                                insert_reactions(&mut tx, ctx, &id, &full).await?;
+                            }
+                            None => insert_reactions(&mut tx, ctx, &id, message).await?,
+                        }
                     }
                     for (user, emoji) in &removals {
                         let found = query(
