@@ -93,7 +93,11 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     [userStore],
   );
   const getUserState = useCallback(() => userStore.getState(), [userStore]);
-  const { currentUserId } = useSyncExternalStore(subscribe, getUserState, getUserState);
+  const {
+    currentUserId,
+    isLoading: userLoading,
+    error: userError,
+  } = useSyncExternalStore(subscribe, getUserState, getUserState);
   const userId = config.devUserId || currentUserId;
   const supported = useMemo(() => supportsCryptoStore(), []);
   const [status, setStatus] = useState<E2eeContextValue["status"]>(
@@ -438,6 +442,8 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       notReadyReason: notReadyReason({
         supported,
         userId: userId || null,
+        userLoading: !config.devUserId && userLoading,
+        userError: !config.devUserId && userError !== null,
         isOnline,
         status,
         ready: readyWorker !== null,
@@ -507,6 +513,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       sas,
     }),
     [
+      config.devUserId,
       deviceId,
       deviceLimit,
       isOnline,
@@ -520,7 +527,9 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       status,
       storeForLogout,
       supported,
+      userError,
       userId,
+      userLoading,
     ],
   );
 

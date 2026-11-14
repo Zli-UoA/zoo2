@@ -1127,6 +1127,7 @@
     "notReady": {
       "unsupported": "This browser can't use encryption (OPFS, Web Workers, or Web Locks is missing). Private windows may not support it. Open zoo in a normal window or another browser.",
       "signedOut": "Couldn't confirm the signed-in user. Sign in again.",
+      "userUnavailable": "Couldn't load the signed-in user's information. Wait a moment, or reload the page.",
       "offline": "Encryption can't get ready while you're offline. It will continue automatically once you're back online.",
       "otherTab": "Another zoo tab or window is using this device's encryption keys. Close that tab and this one will take over.",
       "starting": "Getting encryption ready (registering this device)…",

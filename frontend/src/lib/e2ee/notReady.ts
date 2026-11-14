@@ -5,7 +5,8 @@ import type { E2eeDeviceStatus } from "./deviceManager";
  * このタブで暗号ストアを開けていない理由。設定の「暗号化」「端末」タブに出す。
  *
  * - `unsupported`：暗号ストアを置けないブラウザー（OPFS、Worker、Web Locks がない）。
- * - `signedOut`：ログインしているユーザーが分からない。
+ * - `signedOut`：ログインしているユーザーがいない（ユーザーの取得が終わり、失敗もしていない）。
+ * - `userUnavailable`：ログインしているユーザーの取得に失敗した（5xx、タイムアウトなど。401 ではない）。
  * - `offline`：オフライン。端末の登録と鍵の補充ができない。
  * - `otherTab`：ほかのタブが暗号ストアを開いている（Web Locks を持っている）。そのタブを閉じると引き継ぐ。
  * - `starting`：暗号ストアを開き、端末を登録しているところ。
@@ -15,6 +16,7 @@ import type { E2eeDeviceStatus } from "./deviceManager";
 export type E2eeNotReadyReason =
   | { kind: "unsupported" }
   | { kind: "signedOut" }
+  | { kind: "userUnavailable" }
   | { kind: "offline" }
   | { kind: "otherTab" }
   | { kind: "starting" }
@@ -58,6 +60,10 @@ export function describeLocalFailure(error: unknown): E2eeStartFailure {
 export interface NotReadyInput {
   supported: boolean;
   userId: string | null;
+  /** ログインしているユーザーを取得しているところ（`/api/users/me`）。 */
+  userLoading: boolean;
+  /** ユーザーの取得が 401 以外で失敗した。 */
+  userError: boolean;
   isOnline: boolean;
   status: E2eeDeviceStatus | "unsupported" | "idle";
   ready: boolean;
@@ -73,7 +79,12 @@ export function notReadyReason(input: NotReadyInput): E2eeNotReadyReason | null 
   // オフラインで起動すると、ログイン中のユーザーを確かめられず `userId` がない（OIDC）。
   // ログインし直しを案内しないよう、ユーザーより先にオフラインかを見る。
   if (!input.isOnline) return { kind: "offline" };
-  if (!input.userId) return { kind: "signedOut" };
+  if (!input.userId) {
+    // 取得中や一時的な失敗のときに、ログインし直しを案内しない（401 なら AuthGate が案内する）。
+    if (input.userLoading) return { kind: "starting" };
+    if (input.userError) return { kind: "userUnavailable" };
+    return { kind: "signedOut" };
+  }
   if (input.lockState === "otherTab") return { kind: "otherTab" };
   if (input.deviceLimit) return { kind: "deviceLimit" };
   if (input.startFailure) return { kind: "failed", failure: input.startFailure };

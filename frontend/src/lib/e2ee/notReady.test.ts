@@ -11,6 +11,8 @@ import {
 const base: NotReadyInput = {
   supported: true,
   userId: "00000000-0000-4000-8000-00000000000a",
+  userLoading: false,
+  userError: false,
   isOnline: true,
   status: "starting",
   ready: false,
@@ -31,8 +33,20 @@ describe("notReadyReason", () => {
     expect(notReadyReason({ ...base, status: "unsupported" })).toEqual({ kind: "unsupported" });
   });
 
-  it("オンラインでユーザーが分からない", () => {
+  it("ユーザーの取得が終わり、失敗もしていないのにユーザーがいない", () => {
     expect(notReadyReason({ ...base, userId: null })).toEqual({ kind: "signedOut" });
+  });
+
+  it("ユーザーを取得しているあいだは、ログインし直しではなく準備中と出す", () => {
+    expect(notReadyReason({ ...base, userId: null, userLoading: true })).toEqual({
+      kind: "starting",
+    });
+  });
+
+  it("ユーザーの取得が一時的に失敗したときは、ログインし直しを案内しない", () => {
+    expect(notReadyReason({ ...base, userId: null, userError: true })).toEqual({
+      kind: "userUnavailable",
+    });
   });
 
   it("オフラインで起動してユーザーが分からないときは、ログインし直しではなくオフラインと出す", () => {
