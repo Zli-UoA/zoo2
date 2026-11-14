@@ -684,9 +684,31 @@ async fn remembers_encrypted_channels_across_restarts() {
         let mut store = CryptoStore::open(dir.path(), ALICE).unwrap().store;
         store.remember_encrypted_channel(CHANNEL).unwrap();
     }
-    let store = CryptoStore::open(dir.path(), ALICE).unwrap().store;
+    let mut store = CryptoStore::open(dir.path(), ALICE).unwrap().store;
     assert_eq!(
         store.known_encrypted_channels().collect::<Vec<_>>(),
         vec![CHANNEL]
     );
+    // 画面は、暗号ストアを開く前（ほかが開いているあいだ）にも記録を読める。
+    assert_eq!(
+        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE),
+        vec![CHANNEL.to_owned()]
+    );
+    assert!(zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), BOB).is_empty());
+
+    // 保存できなければ記録に入れない（次の機会に記録し直せるように）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        const OTHER: &str = "00000000-0000-4000-8000-0000000000c2";
+        let user_dir = dir.path().join(ALICE);
+        std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = store.remember_encrypted_channel(OTHER);
+        std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if failed.is_err() {
+            assert!(!store.known_encrypted_channels().any(|id| id == OTHER));
+        }
+        store.remember_encrypted_channel(OTHER).unwrap();
+        assert!(store.known_encrypted_channels().any(|id| id == OTHER));
+    }
 }

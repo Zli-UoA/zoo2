@@ -510,9 +510,13 @@ impl CryptoStore {
     }
 
     /// `encrypted = true` を見たチャンネルを記録する（docs/e2ee.md の「暗号化の格下げを防ぐ」）。
+    /// 保存できなければ記録に入れずにエラーを返す（呼び出し側が次の機会に記録し直す）。
     pub fn remember_encrypted_channel(&mut self, channel_id: &str) -> Result<()> {
-        if self.state.encrypted_channels.insert(channel_id.to_owned()) {
-            self.save()?;
+        if self.state.encrypted_channels.insert(channel_id.to_owned())
+            && let Err(error) = self.save()
+        {
+            self.state.encrypted_channels.remove(channel_id);
+            return Err(error);
         }
         Ok(())
     }

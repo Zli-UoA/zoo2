@@ -894,6 +894,28 @@ impl CryptoStore {
     }
 }
 
+/// 暗号ストアを開かずに、暗号化チャンネルとして記録したチャンネルを読む（#361）。起動の直後、端末の管理の
+/// タスクが暗号ストアを開くより前から、格下げを見つけて平文の送信を止めるため。`state.json` は `rename` で
+/// 置き換えるので、ロックを持たずに読んでも、書きかけを読むことはない。読めなければ空。
+pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct Partial {
+        #[serde(default)]
+        user_id: String,
+        #[serde(default)]
+        encrypted_channels: BTreeSet<String>,
+    }
+    let Ok(dir) = user_dir(root, user_id) else {
+        return Vec::new();
+    };
+    fs::read(dir.join(STATE_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Partial>(&bytes).ok())
+        .filter(|state| state.user_id == user_id)
+        .map(|state| state.encrypted_channels.into_iter().collect())
+        .unwrap_or_default()
+}
+
 /// `root` にある暗号ストアのユーザー ID（ログアウトで消すものを探す）。
 pub fn stored_user_ids(root: &Path) -> Result<Vec<String>> {
     let mut users = Vec::new();

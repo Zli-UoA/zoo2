@@ -35,6 +35,7 @@ impl RevisionWarning {
 /// 一致する結果だけを使う（以前の本文を、別の送信者の行に結び付けて出さないため）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowKey {
+    channel_id: String,
     user_id: String,
     parent_id: Option<String>,
     epoch: Option<u64>,
@@ -46,6 +47,7 @@ pub struct RowKey {
 impl RowKey {
     pub fn of(message: &Message) -> Self {
         Self {
+            channel_id: message.channel_id.clone(),
             user_id: message.user_id.clone(),
             parent_id: message.parent_id.clone(),
             epoch: message.epoch,
@@ -56,7 +58,8 @@ impl RowKey {
     }
 
     fn matches(&self, message: &Message) -> bool {
-        self.user_id == message.user_id
+        self.channel_id == message.channel_id
+            && self.user_id == message.user_id
             && self.parent_id == message.parent_id
             && self.epoch == message.epoch
             && self.revision == message.revision
@@ -102,8 +105,9 @@ pub struct Decryptions {
     pub in_flight: bool,
     /// 復号し直す行があるかもしれない（行が届いた、チャンネルを開いた、暗号ストアが開いた）。
     pub dirty: bool,
-    /// 最後に復号したときの、暗号ストアの受信用セッションの数え（増えたら鍵待ちを復号し直す）。
-    pub generation: Option<u64>,
+    /// チャンネルごとの、最後に復号したときの暗号ストアの受信用セッションの数え（増えたら鍵待ちを
+    /// 復号し直す）。
+    pub generations: HashMap<String, u64>,
 }
 
 impl Decryptions {
@@ -175,13 +179,14 @@ impl Decryptions {
         }
     }
 
-    /// 鍵を待っているメッセージがあるか。
-    pub fn has_missing(&self) -> bool {
+    /// `channel_id` に鍵を待っているメッセージがあるか。
+    pub fn has_missing_in(&self, channel_id: &str) -> bool {
         self.entries.values().any(|entry| {
-            matches!(
-                entry.decryption,
-                Decryption::Undecryptable(UndecryptableReason::KeyMissing)
-            )
+            entry.row.channel_id == channel_id
+                && matches!(
+                    entry.decryption,
+                    Decryption::Undecryptable(UndecryptableReason::KeyMissing)
+                )
         })
     }
 
@@ -458,7 +463,8 @@ mod tests {
         );
         assert!(!decryptions.needs(&row, false));
         assert!(decryptions.needs(&row, true));
-        assert!(decryptions.has_missing());
+        assert!(decryptions.has_missing_in("c1"));
+        assert!(!decryptions.has_missing_in("c2"));
         decryptions.apply(
             "m1",
             RowKey::of(&row),

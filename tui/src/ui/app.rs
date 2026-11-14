@@ -86,6 +86,7 @@ pub enum AppEvent {
     /// 暗号化したメッセージの復号の結果（メッセージ ID、行の版、結果）と、そのときの暗号ストアの
     /// 受信用セッションの数え（#361）。
     Decrypted {
+        channel_id: String,
         results: Vec<(String, RowKey, Decryption)>,
         generation: Option<u64>,
     },
@@ -94,8 +95,11 @@ pub enum AppEvent {
         channel_id: String,
         summary: RecipientSummary,
     },
-    /// 暗号ストアに記録した、暗号化チャンネルの ID（#361）。
-    KnownEncryptedChannels(Vec<String>),
+    /// 暗号ストアに記録した、暗号化チャンネルの ID と、保存できずに記録し直すもの（#361）。
+    KnownEncryptedChannels {
+        known: Vec<String>,
+        failed: Vec<String>,
+    },
     /// 暗号化したメッセージの編集が 409 `E2EE_STALE_REVISION` になった（#361）。今の版の本文が
     /// 送ろうとした本文と同じなら、応答をなくしただけなので成功として扱う。
     EditConflict {
@@ -533,12 +537,13 @@ impl App {
             }
             AppEvent::Encryption(event) => self.encryption.on_event(event),
             AppEvent::Decrypted {
+                channel_id,
                 results,
                 generation,
             } => {
                 self.decryptions.in_flight = false;
-                if generation.is_some() {
-                    self.decryptions.generation = generation;
+                if let Some(generation) = generation {
+                    self.decryptions.generations.insert(channel_id, generation);
                 }
                 for (message_id, row, decryption) in results {
                     self.decryptions.apply(&message_id, row, decryption);
@@ -550,10 +555,11 @@ impl App {
             } => {
                 self.recipients.insert(channel_id, summary);
             }
-            AppEvent::KnownEncryptedChannels(ids) => {
+            AppEvent::KnownEncryptedChannels { known, failed } => {
                 self.known_encrypted_in_flight = false;
                 self.known_encrypted_loaded = true;
-                self.known_encrypted_channels.extend(ids);
+                self.known_encrypted_channels.extend(known);
+                self.unrecorded_encrypted.extend(failed);
             }
             AppEvent::EditConflict {
                 channel_id,
@@ -767,6 +773,14 @@ impl App {
 
     /// 端末の管理のタスクと OIDC の設定を、暗号化の画面につなぐ（#360）。
     pub fn attach_encryption(&mut self, context: super::encryption::E2eeContext) {
+        // 暗号ストアを開く前から、記録した暗号化チャンネルを暗号化として扱う（開くまでの平文の送信を止める）。
+        if let Some(root) = &context.crypto_root {
+            self.known_encrypted_channels
+                .extend(crate::e2ee::store::read_encrypted_channels(
+                    root,
+                    &self.me.id,
+                ));
+        }
         self.encryption.attach(context);
     }
 
@@ -1942,12 +1956,14 @@ impl App {
         let tx = self.app_tx.clone();
         tokio::spawn(async move {
             let mut store = store.lock().await;
-            for id in &ids {
-                let _ = store.remember_encrypted_channel(id);
-            }
+            // 保存できなかったものは、次の機会に記録し直す（記録がないまま起動し直すと、格下げを見つけられない）。
+            let failed = ids
+                .into_iter()
+                .filter(|id| store.remember_encrypted_channel(id).is_err())
+                .collect();
             let known = store.known_encrypted_channels().cloned().collect();
             drop(store);
-            let _ = tx.send(AppEvent::KnownEncryptedChannels(known));
+            let _ = tx.send(AppEvent::KnownEncryptedChannels { known, failed });
         });
     }
 
@@ -1963,10 +1979,12 @@ impl App {
         let Some((_, store)) = self.encryption.store() else {
             return;
         };
-        let retry_missing = self.decryptions.has_missing()
-            && store
-                .try_lock()
-                .is_ok_and(|store| Some(store.inbound_generation()) != self.decryptions.generation);
+        // 鍵待ちの行の復号し直しは、チャンネルごとの数えで決める（別のチャンネルを開いているあいだに鍵が
+        // 届いても、戻ったときに復号し直す）。
+        let retry_missing = self.decryptions.has_missing_in(&channel_id)
+            && store.try_lock().is_ok_and(|store| {
+                self.decryptions.generations.get(&channel_id) != Some(&store.inbound_generation())
+            });
         if !self.decryptions.dirty && !retry_missing {
             return;
         }
@@ -2009,6 +2027,7 @@ impl App {
                 .collect();
             drop(store);
             let _ = tx.send(AppEvent::Decrypted {
+                channel_id,
                 results,
                 generation: Some(generation),
             });

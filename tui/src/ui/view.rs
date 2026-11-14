@@ -25,15 +25,28 @@ const DIM: Style = Style::new().fg(Color::DarkGray);
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
     let notice = encryption_notice(app);
+    // 長い表示（増えた配布先、配れない相手）は折り返し、末尾まで見えるようにする（画面の半分まで）。
+    let notice_height = notice
+        .iter()
+        .map(|line| {
+            line.width()
+                .max(1)
+                .div_ceil(usize::from(frame.area().width.max(1)))
+        })
+        .sum::<usize>()
+        .min(usize::from(frame.area().height / 2)) as u16;
     let [main, notice_area, composer, status] = Layout::vertical([
         Constraint::Min(5),
-        Constraint::Length(notice.len() as u16),
+        Constraint::Length(notice_height),
         Constraint::Length(composer_height),
         Constraint::Length(1),
     ])
     .areas(frame.area());
     if !notice.is_empty() {
-        frame.render_widget(Paragraph::new(notice), notice_area);
+        frame.render_widget(
+            Paragraph::new(notice).wrap(Wrap { trim: false }),
+            notice_area,
+        );
     }
 
     let sidebar_width = (main.width / 4).clamp(18, 32);
@@ -2366,7 +2379,11 @@ mod tests {
         let (tx, stores) = tokio::sync::watch::channel(Some((user.to_owned(), store.clone())));
         let mut app = app();
         app.me.id = user.into();
-        app.attach_encryption(crate::ui::encryption::E2eeContext { oidc: None, stores });
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+        });
         press(&mut app, KeyCode::Char('E'));
         encryption_event(&mut app, |generation| EncryptionEvent::Status {
             generation,
@@ -2478,6 +2495,7 @@ mod tests {
             ),
         ];
         app.on_app_event(AppEvent::Decrypted {
+            channel_id: "c3".into(),
             results,
             generation: Some(1),
         });
@@ -2522,6 +2540,15 @@ mod tests {
         assert!(
             screen.contains("前回の送信から増えた配布先：Bob"),
             "{screen}"
+        );
+        // 狭い端末でも、配れない相手の理由を折り返して末尾まで出す。
+        let narrow: String = render_sized(&mut app, 50, 40)
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect();
+        assert!(
+            narrow.contains("Bobさんは暗号化を設定していません"),
+            "{narrow}"
         );
         assert!(
             screen.contains("Bob さんは暗号化を設定していません"),
