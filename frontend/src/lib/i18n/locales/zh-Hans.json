@@ -1185,7 +1185,8 @@
       "deviceOnlyUnavailable": "另一台设备重新生成了 SSSS 密钥，因此无法只吊销设备。范围已切换为“通行密钥、恢复密钥或 SSSS 密钥”，请确认后继续。",
       "renameFailed": "无法修改设备名称。请重试。",
       "revocationFailed": "无法完成吊销的保存。进度保留在此设备上。请再次点击“执行吊销”。",
-      "verifyFailed": "无法保存重新验证。请重试。"
+      "verifyFailed": "无法保存重新验证。请重试。",
+      "tooManyMembers": "加密频道最多可有 200 名成员。"
     },
     "reunlockToAdd": "重新解锁以添加通行密钥",
     "reunlockToAddDescription": "要添加通行密钥或重新生成恢复密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。",
@@ -1377,6 +1378,37 @@
       "encrypted": "已加密",
       "decryptFailed": "无法解密附件。内容可能已被更改。",
       "blocked": "出于安全考虑，无法打开此类文件"
+    },
+    "legacy": {
+      "badge": "加密前",
+      "badgeHelp": "这条消息是在频道加密之前发送的。它没有加密，服务器可以读取或修改其内容。",
+      "divider": "以下消息已加密",
+      "editCancelled": "此频道已加密，已取消编辑加密前的消息。",
+      "editForbidden": "加密前发送的消息无法编辑，但可以删除。"
+    },
+    "convert": {
+      "action": "加密",
+      "actionDm": "加密此私信",
+      "start": "开启加密",
+      "settingHelp": "从现在起加密消息。之后无法关闭。",
+      "title": "要加密此频道吗？",
+      "titleDm": "要加密此私信吗？",
+      "description": "开启加密后：",
+      "points": {
+        "future": "之后的消息和附件只有成员已验证的设备可以读取。",
+        "earlier": "之前的消息不会加密，会原样保留在服务器上。它们会标记为“加密前”，并且无法再编辑（仍可删除）。",
+        "published": "已发布到 Home 或 ActivityPub 的帖子不会撤回。",
+        "integrations": "Slack 导入和同步将停止。请先移除应用（机器人）和 Incoming Webhook。",
+        "irreversible": "加密之后无法关闭。"
+      },
+      "confirm": "加密",
+      "pending": "正在加密…",
+      "success": "已开启加密",
+      "blockers": {
+        "apps": "有应用（机器人）是成员。请先将其移出频道。",
+        "webhooks": "此频道有 Incoming Webhook。请先删除。",
+        "encrypted_dm": "你与此人已有加密私信。"
+      }
     }
   }
 }

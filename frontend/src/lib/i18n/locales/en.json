@@ -1185,7 +1185,8 @@
       "deviceOnlyUnavailable": "Another device replaced the Secret Storage key, so a device-only revocation isn't possible. The scope has been switched to “passkeys, recovery key, or Secret Storage key”; check it and continue.",
       "renameFailed": "Could not rename the device. Please try again.",
       "revocationFailed": "Could not finish saving the revocation. Its progress is kept on this device. Press “Revoke” again.",
-      "verifyFailed": "Could not save the verification. Please try again."
+      "verifyFailed": "Could not save the verification. Please try again.",
+      "tooManyMembers": "Encrypted channels can have up to 200 members."
     },
     "reunlockToAdd": "Unlock again to add a passkey",
     "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey or regenerate the recovery key. This device stays unlocked either way.",
@@ -1377,6 +1378,37 @@
       "encrypted": "Encrypted",
       "decryptFailed": "Couldn't decrypt the attachment. Its contents may have been altered.",
       "blocked": "This file type is blocked for safety"
+    },
+    "legacy": {
+      "badge": "Before encryption",
+      "badgeHelp": "This message was sent before the channel was encrypted. It is not encrypted, so the server can read or change it.",
+      "divider": "Messages below are encrypted",
+      "editCancelled": "This channel is now encrypted, so editing a message sent before encryption was cancelled.",
+      "editForbidden": "Messages sent before encryption can't be edited. You can still delete them."
+    },
+    "convert": {
+      "action": "Encryption",
+      "actionDm": "Encrypt this DM",
+      "start": "Turn on encryption",
+      "settingHelp": "Encrypt messages from now on. This can't be turned off later.",
+      "title": "Encrypt this channel?",
+      "titleDm": "Encrypt this DM?",
+      "description": "After you turn on encryption:",
+      "points": {
+        "future": "New messages and attachments can be read only by members' verified devices.",
+        "earlier": "Earlier messages stay unencrypted on the server. They are marked “Before encryption” and can no longer be edited (you can still delete them).",
+        "published": "Posts already shared to Home or ActivityPub are not withdrawn.",
+        "integrations": "Slack imports and sync stop. Remove apps (bots) and incoming webhooks first.",
+        "irreversible": "Encryption can't be turned off later."
+      },
+      "confirm": "Encrypt",
+      "pending": "Encrypting…",
+      "success": "Encryption turned on",
+      "blockers": {
+        "apps": "An app (bot) is a member. Remove it from the channel first.",
+        "webhooks": "The channel has incoming webhooks. Delete them first.",
+        "encrypted_dm": "You already have an encrypted DM with this person."
+      }
     }
   }
 }

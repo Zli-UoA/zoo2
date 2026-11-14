@@ -5,6 +5,7 @@ import {
   encryptionSendState,
   noteEncryptedChannel,
   resetSeenEncryptedChannels,
+  subscribeEncryptedChannels,
 } from "./encryptionGuard";
 
 const base = { channelId: "c1", hasCiphertext: false } as const;
@@ -101,5 +102,22 @@ describe("encryptionSendState", () => {
       downgraded: false,
       checking: false,
     });
+  });
+});
+
+describe("subscribeEncryptedChannels", () => {
+  it("新しく覚えたときだけ、描画のあとに知らせる", async () => {
+    stubLocalStorage();
+    const listener = vi.fn();
+    const unsubscribe = subscribeEncryptedChannels(listener);
+    noteEncryptedChannel("c-new");
+    // 呼んだその場では知らせない（描画の中で呼ばれても、ほかの部品を更新しない）。
+    expect(listener).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(listener).toHaveBeenCalledTimes(1);
+    noteEncryptedChannel("c-new");
+    await Promise.resolve();
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
   });
 });

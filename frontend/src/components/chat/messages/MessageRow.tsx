@@ -8,6 +8,7 @@ import {
   BotIcon,
   CopyIcon,
   LockKeyholeIcon,
+  LockKeyholeOpenIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MoreHorizontalIcon,
@@ -49,6 +50,7 @@ import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
 import {
   useMentionUserNames,
   useMessageDecryption,
+  usePlaintextBeforeEncryption,
   resolveMessageDecryption,
   type MessageDecryption,
   type SenderTrust,
@@ -189,6 +191,22 @@ export function UndecryptableMessage({ reason }: { reason: UndecryptableReason }
   );
 }
 
+/**
+ * 暗号化に切り替える前の平文のメッセージの印（#367）。暗号化されておらず、サーバーが書き換えられることを示す。
+ */
+export function BeforeEncryptionBadge() {
+  const { t } = useTranslation();
+  return (
+    <span
+      className="inline-flex w-fit items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+      title={t("e2ee.legacy.badgeHelp")}
+    >
+      <LockKeyholeOpenIcon className="size-3" aria-hidden="true" />
+      {t("e2ee.legacy.badge")}
+    </span>
+  );
+}
+
 /** 検証済みでない送信者の印。検証済みなら何も出さない。 */
 export function SenderTrustBadge({ trust }: { trust: SenderTrust }) {
   const { t } = useTranslation();
@@ -276,6 +294,9 @@ export function MessageRow({
   const { locale } = useLocale();
   const { message } = item;
   const decryptionFromPane = useMessageDecryption(message.id);
+  // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、印を付け、編集させない。
+  const beforeEncryption = usePlaintextBeforeEncryption(message);
+  const canEdit = isOwn && !beforeEncryption;
   const resolvedDecryption = resolveMessageDecryption(message, decryption ?? decryptionFromPane);
   // 暗号化チャンネルの行の `content` は空なので、復号した本文を使う。
   const bodyText =
@@ -500,6 +521,7 @@ export function MessageRow({
                   {resolvedDecryption?.status === "decrypted" ? (
                     <SenderTrustBadge trust={resolvedDecryption.sender} />
                   ) : null}
+                  {beforeEncryption ? <BeforeEncryptionBadge /> : null}
                   {resolvedDecryption?.status === "decrypted" &&
                   resolvedDecryption.revisionWarning ? (
                     <RevisionWarningBadge warning={resolvedDecryption.revisionWarning} />
@@ -658,7 +680,7 @@ export function MessageRow({
                 <SmilePlusIcon />
               </Button>
               {threadButton}
-              {isOwn ? (
+              {canEdit ? (
                 <>
                   <Button
                     variant="ghost"
@@ -724,7 +746,7 @@ export function MessageRow({
                     {t("threads.open")}
                   </DropdownMenuItem>
                 ) : null}
-                {isOwn ? (
+                {canEdit ? (
                   <>
                     <DropdownMenuItem onClick={onStartEdit}>
                       <PencilIcon />

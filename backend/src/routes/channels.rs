@@ -40,7 +40,8 @@ pub struct UpdateChannelRequest {
     pub description: Option<String>,
     pub is_private: Option<bool>,
     pub is_nsfw: Option<bool>,
-    /// 変更はできない。今と違う値なら 409 `E2EE_ENCRYPTED_IMMUTABLE`。
+    /// ここでは変えられない。今と違う値なら 409 `E2EE_ENCRYPTED_IMMUTABLE`（暗号化への切り替えは
+    /// `POST /api/channels/{id}/encrypt`。#367）。
     pub encrypted: Option<bool>,
 }
 
@@ -596,9 +597,12 @@ pub(crate) async fn join_channel(
     } else {
         if channel.encrypted {
             // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）。この経路はチャンネルの
-            // 行をロックしていない（encrypted は変わらないので、ロックなしで読んだ値で判定できる）。
+            // 行をロックしていない（encrypted は true から false に戻らないので、true と読んだ値で判定できる。#367）。
             e2ee_channels::lock_members(&mut tx, &[auth_user.id.as_str()]).await?;
             e2ee_channels::check_member_limit(&mut tx, &id, 1).await?;
+        } else {
+            // ロックなしで平文と読んだあとに暗号化へ切り替わっていたら（#367）、epoch を増やさずに足さない。
+            e2ee_channels::ensure_still_plaintext(&mut tx, &id).await?;
         }
         let now = crate::models::now_utc_millis();
         let cu = toasty::create!(ChannelUser {
@@ -641,7 +645,7 @@ async fn add_channel_user(
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
     // 暗号化チャンネルでは、追加する人のメンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、
-    // チャンネルの行より前に取る。encrypted は変わらないので、ロックなしで読んで判定できる。
+    // チャンネルの行より前に取る。encrypted は true から false に戻らないので、true と読めばそのまま判定できる（#367）。
     let encrypted = crate::apps::query(
         &mut tx,
         "SELECT json_build_object('encrypted', encrypted)::text FROM channels WHERE id = $1",
@@ -676,6 +680,14 @@ async fn add_channel_user(
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
+    }
+
+    // ロックなしで読んだ encrypted のあとに暗号化へ切り替わっていたら（#367）、メンバー単位のロックを取っていない
+    // ので、やり直させる（ロックの順を守るため、ここでは取らない）。
+    if channel.encrypted != encrypted {
+        return Err(AppError::Conflict(
+            "The channel was encrypted while adding the member; retry".into(),
+        ));
     }
 
     let is_admin = if channel.is_dm {
