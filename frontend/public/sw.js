@@ -42,7 +42,9 @@ if (typeof importScripts === "function") importScripts("/sw-push.js");
 // ときに nginx の案内のページを出すため、app shell を返さない。
 function isPrivatePath(pathname) {
   return (
-    pathname.startsWith("/api/") || pathname.startsWith("/auth/") || pathname.startsWith("/android/")
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/auth/") ||
+    pathname.startsWith("/android/")
   );
 }
 
