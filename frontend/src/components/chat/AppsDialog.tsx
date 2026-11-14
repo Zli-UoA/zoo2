@@ -21,6 +21,7 @@ import { AppPermissions } from "./AppSettingsSections";
 import { AppConnections } from "./AppConnections";
 import { AppBlocks } from "./AppBlocks";
 import { AppAvatar } from "./AppIdentity";
+import { AppEncryptedChannelConsent } from "./AppEncryptedChannelConsent";
 
 type Manifest = {
   scopes?: string[];
@@ -143,7 +144,10 @@ function UserAppsDialog({
   const [error, setError] = useState("");
   const [commandArguments, setCommandArguments] = useState<Record<string, string>>({});
   const [surfaces, setSurfaces] = useState<Surface[]>([]);
+  const [consent, setConsent] = useState<{ pending: boolean; error: string } | null>(null);
   const people = useUsers().data ?? [];
+  const targetChannel = channels.find((channel) => channel.id === targetChannelId);
+  const encryptedTarget = Boolean(targetChannel?.encrypted);
   const app = apps.find((a) => a.id === selected);
   const canManage = app && (app.owner_id === currentUserId || isAdmin);
   const visibleApps = apps
@@ -226,6 +230,28 @@ function UserAppsDialog({
       setError(t("apps.actionError"));
     } finally {
       setBusy(false);
+    }
+  }
+  /**
+   * Add the App's bot to an encrypted channel after a member's explicit consent (#366). The server
+   * accepts it only with `e2ee_allowed` and only for Apps whose bot has set up an E2EE device.
+   */
+  async function addToEncryptedChannel() {
+    if (!app || !targetChannelId || consent?.pending) return;
+    setConsent({ pending: true, error: "" });
+    try {
+      await client.request(`/api/apps/${app.id}/channels/${targetChannelId}`, {
+        method: "POST",
+        body: { e2ee_allowed: true },
+      });
+      setConsent(null);
+      setRevision((v) => v + 1);
+    } catch (cause) {
+      const code = (cause as { body?: { code?: unknown } | null }).body?.code;
+      setConsent({
+        pending: false,
+        error: t(code === "E2EE_BOT_NOT_READY" ? "apps.e2ee.notReady" : "apps.actionError"),
+      });
     }
   }
   /** Settings, credentials and approval live in the developer console. */
@@ -469,15 +495,18 @@ function UserAppsDialog({
                       <Button
                         variant="outline"
                         disabled={busy}
+                        title={encryptedTarget ? t("apps.e2ee.encryptedHint") : undefined}
                         onClick={() =>
-                          void run(() =>
-                            client.request(`/api/apps/${app.id}/channels/${targetChannelId}`, {
-                              method: "POST",
-                            }),
-                          )
+                          encryptedTarget
+                            ? setConsent({ pending: false, error: "" })
+                            : void run(() =>
+                                client.request(`/api/apps/${app.id}/channels/${targetChannelId}`, {
+                                  method: "POST",
+                                }),
+                              )
                         }
                       >
-                        {t("apps.addChannel")}
+                        {encryptedTarget ? t("apps.e2ee.addEncrypted") : t("apps.addChannel")}
                       </Button>
                     ) : null}
                   </div>
@@ -578,6 +607,23 @@ function UserAppsDialog({
           )}
         </div>
       </div>
+      {app && targetChannel && consent ? (
+        // Mounted only while open and keyed by App and channel, so the consent checkbox always starts
+        // unchecked: an earlier tick (cancelled, or for another App) never carries over.
+        <AppEncryptedChannelConsent
+          key={`${app.id}:${targetChannel.id}`}
+          open
+          appName={app.name}
+          channelName={targetChannel.channel_name}
+          supported={Boolean(app.manifest.scopes?.includes("e2ee:device"))}
+          pending={consent?.pending}
+          error={consent?.error || undefined}
+          onConfirm={addToEncryptedChannel}
+          onOpenChange={(open) => {
+            if (!open) setConsent(null);
+          }}
+        />
+      ) : null}
     </>
   );
   return embedded ? (

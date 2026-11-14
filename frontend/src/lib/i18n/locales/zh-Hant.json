@@ -655,7 +655,22 @@
       "connect": "連接帳號",
       "disconnect": "中斷連接"
     },
-    "commandArguments": "參數"
+    "commandArguments": "參數",
+    "e2ee": {
+      "title": "將 {{app}} 新增到加密頻道 #{{channel}}",
+      "description": "將應用程式新增到加密頻道需要成員明確許可。",
+      "unsupported": "此應用程式不支援加密頻道（缺少 e2ee:device 權限）。",
+      "readsAfterJoin": "{{app}} 會以裝置身分加入頻道，可以解密並讀取加入後傳送的訊息，並發布加密訊息。",
+      "noHistory": "它無法讀取加入前的訊息（之前在此頻道期間收到的訊息除外）。",
+      "trustOperator": "解密金鑰由應用程式的伺服器保管。只有在信任應用程式的營運者時才允許。",
+      "remove": "你可以隨時將它移出頻道。移出後，它將無法讀取之後的訊息。",
+      "agree": "我已了解，並允許 {{app}} 讀取此頻道的訊息",
+      "confirm": "允許並新增",
+      "adding": "正在新增…",
+      "addEncrypted": "新增到加密頻道",
+      "notReady": "此應用程式尚未完成加密準備（註冊裝置）。請啟動應用程式後再試一次。",
+      "encryptedHint": "將應用程式新增到加密頻道需要成員許可。"
+    }
   },
   "search": {
     "engine": "搜尋引擎",
