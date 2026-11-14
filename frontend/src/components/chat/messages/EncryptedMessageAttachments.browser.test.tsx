@@ -60,3 +60,22 @@ it("does not fetch and decrypt again when a virtualized row remounts", async () 
   await waitFor(() => expect(again.naturalWidth).toBe(3));
   expect(loader).toHaveBeenCalledTimes(1);
 });
+
+it("does not reuse decrypted attachments across crypto scopes (another worker or account)", async () => {
+  const first = vi.fn(async (info: AttachmentInfo) => new Blob([PNG], { type: info.mimetype }));
+  const second = vi.fn(async (info: AttachmentInfo) => new Blob([PNG], { type: info.mimetype }));
+  const element = (loader: typeof first) => (
+    <LocaleProvider>
+      <EncryptedAttachmentLoaderContext.Provider value={loader}>
+        <EncryptedMessageAttachments attachments={[attachment()]} />
+      </EncryptedAttachmentLoaderContext.Provider>
+    </LocaleProvider>
+  );
+
+  const view = render(element(first));
+  await screen.findByRole("img", { name: "wide.png" });
+  // ロックやログアウト、別のアカウントでは Worker が作り直され、キャッシュも別になる。
+  view.rerender(element(second));
+  await waitFor(() => expect(second).toHaveBeenCalledTimes(1));
+  expect(first).toHaveBeenCalledTimes(1);
+});
