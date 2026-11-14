@@ -43,6 +43,7 @@ vi.mock("../../lib/offline/identity", async (original) => ({
   readLastOfflineUserId: () => null,
 }));
 vi.mock("../../lib/e2ee/deviceManager", () => ({
+  loginNotFoundCounter: () => new Set<string>(),
   E2eeDeviceManager: class {
     suspend = vi.fn(async () => {});
     resume = vi.fn();
