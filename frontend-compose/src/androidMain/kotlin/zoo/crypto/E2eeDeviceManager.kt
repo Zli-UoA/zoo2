@@ -20,7 +20,10 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -423,18 +426,60 @@ class E2eeDeviceManager(
             }
         replenish(store, counts)
         ready.value = store
-        // 解錠済みの端末は、署名を確かめて鍵バックアップへ送る（失敗しても to-device の処理は続ける）。
-        background { setup?.runStartupCheck() }
         val deviceId = store.deviceId
-        // ack を送れた行は、Shape から消えるまで処理し直さない（ack より先に次の一覧が届くため）。
-        val acknowledged = mutableSetOf<String>()
-        toDevice(deviceId).collect { rows ->
-            connected()
-            acknowledged.retainAll(rows.mapTo(mutableSetOf()) { it.id })
-            val waiting = rows.filter { it.id !in acknowledged }
-            if (waiting.isNotEmpty()) acknowledged += process(store, deviceId, waiting)
+        // 起動時の確認と鍵バックアップへの送信は、to-device の処理を待たせないよう別の worker で行う。
+        // coroutineScope は、失敗や取り消しで抜ける前に worker の終了を待つので、worker が使っている暗号ストアを
+        // 先に閉じない（閉じるのは runLoop の finally）。
+        coroutineScope {
+            val backups = Channel<Unit>(Channel.CONFLATED)
+            launch { backupWorker(backups) }
+            // 解錠済みの端末は、署名を確かめて鍵バックアップへ送る。
+            backups.trySend(Unit)
+            // ack を送れた行は、Shape から消えるまで処理し直さない（ack より先に次の一覧が届くため）。
+            val acknowledged = mutableSetOf<String>()
+            toDevice(deviceId).collect { rows ->
+                connected()
+                acknowledged.retainAll(rows.mapTo(mutableSetOf()) { it.id })
+                val waiting = rows.filter { it.id !in acknowledged }
+                if (waiting.isNotEmpty()) {
+                    val result = process(store, deviceId, waiting)
+                    acknowledged += result.processed
+                    // 受け取った Megolm セッションの鍵を、鍵バックアップに送る（解錠済みの端末だけ。E2eeSetup が確かめる）。
+                    if (result.roomKeys > 0) backups.trySend(Unit)
+                }
+            }
+            error("to-device の Shape が終わりました")
         }
-        error("to-device の Shape が終わりました")
+    }
+
+    /**
+     * 起動時の確認（署名し直し）と鍵バックアップへの送信（#360）。最初の 1 回は起動時の確認を行い、そのあとは
+     * 鍵を受け取るたびに送る。通信の失敗などの例外は、間隔をのばしながら（[firstRetryDelay] から [maxRetryDelay]
+     * まで）試し直す。解錠し直しが要る 409 や、使えない今の版は結果（[BackupUploadResult]）として返るので、
+     * 試し直さず、次の鍵の受信か解錠を待つ。
+     */
+    private suspend fun backupWorker(triggers: ReceiveChannel<Unit>) {
+        val setup = setup ?: return
+        var startupChecked = false
+        for (trigger in triggers) {
+            var backoff = firstRetryDelay
+            while (true) {
+                try {
+                    if (startupChecked) setup.uploadKeyBackup()
+                    else {
+                        setup.runStartupCheck()
+                        startupChecked = true
+                    }
+                    break
+                } catch (failure: CancellationException) {
+                    throw failure
+                } catch (failure: Exception) {
+                    onError(failure)
+                    delay(backoff)
+                    backoff = minOf(backoff * 2, maxRetryDelay)
+                }
+            }
+        }
     }
 
     private suspend fun ensureRegistered(store: CryptoStore): KeyCounts {
@@ -458,7 +503,7 @@ class E2eeDeviceManager(
     }
 
     /** 行を処理して ack を送り、ack を送れた ID を返す。 */
-    private suspend fun process(store: CryptoStore, deviceId: String, rows: List<ToDeviceRow>): List<String> {
+    private suspend fun process(store: CryptoStore, deviceId: String, rows: List<ToDeviceRow>): ToDeviceResult {
         val senders = rows.map { it.senderUserId }.distinct().sorted()
         val deviceKeys = api.queryKeys(senders)
         val result = withContext(io) { store.processToDevice(rows, deviceKeys) }
@@ -467,9 +512,7 @@ class E2eeDeviceManager(
             withContext(io) { store.acknowledged(result.processed) }
         }
         if (result.newOlmSessions > 0) replenish(store, KeyCounts(api.uploadKeys(deviceId, EMPTY, EMPTY)))
-        // 受け取った Megolm セッションの鍵を、鍵バックアップに送る（解錠済みの端末だけ。E2eeSetup が確かめる）。
-        if (result.roomKeys > 0) background { setup?.uploadKeyBackup() }
-        return result.processed
+        return result
     }
 
     /**
@@ -553,18 +596,6 @@ class E2eeDeviceManager(
                 logoutStore = null
                 background.coroutineContext[Job]?.cancel()
             }
-        }
-    }
-
-    /** 失敗しても処理を止めない補助の処理（起動時の確認、鍵バックアップへの送信）。失敗は通知だけする。 */
-    private suspend fun background(block: suspend () -> Unit) {
-        try {
-            block()
-        } catch (failure: CancellationException) {
-            currentCoroutineContext().ensureActive()
-            onError(failure)
-        } catch (failure: Exception) {
-            onError(failure)
         }
     }
 

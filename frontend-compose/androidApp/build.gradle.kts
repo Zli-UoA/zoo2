@@ -13,6 +13,13 @@ android {
         targetSdk = 35
         versionCode = providers.gradleProperty("zoo.android.versionCode").orNull?.toInt() ?: 1
         versionName = providers.gradleProperty("zoo.android.versionName").orNull ?: "0.1.0"
+        // E2EE の再認証（#360）のリダイレクト先のホスト。App Links の intent-filter（manifest）と、
+        // 認可リクエストの redirect_uri（AndroidReauth）の両方にこの値を使う。このホストの nginx が
+        // assetlinks.json を配り、AuthZ の Android のクライアントに https://<ホスト>/android/reauth-callback を登録する。
+        val reauthHost = providers.gradleProperty("zoo.android.reauthHost").orNull ?: "zli.chat"
+        require(Regex("[a-z0-9.-]+").matches(reauthHost)) { "zoo.android.reauthHost はホスト名にしてください" }
+        manifestPlaceholders["reauthHost"] = reauthHost
+        buildConfigField("String", "REAUTH_HOST", "\"$reauthHost\"")
     }
     buildFeatures {
         aidl = true

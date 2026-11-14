@@ -399,14 +399,17 @@ class CryptoStore private constructor(
     /**
      * 鍵バックアップの送信が 409 `E2EE_SSSS_CONFLICT` になった。記録した `secrets_revision` を消して、
      * 解錠し直すまで、暗号ストアの鍵を使う処理（署名し直し、鍵バックアップの送信）を止める（TUI と同じ）。
+     *
+     * `failed` は、409 になった要求の `secrets_revision`。送っている間に解錠し直して新しい値を保存していたら
+     * （値が違えば）、その解錠を取り消さない。
      */
     @Synchronized
-    fun forgetSecretsRevision() {
+    fun forgetSecretsRevision(failed: Long) {
+        if (state.secretsRevision != failed) return
         backupState?.let {
             it.setSecretsRevision(null)
             it.suspend()
         }
-        if (state.secretsRevision == null) return
         state.secretsRevision = null
         save()
     }

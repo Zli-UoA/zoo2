@@ -47,8 +47,8 @@ class ReauthRequest private constructor(
         fun codeChallenge(verifier: String): String =
             encoder.encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.encodeToByteArray()))
 
-        /** 接続先（`https://zli.chat` など）のリダイレクト先。 */
-        fun redirectUri(server: String): String = server.trimEnd('/') + CALLBACK_PATH
+        /** `origin`（App Links のホストの `https://zli.chat` など。アプリのビルド時に決める）のリダイレクト先。 */
+        fun redirectUri(origin: String): String = origin.trimEnd('/') + CALLBACK_PATH
 
         /**
          * 認可リクエストを作る。scope は `openid profile`（再認証では refresh token を作らないので

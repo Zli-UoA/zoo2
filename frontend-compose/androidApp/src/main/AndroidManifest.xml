@@ -29,7 +29,8 @@
         </activity>
         <!--
             E2EE の直前の再認証（#360）のリダイレクト先。App Links で受け取り、MainActivity に渡してすぐ閉じる。
-            検証には https://zli.chat/.well-known/assetlinks.json（infra/frontend-nginx.conf）が要る。
+            ホストはビルド時の zoo.android.reauthHost（既定は zli.chat。AndroidReauth の redirect_uri と同じ値）。
+            検証には https://<ホスト>/.well-known/assetlinks.json（infra/frontend-nginx.conf）が要る。
         -->
         <activity
             android:name="zoo.android.ReauthCallbackActivity"
@@ -42,7 +43,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" />
-                <data android:host="zli.chat" />
+                <data android:host="${reauthHost}" />
                 <data android:path="/android/reauth-callback" />
             </intent-filter>
         </activity>

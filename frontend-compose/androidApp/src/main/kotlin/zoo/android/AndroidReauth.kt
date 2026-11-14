@@ -33,7 +33,8 @@ import zoo.json
  *
  * - 認可リクエスト（PKCE、`max_age=0`、`state`、`nonce`）を Custom Tabs で開く。今の画面（とメモリーの鍵、
  *   リカバリーキー）はそのまま残る。
- * - AuthZ のリダイレクト先 `https://zli.chat/android/reauth-callback` は App Links でこのアプリに届く
+ * - AuthZ のリダイレクト先 `https://<ビルド時のホスト>/android/reauth-callback`（既定は `zli.chat`。接続先が
+ *   違っても同じ）は App Links でこのアプリに届く
  *   （[ReauthCallbackActivity] から [MainActivity] へ渡し、[deliver] で受け取る）。`state` が違う URI は無視する。
  * - 認可コードはトークンエンドポイントで ID トークンに換え、iss、aud、exp、nonce を確かめる。今のセッションの
  *   トークンは変えない。
@@ -64,7 +65,8 @@ internal class AndroidReauth(
                 authorizationEndpoint = discovery.text("authorization_endpoint")
                     ?: throw ReauthException(ReauthException.Reason.DENIED, "この IdP は認可コードフローに対応していません"),
                 clientId = connection.client,
-                redirectUri = ReauthRequest.redirectUri(connection.base),
+                // 接続先ではなく、manifest の App Links と同じビルド時のホストにする（独自の接続先でもアプリに戻る）。
+                redirectUri = ReauthRequest.redirectUri("https://${works.zli.zoo.BuildConfig.REAUTH_HOST}"),
                 resource = connection.resource,
             )
         val waiting = Pending(request, CompletableDeferred())

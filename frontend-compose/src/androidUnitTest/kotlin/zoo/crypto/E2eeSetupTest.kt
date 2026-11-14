@@ -42,7 +42,7 @@ import zoo.crypto.ffi.verifyDeviceKeys
  */
 class E2eeSetupTest {
     private val root: File = Files.createTempDirectory("zoo-e2ee-setup").toFile()
-    private val server = FakeServer()
+    private val server = FakeSetupServer(ALICE)
     private val opened = mutableListOf<CryptoStore>()
 
     @AfterTest
@@ -219,7 +219,7 @@ class E2eeSetupTest {
         val stranger = second.setup.begin()
         val foreign =
             stranger.session.plan(
-                FakeServer().keysQuery().toString(), FakeServer().versionsJson().toString(), second.store.deviceKeys(),
+                FakeSetupServer(ALICE).keysQuery().toString(), FakeSetupServer(ALICE).versionsJson().toString(), second.store.deviceKeys(),
             )
         server.addVersion(Json.parseToJsonElement(foreign.backupVersion!!).jsonObject)
         stranger.session.close()
@@ -242,6 +242,19 @@ class E2eeSetupTest {
         assertNull(device.store.secretsRevision)
         assertEquals(LockReason.MISMATCH, (device.setup.loadStatus() as E2eeStatus.Locked).reason)
         assertEquals(1, device.store.pendingBackupCount())
+    }
+
+    @Test
+    fun staleConflictDoesNotForgetANewerUnlock() = runBlocking<Unit> {
+        val device = Device("a")
+        val start = device.setup.begin()
+        device.setup.completeSetup(start.session, "t")
+        start.session.close()
+        // 前の secrets_revision で送った要求の 409 が、解錠し直して保存した新しい値を消さない。
+        device.store.forgetSecretsRevision(0)
+        assertEquals(1L, device.store.secretsRevision)
+        device.store.forgetSecretsRevision(1)
+        assertNull(device.store.secretsRevision)
     }
 
     @Test
@@ -316,164 +329,169 @@ class E2eeSetupTest {
         }
     }
 
-    /** 初回設定と解錠の API を模した、状態を持つサーバー（docs/e2ee.md の API の要点だけ）。 */
-    private class FakeServer : E2eeSetupApi {
-        var defaultKeyId: String? = null
-        var revision = 0L
-        var storageKey: JsonElement = JsonNull
-        var secrets: JsonObject = JsonObject(emptyMap())
-        val slots = mutableListOf<JsonObject>()
-        val keys = mutableMapOf<String, JsonElement>()
-        val signatures = mutableListOf<JsonObject>()
-        val versions = mutableListOf<JsonObject>()
-        val reauthHeaders = mutableListOf<String>()
-        val usedSlots = mutableListOf<String>()
-        val backupUploads = mutableListOf<Int>()
-        val failNext = mutableSetOf<String>()
-        val loseResponse = mutableSetOf<String>()
-        var backupConflict: String? = null
-
-        val recoverySlotId: String?
-            get() = slots.firstOrNull { it["kind"]?.jsonPrimitive?.content == "recovery" }?.get("id")?.jsonPrimitive?.content
-
-        fun reset() {
-            defaultKeyId = null
-            revision = 0
-            slots.clear()
-            keys.clear()
-            signatures.clear()
-            versions.clear()
-            failNext.clear()
-        }
-
-        private fun fail(op: String) {
-            if (failNext.remove(op)) throw IOException("通信に失敗しました（$op）")
-        }
-
-        private fun requireReauth(reauth: String?) {
-            if (reauth == null) throw ApiException(403, code("E2EE_REAUTH_REQUIRED"))
-            reauthHeaders += reauth
-        }
-
-        private fun code(code: String) = buildJsonObject { put("code", code) }
-
-        private fun checkDefaultKey(body: JsonObject) {
-            val expected = body["expected_default_key_id"] ?: return
-            if (expected.jsonPrimitive.content != defaultKeyId) throw ApiException(409, code("E2EE_SSSS_CONFLICT"))
-        }
-
-        override suspend fun secretStorage(): JsonObject = buildJsonObject {
-            put("default_key_id", defaultKeyId?.let(::JsonPrimitive) ?: JsonNull)
-            if (defaultKeyId != null) {
-                put("keys", buildJsonObject { put(defaultKeyId!!, storageKey) })
-                put("secrets", secrets)
-                put("secrets_revision", revision)
-            } else {
-                put("keys", JsonObject(emptyMap()))
-                put("secrets", JsonObject(emptyMap()))
-                put("secrets_revision", JsonNull)
-            }
-            put("slots", JsonArray(slots))
-        }
-
-        override suspend fun createSecretStorageKey(body: JsonObject, reauth: String?): Long? {
-            requireReauth(reauth)
-            fail("secret_storage")
-            val keyId = body["key_id"]!!.jsonPrimitive.content
-            if (defaultKeyId != null) throw ApiException(409, code("E2EE_SSSS_CONFLICT"))
-            defaultKeyId = keyId
-            storageKey = body["key"]!!
-            secrets =
-                JsonObject(
-                    body["secrets"]!!.jsonObject.mapValues { (_, secret) ->
-                        JsonObject(secret.jsonObject + ("key_id" to JsonPrimitive(keyId)))
-                    }
-                )
-            slots += body["slots"]!!.jsonArray.map { it.jsonObject }
-            revision += 1
-            if (loseResponse.remove("secret_storage")) throw IOException("応答をなくしました")
-            return revision
-        }
-
-        override suspend fun addKeySlot(slot: JsonObject, reauth: String?) {
-            if (slots.none { it["id"] == slot["id"] }) slots += slot
-        }
-
-        override suspend fun markKeySlotUsed(slotId: String) {
-            usedSlots += slotId
-        }
-
-        fun keysQuery(): JsonObject = buildJsonObject {
-            put("device_keys", JsonObject(emptyMap()))
-            for ((field, target) in listOf(
-                "master_key" to "master_keys",
-                "self_signing_key" to "self_signing_keys",
-                "user_signing_key" to "user_signing_keys",
-            )) {
-                put(target, buildJsonObject { keys[field]?.let { put(ALICE, it) } })
-            }
-            put("signatures", JsonArray(signatures))
-        }
-
-        override suspend fun queryOwnKeys(userId: String) = keysQuery()
-
-        fun versionsJson() = buildJsonObject { put("versions", JsonArray(versions)) }
-
-        override suspend fun backupVersions() = versionsJson()
-
-        override suspend fun currentBackupVersion(): JsonObject? = versions.lastOrNull()
-
-        override suspend fun uploadCrossSigningKeys(body: JsonObject, reauth: String?) {
-            requireReauth(reauth)
-            checkDefaultKey(body)
-            fail("cross_signing")
-            for (field in listOf("master_key", "self_signing_key", "user_signing_key")) {
-                body[field]?.let { keys[field] = it }
-            }
-        }
-
-        override suspend fun uploadSignatures(signatures: JsonArray) {
-            fail("signatures")
-            for (upload in signatures.map { it.jsonObject }) {
-                this.signatures +=
-                    buildJsonObject {
-                        put("signer_user_id", ALICE)
-                        put("signer_key_id", upload["signer_key_id"]!!)
-                        put("target_user_id", upload["target_user_id"]!!)
-                        put("target_key_id", upload["target_key_id"]!!)
-                        put("signature", upload["signature"]!!)
-                    }
-            }
-        }
-
-        fun addVersion(body: JsonObject) {
-            versions +=
-                buildJsonObject {
-                    put("version", (versions.size + 1).toString())
-                    put("algorithm", body["algorithm"]!!)
-                    put("auth_data", body["auth_data"]!!)
-                    put("deleted", false)
-                }
-        }
-
-        override suspend fun createBackupVersion(body: JsonObject, reauth: String?) {
-            checkDefaultKey(body)
-            fail("versions")
-            addVersion(body)
-        }
-
-        override suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject) {
-            backupConflict?.let { throw ApiException(409, code(it)) }
-            check(version == versions.last()["version"]!!.jsonPrimitive.content)
-            check(secretsRevision == revision)
-            backupUploads += body["sessions"]!!.jsonArray.size
-        }
-    }
-
     private companion object {
         const val ALICE = CryptoStoreTest.ALICE
         const val BOB = CryptoStoreTest.BOB
         const val BOB_DEVICE = CryptoStoreTest.BOB_DEVICE
         const val CHANNEL = CryptoStoreTest.CHANNEL
+    }
+}
+
+/** 初回設定と解錠の API を模した、状態を持つサーバー（docs/e2ee.md の API の要点だけ）。 */
+internal class FakeSetupServer(private val userId: String) : E2eeSetupApi {
+    var defaultKeyId: String? = null
+    var revision = 0L
+    var storageKey: JsonElement = JsonNull
+    var secrets: JsonObject = JsonObject(emptyMap())
+    val slots = mutableListOf<JsonObject>()
+    val keys = mutableMapOf<String, JsonElement>()
+    val signatures = mutableListOf<JsonObject>()
+    val versions = mutableListOf<JsonObject>()
+    val reauthHeaders = mutableListOf<String>()
+    val usedSlots = mutableListOf<String>()
+    val backupUploads = mutableListOf<Int>()
+    val failNext = mutableSetOf<String>()
+    val loseResponse = mutableSetOf<String>()
+    var backupConflict: String? = null
+
+    /** 置くと、鍵バックアップの送信がこれを待つ（送信が長引いた場合）。 */
+    var holdBackup: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+    val recoverySlotId: String?
+        get() = slots.firstOrNull { it["kind"]?.jsonPrimitive?.content == "recovery" }?.get("id")?.jsonPrimitive?.content
+
+    fun reset() {
+        defaultKeyId = null
+        revision = 0
+        slots.clear()
+        keys.clear()
+        signatures.clear()
+        versions.clear()
+        failNext.clear()
+    }
+
+    private fun fail(op: String) {
+        if (failNext.remove(op)) throw IOException("通信に失敗しました（$op）")
+    }
+
+    private fun requireReauth(reauth: String?) {
+        if (reauth == null) throw ApiException(403, code("E2EE_REAUTH_REQUIRED"))
+        reauthHeaders += reauth
+    }
+
+    private fun code(code: String) = buildJsonObject { put("code", code) }
+
+    private fun checkDefaultKey(body: JsonObject) {
+        val expected = body["expected_default_key_id"] ?: return
+        if (expected.jsonPrimitive.content != defaultKeyId) throw ApiException(409, code("E2EE_SSSS_CONFLICT"))
+    }
+
+    override suspend fun secretStorage(): JsonObject = buildJsonObject {
+        put("default_key_id", defaultKeyId?.let(::JsonPrimitive) ?: JsonNull)
+        if (defaultKeyId != null) {
+            put("keys", buildJsonObject { put(defaultKeyId!!, storageKey) })
+            put("secrets", secrets)
+            put("secrets_revision", revision)
+        } else {
+            put("keys", JsonObject(emptyMap()))
+            put("secrets", JsonObject(emptyMap()))
+            put("secrets_revision", JsonNull)
+        }
+        put("slots", JsonArray(slots))
+    }
+
+    override suspend fun createSecretStorageKey(body: JsonObject, reauth: String?): Long? {
+        requireReauth(reauth)
+        fail("secret_storage")
+        val keyId = body["key_id"]!!.jsonPrimitive.content
+        if (defaultKeyId != null) throw ApiException(409, code("E2EE_SSSS_CONFLICT"))
+        defaultKeyId = keyId
+        storageKey = body["key"]!!
+        secrets =
+            JsonObject(
+                body["secrets"]!!.jsonObject.mapValues { (_, secret) ->
+                    JsonObject(secret.jsonObject + ("key_id" to JsonPrimitive(keyId)))
+                }
+            )
+        slots += body["slots"]!!.jsonArray.map { it.jsonObject }
+        revision += 1
+        if (loseResponse.remove("secret_storage")) throw IOException("応答をなくしました")
+        return revision
+    }
+
+    override suspend fun addKeySlot(slot: JsonObject, reauth: String?) {
+        if (slots.none { it["id"] == slot["id"] }) slots += slot
+    }
+
+    override suspend fun markKeySlotUsed(slotId: String) {
+        usedSlots += slotId
+    }
+
+    fun keysQuery(): JsonObject = buildJsonObject {
+        put("device_keys", JsonObject(emptyMap()))
+        for ((field, target) in listOf(
+            "master_key" to "master_keys",
+            "self_signing_key" to "self_signing_keys",
+            "user_signing_key" to "user_signing_keys",
+        )) {
+            put(target, buildJsonObject { keys[field]?.let { put(userId, it) } })
+        }
+        put("signatures", JsonArray(signatures))
+    }
+
+    override suspend fun queryOwnKeys(userId: String) = keysQuery()
+
+    fun versionsJson() = buildJsonObject { put("versions", JsonArray(versions)) }
+
+    override suspend fun backupVersions() = versionsJson()
+
+    override suspend fun currentBackupVersion(): JsonObject? = versions.lastOrNull()
+
+    override suspend fun uploadCrossSigningKeys(body: JsonObject, reauth: String?) {
+        requireReauth(reauth)
+        checkDefaultKey(body)
+        fail("cross_signing")
+        for (field in listOf("master_key", "self_signing_key", "user_signing_key")) {
+            body[field]?.let { keys[field] = it }
+        }
+    }
+
+    override suspend fun uploadSignatures(signatures: JsonArray) {
+        fail("signatures")
+        for (upload in signatures.map { it.jsonObject }) {
+            this.signatures +=
+                buildJsonObject {
+                    put("signer_user_id", userId)
+                    put("signer_key_id", upload["signer_key_id"]!!)
+                    put("target_user_id", upload["target_user_id"]!!)
+                    put("target_key_id", upload["target_key_id"]!!)
+                    put("signature", upload["signature"]!!)
+                }
+        }
+    }
+
+    fun addVersion(body: JsonObject) {
+        versions +=
+            buildJsonObject {
+                put("version", (versions.size + 1).toString())
+                put("algorithm", body["algorithm"]!!)
+                put("auth_data", body["auth_data"]!!)
+                put("deleted", false)
+            }
+    }
+
+    override suspend fun createBackupVersion(body: JsonObject, reauth: String?) {
+        checkDefaultKey(body)
+        fail("versions")
+        addVersion(body)
+    }
+
+    override suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject) {
+        holdBackup?.await()
+        fail("backup_keys")
+        backupConflict?.let { throw ApiException(409, code(it)) }
+        check(version == versions.last()["version"]!!.jsonPrimitive.content)
+        check(secretsRevision == revision)
+        backupUploads += body["sessions"]!!.jsonArray.size
     }
 }

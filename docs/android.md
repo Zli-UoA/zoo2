@@ -89,6 +89,10 @@ App Links の検証には、zli.chat の nginx が配る `/.well-known/assetlink
 frontend のコンテナの `ANDROID_APP_CERT_SHA256` に、配布する APK の署名証明書の SHA-256 の指紋を入れてください
 （zoo2-infra。debug APK は署名が違うので、App Links で戻りません）。
 AuthZ の Android のクライアントには、認可コードのグラントと、このリダイレクト URI の登録が要ります。
+backend は再認証の ID トークンの `aud` を `OIDC_REAUTH_AUDIENCES`（zoo2-infra の ConfigMap `zoo2-oidc`。カンマ区切り）で
+確かめるので、Web などの今の client ID を残したまま、Android の client ID も足してください。足すまでは、保存が 403 になります。
+リダイレクト先のホストはビルド時の `-Pzoo.android.reauthHost=<ホスト>`（既定は `zli.chat`）で、manifest の App Links と
+認可リクエストの両方に使います。接続先のサーバーが違っても、このホストに戻ります。
 パスキーは Credential Manager の PRF で使いますが、AuthZ の `assetlinks.json`（AuthZ#96）が要り、実機ではまだ確かめていません。
 使えないときは、リカバリーキーで解錠してください。解錠した端末だけが、受け取った鍵を鍵バックアップに送ります。
 暗号化チャンネルの送受信、端末一覧と失効、Push の復号は、まだ Android にはありません（#361、#362、#510）。
