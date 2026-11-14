@@ -722,13 +722,27 @@ test("encrypted pushes show the body decrypted by /sw-push.js and fall back to t
   );
 });
 
-test("a missing push decryption script keeps the worker installable", async () => {
-  const { handlers, notifications } = worker({
-    importScripts: () => {
-      throw new Error("NetworkError");
-    },
+test("a push decryption script that cannot be loaded fails the install so it is retried", () => {
+  // importScripts の失敗を握りつぶすと、復号できない Service Worker が残る。
+  assert.throws(
+    () =>
+      worker({
+        importScripts: () => {
+          throw new Error("NetworkError");
+        },
+      }),
+    /NetworkError/,
+  );
+});
+
+test("the dev placeholder for /sw-push.js leaves pushes undecrypted", async () => {
+  const placeholder = readFileSync(new URL("../public/sw-push.js", import.meta.url), "utf8");
+  const placeholderSelf = {};
+  const { handlers, notifications, context } = worker({
+    importScripts: () => runInNewContext(placeholder, { self: placeholderSelf }),
   });
-  assert.ok(handlers.has("install"));
+  assert.deepEqual(placeholderSelf, { zooDecryptPush: undefined });
+  assert.equal(context.self.zooDecryptPush, undefined);
   await dispatch(handlers, "push", {
     data: { json: () => ({ title: "Alice", body: "新しいメッセージ", e2ee: {} }) },
   });

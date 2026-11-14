@@ -32,13 +32,11 @@ const SHELL = [
 const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
 
 // 暗号化チャンネルの Push の復号（#365。docs/e2ee.md の「Web Push の復号」）。`pnpm build` が
-// src/sw/push.ts から作る /sw-push.js が `self.zooDecryptPush` を置く。importScripts は起動時にしか
-// 読めない。ない（dev サーバー）か読めなければ、復号せずに「新しいメッセージ」を出す。
-try {
-  if (typeof importScripts === "function") importScripts("/sw-push.js");
-} catch {
-  /* The push handler falls back to the server's generic body. */
-}
+// src/sw/push.ts から作る /sw-push.js が `self.zooDecryptPush` を置く（dev サーバーでは、何もしない
+// public/sw-push.js を返す）。importScripts は起動時と install のあいだにしか読めず、読めたスクリプト
+// だけが更新の検査の対象になる。そのため失敗を握りつぶさず、install を失敗させて、次の登録や更新の
+// 検査で読み直させる（握りつぶすと、復号できない Service Worker が sw.js の次の変更まで残る）。
+if (typeof importScripts === "function") importScripts("/sw-push.js");
 
 function isPrivatePath(pathname) {
   return pathname.startsWith("/api/") || pathname.startsWith("/auth/");
