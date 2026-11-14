@@ -296,6 +296,65 @@ fn code(toks: &[Tok], i: usize, out: &mut String) -> usize {
     i + 1
 }
 
+/// 取り込み済みの本文 (Slack の mrkdwn を、書式を変換する前の変換で MFM にしたもの) に、書式の変換を当てる。
+///
+/// 次のときは `None` を返す: 変わらないとき、すでに書式を変換した本文 (`**` `~~` `<i>` U+200B を含む)、
+/// 変換後が `MAX_MESSAGE_CONTENT_LENGTH` を超えるとき。保存済みの本文では、`<...>` から変換したリンクが
+/// `[label](https://…)` や URL の形になっているので、これらは書式の対象にしない。
+pub fn reformat_stored(content: &str) -> Option<String> {
+    if content.contains(ZWSP) || ["**", "~~", "<i>"].iter().any(|m| content.contains(m)) {
+        return None;
+    }
+    let mut toks: Vec<Tok> = Vec::with_capacity(content.len().min(MAX_FORMAT_INPUT_CHARS));
+    let mut rest = content;
+    let mut prev: Option<char> = None;
+    while let Some(c) = rest.chars().next() {
+        let atom = match c {
+            '[' => markdown_link_len(rest),
+            'h' if !prev.is_some_and(|p| p.is_ascii_alphanumeric()) => bare_url_len(rest),
+            _ => None,
+        };
+        if let Some(len) = atom {
+            toks.push(Tok::Atom(rest[..len].to_string()));
+            prev = rest[..len].chars().next_back();
+            rest = &rest[len..];
+        } else {
+            toks.push(Tok::Ch(c));
+            prev = Some(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    let mut out = String::with_capacity(content.len() + 16);
+    format(&toks, 0, &mut out);
+    (out != content && out.chars().count() <= MAX_MESSAGE_CONTENT_LENGTH).then_some(out)
+}
+
+/// `[label](https://…)` の長さ (バイト)
+fn markdown_link_len(s: &str) -> Option<usize> {
+    let close = s.find(']')?;
+    if s[1..close].contains(['\n', '[']) || !s[close..].starts_with("](") {
+        return None;
+    }
+    let url = &s[close + 2..];
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return None;
+    }
+    let end = url.find(|c: char| c == ')' || c.is_whitespace())?;
+    url[end..].starts_with(')').then_some(close + 2 + end + 1)
+}
+
+/// 素の URL の長さ (バイト)。末尾の記号 (`*` `_` `~` や句読点) は、URL に含めない
+fn bare_url_len(s: &str) -> Option<usize> {
+    let scheme = ["https://", "http://"]
+        .iter()
+        .find(|p| s.starts_with(**p))?;
+    let end = s
+        .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
+        .unwrap_or(s.len());
+    let url = s[..end].trim_end_matches(['*', '_', '~', '.', ',', '!', '?', ';', ':', '\'', '"']);
+    (url.len() > scheme.len()).then_some(url.len())
+}
+
 /// 本文でメンションされている Slack ユーザー ID (`<@U123>` / `<@W123|name>`) を出現順・重複なしで返す
 pub fn mentioned_users(text: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
@@ -546,6 +605,37 @@ mod tests {
             mrkdwn_to_text("*b* ~s~ _i_ **x**", &Map),
             "*b* ~s~ _i_ **x**"
         );
+    }
+
+    #[test]
+    fn reformats_stored_content_without_touching_links() {
+        let r = |s: &str| reformat_stored(s);
+        assert_eq!(r("これは*太字*です").as_deref(), Some("これは**太字**です"));
+        assert_eq!(
+            r("*see [a_b](https://a.test/_x_/~y~) now*").as_deref(),
+            Some("**see [a_b](https://a.test/_x_/~y~) now**")
+        );
+        assert_eq!(
+            r("_https://a.test/x_y_z_").as_deref(),
+            Some("<i>https://a.test/x_y_z</i>")
+        );
+        assert_eq!(r("see https://a.test/_x_/~y~"), None);
+        assert_eq!(r("<b>x</b>").as_deref(), Some("<\u{200b}b>x<\u{200b}/b>"));
+        assert_eq!(r("2*3*4"), None);
+        assert_eq!(r("plain text"), None);
+    }
+
+    #[test]
+    fn reformat_skips_content_that_is_already_converted() {
+        assert_eq!(reformat_stored("**a** *b*"), None);
+        assert_eq!(reformat_stored("~~a~~ ~b~"), None);
+        assert_eq!(reformat_stored("<i>a</i> *b*"), None);
+        assert_eq!(reformat_stored("*\u{200b}*x"), None);
+        // 2 回当てても、結果は変わらない
+        let once = reformat_stored("a *b* ~c~ _d_").unwrap();
+        assert_eq!(reformat_stored(&once), None);
+        let long = format!("*a* {}", "a".repeat(MAX_MESSAGE_CONTENT_LENGTH - 4));
+        assert_eq!(reformat_stored(&long), None);
     }
 
     #[test]

@@ -88,3 +88,7 @@ path = "src/bin/zoo_dispatcher.rs"
 [[bin]]
 name = "zoo_slack_worker"
 path = "src/bin/zoo_slack_worker.rs"
+
+[[bin]]
+name = "zoo_slack_reformat"
+path = "src/bin/zoo_slack_reformat.rs"
