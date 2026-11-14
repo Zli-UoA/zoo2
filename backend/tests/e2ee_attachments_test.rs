@@ -302,6 +302,32 @@ async fn encrypted_attachments_leave_no_plaintext_in_s3() {
         "{body}"
     );
 
+    // 平文のチャンネルで上げた添付（平文の PNG）は、暗号化チャンネルのメッセージに紐付けられない。
+    let plain_channel = env.channel(&alice, &[&bob], false).await;
+    let (status, body) = env
+        .presign(
+            &alice,
+            &plain_channel,
+            "photo.png",
+            "image/png",
+            plaintext.len(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let plain_attachment = body["data"]["attachment_id"].as_str().unwrap().to_owned();
+    let mut cross = message(&channel, &device, epoch);
+    cross["attachment_ids"] = json!([plain_attachment]);
+    let (status, body) = env.call("POST", "/api/messages", &alice, cross).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        env.query(
+            "SELECT (message_id IS NULL)::text FROM attachments WHERE id = $1",
+            &[&plain_attachment],
+        )
+        .await,
+        vec![json!(true)]
+    );
+
     let mut send = message(&channel, &device, epoch);
     send["attachment_ids"] = json!([attachment_id]);
     let message_id = send["id"].as_str().unwrap().to_owned();
@@ -442,6 +468,17 @@ async fn the_database_rejects_plaintext_attachment_rows_in_encrypted_channels() 
         .await
         .is_err()
     );
+    // 決まった値や置き場所を、あとから書き換えることもできない。
+    for update in [
+        "UPDATE attachments SET file_name = 'secret.png' WHERE id = $1",
+        "UPDATE attachments SET content_type = 'image/png' WHERE id = $1",
+        "UPDATE attachments SET storage_key = 'home-images/x' WHERE id = $1",
+    ] {
+        assert!(
+            env.exec(update, &[&ok]).await.is_err(),
+            "{update} を受け付けた"
+        );
+    }
 
     // 平文のチャンネルは今までどおり。
     let id = Uuid::new_v4().to_string();
@@ -458,4 +495,13 @@ async fn the_database_rejects_plaintext_attachment_rows_in_encrypted_channels() 
     )
     .await
     .unwrap();
+    // 平文の行を、暗号化チャンネルに移すこともできない。
+    assert!(
+        env.exec(
+            "UPDATE attachments SET channel_id = $2 WHERE id = $1",
+            &[&id, &encrypted]
+        )
+        .await
+        .is_err()
+    );
 }
