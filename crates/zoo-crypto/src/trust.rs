@@ -219,9 +219,15 @@ pub enum TrustWarning {
     UserSigningKeyChanged,
 }
 
-/// 利用者が新しいマスター鍵を受け入れたとき（#362）にサーバーに送るもの。
+/// 利用者が新しいマスター鍵を受け入れたとき（#362）と、SAS で検証したとき（#368）にサーバーに送るもの。
+///
+/// ピンと署名を送れたら、[`TrustStore::confirm_accepted_master_key`] で記録の登録待ちを外す。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedMasterKey {
+    /// 相手の user_id。
+    pub target_user_id: String,
+    /// 相手のマスター鍵の公開鍵。
+    pub master_key: String,
     /// `POST /api/e2ee/tofu_pins` に `replace: true` で送るピン。
     pub pin: Value,
     /// `POST /api/e2ee/cross_signing/signatures` に送る、マスター鍵への署名。
@@ -408,8 +414,13 @@ impl TrustStore {
         self.push_usk(user_signing.public_key().to_base64())
     }
 
-    /// 利用者が相手の新しいマスター鍵を受け入れた（#362）。記録を今のユーザー署名鍵で
-    /// 確認したものに置き換え、サーバーに送るピンと署名を返す。
+    /// 利用者が相手の新しいマスター鍵を受け入れた（#362）、または SAS で検証した（#368）。記録を
+    /// 今のユーザー署名鍵で確認したものに置き換え、サーバーに送るピンと署名を返す。
+    ///
+    /// 記録は、ピンをサーバーに置けるまで登録待ち（`pin_pending`）にする。置けたら
+    /// [`confirm_accepted_master_key`](Self::confirm_accepted_master_key) で外す。置けないまま判定すると、
+    /// サーバーのピンがなければ TOFU と同じくピンを返し直し、違うマスター鍵のピンがあれば再検証に戻る
+    /// （ピンも署名もサーバーにないのに、記録だけで配らないようにする）。
     ///
     /// `user_signing` は、履歴の最後（今の基準）のユーザー署名鍵でなければならない。
     pub fn accept_master_key(
@@ -431,22 +442,33 @@ impl TrustStore {
             TrustRecord {
                 master_key: master.to_base64(),
                 confirmed_usk: Some(usk),
-                pin_pending: false,
+                pin_pending: true,
             },
         );
-        Ok(AcceptedMasterKey { pin, signature })
+        Ok(AcceptedMasterKey {
+            target_user_id: target_user_id.to_owned(),
+            master_key: master.to_base64(),
+            pin,
+            signature,
+        })
+    }
+
+    /// [`accept_master_key`](Self::accept_master_key) のピン（`replace: true`）と署名をサーバーに
+    /// 保存できたときに、記録の登録待ちを外す。記録が別のマスター鍵に変わっていれば何もしない。
+    pub fn confirm_accepted_master_key(&mut self, target_user_id: &str, master_key: &str) {
+        if let Some(record) = self
+            .records
+            .get_mut(target_user_id)
+            .filter(|r| r.pin_pending && r.master_key == master_key)
+        {
+            record.pin_pending = false;
+        }
     }
 
     /// TOFU で作ったピンの登録（`POST /api/e2ee/tofu_pins`）が成功したときに、記録の登録待ちを外す。
     /// そのあと判定し直すと、その相手の端末を配布先に入れる。
     pub fn confirm_tofu_pin(&mut self, pin: &NewTofuPin) {
-        if let Some(record) = self
-            .records
-            .get_mut(&pin.target_user_id)
-            .filter(|r| r.pin_pending && r.master_key == pin.master_key)
-        {
-            record.pin_pending = false;
-        }
+        self.confirm_accepted_master_key(&pin.target_user_id, &pin.master_key);
     }
 
     /// TOFU で作ったピンの登録が 409 `E2EE_PIN_CONFLICT` になったときに、登録待ちの記録を戻す。
