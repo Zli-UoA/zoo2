@@ -271,6 +271,42 @@ describe("decryptPush", () => {
     expect(asked).toEqual([]);
   });
 
+  it("復号やタブの答えを待つあいだにユーザーが替わったら、本文を返さない", async () => {
+    const { e2ee, env } = await setup();
+    // 写しを開く（wasm を準備する）あいだに、別のユーザーでログインし直す
+    let current: string | null = BOB;
+    const base = env({}, [BOB_DB]);
+    const switching: PushDecryptEnvironment<string> = {
+      ...base,
+      currentUser: async () => current,
+      openSnapshot: async (files) => {
+        const snapshot = await base.openSnapshot(files);
+        current = ALICE;
+        return snapshot;
+      },
+    };
+    expect(await decryptPush(e2ee, switching)).toBeNull();
+    // タブに頼んだ答えを待つあいだに、ログアウトした
+    current = BOB;
+    const busy = env({ [`zoo-crypto:${BOB_DB}`]: false }, [BOB_DB]);
+    const loggingOut: PushDecryptEnvironment<string> = {
+      ...busy,
+      currentUser: async () => current,
+      askTabs: async (request) => {
+        const answer = await busy.askTabs(request);
+        current = null;
+        return answer;
+      },
+    };
+    expect(await decryptPush(e2ee, loggingOut)).toBeNull();
+    // 替わらなければ、どちらの経路も本文を返す
+    current = BOB;
+    expect(await decryptPush(e2ee, { ...base, currentUser: async () => current })).toBe(
+      "push body",
+    );
+    expect(await decryptPush(e2ee, { ...busy, currentUser: async () => current })).toBe("from tab");
+  });
+
   it("形の違う e2ee は、ロックも取らずに復号しない", async () => {
     const { e2ee, env, events } = await setup();
     for (const value of [

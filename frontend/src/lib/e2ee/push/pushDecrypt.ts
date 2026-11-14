@@ -104,16 +104,33 @@ export interface SnapshotBackend extends Pick<CryptoBackend, "read" | "readInbou
   close(): Promise<void>;
 }
 
-/** Push の `e2ee` を復号して、通知の本文を返す。復号できなければ `null`。 */
+/**
+ * Push の `e2ee` を復号して、通知の本文を返す。復号できなければ `null`。
+ *
+ * 宛先が今ログインしているユーザーかは、始める前と、本文を返す直前の 2 回確かめる。ファイルの
+ * 読み込み、wasm の準備、タブの答えを待つあいだに別のユーザーでログインし直されても、前の
+ * ユーザーの本文を出さない（ログアウトを経ない切り替えでは、前のユーザーの鍵が残っているため）。
+ */
 export async function decryptPush<Files>(
   value: unknown,
   env: PushDecryptEnvironment<Files>,
 ): Promise<string | null> {
   const e2ee = parsePushE2ee(value);
   if (!e2ee) return null;
+  const isRecipientCurrent = async () =>
+    (await env.currentUser().catch(() => null)) === e2ee.recipientId;
   // ログアウトせずに別のユーザーでログインし直したあとに、前のユーザー宛ての Push が届いても、
   // 前のユーザーの暗号ストアで本文を出さない。
-  if ((await env.currentUser().catch(() => null)) !== e2ee.recipientId) return null;
+  if (!(await isRecipientCurrent())) return null;
+  const body = await decryptForRecipient(e2ee, env);
+  if (body === null || !(await isRecipientCurrent())) return null;
+  return body;
+}
+
+async function decryptForRecipient<Files>(
+  e2ee: NonNullable<ReturnType<typeof parsePushE2ee>>,
+  env: PushDecryptEnvironment<Files>,
+): Promise<string | null> {
   for (const namespace of pushNamespaces(e2ee.recipientId)) {
     const name = cryptoDatabaseName(namespace);
     // 暗号ストアを開くタブと同じロック（`cryptoLockName`）。持っているあいだ、タブは開かずに待つ。
