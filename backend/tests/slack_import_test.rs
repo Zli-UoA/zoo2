@@ -2936,7 +2936,25 @@ async fn test_import_does_not_adopt_a_message_that_uses_the_deterministic_id() -
     )
     .await?;
 
-    let export = upload(&state, &app, &admin, &zip(json!([first, second]))).await;
+    // 返信の ID も先に使われる。親を後から取り込んでも、その行はスレッドに移らない
+    let reply_squat = backend::slack::message_id(&team, "C9", "1704070300.000400");
+    sql(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1,$2,$3,'fake reply') \
+         RETURNING json_build_object('ok',true)::text",
+        &[&reply_squat, &mallory, &channel],
+    )
+    .await?;
+    let parent = json!({"ts":"1704070200.000300","user":"U1","text":"parent","thread_ts":"1704070200.000300",
+        "replies":[{"user":"U1","ts":"1704070300.000400"}]});
+    let reply = json!({"ts":"1704070300.000400","user":"U1","text":"reply","thread_ts":"1704070200.000300"});
+    let export = upload(
+        &state,
+        &app,
+        &admin,
+        &zip(json!([first, second, parent, reply])),
+    )
+    .await;
     let (status, run) = start(
         &app,
         &admin,
@@ -2969,6 +2987,13 @@ async fn test_import_does_not_adopt_a_message_that_uses_the_deterministic_id() -
     )
     .await?;
     assert_eq!(reactions[0]["n"], 0);
+    let threaded = sql(
+        &state,
+        "SELECT json_build_object('p',parent_id)::text FROM messages WHERE id=$1",
+        &[&reply_squat],
+    )
+    .await?;
+    assert!(threaded[0]["p"].is_null(), "{threaded:?}");
     // 取り込みで作った最初の投稿は、再取り込みでも重複しない
     let total = sql(
         &state,
@@ -2976,7 +3001,8 @@ async fn test_import_does_not_adopt_a_message_that_uses_the_deterministic_id() -
         &[&channel],
     )
     .await?;
-    assert_eq!(total[0]["n"], 2, "{total:?}");
+    // 最初の投稿、先に使われた 2 件、親 (返信は飛ばす)
+    assert_eq!(total[0]["n"], 4, "{total:?}");
     Ok(())
 }
 

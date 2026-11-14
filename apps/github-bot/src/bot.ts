@@ -203,6 +203,8 @@ export class GitHubBot {
         notice.stateChange = true;
       }
     const snapshots = new Map<string, Json>();
+    // 1 つの送信先で ID が衝突しても、ほかの送信先への配信を続け、最後にジョブの失敗として残す
+    let conflict: BotError | undefined;
     for (const notice of list) {
       const groups = new Map<string, typeof subscriptions>();
       for (const sub of subscriptions)
@@ -325,11 +327,16 @@ export class GitHubBot {
             this.store.set(childKey, child);
           }
         } catch (error) {
+          if (error instanceof BotError && error.code === "message_id_conflict") {
+            conflict ??= error;
+            continue;
+          }
           if ([403, 404].includes(Number((error as { status?: number }).status))) continue;
           throw error;
         }
       }
     }
+    if (conflict) throw conflict;
   }
   async current(notice: Notice, existing: Thread | undefined, payload: Json): Promise<Json> {
     try {

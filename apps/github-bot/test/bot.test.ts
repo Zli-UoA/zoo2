@@ -694,17 +694,26 @@ test("message IDs cannot be computed from public values", async (t) => {
   );
 });
 
-test("a message that this bot did not publish under its ID fails the job instead of dropping the notice", async (t) => {
-  const f = fixture();
+test("a message that this bot did not publish under its ID fails the job without blocking other channels", async (t) => {
+  const f = fixture({
+    rules: [
+      { repository: "acme/project", installationId: 10, channels: ["aaa-conflict", "channel"] },
+    ],
+  });
   t.after(() => f.store.close());
-  const taken = keyedId(f.config.encryptionKey, "thread:channel:acme/project:issue:7");
-  f.zoo.messages.set(taken, { id: taken, channel_id: "other", content: "occupied" });
-  // The ID exists elsewhere, so POST conflicts and the follow-up edit is not found.
-  f.zoo.updateMessage = async () => {
-    throw new ZooError(404, "Message not found");
+  f.store.subscribe({ repo: "acme/project", channel: "aaa-conflict", features: ["issues"] });
+  const taken = keyedId(f.config.encryptionKey, "thread:aaa-conflict:acme/project:issue:7");
+  // Another member's message in the same channel already uses the ID: POST conflicts and the edit is forbidden.
+  f.zoo.messages.set(taken, { id: taken, channel_id: "aaa-conflict", content: "occupied" });
+  const update = f.zoo.updateMessage;
+  f.zoo.updateMessage = async (messageId, content) => {
+    if (messageId === taken) throw new ZooError(403, "Forbidden");
+    return update(messageId, content);
   };
   await assert.rejects(
     f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue })),
     (error) => error instanceof BotError && error.code === "message_id_conflict" && !error.retryable,
   );
+  assert.equal([...f.zoo.messages.values()].filter((m) => m.channel_id === "channel").length, 1);
+  assert.equal(f.zoo.messages.get(taken)!.content, "occupied");
 });

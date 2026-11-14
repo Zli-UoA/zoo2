@@ -1115,24 +1115,30 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 last_ts = Some(message.ts.as_str());
                 processed += 1;
             }
-            let mut stale: Vec<String> = Vec::new();
+            // 削除する行は、決定的な ID の行のうち、作成日時が Slack の投稿時刻と同じ行だけ (`id_taken_by_other` と同じ判定)
+            let mut stale: Vec<serde_json::Value> = Vec::new();
             for event in messages.iter().filter(|m| m.is_history_event()) {
                 // `ts` が元の投稿の `ts` と同じ形式の記録は、本物の投稿の ID と同じになるので消さない
                 if crate::slack::is_valid_ts(&event.ts)
                     && !real_ts.contains(event.ts.as_str())
                     && event.original_message_ts() != Some(event.ts.as_str())
                 {
-                    stale.push(super::message_id(&team, &channel.id, &event.ts));
+                    stale.push(serde_json::json!({"id": super::message_id(&team, &channel.id, &event.ts), "ts": event.ts}));
                 }
             }
-            for original in &deleted_originals {
-                stale.push(super::message_id(&team, &channel.id, original));
+            for original in deleted_originals
+                .iter()
+                .filter(|ts| crate::slack::is_valid_ts(ts))
+            {
+                stale.push(serde_json::json!({"id": super::message_id(&team, &channel.id, original), "ts": original}));
             }
             if !stale.is_empty() {
                 exec(
                     &mut tx,
-                    "UPDATE messages SET deleted_at=CURRENT_TIMESTAMP \
-                     WHERE channel_id=$2 AND deleted_at IS NULL AND id IN (SELECT jsonb_array_elements_text($1::jsonb))",
+                    "UPDATE messages m SET deleted_at=CURRENT_TIMESTAMP \
+                     FROM jsonb_to_recordset($1::jsonb) AS s(id text,ts text) \
+                     WHERE m.id=s.id AND m.channel_id=$2 AND m.deleted_at IS NULL \
+                     AND m.created_at=(to_timestamp(s.ts::numeric) AT TIME ZONE 'UTC')::timestamp(3)",
                     &[&serde_json::json!(stale).to_string(), channel_id],
                 )
                 .await?;
@@ -1580,6 +1586,16 @@ pub(super) async fn insert_message(
         ],
     )
     .await?;
+    // 確認と INSERT の間に、別の行が同じ ID で確定していた場合も、その行には何も結び付けない
+    if derived && id_taken_by_other(tx, &id, channel_id, &message.ts).await? {
+        tracing::warn!(
+            message_id = %id,
+            slack_channel,
+            ts = %message.ts,
+            "A Slack message was not imported because its ID is already used by another message"
+        );
+        return Ok(());
+    }
     // 差分同期・イベントで取り込んだ投稿は、`slack_message_map` に `slack` で残す (直近 24 時間の再確認が、
     // Slack から消えた投稿を見つけるのに使う。ZIP の取り込みは、件数が多いので残さない。古い行は掃除が消す)
     // スレッドの返信 (`thread_ts` が自分の `ts` と違う) は残さない。履歴 (`conversations.history`) は返信を返さないので、
@@ -1596,16 +1612,17 @@ pub(super) async fn insert_message(
 
     // 親だけを後から取り込んだときも、先に入っていた返信をスレッドに戻す
     if parent.is_empty() && !message.replies.is_empty() {
-        let replies: Vec<String> = message
+        let replies: Vec<serde_json::Value> = message
             .replies
             .iter()
             .filter(|r| r.ts != message.ts && super::is_valid_ts(&r.ts))
-            .map(|r| super::message_id(&ctx.team, slack_channel, &r.ts))
+            .map(|r| serde_json::json!({"id": super::message_id(&ctx.team, slack_channel, &r.ts), "ts": r.ts}))
             .collect();
         exec(
             tx,
-            "UPDATE messages m SET parent_id=$1 FROM (SELECT jsonb_array_elements_text($3::jsonb) AS id) r \
+            "UPDATE messages m SET parent_id=$1 FROM jsonb_to_recordset($3::jsonb) AS r(id text,ts text) \
              WHERE m.id=r.id AND m.channel_id=$2 AND m.parent_id IS NULL AND m.id<>$1 \
+             AND m.created_at=(to_timestamp(r.ts::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
              AND EXISTS(SELECT 1 FROM messages p WHERE p.id=$1 AND p.parent_id IS NULL) \
              AND NOT EXISTS(SELECT 1 FROM messages c WHERE c.parent_id=m.id)",
             &[&id, channel_id, &serde_json::to_string(&replies).unwrap_or_default()],
