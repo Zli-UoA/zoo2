@@ -59,7 +59,7 @@
 - Web（React）: 着信ダイアログ・呼び出し音・招待の UI・Web Push の応答/拒否ボタン（下の「Web の動き」）。バックエンドの PR で、通知一覧の「不在着信」のカードと、Service Worker の `call_invite_end`（出ている通知を閉じる）を先に入れてある。
 - デスクトップ版（Tauri）: トースト。Linux は応答/拒否のボタン付き。GPUI 版（`desktop/`）は、`Toast.message_id` が `Option` になったことに合わせて直しただけで、通話の着信は出さない。
 - TUI: 通話の機能がないので、呼び出しも扱わない。`message_id` が NULL の行（不在着信）を読み飛ばさず扱えるよう、`client-types` の型だけ合わせた。
-- Compose: 反映しない（通話関連の変更は docs と PR 本文に記録して済ませる方針）。
+- Compose（Android）: 通話の UI は追加しない（通話関連の変更は docs と PR 本文に記録して済ませる方針）。例外として、不在着信（`missed_call`、`message_id` が NULL）は、通知の種類を知らない一覧が「返信」と誤って表示するので、Android の通知一覧と未読数から除く（`frontend-compose/` の `androidNotificationRows`）。
 
 ## Web の動き
 
