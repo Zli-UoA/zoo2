@@ -276,6 +276,26 @@ describe("MegolmChannels", () => {
     await second.store.close();
   });
 
+  it("前回の配布先から増えたメンバーを、開き直しても返す（初めてのチャンネルは空）", async () => {
+    const backend = new MemoryCryptoBackend();
+    const keys = memoryKeys();
+    const options = {
+      backend,
+      name: "zoo-crypto-recipients.sqlite",
+      userId: ALICE,
+      keys,
+      reset: async () => backend,
+    };
+    const first = await CryptoStore.open(options);
+    expect(await first.store.megolm.noteRecipients(CHANNEL, [BOB, ALICE])).toEqual([]);
+    expect(await first.store.megolm.noteRecipients(CHANNEL, [ALICE, BOB])).toEqual([]);
+    await first.store.close();
+    const second = await CryptoStore.open(options);
+    expect(await second.store.megolm.noteRecipients(CHANNEL, [ALICE, BOB, CAROL])).toEqual([CAROL]);
+    expect(await second.store.megolm.noteRecipients("other", [ALICE, CAROL])).toEqual([]);
+    await second.store.close();
+  });
+
   it("解錠していない端末は、配布先を判定せず NeedsUnlock で失敗する", async () => {
     const alice = await openStore(ALICE);
     await expect(

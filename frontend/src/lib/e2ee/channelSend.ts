@@ -2,7 +2,15 @@ import type { AttachmentInfo, JsonObject, Mentions, OutgoingMessage } from "@zoo
 
 import type { ApiClient } from "../api/client";
 import type { CryptoWorker } from "./cryptoWorker";
-import { claimKeys, fetchRecipients, postTofuPin, sendToDevice, staleEpoch } from "./megolmApi";
+import {
+  claimKeys,
+  fetchRecipients,
+  postTofuPin,
+  sendToDevice,
+  staleEpoch,
+  staleRevision,
+} from "./megolmApi";
+import type { MessageDecryption } from "./messageDecryption";
 import type { RecipientSummary } from "./store/megolm";
 
 /** 409 `E2EE_STALE_EPOCH` を続けて受けたら諦める回数（docs/e2ee.md の送信の手順 5）。 */
@@ -37,6 +45,9 @@ export interface EncryptedMessageRequest {
   /** 暗号化した添付の `attachments.id`（#364）。鍵などは暗号化した本文の `attachments` に入れる。 */
   attachment_ids?: string[];
 }
+
+/** ピンを置いたあとに判定し直す回数の上限。 */
+const MAX_PIN_ROUNDS = 2;
 
 /** 送信を止めた（3 回続けて `E2EE_STALE_EPOCH` を受けた）。下書きに戻して利用者に知らせる。 */
 export class EncryptedSendError extends Error {
@@ -123,9 +134,8 @@ async function evaluateRecipients(
   minEpoch: bigint | null,
 ): Promise<void> {
   const { worker, client, signal } = deps;
-  // TOFU のピンが別の端末のピンとぶつかったら、そのピンを入れたスナップショットで判定し直す。
+  let pages = await fetchRecipients(client, channelId, minEpoch, signal);
   for (let round = 0; ; round += 1) {
-    const pages = await fetchRecipients(client, channelId, minEpoch, signal);
     const summary = await worker.request({ op: "megolmEvaluate", channelId, pages });
     noteEpoch(channelId, BigInt(summary.epoch));
     const confirmed = [];
@@ -137,8 +147,19 @@ async function evaluateRecipients(
     if (confirmed.length > 0 || discarded.length > 0) {
       await worker.request({ op: "megolmSettlePins", confirmed, discarded });
     }
-    if (discarded.length > 0 && round === 0) continue;
-    deps.onRecipients?.(channelId, summary);
+    // 初めて見た相手は、ピンを置けるまで配布先に入らない。ピンを置けたら、同じスナップショットで
+    // 判定し直してその端末を入れる。別の端末のピンとぶつかったら、そのピンを入れたスナップショットを
+    // 取り直して判定し直す。
+    if ((confirmed.length > 0 || discarded.length > 0) && round < MAX_PIN_ROUNDS) {
+      if (discarded.length > 0) pages = await fetchRecipients(client, channelId, minEpoch, signal);
+      continue;
+    }
+    const addedUserIds = await worker.request({
+      op: "megolmNoteRecipients",
+      channelId,
+      userIds: summary.userIds,
+    });
+    deps.onRecipients?.(channelId, { ...summary, addedUserIds });
     return;
   }
 }
@@ -301,5 +322,25 @@ export async function editEncryptedMessage(
         { signal: deps.signal },
       );
     },
+  );
+}
+
+/**
+ * 編集の 409 `E2EE_STALE_REVISION` が、自分の編集の応答をなくしただけか（docs/e2ee.md の「メッセージ」）。
+ * `current_revision` の行を復号した本文が、送ろうとした本文と同じなら、編集は済んでいる。
+ * `shown` は、そのメッセージの今の復号の結果（`rowRevision` の行のもの）。
+ */
+export function editAlreadyApplied(
+  error: unknown,
+  shown: MessageDecryption | undefined,
+  body: string,
+): boolean {
+  const current = staleRevision(error);
+  return (
+    current !== null &&
+    shown?.status === "decrypted" &&
+    !shown.revisionWarning &&
+    shown.rowRevision === current &&
+    shown.body === body
   );
 }

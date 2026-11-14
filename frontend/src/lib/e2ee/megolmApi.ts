@@ -22,6 +22,14 @@ export function apiErrorCode(error: unknown): string | null {
   return typeof body?.code === "string" ? body.code : null;
 }
 
+/** 409 `E2EE_STALE_REVISION` の `current_revision`。違うエラーなら `null`。 */
+export function staleRevision(error: unknown): number | null {
+  if (apiErrorCode(error) !== "E2EE_STALE_REVISION") return null;
+  const current = ((error as ApiError).body as { current_revision?: unknown } | null)
+    ?.current_revision;
+  return typeof current === "number" ? current : null;
+}
+
 /** 409 `E2EE_STALE_EPOCH` の `current_epoch`。違うエラーなら `null`。 */
 export function staleEpoch(error: unknown): bigint | null {
   if (apiErrorCode(error) !== "E2EE_STALE_EPOCH") return null;

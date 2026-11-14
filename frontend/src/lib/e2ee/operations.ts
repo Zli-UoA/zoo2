@@ -190,6 +190,8 @@ export class CryptoOperations {
         return null;
       case "megolmIsKnownEncrypted":
         return this.opened().megolm.isKnownEncrypted(request.channelId);
+      case "megolmNoteRecipients":
+        return this.opened().megolm.noteRecipients(request.channelId, request.userIds);
       case "close":
         this.setup.discard();
         this.lastOpen = null;
