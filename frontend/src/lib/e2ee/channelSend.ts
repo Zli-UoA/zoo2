@@ -103,15 +103,26 @@ async function prepareOutboundSession(
   shapeEpoch: string | null | undefined,
   minEpoch: bigint | null,
 ): Promise<void> {
-  const { worker, client, signal } = deps;
   const epoch = noteEpoch(channelId, minEpoch ?? BigInt(shapeEpoch ?? "0"));
-  const needsSnapshot =
+  // 1. 配布先の判定をやり直すか（送信用セッションがない、作り直しの条件に当たった、409 を受けた）。
+  const refreshRecipients =
     minEpoch !== null ||
-    (await worker.request({ op: "megolmNeedsSnapshot", channelId, epoch: Number(epoch) }));
-  // スナップショットが要らなくても、配り終えていない端末（前の配布の途中の失敗、払い出されなかった
-  // 端末、`undelivered`）が残っていれば、送る前に配布を続ける（下の `megolmStart` から）。
+    (await deps.worker.request({ op: "megolmNeedsSnapshot", channelId, epoch: Number(epoch) }));
+  if (refreshRecipients) await evaluateRecipients(deps, channelId, minEpoch);
+  // 2. 判定をやり直さないときも、必ず配り終えていない端末を確かめて配る（前の配布の途中の失敗、
+  //    払い出されなかった端末、`undelivered` の端末）。配り終えるまで、本文は暗号化しない。
+  await shareWithPendingDevices(deps, channelId, refreshRecipients);
+}
+
+/** `recipients` を取り直して配布先を判定し、初めて見た相手の TOFU のピンを置く。 */
+async function evaluateRecipients(
+  deps: ChannelCryptoDeps,
+  channelId: string,
+  minEpoch: bigint | null,
+): Promise<void> {
+  const { worker, client, signal } = deps;
   // TOFU のピンが別の端末のピンとぶつかったら、そのピンを入れたスナップショットで判定し直す。
-  for (let round = 0; needsSnapshot; round += 1) {
+  for (let round = 0; ; round += 1) {
     const pages = await fetchRecipients(client, channelId, minEpoch, signal);
     const summary = await worker.request({ op: "megolmEvaluate", channelId, pages });
     noteEpoch(channelId, BigInt(summary.epoch));
@@ -126,23 +137,41 @@ async function prepareOutboundSession(
     }
     if (discarded.length > 0 && round === 0) continue;
     deps.onRecipients?.(channelId, summary);
-    break;
+    return;
   }
+}
 
+/**
+ * 送信用セッションを用意し（epoch が違えば作り直す）、まだ配っていない端末に `zoo.room_key` を配る。
+ * 配布の途中で失敗したら（`keys/claim` や `to_device` の通信の失敗、5xx）、だれにも配れていないかも
+ * しれないセッションで送らないよう、セッションを捨ててから投げ直す（次の送信で作り直して配る）。
+ */
+async function shareWithPendingDevices(
+  deps: ChannelCryptoDeps,
+  channelId: string,
+  refreshed: boolean,
+): Promise<void> {
+  const { worker, client, signal } = deps;
   const plan = await worker.request({ op: "megolmStart", channelId });
-  if (needsSnapshot) deps.onSessionCreated?.();
+  if (refreshed) deps.onSessionCreated?.();
   if (plan.pending === 0) return;
-  const claimed =
-    Object.keys(plan.claim).length > 0 ? await claimKeys(client, plan.claim, signal) : {};
-  const { messages } = await worker.request({ op: "megolmShare", channelId, claimed });
-  const undelivered = await sendToDevice(client, deps.deviceId, messages, signal);
-  const skipped = new Set(undelivered.map((target) => `${target.userId}|${target.deviceId}`));
-  const delivered = Object.entries(messages).flatMap(([userId, devices]) =>
-    Object.keys(devices)
-      .filter((deviceId) => !skipped.has(`${userId}|${deviceId}`))
-      .map((deviceId) => ({ userId, deviceId })),
-  );
-  await worker.request({ op: "megolmMarkShared", channelId, devices: delivered });
+  try {
+    const claimed =
+      Object.keys(plan.claim).length > 0 ? await claimKeys(client, plan.claim, signal) : {};
+    const { messages } = await worker.request({ op: "megolmShare", channelId, claimed });
+    const undelivered = await sendToDevice(client, deps.deviceId, messages, signal);
+    const skipped = new Set(undelivered.map((target) => `${target.userId}|${target.deviceId}`));
+    // 払い出されなかった端末と `undelivered` の端末は配った端末に入れないので、次の送信の前にまた配る。
+    const delivered = Object.entries(messages).flatMap(([userId, devices]) =>
+      Object.keys(devices)
+        .filter((deviceId) => !skipped.has(`${userId}|${deviceId}`))
+        .map((deviceId) => ({ userId, deviceId })),
+    );
+    await worker.request({ op: "megolmMarkShared", channelId, devices: delivered });
+  } catch (error) {
+    await worker.request({ op: "megolmDiscard", channelId }).catch(() => undefined);
+    throw error;
+  }
 }
 
 /**

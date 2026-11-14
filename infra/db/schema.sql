@@ -1861,6 +1861,8 @@ CREATE TABLE slack_files (
   error text,
   attempts integer NOT NULL DEFAULT 0,
   in_content boolean NOT NULL DEFAULT false,
+  lease_until timestamptz,
+  lease_token text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (team_id, slack_file_id, message_id),
@@ -1881,6 +1883,8 @@ CREATE TABLE slack_files (
 
 CREATE INDEX idx_slack_files_job_status ON slack_files (job_id, status);
 CREATE INDEX idx_slack_files_message ON slack_files (team_id, message_id);
+-- ジョブに紐づかない (または終わったジョブの) 添付を、順番に取得する行単位のループが引くためのインデックス
+CREATE INDEX idx_slack_files_pending_rows ON slack_files (created_at) WHERE status = 'pending';
 
 -- 過去ログの一括取り込みでアプリへイベントを大量配送しないよう、
 -- トランザクション内で zoo.suppress_app_events=on のときは app_emit を素通りさせる。

@@ -73,6 +73,10 @@ function fakeWorker() {
       }
     },
     terminate: () => {},
+    /** テスト用：配った端末の記録を消す（`undelivered` で配り終えていない状態）。 */
+    markUnshared: () => {
+      shared = false;
+    },
   } as unknown as CryptoWorker;
   return { worker, ops };
 }
@@ -250,8 +254,35 @@ describe("sendEncryptedMessage", () => {
     await expect(send("m1")).rejects.toBe(unavailable);
     expect(calls.filter((call) => call.path === "/api/messages")).toHaveLength(0);
     calls.length = 0;
-    // 2 回目は、スナップショットを取り直さなくても、配り終えていない端末に配ってから送る。
+    // 配布の途中で失敗したセッションは捨てるので、2 回目は判定をやり直し、配ってから送る。
     await send("m1");
+    expect(calls.map((call) => call.path)).toEqual([
+      `/api/e2ee/channels/${CHANNEL}/recipients`,
+      "/api/e2ee/keys/claim",
+      "/api/e2ee/to_device",
+      "/api/messages",
+    ]);
+  });
+
+  it("判定をやり直さないときも、配り終えていない端末に配ってから送る", async () => {
+    const { worker, ops } = fakeWorker();
+    const { client, calls } = fakeClient([null, null], [3]);
+    const send = (messageId: string) =>
+      sendEncryptedMessage(deps(worker, client), {
+        channelId: CHANNEL,
+        shapeEpoch: "3",
+        messageId,
+        parentId: null,
+        body: "hello",
+        mentions: NO_MENTIONS,
+      });
+    await send("m1");
+    // to_device の undelivered などで配り終えていない端末が残った状態にする。
+    ops.length = 0;
+    calls.length = 0;
+    (worker as unknown as { markUnshared: () => void }).markUnshared();
+    await send("m2");
+    expect(ops.filter((op) => op.op === "megolmNeedsSnapshot")).toHaveLength(1);
     expect(calls.map((call) => call.path)).toEqual([
       "/api/e2ee/keys/claim",
       "/api/e2ee/to_device",

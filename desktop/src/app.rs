@@ -2481,11 +2481,12 @@ impl AppState {
         if !self.window_active {
             return false;
         }
-        // 暗号化チャンネルは本文を表示しないので、見ていないメッセージを既読にしない。
+        // 暗号化チャンネルは本文を表示しないので、見ていないメッセージを既読にしない。チャンネルの行が
+        // ない（再同期中で暗号化か分からない）あいだも既読にしない（行が届けば `on_tick` で試し直す）。
         if self
             .current_channel
             .as_deref()
-            .is_some_and(|id| self.is_encrypted_channel(id))
+            .is_some_and(|id| self.is_encrypted_channel(id) || self.store.channel(id).is_none())
         {
             return false;
         }
@@ -5095,8 +5096,17 @@ pub(crate) mod tests {
         assert!(state.submit_message("同期後の本文".into()));
     }
 
-    #[test]
-    fn encrypted_channels_are_not_marked_read() {
+    #[tokio::test]
+    async fn encrypted_channels_are_not_marked_read() {
+        // 同じ状態の平文のチャンネルは既読になる（下の暗号化チャンネルとの比較のため）。
+        let mut plain = connected_state();
+        plain.window_active = true;
+        plain.open_channel("c1".into());
+        plain.unread.insert("c1".into());
+        assert!(plain.mark_current_read());
+        assert!(!plain.unread.contains("c1"));
+        assert!(plain.last_read_marked.contains_key("c1"));
+
         let mut state = connected_state();
         state.on_shape(ShapeEvent::Batch(
             ShapeId::Channels,
@@ -5107,8 +5117,33 @@ pub(crate) mod tests {
         ));
         state.window_active = true;
         state.open_channel("c1".into());
-        // 本文を表示しない暗号化チャンネルでは、既読の API を呼ばない。
+        state.unread.insert("c1".into());
+        // 本文を表示しない暗号化チャンネルでは、未読を消さず、既読の API も呼ばない。
         assert!(!state.mark_current_read());
+        assert!(state.unread.contains("c1"));
+        assert!(!state.last_read_marked.contains_key("c1"));
+    }
+
+    #[tokio::test]
+    async fn channels_without_a_row_are_not_marked_read() {
+        let mut state = connected_state();
+        state.window_active = true;
+        state.open_channel("c1".into());
+        // 再同期で行がないあいだは、暗号化か分からないので既読にしない。
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            Batch {
+                reset: true,
+                changes: vec![],
+                up_to_date: false,
+            },
+        ));
+        // 開いたときに記録した既読を消し、未読を立てる（既読済みの判定で戻らないようにする）。
+        state.last_read_marked.clear();
+        state.unread.insert("c1".into());
+        assert!(!state.mark_current_read());
+        assert!(state.unread.contains("c1"));
+        assert!(state.last_read_marked.is_empty());
     }
 
     #[test]

@@ -35,10 +35,10 @@ zoo2 のデスクトップクライアントです。[Tauri v2](https://tauri.ap
 
 [GitHub Releases](https://github.com/Zli-UoA/zoo2/releases) の、`zoo2 デスクトップ版 (Tauri)` のリリース (タグは `desktop-tauri-v<版>`) からダウンロードします。一覧の「Latest」は TUI のリリースなので、デスクトップ版は名前で探してください。
 
-[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.2.3` は入れたい版に置き換えてください。
+[GitHub CLI](https://cli.github.com) を使う場合は、次のようにします。`0.2.4` は入れたい版に置き換えてください。
 
 ```bash
-gh release download desktop-tauri-v0.2.3 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
+gh release download desktop-tauri-v0.2.4 --repo Zli-UoA/zoo2 --pattern 'zoo2_*'
 ```
 
 リリースから入れると、アプリが自分で更新します (「[更新](#更新)」)。
@@ -56,18 +56,18 @@ gh run download --repo Zli-UoA/zoo2 --name zoo2-desktop-tauri-linux $(gh run lis
 
 ### ファイル
 
-次のファイルがあります。`0.2.3` の部分は版によって変わります。CI の成果物は、Linux の 2 つだけです。
+次のファイルがあります。`0.2.4` の部分は版によって変わります。CI の成果物は、Linux の 2 つだけです。
 
 | ファイル | 対象 |
 |---|---|
-| `zoo2_0.2.3_amd64.deb` | Ubuntu、Debian |
-| `zoo2_0.2.3_amd64.AppImage` | そのほかの Linux |
-| `zoo2_0.2.3_universal.dmg` | macOS (Apple シリコン、Intel) |
+| `zoo2_0.2.4_amd64.deb` | Ubuntu、Debian |
+| `zoo2_0.2.4_amd64.AppImage` | そのほかの Linux |
+| `zoo2_0.2.4_universal.dmg` | macOS (Apple シリコン、Intel) |
 
 ### Ubuntu / Debian
 
 ```bash
-sudo apt install ./zoo2_0.2.3_amd64.deb
+sudo apt install ./zoo2_0.2.4_amd64.deb
 ```
 
 WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-appindicator3-1`) も一緒に入ります。アプリケーションの一覧に「zoo2」が出ます。コマンドは `zoo2-desktop-tauri` です。
@@ -75,11 +75,11 @@ WebKitGTK とトレイのライブラリ (`libwebkit2gtk-4.1-0`、`libayatana-ap
 ### AppImage
 
 ```bash
-chmod +x zoo2_0.2.3_amd64.AppImage
+chmod +x zoo2_0.2.4_amd64.AppImage
 ```
 
 ```bash
-./zoo2_0.2.3_amd64.AppImage
+./zoo2_0.2.4_amd64.AppImage
 ```
 
 好きな場所に置いて、そのまま起動できます。システムの WebKitGTK 4.1 を使うので、入っていなければ、ディストリビューションのパッケージで入れてください。
@@ -145,7 +145,7 @@ NixOS の設定 (flake) に入れるときは、`inputs` に zoo2 を足し、�
 }
 ```
 
-特定のリリースに固定するときは `github:Zli-UoA/zoo2/desktop-tauri-v0.2.3` のようにタグを指定します。flake のパッケージがあるのは v0.2.0 からです。
+特定のリリースに固定するときは `github:Zli-UoA/zoo2/desktop-tauri-v0.2.4` のようにタグを指定します。flake のパッケージがあるのは v0.2.0 からです。
 
 Nix で入れた版は、アプリの中からは更新しません (「[更新](#更新)」)。
 
@@ -181,7 +181,7 @@ Nix で入れた版は、アプリの中からは更新しません (「[更新]
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | AuthZ の「Zoo for Desktop」の ID | AuthZ に登録したデスクトップ版の public client の ID |
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
-| `check_updates` | `ZOO_CHECK_UPDATES` | `true` | `false` にすると、新しい版を確かめない (「[更新](#更新)」) |
+| `check_updates` | `ZOO_CHECK_UPDATES` | `true` | `false` にすると、新しい版を自動では確かめない (「[更新](#更新)」) |
 | `desktop_ui` | `ZOO_DESKTOP_UI` | `remote` (`dev_user` を指定したときは `leptos`) | 画面の種類。`remote` は `api_base_url` の Web 版の画面 (通話もできる)、`leptos` はアプリに入っている最小限の画面。ほかの値は設定のエラーになる |
 
 ログインで得たトークンは、そのときの接続先 (`api_base_url`) にだけ送ります。接続先や OIDC の設定を変えたら、ログインし直してください。
@@ -193,6 +193,8 @@ GitHub Releases から入れたアプリは、自分で新しい版を確かめ�
 1. 新しい版があると、裏でダウンロードし、署名を確かめておきます。
 2. 準備ができると、「zoo2 を更新できます」という通知が出て、トレイのメニューに「更新して再起動 (v<版>)」が増えます。
 3. 通知かメニューを押すと、新しい版に入れ替えて、アプリを再起動します。押すまでは、いまの版のまま動きます。
+
+macOS では、メニューバーの「zoo2」→「アップデートを確認…」からも更新できます。押すと更新のウィンドウが開き、その場で確かめます。新しい版があれば、ダウンロードの進み具合を出しながら取得し、入れ替えてアプリを再起動します。新しい版がないときは「zoo2 は最新です」と出して、少し後に閉じます。トレイや通知の「更新して再起動」を押したときも、同じウィンドウにインストールの様子を出します。準備ができた更新があるときは、この項目が「更新して再起動 (v<版>)…」に変わります。
 
 | 入れ方 | 入れ替えるとき |
 |---|---|
@@ -211,7 +213,7 @@ Nix で入れた版も、アプリの中からは更新しません (Nix のス�
 | `nix profile` | `nix profile upgrade zoo2-desktop-tauri` |
 | NixOS の flake | `nix flake update zoo2` してから、`nixos-rebuild switch` (Home Manager なら `home-manager switch`) |
 
-更新を確かめたくないときは、設定の `check_updates = false` (環境変数なら `ZOO_CHECK_UPDATES=false`) にします。TUI と同じ設定です。
+自動で更新を確かめたくないときは、設定の `check_updates = false` (環境変数なら `ZOO_CHECK_UPDATES=false`) にします。TUI と同じ設定です。この設定でも、macOS のメニューバーの「アップデートを確認…」は使えます。
 
 画面の種類によって、更新が要る範囲が違います。
 
