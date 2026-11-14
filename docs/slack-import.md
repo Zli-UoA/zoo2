@@ -192,6 +192,7 @@ Slack の配布アプリ（Marketplace の審査を通っていないもの）�
 | `SLACK_TOKEN_ENCRYPTION_KEY` | ユーザートークンの暗号化と state の署名に使う 32 バイトの鍵（base64）。`openssl rand -base64 32` などで作ります |
 | `SLACK_TEAM_ID` | 連携を許可する Slack ワークスペースの ID（`T…`）。任意ですが設定を推奨します。設定・変更する前に別のワークスペースで連携したアカウントは、連携済みとして表示されますが、チャンネルの取り込みには使えません（403 `team_mismatch`）。設定画面の案内に従って解除し、連携し直してもらってください。変更する前に始まった取り込みは、そのまま進みます |
 | `SLACK_FRONTEND_URL` | 連携後に戻るフロントエンドのオリジン。フロントとバックエンドが同一オリジンなら不要です |
+| `SLACK_APP_ID` | 任意。この Slack アプリの ID（`A…`。「Basic Information」の「App ID」。Secret ではありません）。設定すると、受信口（`POST /api/slack/events`）は、`api_app_id` が違うイベントを、200 を返して何もせずに無視し、取り込み（差分同期・イベント・ZIP）は、`app_id` が一致するメッセージ（このアプリが投稿したもの）を取り込みません。**Slack アプリを作り直して ID が変わったときは、更新してください**（古い値のままだと、新しいアプリのイベントが、エラーなしに無視され、リアルタイムの同期が止まったように見えます）。未設定なら、どちらも行いません |
 | `SLACK_SIGNING_SECRET` | 任意。Slack アプリの Signing Secret（「Basic Information」の「App Credentials」）。設定すると、Slack の Events API の受信口（`POST /api/slack/events`）が有効になります（後述の「Events API で、投稿をすぐに同期する」）。未設定なら受信口は 404 で、これまでどおりです。上の 4 つが未設定のまま、これだけを設定すると、設定ミスとして起動時にエラーになります（`zoo_slack_worker` も同じ検査をします） |
 
 `SLACK_CLIENT_ID`・`SLACK_CLIENT_SECRET`・`SLACK_OAUTH_REDIRECT_URL`・`SLACK_TOKEN_ENCRYPTION_KEY` は 4 つそろえて設定してください。一部だけだと起動時にエラーになり、バックエンドが起動しません。デプロイは、マイグレーションを適用する → 4 つの環境変数を同時に設定する → バックエンドを再起動する、の順に行います。
