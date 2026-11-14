@@ -12,3 +12,21 @@ export function accountProfileUrl(issuer: string, returnTo: string | null): stri
     return null;
   }
 }
+
+/**
+ * AuthZ のセッション（`/settings/security`）とサービス接続（`/settings/services`）の画面の URL。
+ * 失効とリセットで、セッションとトークンを利用者に失効してもらう（docs/e2ee.md の「失効の手順」）。
+ */
+export function accountRevocationUrls(
+  issuer: string,
+): { security: string; services: string } | null {
+  try {
+    const origin = new URL(issuer).origin;
+    return {
+      security: new URL("/settings/security", origin).href,
+      services: new URL("/settings/services", origin).href,
+    };
+  } catch {
+    return null;
+  }
+}

@@ -28,6 +28,7 @@ import { CallSettingsDevices } from "../call/CallSettingsDevices";
 import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { EncryptionSettings } from "../e2ee/EncryptionSettings";
+import { DevicesSettings } from "../e2ee/DevicesSettings";
 import { SlackImportPanel } from "./SlackImportPanel";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -94,6 +95,9 @@ export function ZooSettings() {
             </Tabs.Tab>
             <Tabs.Tab value="encryption" className={panelTabClassName}>
               {t("e2ee.tab")}
+            </Tabs.Tab>
+            <Tabs.Tab value="devices" className={panelTabClassName}>
+              {t("e2ee.devicesTab")}
             </Tabs.Tab>
             <Tabs.Tab value="activitypub" className={panelTabClassName}>
               ActivityPub
@@ -170,6 +174,10 @@ export function ZooSettings() {
           <Tabs.Panel value="encryption" className="min-h-0">
             <h2 className="sr-only">{t("e2ee.tab")}</h2>
             <EncryptionSettings />
+          </Tabs.Panel>
+          <Tabs.Panel value="devices" className="min-h-0">
+            <h2 className="sr-only">{t("e2ee.devicesTab")}</h2>
+            <DevicesSettings />
           </Tabs.Panel>
           <Tabs.Panel value="activitypub" className="min-h-0">
             <h2 className="sr-only">ActivityPub</h2>
