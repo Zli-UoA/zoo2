@@ -2010,6 +2010,18 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 - 本物の Service Worker での確かめは `frontend/src/sw/push.browser.test.ts`（Chromium）。
 - 【決定】（#365）Android は、まだ Push の受信（FCM）がなく、#365 の時点では暗号ストアと端末の登録（#359）もなかったので、#365 では扱わず、[#510](https://github.com/Zli-UoA/zoo2/issues/510) に分けた。Android で Push を受けるようにするときは、同じ `e2ee` を受け取り、Android の暗号ストアの受信用セッション（UniFFI の `InboundSessionStore`）で、Web と同じく書き戻さずに復号する。
 
+### Playwright の E2E（[#363](https://github.com/Zli-UoA/zoo2/issues/363)）
+
+`frontend/e2e/e2ee.spec.ts`（設定は `frontend/playwright.e2ee.config.ts`、`pnpm test:e2e:e2ee`）で、本物の backend、PostgreSQL、Electric と、React の Web を通します。CI は `.github/workflows/ci-frontend-e2ee-e2e.yaml` です。数分かかるので、E2EE の経路（暗号、鍵の API、暗号化した DM の送受信と表示、ログインと再認証、Shape、DB のスキーマ）とテストの仕組みを変えたときだけ実行します（対象は同じファイルの `paths`）。
+
+- 2 人のユーザーが、それぞれ 2 端末（ブラウザーのコンテキストを分ける）で、初回設定、解錠、暗号化 DM の送受信、絵文字 SAS 検証（#368）、失効、退出を 1 本のテストで順に行い、最後に DB に平文が残っていないことを確かめる。
+- 端末ごとに CDP の仮想認証器（`ctap2`、`hasResidentKey`、`hasUserVerification`、`hasPrf: true`）を付ける。zoo2 はパスキーを登録しないので、AuthZ の代わりにページから `navigator.credentials.create()`（RP ID は `localhost`、`extensions: { prf: {} }`）で登録する。
+- 仮想認証器のクレデンシャルの PRF の秘密は、別の認証器へ写せない（CDP の `WebAuthn.addCredential` に PRF の秘密を渡す項目がない）。同じパスキーを 2 台目でも使う（同期したパスキー）形は作れないので、2 台目はリカバリーキーで解錠する。既存のパスキーのスロットでの解錠（`evaluatePrfForUnlock`）は、1 台目が失効を始める前に SSSS を開け直すところで確かめる。
+- モック IdP（`frontend/e2e/mock-idp.ts`）の issuer は、[RP ID の決め方](#rp-id-の決め方)のとおり `localhost` にする。OIDC の E2E（issuer は `127.0.0.1`）とは backend の `OIDC_ISSUER` が違うので、CI の workflow を分けている。モック IdP は、認可コードのグラントの ID トークンに `authenticated_at` を入れ（AuthZ#97 と同じ）、認可したときのユーザーを認可コードとリフレッシュトークンに残す（2 人が同時にログインしているため）。backend には `OIDC_REAUTH_AUDIENCES` と `E2EE_ENCRYPTED_CHANNELS_ENABLED` を渡す。
+- 失効は「端末だけ」で行い、失効した端末あての to-device が増えないこと、失効した端末が失効のあとのメッセージを表示しないことを確かめる。退出は DM の退出で、退出のあとに残ったメンバーが新しい Megolm セッション（`messages.epoch` が進み、`session_id` が変わる）で送り、退出したユーザーの端末あての to-device が増えないことを確かめる。
+- 平文の確認は、DM の `messages` の本文の列（`content`）が空で `ciphertext` があることと、DB 全体の `pg_dump --data-only` のどこにも、送った本文（実行ごとに一意の小文字の英数字を入れる）が出てこないことで行う。`docker compose -f infra/db/compose.yml exec postgres` で読むので、compose のプロジェクト名を変えて DB を起動したときは `COMPOSE_PROJECT_NAME` を合わせる。
+- 扱っていないもの：暗号化した添付（#364）、既存のチャンネルの暗号化（#367）、全体の失効（1〜5）とリセット、初回設定の途中で止めた場合の再開（`setupController.test.ts` などの単体テストで確かめている）。
+
 ## 脅威モデル
 
 ### 守るもの

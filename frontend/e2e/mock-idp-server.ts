@@ -10,8 +10,10 @@ import { startMockIdp } from "./mock-idp.ts";
  */
 const port = Number(process.env.MOCK_IDP_PORT ?? "4000");
 const clientId = process.env.MOCK_IDP_CLIENT_ID ?? "zoo";
+// issuer のホスト名（既定は 127.0.0.1）。E2EE の E2E はパスキーの RP ID に使うので localhost にする。
+const host = process.env.MOCK_IDP_HOST || undefined;
 
-const idp = await startMockIdp({ port, clientId });
+const idp = await startMockIdp({ port, clientId, host });
 console.log(`mock IdP listening: issuer=${idp.issuer} client_id=${idp.clientId}`);
 
 const shutdown = async () => {

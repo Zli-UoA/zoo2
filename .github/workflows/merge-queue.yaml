@@ -24,6 +24,7 @@ jobs:
       ci-backend: ${{ steps.match.outputs.ci-backend }}
       ci-frontend: ${{ steps.match.outputs.ci-frontend }}
       ci-frontend-auth-e2e: ${{ steps.match.outputs.ci-frontend-auth-e2e }}
+      ci-frontend-e2ee-e2e: ${{ steps.match.outputs.ci-frontend-e2ee-e2e }}
       ci-tui: ${{ steps.match.outputs.ci-tui }}
       ci-desktop-tauri: ${{ steps.match.outputs.ci-desktop-tauri }}
       ci-crypto: ${{ steps.match.outputs.ci-crypto }}
@@ -55,6 +56,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.ci-frontend-auth-e2e == 'true'
     uses: ./.github/workflows/ci-frontend-auth-e2e.yaml
+    secrets: inherit
+
+  ci-frontend-e2ee-e2e:
+    needs: changes
+    if: needs.changes.outputs.ci-frontend-e2ee-e2e == 'true'
+    uses: ./.github/workflows/ci-frontend-e2ee-e2e.yaml
     secrets: inherit
 
   ci-tui:
@@ -117,6 +124,7 @@ jobs:
       - ci-backend
       - ci-frontend
       - ci-frontend-auth-e2e
+      - ci-frontend-e2ee-e2e
       - ci-tui
       - ci-desktop-tauri
       - ci-crypto
