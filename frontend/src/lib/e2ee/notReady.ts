@@ -69,9 +69,11 @@ export interface NotReadyInput {
 /** 暗号ストアを開けていない理由。開けていれば `null`。 */
 export function notReadyReason(input: NotReadyInput): E2eeNotReadyReason | null {
   if (!input.supported || input.status === "unsupported") return { kind: "unsupported" };
-  if (!input.userId) return { kind: "signedOut" };
-  if (input.status === "ready" && input.ready) return null;
+  if (input.userId && input.status === "ready" && input.ready) return null;
+  // オフラインで起動すると、ログイン中のユーザーを確かめられず `userId` がない（OIDC）。
+  // ログインし直しを案内しないよう、ユーザーより先にオフラインかを見る。
   if (!input.isOnline) return { kind: "offline" };
+  if (!input.userId) return { kind: "signedOut" };
   if (input.lockState === "otherTab") return { kind: "otherTab" };
   if (input.deviceLimit) return { kind: "deviceLimit" };
   if (input.startFailure) return { kind: "failed", failure: input.startFailure };

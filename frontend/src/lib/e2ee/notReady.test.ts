@@ -31,8 +31,14 @@ describe("notReadyReason", () => {
     expect(notReadyReason({ ...base, status: "unsupported" })).toEqual({ kind: "unsupported" });
   });
 
-  it("ユーザーが分からない", () => {
+  it("オンラインでユーザーが分からない", () => {
     expect(notReadyReason({ ...base, userId: null })).toEqual({ kind: "signedOut" });
+  });
+
+  it("オフラインで起動してユーザーが分からないときは、ログインし直しではなくオフラインと出す", () => {
+    expect(notReadyReason({ ...base, userId: null, isOnline: false, status: "idle" })).toEqual({
+      kind: "offline",
+    });
   });
 
   it("オフライン", () => {
