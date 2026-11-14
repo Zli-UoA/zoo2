@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use zoo_crypto as core;
 
 use crate::{
-    CrossSigningKeyPair, Result, SignatureUpload, VerifiedDeviceKeys, ZooCryptoError, lock,
-    parse_json,
+    CrossSigningKeyPair, DeviceAccount, Result, SignatureUpload, VerifiedDeviceKeys,
+    ZooCryptoError, bytes32, lock, parse_json,
 };
 
 /// 相手ごとの記録（[`core::TrustRecord`]）。
@@ -149,9 +149,39 @@ impl TrustStore {
         }))
     }
 
+    /// [`pickle`](Self::pickle) で保存したものを戻す。`account` は今の端末。封筒を開けないときは
+    /// `InvalidPickle`、中の JSON が正しくない、または `account` のユーザーの記録でないときは
+    /// `InvalidTrustStore`。
+    #[uniffi::constructor]
+    pub fn from_pickle(
+        pickle: String,
+        account: &DeviceAccount,
+        storage_key: Vec<u8>,
+    ) -> Result<Arc<Self>> {
+        let storage_key = zeroize::Zeroizing::new(bytes32("storage_key", &storage_key)?);
+        let account = lock(&account.inner);
+        Ok(Arc::new(Self {
+            inner: Mutex::new(core::TrustStore::from_pickle(
+                &pickle,
+                &account,
+                &storage_key,
+            )?),
+        }))
+    }
+
     /// 保存形式（JSON）。端末アカウントと同じ保存鍵で暗号化して置く。
     pub fn to_json(&self) -> String {
         lock(&self.inner).to_json()
+    }
+
+    /// [`to_json`](Self::to_json) の JSON を、32 バイトの保存鍵で暗号化した、暗号ストアに置く
+    /// 文字列にする（#359）。`account` は今の端末。保存のたびに出力は変わる。
+    ///
+    /// ロックは端末アカウント、このオブジェクトの順に取る。
+    pub fn pickle(&self, account: &DeviceAccount, storage_key: Vec<u8>) -> Result<String> {
+        let storage_key = zeroize::Zeroizing::new(bytes32("storage_key", &storage_key)?);
+        let account = lock(&account.inner);
+        Ok(lock(&self.inner).pickle(&account, &storage_key))
     }
 
     pub fn user_id(&self) -> String {

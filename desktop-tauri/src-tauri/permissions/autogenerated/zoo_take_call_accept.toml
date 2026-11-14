@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-zoo-take-call-accept"
+description = "Enables the zoo_take_call_accept command without any pre-configured scope."
+commands.allow = ["zoo_take_call_accept"]
+
+[[permission]]
+identifier = "deny-zoo-take-call-accept"
+description = "Denies the zoo_take_call_accept command without any pre-configured scope."
+commands.deny = ["zoo_take_call_accept"]

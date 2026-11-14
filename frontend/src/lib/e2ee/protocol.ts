@@ -169,6 +169,8 @@ export interface OpenedCryptoStore {
   registered: boolean;
   /** 保存鍵を開けずに作り直したとき、前の端末の ID（サーバーから消す）。 */
   replacedDeviceId: string | null;
+  /** 前の端末の登録が済んでいたか（`replacedDeviceId` がないときは `false`）。 */
+  replacedRegistered: boolean;
 }
 
 export interface CryptoResults {

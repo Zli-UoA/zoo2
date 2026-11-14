@@ -15,11 +15,11 @@ const meta = {
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
   args: {
-    channelId: "channel-general",
+    channelId: "00000000-0000-4000-8000-000000000001",
   },
   decorators: [
     (Story) => (
-      <StoryShell selectedChannelId="channel-general">
+      <StoryShell selectedChannelId="00000000-0000-4000-8000-000000000001">
         <div className="h-[720px] min-w-0 flex-1 bg-background">
           <Story />
         </div>
@@ -55,7 +55,7 @@ export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
   decorators: [
     (Story) => (
-      <StoryShell selectedChannelId="channel-general" initialPane="chat">
+      <StoryShell selectedChannelId="00000000-0000-4000-8000-000000000001" initialPane="chat">
         <div className="h-[720px] min-w-0 flex-1 bg-background">
           <Story />
         </div>
@@ -99,11 +99,11 @@ export const CommandCompletion: Story = {
       expect(commandInvocation).toHaveBeenCalledWith("notes", {
         kind: "command",
         name: "echo",
-        channel_id: "channel-general",
+        channel_id: "00000000-0000-4000-8000-000000000001",
         values: { text: "hello" },
       }),
     );
-    await expect(commandLookup).toHaveBeenCalledWith("channel-general");
+    await expect(commandLookup).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000001");
     await expect(input).toHaveValue("");
   }),
 };
@@ -116,7 +116,7 @@ export const Nsfw: Story = {
       attachments: [{ ...storyAttachments[0], message_id: "message-hello", is_sensitive: true }],
       channels: storyCollections.channels.map((channel) => ({
         ...channel,
-        is_nsfw: channel.id === "channel-general",
+        is_nsfw: channel.id === "00000000-0000-4000-8000-000000000001",
       })),
     },
   },

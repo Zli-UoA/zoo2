@@ -28,6 +28,8 @@ jobs:
   version:
     # 手動実行でも、レビュー前の作業ブランチからは公開しない。
     if: github.ref == 'refs/heads/main'
+    # 署名鍵の Secret を移す先。main に限り、必要ならレビュアーを付ける（リポジトリの Settings で設定する）。
+    environment: desktop-tauri-release
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -37,7 +39,9 @@ jobs:
       publish: ${{ steps.version.outputs.publish }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Check version and signing keys
         id: version
         env:
@@ -72,6 +76,8 @@ jobs:
   build:
     needs: version
     if: needs.version.outputs.build == 'true'
+    # 署名鍵の Secret を移す先。main に限り、必要ならレビュアーを付ける（リポジトリの Settings で設定する）。
+    environment: desktop-tauri-release
     strategy:
       fail-fast: true
       matrix:
@@ -87,7 +93,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -107,7 +115,7 @@ jobs:
         id: rust-toolchain
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           targets: ${{ runner.os == 'macOS' && 'wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin' || 'wasm32-unknown-unknown' }}
@@ -115,14 +123,17 @@ jobs:
         # ci-desktop-tauri.yaml と同じ版にする。
         run: |
           case "$RUNNER_OS" in
-            Linux) trunk_target=x86_64-unknown-linux-gnu ;;
-            macOS) trunk_target=aarch64-apple-darwin ;;
+            Linux) trunk_target=x86_64-unknown-linux-gnu; trunk_sha256=f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b ;;
+            macOS) trunk_target=aarch64-apple-darwin; trunk_sha256=764e299dd50d89442a4e96a236349f57961984b701e74d3dbdb39cd1c9f5101e ;;
           esac
           # trunk は ~/.cargo/bin がない実行先 (macOS) もあるので、専用の場所に置いて PATH に足す。
           trunk_bin="$HOME/.local/trunk/bin"
           mkdir -p "$trunk_bin"
           echo "$trunk_bin" >> "$GITHUB_PATH"
-          curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-$trunk_target.tar.gz" | tar -xz -C "$trunk_bin"
+          # チェックサムを確かめてから展開する（macOS には sha256sum がないので shasum を使う）。
+          curl -fsSL -o "$RUNNER_TEMP/trunk.tar.gz" "https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-$trunk_target.tar.gz"
+          echo "$trunk_sha256  $RUNNER_TEMP/trunk.tar.gz" | shasum -a 256 -c -
+          tar -xz -C "$trunk_bin" -f "$RUNNER_TEMP/trunk.tar.gz"
           cargo install --locked wasm-bindgen-cli --version 0.2.129
           cargo install --locked tauri-cli --version 2.11.4
       # 公開鍵をアプリに入れ、更新用の署名 (.sig) も作る。
@@ -169,7 +180,7 @@ jobs:
           fi
           ls -l dist
       - name: Upload
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: zoo2-desktop-tauri-release-${{ matrix.name }}
           path: dist/*
@@ -186,7 +197,7 @@ jobs:
     steps:
       - name: Download
         if: needs.version.outputs.build == 'true'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: zoo2-desktop-tauri-release-*
           merge-multiple: true

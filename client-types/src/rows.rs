@@ -104,6 +104,21 @@ pub struct Notification {
     pub display_data: Option<Value>,
 }
 
+/// 通話の招待（呼び出し）。呼び出し中 (`pending`) の行だけが Shape に届く（docs/calls.md）。
+///
+/// 時刻は Electric の `timestamptz`（`2026-11-14 10:00:00.123+00`）のまま持つ。
+/// 読むときは [`crate::notify::parse_timestamptz`] を使う。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallInvite {
+    pub id: String,
+    pub channel_id: String,
+    pub inviter_id: String,
+    pub invitee_id: String,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CardField {
     pub title: String,
@@ -280,6 +295,20 @@ impl FromRow for Attachment {
             storage_key: text(row, "storage_key")?,
             is_sensitive: opt_boolean(row, "is_sensitive")?.unwrap_or(false),
             created_at: time(row, "created_at")?,
+        })
+    }
+}
+
+impl FromRow for CallInvite {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
+            id: text(row, "id")?,
+            channel_id: text(row, "channel_id")?,
+            inviter_id: text(row, "inviter_id")?,
+            invitee_id: text(row, "invitee_id")?,
+            status: text(row, "status")?,
+            created_at: text(row, "created_at")?,
+            expires_at: text(row, "expires_at")?,
         })
     }
 }

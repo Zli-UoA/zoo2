@@ -1,4 +1,5 @@
 mod app;
+pub mod encryption;
 mod timeline;
 mod view;
 
@@ -35,6 +36,7 @@ pub async fn run(
     api_base_url: String,
     credentials: Credentials,
     check_updates: bool,
+    e2ee: Option<encryption::E2eeContext>,
 ) -> Result<()> {
     let api = ApiClient::new(http.clone(), &api_base_url, credentials.clone());
     // 画面を開く前に自分を確かめる。認証の失敗をターミナルの通常表示で伝えるため。
@@ -53,6 +55,9 @@ pub async fn run(
         shape_tx,
         app_tx,
     );
+    if let Some(e2ee) = e2ee {
+        app.attach_encryption(e2ee);
+    }
 
     let mut terminal = ratatui::init();
     // 貼り付けを1つのイベントで受け取り、中の改行を送信の Enter と区別する。
@@ -1069,6 +1074,7 @@ mod tests {
             fixture.api_base_url.clone(),
             fixture.credentials.clone(),
             false,
+            None,
         )
         .await;
         let message = result.unwrap_err().to_string();
@@ -1255,6 +1261,7 @@ mod tests {
             api,
             Credentials::Bearer(manager),
             false,
+            None,
         )
         .await;
         let message = result.unwrap_err().to_string();

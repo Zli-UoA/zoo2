@@ -9,6 +9,8 @@ import {
   clearPendingDeviceDeletion,
   markDeviceDeletionPending,
   readPendingDeviceDeletions,
+  updatePendingDeviceDeletion,
+  type PendingDeviceDeletion,
 } from "./identity";
 import type { ToDeviceRow } from "./protocol";
 import { subscribeToDevice, type ToDeviceSubscription } from "./toDeviceShape";
@@ -28,6 +30,11 @@ export interface E2eeDeviceManagerOptions {
   retryDelayMs?: number;
   /** ログアウトで、処理中のもの（登録の要求など）を待つ時間。 */
   settleTimeoutMs?: number;
+  /**
+   * このログインで、削除 API の 404 を数えた端末（`loginNotFoundCounter`）。manager を作り直しても
+   * 同じものを渡し、起動の試し直しで 404 を数え直さない。省いたらインスタンスごとに持つ。
+   */
+  countedNotFound?: Set<string>;
   onStatus?: (status: E2eeDeviceStatus, error?: unknown) => void;
   /**
    * Megolm のセッション鍵を受け取って保存した。鍵バックアップに送り（#360）、「鍵がまだ届いていない」
@@ -43,6 +50,28 @@ export interface E2eeDeviceManagerOptions {
 
 /** ログアウトで端末の削除 API を待つ時間。オフラインならすぐ失敗し、次のログインで消し直す。 */
 const DELETE_TIMEOUT_MS = 5_000;
+
+/**
+ * 登録できたか分からない端末を、404 が続いたら消えたものとする回数（次のログインごとに 1 回）。
+ * Android の `E2eeDeviceManager.MAX_NOT_FOUND`、TUI の `MAX_NOT_FOUND` と同じ。
+ */
+export const MAX_NOT_FOUND = 3;
+
+const countedNotFoundByUser = new Map<string, Set<string>>();
+
+/**
+ * このページで、ユーザーごとに削除 API の 404 を数えた端末。ログインはページの読み込みをまたぐ
+ * （OIDC のリダイレクト。ログアウトはページを離れる）ので、ページを読み込んでいるあいだを 1 回の
+ * ログインとして扱い、manager を作り直しても（`E2eeProvider` の起動の試し直し）同じ集合を返す。
+ */
+export function loginNotFoundCounter(userId: string): Set<string> {
+  let counted = countedNotFoundByUser.get(userId);
+  if (!counted) {
+    counted = new Set();
+    countedNotFoundByUser.set(userId, counted);
+  }
+  return counted;
+}
 
 function isDeviceGone(error: unknown): boolean {
   // 登録：削除済みの device_id は 409。鍵のアップロードと ack：削除済みの端末は 404。
@@ -83,15 +112,27 @@ export class E2eeDeviceManager {
   private processAbort = new AbortController();
   /** 登録の要求の結果がまだ分からない。分からないうちは、ログアウトで端末を消さない。 */
   private registering = false;
+  /**
+   * 登録できたと分かっている端末（開いたときに登録済みだった、または登録の応答を受け取った）。
+   * ここにない端末の削除待ちは `unconfirmed` にして、404 でもすぐには消えたものとしない。
+   */
+  private readonly confirmedRegistrations = new Set<string>();
+  /**
+   * このログインで 404 を数えた端末。`unconfirmed` の端末の 404 は、ログインごとに 1 回だけ数える
+   * （起動の試し直しで上限に達して、削除待ちを早く外さないため）。
+   */
+  private readonly countedNotFound: Set<string>;
   /** ログアウトのために開いたとき、保存鍵を失って作り直した前の端末（これも消す）。 */
-  private readonly replacedDeviceIds: string[] = [];
+  private readonly replacedDevices: PendingDeviceDeletion[] = [];
   /** 端末が消されていたので、起動し直さなければならない（`reregister`）。済むまで残す。 */
   private restartPending = false;
   /** 起動し直す前に、まだ暗号ストアを消していない。 */
   private destroyBeforeRestart = false;
   private restarting = false;
 
-  constructor(private readonly options: E2eeDeviceManagerOptions) {}
+  constructor(private readonly options: E2eeDeviceManagerOptions) {
+    this.countedNotFound = options.countedNotFound ?? new Set();
+  }
 
   get currentDeviceId(): string | null {
     return this.deviceId;
@@ -109,13 +150,15 @@ export class E2eeDeviceManager {
     const signal = this.abort.signal;
     this.options.onStatus?.("starting");
     try {
-      await retryPendingDeviceDeletion(client, userId);
+      await retryPendingDeviceDeletion(client, userId, this.countedNotFound);
       let opened = await worker.request({ op: "open", namespace, userId });
       // 登録が途中で失敗しても、ログアウトで消せるように先に覚える。
-      this.deviceId = opened.deviceId;
+      this.rememberOpened(opened);
       if (opened.replacedDeviceId) {
         // 保存鍵を失って作り直した。前の端末はもう使えないので消す。
-        await this.deleteDeviceOrRemember(opened.replacedDeviceId);
+        await this.deleteDeviceOrRemember(
+          this.entry(opened.replacedDeviceId, !opened.replacedRegistered),
+        );
       }
       let counts: KeyCounts;
       try {
@@ -125,7 +168,7 @@ export class E2eeDeviceManager {
         // 別の端末から消された。暗号ストアを作り直して、新しい端末として登録する。
         await worker.request({ op: "destroy", namespace });
         opened = await worker.request({ op: "open", namespace, userId });
-        this.deviceId = opened.deviceId;
+        this.rememberOpened(opened);
         counts = await this.ensureRegistered(opened.registered, opened.deviceId);
       }
       if (this.stopped) return;
@@ -138,6 +181,15 @@ export class E2eeDeviceManager {
       if (!this.stopped) this.options.onStatus?.("error", error);
       throw error;
     }
+  }
+
+  private rememberOpened(opened: { deviceId: string; registered: boolean }): void {
+    this.deviceId = opened.deviceId;
+    if (opened.registered) this.confirmedRegistrations.add(opened.deviceId);
+  }
+
+  private entry(deviceId: string, unconfirmed: boolean): PendingDeviceDeletion {
+    return { userId: this.options.userId, deviceId, unconfirmed };
   }
 
   private subscribe(): void {
@@ -161,13 +213,15 @@ export class E2eeDeviceManager {
       userId: this.options.userId,
     });
     // 登録の応答をなくした端末は、サーバーにはあるのに手元では未登録のまま。どちらでも
-    // 削除 API を呼ぶ（冪等で、サーバーになければ 404 になり、消すものがないと分かる）。
-    this.deviceId = opened.deviceId;
+    // 削除 API を呼ぶ（冪等で、サーバーになければ 404 になる。ただし登録できたか分からないので、
+    // 404 でもすぐには消えたものとしない）。
+    this.rememberOpened(opened);
     if (opened.replacedDeviceId) {
       // 保存鍵を失って作り直した。前の端末の ID はもう暗号ストアにないので、先に削除待ちに
       // 残し、ログアウトで一緒に消す。
-      markDeviceDeletionPending({ userId: this.options.userId, deviceId: opened.replacedDeviceId });
-      this.replacedDeviceIds.push(opened.replacedDeviceId);
+      const replaced = this.entry(opened.replacedDeviceId, !opened.replacedRegistered);
+      markDeviceDeletionPending(replaced);
+      this.replacedDevices.push(replaced);
     }
   }
 
@@ -193,6 +247,7 @@ export class E2eeDeviceManager {
       throw error;
     }
     this.registering = false;
+    this.confirmedRegistrations.add(deviceId);
     await worker.request({ op: "markRegistered" });
     return counts;
   }
@@ -366,13 +421,17 @@ export class E2eeDeviceManager {
     // 登録の要求が終わってから消す（先に消すと、あとから届いた登録で端末ができてしまう）。
     await this.settle();
     const deviceId = this.deviceId;
-    if (deviceId) markDeviceDeletionPending({ userId: this.options.userId, deviceId });
+    // 登録できたと分かっていなければ、404 でもすぐには消えたものとしない。
+    const target = deviceId
+      ? this.entry(deviceId, !this.confirmedRegistrations.has(deviceId))
+      : null;
+    if (target) markDeviceDeletionPending(target);
     await this.options.worker.request({ op: "destroy", namespace: this.options.namespace });
     this.options.onStatus?.("stopped");
-    // 待っても登録の結果が分からなければ、いま消すと、そのあとに登録が届いて端末が残りうる
-    // （404 で削除待ちを外してしまう）。削除待ちに残し、次のログインで消し直す。
-    if (deviceId && !this.registering) await this.deleteDeviceOrRemember(deviceId);
-    for (const replaced of this.replacedDeviceIds) await this.deleteDeviceOrRemember(replaced);
+    // 待っても登録の結果が分からなければ、いま消しても、そのあとに登録が届いて端末ができうる。
+    // 削除待ち（`unconfirmed`）に残し、次のログインで消し直す。
+    if (target && !this.registering) await this.deleteDeviceOrRemember(target);
+    for (const replaced of this.replacedDevices) await this.deleteDeviceOrRemember(replaced);
   }
 
   private halt(): void {
@@ -396,35 +455,91 @@ export class E2eeDeviceManager {
     clearTimeout(timer);
   }
 
-  private async deleteDeviceOrRemember(deviceId: string): Promise<void> {
-    const pending = { userId: this.options.userId, deviceId };
-    markDeviceDeletionPending(pending);
-    await deleteOrKeep(this.options.client, pending);
+  private async deleteDeviceOrRemember(target: PendingDeviceDeletion): Promise<void> {
+    markDeviceDeletionPending(target);
+    await deleteOrKeep(this.options.client, target, this.countedNotFound);
   }
 }
 
-/** 削除 API を呼び、消せたら（404 も含む）削除待ちから外す。失敗したら残す。 */
+type DeleteOutcome = "deleted" | "notFound" | "failed";
+
+/**
+ * 削除 API を呼び、消せたら削除待ちから外す。失敗したら残し、次のログインで消し直す。
+ *
+ * 404 は、登録できたと分かっている端末なら、消すものがないので済んだものとする。登録できたか
+ * 分からない端末（`unconfirmed`）は、あとから届いた登録で端末ができうるので残し、続けて
+ * `MAX_NOT_FOUND` 回 404 なら済んだものとする。404 以外の失敗では、回数を 0 に戻す。`counted`（ログインごとの集合）を渡したときは、
+ * 同じ端末の 404 をそのログインで 1 回だけ数える。
+ */
 async function deleteOrKeep(
   client: ApiClient,
-  pending: { userId: string; deviceId: string },
+  target: PendingDeviceDeletion,
+  counted?: Set<string>,
 ): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DELETE_TIMEOUT_MS);
+  let outcome: DeleteOutcome;
   try {
-    await deleteDevice(client, pending.deviceId, { signal: controller.signal });
-    clearPendingDeviceDeletion(pending);
+    await deleteDevice(client, target.deviceId, { signal: controller.signal });
+    outcome = "deleted";
   } catch (error) {
-    // 404 はサーバーに端末がない（登録の前に止まった）。消すものがない。
-    if (error instanceof ApiError && error.status === 404) clearPendingDeviceDeletion(pending);
-    // それ以外は残し、次のログインで消し直す。
+    outcome = error instanceof ApiError && error.status === 404 ? "notFound" : "failed";
   } finally {
     clearTimeout(timer);
   }
+  const current = findPendingDeviceDeletion(target) ?? target;
+  if (outcome === "failed") {
+    // 404 が続いていない。数え直す（間に失敗をはさんだ 404 は、続けて受けたものとしない）。
+    if ((current.notFound ?? 0) > 0) updatePendingDeviceDeletion({ ...current, notFound: 0 });
+    return;
+  }
+  if (outcome === "deleted" || !current.unconfirmed) {
+    clearPendingDeviceDeletion(current);
+    return;
+  }
+  if (counted) {
+    if (counted.has(current.deviceId)) return;
+    counted.add(current.deviceId);
+  }
+  const notFound = (current.notFound ?? 0) + 1;
+  if (notFound >= MAX_NOT_FOUND) clearPendingDeviceDeletion(current);
+  else updatePendingDeviceDeletion({ ...current, notFound });
 }
 
-/** 前のログアウトで消せなかった端末を、同じユーザーのログインで消し直す。 */
-export async function retryPendingDeviceDeletion(client: ApiClient, userId: string): Promise<void> {
-  for (const pending of readPendingDeviceDeletions()) {
-    if (pending.userId === userId) await deleteOrKeep(client, pending);
+function findPendingDeviceDeletion(target: PendingDeviceDeletion): PendingDeviceDeletion | null {
+  try {
+    return (
+      readPendingDeviceDeletions().find(
+        (entry) => entry.userId === target.userId && entry.deviceId === target.deviceId,
+      ) ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 前のログアウトで消せなかった端末を、同じユーザーのログインで消し直す。`counted` は、そのログインで
+ * 404 を数えた端末（`deleteOrKeep`）。
+ */
+export async function retryPendingDeviceDeletion(
+  client: ApiClient,
+  userId: string,
+  counted?: Set<string>,
+): Promise<void> {
+  let all: PendingDeviceDeletion[];
+  try {
+    all = readPendingDeviceDeletions();
+  } catch {
+    // 一覧を読めなければ、何も消さない（一覧はそのまま残す）。
+    return;
+  }
+  // 同じ端末の記録が重なっていても（前の形式や手で直した値）、1 回だけ消し直す。先の記録で削除を
+  // 終えたあとに、後の記録で削除待ちを書き戻さないため。
+  const seen = new Set<string>();
+  for (const pending of all) {
+    if (pending.userId !== userId || seen.has(pending.deviceId)) continue;
+    seen.add(pending.deviceId);
+    await deleteOrKeep(client, pending, counted);
   }
 }

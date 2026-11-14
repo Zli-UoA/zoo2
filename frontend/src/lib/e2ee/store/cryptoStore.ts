@@ -116,6 +116,11 @@ export interface OpenedStore {
   store: CryptoStore;
   /** 保存鍵を開けずに暗号ストアを作り直したとき、前の端末の ID（サーバーから消す）。 */
   replacedDeviceId: string | null;
+  /**
+   * 前の端末の登録が済んでいたか。済んでいなければ、削除 API の 404 でもすぐには消えたものと
+   * しない（登録の応答をなくしただけかもしれない）。
+   */
+  replacedRegistered: boolean;
 }
 
 interface OpenOptions {
@@ -190,6 +195,7 @@ export class CryptoStore {
     const keys = options.keys ?? indexedDbWrappingKeys;
     let snapshot = await backend.read();
     let replacedDeviceId: string | null = null;
+    let replacedRegistered = false;
     if (snapshot.meta[META_USER_ID] && snapshot.meta[META_USER_ID] !== options.userId) {
       throw new Error("暗号ストアが別のユーザーのものです");
     }
@@ -205,6 +211,7 @@ export class CryptoStore {
       if (!(error instanceof StorageKeyUnavailableError)) throw error;
       // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
       replacedDeviceId = snapshot.meta[META_DEVICE_ID] ?? null;
+      replacedRegistered = snapshot.meta[META_REGISTERED] === "1";
       // 開いたままのファイルは消せないので、先に閉じる。
       await backend.close().catch(() => undefined);
       backend = await options.reset();
@@ -254,7 +261,7 @@ export class CryptoStore {
         store.free();
         throw error;
       }
-      return { store, replacedDeviceId };
+      return { store, replacedDeviceId, replacedRegistered };
     }
 
     const account = new DeviceAccount(options.userId, crypto.randomUUID());
@@ -285,7 +292,7 @@ export class CryptoStore {
       store.free();
       throw error;
     }
-    return { store, replacedDeviceId };
+    return { store, replacedDeviceId, replacedRegistered };
   }
 
   get userId(): string {

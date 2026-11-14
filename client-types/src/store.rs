@@ -6,7 +6,10 @@ pub use crate::accounts::AccountProfiles;
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    rows::{Attachment, Channel, ChannelUser, FromRow, Message, Notification, Reaction, User},
+    rows::{
+        Attachment, CallInvite, Channel, ChannelUser, FromRow, Message, Notification, Reaction,
+        User,
+    },
     shape::{Batch, Change, ShapeId},
 };
 
@@ -25,6 +28,7 @@ pub struct Store {
     attachments: HashMap<String, HashMap<String, Attachment>>,
     notifications: HashMap<String, Notification>,
     notification_keys: HashMap<String, String>,
+    call_invites: HashMap<String, CallInvite>,
     synced: HashSet<ShapeId>,
     /// 型に変換できなかった行の数。スキーマのずれに気づけるよう画面に出す。
     pub invalid_rows: usize,
@@ -82,6 +86,12 @@ impl Store {
                 batch.changes,
                 &mut invalid,
             ),
+            ShapeId::CallInvites => apply_rows(
+                &mut self.call_invites,
+                batch.reset,
+                batch.changes,
+                &mut invalid,
+            ),
         }
         self.invalid_rows += invalid;
         match id {
@@ -121,6 +131,13 @@ impl Store {
             _ => return,
         }
         self.synced.remove(id);
+    }
+
+    /// 呼び出し中の通話の招待（自分が呼んだものと、呼ばれたもの）。id の順。
+    pub fn call_invites(&self) -> Vec<&CallInvite> {
+        let mut invites: Vec<&CallInvite> = self.call_invites.values().collect();
+        invites.sort_by(|a, b| a.id.cmp(&b.id));
+        invites
     }
 
     /// 通知を新しい順に返す。

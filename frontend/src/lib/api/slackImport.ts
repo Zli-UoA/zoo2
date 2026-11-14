@@ -103,7 +103,7 @@ export function getSlackImport(
   id: string,
   signal?: AbortSignal,
 ): Promise<SlackImport> {
-  return client.get<SlackImport>(`${BASE}/${id}`, { signal });
+  return client.get<SlackImport>(`${BASE}/${encodeURIComponent(id)}`, { signal });
 }
 
 export function startSlackImport(
@@ -111,18 +111,20 @@ export function startSlackImport(
   id: string,
   mappings: SlackChannelMapping[],
 ): Promise<SlackImport> {
-  return client.request<SlackImport>(`${BASE}/${id}/start`, {
+  return client.request<SlackImport>(`${BASE}/${encodeURIComponent(id)}/start`, {
     method: "POST",
     body: { mappings },
   });
 }
 
 export function cancelSlackImport(client: ApiClient, id: string): Promise<SlackImport> {
-  return client.request<SlackImport>(`${BASE}/${id}`, { method: "DELETE" });
+  return client.request<SlackImport>(`${BASE}/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function fetchSlackImportFiles(client: ApiClient, id: string): Promise<SlackImport> {
-  return client.request<SlackImport>(`${BASE}/${id}/fetch-files`, { method: "POST" });
+  return client.request<SlackImport>(`${BASE}/${encodeURIComponent(id)}/fetch-files`, {
+    method: "POST",
+  });
 }
 
 export class SlackExportUploadError extends Error {
@@ -184,7 +186,9 @@ export async function uploadSlackExport(
     (loaded, total) => onProgress(total > 0 ? loaded / total : 0),
     signal,
   );
-  return client.request<SlackImport>(`${BASE}/${created.import.id}/uploaded`, { method: "POST" });
+  return client.request<SlackImport>(`${BASE}/${encodeURIComponent(created.import.id)}/uploaded`, {
+    method: "POST",
+  });
 }
 
 /**

@@ -170,7 +170,7 @@ async fn logout_destroys_the_store_and_remembers_a_failed_deletion() {
             .unwrap();
     }
     assert!(!root.join(BOB).exists());
-    let pending = store::read_pending_device_deletions(&root);
+    let pending = store::read_pending_device_deletions(&root).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].device_id, device_id);
 
@@ -180,8 +180,12 @@ async fn logout_destroys_the_store_and_remembers_a_failed_deletion() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {}, "txid": null })))
         .mount(&server)
         .await;
-    manager::retry_pending_device_deletion(&api, &root, BOB).await;
-    assert!(store::read_pending_device_deletions(&root).is_empty());
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
+    assert!(
+        store::read_pending_device_deletions(&root)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -209,25 +213,26 @@ async fn logout_deletes_a_device_whose_registration_response_was_lost() {
             .await
             .unwrap();
     }
-    assert!(store::read_pending_device_deletions(&root).is_empty());
+    assert!(
+        store::read_pending_device_deletions(&root)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
 fn pending_deletions_of_other_users_are_kept() {
     let dir = tempfile::tempdir().unwrap();
     let root = store::crypto_root(dir.path());
-    let a = store::PendingDeviceDeletion {
-        user_id: ALICE.into(),
-        device_id: "a".into(),
-    };
-    let b = store::PendingDeviceDeletion {
-        user_id: BOB.into(),
-        device_id: "b".into(),
-    };
+    let a = store::PendingDeviceDeletion::new(ALICE, "a", false);
+    let b = store::PendingDeviceDeletion::new(BOB, "b", false);
     store::mark_device_deletion_pending(&root, &a).unwrap();
     store::mark_device_deletion_pending(&root, &b).unwrap();
     store::clear_pending_device_deletion(&root, &b).unwrap();
-    assert_eq!(store::read_pending_device_deletions(&root), vec![a]);
+    assert_eq!(
+        store::read_pending_device_deletions(&root).unwrap(),
+        vec![a]
+    );
 }
 
 #[test]
@@ -281,7 +286,11 @@ async fn logout_also_deletes_the_device_replaced_after_losing_the_storage_key() 
         .map(|request| request.url.path().to_owned())
         .collect();
     assert!(deleted.contains(&format!("/api/e2ee/devices/{old_device}")));
-    assert!(store::read_pending_device_deletions(&root).is_empty());
+    assert!(
+        store::read_pending_device_deletions(&root)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -311,7 +320,7 @@ async fn logout_keeps_another_users_device_for_their_next_login() {
             .unwrap();
     }
     assert!(!root.join(ALICE).exists());
-    let pending = store::read_pending_device_deletions(&root);
+    let pending = store::read_pending_device_deletions(&root).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(
         (pending[0].user_id.as_str(), pending[0].device_id.as_str()),
@@ -349,7 +358,7 @@ fn losing_the_storage_key_records_the_old_device_before_removing_the_state() {
         Some(old_device.as_str())
     );
     // 作り直しが途中で失敗しても前の端末を消せるよう、state.json を消す前に削除待ちに残してある。
-    let pending = store::read_pending_device_deletions(&root);
+    let pending = store::read_pending_device_deletions(&root).unwrap();
     assert!(
         pending
             .iter()
@@ -370,4 +379,372 @@ fn the_user_lock_lives_outside_the_store_and_is_held_while_destroying() {
     assert!(CryptoStore::open(&root, BOB).is_ok());
     // 削除待ちの一覧を探すときに、ロックファイルをユーザーと取り違えない。
     assert_eq!(store::stored_user_ids(&root).unwrap(), vec![BOB.to_owned()]);
+}
+
+fn api_for(server: &MockServer) -> ApiClient {
+    ApiClient::new(
+        reqwest::Client::new(),
+        &server.uri(),
+        Credentials::Dev(BOB.into()),
+    )
+}
+
+#[tokio::test]
+async fn not_found_for_a_registered_device_finishes_the_deletion() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let mut bob = CryptoStore::open(&root, BOB).unwrap().store;
+    bob.mark_registered().unwrap();
+    drop(bob);
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    for target in manager::open_for_logout(&root).unwrap() {
+        manager::destroy_for_logout(&api, &root, target, Some(BOB))
+            .await
+            .unwrap();
+    }
+    assert!(
+        store::read_pending_device_deletions(&root)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn not_found_for_an_unconfirmed_device_is_retried_until_it_repeats() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    // 登録の応答をなくして、手元では未登録のまま。あとから登録が届くかもしれない。
+    let bob = CryptoStore::open(&root, BOB).unwrap().store;
+    let device_id = bob.device_id().to_owned();
+    drop(bob);
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("/api/e2ee/devices/{device_id}")))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    for target in manager::open_for_logout(&root).unwrap() {
+        manager::destroy_for_logout(&api, &root, target, Some(BOB))
+            .await
+            .unwrap();
+    }
+    let pending = store::read_pending_device_deletions(&root).unwrap();
+    assert_eq!(
+        pending,
+        vec![store::PendingDeviceDeletion {
+            not_found: 1,
+            ..store::PendingDeviceDeletion::new(BOB, &device_id, true)
+        }]
+    );
+
+    // 次の起動ごとに消し直す。続けて 3 回 404 なら済んだものとする。
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
+    assert_eq!(
+        store::read_pending_device_deletions(&root).unwrap()[0].not_found,
+        2
+    );
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
+    assert_eq!(manager::MAX_NOT_FOUND, 3);
+    assert!(
+        store::read_pending_device_deletions(&root)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn not_found_is_counted_once_per_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    store::mark_device_deletion_pending(&root, &store::PendingDeviceDeletion::new(BOB, "d", true))
+        .unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/e2ee/devices/d"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(4)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    // 同じ起動の中の試し直し（`spawn` のループ）では、404 を 1 回だけ数える。
+    let mut counted = std::collections::BTreeSet::new();
+    for _ in 0..4 {
+        manager::retry_pending_device_deletion(&api, &root, BOB, &mut counted).await;
+    }
+    let pending = store::read_pending_device_deletions(&root).unwrap();
+    assert_eq!((pending.len(), pending[0].not_found), (1, 1));
+}
+
+#[tokio::test]
+async fn a_failure_between_not_founds_restarts_the_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    store::mark_device_deletion_pending(&root, &store::PendingDeviceDeletion::new(BOB, "d", true))
+        .unwrap();
+    let server = MockServer::start().await;
+    let api = api_for(&server);
+    let mut counts = Vec::new();
+    // 次の起動ごとに 1 回ずつ消し直す（404 → 404 → 503 → 404）。
+    for status in [404, 404, 503, 404] {
+        server.reset().await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
+        counts.push(store::read_pending_device_deletions(&root).unwrap()[0].not_found);
+    }
+    assert_eq!(counts, vec![1, 2, 0, 1]);
+}
+
+#[tokio::test]
+async fn logout_destroys_the_store_without_a_storage_key_even_if_the_pending_list_is_broken() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let mut bob = CryptoStore::open(&root, BOB).unwrap().store;
+    bob.mark_registered().unwrap();
+    let old_device = bob.device_id().to_owned();
+    drop(bob);
+    std::fs::remove_file(root.join(BOB).join("storage.key")).unwrap();
+    let file = root.join("pending-device-delete.json");
+    std::fs::write(&file, b"{broken").unwrap();
+
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {}, "txid": null })))
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    // ログアウトでは開いて消し、前の端末も削除 API で消す。一覧は書き換えない。
+    for target in manager::open_for_logout(&root).unwrap() {
+        manager::destroy_for_logout(&api, &root, target, Some(BOB))
+            .await
+            .unwrap();
+    }
+    assert!(!root.join(BOB).exists());
+    let deleted: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect();
+    assert!(deleted.contains(&format!("/api/e2ee/devices/{old_device}")));
+    // 読めない一覧は書き換えずに退避してある。
+    assert_eq!(
+        std::fs::read(root.join("pending-device-delete.unreadable.json")).unwrap(),
+        b"{broken"
+    );
+}
+
+#[tokio::test]
+async fn an_unconfirmed_device_registered_late_is_deleted_on_the_next_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let bob = CryptoStore::open(&root, BOB).unwrap().store;
+    let device_id = bob.device_id().to_owned();
+    drop(bob);
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(404))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    for target in manager::open_for_logout(&root).unwrap() {
+        manager::destroy_for_logout(&api, &root, target, Some(BOB))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        store::read_pending_device_deletions(&root).unwrap().len(),
+        1
+    );
+    // ログアウトのあとで登録がコミットされ、サーバーに端末ができた。
+    Mock::given(method("DELETE"))
+        .and(path(format!("/api/e2ee/devices/{device_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {}, "txid": null })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
+    assert!(
+        store::read_pending_device_deletions(&root)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn losing_the_storage_key_records_whether_the_old_device_was_registered() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let first = CryptoStore::open(&root, BOB).unwrap().store;
+    let unregistered = first.device_id().to_owned();
+    drop(first);
+    std::fs::remove_file(root.join(BOB).join("storage.key")).unwrap();
+    let mut second = CryptoStore::open(&root, BOB).unwrap();
+    assert!(!second.replaced_registered);
+    second.store.mark_registered().unwrap();
+    let registered = second.store.device_id().to_owned();
+    drop(second);
+    std::fs::remove_file(root.join(BOB).join("storage.key")).unwrap();
+    let third = CryptoStore::open(&root, BOB).unwrap();
+    assert!(third.replaced_registered);
+    assert_eq!(
+        store::read_pending_device_deletions(&root).unwrap(),
+        vec![
+            store::PendingDeviceDeletion::new(BOB, &unregistered, true),
+            store::PendingDeviceDeletion::new(BOB, &registered, false),
+        ]
+    );
+}
+
+#[test]
+fn marking_a_device_again_keeps_unconfirmed_and_the_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let entry = store::PendingDeviceDeletion::new(BOB, "d", true);
+    store::mark_device_deletion_pending(&root, &entry).unwrap();
+    store::update_pending_device_deletion(
+        &root,
+        &store::PendingDeviceDeletion {
+            not_found: 2,
+            ..entry.clone()
+        },
+    )
+    .unwrap();
+    store::mark_device_deletion_pending(&root, &store::PendingDeviceDeletion::new(BOB, "d", false))
+        .unwrap();
+    let pending = store::read_pending_device_deletions(&root).unwrap();
+    assert_eq!((pending[0].unconfirmed, pending[0].not_found), (true, 2));
+}
+
+#[tokio::test]
+async fn a_broken_pending_list_is_moved_aside_before_recording_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("pending-device-delete.json");
+    std::fs::write(&file, b"{broken").unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {}, "txid": null })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
+    assert!(store::read_pending_device_deletions(&root).is_err());
+    // 次に記録するときに、読めないファイルを退避してから、空の一覧に足す。
+    let entry = store::PendingDeviceDeletion::new(BOB, "d", false);
+    store::mark_device_deletion_pending(&root, &entry).unwrap();
+    assert_eq!(
+        std::fs::read(root.join("pending-device-delete.unreadable.json")).unwrap(),
+        b"{broken"
+    );
+    assert_eq!(
+        store::read_pending_device_deletions(&root).unwrap(),
+        vec![entry]
+    );
+}
+
+#[test]
+fn losing_the_storage_key_with_a_broken_pending_list_still_records_the_old_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let first = CryptoStore::open(&root, BOB).unwrap().store;
+    let old_device = first.device_id().to_owned();
+    drop(first);
+    std::fs::remove_file(root.join(BOB).join("storage.key")).unwrap();
+    std::fs::write(root.join("pending-device-delete.json"), b"{broken").unwrap();
+    // 起動でも開ける（読めない一覧は退避して、前の端末を記録する）。
+    let reopened = CryptoStore::open(&root, BOB).unwrap();
+    assert_eq!(
+        reopened.replaced_device_id.as_deref(),
+        Some(old_device.as_str())
+    );
+    assert_eq!(
+        store::read_pending_device_deletions(&root).unwrap(),
+        vec![store::PendingDeviceDeletion::new(BOB, &old_device, true)]
+    );
+}
+
+#[tokio::test]
+async fn duplicated_pending_entries_are_retried_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    std::fs::create_dir_all(&root).unwrap();
+    let entry = json!({ "user_id": BOB, "device_id": "d", "unconfirmed": true, "not_found": 2 });
+    std::fs::write(
+        root.join("pending-device-delete.json"),
+        serde_json::to_vec(&json!([entry, entry])).unwrap(),
+    )
+    .unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    // 3 回目の 404 で済んだものとし、重なった後の記録で足し直さない。
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
+    assert!(
+        store::read_pending_device_deletions(&root)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn reads_pending_deletions_of_the_previous_format_as_confirmed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("pending-device-delete.json"),
+        serde_json::to_vec(&json!([{ "user_id": BOB, "device_id": "d" }])).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        store::read_pending_device_deletions(&root).unwrap(),
+        vec![store::PendingDeviceDeletion::new(BOB, "d", false)]
+    );
+}
+
+#[tokio::test]
+async fn waits_only_while_the_screen_still_holds_the_store() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let open = || {
+        Arc::new(tokio::sync::Mutex::new(
+            CryptoStore::open(&root, BOB).unwrap().store,
+        ))
+    };
+    // ほかに持ち主がいなければ、待たずに戻る。
+    tokio::time::timeout(Duration::from_secs(1), manager::wait_until_released(open()))
+        .await
+        .expect("持ち主がいないのに待ち続けた");
+    // 画面が持っている間は待ち、手放したら開き直せる。
+    let store = open();
+    let held = store.clone();
+    let started = Instant::now();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(held);
+    });
+    manager::wait_until_released(store).await;
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert!(CryptoStore::open(&root, BOB).is_ok());
 }

@@ -6,7 +6,9 @@ import { expect, screen, userEvent, waitFor } from "storybook/test";
 import { storyChannels, storyCollections, storyChannelUsers } from "../../../.storybook/fixtures";
 import { MembersPanel } from "./MembersPanel";
 
-const general = storyChannels.find((channel) => channel.id === "channel-general")!;
+const general = storyChannels.find(
+  (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+)!;
 const secret = storyChannels.find((channel) => channel.id === "channel-secret")!;
 const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
 

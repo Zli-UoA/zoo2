@@ -29,7 +29,15 @@ internal class AndroidPlatform(
     private val userId: String,
     val logout: () -> Unit,
     private val chooseFiles: suspend () -> List<Uri>,
+    /**
+     * 鍵バックアップに送れていない鍵があるときの、ログアウトの確認（docs/e2ee.md の「ログアウトと
+     * 端末の削除」）。`count` が負なら数えられなかった。ログアウトしてよければ真を返す。
+     */
+    private val confirmUnbackedKeys: suspend (count: Int) -> Boolean,
 ) : Platform {
+    /** E2EE の端末（#359）。ログインしたあとに設定する。 */
+    var e2ee: zoo.crypto.E2eeDeviceManager? = null
+
     var env by mutableStateOf(Environment(path = "/home", touch = true, oidc = true))
         private set
 
@@ -203,7 +211,17 @@ internal class AndroidPlatform(
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {
             "logout" -> {
-                try { logout() } finally { clear() }
+                val manager = e2ee
+                // 件数を数える前に to-device の処理を止める（数えたあとで増えた鍵を、確かめずに消さないため）。
+                val count = manager?.prepareLogout() ?: 0
+                if (count != 0 && !confirmUnbackedKeys(count)) {
+                    // 取りやめたら、to-device の処理に戻る。
+                    manager?.cancelLogout()
+                } else {
+                    // 端末の削除 API にトークンが要るので、認証情報を消す前に行う。
+                    manager?.destroyForLogout()
+                    try { logout() } finally { clear() }
+                }
                 "{}"
             }
             "copy" -> {

@@ -6,7 +6,9 @@ import { expect, fn, screen } from "storybook/test";
 import { storyChannels } from "../../../.storybook/fixtures";
 import { ChannelWebhooksDialog } from "./ChannelWebhooksDialog";
 
-const general = storyChannels.find((channel) => channel.id === "channel-general")!;
+const general = storyChannels.find(
+  (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+)!;
 const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
 
 const meta = {
