@@ -1497,12 +1497,21 @@ async fn backup_versions_switch_forward_and_reject_old_keys() {
         (status, code(&res)),
         (StatusCode::CONFLICT, "E2EE_WRONG_BACKUP_VERSION")
     );
+    // 形式の検査で拒んだことを確かめる（署名の検査の 400 `E2EE_BAD_SIGNATURE` と区別する）。
+    let format_error = |res: &Value| {
+        code(res).is_empty()
+            && res["error"]
+                .as_str()
+                .is_some_and(|e| e.starts_with("auth_data.algorithm and auth_data.version"))
+    };
     let legacy = json!({"algorithm": algorithm, "auth_data": alice.auth_data(&backup_key()), "expected_current_version": null});
-    let (status, _) = env.post(versions, &user, true, legacy).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    let mut partial = alice.versioned_auth_data(&backup_key(), 3);
-    partial.as_object_mut().unwrap().remove("algorithm");
-    let (status, _) = env
+    let (status, res) = env.post(versions, &user, true, legacy).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+    assert!(format_error(&res), "{res}");
+    // 方式を除いて署名し直した（署名は正しいが、版の番号だけがある）auth_data。
+    let mut partial = json!({"public_key": backup_key(), "version": "3"});
+    sign(&mut partial, &alice.user, &alice.master);
+    let (status, res) = env
         .post(
             versions,
             &user,
@@ -1510,7 +1519,23 @@ async fn backup_versions_switch_forward_and_reject_old_keys() {
             json!({"algorithm": algorithm, "auth_data": partial, "expected_current_version": null}),
         )
         .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+    assert!(format_error(&res), "{res}");
+    // 署名したあとで方式を除いたものは、署名の検査で拒む。
+    let mut tampered = alice.versioned_auth_data(&backup_key(), 3);
+    tampered.as_object_mut().unwrap().remove("algorithm");
+    let (status, res) = env
+        .post(
+            versions,
+            &user,
+            true,
+            json!({"algorithm": algorithm, "auth_data": tampered, "expected_current_version": null}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::BAD_REQUEST, "E2EE_BAD_SIGNATURE")
+    );
 
     // 次の版の番号は消した版を含めた最大 + 1。
     let third = json!({"algorithm": algorithm, "auth_data": alice.versioned_auth_data(&backup_key(), 3), "expected_current_version": null});
