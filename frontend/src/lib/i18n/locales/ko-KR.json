@@ -78,6 +78,9 @@
     "login": "로그인",
     "failed": "로그인하지 못했습니다",
     "retry": "다시 로그인",
+    "logoutStorageFailed": "로그아웃을 완료할 수 없습니다",
+    "logoutStorageFailedHelp": "메모리의 세션은 삭제했지만 브라우저에 저장된 인증 정보를 무효화하지 못했습니다. 저장 공간을 사용할 수 있게 된 후 이 화면에서 다시 시도해 주세요.",
+    "retryLogout": "로그아웃 다시 시도",
     "unauthorizedLoop": "API가 401을 계속 반환하여 다시 로그인하는 것을 중단했습니다. OIDC 설정(audience / typ / JWKS)과 백엔드 로그를 확인해 주세요.",
     "errorWithCode": "{{message}}({{code}})",
     "oidcErrors": {

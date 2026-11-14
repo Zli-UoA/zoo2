@@ -57,10 +57,11 @@ export function writeStoredSession(
   }
 }
 
-export function clearStoredSession(storage: AuthStorage): void {
+export function clearStoredSession(storage: AuthStorage): boolean {
   try {
     storage.removeItem(SESSION_KEY);
+    return true;
   } catch {
-    // sessionStorage が無効でもログアウト処理を妨げない。
+    return false;
   }
 }

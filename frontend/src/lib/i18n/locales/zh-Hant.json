@@ -78,6 +78,9 @@
     "login": "登入",
     "failed": "無法登入",
     "retry": "重新登入",
+    "logoutStorageFailed": "無法完成登出",
+    "logoutStorageFailedHelp": "記憶體中的工作階段已清除，但瀏覽器無法使已儲存的登入資料失效。請恢復儲存空間存取權，並在離開此頁面前重試。",
+    "retryLogout": "重試登出",
     "unauthorizedLoop": "API 持續回傳 401，已停止自動重新登入。請檢查 OIDC 設定（audience / typ / JWKS）與後端日誌。",
     "errorWithCode": "{{message}} ({{code}})",
     "oidcErrors": {
