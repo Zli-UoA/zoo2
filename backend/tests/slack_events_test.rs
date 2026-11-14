@@ -355,15 +355,16 @@ async fn test_events_ignore_unregistered_and_non_post_events() -> anyhow::Result
     let _serial = SERIAL.lock().await;
     let f = fixture(Some(SECRET)).await?;
     let now = now_secs();
-    // 対応付けのないチャンネル・許可していないワークスペース・投稿でないイベント・入退室・編集と削除は、200 で何も書かない
+    // 対応付けのないチャンネル・許可していないワークスペース・ファイルへのリアクション・入退室・ほかのイベントは、200 で何も書かない
     let other_channel = message_event(&f.team, "C999", &f.ts_new, None);
     let other_team = message_event("TOTHER", "C1", &f.ts_new, None);
-    let mut reaction = message_event(&f.team, "C1", &f.ts_new, None);
-    reaction["event"]["type"] = json!("reaction_added");
+    let mut file_reaction = message_event(&f.team, "C1", &f.ts_new, None);
+    file_reaction["event"] = json!({"type": "reaction_added", "user": "UA", "reaction": "x",
+        "item": {"type": "file", "file": "F1"}});
     let join = message_event(&f.team, "C1", &f.ts_new, Some("channel_join"));
-    let changed = message_event(&f.team, "C1", &f.ts_new, Some("message_changed"));
-    let deleted = message_event(&f.team, "C1", &f.ts_new, Some("message_deleted"));
-    for event in [other_channel, other_team, reaction, join, changed, deleted] {
+    let created = json!({"type": "event_callback", "team_id": &f.team,
+        "event": {"type": "channel_created", "channel": {"id": "C1"}}});
+    for event in [other_channel, other_team, file_reaction, join, created] {
         let (status, _) = post_event(&f.app, SECRET, now, &event).await?;
         assert_eq!(status, StatusCode::OK, "{event}");
     }

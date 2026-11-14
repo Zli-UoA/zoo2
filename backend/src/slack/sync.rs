@@ -92,8 +92,9 @@ pub async fn worker(s: AppState) {
                 // 取り込めずに残った合図 (同期の対象にならないチャンネルなど) は、1 日で捨てる
                 query(
                     &mut tx,
-                    "DELETE FROM slack_channel_wakes WHERE last_at<now()-interval '1 day' \
-                     RETURNING json_build_object('ok',true)::text",
+                    "WITH w AS (DELETE FROM slack_channel_wakes WHERE last_at<now()-interval '1 day' RETURNING 1), \
+                     h AS (DELETE FROM slack_message_hints WHERE created_at<now()-interval '1 day' OR attempts>=5 RETURNING 1) \
+                     SELECT json_build_object('ok',true)::text",
                     &[],
                 )
                 .await?;
@@ -285,7 +286,8 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
             "WITH c AS (SELECT t.team_id,t.slack_channel_id FROM slack_channel_syncs t \
              JOIN slack_channels sc ON sc.team_id=t.team_id AND sc.slack_channel_id=t.slack_channel_id \
              JOIN channels ch ON ch.id=sc.channel_id \
-             WHERE (t.available_at<=now() OR (NOT t.running \
+             WHERE NOT COALESCE(ch.encrypted,false) \
+             AND (t.available_at<=now() OR (NOT t.running \
                AND (t.not_before IS NULL OR t.not_before<=now()) \
                AND (t.last_synced_at IS NULL OR t.last_synced_at<=now()-{WAKE_MIN_INTERVAL}) \
                AND EXISTS(SELECT 1 FROM slack_channel_wakes w WHERE w.team_id=t.team_id \
@@ -487,7 +489,7 @@ fn retry_after(response: &reqwest::Response) -> u64 {
         .unwrap_or(60)
 }
 
-fn parse_messages(value: &Value) -> Vec<SlackMessage> {
+pub(super) fn parse_messages(value: &Value) -> Vec<SlackMessage> {
     value["messages"]
         .as_array()
         .into_iter()
@@ -710,6 +712,21 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
         tx.commit().await.map_err(AppError::from)?;
     }
 
+    // イベント (#293) が知らせた、編集・削除・リアクションの変更・範囲外のスレッドの返信を、Slack API で
+    // 1 件ずつ取り直して反映する。新しい同期の始まりで 1 回だけ行う (最初の同期は、全部取るので省く)
+    if !task.running && task.synced && !is_initial(task) {
+        super::hints::process(
+            &mut slack,
+            &mut ctx,
+            task.team_id.as_str(),
+            task.slack_channel_id.as_str(),
+            task.channel_id.as_str(),
+            task.token.as_str(),
+            &mut db,
+        )
+        .await?;
+    }
+
     // ユーザーが API から取り込みを始めたチャンネルの最初の同期 (カーソルが 0)。全履歴を取るので、返信も、
     // 差分同期の監視範囲 (3 日・最大 20 スレッド) には限らず、返信のある全スレッドから取る
     let initial = is_initial(task);
@@ -914,7 +931,7 @@ async fn store(
 }
 
 /// 投稿者とメンションされた人のうち、まだ zoo にいない Slack ユーザーの名前を `users.info` で調べる
-async fn lookup_profiles(
+pub(super) async fn lookup_profiles(
     db: &mut toasty::Db,
     slack: &mut Slack,
     ctx: &mut Context,

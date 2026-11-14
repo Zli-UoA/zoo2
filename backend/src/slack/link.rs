@@ -977,8 +977,15 @@ async fn manifest(State(s): State<AppState>, user: AuthUser) -> Result<Json<Valu
 /// ユーザーの Events API の購読 (`user_events`)。ユーザートークンで履歴を読む差分同期と同じ権限
 /// (`channels:history`・`groups:history`) で、連携したユーザーが参加しているチャンネルの投稿が届く。
 /// 新しいスコープは要らないので、連携済みのユーザーが連携し直す必要はない。
+/// 編集・削除は `message.channels` / `message.groups` の subtype (`message_changed`・`message_deleted`) で届き、
+/// リアクションの追加・削除は `reactions:read` で届く (どれも、すでに求めているスコープ)。
 /// DM・グループ DM (`message.im`・`message.mpim`) は、取り込み自体が未対応なので購読しない
-pub const USER_EVENTS: &[&str] = &["message.channels", "message.groups"];
+pub const USER_EVENTS: &[&str] = &[
+    "message.channels",
+    "message.groups",
+    "reaction_added",
+    "reaction_removed",
+];
 
 /// Events API の受信先 (バックエンドの `/api/slack/events`)。リダイレクト URL と同じ公開 URL を使う
 fn events_request_url(redirect: Option<&str>) -> String {
@@ -1156,7 +1163,12 @@ mod tests {
         assert_eq!(subs["request_url"], "https://zoo.example/api/slack/events");
         assert_eq!(
             subs["user_events"],
-            json!(["message.channels", "message.groups"])
+            json!([
+                "message.channels",
+                "message.groups",
+                "reaction_added",
+                "reaction_removed"
+            ])
         );
         // 購読に要るスコープは、すでに求めている (再連携は要らない)
         assert!(
