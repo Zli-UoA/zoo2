@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { ApiError, type ApiClient, type RequestOptions } from "../api/client";
 import type { CryptoWorker } from "./cryptoWorker";
 import { CryptoOperations, toCryptoFailure } from "./operations";
-import type { CryptoOperation, ToDeviceRow } from "./protocol";
+import type { CryptoOperation, KeysQueryResponse, ToDeviceRow } from "./protocol";
 import { SasController, type SasEntry } from "./sasController";
 import { REAUTH_HEADER } from "./secretStorageApi";
 import { MemoryCryptoBackend } from "./store/backend";
@@ -210,14 +210,11 @@ class FakeServer {
         );
         if (mine.length === 0) continue;
         const senders = [...new Set(mine.map((row) => row.sender_user_id))];
-        const deviceKeys = this.keysQuery(party.userId, senders).device_keys as Record<
-          string,
-          Record<string, JsonObject>
-        >;
+        const keysQuery = this.keysQuery(party.userId, senders) as unknown as KeysQueryResponse;
         const result = await party.worker.request({
           op: "processToDevice",
           rows: mine,
-          deviceKeys,
+          keysQuery,
         });
         expect(result.dropped).toBe(0);
         await party.sas.handleMessages(result.verifications);
@@ -491,11 +488,8 @@ describe("絵文字 SAS 検証", () => {
     server.beforeKeysQuery = async () => {
       await alice.sas.cancel(txnId);
       const rows = server.queue.splice(0);
-      const deviceKeys = server.keysQuery(BOB, [ALICE]).device_keys as Record<
-        string,
-        Record<string, JsonObject>
-      >;
-      const result = await bob.worker.request({ op: "processToDevice", rows, deviceKeys });
+      const keysQuery = server.keysQuery(BOB, [ALICE]) as unknown as KeysQueryResponse;
+      const result = await bob.worker.request({ op: "processToDevice", rows, keysQuery });
       void bob.sas.handleMessages(result.verifications);
       server.failKeysQuery = 2;
     };

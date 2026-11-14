@@ -1,5 +1,5 @@
 import type { ApiClient } from "../api/client";
-import type { DeviceKeysByUser, KeyUpload, RegistrationRequest } from "./protocol";
+import type { KeyUpload, KeysQueryResponse, RegistrationRequest } from "./protocol";
 
 /**
  * 端末と鍵、to-device の API（docs/e2ee.md の「端末とワンタイム鍵」「to-device メッセージ」）。
@@ -41,24 +41,34 @@ export async function uploadKeys(
   return data;
 }
 
-export async function queryDeviceKeys(
+/** `keys/query`（{@link KEYS_QUERY_BATCH} 人ずつ）。`device_keys`、`master_keys`、`signatures` などをまとめる。 */
+export async function queryKeys(
   client: ApiClient,
   userIds: string[],
   signal?: AbortSignal,
-): Promise<DeviceKeysByUser> {
-  const result: DeviceKeysByUser = {};
+): Promise<KeysQueryResponse> {
+  const merged: KeysQueryResponse = {
+    device_keys: {},
+    master_keys: {},
+    self_signing_keys: {},
+    user_signing_keys: {},
+    tofu_pins: {},
+    signatures: [],
+  };
   for (let start = 0; start < userIds.length; start += KEYS_QUERY_BATCH) {
-    const response = await client.request<{ device_keys?: DeviceKeysByUser }>(
-      "/api/e2ee/keys/query",
-      {
-        method: "POST",
-        body: { user_ids: userIds.slice(start, start + KEYS_QUERY_BATCH) },
-        signal,
-      },
-    );
-    Object.assign(result, response.device_keys ?? {});
+    const page = await client.request<Partial<KeysQueryResponse>>("/api/e2ee/keys/query", {
+      method: "POST",
+      body: { user_ids: userIds.slice(start, start + KEYS_QUERY_BATCH) },
+      signal,
+    });
+    Object.assign(merged.device_keys, page.device_keys ?? {});
+    Object.assign(merged.master_keys, page.master_keys ?? {});
+    Object.assign(merged.self_signing_keys, page.self_signing_keys ?? {});
+    Object.assign(merged.user_signing_keys, page.user_signing_keys ?? {});
+    Object.assign(merged.tofu_pins, page.tofu_pins ?? {});
+    merged.signatures.push(...(page.signatures ?? []));
   }
-  return result;
+  return merged;
 }
 
 export async function ackToDevice(

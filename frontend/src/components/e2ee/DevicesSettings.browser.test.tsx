@@ -117,6 +117,7 @@ function renderPanel() {
     deviceLimit: null,
     cancelLogout: vi.fn(),
     requestKeyBackup: vi.fn(),
+    requestKeyBackupImport: vi.fn(),
     clearForLogout: async () => {},
     sas: null,
   };

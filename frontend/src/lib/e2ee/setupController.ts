@@ -1,6 +1,7 @@
 import type { JsonObject } from "@zoo/crypto-wasm";
 
 import type { ApiClient } from "../api/client";
+import { BACKUP_IMPORT_MAX_PAGES, BACKUP_IMPORT_PAGE_SIZE } from "./backupImportLimits";
 import type { CryptoWorker } from "./cryptoWorker";
 import {
   type CredentialGetter,
@@ -15,6 +16,7 @@ import {
   createBackupVersion,
   createSecretStorageKey,
   errorCode,
+  getBackupKeysPage,
   getCurrentBackupVersion,
   uploadBackupKeys,
   deleteKeySlot,
@@ -42,6 +44,11 @@ export interface E2eeSetupDeps {
   /** パスキーの RP ID（issuer のホスト名）。OIDC を設定していなければ `null`（リカバリーキーだけ）。 */
   rpId: string | null;
   getCredential?: CredentialGetter;
+  /**
+   * 解錠（初回設定、初回設定の続き、解錠し直しを含む）を終えたときに呼ぶ。鍵バックアップからの
+   * 取り込み（`E2eeContextValue.requestKeyBackupImport`）を始めるのに使う。
+   */
+  onUnlocked?: () => void;
 }
 
 export type E2eeStatus =
@@ -134,9 +141,16 @@ export type BackupUploadResult =
  * 解錠していない端末と、今の版がない場合は何もしない。
  */
 export function uploadKeyBackup(deps: E2eeSetupDeps): Promise<BackupUploadResult> {
-  // 呼び出し元（解錠、起動時の確認、鍵の受信）にかかわらず、同じ Worker への送信は 1 つずつ行う。
+  return enqueueBackup(deps, () => uploadKeyBackupNow(deps));
+}
+
+/**
+ * 呼び出し元（解錠、起動時の確認、鍵の受信）にかかわらず、同じ Worker への鍵バックアップの送信と
+ * 取り込みは 1 つずつ行う。
+ */
+function enqueueBackup<T>(deps: E2eeSetupDeps, task: () => Promise<T>): Promise<T> {
   const previous = backupQueues.get(deps.worker) ?? Promise.resolve();
-  const run = previous.catch(() => undefined).then(() => uploadKeyBackupNow(deps));
+  const run = previous.catch(() => undefined).then(task);
   backupQueues.set(deps.worker, run);
   return run;
 }
@@ -170,21 +184,96 @@ async function uploadKeyBackupNow(deps: E2eeSetupDeps): Promise<BackupUploadResu
   }
 }
 
+export type BackupImportResult =
+  | { kind: "done"; imported: number; dropped: number }
+  /**
+   * 今の版を使えない（{@link BackupUploadResult} の `rejected` と同じ）か、サーバーの応答が上限を
+   * 超えた（`BackupTooManyPages`、`BackupPageTooLarge`、同じカーソルの繰り返しの `BackupCursorLoop`）。
+   * 試し直さず、次の解錠か起動まで取り込まない。
+   */
+  | { kind: "rejected"; code: string }
+  /** 取り込みの途中で版が消えた（404）。次の解錠か起動で、今の版から取り込み直す。 */
+  | { kind: "gone"; imported: number; dropped: number };
+
+/**
+ * 鍵バックアップの今の版から、過去のセッションを取り込む（docs/e2ee.md の「新しい端末での解錠」の
+ * 手順 5）。解錠していない端末と、今の版がない場合は何もしない。
+ *
+ * `GET /api/e2ee/key_backup/keys` を 1 ページ（1000 件）ずつ読み、ページごとに暗号ストアへ保存する。
+ * 進み具合も同じ書き込みで保存するので、途中で失敗しても（通信の失敗、タブを閉じた）、次に呼んだ
+ * ときに続きのページから取り込む。版を取り込み終えたら、同じ版では読み直さない。
+ * アップロードと同じ順番待ちで行う（今の版の検証と送信待ちの記録を、同時に変えないため）。
+ */
+export function importKeyBackup(
+  deps: E2eeSetupDeps,
+  /** 1 ページを保存するたびに、取り込んだ数を渡す（復号できなかったメッセージを試し直すのに使う）。 */
+  onPage?: (imported: number) => void,
+): Promise<BackupImportResult> {
+  return enqueueBackup(deps, () => importKeyBackupNow(deps, onPage));
+}
+
+async function importKeyBackupNow(
+  deps: E2eeSetupDeps,
+  onPage?: (imported: number) => void,
+): Promise<BackupImportResult> {
+  let imported = 0;
+  let dropped = 0;
+  if (!(await deps.worker.request({ op: "hasOwnKeys" }))) {
+    return { kind: "done", imported, dropped };
+  }
+  const currentVersion = await getCurrentBackupVersion(deps.client);
+  const start = await deps.worker.request({ op: "beginBackupImport", currentVersion });
+  if (start.kind === "rejected") return start;
+  if (start.kind !== "import") return { kind: "done", imported, dropped };
+  let after = start.after;
+  let pages = start.pages;
+  // サーバーが同じカーソルを返し続けても、同じページを読み続けない。
+  const seen = new Set<string>(after === null ? [] : [after]);
+  for (;;) {
+    if (pages >= BACKUP_IMPORT_MAX_PAGES) return { kind: "rejected", code: "BackupTooManyPages" };
+    const page = await getBackupKeysPage(deps.client, start.version, after);
+    if (!page) return { kind: "gone", imported, dropped };
+    if (page.sessions.length > BACKUP_IMPORT_PAGE_SIZE) {
+      return { kind: "rejected", code: "BackupPageTooLarge" };
+    }
+    if (page.next !== null && seen.has(page.next)) {
+      return { kind: "rejected", code: "BackupCursorLoop" };
+    }
+    if (page.next !== null) seen.add(page.next);
+    pages += 1;
+    const result = await deps.worker.request({
+      op: "importBackupPage",
+      version: start.version,
+      rows: page.sessions,
+      next: page.next,
+    });
+    imported += result.imported;
+    dropped += result.dropped;
+    onPage?.(result.imported);
+    if (!page.next) return { kind: "done", imported, dropped };
+    after = page.next;
+  }
+}
+
 /**
  * 起動時の確認（docs/e2ee.md の「初回設定と解錠の流れ」）。解錠済みの端末だけが、自分の端末への
  * 署名を確かめ、なければ署名し直す。まだ解錠していない端末は、何も取得しない。
+ *
+ * 暗号ストアの鍵をそのまま使える（解錠済みで、初回設定の途中でも鍵の不一致でもない）ときに `true`。
+ * 鍵バックアップへの送信の失敗では `false` にしない（取り込みを始められるように）。
  */
-export async function runStartupCheck(deps: E2eeSetupDeps): Promise<void> {
-  if (!(await deps.worker.request({ op: "hasOwnKeys" }))) return;
+export async function runStartupCheck(deps: E2eeSetupDeps): Promise<boolean> {
+  if (!(await deps.worker.request({ op: "hasOwnKeys" }))) return false;
   const [keysQuery, versions] = await Promise.all([
     queryOwnKeys(deps.client, deps.userId),
     listBackupVersions(deps.client),
   ]);
   const check = await deps.worker.request({ op: "startupCheck", keysQuery, versions });
   if (check?.kind === "sign_device") await uploadSignatures(deps.client, [check.signature]);
-  if (check && check.kind !== "resume_setup" && check.kind !== "unlock") {
-    await uploadKeyBackup(deps);
-  }
+  if (!check || check.kind === "resume_setup" || check.kind === "unlock") return false;
+  // 送信に失敗しても（通信の失敗など）、鍵はそのまま使える。送信待ちは次の受信や起動で送る。
+  await uploadKeyBackup(deps).catch(() => undefined);
+  return true;
 }
 
 /**
@@ -289,6 +378,9 @@ export async function saveRemaining(
   await deps.worker.request({ op: "finishSetup", secretsRevision, keyId });
   // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送る。失敗しても解錠は済んでいる。
   await uploadKeyBackup(deps).catch(() => undefined);
+  // 過去のセッションを鍵バックアップから取り込む。件数が多いと時間がかかるので、待たずに返す
+  // （取り込みと試し直しは E2eeProvider が行う）。
+  deps.onUnlocked?.();
 }
 
 async function planRemaining(deps: E2eeSetupDeps, keyId?: string): Promise<ResumePlan> {

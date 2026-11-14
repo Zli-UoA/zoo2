@@ -196,7 +196,8 @@ describe("E2eeDeviceManager", () => {
     expect(requests).toContainEqual({
       method: "POST",
       path: "/api/e2ee/keys/query",
-      body: { user_ids: ["u2"] },
+      // 送信ユーザーと自分（他のユーザーのマスター鍵を信頼できるかを確かめるため）。
+      body: { user_ids: [USER, "u2"].sort() },
     });
     expect(requests).toContainEqual({
       method: "POST",

@@ -139,11 +139,14 @@ export async function openSqliteCryptoBackend(databaseName: string): Promise<Cry
               [session.theirIdentityKey, session.sessionId, session.pickle],
             );
           }
-          for (const { key, pickle } of changes.inboundSessions ?? []) {
+          for (const { key, pickle, fromBackup } of changes.inboundSessions ?? []) {
+            // 鍵バックアップから取り込んだだけなら、同じ版には上げ直さない。新しい行は送信済みにし、
+            // すでにある行は送信待ちかどうかを変えない（送っていない Olm 由来のセッションは送る）。
             await query(
-              `INSERT INTO inbound_sessions (key, pickle, backed_up) VALUES (?, ?, 0)
-               ON CONFLICT (key) DO UPDATE SET pickle = excluded.pickle, backed_up = 0`,
-              [key, pickle],
+              `INSERT INTO inbound_sessions (key, pickle, backed_up) VALUES (?, ?, ?)
+               ON CONFLICT (key) DO UPDATE SET pickle = excluded.pickle,
+                 backed_up = CASE WHEN excluded.backed_up = 1 THEN inbound_sessions.backed_up ELSE 0 END`,
+              [key, pickle, fromBackup ? 1 : 0],
             );
           }
           if (changes.trustStore !== undefined) {
