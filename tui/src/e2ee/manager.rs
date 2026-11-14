@@ -1,5 +1,6 @@
 //! ログイン後の端末の登録、鍵の補充、to-device の処理（#359。React の `deviceManager.ts` と同じ流れ）。
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -119,10 +120,14 @@ enum DeleteOutcome {
 /// 404 は、登録できたと分かっている端末なら、消すものがないので済んだものとする。登録できたか
 /// 分からない端末（`unconfirmed`）は、あとから届いた登録で端末ができうるので残し、続けて
 /// [`MAX_NOT_FOUND`] 回 404 なら済んだものとする。
+///
+/// `counted` は、この起動で 404 を数えた端末。同じ端末の 404 は起動ごとに 1 回だけ数える
+/// （`spawn` のループの試し直しで上限に達して、削除待ちを早く外さないため）。
 pub async fn delete_device_or_remember(
     api: &ApiClient,
     root: &Path,
     target: &PendingDeviceDeletion,
+    counted: &mut BTreeSet<String>,
 ) {
     let _ = mark_device_deletion_pending(root, target);
     let outcome =
@@ -147,6 +152,9 @@ pub async fn delete_device_or_remember(
             let _ = clear_pending_device_deletion(root, &current);
         }
         DeleteOutcome::NotFound => {
+            if !counted.insert(current.device_id.clone()) {
+                return;
+            }
             let not_found = current.not_found + 1;
             if not_found >= MAX_NOT_FOUND {
                 let _ = clear_pending_device_deletion(root, &current);
@@ -164,14 +172,19 @@ pub async fn delete_device_or_remember(
 }
 
 /// 前のログアウトで消せなかった端末を、同じユーザーで消し直す。一覧を読めなければ何もしない
-/// （ファイルはそのまま残す）。
-pub async fn retry_pending_device_deletion(api: &ApiClient, root: &Path, user_id: &str) {
+/// （ファイルはそのまま残す）。`counted` は [`delete_device_or_remember`] と同じ。
+pub async fn retry_pending_device_deletion(
+    api: &ApiClient,
+    root: &Path,
+    user_id: &str,
+    counted: &mut BTreeSet<String>,
+) {
     let Ok(all) = read_pending_device_deletions(root) else {
         return;
     };
     for pending in all {
         if pending.user_id == user_id {
-            delete_device_or_remember(api, root, &pending).await;
+            delete_device_or_remember(api, root, &pending, counted).await;
         }
     }
 }
@@ -190,6 +203,7 @@ pub fn spawn(
     tokio::spawn(async move {
         let mut backoff = Duration::from_secs(5);
         let mut user_id = user_id;
+        let mut state = RunState::default();
         loop {
             if user_id.is_none() {
                 user_id = api.me().await.ok().map(|me| me.id);
@@ -199,7 +213,7 @@ pub fn spawn(
                 backoff = (backoff * 2).min(Duration::from_secs(300));
                 continue;
             };
-            let mut connected = false;
+            state.connected = false;
             match run(
                 &http,
                 &api_base_url,
@@ -207,7 +221,7 @@ pub fn spawn(
                 &api,
                 &root,
                 user_id,
-                &mut connected,
+                &mut state,
             )
             .await
             {
@@ -215,7 +229,7 @@ pub fn spawn(
                 Err(err) if err.to_string().contains("ほかの zoo2-tui") => return,
                 _ => {}
             }
-            let (delay, next) = retry_delay(backoff, connected);
+            let (delay, next) = retry_delay(backoff, state.connected);
             tokio::time::sleep(delay).await;
             backoff = next;
         }
@@ -231,6 +245,15 @@ pub fn retry_delay(backoff: Duration, connected: bool) -> (Duration, Duration) {
     (delay, (delay * 2).min(Duration::from_secs(300)))
 }
 
+/// `spawn` のループが試し直しをまたいで持つ状態。
+#[derive(Default)]
+struct RunState {
+    /// この回で、登録と補充を終えて Shape を受け取れた（[`retry_delay`]）。回ごとに戻す。
+    connected: bool,
+    /// この起動で 404 を数えた削除待ちの端末（試し直しのたびに数えないため）。
+    counted_not_found: BTreeSet<String>,
+}
+
 async fn run(
     http: &reqwest::Client,
     api_base_url: &str,
@@ -238,13 +261,13 @@ async fn run(
     api: &ApiClient,
     root: &Path,
     user_id: &str,
-    connected: &mut bool,
+    state: &mut RunState,
 ) -> Result<()> {
-    retry_pending_device_deletion(api, root, user_id).await;
+    retry_pending_device_deletion(api, root, user_id, &mut state.counted_not_found).await;
     let opened = CryptoStore::open(root, user_id)?;
     if let Some(replaced) = &opened.replaced_device_id {
         let target = PendingDeviceDeletion::new(user_id, replaced, !opened.replaced_registered);
-        delete_device_or_remember(api, root, &target).await;
+        delete_device_or_remember(api, root, &target, &mut state.counted_not_found).await;
     }
     let mut store = Arc::new(Mutex::new(opened.store));
     let counts = match ensure_registered(api, &store).await {
@@ -277,7 +300,7 @@ async fn run(
     loop {
         let batch = stream.next_batch().await?;
         // Shape を受け取れた。このあとの切断は、最初の間隔から試し直す。
-        *connected = true;
+        state.connected = true;
         if batch.reset {
             rows.clear();
         }
@@ -419,9 +442,10 @@ pub async fn destroy_for_logout(
     if signed_in_user != Some(user_id.as_str()) {
         return Ok(());
     }
-    delete_device_or_remember(api, root, &current).await;
+    let mut counted = BTreeSet::new();
+    delete_device_or_remember(api, root, &current, &mut counted).await;
     if let Some(replaced) = &replaced {
-        delete_device_or_remember(api, root, replaced).await;
+        delete_device_or_remember(api, root, replaced, &mut counted).await;
     }
     Ok(())
 }

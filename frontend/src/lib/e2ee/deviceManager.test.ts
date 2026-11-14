@@ -638,6 +638,33 @@ describe("E2eeDeviceManager", () => {
       expect(readPendingDeviceDeletions()).toEqual([]);
     });
 
+    it("同じログインの中の試し直しでは、404 を 1 回だけ数える", async () => {
+      markDeviceDeletionPending({ userId: USER, deviceId: "d-old", unconfirmed: true });
+      const { worker, calls } = fakeWorker({
+        open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      });
+      let uploads = 0;
+      const { client, requests } = fakeClient({
+        "DELETE /api/e2ee/devices/d-old": notFound,
+        // 起動の補充を何回か失敗させ、起動を試し直させる。
+        "POST /api/e2ee/keys/upload": () => {
+          uploads += 1;
+          if (uploads <= 3) throw new ApiError(503, "busy");
+          return { one_time_key_counts: { signed_curve25519: 50 }, unused_fallback_key_types: [] };
+        },
+      });
+      const instance = manager(worker, client);
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await instance.start().catch(() => undefined);
+      }
+      expect(calls.filter((call) => call.op === "open")).toHaveLength(4);
+      expect(requests.filter((r) => r.path === "/api/e2ee/devices/d-old")).toHaveLength(4);
+      expect(readPendingDeviceDeletions()).toEqual([
+        { userId: USER, deviceId: "d-old", unconfirmed: true, notFound: 1 },
+      ]);
+      await instance.stop();
+    });
+
     it("あとから登録が届いた端末は、次のログインで消す", async () => {
       // ログアウトのために開いた（登録の応答をなくしていた）端末。
       const { worker } = fakeWorker();

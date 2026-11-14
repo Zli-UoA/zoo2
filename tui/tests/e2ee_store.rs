@@ -180,7 +180,7 @@ async fn logout_destroys_the_store_and_remembers_a_failed_deletion() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "data": {}, "txid": null })))
         .mount(&server)
         .await;
-    manager::retry_pending_device_deletion(&api, &root, BOB).await;
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
     assert!(
         store::read_pending_device_deletions(&root)
             .unwrap()
@@ -446,18 +446,41 @@ async fn not_found_for_an_unconfirmed_device_is_retried_until_it_repeats() {
     );
 
     // 次の起動ごとに消し直す。続けて 3 回 404 なら済んだものとする。
-    manager::retry_pending_device_deletion(&api, &root, BOB).await;
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
     assert_eq!(
         store::read_pending_device_deletions(&root).unwrap()[0].not_found,
         2
     );
-    manager::retry_pending_device_deletion(&api, &root, BOB).await;
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
     assert_eq!(manager::MAX_NOT_FOUND, 3);
     assert!(
         store::read_pending_device_deletions(&root)
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn not_found_is_counted_once_per_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    store::mark_device_deletion_pending(&root, &store::PendingDeviceDeletion::new(BOB, "d", true))
+        .unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/e2ee/devices/d"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(4)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    // 同じ起動の中の試し直し（`spawn` のループ）では、404 を 1 回だけ数える。
+    let mut counted = std::collections::BTreeSet::new();
+    for _ in 0..4 {
+        manager::retry_pending_device_deletion(&api, &root, BOB, &mut counted).await;
+    }
+    let pending = store::read_pending_device_deletions(&root).unwrap();
+    assert_eq!((pending.len(), pending[0].not_found), (1, 1));
 }
 
 #[tokio::test]
@@ -490,7 +513,7 @@ async fn an_unconfirmed_device_registered_late_is_deleted_on_the_next_start() {
         .expect(1)
         .mount(&server)
         .await;
-    manager::retry_pending_device_deletion(&api, &root, BOB).await;
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
     assert!(
         store::read_pending_device_deletions(&root)
             .unwrap()
@@ -557,7 +580,7 @@ async fn a_broken_pending_list_is_neither_retried_nor_overwritten() {
         .mount(&server)
         .await;
     let api = api_for(&server);
-    manager::retry_pending_device_deletion(&api, &root, BOB).await;
+    manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
     assert!(store::read_pending_device_deletions(&root).is_err());
     let entry = store::PendingDeviceDeletion::new(BOB, "d", false);
     assert!(store::mark_device_deletion_pending(&root, &entry).is_err());
