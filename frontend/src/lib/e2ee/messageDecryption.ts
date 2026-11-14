@@ -11,8 +11,9 @@ import type { MessageRow } from "../electric/types";
  * - `staleEpoch`：セッションと行の `epoch` が合わない。
  * - `invalid`：チャンネル、行、種別、送信者、リプレイ、版のどれかの照合に失敗して破棄した。
  * - `failed`：上のどれにも当たらない復号の失敗。
- * - `unencrypted`：暗号化チャンネルなのに暗号文がない（削除されていない）行。正しいサーバーは DB の
- *   トリガーでこの行を作れないので、サーバーや同期元が書き換えたものとして本文を出さない。
+ * - `unencrypted`：暗号化チャンネルなのに暗号文がなく、`epoch` だけがある（削除されていない）行。正しい
+ *   サーバーは DB のトリガーでこの行を作れないので、サーバーや同期元が書き換えたものとして本文を出さない。
+ *   `epoch` もない行は、暗号化に切り替える前の平文のメッセージ（#367。`isPlaintextBeforeEncryption`）。
  */
 export type UndecryptableReason =
   | "keyMissing"
@@ -110,6 +111,19 @@ export function isEncryptedMessage(message: Pick<MessageRow, "ciphertext">): boo
 }
 
 /**
+ * 暗号化チャンネルの、暗号化に切り替える前の平文のメッセージか（#367。docs/e2ee.md の「既存のチャンネルの暗号化」）。
+ *
+ * 暗号文も `epoch` もない行。暗号化チャンネルとして送った行は、削除しても `epoch` が残る。平文なので本文を
+ * そのまま出すが、「暗号化前」の印を付け、編集させない（サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する）。
+ * 平文の行はサーバーが書き換えられるので、暗号化したメッセージと同じようには信用しない（印で区別する）。
+ */
+export function isPlaintextBeforeEncryption(
+  message: Pick<MessageRow, "ciphertext" | "epoch">,
+): boolean {
+  return message.ciphertext == null && message.epoch == null;
+}
+
+/**
  * 表示に使う復号の結果を決める。
  *
  * 平文のメッセージは `null`（今までどおり `content` を表示する）。暗号文があるのに復号の結果がまだ
@@ -152,19 +166,42 @@ export function useMentionUserNames(): ReadonlyMap<string, string> {
   return useContext(MentionUserNamesContext);
 }
 
+/** 表示中のチャンネルを暗号化チャンネルとして扱うか（格下げの検出を含む）。`MessagePane` が渡す。 */
+export const EncryptedChannelContext = createContext(false);
+
+export function useEncryptedChannel(): boolean {
+  return useContext(EncryptedChannelContext);
+}
+
+/**
+ * 暗号化チャンネルで、`message` が暗号化に切り替える前の平文のメッセージか（#367）。印と編集の可否に使う。
+ */
+export function usePlaintextBeforeEncryption(
+  message: Pick<MessageRow, "ciphertext" | "epoch">,
+): boolean {
+  return useEncryptedChannel() && isPlaintextBeforeEncryption(message);
+}
+
 /** 表示中のチャンネルの復号の結果と、メンションの突き合わせに使うユーザー名の表を渡す。 */
 export function MessageDecryptionsProvider({
   decryptions,
   mentionUserNames,
+  encrypted = false,
   children,
 }: {
   decryptions: ReadonlyMap<string, MessageDecryption>;
   mentionUserNames: ReadonlyMap<string, string>;
+  /** 暗号化チャンネルとして扱うか。 */
+  encrypted?: boolean;
   children?: ReactNode;
 }) {
   return createElement(
-    MessageDecryptionsContext.Provider,
-    { value: decryptions },
-    createElement(MentionUserNamesContext.Provider, { value: mentionUserNames }, children),
+    EncryptedChannelContext.Provider,
+    { value: encrypted },
+    createElement(
+      MessageDecryptionsContext.Provider,
+      { value: decryptions },
+      createElement(MentionUserNamesContext.Provider, { value: mentionUserNames }, children),
+    ),
   );
 }

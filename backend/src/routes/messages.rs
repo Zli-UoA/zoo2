@@ -778,6 +778,10 @@ pub(crate) async fn create_message_impl(
         .await?;
         e2ee_channels::check_epoch(payload.epoch.unwrap_or(0), current.membership_epoch)?;
         e2ee_channels::check_sender_device(&mut tx, &auth_user.id, sender).await?;
+    } else if e2ee_channels::lock_encryption(&mut tx, &payload.channel_id).await? {
+        // ロックなしで平文と読んだあとに暗号化へ切り替わっていたら（#367）、平文を書かない。チャンネルの行を
+        // FOR KEY SHARE で読むので、切り替え（FOR UPDATE）の前か後のどちらかに並ぶ。
+        return Err(e2ee_channels::plaintext_forbidden());
     }
     // スレッド親メッセージ検証
     let mut parent_author_id: Option<String> = None;
@@ -1063,7 +1067,8 @@ pub(crate) async fn update_message(
     }
     let row = crate::apps::query(
         &mut tx,
-        "SELECT json_build_object('revision', revision, 'deleted', deleted_at IS NOT NULL)::text
+        "SELECT json_build_object('revision', revision, 'deleted', deleted_at IS NOT NULL,
+           'legacy', epoch IS NULL AND ciphertext IS NULL)::text
          FROM messages WHERE id = $1 FOR UPDATE",
         &[id.as_str()],
     )
@@ -1073,6 +1078,11 @@ pub(crate) async fn update_message(
     .filter(|row| row["deleted"] != true)
     .ok_or_else(|| AppError::NotFound(format!("Message not found: {id}")))?;
     let current_revision = row["revision"].as_i64().unwrap_or(0);
+    // 暗号化に切り替える前の平文のメッセージは、切り替えたあとは編集できない（#367）。平文で上書きすると暗号化
+    // チャンネルに新しい平文が入り、暗号文に置き換えても、元の平文は Home や通知などに残るため。削除はできる。
+    if current.encrypted && row["legacy"] == true {
+        return Err(e2ee_channels::legacy_immutable());
+    }
     let now = crate::models::now_utc_millis();
 
     if current.encrypted {

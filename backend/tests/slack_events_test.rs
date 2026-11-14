@@ -187,6 +187,8 @@ async fn fixture(signing_secret: Option<&str>) -> anyhow::Result<Fixture> {
     config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
     config.slack.api_base_url = slack.uri();
     config.slack.signing_secret = signing_secret.map(str::to_string);
+    // 環境変数 SLACK_APP_ID に依らない (`message_event` の api_app_id と食い違うと、受信口がイベントを無視する)
+    config.slack.app_id = None;
     let db = init_db(&config.database_url).await?;
     let state = AppState::new(db, config);
     let app = create_router(state.clone());
@@ -872,5 +874,236 @@ async fn test_light_syncs_stop_fetching_candidates_that_cannot_be_kept() -> anyh
     }
     // 最初の軽い同期は、残れる新しい 20 件だけを取る。2 回目以降は、取り直さない
     assert_eq!(totals, [20, 20, 20], "{totals:?}");
+    Ok(())
+}
+
+/// このワークスペース以外の同期の項目の `available_at` を、1 日先へ延ばす。元の値を返す (`restore_other_teams` で戻す)
+async fn defer_other_teams(state: &AppState, team: &str) -> anyhow::Result<Vec<Value>> {
+    // 保存と更新を 1 つのトランザクションにまとめる。途中で失敗したら、ロールバックされ、共有の DB に変更が残らない
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let mut saved = query(
+        &mut tx,
+        "SELECT json_build_object('team',team_id,'channel',slack_channel_id,'at',available_at::text)::text \
+         FROM slack_channel_syncs WHERE team_id<>$1",
+        &[team],
+    )
+    .await?;
+    query(
+        &mut tx,
+        "UPDATE slack_channel_syncs SET available_at=now()+interval '1 day' WHERE team_id<>$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[team],
+    )
+    .await?;
+    // 前のテストが残した、熟した合図 (`slack_channel_wakes`) も、先に取られるので、一時的に先へ延ばす
+    let mut wakes = query(
+        &mut tx,
+        "SELECT json_build_object('team',team_id,'channel',slack_channel_id,'at',first_at::text,'wake',true)::text \
+         FROM slack_channel_wakes WHERE team_id<>$1",
+        &[team],
+    )
+    .await?;
+    query(
+        &mut tx,
+        "UPDATE slack_channel_wakes SET first_at=now()+interval '1 day' WHERE team_id<>$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[team],
+    )
+    .await?;
+    tx.commit().await?;
+    saved.append(&mut wakes);
+    Ok(saved)
+}
+
+async fn restore_other_teams(state: &AppState, saved: &[Value]) -> anyhow::Result<()> {
+    for row in saved {
+        let statement = if row["wake"] == true {
+            "UPDATE slack_channel_wakes SET first_at=$3::timestamptz WHERE team_id=$1 AND slack_channel_id=$2 \
+             RETURNING json_build_object('ok',true)::text"
+        } else {
+            "UPDATE slack_channel_syncs SET available_at=$3::timestamptz WHERE team_id=$1 AND slack_channel_id=$2 \
+             RETURNING json_build_object('ok',true)::text"
+        };
+        sql(
+            state,
+            statement,
+            &[
+                row["team"].as_str().unwrap(),
+                row["channel"].as_str().unwrap(),
+                row["at"].as_str().unwrap(),
+            ],
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_woken_channels_are_claimed_before_channels_that_are_merely_due() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET)).await?;
+    // 2 つ目のチャンネル C2 (Zoo のチャンネルも 1 つ) を対応付ける。C2 は、C1 より前から期限が来ているだけ
+    let owner = sql(
+        &f.state,
+        "SELECT json_build_object('id',user_id)::text FROM slack_user_links WHERE team_id=$1",
+        &[&f.team],
+    )
+    .await?[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let zoo2 = create_channel(&f.app, &owner).await?;
+    let cursor = format!("{}.000000", now_secs() - 7200);
+    sql(
+        &f.state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C2',$2,$3) RETURNING json_build_object('ok',true)::text",
+        &[&f.team, &zoo2, &cursor],
+    )
+    .await?;
+    {
+        let mut db = f.state.db.clone();
+        let mut tx = db.transaction().await?;
+        sync::enqueue_team(&mut tx, &f.team).await?;
+        tx.commit().await?;
+    }
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [], "has_more": false})),
+        )
+        .mount(&f.slack)
+        .await;
+    // C2: 10 分前から期限切れ (順番待ちの先頭)。C1: 5 分前から期限切れで、合図が熟している
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET running=false,last_synced_at=now()-interval '1 hour',rechecked_at=now(),not_before=NULL,\
+         available_at=CASE WHEN slack_channel_id='C2' THEN now()-interval '10 minutes' ELSE now()-interval '5 minutes' END \
+         WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    let (status, _) = post_event(
+        &f.app,
+        SECRET,
+        now_secs(),
+        &message_event(&f.team, "C1", &f.ts_new, None),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    // 1 つだけ取る (ほかのテストが残した項目が先に来ないよう、このワークスペース以外の項目を、一時的に先へ延ばす。
+    // 共有の DB に変更を残さないよう、`run_once` が失敗しても、あとで元の値に戻す)
+    let saved = defer_other_teams(&f.state, &f.team).await?;
+    let claimed = sync::run_once(&f.state).await;
+    restore_other_teams(&f.state, &saved).await?;
+    assert!(claimed?);
+    let first = f
+        .slack
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .find(|r| r.url.path() == "/conversations.history")
+        .and_then(|r| {
+            r.url
+                .query_pairs()
+                .find(|(k, _)| k == "channel")
+                .map(|(_, v)| v.to_string())
+        });
+    assert_eq!(first.as_deref(), Some("C1"), "the woken channel goes first");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_a_running_channel_with_a_ripe_wake_is_not_put_first() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET)).await?;
+    // 2 つ目のチャンネル C2 (Zoo のチャンネルも 1 つ) を対応付ける。C2 は、C1 より前から期限が来ているだけ
+    let owner = sql(
+        &f.state,
+        "SELECT json_build_object('id',user_id)::text FROM slack_user_links WHERE team_id=$1",
+        &[&f.team],
+    )
+    .await?[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let zoo2 = create_channel(&f.app, &owner).await?;
+    let cursor = format!("{}.000000", now_secs() - 7200);
+    sql(
+        &f.state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C2',$2,$3) RETURNING json_build_object('ok',true)::text",
+        &[&f.team, &zoo2, &cursor],
+    )
+    .await?;
+    {
+        let mut db = f.state.db.clone();
+        let mut tx = db.transaction().await?;
+        sync::enqueue_team(&mut tx, &f.team).await?;
+        tx.commit().await?;
+    }
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .and(query_param("channel", "C2"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [], "has_more": false})),
+        )
+        .mount(&f.slack)
+        .await;
+    // C2: 10 分前から期限切れ (順番待ちの先頭)。C1: 5 分前から期限切れで、合図が熟しているが、同期の途中 (running)
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET running=false,last_synced_at=now()-interval '1 hour',rechecked_at=now(),not_before=NULL,\
+         available_at=CASE WHEN slack_channel_id='C2' THEN now()-interval '10 minutes' ELSE now()-interval '5 minutes' END \
+         WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    let (status, _) = post_event(
+        &f.app,
+        SECRET,
+        now_secs(),
+        &message_event(&f.team, "C1", &f.ts_new, None),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    // C1 は同期の途中 (続きを待っている)
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET running=true,phase='history',run_oldest=$2 WHERE team_id=$1 AND slack_channel_id='C1' \
+         RETURNING json_build_object('ok',true)::text",
+        &[&f.team, &cursor],
+    )
+    .await?;
+    // 1 つだけ取る (ほかのテストが残した項目が先に来ないよう、このワークスペース以外の項目を、一時的に先へ延ばす。
+    // 共有の DB に変更を残さないよう、`run_once` が失敗しても、あとで元の値に戻す)
+    let saved = defer_other_teams(&f.state, &f.team).await?;
+    let claimed = sync::run_once(&f.state).await;
+    restore_other_teams(&f.state, &saved).await?;
+    assert!(claimed?);
+    let first = f
+        .slack
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .find(|r| r.url.path() == "/conversations.history")
+        .and_then(|r| {
+            r.url
+                .query_pairs()
+                .find(|(k, _)| k == "channel")
+                .map(|(_, v)| v.to_string())
+        });
+    assert_eq!(
+        first.as_deref(),
+        Some("C2"),
+        "the earlier due channel goes first"
+    );
     Ok(())
 }
