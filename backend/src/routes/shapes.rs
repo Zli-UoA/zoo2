@@ -231,14 +231,16 @@ struct StreamAccess {
     actor: String,
     initial_guest: bool,
     channel: Option<String>,
-    last_checked: tokio::time::Instant,
+    started: tokio::time::Instant,
+    /// 最後にアクセス権を確かめた時刻。まだ確かめていなければ None（最初のチャンクの前に必ず確かめる）。
+    last_checked: Option<tokio::time::Instant>,
     _sse_guard: crate::metrics::SseConnectionGuard,
     _permit: crate::routes::shape_limit::ShapeStreamPermit,
 }
 
 impl StreamAccess {
     async fn still_allowed(&mut self) -> bool {
-        self.last_checked = tokio::time::Instant::now();
+        self.last_checked = Some(tokio::time::Instant::now());
         let mut db = self.state.db.clone();
         let Ok(mut tx) = db.transaction().await else {
             return false;
@@ -382,18 +384,19 @@ async fn proxy_shape(
                 actor: actor.to_owned(),
                 initial_guest,
                 channel,
-                last_checked: tokio::time::Instant::now(),
+                started: tokio::time::Instant::now(),
+                last_checked: None,
                 _sse_guard: sse_guard,
                 _permit: permit,
             },
             |mut st| async move {
                 loop {
-                    let deadline = st.last_checked + STREAM_IDLE_RECHECK;
+                    let deadline = st.last_checked.unwrap_or(st.started) + STREAM_IDLE_RECHECK;
                     tokio::select! {
                         chunk = st.upstream.next() => {
                             let chunk = chunk?;
                             // 転送のたびに確かめると負荷が大きいので、直近に確かめていれば省く。
-                            if st.last_checked.elapsed() >= STREAM_CHUNK_RECHECK
+                            if st.last_checked.is_none_or(|t| t.elapsed() >= STREAM_CHUNK_RECHECK)
                                 && !st.still_allowed().await
                             {
                                 return None;
