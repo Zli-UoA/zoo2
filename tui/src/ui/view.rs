@@ -694,7 +694,7 @@ mod tests {
         api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
         electric::{Batch, Change, ShapeEvent},
         http::Credentials,
-        ui::app::AppEvent,
+        ui::{app::AppEvent, encryption::EncryptionEvent},
     };
 
     fn batch(rows: Vec<(&str, Value)>) -> Batch {
@@ -2062,5 +2062,112 @@ mod tests {
         assert!(render(&mut app).contains("検索: sec"));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.current.as_deref(), Some("c2"));
+    }
+
+    fn render_sized(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut screen = String::new();
+        for y in 0..buffer.area.height {
+            let mut x = 0;
+            while x < buffer.area.width {
+                let symbol = buffer[(x, y)].symbol();
+                screen.push_str(symbol);
+                x += symbol.width().max(1) as u16;
+            }
+            screen.push('\n');
+        }
+        screen
+    }
+
+    fn encryption_event(app: &mut App, event: impl FnOnce(u64) -> EncryptionEvent) {
+        let generation = app.encryption.generation();
+        app.on_app_event(AppEvent::Encryption(event(generation)));
+    }
+
+    #[tokio::test]
+    async fn encryption_screen_walks_through_first_setup() {
+        let mut app = app();
+        app.me.id = "00000000-0000-4000-8000-00000000000b".into();
+        // テストでブラウザーを開かない。
+        app.encryption.over_ssh = true;
+        press(&mut app, KeyCode::Char('E'));
+        assert_eq!(app.mode, Mode::Encryption);
+        // 端末の登録が済むまでは、暗号ストアがない。
+        assert!(render_sized(&mut app, 100, 30).contains("端末を登録しています"));
+
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::NotSetUp),
+        });
+        assert!(render_sized(&mut app, 100, 30).contains("初回設定を始める"));
+        press(&mut app, KeyCode::Enter);
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("リカバリーキー"), "{screen}");
+        let Screen::RecoveryKey(key) = &app.encryption.screen else {
+            panic!("リカバリーキーを表示していない");
+        };
+        assert!(screen.contains(key.as_str()), "{screen}");
+
+        // 再認証の待ち受け。SSH の先では、ポートの転送か、Web か Android での初回設定を案内する。
+        encryption_event(&mut app, |generation| EncryptionEvent::ReauthWaiting {
+            generation,
+            url: "https://account.example/authorize?max_age=0".into(),
+            port: 41234,
+        });
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("ssh -L 41234:127.0.0.1:41234"), "{screen}");
+        assert!(screen.contains("Web か Android"), "{screen}");
+        assert!(screen.contains("max_age=0"), "{screen}");
+
+        // 再認証をやめても、鍵は捨てずに、もう一度再認証できる。
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Encryption);
+        assert!(render_sized(&mut app, 100, 30).contains("同じ鍵のまま"));
+
+        // 保存が 403 になったら、同じ鍵のまま再認証してやり直せる。
+        encryption_event(&mut app, |generation| EncryptionEvent::Failed {
+            generation,
+            failure: crate::ui::encryption::Failure::Reauth("再認証が必要です".into()),
+        });
+        assert!(render_sized(&mut app, 100, 30).contains("再認証して保存し直す"));
+        encryption_event(&mut app, |generation| EncryptionEvent::Saved { generation });
+        assert!(render_sized(&mut app, 100, 30).contains("解錠済み"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn encryption_screen_takes_a_recovery_key_and_shows_the_status() {
+        let mut app = app();
+        app.encryption.over_ssh = true;
+        press(&mut app, KeyCode::Char('E'));
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::Locked(LockReason::Resume)),
+        });
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("初回設定が途中です"), "{screen}");
+        app.on_terminal_event(Event::Paste("EsTc 1234".into()));
+        press(&mut app, KeyCode::Backspace);
+        assert!(render_sized(&mut app, 100, 30).contains("> EsTc 123"));
+        // 打ち間違いは、入力欄を空にして知らせる。
+        encryption_event(&mut app, |generation| EncryptionEvent::Failed {
+            generation,
+            failure: crate::ui::encryption::Failure::WrongKey(
+                "リカバリーキーの形式が違います".into(),
+            ),
+        });
+        assert!(render_sized(&mut app, 100, 30).contains("リカバリーキーの形式が違います"));
+        // 古い世代の結果は捨てる。
+        app.on_app_event(AppEvent::Encryption(EncryptionEvent::Saved {
+            generation: 0,
+        }));
+        assert!(!render_sized(&mut app, 100, 30).contains("解錠済み"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+        // 閉じても、解錠が要ることをステータス行に出す。
+        assert!(render_sized(&mut app, 100, 30).contains("暗号化: 解錠が必要 (E)"));
     }
 }

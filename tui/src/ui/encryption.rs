@@ -195,6 +195,12 @@ impl Encryption {
         }
     }
 
+    /// 今の画面の世代（裏の処理の結果を照らし合わせる）。
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     fn next_generation(&mut self) -> u64 {
         if let Some(task) = self.task.take() {
             task.abort();
