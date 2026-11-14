@@ -1181,6 +1181,12 @@ async fn call_stream(
          WHERE (
              SELECT count(*) FROM call_presence
              WHERE channel_id = $1 AND expires_at > statement_timestamp()
+         ) + (
+             -- 呼び出し中の人（自分以外）の席は空けておく。招待は空きの数までしか作らないので、
+             -- 招待されていない人が先に入って、呼ばれた人が入れなくなることを防ぐ。
+             SELECT count(*) FROM call_invites
+             WHERE channel_id = $1 AND status = 'pending' AND invitee_id <> $3
+               AND expires_at > statement_timestamp()
          ) < {MAX_CALL_PARTICIPANTS}
          RETURNING session_id::text"
     );

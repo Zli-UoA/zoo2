@@ -21,6 +21,8 @@ use crate::{
 
 /// 1 回の招待で呼べる人数の上限（通話の定員から、呼ぶ本人を除いた数）。
 const MAX_INVITEES_PER_REQUEST: usize = MAX_CALL_PARTICIPANTS - 1;
+/// 重複を含めた、1 回の要求の `user_ids` の上限。
+const MAX_USER_IDS_PER_REQUEST: usize = 50;
 
 const RETURNING_INVITE: &str = "RETURNING json_build_object(
     'id', id, 'channel_id', channel_id, 'inviter_id', inviter_id, 'invitee_id', invitee_id)::text";
@@ -311,12 +313,18 @@ pub async fn create(
         ));
     }
 
-    let mut ids: Vec<String> = Vec::new();
-    for id in body.user_ids {
-        if id != user.id && !ids.contains(&id) {
-            ids.push(id);
-        }
+    // 重複を除く前に、要求の大きさを抑える（除く処理が、要求の人数の 2 乗で増えないように）。
+    if body.user_ids.len() > MAX_USER_IDS_PER_REQUEST {
+        return Err(AppError::BadRequest(format!(
+            "Too many users (max {MAX_INVITEES_PER_REQUEST})"
+        )));
     }
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<String> = body
+        .user_ids
+        .into_iter()
+        .filter(|id| *id != user.id && seen.insert(id.clone()))
+        .collect();
     if ids.is_empty() {
         return Err(AppError::BadRequest("user_ids is empty".into()));
     }

@@ -356,6 +356,9 @@ struct Delivery {
     /// 応答不可 (DND) のユーザーには送らない。着信を送らなかった人に取り消しだけが届かないよう、
     /// 取り消し (`call_invite_end`) も同じ。
     respect_dnd: bool,
+    /// 送り終えていなければならない時刻。各購読への送信の直前に、残りの時間を TTL にする
+    /// （前の購読への送信に時間がかかっても、期限の過ぎた着信を届けないため）。
+    expires: Option<std::time::Instant>,
 }
 
 impl Delivery {
@@ -363,6 +366,7 @@ impl Delivery {
         ttl: 300,
         urgent: false,
         respect_dnd: true,
+        expires: None,
     };
 }
 
@@ -399,7 +403,17 @@ async fn push_to_user(
             // Older registrations receive a generic alert until the browser refreshes its keys.
             _ => None,
         };
-        let result = send_with(client, config, endpoint, body, delivery).await;
+        // 期限つきの送信は、残りの時間を TTL にする。残りがなければ、送らない。
+        let remaining = delivery.expires.map(|expires| {
+            expires
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs()
+        });
+        if remaining == Some(0) {
+            break;
+        }
+        let ttl = remaining.map_or(delivery.ttl, |secs| secs as u32);
+        let result = send_with(client, config, endpoint, body, delivery, ttl).await;
         match result {
             Ok(response)
                 if response.status().as_u16() == 404 || response.status().as_u16() == 410 =>
@@ -499,6 +513,7 @@ async fn deliver_call_invites(
         return Ok(());
     };
     let client = push_client()?;
+    let started = std::time::Instant::now();
     for invite in invites {
         let payload = if end {
             NotificationPayload {
@@ -539,6 +554,10 @@ async fn deliver_call_invites(
             ttl: if end { 60 } else { CALL_INVITE_TTL_SECONDS },
             urgent: true,
             respect_dnd: true,
+            // 着信は、招待の期限までに送れた購読にだけ送る（期限の過ぎた着信を、あとから出さない）。
+            expires: (!end).then_some(
+                started + std::time::Duration::from_secs(u64::from(CALL_INVITE_TTL_SECONDS)),
+            ),
         };
         push_to_user(
             &client,
@@ -563,7 +582,7 @@ async fn send(
     endpoint: Url,
     body: Option<Vec<u8>>,
 ) -> anyhow::Result<reqwest::Response> {
-    send_with(client, config, endpoint, body, &Delivery::NORMAL).await
+    send_with(client, config, endpoint, body, &Delivery::NORMAL, 300).await
 }
 
 async fn send_with(
@@ -572,6 +591,7 @@ async fn send_with(
     endpoint: Url,
     body: Option<Vec<u8>>,
     delivery: &Delivery,
+    ttl: u32,
 ) -> anyhow::Result<reqwest::Response> {
     let claims = Claims {
         aud: endpoint.origin().ascii_serialization(),
@@ -585,7 +605,7 @@ async fn send_with(
             "Authorization",
             format!("vapid t={token}, k={}", config.public_key),
         )
-        .header("TTL", delivery.ttl.to_string());
+        .header("TTL", ttl.to_string());
     let request = if delivery.urgent {
         request.header("Urgency", "high")
     } else {
