@@ -120,10 +120,7 @@ async fn deleted_messages_keep_no_body_or_projection() -> anyhow::Result<()> {
     }
 
     // DELETE /api/messages/{id}
-    assert_eq!(
-        delete_message(&app, &owner, &ids[0]).await?,
-        StatusCode::OK
-    );
+    assert_eq!(delete_message(&app, &owner, &ids[0]).await?, StatusCode::OK);
     assert_cleared(&tombstone(&mut db, &ids[0]).await?);
 
     // 履歴の消去は、同じ deleted_at の更新だけで本文を消す。
