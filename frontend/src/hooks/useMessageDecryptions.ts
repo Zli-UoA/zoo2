@@ -125,6 +125,7 @@ export function useMessageDecryptions(
                   status: "decrypted",
                   body: outcome.body,
                   kind: outcome.kind,
+                  mentions: outcome.mentions,
                   sender: outcome.sender,
                   attachments: outcome.attachments,
                 }

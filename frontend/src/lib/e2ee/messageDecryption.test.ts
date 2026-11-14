@@ -36,6 +36,7 @@ describe("resolveMessageDecryption", () => {
       status: "decrypted",
       body: "hi",
       kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
       sender: "unverified",
     } as const;
     expect(resolveMessageDecryption({ ciphertext }, decrypted)).toBe(decrypted);
@@ -48,7 +49,13 @@ describe("resolveMessageDecryption", () => {
     expect(
       resolveMessageDecryption(
         { ciphertext: null },
-        { status: "decrypted", body: "x", kind: "message", sender: "verified" },
+        {
+          status: "decrypted",
+          body: "x",
+          kind: "message",
+          mentions: { user_ids: [], channel: false, here: false },
+          sender: "verified",
+        },
       ),
     ).toBeNull();
   });
@@ -59,6 +66,7 @@ describe("applyRevision", () => {
     status: "decrypted",
     body: "before",
     kind: "message",
+    mentions: { user_ids: [], channel: false, here: false },
     sender: "verified",
   };
   const v1: MessageDecryption = { ...v0, body: "after" };
