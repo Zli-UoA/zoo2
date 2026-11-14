@@ -18,6 +18,7 @@ import {
   ShieldAlertIcon,
 } from "lucide-react";
 import { MfmContent } from "./MfmContent";
+import { decryptedMentionAllowlist, type MentionAllowlist } from "./mentions";
 import { LinkPreviews } from "./LinkPreviews.tsx";
 import { previewUrls } from "./linkPreviews";
 
@@ -45,6 +46,7 @@ import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
 import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
 import {
+  useMentionUserNames,
   useMessageDecryption,
   resolveMessageDecryption,
   type MessageDecryption,
@@ -137,6 +139,7 @@ export function MessageBody({
   editedAt,
   emojis,
   previews = "auto",
+  mentions,
 }: {
   emojis?: Record<string, DisplayEmoji>;
   editedAt?: string | null;
@@ -145,6 +148,8 @@ export function MessageBody({
   appBlocks?: string | null;
   /** `manual` は、押したときだけ URL カードを読み込む（暗号化チャンネル）。 */
   previews?: "auto" | "manual";
+  /** 暗号化メッセージで、メンションとして表示してよい `@name`（{@link MfmContent} の `mentions`）。 */
+  mentions?: MentionAllowlist;
 }) {
   if (hasCardBlocks(appBlocks)) return null;
   const cards = parseMessageCards(data);
@@ -160,7 +165,7 @@ export function MessageBody({
   return (
     <>
       <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
-        <MfmContent content={content} emojis={emojis} />
+        <MfmContent content={content} emojis={emojis} mentions={mentions} />
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
       {previews === "manual" ? (
@@ -274,6 +279,17 @@ export function MessageRow({
   // 暗号化チャンネルの行の `content` は空なので、復号した本文を使う。
   const bodyText =
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
+  // 暗号化メッセージのメンションは、本文の `@name` ではなく、復号した `mentions` だけで表示する。
+  const mentionUserNames = useMentionUserNames();
+  const decryptedMentions =
+    resolvedDecryption?.status === "decrypted" ? resolvedDecryption.mentions : undefined;
+  const mentionAllowlist = useMemo(
+    () =>
+      decryptedMentions
+        ? decryptedMentionAllowlist(decryptedMentions, mentionUserNames)
+        : undefined,
+    [decryptedMentions, mentionUserNames],
+  );
 
   async function copyRawMessage() {
     // メニューを出さない状態でも、ほかの経路から呼ばれたときに空文字列で上書きしない。
@@ -495,6 +511,7 @@ export function MessageRow({
                     appBlocks={resolvedDecryption ? null : message.app_blocks}
                     editedAt={message.updated_at}
                     previews={resolvedDecryption ? "manual" : "auto"}
+                    mentions={mentionAllowlist}
                   />
                 </>
               )}

@@ -514,7 +514,14 @@ describe("editAlreadyApplied", () => {
       { path: "/api/messages/m1", method: "PATCH" },
     );
   const shown = (rowRevision: number, body: string) =>
-    ({ status: "decrypted", body, kind: "message", sender: "verified", rowRevision }) as const;
+    ({
+      status: "decrypted",
+      body,
+      kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
+      sender: "verified",
+      rowRevision,
+    }) as const;
 
   it("今の版が自分の送った本文なら、応答をなくしただけとして済んだものにする", () => {
     expect(editAlreadyApplied(stale(2), shown(2, "edited"), "edited")).toBe(true);

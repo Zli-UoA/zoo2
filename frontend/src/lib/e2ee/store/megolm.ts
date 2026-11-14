@@ -7,6 +7,7 @@ import {
   type EncryptedMessage,
   type InboundSessionStore,
   type JsonObject,
+  type Mentions,
   type NewTofuPin,
   type OutgoingMessage,
   type OwnKeys,
@@ -93,6 +94,12 @@ export type DecryptOutcome =
       status: "decrypted";
       body: string;
       kind: "message" | "emote";
+      /**
+       * 暗号化した平文の `mentions`。受信側は、表示とハイライトにこれだけを使う（docs/e2ee.md の
+       * 「Megolm の平文」）。送信の要求の平文の `mentions` は、サーバーが通知を作るためのもので、
+       * 暗号文と違っても使わない。
+       */
+      mentions: Mentions;
       sender: "verified" | "unverified" | "unauthenticated";
       revision: RevisionStatus;
     }
@@ -410,6 +417,11 @@ export class MegolmChannels {
           status: "decrypted",
           body: decrypted.payload.content.body,
           kind,
+          mentions: {
+            user_ids: [...decrypted.payload.mentions.user_ids],
+            channel: decrypted.payload.mentions.channel,
+            here: decrypted.payload.mentions.here,
+          },
           sender:
             decrypted.origin === "backup"
               ? "unauthenticated"

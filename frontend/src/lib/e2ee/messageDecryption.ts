@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react";
+import { createContext, createElement, useContext, type ReactNode } from "react";
 
 import type { MessageRow } from "../electric/types";
 
@@ -30,6 +30,13 @@ export type UndecryptableReason =
  */
 export type SenderTrust = "verified" | "unverified" | "unauthenticated";
 
+/** 復号したペイロードの `mentions`（`{user_ids, channel, here}`）。 */
+export interface DecryptedMentions {
+  readonly user_ids: readonly string[];
+  readonly channel: boolean;
+  readonly here: boolean;
+}
+
 export type MessageDecryption =
   | {
       status: "decrypted";
@@ -37,6 +44,11 @@ export type MessageDecryption =
       body: string;
       /** 復号したペイロードの `content.kind`。行の `message_kind` との照合は済んでいる。 */
       kind: "message" | "emote";
+      /**
+       * 復号したペイロードの `mentions`。暗号化メッセージのメンションの表示とハイライトは、本文の
+       * `@name` の解析ではなく、これだけで決める（docs/e2ee.md の「Megolm の平文」）。
+       */
+      mentions: DecryptedMentions;
       sender: SenderTrust;
       /**
        * 版の照合の警告。`stale` は、このメッセージの新しい版を見たあとに古い版の行が届いた
@@ -123,4 +135,33 @@ export const MessageDecryptionsContext =
 /** `id` のメッセージの復号の結果。なければ `undefined`。 */
 export function useMessageDecryption(id: string): MessageDecryption | undefined {
   return useContext(MessageDecryptionsContext).get(id);
+}
+
+const NO_USER_NAMES: ReadonlyMap<string, string> = new Map();
+
+/**
+ * ユーザー ID からユーザー名（`user_name`）を引く表。復号した `mentions.user_ids` を、本文の
+ * `@name` と突き合わせるのに使う。`MessagePane` が渡す。
+ */
+export const MentionUserNamesContext = createContext<ReadonlyMap<string, string>>(NO_USER_NAMES);
+
+export function useMentionUserNames(): ReadonlyMap<string, string> {
+  return useContext(MentionUserNamesContext);
+}
+
+/** 表示中のチャンネルの復号の結果と、メンションの突き合わせに使うユーザー名の表を渡す。 */
+export function MessageDecryptionsProvider({
+  decryptions,
+  mentionUserNames,
+  children,
+}: {
+  decryptions: ReadonlyMap<string, MessageDecryption>;
+  mentionUserNames: ReadonlyMap<string, string>;
+  children?: ReactNode;
+}) {
+  return createElement(
+    MessageDecryptionsContext.Provider,
+    { value: decryptions },
+    createElement(MentionUserNamesContext.Provider, { value: mentionUserNames }, children),
+  );
 }

@@ -141,12 +141,34 @@ describe("MegolmChannels", () => {
       body: "secret hello",
       sender: "unverified",
     });
+    // 復号した平文の mentions も返す（受信側の表示とハイライトはこれだけを使う）。
+    expect(received).toMatchObject({ mentions: NO_MENTIONS });
     // 送信者自身も、自分のメッセージを読める。
     const [own] = await alice.store.megolm.decrypt([row(alice.store, "m1", encrypted)]);
     expect(own).toMatchObject({ status: "decrypted", body: "secret hello" });
 
     // 配った端末にはもう配らない。
     expect((await alice.store.megolm.start(CHANNEL)).pending).toBe(0);
+    await alice.store.close();
+    await bob.store.close();
+  });
+
+  it("復号の結果に、暗号化した平文の mentions をそのまま返す", async () => {
+    const alice = await openStore(ALICE);
+    const bob = await openStore(BOB);
+    const bobDevice = recipient(bob.store);
+    alice.store.megolm.setDistribution(CHANNEL, 1, [bobDevice.device()]);
+    await alice.store.megolm.start(CHANNEL);
+    const { messages } = await alice.store.megolm.share(CHANNEL, bobDevice.claimed);
+    await deliver(alice.store, bob.store, messages, "1");
+    const mentions = { user_ids: [BOB, CAROL], channel: true, here: false };
+    const encrypted = alice.store.megolm.encrypt(CHANNEL, {
+      ...outgoing("m1", "@bob @carol @channel"),
+      mentions,
+    });
+
+    const [received] = await bob.store.megolm.decrypt([row(alice.store, "m1", encrypted)]);
+    expect(received).toMatchObject({ status: "decrypted", mentions });
     await alice.store.close();
     await bob.store.close();
   });
