@@ -10,6 +10,7 @@ import { useCollections } from "../../lib/electric/collections-context";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import type { FeedMessage } from "./messages/messageFormat";
+import { apiPath } from "../../lib/api/path";
 
 type Block =
   | { type: "card"; card: CardData }
@@ -70,7 +71,7 @@ export function AppBlocks({
     setBusy(true);
     setError("");
     try {
-      await client.request(`/api/apps/${appId}/invoke`, {
+      await client.request(apiPath`/api/apps/${appId}/invoke`, {
         method: "POST",
         body: {
           kind,
@@ -198,7 +199,7 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
   }
   async function download(id: string) {
     try {
-      const result = await client.get<{ url: string }>(`/api/app-files/${id}/download`);
+      const result = await client.get<{ url: string }>(apiPath`/api/app-files/${id}/download`);
       if (result.url.startsWith("https://"))
         window.open(result.url, "_blank", "noopener,noreferrer");
     } catch {
@@ -236,7 +237,7 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
                     variant="ghost"
                     onClick={() => {
                       void client
-                        .request(`/api/apps/${unfurl.app_id}/entities/requests`, {
+                        .request(apiPath`/api/apps/${unfurl.app_id}/entities/requests`, {
                           method: "POST",
                           body: {
                             kind,

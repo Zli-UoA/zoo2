@@ -1096,3 +1096,123 @@ fn row_json(signer: &str, upload: &zoo_crypto::SignatureUpload) -> Value {
     })
     .unwrap()
 }
+
+// ---- 受信時の検証の手順 4（送信ユーザーの自己署名鍵） ----
+
+/// 自分の別の端末：解錠済みなら、自分のマスター鍵で署名された自己署名鍵を返す。
+#[test]
+fn sender_trust_for_own_devices_uses_own_self_signing_key() {
+    let (alice, _) = alice_and_bob();
+    let mut store = unlocked_store(&alice);
+    let snapshot = Snapshot::new(&alice, &[&alice]);
+
+    let trust = store
+        .sender_trust(&snapshot.get(), ALICE, &alice.device(1))
+        .unwrap();
+    assert_eq!(trust.self_signing_key, alice.keys.self_signing.public_key());
+    // 署名が `e2ee_key_signatures` の行にある端末は、その署名も返す。
+    assert!(trust.signature.is_some());
+    let embedded = store
+        .sender_trust(&snapshot.get(), ALICE, &alice.device(0))
+        .unwrap();
+    assert!(embedded.signature.is_none());
+
+    // 未解錠（自分のマスター鍵を信頼していない）なら返さない。
+    let mut locked = TrustStore::new(ALICE).unwrap();
+    assert!(
+        locked
+            .sender_trust(&snapshot.get(), ALICE, &alice.device(1))
+            .is_none()
+    );
+
+    // サーバーの自分のマスター鍵が変わったら返さない。
+    let mut replaced = User::new(ALICE, &[Sig::Embedded]);
+    replaced.replace_master_key();
+    let snapshot = Snapshot::new(&replaced, &[&replaced]);
+    assert!(
+        store
+            .sender_trust(&snapshot.get(), ALICE, &replaced.device(0))
+            .is_none()
+    );
+}
+
+/// 他のユーザー：TOFU で信頼したマスター鍵の自己署名鍵を返す。初めて見た相手のピンは作らない。
+#[test]
+fn sender_trust_for_other_users_follows_distribution_rules() {
+    let (alice, bob) = alice_and_bob();
+    let mut store = unlocked_store(&alice);
+    let mut snapshot = Snapshot::new(&alice, &[&alice, &bob]);
+
+    // 初めて見た相手：ピンを作らず、記録も作らない。
+    assert!(
+        store
+            .sender_trust(&snapshot.get(), BOB, &bob.device(0))
+            .is_none()
+    );
+    assert!(store.record(BOB).is_none());
+
+    // 配布先の判定で TOFU のピンを作り、登録待ちのあいだは信頼しない。
+    let first = evaluate(&mut store, &alice, &snapshot);
+    assert!(
+        store
+            .sender_trust(&snapshot.get(), BOB, &bob.device(0))
+            .is_none()
+    );
+
+    // ピンを置けたら信頼する。
+    store.confirm_tofu_pin(&first.new_pins[0]);
+    snapshot.pin(BOB, first.new_pins[0].pin.clone());
+    let trust = store
+        .sender_trust(&snapshot.get(), BOB, &bob.device(1))
+        .unwrap();
+    assert_eq!(trust.self_signing_key, bob.keys.self_signing.public_key());
+    assert!(trust.signature.is_some());
+
+    // マスター鍵が変わったら、再検証まで返さない。
+    let mut replaced = User::new(BOB, &[Sig::Embedded]);
+    replaced.replace_master_key();
+    let changed = Snapshot::new(&alice, &[&alice, &replaced]);
+    assert!(
+        store
+            .sender_trust(&changed.get(), BOB, &replaced.device(0))
+            .is_none()
+    );
+}
+
+/// 他のユーザーの自己署名鍵がマスター鍵で署名されていなければ返さない。
+#[test]
+fn sender_trust_rejects_self_signing_key_not_signed_by_master() {
+    let (alice, bob) = alice_and_bob();
+    let mut store = unlocked_store(&alice);
+    let mut snapshot = Snapshot::new(&alice, &[&alice, &bob]);
+    evaluate_registered(&mut store, &alice, &snapshot);
+    let attacker = CrossSigningKeys::generate(BOB).unwrap();
+    snapshot.value["self_signing_keys"][BOB] =
+        attacker.master.sign_subkey(&attacker.self_signing).unwrap();
+
+    assert!(
+        store
+            .sender_trust(&snapshot.get(), BOB, &bob.device(0))
+            .is_none()
+    );
+}
+
+/// 規則 3：自分のユーザー署名鍵で署名したマスター鍵は、記録がなくても信頼する。
+#[test]
+fn sender_trust_accepts_user_signing_signature() {
+    let (alice, bob) = alice_and_bob();
+    let mut store = unlocked_store(&alice);
+    let mut snapshot = Snapshot::new(&alice, &[&alice, &bob]);
+    let upload = alice
+        .keys
+        .user_signing
+        .sign_master_key(BOB, &bob.keys.master.public_key_json())
+        .unwrap();
+    snapshot.signature(row_json(ALICE, &upload));
+
+    let trust = store
+        .sender_trust(&snapshot.get(), BOB, &bob.device(0))
+        .unwrap();
+    assert_eq!(trust.self_signing_key, bob.keys.self_signing.public_key());
+    assert!(store.record(BOB).is_some());
+}

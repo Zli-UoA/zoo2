@@ -130,6 +130,16 @@ type Story = StoryObj<typeof meta>;
 
 export const Loading: Story = {};
 
+/** このタブで暗号ストアを開けていない。サーバーにつながらず、試し直している。 */
+export const Unavailable: Story = {
+  args: {
+    state: { step: "unavailable", reason: { kind: "failed", failure: { source: "network" } } },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText(/サーバーにつながらず/)).toBeVisible();
+  }),
+};
+
 export const LoadFailed: Story = {
   args: { state: { step: "loadFailed" }, handlers: handlers() },
   play: playForImplementation(async ({ args }) => {

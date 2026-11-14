@@ -5,7 +5,9 @@ import { expect, fn, screen, userEvent } from "storybook/test";
 import { storyChannels } from "../../../.storybook/fixtures";
 import { RenameChannelDialog } from "./RenameChannelDialog";
 
-const general = storyChannels.find((channel) => channel.id === "channel-general")!;
+const general = storyChannels.find(
+  (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+)!;
 
 const meta = {
   title: "Features/Channels/Edit",

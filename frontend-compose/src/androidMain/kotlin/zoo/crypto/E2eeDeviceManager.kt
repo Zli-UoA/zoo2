@@ -484,6 +484,7 @@ class E2eeDeviceManager(
      * 端末を消す。失敗したら削除待ちに残す。404 は、登録できたと分かっている端末なら、消すものが
      * ないので済んだものとする。登録できたか分からない端末（[PendingDeviceDeletion.unconfirmed]）は、
      * あとから届いた登録で端末ができうるので残し、続けて [MAX_NOT_FOUND] 回 404 なら済んだものとする。
+     * 404 以外の失敗では、回数を 0 に戻す（React の `deleteOrKeep`、TUI の `delete_device_or_remember` と同じ）。
      */
     private suspend fun deleteDeviceOrRemember(target: PendingDeviceDeletion) {
         remember(target)
@@ -509,6 +510,8 @@ class E2eeDeviceManager(
                     if (current.notFound + 1 >= MAX_NOT_FOUND) forget(current)
                     else pendingWrite { pending.update(current.copy(notFound = current.notFound + 1)) }
                 }
+            // 404 が続いていない。数え直す（間に失敗をはさんだ 404 は、続けて受けたものとしない）。
+            current.notFound != 0 -> pendingWrite { pending.update(current.copy(notFound = 0)) }
             else -> Unit
         }
     }

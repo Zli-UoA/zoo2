@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 import {
+  OwnSecrets,
   initSync,
   verifyDeviceKeys,
   type EncryptedMessage,
@@ -9,7 +10,7 @@ import {
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { MemoryCryptoBackend } from "./backend";
-import { CryptoStore } from "./cryptoStore";
+import { CryptoStore, type KeysQueryResponse } from "./cryptoStore";
 import type { WrappingKeyStore } from "./storageKey";
 
 beforeAll(() => {
@@ -69,6 +70,9 @@ async function deliver(
   receiver: CryptoStore,
   messages: Record<string, Record<string, JsonObject>>,
   id: string,
+  keysQuery: KeysQueryResponse = keysQueryOf({
+    [sender.userId]: { [sender.deviceId]: sender.deviceKeys() },
+  }),
 ) {
   const content = messages[receiver.userId]?.[receiver.deviceId];
   expect(content).toBeDefined();
@@ -82,8 +86,20 @@ async function deliver(
         content: content!,
       },
     ],
-    { [sender.userId]: { [sender.deviceId]: sender.deviceKeys() } },
+    keysQuery,
   );
+}
+
+/** 端末鍵だけの `keys/query` の応答（クロス署名鍵がないので、送信端末は検証済みにならない）。 */
+function keysQueryOf(deviceKeys: Record<string, Record<string, JsonObject>>): KeysQueryResponse {
+  return {
+    device_keys: deviceKeys,
+    master_keys: {},
+    self_signing_keys: {},
+    user_signing_keys: {},
+    tofu_pins: {},
+    signatures: [],
+  };
 }
 
 function row(
@@ -325,6 +341,319 @@ describe("MegolmChannels", () => {
         { channel_id: CHANNEL, membership_epoch: 1, user_ids: [ALICE], device_keys: {} },
       ]),
     ).rejects.toMatchObject({ code: "NeedsUnlock" });
+    await alice.store.close();
+  });
+});
+
+/** ユーザーのクロス署名鍵（`OwnSecrets`）と、`keys/query` に載せる公開鍵。 */
+function identity(userId: string) {
+  const secrets = OwnSecrets.generate(userId);
+  const cs = secrets.crossSigning;
+  const upload = cs.uploadJson() as Record<string, JsonObject>;
+  return {
+    secrets,
+    master: upload.master_key!,
+    selfSigning: upload.self_signing_key!,
+    userSigning: upload.user_signing_key!,
+    /**
+     * 自己署名鍵で端末鍵に署名し、`keys/query` の `signatures` の行（`e2ee_key_signatures`）を返す。
+     * サーバーは端末鍵の JSON を書き換えず、署名を別の行で返す。
+     */
+    signDevice(store: CryptoStore): JsonObject {
+      const ssk = cs.selfSigning;
+      const signed = ssk.signDevice(store.deviceKeys());
+      ssk.free();
+      return { signer_user_id: userId, ...signed } as unknown as JsonObject;
+    },
+  };
+}
+
+type Identity = ReturnType<typeof identity>;
+
+/** `users` のクロス署名鍵を載せた `keys/query` の応答。`me` にだけユーザー署名鍵を返す。 */
+function keysQueryWith(
+  me: string,
+  users: Record<string, Identity>,
+  devices: CryptoStore[],
+  signatures: JsonObject[],
+  tofuPins: Record<string, JsonObject> = {},
+): KeysQueryResponse {
+  const deviceKeys: Record<string, Record<string, JsonObject>> = {};
+  for (const device of devices) {
+    (deviceKeys[device.userId] ??= {})[device.deviceId] = device.deviceKeys();
+  }
+  const query = keysQueryOf(deviceKeys);
+  for (const [userId, user] of Object.entries(users)) {
+    query.master_keys[userId] = user.master;
+    query.self_signing_keys[userId] = user.selfSigning;
+    if (userId === me) query.user_signing_keys[userId] = user.userSigning;
+  }
+  query.signatures = signatures;
+  query.tofu_pins = tofuPins;
+  return query;
+}
+
+/** `sender` から `receiver` にセッション鍵を配り、`keysQuery` で受け取らせて、1 通を復号させる。 */
+async function sendAndDecrypt(
+  sender: CryptoStore,
+  receiver: CryptoStore,
+  keysQuery: KeysQueryResponse,
+  id = "1",
+) {
+  const device = recipient(receiver);
+  sender.megolm.setDistribution(CHANNEL, 1, [device.device()]);
+  await sender.megolm.start(CHANNEL);
+  const { messages } = await sender.megolm.share(CHANNEL, device.claimed);
+  sender.megolm.markShared(CHANNEL, [{ userId: receiver.userId, deviceId: receiver.deviceId }]);
+  expect((await deliver(sender, receiver, messages, id, keysQuery)).roomKeys).toBe(1);
+  const encrypted = sender.megolm.encrypt(CHANNEL, outgoing(`m${id}`, "hello"));
+  const [received] = await receiver.megolm.decrypt([row(sender, `m${id}`, encrypted)]);
+  return received;
+}
+
+describe("受信時の検証の手順 4（送信端末を検証済みにする）", () => {
+  it("自分の別の端末のメッセージは、解錠済みなら検証済みになる", async () => {
+    const me = identity(BOB);
+    const other = await openStore(BOB);
+    const current = await openStore(BOB);
+    await current.store.saveOwnKeys(me.secrets, 1);
+    const query = keysQueryWith(BOB, { [BOB]: me }, [other.store], [me.signDevice(other.store)]);
+
+    expect(await sendAndDecrypt(other.store, current.store, query)).toMatchObject({
+      status: "decrypted",
+      sender: "verified",
+    });
+
+    // 解錠していない端末は、自分のマスター鍵を信頼していないので、検証済みにしない。
+    const locked = await openStore(BOB);
+    expect(await sendAndDecrypt(other.store, locked.store, query, "2")).toMatchObject({
+      status: "decrypted",
+      sender: "unverified",
+    });
+    await other.store.close();
+    await current.store.close();
+    await locked.store.close();
+  });
+
+  /** Bob が Alice のマスター鍵を TOFU で信頼した（ピンを置けた）状態を作る。 */
+  async function tofuTrusted() {
+    const aliceId = identity(ALICE);
+    const bobId = identity(BOB);
+    const alice = await openStore(ALICE);
+    const bob = await openStore(BOB);
+    await bob.store.saveOwnKeys(bobId.secrets, 1);
+    const snapshot = keysQueryWith(
+      BOB,
+      { [ALICE]: aliceId, [BOB]: bobId },
+      [alice.store],
+      [aliceId.signDevice(alice.store)],
+    );
+    const summary = await bob.store.megolm.evaluate(CHANNEL, [
+      {
+        ...snapshot,
+        channel_id: CHANNEL,
+        membership_epoch: 1,
+        user_ids: [ALICE, BOB],
+      } as unknown as JsonObject,
+    ]);
+    expect(summary.newPins).toHaveLength(1);
+    const pin = summary.newPins[0]!;
+    bob.store.trustStore.confirmTofuPin(pin);
+    await bob.store.saveTrustStore();
+    return { aliceId, bobId, alice, bob, pins: { [ALICE]: pin.pin } };
+  }
+
+  it("他のユーザーの、TOFU で信頼した端末のメッセージは検証済みになる", async () => {
+    const { aliceId, bobId, alice, bob, pins } = await tofuTrusted();
+    const query = keysQueryWith(
+      BOB,
+      { [ALICE]: aliceId, [BOB]: bobId },
+      [alice.store],
+      [aliceId.signDevice(alice.store)],
+      pins,
+    );
+    expect(await sendAndDecrypt(alice.store, bob.store, query)).toMatchObject({
+      status: "decrypted",
+      sender: "verified",
+    });
+    await alice.store.close();
+    await bob.store.close();
+  });
+
+  it("初めて見た相手は、ピンを作らず未検証のままにする", async () => {
+    const aliceId = identity(ALICE);
+    const bobId = identity(BOB);
+    const alice = await openStore(ALICE);
+    const bob = await openStore(BOB);
+    await bob.store.saveOwnKeys(bobId.secrets, 1);
+    const query = keysQueryWith(
+      BOB,
+      { [ALICE]: aliceId, [BOB]: bobId },
+      [alice.store],
+      [aliceId.signDevice(alice.store)],
+    );
+    expect(await sendAndDecrypt(alice.store, bob.store, query)).toMatchObject({
+      sender: "unverified",
+    });
+    expect(bob.store.trustStore.record(ALICE)).toBeUndefined();
+    await alice.store.close();
+    await bob.store.close();
+  });
+
+  it.each([
+    ["自己署名鍵の署名がない端末", "unsigned"],
+    ["偽の自己署名鍵で署名した端末", "forged"],
+  ] as const)("%sは未検証のままにする", async (_, kind) => {
+    const { aliceId, bobId, alice, bob, pins } = await tofuTrusted();
+    const sender = await openStore(ALICE);
+    let signatures: JsonObject[] = [];
+    let users = { [ALICE]: aliceId, [BOB]: bobId };
+    if (kind === "forged") {
+      // 攻撃者が自分のマスター鍵で署名した自己署名鍵を Alice のものとして出し、その鍵で端末に署名した。
+      const attacker = identity(ALICE);
+      signatures = [attacker.signDevice(sender.store)];
+      users = { [ALICE]: { ...aliceId, selfSigning: attacker.selfSigning }, [BOB]: bobId };
+    }
+    const query = keysQueryWith(BOB, users, [sender.store], signatures, pins);
+    expect(await sendAndDecrypt(sender.store, bob.store, query)).toMatchObject({
+      status: "decrypted",
+      sender: "unverified",
+    });
+    await sender.store.close();
+    await alice.store.close();
+    await bob.store.close();
+  });
+});
+
+describe("鍵バックアップからの取り込み（新しい端末での解錠の手順 5）", () => {
+  /** `me` の今の版（`GET /api/e2ee/key_backup/versions/current` の応答）。 */
+  function currentVersion(me: Identity): JsonObject {
+    const backupKey = me.secrets.backupKey;
+    const cs = me.secrets.crossSigning;
+    const master = cs.master;
+    const request = backupKey.createVersionRequest(master, null);
+    master.free();
+    cs.free();
+    backupKey.free();
+    return { version: "1", algorithm: request.algorithm, auth_data: request.auth_data, count: 1 };
+  }
+
+  /** 端末 A が Alice から受け取った鍵を、鍵バックアップに上げる。上げた行を返す。 */
+  async function backedUpOnDeviceA() {
+    const me = identity(BOB);
+    const version = currentVersion(me);
+    const alice = await openStore(ALICE);
+    const deviceA = await openStore(BOB);
+    await deviceA.store.saveOwnKeys(me.secrets, 1);
+    expect(
+      await sendAndDecrypt(
+        alice.store,
+        deviceA.store,
+        keysQueryOf({
+          [ALICE]: { [alice.store.deviceId]: alice.store.deviceKeys() },
+        }),
+      ),
+    ).toMatchObject({ status: "decrypted" });
+    const upload = await deviceA.store.prepareBackupUpload(version, 1000);
+    if (upload.kind !== "upload") throw new Error(`アップロードできません: ${upload.kind}`);
+    await deviceA.store.backupUploaded(upload.uploadId);
+    const rows = (upload.body as { sessions: JsonObject[] }).sessions;
+    expect(rows).toHaveLength(1);
+    // 端末 A が過去に受け取ったメッセージ（新しい端末 B には鍵が届いていない）。
+    const encrypted = alice.store.megolm.encrypt(CHANNEL, outgoing("old", "過去のメッセージ"));
+    const message = row(alice.store, "old", encrypted);
+    await deviceA.store.close();
+    return { me, version, alice, rows, message };
+  }
+
+  it("端末 A で受け取った鍵を、新しい端末 B で解錠したあとに取り込み、過去のメッセージを読める", async () => {
+    const { me, version, alice, rows, message } = await backedUpOnDeviceA();
+    const deviceB = await openStore(BOB);
+    await deviceB.store.saveOwnKeys(me.secrets, 1);
+    expect(await deviceB.store.megolm.decrypt([message])).toEqual([
+      { status: "undecryptable", reason: "keyMissing" },
+    ]);
+
+    expect(await deviceB.store.beginBackupImport(version)).toEqual({
+      kind: "import",
+      version: "1",
+      after: null,
+    });
+    expect(await deviceB.store.importBackupPage("1", rows, null)).toEqual({
+      imported: 1,
+      dropped: 0,
+    });
+    // バックアップ由来のセッションで復号したので、送信者は確かめられない。
+    expect(await deviceB.store.megolm.decrypt([message])).toMatchObject([
+      { status: "decrypted", body: "過去のメッセージ", sender: "unauthenticated" },
+    ]);
+    // 同じ版には上げ直さない。取り込み終えた版は読み直さない。
+    expect(await deviceB.store.pendingBackupCount()).toBe(0);
+    expect(await deviceB.store.prepareBackupUpload(version, 1000)).toEqual({ kind: "none" });
+    expect(await deviceB.store.beginBackupImport(version)).toEqual({ kind: "done", version: "1" });
+    await deviceB.store.close();
+    await alice.store.close();
+  });
+
+  it("途中で止まった取り込みは、保存した続きのカーソルから始める", async () => {
+    const { me, version, alice, rows } = await backedUpOnDeviceA();
+    const deviceB = await openStore(BOB);
+    await deviceB.store.saveOwnKeys(me.secrets, 1);
+    await deviceB.store.beginBackupImport(version);
+    await deviceB.store.importBackupPage("1", rows, "cursor-1");
+    expect(await deviceB.store.beginBackupImport(version)).toEqual({
+      kind: "import",
+      version: "1",
+      after: "cursor-1",
+    });
+    await deviceB.store.close();
+    await alice.store.close();
+  });
+
+  it("壊れた行と、別のセッションの行は取り込まない", async () => {
+    const { me, version, alice, rows, message } = await backedUpOnDeviceA();
+    const good = rows[0]! as Record<string, unknown> & { session_data: Record<string, string> };
+    const other = await backedUpOnDeviceA();
+    const otherRow = other.rows[0]! as Record<string, unknown>;
+    const broken = [
+      // MAC が合わない（暗号文を書き換えた）。
+      { ...good, session_data: { ...good.session_data, ciphertext: good.session_data.mac } },
+      // 別のセッションの行に、このセッションの暗号文を入れた（行と平文の session_id が違う）。
+      { ...good, session_id: otherRow.session_id },
+      // 別のチャンネルの行として出した（行と平文の channel_id が違う）。
+      { ...good, channel_id: "00000000-0000-4000-8000-0000000000c2" },
+      // 別のユーザーのバックアップ鍵で暗号化した行。
+      otherRow,
+    ] as JsonObject[];
+    const deviceB = await openStore(BOB);
+    await deviceB.store.saveOwnKeys(me.secrets, 1);
+    await deviceB.store.beginBackupImport(version);
+    expect(await deviceB.store.importBackupPage("1", broken, null)).toEqual({
+      imported: 0,
+      dropped: 4,
+    });
+    expect(await deviceB.store.megolm.decrypt([message])).toEqual([
+      { status: "undecryptable", reason: "keyMissing" },
+    ]);
+    await deviceB.store.close();
+    await alice.store.close();
+    await other.alice.store.close();
+  });
+
+  it("署名のない版や、別のバックアップ鍵の版からは取り込まない", async () => {
+    const { me, alice } = await backedUpOnDeviceA();
+    const deviceB = await openStore(BOB);
+    await deviceB.store.saveOwnKeys(me.secrets, 1);
+    const stranger = currentVersion(identity(BOB));
+    expect(await deviceB.store.beginBackupImport(stranger)).toMatchObject({ kind: "rejected" });
+    expect(await deviceB.store.beginBackupImport(null)).toEqual({ kind: "none" });
+    // 受け入れていない版のページは保存しない。
+    await expect(deviceB.store.importBackupPage("1", [], null)).rejects.toThrow();
+    // 解錠していない端末は取り込まない。
+    const locked = await openStore(BOB);
+    expect(await locked.store.beginBackupImport(currentVersion(me))).toEqual({ kind: "none" });
+    await deviceB.store.close();
+    await locked.store.close();
     await alice.store.close();
   });
 });

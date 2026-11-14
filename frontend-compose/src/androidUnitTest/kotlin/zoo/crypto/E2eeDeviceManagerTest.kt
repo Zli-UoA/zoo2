@@ -213,6 +213,27 @@ class E2eeDeviceManagerTest {
     }
 
     @Test
+    fun failureOtherThanNotFoundResetsCount() = managerTest {
+        val stale = "00000000-0000-4000-8000-0000000000da"
+        pending.add(PendingDeviceDeletion(SERVER, BOB, stale, unconfirmed = true))
+        api.missing += stale
+        // 404 → 404 → 503 → 404：失敗をはさんだので、続けて 3 回にはならず、削除待ちに残る。
+        val failures = listOf(null, null, ApiException(503), null)
+        for ((failure, expected) in failures.zip(listOf(1, 2, 0, 1))) {
+            api.deleteFailure = failure
+            val next = manager()
+            next.start()
+            advanceUntilIdle()
+            assertEquals(
+                listOf(PendingDeviceDeletion(SERVER, BOB, stale, unconfirmed = true, notFound = expected)),
+                pending.all(),
+            )
+            next.stop()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun notFoundIsCountedOncePerLogin() = managerTest {
         val stale = "00000000-0000-4000-8000-0000000000d9"
         pending.add(PendingDeviceDeletion(SERVER, BOB, stale, unconfirmed = true))

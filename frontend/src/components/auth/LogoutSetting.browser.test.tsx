@@ -23,6 +23,7 @@ function e2ee(
     status: "idle",
     deviceId: null,
     worker: null,
+    notReadyReason: { kind: "starting" },
     roomKeysVersion: 0,
     userId: null,
     pendingBackupCount,
@@ -30,6 +31,7 @@ function e2ee(
     deviceLimit: null,
     cancelLogout,
     requestKeyBackup: vi.fn(),
+    requestKeyBackupImport: vi.fn(),
     clearForLogout,
     sas: null,
   };

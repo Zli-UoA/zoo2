@@ -1,8 +1,10 @@
 import {
   BackupUploadState,
   DeviceAccount,
+  type BackupRow,
   type BackupUpload,
   InboundSessionStore,
+  KeySnapshot,
   OlmSessions,
   OwnKeys,
   Revocation,
@@ -11,11 +13,17 @@ import {
   type RevocationSummary,
   type UnlockedSecretStorage,
   type JsonObject,
+  type SenderTrust,
   type SessionRef,
   type VerificationMessage,
 } from "@zoo/crypto-wasm";
 
-import { inboundSessionKey, type CryptoBackend, type CryptoStoreWrite } from "./backend";
+import {
+  inboundSessionKey,
+  type CryptoBackend,
+  type CryptoStoreWrite,
+  type InboundSessionKey,
+} from "./backend";
 import { MegolmChannels } from "./megolm";
 import { SasVerifications } from "./verification";
 import {
@@ -50,6 +58,32 @@ const META_REVOCATION = "revocation";
  */
 const META_BACKUP_UPLOAD = "backup_upload";
 
+/**
+ * 鍵バックアップからの取り込みの進み具合（{@link BackupImportProgress} の JSON）。秘密は入らない。
+ * 途中で止まったら、同じ版なら続きから取り込み、版が変わったら始めから取り込む。
+ */
+const META_BACKUP_IMPORT = "backup_import";
+
+interface BackupImportProgress {
+  /** 取り込んでいる（取り込んだ）版。 */
+  version: string;
+  /** 次に読むページのカーソル（`GET /api/e2ee/key_backup/keys` の `after`）。 */
+  after: string | null;
+  /** 最後のページまで取り込んだ。 */
+  done: boolean;
+}
+
+/** {@link CryptoStore.beginBackupImport} の結果。 */
+export type BackupImportStart =
+  /** `after` のカーソル（`null` なら最初）から読んで取り込む。 */
+  | { kind: "import"; version: string; after: string | null }
+  /** この版は取り込み終えている。 */
+  | { kind: "done"; version: string }
+  /** 解錠していない、または今の版がない。 */
+  | { kind: "none" }
+  /** 今の版を使えない（アップロードの `rejected` と同じ）。取り込まない。 */
+  | { kind: "rejected"; code: string };
+
 /** 鍵バックアップへの 1 回のアップロード（`POST /api/e2ee/key_backup/keys`）。 */
 export type BackupUploadRequest =
   | {
@@ -81,6 +115,18 @@ export interface ToDeviceRow {
 
 /** `keys/query` の応答の `device_keys`（ユーザー、端末の順）。 */
 export type DeviceKeysByUser = Record<string, Record<string, JsonObject>>;
+
+/**
+ * `keys/query` の応答（50 人ずつ問い合わせてまとめたもの）。`KeySnapshot.fromJson` にそのまま渡せる。
+ */
+export type KeysQueryResponse = {
+  device_keys: DeviceKeysByUser;
+  master_keys: Record<string, JsonObject>;
+  self_signing_keys: Record<string, JsonObject>;
+  user_signing_keys: Record<string, JsonObject>;
+  tofu_pins: Record<string, JsonObject>;
+  signatures: JsonObject[];
+};
 
 export interface RegistrationRequest {
   device_keys: JsonObject;
@@ -406,12 +452,12 @@ export class CryptoStore {
    * 1 つのトランザクションで保存する。ack が届く前に終了しても、次の起動で同じメッセージを
    * 処理し直さない（Olm のメッセージは 2 回は復号できないため）。
    *
-   * `deviceKeys` は送信ユーザーの `keys/query` の応答。送信端末の検証済みかの判定（手順 4）は、
-   * クロス署名を扱う #360 以降で足す。それまでは「未検証の送信者」として保存する。
+   * `keysQuery` は送信ユーザーと自分の `keys/query` の応答。端末鍵（手順 1）と、送信端末を
+   * 検証済みにするかの判定（手順 4。送信ユーザーの信頼したマスター鍵と自己署名鍵）に使う。
    */
   async processToDevice(
     rows: ToDeviceRow[],
-    deviceKeys: DeviceKeysByUser,
+    keysQuery: KeysQueryResponse,
   ): Promise<ToDeviceResult> {
     const result: ToDeviceResult = {
       processed: [],
@@ -420,27 +466,32 @@ export class CryptoStore {
       newOlmSessions: 0,
       verifications: [],
     };
-    for (const row of rows) {
-      if (this.processedToDevice.has(row.id)) {
-        result.processed.push(row.id);
-        continue;
-      }
-      const changes: CryptoStoreWrite = { addProcessedToDevice: [row.id] };
-      try {
-        if (row.type === "m.room.encrypted") {
-          await this.processEncrypted(row, deviceKeys, changes, result);
-        } else {
-          result.dropped += 1;
+    const senders = new SenderTrustCache(this.trust, keysQuery);
+    try {
+      for (const row of rows) {
+        if (this.processedToDevice.has(row.id)) {
+          result.processed.push(row.id);
+          continue;
         }
-        await this.write(changes);
-      } catch (error) {
-        // 復号で進んだメモリーの状態を保存できていない。書き込みに限らず（保存済みのセッションの
-        // 読み取りなど）途中で失敗したら、開き直すまで使わない。
-        this.broken = true;
-        throw error;
+        const changes: CryptoStoreWrite = { addProcessedToDevice: [row.id] };
+        try {
+          if (row.type === "m.room.encrypted") {
+            await this.processEncrypted(row, keysQuery.device_keys, senders, changes, result);
+          } else {
+            result.dropped += 1;
+          }
+          await this.write(changes);
+        } catch (error) {
+          // 復号で進んだメモリーの状態を保存できていない。書き込みに限らず（保存済みのセッションの
+          // 読み取りなど）途中で失敗したら、開き直すまで使わない。
+          this.broken = true;
+          throw error;
+        }
+        this.processedToDevice.add(row.id);
+        result.processed.push(row.id);
       }
-      this.processedToDevice.add(row.id);
-      result.processed.push(row.id);
+    } finally {
+      senders.free();
     }
     return result;
   }
@@ -448,6 +499,7 @@ export class CryptoStore {
   private async processEncrypted(
     row: ToDeviceRow,
     deviceKeys: DeviceKeysByUser,
+    senders: SenderTrustCache,
     changes: CryptoStoreWrite,
     result: ToDeviceResult,
   ): Promise<void> {
@@ -485,9 +537,15 @@ export class CryptoStore {
         }
         return;
       }
+      // 手順 4：送信ユーザーの、信頼したマスター鍵で署名された自己署名鍵。信頼できなければ `null`
+      // （未解錠、再検証待ち、初めて見た相手など）で、セッションは「未検証の送信者」になる。
+      const trust = sender && senderDevice ? senders.get(sender, senderDevice) : null;
+      if (senders.takeTrustChanged()) {
+        changes.trustStore = this.trust.pickle(this.account, this.storageKey);
+      }
       let roomKey;
       try {
-        roomKey = decrypted.verifyRoomKey(this.account, listed ?? null, null);
+        roomKey = decrypted.verifyRoomKey(this.account, listed ?? null, trust);
       } catch {
         result.dropped += 1;
         return;
@@ -592,41 +650,9 @@ export class CryptoStore {
     currentVersion: JsonObject | null,
     limit: number,
   ): Promise<BackupUploadRequest> {
-    const own = await this.ownKeys();
-    if (!own) return { kind: "none" };
-    const state = await this.loadBackupState();
-    try {
-      state.setSecretsRevision(own.secretsRevision ?? undefined);
-      if (!currentVersion) {
-        state.suspend();
-        return { kind: "none" };
-      }
-      let change: string;
-      try {
-        change = state.acceptCurrentVersion(
-          currentVersion,
-          own.keys.masterPublicKey,
-          own.keys.backupKey,
-        );
-      } catch (error) {
-        const code = (error as { code?: unknown }).code;
-        return { kind: "rejected", code: typeof code === "string" ? code : "Unknown" };
-      }
-      if (change === "changed") {
-        try {
-          await this.backend.resetBackedUp();
-        } catch (error) {
-          // 新しい版を見たことは、送信待ちに戻せたあとでだけ記録する。次の呼び出しで、保存した
-          // 状態から読み直して、もう一度戻す。
-          this.backupState?.free();
-          this.backupState = null;
-          throw error;
-        }
-      }
-      await this.saveBackupState(state);
-    } finally {
-      own.keys.free();
-    }
+    const accepted = await this.acceptBackupVersion(currentVersion);
+    if (accepted.kind !== "accepted") return accepted;
+    const state = accepted.state;
 
     const sessions = await this.backend.pendingBackupSessions(limit);
     if (sessions.length === 0) return { kind: "none" };
@@ -652,6 +678,162 @@ export class CryptoStore {
       body: upload.body,
       count: sent.size,
     };
+  }
+
+  /**
+   * 今の版を検証して受け入れる（アップロードと取り込みの前に行う。docs/e2ee.md の「鍵バックアップ」）。
+   *
+   * `auth_data` に自分のマスター鍵の署名があり、公開鍵が SSSS のバックアップ鍵と同じで、前に見た版より
+   * 古くないときだけ受け入れる。版が変わったら、すべての受信用セッションを送信待ちに戻す。
+   */
+  private async acceptBackupVersion(
+    currentVersion: JsonObject | null,
+  ): Promise<
+    | { kind: "accepted"; state: BackupUploadState; version: string }
+    | { kind: "none" }
+    | { kind: "rejected"; code: string }
+  > {
+    const own = await this.ownKeys();
+    if (!own) return { kind: "none" };
+    const state = await this.loadBackupState();
+    try {
+      state.setSecretsRevision(own.secretsRevision ?? undefined);
+      if (!currentVersion) {
+        state.suspend();
+        return { kind: "none" };
+      }
+      let change: string;
+      const backupKey = own.keys.backupKey;
+      try {
+        change = state.acceptCurrentVersion(currentVersion, own.keys.masterPublicKey, backupKey);
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        return { kind: "rejected", code: typeof code === "string" ? code : "Unknown" };
+      } finally {
+        backupKey.free();
+      }
+      if (change === "changed") {
+        try {
+          await this.backend.resetBackedUp();
+        } catch (error) {
+          // 新しい版を見たことは、送信待ちに戻せたあとでだけ記録する。次の呼び出しで、保存した
+          // 状態から読み直して、もう一度戻す。
+          this.backupState?.free();
+          this.backupState = null;
+          throw error;
+        }
+      }
+      await this.saveBackupState(state);
+    } finally {
+      own.keys.free();
+    }
+    const verified = state.currentVersion();
+    if (!verified) return { kind: "none" };
+    return { kind: "accepted", state, version: verified.version };
+  }
+
+  /**
+   * 鍵バックアップからの取り込みを始める（docs/e2ee.md の「新しい端末での解錠」の手順 5）。
+   *
+   * `currentVersion` は `GET /api/e2ee/key_backup/versions/current` の応答。アップロードと同じ検証を
+   * 通った今の版だけから取り込む。途中で止まった取り込みは、同じ版なら続きのカーソルから始める。
+   * その版を取り込み終えていれば `done`。
+   */
+  async beginBackupImport(currentVersion: JsonObject | null): Promise<BackupImportStart> {
+    const accepted = await this.acceptBackupVersion(currentVersion);
+    if (accepted.kind !== "accepted") return accepted;
+    const progress = await this.backupImportProgress();
+    if (progress?.version !== accepted.version) {
+      return { kind: "import", version: accepted.version, after: null };
+    }
+    if (progress.done) return { kind: "done", version: accepted.version };
+    return { kind: "import", version: accepted.version, after: progress.after };
+  }
+
+  /**
+   * `GET /api/e2ee/key_backup/keys` の 1 ページを取り込む。`next` は応答の `next`（最後のページなら
+   * `null`）で、取り込んだセッションと一緒に進み具合として保存する。
+   *
+   * 取り込んだセッションは「バックアップ由来」として保存し、Olm 由来のセッションを置き換えない
+   * （`InboundSessionStore.importBackupSession`）。復号できない行、平文が行と合わない行、`session_key`
+   * から導いた `session_id` が合わない行は捨てる。同じ版には上げ直さない（送信済みとして保存する）。
+   */
+  async importBackupPage(
+    version: string,
+    rows: JsonObject[],
+    next: string | null,
+  ): Promise<{ imported: number; dropped: number }> {
+    // 受け入れた今の版からだけ取り込む（取り込みの途中で版が変わったら、始め直させる）。
+    const accepted = this.backupState?.currentVersion();
+    if (!accepted || accepted.version !== version) {
+      throw new Error("鍵バックアップの今の版が変わりました");
+    }
+    const own = await this.ownKeys();
+    if (!own) throw new Error("解錠していません");
+    const backupKey = own.keys.backupKey;
+    const sessions = new Map<InboundSessionKey, string>();
+    let imported = 0;
+    let dropped = 0;
+    try {
+      for (const row of rows) {
+        let session;
+        try {
+          session = backupKey.decryptRow(row as unknown as BackupRow);
+        } catch {
+          dropped += 1;
+          continue;
+        }
+        const ref: SessionRef = {
+          channel_id: session.channelId,
+          sender_key: session.senderKey,
+          session_id: session.sessionId,
+        };
+        try {
+          await this.loadInboundSession(ref);
+        } catch (error) {
+          session.free();
+          throw error;
+        }
+        let outcome;
+        try {
+          // `session` は渡すと wasm 側に移る（ここで解放される）。
+          outcome = this.inbound.importBackupSession(session);
+        } catch {
+          dropped += 1;
+          continue;
+        }
+        if (outcome === "kept") continue;
+        const pickle = this.inbound.pickleSession(ref, this.account, this.storageKey);
+        if (pickle) sessions.set(inboundSessionKey(ref), pickle);
+        imported += 1;
+      }
+    } finally {
+      backupKey.free();
+      own.keys.free();
+    }
+    const progress: BackupImportProgress = { version, after: next, done: next === null };
+    await this.write({
+      meta: { [META_BACKUP_IMPORT]: JSON.stringify(progress) },
+      inboundSessions: [...sessions].map(([key, pickle]) => ({ key, pickle, fromBackup: true })),
+    });
+    return { imported, dropped };
+  }
+
+  private async backupImportProgress(): Promise<BackupImportProgress | null> {
+    const { meta } = await this.backend.read();
+    const saved = meta[META_BACKUP_IMPORT];
+    if (!saved) return null;
+    try {
+      const value = JSON.parse(saved) as Partial<BackupImportProgress>;
+      if (typeof value.version !== "string" || typeof value.done !== "boolean") return null;
+      return {
+        version: value.version,
+        after: typeof value.after === "string" ? value.after : null,
+        done: value.done,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -834,6 +1016,54 @@ export class CryptoStore {
     this.discardPendingUpload();
     this.backupState?.free();
     this.backupState = null;
+  }
+}
+
+/**
+ * 1 回の to-device の処理で使う、送信ユーザーごとの {@link TrustStore.senderTrust} の結果。
+ *
+ * 判定（`senderTrust`）は記録を変えることがある（規則 3 の署名や共有ピンの採用）。変わったかは
+ * 保存した文字列と比べて調べ、変わったら同じ行の書き込みで記録も保存する。
+ */
+class SenderTrustCache {
+  private snapshot: KeySnapshot | null = null;
+  private readonly results = new Map<string, SenderTrust | null>();
+  private saved: string;
+
+  constructor(
+    private readonly trust: TrustStore,
+    private readonly keysQuery: KeysQueryResponse,
+  ) {
+    this.saved = trust.toJson();
+  }
+
+  get(sender: string, senderDevice: string): SenderTrust | null {
+    const key = JSON.stringify([sender, senderDevice]);
+    if (!this.results.has(key)) {
+      let trust: SenderTrust | null = null;
+      try {
+        this.snapshot ??= KeySnapshot.fromJson(this.keysQuery as unknown as JsonObject);
+        trust = this.trust.senderTrust(this.snapshot, sender, senderDevice);
+      } catch {
+        // 応答を読めなければ、確かめられないものとして扱う（「未検証の送信者」）。
+        trust = null;
+      }
+      this.results.set(key, trust);
+    }
+    return this.results.get(key) ?? null;
+  }
+
+  /** 前に呼んでから記録が変わったか。 */
+  takeTrustChanged(): boolean {
+    const now = this.trust.toJson();
+    if (now === this.saved) return false;
+    this.saved = now;
+    return true;
+  }
+
+  free(): void {
+    this.snapshot?.free();
+    this.snapshot = null;
   }
 }
 

@@ -87,7 +87,11 @@ export const UnreadAndArchived: Story = {
       handlers: [
         http.get("*/api/channel-read-states", () =>
           HttpResponse.json([
-            { channel_id: "channel-general", last_read_at: null, has_unread: true },
+            {
+              channel_id: "00000000-0000-4000-8000-000000000001",
+              last_read_at: null,
+              has_unread: true,
+            },
             { channel_id: "channel-design", last_read_at: null, has_unread: true },
           ]),
         ),

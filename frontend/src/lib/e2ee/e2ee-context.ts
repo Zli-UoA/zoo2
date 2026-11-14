@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 
 import type { CryptoWorker } from "./cryptoWorker";
 import type { E2eeDeviceStatus } from "./deviceManager";
+import { type E2eeNotReadyReason, NOT_READY_STARTING } from "./notReady";
 import type { StaleDevice } from "./revocationApi";
 import type { SasController } from "./sasController";
 
@@ -14,6 +15,11 @@ export interface E2eeContextValue {
    * 設定の「暗号化」タブ（初回設定と解錠。#360）が使う。
    */
   worker: CryptoWorker | null;
+  /**
+   * `worker` がない理由（ほかのタブが開いている、登録に失敗して試し直している、など）。
+   * 設定の「暗号化」「端末」タブが、準備できていないことの説明に使う。開けていれば `null`。
+   */
+  notReadyReason: E2eeNotReadyReason | null;
   userId: string | null;
   /** Megolm のセッション鍵を受け取るたびに増える（復号できなかったメッセージを試し直す。#361）。 */
   roomKeysVersion: number;
@@ -38,6 +44,12 @@ export interface E2eeContextValue {
    * （送信用セッションの写しを含む）に呼ぶ。解錠していない端末では何もしない。
    */
   requestKeyBackup(): void;
+  /**
+   * 鍵バックアップの今の版から、過去のセッションを取り込む（docs/e2ee.md の「新しい端末での解錠」の
+   * 手順 5）。解錠を終えたときに呼ぶ。取り込んだら `roomKeysVersion` を進める。解錠していない端末と、
+   * 暗号ストアを開いていないタブでは何もしない。
+   */
+  requestKeyBackupImport: () => void;
   /** ログアウト：暗号ストアを消し、端末を削除する（失敗したら次のログインで消し直す）。 */
   clearForLogout(): Promise<void>;
   /** 他のユーザーの絵文字 SAS 検証（#368）。暗号ストアを開いたタブで、端末の登録が済んだときだけ。 */
@@ -48,6 +60,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   status: "idle",
   deviceId: null,
   worker: null,
+  notReadyReason: NOT_READY_STARTING,
   userId: null,
   roomKeysVersion: 0,
   pendingBackupCount: async () => 0,
@@ -55,6 +68,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   deviceLimit: null,
   cancelLogout: () => {},
   requestKeyBackup: () => {},
+  requestKeyBackupImport: () => {},
   clearForLogout: async () => {},
   sas: null,
 });

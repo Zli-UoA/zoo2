@@ -16,7 +16,13 @@ import { Input } from "../ui/input";
 import { SettingsSection } from "../ui/control-panel";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { Spinner } from "../ui/spinner";
-import { AuthzSteps, DeviceSummary, type DeviceRowView } from "./DevicesSettingsView";
+import type { E2eeNotReadyReason } from "../../lib/e2ee/notReady";
+import {
+  AuthzSteps,
+  DeviceSummary,
+  type DeviceRowView,
+  E2eeNotReadyNotice,
+} from "./DevicesSettingsView";
 
 /** 画面に出す誤り。文言は `e2ee.errors.<code>`。 */
 export type EncryptionErrorCode =
@@ -45,8 +51,8 @@ export interface KeySlotView {
 
 export type EncryptionViewState =
   | { step: "loading" }
-  /** 暗号ストアがまだ開いていない（端末の登録の前など）。 */
-  | { step: "unavailable" }
+  /** 暗号ストアがまだ開いていない（端末の登録の前など）。`reason` はその理由。 */
+  | { step: "unavailable"; reason: E2eeNotReadyReason }
   | { step: "loadFailed" }
   | { step: "notSetUp"; busy: boolean }
   | {
@@ -184,7 +190,7 @@ function StepContent({
     case "loading":
       return <Busy label={t("e2ee.loading")} />;
     case "unavailable":
-      return <p className="text-sm text-muted-foreground">{t("e2ee.unavailable")}</p>;
+      return <E2eeNotReadyNotice reason={state.reason} />;
     case "loadFailed":
       return (
         <div className="space-y-2">

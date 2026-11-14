@@ -17,7 +17,7 @@ import { ApiError, type ApiClient, type RequestOptions } from "../api/client";
 import type { CryptoWorker } from "./cryptoWorker";
 import { CryptoOperations } from "./operations";
 import type { CredentialGetter } from "./passkey";
-import type { CryptoOperation } from "./protocol";
+import type { CryptoOperation, KeysQueryResponse } from "./protocol";
 import { REAUTH_HEADER } from "./secretStorageApi";
 import {
   ReauthRequiredError,
@@ -31,12 +31,25 @@ import {
   loadE2eeStatus,
   runStartupCheck,
   uploadKeyBackup,
+  importKeyBackup,
   saveRemaining,
   unlock,
   type E2eeSetupDeps,
 } from "./setupController";
 import { MemoryCryptoBackend } from "./store/backend";
 import type { WrappingKeyStore } from "./store/storageKey";
+
+/** 端末鍵だけの `keys/query` の応答（クロス署名鍵がないので、送信端末は検証済みにならない）。 */
+function keysQueryOf(deviceKeys: Record<string, Record<string, JsonObject>>): KeysQueryResponse {
+  return {
+    device_keys: deviceKeys,
+    master_keys: {},
+    self_signing_keys: {},
+    user_signing_keys: {},
+    tofu_pins: {},
+    signatures: [],
+  };
+}
 
 beforeAll(() => {
   const wasm = readFileSync(
@@ -64,6 +77,8 @@ class FakeServer {
   signatures: Json[] = [];
   versions: Json[] = [];
   backupSessions: Json[] = [];
+  /** `GET /api/e2ee/key_backup/keys` の 1 ページの件数（実際のサーバーは 1000）。 */
+  backupPageSize = 1000;
   fail: { path: string; when: "before" | "after" } | null = null;
   requests: { method: string; path: string; reauth: boolean }[] = [];
 
@@ -201,6 +216,18 @@ class FakeServer {
         const current = this.versions.at(-1);
         if (!current || current.deleted) this.error(404, "NOT_FOUND");
         return { ...current, count: this.backupSessions.length };
+      }
+      case "GET /api/e2ee/key_backup/keys": {
+        const version = this.versions.find((v) => v.version === params.get("version"));
+        if (!version || version.deleted) this.error(404, "NOT_FOUND");
+        const key = (row: Json) => JSON.stringify([row.channel_id, row.sender_key, row.session_id]);
+        const rows = [...this.backupSessions].sort((a, b) => key(a).localeCompare(key(b)));
+        const start = Number(params.get("after") ?? 0);
+        const end = start + this.backupPageSize;
+        return {
+          sessions: rows.slice(start, end),
+          next: end < rows.length ? String(end) : null,
+        };
       }
       case "POST /api/e2ee/key_backup/keys": {
         const current = this.versions.at(-1);
@@ -684,7 +711,7 @@ describe("初回設定と解錠", () => {
           content,
         },
       ],
-      deviceKeys: { [sender.userId]: { [sender.deviceId]: sender.deviceKeys() } },
+      keysQuery: keysQueryOf({ [sender.userId]: { [sender.deviceId]: sender.deviceKeys() } }),
     });
     expect(result.roomKeys).toBe(1);
   }
@@ -710,6 +737,75 @@ describe("初回設定と解錠", () => {
     expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 1 });
     expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 0 });
     expect(server.backupSessions).toHaveLength(2);
+  });
+
+  it("新しい端末で解錠すると、鍵バックアップの今の版から過去のセッションをページごとに取り込む", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const { keyId, recoveryKey } = await beginSetup(first.deps(server), null);
+    await completeSetup(first.deps(server), keyId, TOKEN);
+    for (let i = 0; i < 3; i += 1) await receiveRoomKey(first);
+    expect(await uploadKeyBackup(first.deps(server))).toEqual({ kind: "done", uploaded: 3 });
+    server.backupPageSize = 1;
+
+    // 解錠を終えたら、取り込みを頼む（取り込みは待たずに返る）。
+    const second = await device("second");
+    let unlocked = 0;
+    const deps = { ...second.deps(server), onUnlocked: () => (unlocked += 1) };
+    const status = await loadE2eeStatus(deps);
+    if (status.kind !== "locked") throw new Error("unreachable");
+    await unlock(deps, status.storage, { kind: "recovery", recoveryKey });
+    expect(unlocked).toBe(1);
+
+    // 2 ページ目で通信が切れても、1 ページ目は保存してあり、次は 2 ページ目から読む。
+    server.fail = { path: "GET /api/e2ee/key_backup/keys?version=1&after=1", when: "before" };
+    const pages: number[] = [];
+    await expect(importKeyBackup(deps, (n) => pages.push(n))).rejects.toThrow("network error");
+    expect(pages).toEqual([1]);
+    expect(second.backend.inboundSessions.size).toBe(1);
+    server.requests = [];
+    expect(await importKeyBackup(deps)).toEqual({ kind: "done", imported: 2, dropped: 0 });
+    expect(server.requests.map((r) => r.path)).toContain(
+      "/api/e2ee/key_backup/keys?version=1&after=1",
+    );
+    expect(server.requests.map((r) => r.path)).not.toContain("/api/e2ee/key_backup/keys?version=1");
+    expect(second.backend.inboundSessions.size).toBe(3);
+
+    // 取り込んだセッションは同じ版には上げ直さない。取り込み終えた版は読み直さない。
+    server.requests = [];
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 0 });
+    expect(await importKeyBackup(deps)).toEqual({ kind: "done", imported: 0, dropped: 0 });
+    expect(server.requests.some((r) => r.path.startsWith("/api/e2ee/key_backup/keys"))).toBe(false);
+    expect(server.backupSessions).toHaveLength(3);
+  });
+
+  it("取り込みの途中で版が消えたら、やめて次の解錠か起動に任せる", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const { keyId, recoveryKey } = await beginSetup(first.deps(server), null);
+    await completeSetup(first.deps(server), keyId, TOKEN);
+    await receiveRoomKey(first);
+    await uploadKeyBackup(first.deps(server));
+
+    const second = await device("second");
+    const deps = second.deps(server);
+    const status = await loadE2eeStatus(deps);
+    if (status.kind !== "locked") throw new Error("unreachable");
+    await unlock(deps, status.storage, { kind: "recovery", recoveryKey });
+    // 今の版を読んだあと、ページを読む前に別の端末が版を消した。
+    const respond = server.client();
+    const client = {
+      ...respond,
+      get: ((path: string, options?: RequestOptions) => {
+        if (path.startsWith("/api/e2ee/key_backup/keys")) server.versions.at(-1)!.deleted = true;
+        return respond.get(path, options);
+      }) as ApiClient["get"],
+    };
+    expect(await importKeyBackup({ ...deps, client })).toEqual({
+      kind: "gone",
+      imported: 0,
+      dropped: 0,
+    });
   });
 
   it("今の版をマスター鍵で検証できないか、公開鍵が違えば送らない", async () => {
