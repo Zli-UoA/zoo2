@@ -807,6 +807,11 @@ export class CryptoStore {
         if (pickle) sessions.set(inboundSessionKey(ref), pickle);
         imported += 1;
       }
+    } catch (error) {
+      // 取り込んだ行がメモリーに残っている。同じストアで試し直すと、その行は「保存済み」として
+      // 扱われ（`kept`）、保存されないまま進み具合だけが進むので、開き直すまで使わない。
+      this.broken = true;
+      throw error;
     } finally {
       backupKey.free();
       own.keys.free();

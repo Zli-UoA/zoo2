@@ -779,6 +779,22 @@ describe("初回設定と解錠", () => {
     expect(server.backupSessions).toHaveLength(3);
   });
 
+  it("起動時の鍵バックアップへの送信に失敗しても、鍵を使えるなら取り込みを始められる", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    await receiveRoomKey(first);
+    server.fail = {
+      path: `POST /api/e2ee/key_backup/keys?version=1&secrets_revision=${server.revision}`,
+      when: "before",
+    };
+    expect(await runStartupCheck(deps)).toBe(true);
+    expect(server.fail).toBeNull();
+    expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
+  });
+
   it("取り込みの途中で版が消えたら、やめて次の解錠か起動に任せる", async () => {
     const server = new FakeServer();
     const first = await device("first");
