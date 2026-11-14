@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>zoo2 の更新</title>
+    <link rel="stylesheet" href="updater.css" />
+    <script src="updater.js" defer></script>
+  </head>
+  <body>
+    <!-- 更新のウィンドウ。状態は Rust 側 (src-tauri/src/update.rs) が window.zooUpdater.set() で渡す。 -->
+    <main class="updater">
+      <img class="icon" src="icon.png" alt="" width="96" height="96" />
+      <p class="title" id="title">更新を確かめています</p>
+      <div class="bar" id="bar" data-state="indeterminate" role="progressbar" aria-labelledby="title">
+        <div class="fill" id="fill"></div>
+      </div>
+      <p class="detail" id="detail"></p>
+    </main>
+  </body>
+</html>
