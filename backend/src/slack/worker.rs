@@ -108,13 +108,9 @@ pub async fn worker_until(s: AppState, mut stop: Stop) {
         Err(e) => tracing::warn!(error = %e, "Failed to clean up leftover Slack import ZIPs"),
     }
     // ジョブに紐づかない添付 (差分同期の添付など) の取得。ジョブの処理は長くかかるので、別のタスクで動かす。
-    // トークンがあるときだけ動かす。終わるときは、取りかけの行を手放すのを待つ
-    let mut files = s
-        .config
-        .slack
-        .import_bot_token
-        .is_some()
-        .then(|| tokio::spawn(orphan_files_worker(s.clone(), stop.clone())));
+    // Bot トークンか、ユーザートークン (連携) を使えるときだけ動かす。終わるときは、取りかけの行を手放すのを待つ
+    let mut files =
+        file_worker_enabled(&s).then(|| tokio::spawn(orphan_files_worker(s.clone(), stop.clone())));
     let finish = |files: Option<tokio::task::JoinHandle<()>>| async move {
         if let Some(files) = files {
             let _ = tokio::time::timeout(RELEASE_TIMEOUT, files).await;
@@ -1602,6 +1598,8 @@ enum FileOutcome {
     Skipped(String),
     /// Slack が 429 を返した。試行回数に数えず、この秒数だけ待って取り直す (行単位の取得だけが扱う)
     RetryLater(u64),
+    /// どのトークンでも、Slack がログイン画面を返した (権限がない)。取り直しても変わらない
+    Denied,
 }
 
 /// 添付の取得に使うクライアント。リダイレクトは `get_following_redirects` が 1 回ずつ確かめるので、自動では追従しない
@@ -1723,7 +1721,7 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     continue;
                 }
                 file.lease_token = lease_token;
-                let outcome = fetch_one(s, &client, token, &file).await;
+                let outcome = fetch_one(s, &client, &[token.to_string()], &file).await;
                 let mut tx = db.transaction().await?;
                 // 投稿の編集 (messages → slack_files の順) と同じ順にロックして、行き違いのデッドロックを避ける
                 query(
@@ -1737,12 +1735,17 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     Ok(FileOutcome::RetryLater(_)) => Err(AppError::BadGateway(
                         "Slack file download returned 429 Too Many Requests".into(),
                     )),
+                    Ok(FileOutcome::Denied) => Err(AppError::BadGateway(format!(
+                        "Slack file download failed: {DENIED_NOTE}"
+                    ))),
                     other => other,
                 };
                 let (status, attachment, error) = match outcome {
                     Ok(FileOutcome::Done(attachment)) => ("done", attachment, String::new()),
                     Ok(FileOutcome::Skipped(reason)) => ("skipped", String::new(), reason),
-                    Ok(FileOutcome::RetryLater(_)) => unreachable!("mapped to an error above"),
+                    Ok(FileOutcome::RetryLater(_) | FileOutcome::Denied) => {
+                        unreachable!("mapped to an error above")
+                    }
                     Err(e) if file.attempts + 1 >= MAX_FILE_ATTEMPTS => {
                         ("failed", String::new(), e.to_string())
                     }
@@ -1816,12 +1819,97 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
 // 取得そのもの (`fetch_one`) と結果の書き込み (`record_file_result`) は、ジョブの取得と同じ。
 // 進行中のジョブ (`analyzing`/`importing`/`fetching_files`) や、まだ始まっていないジョブの行は、ジョブの取得に任せる。
 
-/// 行単位の取得のワーカー。トークンがなければ何もせず戻る (呼び出し側で、トークンがあるときだけ起動する)。
+/// 行単位の取得を動かすか。Bot トークンがあるか、連携したユーザーのトークンを復号できる (OAuth と暗号化キー) とき
+fn file_worker_enabled(s: &AppState) -> bool {
+    s.config.slack.import_bot_token.is_some() || user_tokens_enabled(s)
+}
+
+fn user_tokens_enabled(s: &AppState) -> bool {
+    s.config.slack.oauth_enabled() && s.config.slack.encryption_key().is_some()
+}
+
+/// 候補のユーザーがいないとき (まだ再連携が進んでいない)、行を戻して次に試すまで待つ秒数
+const NO_USER_TOKEN_WAIT_SECS: u64 = 3 * 3600;
+const DENIED_NOTE: &str = "Slack file is not visible to any linked user or the bot";
+const NO_USER_TOKEN_NOTE: &str = "no linked user with files:read yet";
+
+/// 1 行の取得に使うトークン (ユーザー → Bot の順)。値は復号したもので、ログやエラーに出さない
+struct FileTokens {
+    tokens: Vec<String>,
+    /// `tokens` のうち、先頭から数えたユーザーのトークンの数 (残りは Bot)
+    users: usize,
+}
+
+/// 行の URL が、この行のファイルのものか。ユーザーのトークンは、このパスにだけ付けて送る。
+/// ZIP の URL は管理者が上げたものなので、別のワークスペース・別のファイルの URL にユーザーの権限を使わない
+fn is_own_file_url(url: &str, team: &str, file_id: &str) -> bool {
+    reqwest::Url::parse(url)
+        .map(|u| {
+            u.path()
+                .starts_with(&format!("/files-pri/{team}-{file_id}/"))
+        })
+        .unwrap_or(false)
+}
+
+/// 行の取得に使うトークンを集める。ユーザーは、同じワークスペースの連携のうち、`files:read` を持つ人。
+/// 非公開チャンネルは、そのメンバーだけ。前回その Slack チャンネルを読めた人、メンバー、新しい連携の順。
+/// 人数では切らない (先頭の人が見えなくても、残りの人で取れるように)。
+async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, AppError> {
+    let mut tokens = Vec::new();
+    let own_url = file.url.as_deref().is_some_and(|u| {
+        allowed_file_url(u, &s.config.slack.files_base_url)
+            && is_own_file_url(u, &file.team_id, &file.slack_file_id)
+    });
+    if own_url
+        && s.config.slack.team_allowed(&file.team_id)
+        && let Some(key) = s
+            .config
+            .slack
+            .oauth_enabled()
+            .then(|| s.config.slack.encryption_key())
+            .flatten()
+    {
+        let mut db = s.db.clone();
+        let mut tx = db.transaction().await?;
+        let rows = query(
+            &mut tx,
+            "SELECT json_build_object('user_id',l.user_id,'token',l.access_token_enc)::text \
+             FROM slack_user_links l JOIN channels ch ON ch.id=$2 \
+             WHERE l.team_id=$1 AND 'files:read'=ANY(string_to_array(replace(l.scopes,' ',''),',')) \
+             AND (NOT ch.is_private OR EXISTS(SELECT 1 FROM channel_user cu \
+                  WHERE cu.channel_id=ch.id AND cu.user_id=l.user_id)) \
+             ORDER BY (l.user_id=COALESCE((SELECT sy.token_user_id FROM slack_channels sc \
+                  JOIN slack_channel_syncs sy ON sy.team_id=sc.team_id AND sy.slack_channel_id=sc.slack_channel_id \
+                  WHERE sc.team_id=$1 AND sc.channel_id=$2),'')) DESC,\
+             EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=ch.id AND cu.user_id=l.user_id) DESC,\
+             l.updated_at DESC,l.user_id",
+            &[&file.team_id, &file.channel_id],
+        )
+        .await?;
+        tx.commit().await?;
+        for row in rows {
+            let (Some(user), Some(enc)) = (row["user_id"].as_str(), row["token"].as_str()) else {
+                continue;
+            };
+            match super::crypto::decrypt(&key, enc) {
+                Ok(token) => tokens.push(token),
+                Err(_) => tracing::warn!(user_id = %user, "Failed to decrypt a Slack token"),
+            }
+        }
+    }
+    let users = tokens.len();
+    if let Some(bot) = s.config.slack.import_bot_token.as_deref() {
+        tokens.push(bot.to_string());
+    }
+    Ok(FileTokens { tokens, users })
+}
+
+/// 行単位の取得のワーカー。取得に使えるトークンがなければ何もせず戻る (呼び出し側で、使えるときだけ起動する)。
 /// `stop` が `true` になったら、取りかけの行を手放して戻る
 pub async fn orphan_files_worker(s: AppState, mut stop: Stop) {
-    let Some(token) = s.config.slack.import_bot_token.clone() else {
+    if !file_worker_enabled(&s) {
         return;
-    };
+    }
     let client = match file_client() {
         Ok(client) => client,
         Err(e) => {
@@ -1830,7 +1918,7 @@ pub async fn orphan_files_worker(s: AppState, mut stop: Stop) {
         }
     };
     loop {
-        let wait = match orphan_files_step(&s, &client, &token, &mut stop, "").await {
+        let wait = match orphan_files_step(&s, &client, &mut stop, "").await {
             // 次の行をすぐ取る。Slack に続けて要求しすぎないよう、少しだけ間を置く
             Ok(FileStep::Done) => Duration::from_millis(200),
             Ok(FileStep::Idle) => FILE_IDLE,
@@ -1851,14 +1939,14 @@ pub async fn orphan_files_worker(s: AppState, mut stop: Stop) {
 /// 行単位の取得を 1 件だけ進める (テスト用)。`team` が空でなければ、そのワークスペースの行だけを取る。
 /// 取る行がなかったら `false`
 pub async fn orphan_files_once(s: &AppState, team: &str) -> Result<bool, AppError> {
-    let Some(token) = s.config.slack.import_bot_token.as_deref() else {
+    if !file_worker_enabled(s) {
         return Ok(false);
-    };
+    }
     let client = file_client()?;
     // 合図を送らない (止まらない) 取得。送り手をここで持ち続ける
     let (_keep, mut stop) = tokio::sync::watch::channel(false);
     Ok(!matches!(
-        orphan_files_step(s, &client, token, &mut stop, team).await?,
+        orphan_files_step(s, &client, &mut stop, team).await?,
         FileStep::Idle
     ))
 }
@@ -1969,6 +2057,7 @@ async fn release_file(
     file: &PendingFile,
     retry: bool,
     secs: u64,
+    note: &str,
 ) -> Result<(), AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
@@ -1976,7 +2065,8 @@ async fn release_file(
         &mut tx,
         "UPDATE slack_files SET lease_token=NULL,\
          lease_until=CASE WHEN $5::bigint=0 THEN NULL ELSE now()+make_interval(secs=>$5::bigint) END,\
-         attempts=GREATEST(attempts-CASE WHEN $4::boolean THEN 1 ELSE 0 END,0),updated_at=now() \
+         attempts=GREATEST(attempts-CASE WHEN $4::boolean THEN 1 ELSE 0 END,0),\
+         error=COALESCE(NULLIF($7,''),error),updated_at=now() \
          WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$3 AND lease_token=$6 AND status='pending'",
         &[
             &file.team_id,
@@ -1985,6 +2075,7 @@ async fn release_file(
             if retry { "true" } else { "false" },
             &secs.to_string(),
             &file.lease_token,
+            note,
         ],
     )
     .await?;
@@ -1995,7 +2086,6 @@ async fn release_file(
 async fn orphan_files_step(
     s: &AppState,
     client: &reqwest::Client,
-    token: &str,
     stop: &mut Stop,
     team: &str,
 ) -> Result<FileStep, AppError> {
@@ -2007,22 +2097,35 @@ async fn orphan_files_step(
     let Some(file) = claim_file(s, team, &lease_token).await? else {
         return Ok(FileStep::Idle);
     };
+    let tokens = file_tokens(s, &file).await?;
+    // 使えるトークンがない (Bot なし、連携した人もまだいない)。試行に数えず、しばらく待ってから取り直す
+    if tokens.tokens.is_empty() {
+        release_file(s, &file, true, NO_USER_TOKEN_WAIT_SECS, NO_USER_TOKEN_NOTE).await?;
+        return Ok(FileStep::Done);
+    }
     // 取得の途中で合図を受けたら、取得を捨てて行を手放す (添付は決定的 ID で作るので、取り直しても重複しない)
     let outcome = tokio::select! {
-        outcome = fetch_one(s, client, token, &file) => outcome,
+        outcome = fetch_one(s, client, &tokens.tokens, &file) => outcome,
         _ = stopped(stop) => {
-            release_file(s, &file, true, 0).await?;
+            release_file(s, &file, true, 0, "").await?;
             return Ok(FileStep::Stopped);
         }
     };
     let (status, attachment, error) = match outcome {
         Ok(FileOutcome::RetryLater(secs)) => {
-            release_file(s, &file, true, secs).await?;
+            release_file(s, &file, true, secs, "").await?;
             tracing::info!(secs, "Slack file download rate limited");
             return Ok(FileStep::Wait(secs));
         }
         Ok(FileOutcome::Done(attachment)) => ("done", attachment, String::new()),
         Ok(FileOutcome::Skipped(reason)) => ("skipped", String::new(), reason),
+        // どのトークンにも見えなかった。Bot しか試していなくて、連携した人がこれから増えるなら (再連携が進むまで)、
+        // 試行に数えず待つ。ユーザーも試したなら、取り直しても変わらないので、すぐ `failed` にする
+        Ok(FileOutcome::Denied) if tokens.users == 0 && user_tokens_enabled(s) => {
+            release_file(s, &file, true, NO_USER_TOKEN_WAIT_SECS, NO_USER_TOKEN_NOTE).await?;
+            return Ok(FileStep::Done);
+        }
+        Ok(FileOutcome::Denied) => ("failed", String::new(), DENIED_NOTE.to_string()),
         // 取るときに試行回数を増やしてあるので、`attempts` は今回を含む
         Err(e) if file.attempts >= MAX_FILE_ATTEMPTS => ("failed", String::new(), e.to_string()),
         Err(e) => ("pending", String::new(), e.to_string()),
@@ -2041,7 +2144,7 @@ async fn orphan_files_step(
             Ok(FileStep::Done)
         }
         Err(e) => {
-            if let Err(release) = release_file(s, &file, true, 0).await {
+            if let Err(release) = release_file(s, &file, true, 0, "").await {
                 tracing::warn!(error = %release, "Failed to release a Slack file");
             }
             Err(e)
@@ -2116,12 +2219,16 @@ async fn write_file_result(
 /// 取得を許可した URL (`SLACK_FILES_BASE_URL` の下) へのリダイレクトだけを、最大 3 回まで追従して取得する。
 /// `Authorization` (Bot トークン) は、最初の URL と同じオリジン (scheme・ホスト・ポート) にだけ付ける。
 /// クライアントは自動の追従をしない (`Policy::none`) ので、ここで 1 回ずつ確かめる
+///
+/// Slack のドメイン (`*.slack.com`、許可した URL のホストを除く) へのリダイレクトは、ログイン画面に飛ばされた
+/// (このトークンには、ファイルが見えない) ことのサインなので、`None` を返す。ほかの許可外 URL は、エラーにする。
+/// 許可は広げない (`Authorization` は許可した URL にだけ送る)
 async fn get_following_redirects(
     client: &reqwest::Client,
     url: &str,
     token: &str,
     base: &str,
-) -> Result<reqwest::Response, AppError> {
+) -> Result<Option<reqwest::Response>, AppError> {
     let failed =
         |detail: String| AppError::BadGateway(format!("Slack file download failed: {detail}"));
     let origin = reqwest::Url::parse(url).map_err(|e| failed(e.to_string()))?;
@@ -2133,7 +2240,7 @@ async fn get_following_redirects(
         }
         let response = request.send().await.map_err(|e| failed(e.to_string()))?;
         if !response.status().is_redirection() {
-            return Ok(response);
+            return Ok(Some(response));
         }
         let location = response
             .headers()
@@ -2142,11 +2249,26 @@ async fn get_following_redirects(
             .ok_or_else(|| failed("a redirect without a location".into()))?;
         let next = current.join(location).map_err(|e| failed(e.to_string()))?;
         if !allowed_file_url(next.as_str(), base) {
+            if is_login_redirect(&next, base) {
+                return Ok(None);
+            }
+            // リダイレクト先の URL は、元の URL を含むことがあるので、エラーには入れない
             return Err(failed("redirected to a URL that is not allowed".into()));
         }
         current = next;
     }
     Err(failed("too many redirects".into()))
+}
+
+fn is_login_redirect(next: &reqwest::Url, base: &str) -> bool {
+    let base_host = reqwest::Url::parse(base)
+        .ok()
+        .and_then(|b| b.host_str().map(str::to_ascii_lowercase));
+    next.scheme() == "https"
+        && next.host_str().is_some_and(|h| {
+            let h = h.to_ascii_lowercase();
+            h.ends_with(".slack.com") && Some(&h) != base_host.as_ref()
+        })
 }
 
 /// 本文を `max` バイトまで読む。累計が上限を超えたら、残りを読まずに `None` を返す
@@ -2187,10 +2309,13 @@ fn allowed_file_url(url: &str, base: &str) -> bool {
         && url.path().starts_with(&prefix)
 }
 
+/// `tokens` を前から順に試して、最初に取れたものを使う。トークンごとに、ログイン画面 (権限なし) は次へ進み、
+/// 一時的な失敗 (5xx・通信) も次へ進む (全部だめなら、その失敗を返す)。429 は、残りを試さずに待つ。
+/// 全部が権限なしなら `Denied`。ユーザーのトークンは、呼び出し側が、その行のファイルの URL のときだけ渡す
 async fn fetch_one(
     s: &AppState,
     client: &reqwest::Client,
-    token: &str,
+    tokens: &[String],
     file: &PendingFile,
 ) -> Result<FileOutcome, AppError> {
     let Some(url) = file
@@ -2208,35 +2333,55 @@ async fn fetch_one(
         return Ok(FileOutcome::Skipped("Unsupported content type".into()));
     }
 
-    let response =
-        get_following_redirects(client, url, token, &s.config.slack.files_base_url).await?;
-    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        let secs = response
+    let mut transient = None;
+    let mut found = None;
+    for token in tokens {
+        let response =
+            match get_following_redirects(client, url, token, &s.config.slack.files_base_url).await
+            {
+                Ok(Some(response)) => response,
+                Ok(None) => continue,
+                Err(e) => {
+                    transient = Some(e);
+                    continue;
+                }
+            };
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let secs = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(60)
+                .clamp(1, MAX_RETRY_AFTER_SECS);
+            return Ok(FileOutcome::RetryLater(secs));
+        }
+        if !response.status().is_success() {
+            transient = Some(AppError::BadGateway(format!(
+                "Slack file download returned {}",
+                response.status()
+            )));
+            continue;
+        }
+        // トークンの権限が足りないと、Slack はログイン画面の HTML を返す
+        let is_html = response
             .headers()
-            .get(reqwest::header::RETRY_AFTER)
+            .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(60)
-            .clamp(1, MAX_RETRY_AFTER_SECS);
-        return Ok(FileOutcome::RetryLater(secs));
+            .is_some_and(|v| v.starts_with("text/html") && !file.mimetype.starts_with("text/html"));
+        if is_html {
+            continue;
+        }
+        found = Some(response);
+        break;
     }
-    if !response.status().is_success() {
-        return Err(AppError::BadGateway(format!(
-            "Slack file download returned {}",
-            response.status()
-        )));
-    }
-    // トークンの権限が足りないと Slack はログイン画面の HTML を返す
-    let is_html = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.starts_with("text/html") && !file.mimetype.starts_with("text/html"));
-    if is_html {
-        return Err(AppError::BadGateway(
-            "Slack returned a login page; check the token's files:read scope".into(),
-        ));
-    }
+    let Some(response) = found else {
+        // 一時的な失敗が 1 つでもあれば、取り直す。全部が権限なしのときだけ、確定させる
+        return match transient {
+            Some(e) => Err(e),
+            None => Ok(FileOutcome::Denied),
+        };
+    };
     if response.content_length().is_some_and(|len| len > max) {
         return Ok(FileOutcome::Skipped(format!("File exceeds {max} bytes")));
     }
