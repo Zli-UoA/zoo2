@@ -2207,10 +2207,14 @@ mod tests {
             panic!("リカバリーキーを表示していない");
         };
         let key = key.as_str().to_owned();
-        // 表示中に端末を縮めると、キーを出さずに広げるよう求め、y では保存に進まない。
+        // いったんキー全体を表示してから、表示中に端末を縮める。キーを出さずに広げるよう求め、y では
+        // 保存に進まない（画面は、キー操作の前に必ず描き直す）。
+        assert!(render_sized(&mut app, 100, 30).contains(&key));
+        assert!(app.encryption.recovery_key_shown);
         let screen = render_sized(&mut app, 100, 8);
         assert!(screen.contains("端末を広げてください"), "{screen}");
         assert!(!screen.contains(&key));
+        assert!(!app.encryption.recovery_key_shown);
         press(&mut app, KeyCode::Char('y'));
         assert!(matches!(app.encryption.screen, Screen::RecoveryKey(_)));
         // 広げてキー全体が見えたら、保存に進める。
