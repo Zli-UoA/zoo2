@@ -24,7 +24,7 @@
  * built with `crates/zoo-crypto-wasm/build.sh`); see {@link loadZooCrypto}.
  */
 import { randomUUID } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { open, readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -88,7 +88,15 @@ export function fileStore(path: string): E2eeStore {
     },
     async save(data) {
       const temporary = `${path}.${process.pid}.tmp`;
-      await writeFile(temporary, data, { mode: 0o600 });
+      const file = await open(temporary, "w", 0o600);
+      try {
+        await file.writeFile(data);
+        // Flush before the rename, so a power loss never leaves an empty store (which would mean a
+        // new master key and re-verification by every member).
+        await file.sync();
+      } finally {
+        await file.close();
+      }
       await rename(temporary, path);
     },
   };
@@ -177,7 +185,6 @@ interface Evaluation {
   epoch: number;
   pages: JsonObject[];
   devices: DeviceKeys[];
-  trusted: Set<string>;
 }
 
 interface ToDeviceRow {
@@ -371,8 +378,6 @@ export class ZooE2ee {
         const before = this.olm.length;
         stored += await this.processToDevice(row);
         if (this.olm.length > before) newOlmSessions = true;
-        this.processed.add(row.id);
-        this.state.processed_to_device = [...this.processed].slice(-PROCESSED_TO_DEVICE_MEMORY);
         try {
           // The advanced Olm state, the session key and the processed mark are saved together.
           await this.save();
@@ -401,7 +406,10 @@ export class ZooE2ee {
    * instead of being lost.
    */
   private async processToDevice(row: ToDeviceRow): Promise<number> {
-    if (row.type !== "m.room.encrypted") return 0;
+    if (row.type !== "m.room.encrypted") {
+      this.markProcessed(row.id);
+      return 0;
+    }
     const { storageKey } = this.options;
     // Before decrypting: the device keys of the sender the server reports (errors leave the message
     // in the queue for the next sync).
@@ -410,14 +418,16 @@ export class ZooE2ee {
     try {
       decrypted = this.account.decryptToDevice(this.olm, row.content);
     } catch {
+      this.markProcessed(row.id);
       return 0; // An undecryptable message never becomes readable; drop it.
     }
+    // Decryption advanced the account and the Olm sessions. Their pickles go into the stored state
+    // only together with the processed mark and the session key (the `finally` below, which runs
+    // without awaiting), so a save from a concurrent send never stores one without the others.
+    const account = this.account.pickle(storageKey);
+    const pickled = this.olm.pickleSessions(this.account, storageKey, decrypted.senderKey) as StoredState["olm_sessions"];
+    let inbound: [string, string] | null = null;
     try {
-      // Decryption advanced the account and the Olm sessions: keep them whatever the outcome.
-      this.state.account = this.account.pickle(storageKey);
-      const pickled = this.olm.pickleSessions(this.account, storageKey, decrypted.senderKey) as StoredState["olm_sessions"];
-      const others = this.state.olm_sessions.filter((session) => session.their_identity_key !== decrypted.senderKey);
-      this.state.olm_sessions = [...others, ...pickled];
       const sender = decrypted.sender;
       const senderDevice = decrypted.senderDevice;
       const plaintext = decrypted.plaintext as { content?: { channel_id?: unknown } };
@@ -429,11 +439,17 @@ export class ZooE2ee {
       const sleep = this.options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
       for (let attempt = 0; ; attempt += 1) {
         try {
-          // Not saved here: the caller saves the Olm state, the key and the processed mark together.
+          // Not saved here: the Olm state, the key and the processed mark are saved together.
           const evaluation = await this.evaluate(channelId, null, false);
           try {
             listed = deviceKeysOf(evaluation.pages, sender, senderDevice) ?? listed;
-            if (evaluation.trusted.has(sender)) trust = senderTrust(evaluation.pages, sender, senderDevice);
+            // Only a device the evaluation verified (trusted master key → self-signing key signed by
+            // it → device signed by that) gets the sender's self-signing key. The user's state alone
+            // is not enough: a user stays trusted when the server swaps in a self-signing key that the
+            // master key never signed, and zoo-crypto checks only the device's signature by the key
+            // it is given.
+            const verified = evaluation.devices.some((device) => device.userId === sender && device.deviceId === senderDevice && device.curve25519 === decrypted.senderKey);
+            if (verified) trust = senderTrust(evaluation.pages, sender, senderDevice);
           } finally {
             freeEvaluation(evaluation);
           }
@@ -457,11 +473,21 @@ export class ZooE2ee {
       const outcome = this.inbound.addRoomKey(roomKey);
       if (outcome === "kept") return 0;
       const pickle = this.inbound.pickleSession(ref, this.account, storageKey);
-      if (pickle) this.state.inbound[inboundKey(ref)] = pickle;
+      if (pickle) inbound = [inboundKey(ref), pickle];
       return 1;
     } finally {
+      const senderKey = decrypted.senderKey;
       decrypted.free();
+      this.state.account = account;
+      this.state.olm_sessions = [...this.state.olm_sessions.filter((session) => session.their_identity_key !== senderKey), ...pickled];
+      if (inbound) this.state.inbound[inbound[0]] = inbound[1];
+      this.markProcessed(row.id);
     }
+  }
+
+  private markProcessed(id: string): void {
+    this.processed.add(id);
+    this.state.processed_to_device = [...this.processed].slice(-PROCESSED_TO_DEVICE_MEMORY);
   }
 
   private loadInbound(ref: { channel_id: string; sender_key: string; session_id: string }): void {
@@ -713,8 +739,7 @@ export class ZooE2ee {
         if (conflict) pages = null;
         continue;
       }
-      const trusted = new Set(Object.entries(distribution.users).filter(([, user]) => user.state.state === "trusted").map(([userId]) => userId));
-      return { epoch, pages, devices: distribution.devices, trusted };
+      return { epoch, pages, devices: distribution.devices };
     }
   }
 

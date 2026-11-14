@@ -684,3 +684,40 @@ async fn an_allowed_bot_exchanges_keys_and_ciphertext_but_no_plaintext() {
     let (status, _) = env.call("GET", &recipients, &bot.token, Value::Null).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn disabling_an_app_removes_its_bot_and_bumps_the_epoch() {
+    let env = env().await;
+    let alice = env.user().await;
+    let channel = env.channel(&alice, &[]).await;
+    let app = env.app(&alice, E2EE_SCOPES).await;
+    env.bot_device(&app).await;
+    let (status, body) = env
+        .add(&app, &channel, &alice, json!({"e2ee_allowed": true}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let before = env.epoch(&channel).await;
+    let (status, body) = env
+        .call(
+            "POST",
+            &format!("/api/apps/{}/actions/disable", app.id),
+            &alice,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(!env.granted(&channel, &app.bot).await);
+    assert!(
+        env.query(
+            "SELECT '{}'::text FROM channel_user WHERE channel_id = $1 AND user_id = $2",
+            &[&channel, &app.bot],
+        )
+        .await
+        .is_empty()
+    );
+    assert_eq!(
+        env.epoch(&channel).await,
+        before + 1,
+        "members stop using sessions the bot holds"
+    );
+}

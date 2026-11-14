@@ -224,6 +224,10 @@ async fn action(
   json!({"status":"installed"})
  },
  "delete" | "disable"=>{
+  // The bot leaves every channel below. In encrypted channels it may have joined as an E2EE device
+  // (#366): bump their membership_epoch first, so members stop using sessions it holds. The bulk bump
+  // takes the bot's member lock and then the channel rows (the lock order in routes/e2ee.rs).
+  crate::routes::e2ee_channels::bump_user_epochs(&mut tx,app["bot_user_id"].as_str().unwrap()).await?;
   invalidate_ui(&mut tx,&id).await?;
   toasty::sql::statement("UPDATE app_files SET public_token_hash=NULL WHERE installation_id IN(SELECT id FROM app_installations WHERE app_id=$1)").bind(id.as_str()).exec(&mut tx).await?;
   if action=="delete" {toasty::sql::statement("UPDATE apps SET deleted_at=now() WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;}

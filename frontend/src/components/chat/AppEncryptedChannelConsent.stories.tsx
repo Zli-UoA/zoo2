@@ -44,9 +44,10 @@ export const Unsupported: Story = {
   args: { supported: false },
   play: playForImplementation(async ({ canvasElement }) => {
     const portal = within(canvasElement.ownerDocument.body);
+    // The dialog may still be fading in, so check presence rather than visibility.
     await expect(
       await portal.findByText(/この App は暗号化チャンネルに対応していません/),
-    ).toBeVisible();
+    ).toBeInTheDocument();
     await expect(portal.queryByRole("button", { name: "許可して追加" })).not.toBeInTheDocument();
   }),
 };

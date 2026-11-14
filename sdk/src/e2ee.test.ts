@@ -259,3 +259,43 @@ test("stops without acknowledging when the store cannot be saved, and a reopened
   assert.equal((await reopened.decryptEvent(zoo.botEvents[0]!))?.body, "after the disk is fixed");
   reopened.close();
 });
+
+test("a self-signing key the sender's master key never signed does not make the sender verified", async () => {
+  const { zoo, app } = setup();
+  const bot = await openBot(zoo, app);
+  const alice = new HumanDevice(crypto, zoo);
+  const channel = zoo.channel([alice.userId, zoo.botUserId]);
+  alice.send(channel, "genuine");
+  assert.equal((await bot.decryptEvent(zoo.botEvents[0]!))?.senderVerified, true, "the bot pinned Alice's master key");
+
+  // The server keeps Alice's pinned master key but swaps in its own self-signing key, signed by
+  // another master key, and signs her device with it.
+  const forged = crypto.OwnSecrets.generate(alice.userId).crossSigning;
+  zoo.crossSigning.get(alice.userId)!.self_signing = forged.uploadJson().self_signing_key as Record<string, unknown> as never;
+  zoo.signatures.push({ ...forged.selfSigning.signDevice(alice.account.deviceKeys()), signer_user_id: alice.userId });
+  zoo.bumpEpoch(channel);
+  alice.send(channel, "forged");
+  const message = await bot.decryptEvent(zoo.botEvents[1]!);
+  assert.equal(message?.body, "forged");
+  assert.equal(message?.senderVerified, false);
+  bot.close();
+});
+
+test("fileStore writes the state atomically and reads it back", async () => {
+  const { mkdtemp, readdir, rm, stat } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { fileStore } = await import("./e2ee.ts");
+  const dir = await mkdtemp(join(tmpdir(), "zoo-e2ee-"));
+  try {
+    const store = fileStore(join(dir, "store.json"));
+    assert.equal(await store.load(), null);
+    await store.save('{"a":1}');
+    await store.save('{"a":2}');
+    assert.equal(await store.load(), '{"a":2}');
+    assert.deepEqual(await readdir(dir), ["store.json"], "no temporary file is left");
+    assert.equal((await stat(join(dir, "store.json"))).mode & 0o777, 0o600);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
