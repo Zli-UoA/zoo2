@@ -2343,9 +2343,21 @@ async fn fetch_one(
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     // 取得の途中で取り込み先が暗号化に切り替わっていたら (#367)、平文の添付の行を作らず、置いたオブジェクトも消す。
-    // チャンネルの行を FOR KEY SHARE で読むので、この確認から INSERT までが切り替えと直列になる
+    // チャンネルの行を FOR KEY SHARE で読むので、この確認から INSERT までが切り替えと直列になる。
+    // 保存先のキーは同じファイルなら同じなので、前の取得が切り替えの前に行を作っていたら (取り直し)、その添付の
+    // 実体を消さず、その行を結果にする (切り替える前の添付は残す)
     if crate::routes::e2ee_channels::lock_encryption(&mut tx, &file.channel_id).await? {
+        let registered = !query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM attachments WHERE id=$1",
+            &[&attachment],
+        )
+        .await?
+        .is_empty();
         tx.rollback().await?;
+        if registered {
+            return Ok(FileOutcome::Done(attachment));
+        }
         if let Err(e) = s
             .s3_client
             .delete_object()
