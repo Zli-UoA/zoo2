@@ -33,8 +33,9 @@ pub struct View<'a> {
 }
 
 /// 最後に渡した状態 (読み込みが終わったときに渡し直す) と、その世代。
-/// 世代は状態を渡すたびに増やし、閉じる予約は、予約したときの世代のままのときだけ閉じる
-/// (結果を出した後にもう一度押して始めた作業の最中に、前の予約で閉じないように)。
+/// 世代はウィンドウを出すときと状態を渡すときに増やし、閉じる予約は、予約したときの世代の
+/// ままのときだけ閉じる (結果を出した後にもう一度押して始めた作業の最中に、前の予約で閉じない
+/// ように)。世代を増やすのと閉じるのは同じロックの中で行う。
 #[derive(Default)]
 struct Last(Mutex<LastState>);
 
@@ -44,16 +45,27 @@ struct LastState {
     generation: u64,
 }
 
-/// ウィンドウを出す (出ていれば前に出す)。
+/// ウィンドウを出す (出ていれば前に出す)。新しい作業を始めるときに呼ぶ。
 pub fn open(app: &AppHandle) {
     if app.try_state::<Last>().is_none() {
         app.manage(Last::default());
     }
-    if let Some(window) = app.get_webview_window(LABEL) {
-        let _ = window.show();
-        let _ = window.set_focus();
+    let Some(last) = app.try_state::<Last>() else {
         return;
+    };
+    // ロックを持ったまま世代を増やして出す。前の閉じる予約は、この前に隠し終えているか、
+    // この後に世代の違いを見て何もしないかのどちらかになる。
+    {
+        let mut last = lock(&last.0);
+        last.generation += 1;
+        if let Some(window) = app.get_webview_window(LABEL) {
+            let _ = window.show();
+            let _ = window.set_focus();
+            return;
+        }
     }
+    // まだ作っていない (閉じる予約が触るウィンドウもない)。読み込みが終わったときの
+    // `on_page_load` が同じロックを取るので、ロックを放してから作る。
     let result =
         WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("updater/index.html".into()))
             .title("zoo2 の更新")
@@ -105,10 +117,16 @@ pub fn set(app: &AppHandle, view: View<'_>) {
 
 /// ウィンドウが出ているか (進み具合を渡すかどうか)。
 pub fn is_open(app: &AppHandle) -> bool {
-    app.get_webview_window(LABEL).is_some()
+    app.get_webview_window(LABEL)
+        .is_some_and(|window| window.is_visible().unwrap_or(false))
 }
 
-/// 少し待ってから閉じる (結果を読めるように)。その間に新しい状態を渡したら、閉じない。
+/// 少し待ってから閉じる (結果を読めるように)。その間にウィンドウを出し直すか新しい状態を
+/// 渡したら、閉じない。
+///
+/// 閉じるのではなく隠す。`close` はウィンドウを後から破棄するので、直後の `open` が
+/// 破棄される途中のウィンドウを前に出してしまうことがある。隠すのと出すのは、同じイベント
+/// ループに順に届くので、後から出したほうが残る。
 pub fn close_after(app: &AppHandle, delay: Duration) {
     let Some(generation) = app.try_state::<Last>().map(|last| lock(&last.0).generation) else {
         return;
@@ -119,13 +137,12 @@ pub fn close_after(app: &AppHandle, delay: Duration) {
         let Some(last) = app.try_state::<Last>() else {
             return;
         };
-        let mut last = lock(&last.0);
+        let last = lock(&last.0);
         if last.generation != generation {
             return;
         }
-        last.json = None;
         if let Some(window) = app.get_webview_window(LABEL) {
-            let _ = window.close();
+            let _ = window.hide();
         }
     });
 }
