@@ -161,7 +161,15 @@ impl Core {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(&path, serde_json::to_vec(&settings)?)?;
+        // 同じディレクトリの一時ファイルに書いてから置き換える。途中で失敗しても、
+        // 保存済みの設定 (通知オフなど) を壊さない。
+        let tmp = path.with_extension("json.tmp");
+        let written = std::fs::write(&tmp, serde_json::to_vec(&settings)?)
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(err) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err.into());
+        }
         *self
             .notifications
             .lock()

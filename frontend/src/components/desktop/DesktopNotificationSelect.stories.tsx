@@ -57,6 +57,8 @@ const meta = {
   title: "Features/Preferences/DesktopNotifications",
   component: DesktopNotificationSelect,
   parameters: { a11y: { test: "error" } },
+  // 行の名前 (「通知」) は日本語で書いているので、ツールバーのロケールによらず日本語で出す。
+  globals: { locale: "ja" },
   decorators: [
     (Story) => (
       <div className={preferenceSurfaces["Features/Preferences/DesktopNotifications"]}>
