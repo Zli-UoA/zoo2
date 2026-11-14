@@ -1,75 +1,15 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent, within } from "storybook/test";
+import { expect, screen, userEvent, within } from "storybook/test";
 
-import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import {
-  EncryptionSettingsView,
-  type EncryptionSettingsHandlers,
-  type EncryptionViewState,
-} from "./EncryptionSettingsView";
-
-const RECOVERY_KEY = "EsTc 5rJ7 kQ2m 8NvP x3Lw 9aHd 4ZfY 6bGs 2CtR 7uWe 1MnK pXqV";
-
-const handlers = (): EncryptionSettingsHandlers => ({
-  onRetry: fn(),
-  onStart: fn(),
-  onAddSetupPasskey: fn(),
-  onSave: fn(),
-  onUnlockWithPasskey: fn(),
-  onUnlockWithRecoveryKey: fn(),
-  onContinue: fn(),
-  onAddPasskey: fn(),
-  onReunlock: fn(),
-  onCancelReunlock: fn(),
-  onRemoveSlot: fn(),
-  onReset: fn(),
-  onRegenerateRecoveryKey: fn(),
-  onSaveRecoveryKey: fn(),
-  onCancelRecoveryKey: fn(),
-});
-
-const recoveryKey: EncryptionViewState = {
-  step: "recoveryKey",
-  recoveryKey: RECOVERY_KEY,
-  reset: false,
-  passkeyAvailable: true,
-  passkeyAdded: false,
-  busy: null,
-  error: null,
-};
-
-const locked: EncryptionViewState = {
-  step: "locked",
-  reason: "new",
-  passkeyAvailable: true,
-  hasPasskeySlots: true,
-  busy: null,
-  error: null,
-};
-
-const unlocked: EncryptionViewState = {
-  step: "unlocked",
-  passkeyAvailable: true,
-  canAddPasskey: true,
-  busy: null,
-  error: null,
-  slots: [
-    {
-      id: "slot-recovery",
-      kind: "recovery",
-      label: null,
-      createdAt: "2026-11-13T09:00:00Z",
-      lastUsedAt: null,
-    },
-    {
-      id: "slot-passkey",
-      kind: "passkey",
-      label: "MacBook の iCloud キーチェーン",
-      createdAt: "2026-11-13T09:00:00Z",
-      lastUsedAt: "2026-11-14T08:30:00Z",
-    },
-  ],
-};
+  E2EE_RECOVERY_KEY as RECOVERY_KEY,
+  encryptionHandlers as handlers,
+  encryptionLocked as locked,
+  encryptionRecoveryKey as recoveryKey,
+  encryptionUnlocked as unlocked,
+} from "../../../.storybook/e2ee-fixtures";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
+import { EncryptionSettingsView } from "./EncryptionSettingsView";
 
 const meta = {
   title: "Features/E2EE/EncryptionSettings",
@@ -88,8 +28,6 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Loading: Story = {};
-
-export const Unavailable: Story = { args: { state: { step: "unavailable" } } };
 
 export const LoadFailed: Story = {
   args: { state: { step: "loadFailed" }, handlers: handlers() },

@@ -3,6 +3,7 @@ import { useRouter, useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { isUuid } from "../../lib/api/path";
 import { usePresence, useConversationView } from "../../hooks/usePresence";
 import { AppSurfaceHost } from "../chat/AppSurfaceHost";
 import { useActiveChannels } from "../../hooks/useRealtime";
@@ -66,7 +67,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     select: (state) => {
       for (let index = state.matches.length - 1; index >= 0; index -= 1) {
         const channelId = (state.matches[index].params as { channelId?: string }).channelId;
-        if (channelId) {
+        // UUID でない値（細工した URL など）はチャンネルとして扱わず、API も呼ばない。
+        if (isUuid(channelId)) {
           return channelId;
         }
       }

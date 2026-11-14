@@ -226,6 +226,13 @@ SPA は IdP の Discovery / token エンドポイントをブラウザから直�
 | `CSP_APP_IMAGE_SRC` | frontend の実行時環境変数 | App アイコンの HTTPS 配信元オリジン（空白区切り、`img-src` に追加） |
 | `CSP_AVATAR_SRC` | frontend の実行時環境変数 | OIDCユーザーアイコンの配信元。既定は `https://avater.zliusercontent.com`。別のIdPではその画像配信元のHTTPSオリジンを指定する |
 
+Android アプリの App Links（E2EE の再認証のリダイレクト。`docs/e2ee.md` の「Compose Android」）のために、次の値も起動時に読みます。CSP には関係しません。
+
+| Variable | 設定元 | 用途 |
+| --- | --- | --- |
+| `ANDROID_APP_PACKAGE` | frontend の実行時環境変数 | Android アプリのパッケージ名。既定は `works.zli.zoo` |
+| `ANDROID_APP_CERT_SHA256` | frontend の実行時環境変数 | 配布する APK の署名証明書の SHA-256 の指紋（`AA:BB:...`。鍵を替える間はカンマ区切りで複数）。空なら `/.well-known/assetlinks.json` は 404。形式が違えばコンテナは起動しない |
+
 `CSP_CONNECT_SRC` には IdP の **issuer と token エンドポイントのオリジン**を指定します（例: `https://idm.example.com`）。Kanidm では通常どちらも同じオリジンです。JWKS は Rust が取得するためブラウザの CSP には不要ですが、リバースプロキシ等で別オリジンに置いている場合でも Rust 側の到達性だけを確認してください。`VITE_API_BASE_URL` を空以外にして API を別オリジンへ向ける構成にした場合は、そのオリジンも `CSP_CONNECT_SRC` に追加してください（Compose のステージング構成では `/api/*` を同一オリジンで Traefik から Rust へ転送するため不要です）。
 
 `img-src` は既定で `'self' data: blob: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC`・`CSP_APP_IMAGE_SRC`・`CSP_AVATAR_SRC`を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`）を `CSP_STORAGE_SRC` に指定してください。カスタムドメインやリバースプロキシ（`S3_PUBLIC_ENDPOINT`）を経由する場合は、R2 のオリジンではなくその公開オリジン（例: `https://attachments.zliusercontent.com`）を指定します。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。

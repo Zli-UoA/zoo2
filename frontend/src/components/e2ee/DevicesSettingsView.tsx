@@ -7,6 +7,7 @@ import {
   ExternalLinkIcon,
   FingerprintIcon,
   KeyRoundIcon,
+  LoaderCircleIcon,
   MonitorSmartphoneIcon,
   PencilIcon,
   ShieldAlertIcon,
@@ -27,6 +28,7 @@ import { Input } from "../ui/input";
 import { SettingsSection } from "../ui/control-panel";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { Spinner } from "../ui/spinner";
+import type { E2eeNotReadyReason } from "../../lib/e2ee/notReady";
 import type { EncryptionErrorCode } from "./EncryptionSettingsView";
 
 /** 端末一覧の 1 行。 */
@@ -96,7 +98,6 @@ export type DevicesErrorCode =
 
 export type DevicesViewState =
   | { step: "loading" }
-  | { step: "unavailable" }
   | { step: "loadFailed" }
   | {
       step: "ready";
@@ -215,7 +216,51 @@ export function DeviceSummary({ device }: { device: DeviceRowView }) {
   );
 }
 
-/** 設定の「端末」タブ（端末一覧、失効、他のユーザーの検証。#362）。 */
+function notReadyMessage(t: TFunction, reason: E2eeNotReadyReason): string {
+  switch (reason.kind) {
+    case "failed": {
+      const failure = reason.failure;
+      if (failure.source === "network") return t("e2ee.notReady.failedNetwork");
+      if (failure.source === "local") {
+        return failure.name
+          ? t("e2ee.notReady.failedLocalNamed", { name: failure.name })
+          : t("e2ee.notReady.failedLocal");
+      }
+      return failure.code
+        ? t("e2ee.notReady.failedServerCode", { status: failure.status, code: failure.code })
+        : t("e2ee.notReady.failedServer", { status: failure.status });
+    }
+    default:
+      return t(`e2ee.notReady.${reason.kind}`);
+  }
+}
+
+/**
+ * このタブで暗号ストアをまだ開けていない理由（設定の「暗号化」タブの上に 1 回だけ出す）。
+ * ほかのタブが開いている、登録に失敗して試し直している、などを区別して伝える。
+ */
+export function E2eeNotReadyNotice({ reason }: { reason: E2eeNotReadyReason }) {
+  const { t } = useTranslation();
+  return (
+    <div role="status" className="space-y-1 text-sm text-muted-foreground">
+      <p className="flex items-center gap-2">
+        {reason.kind === "starting" && (
+          <LoaderCircleIcon
+            className="size-4 shrink-0 animate-spin motion-reduce:animate-none"
+            aria-hidden="true"
+          />
+        )}
+        <span>{notReadyMessage(t, reason)}</span>
+      </p>
+      {reason.kind === "failed" && <p className="text-xs">{t("e2ee.notReady.retrying")}</p>}
+    </div>
+  );
+}
+
+/**
+ * 設定の「暗号化」タブの、端末（一覧、削除、失効）と他のユーザーの検証のセクション（#362）。
+ * 状態は `DevicesSettings` が持つ。
+ */
 export function DevicesSettingsView({
   state,
   handlers,
@@ -225,9 +270,6 @@ export function DevicesSettingsView({
 }) {
   const { t } = useTranslation();
   if (state.step === "loading") return <Busy label={t("e2ee.loading")} />;
-  if (state.step === "unavailable") {
-    return <p className="text-sm text-muted-foreground">{t("e2ee.unavailable")}</p>;
-  }
   if (state.step === "loadFailed") {
     return (
       <div className="space-y-2">
@@ -882,6 +924,7 @@ export function DeviceLimitView({
   const stale = new Set(staleIds);
   return (
     <SettingsSection
+      className="border-destructive/50"
       title={t("e2ee.devices.limitTitle")}
       description={t("e2ee.devices.limitDescription")}
     >

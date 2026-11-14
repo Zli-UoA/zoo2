@@ -7,7 +7,6 @@ import {
   FingerprintIcon,
   KeyRoundIcon,
   LockIcon,
-  ShieldCheckIcon,
   Trash2Icon,
 } from "lucide-react";
 
@@ -45,8 +44,6 @@ export interface KeySlotView {
 
 export type EncryptionViewState =
   | { step: "loading" }
-  /** 暗号ストアがまだ開いていない（端末の登録の前など）。 */
-  | { step: "unavailable" }
   | { step: "loadFailed" }
   | { step: "notSetUp"; busy: boolean }
   | {
@@ -149,7 +146,10 @@ function Busy({ label }: { label: string }) {
   );
 }
 
-/** 設定の「暗号化」タブ（#360）。状態は `EncryptionSettings` が持つ。 */
+/**
+ * 設定の「暗号化」タブの、状態と解錠、鍵のセクション（#360）。状態は `EncryptionSettings` が持つ。
+ * タブの見出しと、暗号ストアを開けていない理由は `EncryptionTabView` が出す。
+ */
 export function EncryptionSettingsView({
   state,
   handlers,
@@ -157,19 +157,7 @@ export function EncryptionSettingsView({
   state: EncryptionViewState;
   handlers: EncryptionSettingsHandlers;
 }) {
-  const { t } = useTranslation();
-  return (
-    <div className="space-y-4">
-      <div className="rounded-lg border p-4">
-        <p className="flex items-center gap-2 text-sm font-semibold">
-          <ShieldCheckIcon aria-hidden="true" className="size-5 text-muted-foreground" />
-          {t("e2ee.title")}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">{t("e2ee.description")}</p>
-      </div>
-      <StepContent state={state} handlers={handlers} />
-    </div>
-  );
+  return <StepContent state={state} handlers={handlers} />;
 }
 
 function StepContent({
@@ -183,8 +171,6 @@ function StepContent({
   switch (state.step) {
     case "loading":
       return <Busy label={t("e2ee.loading")} />;
-    case "unavailable":
-      return <p className="text-sm text-muted-foreground">{t("e2ee.unavailable")}</p>;
     case "loadFailed":
       return (
         <div className="space-y-2">

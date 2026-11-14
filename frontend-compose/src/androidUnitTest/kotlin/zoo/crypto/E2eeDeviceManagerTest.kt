@@ -71,7 +71,10 @@ class E2eeDeviceManagerTest {
         }
     }
 
-    private fun TestScope.manager(pending: PendingDeviceDeletions = this@E2eeDeviceManagerTest.pending) =
+    private fun TestScope.manager(
+        pending: PendingDeviceDeletions = this@E2eeDeviceManagerTest.pending,
+        setupApi: E2eeSetupApi? = null,
+    ) =
         E2eeDeviceManager(
             api = api,
             server = SERVER,
@@ -86,6 +89,7 @@ class E2eeDeviceManagerTest {
             scope = CoroutineScope(StandardTestDispatcher(testScheduler) + Job(managerJob)),
             io = StandardTestDispatcher(testScheduler),
             onError = { it.printStackTrace() },
+            setupApi = setupApi,
         )
 
     @Test
@@ -113,6 +117,42 @@ class E2eeDeviceManagerTest {
         assertEquals(listOf(deviceId), api.deleted)
         assertFalse(files.directory.exists())
         assertTrue(pending.all().isEmpty())
+    }
+
+    @Test
+    fun keyBackupRunsBesideToDeviceAndRetriesAfterFailures() = managerTest {
+        val server = FakeSetupServer(BOB)
+        val manager = manager(setupApi = server)
+        manager.start()
+        advanceUntilIdle()
+        val body = api.registered.single()
+        // この端末で初回設定を終える（解錠済みになる）。
+        val setup = manager.setup!!
+        val start = setup.begin()
+        setup.completeSetup(start.session, "id-token")
+        start.session.close()
+        advanceUntilIdle()
+
+        // 鍵バックアップへの送信が長引いても、to-device の処理と ack は止まらない。
+        val hold = CompletableDeferred<Unit>()
+        server.holdBackup = hold
+        rows.value = listOf(roomKeyFromAlice(body, "10"))
+        advanceUntilIdle()
+        assertEquals(listOf(listOf("10")), api.acks)
+        rows.value = listOf(roomKeyFromAlice(body, "11", keyIndex = 1))
+        advanceUntilIdle()
+        assertEquals(listOf(listOf("10"), listOf("11")), api.acks)
+        assertTrue(server.backupUploads.isEmpty())
+
+        // 通信の失敗は、間隔をあけて試し直す（新しい鍵が届かなくても）。
+        server.failNext += "backup_keys"
+        server.holdBackup = null
+        hold.complete(Unit)
+        runCurrent()
+        assertTrue(server.backupUploads.isEmpty())
+        advanceTimeBy(6.seconds)
+        runCurrent()
+        assertEquals(listOf(2), server.backupUploads)
     }
 
     @Test
@@ -213,6 +253,27 @@ class E2eeDeviceManagerTest {
     }
 
     @Test
+    fun failureOtherThanNotFoundResetsCount() = managerTest {
+        val stale = "00000000-0000-4000-8000-0000000000da"
+        pending.add(PendingDeviceDeletion(SERVER, BOB, stale, unconfirmed = true))
+        api.missing += stale
+        // 404 → 404 → 503 → 404：失敗をはさんだので、続けて 3 回にはならず、削除待ちに残る。
+        val failures = listOf(null, null, ApiException(503), null)
+        for ((failure, expected) in failures.zip(listOf(1, 2, 0, 1))) {
+            api.deleteFailure = failure
+            val next = manager()
+            next.start()
+            advanceUntilIdle()
+            assertEquals(
+                listOf(PendingDeviceDeletion(SERVER, BOB, stale, unconfirmed = true, notFound = expected)),
+                pending.all(),
+            )
+            next.stop()
+            advanceUntilIdle()
+        }
+    }
+
+    @Test
     fun notFoundIsCountedOncePerLogin() = managerTest {
         val stale = "00000000-0000-4000-8000-0000000000d9"
         pending.add(PendingDeviceDeletion(SERVER, BOB, stale, unconfirmed = true))
@@ -262,10 +323,10 @@ class E2eeDeviceManagerTest {
     }
 
     /** 登録の本文の鍵で、Alice から Bob に Megolm のセッション鍵を送る to-device の行。 */
-    private fun roomKeyFromAlice(body: JsonObject, id: String): ToDeviceRow {
+    private fun roomKeyFromAlice(body: JsonObject, id: String, keyIndex: Int = 0): ToDeviceRow {
         val deviceKeys = body["device_keys"]!!.jsonObject
         val bobKeys = verifyDeviceKeys(deviceKeys.toString(), BOB, deviceKeys["device_id"]!!.jsonPrimitive.content)
-        val oneTimeKey = body["one_time_keys"]!!.jsonObject.values.first()
+        val oneTimeKey = body["one_time_keys"]!!.jsonObject.values.elementAt(keyIndex)
         val alice = DeviceAccount(ALICE, ALICE_DEVICE)
         val sessions = OlmSessionStore()
         val sessionId = alice.createOutboundOlmSession(sessions, bobKeys, oneTimeKey.toString())
@@ -317,7 +378,7 @@ class E2eeDeviceManagerTest {
             return counts()
         }
 
-        override suspend fun queryKeys(userIds: List<String>) = deviceKeys
+        override suspend fun queryKeys(userIds: List<String>) = KeysQuery(deviceKeys)
 
         override suspend fun ackToDevice(deviceId: String, ids: List<String>) {
             if (deviceId in gone) throw ApiException(404)

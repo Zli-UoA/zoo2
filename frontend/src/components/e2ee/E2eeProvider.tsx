@@ -24,6 +24,13 @@ import {
   markCryptoStoreDeletionPending,
   readPendingCryptoStoreDeletion,
 } from "../../lib/e2ee/identity";
+import {
+  type CryptoLockState,
+  describeLocalFailure,
+  describeStartFailure,
+  type E2eeStartFailure,
+  notReadyReason,
+} from "../../lib/e2ee/notReady";
 import { answerPushDecryptRequest } from "../../lib/e2ee/push/protocol";
 import { forgetPushRecipient, rememberPushRecipient } from "../../lib/e2ee/push/recipient";
 import { type StaleDevice, staleDevices } from "../../lib/e2ee/revocationApi";
@@ -86,7 +93,11 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     [userStore],
   );
   const getUserState = useCallback(() => userStore.getState(), [userStore]);
-  const { currentUserId } = useSyncExternalStore(subscribe, getUserState, getUserState);
+  const {
+    currentUserId,
+    isLoading: userLoading,
+    error: userError,
+  } = useSyncExternalStore(subscribe, getUserState, getUserState);
   const userId = config.devUserId || currentUserId;
   const supported = useMemo(() => supportsCryptoStore(), []);
   const [status, setStatus] = useState<E2eeContextValue["status"]>(
@@ -95,6 +106,10 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [deviceLimit, setDeviceLimit] = useState<StaleDevice[] | null>(null);
   const [readyWorker, setReadyWorker] = useState<CryptoWorker | null>(null);
+  /** Web Locks の状態。ほかのタブが持っているあいだは、設定の画面でそう伝える。 */
+  const [lockState, setLockState] = useState<CryptoLockState>("idle");
+  /** 起動（開く、登録、補充）の直近の失敗。試し直して成功したら消す。 */
+  const [startFailure, setStartFailure] = useState<E2eeStartFailure | null>(null);
   const [roomKeysVersion, setRoomKeysVersion] = useState(0);
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const leader = useRef<ActiveStore | null>(null);
@@ -159,10 +174,16 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         onStatus: (next, error) => {
           setStatus(next);
           if (next === "stopped") setDeviceId(null);
-          // 20 台の上限で登録できなかった。設定の「端末」タブで、削除する端末を選んでもらう。
-          if (next === "error") setDeviceLimit(staleDevices(error));
+          if (next === "error") {
+            // 20 台の上限で登録できなかった。設定の「暗号化」タブで、削除する端末を選んでもらう。
+            setDeviceLimit(staleDevices(error));
+            // 設定の画面に、試し直している理由を出す（状態コードとエラーの名前だけ）。起動のほか、
+            // 別の端末から消されたあとの登録し直し（`reregister`）の失敗もここに来る。
+            setStartFailure(describeStartFailure(error));
+          }
           if (next === "ready") {
             setDeviceLimit(null);
+            setStartFailure(null);
             // 別の端末から消されて登録し直したら（`reregister`）、端末 ID が変わる。
             setDeviceId(manager.currentDeviceId);
           }
@@ -189,6 +210,9 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(LOCK_CHANNEL);
     let requesting = false;
     let releaseCurrent: () => void = () => {};
+    /** Worker を作れなかったときに、間隔をあけて試し直すタイマーと、その間隔。 */
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let workerRetryDelay = START_RETRY_MS;
 
     const lead = () => {
       requesting = true;
@@ -202,9 +226,26 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         resolveHeld();
       };
       releaseCurrent = release;
+      let granted = false;
+      /** ログアウトする別のタブにロックを奪われた（返されるまで、そのタブが持っている）。 */
+      let stolen = false;
+      /** Worker を作れなかった（CSP などで投げた）。ロックの拒否と区別する。 */
+      let workerFailed = false;
+      setLockState("idle");
       navigator.locks
         .request(cryptoLockName(namespace), { signal: controller.signal }, async () => {
-          const worker = startCryptoWorker();
+          granted = true;
+          setLockState("held");
+          let worker: CryptoWorker;
+          try {
+            worker = startCryptoWorker();
+          } catch (error) {
+            workerFailed = true;
+            // ここでの TypeError は通信ではなく、Worker を作れなかったこと（CSP の Trusted Types など）。
+            setStartFailure(describeLocalFailure(error));
+            throw error;
+          }
+          workerRetryDelay = START_RETRY_MS;
           let active: ActiveStore | null = null;
           try {
             await retryPendingStoreDeletion(worker, namespace).catch(() => undefined);
@@ -224,6 +265,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
                 void runStartupCheck({ worker, client, userId, rpId: null }).catch(() => undefined);
                 break;
               } catch {
+                // 失敗の理由は `onStatus("error")` で記録している。
                 await manager.stop().catch(() => undefined);
                 await wait(delay, held);
                 delay = Math.min(delay * 2, START_RETRY_MAX_MS);
@@ -232,16 +274,52 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
             await held;
           } finally {
             setReadyWorker((current) => (current === worker ? null : current));
+            setStartFailure(null);
+            // 奪われたときは、`catch` が「ほかのタブが持っている」にしたのを残す（片付けはその後に来る）。
+            if (!stolen) setLockState("idle");
             if (leader.current === active) leader.current = null;
             await active?.manager.stop().catch(() => undefined);
             worker.terminate();
           }
         })
         // 中止（アンマウント）と、ログアウトする別のタブに奪われたときは、持っていた分を片付ける。
-        .catch(() => release())
+        .catch(() => {
+          if (controller.signal.aborted) {
+            release();
+            return;
+          }
+          if (workerFailed) {
+            // Worker を作れなかった。ロックは返したので、間隔をあけて取り直し、作り直す。
+            setLockState("idle");
+            release();
+            const delay = workerRetryDelay;
+            workerRetryDelay = Math.min(workerRetryDelay * 2, START_RETRY_MAX_MS);
+            retryTimer = setTimeout(() => {
+              retryTimer = null;
+              if (!controller.signal.aborted && !requesting) lead();
+            }, delay);
+            return;
+          }
+          // ロックを持っていたのに拒否された。ログアウトする別のタブに奪われ、取りやめたタブが
+          // ロックを返すまで、そのタブが持っている。
+          if (granted) {
+            stolen = true;
+            setLockState("otherTab");
+          }
+          release();
+        })
         .finally(() => {
           requesting = false;
         });
+      // すぐに取れなければ、ほかのタブが持っている。持ち主がいるかを確かめて、画面で伝える。
+      void navigator.locks
+        .query()
+        .then((snapshot) => {
+          const name = cryptoLockName(namespace);
+          if (!granted && !controller.signal.aborted && snapshot.held?.some((l) => l.name === name))
+            setLockState("otherTab");
+        })
+        .catch(() => undefined);
     };
 
     lead();
@@ -253,6 +331,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     }
     return () => {
       controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
       releaseCurrent();
       channel?.close();
     };
@@ -362,6 +441,18 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       status,
       deviceId,
       worker: status === "ready" ? readyWorker : null,
+      notReadyReason: notReadyReason({
+        supported,
+        userId: userId || null,
+        userLoading: !config.devUserId && userLoading,
+        userError: !config.devUserId && userError !== null,
+        isOnline,
+        status,
+        ready: readyWorker !== null,
+        lockState,
+        deviceLimit: deviceLimit !== null,
+        startFailure,
+      }),
       userId: userId || null,
       deviceLimit,
       revocationPending: async () => {
@@ -424,17 +515,23 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       sas,
     }),
     [
+      config.devUserId,
       deviceId,
       deviceLimit,
+      isOnline,
+      lockState,
       namespace,
       readyWorker,
       requestKeyBackup,
       roomKeysVersion,
       sas,
+      startFailure,
       status,
       storeForLogout,
       supported,
+      userError,
       userId,
+      userLoading,
     ],
   );
 

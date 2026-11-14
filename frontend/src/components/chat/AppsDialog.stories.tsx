@@ -18,7 +18,7 @@ const meta = {
       </StoryShell>
     ),
   ],
-  args: { onClose: fn(), channelId: "channel-general" },
+  args: { onClose: fn(), channelId: "00000000-0000-4000-8000-000000000001" },
 } satisfies Meta<typeof AppsPanel>;
 export default meta;
 type Story = StoryObj<typeof meta>;

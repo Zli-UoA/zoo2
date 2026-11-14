@@ -286,7 +286,9 @@ function NotificationCardVrt() {
       <ul>
         <NotificationCard
           group={reactionGroup}
-          channel={storyChannels.find((channel) => channel.id === "channel-general")}
+          channel={storyChannels.find(
+            (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+          )}
           users={new Map(storyUsers.map((user) => [user.id, user]))}
           onRead={noop}
           scrollRoot={scrollRoot}
@@ -441,7 +443,9 @@ describe("catalog surfaces", () => {
       { theme: "light", width: 1440, height: 900 },
       <div className="flex h-screen justify-end bg-background">
         <MembersPanel
-          channel={storyChannels.find((channel) => channel.id === "channel-general")!}
+          channel={storyChannels.find(
+            (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+          )!}
           className="flex w-80 border-l"
         />
       </div>,
@@ -457,7 +461,9 @@ describe("catalog surfaces", () => {
         open
         onOpenChange={noop}
         channels={storyChannels}
-        joinedChannelIds={new Set(["channel-general", "channel-design", "channel-secret"])}
+        joinedChannelIds={
+          new Set(["00000000-0000-4000-8000-000000000001", "channel-design", "channel-secret"])
+        }
         onJoinChannel={async () => {}}
       />,
     );
