@@ -86,6 +86,7 @@ async fn run() -> Result<()> {
         }
     };
     // 端末の登録と to-device の処理は、画面と並行して裏で行う（#359）。
+    let crypto_root = config::config_dir().map(|dir| e2ee::store::crypto_root(&dir));
     let crypto = config::config_dir().map(|dir| {
         let user_id = match &credentials {
             Credentials::Dev(user_id) => Some(user_id.clone()),
@@ -109,7 +110,11 @@ async fn run() -> Result<()> {
             };
             (
                 Some(task),
-                Some(ui::encryption::E2eeContext { oidc, stores }),
+                Some(ui::encryption::E2eeContext {
+                    oidc,
+                    stores,
+                    crypto_root,
+                }),
             )
         }
         None => (None, None),

@@ -408,7 +408,7 @@ async fn process(
     let result = store
         .lock()
         .await
-        .process_to_device(rows, &response["device_keys"])?;
+        .process_to_device_with_keys(rows, &response)?;
     if !result.processed.is_empty() {
         api.e2ee_ack_to_device(device_id, &result.processed).await?;
         store.lock().await.acknowledged(&result.processed)?;

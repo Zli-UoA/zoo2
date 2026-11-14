@@ -6,6 +6,7 @@
 pub mod accounts;
 pub mod api;
 pub mod ipc;
+pub mod mentions;
 pub mod mfm;
 pub mod notify;
 pub mod rows;
