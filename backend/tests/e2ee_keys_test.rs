@@ -1503,7 +1503,12 @@ async fn backup_versions_switch_forward_and_reject_old_keys() {
     let mut partial = alice.versioned_auth_data(&backup_key(), 3);
     partial.as_object_mut().unwrap().remove("algorithm");
     let (status, _) = env
-        .post(versions, &user, true, json!({"algorithm": algorithm, "auth_data": partial, "expected_current_version": null}))
+        .post(
+            versions,
+            &user,
+            true,
+            json!({"algorithm": algorithm, "auth_data": partial, "expected_current_version": null}),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 

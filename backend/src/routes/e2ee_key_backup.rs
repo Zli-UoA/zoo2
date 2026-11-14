@@ -112,8 +112,7 @@ fn check_signed_version(
         Some(_) => Err(wrong_version(current)),
         None if version == 1 => Ok(()),
         None => Err(AppError::BadRequest(
-            "auth_data.algorithm and auth_data.version are required after the first version"
-                .into(),
+            "auth_data.algorithm and auth_data.version are required after the first version".into(),
         )),
     }
 }
