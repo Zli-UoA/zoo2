@@ -419,6 +419,16 @@ impl Slack {
         })
     }
 
+    /// 今使っているトークンの位置。`NoAccess` で全トークンを試し切ると、位置が末尾まで進み、後続の呼び出しが
+    /// `no_usable_token` で失敗する。チャンネル全体の失敗ではない呼び出し (補完の取得など) は、前後で保存・復元する
+    pub(super) fn position(&self) -> usize {
+        self.index
+    }
+
+    pub(super) fn set_position(&mut self, index: usize) {
+        self.index = index;
+    }
+
     fn user(&self) -> Option<&str> {
         self.tokens.get(self.index).map(|(u, _)| u.as_str())
     }
