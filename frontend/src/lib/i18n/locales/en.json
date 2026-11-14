@@ -661,7 +661,7 @@
       "description": "Adding an app to an encrypted channel needs a member's explicit permission.",
       "unsupported": "This app does not support encrypted channels (it lacks the e2ee:device permission).",
       "readsAfterJoin": "{{app}} joins the channel as a device and can decrypt and read messages sent after it joins, and post encrypted messages.",
-      "noHistory": "It cannot read messages sent before it joined.",
+      "noHistory": "It cannot read messages sent before it joined, except those it received while it was in this channel before.",
       "trustOperator": "The app's server holds the decryption keys. Allow this only if you trust whoever runs the app.",
       "remove": "You can remove it from the channel at any time. After that, it cannot read new messages.",
       "agree": "I understand, and I allow {{app}} to read this channel's messages",
