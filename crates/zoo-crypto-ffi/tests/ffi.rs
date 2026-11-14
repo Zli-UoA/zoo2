@@ -227,3 +227,115 @@ fn trust_store_round_trip() {
         .unwrap();
     assert!(distribution.devices.is_empty());
 }
+
+/// 暗号ストア（#359）：Olm セッション、受信用セッション、配布先の判定の記録を保存して戻す。
+#[test]
+fn store_pickles_round_trip() {
+    let key = vec![9u8; 32];
+    let alice = DeviceAccount::new(ALICE.into(), ALICE_DEVICE.into()).unwrap();
+    let bob = DeviceAccount::new(BOB.into(), BOB_DEVICE.into()).unwrap();
+    bob.generate_one_time_keys(1);
+    let otks: serde_json::Value = serde_json::from_str(&bob.one_time_keys()).unwrap();
+    let (_, otk) = otks.as_object().unwrap().iter().next().unwrap();
+    bob.mark_keys_as_published();
+
+    let alice_sessions = OlmSessionStore::new();
+    let bob_keys = verify_device_keys(bob.device_keys(), BOB.into(), BOB_DEVICE.into()).unwrap();
+    let session_id = alice
+        .create_outbound_olm_session(&alice_sessions, &bob_keys, otk.to_string())
+        .unwrap();
+    let outbound = OutboundSession::new(CHANNEL.into(), 1, 0);
+    let content = alice
+        .encrypt_room_key(&alice_sessions, session_id, &bob_keys, &outbound)
+        .unwrap();
+
+    // Bob が受け取って、Olm セッションと受信用セッションを保存する。
+    let bob_sessions = OlmSessionStore::new();
+    let decrypted = bob.decrypt_to_device(&bob_sessions, content).unwrap();
+    let stored = bob_sessions
+        .pickle_sessions(&bob, key.clone(), Some(decrypted.sender_key()))
+        .unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].their_identity_key, alice.curve25519_key());
+    assert!(
+        bob_sessions
+            .pickle_sessions(&bob, key.clone(), Some(bob.curve25519_key()))
+            .unwrap()
+            .is_empty()
+    );
+    let room_key = decrypted
+        .verify_room_key(&bob, Some(alice.device_keys()), None)
+        .unwrap();
+    let inbound = InboundSessionStore::new();
+    assert_eq!(inbound.add_room_key(&room_key).unwrap(), AddOutcome::Added);
+    let session_ref = inbound.session_refs().remove(0);
+    let inbound_pickle = inbound
+        .pickle_session(&bob, session_ref.clone(), key.clone())
+        .unwrap()
+        .unwrap();
+    let missing = SessionRef {
+        session_id: "missing".into(),
+        ..session_ref.clone()
+    };
+    assert_eq!(
+        inbound.pickle_session(&bob, missing, key.clone()).unwrap(),
+        None
+    );
+
+    // 端末アカウントを戻してから、ほかの状態を戻す。
+    let bob = DeviceAccount::from_pickle(
+        bob.pickle(key.clone()).unwrap(),
+        key.clone(),
+        BOB.into(),
+        BOB_DEVICE.into(),
+    )
+    .unwrap();
+    let restored_sessions = OlmSessionStore::new();
+    let info = restored_sessions
+        .restore_session(&bob, stored[0].pickle.clone(), key.clone())
+        .unwrap();
+    assert_eq!(info.session_id, stored[0].session_id);
+    // 同じ ID は置き換える。
+    restored_sessions
+        .restore_session(&bob, stored[0].pickle.clone(), key.clone())
+        .unwrap();
+    assert_eq!(restored_sessions.len(), 1);
+    let restored_inbound = InboundSessionStore::new();
+    assert_eq!(
+        restored_inbound
+            .restore_session(&bob, inbound_pickle.clone(), key.clone())
+            .unwrap(),
+        session_ref
+    );
+    let ciphertext = outbound.encrypt(&alice, message("hi")).unwrap();
+    assert_eq!(
+        restored_inbound
+            .decrypt(row(ciphertext))
+            .unwrap()
+            .payload
+            .content
+            .body,
+        "hi"
+    );
+
+    // 保存鍵が違う、別の端末の値は開けない。
+    assert!(matches!(
+        restored_inbound.restore_session(&bob, inbound_pickle.clone(), vec![1u8; 32]),
+        Err(ZooCryptoError::InvalidPickle { .. })
+    ));
+    assert!(matches!(
+        restored_sessions.restore_session(&alice, stored[0].pickle.clone(), key.clone()),
+        Err(ZooCryptoError::InvalidPickle { .. })
+    ));
+
+    // 配布先の判定の記録。
+    let trust = TrustStore::new(BOB.into()).unwrap();
+    let pickle = trust.pickle(&bob, key.clone()).unwrap();
+    assert_ne!(pickle, trust.pickle(&bob, key.clone()).unwrap());
+    let restored = TrustStore::from_pickle(pickle.clone(), &bob, key.clone()).unwrap();
+    assert_eq!(restored.to_json(), trust.to_json());
+    assert!(matches!(
+        TrustStore::from_pickle(pickle, &alice, key),
+        Err(ZooCryptoError::InvalidPickle { .. })
+    ));
+}
