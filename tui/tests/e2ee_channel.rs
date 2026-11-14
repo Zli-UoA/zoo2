@@ -18,7 +18,10 @@ use std::sync::{Arc, Mutex as StdMutex};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate, matchers::any};
-use zoo_crypto::{BackupDecryptionKey, CrossSigningKeys, OwnSecrets, RevisionStatus};
+use zoo_crypto::{
+    AttachmentInfo, BackupDecryptionKey, CrossSigningKeys, OwnSecrets, RevisionStatus,
+    encrypt_attachment,
+};
 use zoo2_tui::api::ApiClient;
 use zoo2_tui::e2ee::send::{self, ChannelSender, Edit, NewMessage, SendContext};
 use zoo2_tui::e2ee::setup::SharedStore;
@@ -434,6 +437,7 @@ async fn alice_and_bob_exchange_encrypted_messages_without_plaintext_on_the_serv
         body: "こんにちは（編集）".into(),
         kind: "message".into(),
         mentions: Mentions::default(),
+        attachments: Vec::new(),
     };
     send::edit_encrypted_message(&alice.ctx(), &edit, &mut None)
         .await
@@ -449,6 +453,63 @@ async fn alice_and_bob_exchange_encrypted_messages_without_plaintext_on_the_serv
         .await
         .unwrap_err();
     assert_eq!(zoo2_tui::api::stale_revision(&error), Some(1));
+}
+
+fn attachment(name: &str) -> AttachmentInfo {
+    AttachmentInfo {
+        attachment_id: uuid::Uuid::new_v4().to_string(),
+        name: name.into(),
+        mimetype: "application/pdf".into(),
+        size: 3,
+        width: None,
+        height: None,
+        sensitive: false,
+        file: encrypt_attachment(b"pdf").file,
+    }
+}
+
+#[tokio::test]
+async fn editing_keeps_the_encrypted_attachments_of_the_original() {
+    let (_server, backend, alice, bob) = setup().await;
+    let first = message("添付付き");
+    send::send_encrypted_message(&alice.ctx(), &first, &mut None)
+        .await
+        .unwrap();
+    bob.receive(&backend).await;
+    // Web などから添付付きで送った版（添付の鍵などは暗号化した本文にだけある）。
+    let attached = vec![attachment("plan.pdf")];
+    let mut edit = Edit {
+        channel_id: CHANNEL.into(),
+        shape_epoch: Some(1),
+        message_id: first.message_id.clone(),
+        parent_id: None,
+        revision: 1,
+        body: "添付付き".into(),
+        kind: "message".into(),
+        mentions: Mentions::default(),
+        attachments: attached.clone(),
+    };
+    send::edit_encrypted_message(&alice.ctx(), &edit, &mut None)
+        .await
+        .unwrap();
+    // TUI で本文だけを編集する。画面は、復号した元の版の添付をそのまま渡す。
+    let Decryption::Decrypted(shown) = alice.decrypt(&backend, &first.message_id).await else {
+        panic!("自分の送ったものを復号できない");
+    };
+    edit.revision = 2;
+    edit.body = "本文だけ直した".into();
+    edit.attachments = shown.attachments;
+    send::edit_encrypted_message(&alice.ctx(), &edit, &mut None)
+        .await
+        .unwrap();
+    let Decryption::Decrypted(received) = bob.decrypt(&backend, &first.message_id).await else {
+        panic!("編集した版を復号できない");
+    };
+    assert_eq!(received.body, "本文だけ直した");
+    assert_eq!(
+        received.attachments, attached,
+        "添付の鍵、IV、ハッシュが残る"
+    );
 }
 
 #[tokio::test]

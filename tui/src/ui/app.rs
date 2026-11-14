@@ -11,7 +11,9 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tui_textarea::TextArea;
 use zoo2_client_core::poll::PollGate;
 
-use super::e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind, Decryptions, Shown};
+use super::e2ee_chat::{
+    self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
+};
 use crate::{
     api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
     e2ee::{
@@ -84,7 +86,7 @@ pub enum AppEvent {
     /// 暗号化したメッセージの復号の結果（メッセージ ID、行の版、結果）と、そのときの暗号ストアの
     /// 受信用セッションの数え（#361）。
     Decrypted {
-        results: Vec<(String, u64, Decryption)>,
+        results: Vec<(String, RowKey, Decryption)>,
         generation: Option<u64>,
     },
     /// 暗号化チャンネルの配布先を判定し直した（#361）。
@@ -538,8 +540,8 @@ impl App {
                 if generation.is_some() {
                     self.decryptions.generation = generation;
                 }
-                for (message_id, revision, decryption) in results {
-                    self.decryptions.apply(&message_id, revision, decryption);
+                for (message_id, row, decryption) in results {
+                    self.decryptions.apply(&message_id, row, decryption);
                 }
             }
             AppEvent::Recipients {
@@ -559,12 +561,13 @@ impl App {
                 current_revision,
                 content,
             } => {
-                let applied =
-                    self.decryptions
-                        .editable(&message_id)
-                        .is_some_and(|(shown, revision)| {
-                            revision == current_revision && shown.body == content
-                        });
+                let applied = self
+                    .store
+                    .message(&channel_id, &message_id)
+                    .and_then(|message| self.decryptions.editable(message))
+                    .is_some_and(|(shown, revision)| {
+                        revision == current_revision && shown.body == content
+                    });
                 if !applied {
                     self.notify(
                         "このメッセージはほかの場所で編集されました。読み込み直してから編集してください",
@@ -1823,12 +1826,10 @@ impl App {
                 self.notify("暗号化前のメッセージは編集できません");
                 return;
             }
-            Shown::Decrypted { warning: None, .. } => {
-                match self.decryptions.editable(&message_id) {
-                    Some((decrypted, _)) => decrypted.body.clone(),
-                    None => return,
-                }
-            }
+            Shown::Decrypted { warning: None, .. } => match self.decryptions.editable(message) {
+                Some((decrypted, _)) => decrypted.body.clone(),
+                None => return,
+            },
             Shown::Decrypted { .. } | Shown::Undecryptable(_) => {
                 self.notify("復号できていないメッセージは編集できません");
                 return;
@@ -1969,12 +1970,12 @@ impl App {
         if !self.decryptions.dirty && !retry_missing {
             return;
         }
-        let rows: Vec<EncryptedRow> = self
+        let rows: Vec<(RowKey, EncryptedRow)> = self
             .store
             .visible_messages(&channel_id)
             .filter(|message| self.decryptions.needs(message, retry_missing))
             .filter_map(|message| {
-                Some(EncryptedRow {
+                let row = EncryptedRow {
                     channel_id: message.channel_id.clone(),
                     message_id: message.id.clone(),
                     parent_id: message.parent_id.clone(),
@@ -1986,7 +1987,8 @@ impl App {
                     epoch: message.epoch,
                     revision: message.revision,
                     ciphertext: message.ciphertext.clone()?,
-                })
+                };
+                Some((RowKey::of(message), row))
             })
             .collect();
         self.decryptions.dirty = false;
@@ -1999,13 +2001,10 @@ impl App {
             let mut store = store.lock().await;
             let generation = store.inbound_generation();
             let results = rows
-                .iter()
-                .map(|row| {
-                    (
-                        row.message_id.clone(),
-                        row.revision,
-                        store.decrypt_message(row),
-                    )
+                .into_iter()
+                .map(|(key, row)| {
+                    let decryption = store.decrypt_message(&row);
+                    (row.message_id, key, decryption)
                 })
                 .collect();
             drop(store);
@@ -2128,7 +2127,7 @@ impl App {
                 let Some(message) = self.store.message(&channel_id, message_id) else {
                     return;
                 };
-                let Some((decrypted, row_revision)) = self.decryptions.editable(message_id) else {
+                let Some((decrypted, row_revision)) = self.decryptions.editable(message) else {
                     self.notify("復号できていないメッセージは編集できません");
                     return;
                 };
@@ -2141,6 +2140,7 @@ impl App {
                     body: content.clone(),
                     kind: decrypted.kind.clone(),
                     mentions: mentions.clone(),
+                    attachments: decrypted.attachments.clone(),
                 })
             }
             _ => None,

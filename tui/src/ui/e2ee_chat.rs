@@ -29,10 +29,48 @@ impl RevisionWarning {
     }
 }
 
+/// 復号の結果を出した行の、照合に使う列（`InboundSessionStore::decrypt` に渡したもの）。
+///
+/// 同じ `revision` でも、送信者や暗号文などが変わった行は別の行として復号し直す。表示にも、今の行と
+/// 一致する結果だけを使う（以前の本文を、別の送信者の行に結び付けて出さないため）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowKey {
+    user_id: String,
+    parent_id: Option<String>,
+    epoch: Option<u64>,
+    revision: u64,
+    message_kind: Option<String>,
+    ciphertext: Option<serde_json::Value>,
+}
+
+impl RowKey {
+    pub fn of(message: &Message) -> Self {
+        Self {
+            user_id: message.user_id.clone(),
+            parent_id: message.parent_id.clone(),
+            epoch: message.epoch,
+            revision: message.revision,
+            message_kind: message.message_kind.clone(),
+            ciphertext: message.ciphertext.clone(),
+        }
+    }
+
+    fn matches(&self, message: &Message) -> bool {
+        self.user_id == message.user_id
+            && self.parent_id == message.parent_id
+            && self.epoch == message.epoch
+            && self.revision == message.revision
+            && self.message_kind == message.message_kind
+            && self.ciphertext == message.ciphertext
+    }
+}
+
 /// 1 つのメッセージの、表示する復号の結果。
 #[derive(Debug, Clone)]
 struct Entry {
-    /// この結果を出した行の `revision`。編集はこの版を基準に送る。
+    /// この結果を出した行。
+    row: RowKey,
+    /// 表示する本文の版。編集はこの版を基準に送る（古い版の行では、見た中で最新の版）。
     row_revision: u64,
     decryption: Decryption,
     warning: Option<RevisionWarning>,
@@ -71,7 +109,8 @@ pub struct Decryptions {
 impl Decryptions {
     /// 復号の結果を入れる。版の照合（`RevisionStatus`）で、表示する結果を決める
     /// （React の `applyRevision` と同じ）。
-    pub fn apply(&mut self, message_id: &str, row_revision: u64, decryption: Decryption) {
+    pub fn apply(&mut self, message_id: &str, row: RowKey, decryption: Decryption) {
+        let row_revision = row.revision;
         let entry = match decryption {
             Decryption::Decrypted(decrypted) => {
                 let seen = self.latest.get(message_id);
@@ -80,6 +119,7 @@ impl Decryptions {
                 if stale {
                     let shown = seen.map(|(_, d)| d.clone()).unwrap_or(decrypted);
                     Entry {
+                        row,
                         row_revision: seen.map_or(row_revision, |(revision, _)| *revision),
                         decryption: Decryption::Decrypted(shown),
                         warning: Some(RevisionWarning::Stale),
@@ -90,6 +130,7 @@ impl Decryptions {
                         _ => decrypted,
                     };
                     Entry {
+                        row,
                         row_revision,
                         decryption: Decryption::Decrypted(shown),
                         warning: Some(RevisionWarning::Conflict),
@@ -98,6 +139,7 @@ impl Decryptions {
                     self.latest
                         .insert(message_id.to_owned(), (row_revision, decrypted.clone()));
                     Entry {
+                        row,
                         row_revision,
                         decryption: Decryption::Decrypted(decrypted),
                         warning: None,
@@ -105,6 +147,7 @@ impl Decryptions {
                 }
             }
             undecryptable => Entry {
+                row,
                 row_revision,
                 decryption: undecryptable,
                 warning: None,
@@ -113,8 +156,8 @@ impl Decryptions {
         self.entries.insert(message_id.to_owned(), entry);
     }
 
-    /// 行を復号する必要があるか。暗号文があり、まだ結果がない、行の版が進んだ、または鍵待ちで
-    /// （`retry_missing` のとき）。
+    /// 行を復号する必要があるか。暗号文があり、まだ結果がない、行が変わった（版だけでなく、送信者、
+    /// 暗号文、`parent_id`、`epoch`、種別のどれでも）、または鍵待ちで（`retry_missing` のとき）。
     pub fn needs(&self, message: &Message, retry_missing: bool) -> bool {
         if message.ciphertext.is_none() || message.deleted_at.is_some() {
             return false;
@@ -122,7 +165,7 @@ impl Decryptions {
         match self.entries.get(&message.id) {
             None => true,
             Some(entry) => {
-                entry.row_revision < message.revision
+                !entry.row.matches(message)
                     || (retry_missing
                         && matches!(
                             entry.decryption,
@@ -148,7 +191,12 @@ impl Decryptions {
             return Shown::Plain;
         }
         if message.ciphertext.is_some() {
-            return match self.entries.get(&message.id) {
+            // 今の行と一致する結果だけを使う。行が変わったら、復号し直すまで本文を出さない。
+            let entry = self
+                .entries
+                .get(&message.id)
+                .filter(|entry| entry.row.matches(message));
+            return match entry {
                 Some(Entry {
                     decryption: Decryption::Decrypted(decrypted),
                     warning,
@@ -177,14 +225,15 @@ impl Decryptions {
         }
     }
 
-    /// 編集の基準にする、復号できた結果と、その行の版。
-    pub fn editable(&self, message_id: &str) -> Option<(&Decrypted, u64)> {
-        match self.entries.get(message_id)? {
+    /// 編集の基準にする、今の行の復号できた結果と、その版。
+    pub fn editable(&self, message: &Message) -> Option<(&Decrypted, u64)> {
+        match self.entries.get(&message.id)? {
             Entry {
+                row,
                 decryption: Decryption::Decrypted(decrypted),
                 warning: None,
                 row_revision,
-            } => Some((decrypted, *row_revision)),
+            } if row.matches(message) => Some((decrypted, *row_revision)),
             _ => None,
         }
     }
@@ -356,10 +405,11 @@ mod tests {
     #[test]
     fn keeps_the_latest_revision_when_an_older_row_arrives() {
         let mut decryptions = Decryptions::default();
-        decryptions.apply("m1", 2, decrypted("新しい", RevisionStatus::Latest));
+        let key = |revision| RowKey::of(&message(revision, true, Some(1)));
+        decryptions.apply("m1", key(2), decrypted("新しい", RevisionStatus::Latest));
         decryptions.apply(
             "m1",
-            1,
+            key(1),
             decrypted("古い", RevisionStatus::Stale { latest: 2 }),
         );
         let Shown::Decrypted {
@@ -372,7 +422,7 @@ mod tests {
         assert_eq!(shown.body, "新しい");
         assert_eq!(warning, Some(RevisionWarning::Stale));
         // 警告の付いた結果は編集の基準にしない。
-        assert!(decryptions.editable("m1").is_none());
+        assert!(decryptions.editable(&message(1, true, Some(1))).is_none());
     }
 
     #[test]
@@ -403,15 +453,63 @@ mod tests {
         assert!(decryptions.needs(&row, false));
         decryptions.apply(
             "m1",
-            0,
+            RowKey::of(&row),
             Decryption::Undecryptable(UndecryptableReason::KeyMissing),
         );
         assert!(!decryptions.needs(&row, false));
         assert!(decryptions.needs(&row, true));
         assert!(decryptions.has_missing());
-        decryptions.apply("m1", 0, decrypted("本文", RevisionStatus::Latest));
+        decryptions.apply(
+            "m1",
+            RowKey::of(&row),
+            decrypted("本文", RevisionStatus::Latest),
+        );
         assert!(!decryptions.needs(&row, true));
         assert!(decryptions.needs(&message(1, true, Some(1)), false));
+    }
+
+    #[test]
+    fn rows_changed_without_a_new_revision_are_verified_again() {
+        let mut decryptions = Decryptions::default();
+        let row = message(0, true, Some(1));
+        decryptions.apply(
+            "m1",
+            RowKey::of(&row),
+            decrypted("本文", RevisionStatus::Latest),
+        );
+        assert!(decryptions.editable(&row).is_some());
+        // 同じ版のまま、送信者や暗号文が変わった行。以前の結果を使わず、復号し直すまで本文を出さない。
+        let changed = [
+            Message {
+                user_id: "u2".into(),
+                ..row.clone()
+            },
+            Message {
+                ciphertext: Some(json!({ "session_id": "other" })),
+                ..row.clone()
+            },
+            Message {
+                parent_id: Some("root".into()),
+                ..row.clone()
+            },
+            Message {
+                epoch: Some(2),
+                ..row.clone()
+            },
+            Message {
+                message_kind: Some("emote".into()),
+                ..row.clone()
+            },
+        ];
+        for other in &changed {
+            assert!(decryptions.needs(other, false), "{other:?}");
+            assert!(matches!(
+                decryptions.shown(other, true),
+                Shown::Undecryptable(UndecryptableReason::Locked)
+            ));
+            assert!(decryptions.editable(other).is_none());
+        }
+        assert!(!decryptions.needs(&row, false));
     }
 
     #[test]

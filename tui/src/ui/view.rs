@@ -2446,26 +2446,39 @@ mod tests {
                     .collect(),
             ),
         ));
+        let key = |id: &str| {
+            crate::ui::e2ee_chat::RowKey::of(app.store.message("c3", id).expect("行がある"))
+        };
+        let results = vec![
+            (
+                "e1".into(),
+                key("e1"),
+                Decryption::Decrypted(Decrypted {
+                    body: "復号した本文".into(),
+                    kind: "message".into(),
+                    mentions: Default::default(),
+                    sender: SenderTrust::Unverified,
+                    revision: zoo_crypto::RevisionStatus::Latest,
+                    attachments: vec![zoo_crypto::AttachmentInfo {
+                        attachment_id: uuid::Uuid::new_v4().to_string(),
+                        name: "plan.pdf".into(),
+                        mimetype: "application/pdf".into(),
+                        size: 3,
+                        width: None,
+                        height: None,
+                        sensitive: false,
+                        file: zoo_crypto::encrypt_attachment(b"pdf").file,
+                    }],
+                }),
+            ),
+            (
+                "e2".into(),
+                key("e2"),
+                Decryption::Undecryptable(UndecryptableReason::KeyMissing),
+            ),
+        ];
         app.on_app_event(AppEvent::Decrypted {
-            results: vec![
-                (
-                    "e1".into(),
-                    0,
-                    Decryption::Decrypted(Decrypted {
-                        body: "復号した本文".into(),
-                        kind: "message".into(),
-                        mentions: Default::default(),
-                        sender: SenderTrust::Unverified,
-                        revision: zoo_crypto::RevisionStatus::Latest,
-                        attachments: vec!["plan.pdf".into()],
-                    }),
-                ),
-                (
-                    "e2".into(),
-                    0,
-                    Decryption::Undecryptable(UndecryptableReason::KeyMissing),
-                ),
-            ],
+            results,
             generation: Some(1),
         });
         let screen = render_sized(&mut app, 140, 40);

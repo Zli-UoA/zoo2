@@ -143,9 +143,12 @@ fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> V
                 mentions_me.then_some(ctx.me_name),
                 &ctx.store.account_profiles,
             ));
-            for name in &d.attachments {
+            for attachment in &d.attachments {
                 lines.push(Line::styled(
-                    format!("📎 {name}（暗号化した添付。TUI では開けません）"),
+                    format!(
+                        "📎 {}（暗号化した添付。TUI では開けません）",
+                        attachment.name
+                    ),
                     DIM,
                 ));
             }

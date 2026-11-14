@@ -18,9 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, anyhow};
 use serde_json::Value;
 use zoo_crypto::{
-    CryptoError, DeviceKeys, EncryptedMessage, KeySnapshot, Mentions, NewTofuPin, OlmSession,
-    OutboundSession, OutgoingMessage, Rejection, RevisionStatus, SessionOrigin, SessionRef,
-    UserState,
+    AttachmentInfo, CryptoError, DeviceKeys, EncryptedMessage, KeySnapshot, Mentions, NewTofuPin,
+    OlmSession, OutboundSession, OutgoingMessage, Rejection, RevisionStatus, SessionOrigin,
+    SessionRef, UserState,
 };
 
 use super::{CryptoStore, StoredInboundSession, inbound_key};
@@ -182,8 +182,8 @@ pub struct Decrypted {
     pub sender: SenderTrust,
     /// 版の照合の結果。
     pub revision: RevisionStatus,
-    /// 暗号化した添付のファイル名（#364。TUI は名前だけを出す）。
-    pub attachments: Vec<String>,
+    /// 暗号化した添付（#364）。TUI は名前だけを出す。編集では鍵などを含めてそのまま送り直す。
+    pub attachments: Vec<AttachmentInfo>,
 }
 
 /// 1 行の復号の結果。
@@ -565,12 +565,7 @@ impl CryptoStore {
                     (SessionOrigin::Olm, false) => SenderTrust::Unverified,
                 },
                 revision: decrypted.revision,
-                attachments: decrypted
-                    .payload
-                    .attachments
-                    .into_iter()
-                    .map(|attachment| attachment.name)
-                    .collect(),
+                attachments: decrypted.payload.attachments,
             }),
             Err(CryptoError::MissingRoomKey { .. }) => {
                 Decryption::Undecryptable(UndecryptableReason::KeyMissing)

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
-use zoo_crypto::{MessageContent, OutgoingMessage};
+use zoo_crypto::{AttachmentInfo, MessageContent, OutgoingMessage};
 
 use super::setup::{self, SharedStore};
 use super::store::{MegolmError, RecipientSummary, SharePlan};
@@ -410,6 +410,9 @@ pub struct Edit {
     /// 元の版の `content.kind`。
     pub kind: String,
     pub mentions: Mentions,
+    /// 元の版の暗号化した添付（#364）。編集では添付を変えられないので、鍵などを含めてそのまま入れる
+    /// （空にすると、新しい版から添付を開けなくなる。Web の `editEncryptedMessage` と同じ）。
+    pub attachments: Vec<AttachmentInfo>,
 }
 
 /// 置き換えた本文を、版 `revision` で暗号化して `PATCH /api/messages/{id}` で送る。編集では通知を
@@ -429,7 +432,7 @@ pub async fn edit_encrypted_message(
             kind: edit.kind.clone(),
         },
         mentions: core_mentions(&edit.mentions),
-        attachments: Vec::new(),
+        attachments: edit.attachments.clone(),
     };
     let api = ctx.api.clone();
     encrypt_and_submit(
