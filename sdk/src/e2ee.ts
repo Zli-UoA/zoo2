@@ -205,6 +205,8 @@ export class ZooE2ee {
   private readonly processed: Set<string>;
   private readonly loadedInbound = new Set<string>();
   private syncing: Promise<number> | undefined;
+  /** Serializes the tasks that change the device account ({@link exclusive}). */
+  private accountQueue: Promise<unknown> = Promise.resolve();
   /** The store could not be saved after the memory moved ahead; the device must be opened again. */
   private broken = false;
   private saving: Promise<void> = Promise.resolve();
@@ -337,7 +339,24 @@ export class ZooE2ee {
   }
 
   /** Keep {@link ONE_TIME_KEY_TARGET} one-time keys and an unused fallback key on the server. */
-  async replenishKeys(): Promise<void> {
+  replenishKeys(): Promise<void> {
+    return this.exclusive(() => this.replenish());
+  }
+
+  /**
+   * Run tasks that change the device account one at a time (replenishing keys, processing to-device
+   * messages). A to-device message consumes a one-time key when it creates an Olm session, and the
+   * account must reach the store together with that session, the session key and the processed mark;
+   * a replenish saving the account while a message is still being verified would store the consumed
+   * key without them, and a crash at that moment would make the message undecryptable.
+   */
+  private exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.accountQueue.catch(() => undefined).then(task);
+    this.accountQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  private async replenish(): Promise<void> {
     const counts = await this.options.app.request<{ one_time_key_counts: { signed_curve25519: number }; unused_fallback_key_types: string[] }>("POST", "/e2ee/keys/upload", { device_id: this.deviceId });
     const missing = ONE_TIME_KEY_TARGET - counts.one_time_key_counts.signed_curve25519;
     const needsFallback = !counts.unused_fallback_key_types.includes("signed_curve25519");
@@ -363,7 +382,7 @@ export class ZooE2ee {
    * Returns the number of session keys stored. Concurrent calls share one run.
    */
   syncToDevice(): Promise<number> {
-    this.syncing ??= this.runSync().finally(() => {
+    this.syncing ??= this.exclusive(() => this.runSync()).finally(() => {
       this.syncing = undefined;
     });
     return this.syncing;
@@ -397,7 +416,7 @@ export class ZooE2ee {
       if (messages.length < TO_DEVICE_PAGE) break;
     }
     // Inbound Olm sessions used one-time keys.
-    if (newOlmSessions) await this.replenishKeys();
+    if (newOlmSessions) await this.replenish();
     return stored;
   }
 
