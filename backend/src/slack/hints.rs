@@ -476,7 +476,7 @@ async fn apply(
     Ok(())
 }
 
-async fn exec_delete(
+pub(super) async fn exec_delete(
     tx: &mut toasty::Transaction<'_>,
     id: &str,
     zoo_channel: &str,
@@ -494,7 +494,7 @@ async fn exec_delete(
 }
 
 /// 編集の反映。本文とカードを、取り込みと同じ変換で作り直し、違うときだけ更新する
-async fn edit(
+pub(super) async fn edit(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
     id: &str,

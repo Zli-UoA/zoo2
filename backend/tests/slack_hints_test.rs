@@ -267,7 +267,7 @@ async fn set_sync_state(
         state,
         &format!(
             "UPDATE slack_channel_syncs SET available_at=now()+interval '{next}',\
-             last_synced_at=now()-interval '{last}',not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+             last_synced_at=now()-interval '{last}',rechecked_at=now(),not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
              WHERE team_id=$1 RETURNING json_build_object('ok',true)::text"
         ),
         &[team],
