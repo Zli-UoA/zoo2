@@ -143,8 +143,16 @@ fn key_exists() -> AppError {
     )
 }
 
-fn device_not_found() -> AppError {
-    AppError::NotFound("Device not found".into())
+/// 呼び出した端末（または指定した自分の端末）が見つからない、または削除済み。クライアントは、この
+/// コードの付いた 404 だけを「端末が別の端末から削除された」候補にする（docs/e2ee.md の「端末が
+/// 削除されていたとき」）。コードのない 404（前段のプロキシーなど）では暗号ストアを作り直さない。
+pub(crate) fn device_not_found() -> AppError {
+    coded(
+        StatusCode::NOT_FOUND,
+        "E2EE_DEVICE_NOT_FOUND",
+        "Device not found",
+        Value::Null,
+    )
 }
 
 pub(crate) fn crypto_error(err: CryptoError) -> AppError {

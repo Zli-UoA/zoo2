@@ -15,6 +15,7 @@ import {
   RevocationConflictError,
   RevocationPendingError,
   type RevocationResult,
+  ReverifyKeyChangedError,
   abandonRevocation,
   addRevocationPasskey,
   beginRevocation,
@@ -24,6 +25,7 @@ import {
   loadVerifications,
   newRevocationRecoveryKey,
   openSecretStorage,
+  previewReverify,
   resumeRevocation,
   revocationStatus,
   reverifyUser,
@@ -69,6 +71,7 @@ function useEncryptedPeers(userId: string | null): string[] {
 
 function toDevicesError(error: unknown, fallback: DevicesErrorCode): DevicesErrorCode {
   if (error instanceof RevocationConflictError) return "mismatch";
+  if (error instanceof ReverifyKeyChangedError) return "reverifyKeyChanged";
   if (error instanceof RevocationPendingError || error instanceof RevocationChangedError) {
     return "revocationPending";
   }
@@ -242,6 +245,7 @@ export function DevicesSettings({
         const verifications = unlocked
           ? await loadVerifications(deps, peers)
           : { users: [], warnings: [] };
+        const ownMasterKey = unlocked ? await deps.worker.request({ op: "ownMasterKey" }) : null;
         // あとから始めた読み直しがある。結果はそちらに任せる。
         if (seq !== loadSeq.current) return true;
         const data = {
@@ -249,6 +253,7 @@ export function DevicesSettings({
           verifications: verifications.users.map((row) => ({ ...row, name: nameOf(row.userId) })),
           warnings: verifications.warnings,
           unlocked,
+          ownMasterKey,
           pendingRevocation: pending ? { scope: pending.scope, stage: pending.stage } : null,
           accountUrls,
         };
@@ -562,10 +567,27 @@ export function DevicesSettings({
       setPhase(null);
       void load();
     },
-    onReverify: (target) => {
+    onPrepareReverify: async (target) => {
+      if (!deps) return null;
+      ready((current) => ({ ...current, busy: "verify", error: null }));
+      try {
+        const preview = await previewReverify(deps, target);
+        ready((current) => ({ ...current, busy: null }));
+        return preview;
+      } catch (error) {
+        ready((current) => ({
+          ...current,
+          busy: null,
+          error: toDevicesError(error, "verifyFailed"),
+        }));
+        return null;
+      }
+    },
+    onReverify: (target, masterKey) => {
       if (!deps) return;
+      // 再認証のウィンドウは、押した操作の中で開く（ポップアップを止められないように）。
       const reauth = startReauth(config);
-      run("verify", async () => reverifyUser(deps, target, await reauth()));
+      run("verify", async () => reverifyUser(deps, target, masterKey, await reauth()));
     },
     // 検証の画面はシェルのダイアログ（SasVerificationHost）に出る。
     onSasVerify: sas

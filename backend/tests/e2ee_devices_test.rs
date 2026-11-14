@@ -643,8 +643,9 @@ async fn delete_is_owner_only_idempotent_and_removes_only_own_self_signatures() 
         .0,
         StatusCode::NOT_FOUND
     );
-    // 削除のあとのアップロードは 404。
-    let (status, _) = request(
+    // 削除のあとのアップロードは 404。クライアントが端末の削除を見分けられるよう、コードを付ける
+    // （コードのない 404 では、クライアントは暗号ストアを作り直さない）。
+    let (status, body) = request(
         &env.app,
         "POST",
         "/api/e2ee/keys/upload",
@@ -653,6 +654,18 @@ async fn delete_is_owner_only_idempotent_and_removes_only_own_self_signatures() 
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "E2EE_DEVICE_NOT_FOUND");
+    // ack も同じ。
+    let (status, body) = request(
+        &env.app,
+        "POST",
+        "/api/e2ee/to_device/ack",
+        &alice,
+        json!({"device_id": device_id, "ids": []}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "E2EE_DEVICE_NOT_FOUND");
 }
 
 #[tokio::test]

@@ -269,9 +269,13 @@ impl ApiClient {
     const E2EE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// E2EE の要求を送り、応答の封筒 `{data, txid}` の `data` を返す。
+    ///
+    /// エラーは [`crate::http::ApiError`] にする（401 を除く）。端末が消された候補は、409
+    /// `E2EE_DEVICE_EXISTS` と 404 `E2EE_DEVICE_NOT_FOUND` のようにコードで見分けるため
+    /// （docs/e2ee.md の「端末が削除されていたとき」）。
     async fn write_data(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
         let envelope: Envelope = self
-            .send_with_timeout(method, path, body, Some(Self::E2EE_TIMEOUT))
+            .send_e2ee(method, path, body, None)
             .await?
             .json()
             .await?;
@@ -358,6 +362,29 @@ impl ApiClient {
             .await?;
         }
         Ok(())
+    }
+
+    /// `GET /api/e2ee/devices`：自分の、削除されていない端末の `device_id`（封筒なしの配列）。
+    /// 配列でない、または `device_id` のない要素があれば、一覧を取れなかったものとしてエラーにする。
+    pub async fn e2ee_device_ids(&self) -> Result<Vec<String>> {
+        let value: Value = self
+            .send_e2ee(Method::GET, "/api/e2ee/devices", None, None)
+            .await?
+            .json()
+            .await?;
+        let devices = value
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("端末の一覧が配列ではありません"))?;
+        devices
+            .iter()
+            .map(|device| {
+                device
+                    .get("device_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow::anyhow!("端末の一覧に device_id のない要素があります"))
+            })
+            .collect()
     }
 
     /// `DELETE /api/e2ee/devices/{device_id}`。削除済みでも成功する（冪等）。
@@ -936,6 +963,68 @@ mod tests {
             err.downcast_ref::<HttpError>(),
             Some(HttpError::Unauthorized)
         ));
+    }
+
+    #[tokio::test]
+    async fn device_errors_keep_the_code_and_lists_own_devices() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/devices"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(
+                json!({ "error": "The device ID is already used", "code": "E2EE_DEVICE_EXISTS" }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/keys/upload"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(
+                json!({ "error": "Device not found", "code": "E2EE_DEVICE_NOT_FOUND" }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/to_device/ack"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/e2ee/devices"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{ "device_id": "d1" }, { "device_id": "d2" }])),
+            )
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let err = api.e2ee_register_device(json!({})).await.unwrap_err();
+        assert!(crate::http::ApiError::has_code(&err, "E2EE_DEVICE_EXISTS"));
+        assert_eq!(
+            crate::http::ApiError::status_of(&err),
+            Some(reqwest::StatusCode::CONFLICT)
+        );
+        let err = api
+            .e2ee_upload_keys("d1", json!({}), json!({}))
+            .await
+            .unwrap_err();
+        assert!(crate::http::ApiError::has_code(
+            &err,
+            "E2EE_DEVICE_NOT_FOUND"
+        ));
+        // コードのない 404 は、状態だけを読める。
+        let err = api
+            .e2ee_ack_to_device("d1", &["1".into()])
+            .await
+            .unwrap_err();
+        assert!(!crate::http::ApiError::has_code(
+            &err,
+            "E2EE_DEVICE_NOT_FOUND"
+        ));
+        assert_eq!(
+            crate::http::ApiError::status_of(&err),
+            Some(reqwest::StatusCode::NOT_FOUND)
+        );
+        assert_eq!(api.e2ee_device_ids().await.unwrap(), vec!["d1", "d2"]);
     }
 
     #[tokio::test]

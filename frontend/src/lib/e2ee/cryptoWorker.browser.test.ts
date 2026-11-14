@@ -49,6 +49,31 @@ describe("zoo-crypto Worker", () => {
     expect(names.filter((name) => name.startsWith("zoo-crypto-"))).toEqual([]);
   });
 
+  it("端末だけを作り直すと、OPFS の SQLite に新しい端末が残り、開き直しても同じ端末に戻る", async () => {
+    // 別の端末から消された端末を作り直すとき（deviceManager の replaceDevice）。
+    const namespace = `test-${crypto.randomUUID()}`;
+    worker = startCryptoWorker();
+    const first = await worker.request({ op: "open", namespace, userId: USER });
+    await worker.request({ op: "markRegistered" });
+    const replaced = await worker.request({
+      op: "replaceDevice",
+      namespace,
+      userId: USER,
+      deviceId: first.deviceId,
+    });
+    expect(replaced).toMatchObject({ userId: USER, registered: false, replacedDeviceId: null });
+    expect(replaced.deviceId).not.toBe(first.deviceId);
+    const request = await worker.request({ op: "registrationRequest" });
+    expect(request.device_keys).toMatchObject({ device_id: replaced.deviceId });
+    await worker.request({ op: "close" });
+    worker.terminate();
+
+    worker = startCryptoWorker();
+    const reopened = await worker.request({ op: "open", namespace, userId: USER });
+    expect(reopened).toMatchObject({ deviceId: replaced.deviceId, registered: false });
+    await worker.request({ op: "destroy", namespace });
+  });
+
   it("同じ Worker で暗号ストアを消してから、同じ名前で作り直せる", async () => {
     // 別の端末から消された端末を作り直すとき（deviceManager の start）と同じ順。
     const namespace = `test-${crypto.randomUUID()}`;

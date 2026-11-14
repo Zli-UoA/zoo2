@@ -112,6 +112,31 @@ export class CryptoOperations {
         this.reopenPending = false;
         return this.describe(replacedDeviceId, replacedRegistered);
       }
+      case "replaceDevice": {
+        const { namespace, userId, deviceId } = request;
+        const name = cryptoDatabaseName(namespace);
+        // 開いていなければ（前の作り直しのあとで開き直せなかった、Worker を作り直したなど）、保存済みの
+        // 状態から開く。
+        if (!this.store || this.storeName !== name || this.store.userId !== userId) {
+          await this.dispatch({ op: "open", namespace, userId });
+        }
+        const store = this.opened();
+        // 作り直しは、消されたと確かめた端末（`deviceId`）にだけ行う。保存済みの暗号ストアがすでに別の
+        // 端末なら、前の作り直しは保存できている（そのあとの開き直しだけが失敗した）。その端末を
+        // もう一度作り直さず、そのまま返して登録から続けさせる。
+        if (store.deviceId !== deviceId) return this.describe(null, false);
+        this.revocation.discard();
+        this.setup.discard();
+        await store.replaceDevice();
+        // 新しい端末アカウントで読み直す（メモリーの古い端末の状態を使い続けない）。開き直しに失敗しても、
+        // 次の操作の前に開き直す（`reopenPending`）。
+        await store.close();
+        this.store = null;
+        this.storeName = null;
+        this.lastOpen = { namespace, userId };
+        this.reopenPending = true;
+        return this.dispatch({ op: "open", namespace, userId });
+      }
       case "registrationRequest":
         return this.opened().registrationRequest();
       case "markRegistered":
@@ -235,7 +260,15 @@ export class CryptoOperations {
         await this.opened().saveTrustStore();
         return null;
       case "acceptMasterKey":
-        return this.opened().acceptMasterKey(request.targetUserId, request.masterKey);
+        return this.opened().acceptMasterKey(
+          request.targetUserId,
+          request.masterKey,
+          request.expectedMasterKey,
+        );
+      case "trustRecord":
+        return this.opened().trustStore.record(request.targetUserId) ?? null;
+      case "ownMasterKey":
+        return this.opened().trustStore.ownMasterKey ?? null;
       case "confirmAcceptedMasterKey":
         await this.opened().confirmAcceptedMasterKey(request.targetUserId, request.masterKey);
         return null;
