@@ -42,7 +42,11 @@ export function CallInvitePicker({
       className="space-y-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (chosen.length > 0 && !busy) onInvite(chosen.map((candidate) => candidate.id));
+        if (chosen.length > 0 && !busy) {
+          onInvite(chosen.map((candidate) => candidate.id));
+          // 呼んだ人は、選択から外す（期限が来て候補に戻ったときに、チェック済みで出ないように）。
+          setSelected(new Set());
+        }
       }}
     >
       {full ? <p className="text-xs text-muted-foreground">{t("call.inviteFull")}</p> : null}

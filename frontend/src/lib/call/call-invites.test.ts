@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { ApiError } from "../api/client";
 import type { CallInviteRow } from "../electric/types";
 import {
+  CALL_ACCEPT_MARK_TTL_MS,
   acceptCallInvite,
+  callAcceptMarkPath,
+  callInviteDurationMs,
   callInviteExpiresAt,
+  consumeCallAcceptMark,
   cancelCallInvite,
   declineCallInvite,
   inviteToCall,
@@ -117,12 +121,9 @@ describe("API", () => {
 
 describe("起動用の URL パラメーター", () => {
   const id = "00000000-0000-4000-8000-000000000001";
-  it("招待の ID と応答の指定を読む", () => {
-    expect(parseCallInviteLaunch(`?call_invite=${id}&call_action=accept`)).toEqual({
-      inviteId: id,
-      action: "accept",
-    });
-    expect(parseCallInviteLaunch(`?call_invite=${id}`)).toEqual({ inviteId: id, action: null });
+  it("招待の ID だけを読む（応答の指定は読まない）", () => {
+    expect(parseCallInviteLaunch(`?call_invite=${id}`)).toBe(id);
+    expect(parseCallInviteLaunch(`?call_invite=${id}&call_action=accept`)).toBe(id);
   });
   it("UUID でなければ読まない", () => {
     expect(parseCallInviteLaunch("?call_invite=../../x")).toBeNull();
@@ -130,9 +131,70 @@ describe("起動用の URL パラメーター", () => {
   });
   it("URL から外しても、他のパラメーターは残る", () => {
     expect(
-      stripCallInviteLaunch(
-        `https://zoo.example/channels/c1?message=m1&call_invite=${id}&call_action=accept#x`,
-      ),
+      stripCallInviteLaunch(`https://zoo.example/channels/c1?message=m1&call_invite=${id}#x`),
     ).toBe("/channels/c1?message=m1#x");
+  });
+});
+
+describe("応答の印（Service Worker が残す）", () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+
+  function stubCaches(entries: Map<string, string>) {
+    vi.stubGlobal("caches", {
+      open: async () => ({
+        match: async (path: string) => {
+          // 本物の Response と同じく、あとで印が消えても本文は読める。
+          const value = entries.get(path);
+          return value === undefined ? undefined : { text: async () => value };
+        },
+        delete: async (path: string) => entries.delete(path),
+      }),
+    });
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("印があれば一度だけ true を返し、印は消える", async () => {
+    const entries = new Map([[callAcceptMarkPath(id), String(1_000)]]);
+    stubCaches(entries);
+    expect(await consumeCallAcceptMark(id, 1_500)).toBe(true);
+    expect(await consumeCallAcceptMark(id, 1_500)).toBe(false);
+  });
+
+  it("印がなければ（URL を開いただけでは）false", async () => {
+    stubCaches(new Map());
+    expect(await consumeCallAcceptMark(id)).toBe(false);
+  });
+
+  it("古い印は使えない（消えるが false）", async () => {
+    const entries = new Map([[callAcceptMarkPath(id), String(1_000)]]);
+    stubCaches(entries);
+    expect(await consumeCallAcceptMark(id, 1_000 + CALL_ACCEPT_MARK_TTL_MS + 1)).toBe(false);
+    expect(entries.size).toBe(0);
+  });
+
+  it("Cache が使えなければ false", async () => {
+    vi.stubGlobal("caches", {
+      open: async () => {
+        throw new Error("blocked");
+      },
+    });
+    expect(await consumeCallAcceptMark(id)).toBe(false);
+  });
+});
+
+describe("callInviteDurationMs と端末の時計", () => {
+  it("招待の長さは created_at と expires_at の差", () => {
+    expect(callInviteDurationMs(invite())).toBe(30_000);
+    expect(callInviteDurationMs(invite({ created_at: "nonsense" }))).toBe(0);
+  });
+
+  it("deadlineOf を渡すと、端末の時計がずれていても期限を決められる", () => {
+    const skewedNow = NOW + 120_000; // 端末の時計が 2 分進んでいる
+    const row = invite();
+    expect(liveCallInvites([row], skewedNow)).toEqual([]);
+    const receivedAt = skewedNow - 1_000;
+    const deadlineOf = () => receivedAt + callInviteDurationMs(row);
+    expect(liveCallInvites([row], skewedNow, deadlineOf)).toEqual([row]);
   });
 });

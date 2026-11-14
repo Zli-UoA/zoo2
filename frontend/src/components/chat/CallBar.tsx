@@ -166,7 +166,7 @@ export function CallBar({ channels = [] }: CallBarProps) {
               </span>
               <button
                 type="button"
-                className="shrink-0 rounded-full p-0.5 hover:bg-muted"
+                className="-m-1 shrink-0 rounded-full p-1.5 hover:bg-muted"
                 aria-label={t("call.cancelInvite", { name: userName(invite.invitee_id) })}
                 title={t("call.cancelInvite", { name: userName(invite.invitee_id) })}
                 onClick={() => void cancelCallInvite(inviteApi, invite.id).catch(() => {})}

@@ -458,6 +458,7 @@
     "incomingDmHint": "Answer the call?",
     "incomingChannel": "{{name}} is inviting you to a call",
     "inviteEnded": "This call has already ended",
+    "inviteAcceptFailed": "Could not answer the call. Please try again",
     "inviteButton": "Invite members",
     "inviteNobody": "There is no one to invite",
     "inviteFull": "The call is full",

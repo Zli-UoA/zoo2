@@ -134,3 +134,19 @@ it("coerces notification read status so false remains unread", () => {
   expect(coerceElectricRow("notifications", { id: "n1", is_read: "false" }).is_read).toBe(false);
   expect(coerceElectricRow("notifications", { id: "n1", is_read: "t" }).is_read).toBe(true);
 });
+
+describe("call_invites", () => {
+  it("coerces the invite row and keeps timestamptz as a string", () => {
+    const row = coerceElectricRow("call_invites", {
+      id: "00000000-0000-4000-8000-000000000001",
+      channel_id: "c1",
+      inviter_id: "alice",
+      invitee_id: "bob",
+      status: "pending",
+      created_at: "2026-11-14 10:00:00.000+00",
+      expires_at: "2026-11-14 10:00:30.000+00",
+    });
+    expect(row.expires_at).toBe("2026-11-14 10:00:30.000+00");
+    expect(row.status).toBe("pending");
+  });
+});

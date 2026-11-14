@@ -530,6 +530,14 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
+const CALL_ACCEPT_CACHE = "zoo-call-accept";
+
+// 通知の「応答」を押した印。画面（`IncomingCallDialog`）が一度だけ読んで消し、あれば応答して通話に入る。
+async function markCallAccept(inviteId) {
+  const cache = await caches.open(CALL_ACCEPT_CACHE);
+  await cache.put(`/__call-accept/${inviteId}`, new Response(String(Date.now())));
+}
+
 async function closeCallInvite(tag) {
   const open = await self.registration.getNotifications({ tag });
   for (const notification of open) notification.close();
@@ -628,24 +636,42 @@ self.addEventListener("notificationclick", (event) => {
   const inviteId = event.notification.data?.inviteId;
   event.waitUntil(
     (async () => {
-      if (event.action === "decline" && typeof inviteId === "string") {
-        // Service Worker は API のトークンを持たないので、開いているタブに拒否を頼む。
-        // タブがなければ通知を閉じるだけで、期限が来ると不在着信になる。
+      if (typeof inviteId === "string") {
         const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-        for (const client of windows) {
-          client.postMessage({ type: "zoo-call-invite", action: "decline", inviteId });
+        const appWindows = windows.filter(
+          (client) => new URL(client.url).origin === self.location.origin,
+        );
+        if (event.action === "decline") {
+          // Service Worker は API のトークンを持たないので、開いているタブに拒否を頼む。
+          // タブがなければ通知を閉じるだけで、期限が来ると不在着信になる。
+          for (const client of appWindows) {
+            client.postMessage({ type: "zoo-call-invite", action: "decline", inviteId });
+          }
+          return;
         }
-        return;
+        if (event.action === "accept") {
+          // URL だけで応答させないよう、「応答を押した」印をここで残し、画面が一度だけ読んで消す。
+          await markCallAccept(inviteId);
+          for (const client of appWindows) {
+            client.postMessage({ type: "zoo-call-invite", action: "accept", inviteId });
+          }
+        }
+        if (appWindows.length > 0) {
+          // 開いているタブは、移動（再読み込み）せずに前へ出す。通話中のタブを壊さない。
+          for (const client of appWindows) {
+            try {
+              await client.focus();
+              return;
+            } catch {
+              /* Try another app window or open a new one. */
+            }
+          }
+        }
       }
       let target = "/";
       try {
         const url = new URL(event.notification.data?.url || "/", self.location.origin);
         if (url.origin === self.location.origin && url.pathname.startsWith("/channels/")) {
-          // 「応答」は、画面側で応答して通話に入る（`IncomingCallDialog`）。
-          if (event.action === "accept" && typeof inviteId === "string") {
-            url.searchParams.set("call_invite", inviteId);
-            url.searchParams.set("call_action", "accept");
-          }
           target = url.href;
         }
       } catch {

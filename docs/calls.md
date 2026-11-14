@@ -62,14 +62,16 @@
 
 ## Web の動き
 
-- **購読**: `callInvites`（`frontend/src/lib/electric/collections.ts`）が `/api/shapes/call_invites` を購読する（永続化しない）。`useCallInvites` が、自分が呼ばれている招待（`incoming`）と、自分が呼んでいる招待（`outgoing`）に分ける。サーバーが `missed` にするまでの数秒も、`expires_at` を過ぎた招待は一覧から外す。
+- **購読**: `callInvites`（`frontend/src/lib/electric/collections.ts`）が `/api/shapes/call_invites` を購読する（永続化しない）。`useCallInvites` が、自分が呼ばれている招待（`incoming`）と、自分が呼んでいる招待（`outgoing`）に分ける。サーバーが `missed` にするまでの数秒も、期限を過ぎた招待は一覧から外す。期限は、端末の時計がずれていても働くよう、行を初めて受け取った時刻 + 招待の長さ（`created_at` と `expires_at` の差）で決める。
 - **着信**: `IncomingCallDialog`（`routes/_shell.tsx` の `CallProvider` の下）が、`incoming` の先頭を `IncomingCallCard` で出し、着信音（`call-sounds.ts` の `startRingtone`。効果音の設定に従う。ページを操作する前は、ブラウザーの自動再生の制限で鳴らないことがある）を繰り返す。
-  - 応答: `POST /api/call-invites/{id}/accept` のあとに `joinCall(channelId)`。別の通話中なら、`joinCall` が先に抜ける。終わっていた招待（409・404）には入らず、「この着信はすでに終了しました」を出す。
+  - 応答: `POST /api/call-invites/{id}/accept` のあとに `joinCall(channelId)`（`joinCall` は通話が終わるまで戻らないので待たない。待つと、通話中に届く次の着信を操作できない）。別の通話中なら、`joinCall` が先に抜ける。終わっていた招待（409・404）には入らず、「この着信はすでに終了しました」をトーストで出す。それ以外の失敗は、カードに「応答できませんでした」を出す。
   - 拒否: `POST /api/call-invites/{id}/decline`。
 - **招待する側**（`CallBar`）: チャンネルの通話では「メンバーを招待」で、通話に入っておらず呼び出し中でもない、チャンネルのメンバー（bot と無効化したユーザーを除く）を選んで呼ぶ（`CallInvitePicker`。空き = 定員 - 在室 - 呼び出し中 まで）。DM では出さない。呼び出し中の相手は「〇〇さんを呼び出し中…」と出し、取り消せる。
 - **Web Push**（`public/sw.js`）:
   - `call_invite` は `requireInteraction` つきで、「応答」「拒否」のボタンを付ける。
-  - 「応答」は `/channels/{id}?call_invite={招待の ID}&call_action=accept` を開く（開いているタブがあれば、そのタブを移動する）。画面側（`IncomingCallDialog`）が URL を読み、パラメーターを外してから、一度だけ応答して通話に入る。
-  - 「拒否」は、開いているタブへ `postMessage`（`{ type: "zoo-call-invite", action: "decline", inviteId }`）で依頼する。Service Worker は API のトークンを持たないため、タブがなければ通知を閉じるだけで、期限が来ると不在着信になる。
+  - 「応答」: URL だけでは応答しない（リンクを開かせるだけで通話に入れてしまうため）。Service Worker が Cache（`zoo-call-accept`）に「応答を押した」印（招待の ID と時刻）を残し、画面（`IncomingCallDialog`）が、印を一度だけ読んで消せたときだけ、応答して通話に入る。印は 60 秒で無効。
+    - 開いているタブがあれば、移動（再読み込み）せずに前へ出し、`postMessage`（`{ type: "zoo-call-invite", action: "accept", inviteId }`）で依頼する。複数のタブのうち、印を先に消せた 1 つだけが応答する。
+    - タブがなければ `/channels/{id}?call_invite={招待の ID}` を開く。画面は、URL の `call_invite` を外してから、印があれば応答する。印がなければ（外部のリンクなどで開かれた場合）何もしない。
+  - 「拒否」は、開いているタブへ `postMessage`（`action: "decline"`）で依頼する。Service Worker は API のトークンを持たないため、依頼を受けられる画面（`routes/_shell.tsx` の下）を開いたタブがなければ通知を閉じるだけで、期限が来ると不在着信になる。
   - `call_invite_end` は、同じ `tag` の通知を閉じる（通知がなければ、同じ `tag` で出してすぐ閉じる）。
 - **不在着信**: 通知一覧の `NotificationCard` に「〇〇さんからの不在着信」を出し、チャンネルへのリンクを付ける（`message_id` は NULL）。

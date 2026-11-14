@@ -458,6 +458,7 @@
     "incomingDmHint": "要接聽嗎？",
     "incomingChannel": "{{name}} 邀請你加入通話",
     "inviteEnded": "呢個來電已經結束",
+    "inviteAcceptFailed": "接唔到，請再試一次",
     "inviteButton": "邀請成員",
     "inviteNobody": "冇可以邀請嘅成員",
     "inviteFull": "通話人數已滿",

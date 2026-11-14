@@ -458,6 +458,7 @@
     "incomingDmHint": "通話に応答しますか？",
     "incomingChannel": "{{name}} さんが通話に招待しています",
     "inviteEnded": "この着信はすでに終了しました",
+    "inviteAcceptFailed": "応答できませんでした。もう一度お試しください",
     "inviteButton": "メンバーを招待",
     "inviteNobody": "招待できるメンバーがいません",
     "inviteFull": "通話の定員に達しています",

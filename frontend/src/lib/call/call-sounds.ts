@@ -138,7 +138,11 @@ export function playCallSound(kind: CallSoundKind): void {
   const ctx = getContext();
   if (!ctx) return;
   try {
-    if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+    if (ctx.state === "suspended") {
+      void ctx.resume().catch(() => {});
+      // 着信音は繰り返すので、止まっている間は積まない（再開した瞬間にまとめて鳴り、音が割れる）。
+      if (kind === "ring") return;
+    }
     const start = ctx.currentTime + 0.01;
     const { notes, step, length } = SOUNDS[kind];
     notes.forEach((freq, i) => {

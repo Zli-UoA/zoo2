@@ -458,6 +458,7 @@
     "incomingDmHint": "전화를 받으시겠어요?",
     "incomingChannel": "{{name}}님이 통화에 초대했습니다",
     "inviteEnded": "이미 종료된 전화입니다",
+    "inviteAcceptFailed": "전화를 받지 못했습니다. 다시 시도해 주세요",
     "inviteButton": "멤버 초대",
     "inviteNobody": "초대할 수 있는 멤버가 없습니다",
     "inviteFull": "통화 정원이 찼습니다",
