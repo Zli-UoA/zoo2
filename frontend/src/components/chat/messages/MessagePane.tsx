@@ -58,6 +58,7 @@ import {
 } from "../../../lib/e2ee/encryptionGuard";
 import { apiErrorCode } from "../../../lib/e2ee/megolmApi";
 import {
+  isPlaintextBeforeEncryption,
   MessageDecryptionsProvider,
   type MessageDecryption,
 } from "../../../lib/e2ee/messageDecryption";
@@ -294,12 +295,16 @@ export function MessagePane({
     [treatAsEncrypted, messagesQuery.data, threadQuery.data, threadRoot],
   );
   const workerDecryptions = useMessageDecryptions(channelId, decryptionRows);
-  // 暗号化チャンネルの、暗号文のない（削除されていない）行は、暗号ストアがなくても本文を出さない。
-  // 正しいサーバーは DB のトリガーでこの行を作れないので、同期元が書き換えたものとして扱う。
+  // 暗号化チャンネルの、暗号文がなく `epoch` だけがある（削除されていない）行は、暗号ストアがなくても本文を
+  // 出さない。正しいサーバーは DB のトリガーでこの行を作れないので、同期元が書き換えたものとして扱う。
+  // `epoch` もない行は、暗号化に切り替える前の平文のメッセージ（#367）なので、印を付けて本文を出す（MessageRow）。
   const decryptions = useMemo(() => {
     // フィードは削除済みの行を除くが、念のため `deleted_at` のある行（暗号文は DB が消す）は除く。
     const unencrypted = decryptionRows.filter(
-      (row) => !row.ciphertext && !(row as { deleted_at?: string | null }).deleted_at,
+      (row) =>
+        !row.ciphertext &&
+        !isPlaintextBeforeEncryption(row) &&
+        !(row as { deleted_at?: string | null }).deleted_at,
     );
     if (unencrypted.length === 0) return workerDecryptions;
     const next = new Map(workerDecryptions);
@@ -369,6 +374,18 @@ export function MessagePane({
     if (pendingDeleteId && isArchivedMessage(pendingDeleteId)) setPendingDeleteId(null);
     if (reactionMessageId && isArchivedMessage(reactionMessageId)) setReactionMessageId(null);
   }, [editingId, pendingDeleteId, reactionMessageId, isArchivedMessage]);
+
+  // 編集中にチャンネルが暗号化に切り替わったら（#367）、切り替える前の平文のメッセージの編集をやめる。
+  // サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する。
+  useEffect(() => {
+    if (!treatAsEncrypted || !editingId) return;
+    const row = messagesCollection.get(editingId);
+    if (row && isPlaintextBeforeEncryption(row)) {
+      setEditingId(null);
+      setEditingText("");
+      toast.info(t("e2ee.legacy.editCancelled"));
+    }
+  }, [treatAsEncrypted, editingId, messagesCollection, t]);
 
   const handleReaction = useCallback(
     async (messageId: string, emoji: string) => {
@@ -824,7 +841,11 @@ export function MessagePane({
   }, [pendingDeleteId, run, messagesCollection, isArchivedMessage]);
 
   return (
-    <MessageDecryptionsProvider decryptions={decryptions} mentionUserNames={mentionUserNames}>
+    <MessageDecryptionsProvider
+      decryptions={decryptions}
+      mentionUserNames={mentionUserNames}
+      encrypted={treatAsEncrypted}
+    >
       <section className="relative flex h-full min-h-0">
         <div className="flex min-w-0 flex-1 flex-col">
           {reactionsQuery.isError ||

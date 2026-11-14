@@ -6,7 +6,10 @@ import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
-import { MentionUserNamesContext } from "../../../lib/e2ee/messageDecryption";
+import {
+  EncryptedChannelContext,
+  MentionUserNamesContext,
+} from "../../../lib/e2ee/messageDecryption";
 import { storyAttachments } from "../../../../.storybook/attachment-fixtures";
 import { EncryptedAttachmentError } from "../../../lib/e2ee/attachments";
 import { EncryptedAttachmentLoaderContext } from "./EncryptedMessageAttachments";
@@ -515,6 +518,30 @@ export const EncryptedUnencryptedRow: Story = {
       canvas.getByText("このメッセージは暗号化されていないため表示しません。"),
     ).toBeVisible();
     await expect(canvas.queryByText("偽の本文")).not.toBeInTheDocument();
+  }),
+};
+
+export const EncryptedBeforeEncryptionRow: Story = {
+  decorators: [
+    (Story) => (
+      <EncryptedChannelContext.Provider value={true}>
+        <Story />
+      </EncryptedChannelContext.Provider>
+    ),
+  ],
+  args: {
+    // 暗号化に切り替える前の平文のメッセージ（#367）。本文を出し、印を付け、編集させない。
+    item: {
+      ...item,
+      message: { ...item.message, id: "message-before-encryption", ciphertext: null, epoch: null },
+    },
+    isOwn: true,
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("暗号化前")).toBeVisible();
+    await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
   }),
 };
 

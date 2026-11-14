@@ -1183,7 +1183,8 @@
       "deviceOnlyUnavailable": "另一部裝置重新整咗 SSSS 金鑰，所以唔可以只撤銷裝置。範圍已經轉做「通行金鑰、復原金鑰或者 SSSS 金鑰」，請確認之後繼續。",
       "renameFailed": "改唔到裝置名稱。請再試一次。",
       "revocationFailed": "撤銷未能夠儲存晒。進度留咗喺呢部裝置。請再撳一次「執行撤銷」。",
-      "verifyFailed": "儲存唔到重新驗證。請再試一次。"
+      "verifyFailed": "儲存唔到重新驗證。請再試一次。",
+      "tooManyMembers": "加密頻道最多可以有 200 個成員。"
     },
     "reunlockToAdd": "重新解鎖嚟加通行金鑰",
     "reunlockToAddDescription": "要加通行金鑰或者重新整復原金鑰，請用通行金鑰或者復原金鑰再解鎖一次。呢部裝置嘅解鎖狀態唔會變。",
@@ -1375,6 +1376,37 @@
       "encrypted": "已加密",
       "decryptFailed": "解密唔到附件。內容可能已經畀人改過。",
       "blocked": "為咗安全，呢種檔案唔可以開"
+    },
+    "legacy": {
+      "badge": "加密之前",
+      "badgeHelp": "呢條訊息係頻道加密之前傳送嘅。佢冇加密，伺服器可以讀取或者改佢嘅內容。",
+      "divider": "由呢度開始已經加密",
+      "editCancelled": "呢個頻道已經加密，所以取消咗編輯加密之前嘅訊息。",
+      "editForbidden": "加密之前傳送嘅訊息唔可以編輯，但係可以刪除。"
+    },
+    "convert": {
+      "action": "加密",
+      "actionDm": "加密呢個私訊",
+      "start": "開啟加密",
+      "settingHelp": "由而家開始加密訊息。之後唔可以關閉。",
+      "title": "要加密呢個頻道嗎？",
+      "titleDm": "要加密呢個私訊嗎？",
+      "description": "開啟加密之後：",
+      "points": {
+        "future": "之後嘅訊息同附件，淨係成員已驗證嘅裝置先讀到。",
+        "earlier": "之前嘅訊息唔會加密，會原封不動留喺伺服器。佢哋會標示「加密之前」，之後唔可以再編輯（仍然可以刪除）。",
+        "published": "已經發佈去 Home 或者 ActivityPub 嘅帖文唔會撤回。",
+        "integrations": "Slack 匯入同同步會停止。請先移除應用程式（機械人）同 Incoming Webhook。",
+        "irreversible": "加密之後唔可以關閉。"
+      },
+      "confirm": "加密",
+      "pending": "加緊密…",
+      "success": "已經開啟加密",
+      "blockers": {
+        "apps": "有應用程式（機械人）係成員。請先將佢移出頻道。",
+        "webhooks": "呢個頻道有 Incoming Webhook。請先刪除。",
+        "encrypted_dm": "你同呢個人已經有加密私訊。"
+      }
     }
   }
 }
