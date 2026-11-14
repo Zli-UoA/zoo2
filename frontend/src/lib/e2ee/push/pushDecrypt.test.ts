@@ -163,6 +163,25 @@ describe("ログアウトで消し切れなかった暗号ストア", () => {
     ).toBeNull();
   });
 
+  it("消し切れなかった暗号ストアを、次の操作で開き直して新しい端末を作らない", async () => {
+    const { bob } = await exchange("logged out secret");
+    const operations = new CryptoOperations(
+      { open: async () => bob.backend, remove: () => bob.backend.destroy() },
+      bob.keys,
+    );
+    await operations.run({ op: "open", namespace: `user-${BOB}`, userId: BOB });
+    const deviceId = bob.backend.meta.get("device_id");
+    failingRemoval(bob.backend);
+    await expect(operations.run({ op: "destroy", namespace: `user-${BOB}` })).rejects.toThrow(
+      "NoModificationAllowedError",
+    );
+    // 包む鍵はないので、開き直すと新しい端末として作り直してしまう。開き直さずに失敗する。
+    await expect(operations.run({ op: "pendingBackupCount" })).rejects.toThrow(
+      "暗号ストアが開いていません",
+    );
+    expect(bob.backend.meta.get("device_id")).toBe(deviceId);
+  });
+
   it("開いていない暗号ストアを消す操作（destroy）でも、包む鍵を先に消す", async () => {
     const { row, bob } = await exchange("logged out secret");
     failingRemoval(bob.backend);

@@ -273,22 +273,27 @@ export class CryptoOperations {
         this.revocation.discard();
         this.setup.discard();
         const name = cryptoDatabaseName(request.namespace);
-        if (this.store && this.storeName === name) {
-          await this.store.destroy();
-        } else {
-          await destroyCryptoStore({
-            removeFiles: () => this.backends.remove(name),
-            deleteWrappingKey: () => this.keys.delete(name),
-          });
-        }
-        if (this.storeName === name) {
-          this.store = null;
-          this.storeName = null;
-        }
-        // 開き直しに失敗したあと（storeName が null）でも、消したストアを開き直さない。
-        if (this.lastOpen?.namespace === request.namespace) {
-          this.lastOpen = null;
-          this.reopenPending = false;
+        try {
+          if (this.store && this.storeName === name) {
+            await this.store.destroy();
+          } else {
+            await destroyCryptoStore({
+              removeFiles: () => this.backends.remove(name),
+              deleteWrappingKey: () => this.keys.delete(name),
+            });
+          }
+        } finally {
+          // 消し切れなくても（ファイルの削除だけが失敗したなど）、このストアはもう使わない。保存鍵を
+          // 包む鍵は先に消しているので、開き直すと新しい端末として作り直してしまう。
+          if (this.storeName === name) {
+            this.store = null;
+            this.storeName = null;
+          }
+          // 開き直しに失敗したあと（storeName が null）でも、消したストアを開き直さない。
+          if (this.lastOpen?.namespace === request.namespace) {
+            this.lastOpen = null;
+            this.reopenPending = false;
+          }
         }
         return null;
       }
