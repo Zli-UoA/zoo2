@@ -200,9 +200,7 @@ export function NotificationCard({
     <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
       <ContextIcon className="size-4 shrink-0" aria-hidden="true" />
       <span className="min-w-0 truncate font-medium">{channelLabel}</span>
-      {canOpen ? (
-        <ArrowUpRightIcon className="size-3.5 shrink-0" aria-hidden="true" />
-      ) : null}
+      {canOpen ? <ArrowUpRightIcon className="size-3.5 shrink-0" aria-hidden="true" /> : null}
     </p>
   );
   return (
