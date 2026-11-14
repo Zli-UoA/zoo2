@@ -1,4 +1,4 @@
-import { DeviceAccount } from "@zoo/crypto-wasm";
+import { DeviceAccount, decryptAttachment, encryptAttachment } from "@zoo/crypto-wasm";
 
 import { cryptoDatabaseName } from "./identity";
 import { RevocationSession, evaluateTrust } from "./revocationSession";
@@ -38,7 +38,14 @@ export class CryptoOperations {
   private reopenPending = false;
 
   async run(request: CryptoOperation): Promise<CryptoResults[Op]> {
-    const needsStore = !["generateDeviceKeys", "open", "close", "destroy"].includes(request.op);
+    const needsStore = ![
+      "generateDeviceKeys",
+      "open",
+      "close",
+      "destroy",
+      "encryptAttachment",
+      "decryptAttachment",
+    ].includes(request.op);
     if (this.reopenPending && needsStore) {
       // ストレージが戻っていなければ、ここで失敗する。呼び出し側はあとで試し直す。
       await this.reopen();
@@ -74,6 +81,12 @@ export class CryptoOperations {
     switch (request.op) {
       case "generateDeviceKeys":
         return generateDeviceKeys(request.userId, request.deviceId);
+      case "encryptAttachment": {
+        const { ciphertext, file } = encryptAttachment(request.plaintext);
+        return { ciphertext, file };
+      }
+      case "decryptAttachment":
+        return decryptAttachment(request.file, request.ciphertext);
       case "open": {
         const name = cryptoDatabaseName(request.namespace);
         if (this.store) {

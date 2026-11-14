@@ -1,4 +1,5 @@
 import type {
+  EncryptedFile,
   AcceptedMasterKey,
   EncryptedMessage,
   IdentityKeys,
@@ -132,7 +133,10 @@ export type CryptoOperation =
       /** 暗号ストアを消す。開いていなくても、`namespace` のファイルと保存鍵を消す。 */
       op: "destroy";
       namespace: string;
-    };
+    }
+  // 暗号化した添付（#364）。暗号ストアを使わない。
+  | { op: "encryptAttachment"; plaintext: Uint8Array }
+  | { op: "decryptAttachment"; file: EncryptedFile; ciphertext: Uint8Array };
 
 export interface GeneratedDeviceKeys {
   /** 自己署名した端末鍵（`device_keys`）。 */
@@ -213,6 +217,8 @@ export interface CryptoResults {
   megolmDecrypt: DecryptOutcome[];
   megolmRememberEncrypted: null;
   megolmIsKnownEncrypted: boolean;
+  encryptAttachment: { ciphertext: Uint8Array; file: EncryptedFile };
+  decryptAttachment: Uint8Array;
   megolmNoteRecipients: string[];
 }
 

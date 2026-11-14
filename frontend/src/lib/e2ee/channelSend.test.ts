@@ -505,6 +505,85 @@ describe("editEncryptedMessage", () => {
   });
 });
 
+describe("暗号化した添付（#364）", () => {
+  const attachment = {
+    attachment_id: "0b0d5c5e-6f2a-4c1e-9d7a-2f3b4c5d6e7f",
+    name: "secret.png",
+    mimetype: "image/png",
+    size: 10,
+    file: {
+      v: "v2" as const,
+      key: {
+        kty: "oct" as const,
+        key_ops: ["encrypt", "decrypt"],
+        alg: "A256CTR" as const,
+        k: "key",
+        ext: true as const,
+      },
+      iv: "iv",
+      hashes: { sha256: "hash" },
+    },
+  };
+
+  it("鍵などは暗号化する本文に入れ、送信の要求には ID だけを入れる", async () => {
+    const { worker, ops } = fakeWorker();
+    const { client, calls } = fakeClient([null], [3]);
+    await sendEncryptedMessage(deps(worker, client), {
+      channelId: CHANNEL,
+      shapeEpoch: "3",
+      messageId: "m1",
+      parentId: null,
+      body: "",
+      mentions: NO_MENTIONS,
+      attachments: [attachment],
+    });
+    const encrypt = ops.find((op) => op.op === "megolmEncrypt");
+    expect(encrypt).toMatchObject({ message: { attachments: [attachment] } });
+    const post = calls.find((call) => call.path === "/api/messages")!;
+    expect(post.body).toMatchObject({ attachment_ids: [attachment.attachment_id], content: "" });
+    const sent = JSON.stringify(calls.map((call) => call.body));
+    expect(sent).not.toContain("secret.png");
+    expect(sent).not.toContain('"k":"key"');
+  });
+
+  it("添付がなければ、本文にも要求にも添付の項目を入れない", async () => {
+    const { worker, ops } = fakeWorker();
+    const { client, calls } = fakeClient([null], [3]);
+    await sendEncryptedMessage(deps(worker, client), {
+      channelId: CHANNEL,
+      shapeEpoch: "3",
+      messageId: "m1",
+      parentId: null,
+      body: "hello",
+      mentions: NO_MENTIONS,
+    });
+    const encrypt = ops.find((op) => op.op === "megolmEncrypt") as { message: object };
+    expect(encrypt.message).not.toHaveProperty("attachments");
+    const post = calls.find((call) => call.path === "/api/messages")!;
+    expect(post.body).not.toHaveProperty("attachment_ids");
+  });
+
+  it("編集では元の版の添付をそのまま本文に入れ、要求には入れない", async () => {
+    const { worker, ops } = fakeWorker();
+    const { client, calls } = fakeClient([null], [3]);
+    await editEncryptedMessage(deps(worker, client), {
+      channelId: CHANNEL,
+      shapeEpoch: "3",
+      messageId: "m1",
+      parentId: null,
+      revision: 1,
+      body: "edited",
+      kind: "message",
+      mentions: NO_MENTIONS,
+      attachments: [attachment],
+    });
+    const encrypt = ops.find((op) => op.op === "megolmEncrypt");
+    expect(encrypt).toMatchObject({ message: { revision: 1, attachments: [attachment] } });
+    const patch = calls.find((call) => call.method === "PATCH")!;
+    expect(patch.body).not.toHaveProperty("attachment_ids");
+  });
+});
+
 describe("editAlreadyApplied", () => {
   const stale = (current: number) =>
     new ApiError(

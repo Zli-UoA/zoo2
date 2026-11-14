@@ -148,6 +148,10 @@ pub enum CryptoError {
     #[error("鍵バックアップのセッションを復号できません: {0}")]
     BackupDecryption(String),
 
+    /// 暗号化した添付を復号できない（暗号文のハッシュが合わない）。
+    #[error("添付を復号できません: {0}")]
+    AttachmentDecryption(String),
+
     /// 受信時の検証に失敗した。呼び出し側は破棄する。
     #[error("受信時の検証に失敗しました: {0}")]
     Rejected(Rejection),

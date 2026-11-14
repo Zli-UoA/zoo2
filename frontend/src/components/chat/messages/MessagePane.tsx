@@ -7,7 +7,14 @@ import { toast } from "sonner";
 import { useChannelCommands } from "../../../hooks/useChannelCommands";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
-import { useAttachmentUpload, useMessageAttachments } from "../../../hooks/useAttachments";
+import {
+  useAttachmentUpload,
+  useEncryptedAttachmentUpload,
+  useMessageAttachments,
+} from "../../../hooks/useAttachments";
+import type { AttachmentInfo } from "@zoo/crypto-wasm";
+
+import type { UploadedAttachment } from "../../../lib/api/attachments";
 import {
   useChannelMembers,
   useUsers,
@@ -197,9 +204,41 @@ export function MessagePane({
     [appClient, e2ee, encrypted],
   );
   const sendBlocked = (encrypted && cryptoDeps === null) || downgraded || checkingEncryption;
-  // 暗号化チャンネルでは添付を送らない（サーバーも 400 E2EE_ATTACHMENTS_FORBIDDEN で拒否する）。
-  // 暗号化した添付（#364）を入れたら外す。
-  const uploadAttachment = treatAsEncrypted ? undefined : channelUpload;
+  // 暗号化チャンネルの添付は、暗号化して上げ、鍵などを Megolm で暗号化した本文の attachments に入れる
+  // （#364。docs/e2ee.md の「暗号化した添付」）。Composer には今までどおり ID を返し、本文に入れる
+  // AttachmentInfo は送信まで ID ごとに持っておく。送れないあいだ（sendBlocked。cryptoDeps がない、格下げ、確認待ち）は出さない。
+  const encryptedUpload = useEncryptedAttachmentUpload(channelId);
+  const encryptedAttachments = useRef(new Map<string, AttachmentInfo>());
+  const uploadEncryptedAttachment = useCallback(
+    async (file: File): Promise<UploadedAttachment> => {
+      const info = await encryptedUpload(file);
+      encryptedAttachments.current.set(info.attachment_id, info);
+      return {
+        id: info.attachment_id,
+        file_name: info.name,
+        file_size: info.size,
+        content_type: info.mimetype,
+      };
+    },
+    [encryptedUpload],
+  );
+  const takeEncryptedAttachments = useCallback(
+    (attachmentIds: string[], sensitiveAttachmentIds: string[]): AttachmentInfo[] =>
+      attachmentIds.map((id) => {
+        const info = encryptedAttachments.current.get(id);
+        if (!info) throw new Error(`Unknown encrypted attachment: ${id}`);
+        return sensitiveAttachmentIds.includes(id) ? { ...info, sensitive: true } : info;
+      }),
+    [],
+  );
+  const forgetEncryptedAttachments = useCallback((attachmentIds: string[]) => {
+    for (const id of attachmentIds) encryptedAttachments.current.delete(id);
+  }, []);
+  const uploadAttachment = treatAsEncrypted
+    ? cryptoDeps && !sendBlocked
+      ? uploadEncryptedAttachment
+      : undefined
+    : channelUpload;
   const { currentUserId } = useCurrentUser();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
@@ -519,7 +558,9 @@ export function MessagePane({
             parentId: null,
             body: content,
             mentions: encryptedMentions(content, usersQuery.data ?? []),
+            attachments: takeEncryptedAttachments(attachmentIds, sensitiveAttachmentIds),
           });
+          forgetEncryptedAttachments(attachmentIds);
           return true;
         } catch (cause) {
           reportEncryptedFailure(cause);
@@ -570,6 +611,8 @@ export function MessagePane({
       membershipEpoch,
       usersQuery.data,
       reportEncryptedFailure,
+      takeEncryptedAttachments,
+      forgetEncryptedAttachments,
     ],
   );
 
@@ -595,7 +638,9 @@ export function MessagePane({
             parentId: threadRootId,
             body: content,
             mentions: encryptedMentions(content, usersQuery.data ?? []),
+            attachments: takeEncryptedAttachments(attachmentIds, sensitiveAttachmentIds),
           });
+          forgetEncryptedAttachments(attachmentIds);
           return true;
         } catch (cause) {
           reportEncryptedFailure(cause);
@@ -652,6 +697,8 @@ export function MessagePane({
       membershipEpoch,
       usersQuery.data,
       reportEncryptedFailure,
+      takeEncryptedAttachments,
+      forgetEncryptedAttachments,
     ],
   );
 
@@ -704,6 +751,8 @@ export function MessagePane({
           body: content,
           kind: decrypted.kind,
           mentions: encryptedMentions(content, usersQuery.data ?? []),
+          // 編集では添付を変えられないので、元の版の添付をそのまま入れる（#364）。
+          attachments: decrypted.attachments,
         });
         // 保存中に別のメッセージの編集を始めた、または本文を書き足したら、編集欄を閉じない。
         if (editingIdRef.current === id && editingTextRef.current.trim() === content) {

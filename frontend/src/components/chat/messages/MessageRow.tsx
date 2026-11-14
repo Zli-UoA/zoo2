@@ -41,6 +41,7 @@ import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
+import { EncryptedMessageAttachments } from "./EncryptedMessageAttachments";
 import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
 import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
@@ -498,8 +499,18 @@ export function MessageRow({
                   />
                 </>
               )}
-              {/* 暗号化の行の添付はサーバーの値で、暗号文で確かめられないので出さない。 */}
-              {resolvedDecryption ? null : <MessageAttachments attachments={attachments} />}
+              {/* 暗号化チャンネルでは、サーバーの添付の行（encrypted.bin）ではなく、復号した本文の
+                  attachments を表示する。復号できないメッセージの添付は表示も取得もしない（#364）。 */}
+              {resolvedDecryption ? (
+                resolvedDecryption.status === "decrypted" ? (
+                  <EncryptedMessageAttachments
+                    attachments={resolvedDecryption.attachments ?? []}
+                    serverAttachments={attachments}
+                  />
+                ) : null
+              ) : (
+                <MessageAttachments attachments={attachments} />
+              )}
               {resolvedDecryption ? null : <MessageAppContent message={message} />}
               {!resolvedDecryption && message.updated_at && hasCardBlocks(message.app_blocks) ? (
                 <EditedIndicator at={message.updated_at} />

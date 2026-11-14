@@ -1174,10 +1174,10 @@
     "reunlockToAddDescription": "要添加通行密钥或重新生成恢复密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。",
     "badge": "已加密",
     "encryptChannel": "端到端加密",
-    "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消，目前也还不能发送附件。",
+    "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消。",
     "encryptChannelPrivateOnly": "只有私密频道可以加密。",
     "encryptDm": "端到端加密",
-    "encryptDmHelp": "只有参与者已验证的设备才能读取消息。加密之后无法取消，目前也还不能发送附件。",
+    "encryptDmHelp": "只有参与者已验证的设备才能读取消息。加密之后无法取消。",
     "undecryptable": {
       "keyMissing": "解密此消息的密钥尚未送达。",
       "locked": "在此设备上解锁加密后即可读取此消息。",
@@ -1355,6 +1355,11 @@
     },
     "resetDevicesTitle": "选择要删除的设备",
     "resetDevicesDescription": "请选择陌生的设备并删除。如果有他人为你的账号设置了加密，必须完成此选择才能完成重置，以免留下攻击者的设备。",
-    "resetDevicesConfirm": "我已选择陌生的设备（如没有，已确认）"
+    "resetDevicesConfirm": "我已选择陌生的设备（如没有，已确认）",
+    "attachments": {
+      "encrypted": "已加密",
+      "decryptFailed": "无法解密附件。内容可能已被更改。",
+      "blocked": "出于安全考虑，无法打开此类文件"
+    }
   }
 }
