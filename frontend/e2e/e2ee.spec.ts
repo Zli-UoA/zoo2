@@ -506,9 +506,7 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     expect(toDeviceSentCount(bobDeviceIds, { before: leftAt })).toBeGreaterThan(0);
     expect(toDeviceSentCount(bobDeviceIds, { after: leftAt })).toBe(0);
     // Bob の端末には、退出のあとのメッセージが出ない（DM の一覧からも消える）。
-    await expect(
-      b2.page.getByRole("link", { name: new RegExp(alice.name) }),
-    ).toHaveCount(0);
+    await expect(b2.page.getByRole("link", { name: new RegExp(alice.name) })).toHaveCount(0);
     for (const device of [b1, b2]) {
       await expect(device.page.getByText(afterLeave, { exact: true })).toHaveCount(0);
     }
