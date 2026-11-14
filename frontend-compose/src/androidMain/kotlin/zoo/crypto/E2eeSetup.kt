@@ -177,7 +177,12 @@ class E2eeSetup(
     }
 
     /** 今の状態を読む。解錠済みの端末は、起動時の確認（署名し直し、止まった初回設定の発見）も行う。 */
-    suspend fun loadStatus(): E2eeStatus = startupStatus(store(), api.secretStorage())
+    suspend fun loadStatus(): E2eeStatus {
+        val store = store()
+        // 取得を始める前の記録を使う（取得を待つ間に解錠し直して保存した新しい値を、古い応答で消さないため）。
+        val recorded = store.secretsRevision
+        return startupStatus(store, recorded, api.secretStorage())
+    }
 
     /**
      * `GET /api/e2ee/secret_storage` の応答と暗号ストアから状態を決め、要るなら自分の端末に署名し直す。
@@ -185,17 +190,18 @@ class E2eeSetup(
      * 解錠済みの端末でも、最後に解錠したときの `secrets_revision` がサーバーの値と違えば、暗号ストアの鍵を
      * 使わずに解錠し直しを求める（TUI と同じ。古い値のまま鍵バックアップに送り続けないため）。
      */
-    private suspend fun startupStatus(store: CryptoStore, storage: JsonObject): E2eeStatus {
+    private suspend fun startupStatus(store: CryptoStore, recorded: Long?, storage: JsonObject): E2eeStatus {
         if (!hasSecretStorage(storage)) return E2eeStatus.NotSetUp
         if (!store.hasOwnKeys) return E2eeStatus.Locked(LockReason.NEW, storage)
         // 解錠し直しが要ると分かったら、記録した secrets_revision を消して、暗号ストアの自分の鍵（自己署名鍵による
         // 送信端末の検証、署名し直し、鍵バックアップの送信）を、解錠し直すまで使わない。ロックの判定と鍵を使えるかを、
         // 同じ記録で決める。
+        // 消すのは、取得を始める前の記録がまだ残っているときだけ（forgetSecretsRevision が今の値と比べる）。
         suspend fun mismatch(): E2eeStatus {
-            store.secretsRevision?.let { recorded -> withContext(io) { store.forgetSecretsRevision(recorded) } }
+            recorded?.let { withContext(io) { store.forgetSecretsRevision(it) } }
             return E2eeStatus.Locked(LockReason.MISMATCH, storage)
         }
-        if (storage.secretsRevision() != store.secretsRevision) return mismatch()
+        if (storage.secretsRevision() != recorded) return mismatch()
         val (keys, versions) = serverState()
         return when (val check = withContext(io) { store.startupCheck(keys, versions) }) {
             null -> E2eeStatus.Locked(LockReason.NEW, storage)
@@ -217,7 +223,8 @@ class E2eeSetup(
     suspend fun runStartupCheck(): E2eeStatus? {
         val store = store()
         if (!store.hasOwnKeys) return null
-        val status = startupStatus(store, api.secretStorage())
+        val recorded = store.secretsRevision
+        val status = startupStatus(store, recorded, api.secretStorage())
         if (status is E2eeStatus.Unlocked) {
             uploadKeyBackup()
             // 解錠のあとの取り込みが途中で止まっていたら、続きを取り込む。

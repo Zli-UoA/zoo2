@@ -361,6 +361,23 @@ class E2eeSetupTest {
     }
 
     @Test
+    fun staleStatusResponseDoesNotForgetANewerUnlock() = runBlocking<Unit> {
+        val device = Device("a")
+        val start = device.setup.begin()
+        device.setup.completeSetup(start.session, "t")
+        start.session.close()
+        // 起動時の確認の応答（revision 1）が届く前に、別の端末が SSSS を書き換え、この端末が解錠し直した。
+        server.afterSecretStorage = {
+            server.revision += 1
+            device.setup.unlock(UnlockMethod.Recovery(start.recoveryKey)).session.close()
+        }
+        device.setup.loadStatus()
+        // 遅れて届いた古い応答で、新しい解錠の記録を消さない。
+        assertEquals(2L, device.store.secretsRevision)
+        assertIs<E2eeStatus.Unlocked>(device.setup.loadStatus())
+    }
+
+    @Test
     fun setupAndUnlockWithPasskey() = runBlocking<Unit> {
         val passkey = FakePasskey()
         val first = Device("first")
@@ -508,7 +525,19 @@ internal class FakeSetupServer(private val userId: String) : E2eeSetupApi {
         if (expected.jsonPrimitive.content != defaultKeyId) throw ApiException(409, code("E2EE_SSSS_CONFLICT"))
     }
 
-    override suspend fun secretStorage(): JsonObject = buildJsonObject {
+    /** 置くと、`GET /api/e2ee/secret_storage` の応答を作ったあと、返す前に 1 回だけ呼ぶ（応答が遅れて届く場合）。 */
+    var afterSecretStorage: (suspend () -> Unit)? = null
+
+    override suspend fun secretStorage(): JsonObject {
+        val response = secretStorageNow()
+        afterSecretStorage?.let { hook ->
+            afterSecretStorage = null
+            hook()
+        }
+        return response
+    }
+
+    private fun secretStorageNow(): JsonObject = buildJsonObject {
         put("default_key_id", defaultKeyId?.let(::JsonPrimitive) ?: JsonNull)
         if (defaultKeyId != null) {
             put("keys", buildJsonObject { put(defaultKeyId!!, storageKey) })
