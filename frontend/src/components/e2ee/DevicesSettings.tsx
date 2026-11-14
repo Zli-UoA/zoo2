@@ -4,12 +4,11 @@ import type { RevocationScope, RevocationSummary } from "@zoo/crypto-wasm";
 
 import { useUsers } from "../../hooks/useRealtime";
 import { createConfiguredApiClient } from "../../lib/api/client";
-import type { AppConfig } from "../../lib/config";
 import { useCollections } from "../../lib/electric/collections-context";
 import { deleteDevice } from "../../lib/e2ee/api";
 import { useE2ee } from "../../lib/e2ee/e2ee-context";
 import { passkeyPrfSupported, passkeyRpId } from "../../lib/e2ee/passkey";
-import { openReauthWindow, reauthenticate } from "../../lib/e2ee/reauth";
+import { startReauth } from "../../lib/e2ee/reauth";
 import { listDevices, renameDevice } from "../../lib/e2ee/revocationApi";
 import {
   RevocationChangedError,
@@ -31,7 +30,6 @@ import {
 } from "../../lib/e2ee/revocationController";
 import { type E2eeSetupDeps, ServerKeyMismatchError } from "../../lib/e2ee/setupController";
 import { accountRevocationUrls } from "../../lib/oidc/accountUrl";
-import { getOidcClient } from "../../lib/oidc/session";
 import {
   DeviceLimitView,
   type DevicesErrorCode,
@@ -42,14 +40,6 @@ import {
   type RevocationPhase,
 } from "./DevicesSettingsView";
 import { toEncryptionError } from "./EncryptionSettings";
-
-/** 再認証して ID トークンを返す。別のウィンドウはクリックの中で同期的に開く。 */
-function startReauth(config: AppConfig): () => Promise<string | null> {
-  const oidc = getOidcClient(config);
-  if (!oidc) return async () => null;
-  const popup = openReauthWindow();
-  return () => reauthenticate({ oidc, popup });
-}
 
 /** 暗号化チャンネル（削除されていないもの）を共有する相手。 */
 function useEncryptedPeers(userId: string | null): string[] {
@@ -165,7 +155,7 @@ function DeviceLimit({ staleIds }: { staleIds: string[] }) {
 
 function DevicesPanel() {
   const e2ee = useE2ee();
-  const { worker, userId, deviceId } = e2ee;
+  const { worker, userId, deviceId, sas } = e2ee;
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const rpId = passkeyRpId(config);
@@ -279,6 +269,9 @@ function DevicesPanel() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 絵文字 SAS で相手を検証して保存できたら、検証状態を読み直す（「検証済み」にする）。
+  useEffect(() => sas?.onSaved(() => void load()), [sas, load]);
 
   const notesOf = (summary: RevocationSummary) => ({
     notes: Object.entries(summary.notes).map(([user, notes]) => ({
@@ -551,6 +544,14 @@ function DevicesPanel() {
       const reauth = startReauth(config);
       run("verify", async () => reverifyUser(deps, target, await reauth()));
     },
+    // 検証の画面はシェルのダイアログ（SasVerificationHost）に出る。
+    onSasVerify: sas
+      ? (target) => {
+          void sas
+            .request(target)
+            .catch(() => ready((current) => ({ ...current, error: "sasFailed" })));
+        }
+      : undefined,
   };
 
   const viewState =

@@ -20,7 +20,13 @@ function fakeWorker(overrides: Partial<Record<CryptoOperation["op"], unknown>> =
       fallback_keys: {},
     },
     prepareKeyUpload: null,
-    processToDevice: { processed: ["1"], roomKeys: 1, dropped: 0, newOlmSessions: 1 },
+    processToDevice: {
+      processed: ["1"],
+      roomKeys: 1,
+      dropped: 0,
+      newOlmSessions: 1,
+      verifications: [],
+    },
     pendingBackupCount: 2,
     ...overrides,
   };
@@ -453,7 +459,13 @@ describe("E2eeDeviceManager", () => {
         return null;
       },
       // 受信の処理の中で補充しないよう、新しい Olm セッションは作らない。
-      processToDevice: { processed: ["1"], roomKeys: 0, dropped: 0, newOlmSessions: 0 },
+      processToDevice: {
+        processed: ["1"],
+        roomKeys: 0,
+        dropped: 0,
+        newOlmSessions: 0,
+        verifications: [],
+      },
       // 新しい端末は、鍵を補充しなければならない。
       prepareKeyUpload: () => (destroyed ? upload : null),
     });
@@ -499,7 +511,13 @@ describe("E2eeDeviceManager", () => {
   it("ログアウトの確認で止めていたあいだに再登録が失敗したら、取りやめたときに再開する", async () => {
     const { worker, calls } = fakeWorker({
       open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
-      processToDevice: { processed: ["1"], roomKeys: 0, dropped: 0, newOlmSessions: 0 },
+      processToDevice: {
+        processed: ["1"],
+        roomKeys: 0,
+        dropped: 0,
+        newOlmSessions: 0,
+        verifications: [],
+      },
     });
     let uploads = 0;
     let failRestart: (error: Error) => void = () => {};

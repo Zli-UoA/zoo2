@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { AppShell } from "../components/layout/AppShell";
 import { OfflineProvider } from "../components/offline/OfflineProvider";
 import { E2eeProvider } from "../components/e2ee/E2eeProvider";
+import { SasVerificationHost } from "../components/e2ee/SasVerificationHost";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
 import { IncomingCallDialog } from "../components/call/IncomingCallDialog";
 import { CallProvider } from "../lib/call/call-context";
@@ -35,6 +36,7 @@ function ShellLayout() {
               <AppShell>
                 <Outlet />
               </AppShell>
+              <SasVerificationHost />
               <IncomingCallDialog />
             </NotificationsProvider>
           </HomeLiveProvider>

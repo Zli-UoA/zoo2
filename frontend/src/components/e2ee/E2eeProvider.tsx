@@ -7,12 +7,14 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import type { VerificationMessage } from "@zoo/crypto-wasm";
 
 import { createConfiguredApiClient } from "../../lib/api/client";
 import type { AppConfig } from "../../lib/config";
 import { getCurrentUserStore } from "../../lib/currentUser";
 import { startCryptoWorker, type CryptoWorker } from "../../lib/e2ee/cryptoWorker";
 import { E2eeDeviceManager } from "../../lib/e2ee/deviceManager";
+import { SasController } from "../../lib/e2ee/sasController";
 import { deviceDisplayName } from "../../lib/e2ee/displayName";
 import { E2eeContext, type E2eeContextValue } from "../../lib/e2ee/e2ee-context";
 import {
@@ -138,6 +140,11 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const requestKeyBackupRef = useRef(requestKeyBackup);
   requestKeyBackupRef.current = requestKeyBackup;
 
+  // 絵文字 SAS の検証（#368）。検証のメッセージは、コントローラーを作る前に届いたら溜めておく。
+  const [sas, setSas] = useState<SasController | null>(null);
+  const sasRef = useRef<SasController | null>(null);
+  const pendingVerifications = useRef<VerificationMessage[]>([]);
+
   const createManager = useCallback(
     (worker: CryptoWorker, managerUserId: string) => {
       const manager: E2eeDeviceManager = new E2eeDeviceManager({
@@ -161,6 +168,11 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         onRoomKeys: () => {
           requestKeyBackupRef.current();
           setRoomKeysVersion((version) => version + 1);
+        },
+        onVerifications: (messages) => {
+          const controller = sasRef.current;
+          if (controller) void controller.handleMessages(messages);
+          else pendingVerifications.current.push(...messages);
         },
       });
       return manager;
@@ -243,6 +255,20 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       channel?.close();
     };
   }, [client, createManager, isOnline, namespace, supported, userId]);
+
+  useEffect(() => {
+    if (status !== "ready" || !readyWorker || !deviceId || !userId) return;
+    const controller = new SasController({ worker: readyWorker, client, userId, deviceId });
+    sasRef.current = controller;
+    setSas(controller);
+    const pending = pendingVerifications.current.splice(0);
+    if (pending.length > 0) void controller.handleMessages(pending);
+    return () => {
+      if (sasRef.current === controller) sasRef.current = null;
+      setSas((current) => (current === controller ? null : current));
+      controller.dispose();
+    };
+  }, [client, deviceId, readyWorker, status, userId]);
 
   // Service Worker が Push を復号してよい宛先（今ログインしているユーザー）を置く（#365）。
   // 消すのは、ログアウト（clearForLogout）と、認証が切れたとき（AuthGate の 401 の処理）。
@@ -393,6 +419,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         store.worker.terminate();
       },
       requestKeyBackup,
+      sas,
     }),
     [
       deviceId,
@@ -401,6 +428,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       readyWorker,
       requestKeyBackup,
       roomKeysVersion,
+      sas,
       status,
       storeForLogout,
       supported,

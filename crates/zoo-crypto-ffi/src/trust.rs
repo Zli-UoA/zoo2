@@ -205,6 +205,12 @@ impl TrustStore {
         })
     }
 
+    /// [`accept_master_key`](Self::accept_master_key) のピンと署名をサーバーに保存できた。
+    /// 記録の登録待ちを外す（#368）。
+    pub fn confirm_accepted_master_key(&self, target_user_id: String, master_key: String) {
+        lock(&self.inner).confirm_accepted_master_key(&target_user_id, &master_key);
+    }
+
     /// ピンの登録が成功した。
     pub fn confirm_tofu_pin(&self, pin: NewTofuPin) -> Result<()> {
         lock(&self.inner).confirm_tofu_pin(&pin.try_into()?);

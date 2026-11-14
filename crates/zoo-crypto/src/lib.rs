@@ -47,6 +47,15 @@
 //! - [`encrypt_attachment`]、[`decrypt_attachment`]、[`EncryptedFile`]、[`AttachmentInfo`]：
 //!   暗号化した添付（Matrix の `EncryptedFile` と同じ AES-256-CTR と SHA-256）と、
 //!   [`MessagePayload::attachments`]
+//!
+//! #368 で足したもの:
+//!
+//! - [`SasVerification`]：他のユーザーの絵文字 SAS 検証（`m.key.verification.*` を Olm で送る）と、
+//!   検証できた相手のマスター鍵への署名
+//! - [`DeviceAccount::encrypt_verification`]、[`OlmDecrypted::verify_verification`]：検証のメッセージの
+//!   暗号化と、受信時の検証（手順 1〜3）
+//! - [`TrustStore::confirm_accepted_master_key`]：受け入れ（#362）と SAS のピンを保存できたときに、
+//!   記録の登録待ちを外す
 
 mod attachment;
 mod backup;
@@ -64,6 +73,7 @@ mod setup;
 mod signing;
 mod store;
 mod trust;
+mod verification;
 
 pub use attachment::{
     ATTACHMENT_KEY_ALGORITHM, ATTACHMENT_VERSION, AttachmentInfo, AttachmentKey,
@@ -116,6 +126,13 @@ pub use signing::{signable_json, verify_json_signature};
 pub use trust::{
     AcceptedMasterKey, DeviceExclusion, Distribution, KeySnapshot, NewTofuPin,
     ReverificationReason, TrustBasis, TrustRecord, TrustStore, TrustWarning, UserState, UserTrust,
+};
+pub use verification::{
+    SAS_METHOD, SasCancellation, SasPhase, SasVerification, VERIFICATION_ACCEPT_TYPE,
+    VERIFICATION_CANCEL_TYPE, VERIFICATION_DONE_TYPE, VERIFICATION_KEY_TYPE, VERIFICATION_MAC_TYPE,
+    VERIFICATION_MAX_CLOCK_SKEW_MS, VERIFICATION_READY_TYPE, VERIFICATION_REQUEST_TYPE,
+    VERIFICATION_START_TYPE, VERIFICATION_TIMEOUT_MS, VERIFICATION_TYPES, VerificationIdentity,
+    VerificationMessage, VerificationOutgoing, cancel_code, verification_devices,
 };
 pub use vodozemac::olm::IdentityKeys;
 pub use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, PickleError};

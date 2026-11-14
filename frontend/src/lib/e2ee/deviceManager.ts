@@ -1,3 +1,5 @@
+import type { VerificationMessage } from "@zoo/crypto-wasm";
+
 import { ApiError, type ApiClient } from "../api/client";
 import type { AppConfig } from "../config";
 import { deleteDevice, queryDeviceKeys, registerDevice, uploadKeys, ackToDevice } from "./api";
@@ -32,6 +34,11 @@ export interface E2eeDeviceManagerOptions {
    * メッセージを復号し直す（#361）。
    */
   onRoomKeys?: () => void;
+  /**
+   * 絵文字 SAS の検証のメッセージ（受信時の検証の手順 1〜3 を通ったもの）を受け取った（#368）。
+   * Olm のメッセージは処理し直せないので、ack の成否に関わらず、受け取ったときに 1 回だけ呼ぶ。
+   */
+  onVerifications?: (messages: VerificationMessage[]) => void;
 }
 
 /** ログアウトで端末の削除 API を待つ時間。オフラインならすぐ失敗し、次のログインで消し直す。 */
@@ -249,6 +256,7 @@ export class E2eeDeviceManager {
         const result = await worker.request({ op: "processToDevice", rows, deviceKeys });
         if (result.newOlmSessions > 0) this.needsReplenish = true;
         if (result.roomKeys > 0) this.options.onRoomKeys?.();
+        if (result.verifications.length > 0) this.options.onVerifications?.(result.verifications);
         if (result.processed.length > 0) {
           await ackToDevice(client, deviceId, result.processed, signal);
           await worker.request({ op: "acknowledged", ids: result.processed });

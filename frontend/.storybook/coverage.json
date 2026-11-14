@@ -720,12 +720,31 @@
       ]
     },
     {
+      "file": "src/components/e2ee/SasVerificationView.stories.tsx",
+      "states": [
+        "Incoming",
+        "IncomingNeedsUnlock",
+        "Requested",
+        "Exchanging",
+        "Compare",
+        "CompareLongName",
+        "Confirmed",
+        "Saving",
+        "Saved",
+        "NeedsReauth",
+        "MismatchedSas",
+        "TimedOut",
+        "SendFailed"
+      ]
+    },
+    {
       "file": "src/components/e2ee/DevicesSettingsView.stories.tsx",
       "states": [
         "Loading",
         "LoadFailed",
         "Ready",
         "Reverify",
+        "SasVerify",
         "Rename",
         "UserSigningKeyRollback",
         "ReadyLocked",
@@ -1343,6 +1362,15 @@
       "file": "src/components/e2ee/DevicesSettings.tsx",
       "reason": "端末タブ（端末一覧、失効、他のユーザーの検証）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
       "checks": ["src/lib/e2ee/revocationController.test.ts"]
+    },
+    {
+      "file": "src/components/e2ee/SasVerificationView.tsx",
+      "story": "src/components/e2ee/SasVerificationView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/SasVerificationHost.tsx",
+      "reason": "絵文字 SAS の検証のダイアログを、E2eeProvider の SasController（暗号ストアの Worker、to-device、再認証の別ウィンドウ）につなぐ制御層。画面の各状態はSasVerificationViewのストーリーで、検証の手順は単体テストで確認する。",
+      "checks": ["src/lib/e2ee/sasController.test.ts"]
     },
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",

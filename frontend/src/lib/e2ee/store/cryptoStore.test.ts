@@ -234,7 +234,13 @@ describe("CryptoStore", () => {
     const deviceKeys = { [ALICE]: { [alice.deviceId]: alice.deviceKeys() } };
 
     const result = await store.processToDevice([row], deviceKeys);
-    expect(result).toEqual({ processed: ["7"], roomKeys: 1, dropped: 0, newOlmSessions: 1 });
+    expect(result).toEqual({
+      processed: ["7"],
+      roomKeys: 1,
+      dropped: 0,
+      newOlmSessions: 1,
+      verifications: [],
+    });
     expect(backend.olmSessions.size).toBe(1);
     expect(backend.inboundSessions.size).toBe(1);
     expect(await store.pendingBackupCount()).toBe(1);
@@ -243,7 +249,13 @@ describe("CryptoStore", () => {
     await store.close();
     const reopened = (await open(backend, keys)).store;
     const again = await reopened.processToDevice([row], deviceKeys);
-    expect(again).toEqual({ processed: ["7"], roomKeys: 0, dropped: 0, newOlmSessions: 0 });
+    expect(again).toEqual({
+      processed: ["7"],
+      roomKeys: 0,
+      dropped: 0,
+      newOlmSessions: 0,
+      verifications: [],
+    });
     await reopened.acknowledged(["7"]);
     expect(backend.processedToDevice.size).toBe(0);
 
@@ -322,6 +334,7 @@ describe("CryptoStore", () => {
       roomKeys: 1,
       dropped: 0,
       newOlmSessions: 1,
+      verifications: [],
     });
     alice.free();
   });

@@ -90,7 +90,9 @@ export type DevicesErrorCode =
   | "deviceOnlyUnavailable"
   | "renameFailed"
   | "revocationFailed"
-  | "verifyFailed";
+  | "verifyFailed"
+  /** 絵文字 SAS の検証を始められなかった（#368）。 */
+  | "sasFailed";
 
 export type DevicesViewState =
   | { step: "loading" }
@@ -136,6 +138,19 @@ export interface DevicesSettingsHandlers {
   onCancelRevocation: () => void;
   onFinish: () => void;
   onReverify: (userId: string) => void;
+  /**
+   * 絵文字 SAS で検証する（#368）。この端末で検証を進められないとき（暗号ストアを開いていない
+   * タブなど）は渡さない（ボタンを出さない）。
+   */
+  onSasVerify?: (userId: string) => void;
+}
+
+/** 絵文字 SAS で検証できる相手か（クロス署名鍵があり、まだ検証済みでない他のユーザー）。 */
+function canSasVerify(state: UserState): boolean {
+  if (state.state === "needs_reverification") return true;
+  return (
+    state.state === "trusted" && state.basis !== "own" && state.basis !== "user_signing_signature"
+  );
 }
 
 function formatDate(value: string | null, locale: string): string | null {
@@ -411,16 +426,28 @@ function VerificationList({
                     </p>
                   </div>
                 </div>
-                {reverify && state.unlocked ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={state.busy !== null}
-                    onClick={() => setConfirming(row)}
-                  >
-                    {t("e2ee.verification.reverify")}
-                  </Button>
-                ) : null}
+                <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                  {handlers.onSasVerify && state.unlocked && canSasVerify(row.state) ? (
+                    <Button
+                      variant={reverify ? "default" : "outline"}
+                      size="sm"
+                      disabled={state.busy !== null}
+                      onClick={() => handlers.onSasVerify?.(row.userId)}
+                    >
+                      {t("e2ee.sas.start")}
+                    </Button>
+                  ) : null}
+                  {reverify && state.unlocked ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={state.busy !== null}
+                      onClick={() => setConfirming(row)}
+                    >
+                      {t("e2ee.verification.reverify")}
+                    </Button>
+                  ) : null}
+                </div>
               </li>
             );
           })}
