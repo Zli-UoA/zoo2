@@ -1,4 +1,5 @@
 import {
+  type AttachmentInfo,
   KeySnapshot,
   OlmSession,
   OutboundSession,
@@ -102,6 +103,8 @@ export type DecryptOutcome =
       mentions: Mentions;
       sender: "verified" | "unverified" | "unauthenticated";
       revision: RevisionStatus;
+      /** 暗号化した添付（#364）。添付がなければ空。 */
+      attachments: AttachmentInfo[];
     }
   | { status: "undecryptable"; reason: "keyMissing" | "invalid" | "failed" };
 
@@ -429,6 +432,7 @@ export class MegolmChannels {
                 ? "verified"
                 : "unverified",
           revision: decrypted.revision,
+          attachments: decrypted.payload.attachments ?? [],
         });
       } catch (error) {
         const code = (error as { code?: unknown }).code;

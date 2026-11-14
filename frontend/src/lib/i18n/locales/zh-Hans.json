@@ -1083,7 +1083,10 @@
       "unbackedDescription_other": "有 {{count}} 个密钥未备份。退出登录后，只有此设备能解密的历史消息将无法阅读。",
       "unknownDescription": "无法确认密钥是否已备份。退出登录后，只有此设备能解密的历史消息可能无法阅读。",
       "confirm": "退出登录",
-      "deleteFailed": "无法删除此设备的加密密钥。下次打开时会再次删除。"
+      "deleteFailed": "无法删除此设备的加密密钥。下次打开时会再次删除。",
+      "revocationTitle": "吊销尚未完成",
+      "revocationDescription": "退出登录会删除此设备上保留的吊销进度。你需要在其他设备上重新解锁 SSSS 并重新吊销。",
+      "revocationConfirm": "退出登录"
     },
     "tab": "加密",
     "title": "端到端加密",
@@ -1135,6 +1138,8 @@
     "removeSlotConfirmDescription": "删除后将无法使用此通行密钥解锁。删除前需要重新登录。",
     "removeSlotConfirm": "删除",
     "addPasskeyNeedsUnlock": "要添加通行密钥，请在此页重新解锁一次（重新加载页面后，解锁所用的密钥会从内存中清除）。",
+    "manageSlotsNeedsUnlock": "要重新生成恢复密钥，请在此页重新解锁一次（重新加载页面后，解锁所用的密钥会从内存中清除）。",
+    "reunlockToManage": "重新解锁",
     "resetTitle": "重置加密",
     "resetDescription": "在通行密钥和恢复密钥都丢失，或看到不认识的设置时，用新密钥重新创建。",
     "reset": "重置",
@@ -1156,16 +1161,23 @@
       "passkeyNoSlot": "所选的通行密钥未注册为加密解锁方式。",
       "lastSlot": "无法删除最后一个解锁方式。",
       "disabled": "此服务器尚不支持加密频道。",
-      "publicForbidden": "只有私密频道可以加密。"
+      "publicForbidden": "只有私密频道可以加密。",
+      "deleteFailed": "无法删除设备。请重试。",
+      "refreshFailed": "无法重新加载设备列表。显示的内容可能不是最新的。",
+      "revocationPending": "有未完成的吊销。请先通过“继续吊销”保存到最后。",
+      "deviceOnlyUnavailable": "另一台设备重新生成了 SSSS 密钥，因此无法只吊销设备。范围已切换为“通行密钥、恢复密钥或 SSSS 密钥”，请确认后继续。",
+      "renameFailed": "无法修改设备名称。请重试。",
+      "revocationFailed": "无法完成吊销的保存。进度保留在此设备上。请再次点击“执行吊销”。",
+      "verifyFailed": "无法保存重新验证。请重试。"
     },
     "reunlockToAdd": "重新解锁以添加通行密钥",
-    "reunlockToAddDescription": "要添加通行密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。",
+    "reunlockToAddDescription": "要添加通行密钥或重新生成恢复密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。",
     "badge": "已加密",
     "encryptChannel": "端到端加密",
-    "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消，目前也还不能发送附件。",
+    "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消。",
     "encryptChannelPrivateOnly": "只有私密频道可以加密。",
     "encryptDm": "端到端加密",
-    "encryptDmHelp": "只有参与者已验证的设备才能读取消息。加密之后无法取消，目前也还不能发送附件。",
+    "encryptDmHelp": "只有参与者已验证的设备才能读取消息。加密之后无法取消。",
     "undecryptable": {
       "keyMissing": "解密此消息的密钥尚未送达。",
       "locked": "在此设备上解锁加密后即可读取此消息。",
@@ -1205,6 +1217,149 @@
       "added": "自上次发送以来新增的接收者：{{names}}"
     },
     "downgraded": "此频道曾经加密，但服务器现在表示未加密。不会以明文发送消息。",
-    "checking": "正在确认此频道的加密状态…"
+    "checking": "正在确认此频道的加密状态…",
+    "devicesTab": "设备",
+    "devices": {
+      "title": "设备",
+      "description": "持有加密密钥的设备列表。任何人都可以设置设备名称，请根据添加时间和最后使用时间来辨别。",
+      "unnamed": "未命名的设备",
+      "current": "此设备",
+      "unsigned": "未签名",
+      "created": "添加于 {{date}}",
+      "lastSeen": "最后使用 {{date}}",
+      "name": "设备名称",
+      "rename": "修改设备名称",
+      "delete": "删除设备",
+      "deleteIsNotRevocation": "删除设备不等于吊销。被删除的设备仍可用其持有的密钥读取当前备份。丢失或陌生的设备，请从“开始吊销”中删除。",
+      "deleteConfirmTitle": "要删除此设备吗？",
+      "deleteConfirmDescription": "删除不等于吊销。如果是丢失或陌生的设备，请取消并从“开始吊销”中删除。",
+      "deleteOnly": "仅删除",
+      "limitTitle": "已达到设备上限（20 台）",
+      "limitDescription": "无法注册此设备。请选择不再使用的设备并删除。删除不等于吊销，如有丢失的设备，请在此设备注册后再进行吊销。",
+      "limitStale": "30 天以上未使用的设备",
+      "limitDelete": "删除所选设备",
+      "limitDeleted": "已删除。稍后将重新注册此设备。"
+    },
+    "revocation": {
+      "pendingTitle": "吊销尚未完成",
+      "pendingDescription": "之前开始的吊销还没有完成。请重新解锁 SSSS 并保存剩余部分。",
+      "resume": "继续吊销",
+      "start": "开始吊销",
+      "needsUnlock": "吊销和重新验证只能在已解锁加密的设备上进行。",
+      "title": "吊销设备和密钥",
+      "description": "删除丢失或陌生的设备，并重新生成密钥。你的其他设备在重新解锁之前不会收到密钥。",
+      "selectTitle": "要删除的设备",
+      "selectDescription": "请选择丢失和陌生的设备。不要依据设备名称，请根据添加时间和最后使用时间确认。",
+      "scopeTitle": "可能泄露的内容",
+      "scope": {
+        "device_only": "仅设备",
+        "full": "通行密钥、恢复密钥或 SSSS 密钥"
+      },
+      "scopeDescription": {
+        "device_only": "重新生成自签名密钥、用户签名密钥和备份密钥。保留主密钥和恢复密钥。",
+        "full": "还会重新生成主密钥、SSSS 密钥和恢复密钥。其他用户需要重新验证你。如不确定，请选择此项。"
+      },
+      "irreversible": "吊销无法撤回已获取的历史消息、旧备份的内容以及被删除设备持有的密钥。",
+      "next": "下一步",
+      "unlockDescription": "开始之前，请用通行密钥或恢复密钥重新解锁 SSSS。",
+      "unlockResume": "要继续未完成的吊销，请用通行密钥或恢复密钥重新解锁 SSSS。如果完整吊销已生成新的恢复密钥，请使用新的那个。",
+      "newRecoveryKey": "这是新的恢复密钥。请记下后再执行。吊销后，旧的恢复密钥和通行密钥将无法解锁。",
+      "passkeyDescription": "让此设备的通行密钥可以解锁（其他通行密钥请稍后在“加密”中添加）。",
+      "fullWarning": "在频道的其他成员重新验证你之前，他们不会把密钥分发给你的新设备。",
+      "notesTitle": "不会重新签名的用户",
+      "notesDescription": "此设备上没有这些用户的确认记录。吊销后，在你重新验证之前不会向他们分发密钥。",
+      "note": {
+        "no_record": "此设备上没有记录",
+        "not_confirmed": "只有未确认的记录",
+        "pin_replaced": "服务器的记录不同，将用此设备的记录替换",
+        "signature_unverified": "无法验证签名",
+        "master_key_mismatch": "签名的密钥与记录不同",
+        "stale_confirmation": "只有用旧的用户签名密钥确认的记录（需要重新验证）",
+        "pin_pending": "固定尚未登记完成"
+      },
+      "versionsWithoutKey": "有无法迁移到新版本的备份（版本 {{versions}}）。此设备和 SSSS 中都没有它们的密钥，这些消息无法恢复。",
+      "executeDescription": "执行后，你需要重新登录确认身份，然后生成并保存新密钥。",
+      "execute": "执行吊销",
+      "stage": {
+        "prepared": "正在保存 SSSS…",
+        "secret_storage_saved": "正在保存交叉签名密钥…",
+        "cross_signing_saved": "正在重新签名…",
+        "signatures_saved": "正在创建新的密钥备份版本…",
+        "backup_created": "正在把旧备份迁移到新版本…",
+        "migrated": "正在确认保存的密钥…",
+        "verified": "已完成"
+      },
+      "conflict": "与其他设备上的吊销混在了一起。请重新解锁 SSSS 并重新吊销（未删除备份的密钥会被继承）。",
+      "restart": "重新开始",
+      "done": "吊销已完成。",
+      "unsignedTitle": "未用新密钥签名的设备",
+      "unsignedDescription": "这些设备在用通行密钥或恢复密钥重新解锁之前不会收到密钥。如有陌生设备，请删除。",
+      "droppedSessions_one": "旧备份中有 {{count}} 条无法迁移。",
+      "droppedSessions_other": "旧备份中有 {{count}} 条无法迁移。",
+      "finish": "关闭"
+    },
+    "verification": {
+      "title": "验证其他用户",
+      "description": "与你共享加密频道的用户的密钥状态。密钥发生变化的用户，在你重新验证之前不会收到密钥。",
+      "empty": "你没有与任何人共享加密频道。",
+      "trusted": {
+        "own": "你自己",
+        "user_signing_signature": "已验证",
+        "shared_pin": "信任首次看到的密钥（你其他设备的记录）",
+        "record": "信任首次看到的密钥"
+      },
+      "reason": {
+        "master_key_changed": "对方的密钥已变更。在你重新验证之前不会分发密钥。",
+        "not_confirmed": "对方的密钥未确认。在你重新验证之前不会分发密钥。",
+        "user_signing_key_changed": "你的签名密钥已变更，需要重新确认。"
+      },
+      "state": {
+        "no_cross_signing_keys": "尚未设置加密",
+        "invalid_cross_signing_keys": "密钥已损坏",
+        "needs_unlock": "解锁后可以确认",
+        "pin_pending": "正在确认",
+        "blocked": "无法确认你自己的密钥，因此未分发"
+      },
+      "reverify": "重新验证",
+      "confirmTitle": "要信任 {{name}} 的当前密钥吗？",
+      "confirmDescription": "请在频道之外（当面或其他联系方式）确认对方确实重新生成了密钥后再信任。保存前需要重新登录确认身份。",
+      "warning": {
+        "own_identity_unknown": "尚未确认你的主密钥。解锁后即可确认。",
+        "own_master_key_changed": "服务器上的主密钥与此设备确认过的不同。在重新解锁之前不会向任何设备分发密钥。",
+        "untrusted_user_signing_key": "无法确认你的用户签名密钥。不会向其他用户分发密钥。",
+        "user_signing_key_rollback": "你的用户签名密钥被回退到曾被替换的旧密钥。服务器可能被篡改，因此不会向其他用户分发密钥。",
+        "user_signing_key_changed": "你的用户签名密钥已变更。未重新签名的用户需要重新验证。"
+      }
+    },
+    "authz": {
+      "beforeTitle": "开始前在 AuthZ 中要做的事",
+      "afterTitle": "完成后在 AuthZ 中要做的事",
+      "revokeSessions": "在“安全”中，退出除此设备以外的所有会话（在重新登录后 5 分钟内）。",
+      "disconnect": "在“服务连接”中，停止 zoo（Web、Android、TUI）的所有连接。",
+      "disconnectAgain": "在“服务连接”中，再次停止 zoo 的所有连接（吊销过程中的身份确认会发放令牌）。",
+      "signOut": "最后，在此设备上也退出登录，然后重新登录。",
+      "note": "仅删除设备不会结束登录会话和令牌。已发放的令牌在过期前仍可使用，如强烈怀疑账号被盗，请同时请管理员停用账号。",
+      "open": {
+        "security": "打开 AuthZ 的安全设置",
+        "services": "打开 AuthZ 的服务连接"
+      },
+      "acknowledge": "我已在 AuthZ 中结束会话并停止服务连接"
+    },
+    "recovery": {
+      "regenerate": "重新生成恢复密钥",
+      "create": "生成恢复密钥",
+      "newTitle": "新的恢复密钥",
+      "newDescription": "保存后，旧的恢复密钥将无法解锁。删除或重建密钥槽不等于吊销；如果旧的恢复密钥可能已泄露，请在“设备”中进行吊销。",
+      "save": "保存",
+      "removeDescription": "将无法再用此恢复密钥解锁。已获取的密钥不会失效。如可能已泄露，请进行吊销。"
+    },
+    "resetDevicesTitle": "选择要删除的设备",
+    "resetDevicesDescription": "请选择陌生的设备并删除。如果有他人为你的账号设置了加密，必须完成此选择才能完成重置，以免留下攻击者的设备。",
+    "resetDevicesConfirm": "我已选择陌生的设备（如没有，已确认）",
+    "attachments": {
+      "encrypted": "已加密",
+      "decryptFailed": "无法解密附件。内容可能已被更改。",
+      "blocked": "出于安全考虑，无法打开此类文件"
+    }
   }
 }

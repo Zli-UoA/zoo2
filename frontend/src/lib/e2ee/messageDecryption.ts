@@ -1,3 +1,4 @@
+import type { AttachmentInfo } from "@zoo/crypto-wasm";
 import { createContext, createElement, useContext, type ReactNode } from "react";
 
 import type { MessageRow } from "../electric/types";
@@ -50,6 +51,8 @@ export type MessageDecryption =
        */
       mentions: DecryptedMentions;
       sender: SenderTrust;
+      /** 復号したペイロードの `attachments`（暗号化した添付。#364）。ないときは空。 */
+      attachments?: AttachmentInfo[];
       /**
        * 版の照合の警告。`stale` は、このメッセージの新しい版を見たあとに古い版の行が届いた
        * （本文は見た中で最新の版のまま）。`conflict` は、同じ版で中身の違う行が届いた（本文は先に

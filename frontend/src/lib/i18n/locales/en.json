@@ -1083,7 +1083,10 @@
       "unbackedDescription_other": "{{count}} keys are not backed up. If you log out, past messages that only this device can decrypt will become unreadable.",
       "unknownDescription": "Could not check whether your keys are backed up. If you log out, past messages that only this device can decrypt may become unreadable.",
       "confirm": "Log out",
-      "deleteFailed": "Could not delete this device's encryption keys. They will be deleted the next time you open the app."
+      "deleteFailed": "Could not delete this device's encryption keys. They will be deleted the next time you open the app.",
+      "revocationTitle": "A revocation is unfinished",
+      "revocationDescription": "Logging out deletes the revocation progress kept on this device. You will need to unlock Secret Storage on another device and start the revocation over.",
+      "revocationConfirm": "Log out"
     },
     "tab": "Encryption",
     "title": "End-to-end encryption",
@@ -1135,6 +1138,8 @@
     "removeSlotConfirmDescription": "This passkey will no longer unlock encryption. You'll be asked to sign in again first.",
     "removeSlotConfirm": "Remove",
     "addPasskeyNeedsUnlock": "To add a passkey, unlock again on this page. (Reloading the page clears the unlocked key from memory.)",
+    "manageSlotsNeedsUnlock": "To regenerate the recovery key, unlock again on this page. (Reloading the page clears the unlocked key from memory.)",
+    "reunlockToManage": "Unlock again",
     "resetTitle": "Reset encryption",
     "resetDescription": "Create new keys if you've lost both your passkeys and recovery key, or if you see a setup you don't recognize.",
     "reset": "Reset",
@@ -1156,16 +1161,23 @@
       "passkeyNoSlot": "The selected passkey isn't registered for unlocking encryption.",
       "lastSlot": "You can't remove the last way to unlock.",
       "disabled": "Encrypted channels aren't available on this server yet.",
-      "publicForbidden": "Only private channels can be encrypted."
+      "publicForbidden": "Only private channels can be encrypted.",
+      "deleteFailed": "Could not delete the device. Please try again.",
+      "refreshFailed": "Couldn't reload the device list. What you see may be out of date.",
+      "revocationPending": "An unfinished revocation exists. Continue it with “Continue revocation” first.",
+      "deviceOnlyUnavailable": "Another device replaced the Secret Storage key, so a device-only revocation isn't possible. The scope has been switched to “passkeys, recovery key, or Secret Storage key”; check it and continue.",
+      "renameFailed": "Could not rename the device. Please try again.",
+      "revocationFailed": "Could not finish saving the revocation. Its progress is kept on this device. Press “Revoke” again.",
+      "verifyFailed": "Could not save the verification. Please try again."
     },
     "reunlockToAdd": "Unlock again to add a passkey",
-    "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey. This device stays unlocked either way.",
+    "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey or regenerate the recovery key. This device stays unlocked either way.",
     "badge": "Encrypted",
     "encryptChannel": "Encrypt end-to-end",
-    "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later.",
     "encryptChannelPrivateOnly": "Only private channels can be encrypted.",
     "encryptDm": "Encrypt end-to-end",
-    "encryptDmHelp": "Only participants' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "encryptDmHelp": "Only participants' verified devices can read messages. Encryption can't be turned off later.",
     "undecryptable": {
       "keyMissing": "Waiting for the key to decrypt this message.",
       "locked": "Unlock encryption on this device to read this message.",
@@ -1205,6 +1217,149 @@
       "added": "New since your last message: {{names}}"
     },
     "downgraded": "This channel was encrypted, but the server now says it isn't. Messages won't be sent unencrypted.",
-    "checking": "Checking this channel's encryption…"
+    "checking": "Checking this channel's encryption…",
+    "devicesTab": "Devices",
+    "devices": {
+      "title": "Devices",
+      "description": "Devices that hold encryption keys. Anyone can set a device name, so tell devices apart by when they were added and last used.",
+      "unnamed": "Unnamed device",
+      "current": "This device",
+      "unsigned": "Not signed",
+      "created": "Added {{date}}",
+      "lastSeen": "Last used {{date}}",
+      "name": "Device name",
+      "rename": "Rename device",
+      "delete": "Delete device",
+      "deleteIsNotRevocation": "Deleting a device does not revoke it. A deleted device can still read the current backup with the keys it holds. Delete lost or unfamiliar devices from “Start revocation”.",
+      "deleteConfirmTitle": "Delete this device?",
+      "deleteConfirmDescription": "Deleting is not revocation. If the device is lost or unfamiliar, cancel and delete it from “Start revocation”.",
+      "deleteOnly": "Delete only",
+      "limitTitle": "You have reached the device limit (20)",
+      "limitDescription": "This device cannot be registered. Choose devices you no longer use and delete them. Deleting is not revocation, so if a device was lost, also revoke it after this device is registered.",
+      "limitStale": "Not used for 30 days or more",
+      "limitDelete": "Delete selected devices",
+      "limitDeleted": "Deleted. This device will register again shortly."
+    },
+    "revocation": {
+      "pendingTitle": "A revocation is unfinished",
+      "pendingDescription": "A revocation you started earlier is not finished. Unlock Secret Storage again and save the rest.",
+      "resume": "Continue revocation",
+      "start": "Start revocation",
+      "needsUnlock": "Revocation and re-verification are available on a device that has unlocked encryption.",
+      "title": "Revoke devices and keys",
+      "description": "Delete lost or unfamiliar devices and replace your keys. Your other devices will not receive keys until they unlock again.",
+      "selectTitle": "Devices to delete",
+      "selectDescription": "Select lost and unfamiliar devices. Do not rely on device names; check when each device was added and last used.",
+      "scopeTitle": "What may have leaked",
+      "scope": {
+        "device_only": "A device only",
+        "full": "A passkey, the recovery key, or the Secret Storage key"
+      },
+      "scopeDescription": {
+        "device_only": "Replaces the self-signing, user-signing, and backup keys. Keeps your master key and recovery key.",
+        "full": "Also replaces your master key, Secret Storage key, and recovery key. Other people will need to verify you again. Choose this if unsure."
+      },
+      "irreversible": "Revocation cannot undo past messages that were already downloaded, the contents of old backups, or keys held by deleted devices.",
+      "next": "Next",
+      "unlockDescription": "Before you start, unlock Secret Storage again with a passkey or your recovery key.",
+      "unlockResume": "To continue the unfinished revocation, unlock Secret Storage again with a passkey or your recovery key. If a full revocation already created a new recovery key, use the new one.",
+      "newRecoveryKey": "This is your new recovery key. Save it before you continue. After the revocation, your old recovery key and passkeys will no longer unlock.",
+      "passkeyDescription": "Let this device's passkey unlock (add other passkeys later from the Encryption tab).",
+      "fullWarning": "Other members of your channels will not send keys to your new devices until they verify you again.",
+      "notesTitle": "People who will not be re-signed",
+      "notesDescription": "This device has no confirmed record of these people. After the revocation, they receive no keys until you verify them again.",
+      "note": {
+        "no_record": "no record on this device",
+        "not_confirmed": "only an unconfirmed record",
+        "pin_replaced": "the server's record differed and will be replaced with this device's record",
+        "signature_unverified": "the signature could not be verified",
+        "master_key_mismatch": "the signed key differs from the record",
+        "stale_confirmation": "Confirmed with an older user-signing key (needs re-verification)",
+        "pin_pending": "Its pin isn't registered yet"
+      },
+      "versionsWithoutKey": "Some backups cannot be moved to the new version (versions {{versions}}). Neither this device nor Secret Storage has their keys, so their messages cannot be restored.",
+      "executeDescription": "You will sign in again to confirm it is you, then new keys are created and saved.",
+      "execute": "Revoke",
+      "stage": {
+        "prepared": "Saving Secret Storage…",
+        "secret_storage_saved": "Saving cross-signing keys…",
+        "cross_signing_saved": "Re-signing…",
+        "signatures_saved": "Creating a new key backup version…",
+        "backup_created": "Moving old backups to the new version…",
+        "migrated": "Checking the saved keys…",
+        "verified": "Done"
+      },
+      "conflict": "This revocation got mixed up with one on another device. Unlock Secret Storage again and start over (keys for backups that were not deleted are carried over).",
+      "restart": "Start over",
+      "done": "The revocation is complete.",
+      "unsignedTitle": "Devices not signed with the new keys",
+      "unsignedDescription": "These devices receive no keys until they unlock again with a passkey or the recovery key. Delete any you do not recognize.",
+      "droppedSessions_one": "{{count}} session from the old backup could not be moved.",
+      "droppedSessions_other": "{{count}} sessions from the old backup could not be moved.",
+      "finish": "Close"
+    },
+    "verification": {
+      "title": "Verifying other people",
+      "description": "Key status of the people you share encrypted channels with. If someone's key changes, they receive no keys until you verify them again.",
+      "empty": "You do not share an encrypted channel with anyone.",
+      "trusted": {
+        "own": "You",
+        "user_signing_signature": "Verified",
+        "shared_pin": "Trusting the first key seen (recorded by your other device)",
+        "record": "Trusting the first key seen"
+      },
+      "reason": {
+        "master_key_changed": "Their key changed. They receive no keys until you verify them again.",
+        "not_confirmed": "Their key is not confirmed. They receive no keys until you verify them again.",
+        "user_signing_key_changed": "Your signing key changed, so you need to confirm them again."
+      },
+      "state": {
+        "no_cross_signing_keys": "Has not set up encryption",
+        "invalid_cross_signing_keys": "Their keys are broken",
+        "needs_unlock": "Unlock to check",
+        "pin_pending": "Checking",
+        "blocked": "Not sending keys because your own keys could not be checked"
+      },
+      "reverify": "Verify again",
+      "confirmTitle": "Trust {{name}}'s current key?",
+      "confirmDescription": "Confirm outside the channel (in person or another way) that they really replaced their keys. You will sign in again to confirm it is you before saving.",
+      "warning": {
+        "own_identity_unknown": "Your master key has not been checked yet. Unlock to check it.",
+        "own_master_key_changed": "The master key on the server differs from the one this device checked. No keys are sent to any device until you unlock again.",
+        "untrusted_user_signing_key": "Your user-signing key could not be checked. No keys are sent to other people.",
+        "user_signing_key_rollback": "Your user-signing key was rolled back to an old key that had been replaced. The server may have been tampered with, so no keys are sent to other people.",
+        "user_signing_key_changed": "Your user-signing key changed. People who were not re-signed need to be verified again."
+      }
+    },
+    "authz": {
+      "beforeTitle": "Before you start, in AuthZ",
+      "afterTitle": "When finished, in AuthZ",
+      "revokeSessions": "In “Security”, sign out all sessions except this one (within 5 minutes of signing in again).",
+      "disconnect": "In “Connected services”, disconnect every zoo connection (Web, Android, TUI).",
+      "disconnectAgain": "In “Connected services”, disconnect every zoo connection again (signing in during the revocation issues new tokens).",
+      "signOut": "Finally, sign out on this device too, and sign in again.",
+      "note": "Deleting devices does not end sign-in sessions or tokens. Issued tokens work until they expire, so if you strongly suspect a takeover, also ask an administrator to suspend the account.",
+      "open": {
+        "security": "Open AuthZ security",
+        "services": "Open AuthZ connected services"
+      },
+      "acknowledge": "I ended the sessions and disconnected the services in AuthZ"
+    },
+    "recovery": {
+      "regenerate": "Replace recovery key",
+      "create": "Create recovery key",
+      "newTitle": "New recovery key",
+      "newDescription": "After saving, the old recovery key no longer unlocks. Deleting or replacing a key slot is not revocation; if the old recovery key may have leaked, also revoke from the Devices tab.",
+      "save": "Save",
+      "removeDescription": "This recovery key will no longer unlock. Keys already obtained stay valid. If it may have leaked, revoke."
+    },
+    "resetDevicesTitle": "Choose devices to delete",
+    "resetDevicesDescription": "Select unfamiliar devices to delete them. If someone else set up encryption for your account, you must finish this choice before the reset completes so the attacker's devices are not left behind.",
+    "resetDevicesConfirm": "I selected unfamiliar devices (or confirmed there are none)",
+    "attachments": {
+      "encrypted": "Encrypted",
+      "decryptFailed": "Couldn't decrypt the attachment. Its contents may have been altered.",
+      "blocked": "This file type is blocked for safety"
+    }
   }
 }

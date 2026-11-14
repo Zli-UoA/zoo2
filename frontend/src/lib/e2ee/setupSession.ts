@@ -10,6 +10,7 @@ import {
   type KeySlot,
   type ResumePlan,
   type StartupCheck,
+  type UnlockedSecretStorage,
 } from "@zoo/crypto-wasm";
 
 import type { CryptoStore } from "./store/cryptoStore";
@@ -101,6 +102,23 @@ export class SetupSession {
       ),
       label: input.label,
     };
+  }
+
+  /**
+   * 解錠したあとに、既定の SSSS 鍵のリカバリーキーのスロットを作り直す（#362）。返したリカバリーキーを
+   * 利用者に控えてもらってから、スロットを保存する（置き換えには再認証が要る）。
+   */
+  newRecoverySlot(): { slot: KeySlot; recoveryKey: string } {
+    const pending = this.require();
+    const recovery = RecoveryKey.generate();
+    try {
+      return {
+        slot: { ...newRecoverySlot(this.userId(), pending.ssss, recovery), label: null },
+        recoveryKey: recovery.toDisplay(),
+      };
+    } finally {
+      recovery.free();
+    }
   }
 
   /** 初回設定で作ったスロット（保存の再試行で、サーバーにないものを足す）。 */
@@ -198,6 +216,21 @@ export class SetupSession {
       return own.keys.startupCheck(keysQuery, versions, store.deviceKeys());
     } finally {
       own.keys.free();
+    }
+  }
+
+  /**
+   * 開けた SSSS 鍵で、読み直した `GET /api/e2ee/secret_storage` の応答を開ける（失効の始めと再開。
+   * #362）。既定の鍵が開けた鍵と違えば `SsssKeyMismatch`。使い終わったら `free()` する。
+   */
+  unlockedStorage(response: JsonObject): UnlockedSecretStorage {
+    const pending = this.require();
+    const storage = SecretStorage.fromJson(this.userId(), response);
+    if (!storage) throw new SetupError("NoSecretStorage", "SSSS がまだありません");
+    try {
+      return storage.unlockWithKey(pending.ssss);
+    } finally {
+      storage.free();
     }
   }
 

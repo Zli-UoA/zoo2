@@ -537,8 +537,10 @@ pub(crate) async fn create_message_impl(
         let Some(ciphertext) = payload.ciphertext.as_ref().filter(|v| !v.is_null()) else {
             return Err(e2ee_channels::ciphertext_required());
         };
-        if !attachment_ids.is_empty() || !payload.sensitive_attachment_ids.is_empty() {
-            return Err(e2ee_channels::attachments_forbidden());
+        // 添付は、クライアントで暗号化したもの（presign で決まったファイル名と Content-Type に限った行）を
+        // 紐付ける（#364）。センシティブの印は暗号化した本文の `attachments[].sensitive` に入れる。
+        if payload.sensitive || !payload.sensitive_attachment_ids.is_empty() {
+            return Err(e2ee_channels::plaintext_forbidden());
         }
         if payload.metadata.is_some() {
             return Err(AppError::BadRequest(
@@ -674,14 +676,19 @@ pub(crate) async fn create_message_impl(
             )
             .await?;
 
-            let metadata = crate::storage::verify::uploaded_image_metadata(
-                &state.s3_client,
-                &state.config.s3.bucket,
-                &att.storage_key,
-                att.file_size,
-                &att.content_type,
-            )
-            .await?;
+            // 暗号化チャンネルの添付は暗号文なので、画像として読まない（#364）。
+            let metadata = if sender.is_some() {
+                None
+            } else {
+                crate::storage::verify::uploaded_image_metadata(
+                    &state.s3_client,
+                    &state.config.s3.bucket,
+                    &att.storage_key,
+                    att.file_size,
+                    &att.content_type,
+                )
+                .await?
+            };
             verified_attachments.push((att.id, metadata));
         }
     }

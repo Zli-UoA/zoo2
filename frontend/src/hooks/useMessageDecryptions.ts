@@ -52,9 +52,13 @@ export function useMessageDecryptions(
   const latest = useRef<LatestRevisions>(new Map());
   const [results, setResults] = useState<ReadonlyMap<string, MessageDecryption>>(new Map());
   const retried = useRef(roomKeysVersion);
+  // Worker が変わるたびに増やす。古い Worker の遅れて届いた応答を見分けるため（古い Worker は `stop()` を
+  // 待ってから terminate されるので、そのあいだに応答が届くことがある）。
+  const workerGeneration = useRef(0);
 
   useEffect(() => {
     latest.current.clear();
+    workerGeneration.current += 1;
   }, [worker]);
 
   useEffect(() => {
@@ -101,12 +105,16 @@ export function useMessageDecryptions(
       return;
     }
     let active = true;
+    const generation = workerGeneration.current;
     void worker
       .request({
         op: "megolmDecrypt",
         rows: pending.map((message) => toEncryptedMessage(message, channelId)),
       })
       .then((outcomes) => {
+        // Worker が変わっていれば捨てる（キャッシュにも最新の版にも入れない）。新しい Worker で復号し直す。
+        // チャンネルを離れただけなら、最新の版は覚えておく。
+        if (generation !== workerGeneration.current) return;
         pending.forEach((message, index) => {
           const outcome = outcomes[index];
           const key = rowKey(message, channelId);
@@ -119,6 +127,7 @@ export function useMessageDecryptions(
                   kind: outcome.kind,
                   mentions: outcome.mentions,
                   sender: outcome.sender,
+                  attachments: outcome.attachments,
                 }
               : { status: "undecryptable", reason: outcome.reason };
           const check = outcome.status === "decrypted" ? outcome.revision.status : "latest";

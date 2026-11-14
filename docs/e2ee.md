@@ -49,7 +49,7 @@
 - 他のユーザーの検証は、最初は **TOFU だけ**にする。マスター鍵が変わったら、再検証するまでそのユーザーへの配布を止める。絵文字 SAS は後続（[#368](https://github.com/Zli-UoA/zoo2/issues/368)）。
 - 方式は Matrix 型の **Megolm** にする。MLS は使わない。
 - React の変更は、各 PR で Compose Android と TUI にも反映する（[AGENTS.md](../AGENTS.md) の追従ルールと同じ。Compose for Web は実験を中止したので、wasmJs には反映しない）。
-- 初期版では、暗号化チャンネルへの**添付を禁止**する。クライアントで添付ボタンを出さないだけでなく、サーバーの添付 API でも拒否する。暗号化した添付（[#364](https://github.com/Zli-UoA/zoo2/issues/364)）を実装したら、この禁止を外す。
+- 初期版では、暗号化チャンネルへの**添付を禁止**する。クライアントで添付ボタンを出さないだけでなく、サーバーの添付 API でも拒否する。暗号化した添付（[#364](https://github.com/Zli-UoA/zoo2/issues/364)）を実装したら、この禁止を外す。【決定】（#364）サーバーの禁止は、クライアントで暗号化した添付（[暗号化した添付](#暗号化した添付)）に限って外した。平文の添付は今も拒否する。
 
 レビューで足した 5 点は、それぞれ次の節で仕様にしています。
 
@@ -238,7 +238,7 @@ Megolm セッション鍵の配布（`zoo.room_key`）の `content` は次の形
 
 | フィールド | 内容 |
 | --- | --- |
-| `type` | 初期版では `zoo.message` だけ。暗号化した添付（#364）などで型を足す |
+| `type` | `zoo.message` だけ。【決定】（#364）暗号化した添付は型を足さず、同じ `zoo.message` の `attachments` に入れる（本文と添付を 1 つのメッセージで送るため） |
 | `channel_id` | メッセージを置くチャンネル。別のチャンネルへの移植を検出する |
 | `message_id` | `messages.id`。同じチャンネルの別の行への移植と、リプレイを検出する |
 | `parent_id` | スレッドの親。行の `parent_id` と照合し、別のスレッドへの移植を検出する |
@@ -248,6 +248,7 @@ Megolm セッション鍵の配布（`zoo.room_key`）の `content` は次の形
 | `content.format` | `mfm` だけ |
 | `content.kind` | `message` か `emote`（`messages.message_kind` と同じ値） |
 | `mentions` | メンション。`user_ids` はユーザー ID の配列、`channel` は `@channel`、`here` は `@here`。【決定】（#358）形は送信の要求の平文の `mentions` と同じ `{user_ids, channel, here}`。受信側は、表示とハイライトにこの暗号化した `mentions` だけを使う |
+| `attachments` | 【決定】（#364）暗号化した添付の配列（[暗号化した添付](#暗号化した添付)）。添付がなければ項目ごと省く（#364 より前の平文と同じ形にするため。受信側は、ないときを空の配列として読む）。10 個まで（平文チャンネルの `attachment_ids` と同じ）で、`attachment_id` は重ならない |
 
 編集は別の型を作らず、同じ `zoo.message` で `revision` を増やして送ります。編集履歴は持たないので、サーバーの行の暗号文を置き換えます。
 
@@ -266,6 +267,54 @@ Megolm セッション鍵の配布（`zoo.room_key`）の `content` は次の形
 ```
 
 Matrix では `sender_key` と `device_id` を非推奨にしていますが、zoo では受信時の照合と「鍵がまだ届いていない」表示に使うので必須にします。【決定】暗号文（`ciphertext` の JSON 全体）の上限は 256 KiB です（#357。超えたら 400 `E2EE_LIMIT_EXCEEDED`、`limit` は `ciphertext_size`）。
+
+### 暗号化した添付
+
+【決定】（#364）Matrix の [`EncryptedFile`](https://spec.matrix.org/latest/client-server-api/#sending-encrypted-attachments)（`v2`）と同じ方式です。ファイルはクライアントで暗号化してから S3 に上げ、復号に要る値は Megolm で暗号化する平文の `attachments` にだけ入れます。サーバーと S3 には平文の中身、ファイル名、MIME、画像の大きさを渡しません。実装は `crates/zoo-crypto` の `encrypt_attachment` と `decrypt_attachment`（wasm の `encryptAttachment` と `decryptAttachment`、UniFFI の `encrypt_attachment` と `decrypt_attachment`）です。
+
+- 暗号化：添付ごとに新しい 32 バイトの鍵と、前半 8 バイトが乱数で後半 8 バイト（カウンター）が 0 の 16 バイトの IV を作り、AES-256-CTR（カウンターは 128 ビットのビッグエンディアン）で暗号化する。鍵は使い回さない。暗号文は平文と同じ長さ。
+- ハッシュ：暗号文の SHA-256 を `hashes.sha256` に入れる（Matrix と同じく、平文ではなく暗号文のハッシュ）。受信側は、取得した暗号文のハッシュを定数時間で比べ、合わなければ復号せずに捨てる（サーバーや S3 が中身を差し替えても、平文を返さない）。
+- base64：`iv` と `hashes.sha256` はパディングなしの base64、鍵の `k` は JWK と同じパディングなしの base64url。受け取るときは、ほかの Matrix の実装に合わせてパディングありも受け付ける。
+- 表示（Web）：【決定】（#364）復号した中身は、暗号の Worker ごとの上限付きのキャッシュ（64 MiB、100 件、古いものから捨てる）にメモリだけで残し、メッセージ一覧の行が再マウントされても取得と復号をやり直さない。キーには添付の ID だけでなく鍵、IV、ハッシュ、MIME を含める（同じ `attachment_id` を別の鍵で指すメッセージに、ほかの平文を出さないため）。ロックやログアウトで Worker を捨てると、キャッシュもまとめて手放す。署名付き URL の取得は、平文の添付と同じキャッシュでまとめる。
+
+平文の `attachments` の 1 つは次の形です。
+
+```json
+{
+  "attachment_id": "<attachments.id>",
+  "name": "photo.png",
+  "mimetype": "image/png",
+  "size": 12345,
+  "width": 640,
+  "height": 480,
+  "sensitive": true,
+  "file": {
+    "v": "v2",
+    "key": { "kty": "oct", "key_ops": ["encrypt", "decrypt"], "alg": "A256CTR", "k": "<base64url>", "ext": true },
+    "iv": "<base64>",
+    "hashes": { "sha256": "<base64>" }
+  }
+}
+```
+
+| フィールド | 内容 |
+| --- | --- |
+| `attachment_id` | `POST /api/attachments/presign` が返した `attachment_id`（UUID）。Matrix の `url` の代わり。取得は `GET /api/attachments/{id}/url` |
+| `name` | 元のファイル名。1〜255 文字で、制御文字を含まない |
+| `mimetype` | 元の MIME。1〜128 文字。表示や保存のときに、復号した中身にこの型を付ける |
+| `size` | 元の大きさ（バイト）。AES-CTR なので暗号文と同じ。受信側は、復号した長さと比べる |
+| `width`、`height` | 画像の幅と高さ（ピクセル）。画像でなければ省く。両方あるか、両方ないか。サーバーは画像を読めないので、送信側が測って入れる |
+| `sensitive` | センシティブ（ぼかして表示する）か。`true` のときだけ入れる。平文チャンネルの `sensitive` と `sensitive_attachment_ids` の代わり |
+| `file` | Matrix の `EncryptedFile` から `url` を除いたもの。`v` は `v2`、鍵は `kty: oct`、`alg: A256CTR`、`ext: true`、`key_ops` に `encrypt` と `decrypt` を含む JWK |
+
+- 送信の手順：ファイルを暗号化し、`POST /api/attachments/presign` に決まったファイル名 `encrypted.bin` と Content-Type `application/octet-stream`、暗号文の大きさを渡す（`zoo_crypto::ENCRYPTED_ATTACHMENT_FILE_NAME` と `ENCRYPTED_ATTACHMENT_CONTENT_TYPE`）。返った URL に暗号文を同じ Content-Type で PUT し、`attachment_id` と `AttachmentInfo` を平文の `attachments` に入れて Megolm で暗号化し、送信の要求の `attachment_ids` にも同じ ID を入れる。サーバーは `attachment_ids` で行をメッセージに紐付け、未送信の行を今までどおり片付ける。
+- 編集：【決定】編集では添付を変えられない（平文チャンネルと同じく、`PATCH` は `attachment_ids` を受け取らない）。編集した版の平文には、元の版の `attachments` をそのまま入れる。#364 より前のクライアントで編集すると、新しい版に `attachments` が入らず、添付は表示されなくなる（サーバーの行は残る。既知の制限）。
+- 受信の手順：復号した平文の `attachments` を表示する。サーバーの `attachments` の行（Attachments Shape）の `file_name`、`content_type`、`width`、`height`、`blurhash` は使わない（`encrypted.bin` と `application/octet-stream` で、画像の情報はない）。取得は `GET /api/attachments/{attachment_id}/url` の URL から暗号文を読み、ハッシュを確かめてから復号する。復号した長さが `size` と違えば、復号できなかったものとして扱う。
+- 【決定】（#364）サーバーの行の `is_sensitive` だけは読む。NSFW のチャンネルでは、presign とチャンネルを NSFW にしたときにサーバーが付けるので、本文の `sensitive` がなくてもぼかす。
+- 【決定】（#364）サーバーは名前と MIME を見られないので、平文の添付でサーバーが拒否する種類（実行ファイルなど。`DISALLOWED_UPLOAD_EXTENSIONS` と `DISALLOWED_UPLOAD_TYPES`）は、受信側で取得も保存もさせない。名前の双方向の制御文字（U+202E など）は `_` に置き換えて表示し、保存する。
+- 【決定】（#364）Web は、復号に失敗した添付（ハッシュや大きさが合わない）を覚え、再試行を押すまで取り直さない（行が再マウントされるたびに全量を取得しない）。
+- 【決定】復号に使う値は暗号化した本文にしかないので、添付の取得と復号はメッセージの復号のあとに行う。復号できないメッセージの添付は、表示も取得もしない。
+- 【決定】サーバーの添付の行は、暗号化チャンネルでは決まったファイル名と Content-Type だけを持つ（[DB](#db) のトリガー）。ファイルの大きさ（暗号文の大きさ）と数、アップロードの時刻はサーバーに見える（[脅威モデル](#守らないもの)）。
 
 ### クロス署名
 
@@ -704,8 +753,8 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない（暗号化チャンネルで必須。平文チャンネルでは、送ったときだけ） | `current_revision` |
 | 409 | `E2EE_PIN_CONFLICT` | `replace: false` で、同じ相手に、違うマスター鍵の TOFU のピンがすでにあり、そのピンを今のユーザー署名鍵で検証できる | `pin` |
 | 400 | `E2EE_CIPHERTEXT_REQUIRED` | 暗号化チャンネルに `ciphertext` なしで送った | |
-| 400 | `E2EE_PLAINTEXT_FORBIDDEN` | 暗号化チャンネルに空でない `content` を送った、または平文チャンネルに `ciphertext` か `epoch` を送った、または Slack 取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで暗号化チャンネルを指定した（メッセージの作成では `revision` も。編集では `revision` は送ってよい） | |
-| 400 | `E2EE_ATTACHMENTS_FORBIDDEN` | 暗号化チャンネルへの添付（`POST /api/attachments/presign` と、送信の `attachment_ids`。#358） | |
+| 400 | `E2EE_PLAINTEXT_FORBIDDEN` | 暗号化チャンネルに空でない `content` を送った、または平文チャンネルに `ciphertext` か `epoch` を送った、または Slack 取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで暗号化チャンネルを指定した（メッセージの作成では `revision` も。編集では `revision` は送ってよい）。暗号化チャンネルの `POST /api/attachments/presign` に、決まったファイル名（`encrypted.bin`）と Content-Type（`application/octet-stream`）以外を送った、または暗号化チャンネルへの送信に `sensitive: true` か `sensitive_attachment_ids` を付けた（#364） | |
+| 400 | `E2EE_ATTACHMENTS_FORBIDDEN` | 【決定】（#364）廃止。#358 から #364 までは、暗号化チャンネルへの添付（`POST /api/attachments/presign` と、送信の `attachment_ids`）に返していた。#364 からは暗号化した添付を受け付け、平文の添付は `E2EE_PLAINTEXT_FORBIDDEN` で拒否する | |
 | 400 | `E2EE_BAD_SIGNATURE` | 署名が不正 | |
 | 400 | `E2EE_KEY_REUSED` | 過去に使ったクロス署名鍵の公開鍵か、過去の版のバックアップの公開鍵を登録し直そうとした | |
 | 400 | `E2EE_INVALID_EPOCH` | `epoch` が今の値より大きい | |
@@ -977,7 +1026,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
   サーバーは次を確かめる。
   - `content` が空（違えば 400 `E2EE_PLAINTEXT_FORBIDDEN`）。`ciphertext` がある（なければ 400 `E2EE_CIPHERTEXT_REQUIRED`）。
-  - `attachment_ids` がない（あれば 400 `E2EE_ATTACHMENTS_FORBIDDEN`）。`metadata` がない（App 用なので 400）。
+  - 【決定】（#364）`attachment_ids` は、暗号化チャンネルで presign した行（決まったファイル名と Content-Type の行）を紐付ける。平文チャンネルと同じく、送信者が上げた、同じチャンネルの、紐付けていない行だけ。画像の大きさとプレビュー（`width`、`height`、`blurhash`）は作らない（暗号文なので S3 から読まない）。`sensitive: true` と `sensitive_attachment_ids` は 400 `E2EE_PLAINTEXT_FORBIDDEN`（センシティブの印は平文の `attachments[].sensitive` に入れる）。#358 から #364 までは、`attachment_ids` があれば 400 `E2EE_ATTACHMENTS_FORBIDDEN` にしていた。`metadata` がない（App 用なので 400）。
   - `ciphertext.device_id` が送信者の削除されていない端末で、`ciphertext.sender_key` がその端末の識別鍵と一致する（違えば 400）。
   - `epoch` が今の `membership_epoch` と等しい。小さければ 409 `E2EE_STALE_EPOCH`、大きければ 400 `E2EE_INVALID_EPOCH`。
   - `revision` が 0（違えば 400）。
@@ -994,7 +1043,8 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 通知を作るのは、チャンネルのメンバーで、送信者自身でなく、Bot でも無効化済みでもないユーザーだけ（平文チャンネルの本文のメンションと同じ規則）。メンバーでない ID は黙って無視し、400 にしない（送信のあいだに退出した人がいても送信を止めないため）。`channel` と `here` は、平文チャンネルの `@channel` と `@here` と同じく、送信者以外のメンバー全員に通知する。
   - 平文チャンネルでは `mentions` を使わず、今までどおり本文から作る（送っても 400 にはせず、無視する）。
   - 編集（`PATCH /api/messages/{id}`）は、平文チャンネルと同じく通知を作らないので、`mentions` を受け取らない（`UpdateMessageRequest` にない項目なので、送っても無視する）。
-- `POST /api/attachments/presign`：暗号化チャンネルの `channel_id` なら 400 `E2EE_ATTACHMENTS_FORBIDDEN`（#358）。
+- `POST /api/attachments/presign`：【決定】（#364）暗号化チャンネルの `channel_id` では、`file_name` が `encrypted.bin` で `content_type` が `application/octet-stream` の要求だけを受け付け、違えば 400 `E2EE_PLAINTEXT_FORBIDDEN`（[暗号化した添付](#暗号化した添付)）。MIME の検証（危険な型の拒否）はこの値では働かず、画像としても読まない。判定はメンバーの確認のあと（非公開チャンネルの存在を漏らさないため）。#358 から #364 までは、暗号化チャンネルなら 400 `E2EE_ATTACHMENTS_FORBIDDEN` にしていた。
+- `GET /api/attachments/{id}/url`：変えない。暗号化チャンネルの添付は `application/octet-stream` の `attachment` として返る。
 - App の API（`/api/apps/v1/*`）：【決定】暗号化チャンネルと DM の作成（`encrypted: true`。`/api/apps/v1/dms` と `create_channel`）も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のときも、App からの `encrypted: true` は `E2EE_APPS_FORBIDDEN` を返す（判定の順は、App かどうか、設定の順。App には、設定にかかわらず作成を許さないため）。暗号化チャンネルとそのメッセージへの読み書きを、委任トークン（`app_credentials.user_id` があり、ユーザーとして動くもの）を含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する（#358）。メッセージの作成（`/api/apps/v1/messages`）、ファイルの紐付け（`/api/apps/v1/messages/{id}/files`）、`blocks`、`unfurls` を含む。委任トークンはチャンネルに参加しないまま、そのユーザーの権限で動くので、App の参加の禁止だけでは止まらないため。
   - 【決定】（#358）拒否は `Principal::channel`（`Actor::channel` は App のトークンのとき、これを先に呼ぶ）で行う。メンバーでない（見えない）チャンネルは今までどおり 404 にし、見えるチャンネルが暗号化されているときだけ 403 にする（存在を推測させないため）。一覧の API（`/api/apps/v1/stars`、`assistant-sessions`、ファイルの共有先の解決）は、暗号化チャンネルの項目を 404 と同じく読み飛ばす。
   - 【決定】（#358）`GET /api/apps/v1/shapes/channels` の where に `NOT encrypted` を足し、委任トークンでも暗号化チャンネルを列挙しない。App の応答トークン（`POST /api/app-responses/{token}`）も、暗号化チャンネルには書き込まない。
@@ -1227,6 +1277,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 【決定】残りの `channels.membership_epoch`、`messages` の列と制約、作成時の `encrypted` の指定、`encrypted` と `is_private` を変えさせない 409 とトリガーは #357 で足す。
 - 【決定】DB のトリガーで、暗号化チャンネルの `messages` に平文が入らないようにする。`BEFORE INSERT OR UPDATE ON messages`（列を限らない）で、チャンネルが `encrypted` なら、削除済みでない行に `content = ''` と `ciphertext IS NOT NULL` を求め、すべての行で `app_attachments`、`app_blocks`、`app_unfurls`、`metadata`、`card` が NULL（または空文字列）で、`home_post_id` が NULL、`apub` が false であることを求める。`card` は Incoming Webhook や App の経路で入る平文の列で、Messages Shape にも含まれる。`home_post_id` と `apub` は Home と ActivityPub への同期の列で、暗号化チャンネルでは同期しない（[機能ごとの扱い](#機能ごとの扱い)）。API 以外の経路（Webhook、App と委任トークン、Slack 取り込み、Home の同期など）で書き込まれても止めるための最後の防御（#358）。
   - 【決定】（#358）トリガーは `messages_e2ee_reject_plaintext`（関数 `e2ee_reject_plaintext_messages`）。違反は SQLSTATE `23514` で拒否する。`metadata` は INSERT では `app_message_options`（`zoo.message_options`）が入れるので、名前の順でそれより後に動くこのトリガーが、入れたあとの値を確かめる。削除済みの行の `ciphertext` は `messages_clear_deleted_ciphertext`（#357）が先に消す。
+  - 【決定】（#364）`attachments` の `BEFORE INSERT OR UPDATE` のトリガー `attachments_e2ee_reject_plaintext`（関数 `e2ee_reject_plaintext_attachments`）で、暗号化チャンネルの行に、`file_name = 'encrypted.bin'`、`content_type = 'application/octet-stream'`、`width`、`height`、`blurhash` が NULL、`storage_key` が `attachments/<channel_id>/` で始まることを求める（SQLSTATE `23514`）。presign 以外の経路（Home の画像の転記、Slack 取り込みなど）で、平文のファイル名や画像の情報、平文のオブジェクト（`home-images/` など）を指す行が入らないようにする最後の防御。#358 から #364 までは暗号化チャンネルに添付がなかったので、既存の行は違反しない。
   - 【決定】（#358）`channel_user` の `BEFORE INSERT OR UPDATE` のトリガー `channel_user_e2ee_reject_bots`（関数 `e2ee_reject_bot_members`）で、`users.is_bot` のユーザー（App の Bot と Incoming Webhook のユーザー）を暗号化チャンネルに入れない。
   - 【決定】（#358）`app_message_events_v2` は、暗号化チャンネルのメッセージ（INSERT、UPDATE、DELETE）を App のイベントにしない。本文を解析する `is_mention`（`app.mentioned`）と `link.shared` もここで止まる。`sync_channel_home_post` の対象にも `NOT c.encrypted` を足す（暗号化チャンネルは非公開なので、もともと対象外だが明示する）。
 - 【決定】`channels.encrypted` は作成時だけ指定でき、トリガーで `OLD.encrypted IS DISTINCT FROM NEW.encrypted` の更新（両方向）を拒否する。平文のメッセージを持つチャンネルが暗号化チャンネルとして扱われ、履歴を復号できず平文と暗号文が混在するのを防ぐため（既存チャンネルの暗号化は初期版ではできない）。`is_private` も false にできないようにする。
@@ -1296,7 +1347,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 一度 `encrypted = true` を見たチャンネルの ID を、暗号ストアに記録する。以後は Shape や API の値にかかわらず、そのチャンネルには暗号化して送る。
 - 記録したチャンネルで `encrypted = false` が届いたら、送信を止め、警告を出す。平文で送り直すことはしない。
 - `ciphertext` のある行を含むチャンネル、名前が `edm:` で始まるチャンネルも、`encrypted = false` が届いたら同じように扱う。
-- 担当は #361。【決定】（#361）Web は、記録を暗号ストアの `meta`（`encrypted_channel:<channel_id>`）に置き、同じチャンネルの ID を `localStorage`（チャンネルごとのキー `zoo.e2ee.encryptedChannel:<channel_id>`。タブが同時に書いても、ほかのチャンネルの記録を消さない）にも置く（暗号ストアを開いていないタブは `meta` を読めないため。ID はサーバーも知っている値なので暗号化しない）。判定は `MessagePane` で行う（記録がある、名前が `edm:`、`ciphertext` のある行がある、のどれかで `encrypted = false` なら、送信を止めて警告し、表示と添付の扱いは暗号化チャンネルのままにする）。判定は数行の条件なので、`crates/zoo-crypto` には置かず、Android と TUI の対応でそれぞれ同じ条件を入れる。
+- 担当は #361。【決定】（#361）Web は、記録を暗号ストアの `meta`（`encrypted_channel:<channel_id>`）に置き、同じチャンネルの ID を `localStorage`（チャンネルごとのキー `zoo.e2ee.encryptedChannel:<channel_id>`。タブが同時に書いても、ほかのチャンネルの記録を消さない）にも置く（暗号ストアを開いていないタブは `meta` を読めないため。ID はサーバーも知っている値なので暗号化しない）。`encrypted = true` を見たときだけでなく、`meta` の記録で暗号化と分かったときも `localStorage` に置く。判定は `MessagePane` で行う（記録がある、名前が `edm:`、`ciphertext` のある行がある、のどれかで `encrypted = false` なら、送信を止めて警告し、表示と添付の扱いは暗号化チャンネルのままにする）。判定は数行の条件なので、`crates/zoo-crypto` には置かず、Android と TUI の対応でそれぞれ同じ条件を入れる。
 
 ## 鍵の配布先の判定
 
@@ -1393,7 +1444,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 端末だけ（SSSS 鍵、パスキー、リカバリーキーは漏れていない） | 1、3、4 と、SSSS の秘密の置き換え | 残す |
 | パスキー、リカバリーキー、SSSS 鍵のどれか（端末の紛失と重なる場合を含む） | 1〜5 のすべて | 必ず作り直す |
 
-【提案】失効の画面では、端末をなくしただけの場合も 1〜5 のすべてを選べるようにします。マスター鍵を残すと、サーバーを乗っ取った攻撃者に古い自己署名鍵へ巻き戻される危険が残るためです（[脅威モデル](#脅威モデル)の「古いクロス署名鍵への巻き戻し」）。
+【決定】（#362）失効の画面では、端末をなくしただけの場合も 1〜5 のすべてを選べるようにします（迷ったら 1〜5 を選ぶよう案内する）。マスター鍵を残すと、サーバーを乗っ取った攻撃者に古い自己署名鍵へ巻き戻される危険が残るためです（[脅威モデル](#脅威モデル)の「古いクロス署名鍵への巻き戻し」）。
 
 マスター鍵を残してよいのは、端末を失っただけの場合に限ります。端末はマスター鍵の秘密鍵も SSSS 鍵も保存しないので、端末からはマスター鍵は漏れません。一方、鍵スロットを開けられた時点で、SSSS 鍵と、SSSS に入っているマスター鍵の秘密鍵も漏れています。古いマスター鍵を持つ攻撃者は、作り直した自己署名鍵とは別の自己署名鍵を自分で作り、自分の端末に署名できます。他のユーザーのピンは古いマスター鍵のままなので、その端末に鍵が配られてしまいます。
 
@@ -1466,6 +1517,35 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - SSSS を書いたあと、クロス署名鍵を保存する前に別の端末で解錠すると、その端末は署名をせずに表示を出す。失効が終わったあと、その端末は自分に署名し直し、配布先に入る。
 - 失効で SSSS を書いたあと、起動し直していない別の端末のバックアップへのアップロードは 409 `E2EE_SSSS_CONFLICT` になる。
 
+### 失効と検証の実装（#362）
+
+【決定】（#362）Web（React）の実装で決めた細部です。TUI と Compose for Android は、それぞれの #360（初回設定と解錠、再認証）のあとに、同じ `zoo-crypto` の関数で入れます（別の PR）。
+
+- 共通部分（`crates/zoo-crypto` の `revocation.rs`）は I/O を持たず、要求の本文と、暗号ストアに置く進み具合（`RevocationState`）を返す。
+  - `ResignPlan::collect` は、手順 4 の【決定】のとおり、失効を行う端末の記録のうち `confirmed_usk` がある相手のピン（記録のマスター鍵で作り直す）と、古いユーザー署名鍵で検証でき、記録と同じマスター鍵への署名だけを署名し直す。署名し直さない相手は、理由（`no_record`、`not_confirmed`、`pin_replaced`、`signature_unverified`、`master_key_mismatch`、`stale_confirmation`、`pin_pending`）を付けて失効の画面に出す。
+  - `confirmed_usk` が、暗号ストアの古いユーザー署名鍵か、サーバーの今のユーザー署名鍵と違う記録は、署名し直さない（`stale_confirmation`）。別の端末の失効でユーザー署名鍵が変わり、再検証が必要になっている記録から、ピンを作らないため（手順 4 の【決定】の「記録から自動で作る経路は残さない」）。ピンの登録が済んでいない記録（`pin_pending`）も、別の端末のピンを上書きしないよう署名し直さない。
+  - 署名の段では、今の端末への自己署名を先に、相手のマスター鍵への署名とは別の要求で送る。マスター鍵への署名は、送る前に `keys/query` で相手の今のマスター鍵と照合し、作り直された相手は外して `master_key_mismatch` に回す（照合と送信のあいだに作り直されて 404 になったら、照合し直す）。失効を始めてから相手がマスター鍵を作り直すと、サーバーはその署名を 404 で拒み、失効が先に進めなくなるため。
+  - 候補を集める相手は、`GET /api/e2ee/tofu_pins` のすべてのピンの相手と、暗号ストアに記録がある相手。この相手を `keys/query` で問い合わせ、`signatures` と `master_keys` を使う（ピンか署名があれば、暗号化チャンネルを抜けた相手のマスター鍵も返る）。自分を署名者とする署名を持つ相手は、受け入れ（再検証）でも SAS でもピンを作るので、この 2 つで足りる。
+  - 古いユーザー署名鍵は、暗号ストアの自分の鍵（`OwnKeys`）のものを使う。暗号ストアにないとき（解錠しただけの端末）は、開け直した SSSS の鍵を使う。別の端末の失効が SSSS を書いたあとで止まっていると、SSSS の鍵はサーバーに出ていない新しい鍵なので、サーバーのピンを検証できず、すべて一覧に出る（安全側）。
+  - `expected_keys` には、始める前に `keys/query` で読んだサーバーの今の鍵を入れる。SSSS の自己署名鍵とユーザー署名鍵がサーバーと違っても拒否しない（別の端末の失効が SSSS を書いたあとで止まったときに、やり直せるようにするため）。端末だけの失効は、SSSS のマスター鍵がサーバーの鍵と違えば行えない（`ServerKeyMismatch`。1〜5 で作り直す）。
+  - クロス署名鍵の差し替え（`POST /api/e2ee/cross_signing/keys`）と鍵バックアップの版の作成（`POST /api/e2ee/key_backup/versions`）には、`expected_default_key_id` にこの失効の SSSS 鍵（1〜5 では新しい鍵、端末だけでは始める前の鍵）を入れる。サーバーは同じトランザクションで照合し、違えば 409 `E2EE_SSSS_CONFLICT` にする（#360 の初回設定とリセットと同じ）。SSSS を保存したあとで、別の端末のリセットや失効が SSSS だけを作り直して止まったときに、その SSSS に対応しない公開鍵や版を書かないようにするため。`expected_keys` と `expected_current_version` だけでは、公開鍵や版がまだ変わっていないので検出できない。同じ 2 つの API に、SSSS を保存した応答の `secrets_revision` を `expected_secrets_revision` として入れる（省略したら照合しない。違えば同じく 409 `E2EE_SSSS_CONFLICT`）。端末だけの失効は SSSS の鍵を変えないので、別の端末の端末だけの失効が秘密だけを書き換えたことは、鍵 ID では見分けられないため。409 なら、ほかの 409 と同じく SSSS を開け直してやり直す。
+  - 進み具合は、`prepared`、`secret_storage_saved`、`cross_signing_saved`、`signatures_saved`、`backup_created`、`migrated`、`verified` の順に進め、保存が 1 つ済むたびに暗号ストアに保存する。中身は、始める前の前提の値、作った鍵の公開鍵、新しい自己署名鍵、ユーザー署名鍵、バックアップ鍵の秘密鍵、`zoo.megolm_backup.previous` に入れた古いバックアップ鍵、署名し直す一覧。マスター鍵の秘密鍵と SSSS 鍵は入れない（Web は暗号ストアの `meta` の `revocation` に、保存鍵で暗号化した封筒で置く）。
+  - 続けるときは、SSSS を開け直し、SSSS の鍵が記録した公開鍵と同じかを確かめる。1〜5 を `prepared` で止めた（SSSS を保存する前）ときは、マスター鍵と SSSS 鍵がないので続けず、最初からやり直す（`CryptoError::RevocationRestart`）。端末だけの失効は、同じ SSSS 鍵で開け直せば、記録した鍵で続けられる。
+  - 古い版の移行では、行を古い鍵で復号し（`decrypt_row` で行と平文の一致を確かめる）、新しい版の公開鍵で暗号化し直して送る。送る行の `is_verified` は `false` にする（取り込んだセッションは送信者を確かめられないため）。すべて送れたら古い版を消す（今の版ではないので再認証は要らない。404 は別の端末が先に消したものとして扱う）。手元の受信用セッションの新しい版へのアップロードは、鍵バックアップへのアップロード（`BackupUploadState`。今の版が変わったら手元のセッションをすべて待ちに入れる）で行う。
+  - 1〜5 では、リカバリーキーを必ず作り直す（古いリカバリーキーを入力して新しい SSSS 鍵のスロットを作る経路は持たない。漏れたかどうかを利用者が判断しにくいため）。パスキーのスロットは、失効を行う端末で使えるパスキーを 1 つ作れる。ほかのパスキーは、失効のあと、設定の「暗号化」タブで足す。
+- Web の画面は、設定の「端末」タブ（`DevicesSettings`）。
+  - 端末一覧は、端末名、登録日時、最後に使った日時、`device_id` を並べ、今の自己署名鍵の署名がない端末に「未署名」を付ける（表示のために署名の行があるかだけを見る。配布先の判定では署名を検証する）。端末名の変更と、削除（「削除は失効ではない」と表示し、失効を勧める）を行える。
+  - 失効は、削除する端末と範囲を選ぶ、SSSS を開け直す、（1〜5 なら）新しいリカバリーキーを控える、署名し直さない相手と「新しい版に移せないバックアップ」を確かめる、実行（再認証）、の順。実行は、端末の削除と一覧の収集（サーバーに保存しない）のあとに、再認証の ID トークン 1 つで最後まで保存する。403 `E2EE_REAUTH_REQUIRED` なら同じ画面から再認証してやり直し、409（別の端末の失効と入り混じった）と読み直しの不一致なら、記録を捨てて SSSS を開け直してやり直す。終わったら、新しい自己署名鍵で署名されていない自分の端末を出し、見覚えがなければ削除を勧める。
+  - 終わっていない失効があれば、端末タブに「失効を続ける」を出し、ログアウトの前に警告する（ログアウトすると暗号ストアの進み具合が消えるため）。
+  - AuthZ のセッションとトークンの失効は、今の AuthZ ではクライアントから行えない（`/revoke-other-sessions` と `disconnect` は AuthZ のオリジンのセッションのクッキーが要り、`trustedOrigins` は AuthZ 自身だけ）。そのため、失効とリセットの画面で、上の【決定】の (1)(2) を始める前に、(4)(5) を終えたあとに、AuthZ の「セキュリティ」と「サービス接続」の画面へのリンクと手順を出し、(1)(2) を済ませたことを確かめてから進める。AuthZ#100 が入ったら、画面から 1 回で行う形に変える。本番の `accessTokenTtl` は確かめていない（【未検証】のまま）。
+  - 他のユーザーの検証は、暗号化チャンネル（削除されていないもの）を共有する相手の判定（配布先の判定と同じ `TrustStore::evaluate`。初めて見た相手には TOFU のピンを置く）を表示し、再検証が必要な相手は、チャンネルの外で確かめるよう案内してから、再認証して受け入れる（`replace: true` のピンとマスター鍵への署名）。判定の警告（自分のユーザー署名鍵の巻き戻し、自分のマスター鍵の変更など）もここに出す。
+  - 20 台の上限で端末を登録できなかったとき（400 `E2EE_LIMIT_EXCEEDED`、`limit` は `devices`）は、端末タブに端末の一覧を出し、`stale_devices`（30 日以上使っていない端末）を選んだ状態で、削除する端末を選んでもらう。削除したら、端末の起動の再試行で登録し直す。
+- Web の「暗号化」タブ（`EncryptionSettings`）。
+  - スロットの保存（`POST /api/e2ee/secret_storage/slots`）の `key_id` は、スロットを包んだ SSSS 鍵の ID を送る（画面が読み直した既定の鍵の ID で上書きしない）。別の端末が SSSS を作り直したあとに、メモリーの古い鍵で包んだスロットで有効なスロットを置き換えないよう、サーバーの照合（409 `E2EE_SSSS_CONFLICT`）に任せる。
+  - リカバリーキーのスロットを作り直せる（新しいリカバリーキーを控えてから、同じ鍵の既存のスロットを置き換える。置き換えには再認証が要る）。リカバリーキーのスロットも削除できる（最後の 1 つはサーバーが拒否する）。スロットの削除と作り直しは失効ではないと表示する。
+  - E2EE のリセットでは、今の端末以外の自分の端末を選んでもらい、選んだ端末を削除してから保存する。選択を確かめるまで保存できない（他人が作った SSSS が登録されていたときに、攻撃者の端末が残らないようにするため）。AuthZ で行う手順も同じく出す。
+- 結合テストは `backend/tests/e2ee_revocation_test.rs`（本物のサーバーに `zoo-crypto` の失効と配布先の判定を当てる）、共通部分のテストは `crates/zoo-crypto/tests/revocation.rs`、Web の手順は `frontend/src/lib/e2ee/revocationController.test.ts`（本物の wasm と、サーバーを模したもの）。
+
 ### 取り消せないもの
 
 【決定】次のものは、失効しても取り消せません。UI にもそう表示します。
@@ -1493,7 +1573,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 - 作り直す対象を絞らないのは、PRF の評価が RP ID の単位でしか分かれないため。許可されていた間、そのオリジンのコードはスロットをどこで作ったかに関係なく、すべてのパスキーについて、スロットの salt（秘密ではない）から PRF 出力を得られた。
 - 乗っ取りの疑いがあるときにスロットの作り直しだけで済ませないのは、作り直しても SSSS 鍵が変わらないため。そのオリジンの攻撃者は PRF 出力から KEK を導き、スロットの暗号文から SSSS 鍵を得られた可能性がある。これは失効の表の「パスキー、リカバリーキー、SSSS 鍵のどれか」に当たる。
-- スロットはユーザーごとにあり、作り直しには各パスキーの UV が要るので、どちらも各ユーザーが自分の解錠済みの端末で行う。【提案】クライアントに外した日時を設定し、それより前に作ったパスキーのスロットがあるユーザーに、解錠のときに作り直し（乗っ取りの疑いがあるときは失効）を求める。仕組みは #362 で決める。
+- スロットはユーザーごとにあり、作り直しには各パスキーの UV が要るので、どちらも各ユーザーが自分の解錠済みの端末で行う。【提案】クライアントに外した日時を設定し、それより前に作ったパスキーのスロットがあるユーザーに、解錠のときに作り直し（乗っ取りの疑いがあるときは失効）を求める。#362 では入れず（外す予定のオリジンがまだないため）、初めてオリジンを外すときに issue を立てて入れる。それまでは、利用者への案内と、設定の「暗号化」タブのスロットの作り直し（パスキーの追加は同じ credential ID のスロットを新しい `prf_salt` で置き換える）と「端末」タブの失効で行う。
 - AuthZ 側の手順（AuthZ#95 の `docs/deployment.md`）からは、この節にリンクする。
 
 ### アカウントの無効化
@@ -1536,7 +1616,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | メンション通知 | 送信側が平文の `mentions` を付け、サーバーはそこから通知を作る（規則は[メッセージ](#メッセージ357358)の `mentions`）。本文の解析はしない。止める解析は、`backend/src/notifications.rs` の `extract_mentions` と、`infra/db/schema.sql` の SQL 関数 `is_mention`（`app_message_events_v2()` が App の `app.mentioned` イベントを作るときに呼ぶ）の 2 か所。受信側の表示とハイライトは、復号した `mentions` だけを使う。平文と暗号文の `mentions` が違っても、表示には平文を使わない |
 | 通知一覧 | `notification_display` の本文の抜粋は空になる。クライアントは手元で復号できれば本文を出し、できなければ「暗号化されたメッセージ」と出す |
 | Web Push | 本文の代わりに「新しいメッセージ」だけを送る（`push.rs` の本文先頭 240 文字を使わない）。Service Worker での復号は後続（[#365](https://github.com/Zli-UoA/zoo2/issues/365)） |
-| 添付 | **初期版では禁止**。クライアントは添付ボタンと貼り付けを出さない。サーバーは `POST /api/attachments/presign` と、メッセージへの添付の紐付けを 400 で拒否する。App のファイル API（`/api/apps/v1/files`、`/api/apps/v1/messages/{id}/files`）は別の S3 バケットへの経路なので、App の行の規則で拒否する。暗号化した添付（#364）を実装したら禁止を外す |
+| 添付 | 【決定】（#364）**クライアントで暗号化した添付だけ**を受け付ける（[暗号化した添付](#暗号化した添付)）。サーバーは `POST /api/attachments/presign` で決まったファイル名と Content-Type 以外を 400 `E2EE_PLAINTEXT_FORBIDDEN` で拒否し、MIME の検証と画像の処理（大きさ、プレビュー）を行わない。DB のトリガーでも平文の行を拒否する。App のファイル API（`/api/apps/v1/files`、`/api/apps/v1/messages/{id}/files`）は別の S3 バケットへの経路なので、今までどおり App の行の規則で拒否する。#358 から #364 までは、暗号化チャンネルへの添付をすべて禁止していた |
 | リアクション | 平文のまま |
 | スレッド | `parent_id` は平文のまま。暗号化したペイロードにも入れて照合する |
 | URL カード | 【決定】（#361）既定では展開しない。カードを出すとクライアントが URL を Summaly と画像プロクシに送るので、それらの運用者に URL が見えるため。メッセージごとに「リンクのプレビューを読み込む」を押したときだけ取得する（React の `MessageBody` の `previews: "manual"`）。押した状態は保存せず、表示し直すと元に戻る |
@@ -1711,6 +1791,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
   - `mentions`（`user_ids`、`channel`、`here`）
   - リアクション（平文と決めたため）
   - 暗号文の長さ、編集と削除の時刻
+  - 暗号化した添付の数、大きさ（AES-CTR なので元の大きさと同じ）、アップロードの時刻（#364）
   - 端末の一覧、端末とクロス署名の公開鍵、署名の関係
   - SSSS のスロット（`credential_id`、`prf_salt`、`label`、`created_at`、`last_used_at`。ラベルは端末名を含むことがあり、最終使用時刻は解錠の時刻を示す）と、鍵バックアップのセッション（`channel_id`、`sender_key`、`session_id`、`first_message_index`、`forwarded_count`、`is_verified`、`updated_at`）。鍵そのものは暗号化されている
   - to-device メッセージの宛先、回数、時刻
@@ -1795,15 +1876,15 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 | Android と TUI の暗号化の送受信（それぞれの暗号ストアと端末の登録が先に要る） | 未決 | #361 の続き |
 | クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。`max_age=0` で取り直した ID トークンの `authenticated_at` で確かめる（[クロス署名の API](#クロス署名356)） | 【決定】（実際の AuthZ での動きは AuthZ#102 の E2E で確かめた） | #356 |
 | AuthZ で、すべてのセッションとトークンを 1 回で失効し、パスキーの削除と同時にも行える機能（今は、パスキーの削除はセッションもトークンも失効しない） | 【決定】AuthZ に頼む（AuthZ#100） | #362、AuthZ#100 |
-| 本番のアクセストークンの有効期間（`accessTokenTtl`。推奨は 3600 秒） | 【未検証】 | #362 |
+| 本番のアクセストークンの有効期間（`accessTokenTtl`。推奨は 3600 秒）。#362 では確かめていない（実機の `expires_in` を見る） | 【未検証】 | #362 の後続 |
 | 再認証の AuthZ 側の変更（`authenticatedAt` の claim、本番のループバックのリダイレクト）。Android は App Links、TUI はループバックで受け取る。初回設定、失効、鍵の差し替えのすべてで使う | 【決定】（AuthZ#97） | #356、#360、#362 |
 | Android の再認証で、AuthZ からの 302 のリダイレクトを Custom Tabs が App Links としてアプリに渡すか | 【未検証】 | #360、#369 |
 | デスクトップ版を E2EE の対象にするか | 【決定】最初の範囲では対象外（後続の issue は未作成） | 後続 |
-| 一度置き換わった自己署名鍵に戻ったことをクライアントで検出する | 【提案】 | #362 |
-| 一度置き換わったユーザー署名鍵に戻ったことを、暗号ストアのユーザー署名鍵の履歴と `confirmed_usk` で検出する（検出と保存形式は【決定】。検出は #350 の `zoo-crypto` に入れた。暗号ストアの保存は #359、警告の表示は #362） | 【決定】（保存形式は #350 で決定） | #350、#359、#362 |
-| AuthZ でパスキーの credential ID の一覧を取れるようにし、削除済みのパスキーの鍵スロットを表示する | 【提案】（AuthZ の issue が要る） | #362 |
+| 一度置き換わった自己署名鍵に戻ったことをクライアントで検出する（自分の端末では、起動時の確認で暗号ストアの鍵とサーバーの鍵が違うと解錠し直しになり、SSSS の鍵とも違えば「失効が終わっていないか、SSSS が書き換えられた」と出る。他のユーザーの自己署名鍵の履歴は持たない） | 【提案】 | 後続 |
+| 一度置き換わったユーザー署名鍵に戻ったことを、暗号ストアのユーザー署名鍵の履歴と `confirmed_usk` で検出する（検出と保存形式は【決定】。検出は #350 の `zoo-crypto` に入れた。暗号ストアの保存は #359、警告の表示は #362 で端末タブに入れた） | 【決定】（保存形式は #350 で決定） | #350、#359、#362 |
+| AuthZ でパスキーの credential ID の一覧を取れるようにし、削除済みのパスキーの鍵スロットを表示する | 【提案】（AuthZ の issue が要る。#362 では入れていない） | 後続 |
 | 自分の端末どうしで鍵を要求し合う仕組み（Matrix の `m.room_key_request`）。初期版は鍵バックアップで代える | 未決 | 後続 |
-| 許可オリジンを外したときに、パスキーのスロットの作り直しを求める仕組み | 【提案】 | #362 |
+| 許可オリジンを外したときに、パスキーのスロットの作り直しを求める仕組み | 【提案】（初めてオリジンを外すときに issue を立てる） | 後続 |
 | TUI で、別の端末から承認して解錠する方式 | 未決 | 後続 |
 
 ## 参考

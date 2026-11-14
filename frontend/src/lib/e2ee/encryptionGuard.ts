@@ -63,6 +63,9 @@ export function encryptionSendState(input: {
   hasCiphertext: boolean;
 }): EncryptionSendState {
   if (input.encrypted) return { downgraded: false, checking: false };
+  // 暗号ストアの記録で暗号化と分かったら、`localStorage` にも覚える（暗号ストアを開いていないタブでも、
+  // 開き直したあとまで格下げとして扱えるように）。
+  if (input.known === true) noteEncryptedChannel(input.channelId);
   const downgraded =
     seenAsEncrypted(input.channelId) ||
     input.known === true ||
