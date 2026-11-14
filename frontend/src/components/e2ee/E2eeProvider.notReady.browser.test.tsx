@@ -36,7 +36,6 @@ vi.mock("../../lib/e2ee/deviceManager", () => ({
     async suspend() {}
     resume() {}
   },
-  loginNotFoundCounter: () => new Set<string>(),
 }));
 
 vi.mock("../../lib/e2ee/sasController", () => ({
