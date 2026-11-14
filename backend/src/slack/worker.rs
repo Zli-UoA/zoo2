@@ -674,7 +674,7 @@ impl FilePolicy {
 
     /// 添付として取得するファイルか。取り込めないファイル (外部サービスの共有など)、トークンがなくて保留する
     /// ファイル、サイズ・形式・URL で取得をスキップするファイルは偽
-    fn will_fetch(&self, file: &super::export::SlackFile) -> bool {
+    pub(super) fn will_fetch(&self, file: &super::export::SlackFile) -> bool {
         let mimetype = file
             .mimetype
             .as_deref()
@@ -1359,32 +1359,53 @@ pub(super) async fn create_channel(
     ))
 }
 
-pub(super) async fn insert_message(
+/// 投稿のリアクションを入れる (すでにあるものは変えない)。投稿が zoo になければ何もしない
+pub(super) async fn insert_reactions(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
-    slack_channel: &str,
-    channel_id: &str,
-    job_id: &str,
+    id: &str,
     message: &SlackMessage,
 ) -> Result<(), AppError> {
-    let author = message.author().unwrap_or_default();
-    let fallback = message
-        .username
-        .as_deref()
-        .or(message.bot_profile.as_ref().map(|b| b.name.as_str()))
-        .filter(|n| !n.is_empty());
-    let user = ctx.user(tx, author, fallback).await?;
-    let id = super::message_id(&ctx.team, slack_channel, &message.ts);
-    let parent = message
-        .parent_ts()
-        .map(|ts| super::message_id(&ctx.team, slack_channel, ts))
-        .unwrap_or_default();
-    let edited = message
-        .edited
-        .as_ref()
-        .map(|e| e.ts.as_str())
-        .filter(|ts| super::is_valid_ts(ts))
-        .unwrap_or("");
+    for reaction in &message.reactions {
+        let Some(emoji) = reaction_emoji(&reaction.name) else {
+            continue;
+        };
+        for slack_user in &reaction.users {
+            let reactor = ctx.user(tx, slack_user, None).await?;
+            exec(
+                tx,
+                "INSERT INTO message_reactions(id,message_id,user_id,emoji,created_at) \
+                 SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+                 WHERE EXISTS(SELECT 1 FROM messages WHERE id=$2) ON CONFLICT DO NOTHING",
+                &[
+                    &super::reaction_id(id, &reactor.id, &emoji),
+                    id,
+                    &reactor.id,
+                    &emoji,
+                    &message.ts,
+                ],
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// 投稿の表示用の内容。取り込み (`insert_message`) と、編集の反映 (`sync` のヒント) で共有する
+pub(super) struct Rendered {
+    pub(super) content: String,
+    /// エンコード済みのカード (なければ空)
+    pub(super) card: String,
+    /// 本文が、取得しない添付のファイル名で補ったものか
+    pub(super) filled: bool,
+}
+
+/// 投稿の本文とカードを作る。メンションされた人のプレースホルダも作る
+pub(super) async fn render_message(
+    tx: &mut toasty::Transaction<'_>,
+    ctx: &mut Context,
+    message: &SlackMessage,
+) -> Result<Rendered, AppError> {
     // メンションされた人のプレースホルダを先に作り、本文の <@U…> を解決できるようにする
     for mentioned in super::convert::mentioned_users(&message.text) {
         ctx.user(tx, &mentioned, None).await?;
@@ -1424,6 +1445,44 @@ pub(super) async fn insert_message(
         );
         filled = !content.trim().is_empty();
     }
+    Ok(Rendered {
+        content,
+        card,
+        filled,
+    })
+}
+
+pub(super) async fn insert_message(
+    tx: &mut toasty::Transaction<'_>,
+    ctx: &mut Context,
+    slack_channel: &str,
+    channel_id: &str,
+    job_id: &str,
+    message: &SlackMessage,
+) -> Result<(), AppError> {
+    let author = message.author().unwrap_or_default();
+    let fallback = message
+        .username
+        .as_deref()
+        .or(message.bot_profile.as_ref().map(|b| b.name.as_str()))
+        .filter(|n| !n.is_empty());
+    let user = ctx.user(tx, author, fallback).await?;
+    let id = super::message_id(&ctx.team, slack_channel, &message.ts);
+    let parent = message
+        .parent_ts()
+        .map(|ts| super::message_id(&ctx.team, slack_channel, ts))
+        .unwrap_or_default();
+    let edited = message
+        .edited
+        .as_ref()
+        .map(|e| e.ts.as_str())
+        .filter(|ts| super::is_valid_ts(ts))
+        .unwrap_or("");
+    let Rendered {
+        content,
+        card,
+        filled,
+    } = render_message(tx, ctx, message).await?;
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(
         tx,
@@ -1468,28 +1527,7 @@ pub(super) async fn insert_message(
         .await?;
     }
 
-    for reaction in &message.reactions {
-        let Some(emoji) = reaction_emoji(&reaction.name) else {
-            continue;
-        };
-        for slack_user in &reaction.users {
-            let reactor = ctx.user(tx, slack_user, None).await?;
-            exec(
-                tx,
-                "INSERT INTO message_reactions(id,message_id,user_id,emoji,created_at) \
-                 SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
-                 WHERE EXISTS(SELECT 1 FROM messages WHERE id=$2) ON CONFLICT DO NOTHING",
-                &[
-                    &super::reaction_id(&id, &reactor.id, &emoji),
-                    &id,
-                    &reactor.id,
-                    &emoji,
-                    &message.ts,
-                ],
-            )
-            .await?;
-        }
-    }
+    insert_reactions(tx, ctx, &id, message).await?;
 
     for file in message.files.iter().filter(|f| f.is_importable()) {
         let url = file.url_private_download.as_deref().unwrap_or_default();

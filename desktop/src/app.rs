@@ -377,10 +377,6 @@ pub struct AppState {
     /// 削除確認を出している対象のメッセージ ID。
     pub confirm_delete_message: Option<String>,
 
-    /// サイドバーのチャンネル絞り込みクエリ。
-    pub search_query: String,
-    /// `AppState` 側から検索欄 (`TextInput`) へ反映すべき文字列。
-    pub pending_search_text: Option<String>,
     /// メッセージ入力欄の現在の文字列。
     pub composer_draft: String,
     /// `(チャンネル ID, 送信先)` ごとの書きかけ下書き。
@@ -410,6 +406,16 @@ pub struct AppState {
     pub channel_cache: ChannelViewCache,
 
     pub unread: HashSet<String>,
+    /// 未読の線を置く位置 (チャンネルごと)。そのチャンネルが未読のときの `last_read_at` で、
+    /// チャンネルを閲覧している間は既読になっても残す (frontend の `useMessageReadState` と同じ)。
+    pub read_boundary: HashMap<String, jiff::civil::DateTime>,
+    /// 直近の ReadStates で知った `last_read_at` (チャンネルごと、未読でないものも含む)。
+    /// チャンネルを開くとき、ポーリングを待たずに未読の線の位置を決めるのに使う。
+    last_read_known: HashMap<String, jiff::civil::DateTime>,
+    /// このセッションで ReadStates の取得を一度終えたか (成否を問わない)。
+    /// 終えるまでは自動既読にしない。先に既読にすると、サーバーが `has_unread: false` を返し、
+    /// 開いた時点の `last_read_at` (未読の線の位置) が分からなくなるため。
+    read_states_loaded: bool,
     pub last_read_marked: HashMap<String, String>,
     pub read_mark_in_flight: HashMap<String, String>,
     pub read_mark_backoff_until: HashMap<String, (String, Instant)>,
@@ -572,8 +578,6 @@ impl AppState {
             target: Target::Channel,
             active_reaction_message: None,
             confirm_delete_message: None,
-            search_query: String::new(),
-            pending_search_text: None,
             composer_draft: String::new(),
             saved_drafts: HashMap::new(),
             saved_draft_message_ids: HashMap::new(),
@@ -589,6 +593,9 @@ impl AppState {
             known_encrypted_channels: HashSet::new(),
             channel_cache: ChannelViewCache::default(),
             unread: HashSet::new(),
+            read_boundary: HashMap::new(),
+            last_read_known: HashMap::new(),
+            read_states_loaded: false,
             last_read_marked: HashMap::new(),
             read_mark_in_flight: HashMap::new(),
             read_mark_backoff_until: HashMap::new(),
@@ -1136,8 +1143,6 @@ impl AppState {
         self.target = Target::Channel;
         self.active_reaction_message = None;
         self.confirm_delete_message = None;
-        self.search_query.clear();
-        self.pending_search_text = Some(String::new());
         self.composer_draft.clear();
         self.saved_drafts.clear();
         self.saved_draft_message_ids.clear();
@@ -1150,6 +1155,9 @@ impl AppState {
         self.known_encrypted_channels.clear();
         self.channel_cache = ChannelViewCache::default();
         self.unread.clear();
+        self.read_boundary.clear();
+        self.last_read_known.clear();
+        self.read_states_loaded = false;
         self.last_read_marked.clear();
         self.read_mark_in_flight.clear();
         self.read_mark_backoff_until.clear();
@@ -1886,6 +1894,8 @@ impl AppState {
     fn evict_channel(&mut self, channel_id: &str) {
         self.unsubscribe_channel(channel_id);
         self.unread.remove(channel_id);
+        self.read_boundary.remove(channel_id);
+        self.last_read_known.remove(channel_id);
         self.last_read_marked.remove(channel_id);
         self.read_mark_in_flight.remove(channel_id);
         self.read_mark_backoff_until.remove(channel_id);
@@ -2205,6 +2215,8 @@ impl AppState {
                 true
             }
             AppEvent::ReadStates(states) => {
+                self.read_states_loaded = true;
+                self.update_read_boundaries(&states);
                 let next_unread: HashSet<String> = states
                     .into_iter()
                     .filter(|s| s.has_unread)
@@ -2263,7 +2275,10 @@ impl AppState {
             }
             AppEvent::ReadStatesPollFinished => {
                 self.read_poll.finish(Instant::now(), true);
-                false
+                // 取得に失敗しても、自動既読をいつまでも止めないように、試した時点で解除する。
+                let first = !self.read_states_loaded;
+                self.read_states_loaded = true;
+                first && self.mark_current_read()
             }
             AppEvent::EmojiPollFinished => {
                 self.emoji_poll.finish(Instant::now(), true);
@@ -2457,6 +2472,54 @@ impl AppState {
     }
 
     /// 開いているチャンネルの最新メッセージを画面に表示済みであれば既読にする。
+    /// 未読の線の位置を、ReadStates の `last_read_at` から決める。
+    /// 開いているチャンネルは、開いている間は位置を固定する (frontend が開いた時点の既読位置を使うのと同じ)。
+    /// 開いていないチャンネルは、未読のものだけ毎回最新の `last_read_at` で上書きし、既読のものは捨てる。
+    fn update_read_boundaries(&mut self, states: &[zoo2_client_core::api::ReadState]) {
+        let current = self.current_channel.clone();
+        for state in states {
+            let known = match state.last_read_at.as_deref() {
+                Some(value) => parse_utc_timestamp(value),
+                // 一度も読んでいなければ、すべてが未読。
+                None => Some(jiff::civil::DateTime::MIN),
+            };
+            let Some(known) = known else {
+                continue;
+            };
+            self.last_read_known.insert(state.channel_id.clone(), known);
+            if current.as_deref() == Some(state.channel_id.as_str()) {
+                if state.has_unread {
+                    self.read_boundary
+                        .entry(state.channel_id.clone())
+                        .or_insert(known);
+                }
+            } else if state.has_unread {
+                self.read_boundary.insert(state.channel_id.clone(), known);
+            } else {
+                self.read_boundary.remove(&state.channel_id);
+            }
+        }
+        self.read_boundary.retain(|channel, _| {
+            current.as_deref() == Some(channel.as_str())
+                || states
+                    .iter()
+                    .any(|s| &s.channel_id == channel && s.has_unread)
+        });
+    }
+
+    /// チャンネルを開いた訪問のあいだ使う未読の線の位置を、知っている `last_read_at` で決める。
+    /// 未読と分かっているときだけ置く。ポーリングのタイミングに左右されない。
+    fn pin_read_boundary_on_open(&mut self, channel_id: &str) {
+        match self.last_read_known.get(channel_id) {
+            Some(known) if self.unread.contains(channel_id) => {
+                self.read_boundary.insert(channel_id.to_string(), *known);
+            }
+            _ => {
+                self.read_boundary.remove(channel_id);
+            }
+        }
+    }
+
     fn sync_unread_with_latest(&mut self) -> bool {
         let Some(channel_id) = self.current_channel.clone() else {
             return false;
@@ -2478,7 +2541,7 @@ impl AppState {
     }
 
     pub fn mark_current_read(&mut self) -> bool {
-        if !self.window_active {
+        if !self.window_active || !self.read_states_loaded {
             return false;
         }
         // 暗号化チャンネルは本文を表示しないので、見ていないメッセージを既読にしない。チャンネルの行が
@@ -2797,25 +2860,6 @@ impl AppState {
         });
     }
 
-    /// 検索クエリで絞り込んだチャンネル一覧。
-    pub fn filtered_channels(&self) -> Vec<&Channel> {
-        let query = self.search_query.trim().to_lowercase();
-        let me_id = self.me.as_ref().map(|m| m.id.as_str()).unwrap_or_default();
-        self.store
-            .channels()
-            .into_iter()
-            .filter(|ch| {
-                if query.is_empty() {
-                    return true;
-                }
-                self.store
-                    .channel_label(ch, me_id)
-                    .to_lowercase()
-                    .contains(&query)
-            })
-            .collect()
-    }
-
     /// 指定チャンネルの作成者ユーザー ID を返す。
     pub fn channel_creator_id(&self, channel_id: &str) -> Option<&str> {
         self.channel_creators_by_key
@@ -3046,6 +3090,7 @@ impl AppState {
     /// `jump_to_newest` が false のときは、最下部へのスクロールも、最新投稿を表示済みとする記録と既読化もしない。
     /// 通知から古い投稿へ移るとき、移動先を見る前に既読化しないために使う。
     fn open_channel_inner(&mut self, channel_id: String, jump_to_newest: bool) {
+        let switching = self.current_channel.as_deref() != Some(channel_id.as_str());
         if let Some(old_ch) = self.current_channel.clone()
             && old_ch != channel_id
         {
@@ -3075,6 +3120,8 @@ impl AppState {
             // 別のチャンネルへ切り替えるときは前のチャンネルの Messages / Reactions 購読とキャッシュを破棄し、
             // バックグラウンドタスクとメモリがチャンネル数に応じて増え続けるのを防ぐ。
             self.unsubscribe_channel(&old_ch);
+            // 出ていくチャンネルの未読の線は、次に開くときに決め直す。
+            self.read_boundary.remove(&old_ch);
             self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
             self.timeline_anchor_first_id = None;
         } else if self.current_channel.is_none() {
@@ -3087,6 +3134,9 @@ impl AppState {
         self.subscribe(ShapeId::Messages(channel_id.clone()));
 
         self.current_channel = Some(channel_id.clone());
+        if switching {
+            self.pin_read_boundary_on_open(&channel_id);
+        }
         self.timeline_anchor_first_id = None;
         if !jump_to_newest {
             self.timeline_at_bottom = false;
@@ -4934,6 +4984,15 @@ impl AppState {
     }
 }
 
+/// サーバーの時刻 (`2026-11-01T00:00:00` や `2026-11-01 00:00:00`、`Z` やオフセット付きも可) を UTC の日時にする。
+pub fn parse_utc_timestamp(value: &str) -> Option<jiff::civil::DateTime> {
+    let value = value.trim();
+    if let Ok(ts) = value.parse::<jiff::Timestamp>() {
+        return Some(ts.to_zoned(jiff::tz::TimeZone::UTC).datetime());
+    }
+    value.replacen(' ', "T", 1).parse().ok()
+}
+
 /// `thumbsup` や `:thumbsup:` のショートコード、または絵文字そのものを絵文字に変換する。
 pub fn resolve_emoji(input: &str) -> Option<String> {
     zoo2_client_core::mfm::resolve_emoji(input)
@@ -5043,6 +5102,8 @@ pub(crate) mod tests {
                 ),
             ]),
         ));
+        // ReadStates の初回の取得は終えたものとする (終えるまでは自動既読にしないため)。
+        state.read_states_loaded = true;
         state
     }
 
@@ -5122,6 +5183,58 @@ pub(crate) mod tests {
         assert!(!state.mark_current_read());
         assert!(state.unread.contains("c1"));
         assert!(!state.last_read_marked.contains_key("c1"));
+    }
+
+    #[tokio::test]
+    async fn waits_for_the_first_read_states_before_marking_read() {
+        let mut state = connected_state();
+        state.read_states_loaded = false;
+        state.window_active = true;
+        // 接続の直後、ReadStates より先にメッセージの同期が終わったチャンネルを開いた。
+        state.open_channel("c1".into());
+        state.unread.insert("c1".into());
+        assert!(!state.mark_current_read());
+        assert!(!state.last_read_marked.contains_key("c1"));
+
+        // 届いた `last_read_at` で未読の線を置いてから既読にする。
+        state.on_app_event(AppEvent::ReadStates(vec![ReadState {
+            channel_id: "c1".into(),
+            has_unread: true,
+            last_read_at: Some("2026-11-01T02:00:00".into()),
+        }]));
+        assert_eq!(
+            state.read_boundary.get("c1"),
+            Some(&"2026-11-01T02:00:00".parse().unwrap())
+        );
+        assert_eq!(
+            state.last_read_marked.get("c1").map(String::as_str),
+            Some("m1")
+        );
+        // 既読にしたあとの `has_unread: false` でも、線は残る。
+        state.on_app_event(AppEvent::ReadStates(vec![ReadState {
+            channel_id: "c1".into(),
+            has_unread: false,
+            last_read_at: Some("2026-11-01T03:00:00".into()),
+        }]));
+        assert_eq!(
+            state.read_boundary.get("c1"),
+            Some(&"2026-11-01T02:00:00".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_first_read_states_poll_does_not_block_marking_read() {
+        let mut state = connected_state();
+        state.read_states_loaded = false;
+        state.window_active = true;
+        state.open_channel("c1".into());
+        state.unread.insert("c1".into());
+        assert!(!state.mark_current_read());
+        state.on_app_event(AppEvent::ReadStatesPollFinished);
+        assert_eq!(
+            state.last_read_marked.get("c1").map(String::as_str),
+            Some("m1")
+        );
     }
 
     #[tokio::test]
@@ -5338,7 +5451,6 @@ pub(crate) mod tests {
         );
 
         state.composer_draft = "残っていた下書き".into();
-        state.search_query = "general".into();
         state.failed_drafts.push(FailedDraft {
             channel_id: "c1".into(),
             target: Target::Channel,
@@ -5363,20 +5475,12 @@ pub(crate) mod tests {
                 .map(|(s, _)| s.as_str()),
             Some("")
         );
-        assert!(state.search_query.is_empty());
-        assert_eq!(state.pending_search_text.as_deref(), Some(""));
         assert!(state.failed_drafts.is_empty());
     }
 
     #[tokio::test]
-    async fn opens_channel_thread_and_filters_sidebar() {
+    async fn opens_channel_and_thread() {
         let mut state = connected_state();
-        assert_eq!(state.filtered_channels().len(), 2);
-        state.search_query = "sec".into();
-        assert_eq!(state.filtered_channels().len(), 1);
-        assert_eq!(state.filtered_channels()[0].id, "c2");
-        state.search_query.clear();
-
         state.open_channel("c1".into());
         assert_eq!(state.current_channel.as_deref(), Some("c1"));
         assert_eq!(state.target, Target::Channel);
@@ -5525,10 +5629,12 @@ pub(crate) mod tests {
             ReadState {
                 channel_id: "c1".into(),
                 has_unread: true,
+                last_read_at: None,
             },
             ReadState {
                 channel_id: "c2".into(),
                 has_unread: true,
+                last_read_at: None,
             },
         ]));
         assert!(state.unread.contains("c1"));
@@ -9730,5 +9836,116 @@ pub(crate) mod tests {
         assert_eq!(atts_by_msg.get("m1").unwrap()[1].file_name, "file2.pdf");
         assert_eq!(atts_by_msg.get("m2").unwrap().len(), 1);
         assert_eq!(atts_by_msg.get("m2").unwrap()[0].file_name, "file3.jpg");
+    }
+}
+
+#[cfg(test)]
+mod read_boundary_tests {
+    use super::*;
+    use jiff::civil::DateTime;
+    use zoo2_client_core::api::ReadState;
+
+    fn state() -> AppState {
+        AppState::from_config(&Config {
+            api_base_url: "http://localhost:0".to_string(),
+            auth: zoo2_client_core::config::AuthConfig::Dev {
+                user_id: "u".to_string(),
+            },
+            check_updates: false,
+        })
+    }
+
+    fn read_state(channel: &str, has_unread: bool, at: Option<&str>) -> ReadState {
+        ReadState {
+            channel_id: channel.to_string(),
+            has_unread,
+            last_read_at: at.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn parses_server_timestamps() {
+        let expected: DateTime = "2026-11-01T09:00:00".parse().unwrap();
+        assert_eq!(parse_utc_timestamp("2026-11-01T09:00:00"), Some(expected));
+        assert_eq!(parse_utc_timestamp("2026-11-01 09:00:00"), Some(expected));
+        assert_eq!(parse_utc_timestamp("2026-11-01T09:00:00Z"), Some(expected));
+        assert_eq!(
+            parse_utc_timestamp("2026-11-01T18:00:00+09:00"),
+            Some(expected)
+        );
+        assert_eq!(parse_utc_timestamp("あ"), None);
+    }
+
+    #[test]
+    fn keeps_the_boundary_of_the_open_channel_after_it_is_read() {
+        let mut s = state();
+        s.current_channel = Some("c1".into());
+        s.update_read_boundaries(&[
+            read_state("c1", true, Some("2026-11-01T09:00:00")),
+            read_state("c2", true, None),
+        ]);
+        assert_eq!(
+            s.read_boundary.get("c1"),
+            Some(&"2026-11-01T09:00:00".parse().unwrap())
+        );
+        assert_eq!(s.read_boundary.get("c2"), Some(&DateTime::MIN));
+
+        // 既読になっても、開いている c1 の線は残る。閲覧していない c2 は捨てる。
+        s.update_read_boundaries(&[
+            read_state("c1", false, Some("2026-11-01T10:00:00")),
+            read_state("c2", false, Some("2026-11-01T10:00:00")),
+        ]);
+        assert!(s.read_boundary.contains_key("c1"));
+        assert!(!s.read_boundary.contains_key("c2"));
+        // 残っている線は、あとから届いた `last_read_at` で動かさない。
+        assert_eq!(
+            s.read_boundary.get("c1"),
+            Some(&"2026-11-01T09:00:00".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn unopened_channel_boundary_follows_the_latest_last_read_at() {
+        let mut s = state();
+        s.current_channel = Some("c2".into());
+        s.update_read_boundaries(&[read_state("c1", true, Some("2026-11-01T09:00:00"))]);
+        // c1 を別の端末で読み、またすぐ未読になった。古い位置を引きずらない。
+        s.update_read_boundaries(&[read_state("c1", true, Some("2026-11-01T12:00:00"))]);
+        assert_eq!(
+            s.read_boundary.get("c1"),
+            Some(&"2026-11-01T12:00:00".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn switching_channels_clears_the_old_boundary_and_pins_the_new_one() {
+        let mut s = state();
+        s.unread.insert("b".into());
+        s.last_read_known
+            .insert("b".into(), "2026-11-01T09:00:00".parse().unwrap());
+        s.current_channel = Some("a".into());
+        s.read_boundary
+            .insert("a".into(), "2026-11-01T08:00:00".parse().unwrap());
+        s.open_channel_inner("b".into(), true);
+        assert!(!s.read_boundary.contains_key("a"));
+        assert_eq!(
+            s.read_boundary.get("b"),
+            Some(&"2026-11-01T09:00:00".parse().unwrap())
+        );
+        // 読み終えて戻ったら (未読でないので) 線は置かない。
+        s.unread.remove("a");
+        s.open_channel_inner("a".into(), true);
+        assert!(!s.read_boundary.contains_key("b"));
+        assert!(!s.read_boundary.contains_key("a"));
+    }
+
+    #[test]
+    fn leaving_a_read_channel_drops_its_boundary_on_the_next_poll() {
+        let mut s = state();
+        s.current_channel = Some("c1".into());
+        s.update_read_boundaries(&[read_state("c1", true, None)]);
+        s.current_channel = Some("c2".into());
+        s.update_read_boundaries(&[read_state("c1", false, None)]);
+        assert!(s.read_boundary.is_empty());
     }
 }
