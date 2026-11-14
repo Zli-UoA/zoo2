@@ -315,24 +315,27 @@ impl WorkspaceView {
             })
         };
 
+        // チャンネル未選択時の通知 (アクセス権を失ったときなど)。Composer がないので、ここに出す。
+        // チャンネル欄を閉じていても見えるよう、折りたたみの外に置く。
+        let notice_block: Option<AnyElement> = if loading || current_channel.is_some() {
+            None
+        } else {
+            notice.map(|msg| {
+                div()
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .text_size(text_xs.size())
+                    .line_height(text_xs.line())
+                    .text_color(t.muted_foreground)
+                    .child(msg)
+                    .into_any_element()
+            })
+        };
+
         let channels_body: Vec<AnyElement> = if loading {
             skeleton_rows("sidebar-skel-ch", 5)
         } else {
             let mut body: Vec<AnyElement> = Vec::new();
-            if current_channel.is_none()
-                && let Some(msg) = notice
-            {
-                body.push(
-                    div()
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .text_size(text_xs.size())
-                        .line_height(text_xs.line())
-                        .text_color(t.muted_foreground)
-                        .child(msg)
-                        .into_any_element(),
-                );
-            }
             if rows.is_empty() {
                 body.push(
                     v_flex()
@@ -461,6 +464,7 @@ impl WorkspaceView {
                     .min_h_0()
                     .py(px(4.0))
                     .children(sync_error_block)
+                    .children(notice_block)
                     .child(channels_section)
                     .child(dms_section),
             )
