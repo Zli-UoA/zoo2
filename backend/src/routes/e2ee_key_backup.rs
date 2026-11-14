@@ -15,7 +15,7 @@ use axum::{
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use zoo_crypto::Curve25519PublicKey;
+use zoo_crypto::{BACKUP_PROOF_HEADER, BackupUploadKey, Curve25519PublicKey};
 
 use crate::{
     auth::AuthUser,
@@ -43,6 +43,15 @@ pub const MAX_SESSION_DATA_BYTES: usize = 8 * 1024;
 const MAX_UPLOAD_BODY_BYTES: usize = 10 * 1024 * 1024;
 /// `channel_id`、`sender_key`、`session_id` の長さの上限。
 const MAX_ID_CHARS: usize = 128;
+/// 1 つの版のセッションの数の上限（`limit` は `backup_version_sessions`）。根拠は docs/e2ee.md の鍵バックアップの API。
+pub const MAX_BACKUP_VERSION_SESSIONS: i64 = 500_000;
+/// 1 つの版の `session_data` の JSON の大きさの合計の上限（`limit` は `backup_version_size`）。
+pub const MAX_BACKUP_VERSION_BYTES: i64 = 512 * 1024 * 1024;
+/// 1 人の、消していないすべての版のセッションの数の上限（`limit` は `backup_user_sessions`）。
+/// 失効のあとの移行で、古い版と今の版に同じセッションが並ぶので、版ごとの上限の 2 倍にする。
+pub const MAX_BACKUP_USER_SESSIONS: i64 = 2 * MAX_BACKUP_VERSION_SESSIONS;
+/// 1 人の、消していないすべての版の `session_data` の大きさの合計の上限（`limit` は `backup_user_size`）。
+pub const MAX_BACKUP_USER_BYTES: i64 = 2 * MAX_BACKUP_VERSION_BYTES;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -73,6 +82,61 @@ fn wrong_version(current: Option<i64>) -> AppError {
         "The backup version is not the current one",
         json!({"current_version": current.map(|v| v.to_string())}),
     )
+}
+
+fn proof_invalid() -> AppError {
+    coded(
+        StatusCode::FORBIDDEN,
+        "E2EE_BACKUP_PROOF_INVALID",
+        "The backup upload proof is invalid",
+        Value::Null,
+    )
+}
+
+/// 版のアップロードの証明を確かめる鍵（サーバーだけが持つ）。この列より前に作った版（古い backend が
+/// 作った版を含む）は NULL なので、初めて要るときに作る。並行して作っても、最初に書いた鍵だけが残る。
+async fn upload_key(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+    version: &str,
+) -> Result<BackupUploadKey, AppError> {
+    let select = "SELECT json_build_object('key', upload_key)::text FROM e2ee_key_backup_versions
+                  WHERE user_id = $1 AND version = $2::bigint";
+    let mut stored = first(tx, select, &[user_id, version])
+        .await?
+        .ok_or_else(version_not_found)?;
+    if stored["key"].is_null() {
+        let generated = BackupUploadKey::generate();
+        exec(
+            tx,
+            "UPDATE e2ee_key_backup_versions SET upload_key = $3
+             WHERE user_id = $1 AND version = $2::bigint AND upload_key IS NULL",
+            &[user_id, version, &generated.to_base64()],
+        )
+        .await?;
+        stored = first(tx, select, &[user_id, version])
+            .await?
+            .ok_or_else(version_not_found)?;
+    }
+    stored["key"]
+        .as_str()
+        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("backup upload key is missing")))
+        .and_then(|key| {
+            BackupUploadKey::from_base64(key)
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("invalid backup upload key: {e}")))
+        })
+}
+
+/// 版の応答に、アップロードの証明に使う公開鍵（`upload_key`）を足す。
+async fn with_upload_key(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+    version: i64,
+    mut body: Value,
+) -> Result<Value, AppError> {
+    let key = upload_key(tx, user_id, &version.to_string()).await?;
+    body["upload_key"] = json!(key.public_key().to_base64());
+    Ok(body)
 }
 
 fn version_not_found() -> AppError {
@@ -228,13 +292,14 @@ async fn create_version(
     let version = max.unwrap_or(0) + 1;
     exec(
         &mut tx,
-        "INSERT INTO e2ee_key_backup_versions (user_id, version, algorithm, auth_data)
-         VALUES ($1, $2::bigint, $3, $4::jsonb)",
+        "INSERT INTO e2ee_key_backup_versions (user_id, version, algorithm, auth_data, upload_key)
+         VALUES ($1, $2::bigint, $3, $4::jsonb, $5)",
         &[
             &actor.id,
             &version.to_string(),
             BACKUP_ALGORITHM,
             &req.auth_data.to_string(),
+            &BackupUploadKey::generate().to_base64(),
         ],
     )
     .await?;
@@ -300,6 +365,7 @@ async fn current_version(
         .and_then(|v| v["version"].as_i64())
         .ok_or_else(version_not_found)?;
     let body = version_json(&mut tx, &actor.id, version, true).await?;
+    let body = with_upload_key(&mut tx, &actor.id, version, body).await?;
     tx.commit().await?;
     Ok(Json(body))
 }
@@ -313,12 +379,14 @@ async fn version_json(
     first(
         tx,
         "SELECT json_build_object('version', v.version::text, 'algorithm', v.algorithm,
-           'auth_data', v.auth_data, 'count', CASE WHEN $3::boolean THEN
-             (SELECT count(*) FROM e2ee_key_backup_sessions s WHERE s.user_id = v.user_id AND s.version = v.version)
-           END)::text
+           'auth_data', v.auth_data, 'count', CASE WHEN $3::boolean THEN v.session_count END)::text
          FROM e2ee_key_backup_versions v
          WHERE v.user_id = $1 AND v.version = $2::bigint AND v.deleted_at IS NULL",
-        &[user_id, &version.to_string(), if with_count { "true" } else { "false" }],
+        &[
+            user_id,
+            &version.to_string(),
+            if with_count { "true" } else { "false" },
+        ],
     )
     .await?
     .map(|mut v| {
@@ -340,6 +408,7 @@ async fn get_version(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let body = version_json(&mut tx, &actor.id, version, false).await?;
+    let body = with_upload_key(&mut tx, &actor.id, version, body).await?;
     tx.commit().await?;
     Ok(Json(body))
 }
@@ -479,9 +548,11 @@ pub struct UploadRequest {
 }
 
 /// `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`：今の版にセッションを上げる。
+/// `X-Zoo-Backup-Proof`（任意）があれば確かめ、証明付きの行として書く。
 async fn upload_sessions(
     State(state): State<AppState>,
     actor: AuthUser,
+    headers: HeaderMap,
     Query(query): Query<UploadQuery>,
     Json(req): Json<UploadRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
@@ -522,12 +593,23 @@ async fn upload_sessions(
         &[&actor.id],
     )
     .await?;
-    let now = current(&mut tx, &actor.id)
-        .await?
-        .and_then(|v| v["version"].as_i64());
+    let current_row = current(&mut tx, &actor.id).await?;
+    let now = current_row.as_ref().and_then(|v| v["version"].as_i64());
     if now.is_none() || now.map(|v| v.to_string()).as_deref() != Some(version) {
         return Err(wrong_version(now));
     }
+    // 上限の判定の「書く前」の数を、同じ版への並行したアップロードの変更と分けて読むため、版の行を先に
+    // ロックする。ロックしないと、ほかのアップロードの縮小が「書く前」と「書いたあと」の間にコミットし、
+    // 上限を超える増加が隠れる。トリガーも同じ行を更新するので、同じ版のアップロードはもともとここで並ぶ。
+    // FOR NO KEY UPDATE にして、セッションの行の外部キーの検査（FOR KEY SHARE）とは衝突させない。
+    first(
+        &mut tx,
+        "SELECT '{}'::text FROM e2ee_key_backup_versions
+         WHERE user_id = $1 AND version = $2::bigint FOR NO KEY UPDATE",
+        &[&actor.id, version],
+    )
+    .await?
+    .ok_or_else(|| wrong_version(now))?;
     let ssss = default_key(&mut tx, &actor.id).await?;
     if ssss.as_ref().and_then(|k| k["secrets_revision"].as_i64()) != Some(secrets_revision) {
         return Err(coded(
@@ -540,6 +622,28 @@ async fn upload_sessions(
             }),
         ));
     }
+    // アップロードの証明：バックアップ鍵を持つ端末だけが作れる。証明付きの行は証明のない行に必ず勝ち、
+    // 証明のない要求は証明付きの行を置き換えられない（アクセストークンだけを持つ者が、偽の行で先に埋めたり、
+    // 上書きしたりできないようにする。M-1）。送らない古いクライアントの行は、今までどおりの規則で残す。
+    let proven = match headers.get(BACKUP_PROOF_HEADER) {
+        None => false,
+        Some(proof) => {
+            let backup_key = current_row
+                .as_ref()
+                .and_then(|v| v["auth_data"]["public_key"].as_str())
+                .and_then(|k| Curve25519PublicKey::from_base64(k).ok())
+                .ok_or_else(|| AppError::Internal(anyhow::anyhow!("invalid backup public key")))?;
+            let key = upload_key(&mut tx, &actor.id, version).await?;
+            let valid = proof
+                .to_str()
+                .is_ok_and(|proof| key.verify_proof(&backup_key, &actor.id, version, proof));
+            if !valid {
+                return Err(proof_invalid());
+            }
+            true
+        }
+    };
+    let before = backup_totals(&mut tx, &actor.id, version).await?;
     if !best.is_empty() {
         // 読んでから書くと、並行した同じセッションのアップロードがよい行を上書きしたり、主キーの衝突（500）に
         // なったりするので、1 つの文で決める。
@@ -547,9 +651,9 @@ async fn upload_sessions(
             &mut tx,
             "INSERT INTO e2ee_key_backup_sessions AS cur
                (user_id, version, channel_id, sender_key, session_id, first_message_index,
-                forwarded_count, is_verified, session_data)
+                forwarded_count, is_verified, session_data, proven)
              SELECT $1, $2::bigint, s.channel_id, s.sender_key, s.session_id, s.first_message_index,
-                    s.forwarded_count, s.is_verified, s.session_data
+                    s.forwarded_count, s.is_verified, s.session_data, $4::boolean
              FROM jsonb_to_recordset($3::jsonb) AS s(channel_id text, sender_key text, session_id text,
                first_message_index integer, forwarded_count integer, is_verified boolean, session_data jsonb)
              ON CONFLICT (user_id, version, channel_id, sender_key, session_id) DO UPDATE
@@ -557,26 +661,97 @@ async fn upload_sessions(
                  forwarded_count = EXCLUDED.forwarded_count,
                  is_verified = EXCLUDED.is_verified,
                  session_data = EXCLUDED.session_data,
+                 proven = EXCLUDED.proven,
                  updated_at = now()
-             WHERE (EXCLUDED.is_verified::int, -EXCLUDED.first_message_index, -EXCLUDED.forwarded_count)
-                 > (cur.is_verified::int, -cur.first_message_index, -cur.forwarded_count)",
+             WHERE (EXCLUDED.proven::int, EXCLUDED.is_verified::int, -EXCLUDED.first_message_index,
+                    -EXCLUDED.forwarded_count)
+                 > (cur.proven::int, cur.is_verified::int, -cur.first_message_index, -cur.forwarded_count)",
             &[
                 &actor.id,
                 version,
                 &Value::Array(best.values().map(BackupSession::json).collect()).to_string(),
+                if proven { "true" } else { "false" },
             ],
         )
         .await?;
     }
-    let count = first(
-        &mut tx,
-        "SELECT count(*)::text FROM e2ee_key_backup_sessions WHERE user_id = $1 AND version = $2::bigint",
-        &[&actor.id, version],
+    let after = backup_totals(&mut tx, &actor.id, version).await?;
+    // 増やした上限だけを拒否する（上限を下げたあとも、行を減らすか変えないアップロードは通す）。
+    // 拒否したら、コミットせずにトランザクションを捨てるので、行も数も戻る。
+    for (limit, max, before, after) in [
+        (
+            "backup_version_sessions",
+            MAX_BACKUP_VERSION_SESSIONS,
+            before.version_sessions,
+            after.version_sessions,
+        ),
+        (
+            "backup_version_size",
+            MAX_BACKUP_VERSION_BYTES,
+            before.version_bytes,
+            after.version_bytes,
+        ),
+        (
+            "backup_user_sessions",
+            MAX_BACKUP_USER_SESSIONS,
+            before.user_sessions,
+            after.user_sessions,
+        ),
+        (
+            "backup_user_size",
+            MAX_BACKUP_USER_BYTES,
+            before.user_bytes,
+            after.user_bytes,
+        ),
+    ] {
+        if after > max && after > before {
+            return Err(limit_exceeded(limit));
+        }
+    }
+    tx.commit().await?;
+    Ok(Json(ApiResponse::new(
+        json!({"count": after.version_sessions}),
+        None,
+    )))
+}
+
+/// 版とユーザーのセッションの数と大きさ（`e2ee_key_backup_versions` の、トリガーが保つ列）。
+struct BackupTotals {
+    version_sessions: i64,
+    version_bytes: i64,
+    user_sessions: i64,
+    user_bytes: i64,
+}
+
+async fn backup_totals(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+    version: &str,
+) -> Result<BackupTotals, AppError> {
+    let row = first(
+        tx,
+        "SELECT json_build_object(
+           'version_sessions', v.session_count, 'version_bytes', v.session_bytes,
+           'user_sessions', u.sessions, 'user_bytes', u.bytes)::text
+         FROM e2ee_key_backup_versions v,
+           (SELECT coalesce(sum(session_count), 0) AS sessions, coalesce(sum(session_bytes), 0) AS bytes
+            FROM e2ee_key_backup_versions WHERE user_id = $1 AND deleted_at IS NULL) u
+         WHERE v.user_id = $1 AND v.version = $2::bigint",
+        &[user_id, version],
     )
     .await?
-    .unwrap_or(Value::Null);
-    tx.commit().await?;
-    Ok(Json(ApiResponse::new(json!({"count": count}), None)))
+    .ok_or_else(version_not_found)?;
+    let field = |name: &str| {
+        row[name]
+            .as_i64()
+            .ok_or_else(|| AppError::Internal(anyhow::anyhow!("invalid backup totals: {name}")))
+    };
+    Ok(BackupTotals {
+        version_sessions: field("version_sessions")?,
+        version_bytes: field("version_bytes")?,
+        user_sessions: field("user_sessions")?,
+        user_bytes: field("user_bytes")?,
+    })
 }
 
 #[derive(Deserialize)]

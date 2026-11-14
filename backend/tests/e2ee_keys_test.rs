@@ -489,7 +489,7 @@ async fn cors_allows_the_reauth_header() {
                 .header("access-control-request-method", "POST")
                 .header(
                     "access-control-request-headers",
-                    "x-zoo-reauth,content-type",
+                    "x-zoo-reauth,x-zoo-backup-proof,content-type",
                 )
                 .body(Body::empty())
                 .unwrap(),
@@ -501,6 +501,7 @@ async fn cors_allows_the_reauth_header() {
         .unwrap()
         .to_ascii_lowercase();
     assert!(allowed.contains("x-zoo-reauth"), "{allowed}");
+    assert!(allowed.contains("x-zoo-backup-proof"), "{allowed}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,10 +1100,17 @@ async fn secret_storage_checks_revisions_slots_and_reauth() {
     let (status, _) = env.post(keys, &alice, true, missing).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 秘密を足すだけなら再認証は要らない。置き換えには要る。
+    // 秘密は、足すにも置き換えるにも再認証が要る（M-3。トークンだけで開けない秘密を足して
+    // secrets_revision を進めさせない）。拒否したときは revision も変わらない。
     let secrets = "/api/e2ee/secret_storage/secrets";
     let add = json!({"key_id": first_key, "expected_secrets_revision": 1, "secrets": {"zoo.megolm_backup.previous": secret()}});
-    let (status, res) = env.post(secrets, &alice, false, add).await;
+    let (status, res) = env.post(secrets, &alice, false, add.clone()).await;
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::FORBIDDEN, "E2EE_REAUTH_REQUIRED")
+    );
+    assert_eq!(env.revision(&alice).await, 1);
+    let (status, res) = env.post(secrets, &alice, true, add).await;
     assert_eq!(status, StatusCode::OK, "{res}");
     assert_eq!(res["data"]["secrets_revision"], 2);
     let old_ciphertext = env
@@ -1199,25 +1207,42 @@ async fn slots_are_capped_replaced_with_reauth_and_never_drop_to_zero() {
     );
     assert_eq!(res["default_key_id"], key_id);
 
-    // パスキーのスロットは 20 個まで（足すだけなら再認証は要らない）。
+    // スロットを足すにも再認証が要る（M-3。トークンだけで開けないスロットを上限まで足させない）。
+    let (status, res) = env
+        .post(path, &alice, false, with_key(passkey_slot("cred-0")))
+        .await;
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::FORBIDDEN, "E2EE_REAUTH_REQUIRED")
+    );
+    assert_eq!(
+        env.count(
+            "SELECT 1 FROM e2ee_secret_storage_key_slots WHERE user_id = $1",
+            &[&alice]
+        )
+        .await,
+        1
+    );
+
+    // パスキーのスロットは 20 個まで。
     let mut first_slot = Value::Null;
     for i in 0..20 {
         let slot = with_key(passkey_slot(&format!("cred-{i}")));
-        let (status, res) = env.post(path, &alice, false, slot.clone()).await;
+        let (status, res) = env.post(path, &alice, true, slot.clone()).await;
         assert_eq!(status, StatusCode::OK, "{res}");
         if i == 0 {
             first_slot = slot;
         }
     }
     let (status, res) = env
-        .post(path, &alice, false, with_key(passkey_slot("cred-20")))
+        .post(path, &alice, true, with_key(passkey_slot("cred-20")))
         .await;
     assert_eq!(
         (status, code(&res)),
         (StatusCode::BAD_REQUEST, "E2EE_LIMIT_EXCEEDED")
     );
     assert_eq!(res["limit"], "slots");
-    // 同じスロットの再送は 200。
+    // 同じスロットの再送は、再認証なしでも 200（何も変えない）。
     let (status, _) = env.post(path, &alice, false, first_slot.clone()).await;
     assert_eq!(status, StatusCode::OK);
     // 同じ credential ID の置き換えは、20 個に達していても通るが、再認証が要る。
@@ -1606,6 +1631,583 @@ async fn backup_sessions_page_past_one_thousand() {
         .await;
     assert_eq!(page["sessions"].as_array().unwrap().len(), 750);
     assert!(page["next"].is_null());
+}
+
+#[tokio::test]
+async fn backup_totals_are_counted_and_capped_per_version_and_user() {
+    let env = env().await;
+    let alice = env.identity().await;
+    let user = alice.user.clone();
+    env.ssss(&user, json!([recovery_slot()])).await;
+    let revision = env.revision(&user).await;
+    let body = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key())});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, false, body)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let upload = |version: &str| {
+        format!("/api/e2ee/key_backup/keys?version={version}&secrets_revision={revision}")
+    };
+    let totals = |version: &'static str| {
+        let (env, user) = (&env, user.clone());
+        async move {
+            let row = env
+                .query(
+                    "SELECT json_build_object('count', session_count, 'bytes', session_bytes,
+                       'real_count', (SELECT count(*) FROM e2ee_key_backup_sessions s
+                                      WHERE s.user_id = v.user_id AND s.version = v.version),
+                       'real_bytes', (SELECT coalesce(sum(octet_length(session_data::text)), 0)
+                                      FROM e2ee_key_backup_sessions s
+                                      WHERE s.user_id = v.user_id AND s.version = v.version))::text
+                     FROM e2ee_key_backup_versions v WHERE user_id = $1 AND version = $2::bigint",
+                    &[&user, version],
+                )
+                .await;
+            let row = row[0].clone();
+            // トリガーが保つ数は、実際の行の数と大きさと一致する。
+            assert_eq!(row["count"], row["real_count"], "{row}");
+            assert_eq!(row["bytes"], row["real_bytes"], "{row}");
+            (
+                row["count"].as_i64().unwrap(),
+                row["bytes"].as_i64().unwrap(),
+            )
+        }
+    };
+
+    // 足す、よい行で置き換える、同じ要求で重複する、のどれでも数がずれない。
+    let sessions: Vec<Value> = (0..5)
+        .map(|i| session("c", "k", &format!("s{i}"), false, 3))
+        .collect();
+    let (status, res) = env
+        .post(&upload("1"), &user, false, json!({"sessions": sessions}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(res["data"]["count"], 5);
+    assert_eq!(totals("1").await.0, 5);
+    let mut bigger = session("c", "k", "s0", true, 0);
+    bigger["session_data"]["ciphertext"] = json!(random_b64(600));
+    let (status, res) = env
+        .post(
+            &upload("1"),
+            &user,
+            false,
+            json!({"sessions": [bigger, session("c", "k", "s5", false, 0), session("c", "k", "s1", false, 9)]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(res["data"]["count"], 6);
+    let (count, bytes) = totals("1").await;
+    assert_eq!(count, 6);
+    let (_, current) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    assert_eq!(current["count"], 6);
+
+    // 版の上限：数を増やすアップロードは 400 で、行も数も変わらない。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = session_count + $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[
+            &user,
+            &(backend::routes::e2ee_key_backup::MAX_BACKUP_VERSION_SESSIONS - count).to_string(),
+        ],
+    )
+    .await;
+    let (status, res) = env
+        .post(
+            &upload("1"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "over", false, 0)]}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_version_sessions")
+        )
+    );
+    assert_eq!(
+        env.count(
+            "SELECT 1 FROM e2ee_key_backup_sessions WHERE user_id = $1 AND session_id = 'over'",
+            &[&user]
+        )
+        .await,
+        0
+    );
+    // 上限に達していても、数を増やさないアップロード（同じ行の再送、よい行での置き換え）は通る。
+    let (status, res) = env
+        .post(
+            &upload("1"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s2", false, 0)]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &count.to_string()],
+    )
+    .await;
+
+    // 版の大きさの上限。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_bytes = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[
+            &user,
+            &backend::routes::e2ee_key_backup::MAX_BACKUP_VERSION_BYTES.to_string(),
+        ],
+    )
+    .await;
+    let (status, res) = env
+        .post(
+            &upload("1"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "big", false, 0)]}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_version_size")
+        )
+    );
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_bytes = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &bytes.to_string()],
+    )
+    .await;
+    assert_eq!(totals("1").await, (count, bytes));
+
+    // ユーザーの上限は、消していないすべての版の合計で数える。版 1 を古い版として残したまま、
+    // 版 2 に上げる（失効のあとの移行と同じ形）。
+    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key()), "expected_current_version": "1"});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, true, create)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let (status, res) = env
+        .post(
+            &upload("2"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s0", false, 0)]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[
+            &user,
+            &backend::routes::e2ee_key_backup::MAX_BACKUP_USER_SESSIONS.to_string(),
+        ],
+    )
+    .await;
+    let (status, res) = env
+        .post(
+            &upload("2"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s1", false, 0)]}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_user_sessions")
+        )
+    );
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = $2::bigint, session_bytes = $3::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[
+            &user,
+            &count.to_string(),
+            &backend::routes::e2ee_key_backup::MAX_BACKUP_USER_BYTES.to_string(),
+        ],
+    )
+    .await;
+    let (status, res) = env
+        .post(
+            &upload("2"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s1", false, 0)]}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_user_size")
+        )
+    );
+    // 古い版を消すと、その版は合計に入らない（行も数も消える）。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_bytes = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &bytes.to_string()],
+    )
+    .await;
+    let (status, res) = env
+        .delete("/api/e2ee/key_backup/versions/1", &user, false)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(totals("1").await, (0, 0));
+    let (status, res) = env
+        .post(
+            &upload("2"),
+            &user,
+            false,
+            json!({"sessions": [session("c", "k", "s1", false, 0)]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(totals("2").await.0, 2);
+}
+
+#[tokio::test]
+async fn a_concurrent_shrink_does_not_hide_an_increase_past_the_cap() {
+    // レビューの再現の順：上限を超えた版で、A（新しい行）が「書く前」を読むのと、B（縮小）のコミットが
+    // 入れ違う。B は版の行をロックしたまま縮小し、A が待っているあいだにコミットする。A は版の行のロックの
+    // あとに「書く前」を読むので、縮小のあとの数と比べて上限を超える増加を拒否する。
+    let env = env().await;
+    let alice = env.identity().await;
+    let user = alice.user.clone();
+    env.ssss(&user, json!([recovery_slot()])).await;
+    let revision = env.revision(&user).await;
+    let body = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key())});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, false, body)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let max = backend::routes::e2ee_key_backup::MAX_BACKUP_VERSION_BYTES;
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_bytes = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &(max + 1024).to_string()],
+    )
+    .await;
+
+    // B：版の行をロックして 2048 バイト縮める（コミットはまだ）。
+    let mut db = env.db.clone();
+    let mut shrink = db.transaction().await.unwrap();
+    let shrink_pid = backend::apps::query(&mut shrink, "SELECT pg_backend_pid()::text", &[])
+        .await
+        .unwrap()[0]
+        .to_string();
+    backend::apps::query(
+        &mut shrink,
+        "UPDATE e2ee_key_backup_versions SET session_bytes = session_bytes - 2048
+         WHERE user_id = $1 AND version = 1 RETURNING '{}'::text",
+        &[&user],
+    )
+    .await
+    .unwrap();
+
+    // A：1.5 KiB ほどの新しい行。縮小のあとでも上限を超える。
+    let mut big = session("c", "k", "grow", false, 0);
+    big["session_data"]["ciphertext"] = json!("a".repeat(1500));
+    let app = env.app.clone();
+    let (upload_user, path) = (
+        user.clone(),
+        format!("/api/e2ee/key_backup/keys?version=1&secrets_revision={revision}"),
+    );
+    let upload = tokio::spawn(async move {
+        send(
+            &app,
+            "POST",
+            &path,
+            &upload_user,
+            None,
+            json!({"sessions": [big]}),
+        )
+        .await
+    });
+    // A が B のロックで待っていることを DB で確かめてから B をコミットする。修正の前の実装では、A は
+    // 「書く前」を読んだあと、トリガーの版の行の更新で B を待つので、この順を確実に作れる。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let blocked = env
+            .count(
+                "SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))",
+                &[&shrink_pid],
+            )
+            .await;
+        if blocked > 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the upload never waited for the shrinking transaction"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    shrink.commit().await.unwrap();
+
+    let (status, res) = upload.await.unwrap();
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_version_size")
+        ),
+        "{res}"
+    );
+    assert_eq!(
+        env.count(
+            "SELECT 1 FROM e2ee_key_backup_sessions WHERE user_id = $1 AND session_id = 'grow'",
+            &[&user]
+        )
+        .await,
+        0
+    );
+}
+
+/// `X-Zoo-Backup-Proof` を付けたアップロード（`proof` が `None` なら付けない）。
+async fn upload_with_proof(
+    env: &Env,
+    user: &str,
+    path: &str,
+    proof: Option<&str>,
+    sessions: Value,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", "application/json")
+        .header("X-Dev-User", user);
+    if let Some(proof) = proof {
+        builder = builder.header("X-Zoo-Backup-Proof", proof);
+    }
+    let response = env
+        .app
+        .clone()
+        .oneshot(
+            builder
+                .body(Body::from(json!({"sessions": sessions}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn backup_upload_proofs_block_preemption_and_overwrites() {
+    let env = env().await;
+    let alice = env.identity().await;
+    let user = alice.user.clone();
+    env.ssss(&user, json!([recovery_slot()])).await;
+    let revision = env.revision(&user).await;
+    let backup = zoo_crypto::BackupDecryptionKey::generate();
+    let body = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2",
+                      "auth_data": alice.auth_data(&backup.public_key().to_base64())});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, false, body)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let path = |version: &str| {
+        format!("/api/e2ee/key_backup/keys?version={version}&secrets_revision={revision}")
+    };
+
+    // 版の応答は、サーバーの公開鍵（upload_key）を返す。秘密鍵は返さず、版の一覧にも出さない。
+    let (_, current) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    let upload_key = current["upload_key"].as_str().unwrap().to_owned();
+    let (_, same) = env.get("/api/e2ee/key_backup/versions/1", &user).await;
+    assert_eq!(same["upload_key"], upload_key.as_str());
+    let (_, list) = env.get("/api/e2ee/key_backup/versions", &user).await;
+    assert!(list["versions"][0].get("upload_key").is_none(), "{list}");
+    let stored = env
+        .query(
+            "SELECT to_json(upload_key)::text FROM e2ee_key_backup_versions WHERE user_id = $1",
+            &[&user],
+        )
+        .await;
+    assert_ne!(stored[0], json!(upload_key));
+    let server_key = zoo_crypto::Curve25519PublicKey::from_base64(&upload_key).unwrap();
+    let proof = backup.upload_proof(&server_key, &user, "1").unwrap();
+    let row = |id: &'static str| {
+        let (env, user) = (&env, user.clone());
+        async move {
+            env.query(
+                "SELECT json_build_object('data', session_data, 'proven', proven, 'v', is_verified,
+                   'i', first_message_index)::text
+                 FROM e2ee_key_backup_sessions WHERE user_id = $1 AND session_id = $2",
+                &[&user, id],
+            )
+            .await[0]
+                .clone()
+        }
+    };
+
+    // 先取り：アクセストークンだけを持つ者が、いちばんよい順位の偽の行を先に入れても、
+    // 証明付きの正規の行（順位が低くても）が置き換える。
+    let forged = session("c", "k", "s1", true, 0);
+    let (status, res) =
+        upload_with_proof(&env, &user, &path("1"), None, json!([forged.clone()])).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let legit = session("c", "k", "s1", false, 4);
+    let (status, res) = upload_with_proof(
+        &env,
+        &user,
+        &path("1"),
+        Some(&proof),
+        json!([legit.clone()]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let saved = row("s1").await;
+    assert_eq!(saved["data"], legit["session_data"]);
+    assert_eq!(saved["proven"], true);
+
+    // 上書き：証明のない要求は、証明付きの行をどの順位でも置き換えられない（200 だが何も変えない）。
+    let (status, res) =
+        upload_with_proof(&env, &user, &path("1"), None, json!([forged.clone()])).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    assert_eq!(row("s1").await, saved);
+
+    // 証明付きの行どうしは、今までどおりの順位で決める。
+    let worse = session("c", "k", "s1", false, 9);
+    upload_with_proof(&env, &user, &path("1"), Some(&proof), json!([worse])).await;
+    assert_eq!(row("s1").await, saved);
+    let better = session("c", "k", "s1", true, 0);
+    upload_with_proof(
+        &env,
+        &user,
+        &path("1"),
+        Some(&proof),
+        json!([better.clone()]),
+    )
+    .await;
+    assert_eq!(row("s1").await["data"], better["session_data"]);
+
+    // 証明を送らない古いクライアントの行は、今までどおりの規則で残す。
+    upload_with_proof(
+        &env,
+        &user,
+        &path("1"),
+        None,
+        json!([session("c", "k", "s2", false, 3)]),
+    )
+    .await;
+    let good = session("c", "k", "s2", false, 0);
+    upload_with_proof(&env, &user, &path("1"), None, json!([good.clone()])).await;
+    assert_eq!(row("s2").await["data"], good["session_data"]);
+    assert_eq!(row("s2").await["proven"], false);
+
+    // 正しくない証明は 403 で、何も書かない。別のバックアップ鍵、別のユーザー、別の版、形の崩れた値。
+    let other = zoo_crypto::BackupDecryptionKey::generate();
+    let bob = env.user().await;
+    for bad in [
+        other.upload_proof(&server_key, &user, "1").unwrap(),
+        backup.upload_proof(&server_key, &bob, "1").unwrap(),
+        backup.upload_proof(&server_key, &user, "2").unwrap(),
+        "!!".to_owned(),
+        String::new(),
+    ] {
+        let (status, res) = upload_with_proof(
+            &env,
+            &user,
+            &path("1"),
+            Some(&bad),
+            json!([session("c", "k", "bad", true, 0)]),
+        )
+        .await;
+        assert_eq!(
+            (status, code(&res)),
+            (StatusCode::FORBIDDEN, "E2EE_BACKUP_PROOF_INVALID"),
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        env.count(
+            "SELECT 1 FROM e2ee_key_backup_sessions WHERE user_id = $1 AND session_id = 'bad'",
+            &[&user]
+        )
+        .await,
+        0
+    );
+
+    // 版ごとに鍵が違うので、前の版の証明は新しい版に使えない。
+    let next = zoo_crypto::BackupDecryptionKey::generate();
+    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2",
+                        "auth_data": alice.auth_data(&next.public_key().to_base64()),
+                        "expected_current_version": "1"});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, true, create)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let (_, current) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    let next_key = current["upload_key"].as_str().unwrap().to_owned();
+    assert_ne!(next_key, upload_key);
+    let (status, res) = upload_with_proof(
+        &env,
+        &user,
+        &path("2"),
+        Some(&proof),
+        json!([session("c", "k", "s1", false, 0)]),
+    )
+    .await;
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::FORBIDDEN, "E2EE_BACKUP_PROOF_INVALID")
+    );
+    let next_proof = next
+        .upload_proof(
+            &zoo_crypto::Curve25519PublicKey::from_base64(&next_key).unwrap(),
+            &user,
+            "2",
+        )
+        .unwrap();
+    let (status, res) = upload_with_proof(
+        &env,
+        &user,
+        &path("2"),
+        Some(&next_proof),
+        json!([session("c", "k", "s1", false, 0)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+
+    // 鍵のない版（この列より前に作った版）は、初めて要るときに鍵を作り、そのあとは変えない。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET upload_key = NULL WHERE user_id = $1 AND version = 2",
+        &[&user],
+    )
+    .await;
+    let (_, first_read) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    let (_, second_read) = env
+        .get("/api/e2ee/key_backup/versions/current", &user)
+        .await;
+    assert!(first_read["upload_key"].is_string());
+    assert_eq!(first_read["upload_key"], second_read["upload_key"]);
+    assert_ne!(first_read["upload_key"], json!(next_key));
 }
 
 #[tokio::test]

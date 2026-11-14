@@ -70,6 +70,7 @@ erDiagram
       integer forwarded_count
       boolean is_verified
       jsonb session_data
+      boolean proven
       timestamptz updated_at
     }
     e2ee_key_backup_sessions }o--o| e2ee_key_backup_versions : e2ee_key_backup_sessions_user_id_version_fkey
@@ -80,6 +81,9 @@ erDiagram
       jsonb auth_data
       timestamptz created_at
       timestamptz deleted_at
+      bigint session_count
+      bigint session_bytes
+      text upload_key
     }
     e2ee_key_backup_versions }o--o| users : e2ee_key_backup_versions_user_id_fkey
     e2ee_key_signatures {
