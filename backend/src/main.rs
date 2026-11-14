@@ -61,6 +61,11 @@ async fn main() -> anyhow::Result<()> {
             "Slack import and sync workers are disabled in this process (SLACK_IMPORT_WORKER)"
         );
     }
+    // Slack の Events API の受信口 (#293)。Signing Secret の値はログに出さない
+    tracing::info!(
+        enabled = state.config.slack.events_enabled(),
+        "Slack Events API receiver (POST /api/slack/events; SLACK_SIGNING_SECRET)"
+    );
     // SIGTERM を受けたら、処理中の取り込みを手放す (attempts を消費せず、別の台がすぐに再開できる)
     let (slack_import_stop, slack_import_stop_rx) = tokio::sync::watch::channel(false);
     let slack_import_worker = slack_workers.then(|| {

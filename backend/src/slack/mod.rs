@@ -2,6 +2,7 @@
 pub mod api_import;
 pub mod convert;
 pub mod crypto;
+pub mod events;
 pub mod export;
 pub mod import;
 pub mod link;

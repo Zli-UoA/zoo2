@@ -193,7 +193,7 @@ impl SlackFile {
 }
 
 /// チャンネル参加・トピック変更などのシステムメッセージは取り込まない
-const SKIPPED_SUBTYPES: &[&str] = &[
+pub(super) const SKIPPED_SUBTYPES: &[&str] = &[
     "channel_join",
     "channel_leave",
     "channel_topic",

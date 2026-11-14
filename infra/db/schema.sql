@@ -1834,6 +1834,9 @@ CREATE TABLE slack_channel_syncs (
   last_error text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
+  not_before timestamptz,
+  swept_at timestamptz,
+  run_light boolean NOT NULL DEFAULT false,
   PRIMARY KEY (team_id, slack_channel_id),
   CONSTRAINT slack_channel_syncs_phase_check CHECK (phase IN ('history', 'threads')),
   CONSTRAINT slack_channel_syncs_channel_fkey
@@ -1842,6 +1845,21 @@ CREATE TABLE slack_channel_syncs (
 );
 
 CREATE INDEX idx_slack_channel_syncs_due ON slack_channel_syncs (available_at);
+
+-- Slack の Events API (#293) が届いたチャンネルの「今すぐ同期して」の合図。受信口はこの表にだけ書く。
+-- slack_channel_syncs の行は、同期のトランザクションが長く握るので、受信口がそこを UPDATE して待たされないようにするため、別の表にした。
+-- 同期のワーカーが、最初の合図から数秒たった (デバウンス) チャンネルを、最短間隔を空けて取り、新しい同期を始めるときに行を消す。
+-- 新しいテーブルと NULL 許容のカラムの追加だけなので、適用前のバックエンドが動いたままでも壊れない。
+CREATE TABLE slack_channel_wakes (
+  team_id text NOT NULL,
+  slack_channel_id text NOT NULL,
+  first_at timestamptz NOT NULL DEFAULT now(),
+  last_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (team_id, slack_channel_id),
+  CONSTRAINT slack_channel_wakes_channel_fkey
+    FOREIGN KEY (team_id, slack_channel_id) REFERENCES slack_channels (team_id, slack_channel_id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
 
 -- エクスポートに実体が含まれない添付ファイル。トークンで取得して attachments に移す。
 -- 同じファイルが複数のメッセージに共有されることがあるため、メッセージごとに 1 行持つ。
