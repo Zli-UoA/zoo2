@@ -6,6 +6,7 @@ import type {
   MessageReactionRow,
   MessageRow,
   NotificationRow,
+  CallInviteRow,
   TableName,
   TableRowMap,
   UserRow,
@@ -43,6 +44,7 @@ export type ShapeName =
   | "channelUsers"
   | "channelLeaves"
   | "notifications"
+  | "callInvites"
   | "attachments";
 
 export interface ShapeMeta {
@@ -58,6 +60,7 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   users: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
   channelLeaves: { table: "channel_leave", proxyPath: "channel_leaves" },
+  callInvites: { table: "call_invites", proxyPath: "call_invites" },
   attachments: { table: "attachments", proxyPath: "attachments" },
 };
 
@@ -196,6 +199,19 @@ export const ATTACHMENT_SCHEMA: ShapeSchema<AttachmentRow> = {
   },
 };
 
+export const CALL_INVITE_SCHEMA: ShapeSchema<CallInviteRow> = {
+  table: "call_invites",
+  columns: {
+    id: "uuid",
+    channel_id: "text",
+    inviter_id: "text",
+    invitee_id: "text",
+    status: "text",
+    created_at: "timestamptz",
+    expires_at: "timestamptz",
+  },
+};
+
 export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = {
   notifications: NOTIFICATION_SCHEMA,
   users: USER_SCHEMA,
@@ -204,6 +220,7 @@ export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = 
   message_reactions: MESSAGE_REACTION_SCHEMA,
   channel_user: CHANNEL_USER_SCHEMA,
   channel_leave: CHANNEL_LEAVE_SCHEMA,
+  call_invites: CALL_INVITE_SCHEMA,
   attachments: ATTACHMENT_SCHEMA,
 };
 

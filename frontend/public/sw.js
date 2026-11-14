@@ -530,6 +530,14 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
+const CALL_ACCEPT_CACHE = "zoo-call-accept";
+
+// 通知の「応答」を押した印。画面（`IncomingCallDialog`）が一度だけ読んで消し、あれば応答して通話に入る。
+async function markCall(kind, inviteId) {
+  const cache = await caches.open(CALL_ACCEPT_CACHE);
+  await cache.put(`/__call-${kind}/${inviteId}`, new Response(String(Date.now())));
+}
+
 async function closeCallInvite(tag) {
   const open = await self.registration.getNotifications({ tag });
   for (const notification of open) notification.close();
@@ -582,12 +590,42 @@ self.addEventListener("push", (event) => {
               ? "回應: "
               : "Reaction: ") + body;
       }
+      const isCallInvite =
+        payload.notificationType === "call_invite" && typeof payload.inviteId === "string";
       await self.registration.showNotification(title, {
         body,
         icon: "/icons/icon-192.png",
         badge: "/icons/badge-96.png",
         tag: typeof payload.tag === "string" ? payload.tag : "zoo-activity",
-        data: { url: typeof payload.url === "string" ? payload.url : "/" },
+        data: {
+          url: typeof payload.url === "string" ? payload.url : "/",
+          ...(isCallInvite ? { inviteId: payload.inviteId } : {}),
+        },
+        // 着信は、応答するか拒否するまで出し続ける（期限が来たら call_invite_end で閉じる）。
+        ...(isCallInvite
+          ? {
+              requireInteraction: true,
+              renotify: true,
+              actions: [
+                {
+                  action: "accept",
+                  title: language.startsWith("ja")
+                    ? "応答"
+                    : language.startsWith("zh")
+                      ? "接聽"
+                      : "Accept",
+                },
+                {
+                  action: "decline",
+                  title: language.startsWith("ja")
+                    ? "拒否"
+                    : language.startsWith("zh")
+                      ? "拒絕"
+                      : "Decline",
+                },
+              ],
+            }
+          : {}),
       });
     })(),
   );
@@ -595,8 +633,48 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  const inviteId = event.notification.data?.inviteId;
   event.waitUntil(
     (async () => {
+      if (typeof inviteId === "string") {
+        const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+        const appWindows = windows.filter(
+          (client) => new URL(client.url).origin === self.location.origin,
+        );
+        if (event.action === "decline") {
+          // Service Worker は API のトークンを持たないので、画面に拒否を頼む。
+          // 開いているタブがあれば postMessage、なければ印を残して画面を開く（画面が印を読んで拒否する）。
+          for (const client of appWindows) {
+            client.postMessage({ type: "zoo-call-invite", action: "decline", inviteId });
+          }
+          if (appWindows.length === 0) {
+            await markCall("decline", inviteId);
+            const url = new URL(event.notification.data?.url || "/", self.location.origin);
+            if (url.origin === self.location.origin && url.pathname.startsWith("/channels/")) {
+              await self.clients.openWindow(url.href);
+            }
+          }
+          return;
+        }
+        if (event.action === "accept") {
+          // URL だけで応答させないよう、「応答を押した」印をここで残し、画面が一度だけ読んで消す。
+          await markCall("accept", inviteId);
+          for (const client of appWindows) {
+            client.postMessage({ type: "zoo-call-invite", action: "accept", inviteId });
+          }
+        }
+        if (appWindows.length > 0) {
+          // 開いているタブは、移動（再読み込み）せずに前へ出す。通話中のタブを壊さない。
+          for (const client of appWindows) {
+            try {
+              await client.focus();
+              return;
+            } catch {
+              /* Try another app window or open a new one. */
+            }
+          }
+        }
+      }
       let target = "/";
       try {
         const url = new URL(event.notification.data?.url || "/", self.location.origin);

@@ -44,6 +44,13 @@ export function shapeQueryParams(
     if (!options.userId) throw new Error("Channel leave shapes require a user ID");
     return { where: "user_id = $1", "params[1]": options.userId };
   }
+  if (shape === "callInvites") {
+    if (!options.userId) throw new Error("Call invite shapes require a user ID");
+    return {
+      where: "(invitee_id = $1 OR inviter_id = $1) AND status = 'pending'",
+      "params[1]": options.userId,
+    };
+  }
   if (shape === "notifications") {
     if (!options.userId) throw new Error("Notification shapes require a user ID");
     return { where: "user_id = $1", "params[1]": options.userId };
