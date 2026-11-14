@@ -238,45 +238,52 @@ async fn shape(
     let guard_state = s.clone();
     let guard_principal = p.clone();
     let guard_channel = params.get("channel_id").cloned();
-    let response = match name.as_str() {
-        "messages" | "message_reactions" => {
-            let channel = params
-                .get("channel_id")
-                .ok_or_else(|| AppError::BadRequest("channel_id is required".into()))?;
-            check(&s, &p, channel, "messages:read", false).await?;
-            if name == "messages" {
-                params.insert(
-                    "_app_metadata_allowed".into(),
-                    p.scopes.iter().any(|s| s == "metadata:read").to_string(),
-                );
-                shapes::messages_shape(State(s), p.actor(), Query(params)).await
-            } else {
-                shapes::message_reactions_shape(State(s), p.actor(), Query(params)).await
+    // App のストリームは、委任元の利用者本人の枠から引かず、資格情報ごとに数える。
+    let limit_key = format!("app:{}", p.credential_id);
+    let response = crate::routes::shape_limit::SHAPE_LIMIT_KEY
+        .scope(limit_key, async {
+            match name.as_str() {
+                "messages" | "message_reactions" => {
+                    let channel = params
+                        .get("channel_id")
+                        .ok_or_else(|| AppError::BadRequest("channel_id is required".into()))?;
+                    check(&s, &p, channel, "messages:read", false).await?;
+                    if name == "messages" {
+                        params.insert(
+                            "_app_metadata_allowed".into(),
+                            p.scopes.iter().any(|s| s == "metadata:read").to_string(),
+                        );
+                        shapes::messages_shape(State(s), p.actor(), Query(params)).await
+                    } else {
+                        shapes::message_reactions_shape(State(s), p.actor(), Query(params)).await
+                    }
+                }
+                "channels" => {
+                    p.require("channels:read")?;
+                    shapes::app_channels_shape(s, &p, params).await
+                }
+                "users" => {
+                    p.require("users:read")?;
+                    shapes::users_shape(State(s), p.actor(), Query(params)).await
+                }
+                "channel_users" => {
+                    let channel = params
+                        .get("channel_id")
+                        .ok_or_else(|| AppError::BadRequest("channel_id is required".into()))?;
+                    check(&s, &p, channel, "channels:read", false).await?;
+                    shapes::channel_users_shape(State(s), p.actor(), Query(params)).await
+                }
+                _ => Err(AppError::NotFound("Unknown app shape".into())),
             }
-        }
-        "channels" => {
-            p.require("channels:read")?;
-            shapes::app_channels_shape(s, &p, params).await
-        }
-        "users" => {
-            p.require("users:read")?;
-            shapes::users_shape(State(s), p.actor(), Query(params)).await
-        }
-        "channel_users" => {
-            let channel = params
-                .get("channel_id")
-                .ok_or_else(|| AppError::BadRequest("channel_id is required".into()))?;
-            check(&s, &p, channel, "channels:read", false).await?;
-            shapes::channel_users_shape(State(s), p.actor(), Query(params)).await
-        }
-        _ => Err(AppError::NotFound("Unknown app shape".into())),
-    }?;
+        })
+        .await?;
     let (mut parts, body) = response.into_parts();
     parts.headers.insert(
         "cache-control",
         axum::http::HeaderValue::from_static("private, no-store"),
     );
-    let interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    // 資格情報とチャンネルの権限の再確認は、1 本ごとに毎秒ではなく 30 秒おきにする（接続プールを使い切らないため）。
+    let interval = tokio::time::interval(std::time::Duration::from_secs(30));
     let stream = futures_util::stream::unfold(
         (
             body.into_data_stream(),
