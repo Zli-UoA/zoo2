@@ -262,8 +262,8 @@ fn inbound_key(session: &SessionRef) -> String {
 impl CryptoStore {
     /// `user_id` の暗号ストアを開く。なければ端末を作る（`device_id` は UUID v4）。
     ///
-    /// 保存鍵を失っていて、前の端末を削除待ちに記録できない（一覧が壊れているなど）ときは開かない
-    /// （前の端末の ID を失わないため）。
+    /// 保存鍵を失っていて、前の端末を削除待ちに記録できない（一覧のファイルを読み書きできないなど）
+    /// ときは開かない（前の端末の ID を失わないため）。中身を読めない一覧は退避して記録する。
     pub fn open(root: &Path, user_id: &str) -> Result<Opened> {
         Self::open_with(root, user_id, false)
     }
@@ -920,6 +920,8 @@ impl PendingDeviceDeletion {
 }
 
 const PENDING_FILE: &str = "pending-device-delete.json";
+/// 読めなくなった削除待ちの一覧を退避する先（最後に退避したものだけを持つ）。
+const PENDING_UNREADABLE_FILE: &str = "pending-device-delete.unreadable.json";
 
 /// 削除待ちの一覧を読んで書き戻すあいだ、プロセスをまたいで直列にする（`<root>/pending-device-delete.lock`）。
 /// ユーザーのロックとは別にする（一覧は全ユーザーで共有し、ストアを開く前にも更新するため）。
@@ -936,11 +938,10 @@ fn with_pending_lock<T>(root: &Path, f: impl FnOnce() -> Result<T>) -> Result<T>
 /// 削除待ちに足す。ユーザーと端末の組ごとに残し、別のユーザーの削除待ちを上書きしない。
 /// 同じ端末があれば、`unconfirmed` を合わせ（どちらかが真なら真）、404 の回数は保つ。
 ///
-/// 一覧を読めなければエラーにし、ファイルを変えない（空の一覧で上書きして、ほかの削除待ちを
-/// 失わないため）。
+/// 中身を読めない一覧は退避してから空の一覧に足す（[`read_for_update`]）。
 pub fn mark_device_deletion_pending(root: &Path, pending: &PendingDeviceDeletion) -> Result<()> {
     with_pending_lock(root, || {
-        let mut all = read_pending_device_deletions(root)?;
+        let mut all = read_for_update(root)?;
         if let Some(existing) = all.iter_mut().find(|entry| entry.same_device(pending)) {
             if existing.unconfirmed || !pending.unconfirmed {
                 return Ok(());
@@ -959,7 +960,7 @@ pub fn mark_device_deletion_pending(root: &Path, pending: &PendingDeviceDeletion
 /// 同じ端末の記録を `pending` に置き換える（404 の回数を数えるため）。なければ何もしない。
 pub fn update_pending_device_deletion(root: &Path, pending: &PendingDeviceDeletion) -> Result<()> {
     with_pending_lock(root, || {
-        let mut all = read_pending_device_deletions(root)?;
+        let mut all = read_for_update(root)?;
         let Some(existing) = all.iter_mut().find(|entry| entry.same_device(pending)) else {
             return Ok(());
         };
@@ -968,7 +969,8 @@ pub fn update_pending_device_deletion(root: &Path, pending: &PendingDeviceDeleti
     })
 }
 
-/// 削除待ちの端末（全ユーザー分）。ファイルがなければ空。読めない、形式が違うときはエラー。
+/// 削除待ちの端末（全ユーザー分）。ファイルがなければ空。読めない、形式が違うときはエラー
+/// （ファイルは、次に書き換えるときに退避する）。
 pub fn read_pending_device_deletions(root: &Path) -> Result<Vec<PendingDeviceDeletion>> {
     let path = root.join(PENDING_FILE);
     let bytes = match fs::read(&path) {
@@ -976,13 +978,38 @@ pub fn read_pending_device_deletions(root: &Path) -> Result<Vec<PendingDeviceDel
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err.into()),
     };
-    serde_json::from_slice(&bytes).with_context(|| format!("{} を読めません", path.display()))
+    parse_pending(&bytes).with_context(|| format!("{} を読めません", path.display()))
 }
 
-/// 消せた端末を、削除待ちから外す。一覧を読めなければエラーにし、ファイルを変えない。
+fn parse_pending(bytes: &[u8]) -> serde_json::Result<Vec<PendingDeviceDeletion>> {
+    serde_json::from_slice(bytes)
+}
+
+/// 書き換えるために一覧を読む（削除待ちのロックの中で呼ぶ）。中身を読めない（形式が違う）ファイルは
+/// `pending-device-delete.unreadable.json` に退避して、空の一覧から始める。読めないファイルを残しても
+/// 消し直しには使えず、以後の削除待ちを記録できなくなる（保存鍵を失ったときは暗号ストアも開けない）
+/// ため。ファイルを読み出せない（権限など）ときはエラーにし、ファイルを変えない。
+fn read_for_update(root: &Path) -> Result<Vec<PendingDeviceDeletion>> {
+    let path = root.join(PENDING_FILE);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.into()),
+    };
+    match parse_pending(&bytes) {
+        Ok(all) => Ok(all),
+        Err(_) => {
+            fs::rename(&path, root.join(PENDING_UNREADABLE_FILE))
+                .with_context(|| format!("{} を退避できません", path.display()))?;
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// 消せた端末を、削除待ちから外す。
 pub fn clear_pending_device_deletion(root: &Path, done: &PendingDeviceDeletion) -> Result<()> {
     with_pending_lock(root, || {
-        let mut rest = read_pending_device_deletions(root)?;
+        let mut rest = read_for_update(root)?;
         let before = rest.len();
         rest.retain(|entry| !entry.same_device(done));
         if rest.len() == before {

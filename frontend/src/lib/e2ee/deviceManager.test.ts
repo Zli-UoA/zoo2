@@ -11,6 +11,7 @@ import {
 } from "./deviceManager";
 import {
   CRYPTO_PENDING_DEVICE_DELETE_KEY,
+  CRYPTO_PENDING_DEVICE_DELETE_UNREADABLE_KEY,
   markDeviceDeletionPending,
   readPendingDeviceDeletions,
   updatePendingDeviceDeletion,
@@ -803,22 +804,29 @@ describe("E2eeDeviceManager", () => {
     });
   });
 
-  it("削除待ちの一覧が壊れていたら、消し直さず、空の一覧で上書きしない", async () => {
+  it("削除待ちの一覧が壊れていたら、消し直さず、退避してから記録し直す", async () => {
     window.localStorage.setItem(CRYPTO_PENDING_DEVICE_DELETE_KEY, "{broken");
     const { client, requests } = fakeClient();
     await retryPendingDeviceDeletion(client, USER);
     expect(requests).toEqual([]);
     expect(() => readPendingDeviceDeletions()).toThrow();
-    markDeviceDeletionPending({ userId: USER, deviceId: DEVICE });
-    expect(window.localStorage.getItem(CRYPTO_PENDING_DEVICE_DELETE_KEY)).toBe("{broken");
 
+    // ログアウトで削除 API が失敗しても、削除待ちに記録できる。読めない値は別のキーに残す。
     const { worker } = fakeWorker({
       open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
     });
-    const instance = manager(worker, client);
+    const failing = fakeClient({
+      [`DELETE /api/e2ee/devices/${DEVICE}`]: () => {
+        throw new ApiError(503, "offline");
+      },
+    });
+    const instance = manager(worker, failing.client);
     await instance.start();
     await instance.destroy();
-    expect(window.localStorage.getItem(CRYPTO_PENDING_DEVICE_DELETE_KEY)).toBe("{broken");
+    expect(window.localStorage.getItem(CRYPTO_PENDING_DEVICE_DELETE_UNREADABLE_KEY)).toBe(
+      "{broken",
+    );
+    expect(readPendingDeviceDeletions()).toEqual([{ userId: USER, deviceId: DEVICE }]);
   });
 
   it("同じ端末の削除待ちが重なっていても、1 回だけ消し直して足し直さない", async () => {
@@ -833,6 +841,17 @@ describe("E2eeDeviceManager", () => {
     expect(requests.filter((r) => r.method === "DELETE")).toHaveLength(1);
     expect(readPendingDeviceDeletions()).toEqual([]);
   });
+
+  it.each(["null", "123", "{}", JSON.stringify([{ user_id: USER, device_id: DEVICE }])])(
+    "形式の違う削除待ち（%s）は読めないものとして退避する",
+    (raw) => {
+      window.localStorage.setItem(CRYPTO_PENDING_DEVICE_DELETE_KEY, raw);
+      expect(() => readPendingDeviceDeletions()).toThrow();
+      markDeviceDeletionPending({ userId: USER, deviceId: DEVICE });
+      expect(window.localStorage.getItem(CRYPTO_PENDING_DEVICE_DELETE_UNREADABLE_KEY)).toBe(raw);
+      expect(readPendingDeviceDeletions()).toEqual([{ userId: USER, deviceId: DEVICE }]);
+    },
+  );
 
   it("前の形式の削除待ち（unconfirmed なし）は、登録済みの端末として扱う", async () => {
     window.localStorage.setItem(

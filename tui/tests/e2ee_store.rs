@@ -516,8 +516,6 @@ async fn logout_destroys_the_store_without_a_storage_key_even_if_the_pending_lis
     std::fs::remove_file(root.join(BOB).join("storage.key")).unwrap();
     let file = root.join("pending-device-delete.json");
     std::fs::write(&file, b"{broken").unwrap();
-    // 起動では、前の端末を記録できなければ開かない。
-    assert!(CryptoStore::open(&root, BOB).is_err());
 
     let server = MockServer::start().await;
     Mock::given(method("DELETE"))
@@ -540,7 +538,11 @@ async fn logout_destroys_the_store_without_a_storage_key_even_if_the_pending_lis
         .map(|request| request.url.path().to_owned())
         .collect();
     assert!(deleted.contains(&format!("/api/e2ee/devices/{old_device}")));
-    assert_eq!(std::fs::read(&file).unwrap(), b"{broken");
+    // 読めない一覧は書き換えずに退避してある。
+    assert_eq!(
+        std::fs::read(root.join("pending-device-delete.unreadable.json")).unwrap(),
+        b"{broken"
+    );
 }
 
 #[tokio::test]
@@ -627,7 +629,7 @@ fn marking_a_device_again_keeps_unconfirmed_and_the_count() {
 }
 
 #[tokio::test]
-async fn a_broken_pending_list_is_neither_retried_nor_overwritten() {
+async fn a_broken_pending_list_is_moved_aside_before_recording_again() {
     let dir = tempfile::tempdir().unwrap();
     let root = store::crypto_root(dir.path());
     std::fs::create_dir_all(&root).unwrap();
@@ -642,10 +644,38 @@ async fn a_broken_pending_list_is_neither_retried_nor_overwritten() {
     let api = api_for(&server);
     manager::retry_pending_device_deletion(&api, &root, BOB, &mut Default::default()).await;
     assert!(store::read_pending_device_deletions(&root).is_err());
+    // 次に記録するときに、読めないファイルを退避してから、空の一覧に足す。
     let entry = store::PendingDeviceDeletion::new(BOB, "d", false);
-    assert!(store::mark_device_deletion_pending(&root, &entry).is_err());
-    assert!(store::clear_pending_device_deletion(&root, &entry).is_err());
-    assert_eq!(std::fs::read(&file).unwrap(), b"{broken");
+    store::mark_device_deletion_pending(&root, &entry).unwrap();
+    assert_eq!(
+        std::fs::read(root.join("pending-device-delete.unreadable.json")).unwrap(),
+        b"{broken"
+    );
+    assert_eq!(
+        store::read_pending_device_deletions(&root).unwrap(),
+        vec![entry]
+    );
+}
+
+#[test]
+fn losing_the_storage_key_with_a_broken_pending_list_still_records_the_old_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let first = CryptoStore::open(&root, BOB).unwrap().store;
+    let old_device = first.device_id().to_owned();
+    drop(first);
+    std::fs::remove_file(root.join(BOB).join("storage.key")).unwrap();
+    std::fs::write(root.join("pending-device-delete.json"), b"{broken").unwrap();
+    // 起動でも開ける（読めない一覧は退避して、前の端末を記録する）。
+    let reopened = CryptoStore::open(&root, BOB).unwrap();
+    assert_eq!(
+        reopened.replaced_device_id.as_deref(),
+        Some(old_device.as_str())
+    );
+    assert_eq!(
+        store::read_pending_device_deletions(&root).unwrap(),
+        vec![store::PendingDeviceDeletion::new(BOB, &old_device, true)]
+    );
 }
 
 #[tokio::test]
