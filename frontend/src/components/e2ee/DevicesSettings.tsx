@@ -79,7 +79,9 @@ function useEncryptedPeers(userId: string | null): string[] {
 
 function toDevicesError(error: unknown, fallback: DevicesErrorCode): DevicesErrorCode {
   if (error instanceof RevocationConflictError) return "mismatch";
-  if (error instanceof RevocationPendingError) return "revocationPending";
+  if (error instanceof RevocationPendingError || error instanceof RevocationChangedError) {
+    return "revocationPending";
+  }
   const code = toEncryptionError(error, "saveFailed");
   return code === "saveFailed" ? fallback : code;
 }
@@ -190,6 +192,8 @@ function DevicesPanel() {
     versionsWithoutKey: [],
   });
   const loadSeq = useRef(0);
+  /** 再開できずに競合の画面を出した失効（「やり直す」で、この失効の記録だけを捨てる）。 */
+  const conflictRef = useRef<string | null>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -360,6 +364,12 @@ function DevicesPanel() {
         await afterUnlock();
       } catch (error) {
         if (error instanceof ServerKeyMismatchError) {
+          // 再開できない失効（別の端末が SSSS を作り直した）の記録は残る。「やり直す」で、この失効だけを
+          // 捨ててから始め直す。
+          const stale = await revocationStatus(deps).catch(() => null);
+          conflictRef.current = stale?.revocation_id ?? null;
+          // 始め直すときも、記録した範囲と端末を引き継ぐ（端末だけに縮めない）。
+          if (stale) planRef.current = { scope: stale.scope, selected: stale.deleted_devices };
           setPhase({ phase: "conflict" });
           return;
         }
@@ -454,11 +464,12 @@ function DevicesPanel() {
         error: null,
         revocation: { phase: "running", stage: "prepared" },
       }));
+      let target: string | undefined;
       void (async () => {
         try {
           // 再認証のあいだに画面を離れて別の失効を始めても、その失効を（キーの控えや実行の操作を
           // 待たずに）保存しないよう、実行を始めた失効を固定する。
-          const target = (await revocationStatus(deps))?.revocation_id;
+          target = (await revocationStatus(deps))?.revocation_id;
           const token = await reauth();
           if (!mounted.current) return;
           const result = await continueRevocation(
@@ -482,7 +493,9 @@ function DevicesPanel() {
             return;
           }
           if (error instanceof RevocationConflictError || error instanceof ServerKeyMismatchError) {
-            await abandonRevocation(deps).catch(() => undefined);
+            // 実行した失効だけを捨てる（別の失効に置き換わっていたら捨てない）。
+            await abandonRevocation(deps, target).catch(() => undefined);
+            conflictRef.current = null;
             setPhase({ phase: "conflict" });
             return;
           }
@@ -496,7 +509,22 @@ function DevicesPanel() {
     },
     onRestart: () => {
       resumeRef.current = false;
-      setPhase({ phase: "unlock", resume: false });
+      const stale = conflictRef.current;
+      conflictRef.current = null;
+      if (!deps || stale === null) {
+        setPhase({ phase: "unlock", resume: false });
+        return;
+      }
+      // 再開できなかった失効の記録を、その失効であることを確かめてから捨てる。別の失効に置き換わって
+      // いたら捨てずに一覧に戻す（その失効は「失効を続ける」から続ける）。
+      ready((current) => ({ ...current, busy: "revocation", error: null }));
+      void abandonRevocation(deps, stale).then(
+        () => setPhase({ phase: "unlock", resume: false }),
+        (error) => {
+          setPhase(null, toDevicesError(error, "revocationFailed"));
+          void load();
+        },
+      );
     },
     onCancelRevocation: () => {
       setPhase(null);

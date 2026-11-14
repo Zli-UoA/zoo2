@@ -99,7 +99,7 @@ export type CryptoOperation =
       keysQuery: JsonObject;
       currentVersion: JsonObject;
     }
-  | { op: "revocationAbandon" }
+  | { op: "revocationAbandon"; expectedId?: string }
   | { op: "trustRecordedUsers" }
   | { op: "trustEvaluate"; keysQuery: JsonObject; userIds: string[] }
   | { op: "trustPinResult"; pin: NewTofuPin; registered: boolean }

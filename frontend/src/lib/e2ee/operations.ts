@@ -204,7 +204,7 @@ export class CryptoOperations {
         );
         return null;
       case "revocationAbandon":
-        await this.revocation.abandon(this.opened());
+        await this.revocation.abandon(this.opened(), request.expectedId);
         return null;
       case "trustRecordedUsers":
         return this.opened().trustStore.recordedUsers();

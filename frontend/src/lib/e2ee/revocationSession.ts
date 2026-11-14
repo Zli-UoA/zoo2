@@ -239,7 +239,15 @@ export class RevocationSession {
   }
 
   /** 失効の記録を消す（やり直すとき）。 */
-  async abandon(store: CryptoStore): Promise<void> {
+  async abandon(store: CryptoStore, expectedId?: string): Promise<void> {
+    // 捨てる失効を指定されたら、暗号ストアの記録がその失効のときだけ捨てる（別の画面で始め直した
+    // 失効を、前の画面の「やり直す」で消さない）。
+    if (expectedId !== undefined) {
+      const stored = await store.revocationSummary();
+      if (stored && stored.revocation_id !== expectedId) {
+        throw coded(REVOCATION_CHANGED, "捨てようとした失効が、別の失効に置き換わりました");
+      }
+    }
     this.discard();
     await store.clearRevocation();
   }

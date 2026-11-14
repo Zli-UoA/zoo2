@@ -456,6 +456,8 @@ async function runRevocation(
       currentVersion: current ?? {},
     });
   } catch (error) {
+    // 別の失効に置き換わった（Worker の照合）。読み直しの不一致ではないので、今の失効を捨てさせない。
+    if (codeOf(error) === REVOCATION_CHANGED) throw new RevocationChangedError();
     throw new ServerKeyMismatchError((error as Error).message);
   }
   return {
@@ -470,8 +472,20 @@ function ssssConflictCode(error: RevocationConflictError): boolean {
 }
 
 /** やり直すために、保存した失効を捨てる。 */
-export async function abandonRevocation(deps: E2eeSetupDeps): Promise<void> {
-  await deps.worker.request({ op: "revocationAbandon" });
+export async function abandonRevocation(
+  deps: E2eeSetupDeps,
+  /**
+   * 捨てる失効（`revocation_id`）。暗号ストアの記録が別の失効なら捨てずに {@link RevocationChangedError}。
+   * 省略したら、記録をそのまま捨てる。
+   */
+  expectedId?: string,
+): Promise<void> {
+  try {
+    await deps.worker.request({ op: "revocationAbandon", expectedId });
+  } catch (error) {
+    if (codeOf(error) === REVOCATION_CHANGED) throw new RevocationChangedError();
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

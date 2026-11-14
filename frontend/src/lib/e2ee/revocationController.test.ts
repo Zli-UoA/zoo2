@@ -619,6 +619,33 @@ describe("失効の手順", () => {
     expect(await revocationStatus(deps)).not.toBeNull();
   });
 
+  it("最後の一覧を読むあいだに別の失効に置き換わったら、今の失効を捨てさせない", async () => {
+    const { server, deps, recoveryKey } = await setUp();
+    await openSecretStorage(deps, { kind: "recovery", recoveryKey });
+    await beginRevocation(deps, "device_only", []);
+    let second: Awaited<ReturnType<typeof beginRevocation>> | null = null;
+    server.after = {
+      route: "GET /api/e2ee/devices",
+      run: async () => {
+        await abandonRevocation(deps);
+        second = await beginRevocation(deps, "device_only", []);
+      },
+    };
+    // 読み直しの不一致（`ServerKeyMismatchError`）ではなく、置き換わったことを返す。
+    await expect(continueRevocation(deps, TOKEN)).rejects.toBeInstanceOf(RevocationChangedError);
+    expect(await revocationStatus(deps)).toMatchObject({ revocation_id: second!.revocation_id });
+  });
+
+  it("捨てる失効を指定したら、その失効の記録だけを捨てる", async () => {
+    const { deps, recoveryKey } = await setUp();
+    await openSecretStorage(deps, { kind: "recovery", recoveryKey });
+    const first = await beginRevocation(deps, "device_only", []);
+    await expect(abandonRevocation(deps, "another")).rejects.toBeInstanceOf(RevocationChangedError);
+    expect(await revocationStatus(deps)).toMatchObject({ revocation_id: first.revocation_id });
+    await abandonRevocation(deps, first.revocation_id);
+    expect(await revocationStatus(deps)).toBeNull();
+  });
+
   it("終わっていない失効があれば、新しい失効を始めない", async () => {
     const { server, deps, recoveryKey } = await setUp();
     await openSecretStorage(deps, { kind: "recovery", recoveryKey });

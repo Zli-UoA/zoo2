@@ -6,6 +6,7 @@ import type { CryptoWorker } from "../../lib/e2ee/cryptoWorker";
 import { E2eeContext, type E2eeContextValue } from "../../lib/e2ee/e2ee-context";
 import * as controller from "../../lib/e2ee/revocationController";
 import { LocaleProvider } from "../i18n/LocaleProvider";
+import { ServerKeyMismatchError } from "../../lib/e2ee/setupController";
 import { DevicesSettings } from "./DevicesSettings";
 
 // Electric の行。`users` を差し替えて描画し直すと、`nameOf` が作り直されて一覧を読み直す。
@@ -237,4 +238,24 @@ it("keeps the list and offers a retry when reloading after a rename fails", asyn
   await userEvent.click(screen.getByRole("button", { name: "もう一度試す" }));
   await waitFor(() => expect(screen.queryByText(/端末の一覧を読み直せませんでした/)).toBeNull());
   expect(mocked.loadDevices.mock.calls.length).toBe(loads + 2);
+});
+
+it("discards only the revocation that could not be resumed before starting over", async () => {
+  // 別の端末が SSSS を作り直したので、止まった失効を再開できない（記録は残る）。
+  mocked.revocationStatus.mockResolvedValue({
+    ...(summary("device_only", "secret_storage_saved") as object),
+    revocation_id: "stale",
+  } as never);
+  mocked.resumeRevocation.mockRejectedValue(new ServerKeyMismatchError("mismatch"));
+  mocked.abandonRevocation.mockImplementation(async () => {
+    mocked.revocationStatus.mockResolvedValue(null);
+  });
+  renderPanel();
+  await userEvent.click(await screen.findByRole("button", { name: "失効を続ける" }));
+  await userEvent.type(screen.getByLabelText("リカバリーキー"), "key");
+  await userEvent.click(screen.getByRole("button", { name: "リカバリーキーで解錠" }));
+  await userEvent.click(await screen.findByRole("button", { name: "やり直す" }));
+  expect(mocked.abandonRevocation).toHaveBeenCalledWith(expect.anything(), "stale");
+  // 記録を捨てたので、始め直せる（解錠の段に戻る）。
+  expect(await screen.findByRole("button", { name: "リカバリーキーで解錠" })).toBeVisible();
 });
