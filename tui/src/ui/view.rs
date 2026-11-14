@@ -26,12 +26,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
     // 長い表示（増えた配布先、配れない相手）は、タイムラインと同じ折り返し（表示幅で切る）で自分で
     // 折り返し、その行数を高さにする（画面の半分まで）。`Paragraph` の語ごとの折り返しでは、行数が
-    // 表示幅から計算した数より増えて、末尾が切れることがあるため。
-    let notice: Vec<Line<'static>> = encryption_notice(app)
-        .into_iter()
-        .flat_map(|line| timeline::wrap(line, usize::from(frame.area().width)))
-        .collect();
-    let notice_height = notice.len().min(usize::from(frame.area().height / 2)) as u16;
+    // 表示幅から計算した数より増えて、末尾が切れることがあるため。収まらなければ人数だけを出し、
+    // 全員は `V` の詳細の画面で確かめる。
+    let notice = encryption_notice(
+        app,
+        usize::from(frame.area().width),
+        usize::from(frame.area().height / 2),
+    );
+    let notice_height = notice.len() as u16;
     let [main, notice_area, composer, status] = Layout::vertical([
         Constraint::Min(5),
         Constraint::Length(notice_height),
@@ -72,6 +74,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ),
         Mode::Encryption => draw_encryption(frame, app),
         Mode::Create(form) => draw_create(frame, form),
+        Mode::Recipients { scroll } => {
+            let scroll = *scroll;
+            draw_recipients(frame, app, scroll);
+        }
         _ => {}
     }
 }
@@ -79,22 +85,26 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 /// 暗号化チャンネルの送信画面の表示（docs/e2ee.md の「鍵の配布先の判定」。React の
 /// `EncryptionRecipientsNotice` と同じ）。入力欄の上に、配布先の数、前回から増えた配布先、鍵を配れない
 /// 相手と理由を出す。格下げを見つけたら、送らないことを出す。平文のチャンネルでは何も出さない。
-fn encryption_notice(app: &App) -> Vec<Line<'static>> {
+fn encryption_notice(app: &App, width: usize, max_lines: usize) -> Vec<Line<'static>> {
+    let wrap = |lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
+        lines
+            .into_iter()
+            .flat_map(|line| timeline::wrap(line, width))
+            .collect()
+    };
     let Some(channel_id) = app.current.as_deref() else {
         return Vec::new();
     };
-    let warn = Style::new().fg(Color::Yellow);
     match app.channel_encryption(channel_id) {
         ChannelEncryption::Plain => return Vec::new(),
         ChannelEncryption::Downgraded => {
-            return vec![Line::styled(
+            return wrap(vec![Line::styled(
                 format!(" ⚠ {}", e2ee_chat::DOWNGRADED),
                 Style::new().fg(Color::Red),
-            )];
+            )]);
         }
         ChannelEncryption::Encrypted => {}
     }
-    let name = |id: &str| app.store.display_name(id);
     let Some(summary) = app.recipients.get(channel_id) else {
         let text = match app.encryption.status {
             Some(E2eeStatus::Unlocked) => {
@@ -102,20 +112,27 @@ fn encryption_notice(app: &App) -> Vec<Line<'static>> {
             }
             _ => " 🔒 暗号化チャンネルに送るには、この端末で暗号化を解錠してください (E)",
         };
-        return vec![Line::styled(text, DIM)];
+        return wrap(vec![Line::styled(text, DIM)]);
     };
-    let mut lines = vec![Line::styled(
-        format!(
-            " 🔒 {} 人の {} 台の端末あてに暗号化しています。",
-            summary.user_count, summary.device_count
-        ),
-        DIM,
-    )];
+    let has_lists = !summary.added_user_ids.is_empty() || !summary.undeliverable.is_empty();
+    let mut summary_line = format!(
+        " 🔒 {} 人の {} 台の端末あてに暗号化しています。",
+        summary.user_count, summary.device_count
+    );
+    if has_lists {
+        summary_line.push_str(" V: 配布先の詳細");
+    }
+    let summary_line = Line::styled(summary_line, DIM);
+    let name = |id: &str| app.store.display_name(id);
+    let added_style = Style::new().add_modifier(Modifier::BOLD);
+    let warn = Style::new().fg(Color::Yellow);
+    // 全部を出す形。
+    let mut full = vec![summary_line.clone()];
     if !summary.added_user_ids.is_empty() {
         let names: Vec<String> = summary.added_user_ids.iter().map(|id| name(id)).collect();
-        lines.push(Line::styled(
+        full.push(Line::styled(
             format!(" 前回の送信から増えた配布先：{}", names.join(", ")),
-            Style::new().add_modifier(Modifier::BOLD),
+            added_style,
         ));
     }
     if !summary.undeliverable.is_empty() {
@@ -124,7 +141,7 @@ fn encryption_notice(app: &App) -> Vec<Line<'static>> {
             .iter()
             .map(|(id, reason)| reason.describe(&name(id)))
             .collect();
-        lines.push(Line::styled(
+        full.push(Line::styled(
             format!(
                 " 次の人は新しいメッセージを読めません：{}",
                 reasons.join("、")
@@ -132,7 +149,89 @@ fn encryption_notice(app: &App) -> Vec<Line<'static>> {
             warn,
         ));
     }
-    lines
+    let full = wrap(full);
+    if full.len() <= max_lines {
+        return full;
+    }
+    // 収まらなければ人数だけを出し、全員は `V` の詳細の画面で確かめてもらう（増えた人と配れない人を、
+    // 末尾が切れて見落とさないように、どちらも必ず 1 行は出す）。
+    let mut compact = vec![summary_line];
+    if !summary.added_user_ids.is_empty() {
+        compact.push(Line::styled(
+            format!(
+                " 前回の送信から増えた配布先：{} 人（V で一覧）",
+                summary.added_user_ids.len()
+            ),
+            added_style,
+        ));
+    }
+    if !summary.undeliverable.is_empty() {
+        compact.push(Line::styled(
+            format!(
+                " 次の人は新しいメッセージを読めません：{} 人（V で一覧）",
+                summary.undeliverable.len()
+            ),
+            warn,
+        ));
+    }
+    let mut compact = wrap(compact);
+    compact.truncate(max_lines.max(1));
+    compact
+}
+
+/// 配布先の詳細（`V`）。増えた配布先と、鍵を配れない相手と理由を、1 人 1 行で全員出す。
+pub(super) fn recipient_details(app: &App) -> Option<Vec<Line<'static>>> {
+    let channel_id = app.current.as_deref()?;
+    let summary = app.recipients.get(channel_id)?;
+    let name = |id: &str| app.store.display_name(id);
+    let mut lines = vec![Line::from(format!(
+        "{} 人の {} 台の端末あてに暗号化しています。",
+        summary.user_count, summary.device_count
+    ))];
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        format!(
+            "前回の送信から増えた配布先（{} 人）",
+            summary.added_user_ids.len()
+        ),
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    for id in &summary.added_user_ids {
+        lines.push(Line::from(format!("  {}", name(id))));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        format!(
+            "次の人は新しいメッセージを読めません（{} 人）",
+            summary.undeliverable.len()
+        ),
+        Style::new().fg(Color::Yellow),
+    ));
+    for (id, reason) in &summary.undeliverable {
+        lines.push(Line::from(format!("  {}", reason.describe(&name(id)))));
+    }
+    Some(lines)
+}
+
+/// 配布先の詳細の画面。`scroll` 行目から、画面に入るだけ出す。
+fn draw_recipients(frame: &mut Frame, app: &App, scroll: usize) {
+    let Some(lines) = recipient_details(app) else {
+        return;
+    };
+    let height = usize::from(frame.area().height.saturating_sub(4)).max(1);
+    let total = lines.len();
+    let scroll = scroll.min(total.saturating_sub(1));
+    let mut visible: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(height).collect();
+    visible.push(Line::styled(
+        format!(
+            "j/k: スクロール ({}-{} / {}) / Esc: 閉じる",
+            scroll + 1,
+            (scroll + height).min(total),
+            total
+        ),
+        DIM,
+    ));
+    draw_popup_sized(frame, "配布先の詳細", visible, 72);
 }
 
 /// チャンネルか DM の作成の入力欄（#361）。
@@ -578,6 +677,7 @@ const HELP: &[(&str, &str)] = &[
     ("/", "チャンネル・スレッドを検索"),
     ("u", "選択中のスレッドを再開"),
     ("c / m", "チャンネル / DM を作る (Tab で暗号化)"),
+    ("V", "暗号化チャンネルの配布先の詳細"),
     ("R", "送れなかった本文を入力欄に戻す"),
     ("E", "暗号化（初回設定・解錠）"),
     ("q / Ctrl+C", "終了"),
@@ -2728,6 +2828,78 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.composer.lines(), ["平文"]);
         assert!(render_sized(&mut app, 140, 30).contains("記録を読めないため"));
+    }
+
+    #[tokio::test]
+    async fn long_recipient_lists_fall_back_to_counts_and_a_details_screen() {
+        use crate::e2ee::store::{RecipientSummary, UndeliverableReason};
+        let summary = |added: usize, undeliverable: usize| RecipientSummary {
+            epoch: 1,
+            user_count: 2,
+            device_count: 3,
+            user_ids: Vec::new(),
+            added_user_ids: (0..added).map(|i| format!("added-user-{i:05}")).collect(),
+            undeliverable: (0..undeliverable)
+                .map(|i| {
+                    (
+                        format!("missing-user-{i:03}"),
+                        UndeliverableReason::NotSetUp,
+                    )
+                })
+                .collect(),
+            new_pins: Vec::new(),
+        };
+        let squash = |screen: String| -> String {
+            screen
+                .chars()
+                .filter(|c| !c.is_whitespace() && *c != '│')
+                .collect()
+        };
+
+        // 4 人ずつなら、幅 50 でも折り返して全員を出す。
+        let mut app = encrypted_app("secret-e2ee", true);
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: summary(4, 4),
+        });
+        let screen = squash(render_sized(&mut app, 50, 40));
+        assert!(screen.contains("added-user-00003"), "{screen}");
+        assert!(
+            screen.contains("missing-user-003さんは暗号化を設定していません"),
+            "{screen}"
+        );
+
+        // 収まらなければ人数だけを出し、増えた人と配れない人の両方を必ず出す。
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: summary(30, 5),
+        });
+        let screen = squash(render_sized(&mut app, 50, 20));
+        assert!(
+            screen.contains("前回の送信から増えた配布先：30人（Vで一覧）"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("次の人は新しいメッセージを読めません：5人（Vで一覧）"),
+            "{screen}"
+        );
+
+        // `V` の詳細の画面では、スクロールして全員を確かめられる。
+        app.focus = Focus::Messages;
+        press(&mut app, KeyCode::Char('V'));
+        assert!(matches!(app.mode, Mode::Recipients { .. }));
+        let screen = squash(render_sized(&mut app, 50, 20));
+        assert!(screen.contains("配布先の詳細"), "{screen}");
+        assert!(screen.contains("added-user-00000"), "{screen}");
+        assert!(!screen.contains("missing-user-004"), "{screen}");
+        press(&mut app, KeyCode::Char('G'));
+        let screen = squash(render_sized(&mut app, 50, 20));
+        assert!(
+            screen.contains("missing-user-004さんは暗号化を設定していません"),
+            "{screen}"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[tokio::test]
