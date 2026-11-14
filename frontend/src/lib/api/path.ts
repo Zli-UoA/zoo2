@@ -31,7 +31,7 @@ export class UnsafeApiPathError extends Error {
 /**
  * パスのうちクエリより前の部分に、正規化すると別のパスになる文字列や区切り文字が
  * 含まれていないかを確認する。`/` 始まりでない、`\`、`#`、`//`、エンコードされた
- * `/` と `\`、`.` / `..` の区間のいずれかがあれば拒否する。
+ * `\`、`.` / `..` の区間のいずれかがあれば拒否する。
  */
 export function assertSafeApiPath(path: string): void {
   const queryStart = path.indexOf("?");
@@ -44,7 +44,7 @@ export function assertSafeApiPath(path: string): void {
     /[\t\n\r]/.test(path) ||
     pathname.includes("#") ||
     path.includes("#") ||
-    /%(2f|5c)/i.test(pathname) ||
+    /%5c/i.test(pathname) ||
     pathname.split("/").some((segment) => {
       const decoded = segment.replace(/%2e/gi, ".");
       return decoded === "." || decoded === "..";

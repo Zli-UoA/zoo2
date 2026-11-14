@@ -27,6 +27,7 @@ describe("assertSafeApiPath", () => {
     "/api/channels/abc/read-state?after=1",
     "/api/threads?cursor=a/b",
     "/api/e2ee/devices/a%20b",
+    "/api/home/https%3A%2F%2Fexample.test%2Fnotes%2F1/thread",
   ])("allows %s", (path) => {
     expect(() => assertSafeApiPath(path)).not.toThrow();
   });
@@ -37,7 +38,6 @@ describe("assertSafeApiPath", () => {
     "/api/channels/../apps/x",
     "/api/channels/./x",
     "/api/channels/%2e%2e/x",
-    "/api/channels/a%2Fb/view",
     "/api/channels/a%5Cb/view",
     "/api/channels/a\\b/view",
     "/api/channels/a#b",
