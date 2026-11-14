@@ -1162,10 +1162,10 @@
     "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey. This device stays unlocked either way.",
     "badge": "Encrypted",
     "encryptChannel": "Encrypt end-to-end",
-    "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later.",
     "encryptChannelPrivateOnly": "Only private channels can be encrypted.",
     "encryptDm": "Encrypt end-to-end",
-    "encryptDmHelp": "Only participants' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "encryptDmHelp": "Only participants' verified devices can read messages. Encryption can't be turned off later.",
     "undecryptable": {
       "keyMissing": "Waiting for the key to decrypt this message.",
       "locked": "Unlock encryption on this device to read this message.",

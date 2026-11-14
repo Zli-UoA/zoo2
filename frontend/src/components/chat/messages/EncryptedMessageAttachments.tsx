@@ -338,7 +338,8 @@ function EncryptedDownloadButton({
     if (downloading) return;
     setDownloading(true);
     try {
-      saveBlob(blob ?? (await source.load(attachment)), attachment.name);
+      // 押したことを、利用者の明示的な再試行として扱う（覚えている復号の失敗も取り直す）。
+      saveBlob(blob ?? (await source.load(attachment, { retry: true })), attachment.name);
     } catch (error) {
       toast.error(
         error instanceof EncryptedAttachmentError && error.reason === "decrypt"

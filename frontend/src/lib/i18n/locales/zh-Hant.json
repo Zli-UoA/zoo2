@@ -1162,10 +1162,10 @@
     "reunlockToAddDescription": "若要新增通行金鑰，請使用通行金鑰或復原金鑰重新解鎖。此裝置的解鎖狀態不會改變。",
     "badge": "已加密",
     "encryptChannel": "端對端加密",
-    "encryptChannelHelp": "只有成員已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",
+    "encryptChannelHelp": "只有成員已驗證的裝置才能讀取訊息。加密之後無法取消。",
     "encryptChannelPrivateOnly": "只有私人頻道可以加密。",
     "encryptDm": "端對端加密",
-    "encryptDmHelp": "只有參與者已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",
+    "encryptDmHelp": "只有參與者已驗證的裝置才能讀取訊息。加密之後無法取消。",
     "undecryptable": {
       "keyMissing": "解密此訊息的金鑰尚未送達。",
       "locked": "在此裝置上解鎖加密後即可讀取此訊息。",

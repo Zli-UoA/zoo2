@@ -1162,10 +1162,10 @@
     "reunlockToAddDescription": "要添加通行密钥，请使用通行密钥或恢复密钥重新解锁。此设备的解锁状态不会改变。",
     "badge": "已加密",
     "encryptChannel": "端到端加密",
-    "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消，目前也还不能发送附件。",
+    "encryptChannelHelp": "只有成员已验证的设备才能读取消息。加密之后无法取消。",
     "encryptChannelPrivateOnly": "只有私密频道可以加密。",
     "encryptDm": "端到端加密",
-    "encryptDmHelp": "只有参与者已验证的设备才能读取消息。加密之后无法取消，目前也还不能发送附件。",
+    "encryptDmHelp": "只有参与者已验证的设备才能读取消息。加密之后无法取消。",
     "undecryptable": {
       "keyMissing": "解密此消息的密钥尚未送达。",
       "locked": "在此设备上解锁加密后即可读取此消息。",

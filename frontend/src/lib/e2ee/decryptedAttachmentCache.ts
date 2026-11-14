@@ -9,7 +9,7 @@ import { EncryptedAttachmentError } from "./attachments";
  * ダウンロード、Worker での復号をやり直さないように、復号した `Blob` をここに残す。object URL は表示する
  * コンポーネントごとに作って捨てる（`Blob` は複製しないので安い）。
  *
- * キーは添付の ID だけでなく、本文の鍵、IV、ハッシュ、MIME を含める。同じ `attachment_id` を別の鍵で
+ * キーは添付の ID だけでなく、本文の鍵、IV、ハッシュ、MIME、大きさを含める（大きさは復号のあとに確かめる）。同じ `attachment_id` を別の鍵で
  * 指すメッセージに、ほかのメッセージの平文を出さないため。
  *
  * 復号の失敗（ハッシュや大きさが合わない）は覚えておき、再マウントのたびに全量を取り直さない。やり直すのは
@@ -38,7 +38,14 @@ export const DECRYPTED_ATTACHMENT_CACHE_MAX_ENTRIES = 100;
 
 export function decryptedAttachmentCacheKey(info: AttachmentInfo): string {
   const { file } = info;
-  return [info.attachment_id, file.key.k, file.iv, file.hashes.sha256, info.mimetype].join("\n");
+  return [
+    info.attachment_id,
+    file.key.k,
+    file.iv,
+    file.hashes.sha256,
+    info.mimetype,
+    info.size,
+  ].join("\n");
 }
 
 export function createDecryptedAttachmentCache({

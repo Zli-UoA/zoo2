@@ -83,6 +83,10 @@ describe("createDecryptedAttachmentCache", () => {
     expect(decryptedAttachmentCacheKey(info("a", "k1", "image/png"))).not.toBe(
       decryptedAttachmentCacheKey(info("a", "k1", "text/html")),
     );
+    // 大きさの検証は復号のあとなので、本文の size が違えば結果を共有しない。
+    expect(decryptedAttachmentCacheKey(info("a"))).not.toBe(
+      decryptedAttachmentCacheKey({ ...info("a"), size: 2 }),
+    );
     const cache = createDecryptedAttachmentCache();
     await cache.load(info("a", "k1"), async () => blob(1));
     expect(cache.peek(info("a", "k2"))).toBeUndefined();

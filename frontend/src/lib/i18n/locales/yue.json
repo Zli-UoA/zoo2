@@ -1162,10 +1162,10 @@
     "reunlockToAddDescription": "要加通行金鑰，請用通行金鑰或者復原金鑰再解鎖一次。呢部裝置嘅解鎖狀態唔會變。",
     "badge": "已加密",
     "encryptChannel": "端對端加密",
-    "encryptChannelHelp": "只有成員已驗證嘅裝置先睇到訊息。加密之後唔可以取消，暫時亦都唔可以傳附件。",
+    "encryptChannelHelp": "只有成員已驗證嘅裝置先睇到訊息。加密之後唔可以取消。",
     "encryptChannelPrivateOnly": "只有私人頻道先可以加密。",
     "encryptDm": "端對端加密",
-    "encryptDmHelp": "只有參與者已驗證嘅裝置先睇到訊息。加密之後唔可以取消，暫時亦都唔可以傳附件。",
+    "encryptDmHelp": "只有參與者已驗證嘅裝置先睇到訊息。加密之後唔可以取消。",
     "undecryptable": {
       "keyMissing": "解密呢條訊息嘅鑰匙仲未到。",
       "locked": "喺呢部裝置解鎖加密之後就睇到呢條訊息。",

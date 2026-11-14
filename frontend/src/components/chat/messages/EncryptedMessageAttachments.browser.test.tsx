@@ -133,3 +133,23 @@ it("does not fetch an undecryptable attachment again when the row remounts", asy
   expect(screen.getByRole("button", { name: /再試行|Retry/ })).toBeVisible();
   expect(loader).toHaveBeenCalledTimes(1);
 });
+
+it("retries a remembered decryption failure when the download button is pressed", async () => {
+  const loader = vi
+    .fn<(info: AttachmentInfo) => Promise<Blob>>()
+    .mockRejectedValueOnce(new EncryptedAttachmentError("decrypt"))
+    .mockResolvedValue(new Blob(["%PDF-1.7"], { type: "application/pdf" }));
+  const pdf = { ...attachment(), name: "minutes.pdf", mimetype: "application/pdf" };
+  render(view(loader, [pdf]));
+  const button = await screen.findByRole("button", { name: /minutes\.pdf/ });
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+
+  button.click();
+  await waitFor(() => expect(loader).toHaveBeenCalledTimes(1));
+  // 2 回目の押下は、覚えている失敗を使わずに取り直す。
+  await waitFor(() => expect(button).not.toBeDisabled());
+  button.click();
+  await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+  click.mockRestore();
+});
