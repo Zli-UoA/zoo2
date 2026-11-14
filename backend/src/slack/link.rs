@@ -965,33 +965,64 @@ async fn manifest(State(s): State<AppState>, user: AuthUser) -> Result<Json<Valu
         ));
     }
     tx.commit().await?;
-    let redirect = s
-        .config
-        .slack
-        .oauth_redirect_url
-        .clone()
-        .unwrap_or_else(|| "https://<zoo-backend>/api/slack/oauth/callback".into());
     Ok(Json(json!({
         "configured": s.config.slack.oauth_enabled(),
-        "manifest": {
-            "display_information": {
-                "name": "Zoo",
-                "description": "Zoo と Slack を連携します",
-            },
-            "features": {
-                "bot_user": { "display_name": "Zoo", "always_online": false },
-            },
-            "oauth_config": {
-                "redirect_urls": [redirect],
-                "scopes": { "user": USER_SCOPES, "bot": BOT_SCOPES },
-            },
-            "settings": {
-                "org_deploy_enabled": false,
-                "socket_mode_enabled": false,
-                "token_rotation_enabled": false,
-            },
-        },
+        "manifest": manifest_json(
+            s.config.slack.oauth_redirect_url.as_deref(),
+            s.config.slack.signing_secret.is_some(),
+        ),
     })))
+}
+
+/// ユーザーの Events API の購読 (`user_events`)。ユーザートークンで履歴を読む差分同期と同じ権限
+/// (`channels:history`・`groups:history`) で、連携したユーザーが参加しているチャンネルの投稿が届く。
+/// 新しいスコープは要らないので、連携済みのユーザーが連携し直す必要はない。
+/// DM・グループ DM (`message.im`・`message.mpim`) は、取り込み自体が未対応なので購読しない
+pub const USER_EVENTS: &[&str] = &["message.channels", "message.groups"];
+
+/// Events API の受信先 (バックエンドの `/api/slack/events`)。リダイレクト URL と同じ公開 URL を使う
+fn events_request_url(redirect: Option<&str>) -> String {
+    redirect
+        .and_then(|r| reqwest::Url::parse(r).ok())
+        .map(|mut url| {
+            url.set_path("/api/slack/events");
+            url.set_query(None);
+            url.set_fragment(None);
+            url.to_string()
+        })
+        .unwrap_or_else(|| "https://<zoo-backend>/api/slack/events".into())
+}
+
+fn manifest_json(redirect: Option<&str>, events: bool) -> Value {
+    let redirect = redirect
+        .map(str::to_string)
+        .unwrap_or_else(|| "https://<zoo-backend>/api/slack/oauth/callback".into());
+    let mut settings = json!({
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": false,
+        "token_rotation_enabled": false,
+    });
+    // 受信口は `SLACK_SIGNING_SECRET` があるときだけ有効。ないうちは、検証できない request URL を manifest に入れない
+    if events {
+        settings["event_subscriptions"] = json!({
+            "request_url": events_request_url(Some(&redirect)),
+            "user_events": USER_EVENTS,
+        });
+    }
+    json!({
+        "display_information": {
+            "name": "Zoo",
+            "description": "Zoo と Slack を連携します",
+        },
+        "features": {
+            "bot_user": { "display_name": "Zoo", "always_online": false },
+        },
+        "oauth_config": {
+            "redirect_urls": [redirect],
+            "scopes": { "user": USER_SCOPES, "bot": BOT_SCOPES },
+        },
+        "settings": settings,
+    })
 }
 
 #[cfg(test)]
@@ -1113,5 +1144,29 @@ mod tests {
         // 重複しない (認可 URL の `user_scope` に同じスコープを 2 回書かない)
         let unique: HashSet<_> = USER_SCOPES.iter().collect();
         assert_eq!(unique.len(), USER_SCOPES.len());
+    }
+
+    #[test]
+    fn manifest_subscribes_to_user_events_only_when_the_receiver_is_enabled() {
+        let redirect = "https://zoo.example/api/slack/oauth/callback?x=1";
+        let off = manifest_json(Some(redirect), false);
+        assert!(off["settings"]["event_subscriptions"].is_null());
+        let on = manifest_json(Some(redirect), true);
+        let subs = &on["settings"]["event_subscriptions"];
+        assert_eq!(subs["request_url"], "https://zoo.example/api/slack/events");
+        assert_eq!(
+            subs["user_events"],
+            json!(["message.channels", "message.groups"])
+        );
+        // 購読に要るスコープは、すでに求めている (再連携は要らない)
+        assert!(
+            USER_SCOPES.contains(&"channels:history") && USER_SCOPES.contains(&"groups:history")
+        );
+        assert!(subs.get("bot_events").is_none());
+        // リダイレクト URL が未設定でも、仮の URL を入れる
+        assert_eq!(
+            manifest_json(None, true)["settings"]["event_subscriptions"]["request_url"],
+            "https://<zoo-backend>/api/slack/events"
+        );
     }
 }

@@ -25,8 +25,18 @@ erDiagram
       text last_error
       timestamptz created_at
       timestamptz updated_at
+      timestamptz not_before
+      timestamptz swept_at
+      boolean run_light
     }
     slack_channel_syncs |o--o| slack_channels : slack_channel_syncs_channel_fkey
+    slack_channel_wakes {
+      text team_id PK,FK
+      text slack_channel_id PK,FK
+      timestamptz first_at
+      timestamptz last_at
+    }
+    slack_channel_wakes |o--o| slack_channels : slack_channel_wakes_channel_fkey
     slack_channels {
       text team_id PK
       text slack_channel_id PK
