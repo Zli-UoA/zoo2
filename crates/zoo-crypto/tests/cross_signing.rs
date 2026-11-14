@@ -1105,15 +1105,16 @@ fn sender_trust_for_own_devices_uses_own_self_signing_key() {
     let (alice, _) = alice_and_bob();
     let mut store = unlocked_store(&alice);
     let snapshot = Snapshot::new(&alice, &[&alice]);
+    let own_ssk = alice.keys.self_signing.public_key();
 
     let trust = store
-        .sender_trust(&snapshot.get(), ALICE, &alice.device(1))
+        .sender_trust(&snapshot.get(), ALICE, &alice.device(1), Some(&own_ssk))
         .unwrap();
     assert_eq!(trust.self_signing_key, alice.keys.self_signing.public_key());
     // 署名が `e2ee_key_signatures` の行にある端末は、その署名も返す。
     assert!(trust.signature.is_some());
     let embedded = store
-        .sender_trust(&snapshot.get(), ALICE, &alice.device(0))
+        .sender_trust(&snapshot.get(), ALICE, &alice.device(0), Some(&own_ssk))
         .unwrap();
     assert!(embedded.signature.is_none());
 
@@ -1121,7 +1122,7 @@ fn sender_trust_for_own_devices_uses_own_self_signing_key() {
     let mut locked = TrustStore::new(ALICE).unwrap();
     assert!(
         locked
-            .sender_trust(&snapshot.get(), ALICE, &alice.device(1))
+            .sender_trust(&snapshot.get(), ALICE, &alice.device(1), None)
             .is_none()
     );
 
@@ -1131,7 +1132,7 @@ fn sender_trust_for_own_devices_uses_own_self_signing_key() {
     let snapshot = Snapshot::new(&replaced, &[&replaced]);
     assert!(
         store
-            .sender_trust(&snapshot.get(), ALICE, &replaced.device(0))
+            .sender_trust(&snapshot.get(), ALICE, &replaced.device(0), Some(&own_ssk))
             .is_none()
     );
 }
@@ -1146,7 +1147,7 @@ fn sender_trust_for_other_users_follows_distribution_rules() {
     // 初めて見た相手：ピンを作らず、記録も作らない。
     assert!(
         store
-            .sender_trust(&snapshot.get(), BOB, &bob.device(0))
+            .sender_trust(&snapshot.get(), BOB, &bob.device(0), None)
             .is_none()
     );
     assert!(store.record(BOB).is_none());
@@ -1155,7 +1156,7 @@ fn sender_trust_for_other_users_follows_distribution_rules() {
     let first = evaluate(&mut store, &alice, &snapshot);
     assert!(
         store
-            .sender_trust(&snapshot.get(), BOB, &bob.device(0))
+            .sender_trust(&snapshot.get(), BOB, &bob.device(0), None)
             .is_none()
     );
 
@@ -1163,7 +1164,7 @@ fn sender_trust_for_other_users_follows_distribution_rules() {
     store.confirm_tofu_pin(&first.new_pins[0]);
     snapshot.pin(BOB, first.new_pins[0].pin.clone());
     let trust = store
-        .sender_trust(&snapshot.get(), BOB, &bob.device(1))
+        .sender_trust(&snapshot.get(), BOB, &bob.device(1), None)
         .unwrap();
     assert_eq!(trust.self_signing_key, bob.keys.self_signing.public_key());
     assert!(trust.signature.is_some());
@@ -1174,7 +1175,7 @@ fn sender_trust_for_other_users_follows_distribution_rules() {
     let changed = Snapshot::new(&alice, &[&alice, &replaced]);
     assert!(
         store
-            .sender_trust(&changed.get(), BOB, &replaced.device(0))
+            .sender_trust(&changed.get(), BOB, &replaced.device(0), None)
             .is_none()
     );
 }
@@ -1192,7 +1193,7 @@ fn sender_trust_rejects_self_signing_key_not_signed_by_master() {
 
     assert!(
         store
-            .sender_trust(&snapshot.get(), BOB, &bob.device(0))
+            .sender_trust(&snapshot.get(), BOB, &bob.device(0), None)
             .is_none()
     );
 }
@@ -1211,8 +1212,37 @@ fn sender_trust_accepts_user_signing_signature() {
     snapshot.signature(row_json(ALICE, &upload));
 
     let trust = store
-        .sender_trust(&snapshot.get(), BOB, &bob.device(0))
+        .sender_trust(&snapshot.get(), BOB, &bob.device(0), None)
         .unwrap();
     assert_eq!(trust.self_signing_key, bob.keys.self_signing.public_key());
     assert!(store.record(BOB).is_some());
+}
+
+/// 端末だけの失効で自己署名鍵を作り直したあと、サーバーが古い自己署名鍵（マスター鍵の署名は
+/// 残る）と、外した端末への署名を返しても、自分の端末は検証済みにしない。
+#[test]
+fn sender_trust_for_own_devices_rejects_replaced_self_signing_key() {
+    let alice = User::new(ALICE, &[Sig::Embedded, Sig::Row]);
+    let mut store = unlocked_store(&alice);
+    let mut snapshot = Snapshot::new(&alice, &[&alice]);
+    let old = CrossSigningKeys::generate(ALICE).unwrap();
+    snapshot.value["self_signing_keys"][ALICE] =
+        alice.keys.master.sign_subkey(&old.self_signing).unwrap();
+    let device = alice.devices[1].0.device_keys();
+    let upload = old.self_signing.sign_device(&device).unwrap();
+    snapshot.signature(row_json(ALICE, &upload));
+
+    let current = alice.keys.self_signing.public_key();
+    assert!(
+        store
+            .sender_trust(&snapshot.get(), ALICE, &alice.device(1), Some(&current))
+            .is_none()
+    );
+    // 暗号ストアの鍵がその古い鍵なら（解錠し直す前の端末）、サーバーの鍵と一致するので返す。
+    let previous = old.self_signing.public_key();
+    assert!(
+        store
+            .sender_trust(&snapshot.get(), ALICE, &alice.device(1), Some(&previous))
+            .is_some()
+    );
 }

@@ -24,6 +24,7 @@ import {
   type CryptoStoreWrite,
   type InboundSessionKey,
 } from "./backend";
+import { BACKUP_IMPORT_MAX_PAGES, BACKUP_IMPORT_PAGE_SIZE } from "../backupImportLimits";
 import { MegolmChannels } from "./megolm";
 import { SasVerifications } from "./verification";
 import {
@@ -69,14 +70,21 @@ interface BackupImportProgress {
   version: string;
   /** 次に読むページのカーソル（`GET /api/e2ee/key_backup/keys` の `after`）。 */
   after: string | null;
-  /** 最後のページまで取り込んだ。 */
+  /**
+   * 最後のページまで取り込んだ。1 行も読まなかったときは済みにしない（サーバーが一時的に、または
+   * わざと空を返しても、その版を読み直せるように。空の版の読み直しは 1 回の要求で済む）。
+   */
   done: boolean;
+  /** この版で読んだ行の数。 */
+  rows: number;
+  /** この版で読んだページの数（{@link BACKUP_IMPORT_MAX_PAGES} を超えて読まない）。 */
+  pages: number;
 }
 
 /** {@link CryptoStore.beginBackupImport} の結果。 */
 export type BackupImportStart =
-  /** `after` のカーソル（`null` なら最初）から読んで取り込む。 */
-  | { kind: "import"; version: string; after: string | null }
+  /** `after` のカーソル（`null` なら最初）から読んで取り込む。`pages` はこの版で読んだページの数。 */
+  | { kind: "import"; version: string; after: string | null; pages: number }
   /** この版は取り込み終えている。 */
   | { kind: "done"; version: string }
   /** 解錠していない、または今の版がない。 */
@@ -466,7 +474,17 @@ export class CryptoStore {
       newOlmSessions: 0,
       verifications: [],
     };
-    const senders = new SenderTrustCache(this.trust, keysQuery);
+    // 自分の別の端末は、暗号ストアの自分の自己署名鍵（解錠して取り出した今の鍵）と、サーバーの
+    // 自己署名鍵が同じときだけ検証済みにする（失効で置き換えた古い鍵への巻き戻しを受け入れない）。
+    const own = rows.length > 0 ? await this.ownKeys() : null;
+    let ownSelfSigningKey: string | null = null;
+    if (own) {
+      const selfSigning = own.keys.selfSigning;
+      ownSelfSigningKey = selfSigning.publicKey;
+      selfSigning.free();
+      own.keys.free();
+    }
+    const senders = new SenderTrustCache(this.trust, keysQuery, ownSelfSigningKey);
     try {
       for (const row of rows) {
         if (this.processedToDevice.has(row.id)) {
@@ -744,10 +762,15 @@ export class CryptoStore {
     if (accepted.kind !== "accepted") return accepted;
     const progress = await this.backupImportProgress();
     if (progress?.version !== accepted.version) {
-      return { kind: "import", version: accepted.version, after: null };
+      return { kind: "import", version: accepted.version, after: null, pages: 0 };
     }
     if (progress.done) return { kind: "done", version: accepted.version };
-    return { kind: "import", version: accepted.version, after: progress.after };
+    return {
+      kind: "import",
+      version: accepted.version,
+      after: progress.after,
+      pages: progress.pages,
+    };
   }
 
   /**
@@ -767,6 +790,14 @@ export class CryptoStore {
     const accepted = this.backupState?.currentVersion();
     if (!accepted || accepted.version !== version) {
       throw new Error("鍵バックアップの今の版が変わりました");
+    }
+    if (rows.length > BACKUP_IMPORT_PAGE_SIZE) {
+      throw new Error("鍵バックアップの 1 ページの行が多すぎます");
+    }
+    const previous = await this.backupImportProgress();
+    const counted = previous?.version === version ? previous : { rows: 0, pages: 0 };
+    if (counted.pages >= BACKUP_IMPORT_MAX_PAGES) {
+      throw new Error("鍵バックアップのページが多すぎます");
     }
     const own = await this.ownKeys();
     if (!own) throw new Error("解錠していません");
@@ -807,11 +838,23 @@ export class CryptoStore {
         if (pickle) sessions.set(inboundSessionKey(ref), pickle);
         imported += 1;
       }
+    } catch (error) {
+      // 取り込んだ行がメモリーに残っている。同じストアで試し直すと、その行は「保存済み」として
+      // 扱われ（`kept`）、保存されないまま進み具合だけが進むので、開き直すまで使わない。
+      this.broken = true;
+      throw error;
     } finally {
       backupKey.free();
       own.keys.free();
     }
-    const progress: BackupImportProgress = { version, after: next, done: next === null };
+    const total = counted.rows + rows.length;
+    const progress: BackupImportProgress = {
+      version,
+      after: next,
+      done: next === null && total > 0,
+      rows: total,
+      pages: counted.pages + 1,
+    };
     await this.write({
       meta: { [META_BACKUP_IMPORT]: JSON.stringify(progress) },
       inboundSessions: [...sessions].map(([key, pickle]) => ({ key, pickle, fromBackup: true })),
@@ -826,10 +869,14 @@ export class CryptoStore {
     try {
       const value = JSON.parse(saved) as Partial<BackupImportProgress>;
       if (typeof value.version !== "string" || typeof value.done !== "boolean") return null;
+      const count = (n: unknown) =>
+        typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : 0;
       return {
         version: value.version,
         after: typeof value.after === "string" ? value.after : null,
         done: value.done,
+        rows: count(value.rows),
+        pages: count(value.pages),
       };
     } catch {
       return null;
@@ -1033,6 +1080,8 @@ class SenderTrustCache {
   constructor(
     private readonly trust: TrustStore,
     private readonly keysQuery: KeysQueryResponse,
+    /** 暗号ストアの自分の自己署名鍵の公開鍵（未解錠なら `null`）。 */
+    private readonly ownSelfSigningKey: string | null,
   ) {
     this.saved = trust.toJson();
   }
@@ -1043,7 +1092,7 @@ class SenderTrustCache {
       let trust: SenderTrust | null = null;
       try {
         this.snapshot ??= KeySnapshot.fromJson(this.keysQuery as unknown as JsonObject);
-        trust = this.trust.senderTrust(this.snapshot, sender, senderDevice);
+        trust = this.trust.senderTrust(this.snapshot, sender, senderDevice, this.ownSelfSigningKey);
       } catch {
         // 応答を読めなければ、確かめられないものとして扱う（「未検証の送信者」）。
         trust = null;

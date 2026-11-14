@@ -1,6 +1,7 @@
 import type { JsonObject } from "@zoo/crypto-wasm";
 
 import type { ApiClient } from "../api/client";
+import { BACKUP_IMPORT_MAX_PAGES, BACKUP_IMPORT_PAGE_SIZE } from "./backupImportLimits";
 import type { CryptoWorker } from "./cryptoWorker";
 import {
   type CredentialGetter,
@@ -185,7 +186,11 @@ async function uploadKeyBackupNow(deps: E2eeSetupDeps): Promise<BackupUploadResu
 
 export type BackupImportResult =
   | { kind: "done"; imported: number; dropped: number }
-  /** 今の版を使えない（{@link BackupUploadResult} の `rejected` と同じ）。取り込んでいない。 */
+  /**
+   * 今の版を使えない（{@link BackupUploadResult} の `rejected` と同じ）か、サーバーの応答が上限を
+   * 超えた（`BackupTooManyPages`、`BackupPageTooLarge`、同じカーソルの繰り返しの `BackupCursorLoop`）。
+   * 試し直さず、次の解錠か起動まで取り込まない。
+   */
   | { kind: "rejected"; code: string }
   /** 取り込みの途中で版が消えた（404）。次の解錠か起動で、今の版から取り込み直す。 */
   | { kind: "gone"; imported: number; dropped: number };
@@ -221,9 +226,21 @@ async function importKeyBackupNow(
   if (start.kind === "rejected") return start;
   if (start.kind !== "import") return { kind: "done", imported, dropped };
   let after = start.after;
+  let pages = start.pages;
+  // サーバーが同じカーソルを返し続けても、同じページを読み続けない。
+  const seen = new Set<string>(after === null ? [] : [after]);
   for (;;) {
+    if (pages >= BACKUP_IMPORT_MAX_PAGES) return { kind: "rejected", code: "BackupTooManyPages" };
     const page = await getBackupKeysPage(deps.client, start.version, after);
     if (!page) return { kind: "gone", imported, dropped };
+    if (page.sessions.length > BACKUP_IMPORT_PAGE_SIZE) {
+      return { kind: "rejected", code: "BackupPageTooLarge" };
+    }
+    if (page.next !== null && seen.has(page.next)) {
+      return { kind: "rejected", code: "BackupCursorLoop" };
+    }
+    if (page.next !== null) seen.add(page.next);
+    pages += 1;
     const result = await deps.worker.request({
       op: "importBackupPage",
       version: start.version,
@@ -243,6 +260,7 @@ async function importKeyBackupNow(
  * 署名を確かめ、なければ署名し直す。まだ解錠していない端末は、何も取得しない。
  *
  * 暗号ストアの鍵をそのまま使える（解錠済みで、初回設定の途中でも鍵の不一致でもない）ときに `true`。
+ * 鍵バックアップへの送信の失敗では `false` にしない（取り込みを始められるように）。
  */
 export async function runStartupCheck(deps: E2eeSetupDeps): Promise<boolean> {
   if (!(await deps.worker.request({ op: "hasOwnKeys" }))) return false;
@@ -253,7 +271,8 @@ export async function runStartupCheck(deps: E2eeSetupDeps): Promise<boolean> {
   const check = await deps.worker.request({ op: "startupCheck", keysQuery, versions });
   if (check?.kind === "sign_device") await uploadSignatures(deps.client, [check.signature]);
   if (!check || check.kind === "resume_setup" || check.kind === "unlock") return false;
-  await uploadKeyBackup(deps);
+  // 送信に失敗しても（通信の失敗など）、鍵はそのまま使える。送信待ちは次の受信や起動で送る。
+  await uploadKeyBackup(deps).catch(() => undefined);
   return true;
 }
 

@@ -514,17 +514,21 @@ impl TrustStore {
 
     /// 受信時の検証の手順 4 に渡す、送信ユーザーの信頼した自己署名鍵 `{self_signing_key, signature}`
     /// （`DecryptedToDevice.verifyRoomKey` の `trust`）。信頼できなければ `null`。
-    /// `snapshot` は送信ユーザーと自分の `keys/query`。記録が変わることがあるので、呼んだあとは保存し直す。
+    /// `snapshot` は送信ユーザーと自分の `keys/query`。`ownSelfSigningKey` は暗号ストアの自分の
+    /// 自己署名鍵の公開鍵（base64。未解錠なら `null`）で、送信ユーザーが自分のときはサーバーの鍵と
+    /// 同じでなければならない。記録が変わることがあるので、呼んだあとは保存し直す。
     #[wasm_bindgen(js_name = senderTrust, unchecked_return_type = "SenderTrust | null")]
     pub fn sender_trust(
         &mut self,
         snapshot: &KeySnapshot,
         sender: &str,
         sender_device: &str,
+        own_self_signing_key: Option<String>,
     ) -> Result<JsValue, JsValue> {
+        let own = own_self_signing_key.as_deref().map(ed25519).transpose()?;
         match self
             .inner
-            .sender_trust(&snapshot.inner, sender, sender_device)
+            .sender_trust(&snapshot.inner, sender, sender_device, own.as_ref())
         {
             Some(trust) => to_js(&json!({
                 "self_signing_key": trust.self_signing_key.to_base64(),

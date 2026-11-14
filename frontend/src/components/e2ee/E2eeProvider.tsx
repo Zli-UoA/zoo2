@@ -31,6 +31,7 @@ import {
   type E2eeStartFailure,
   notReadyReason,
 } from "../../lib/e2ee/notReady";
+import { BackupImportQueue } from "../../lib/e2ee/backupImportQueue";
 import { answerPushDecryptRequest } from "../../lib/e2ee/push/protocol";
 import { forgetPushRecipient, rememberPushRecipient } from "../../lib/e2ee/push/recipient";
 import { type StaleDevice, staleDevices } from "../../lib/e2ee/revocationApi";
@@ -163,55 +164,26 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   // などで止まったら、間隔をあけて（30 秒から倍にし、最大 10 分）続きのページから試し直す。試し直しを
   // やめるのは、取り込み終えたとき、版を使えない・版が消えたと分かったとき、このタブが暗号ストアを
   // 手放したとき（ほかのタブがストアを開いたら、そのタブの起動時の確認から続きを取り込む）。
-  const importQueue = useRef<{
-    running: boolean;
-    again: boolean;
-    retry: ReturnType<typeof setTimeout> | null;
-    delay: number;
-  }>({ running: false, again: false, retry: null, delay: IMPORT_RETRY_MS });
+  const importQueue = useMemo(
+    () =>
+      new BackupImportQueue<ActiveStore>({
+        current: () => leader.current,
+        run: async (active) => {
+          if (!userId) return;
+          await importKeyBackup({ worker: active.worker, client, userId, rpId: null }, (count) => {
+            if (count > 0) setRoomKeysVersion((version) => version + 1);
+          });
+        },
+        retryMs: IMPORT_RETRY_MS,
+        retryMaxMs: IMPORT_RETRY_MAX_MS,
+      }),
+    [client, userId],
+  );
+  const importQueueRef = useRef(importQueue);
+  importQueueRef.current = importQueue;
   const requestKeyBackupImport = useCallback(() => {
-    const active = leader.current;
-    if (!active || !userId) return;
-    const queue = importQueue.current;
-    if (queue.retry) clearTimeout(queue.retry);
-    queue.retry = null;
-    if (queue.running) {
-      queue.again = true;
-      return;
-    }
-    queue.running = true;
-    void (async () => {
-      let failed = false;
-      try {
-        do {
-          queue.again = false;
-          try {
-            await importKeyBackup(
-              { worker: active.worker, client, userId, rpId: null },
-              (count) => {
-                if (count > 0) setRoomKeysVersion((version) => version + 1);
-              },
-            );
-            failed = false;
-          } catch {
-            failed = true;
-          }
-        } while (queue.again && leader.current === active);
-      } finally {
-        queue.running = false;
-        if (!failed) {
-          queue.delay = IMPORT_RETRY_MS;
-        } else if (leader.current === active) {
-          const delay = queue.delay;
-          queue.delay = Math.min(delay * 2, IMPORT_RETRY_MAX_MS);
-          queue.retry = setTimeout(() => {
-            queue.retry = null;
-            if (leader.current === active) requestKeyBackupImportRef.current();
-          }, delay);
-        }
-      }
-    })();
-  }, [client, userId]);
+    if (userId) importQueue.request();
+  }, [importQueue, userId]);
   const requestKeyBackupImportRef = useRef(requestKeyBackupImport);
   requestKeyBackupImportRef.current = requestKeyBackupImport;
 
@@ -324,11 +296,16 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
                 // （docs/e2ee.md の「初回設定と解錠の流れ」。止まった初回設定は暗号化タブで案内する）。
                 // 鍵をそのまま使えるなら、鍵バックアップの取り込みの続きも行う（解錠の直後に止まった
                 // 取り込みや、取り込みを入れる前に解錠した端末の分）。
+                // 確認そのものが失敗しても（通信の失敗）、取り込みは頼む。取り込みは今の版をアップロード
+                // と同じ規則で検証してから行い、試し直しも取り込みの順番待ちが行う。
                 void runStartupCheck({ worker, client, userId, rpId: null })
+                  .then(
+                    (ready) => ready,
+                    () => true,
+                  )
                   .then((ready) => {
                     if (ready) requestKeyBackupImportRef.current();
-                  })
-                  .catch(() => undefined);
+                  });
                 break;
               } catch {
                 // 失敗の理由は `onStatus("error")` で記録している。
@@ -344,10 +321,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
             // 奪われたときは、`catch` が「ほかのタブが持っている」にしたのを残す（片付けはその後に来る）。
             if (!stolen) setLockState("idle");
             if (leader.current === active) leader.current = null;
-            const imports = importQueue.current;
-            if (imports.retry) clearTimeout(imports.retry);
-            imports.retry = null;
-            imports.delay = IMPORT_RETRY_MS;
+            importQueueRef.current.reset();
             await active?.manager.stop().catch(() => undefined);
             worker.terminate();
           }

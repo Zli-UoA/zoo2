@@ -545,6 +545,10 @@ impl TrustStore {
     /// その自己署名鍵による `sender_device` への署名を返す。次のときは `None`。
     ///
     /// - 自分のマスター鍵をまだ信頼していない（未解錠）か、サーバーの自分のマスター鍵が変わった。
+    /// - 送信ユーザーが自分で、サーバーの自己署名鍵が `own_self_signing`（暗号ストアの自分の
+    ///   自己署名鍵。SSSS から取り出した今の鍵）と違う、または `own_self_signing` がない。失効で
+    ///   置き換えた古い自己署名鍵（マスター鍵の署名は残る）をサーバーが返しても、外した端末を
+    ///   検証済みにしないため。
     /// - 送信ユーザーのマスター鍵を信頼できない（クロス署名鍵がない、再検証待ち、TOFU のピンの登録待ち、
     ///   初めて見た相手）。初めて見た相手のピンは作らない。作るのは配布先の判定だけ。
     /// - 自己署名鍵がない、壊れている、マスター鍵で署名されていない。
@@ -556,6 +560,7 @@ impl TrustStore {
         snapshot: &KeySnapshot,
         sender: &str,
         sender_device: &str,
+        own_self_signing: Option<&Ed25519PublicKey>,
     ) -> Option<SenderTrust> {
         let mut scratch = Distribution::default();
         let own_master = self.check_own_master(snapshot, &mut scratch.warnings)?;
@@ -571,6 +576,9 @@ impl TrustStore {
                 .ok()?
         };
         let self_signing = trusted_self_signing_key(snapshot, sender, &master)?;
+        if sender == self.user_id && own_self_signing != Some(&self_signing) {
+            return None;
+        }
         let key_id = cross_signing_key_id(&self_signing);
         let signature = snapshot
             .signatures

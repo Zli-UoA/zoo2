@@ -47,8 +47,9 @@ vi.mock("../../lib/e2ee/sasController", () => ({
 }));
 
 vi.mock("../../lib/e2ee/setupController", () => ({
-  runStartupCheck: async () => {},
+  runStartupCheck: async () => false,
   uploadKeyBackup: async () => {},
+  importKeyBackup: async () => {},
 }));
 
 vi.mock("../../lib/e2ee/push/recipient", () => ({

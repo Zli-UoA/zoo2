@@ -539,8 +539,7 @@ describe("鍵バックアップからの取り込み（新しい端末での解�
   }
 
   /** 端末 A が Alice から受け取った鍵を、鍵バックアップに上げる。上げた行を返す。 */
-  async function backedUpOnDeviceA() {
-    const me = identity(BOB);
+  async function backedUpOnDeviceA(me: Identity = identity(BOB)) {
     const version = currentVersion(me);
     const alice = await openStore(ALICE);
     const deviceA = await openStore(BOB);
@@ -578,6 +577,7 @@ describe("鍵バックアップからの取り込み（新しい端末での解�
       kind: "import",
       version: "1",
       after: null,
+      pages: 0,
     });
     expect(await deviceB.store.importBackupPage("1", rows, null)).toEqual({
       imported: 1,
@@ -605,7 +605,49 @@ describe("鍵バックアップからの取り込み（新しい端末での解�
       kind: "import",
       version: "1",
       after: "cursor-1",
+      pages: 1,
     });
+    await deviceB.store.close();
+    await alice.store.close();
+  });
+
+  it("空のページだけで終わった版は、取り込み済みにせず、次も始めから読む", async () => {
+    const { me, version, alice, rows, message } = await backedUpOnDeviceA();
+    const deviceB = await openStore(BOB);
+    await deviceB.store.saveOwnKeys(me.secrets, 1);
+    await deviceB.store.beginBackupImport(version);
+    // サーバーが一時的に（またはわざと）空を返した。
+    expect(await deviceB.store.importBackupPage("1", [], null)).toEqual({
+      imported: 0,
+      dropped: 0,
+    });
+    expect(await deviceB.store.beginBackupImport(version)).toEqual({
+      kind: "import",
+      version: "1",
+      after: null,
+      pages: 1,
+    });
+    // 正しく返るようになったら取り込める。
+    expect(await deviceB.store.importBackupPage("1", rows, null)).toEqual({
+      imported: 1,
+      dropped: 0,
+    });
+    expect(await deviceB.store.megolm.decrypt([message])).toMatchObject([{ status: "decrypted" }]);
+    expect(await deviceB.store.beginBackupImport(version)).toEqual({ kind: "done", version: "1" });
+    await deviceB.store.close();
+    await alice.store.close();
+  });
+
+  it("1 ページの行が多すぎるページと、上限を超えたページは保存しない", async () => {
+    const { me, version, alice, rows } = await backedUpOnDeviceA();
+    const deviceB = await openStore(BOB);
+    await deviceB.store.saveOwnKeys(me.secrets, 1);
+    await deviceB.store.beginBackupImport(version);
+    const tooMany = Array.from({ length: 1001 }, () => rows[0]!);
+    await expect(deviceB.store.importBackupPage("1", tooMany, null)).rejects.toThrow();
+    expect(deviceB.store.isBroken).toBe(false);
+    for (let i = 0; i < 1000; i += 1) await deviceB.store.importBackupPage("1", [], `c${i}`);
+    await expect(deviceB.store.importBackupPage("1", rows, null)).rejects.toThrow();
     await deviceB.store.close();
     await alice.store.close();
   });
@@ -638,6 +680,55 @@ describe("鍵バックアップからの取り込み（新しい端末での解�
     await deviceB.store.close();
     await alice.store.close();
     await other.alice.store.close();
+  });
+
+  it("ページの途中で読み取りに失敗したら、開き直すまで使わず、開き直して試し直すとすべて保存する", async () => {
+    class FlakyBackend extends MemoryCryptoBackend {
+      failOnRead = 0;
+      override async readInboundSession(key: string): Promise<string | null> {
+        this.failOnRead -= 1;
+        if (this.failOnRead === 0) throw new Error("I/O error");
+        return super.readInboundSession(key);
+      }
+    }
+    const first = await backedUpOnDeviceA();
+    const second = await backedUpOnDeviceA(first.me);
+    const rows = [...first.rows, ...second.rows];
+    const backend = new FlakyBackend();
+    const keys = memoryKeys();
+    const openB = async () =>
+      (
+        await CryptoStore.open({
+          backend,
+          name: "zoo-crypto-device-b.sqlite",
+          userId: BOB,
+          keys,
+          reset: async () => backend,
+        })
+      ).store;
+    const deviceB = await openB();
+    await deviceB.saveOwnKeys(first.me.secrets, 1);
+    await deviceB.beginBackupImport(first.version);
+    // 1 行目はメモリーに取り込み、2 行目の読み取りで失敗する。
+    backend.failOnRead = 2;
+    await expect(deviceB.importBackupPage("1", rows, null)).rejects.toThrow("I/O error");
+    expect(deviceB.isBroken).toBe(true);
+    expect(backend.inboundSessions.size).toBe(0);
+    await deviceB.close();
+
+    const reopened = await openB();
+    expect(await reopened.beginBackupImport(first.version)).toMatchObject({
+      after: null,
+      pages: 0,
+    });
+    expect(await reopened.importBackupPage("1", rows, null)).toEqual({
+      imported: 2,
+      dropped: 0,
+    });
+    expect(backend.inboundSessions.size).toBe(2);
+    await reopened.close();
+    await first.alice.store.close();
+    await second.alice.store.close();
   });
 
   it("署名のない版や、別のバックアップ鍵の版からは取り込まない", async () => {
