@@ -20,6 +20,12 @@ import type { CryptoOperation, ToDeviceRow } from "./protocol";
 
 const USER = "00000000-0000-4000-8000-00000000000a";
 const DEVICE = "00000000-0000-4000-8000-0000000000d1";
+const REPLACED_DEVICE = "00000000-0000-4000-8000-0000000000d3";
+
+/** 端末が削除されたときの backend の 404（`E2EE_DEVICE_NOT_FOUND`）。 */
+function goneError(): ApiError {
+  return new ApiError(404, "gone", { error: "Device not found", code: "E2EE_DEVICE_NOT_FOUND" });
+}
 
 function fakeWorker(overrides: Partial<Record<CryptoOperation["op"], unknown>> = {}) {
   const calls: CryptoOperation[] = [];
@@ -39,6 +45,12 @@ function fakeWorker(overrides: Partial<Record<CryptoOperation["op"], unknown>> =
       verifications: [],
     },
     pendingBackupCount: 2,
+    replaceDevice: {
+      userId: USER,
+      deviceId: REPLACED_DEVICE,
+      registered: false,
+      replacedDeviceId: null,
+    },
     ...overrides,
   };
   const worker = {
@@ -65,6 +77,8 @@ function fakeClient(
     const handler = handlers[`${method} ${path}`];
     if (handler) return handler(body, signal);
     if (path === "/api/e2ee/keys/query") return { device_keys: {} };
+    // 自分の端末の一覧。既定では空（端末は消されている）。
+    if (method === "GET" && path === "/api/e2ee/devices") return [];
     return counts;
   };
   const client = {
@@ -74,6 +88,7 @@ function fakeClient(
         options: { method?: string; body?: unknown; signal?: AbortSignal } = {},
       ) => respond(options.method ?? "GET", path, options.body, options.signal),
     ),
+    get: vi.fn(async (path: string) => respond("GET", path, null)),
     post: vi.fn(async (path: string, body: unknown, options: { signal?: AbortSignal } = {}) => ({
       data: await respond("POST", path, body, options.signal),
       txid: null,
@@ -158,22 +173,94 @@ describe("E2eeDeviceManager", () => {
     expect(calls.at(-1)).toEqual({ op: "markKeysPublished" });
   });
 
-  it("別の端末から消された端末は、作り直して登録し直す", async () => {
+  it("別の端末から消された端末は、一覧で確かめてから、端末だけを作り直して登録し直す", async () => {
     const { worker, calls } = fakeWorker({
       open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
     });
     let first = true;
-    const { client } = fakeClient({
+    const { client, requests } = fakeClient({
       "POST /api/e2ee/keys/upload": () => {
         if (first) {
           first = false;
-          throw new ApiError(404, "gone");
+          throw goneError();
         }
         return { one_time_key_counts: { signed_curve25519: 50 }, unused_fallback_key_types: [] };
       },
     });
-    await manager(worker, client).start();
-    expect(calls.map((call) => call.op).slice(0, 3)).toEqual(["open", "destroy", "open"]);
+    const instance = manager(worker, client);
+    await instance.start();
+    // 暗号ストアは消さない（信頼の記録と受信用セッションを引き継ぐ）。
+    expect(calls.map((call) => call.op).slice(0, 2)).toEqual(["open", "replaceDevice"]);
+    expect(calls.some((call) => call.op === "destroy")).toBe(false);
+    expect(requests.map((r) => `${r.method} ${r.path}`).slice(0, 3)).toEqual([
+      "POST /api/e2ee/keys/upload",
+      "GET /api/e2ee/devices",
+      "POST /api/e2ee/devices",
+    ]);
+    expect(instance.currentDeviceId).toBe(REPLACED_DEVICE);
+  });
+
+  describe("端末が消されたかの判定", () => {
+    const registered = { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null };
+
+    it.each([
+      ["コードのない 404", () => new ApiError(404, "not found", { error: "Not Found" })],
+      ["本文のない 404", () => new ApiError(404, "not found")],
+      ["別のコードの 404", () => new ApiError(404, "x", { code: "E2EE_OTHER" })],
+      ["コードのない 409", () => new ApiError(409, "conflict", { error: "conflict" })],
+    ])("%s では作り直さない（ふつうの失敗）", async (_name, error) => {
+      const { worker, calls } = fakeWorker({ open: registered });
+      const { client, requests } = fakeClient({
+        "POST /api/e2ee/keys/upload": () => {
+          throw error();
+        },
+      });
+      await expect(manager(worker, client).start()).rejects.toBeInstanceOf(ApiError);
+      expect(calls.map((call) => call.op)).toEqual(["open"]);
+      expect(requests.some((r) => r.path === "/api/e2ee/devices")).toBe(false);
+    });
+
+    it("端末の一覧に今の端末があれば、作り直さない", async () => {
+      const { worker, calls } = fakeWorker({ open: registered });
+      const { client } = fakeClient({
+        "POST /api/e2ee/keys/upload": () => {
+          throw goneError();
+        },
+        "GET /api/e2ee/devices": () => [{ device_id: DEVICE }],
+      });
+      await expect(manager(worker, client).start()).rejects.toBeInstanceOf(ApiError);
+      expect(calls.map((call) => call.op)).toEqual(["open"]);
+    });
+
+    it("端末の一覧を取れなければ、作り直さない", async () => {
+      const { worker, calls } = fakeWorker({ open: registered });
+      const { client } = fakeClient({
+        "POST /api/e2ee/keys/upload": () => {
+          throw goneError();
+        },
+        "GET /api/e2ee/devices": () => {
+          throw new ApiError(503, "busy");
+        },
+      });
+      await expect(manager(worker, client).start()).rejects.toBeInstanceOf(ApiError);
+      expect(calls.map((call) => call.op)).toEqual(["open"]);
+    });
+
+    it("登録の 409 `E2EE_DEVICE_EXISTS` も候補にする", async () => {
+      const { worker, calls } = fakeWorker();
+      let first = true;
+      const { client } = fakeClient({
+        "POST /api/e2ee/devices": () => {
+          if (first) {
+            first = false;
+            throw new ApiError(409, "exists", { code: "E2EE_DEVICE_EXISTS" });
+          }
+          return { one_time_key_counts: { signed_curve25519: 50 }, unused_fallback_key_types: [] };
+        },
+      });
+      await manager(worker, client).start();
+      expect(calls.map((call) => call.op)).toContain("replaceDevice");
+    });
   });
 
   it("to-device を処理して ack し、Olm セッションが増えたら鍵を補充する", async () => {
@@ -436,7 +523,7 @@ describe("E2eeDeviceManager", () => {
     });
     const { client } = fakeClient({
       "POST /api/e2ee/to_device/ack": () => {
-        throw new ApiError(404, "gone");
+        throw goneError();
       },
     });
     const instance = manager(worker, client);
@@ -451,13 +538,54 @@ describe("E2eeDeviceManager", () => {
       },
     ]);
     await vi.waitFor(() =>
-      expect(calls.map((call) => call.op)).toEqual(expect.arrayContaining(["destroy"])),
+      expect(calls.map((call) => call.op)).toEqual(expect.arrayContaining(["replaceDevice"])),
     );
     await vi.waitFor(() => expect(calls.filter((call) => call.op === "open")).toHaveLength(2));
+    expect(calls.some((call) => call.op === "destroy")).toBe(false);
     await instance.stop();
   });
 
-  it("再登録で新しい端末を登録したあとで補充に失敗しても、試し直しで暗号ストアを消し直さない", async () => {
+  it("受信中の ack の 404 でも、端末の一覧に今の端末があれば作り直さない", async () => {
+    const { worker, calls } = fakeWorker({
+      open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
+      processToDevice: {
+        processed: ["1"],
+        roomKeys: 0,
+        dropped: 0,
+        newOlmSessions: 0,
+        verifications: [],
+      },
+    });
+    let listed = 0;
+    const { client } = fakeClient({
+      "POST /api/e2ee/to_device/ack": () => {
+        throw goneError();
+      },
+      "GET /api/e2ee/devices": () => {
+        listed += 1;
+        return [{ device_id: DEVICE }];
+      },
+    });
+    const instance = manager(worker, client);
+    await instance.start();
+    rowsListener!([
+      {
+        id: "1",
+        sender_user_id: "u2",
+        sender_device_id: "d2",
+        type: "m.room.encrypted",
+        content: {},
+      },
+    ]);
+    await vi.waitFor(() => expect(listed).toBeGreaterThan(0));
+    // 同じ端末で起動し直す（開き直しはするが、作り直さない）。
+    await vi.waitFor(() => expect(calls.filter((call) => call.op === "open")).toHaveLength(2));
+    expect(calls.some((call) => call.op === "replaceDevice")).toBe(false);
+    expect(instance.currentDeviceId).toBe(DEVICE);
+    await instance.stop();
+  });
+
+  it("再登録で新しい端末を登録したあとで補充に失敗しても、試し直しで端末を作り直さない", async () => {
     const NEW_DEVICE = "00000000-0000-4000-8000-0000000000d2";
     let destroyed = false;
     let registered = false;
@@ -468,9 +596,9 @@ describe("E2eeDeviceManager", () => {
         destroyed
           ? { userId: USER, deviceId: NEW_DEVICE, registered, replacedDeviceId: null }
           : { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },
-      destroy: () => {
+      replaceDevice: () => {
         destroyed = true;
-        return null;
+        return { userId: USER, deviceId: NEW_DEVICE, registered: false, replacedDeviceId: null };
       },
       markRegistered: () => {
         registered = true;
@@ -490,7 +618,7 @@ describe("E2eeDeviceManager", () => {
     let failedUploads = 0;
     const { client, requests } = fakeClient({
       "POST /api/e2ee/to_device/ack": () => {
-        throw new ApiError(404, "gone");
+        throw goneError();
       },
       "POST /api/e2ee/keys/upload": (body) => {
         const keys = (body as { one_time_keys: Record<string, unknown> }).one_time_keys;
@@ -518,10 +646,12 @@ describe("E2eeDeviceManager", () => {
       expect(calls.filter((call) => call.op === "markKeysPublished")).toHaveLength(1),
     );
     expect(failedUploads).toBe(2);
-    // 暗号ストアを消したのは、端末が消されていたと分かったときの 1 回だけ。
-    expect(calls.filter((call) => call.op === "destroy")).toHaveLength(1);
+    // 端末を作り直したのは、端末が消されていたと分かったときの 1 回だけ。
+    expect(calls.filter((call) => call.op === "replaceDevice")).toHaveLength(1);
     // 新しい端末の登録も 1 回だけで、試し直しは同じ端末を使う。
-    expect(requests.filter((r) => r.path === "/api/e2ee/devices")).toHaveLength(1);
+    expect(
+      requests.filter((r) => r.method === "POST" && r.path === "/api/e2ee/devices"),
+    ).toHaveLength(1);
     expect(instance.currentDeviceId).toBe(NEW_DEVICE);
     await instance.stop();
   });
@@ -541,7 +671,7 @@ describe("E2eeDeviceManager", () => {
     let failRestart: (error: Error) => void = () => {};
     const { client } = fakeClient({
       "POST /api/e2ee/to_device/ack": () => {
-        throw new ApiError(404, "gone");
+        throw goneError();
       },
       "POST /api/e2ee/keys/upload": () => {
         uploads += 1;
@@ -573,7 +703,7 @@ describe("E2eeDeviceManager", () => {
     instance.resume();
     await vi.waitFor(() => expect(calls.filter((call) => call.op === "open")).toHaveLength(3));
     // 作り直しは最初の 1 回だけ。
-    expect(calls.filter((call) => call.op === "destroy")).toHaveLength(1);
+    expect(calls.filter((call) => call.op === "replaceDevice")).toHaveLength(1);
     await instance.stop();
   });
 

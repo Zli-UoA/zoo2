@@ -13,6 +13,7 @@ import {
   type PendingDeviceDeletion,
 } from "./identity";
 import type { ToDeviceRow } from "./protocol";
+import { listDevices } from "./revocationApi";
 import { subscribeToDevice, type ToDeviceSubscription } from "./toDeviceShape";
 
 export type E2eeDeviceStatus = "starting" | "ready" | "error" | "stopped";
@@ -73,13 +74,18 @@ export function loginNotFoundCounter(userId: string): Set<string> {
   return counted;
 }
 
-function isDeviceGone(error: unknown): boolean {
-  // 登録：削除済みの device_id は 409。鍵のアップロードと ack：削除済みの端末は 404。
+/**
+ * 端末が別の端末から削除された候補か（docs/e2ee.md の「端末が削除されていたとき」）。登録の 409
+ * `E2EE_DEVICE_EXISTS`（削除済みの device_id）と、鍵のアップロードと ack の 404 `E2EE_DEVICE_NOT_FOUND`
+ * だけ。コードのない 404 / 409（前段のプロキシーの誤りなど）や、ほかの API の 404 は、ふつうの失敗として
+ * 試し直す。候補でも、{@link E2eeDeviceManager} は端末の一覧で確かめてから作り直す。
+ */
+export function isDeviceGoneCandidate(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const code = (error.body as { code?: unknown } | null)?.code;
   return (
-    error instanceof ApiError &&
-    (error.status === 404 ||
-      (error.status === 409 &&
-        (error.body as { code?: unknown } | null)?.code === "E2EE_DEVICE_EXISTS"))
+    (error.status === 404 && code === "E2EE_DEVICE_NOT_FOUND") ||
+    (error.status === 409 && code === "E2EE_DEVICE_EXISTS")
   );
 }
 
@@ -126,8 +132,8 @@ export class E2eeDeviceManager {
   private readonly replacedDevices: PendingDeviceDeletion[] = [];
   /** 端末が消されていたので、起動し直さなければならない（`reregister`）。済むまで残す。 */
   private restartPending = false;
-  /** 起動し直す前に、まだ暗号ストアを消していない。 */
-  private destroyBeforeRestart = false;
+  /** 起動し直す前に、端末が消されたかを確かめて、端末を作り直さなければならない。 */
+  private replaceBeforeRestart = false;
   private restarting = false;
 
   constructor(private readonly options: E2eeDeviceManagerOptions) {
@@ -164,10 +170,12 @@ export class E2eeDeviceManager {
       try {
         counts = await this.ensureRegistered(opened.registered, opened.deviceId);
       } catch (error) {
-        if (!isDeviceGone(error) || this.stopped) throw error;
-        // 別の端末から消された。暗号ストアを作り直して、新しい端末として登録する。
-        await worker.request({ op: "destroy", namespace });
-        opened = await worker.request({ op: "open", namespace, userId });
+        if (!isDeviceGoneCandidate(error) || this.stopped) throw error;
+        // 端末の一覧にもなければ、別の端末から消された。端末だけを作り直して（信頼の記録と受信用
+        // セッションは引き継ぐ）、新しい端末として登録する。一覧にあれば、ふつうの失敗として試し直す。
+        if (!(await this.deviceGone(opened.deviceId))) throw error;
+        if (this.stopped) return;
+        opened = await worker.request({ op: "replaceDevice", namespace, userId });
         this.rememberOpened(opened);
         counts = await this.ensureRegistered(opened.registered, opened.deviceId);
       }
@@ -181,6 +189,18 @@ export class E2eeDeviceManager {
       if (!this.stopped) this.options.onStatus?.("error", error);
       throw error;
     }
+  }
+
+  /**
+   * 端末が消されたかを、`GET /api/e2ee/devices`（自分の、削除されていない端末）で確かめる。一覧に
+   * なければ `true`。一覧を取れなければ投げる（ふつうの失敗として試し直す）。
+   *
+   * 悪意のあるサーバーは一覧でも同じことを言えるので、これは一時的な誤った応答への備え。サーバーへの
+   * 備えは、作り直しで信頼の記録と受信用セッションを引き継ぐこと（`replaceDevice`）。
+   */
+  private async deviceGone(deviceId: string): Promise<boolean> {
+    const devices = await listDevices(this.options.client);
+    return !devices.some((device) => device.device_id === deviceId);
   }
 
   private rememberOpened(opened: { deviceId: string; registered: boolean }): void {
@@ -277,10 +297,11 @@ export class E2eeDeviceManager {
           await this.process(this.latestRows);
         }
       } catch (error) {
-        // 受信の途中で、端末が別の端末から消されていた（ack や補充が 404）。同じ端末で試し直しても
-        // 直らないので、起動と同じく暗号ストアを作り直して、新しい端末として登録し直す。
-        if (isDeviceGone(error) && !this.stopped && !this.suspended) {
-          this.destroyBeforeRestart = true;
+        // 受信の途中で、端末が別の端末から消されたらしい（ack や補充が 404 `E2EE_DEVICE_NOT_FOUND`）。
+        // 同じ端末で試し直しても直らないので、端末の一覧で確かめてから、起動と同じく端末を作り直して
+        // 登録し直す（`reregister`）。
+        if (isDeviceGoneCandidate(error) && !this.stopped && !this.suspended) {
+          this.replaceBeforeRestart = true;
           void this.reregister();
           return;
         }
@@ -333,12 +354,14 @@ export class E2eeDeviceManager {
   }
 
   /**
-   * 端末が消されていたので、暗号ストアを作り直して起動し直す。失敗したら試し直す。
+   * 端末が消されたらしいので、端末の一覧で確かめ、消されていれば端末を作り直して起動し直す。失敗
+   * したら試し直す。
    *
-   * 暗号ストアを消すのは最初の 1 回だけにする（`destroyBeforeRestart`）。新しい端末の登録が済んだ
-   * あとで補充などが失敗したときに消すと、登録した端末の秘密鍵まで失う。試し直しでは起動
-   * （`start`）だけをやり直し、同じ暗号ストアの端末を使う。ログアウトの確認で止めているあいだは
-   * 待ち（`restartPending`）だけを残し、取りやめたら（`resume`）再開する。
+   * 端末を作り直すのは最初の 1 回だけにする（`replaceBeforeRestart`）。新しい端末の登録が済んだ
+   * あとで補充などが失敗したときに作り直すと、登録した端末の秘密鍵まで失う。試し直しでは起動
+   * （`start`）だけをやり直し、同じ暗号ストアの端末を使う。一覧に今の端末があれば（消されていない）、
+   * 作り直さずに起動し直す。一覧を取れなければ、確かめるところから試し直す。ログアウトの確認で
+   * 止めているあいだは待ち（`restartPending`）だけを残し、取りやめたら（`resume`）再開する。
    */
   private async reregister(): Promise<void> {
     this.subscription?.unsubscribe();
@@ -349,10 +372,19 @@ export class E2eeDeviceManager {
     if (this.stopped || this.suspended || this.restarting) return;
     this.restarting = true;
     try {
-      if (this.destroyBeforeRestart) {
-        await this.options.worker.request({ op: "destroy", namespace: this.options.namespace });
-        this.destroyBeforeRestart = false;
-        this.deviceId = null;
+      if (this.replaceBeforeRestart) {
+        const deviceId = this.deviceId;
+        if (deviceId && (await this.deviceGone(deviceId))) {
+          if (this.stopped || this.suspended) return;
+          const { namespace, userId } = this.options;
+          const opened = await this.options.worker.request({
+            op: "replaceDevice",
+            namespace,
+            userId,
+          });
+          this.rememberOpened(opened);
+        }
+        this.replaceBeforeRestart = false;
       }
       if (this.stopped || this.suspended) return;
       await this.start();

@@ -31,9 +31,19 @@ export const devicesHandlers = (): DevicesSettingsHandlers => ({
   onRestart: fn(),
   onCancelRevocation: fn(),
   onFinish: fn(),
+  onPrepareReverify: fn(async () => ({
+    masterKey: REVERIFY_NEW_MASTER_KEY,
+    previousMasterKey: REVERIFY_OLD_MASTER_KEY,
+  })),
   onReverify: fn(),
   onSasVerify: fn(),
 });
+
+/** 再検証の確認の画面に出す、相手の新しいマスター鍵と前に信頼した鍵（公開鍵。ダミー）。 */
+export const REVERIFY_NEW_MASTER_KEY = "nE7wKq3vXbT9yLm2Pd8sRf5hGj1cZa6uVo4eWi0kBnQ";
+export const REVERIFY_OLD_MASTER_KEY = "Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4zAb7cDe0fGhI";
+/** 自分のマスター鍵（ダミー）。 */
+export const OWN_MASTER_KEY = "Qw9eRt2yUi5oPa8sDf1gHj4kLz7xCv0bNm3QwErTyUi";
 
 export const deviceRows: DeviceRowView[] = [
   {
@@ -89,6 +99,7 @@ export const devicesReady: Extract<DevicesViewState, { step: "ready" }> = {
   ],
   warnings: [],
   unlocked: true,
+  ownMasterKey: OWN_MASTER_KEY,
   pendingRevocation: null,
   accountUrls: {
     security: "https://account.zli.works/settings/security",

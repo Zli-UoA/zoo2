@@ -112,6 +112,21 @@ export class CryptoOperations {
         this.reopenPending = false;
         return this.describe(replacedDeviceId, replacedRegistered);
       }
+      case "replaceDevice": {
+        const name = cryptoDatabaseName(request.namespace);
+        const store = this.opened();
+        if (this.storeName !== name || store.userId !== request.userId) {
+          throw new Error("作り直す暗号ストアが開いていません");
+        }
+        this.revocation.discard();
+        this.setup.discard();
+        await store.replaceDevice();
+        // 新しい端末アカウントで読み直す（メモリーの古い端末の状態を使い続けない）。
+        await store.close();
+        this.store = null;
+        this.storeName = null;
+        return this.dispatch({ op: "open", namespace: request.namespace, userId: request.userId });
+      }
       case "registrationRequest":
         return this.opened().registrationRequest();
       case "markRegistered":
@@ -235,7 +250,15 @@ export class CryptoOperations {
         await this.opened().saveTrustStore();
         return null;
       case "acceptMasterKey":
-        return this.opened().acceptMasterKey(request.targetUserId, request.masterKey);
+        return this.opened().acceptMasterKey(
+          request.targetUserId,
+          request.masterKey,
+          request.expectedMasterKey,
+        );
+      case "trustRecord":
+        return this.opened().trustStore.record(request.targetUserId) ?? null;
+      case "ownMasterKey":
+        return this.opened().trustStore.ownMasterKey ?? null;
       case "confirmAcceptedMasterKey":
         await this.opened().confirmAcceptedMasterKey(request.targetUserId, request.masterKey);
         return null;

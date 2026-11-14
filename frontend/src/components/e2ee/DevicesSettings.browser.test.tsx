@@ -44,6 +44,8 @@ vi.mock("../../lib/e2ee/revocationController", () => ({
   RevocationConflictError: class RevocationConflictError extends Error {},
   RevocationChangedError: class RevocationChangedError extends Error {},
   RevocationPendingError: class RevocationPendingError extends Error {},
+  ReverifyKeyChangedError: class ReverifyKeyChangedError extends Error {},
+  previewReverify: vi.fn(),
   loadDevices: vi.fn(),
   revocationStatus: vi.fn(),
   loadVerifications: vi.fn(),

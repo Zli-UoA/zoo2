@@ -10,6 +10,7 @@ import type {
 
 import { ApiError } from "../api/client";
 import { deleteDevice } from "./api";
+import { masterPublicKey } from "./masterKey";
 import { REVOCATION_CHANGED, REVOCATION_PENDING } from "./protocol";
 import { PasskeyError, evaluatePrfForNewSlot, evaluatePrfForUnlock } from "./passkey";
 import {
@@ -573,14 +574,49 @@ export async function loadVerifications(
   return { users: [], warnings: [] };
 }
 
+/** 再検証の確認の画面に出す鍵（{@link previewReverify}）。 */
+export interface ReverifyPreview {
+  /** サーバーが今返す、相手のマスター鍵の公開鍵。確認の画面に指紋として出し、署名はこの鍵にだけ行う。 */
+  masterKey: string;
+  /** この端末の記録のマスター鍵（前に信頼した鍵）。記録がなければ `null`。 */
+  previousMasterKey: string | null;
+}
+
+/** 確認の画面に出した鍵と、署名する直前にサーバーが返した鍵が違った（再検証を止めた）。 */
+export class ReverifyKeyChangedError extends Error {
+  constructor() {
+    super("確認の画面に出した鍵から、相手のマスター鍵が変わりました");
+    this.name = "ReverifyKeyChangedError";
+  }
+}
+
+/** 再検証の確認の画面に出す、相手の今のマスター鍵と、記録の前の鍵を読む（M-2）。 */
+export async function previewReverify(
+  deps: E2eeSetupDeps,
+  targetUserId: string,
+): Promise<ReverifyPreview> {
+  const keysQuery = await queryKeys(deps.client, [targetUserId]);
+  const masterKey = masterPublicKey(
+    (keysQuery.master_keys as Record<string, JsonObject> | undefined)?.[targetUserId],
+  );
+  if (!masterKey) throw new Error("相手のマスター鍵がありません");
+  const record = await deps.worker.request({ op: "trustRecord", targetUserId });
+  return { masterKey, previousMasterKey: record?.master_key ?? null };
+}
+
 /**
  * 利用者が相手の今のマスター鍵を受け入れる（再検証。TOFU を受け入れ直す）。`replace: true` のピンと
  * マスター鍵への署名には、直前の再認証が要る。記録は、ピンと署名を保存できてから登録待ちを外す
  * （保存できなければ、ピンも署名もないまま記録だけで配ることはない）。
+ *
+ * `expectedMasterKey` は、確認の画面で利用者に指紋を見せた鍵（{@link previewReverify}）。確認のあとに
+ * サーバーの鍵を取り直し、同じ鍵のときだけ署名する。違えば {@link ReverifyKeyChangedError} を投げ、
+ * 何も保存しない（確認のあいだにサーバーが鍵を差し替えても、見せていない鍵に署名しないため）。
  */
 export async function reverifyUser(
   deps: E2eeSetupDeps,
   targetUserId: string,
+  expectedMasterKey: string,
   reauth: string | null,
 ): Promise<void> {
   const keysQuery = await queryKeys(deps.client, [targetUserId]);
@@ -588,10 +624,12 @@ export async function reverifyUser(
     targetUserId
   ];
   if (!masterKey) throw new Error("相手のマスター鍵がありません");
+  if (masterPublicKey(masterKey) !== expectedMasterKey) throw new ReverifyKeyChangedError();
   const accepted = await deps.worker.request({
     op: "acceptMasterKey",
     targetUserId,
     masterKey,
+    expectedMasterKey,
   });
   await saveAcceptedMasterKey(deps, accepted, reauth);
 }
