@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 
 use zoo_crypto as core;
 
-use crate::{DeviceAccount, ReceivedRoomKey, Result, ZooCryptoError, lock, parse_json};
+use crate::{DeviceAccount, ReceivedRoomKey, Result, ZooCryptoError, bytes32, lock, parse_json};
 
 /// チャンネルごとの Megolm の送信用セッション（[`core::OutboundSession`]）。
 ///
-/// コアの送信用セッションは、まだ保存形式を持たない（暗号ストアは #359）。
+/// コアの送信用セッションは、まだ保存形式を持たない（送信を行う #361 で足す）。
 #[derive(uniffi::Object)]
 pub struct OutboundSession {
     pub(crate) inner: Mutex<core::OutboundSession>,
@@ -62,7 +62,8 @@ impl OutboundSession {
 
 /// Megolm の受信用セッションと、リプレイと版の記録（[`core::InboundSessionStore`]）。
 ///
-/// コアの受信用セッションは、まだ保存形式を持たない（暗号ストアは #359）。
+/// 受信用セッションは、キーごとに保存する（[`pickle_session`](Self::pickle_session) と
+/// [`restore_session`](Self::restore_session)。#359）。リプレイと版の記録は保存しない（#361）。
 #[derive(uniffi::Object, Default)]
 pub struct InboundSessionStore {
     pub(crate) inner: Mutex<core::InboundSessionStore>,
@@ -90,6 +91,39 @@ impl InboundSessionStore {
         let account = lock(&account.inner);
         let outbound = lock(&outbound.inner);
         lock(&self.inner).add_outbound(&account, &outbound).into()
+    }
+
+    /// `key` のセッションを、32 バイトの保存鍵で暗号化した保存形式にする（#359）。キーの
+    /// セッションがなければ `None`。保存のたびに出力は変わる。
+    ///
+    /// ロックは端末アカウント、このオブジェクトの順に取る。
+    pub fn pickle_session(
+        &self,
+        account: &DeviceAccount,
+        key: SessionRef,
+        storage_key: Vec<u8>,
+    ) -> Result<Option<String>> {
+        let storage_key = zeroize::Zeroizing::new(bytes32("storage_key", &storage_key)?);
+        let account = lock(&account.inner);
+        Ok(lock(&self.inner).pickle_session(&key.into(), &account, &storage_key))
+    }
+
+    /// [`pickle_session`](Self::pickle_session) の文字列から、そのキーのセッションを戻す。
+    /// 同じキーのセッションがあれば置き換える。戻したキーを返す。保存鍵が違う、別のユーザーや
+    /// 端末の値、形式が壊れているときは `InvalidPickle`。
+    ///
+    /// ロックは端末アカウント、このオブジェクトの順に取る。
+    pub fn restore_session(
+        &self,
+        account: &DeviceAccount,
+        pickle: String,
+        storage_key: Vec<u8>,
+    ) -> Result<SessionRef> {
+        let storage_key = zeroize::Zeroizing::new(bytes32("storage_key", &storage_key)?);
+        let account = lock(&account.inner);
+        Ok(lock(&self.inner)
+            .restore_session(&pickle, &account, &storage_key)?
+            .into())
     }
 
     /// 保存しているセッションのキー。

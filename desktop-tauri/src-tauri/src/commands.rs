@@ -160,6 +160,18 @@ pub async fn zoo_notifications_observed(
     Ok(())
 }
 
+/// トーストの「応答」を押した招待の ID を、一度だけ返す（なければ `None`）。(b) の画面だけが呼べる。
+/// 応答するのは、これを取れた画面だけ。外から偽装できない、Rust 側だけが残す印で、イベントや URL
+/// だけでは応答しない。
+#[tauri::command]
+pub async fn zoo_take_call_accept(
+    webview: Webview,
+    core: Core_<'_>,
+) -> Result<Option<String>, IpcError> {
+    require(&webview, &core, REMOTE)?;
+    Ok(core.take_call_accept().await)
+}
+
 fn leptos_only(core: &Core) -> Result<(), IpcError> {
     if core.ui() == UiMode::Leptos {
         Ok(())

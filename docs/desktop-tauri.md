@@ -47,6 +47,7 @@ Electric の Shape を購読する側は、(a) と (b) で異なる。**どち�
 | 書き込み（REST） | `zoo_send_message` で Rust 側が呼ぶ | WebView 側が直接呼ぶ |
 | アクセストークン | Rust 側だけが持つ | `zoo_access_token` で WebView に渡す |
 | 通知の Shape | Rust 側が購読する | React が購読している（通知の画面で使う）。React は変化を `zoo_notifications_observed` で Rust 側に渡す |
+| 通話の招待の Shape | Rust 側が購読する（着信のトースト用） | Rust 側が購読する（着信のトースト用。画面の表示用には、WebView 側も別に購読する）。詳しくは [音声通話と呼び出し](calls.md) |
 | 通知の判定と表示 | Rust 側（`client_types::notify`、`notify-rust`） | 同じ |
 | ログイン画面 | Leptos | Leptos の同じ画面（下記） |
 
@@ -81,7 +82,7 @@ ShapeEvent ─▶ 1 本のループ
   - 表示中のチャンネルとフォーカスを `zoo_set_focus` で、`zoo://open` を受けたらその画面へ移る。
 - Tauri の中で動いているかは `window.__TAURI_INTERNALS__` の有無で見分ける。さらに `zoo_session` の `protocol` が `PROTOCOL_VERSION` と一致する場合だけ IPC を使う。Web は Tauri 版と別にデプロイされるので、一致しないことがある。一致しないときと `zoo_session` が失敗したときは、OIDC のログインへは進まず（Tauri の中では AuthZ への移動を `on_navigation` が止めて既定のブラウザーで開くため、ログインを完了できない）、アプリの更新を案内する画面と再読み込みのボタンを出す。
 - capabilities：コマンドは `build.rs` の `AppManifest::commands` で 1 つずつ宣言する。宣言すると `allow-<名前>` の許可が作られ、capabilities でウィンドウごとに許せる。app の manifest があると、Tauri（2.12）は宣言のないコマンドを ACL がないものとして、ハンドラーに渡す前に拒否する。
-  - `main-remote`：リモートの URL（`remote.urls`）は `Config.api_base_url` のオリジンだけにする。stg と `http://localhost:5173` は debug ビルドのときだけ足す。呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_access_token`、`zoo_notifications_observed` と、`zoo://session` と `zoo://open` を受け取るための `core:event:allow-listen`、`core:event:allow-unlisten` に限る。
+  - `main-remote`：リモートの URL（`remote.urls`）は `Config.api_base_url` のオリジンだけにする。stg と `http://localhost:5173` は debug ビルドのときだけ足す。呼べるコマンドは `zoo_session`、`zoo_start_login`、`zoo_cancel_login`、`zoo_logout`、`zoo_set_focus`、`zoo_access_token`、`zoo_notifications_observed`、`zoo_take_call_accept` と、`zoo://session`、`zoo://open`、`zoo://call-accept` を受け取るための `core:event:allow-listen`、`core:event:allow-unlisten` に限る。
   - コマンドの中でも、呼び出し元のウィンドウの `UiMode` と URL のオリジンを確かめ、合わなければ `ErrorCode::WrongMode` を返す。
   - 許可したオリジン以外への移動は `on_navigation` で止め、既定のブラウザーで開く。
 - Tauri の中では Web Push を使わない（`supportsPush()` が false を返す）。使うと、Rust 側の通知と二重に出る。Service Worker はオフライン保存に使うので止めない。

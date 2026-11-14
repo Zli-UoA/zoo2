@@ -181,7 +181,8 @@ impl DeviceAccount {
 
 /// この端末が持つ Olm セッションの一覧。
 ///
-/// コアの Olm セッションは、まだ保存形式を持たない（暗号ストアは #359）。
+/// 保存は 1 つずつ（[`pickle_sessions`](Self::pickle_sessions) と [`restore_session`](Self::restore_session)）。
+/// 形式はコアの保存用の封筒（docs/e2ee.md の「暗号ストア」、#359）。
 #[derive(uniffi::Object, Default)]
 pub struct OlmSessionStore {
     inner: Mutex<Vec<core::OlmSession>>,
@@ -212,6 +213,87 @@ impl OlmSessionStore {
                 their_identity_key: s.their_identity_key().to_base64(),
             })
             .collect()
+    }
+
+    /// セッションを、32 バイトの保存鍵で暗号化した保存形式にする（#359）。`their_identity_key` を
+    /// 渡すと、その相手とのセッションだけにする（復号で状態が進んだセッションを保存し直すのに使う）。
+    /// `account` は今の端末で、別の端末の暗号ストアに差し替えられても開けないようにする。
+    /// 保存のたびに出力は変わる。
+    ///
+    /// ロックは端末アカウント、このオブジェクトの順に取る。
+    pub fn pickle_sessions(
+        &self,
+        account: &DeviceAccount,
+        storage_key: Vec<u8>,
+        their_identity_key: Option<String>,
+    ) -> Result<Vec<StoredOlmSession>> {
+        let storage_key = zeroize::Zeroizing::new(bytes32("storage_key", &storage_key)?);
+        let account = lock(&account.inner);
+        Ok(lock(&self.inner)
+            .iter()
+            .filter_map(|s| {
+                let identity = s.their_identity_key().to_base64();
+                if their_identity_key
+                    .as_deref()
+                    .is_some_and(|wanted| wanted != identity)
+                {
+                    return None;
+                }
+                Some(StoredOlmSession {
+                    session_id: s.session_id(),
+                    their_identity_key: identity,
+                    pickle: s.pickle(&account, &storage_key),
+                })
+            })
+            .collect())
+    }
+
+    /// [`pickle_sessions`](Self::pickle_sessions) の `pickle` からセッションを戻す。同じ ID の
+    /// セッションがあれば置き換える。保存鍵が違う、別のユーザーや端末の値、形式が壊れているときは
+    /// `InvalidPickle`。
+    ///
+    /// ロックは端末アカウント、このオブジェクトの順に取る。
+    pub fn restore_session(
+        &self,
+        account: &DeviceAccount,
+        pickle: String,
+        storage_key: Vec<u8>,
+    ) -> Result<OlmSessionInfo> {
+        let storage_key = zeroize::Zeroizing::new(bytes32("storage_key", &storage_key)?);
+        let account = lock(&account.inner);
+        let session = core::OlmSession::from_pickle(&pickle, &account, &storage_key)?;
+        let info = OlmSessionInfo {
+            session_id: session.session_id(),
+            their_identity_key: session.their_identity_key().to_base64(),
+        };
+        let mut sessions = lock(&self.inner);
+        match sessions
+            .iter_mut()
+            .find(|s| s.session_id() == info.session_id)
+        {
+            Some(existing) => *existing = session,
+            None => sessions.push(session),
+        }
+        Ok(info)
+    }
+}
+
+/// 保存形式にした Olm セッション（[`OlmSessionStore::pickle_sessions`]）。`pickle` は保存鍵で
+/// 暗号化してあるので、`toString()` に出ても中身は読めない。
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct StoredOlmSession {
+    pub session_id: String,
+    /// 相手の端末の識別鍵（パディングなしの base64）。
+    pub their_identity_key: String,
+    pub pickle: String,
+}
+
+impl std::fmt::Debug for StoredOlmSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredOlmSession")
+            .field("session_id", &self.session_id)
+            .field("their_identity_key", &self.their_identity_key)
+            .finish_non_exhaustive()
     }
 }
 

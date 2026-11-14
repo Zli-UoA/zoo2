@@ -62,6 +62,10 @@ pub mod command {
     pub const ACCESS_TOKEN: &str = "zoo_access_token";
     /// [`super::ObservedNotifications`]。React が受け取った通知の Shape の変化を渡す。
     pub const NOTIFICATIONS_OBSERVED: &str = "zoo_notifications_observed";
+    /// 引数なし。トーストの「応答」を押した招待の ID を、一度だけ返す（なければ `null`）。
+    /// 外から偽装できない、Rust 側だけが残す印。古い版のアプリにはないので、呼べなかったら何もしない
+    /// (`PROTOCOL_VERSION` は上げない)。
+    pub const TAKE_CALL_ACCEPT: &str = "zoo_take_call_accept";
 }
 
 /// Rust 側から WebView へ送るイベントの名前。
@@ -74,6 +78,9 @@ pub mod event {
     pub const SHAPE_FAILED: &str = "zoo://shape-failed";
     /// [`super::OpenTarget`]。通知やトレイ、ディープリンクから、あるメッセージを開くとき。
     pub const OPEN: &str = "zoo://open";
+    /// 中身なし。着信のトーストの「応答」が押された。`zoo_take_call_accept` で印を取りに来る合図で、
+    /// このイベントだけでは応答しない。
+    pub const CALL_ACCEPT: &str = "zoo://call-accept";
 }
 
 /// どちらの画面で動いているか。
@@ -309,6 +316,7 @@ mod tests {
             command::SEND_MESSAGE,
             command::ACCESS_TOKEN,
             command::NOTIFICATIONS_OBSERVED,
+            command::TAKE_CALL_ACCEPT,
         ] {
             assert!(
                 name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
@@ -320,6 +328,7 @@ mod tests {
             event::SHAPE,
             event::SHAPE_FAILED,
             event::OPEN,
+            event::CALL_ACCEPT,
         ] {
             assert!(
                 name.chars()
