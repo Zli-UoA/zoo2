@@ -556,10 +556,15 @@ impl WorkspaceView {
         let t = p.t;
         let sm = TextSpec::SM;
         let state = self.state.read(cx);
-        let autocomplete = state.mention_autocomplete.as_ref()?;
-        if autocomplete.candidates.is_empty() {
+        // 補完が閉じたら記録を消し、次に開いたとき選択中の行へスクロールし直す。
+        let Some(autocomplete) = state
+            .mention_autocomplete
+            .as_ref()
+            .filter(|a| !a.candidates.is_empty())
+        else {
+            self.mention_scrolled_to.set(None);
             return None;
-        }
+        };
         let selected_index = autocomplete
             .selected_index
             .min(autocomplete.candidates.len() - 1);

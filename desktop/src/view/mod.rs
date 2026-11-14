@@ -429,10 +429,8 @@ impl WorkspaceView {
             |this: &mut Self, _, event: &InputEvent, cx| match event {
                 InputEvent::Changed(text) => {
                     this.state.update(cx, |state, cx| {
-                        if let Some(qs) = &mut state.quick_switcher {
-                            qs.query = text.clone();
-                            qs.selected_index = 0;
-                        }
+                        // 選択を先頭に戻し、先頭の行へのスクロールも要求する。
+                        state.update_quick_switcher_query(text.clone());
                         cx.notify();
                     });
                 }
