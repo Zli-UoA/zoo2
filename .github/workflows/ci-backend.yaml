@@ -38,8 +38,10 @@ jobs:
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
-  # fmt, clippy, build and unit tests share one job so the Rust cache is
+  # fmt, clippy and unit tests share one job so the Rust cache is
   # restored once across the Rust checks.
+  # The binary itself is built and linked by e2e (integration tests) and deploy-image (release),
+  # so a separate `cargo build` here would only recompile what clippy already checked.
   check:
     needs: runner
     # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
@@ -73,8 +75,6 @@ jobs:
         run: cargo fmt --check
       - name: lint check
         run: cargo clippy
-      - name: Build project
-        run: cargo build
       - name: unit test
         run: cargo test --lib
 
