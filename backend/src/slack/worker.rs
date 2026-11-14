@@ -1543,6 +1543,17 @@ pub(super) async fn insert_message(
         ],
     )
     .await?;
+    // 差分同期・イベントで取り込んだ投稿は、`slack_message_map` に `slack` で残す (直近 24 時間の再確認が、
+    // Slack から消えた投稿を見つけるのに使う。ZIP の取り込みは、件数が多いので残さない。古い行は掃除が消す)
+    if job_id.is_empty() {
+        exec(
+            tx,
+            "INSERT INTO slack_message_map(team_id,slack_channel_id,ts,message_id,origin) \
+             SELECT $1,$2,$3,$4,'slack' WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) ON CONFLICT DO NOTHING",
+            &[&ctx.team, slack_channel, &message.ts, &id],
+        )
+        .await?;
+    }
 
     // 親だけを後から取り込んだときも、先に入っていた返信をスレッドに戻す
     if parent.is_empty() && !message.replies.is_empty() {
