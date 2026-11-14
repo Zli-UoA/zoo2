@@ -204,8 +204,14 @@ function DevicesPanel() {
   const setPhase = (revocation: RevocationPhase | null, error: DevicesErrorCode | null = null) =>
     ready((current) => ({ ...current, revocation, busy: null, error }));
 
+  /**
+   * 端末一覧と検証状態を読み直す。`peers` と `nameOf` は Electric の行が変わるたびに作り直されるので、
+   * 失効の途中でも呼ばれる。そのため、一覧のデータだけを差し替え、失効の画面（`revocation`）、実行中の
+   * 操作（`busy`）、エラーは変えない（それぞれの操作が自分で戻す）。読み直しに失敗しても、表示中の
+   * 画面は残す（最初の読み込みだけ `loadFailed` にする）。
+   */
   const load = useCallback(
-    async (keepRevocation = false) => {
+    async () => {
       const seq = ++loadSeq.current;
       if (!deps) {
         setState({ step: "unavailable" });
@@ -221,21 +227,29 @@ function DevicesPanel() {
           ? await loadVerifications(deps, peers)
           : { users: [], warnings: [] };
         if (seq !== loadSeq.current) return;
-        setState((current) => ({
-          step: "ready",
+        const data = {
           devices,
           verifications: verifications.users.map((row) => ({ ...row, name: nameOf(row.userId) })),
           warnings: verifications.warnings,
           unlocked,
           pendingRevocation: pending ? { scope: pending.scope, stage: pending.stage } : null,
           accountUrls,
-          revocation: keepRevocation && current.step === "ready" ? current.revocation : null,
-          passkeyAvailable: false,
-          busy: null,
-          error: null,
-        }));
+        };
+        setState((current) =>
+          current.step === "ready"
+            ? { ...current, ...data }
+            : {
+                step: "ready",
+                ...data,
+                revocation: null,
+                passkeyAvailable: false,
+                busy: null,
+                error: null,
+              },
+        );
       } catch {
-        if (seq === loadSeq.current) setState({ step: "loadFailed" });
+        if (seq !== loadSeq.current) return;
+        setState((current) => (current.step === "ready" ? current : { step: "loadFailed" }));
       }
     },
     // accountUrls は config から決まる。
@@ -266,7 +280,8 @@ function DevicesPanel() {
   const run = (busy: "rename" | "delete" | "verify", task: () => Promise<void>) => {
     ready((current) => ({ ...current, busy, error: null }));
     void task().then(
-      () => load(),
+      // 読み直してから、操作を終えたことにする（古い一覧のまま押せないように）。
+      () => load().then(() => ready((current) => ({ ...current, busy: null }))),
       (error) =>
         ready((current) => ({
           ...current,
@@ -412,7 +427,7 @@ function DevicesPanel() {
           setPhase({ phase: "done", result: toResult(result) });
           // 手元の受信用セッションを、新しい版に送り直す（版が変わったので、すべて送り直す）。
           e2ee.requestKeyBackup();
-          void load(true);
+          void load();
         } catch (error) {
           if (error instanceof RevocationConflictError || error instanceof ServerKeyMismatchError) {
             await abandonRevocation(deps).catch(() => undefined);
