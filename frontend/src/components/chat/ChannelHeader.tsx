@@ -120,13 +120,22 @@ export function ChannelHeader({
       >
         <ArrowLeftIcon />
       </Button>
-      <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+      <div className="relative flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
         {isDm ? (
-          isGroup ? (
-            <UsersIcon className="size-4" aria-hidden="true" />
-          ) : (
-            <MessagesSquareIcon className="size-4" aria-hidden="true" />
-          )
+          <>
+            {isGroup ? (
+              <UsersIcon className="size-4" aria-hidden="true" />
+            ) : (
+              <MessagesSquareIcon className="size-4" aria-hidden="true" />
+            )}
+            {channel.encrypted ? (
+              // DM はチャンネル設定を開けないので、暗号化 DM はアイコンに鍵を重ねて見分けられるようにする。
+              <LockKeyholeIcon
+                className="absolute -right-1 -bottom-1 size-3.5 rounded-full bg-background p-0.5 text-foreground ring-1 ring-border"
+                aria-hidden="true"
+              />
+            ) : null}
+          </>
         ) : channel.encrypted ? (
           <LockKeyholeIcon className="size-4" aria-hidden="true" />
         ) : channel.is_private ? (
@@ -139,7 +148,7 @@ export function ChannelHeader({
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-sm font-semibold">{displayTitle}</h2>
           {channel.encrypted ? (
-            // 見た目の印は左のアイコンだけにし、印の文字はチャンネル設定に出す。読み上げでは、
+            // 見た目の印は左のアイコン（DM は鍵を重ねたアイコン）だけにし、印の文字はチャンネル設定に出す。読み上げでは、
             // 送信の前に暗号化されているかを確かめられるよう、見出しの隣で伝える。
             <span className="sr-only">{t("e2ee.badge")}</span>
           ) : null}

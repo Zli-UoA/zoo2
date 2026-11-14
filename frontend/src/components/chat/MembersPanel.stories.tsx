@@ -90,9 +90,17 @@ export const EncryptedUnreadableMember: Story = {
             channel_id: secret.id,
             membership_epoch: "1",
             user_ids: ["user-alice", "user-bob"],
-            device_keys: { "user-alice": { ALICE1: { device_id: "ALICE1" } }, "user-bob": {} },
-            master_keys: { "user-alice": { keys: {} } },
-            self_signing_keys: { "user-alice": { keys: {} } },
+            device_keys: {
+              "user-alice": {
+                ALICE1: {
+                  device_id: "ALICE1",
+                  signatures: { "user-alice": { "ed25519:ALICESSK": "sig" } },
+                },
+              },
+              "user-bob": {},
+            },
+            master_keys: { "user-alice": { keys: { "ed25519:ALICEMSK": "ALICEMSK" } } },
+            self_signing_keys: { "user-alice": { keys: { "ed25519:ALICESSK": "ALICESSK" } } },
             user_signing_keys: {},
             signatures: [],
             tofu_pins: {},

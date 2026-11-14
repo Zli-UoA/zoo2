@@ -194,3 +194,16 @@ export const Encrypted: Story = {
     await expect(within(dialog).getByText("暗号化")).toBeVisible();
   }),
 };
+
+/** 暗号化 DM。DM はチャンネル設定を開けないので、DM のアイコンに鍵を重ねて見分けられるようにする。 */
+export const EncryptedDm: Story = {
+  args: {
+    channel: { ...secret, is_dm: true, encrypted: true, membership_epoch: "1" },
+    memberCount: memberCount(secret.id),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(canvasElement.querySelector("svg.lucide-lock-keyhole")).not.toBeNull(),
+    );
+  }),
+};
