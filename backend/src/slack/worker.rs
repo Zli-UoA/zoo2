@@ -1842,6 +1842,9 @@ struct FileTokens {
     users: usize,
     /// ユーザーのトークンを使える行か。連携が増えれば取れる見込みがあるのは、この行だけ
     eligible: bool,
+    /// 同じワークスペースに、`files:read` を持つ連携が 1 人でもいるか (使える行だけ調べる)。
+    /// いなければ、再連携が進むまで待つ。いるのに、この行のトークンがない (メンバーが連携していない) なら、待たない
+    workspace_has_links: bool,
 }
 
 /// 行の URL が、この行のファイルのものか。ユーザーのトークンは、このパスにだけ付けて送る。
@@ -1903,6 +1906,20 @@ async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, App
             }
         }
     }
+    let mut workspace_has_links = false;
+    if eligible {
+        let mut db = s.db.clone();
+        let mut tx = db.transaction().await?;
+        workspace_has_links = !query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM slack_user_links l WHERE l.team_id=$1 \
+             AND 'files:read'=ANY(string_to_array(replace(l.scopes,' ',''),',')) LIMIT 1",
+            &[&file.team_id],
+        )
+        .await?
+        .is_empty();
+        tx.commit().await?;
+    }
     let users = tokens.len();
     if let Some(bot) = s.config.slack.import_bot_token.as_deref() {
         tokens.push(bot.to_string());
@@ -1911,6 +1928,7 @@ async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, App
         tokens,
         users,
         eligible,
+        workspace_has_links,
     })
 }
 
@@ -2140,10 +2158,11 @@ async fn orphan_files_step(
         }
         Ok(FileOutcome::Done(attachment)) => ("done", attachment, String::new()),
         Ok(FileOutcome::Skipped(reason)) => ("skipped", String::new(), reason),
-        // どのトークンにも見えなかった。ユーザーのトークンを使える行で、連携した人がこれから増えるなら (再連携が進むまで)、
-        // 試行に数えず待つ。ユーザーも試した、またはユーザーのトークンを使えない行は、取り直しても変わらないので、
+        // どのトークンにも見えなかった。ユーザーのトークンを使える行で、ワークスペースに `files:read` を持つ連携がまだ
+        // 1 人もいないなら (再連携が進むまで)、試行に数えず待つ。連携がある (ユーザーも試した、またはこのチャンネルの
+        // メンバーが連携していない)、またはユーザーのトークンを使えない行は、取り直しても変わらないので、
         // すぐ `failed` にする
-        Ok(FileOutcome::Denied) if tokens.eligible && tokens.users == 0 => {
+        Ok(FileOutcome::Denied) if tokens.eligible && !tokens.workspace_has_links => {
             release_file(s, &file, true, NO_USER_TOKEN_WAIT_SECS, NO_USER_TOKEN_NOTE).await?;
             return Ok(FileStep::Done);
         }
@@ -2331,6 +2350,28 @@ fn allowed_file_url(url: &str, base: &str) -> bool {
         && url.path().starts_with(&prefix)
 }
 
+/// 取得中の行のリースを延ばす (リースの持ち主だけ)
+async fn renew_file_lease(s: &AppState, file: &PendingFile) -> Result<(), AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    exec(
+        &mut tx,
+        &format!(
+            "UPDATE slack_files SET lease_until=now()+{FILE_LEASE_SQL} \
+             WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$3 AND lease_token=$4 AND status='pending'"
+        ),
+        &[
+            &file.team_id,
+            &file.slack_file_id,
+            &file.message_id,
+            &file.lease_token,
+        ],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// `tokens` を前から順に試して、最初に取れたものを使う。トークンごとに、ログイン画面 (権限なし) は次へ進み、
 /// 一時的な失敗 (5xx・通信) も次へ進む (全部だめなら、その失敗を返す)。429 は、残りを試さずに待つ。
 /// 全部が権限なしなら `Denied`。ユーザーのトークンは、呼び出し側が、その行のファイルの URL のときだけ渡す
@@ -2357,7 +2398,11 @@ async fn fetch_one(
 
     let mut transient = None;
     let mut found = None;
-    for token in tokens {
+    for (i, token) in tokens.iter().enumerate() {
+        // トークンを順に試すと、リース (10 分) を超えうるので、次のトークンの前に延ばす
+        if i > 0 {
+            renew_file_lease(s, file).await?;
+        }
         let response =
             match get_following_redirects(client, url, token, &s.config.slack.files_base_url).await
             {

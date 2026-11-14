@@ -916,15 +916,18 @@ async fn test_orphan_files_use_only_members_for_private_channels_and_try_every_m
     let outsider = f.extra_user().await?;
     f.link(&outsider, "xoxp-outsider", "files:read", None)
         .await?;
-    f.add_pri("F1", "").await?;
-    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
-    mount_pri(&files, &f, "F1", "xoxp-outsider", body(b"no")).await;
+    f.add_pri("F0", "").await?;
+    mount_pri(&files, &f, "F0", "xoxb-test", login_redirect()).await;
+    mount_pri(&files, &f, "F0", "xoxp-outsider", body(b"no")).await;
     assert!(f.once().await);
-    let row = f.file("F1").await;
+    // ワークスペースに連携はあるが、このチャンネルのメンバーではない。待っても変わらないので、確定する
+    let row = f.file("F0").await;
     assert_eq!(
         (row["status"].as_str(), row["attempts"].as_i64()),
-        (Some("pending"), Some(0))
+        (Some("failed"), Some(1))
     );
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
 
     // メンバーが 4 人いて、先頭の 3 人に見えなくても、4 人目で取れる (人数で切らない)
     let mut members = vec![f.user.clone()];
