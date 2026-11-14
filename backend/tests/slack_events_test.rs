@@ -879,38 +879,41 @@ async fn test_light_syncs_stop_fetching_candidates_that_cannot_be_kept() -> anyh
 
 /// このワークスペース以外の同期の項目の `available_at` を、1 日先へ延ばす。元の値を返す (`restore_other_teams` で戻す)
 async fn defer_other_teams(state: &AppState, team: &str) -> anyhow::Result<Vec<Value>> {
-    let saved = sql(
-        state,
+    // 保存と更新を 1 つのトランザクションにまとめる。途中で失敗したら、ロールバックされ、共有の DB に変更が残らない
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let mut saved = query(
+        &mut tx,
         "SELECT json_build_object('team',team_id,'channel',slack_channel_id,'at',available_at::text)::text \
          FROM slack_channel_syncs WHERE team_id<>$1",
         &[team],
     )
     .await?;
-    sql(
-        state,
+    query(
+        &mut tx,
         "UPDATE slack_channel_syncs SET available_at=now()+interval '1 day' WHERE team_id<>$1 \
          RETURNING json_build_object('ok',true)::text",
         &[team],
     )
     .await?;
     // 前のテストが残した、熟した合図 (`slack_channel_wakes`) も、先に取られるので、一時的に先へ延ばす
-    let mut wakes = sql(
-        state,
+    let mut wakes = query(
+        &mut tx,
         "SELECT json_build_object('team',team_id,'channel',slack_channel_id,'at',first_at::text,'wake',true)::text \
          FROM slack_channel_wakes WHERE team_id<>$1",
         &[team],
     )
     .await?;
-    sql(
-        state,
+    query(
+        &mut tx,
         "UPDATE slack_channel_wakes SET first_at=now()+interval '1 day' WHERE team_id<>$1 \
          RETURNING json_build_object('ok',true)::text",
         &[team],
     )
     .await?;
-    let mut all = saved;
-    all.append(&mut wakes);
-    Ok(all)
+    tx.commit().await?;
+    saved.append(&mut wakes);
+    Ok(saved)
 }
 
 async fn restore_other_teams(state: &AppState, saved: &[Value]) -> anyhow::Result<()> {
