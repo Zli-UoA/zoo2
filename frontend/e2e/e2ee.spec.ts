@@ -314,7 +314,7 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
   const a2 = await openDevice(browser, "alice-2", alice);
   const b1 = await openDevice(browser, "bob-1", bob);
   const b2 = await openDevice(browser, "bob-2", bob);
-  const devices = [a1, a2, b1, b2];
+  const devices: Device[] = [a1, a2, b1, b2];
 
   try {
     // ログイン（端末の登録はログインのあとに自動で行われる）。
@@ -388,6 +388,33 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     for (const device of [a1, a2, b1]) await expectDecrypted(device, fromBob);
     await a1.page.screenshot({ path: testInfo.outputPath("alice-1-03-dm.png") });
     await b1.page.screenshot({ path: testInfo.outputPath("bob-1-03-dm.png") });
+
+    // 送信端末の検証（docs/e2ee.md の「受信時の検証」の手順 4）。Alice の端末から見て、自分の別の
+    // 端末のメッセージも、送る前に TOFU で信頼した Bob（2 台目は 1 台目が置いたピンを採用する）の
+    // メッセージも、「未検証の送信者」にならない。
+    for (const device of [a1, a2]) {
+      await expect(device.page.getByText("未検証の送信者", { exact: true })).toHaveCount(0);
+    }
+
+    // 新しい端末での解錠（docs/e2ee.md の「初回設定と解錠の流れ」の 5）。Bob の端末が鍵バックアップに
+    // 上げたセッションを、あとから解錠した 3 台目が取り込み、解錠より前のメッセージを読める。
+    const backedUp = () =>
+      Number(
+        sql(`SELECT count(*) FROM e2ee_key_backup_sessions WHERE user_id = ${literal(bobId)}`)[0],
+      );
+    await expect.poll(backedUp, { timeout: 60_000 }).toBeGreaterThanOrEqual(2);
+    const b3 = await openDevice(browser, "bob-3", bob);
+    devices.push(b3);
+    await login(b3);
+    await unlockWithRecoveryKey(b3, bobRecoveryKey, testInfo);
+    await openChannel(b3, dmId);
+    await expectDecrypted(b3, fromAlice);
+    await expectDecrypted(b3, fromBob);
+    // バックアップ由来のセッションで復号したので、送信者は確かめられない（仕様どおり）。
+    await expect(b3.page.getByText("送信者を確かめられません", { exact: true })).toHaveCount(2);
+    await b3.page.screenshot({ path: testInfo.outputPath("bob-3-03-backup.png") });
+    // 以降の SAS、失効、退出は 2 人 × 2 端末で確かめるので、3 台目は閉じる（登録した端末は残る）。
+    await b3.context.close();
 
     // 4. 絵文字 SAS 検証（Alice の 1 台目 → Bob）。Bob の端末すべてに要求が届き、1 台目で受け入れる。
     await openSettings(a1, "devices");

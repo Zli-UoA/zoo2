@@ -18,8 +18,10 @@ class ZooApi(val config: Config, val platform: Platform, private val http: HttpC
         path: String,
         method: String = "GET",
         body: JsonElement? = null,
+        /** 追加のヘッダー（E2EE の直前の再認証の `X-Zoo-Reauth` など）。 */
+        extraHeaders: Map<String, String> = emptyMap(),
     ): JsonElement {
-        val auth = platform.headers()
+        val auth = platform.headers() + extraHeaders
         val (response, raw) =
             try {
                 val result =

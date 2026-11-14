@@ -17,7 +17,7 @@ export interface E2eeContextValue {
   worker: CryptoWorker | null;
   /**
    * `worker` がない理由（ほかのタブが開いている、登録に失敗して試し直している、など）。
-   * 設定の「暗号化」「端末」タブが、準備できていないことの説明に使う。開けていれば `null`。
+   * 設定の「暗号化」タブが、準備できていないことの説明に使う。開けていれば `null`。
    */
   notReadyReason: E2eeNotReadyReason | null;
   userId: string | null;
@@ -44,6 +44,12 @@ export interface E2eeContextValue {
    * （送信用セッションの写しを含む）に呼ぶ。解錠していない端末では何もしない。
    */
   requestKeyBackup(): void;
+  /**
+   * 鍵バックアップの今の版から、過去のセッションを取り込む（docs/e2ee.md の「新しい端末での解錠」の
+   * 手順 5）。解錠を終えたときに呼ぶ。取り込んだら `roomKeysVersion` を進める。解錠していない端末と、
+   * 暗号ストアを開いていないタブでは何もしない。
+   */
+  requestKeyBackupImport: () => void;
   /** ログアウト：暗号ストアを消し、端末を削除する（失敗したら次のログインで消し直す）。 */
   clearForLogout(): Promise<void>;
   /** 他のユーザーの絵文字 SAS 検証（#368）。暗号ストアを開いたタブで、端末の登録が済んだときだけ。 */
@@ -62,6 +68,7 @@ export const E2eeContext = createContext<E2eeContextValue>({
   deviceLimit: null,
   cancelLogout: () => {},
   requestKeyBackup: () => {},
+  requestKeyBackupImport: () => {},
   clearForLogout: async () => {},
   sas: null,
 });

@@ -33,8 +33,12 @@ export interface CryptoStoreWrite {
   meta?: Record<string, string | null>;
   account?: string;
   olmSessions?: StoredOlmSession[];
-  /** 受信用セッション。新しく足したものや置き換えたものは、鍵バックアップの送信待ちに入れ直す。 */
-  inboundSessions?: { key: InboundSessionKey; pickle: string }[];
+  /**
+   * 受信用セッション。新しく足したものや置き換えたものは、鍵バックアップの送信待ちに入れ直す。
+   * `fromBackup` は、鍵バックアップの今の版から取り込んだだけの変更（同じ版には上げ直さない）。
+   * 新しい行は送信済みにし、すでにある行は送信待ちかどうかを変えない。
+   */
+  inboundSessions?: { key: InboundSessionKey; pickle: string; fromBackup?: boolean }[];
   trustStore?: string;
   /** 処理を終えて、まだ ack を送れていない to-device メッセージの ID。 */
   addProcessedToDevice?: string[];
@@ -104,8 +108,9 @@ export class MemoryCryptoBackend implements CryptoBackend {
     for (const session of changes.olmSessions ?? []) {
       this.olmSessions.set(session.sessionId, session);
     }
-    for (const { key, pickle } of changes.inboundSessions ?? []) {
-      this.inboundSessions.set(key, { pickle, backedUp: false });
+    for (const { key, pickle, fromBackup } of changes.inboundSessions ?? []) {
+      const backedUp = fromBackup ? (this.inboundSessions.get(key)?.backedUp ?? true) : false;
+      this.inboundSessions.set(key, { pickle, backedUp });
     }
     if (changes.trustStore !== undefined) this.trustStore = changes.trustStore;
     for (const id of changes.addProcessedToDevice ?? []) this.processedToDevice.add(id);

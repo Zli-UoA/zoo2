@@ -6,7 +6,7 @@ import { GitHubError } from "../src/github.ts";
 import { preview } from "../src/previews.ts";
 import { subscription, words, permits } from "../src/subscriptions.ts";
 import { ZooError } from "../../../sdk/src/index.ts";
-import type { Json } from "../src/types.ts";
+import { BotError, id, keyedId, type Json } from "../src/types.ts";
 
 test("GitHub repository writes are impossible, including Zoo thread replies and action events", async (t) => {
   const f = fixture();
@@ -679,4 +679,41 @@ test("a burst of Checks refreshes the canonical PR card once without replaying e
   assert.equal(f.zoo.messages.size, 1);
   assert.match(JSON.stringify([...f.zoo.messages.values()][0].blocks), /CI: success/);
   assert.ok(f.remote.readRequests.length < 10, `Unexpected API request count: ${f.remote.readRequests.length}`);
+});
+
+test("message IDs cannot be computed from public values", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  await f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue }));
+  const root = f.store.thread("channel", { repo: "acme/project", kind: "issue", number: "7" })!;
+  assert.notEqual(root.message, id("thread:channel:acme/project:issue:7"));
+  assert.equal(root.message, keyedId(f.config.encryptionKey, "thread:channel:acme/project:issue:7"));
+  assert.notEqual(
+    keyedId(f.config.encryptionKey, "thread:channel:acme/project:issue:7"),
+    keyedId(Buffer.alloc(32, 8), "thread:channel:acme/project:issue:7"),
+  );
+});
+
+test("a message that this bot did not publish under its ID fails the job without blocking other channels", async (t) => {
+  const f = fixture({
+    rules: [
+      { repository: "acme/project", installationId: 10, channels: ["aaa-conflict", "channel"] },
+    ],
+  });
+  t.after(() => f.store.close());
+  f.store.subscribe({ repo: "acme/project", channel: "aaa-conflict", features: ["issues"] });
+  const taken = keyedId(f.config.encryptionKey, "thread:aaa-conflict:acme/project:issue:7");
+  // Another member's message in the same channel already uses the ID: POST conflicts and the edit is forbidden.
+  f.zoo.messages.set(taken, { id: taken, channel_id: "aaa-conflict", content: "occupied" });
+  const update = f.zoo.updateMessage;
+  f.zoo.updateMessage = async (messageId, content) => {
+    if (messageId === taken) throw new ZooError(403, "Forbidden");
+    return update(messageId, content);
+  };
+  await assert.rejects(
+    f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue })),
+    (error) => error instanceof BotError && error.code === "message_id_conflict" && !error.retryable,
+  );
+  assert.equal([...f.zoo.messages.values()].filter((m) => m.channel_id === "channel").length, 1);
+  assert.equal(f.zoo.messages.get(taken)!.content, "occupied");
 });

@@ -123,7 +123,7 @@ export class CryptoOperations {
         await this.opened().markKeysPublished();
         return null;
       case "processToDevice":
-        return this.opened().processToDevice(request.rows, request.deviceKeys);
+        return this.opened().processToDevice(request.rows, request.keysQuery);
       case "acknowledged":
         await this.opened().acknowledged(request.ids);
         return null;
@@ -157,6 +157,10 @@ export class CryptoOperations {
         return this.opened().hasOwnKeys();
       case "prepareBackupUpload":
         return this.opened().prepareBackupUpload(request.currentVersion, request.limit);
+      case "beginBackupImport":
+        return this.opened().beginBackupImport(request.currentVersion);
+      case "importBackupPage":
+        return this.opened().importBackupPage(request.version, request.rows, request.next);
       case "backupUploaded":
         await this.opened().backupUploaded(request.uploadId);
         return null;

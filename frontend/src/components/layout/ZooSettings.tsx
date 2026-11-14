@@ -27,12 +27,11 @@ import { AppsPanel } from "../chat/AppsDialog";
 import { CallSettingsDevices } from "../call/CallSettingsDevices";
 import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
 import { WorkspaceMembers } from "./WorkspaceMembers";
-import { EncryptionSettings } from "../e2ee/EncryptionSettings";
-import { DevicesSettings } from "../e2ee/DevicesSettings";
+import { EncryptionTab } from "../e2ee/EncryptionTab";
 import { SlackImportPanel } from "./SlackImportPanel";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import type { SettingsTab } from "../../routes/_shell.settings";
+import { normalizeSettingsSearch, type SettingsTab } from "./settingsSearch";
 import { Button } from "../ui/button";
 import { SettingRow, panelTabClassName } from "../ui/control-panel";
 import { useShell } from "./shell-context";
@@ -47,14 +46,25 @@ export function ZooSettings() {
   const { t } = useTranslation();
   const shell = useShell();
   const navigate = useNavigate();
-  const search = useRouterState({
-    select: (state) => state.location.search as { tab?: SettingsTab; channel?: string },
+  const rawSearch = useRouterState({
+    select: (state) => state.location.search as Record<string, unknown>,
   });
+  // 古い `?tab=devices` も、ここで暗号化タブの端末のセクションに直す。
+  const search = useMemo(() => normalizeSettingsSearch(rawSearch), [rawSearch]);
   const { config } = useCollections();
   const { isAdmin } = useCurrentUser();
   // 管理者向けのタブは、権限がなければ一般タブに戻す
   const tab: SettingsTab =
     search.tab && (isAdmin || !ADMIN_TABS.includes(search.tab)) ? search.tab : "general";
+  const clearSection = useCallback(
+    () =>
+      void navigate({
+        to: "/settings",
+        search: { ...search, section: undefined },
+        replace: true,
+      }),
+    [navigate, search],
+  );
   return (
     <section className="flex h-full min-h-0 flex-col" aria-labelledby="zoo-settings-title">
       <PaneHeader>
@@ -77,7 +87,7 @@ export function ZooSettings() {
           onValueChange={(value) =>
             void navigate({
               to: "/settings",
-              search: { ...search, tab: value as SettingsTab },
+              search: { ...search, tab: value as SettingsTab, section: undefined },
               replace: true,
             })
           }
@@ -95,9 +105,6 @@ export function ZooSettings() {
             </Tabs.Tab>
             <Tabs.Tab value="encryption" className={panelTabClassName}>
               {t("e2ee.tab")}
-            </Tabs.Tab>
-            <Tabs.Tab value="devices" className={panelTabClassName}>
-              {t("e2ee.devicesTab")}
             </Tabs.Tab>
             <Tabs.Tab value="activitypub" className={panelTabClassName}>
               ActivityPub
@@ -173,11 +180,10 @@ export function ZooSettings() {
           </Tabs.Panel>
           <Tabs.Panel value="encryption" className="min-h-0">
             <h2 className="sr-only">{t("e2ee.tab")}</h2>
-            <EncryptionSettings />
-          </Tabs.Panel>
-          <Tabs.Panel value="devices" className="min-h-0">
-            <h2 className="sr-only">{t("e2ee.devicesTab")}</h2>
-            <DevicesSettings />
+            <EncryptionTab
+              focusDevices={search.section === "devices"}
+              onDevicesFocused={clearSection}
+            />
           </Tabs.Panel>
           <Tabs.Panel value="activitypub" className="min-h-0">
             <h2 className="sr-only">ActivityPub</h2>

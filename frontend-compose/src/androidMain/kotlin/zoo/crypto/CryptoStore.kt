@@ -20,11 +20,18 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import zoo.crypto.ffi.AddOutcome
+import zoo.crypto.ffi.BackupUpload
+import zoo.crypto.ffi.BackupUploadState
 import zoo.crypto.ffi.DeviceAccount
 import zoo.crypto.ffi.InboundSessionStore
 import zoo.crypto.ffi.OlmSessionStore
+import zoo.crypto.ffi.OwnKeys
+import zoo.crypto.ffi.SenderTrust
 import zoo.crypto.ffi.SessionRef
+import zoo.crypto.ffi.SetupSession
+import zoo.crypto.ffi.StartupCheck
 import zoo.crypto.ffi.TrustStore
+import zoo.crypto.ffi.VersionChange
 import zoo.crypto.ffi.ZooCryptoException
 
 /**
@@ -81,6 +88,8 @@ data class ToDeviceResult(
     val dropped: Int,
     /** 新しく作った Olm セッションの数（ワンタイム鍵を使われたので補充する）。 */
     val newOlmSessions: Int,
+    /** 保存した鍵のうち、送信端末を検証できた（受信時の検証の手順 4）ものの数。 */
+    val verifiedRoomKeys: Int = 0,
 )
 
 /** `POST /api/e2ee/keys/upload` に送る鍵。 */
@@ -117,7 +126,33 @@ internal class StoreState(
     @SerialName("trust_store") var trustStore: String? = null,
     /** 処理を終えて、まだ ack を送れていない to-device の ID。 */
     @SerialName("processed_to_device") var processedToDevice: Set<String> = emptySet(),
+    /** 解錠した（または初回設定で作った）自分の鍵（`OwnKeys` の封筒。マスター鍵の秘密鍵は入れない。#360）。 */
+    @SerialName("own_keys") var ownKeys: String? = null,
+    /** 最後に解錠したとき（自分で SSSS を書いたときは、その応答）の `secrets_revision`。 */
+    @SerialName("secrets_revision") var secretsRevision: Long? = null,
+    /** 鍵バックアップの送信の状態（`BackupUploadState.to_json`。秘密は入らない）。 */
+    @SerialName("backup_upload") var backupUpload: String? = null,
+    /** 解錠したあと、過去のセッションを最後まで取り込んだ鍵バックアップの版（新しい端末での解錠の手順 5）。 */
+    @SerialName("imported_backup_version") var importedBackupVersion: String? = null,
 )
+
+/** [CryptoStore.prepareBackupUpload] の結果。 */
+sealed interface BackupUploadRequest {
+    /** 送るものがない（解錠していない、今の版がない、送信待ちがない）。 */
+    data object None : BackupUploadRequest
+
+    /** 今の版を使えない（署名がない、SSSS の鍵と違う、版の巻き戻りなど）。送らない。 */
+    data class Rejected(val reason: String) : BackupUploadRequest
+
+    /** `POST /api/e2ee/key_backup/keys` に送る。 */
+    class Upload(
+        val id: Long,
+        val version: String,
+        val secretsRevision: Long,
+        val body: JsonObject,
+        val count: Int,
+    ) : BackupUploadRequest
+}
 
 /**
  * Android の暗号ストア（docs/e2ee.md の「暗号ストア」、#359）。1 つのユーザーの端末アカウント、
@@ -138,12 +173,21 @@ class CryptoStore private constructor(
     private val account: DeviceAccount,
     private val olmSessions: OlmSessionStore,
     private val inbound: InboundSessionStore,
-    private val trust: TrustStore,
+    private var trust: TrustStore,
     private val state: StoreState,
     private val deleteWrappingKey: () -> Unit,
 ) : AutoCloseable {
     private val loadedInbound = mutableSetOf<String>()
     private var closed = false
+
+    /** 鍵バックアップの送信の状態。初めて送るときに `state.backup_upload` から読む。 */
+    private var backupState: BackupUploadState? = null
+
+    /** 送っている途中の要求と、送ったときのセッションの pickle（送ったあとに書き換わったものを残すため）。 */
+    private class PendingUpload(val upload: BackupUpload, val sessions: List<Pair<String, String>>)
+
+    private val pendingUploads = mutableMapOf<Long, PendingUpload>()
+    private var nextUploadId = 0L
 
     val userId: String get() = state.userId
     val deviceId: String get() = state.deviceId
@@ -208,15 +252,51 @@ class CryptoStore private constructor(
      * to-device メッセージを処理する（React の `CryptoStore.processToDevice`、TUI と同じ規則）。
      *
      * 1 件ごとに、変わった状態と処理済みの印を保存してから次に進む。ack の前に終了しても、同じ
-     * メッセージを 2 回復号しない。`deviceKeys` は送信ユーザーの `keys/query` の応答の `device_keys`。
-     * 送信端末の検証（受信時の検証の手順 4）は #360 以降で足す。
+     * メッセージを 2 回復号しない。`deviceKeys` は送信ユーザーの `keys/query` の応答の `device_keys`、
+     * `signatures` は同じ応答の `signatures`（`e2ee_key_signatures` の行）。
+     *
+     * 送信端末の検証（受信時の検証の手順 4）は、今は自分の別の端末だけを行う（解錠済みなら、暗号ストアの自分の
+     * 自己署名鍵と、その鍵による端末鍵への署名で確かめる）。他のユーザーの端末は、配布先の判定の記録で信頼した
+     * マスター鍵が要るので、送受信（#361）で入れる。それまでは検証しない（`trust` を渡さない）。
      */
     @Synchronized
-    fun processToDevice(rows: List<ToDeviceRow>, deviceKeys: JsonObject): ToDeviceResult {
+    fun processToDevice(
+        rows: List<ToDeviceRow>,
+        deviceKeys: JsonObject,
+        signatures: JsonArray = JsonArray(emptyList()),
+    ): ToDeviceResult {
         val processed = mutableListOf<String>()
         var roomKeys = 0
         var dropped = 0
         var newOlmSessions = 0
+        var verifiedRoomKeys = 0
+        // 解錠し直しが要る（secrets_revision を消した）ときは、暗号ストアの自分の鍵を使わない。
+        val ownSelfSigning by lazy {
+            state.ownKeys?.takeIf { state.secretsRevision != null }?.let { sealed ->
+                try {
+                    OwnKeys.fromPickle(sealed, account, storageKey).use { it.selfSigningPublicKey() }
+                } catch (_: ZooCryptoException) {
+                    null
+                }
+            }
+        }
+        val trustFor = { sender: String?, device: String? ->
+            val selfSigning = if (sender == state.userId && device != null) ownSelfSigning else null
+            selfSigning?.let { key ->
+                val signature =
+                    signatures.firstNotNullOfOrNull { element ->
+                        val row = element as? JsonObject ?: return@firstNotNullOfOrNull null
+                        fun text(name: String) = (row[name] as? JsonPrimitive)?.content
+                        row["signature"]?.let { it as? JsonPrimitive }?.content?.takeIf {
+                            text("signer_user_id") == state.userId &&
+                                text("signer_key_id") == "ed25519:$key" &&
+                                text("target_user_id") == state.userId &&
+                                text("target_key_id") == device
+                        }
+                    }
+                SenderTrust(key, signature)
+            }
+        }
         // 前の処理で印を付けた行（ack の前に失敗した）。その保存の同期が済んだとは限らない（rename の
         // あとで同期に失敗しても、開き直すと新しい state.json を読めることがある）ので、返す前に
         // 保存し直して、同期を確かめてから ack させる。
@@ -226,11 +306,12 @@ class CryptoStore private constructor(
                 unsaved = true
             } else {
                 if (row.type == "m.room.encrypted") {
-                    when (val outcome = processEncrypted(row, deviceKeys)) {
+                    when (val outcome = processEncrypted(row, deviceKeys, trustFor)) {
                         is Encrypted.Dropped -> dropped++
                         is Encrypted.Decrypted -> {
                             newOlmSessions += outcome.newOlmSessions
                             if (outcome.roomKey) roomKeys++ else if (outcome.rejected) dropped++
+                            if (outcome.roomKey && outcome.verified) verifiedRoomKeys++
                         }
                     }
                 } else {
@@ -243,15 +324,24 @@ class CryptoStore private constructor(
             processed += row.id
         }
         if (unsaved) save()
-        return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions)
+        return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions, verifiedRoomKeys)
     }
 
     private sealed interface Encrypted {
         data object Dropped : Encrypted
-        data class Decrypted(val newOlmSessions: Int, val roomKey: Boolean, val rejected: Boolean) : Encrypted
+        data class Decrypted(
+            val newOlmSessions: Int,
+            val roomKey: Boolean,
+            val rejected: Boolean,
+            val verified: Boolean = false,
+        ) : Encrypted
     }
 
-    private fun processEncrypted(row: ToDeviceRow, deviceKeys: JsonObject): Encrypted {
+    private fun processEncrypted(
+        row: ToDeviceRow,
+        deviceKeys: JsonObject,
+        trustFor: (sender: String?, device: String?) -> SenderTrust?,
+    ): Encrypted {
         val before = olmSessions.len()
         val decrypted =
             try {
@@ -276,16 +366,17 @@ class CryptoStore private constructor(
                 }
             val roomKey =
                 try {
-                    decrypted.verifyRoomKey(account, listed?.toString(), null)
+                    decrypted.verifyRoomKey(account, listed?.toString(), trustFor(decrypted.sender(), decrypted.senderDevice()))
                 } catch (_: ZooCryptoException) {
                     return Encrypted.Decrypted(created, roomKey = false, rejected = true)
                 }
             roomKey.use {
+                // addRoomKey で鍵を渡す前に読む。
+                val verified = roomKey.senderVerified()
                 val ref = SessionRef(roomKey.channelId(), roomKey.senderKey(), roomKey.sessionId())
                 val key = inboundKey(ref)
-                if (loadedInbound.add(key)) {
-                    state.inboundSessions[key]?.let { inbound.restoreSession(account, it.pickle, storageKey) }
-                }
+                // 読み込めたときだけ読み込み済みにする（失敗したら次の試行で読み直す）。
+                loadInbound(key)
                 if (inbound.addRoomKey(roomKey) == AddOutcome.KEPT) {
                     return Encrypted.Decrypted(created, roomKey = false, rejected = false)
                 }
@@ -293,7 +384,7 @@ class CryptoStore private constructor(
                     inbound.pickleSession(account, ref, storageKey)
                         ?: return Encrypted.Decrypted(created, roomKey = false, rejected = false)
                 state.inboundSessions = state.inboundSessions + (key to StoredInboundSession(pickle, backedUp = false))
-                return Encrypted.Decrypted(created, roomKey = true, rejected = false)
+                return Encrypted.Decrypted(created, roomKey = true, rejected = false, verified = verified)
             }
         }
     }
@@ -309,6 +400,294 @@ class CryptoStore private constructor(
     /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
     @Synchronized
     fun pendingBackupCount(): Int = state.inboundSessions.values.count { !it.backedUp }
+
+    /** 保存している受信用セッションのキーの数（単体テストで使う）。 */
+    @get:Synchronized
+    internal val inboundSessionCount: Int get() = state.inboundSessions.size
+
+    /** 今の端末の署名付きの端末鍵（JSON）。 */
+    @Synchronized
+    fun deviceKeys(): String = account.deviceKeys()
+
+    /** 自分の鍵を保存してあるか（解錠済みの端末か）。 */
+    @get:Synchronized
+    val hasOwnKeys: Boolean get() = state.ownKeys != null
+
+    /** 最後に解錠したときの `secrets_revision`。 */
+    @get:Synchronized
+    val secretsRevision: Long? get() = state.secretsRevision
+
+    /**
+     * 解錠した（または初回設定で作った）自分の鍵を保存する（#360。TUI の `save_own_keys`、React の
+     * `saveOwnKeys` と同じ）。マスター鍵の秘密鍵は保存せず、自分のマスター鍵の公開鍵とユーザー署名鍵を、
+     * 配布先の判定の記録に入れる。書けなければ、メモリーの状態も前に戻して例外を投げる。
+     */
+    @Synchronized
+    fun saveOwnKeys(session: SetupSession, secretsRevision: Long?) {
+        // 記録はコピーで更新し、すべて保存できたときだけ置き換える。
+        val updated = TrustStore.fromJson(trust.toJson(), state.userId)
+        try {
+            session.recordOwnKeys(updated)
+            val ownKeys = session.ownKeysPickle(account, storageKey)
+            val trustStore = updated.pickle(account, storageKey)
+            val previous = Triple(state.ownKeys, state.secretsRevision, state.trustStore)
+            val previousImported = state.importedBackupVersion
+            state.ownKeys = ownKeys
+            state.secretsRevision = secretsRevision
+            state.trustStore = trustStore
+            // 解錠し直したら、鍵バックアップから取り込み直す。
+            state.importedBackupVersion = null
+            try {
+                save()
+            } catch (failure: Throwable) {
+                state.ownKeys = previous.first
+                state.secretsRevision = previous.second
+                state.trustStore = previous.third
+                state.importedBackupVersion = previousImported
+                throw failure
+            }
+        } catch (failure: Throwable) {
+            updated.close()
+            throw failure
+        }
+        trust.close()
+        trust = updated
+        // 新しい秘密を記録したので、鍵バックアップの今の版は検証し直す。
+        backupState?.suspend()
+    }
+
+    /**
+     * 鍵バックアップの送信が 409 `E2EE_SSSS_CONFLICT` になった。記録した `secrets_revision` を消して、
+     * 解錠し直すまで、暗号ストアの鍵を使う処理（署名し直し、鍵バックアップの送信）を止める（TUI と同じ）。
+     *
+     * `failed` は、409 になった要求の `secrets_revision`。送っている間に解錠し直して新しい値を保存していたら
+     * （値が違えば）、その解錠を取り消さない。
+     */
+    @Synchronized
+    fun forgetSecretsRevision(failed: Long) {
+        if (state.secretsRevision != failed) return
+        backupState?.let {
+            it.setSecretsRevision(null)
+            it.suspend()
+        }
+        state.secretsRevision = null
+        save()
+    }
+
+    /**
+     * 暗号ストアの自分の鍵とサーバーの状態（自分だけの `keys/query` と `GET /api/e2ee/key_backup/versions`
+     * の応答）から、起動時にすることを決める。まだ解錠していなければ `null`。
+     */
+    @Synchronized
+    fun startupCheck(keysQuery: String, versions: String): StartupCheck? {
+        val sealed = state.ownKeys ?: return null
+        return OwnKeys.fromPickle(sealed, account, storageKey).use { it.startupCheck(keysQuery, versions, account.deviceKeys()) }
+    }
+
+    private fun loadBackupState(): BackupUploadState {
+        backupState?.let { return it }
+        val saved =
+            state.backupUpload?.let {
+                try {
+                    BackupUploadState.fromJson(it, state.userId)
+                } catch (_: ZooCryptoException) {
+                    null
+                }
+            }
+        return (saved ?: BackupUploadState(state.userId)).also { backupState = it }
+    }
+
+    /**
+     * 保存した受信用セッションを、まだなら読み込む。読み込めたときだけ読み込み済みにする（壊れた pickle は、
+     * 次の試行でもエラーになる。読めないセッションを送ったことにしない）。
+     */
+    private fun loadInbound(key: String) {
+        if (key in loadedInbound) return
+        state.inboundSessions[key]?.let { inbound.restoreSession(account, it.pickle, storageKey) }
+        loadedInbound += key
+    }
+
+    /**
+     * 鍵バックアップへ送る次の要求を作る（docs/e2ee.md の「鍵バックアップ」。TUI の `prepare_backup_upload`、
+     * React の `prepareBackupUpload` と同じ規則）。
+     *
+     * `currentVersion` は `GET /api/e2ee/key_backup/versions/current` の応答（なければ `null`）。今の版の
+     * `auth_data` に自分のマスター鍵の署名があり、公開鍵が SSSS のバックアップ鍵と同じで、前に見た版より
+     * 古くないときだけ送る（`BackupUploadState.accept_current_version`）。版が変わったら、すべての
+     * セッションを送り直す。
+     */
+    @Synchronized
+    fun prepareBackupUpload(currentVersion: JsonObject?, limit: Int): BackupUploadRequest {
+        // 送信は 1 つずつ（E2eeSetup.uploadKeyBackup）なので、ここで残っている要求は、送っている途中で
+        // 捨てられたもの。記録を捨てる（入れたセッションは送信待ちのまま）。
+        pendingUploads.values.forEach { it.upload.close() }
+        pendingUploads.clear()
+        if (state.ownKeys == null) return BackupUploadRequest.None
+        if (currentVersion == null) {
+            loadBackupState().suspend()
+            return BackupUploadRequest.None
+        }
+        try {
+            acceptCurrentVersion(currentVersion)
+        } catch (failure: ZooCryptoException) {
+            return BackupUploadRequest.Rejected(failure.message.orEmpty())
+        }
+        val backup = loadBackupState()
+        val keys = state.inboundSessions.filterValues { !it.backedUp }.keys.take(limit)
+        if (keys.isEmpty()) return BackupUploadRequest.None
+        for (key in keys) {
+            loadInbound(key)
+            backup.enqueue(sessionRef(key))
+        }
+        val upload = backup.nextUpload(inbound, limit.toULong()) ?: return BackupUploadRequest.None
+        val sent = upload.sessions().map(::inboundKey).toSet()
+        val sessions = keys.filter { it in sent }.mapNotNull { key -> state.inboundSessions[key]?.let { key to it.pickle } }
+        nextUploadId += 1
+        val id = nextUploadId
+        pendingUploads[id] = PendingUpload(upload, sessions)
+        return BackupUploadRequest.Upload(
+            id = id,
+            version = upload.version(),
+            secretsRevision = upload.secretsRevision().toLong(),
+            body = json.parseToJsonElement(upload.body()) as JsonObject,
+            count = sessions.size,
+        )
+    }
+
+    /**
+     * サーバーが今の版として返した版（`GET /api/e2ee/key_backup/versions/current` の応答）を、暗号ストアの自分の
+     * マスター鍵とバックアップ鍵で検証して受け入れ（`BackupUploadState.accept_current_version`）、版の番号を返す。
+     * 署名がない、公開鍵が違う、版が戻ったなどは [ZooCryptoException] を投げる。版が変わったら、手元の
+     * セッションをすべて送信待ちに戻し、新しい版を見たことと同じ書き込みで記録する。
+     */
+    private fun acceptCurrentVersion(currentVersion: JsonObject): String {
+        val sealed = checkNotNull(state.ownKeys) { "解錠していません" }
+        val backup = loadBackupState()
+        backup.setSecretsRevision(state.secretsRevision?.toULong())
+        val change =
+            OwnKeys.fromPickle(sealed, account, storageKey).use { own ->
+                own.backupKey().use { key ->
+                    backup.acceptCurrentVersion(currentVersion.toString(), own.masterPublicKey(), key)
+                }
+            }
+        val previousSessions = state.inboundSessions
+        val previousBackup = state.backupUpload
+        if (change == VersionChange.CHANGED) {
+            state.inboundSessions =
+                state.inboundSessions.mapValues { (_, session) -> StoredInboundSession(session.pickle, backedUp = false) }
+        }
+        state.backupUpload = backup.toJson()
+        try {
+            save()
+        } catch (failure: Throwable) {
+            state.inboundSessions = previousSessions
+            state.backupUpload = previousBackup
+            // 新しい版を見たことを記録できなかったので、次の送信でもう一度戻す。
+            backup.close()
+            backupState = null
+            throw failure
+        }
+        return checkNotNull(backup.currentVersion()).version
+    }
+
+    /**
+     * 鍵バックアップから取り込む版を決める（新しい端末での解錠の手順 5）。解錠していない、今の版がない、
+     * この版から取り込み終えているときは `null`。版を使えない（[acceptCurrentVersion] が拒んだ）ときは
+     * [ZooCryptoException]。
+     */
+    @Synchronized
+    fun backupVersionToImport(currentVersion: JsonObject?): String? {
+        if (state.ownKeys == null || state.secretsRevision == null || currentVersion == null) return null
+        val version = acceptCurrentVersion(currentVersion)
+        return version.takeIf { it != state.importedBackupVersion }
+    }
+
+    /**
+     * `GET /api/e2ee/key_backup/keys` の 1 ページの行を、暗号ストアのバックアップ鍵で復号して取り込む（docs/e2ee.md の
+     * 「受信時の検証」の「鍵バックアップから取り込んだとき」）。復号と照合は zoo-crypto（`BackupDecryptionKey.import_rows`）
+     * が行い、Megolm のセッション鍵は Kotlin に出さない。
+     *
+     * - バックアップ由来として保存し、Olm 由来のセッションを置き換えない（同じキーの保存済みのセッションを先に読み込み、
+     *   両方を 1 つの pickle にして保存し直す）。
+     * - 行と平文が合わない、`session_key` と `session_id` が合わない行は捨てる。
+     * - 新しく取り込んだセッションは、この版から取ったので送信済みにする（同じ版に上げ直さない）。保存済みの
+     *   セッションの送信済みの印は変えない。
+     *
+     * 返すのは取り込めた行の数。
+     */
+    @Synchronized
+    fun importBackupRows(rows: List<JsonObject>): Int {
+        val sealed = state.ownKeys ?: return 0
+        if (rows.isEmpty()) return 0
+        val refs =
+            rows.mapNotNull { row ->
+                fun text(name: String) = (row[name] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                val channel = text("channel_id") ?: return@mapNotNull null
+                val sender = text("sender_key") ?: return@mapNotNull null
+                val session = text("session_id") ?: return@mapNotNull null
+                SessionRef(channel, sender, session)
+            }
+        refs.forEach { loadInbound(inboundKey(it)) }
+        val discarded =
+            OwnKeys.fromPickle(sealed, account, storageKey).use { own ->
+                own.backupKey().use { key -> key.importRows(inbound, rows.map(JsonObject::toString)).toInt() }
+            }
+        val previous = state.inboundSessions
+        var changed = previous
+        for (ref in refs) {
+            val key = inboundKey(ref)
+            val pickle = inbound.pickleSession(account, ref, storageKey) ?: continue
+            val existing = changed[key]
+            if (existing?.pickle == pickle) continue
+            changed = changed + (key to StoredInboundSession(pickle, backedUp = existing?.backedUp ?: true))
+        }
+        if (changed !== previous) {
+            state.inboundSessions = changed
+            try {
+                save()
+            } catch (failure: Throwable) {
+                state.inboundSessions = previous
+                throw failure
+            }
+        }
+        return rows.size - discarded
+    }
+
+    /** `version` の鍵バックアップから最後まで取り込んだ。 */
+    @Synchronized
+    fun backupImported(version: String) {
+        if (state.importedBackupVersion == version) return
+        state.importedBackupVersion = version
+        save()
+    }
+
+    /** [prepareBackupUpload] の `id` の要求が成功した。その要求に入れたセッションだけを送信済みにする。 */
+    @Synchronized
+    fun backupUploaded(id: Long) {
+        val pending = pendingUploads.remove(id) ?: return
+        pending.upload.use { upload ->
+            backupState?.let {
+                it.uploadSucceeded(upload)
+                state.backupUpload = it.toJson()
+            }
+        }
+        val sentPickles = pending.sessions.toMap()
+        state.inboundSessions =
+            state.inboundSessions.mapValues { (key, session) ->
+                // 送ったあとに書き換わった（pickle が違う）セッションは、送信待ちのまま残す。
+                if (sentPickles[key] == session.pickle) {
+                    StoredInboundSession(session.pickle, backedUp = true)
+                } else session
+            }
+        save()
+    }
+
+    /** `id` の要求が失敗した。入れたセッションは送信待ちのまま残す。409 のときは、今の版を検証し直すまで送らない。 */
+    @Synchronized
+    fun backupUploadFailed(id: Long, conflict: Boolean) {
+        pendingUploads.remove(id)?.upload?.close()
+        if (conflict) backupState?.suspend()
+    }
 
     /** 配布先の判定の記録（#361 以降が使う）。変えたら [saveTrustStore] で保存し直す。 */
     val trustStore: TrustStore get() = trust
@@ -351,6 +730,10 @@ class CryptoStore private constructor(
         if (closed) return
         closed = true
         storageKey.fill(0)
+        pendingUploads.values.forEach { it.upload.close() }
+        pendingUploads.clear()
+        backupState?.close()
+        backupState = null
         account.close()
         olmSessions.close()
         inbound.close()
@@ -543,6 +926,13 @@ class CryptoStore private constructor(
         internal fun inboundKey(ref: SessionRef): String =
             JsonArray(listOf(JsonPrimitive(ref.channelId), JsonPrimitive(ref.senderKey), JsonPrimitive(ref.sessionId)))
                 .toString()
+
+        /** [inboundKey] の逆。 */
+        internal fun sessionRef(key: String): SessionRef {
+            val parts = (json.parseToJsonElement(key) as JsonArray).map { (it as JsonPrimitive).content }
+            check(parts.size == 3) { "受信用セッションのキーを読めません" }
+            return SessionRef(parts[0], parts[1], parts[2])
+        }
 
         /**
          * 一時ファイルに書いて `fsync` してから置き換え、親ディレクトリーも同期する。どれかに失敗したら

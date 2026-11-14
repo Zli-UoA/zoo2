@@ -274,11 +274,23 @@ async fn apply_chunk(
         })
         .collect();
     let mut rows: HashMap<String, Value> = HashMap::new();
+    // 決定的な ID の行は、作成日時が Slack の投稿時刻と同じ行だけを対象にする (先に同じ ID を使われた行は触らない)。
+    // `slack_message_map` にある行は、Zoo で作った投稿の作成日時が違うので、時刻を照合しない
+    let wanted: Vec<Value> = chunk
+        .iter()
+        .zip(&ids)
+        .map(|(m, id)| {
+            let check = !mapped.contains_key(&m.ts) && super::is_valid_ts(&m.ts);
+            serde_json::json!({"id": id, "ts": if check { m.ts.as_str() } else { "" }})
+        })
+        .collect();
     for row in query(
         &mut tx,
-        "SELECT json_build_object('id',id,'content',content,'card',COALESCE(card,''),'deleted',deleted_at IS NOT NULL)::text \
-         FROM messages WHERE channel_id=$2 AND id IN (SELECT jsonb_array_elements_text($1::jsonb))",
-        &[&serde_json::json!(ids).to_string(), zoo_channel],
+        "SELECT json_build_object('id',m.id,'content',m.content,'card',COALESCE(m.card,''),'deleted',m.deleted_at IS NOT NULL)::text \
+         FROM messages m JOIN jsonb_to_recordset($1::jsonb) AS x(id text,ts text) ON x.id=m.id \
+         WHERE m.channel_id=$2 \
+         AND (x.ts='' OR m.created_at=(to_timestamp(x.ts::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
+        &[&serde_json::json!(wanted).to_string(), zoo_channel],
     )
     .await?
     {

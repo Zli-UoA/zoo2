@@ -31,11 +31,12 @@ import {
   type E2eeStartFailure,
   notReadyReason,
 } from "../../lib/e2ee/notReady";
+import { BackupImportQueue } from "../../lib/e2ee/backupImportQueue";
 import { answerPushDecryptRequest } from "../../lib/e2ee/push/protocol";
 import { forgetPushRecipient, rememberPushRecipient } from "../../lib/e2ee/push/recipient";
 import { type StaleDevice, staleDevices } from "../../lib/e2ee/revocationApi";
 import { indexedDbWrappingKeys } from "../../lib/e2ee/store/storageKey";
-import { runStartupCheck, uploadKeyBackup } from "../../lib/e2ee/setupController";
+import { importKeyBackup, runStartupCheck, uploadKeyBackup } from "../../lib/e2ee/setupController";
 import { supportsCryptoStore } from "../../lib/e2ee/support";
 import { readLastOfflineUserId } from "../../lib/offline/identity";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
@@ -50,6 +51,9 @@ const LOCK_CHANNEL = "zoo-crypto-lock";
 /** 起動に失敗したときに試し直す間隔（最初と最大）。 */
 const START_RETRY_MS = 5_000;
 const START_RETRY_MAX_MS = 300_000;
+/** 鍵バックアップからの取り込みを試し直す間隔（最初と最大）。 */
+const IMPORT_RETRY_MS = 30_000;
+const IMPORT_RETRY_MAX_MS = 600_000;
 
 /**
  * 前のログアウトで消せなかった暗号ストアを消し直す。
@@ -155,6 +159,34 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   const requestKeyBackupRef = useRef(requestKeyBackup);
   requestKeyBackupRef.current = requestKeyBackup;
 
+  // 鍵バックアップからの取り込み（docs/e2ee.md の「新しい端末での解錠」の手順 5）。暗号ストアを開いた
+  // タブで 1 つずつ行い、ページを保存するたびに復号できなかったメッセージを試し直させる。通信の失敗
+  // などで止まったら、間隔をあけて（30 秒から倍にし、最大 10 分）続きのページから試し直す。試し直しを
+  // やめるのは、取り込み終えたとき、版を使えない・版が消えたと分かったとき、このタブが暗号ストアを
+  // 手放したとき（ほかのタブがストアを開いたら、そのタブの起動時の確認から続きを取り込む）。
+  const importQueue = useMemo(
+    () =>
+      new BackupImportQueue<ActiveStore>({
+        current: () => leader.current,
+        run: async (active) => {
+          if (!userId) return;
+          await importKeyBackup({ worker: active.worker, client, userId, rpId: null }, (count) => {
+            if (count > 0) setRoomKeysVersion((version) => version + 1);
+          });
+        },
+        retryMs: IMPORT_RETRY_MS,
+        retryMaxMs: IMPORT_RETRY_MAX_MS,
+      }),
+    [client, userId],
+  );
+  const importQueueRef = useRef(importQueue);
+  importQueueRef.current = importQueue;
+  const requestKeyBackupImport = useCallback(() => {
+    if (userId) importQueue.request();
+  }, [importQueue, userId]);
+  const requestKeyBackupImportRef = useRef(requestKeyBackupImport);
+  requestKeyBackupImportRef.current = requestKeyBackupImport;
+
   // 絵文字 SAS の検証（#368）。検証のメッセージは、コントローラーを作る前に届いたら溜めておく。
   const [sas, setSas] = useState<SasController | null>(null);
   const sasRef = useRef<SasController | null>(null);
@@ -175,7 +207,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
           setStatus(next);
           if (next === "stopped") setDeviceId(null);
           if (next === "error") {
-            // 20 台の上限で登録できなかった。設定の「端末」タブで、削除する端末を選んでもらう。
+            // 20 台の上限で登録できなかった。設定の「暗号化」タブで、削除する端末を選んでもらう。
             setDeviceLimit(staleDevices(error));
             // 設定の画面に、試し直している理由を出す（状態コードとエラーの名前だけ）。起動のほか、
             // 別の端末から消されたあとの登録し直し（`reregister`）の失敗もここに来る。
@@ -262,7 +294,18 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
                 setReadyWorker(worker);
                 // 解錠済みの端末は、起動時に自分の端末への署名を確かめ、なければ署名し直す
                 // （docs/e2ee.md の「初回設定と解錠の流れ」。止まった初回設定は暗号化タブで案内する）。
-                void runStartupCheck({ worker, client, userId, rpId: null }).catch(() => undefined);
+                // 鍵をそのまま使えるなら、鍵バックアップの取り込みの続きも行う（解錠の直後に止まった
+                // 取り込みや、取り込みを入れる前に解錠した端末の分）。
+                // 確認そのものが失敗しても（通信の失敗）、取り込みは頼む。取り込みは今の版をアップロード
+                // と同じ規則で検証してから行い、試し直しも取り込みの順番待ちが行う。
+                void runStartupCheck({ worker, client, userId, rpId: null })
+                  .then(
+                    (ready) => ready,
+                    () => true,
+                  )
+                  .then((ready) => {
+                    if (ready) requestKeyBackupImportRef.current();
+                  });
                 break;
               } catch {
                 // 失敗の理由は `onStatus("error")` で記録している。
@@ -278,6 +321,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
             // 奪われたときは、`catch` が「ほかのタブが持っている」にしたのを残す（片付けはその後に来る）。
             if (!stolen) setLockState("idle");
             if (leader.current === active) leader.current = null;
+            importQueueRef.current.reset();
             await active?.manager.stop().catch(() => undefined);
             worker.terminate();
           }
@@ -512,6 +556,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         store.worker.terminate();
       },
       requestKeyBackup,
+      requestKeyBackupImport,
       sas,
     }),
     [
@@ -523,6 +568,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       namespace,
       readyWorker,
       requestKeyBackup,
+      requestKeyBackupImport,
       roomKeysVersion,
       sas,
       startFailure,

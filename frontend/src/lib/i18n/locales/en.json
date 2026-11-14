@@ -1122,7 +1122,7 @@
     },
     "tab": "Encryption",
     "title": "End-to-end encryption",
-    "description": "Messages in encrypted channels and DMs can only be read on your devices. Your keys are protected by a passkey or a recovery key.",
+    "description": "Messages in encrypted channels and DMs can only be read on your devices.",
     "loading": "Loading encryption status…",
     "notReady": {
       "unsupported": "This browser can't use encryption (OPFS, Web Workers, or Web Locks is missing). Private windows may not support it. Open zoo in a normal window or another browser.",
@@ -1131,7 +1131,7 @@
       "offline": "Encryption can't get ready while you're offline. It will continue automatically once you're back online.",
       "otherTab": "Another zoo tab or window is using this device's encryption keys. Close that tab and this one will take over.",
       "starting": "Getting encryption ready (registering this device)…",
-      "deviceLimit": "You've reached the limit of 20 registered devices. Remove devices you no longer use in the Devices tab.",
+      "deviceLimit": "You've reached the limit of 20 registered devices. Remove devices you no longer use from the list below.",
       "failedServer": "Couldn't register this device (server responded {{status}}).",
       "failedServerCode": "Couldn't register this device (server responded {{status}} {{code}}).",
       "failedNetwork": "Couldn't reach the server to register this device.",
@@ -1266,10 +1266,9 @@
     },
     "downgraded": "This channel was encrypted, but the server now says it isn't. Messages won't be sent unencrypted.",
     "checking": "Checking this channel's encryption…",
-    "devicesTab": "Devices",
     "devices": {
       "title": "Devices",
-      "description": "Devices that hold encryption keys. Anyone can set a device name, so tell devices apart by when they were added and last used.",
+      "description": "Devices that hold encryption keys.",
       "unnamed": "Unnamed device",
       "current": "This device",
       "unsigned": "Not signed",
@@ -1397,7 +1396,7 @@
       "regenerate": "Replace recovery key",
       "create": "Create recovery key",
       "newTitle": "New recovery key",
-      "newDescription": "After saving, the old recovery key no longer unlocks. Deleting or replacing a key slot is not revocation; if the old recovery key may have leaked, also revoke from the Devices tab.",
+      "newDescription": "After saving, the old recovery key no longer unlocks. Deleting or replacing a key slot is not revocation; if the old recovery key may have leaked, also revoke from the Devices section on this tab.",
       "save": "Save",
       "removeDescription": "This recovery key will no longer unlock. Keys already obtained stay valid. If it may have leaked, revoke."
     },
@@ -1544,6 +1543,13 @@
         "62": "Folder",
         "63": "Pin"
       }
+    },
+    "android": {
+      "saveDescription": "Before saving, you will sign in again. A browser opens, and you return to this screen when you finish signing in.",
+      "continueDescription": "Sign in again to save the rest of the interrupted setup. A browser will open.",
+      "reauthWaiting": "Waiting for you to sign in again in the browser…",
+      "reauthCancel": "Stop signing in",
+      "browserUnavailable": "Could not open a browser to sign in. Install or enable a browser and press again."
     }
   }
 }
