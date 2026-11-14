@@ -103,7 +103,10 @@ describe("MfmContent", () => {
     expect(html).not.toContain("<em>");
     expect(render("5 *\u200b 3 * 4")).not.toContain("<em>");
     expect(html).not.toContain("mfm-spin");
-    expect(html).not.toContain("<a ");
+    // `[a](https://x.test)` の記法はリンクにならず、文字のまま残る。本文中の URL の自動リンクは維持される
+    expect(html).not.toContain(">a</a>");
+    expect(html).toContain("[a]");
+    expect(html).toContain('href="https://x.test"');
   });
   it("accepts time units, negative delay and spin axes/direction", () => {
     const html = render("$[spin.x,left,speed=2500ms,delay=-1s 🐱]");
@@ -237,7 +240,10 @@ describe("MfmContent", () => {
     expect(html).toContain(" @bob ");
     expect(html).toContain(" @here ");
     // 外部のアカウントはメンションにもリンクにもしない。
-    expect(html).not.toContain("<a ");
+    // `[a](https://x.test)` の記法はリンクにならず、文字のまま残る。本文中の URL の自動リンクは維持される
+    expect(html).not.toContain(">a</a>");
+    expect(html).toContain("[a]");
+    expect(html).toContain('href="https://x.test"');
     expect(html).toContain("@carol@example.com");
     // mentions を渡さない（平文のメッセージ）ときは、今までどおり本文の @name をすべて表示する。
     expect(render("@alice @bob").match(/bg-brand-muted/g)).toHaveLength(2);

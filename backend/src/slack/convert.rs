@@ -30,27 +30,61 @@ pub fn mrkdwn_to_text(text: &str, resolver: &impl Resolver) -> String {
     convert(text, resolver, true)
 }
 
-fn convert(text: &str, resolver: &impl Resolver, plain: bool) -> String {
-    let mut toks: Vec<Tok> = Vec::with_capacity(text.len());
+/// 書式の変換に渡す本文の最大文字数。取り込みの JSON は 1 ファイル 64 MiB まで読めて、本文に長さの制限がないので、
+/// 変換の前に切って、文字ごとの `Tok` がメモリを使いすぎないようにする。変換後の本文は
+/// `MAX_MESSAGE_CONTENT_LENGTH` で切るので、余裕を持たせた上限にしている。
+const MAX_FORMAT_INPUT_CHARS: usize = MAX_MESSAGE_CONTENT_LENGTH * 4;
+
+/// 本文を、`<...>` の外側の文字 (unescape 済み) と、`<...>` を変換した文字列に分けて順に渡す
+fn scan(
+    text: &str,
+    resolver: &impl Resolver,
+    plain: bool,
+    mut on_text: impl FnMut(&str),
+    mut on_atom: impl FnMut(String),
+) {
     let mut rest = text;
     while let Some(start) = rest.find('<') {
-        push_text(&mut toks, &unescape(&rest[..start]));
+        on_text(&unescape(&rest[..start]));
         let after = &rest[start + 1..];
         let Some(end) = after.find('>') else {
-            push_text(&mut toks, &unescape(&rest[start..]));
-            rest = "";
-            break;
+            on_text(&unescape(&rest[start..]));
+            return;
         };
-        toks.push(Tok::Atom(convert_token(&after[..end], resolver, plain)));
+        on_atom(convert_token(&after[..end], resolver, plain));
         rest = &after[end + 1..];
     }
-    push_text(&mut toks, &unescape(rest));
-    let mut out = String::with_capacity(text.len() + 16);
+    on_text(&unescape(rest));
+}
+
+fn convert(text: &str, resolver: &impl Resolver, plain: bool) -> String {
+    // カードの説明は書式を変換しないので、文字ごとに展開せず、そのままつなげる
     if plain {
-        push_verbatim(&toks, &mut out);
-    } else {
-        format(&toks, 0, &mut out);
+        let out = std::cell::RefCell::new(String::with_capacity(text.len()));
+        scan(
+            text,
+            resolver,
+            true,
+            |t| out.borrow_mut().push_str(t),
+            |a| out.borrow_mut().push_str(&a),
+        );
+        return out.into_inner();
     }
+    let text = match text.char_indices().nth(MAX_FORMAT_INPUT_CHARS) {
+        Some((end, _)) => &text[..end],
+        None => text,
+    };
+    let toks = std::cell::RefCell::new(Vec::<Tok>::new());
+    scan(
+        text,
+        resolver,
+        false,
+        |t| push_text(&mut toks.borrow_mut(), t),
+        |a| toks.borrow_mut().push(Tok::Atom(a)),
+    );
+    let toks = toks.into_inner();
+    let mut out = String::with_capacity(text.len() + 16);
+    format(&toks, 0, &mut out);
     out
 }
 
@@ -215,6 +249,13 @@ fn closing(toks: &[Tok], open: usize, mark: char) -> Result<usize, usize> {
         if is_char(toks.get(j), '\n') {
             return Err(j);
         }
+        // コードの中の記号は、外側の書式の終わりにしない
+        if is_char(toks.get(j), '`')
+            && let Some(end) = code_end(toks, j)
+        {
+            j = end;
+            continue;
+        }
         if is_char(toks.get(j), mark)
             && !is_space(toks.get(j - 1))
             && !is_char(toks.get(j - 1), mark)
@@ -228,28 +269,28 @@ fn closing(toks: &[Tok], open: usize, mark: char) -> Result<usize, usize> {
     Err(toks.len())
 }
 
-/// `toks[i]` が `` ` `` のとき、コードの範囲をそのまま出して、次の位置を返す。閉じていなければ文字のまま出す
-fn code(toks: &[Tok], i: usize, out: &mut String) -> usize {
+/// `toks[i]` が `` ` `` のとき、閉じているコードの範囲の終わり (含まない位置)。閉じていなければ `None`
+fn code_end(toks: &[Tok], i: usize) -> Option<usize> {
     let fence = |at: usize| (0..3).all(|k| is_char(toks.get(at + k), '`'));
     if fence(i) {
-        let mut j = i + 3;
-        while j < toks.len() {
-            if fence(j) {
-                push_verbatim(&toks[i..j + 3], out);
-                return j + 3;
-            }
-            j += 1;
-        }
-        out.push_str("```");
-        return i + 3;
+        return (i + 3..toks.len()).find(|&j| fence(j)).map(|j| j + 3);
     }
     let mut j = i + 1;
     while j < toks.len() && !is_char(toks.get(j), '`') && !is_char(toks.get(j), '\n') {
         j += 1;
     }
-    if is_char(toks.get(j), '`') && j > i + 1 {
-        push_verbatim(&toks[i..=j], out);
-        return j + 1;
+    (is_char(toks.get(j), '`') && j > i + 1).then_some(j + 1)
+}
+
+/// `toks[i]` が `` ` `` のとき、コードの範囲をそのまま出して、次の位置を返す。閉じていなければ文字のまま出す
+fn code(toks: &[Tok], i: usize, out: &mut String) -> usize {
+    if let Some(end) = code_end(toks, i) {
+        push_verbatim(&toks[i..end], out);
+        return end;
+    }
+    if is_char(toks.get(i), '`') && (1..3).all(|k| is_char(toks.get(i + k), '`')) {
+        out.push_str("```");
+        return i + 3;
     }
     out.push('`');
     i + 1
@@ -452,6 +493,12 @@ mod tests {
             "```\n*x* **y**\n```\n**z**"
         );
         assert_eq!(mfm("*a `b*c` d*"), "**a `b*c` d**");
+        // コードの中の記号は、外側の書式の終わりにしない (直後が英字でも空白でも)
+        assert_eq!(mfm("*a `b* c` d*"), "**a `b* c` d**");
+        assert_eq!(mfm("*a `x* y` z*"), "**a `x* y` z**");
+        assert_eq!(mfm("~a `b~ c` d~"), "~~a `b~ c` d~~");
+        assert_eq!(mfm("_a `b_ c` d_"), "<i>a `b_ c` d</i>");
+        assert_eq!(mfm("*a ```b* c``` d*"), "**a ```b* c``` d**");
         assert_eq!(mfm("a ` b *c*"), "a ` b **c**");
         assert_eq!(mfm("```*x"), "```*x");
     }
@@ -499,6 +546,15 @@ mod tests {
             mrkdwn_to_text("*b* ~s~ _i_ **x**", &Map),
             "*b* ~s~ _i_ **x**"
         );
+    }
+
+    #[test]
+    fn clips_huge_input_before_expanding_it() {
+        let huge = "あ*a* ".repeat(MAX_FORMAT_INPUT_CHARS);
+        let out = mfm(&huge);
+        assert_eq!(out.chars().count(), MAX_MESSAGE_CONTENT_LENGTH);
+        // カードの説明は切らない
+        assert_eq!(mrkdwn_to_text(&huge, &Map), huge);
     }
 
     #[test]
