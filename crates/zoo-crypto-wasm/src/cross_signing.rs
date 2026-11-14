@@ -405,7 +405,7 @@ impl TrustStore {
         self.inner.user_signing_key_history().to_vec()
     }
 
-    /// 相手の記録 `{master_key, confirmed_usk, pin_pending}`。なければ `undefined`。
+    /// 相手の記録 `{master_key, confirmed_usk, pin_pending, replaced_master_keys?}`。なければ `undefined`。
     #[wasm_bindgen(unchecked_return_type = "TrustRecord | undefined")]
     pub fn record(&self, target_user_id: &str) -> Result<JsValue, JsValue> {
         match self.inner.record(target_user_id) {
@@ -541,7 +541,12 @@ fn distribution_to_js(distribution: core::Distribution) -> Result<JsValue, JsVal
         .into_iter()
         .map(trust_warning)
         .collect();
-    let out = to_js(&json!({"users": users, "new_pins": new_pins, "warnings": warnings}))?;
+    let out = to_js(&json!({
+        "users": users,
+        "new_pins": new_pins,
+        "warnings": warnings,
+        "signed_master_key_changes": distribution.signed_master_key_changes,
+    }))?;
     let devices = Array::new();
     for device in distribution.devices {
         devices.push(&DeviceKeys { inner: device }.into());
