@@ -6,7 +6,12 @@ import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { cryptoDatabaseName } from "../identity";
 import { PUSH_DECRYPT_REQUEST, type PushDecryptRequest } from "./protocol";
-import { decryptFromStore, decryptPush, type PushDecryptEnvironment } from "./pushDecrypt";
+import {
+  decryptFromStore,
+  decryptPush,
+  serializeDecryption,
+  type PushDecryptEnvironment,
+} from "./pushDecrypt";
 import { ALICE, exchange as exchangeKeys, memoryKeys, sqliteFile } from "./pushTestKit";
 import { openSnapshotBackend } from "./snapshotBackend";
 
@@ -155,5 +160,61 @@ describe("decryptPush", () => {
     }
     expect(locks).toEqual([]);
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("serializeDecryption", () => {
+  it("同時に届いた Push を 1 件ずつ復号する（前の処理がロックを持つあいだに次を始めない）", async () => {
+    let running = 0;
+    let overlapped = false;
+    const order: string[] = [];
+    const decrypt = serializeDecryption(async (e2ee) => {
+      running += 1;
+      if (running > 1) overlapped = true;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push(String(e2ee));
+      running -= 1;
+      return `body:${String(e2ee)}`;
+    }, 1_000);
+    expect(await Promise.all([decrypt("a"), decrypt("b"), decrypt("c")])).toEqual([
+      "body:a",
+      "body:b",
+      "body:c",
+    ]);
+    expect(order).toEqual(["a", "b", "c"]);
+    expect(overlapped).toBe(false);
+  });
+
+  it("上限は前の処理を待つ時間を含み、止まった処理のあとも次を始める", async () => {
+    vi.useFakeTimers();
+    try {
+      const wait = (ms: number, value: string) =>
+        new Promise<string>((resolve) => setTimeout(() => resolve(value), ms));
+      const decrypt = serializeDecryption(async (e2ee) => {
+        if (e2ee === "slow") return wait(80, "slow");
+        if (e2ee === "work") return wait(50, "work");
+        return new Promise<string | null>(() => {});
+      }, 100);
+      // 2 件目は 80 ms 待ってから 50 ms 掛かるので、100 ms の上限を過ぎる
+      const slow = decrypt("slow");
+      const late = decrypt("work");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await slow).toBe("slow");
+      expect(await late).toBeNull();
+      // 止まった処理は上限（t = 200）で諦め、次の処理はそこから始める
+      const stuck = decrypt("stuck");
+      await vi.advanceTimersByTimeAsync(80);
+      const next = decrypt("work");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await stuck).toBeNull();
+      expect(await next).toBe("work");
+      // 失敗は null にする
+      const failing = serializeDecryption(async () => {
+        throw new Error("x");
+      }, 100);
+      expect(await failing("e")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

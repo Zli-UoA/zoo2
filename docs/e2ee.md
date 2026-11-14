@@ -1703,8 +1703,8 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
   - `message` は zoo-crypto の `EncryptedMessage` と同じ形で、Push を送るときに読んだ `messages` の行の値（編集されていれば、そのときの版）。どれもサーバーが元から持つ値で、Push のために新しくサーバーに渡る値はない。削除されたメッセージ（`ciphertext` が NULL）の通知は、今までどおり送らない。
   - `recipient_id` は、Service Worker が暗号ストア（`cryptoDatabaseName`。名前空間は `user-<id>`、開発用のログインは `dev-<id>` で、順に探す）を選ぶのに使う。
 - 上限：RFC 8291 で暗号化したあとの長さが 4096 バイト（RFC 8030 が Push サービスに求める上限。今までと同じ検査）を超えるなら、`e2ee` を外して送る（`push.rs` の `encrypt_fitting`）。本文がおよそ 1.7 KB（UTF-8。日本語でおよそ 600 字。タイトルやメンションの長さで変わる）を超えると外れる。Service Worker は API のトークンを持たないので、外れた暗号文を後から取りに行くことはしない。
-- 戻し方：`e2ee` がない Push、復号できない Push（鍵が届いていない、照合に失敗した、暗号ストアを開けない、どれにも答えがない）は、「新しいメッセージ」のまま出す。全体で 10 秒を超えたときも同じ。
-- 復号の順（`frontend/src/sw/push.ts`、`frontend/src/lib/e2ee/push/`）。
+- 戻し方：`e2ee` がない Push、復号できない Push（鍵が届いていない、照合に失敗した、暗号ストアを開けない、どれにも答えがない）は、「新しいメッセージ」のまま出す。前の Push を待つ時間も含めて 10 秒を超えたときも同じ（前の Push が 10 秒で終わらなければ、次の Push はそれ以上待たずに始める）。
+- 復号の順（`frontend/src/sw/push.ts`、`frontend/src/lib/e2ee/push/`）。同時に届いた Push は、Service Worker の中で 1 件ずつ復号する（`serializeDecryption`）。並べると、後の Push が、前の Push の持つロックを、開いているタブのものと取り違えるため。
   1. Service Worker は、暗号ストアのロック（`zoo-crypto:<DB 名>`、[暗号ストア](#暗号ストア)）を `ifAvailable` で取ろうとする。
   2. 取れたら、暗号ストアを開いているタブはない。ロックを持ったまま、OPFS の暗号ストアのファイル（残っていれば `-journal` も）を読み、wa-sqlite のメモリーの VFS で開く。Service Worker では、暗号ストアの Worker が使う `OPFSCoopSyncVFS`（OPFS の同期のハンドルは専用の Worker にしかない）を使えないため。IndexedDB の鍵で保存鍵を開き、端末アカウントと受信用セッションを戻し、zoo-crypto の受信時の検証を通して復号する。写しは OPFS に書き戻さず、受信用セッションの照合の記録（リプレイと版）もメモリーにだけ置いて捨てる。保存鍵を開けなくても、暗号ストアを作り直さない。ロックを持つあいだに開こうとしたタブは、読み終わるまで待つ。
   3. 取れなければ、暗号ストアを開いているタブがある。Service Worker は、すべてのウィンドウに `zoo-e2ee-push-decrypt` を MessageChannel で送る。その名前空間の暗号ストアを開いているタブ（`E2eeProvider`）が、画面の表示と同じ `megolmDecrypt` で復号して本文を返し、ほかのタブは `null` を返す。3 秒で答えがなければ諦める。

@@ -134,3 +134,30 @@ export async function decryptPush(
   }
   return null;
 }
+
+/**
+ * Service Worker の中で、Push の復号を 1 件ずつ行う。
+ *
+ * 同時に届いた Push を並べて動かすと、1 件目が暗号ストアのロックを持っているあいだ、2 件目は
+ * ロックを取れず、開いているタブがあると取り違えてタブに頼む（タブがなければ「新しいメッセージ」の
+ * まま出る）。前の処理を待ってから、ロックを取り直す。
+ *
+ * `timeoutMs` は、前の処理を待つ時間も含めた上限。過ぎたら `null` を返す。前の処理が上限を過ぎても
+ * 終わらなければ、次の処理はそれ以上待たずに始める（止まった処理で、後の Push をすべて止めないため）。
+ */
+export function serializeDecryption(
+  decrypt: (e2ee: unknown) => Promise<string | null>,
+  timeoutMs: number,
+): (e2ee: unknown) => Promise<string | null> {
+  let previous: Promise<unknown> = Promise.resolve();
+  return (e2ee) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+    });
+    const run = previous.then(() => decrypt(e2ee)).catch(() => null);
+    const result = Promise.race([run, timeout]).finally(() => clearTimeout(timer));
+    previous = result;
+    return result;
+  };
+}

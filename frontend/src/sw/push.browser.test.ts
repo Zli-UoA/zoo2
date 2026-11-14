@@ -86,6 +86,11 @@ describe("sw-push（Service Worker での Push の復号）", () => {
   it("開いているタブがなければ、Service Worker が暗号ストアを読んで復号する", async () => {
     const worker = await activeWorker();
     expect(await decryptInWorker(worker, { recipient_id: BOB, message: row })).toBe(SECRET);
+    // 同時に届いた Push も、前の Push がロックを持つあいだタブに頼まず、順に復号する
+    const pushes = await Promise.all(
+      [1, 2, 3].map(() => decryptInWorker(worker, { recipient_id: BOB, message: row })),
+    );
+    expect(pushes).toEqual([SECRET, SECRET, SECRET]);
     // 行と照合できない暗号文は復号しない
     expect(
       await decryptInWorker(worker, { recipient_id: BOB, message: { ...row, message_id: "x" } }),

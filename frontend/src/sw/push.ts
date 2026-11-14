@@ -16,7 +16,7 @@ import {
   type PushDecryptReply,
   type PushDecryptRequest,
 } from "../lib/e2ee/push/protocol";
-import { decryptPush } from "../lib/e2ee/push/pushDecrypt";
+import { decryptPush, serializeDecryption } from "../lib/e2ee/push/pushDecrypt";
 import { openSnapshotBackend, readCryptoDatabaseFiles } from "../lib/e2ee/push/snapshotBackend";
 
 // tsconfig の lib は DOM なので、Service Worker のグローバルは使う分だけ型を付ける。
@@ -30,7 +30,7 @@ const scope = self as unknown as {
   zooDecryptPush?: (e2ee: unknown) => Promise<string | null>;
 };
 
-/** Push の処理に掛けてよい時間。過ぎたら「新しいメッセージ」のまま出す。 */
+/** Push の処理に掛けてよい時間（前の Push を待つ時間を含む）。過ぎたら「新しいメッセージ」のまま出す。 */
 const DECRYPT_TIMEOUT_MS = 10_000;
 
 let cryptoReady: Promise<unknown> | null = null;
@@ -103,12 +103,6 @@ async function decrypt(e2ee: unknown): Promise<string | null> {
   });
 }
 
-scope.zooDecryptPush = (e2ee) => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), DECRYPT_TIMEOUT_MS);
-  });
-  return Promise.race([decrypt(e2ee).catch(() => null), timeout]).finally(() =>
-    clearTimeout(timer),
-  );
-};
+// 同時に届いた Push は 1 件ずつ復号する（並べると、後の Push が前の Push の持つロックを、開いて
+// いるタブのものと取り違える）。上限は、前の Push を待つ時間も含める。
+scope.zooDecryptPush = serializeDecryption(decrypt, DECRYPT_TIMEOUT_MS);
