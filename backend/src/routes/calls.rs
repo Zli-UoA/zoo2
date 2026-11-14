@@ -1173,6 +1173,7 @@ async fn call_stream(
     // 4. call_presence に挿入 (定員 6 人を超えないことを条件付きでアトミックに検証・挿入)
     let now_str = crate::models::now_utc_millis().to_string();
     let session_str = query.session_id.to_string();
+    let reserved = crate::call_invites::reserved_seat_condition();
     let insert_query = format!(
         "INSERT INTO call_presence (
             channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
@@ -1182,11 +1183,10 @@ async fn call_stream(
              SELECT count(*) FROM call_presence
              WHERE channel_id = $1 AND expires_at > statement_timestamp()
          ) + (
-             -- 呼び出し中の人（自分以外）の席は空けておく。招待は空きの数までしか作らないので、
-             -- 招待されていない人が先に入って、呼ばれた人が入れなくなることを防ぐ。
-             SELECT count(*) FROM call_invites
-             WHERE channel_id = $1 AND status = 'pending' AND invitee_id <> $3
-               AND expires_at > statement_timestamp()
+             -- 呼び出し中の人と、応答してまだ入室していない人（自分以外）の席は空けておく。招待は空きの
+             -- 数までしか作らないので、招待されていない人が先に入って、呼ばれた人が入れなくなることを防ぐ。
+             SELECT count(*) FROM call_invites i
+             WHERE i.channel_id = $1 AND i.invitee_id <> $3 AND {reserved}
          ) < {MAX_CALL_PARTICIPANTS}
          RETURNING session_id::text"
     );
