@@ -183,7 +183,7 @@ describe("Apps control panel", () => {
     expect(api.request).not.toHaveBeenCalled();
     await userEvent.click(within(dialog).getByRole("checkbox"));
     await userEvent.click(confirm);
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/暗号化の準備/);
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("暗号化の準備");
     await userEvent.click(confirm);
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: /暗号化チャンネル/ })).toBeNull(),

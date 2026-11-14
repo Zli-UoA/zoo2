@@ -7,6 +7,11 @@ on:
     paths:
       - "apps/github-bot/**"
       - "sdk/**"
+      # sdk の E2EE（sdk/src/e2ee.ts）は zoo-crypto の wasm を読む。サンプルの Bot もここで試す。
+      - "examples/e2ee-echo-bot/**"
+      - "crates/zoo-crypto/**"
+      - "crates/zoo-crypto-wasm/**"
+      - "rust-toolchain.toml"
       - ".github/workflows/ci-github-bot.yaml"
       - ".github/workflows/select-runner.yaml"
   push:
@@ -14,6 +19,11 @@ on:
     paths:
       - "apps/github-bot/**"
       - "sdk/**"
+      # sdk の E2EE（sdk/src/e2ee.ts）は zoo-crypto の wasm を読む。サンプルの Bot もここで試す。
+      - "examples/e2ee-echo-bot/**"
+      - "crates/zoo-crypto/**"
+      - "crates/zoo-crypto-wasm/**"
+      - "rust-toolchain.toml"
       - ".github/workflows/ci-github-bot.yaml"
       - ".github/workflows/select-runner.yaml"
 permissions:
@@ -59,6 +69,49 @@ jobs:
             await new Promise(resolve => http.close(resolve));
             store.close();
           '
+  # sdk の E2EE（Bot の端末。#366）とサンプルの Bot。wasm（crates/zoo-crypto-wasm）を作ってから試す。
+  sdk-e2ee:
+    needs: runner
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read Rust toolchain and wasm-bindgen version
+        id: versions
+        run: |
+          echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+          echo "wasm-bindgen=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/zoo-crypto-wasm/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.channel }}
+          targets: wasm32-unknown-unknown
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # キャッシュの保存は main だけにする（ci-frontend.yaml の crypto-wasm と同じ）。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: crates/zoo-crypto-wasm
+      # cargo install は毎回ソースからビルドして約90秒かかるので、版ごとにバイナリーをキャッシュする。
+      - name: Restore wasm-bindgen-cli
+        id: wasm-bindgen-cli
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo-tools
+          key: cargo-tools-${{ runner.os }}-${{ runner.arch }}-wasm-bindgen-cli-${{ steps.versions.outputs.wasm-bindgen }}
+      - name: Install wasm-bindgen-cli
+        if: steps.wasm-bindgen-cli.outputs.cache-hit != 'true'
+        run: cargo install --locked --root "$HOME/.cargo-tools" wasm-bindgen-cli --version "${{ steps.versions.outputs.wasm-bindgen }}"
+      - name: Add cached tools to PATH
+        run: echo "$HOME/.cargo-tools/bin" >> "$GITHUB_PATH"
+      - name: Build wasm package
+        run: crates/zoo-crypto-wasm/build.sh
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Test the E2EE sdk and the sample bot
+        run: node --experimental-strip-types --test sdk/src/e2ee.test.ts examples/e2ee-echo-bot/echo.test.ts
+
   publish:
     needs: [runner, test]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

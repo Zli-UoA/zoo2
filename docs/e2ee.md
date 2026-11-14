@@ -30,12 +30,13 @@
 12. [受信時の検証](#受信時の検証)
 13. [失効と復旧](#失効と復旧)
 14. [機能ごとの扱い](#機能ごとの扱い)
-15. [有効化と運用](#有効化と運用)
-16. [クライアントの構成](#クライアントの構成)
-17. [脅威モデル](#脅威モデル)
-18. [ロードマップ](#ロードマップ)
-19. [未決と未検証の一覧](#未決と未検証の一覧)
-20. [参考](#参考)
+15. [Bot の端末](#bot-の端末)
+16. [有効化と運用](#有効化と運用)
+17. [クライアントの構成](#クライアントの構成)
+18. [脅威モデル](#脅威モデル)
+19. [ロードマップ](#ロードマップ)
+20. [未決と未検証の一覧](#未決と未検証の一覧)
+21. [参考](#参考)
 
 ## 決めたこと
 
@@ -710,7 +711,9 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 400 | `E2EE_KEY_REUSED` | 過去に使ったクロス署名鍵の公開鍵か、過去の版のバックアップの公開鍵を登録し直そうとした | |
 | 400 | `E2EE_INVALID_EPOCH` | `epoch` が今の値より大きい | |
 | 400 | `E2EE_PUBLIC_FORBIDDEN` | 公開チャンネルを `encrypted: true` で作ろうとした | |
-| 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加（`POST /api/apps/{id}/channels/{channel}`）と、暗号化 DM の相手に Bot を選んだとき（`POST /api/dms`）。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む。#358）。App からの暗号化チャンネルと DM の作成の拒否は #357 で入れた（作成 API の入口） | |
+| 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの、`e2ee:device` のない App（Bot）の追加（`POST /api/apps/{id}/channels/{channel}`。#366 で、メンバーが許可した Bot の端末だけ入れるようにした。[Bot の端末](#bot-の端末)）と、暗号化 DM の相手に Bot を選んだとき（`POST /api/dms`）。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む。#358）。App からの暗号化チャンネルと DM の作成の拒否は #357 で入れた（作成 API の入口）。許可して参加した Bot のトークンは、暗号文だけを扱う経路（メッセージの作成、編集、削除、リアクション、退出と `/api/apps/v1/e2ee/...`）だけ通す（#366） | |
+| 400 | `E2EE_BOT_CONSENT_REQUIRED` | 暗号化チャンネルに App（Bot）を入れる要求に、メンバーの明示的な許可（`e2ee_allowed: true`）がない（#366） | |
+| 409 | `E2EE_BOT_NOT_READY` | 暗号化チャンネルに入れる Bot が、マスター鍵、自己署名鍵と、自己署名鍵で署名した端末をまだ持たない（#366） | |
 | 403 | `E2EE_ADD_FORBIDDEN` | 暗号化チャンネルで、メンバーでないワークスペースの管理者と、退出した作成者が `POST /api/channels/{id}/users` でメンバーを足そうとした（`channel_user` の実際の行で判定する） | |
 | 403 | `E2EE_DISABLED` | 暗号化チャンネルの作成が、サーバーの設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` で無効（#358 の拒否が入るまでと、運用で false に戻したあと） | |
 | 403 | `E2EE_REAUTH_REQUIRED` | `X-Zoo-Reauth` の ID トークンがない、検証できない、または `authenticated_at`（AuthZ が直前に認証した時刻の claim）がないか 5 分より前。対象は、クロス署名鍵の登録と差し替え（初回設定を含む）、SSSS 鍵の作成と作り直し（初回設定を含む）、既存の秘密とスロットの置き換え、スロットの削除、`replace: true` のピンと、ユーザー署名鍵によるマスター鍵への署名、最初の版でない鍵バックアップの版の作成、今の版の削除で、直前の再認証がない | |
@@ -995,7 +998,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 平文チャンネルでは `mentions` を使わず、今までどおり本文から作る（送っても 400 にはせず、無視する）。
   - 編集（`PATCH /api/messages/{id}`）は、平文チャンネルと同じく通知を作らないので、`mentions` を受け取らない（`UpdateMessageRequest` にない項目なので、送っても無視する）。
 - `POST /api/attachments/presign`：暗号化チャンネルの `channel_id` なら 400 `E2EE_ATTACHMENTS_FORBIDDEN`（#358）。
-- App の API（`/api/apps/v1/*`）：【決定】暗号化チャンネルと DM の作成（`encrypted: true`。`/api/apps/v1/dms` と `create_channel`）も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のときも、App からの `encrypted: true` は `E2EE_APPS_FORBIDDEN` を返す（判定の順は、App かどうか、設定の順。App には、設定にかかわらず作成を許さないため）。暗号化チャンネルとそのメッセージへの読み書きを、委任トークン（`app_credentials.user_id` があり、ユーザーとして動くもの）を含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する（#358）。メッセージの作成（`/api/apps/v1/messages`）、ファイルの紐付け（`/api/apps/v1/messages/{id}/files`）、`blocks`、`unfurls` を含む。委任トークンはチャンネルに参加しないまま、そのユーザーの権限で動くので、App の参加の禁止だけでは止まらないため。
+- App の API（`/api/apps/v1/*`）：【決定】暗号化チャンネルと DM の作成（`encrypted: true`。`/api/apps/v1/dms` と `create_channel`）も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のときも、App からの `encrypted: true` は `E2EE_APPS_FORBIDDEN` を返す（判定の順は、App かどうか、設定の順。App には、設定にかかわらず作成を許さないため）。暗号化チャンネルとそのメッセージへの読み書きを、委任トークン（`app_credentials.user_id` があり、ユーザーとして動くもの）を含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する（#358。例外は、メンバーが許可して参加した Bot の端末の、暗号文だけを扱う経路。#366。[Bot の端末](#bot-の端末)）。メッセージの作成（`/api/apps/v1/messages`）、ファイルの紐付け（`/api/apps/v1/messages/{id}/files`）、`blocks`、`unfurls` を含む。委任トークンはチャンネルに参加しないまま、そのユーザーの権限で動くので、App の参加の禁止だけでは止まらないため。
   - 【決定】（#358）拒否は `Principal::channel`（`Actor::channel` は App のトークンのとき、これを先に呼ぶ）で行う。メンバーでない（見えない）チャンネルは今までどおり 404 にし、見えるチャンネルが暗号化されているときだけ 403 にする（存在を推測させないため）。一覧の API（`/api/apps/v1/stars`、`assistant-sessions`、ファイルの共有先の解決）は、暗号化チャンネルの項目を 404 と同じく読み飛ばす。
   - 【決定】（#358）`GET /api/apps/v1/shapes/channels` の where に `NOT encrypted` を足し、委任トークンでも暗号化チャンネルを列挙しない。App の応答トークン（`POST /api/app-responses/{token}`）も、暗号化チャンネルには書き込まない。
 
@@ -1228,6 +1231,8 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 - 【決定】DB のトリガーで、暗号化チャンネルの `messages` に平文が入らないようにする。`BEFORE INSERT OR UPDATE ON messages`（列を限らない）で、チャンネルが `encrypted` なら、削除済みでない行に `content = ''` と `ciphertext IS NOT NULL` を求め、すべての行で `app_attachments`、`app_blocks`、`app_unfurls`、`metadata`、`card` が NULL（または空文字列）で、`home_post_id` が NULL、`apub` が false であることを求める。`card` は Incoming Webhook や App の経路で入る平文の列で、Messages Shape にも含まれる。`home_post_id` と `apub` は Home と ActivityPub への同期の列で、暗号化チャンネルでは同期しない（[機能ごとの扱い](#機能ごとの扱い)）。API 以外の経路（Webhook、App と委任トークン、Slack 取り込み、Home の同期など）で書き込まれても止めるための最後の防御（#358）。
   - 【決定】（#358）トリガーは `messages_e2ee_reject_plaintext`（関数 `e2ee_reject_plaintext_messages`）。違反は SQLSTATE `23514` で拒否する。`metadata` は INSERT では `app_message_options`（`zoo.message_options`）が入れるので、名前の順でそれより後に動くこのトリガーが、入れたあとの値を確かめる。削除済みの行の `ciphertext` は `messages_clear_deleted_ciphertext`（#357）が先に消す。
   - 【決定】（#358）`channel_user` の `BEFORE INSERT OR UPDATE` のトリガー `channel_user_e2ee_reject_bots`（関数 `e2ee_reject_bot_members`）で、`users.is_bot` のユーザー（App の Bot と Incoming Webhook のユーザー）を暗号化チャンネルに入れない。
+  - 【決定】（#366）例外は、メンバーが許可した Bot（`e2ee_bot_grants` に `(channel_id, bot_user_id)` の行がある）だけ。許可の行は `channel_user` の行より先に入れ、`channel_user` の行が消えたらトリガー `channel_user_e2ee_revoke_bot_grant` で消す（[Bot の端末](#bot-の端末)）。
+- 【決定】（#366）`app_message_events_v2` は、暗号化チャンネルのメッセージを、許可のある Bot の `e2ee:device` を持つインストールにだけ、暗号文と照合の列だけのイベントにする（[Bot の端末](#bot-の端末)の API）。
   - 【決定】（#358）`app_message_events_v2` は、暗号化チャンネルのメッセージ（INSERT、UPDATE、DELETE）を App のイベントにしない。本文を解析する `is_mention`（`app.mentioned`）と `link.shared` もここで止まる。`sync_channel_home_post` の対象にも `NOT c.encrypted` を足す（暗号化チャンネルは非公開なので、もともと対象外だが明示する）。
 - 【決定】`channels.encrypted` は作成時だけ指定でき、トリガーで `OLD.encrypted IS DISTINCT FROM NEW.encrypted` の更新（両方向）を拒否する。平文のメッセージを持つチャンネルが暗号化チャンネルとして扱われ、履歴を復号できず平文と暗号文が混在するのを防ぐため（既存チャンネルの暗号化は初期版ではできない）。`is_private` も false にできないようにする。
 - 【決定】送信と編集のトランザクションは `channels` の行を `FOR SHARE` で読んで `epoch` を比べる。`membership_epoch` を増やす処理は `UPDATE`（行ロック）なので、epoch の比較と増加が直列になる。
@@ -1542,11 +1547,72 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | オフラインキャッシュ | 暗号文だけを保存し、復号した平文は保存しない。ログアウト時の削除は今と同じ |
 | Home/LTL への同期 | 止める（`sync_channel_home_post` の対象外。DB のトリガーで `home_post_id` を NULL に保つ） |
 | ActivityPub の連合 | 止める（DB のトリガーで `apub` を false に保つ。Home の投稿は公開チャンネルにしか置けないので、暗号化チャンネルからは連合しない） |
-| App（Bot） | 参加を禁止し（403 `E2EE_APPS_FORBIDDEN`。強制する場所は、`backend/src/apps/management.rs` の `add_channel`、`POST /api/dms` の対象（`is_bot`）、DB の `channel_user` の挿入前のトリガー（ボットの参加を、暗号化チャンネルでは拒否する。`app_guest_membership_rules` と同じ形）、読み書きの入口の `Principal::channel` と `Actor::channel`（委任トークンとボットのトークンを 403 にする。`/api/apps/v1/shapes/*` と Actor 経由のピン、履歴、メタデータも対象）の 4 か所）、App からの `encrypted: true` のチャンネルと DM の作成も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` にする。理由は 2 つある。`backend/src/apps/api.rs` の `create_channel` は `c::create_channel` を呼ぶので、App が暗号化チャンネルを作って作成者として参加できてしまう。`/api/apps/v1/dms` は `dms::create_or_get_dm` を呼び、`create_channel` を通らずにチャンネルと参加者を直接作る。拒否は、`create_channel` 側と、`apps/api.rs` の `dm`（`Principal` を見て判定する。`dms::create_or_get_dm` は人間の `POST /api/dms` と共用で `Principal` を受け取らない）で行う。`app_message_events_v2` のイベントと App の履歴 API の対象から外す。`/api/apps/v1/*` は、委任トークン（ユーザーとして動くもの）を含めて、暗号化チャンネルへの読み書きと添付（`files`、`messages/{id}/files`、`blocks`、`unfurls`）を拒否する。DB のトリガーで、暗号化チャンネルの行の `app_attachments`、`app_blocks`、`app_unfurls`、`metadata` を空に保つ（[DB](#db)）。担当は #358。ただし、App からの暗号化チャンネルと DM の作成の拒否は #357 の作業（作成 API の入口）。Bot を端末として参加させるのは後続（[#366](https://github.com/Zli-UoA/zoo2/issues/366)） |
+| App（Bot） | 参加を禁止し（403 `E2EE_APPS_FORBIDDEN`。強制する場所は、`backend/src/apps/management.rs` の `add_channel`、`POST /api/dms` の対象（`is_bot`）、DB の `channel_user` の挿入前のトリガー（ボットの参加を、暗号化チャンネルでは拒否する。`app_guest_membership_rules` と同じ形）、読み書きの入口の `Principal::channel` と `Actor::channel`（委任トークンとボットのトークンを 403 にする。`/api/apps/v1/shapes/*` と Actor 経由のピン、履歴、メタデータも対象）の 4 か所）、App からの `encrypted: true` のチャンネルと DM の作成も、委任トークンを含めて 403 `E2EE_APPS_FORBIDDEN` にする。理由は 2 つある。`backend/src/apps/api.rs` の `create_channel` は `c::create_channel` を呼ぶので、App が暗号化チャンネルを作って作成者として参加できてしまう。`/api/apps/v1/dms` は `dms::create_or_get_dm` を呼び、`create_channel` を通らずにチャンネルと参加者を直接作る。拒否は、`create_channel` 側と、`apps/api.rs` の `dm`（`Principal` を見て判定する。`dms::create_or_get_dm` は人間の `POST /api/dms` と共用で `Principal` を受け取らない）で行う。`app_message_events_v2` のイベントと App の履歴 API の対象から外す。`/api/apps/v1/*` は、委任トークン（ユーザーとして動くもの）を含めて、暗号化チャンネルへの読み書きと添付（`files`、`messages/{id}/files`、`blocks`、`unfurls`）を拒否する。DB のトリガーで、暗号化チャンネルの行の `app_attachments`、`app_blocks`、`app_unfurls`、`metadata` を空に保つ（[DB](#db)）。担当は #358。ただし、App からの暗号化チャンネルと DM の作成の拒否は #357 の作業（作成 API の入口）。【決定】（#366）メンバーが明示的に許可した、`e2ee:device` を持つ Bot だけは、端末として参加できる。サーバーが平文を受け取る経路は開かない（[Bot の端末](#bot-の端末)） |
 | Slack 取り込み | 暗号化チャンネルへの取り込みを禁止する。取り込みの開始（`POST /api/admin/slack-imports/{id}/start`）のマッピングで、既存のチャンネル（`MappingAction::Existing`）として暗号化チャンネルを指定したら 400 `E2EE_PLAINTEXT_FORBIDDEN`（`backend/src/slack/import.rs` の `MappingAction::Existing` と worker は平文の `content` を `messages` に入れるため。添付も取り込めない）（#358） Slack 取り込みのコードは #300 で入った。設定 `E2EE_ENCRYPTED_CHANNELS_ENABLED` が false のあいだは暗号化チャンネルを作れないので、#357 より前の拒否は設定で足りる（Slack 取り込みの拒否は #358 で入れ、#358 のあとに設定を true にする）。`docs/slack-import.md` にも書いた。worker も、ジョブの実行時に暗号化チャンネルへの書き込みを検査する（#367 で既存のチャンネルを暗号化できるようになると、開始のあとにチャンネルが暗号化されうるため。#367 の条件にも書く）。 |
 | Incoming Webhook | 作成を禁止する（403 `E2EE_WEBHOOKS_FORBIDDEN`）。Webhook のユーザーは Bot なので、DB のトリガーでも参加できない。既存の Webhook は、暗号化チャンネルを後から作れない（[既存チャンネルの暗号化](#機能ごとの扱い)は初期版ではできない）ので存在しない（#358） |
 | 通話 | 本書の対象外。通話のシグナリングとメディアは今の仕組みのまま |
 | 既存チャンネルの暗号化 | 初期版ではできない。後続（[#367](https://github.com/Zli-UoA/zoo2/issues/367)） |
+
+## Bot の端末
+
+【決定】（[#366](https://github.com/Zli-UoA/zoo2/issues/366)）App のボットユーザー（Bot）は、人間の端末と同じ仕組み（端末鍵、クロス署名、TOFU、Olm と Megolm）で、端末として暗号化チャンネルに参加できます。参加させるかどうかはチャンネルのメンバーが明示的に決めます。サーバーが平文を受け取る経路は開きません。サンプルは `examples/e2ee-echo-bot`、Bot 側の実装は `sdk/src/e2ee.ts`（`@zoo/app-sdk/e2ee`）です。
+
+### 参加の許可
+
+- 【決定】入れられるのは、scope `e2ee:device` を宣言し、インストールで認められた App の Bot だけ。`e2ee:device` のない App は今までどおり 403 `E2EE_APPS_FORBIDDEN`。
+- 【決定】メンバーが `POST /api/apps/{id}/channels/{channel}` の本文に `{"e2ee_allowed": true}` を付けたときだけ入れる（ないか `false` なら 400 `E2EE_BOT_CONSENT_REQUIRED`）。入れられる人は今までの規則のまま（暗号化チャンネルは非公開なので、メンバーである作成者か管理者）。判定はメンバーの確認のあとに行い、非公開チャンネルの存在を漏らさない。
+- 【決定】Bot がまだ端末を用意していない（マスター鍵、自己署名鍵と、今の自己署名鍵で署名した削除されていない端末がない）ときは 409 `E2EE_BOT_NOT_READY`。入れても鍵を受け取れない Bot をメンバーに数えないため。
+- 【決定】許可は `e2ee_bot_grants`（`channel_id`、`bot_user_id`、`granted_by`、`created_at`）に置き、`channel_user` の行と同じトランザクションで、先に入れる。`channel_user` のトリガー `channel_user_e2ee_reject_bots`（関数 `e2ee_reject_bot_members`）は、許可の行のない Bot と Webhook のユーザーを今までどおり拒否する。API 以外の経路（`join` など）で Bot が入ることはない。
+- 【決定】参加は人間の追加と同じく `membership_epoch` を 1 増やす（ロックの順も同じ：Bot のメンバー単位のロック、チャンネルの行）。Bot の端末は、参加したあとに作られたセッションだけを受け取り、参加前のメッセージは読めない。
+- 【決定】Web は、App の詳細の「暗号化チャンネルに追加」から確認の画面（`AppEncryptedChannelConsent`）を出す。参加したあとのメッセージを App が復号して読めること、参加前のメッセージは読めないこと、復号の鍵を App のサーバーが持つこと、いつでも外せることを示し、チェックを入れてから追加する。`e2ee:device` のない App には、対応していないことだけを示す。
+- 【決定】React 版 Web だけに置く。Compose の App 詳細の「このチャンネルに追加」は許可を付けないので、暗号化チャンネルでは 400 `E2EE_BOT_CONSENT_REQUIRED` で止まる（Android と TUI は暗号化チャンネルの送受信をまだ持たない。[未決と未検証の一覧](#未決と未検証の一覧)）。
+- 暗号化 DM の相手には、今までどおり Bot を選べない（`POST /api/dms` の 403 `E2EE_APPS_FORBIDDEN`）。App からの暗号化チャンネルと DM の作成も、今までどおり拒否する。
+
+### 信頼
+
+- 【決定】Bot に特別な信頼の規則は作らない。Bot は自分のクロス署名鍵（マスター鍵、自己署名鍵、ユーザー署名鍵）を作り、自己署名鍵で自分の端末に署名する。メンバーの端末は、Bot のマスター鍵を初めて見たときに TOFU で信頼し（[鍵の配布先の判定](#鍵の配布先の判定)の規則 4）、署名された Bot の端末にだけ鍵を配る。Bot からメンバーへの配布も同じ規則で判定する。
+- 【決定】Bot は他のユーザーのマスター鍵に署名しない（検証済みの印は人の操作でだけ作る）。`replace: true` のピンも作らない。サーバーも Bot のトークンからはこの 2 つを 403 で拒否する。
+- 【決定】メンバーの許可は「この App にこのチャンネルのメッセージを読ませる」判断で、Bot の鍵が正しいことを人が確かめるものではない。Bot のマスター鍵が変わったら（サーバーによる差し替えを含む）、メンバーの端末は規則 5 で配布を止め、再検証を求める。
+- Bot は、復号したメッセージの送信端末が検証済みか（`senderVerified`）を受け取る。サンプルの Bot は、検証済みでない送信者には応答しない。
+
+### API
+
+【決定】Bot は、人間の端末の API（[端末とワンタイム鍵](#端末とワンタイム鍵354)、[to-device メッセージ](#to-device-メッセージ355)、[クロス署名](#クロス署名356)、[配布先のスナップショット](#配布先のスナップショット)）を、App のトークンで `/api/apps/v1/e2ee/...` から呼ぶ（`backend/src/apps/e2ee.rs`）。中身は人間の API の処理をそのまま使い、呼び出し元をボットユーザーにする。使えるのは、委任でない、`e2ee:device` を持つボットのトークンだけ（委任トークンは 403。ユーザーとして動くので、ユーザーの端末を作らせない）。
+
+| Bot の API | 人間の API との違い |
+| --- | --- |
+| `GET`/`POST /api/apps/v1/e2ee/devices`、`DELETE /api/apps/v1/e2ee/devices/{device_id}` | なし |
+| `POST /api/apps/v1/e2ee/keys/upload`、`keys/query`、`keys/claim` | なし |
+| `GET /api/apps/v1/e2ee/to_device?device_id=...&limit=...` | Bot は Electric の Shape を使わないので、自分の端末あての受信確認していない行（`id`、`sender_user_id`、`sender_device_id`、`type`、`content`）を `id` の昇順に返す。`limit` は 1〜100（既定 100）。処理したら `to_device/ack` で消す |
+| `POST /api/apps/v1/e2ee/to_device`、`to_device/ack` | なし |
+| `POST /api/apps/v1/e2ee/cross_signing/keys` | 直前の再認証を求めない。Bot は対話的に再認証できず、App のトークンがいちばん強い資格情報のため。差し替えたマスター鍵は、メンバーの端末が規則 5 で見つけて配布を止める |
+| `POST /api/apps/v1/e2ee/cross_signing/signatures` | 自分の端末への自己署名だけ（他のユーザーへの署名は 403） |
+| `GET`/`POST /api/apps/v1/e2ee/tofu_pins` | `replace: true` は 403 |
+| `GET /api/apps/v1/e2ee/channels/{channel_id}/recipients` | メンバーが許可して参加したチャンネルだけ（許可がなければ 403、メンバーでなければ 404） |
+
+- 【決定】Secret Storage と鍵バックアップの API は Bot に出さない。Bot の鍵は Bot の手元の暗号ストアにだけ置く（下の「鍵の保存場所」）。
+- 【決定】暗号化したメッセージの作成、編集、削除、リアクションと、Bot の退出は、今までの `/api/apps/v1/messages`、`/api/apps/v1/messages/{id}`、`/api/apps/v1/messages/{id}/reactions`、`/api/apps/v1/channels/{id}/leave` を使う。この経路だけ、許可のある Bot のトークンに暗号化チャンネルを通す（`Principal::e2ee_channel`）。検証は人間の送信と同じ（`content` は空、`ciphertext`、`epoch`、送信端末の照合、`mentions` の形。平文は 400 `E2EE_PLAINTEXT_FORBIDDEN`）。ほかの App の API（`blocks`、`unfurls`、`files`、メタデータ、ピン、履歴、Shape など）は、許可のある Bot にも今までどおり 403 `E2EE_APPS_FORBIDDEN`。委任トークンは、許可のある Bot の App のものでも、すべて 403。
+- 【決定】`app_message_events_v2` は、暗号化チャンネルのメッセージを、そのチャンネルに許可のある Bot の、`e2ee:device` を持つインストールにだけ、`message.created`、`message.updated`（`ciphertext`、`revision`、`epoch` が変わったときだけ）、`message.deleted` として送る。`data` は `id`、`channel_id`、`parent_id`、`user_id`、`message_kind`、`epoch`、`revision`、`ciphertext`（削除では `null`）、`encrypted: true`、`created_at`、`updated_at`、`deleted_at` だけ。本文を解析する `app.mentioned` と `link.shared` は作らない（Bot は復号した `mentions` でメンションを見つける）。Bot 自身のメッセージのイベントは、今までどおり作らない。
+
+### 鍵の保存場所
+
+- 【決定】Bot は鍵を手元の暗号ストアに置く。`ZooE2ee` は、端末アカウント、Olm セッション（受信用と送信用）、受信用 Megolm セッション、自己署名鍵とユーザー署名鍵、信頼の記録（`TrustStore`）を、運用者が渡す 32 バイトの保存鍵（サンプルでは `ZOO_E2EE_STORAGE_KEY`。Secret として扱い、ストアやログに入れない）で pickle し、`E2eeStore`（既定はファイル。一時ファイルに書いて rename し、権限は 0600）に置く。
+- 【決定】マスター鍵の秘密鍵は、初回設定で自己署名鍵とユーザー署名鍵に署名したら捨てる。SSSS と鍵バックアップは使わない（サーバーに置く Bot の秘密はない）。
+- 【決定】送信用の Megolm セッションはメモリーにだけ置く（Web と同じ。起動し直したら次の送信で作り直して配る）。リプレイと版の記録も保存しない（Web と同じ【提案】）。
+- 【決定】Bot は 1 つの端末だけを持つ。初回設定のあと、Bot の他の端末を消す。ストアを失ったら、次の起動で新しい端末とクロス署名鍵を作り直す（`expected_keys` を付けて差し替える）。メンバーの端末からはマスター鍵が変わったように見え、再検証するまで鍵は配られない。同じ Bot を複数のプロセスで同時に動かさない。
+
+### 失効
+
+- 【決定】チャンネルから外す（App の管理の `DELETE /api/apps/{id}/channels/{channel}`、または Bot の退出）と、許可が消え（`channel_user` の削除のトリガー `channel_user_e2ee_revoke_bot_grant`）、`membership_epoch` が増える。それ以降のセッションは Bot に配られない。もう一度入れるには、もう一度許可が要る。外す前のセッションで暗号化したメッセージは、Bot が保存していれば読めたまま（人間の退出と同じ）。
+- 【決定】Bot は `DELETE /api/apps/v1/e2ee/devices/{device_id}` で自分の端末を消せる。人間の端末の削除と同じく、参加しているすべての暗号化チャンネルの `membership_epoch` が増える。
+- 【決定】Bot のトークンが漏れても、攻撃者は Bot の自己署名鍵を持たないので、新しく登録した端末に鍵は配られない。クロス署名鍵を差し替えれば、メンバーの端末が規則 5 で止める。Bot の暗号ストアと保存鍵の両方が漏れたら、チャンネルから外す。
+- App の無効化、アンインストール、トークンの失効では、Bot はトークンを使えなくなるので鍵を取り出せないが、チャンネルのメンバーからは外れない（メンバーの端末は鍵を配り続け、to-device はキューの上限まで残る）。確実に止めるには、チャンネルから外す（[未決と未検証の一覧](#未決と未検証の一覧)）。
+
+### Bot の送受信（sdk）
+
+1. `ZooE2ee.open`：ストアから戻すか、初回設定（端末の登録とワンタイム鍵、クロス署名鍵、自己署名）を行う。ワンタイム鍵を 50 個に保つ。
+2. `decryptEvent`：`data.encrypted` のイベントを復号する。鍵がなければ to-device を取り（`syncToDevice`）、少し待ってやり直し、それでもなければ投げる（イベントは ACK されず、再送される）。to-device は、`zoo.room_key` の `channel_id` のスナップショットで送信端末の端末鍵と信頼を確かめてから保存する（[受信時の検証](#受信時の検証)の手順 1〜4。許可のないチャンネルの鍵は捨てる）。
+3. `sendMessage`：スナップショットを取り、配布先を判定する（初めて見た相手の TOFU のピンを置いたら、同じスナップショットで判定し直す。ピンを置いた直後の判定ではその相手が `pin_pending` で、端末が配布先に入らないため）。epoch が変わったか作り直しの条件に当たれば新しいセッションを作り、まだ配っていない検証済みの端末に配ってから暗号化して送る。409 `E2EE_STALE_EPOCH` は 3 回までやり直す。
 
 ## 有効化と運用
 
@@ -1766,7 +1832,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 | [#363](https://github.com/Zli-UoA/zoo2/issues/363) | Playwright の E2E テスト（仮想認証器 `hasPrf: true`） | #362 |
 | [#364](https://github.com/Zli-UoA/zoo2/issues/364) | 暗号化した添付（実装したら添付の禁止を外す） | #361 |
 | [#365](https://github.com/Zli-UoA/zoo2/issues/365) | Push 通知を Service Worker で復号する | #361 |
-| [#366](https://github.com/Zli-UoA/zoo2/issues/366) | Bot を端末として参加させる | #361 |
+| [#366](https://github.com/Zli-UoA/zoo2/issues/366) | Bot を端末として参加させる（メンバーの許可、`e2ee:device`、`/api/apps/v1/e2ee/...`、`sdk/src/e2ee.ts`、`examples/e2ee-echo-bot`。[Bot の端末](#bot-の端末)） | #361 |
 | [#367](https://github.com/Zli-UoA/zoo2/issues/367) | 既存のプライベートチャンネルを暗号化に切り替える。Slack 取り込みの worker が、暗号化されたチャンネルへ平文を書かないようにする（worker 側の検査、または切り替え時に進行中の取り込みを止める） | #361 |
 | [#368](https://github.com/Zli-UoA/zoo2/issues/368) | 他のユーザーの絵文字 SAS 検証 | #362 |
 | [#369](https://github.com/Zli-UoA/zoo2/issues/369) | 対象環境での PRF と ROR の動作確認（実機） | AuthZ#94、#360 |
@@ -1803,6 +1869,9 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 | 自分の端末どうしで鍵を要求し合う仕組み（Matrix の `m.room_key_request`）。初期版は鍵バックアップで代える | 未決 | 後続 |
 | 許可オリジンを外したときに、パスキーのスロットの作り直しを求める仕組み | 【提案】 | #362 |
 | TUI で、別の端末から承認して解錠する方式 | 未決 | 後続 |
+| App の無効化とアンインストールで、許可して参加した Bot を暗号化チャンネルから外す（今はチャンネルから外すまで、メンバーの端末が Bot の端末に鍵を配り続ける） | 未決 | 後続 |
+| Compose Android と TUI で、暗号化チャンネルに Bot を入れる許可の画面（暗号化チャンネルの送受信が先に要る） | 未決 | 後続 |
+| Bot のリプレイと版の記録を Bot の暗号ストアに保存する（Web と同じく、今はメモリーにだけ持つ） | 【提案】 | 後続 |
 
 ## 参考
 
