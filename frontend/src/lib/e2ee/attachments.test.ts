@@ -10,6 +10,7 @@ import {
   ENCRYPTED_ATTACHMENT_FILE_NAME,
   EncryptedAttachmentError,
   fetchEncryptedAttachment,
+  receivedAttachmentView,
   uploadEncryptedAttachment,
   type AttachmentCrypto,
 } from "./attachments";
@@ -216,5 +217,42 @@ describe("fetchEncryptedAttachment", () => {
       credentials: "omit",
     });
     expect(new Uint8Array(await blob.arrayBuffer())).toEqual(PLAINTEXT);
+  });
+});
+
+describe("received attachments", () => {
+  it("rejects a plaintext whose length differs from the declared size", async () => {
+    const encrypted = encryptAttachment(PLAINTEXT);
+    await expect(
+      fetchEncryptedAttachment(
+        {} as ApiClient,
+        {
+          attachment_id: "a",
+          name: "secret.txt",
+          mimetype: "text/plain",
+          size: PLAINTEXT.byteLength + 1,
+          file: encrypted.file,
+        },
+        wasmCrypto,
+        (async () => new Response(new Blob([encrypted.ciphertext as BlobPart]))) as typeof fetch,
+        async () => "https://storage.example/download",
+      ),
+    ).rejects.toEqual(expect.objectContaining({ reason: "decrypt" }));
+  });
+
+  it("blocks types the server rejects for plaintext and neutralizes bidi controls", () => {
+    expect(receivedAttachmentView({ name: "photo.png", mimetype: "image/png" })).toEqual({
+      name: "photo.png",
+      mimetype: "image/png",
+      blocked: false,
+    });
+    // サーバーは名前と MIME を見られないので、平文なら拒否される種類は受信側で開かせない。
+    expect(
+      receivedAttachmentView({ name: "請求書.pdf.exe", mimetype: "application/x-msdownload" }),
+    ).toMatchObject({ blocked: true, mimetype: ENCRYPTED_ATTACHMENT_CONTENT_TYPE });
+    // U+202E（RLO）で拡張子を偽装させない。
+    expect(receivedAttachmentView({ name: "inv\u202Egnp.exe", mimetype: "image/png" })).toEqual(
+      expect.objectContaining({ name: "inv_gnp.exe", blocked: true }),
+    );
   });
 });

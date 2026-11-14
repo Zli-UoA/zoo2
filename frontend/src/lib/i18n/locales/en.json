@@ -1197,7 +1197,8 @@
     "checking": "Checking this channel's encryption…",
     "attachments": {
       "encrypted": "Encrypted",
-      "decryptFailed": "Couldn't decrypt the attachment. Its contents may have been altered."
+      "decryptFailed": "Couldn't decrypt the attachment. Its contents may have been altered.",
+      "blocked": "This file type is blocked for safety"
     }
   }
 }

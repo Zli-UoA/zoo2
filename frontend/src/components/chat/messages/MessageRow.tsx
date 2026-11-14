@@ -488,7 +488,10 @@ export function MessageRow({
                   attachments を表示する。復号できないメッセージの添付は表示も取得もしない（#364）。 */}
               {resolvedDecryption ? (
                 resolvedDecryption.status === "decrypted" ? (
-                  <EncryptedMessageAttachments attachments={resolvedDecryption.attachments ?? []} />
+                  <EncryptedMessageAttachments
+                    attachments={resolvedDecryption.attachments ?? []}
+                    serverAttachments={attachments}
+                  />
                 ) : null
               ) : (
                 <MessageAttachments attachments={attachments} />

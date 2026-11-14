@@ -1197,7 +1197,8 @@
     "checking": "正在確認此頻道的加密狀態…",
     "attachments": {
       "encrypted": "已加密",
-      "decryptFailed": "無法解密附件。內容可能已被更改。"
+      "decryptFailed": "無法解密附件。內容可能已被更改。",
+      "blocked": "基於安全考量，無法開啟此類檔案"
     }
   }
 }

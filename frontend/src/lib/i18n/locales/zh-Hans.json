@@ -1197,7 +1197,8 @@
     "checking": "正在确认此频道的加密状态…",
     "attachments": {
       "encrypted": "已加密",
-      "decryptFailed": "无法解密附件。内容可能已被更改。"
+      "decryptFailed": "无法解密附件。内容可能已被更改。",
+      "blocked": "出于安全考虑，无法打开此类文件"
     }
   }
 }

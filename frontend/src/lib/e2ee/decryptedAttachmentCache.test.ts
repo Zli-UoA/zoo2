@@ -1,6 +1,7 @@
 import type { AttachmentInfo } from "@zoo/crypto-wasm";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import { EncryptedAttachmentError } from "./attachments";
 import {
   createDecryptedAttachmentCache,
   decryptedAttachmentCacheFor,
@@ -54,6 +55,23 @@ describe("createDecryptedAttachmentCache", () => {
     await expect(cache.load(info("a"), loader)).rejects.toThrow("download");
     expect(cache.peek(info("a"))).toBeUndefined();
     await expect(cache.load(info("a"), loader)).resolves.toBeInstanceOf(Blob);
+    expect(loader).toHaveBeenCalledTimes(2);
+  });
+
+  it("remembers decryption failures until an explicit retry", async () => {
+    const cache = createDecryptedAttachmentCache();
+    const loader = vi
+      .fn<(info: AttachmentInfo) => Promise<Blob>>()
+      .mockRejectedValueOnce(new EncryptedAttachmentError("decrypt"))
+      .mockResolvedValueOnce(blob(1));
+
+    await expect(cache.load(info("a"), loader)).rejects.toMatchObject({ reason: "decrypt" });
+    expect(cache.failed(info("a"))).toBe(true);
+    // 再マウントでは取り直さない（ハッシュの合わない大きな添付を何度も取得しない）。
+    await expect(cache.load(info("a"), loader)).rejects.toMatchObject({ reason: "decrypt" });
+    expect(loader).toHaveBeenCalledTimes(1);
+    await expect(cache.load(info("a"), loader, { retry: true })).resolves.toBeInstanceOf(Blob);
+    expect(cache.failed(info("a"))).toBe(false);
     expect(loader).toHaveBeenCalledTimes(2);
   });
 

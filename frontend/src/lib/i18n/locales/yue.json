@@ -1197,7 +1197,8 @@
     "checking": "確認緊呢個頻道嘅加密…",
     "attachments": {
       "encrypted": "已加密",
-      "decryptFailed": "解密唔到附件。內容可能已經畀人改過。"
+      "decryptFailed": "解密唔到附件。內容可能已經畀人改過。",
+      "blocked": "為咗安全，呢種檔案唔可以開"
     }
   }
 }

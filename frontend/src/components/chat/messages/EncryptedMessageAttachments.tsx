@@ -10,6 +10,7 @@ import { formatAttachmentSize, isInlineImage } from "../../../lib/attachments";
 import {
   EncryptedAttachmentError,
   fetchEncryptedAttachment,
+  receivedAttachmentView,
   workerAttachmentCrypto,
 } from "../../../lib/e2ee/attachments";
 import {
@@ -18,6 +19,7 @@ import {
 } from "../../../lib/e2ee/decryptedAttachmentCache";
 import { useE2ee } from "../../../lib/e2ee/e2ee-context";
 import { useCollections } from "../../../lib/electric/collections-context";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
@@ -32,10 +34,14 @@ export const EncryptedAttachmentLoaderContext = createContext<EncryptedAttachmen
   null,
 );
 
-/** 復号した添付の取り出し。`peek` はキャッシュだけを見る（再マウントでスピナーを出さない）。 */
+/**
+ * 復号した添付の取り出し。`peek` と `failed` はキャッシュだけを見る（再マウントでスピナーを出さず、
+ * 復号できなかった添付を取り直さない）。
+ */
 export interface EncryptedAttachmentSource {
   peek(info: AttachmentInfo): Blob | undefined;
-  load(info: AttachmentInfo): Promise<Blob>;
+  failed(info: AttachmentInfo): boolean;
+  load(info: AttachmentInfo, options?: { retry?: boolean }): Promise<Blob>;
 }
 
 /**
@@ -74,7 +80,8 @@ export function useEncryptedAttachmentSource(): EncryptedAttachmentSource {
         };
     return {
       peek: (info) => cache?.peek(info),
-      load: (info) => (cache ? cache.load(info, loader) : loader(info)),
+      failed: (info) => cache?.failed(info) ?? false,
+      load: (info, options) => (cache ? cache.load(info, loader, options) : loader(info)),
     };
   }, [override, worker, client, config]);
 }
@@ -87,7 +94,8 @@ function useDecryptedAttachment(info: AttachmentInfo) {
   const key = decryptedAttachmentCacheKey(info);
   const [state, setState] = useState<DecryptedState>(() => {
     const cached = source.peek(info);
-    return cached ? { status: "ready", blob: cached } : { status: "loading" };
+    if (cached) return { status: "ready", blob: cached };
+    return source.failed(info) ? { status: "error" } : { status: "loading" };
   });
   const [attempt, setAttempt] = useState(0);
 
@@ -97,9 +105,14 @@ function useDecryptedAttachment(info: AttachmentInfo) {
       setState({ status: "ready", blob: cached });
       return;
     }
+    // 復号できなかった添付は、再試行を押すまで取り直さない。
+    if (attempt === 0 && source.failed(info)) {
+      setState({ status: "error" });
+      return;
+    }
     let cancelled = false;
     setState({ status: "loading" });
-    source.load(info).then(
+    source.load(info, { retry: attempt > 0 }).then(
       (blob) => {
         if (!cancelled) setState({ status: "ready", blob });
       },
@@ -141,10 +154,31 @@ function useObjectUrl(blob: Blob | null): string | null {
  * 暗号化チャンネルのメッセージの添付（#364）。復号した本文の `attachments` だけを表示し、
  * サーバーの添付の行（`encrypted.bin`）は使わない。
  */
-export function EncryptedMessageAttachments({ attachments }: { attachments: AttachmentInfo[] }) {
+export function EncryptedMessageAttachments({
+  attachments,
+  serverAttachments = [],
+}: {
+  attachments: AttachmentInfo[];
+  /**
+   * サーバーの添付の行（`encrypted.bin`）。中身には使わず、NSFW のチャンネルでサーバーが付けるぼかしの印
+   * （`is_sensitive`）だけを読む。
+   */
+  serverAttachments?: AttachmentRow[];
+}) {
   if (attachments.length === 0) return null;
-  const images = attachments.filter((attachment) => isInlineImage(attachment.mimetype));
-  const files = attachments.filter((attachment) => !isInlineImage(attachment.mimetype));
+  const serverSensitive = new Set(
+    serverAttachments.filter((row) => row.is_sensitive).map((row) => row.id),
+  );
+  const shown = attachments.map((attachment) => {
+    const view = receivedAttachmentView(attachment);
+    return {
+      info: { ...attachment, name: view.name, mimetype: view.mimetype },
+      blocked: view.blocked,
+      sensitive: Boolean(attachment.sensitive) || serverSensitive.has(attachment.attachment_id),
+    };
+  });
+  const images = shown.filter(({ info, blocked }) => !blocked && isInlineImage(info.mimetype));
+  const files = shown.filter(({ info, blocked }) => blocked || !isInlineImage(info.mimetype));
   return (
     <div className="mt-2 flex max-w-xl flex-col gap-2">
       {images.length > 0 ? (
@@ -153,23 +187,23 @@ export function EncryptedMessageAttachments({ attachments }: { attachments: Atta
             images.length === 1 ? "w-fit max-w-full" : "grid w-full max-w-sm grid-cols-2 gap-2"
           }
         >
-          {images.map((attachment) => (
+          {images.map(({ info, sensitive }) => (
             <SensitiveMedia
-              key={attachment.attachment_id}
-              sensitive={attachment.sensitive}
-              preview={{ width: attachment.width ?? null, height: attachment.height ?? null }}
+              key={`${info.attachment_id}:${sensitive}`}
+              sensitive={sensitive}
+              preview={{ width: info.width ?? null, height: info.height ?? null }}
               className={images.length === 1 ? "w-64 max-w-full" : "w-full"}
             >
-              <EncryptedImage attachment={attachment} multiple={images.length > 1} />
+              <EncryptedImage attachment={info} multiple={images.length > 1} />
             </SensitiveMedia>
           ))}
         </div>
       ) : null}
       {files.length > 0 ? (
         <ul className="flex flex-col gap-1.5">
-          {files.map((attachment) => (
-            <li key={attachment.attachment_id}>
-              <EncryptedFileCard attachment={attachment} />
+          {files.map(({ info, blocked }) => (
+            <li key={info.attachment_id}>
+              <EncryptedFileCard attachment={info} blocked={blocked} />
             </li>
           ))}
         </ul>
@@ -250,10 +284,13 @@ function EncryptedImage({
 function EncryptedFileCard({
   attachment,
   failed = false,
+  blocked = false,
   onRetry,
 }: {
   attachment: AttachmentInfo;
   failed?: boolean;
+  /** 平文の添付ならサーバーが拒否する種類（実行ファイルなど）。取得も保存もさせない。 */
+  blocked?: boolean;
   onRetry?: () => void;
 }) {
   const { t } = useTranslation();
@@ -267,6 +304,7 @@ function EncryptedFileCard({
           <LockIcon className="size-3 shrink-0" aria-label={t("e2ee.attachments.encrypted")} />
           {formatAttachmentSize(attachment.size, locale)}
           {failed ? ` · ${t("e2ee.attachments.decryptFailed")}` : null}
+          {blocked ? ` · ${t("e2ee.attachments.blocked")}` : null}
         </p>
       </div>
       {failed && onRetry ? (
@@ -278,7 +316,7 @@ function EncryptedFileCard({
           {t("attachments.retry")}
         </button>
       ) : null}
-      {failed ? null : <EncryptedDownloadButton attachment={attachment} />}
+      {failed || blocked ? null : <EncryptedDownloadButton attachment={attachment} />}
     </div>
   );
 }

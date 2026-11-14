@@ -4,6 +4,8 @@ import type { AttachmentInfo } from "@zoo/crypto-wasm";
 import { expect, it, vi } from "vite-plus/test";
 
 import { DEFAULT_CONFIG } from "../../../lib/config";
+import { EncryptedAttachmentError } from "../../../lib/e2ee/attachments";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import {
   EncryptedAttachmentLoaderContext,
@@ -78,4 +80,56 @@ it("does not reuse decrypted attachments across crypto scopes (another worker or
   view.rerender(element(second));
   await waitFor(() => expect(second).toHaveBeenCalledTimes(1));
   expect(first).toHaveBeenCalledTimes(1);
+});
+
+function view(
+  loader: (info: AttachmentInfo) => Promise<Blob>,
+  attachments: AttachmentInfo[],
+  serverAttachments: AttachmentRow[] = [],
+) {
+  return (
+    <LocaleProvider>
+      <EncryptedAttachmentLoaderContext.Provider value={loader}>
+        <EncryptedMessageAttachments
+          attachments={attachments}
+          serverAttachments={serverAttachments}
+        />
+      </EncryptedAttachmentLoaderContext.Provider>
+    </LocaleProvider>
+  );
+}
+
+it("blurs images the server marked sensitive for an NSFW channel", async () => {
+  const loader = vi.fn(async (info: AttachmentInfo) => new Blob([PNG], { type: info.mimetype }));
+  const info = attachment();
+  // 本文には sensitive がないが、NSFW のチャンネルなのでサーバーの行に is_sensitive がある。
+  render(view(loader, [info], [{ id: info.attachment_id, is_sensitive: true } as AttachmentRow]));
+  expect(await screen.findByRole("button", { expanded: false })).toBeVisible();
+  expect(screen.queryByRole("img", { name: "wide.png" })).toBeNull();
+  expect(loader).not.toHaveBeenCalled();
+});
+
+it("does not fetch or offer to save file types the server would reject", async () => {
+  const loader = vi.fn(async () => new Blob(["MZ"]));
+  render(
+    view(loader, [
+      { ...attachment(), name: "請求書.pdf.exe", mimetype: "application/x-msdownload" },
+    ]),
+  );
+  expect(await screen.findByText("請求書.pdf.exe")).toBeVisible();
+  expect(screen.queryByRole("button", { name: /請求書/ })).toBeNull();
+  expect(loader).not.toHaveBeenCalled();
+});
+
+it("does not fetch an undecryptable attachment again when the row remounts", async () => {
+  const loader = vi.fn(async (): Promise<Blob> => {
+    throw new EncryptedAttachmentError("decrypt");
+  });
+  const first = render(view(loader, [attachment()]));
+  expect(await screen.findByRole("button", { name: /再試行|Retry/ })).toBeVisible();
+  first.unmount();
+
+  render(view(loader, [attachment()]));
+  expect(screen.getByRole("button", { name: /再試行|Retry/ })).toBeVisible();
+  expect(loader).toHaveBeenCalledTimes(1);
 });

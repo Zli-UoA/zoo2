@@ -308,8 +308,11 @@ Matrix では `sender_key` と `device_id` を非推奨にしていますが、z
 | `file` | Matrix の `EncryptedFile` から `url` を除いたもの。`v` は `v2`、鍵は `kty: oct`、`alg: A256CTR`、`ext: true`、`key_ops` に `encrypt` と `decrypt` を含む JWK |
 
 - 送信の手順：ファイルを暗号化し、`POST /api/attachments/presign` に決まったファイル名 `encrypted.bin` と Content-Type `application/octet-stream`、暗号文の大きさを渡す（`zoo_crypto::ENCRYPTED_ATTACHMENT_FILE_NAME` と `ENCRYPTED_ATTACHMENT_CONTENT_TYPE`）。返った URL に暗号文を同じ Content-Type で PUT し、`attachment_id` と `AttachmentInfo` を平文の `attachments` に入れて Megolm で暗号化し、送信の要求の `attachment_ids` にも同じ ID を入れる。サーバーは `attachment_ids` で行をメッセージに紐付け、未送信の行を今までどおり片付ける。
-- 編集：【決定】編集では添付を変えられない（平文チャンネルと同じく、`PATCH` は `attachment_ids` を受け取らない）。編集した版の平文には、元の版の `attachments` をそのまま入れる。
-- 受信の手順：復号した平文の `attachments` を表示する。サーバーの `attachments` の行（Attachments Shape）の `file_name`、`content_type`、`width`、`height`、`blurhash` は使わない（`encrypted.bin` と `application/octet-stream` で、画像の情報はない）。取得は `GET /api/attachments/{attachment_id}/url` の URL から暗号文を読み、ハッシュを確かめてから復号する。
+- 編集：【決定】編集では添付を変えられない（平文チャンネルと同じく、`PATCH` は `attachment_ids` を受け取らない）。編集した版の平文には、元の版の `attachments` をそのまま入れる。#364 より前のクライアントで編集すると、新しい版に `attachments` が入らず、添付は表示されなくなる（サーバーの行は残る。既知の制限）。
+- 受信の手順：復号した平文の `attachments` を表示する。サーバーの `attachments` の行（Attachments Shape）の `file_name`、`content_type`、`width`、`height`、`blurhash` は使わない（`encrypted.bin` と `application/octet-stream` で、画像の情報はない）。取得は `GET /api/attachments/{attachment_id}/url` の URL から暗号文を読み、ハッシュを確かめてから復号する。復号した長さが `size` と違えば、復号できなかったものとして扱う。
+- 【決定】（#364）サーバーの行の `is_sensitive` だけは読む。NSFW のチャンネルでは、presign とチャンネルを NSFW にしたときにサーバーが付けるので、本文の `sensitive` がなくてもぼかす。
+- 【決定】（#364）サーバーは名前と MIME を見られないので、平文の添付でサーバーが拒否する種類（実行ファイルなど。`DISALLOWED_UPLOAD_EXTENSIONS` と `DISALLOWED_UPLOAD_TYPES`）は、受信側で取得も保存もさせない。名前の双方向の制御文字（U+202E など）は `_` に置き換えて表示し、保存する。
+- 【決定】（#364）Web は、復号に失敗した添付（ハッシュや大きさが合わない）を覚え、再試行を押すまで取り直さない（行が再マウントされるたびに全量を取得しない）。
 - 【決定】復号に使う値は暗号化した本文にしかないので、添付の取得と復号はメッセージの復号のあとに行う。復号できないメッセージの添付は、表示も取得もしない。
 - 【決定】サーバーの添付の行は、暗号化チャンネルでは決まったファイル名と Content-Type だけを持つ（[DB](#db) のトリガー）。ファイルの大きさ（暗号文の大きさ）と数、アップロードの時刻はサーバーに見える（[脅威モデル](#守らないもの)）。
 

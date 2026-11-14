@@ -161,5 +161,31 @@ export async function fetchEncryptedAttachment(
   } catch (error) {
     throw new EncryptedAttachmentError("decrypt", error);
   }
-  return new Blob([plaintext as BlobPart], { type: info.mimetype });
+  // 本文の大きさと違えば、送信者の値を信じない（docs/e2ee.md。表示の大きさと中身を食い違わせない）。
+  if (plaintext.byteLength !== info.size) {
+    throw new EncryptedAttachmentError("decrypt");
+  }
+  return new Blob([plaintext as BlobPart], { type: receivedAttachmentView(info).mimetype });
+}
+
+/** 表示や保存の向きを変える双方向の制御文字（U+202E などで拡張子を偽装させない）。 */
+const BIDI_CONTROLS = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * 受け取った添付を表示と保存に使う形にする。
+ *
+ * 暗号化チャンネルでは、サーバーは名前と MIME を見られないので、平文の添付でサーバーが拒否する種類
+ * （`resolveAttachmentContentType` が null を返す実行ファイルなど）は、受信側で開かせない（`blocked`）。
+ * 名前の双方向の制御文字は `_` に置き換える。
+ */
+export function receivedAttachmentView(info: Pick<AttachmentInfo, "name" | "mimetype">): {
+  name: string;
+  mimetype: string;
+  blocked: boolean;
+} {
+  const name = info.name.replace(BIDI_CONTROLS, "_");
+  const mimetype = resolveAttachmentContentType({ name, type: info.mimetype });
+  return mimetype
+    ? { name, mimetype, blocked: false }
+    : { name, mimetype: ENCRYPTED_ATTACHMENT_CONTENT_TYPE, blocked: true };
 }
