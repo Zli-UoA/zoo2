@@ -330,6 +330,14 @@ impl SecretStorage {
                 .js()?,
         })
     }
+
+    /// メモリーにある SSSS 鍵で開ける（失効の始めと、保存のあとの読み直し。#362）。
+    #[wasm_bindgen(js_name = unlockWithKey)]
+    pub fn unlock_with_key(&self, key: &SsssKey) -> Result<UnlockedSecretStorage, JsValue> {
+        Ok(UnlockedSecretStorage {
+            inner: self.inner.unlock_with_key(&key.inner).js()?,
+        })
+    }
 }
 
 /// 解錠した SSSS。秘密を取り出す。

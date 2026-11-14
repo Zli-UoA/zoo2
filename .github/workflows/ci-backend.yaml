@@ -38,8 +38,10 @@ jobs:
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
-  # fmt, clippy, build and unit tests share one job so the Rust cache is
+  # fmt, clippy and unit tests share one job so the Rust cache is
   # restored once across the Rust checks.
+  # The binary itself is built and linked by e2e (integration tests) and deploy-image (release),
+  # so a separate `cargo build` here would only recompile what clippy already checked.
   check:
     needs: runner
     # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
@@ -73,8 +75,6 @@ jobs:
         run: cargo fmt --check
       - name: lint check
         run: cargo clippy
-      - name: Build project
-        run: cargo build
       - name: unit test
         run: cargo test --lib
 
@@ -227,8 +227,16 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stack.yaml down -v --remove-orphans
 
   e2e:
+    name: e2e (${{ matrix.leg }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # テストバイナリーは 1 つの DB を共有し、プロセス内の Mutex で共有行を守っているので、
+        # バイナリー同士は並列に動かせない。そこで、DB ごと分けた 2 つの job に振り分ける。
+        # slack は leg A に書いたテストだけを、core は残りのすべてを実行する。
+        leg: [slack, core]
     env:
-      COMPOSE_PROJECT_NAME: zoo-ci-backend-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_PROJECT_NAME: zoo-ci-backend-${{ matrix.leg }}-${{ github.run_id }}-${{ github.run_attempt }}
       POSTGRES_PORT: "0"
       ELECTRIC_PORT: "0"
       S3_PORT: "0"
@@ -341,9 +349,39 @@ jobs:
       - name: e2e test
         env:
           DEV_AUTH_ENABLED: "true"
+          LEG: ${{ matrix.leg }}
         run: |
-          cargo test --test '*'
-          cargo test --lib activitypub:: -- --include-ignored --test-threads=1
+          # leg slack のテスト。ここに書いたもの以外は、すべて leg core で実行する。
+          slack_tests=(
+            activitypub_test
+            slack_api_import_test
+            slack_files_test
+            slack_import_test
+            slack_link_test
+            slack_sync_test
+            e2ee_channels_test
+            e2ee_devices_test
+            e2ee_keys_test
+            e2ee_plaintext_features_test
+            e2ee_to_device_test
+          )
+          args=()
+          if [ "$LEG" = slack ]; then
+            for t in "${slack_tests[@]}"; do
+              test -f "tests/$t.rs" || { echo "::error::tests/$t.rs not found"; exit 1; }
+              args+=(--test "$t")
+            done
+          else
+            for f in tests/*.rs; do
+              t=$(basename "$f" .rs)
+              case " ${slack_tests[*]} " in *" $t "*) continue ;; esac
+              args+=(--test "$t")
+            done
+          fi
+          cargo test "${args[@]}"
+          if [ "$LEG" = slack ]; then
+            cargo test --lib activitypub:: -- --include-ignored --test-threads=1
+          fi
 
       - name: Show container logs
         if: failure()

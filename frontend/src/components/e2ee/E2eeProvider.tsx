@@ -21,6 +21,7 @@ import {
   markCryptoStoreDeletionPending,
   readPendingCryptoStoreDeletion,
 } from "../../lib/e2ee/identity";
+import { type StaleDevice, staleDevices } from "../../lib/e2ee/revocationApi";
 import { runStartupCheck, uploadKeyBackup } from "../../lib/e2ee/setupController";
 import { supportsCryptoStore } from "../../lib/e2ee/support";
 import { readLastOfflineUserId } from "../../lib/offline/identity";
@@ -86,7 +87,9 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     supported ? "idle" : "unsupported",
   );
   const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [deviceLimit, setDeviceLimit] = useState<StaleDevice[] | null>(null);
   const [readyWorker, setReadyWorker] = useState<CryptoWorker | null>(null);
+  const [roomKeysVersion, setRoomKeysVersion] = useState(0);
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const leader = useRef<ActiveStore | null>(null);
   const takeover = useRef<{ store: Promise<ActiveStore>; release: () => void } | null>(null);
@@ -132,20 +135,32 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   requestKeyBackupRef.current = requestKeyBackup;
 
   const createManager = useCallback(
-    (worker: CryptoWorker, managerUserId: string) =>
-      new E2eeDeviceManager({
+    (worker: CryptoWorker, managerUserId: string) => {
+      const manager: E2eeDeviceManager = new E2eeDeviceManager({
         config,
         client,
         worker,
         userId: managerUserId,
         namespace,
         displayName: deviceDisplayName(),
-        onStatus: (next) => {
+        onStatus: (next, error) => {
           setStatus(next);
           if (next === "stopped") setDeviceId(null);
+          // 20 台の上限で登録できなかった。設定の「端末」タブで、削除する端末を選んでもらう。
+          if (next === "error") setDeviceLimit(staleDevices(error));
+          if (next === "ready") {
+            setDeviceLimit(null);
+            // 別の端末から消されて登録し直したら（`reregister`）、端末 ID が変わる。
+            setDeviceId(manager.currentDeviceId);
+          }
         },
-        onRoomKeys: () => requestKeyBackupRef.current(),
-      }),
+        onRoomKeys: () => {
+          requestKeyBackupRef.current();
+          setRoomKeysVersion((version) => version + 1);
+        },
+      });
+      return manager;
+    },
     [client, config, namespace],
   );
 
@@ -291,6 +306,13 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       deviceId,
       worker: status === "ready" ? readyWorker : null,
       userId: userId || null,
+      deviceLimit,
+      revocationPending: async () => {
+        const store = await storeForLogout();
+        if (!store) return false;
+        return store.manager.revocationPending();
+      },
+      roomKeysVersion,
       pendingBackupCount: async () => {
         const epoch = logoutEpoch.current;
         const store = await storeForLogout();
@@ -333,7 +355,18 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
       },
       requestKeyBackup,
     }),
-    [deviceId, namespace, readyWorker, requestKeyBackup, status, storeForLogout, supported, userId],
+    [
+      deviceId,
+      deviceLimit,
+      namespace,
+      readyWorker,
+      requestKeyBackup,
+      roomKeysVersion,
+      status,
+      storeForLogout,
+      supported,
+      userId,
+    ],
   );
 
   return <E2eeContext.Provider value={value}>{children}</E2eeContext.Provider>;

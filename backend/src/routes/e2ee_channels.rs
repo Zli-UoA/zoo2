@@ -104,13 +104,26 @@ pub fn ciphertext_required() -> AppError {
     )
 }
 
-pub fn attachments_forbidden() -> AppError {
-    coded(
-        StatusCode::BAD_REQUEST,
-        "E2EE_ATTACHMENTS_FORBIDDEN",
-        "Attachments are not allowed in an encrypted channel",
-        Value::Null,
-    )
+/// 暗号化チャンネルの添付のファイル名（`zoo_crypto::ENCRYPTED_ATTACHMENT_FILE_NAME`）。
+pub const ENCRYPTED_ATTACHMENT_FILE_NAME: &str = zoo_crypto::ENCRYPTED_ATTACHMENT_FILE_NAME;
+/// 暗号化チャンネルの添付の Content-Type（`zoo_crypto::ENCRYPTED_ATTACHMENT_CONTENT_TYPE`）。
+pub const ENCRYPTED_ATTACHMENT_CONTENT_TYPE: &str = zoo_crypto::ENCRYPTED_ATTACHMENT_CONTENT_TYPE;
+
+/// 暗号化チャンネルの `POST /api/attachments/presign` は、決まったファイル名と Content-Type だけを受け付ける
+/// （#364）。本当の値は Megolm で暗号化した本文に入れる。違えば 400 `E2EE_PLAINTEXT_FORBIDDEN`。
+pub fn check_encrypted_attachment(file_name: &str, content_type: &str) -> Result<(), AppError> {
+    if file_name == ENCRYPTED_ATTACHMENT_FILE_NAME
+        && content_type == ENCRYPTED_ATTACHMENT_CONTENT_TYPE
+    {
+        Ok(())
+    } else {
+        Err(coded(
+            StatusCode::BAD_REQUEST,
+            "E2EE_PLAINTEXT_FORBIDDEN",
+            "Attachments in an encrypted channel must be encrypted on the client: use file_name \"encrypted.bin\" and content_type \"application/octet-stream\"",
+            Value::Null,
+        ))
+    }
 }
 
 pub fn encrypted_immutable() -> AppError {

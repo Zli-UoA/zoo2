@@ -747,3 +747,121 @@ async fn test_events_record_one_hint_per_message_and_kind() -> anyhow::Result<()
     assert_eq!(wakes(&f.state, &f.team, "C999").await, 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn test_a_new_event_revives_a_hint_that_hit_the_attempt_limit() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET)).await?;
+    let ts = f.ts_new.clone();
+    let (status, _) = post_event(
+        &f.app,
+        SECRET,
+        now_secs(),
+        &changed_event(&f.team, "C1", &ts),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    sql(
+        &f.state,
+        "UPDATE slack_message_hints SET attempts=5,created_at=now()-interval '2 days' WHERE team_id=$1 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    // 上限に達した行 (掃除待ち) に、同じメッセージの新しいイベントが届いたら、新しい確認として処理できる状態に戻す
+    let (status, _) = post_event(
+        &f.app,
+        SECRET,
+        now_secs(),
+        &changed_event(&f.team, "C1", &ts),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let rows = sql(
+        &f.state,
+        "SELECT json_build_object('attempts',attempts,'fresh',created_at>now()-interval '1 minute')::text \
+         FROM slack_message_hints WHERE team_id=$1",
+        &[&f.team],
+    )
+    .await?;
+    assert_eq!(
+        (rows[0]["attempts"].as_i64(), rows[0]["fresh"].as_bool()),
+        (Some(0), Some(true))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_a_truncated_list_of_another_emoji_does_not_block_a_removal() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let ts = f.ts_new.clone();
+    let id = backend::slack::message_id(&f.team, "C1", &ts);
+    let heart = backend::slack::convert::reaction_emoji("heart").unwrap();
+    let user = sql(
+        &f.state,
+        "SELECT json_build_object('id',user_id)::text FROM slack_users WHERE team_id=$1 AND slack_user_id='UA'",
+        &[&f.team],
+    )
+    .await?[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    sql(
+        &f.state,
+        "INSERT INTO message_reactions(id,message_id,user_id,emoji) VALUES($1,$2,$3,$4) RETURNING json_build_object('ok',true)::text",
+        &[&uuid::Uuid::new_v4().to_string(), &id, &user, &heart],
+    )
+    .await?;
+    // 無関係な thumbsup の users が一部 (count のほうが多い) でも、heart の削除は止めない (reactions.get は呼ばない)
+    mock_fetch(
+        &f,
+        &ts,
+        json!([{"type":"message","ts":&ts,"user":"UA","text":"new post",
+        "reactions":[{"name":"thumbsup","users":["UB"],"count":3}]}]),
+    )
+    .await;
+    deliver(
+        &f,
+        &reaction_event(&f.team, "C1", &ts, "UA", "heart", false),
+    )
+    .await?;
+    let hearts = sql(
+        &f.state,
+        "SELECT json_build_object('n',count(*))::text FROM message_reactions WHERE message_id=$1 AND emoji=$2",
+        &[&id, &heart],
+    )
+    .await?;
+    assert_eq!(hearts[0]["n"], 0, "the heart was removed");
+    assert!(hints(&f).await.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_additions_use_the_full_reaction_list_when_users_were_truncated() -> anyhow::Result<()>
+{
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let ts = f.ts_new.clone();
+    mock_fetch(
+        &f,
+        &ts,
+        json!([{"type":"message","ts":&ts,"user":"UA","text":"new post",
+        "reactions":[{"name":"thumbsup","users":["UB"],"count":3}]}]),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/reactions.get"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true,
+            "message": {"reactions": [{"name":"thumbsup","users":["UB","UC","UA"],"count":3}]}})))
+        .mount(&f.slack)
+        .await;
+    deliver(
+        &f,
+        &reaction_event(&f.team, "C1", &ts, "UA", "thumbsup", true),
+    )
+    .await?;
+    // 省略された UC も、完全な一覧から入る (UB・UC・UA の 3 行)
+    assert_eq!(reactions_of(&f, &ts).await, 3);
+    Ok(())
+}
