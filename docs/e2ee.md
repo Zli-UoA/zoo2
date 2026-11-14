@@ -1849,7 +1849,7 @@ A が B に検証を求める場合です。
 - 今の値は、Web と TUI の共通の public client だけ（`client-core` の TUI の既定のクライアント ID と同じ）。Android のアプリは、ログインの画面で利用者がクライアント ID を入れる作りで、決まった ID がない。Android の再認証（#360）でクライアントを決めたら、zoo2-infra の PR でこの値に足す。
 - preview は OIDC を使わないので、置かない。
 - 変えるときも zoo2-infra の PR で行い、`kubectl patch` や `kubectl set env` でクラスタを直接変えない。
-- 確かめ方：起動時の警告が出ないことだけでは足りない（Web の ID だけでも警告は出ないが、ほかのクライアントの再認証は 403 になる）。zoo2-infra の `backend.yaml` の値に、各クライアントの ID がすべて入っているかを照らし合わせる。Web は GitHub Actions の変数 `VITE_OIDC_CLIENT_ID`（`cd-images.yaml` が frontend のビルドに渡す）、TUI は `client-core/src/config.rs` の `TUI_DEFAULT_OIDC_CLIENT_ID`、Android は決めたクライアントの ID。配備された値は、読み取りだけの `kubectl -n zoo2 get deployment backend -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OIDC_REAUTH_AUDIENCES")].value}'` で確かめられる。
+- 確かめ方：起動時の警告が出ないことだけでは足りない（一覧が空でなければ警告は出ないが、一覧にない ID を使うクライアントの再認証は 403 になる）。zoo2-infra の `backend.yaml` の値に、各クライアントの ID がすべて入っているかを照らし合わせる。Web は GitHub Actions の変数 `VITE_OIDC_CLIENT_ID`（`cd-images.yaml` が frontend のビルドに渡す）、TUI は `client-core/src/config.rs` の `TUI_DEFAULT_OIDC_CLIENT_ID`、Android は決めたクライアントの ID。配備された値は、読み取りだけの `kubectl -n zoo2 get deployment backend -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OIDC_REAUTH_AUDIENCES")].value}'` で確かめられる。
 
 ## クライアントの構成
 
