@@ -14,7 +14,7 @@ use zoo_crypto::{CryptoError, ServerKeyState, SetupSession, StartupCheck};
 use crate::api::ApiClient;
 use crate::http::ApiError;
 
-use super::store::{BackupUploadRequest, CryptoStore};
+use super::store::{BackupImportStart, BackupUploadRequest, CryptoStore};
 
 /// 共有する暗号ストア（端末の管理のタスクと画面が使う）。
 pub type SharedStore = Arc<Mutex<CryptoStore>>;
@@ -168,6 +168,9 @@ pub async fn run_startup_check(
     let storage = api.e2ee_secret_storage().await?;
     let status = startup_status(api, store, user_id, &storage).await?;
     if status == E2eeStatus::Unlocked {
+        // 取り込みを入れる前に解錠した端末も、起動したときに取り込む（取り込み終えた版は読み直さない）。
+        // 取り込みは裏で行い、止まったら試し直す。
+        spawn_backup_import(api.clone(), store);
         upload_key_backup(api, store).await?;
     }
     Ok(status)
@@ -341,42 +344,52 @@ pub async fn save_remaining(
         .save_own_keys(session.secrets(), secrets_revision)?;
     // 解錠した（または初回設定を終えた）ので、鍵バックアップの今の版から過去のセッションを取り込み
     // （新しい端末での解錠の手順 5）、手元のセッションを今の版に送る。失敗しても解錠は済んでいる。
-    let _ = import_key_backup(api, store).await;
+    if import_key_backup(api, store).await.is_err() {
+        spawn_backup_import(api.clone(), store);
+    }
     let _ = upload_key_backup(api, store).await;
     Ok(())
 }
 
+/// [`import_key_backup`] の結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupImportResult {
+    /// 取り込み終えた（この呼び出しで取り込んだ数）。その版は、次から読み直さない。
+    Done { imported: usize },
+    /// 取り込むものがない（解錠していない、解錠し直しが要る、今の版がない）。
+    None,
+    /// 今の版を使えない（署名がない、SSSS の鍵と違う、巻き戻りなど）。取り込まない。
+    Rejected(String),
+    /// 取り込みの途中で版が消えた（404）。次の解錠か起動で、今の版から取り込む。
+    VersionGone,
+}
+
 /// 鍵バックアップの今の版から、過去のセッションを取り込む（docs/e2ee.md の「新しい端末での解錠」の
-/// 手順 5）。今の版を `verify_backup_version`（マスター鍵の署名、公開鍵がバックアップ鍵と同じ）で
-/// 確かめ、`GET /api/e2ee/key_backup/keys` を `next` がなくなるまで読む。取り込んだ数を返す。
+/// 手順 5。Web の `setupController.ts` の `importKeyBackup` と同じ）。
 ///
-/// 解錠していない、または解錠し直しが要るあいだは、暗号ストアの鍵を使わないので取り込まない。
-pub async fn import_key_backup(api: &ApiClient, store: &SharedStore) -> Result<usize> {
-    let (user_id, own) = {
-        let store = store.lock().await;
-        if store.needs_unlock() {
-            return Ok(0);
-        }
-        let Some(own) = store.own_keys()? else {
-            return Ok(0);
-        };
-        (store.user_id().to_owned(), own)
+/// 今の版をアップロードと同じ `BackupUploadState::accept_current_version` で確かめてから、
+/// `GET /api/e2ee/key_backup/keys` を 1 ページずつ読み、ページごとに取り込みと進み具合を保存する。
+/// 止まったら（通信の失敗や終了）、同じ版なら続きのページから読む。取り込み終えた版は読み直さない。
+/// アップロードと同じ順番待ちで、1 つずつ行う。
+pub async fn import_key_backup(api: &ApiClient, store: &SharedStore) -> Result<BackupImportResult> {
+    let _serial = BACKUP_UPLOAD.lock().await;
+    let current = api.e2ee_current_backup_version().await?;
+    let start = store.lock().await.begin_backup_import(current.as_ref())?;
+    let (version, mut after) = match start {
+        BackupImportStart::Import { version, after } => (version, after),
+        BackupImportStart::Done { .. } => return Ok(BackupImportResult::Done { imported: 0 }),
+        BackupImportStart::None => return Ok(BackupImportResult::None),
+        BackupImportStart::Rejected(message) => return Ok(BackupImportResult::Rejected(message)),
     };
-    let Some(current) = api.e2ee_current_backup_version().await? else {
-        return Ok(0);
-    };
-    let version = zoo_crypto::verify_backup_version(
-        &current,
-        &user_id,
-        &own.master_public_key,
-        &own.backup_key,
-    )?;
     let mut imported = 0;
-    let mut after: Option<String> = None;
     loop {
-        let page = api
-            .e2ee_backup_keys(&version.version, after.as_deref())
-            .await?;
+        let page = match api.e2ee_backup_keys(&version, after.as_deref()).await {
+            Ok(page) => page,
+            Err(error) if ApiError::status_of(&error) == Some(reqwest::StatusCode::NOT_FOUND) => {
+                return Ok(BackupImportResult::VersionGone);
+            }
+            Err(error) => return Err(error),
+        };
         let rows: Vec<zoo_crypto::BackupRow> = page
             .get("sessions")
             .and_then(Value::as_array)
@@ -388,16 +401,52 @@ pub async fn import_key_backup(api: &ApiClient, store: &SharedStore) -> Result<u
                 other => serde_json::from_value(other.clone()).ok(),
             })
             .collect();
+        let next = page
+            .get("next")
+            .and_then(Value::as_str)
+            .filter(|next| after.as_deref() != Some(*next))
+            .map(str::to_owned);
         imported += store
             .lock()
             .await
-            .import_backup_rows(&own.backup_key, &rows)?;
-        match page.get("next").and_then(Value::as_str) {
-            Some(next) if after.as_deref() != Some(next) => after = Some(next.to_owned()),
-            _ => break,
+            .import_backup_page(&version, &rows, next.as_deref())?;
+        match next {
+            Some(next) => after = Some(next),
+            None => return Ok(BackupImportResult::Done { imported }),
         }
     }
-    Ok(imported)
+}
+
+/// 取り込みのやり直しを 1 つにするための印（同じプロセスで重ねて試し直さない）。
+static BACKUP_IMPORT_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 鍵バックアップからの取り込みを裏で行い、通信の失敗などで止まったら、30 秒から倍にして最大 10 分の
+/// 間隔で、続きのページから試し直す（Web と同じ）。やめるのは、取り込み終えたとき、取り込むものが
+/// ない、版を使えない、または途中で版が消えたと分かったとき、暗号ストアが手放されたとき。暗号ストアは、
+/// 試すあいだだけ持つ（端末の管理のタスクが開き直せるように）。
+pub fn spawn_backup_import(api: ApiClient, store: &SharedStore) {
+    use std::sync::atomic::Ordering;
+    if BACKUP_IMPORT_RUNNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let weak = Arc::downgrade(store);
+    tokio::spawn(async move {
+        let mut delay = std::time::Duration::from_secs(30);
+        loop {
+            let Some(store) = weak.upgrade() else {
+                break;
+            };
+            let result = import_key_backup(&api, &store).await;
+            drop(store);
+            if result.is_ok() {
+                break;
+            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(std::time::Duration::from_secs(600));
+        }
+        BACKUP_IMPORT_RUNNING.store(false, Ordering::Release);
+    });
 }
 
 async fn plan_remaining(

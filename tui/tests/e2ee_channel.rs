@@ -65,6 +65,12 @@ struct State {
     /// 鍵バックアップの今の版と、上がっている行。
     backup_version: Option<Value>,
     backup_rows: Vec<Value>,
+    /// 上がってきた行の数（取り込んだセッションを上げ直していないかを見る）。
+    backup_posted: usize,
+    /// 読まれたページの `after`。
+    backup_reads: Vec<Option<String>>,
+    /// この `after` のページを読まれたら、1 回だけ 500 にする。
+    fail_backup_read: Option<Option<String>>,
 }
 
 #[derive(Clone, Default)]
@@ -247,6 +253,7 @@ impl Respond for Backend {
                 None => ResponseTemplate::new(404),
             },
             ("POST", "/api/e2ee/key_backup/keys") => {
+                state.backup_posted += body["sessions"].as_array().unwrap().len();
                 for row in body["sessions"].as_array().unwrap() {
                     let same = |other: &Value| {
                         ["channel_id", "sender_key", "session_id"]
@@ -260,11 +267,17 @@ impl Respond for Backend {
             }
             ("GET", "/api/e2ee/key_backup/keys") => {
                 // 1 行ずつのページで返す（`next` をたどることを確かめる）。
-                let index: usize = request
+                let after = request
                     .url
                     .query_pairs()
                     .find(|(key, _)| key == "after")
-                    .map_or(0, |(_, value)| value.parse().unwrap());
+                    .map(|(_, value)| value.into_owned());
+                state.backup_reads.push(after.clone());
+                if state.fail_backup_read.as_ref() == Some(&after) {
+                    state.fail_backup_read = None;
+                    return ResponseTemplate::new(500);
+                }
+                let index: usize = after.map_or(0, |after| after.parse().unwrap());
                 let page: Vec<Value> = state
                     .backup_rows
                     .iter()
@@ -816,6 +829,33 @@ async fn remembers_encrypted_channels_across_restarts() {
     );
     drop(opened);
 
+    // 作り直しの途中（前の `state.json` を別の名前に移したあと、新しいものを保存する前）に止まっても、
+    // 記録を読めて、次に開いたときに引き継ぐ。
+    let user_dir = dir.path().join(ALICE);
+    std::fs::rename(
+        user_dir.join("state.json"),
+        user_dir.join("state.replaced.json"),
+    )
+    .unwrap();
+    std::fs::remove_file(user_dir.join("storage.key")).unwrap();
+    assert!(
+        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE)
+            .unwrap()
+            .contains(&CHANNEL.to_owned())
+    );
+    let opened = CryptoStore::open(dir.path(), ALICE).unwrap();
+    assert!(
+        opened
+            .store
+            .known_encrypted_channels()
+            .any(|id| id == CHANNEL)
+    );
+    assert!(
+        !user_dir.join("state.replaced.json").exists(),
+        "保存し終えたら消す"
+    );
+    drop(opened);
+
     // 記録のファイルを読めなければ、記録がないものとせずにエラーにする。
     std::fs::write(dir.path().join(ALICE).join("state.json"), b"{broken").unwrap();
     assert!(zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE).is_err());
@@ -830,20 +870,26 @@ async fn the_previous_recipients_are_kept_when_saving_fails() {
     const CAROL: &str = "00000000-0000-4000-8000-00000000000c";
     let mut store = alice.store.lock().await;
     let members = vec![ALICE.to_owned(), BOB.to_owned(), CAROL.to_owned()];
+    // 書き込めないディレクトリーで保存を失敗させる（root などで書けてしまう環境では、成功として確かめる）。
     #[cfg(unix)]
-    {
+    let saved = {
         use std::os::unix::fs::PermissionsExt;
         let user_dir = alice._dir.path().join(ALICE);
         std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let failed = store.megolm_note_recipients(CHANNEL, &members);
+        let first = store.megolm_note_recipients(CHANNEL, &members);
         std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(failed.is_err() || failed.as_ref().unwrap() == &vec![CAROL.to_owned()]);
+        first.is_ok()
+    };
+    #[cfg(not(unix))]
+    let saved = store.megolm_note_recipients(CHANNEL, &members).is_ok();
+    let retried = store.megolm_note_recipients(CHANNEL, &members).unwrap();
+    if saved {
+        // 保存できていれば、記録は更新済みなので、同じ配布先で増えた人はいない。
+        assert!(retried.is_empty());
+    } else {
+        // 保存できなかったときは前の記録に戻すので、次の判定で増えた人をもう一度出す。
+        assert_eq!(retried, vec![CAROL.to_owned()]);
     }
-    // 保存できなかったときも、次の判定で増えた人をもう一度出す。
-    assert_eq!(
-        store.megolm_note_recipients(CHANNEL, &members).unwrap(),
-        vec![CAROL.to_owned()]
-    );
     let _ = backend;
 }
 
@@ -1068,7 +1114,7 @@ async fn a_new_device_imports_past_sessions_from_the_key_backup() {
         setup::import_key_backup(&laptop.api, &laptop.store)
             .await
             .unwrap(),
-        2
+        setup::BackupImportResult::Done { imported: 2 }
     );
     for (sent, body) in [
         (&first, "新しい端末を足す前 1"),
@@ -1079,8 +1125,23 @@ async fn a_new_device_imports_past_sessions_from_the_key_backup() {
         // バックアップ由来のセッションで復号したものは「送信者を確かめられない」。
         assert_eq!(sender_of(&decrypted), SenderTrust::Unauthenticated);
     }
-    // 取り込んだセッションは、同じ版に上げ直さない。
+    // 取り込んだセッションは、同じ版に上げ直さない（新しい端末で初めて見た版でも、取り込みの前に
+    // 受け入れているので、そのあとのアップロードで送信待ちに戻さない）。
     assert_eq!(laptop.store.lock().await.pending_backup_count(), 0);
+    let posted = backend.0.lock().unwrap().backup_posted;
+    setup::upload_key_backup(&laptop.api, &laptop.store)
+        .await
+        .unwrap();
+    assert_eq!(backend.0.lock().unwrap().backup_posted, posted);
+    // 取り込み終えた版は、読み直さない。
+    let reads = backend.0.lock().unwrap().backup_reads.len();
+    assert_eq!(
+        setup::import_key_backup(&laptop.api, &laptop.store)
+            .await
+            .unwrap(),
+        setup::BackupImportResult::Done { imported: 0 }
+    );
+    assert_eq!(backend.0.lock().unwrap().backup_reads.len(), reads);
 
     // 元の端末で取り込んでも、Olm 由来（自分の送信用セッションの写し）を置き換えない。
     setup::import_key_backup(&alice.api, &alice.store)
@@ -1098,6 +1159,39 @@ async fn a_new_device_imports_past_sessions_from_the_key_backup() {
         setup::import_key_backup(&other.api, &other.store)
             .await
             .unwrap(),
-        0
+        setup::BackupImportResult::None
+    );
+
+    // 取り込みが途中で止まっても、続きのページから読む。
+    let tablet = other_device(&server, &backend, &alice);
+    {
+        let mut state = backend.0.lock().unwrap();
+        state.backup_reads.clear();
+        state.fail_backup_read = Some(Some("1".into()));
+    }
+    assert!(
+        setup::import_key_backup(&tablet.api, &tablet.store)
+            .await
+            .is_err()
+    );
+    // 1 ページ目は取り込めている。
+    assert_eq!(
+        body_of(&tablet.decrypt(&backend, &first.message_id).await),
+        "新しい端末を足す前 1"
+    );
+    assert_eq!(
+        setup::import_key_backup(&tablet.api, &tablet.store)
+            .await
+            .unwrap(),
+        setup::BackupImportResult::Done { imported: 1 }
+    );
+    assert_eq!(
+        backend.0.lock().unwrap().backup_reads,
+        vec![None, Some("1".into()), Some("1".into())],
+        "止まったページから読み直す"
+    );
+    assert_eq!(
+        body_of(&tablet.decrypt(&backend, &second.message_id).await),
+        "新しい端末を足す前 2"
     );
 }
