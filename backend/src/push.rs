@@ -720,4 +720,51 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         let sent = decrypt_push(&components, &auth, &keys.encrypt_fitting(&plain).unwrap());
         assert!(sent.get("e2ee").is_none(), "{sent}");
     }
+
+    /// 本物の Megolm の暗号文で、どのくらいの本文まで暗号文を付けて送れるか（docs/e2ee.md の
+    /// 「Web Push の復号」の目安。長いタイトルと、メンション 1 人のとき）。
+    #[test]
+    fn megolm_ciphertext_fits_bodies_up_to_about_600_japanese_characters() {
+        use zoo_crypto::{
+            DeviceAccount, Mentions, MessageContent, OutboundSession, OutgoingMessage,
+        };
+        let account = DeviceAccount::new(
+            "00000000-0000-4000-8000-000000000004",
+            "00000000-0000-4000-8000-000000000005",
+        )
+        .unwrap();
+        let (receiver, auth) = ece::generate_keypair_and_auth_secret().unwrap();
+        let keys = SubscriptionKeys {
+            p256dh: URL_SAFE_NO_PAD.encode(receiver.pub_as_raw().unwrap()),
+            auth: URL_SAFE_NO_PAD.encode(auth),
+        };
+        let fits = |chars: usize| {
+            let mut outbound = OutboundSession::new("00000000-0000-4000-8000-000000000002", 3, 0);
+            let ciphertext = outbound
+                .encrypt(
+                    &account,
+                    &OutgoingMessage {
+                        message_id: "00000000-0000-4000-8000-000000000003".into(),
+                        parent_id: None,
+                        revision: 0,
+                        content: MessageContent {
+                            body: "あ".repeat(chars),
+                            format: "mfm".into(),
+                            kind: "message".into(),
+                        },
+                        mentions: Mentions {
+                            user_ids: vec!["00000000-0000-4000-8000-000000000001".into()],
+                            ..Mentions::default()
+                        },
+                    },
+                )
+                .unwrap();
+            let mut payload = encrypted_payload(0);
+            payload.title = format!("{} · #{}", "名".repeat(60), "チ".repeat(60));
+            payload.e2ee.as_mut().unwrap().message.ciphertext = ciphertext;
+            keys.encrypt(&payload).is_ok()
+        };
+        assert!(fits(550));
+        assert!(!fits(700));
+    }
 }
