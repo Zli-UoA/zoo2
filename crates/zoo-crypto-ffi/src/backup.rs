@@ -44,20 +44,22 @@ impl BackupDecryptionKey {
         self.inner.public_key().to_base64()
     }
 
-    /// 版の `auth_data`（JSON）を作り、マスター鍵で署名する。
-    pub fn auth_data(&self, master: &CrossSigningKeyPair) -> Result<String> {
-        Ok(self.inner.auth_data(&master.inner)?.to_string())
+    /// 版 `version` の `auth_data`（JSON）を作る。方式と版の番号を入れ、マスター鍵で署名する。
+    pub fn auth_data(&self, master: &CrossSigningKeyPair, version: u64) -> Result<String> {
+        Ok(self.inner.auth_data(&master.inner, version)?.to_string())
     }
 
-    /// `POST /api/e2ee/key_backup/versions` の本文（JSON）。
+    /// `POST /api/e2ee/key_backup/versions` の本文（JSON）。`version` は作る版の番号
+    /// （[`next_backup_version`]）。
     pub fn create_version_request(
         &self,
         master: &CrossSigningKeyPair,
         expected_current_version: Option<String>,
+        version: u64,
     ) -> Result<String> {
         Ok(self
             .inner
-            .create_version_request(&master.inner, expected_current_version.as_deref())?
+            .create_version_request(&master.inner, expected_current_version.as_deref(), version)?
             .to_string())
     }
 
@@ -108,6 +110,13 @@ pub fn verify_backup_version(
     let master_key = ed25519_from_base64(&master_key)?;
     let verified = core::verify_backup_version(&version, &user_id, &master_key, &backup_key.inner)?;
     Ok((&verified).into())
+}
+
+/// 次に作る版の番号（`auth_data` に入れて署名する）。`versions` は `GET /api/e2ee/key_backup/versions`
+/// の応答（JSON。消した版を含む）。
+#[uniffi::export]
+pub fn next_backup_version(versions: String) -> Result<u64> {
+    Ok(core::next_backup_version(&parse_versions(&versions)?))
 }
 
 fn parse_versions(versions: &str) -> Result<Vec<core::BackupVersionInfo>> {

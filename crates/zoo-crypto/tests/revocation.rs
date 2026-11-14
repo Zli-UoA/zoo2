@@ -122,7 +122,7 @@ impl Alice {
         }));
         let version = secrets
             .backup_key
-            .create_version_request(&secrets.cross_signing.master, None)
+            .create_version_request(&secrets.cross_signing.master, None, 1)
             .unwrap();
         alice.apply_version(&version);
         (alice, secrets)
@@ -142,6 +142,8 @@ impl Alice {
 
     fn apply_version(&mut self, body: &Value) -> String {
         let number = (self.versions.len() + 1).to_string();
+        // サーバーは、署名した版の番号が振る番号と違う要求を 409 で拒む。
+        assert_eq!(body["auth_data"]["version"], json!(number));
         self.versions.push(json!({
             "version": number,
             "algorithm": body["algorithm"],

@@ -24,7 +24,7 @@ use vodozemac::{Ed25519PublicKey, base64_encode};
 use zeroize::Zeroizing;
 
 use crate::backup::{
-    BackupDecryptionKey, BackupEncryptionKey, BackupRow, BackupVersionInfo,
+    BackupDecryptionKey, BackupEncryptionKey, BackupRow, BackupVersionInfo, next_backup_version,
     select_previous_backup_keys,
 };
 use crate::cross_signing::{
@@ -379,6 +379,11 @@ pub struct RevocationState {
     pub expected_secrets_revision: Option<u64>,
     /// 始める前の今の版（`expected_current_version`）。
     pub expected_current_version: Option<String>,
+    /// 作る版の番号（始める前の版の一覧から [`next_backup_version`] で決め、`auth_data` に入れて署名する）。
+    /// 保存形式に後から足した項目なので、ない状態（以前の版で始めた失効）は、`expected_current_version`
+    /// の次の番号（今の版がなければ 1）を使う。
+    #[serde(default)]
+    pub next_backup_version: Option<u64>,
     /// 新しい既定の SSSS 鍵（2〜5）。端末だけの失効では、始める前の鍵と同じ。
     pub key_id: String,
     /// 作った鍵の公開鍵。
@@ -637,6 +642,7 @@ impl Revocation {
             expected_default_key_id: input.unlocked.key().key_id().to_owned(),
             expected_secrets_revision: input.unlocked.secrets_revision(),
             expected_current_version: current,
+            next_backup_version: Some(next_backup_version(&input.server.backup_versions)),
             key_id: ssss.key_id().to_owned(),
             new_keys: PublicCrossSigningKeys::of(&secrets.cross_signing),
             new_backup_public_key: secrets.backup_key.public_key().to_base64(),
@@ -857,9 +863,22 @@ impl Revocation {
     /// 直前の再認証が要る。`expected_default_key_id` と `expected_secrets_revision` は
     /// [`Self::cross_signing_request`] と同じ。
     pub fn backup_version_request(&self) -> Result<Value, CryptoError> {
+        let expected = self.state.expected_current_version.as_deref();
+        let version = match (self.state.next_backup_version, expected) {
+            (Some(version), _) => version,
+            (None, Some(current)) => current
+                .parse::<u64>()
+                .ok()
+                .and_then(|n| n.checked_add(1))
+                .ok_or_else(|| {
+                    CryptoError::InvalidBackup(format!("今の版の番号が正しくありません: {current}"))
+                })?,
+            (None, None) => 1,
+        };
         let mut body = self.secrets.backup_key.create_version_request(
             &self.secrets.cross_signing.master,
-            self.state.expected_current_version.as_deref(),
+            expected,
+            version,
         )?;
         body["expected_default_key_id"] = json!(self.state.key_id);
         self.add_secrets_revision(&mut body);
