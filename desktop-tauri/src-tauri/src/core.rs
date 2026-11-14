@@ -373,7 +373,11 @@ impl Core {
                         return;
                     }
                     // 古い backend など、通話の招待の購読だけが失敗しても、画面にはエラーを出さない。
-                    ShapeEvent::Failed(ShapeId::CallInvites, _) => {}
+                    ShapeEvent::Failed(ShapeId::CallInvites, message) => {
+                        eprintln!(
+                            "通話の招待を購読できません (着信のトーストは出ません): {message}"
+                        );
+                    }
                     ShapeEvent::Failed(id, message) => {
                         let _ = core
                             .app
@@ -401,7 +405,12 @@ impl Core {
                         .as_deref()
                         .and_then(notify::parse_dnd_until);
                 }
+                let first_check = !inner.dnd_checked;
                 inner.dnd_checked = true;
+                // DND を取る前に届いた着信は、まだ判定していない。初めて取れたときに、判定し直す。
+                if first_check {
+                    core.reconcile_call_toasts(&mut inner, false);
+                }
                 drop(inner);
                 tokio::time::sleep(DND_REFRESH).await;
             }
@@ -527,7 +536,9 @@ impl Core {
             focused_channel: None,
         }
         .in_dnd();
-        let in_front = self.window_in_front(inner);
+        // 着信のダイアログがあるのは React の画面だけ。Leptos では、前面でもトーストを出す。
+        let in_front = self.ui == UiMode::Remote && self.window_in_front(inner);
+        let api = session.api.clone();
         for toast in candidates {
             if inner.call_toast_seen.contains(&toast.invite_id) {
                 continue;
@@ -536,12 +547,15 @@ impl Core {
             if in_dnd || in_front {
                 continue;
             }
-            let handle = self.show_call_toast(&toast);
-            inner.call_toasts.insert(toast.invite_id.clone(), handle);
+            let handle = CallToast::default();
+            inner
+                .call_toasts
+                .insert(toast.invite_id.clone(), handle.clone());
+            self.show_call_toast(&toast, handle, api.clone());
         }
     }
 
-    fn show_call_toast(&self, invite: &notify::CallInviteToast) -> CallToast {
+    fn show_call_toast(&self, invite: &notify::CallInviteToast, handle: CallToast, api: ApiClient) {
         let core = self.app.state::<Arc<Core>>().inner().clone();
         let id = invite.invite_id.clone();
         let decline_core = core.clone();
@@ -554,19 +568,37 @@ impl Core {
             }) as Box<dyn FnOnce() + Send>
         });
         let app = self.app.clone();
-        let handle = toast::show_call_invite(
-            &invite.title,
-            &invite.body,
-            CallActions {
-                accept,
-                decline: Some(Box::new(move || {
-                    tauri::async_runtime::spawn(async move {
-                        decline_core.decline_call_invite(&decline_id).await;
-                    });
-                })),
-                open: Box::new(move || crate::window::show_main(&app)),
-            },
-        );
+        let actions = CallActions {
+            accept,
+            decline: Some(Box::new(move || {
+                tauri::async_runtime::spawn(async move {
+                    decline_core.decline_call_invite(&decline_id).await;
+                });
+            })),
+            open: Box::new(move || crate::window::show_main(&app)),
+        };
+        if invite.inviter_known {
+            toast::show_call_invite(&handle, &invite.title, &invite.body, actions);
+        } else {
+            // users の Shape を持たない (React の) 画面では、呼んだ人の名前を、通話の参加者から API で引く。
+            // 引けなければ、決まった文言のまま出す。閉じる指示が先に来ていたら、出さずに閉じる。
+            let (inviter_id, channel_id) = (invite.inviter_id.clone(), invite.channel_id.clone());
+            let (title, body) = (invite.title.clone(), invite.body.clone());
+            tauri::async_runtime::spawn(async move {
+                let name = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    api.call_participant_name(&channel_id, &inviter_id),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten();
+                match name {
+                    Some(name) => toast::show_call_invite(&handle, &name, "着信", actions),
+                    None => toast::show_call_invite(&handle, &title, &body, actions),
+                }
+            });
+        }
         // Shape から消えなかったときの保険。受け取った時刻 + 招待の長さ + 数秒で閉じる。
         if let Some(ms) = invite.duration_ms.filter(|ms| *ms > 0) {
             let guard = core;
@@ -576,7 +608,6 @@ impl Core {
                 guard.close_call_toast(&id).await;
             });
         }
-        handle
     }
 
     async fn close_call_toast(&self, invite_id: &str) {
@@ -594,7 +625,14 @@ impl Core {
     /// トーストの「応答」。ウィンドウを前に出し、WebView に印を取りに来る合図を送る。
     /// 応答そのもの（API と通話への参加）は、印を取った WebView が行う。このイベントだけでは応答しない。
     async fn accept_call_invite(&self, invite_id: String) {
-        self.inner.lock().await.pending_accept = Some((invite_id, Instant::now()));
+        {
+            let mut inner = self.inner.lock().await;
+            // ログアウトのあとや、閉じたトーストの action では、印を残さない（別のユーザーのログインに残らないように）。
+            if inner.session.is_none() || !inner.call_toasts.contains_key(&invite_id) {
+                return;
+            }
+            inner.pending_accept = Some((invite_id, Instant::now()));
+        }
         crate::window::show_main(&self.app);
         let _ = self.app.emit_to(MAIN, event::CALL_ACCEPT, ());
     }
@@ -795,7 +833,8 @@ impl Core {
         let mut inner = self.inner.lock().await;
         inner.window_focused = focused;
         // 前面に来たら、着信は React のダイアログに任せて、トーストを閉じる。
-        if focused {
+        // Leptos の画面には着信のダイアログがないので、閉じない（「拒否」を押せなくなる）。
+        if focused && self.ui == UiMode::Remote {
             Self::close_all_call_toasts(&mut inner);
         }
     }

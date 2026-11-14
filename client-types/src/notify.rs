@@ -76,11 +76,15 @@ pub fn parse_timestamptz(value: &str) -> Option<DateTime> {
 pub struct CallInviteToast {
     pub invite_id: String,
     pub channel_id: String,
+    /// 呼んだ人。名前を引き直すのに使う。
+    pub inviter_id: String,
     pub title: String,
     pub body: String,
     /// 招待の有効な長さ（`expires_at` - `created_at`）。受け取った時刻から数えて、この時間で閉じる。
     /// 端末の時計に頼らないための値。読めなければ None。
     pub duration_ms: Option<i64>,
+    /// 呼んだ人の名前を、Store から引けたか。偽なら `title` は決まった文言で、呼び出し側が名前を引き直せる。
+    pub inviter_known: bool,
 }
 
 /// 呼ばれている、呼び出し中の招待。`fresh` が偽（初回の同期や再接続の `reset`）のときは、
@@ -103,15 +107,22 @@ pub fn pending_call_invites<'a>(
 }
 
 /// 着信のトーストの中身。DM は相手の名前だけ、チャンネルは「名前 (#チャンネル)」。
+/// users の Shape を持たないクライアントでは、名前が引けない（`inviter_known` が偽）。そのときは、
+/// ユーザー ID を題名に出さず、決まった文言にする。呼び出し側が、API で名前を引いて差し替えられる。
 pub fn call_invite_toast(store: &Store, invite: &crate::rows::CallInvite) -> CallInviteToast {
-    let actor = store.display_name(&invite.inviter_id);
+    let inviter_known = store.user(&invite.inviter_id).is_some();
     let channel = store.channel(&invite.channel_id);
-    let (title, body) = match channel {
-        Some(channel) if !channel.is_dm => (
-            format!("{actor} (#{})", channel.channel_name),
-            "通話に招待されています".to_string(),
-        ),
-        _ => (actor, "着信".to_string()),
+    let (title, body) = if inviter_known {
+        let actor = store.display_name(&invite.inviter_id);
+        match channel {
+            Some(channel) if !channel.is_dm => (
+                format!("{actor} (#{})", channel.channel_name),
+                "通話に招待されています".to_string(),
+            ),
+            _ => (actor, "着信".to_string()),
+        }
+    } else {
+        ("着信".to_string(), "通話の着信があります".to_string())
     };
     let duration_ms = match (
         parse_timestamptz(&invite.created_at),
@@ -127,9 +138,11 @@ pub fn call_invite_toast(store: &Store, invite: &crate::rows::CallInvite) -> Cal
     CallInviteToast {
         invite_id: invite.id.clone(),
         channel_id: invite.channel_id.clone(),
+        inviter_id: invite.inviter_id.clone(),
         title,
         body,
         duration_ms,
+        inviter_known,
     }
 }
 
@@ -493,6 +506,37 @@ mod tests {
         assert_eq!(toast.invite_id, "i1");
         assert_eq!(toast.channel_id, "c1");
         assert_eq!(toast.duration_ms, Some(30_000));
-        assert!(!toast.title.is_empty());
+        // users の Shape を持たないクライアントでは、ユーザー ID を出さず、決まった文言にする
+        assert!(!toast.inviter_known);
+        assert_eq!(toast.title, "着信");
+        assert_eq!(toast.body, "通話の着信があります");
+        assert!(!toast.title.contains("u2"));
+    }
+
+    #[test]
+    fn call_invite_toast_uses_the_caller_and_channel_names_when_known() {
+        let mut store = Store::default();
+        let rows = |value: serde_json::Value| Batch {
+            reset: true,
+            up_to_date: true,
+            changes: vec![Change::Upsert {
+                key: value["id"].as_str().unwrap().into(),
+                row: value.as_object().unwrap().clone(),
+            }],
+        };
+        store.apply(
+            &ShapeId::Users,
+            rows(json!({ "id": "u2", "user_name": "bob", "display_name": "Bob" })),
+        );
+        store.apply(
+            &ShapeId::CallInvites,
+            invite_batch("i1", "me", "pending", "2026-11-14 10:00:30+00"),
+        );
+        let invite = store.call_invites()[0].clone();
+        // チャンネルが引けなくても、名前が分かれば名前を出す
+        let toast = call_invite_toast(&store, &invite);
+        assert!(toast.inviter_known);
+        assert_eq!(toast.title, "Bob");
+        assert_eq!(toast.body, "着信");
     }
 }

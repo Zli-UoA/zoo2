@@ -158,9 +158,8 @@ fn close_handle(_handle: &notify_rust::NotificationHandle) {}
 
 /// 着信のトーストを出す。Linux は「応答」「拒否」のボタン付きで、閉じるまで出し続ける
 /// （GNOME は、通常の通知を数秒で一覧にしまうため）。mac は出すだけで、クリックは受け取れない。
-/// 招待が終わったら、返した `CallToast` の `close` で閉じる。
-pub fn show_call_invite(title: &str, body: &str, actions: CallActions) -> CallToast {
-    let toast = CallToast::default();
+/// 先に作っておいた `CallToast` に預かる。招待が終わったら、その `close` で閉じる（出す前でもよい）。
+pub fn show_call_invite(toast: &CallToast, title: &str, body: &str, actions: CallActions) {
     let mut notification = notify_rust::Notification::new();
     notification.appname("zoo2").summary(title).body(body);
 
@@ -238,6 +237,4 @@ pub fn show_call_invite(title: &str, body: &str, actions: CallActions) -> CallTo
         let _ = actions;
         let _ = notification.show();
     }
-
-    toast
 }

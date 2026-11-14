@@ -108,7 +108,8 @@ function DesktopBridgeInner({ channelId }: { channelId: string | null }) {
     let cancelled = false;
     const take = () => {
       void desktopTakeCallAccept().then((inviteId) => {
-        if (inviteId && !cancelled) requestAcceptCallInvite(inviteId);
+        // 印は取った時点で消えるので、画面が離れていても、取れたら必ず頼む（window へのイベント）。
+        if (inviteId) requestAcceptCallInvite(inviteId);
       });
     };
     take();
