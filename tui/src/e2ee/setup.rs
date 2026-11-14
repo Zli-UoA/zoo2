@@ -417,18 +417,26 @@ pub async fn import_key_backup(api: &ApiClient, store: &SharedStore) -> Result<B
     }
 }
 
-/// 取り込みのやり直しを 1 つにするための印（同じプロセスで重ねて試し直さない）。
-static BACKUP_IMPORT_RUNNING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+/// 取り込みのやり直しが動いている暗号ストア（`Arc` の指す先）。同じ暗号ストアには重ねて試し直さない。
+/// 暗号ストアごとに持つので、古い暗号ストアのやり直しが待っているあいだに開き直した暗号ストアの取り込みも
+/// 始められる。やり直しのタスクは `Weak` を持つので、終わるまで同じ番地が別の暗号ストアに使われることは
+/// ない。
+static BACKUP_IMPORT_RUNNING: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
 /// 鍵バックアップからの取り込みを裏で行い、通信の失敗などで止まったら、30 秒から倍にして最大 10 分の
 /// 間隔で、続きのページから試し直す（Web と同じ）。やめるのは、取り込み終えたとき、取り込むものが
 /// ない、版を使えない、または途中で版が消えたと分かったとき、暗号ストアが手放されたとき。暗号ストアは、
 /// 試すあいだだけ持つ（端末の管理のタスクが開き直せるように）。
 pub fn spawn_backup_import(api: ApiClient, store: &SharedStore) {
-    use std::sync::atomic::Ordering;
-    if BACKUP_IMPORT_RUNNING.swap(true, Ordering::AcqRel) {
-        return;
+    let identity = Arc::as_ptr(store) as usize;
+    {
+        let mut running = BACKUP_IMPORT_RUNNING
+            .lock()
+            .expect("取り込みのやり直しの記録のロック");
+        if running.contains(&identity) {
+            return;
+        }
+        running.push(identity);
     }
     let weak = Arc::downgrade(store);
     tokio::spawn(async move {
@@ -445,7 +453,12 @@ pub fn spawn_backup_import(api: ApiClient, store: &SharedStore) {
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(std::time::Duration::from_secs(600));
         }
-        BACKUP_IMPORT_RUNNING.store(false, Ordering::Release);
+        BACKUP_IMPORT_RUNNING
+            .lock()
+            .expect("取り込みのやり直しの記録のロック")
+            .retain(|running| *running != identity);
+        // `weak` はここまで持つ（番地を、記録を消すまで別の暗号ストアに使わせない）。
+        drop(weak);
     });
 }
 
