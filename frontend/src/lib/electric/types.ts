@@ -114,7 +114,8 @@ export type NotificationRow = {
   user_id: string;
   actor_id: string;
   channel_id: string;
-  message_id: string;
+  /** 不在着信（`missed_call`）にはメッセージがない。 */
+  message_id: string | null;
   notification_type: string;
   is_read: boolean;
   created_at: TimestampString;

@@ -267,7 +267,7 @@ export function NotificationCard({
               ref={destinationRef}
               to="/channels/$channelId"
               params={{ channelId: notification.channel_id }}
-              search={{ message: notification.message_id }}
+              search={{ message: notification.message_id ?? undefined }}
               onClick={() => shell.showChat()}
               title={channelLabel}
               aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}: ${quotePreview(message.content)}`}

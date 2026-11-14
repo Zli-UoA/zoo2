@@ -1,4 +1,4 @@
-h1:Yh/OWjbp18W9jePv/wDFpeeUixsx+YZZCkRyPyWof+Y=
+h1:zSGEvwBFDkr0DUi6e7OpSWYkezCdSJ1XR5zkK+AHvaA=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -78,3 +78,4 @@ h1:Yh/OWjbp18W9jePv/wDFpeeUixsx+YZZCkRyPyWof+Y=
 20261124000000_slack_event_wakes.sql h1:LF6EQiFALCG0qRDDS/OCCa9uK9kbV9NoCbwaW/5XqQQ=
 20261125000000_e2ee_bot_devices.sql h1:Y0EztfMRpCSzqhrcx0g8AE5b/mO6cbtrjiqiej+cy0k=
 20261125001000_slack_message_hints.sql h1:GRKXNL4kCU4nOlO4D3S8fvii+y4t+BQlkHGBiq1W4CA=
+20261126000000_call_invites.sql h1:LwZkMT8l4XAomD+5+reowh52wxTCAq5XrAcDtvxgEBY=

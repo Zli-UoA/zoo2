@@ -973,3 +973,409 @@ async fn test_call_stream_lifecycle_and_room_closure() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// ---- 通話の招待 (docs/calls.md) ----
+
+struct InviteWorld {
+    app: Router,
+    state: AppState,
+    db: toasty::Db,
+    alice: String,
+    bob: String,
+    carol: String,
+    public_ch: String,
+    private_ch: String,
+    dm_ch: String,
+}
+
+async fn invite_world() -> anyhow::Result<InviteWorld> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+    let new_id = || uuid::Uuid::new_v4().to_string();
+    let (alice, bob, carol) = (new_id(), new_id(), new_id());
+    let (public_ch, private_ch, dm_ch) = (new_id(), new_id(), new_id());
+
+    let mut tx = db.transaction().await?;
+    for (id, name) in [(&alice, "Alice"), (&bob, "Bob"), (&carol, "Carol")] {
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(id.as_str())
+        .bind(name)
+        .exec(&mut tx)
+        .await?;
+    }
+    for (ch, private, dm, members) in [
+        (&public_ch, false, false, vec![&alice, &bob, &carol]),
+        (&private_ch, true, false, vec![&alice, &bob]),
+        (&dm_ch, true, true, vec![&alice, &bob]),
+    ] {
+        toasty::sql::statement(
+            "INSERT INTO channels (id, channel_name, created_user_id, is_private, is_dm) VALUES ($1, $1, $2, $3, $4)",
+        )
+        .bind(ch.as_str())
+        .bind(alice.as_str())
+        .bind(private)
+        .bind(dm)
+        .exec(&mut tx)
+        .await?;
+        for member in members {
+            toasty::sql::statement(
+                "INSERT INTO channel_user (user_id, channel_id, joined_at) VALUES ($1, $2, CURRENT_TIMESTAMP)",
+            )
+            .bind(member.as_str())
+            .bind(ch.as_str())
+            .exec(&mut tx)
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(InviteWorld {
+        app,
+        state,
+        db,
+        alice,
+        bob,
+        carol,
+        public_ch,
+        private_ch,
+        dm_ch,
+    })
+}
+
+async fn put_presence(db: &mut toasty::Db, channel: &str, user: &str) -> anyhow::Result<()> {
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, gen_random_uuid(), $2, $2, $2, false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(channel)
+    .bind(user)
+    .exec(db)
+    .await?;
+    Ok(())
+}
+
+async fn invite_status(db: &mut toasty::Db, id: &str) -> anyhow::Result<String> {
+    let rows = toasty::sql::query("SELECT status FROM call_invites WHERE id = $1::uuid")
+        .bind(id)
+        .exec(db)
+        .await?;
+    for row in rows {
+        if let toasty::stmt::Value::Record(rec) = row
+            && let Some(toasty::stmt::Value::String(status)) = rec.fields.into_iter().next()
+        {
+            return Ok(status);
+        }
+    }
+    anyhow::bail!("invite {id} not found")
+}
+
+async fn invite(
+    w: &InviteWorld,
+    actor: &str,
+    channel: &str,
+    users: &[&str],
+) -> anyhow::Result<(StatusCode, Value)> {
+    request(
+        &w.app,
+        actor,
+        "POST",
+        &format!("/api/channels/{channel}/call/invites"),
+        Some(serde_json::json!({ "user_ids": users })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn test_call_invite_lifecycle_and_permissions() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob, carol) = (w.alice.clone(), w.bob.clone(), w.carol.clone());
+    let (public_ch, private_ch, dm_ch) =
+        (w.public_ch.clone(), w.private_ch.clone(), w.dm_ch.clone());
+
+    // 通話に入っていない人は呼べない
+    let (status, _) = invite(&w, &alice, &public_ch, &[&bob]).await?;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    put_presence(&mut w.db, &public_ch, &alice).await?;
+    put_presence(&mut w.db, &private_ch, &alice).await?;
+    put_presence(&mut w.db, &dm_ch, &alice).await?;
+
+    // 呼ぶ: 二重には呼べない（2 回目は作られない）
+    let (status, body) = invite(&w, &alice, &public_ch, &[&bob]).await?;
+    assert_eq!(status, StatusCode::OK);
+    let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(body["invites"][0]["invitee_id"], bob.as_str());
+    let (status, body) = invite(&w, &alice, &public_ch, &[&bob]).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["invites"].as_array().unwrap().len(), 0);
+
+    // 自分だけ・空・DM は 400
+    for (ch, users) in [
+        (&public_ch, vec![alice.as_str()]),
+        (&public_ch, vec![]),
+        (&dm_ch, vec![bob.as_str()]),
+    ] {
+        let (status, _) = invite(&w, &alice, ch, &users).await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    // 見られないチャンネルの相手と、存在しない人は 404
+    let (status, _) = invite(&w, &alice, &private_ch, &[&carol]).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = invite(&w, &alice, &public_ch, &["nobody"]).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // 他人の招待には応答できず、呼んだ人も応答できない。取り消しは呼んだ人だけ
+    for (actor, action) in [
+        (&carol, "accept"),
+        (&alice, "accept"),
+        (&alice, "decline"),
+        (&bob, "cancel"),
+        (&carol, "cancel"),
+    ] {
+        let (status, _) = request(
+            &w.app,
+            actor,
+            "POST",
+            &format!("/api/call-invites/{id}/{action}"),
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{action}");
+    }
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "POST",
+        "/api/call-invites/not-a-uuid/accept",
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // 拒否したら declined。もう一度は 409
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/call-invites/{id}/decline"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(invite_status(&mut w.db, &id).await?, "declined");
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/call-invites/{id}/decline"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // 呼び直して、呼んだ人が取り消す
+    let (_, body) = invite(&w, &alice, &public_ch, &[&bob]).await?;
+    let id2 = body["invites"][0]["id"].as_str().unwrap().to_string();
+    let (status, _) = request(
+        &w.app,
+        &alice,
+        "POST",
+        &format!("/api/call-invites/{id2}/cancel"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(invite_status(&mut w.db, &id2).await?, "cancelled");
+
+    // 呼び直して応答する。チャンネルの ID が返る。期限の過ぎた招待には応答できない
+    let (_, body) = invite(&w, &alice, &public_ch, &[&bob]).await?;
+    let id3 = body["invites"][0]["id"].as_str().unwrap().to_string();
+    let (status, body) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/call-invites/{id3}/accept"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["channel_id"], public_ch.as_str());
+    assert_eq!(invite_status(&mut w.db, &id3).await?, "accepted");
+
+    let (_, body) = invite(&w, &alice, &public_ch, &[&bob]).await?;
+    let id4 = body["invites"][0]["id"].as_str().unwrap().to_string();
+    toasty::sql::statement("UPDATE call_invites SET expires_at = statement_timestamp() - interval '1 second' WHERE id = $1::uuid")
+        .bind(id4.as_str())
+        .exec(&mut w.db)
+        .await?;
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "POST",
+        &format!("/api/call-invites/{id4}/accept"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CONFLICT);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_expired_call_invite_becomes_missed_call_notification() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob) = (w.alice.clone(), w.bob.clone());
+    put_presence(&mut w.db, &w.public_ch.clone(), &alice).await?;
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob]).await?;
+    let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+
+    // 期限の前は、定期処理が触らない
+    backend::call_invites::sweep(&mut w.db).await?;
+    assert_eq!(invite_status(&mut w.db, &id).await?, "pending");
+
+    toasty::sql::statement("UPDATE call_invites SET expires_at = statement_timestamp() - interval '1 second' WHERE id = $1::uuid")
+        .bind(id.as_str())
+        .exec(&mut w.db)
+        .await?;
+    // 2 回走らせても、不在着信は 1 件だけ
+    backend::call_invites::sweep(&mut w.db).await?;
+    backend::call_invites::sweep(&mut w.db).await?;
+    assert_eq!(invite_status(&mut w.db, &id).await?, "missed");
+
+    let rows = toasty::sql::query(
+        "SELECT json_build_object('id', id, 'actor_id', actor_id, 'is_read', is_read,
+            'message_id', message_id, 'message_deleted', message_deleted, 'source', source)::text
+         FROM notification_events WHERE user_id = $1 AND notification_type = 'missed_call'",
+    )
+    .bind(bob.as_str())
+    .exec(&mut w.db)
+    .await?;
+    assert_eq!(rows.len(), 1);
+    let toasty::stmt::Value::Record(rec) = rows.into_iter().next().unwrap() else {
+        panic!("record")
+    };
+    let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next() else {
+        panic!("json")
+    };
+    let n: Value = serde_json::from_str(&json)?;
+    assert_eq!(n["actor_id"], alice.as_str());
+    assert_eq!(n["is_read"], false);
+    assert_eq!(n["source"], "channel");
+    assert!(n["message_id"].is_null());
+    // Electric の shape の where (`message_deleted = false`) に残る
+    assert_eq!(n["message_deleted"], false);
+    let notification_id = n["id"].as_str().unwrap().to_string();
+
+    // コンテキスト取得と既読化も、メッセージなしで通る
+    let (status, ctx) = request(
+        &w.app,
+        &bob,
+        "GET",
+        &format!("/api/notifications/{notification_id}/context"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(ctx["message"].is_null());
+    let (status, _) = request(
+        &w.app,
+        &bob,
+        "PATCH",
+        &format!("/api/notifications/{notification_id}/read"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_call_invite_cancelled_when_room_empties() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob) = (w.alice.clone(), w.bob.clone());
+    let session = uuid::Uuid::new_v4();
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, 'Alice', 'Alice', false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(w.public_ch.as_str())
+    .bind(session.to_string())
+    .bind(alice.as_str())
+    .exec(&mut w.db)
+    .await?;
+    let (_, body) = invite(&w, &alice, &w.public_ch.clone(), &[&bob]).await?;
+    let id = body["invites"][0]["id"].as_str().unwrap().to_string();
+
+    let (status, _) = request(
+        &w.app,
+        &alice,
+        "POST",
+        &format!("/api/channels/{}/call/leave", w.public_ch),
+        Some(serde_json::json!({ "session_id": session })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(invite_status(&mut w.db, &id).await?, "cancelled");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_dm_call_rings_the_other_member_and_join_accepts() -> anyhow::Result<()> {
+    let mut w = invite_world().await?;
+    let (alice, bob) = (w.alice.clone(), w.bob.clone());
+    w.state.call_registry.set_listening(true);
+
+    let open = |actor: &str, session: uuid::Uuid| {
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/channels/{}/call/stream?session_id={session}",
+                w.dm_ch
+            ))
+            .header("X-Dev-User", actor.to_string())
+            .body(Body::empty());
+        let app = w.app.clone();
+        async move { anyhow::Ok(app.oneshot(req?).await?) }
+    };
+
+    // 空の部屋に最初に入ると、相手を呼ぶ（SSE の応答は、開いたままにしておく）
+    let alice_stream = open(&alice, uuid::Uuid::new_v4()).await?;
+    assert_eq!(alice_stream.status(), StatusCode::OK);
+    let rows = toasty::sql::query(
+        "SELECT id::text, status FROM call_invites WHERE channel_id = $1 AND invitee_id = $2 AND inviter_id = $3",
+    )
+    .bind(w.dm_ch.as_str())
+    .bind(bob.as_str())
+    .bind(alice.as_str())
+    .exec(&mut w.db)
+    .await?;
+    assert_eq!(rows.len(), 1);
+    let toasty::stmt::Value::Record(rec) = rows.into_iter().next().unwrap() else {
+        panic!("record")
+    };
+    let mut fields = rec.fields.into_iter();
+    let Some(toasty::stmt::Value::String(id)) = fields.next() else {
+        panic!("id")
+    };
+    assert_eq!(invite_status(&mut w.db, &id).await?, "pending");
+
+    // 相手が入ったら応答済み。2 人目の入室では、新しく呼ばない
+    let bob_stream = open(&bob, uuid::Uuid::new_v4()).await?;
+    assert_eq!(bob_stream.status(), StatusCode::OK);
+    assert_eq!(invite_status(&mut w.db, &id).await?, "accepted");
+    let count = toasty::sql::query("SELECT 1 FROM call_invites WHERE channel_id = $1")
+        .bind(w.dm_ch.as_str())
+        .exec(&mut w.db)
+        .await?
+        .len();
+    assert_eq!(count, 1);
+    drop((alice_stream, bob_stream));
+    Ok(())
+}
