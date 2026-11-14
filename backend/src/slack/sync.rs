@@ -713,6 +713,8 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
     // ユーザーが API から取り込みを始めたチャンネルの最初の同期 (カーソルが 0)。全履歴を取るので、返信も、
     // 差分同期の監視範囲 (3 日・最大 20 スレッド) には限らず、返信のある全スレッドから取る
     let initial = is_initial(task);
+    // この同期が、スレッドの総なめを省く軽い同期になるか (履歴を読み終えたときの判定と同じ条件)
+    let light_now = task.synced && !initial && task.swept_recent;
     for _ in 0..MAX_PAGES_PER_STEP {
         if progress.phase == "history" {
             let mut params = vec![
@@ -739,7 +741,11 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                     // 最初の同期は、返信のあるスレッドをすべて取る (範囲内の親は、あとで返信が付くので監視に残す)
                     recent || message.reply_count.unwrap_or(0) > 0
                 } else {
-                    recent && progress.pending.len() < MAX_CANDIDATES
+                    // 軽い同期 (スレッドの総なめを省く) は、前回までの同期で返信を取った (`known`) スレッドの親が、カーソルを
+                    // 進めないせいで履歴に何度も出てきても、取り直さない。新しい返信は、次の全部取り直しか、イベントで取る
+                    recent
+                        && progress.pending.len() < MAX_CANDIDATES
+                        && !(light_now && progress.known.contains(&message.ts))
                 };
                 if top_level
                     && threadable(message)
