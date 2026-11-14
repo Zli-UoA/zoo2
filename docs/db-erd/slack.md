@@ -23,9 +23,9 @@ erDiagram
       text token_user_id
       timestamptz last_synced_at
       text last_error
-      timestamptz not_before
       timestamptz created_at
       timestamptz updated_at
+      timestamptz not_before
     }
     slack_channel_syncs |o--o| slack_channels : slack_channel_syncs_channel_fkey
     slack_channel_wakes {

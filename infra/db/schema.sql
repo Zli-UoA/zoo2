@@ -1832,9 +1832,9 @@ CREATE TABLE slack_channel_syncs (
   token_user_id text,
   last_synced_at timestamptz,
   last_error text,
-  not_before timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
+  not_before timestamptz,
   PRIMARY KEY (team_id, slack_channel_id),
   CONSTRAINT slack_channel_syncs_phase_check CHECK (phase IN ('history', 'threads')),
   CONSTRAINT slack_channel_syncs_channel_fkey

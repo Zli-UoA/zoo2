@@ -526,3 +526,60 @@ async fn test_wake_does_not_override_a_backoff() -> anyhow::Result<()> {
     assert_eq!(wakes(&f.state, &f.team, "C1").await, 1);
     Ok(())
 }
+
+async fn history_calls(slack: &MockServer) -> usize {
+    slack
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/conversations.history")
+        .count()
+}
+
+#[tokio::test]
+async fn test_wake_is_kept_while_a_run_resumes_and_starts_one_more_sync() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET)).await?;
+    // 途中まで進んだ同期 (`running`) の続き。再開では合図を消さない
+    let (status, _) = post_event(
+        &f.app,
+        SECRET,
+        now_secs(),
+        &message_event(&f.team, "C1", &f.ts_new, None),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs t SET running=true,phase='history',run_oldest=sc.last_ts,available_at=now(),\
+         last_synced_at=now()-interval '1 hour',lease_token=NULL,lease_until=NULL,not_before=NULL \
+         FROM slack_channels sc WHERE t.team_id=$1 AND sc.team_id=t.team_id AND sc.slack_channel_id=t.slack_channel_id \
+         RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    drain(&f.state).await;
+    assert_eq!(
+        history_calls(&f.slack).await,
+        1,
+        "the resumed run reads the history"
+    );
+    assert_eq!(count_messages(&f.state, &f.channel).await, 1);
+    // 再開の途中では消えなかった合図が、終わった同期のあとに残っている
+    assert_eq!(wakes(&f.state, &f.team, "C1").await, 1);
+
+    // 終わった同期から 30 秒たてば、その合図でもう 1 回同期する
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET last_synced_at=now()-interval '1 minute',available_at=now()+interval '1 hour' \
+         WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    drain(&f.state).await;
+    assert_eq!(history_calls(&f.slack).await, 2);
+    assert_eq!(wakes(&f.state, &f.team, "C1").await, 0);
+    Ok(())
+}
