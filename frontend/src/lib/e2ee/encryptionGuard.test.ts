@@ -59,7 +59,6 @@ describe("encryptionSendState", () => {
   });
 
   it("記録、edm: の名前、暗号文のある行のどれかで格下げとして扱う", () => {
-    expect(encryptionSendState({ ...base, encrypted: false, known: true }).downgraded).toBe(true);
     expect(
       encryptionSendState({ ...base, encrypted: false, known: false, channelName: "edm:a:b" })
         .downgraded,
@@ -68,6 +67,23 @@ describe("encryptionSendState", () => {
       encryptionSendState({ ...base, encrypted: false, known: false, hasCiphertext: true })
         .downgraded,
     ).toBe(true);
+    // 記録で分かったチャンネルは覚えるので、最後に確かめる。
+    expect(encryptionSendState({ ...base, encrypted: false, known: true }).downgraded).toBe(true);
+  });
+
+  it("暗号ストアの記録で暗号化と分かったチャンネルは、暗号ストアのないタブにも覚えさせる", () => {
+    const values = stubLocalStorage();
+    expect(encryptionSendState({ ...base, encrypted: false, known: true }).downgraded).toBe(true);
+    expect(values.get(`${ENCRYPTED_CHANNEL_STORAGE_PREFIX}c1`)).toBe("1");
+    // 開き直した、暗号ストアを開いていないタブ。
+    resetSeenEncryptedChannels();
+    expect(encryptionSendState({ ...base, encrypted: false, known: "unavailable" })).toEqual({
+      downgraded: true,
+      checking: false,
+    });
+    // 記録がないと分かっただけなら、覚えない。
+    encryptionSendState({ ...base, channelId: "c2", encrypted: false, known: false });
+    expect(values.has(`${ENCRYPTED_CHANNEL_STORAGE_PREFIX}c2`)).toBe(false);
   });
 
   it("記録の問い合わせの応答待ちと失敗のあいだは、平文でも送らない", () => {
