@@ -958,6 +958,7 @@ async fn test_woken_channels_are_claimed_before_channels_that_are_merely_due() -
     Ok(())
 }
 
+#[tokio::test]
 async fn test_a_running_channel_with_a_ripe_wake_is_not_put_first() -> anyhow::Result<()> {
     let _serial = SERIAL.lock().await;
     let f = fixture(Some(SECRET)).await?;
