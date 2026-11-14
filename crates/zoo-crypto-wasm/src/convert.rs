@@ -56,6 +56,7 @@ pub(crate) fn crypto_error(e: CryptoError) -> JsValue {
         CryptoError::BackupDecryption(_) => "BackupDecryption",
         CryptoError::Rejected(_) => "Rejected",
         CryptoError::ServerKeyMismatch(_) => "ServerKeyMismatch",
+        CryptoError::RevocationRestart => "RevocationRestart",
         _ => "Unknown",
     };
     let error = error(code, &e.to_string());

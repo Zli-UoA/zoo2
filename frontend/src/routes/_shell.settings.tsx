@@ -5,6 +5,7 @@ export const SETTINGS_TABS = [
   "general",
   "call",
   "encryption",
+  "devices",
   "apps",
   "members",
   "activitypub",

@@ -13,7 +13,10 @@ vi.mock("../../lib/offline/offline-context", () => ({
 }));
 vi.mock("../../lib/oidc/session", () => ({ getOidcClient: () => null }));
 
-function e2ee(pendingBackupCount: E2eeContextValue["pendingBackupCount"]) {
+function e2ee(
+  pendingBackupCount: E2eeContextValue["pendingBackupCount"],
+  revocationPending: E2eeContextValue["revocationPending"] = async () => false,
+) {
   const cancelLogout = vi.fn();
   const clearForLogout = vi.fn(async () => {});
   const value: E2eeContextValue = {
@@ -23,6 +26,8 @@ function e2ee(pendingBackupCount: E2eeContextValue["pendingBackupCount"]) {
     roomKeysVersion: 0,
     userId: null,
     pendingBackupCount,
+    revocationPending,
+    deviceLimit: null,
     cancelLogout,
     requestKeyBackup: vi.fn(),
     clearForLogout,
@@ -69,4 +74,42 @@ it("does not cancel when nothing was started", () => {
   const { value, cancelLogout } = e2ee(async () => 0);
   renderButton(value).unmount();
   expect(cancelLogout).not.toHaveBeenCalled();
+});
+
+it("cancels the suspended logout when an unfinished revocation warning is dismissed", async () => {
+  const pendingBackupCount = vi.fn(async () => 0);
+  const { value, cancelLogout, clearForLogout } = e2ee(pendingBackupCount, async () => true);
+  renderButton(value);
+  await userEvent.click(screen.getByRole("button", { name: "ログアウト" }));
+  await screen.findByText("失効が終わっていません");
+  await userEvent.keyboard("{Escape}");
+  expect(cancelLogout).toHaveBeenCalledTimes(1);
+  expect(pendingBackupCount).not.toHaveBeenCalled();
+  expect(clearForLogout).not.toHaveBeenCalled();
+});
+
+it("continues to the key count after confirming the unfinished revocation warning", async () => {
+  const pendingBackupCount = vi.fn(async () => 2);
+  const { value, cancelLogout } = e2ee(pendingBackupCount, async () => true);
+  renderButton(value);
+  await userEvent.click(screen.getByRole("button", { name: "ログアウト" }));
+  await screen.findByText("失効が終わっていません");
+  await userEvent.click(screen.getByRole("button", { name: "ログアウトする" }));
+  expect(pendingBackupCount).toHaveBeenCalledTimes(1);
+  // 確かめてダイアログが閉じても、取りやめとは扱わない。
+  expect(cancelLogout).not.toHaveBeenCalled();
+});
+
+it("warns before logging out when the unfinished revocation check fails", async () => {
+  const pendingBackupCount = vi.fn(async () => 0);
+  const { value, cancelLogout, clearForLogout } = e2ee(pendingBackupCount, async () => {
+    throw new Error("worker unavailable");
+  });
+  renderButton(value);
+  await userEvent.click(screen.getByRole("button", { name: "ログアウト" }));
+  await screen.findByText("失効が終わっていません");
+  expect(pendingBackupCount).not.toHaveBeenCalled();
+  expect(clearForLogout).not.toHaveBeenCalled();
+  await userEvent.keyboard("{Escape}");
+  expect(cancelLogout).toHaveBeenCalledTimes(1);
 });
