@@ -1,9 +1,7 @@
 //! `input.tsx` と `input-styles.ts`。見た目だけの枠で、入力処理 (IME など) は持たない。
 //! 既存の `input.rs` (テキスト入力) を中に入れるときは、`child` に渡す。
 
-use gpui::{
-    AnyElement, App, FocusHandle, SharedString, StyleRefinement, Window, div, prelude::*, px,
-};
+use gpui::{AnyElement, App, SharedString, StyleRefinement, Window, div, prelude::*, px};
 
 use super::{Palette, TextSpec, alpha, palette, ring};
 use crate::fonts;
@@ -77,7 +75,6 @@ pub struct Input {
     value: Option<SharedString>,
     placeholder: Option<SharedString>,
     state: FieldState,
-    focus_handle: Option<FocusHandle>,
     children: Vec<AnyElement>,
     style: StyleRefinement,
 }
@@ -88,7 +85,6 @@ impl Input {
             value: None,
             placeholder: None,
             state: FieldState::default(),
-            focus_handle: None,
             children: Vec::new(),
             style: StyleRefinement::default(),
         }
@@ -109,15 +105,11 @@ impl Input {
         self
     }
 
-    /// `focus-visible` の見た目を常に出す。
+    /// `focus-visible` の見た目 (枠の色と輪) を出す。呼び出し側が、中の入力欄にフォーカスがあるかを
+    /// render で調べて渡す。同じ FocusHandle を枠でも `track_focus` すると、tab stop と
+    /// フォーカスの経路が二重になるので、枠はフォーカスを持たない。
     pub fn focused(mut self, focused: bool) -> Self {
         self.state.focused = focused;
-        self
-    }
-
-    /// 実際のフォーカスで枠と輪を出す。
-    pub fn focus_handle(mut self, handle: &FocusHandle) -> Self {
-        self.focus_handle = Some(handle.clone());
         self
     }
 }
@@ -151,12 +143,6 @@ impl RenderOnce for Input {
         let mut frame = input_frame(&p, self.state)
             .children(shown)
             .children(self.children);
-        if let Some(handle) = self.focus_handle.as_ref() {
-            let ring_color = alpha(t.ring, 0.5);
-            frame = frame
-                .track_focus(handle)
-                .focus(move |s| s.border_color(t.ring).shadow(vec![ring(ring_color, 3.0)]));
-        }
         frame.style().refine(&self.style);
         frame
     }

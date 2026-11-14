@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use gpui::{App, SharedString, Window, div, prelude::*};
+use gpui::{App, FocusHandle, SharedString, Window, div, prelude::*};
 
 use super::alert_dialog::AlertDialog;
 use super::button::{Button, ButtonVariant};
@@ -22,6 +22,8 @@ pub struct ConfirmActionDialog {
     error: Option<SharedString>,
     on_confirm: Option<Handler>,
     on_cancel: Option<Handler>,
+    cancel_focus: Option<FocusHandle>,
+    confirm_focus: Option<FocusHandle>,
 }
 
 impl ConfirmActionDialog {
@@ -46,7 +48,21 @@ impl ConfirmActionDialog {
             error: None,
             on_confirm: None,
             on_cancel: None,
+            cancel_focus: None,
+            confirm_focus: None,
         }
+    }
+
+    /// 取り消しボタンのフォーカス。Tab と Enter / Space で操作するときに結ぶ。
+    pub fn cancel_focus(mut self, handle: &FocusHandle) -> Self {
+        self.cancel_focus = Some(handle.clone());
+        self
+    }
+
+    /// 確定ボタンのフォーカス。
+    pub fn confirm_focus(mut self, handle: &FocusHandle) -> Self {
+        self.confirm_focus = Some(handle.clone());
+        self
     }
 
     pub fn pending(mut self, pending: bool) -> Self {
@@ -90,12 +106,18 @@ impl RenderOnce for ConfirmActionDialog {
         if let Some(h) = self.on_cancel {
             cancel = cancel.on_click(move |_, w, cx| h(w, cx));
         }
+        if let Some(handle) = self.cancel_focus.as_ref() {
+            cancel = cancel.focus_handle(handle);
+        }
         let mut confirm = Button::new(SharedString::from(format!("{}-ok", self.id)))
             .variant(ButtonVariant::Destructive)
             .label(label)
             .disabled(self.pending);
         if let Some(h) = self.on_confirm {
             confirm = confirm.on_click(move |_, w, cx| h(w, cx));
+        }
+        if let Some(handle) = self.confirm_focus.as_ref() {
+            confirm = confirm.focus_handle(handle);
         }
         let destructive = p.t.destructive;
         let mut dialog = AlertDialog::new(self.title).description(self.description);
