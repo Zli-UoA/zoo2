@@ -283,6 +283,7 @@ async fn apply(
             .filter_map(|r| reaction_emoji(&r.reaction))
             .collect();
         if wanted.iter().any(|emoji| truncated(&reactions, emoji)) {
+            let position = slack.position();
             match slack
                 .get(
                     "reactions.get",
@@ -300,7 +301,10 @@ async fn apply(
                     // 追加の処理にも、取り直した完全な一覧を使う (`users` が省略された追加者を取りこぼさない)
                     full_reactions = Some(reactions.clone());
                 }
-                Err(e @ (SyncError::RateLimited(_) | SyncError::NoAccess(_))) => return Err(e),
+                Err(e @ SyncError::RateLimited(_)) => return Err(e),
+                // `reactions:read` がないトークンだけのときなど、この補完の取得だけが読めない。チャンネル全体の履歴は読めるので、
+                // 同期は続ける (確かめられないので削除は反映せず、ヒントを残す)。トークンの位置は戻す
+                Err(SyncError::NoAccess(_)) => slack.set_position(position),
                 Err(_) => {}
             }
         }
@@ -382,8 +386,20 @@ async fn apply(
             match existing {
                 None => {
                     if has("reply") && message.is_importable() {
-                        insert_message(&mut tx, ctx, slack_channel, zoo_channel, "", message)
-                            .await?;
+                        // `users` が省略されていたら、取り直した完全なリアクションの一覧で入れる
+                        let full = full_reactions.as_ref().map(|reactions| SlackMessage {
+                            reactions: reactions.clone(),
+                            ..message.clone()
+                        });
+                        insert_message(
+                            &mut tx,
+                            ctx,
+                            slack_channel,
+                            zoo_channel,
+                            "",
+                            full.as_ref().unwrap_or(message),
+                        )
+                        .await?;
                     }
                 }
                 Some(row) if row["deleted"] == true => {}
