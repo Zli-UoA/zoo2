@@ -1174,10 +1174,10 @@
     "reunlockToAddDescription": "Unlock again with a passkey or your recovery key to add a passkey or regenerate the recovery key. This device stays unlocked either way.",
     "badge": "Encrypted",
     "encryptChannel": "Encrypt end-to-end",
-    "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "encryptChannelHelp": "Only members' verified devices can read messages. Encryption can't be turned off later.",
     "encryptChannelPrivateOnly": "Only private channels can be encrypted.",
     "encryptDm": "Encrypt end-to-end",
-    "encryptDmHelp": "Only participants' verified devices can read messages. Encryption can't be turned off later, and attachments can't be sent yet.",
+    "encryptDmHelp": "Only participants' verified devices can read messages. Encryption can't be turned off later.",
     "undecryptable": {
       "keyMissing": "Waiting for the key to decrypt this message.",
       "locked": "Unlock encryption on this device to read this message.",
@@ -1355,6 +1355,11 @@
     },
     "resetDevicesTitle": "Choose devices to delete",
     "resetDevicesDescription": "Select unfamiliar devices to delete them. If someone else set up encryption for your account, you must finish this choice before the reset completes so the attacker's devices are not left behind.",
-    "resetDevicesConfirm": "I selected unfamiliar devices (or confirmed there are none)"
+    "resetDevicesConfirm": "I selected unfamiliar devices (or confirmed there are none)",
+    "attachments": {
+      "encrypted": "Encrypted",
+      "decryptFailed": "Couldn't decrypt the attachment. Its contents may have been altered.",
+      "blocked": "This file type is blocked for safety"
+    }
   }
 }

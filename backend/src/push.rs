@@ -756,6 +756,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
                             user_ids: vec!["00000000-0000-4000-8000-000000000001".into()],
                             ..Mentions::default()
                         },
+                        attachments: Vec::new(),
                     },
                 )
                 .unwrap();

@@ -66,12 +66,33 @@ export interface SessionRef { channel_id: string; sender_key: string; session_id
 export interface PickledOlmSession { session_id: string; their_identity_key: string; pickle: string }
 export interface MessageContent { body: string; format: string; kind: string }
 export interface Mentions { user_ids: string[]; channel: boolean; here: boolean }
+/** Matrix の EncryptedFile から url を除いたもの（#364）。 */
+export interface EncryptedFile {
+  v: "v2";
+  key: { kty: "oct"; key_ops: string[]; alg: "A256CTR"; k: string; ext: true };
+  iv: string;
+  hashes: { sha256: string; [name: string]: string };
+}
+/** Megolm で暗号化する平文に入れる、1 つの添付（#364）。 */
+export interface AttachmentInfo {
+  attachment_id: string;
+  name: string;
+  mimetype: string;
+  size: number;
+  width?: number;
+  height?: number;
+  sensitive?: boolean;
+  file: EncryptedFile;
+}
+/** encryptAttachment の結果。ciphertext を S3 に上げ、file を AttachmentInfo.file に入れる。 */
+export interface EncryptedAttachment { ciphertext: Uint8Array; file: EncryptedFile }
 export interface OutgoingMessage {
   message_id: string;
   parent_id?: string | null;
   revision: number;
   content: MessageContent;
   mentions?: Mentions;
+  attachments?: AttachmentInfo[];
 }
 export interface EncryptedMessage {
   channel_id: string;
@@ -92,6 +113,7 @@ export interface MessagePayload {
   revision: number;
   content: MessageContent;
   mentions: Mentions;
+  attachments?: AttachmentInfo[];
 }
 export type RevisionStatus =
   | { status: "latest" }
@@ -203,6 +225,9 @@ export interface ZooCryptoConstants {
   RECOVERY_KEY_CHARS: number;
   BACKUP_ALGORITHM: string;
   MAX_UPLOAD_SESSIONS: number;
+  ENCRYPTED_ATTACHMENT_FILE_NAME: string;
+  ENCRYPTED_ATTACHMENT_CONTENT_TYPE: string;
+  MAX_ATTACHMENTS: number;
 }
 "#;
 
@@ -227,7 +252,37 @@ pub fn constants() -> Result<JsValue, JsValue> {
         "RECOVERY_KEY_CHARS": core::RECOVERY_KEY_CHARS,
         "BACKUP_ALGORITHM": core::BACKUP_ALGORITHM,
         "MAX_UPLOAD_SESSIONS": core::MAX_UPLOAD_SESSIONS,
+        "ENCRYPTED_ATTACHMENT_FILE_NAME": core::ENCRYPTED_ATTACHMENT_FILE_NAME,
+        "ENCRYPTED_ATTACHMENT_CONTENT_TYPE": core::ENCRYPTED_ATTACHMENT_CONTENT_TYPE,
+        "MAX_ATTACHMENTS": core::MAX_ATTACHMENTS,
     }))
+}
+
+/// 添付の中身を、新しい鍵と IV の AES-256-CTR で暗号化する（#364）。
+///
+/// `ciphertext` を S3 にアップロードし、`file` を `AttachmentInfo.file` に入れて Megolm で暗号化して送る。
+#[wasm_bindgen(js_name = encryptAttachment, unchecked_return_type = "EncryptedAttachment")]
+pub fn encrypt_attachment(plaintext: &[u8]) -> Result<JsValue, JsValue> {
+    let encrypted = core::encrypt_attachment(plaintext);
+    let result = js_sys::Object::new();
+    convert::set(
+        &result,
+        "ciphertext",
+        &js_sys::Uint8Array::from(encrypted.ciphertext.as_slice()).into(),
+    )?;
+    convert::set(&result, "file", &to_js(&encrypted.file)?)?;
+    Ok(result.into())
+}
+
+/// S3 から取得した暗号文のハッシュを確かめてから復号する（#364）。合わなければ投げる
+/// （`code` は `AttachmentDecryption`、`file` の形式の誤りは `InvalidPayload`）。
+#[wasm_bindgen(js_name = decryptAttachment)]
+pub fn decrypt_attachment(
+    #[wasm_bindgen(unchecked_param_type = "EncryptedFile")] file: JsValue,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    let file: core::EncryptedFile = from_js(&file, "file")?;
+    core::decrypt_attachment(&file, ciphertext).js()
 }
 
 /// Matrix と同じ Canonical JSON の文字列にする。

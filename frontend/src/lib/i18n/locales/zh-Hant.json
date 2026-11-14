@@ -1174,10 +1174,10 @@
     "reunlockToAddDescription": "若要新增通行金鑰或重新產生復原金鑰，請使用通行金鑰或復原金鑰重新解鎖。此裝置的解鎖狀態不會改變。",
     "badge": "已加密",
     "encryptChannel": "端對端加密",
-    "encryptChannelHelp": "只有成員已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",
+    "encryptChannelHelp": "只有成員已驗證的裝置才能讀取訊息。加密之後無法取消。",
     "encryptChannelPrivateOnly": "只有私人頻道可以加密。",
     "encryptDm": "端對端加密",
-    "encryptDmHelp": "只有參與者已驗證的裝置才能讀取訊息。加密之後無法取消，目前也還不能傳送附件。",
+    "encryptDmHelp": "只有參與者已驗證的裝置才能讀取訊息。加密之後無法取消。",
     "undecryptable": {
       "keyMissing": "解密此訊息的金鑰尚未送達。",
       "locked": "在此裝置上解鎖加密後即可讀取此訊息。",
@@ -1355,6 +1355,11 @@
     },
     "resetDevicesTitle": "選擇要刪除的裝置",
     "resetDevicesDescription": "請選擇陌生的裝置並刪除。若有他人為你的帳號設定了加密，必須完成此選擇才能完成重設，以免留下攻擊者的裝置。",
-    "resetDevicesConfirm": "我已選擇陌生的裝置（若沒有，已確認）"
+    "resetDevicesConfirm": "我已選擇陌生的裝置（若沒有，已確認）",
+    "attachments": {
+      "encrypted": "已加密",
+      "decryptFailed": "無法解密附件。內容可能已被更改。",
+      "blocked": "基於安全考量，無法開啟此類檔案"
+    }
   }
 }
