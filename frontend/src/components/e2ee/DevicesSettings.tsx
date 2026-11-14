@@ -30,6 +30,7 @@ import {
 } from "../../lib/e2ee/revocationController";
 import { type E2eeSetupDeps, ServerKeyMismatchError } from "../../lib/e2ee/setupController";
 import { accountRevocationUrls } from "../../lib/oidc/accountUrl";
+import { NOT_READY_STARTING as STARTING } from "../../lib/e2ee/notReady";
 import {
   DeviceLimitView,
   type DevicesErrorCode,
@@ -220,7 +221,7 @@ function DevicesPanel() {
     async (): Promise<boolean> => {
       const seq = ++loadSeq.current;
       if (!deps) {
-        setState({ step: "unavailable" });
+        setState({ step: "unavailable", reason: STARTING });
         return true;
       }
       try {
@@ -554,7 +555,12 @@ function DevicesPanel() {
       : undefined,
   };
 
+  // 暗号ストアを開けていない理由は、開くまでのあいだにも変わる。表示のときに今の理由を入れる。
   const viewState =
-    state.step === "ready" ? { ...state, passkeyAvailable: rpId !== null && prfSupported } : state;
+    state.step === "ready"
+      ? { ...state, passkeyAvailable: rpId !== null && prfSupported }
+      : state.step === "unavailable"
+        ? { ...state, reason: e2ee.notReadyReason ?? STARTING }
+        : state;
   return <DevicesSettingsView state={viewState} handlers={handlers} />;
 }
