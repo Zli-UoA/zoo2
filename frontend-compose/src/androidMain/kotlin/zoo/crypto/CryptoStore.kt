@@ -699,6 +699,88 @@ class CryptoStore private constructor(
     }
 
     /**
+     * 暗号ストアを消さずに、端末だけを作り直す（サーバーから端末が消されたと確かめたとき。docs/e2ee.md の
+     * 「端末が削除されていたとき」）。新しい端末アカウント（新しい `device_id`、ワンタイム鍵とフォールバック鍵。未登録）を
+     * 作り、ユーザーに属する記録を引き継いだ新しい暗号ストアを返す。このストアは閉じる（ディレクトリーの印は、
+     * 返すストアに引き継ぐ）。
+     *
+     * - 引き継ぐ：配布先の判定の記録（TrustStore）と、受信用セッションのすべて（鍵バックアップの送信待ちの印も
+     *   そのまま）。どれも封の AAD に `device_id` が入るので、保存したものを古い端末アカウントで開き、新しい端末
+     *   アカウントで封をし直す。開けない受信用セッション（壊れたもの）は捨てる。鍵バックアップの送信の状態
+     *   （見た版の最大。版の巻き戻しの検出に使う）も残す。
+     * - 捨てる：Olm セッション（古い端末の鍵に結び付く）、処理済みの to-device の ID、解錠した自分の鍵と
+     *   `secrets_revision`（利用者が解錠し直す。別の端末からわざと消された端末が、自分の鍵で新しい端末に勝手に
+     *   署名しないため）、鍵バックアップからの取り込みの進み具合。
+     *
+     * `state.json` は 1 回の書き込みで置き換えるので、途中で止まっても、前の端末か新しい端末のどちらかが残る。
+     * 書けなければ、このストアはそのまま（開いたまま）にして例外を投げる。古い端末の削除 API は呼ばない
+     * （サーバーはもう消したと言っている）。
+     */
+    @Synchronized
+    fun replaceDevice(): CryptoStore {
+        check(!closed) { "暗号ストアは閉じています" }
+        val opened = mutableListOf<AutoCloseable>()
+        val key = storageKey.copyOf()
+        try {
+            val newAccount = DeviceAccount(state.userId, UUID.randomUUID().toString()).also(opened::add)
+            newAccount.generateOneTimeKeys(newAccount.maxNumberOfOneTimeKeys())
+            newAccount.generateFallbackKey()
+            // 保存したもの（メモリーの記録ではなく）を、古い端末で開いて新しい端末で封をし直す。
+            val newTrust =
+                (state.trustStore?.let { TrustStore.fromPickle(it, account, key) } ?: TrustStore(state.userId))
+                    .also(opened::add)
+            val sessions = InboundSessionStore().also(opened::add)
+            val resealed = mutableMapOf<String, StoredInboundSession>()
+            for ((_, stored) in state.inboundSessions) {
+                val ref =
+                    try {
+                        sessions.restoreSession(account, stored.pickle, key)
+                    } catch (_: ZooCryptoException) {
+                        // 開けない（壊れた）セッションは捨てる。
+                        continue
+                    }
+                val pickle = sessions.pickleSession(newAccount, ref, key) ?: continue
+                resealed[inboundKey(ref)] = StoredInboundSession(pickle, backedUp = stored.backedUp)
+            }
+            // 見た版の最大と送信待ちは残し、解錠とともに捨てる secrets_revision だけを外す。
+            val backupUpload =
+                state.backupUpload?.let { saved ->
+                    try {
+                        BackupUploadState.fromJson(saved, state.userId).use {
+                            it.setSecretsRevision(null)
+                            it.toJson()
+                        }
+                    } catch (_: ZooCryptoException) {
+                        null
+                    }
+                }
+            val next =
+                StoreState(
+                    version = STATE_VERSION,
+                    userId = state.userId,
+                    deviceId = newAccount.deviceId(),
+                    account = newAccount.pickle(key),
+                    inboundSessions = resealed,
+                    trustStore = newTrust.pickle(newAccount, key),
+                    backupUpload = backupUpload,
+                )
+            val replacement =
+                CryptoStore(
+                    directory, key, newAccount, OlmSessionStore().also(opened::add), sessions, newTrust, next,
+                    deleteWrappingKey,
+                )
+            replacement.save()
+            // 新しいストアに引き継いだので、ディレクトリーの印は外さずに、このストアのものだけを手放す。
+            releaseResources()
+            return replacement
+        } catch (failure: Throwable) {
+            opened.forEach { it.close() }
+            key.fill(0)
+            throw failure
+        }
+    }
+
+    /**
      * 暗号ストアを消す（ログアウト）。先に保存鍵を包む鍵を消し、失敗してもファイルの削除を試す
      * （React の `destroyCryptoStore` と同じ順）。消し切れなかったら最初の例外を投げる。
      *
