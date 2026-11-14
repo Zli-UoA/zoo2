@@ -109,6 +109,7 @@ function renderPanel() {
     status: "ready" as E2eeContextValue["status"],
     deviceId: DEVICE,
     worker,
+    notReadyReason: null,
     userId: "u0",
     roomKeysVersion: 0,
     pendingBackupCount: async () => 0,
