@@ -179,6 +179,7 @@ export class OidcClient {
   /** One-use, memory-only hint for a logout whose durable cleanup must be retried. */
   private pendingLogoutOperation: { generation: number; idTokenHint: string | null } | null = null;
   private refreshPromise: Promise<OidcTokens> | null = null;
+  private loginPreparation: object | null = null;
   private callbackRequest: { url: string; promise: Promise<{ returnTo: string }> } | null = null;
   /** login/logout と進行中の refresh/callback の競合を検知する認証操作世代。 */
   private generation = 0;
@@ -324,10 +325,25 @@ export class OidcClient {
 
   /** authorize エンドポイントへリダイレクトする。戻り値はテスト用の URL。 */
   async login(returnTo?: string): Promise<string> {
+    const preparation = {};
+    this.loginPreparation = preparation;
+    try {
+      return await this.performLogin(returnTo);
+    } finally {
+      if (this.loginPreparation === preparation) this.loginPreparation = null;
+    }
+  }
+
+  private async performLogin(returnTo?: string): Promise<string> {
     // A login supersedes any older login/logout navigation and invalidates
     // refresh or callback work started by the previous auth operation.
     this.discardPendingLogoutOperation();
     const generation = ++this.generation;
+    // An in-flight refresh may already have consumed its rotating token.
+    // Never send that token a second time after superseding the refresh.
+    if (this.refreshPromise && this.tokens) {
+      this.tokens = { ...this.tokens, refreshToken: null };
+    }
     this.refreshPromise = null;
     this.callbackRequest = null;
     let endpoints: OidcEndpoints;
@@ -386,6 +402,7 @@ export class OidcClient {
 
   /** Discard an authorization attempt when its page is restored from bfcache. */
   cancelPendingLogin(): void {
+    this.loginPreparation = null;
     this.generation += 1;
     this.reauthorizeRequested = false;
   }
@@ -511,6 +528,7 @@ export class OidcClient {
    * 使えるようトークンを返す。期限を過ぎていればキャッシュを捨てて null を返す。
    */
   async getAccessToken(): Promise<string | null> {
+    if (this.loginPreparation) return null;
     const tokens = this.tokens;
     if (!tokens) {
       return null;
@@ -550,6 +568,7 @@ export class OidcClient {
   }
 
   resetSession(): void {
+    this.loginPreparation = null;
     this.discardPendingLogoutOperation();
     this.generation += 1;
     this.tokens = null;
@@ -613,6 +632,7 @@ export class OidcClient {
    * できない場合はページを離れず、AuthGate に再試行画面を出させる。
    */
   async logout(): Promise<void> {
+    this.loginPreparation = null;
     const currentIdTokenHint = this.tokens?.idToken ?? null;
     const generation = ++this.generation;
     const previousLogoutOperation = this.pendingLogoutOperation;

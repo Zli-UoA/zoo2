@@ -370,6 +370,12 @@ describe("AuthGate session recovery", () => {
           void harness.client.logout();
         });
         expect(container.textContent).toContain("auth.logoutStorageFailed");
+        await flush(() => {
+          const event = new Event("pageshow");
+          Object.defineProperty(event, "persisted", { value: true });
+          window.dispatchEvent(event);
+        });
+        expect(container.textContent).toContain("auth.logoutStorageFailed");
         if (failure === "storage read failure") storageGate.deny("getItem");
         const api = createApiClient({ fetch: async () => new Response("", { status: 401 }) });
         await act(async () => {

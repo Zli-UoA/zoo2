@@ -810,6 +810,61 @@ describe("OidcClient.getAccessToken", () => {
     expect(harness.client.hasSession).toBe(false);
   });
 
+  it("does not reuse a refreshing token while login is preparing", async () => {
+    let releaseRefresh!: () => void;
+    let releaseDigest!: (digest: ArrayBuffer) => void;
+    let digestStarted!: () => void;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const digestGate = new Promise<ArrayBuffer>((resolve) => {
+      releaseDigest = resolve;
+    });
+    const digestReady = new Promise<void>((resolve) => {
+      digestStarted = resolve;
+    });
+    const harness = createHarness({
+      token: async (body, nonce) => {
+        if (body.get("grant_type") === "refresh_token") {
+          await refreshGate;
+          return { access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 };
+        }
+        return {
+          access_token: "access-1",
+          refresh_token: "refresh-1",
+          id_token: idToken({ nonce }),
+          expires_in: 10,
+        };
+      },
+    });
+    await completeLogin(harness);
+    harness.advance(11_000);
+    const refreshing = harness.client.getAccessToken();
+    await vi.waitFor(() => expect(harness.refreshCalls()).toHaveLength(1));
+    const digest = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(async () => {
+      digestStarted();
+      return await digestGate;
+    });
+    try {
+      const login = harness.client.login();
+      await digestReady;
+      const access = harness.client.getAccessToken();
+      await Promise.resolve();
+      expect(harness.refreshCalls()).toHaveLength(1);
+      releaseRefresh();
+      releaseDigest(new Uint8Array(32).buffer);
+      await expect(refreshing).resolves.toBeNull();
+      await expect(access).resolves.toBeNull();
+      await expect(login).resolves.toContain("/ui/oauth2");
+      await expect(harness.client.getAccessToken()).resolves.toBeNull();
+      expect(harness.refreshCalls()).toHaveLength(1);
+    } finally {
+      releaseRefresh();
+      releaseDigest(new Uint8Array(32).buffer);
+      digest.mockRestore();
+    }
+  });
+
   it("does not let an old refresh failure clear a newly authenticated session", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {

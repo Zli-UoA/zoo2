@@ -333,6 +333,7 @@ function WebAuthGate({ children }: { children: ReactNode }) {
               }
             }
           } catch (cause) {
+            if (logoutBlocked.current) return;
             loginInProgress.current = false;
             authRecoveryPending.current = true;
             setError(describeAuthError(cause));
