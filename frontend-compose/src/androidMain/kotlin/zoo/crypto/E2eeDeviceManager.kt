@@ -256,6 +256,12 @@ class E2eeDeviceManager(
     /** 登録の要求が成功したと分かった端末（ログアウトで、404 を消えたものとしてよいか決める）。 */
     private val confirmedRegistrations: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
+    /**
+     * この manager がすでに 404 を数えた端末。[runOnce] は失敗のたびにやり直すので、ログインごとに
+     * 1 回だけ数える（同じログインの試し直しで上限に達して、削除待ちを早く外さないため）。
+     */
+    private val countedNotFound: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     /** 保存鍵を失って作り直した前の端末（ログアウトでも消す）。 */
     private val replacedDevices = mutableListOf<PendingDeviceDeletion>()
 
@@ -499,8 +505,10 @@ class E2eeDeviceManager(
             outcome == DeleteOutcome.DELETED -> forget(current)
             outcome == DeleteOutcome.NOT_FOUND && !current.unconfirmed -> forget(current)
             outcome == DeleteOutcome.NOT_FOUND ->
-                if (current.notFound + 1 >= MAX_NOT_FOUND) forget(current)
-                else pendingWrite { pending.update(current.copy(notFound = current.notFound + 1)) }
+                if (countedNotFound.add(current.deviceId)) {
+                    if (current.notFound + 1 >= MAX_NOT_FOUND) forget(current)
+                    else pendingWrite { pending.update(current.copy(notFound = current.notFound + 1)) }
+                }
             else -> Unit
         }
     }

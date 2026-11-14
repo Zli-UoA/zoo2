@@ -213,6 +213,19 @@ class E2eeDeviceManagerTest {
     }
 
     @Test
+    fun notFoundIsCountedOncePerLogin() = managerTest {
+        val stale = "00000000-0000-4000-8000-0000000000d9"
+        pending.add(PendingDeviceDeletion(SERVER, BOB, stale, unconfirmed = true))
+        api.missing += stale
+        // 同じログインの中で、登録が 2 回失敗して初めからやり直す（そのたびに削除待ちを消し直す）。
+        api.registerTimeouts = 2
+        manager().start()
+        advanceUntilIdle()
+        assertEquals(3, api.registerAttempts)
+        assertEquals(listOf(PendingDeviceDeletion(SERVER, BOB, stale, unconfirmed = true, notFound = 1)), pending.all())
+    }
+
+    @Test
     fun requestTimeoutBacksOffAndRetries() = managerTest {
         api.registerTimeouts = 1
         val manager = manager()
