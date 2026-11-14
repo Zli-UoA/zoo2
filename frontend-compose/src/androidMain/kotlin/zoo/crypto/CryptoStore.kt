@@ -314,15 +314,32 @@ class CryptoStore private constructor(
     /**
      * 暗号ストアを消す（ログアウト）。先に保存鍵を包む鍵を消し、失敗してもファイルの削除を試す
      * （React の `destroyCryptoStore` と同じ順）。消し切れなかったら最初の例外を投げる。
+     *
+     * 消し終えるまでディレクトリーを開いたままの印にしておき、ほかの処理がそのあいだに開き直した
+     * ストアを消さないようにする（静的な [destroy] と同じ）。
      */
     @Synchronized
     fun destroy() {
-        close()
-        destroyFiles(directory, deleteWrappingKey)
+        val path = directory.canonicalPath
+        // 閉じたあとなら、印を取り直す（ほかの処理が開いていれば消さない）。
+        if (closed && !openDirectories.add(path)) throw CryptoStoreBusyException()
+        try {
+            releaseResources()
+            destroyFiles(directory, deleteWrappingKey)
+        } finally {
+            openDirectories.remove(path)
+        }
     }
 
     @Synchronized
     override fun close() {
+        if (closed) return
+        releaseResources()
+        openDirectories.remove(directory.canonicalPath)
+    }
+
+    /** 保存鍵と FFI のオブジェクトを手放す。ディレクトリーの印は外さない。 */
+    private fun releaseResources() {
         if (closed) return
         closed = true
         storageKey.fill(0)
@@ -330,7 +347,6 @@ class CryptoStore private constructor(
         olmSessions.close()
         inbound.close()
         trust.close()
-        openDirectories.remove(directory.canonicalPath)
     }
 
     private fun save() {
@@ -355,8 +371,9 @@ class CryptoStore private constructor(
          * `create` が偽でなければ `null` を返す（ログアウトで、なければ作らずに済ませるため）。
          *
          * 保存鍵を失った（ファイルがない、包む鍵が消えた・失効した、壊れた）ときは、どの値も読めないので
-         * 作り直して新しい端末にする。前の端末の ID は `state.json` にしかないので、消す前に
-         * [rememberReplaced] に渡す（削除待ちに残し、作り直しが途中で失敗しても消せるように）。
+         * 作り直して新しい端末にする。前の端末の ID と登録済みか（平文）は `state.json` にしかないので、
+         * 消す前に [rememberReplaced] に渡す（削除待ちに残し、作り直しが途中で失敗しても消せるように）。
+         * [rememberReplaced] が例外を投げたら、何も消さずに投げる。
          *
          * Keystore の一時的な失敗はそのまま投げる（作り直すと、Olm セッションや、まだバックアップして
          * いない受信用セッションが消えるため）。
@@ -365,7 +382,7 @@ class CryptoStore private constructor(
             files: CryptoStoreFiles,
             userId: String,
             create: Boolean = true,
-            rememberReplaced: (String) -> Unit = {},
+            rememberReplaced: (deviceId: String, registered: Boolean) -> Unit = { _, _ -> },
         ): Opened? {
             val path = files.directory.canonicalPath
             if (!openDirectories.add(path)) throw CryptoStoreBusyException()
@@ -383,7 +400,7 @@ class CryptoStore private constructor(
             files: CryptoStoreFiles,
             userId: String,
             create: Boolean,
-            rememberReplaced: (String) -> Unit,
+            rememberReplaced: (deviceId: String, registered: Boolean) -> Unit,
         ): Opened? {
             val directory = files.directory
             val stateFile = File(directory, STATE_FILE)
@@ -402,7 +419,7 @@ class CryptoStore private constructor(
                     }
                 if (key != null) return Opened(restore(files, key, stored), null)
                 // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
-                rememberReplaced(stored.deviceId)
+                rememberReplaced(stored.deviceId, stored.registered)
                 replaced = stored.deviceId
                 if (!stateFile.delete() && stateFile.exists()) throw IOException("暗号ストアを消せません")
                 discardStorageKey(keyFile, files)
@@ -519,7 +536,10 @@ class CryptoStore private constructor(
             JsonArray(listOf(JsonPrimitive(ref.channelId), JsonPrimitive(ref.senderKey), JsonPrimitive(ref.sessionId)))
                 .toString()
 
-        /** 一時ファイルに書いて `fsync` してから置き換える。 */
+        /**
+         * 一時ファイルに書いて `fsync` してから置き換え、親ディレクトリーも同期する。どれかに失敗したら
+         * 例外を投げる（保存できたことにして ack を送らないため）。
+         */
         internal fun writeAtomically(target: File, bytes: ByteArray) {
             target.parentFile?.mkdirs()
             val temporary = File(target.parentFile, "${target.name}.tmp")
@@ -531,10 +551,30 @@ class CryptoStore private constructor(
                 temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING,
             )
             // rename したディレクトリーのエントリーも書き出す（停電で前の状態に戻らないように）。
-            // ディレクトリーを開けない環境では諦める（ファイル自体は書き出してある）。
+            syncDirectory(target.parentFile!!)
+        }
+
+        /**
+         * ディレクトリーを `fsync` する。JVM（単体テスト）では `FileChannel` で開けるが、Android の
+         * `FileChannel.open` はディレクトリーを開けない（EISDIR）ので、`android.system.Os` で開く。
+         */
+        private fun syncDirectory(directory: File) {
+            val channelFailure =
+                try {
+                    FileChannel.open(directory.toPath(), StandardOpenOption.READ).use { it.force(true) }
+                    return
+                } catch (e: IOException) {
+                    e
+                }
             try {
-                FileChannel.open(target.parentFile!!.toPath(), StandardOpenOption.READ).use { it.force(true) }
-            } catch (_: IOException) {
+                val fd = android.system.Os.open(directory.path, android.system.OsConstants.O_RDONLY, 0)
+                try {
+                    android.system.Os.fsync(fd)
+                } finally {
+                    android.system.Os.close(fd)
+                }
+            } catch (e: android.system.ErrnoException) {
+                throw IOException("${directory.name} を同期できません", e).apply { addSuppressed(channelFailure) }
             }
         }
     }

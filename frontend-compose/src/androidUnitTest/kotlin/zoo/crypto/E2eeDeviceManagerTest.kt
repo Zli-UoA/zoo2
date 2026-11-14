@@ -8,6 +8,7 @@ import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -70,7 +71,7 @@ class E2eeDeviceManagerTest {
         }
     }
 
-    private fun TestScope.manager() =
+    private fun TestScope.manager(pending: PendingDeviceDeletions = this@E2eeDeviceManagerTest.pending) =
         E2eeDeviceManager(
             api = api,
             server = SERVER,
@@ -178,8 +179,73 @@ class E2eeDeviceManagerTest {
         manager.destroyForLogout()
         // 登録の結果が分からないうちに消すと、あとから届いた登録で端末が残りうる。削除待ちに残す。
         assertTrue(api.deleted.isEmpty())
-        assertEquals(listOf(PendingDeviceDeletion(SERVER, BOB, deviceId)), pending.all())
+        assertEquals(listOf(PendingDeviceDeletion(SERVER, BOB, deviceId, unconfirmed = true)), pending.all())
         assertFalse(files.directory.exists())
+    }
+
+    @Test
+    fun notFoundForUnconfirmedDeviceIsRetriedUpToLimit() = managerTest {
+        api.registerGate = CompletableDeferred()
+        val manager = manager()
+        manager.start()
+        advanceUntilIdle()
+        val deviceId = manager.currentDeviceId!!
+        manager.prepareLogout()
+        manager.destroyForLogout()
+        api.registerGate = null
+        api.missing += deviceId
+
+        // 登録できたか分からない端末の 404 は、すぐには消えたものとしない。次のログインごとに数える。
+        for (attempt in 1 until E2eeDeviceManager.MAX_NOT_FOUND) {
+            val next = manager()
+            next.start()
+            advanceUntilIdle()
+            assertEquals(
+                listOf(PendingDeviceDeletion(SERVER, BOB, deviceId, unconfirmed = true, notFound = attempt)),
+                pending.all(),
+            )
+            next.stop()
+            advanceUntilIdle()
+        }
+        manager().start()
+        advanceUntilIdle()
+        assertTrue(pending.all().isEmpty())
+    }
+
+    @Test
+    fun requestTimeoutBacksOffAndRetries() = managerTest {
+        api.registerTimeouts = 1
+        val manager = manager()
+        manager.start()
+        advanceUntilIdle()
+        // 期限切れは取り消しではないので、処理は止まらずに試し直して登録する。
+        assertEquals(2, api.registerAttempts)
+        assertEquals(1, api.registered.size)
+
+        // 止めたら、取り消しは伝わり、届いた行を処理しない。
+        manager.stop()
+        advanceUntilIdle()
+        rows.value = listOf(ToDeviceRow("20", ALICE, "m.room.encrypted", JsonObject(emptyMap())))
+        advanceUntilIdle()
+        assertTrue(api.acks.isEmpty())
+    }
+
+    @Test
+    fun logoutClosesStoreWhenPendingListCannotBeWritten() = managerTest {
+        // 削除待ちの一覧を書けない（親がファイル）。
+        val blocker = File(root, "blocker").apply { writeText("x") }
+        val broken = PendingDeviceDeletions(File(blocker, "pending.json"))
+        val manager = manager(broken)
+        manager.start()
+        advanceUntilIdle()
+        val deviceId = manager.currentDeviceId!!
+        assertEquals(0, manager.prepareLogout())
+        manager.destroyForLogout()
+        // 記録できなくても、暗号ストアは消して閉じ、端末の削除も試す。
+        assertFalse(files.directory.exists())
+        assertEquals(listOf(deviceId), api.deleted)
+        // 同じプロセスで、また開ける。
+        CryptoStore.open(files, BOB)!!.store.close()
     }
 
     /** 登録の本文の鍵で、Alice から Bob に Megolm のセッション鍵を送る to-device の行。 */
@@ -206,6 +272,11 @@ class E2eeDeviceManagerTest {
         val gone = mutableSetOf<String>()
         var deleteFailure: Exception? = null
         var registerGate: CompletableDeferred<Unit>? = null
+        /** 404 を返す端末（サーバーにない）。 */
+        val missing = mutableSetOf<String>()
+        /** 登録の要求を、この回数だけ期限切れにする。 */
+        var registerTimeouts = 0
+        var registerAttempts = 0
         var deviceKeys = JsonObject(emptyMap())
         private var serverKeys = 0
 
@@ -215,6 +286,11 @@ class E2eeDeviceManagerTest {
         }
 
         override suspend fun registerDevice(body: JsonObject): JsonObject {
+            registerAttempts++
+            if (registerTimeouts > 0) {
+                registerTimeouts--
+                withRequestTimeout(1.seconds) { awaitCancellation() }
+            }
             registerGate?.await()
             registered += body
             serverKeys = body["one_time_keys"]!!.jsonObject.size
@@ -239,6 +315,7 @@ class E2eeDeviceManagerTest {
 
         override suspend fun deleteDevice(deviceId: String) {
             deleteFailure?.let { throw it }
+            if (deviceId in missing) throw ApiException(404)
             deleted += deviceId
         }
     }

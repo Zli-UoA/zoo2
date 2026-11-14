@@ -44,7 +44,7 @@ class CryptoStoreTest {
     }
 
     private fun open(create: Boolean = true, replaced: MutableList<String> = mutableListOf()) =
-        CryptoStore.open(files, BOB, create) { replaced += it }
+        CryptoStore.open(files, BOB, create) { id, _ -> replaced += id }
 
     @Test
     fun createsDeviceOnceAndRestoresIt() {
@@ -196,6 +196,20 @@ class CryptoStoreTest {
     }
 
     @Test
+    fun closedStoreDoesNotDestroyStoreOpenedAgain() {
+        val first = open()!!.store
+        first.close()
+        // ほかの処理が開き直したストアは、閉じたものから消さない。
+        val second = open()!!.store
+        assertFailsWith<CryptoStoreBusyException> { first.destroy() }
+        assertTrue(File(files.directory, "state.json").exists())
+        second.destroy()
+        assertFalse(files.directory.exists())
+        // 消し終えたら、また開ける。
+        open()!!.store.close()
+    }
+
+    @Test
     fun readsToDeviceRowsFromShape() {
         val row =
             toDeviceRow(
@@ -225,6 +239,30 @@ class CryptoStoreTest {
         assertEquals(listOf(b), pending.all())
         pending.remove(b)
         assertTrue(pending.all().isEmpty())
+    }
+
+    @Test
+    fun pendingDeletionsKeepUnconfirmedFlagAndCount() {
+        val pending = PendingDeviceDeletions(File(root, "pending.json"))
+        val a = PendingDeviceDeletion("https://a", ALICE, ALICE_DEVICE, unconfirmed = true)
+        pending.add(a)
+        pending.update(a.copy(notFound = 1))
+        // 同じ端末を足し直しても、記録の状態は消さない。
+        pending.add(a.copy(unconfirmed = false))
+        assertEquals(listOf(a.copy(notFound = 1)), pending.all())
+        pending.remove(a.copy(unconfirmed = false))
+        assertTrue(pending.all().isEmpty())
+    }
+
+    @Test
+    fun unreadablePendingDeletionsAreNotOverwritten() {
+        val file = File(root, "pending.json")
+        file.writeText("{broken")
+        val pending = PendingDeviceDeletions(file)
+        assertFailsWith<Exception> { pending.all() }
+        assertFailsWith<Exception> { pending.add(PendingDeviceDeletion("https://a", BOB, BOB_DEVICE)) }
+        assertFailsWith<Exception> { pending.remove(PendingDeviceDeletion("https://a", BOB, BOB_DEVICE)) }
+        assertEquals("{broken", file.readText())
     }
 
     private fun softwareKey(): SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()

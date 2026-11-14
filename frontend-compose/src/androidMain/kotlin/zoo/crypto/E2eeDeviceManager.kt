@@ -15,6 +15,9 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.awaitClose
@@ -63,10 +66,24 @@ interface E2eeApi {
     suspend fun deleteDevice(deviceId: String)
 }
 
+/** E2EE の API が期限までに答えなかった。通信の失敗と同じく、間隔をあけて試し直す。 */
+class E2eeRequestTimeoutException(cause: Throwable) : java.io.IOException("E2EE の API が時間内に答えませんでした", cause)
+
+/**
+ * 要求ごとの期限。`withTimeout` の [TimeoutCancellationException] は [CancellationException] なので、
+ * そのままでは呼び出し側の取り消しと区別できない。通信の失敗（[E2eeRequestTimeoutException]）にして返す。
+ */
+suspend fun <T> withRequestTimeout(timeout: Duration, block: suspend () -> T): T =
+    try {
+        withTimeout(timeout) { block() }
+    } catch (failure: TimeoutCancellationException) {
+        throw E2eeRequestTimeoutException(failure)
+    }
+
 /** [ZooApi] で呼ぶ [E2eeApi]。E2EE の API には 30 秒の期限を付ける（TUI と同じ）。 */
 class ZooE2eeApi(private val api: ZooApi) : E2eeApi {
     private suspend fun call(path: String, method: String, body: JsonElement? = null): JsonElement =
-        withTimeout(TIMEOUT) { api.request(path, method, body) }
+        withRequestTimeout(TIMEOUT) { api.request(path, method, body) }
 
     /** 書き込みの応答は `{"data": ...}` の封筒に入っている。 */
     private fun data(response: JsonElement): JsonObject =
@@ -236,8 +253,11 @@ class E2eeDeviceManager(
     @Volatile
     private var registration: Deferred<JsonObject>? = null
 
+    /** 登録の要求が成功したと分かった端末（ログアウトで、404 を消えたものとしてよいか決める）。 */
+    private val confirmedRegistrations: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     /** 保存鍵を失って作り直した前の端末（ログアウトでも消す）。 */
-    private val replacedDeviceIds = mutableListOf<String>()
+    private val replacedDevices = mutableListOf<PendingDeviceDeletion>()
 
     /** 処理を始める。動いていれば何もしない。 */
     fun start() {
@@ -259,7 +279,10 @@ class E2eeDeviceManager(
             try {
                 runOnce { connected = true }
             } catch (failure: CancellationException) {
-                throw failure
+                // この処理が取り消されたのなら止める。内側の期限切れなど、取り消されていないのに
+                // 届いたものは、ほかの失敗と同じく間隔をあけて試し直す。
+                currentCoroutineContext().ensureActive()
+                onError(failure)
             } catch (failure: Exception) {
                 onError(failure)
             } finally {
@@ -278,10 +301,15 @@ class E2eeDeviceManager(
         // 開いたものは、取り消されても閉じられるよう、開いたその場で覚える。
         val opened =
             withContext(io) {
-                CryptoStore.open(files, userId) { replaced -> pending.add(entry(replaced)) }!!.also { store = it.store }
+                CryptoStore.open(files, userId) { replaced, registered ->
+                    // 記録できなければ開かない（前の端末の ID を失わないため）。
+                    pending.add(entry(replaced, unconfirmed = !registered))
+                }!!.also { store = it.store }
             }
         currentDeviceId = opened.store.deviceId
-        opened.replacedDeviceId?.let { deleteDeviceOrRemember(it) }
+        opened.replacedDeviceId?.let { replaced ->
+            deleteDeviceOrRemember(rememberedEntry(replaced) ?: entry(replaced, unconfirmed = true))
+        }
         return opened.store
     }
 
@@ -318,6 +346,7 @@ class E2eeDeviceManager(
         if (store.isRegistered) return KeyCounts(api.uploadKeys(deviceId, EMPTY, EMPTY))
         val body = JsonObject(withContext(io) { store.registrationRequest() } + ("display_name" to JsonPrimitive(displayName)))
         val request = background.async { api.registerDevice(body) }
+        request.invokeOnCompletion { cause -> if (cause == null) confirmedRegistrations += deviceId }
         registration = request
         val response = request.await()
         withContext(io) { store.markRegistered() }
@@ -357,9 +386,10 @@ class E2eeDeviceManager(
                 try {
                     val opened =
                         withContext(io) {
-                            CryptoStore.open(files, userId, create = false) { replaced ->
-                                pending.add(entry(replaced))
-                                synchronized(replacedDeviceIds) { replacedDeviceIds += replaced }
+                            CryptoStore.open(files, userId, create = false) { replaced, registered ->
+                                val replacedEntry = entry(replaced, unconfirmed = !registered)
+                                pending.add(replacedEntry)
+                                synchronized(replacedDevices) { replacedDevices += replacedEntry }
                             }?.also { logoutStore = it.store }
                         } ?: return@withLock 0
                     currentDeviceId = opened.store.deviceId
@@ -397,53 +427,110 @@ class E2eeDeviceManager(
             val registrationUnknown =
                 request != null && withTimeoutOrNull(settleTimeout) { request.join() } == null && request.isActive
             val store = logoutStore
-            logoutStore = null
-            val deviceId =
-                store?.deviceId ?: currentDeviceId ?: withContext(io) { CryptoStore.storedDeviceId(files, userId) }
-            deviceId?.let { pending.add(entry(it)) }
             try {
-                withContext(io) { if (store != null) store.destroy() else CryptoStore.destroy(files) }
-            } catch (failure: CancellationException) {
-                throw failure
-            } catch (failure: Exception) {
-                // 消せなかったファイルは、次に同じユーザーでログインしたときに開かれ、削除待ちの端末を
-                // 消したあとで、新しい端末として登録し直す。
-                onError(failure)
+                val deviceId =
+                    store?.deviceId ?: currentDeviceId ?: withContext(io) { CryptoStore.storedDeviceId(files, userId) }
+                // 登録できたと分かっていなければ、404 でもすぐには消えたものとしない。
+                val target =
+                    deviceId?.let {
+                        entry(it, unconfirmed = store?.isRegistered != true && it !in confirmedRegistrations)
+                    }
+                // 記録に失敗しても、暗号ストアは消す（API の結果を待たずに、先に消す）。
+                target?.let { remember(it) }
+                try {
+                    withContext(io) { if (store != null) store.destroy() else CryptoStore.destroy(files) }
+                } catch (failure: CancellationException) {
+                    throw failure
+                } catch (failure: Exception) {
+                    // 消せなかったファイルは、次に同じユーザーでログインしたときに開かれ、削除待ちの端末を
+                    // 消したあとで、新しい端末として登録し直す。
+                    onError(failure)
+                }
+                if (target != null && !registrationUnknown) deleteDeviceOrRemember(target)
+                synchronized(replacedDevices) { replacedDevices.toList() }.forEach { deleteDeviceOrRemember(it) }
+            } finally {
+                // 途中で失敗しても閉じる（同じプロセスで開き直せるように）。消したあとなら何もしない。
+                store?.close()
+                logoutStore = null
+                background.coroutineContext[Job]?.cancel()
             }
-            if (deviceId != null && !registrationUnknown) deleteDeviceOrRemember(deviceId)
-            synchronized(replacedDeviceIds) { replacedDeviceIds.toList() }.forEach { deleteDeviceOrRemember(it) }
-            background.coroutineContext[Job]?.cancel()
         }
     }
 
     /** 前のログアウトで消せなかった端末を、同じ接続先とユーザーで消し直す。 */
     private suspend fun retryPendingDeletions() {
-        withContext(io) { pending.all() }
-            .filter { it.server == server && it.userId == userId }
-            .forEach { deleteDeviceOrRemember(it.deviceId) }
+        val all =
+            try {
+                withContext(io) { pending.all() }
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: Exception) {
+                // 一覧を読めなければ、何も消さない（ファイルはそのまま残す）。
+                onError(failure)
+                return
+            }
+        all.filter { it.server == server && it.userId == userId }.forEach { deleteDeviceOrRemember(it) }
     }
 
-    /** 端末を消す。失敗したら削除待ちに残す。404（登録の前に止まった端末）は、消すものがないので済んだものとする。 */
-    private suspend fun deleteDeviceOrRemember(deviceId: String) {
-        val entry = entry(deviceId)
-        withContext(io) { pending.add(entry) }
-        val deleted =
+    private enum class DeleteOutcome { DELETED, NOT_FOUND, FAILED }
+
+    /**
+     * 端末を消す。失敗したら削除待ちに残す。404 は、登録できたと分かっている端末なら、消すものが
+     * ないので済んだものとする。登録できたか分からない端末（[PendingDeviceDeletion.unconfirmed]）は、
+     * あとから届いた登録で端末ができうるので残し、続けて [MAX_NOT_FOUND] 回 404 なら済んだものとする。
+     */
+    private suspend fun deleteDeviceOrRemember(target: PendingDeviceDeletion) {
+        remember(target)
+        val outcome =
             withTimeoutOrNull(settleTimeout) {
                 try {
-                    api.deleteDevice(deviceId)
-                    true
+                    api.deleteDevice(target.deviceId)
+                    DeleteOutcome.DELETED
                 } catch (failure: ApiException) {
-                    failure.status == 404
+                    if (failure.status == 404) DeleteOutcome.NOT_FOUND else DeleteOutcome.FAILED
                 } catch (failure: CancellationException) {
                     throw failure
                 } catch (_: Exception) {
-                    false
+                    DeleteOutcome.FAILED
                 }
-            } ?: false
-        if (deleted) withContext(io) { pending.remove(entry) }
+            } ?: DeleteOutcome.FAILED
+        val current = rememberedEntry(target.deviceId) ?: target
+        when {
+            outcome == DeleteOutcome.DELETED -> forget(current)
+            outcome == DeleteOutcome.NOT_FOUND && !current.unconfirmed -> forget(current)
+            outcome == DeleteOutcome.NOT_FOUND ->
+                if (current.notFound + 1 >= MAX_NOT_FOUND) forget(current)
+                else pendingWrite { pending.update(current.copy(notFound = current.notFound + 1)) }
+            else -> Unit
+        }
     }
 
-    private fun entry(deviceId: String) = PendingDeviceDeletion(server, userId, deviceId)
+    /** 削除待ちに足す。書けなくても続ける（通知だけする）。 */
+    private suspend fun remember(target: PendingDeviceDeletion) = pendingWrite { pending.add(target) }
+
+    private suspend fun forget(target: PendingDeviceDeletion) = pendingWrite { pending.remove(target) }
+
+    private suspend fun rememberedEntry(deviceId: String): PendingDeviceDeletion? =
+        try {
+            withContext(io) { pending.all() }.find { it.sameDevice(entry(deviceId)) }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (_: Exception) {
+            null
+        }
+
+    private suspend fun pendingWrite(write: () -> Unit) {
+        try {
+            withContext(io) { write() }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Exception) {
+            onError(failure)
+        }
+    }
+
+    private fun entry(deviceId: String, unconfirmed: Boolean = false) =
+        PendingDeviceDeletion(server, userId, deviceId, unconfirmed)
 
     private class KeyCounts(response: JsonObject) {
         val oneTimeKeys: Int =
@@ -457,6 +544,9 @@ class E2eeDeviceManager(
 
     companion object {
         private val EMPTY = JsonObject(emptyMap())
+
+        /** 登録できたか分からない端末を、404 が続いたら消えたものとする回数（次のログインごとに 1 回）。 */
+        const val MAX_NOT_FOUND = 3
 
         /** 登録の 409 `E2EE_DEVICE_EXISTS`（削除済みの device_id）と、鍵のアップロードや ack の 404。 */
         fun isDeviceGone(failure: ApiException): Boolean =

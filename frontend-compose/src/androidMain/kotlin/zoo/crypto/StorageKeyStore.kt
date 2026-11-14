@@ -5,8 +5,6 @@ import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import java.io.File
 import java.io.IOException
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.crypto.AEADBadTagException
@@ -140,10 +138,9 @@ class StorageKeyStore(
         val iv = cipher.iv
         check(iv.size == IV_SIZE && sealed.size == KEY_SIZE + TAG_BITS / 8)
         val wrapped = byteArrayOf(VERSION) + iv + sealed
-        file.parentFile?.mkdirs()
-        val temporary = File(file.parentFile, "${file.name}.tmp")
-        temporary.writeBytes(wrapped)
-        Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        // 内容とディレクトリーのエントリーを同期してから返す（この鍵で保存した state.json だけが残り、
+        // 保存鍵を失うことがないように）。
+        CryptoStore.writeAtomically(file, wrapped)
         return key
     }
 
