@@ -1543,6 +1543,13 @@
         "62": "文件夾",
         "63": "圖釘"
       }
+    },
+    "android": {
+      "saveDescription": "儲存之前要再登入一次。瀏覽器會打開，登入完之後會返嚟呢個畫面。",
+      "continueDescription": "請再登入一次，儲存中斷咗嘅初次設定。瀏覽器會打開。",
+      "reauthWaiting": "等緊你喺瀏覽器再登入…",
+      "reauthCancel": "唔登入住",
+      "browserUnavailable": "開唔到用嚟登入嘅瀏覽器。請安裝或者啟用瀏覽器，再撳多一次。"
     }
   }
 }

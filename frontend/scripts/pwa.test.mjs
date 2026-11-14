@@ -533,6 +533,7 @@ test("APIs, auth, cross-origin requests and non-GET requests pass through", asyn
   for (const [url, mode, method] of [
     [`${ORIGIN}/api/users/me`, "navigate", "GET"],
     [`${ORIGIN}/auth/callback`, "navigate", "GET"],
+    [`${ORIGIN}/android/reauth-callback?code=c&state=s`, "navigate", "GET"],
     [`${ORIGIN}/api/shapes/messages`, "cors", "GET"],
     ["https://idp.example/auth", "navigate", "GET"],
     [`${ORIGIN}/assets/app.js`, "cors", "POST"],

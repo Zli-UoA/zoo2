@@ -1543,6 +1543,13 @@
         "62": "文件夹",
         "63": "图钉"
       }
+    },
+    "android": {
+      "saveDescription": "保存前需要重新登录。浏览器会打开，登录完成后会回到此界面。",
+      "continueDescription": "请重新登录，以保存中断的初始设置的剩余部分。浏览器将会打开。",
+      "reauthWaiting": "正在等待你在浏览器中重新登录…",
+      "reauthCancel": "停止登录",
+      "browserUnavailable": "无法打开用于登录的浏览器。请安装或启用浏览器后再按一次。"
     }
   }
 }
