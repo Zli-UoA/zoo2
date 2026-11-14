@@ -78,6 +78,9 @@
     "login": "ログイン",
     "failed": "ログインできませんでした",
     "retry": "再ログイン",
+    "logoutStorageFailed": "ログアウトを完了できません",
+    "logoutStorageFailedHelp": "メモリ上のセッションは破棄しましたが、ブラウザーに保存された認証情報を無効化できませんでした。保存領域が使える状態に戻してから、この画面で再試行してください。",
+    "retryLogout": "ログアウトを再試行",
     "unauthorizedLoop": "API が 401 を返し続けたため、再ログインを停止しました。OIDC の設定（audience / typ / JWKS）とバックエンドのログを確認してください。",
     "errorWithCode": "{{message}}（{{code}}）",
     "oidcErrors": {
@@ -412,7 +415,10 @@
     "on": "有効",
     "off": "無効",
     "unavailable": "利用不可",
-    "title": "プッシュ通知"
+    "title": "プッシュ通知",
+    "desktopTitle": "通知",
+    "desktopValue": "OS の通知",
+    "desktopDescription": "メンションや DM を、アプリが OS の通知で知らせます。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。"
   },
   "mfm": {
     "suggestions": "MFMの候補",
@@ -1165,11 +1171,16 @@
       "locked": "この端末で暗号化を解錠すると、このメッセージを読めます。",
       "staleEpoch": "以前のメンバー向けに暗号化されたメッセージなので読めません。",
       "invalid": "このメッセージは検証に失敗したため表示しません。",
-      "failed": "このメッセージを復号できませんでした。"
+      "failed": "このメッセージを復号できませんでした。",
+      "unencrypted": "このメッセージは暗号化されていないため表示しません。"
     },
     "sender": {
       "unverified": "未検証の送信者",
       "unauthenticated": "送信者を確かめられません"
+    },
+    "revision": {
+      "stale": "サーバーが古い版を返しました。最新の版を表示しています",
+      "conflict": "同じ版で内容の違うメッセージが届きました。先に届いた方を表示しています"
     },
     "undeliverable": {
       "title": "次の人は新しいメッセージを読めません",

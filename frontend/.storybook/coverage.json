@@ -264,6 +264,8 @@
         "SensitiveAttachments",
         "EncryptedDecrypted",
         "EncryptedUnverifiedSender",
+        "EncryptedStaleRevision",
+        "EncryptedUnencryptedRow",
         "EncryptedBackupSender",
         "EncryptedKeyMissing",
         "EncryptedLocked",
@@ -451,6 +453,10 @@
     {
       "file": "src/components/offline/OfflineBanner.stories.tsx",
       "states": ["Online", "Offline", "PersistenceError", "Mobile"]
+    },
+    {
+      "file": "src/components/desktop/DesktopNotificationSelect.stories.tsx",
+      "states": ["On", "TurnOff", "Off", "OlderApp"]
     },
     {
       "file": "src/components/pwa/PwaControls.stories.tsx",
@@ -692,7 +698,7 @@
     },
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
-      "states": ["Default", "Undeliverable"]
+      "states": ["Default", "Undeliverable", "AddedRecipients"]
     }
   ],
   "modules": [
@@ -972,6 +978,10 @@
     {
       "file": "src/components/layout/ZooSettings.tsx",
       "story": "src/components/layout/ZooSettings.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DesktopNotificationSelect.tsx",
+      "story": "src/components/desktop/DesktopNotificationSelect.stories.tsx"
     },
     {
       "file": "src/components/desktop/DesktopBridge.tsx",

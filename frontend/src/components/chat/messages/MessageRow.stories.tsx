@@ -444,6 +444,42 @@ export const EncryptedUnverifiedSender: Story = {
   }),
 };
 
+export const EncryptedStaleRevision: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "編集したあとの本文です。",
+      kind: "message",
+      sender: "verified",
+      revisionWarning: "stale",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByText("サーバーが古い版を返しました。最新の版を表示しています"),
+    ).toBeVisible();
+  }),
+};
+
+export const EncryptedUnencryptedRow: Story = {
+  args: {
+    // 暗号化チャンネルで暗号文のない行。サーバーが書き換えた本文は出さない。
+    item: {
+      ...encryptedItem,
+      message: { ...encryptedItem.message, ciphertext: null, content: "偽の本文" },
+    },
+    decryption: { status: "undecryptable", reason: "unencrypted" },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByText("このメッセージは暗号化されていないため表示しません。"),
+    ).toBeVisible();
+    await expect(canvas.queryByText("偽の本文")).not.toBeInTheDocument();
+  }),
+};
+
 export const EncryptedBackupSender: Story = {
   args: {
     item: encryptedItem,

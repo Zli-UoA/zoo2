@@ -2,15 +2,13 @@ import { useEffect, useRef, useState } from "react";
 
 import type { FeedMessage } from "../components/chat/messages/messageFormat";
 import { useE2ee } from "../lib/e2ee/e2ee-context";
-import type { MessageDecryption } from "../lib/e2ee/messageDecryption";
+import {
+  applyRevision,
+  type LatestRevisions,
+  type MessageDecryption,
+  type RevisionCheck,
+} from "../lib/e2ee/messageDecryption";
 import type { EncryptedMessage } from "@zoo/crypto-wasm";
-
-/** 暗号文の行を見分けるキー。版や暗号文が変われば（編集）、復号し直す。 */
-function rowKey(message: FeedMessage): string | null {
-  const ciphertext = message.ciphertext;
-  if (!ciphertext) return null;
-  return `${message.id}\u0000${message.revision ?? 0}\u0000${ciphertext.session_id}\u0000${ciphertext.ciphertext}`;
-}
 
 function toEncryptedMessage(message: FeedMessage, channelId: string): EncryptedMessage {
   return {
@@ -26,6 +24,16 @@ function toEncryptedMessage(message: FeedMessage, channelId: string): EncryptedM
 }
 
 /**
+ * 暗号文の行を見分けるキー。Worker が照合する値（チャンネル、行、親、送信者、種別、epoch、版、
+ * 暗号文の送信端末とセッション）をすべて入れる。どれかが変われば（編集や同期元の書き換え）、前の
+ * 結果を使わずに復号と照合をやり直す。
+ */
+function rowKey(message: FeedMessage, channelId: string): string | null {
+  if (!message.ciphertext) return null;
+  return JSON.stringify(toEncryptedMessage(message, channelId));
+}
+
+/**
  * 暗号化チャンネルの行を、暗号ストアの Worker で復号する（docs/e2ee.md の「受信時の検証」）。
  *
  * 結果はメッセージの ID ごとに返す。Worker がない（このタブが暗号ストアを開いていない、まだ登録中）
@@ -37,9 +45,17 @@ export function useMessageDecryptions(
   messages: readonly FeedMessage[],
 ): ReadonlyMap<string, MessageDecryption> {
   const { worker, roomKeysVersion } = useE2ee();
-  const cache = useRef(new Map<string, MessageDecryption>());
+  // 行ごとの復号の結果と、Worker の版の照合の結果。
+  const cache = useRef(new Map<string, { value: MessageDecryption; check: RevisionCheck }>());
+  // メッセージごとに見た最新の版。キャッシュを使い回したときも、古い版の行を最新として出さない。
+  // Worker の版の記録と同じく、チャンネルを切り替えても忘れない（Worker が変われば忘れる）。
+  const latest = useRef<LatestRevisions>(new Map());
   const [results, setResults] = useState<ReadonlyMap<string, MessageDecryption>>(new Map());
   const retried = useRef(roomKeysVersion);
+
+  useEffect(() => {
+    latest.current.clear();
+  }, [worker]);
 
   useEffect(() => {
     cache.current.clear();
@@ -50,22 +66,33 @@ export function useMessageDecryptions(
     if (!worker) return;
     if (retried.current !== roomKeysVersion) {
       retried.current = roomKeysVersion;
-      for (const [key, value] of cache.current) {
+      for (const [key, { value }] of cache.current) {
         if (value.status === "undecryptable" && value.reason === "keyMissing") {
           cache.current.delete(key);
         }
       }
     }
     const pending = messages.filter((message) => {
-      const key = rowKey(message);
+      const key = rowKey(message, channelId);
       return key !== null && !cache.current.has(key);
     });
     const publish = () => {
       const next = new Map<string, MessageDecryption>();
       for (const message of messages) {
-        const key = rowKey(message);
-        const value = key ? cache.current.get(key) : undefined;
-        if (value) next.set(message.id, value);
+        const key = rowKey(message, channelId);
+        const entry = key ? cache.current.get(key) : undefined;
+        if (!entry) continue;
+        const value = applyRevision(
+          latest.current,
+          message.id,
+          message.revision ?? 0,
+          entry.value,
+          entry.check,
+        );
+        next.set(
+          message.id,
+          value.status === "decrypted" ? { ...value, rowRevision: message.revision ?? 0 } : value,
+        );
       }
       setResults(next);
     };
@@ -82,10 +109,9 @@ export function useMessageDecryptions(
       .then((outcomes) => {
         pending.forEach((message, index) => {
           const outcome = outcomes[index];
-          const key = rowKey(message);
+          const key = rowKey(message, channelId);
           if (!outcome || !key) return;
-          cache.current.set(
-            key,
+          const value: MessageDecryption =
             outcome.status === "decrypted"
               ? {
                   status: "decrypted",
@@ -93,8 +119,11 @@ export function useMessageDecryptions(
                   kind: outcome.kind,
                   sender: outcome.sender,
                 }
-              : { status: "undecryptable", reason: outcome.reason },
-          );
+              : { status: "undecryptable", reason: outcome.reason };
+          const check = outcome.status === "decrypted" ? outcome.revision.status : "latest";
+          cache.current.set(key, { value, check });
+          // 表示しなくても（チャンネルを離れた）、最新の版は覚えておく。
+          applyRevision(latest.current, message.id, message.revision ?? 0, value, check);
         });
         if (active) publish();
       })

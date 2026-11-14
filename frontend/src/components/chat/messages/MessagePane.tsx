@@ -38,6 +38,7 @@ import { encryptedMentions } from "./mentions";
 import { useMessageDecryptions } from "../../../hooks/useMessageDecryptions";
 import {
   EncryptedSendError,
+  editAlreadyApplied,
   editEncryptedMessage,
   sendEncryptedMessage,
   type ChannelCryptoDeps,
@@ -49,7 +50,10 @@ import {
   type KnownEncryptedState,
 } from "../../../lib/e2ee/encryptionGuard";
 import { apiErrorCode } from "../../../lib/e2ee/megolmApi";
-import { MessageDecryptionsContext } from "../../../lib/e2ee/messageDecryption";
+import {
+  MessageDecryptionsContext,
+  type MessageDecryption,
+} from "../../../lib/e2ee/messageDecryption";
 import type { RecipientSummary } from "../../../lib/e2ee/store/megolm";
 import { localizeApiError } from "../../../lib/i18n/apiError";
 
@@ -245,7 +249,21 @@ export function MessagePane({
         : [],
     [treatAsEncrypted, messagesQuery.data, threadQuery.data, threadRoot],
   );
-  const decryptions = useMessageDecryptions(channelId, decryptionRows);
+  const workerDecryptions = useMessageDecryptions(channelId, decryptionRows);
+  // 暗号化チャンネルの、暗号文のない（削除されていない）行は、暗号ストアがなくても本文を出さない。
+  // 正しいサーバーは DB のトリガーでこの行を作れないので、同期元が書き換えたものとして扱う。
+  const decryptions = useMemo(() => {
+    // フィードは削除済みの行を除くが、念のため `deleted_at` のある行（暗号文は DB が消す）は除く。
+    const unencrypted = decryptionRows.filter(
+      (row) => !row.ciphertext && !(row as { deleted_at?: string | null }).deleted_at,
+    );
+    if (unencrypted.length === 0) return workerDecryptions;
+    const next = new Map(workerDecryptions);
+    for (const row of unencrypted) {
+      next.set(row.id, { status: "undecryptable", reason: "unencrypted" });
+    }
+    return next as ReadonlyMap<string, MessageDecryption>;
+  }, [decryptionRows, workerDecryptions]);
 
   /** 暗号化した送信の失敗を利用者に知らせる。 */
   const reportEncryptedFailure = useCallback(
@@ -272,6 +290,15 @@ export function MessagePane({
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  // 暗号化チャンネルで編集を始めたときの版。保存はこの次の版で送り、ほかで編集されていれば 409 にする。
+  const [editingRevision, setEditingRevision] = useState(0);
+  const savingEdit = useRef(false);
+  const editingIdRef = useRef(editingId);
+  editingIdRef.current = editingId;
+  const editingTextRef = useRef(editingText);
+  editingTextRef.current = editingText;
+  const decryptionsRef = useRef(decryptions);
+  decryptionsRef.current = decryptions;
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
 
@@ -635,15 +662,19 @@ export function MessagePane({
       if (encrypted) {
         // 行の `content` は空なので、復号した本文から始める。復号できない版は上書きしない。
         const decrypted = decryptions.get(id);
-        if (decrypted?.status !== "decrypted") return;
+        // 版の照合で警告した行（表示と行の版が違う）からは編集を始めない。
+        if (decrypted?.status !== "decrypted" || decrypted.revisionWarning) return;
         setEditingId(id);
         setEditingText(decrypted.body);
+        // 表示している本文の版を基準にする。行が新しい版に進んでいて、その復号がまだなら、保存は
+        // 409 になり、ほかで編集されたと知らせる（新しい版を古い本文で上書きしない）。
+        setEditingRevision(decrypted.rowRevision ?? messagesCollection.get(id)?.revision ?? 0);
         return;
       }
       setEditingId(id);
       setEditingText(content);
     },
-    [sendBlocked, encrypted, decryptions],
+    [sendBlocked, encrypted, decryptions, messagesCollection],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -657,28 +688,51 @@ export function MessagePane({
     if (!id || !content || isArchivedMessage(id) || sendBlocked) {
       return;
     }
-    setEditingId(null);
-    setEditingText("");
     if (cryptoDeps) {
       const row = messagesCollection.get(id);
       const decrypted = decryptions.get(id);
-      if (!row || decrypted?.status !== "decrypted") return;
+      if (!row || decrypted?.status !== "decrypted" || savingEdit.current) return;
+      // 送れるまで編集中の本文を残す（失敗したら、そのまま直して保存し直せる）。
+      savingEdit.current = true;
       try {
         await editEncryptedMessage(cryptoDeps, {
           channelId,
           shapeEpoch: membershipEpoch,
           messageId: id,
           parentId: row.parent_id,
-          revision: (row.revision ?? 0) + 1,
+          revision: editingRevision + 1,
           body: content,
           kind: decrypted.kind,
           mentions: encryptedMentions(content, usersQuery.data ?? []),
         });
+        // 保存中に別のメッセージの編集を始めた、または本文を書き足したら、編集欄を閉じない。
+        if (editingIdRef.current === id && editingTextRef.current.trim() === content) {
+          setEditingId(null);
+          setEditingText("");
+        } else if (editingIdRef.current === id) {
+          // 書き足した本文を保存し直すときは、今送った版の次の版で送る。
+          setEditingRevision(editingRevision + 1);
+        }
       } catch (cause) {
-        reportEncryptedFailure(cause);
+        // 応答をなくして保存し直したときは、今の版が自分の送った本文なら済んだものとして扱う。
+        const shown = decryptionsRef.current.get(id);
+        if (editAlreadyApplied(cause, shown, content)) {
+          if (editingIdRef.current === id && editingTextRef.current.trim() === content) {
+            setEditingId(null);
+            setEditingText("");
+          } else if (editingIdRef.current === id && shown?.status === "decrypted") {
+            setEditingRevision(shown.rowRevision ?? editingRevision + 1);
+          }
+        } else {
+          reportEncryptedFailure(cause);
+        }
+      } finally {
+        savingEdit.current = false;
       }
       return;
     }
+    setEditingId(null);
+    setEditingText("");
     await run(() =>
       messagesCollection.update(id, (message) => {
         message.content = content;
@@ -687,6 +741,7 @@ export function MessagePane({
   }, [
     editingId,
     editingText,
+    editingRevision,
     run,
     messagesCollection,
     isArchivedMessage,

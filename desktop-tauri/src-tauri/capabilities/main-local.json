@@ -12,6 +12,8 @@
     "allow-zoo-cancel-login",
     "allow-zoo-logout",
     "allow-zoo-set-focus",
+    "allow-zoo-notification-settings",
+    "allow-zoo-set-notifications",
     "allow-zoo-open-channel",
     "allow-zoo-resync",
     "allow-zoo-account-profiles",

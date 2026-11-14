@@ -2,7 +2,15 @@ import type { JsonObject, Mentions, OutgoingMessage } from "@zoo/crypto-wasm";
 
 import type { ApiClient } from "../api/client";
 import type { CryptoWorker } from "./cryptoWorker";
-import { claimKeys, fetchRecipients, postTofuPin, sendToDevice, staleEpoch } from "./megolmApi";
+import {
+  claimKeys,
+  fetchRecipients,
+  postTofuPin,
+  sendToDevice,
+  staleEpoch,
+  staleRevision,
+} from "./megolmApi";
+import type { MessageDecryption } from "./messageDecryption";
 import type { RecipientSummary } from "./store/megolm";
 
 /** 409 `E2EE_STALE_EPOCH` を続けて受けたら諦める回数（docs/e2ee.md の送信の手順 5）。 */
@@ -36,6 +44,9 @@ export interface EncryptedMessageRequest {
   mentions: Mentions;
 }
 
+/** ピンを置いたあとに判定し直す回数の上限。 */
+const MAX_PIN_ROUNDS = 2;
+
 /** 送信を止めた（3 回続けて `E2EE_STALE_EPOCH` を受けた）。下書きに戻して利用者に知らせる。 */
 export class EncryptedSendError extends Error {
   constructor(message: string) {
@@ -65,12 +76,14 @@ export function resetKnownEpochs(): void {
 }
 
 /**
- * チャンネルごとの送信用セッションの用意を直列にする。続けて送ったときに、両方が同時に
- * スナップショットを取り、同じ端末に鍵を 2 回配らないようにする（暗号化と送信は並べてよい）。
+ * チャンネルごとの送信用セッションの用意と暗号化を直列にする。続けて送ったときに、両方が同時に
+ * スナップショットを取り、同じ端末に鍵を 2 回配らないようにする。送信用セッションを捨てる処理
+ * （配布の失敗、作り直し）もこの中でだけ行うので、用意したセッションが暗号化の前に捨てられることは
+ * ない（送信の要求は並べてよい）。
  */
-const preparing = new Map<string, Promise<void>>();
+const preparing = new Map<string, Promise<unknown>>();
 
-function serialized(channelId: string, task: () => Promise<void>): Promise<void> {
+function serialized<T>(channelId: string, task: () => Promise<T>): Promise<T> {
   const previous = preparing.get(channelId) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(task);
   preparing.set(channelId, next);
@@ -119,9 +132,8 @@ async function evaluateRecipients(
   minEpoch: bigint | null,
 ): Promise<void> {
   const { worker, client, signal } = deps;
-  // TOFU のピンが別の端末のピンとぶつかったら、そのピンを入れたスナップショットで判定し直す。
+  let pages = await fetchRecipients(client, channelId, minEpoch, signal);
   for (let round = 0; ; round += 1) {
-    const pages = await fetchRecipients(client, channelId, minEpoch, signal);
     const summary = await worker.request({ op: "megolmEvaluate", channelId, pages });
     noteEpoch(channelId, BigInt(summary.epoch));
     const confirmed = [];
@@ -133,8 +145,19 @@ async function evaluateRecipients(
     if (confirmed.length > 0 || discarded.length > 0) {
       await worker.request({ op: "megolmSettlePins", confirmed, discarded });
     }
-    if (discarded.length > 0 && round === 0) continue;
-    deps.onRecipients?.(channelId, summary);
+    // 初めて見た相手は、ピンを置けるまで配布先に入らない。ピンを置けたら、同じスナップショットで
+    // 判定し直してその端末を入れる。別の端末のピンとぶつかったら、そのピンを入れたスナップショットを
+    // 取り直して判定し直す。
+    if ((confirmed.length > 0 || discarded.length > 0) && round < MAX_PIN_ROUNDS) {
+      if (discarded.length > 0) pages = await fetchRecipients(client, channelId, minEpoch, signal);
+      continue;
+    }
+    const addedUserIds = await worker.request({
+      op: "megolmNoteRecipients",
+      channelId,
+      userIds: summary.userIds,
+    });
+    deps.onRecipients?.(channelId, { ...summary, addedUserIds });
     return;
   }
 }
@@ -186,11 +209,10 @@ async function encryptAndSubmit(
 ): Promise<void> {
   let minEpoch: bigint | null = null;
   for (let attempt = 0; attempt < STALE_EPOCH_ATTEMPTS; attempt += 1) {
-    await ensureOutboundSession(deps, channelId, shapeEpoch, minEpoch);
-    const { ciphertext, epoch } = await deps.worker.request({
-      op: "megolmEncrypt",
-      channelId,
-      message,
+    // 用意から暗号化までを、同じチャンネルのほかの送信の用意と重ねない。
+    const { ciphertext, epoch } = await serialized(channelId, async () => {
+      await prepareOutboundSession(deps, channelId, shapeEpoch, minEpoch);
+      return deps.worker.request({ op: "megolmEncrypt", channelId, message });
     });
     try {
       await submit(ciphertext, epoch);
@@ -198,8 +220,9 @@ async function encryptAndSubmit(
     } catch (error) {
       const current = staleEpoch(error);
       if (current === null) throw error;
-      // 古いセッションでは送らない。新しい epoch で作り直す。
-      await deps.worker.request({ op: "megolmDiscard", channelId });
+      // 古いセッションでは送らない。`current_epoch` 以上のスナップショットで判定し直すと、epoch の
+      // 違う送信用セッションは `megolmStart` が捨てて作り直す。ここで捨てないのは、同じチャンネルの
+      // ほかの送信がすでに新しい epoch で用意したセッションを、暗号化の前に捨てないため。
       minEpoch = noteEpoch(channelId, current);
     }
   }
@@ -286,5 +309,25 @@ export async function editEncryptedMessage(
         { signal: deps.signal },
       );
     },
+  );
+}
+
+/**
+ * 編集の 409 `E2EE_STALE_REVISION` が、自分の編集の応答をなくしただけか（docs/e2ee.md の「メッセージ」）。
+ * `current_revision` の行を復号した本文が、送ろうとした本文と同じなら、編集は済んでいる。
+ * `shown` は、そのメッセージの今の復号の結果（`rowRevision` の行のもの）。
+ */
+export function editAlreadyApplied(
+  error: unknown,
+  shown: MessageDecryption | undefined,
+  body: string,
+): boolean {
+  const current = staleRevision(error);
+  return (
+    current !== null &&
+    shown?.status === "decrypted" &&
+    !shown.revisionWarning &&
+    shown.rowRevision === current &&
+    shown.body === body
   );
 }

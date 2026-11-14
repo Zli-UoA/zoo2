@@ -78,6 +78,9 @@
     "login": "登入",
     "failed": "無法登入",
     "retry": "重新登入",
+    "logoutStorageFailed": "無法完成登出",
+    "logoutStorageFailedHelp": "記憶體中的工作階段已清除，但瀏覽器無法使已儲存的登入資料失效。請恢復儲存空間存取權，並在離開此頁面前重試。",
+    "retryLogout": "重試登出",
     "unauthorizedLoop": "API 持續回傳 401，已停止自動重新登入。請檢查 OIDC 設定（audience / typ / JWKS）與後端日誌。",
     "errorWithCode": "{{message}} ({{code}})",
     "oidcErrors": {
@@ -412,7 +415,10 @@
     "on": "啟用",
     "off": "停用",
     "unavailable": "無法使用",
-    "title": "推播通知"
+    "title": "推播通知",
+    "desktopTitle": "通知",
+    "desktopValue": "系統通知",
+    "desktopDescription": "應用程式會透過系統通知提醒你被提及與收到私訊。若在系統設定中關閉了 zoo2 的通知，請在那裡也將其開啟。"
   },
   "mfm": {
     "suggestions": "MFM 候選",
@@ -1165,11 +1171,16 @@
       "locked": "在此裝置上解鎖加密後即可讀取此訊息。",
       "staleEpoch": "此訊息是為先前的成員加密的，無法讀取。",
       "invalid": "此訊息驗證失敗，因此不顯示。",
-      "failed": "無法解密此訊息。"
+      "failed": "無法解密此訊息。",
+      "unencrypted": "此訊息未加密，因此不顯示。"
     },
     "sender": {
       "unverified": "未驗證的傳送者",
       "unauthenticated": "無法確認傳送者"
+    },
+    "revision": {
+      "stale": "伺服器傳回了舊版本。正在顯示最新版本",
+      "conflict": "收到了版本相同但內容不同的訊息。正在顯示先收到的那則"
     },
     "undeliverable": {
       "title": "以下使用者無法讀取新訊息",

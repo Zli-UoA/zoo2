@@ -78,6 +78,9 @@
     "login": "Log in",
     "failed": "Unable to log in",
     "retry": "Log in again",
+    "logoutStorageFailed": "Logout could not be completed",
+    "logoutStorageFailedHelp": "Your session has been cleared from memory, but this browser could not invalidate saved sign-in data. Restore storage access and retry on this page before leaving it.",
+    "retryLogout": "Retry logout",
     "unauthorizedLoop": "Automatic login stopped because the API repeatedly returned 401. Check the OIDC settings (audience / typ / JWKS) and backend logs.",
     "errorWithCode": "{{message}} ({{code}})",
     "oidcErrors": {
@@ -412,7 +415,10 @@
     "on": "On",
     "off": "Off",
     "unavailable": "Unavailable",
-    "title": "Push notifications"
+    "title": "Push notifications",
+    "desktopTitle": "Notifications",
+    "desktopValue": "System notifications",
+    "desktopDescription": "The app shows mentions and DMs as system notifications. If notifications for zoo2 are turned off in your system settings, turn them on there as well."
   },
   "mfm": {
     "suggestions": "MFM suggestions",
@@ -1165,11 +1171,16 @@
       "locked": "Unlock encryption on this device to read this message.",
       "staleEpoch": "This message was encrypted for an earlier member list and can't be read.",
       "invalid": "This message failed verification and isn't shown.",
-      "failed": "This message couldn't be decrypted."
+      "failed": "This message couldn't be decrypted.",
+      "unencrypted": "This message isn't encrypted, so it isn't shown."
     },
     "sender": {
       "unverified": "Unverified sender",
       "unauthenticated": "Sender can't be confirmed"
+    },
+    "revision": {
+      "stale": "The server returned an older version. Showing the latest version",
+      "conflict": "A different message arrived with the same version. Showing the one received first"
     },
     "undeliverable": {
       "title": "These people can't read new messages",
