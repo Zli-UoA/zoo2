@@ -795,6 +795,48 @@ describe("初回設定と解錠", () => {
     expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
   });
 
+  it("サーバーが同じカーソルを返し続けたら、取り込みをやめる", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const { keyId, recoveryKey } = await beginSetup(first.deps(server), null);
+    await completeSetup(first.deps(server), keyId, TOKEN);
+    await receiveRoomKey(first);
+    await uploadKeyBackup(first.deps(server));
+
+    const second = await device("second");
+    const deps = second.deps(server);
+    const status = await loadE2eeStatus(deps);
+    if (status.kind !== "locked") throw new Error("unreachable");
+    await unlock(deps, status.storage, { kind: "recovery", recoveryKey });
+    const respond = server.client();
+    let reads = 0;
+    const looping = {
+      ...respond,
+      get: (async (path: string, options?: RequestOptions) => {
+        if (!path.startsWith("/api/e2ee/key_backup/keys")) return respond.get(path, options);
+        reads += 1;
+        return { sessions: [], next: reads % 2 === 0 ? "a" : "b" };
+      }) as ApiClient["get"],
+    };
+    expect(await importKeyBackup({ ...deps, client: looping })).toEqual({
+      kind: "rejected",
+      code: "BackupCursorLoop",
+    });
+    expect(reads).toBe(3);
+
+    const huge = {
+      ...respond,
+      get: (async (path: string, options?: RequestOptions) => {
+        if (!path.startsWith("/api/e2ee/key_backup/keys")) return respond.get(path, options);
+        return { sessions: Array.from({ length: 1001 }, () => ({})), next: null };
+      }) as ApiClient["get"],
+    };
+    expect(await importKeyBackup({ ...deps, client: huge })).toEqual({
+      kind: "rejected",
+      code: "BackupPageTooLarge",
+    });
+  });
+
   it("取り込みの途中で版が消えたら、やめて次の解錠か起動に任せる", async () => {
     const server = new FakeServer();
     const first = await device("first");
