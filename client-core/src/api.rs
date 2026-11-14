@@ -117,13 +117,24 @@ impl ApiClient {
         path: &str,
         body: Option<Value>,
     ) -> Result<reqwest::Response> {
-        let reading = method == Method::GET;
+        let timeout = (method == Method::GET).then(|| std::time::Duration::from_secs(10));
+        self.send_with_timeout(method, path, body, timeout).await
+    }
+
+    /// `timeout` は、接続から応答の本文を読み終えるまでの期限（reqwest の `RequestBuilder::timeout`）。
+    async fn send_with_timeout(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<reqwest::Response> {
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base_url))
             .header(reqwest::header::ACCEPT, "application/json");
-        if reading {
-            request = request.timeout(std::time::Duration::from_secs(10));
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
         }
         if let Some(body) = body {
             request = request.json(&body);
@@ -197,6 +208,91 @@ impl ApiClient {
 
     pub async fn token_persistence_report(&self) -> TokenPersistenceReport {
         self.credentials.persistence_report().await
+    }
+
+    /// E2EE の要求の期限。応答が止まっても、端末の管理（暗号ストアのロックを持つ）が
+    /// 止まったままにならないようにする。
+    const E2EE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// E2EE の要求を送り、応答の封筒 `{data, txid}` の `data` を返す。
+    async fn write_data(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
+        let envelope: Envelope = self
+            .send_with_timeout(method, path, body, Some(Self::E2EE_TIMEOUT))
+            .await?
+            .json()
+            .await?;
+        Ok(envelope.data.unwrap_or(Value::Null))
+    }
+
+    /// `POST /api/e2ee/devices`：端末を登録する（docs/e2ee.md の「端末とワンタイム鍵」）。
+    /// 応答の `one_time_key_counts` と `unused_fallback_key_types` を含む端末の行を返す。
+    pub async fn e2ee_register_device(&self, body: Value) -> Result<Value> {
+        self.write_data(Method::POST, "/api/e2ee/devices", Some(body))
+            .await
+    }
+
+    /// `POST /api/e2ee/keys/upload`。鍵が空なら、今の数を読むだけになる。
+    pub async fn e2ee_upload_keys(
+        &self,
+        device_id: &str,
+        one_time_keys: Value,
+        fallback_keys: Value,
+    ) -> Result<Value> {
+        self.write_data(
+            Method::POST,
+            "/api/e2ee/keys/upload",
+            Some(serde_json::json!({
+                "device_id": device_id,
+                "one_time_keys": one_time_keys,
+                "fallback_keys": fallback_keys,
+            })),
+        )
+        .await
+    }
+
+    /// `POST /api/e2ee/keys/query`（封筒なしの JSON）。一度に 50 人までにする。
+    pub async fn e2ee_query_keys(&self, user_ids: &[String]) -> Result<Value> {
+        let mut device_keys = serde_json::Map::new();
+        for chunk in user_ids.chunks(50) {
+            let response: Value = self
+                .send_with_timeout(
+                    Method::POST,
+                    "/api/e2ee/keys/query",
+                    Some(serde_json::json!({ "user_ids": chunk })),
+                    Some(Self::E2EE_TIMEOUT),
+                )
+                .await?
+                .json()
+                .await?;
+            if let Some(Value::Object(users)) = response.get("device_keys") {
+                device_keys.extend(users.clone());
+            }
+        }
+        Ok(serde_json::json!({ "device_keys": device_keys }))
+    }
+
+    /// `POST /api/e2ee/to_device/ack`。一度に 1000 件までにする。
+    pub async fn e2ee_ack_to_device(&self, device_id: &str, ids: &[String]) -> Result<()> {
+        for chunk in ids.chunks(1000) {
+            self.write_data(
+                Method::POST,
+                "/api/e2ee/to_device/ack",
+                Some(serde_json::json!({ "device_id": device_id, "ids": chunk })),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// `DELETE /api/e2ee/devices/{device_id}`。削除済みでも成功する（冪等）。
+    pub async fn e2ee_delete_device(&self, device_id: &str) -> Result<()> {
+        self.write_data(
+            Method::DELETE,
+            &format!("/api/e2ee/devices/{device_id}"),
+            None,
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn threads(&self, archived: bool, before: Option<&str>) -> Result<ThreadPage> {

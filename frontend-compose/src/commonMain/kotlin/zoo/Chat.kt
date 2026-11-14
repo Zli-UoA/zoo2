@@ -656,7 +656,10 @@ internal fun Message(
         else app.openThread(id, wide)
     }
     val startEdit = {
-        if (callbacks?.startEdit != null) callbacks.startEdit.invoke() else editing = true
+        // 暗号化チャンネルでは、暗号化して送れるようになるまで編集を始めない（保存も送らない）。
+        if (channel.flag("encrypted")) app.toast = app.t("e2ee.sendUnavailable")
+        else if (callbacks?.startEdit != null) callbacks.startEdit.invoke()
+        else editing = true
     }
     val requestDelete = {
         if (callbacks?.requestDelete != null) callbacks.requestDelete.invoke() else deleting = true

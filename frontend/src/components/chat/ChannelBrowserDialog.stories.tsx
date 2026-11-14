@@ -1,6 +1,6 @@
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { storyChannels } from "../../../.storybook/fixtures";
@@ -68,6 +68,36 @@ export const JoinFailed: Story = {
     await expect(await screen.findByRole("alert")).toBeInTheDocument();
     await expect(args.onOpenChange).not.toHaveBeenCalled();
     await expect(screen.getAllByRole("button", { name: "参加する" })[0]).toBeEnabled();
+  }),
+};
+
+export const SortByName: Story = {
+  play: playForImplementation(async () => {
+    const rows = async () =>
+      (await screen.findAllByRole("link")).map((link) => link.textContent ?? "");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "アーカイブ済みのチャンネルを含める" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /並び替え/ }));
+    await userEvent.click(await screen.findByRole("menuitemradio", { name: /A → Z/ }));
+    await expect((await rows())[0]).toContain("old-announcements");
+    // 閉じるアニメーションの途中（pointer-events: none）のメニューを押さないよう、閉じるのを待つ。
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: /並び替え/ }));
+    await userEvent.click(await screen.findByRole("menuitemradio", { name: /Z → A/ }));
+    await expect((await rows())[0]).toContain("random");
+  }),
+};
+
+export const IncludeArchived: Story = {
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText("random")).toBeInTheDocument();
+    await expect(screen.queryByText("old-announcements")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "アーカイブ済みのチャンネルを含める" });
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(toggle);
+    await expect(await screen.findByText("old-announcements")).toBeInTheDocument();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
   }),
 };
 

@@ -67,6 +67,27 @@ erDiagram
     }
     call_presence }o--o| channels : call_presence_channel_id_fkey
     call_presence }o--o| users : call_presence_user_id_fkey
+    channel_leave {
+      text user_id PK,FK
+      text channel_id PK,FK
+      timestamp(3) left_at
+    }
+    channel_leave }o--o| channels : channel_leave_channel_id_fkey
+    channel_leave }o--o| users : channel_leave_user_id_fkey
+    channel_notes {
+      text id PK
+      text channel_id FK
+      character_varying(200) title
+      text content
+      integer position
+      timestamp(3) deleted_at
+      integer version
+      text created_user_id FK
+      timestamp(3) created_at
+      timestamp(3) updated_at
+    }
+    channel_notes }o--o| channels : channel_notes_channel_id_fkey
+    channel_notes }o--o| users : channel_notes_created_user_id_fkey
     channel_pins {
       text channel_id PK,FK
       text item_type PK

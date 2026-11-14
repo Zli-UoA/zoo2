@@ -120,15 +120,15 @@ export class CryptoOperations {
         this.setup.addPasskeySlot(request);
         return null;
       case "setupSecretStorageRequest":
-        return this.setup.secretStorageRequest();
+        return this.setup.secretStorageRequest(request.keyId);
       case "setupPendingSlots":
         return this.setup.pendingSlots();
       case "unlock":
         return this.setup.unlock(request.response, request.secret);
       case "planResume":
-        return this.setup.plan(this.opened(), request.keysQuery, request.versions);
+        return this.setup.plan(this.opened(), request.keysQuery, request.versions, request.keyId);
       case "finishSetup":
-        await this.setup.finish(this.opened(), request.secretsRevision);
+        await this.setup.finish(this.opened(), request.secretsRevision, request.keyId);
         return null;
       case "newPasskeySlot":
         return this.setup.newPasskeySlot(request);

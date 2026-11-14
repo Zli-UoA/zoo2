@@ -59,11 +59,12 @@ export type CryptoOperation =
   // 初回設定と解錠（#360）。秘密は Worker のメモリーにだけ置き、要求の本文だけを返す。
   | { op: "setupBegin"; reset: ResetExpectation | null }
   | ({ op: "setupAddPasskeySlot" } & PasskeySlotInput)
-  | { op: "setupSecretStorageRequest" }
+  | { op: "setupSecretStorageRequest"; keyId: string }
   | { op: "setupPendingSlots" }
   | { op: "unlock"; response: JsonObject; secret: UnlockSecret }
-  | { op: "planResume"; keysQuery: JsonObject; versions: JsonObject }
-  | { op: "finishSetup"; secretsRevision: number | null }
+  /** `keyId` を渡すと、メモリーの SSSS 鍵がその鍵のときだけ行う（初回設定とリセット）。 */
+  | { op: "planResume"; keysQuery: JsonObject; versions: JsonObject; keyId?: string }
+  | { op: "finishSetup"; secretsRevision: number | null; keyId?: string }
   | ({ op: "newPasskeySlot" } & PasskeySlotInput)
   | { op: "newRecoverySlot" }
   | { op: "startupCheck"; keysQuery: JsonObject; versions: JsonObject }

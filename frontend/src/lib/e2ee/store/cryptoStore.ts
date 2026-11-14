@@ -489,7 +489,8 @@ export class CryptoStore {
     try {
       this.trust.trustOwnMasterKey(crossSigning.master);
       this.trust.recordOwnUserSigningKey(crossSigning.userSigning);
-      await this.backend.write({
+      // 失敗したら、メモリーの記録が保存と食い違うので、開き直させる（`write` が印を付ける）。
+      await this.write({
         meta: {
           [META_OWN_KEYS]: keys.pickle(this.account, this.storageKey),
           [META_SECRETS_REVISION]: secretsRevision === null ? null : String(secretsRevision),
@@ -545,7 +546,17 @@ export class CryptoStore {
         const code = (error as { code?: unknown }).code;
         return { kind: "rejected", code: typeof code === "string" ? code : "Unknown" };
       }
-      if (change === "changed") await this.backend.resetBackedUp();
+      if (change === "changed") {
+        try {
+          await this.backend.resetBackedUp();
+        } catch (error) {
+          // 新しい版を見たことは、送信待ちに戻せたあとでだけ記録する。次の呼び出しで、保存した
+          // 状態から読み直して、もう一度戻す。
+          this.backupState?.free();
+          this.backupState = null;
+          throw error;
+        }
+      }
       await this.saveBackupState(state);
     } finally {
       own.keys.free();

@@ -13,6 +13,7 @@ use zoo2_tui::{
         token::{self, StoredTokens, TokenManager},
     },
     config::{self, AuthConfig, Config, OidcConfig},
+    e2ee,
     http::Credentials,
     ui,
 };
@@ -23,7 +24,7 @@ const USAGE: &str = "\
 コマンド:
   run      チャット画面を開く (省略時の既定)
   login    ブラウザでコードを承認してログインする
-  logout   保存したトークンを消す
+  logout   この端末の暗号の鍵と、保存したトークンを消す
   help     このヘルプを表示する
 
 設定は ~/.config/zoo2-tui/config.toml と環境変数 ZOO_* から読み込みます。";
@@ -84,7 +85,26 @@ async fn run() -> Result<()> {
             )))
         }
     };
-    ui::run(http, config.api_base_url, credentials, config.check_updates).await
+    // 端末の登録と to-device の処理は、画面と並行して裏で行う（#359）。
+    let crypto_task = config::config_dir().map(|dir| {
+        let user_id = match &credentials {
+            Credentials::Dev(user_id) => Some(user_id.clone()),
+            Credentials::Bearer(_) => None,
+        };
+        e2ee::manager::spawn(
+            http.clone(),
+            config.api_base_url.clone(),
+            credentials.clone(),
+            ApiClient::new(http.clone(), &config.api_base_url, credentials.clone()),
+            e2ee::store::crypto_root(&dir),
+            user_id,
+        )
+    });
+    let result = ui::run(http, config.api_base_url, credentials, config.check_updates).await;
+    if let Some(task) = crypto_task {
+        task.abort();
+    }
+    result
 }
 
 async fn login() -> Result<()> {
@@ -133,9 +153,33 @@ async fn login() -> Result<()> {
 
 async fn logout() -> Result<()> {
     let config = Config::load()?;
+    let http = reqwest::Client::new();
+    // dev モードでも、run で作った暗号ストアと端末は消す。トークンの失効はない。
+    if let AuthConfig::Dev { user_id } = &config.auth {
+        let credentials = Credentials::Dev(user_id.clone());
+        if !clear_encryption(&config, credentials, &http).await? {
+            println!("ログアウトを取りやめました。");
+        } else {
+            println!("この端末の暗号の鍵を消しました。");
+        }
+        return Ok(());
+    }
     let oidc = oidc_config(&config)?;
     let path = token_file()?;
-    let http = reqwest::Client::new();
+    // 端末の削除 API にはトークンが要る。トークンがなければ、次のログインで消し直す。
+    let credentials = match token::load(&path, oidc, Some(&config.api_base_url))? {
+        Some(tokens) => Credentials::Bearer(Arc::new(TokenManager::new(
+            http.clone(),
+            oidc.clone(),
+            path.clone(),
+            tokens,
+        ))),
+        None => Credentials::Dev(String::new()),
+    };
+    if !clear_encryption(&config, credentials, &http).await? {
+        println!("ログアウトを取りやめました。");
+        return Ok(());
+    }
     match revoke_and_delete_tokens(&path, oidc, &http).await? {
         token::DeleteOutcome::Deleted => println!("ログアウトしました。"),
         token::DeleteOutcome::Missing => println!("ログインしていません。"),
@@ -144,6 +188,45 @@ async fn logout() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 暗号ストアを消し、端末を削除する（docs/e2ee.md の「ログアウトと端末の削除」）。
+///
+/// 鍵バックアップに送れていない鍵があれば、件数を示して確かめる。取りやめたら `false`。
+async fn clear_encryption(
+    config: &Config,
+    credentials: Credentials,
+    http: &reqwest::Client,
+) -> Result<bool> {
+    let Some(dir) = config::config_dir() else {
+        return Ok(true);
+    };
+    let root = e2ee::store::crypto_root(&dir);
+    let targets = e2ee::manager::open_for_logout(&root)?;
+    if targets.is_empty() {
+        return Ok(true);
+    }
+    let pending: usize = targets.iter().map(|target| target.pending_backup).sum();
+    if pending > 0 {
+        println!(
+            "{pending} 件の鍵がバックアップされていません。ログアウトすると、この端末でしか復号できない過去のメッセージが読めなくなります。"
+        );
+        print!("ログアウトしますか？ [y/N] ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Ok(false);
+        }
+    }
+    let api = ApiClient::new(http.clone(), &config.api_base_url, credentials);
+    // 削除 API は、トークンのユーザーの暗号ストアにだけ呼ぶ。分からなければ（オフラインなど）、
+    // 削除待ちに残して次の起動で消し直す。
+    let signed_in_user = api.me().await.ok().map(|me| me.id);
+    for target in targets {
+        e2ee::manager::destroy_for_logout(&api, &root, target, signed_in_user.as_deref()).await?;
+    }
+    Ok(true)
 }
 
 async fn revoke_and_delete_tokens(
