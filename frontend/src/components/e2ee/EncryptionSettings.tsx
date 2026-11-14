@@ -87,8 +87,21 @@ function slotViews(storage: SecretStorageResponse): KeySlotView[] {
 /**
  * 設定の「暗号化」タブの、状態と解錠、鍵のセクション（初回設定と解錠。#360）。暗号ストアを開いてから
  * 出す（開けていない理由は、タブの上に `EncryptionTab` が出す）。
+ *
+ * 同じタブの端末のセクションとは `EncryptionTab` を通して知らせ合う。`onUnlocked` は、解錠か初回設定
+ * （リセットを含む）を終えたとき（最初の読み込みで解錠済みだったときは呼ばない）。`refreshKey` が
+ * 変わったら（端末のセクションで失効を終え、鍵スロットが変わったとき）、状態を読み直す。
+ * `onSettled` は、読み込み中でなくなったか。
  */
-export function EncryptionSettings() {
+export function EncryptionSettings({
+  refreshKey = 0,
+  onUnlocked,
+  onSettled,
+}: {
+  refreshKey?: number;
+  onUnlocked?: () => void;
+  onSettled?: (settled: boolean) => void;
+} = {}) {
   const { worker, userId, deviceId } = useE2ee();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
@@ -160,6 +173,23 @@ export function EncryptionSettings() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadedKey = useRef(refreshKey);
+  useEffect(() => {
+    if (refreshKey === loadedKey.current) return;
+    loadedKey.current = refreshKey;
+    void load();
+  }, [refreshKey, load]);
+
+  /** 最後に落ち着いた（読み込み中でない）段。解錠したことを、段の移り変わりで見分ける。 */
+  const settledStep = useRef<EncryptionViewState["step"] | null>(null);
+  useEffect(() => {
+    onSettled?.(state.step !== "loading");
+    if (state.step === "loading") return;
+    const previous = settledStep.current;
+    settledStep.current = state.step;
+    if (state.step === "unlocked" && previous !== null && previous !== "unlocked") onUnlocked?.();
+  }, [state.step, onSettled, onUnlocked]);
 
   const begin = useCallback(
     async (resetFrom: SecretStorageResponse | null) => {

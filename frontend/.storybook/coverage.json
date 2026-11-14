@@ -1381,7 +1381,7 @@
       "file": "src/components/e2ee/EncryptionTab.tsx",
       "story": "src/components/layout/ZooSettings.stories.tsx",
       "composed": true,
-      "reason": "暗号ストアを開いたかで、理由か各セクションかを選び、20 台の上限の画面と、古い ?tab=devices のリンクからの移動をつなぐ。並びと理由の表示は EncryptionTabView のストーリーで、タブの開き方は ZooSettings の Encryption と LegacyDevicesLink で確かめる。"
+      "reason": "暗号ストアを開いたかで、理由か各セクションかを選び、20 台の上限の画面、セクション間の読み直し（解錠と失効）、古い ?tab=devices のリンクからの移動をつなぐ。並びと理由の表示は EncryptionTabView のストーリーで、タブの開き方は ZooSettings の Encryption と LegacyDevicesLink で、セクション間の読み直しと移る時機は EncryptionTab.browser.test.tsx で確かめる。"
     },
     {
       "file": "src/components/e2ee/DevicesSettingsView.tsx",

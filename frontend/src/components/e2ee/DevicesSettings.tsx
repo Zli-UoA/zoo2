@@ -152,8 +152,20 @@ export function DeviceLimit({ staleIds }: { staleIds: string[] }) {
 /**
  * 設定の「暗号化」タブの、端末（一覧、削除、失効）と他のユーザーの検証のセクション（#362）。暗号
  * ストアを開いてから出す。
+ *
+ * 同じタブの状態と解錠のセクションとは `EncryptionTab` を通して知らせ合う。`refreshKey` が変わったら
+ * （上のセクションで解錠か初回設定を終えたとき）、端末と検証状態を読み直す。`onKeysChanged` は、失効を
+ * 終えて鍵スロットが変わったとき。`onSettled` は、読み込み中でなくなったか。
  */
-export function DevicesSettings() {
+export function DevicesSettings({
+  refreshKey = 0,
+  onKeysChanged,
+  onSettled,
+}: {
+  refreshKey?: number;
+  onKeysChanged?: () => void;
+  onSettled?: (settled: boolean) => void;
+} = {}) {
   const e2ee = useE2ee();
   const { worker, userId, deviceId, sas } = e2ee;
   const { config } = useCollections();
@@ -267,6 +279,17 @@ export function DevicesSettings() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadedKey = useRef(refreshKey);
+  useEffect(() => {
+    if (refreshKey === loadedKey.current) return;
+    loadedKey.current = refreshKey;
+    void load();
+  }, [refreshKey, load]);
+
+  useEffect(() => {
+    onSettled?.(state.step !== "loading");
+  }, [state.step, onSettled]);
 
   // 絵文字 SAS で相手を検証して保存できたら、検証状態を読み直す（「検証済み」にする）。
   useEffect(() => sas?.onSaved(() => void load()), [sas, load]);
@@ -489,6 +512,8 @@ export function DevicesSettings() {
           // 手元の受信用セッションを、新しい版に送り直す（版が変わったので、すべて送り直す）。
           e2ee.requestKeyBackup();
           void load();
+          // リカバリーキーとパスキーのスロットが変わった。上のセクションに読み直してもらう。
+          onKeysChanged?.();
         } catch (error) {
           if (error instanceof RevocationChangedError) {
             setPhase(null);

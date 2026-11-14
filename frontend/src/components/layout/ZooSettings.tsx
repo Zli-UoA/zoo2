@@ -31,7 +31,7 @@ import { EncryptionTab } from "../e2ee/EncryptionTab";
 import { SlackImportPanel } from "./SlackImportPanel";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import type { SettingsSearch, SettingsTab } from "../../routes/_shell.settings";
+import { normalizeSettingsSearch, type SettingsTab } from "./settingsSearch";
 import { Button } from "../ui/button";
 import { SettingRow, panelTabClassName } from "../ui/control-panel";
 import { useShell } from "./shell-context";
@@ -46,9 +46,11 @@ export function ZooSettings() {
   const { t } = useTranslation();
   const shell = useShell();
   const navigate = useNavigate();
-  const search = useRouterState({
-    select: (state) => state.location.search as SettingsSearch,
+  const rawSearch = useRouterState({
+    select: (state) => state.location.search as Record<string, unknown>,
   });
+  // 古い `?tab=devices` も、ここで暗号化タブの端末のセクションに直す。
+  const search = useMemo(() => normalizeSettingsSearch(rawSearch), [rawSearch]);
   const { config } = useCollections();
   const { isAdmin } = useCurrentUser();
   // 管理者向けのタブは、権限がなければ一般タブに戻す
@@ -58,10 +60,10 @@ export function ZooSettings() {
     () =>
       void navigate({
         to: "/settings",
-        search: (current) => ({ ...current, section: undefined }),
+        search: { ...search, section: undefined },
         replace: true,
       }),
-    [navigate],
+    [navigate, search],
   );
   return (
     <section className="flex h-full min-h-0 flex-col" aria-labelledby="zoo-settings-title">
