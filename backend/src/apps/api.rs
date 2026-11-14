@@ -276,7 +276,8 @@ async fn shape(
         "cache-control",
         axum::http::HeaderValue::from_static("private, no-store"),
     );
-    let interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    // 資格情報とチャンネルの権限の再確認は、1 本ごとに毎秒ではなく 30 秒おきにする（接続プールを使い切らないため）。
+    let interval = tokio::time::interval(std::time::Duration::from_secs(30));
     let stream = futures_util::stream::unfold(
         (
             body.into_data_stream(),

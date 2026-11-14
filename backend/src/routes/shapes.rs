@@ -219,6 +219,41 @@ pub(crate) fn e2ee_to_device_shape_where<'a>(
 pub(crate) const E2EE_DEVICES_SHAPE_COLUMNS: &str =
     "user_id,device_id,curve25519_key,ed25519_key,device_keys,deleted_at";
 
+/// 通信が流れているストリームのアクセス権を、チャンクの転送前に再確認する最短の間隔。
+const STREAM_CHUNK_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
+/// 通信がないストリームのアクセス権を再確認する間隔。
+const STREAM_IDLE_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 開いているストリームの状態。アクセス権の確認は、1 本ごとに毎秒ではなく、上の間隔でだけ行う。
+struct StreamAccess {
+    upstream: futures_util::stream::BoxStream<'static, Result<axum::body::Bytes, reqwest::Error>>,
+    state: AppState,
+    actor: String,
+    initial_guest: bool,
+    channel: Option<String>,
+    last_checked: tokio::time::Instant,
+    _sse_guard: crate::metrics::SseConnectionGuard,
+    _permit: crate::routes::shape_limit::ShapeStreamPermit,
+}
+
+impl StreamAccess {
+    async fn still_allowed(&mut self) -> bool {
+        self.last_checked = tokio::time::Instant::now();
+        let mut db = self.state.db.clone();
+        let Ok(mut tx) = db.transaction().await else {
+            return false;
+        };
+        let guest = if self.initial_guest { "true" } else { "false" };
+        let access = crate::apps::one(
+            &mut tx,
+            "SELECT json_build_object('ok',NOT u.is_deactivated AND u.is_guest=$2::boolean AND ($3='' OR EXISTS(SELECT 1 FROM channels c WHERE c.id=$3 AND c.deleted_at IS NULL AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=u.id)))))::text FROM users u WHERE u.id=$1",
+            &[&self.actor, guest, self.channel.as_deref().unwrap_or("")],
+        )
+        .await;
+        matches!(access, Ok(v) if v["ok"] == true)
+    }
+}
+
 /// Electric へのストリーミング Shape プロキシ実行
 async fn proxy_shape(
     state: &AppState,
@@ -233,6 +268,11 @@ async fn proxy_shape(
 
     let span = tracing::info_span!("electric_proxy", shape = table);
     async move {
+        // 1 アカウントが開けるストリームの数を制限する（開いている間、枠を持つ）。
+        let permit = state.shape_streams.try_acquire(actor).ok_or_else(|| {
+            crate::metrics::record_electric_proxy_request(table, 429);
+            AppError::RateLimited
+        })?;
         let mut params = filter_electric_params(raw_query);
         params.push(("table".to_string(), table.to_string()));
         if table == "messages"
@@ -325,24 +365,37 @@ async fn proxy_shape(
         let channel = raw_query.get("channel_id").cloned();
         let stream = upstream_resp.bytes_stream().boxed();
         let stream = futures_util::stream::unfold(
-            (
-                stream,
-                state.clone(),
-                actor.to_owned(),
+            StreamAccess {
+                upstream: stream,
+                state: state.clone(),
+                actor: actor.to_owned(),
                 initial_guest,
                 channel,
-                sse_guard,
-            ),
-            |(mut upstream, state, actor, initial_guest, channel, sse_guard)| async move {
+                last_checked: tokio::time::Instant::now(),
+                _sse_guard: sse_guard,
+                _permit: permit,
+            },
+            |mut st| async move {
                 loop {
-                    let mut db = state.db.clone();
-                    let mut tx = db.transaction().await.ok()?;
-                    let access=crate::apps::one(&mut tx,"SELECT json_build_object('ok',NOT u.is_deactivated AND u.is_guest=$2::boolean AND ($3='' OR EXISTS(SELECT 1 FROM channels c WHERE c.id=$3 AND c.deleted_at IS NULL AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=u.id)))))::text FROM users u WHERE u.id=$1",&[&actor,if initial_guest{"true"}else{"false"},channel.as_deref().unwrap_or("")]).await.ok()?;
-                    if access["ok"] != true {
-                        return None;
+                    let deadline = st.last_checked + STREAM_IDLE_RECHECK;
+                    tokio::select! {
+                        chunk = st.upstream.next() => {
+                            let chunk = chunk?;
+                            // 転送のたびに確かめると負荷が大きいので、直近に確かめていれば省く。
+                            if st.last_checked.elapsed() >= STREAM_CHUNK_RECHECK
+                                && !st.still_allowed().await
+                            {
+                                return None;
+                            }
+                            return Some((chunk, st));
+                        }
+                        _ = tokio::time::sleep_until(deadline) => {
+                            // 通信がなくても、権限を失ったストリームは閉じる。
+                            if !st.still_allowed().await {
+                                return None;
+                            }
+                        }
                     }
-                    drop(tx);
-                    tokio::select! {chunk=upstream.next()=>return chunk.map(|chunk|(chunk,(upstream,state,actor,initial_guest,channel,sse_guard))),_=tokio::time::sleep(std::time::Duration::from_secs(1))=>{}}
                 }
             },
         );
