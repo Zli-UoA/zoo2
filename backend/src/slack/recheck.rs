@@ -41,7 +41,8 @@ fn now_secs() -> u64 {
 }
 
 /// 再確認。失敗しても、通常の同期は止めない (再確認が失敗し続けても、新しい投稿の取り込みを妨げない)。失敗したら、5 分後に
-/// もう一度試す (`rechecked_at` を、30 分の間隔の 5 分前にする)。ただし 429 は、`Retry-After` を守るため、そのまま返す
+/// もう一度試す (`rechecked_at` を、30 分の間隔の 5 分前にする)。ただし 429 は、`Retry-After` を守るため、そのまま返し、
+/// 再確認は、待ちより 5 分あとに回す (待ちのあとに、通常の同期が先に行える)
 /// (この回の通常の同期は、待ちのあと)。リースを失ったときも、そのまま返す
 pub(super) async fn run(
     slack: &mut Slack,
@@ -76,15 +77,21 @@ pub(super) async fn run(
             };
             tracing::warn!(team, channel = slack_channel, %reason, "Slack recheck failed; the sync goes on");
             ctx.users.retain(|id, _| known_users.contains(id));
+            // 次に再確認するまでの秒数。429 は、待ち (`Retry-After`) のあとに、通常の同期を先に行えるよう、待ちより 5 分あとにする。
+            // それ以外は 5 分後
+            let retry_secs = match &error {
+                SyncError::RateLimited(secs) => (*secs).min(3600) + 300,
+                _ => 300,
+            };
             // 全トークンを試し切った位置を戻す (後続の通常の同期の呼び出しが、トークンなしで失敗しないように)
             slack.set_position(position);
             let mut tx = db.transaction().await.map_err(AppError::from)?;
             query(
                 &mut tx,
-                "UPDATE slack_channel_syncs SET rechecked_at=now()-interval '25 minutes' \
+                "UPDATE slack_channel_syncs SET rechecked_at=now()-interval '30 minutes'+make_interval(secs=>$4::integer) \
                  WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
                  RETURNING json_build_object('ok',true)::text",
-                &[team, slack_channel, lease_token],
+                &[team, slack_channel, lease_token, &retry_secs.to_string()],
             )
             .await?;
             tx.commit().await.map_err(AppError::from)?;

@@ -687,7 +687,7 @@ async fn test_a_rate_limited_recheck_waits_for_retry_after() -> anyhow::Result<(
     // 再確認が 429 になったら、同じ `conversations.history` を、すぐには呼ばない (Retry-After を守る)
     failing_recheck(
         &f,
-        ResponseTemplate::new(429).insert_header("retry-after", "60"),
+        ResponseTemplate::new(429).insert_header("retry-after", "600"),
     )
     .await?;
     assert_eq!(
@@ -701,9 +701,10 @@ async fn test_a_rate_limited_recheck_waits_for_retry_after() -> anyhow::Result<(
         &[&f.team],
     )
     .await?;
-    assert!(rows[0]["wait"].as_f64().unwrap() > 40.0, "{}", rows[0]);
-    // 待ちのあとは、再確認に妨げられず、通常の同期が新しい投稿を取り込む (再確認は 5 分後に回っている)
-    assert!((3.0..=6.0).contains(&retry_in_minutes(&f).await));
+    assert!(rows[0]["wait"].as_f64().unwrap() > 500.0, "{}", rows[0]);
+    // 待ちのあとは、再確認に妨げられず、通常の同期が新しい投稿を取り込む (再確認は、待ち (10 分) より 5 分あとに回っている)
+    let minutes = retry_in_minutes(&f).await;
+    assert!((14.0..=16.0).contains(&minutes), "{minutes}");
     sql(
         &f.state,
         "UPDATE slack_channel_syncs SET available_at=now(),not_before=NULL WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",

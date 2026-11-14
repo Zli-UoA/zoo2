@@ -278,10 +278,11 @@ pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
     Ok(true)
 }
 
-/// 順番待ちの先頭を取る。**実行中の続き (`running`) と、イベントの合図が熟した (デバウンスが過ぎた) チャンネルを、先に取る。**
-/// 対応付けたチャンネルが多いと (本番は 400 件ほど)、期限の来た順に並ぶだけでは、続きの 1 ステップごとや、合図の同期が、
-/// 全チャンネルの一巡 (数分) の後ろに回ってしまう。1 ステップの大きさは `MAX_PAGES_PER_STEP` で抑えているので、先に取っても、
-/// ほかのチャンネルを飢えさせない。
+/// 順番待ちの先頭を取る。**イベントの合図が熟した (デバウンスが過ぎた) チャンネルを、期限の来た順より先に取る。**
+/// 対応付けたチャンネルが多いと (本番は 400 件ほど)、期限の来た順に並ぶだけでは、合図の同期が、全チャンネルの一巡 (数分) の
+/// 後ろに回ってしまう。合図の同期は、チャンネルごとに最短 30 秒の間隔 (`WAKE_MIN_INTERVAL`) と、デバウンスがあるので、先に取っても、
+/// ほかのチャンネルを飢えさせない。実行中の続き (`running`) は、先にしない (ページの多いチャンネルが、続けて取られて、
+/// 期限の来たほかのチャンネルを止めないため。続きは、これまでどおり期限の順)。
 async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
@@ -304,8 +305,8 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
              AND (sc.last_ts IS NOT NULL OR ch.slack_imported_at IS NOT NULL) \
              AND NOT EXISTS(SELECT 1 FROM slack_import_jobs j WHERE j.team_id=t.team_id \
                AND j.status IN ('analyzing','importing')) \
-             ORDER BY (t.running OR EXISTS(SELECT 1 FROM slack_channel_wakes w WHERE w.team_id=t.team_id \
-               AND w.slack_channel_id=t.slack_channel_id AND w.first_at<=now()-{WAKE_DEBOUNCE})) DESC,\
+             ORDER BY EXISTS(SELECT 1 FROM slack_channel_wakes w WHERE w.team_id=t.team_id \
+               AND w.slack_channel_id=t.slack_channel_id AND w.first_at<=now()-{WAKE_DEBOUNCE}) DESC,\
                t.available_at,t.team_id,t.slack_channel_id FOR UPDATE OF t SKIP LOCKED LIMIT 1) \
              UPDATE slack_channel_syncs t SET lease_until=now()+{LEASE_SQL},lease_token=$1,updated_at=now() \
              FROM c, slack_channels sc, channels ch \
