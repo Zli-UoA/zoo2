@@ -2,21 +2,21 @@ import { useLiveQuery } from "@tanstack/react-db";
 import type { AttachmentInfo } from "@zoo/crypto-wasm";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { attachmentUrlExpiresAt, shouldRefreshAttachmentUrl } from "../lib/attachments";
+import { shouldRefreshAttachmentUrl } from "../lib/attachments";
+import {
+  cachedAttachmentUrl,
+  forgetAttachmentUrl,
+  requestAttachmentUrl,
+} from "../lib/api/attachmentUrls";
 import { createConfiguredApiClient } from "../lib/api/client";
 import {
   AttachmentUploadError,
   uploadAttachment,
   type UploadedAttachment,
 } from "../lib/api/attachments";
-import type { AttachmentUrlResponse } from "../lib/api/types";
 import { uploadEncryptedAttachment, workerAttachmentCrypto } from "../lib/e2ee/attachments";
 import { useE2ee } from "../lib/e2ee/e2ee-context";
 import { useCollections } from "../lib/electric/collections-context";
-
-type UrlEntry = { url: string; expiresAt: number };
-const urlCaches = new WeakMap<object, Map<string, UrlEntry>>();
-const urlRequests = new WeakMap<object, Map<string, Promise<UrlEntry>>>();
 
 type AttachmentUrlStatus = "loading" | "ready" | "error";
 
@@ -66,17 +66,7 @@ export function useEncryptedAttachmentUpload(channelId: string) {
 export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const urlCache = useMemo(() => {
-    let cache = urlCaches.get(config);
-    if (!cache) urlCaches.set(config, (cache = new Map()));
-    return cache;
-  }, [config]);
-  const requests = useMemo(() => {
-    let pending = urlRequests.get(config);
-    if (!pending) urlRequests.set(config, (pending = new Map()));
-    return pending;
-  }, [config]);
-  const cached = urlCache.get(attachmentId);
+  const cached = cachedAttachmentUrl(config, attachmentId);
   const [status, setStatus] = useState<AttachmentUrlStatus>(cached ? "ready" : "loading");
   const [url, setUrl] = useState<string | null>(cached?.url ?? null);
   const [expiresAt, setExpiresAt] = useState<number | null>(cached?.expiresAt ?? null);
@@ -84,7 +74,7 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
 
   const load = useCallback(
     async (useCache: boolean): Promise<string | null> => {
-      const cachedEntry = urlCache.get(attachmentId);
+      const cachedEntry = cachedAttachmentUrl(config, attachmentId);
       if (useCache && cachedEntry && !shouldRefreshAttachmentUrl(cachedEntry.expiresAt)) {
         setUrl(cachedEntry.url);
         setExpiresAt(cachedEntry.expiresAt);
@@ -94,24 +84,7 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
       const current = ++requestId.current;
       setStatus("loading");
       try {
-        let pending = requests.get(attachmentId);
-        if (!pending) {
-          pending = client
-            .requestWithTx<AttachmentUrlResponse>(`/api/attachments/${attachmentId}/url`, {
-              method: "GET",
-            })
-            .then(({ data }) => {
-              const value = {
-                url: data.download_url,
-                expiresAt: attachmentUrlExpiresAt(data.download_url),
-              };
-              urlCache.set(attachmentId, value);
-              return value;
-            })
-            .finally(() => requests.delete(attachmentId));
-          requests.set(attachmentId, pending);
-        }
-        const value = await pending;
+        const value = await requestAttachmentUrl(client, config, attachmentId);
         if (current !== requestId.current) return null;
         const nextExpiresAt = value.expiresAt;
         setUrl(value.url);
@@ -128,7 +101,7 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
         return null;
       }
     },
-    [attachmentId, client, urlCache, requests],
+    [attachmentId, client, config],
   );
 
   useEffect(() => {
@@ -139,17 +112,17 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
   }, [load]);
 
   const reload = useCallback(() => {
-    urlCache.delete(attachmentId);
+    forgetAttachmentUrl(config, attachmentId);
     void load(false);
-  }, [attachmentId, load, urlCache]);
+  }, [attachmentId, load, config]);
 
   const getFreshUrl = useCallback(() => {
-    const cachedEntry = urlCache.get(attachmentId);
+    const cachedEntry = cachedAttachmentUrl(config, attachmentId);
     if (cachedEntry && !shouldRefreshAttachmentUrl(cachedEntry.expiresAt)) {
       return Promise.resolve(cachedEntry.url);
     }
     return load(false);
-  }, [attachmentId, load, urlCache]);
+  }, [attachmentId, load, config]);
 
   return { url, status, expiresAt, reload, getFreshUrl };
 }

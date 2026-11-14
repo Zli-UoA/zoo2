@@ -187,4 +187,34 @@ describe("fetchEncryptedAttachment", () => {
       ),
     ).rejects.toBeInstanceOf(EncryptedAttachmentError);
   });
+
+  it("gets the signed URL from the given resolver (the shared URL cache)", async () => {
+    const encrypted = encryptAttachment(PLAINTEXT);
+    const requestWithTx = vi.fn();
+    const client = { requestWithTx } as unknown as ApiClient;
+    const resolveUrl = vi.fn(async () => "https://storage.example/cached");
+    const fetchImpl = vi.fn(
+      async () => new Response(new Blob([encrypted.ciphertext as BlobPart]), { status: 200 }),
+    );
+
+    const blob = await fetchEncryptedAttachment(
+      client,
+      {
+        attachment_id: "a",
+        name: "secret.txt",
+        mimetype: "text/plain",
+        size: PLAINTEXT.byteLength,
+        file: encrypted.file,
+      },
+      wasmCrypto,
+      fetchImpl as typeof fetch,
+      resolveUrl,
+    );
+    expect(resolveUrl).toHaveBeenCalledWith("a");
+    expect(requestWithTx).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledWith("https://storage.example/cached", {
+      credentials: "omit",
+    });
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(PLAINTEXT);
+  });
 });

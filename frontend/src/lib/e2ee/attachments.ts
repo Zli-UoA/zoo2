@@ -129,20 +129,25 @@ export class EncryptedAttachmentError extends Error {
  * 本文の `AttachmentInfo` の添付を取得して復号し、元の MIME の `Blob` にする。
  *
  * 暗号文のハッシュが本文の値と合わなければ投げる（サーバーや S3 が中身を差し替えても、平文を返さない）。
+ * `resolveUrl` を渡すと、署名付き URL をそこから得る（画面では `lib/api/attachmentUrls.ts` のキャッシュ）。
  */
 export async function fetchEncryptedAttachment(
   client: ApiClient,
   info: AttachmentInfo,
   crypto: AttachmentCrypto,
   fetchImpl: typeof fetch = fetch,
+  resolveUrl: (attachmentId: string) => Promise<string> = async (attachmentId) =>
+    (
+      await client.requestWithTx<AttachmentUrlResponse>(
+        `/api/attachments/${encodeURIComponent(attachmentId)}/url`,
+        { method: "GET" },
+      )
+    ).data.download_url,
 ): Promise<Blob> {
   let ciphertext: Uint8Array;
   try {
-    const { data } = await client.requestWithTx<AttachmentUrlResponse>(
-      `/api/attachments/${encodeURIComponent(info.attachment_id)}/url`,
-      { method: "GET" },
-    );
-    const response = await fetchImpl(data.download_url, { credentials: "omit" });
+    const downloadUrl = await resolveUrl(info.attachment_id);
+    const response = await fetchImpl(downloadUrl, { credentials: "omit" });
     if (!response.ok) {
       throw new Error(`Attachment download failed with status ${response.status}`);
     }
