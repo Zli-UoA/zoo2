@@ -698,9 +698,14 @@ impl Revocation {
 
     /// `POST /api/e2ee/cross_signing/keys` の本文（`expected_keys` は始める前のサーバーの鍵）。
     /// 端末だけの失効ではマスター鍵を送らない。直前の再認証が要る。
+    ///
+    /// `expected_default_key_id` には、この失効の SSSS 鍵（2〜5 では新しい鍵）を入れる。SSSS を
+    /// 保存したあとで別の端末が SSSS だけを作り直した（リセットや失効を SSSS の保存の直後で止めた）
+    /// ときに、その SSSS に対応しない公開鍵を書かないようにするため（409 `E2EE_SSSS_CONFLICT`）。
     pub fn cross_signing_request(&self) -> Value {
         let upload = self.secrets.cross_signing.upload_json();
         let mut body = json!({
+            "expected_default_key_id": self.state.key_id,
             "expected_keys": {
                 "master": self.state.expected_keys.master,
                 "self_signing": self.state.expected_keys.self_signing,
@@ -732,12 +737,14 @@ impl Revocation {
     }
 
     /// `POST /api/e2ee/key_backup/versions` の本文（`expected_current_version` は始める前の今の版）。
-    /// 直前の再認証が要る。
+    /// 直前の再認証が要る。`expected_default_key_id` は [`Self::cross_signing_request`] と同じ。
     pub fn backup_version_request(&self) -> Result<Value, CryptoError> {
-        self.secrets.backup_key.create_version_request(
+        let mut body = self.secrets.backup_key.create_version_request(
             &self.secrets.cross_signing.master,
             self.state.expected_current_version.as_deref(),
-        )
+        )?;
+        body["expected_default_key_id"] = json!(self.state.key_id);
+        Ok(body)
     }
 
     /// 新しい版を作った。

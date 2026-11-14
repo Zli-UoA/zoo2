@@ -1215,6 +1215,71 @@ async fn concurrent_revocations_keep_every_live_backup_key_in_ssss() {
     assert_eq!(live, 1, "{versions}");
 }
 
+/// 1〜5 の失効が SSSS を保存したあと、別の端末の失効が SSSS だけを作り直して止まったら、続きの
+/// クロス署名鍵と鍵バックアップの版を保存しない（`expected_default_key_id` を同じトランザクションで
+/// 照合して 409 `E2EE_SSSS_CONFLICT`）。公開鍵の保存の前と、版を作る前の 2 か所で確かめる。
+#[tokio::test]
+async fn revocation_stops_when_another_device_replaced_secret_storage() {
+    let env = env().await;
+    let (mut alice, mut first) = setup(&env).await;
+    let mut second = Device::register(&env, &alice.id).await;
+    second.unlock(&env, &alice).await.unwrap();
+
+    for stop in [
+        RevocationStage::SecretStorageSaved,
+        RevocationStage::SignaturesSaved,
+    ] {
+        let mut r1 = prepare(&env, &alice, &first, RevocationScope::Full, &[]).await;
+        finish(&env, &mut alice, &mut first, &mut r1, stop)
+            .await
+            .unwrap();
+        // 2 台目は 1 台目の SSSS を開けて失効を始め、SSSS だけを保存して止まる。
+        let mut r2 = prepare(&env, &alice, &second, RevocationScope::Full, &[]).await;
+        finish(
+            &env,
+            &mut alice,
+            &mut second,
+            &mut r2,
+            RevocationStage::SecretStorageSaved,
+        )
+        .await
+        .unwrap();
+        let ssss = env.secret_storage(&alice.id).await["default_key_id"].clone();
+        let keys = env.keys_query(&alice.id, &[&alice.id]).await;
+        let versions = env.versions(&alice.id).await;
+
+        let (status, res) = finish(
+            &env,
+            &mut alice,
+            &mut first,
+            &mut r1,
+            RevocationStage::Verified,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::CONFLICT, "{stop:?}");
+        assert_eq!(code(&res), "E2EE_SSSS_CONFLICT", "{stop:?}");
+        assert_eq!(env.secret_storage(&alice.id).await["default_key_id"], ssss);
+        let after = env.keys_query(&alice.id, &[&alice.id]).await;
+        for field in ["master_keys", "self_signing_keys", "user_signing_keys"] {
+            assert_eq!(after[field], keys[field], "{stop:?} {field}");
+        }
+        assert_eq!(env.versions(&alice.id).await, versions, "{stop:?}");
+
+        // 2 台目が最後まで終えれば、SSSS と公開鍵と版がそろう。
+        finish(
+            &env,
+            &mut alice,
+            &mut second,
+            &mut r2,
+            RevocationStage::Verified,
+        )
+        .await
+        .unwrap();
+        first.unlock(&env, &alice).await.unwrap();
+    }
+}
+
 /// 暗号化チャンネルを抜けた相手に受け入れで署名していても、失効のあとで署名が付け直される。
 #[tokio::test]
 async fn signatures_on_users_who_left_are_resigned() {

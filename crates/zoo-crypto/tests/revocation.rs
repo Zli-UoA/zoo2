@@ -343,6 +343,9 @@ fn save_all(alice: &mut Alice, revocation: &mut Revocation, slots: &[KeySlot]) {
             .unwrap()
             .clone()
     );
+    // 保存した SSSS の既定の鍵を前提にする（別の端末が SSSS だけを作り直したら 409）。
+    let default_key_id = json!(revocation.state().key_id);
+    assert_eq!(body["expected_default_key_id"], default_key_id);
     alice.apply_cross_signing(&body);
     revocation.advance(RevocationStage::CrossSigningSaved);
     let device = DeviceAccount::new(ALICE, DEVICE).unwrap().device_keys();
@@ -351,6 +354,7 @@ fn save_all(alice: &mut Alice, revocation: &mut Revocation, slots: &[KeySlot]) {
     revocation.advance(RevocationStage::SignaturesSaved);
     let version_body = revocation.backup_version_request().unwrap();
     assert_eq!(version_body["expected_current_version"], json!("1"));
+    assert_eq!(version_body["expected_default_key_id"], default_key_id);
     let version = alice.apply_version(&version_body);
     revocation.backup_created(version);
 }

@@ -100,6 +100,15 @@ class FakeServer {
     throw new ApiError(status, code, { error: code, code, ...extra });
   }
 
+  /** 実際のサーバーと同じく、前提にした既定の SSSS 鍵を照合する（省略したら照合しない）。 */
+  private checkExpectedDefaultKey(body: Json) {
+    if (body.expected_default_key_id === undefined) return;
+    const current = (this.ssss?.default_key_id as string | undefined) ?? null;
+    if (body.expected_default_key_id !== current) {
+      this.error(409, "E2EE_SSSS_CONFLICT", { default_key_id: current });
+    }
+  }
+
   private requireReauth(reauth: boolean) {
     if (!reauth) this.error(403, "E2EE_REAUTH_REQUIRED");
   }
@@ -220,6 +229,7 @@ class FakeServer {
       }
       case "POST /api/e2ee/cross_signing/keys": {
         this.requireReauth(reauth);
+        this.checkExpectedDefaultKey(body);
         const expected = body.expected_keys as Json;
         if (
           expected.master !== keyOf(this.master) ||
@@ -251,6 +261,7 @@ class FakeServer {
         if (body.replace) this.requireReauth(reauth);
         return { pins: body.pins };
       case "POST /api/e2ee/key_backup/versions": {
+        this.checkExpectedDefaultKey(body);
         const current = this.currentVersion();
         const authData = body.auth_data as Json;
         if (current && (current.auth_data as Json).public_key === authData.public_key) {
@@ -523,5 +534,46 @@ describe("失効の手順", () => {
     await beginRevocation(otherDeps, "device_only", []);
     await continueRevocation(otherDeps, TOKEN);
     await expect(continueRevocation(deps, TOKEN)).rejects.toBeInstanceOf(RevocationConflictError);
+  });
+
+  /**
+   * A の 1〜5 の失効が SSSS を保存して `stop` の要求の前で止まったあと、B の 1〜5 の失効が SSSS だけを
+   * 保存して止まる。A を続けても、B の SSSS に対応しない公開鍵や版を書かない。
+   */
+  async function interleaveSecretStorage(stop: string) {
+    const { server, deps, recoveryKey } = await setUp();
+    const other = await device("other");
+    other.register(server);
+    const otherDeps = other.deps(server);
+
+    await openSecretStorage(deps, { kind: "recovery", recoveryKey });
+    await beginRevocation(deps, "full", []);
+    const recoveryOfA = await newRevocationRecoveryKey(deps);
+    server.fail = stop;
+    await expect(continueRevocation(deps, TOKEN)).rejects.toThrow(TypeError);
+
+    await openSecretStorage(otherDeps, { kind: "recovery", recoveryKey: recoveryOfA });
+    await beginRevocation(otherDeps, "full", []);
+    await newRevocationRecoveryKey(otherDeps);
+    server.fail = "POST /api/e2ee/cross_signing/keys";
+    await expect(continueRevocation(otherDeps, TOKEN)).rejects.toThrow(TypeError);
+    const keyOfB = server.ssss?.default_key_id;
+
+    const master = keyOf(server.master);
+    const versions = server.versions.length;
+    const error = await continueRevocation(deps, TOKEN).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(RevocationConflictError);
+    expect((error as RevocationConflictError).code).toBe("E2EE_SSSS_CONFLICT");
+    expect(keyOf(server.master)).toBe(master);
+    expect(server.versions).toHaveLength(versions);
+    expect(server.ssss?.default_key_id).toBe(keyOfB);
+  }
+
+  it("SSSS の保存のあと別の端末が SSSS を作り直したら、クロス署名鍵を保存しない", async () => {
+    await interleaveSecretStorage("POST /api/e2ee/cross_signing/keys");
+  });
+
+  it("版を作る前に別の端末が SSSS を作り直したら、版を作らない", async () => {
+    await interleaveSecretStorage("POST /api/e2ee/key_backup/versions");
   });
 });
