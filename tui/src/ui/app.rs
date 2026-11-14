@@ -1996,10 +1996,13 @@ impl App {
         if !self.decryptions.dirty && !retry_missing {
             return;
         }
+        // 復号するときは、鍵待ちの行も必ず含める。タスクはロックを取ったあとの数えを記録するので、
+        // 鍵待ちの行を試さずに数えだけを進めると、鍵が届いていても復号し直さなくなるため（ロックを取れずに
+        // `retry_missing` を確かめられなかったときも同じ）。鍵待ちの行の復号は手元だけで済む。
         let rows: Vec<(RowKey, EncryptedRow)> = self
             .store
             .visible_messages(&channel_id)
-            .filter(|message| self.decryptions.needs(message, retry_missing))
+            .filter(|message| self.decryptions.needs(message, true))
             .filter_map(|message| {
                 let row = EncryptedRow {
                     channel_id: message.channel_id.clone(),
@@ -2709,6 +2712,144 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|request| request.method == "GET")
+        );
+    }
+
+    /// 鍵待ちの行があるときに、端末の管理のタスクが暗号ストアのロックを持ったまま鍵を取り込み、
+    /// そのあいだに別の行が届いても、鍵待ちの行を復号し直す（数えだけを進めない）。
+    #[tokio::test]
+    async fn rows_waiting_for_keys_are_retried_even_when_the_lock_was_busy() {
+        use crate::e2ee::store::{CryptoStore, ToDeviceRow, UndecryptableReason};
+        const ME: &str = "00000000-0000-4000-8000-0000000000b0";
+        const SENDER: &str = "00000000-0000-4000-8000-0000000000a0";
+        const CHANNEL: &str = "00000000-0000-4000-8000-0000000000c0";
+        let dir = tempfile::tempdir().unwrap();
+        let mut opened = CryptoStore::open(dir.path(), ME).unwrap().store;
+        opened.mark_registered().unwrap();
+        let store = std::sync::Arc::new(tokio::sync::Mutex::new(opened));
+        let server = wiremock::MockServer::start().await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        let (_stores_tx, stores) =
+            tokio::sync::watch::channel(Some((ME.to_owned(), store.clone())));
+        app.attach_encryption(super::super::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+        });
+        app.current = Some(CHANNEL.into());
+
+        // 送信者の端末のセッション。鍵（インデックス 0 から）は、あとで届ける。
+        let sender =
+            zoo_crypto::DeviceAccount::new(SENDER, &uuid::Uuid::new_v4().to_string()).unwrap();
+        let mut outbound = zoo_crypto::OutboundSession::new(CHANNEL, 1, 0);
+        let room_key = outbound.room_key();
+        let mut encrypted_row = |id: &str| {
+            let ciphertext = outbound
+                .encrypt(
+                    &sender,
+                    &zoo_crypto::OutgoingMessage {
+                        message_id: id.into(),
+                        parent_id: None,
+                        revision: 0,
+                        content: zoo_crypto::MessageContent {
+                            body: format!("本文 {id}"),
+                            format: "mfm".into(),
+                            kind: "message".into(),
+                        },
+                        mentions: Default::default(),
+                        attachments: Vec::new(),
+                    },
+                )
+                .unwrap();
+            serde_json::json!({ "id": id, "user_id": SENDER, "channel_id": CHANNEL, "content": "",
+                                "created_at": "2026-11-01 04:00:00", "epoch": "1", "revision": "0",
+                                "ciphertext": ciphertext.to_string() })
+        };
+        let x = encrypted_row("x");
+        let y = encrypted_row("y");
+        fn feed(app: &mut App, id: &str, row: serde_json::Value) {
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages(CHANNEL.into()),
+                Batch {
+                    changes: vec![electric::Change::Upsert {
+                        key: id.into(),
+                        row: row.as_object().unwrap().clone(),
+                    }],
+                    up_to_date: true,
+                    ..Default::default()
+                },
+            ));
+        }
+        async fn decrypted(app: &mut App, rx: &mut mpsc::UnboundedReceiver<AppEvent>) {
+            loop {
+                match rx.recv().await.expect("イベントが届く") {
+                    event @ AppEvent::Decrypted { .. } => {
+                        app.on_app_event(event);
+                        return;
+                    }
+                    other => app.on_app_event(other),
+                }
+            }
+        }
+        fn shown(app: &App, id: &str) -> Result<String, UndecryptableReason> {
+            let message = app.store.message(CHANNEL, id).unwrap();
+            match app.decryptions.shown(message, true) {
+                Shown::Decrypted { message, .. } => Ok(message.body.clone()),
+                Shown::Undecryptable(reason) => Err(reason),
+                _ => panic!("暗号化したメッセージとして出す"),
+            }
+        }
+
+        feed(&mut app, "x", x);
+        app.request_decryptions();
+        decrypted(&mut app, &mut rx).await;
+        assert_eq!(shown(&app, "x"), Err(UndecryptableReason::KeyMissing));
+
+        // 端末の管理のタスクがロックを持ったまま鍵を取り込む。そのあいだに行 Y が届き、復号を頼む
+        // （ロックを取れないので、鍵待ちの行を復号し直すかは確かめられない）。
+        let mut guard = store.lock().await;
+        feed(&mut app, "y", y);
+        app.request_decryptions();
+        let request = guard.registration_request();
+        let recipient =
+            zoo_crypto::verify_device_keys(&request["device_keys"], ME, guard.device_id()).unwrap();
+        let fallback = guard
+            .prepare_key_upload(50, false)
+            .unwrap()
+            .unwrap()
+            .fallback_keys;
+        let key = fallback
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let mut olm = sender
+            .create_outbound_olm_session(&recipient, &key)
+            .unwrap();
+        let content = sender
+            .encrypt_room_key(&mut olm, &recipient, &room_key)
+            .unwrap();
+        let row = ToDeviceRow {
+            id: "1".into(),
+            sender_user_id: SENDER.into(),
+            r#type: "m.room.encrypted".into(),
+            content,
+        };
+        let device_keys =
+            serde_json::json!({ SENDER: { sender.device_id(): sender.device_keys() } });
+        let result = guard
+            .process_to_device(std::slice::from_ref(&row), &device_keys)
+            .unwrap();
+        assert_eq!(result.room_keys, 1);
+        drop(guard);
+        decrypted(&mut app, &mut rx).await;
+        assert_eq!(shown(&app, "y").as_deref(), Ok("本文 y"));
+        assert_eq!(
+            shown(&app, "x").as_deref(),
+            Ok("本文 x"),
+            "鍵が届いたので、鍵待ちの行も復号し直す"
         );
     }
 
