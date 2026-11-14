@@ -445,6 +445,10 @@
       "states": ["Online", "Offline", "PersistenceError", "Mobile"]
     },
     {
+      "file": "src/components/desktop/DesktopNotificationSelect.stories.tsx",
+      "states": ["On", "TurnOff", "Off", "OlderApp"]
+    },
+    {
       "file": "src/components/pwa/PwaControls.stories.tsx",
       "states": [
         "Default",
@@ -960,6 +964,10 @@
     {
       "file": "src/components/layout/ZooSettings.tsx",
       "story": "src/components/layout/ZooSettings.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DesktopNotificationSelect.tsx",
+      "story": "src/components/desktop/DesktopNotificationSelect.stories.tsx"
     },
     {
       "file": "src/components/desktop/DesktopBridge.tsx",

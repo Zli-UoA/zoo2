@@ -412,7 +412,10 @@
     "on": "有効",
     "off": "無効",
     "unavailable": "利用不可",
-    "title": "プッシュ通知"
+    "title": "プッシュ通知",
+    "desktopTitle": "通知",
+    "desktopValue": "OS の通知",
+    "desktopDescription": "メンションや DM を、アプリが OS の通知で知らせます。OS の設定で zoo2 の通知を止めている場合は、そちらもオンにしてください。"
   },
   "mfm": {
     "suggestions": "MFMの候補",

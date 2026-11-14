@@ -412,7 +412,10 @@
     "on": "켜짐",
     "off": "꺼짐",
     "unavailable": "사용 불가",
-    "title": "푸시 알림"
+    "title": "푸시 알림",
+    "desktopTitle": "알림",
+    "desktopValue": "시스템 알림",
+    "desktopDescription": "멘션과 DM을 앱이 시스템 알림으로 알려 줍니다. 시스템 설정에서 zoo2 알림을 꺼 두었다면 그쪽도 켜 주세요."
   },
   "mfm": {
     "suggestions": "MFM 후보",

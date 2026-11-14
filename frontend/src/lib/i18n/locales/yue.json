@@ -412,7 +412,10 @@
     "on": "開啟",
     "off": "關閉",
     "unavailable": "未能使用",
-    "title": "推送通知"
+    "title": "推送通知",
+    "desktopTitle": "通知",
+    "desktopValue": "系統通知",
+    "desktopDescription": "App 會用系統通知話你知有人提及你同埋收到 DM。如果你喺系統設定度熄咗 zoo2 嘅通知，請喺嗰度都開返。"
   },
   "mfm": {
     "suggestions": "MFM 建議",
