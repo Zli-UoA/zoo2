@@ -342,6 +342,8 @@ async fn apply(
     if leased.is_empty() {
         return Err(SyncError::LeaseLost);
     }
+    // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
+    super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
     let existing = query(
         &mut tx,
         "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''))::text \
