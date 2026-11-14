@@ -8,7 +8,13 @@ import { createApiClient, type FetchLike } from "../../lib/api/client";
 import { subscribeAuthSessionEnded } from "../../lib/auth";
 import { createShapeFetch } from "../../lib/electric/headers";
 import { OidcClient, type OidcFetch } from "../../lib/oidc/client";
-import { isLoggedOut, markRedirectStarted, savePending, takePending } from "../../lib/oidc/pending";
+import {
+  isLoggedOut,
+  markLoggedOut,
+  markRedirectStarted,
+  savePending,
+  takePending,
+} from "../../lib/oidc/pending";
 import { base64UrlEncode } from "../../lib/oidc/pkce";
 
 const ORIGIN = "https://app.example";
@@ -237,6 +243,28 @@ afterEach(async () => {
 });
 
 describe("AuthGate session recovery", () => {
+  it("discards the in-memory session on bfcache return after another document logged out", async () => {
+    const harness = createOidcHarness(async (_body, nonce) => ({
+      access_token: "access-1",
+      id_token: makeIdToken(nonce),
+      expires_in: 300,
+    }));
+    await completeLogin(harness);
+    authMocks.client = harness.client;
+    await renderGate();
+    expect(container.textContent).toContain("private-content");
+    markLoggedOut(window.sessionStorage);
+    await flush(() => {
+      const event = new Event("pageshow");
+      Object.defineProperty(event, "persisted", { value: true });
+      window.dispatchEvent(event);
+    });
+    expect(container.textContent).toContain("auth.loggedOut");
+    expect(container.textContent).not.toContain("private-content");
+    expect(harness.client.hasSession).toBe(false);
+    await expect(harness.client.getAccessToken()).resolves.toBeNull();
+    expect(isLoggedOut(window.sessionStorage)).toBe(true);
+  });
   it("discards authorization still waiting for discovery after a bfcache return", async () => {
     let releaseDiscovery!: () => void;
     let markStarted!: () => void;

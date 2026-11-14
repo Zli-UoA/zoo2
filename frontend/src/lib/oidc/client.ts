@@ -528,13 +528,13 @@ export class OidcClient {
    * 使えるようトークンを返す。期限を過ぎていればキャッシュを捨てて null を返す。
    */
   async getAccessToken(): Promise<string | null> {
-    if (this.loginPreparation) return null;
     const tokens = this.tokens;
     if (!tokens) {
       return null;
     }
     const generation = this.generation;
     const remaining = tokens.expiresAt - this.environment.now();
+    if (this.loginPreparation) return remaining > 0 ? tokens.accessToken : null;
     if (remaining > REFRESH_SKEW_MS) {
       return tokens.accessToken;
     }

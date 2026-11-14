@@ -865,6 +865,44 @@ describe("OidcClient.getAccessToken", () => {
     }
   });
 
+  it("returns an unexpired access token without refreshing during login preparation", async () => {
+    const harness = createHarness({
+      token: (_body, nonce) => ({
+        access_token: "access-1",
+        refresh_token: "refresh-1",
+        id_token: idToken({ nonce }),
+        expires_in: 30,
+      }),
+    });
+    await completeLogin(harness);
+    let started!: () => void;
+    let release!: (digest: ArrayBuffer) => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const waiting = new Promise<ArrayBuffer>((resolve) => {
+      release = resolve;
+    });
+    const digest = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(async () => {
+      started();
+      return await waiting;
+    });
+    try {
+      const login = harness.client.login();
+      await ready;
+      await expect(harness.client.getAccessToken()).resolves.toBe("access-1");
+      expect(harness.refreshCalls()).toHaveLength(0);
+      harness.advance(30_000);
+      await expect(harness.client.getAccessToken()).resolves.toBeNull();
+      expect(harness.refreshCalls()).toHaveLength(0);
+      release(new Uint8Array(32).buffer);
+      await login;
+    } finally {
+      release(new Uint8Array(32).buffer);
+      digest.mockRestore();
+    }
+  });
+
   it("does not let an old refresh failure clear a newly authenticated session", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {

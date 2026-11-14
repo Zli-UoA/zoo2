@@ -317,6 +317,14 @@ function WebAuthGate({ children }: { children: ReactNode }) {
             activeClient.cancelPendingLogin();
           }
           try {
+            if (logoutBlocked.current) return;
+            if (isLoggedOut(storage)) {
+              activeClient.resetSession();
+              authRecoveryPending.current = false;
+              setError(null);
+              setPhase("loggedOut");
+              return;
+            }
             clearAuthorizeRedirectPending(storage);
             if (wasLoggingIn) {
               clearRedirectStarted(storage);
