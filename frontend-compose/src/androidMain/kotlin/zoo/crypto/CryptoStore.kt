@@ -26,6 +26,7 @@ import zoo.crypto.ffi.DeviceAccount
 import zoo.crypto.ffi.InboundSessionStore
 import zoo.crypto.ffi.OlmSessionStore
 import zoo.crypto.ffi.OwnKeys
+import zoo.crypto.ffi.SenderTrust
 import zoo.crypto.ffi.SessionRef
 import zoo.crypto.ffi.SetupSession
 import zoo.crypto.ffi.StartupCheck
@@ -87,6 +88,8 @@ data class ToDeviceResult(
     val dropped: Int,
     /** 新しく作った Olm セッションの数（ワンタイム鍵を使われたので補充する）。 */
     val newOlmSessions: Int,
+    /** 保存した鍵のうち、送信端末を検証できた（受信時の検証の手順 4）ものの数。 */
+    val verifiedRoomKeys: Int = 0,
 )
 
 /** `POST /api/e2ee/keys/upload` に送る鍵。 */
@@ -129,6 +132,8 @@ internal class StoreState(
     @SerialName("secrets_revision") var secretsRevision: Long? = null,
     /** 鍵バックアップの送信の状態（`BackupUploadState.to_json`。秘密は入らない）。 */
     @SerialName("backup_upload") var backupUpload: String? = null,
+    /** 解錠したあと、過去のセッションを最後まで取り込んだ鍵バックアップの版（新しい端末での解錠の手順 5）。 */
+    @SerialName("imported_backup_version") var importedBackupVersion: String? = null,
 )
 
 /** [CryptoStore.prepareBackupUpload] の結果。 */
@@ -247,15 +252,51 @@ class CryptoStore private constructor(
      * to-device メッセージを処理する（React の `CryptoStore.processToDevice`、TUI と同じ規則）。
      *
      * 1 件ごとに、変わった状態と処理済みの印を保存してから次に進む。ack の前に終了しても、同じ
-     * メッセージを 2 回復号しない。`deviceKeys` は送信ユーザーの `keys/query` の応答の `device_keys`。
-     * 送信端末の検証（受信時の検証の手順 4）は #360 以降で足す。
+     * メッセージを 2 回復号しない。`deviceKeys` は送信ユーザーの `keys/query` の応答の `device_keys`、
+     * `signatures` は同じ応答の `signatures`（`e2ee_key_signatures` の行）。
+     *
+     * 送信端末の検証（受信時の検証の手順 4）は、今は自分の別の端末だけを行う（解錠済みなら、暗号ストアの自分の
+     * 自己署名鍵と、その鍵による端末鍵への署名で確かめる）。他のユーザーの端末は、配布先の判定の記録で信頼した
+     * マスター鍵が要るので、送受信（#361）で入れる。それまでは検証しない（`trust` を渡さない）。
      */
     @Synchronized
-    fun processToDevice(rows: List<ToDeviceRow>, deviceKeys: JsonObject): ToDeviceResult {
+    fun processToDevice(
+        rows: List<ToDeviceRow>,
+        deviceKeys: JsonObject,
+        signatures: JsonArray = JsonArray(emptyList()),
+    ): ToDeviceResult {
         val processed = mutableListOf<String>()
         var roomKeys = 0
         var dropped = 0
         var newOlmSessions = 0
+        var verifiedRoomKeys = 0
+        // 解錠し直しが要る（secrets_revision を消した）ときは、暗号ストアの自分の鍵を使わない。
+        val ownSelfSigning by lazy {
+            state.ownKeys?.takeIf { state.secretsRevision != null }?.let { sealed ->
+                try {
+                    OwnKeys.fromPickle(sealed, account, storageKey).use { it.selfSigningPublicKey() }
+                } catch (_: ZooCryptoException) {
+                    null
+                }
+            }
+        }
+        val trustFor = { sender: String?, device: String? ->
+            val selfSigning = if (sender == state.userId && device != null) ownSelfSigning else null
+            selfSigning?.let { key ->
+                val signature =
+                    signatures.firstNotNullOfOrNull { element ->
+                        val row = element as? JsonObject ?: return@firstNotNullOfOrNull null
+                        fun text(name: String) = (row[name] as? JsonPrimitive)?.content
+                        row["signature"]?.let { it as? JsonPrimitive }?.content?.takeIf {
+                            text("signer_user_id") == state.userId &&
+                                text("signer_key_id") == "ed25519:$key" &&
+                                text("target_user_id") == state.userId &&
+                                text("target_key_id") == device
+                        }
+                    }
+                SenderTrust(key, signature)
+            }
+        }
         // 前の処理で印を付けた行（ack の前に失敗した）。その保存の同期が済んだとは限らない（rename の
         // あとで同期に失敗しても、開き直すと新しい state.json を読めることがある）ので、返す前に
         // 保存し直して、同期を確かめてから ack させる。
@@ -265,11 +306,12 @@ class CryptoStore private constructor(
                 unsaved = true
             } else {
                 if (row.type == "m.room.encrypted") {
-                    when (val outcome = processEncrypted(row, deviceKeys)) {
+                    when (val outcome = processEncrypted(row, deviceKeys, trustFor)) {
                         is Encrypted.Dropped -> dropped++
                         is Encrypted.Decrypted -> {
                             newOlmSessions += outcome.newOlmSessions
                             if (outcome.roomKey) roomKeys++ else if (outcome.rejected) dropped++
+                            if (outcome.roomKey && outcome.verified) verifiedRoomKeys++
                         }
                     }
                 } else {
@@ -282,15 +324,24 @@ class CryptoStore private constructor(
             processed += row.id
         }
         if (unsaved) save()
-        return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions)
+        return ToDeviceResult(processed, roomKeys, dropped, newOlmSessions, verifiedRoomKeys)
     }
 
     private sealed interface Encrypted {
         data object Dropped : Encrypted
-        data class Decrypted(val newOlmSessions: Int, val roomKey: Boolean, val rejected: Boolean) : Encrypted
+        data class Decrypted(
+            val newOlmSessions: Int,
+            val roomKey: Boolean,
+            val rejected: Boolean,
+            val verified: Boolean = false,
+        ) : Encrypted
     }
 
-    private fun processEncrypted(row: ToDeviceRow, deviceKeys: JsonObject): Encrypted {
+    private fun processEncrypted(
+        row: ToDeviceRow,
+        deviceKeys: JsonObject,
+        trustFor: (sender: String?, device: String?) -> SenderTrust?,
+    ): Encrypted {
         val before = olmSessions.len()
         val decrypted =
             try {
@@ -315,11 +366,13 @@ class CryptoStore private constructor(
                 }
             val roomKey =
                 try {
-                    decrypted.verifyRoomKey(account, listed?.toString(), null)
+                    decrypted.verifyRoomKey(account, listed?.toString(), trustFor(decrypted.sender(), decrypted.senderDevice()))
                 } catch (_: ZooCryptoException) {
                     return Encrypted.Decrypted(created, roomKey = false, rejected = true)
                 }
             roomKey.use {
+                // addRoomKey で鍵を渡す前に読む。
+                val verified = roomKey.senderVerified()
                 val ref = SessionRef(roomKey.channelId(), roomKey.senderKey(), roomKey.sessionId())
                 val key = inboundKey(ref)
                 if (loadedInbound.add(key)) {
@@ -332,7 +385,7 @@ class CryptoStore private constructor(
                     inbound.pickleSession(account, ref, storageKey)
                         ?: return Encrypted.Decrypted(created, roomKey = false, rejected = false)
                 state.inboundSessions = state.inboundSessions + (key to StoredInboundSession(pickle, backedUp = false))
-                return Encrypted.Decrypted(created, roomKey = true, rejected = false)
+                return Encrypted.Decrypted(created, roomKey = true, rejected = false, verified = verified)
             }
         }
     }
@@ -348,6 +401,10 @@ class CryptoStore private constructor(
     /** 鍵バックアップにまだ送っていない受信用セッションの数。 */
     @Synchronized
     fun pendingBackupCount(): Int = state.inboundSessions.values.count { !it.backedUp }
+
+    /** 保存している受信用セッションのキーの数（単体テストで使う）。 */
+    @get:Synchronized
+    internal val inboundSessionCount: Int get() = state.inboundSessions.size
 
     /** 今の端末の署名付きの端末鍵（JSON）。 */
     @Synchronized
@@ -375,15 +432,19 @@ class CryptoStore private constructor(
             val ownKeys = session.ownKeysPickle(account, storageKey)
             val trustStore = updated.pickle(account, storageKey)
             val previous = Triple(state.ownKeys, state.secretsRevision, state.trustStore)
+            val previousImported = state.importedBackupVersion
             state.ownKeys = ownKeys
             state.secretsRevision = secretsRevision
             state.trustStore = trustStore
+            // 解錠し直したら、鍵バックアップから取り込み直す。
+            state.importedBackupVersion = null
             try {
                 save()
             } catch (failure: Throwable) {
                 state.ownKeys = previous.first
                 state.secretsRevision = previous.second
                 state.trustStore = previous.third
+                state.importedBackupVersion = previousImported
                 throw failure
             }
         } catch (failure: Throwable) {
@@ -462,42 +523,17 @@ class CryptoStore private constructor(
         // 捨てられたもの。記録を捨てる（入れたセッションは送信待ちのまま）。
         pendingUploads.values.forEach { it.upload.close() }
         pendingUploads.clear()
-        val sealed = state.ownKeys ?: return BackupUploadRequest.None
-        val backup = loadBackupState()
-        backup.setSecretsRevision(state.secretsRevision?.toULong())
+        if (state.ownKeys == null) return BackupUploadRequest.None
         if (currentVersion == null) {
-            backup.suspend()
+            loadBackupState().suspend()
             return BackupUploadRequest.None
         }
-        val change =
-            try {
-                OwnKeys.fromPickle(sealed, account, storageKey).use { own ->
-                    own.backupKey().use { key ->
-                        backup.acceptCurrentVersion(currentVersion.toString(), own.masterPublicKey(), key)
-                    }
-                }
-            } catch (failure: ZooCryptoException) {
-                return BackupUploadRequest.Rejected(failure.message.orEmpty())
-            }
-        val previousSessions = state.inboundSessions
-        val previousBackup = state.backupUpload
-        if (change == VersionChange.CHANGED) {
-            // 新しい版には、手元のセッションをすべて送り直す。新しい版を見たことと同じ書き込みで記録する。
-            state.inboundSessions =
-                state.inboundSessions.mapValues { (_, session) -> StoredInboundSession(session.pickle, backedUp = false) }
-        }
-        state.backupUpload = backup.toJson()
         try {
-            save()
-        } catch (failure: Throwable) {
-            state.inboundSessions = previousSessions
-            state.backupUpload = previousBackup
-            // 新しい版を見たことを記録できなかったので、次の送信でもう一度戻す。
-            backup.close()
-            backupState = null
-            throw failure
+            acceptCurrentVersion(currentVersion)
+        } catch (failure: ZooCryptoException) {
+            return BackupUploadRequest.Rejected(failure.message.orEmpty())
         }
-
+        val backup = loadBackupState()
         val keys = state.inboundSessions.filterValues { !it.backedUp }.keys.take(limit)
         if (keys.isEmpty()) return BackupUploadRequest.None
         for (key in keys) {
@@ -517,6 +553,113 @@ class CryptoStore private constructor(
             body = json.parseToJsonElement(upload.body()) as JsonObject,
             count = sessions.size,
         )
+    }
+
+    /**
+     * サーバーが今の版として返した版（`GET /api/e2ee/key_backup/versions/current` の応答）を、暗号ストアの自分の
+     * マスター鍵とバックアップ鍵で検証して受け入れ（`BackupUploadState.accept_current_version`）、版の番号を返す。
+     * 署名がない、公開鍵が違う、版が戻ったなどは [ZooCryptoException] を投げる。版が変わったら、手元の
+     * セッションをすべて送信待ちに戻し、新しい版を見たことと同じ書き込みで記録する。
+     */
+    private fun acceptCurrentVersion(currentVersion: JsonObject): String {
+        val sealed = checkNotNull(state.ownKeys) { "解錠していません" }
+        val backup = loadBackupState()
+        backup.setSecretsRevision(state.secretsRevision?.toULong())
+        val change =
+            OwnKeys.fromPickle(sealed, account, storageKey).use { own ->
+                own.backupKey().use { key ->
+                    backup.acceptCurrentVersion(currentVersion.toString(), own.masterPublicKey(), key)
+                }
+            }
+        val previousSessions = state.inboundSessions
+        val previousBackup = state.backupUpload
+        if (change == VersionChange.CHANGED) {
+            state.inboundSessions =
+                state.inboundSessions.mapValues { (_, session) -> StoredInboundSession(session.pickle, backedUp = false) }
+        }
+        state.backupUpload = backup.toJson()
+        try {
+            save()
+        } catch (failure: Throwable) {
+            state.inboundSessions = previousSessions
+            state.backupUpload = previousBackup
+            // 新しい版を見たことを記録できなかったので、次の送信でもう一度戻す。
+            backup.close()
+            backupState = null
+            throw failure
+        }
+        return checkNotNull(backup.currentVersion()).version
+    }
+
+    /**
+     * 鍵バックアップから取り込む版を決める（新しい端末での解錠の手順 5）。解錠していない、今の版がない、
+     * この版から取り込み終えているときは `null`。版を使えない（[acceptCurrentVersion] が拒んだ）ときは
+     * [ZooCryptoException]。
+     */
+    @Synchronized
+    fun backupVersionToImport(currentVersion: JsonObject?): String? {
+        if (state.ownKeys == null || state.secretsRevision == null || currentVersion == null) return null
+        val version = acceptCurrentVersion(currentVersion)
+        return version.takeIf { it != state.importedBackupVersion }
+    }
+
+    /**
+     * `GET /api/e2ee/key_backup/keys` の 1 ページの行を、暗号ストアのバックアップ鍵で復号して取り込む（docs/e2ee.md の
+     * 「受信時の検証」の「鍵バックアップから取り込んだとき」）。復号と照合は zoo-crypto（`BackupDecryptionKey.import_rows`）
+     * が行い、Megolm のセッション鍵は Kotlin に出さない。
+     *
+     * - バックアップ由来として保存し、Olm 由来のセッションを置き換えない（同じキーの保存済みのセッションを先に読み込み、
+     *   両方を 1 つの pickle にして保存し直す）。
+     * - 行と平文が合わない、`session_key` と `session_id` が合わない行は捨てる。
+     * - 新しく取り込んだセッションは、この版から取ったので送信済みにする（同じ版に上げ直さない）。保存済みの
+     *   セッションの送信済みの印は変えない。
+     *
+     * 返すのは取り込めた行の数。
+     */
+    @Synchronized
+    fun importBackupRows(rows: List<JsonObject>): Int {
+        val sealed = state.ownKeys ?: return 0
+        if (rows.isEmpty()) return 0
+        val refs =
+            rows.mapNotNull { row ->
+                fun text(name: String) = (row[name] as? JsonPrimitive)?.takeIf { it.isString }?.content
+                val channel = text("channel_id") ?: return@mapNotNull null
+                val sender = text("sender_key") ?: return@mapNotNull null
+                val session = text("session_id") ?: return@mapNotNull null
+                SessionRef(channel, sender, session)
+            }
+        refs.forEach { loadInbound(inboundKey(it)) }
+        val discarded =
+            OwnKeys.fromPickle(sealed, account, storageKey).use { own ->
+                own.backupKey().use { key -> key.importRows(inbound, rows.map(JsonObject::toString)).toInt() }
+            }
+        val previous = state.inboundSessions
+        var changed = previous
+        for (ref in refs) {
+            val key = inboundKey(ref)
+            val pickle = inbound.pickleSession(account, ref, storageKey) ?: continue
+            val existing = changed[key]
+            if (existing?.pickle == pickle) continue
+            changed = changed + (key to StoredInboundSession(pickle, backedUp = existing?.backedUp ?: true))
+        }
+        if (changed !== previous) {
+            state.inboundSessions = changed
+            try {
+                save()
+            } catch (failure: Throwable) {
+                state.inboundSessions = previous
+                throw failure
+            }
+        }
+        return rows.size - discarded
+    }
+
+    /** `version` の鍵バックアップから最後まで取り込んだ。 */
+    @Synchronized
+    fun backupImported(version: String) {
+        if (state.importedBackupVersion == version) return
+        state.importedBackupVersion = version
+        save()
     }
 
     /** [prepareBackupUpload] の `id` の要求が成功した。その要求に入れたセッションだけを送信済みにする。 */

@@ -258,6 +258,93 @@ class E2eeSetupTest {
     }
 
     @Test
+    fun newDeviceImportsPastSessionsFromKeyBackup() = runBlocking<Unit> {
+        val first = Device("first")
+        val start = first.setup.begin()
+        first.setup.completeSetup(start.session, "t")
+        start.session.close()
+        receiveRoomKey(first.store)
+        receiveRoomKey(first.store)
+        first.setup.uploadKeyBackup()
+        assertEquals(listOf(2), server.backupUploads)
+
+        // 新しい端末で解錠すると、今の版から過去のセッションを取り込む（1 ページ 1 件で、next をたどる）。
+        server.backupPageSize = 1
+        val second = Device("second")
+        second.setup.unlock(UnlockMethod.Recovery(start.recoveryKey)).session.close()
+        assertEquals(2, server.backupReads)
+        assertEquals(2, second.store.inboundSessionCount)
+        // 同じ版には上げ直さない。
+        assertEquals(0, second.store.pendingBackupCount())
+        assertEquals(listOf(2), server.backupUploads)
+
+        // 取り込み終えた版からは、起動し直しても読み直さない。
+        second.restart()
+        assertIs<E2eeStatus.Unlocked>(second.setup.runStartupCheck())
+        assertEquals(2, server.backupReads)
+        assertEquals(0, second.setup.importKeyBackup())
+    }
+
+    @Test
+    fun keyBackupRowsThatDoNotMatchAreDiscarded() = runBlocking<Unit> {
+        val first = Device("first")
+        val start = first.setup.begin()
+        first.setup.completeSetup(start.session, "t")
+        start.session.close()
+        receiveRoomKey(first.store)
+        receiveRoomKey(first.store)
+        first.setup.uploadKeyBackup()
+        // サーバーが行の session_id を書き換えた。平文と合わないので捨てる。
+        val rows = server.backupRows.values.single()
+        rows[0] = JsonObject(rows[0] + ("session_id" to JsonPrimitive("AAAA")))
+
+        val second = Device("second")
+        second.setup.unlock(UnlockMethod.Recovery(start.recoveryKey)).session.close()
+        assertEquals(1, second.store.inboundSessionCount)
+    }
+
+    @Test
+    fun roomKeysFromMyOtherSignedDeviceAreVerified() = runBlocking<Unit> {
+        val device = Device("a")
+        val start = device.setup.begin()
+        device.setup.completeSetup(start.session, "t")
+        start.session.close()
+        // 自分の別の端末（自己署名鍵で署名した）。
+        val other = DeviceAccount(ALICE, OTHER_DEVICE)
+        val unlocked =
+            zoo.crypto.ffi.parseSecretStorage(ALICE, server.secretStorage().toString())!!
+                .unlockWithRecoveryKey(zoo.crypto.ffi.RecoveryKey.parse(start.recoveryKey))
+        val upload = unlocked.crossSigningKey(zoo.crypto.ffi.KeyUsage.SELF_SIGNING)!!.signDevice(other.deviceKeys())
+        val signatures =
+            JsonArray(
+                listOf(
+                    buildJsonObject {
+                        put("signer_user_id", ALICE)
+                        put("signer_key_id", upload.signerKeyId)
+                        put("target_user_id", upload.targetUserId)
+                        put("target_key_id", upload.targetKeyId)
+                        put("signature", upload.signature)
+                    }
+                )
+            )
+        assertEquals(1, receiveRoomKey(device.store, other, ALICE, OTHER_DEVICE, signatures).verifiedRoomKeys)
+        // 署名がない端末と、他のユーザーの端末は、検証済みにしない（他のユーザーは #361）。
+        DeviceAccount(ALICE, THIRD_DEVICE).use { unsigned ->
+            assertEquals(0, receiveRoomKey(device.store, unsigned, ALICE, THIRD_DEVICE, signatures).verifiedRoomKeys)
+        }
+        assertEquals(0, receiveRoomKey(device.store).verifiedRoomKeys)
+        // 解錠し直しが要るあいだは、暗号ストアの自分の鍵を使わない。
+        device.store.forgetSecretsRevision(1)
+        DeviceAccount(ALICE, OTHER_DEVICE).use { again ->
+            val second = unlocked.crossSigningKey(zoo.crypto.ffi.KeyUsage.SELF_SIGNING)!!.signDevice(again.deviceKeys())
+            val rows = JsonArray(listOf(JsonObject(signatures[0].jsonObject + ("signature" to JsonPrimitive(second.signature)))))
+            assertEquals(0, receiveRoomKey(device.store, again, ALICE, OTHER_DEVICE, rows).verifiedRoomKeys)
+        }
+        other.close()
+        unlocked.close()
+    }
+
+    @Test
     fun setupAndUnlockWithPasskey() = runBlocking<Unit> {
         val passkey = FakePasskey()
         val first = Device("first")
@@ -284,8 +371,17 @@ class E2eeSetupTest {
     }
 
     /** ほかの端末から、Megolm セッションの鍵を受け取る（鍵バックアップの送信待ちが 1 件増える）。 */
-    private fun receiveRoomKey(store: CryptoStore) {
-        DeviceAccount(BOB, BOB_DEVICE).use { bob ->
+    private fun receiveRoomKey(store: CryptoStore): ToDeviceResult =
+        DeviceAccount(BOB, BOB_DEVICE).use { bob -> receiveRoomKey(store, bob, BOB, BOB_DEVICE) }
+
+    private fun receiveRoomKey(
+        store: CryptoStore,
+        bob: DeviceAccount,
+        sender: String,
+        senderDevice: String,
+        signatures: JsonArray = JsonArray(emptyList()),
+    ): ToDeviceResult {
+        run {
             OlmSessionStore().use { sessions ->
                 val upload = store.prepareKeyUpload(0, false)
                 val target =
@@ -295,14 +391,16 @@ class E2eeSetupTest {
                 val sessionId = bob.createOutboundOlmSession(sessions, target, oneTimeKey.toString())
                 val content = bob.encryptRoomKey(sessions, sessionId, target, OutboundSession(CHANNEL, 1uL, 0uL))
                 val deviceKeys = buildJsonObject {
-                    put(BOB, buildJsonObject { put(BOB_DEVICE, Json.parseToJsonElement(bob.deviceKeys())) })
+                    put(sender, buildJsonObject { put(senderDevice, Json.parseToJsonElement(bob.deviceKeys())) })
                 }
                 val result =
                     store.processToDevice(
-                        listOf(ToDeviceRow(java.util.UUID.randomUUID().toString(), BOB, "m.room.encrypted", Json.parseToJsonElement(content))),
+                        listOf(ToDeviceRow(java.util.UUID.randomUUID().toString(), sender, "m.room.encrypted", Json.parseToJsonElement(content))),
                         deviceKeys,
+                        signatures,
                     )
                 assertEquals(1, result.roomKeys)
+                return result
             }
         }
     }
@@ -334,6 +432,8 @@ class E2eeSetupTest {
         const val BOB = CryptoStoreTest.BOB
         const val BOB_DEVICE = CryptoStoreTest.BOB_DEVICE
         const val CHANNEL = CryptoStoreTest.CHANNEL
+        const val OTHER_DEVICE = "00000000-0000-4000-8000-0000000000a2"
+        const val THIRD_DEVICE = "00000000-0000-4000-8000-0000000000a3"
     }
 }
 
@@ -353,6 +453,12 @@ internal class FakeSetupServer(private val userId: String) : E2eeSetupApi {
     val failNext = mutableSetOf<String>()
     val loseResponse = mutableSetOf<String>()
     var backupConflict: String? = null
+
+    /** 鍵バックアップの行（版ごと。`GET /api/e2ee/key_backup/keys` で返す）。 */
+    val backupRows = mutableMapOf<String, MutableList<JsonObject>>()
+    /** `GET /api/e2ee/key_backup/keys` の 1 ページの行の数と、読んだ回数。 */
+    var backupPageSize = 1000
+    var backupReads = 0
 
     /** 置くと、鍵バックアップの送信がこれを待つ（送信が長引いた場合）。 */
     var holdBackup: kotlinx.coroutines.CompletableDeferred<Unit>? = null
@@ -492,6 +598,23 @@ internal class FakeSetupServer(private val userId: String) : E2eeSetupApi {
         backupConflict?.let { throw ApiException(409, code(it)) }
         check(version == versions.last()["version"]!!.jsonPrimitive.content)
         check(secretsRevision == revision)
-        backupUploads += body["sessions"]!!.jsonArray.size
+        val sessions = body["sessions"]!!.jsonArray.map { it.jsonObject }
+        backupUploads += sessions.size
+        val rows = backupRows.getOrPut(version) { mutableListOf() }
+        for (session in sessions) {
+            rows.removeAll { row -> listOf("channel_id", "sender_key", "session_id").all { row[it] == session[it] } }
+            rows += session
+        }
+    }
+
+    override suspend fun backupKeys(version: String, after: String?): JsonObject {
+        backupReads += 1
+        val rows = backupRows[version].orEmpty()
+        val start = after?.toInt() ?: 0
+        val end = minOf(start + backupPageSize, rows.size)
+        return buildJsonObject {
+            put("sessions", JsonArray(rows.subList(start, end)))
+            put("next", if (end < rows.size) JsonPrimitive(end.toString()) else JsonNull)
+        }
     }
 }

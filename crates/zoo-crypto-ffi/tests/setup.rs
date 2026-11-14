@@ -139,6 +139,17 @@ fn setup_unlock_and_startup_check() {
         .own_keys_pickle(&account, storage_key.clone())
         .unwrap();
     let own = OwnKeys::from_pickle(sealed, &account, storage_key.clone()).unwrap();
+    let self_signing = serde_json::from_str::<Value>(&server.keys_query()).unwrap()["self_signing_keys"]
+        [ALICE]["keys"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(own.self_signing_public_key(), self_signing);
     assert_eq!(
         own.startup_check(
             server.keys_query(),

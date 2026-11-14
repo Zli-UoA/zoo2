@@ -56,6 +56,11 @@ interface E2eeSetupApi {
     /** `POST /api/e2ee/key_backup/versions`。 */
     suspend fun createBackupVersion(body: JsonObject, reauth: String?)
 
+    /**
+     * `GET /api/e2ee/key_backup/keys?version=<版>&after=<カーソル>`。`{"sessions": [...], "next": <カーソル>|null}`。
+     */
+    suspend fun backupKeys(version: String, after: String?): JsonObject
+
     /** `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`。 */
     suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject)
 }
@@ -206,9 +211,45 @@ class E2eeSetup(
         val store = store()
         if (!store.hasOwnKeys) return null
         val status = startupStatus(store, api.secretStorage())
-        if (status is E2eeStatus.Unlocked) uploadKeyBackup()
+        if (status is E2eeStatus.Unlocked) {
+            uploadKeyBackup()
+            // 解錠のあとの取り込みが途中で止まっていたら、続きを取り込む。
+            importKeyBackup()
+        }
         return status
     }
+
+    /**
+     * 鍵バックアップの今の版から、過去のセッションを取り込む（docs/e2ee.md の「新しい端末での解錠」の手順 5）。
+     * 解錠のあと（初回の解錠と、解錠し直しのあと）に、今の版の `GET /api/e2ee/key_backup/keys` を `next` が
+     * `null` になるまで読み、暗号ストアのバックアップ鍵で復号して、バックアップ由来として取り込む。
+     *
+     * 今の版は、アップロードと同じく `BackupUploadState::accept_current_version` で検証してから使う。この版から
+     * 取り込み終えていれば何もしない。返すのは取り込めた行の数。
+     */
+    suspend fun importKeyBackup(): Int =
+        backupUpload.withLock {
+            val store = store()
+            if (!store.hasOwnKeys) return@withLock 0
+            val current = api.currentBackupVersion()
+            val version =
+                try {
+                    withContext(io) { store.backupVersionToImport(current) }
+                } catch (_: ZooCryptoException) {
+                    // 署名がない、鍵が違うなど、使えない版からは取り込まない。
+                    null
+                } ?: return@withLock 0
+            var imported = 0
+            var after: String? = null
+            do {
+                val page = api.backupKeys(version, after)
+                val rows = (page["sessions"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
+                imported += withContext(io) { store.importBackupRows(rows) }
+                after = (page["next"] as? JsonPrimitive)?.contentOrNull
+            } while (after != null)
+            withContext(io) { store.backupImported(version) }
+            imported
+        }
 
     /**
      * 鍵バックアップの送信待ちのセッションを、今の版に送る（docs/e2ee.md の「鍵バックアップ」）。
@@ -313,9 +354,11 @@ class E2eeSetup(
         }
         val store = store()
         withContext(io) { store.saveOwnKeys(session, secretsRevision) }
-        // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送る。失敗しても解錠は済んでいる。
+        // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送り、過去のセッションを取り込む。
+        // 失敗しても解錠は済んでいる（取り込みは、次の起動時の確認で続きを行う）。
         try {
             uploadKeyBackup()
+            if (!session.isCreated()) importKeyBackup()
         } catch (failure: kotlinx.coroutines.CancellationException) {
             throw failure
         } catch (_: Exception) {

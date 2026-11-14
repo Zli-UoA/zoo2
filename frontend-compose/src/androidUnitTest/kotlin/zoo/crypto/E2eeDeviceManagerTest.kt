@@ -357,7 +357,7 @@ class E2eeDeviceManagerTest {
             return counts()
         }
 
-        override suspend fun queryKeys(userIds: List<String>) = deviceKeys
+        override suspend fun queryKeys(userIds: List<String>) = KeysQuery(deviceKeys)
 
         override suspend fun ackToDevice(deviceId: String, ids: List<String>) {
             if (deviceId in gone) throw ApiException(404)

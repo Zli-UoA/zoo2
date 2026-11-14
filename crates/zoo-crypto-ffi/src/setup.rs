@@ -240,6 +240,11 @@ impl OwnKeys {
         self.inner.master_public_key.to_base64()
     }
 
+    /// 自分の自己署名鍵の公開鍵（受信時の検証の手順 4 で、自分の別の端末を検証済みにする `SenderTrust` に使う）。
+    pub fn self_signing_public_key(&self) -> String {
+        self.inner.self_signing.public_key().to_base64()
+    }
+
     /// 今の版のバックアップ鍵。
     pub fn backup_key(&self) -> Arc<BackupDecryptionKey> {
         BackupDecryptionKey::wrap(self.inner.backup_key.clone())

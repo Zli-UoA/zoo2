@@ -65,8 +65,8 @@ interface E2eeApi {
     /** `POST /api/e2ee/keys/upload`。鍵が空なら、今の数を読むだけになる。 */
     suspend fun uploadKeys(deviceId: String, oneTimeKeys: JsonObject, fallbackKeys: JsonObject): JsonObject
 
-    /** `POST /api/e2ee/keys/query` の `device_keys`。 */
-    suspend fun queryKeys(userIds: List<String>): JsonObject
+    /** `POST /api/e2ee/keys/query` の `device_keys` と `signatures`。 */
+    suspend fun queryKeys(userIds: List<String>): KeysQuery
 
     /** `POST /api/e2ee/to_device/ack`。 */
     suspend fun ackToDevice(deviceId: String, ids: List<String>)
@@ -74,6 +74,14 @@ interface E2eeApi {
     /** `DELETE /api/e2ee/devices/{device_id}`。 */
     suspend fun deleteDevice(deviceId: String)
 }
+
+/** `POST /api/e2ee/keys/query` の応答のうち、to-device の処理に使うもの。 */
+class KeysQuery(
+    /** ユーザーごと、端末ごとの端末鍵。 */
+    val deviceKeys: JsonObject,
+    /** `e2ee_key_signatures` の行（自己署名鍵による端末鍵への署名を探す。受信時の検証の手順 4）。 */
+    val signatures: JsonArray = JsonArray(emptyList()),
+)
 
 /** E2EE の API が期限までに答えなかった。通信の失敗と同じく、間隔をあけて試し直す。 */
 class E2eeRequestTimeoutException(cause: Throwable) : java.io.IOException("E2EE の API が時間内に答えませんでした", cause)
@@ -149,6 +157,15 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi {
         call("/api/e2ee/key_backup/versions", "POST", body, reauth)
     }
 
+    override suspend fun backupKeys(version: String, after: String?): JsonObject =
+        obj(
+            call(
+                "/api/e2ee/key_backup/keys?version=${version.encodeURLParameter()}" +
+                    (after?.let { "&after=${it.encodeURLParameter()}" } ?: ""),
+                "GET",
+            )
+        )
+
     override suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject) {
         call(
             "/api/e2ee/key_backup/keys?version=${version.encodeURLParameter()}&secrets_revision=$secretsRevision",
@@ -176,15 +193,17 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi {
             )
         )
 
-    override suspend fun queryKeys(userIds: List<String>): JsonObject {
+    override suspend fun queryKeys(userIds: List<String>): KeysQuery {
         // サーバーの上限は 100 人。TUI と同じく 50 人ずつにする。
         val merged = mutableMapOf<String, JsonElement>()
+        val signatures = mutableListOf<JsonElement>()
         for (chunk in userIds.chunked(50)) {
             val response =
                 call("/api/e2ee/keys/query", "POST", buildJsonObject { put("user_ids", JsonArray(chunk.map(::JsonPrimitive))) })
             ((response as? JsonObject)?.get("device_keys") as? JsonObject)?.let(merged::putAll)
+            ((response as? JsonObject)?.get("signatures") as? JsonArray)?.let(signatures::addAll)
         }
-        return JsonObject(merged)
+        return KeysQuery(JsonObject(merged), JsonArray(signatures))
     }
 
     override suspend fun ackToDevice(deviceId: String, ids: List<String>) {
@@ -505,8 +524,8 @@ class E2eeDeviceManager(
     /** 行を処理して ack を送り、ack を送れた ID を返す。 */
     private suspend fun process(store: CryptoStore, deviceId: String, rows: List<ToDeviceRow>): ToDeviceResult {
         val senders = rows.map { it.senderUserId }.distinct().sorted()
-        val deviceKeys = api.queryKeys(senders)
-        val result = withContext(io) { store.processToDevice(rows, deviceKeys) }
+        val keys = api.queryKeys(senders)
+        val result = withContext(io) { store.processToDevice(rows, keys.deviceKeys, keys.signatures) }
         if (result.processed.isNotEmpty()) {
             api.ackToDevice(deviceId, result.processed)
             withContext(io) { store.acknowledged(result.processed) }
