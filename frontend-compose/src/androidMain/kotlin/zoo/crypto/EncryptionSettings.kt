@@ -294,7 +294,8 @@ fun EncryptionSettings(app: Session, host: E2eeSettingsHost) {
                         Text(t("passkeyUnavailable"), muted = true, small = true)
                     }
                 }
-                SettingsSection(t("save"), t("android.saveDescription")) {
+                SettingsSection("") {
+                    Text(t("android.saveDescription"), muted = true, small = true)
                     Button(t("save"), primary = true, enabled = busy == null && confirmed) {
                         run(t("android.reauthWaiting")) {
                             // 再認証は、リカバリーキーを控えたあと、保存の直前に行う（同じ画面のまま）。
