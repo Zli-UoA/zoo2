@@ -60,7 +60,22 @@ export function IncomingCallDialog() {
     });
   }, []);
 
-  const invite = incoming[0];
+  // 応答・拒否が済んだ招待。Electric の shape から行が消えるまでの間は、出さない（もう一度押すと、
+  // 409 で「終了しました」と誤って表示されるため）。失敗したときは入れず、押し直せる。
+  const [handledIds, setHandledIds] = useState<ReadonlySet<string>>(new Set());
+  const markHandled = useCallback((inviteId: string) => {
+    setHandledIds((current) => new Set(current).add(inviteId));
+  }, []);
+  useEffect(() => {
+    // shape から消えた招待は、済みの記録から外す。
+    setHandledIds((current) => {
+      const live = new Set(incoming.map((row) => row.id));
+      const next = new Set([...current].filter((id) => live.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [incoming]);
+
+  const invite = incoming.find((row) => !handledIds.has(row.id));
   const ringing = Boolean(invite);
   useEffect(() => {
     if (!ringing) return;
@@ -73,6 +88,7 @@ export function IncomingCallDialog() {
       setFailedInviteId(null);
       try {
         const channelId = await acceptCallInvite(api, inviteId);
+        markHandled(inviteId);
         // 終わっていた（期限切れ・取り消し）なら、入らない。
         if (!channelId) {
           toast.error(t("call.inviteEnded"));
@@ -87,7 +103,7 @@ export function IncomingCallDialog() {
         void closeCallInviteNotification(inviteId);
       }
     },
-    [api, joinCall, setBusy, t],
+    [api, joinCall, markHandled, setBusy, t],
   );
 
   const decline = useCallback(
@@ -95,6 +111,7 @@ export function IncomingCallDialog() {
       setBusy(inviteId, true);
       try {
         await declineCallInvite(api, inviteId);
+        markHandled(inviteId);
       } catch {
         // 拒否できなくても、期限で呼び出しは終わる。
       } finally {
@@ -102,7 +119,7 @@ export function IncomingCallDialog() {
         void closeCallInviteNotification(inviteId);
       }
     },
-    [api, setBusy],
+    [api, markHandled, setBusy],
   );
 
   // Web Push の通知から開かれた。URL から外し、「応答」の印があったときだけ応答する。
