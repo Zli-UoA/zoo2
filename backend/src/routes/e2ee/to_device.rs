@@ -118,7 +118,7 @@ fn parse_recipients(req: &SendRequest) -> Result<Vec<(&str, &str, String)>, AppE
 ///   ロックのあとで `deleted_at` を読み直すので、端末の削除と並行しても削除済みの端末に入らない。
 /// - 受信確認されていないメッセージが上限に達した宛先は入れず、応答の `undelivered` で返す。
 /// - 同じ `(送信ユーザー, 送信端末, txn_id, 宛先)` の再送は、キューにあっても ack 後でも 1 件にまとめる。
-async fn send_to_device(
+pub(crate) async fn send_to_device(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<SendRequest>,
@@ -270,7 +270,7 @@ fn parse_ids(ids: &[Value]) -> Result<Vec<i64>, AppError> {
 ///
 /// 呼び出した端末宛ての行だけを消す（ID は推測できるので、他人宛ての行を消させない）。
 /// すでに消えた ID と、他の端末宛ての ID は黙って無視する。
-async fn ack_to_device(
+pub(crate) async fn ack_to_device(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<AckRequest>,

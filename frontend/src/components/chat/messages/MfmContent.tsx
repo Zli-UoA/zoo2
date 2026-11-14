@@ -20,6 +20,7 @@ import { MfmSearch } from "./MfmSearch";
 import { ChannelHashtag } from "./MfmChannels";
 import { AccountGlyph } from "./MfmAccounts";
 import { messageTextSegments } from "./messageFormat";
+import { isAllowedMention, type MentionAllowlist } from "./mentions";
 import { functionPresentation, MFM_FUNCTIONS } from "./mfmFunctions";
 
 export interface MfmContentProps {
@@ -32,6 +33,12 @@ export interface MfmContentProps {
   renderEmoji?: (name: string) => ReactNode;
   /** Application event, never evaluated as JavaScript. */
   onClickEvent?: (event: string) => void;
+  /**
+   * 暗号化メッセージで、メンションとして表示してよい `@name`（復号した `mentions` から作る）。
+   * 渡したときは、ここにない `@name` を素の文字列で出し、外部のアカウントへのリンクも作らない。
+   * 省くと（平文のメッセージ）、今までどおり本文の `@name` をすべてメンションとして表示する。
+   */
+  mentions?: MentionAllowlist;
 }
 const ShortcodeContext = createContext<Readonly<Record<string, string>>>({});
 const linkClass = `${inlineLinkClassName} underline`;
@@ -42,12 +49,12 @@ function externalLink(url: string, children: ReactNode): ReactNode {
     </ExternalLink>
   );
 }
-function text(content: string): ReactNode {
+function text(content: string, mentions?: MentionAllowlist): ReactNode {
   return messageTextSegments(content).map((segment, index) => (
     <Fragment key={index}>
       {segment.kind === "link" ? (
         externalLink(segment.value, segment.value.replace(/^https?:\/\//i, ""))
-      ) : segment.kind === "mention" ? (
+      ) : segment.kind === "mention" && (!mentions || isAllowedMention(segment.value, mentions)) ? (
         <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">
           <AccountGlyph name={segment.value.slice(1)} mention />
         </span>
@@ -168,7 +175,7 @@ function renderNode(
   const children = () => render(node.children ?? []);
   switch (node.type) {
     case "text":
-      return inLink ? node.props.text : text(node.props.text);
+      return inLink ? node.props.text : text(node.props.text, options.mentions);
     case "unicodeEmoji":
       return node.props.emoji;
     case "emojiCode":
@@ -202,7 +209,7 @@ function renderNode(
     case "mathBlock":
       return <MathFormula formula={node.props.formula} block={node.type === "mathBlock"} />;
     case "url":
-      return inLink ? node.props.url : text(node.props.url);
+      return inLink ? node.props.url : text(node.props.url, options.mentions);
     case "link": {
       if (inLink) return children();
       const label = node.children.map((child, index) => (
@@ -215,6 +222,9 @@ function renderNode(
     case "mention": {
       // Local mentions retain the chat's existing styling; federated mentions link to their origin.
       const host = node.props.host;
+      // 暗号化メッセージの `mentions` はこのワークスペースのユーザー ID だけなので、外部のアカウントは
+      // メンションとして扱わず、素の文字列で出す。
+      if (host && options.mentions) return node.props.acct;
       return !inLink && host && /^[a-z\d.-]+(?::\d+)?$/i.test(host)
         ? externalLink(
             `https://${host}/@${encodeURIComponent(node.props.username)}`,
@@ -222,7 +232,7 @@ function renderNode(
           )
         : inLink
           ? node.props.acct
-          : text(node.props.acct);
+          : text(node.props.acct, options.mentions);
     }
     case "hashtag":
       return inLink ? (

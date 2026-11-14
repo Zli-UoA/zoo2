@@ -10,6 +10,13 @@ const api = vi.hoisted(() => ({
   request: vi.fn(),
   selectedChannelId: "general" as string | null,
   navigate: vi.fn(),
+  channels: [] as {
+    id: string;
+    channel_name: string;
+    encrypted?: boolean;
+    is_dm: boolean;
+    archive_at: null;
+  }[],
 }));
 vi.mock("../../lib/api/client", () => ({ createConfiguredApiClient: () => api }));
 vi.mock("../../lib/electric/collections-context", () => ({
@@ -20,7 +27,7 @@ vi.mock("../../hooks/useCurrentUser", () => ({
 }));
 vi.mock("../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: [] }),
-  useActiveChannels: () => ({ data: [] }),
+  useActiveChannels: () => ({ data: api.channels }),
 }));
 vi.mock("../layout/shell-context", () => ({
   useShell: () => ({ selectedChannelId: api.selectedChannelId }),
@@ -48,6 +55,7 @@ const apps = [
 ];
 beforeEach(() => {
   api.selectedChannelId = "general";
+  api.channels = [];
   api.get
     .mockReset()
     .mockImplementation((path: string) => Promise.resolve(path === "/api/apps" ? apps : []));
@@ -150,6 +158,95 @@ describe("Apps control panel", () => {
         }),
       ),
     );
+  });
+
+  it("adds a bot to an encrypted channel only after explicit consent", async () => {
+    api.selectedChannelId = "secret";
+    api.channels = [
+      { id: "secret", channel_name: "secret", encrypted: true, is_dm: false, archive_at: null },
+    ];
+    const bot = { ...apps[0]!, manifest: { scopes: ["messages:read", "e2ee:device"] } };
+    api.get.mockImplementation((path: string) =>
+      Promise.resolve(path === "/api/apps" ? [bot] : []),
+    );
+    api.request.mockRejectedValueOnce(
+      Object.assign(new Error("conflict"), { body: { code: "E2EE_BOT_NOT_READY" } }),
+    );
+    panel();
+    await userEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
+    await userEvent.click(screen.getByRole("button", { name: "暗号化チャンネルに追加" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: /Alpha を暗号化チャンネル #secret に追加/,
+    });
+    const confirm = within(dialog).getByRole("button", { name: "許可して追加" });
+    expect(confirm).toBeDisabled();
+    expect(api.request).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("checkbox"));
+    await userEvent.click(confirm);
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("暗号化の準備");
+    await userEvent.click(confirm);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /暗号化チャンネル/ })).toBeNull(),
+    );
+    expect(api.request).toHaveBeenLastCalledWith("/api/apps/alpha/channels/secret", {
+      method: "POST",
+      body: { e2ee_allowed: true },
+    });
+  });
+
+  it("never carries a consent tick over a cancel or to another app", async () => {
+    api.selectedChannelId = "secret";
+    api.channels = [
+      { id: "secret", channel_name: "secret", encrypted: true, is_dm: false, archive_at: null },
+    ];
+    const manifest = { scopes: ["messages:read", "e2ee:device"] };
+    api.get.mockImplementation((path: string) =>
+      Promise.resolve(
+        path === "/api/apps"
+          ? [
+              { ...apps[0]!, manifest },
+              { ...apps[0]!, id: "beta", name: "Beta", manifest },
+            ]
+          : [],
+      ),
+    );
+    panel();
+    await userEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
+    await userEvent.click(screen.getByRole("button", { name: "暗号化チャンネルに追加" }));
+    let dialog = await screen.findByRole("dialog", { name: /Alpha を暗号化チャンネル/ });
+    await userEvent.click(within(dialog).getByRole("checkbox"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "キャンセル" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Alpha を/ })).toBeNull());
+    // Reopening for the same app starts unchecked.
+    await userEvent.click(screen.getByRole("button", { name: "暗号化チャンネルに追加" }));
+    dialog = await screen.findByRole("dialog", { name: /Alpha を暗号化チャンネル/ });
+    expect(within(dialog).getByRole("checkbox")).not.toBeChecked();
+    await userEvent.click(within(dialog).getByRole("checkbox"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "キャンセル" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /Alpha を/ })).toBeNull());
+    // And so does another app (on a narrow viewport, go back to the list first).
+    const back = screen.queryByRole("button", { name: "App一覧に戻る" });
+    if (back) await userEvent.click(back);
+    await userEvent.click(await screen.findByRole("button", { name: /Beta/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "暗号化チャンネルに追加" }));
+    dialog = await screen.findByRole("dialog", { name: /Beta を暗号化チャンネル/ });
+    expect(within(dialog).getByRole("checkbox")).not.toBeChecked();
+    expect(within(dialog).getByRole("button", { name: "許可して追加" })).toBeDisabled();
+    expect(api.request).not.toHaveBeenCalled();
+  });
+
+  it("explains that an app without e2ee:device cannot join an encrypted channel", async () => {
+    api.selectedChannelId = "secret";
+    api.channels = [
+      { id: "secret", channel_name: "secret", encrypted: true, is_dm: false, archive_at: null },
+    ];
+    panel();
+    await userEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
+    await userEvent.click(screen.getByRole("button", { name: "暗号化チャンネルに追加" }));
+    const dialog = await screen.findByRole("dialog", { name: /暗号化チャンネル/ });
+    expect(within(dialog).getByText(/対応していません/)).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: "許可して追加" })).toBeNull();
+    expect(api.request).not.toHaveBeenCalled();
   });
 
   it("offers retry after loading the catalog fails", async () => {

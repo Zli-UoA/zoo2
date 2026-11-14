@@ -2,10 +2,19 @@ import { act, render } from "@testing-library/react";
 import { expect, it, vi } from "vite-plus/test";
 import type { AppConfig } from "../../lib/config";
 import { useE2ee, type E2eeContextValue } from "../../lib/e2ee/e2ee-context";
+import { cryptoDatabaseName } from "../../lib/e2ee/identity";
+import { readPushRecipient } from "../../lib/e2ee/push/recipient";
+import { indexedDbWrappingKeys } from "../../lib/e2ee/store/storageKey";
 import { E2eeProvider } from "./E2eeProvider";
 
 const mocks = vi.hoisted(() => ({
   attachGate: null as null | Promise<void>,
+  user: {
+    currentUserId: null as string | null,
+    isLoading: false,
+    isAdmin: false,
+    error: null as string | null,
+  },
   managers: [] as Array<{
     suspend: ReturnType<typeof vi.fn>;
     resume: ReturnType<typeof vi.fn>;
@@ -14,6 +23,14 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../lib/e2ee/support", () => ({ supportsCryptoStore: () => true }));
+vi.mock("../../lib/currentUser", () => ({
+  getCurrentUserStore: () => ({
+    getState: () => mocks.user,
+    subscribe: () => () => {},
+    ensureLoaded: async () => {},
+    refresh: async () => {},
+  }),
+}));
 vi.mock("../../lib/e2ee/cryptoWorker", () => ({
   startCryptoWorker: () => ({ terminate: () => {}, request: async () => ({}) }),
 }));
@@ -42,14 +59,14 @@ vi.mock("../../lib/e2ee/deviceManager", () => ({
 
 const config = { devUserId: "user-a" } as unknown as AppConfig;
 
-function mount() {
+function mount(appConfig: AppConfig = config) {
   let ctx!: E2eeContextValue;
   function Probe() {
     ctx = useE2ee();
     return null;
   }
   render(
-    <E2eeProvider config={config}>
+    <E2eeProvider config={appConfig}>
       <Probe />
     </E2eeProvider>,
   );
@@ -92,4 +109,27 @@ it("counts normally when the logout is not cancelled", async () => {
   expect(result).toBe(1);
   expect(mocks.managers[0].suspend).toHaveBeenCalledTimes(1);
   await act(async () => get().cancelLogout());
+});
+
+it("forgets the push recipient and deletes the wrapping key even when the store cannot be opened", async () => {
+  // Service Worker は、宛先が今のユーザーで、保存鍵を開けるときだけ Push を復号する（#365）。
+  mocks.managers.length = 0;
+  mocks.attachGate = null;
+  const name = cryptoDatabaseName("ns-test");
+  await indexedDbWrappingKeys.put(
+    name,
+    await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt"]),
+  );
+  const { get } = mount();
+  await vi.waitFor(async () => expect(await readPushRecipient()).toBe("user-a"));
+  // 暗号ストアを開けない（Worker の起動や attach の失敗）。
+  mocks.attachGate = Promise.reject(new Error("cannot open"));
+  mocks.attachGate.catch(() => {});
+  await act(async () => {
+    await get()
+      .clearForLogout()
+      .catch(() => undefined);
+  });
+  expect(await readPushRecipient()).toBeNull();
+  expect(await indexedDbWrappingKeys.get(name)).toBeUndefined();
 });

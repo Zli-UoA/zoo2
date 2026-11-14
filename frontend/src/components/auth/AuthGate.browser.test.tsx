@@ -5,6 +5,7 @@ import { AuthGate } from "./AuthGate";
 import { notifyUnauthorized } from "../../lib/auth";
 import { resetDesktopForTest } from "../../lib/desktop";
 import { markLoggedOut } from "../../lib/oidc/pending";
+import { readPushRecipient, rememberPushRecipient } from "../../lib/e2ee/push/recipient";
 
 const mocks = vi.hoisted(() => ({
   client: {
@@ -103,4 +104,22 @@ it.each([
     resetDesktopForTest();
     mocks.client.hasSession = true;
   }
+});
+
+it("forgets the push recipient when the session expires (401) so the next user never sees it", async () => {
+  // Service Worker は、この宛先と一致する Push だけを復号する（docs/e2ee.md の「Web Push の復号」）。
+  await rememberPushRecipient("00000000-0000-4000-8000-00000000000a");
+  render(
+    <LocaleProvider>
+      <AuthGate>
+        <button>Cached history</button>
+      </AuthGate>
+    </LocaleProvider>,
+  );
+  await screen.findByRole("button", { name: "Cached history" });
+  await act(async () => {
+    notifyUnauthorized();
+  });
+  await waitFor(() => expect(mocks.client.login).toHaveBeenCalledOnce());
+  await waitFor(async () => expect(await readPushRecipient()).toBeNull());
 });

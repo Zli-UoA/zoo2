@@ -684,6 +684,71 @@ test("reaction notifications describe the event and malformed payloads retain th
   assert.match(notifications[1][1].body, /新しい通知/);
 });
 
+test("encrypted pushes show the body decrypted by /sw-push.js and fall back to the generic body", async () => {
+  const imported = [];
+  const received = [];
+  const outcomes = ["秘密のこんにちは", null, new Error("store failure"), "👍"];
+  const { handlers, notifications, context } = worker({
+    importScripts: (url) => imported.push(url),
+  });
+  assert.deepEqual(imported, ["/sw-push.js"]);
+  // /sw-push.js が置く関数
+  context.self.zooDecryptPush = async (e2ee) => {
+    received.push(e2ee);
+    const outcome = outcomes.shift();
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  };
+  const e2ee = { recipient_id: "r", message: { channel_id: "c" } };
+  const push = (extra = {}) =>
+    dispatch(handlers, "push", {
+      data: {
+        json: () => ({ title: "Alice · #secret", body: "新しいメッセージ", e2ee, ...extra }),
+      },
+    });
+  await push();
+  await push();
+  await push();
+  await push({ notificationType: "reaction" });
+  // e2ee のない Push は復号しない
+  await dispatch(handlers, "push", {
+    data: { json: () => ({ title: "Bob", body: "plain" }) },
+  });
+  assert.equal(received.length, 4);
+  assert.deepEqual(received[0], e2ee);
+  assert.deepEqual(
+    notifications.map(([, options]) => options.body),
+    ["秘密のこんにちは", "新しいメッセージ", "新しいメッセージ", "リアクション: 👍", "plain"],
+  );
+});
+
+test("a push decryption script that cannot be loaded fails the install so it is retried", () => {
+  // importScripts の失敗を握りつぶすと、復号できない Service Worker が残る。
+  assert.throws(
+    () =>
+      worker({
+        importScripts: () => {
+          throw new Error("NetworkError");
+        },
+      }),
+    /NetworkError/,
+  );
+});
+
+test("the dev placeholder for /sw-push.js leaves pushes undecrypted", async () => {
+  const placeholder = readFileSync(new URL("../public/sw-push.js", import.meta.url), "utf8");
+  const placeholderSelf = {};
+  const { handlers, notifications, context } = worker({
+    importScripts: () => runInNewContext(placeholder, { self: placeholderSelf }),
+  });
+  assert.deepEqual(placeholderSelf, { zooDecryptPush: undefined });
+  assert.equal(context.self.zooDecryptPush, undefined);
+  await dispatch(handlers, "push", {
+    data: { json: () => ({ title: "Alice", body: "新しいメッセージ", e2ee: {} }) },
+  });
+  assert.equal(notifications[0][1].body, "新しいメッセージ");
+});
+
 test("notification click navigates an existing app to the target message", async () => {
   const { handlers, context } = worker();
   const target = "https://zoo.example/channels/123?message=456";

@@ -53,6 +53,22 @@ async fn check(
     let mut tx = db.transaction().await?;
     p.channel(&mut tx, channel, write).await
 }
+/// [`check`] と同じだが、メンバーが許可した Bot の端末には暗号化チャンネルも通す（#366。
+/// 暗号文だけを扱う経路だけが使う。[`Principal::e2ee_channel`]）。
+async fn check_e2ee(
+    state: &AppState,
+    p: &Principal,
+    channel: &str,
+    scope: &str,
+    write: bool,
+) -> Result<(), AppError> {
+    p.require(scope)?;
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    p.e2ee_channel(&mut tx, channel, write).await
+}
+/// メッセージのチャンネルを確かめる。メンバーが許可した Bot の端末には暗号化チャンネルも通す
+/// （作成、編集、削除、リアクションは、暗号化チャンネルでもサーバーが平文を受け取らない。#366）。
 async fn message_check(
     state: &AppState,
     p: &Principal,
@@ -63,14 +79,14 @@ async fn message_check(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let message = crate::models::Message::get_by_id(&mut tx, id).await?;
-    p.channel(&mut tx, &message.channel_id, true).await
+    p.e2ee_channel(&mut tx, &message.channel_id, true).await
 }
 async fn create_message(
     State(state): State<AppState>,
     p: Principal,
     Json(body): Json<m::CreateMessageRequest>,
 ) -> Result<Json<crate::routes::response::ApiResponse<m::MessageResponse>>, AppError> {
-    check(&state, &p, &body.channel_id, "messages:write", true).await?;
+    check_e2ee(&state, &p, &body.channel_id, "messages:write", true).await?;
     if body.metadata.is_some() {
         p.require("metadata:write")?;
     }
@@ -178,7 +194,7 @@ async fn leave_channel(
     p: Principal,
     Path(id): Path<String>,
 ) -> Result<Json<crate::routes::response::ApiResponse<c::LeaveChannelResponse>>, AppError> {
-    check(&s, &p, &id, "channels:manage", false).await?;
+    check_e2ee(&s, &p, &id, "channels:manage", false).await?;
     c::leave_channel(State(s), p.actor(), Path(id)).await
 }
 async fn archive_channel(

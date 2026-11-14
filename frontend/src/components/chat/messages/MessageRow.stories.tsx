@@ -6,6 +6,7 @@ import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
+import { MentionUserNamesContext } from "../../../lib/e2ee/messageDecryption";
 import { storyAttachments } from "../../../../.storybook/attachment-fixtures";
 import { EncryptedAttachmentError } from "../../../lib/e2ee/attachments";
 import { EncryptedAttachmentLoaderContext } from "./EncryptedMessageAttachments";
@@ -419,6 +420,7 @@ export const EncryptedDecrypted: Story = {
       status: "decrypted",
       body: "暗号化したメッセージです。詳細は https://example.com/docs を参照してください。",
       kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
       sender: "verified",
     },
   },
@@ -431,6 +433,38 @@ export const EncryptedDecrypted: Story = {
   }),
 };
 
+const storyUserNames = new Map(storyUsers.map((user) => [user.id, user.user_name]));
+
+/**
+ * 暗号化メッセージのメンションは、復号した `mentions` だけで表示する。本文に `@bob` や `@channel` が
+ * あっても、`mentions` になければメンションとして表示しない（docs/e2ee.md の「Megolm の平文」）。
+ */
+export const EncryptedMentions: Story = {
+  decorators: [
+    (Story) => (
+      <MentionUserNamesContext.Provider value={storyUserNames}>
+        <Story />
+      </MentionUserNamesContext.Provider>
+    ),
+  ],
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "@alice さん、確認をお願いします。@bob さんと @channel にも共有します。",
+      kind: "message",
+      mentions: { user_ids: ["user-alice"], channel: false, here: false },
+      sender: "verified",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const body = canvasElement.querySelector(".mfm-body");
+    await expect(body?.querySelectorAll(".bg-brand-muted")).toHaveLength(1);
+    await expect(body?.querySelector(".bg-brand-muted")).toHaveTextContent("@alice");
+    await expect(body).toHaveTextContent("@bob さんと @channel にも共有します。");
+  }),
+};
+
 export const EncryptedUnverifiedSender: Story = {
   args: {
     item: encryptedItem,
@@ -438,6 +472,7 @@ export const EncryptedUnverifiedSender: Story = {
       status: "decrypted",
       body: "未検証の端末から届いたメッセージです。",
       kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
       sender: "unverified",
     },
   },
@@ -453,6 +488,7 @@ export const EncryptedStaleRevision: Story = {
       status: "decrypted",
       body: "編集したあとの本文です。",
       kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
       sender: "verified",
       revisionWarning: "stale",
     },
@@ -489,6 +525,7 @@ export const EncryptedBackupSender: Story = {
       status: "decrypted",
       body: "鍵バックアップから復号したメッセージです。",
       kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
       sender: "unauthenticated",
     },
   },
@@ -578,6 +615,7 @@ export const EncryptedWithAttachments: Story = {
       status: "decrypted",
       body: "設計図と議事録を共有します。",
       kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
       sender: "verified",
       attachments: encryptedAttachments,
     },
@@ -610,6 +648,7 @@ export const EncryptedAttachmentDecryptFailed: Story = {
       status: "decrypted",
       body: "中身を差し替えられた添付です。",
       kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
       sender: "verified",
       attachments: encryptedAttachments.slice(0, 1),
     },

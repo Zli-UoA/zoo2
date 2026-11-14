@@ -29,6 +29,10 @@
       "states": ["Default", "Loading", "LoadError", "InvalidRequest", "Mobile"]
     },
     {
+      "file": "src/components/chat/AppEncryptedChannelConsent.stories.tsx",
+      "states": ["Default", "Pending", "NotReady", "Unsupported", "Mobile"]
+    },
+    {
       "file": "src/components/chat/AppsDialog.stories.tsx",
       "states": [
         "Default",
@@ -780,6 +784,10 @@
       "file": "src/components/chat/AppSurfaceHost.tsx",
       "reason": "待機時のポーリングを間引き、コマンド・アクション後に即時更新する制御層。private UIの起動はブラウザ統合テスト、直列化・非表示・復帰はvisiblePoll.test.tsで確認する。",
       "checks": ["src/components/chat/AppInteraction.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/AppEncryptedChannelConsent.tsx",
+      "story": "src/components/chat/AppEncryptedChannelConsent.stories.tsx"
     },
     {
       "file": "src/components/chat/AppsDialog.tsx",

@@ -1,0 +1,6 @@
+{
+  "scopes": ["messages:read", "messages:write", "e2ee:device"],
+  "events": ["message.created"],
+  "transport": "websocket",
+  "redirect_uris": ["https://example.com/callback"]
+}

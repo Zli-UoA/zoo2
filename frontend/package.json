@@ -9,7 +9,7 @@
     "dev": "vp dev --port 5173",
     "generate-routes": "tsr generate",
     "sync:emojibase": "node scripts/sync-emojibase-data.mjs",
-    "build": "vp build",
+    "build": "vp build && vp build --config vite.sw-push.config.ts",
     "start": "vp preview",
     "preview": "vp preview",
     "check": "vp check",

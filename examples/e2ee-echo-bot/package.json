@@ -1,0 +1,13 @@
+{
+  "name": "@zoo/e2ee-echo-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-strip-types bot.ts",
+    "test": "node --experimental-strip-types --test echo.test.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

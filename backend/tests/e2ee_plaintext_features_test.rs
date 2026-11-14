@@ -12,7 +12,10 @@ use backend::{config::Config, db::init_db, routes::create_router, state::AppStat
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
-use zoo_crypto::DeviceAccount;
+use zoo_crypto::{
+    DeviceAccount, EncryptedMessage, InboundSessionStore, Mentions, MessageContent,
+    OutboundSession, OutgoingMessage,
+};
 
 struct Env {
     app: Router,
@@ -355,6 +358,142 @@ async fn encrypted_mentions_come_only_from_the_plaintext_mentions() {
         .await;
     assert_eq!(notified.len(), 1, "{notified:?}");
     assert_eq!(notified[&bob], "mention");
+}
+
+/// 暗号化チャンネルの Web Push には暗号文だけが入り、サーバーは平文を持たない。鍵を持つ端末は、
+/// Push の中身だけで本文を復号できる (#365)。
+#[tokio::test]
+async fn encrypted_push_carries_the_ciphertext_but_no_plaintext() {
+    const SECRET: &str = "合言葉は 🦊 zoo-push-secret";
+    let env = env().await;
+    let (alice, _) = env.user().await;
+    let (bob, bob_name) = env.user().await;
+    let encrypted = env.channel(&alice, &[&bob], true).await;
+    let device = env.device(&alice).await;
+
+    // 送信端末と同じ鍵を持つ受信用セッション（Bob の端末が to-device で受け取るものと同じ鍵）
+    let epoch = env.epoch(&encrypted).await as u64;
+    let mut outbound = OutboundSession::new(&encrypted, epoch, 1_700_000_000_000);
+    let mut receiver = InboundSessionStore::new();
+    receiver.add_outbound(&device, &outbound);
+    let message_id = Uuid::new_v4().to_string();
+    let ciphertext = outbound
+        .encrypt(
+            &device,
+            &OutgoingMessage {
+                message_id: message_id.clone(),
+                parent_id: None,
+                revision: 0,
+                content: MessageContent {
+                    body: SECRET.into(),
+                    format: "mfm".into(),
+                    kind: "message".into(),
+                },
+                mentions: Mentions {
+                    user_ids: vec![bob.clone()],
+                    ..Mentions::default()
+                },
+                attachments: Vec::new(),
+            },
+        )
+        .unwrap();
+    let (status, body) = env
+        .call(
+            "POST",
+            "/api/messages",
+            &alice,
+            json!({"id": message_id, "channel_id": encrypted, "content": "", "epoch": epoch,
+                "revision": 0, "mentions": {"user_ids": [bob]}, "ciphertext": ciphertext}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let mut db = env.db.clone();
+    let notification = backend::models::Notification::filter(
+        backend::models::Notification::fields()
+            .message_id()
+            .eq(message_id.as_str()),
+    )
+    .first()
+    .exec(&mut db)
+    .await
+    .unwrap()
+    .expect("Bob への通知");
+    assert_eq!(notification.user_id, bob);
+    let payload = backend::push::payload_json(&mut db, &notification)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // サーバーが作る Push には平文がない。本文は「新しいメッセージ」
+    let serialized = payload.to_string();
+    assert!(!serialized.contains("zoo-push-secret"), "{serialized}");
+    assert!(!serialized.contains("合言葉"), "{serialized}");
+    assert_eq!(payload["body"], backend::push::ENCRYPTED_MESSAGE_BODY);
+    assert_eq!(payload["e2ee"]["recipient_id"], bob.as_str());
+    let row = &payload["e2ee"]["message"];
+    assert_eq!(row["ciphertext"], ciphertext);
+
+    // 鍵を持つ端末は、Push の中身だけで、受信時の検証を通して復号できる
+    let decrypted = receiver
+        .decrypt(&EncryptedMessage {
+            channel_id: row["channel_id"].as_str().unwrap(),
+            message_id: row["message_id"].as_str().unwrap(),
+            parent_id: row["parent_id"].as_str(),
+            user_id: row["user_id"].as_str().unwrap(),
+            message_kind: row["message_kind"].as_str().unwrap(),
+            epoch: row["epoch"].as_u64().unwrap(),
+            revision: row["revision"].as_u64().unwrap(),
+            ciphertext: &row["ciphertext"],
+        })
+        .unwrap();
+    assert_eq!(decrypted.payload.content.body, SECRET);
+
+    // 削除したメッセージは送らない（暗号文も消える）
+    let (status, body) = env
+        .call(
+            "DELETE",
+            &format!("/api/messages/{message_id}"),
+            &alice,
+            Value::Null,
+        )
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert!(
+        backend::push::payload_json(&mut db, &notification)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // 平文チャンネルは今までどおり本文を送り、e2ee を付けない
+    let plain = env.channel(&alice, &[&bob], false).await;
+    let (status, body) = env
+        .call(
+            "POST",
+            "/api/messages",
+            &alice,
+            json!({"channel_id": plain, "content": format!("hi @{bob_name}")}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let plain_message = body["data"]["id"].as_str().unwrap().to_string();
+    let notification = backend::models::Notification::filter(
+        backend::models::Notification::fields()
+            .message_id()
+            .eq(plain_message.as_str()),
+    )
+    .first()
+    .exec(&mut db)
+    .await
+    .unwrap()
+    .unwrap();
+    let payload = backend::push::payload_json(&mut db, &notification)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(payload["body"], format!("hi @{bob_name}"));
+    assert!(payload.get("e2ee").is_none(), "{payload}");
 }
 
 // ---------------------------------------------------------------------------
