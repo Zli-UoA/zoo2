@@ -62,17 +62,17 @@ function Busy({ label }: { label: string }) {
 export function SasEmojiList({ emoji }: { emoji: number[] }) {
   const { t } = useTranslation();
   return (
-    <ol aria-label={t("e2ee.sas.emojiList")} className="grid grid-cols-4 gap-2 sm:grid-cols-7">
+    <ol aria-label={t("e2ee.sas.emojiList")} className="grid grid-cols-4 gap-1.5 sm:grid-cols-7">
       {emoji.map((index, position) => (
         <li
           // 同じ絵文字が 2 回出ることがあるので、位置をキーにする。
           key={position}
-          className="flex min-w-0 flex-col items-center gap-1 rounded-md border p-2 text-center"
+          className="flex min-w-0 flex-col items-center gap-1 rounded-md border px-1 py-2 text-center"
         >
           <span aria-hidden="true" className="text-3xl leading-none">
             {SAS_EMOJI[index]}
           </span>
-          <span className="w-full break-words text-xs text-muted-foreground">
+          <span className="w-full break-words text-[11px] leading-tight text-muted-foreground">
             {
               // 翻訳のキーは 0〜63 の文字列（型では 1 つに代表させる）。
               t(`e2ee.sas.emoji.${String(index) as "0"}`)
@@ -228,7 +228,7 @@ export function SasVerificationView({
         if (!open) handlers.onClose();
       }}
     >
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
