@@ -945,12 +945,19 @@ async fn test_orphan_files_use_only_members_for_private_channels_and_try_every_m
     for (i, m) in members.iter().enumerate() {
         let token = format!("xoxp-m{i}");
         f.link(m, &token, "files:read", None).await?;
-        let resp = if i == 3 {
+        // 連携が新しい順に試すので、いちばん古い (先頭の) メンバーが最後。ほかの 3 人は、1 回ずつ拒否される
+        let resp = if i == 0 {
             body(b"found")
         } else {
             login_redirect()
         };
-        mount_pri(&files, &f, "F1", &token, resp).await;
+        Mock::given(method("GET"))
+            .and(path(f.pri_path("F1")))
+            .and(header("authorization", format!("Bearer {token}").as_str()))
+            .respond_with(resp)
+            .expect(1)
+            .mount(&files)
+            .await;
     }
     f.expire_wait().await;
     assert!(f.once().await);
@@ -1072,5 +1079,33 @@ async fn test_orphan_files_accept_several_sync_sources_for_one_channel() -> anyh
     mount_pri(&files, &f, "F1", "xoxp-alice", body(b"ok")).await;
     assert!(f.once().await);
     assert_eq!(f.file("F1").await["status"], "done");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_orphan_files_do_not_confirm_a_denial_when_a_token_cannot_be_decrypted()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let files = MockServer::start().await;
+    let f = fixture(&files, with_links(&files)).await?;
+    // キーが合わず、復号できない連携 (ユーザーのトークンを試せていない)
+    let bad = backend::slack::crypto::encrypt(&[9u8; 32], "xoxp-alice")?;
+    sql(
+        &f.state,
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc,scopes) \
+         VALUES($1,$2,'UBAD',$3,'files:read') RETURNING json_build_object('ok',true)::text",
+        &[&f.user, &f.team, &bad],
+    )
+    .await?;
+    f.add_pri("F1", "").await?;
+    mount_pri(&files, &f, "F1", "xoxb-test", login_redirect()).await;
+
+    assert!(f.once().await);
+    let row = f.file("F1").await;
+    // 権限なしと確定せず、取り直す
+    assert_eq!(
+        (row["status"].as_str(), row["attempts"].as_i64()),
+        (Some("pending"), Some(1))
+    );
     Ok(())
 }

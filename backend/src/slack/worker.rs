@@ -1845,6 +1845,8 @@ struct FileTokens {
     /// 同じワークスペースに、`files:read` を持つ連携が 1 人でもいるか (使える行だけ調べる)。
     /// いなければ、再連携が進むまで待つ。いるのに、この行のトークンがない (メンバーが連携していない) なら、待たない
     workspace_has_links: bool,
+    /// 復号できなかった連携があった (キーの不一致など)。ユーザーのトークンを試せていないので、権限なしとは確定しない
+    decrypt_failed: bool,
 }
 
 /// 行の URL が、この行のファイルのものか。ユーザーのトークンは、このパスにだけ付けて送る。
@@ -1877,6 +1879,22 @@ async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, App
         .then(|| s.config.slack.encryption_key())
         .flatten();
     let eligible = own_url && s.config.slack.team_allowed(&file.team_id) && key.is_some();
+    // 連携の有無は、候補より先に調べる (あとで連携が増えても、待つ側に倒れるだけで、権限なしと確定しない)
+    let mut workspace_has_links = false;
+    if eligible {
+        let mut db = s.db.clone();
+        let mut tx = db.transaction().await?;
+        workspace_has_links = !query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM slack_user_links l WHERE l.team_id=$1 \
+             AND 'files:read'=ANY(string_to_array(replace(l.scopes,' ',''),',')) LIMIT 1",
+            &[&file.team_id],
+        )
+        .await?
+        .is_empty();
+        tx.commit().await?;
+    }
+    let mut decrypt_failed = false;
     if eligible && let Some(key) = key {
         let mut db = s.db.clone();
         let mut tx = db.transaction().await?;
@@ -1902,23 +1920,12 @@ async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, App
             };
             match super::crypto::decrypt(&key, enc) {
                 Ok(token) => tokens.push(token),
-                Err(_) => tracing::warn!(user_id = %user, "Failed to decrypt a Slack token"),
+                Err(_) => {
+                    decrypt_failed = true;
+                    tracing::warn!(user_id = %user, "Failed to decrypt a Slack token");
+                }
             }
         }
-    }
-    let mut workspace_has_links = false;
-    if eligible {
-        let mut db = s.db.clone();
-        let mut tx = db.transaction().await?;
-        workspace_has_links = !query(
-            &mut tx,
-            "SELECT json_build_object('ok',true)::text FROM slack_user_links l WHERE l.team_id=$1 \
-             AND 'files:read'=ANY(string_to_array(replace(l.scopes,' ',''),',')) LIMIT 1",
-            &[&file.team_id],
-        )
-        .await?
-        .is_empty();
-        tx.commit().await?;
     }
     let users = tokens.len();
     if let Some(bot) = s.config.slack.import_bot_token.as_deref() {
@@ -1929,6 +1936,7 @@ async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, App
         users,
         eligible,
         workspace_has_links,
+        decrypt_failed,
     })
 }
 
@@ -2166,6 +2174,12 @@ async fn orphan_files_step(
             release_file(s, &file, true, NO_USER_TOKEN_WAIT_SECS, NO_USER_TOKEN_NOTE).await?;
             return Ok(FileStep::Done);
         }
+        // 復号できない連携があると、ユーザーのトークンを試せていない。権限なしとは確定せず、通常の取り直しにする
+        Ok(FileOutcome::Denied) if tokens.decrypt_failed && file.attempts < MAX_FILE_ATTEMPTS => (
+            "pending",
+            String::new(),
+            "a linked user's Slack token could not be decrypted".to_string(),
+        ),
         Ok(FileOutcome::Denied) => ("failed", String::new(), DENIED_NOTE.to_string()),
         // 取るときに試行回数を増やしてあるので、`attempts` は今回を含む
         Err(e) if file.attempts >= MAX_FILE_ATTEMPTS => ("failed", String::new(), e.to_string()),
