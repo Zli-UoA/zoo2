@@ -38,6 +38,11 @@ pub(crate) fn fresh_authentication(authenticated_at: Option<i64>, now: i64) -> b
 pub(crate) struct Reauth(bool);
 
 impl Reauth {
+    /// Bot の端末のクロス署名鍵の登録（#366）。再認証を求めない（`CrossSigningAuth::BotDevice` の説明）。
+    pub(crate) fn bot_device() -> Self {
+        Self(true)
+    }
+
     /// 直前の再認証がなければ 403 `E2EE_REAUTH_REQUIRED`。
     pub(crate) fn require(self) -> Result<(), AppError> {
         if self.0 {

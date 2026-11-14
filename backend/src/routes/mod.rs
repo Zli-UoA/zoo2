@@ -82,6 +82,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(crate::activitypub::router())
         .merge(crate::apps::management::router())
         .merge(crate::apps::api::router())
+        .merge(crate::apps::e2ee::router())
         .merge(crate::apps::oauth::router())
         .merge(crate::apps::delivery::router())
         .merge(crate::apps::ui::router())

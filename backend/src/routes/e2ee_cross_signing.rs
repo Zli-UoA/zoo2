@@ -25,7 +25,7 @@ use crate::{
             crypto_error, exec, first, limit_exceeded, lock_active_user, lock_device, lock_user,
             rows, signature_count,
         },
-        e2ee_reauth::reauth,
+        e2ee_reauth::{Reauth, reauth},
         e2ee_secret_storage::check_expected_default_key,
         response::ApiResponse,
     },
@@ -201,6 +201,25 @@ async fn upload_cross_signing_keys(
     headers: HeaderMap,
     Json(req): Json<CrossSigningRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
+    upload_cross_signing_keys_as(state, actor, CrossSigningAuth::Headers(headers), req).await
+}
+
+/// クロス署名鍵の変更で、直前の再認証をどう確かめるか。
+pub(crate) enum CrossSigningAuth {
+    /// 人間の要求。`X-Zoo-Reauth` を確かめる。
+    Headers(HeaderMap),
+    /// Bot の端末（委任でない、`e2ee:device` を持つ App のトークン。#366）。Bot は対話的に再認証できず、
+    /// App のトークンがいちばん強い資格情報なので、再認証を求めない。差し替えたマスター鍵は、
+    /// メンバーの端末が規則 5（docs/e2ee.md の「鍵の配布先の判定」）で見つけ、再検証まで配布を止める。
+    BotDevice,
+}
+
+pub(crate) async fn upload_cross_signing_keys_as(
+    state: AppState,
+    actor: AuthUser,
+    auth: CrossSigningAuth,
+    req: CrossSigningRequest,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
     let mut provided = BTreeMap::new();
     for (usage, value) in [
         ("master", &req.master_key),
@@ -225,7 +244,10 @@ async fn upload_cross_signing_keys(
     {
         return Err(limit_exceeded("signatures"));
     }
-    let reauth = reauth(&state, &headers, &actor).await?;
+    let reauth = match auth {
+        CrossSigningAuth::Headers(headers) => reauth(&state, &headers, &actor).await?,
+        CrossSigningAuth::BotDevice => Reauth::bot_device(),
+    };
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -392,7 +414,7 @@ async fn upload_cross_signing_keys(
 
 #[derive(Deserialize)]
 pub struct SignatureItem {
-    target_user_id: String,
+    pub(crate) target_user_id: String,
     target_key_id: String,
     signer_key_id: String,
     signature: String,
@@ -400,12 +422,12 @@ pub struct SignatureItem {
 
 #[derive(Deserialize)]
 pub struct SignaturesRequest {
-    signatures: Vec<SignatureItem>,
+    pub(crate) signatures: Vec<SignatureItem>,
 }
 
 /// `POST /api/e2ee/cross_signing/signatures`：自己署名鍵による自分の端末への署名と、ユーザー署名鍵による
 /// 他のユーザーのマスター鍵への署名を足す。署名者は常に呼び出したユーザー。
-async fn upload_signatures(
+pub(crate) async fn upload_signatures(
     State(state): State<AppState>,
     actor: AuthUser,
     headers: HeaderMap,
@@ -571,7 +593,7 @@ pub struct PinItem {
 pub struct PinsRequest {
     pins: Vec<PinItem>,
     #[serde(default)]
-    replace: bool,
+    pub(crate) replace: bool,
 }
 
 fn pin_conflict(pin: Value) -> AppError {
@@ -584,7 +606,7 @@ fn pin_conflict(pin: Value) -> AppError {
 }
 
 /// `POST /api/e2ee/tofu_pins`：TOFU のピンを足す（`replace: true` で置き換える）。
-async fn upload_pins(
+pub(crate) async fn upload_pins(
     State(state): State<AppState>,
     actor: AuthUser,
     headers: HeaderMap,
@@ -724,7 +746,7 @@ pub struct PinsQuery {
 }
 
 /// `GET /api/e2ee/tofu_pins`：自分のピンをすべて、`target_user_id` の昇順に返す。
-async fn list_pins(
+pub(crate) async fn list_pins(
     State(state): State<AppState>,
     actor: AuthUser,
     Query(query): Query<PinsQuery>,
