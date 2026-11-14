@@ -267,7 +267,7 @@ impl Store {
     /// 一覧に出す名前。DM は `dm:<id>:<id>` という内部名なので、自分以外の参加者の名前にする。
     pub fn channel_label(&self, channel: &Channel, me: &str) -> String {
         if !channel.is_dm {
-            return format!("#{}", channel.channel_name);
+            return format!("#{}", crate::text::sanitize_display(&channel.channel_name));
         }
         let mut names: Vec<String> = self
             .channel_users

@@ -2,6 +2,7 @@
 //! 何行目までかを持つので、選択中のメッセージが見えるようにスクロールできる。
 
 use std::{collections::HashMap, ops::Range};
+use zoo2_client_core::text::sanitize_display;
 
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
 use ratatui::{
@@ -136,8 +137,8 @@ fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> V
 /// Emoji Kitchen の合成絵文字 (`kitchen:<a>_<b>`) は画像なので、元の2つを並べて示す。
 fn reaction_label(emoji: &str) -> String {
     match emoji.strip_prefix("kitchen:") {
-        Some(pair) => pair.replacen('_', "+", 1),
-        None => emoji.to_string(),
+        Some(pair) => sanitize_display(&pair.replacen('_', "+", 1)).into_owned(),
+        None => sanitize_display(emoji).into_owned(),
     }
 }
 

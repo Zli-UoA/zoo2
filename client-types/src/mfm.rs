@@ -463,11 +463,11 @@ impl Inline<'_> {
                 Span::styled(
                     format!(
                         " {}",
-                        if profile.display_name.is_empty() {
+                        crate::text::sanitize_display(if profile.display_name.is_empty() {
                             &profile.username
                         } else {
                             &profile.display_name
-                        }
+                        })
                     ),
                     style,
                 ),
@@ -485,6 +485,7 @@ fn account_initial(profile: &crate::accounts::AccountProfile) -> String {
     } else {
         &profile.display_name
     };
+    let label = crate::text::sanitize_display(label);
     label.chars().next().unwrap_or('?').to_string()
 }
 
