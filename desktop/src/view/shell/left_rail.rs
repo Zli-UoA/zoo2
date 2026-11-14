@@ -54,7 +54,9 @@ pub fn rail_destinations() -> &'static [RailDestination] {
     &[RailDestination::Channels]
 }
 
-/// ログアウトのボタンを出すか。Web と同じく、OIDC のときだけ出す (dev は出さない)。
+/// ログアウトのボタンを出すか。OIDC のときだけ出す (dev は出さない)。
+/// Web は #495 でログアウトとテーマの切り替えを設定画面へ移したが、デスクトップには設定画面が
+/// まだないので、レールの下部に残す (設定画面を作るときに移す)。
 pub fn show_logout(auth: &AuthConfig) -> bool {
     matches!(auth, AuthConfig::Oidc(_))
 }
