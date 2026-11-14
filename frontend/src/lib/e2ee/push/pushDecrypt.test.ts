@@ -260,6 +260,35 @@ describe("decryptPush", () => {
     ]);
   });
 
+  it("OIDC の暗号ストアで読めなければ（包む鍵だけが消えて残ったなど）、開発用の暗号ストアも試す", async () => {
+    const { e2ee, env } = await setup();
+    const dev = cryptoDatabaseName(`dev-${BOB}`);
+    const base = env({}, [BOB_DB, dev]);
+    const leftover = new MemoryCryptoBackend();
+    const opened: string[] = [];
+    const result = await decryptPush(e2ee, {
+      ...base,
+      openSnapshot: async (name) => {
+        opened.push(name);
+        if (name === BOB_DB) {
+          return {
+            read: () => leftover.read(),
+            readInboundSession: (key) => leftover.readInboundSession(key),
+            close: async () => {},
+          };
+        }
+        return base.openSnapshot(name);
+      },
+      // 開発用の暗号ストアは、同じ保存鍵を包む鍵の名前ではないので、Bob の鍵を両方の名前で引く
+      keys: {
+        ...memoryKeys(),
+        get: async (name) => (await base.keys!.get(name)) ?? (await base.keys!.get(BOB_DB)),
+      },
+    });
+    expect(opened).toEqual([BOB_DB, dev]);
+    expect(result).toBe("push body");
+  });
+
   it("宛先が今ログインしているユーザーでなければ、ロックも取らずに復号しない", async () => {
     const { e2ee, env, asked, events } = await setup();
     for (const current of [null, ALICE]) {

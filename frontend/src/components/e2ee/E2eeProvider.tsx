@@ -83,7 +83,11 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
     [userStore],
   );
   const getUserState = useCallback(() => userStore.getState(), [userStore]);
-  const { currentUserId } = useSyncExternalStore(subscribe, getUserState, getUserState);
+  const {
+    currentUserId,
+    isLoading: userLoading,
+    error: userError,
+  } = useSyncExternalStore(subscribe, getUserState, getUserState);
   const userId = config.devUserId || currentUserId;
   const supported = useMemo(() => supportsCryptoStore(), []);
   const [status, setStatus] = useState<E2eeContextValue["status"]>(
@@ -234,10 +238,14 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   }, [client, createManager, isOnline, namespace, supported, userId]);
 
   // Service Worker が Push を復号してよい宛先（今ログインしているユーザー）を置く（#365）。
+  // 認証が切れたと分かったとき（OIDC の `/me` が 401）は消す。読み込み中やオフラインで分からない
+  // ときは消さない（オフラインでも通知の本文を出せるように）。
+  const signedOut = Boolean(config.oidc) && !userLoading && userError === null && !userId;
   useEffect(() => {
-    if (!userId || typeof indexedDB === "undefined") return;
-    void rememberPushRecipient(userId).catch(() => undefined);
-  }, [userId]);
+    if (typeof indexedDB === "undefined") return;
+    if (userId) void rememberPushRecipient(userId).catch(() => undefined);
+    else if (signedOut) void forgetPushRecipient().catch(() => undefined);
+  }, [signedOut, userId]);
 
   // Service Worker が Push の復号を頼んできたら、このタブが開いている暗号ストアで復号して返す
   // （#365。docs/e2ee.md の「Web Push の復号」）。開いていないタブも、待たせないよう断りを返す。

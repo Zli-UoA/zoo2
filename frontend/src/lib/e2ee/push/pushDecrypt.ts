@@ -147,13 +147,16 @@ async function decryptForRecipient<Files>(
     if (!outcome.files) continue;
     const backend = await env.openSnapshot(outcome.files);
     try {
-      return await decryptFromStore({
+      const body = await decryptFromStore({
         name,
         recipientId: e2ee.recipientId,
         backend,
         message: e2ee.message,
         keys: env.keys,
       });
+      // この暗号ストアで読めなければ（ログアウトで包む鍵だけが消えて残ったものなど）、次の
+      // 名前空間の暗号ストアを試す。
+      if (body !== null) return body;
     } finally {
       await backend.close().catch(() => undefined);
     }
