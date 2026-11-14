@@ -89,7 +89,45 @@ type Story = StoryObj<typeof meta>;
 
 export const Loading: Story = {};
 
-export const Unavailable: Story = { args: { state: { step: "unavailable" } } };
+/** 暗号ストアを開いて、端末を登録しているところ。 */
+export const Unavailable: Story = {
+  args: { state: { step: "unavailable", reason: { kind: "starting" } } },
+};
+
+/** ほかのタブが暗号ストアを開いている。そのタブを閉じると引き継ぐ。 */
+export const UnavailableOtherTab: Story = {
+  args: { state: { step: "unavailable", reason: { kind: "otherTab" } } },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText(/ほかの zoo のタブかウィンドウが/)).toBeVisible();
+  }),
+};
+
+/** 端末の登録をサーバーに拒否され、試し直している。状態コードと code を出す。 */
+export const UnavailableRegistrationFailed: Story = {
+  args: {
+    state: {
+      step: "unavailable",
+      reason: {
+        kind: "failed",
+        failure: { source: "server", status: 403, code: "E2EE_DISABLED" },
+      },
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText(/403 E2EE_DISABLED/)).toBeVisible();
+    await expect(screen.getByText(/自動で試し直します/)).toBeVisible();
+  }),
+};
+
+/** 端末が 20 台の上限。「端末」タブで削除してもらう。 */
+export const UnavailableDeviceLimit: Story = {
+  args: { state: { step: "unavailable", reason: { kind: "deviceLimit" } } },
+};
+
+/** 暗号ストアを置けないブラウザー。 */
+export const UnavailableUnsupported: Story = {
+  args: { state: { step: "unavailable", reason: { kind: "unsupported" } } },
+};
 
 export const LoadFailed: Story = {
   args: { state: { step: "loadFailed" }, handlers: handlers() },
