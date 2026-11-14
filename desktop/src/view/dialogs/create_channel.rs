@@ -1,11 +1,21 @@
 //! チャンネル作成ダイアログ (`CreateChannelDialog`)。
 
 use gpui::{
-    Context, Div, Focusable, FontWeight, KeyDownEvent, MouseButton, MouseUpEvent, ParentElement,
+    Context, Div, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseUpEvent, ParentElement,
     Styled, Window, div, prelude::*, px,
 };
 
+use super::{checkbox_box, cycle_focus};
+use crate::fonts;
+use crate::ui::button::{Button, ButtonVariant};
+use crate::ui::dialog::Dialog;
+use crate::ui::input::Input;
+use crate::ui::textarea::Textarea;
+use crate::ui::{TextSpec, h_flex, palette, v_flex};
 use crate::view::{WorkspaceView, is_activate_key};
+
+/// 説明の最大文字数 (`MAX_CHANNEL_DESCRIPTION_LENGTH`)。
+const MAX_DESCRIPTION: usize = 250;
 
 impl WorkspaceView {
     pub(in crate::view) fn open_create_channel_modal(
@@ -47,283 +57,203 @@ impl WorkspaceView {
         });
     }
 
+    /// Tab で回る順 (名前、説明、非公開、取り消し、作成)。
+    fn create_channel_focus_order(&self, cx: &Context<Self>) -> Vec<FocusHandle> {
+        vec![
+            self.create_channel_name_input.focus_handle(cx),
+            self.create_channel_desc_input.focus_handle(cx),
+            self.create_channel_private_focus.clone(),
+            self.create_cancel_focus.clone(),
+            self.create_submit_focus.clone(),
+        ]
+    }
+
     pub(in crate::view) fn render_create_channel_modal(
         &self,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        let p = palette(cx);
+        let t = p.t;
+        let i18n = self.i18n;
+        let sm = TextSpec::SM;
+        let xs = TextSpec::XS;
         let state = self.state.read(cx);
-        let theme = state.theme();
         let modal = state.create_channel_modal.as_ref().unwrap();
         let in_flight = modal.in_flight;
         let error = modal.error.clone();
         let is_private = modal.is_private;
+        let name_empty = modal.channel_name.trim().is_empty();
         let desc_count = modal.description.trim().chars().count();
-        let desc_too_long = desc_count > 250;
-        let counter_color = if desc_too_long {
-            theme.danger
-        } else {
-            theme.text_muted
-        };
+        let desc_too_long = desc_count > MAX_DESCRIPTION;
         let is_private_focused = self.create_channel_private_focus.is_focused(window);
+        let order = self.create_channel_focus_order(cx);
+        let order_prev = order.clone();
+        let order_key = order.clone();
+        let max = MAX_DESCRIPTION.to_string();
+        let length = desc_count.to_string();
+        let name_focus = self.create_channel_name_input.focus_handle(cx);
+        let desc_focus = self.create_channel_desc_input.focus_handle(cx);
 
-        div()
-            .w(px(400.0))
-            .p_5()
-            .rounded_lg()
-            .bg(theme.bg_secondary)
-            .border_1()
-            .border_color(theme.border_accent)
-            .flex()
-            .flex_col()
-            .gap_3()
-            .on_action(cx.listener(|this, _: &crate::input::Tab, window, cx| {
-                if this
-                    .create_channel_name_input
-                    .focus_handle(cx)
-                    .is_focused(window)
-                {
-                    window.focus(&this.create_channel_desc_input.focus_handle(cx));
-                } else if this
-                    .create_channel_desc_input
-                    .focus_handle(cx)
-                    .is_focused(window)
-                {
-                    window.focus(&this.create_channel_private_focus);
-                } else if this.create_channel_private_focus.is_focused(window) {
-                    window.focus(&this.create_channel_name_input.focus_handle(cx));
-                }
-            }))
-            .on_action(cx.listener(|this, _: &crate::input::TabPrev, window, cx| {
-                if this
-                    .create_channel_name_input
-                    .focus_handle(cx)
-                    .is_focused(window)
-                {
-                    window.focus(&this.create_channel_private_focus);
-                } else if this
-                    .create_channel_desc_input
-                    .focus_handle(cx)
-                    .is_focused(window)
-                {
-                    window.focus(&this.create_channel_name_input.focus_handle(cx));
-                } else if this.create_channel_private_focus.is_focused(window) {
-                    window.focus(&this.create_channel_desc_input.focus_handle(cx));
-                }
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.text_primary)
-                            .child("新規チャンネル作成"),
-                    )
-                    .child(
-                        div()
-                            .px_1p5()
-                            .rounded_sm()
-                            .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child("✕")
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                    this.state.update(cx, |s, cx| {
-                                        s.close_create_channel_modal();
-                                        cx.notify();
-                                    });
-                                }),
-                            ),
-                    ),
+        let counter = i18n.t_with(
+            "channels.descriptionCounter",
+            &[("length", &length), ("max", &max)],
+        );
+        let help = if desc_too_long {
+            i18n.t_with(
+                "channels.descriptionTooLong",
+                &[("length", &length), ("max", &max)],
             )
-            .when_some(error, |d, err| {
-                d.child(
-                    div()
-                        .p_2()
-                        .rounded_md()
-                        .bg(theme.bg_surface)
-                        .text_xs()
-                        .text_color(theme.danger)
-                        .child(err),
-                )
-            })
+        } else {
+            i18n.t_with("channels.descriptionHelp", &[("max", &max)])
+        };
+
+        // `<form className="flex flex-col gap-3">`
+        let form = v_flex()
+            .gap(px(12.0))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child("チャンネル名"),
-                    )
-                    .child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(theme.bg_surface)
-                            .border_1()
-                            .border_color(theme.border)
-                            .child(self.create_channel_name_input.clone()),
-                    ),
+                Input::new()
+                    .focus_handle(&name_focus)
+                    .child(self.create_channel_name_input.clone()),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
+                // `flex flex-col gap-1.5`
+                v_flex()
+                    .gap(px(6.0))
                     .child(
-                        div()
-                            .flex()
-                            .flex_row()
+                        h_flex()
                             .justify_between()
-                            .items_center()
+                            .gap(px(8.0))
                             .child(
+                                // `text-sm font-medium`
                                 div()
-                                    .text_xs()
-                                    .text_color(theme.text_muted)
-                                    .child("説明 (任意)"),
+                                    .font(fonts::sans(500.0))
+                                    .child(i18n.t("channels.descriptionLabel")),
                             )
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(counter_color)
-                                    .child(format!("{desc_count}/250")),
+                                    .text_size(xs.size())
+                                    .line_height(xs.line())
+                                    .text_color(if desc_too_long {
+                                        t.destructive
+                                    } else {
+                                        t.muted_foreground
+                                    })
+                                    .child(counter),
                             ),
                     )
                     .child(
-                        div()
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .bg(theme.bg_surface)
-                            .border_1()
-                            .border_color(if desc_too_long {
-                                theme.danger
-                            } else {
-                                theme.border
-                            })
+                        Textarea::new()
+                            .invalid(desc_too_long)
+                            .focus_handle(&desc_focus)
                             .child(self.create_channel_desc_input.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(xs.size())
+                            .line_height(xs.line())
+                            .text_color(if desc_too_long {
+                                t.destructive
+                            } else {
+                                t.muted_foreground
+                            })
+                            .child(help),
                     ),
             )
             .child(
-                div()
+                // `<label className="flex items-center gap-2 text-sm">`
+                h_flex()
                     .id("create-channel-private-toggle")
                     .track_focus(&self.create_channel_private_focus)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .p_1()
-                    .rounded_md()
-                    .when(is_private_focused, |d| {
-                        d.border_1().border_color(theme.accent).bg(theme.bg_surface)
-                    })
-                    .hover(|s| s.cursor_pointer().bg(theme.bg_hover))
-                    .child(
-                        div()
-                            .w_4()
-                            .h_4()
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(if is_private {
-                                theme.border_accent
-                            } else {
-                                theme.border
-                            })
-                            .bg(if is_private {
-                                theme.accent_button
-                            } else {
-                                theme.bg_surface
-                            })
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_xs()
-                            .text_color(theme.text_on_accent)
-                            .child(if is_private { "✓" } else { "" }),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.text_primary)
-                            .child("非公開チャンネルにする"),
-                    )
+                    .gap(px(8.0))
+                    .hover(|s| s.cursor_pointer())
+                    .child(checkbox_box(&p, is_private, is_private_focused, false))
+                    .child(i18n.t("channels.makePrivate"))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _: &MouseUpEvent, _, cx| {
                             this.toggle_create_channel_is_private(cx);
                         }),
                     )
-                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                        if ev.keystroke.key == "tab" {
-                            if ev.keystroke.modifiers.shift {
-                                window.focus(&this.create_channel_desc_input.focus_handle(cx));
-                            } else {
-                                window.focus(&this.create_channel_name_input.focus_handle(cx));
-                            }
-                        } else if is_activate_key(&ev.keystroke.key) {
+                    .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                        if is_activate_key(&ev.keystroke.key) {
                             this.toggle_create_channel_is_private(cx);
                         }
                     })),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
-                    .gap_2()
-                    .mt_2()
-                    .child(
-                        div()
-                            .px_3()
-                            .py_1p5()
-                            .rounded_md()
-                            .bg(theme.bg_surface)
-                            .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                            .text_xs()
-                            .text_color(theme.text_muted)
-                            .child("キャンセル")
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                    this.state.update(cx, |s, cx| {
-                                        s.close_create_channel_modal();
-                                        cx.notify();
-                                    });
-                                }),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .px_4()
-                            .py_1p5()
-                            .rounded_md()
-                            .bg(theme.accent_button)
-                            .hover(|s| s.bg(theme.accent_button_hover).cursor_pointer())
-                            .text_xs()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme.text_on_accent)
-                            .child(if in_flight { "作成中…" } else { "作成" })
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                    this.state.update(cx, |s, cx| {
-                                        s.submit_create_channel();
-                                        cx.notify();
-                                    });
-                                }),
-                            ),
-                    ),
+            .when_some(error, |d, err| {
+                d.child(
+                    div()
+                        .text_size(xs.size())
+                        .line_height(xs.line())
+                        .text_color(t.destructive)
+                        .child(i18n.t_with("common.writeErrorDetail", &[("error", &err)])),
+                )
+            });
+
+        let submit_label = if in_flight {
+            i18n.t("channels.creating")
+        } else {
+            i18n.t("channels.create")
+        };
+        let dialog = Dialog::new("create-channel", i18n.t("channels.createTitle"))
+            .description(i18n.t("channels.visibilityHelp"))
+            .on_close(cx.listener(|this, _, _, cx| {
+                this.state.update(cx, |s, cx| {
+                    s.close_create_channel_modal();
+                    cx.notify();
+                });
+            }))
+            .child(form)
+            .footer(
+                Button::new("create-channel-cancel")
+                    .focus_handle(&self.create_cancel_focus)
+                    .variant(ButtonVariant::Outline)
+                    .label(i18n.t("common.cancel"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state.update(cx, |s, cx| {
+                            s.close_create_channel_modal();
+                            cx.notify();
+                        });
+                    })),
             )
+            .footer(
+                Button::new("create-channel-submit")
+                    .focus_handle(&self.create_submit_focus)
+                    .label(submit_label)
+                    .disabled(in_flight || name_empty || desc_too_long)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.state.update(cx, |s, cx| {
+                            s.submit_create_channel();
+                            cx.notify();
+                        });
+                    })),
+            );
+
+        div()
+            .text_size(sm.size())
+            .on_action(cx.listener(move |_, _: &crate::input::Tab, window, _| {
+                cycle_focus(window, &order, false);
+            }))
+            .on_action(cx.listener(move |_, _: &crate::input::TabPrev, window, _| {
+                cycle_focus(window, &order_prev, true);
+            }))
+            // 入力欄の外 (チェックボックスとボタン) の Tab。入力欄の Tab は上の action が受ける。
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
+                if ev.keystroke.key == "tab"
+                    && !this
+                        .create_channel_name_input
+                        .focus_handle(cx)
+                        .is_focused(window)
+                    && !this
+                        .create_channel_desc_input
+                        .focus_handle(cx)
+                        .is_focused(window)
+                {
+                    cycle_focus(window, &order_key, ev.keystroke.modifiers.shift);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(dialog)
     }
 }

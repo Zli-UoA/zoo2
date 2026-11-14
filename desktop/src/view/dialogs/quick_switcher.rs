@@ -1,11 +1,24 @@
 //! クイックスイッチャー。
 
 use gpui::{
-    Context, Div, Focusable, FontWeight, MouseButton, MouseUpEvent, ParentElement,
-    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    Context, Div, Focusable, MouseButton, MouseUpEvent, ParentElement, Styled, Window, div,
+    prelude::*, px,
 };
 
+use crate::icons::Icon;
+use crate::tokens::radius;
+use crate::ui::dialog::Dialog;
+use crate::ui::input::Input;
+use crate::ui::scroll_area::ScrollArea;
+use crate::ui::{TextSpec, h_flex, icon_colored, palette, v_flex};
 use crate::view::WorkspaceView;
+use crate::view::chat::channel_header::header_icon;
+
+/// `sm:max-w-md`
+const WIDTH: f32 = 448.0;
+/// 一覧の高さ (`h-80`) と、1 行の最小の高さ (`min-h-14`)。
+const LIST_HEIGHT: f32 = 320.0;
+const ROW_HEIGHT: f32 = 56.0;
 
 impl WorkspaceView {
     pub(in crate::view) fn open_quick_switcher(
@@ -35,125 +48,178 @@ impl WorkspaceView {
         window.focus(&self.quick_switcher_input.focus_handle(cx));
     }
 
+    /// ⌘K のスイッチャー。Web 版にはなく、見た目は `ChannelBrowserDialog.tsx` に合わせる。
     pub(in crate::view) fn render_quick_switcher_modal(&self, cx: &mut Context<Self>) -> Div {
         let should_scroll = self
             .state
             .update(cx, |s, _| s.take_pending_quick_switcher_scroll());
+        let p = palette(cx);
+        let t = p.t;
+        let i18n = self.i18n;
+        let sm = TextSpec::SM;
+        let xs = TextSpec::XS;
         let state = self.state.read(cx);
-        let theme = state.theme();
         let qs = state.quick_switcher.as_ref().unwrap();
         let candidates = state.quick_switcher_candidates();
         let selected_index = qs.selected_index;
+        let has_query = !qs.query.trim().is_empty();
         if should_scroll {
             self.quick_switcher_scroll.scroll_to_item(selected_index);
         }
 
-        let items = candidates.iter().enumerate().map(|(i, (ch, label))| {
-            let is_selected = i == selected_index;
-            let is_dm = ch.is_dm;
-            let has_unread = state.unread.contains(&ch.id);
-            let icon = if is_dm { "@" } else { "#" };
-            let ch_id = ch.id.clone();
-
-            div()
-                .w_full()
-                .px_3()
-                .py_2()
-                .rounded_md()
-                .bg(if is_selected {
-                    theme.bg_selected
+        let items: Vec<_> = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, (ch, label))| {
+                let is_selected = i == selected_index;
+                let has_unread = state.unread.contains(&ch.id);
+                let icon = header_icon(
+                    ch.is_dm,
+                    ch.is_dm && ch.channel_name.starts_with("dm:group:"),
+                    ch.is_private,
+                );
+                let description = if ch.is_dm {
+                    None
                 } else {
-                    theme.bg_surface
-                })
-                .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
+                    ch.description
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|d| !d.is_empty())
+                        .map(str::to_string)
+                };
+                let ch_id = ch.id.clone();
+                // `flex min-h-14 items-center gap-3 rounded-lg py-2 pl-3 pr-3 hover:bg-muted`
+                h_flex()
+                    .w_full()
+                    .min_h(px(ROW_HEIGHT))
+                    .gap(px(12.0))
+                    .rounded(radius::LG)
+                    .py(px(8.0))
+                    .pl(px(12.0))
+                    .pr(px(12.0))
+                    .when(is_selected, |d| d.bg(t.muted))
+                    .hover(|s| s.bg(t.muted).cursor_pointer())
+                    .child(
+                        // `size-4 shrink-0 opacity-60`
+                        div().flex_none().opacity(0.6).child(icon_colored(
+                            icon,
+                            16.0,
+                            t.foreground,
+                        )),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(sm.size())
+                                    .line_height(sm.line())
+                                    .text_color(t.foreground)
+                                    .child(label.clone()),
+                            )
+                            .when_some(description, |d, desc| {
+                                d.child(
+                                    div()
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .text_size(xs.size())
+                                        .line_height(xs.line())
+                                        .text_color(t.muted_foreground)
+                                        .child(desc),
+                                )
+                            }),
+                    )
+                    .when(has_unread, |d| {
+                        // サイドバーと同じ未読の点 (`size-2 rounded-full bg-brand`)
+                        d.child(div().flex_none().size(px(8.0)).rounded_full().bg(t.brand))
+                    })
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                            let target = ch_id.clone();
+                            this.state.update(cx, |s, cx| {
+                                s.close_quick_switcher();
+                                s.open_channel(target);
+                                cx.notify();
+                            });
+                        }),
+                    )
+            })
+            .collect();
+
+        let search = div()
+            .relative()
+            .child(
+                Input::new()
+                    .focus_handle(&self.quick_switcher_input.focus_handle(cx))
+                    .pl(px(32.0))
+                    .child(self.quick_switcher_input.clone()),
+            )
+            .child(
+                // `pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground`
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(px(10.0))
+                    .flex()
+                    .items_center()
+                    .child(icon_colored(Icon::Search, 16.0, t.muted_foreground)),
+            );
+
+        let list = div()
+            .h(px(LIST_HEIGHT))
+            .min_h_0()
+            .min_w_0()
+            .child(if items.is_empty() {
+                // `flex h-full items-center justify-center px-2 text-center text-sm text-muted-foreground`
+                div()
+                    .flex()
+                    .size_full()
+                    .items_center()
+                    .justify_center()
+                    .px(px(8.0))
+                    .text_center()
+                    .text_size(sm.size())
+                    .line_height(sm.line())
+                    .text_color(t.muted_foreground)
+                    .child(i18n.t(if has_query {
+                        "channels.searchEmpty"
+                    } else {
+                        "channels.browseEmpty"
+                    }))
+                    .into_any_element()
+            } else {
+                ScrollArea::new("quick-switcher-list")
+                    .scroll_handle(&self.quick_switcher_scroll)
+                    .size_full()
+                    .child(v_flex().gap(px(2.0)).pr(px(8.0)).children(items))
+                    .into_any_element()
+            });
+
+        div().child(
+            Dialog::new("quick-switcher", i18n.t("channels.browseTitle"))
+                .w(px(WIDTH))
+                .on_close(cx.listener(|this, _, _, cx| {
+                    this.state.update(cx, |s, cx| {
+                        s.close_quick_switcher();
+                        cx.notify();
+                    });
+                }))
+                .child(search)
+                .child(list)
                 .child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme.text_muted)
-                                .child(icon),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(if is_selected || has_unread {
-                                    FontWeight::BOLD
-                                } else {
-                                    FontWeight::NORMAL
-                                })
-                                .text_color(theme.text_primary)
-                                .child(label.clone()),
-                        ),
-                )
-                .when(has_unread, |d| {
-                    d.child(div().w_2().h_2().rounded_full().bg(theme.accent))
-                })
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        let target = ch_id.clone();
-                        this.state.update(cx, |s, cx| {
-                            s.close_quick_switcher();
-                            s.open_channel(target);
-                            cx.notify();
-                        });
-                    }),
-                )
-        });
-
-        div()
-            .w(px(480.0))
-            .max_h(px(400.0))
-            .p_4()
-            .rounded_lg()
-            .bg(theme.bg_secondary)
-            .border_1()
-            .border_color(theme.border_accent)
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(theme.bg_surface)
-                    .border_1()
-                    .border_color(theme.border)
-                    .child(div().text_sm().child("🔍"))
-                    .child(div().flex_1().child(self.quick_switcher_input.clone())),
-            )
-            .child(
-                div()
-                    .id("quick-switcher-list")
-                    .w_full()
-                    .max_h(px(280.0))
-                    .track_scroll(&self.quick_switcher_scroll)
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .children(items),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme.text_dim)
-                    .child("↑↓ で移動、Enter で決定、Esc で閉じる"),
-            )
+                        .text_size(xs.size())
+                        .line_height(xs.line())
+                        .text_color(t.muted_foreground)
+                        .child("↑↓ で移動、Enter で決定、Esc で閉じる"),
+                ),
+        )
     }
 }

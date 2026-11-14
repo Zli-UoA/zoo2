@@ -13,6 +13,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::theme;
+use crate::ui::{Palette, alpha};
 
 actions!(
     zoo2_text_input,
@@ -126,6 +127,29 @@ pub struct TextInput {
     pub intercept_horizontal_arrows: bool,
     pub intercept_tab: bool,
     pub theme: theme::Theme,
+    /// 枠・背景・余白を持たない見た目にする。`ui/` の枠 (`Input` や Composer の枠) の中に入れるときに使う。
+    /// 文字の大きさと色は親から引き継ぎ、カーソル・選択・プレースホルダーの色は `Palette` から取る。
+    /// 入力の処理 (IME など) は変わらない。
+    pub bare: bool,
+}
+
+/// `bare` のときの、カーソル・選択・プレースホルダーの色 (`textarea.tsx` / `input.tsx` に合わせる)。
+struct BareColors {
+    placeholder: gpui::Hsla,
+    cursor: gpui::Rgba,
+    selection: gpui::Hsla,
+}
+
+fn bare_colors(cx: &App) -> Option<BareColors> {
+    let p = cx.try_global::<Palette>()?;
+    let t = p.t;
+    Some(BareColors {
+        // `placeholder:text-muted-foreground`
+        placeholder: t.muted_foreground.into(),
+        // ブラウザのキャレットは文字色。
+        cursor: t.foreground,
+        selection: alpha(t.link, 0.3).into(),
+    })
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -164,6 +188,7 @@ impl TextInput {
             intercept_horizontal_arrows: false,
             intercept_tab: false,
             theme: theme::Theme::dark(),
+            bare: false,
         }
     }
 
@@ -724,6 +749,7 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
+        let bare = if input.bare { bare_colors(cx) } else { None };
         let content = input.content.clone();
         let multiline = input.multiline;
         let selected_range = input.selected_range.clone();
@@ -741,7 +767,9 @@ impl Element for TextElement {
             let run = TextRun {
                 len: placeholder.len(),
                 font: style.font(),
-                color: input.theme.placeholder_color(),
+                color: bare
+                    .as_ref()
+                    .map_or_else(|| input.theme.placeholder_color(), |c| c.placeholder),
                 background_color: None,
                 underline: None,
                 strikethrough: None,
@@ -851,7 +879,7 @@ impl Element for TextElement {
                 let y = bounds.top() + line_height * (vis_idx as f32);
                 cursor_quad = Some(fill(
                     Bounds::new(point(x, y), size(px(2.0), line_height)),
-                    input.theme.accent,
+                    bare.as_ref().map_or(input.theme.accent, |c| c.cursor),
                 ));
             }
         } else {
@@ -864,7 +892,8 @@ impl Element for TextElement {
                     let y = bounds.top() + line_height * (vis_idx as f32);
                     selections.push(fill(
                         Bounds::from_corners(point(x1, y), point(x2, y + line_height)),
-                        input.theme.selection_bg(),
+                        bare.as_ref()
+                            .map_or_else(|| input.theme.selection_bg(), |c| c.selection),
                     ));
                 }
             }
@@ -974,15 +1003,17 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .bg(self.theme.bg_surface)
-            .border_1()
-            .border_color(border_color)
-            .rounded_md()
-            .px_3()
-            .py_2()
-            .text_sm()
-            .line_height(px(20.0))
-            .text_color(self.theme.text_primary)
+            .when(!self.bare, |d| {
+                d.bg(self.theme.bg_surface)
+                    .border_1()
+                    .border_color(border_color)
+                    .rounded_md()
+                    .px_3()
+                    .py_2()
+                    .text_sm()
+                    .line_height(px(20.0))
+                    .text_color(self.theme.text_primary)
+            })
             .child(TextElement { input: cx.entity() })
     }
 }

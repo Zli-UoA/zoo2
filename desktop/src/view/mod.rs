@@ -48,11 +48,30 @@ pub struct WorkspaceView {
     pub thread_scroll: ScrollHandle,
     pub quick_switcher_scroll: ScrollHandle,
     pub emoji_picker_scroll: ScrollHandle,
+    /// メンション補完の一覧のスクロールと、最後に見える位置へ寄せた行。
+    pub mention_scroll: ScrollHandle,
+    pub mention_scrolled_to: std::cell::Cell<Option<usize>>,
     pub create_channel_private_focus: FocusHandle,
     pub theme_toggle_focus: FocusHandle,
     pub load_older_focus: FocusHandle,
     pub jump_to_latest_focus: FocusHandle,
     pub retry_sync_focus: FocusHandle,
+    /// Composer の添付・絵文字・送信・返信取り消しのボタン。
+    pub composer_attach_focus: FocusHandle,
+    pub composer_emoji_focus: FocusHandle,
+    pub composer_send_focus: FocusHandle,
+    pub composer_cancel_focus: FocusHandle,
+    /// チャンネル作成ダイアログの取り消しと作成のボタン。
+    pub create_cancel_focus: FocusHandle,
+    pub create_submit_focus: FocusHandle,
+    /// 削除確認のボタンと、開いた直後に取り消しへフォーカスを置いたか。
+    pub delete_cancel_focus: FocusHandle,
+    pub delete_confirm_focus: FocusHandle,
+    pub delete_dialog_was_open: std::cell::Cell<bool>,
+    /// メッセージ検索の前・次・閉じるのボタン。
+    pub search_prev_focus: FocusHandle,
+    pub search_next_focus: FocusHandle,
+    pub search_close_focus: FocusHandle,
     pub expanded_cards: std::collections::HashSet<String>,
     pub card_focus_handles: std::cell::RefCell<std::collections::HashMap<String, FocusHandle>>,
     pub attachment_focus_handles:
@@ -76,24 +95,38 @@ impl Focusable for WorkspaceView {
 
 impl WorkspaceView {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let i18n = I18n::detect();
+        // 枠 (`ComposerField` など) は `ui/` の部品が描く。入力欄は枠なしにして、文字だけを持たせる。
         let composer_input = cx.new(|cx| {
-            TextInput::new_multiline(cx, "メッセージを入力 (Enter で送信、Shift+Enter で改行)…")
+            let mut input = TextInput::new_multiline(cx, i18n.t("messages.compose"));
+            input.bare = true;
+            input
         });
         let reaction_input = cx.new(|cx| {
             TextInput::new_single_line(cx, "絵文字またはショートコード (例: thumbsup, 🎉)")
         });
-        let create_channel_name_input =
-            cx.new(|cx| TextInput::new_single_line(cx, "例: general, random"));
-        let create_channel_desc_input =
-            cx.new(|cx| TextInput::new_single_line(cx, "チャンネルのトピックや説明…"));
+        // 以下の入力欄は、枠を `ui/` の `Input` / `Textarea` が描くので、枠なしにする。
+        let create_channel_name_input = cx.new(|cx| {
+            let mut input = TextInput::new_single_line(cx, i18n.t("channels.newName"));
+            input.bare = true;
+            input
+        });
+        let create_channel_desc_input = cx.new(|cx| {
+            let mut input =
+                TextInput::new_single_line(cx, i18n.t("channels.descriptionPlaceholder"));
+            input.bare = true;
+            input
+        });
         let quick_switcher_input = cx.new(|cx| {
-            let mut input = TextInput::new_single_line(cx, "チャンネル名またはメンバー名…");
+            let mut input = TextInput::new_single_line(cx, i18n.t("channels.browseSearch"));
             input.intercept_vertical_arrows = true;
+            input.bare = true;
             input
         });
         let message_search_input = cx.new(|cx| {
             let mut input = TextInput::new_single_line(cx, "チャンネル内メッセージを検索…");
             input.intercept_vertical_arrows = true;
+            input.bare = true;
             input
         });
 
@@ -505,15 +538,29 @@ impl WorkspaceView {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_channels_open: true,
             sidebar_dms_open: true,
-            i18n: I18n::detect(),
+            i18n,
             thread_scroll: ScrollHandle::new(),
             quick_switcher_scroll: ScrollHandle::new(),
             emoji_picker_scroll: ScrollHandle::new(),
+            mention_scroll: ScrollHandle::new(),
+            mention_scrolled_to: std::cell::Cell::new(None),
             create_channel_private_focus: cx.focus_handle().tab_stop(true),
             theme_toggle_focus: cx.focus_handle().tab_stop(true),
             load_older_focus: cx.focus_handle().tab_stop(true),
             jump_to_latest_focus: cx.focus_handle().tab_stop(true),
             retry_sync_focus: cx.focus_handle().tab_stop(true),
+            composer_attach_focus: cx.focus_handle().tab_stop(true),
+            composer_emoji_focus: cx.focus_handle().tab_stop(true),
+            composer_send_focus: cx.focus_handle().tab_stop(true),
+            composer_cancel_focus: cx.focus_handle().tab_stop(true),
+            create_cancel_focus: cx.focus_handle().tab_stop(true),
+            create_submit_focus: cx.focus_handle().tab_stop(true),
+            delete_cancel_focus: cx.focus_handle().tab_stop(true),
+            delete_confirm_focus: cx.focus_handle().tab_stop(true),
+            delete_dialog_was_open: std::cell::Cell::new(false),
+            search_prev_focus: cx.focus_handle().tab_stop(true),
+            search_next_focus: cx.focus_handle().tab_stop(true),
+            search_close_focus: cx.focus_handle().tab_stop(true),
             expanded_cards: std::collections::HashSet::new(),
             card_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
             attachment_focus_handles: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -658,6 +705,7 @@ impl Render for WorkspaceView {
         let has_quick_switcher = state_ref.quick_switcher.is_some();
         let has_emoji_picker = state_ref.emoji_picker_open;
         let has_message_search = state_ref.message_search.is_some();
+        let has_delete_confirm = state_ref.confirm_delete_message.is_some();
 
         let should_focus_composer = self
             .state
@@ -667,25 +715,20 @@ impl Render for WorkspaceView {
             && !has_quick_switcher
             && !has_emoji_picker
             && !has_message_search
+            && !has_delete_confirm
         {
             window.focus(&self.composer_input.focus_handle(cx));
         }
 
         let main_view = self.render_app_shell(timeline_div, thread_div, cx);
 
-        if has_create_modal || has_quick_switcher || has_emoji_picker {
+        if let Some(dialog) = self.render_open_dialog(window, cx) {
             div()
                 .size_full()
                 .relative()
                 .track_focus(&self.focus_handle(cx))
                 .child(main_view)
-                .child(self.render_modal_overlay(
-                    has_create_modal,
-                    has_quick_switcher,
-                    has_emoji_picker,
-                    window,
-                    cx,
-                ))
+                .child(dialog)
         } else {
             div().size_full().child(main_view)
         }

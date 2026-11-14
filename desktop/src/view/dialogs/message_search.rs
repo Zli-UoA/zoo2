@@ -1,10 +1,11 @@
 //! メッセージ検索バー。
 
-use gpui::{
-    Context, Div, Focusable, MouseButton, MouseUpEvent, ParentElement, Styled, Window, div,
-    prelude::*,
-};
+use gpui::{Context, Div, Focusable, ParentElement, Styled, Window, div, prelude::*, px};
 
+use crate::icons::Icon;
+use crate::ui::button::{Button, ButtonSize, ButtonVariant};
+use crate::ui::input::Input;
+use crate::ui::{TextSpec, h_flex, icon_colored, palette};
 use crate::view::WorkspaceView;
 
 impl WorkspaceView {
@@ -53,119 +54,109 @@ impl WorkspaceView {
         window.focus(&self.message_search_input.focus_handle(cx));
     }
 
+    /// チャンネル内のメッセージ検索。Web 版には対応する画面がない。
+    /// 一致したメッセージをタイムラインで見ながら操作するので、ダイアログにはせず、
+    /// タイムラインの上の帯に出す。部品と寸法は `ChannelBrowserDialog.tsx` の検索欄に合わせる。
     pub(in crate::view) fn render_message_search_bar(&self, cx: &mut Context<Self>) -> Div {
+        let p = palette(cx);
+        let t = p.t;
+        let i18n = self.i18n;
+        let xs = TextSpec::XS;
         let state = self.state.read(cx);
-        let theme = state.theme();
         let ms = state.message_search.as_ref().unwrap();
         let count = ms.matches.len();
         let count_text = if ms.query.trim().is_empty() {
             String::new()
         } else if count == 0 {
-            "0 件".to_string()
+            i18n.t_count("messages.count", 0, &[])
         } else {
-            format!("{}/{} 件", ms.current_match_index + 1, count)
+            format!("{}/{}", ms.current_match_index + 1, count)
         };
 
-        div()
+        // `shrink-0 border-b bg-background px-4 py-2`
+        h_flex()
             .w_full()
-            .px_4()
-            .py_2()
-            .bg(theme.bg_surface)
+            .flex_none()
+            .gap(px(8.0))
+            .px(px(16.0))
+            .py(px(8.0))
+            .bg(t.background)
             .border_b_1()
-            .border_color(theme.border)
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
-            .child(div().text_sm().child("🔍"))
-            .child(div().flex_1().child(self.message_search_input.clone()))
+            .border_color(t.border)
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        Input::new()
+                            .focus_handle(&self.message_search_input.focus_handle(cx))
+                            .pl(px(32.0))
+                            .child(self.message_search_input.clone()),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(10.0))
+                            .flex()
+                            .items_center()
+                            .child(icon_colored(Icon::Search, 16.0, t.muted_foreground)),
+                    ),
+            )
             .when(!count_text.is_empty(), |d| {
                 d.child(
                     div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1p5()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(if count > 0 {
-                                    theme.accent
-                                } else {
-                                    theme.text_muted
-                                })
-                                .child(count_text),
-                        )
-                        .when(count > 0, |d| {
-                            d.child(
-                                div()
-                                    .id("btn-search-prev")
-                                    .px_1p5()
-                                    .py_0p5()
-                                    .rounded_sm()
-                                    .bg(theme.bg_secondary)
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                                    .text_xs()
-                                    .text_color(theme.text_primary)
-                                    .child("↑")
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                            this.state.update(cx, |s, cx| {
-                                                s.search_select_prev();
-                                                cx.notify();
-                                            });
-                                        }),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id("btn-search-next")
-                                    .px_1p5()
-                                    .py_0p5()
-                                    .rounded_sm()
-                                    .bg(theme.bg_secondary)
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                                    .text_xs()
-                                    .text_color(theme.text_primary)
-                                    .child("↓")
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                            this.state.update(cx, |s, cx| {
-                                                s.search_select_next();
-                                                cx.notify();
-                                            });
-                                        }),
-                                    ),
-                            )
-                        }),
+                        .flex_none()
+                        .text_size(xs.size())
+                        .line_height(xs.line())
+                        .text_color(t.muted_foreground)
+                        .child(count_text),
+                )
+            })
+            .when(count > 0, |d| {
+                d.child(
+                    Button::new("btn-search-prev")
+                        .focus_handle(&self.search_prev_focus)
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::IconSm)
+                        .icon_start(Icon::ChevronUp)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state.update(cx, |s, cx| {
+                                s.search_select_prev();
+                                cx.notify();
+                            });
+                        })),
+                )
+                .child(
+                    Button::new("btn-search-next")
+                        .focus_handle(&self.search_next_focus)
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::IconSm)
+                        .icon_start(Icon::ChevronDown)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.state.update(cx, |s, cx| {
+                                s.search_select_next();
+                                cx.notify();
+                            });
+                        })),
                 )
             })
             .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .hover(|s| s.bg(theme.bg_hover).cursor_pointer())
-                    .text_xs()
-                    .text_color(theme.text_muted)
-                    .child("閉じる (Esc)")
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                            this.message_search_input
-                                .update(cx, |input, cx| input.clear(cx));
-                            this.state.update(cx, |s, cx| {
-                                s.close_message_search();
-                                cx.notify();
-                            });
-                        }),
-                    ),
+                Button::new("btn-search-close")
+                    .focus_handle(&self.search_close_focus)
+                    .variant(ButtonVariant::Ghost)
+                    .size(ButtonSize::IconSm)
+                    .icon_start(Icon::X)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.message_search_input
+                            .update(cx, |input, cx| input.clear(cx));
+                        this.state.update(cx, |s, cx| {
+                            s.close_message_search();
+                            cx.notify();
+                        });
+                    })),
             )
     }
 }
