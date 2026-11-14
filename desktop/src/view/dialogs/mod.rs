@@ -9,7 +9,7 @@ mod emoji_picker;
 mod message_search;
 mod quick_switcher;
 
-use gpui::{Context, Div, FocusHandle, Window, div, prelude::*, px};
+use gpui::{Context, Div, FocusHandle, Focusable, Window, div, prelude::*, px};
 
 use crate::icons::Icon;
 use crate::ui::dialog::overlay;
@@ -69,8 +69,16 @@ impl WorkspaceView {
             s.emoji_picker_open,
             s.confirm_delete_message.is_some(),
         );
-        if !delete {
-            self.delete_dialog_was_open.set(false);
+        // 削除確認が閉じたとき (取り消し・削除のほか、別端末での削除やアーカイブで対象が消えたときも)、
+        // フォーカスが描かれなくなったボタンに残らないよう Composer へ戻す。
+        // ほかのダイアログが開いたときは、そのダイアログがフォーカスを決める。
+        if !delete
+            && self.delete_dialog_was_open.replace(false)
+            && !(create || switcher || emoji)
+            && (self.delete_cancel_focus.is_focused(window)
+                || self.delete_confirm_focus.is_focused(window))
+        {
+            window.focus(&self.composer_input.focus_handle(cx));
         }
         if create {
             Some(overlay(self.render_create_channel_modal(window, cx)))

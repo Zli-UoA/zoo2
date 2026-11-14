@@ -280,6 +280,10 @@ impl WorkspaceView {
                     });
                     if submitted {
                         this.composer_input.update(cx, |input, cx| input.clear(cx));
+                        // 送信ボタンから送ると、空になってボタンが無効 (フォーカス不可) になる。
+                        // フォーカスの行き場がなくならないよう Composer へ戻す。
+                        this.state
+                            .update(cx, |state, _| state.pending_focus_composer = true);
                     }
                 }
                 InputEvent::Cancel => {
