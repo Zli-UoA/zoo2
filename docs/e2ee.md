@@ -1533,7 +1533,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 削除 | 論理削除し、`ciphertext` を消す。どの経路でも守るために、DB のトリガーで `deleted_at` が入った行の `ciphertext` を NULL にする（`DELETE /api/channels/{channel}/history` の `clear_history` など、`DELETE /api/messages` 以外の論理削除も含む）（#358） |
 | メンション通知 | 送信側が平文の `mentions` を付け、サーバーはそこから通知を作る（規則は[メッセージ](#メッセージ357358)の `mentions`）。本文の解析はしない。止める解析は、`backend/src/notifications.rs` の `extract_mentions` と、`infra/db/schema.sql` の SQL 関数 `is_mention`（`app_message_events_v2()` が App の `app.mentioned` イベントを作るときに呼ぶ）の 2 か所。受信側の表示とハイライトは、復号した `mentions` だけを使う。平文と暗号文の `mentions` が違っても、表示には平文を使わない |
 | 通知一覧 | `notification_display` の本文の抜粋は空になる。クライアントは手元で復号できれば本文を出し、できなければ「暗号化されたメッセージ」と出す |
-| Web Push | 本文の代わりに「新しいメッセージ」だけを送る（`push.rs` の本文先頭 240 文字を使わない）。Service Worker での復号は後続（[#365](https://github.com/Zli-UoA/zoo2/issues/365)） |
+| Web Push | 本文の代わりに「新しいメッセージ」を送る（`push.rs` の本文先頭 240 文字を使わない）。【決定】（#365）Megolm の暗号文と照合に使う列を `e2ee` に付け、受信した端末の Service Worker が手元の暗号ストアで復号できたら本文を出す（[Web Push の復号](#web-push-の復号365)） |
 | 添付 | **初期版では禁止**。クライアントは添付ボタンと貼り付けを出さない。サーバーは `POST /api/attachments/presign` と、メッセージへの添付の紐付けを 400 で拒否する。App のファイル API（`/api/apps/v1/files`、`/api/apps/v1/messages/{id}/files`）は別の S3 バケットへの経路なので、App の行の規則で拒否する。暗号化した添付（#364）を実装したら禁止を外す |
 | リアクション | 平文のまま |
 | スレッド | `parent_id` は平文のまま。暗号化したペイロードにも入れて照合する |
@@ -1687,6 +1687,32 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 - ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。【決定】（#359）React は、消せなかった暗号ストアの名前空間（`zoo.e2ee.pendingStoreDelete`）と、削除 API が失敗した端末（`zoo.e2ee.pendingDeviceDelete`。`user_id` と `device_id` の組の一覧で、別のユーザーの削除待ちを上書きしない）を localStorage に残し、次の起動と、同じユーザーの次のログインで消し直す（`frontend/src/lib/e2ee/identity.ts`）。削除 API の 404（登録の前に止まった端末）は、消すものがないので済んだものとして扱う。
 - 保存鍵による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
 
+### Web Push の復号（[#365](https://github.com/Zli-UoA/zoo2/issues/365)）
+
+【決定】（#365）暗号化チャンネルの Web Push は、サーバーが平文を持たないまま、受信した端末の Service Worker が復号して本文を出します。
+
+- Push の本文（RFC 8291 で暗号化する前の JSON）は、`title`、`url`、`tag`、`notificationType` が平文チャンネルと同じで、`body` は「新しいメッセージ」。暗号化チャンネルの通知だけに `e2ee` を付ける（`backend/src/push.rs`）。
+
+  ```json
+  {"title": "...", "body": "新しいメッセージ", "url": "...", "tag": "...", "notificationType": "mention",
+   "e2ee": {"recipient_id": "<通知の宛先>",
+            "message": {"channel_id": "...", "message_id": "...", "parent_id": null, "user_id": "<送信者>",
+                        "message_kind": "message", "epoch": 3, "revision": 0, "ciphertext": {"...": "..."}}}}
+  ```
+
+  - `message` は zoo-crypto の `EncryptedMessage` と同じ形で、Push を送るときに読んだ `messages` の行の値（編集されていれば、そのときの版）。どれもサーバーが元から持つ値で、Push のために新しくサーバーに渡る値はない。削除されたメッセージ（`ciphertext` が NULL）の通知は、今までどおり送らない。
+  - `recipient_id` は、Service Worker が暗号ストア（`cryptoDatabaseName`。名前空間は `user-<id>`、開発用のログインは `dev-<id>` で、順に探す）を選ぶのに使う。
+- 上限：RFC 8291 で暗号化したあとの長さが 4096 バイト（RFC 8030 が Push サービスに求める上限。今までと同じ検査）を超えるなら、`e2ee` を外して送る（`push.rs` の `encrypt_fitting`）。本文がおよそ 1.7 KB（UTF-8。日本語でおよそ 600 字。タイトルやメンションの長さで変わる）を超えると外れる。Service Worker は API のトークンを持たないので、外れた暗号文を後から取りに行くことはしない。
+- 戻し方：`e2ee` がない Push、復号できない Push（鍵が届いていない、照合に失敗した、暗号ストアを開けない、どれにも答えがない）は、「新しいメッセージ」のまま出す。全体で 10 秒を超えたときも同じ。
+- 復号の順（`frontend/src/sw/push.ts`、`frontend/src/lib/e2ee/push/`）。
+  1. Service Worker は、暗号ストアのロック（`zoo-crypto:<DB 名>`、[暗号ストア](#暗号ストア)）を `ifAvailable` で取ろうとする。
+  2. 取れたら、暗号ストアを開いているタブはない。ロックを持ったまま、OPFS の暗号ストアのファイル（残っていれば `-journal` も）を読み、wa-sqlite のメモリーの VFS で開く。Service Worker では、暗号ストアの Worker が使う `OPFSCoopSyncVFS`（OPFS の同期のハンドルは専用の Worker にしかない）を使えないため。IndexedDB の鍵で保存鍵を開き、端末アカウントと受信用セッションを戻し、zoo-crypto の受信時の検証を通して復号する。写しは OPFS に書き戻さず、受信用セッションの照合の記録（リプレイと版）もメモリーにだけ置いて捨てる。保存鍵を開けなくても、暗号ストアを作り直さない。ロックを持つあいだに開こうとしたタブは、読み終わるまで待つ。
+  3. 取れなければ、暗号ストアを開いているタブがある。Service Worker は、すべてのウィンドウに `zoo-e2ee-push-decrypt` を MessageChannel で送る。その名前空間の暗号ストアを開いているタブ（`E2eeProvider`）が、画面の表示と同じ `megolmDecrypt` で復号して本文を返し、ほかのタブは `null` を返す。3 秒で答えがなければ諦める。
+  4. 通知の本文は、復号した `content.body` の先頭 240 文字（コードポイントで数える。平文チャンネルと同じ）。リアクションの通知は、今までどおり「リアクション: 」を前に付ける。送信者の確かさ（未検証の送信者、バックアップ由来）は通知には出さず、通知から開いた画面で示す。
+- `sw-push.js` は、`pnpm build` が `frontend/vite.sw-push.config.ts` で `dist/client` に作る classic script（IIFE）で、`public/sw.js` が起動時に `importScripts` で読む。Service Worker では `import()` を使えず、`importScripts` は起動時と install のあいだにしか読めないので、名前を固定にする。wasm（zoo-crypto と wa-sqlite）は、Push を受けたときに初めて `assets/` から読む。dev サーバーには `sw-push.js` がないので、復号せずに出す。
+- 本物の Service Worker での確かめは `frontend/src/sw/push.browser.test.ts`（Chromium）。
+- 【決定】（#365）Android は、まだ Push の受信（FCM）も、暗号ストアと端末の登録（#359 の残り）もないので、#365 では扱わない。Android で Push を受けるようにするときは、同じ `e2ee` を受け取り、Android の暗号ストアの受信用セッション（UniFFI の `InboundSessionStore`）で、Web と同じく書き戻さずに復号する。
+
 ## 脅威モデル
 
 ### 守るもの
@@ -1733,6 +1759,7 @@ kubectl --context "$CTX" -n zoo2 rollout restart deployment/backend
 - **巻き戻しの一部**：その端末が新しい版を一度も見ていなければ、サーバーが古い版を返しても分からない。
 - **古いユーザー署名鍵への巻き戻し**：サーバーは、同じマスター鍵で署名された古いユーザー署名鍵と古いピンを見せられる。端末は、相手ごとに最後に見たユーザー署名鍵の公開鍵（`confirmed_usk`）と、自分のユーザー署名鍵の公開鍵の履歴を暗号ストアに記録し、一度置き換わったユーザー署名鍵に戻ったら、その鍵を基準にせず、警告して配布を止める（#362）。履歴を持たない新しい端末は気付けない。
 - **古いクロス署名鍵への巻き戻し**：端末だけの失効ではマスター鍵を残すので、古い自己署名鍵とユーザー署名鍵には、マスター鍵の有効な署名が残る。トークンを持つだけの攻撃者による登録し直しはサーバーが拒否するが（[クロス署名の API](#クロス署名356)）、サーバーや DB を乗っ取った攻撃者は、他のユーザーに古い自己署名鍵を見せて、失った端末の鍵で署名した端末に鍵を配らせられる。これを防ぐには、端末をなくしただけでもマスター鍵を作り直す（[失効の手順](#失効の手順)の 1〜5 のすべて）。【提案】クライアントは、ユーザーごとに同じマスター鍵の下で見た自己署名鍵を暗号ストアに記録し、一度置き換わった自己署名鍵に戻ったら、そのユーザーへの配布を止めて警告する（#362）。置き換わる前の鍵を見ていない端末は気付けない。
+- **通知に出した本文**：Service Worker が復号した本文は OS の通知に出るので、ロック画面や通知の履歴に残る（平文チャンネルの通知と同じ）。Push サービス（FCM など）には、RFC 8291 で暗号化した Push の長さと時刻が見える。暗号化チャンネルの Push には暗号文が入るので、その長さはおおよそ本文の長さを示す（上限を超えて暗号文を外した Push は、外したことが分かる）。
 - **平文の `mentions` による通知**：送信者は、本文と関係のない相手に通知を送れる（平文チャンネルと同じ程度の問題）。表示には復号した `mentions` だけを使う。
 - **取得済みのデータ**：[取り消せないもの](#取り消せないもの)を参照。
 - **すべての端末、パスキー、リカバリーキーを失った場合**：過去ログは復元できない。
