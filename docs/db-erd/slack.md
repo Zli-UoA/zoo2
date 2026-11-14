@@ -112,6 +112,16 @@ erDiagram
       timestamptz updated_at
     }
     slack_message_hints }o--o| slack_channels : slack_message_hints_channel_fkey
+    slack_message_map {
+      text team_id PK,FK
+      text slack_channel_id PK,FK
+      text ts PK
+      text message_id FK
+      text origin
+      timestamptz created_at
+    }
+    slack_message_map }o--o| slack_channels : slack_message_map_channel_fkey
+    slack_message_map |o--o| messages : slack_message_map_message_fkey
     slack_user_links {
       text user_id PK,FK
       text team_id

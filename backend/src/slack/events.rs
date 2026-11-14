@@ -244,6 +244,12 @@ async fn receive(
         )
             .into_response());
     }
+    // 別の Slack アプリ宛てのイベントは無視する (`SLACK_APP_ID` を設定したときだけ)
+    if let Some(app) = s.config.slack.app_id.as_deref()
+        && payload["api_app_id"].as_str().is_some_and(|a| a != app)
+    {
+        return Ok(StatusCode::OK.into_response());
+    }
     let Some(signal) = signal(&payload) else {
         return Ok(StatusCode::OK.into_response());
     };

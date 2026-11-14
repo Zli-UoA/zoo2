@@ -688,6 +688,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
         profiles: HashMap::new(),
         channel_names: HashMap::new(),
         files: FilePolicy::new(s),
+        app_id: s.config.slack.app_id.clone(),
     };
     // 同期した投稿の添付は、ここでは取得しない (同期のリースを塞がないため)。取得できるまでファイル名を本文に補い、
     // `slack_files` の行 (`job_id` なし) を残す。取得は `worker::orphan_files_worker` が行い、取得できたら補った名前を外す
