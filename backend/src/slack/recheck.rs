@@ -166,6 +166,8 @@ async fn apply_chunk(
     if leased.is_empty() {
         return Err(SyncError::LeaseLost);
     }
+    // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
+    super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
     // `slack_message_map` にある投稿は、その Zoo の ID を使う。Zoo で作った投稿 (`zoo`) は、編集・削除を反映しない
     let tss: Vec<&str> = chunk.iter().map(|m| m.ts.as_str()).collect();
     let mut mapped: HashMap<String, (String, bool)> = HashMap::new();
