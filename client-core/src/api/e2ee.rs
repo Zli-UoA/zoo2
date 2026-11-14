@@ -161,6 +161,16 @@ impl ApiClient {
             .map(str::to_owned))
     }
 
+    /// `GET /api/e2ee/key_backup/keys?version=<版>&after=<前のページの next>`（1000 件ずつ）。
+    /// `{"sessions": [...], "next": <続きのカーソルか null>}` を返す。
+    pub async fn e2ee_backup_keys(&self, version: &str, after: Option<&str>) -> Result<Value> {
+        let mut path = format!("/api/e2ee/key_backup/keys?version={}", urlencode(version));
+        if let Some(after) = after {
+            path.push_str(&format!("&after={}", urlencode(after)));
+        }
+        self.e2ee_json(Method::GET, &path, None).await
+    }
+
     /// `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`。
     pub async fn e2ee_upload_backup_keys(
         &self,

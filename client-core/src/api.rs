@@ -305,8 +305,22 @@ impl ApiClient {
     }
 
     /// `POST /api/e2ee/keys/query`（封筒なしの JSON）。一度に 50 人までにする。
+    ///
+    /// 応答の `device_keys`、`master_keys`、`self_signing_keys`、`user_signing_keys`、`tofu_pins` は
+    /// ユーザーごとにまとめ、`signatures` はつなげる（送信端末の検証に使う。docs/e2ee.md の「受信時の検証」）。
     pub async fn e2ee_query_keys(&self, user_ids: &[String]) -> Result<Value> {
-        let mut device_keys = serde_json::Map::new();
+        const BY_USER: [&str; 5] = [
+            "device_keys",
+            "master_keys",
+            "self_signing_keys",
+            "user_signing_keys",
+            "tofu_pins",
+        ];
+        let mut merged: serde_json::Map<String, Value> = BY_USER
+            .iter()
+            .map(|field| (field.to_string(), Value::Object(Default::default())))
+            .collect();
+        let mut signatures = Vec::new();
         for chunk in user_ids.chunks(50) {
             let response: Value = self
                 .send_with_timeout(
@@ -318,11 +332,19 @@ impl ApiClient {
                 .await?
                 .json()
                 .await?;
-            if let Some(Value::Object(users)) = response.get("device_keys") {
-                device_keys.extend(users.clone());
+            for field in BY_USER {
+                if let (Some(Value::Object(users)), Some(Value::Object(into))) =
+                    (response.get(field), merged.get_mut(field))
+                {
+                    into.extend(users.clone());
+                }
+            }
+            if let Some(Value::Array(rows)) = response.get("signatures") {
+                signatures.extend(rows.iter().cloned());
             }
         }
-        Ok(serde_json::json!({ "device_keys": device_keys }))
+        merged.insert("signatures".into(), Value::Array(signatures));
+        Ok(Value::Object(merged))
     }
 
     /// `POST /api/e2ee/to_device/ack`。一度に 1000 件までにする。

@@ -339,9 +339,65 @@ pub async fn save_remaining(
         .lock()
         .await
         .save_own_keys(session.secrets(), secrets_revision)?;
-    // 解錠した（または初回設定を終えた）ので、手元のセッションを今の版に送る。失敗しても解錠は済んでいる。
+    // 解錠した（または初回設定を終えた）ので、鍵バックアップの今の版から過去のセッションを取り込み
+    // （新しい端末での解錠の手順 5）、手元のセッションを今の版に送る。失敗しても解錠は済んでいる。
+    let _ = import_key_backup(api, store).await;
     let _ = upload_key_backup(api, store).await;
     Ok(())
+}
+
+/// 鍵バックアップの今の版から、過去のセッションを取り込む（docs/e2ee.md の「新しい端末での解錠」の
+/// 手順 5）。今の版を `verify_backup_version`（マスター鍵の署名、公開鍵がバックアップ鍵と同じ）で
+/// 確かめ、`GET /api/e2ee/key_backup/keys` を `next` がなくなるまで読む。取り込んだ数を返す。
+///
+/// 解錠していない、または解錠し直しが要るあいだは、暗号ストアの鍵を使わないので取り込まない。
+pub async fn import_key_backup(api: &ApiClient, store: &SharedStore) -> Result<usize> {
+    let (user_id, own) = {
+        let store = store.lock().await;
+        if store.needs_unlock() {
+            return Ok(0);
+        }
+        let Some(own) = store.own_keys()? else {
+            return Ok(0);
+        };
+        (store.user_id().to_owned(), own)
+    };
+    let Some(current) = api.e2ee_current_backup_version().await? else {
+        return Ok(0);
+    };
+    let version = zoo_crypto::verify_backup_version(
+        &current,
+        &user_id,
+        &own.master_public_key,
+        &own.backup_key,
+    )?;
+    let mut imported = 0;
+    let mut after: Option<String> = None;
+    loop {
+        let page = api
+            .e2ee_backup_keys(&version.version, after.as_deref())
+            .await?;
+        let rows: Vec<zoo_crypto::BackupRow> = page
+            .get("sessions")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|row| match row {
+                // 行が JSON の文字列で届いても読む。
+                Value::String(text) => serde_json::from_str(text).ok(),
+                other => serde_json::from_value(other.clone()).ok(),
+            })
+            .collect();
+        imported += store
+            .lock()
+            .await
+            .import_backup_rows(&own.backup_key, &rows)?;
+        match page.get("next").and_then(Value::as_str) {
+            Some(next) if after.as_deref() != Some(next) => after = Some(next.to_owned()),
+            _ => break,
+        }
+    }
+    Ok(imported)
 }
 
 async fn plan_remaining(
