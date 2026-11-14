@@ -33,7 +33,9 @@ jobs:
       terraform-r2: ${{ steps.match.outputs.terraform-r2 }}
       ci-android: ${{ steps.match.outputs.ci-android }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - id: match
         env:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
@@ -132,7 +134,7 @@ jobs:
     permissions:
       statuses: write
     steps:
-      - uses: actions/github-script@v9
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           NEEDS: ${{ toJSON(needs) }}
         with:
