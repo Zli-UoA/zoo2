@@ -150,6 +150,10 @@ pub struct SlackReaction {
     pub name: String,
     #[serde(default)]
     pub users: Vec<String>,
+    /// リアクションした人数。`users` は人数が多いと一部しか入らないので、`count` のほうが大きいときは、
+    /// 全員がそろっていない (リアクションの削除を反映するときに、API で確かめ直す)
+    #[serde(default)]
+    pub count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

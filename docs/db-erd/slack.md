@@ -99,6 +99,19 @@ erDiagram
     }
     slack_import_jobs }o--o| users : slack_import_jobs_created_by_fkey
     slack_import_jobs }o--o| slack_import_jobs : slack_import_jobs_source_id_fkey
+    slack_message_hints {
+      text team_id PK,FK
+      text slack_channel_id PK,FK
+      text message_ts PK
+      text kind PK
+      text slack_user_id PK
+      text reaction PK
+      text thread_ts
+      integer attempts
+      timestamptz created_at
+      timestamptz updated_at
+    }
+    slack_message_hints }o--o| slack_channels : slack_message_hints_channel_fkey
     slack_user_links {
       text user_id PK,FK
       text team_id

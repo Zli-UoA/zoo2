@@ -4,6 +4,7 @@ pub mod convert;
 pub mod crypto;
 pub mod events;
 pub mod export;
+pub mod hints;
 pub mod import;
 pub mod link;
 pub mod sync;
