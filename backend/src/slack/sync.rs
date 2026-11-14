@@ -1107,10 +1107,15 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
     if done.is_empty() {
         return Err(SyncError::LeaseLost);
     }
-    if relinked {
-        super::link::reconcile_team(&mut tx, &task.team_id).await?;
-    }
     tx.commit().await.map_err(AppError::from)?;
+    // 付け替えは別のトランザクションで行う (ZIP の取り込みと同じ)。上の既読の行の書き込みがチャンネルの行を
+    // 外部キーで読むので、同じトランザクションだと、そのあとでメンバー単位のロックを取ることになり、
+    // ロックの順 (メンバー単位、チャンネルの行。#367) が逆になる
+    if relinked {
+        let mut tx = db.transaction().await.map_err(AppError::from)?;
+        super::link::reconcile_team(&mut tx, &task.team_id).await?;
+        tx.commit().await.map_err(AppError::from)?;
+    }
     Ok(Step::Done)
 }
 

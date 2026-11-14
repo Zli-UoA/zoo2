@@ -529,6 +529,31 @@ async fn link_account(
     reassign(tx, &team.id, slack_user, slack_user_name, user).await
 }
 
+/// `move_content` で付け替える人たちのロックを、ロックの順 (docs/e2ee.md の「membership_epoch と送信の順序」) で
+/// まとめて取る：プレースホルダと本人のメンバー単位のロック (昇順)、プレースホルダの参加チャンネルの行
+/// (`id` の昇順、`FOR NO KEY UPDATE`)。チャンネルの行のロックは、暗号化への切り替え (`FOR UPDATE`) とも直列になる。
+/// 同じトランザクションで何人分も付け替えるときは、最初に全員分を 1 回で取る (1 人ずつ取ると、前の人の
+/// チャンネルの行を持ったまま次の人のメンバー単位のロックを待ち、順が逆になる)。
+pub async fn lock_moves(
+    tx: &mut toasty::Transaction<'_>,
+    pairs: &[(&str, &str)],
+) -> Result<(), AppError> {
+    let people: Vec<&str> = pairs.iter().flat_map(|(from, to)| [*from, *to]).collect();
+    crate::routes::e2ee_channels::lock_members(tx, &people).await?;
+    let froms = serde_json::to_string(&pairs.iter().map(|(from, _)| *from).collect::<Vec<_>>())
+        .map_err(|e| AppError::Internal(e.into()))?;
+    query(
+        tx,
+        "SELECT json_build_object('id',id)::text FROM channels \
+         WHERE id IN (SELECT channel_id FROM channel_user \
+           WHERE user_id IN (SELECT jsonb_array_elements_text($1::jsonb))) \
+         ORDER BY id FOR NO KEY UPDATE",
+        &[&froms],
+    )
+    .await?;
+    Ok(())
+}
+
 /// プレースホルダ `from` の投稿・リアクション・参加チャンネル・添付を `to` へ移す。
 /// 何度呼んでも同じ結果になる (残っていた分だけが移る)。
 pub async fn move_content(
@@ -560,17 +585,10 @@ pub async fn move_content(
     if !guest {
         // 参加チャンネルを移すので、暗号化チャンネル (#367 で切り替えたもの) では、人の追加と退出と同じく
         // membership_epoch を増やす。ロックの順 (docs/e2ee.md の「membership_epoch と送信の順序」) を守るため、
-        // 投稿の付け替え (トリガーがチャンネルの行を読む) より前に、メンバー単位のロック、チャンネルの行の順で取る。
-        // チャンネルの行は FOR NO KEY UPDATE で取るので、暗号化への切り替え (FOR UPDATE) とも直列になる。
-        crate::routes::e2ee_channels::lock_members(tx, &[from, to]).await?;
-        query(
-            tx,
-            "SELECT json_build_object('id',id)::text FROM channels \
-             WHERE id IN (SELECT channel_id FROM channel_user WHERE user_id=$1) \
-             ORDER BY id FOR NO KEY UPDATE",
-            &[from],
-        )
-        .await?;
+        // 投稿の付け替え (トリガーがチャンネルの行を読む) より前に、メンバー単位のロック、チャンネルの行の順で取る
+        // (`lock_moves`)。`reconcile_team` のように何人分も続けて移すときは、呼び出し元が全員分を先にまとめて
+        // 取っておく。ここでの取り直しは、同じトランザクションが持つロックなので待たない。
+        lock_moves(tx, &[(from, to)]).await?;
         exec(
             tx,
             "UPDATE channels SET membership_epoch=membership_epoch+1 \
@@ -913,13 +931,22 @@ pub async fn reconcile_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Res
         &[team],
     )
     .await?;
-    let mut pairs = Vec::with_capacity(linked.len());
-    for row in linked {
-        let slack_user = row["slack_user_id"].as_str().unwrap_or_default();
-        let user = row["user_id"].as_str().unwrap_or_default();
-        let placeholder = super::user_id(team, slack_user);
-        move_content(tx, &placeholder, user).await?;
-        pairs.push((placeholder, user.to_string()));
+    let pairs: Vec<(String, String)> = linked
+        .iter()
+        .map(|row| {
+            let slack_user = row["slack_user_id"].as_str().unwrap_or_default();
+            let user = row["user_id"].as_str().unwrap_or_default();
+            (super::user_id(team, slack_user), user.to_string())
+        })
+        .collect();
+    // 全員分のメンバー単位のロックとチャンネルの行を、付け替えの前にまとめて取る (`lock_moves`)
+    let refs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(from, to)| (from.as_str(), to.as_str()))
+        .collect();
+    lock_moves(tx, &refs).await?;
+    for (placeholder, user) in &pairs {
+        move_content(tx, placeholder, user).await?;
     }
     rewrite_mentions(tx, team, &pairs).await
 }
