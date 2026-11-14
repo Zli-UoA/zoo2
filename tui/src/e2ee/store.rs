@@ -46,6 +46,11 @@ const KEY_FILE: &str = "storage.key";
 /// （開き直したときと、記録を読むときに、ここから引き継ぐ）。
 const REPLACED_STATE_FILE: &str = "state.replaced.json";
 
+/// 画面が、暗号ストアを開く前からその場で書く、暗号化チャンネルの記録（Web の `localStorage` の
+/// `zoo.e2ee.encryptedChannel:<id>` と同じ役割）。暗号ストアの `encrypted_channels` への保存は、ストアが
+/// 開いてロックを取れるまで待つので、そのあいだに終了しても記録が残るようにする。
+const ENCRYPTED_CHANNELS_FILE: &str = "encrypted-channels.json";
+
 /// `state.json` のうち、作り直しで引き継ぐ記録（秘密ではない ID だけ）。
 #[derive(Default, Deserialize)]
 struct KeptRecords {
@@ -1251,6 +1256,9 @@ impl CryptoStore {
 /// ファイルを読めない、形式が壊れているときはエラーにする（記録がないものとして扱わない）。
 pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Result<Vec<String>> {
     let dir = user_dir(root, user_id)?;
+    let recorded = read_kept_records(&dir.join(ENCRYPTED_CHANNELS_FILE), user_id)?
+        .map(|records| records.encrypted_channels)
+        .unwrap_or_default();
     // 保存鍵を失って作り直しているあいだ（`state.json` がない）は、置いておいた前の記録を読む。
     // 読むあいだに作り直しを終えて前の記録を消したときは、新しい `state.json` を読み直す。
     let records = match read_kept_records(&dir.join(STATE_FILE), user_id)? {
@@ -1260,9 +1268,37 @@ pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Result<Vec<String>
             None => read_kept_records(&dir.join(STATE_FILE), user_id)?,
         },
     };
-    Ok(records
-        .map(|records| records.encrypted_channels.into_iter().collect())
-        .unwrap_or_default())
+    let mut all = records
+        .map(|records| records.encrypted_channels)
+        .unwrap_or_default();
+    all.extend(recorded);
+    Ok(all.into_iter().collect())
+}
+
+/// 暗号化チャンネルとして見たチャンネルを、暗号ストアを開かずにその場で記録する（#361。
+/// [`ENCRYPTED_CHANNELS_FILE`]）。記録済みなら書かない。0600 で、一時ファイルに書いてから置き換える。
+pub fn record_encrypted_channels(root: &Path, user_id: &str, ids: &[String]) -> Result<()> {
+    #[derive(Serialize)]
+    struct Records<'a> {
+        user_id: &'a str,
+        encrypted_channels: &'a BTreeSet<String>,
+    }
+    let dir = user_dir(root, user_id)?;
+    let path = dir.join(ENCRYPTED_CHANNELS_FILE);
+    let mut all = read_kept_records(&path, user_id)?
+        .map(|records| records.encrypted_channels)
+        .unwrap_or_default();
+    if ids.iter().all(|id| all.contains(id)) {
+        return Ok(());
+    }
+    all.extend(ids.iter().cloned());
+    create_private_dir(root)?;
+    create_private_dir(&dir)?;
+    let bytes = serde_json::to_vec(&Records {
+        user_id,
+        encrypted_channels: &all,
+    })?;
+    write_private(&path, &bytes)
 }
 
 /// `root` にある暗号ストアのユーザー ID（ログアウトで消すものを探す）。

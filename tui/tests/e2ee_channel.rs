@@ -861,6 +861,65 @@ async fn remembers_encrypted_channels_across_restarts() {
     assert!(zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE).is_err());
 }
 
+#[test]
+fn records_written_before_the_store_opens_are_read_back() {
+    const OTHER: &str = "00000000-0000-4000-8000-0000000000c3";
+    let dir = tempfile::tempdir().unwrap();
+    // 暗号ストアを開く前（端末の登録の前）でも、画面がその場で記録できる。
+    zoo2_tui::e2ee::store::record_encrypted_channels(dir.path(), ALICE, &[CHANNEL.to_owned()])
+        .unwrap();
+    assert_eq!(
+        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE).unwrap(),
+        vec![CHANNEL.to_owned()]
+    );
+    // 暗号ストアを開いて、その記録（`state.json`）と合わせて読む。
+    {
+        let mut store = CryptoStore::open(dir.path(), ALICE).unwrap().store;
+        store.remember_encrypted_channel(OTHER).unwrap();
+    }
+    assert_eq!(
+        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE).unwrap(),
+        vec![CHANNEL.to_owned(), OTHER.to_owned()]
+    );
+    // 別のユーザーの記録としては読まない。
+    assert!(
+        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), BOB)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn records_survive_a_failed_rebuild_after_losing_the_storage_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let user_dir = dir.path().join(ALICE);
+    {
+        let mut store = CryptoStore::open(dir.path(), ALICE).unwrap().store;
+        store.remember_encrypted_channel(CHANNEL).unwrap();
+    }
+    std::fs::remove_file(user_dir.join("storage.key")).unwrap();
+    // 新しい `state.json` を保存できない（一時ファイルの場所をディレクトリーでふさぐ）。
+    std::fs::create_dir(user_dir.join("state.tmp")).unwrap();
+    assert!(CryptoStore::open(dir.path(), ALICE).is_err());
+    assert!(!user_dir.join("state.json").exists());
+    // 作り直しに失敗しても、前の記録は読める。
+    assert!(
+        zoo2_tui::e2ee::store::read_encrypted_channels(dir.path(), ALICE)
+            .unwrap()
+            .contains(&CHANNEL.to_owned())
+    );
+    // 次に作り直せたら、記録を引き継ぎ、前のものを消す。
+    std::fs::remove_dir(user_dir.join("state.tmp")).unwrap();
+    let opened = CryptoStore::open(dir.path(), ALICE).unwrap();
+    assert!(
+        opened
+            .store
+            .known_encrypted_channels()
+            .any(|id| id == CHANNEL)
+    );
+    assert!(!user_dir.join("state.replaced.json").exists());
+}
+
 #[tokio::test]
 async fn the_previous_recipients_are_kept_when_saving_fails() {
     let (_server, backend, alice, _bob) = setup().await;

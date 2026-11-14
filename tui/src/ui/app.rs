@@ -258,6 +258,8 @@ pub struct App {
     edit_base: Option<(String, u64)>,
     /// `state.json` の暗号化チャンネルの記録を読めなかった（暗号ストアから読むまで平文で送らない）。
     known_encrypted_unreadable: bool,
+    /// 暗号ストアの置き場所（暗号化チャンネルの記録を、その場で書く）。
+    crypto_root: Option<std::path::PathBuf>,
     /// 暗号ストアに記録していない、`encrypted = true` を見たチャンネル（#361）。
     unrecorded_encrypted: HashSet<String>,
     /// 暗号ストアの記録を読んだか。
@@ -334,6 +336,7 @@ impl App {
             channel_sender: ChannelSender::default(),
             edit_base: None,
             known_encrypted_unreadable: false,
+            crypto_root: None,
             unrecorded_encrypted: HashSet::new(),
             known_encrypted_loaded: false,
             known_encrypted_store: None,
@@ -460,6 +463,7 @@ impl App {
                         if channel.encrypted
                             && self.known_encrypted_channels.insert(channel.id.clone())
                         {
+                            self.record_encrypted(&channel.id);
                             self.unrecorded_encrypted.insert(channel.id.clone());
                         }
                     }
@@ -606,6 +610,7 @@ impl App {
             } => {
                 if encrypted {
                     if self.known_encrypted_channels.insert(channel_id.clone()) {
+                        self.record_encrypted(&channel_id);
                         self.unrecorded_encrypted.insert(channel_id.clone());
                     }
                 } else if requested_encryption {
@@ -793,6 +798,7 @@ impl App {
         // 暗号ストアを開く前から、記録した暗号化チャンネルを暗号化として扱う（開くまでの平文の送信を止める）。
         // 記録を読めなかったときは、暗号ストアから読めるまで平文で送らない（記録がないものとして送ると、
         // 暗号化チャンネルの格下げを見逃すため）。
+        self.crypto_root = context.crypto_root.clone();
         if let Some(root) = &context.crypto_root {
             match crate::e2ee::store::read_encrypted_channels(root, &self.me.id) {
                 Ok(ids) => self.known_encrypted_channels.extend(ids),
@@ -1955,6 +1961,19 @@ impl App {
             self.known_encrypted_channels.contains(channel_id),
             has_ciphertext,
         )
+    }
+
+    /// `encrypted = true` を見たチャンネルを、暗号ストアを待たずにその場で記録する（暗号ストアに記録する
+    /// 前に終了しても、起動し直したあとに格下げを見つけられるように）。書けなくても、暗号ストアへの記録は
+    /// 続ける。
+    fn record_encrypted(&self, channel_id: &str) {
+        if let Some(root) = &self.crypto_root {
+            let _ = crate::e2ee::store::record_encrypted_channels(
+                root,
+                &self.me.id,
+                &[channel_id.to_owned()],
+            );
+        }
     }
 
     /// `encrypted = true` を見たチャンネルを暗号ストアに記録し、記録済みのものを読む（開き直したあとも
