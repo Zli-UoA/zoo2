@@ -261,6 +261,8 @@ pub fn parse_with_accounts(
     let mut in_code = false;
     for raw in content.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw);
+        // 制御文字を含む行は、記法を解析する前に置き換える。端末に出力されるのを防ぐ。
+        let line = &*crate::text::sanitize_display(line);
         if line.trim_start().starts_with("```") {
             in_code = !in_code;
             continue;
@@ -656,6 +658,27 @@ mod tests {
             .iter()
             .map(|line| line.to_string())
             .collect()
+    }
+
+    #[test]
+    fn control_characters_are_replaced_in_every_span() {
+        let esc = "\u{1b}]52;c;AAAA\u{7}";
+        for content in [
+            format!("```\n{esc}\n```"),
+            format!("本文{esc}"),
+            format!("> 引用{esc}"),
+            format!("**太字{esc}**"),
+        ] {
+            for line in parse(&content, None) {
+                for span in line.spans {
+                    assert!(
+                        !span.content.chars().any(char::is_control),
+                        "{content:?} -> {:?}",
+                        span.content
+                    );
+                }
+            }
+        }
     }
 
     #[test]

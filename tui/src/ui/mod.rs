@@ -319,6 +319,7 @@ impl StartupRecovery {
                 ),
                 frame.area(),
             );
+            view::scrub_buffer(frame.buffer_mut());
         })?;
         Ok(())
     }

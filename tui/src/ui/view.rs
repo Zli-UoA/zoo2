@@ -60,6 +60,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Encryption => draw_encryption(frame, app),
         _ => {}
     }
+    scrub_buffer(frame.buffer_mut());
+}
+
+/// 描画したセルから制御文字を取り除く。
+///
+/// ratatui の `Paragraph` などは、ESC や BEL をセルにそのまま残し、バックエンドはセルの
+/// 中身をそのまま端末へ出力する。サーバーから届いた文字列（本文、表示名、チャンネル名、
+/// 説明など）が、端末の制御シーケンスとして解釈されないよう、出力の直前に置き換える。
+pub(super) fn scrub_buffer(buffer: &mut ratatui::buffer::Buffer) {
+    let area = buffer.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buffer[(x, y)];
+            if cell.symbol().chars().any(char::is_control) {
+                let clean = zoo2_client_core::text::sanitize_display(cell.symbol()).into_owned();
+                cell.set_symbol(&clean);
+            }
+        }
+    }
 }
 
 fn pane(title: Line<'static>, focused: bool) -> Block<'static> {
@@ -837,6 +856,56 @@ mod tests {
 
     fn press(app: &mut App, code: KeyCode) {
         app.on_terminal_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    #[tokio::test]
+    async fn control_characters_from_the_server_never_reach_the_screen() {
+        let mut app = app();
+        app.current = Some("c1".into());
+        let esc = "\u{1b}]52;c;QUFB\u{7}\u{1b}c\u{1b}[2J\u{9b}31m";
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": format!("gen{esc}eral"), "is_private": "f",
+                           "description": format!("desc{esc}") }),
+            )]),
+        ));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Users,
+            batch(vec![(
+                "u2",
+                json!({ "id": "u2", "user_name": "bob", "display_name": format!("Bob{esc}") }),
+            )]),
+        ));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m1",
+                json!({ "id": "m1", "user_id": "u2", "channel_id": "c1",
+                           "content": format!("```\n{esc}\n```\n本文{esc}\ttab"),
+                           "created_at": "2026-11-01 03:00:00" }),
+            )]),
+        ));
+        let screen = render(&mut app);
+        assert!(screen.contains("本文"));
+        assert!(
+            !screen.chars().any(|c| c.is_control() && c != '\n'),
+            "control character in screen: {screen:?}"
+        );
+    }
+
+    #[test]
+    fn scrub_buffer_replaces_control_characters_in_cells() {
+        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 4, 1));
+        buffer[(0, 0)].set_symbol("\u{1b}");
+        buffer[(1, 0)].set_symbol("a");
+        buffer[(2, 0)].set_symbol("\u{7}");
+        scrub_buffer(&mut buffer);
+        let symbols: Vec<_> = (0..4)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+        assert_eq!(symbols, ["\u{FFFD}", "a", "\u{FFFD}", " "]);
     }
 
     #[tokio::test]

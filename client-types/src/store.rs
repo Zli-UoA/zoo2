@@ -177,9 +177,11 @@ impl Store {
     /// 表示名。`display_name`、`user_name`、id の順に使う (frontend の `messageFormat.ts` と同じ)。
     pub fn display_name(&self, user_id: &str) -> String {
         match self.user(user_id) {
-            Some(user) if !user.display_name.is_empty() => user.display_name.clone(),
-            Some(user) => user.user_name.clone(),
-            None => user_id.to_string(),
+            Some(user) if !user.display_name.is_empty() => {
+                crate::text::sanitize_display(&user.display_name).into_owned()
+            }
+            Some(user) => crate::text::sanitize_display(&user.user_name).into_owned(),
+            None => crate::text::sanitize_display(user_id).into_owned(),
         }
     }
 
