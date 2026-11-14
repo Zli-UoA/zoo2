@@ -11,8 +11,11 @@ use ratatui::{
 
 use super::{
     app::{App, Focus, Mode, SidebarItem, Target},
+    encryption::Screen,
     timeline::{self, Context},
 };
+use crate::e2ee::reauth;
+use crate::e2ee::setup::{E2eeStatus, LockReason};
 use crate::electric::ShapeId;
 
 const ACCENT: Color = Color::Cyan;
@@ -54,6 +57,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Line::from("y: 削除 / その他: やめる"),
             ],
         ),
+        Mode::Encryption => draw_encryption(frame, app),
         _ => {}
     }
 }
@@ -407,6 +411,17 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(Color::Green),
             ));
         }
+        match app.encryption.status {
+            Some(E2eeStatus::NotSetUp) => spans.push(Span::styled(
+                "  暗号化: 未設定 (E)",
+                Style::new().fg(Color::Yellow),
+            )),
+            Some(E2eeStatus::Locked(_)) => spans.push(Span::styled(
+                "  暗号化: 解錠が必要 (E)",
+                Style::new().fg(Color::Yellow),
+            )),
+            _ => {}
+        }
         spans.push(Span::styled("  ?: ヘルプ  q: 終了", DIM));
         Line::from(spans)
     };
@@ -428,6 +443,7 @@ const HELP: &[(&str, &str)] = &[
     ("/", "チャンネル・スレッドを検索"),
     ("u", "選択中のスレッドを再開"),
     ("R", "送れなかった本文を入力欄に戻す"),
+    ("E", "暗号化（初回設定・解錠）"),
     ("q / Ctrl+C", "終了"),
 ];
 
@@ -444,9 +460,211 @@ fn draw_help(frame: &mut Frame) {
     draw_popup(frame, "キー操作", lines);
 }
 
+/// 暗号化の画面（#360）。
+fn draw_encryption(frame: &mut Frame, app: &App) {
+    let encryption = &app.encryption;
+    let key = |text: &str| Span::styled(text.to_owned(), Style::new().fg(ACCENT));
+    let warn = |text: String| Line::styled(text, Style::new().fg(Color::Yellow));
+    let error = |text: String| Line::styled(text, Style::new().fg(Color::Red));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    match &encryption.screen {
+        Screen::Loading => lines.push(Line::from("状態を読んでいます…")),
+        Screen::Unavailable(message) => {
+            lines.push(error(message.clone()));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 読み直す / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::NotSetUp => {
+            lines.push(Line::from(
+                "暗号化チャンネルを使うには、最初に鍵を作ります。",
+            ));
+            lines.push(Line::from(
+                "リカバリーキーを表示するので、控えてください。新しい端末の解錠に使います。",
+            ));
+            lines.push(Line::from(
+                "保存の直前に、ブラウザーでログインし直します（再認証）。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 初回設定を始める / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::RecoveryKey(recovery_key) => {
+            lines.push(Line::from(
+                "リカバリーキー（紙やパスワードマネージャーに控えてください）:",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                format!("  {}", recovery_key.as_str()),
+                Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "このキーをなくし、ほかに解錠できる端末もないと、暗号化したメッセージを読めなくなります。",
+            ));
+            lines.push(Line::from(
+                "この画面を閉じると、このキーは二度と表示しません。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("y"),
+                Span::raw(": 控えたので保存する / "),
+                key("Esc"),
+                Span::raw(": やめる"),
+            ]));
+        }
+        Screen::Reauth { url, port } => {
+            lines.push(Line::from(
+                "ブラウザーでログインし直してください（再認証）。",
+            ));
+            match (url, port) {
+                (Some(url), Some(port)) => {
+                    if !encryption.over_ssh {
+                        lines.push(Line::from(
+                            "ブラウザーが開かないときは、次の URL を開いてください。",
+                        ));
+                    }
+                    lines.push(Line::from(""));
+                    lines.push(Line::styled(url.clone(), Style::new().fg(ACCENT)));
+                    lines.push(Line::from(""));
+                    if encryption.over_ssh {
+                        for line in reauth::ssh_guidance(*port) {
+                            lines.push(warn(line));
+                        }
+                        lines.push(Line::from(""));
+                    }
+                    lines.push(Line::styled(
+                        format!(
+                            "戻り先: http://127.0.0.1:{port}/callback（この端末で待っています）"
+                        ),
+                        DIM,
+                    ));
+                }
+                _ => lines.push(Line::from("準備しています…")),
+            }
+            lines.push(Line::from(vec![
+                key("Esc"),
+                Span::raw(": 再認証をやめる（鍵はそのまま）"),
+            ]));
+        }
+        Screen::Working(message) => lines.push(Line::from(*message)),
+        Screen::Locked {
+            reason,
+            input,
+            error: message,
+        } => {
+            lines.push(Line::from(match reason {
+                LockReason::New => "この端末はまだ解錠していません。",
+                LockReason::Resume => "初回設定が途中です。リカバリーキーで開け直して続けます。",
+                LockReason::Mismatch => "鍵が変わりました。リカバリーキーで解錠し直してください。",
+            }));
+            lines.push(Line::from(
+                "リカバリーキーを入力してください（空白は無視します）。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::raw("> "),
+                Span::raw(input.as_str().to_owned()),
+                Span::styled("▏", Style::new().fg(ACCENT)),
+            ]));
+            if let Some(message) = message {
+                lines.push(Line::from(""));
+                lines.push(error(message.clone()));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 解錠する / "),
+                key("Ctrl+U"),
+                Span::raw(": 消す / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::NeedsReauth => {
+            lines.push(Line::from(
+                "解錠しました。初回設定の続きを保存するには、再認証が必要です。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 再認証して保存する / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::SaveFailed { message, retry } => {
+            lines.push(error(message.clone()));
+            lines.push(Line::from(""));
+            if *retry {
+                lines.push(Line::from(vec![
+                    key("Enter"),
+                    Span::raw(": 同じ鍵のまま、再認証して保存し直す / "),
+                    key("Esc"),
+                    Span::raw(": 閉じる"),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    key("Enter"),
+                    Span::raw(": 読み直す / "),
+                    key("Esc"),
+                    Span::raw(": 閉じる"),
+                ]));
+            }
+        }
+        Screen::Stopped(message) => {
+            lines.push(error(message.clone()));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 読み直す / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::Unlocked => {
+            lines.push(Line::from("この端末は解錠済みです。"));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(" / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+    }
+    draw_popup_sized(frame, "暗号化", lines, 76);
+}
+
 fn draw_popup(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>) {
-    let width = 56.min(frame.area().width);
-    let height = (lines.len() as u16 + 2).min(frame.area().height);
+    draw_popup_sized(frame, title, lines, 56);
+}
+
+fn draw_popup_sized(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, width: u16) {
+    let width = width.min(frame.area().width);
+    // 折り返す行（再認証の URL など）も入る高さにする。単語の区切りで折り返すと 1 行増えうるので、
+    // 折り返す行には 1 行足す。
+    let inner = usize::from(width.saturating_sub(2)).max(1);
+    let rows: usize = lines
+        .iter()
+        .map(|line| {
+            let width = line.width();
+            if width <= inner {
+                1
+            } else {
+                width.div_ceil(inner) + 1
+            }
+        })
+        .sum();
+    let height = (rows as u16).saturating_add(2).min(frame.area().height);
     let area = Rect {
         x: frame.area().width.saturating_sub(width) / 2,
         y: frame.area().height.saturating_sub(height) / 2,

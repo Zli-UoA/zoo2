@@ -56,6 +56,11 @@
 //!   暗号化と、受信時の検証（手順 1〜3）
 //! - [`TrustStore::confirm_accepted_master_key`]：受け入れ（#362）と SAS のピンを保存できたときに、
 //!   記録の登録待ちを外す
+//!
+//! #360 の TUI で足したもの:
+//!
+//! - [`SetupSession`]：初回設定と解錠のあいだメモリーにだけ置く秘密と、SSSS の保存の本文、続きの計画
+//!   （Web の `setupSession.ts` と同じ役割。TUI と Android が使う）
 
 mod attachment;
 mod backup;
@@ -119,8 +124,8 @@ pub use secret_storage::{
     SlotKind, SlotSecret, SsssKey, SsssKeyDescription, UnlockedSecretStorage, new_prf_salt,
 };
 pub use setup::{
-    OwnKeys, OwnSecrets, ResumePlan, ServerKeyState, StartupCheck, plan_reset, plan_resume,
-    startup_check,
+    OwnKeys, OwnSecrets, ResumePlan, ServerKeyState, SetupSession, StartupCheck, plan_reset,
+    plan_resume, startup_check,
 };
 pub use signing::{signable_json, verify_json_signature};
 pub use trust::{

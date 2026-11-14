@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 
 use crate::http::{Credentials, TokenPersistenceReport, error_for_status};
 
+mod e2ee;
+pub use e2ee::REAUTH_HEADER;
+
 #[derive(Clone)]
 pub struct ApiClient {
     http: reqwest::Client,
