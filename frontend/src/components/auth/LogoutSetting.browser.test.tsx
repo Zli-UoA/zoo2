@@ -32,6 +32,7 @@ function e2ee(
     cancelLogout,
     requestKeyBackup: vi.fn(),
     requestKeyBackupImport: vi.fn(),
+    requestSenderReverify: vi.fn(),
     clearForLogout,
     sas: null,
   };

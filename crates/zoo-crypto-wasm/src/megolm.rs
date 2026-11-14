@@ -6,7 +6,7 @@ use wasm_bindgen::prelude::*;
 use zoo_crypto as core;
 
 use crate::convert::{IntoJs, bytes32, from_js, safe_u64, to_js};
-use crate::device::{DeviceAccount, ReceivedRoomKey};
+use crate::device::{DeviceAccount, ReceivedRoomKey, sender_trust_from_js};
 
 /// チャンネルに配る Megolm セッション鍵（`zoo.room_key` の中身）。
 ///
@@ -249,6 +249,43 @@ impl InboundSessionStore {
             .restore_session(pickle, &account.inner, &key)
             .js()?;
         to_js(&session_ref)
+    }
+
+    /// Olm 由来で、送信端末を検証済みにできていないセッションの送信者 `{user_id, device_id}`。
+    /// セッションがない、Olm 由来がない、検証済みのときは `null`。
+    #[wasm_bindgen(
+        js_name = unverifiedOlmSender,
+        unchecked_return_type = "{ user_id: string; device_id: string } | null"
+    )]
+    pub fn unverified_olm_sender(
+        &self,
+        #[wasm_bindgen(unchecked_param_type = "SessionRef")] session_ref: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let session_ref: core::SessionRef = from_js(&session_ref, "ref")?;
+        match self.inner.unverified_olm_sender(&session_ref) {
+            Some((user_id, device_id)) => {
+                to_js(&json!({"user_id": user_id, "device_id": device_id}))
+            }
+            None => Ok(JsValue::NULL),
+        }
+    }
+
+    /// 受け取ったときに送信端末を検証済みにできなかった Olm 由来のセッションを、`keys/query` の
+    /// 送信端末の端末鍵 `deviceKeys` と、`TrustStore.senderTrust` の結果 `trust` で判定し直す
+    /// （docs/e2ee.md の「受信時の検証」）。検証済みに上げたら `true`（呼び出し側が保存し直す）。
+    #[wasm_bindgen(js_name = reverifyOlmSession)]
+    pub fn reverify_olm_session(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "SessionRef")] session_ref: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "JsonObject")] device_keys: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "SenderTrust")] trust: JsValue,
+    ) -> Result<bool, JsValue> {
+        let session_ref: core::SessionRef = from_js(&session_ref, "ref")?;
+        let device_keys: Value = from_js(&device_keys, "deviceKeys")?;
+        let trust = sender_trust_from_js(&trust)?;
+        Ok(self
+            .inner
+            .reverify_olm_session(&session_ref, &device_keys, &trust))
     }
 
     /// 保存しているセッションのキー `{channel_id, sender_key, session_id}` の一覧。

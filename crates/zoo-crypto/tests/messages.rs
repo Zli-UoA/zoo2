@@ -7,7 +7,7 @@ use zoo_crypto::{
     AddOutcome, BackupSession, CryptoError, DecryptedMessage, DeviceAccount, DeviceKeys,
     EncryptedMessage, InboundSessionStore, ListedDevice, MAX_SAFE_INTEGER, Mentions,
     MessageContent, OlmSession, OutboundSession, OutgoingMessage, ROTATION_PERIOD_MESSAGES,
-    ROTATION_PERIOD_MS, Rejection, RevisionStatus, RoomKey, SenderTrust, SessionOrigin,
+    ROTATION_PERIOD_MS, Rejection, RevisionStatus, RoomKey, SenderTrust, SessionOrigin, SessionRef,
     signable_json, verify_device_keys,
 };
 
@@ -354,6 +354,62 @@ fn verified_sender_is_reported_on_decrypted_messages() {
     bob.store.add_room_key(room_key);
     let row = Row::new(&alice, &mut outbound, &message("m1", 0, "a"));
     assert!(decrypt(&mut bob, &row).unwrap().sender_verified);
+}
+
+#[test]
+fn reverifies_sessions_received_while_the_sender_was_unverifiable() {
+    let alice = Device::new(ALICE, ALICE_DEVICE);
+    let mallory = Device::new(MALLORY, MALLORY_DEVICE);
+    let mut bob = Device::new(BOB, BOB_DEVICE);
+    let ssk = Ed25519SecretKey::new();
+    let mut signed = alice.account.device_keys();
+    cross_sign(&mut signed, ALICE, &ssk);
+    let trust = SenderTrust {
+        self_signing_key: ssk.public_key(),
+        signature: None,
+    };
+    let mut outbound = OutboundSession::new(CHANNEL, EPOCH, NOW_MS);
+    let mut session = olm_session(&alice, &mut bob);
+    let content = send_room_key(&alice, &mut session, &bob, &outbound.room_key());
+    // 受け取ったときは、送信ユーザーの自己署名鍵を確かめられなかった（古いクライアント、未解錠など）。
+    let listed = alice.account.device_keys();
+    let room_key = bob
+        .account
+        .decrypt_to_device(&mut bob.olm_sessions, &content)
+        .unwrap()
+        .verify_room_key(&bob.account, ListedDevice::Listed(&listed), None)
+        .unwrap();
+    bob.store.add_room_key(room_key);
+    let row = Row::new(&alice, &mut outbound, &message("m1", 0, "a"));
+    assert!(!decrypt(&mut bob, &row).unwrap().sender_verified);
+    let key = SessionRef {
+        channel_id: CHANNEL.to_owned(),
+        sender_key: alice.device_keys().curve25519.to_base64(),
+        session_id: outbound.session_id(),
+    };
+    assert_eq!(
+        bob.store.unverified_olm_sender(&key),
+        Some((ALICE, ALICE_DEVICE))
+    );
+
+    // 自己署名鍵の署名がない端末鍵、別の自己署名鍵、別の端末の鍵では上げない。
+    assert!(!bob.store.reverify_olm_session(&key, &listed, &trust));
+    let other = SenderTrust {
+        self_signing_key: Ed25519SecretKey::new().public_key(),
+        signature: None,
+    };
+    assert!(!bob.store.reverify_olm_session(&key, &signed, &other));
+    let mut impostor = mallory.account.device_keys();
+    cross_sign(&mut impostor, MALLORY, &ssk);
+    assert!(!bob.store.reverify_olm_session(&key, &impostor, &trust));
+    assert!(!decrypt(&mut bob, &row).unwrap().sender_verified);
+
+    // 受け取ったときと同じ端末鍵が、信頼した自己署名鍵で署名されていれば上げる。
+    assert!(bob.store.reverify_olm_session(&key, &signed, &trust));
+    assert_eq!(bob.store.unverified_olm_sender(&key), None);
+    assert!(decrypt(&mut bob, &row).unwrap().sender_verified);
+    // もう検証済みなので、何も変えない。
+    assert!(!bob.store.reverify_olm_session(&key, &signed, &trust));
 }
 
 #[test]

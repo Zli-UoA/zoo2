@@ -414,14 +414,7 @@ impl OlmDecrypted {
             None => core::ListedDevice::NotListed,
         };
         let trust: Option<SenderTrustJson> = from_js_opt(&trust, "trust")?;
-        let trust = trust
-            .map(|t| {
-                Ok::<_, JsValue>(core::SenderTrust {
-                    self_signing_key: ed25519(&t.self_signing_key)?,
-                    signature: t.signature,
-                })
-            })
-            .transpose()?;
+        let trust = trust.map(SenderTrustJson::into_core).transpose()?;
         Ok(ReceivedRoomKey {
             inner: self
                 .inner
@@ -436,6 +429,21 @@ struct SenderTrustJson {
     self_signing_key: String,
     #[serde(default)]
     signature: Option<String>,
+}
+
+impl SenderTrustJson {
+    fn into_core(self) -> Result<core::SenderTrust, JsValue> {
+        Ok(core::SenderTrust {
+            self_signing_key: ed25519(&self.self_signing_key)?,
+            signature: self.signature,
+        })
+    }
+}
+
+/// `TrustStore.senderTrust` の結果 `{self_signing_key, signature?}` を読む。
+pub(crate) fn sender_trust_from_js(value: &JsValue) -> Result<core::SenderTrust, JsValue> {
+    let trust: SenderTrustJson = from_js(value, "trust")?;
+    trust.into_core()
 }
 
 /// 検証を通った Megolm セッション鍵。`InboundSessionStore.addRoomKey` で保存する。
