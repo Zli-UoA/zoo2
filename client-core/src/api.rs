@@ -9,7 +9,10 @@ use serde_json::{Value, json};
 use crate::http::{Credentials, TokenPersistenceReport, error_for_status};
 
 mod e2ee;
-pub use e2ee::REAUTH_HEADER;
+pub use e2ee::{
+    DeviceTarget, KEYS_CLAIM_BATCH, REAUTH_HEADER, TO_DEVICE_BATCH, json_u64, stale_epoch,
+    stale_revision,
+};
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -80,6 +83,9 @@ pub struct CreatedChannel {
     pub channel_name: String,
     pub description: Option<String>,
     pub is_private: bool,
+    /// 暗号化チャンネルか（docs/e2ee.md の「暗号化チャンネル」）。暗号化を求めたのに `false` なら送信しない。
+    #[serde(default)]
+    pub encrypted: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -481,6 +487,67 @@ impl ApiClient {
             .data
             .ok_or_else(|| anyhow::anyhow!("作成されたチャンネルのデータがありません"))?;
         Ok((channel, envelope.txid))
+    }
+
+    /// 暗号化チャンネルを作る（`POST /api/channels` の `encrypted: true`。非公開のときだけ作れる）。
+    /// エラーは [`crate::http::ApiError`]（403 `E2EE_DISABLED` などを `code` で分けるため）。
+    pub async fn create_encrypted_channel(
+        &self,
+        channel_name: &str,
+        description: Option<&str>,
+    ) -> Result<(CreatedChannel, Option<String>)> {
+        let body = json!({
+            "channel_name": channel_name,
+            "description": description,
+            "is_private": true,
+            "encrypted": true,
+        });
+        let envelope: Envelope<CreatedChannel> = self
+            .send_coded(Method::POST, "/api/channels", Some(body))
+            .await?
+            .json()
+            .await?;
+        let channel = envelope
+            .data
+            .ok_or_else(|| anyhow::anyhow!("作成されたチャンネルのデータがありません"))?;
+        Ok((channel, envelope.txid))
+    }
+
+    /// DM を作るか、あれば返す（`POST /api/dms`）。`encrypted` なら暗号化 DM（1 対 1 は `edm:` の名前で、
+    /// 平文の DM とは別の行になる）。エラーは [`crate::http::ApiError`]。
+    pub async fn create_dm(
+        &self,
+        target_user_ids: &[String],
+        encrypted: bool,
+    ) -> Result<(CreatedChannel, Option<String>)> {
+        let body = json!({ "target_user_ids": target_user_ids, "encrypted": encrypted });
+        let envelope: Envelope<CreatedChannel> = self
+            .send_coded(Method::POST, "/api/dms", Some(body))
+            .await?
+            .json()
+            .await?;
+        let channel = envelope
+            .data
+            .ok_or_else(|| anyhow::anyhow!("DM のデータがありません"))?;
+        Ok((channel, envelope.txid))
+    }
+
+    /// [`Self::send`] と同じだが、エラーを [`crate::http::ApiError`] にする。
+    async fn send_coded(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<reqwest::Response> {
+        let mut request = self
+            .http
+            .request(method, format!("{}{path}", self.base_url))
+            .header(reqwest::header::ACCEPT, "application/json");
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let request = self.credentials.apply(request).await?;
+        crate::http::error_for_status_coded(request.send().await?).await
     }
 
     pub async fn edit_message(&self, id: &str, content: &str) -> Result<Option<String>> {
