@@ -180,21 +180,23 @@ fn encryption_notice(app: &App, width: usize, max_lines: usize) -> Vec<Line<'sta
     if compact.len() <= max_lines {
         return compact;
     }
-    // それでも収まらない小さな端末では、両方の人数を 1 行にまとめる（配れない人を先に出す）。
+    // それでも収まらない小さな端末では、両方の人数と詳細の案内を短い 1 行にまとめる（配れない人を先に
+    // 出す。幅 40 でも折り返さない長さにする）。
     let mut counts = Vec::new();
     if !summary.undeliverable.is_empty() {
-        counts.push(format!("読めない人 {} 人", summary.undeliverable.len()));
+        counts.push(format!("読めない人 {}", summary.undeliverable.len()));
     }
     if !summary.added_user_ids.is_empty() {
-        counts.push(format!("増えた配布先 {} 人", summary.added_user_ids.len()));
+        counts.push(format!("増えた人 {}", summary.added_user_ids.len()));
     }
+    counts.push("V で詳細".to_owned());
     let style = if summary.undeliverable.is_empty() {
         added_style
     } else {
         warn
     };
     let mut minimal = wrap(vec![Line::styled(
-        format!(" 🔒 {}（V で詳細）", counts.join("・")),
+        format!(" 🔒 {}", counts.join("・")),
         style,
     )]);
     minimal.truncate(max_lines.max(1));
@@ -2906,10 +2908,14 @@ mod tests {
             "{screen}"
         );
 
-        // とても小さな端末でも、両方の人数を出す。
-        let screen = squash(render_sized(&mut app, 40, 12));
-        assert!(screen.contains("読めない人5人"), "{screen}");
-        assert!(screen.contains("増えた配布先30人"), "{screen}");
+        // とても小さな端末でも、両方の人数と詳細の案内を出す。
+        for height in [8, 12] {
+            let screen = squash(render_sized(&mut app, 40, height));
+            assert!(
+                screen.contains("読めない人5・増えた人30・Vで詳細"),
+                "{height}: {screen}"
+            );
+        }
 
         // `V` の詳細の画面では、スクロールして全員を確かめられる。
         app.focus = Focus::Messages;
