@@ -673,15 +673,20 @@ async fn rewrite_mentions(
     // 書き換える名前へのメンションを含む投稿だけをロックして読む。`@slack-` だけで絞ると、
     // 未連携の人へのメンションを含む投稿までチーム全体でロックし、長いトランザクションになる
     let targets = keys;
-    // 並行して本文を編集した人の変更を上書きしないよう、読む行をロックしてから書き換える
+    // 並行して本文を編集した人の変更を上書きしないよう、読む行をロックしてから書き換える。
+    // 暗号化に切り替えたチャンネル (#367) の取り込み済みの投稿は、本文を変えない (DB のトリガーも拒否する)。
+    // チャンネルの行を FOR KEY SHARE でロックするので、切り替えの途中なら待ち、切り替わった行は条件を
+    // 読み直して外れる
     let rows = query(
         tx,
         "SELECT json_build_object('id',m.id,'content',m.content,'card',m.card)::text FROM messages m \
+         JOIN channels c ON c.id=m.channel_id \
          WHERE m.channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) \
+         AND NOT c.encrypted \
          AND strpos(m.content,$2)>0 \
          AND EXISTS(SELECT 1 FROM json_array_elements_text($3::json) AS n(name) \
          WHERE strpos(m.content,'@'||n.name)>0) \
-         FOR UPDATE OF m",
+         FOR UPDATE OF m FOR KEY SHARE OF c",
         &[team, needle, &targets],
     )
     .await?;

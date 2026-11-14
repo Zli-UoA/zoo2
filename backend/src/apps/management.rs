@@ -428,6 +428,9 @@ async fn remove_channel(
             .bind(channel.as_str())
             .exec(&mut tx)
             .await?;
+    } else {
+        // 平文と読んだあとに暗号化へ切り替わっていたら (#367)、epoch を増やさずに外さない
+        crate::routes::e2ee_channels::ensure_still_plaintext(&mut tx, &channel).await?;
     }
     let c = crate::models::Channel::get_by_id(&mut tx, channel.as_str()).await?;
     let admin =

@@ -1,7 +1,7 @@
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 
 import { useChannelCommands } from "../../../hooks/useChannelCommands";
@@ -53,7 +53,9 @@ import {
 import { useE2ee } from "../../../lib/e2ee/e2ee-context";
 import {
   encryptionSendState,
+  encryptedChannelsVersion,
   noteEncryptedChannel,
+  subscribeEncryptedChannels,
   type KnownEncryptedState,
 } from "../../../lib/e2ee/encryptionGuard";
 import { apiErrorCode } from "../../../lib/e2ee/megolmApi";
@@ -153,6 +155,8 @@ export function MessagePane({
   // チャンネル、暗号文のある行があるチャンネルに `encrypted = false` が届いたら、平文では送らず警告する。
   // 見た時点で同期的に覚える（暗号ストアへの問い合わせを待たずに、格下げとして扱えるように）。
   if (encrypted) noteEncryptedChannel(channelId);
+  // ほかの場所（暗号化への切り替えの確認の画面。#367）で覚えたときも描き直し、Shape の反映を待たずに送信を止める。
+  useSyncExternalStore(subscribeEncryptedChannels, encryptedChannelsVersion);
   const [knownEncrypted, setKnownEncrypted] = useState<{
     channelId: string;
     known: KnownEncryptedState;

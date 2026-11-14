@@ -2342,6 +2342,25 @@ async fn fetch_one(
 
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    // 取得の途中で取り込み先が暗号化に切り替わっていたら (#367)、平文の添付の行を作らず、置いたオブジェクトも消す。
+    // チャンネルの行を FOR KEY SHARE で読むので、この確認から INSERT までが切り替えと直列になる
+    if crate::routes::e2ee_channels::lock_encryption(&mut tx, &file.channel_id).await? {
+        tx.rollback().await?;
+        if let Err(e) = s
+            .s3_client
+            .delete_object()
+            .bucket(&s.config.s3.bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            tracing::warn!(
+                key,
+                "Failed to remove a Slack file stored for an encrypted channel: {e}"
+            );
+        }
+        return Ok(FileOutcome::Skipped("Encrypted channel".into()));
+    }
     exec(
         &mut tx,
         "INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at,is_sensitive) \

@@ -333,6 +333,17 @@ async fn database_keeps_earlier_rows_from_gaining_plaintext() {
     ] {
         assert!(env.exec(sql, &[&before]).await.is_err(), "{sql}");
     }
+    // 別のチャンネルの平文の行を移してくることもできない（切り替える前からあった行の例外に当たらない）。
+    let other_channel = env.channel(&alice, true, &[]).await;
+    let moved = env.post(&other_channel, &alice, "from elsewhere").await;
+    assert!(
+        env.exec(
+            "UPDATE messages SET channel_id = $2 WHERE id = $1",
+            &[&moved, &channel]
+        )
+        .await
+        .is_err()
+    );
     // 本文を変えない更新と、消すだけの更新はできる。
     env.exec(
         "UPDATE messages SET updated_at = now() WHERE id = $1",

@@ -1290,7 +1290,7 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
   - 【決定】（#358）`app_message_events_v2` は、暗号化チャンネルのメッセージ（INSERT、UPDATE、DELETE）を App のイベントにしない。本文を解析する `is_mention`（`app.mentioned`）と `link.shared` もここで止まる。`sync_channel_home_post` の対象にも `NOT c.encrypted` を足す（暗号化チャンネルは非公開なので、もともと対象外だが明示する）。
 - 【決定】`channels.encrypted` は作成時だけ指定でき、トリガーで `OLD.encrypted IS DISTINCT FROM NEW.encrypted` の更新（両方向）を拒否する。平文のメッセージを持つチャンネルが暗号化チャンネルとして扱われ、履歴を復号できず平文と暗号文が混在するのを防ぐため（既存チャンネルの暗号化は初期版ではできない）。`is_private` も false にできないようにする。
   - 【決定】（#367）false から true への更新は認める（関数 `e2ee_protect_channel_encryption` は、true から false だけを拒否する）。true にするときは、許可のない Bot と Webhook のユーザーがメンバーにいないこと、`channel_webhooks` の行がないことを求める（SQLSTATE `23514`）。切り替える前の平文の行の扱いは、下の #367 の項目と[既存のチャンネルの暗号化](#既存のチャンネルの暗号化)。
-- 【決定】（#367）暗号化に切り替える前の平文の行（`epoch` と `ciphertext` のない行）は、`e2ee_reject_plaintext_messages` で次のように扱う。本文と平文の列（`content`、`app_attachments`、`app_blocks`、`app_unfurls`、`metadata`、`card`、`home_post_id`、`apub`）は、そのままにするか消すだけの更新を認め、新しい値を入れる更新と、`ciphertext` や `epoch` を入れる更新（暗号文への書き換え）は拒否する。リアクションの表示（`display_data`）、論理削除、投稿者の付け替え（Slack の連携）、スレッドの列などの更新は通る。新しい行（INSERT）は、今までどおり暗号文だけを認める。`e2ee_reject_plaintext_attachments` も、切り替える前の平文の添付には、ファイル名、Content-Type、画像の情報、保存先、`message_id`、`channel_id` を変えない更新（センシティブの印など）だけを認める。紐付けていない平文の添付を、切り替えたあとのメッセージに紐付けることはできない。
+- 【決定】（#367）暗号化に切り替える前の平文の行（`epoch` と `ciphertext` のない行）は、`e2ee_reject_plaintext_messages` で次のように扱う。例外は同じチャンネルの中の更新だけで、別のチャンネルから `channel_id` を変えて移した行は、新しい行と同じく暗号文を求める。本文と平文の列（`content`、`app_attachments`、`app_blocks`、`app_unfurls`、`metadata`、`card`、`home_post_id`、`apub`）は、そのままにするか消すだけの更新を認め、新しい値を入れる更新と、`ciphertext` や `epoch` を入れる更新（暗号文への書き換え）は拒否する。リアクションの表示（`display_data`）、論理削除、投稿者の付け替え（Slack の連携）、スレッドの列などの更新は通る。新しい行（INSERT）は、今までどおり暗号文だけを認める。`e2ee_reject_plaintext_attachments` も、切り替える前の平文の添付には、ファイル名、Content-Type、画像の情報、保存先、`message_id`、`channel_id` を変えない更新（センシティブの印など）だけを認める。紐付けていない平文の添付を、切り替えたあとのメッセージに紐付けることはできない。
 - 【決定】（#367）暗号化チャンネルの判定に使うトリガー（`e2ee_reject_plaintext_messages`、`e2ee_reject_plaintext_attachments`、`e2ee_reject_bot_members`、`e2ee_reject_channel_webhooks`）は、`channels` の行を `SELECT encrypted ... WHERE id = $1 FOR KEY SHARE` で読む。切り替えは行を `FOR UPDATE` でロックするので、平文の書き込みは切り替えの前か後のどちらかに並ぶ（切り替えの途中に読んだ古い `encrypted = false` で、切り替えのあとに平文が入らない）。`WHERE` に `encrypted` を入れると、条件に合わない古い版の行はロックされず、切り替えを待たないので入れない。`FOR KEY SHARE` は `FOR UPDATE` とだけ衝突し、`INSERT` の外部キーの検査と同じ強さなので、ほかの書き込みを新しく待たせない。`channel_webhooks` の `BEFORE INSERT OR UPDATE OF channel_id` のトリガー `channel_webhooks_e2ee_reject` は、暗号化チャンネルへの Incoming Webhook の作成を拒否する（API の 403 `E2EE_WEBHOOKS_FORBIDDEN` の最後の防御）。
 - 【決定】送信と編集のトランザクションは `channels` の行を `FOR SHARE` で読んで `epoch` を比べる。`membership_epoch` を増やす処理は `UPDATE`（行ロック）なので、epoch の比較と増加が直列になる。
 
@@ -1683,6 +1683,8 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   - 添付の取得は、取り込み先が暗号化されていれば `skipped`（`Encrypted channel`）にする。取得の途中で切り替わったら、添付の INSERT を DB のトリガーが拒否し、次の試行で `skipped` になる。行単位の取得は、取る行を選ぶときにも暗号化チャンネルを外している（#364）。取得の結果で、取り込み済みの投稿の本文（補ったファイル名）は変えない。
   - 同期（`backend/src/slack/sync.rs`）は、暗号化チャンネルを取らない（取る行を選ぶ条件で外す。#293）。取ったあとに暗号化されていれば、そのチャンネルの同期を 1 日休ませる（`encrypted_channel`）。1 ページを保存するトランザクションと、イベントで知らせた編集・削除・リアクション・返信を反映するトランザクション（`backend/src/slack/hints.rs`）と、取り込み済みの投稿を取り直すトランザクション（`backend/src/slack/recheck.rs`）でも、行を `FOR KEY SHARE` で読み、切り替わっていれば書かない。
   - 取り込みの開始で、暗号化チャンネルを取り込み先にすると 400（#358 のまま）。
+  - 添付の取得は、添付の行の INSERT と同じトランザクションでも取り込み先を `FOR KEY SHARE` で確かめ、切り替わっていれば行を作らず、置いた S3 のオブジェクトを消して `skipped` にする。取り込み済みの投稿を取り直す処理（`recheck.rs`）は、Slack にない投稿を消す最後のトランザクションでも確かめる。
+  - Slack のアカウントの連携で、プレースホルダへのメンションを本人の名前に書き換える処理（`link.rs` の `rewrite_mentions`）は、暗号化チャンネルの投稿を書き換えない（チャンネルの行を `FOR KEY SHARE` でロックして条件を読み直す）。投稿者の付け替えは本文を変えないので、今までどおり行う。
 - 切り替える前に取り込んだ投稿は、ほかの平文のメッセージと同じく残る。
 
 ### App と Webhook
@@ -1696,6 +1698,8 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 ### クライアント
 
+- 【決定】Web は、API の応答で `encrypted = true` を確かめたら、Shape の反映を待たずに、そのチャンネルを「暗号化を見たチャンネル」として覚える（[暗号化の格下げを防ぐ](#暗号化の格下げを防ぐ)）。Shape の反映が遅れたり、待ちが失敗したりしても、表示中の `MessagePane` が描き直して平文の送信を止める（Shape に `encrypted = true` が届くまでは、格下げの警告と同じ表示になる）。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。
+- 【決定】確認の画面は、開いたときのチャンネルに固定する。開いたまま表示するチャンネルが変わったら閉じる（`ChannelScreen` は `ChannelHeader` をチャンネルごとに作り直す）。確認の画面にはチャンネル名を出さないので、移動先を確かめずに戻せない形で切り替えないため。
 - 【決定】Web（React）は、非公開チャンネルの「チャンネル設定」と、DM のメニューから切り替える。確認の画面で、これからのメッセージだけを暗号化すること、これまでのメッセージは平文のまま残り編集できなくなること、Home と ActivityPub に出した投稿は取り消されないこと、Slack の取り込みと同期が止まり、App と Webhook は先に外すこと（チャンネルだけ）、元に戻せないことを示す。切り替えのあと、端末の暗号化の準備ができていなければ、送信の欄は今までどおり止まる（作成した暗号化チャンネルと同じ）。
 - 【決定】Compose Android と TUI は、ほかの E2EE の PR と同じく、暗号化チャンネルの送受信をまだ持たないので、この PR では切り替えの操作を足さない（[未決と未検証の一覧](#未決と未検証の一覧)）。
 

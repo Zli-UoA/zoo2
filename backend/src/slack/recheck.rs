@@ -97,6 +97,8 @@ pub(super) async fn run(
 
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
+    // 最後の `apply_chunk` のあとに暗号化へ切り替わっていたら (#367)、Slack にない投稿の削除もしない
+    super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
     if complete {
         let present: HashSet<&str> = messages.iter().map(|m| m.ts.as_str()).collect();
         let candidates = query(

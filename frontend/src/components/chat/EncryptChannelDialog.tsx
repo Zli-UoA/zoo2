@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { encryptChannel } from "../../lib/api/encryptChannel";
 import { useCollections } from "../../lib/electric/collections-context";
+import { noteEncryptedChannel } from "../../lib/e2ee/encryptionGuard";
 import { changeMessageMatcher, syncTxid } from "../../lib/electric/txid";
 import type { ChannelRow } from "../../lib/electric/types";
 import { localizeApiError } from "../../lib/i18n/apiError";
@@ -50,12 +51,30 @@ export function EncryptChannelDialog({
     onOpenChange(next);
   }
 
+  // 確認を開いたときの対象に固定する。開いたまま対象が変わったら、確認を閉じる（移動先のチャンネルを、確かめずに
+  // 戻せない形で切り替えない）。`ChannelScreen` は `ChannelHeader` をチャンネルごとに作り直すので、ふつうは確認ごと
+  // なくなるが、この部品だけでも守る。
+  const [openedFor, setOpenedFor] = useState<string | null>(null);
+  if (open && openedFor === null) setOpenedFor(channel.id);
+  if (!open && openedFor !== null) setOpenedFor(null);
+  const channelId = openedFor ?? channel.id;
+  const targetChanged = open && openedFor !== null && openedFor !== channel.id;
+  useEffect(() => {
+    if (targetChanged) {
+      setError(null);
+      onOpenChange(false);
+    }
+  }, [targetChanged, onOpenChange]);
+
   async function confirm() {
-    if (pending) return;
+    if (pending || targetChanged) return;
     setPending(true);
     setError(null);
     try {
-      const response = await encryptChannel(client, channel.id);
+      const response = await encryptChannel(client, channelId);
+      // 応答で暗号化を確かめたら、Shape の反映を待たずに覚える。表示中の `MessagePane` は描き直して送信を止め、
+      // Shape が遅れても（反映の待ちが失敗しても）平文を送らない（docs/e2ee.md の「暗号化の格下げを防ぐ」）。
+      if (response.data.encrypted === true) noteEncryptedChannel(channelId);
       try {
         await syncTxid({
           mode: collections.config.txidMode,
@@ -63,7 +82,7 @@ export function EncryptChannelDialog({
           target: collections.channels.utils,
           match: changeMessageMatcher<ChannelRow>(
             "update",
-            (row) => row.id === channel.id && row.encrypted === true,
+            (row) => row.id === channelId && row.encrypted === true,
           ),
           timeout: SHAPE_SYNC_TIMEOUT_MS,
         });

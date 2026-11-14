@@ -33,7 +33,8 @@ BEGIN
   IF NOT COALESCE(enc, false) THEN
     RETURN NEW;
   END IF;
-  IF TG_OP = 'UPDATE' AND OLD.epoch IS NULL AND OLD.ciphertext IS NULL THEN
+  -- 別のチャンネルから移した行は、切り替える前からこのチャンネルにあった行ではないので、例外にしない。
+  IF TG_OP = 'UPDATE' AND OLD.channel_id = NEW.channel_id AND OLD.epoch IS NULL AND OLD.ciphertext IS NULL THEN
     IF NEW.ciphertext IS NOT NULL OR NEW.epoch IS NOT NULL
        OR (NEW.content IS DISTINCT FROM OLD.content AND NEW.content <> '')
        OR (NULLIF(NEW.app_attachments, '') IS DISTINCT FROM NULLIF(OLD.app_attachments, '') AND NULLIF(NEW.app_attachments, '') IS NOT NULL)
