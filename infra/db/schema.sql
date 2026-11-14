@@ -3337,7 +3337,9 @@ BEGIN
     END IF;
     RETURN NEW;
   END IF;
-  IF NEW.deleted_at IS NULL AND (NEW.content <> '' OR NEW.ciphertext IS NULL) THEN
+  -- 削除済みの行も本文は空にする（#367）。別のチャンネルから削除済みの平文の行を移して、本文を持ち込ませない。
+  -- 暗号化チャンネルで送った行は、もともと本文が空なので、削除しても違反しない。
+  IF NEW.content <> '' OR (NEW.deleted_at IS NULL AND NEW.ciphertext IS NULL) THEN
     RAISE EXCEPTION 'messages in an encrypted channel require ciphertext and empty content' USING ERRCODE = '23514';
   END IF;
   IF NULLIF(NEW.app_attachments, '') IS NOT NULL OR NULLIF(NEW.app_blocks, '') IS NOT NULL
