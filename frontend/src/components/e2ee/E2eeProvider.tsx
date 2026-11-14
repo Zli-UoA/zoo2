@@ -207,7 +207,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
           setStatus(next);
           if (next === "stopped") setDeviceId(null);
           if (next === "error") {
-            // 20 台の上限で登録できなかった。設定の「端末」タブで、削除する端末を選んでもらう。
+            // 20 台の上限で登録できなかった。設定の「暗号化」タブで、削除する端末を選んでもらう。
             setDeviceLimit(staleDevices(error));
             // 設定の画面に、試し直している理由を出す（状態コードとエラーの名前だけ）。起動のほか、
             // 別の端末から消されたあとの登録し直し（`reregister`）の失敗もここに来る。

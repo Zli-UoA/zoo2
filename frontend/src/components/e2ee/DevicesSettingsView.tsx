@@ -98,8 +98,6 @@ export type DevicesErrorCode =
 
 export type DevicesViewState =
   | { step: "loading" }
-  /** このタブで暗号ストアをまだ開けていない。`reason` はその理由。 */
-  | { step: "unavailable"; reason: E2eeNotReadyReason }
   | { step: "loadFailed" }
   | {
       step: "ready";
@@ -218,7 +216,6 @@ export function DeviceSummary({ device }: { device: DeviceRowView }) {
   );
 }
 
-/** 設定の「端末」タブ（端末一覧、失効、他のユーザーの検証。#362）。 */
 function notReadyMessage(t: TFunction, reason: E2eeNotReadyReason): string {
   switch (reason.kind) {
     case "failed": {
@@ -239,7 +236,7 @@ function notReadyMessage(t: TFunction, reason: E2eeNotReadyReason): string {
 }
 
 /**
- * このタブで暗号ストアをまだ開けていない理由（設定の「暗号化」「端末」タブ）。
+ * このタブで暗号ストアをまだ開けていない理由（設定の「暗号化」タブの上に 1 回だけ出す）。
  * ほかのタブが開いている、登録に失敗して試し直している、などを区別して伝える。
  */
 export function E2eeNotReadyNotice({ reason }: { reason: E2eeNotReadyReason }) {
@@ -260,6 +257,10 @@ export function E2eeNotReadyNotice({ reason }: { reason: E2eeNotReadyReason }) {
   );
 }
 
+/**
+ * 設定の「暗号化」タブの、端末（一覧、削除、失効）と他のユーザーの検証のセクション（#362）。
+ * 状態は `DevicesSettings` が持つ。
+ */
 export function DevicesSettingsView({
   state,
   handlers,
@@ -269,7 +270,6 @@ export function DevicesSettingsView({
 }) {
   const { t } = useTranslation();
   if (state.step === "loading") return <Busy label={t("e2ee.loading")} />;
-  if (state.step === "unavailable") return <E2eeNotReadyNotice reason={state.reason} />;
   if (state.step === "loadFailed") {
     return (
       <div className="space-y-2">
@@ -924,6 +924,7 @@ export function DeviceLimitView({
   const stale = new Set(staleIds);
   return (
     <SettingsSection
+      className="border-destructive/50"
       title={t("e2ee.devices.limitTitle")}
       description={t("e2ee.devices.limitDescription")}
     >
