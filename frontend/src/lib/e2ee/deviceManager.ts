@@ -30,6 +30,11 @@ export interface E2eeDeviceManagerOptions {
   retryDelayMs?: number;
   /** ログアウトで、処理中のもの（登録の要求など）を待つ時間。 */
   settleTimeoutMs?: number;
+  /**
+   * このログインで、削除 API の 404 を数えた端末（`loginNotFoundCounter`）。manager を作り直しても
+   * 同じものを渡し、起動の試し直しで 404 を数え直さない。省いたらインスタンスごとに持つ。
+   */
+  countedNotFound?: Set<string>;
   onStatus?: (status: E2eeDeviceStatus, error?: unknown) => void;
   /**
    * Megolm のセッション鍵を受け取って保存した。鍵バックアップに送り（#360）、「鍵がまだ届いていない」
@@ -51,6 +56,22 @@ const DELETE_TIMEOUT_MS = 5_000;
  * Android の `E2eeDeviceManager.MAX_NOT_FOUND`、TUI の `MAX_NOT_FOUND` と同じ。
  */
 export const MAX_NOT_FOUND = 3;
+
+const countedNotFoundByUser = new Map<string, Set<string>>();
+
+/**
+ * このページで、ユーザーごとに削除 API の 404 を数えた端末。ログインはページの読み込みをまたぐ
+ * （OIDC のリダイレクト。ログアウトはページを離れる）ので、ページを読み込んでいるあいだを 1 回の
+ * ログインとして扱い、manager を作り直しても（`E2eeProvider` の起動の試し直し）同じ集合を返す。
+ */
+export function loginNotFoundCounter(userId: string): Set<string> {
+  let counted = countedNotFoundByUser.get(userId);
+  if (!counted) {
+    counted = new Set();
+    countedNotFoundByUser.set(userId, counted);
+  }
+  return counted;
+}
 
 function isDeviceGone(error: unknown): boolean {
   // 登録：削除済みの device_id は 409。鍵のアップロードと ack：削除済みの端末は 404。
@@ -97,10 +118,10 @@ export class E2eeDeviceManager {
    */
   private readonly confirmedRegistrations = new Set<string>();
   /**
-   * このログイン（インスタンス）で 404 を数えた端末。`unconfirmed` の端末の 404 は、ログインごとに
-   * 1 回だけ数える（起動の試し直しで上限に達して、削除待ちを早く外さないため）。
+   * このログインで 404 を数えた端末。`unconfirmed` の端末の 404 は、ログインごとに 1 回だけ数える
+   * （起動の試し直しで上限に達して、削除待ちを早く外さないため）。
    */
-  private readonly countedNotFound = new Set<string>();
+  private readonly countedNotFound: Set<string>;
   /** ログアウトのために開いたとき、保存鍵を失って作り直した前の端末（これも消す）。 */
   private readonly replacedDevices: PendingDeviceDeletion[] = [];
   /** 端末が消されていたので、起動し直さなければならない（`reregister`）。済むまで残す。 */
@@ -109,7 +130,9 @@ export class E2eeDeviceManager {
   private destroyBeforeRestart = false;
   private restarting = false;
 
-  constructor(private readonly options: E2eeDeviceManagerOptions) {}
+  constructor(private readonly options: E2eeDeviceManagerOptions) {
+    this.countedNotFound = options.countedNotFound ?? new Set();
+  }
 
   get currentDeviceId(): string | null {
     return this.deviceId;

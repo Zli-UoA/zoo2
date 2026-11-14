@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { ApiError, type ApiClient } from "../api/client";
 import { resolveConfig } from "../config";
 import type { CryptoWorker } from "./cryptoWorker";
-import { E2eeDeviceManager, MAX_NOT_FOUND, retryPendingDeviceDeletion } from "./deviceManager";
+import {
+  E2eeDeviceManager,
+  loginNotFoundCounter,
+  MAX_NOT_FOUND,
+  retryPendingDeviceDeletion,
+} from "./deviceManager";
 import {
   CRYPTO_PENDING_DEVICE_DELETE_KEY,
   markDeviceDeletionPending,
@@ -663,6 +668,41 @@ describe("E2eeDeviceManager", () => {
         { userId: USER, deviceId: "d-old", unconfirmed: true, notFound: 1 },
       ]);
       await instance.stop();
+    });
+
+    it("起動の試し直しで manager を作り直しても、同じログインでは 404 を 1 回だけ数える", async () => {
+      markDeviceDeletionPending({ userId: USER, deviceId: "d-old", unconfirmed: true });
+      // E2eeProvider と同じく、起動に失敗したら止めて、manager を作り直す。
+      const { worker } = fakeWorker({
+        open: () => {
+          throw new Error("暗号ストアを開けません");
+        },
+      });
+      const { client, requests } = fakeClient({ "DELETE /api/e2ee/devices/d-old": notFound });
+      const counted = new Set<string>();
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const instance = new E2eeDeviceManager({
+          config: resolveConfig({ DEV: false }),
+          client,
+          worker,
+          userId: USER,
+          namespace: `user-${USER}`,
+          displayName: "Chrome（macOS）",
+          subscribe,
+          countedNotFound: counted,
+        });
+        await instance.start().catch(() => undefined);
+        await instance.stop();
+      }
+      expect(requests.filter((r) => r.path === "/api/e2ee/devices/d-old")).toHaveLength(3);
+      expect(readPendingDeviceDeletions()).toEqual([
+        { userId: USER, deviceId: "d-old", unconfirmed: true, notFound: 1 },
+      ]);
+    });
+
+    it("ログインごとの集合は、ユーザーごとにページのあいだ同じものを返す", () => {
+      expect(loginNotFoundCounter(USER)).toBe(loginNotFoundCounter(USER));
+      expect(loginNotFoundCounter(USER)).not.toBe(loginNotFoundCounter("other"));
     });
 
     it("あとから登録が届いた端末は、次のログインで消す", async () => {
