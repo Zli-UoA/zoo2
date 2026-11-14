@@ -32,7 +32,22 @@ import zoo.android.update.AndroidUpdateFrame
 import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
 
+/** 鍵バックアップに送れていない鍵があるときの、ログアウトの確認（#359）。 */
+private class UnbackedKeysPrompt(val count: Int, val answer: CompletableDeferred<Boolean>)
+
 class MainActivity : ComponentActivity() {
+    private var unbackedKeysPrompt by mutableStateOf<UnbackedKeysPrompt?>(null)
+
+    private suspend fun confirmUnbackedKeys(count: Int): Boolean {
+        val answer = CompletableDeferred<Boolean>()
+        unbackedKeysPrompt = UnbackedKeysPrompt(count, answer)
+        return try {
+            answer.await()
+        } finally {
+            unbackedKeysPrompt = null
+        }
+    }
+
     private var fileResult: CompletableDeferred<List<Uri>>? = null
     private val picker =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
@@ -210,6 +225,7 @@ class MainActivity : ComponentActivity() {
                         Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
                             NativeWindow(current.session) { ZooApp(current.session) }
                         }
+                        unbackedKeysPrompt?.let { UnbackedKeysDialog(platform, it) }
                     }
                 }
             }
@@ -268,7 +284,7 @@ class MainActivity : ComponentActivity() {
             currentCoroutineContext().ensureActive()
             val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val platform = AndroidPlatform(
-                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles,
+                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, ::confirmUnbackedKeys,
             )
             platform.systemDark(dark)
             val config = Config(
@@ -276,7 +292,25 @@ class MainActivity : ComponentActivity() {
                 assetsBaseUrl = connection.base,
             )
             val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
-            return RunningSession(session, platform, lifetime, http, auth).also { session.start() }
+            // ログインしたら、E2EE の端末を登録する（#359）。失敗は表示せず、裏で試し直す。
+            val e2ee = zoo.crypto.E2eeDeviceManager(
+                api = zoo.crypto.ZooE2eeApi(ZooApi(config, platform, http)),
+                server = connection.base,
+                userId = me.text("id"),
+                displayName = e2eeDisplayName(),
+                files = zoo.crypto.CryptoStoreFiles.android(this, connection.base, me.text("id")),
+                pending = zoo.crypto.PendingDeviceDeletions.android(this),
+                toDevice = { deviceId -> zoo.crypto.toDeviceShape(config, platform, http, deviceId) },
+                scope = lifetime,
+                onError = { failure ->
+                    android.util.Log.w("ZooE2ee", "E2EE の端末の処理に失敗しました: ${failure::class.simpleName}: ${failure.message}")
+                },
+            )
+            platform.e2ee = e2ee
+            return RunningSession(session, platform, lifetime, http, auth, e2ee).also {
+                session.start()
+                e2ee.start()
+            }
         } catch (failure: Throwable) {
             auth.close()
             http.close()
@@ -436,15 +470,48 @@ private class RunningSession(
     val scope: CoroutineScope,
     private val http: HttpClient,
     val auth: DeviceAuth,
+    private val e2ee: zoo.crypto.E2eeDeviceManager,
 ) {
     fun logout() {
         try { auth.forget() } finally { close() }
     }
 
     fun close() {
+        e2ee.stop()
         auth.close()
         session.close()
         scope.cancel()
         http.close()
     }
+}
+
+/** 端末名（`display_name`）。本人の端末一覧（#362）にだけ出る。例：`Zoo Android（Pixel 8）`。 */
+private fun e2eeDisplayName(): String =
+    "Zoo Android（${android.os.Build.MODEL.orEmpty().ifBlank { "Android" }.take(100)}）"
+
+/** 鍵バックアップに送れていない鍵があるときの、ログアウトの確認（React の `UnbackedKeysLogoutDialog`）。 */
+@Composable
+private fun UnbackedKeysDialog(platform: AndroidPlatform, prompt: UnbackedKeysPrompt) {
+    val t = { key: String -> platform.translate(key, mapOf("count" to prompt.count.toString())) }
+    AlertDialog(
+        onDismissRequest = { prompt.answer.complete(false) },
+        title = { Text(t("e2ee.logout.unbackedTitle")) },
+        text = {
+            Text(
+                when {
+                    prompt.count < 0 -> t("e2ee.logout.unknownDescription")
+                    prompt.count == 1 -> t("e2ee.logout.unbackedDescription_one")
+                    else -> t("e2ee.logout.unbackedDescription_other")
+                }
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { prompt.answer.complete(true) }) {
+                Text(t("e2ee.logout.confirm"), color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { prompt.answer.complete(false) }) { Text(t("common.cancel")) }
+        },
+    )
 }
