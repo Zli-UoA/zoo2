@@ -11,6 +11,7 @@ import { describeApiError } from "../../hooks/useChannelAdmin";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
+import { apiPath } from "../../lib/api/path";
 
 export interface ChannelWebhook {
   id: string;
@@ -91,7 +92,7 @@ export function ChannelWebhooksDialog({
   const { t } = useTranslation();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const path = `/api/channels/${channel.id}/webhooks`;
+  const path = apiPath`/api/channels/${channel.id}/webhooks`;
   const [hooks, setHooks] = useState<ChannelWebhook[]>([]);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
@@ -363,7 +364,9 @@ function WebhookAppSelection({
     if (!id || busy) return;
     setBusy(true);
     try {
-      await client.post(`/api/channels/${channelId}/webhooks/${hook.id}/app`, { app_id: id });
+      await client.post(apiPath`/api/channels/${channelId}/webhooks/${hook.id}/app`, {
+        app_id: id,
+      });
       onUpdated();
     } catch {
       setError(true);
