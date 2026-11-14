@@ -121,6 +121,21 @@ it("Worker を作れなかったときは、ほかのタブではなく、この
   );
 });
 
+it("Worker を作るときの TypeError は、通信の失敗ではなく、この端末での失敗として出す", async () => {
+  // CSP の Trusted Types で既定のポリシーがないと、`Worker()` は TypeError を投げる。
+  mocks.startCryptoWorker.mockImplementation(() => {
+    throw new TypeError("This document requires 'TrustedScriptURL' assignment.");
+  });
+  render(
+    <E2eeProvider config={config}>
+      <Probe />
+    </E2eeProvider>,
+  );
+  await waitFor(() =>
+    expect(reason()).toEqual({ kind: "failed", failure: { source: "local", name: "TypeError" } }),
+  );
+});
+
 it("ほかのタブがロックを持っているあいだはそう出し、返されたら引き継ぐ", async () => {
   let releaseOther: () => void = () => {};
   const otherHolds = new Promise<void>((resolve) => {

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { ApiError } from "../api/client";
-import { describeStartFailure, notReadyReason, type NotReadyInput } from "./notReady";
+import {
+  describeLocalFailure,
+  describeStartFailure,
+  notReadyReason,
+  type NotReadyInput,
+} from "./notReady";
 
 const base: NotReadyInput = {
   supported: true,
@@ -97,5 +102,14 @@ describe("describeStartFailure", () => {
     });
     expect(describeStartFailure(new Error("plain"))).toEqual({ source: "local", name: null });
     expect(describeStartFailure("oops")).toEqual({ source: "local", name: null });
+  });
+});
+
+describe("describeLocalFailure", () => {
+  it("TypeError も、この端末での失敗として扱う", () => {
+    expect(describeLocalFailure(new TypeError("Trusted Types"))).toEqual({
+      source: "local",
+      name: "TypeError",
+    });
   });
 });

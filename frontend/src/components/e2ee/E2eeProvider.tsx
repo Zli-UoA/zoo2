@@ -26,6 +26,7 @@ import {
 } from "../../lib/e2ee/identity";
 import {
   type CryptoLockState,
+  describeLocalFailure,
   describeStartFailure,
   type E2eeStartFailure,
   notReadyReason,
@@ -234,7 +235,8 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
             worker = startCryptoWorker();
           } catch (error) {
             workerFailed = true;
-            setStartFailure(describeStartFailure(error));
+            // ここでの TypeError は通信ではなく、Worker を作れなかったこと（CSP の Trusted Types など）。
+            setStartFailure(describeLocalFailure(error));
             throw error;
           }
           workerRetryDelay = START_RETRY_MS;

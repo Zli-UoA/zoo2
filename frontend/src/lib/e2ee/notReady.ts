@@ -43,6 +43,14 @@ export function describeStartFailure(error: unknown): E2eeStartFailure {
   }
   // fetch は、つながらないときに TypeError を投げる。
   if (error instanceof TypeError) return { source: "network" };
+  return describeLocalFailure(error);
+}
+
+/**
+ * この端末での失敗として扱う（エラーの名前だけを残す）。Worker を作るときの例外は、種類に
+ * かかわらずこれにする。`Worker()` は、CSP の Trusted Types などで TypeError も投げるため。
+ */
+export function describeLocalFailure(error: unknown): E2eeStartFailure {
   const name = error instanceof Error && error.name && error.name !== "Error" ? error.name : null;
   return { source: "local", name };
 }
