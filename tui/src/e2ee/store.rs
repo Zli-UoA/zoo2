@@ -1245,6 +1245,97 @@ impl CryptoStore {
             .count()
     }
 
+    /// 端末だけを作り直し、暗号ストアの記録を引き継ぐ（docs/e2ee.md の「端末が削除されていたとき」）。
+    /// サーバーが、この端末を消したと言い、端末の一覧でも確かめたときに呼ぶ。
+    ///
+    /// 新しい端末アカウント（新しい `device_id`。未登録）を作り、次のものを新しい端末で封をし直して
+    /// 引き継ぐ（封の AAD に `device_id` が入るので、古い端末で開いて新しい端末で閉じ直す）：
+    /// 配布先の判定の記録（TrustStore）、受信用セッション（鍵バックアップに送ったかどうかも保つ）、
+    /// 鍵バックアップの送信の状態（見た版の最大と送信待ち）、暗号化チャンネルと前回の配布先の記録。
+    ///
+    /// Olm セッション（送信用も受信用も）、処理済みの to-device の ID、解錠した自分の鍵と
+    /// `secrets_revision`、鍵バックアップからの取り込みの進み具合は捨てる。自分の鍵は解錠し直してもらう
+    /// （別の端末からわざと消された端末が、自分の鍵で新しい端末に勝手に署名しないため）。開けない受信用
+    /// セッション（壊れたもの）も捨てる。保存鍵は変えない。
+    ///
+    /// `state.json` を 1 回だけ置き換えるので、途中で止まっても前の状態か新しい状態のどちらかが残る。
+    /// 古い端末の削除 API は呼ばない（サーバーはもう消したと言っている）。
+    pub fn replace_device(&mut self) -> Result<()> {
+        let user_id = self.state.user_id.clone();
+        let mut account = DeviceAccount::new(&user_id, &uuid::Uuid::new_v4().to_string())?;
+        account.generate_one_time_keys(account.max_number_of_one_time_keys());
+        account.generate_fallback_key();
+
+        // 保存してある記録を、古い端末で開く（メモリーの記録は、保存したものと同じか、保存に失敗したもの）。
+        let trust = match &self.state.trust_store {
+            Some(pickle) => TrustStore::from_pickle(pickle, &self.account, &self.storage_key)?,
+            None => TrustStore::new(&user_id)?,
+        };
+        let mut inbound = InboundSessionStore::new();
+        let mut inbound_sessions = BTreeMap::new();
+        for (key, stored) in &self.state.inbound_sessions {
+            let Ok(session) =
+                inbound.restore_session(&stored.pickle, &self.account, &self.storage_key)
+            else {
+                continue;
+            };
+            let Some(pickle) = inbound.pickle_session(&session, &account, &self.storage_key) else {
+                continue;
+            };
+            inbound_sessions.insert(
+                key.clone(),
+                StoredInboundSession {
+                    pickle,
+                    backed_up: stored.backed_up,
+                },
+            );
+        }
+        // 鍵バックアップの送信の状態は、見た版の最大と送信待ちを残し、解錠したときの
+        // `secrets_revision` だけを捨てる。読めなければ捨てる（版が変わったときと同じく、送り直す）。
+        let backup_upload = self
+            .state
+            .backup_upload
+            .as_deref()
+            .and_then(|json| BackupUploadState::from_json(json, &user_id).ok())
+            .map(|mut backup| {
+                backup.set_secrets_revision(None);
+                backup.to_json()
+            });
+
+        let state = State {
+            version: STATE_VERSION,
+            user_id: user_id.clone(),
+            device_id: account.device_id().to_owned(),
+            registered: false,
+            account: account.pickle(&self.storage_key),
+            olm_sessions: Vec::new(),
+            inbound_sessions,
+            trust_store: Some(trust.pickle(&account, &self.storage_key)),
+            processed_to_device: BTreeSet::new(),
+            own_keys: None,
+            secrets_revision: None,
+            backup_upload,
+            outbound_olm: BTreeMap::new(),
+            encrypted_channels: self.state.encrypted_channels.clone(),
+            recipients: self.state.recipients.clone(),
+            backup_import: None,
+        };
+        write_private(&self.dir.join(STATE_FILE), &serde_json::to_vec(&state)?)?;
+
+        self.account = account;
+        self.olm_sessions = Vec::new();
+        self.inbound = InboundSessionStore::new();
+        self.loaded_inbound = BTreeSet::new();
+        self.trust = trust;
+        self.state = state;
+        self.backup_state = None;
+        self.pending_uploads = BTreeMap::new();
+        self.outbound = BTreeMap::new();
+        self.pending = BTreeMap::new();
+        self.unsaved_inbound = BTreeSet::new();
+        Ok(())
+    }
+
     /// 暗号ストアを消す（ログアウト）。消し終えるまで、ユーザーのロックを持ち続ける。
     pub fn destroy(self) -> Result<()> {
         let Self { dir, _lock, .. } = self;

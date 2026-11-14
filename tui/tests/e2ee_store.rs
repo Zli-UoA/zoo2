@@ -748,3 +748,274 @@ async fn waits_only_while_the_screen_still_holds_the_store() {
     assert!(started.elapsed() >= Duration::from_millis(300));
     assert!(CryptoStore::open(&root, BOB).is_ok());
 }
+
+/// 端末が消された候補（コード付き）の応答。
+fn device_not_found() -> ResponseTemplate {
+    ResponseTemplate::new(404)
+        .set_body_json(json!({ "error": "Device not found", "code": "E2EE_DEVICE_NOT_FOUND" }))
+}
+
+fn registered_store(root: &std::path::Path) -> tokio::sync::Mutex<CryptoStore> {
+    let mut bob = CryptoStore::open(root, BOB).unwrap().store;
+    bob.mark_registered().unwrap();
+    tokio::sync::Mutex::new(bob)
+}
+
+#[tokio::test]
+async fn not_found_or_conflict_without_a_code_does_not_replace_the_device() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/e2ee/keys/upload"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({ "error": "Not Found" })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/e2ee/devices"))
+        .respond_with(ResponseTemplate::new(409))
+        .mount(&server)
+        .await;
+    // 候補にならないので、端末の一覧も見ない。
+    Mock::given(method("GET"))
+        .and(path("/api/e2ee/devices"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+
+    // 登録済みの端末の、鍵のアップロードの 404。
+    let dir = tempfile::tempdir().unwrap();
+    let registered = registered_store(&store::crypto_root(dir.path()));
+    let device_id = registered.lock().await.device_id().to_owned();
+    assert!(manager::register(&api, &registered).await.is_err());
+    let registered = registered.lock().await;
+    assert_eq!(registered.device_id(), device_id);
+    assert!(registered.is_registered());
+
+    // 未登録の端末の、登録の 409。
+    let dir = tempfile::tempdir().unwrap();
+    let unregistered = tokio::sync::Mutex::new(
+        CryptoStore::open(&store::crypto_root(dir.path()), BOB)
+            .unwrap()
+            .store,
+    );
+    let device_id = unregistered.lock().await.device_id().to_owned();
+    assert!(manager::register(&api, &unregistered).await.is_err());
+    assert_eq!(unregistered.lock().await.device_id(), device_id);
+}
+
+#[tokio::test]
+async fn a_device_still_in_the_list_is_not_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let bob = registered_store(&store::crypto_root(dir.path()));
+    let device_id = bob.lock().await.device_id().to_owned();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/e2ee/keys/upload"))
+        .respond_with(device_not_found())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/e2ee/devices"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!([{ "device_id": "other" }, { "device_id": device_id }])),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    let err = manager::register(&api, &bob).await.unwrap_err();
+    assert!(manager::device_gone_candidate(&err));
+    let bob = bob.lock().await;
+    assert_eq!(bob.device_id(), device_id);
+    assert!(bob.is_registered());
+}
+
+#[tokio::test]
+async fn an_unreadable_device_list_does_not_replace_the_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let bob = registered_store(&store::crypto_root(dir.path()));
+    let device_id = bob.lock().await.device_id().to_owned();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/e2ee/keys/upload"))
+        .respond_with(device_not_found())
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/e2ee/devices"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    assert!(manager::register(&api, &bob).await.is_err());
+    let bob = bob.lock().await;
+    assert_eq!(bob.device_id(), device_id);
+    assert!(bob.is_registered());
+}
+
+#[tokio::test]
+async fn a_deleted_device_is_replaced_keeping_the_trust_records_and_inbound_sessions() {
+    use zoo_crypto::{
+        BackupDecryptionKey, CrossSigningKeys, MessageContent, OutgoingMessage, OwnSecrets,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let root = store::crypto_root(dir.path());
+    let mut bob = CryptoStore::open(&root, BOB).unwrap().store;
+    let request = bob.registration_request();
+    bob.mark_registered().unwrap();
+    let old_device_id = bob.device_id().to_owned();
+
+    // 解錠して、Alice のマスター鍵を信頼する。
+    let secrets = OwnSecrets {
+        cross_signing: CrossSigningKeys::generate(BOB).unwrap(),
+        backup_key: BackupDecryptionKey::generate(),
+    };
+    bob.save_own_keys(&secrets, Some(1)).unwrap();
+    let alice_keys = CrossSigningKeys::generate(ALICE).unwrap();
+    bob.trust_store()
+        .accept_master_key(
+            &secrets.cross_signing.user_signing,
+            ALICE,
+            &alice_keys.master.public_key_json(),
+        )
+        .unwrap();
+    bob.save_trust_store().unwrap();
+    let trust = bob.trust_store().to_json();
+    assert!(bob.trust_store().own_master_key().is_some());
+    assert!(
+        bob.trust_store()
+            .record(ALICE)
+            .unwrap()
+            .confirmed_usk
+            .is_some()
+    );
+
+    // Alice から Megolm の鍵を受け取る（鍵バックアップには送っていない）。
+    let alice = DeviceAccount::new(ALICE, &uuid::Uuid::new_v4().to_string()).unwrap();
+    let recipient = verify_device_keys(&request["device_keys"], BOB, bob.device_id()).unwrap();
+    let one_time_key = request["one_time_keys"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    let mut session = alice
+        .create_outbound_olm_session(&recipient, &one_time_key)
+        .unwrap();
+    let mut outbound = OutboundSession::new(CHANNEL, 1, 0);
+    let content = alice
+        .encrypt_room_key(&mut session, &recipient, &outbound.room_key())
+        .unwrap();
+    let device_keys = json!({ ALICE: { alice.device_id(): alice.device_keys() } });
+    let result = bob
+        .process_to_device(
+            &[ToDeviceRow {
+                id: "7".into(),
+                sender_user_id: ALICE.into(),
+                r#type: "m.room.encrypted".into(),
+                content,
+            }],
+            &device_keys,
+        )
+        .unwrap();
+    assert_eq!(result.room_keys, 1);
+    assert_eq!(bob.pending_backup_count(), 1);
+
+    // 鍵のアップロードが E2EE_DEVICE_NOT_FOUND になり、一覧にも今の端末がない。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/e2ee/keys/upload"))
+        .respond_with(device_not_found())
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/e2ee/devices"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{ "device_id": "other" }])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/e2ee/devices"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "one_time_key_counts": { "signed_curve25519": 50 },
+                "unused_fallback_key_types": ["signed_curve25519"],
+            },
+            "txid": null,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // 古い端末の削除 API は呼ばない。
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let api = api_for(&server);
+    let bob = tokio::sync::Mutex::new(bob);
+    let counts = manager::register(&api, &bob).await.unwrap();
+    assert_eq!(counts.one_time_keys, 50);
+    let bob = bob.into_inner();
+
+    // 新しい端末として登録した。
+    let new_device_id = bob.device_id().to_owned();
+    assert_ne!(new_device_id, old_device_id);
+    assert!(bob.is_registered());
+    let registered = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.method.as_str() == "POST" && r.url.path() == "/api/e2ee/devices")
+        .unwrap();
+    let body: Value = serde_json::from_slice(&registered.body).unwrap();
+    assert_eq!(body["device_keys"]["device_id"], new_device_id);
+    // 解錠した自分の鍵は消え、解錠し直しを待つ。
+    assert!(!bob.has_own_keys());
+    assert_eq!(bob.secrets_revision(), None);
+    drop(bob);
+
+    // 開き直しても（新しい端末で封をし直してあるので）、記録と受信用セッションが残っている。
+    let mut bob = CryptoStore::open(&root, BOB).unwrap().store;
+    assert_eq!(bob.device_id(), new_device_id);
+    assert_eq!(bob.trust_store().to_json(), trust);
+    assert_eq!(bob.pending_backup_count(), 1);
+    assert!(!bob.has_own_keys());
+    let ciphertext = outbound
+        .encrypt(
+            &alice,
+            &OutgoingMessage {
+                message_id: "m1".into(),
+                parent_id: None,
+                revision: 0,
+                content: MessageContent {
+                    body: "こんにちは".into(),
+                    format: "mfm".into(),
+                    kind: "message".into(),
+                },
+                mentions: Default::default(),
+                attachments: Vec::new(),
+            },
+        )
+        .unwrap();
+    let decrypted = bob.decrypt_message(&store::EncryptedRow {
+        channel_id: CHANNEL.into(),
+        message_id: "m1".into(),
+        parent_id: None,
+        user_id: ALICE.into(),
+        message_kind: "message".into(),
+        epoch: Some(1),
+        revision: 0,
+        ciphertext,
+    });
+    match decrypted {
+        store::Decryption::Decrypted(decrypted) => assert_eq!(decrypted.body, "こんにちは"),
+        other => panic!("復号できません: {other:?}"),
+    }
+}

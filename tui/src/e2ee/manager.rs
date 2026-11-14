@@ -15,7 +15,7 @@ use tokio::task::JoinHandle;
 
 use crate::api::ApiClient;
 use crate::electric::{Change, ShapeStream};
-use crate::http::{Credentials, HttpError};
+use crate::http::{ApiError, Credentials};
 
 use super::setup::{self, SharedStore};
 use super::store::{
@@ -42,27 +42,46 @@ pub fn display_name() -> String {
 }
 
 fn status_of(err: &anyhow::Error) -> Option<reqwest::StatusCode> {
-    match err.downcast_ref::<HttpError>() {
-        Some(HttpError::Status { status, .. }) => Some(*status),
-        _ => None,
+    ApiError::status_of(err)
+}
+
+/// 端末が別の端末から消された候補か（docs/e2ee.md の「端末が削除されていたとき」）。
+///
+/// 登録（`POST /api/e2ee/devices`）の 409 `E2EE_DEVICE_EXISTS` と、鍵のアップロードと ack の 404
+/// `E2EE_DEVICE_NOT_FOUND` だけを候補にする。コードのない 404 / 409（前段のプロキシーなど）は、
+/// ふつうの失敗として試し直す。候補でも、[`device_gone`] で端末の一覧を見て確かめ直す。
+pub fn device_gone_candidate(err: &anyhow::Error) -> bool {
+    match status_of(err) {
+        Some(reqwest::StatusCode::CONFLICT) => ApiError::has_code(err, "E2EE_DEVICE_EXISTS"),
+        Some(reqwest::StatusCode::NOT_FOUND) => ApiError::has_code(err, "E2EE_DEVICE_NOT_FOUND"),
+        _ => false,
     }
 }
 
-/// 登録の 409（削除済みの device_id）と、鍵のアップロードの 404 は、端末が別の端末から消された印。
-fn device_gone(err: &anyhow::Error) -> bool {
-    matches!(
-        status_of(err),
-        Some(reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::CONFLICT)
-    )
+/// `err` が候補で、`GET /api/e2ee/devices`（自分の、削除されていない端末）に `device_id` がないときだけ、
+/// 端末が消されたものとする。一覧を取れなければ、ふつうの失敗とする（次の試し直しで、また候補から見る）。
+///
+/// 悪意のあるサーバーは一覧でも嘘をつけるので、これは誤った応答への備え。悪意のあるサーバーへの備えは、
+/// 暗号ストアを消さずに端末だけを作り直すこと（[`CryptoStore::replace_device`]）。
+pub async fn device_gone(api: &ApiClient, device_id: &str, err: &anyhow::Error) -> bool {
+    if !device_gone_candidate(err) {
+        return false;
+    }
+    match api.e2ee_device_ids().await {
+        Ok(ids) => !ids.iter().any(|id| id == device_id),
+        Err(_) => false,
+    }
 }
 
-struct Counts {
-    one_time_keys: usize,
-    has_unused_fallback_key: bool,
+/// サーバーのワンタイム鍵の数と、使っていないフォールバック鍵があるか。
+#[derive(Debug)]
+pub struct KeyCounts {
+    pub one_time_keys: usize,
+    pub has_unused_fallback_key: bool,
 }
 
-fn counts(value: &Value) -> Counts {
-    Counts {
+fn counts(value: &Value) -> KeyCounts {
+    KeyCounts {
         one_time_keys: value["one_time_key_counts"]["signed_curve25519"]
             .as_u64()
             .unwrap_or(0) as usize,
@@ -72,7 +91,7 @@ fn counts(value: &Value) -> Counts {
     }
 }
 
-async fn ensure_registered(api: &ApiClient, store: &Mutex<CryptoStore>) -> Result<Counts> {
+async fn ensure_registered(api: &ApiClient, store: &Mutex<CryptoStore>) -> Result<KeyCounts> {
     let (registered, device_id, request) = {
         let store = store.lock().await;
         (
@@ -98,7 +117,26 @@ async fn ensure_registered(api: &ApiClient, store: &Mutex<CryptoStore>) -> Resul
     Ok(counts(&value))
 }
 
-async fn replenish(api: &ApiClient, store: &Mutex<CryptoStore>, counts: Counts) -> Result<()> {
+/// 端末を登録する（登録済みなら、鍵の数を読む）。端末が別の端末から消されていたら（[`device_gone`]）、
+/// 暗号ストアは消さずに端末だけを作り直し（[`CryptoStore::replace_device`]）、新しい端末として登録する。
+///
+/// 受信の途中（ack や補充）の 404 は、`run` を終えて試し直したときに、ここで同じ規則で確かめる
+/// （鍵の数を読む `keys/upload` が、同じ 404 になる）。
+pub async fn register(api: &ApiClient, store: &Mutex<CryptoStore>) -> Result<KeyCounts> {
+    match ensure_registered(api, store).await {
+        Ok(counts) => Ok(counts),
+        Err(err) => {
+            let device_id = store.lock().await.device_id().to_owned();
+            if !device_gone(api, &device_id, &err).await {
+                return Err(err);
+            }
+            store.lock().await.replace_device()?;
+            ensure_registered(api, store).await
+        }
+    }
+}
+
+async fn replenish(api: &ApiClient, store: &Mutex<CryptoStore>, counts: KeyCounts) -> Result<()> {
     let (device_id, upload) = {
         let mut store = store.lock().await;
         let upload =
@@ -313,20 +351,8 @@ async fn run(
         let target = PendingDeviceDeletion::new(user_id, replaced, !opened.replaced_registered);
         delete_device_or_remember(api, root, &target, &mut state.counted_not_found).await;
     }
-    let mut store = Arc::new(Mutex::new(opened.store));
-    let counts = match ensure_registered(api, &store).await {
-        Ok(counts) => counts,
-        Err(err) if device_gone(&err) => {
-            // 別の端末から消された。作り直して、新しい端末として登録する。
-            let old = Arc::try_unwrap(store)
-                .map_err(|_| anyhow::anyhow!("暗号ストアを閉じられません"))?
-                .into_inner();
-            old.destroy()?;
-            store = Arc::new(Mutex::new(CryptoStore::open(root, user_id)?.store));
-            ensure_registered(api, &store).await?
-        }
-        Err(err) => return Err(err),
-    };
+    let store = Arc::new(Mutex::new(opened.store));
+    let counts = register(api, &store).await?;
     replenish(api, &store, counts).await?;
     store_tx.send_replace(Some((user_id.to_owned(), store.clone())));
     // 解錠済みの端末は、署名を確かめて、送信待ちを鍵バックアップに送る。失敗しても to-device は止めない
