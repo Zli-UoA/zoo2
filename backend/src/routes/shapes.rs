@@ -747,7 +747,7 @@ async fn e2ee_to_device_shape(
             .await?
     };
     if !own {
-        return Err(AppError::NotFound("Device not found".into()));
+        return Err(crate::routes::e2ee::device_not_found());
     }
     let (where_clause, extra_params) =
         e2ee_to_device_shape_where(auth_user.id.as_str(), device_id.as_str());

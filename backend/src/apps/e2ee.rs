@@ -162,7 +162,7 @@ async fn receive_to_device(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     if !to_device::own_active_device(&mut tx, &actor.id, &q.device_id).await? {
-        return Err(AppError::NotFound("Device not found".into()));
+        return Err(crate::routes::e2ee::device_not_found());
     }
     let messages = query(
         &mut tx,
