@@ -649,11 +649,28 @@ impl CryptoStore {
         } else {
             KeySnapshot::from_json(query).ok()
         };
+        // 自分の端末は、暗号ストアの今の自己署名鍵（SSSS から取り出したもの）で署名されていなければ
+        // 検証済みにしない（失効で置き換えた古い自己署名鍵をサーバーが返しても、外した端末を検証済みに
+        // しない。Web と同じ）。
+        let own_self_signing = match &snapshot {
+            Some(_) => self
+                .own_keys()
+                .ok()
+                .flatten()
+                .map(|own| own.self_signing.public_key()),
+            None => None,
+        };
         let mut result = ToDeviceResult::default();
         for row in rows {
             if !self.state.processed_to_device.contains(&row.id) {
                 if row.r#type == "m.room.encrypted" {
-                    self.process_encrypted(row, query, snapshot.as_ref(), &mut result)?;
+                    self.process_encrypted(
+                        row,
+                        query,
+                        snapshot.as_ref(),
+                        own_self_signing.as_ref(),
+                        &mut result,
+                    )?;
                 } else {
                     result.dropped += 1;
                 }
@@ -670,6 +687,7 @@ impl CryptoStore {
         row: &ToDeviceRow,
         query: &Value,
         snapshot: Option<&KeySnapshot>,
+        own_self_signing: Option<&zoo_crypto::Ed25519PublicKey>,
         result: &mut ToDeviceResult,
     ) -> Result<()> {
         let device_keys = &query["device_keys"];
@@ -722,6 +740,7 @@ impl CryptoStore {
                     snapshot,
                     sender,
                     decrypted.sender_device().unwrap_or_default(),
+                    own_self_signing,
                 );
                 if self.trust.to_json() != before {
                     self.state.trust_store =
