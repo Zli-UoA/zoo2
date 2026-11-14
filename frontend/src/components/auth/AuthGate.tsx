@@ -123,6 +123,7 @@ function WebAuthGate({ children }: { children: ReactNode }) {
   const failedRedirectAt = useRef<number | null>(null);
   const loginInProgress = useRef(false);
   const logoutRetryInProgress = useRef(false);
+  const logoutBlocked = useRef(false);
   const loginAttempt = useRef(0);
 
   const startLogin = useCallback((client: OidcClient, returnTo: string) => {
@@ -207,12 +208,14 @@ function WebAuthGate({ children }: { children: ReactNode }) {
         loginAttempt.current += 1;
         loginInProgress.current = false;
         if (reason === "logoutBlocked") {
+          logoutBlocked.current = true;
           authRecoveryPending.current = false;
           setError(null);
           setPhase("logoutPending");
           return;
         }
         if (reason === "logout") {
+          logoutBlocked.current = false;
           failedRedirectAt.current = null;
           try {
             clearAuthorizeRedirectPending(storage);
@@ -243,6 +246,7 @@ function WebAuthGate({ children }: { children: ReactNode }) {
         }
       });
       setUnauthorizedHandler(() => {
+        if (logoutBlocked.current) return;
         const now = Date.now();
         let redirectState: ReturnType<typeof readUnauthorizedRedirectState>;
         try {

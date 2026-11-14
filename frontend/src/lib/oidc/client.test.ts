@@ -386,13 +386,20 @@ describe("OidcClient.login", () => {
     const oldPending = takePending(previous.storage, 1_000_001);
     if (!oldPending) throw new Error("old pending authorization was not stored");
     savePending(previous.storage, oldPending);
-    const remove = vi.spyOn(previous.storage, "removeItem").mockImplementationOnce(() => {
-      throw new Error("transient storage failure");
+    const originalRemove = previous.storage.removeItem.bind(previous.storage);
+    let denyPendingRemoval = true;
+    const remove = vi.spyOn(previous.storage, "removeItem").mockImplementation((key) => {
+      if (key === "zoo.oidc.pending" && denyPendingRemoval) {
+        denyPendingRemoval = false;
+        throw new Error("transient storage failure");
+      }
+      originalRemove(key);
     });
 
     try {
       await previous.client.logout();
       expect(isLoggedOut(previous.storage)).toBe(true);
+      expect(previous.storage.getItem("zoo.oidc.pending")).not.toBeNull();
 
       const resumed = createHarness({ storage: previous.storage });
       const oldCallback = `${CALLBACK_URL}?code=old-code&state=${oldPending.state}`;

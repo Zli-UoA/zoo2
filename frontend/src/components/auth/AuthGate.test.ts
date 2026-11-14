@@ -351,6 +351,47 @@ describe("AuthGate session recovery", () => {
     expect(container.textContent).not.toContain("auth.loggedOut");
   });
 
+  it.each(["marker", "storage read failure"])(
+    "keeps logout retry available after a new 401 during %s",
+    async (failure) => {
+      const storageGate = createSessionStorageGate();
+      try {
+        let idToken = "";
+        const harness = createOidcHarness(async (_body, nonce) => {
+          idToken = makeIdToken(nonce);
+          return { access_token: "access-1", id_token: idToken, expires_in: 300 };
+        });
+        await completeLogin(harness);
+        harness.assigned.length = 0;
+        authMocks.client = harness.client;
+        await renderGate();
+        storageGate.deny("removeItem");
+        await flush(() => {
+          void harness.client.logout();
+        });
+        expect(container.textContent).toContain("auth.logoutStorageFailed");
+        if (failure === "storage read failure") storageGate.deny("getItem");
+        const api = createApiClient({ fetch: async () => new Response("", { status: 401 }) });
+        await act(async () => {
+          await expect(api.get("/api/users/me")).rejects.toThrow();
+        });
+        expect(container.textContent).toContain("auth.logoutStorageFailed");
+        storageGate.allow();
+        await flush(() => {
+          const retry = Array.from(container.querySelectorAll("button")).find((button) =>
+            button.textContent?.includes("auth.retryLogout"),
+          );
+          if (!retry) throw new Error("logout cleanup retry action was not rendered");
+          retry.click();
+        });
+        await vi.waitFor(() => expect(harness.assigned.at(-1)).toContain("/logout"));
+        expect(new URL(harness.assigned.at(-1)!).searchParams.get("id_token_hint")).toBe(idToken);
+      } finally {
+        storageGate.restore();
+      }
+    },
+  );
+
   it("blocks logout navigation until storage cleanup can be retried", async () => {
     const storageGate = createSessionStorageGate();
     try {
