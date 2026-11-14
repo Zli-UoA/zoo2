@@ -26,6 +26,7 @@ erDiagram
       timestamptz created_at
       timestamptz updated_at
       timestamptz not_before
+      timestamptz swept_at
     }
     slack_channel_syncs |o--o| slack_channels : slack_channel_syncs_channel_fkey
     slack_channel_wakes {

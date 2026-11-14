@@ -2,6 +2,13 @@
 -- 新しいテーブルと NULL 許容のカラムの追加だけなので、適用前のバックエンドが動いたままでも壊れない。
 -- not_before: 429・失敗・保留のあとに、次に同期してよい日時。合図で前倒しするときも、これより前にはしない。
 ALTER TABLE slack_channel_syncs ADD COLUMN not_before timestamptz;
+-- 適用の時点で次の実行が先になっている項目は、その日時まで合図で前倒ししない (429 などの待ちの途中で適用されても守る)。
+-- 通常の定期の待ち (最大 5 分) の項目も対象になるが、適用後の最初の 1 回の定期の実行まで、合図が待つだけである
+UPDATE slack_channel_syncs SET not_before=available_at WHERE available_at>now();
+
+-- 監視中のスレッドを全部取り直す同期 (定期の実行) を、最後に始めた日時。合図で起きる同期は、直近 5 分以内に
+-- 取り直していれば、スレッドの総なめを省く (Slack の API の呼び出しを抑える)
+ALTER TABLE slack_channel_syncs ADD COLUMN swept_at timestamptz;
 
 -- 受信口は、この表にだけ書く。slack_channel_syncs の行は、同期のトランザクションが長く握る。
 CREATE TABLE slack_channel_wakes (

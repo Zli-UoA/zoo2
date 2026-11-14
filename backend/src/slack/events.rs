@@ -49,7 +49,8 @@ pub fn verify_signature(
     let Ok(ts) = timestamp.trim().parse::<i64>() else {
         return false;
     };
-    if (now - ts).abs() > MAX_SKEW_SECS {
+    // `i64::MIN` などでも桁あふれしない比べ方にする (桁あふれは panic になりうる)
+    if now.abs_diff(ts) > MAX_SKEW_SECS as u64 {
         return false;
     }
     let Some(hex) = signature.strip_prefix("v0=") else {
@@ -237,6 +238,13 @@ mod tests {
         ));
         assert!(!verify_signature("secret", "abc", &sig, body, now));
         assert!(!verify_signature("secret", "", &sig, body, now));
+        // 桁あふれする値でも、panic せずに拒否する
+        for (extreme, opposite) in [(i64::MIN, i64::MAX), (i64::MAX, i64::MIN)] {
+            let ts = extreme.to_string();
+            let sig = sign("secret", &ts, body);
+            assert!(!verify_signature("secret", &ts, &sig, body, now));
+            assert!(!verify_signature("secret", &ts, &sig, body, opposite));
+        }
     }
 
     #[test]

@@ -41,7 +41,8 @@ const SYNC_INTERVAL_SECS: u64 = 300;
 const LEASE_SQL: &str = "interval '5 minutes'";
 /// イベント (#293) の合図で起こすときの、最初の合図からの待ち。続けて届くイベントを 1 回の同期にまとめる
 const WAKE_DEBOUNCE: &str = "interval '3 seconds'";
-/// 合図で起こす同期どうしの最短間隔 (前回の同期の終わりから)。同じチャンネルを何度も取り直さない
+/// 合図で起こす同期どうしの最短間隔 (前回の同期の終わりから)。同じチャンネルを何度も取り直さない。
+/// 合図で起きる同期は、直近 5 分以内に監視中のスレッドを全部取り直していれば、スレッドの総なめを省く (`swept_recent`)
 const WAKE_MIN_INTERVAL: &str = "interval '30 seconds'";
 /// 1 回の `conversations.history` / `replies` で求める件数
 const PAGE_LIMIT: &str = "200";
@@ -198,6 +199,9 @@ struct Task {
     pending_threads: String,
     known_threads: String,
     token_user_id: Option<String>,
+    /// 直近 5 分以内に、監視中のスレッドを全部取り直す同期を始めたか (合図で起きる同期の呼び出しを抑える)
+    #[serde(default)]
+    swept_recent: bool,
 }
 
 /// 1 回の処理の結果
@@ -297,7 +301,8 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
              'last_ts',sc.last_ts,'synced',t.last_synced_at IS NOT NULL,'token',t.lease_token,'attempts',t.attempts,'running',t.running,\
              'phase',t.phase,'run_oldest',t.run_oldest,'run_max_ts',t.run_max_ts,\
              'page_cursor',t.page_cursor,'pending_threads',t.pending_threads,\
-             'known_threads',t.known_threads,'token_user_id',t.token_user_id)::text"
+             'known_threads',t.known_threads,'token_user_id',t.token_user_id,\
+             'swept_recent',(t.swept_at IS NOT NULL AND t.swept_at>now()-interval '5 minutes'))::text"
         ),
         &[&token],
     )
@@ -362,7 +367,7 @@ async fn reset_run(s: &AppState, task: &Task) -> Result<(), AppError> {
         &mut tx,
         "UPDATE slack_channel_syncs SET running=false,phase='history',run_oldest=NULL,run_max_ts=NULL,\
          page_cursor=NULL,pending_threads='[]',lease_until=NULL,lease_token=NULL,available_at=now(),\
-         last_error='invalid_cursor',updated_at=now() \
+         swept_at=NULL,last_error='invalid_cursor',updated_at=now() \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$3 \
          RETURNING json_build_object('ok',true)::text",
         &[&task.team_id, &task.slack_channel_id, &task.token],
@@ -559,6 +564,8 @@ struct Progress {
     pending: Vec<String>,
     /// 次の同期でも返信を確かめるスレッド (`pending` は処理するたびに減るので、別に持つ)
     known: Vec<String>,
+    /// このページで、監視中のスレッドを全部取り直す同期に切り替わった (`swept_at` を今にする)
+    swept_now: bool,
 }
 
 async fn load_tokens(s: &AppState, task: &Task) -> Result<Vec<(String, String)>, AppError> {
@@ -651,6 +658,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             cursor: task.page_cursor.clone(),
             pending: serde_json::from_str(&task.pending_threads).unwrap_or_default(),
             known,
+            swept_now: false,
         }
     } else {
         Progress {
@@ -660,6 +668,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             cursor: None,
             pending: Vec::new(),
             known,
+            swept_now: false,
         }
     };
 
@@ -740,10 +749,18 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             progress.cursor = next.filter(|_| more);
             if !more {
                 progress.phase = "threads".into();
+                // 直近 5 分以内に監視中のスレッドを全部取り直していれば、今回は取り直さない (イベントの合図で
+                // 同期が続くチャンネルで、`conversations.replies` の呼び出しが増えすぎないようにする)。
+                // 今回の履歴で見つけた新しい投稿のスレッドだけを取り、前回までのスレッドは `known` に残す。
+                // 最初の同期は、いつも全部取る。全部取り直す同期は、5 分に 1 回は必ず起きる
+                let light = task.synced && !initial && task.swept_recent;
+                progress.swept_now = !light;
                 // 前回までに見つけたスレッドにも、新しい返信がないか確かめる
-                for ts in progress.known.clone() {
-                    if !progress.pending.contains(&ts) {
-                        progress.pending.push(ts);
+                if !light {
+                    for ts in progress.known.clone() {
+                        if !progress.pending.contains(&ts) {
+                            progress.pending.push(ts);
+                        }
                     }
                 }
                 let horizon = now_secs().saturating_sub(THREAD_WINDOW_SECS);
@@ -767,7 +784,20 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                         .pending
                         .sort_by_key(|ts| std::cmp::Reverse(ts_key(ts)));
                     progress.pending.truncate(MAX_THREADS);
-                    progress.known = progress.pending.clone();
+                    if light {
+                        let mut known = progress.known.clone();
+                        for ts in &progress.pending {
+                            if !known.contains(ts) {
+                                known.push(ts.clone());
+                            }
+                        }
+                        known.retain(|ts| ts_key(ts).is_some_and(|(secs, _)| secs >= horizon));
+                        known.sort_by_key(|ts| std::cmp::Reverse(ts_key(ts)));
+                        known.truncate(MAX_THREADS);
+                        progress.known = known;
+                    } else {
+                        progress.known = progress.pending.clone();
+                    }
                 }
             }
             store(&mut slack, &mut ctx, task, &progress, &messages, &mut db).await?;
@@ -835,7 +865,8 @@ async fn store(
         &mut tx,
         "UPDATE slack_channel_syncs SET running=true,phase=$3,run_oldest=$4,run_max_ts=NULLIF($5,''),\
          page_cursor=NULLIF($6,''),pending_threads=$7,token_user_id=COALESCE(NULLIF($8,''),token_user_id),\
-         known_threads=$10,attempts=0,last_error=NULL,lease_until=now()+interval '5 minutes',updated_at=now() \
+         known_threads=$10,attempts=0,last_error=NULL,lease_until=now()+interval '5 minutes',updated_at=now(),\
+         swept_at=CASE WHEN $11::boolean THEN now() ELSE swept_at END \
          WHERE team_id=$1 AND slack_channel_id=$2 AND lease_token=$9 \
          RETURNING json_build_object('ok',true)::text",
         &[
@@ -849,6 +880,7 @@ async fn store(
             slack.user().unwrap_or(""),
             &task.token,
             &serde_json::to_string(&progress.known).unwrap_or_else(|_| "[]".into()),
+            if progress.swept_now { "true" } else { "false" },
         ],
     )
     .await?;

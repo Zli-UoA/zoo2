@@ -583,3 +583,97 @@ async fn test_wake_is_kept_while_a_run_resumes_and_starts_one_more_sync() -> any
     assert_eq!(wakes(&f.state, &f.team, "C1").await, 0);
     Ok(())
 }
+
+async fn replies_for(slack: &MockServer, thread: &str) -> usize {
+    slack
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| {
+            r.url.path() == "/conversations.replies"
+                && r.url.query_pairs().any(|(k, v)| k == "ts" && v == thread)
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn test_wake_sync_skips_the_thread_sweep_when_one_ran_recently() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET)).await?;
+    let known = format!("{}.000200", now_secs() - 3600);
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET known_threads=$2 WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team, &json!([known]).to_string()],
+    )
+    .await?;
+    let wake = |f: &Fixture| {
+        let app = f.app.clone();
+        let team = f.team.clone();
+        let ts = f.ts_new.clone();
+        async move {
+            let (status, _) = post_event(
+                &app,
+                SECRET,
+                now_secs(),
+                &message_event(&team, "C1", &ts, None),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, StatusCode::OK);
+        }
+    };
+
+    // 1 分前に全部取り直した直後: 合図の同期は、新しい投稿のスレッドだけ取り、前回までのスレッドは取らない
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET swept_at=now()-interval '1 minute' WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    wake(&f).await;
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    drain(&f.state).await;
+    assert_eq!(history_calls(&f.slack).await, 1);
+    assert_eq!(replies_for(&f.slack, &f.ts_new).await, 1);
+    assert_eq!(replies_for(&f.slack, &known).await, 0, "skipped the sweep");
+    // 取らなかったスレッドも、次の全部取り直しのために、監視の対象に残る
+    let rows = sql(
+        &f.state,
+        "SELECT json_build_object('known',known_threads,'swept',swept_at<now()-interval '30 seconds')::text \
+         FROM slack_channel_syncs WHERE team_id=$1",
+        &[&f.team],
+    )
+    .await?;
+    let kept: Vec<String> = serde_json::from_str(rows[0]["known"].as_str().unwrap())?;
+    assert!(
+        kept.contains(&known) && kept.contains(&f.ts_new),
+        "{kept:?}"
+    );
+    assert_eq!(
+        rows[0]["swept"], true,
+        "a light sync does not renew swept_at"
+    );
+
+    // 5 分以上前なら、全部取り直す (活発なチャンネルでも、5 分に 1 回は取り直す)
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET swept_at=now()-interval '10 minutes',last_synced_at=now()-interval '1 hour',\
+         available_at=now()+interval '1 hour' WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    wake(&f).await;
+    age_wake(&f.state, &f.team, "10 seconds").await?;
+    drain(&f.state).await;
+    assert_eq!(replies_for(&f.slack, &known).await, 1, "full sweep");
+    let rows = sql(
+        &f.state,
+        "SELECT json_build_object('fresh',swept_at>now()-interval '1 minute')::text FROM slack_channel_syncs WHERE team_id=$1",
+        &[&f.team],
+    )
+    .await?;
+    assert_eq!(rows[0]["fresh"], true);
+    Ok(())
+}
