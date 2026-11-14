@@ -344,7 +344,7 @@ async fn database_keeps_earlier_rows_from_gaining_plaintext() {
         .await
         .is_err()
     );
-    // 削除済みの平文の行を移してくることもできない（削除済みでも本文は空でなければならない）。
+    // 削除済みの行は本文が空なので、移しても平文は入らない。本文を戻す更新は、削除済みでも拒否される。
     let deleted = env.post(&other_channel, &alice, "deleted elsewhere").await;
     env.exec(
         "UPDATE messages SET deleted_at = now() WHERE id = $1",
@@ -352,14 +352,12 @@ async fn database_keeps_earlier_rows_from_gaining_plaintext() {
     )
     .await
     .unwrap();
-    assert!(
-        env.exec(
-            "UPDATE messages SET channel_id = $2 WHERE id = $1",
-            &[&deleted, &channel]
-        )
-        .await
-        .is_err()
-    );
+    env.exec(
+        "UPDATE messages SET channel_id = $2 WHERE id = $1",
+        &[&deleted, &channel],
+    )
+    .await
+    .unwrap();
     // 本文を変えない更新と、消すだけの更新はできる。
     env.exec(
         "UPDATE messages SET updated_at = now() WHERE id = $1",
