@@ -50,6 +50,7 @@ fn sender() -> Sender {
             kind: "message".to_owned(),
         },
         mentions: Mentions::default(),
+        attachments: Vec::new(),
     };
     let row = outbound.encrypt(&account, &message).unwrap();
     Sender {

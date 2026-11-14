@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tauri::{State, Webview};
 use zoo2_client_types::{
     ipc::{
-        AccessToken, DeviceLogin, ErrorCode, FocusState, IpcError, ObservedNotifications,
-        OpenChannel, SendMessage, SendResult, SessionInfo, UiMode,
+        AccessToken, DeviceLogin, ErrorCode, FocusState, IpcError, NotificationSettings,
+        ObservedNotifications, OpenChannel, SendMessage, SendResult, SessionInfo, UiMode,
     },
     shape::ShapeId,
 };
@@ -76,6 +76,26 @@ pub async fn zoo_set_focus(
     require(&webview, &core, ANY)?;
     core.set_focus(focus).await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn zoo_notification_settings(
+    webview: Webview,
+    core: Core_<'_>,
+) -> Result<NotificationSettings, IpcError> {
+    require(&webview, &core, ANY)?;
+    Ok(core.notification_settings())
+}
+
+#[tauri::command]
+pub async fn zoo_set_notifications(
+    webview: Webview,
+    core: Core_<'_>,
+    settings: NotificationSettings,
+) -> Result<(), IpcError> {
+    require(&webview, &core, ANY)?;
+    core.set_notification_settings(settings)
+        .map_err(|err| IpcError::new(ErrorCode::Internal, format!("{err:#}")))
 }
 
 #[tauri::command]

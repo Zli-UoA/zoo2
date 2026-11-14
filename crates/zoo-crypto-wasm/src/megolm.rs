@@ -49,6 +49,8 @@ struct OutgoingMessageJson {
     content: core::MessageContent,
     #[serde(default)]
     mentions: core::Mentions,
+    #[serde(default)]
+    attachments: Vec<core::AttachmentInfo>,
 }
 
 #[wasm_bindgen]
@@ -110,7 +112,7 @@ impl OutboundSession {
         ))
     }
 
-    /// メッセージ `{message_id, parent_id?, revision, content, mentions?}` を暗号化し、
+    /// メッセージ `{message_id, parent_id?, revision, content, mentions?, attachments?}` を暗号化し、
     /// `messages.ciphertext` に入れる JSON を返す。
     #[wasm_bindgen(unchecked_return_type = "JsonObject")]
     pub fn encrypt(
@@ -125,6 +127,7 @@ impl OutboundSession {
             revision: message.revision,
             content: message.content,
             mentions: message.mentions,
+            attachments: message.attachments,
         };
         to_js(&self.inner.encrypt(&account.inner, &message).js()?)
     }

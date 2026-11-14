@@ -273,7 +273,7 @@ async fn receive(
             "INSERT INTO slack_message_hints(team_id,slack_channel_id,message_ts,kind,slack_user_id,reaction,thread_ts) \
              SELECT team_id,slack_channel_id,$3,$4,$5,$6,$7 FROM slack_channels WHERE team_id=$1 AND slack_channel_id=$2 \
              ON CONFLICT (team_id,slack_channel_id,message_ts,kind,slack_user_id,reaction) \
-             DO UPDATE SET updated_at=now(),thread_ts=EXCLUDED.thread_ts",
+             DO UPDATE SET updated_at=now(),thread_ts=EXCLUDED.thread_ts,attempts=0,created_at=now()",
         );
         statement = statement
             .bind(team)

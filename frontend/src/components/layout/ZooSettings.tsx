@@ -21,11 +21,14 @@ import { SearchEngineSelect } from "../preferences/SearchEngineSelect";
 import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
+import { isDesktopSession } from "../../lib/desktop";
+import { DesktopNotificationSelect } from "../desktop/DesktopNotificationSelect";
 import { AppsPanel } from "../chat/AppsDialog";
 import { CallSettingsDevices } from "../call/CallSettingsDevices";
 import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { EncryptionSettings } from "../e2ee/EncryptionSettings";
+import { DevicesSettings } from "../e2ee/DevicesSettings";
 import { SlackImportPanel } from "./SlackImportPanel";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -93,6 +96,9 @@ export function ZooSettings() {
             <Tabs.Tab value="encryption" className={panelTabClassName}>
               {t("e2ee.tab")}
             </Tabs.Tab>
+            <Tabs.Tab value="devices" className={panelTabClassName}>
+              {t("e2ee.devicesTab")}
+            </Tabs.Tab>
             <Tabs.Tab value="activitypub" className={panelTabClassName}>
               ActivityPub
             </Tabs.Tab>
@@ -126,9 +132,20 @@ export function ZooSettings() {
               <SettingRow icon={<SearchIcon />} label={t("search.engine")}>
                 <SearchEngineSelect />
               </SettingRow>
-              <SettingRow icon={<BellIcon />} label={t("pwa.title")}>
-                <PwaControls presentation="select" />
-              </SettingRow>
+              {isDesktopSession() ? (
+                // デスクトップ版では Web Push を使わず、アプリが OS の通知を出す (lib/desktop.ts)。
+                <SettingRow
+                  icon={<BellIcon />}
+                  label={t("pwa.desktopTitle")}
+                  description={t("pwa.desktopDescription")}
+                >
+                  <DesktopNotificationSelect />
+                </SettingRow>
+              ) : (
+                <SettingRow icon={<BellIcon />} label={t("pwa.title")}>
+                  <PwaControls presentation="select" />
+                </SettingRow>
+              )}
             </div>
             {config.oidc ? (
               <div className="mt-6 overflow-hidden rounded-lg border border-destructive/50">
@@ -157,6 +174,10 @@ export function ZooSettings() {
           <Tabs.Panel value="encryption" className="min-h-0">
             <h2 className="sr-only">{t("e2ee.tab")}</h2>
             <EncryptionSettings />
+          </Tabs.Panel>
+          <Tabs.Panel value="devices" className="min-h-0">
+            <h2 className="sr-only">{t("e2ee.devicesTab")}</h2>
+            <DevicesSettings />
           </Tabs.Panel>
           <Tabs.Panel value="activitypub" className="min-h-0">
             <h2 className="sr-only">ActivityPub</h2>

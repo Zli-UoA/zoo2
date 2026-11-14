@@ -229,7 +229,15 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.stories.tsx",
-      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile", "FederatedReactions", "Encrypted"]
+      "states": [
+        "Default",
+        "ThreadOpen",
+        "NotJoined",
+        "Mobile",
+        "FederatedReactions",
+        "Encrypted",
+        "EncryptionDowngraded"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
@@ -256,10 +264,14 @@
         "SensitiveAttachments",
         "EncryptedDecrypted",
         "EncryptedUnverifiedSender",
+        "EncryptedStaleRevision",
+        "EncryptedUnencryptedRow",
         "EncryptedBackupSender",
         "EncryptedKeyMissing",
         "EncryptedLocked",
-        "EncryptedInvalid"
+        "EncryptedInvalid",
+        "EncryptedWithAttachments",
+        "EncryptedAttachmentDecryptFailed"
       ]
     },
     {
@@ -443,6 +455,10 @@
     {
       "file": "src/components/offline/OfflineBanner.stories.tsx",
       "states": ["Online", "Offline", "PersistenceError", "Mobile"]
+    },
+    {
+      "file": "src/components/desktop/DesktopNotificationSelect.stories.tsx",
+      "states": ["On", "TurnOff", "Off", "OlderApp"]
     },
     {
       "file": "src/components/pwa/PwaControls.stories.tsx",
@@ -679,8 +695,40 @@
         "LockedResume",
         "LockedMismatch",
         "NeedsReauth",
-        "Unlocked"
+        "Unlocked",
+        "ResetChooseDevices",
+        "NewRecoveryKey",
+        "UnlockedRegenerateRecoveryKey",
+        "UnlockedNeedsUnlockWithoutPasskey"
       ]
+    },
+    {
+      "file": "src/components/e2ee/DevicesSettingsView.stories.tsx",
+      "states": [
+        "Loading",
+        "LoadFailed",
+        "Ready",
+        "Reverify",
+        "Rename",
+        "UserSigningKeyRollback",
+        "ReadyLocked",
+        "PendingRevocation",
+        "SelectDevices",
+        "Unlock",
+        "UnlockResume",
+        "WrongRecoveryKey",
+        "FullRecoveryKey",
+        "Confirm",
+        "ConfirmReauthFailed",
+        "Running",
+        "Conflict",
+        "Done",
+        "DeviceLimit"
+      ]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
+      "states": ["Default", "Undeliverable", "AddedRecipients"]
     }
   ],
   "modules": [
@@ -869,6 +917,12 @@
       "reason": "WithAttachmentsで画像とファイルの実表示・読み込み状態を確認する。"
     },
     {
+      "file": "src/components/chat/messages/EncryptedMessageAttachments.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "EncryptedWithAttachmentsで復号した画像とファイルを、EncryptedAttachmentDecryptFailedで復号できない添付を確認する。"
+    },
+    {
       "file": "src/components/chat/messages/MessageList.tsx",
       "story": "src/components/chat/messages/MessageList.stories.tsx"
     },
@@ -960,6 +1014,10 @@
     {
       "file": "src/components/layout/ZooSettings.tsx",
       "story": "src/components/layout/ZooSettings.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DesktopNotificationSelect.tsx",
+      "story": "src/components/desktop/DesktopNotificationSelect.stories.tsx"
     },
     {
       "file": "src/components/desktop/DesktopBridge.tsx",
@@ -1238,6 +1296,19 @@
         "src/lib/e2ee/reauth.test.ts",
         "src/lib/oidc/reauth.test.ts"
       ]
+    },
+    {
+      "file": "src/components/e2ee/DevicesSettingsView.tsx",
+      "story": "src/components/e2ee/DevicesSettingsView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/DevicesSettings.tsx",
+      "reason": "端末タブ（端末一覧、失効、他のユーザーの検証）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
+      "checks": ["src/lib/e2ee/revocationController.test.ts"]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",
+      "story": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx"
     }
   ]
 }

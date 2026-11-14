@@ -1,4 +1,27 @@
-import type { IdentityKeys, JsonObject, KeySlot, ResumePlan, StartupCheck } from "@zoo/crypto-wasm";
+import type {
+  EncryptedFile,
+  AcceptedMasterKey,
+  EncryptedMessage,
+  IdentityKeys,
+  JsonObject,
+  KeySlot,
+  NewTofuPin,
+  OutgoingMessage,
+  ResumePlan,
+  RevocationSignatures,
+  RevocationStage,
+  RevocationSummary,
+  StartupCheck,
+} from "@zoo/crypto-wasm";
+
+import type { RevocationBeginInput, TrustEvaluation } from "./revocationSession";
+import type {
+  ClaimedKeys,
+  DecryptOutcome,
+  RecipientSummary,
+  SharePlan,
+  ShareResult,
+} from "./store/megolm";
 
 import type { PasskeySlotInput, ResetExpectation, UnlockSecret } from "./setupSession";
 import type { BackupUploadRequest } from "./store/cryptoStore";
@@ -12,7 +35,9 @@ import type {
 } from "./store/cryptoStore";
 
 export type { DeviceKeysByUser, KeyUpload, RegistrationRequest, ToDeviceResult, ToDeviceRow };
+export type { ClaimedKeys, DecryptOutcome, RecipientSummary, SharePlan, ShareResult };
 export type { KeySlot, PasskeySlotInput, ResetExpectation, ResumePlan, StartupCheck, UnlockSecret };
+export type { RevocationBeginInput, TrustEvaluation };
 
 /**
  * 暗号の Worker（`crypto.worker.ts`）とのやり取りの型。
@@ -52,6 +77,7 @@ export type CryptoOperation =
   | { op: "planResume"; keysQuery: JsonObject; versions: JsonObject; keyId?: string }
   | { op: "finishSetup"; secretsRevision: number | null; keyId?: string }
   | ({ op: "newPasskeySlot" } & PasskeySlotInput)
+  | { op: "newRecoverySlot" }
   | { op: "startupCheck"; keysQuery: JsonObject; versions: JsonObject }
   | { op: "hasSecrets" }
   | { op: "hasOwnKeys" }
@@ -61,11 +87,56 @@ export type CryptoOperation =
   | { op: "backupUploadFailed"; uploadId: number }
   | { op: "discardSecrets" }
   | { op: "forgetOwnKeys" }
+  // 失効の手順と、他のユーザーの検証（#362）。
+  | { op: "revocationStatus" }
+  | ({ op: "revocationBegin" } & RevocationBeginInput)
+  | { op: "revocationResume"; secretStorage: JsonObject; expectedId?: string }
+  | { op: "revocationNewRecoveryKey" }
+  | ({ op: "revocationAddPasskeySlot" } & PasskeySlotInput)
+  | { op: "revocationSecretStorageRequest"; revocationId: string }
+  | { op: "revocationSecretStorageSaved"; revocationId: string; secretsRevision: number | null }
+  | { op: "revocationCrossSigningRequest"; revocationId: string }
+  | { op: "revocationCrossSigningSaved"; revocationId: string; secretsRevision: number | null }
+  | { op: "revocationSignatures"; revocationId: string }
+  | { op: "revocationDropStaleMasterKeys"; revocationId: string; masterKeys: JsonObject }
+  | { op: "revocationAdvance"; revocationId: string; stage: RevocationStage }
+  | { op: "revocationBackupVersionRequest"; revocationId: string }
+  | { op: "revocationBackupCreated"; revocationId: string; version: string }
+  | { op: "revocationVersionsToMigrate"; revocationId: string; versions: JsonObject }
+  | { op: "revocationReencrypt"; revocationId: string; version: string; rows: JsonObject[] }
+  | {
+      op: "revocationVerify";
+      revocationId: string;
+      secretStorage: JsonObject;
+      keysQuery: JsonObject;
+      currentVersion: JsonObject;
+    }
+  | { op: "revocationAbandon"; expectedId?: string }
+  | { op: "trustRecordedUsers" }
+  | { op: "trustEvaluate"; keysQuery: JsonObject; userIds: string[] }
+  | { op: "trustPinResult"; pin: NewTofuPin; registered: boolean }
+  | { op: "acceptMasterKey"; targetUserId: string; masterKey: JsonObject }
+  // Megolm の送信と復号（#361）。
+  | { op: "megolmNeedsSnapshot"; channelId: string; epoch: number }
+  | { op: "megolmEvaluate"; channelId: string; pages: JsonObject[] }
+  | { op: "megolmSettlePins"; confirmed: NewTofuPin[]; discarded: NewTofuPin[] }
+  | { op: "megolmStart"; channelId: string }
+  | { op: "megolmShare"; channelId: string; claimed: ClaimedKeys }
+  | { op: "megolmMarkShared"; channelId: string; devices: { userId: string; deviceId: string }[] }
+  | { op: "megolmEncrypt"; channelId: string; message: OutgoingMessage }
+  | { op: "megolmDiscard"; channelId: string }
+  | { op: "megolmDecrypt"; rows: EncryptedMessage[] }
+  | { op: "megolmRememberEncrypted"; channelId: string }
+  | { op: "megolmIsKnownEncrypted"; channelId: string }
+  | { op: "megolmNoteRecipients"; channelId: string; userIds: string[] }
   | {
       /** 暗号ストアを消す。開いていなくても、`namespace` のファイルと保存鍵を消す。 */
       op: "destroy";
       namespace: string;
-    };
+    }
+  // 暗号化した添付（#364）。暗号ストアを使わない。
+  | { op: "encryptAttachment"; plaintext: Uint8Array }
+  | { op: "decryptAttachment"; file: EncryptedFile; ciphertext: Uint8Array };
 
 export interface GeneratedDeviceKeys {
   /** 自己署名した端末鍵（`device_keys`）。 */
@@ -104,6 +175,7 @@ export interface CryptoResults {
   planResume: ResumePlan;
   finishSetup: null;
   newPasskeySlot: KeySlot;
+  newRecoverySlot: { slot: KeySlot; recoveryKey: string };
   startupCheck: StartupCheck | null;
   hasSecrets: boolean;
   hasOwnKeys: boolean;
@@ -112,9 +184,50 @@ export interface CryptoResults {
   backupUploadFailed: null;
   discardSecrets: null;
   forgetOwnKeys: null;
+  revocationStatus: RevocationSummary | null;
+  revocationBegin: RevocationSummary;
+  revocationResume: RevocationSummary;
+  revocationNewRecoveryKey: string;
+  revocationAddPasskeySlot: null;
+  revocationSecretStorageRequest: JsonObject;
+  revocationSecretStorageSaved: null;
+  revocationCrossSigningRequest: JsonObject;
+  revocationCrossSigningSaved: null;
+  revocationSignatures: RevocationSignatures;
+  revocationAdvance: null;
+  revocationBackupVersionRequest: JsonObject;
+  revocationBackupCreated: null;
+  revocationVersionsToMigrate: string[];
+  revocationDropStaleMasterKeys: string[];
+  revocationReencrypt: { rows: JsonObject[]; dropped: number };
+  revocationVerify: null;
+  revocationAbandon: null;
+  trustRecordedUsers: string[];
+  trustEvaluate: TrustEvaluation;
+  trustPinResult: null;
+  acceptMasterKey: AcceptedMasterKey;
+  megolmNeedsSnapshot: boolean;
+  megolmEvaluate: RecipientSummary;
+  megolmSettlePins: null;
+  megolmStart: SharePlan;
+  megolmShare: ShareResult;
+  megolmMarkShared: null;
+  megolmEncrypt: { ciphertext: JsonObject; epoch: number };
+  megolmDiscard: null;
+  megolmDecrypt: DecryptOutcome[];
+  megolmRememberEncrypted: null;
+  megolmIsKnownEncrypted: boolean;
+  encryptAttachment: { ciphertext: Uint8Array; file: EncryptedFile };
+  decryptAttachment: Uint8Array;
+  megolmNoteRecipients: string[];
 }
 
 export type CryptoRequest = CryptoOperation & { id: number };
+
+/** 失効の要求の `revocationId` が、Worker が今持つ失効と違う（`CryptoFailure.code`）。何も保存していない。 */
+export const REVOCATION_CHANGED = "RevocationChanged";
+/** 終わっていない失効の記録があるのに、新しい失効を始めようとした（`CryptoFailure.code`）。 */
+export const REVOCATION_PENDING = "RevocationPending";
 
 export interface CryptoFailure {
   name: string;

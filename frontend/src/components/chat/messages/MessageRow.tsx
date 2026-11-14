@@ -41,10 +41,12 @@ import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
+import { EncryptedMessageAttachments } from "./EncryptedMessageAttachments";
 import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
 import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
 import {
+  useMessageDecryption,
   resolveMessageDecryption,
   type MessageDecryption,
   type SenderTrust,
@@ -194,6 +196,17 @@ export function SenderTrustBadge({ trust }: { trust: SenderTrust }) {
   );
 }
 
+/** 版の照合の警告（サーバーが古い版や、同じ版で中身の違う行を返した）。 */
+export function RevisionWarningBadge({ warning }: { warning: "stale" | "conflict" }) {
+  const { t } = useTranslation();
+  return (
+    <span className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300">
+      <ShieldAlertIcon className="size-3" aria-hidden="true" />
+      {t(warning === "stale" ? "e2ee.revision.stale" : "e2ee.revision.conflict")}
+    </span>
+  );
+}
+
 function DateSeparator({ value }: { value: string }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
@@ -257,7 +270,8 @@ export function MessageRow({
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
-  const resolvedDecryption = resolveMessageDecryption(message, decryption);
+  const decryptionFromPane = useMessageDecryption(message.id);
+  const resolvedDecryption = resolveMessageDecryption(message, decryption ?? decryptionFromPane);
   // 暗号化チャンネルの行の `content` は空なので、復号した本文を使う。
   const bodyText =
     resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
@@ -470,19 +484,35 @@ export function MessageRow({
                   {resolvedDecryption?.status === "decrypted" ? (
                     <SenderTrustBadge trust={resolvedDecryption.sender} />
                   ) : null}
+                  {resolvedDecryption?.status === "decrypted" &&
+                  resolvedDecryption.revisionWarning ? (
+                    <RevisionWarningBadge warning={resolvedDecryption.revisionWarning} />
+                  ) : null}
                   <MessageBody
                     emojis={message.display_data?.emojis}
                     content={bodyText}
-                    card={message.card}
-                    appBlocks={message.app_blocks}
+                    // 暗号化の行のカードと App の表示は暗号文で確かめられないので、本文の代わりにしない。
+                    card={resolvedDecryption ? null : message.card}
+                    appBlocks={resolvedDecryption ? null : message.app_blocks}
                     editedAt={message.updated_at}
                     previews={resolvedDecryption ? "manual" : "auto"}
                   />
                 </>
               )}
-              <MessageAttachments attachments={attachments} />
-              <MessageAppContent message={message} />
-              {message.updated_at && hasCardBlocks(message.app_blocks) ? (
+              {/* 暗号化チャンネルでは、サーバーの添付の行（encrypted.bin）ではなく、復号した本文の
+                  attachments を表示する。復号できないメッセージの添付は表示も取得もしない（#364）。 */}
+              {resolvedDecryption ? (
+                resolvedDecryption.status === "decrypted" ? (
+                  <EncryptedMessageAttachments
+                    attachments={resolvedDecryption.attachments ?? []}
+                    serverAttachments={attachments}
+                  />
+                ) : null
+              ) : (
+                <MessageAttachments attachments={attachments} />
+              )}
+              {resolvedDecryption ? null : <MessageAppContent message={message} />}
+              {!resolvedDecryption && message.updated_at && hasCardBlocks(message.app_blocks) ? (
                 <EditedIndicator at={message.updated_at} />
               ) : null}
             </>

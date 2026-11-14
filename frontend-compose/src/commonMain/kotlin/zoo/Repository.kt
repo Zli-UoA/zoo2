@@ -49,6 +49,26 @@ class ZooApi(val config: Config, val platform: Platform, private val http: HttpC
             )
         return if (raw.isBlank()) JsonNull else json.parseToJsonElement(raw)
     }
+
+    /**
+     * 署名付きの URL（S3 の presign）に `bytes` を PUT する。認証ヘッダーは付けない（S3 に渡さないため）。
+     * 暗号化した添付（#364）の暗号文を上げるのに使う。
+     */
+    suspend fun putBytes(url: String, bytes: ByteArray, contentType: String) {
+        val response =
+            http.request(url) {
+                method = HttpMethod.Put
+                setBody(io.ktor.http.content.ByteArrayContent(bytes, ContentType.parse(contentType)))
+            }
+        if (response.status.value !in 200..299) throw ApiException(response.status.value)
+    }
+
+    /** 署名付きの URL（S3 の presign）から取得する。認証ヘッダーは付けない。 */
+    suspend fun getBytes(url: String): ByteArray {
+        val response = http.request(url) { method = HttpMethod.Get }
+        if (response.status.value !in 200..299) throw ApiException(response.status.value)
+        return response.readRawBytes()
+    }
 }
 
 /** One Shape per resource/channel; its owner closes the HTTP stream on navigation or logout. */

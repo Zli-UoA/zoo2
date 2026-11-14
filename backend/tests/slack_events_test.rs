@@ -810,3 +810,67 @@ async fn test_light_syncs_do_not_refetch_replies_of_threads_they_already_fetched
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn test_light_syncs_stop_fetching_candidates_that_cannot_be_kept() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET)).await?;
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET swept_at=now()-interval '1 minute' WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+    // カーソルのあとに、親の候補が 25 件ある (監視できるのは 20 件まで)
+    let parents: Vec<String> = (0..25)
+        .map(|i| format!("{}.000{:03}", now_secs() - 3000 + i, i))
+        .collect();
+    f.slack.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "channel": {"id": "C1", "is_private": false}})),
+        )
+        .mount(&f.slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.replies"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": true, "messages": [], "has_more": false})),
+        )
+        .mount(&f.slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true,
+            "messages": parents.iter().rev().map(|t| json!({"type":"message","ts":t,"user":"UA","text":"p"})).collect::<Vec<_>>(),
+            "has_more": false})))
+        .mount(&f.slack)
+        .await;
+    let mut totals = Vec::new();
+    for _ in 0..3 {
+        let (status, _) = post_event(
+            &f.app,
+            SECRET,
+            now_secs(),
+            &message_event(&f.team, "C1", &parents[0], None),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        sync_now(&f).await?;
+        let total = f
+            .slack
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() == "/conversations.replies")
+            .count();
+        totals.push(total);
+    }
+    // 最初の軽い同期は、残れる新しい 20 件だけを取る。2 回目以降は、取り直さない
+    assert_eq!(totals, [20, 20, 20], "{totals:?}");
+    Ok(())
+}

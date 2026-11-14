@@ -35,7 +35,7 @@ export type StartupCheck =
 /// SSSS から取り出した（または初回設定で作った）自分の秘密鍵。マスター鍵の秘密鍵を含む。
 #[wasm_bindgen]
 pub struct OwnSecrets {
-    inner: core::OwnSecrets,
+    pub(crate) inner: core::OwnSecrets,
 }
 
 #[wasm_bindgen]

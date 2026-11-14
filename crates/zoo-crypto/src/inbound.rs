@@ -659,6 +659,7 @@ mod tests {
                 kind: "message".into(),
             },
             mentions: Mentions::default(),
+            attachments: Vec::new(),
         }
     }
 
@@ -751,6 +752,65 @@ mod tests {
         assert!(matches!(
             InboundSessionStore::new().restore_session(&pickled, &bob, &[4u8; 32]),
             Err(CryptoError::InvalidPickle(_))
+        ));
+    }
+
+    /// 暗号化した添付（#364）は Megolm の平文に入り、復号で同じ値に戻る。添付のない平文には
+    /// `attachments` の項目を出さない（#364 より前の平文と同じ形）。
+    #[test]
+    fn attachments_round_trip_through_megolm() {
+        let alice = DeviceAccount::new(ALICE, ALICE_DEVICE).unwrap();
+        let mut session = GroupSession::new(SessionConfig::version_1());
+        let mut store = InboundSessionStore::new();
+        store.add_room_key(room_key(&alice, &session, ALICE));
+
+        let plain = payload("m0");
+        assert!(
+            serde_json::to_value(&plain)
+                .unwrap()
+                .get("attachments")
+                .is_none()
+        );
+
+        let file = crate::encrypt_attachment(b"secret bytes");
+        let mut with_attachment = payload("m1");
+        with_attachment.attachments.push(crate::AttachmentInfo {
+            attachment_id: "0b0d5c5e-6f2a-4c1e-9d7a-2f3b4c5d6e7f".into(),
+            name: "secret.txt".into(),
+            mimetype: "text/plain".into(),
+            size: 12,
+            width: None,
+            height: None,
+            sensitive: false,
+            file: file.file.clone(),
+        });
+        let encrypted = ciphertext(&alice, &mut session, &with_attachment);
+        let decrypted = store.decrypt(&row("m1", &encrypted)).unwrap();
+        assert_eq!(decrypted.payload.attachments, with_attachment.attachments);
+        assert_eq!(
+            crate::decrypt_attachment(&decrypted.payload.attachments[0].file, &file.ciphertext)
+                .unwrap(),
+            b"secret bytes"
+        );
+
+        // 形式の正しくない添付は、平文の形式の誤りとして捨てる。
+        let mut broken = payload("m2");
+        broken.attachments = with_attachment.attachments.clone();
+        broken.attachments[0].file.key.alg = "A128CTR".into();
+        let encrypted = ciphertext(&alice, &mut session, &broken);
+        assert!(matches!(
+            store.decrypt(&row("m2", &encrypted)),
+            Err(CryptoError::InvalidPayload(_))
+        ));
+        let mut duplicated = payload("m3");
+        duplicated.attachments = vec![
+            with_attachment.attachments[0].clone(),
+            with_attachment.attachments[0].clone(),
+        ];
+        let encrypted = ciphertext(&alice, &mut session, &duplicated);
+        assert!(matches!(
+            store.decrypt(&row("m3", &encrypted)),
+            Err(CryptoError::InvalidPayload(_))
         ));
     }
 
