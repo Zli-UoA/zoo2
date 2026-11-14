@@ -149,32 +149,55 @@ async fn insert_invites(
     Ok(parse_rows(rows))
 }
 
-/// 呼ばれた人が通話に入ったら、その人の `pending` を `accepted` にする。終わった招待を返す。
+#[derive(Debug, Deserialize)]
+struct JoinedInvite {
+    id: String,
+    channel_id: String,
+    inviter_id: String,
+    invitee_id: String,
+    /// 入室より前は、まだ呼び出し中だった（応答の通知を、他の端末で閉じる必要がある）。
+    was_pending: bool,
+}
+
+/// 呼ばれた人が通話に入ったら、その人の招待を `accepted` にして、入室した時刻（`joined_at`）を残す。
+/// 応答（`accept`）が先でも、入室が先でも、同じ 1 文で行う（2 文に分けると、その間に応答が割り込んだ招待に、
+/// `joined_at` が残らず、入室して退出したあとに、席の予約が戻ってしまう）。対象の行は先にロックして、
+/// 同時の応答と順番を決める。終わった招待（入室より前は呼び出し中だったもの）を返す。
 pub async fn accept_on_join(
     db: &mut toasty::Db,
     channel_id: &str,
     user_id: &str,
 ) -> Result<Vec<CallInvitePush>, AppError> {
-    // 先に応答していた人が入った。席の予約は、ここで使い終える（このあと退出しても、戻さない）。
-    toasty::sql::statement(
-        "UPDATE call_invites SET joined_at = statement_timestamp()
-         WHERE channel_id = $1 AND invitee_id = $2 AND status = 'accepted' AND joined_at IS NULL",
+    let rows = toasty::sql::query(
+        "WITH prev AS (
+             SELECT id, status FROM call_invites
+             WHERE channel_id = $1 AND invitee_id = $2
+               AND (status = 'pending' OR (status = 'accepted' AND joined_at IS NULL))
+             FOR UPDATE
+         )
+         UPDATE call_invites c
+         SET status = 'accepted',
+             responded_at = COALESCE(c.responded_at, statement_timestamp()),
+             joined_at = statement_timestamp()
+         FROM prev WHERE c.id = prev.id
+         RETURNING json_build_object(
+             'id', c.id, 'channel_id', c.channel_id, 'inviter_id', c.inviter_id,
+             'invitee_id', c.invitee_id, 'was_pending', prev.status = 'pending')::text",
     )
-    .bind(channel_id.to_string())
-    .bind(user_id.to_string())
-    .exec(&mut *db)
-    .await?;
-    let rows = toasty::sql::query(format!(
-        "UPDATE call_invites SET status = 'accepted', responded_at = statement_timestamp(),
-                joined_at = statement_timestamp()
-         WHERE channel_id = $1 AND invitee_id = $2 AND status = 'pending'
-         {RETURNING_INVITE}"
-    ))
     .bind(channel_id.to_string())
     .bind(user_id.to_string())
     .exec(db)
     .await?;
-    Ok(parse_rows(rows))
+    Ok(parse_rows::<JoinedInvite>(rows)
+        .into_iter()
+        .filter(|invite| invite.was_pending)
+        .map(|invite| CallInvitePush {
+            id: invite.id,
+            channel_id: invite.channel_id,
+            inviter_id: invite.inviter_id,
+            invitee_id: invite.invitee_id,
+        })
+        .collect())
 }
 
 /// 部屋が空になった（呼んだ人が全員抜けた）のに `pending` のままの招待を `cancelled` にする。
