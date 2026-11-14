@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use zoo_crypto::RevisionStatus;
 
-use crate::e2ee::store::{Decrypted, Decryption, UndecryptableReason};
+use crate::e2ee::store::{Decrypted, Decryption, SenderTrust, UndecryptableReason};
 use crate::electric::rows::{Channel, Message};
 
 /// 版の照合の警告。
@@ -99,8 +99,8 @@ pub enum Shown<'a> {
 #[derive(Default)]
 pub struct Decryptions {
     entries: HashMap<String, Entry>,
-    /// メッセージごとに、見た中で最新の版と、その版の復号の結果。
-    latest: HashMap<String, (u64, Decrypted)>,
+    /// メッセージごとに、見た中で最新の版と、その版の復号の結果と行（送信者とチャンネルの照合に使う）。
+    latest: HashMap<String, (u64, Decrypted, RowKey)>,
     /// 復号のタスクが動いている。
     pub in_flight: bool,
     /// 復号し直す行があるかもしれない（行が届いた、チャンネルを開いた、暗号ストアが開いた）。
@@ -119,18 +119,31 @@ impl Decryptions {
             Decryption::Decrypted(decrypted) => {
                 let seen = self.latest.get(message_id);
                 let stale = matches!(decrypted.revision, RevisionStatus::Stale { .. })
-                    || seen.is_some_and(|(revision, _)| row_revision < *revision);
-                if stale {
-                    let shown = seen.map(|(_, d)| d.clone()).unwrap_or(decrypted);
+                    || seen.is_some_and(|(revision, _, _)| row_revision < *revision);
+                let conflict = decrypted.revision == RevisionStatus::Conflict;
+                // 先に見た版の本文を出すときは、その本文の送信者とチャンネルが今の行と同じときだけにする
+                // （別の送信者の行に、先に見た本文を結び付けて出さないため）。違えば本文を出さない。
+                let reusable = |seen: &(u64, Decrypted, RowKey)| {
+                    seen.2.user_id == row.user_id && seen.2.channel_id == row.channel_id
+                };
+                if (stale || conflict) && seen.is_some_and(|seen| !reusable(seen)) {
                     Entry {
                         row,
-                        row_revision: seen.map_or(row_revision, |(revision, _)| *revision),
+                        row_revision,
+                        decryption: Decryption::Undecryptable(UndecryptableReason::Invalid),
+                        warning: None,
+                    }
+                } else if stale {
+                    let shown = seen.map(|(_, d, _)| d.clone()).unwrap_or(decrypted);
+                    Entry {
+                        row_revision: seen.map_or(row_revision, |(revision, _, _)| *revision),
+                        row,
                         decryption: Decryption::Decrypted(shown),
                         warning: Some(RevisionWarning::Stale),
                     }
-                } else if decrypted.revision == RevisionStatus::Conflict {
+                } else if conflict {
                     let shown = match seen {
-                        Some((revision, first)) if *revision == row_revision => first.clone(),
+                        Some((revision, first, _)) if *revision == row_revision => first.clone(),
                         _ => decrypted,
                     };
                     Entry {
@@ -140,8 +153,10 @@ impl Decryptions {
                         warning: Some(RevisionWarning::Conflict),
                     }
                 } else {
-                    self.latest
-                        .insert(message_id.to_owned(), (row_revision, decrypted.clone()));
+                    self.latest.insert(
+                        message_id.to_owned(),
+                        (row_revision, decrypted.clone(), row.clone()),
+                    );
                     Entry {
                         row,
                         row_revision,
@@ -161,8 +176,9 @@ impl Decryptions {
     }
 
     /// 行を復号する必要があるか。暗号文があり、まだ結果がない、行が変わった（版だけでなく、送信者、
-    /// 暗号文、`parent_id`、`epoch`、種別のどれでも）、または鍵待ちで（`retry_missing` のとき）。
-    pub fn needs(&self, message: &Message, retry_missing: bool) -> bool {
+    /// 暗号文、`parent_id`、`epoch`、種別のどれでも）、または `retry` のときに、鍵待ちか、鍵バックアップ
+    /// 由来のセッションで復号した（Olm で鍵が届けば「送信者を確かめられない」の印を外せる）。
+    pub fn needs(&self, message: &Message, retry: bool) -> bool {
         if message.ciphertext.is_none() || message.deleted_at.is_some() {
             return false;
         }
@@ -170,24 +186,17 @@ impl Decryptions {
             None => true,
             Some(entry) => {
                 !entry.row.matches(message)
-                    || (retry_missing
+                    || (retry
                         && matches!(
-                            entry.decryption,
+                            &entry.decryption,
                             Decryption::Undecryptable(UndecryptableReason::KeyMissing)
+                                | Decryption::Decrypted(Decrypted {
+                                    sender: SenderTrust::Unauthenticated,
+                                    ..
+                                })
                         ))
             }
         }
-    }
-
-    /// `channel_id` に鍵を待っているメッセージがあるか。
-    pub fn has_missing_in(&self, channel_id: &str) -> bool {
-        self.entries.values().any(|entry| {
-            entry.row.channel_id == channel_id
-                && matches!(
-                    entry.decryption,
-                    Decryption::Undecryptable(UndecryptableReason::KeyMissing)
-                )
-        })
     }
 
     /// 表示する形。`encrypted` はチャンネルを暗号化チャンネルとして扱うか（格下げの検出を含む）。
@@ -463,8 +472,6 @@ mod tests {
         );
         assert!(!decryptions.needs(&row, false));
         assert!(decryptions.needs(&row, true));
-        assert!(decryptions.has_missing_in("c1"));
-        assert!(!decryptions.has_missing_in("c2"));
         decryptions.apply(
             "m1",
             RowKey::of(&row),
@@ -472,6 +479,65 @@ mod tests {
         );
         assert!(!decryptions.needs(&row, true));
         assert!(decryptions.needs(&message(1, true, Some(1)), false));
+    }
+
+    #[test]
+    fn earlier_bodies_are_not_shown_for_a_different_sender() {
+        let mut decryptions = Decryptions::default();
+        let row = message(1, true, Some(1));
+        decryptions.apply(
+            "m1",
+            RowKey::of(&row),
+            decrypted("本文", RevisionStatus::Latest),
+        );
+        // 別のユーザーが同じ ID と版で作った有効な暗号文を、そのユーザーの行として返された。
+        let other = Message {
+            user_id: "u2".into(),
+            ciphertext: Some(json!({ "session_id": "other" })),
+            ..row.clone()
+        };
+        decryptions.apply(
+            "m1",
+            RowKey::of(&other),
+            decrypted("別の本文", RevisionStatus::Conflict),
+        );
+        assert!(matches!(
+            decryptions.shown(&other, true),
+            Shown::Undecryptable(UndecryptableReason::Invalid)
+        ));
+        // 古い版でも同じ。
+        let older = Message {
+            revision: 0,
+            ..other.clone()
+        };
+        decryptions.apply(
+            "m1",
+            RowKey::of(&older),
+            decrypted("古い本文", RevisionStatus::Stale { latest: 1 }),
+        );
+        assert!(matches!(
+            decryptions.shown(&older, true),
+            Shown::Undecryptable(UndecryptableReason::Invalid)
+        ));
+    }
+
+    #[test]
+    fn rows_read_with_backup_sessions_are_retried_when_keys_arrive() {
+        let mut decryptions = Decryptions::default();
+        let row = message(0, true, Some(1));
+        let mut backup = decrypted("本文", RevisionStatus::Latest);
+        if let Decryption::Decrypted(decrypted) = &mut backup {
+            decrypted.sender = SenderTrust::Unauthenticated;
+        }
+        decryptions.apply("m1", RowKey::of(&row), backup);
+        assert!(!decryptions.needs(&row, false));
+        assert!(decryptions.needs(&row, true));
+        decryptions.apply(
+            "m1",
+            RowKey::of(&row),
+            decrypted("本文", RevisionStatus::Latest),
+        );
+        assert!(!decryptions.needs(&row, true));
     }
 
     #[test]

@@ -2011,18 +2011,22 @@ impl App {
         let Some((_, store)) = self.encryption.store() else {
             return;
         };
-        // 鍵待ちの行の復号し直しは、チャンネルごとの数えで決める（別のチャンネルを開いているあいだに鍵が
-        // 届いても、戻ったときに復号し直す）。
-        let retry_missing = self.decryptions.has_missing_in(&channel_id)
-            && store.try_lock().is_ok_and(|store| {
-                self.decryptions.generations.get(&channel_id) != Some(&store.inbound_generation())
-            });
-        if !self.decryptions.dirty && !retry_missing {
+        // 受信用セッションが増えたら（Olm で鍵が届いた、鍵バックアップから取り込んだ）、鍵待ちの行と、
+        // 鍵バックアップ由来で復号した行を復号し直す。増えたかはチャンネルごとの数えで決める（別の
+        // チャンネルを開いているあいだに鍵が届いても、戻ったときに復号し直す）。
+        let generation = store
+            .try_lock()
+            .ok()
+            .map(|store| store.inbound_generation());
+        let retry = generation.is_some_and(|generation| {
+            self.decryptions.generations.get(&channel_id) != Some(&generation)
+        });
+        if !self.decryptions.dirty && !retry {
             return;
         }
         // 復号するときは、鍵待ちの行も必ず含める。タスクはロックを取ったあとの数えを記録するので、
         // 鍵待ちの行を試さずに数えだけを進めると、鍵が届いていても復号し直さなくなるため（ロックを取れずに
-        // `retry_missing` を確かめられなかったときも同じ）。鍵待ちの行の復号は手元だけで済む。
+        // 数えが増えたかを確かめられなかったときも同じ）。鍵待ちの行の復号は手元だけで済む。
         let rows: Vec<(RowKey, EncryptedRow)> = self
             .store
             .visible_messages(&channel_id)
@@ -2045,7 +2049,11 @@ impl App {
             })
             .collect();
         self.decryptions.dirty = false;
-        if rows.is_empty() && !retry_missing {
+        if rows.is_empty() {
+            // 復号し直す行がなければ、数えだけを記録する（tick ごとに確かめ直さないため）。
+            if let Some(generation) = generation {
+                self.decryptions.generations.insert(channel_id, generation);
+            }
             return;
         }
         self.decryptions.in_flight = true;

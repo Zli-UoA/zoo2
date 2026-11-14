@@ -41,6 +41,37 @@ pub use megolm::{
 const STATE_VERSION: u32 = 1;
 const STATE_FILE: &str = "state.json";
 const KEY_FILE: &str = "storage.key";
+/// 保存鍵を失って暗号ストアを作り直すあいだ、前の `state.json` を置いておく名前。新しい `state.json` を
+/// 保存し終えたら消す。作り直しの途中で止まっても、暗号化チャンネルの記録と前回の配布先を失わない
+/// （開き直したときと、記録を読むときに、ここから引き継ぐ）。
+const REPLACED_STATE_FILE: &str = "state.replaced.json";
+
+/// `state.json` のうち、作り直しで引き継ぐ記録（秘密ではない ID だけ）。
+#[derive(Default, Deserialize)]
+struct KeptRecords {
+    #[serde(default)]
+    user_id: String,
+    #[serde(default)]
+    encrypted_channels: BTreeSet<String>,
+    #[serde(default)]
+    recipients: BTreeMap<String, Vec<String>>,
+}
+
+/// `path` の記録を読む。ファイルがなければ `None`。読めない、形式が壊れている、別のユーザーのものなら
+/// エラー。
+fn read_kept_records(path: &Path, user_id: &str) -> Result<Option<KeptRecords>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err).with_context(|| format!("{} を読めません", path.display())),
+    };
+    let records: KeptRecords = serde_json::from_slice(&bytes)
+        .with_context(|| format!("{} を読めません", path.display()))?;
+    if records.user_id != user_id {
+        bail!("暗号ストアが別のユーザーのものです");
+    }
+    Ok(Some(records))
+}
 /// 削除待ちの一覧を更新するときのロック（全ユーザーで 1 つ）。
 const PENDING_LOCK_FILE: &str = "pending-device-delete.lock";
 
@@ -79,6 +110,44 @@ struct State {
     /// チャンネルごとに、前回判定した配布先のメンバー（`user_id` の昇順。#361）。
     #[serde(default)]
     recipients: BTreeMap<String, Vec<String>>,
+    /// 鍵バックアップからの取り込みの進み具合（秘密は入らない。Web の `meta` の `backup_import`）。
+    #[serde(default)]
+    backup_import: Option<BackupImportProgress>,
+}
+
+/// 鍵バックアップからの取り込みの進み具合。途中で止まったら、同じ版なら続きから取り込み、版が変わったら
+/// 始めから取り込む。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct BackupImportProgress {
+    /// 取り込んでいる（取り込んだ）版。
+    version: String,
+    /// 次に読むページのカーソル（`GET /api/e2ee/key_backup/keys` の `after`）。
+    after: Option<String>,
+    /// 最後のページまで取り込んだ。
+    done: bool,
+}
+
+/// [`CryptoStore::begin_backup_import`] の結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackupImportStart {
+    /// `after` のカーソル（`None` なら最初）から読んで取り込む。
+    Import {
+        version: String,
+        after: Option<String>,
+    },
+    /// この版は取り込み終えている。
+    Done { version: String },
+    /// 解錠していない（解錠し直しが要る）、または今の版がない。
+    None,
+    /// 今の版を使えない（アップロードの `Rejected` と同じ）。取り込まない。
+    Rejected(String),
+}
+
+/// 今の版の受け入れの結果。
+enum AcceptedVersion {
+    Accepted(String),
+    None,
+    Rejected(String),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -165,6 +234,8 @@ pub struct CryptoStore {
     pending: BTreeMap<String, megolm::PendingDistribution>,
     /// 受信用セッションが増えた回数。
     inbound_generation: u64,
+    /// 取り込んだが、保存に失敗した受信用セッション（やり直しで保存し直す）。
+    unsaved_inbound: BTreeSet<String>,
 }
 
 /// 開いた結果。保存鍵を失って作り直したら、前の端末の ID を返す（サーバーから消す）。
@@ -318,8 +389,15 @@ impl CryptoStore {
         let mut replaced_device_id = None;
         let mut replaced_registered = false;
         // 保存鍵を失って作り直すときも、暗号化チャンネルの記録と前回の配布先は引き継ぐ（どちらも
-        // 暗号化していない ID で、捨てると格下げを見つけられなくなる）。
+        // 暗号化していない ID で、捨てると格下げを見つけられなくなる）。前の作り直しが途中で止まって
+        // いたら、置いておいた前の `state.json` から引き継ぐ。
+        let replaced_path = dir.join(REPLACED_STATE_FILE);
         let mut kept = (BTreeSet::new(), BTreeMap::new());
+        if state.is_none()
+            && let Some(records) = read_kept_records(&replaced_path, user_id)?
+        {
+            kept = (records.encrypted_channels, records.recipients);
+        }
         if let Some(mut state) = state {
             if state.version != STATE_VERSION {
                 bail!("暗号ストアの版 {} には対応していません", state.version);
@@ -350,7 +428,15 @@ impl CryptoStore {
                 std::mem::take(&mut state.recipients),
             );
             replaced_device_id = Some(state.device_id);
-            fs::remove_file(&state_path)?;
+            // 新しい保存鍵で読めない `state.json` を残さないよう、前のものは別の名前に移す（消さない。
+            // 新しい `state.json` を保存し終えるまで、記録をここから読めるようにする）。
+            fs::rename(&state_path, &replaced_path).with_context(|| {
+                format!(
+                    "{} を {} に移せません",
+                    state_path.display(),
+                    replaced_path.display()
+                )
+            })?;
         }
         let storage_key = match read_key(&key_path)? {
             Some(key) => key,
@@ -387,8 +473,11 @@ impl CryptoStore {
             outbound: BTreeMap::new(),
             pending: BTreeMap::new(),
             inbound_generation: 0,
+            unsaved_inbound: BTreeSet::new(),
         };
         store.save()?;
+        // 記録を引き継いだ新しい `state.json` を保存できたので、前のものは要らない。
+        let _ = fs::remove_file(&replaced_path);
         Ok(Opened {
             store,
             replaced_device_id,
@@ -433,6 +522,7 @@ impl CryptoStore {
             outbound: BTreeMap::new(),
             pending: BTreeMap::new(),
             inbound_generation: 0,
+            unsaved_inbound: BTreeSet::new(),
         })
     }
 
@@ -717,20 +807,74 @@ impl CryptoStore {
         })
     }
 
-    /// 鍵バックアップの行（`GET /api/e2ee/key_backup/keys` の `sessions`）を、バックアップ鍵で復号して
-    /// バックアップ由来として取り込む（docs/e2ee.md の「受信時の検証」の「鍵バックアップから取り込んだとき」。
-    /// 規則は `InboundSessionStore::import_backup_session`）。取り込んだ数を返す。
+    /// 鍵バックアップからの取り込みを始める（docs/e2ee.md の「新しい端末での解錠」の手順 5。Web の
+    /// `CryptoStore.beginBackupImport` と同じ）。
     ///
-    /// 復号できない行と、`session_id` が合わない行は捨てる。新しく足したセッションは、同じ版に上げ直さない
-    /// よう送信済みにする。すでにあるセッション（Olm 由来など）の送信待ちの印は変えない。
-    pub fn import_backup_rows(
+    /// `current_version` は `GET /api/e2ee/key_backup/versions/current` の応答。アップロードと同じ検証
+    /// （`BackupUploadState::accept_current_version`）を通った今の版だけから取り込む。版が変わったときに
+    /// 手元のセッションを送信待ちに戻すのも、取り込みの前に済ませる（取り込んだセッションを、そのあとの
+    /// アップロードで同じ版に上げ直さないため）。途中で止まった取り込みは、同じ版なら続きのカーソルから
+    /// 始める。その版を取り込み終えていれば `Done`。解錠し直しが要るあいだは取り込まない。
+    pub fn begin_backup_import(
         &mut self,
-        backup_key: &zoo_crypto::BackupDecryptionKey,
+        current_version: Option<&Value>,
+    ) -> Result<BackupImportStart> {
+        if self.needs_unlock() {
+            return Ok(BackupImportStart::None);
+        }
+        let version = match self.accept_backup_version(current_version)? {
+            AcceptedVersion::Accepted(version) => version,
+            AcceptedVersion::None => return Ok(BackupImportStart::None),
+            AcceptedVersion::Rejected(message) => return Ok(BackupImportStart::Rejected(message)),
+        };
+        Ok(match &self.state.backup_import {
+            Some(progress) if progress.version == version && progress.done => {
+                BackupImportStart::Done { version }
+            }
+            Some(progress) if progress.version == version => BackupImportStart::Import {
+                after: progress.after.clone(),
+                version,
+            },
+            _ => BackupImportStart::Import {
+                version,
+                after: None,
+            },
+        })
+    }
+
+    /// `GET /api/e2ee/key_backup/keys` の 1 ページを、バックアップ鍵で復号してバックアップ由来として
+    /// 取り込む（docs/e2ee.md の「受信時の検証」の「鍵バックアップから取り込んだとき」。規則は
+    /// `InboundSessionStore::import_backup_session`）。取り込んだ数を返す。
+    ///
+    /// `next` は応答の `next`（最後のページなら `None`）で、取り込んだセッションと同じ書き込みで進み具合
+    /// として保存する。復号できない行、平文が行と合わない行、`session_id` が合わない行は捨てる。新しく
+    /// 足したセッションは、同じ版に上げ直さないよう送信済みにする。すでにあるセッション（Olm 由来など）の
+    /// 送信待ちの印は変えない。受け入れた今の版と違う版のページは取り込まない。保存できなかったら
+    /// 書き込む前の状態に戻し、保存できていないセッションを覚えておいて、やり直しで保存し直す。
+    pub fn import_backup_page(
+        &mut self,
+        version: &str,
         rows: &[zoo_crypto::BackupRow],
+        next: Option<&str>,
     ) -> Result<usize> {
+        let accepted = self
+            .backup_state
+            .as_ref()
+            .and_then(|state| state.current_version())
+            .map(|current| current.version.clone());
+        if accepted.as_deref() != Some(version) {
+            bail!("鍵バックアップの今の版が変わりました");
+        }
+        if self.needs_unlock() {
+            bail!("解錠し直しが必要です");
+        }
+        let own = self
+            .own_keys()?
+            .ok_or_else(|| anyhow!("解錠していません"))?;
+        let mut changed: BTreeMap<String, Option<StoredInboundSession>> = BTreeMap::new();
         let mut imported = 0;
         for row in rows {
-            let Ok(session) = backup_key.decrypt_row(row) else {
+            let Ok(session) = own.backup_key.decrypt_row(row) else {
                 continue;
             };
             let session_ref = SessionRef {
@@ -743,7 +887,8 @@ impl CryptoStore {
             let Ok(outcome) = self.inbound.import_backup_session(session) else {
                 continue;
             };
-            if outcome == zoo_crypto::AddOutcome::Kept {
+            // 前の保存に失敗したセッションは、取り込みの結果が変わらなくても保存し直す。
+            if outcome == zoo_crypto::AddOutcome::Kept && !self.unsaved_inbound.contains(&key) {
                 continue;
             }
             let Some(pickle) =
@@ -752,21 +897,92 @@ impl CryptoStore {
             else {
                 continue;
             };
-            let backed_up = self
-                .state
-                .inbound_sessions
-                .get(&key)
-                .is_none_or(|stored| stored.backed_up);
+            let previous = self.state.inbound_sessions.get(&key).cloned();
+            let backed_up = previous.as_ref().is_none_or(|stored| stored.backed_up);
             self.state
                 .inbound_sessions
-                .insert(key, StoredInboundSession { pickle, backed_up });
+                .insert(key.clone(), StoredInboundSession { pickle, backed_up });
+            changed.entry(key).or_insert(previous);
             imported += 1;
         }
+        let previous_progress = self.state.backup_import.replace(BackupImportProgress {
+            version: version.to_owned(),
+            after: next.map(str::to_owned),
+            done: next.is_none(),
+        });
+        if let Err(error) = self.save() {
+            // 書けなければ、保存した状態をディスクと同じに戻す（メモリーのセッションは残し、次の
+            // やり直しで保存し直す）。
+            self.state.backup_import = previous_progress;
+            for (key, previous) in changed {
+                match previous {
+                    Some(previous) => {
+                        self.state.inbound_sessions.insert(key.clone(), previous);
+                    }
+                    None => {
+                        self.state.inbound_sessions.remove(&key);
+                    }
+                }
+                self.unsaved_inbound.insert(key);
+            }
+            return Err(error);
+        }
+        for key in changed.keys() {
+            self.unsaved_inbound.remove(key);
+        }
         if imported > 0 {
-            self.save()?;
             self.inbound_generation += 1;
         }
         Ok(imported)
+    }
+
+    /// 今の版を検証して受け入れる（アップロードと取り込みの前に行う。Web の `acceptBackupVersion` と同じ）。
+    ///
+    /// `auth_data` に自分のマスター鍵の署名があり、公開鍵が SSSS のバックアップ鍵と同じで、前に見た版より
+    /// 古くないときだけ受け入れる。版が変わったら、すべての受信用セッションを送信待ちに戻す（新しい版を
+    /// 見たことと同じ書き込みで記録する）。
+    fn accept_backup_version(
+        &mut self,
+        current_version: Option<&Value>,
+    ) -> Result<AcceptedVersion> {
+        let Some(own) = self.own_keys()? else {
+            return Ok(AcceptedVersion::None);
+        };
+        let mut backup = self.load_backup_state()?;
+        backup.set_secrets_revision(self.state.secrets_revision);
+        let Some(current_version) = current_version else {
+            backup.suspend();
+            self.backup_state = Some(backup);
+            return Ok(AcceptedVersion::None);
+        };
+        let change = match backup.accept_current_version(
+            current_version,
+            &own.master_public_key,
+            &own.backup_key,
+        ) {
+            Ok(change) => change,
+            Err(error) => {
+                self.backup_state = Some(backup);
+                return Ok(AcceptedVersion::Rejected(error.to_string()));
+            }
+        };
+        if change == VersionChange::Changed {
+            // 新しい版には、手元のセッションをすべて送り直す。新しい版を見たことと同じ書き込みで記録する。
+            for session in self.state.inbound_sessions.values_mut() {
+                session.backed_up = false;
+            }
+        }
+        self.state.backup_upload = Some(backup.to_json());
+        let saved = self.save();
+        let version = backup
+            .current_version()
+            .map(|current| current.version.clone());
+        self.backup_state = Some(backup);
+        saved?;
+        Ok(match version {
+            Some(version) => AcceptedVersion::Accepted(version),
+            None => AcceptedVersion::None,
+        })
     }
 
     /// ack を送れた ID を、処理済みの印から外す。
@@ -916,37 +1132,13 @@ impl CryptoStore {
         // 送信は 1 つずつ（`setup::upload_key_backup`）なので、ここで残っている要求は、送っている途中で
         // 捨てられたもの。記録を捨てる（入れたセッションは送信待ちのまま）。
         self.pending_uploads.clear();
-        let Some(own) = self.own_keys()? else {
-            return Ok(BackupUploadRequest::None);
-        };
-        let mut backup = self.load_backup_state()?;
-        backup.set_secrets_revision(self.state.secrets_revision);
-        let Some(current_version) = current_version else {
-            backup.suspend();
-            self.backup_state = Some(backup);
-            return Ok(BackupUploadRequest::None);
-        };
-        let change = match backup.accept_current_version(
-            current_version,
-            &own.master_public_key,
-            &own.backup_key,
-        ) {
-            Ok(change) => change,
-            Err(error) => {
-                self.backup_state = Some(backup);
-                return Ok(BackupUploadRequest::Rejected(error.to_string()));
-            }
-        };
-        if change == VersionChange::Changed {
-            // 新しい版には、手元のセッションをすべて送り直す。新しい版を見たことと同じ書き込みで記録する。
-            for session in self.state.inbound_sessions.values_mut() {
-                session.backed_up = false;
+        match self.accept_backup_version(current_version)? {
+            AcceptedVersion::Accepted(_) => {}
+            AcceptedVersion::None => return Ok(BackupUploadRequest::None),
+            AcceptedVersion::Rejected(message) => {
+                return Ok(BackupUploadRequest::Rejected(message));
             }
         }
-        self.state.backup_upload = Some(backup.to_json());
-        let saved = self.save();
-        self.backup_state = Some(backup);
-        saved?;
 
         let keys: Vec<String> = self
             .state
@@ -1058,25 +1250,19 @@ impl CryptoStore {
 /// 置き換えるので、ロックを持たずに読んでも、書きかけを読むことはない。まだ暗号ストアがなければ空。
 /// ファイルを読めない、形式が壊れているときはエラーにする（記録がないものとして扱わない）。
 pub fn read_encrypted_channels(root: &Path, user_id: &str) -> Result<Vec<String>> {
-    #[derive(Deserialize)]
-    struct Partial {
-        #[serde(default)]
-        user_id: String,
-        #[serde(default)]
-        encrypted_channels: BTreeSet<String>,
-    }
-    let path = user_dir(root, user_id)?.join(STATE_FILE);
-    let bytes = match fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(err).with_context(|| format!("{} を読めません", path.display())),
+    let dir = user_dir(root, user_id)?;
+    // 保存鍵を失って作り直しているあいだ（`state.json` がない）は、置いておいた前の記録を読む。
+    // 読むあいだに作り直しを終えて前の記録を消したときは、新しい `state.json` を読み直す。
+    let records = match read_kept_records(&dir.join(STATE_FILE), user_id)? {
+        Some(records) => Some(records),
+        None => match read_kept_records(&dir.join(REPLACED_STATE_FILE), user_id)? {
+            Some(records) => Some(records),
+            None => read_kept_records(&dir.join(STATE_FILE), user_id)?,
+        },
     };
-    let state: Partial = serde_json::from_slice(&bytes)
-        .with_context(|| format!("{} を読めません", path.display()))?;
-    if state.user_id != user_id {
-        bail!("暗号ストアが別のユーザーのものです");
-    }
-    Ok(state.encrypted_channels.into_iter().collect())
+    Ok(records
+        .map(|records| records.encrypted_channels.into_iter().collect())
+        .unwrap_or_default())
 }
 
 /// `root` にある暗号ストアのユーザー ID（ログアウトで消すものを探す）。
