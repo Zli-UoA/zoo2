@@ -31,6 +31,7 @@ const handlers = (): DevicesSettingsHandlers => ({
   onCancelRevocation: fn(),
   onFinish: fn(),
   onReverify: fn(),
+  onSasVerify: fn(),
 });
 
 const devices: DeviceRowView[] = [
@@ -160,6 +161,21 @@ export const Reverify: Story = {
     await userEvent.click(await screen.findByRole("button", { name: "再検証する" }));
     await expect(args.handlers.onReverify).toHaveBeenCalledWith(
       "00000000-0000-4000-8000-0000000000b1",
+    );
+  }),
+};
+
+/** 検証済みでない相手を、絵文字 SAS で検証する（#368。画面はシェルのダイアログに出る）。 */
+export const SasVerify: Story = {
+  args: { state: ready, handlers: handlers() },
+  play: playForImplementation(async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // 鍵が変わった相手と、最初に見た鍵を信頼している相手に出す。検証済みの相手には出さない。
+    const buttons = canvas.getAllByRole("button", { name: "絵文字で検証" });
+    await expect(buttons).toHaveLength(2);
+    await userEvent.click(buttons[1]);
+    await expect(args.handlers.onSasVerify).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-0000000000b3",
     );
   }),
 };

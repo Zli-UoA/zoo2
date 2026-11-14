@@ -437,6 +437,9 @@ impl Device {
             json!({ "signatures": [accepted.signature] }),
         )
         .await;
+        // ピンと署名を保存できたので、記録の登録待ちを外す（#368）。
+        self.trust
+            .confirm_accepted_master_key(&accepted.target_user_id, &accepted.master_key);
     }
 }
 
