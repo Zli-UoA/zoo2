@@ -396,18 +396,44 @@ fn raw_code_len(s: &str) -> Option<usize> {
     (end > 0 && rest.as_bytes()[end] == b'`').then_some(1 + end + 1)
 }
 
-/// `[label](https://…)` の長さ (バイト)
+/// `[label](https://…)` の長さ (バイト)。ラベルの中の閉じたコード (`` `a` ``) は許し、URL の中の括弧は
+/// 対応を数えて、対応する最後の `)` までを 1 つのリンクにする
 fn markdown_link_len(s: &str) -> Option<usize> {
-    let close = s.find(']')?;
-    if s[1..close].contains(['\n', '[', '`']) || !s[close..].starts_with("](") {
+    let mut i = 1;
+    let close = loop {
+        match s[i..].chars().next()? {
+            ']' => break i,
+            '\n' | '[' => return None,
+            '`' => {
+                let rest = &s[i + 1..];
+                let end = rest.find(['`', '\n'])?;
+                if rest.as_bytes()[end] != b'`' {
+                    return None;
+                }
+                i += 1 + end + 1;
+            }
+            c => i += c.len_utf8(),
+        }
+    };
+    if !s[close..].starts_with("](") {
         return None;
     }
     let url = &s[close + 2..];
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return None;
     }
-    let end = url.find(|c: char| c == ')' || c == '`' || c.is_whitespace())?;
-    url[end..].starts_with(')').then_some(close + 2 + end + 1)
+    let mut depth = 0usize;
+    for (k, c) in url.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(close + 2 + k + 1),
+            ')' => depth -= 1,
+            '`' => return None,
+            c if c.is_whitespace() => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// 素の URL の長さ (バイト)。末尾の記号 (`*` `_` `~` や句読点) と、対応する開きのない閉じ括弧は、URL に含めない
@@ -756,6 +782,18 @@ mod tests {
         assert_eq!(
             r("(_https://a.test/x_) and _y_").as_deref(),
             Some("(<i>https://a.test/x</i>) and <i>y</i>")
+        );
+        // コードを含むラベルのリンクと、括弧を含む URL のリンクは、そのまま (外側だけ変換する)
+        assert_eq!(r("[`a`](https://a.test/x)"), None);
+        assert_eq!(r("[`a` *b*](https://a.test/x)"), None);
+        assert_eq!(r("[Wiki](https://a.test/(x)_y_)"), None);
+        assert_eq!(
+            r("[Wiki](https://a.test/a_(b)_c) _d_").as_deref(),
+            Some("[Wiki](https://a.test/a_(b)_c) <i>d</i>")
+        );
+        assert_eq!(
+            r("[Wiki](https://a.test/(x)_) and _y_").as_deref(),
+            Some("[Wiki](https://a.test/(x)_) and <i>y</i>")
         );
         // 対応する括弧を持つ URL は、そのまま
         assert_eq!(r("see https://en.wikipedia.org/wiki/Foo_(bar)"), None);
