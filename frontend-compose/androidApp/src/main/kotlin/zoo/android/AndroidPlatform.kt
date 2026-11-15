@@ -69,7 +69,8 @@ internal class AndroidPlatform(
             cache.write(key, value)
         }
 
-    fun clear() {
+    private suspend fun clear() = withContext(NonCancellable + Dispatchers.IO) {
+        // logout closes the session scope; deletion must still finish, off the UI thread.
         cache.clear()
         files.clear()
     }
