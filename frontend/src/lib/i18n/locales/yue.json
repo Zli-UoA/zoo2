@@ -1567,5 +1567,11 @@
       "reauthCancel": "唔登入住",
       "browserUnavailable": "開唔到用嚟登入嘅瀏覽器。請安裝或者啟用瀏覽器，再撳多一次。"
     }
+  },
+  "defaultChannels": {
+    "title": "新帳戶嘅預設頻道",
+    "description": "揀建立帳戶時自動加入嘅公開頻道。現有帳戶唔受影響。",
+    "empty": "冇可用嘅公開頻道。",
+    "saved": "已儲存。"
   }
 }

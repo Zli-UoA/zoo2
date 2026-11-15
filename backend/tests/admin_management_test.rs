@@ -45,6 +45,38 @@ async fn administrator_roles_require_authorization_and_take_effect_immediately()
         assert_eq!(request(&app, "POST", "/api/users", DEFAULT_DEV_USER_ID,
             json!({"id":id,"user_name":format!("admin_test_{}",id.replace('-', "")),"display_name":"Role test"})).await?.0, StatusCode::OK);
     }
+    // Default channel configuration is restricted to workspace administrators.
+    for method in ["GET", "PATCH"] {
+        assert_eq!(
+            request(
+                &app,
+                method,
+                "/api/workspace/default-channels",
+                &alice,
+                json!({"channel_ids":[]})
+            )
+            .await?
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    for channel_ids in [
+        json!(["missing-channel"]),
+        json!(["duplicate", "duplicate"]),
+    ] {
+        assert_eq!(
+            request(
+                &app,
+                "PATCH",
+                "/api/workspace/default-channels",
+                DEFAULT_DEV_USER_ID,
+                json!({"channel_ids":channel_ids})
+            )
+            .await?
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
     let alice_role = format!("/api/users/{alice}/admin");
     let bob_role = format!("/api/users/{bob}/admin");
     assert_eq!(

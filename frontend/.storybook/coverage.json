@@ -2,6 +2,10 @@
   "$comment": "Required visible states, not a percentage of visual correctness. Composed coverage is explained; controller exclusions are counted separately.",
   "stories": [
     {
+      "file": "src/components/layout/DefaultChannelsSettings.stories.tsx",
+      "states": ["Default", "Empty", "Loading", "LoadError", "SaveError"]
+    },
+    {
       "file": "src/components/ui/image-preview.stories.tsx",
       "states": ["Loading", "WithoutMetadata", "InvalidHash", "Loaded"]
     },
@@ -785,6 +789,10 @@
     }
   ],
   "modules": [
+    {
+      "file": "src/components/layout/DefaultChannelsSettings.tsx",
+      "story": "src/components/layout/DefaultChannelsSettings.stories.tsx"
+    },
     {
       "file": "src/components/SyncStatus.tsx",
       "story": "src/components/SyncStatus.stories.tsx"

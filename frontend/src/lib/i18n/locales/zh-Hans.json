@@ -1567,5 +1567,11 @@
       "reauthCancel": "停止登录",
       "browserUnavailable": "无法打开用于登录的浏览器。请安装或启用浏览器后再按一次。"
     }
+  },
+  "defaultChannels": {
+    "title": "新账号的默认频道",
+    "description": "选择创建账号时自动加入的公开频道。不会影响现有账号。",
+    "empty": "没有可用的公开频道。",
+    "saved": "已保存。"
   }
 }
