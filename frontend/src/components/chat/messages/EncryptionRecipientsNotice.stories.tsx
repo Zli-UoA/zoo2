@@ -30,7 +30,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   // 増えた人も配れない人もいなければ、何も出さない（配布先の数は出さない）。
   play: playForImplementation(async ({ canvasElement }) => {
-    await expect(within(canvasElement).queryByRole("status")).not.toBeInTheDocument();
+    await expect(within(canvasElement).queryByText(/配布先|読めません/)).not.toBeInTheDocument();
     await expect(within(canvasElement).queryByText(/台の端末/)).not.toBeInTheDocument();
   }),
 };

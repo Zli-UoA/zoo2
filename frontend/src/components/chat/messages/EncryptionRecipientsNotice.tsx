@@ -15,6 +15,7 @@ const REASON_KEYS = {
 
 /**
  * 暗号化チャンネルの送信画面の表示（docs/e2ee.md の「鍵の配布先の判定」）。気付いてほしいことがあるときだけ出す。
+ * 何もないときは要素ごと出さないので、読み上げの live region（`role="status"`）は呼び出し側の常に置く親が持つ。
  * 配布先の数（何人の何台の端末か）は、毎回同じで読み流されるので出さない。
  *
  * - 鍵を配れない相手と理由（暗号化を設定していない、再検証が必要など）。配れなくても送信は止めない。
@@ -38,11 +39,7 @@ export function EncryptionRecipientsNotice({
     return user ? userLabel(user) : id;
   };
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="mx-3 mb-2 flex flex-col gap-1 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
-    >
+    <div className="mx-3 mb-2 flex flex-col gap-1 rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
       {added.length > 0 ? (
         <p className="flex items-center gap-1.5 text-foreground">
           <LockKeyholeIcon className="size-3.5 shrink-0" aria-hidden="true" />
