@@ -243,3 +243,52 @@ it.each(["scan", "write"])(
     expect(h.records.get("old-session")?.state).toBe("ended");
   },
 );
+
+it.each([0, 1])(
+  "enforces the requesting session's idle limit despite a failed scan (boundary +%s ms)",
+  async (afterBoundary) => {
+    const h = harness();
+    await h.state.run(h.request);
+    h.advance(AUTH_WORKER_IDLE_MS + afterBoundary);
+    h.environment.store.staleSessionIds = async () => {
+      throw new Error("scan unavailable");
+    };
+    await expect(h.state.run(h.request)).rejects.toThrow("session_ended");
+    expect(h.records.get(h.request.sessionId)?.state).toBe("ended");
+    expect(h.records.get(h.request.sessionId)?.body).toBeUndefined();
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("enforces the requesting session's idle limit while cleanup is in backoff", async () => {
+  const h = harness();
+  const scanner = vi.fn(async () => {
+    throw new Error("scan unavailable");
+  });
+  h.environment.store.staleSessionIds = scanner;
+  await h.state.run(h.request);
+  h.records.set("idle-session", {
+    ...h.records.get(h.request.sessionId)!,
+    lastUsedAt: h.environment.now() - AUTH_WORKER_IDLE_MS,
+  });
+  await expect(h.state.run({ ...h.request, sessionId: "idle-session" })).rejects.toThrow(
+    "session_ended",
+  );
+  expect(scanner).toHaveBeenCalledTimes(1);
+  expect(h.records.get("idle-session")?.body).toBeUndefined();
+  expect(h.fetch).toHaveBeenCalledTimes(1);
+});
+
+it("does not send an idle session's token if persisting its end state fails", async () => {
+  const h = harness();
+  await h.state.run(h.request);
+  h.advance(AUTH_WORKER_IDLE_MS);
+  h.environment.store.staleSessionIds = async () => {
+    throw new Error("scan unavailable");
+  };
+  h.environment.store.put = async () => {
+    throw new Error("write unavailable");
+  };
+  await expect(h.state.run(h.request)).rejects.toThrow("write unavailable");
+  expect(h.fetch).toHaveBeenCalledTimes(1);
+});
