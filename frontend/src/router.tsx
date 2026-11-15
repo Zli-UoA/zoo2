@@ -1,5 +1,6 @@
 import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
+import { createAppHistory } from "./lib/pwa/history";
 
 const RELOAD_GUARD_KEY = "zoo2:preload-error-reload-at";
 const RELOAD_GUARD_MS = 60_000;
@@ -30,6 +31,7 @@ export function getRouter() {
 
   const router = createTanStackRouter({
     routeTree,
+    history: typeof window !== "undefined" ? createAppHistory() : undefined,
     scrollRestoration: true,
     defaultPreload: "intent",
     defaultPreloadStaleTime: 0,
