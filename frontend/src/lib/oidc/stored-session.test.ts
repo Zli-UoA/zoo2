@@ -1,12 +1,13 @@
 import { expect, it, vi } from "vite-plus/test";
 import { readStoredSession, writeStoredSession } from "./stored-session";
 
-it("removes a legacy refresh token when restoring a copied tab session", () => {
+it("preserves a refresh session across reload after access expiry", () => {
   let raw = JSON.stringify({
     binding: "expected",
     tokens: {
       accessToken: "access",
-      refreshToken: "legacy-refresh",
+      refreshToken: "refresh",
+      refreshSessionId: "shared-session",
       idToken: null,
       expiresAt: 5000,
     },
@@ -20,8 +21,8 @@ it("removes a legacy refresh token when restoring a copied tab session", () => {
       raw = "";
     },
   };
-  expect(readStoredSession(storage, "expected", 1000)?.refreshToken).toBeNull();
-  expect(JSON.parse(raw).tokens.refreshToken).toBeNull();
+  expect(readStoredSession(storage, "expected", 6000)?.refreshToken).toBe("refresh");
+  expect(JSON.parse(raw).tokens.refreshSessionId).toBe("shared-session");
 });
 
 it.each([
