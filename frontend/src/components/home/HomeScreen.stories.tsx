@@ -2469,3 +2469,29 @@ export const NewPostsWhileReading: Story = {
     await expect(await canvas.findByText("閲覧中に届いた新着投稿")).toBeVisible();
   }),
 };
+
+export const OlderPageError: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", ({ request }) =>
+          new URL(request.url).searchParams.has("before")
+            ? new HttpResponse(null, { status: 500 })
+            : HttpResponse.json(firstPage),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText("投稿 0");
+    const root = canvasElement.querySelector<HTMLElement>("[data-home-scroll]")!;
+    root.scrollTop = root.scrollHeight;
+    await fireEvent.scroll(root);
+    await canvas.findByRole("alert");
+    root.scrollTop = root.scrollHeight;
+    await fireEvent.scroll(root);
+    await expect(canvas.getByRole("alert")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: "過去の投稿を読む" })).toBeEnabled();
+  }),
+};

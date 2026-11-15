@@ -61,3 +61,21 @@ it("preserves sparse measured rows after deleting unmeasured entries above them"
   expect(next.measurements[0]).toMatchObject({ key: "q", index: 0, start: 50, end: 150 });
   expect(next.anchor).toEqual({ id: "q", offset: -20 });
 });
+it("drops oversized snapshots rather than restoring a truncated history window", () => {
+  const cache = createHomeTimelineCache<{ id: string; content?: string }>();
+  cache.save("large", snapshot());
+  cache.save("large", {
+    ...snapshot(),
+    posts: Array.from({ length: 1001 }, (_, index) => ({ id: String(index) })),
+  });
+  expect(cache.get("large")).toBeUndefined();
+  cache.save("payload", {
+    ...snapshot(),
+    posts: [{ id: "huge", content: "x".repeat(3 * 1024 * 1024) }],
+  });
+  expect(cache.get("payload")).toBeUndefined();
+  cache.save("normal", snapshot());
+  expect(cache.get("normal")).toBeDefined();
+  cache.forget("normal");
+  expect(cache.get("normal")).toBeUndefined();
+});

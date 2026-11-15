@@ -229,6 +229,8 @@ function HomeScreenContent({
   const [refreshing, setRefreshing] = useState(false);
   const [hasMore, setHasMore] = useState(restored?.hasMore ?? false);
   const [error, setError] = useState(false);
+  const [viewportError, setViewportError] = useState(false);
+  const [olderError, setOlderError] = useState(restored?.olderError ?? false);
   const [pendingLike, setPendingLike] = useState<string | null>(null);
   const [reactionError, setReactionError] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -240,6 +242,9 @@ function HomeScreenContent({
   const olderRequest = useRef<AbortController | null>(null);
 
   const deletedPosts = useRef(new Set<string>());
+  const olderErrorRef = useRef(olderError);
+  olderErrorRef.current = olderError;
+  const headRequested = useRef(true);
   const hasMoreRef = useRef(hasMore);
   hasMoreRef.current = hasMore;
   const postsRef = useRef(posts);
@@ -247,17 +252,19 @@ function HomeScreenContent({
   const visibleIds = useRef<string[]>([]);
   const lastHead = useRef<HomePost[]>([]);
   const deferredRefresh = useRef(false);
-  const scheduleRefresh = useRef<() => void>(() => {});
+  const scheduleRefresh = useRef<(includeHead?: boolean) => void>(() => {});
   const refresh = useCallback(
-    async (retain = false) => {
+    async (retain = false, includeHead = true) => {
       if (retain && (olderRequest.current || refreshRequest.current)) {
         deferredRefresh.current = true;
+        headRequested.current ||= includeHead;
         return;
       }
       deferredRefresh.current = false;
       if (!retain) {
         if (scrollRoot.current) scrollRoot.current.scrollTop = 0;
         setNewPosts(0);
+        setOlderError(false);
       }
       const version = ++generation.current;
       refreshRequest.current?.abort();
@@ -270,19 +277,25 @@ function HomeScreenContent({
       const current = postsRef.current;
       const checkedIds = retain && !postId ? visibleIds.current.slice(0, 100) : [];
       try {
-        const fetchedHead = await client.get<HomePost[]>(
-          postId
-            ? `/api/home/${encodeURIComponent(postId)}/thread`
-            : `/api/home?timeline=${timelineQuery}`,
-          { signal: controller.signal },
-        );
-        const head = fetchedHead.filter((post) => !deletedPosts.current.has(post.id));
-        const complete = !postId && fetchedHead.length < 50;
+        const fetchedHead =
+          includeHead || !current.length || postId
+            ? await client.get<HomePost[]>(
+                postId
+                  ? `/api/home/${encodeURIComponent(postId)}/thread`
+                  : `/api/home?timeline=${timelineQuery}`,
+                { signal: controller.signal },
+              )
+            : null;
+        const head = (fetchedHead ?? []).filter((post) => !deletedPosts.current.has(post.id));
+        const complete = !!fetchedHead && !postId && fetchedHead.length < 50;
         const headIds = new Set(head.map(timelineEntryId));
         const missingIds = complete ? [] : checkedIds.filter((id) => !headIds.has(id));
         const query = new URLSearchParams(`timeline=${timelineQuery}`);
-        const checked = missingIds.length
-          ? await client.request<HomePost[]>("/api/home/entries", {
+        let checked: HomePost[] = [];
+        let checkedSuccessfully = true;
+        try {
+          if (missingIds.length)
+            checked = await client.request<HomePost[]>("/api/home/entries", {
               method: "POST",
               body: {
                 entries: missingIds,
@@ -290,42 +303,49 @@ function HomeScreenContent({
                 author: query.get("author"),
               },
               signal: controller.signal,
-            })
-          : [];
+            });
+        } catch {
+          if (controller.signal.aborted || version !== generation.current) return;
+          checkedSuccessfully = false;
+        }
         if (version !== generation.current) return;
         const atTop = (scrollRoot.current?.scrollTop ?? 0) < 80;
-        if (retain && !postId && current.length && !atTop) {
+        if (fetchedHead && retain && !postId && current.length && !atTop) {
           const added = countNewTimelineEntries(
             head,
             lastHead.current.length ? lastHead.current : current,
           );
           if (added) setNewPosts((value) => value + added);
         }
-        lastHead.current = head;
+        if (fetchedHead) lastHead.current = head;
         const rows =
           retain && !postId
             ? mergeTimelineWindow(
                 current,
                 head,
-                complete ? current.map(timelineEntryId) : checkedIds,
+                complete ? current.map(timelineEntryId) : checkedSuccessfully ? checkedIds : [],
                 checked,
-                atTop || complete,
+                complete || (!!fetchedHead && atTop),
               )
             : head;
         const visibleRows = rows.filter((post) => !deletedPosts.current.has(post.id));
         postsRef.current = visibleRows;
         setPosts(visibleRows);
         if (
-          !retain ||
-          complete ||
-          !current.length ||
-          postId ||
-          (atTop &&
-            !head.some((p) => current.some((old) => timelineEntryId(old) === timelineEntryId(p))))
+          fetchedHead &&
+          (!retain ||
+            complete ||
+            !current.length ||
+            postId ||
+            (atTop &&
+              !head.some((p) =>
+                current.some((old) => timelineEntryId(old) === timelineEntryId(p)),
+              )))
         ) {
           setHasMore(!postId && head.length === 50);
         }
-        setError(false);
+        if (fetchedHead) setError(false);
+        setViewportError(!checkedSuccessfully);
       } catch {
         if (!controller.signal.aborted) setError(true);
       } finally {
@@ -334,7 +354,7 @@ function HomeScreenContent({
           refreshRequest.current = null;
           setRefreshing(false);
           if (deferredRefresh.current && document.visibilityState !== "hidden")
-            scheduleRefresh.current();
+            scheduleRefresh.current(false);
         }
       }
     },
@@ -349,13 +369,23 @@ function HomeScreenContent({
     visibleIds.current = [];
     lastHead.current = [];
     setHasMore(snapshot?.hasMore ?? false);
+    setOlderError(snapshot?.olderError ?? false);
+    setError(false);
+    setViewportError(false);
     setNewPosts(0);
+    headRequested.current = true;
     if (scrollRoot.current) scrollRoot.current.scrollTop = snapshot?.scrollOffset ?? 0;
     // Start the initial load through the same gate as live/viewport refreshes.
-    const scheduler = coalescedRefresh(() =>
-      document.visibilityState === "hidden" ? undefined : refresh(true),
-    );
-    scheduleRefresh.current = scheduler.request;
+    const scheduler = coalescedRefresh(() => {
+      if (document.visibilityState === "hidden") return;
+      const includeHead = headRequested.current;
+      headRequested.current = false;
+      return refresh(true, includeHead);
+    });
+    scheduleRefresh.current = (includeHead = true) => {
+      headRequested.current ||= includeHead;
+      scheduler.request();
+    };
     scheduler.request();
     return () => {
       scheduler.dispose();
@@ -396,15 +426,15 @@ function HomeScreenContent({
       postsRef.current = next;
       setPosts(next);
       setHasMore(rows.length === 50 && next.length > current.length);
-      setError(false);
+      setOlderError(false);
     } catch {
-      if (!controller.signal.aborted) setError(true);
+      if (!controller.signal.aborted) setOlderError(true);
     } finally {
       if (olderRequest.current === controller) {
         olderRequest.current = null;
         setLoadingOlder(false);
         if (deferredRefresh.current && document.visibilityState !== "hidden")
-          scheduleRefresh.current();
+          scheduleRefresh.current(false);
       }
     }
   }, [client, timelineQuery, postId]);
@@ -450,6 +480,7 @@ function HomeScreenContent({
       timelineCache.save(cacheKey, {
         posts: postsRef.current,
         hasMore: hasMoreRef.current,
+        olderError: olderErrorRef.current,
         scrollOffset: root.scrollTop,
         listOffset: measured.options.scrollMargin ?? 0,
         measurements: measured.takeSnapshot(),
@@ -484,7 +515,9 @@ function HomeScreenContent({
     visibleIds.current = viewportKey ? viewportKey.split("\n") : [];
     // Revalidate history as it enters the viewport, so edits/deletions are not lost.
     // This uses the same five-second gate as live updates, with no polling.
-    if (viewportKey && !loading) scheduleRefresh.current();
+    const headIds = new Set(lastHead.current.map(timelineEntryId));
+    if (viewportKey && !loading && visibleIds.current.some((id) => !headIds.has(id)))
+      scheduleRefresh.current(false);
   }, [viewportKey, loading]);
   const lastVirtualIndex = virtualRows.at(-1)?.index ?? -1;
   useEffect(() => {
@@ -493,13 +526,24 @@ function HomeScreenContent({
       !refreshing &&
       !loadingOlder &&
       !error &&
+      !olderError &&
       hasMore &&
       lastVirtualIndex >= posts.length - 10 &&
       document.visibilityState === "visible"
     ) {
       void older();
     }
-  }, [lastVirtualIndex, posts.length, hasMore, loading, refreshing, loadingOlder, error, older]);
+  }, [
+    lastVirtualIndex,
+    posts.length,
+    hasMore,
+    loading,
+    refreshing,
+    loadingOlder,
+    error,
+    olderError,
+    older,
+  ]);
   const react = (post: HomePost, choice: ReactionChoice, remove = false) => {
     if (pendingLike) return;
     setPendingLike(post.id);
@@ -609,6 +653,13 @@ function HomeScreenContent({
                   variant={timeline === value ? "secondary" : "ghost"}
                   aria-pressed={timeline === value}
                   onClick={() => {
+                    if (value === timeline) {
+                      void refresh();
+                      return;
+                    }
+                    timelineCache.forget(cacheScope + JSON.stringify([historyKey, value]));
+                    restoreAnchor.current = undefined;
+                    virtualizer.scrollToOffset(0);
                     setTimeline(value);
                     saveHomeTimeline(timelineStorageKey, value);
                   }}
@@ -638,10 +689,10 @@ function HomeScreenContent({
               )}
             </div>
           ) : null}
-          {error ? (
+          {error || viewportError ? (
             <p role="alert" className="p-4 text-sm text-destructive">
               {t("home.loadError")}{" "}
-              <Button variant="link" onClick={() => void refresh()}>
+              <Button variant="link" onClick={() => void refresh(!error, error)}>
                 {t("home.refresh")}
               </Button>
             </p>
@@ -1020,8 +1071,17 @@ function HomeScreenContent({
             </ol>
           )}
           {hasMore ? (
-            <div className="flex justify-center p-4">
-              <Button variant="outline" disabled={loadingOlder} onClick={() => void older()}>
+            <div className="flex flex-col items-center gap-2 p-4">
+              {olderError ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {t("home.loadError")}
+                </p>
+              ) : null}
+              <Button
+                variant="outline"
+                disabled={loadingOlder || refreshing}
+                onClick={() => void older()}
+              >
                 {t(loadingOlder ? "home.loading" : "home.older")}
               </Button>
             </div>

@@ -4,19 +4,33 @@ import { timelineEntryId, type TimelineEntry } from "./homeTimeline";
 export interface HomeTimelineSnapshot<T> {
   posts: T[];
   hasMore: boolean;
+  olderError?: boolean;
   scrollOffset: number;
   listOffset: number;
   measurements: VirtualItem[];
   anchor?: { id: string; offset: number };
 }
 
+export const HOME_CACHE_MAX_POSTS = 1000;
+export const HOME_CACHE_MAX_BYTES = 4 * 1024 * 1024;
+
 /** Tab-memory cache for back navigation, scoped by workspace, account and history entry. */
 export function createHomeTimelineCache<T extends TimelineEntry>(capacity = 8) {
   const snapshots = new Map<string, HomeTimelineSnapshot<T>>();
   return {
     get: (key: string) => snapshots.get(key),
+    forget: (key: string) => snapshots.delete(key),
     save(key: string, snapshot: HomeTimelineSnapshot<T>) {
       snapshots.delete(key);
+      // Retaining oversized history would multiply large post/quote payloads across entries.
+      // Drop it instead of truncating around a cursor and creating a gap in the restored feed.
+      if (snapshot.posts.length > HOME_CACHE_MAX_POSTS) return;
+      let bytes = JSON.stringify({ ...snapshot, posts: [] }).length * 2;
+      for (const post of snapshot.posts) {
+        bytes += JSON.stringify(post).length * 2 + 2;
+        if (bytes > HOME_CACHE_MAX_BYTES) return;
+      }
+      if (bytes > HOME_CACHE_MAX_BYTES) return;
       snapshots.set(key, snapshot);
       while (snapshots.size > capacity) snapshots.delete(snapshots.keys().next().value!);
     },

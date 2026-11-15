@@ -624,6 +624,7 @@
         "Submit",
         "SendError",
         "OlderPosts",
+        "OlderPageError",
         "InfiniteScrolling",
         "InfiniteScrollingMobile",
         "DeletePost",

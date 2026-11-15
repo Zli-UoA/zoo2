@@ -94,6 +94,7 @@ let router: ReturnType<typeof makeRouter>;
 const view = () => <RouterProvider key={fixture.user} router={router} />;
 let failDelete = false;
 beforeEach(async () => {
+  await page.viewport(1440, 900);
   fixture.user = "me";
   rows = Array.from({ length: 180 }, (_, index) => ({
     id: `p-${index}`,
@@ -211,18 +212,22 @@ it("refreshes only the head and viewport, applies edits/deletions, and preserves
       ),
     ).toBe(true),
   );
-  const visible = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).filter(
-    (node) => {
+  let visible: HTMLElement[] = [];
+  await waitFor(() => {
+    const viewport = root.getBoundingClientRect();
+    visible = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).filter((node) => {
       const rect = node.getBoundingClientRect();
-      const viewport = root.getBoundingClientRect();
-      return rect.top >= viewport.top && rect.bottom <= viewport.bottom;
-    },
-  );
-  const anchor = visible[0];
-  const deleted = visible[1];
-  expect(anchor).toBeDefined();
-  expect(deleted).toBeDefined();
-  const id = anchor.dataset.homePost!;
+      return rect.bottom > viewport.top && rect.top < viewport.bottom;
+    });
+    expect(visible.length).toBeGreaterThanOrEqual(2);
+  });
+  const anchor = visible[0],
+    edited = visible[1];
+  const deleted = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).find(
+    (node) => Number(node.dataset.index) > Number(edited.dataset.index),
+  )!;
+  const id = edited.dataset.homePost!;
+  const anchorId = anchor.dataset.homePost!;
   const deletedId = deleted.dataset.homePost!;
   const top = anchor.getBoundingClientRect().top;
   rows = rows
@@ -236,7 +241,9 @@ it("refreshes only the head and viewport, applies edits/deletions, and preserves
   await screen.findByText("表示中の編集", {}, { timeout: 10000 });
   await waitFor(() => expect(root.querySelector(`[data-home-post="${deletedId}"]`)).toBeNull());
   expect(
-    Math.abs(root.querySelector(`[data-home-post="${id}"]`)!.getBoundingClientRect().top - top),
+    Math.abs(
+      root.querySelector(`[data-home-post="${anchorId}"]`)!.getBoundingClientRect().top - top,
+    ),
   ).toBeLessThan(5);
   expect(prefetchDistances).toHaveLength(pagesBefore);
   const checks = requests.filter((url) => url.searchParams.has("entries"));
@@ -368,7 +375,7 @@ it("restores loaded history and the reading position when deleting a post in its
     (node) => {
       const rect = node.getBoundingClientRect(),
         viewport = root.getBoundingClientRect();
-      return rect.top >= viewport.top && rect.bottom <= viewport.bottom;
+      return rect.bottom > viewport.top && rect.top < viewport.bottom;
     },
   );
   const anchor = visible[0],
@@ -425,3 +432,74 @@ it("keeps the detail page and dialog open after a failed deletion, then allows r
   );
   await waitFor(() => expect(router.state.location.pathname).toBe("/home"));
 });
+
+it("does not retry a failed older page when a live head refresh succeeds", async () => {
+  await mount();
+  failOlder = true;
+  approachTail();
+  await screen.findByRole("alert");
+  rows.unshift({ ...rows[0], id: "new-after-failure", content: "失敗後の新着" });
+  act(() => fixture.live());
+  await screen.findByRole("button", { name: "新しい投稿を見る（1件）" }, { timeout: 10000 });
+  expect(prefetchDistances).toHaveLength(1);
+  expect(screen.getByRole("alert")).toBeVisible();
+  failOlder = false;
+  fireEvent.click(screen.getByRole("button", { name: "過去の投稿を読む" }));
+  await waitFor(() => expect(prefetchDistances).toHaveLength(2));
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+}, 15000);
+
+it("reloads timeline tabs from the top while keeping detail back-navigation restoration", async () => {
+  await mount();
+  approachTail();
+  await waitFor(() => expect(prefetchDistances).toHaveLength(1));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "過去の投稿を読む" })).not.toBeDisabled(),
+  );
+  expect(root.scrollTop).toBeGreaterThan(1000);
+  await userEvent.click(screen.getByRole("button", { name: "ローカル" }));
+  await waitFor(() => expect(root.scrollTop).toBe(0));
+  await screen.findByText(/^投稿 0/);
+  root.scrollTop = 1200;
+  fireEvent.scroll(root);
+  await userEvent.click(screen.getByRole("button", { name: "ホーム" }));
+  await waitFor(() => expect(root.scrollTop).toBe(0));
+  await screen.findByText(/^投稿 0/);
+  expect(prefetchDistances).toHaveLength(1);
+});
+
+it("revalidates a changed history viewport without fetching the head again", async () => {
+  await mount();
+  approachTail();
+  await waitFor(() => expect(prefetchDistances).toHaveLength(1));
+  root.scrollTop += 2500;
+  fireEvent.scroll(root);
+  await waitFor(
+    () =>
+      expect(fixture.request.mock.calls.some(([path]) => path === "/api/home/entries")).toBe(true),
+    { timeout: 10000 },
+  );
+  const heads = requests.filter(
+    (url) => !url.searchParams.has("before") && !url.searchParams.has("entries"),
+  );
+  expect(heads).toHaveLength(1);
+}, 15000);
+
+it("keeps successful head updates and pagination usable when viewport reconciliation fails", async () => {
+  await mount();
+  approachTail();
+  await waitFor(() => expect(prefetchDistances).toHaveLength(1));
+  const original = fixture.request.getMockImplementation()!;
+  fixture.request.mockImplementation(async (path, options) => {
+    if (path === "/api/home/entries") throw new Error("viewport offline");
+    return original(path, options);
+  });
+  root.scrollTop += 2500;
+  fireEvent.scroll(root);
+  await screen.findByRole("alert", {}, { timeout: 10000 });
+  rows.unshift({ ...rows[0], id: "head-despite-viewport", content: "先頭は更新できる" });
+  act(() => fixture.live());
+  await screen.findByRole("button", { name: "新しい投稿を見る（1件）" }, { timeout: 10000 });
+  approachTail();
+  await waitFor(() => expect(prefetchDistances).toHaveLength(2), { timeout: 10000 });
+}, 20000);
