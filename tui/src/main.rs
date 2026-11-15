@@ -25,6 +25,7 @@ const USAGE: &str = "\
   run      チャット画面を開く (省略時の既定)
   login    ブラウザでコードを承認してログインする
   logout   この端末の暗号の鍵と、保存したトークンを消す
+  default-channels [--set [ID ...]]  新規アカウントの参加チャンネルを表示・設定 (管理者)
   help     このヘルプを表示する
 
 設定は ~/.config/zoo2-tui/config.toml と環境変数 ZOO_* から読み込みます。";
@@ -36,6 +37,7 @@ async fn main() -> Result<()> {
         "run" => run().await,
         "login" => login().await,
         "logout" => logout().await,
+        "default-channels" => default_channels().await,
         "help" | "-h" | "--help" => {
             println!("{USAGE}");
             Ok(())
@@ -60,6 +62,43 @@ fn token_file() -> Result<PathBuf> {
     config::config_dir()
         .map(|dir| token::token_path(&dir))
         .ok_or_else(|| anyhow!("設定ディレクトリが見つかりません"))
+}
+
+async fn default_channels() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    if !args.is_empty() && args[0] != "--set" {
+        bail!("使い方: zoo2-tui default-channels [--set [ID ...]]");
+    }
+    let config = Config::load()?;
+    let http = reqwest::Client::new();
+    let credentials = credentials(&config, &http).await?;
+    let api = ApiClient::new(http, &config.api_base_url, credentials);
+    let settings = if args.is_empty() {
+        api.default_channels().await?
+    } else {
+        api.set_default_channels(&args[1..]).await?
+    };
+    println!("{settings:#}");
+    Ok(())
+}
+
+async fn credentials(config: &Config, http: &reqwest::Client) -> Result<Credentials> {
+    Ok(match &config.auth {
+        AuthConfig::Dev { user_id } => Credentials::Dev(user_id.clone()),
+        AuthConfig::Oidc(oidc) => {
+            let path = token_file()?;
+            let tokens =
+                token::load_async(&path, oidc, Some(&config.api_base_url)).await?.ok_or_else(|| {
+                    anyhow!("ログインしていません。先に `zoo2-tui login` を実行してください。接続先や OIDC の設定を変えたときも、ログインし直してください")
+                })?;
+            Credentials::Bearer(Arc::new(TokenManager::new(
+                http.clone(),
+                oidc.clone(),
+                path,
+                tokens,
+            )))
+        }
+    })
 }
 
 async fn run() -> Result<()> {

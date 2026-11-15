@@ -252,6 +252,23 @@ impl ApiClient {
         }
         Ok((shortcodes, names))
     }
+    /// Administrator settings for newly created accounts.
+    pub async fn default_channels(&self) -> Result<Value> {
+        self.get("/api/workspace/default-channels").await
+    }
+
+    pub async fn set_default_channels(&self, channel_ids: &[String]) -> Result<Value> {
+        Ok(self
+            .send(
+                Method::PATCH,
+                "/api/workspace/default-channels",
+                Some(json!({"channel_ids":channel_ids})),
+            )
+            .await?
+            .json()
+            .await?)
+    }
+
     pub async fn me(&self) -> Result<Me> {
         self.get("/api/users/me").await
     }
@@ -744,6 +761,29 @@ mod tests {
         let requests = server.received_requests().await.unwrap();
         assert_eq!(requests[0].body_json::<Value>().unwrap()["active"], true);
         assert_eq!(requests[1].body_json::<Value>().unwrap()["active"], false);
+    }
+
+    #[tokio::test]
+    async fn administrator_can_read_and_clear_default_channels() {
+        let server = MockServer::start().await;
+        let settings = json!({"channel_ids":[], "channels":[]});
+        Mock::given(method("GET"))
+            .and(path("/api/workspace/default-channels"))
+            .and(header("X-Dev-User", "u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&settings))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/workspace/default-channels"))
+            .and(body_json(json!({"channel_ids":[]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&settings))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let api = client(&server);
+        assert_eq!(api.default_channels().await.unwrap(), settings);
+        assert_eq!(api.set_default_channels(&[]).await.unwrap(), settings);
     }
 
     #[tokio::test]

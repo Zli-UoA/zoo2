@@ -1570,5 +1570,13 @@
       "reauthCancel": "Stop signing in",
       "browserUnavailable": "Could not open a browser to sign in. Install or enable a browser and press again."
     }
+  },
+  "defaultChannels": {
+    "refreshed": "Some channels are no longer available. The list has been refreshed. Review your selection and save again.",
+    "limit": "You can select up to 100 public channels.",
+    "title": "Default channels for new accounts",
+    "description": "Select public channels to join automatically when an account is created. Existing accounts are unaffected.",
+    "empty": "No public channels are available.",
+    "saved": "Saved."
   }
 }
