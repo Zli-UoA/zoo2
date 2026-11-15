@@ -8,6 +8,8 @@ import {
   type OidcEnvironment,
   type OidcFetch,
 } from "./client";
+import { AuthWorkerState, type AuthWorkerSession } from "./auth-worker-state";
+import type { AuthWorkerRequest, AuthTokenResponse } from "./auth-worker-protocol";
 import { isLoggedOut, savePending, takePending, type AuthStorage } from "./pending";
 import { base64UrlEncode, createChallenge } from "./pkce";
 
@@ -78,6 +80,7 @@ interface Harness {
 
 interface HarnessOptions {
   storage?: AuthStorage;
+  authWorker?: (request: AuthWorkerRequest) => Promise<AuthTokenResponse | null>;
   now?: number;
   online?: boolean;
   discovery?: Record<string, unknown>;
@@ -124,6 +127,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
   });
 
   const env: OidcEnvironment = {
+    authWorker: options.authWorker,
     origin: "https://app.example",
     get href() {
       return href;
@@ -233,33 +237,81 @@ describe("OidcClient session restoration", () => {
     expect(reloaded.reauthorizeCalls).toEqual([]);
   });
 
-  it("does not copy a rotating refresh token into duplicated tabs", async () => {
+  it("shares refresh results with copied tabs and reloads", async () => {
+    const records = new Map<string, AuthWorkerSession>();
+    let queue: Promise<unknown> = Promise.resolve();
+    const exchange = vi.fn(async () =>
+      jsonResponse({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }),
+    );
+    const worker = new AuthWorkerState({
+      store: {
+        get: async (id) => records.get(id),
+        put: async (id, record) => {
+          records.set(id, record);
+        },
+      },
+      exclusive: (_id, action) => {
+        const result = queue.catch(() => {}).then(action);
+        queue = result;
+        return result;
+      },
+      fetch: exchange,
+      now: () => 1_100_000,
+    });
+    const authWorker = (request: AuthWorkerRequest) => worker.run(request);
     const original = createHarness({
-      token: (body, nonce) =>
-        body.get("grant_type") === "refresh_token"
-          ? { access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }
-          : {
-              access_token: "access-1",
-              refresh_token: "refresh-1",
-              id_token: idToken({ nonce }),
-              expires_in: 90,
-            },
+      authWorker,
+      token: (_body, nonce) => ({
+        access_token: "access-1",
+        refresh_token: "refresh-1",
+        id_token: idToken({ nonce }),
+        expires_in: 90,
+      }),
     });
     await completeLogin(original);
     const copiedStorage = memoryStorage();
-    const saved = original.storage.getItem("zoo.oidc.session")!;
-    expect(JSON.parse(saved).tokens.refreshToken).toBeNull();
-    copiedStorage.setItem("zoo.oidc.session", saved);
-    const duplicated = createHarness({ storage: copiedStorage, now: 1_040_000 });
-    original.advance(40_000);
-    await expect(original.client.getAccessToken()).resolves.toBe("access-2");
-    await expect(duplicated.client.getAccessToken()).resolves.toBe("access-1");
-    expect(original.refreshCalls()).toHaveLength(1);
-    expect(duplicated.refreshCalls()).toHaveLength(0);
-    expect(duplicated.reauthorizeCalls).toEqual(["/"]);
-    const reloaded = createHarness({ storage: original.storage, now: 1_040_000 });
-    await expect(reloaded.client.getAccessToken()).resolves.toBe("access-2");
-    expect(reloaded.fetchMock).not.toHaveBeenCalled();
+    copiedStorage.setItem("zoo.oidc.session", original.storage.getItem("zoo.oidc.session")!);
+    const duplicated = createHarness({ storage: copiedStorage, now: 1_100_000, authWorker });
+    // Access token is already expired at reload.
+    const reloaded = createHarness({ storage: original.storage, now: 1_100_000, authWorker });
+    await expect(
+      Promise.all([duplicated.client.getAccessToken(), reloaded.client.getAccessToken()]),
+    ).resolves.toEqual(["access-2", "access-2"]);
+    expect(exchange).toHaveBeenCalledTimes(1);
+    expect(duplicated.reauthorizeCalls).toEqual([]);
+    expect(reloaded.reauthorizeCalls).toEqual([]);
+    const restoredAgain = createHarness({ storage: original.storage, now: 1_100_000, authWorker });
+    await expect(restoredAgain.client.getAccessToken()).resolves.toBe("access-2");
+    expect(exchange).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks logout navigation until the worker session is ended, then retries", async () => {
+    let blocked = true;
+    const calls: AuthWorkerRequest[] = [];
+    const harness = createHarness({
+      authWorker: async (request) => {
+        calls.push(request);
+        if (blocked) throw new Error("storage denied");
+        return null;
+      },
+      token: (_body, nonce) => ({
+        access_token: "access",
+        refresh_token: "refresh",
+        id_token: idToken({ nonce }),
+        expires_in: 300,
+      }),
+    });
+    await completeLogin(harness);
+    harness.assigned.length = 0;
+    await harness.client.logout();
+    expect(harness.assigned).toEqual([]);
+    expect(harness.client.hasSession).toBe(false);
+    blocked = false;
+    await harness.client.logout();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(calls[1]);
+    expect(calls[0].kind).toBe("logout");
+    expect(harness.assigned).toHaveLength(1);
   });
 
   it("does not restore tokens for different resource settings", async () => {
