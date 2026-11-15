@@ -1,3 +1,5 @@
+import { Link } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import { SensitiveMedia } from "../ui/sensitive-media";
 import { ImagePreview } from "../ui/image-preview";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
@@ -6,7 +8,7 @@ import { MessageAttachments } from "../chat/messages/MessageAttachments";
 import type { AttachmentMetadata } from "../../lib/attachments";
 import { useOptionalCollections } from "../../lib/electric/collections-context";
 import { joinUrl, resolvePublicConfig } from "../../lib/config";
-import { ExternalLink } from "../ui/external-link";
+import { ExternalLink, inlineLinkClassName } from "../ui/external-link";
 import { useTranslation } from "react-i18next";
 import { ActivityPubAvatar, type RemoteAvatar } from "./ActivityPubAvatar";
 import { ActivityPubContent, ActivityPubText, type CustomEmoji } from "./ActivityPubEmoji";
@@ -23,6 +25,7 @@ export interface HomeQuote {
   uri: string;
   post: {
     id: string;
+    remote?: boolean;
     content: string;
     user_name: string;
     display_name: string;
@@ -33,6 +36,33 @@ export interface HomeQuote {
     avatar_url?: string | null;
     media?: HomeMedia[];
   } | null;
+}
+
+function QuotePostLink({
+  quote,
+  className,
+  children,
+}: {
+  quote: HomeQuote;
+  className: string;
+  children: ReactNode;
+}) {
+  if (quote.post?.remote === false) {
+    return (
+      <Link
+        to="/home/posts/$postId"
+        params={{ postId: quote.post.id }}
+        className={`${inlineLinkClassName} ${className}`}
+      >
+        {children}
+      </Link>
+    );
+  }
+  return (
+    <ExternalLink href={quote.uri} className={className}>
+      {children}
+    </ExternalLink>
+  );
 }
 
 function QuoteCard({ quote }: { quote: HomeQuote }) {
@@ -47,7 +77,7 @@ function QuoteCard({ quote }: { quote: HomeQuote }) {
     >
       {post ? (
         <>
-          <ExternalLink href={quote.uri} className="flex min-w-0 items-center gap-2">
+          <QuotePostLink quote={quote} className="flex min-w-0 items-center gap-2">
             <ActivityPubAvatar name={name} avatar={post.avatar} avatarUrl={post.avatar_url} />
             <span className="min-w-0">
               <span className="block break-words font-semibold text-foreground">
@@ -57,18 +87,18 @@ function QuoteCard({ quote }: { quote: HomeQuote }) {
                 @{post.user_name}
               </span>
             </span>
-          </ExternalLink>
+          </QuotePostLink>
           <HomePostContent
             content={post.content}
             emojis={post.emojis}
             media={post.media}
             previewLinks={false}
           />
-          <ExternalLink href={quote.uri} className="mt-2 inline-block text-xs text-link">
+          <QuotePostLink quote={quote} className="mt-2 inline-block text-xs text-link">
             <time dateTime={post.created_at}>
               {new Date(post.created_at).toLocaleString(i18n.language)}
             </time>
-          </ExternalLink>
+          </QuotePostLink>
         </>
       ) : (
         <>

@@ -1317,7 +1317,7 @@
         "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
       ],
       "composed": true,
-      "reason": "HomePostContent.browser.test.tsxで通常URL3件と引用の併存・取得共有・引用専用カードとSummalyの分離を、no-summaly.browser.test.tsxで未設定時の本文リンク維持を、LinkPreviewStatesで通常URLの成功・取得中・失敗を、QuotedRenoteでコメント付き・コメントなし・表示できない引用と画像・MFMを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
+      "reason": "HomePostContent.browser.test.tsxで通常URL3件と引用の併存・ローカル引用の内部リンク・単独実行・取得共有・引用専用カードとSummalyの分離を、no-summaly.browser.test.tsxで未設定時の本文リンク維持を、LinkPreviewStatesで通常URLの成功・取得中・失敗を、QuotedRenoteでコメント付き・コメントなし・表示できない引用と画像・MFMを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
     },
     {
       "file": "src/components/apps/console/AppConsole.tsx",

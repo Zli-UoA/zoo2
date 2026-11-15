@@ -44,10 +44,8 @@ pub async fn receive(
         reposts::resolve_announce(&state, &user, &activity).await?;
     }
     receive_verified(&state, &user, &remote, &activity).await?;
-    // Quote resolution is optional: an unavailable original must not reject the comment.
-    if let Err(error) = quotes::resolve(&state, &user, &activity).await {
-        tracing::debug!(%error, "Quoted Note could not be resolved");
-    }
+    // The comment is committed. Optional fetches run separately from Inbox admission.
+    quotes::schedule(state, user, activity);
     Ok(StatusCode::ACCEPTED)
 }
 pub(super) async fn verify_and_store_actor(

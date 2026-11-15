@@ -4,6 +4,34 @@ use super::*;
 type QuoteFlights = std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>;
 static FLIGHTS: std::sync::LazyLock<tokio::sync::Mutex<QuoteFlights>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(QuoteFlights::new()));
+static RESOLUTIONS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
+fn spawn_resolution_task(
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let permit = RESOLUTIONS.try_acquire().ok()?;
+    Some(tokio::spawn(async move {
+        let _permit = permit;
+        task.await;
+    }))
+}
+
+pub(super) fn schedule(state: AppState, user: String, activity: Value) {
+    match activity["type"].as_str() {
+        Some("Create" | "Update") if emoji::note_quote_uri(&activity["object"]).is_some() => {}
+        Some("Announce") => {}
+        _ => return,
+    }
+    // Never queue an unbounded number of optional fetches or retain Inbox permits.
+    let task = async move {
+        if let Err(error) = resolve(&state, &user, &activity).await {
+            tracing::debug!(%error, "Quoted Note could not be resolved");
+        }
+    };
+    if spawn_resolution_task(task).is_none() {
+        tracing::debug!("Quote resolution capacity reached; keeping the original link");
+    }
+}
 
 async fn lock_quote(uri: &str) -> tokio::sync::OwnedMutexGuard<()> {
     let mutex = {
@@ -100,7 +128,7 @@ pub(crate) async fn decorate(
     LEFT JOIN LATERAL (
       SELECT json_build_object('id',p.id,'content',p.content,'user_name',u.user_name,'display_name',COALESCE(profile.display_name,u.display_name),'created_at',p.created_at,'emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'local',true)) FROM jsonb_each(message_content_emojis(p.content)) e),'[]'::jsonb),'avatar_url',u.avatar_url,'media',p.media,'channel_id',p.channel_id,'remote',false,'user_id',p.user_id) AS post
       FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id
-      WHERE r.quote_uri=$2 || '/api/activitypub/notes/' || p.id AND p.apub AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted') AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
+      WHERE p.id=CASE WHEN starts_with(r.quote_uri,$2 || '/api/activitypub/notes/') THEN substr(r.quote_uri,length($2 || '/api/activitypub/notes/')+1) END AND p.apub AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted') AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
     ) local ON true"#, &[&json!(ids).to_string(),&base]).await?;
     if quotes.is_empty() {
         return Ok(());
@@ -144,6 +172,30 @@ pub(crate) async fn decorate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn optional_fetches_run_separately_and_do_not_queue_beyond_capacity() {
+        let gate = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let gate = gate.clone();
+            handles.push(
+                spawn_resolution_task(async move {
+                    let _permit = gate.acquire().await.unwrap();
+                })
+                .expect("the first four optional fetches are admitted"),
+            );
+        }
+        assert!(spawn_resolution_task(async {}).is_none());
+        gate.add_permits(4);
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        spawn_resolution_task(async {})
+            .expect("completed work releases capacity")
+            .await
+            .unwrap();
+    }
 
     #[tokio::test]
     #[ignore = "requires migrated PostgreSQL and ACTIVITYPUB_BASE_URL"]

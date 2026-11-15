@@ -293,19 +293,28 @@ it("defers Home requests until nearby, shares active views and cancels offscreen
   expect(disconnect).toHaveBeenCalledTimes(2);
 });
 
-it("starts Home preview requests when a real scroll container reveals the post", async () => {
-  api.get.mockResolvedValue({ title: "スクロール後のカード", description: "説明", image: null });
+it("prefetches within 200px of the real scrolling pane and defers more distant posts", async () => {
+  const near = "https://example.com/near-scroll-preview";
+  const far = "https://example.com/far-scroll-preview";
+  api.get.mockImplementation(async (url: string) => ({
+    title: url === near ? "画面の100px下のカード" : "遠い投稿のカード",
+    description: "説明",
+    image: null,
+  }));
   const view = render(
     <div style={{ height: 160, overflowY: "auto" }}>
-      <div style={{ height: 1200 }} />
-      <HomePostContent content="https://example.com/real-scroll-preview" />
+      <div style={{ height: 260 }} />
+      <HomePostContent content={near} />
+      <div style={{ height: 1000 }} />
+      <HomePostContent content={far} />
     </div>,
   );
-  await act(async () => {});
-  expect(api.get).not.toHaveBeenCalled();
+  await screen.findByRole("link", { name: /画面の100px下のカード/ });
+  expect(api.get).toHaveBeenCalledTimes(1);
+  expect(api.get).toHaveBeenCalledWith(near, expect.any(Object));
   const scroller = view.container.firstElementChild!;
   scroller.scrollTop = scroller.scrollHeight;
   fireEvent.scroll(scroller);
-  await screen.findByRole("link", { name: /スクロール後のカード/ });
-  expect(api.get).toHaveBeenCalledTimes(1);
+  await screen.findByRole("link", { name: /遠い投稿のカード/ });
+  expect(api.get).toHaveBeenCalledTimes(2);
 });

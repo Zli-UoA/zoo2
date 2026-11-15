@@ -132,9 +132,16 @@ function DeferredLinkPreviews(props: PreviewProps) {
       setNearby(true);
       return () => document.removeEventListener("visibilitychange", update);
     }
+    // rootMargin must expand the actual scrolling pane, not only the window.
+    let root = ref.current?.parentElement ?? null;
+    while (root && root !== document.body && root !== document.documentElement) {
+      if (/(auto|scroll|overlay)/.test(getComputedStyle(root).overflowY)) break;
+      root = root.parentElement;
+    }
+    if (root === document.body || root === document.documentElement) root = null;
     const observer = new IntersectionObserver(
       ([entry]) => setNearby(entry?.isIntersecting ?? false),
-      { rootMargin: "200px 0px" },
+      { root, rootMargin: "200px 0px" },
     );
     if (ref.current) observer.observe(ref.current);
     return () => {

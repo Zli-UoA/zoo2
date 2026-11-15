@@ -1,5 +1,12 @@
 import "../../styles.css";
 import { render, screen, waitFor } from "@testing-library/react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { beforeAll, expect, it } from "vite-plus/test";
 import { http, HttpResponse } from "msw";
 import { mockServer, startMockServer } from "../../test/browser-setup";
@@ -78,6 +85,8 @@ it("renders native quote cards without fetching quoted URLs through Summaly", as
   const more = ["https://example.com/comment-link-two", "https://example.com/comment-link-three"];
   const lookups: string[] = [];
   mockServer.use(
+    http.get("*/summaly-endpoint", () => HttpResponse.text("https://home-summaly.example/url")),
+    http.get("*/media-proxy-endpoint", () => HttpResponse.text("https://home-media.example/")),
     http.get("https://home-summaly.example/url", ({ request }) => {
       lookups.push(new URL(request.url).searchParams.get("url")!);
       return HttpResponse.json({
@@ -130,5 +139,46 @@ it("renders native quote cards without fetching quoted URLs through Summaly", as
       expect(card.getBoundingClientRect().width).toBeLessThanOrEqual(width);
       expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth);
     }
+  }
+});
+
+it("opens local quote authors and timestamps in Zoo instead of the federation JSON endpoint", async () => {
+  const id = "local-quoted-post";
+  const root = createRootRoute();
+  const index = createRoute({
+    getParentRoute: () => root,
+    path: "/",
+    component: () => (
+      <LocaleProvider>
+        <HomePostContent
+          content="<https://zoo.example/api/activitypub/notes/local-quoted-post>"
+          quote={{
+            uri: "https://zoo.example/api/activitypub/notes/local-quoted-post",
+            post: {
+              id,
+              remote: false,
+              content: "Local original",
+              user_name: "local",
+              display_name: "Local author",
+              created_at: "2026-11-01T09:00:00Z",
+              emojis: [],
+            },
+          }}
+        />
+      </LocaleProvider>
+    ),
+  });
+  const detail = createRoute({ getParentRoute: () => root, path: "/home/posts/$postId" });
+  const router = createRouter({
+    routeTree: root.addChildren([index, detail]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  render(<RouterProvider router={router} />);
+  await screen.findByText("Local original");
+  const links = screen.getAllByRole("link");
+  expect(links).toHaveLength(2);
+  for (const link of links) {
+    expect(link).toHaveAttribute("href", `/home/posts/${id}`);
+    expect(link).not.toHaveAttribute("target", "_blank");
   }
 });
