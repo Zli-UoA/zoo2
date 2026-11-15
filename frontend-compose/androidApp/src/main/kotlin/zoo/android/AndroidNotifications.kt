@@ -16,9 +16,15 @@ internal class AndroidNotifications(private val activity: Activity, private val 
     private val token = java.util.UUID.randomUUID().toString()
     private val inbox = NotificationInbox()
     private val shown = mutableMapOf<String, Row>()
-    private val busy = mutableSetOf<String>()
-    private val replied = mutableSetOf<String>()
-    private val replyIds = mutableMapOf<String, String>()
+    private val actions = NotificationActions(
+        shown = shown,
+        request = { path, method, body -> app.api.request(path, method, body); Unit },
+        uuid = app.platform::uuid,
+        canReply = ::canReply,
+        replyParent = ::replyParent,
+        showError = { row, key -> post(row, app.t(key)) },
+        dismiss = ::dismiss,
+    )
     private val observer: Job
 
     init {
@@ -76,6 +82,7 @@ internal class AndroidNotifications(private val activity: Activity, private val 
     private fun post(row: Row, error: String? = null) {
         if (!allowed()) return
         val id = row.text("id")
+        if (id !in shown) return
         val data = row.nested("display_data")
         val actor = author(data.nested("actor")).ifEmpty { "Zoo" }
         val channel = data.nested("channel").text("channel_name")
@@ -101,7 +108,7 @@ internal class AndroidNotifications(private val activity: Activity, private val 
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setDeleteIntent(action(id, "dismiss"))
             .addAction(Notification.Action.Builder(null, app.t("notifications.read"), action(id, "read")).build())
-        if (kind != "reaction" && canReply(row)) {
+        if (kind != "reaction" && !actions.hasReplied(id) && canReply(row)) {
             val input = RemoteInput.Builder("reply").setLabel(app.t("home.reply")).build()
             builder.addAction(Notification.Action.Builder(null, app.t("home.reply"), action(id, "reply", true))
                 .addRemoteInput(input).setAllowGeneratedReplies(true).build())
@@ -125,38 +132,9 @@ internal class AndroidNotifications(private val activity: Activity, private val 
     suspend fun receive(intent: Intent) {
         if (intent.getStringExtra("session") != token) return
         val id = intent.getStringExtra("notification") ?: return
-        val row = shown[id] ?: return
-        if (!busy.add(id)) return
-        try {
-            when (intent.action) {
-                "dismiss" -> { dismiss(id); return }
-                "reply" -> {
-                    if (!canReply(row)) { post(row, app.t("e2ee.sendUnavailable")); return }
-                    val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence("reply")?.toString()?.trim()
-                        ?.takeIf { it.isNotEmpty() } ?: return
-                    if (id !in replied) {
-                        try {
-                            // Do not guess a root when the channel subscription has been released.
-                            val parent = replyParent(row) ?: run { post(row, app.t("common.writeError")); return }
-                            app.api.request("/api/messages", "POST", obj(
-                                "id" to replyIds.getOrPut(id) { app.platform.uuid() },
-                                "channel_id" to row.text("channel_id"),
-                                "parent_id" to parent,
-                                "content" to text,
-                            ))
-                            replied += id
-                        } catch (e: CancellationException) { throw e }
-                        catch (_: Exception) { post(row, app.t("common.writeError")); return }
-                    }
-                }
-                "read" -> Unit
-                else -> return
-            }
-            app.api.request("/api/notifications/$id/read", "PATCH", obj())
-            dismiss(id)
-        } catch (e: CancellationException) { throw e }
-        catch (_: Exception) { post(row, app.t("notifications.readError")) }
-        finally { busy.remove(id) }
+        val text = if (intent.action == "reply")
+            RemoteInput.getResultsFromIntent(intent)?.getCharSequence("reply")?.toString() else null
+        actions.receive(id, intent.action.orEmpty(), text)
     }
 
     fun close() {
@@ -167,7 +145,7 @@ internal class AndroidNotifications(private val activity: Activity, private val 
 
     fun dispatch(intent: Intent, finished: () -> Unit) {
         app.scope.launch {
-            withTimeout(9_000) { receive(intent) }
+            receive(intent)
         }.invokeOnCompletion { finished() }
     }
 

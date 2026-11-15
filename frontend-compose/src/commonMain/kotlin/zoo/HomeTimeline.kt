@@ -25,6 +25,10 @@ class HomeTimeline(
     var refreshing by mutableStateOf(false)
         private set
 
+    /** Includes retained live refreshes, even when the pull-to-refresh spinner stays hidden. */
+    var updating by mutableStateOf(false)
+        private set
+
     var loadingOlder by mutableStateOf(false)
         private set
 
@@ -33,6 +37,9 @@ class HomeTimeline(
 
     var error by mutableStateOf(false)
         private set
+
+    val canLoadOlder: Boolean
+        get() = hasMore && !loading && !loadingOlder && !updating && !error
 
     private var refreshJob: Job? = null
     private var olderJob: Job? = null
@@ -79,6 +86,7 @@ class HomeTimeline(
         val size = if (retain) windowSize else 50
         val retainedTail = if (retain) tail else null
         refreshing = !retain
+        updating = true
         refreshJob =
             scope.launch {
                 error = false
@@ -117,6 +125,7 @@ class HomeTimeline(
                         loading = false
                         refreshing = false
                         refreshJob = null
+                        updating = false
                         if (deferred && app.env.visible && app.env.online) refresh(true)
                     }
                 }
@@ -124,7 +133,7 @@ class HomeTimeline(
     }
 
     fun older() {
-        if (loading || loadingOlder || refreshJob?.isActive == true || !hasMore || posts.isEmpty()) return
+        if (loading || loadingOlder || updating || !hasMore || posts.isEmpty()) return
         val version = generation
         loadingOlder = true
         error = false
@@ -156,6 +165,7 @@ class HomeTimeline(
 
     fun close() {
         generation++
+        updating = false
         refreshJob?.cancel()
         olderJob?.cancel()
     }

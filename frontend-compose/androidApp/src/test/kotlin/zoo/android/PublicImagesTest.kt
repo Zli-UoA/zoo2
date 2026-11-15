@@ -7,6 +7,20 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.*
 
 class PublicImagesTest {
+    @Test fun queryOnlyRedirectKeepsTheImagePath() = runTest {
+        val urls = mutableListOf<String>()
+        val http = HttpClient(MockEngine { request ->
+            urls += request.url.toString()
+            if (urls.size == 1) respond("", HttpStatusCode.Found, headersOf(HttpHeaders.Location, "?token=new"))
+            else respond("image")
+        }) { followRedirects = false }
+        try {
+            assertEquals("image", loadPublicImage(http, "https://cdn.example/images/avatar.png?token=old").decodeToString())
+            assertEquals(listOf("https://cdn.example/images/avatar.png?token=old",
+                "https://cdn.example/images/avatar.png?token=new"), urls)
+        } finally { http.close() }
+    }
+
     @Test fun keepsStreamingSizeLimitAfterRedirects() = runTest {
         val http = HttpClient(MockEngine { request ->
             if (request.url.encodedPath == "/redirect")

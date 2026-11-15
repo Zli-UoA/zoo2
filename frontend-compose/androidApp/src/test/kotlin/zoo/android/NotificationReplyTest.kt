@@ -8,7 +8,13 @@ class NotificationReplyTest {
 
     @Test fun repliesToTheExistingThreadRoot() {
         val reply = obj("id" to "target", "channel_id" to "channel", "parent_id" to "root")
-        assertEquals("root", notificationReplyParent(notification, listOf(reply)))
+        val root = obj("id" to "root", "channel_id" to "channel")
+        assertEquals("root", notificationReplyParent(notification, listOf(reply, root)))
+        assertNull(notificationReplyParent(notification, listOf(reply)))
+        assertNull(notificationReplyParent(notification, listOf(reply,
+            obj("id" to "root", "channel_id" to "channel", "deleted_at" to "2026-11-15"))))
+        assertNull(notificationReplyParent(notification, listOf(reply,
+            obj("id" to "root", "channel_id" to "other"))))
     }
 
     @Test fun startsAThreadAtATopLevelMessage() {

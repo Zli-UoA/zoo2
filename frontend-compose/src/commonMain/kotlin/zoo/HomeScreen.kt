@@ -43,8 +43,7 @@ fun HomeScreen(
         snapshotFlow {
             val layout = scroll.layoutInfo
             val nearEnd = (layout.visibleItemsInfo.lastOrNull()?.index ?: -1) >= layout.totalItemsCount - 3
-            nearEnd && layout.totalItemsCount > 0 && feed.hasMore && !feed.loading &&
-                !feed.loadingOlder && !feed.refreshing && !feed.error && app.env.visible && app.env.online
+            nearEnd && layout.totalItemsCount > 0 && feed.canLoadOlder && app.env.visible && app.env.online
         }.collect { ready -> if (ready) feed.older() }
     }
     val composer = rememberHomeComposerState()

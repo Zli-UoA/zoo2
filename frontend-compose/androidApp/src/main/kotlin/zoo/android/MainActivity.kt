@@ -240,9 +240,11 @@ class MainActivity : ComponentActivity() {
                     var disposed = false
                     val observer = LifecycleEventObserver { _, _ ->
                         platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                        current.session.update(platform.env)
                     }
                     lifecycle.addObserver(observer)
                     platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                    current.session.update(platform.env)
                     val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
                     fun updateOnline() = runOnUiThread {
                         if (!disposed) platform.online(hasInternet(

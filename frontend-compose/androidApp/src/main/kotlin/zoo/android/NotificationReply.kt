@@ -8,5 +8,10 @@ internal fun notificationReplyParent(notification: Row, messages: List<Row>): St
         it.text("id") == notification.text("message_id") &&
             it.text("channel_id") == notification.text("channel_id") && !it.present("deleted_at")
     } ?: return null
-    return target.text("parent_id").ifEmpty { target.text("id") }
+    val parent = target.text("parent_id")
+    if (parent.isEmpty()) return target.text("id")
+    return messages.find {
+        it.text("id") == parent && it.text("channel_id") == notification.text("channel_id") &&
+            !it.present("deleted_at") && it.text("parent_id").isEmpty()
+    }?.text("id")
 }
