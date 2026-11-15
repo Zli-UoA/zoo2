@@ -4,6 +4,7 @@ import android.net.NetworkCapabilities
 import kotlin.test.*
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -13,11 +14,11 @@ class NetworkStatusTest {
     fun onlyValidatedInternetConnectionsAreOnline() {
         assertFalse(hasInternet(null))
         val caps = NetworkCapabilities()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         assertFalse(hasInternet(caps))
-        caps.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        shadowOf(caps).addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
         assertTrue(hasInternet(caps))
-        caps.removeCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        shadowOf(caps).removeCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
         assertFalse(hasInternet(caps))
     }
 }

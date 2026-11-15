@@ -28,7 +28,7 @@ internal fun DmItem(
     val colors = MaterialTheme.colorScheme
     Row(
         Modifier.fillMaxWidth()
-            .height(if (narrow) 36.dp else 32.dp)
+            .heightIn(min = if (LocalTouchUi.current) 56.dp else if (narrow) 36.dp else 32.dp)
             .background(
                 if (active) colors.secondaryContainer else Color.Transparent,
                 RoundedCornerShape(8.dp),
@@ -203,7 +203,7 @@ internal fun RailLink(app: Session, url: String, icon: String, label: String) {
     val ring = if (app.env.dark) Color(0xffbdbdbd) else Color(0xff737373)
     NativeLink(
         url,
-        Modifier.size(40.dp)
+        Modifier.size(touchTargetSize(40.dp, LocalTouchUi.current))
             .onFocusChanged { focused = it.isFocused }
             .hoverable(interactions)
             .focusVisibleRing(14.dp, ring.copy(alpha = .5f), focused && FocusInputModality.keyboard)

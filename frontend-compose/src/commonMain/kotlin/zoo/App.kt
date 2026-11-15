@@ -69,6 +69,12 @@ fun ZooApp(app: Session) {
     val allNotifications by app.repo.notifications.rows.collectAsState()
     val notifications = androidNotificationRows(allNotifications)
     val loading by app.repo.channels.loading.collectAsState()
+    val channelError by app.repo.channels.error.collectAsState()
+    LaunchedEffect(app) { app.activityPubNotifications.ensureLoaded() }
+    val unread = (
+        notifications.count { !it.flag("is_read") } + app.activityPubNotifications.unreadCount -
+            unifiedNotificationFeed(notifications, app.activityPubNotifications.items).duplicateUnreadCount
+        ).coerceAtLeast(0)
     val channel = channels.find { it.text("id") == app.channelId }
     val isHome = isHomePath(app.env.path)
     val isNotifications = app.env.path.startsWith("/notifications")
@@ -91,61 +97,81 @@ fun ZooApp(app: Session) {
         if (wide && channel?.flag("is_dm") == true) app.membersOpen = false
         val membersChannel = channel?.takeUnless { it.flag("is_dm") }
         val showMembersScreen = app.membersOpen && !wide && membersChannel != null
-        Row(Modifier.fillMaxSize()) {
-            if (!isSettings && !showMembersScreen) {
-                Rail(app, notifications.count { !it.flag("is_read") }, narrow)
-                VerticalDivider()
-            }
-            if (!fullPage && (!narrow || app.pane == "sidebar") && !showMembersScreen) {
-                Sidebar(
-                    app,
-                    channels,
-                    users,
-                    members,
-                    loading,
-                    if (narrow) Modifier.weight(1f) else Modifier.width(287.dp),
-                    narrow = narrow,
-                )
-                VerticalDivider()
-            }
-            if (!narrow || fullPage || app.pane == "chat")
-                Column(Modifier.weight(1f).fillMaxHeight().then(webControlModifier("main"))) {
-                    when {
-                        showMembersScreen ->
-                            ChannelMembersScreen(app, membersChannel!!, users, members)
-                        isHome -> HomeScreen(app)
-                        isSettings -> ZooSettings(app, users)
-                        isBubble -> BubbleChat(app, users)
-                        isNotifications -> Notifications(app, notifications, users)
-                        app.env.path.startsWith("/apps-authorize") -> AppConsent(app)
-                        app.channelId == null -> Welcome(app)
-                        channel == null ->
-                            Text(
-                                app.t(if (loading) "common.loading" else "channels.notFound"),
-                                Modifier.padding(24.dp),
-                            )
-                        else -> {
-                            Header(app, channel, users, members, narrow, wide)
-                            HorizontalDivider()
-                            Chat(app, channel, users, members, wide, Modifier.weight(1f))
+        val keyboardOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+        Column(Modifier.fillMaxSize()) {
+            OfflineBanner(
+                app,
+                obj(
+                    "isOnline" to app.env.online,
+                    "persistenceStatus" to app.env.persistenceStatus,
+                    "persistenceError" to app.env.persistenceError,
+                ),
+                onRetry = { app.repo.refresh() },
+            )
+            Row(Modifier.weight(1f).fillMaxWidth()) {
+                if (!narrow && !isSettings && !showMembersScreen) {
+                    Rail(app, notifications.count { !it.flag("is_read") }, narrow)
+                    if (!narrow) VerticalDivider()
+                }
+                if (!fullPage && (!narrow || app.pane == "sidebar") && !showMembersScreen) {
+                    Sidebar(
+                        app,
+                        channels,
+                        users,
+                        members,
+                        loading,
+                        if (narrow) Modifier.weight(1f) else Modifier.width(287.dp),
+                        narrow = narrow,
+                        error = channelError != null,
+                    )
+                    VerticalDivider()
+                }
+                if (!narrow || fullPage || app.pane == "chat")
+                    Column(Modifier.weight(1f).fillMaxHeight().then(webControlModifier("main"))) {
+                        when {
+                            showMembersScreen ->
+                                ChannelMembersScreen(app, membersChannel!!, users, members)
+                            isHome -> HomeScreen(app)
+                            isSettings -> ZooSettings(app, users)
+                            isBubble -> BubbleChat(app, users)
+                            isNotifications -> Notifications(app, notifications, users)
+                            app.env.path.startsWith("/apps-authorize") -> AppConsent(app)
+                            app.channelId == null -> Welcome(app)
+                            channel == null ->
+                                Text(
+                                    app.t(if (loading) "common.loading" else "channels.notFound"),
+                                    Modifier.padding(24.dp),
+                                )
+                            else -> {
+                                Header(app, channel, users, members, narrow, wide)
+                                HorizontalDivider()
+                                Chat(app, channel, users, members, wide, Modifier.weight(1f))
+                            }
                         }
                     }
+                if (wide && app.membersOpen && membersChannel != null) {
+                    VerticalDivider()
+                    Column(Modifier.width(if (width >= 1280.dp) 320.dp else 288.dp).fillMaxHeight()) {
+                        Members(app, membersChannel, users, members, Modifier.fillMaxSize())
+                    }
                 }
-            if (wide && app.membersOpen && membersChannel != null) {
-                VerticalDivider()
-                Column(Modifier.width(if (width >= 1280.dp) 320.dp else 288.dp).fillMaxHeight()) {
-                    Members(app, membersChannel, users, members, Modifier.fillMaxSize())
+            }
+            if (narrow && !keyboardOpen && !showMembersScreen && app.thread == null) {
+                HorizontalDivider()
+                MobileNavigation(
+                    app.env.path,
+                    unread,
+                    { app.t(it) },
+                    app.t(if (unread == 1) "notifications.unread_one" else "notifications.unread_other", "count" to unread.toString()),
+                ) { destination ->
+                    if (destination == MobileDestination.Channels && app.channelId != null)
+                        app.pane = "sidebar"
+                    else if (destination == MobileDestination.Settings)
+                        app.navigate("/settings" + (app.channelId?.let { "?channel=$it" } ?: ""))
+                    else app.navigate(destination.path)
                 }
             }
         }
-        OfflineBanner(
-            app,
-            obj(
-                "isOnline" to app.env.online,
-                "persistenceStatus" to app.env.persistenceStatus,
-                "persistenceError" to app.env.persistenceError,
-            ),
-        )
         AppDialogs(app, channel, channels, users, members)
         AppSurfaces(app)
         val appRoute =
@@ -302,7 +328,6 @@ internal fun AppDialogs(
 
 @Composable
 internal fun Rail(app: Session, unread: Int, narrow: Boolean) {
-    LaunchedEffect(app) { app.activityPubNotifications.ensureLoaded() }
     Column(
         Modifier.width(if (narrow) 55.dp else 63.dp)
             .fillMaxHeight()
@@ -379,6 +404,10 @@ internal fun Sidebar(
         Column(
             Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 4.dp)
         ) {
+            if (narrow) {
+                ScreenHeader("hash", app.t("channels.title"))
+                HorizontalDivider()
+            }
             CollapsibleSection(
                 app.t("channels.title"),
                 icon = "hash",
@@ -418,13 +447,11 @@ internal fun Sidebar(
                                         )
                                 )
                             }
-                        error ->
-                            Text(
-                                app.t("channels.loadError"),
-                                Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                small = true,
-                                color = MaterialTheme.colorScheme.error,
-                            )
+                        error -> LoadErrorState(
+                            app.t("channels.loadError"),
+                            app.t("offline.retry"),
+                            retry = { app.repo.channels.refresh() },
+                        )
                         channels.none { !it.flag("is_dm") } ->
                             Column(
                                 Modifier.padding(8.dp),
@@ -498,7 +525,7 @@ internal fun ChannelLink(app: Session, channel: Row, title: String) {
     val narrow = with(LocalDensity.current) { windowWidth.toDp() < 768.dp }
     Row(
         Modifier.fillMaxWidth()
-            .height(if (narrow) 36.dp else 32.dp)
+            .heightIn(min = if (LocalTouchUi.current) 56.dp else if (narrow) 36.dp else 32.dp)
             .then(
                 webControlModifier(
                     "link",
@@ -617,23 +644,25 @@ internal fun Header(
     PaneHeader {
         if (narrow) {
             IconButton("arrow-left", app.t("channels.back"), size = 44.dp) { app.pane = "sidebar" }
+            Spacer(Modifier.width(4.dp))
+        }
+        if (!narrow) {
+            Box(
+                Modifier.size(32.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (channel.flag("is_dm")) {
+                        if (channel.text("channel_name").startsWith("dm:group:")) "users"
+                        else "messages-square"
+                    } else if (channel.flag("is_private")) "lock" else "hash",
+                    modifier = Modifier.size(16.dp),
+                )
+            }
             Spacer(Modifier.width(12.dp))
         }
-        Box(
-            Modifier.size(32.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (channel.flag("is_dm")) {
-                    if (channel.text("channel_name").startsWith("dm:group:")) "users"
-                    else "messages-square"
-                } else if (channel.flag("is_private")) "lock" else "hash",
-                modifier = Modifier.size(16.dp),
-            )
-        }
-        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -666,7 +695,7 @@ internal fun Header(
         Spacer(Modifier.width(12.dp))
         if (!channel.flag("is_dm"))
             Row(
-                Modifier.height(28.dp)
+                Modifier.heightIn(min = touchTargetSize(28.dp, LocalTouchUi.current))
                     .then(webControlModifier("button", expanded = app.membersOpen))
                     .clip(RoundedCornerShape(8.dp))
                     .background(

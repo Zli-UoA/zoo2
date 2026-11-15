@@ -53,13 +53,13 @@ fun CollapsibleSection(
     val ring = (if (dark) Color(0xffbdbdbd) else Color(0xff737373)).copy(alpha = .5f)
     Column {
         Row(
-            Modifier.fillMaxWidth().heightIn(min = 36.dp).padding(horizontal = 8.dp),
+            Modifier.fillMaxWidth().heightIn(min = touchTargetSize(36.dp, LocalTouchUi.current)).padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Row(
                 Modifier.weight(1f)
-                    .heightIn(min = 36.dp)
+                    .heightIn(min = touchTargetSize(36.dp, LocalTouchUi.current))
                     .focusInputModality()
                     .focusVisibleRing(
                         8.dp,

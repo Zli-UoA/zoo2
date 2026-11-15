@@ -129,8 +129,8 @@ fun ZooTheme(
         TextStyle(
             fontFamily = latin,
             localeList = androidx.compose.ui.text.intl.LocaleList(locale),
-            fontSize = 14.sp,
-            lineHeight = browserLineHeight(20.sp),
+            fontSize = if (LocalTouchUi.current) 16.sp else 14.sp,
+            lineHeight = browserLineHeight(if (LocalTouchUi.current) 24.sp else 20.sp),
             platformStyle = webTextStyle(),
             lineHeightStyle =
                 LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
@@ -149,7 +149,10 @@ fun ZooTheme(
             typography =
                 Typography(
                     bodyMedium = body,
-                    bodySmall = body.copy(fontSize = 12.sp, lineHeight = browserLineHeight(16.sp)),
+                    bodySmall = body.copy(
+                        fontSize = if (LocalTouchUi.current) 13.sp else 12.sp,
+                        lineHeight = browserLineHeight(if (LocalTouchUi.current) 20.sp else 16.sp),
+                    ),
                     titleSmall = body.copy(fontWeight = FontWeight.SemiBold),
                     titleLarge =
                         body.copy(
@@ -359,6 +362,17 @@ fun webControlModifier(
         testTag = id
         if (!enabled) disabled()
         if (selected != null) this.selected = selected
+        attributes["aria-label"]?.takeIf { it.isNotBlank() }?.let { contentDescription = it }
+        when (role) {
+            "button", "menuitem" -> this.role = Role.Button
+            "tab" -> this.role = Role.Tab
+            "checkbox", "menuitemcheckbox" -> this.role = Role.Checkbox
+            "switch" -> this.role = Role.Switch
+            "radio", "menuitemradio" -> this.role = Role.RadioButton
+            "heading" -> heading()
+            "status" -> liveRegion = LiveRegionMode.Polite
+            "alert" -> liveRegion = LiveRegionMode.Assertive
+        }
     }
 }
 
@@ -395,7 +409,7 @@ fun Button(
     val isHovered = enabled && hovered
     val density = LocalDensity.current
     var labelAdvance by remember(label, size, textStyle) { mutableStateOf(Float.NaN) }
-    val controlHeight =
+    val controlHeight = touchTargetSize(
         if (variant == "tab") 36.dp
         else
             when (size.removePrefix("icon-")) {
@@ -403,7 +417,9 @@ fun Button(
                 "sm" -> 28.dp
                 "lg" -> 36.dp
                 else -> 32.dp
-            }
+            },
+        LocalTouchUi.current,
+    )
     val iconOnly = size.startsWith("icon")
     val radius =
         if (variant in listOf("toggle", "tab") || size.endsWith("xs") || size.endsWith("sm")) 8.dp
@@ -498,7 +514,7 @@ fun Button(
                     attributes = if (title == null) emptyMap() else mapOf("title" to title),
                 )
             )
-            .height(controlHeight)
+            .heightIn(min = controlHeight)
             .then(if (iconOnly) Modifier.width(controlHeight) else Modifier)
             .then(
                 if (variant == "tab" && selected == true) Modifier.cssShadowSm(shape) else Modifier
@@ -540,7 +556,7 @@ fun Button(
             .hoverable(interaction, enabled)
             .clickable(
                 interactionSource = interaction,
-                indication = null,
+                indication = if (LocalTouchUi.current) LocalIndication.current else null,
                 enabled = enabled,
                 role = role,
                 onClick = {
@@ -574,7 +590,7 @@ fun Button(
                         lineHeight = textStyle?.lineHeight ?: TextUnit.Unspecified,
                         size =
                             textStyle?.fontSize?.takeIf { it.isSpecified }
-                                ?: when (size) {
+                                ?: if (LocalTouchUi.current) 14.sp else when (size) {
                                     "xs" -> 12.sp
                                     "sm" -> 12.8.sp
                                     else -> 14.sp
@@ -674,7 +690,7 @@ fun IconButton(
 ) {
     Box(
         modifier
-            .size(size)
+            .size(touchTargetSize(size, LocalTouchUi.current))
             .then(webControlModifier("button", enabled))
             .clip(RoundedCornerShape(8.dp))
             .background(
@@ -755,8 +771,8 @@ fun Field(
     val type =
         MaterialTheme.typography.bodyMedium
             .copy(
-                fontSize = if ((!chrome || !singleLine) && viewport < 768f) 16.sp else 14.sp,
-                lineHeight = if (!chrome || !singleLine && viewport < 768f) 24.sp else 20.sp,
+                fontSize = if (LocalTouchUi.current || (!chrome || !singleLine) && viewport < 768f) 16.sp else 14.sp,
+                lineHeight = if (LocalTouchUi.current || !chrome || !singleLine && viewport < 768f) 24.sp else 20.sp,
                 color = colors.onBackground,
             )
             .merge(inputTextStyle)
@@ -854,7 +870,8 @@ fun Field(
                         .onSizeChanged { fieldSize = it }
                         .then(
                             if (resizable && resizedHeight != null) Modifier.height(resizedHeight!!)
-                            else if (chrome && singleLine) Modifier.height(minimumHeight ?: 32.dp)
+                            else if (chrome && singleLine)
+                                Modifier.heightIn(min = touchTargetSize(minimumHeight ?: 32.dp, LocalTouchUi.current))
                             else
                                 Modifier.heightIn(
                                     min = minimumHeight ?: if (!chrome) 44.dp else 64.dp,
@@ -976,13 +993,14 @@ fun Field(
 @Composable
 fun Check(label: String, checked: Boolean, enabled: Boolean = true, change: (Boolean) -> Unit) {
     Row(
-        Modifier.then(webControlModifier("checkbox", enabled, checked))
+        Modifier.heightIn(min = if (LocalTouchUi.current) 48.dp else 0.dp)
+            .then(webControlModifier("checkbox", enabled, checked))
             .toggleable(checked, enabled, role = Role.Checkbox, onValueChange = change),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Box(
-            Modifier.size(13.dp)
+            Modifier.size(if (LocalTouchUi.current) 20.dp else 13.dp)
                 .border(
                     1.dp,
                     if (checked) Color(0xff0075ff) else Color(0xff767676),
@@ -1109,7 +1127,7 @@ fun Menu(
                     ?.let { requesters[it].requestFocus() }
             }
             Column(
-                Modifier.onPreviewKeyEvent {
+                Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()).onPreviewKeyEvent {
                     if (it.type != KeyEventType.KeyDown) false
                     else if (it.key == Key.Escape || it.key == Key.Tab) {
                         setOpen(false)
@@ -1139,6 +1157,7 @@ fun Menu(
                 actions.forEachIndexed { index, item ->
                     Row(
                         Modifier.fillMaxWidth()
+                            .heightIn(min = if (LocalTouchUi.current) 48.dp else 0.dp)
                             .then(webControlModifier("menuitem", item.enabled))
                             .focusRequester(requesters[index])
                             .onFocusChanged { if (it.isFocused) active = index }

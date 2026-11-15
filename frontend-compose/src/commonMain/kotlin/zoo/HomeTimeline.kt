@@ -22,6 +22,9 @@ class HomeTimeline(
     var loading by mutableStateOf(true)
         private set
 
+    var refreshing by mutableStateOf(false)
+        private set
+
     var loadingOlder by mutableStateOf(false)
         private set
 
@@ -75,6 +78,7 @@ class HomeTimeline(
         }
         val size = if (retain) windowSize else 50
         val retainedTail = if (retain) tail else null
+        refreshing = !retain
         refreshJob =
             scope.launch {
                 error = false
@@ -111,6 +115,7 @@ class HomeTimeline(
                 } finally {
                     if (version == generation) {
                         loading = false
+                        refreshing = false
                         refreshJob = null
                         if (deferred && app.env.visible && app.env.online) refresh(true)
                     }

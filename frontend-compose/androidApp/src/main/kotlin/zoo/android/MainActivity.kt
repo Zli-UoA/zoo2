@@ -256,6 +256,7 @@ class MainActivity : ComponentActivity() {
                     LocalWebPlatform provides platform,
                     LocalApp provides current.session,
                     LocalEncryptionSettings provides encryption,
+                    LocalTouchUi provides true,
                 ) {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
                         Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {

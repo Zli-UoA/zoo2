@@ -108,6 +108,15 @@ jobs:
         with:
           name: zoo-android-debug
           path: frontend-compose/androidApp/build/outputs/apk/debug/*.apk
+      - name: Upload Android test reports and UI captures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: zoo-android-test-reports
+          path: |
+            frontend-compose/build/reports/tests/
+            frontend-compose/build/reports/ui/
+            frontend-compose/androidApp/build/reports/tests/
 
   publish-main:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')

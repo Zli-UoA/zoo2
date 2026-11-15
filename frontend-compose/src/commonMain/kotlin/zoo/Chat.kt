@@ -1583,6 +1583,7 @@ internal fun Composer(
                 singleLine = false,
                 enabled = enabled,
                 readOnly = !enabled,
+                maximumHeight = if (app.env.touch) 160.dp else null,
                 placeholder =
                     placeholder
                         ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
@@ -1681,7 +1682,7 @@ private fun ComposerSendButton(canSubmit: State<Boolean>, touch: Boolean, label:
     Box(
         Modifier.padding(bottom = 4.dp)
             .then(webControlModifier("button", enabled))
-            .size(if (touch) 44.dp else 36.dp)
+            .size(if (touch) 48.dp else 36.dp)
             .padding(1.dp)
             .clip(RoundedCornerShape(9.dp))
             .background(

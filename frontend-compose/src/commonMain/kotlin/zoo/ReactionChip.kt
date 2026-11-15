@@ -56,7 +56,7 @@ fun ReactionChip(
             Hint(labels.joinToString(", ")) { hintModifier ->
                 Row(
                     hintModifier
-                        .heightIn(min = 32.dp)
+                        .heightIn(min = touchTargetSize(32.dp, LocalTouchUi.current))
                         .then(webControlModifier("button", enabled = editable, selected = mine))
                         .border(
                             1.dp,
@@ -98,7 +98,8 @@ fun ReactionChip(
             // Keep the user list reachable by keyboard, touch and while reactions are disabled.
             Box(
                 Modifier.size(
-                        if (app.env.touch || LocalViewportWidth.current < 768f || focused) 40.dp
+                        if (LocalTouchUi.current) 48.dp
+                        else if (app.env.touch || LocalViewportWidth.current < 768f || focused) 40.dp
                         else 1.dp
                     )
                     .clipToBounds()
