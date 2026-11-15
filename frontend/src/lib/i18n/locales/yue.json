@@ -1384,7 +1384,7 @@
       "previousFingerprint": "之前信任嘅金鑰指紋",
       "keyChanged": "同之前信任嘅金鑰唔同。請確認對方真係重新產生咗金鑰。",
       "keyUnchanged": "同之前信任嘅金鑰一樣。",
-      "sasRecommended": "可以嘅話，請用「用表情符號驗證」。唔使逐個字對指紋，都可以確認你哋睇緊同一條金鑰。",
+      "sasRecommended": "可以嘅話，請用「驗證」，用 QR 碼或者表情符號驗證。唔使逐個字對指紋，都可以確認你哋睇緊同一條金鑰。",
       "confirmEffect": "信任之後，會用你嘅使用者簽署金鑰簽署呢條金鑰，你所有裝置都會信任佢。",
       "confirmTrust": "信任呢條金鑰",
       "ownFingerprint": "你嘅金鑰指紋",
@@ -1459,9 +1459,9 @@
       }
     },
     "sas": {
-      "start": "用表情符號驗證",
+      "start": "驗證",
       "incomingTitle": "{{name}} 想同你驗證",
-      "incomingDescription": "雙方睇吓螢幕上面係咪出現同一組表情符號，嚟確認對方嘅金鑰。要喺頻道以外（當面或者通話）可以對螢幕嗰陣先好接受。",
+      "incomingDescription": "掃 QR 碼，或者睇吓雙方螢幕上面係咪出現同一組表情符號，嚟確認對方嘅金鑰。要喺頻道以外（當面或者通話）可以對螢幕嗰陣先好接受。",
       "accept": "接受",
       "decline": "拒絕",
       "requestedTitle": "等緊 {{name}} 接受",
@@ -1561,6 +1561,35 @@
         "61": "耳筒",
         "62": "文件夾",
         "63": "圖釘"
+      }
+    },
+    "qr": {
+      "title": "驗證 {{name}}",
+      "codeLabel": "驗證 QR 碼",
+      "showHint": "請 {{name}} 用佢部機掃呢個 QR 碼。用唔到相機或者唔喺身邊嘅話，可以用表情符號驗證。",
+      "waitingForAccept": "{{name}} 接受咗請求之後，就可以用佢部機掃呢個 QR 碼。",
+      "scan": "掃對方嘅 QR 碼",
+      "showOwn": "顯示我嘅 QR 碼",
+      "useEmoji": "用表情符號驗證",
+      "scanHint": "請將相機對住對方螢幕上面嘅 QR 碼。",
+      "otherCode": "呢個 QR 碼唔係而家呢個驗證嘅。請對住對方螢幕上面而家顯示緊嘅 QR 碼。",
+      "scannedTitle": "等緊 {{name}} 確認",
+      "waitingForConfirm": "等緊對方喺佢嘅螢幕確認掃咗…",
+      "confirmTitle": "{{name}} 掃咗個 QR 碼未？",
+      "confirmDescription": "淨係喺 {{name}} 喺你面前用佢部機掃咗呢個 QR 碼嘅時候，先好撳「掃咗」。撳咗之後，要重新登入確認身份，然後將對方嘅金鑰儲存做已驗證。",
+      "confirmYes": "掃咗",
+      "confirmNo": "未掃",
+      "verifiedTitle": "已經用 QR 碼確認咗 {{name}} 嘅金鑰",
+      "needsLogin": "要儲存做已驗證，請重新登入確認身份。",
+      "login": "登入並儲存",
+      "keyMismatch": "QR 碼入面嘅金鑰同伺服器傳嚟嘅金鑰唔一樣，驗證已經中止。金鑰可能已經俾人換咗。",
+      "camera": {
+        "label": "相機畫面",
+        "starting": "開緊相機…",
+        "unsupported": "呢個瀏覽器用唔到相機。請對方掃呢部機嘅 QR 碼，或者用表情符號驗證。",
+        "denied": "冇准用相機。請喺瀏覽器設定度允許，或者用表情符號驗證。",
+        "noCamera": "搵唔到相機。請對方掃呢部機嘅 QR 碼，或者用表情符號驗證。",
+        "failed": "開唔到相機。請用表情符號驗證。"
       }
     },
     "android": {

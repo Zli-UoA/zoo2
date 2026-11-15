@@ -1745,7 +1745,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - Olm の to-device で送ります（[Olm（to-device メッセージ）](#olmto-device-メッセージ)）。外側の `type` は `m.room.encrypted`、内側の `type` と `content` は Matrix と同じです。サーバーは中身を見ないので、backend の API と DB は変えていません。
 - `transaction_id` は要求した端末が作る UUID v4 です（小文字のハイフン区切り。受け取る側は版を問わずに UUID の形を確かめる）。
 - 受け取ったメッセージは、[受信時の検証](#受信時の検証)の手順 1〜3（送信端末、`keys.ed25519`、宛先）に加えて、`keys/query` の応答にある端末からのものだけを受け付けます。`sender_device_keys` にしかない端末からのものは捨てます。
-- zoo で絞るもの：検証できるのは他のユーザーだけ（自分の端末どうしの検証は持たない）。要求した側が `start` を送る（Matrix ではどちらも送れる）。方式は `curve25519-hkdf-sha256`、`sha256`、`hkdf-hmac-sha256.v2`、`emoji` だけ。
+- zoo で絞るもの：検証できるのは他のユーザーだけ（自分の端末どうしの検証は持たない）。要求した側が `start` を送る（Matrix ではどちらも送れる。【提案】[QR コードによる検証](#qr-コードによる検証)では、相手も QR に対応していれば、どちらも送れる）。方式は `curve25519-hkdf-sha256`、`sha256`、`hkdf-hmac-sha256.v2`、`emoji` だけ。
 
 ### 手順
 
@@ -1845,9 +1845,12 @@ A の QR を B が読み取る場合です（B の QR を A が読み取る場�
 
 #### Web の実装
 
-- 他のユーザーの検証のボタン（設定の「暗号化」タブ）を押すと、QR を出し、その下に「QR を読み取る」と「絵文字で検証する」を出します。要求を受けた側も、受け入れたあとに同じ画面を出します。
-- 読み取りは `getUserMedia` でカメラを使います。`BarcodeDetector` があれば使い、なければ JS の QR デコーダーで読みます（Firefox と PC の Safari には `BarcodeDetector` がない）。カメラを使えないとき（許可しなかった、カメラがない、安全なコンテキストでない）は、その旨を出して絵文字を勧めます。
-- QR を作るライブラリーと JS の QR デコーダーは、版を固定して入れます。
+- 他のユーザーの検証のボタン（設定の「暗号化」タブの「検証する」）を押すと、QR を出し、その下に「絵文字で検証する」を出します。相手が受け入れると「相手の QR を読み取る」も出ます。要求を受けた側も、受け入れたあとに同じ画面を出します。
+  - 要求した側が、相手の受け入れより前に「絵文字で検証する」を選んだら、`ready` が届いたときに SAS の `start` を送ります（`SasVerification::start_sas`）。
+- 読み取りは `getUserMedia` でカメラを使います（`QrCodeScanner`）。`BarcodeDetector` があれば使い、なければ JS の QR デコーダーで読みます（Firefox と PC の Safari には `BarcodeDetector` がない）。カメラを使えないとき（許可しなかった、カメラがない、安全なコンテキストでない）は、その旨を出して絵文字を勧めます。ダイアログを閉じるか、QR の表示に戻すと、カメラを止めます。
+- 読み取った QR が別の検証のものか、形が正しくないときは、取りやめずに「今の検証の QR ではない」と出して読み取りを続けます。鍵が違うときだけ取りやめます。
+- QR の作成は `qrcode-generator`（2.0.4）、JS のデコーダーは `jsqr`（1.4.0）で、`frontend/package.json` に版を固定して入れました。どちらも npm のパッケージなので、`flake.nix` の開発シェルは変えていません。
+- テストは `crates/zoo-crypto/tests/verification.rs`（2 人の端末どうしの QR 検証、偽のマスター鍵（表示する側と読み取る側のそれぞれ）、違う `secret`、別の検証の QR、期限切れ、「読み取っていない」、SAS の `start` の衝突、#368 のクライアントとの互換）、`frontend/src/lib/e2ee/sasController.test.ts`（本物の wasm で、QR を読み取って双方が「検証済み」になるまで）、`frontend/src/lib/e2ee/qrCode.test.ts`（QR の作成と読み取りの往復）、`frontend/src/components/e2ee/QrCodeScanner.browser.test.tsx`（実ブラウザーで、カメラの代わりの映像から読む。`BarcodeDetector` の値がバイト列に戻せないときの読み直し）です。
 
 #### TUI
 

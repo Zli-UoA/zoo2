@@ -148,6 +148,10 @@ export type CryptoOperation =
   | { op: "sasAccept"; txnId: string }
   | { op: "sasConfirm"; txnId: string }
   | { op: "sasMismatch"; txnId: string }
+  // QR コードによる検証（docs/e2ee.md の「QR コードによる検証」）。
+  | { op: "sasStartSas"; txnId: string }
+  | { op: "sasScanQr"; txnId: string; bytes: Uint8Array }
+  | { op: "sasConfirmQr"; txnId: string }
   | { op: "sasCancel"; txnId: string }
   | { op: "sasExpire"; now: number }
   | { op: "sasForget"; txnId: string }
@@ -270,6 +274,9 @@ export interface CryptoResults {
   sasAccept: SasUpdate;
   sasConfirm: SasUpdate;
   sasMismatch: SasUpdate;
+  sasStartSas: SasUpdate;
+  sasScanQr: SasUpdate | null;
+  sasConfirmQr: SasUpdate;
   sasCancel: SasUpdate | null;
   sasExpire: SasUpdate[];
   sasForget: null;
