@@ -231,6 +231,47 @@ Secrets がない場合、main の配布ジョブは失敗し、署名の異な�
 
 Shizuku を使用するインストールは、実際に Shizuku が稼働する Android 端末での検証が必要です。
 
+### Shizuku の接続と実装の根拠
+
+Shizuku の Binder はプロセス起動後に Provider へ届きます。WorkManager から起動したときも、
+未到着を即座に権限不足と判断せず、受信リスナーで最大5秒待ちます。待機終了・キャンセル時には
+リスナーを解除し、到着後に使用許可を確認します。UserService の接続は最大20秒で打ち切り、
+接続できなかった場合は更新画面へエラーを保存します。Worker 自体のキャンセルはそのまま伝えます。
+
+調査した資料と実装例:
+
+- [Shizuku API の公式ガイド](https://github.com/RikkaApps/Shizuku-API/blob/master/README.md):
+  Binder の生存期間・使用許可、ADB と root の違い、UserService、destroy の AIDL transaction ID。
+  ADB はアプリ専用ファイルを直接読めないため、APK のパスではなく FD を渡します。
+- [ShizukuProvider](https://github.com/RikkaApps/Shizuku-API/blob/master/provider/src/main/java/rikka/shizuku/ShizukuProvider.java):
+  起動時の Binder 配信は Provider への呼び出しで行われ、Provider の onCreate 完了は受信完了を意味しません。
+- [Obtainium の ShizukuInstaller](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/lib/installers/shizuku_installer.dart):
+  一時的な Binder 未到着を再確認し、権限拒否や古いサービスと分けて扱います。
+- [Droid-ify の ShizukuInstaller](https://github.com/Droid-ify/client/blob/ff1453ed957f3b2382abce9a7eb9a9db8def3a3a/app/src/main/kotlin/com/looker/droidify/installer/installers/shizuku/ShizukuInstaller.kt):
+  install-create / install-write / install-commit と標準入力を使います。
+  ただし、この実装の newProcess は公式で非推奨のため、Zoo では UserService を維持します。
+- [vvb2060/PackageInstaller の BinderWrapper](https://github.com/vvb2060/PackageInstaller/blob/a43b37a22493969be2c8161f3e0551bd462b0d30/app/src/main/java/io/github/vvb2060/packageinstaller/core/BinderWrapper.java):
+  PackageInstaller と各 Session の Binder を Shizuku 経由へ置き換える方式です。
+- [Android 15 の PackageManagerShellCommand](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/services/core/java/com/android/server/pm/PackageManagerShellCommand.java):
+  pm install -S BYTES - は内部でセッション作成・標準入力からの書き込み・commit を実行します。
+  現在のコマンドもセッション方式であり、API 方式への置き換えだけで解決すると断定はできません。
+
+この修正は Binder 未到着の競合と接続タイムアウトの表示を対象にしています。
+端末固有のインストール失敗は、更新画面のエラー全文、Android / Shizuku の版、
+ADB 起動か root 起動かを確認して切り分けます。実機での更新成功は別途確認が必要です。
+Android 固有の接続処理のみの変更で、Web・TUI の更新経路や通信には影響しません。
+
+「Shizuku のインストーラーから結果を取得できませんでした」は、AIDL の戻り値が null または
+空文字だったことを示します。サービスは正常終了時にも pm の失敗時にも空でない文字列を返すため、
+この表示だけで pm の失敗や権限不足と判断できません。接続先の Binder descriptor を検証し、
+`ZooUpdater` / `ZooUpdaterService` タグに接続・処理開始・終了を記録します。
+再現直後に `adb logcat -d -s ZooUpdater ZooUpdaterService ShizukuServiceStarter AndroidRuntime`
+で取得すると、サービス起動前の失敗と、起動後の処理・応答の問題を分けて確認できます。
+
+Android 15 / Shizuku 13.6 / ADB では、メーカーのフレームワークによって UserService の
+makeApplication が失敗する[報告](https://github.com/RikkaApps/Shizuku/issues/2048)もあります。
+ただし、これは起動失敗の報告であり、接続後に空の結果を受けた今回の症状と同一原因とは未確認です。
+
 ## 自動ログインの検証
 
 認証エラー表示・更新・復元・暗号文の改ざん検出・ログアウトと競合する応答を含む
