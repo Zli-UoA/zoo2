@@ -31,7 +31,8 @@ vi.mock("../../lib/currentUser", () => ({
     refresh: async () => {},
   }),
 }));
-vi.mock("../../lib/e2ee/cryptoWorker", () => ({
+vi.mock("../../lib/e2ee/cryptoWorker", async (original) => ({
+  ...(await original<typeof import("../../lib/e2ee/cryptoWorker")>()),
   startCryptoWorker: () => ({ terminate: () => {}, request: async () => ({}) }),
 }));
 vi.mock("../../lib/offline/offline-context", () => ({
