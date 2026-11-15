@@ -118,7 +118,7 @@ it("waits for the current user's membership even when other users are cached", (
   expect(container.querySelector('[data-slot="skeleton"]')).toBeNull();
 });
 
-it("temporarily shows the selected archive without any history or search controls", async () => {
+it("never shows an archived thread in the tree, even while selected, and has no history or search controls", async () => {
   fixture.memberships = [{ user_id: "me", channel_id: "general" }];
   fixture.threads = [
     {
@@ -150,8 +150,7 @@ it("temporarily shows the selected archive without any history or search control
   );
   const { rerender } = render(view());
   await screen.findByRole("link", { name: /Active conversation/ });
-  const selected = await screen.findByRole("link", { name: /Old conversation/ });
-  expect(selected.getAttribute("aria-current")).toBe("page");
+  expect(screen.queryByRole("link", { name: /Old conversation/ })).toBeNull();
   expect(screen.queryByRole("button", { name: /アーカイブ済みスレッド/ })).toBeNull();
   expect(screen.queryByRole("searchbox")).toBeNull();
   expect(fixture.get.mock.calls.every(([path]) => !path.includes("archived=true"))).toBe(true);
