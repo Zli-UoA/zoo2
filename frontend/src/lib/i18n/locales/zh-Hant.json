@@ -1435,8 +1435,8 @@
       "blocked": "基於安全考量，無法開啟此類檔案"
     },
     "legacy": {
-      "badge": "加密前",
-      "badgeHelp": "這則訊息是在頻道加密之前傳送的。它沒有加密，伺服器可以讀取或修改其內容。",
+      "unencryptedBadge": "未加密",
+      "unencryptedBadgeHelp": "這則未加密的訊息位於加密訊息之後。在加密頻道中，正常的伺服器無法建立這樣的訊息，因此可能是伺服器新增或修改了它。",
       "divider": "以下訊息已加密",
       "editCancelled": "此頻道已加密，已取消編輯加密前的訊息。",
       "editForbidden": "加密前傳送的訊息無法編輯，但可以刪除。"
@@ -1451,7 +1451,7 @@
       "description": "開啟加密後：",
       "points": {
         "future": "之後的訊息和附件只有成員已驗證的裝置可以讀取。",
-        "earlier": "之前的訊息不會加密，會原樣保留在伺服器上。它們會標示為「加密前」，並且無法再編輯（仍可刪除）。",
+        "earlier": "之前的訊息不會加密，會原樣保留在伺服器上，並且無法再編輯（仍可刪除）。",
         "published": "已發佈到 Home 或 ActivityPub 的貼文不會撤回。",
         "integrations": "Slack 匯入和同步將停止。請先移除應用程式（機器人）和 Incoming Webhook。",
         "irreversible": "加密之後無法關閉。"

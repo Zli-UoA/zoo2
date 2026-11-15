@@ -497,6 +497,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         me_id: &app.me.id,
         decryptions: &app.decryptions,
         encrypted,
+        // チャンネルの一覧は、並びの中で最初の暗号化したメッセージを見て決める。
+        encrypted_since: None,
         selected: app.selected.as_deref(),
         reply_counts: Some(&counts),
         reactions: &reactions,
@@ -553,6 +555,18 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
     let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
+    // スレッドは親と返信だけを描くので、チャンネルのうち最初の暗号化したメッセージの日時を渡し、それより後の
+    // 平文の親や返信にも警告を付ける（#367。Web の `encryptedSince` と同じ）。
+    let encrypted_since = encrypted
+        .then(|| {
+            app.store
+                .root_messages(&channel_id)
+                .into_iter()
+                .filter(|message| message.ciphertext.is_some() || message.epoch.is_some())
+                .map(|message| message.created_at)
+                .min()
+        })
+        .flatten();
     let mut reply_counts = app.store.reply_counts(&channel_id);
     reply_counts.remove(&thread.root_id);
     let ctx = Context {
@@ -561,6 +575,7 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         me_id: &app.me.id,
         decryptions: &app.decryptions,
         encrypted,
+        encrypted_since,
         selected: thread.selected.as_deref(),
         reply_counts: Some(&reply_counts),
         reactions: &reactions,
@@ -2638,6 +2653,12 @@ mod tests {
                 row["content"] = json!("切り替える前の本文");
                 (id, row)
             },
+            {
+                // 暗号化したメッセージより後ろの、切り替える前の形の行（正しいサーバーは作れない）。
+                let (id, mut row) = encrypted_row("e6", "2026-11-01 04:04:00", false, None);
+                row["content"] = json!("紛れ込んだ平文");
+                (id, row)
+            },
         ];
         app.on_shape(ShapeEvent::Batch(
             ShapeId::Messages("c3".into()),
@@ -2696,7 +2717,29 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("切り替える前の本文"), "{screen}");
-        assert!(screen.contains("[暗号化前]"), "{screen}");
+        // 切り替える前のメッセージには印を付けず、区切りを 1 つ出し、後ろに紛れ込んだ行だけに警告を付ける。
+        assert!(!screen.contains("[暗号化前]"), "{screen}");
+        assert_eq!(
+            screen.matches("ここから暗号化されています").count(),
+            1,
+            "{screen}"
+        );
+        assert_eq!(
+            screen.matches("[暗号化されていません]").count(),
+            1,
+            "{screen}"
+        );
+        let warned = screen
+            .lines()
+            .position(|line| line.contains("[暗号化されていません]"))
+            .expect("警告の行がある");
+        assert!(
+            screen
+                .lines()
+                .nth(warned + 1)
+                .is_some_and(|line| line.contains("紛れ込んだ平文")),
+            "{screen}"
+        );
         // 解錠していない端末には、送る前に解錠を案内する。
         assert!(screen.contains("暗号化を解錠してください"), "{screen}");
 

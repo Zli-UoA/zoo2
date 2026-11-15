@@ -68,6 +68,7 @@ import { apiErrorCode } from "../../../lib/e2ee/megolmApi";
 import {
   isPlaintextBeforeEncryption,
   MessageDecryptionsProvider,
+  firstEncryptedAt,
   type MessageDecryption,
 } from "../../../lib/e2ee/messageDecryption";
 import type { RecipientSummary } from "../../../lib/e2ee/store/megolm";
@@ -295,6 +296,13 @@ export function MessagePane({
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRootRow = threadRootQuery.data?.[0] ?? null;
   const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
+  // 暗号化チャンネルで、読み込んだうちで最初の暗号化したメッセージの作成日時（#367）。スレッドのペインで、
+  // それより後の平文の行（正しいサーバーは作れない）に警告を付けるのに使う。チャンネルのルートに暗号化した
+  // 行がなくても、開いているスレッドの暗号化した返信より後の平文に気付けるよう、スレッドの行も含める。
+  const encryptedSince = useMemo(
+    () => firstEncryptedAt([...feed, ...(threadRoot ? [threadRoot] : []), ...threadReplies]),
+    [feed, threadRoot, threadReplies],
+  );
   const threadIsArchived = !!threadRoot?.thread_archive_at;
   // Legacy links to nested threads resolve to the canonical root. Message IDs
   // themselves remain stable, so navigation can still highlight the old target.
@@ -337,7 +345,9 @@ export function MessagePane({
   const workerDecryptions = useMessageDecryptions(channelId, decryptionRows);
   // 暗号化チャンネルの、暗号文がなく `epoch` だけがある（削除されていない）行は、暗号ストアがなくても本文を
   // 出さない。正しいサーバーは DB のトリガーでこの行を作れないので、同期元が書き換えたものとして扱う。
-  // `epoch` もない行は、暗号化に切り替える前の平文のメッセージ（#367）なので、印を付けて本文を出す（MessageRow）。
+  // `epoch` もない行は、暗号化に切り替える前の平文のメッセージ（#367）なので、本文を出す（MessageRow）。
+  // 区切りより上の行には印を付けず、暗号化したメッセージより後ろにある行だけ警告を付ける（チャンネルの一覧は
+  // MessageList が並びから、スレッドのペインは `encryptedSince` の日時から決める）。
   const decryptions = useMemo(() => {
     // フィードは削除済みの行を除くが、念のため `deleted_at` のある行（暗号文は DB が消す）は除く。
     const unencrypted = decryptionRows.filter(
@@ -889,6 +899,7 @@ export function MessagePane({
       decryptions={decryptions}
       mentionUserNames={mentionUserNames}
       encrypted={treatAsEncrypted}
+      encryptedSince={encryptedSince}
     >
       <section className="relative flex h-full min-h-0">
         <div className="flex min-w-0 flex-1 flex-col">
