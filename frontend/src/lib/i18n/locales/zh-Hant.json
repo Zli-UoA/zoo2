@@ -1303,7 +1303,14 @@
       "limitDescription": "無法登錄此裝置。請選擇不再使用的裝置並刪除。刪除不等於撤銷，若有遺失的裝置，請在此裝置登錄後再進行撤銷。",
       "limitStale": "30 天以上未使用的裝置",
       "limitDelete": "刪除所選裝置",
-      "limitDeleted": "已刪除。稍後將重新登錄此裝置。"
+      "limitDeleted": "已刪除。稍後將重新登錄此裝置。",
+      "stale": "{{days}} 天以上未使用",
+      "notUnlockedStale": "未解鎖，{{days}} 天以上未使用"
+    },
+    "deviceName": {
+      "withOs": "{{browser}}（{{os}}）",
+      "app": "{{browser}}（應用程式）",
+      "appWithOs": "{{browser}}（{{os}}·應用程式）"
     },
     "revocation": {
       "pendingTitle": "撤銷尚未完成",

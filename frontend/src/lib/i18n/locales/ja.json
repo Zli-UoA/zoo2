@@ -1303,7 +1303,14 @@
       "limitDescription": "この端末を登録できません。使っていない端末を選んで削除してください。削除は失効ではないので、なくした端末があれば、登録できたあとに失効も行ってください。",
       "limitStale": "30 日以上使っていない端末",
       "limitDelete": "選んだ端末を削除する",
-      "limitDeleted": "削除しました。まもなくこの端末を登録し直します。"
+      "limitDeleted": "削除しました。まもなくこの端末を登録し直します。",
+      "stale": "{{days}} 日以上使っていない",
+      "notUnlockedStale": "解錠しないまま {{days}} 日以上使っていない"
+    },
+    "deviceName": {
+      "withOs": "{{browser}}（{{os}}）",
+      "app": "{{browser}}（アプリ）",
+      "appWithOs": "{{browser}}（{{os}}・アプリ）"
     },
     "revocation": {
       "pendingTitle": "失効が終わっていません",

@@ -782,6 +782,7 @@
         "Ready",
         "Reverify",
         "SasVerify",
+        "CleanupSuggested",
         "Rename",
         "UserSigningKeyRollback",
         "ReadyLocked",

@@ -109,6 +109,8 @@ export const devicesReady: Extract<DevicesViewState, { step: "ready" }> = {
   passkeyAvailable: true,
   busy: null,
   error: null,
+  // 削除を勧める端末の判定を固定する（登録したばかりの未署名の端末は、まだ勧めない）。
+  now: Date.parse("2026-11-13T09:00:00Z"),
 };
 
 export const encryptionHandlers = (): EncryptionSettingsHandlers => ({

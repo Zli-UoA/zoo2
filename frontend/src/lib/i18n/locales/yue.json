@@ -1303,7 +1303,14 @@
       "limitDescription": "登記唔到呢部裝置。請揀唔再用嘅裝置刪除。刪除唔等於撤銷，如果有唔見咗嘅裝置，請喺呢部裝置登記之後再撤銷。",
       "limitStale": "30 日以上冇用過嘅裝置",
       "limitDelete": "刪除所選裝置",
-      "limitDeleted": "刪咗喇。等陣會重新登記呢部裝置。"
+      "limitDeleted": "刪咗喇。等陣會重新登記呢部裝置。",
+      "stale": "{{days}} 日以上冇用過",
+      "notUnlockedStale": "未解鎖，{{days}} 日以上冇用過"
+    },
+    "deviceName": {
+      "withOs": "{{browser}}（{{os}}）",
+      "app": "{{browser}}（應用程式）",
+      "appWithOs": "{{browser}}（{{os}}·應用程式）"
     },
     "revocation": {
       "pendingTitle": "撤銷未完成",

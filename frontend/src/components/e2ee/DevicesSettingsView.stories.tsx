@@ -119,6 +119,51 @@ export const SasVerify: Story = {
   }),
 };
 
+/**
+ * 長く使っていない端末と、解錠しないまま使っていない端末に印を付け、削除を勧める。自動では消さず、
+ * 消すかは利用者が一覧から決める（Safari のタブとホーム画面のアプリは、別の端末になる）。
+ */
+export const CleanupSuggested: Story = {
+  args: {
+    state: {
+      ...ready,
+      now: Date.parse("2026-11-15T09:00:00Z"),
+      devices: [
+        devices[0],
+        {
+          deviceId: "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+          displayName: "Safari（macOS）",
+          createdAt: "2026-08-02T09:00:00Z",
+          lastSeenAt: "2026-09-20T12:00:00Z",
+          current: false,
+          signed: true,
+        },
+        {
+          deviceId: "7e8f9a0b-1c2d-4e3f-9a4b-5c6d7e8f9a0b",
+          displayName: "Safari（iOS・アプリ）",
+          createdAt: "2026-11-03T21:00:00Z",
+          lastSeenAt: "2026-11-03T21:05:00Z",
+          current: false,
+          signed: false,
+        },
+        devices[1],
+      ],
+    },
+    handlers: handlers(),
+  },
+  play: playForImplementation(async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("30 日以上使っていない")).toBeInTheDocument();
+    await expect(canvas.getByText("解錠しないまま 7 日以上使っていない")).toBeInTheDocument();
+    // 削除は、これまでどおり確認してから行う。
+    await userEvent.click(canvas.getAllByRole("button", { name: "端末を削除" })[0]);
+    await userEvent.click(await screen.findByRole("button", { name: "削除だけ行う" }));
+    await expect(args.handlers.onDelete).toHaveBeenCalledWith(
+      "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+    );
+  }),
+};
+
 export const Rename: Story = {
   args: { state: ready, handlers: handlers() },
   play: playForImplementation(async ({ args, canvasElement }) => {

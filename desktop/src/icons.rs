@@ -53,6 +53,7 @@ icons! {
     ChevronDown => "chevron-down",
     ChevronRight => "chevron-right",
     ChevronUp => "chevron-up",
+    Clock => "clock",
     CloudOff => "cloud-off",
     Copy => "copy",
     Download => "download",

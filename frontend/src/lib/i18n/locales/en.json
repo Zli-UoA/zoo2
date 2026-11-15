@@ -1303,7 +1303,14 @@
       "limitDescription": "This device cannot be registered. Choose devices you no longer use and delete them. Deleting is not revocation, so if a device was lost, also revoke it after this device is registered.",
       "limitStale": "Not used for 30 days or more",
       "limitDelete": "Delete selected devices",
-      "limitDeleted": "Deleted. This device will register again shortly."
+      "limitDeleted": "Deleted. This device will register again shortly.",
+      "stale": "Not used for {{days}}+ days",
+      "notUnlockedStale": "Not unlocked, unused for {{days}}+ days"
+    },
+    "deviceName": {
+      "withOs": "{{browser}} ({{os}})",
+      "app": "{{browser}} (app)",
+      "appWithOs": "{{browser}} ({{os}}, app)"
     },
     "revocation": {
       "pendingTitle": "A revocation is unfinished",

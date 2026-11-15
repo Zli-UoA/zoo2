@@ -1303,7 +1303,14 @@
       "limitDescription": "이 장치를 등록할 수 없습니다. 쓰지 않는 장치를 골라 삭제하십시오. 삭제는 폐기가 아니므로, 잃어버린 장치가 있다면 등록한 뒤에 폐기도 하십시오.",
       "limitStale": "30일 이상 쓰지 않은 장치",
       "limitDelete": "선택한 장치 삭제",
-      "limitDeleted": "삭제했습니다. 곧 이 장치를 다시 등록합니다."
+      "limitDeleted": "삭제했습니다. 곧 이 장치를 다시 등록합니다.",
+      "stale": "{{days}}일 이상 사용 안 함",
+      "notUnlockedStale": "잠금 해제 안 한 채 {{days}}일 이상 사용 안 함"
+    },
+    "deviceName": {
+      "withOs": "{{browser}} ({{os}})",
+      "app": "{{browser}} (응용프로그람)",
+      "appWithOs": "{{browser}} ({{os}}, 응용프로그람)"
     },
     "revocation": {
       "pendingTitle": "폐기가 끝나지 않았습니다",

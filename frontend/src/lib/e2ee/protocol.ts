@@ -75,6 +75,8 @@ export type CryptoOperation =
     }
   | { op: "registrationRequest" }
   | { op: "markRegistered" }
+  /** 削除待ちに残せた（または消せた）前の端末を、暗号ストアの外の記録から外す。 */
+  | { op: "forgetReplacedDevices"; deviceIds: string[] }
   | { op: "prepareKeyUpload"; oneTimeKeyCount: number; hasUnusedFallbackKey: boolean }
   | { op: "markKeysPublished" }
   | { op: "processToDevice"; rows: ToDeviceRow[]; keysQuery: KeysQueryResponse }
@@ -210,10 +212,12 @@ export interface OpenedCryptoStore {
   deviceId: string;
   /** サーバーへの登録が済んでいるか。 */
   registered: boolean;
-  /** 保存鍵を開けずに作り直したとき、前の端末の ID（サーバーから消す）。 */
-  replacedDeviceId: string | null;
-  /** 前の端末の登録が済んでいたか（`replacedDeviceId` がないときは `false`）。 */
-  replacedRegistered: boolean;
+  /**
+   * 前の端末（サーバーから消す）。保存鍵を開けずに作り直したときと、暗号ストアの外の記録
+   * （`store/deviceRecord.ts`）にある同じユーザーの端末が今の端末と違うとき（ファイルが消えたなど）。
+   * 削除待ちに渡すまで（`forgetReplacedDevices`）、開くたびに返す。`registered` は登録が済んでいたか。
+   */
+  replacedDevices: { deviceId: string; registered: boolean }[];
 }
 
 export interface CryptoResults {
@@ -221,6 +225,7 @@ export interface CryptoResults {
   open: OpenedCryptoStore;
   registrationRequest: RegistrationRequest;
   markRegistered: null;
+  forgetReplacedDevices: null;
   prepareKeyUpload: KeyUpload | null;
   markKeysPublished: null;
   processToDevice: ToDeviceResult;
