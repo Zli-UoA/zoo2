@@ -35,6 +35,7 @@ import type {
   KeyUpload,
   KeysQueryResponse,
   RegistrationRequest,
+  ReverifyRequest,
   ToDeviceResult,
   ToDeviceRow,
 } from "./store/cryptoStore";
@@ -78,6 +79,9 @@ export type CryptoOperation =
   | { op: "markKeysPublished" }
   | { op: "processToDevice"; rows: ToDeviceRow[]; keysQuery: KeysQueryResponse }
   | { op: "acknowledged"; ids: string[] }
+  // 「未検証の送信者」のセッションの判定し直し（docs/e2ee.md の「受信時の検証」）。
+  | { op: "reverifyCandidateUsers" }
+  | { op: "reverifySenders"; request: ReverifyRequest; keysQuery: KeysQueryResponse }
   | { op: "pendingBackupCount" }
   | { op: "close" }
   // 初回設定と解錠（#360）。秘密は Worker のメモリーにだけ置き、要求の本文だけを返す。
@@ -217,6 +221,8 @@ export interface CryptoResults {
   markKeysPublished: null;
   processToDevice: ToDeviceResult;
   acknowledged: null;
+  reverifyCandidateUsers: ReverifyRequest;
+  reverifySenders: number;
   pendingBackupCount: number;
   close: null;
   destroy: null;

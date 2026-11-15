@@ -1,6 +1,7 @@
 package zoo.android.update
 
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import androidx.annotation.Keep
 import java.util.concurrent.TimeUnit
 
@@ -29,6 +30,10 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
     @Synchronized
     override fun install(apk: ParcelFileDescriptor, size: Long, userId: Int): String {
         require(size in 1..MAX_APK_BYTES && userId >= 0)
+        Log.i(
+            "ZooUpdaterService",
+            "Install started: uid=${android.os.Process.myUid()}, user=$userId, bytes=$size",
+        )
         val process =
             ProcessBuilder(
                     "/system/bin/pm",
@@ -81,8 +86,15 @@ class UpdateInstallerService : IUpdateInstaller.Stub() {
             process.waitFor()
             reader.join(5000)
             val result = output.toString(Charsets.UTF_8.name()).trim()
+            Log.i(
+                "ZooUpdaterService",
+                "Install finished: exit=${process.exitValue()}, output=${result.take(1000)}",
+            )
             if (process.exitValue() == 0 && result.lineSequence().any { it == "Success" }) "Success"
             else "インストールできませんでした: ${result.take(1000)}"
+        } catch (failure: Exception) {
+            Log.e("ZooUpdaterService", "Install failed", failure)
+            throw failure
         } finally {
             process.destroy()
             watchdog.interrupt()

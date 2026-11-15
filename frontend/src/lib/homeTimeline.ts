@@ -8,6 +8,53 @@ export interface TimelinePosition {
   id: string;
   sortKey: bigint | null;
 }
+
+export function timelineEntryId(entry: TimelineEntry): string {
+  return entry.entry_id ?? entry.id;
+}
+
+/** Count the new prefix against the last fetched head, even across a disconnected history gap. */
+export function countNewTimelineEntries(
+  head: readonly TimelineEntry[],
+  previous: readonly TimelineEntry[],
+): number {
+  const known = new Set(previous.map(timelineEntryId));
+  const overlap = head.findIndex((entry) => known.has(timelineEntryId(entry)));
+  return overlap < 0 ? head.length : overlap;
+}
+
+/** Keep history without refetching it; only an authoritative window may remove rows. */
+export function mergeTimelineWindow<T extends TimelineEntry>(
+  current: readonly T[],
+  head: readonly T[],
+  checkedIds: readonly string[],
+  checked: readonly T[],
+  atTop: boolean,
+): T[] {
+  const headIds = new Set(head.map(timelineEntryId));
+  let lastOverlap = -1;
+  for (let index = current.length - 1; index >= 0; index--) {
+    if (headIds.has(timelineEntryId(current[index]))) {
+      lastOverlap = index;
+      break;
+    }
+  }
+  const replaceHead = atTop || lastOverlap >= 0;
+  const history = replaceHead ? (lastOverlap >= 0 ? current.slice(lastOverlap + 1) : []) : current;
+  const checkedSet = new Set(checkedIds);
+  const updates = new Map([...head, ...checked].map((entry) => [timelineEntryId(entry), entry]));
+  const previous = new Map(current.map((entry) => [timelineEntryId(entry), entry]));
+  const seen = new Set<string>();
+  return [...(replaceHead ? head : []), ...history].flatMap((entry) => {
+    const id = timelineEntryId(entry);
+    if (seen.has(id) || (checkedSet.has(id) && !updates.has(id))) return [];
+    seen.add(id);
+    const next = updates.get(id) ?? entry;
+    const old = previous.get(id);
+    // Preserve row props for memoized rich content when nothing changed.
+    return [old && (old === next || JSON.stringify(old) === JSON.stringify(next)) ? old : next];
+  });
+}
 export function timelinePosition(entry: TimelineEntry): TimelinePosition {
   return {
     id: entry.entry_id ?? entry.id,

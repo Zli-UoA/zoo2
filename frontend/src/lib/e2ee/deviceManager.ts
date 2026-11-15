@@ -409,6 +409,24 @@ export class E2eeDeviceManager {
     }
   }
 
+  /**
+   * 復号で「未検証の送信者」になったセッションを、送信ユーザーと自分の `keys/query` で判定し直す
+   * （docs/e2ee.md の「受信時の検証」）。検証済みに上げた数を返す。今判定する候補がない、または
+   * 未解錠のときは問い合わせない。判定するのは、問い合わせたユーザーの候補だけ。
+   */
+  async reverifySenders(): Promise<number> {
+    if (this.stopped || this.suspended) return 0;
+    const { worker, client } = this.options;
+    const request = await worker.request({ op: "reverifyCandidateUsers" });
+    const senders = request.userIds;
+    if (senders.length === 0) return 0;
+    // 他のユーザーのマスター鍵を信頼できるかを確かめるため、自分も問い合わせる（to-device と同じ）。
+    const users = [...new Set([...senders, this.options.userId])].sort();
+    const keysQuery = await queryKeys(client, users, this.processAbort.signal);
+    if (this.stopped || this.suspended) return 0;
+    return worker.request({ op: "reverifySenders", request, keysQuery });
+  }
+
   /** 終わっていない失効があるか（#362）。 */
   async revocationPending(): Promise<boolean> {
     return (await this.options.worker.request({ op: "revocationStatus" })) !== null;

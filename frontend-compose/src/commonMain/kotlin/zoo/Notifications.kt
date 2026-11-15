@@ -639,7 +639,7 @@ fun NotificationsButton(app: Session, unread: Int) {
         }
     NativeLink(
         "/notifications",
-        Modifier.size(40.dp)
+        Modifier.size(touchTargetSize(40.dp, LocalTouchUi.current))
             .onFocusChanged { focused = it.isFocused }
             .hoverable(interactions)
             .then(

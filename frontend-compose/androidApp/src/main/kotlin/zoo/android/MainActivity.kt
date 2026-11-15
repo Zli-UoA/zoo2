@@ -11,11 +11,17 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -201,21 +207,17 @@ class MainActivity : ComponentActivity() {
                     current.session.update(platform.env)
                 }
                 DisposableEffect(current) {
+                    var disposed = false
                     val observer = LifecycleEventObserver { _, _ ->
                         platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
                     }
                     lifecycle.addObserver(observer)
+                    platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
                     val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
                     fun updateOnline() = runOnUiThread {
-                        platform.online(
-                            connectivity.activeNetwork?.let {
-                                connectivity
-                                    .getNetworkCapabilities(it)
-                                    ?.hasCapability(
-                                        android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET
-                                    )
-                            } == true
-                        )
+                        if (!disposed) platform.online(hasInternet(
+                            connectivity.activeNetwork?.let(connectivity::getNetworkCapabilities),
+                        ))
                     }
                     val callback =
                         object : android.net.ConnectivityManager.NetworkCallback() {
@@ -231,6 +233,7 @@ class MainActivity : ComponentActivity() {
                     connectivity.registerDefaultNetworkCallback(callback)
                     updateOnline()
                     onDispose {
+                        disposed = true
                         lifecycle.removeObserver(observer)
                         connectivity.unregisterNetworkCallback(callback)
                     }
@@ -240,7 +243,7 @@ class MainActivity : ComponentActivity() {
                         current.session.escape() -> Unit
                         current.session.thread != null -> current.session.thread = null
                         platform.back() -> Unit
-                        else -> finish()
+                        else -> moveTaskToBack(true)
                     }
                 }
                 val encryption =
@@ -253,6 +256,7 @@ class MainActivity : ComponentActivity() {
                     LocalWebPlatform provides platform,
                     LocalApp provides current.session,
                     LocalEncryptionSettings provides encryption,
+                    LocalTouchUi provides true,
                 ) {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
                         Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
@@ -320,6 +324,7 @@ class MainActivity : ComponentActivity() {
                 this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, ::confirmUnbackedKeys,
             )
             platform.systemDark(dark)
+            platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
             val config = Config(
                 connection.base, "/api/shapes", me.text("id"), me.flag("is_admin"),
                 assetsBaseUrl = connection.base,
@@ -399,13 +404,15 @@ class MainActivity : ComponentActivity() {
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text("Zoo", style = MaterialTheme.typography.headlineLarge)
-                Text("Android 版 · Compose Multiplatform")
+                Text("Android 版")
                 OutlinedTextField(
                     base,
                     { base = it },
                     label = { Text("Zoo サーバー URL") },
                     enabled = job == null,
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                 )
                 OutlinedTextField(
                     issuer,
@@ -413,6 +420,8 @@ class MainActivity : ComponentActivity() {
                     label = { Text("OIDC issuer") },
                     enabled = job == null,
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                 )
                 OutlinedTextField(
                     client,
@@ -420,6 +429,8 @@ class MainActivity : ComponentActivity() {
                     label = { Text("Android 用 public client ID") },
                     enabled = job == null,
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next),
                 )
                 OutlinedTextField(
                     resource,
@@ -427,9 +438,15 @@ class MainActivity : ComponentActivity() {
                     label = { Text("Resource / audience") },
                     enabled = job == null,
                     singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
                 )
                 Text("サーバー管理者が登録したデバイス認証対応の client ID を指定してください。ブラウザーでコードを承認してログインします。")
-                if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+                if (error.isNotEmpty()) Text(
+                    error,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    color = MaterialTheme.colorScheme.error,
+                )
                 if (retryRestore != null && job == null) {
                     TextButton(onClick = retryRestore) { Text("自動ログインを再試行") }
                 }
