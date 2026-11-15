@@ -161,8 +161,7 @@ internal fun DmSidebar(
                             narrow,
                             onOpen,
                             users.find { user ->
-                                user.text("id") == it.text("channel_name")
-                                    .removePrefix("dm:").split(":")
+                                user.text("id") == (oneToOneDmIds(it.text("channel_name")) ?: emptyList())
                                     .firstOrNull { id -> id != app.config.userId }
                             },
                         )

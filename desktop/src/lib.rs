@@ -1,8 +1,18 @@
 pub mod app;
+pub mod assets;
+pub mod fonts;
+pub mod gallery;
+pub mod gallery_components;
+pub mod gallery_shell;
+pub mod i18n;
+pub mod icons;
 pub mod input;
 pub mod login;
 pub mod mfm_view;
+pub mod resident;
 pub mod theme;
+pub mod tokens;
+pub mod ui;
 pub mod view;
 
 use std::sync::Arc;
@@ -108,8 +118,12 @@ pub fn run(config: Config) {
     let http_client = Arc::new(ReqwestHttpClient::new(runtime.handle().clone()));
 
     Application::new()
+        .with_assets(assets::Assets)
         .with_http_client(http_client)
         .run(move |cx: &mut App| {
+            if let Err(err) = fonts::register(cx) {
+                eprintln!("フォントを登録できませんでした: {err:#}");
+            }
             input::bind_input_keys(cx);
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.bind_keys([
@@ -120,7 +134,8 @@ pub fn run(config: Config) {
             let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
             let state = AppState::spawn_entity(config, runtime.clone(), cx);
 
-            if let Err(err) = cx.open_window(
+            let state_for_resident = state.clone();
+            let window = match cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
@@ -131,9 +146,13 @@ pub fn run(config: Config) {
                 },
                 move |_, cx| cx.new(|cx| WorkspaceView::new(state, cx)),
             ) {
-                eprintln!("ウィンドウを開けませんでした: {err:#}");
-                std::process::exit(1);
-            }
+                Ok(window) => window,
+                Err(err) => {
+                    eprintln!("ウィンドウを開けませんでした: {err:#}");
+                    std::process::exit(1);
+                }
+            };
+            resident::install(cx, state_for_resident, window.into());
             cx.activate(true);
         });
 }

@@ -1,6 +1,4 @@
-import { toast } from "sonner";
 import { useShell } from "./shell-context";
-import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
@@ -8,7 +6,6 @@ import {
   ActivityIcon,
   HashIcon,
   HomeIcon,
-  LogOutIcon,
   MessageCircleMoreIcon,
   type LucideIcon,
   SettingsIcon,
@@ -17,10 +14,9 @@ import {
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
-import { getOidcClient } from "../../lib/oidc/session";
-import { useOfflineStatus } from "../../lib/offline/offline-context";
+import { isDesktopSession } from "../../lib/desktop";
+import { accountProfileUrl } from "../../lib/oidc/accountUrl";
 import { AppAvatar } from "../chat/AppIdentity";
-import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
 import { AppDialogs } from "../chat/AppsDialog";
 import { NotificationsButton } from "../chat/NotificationsButton";
@@ -59,33 +55,14 @@ export function LeftRail() {
   const shell = useShell();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
-  const { clearUserData } = useOfflineStatus();
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
+  // プロフィールは AuthZ で編集する。保存後にこの画面へ戻れるよう、現在の origin を渡す。
+  // デスクトップ版では AuthZ が既定のブラウザーで開き、戻り先もブラウザーの Web 版になるため付けない。
+  const profileUrl = config.oidc
+    ? accountProfileUrl(config.oidc.issuer, isDesktopSession() ? null : window.location.origin)
+    : null;
   const meLabel = me ? me.display_name || me.user_name : (currentUserId ?? "?");
-
-  // OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）。
-  // dev（OIDC 未設定）ではログアウト UI を出さない。
-  const handleLogout = async () => {
-    const client = getOidcClient(config);
-    if (!client) {
-      return;
-    }
-    try {
-      await disablePush(config);
-    } catch {
-      toast.error(t("pwa.logoutError"));
-      return;
-    }
-    try {
-      await clearUserData();
-    } catch {
-      // 端末データを消せなくてもログアウトは続ける。lastUser は消えているため
-      // 次のオフライン起動で前のユーザーの DB は選ばれず、削除は再試行される。
-      toast.error(t("offline.deleteFailed"));
-    }
-    await client.logout();
-  };
 
   return (
     <nav
@@ -119,18 +96,18 @@ export function LeftRail() {
           <SettingsIcon className="size-5" aria-hidden="true" />
         </Link>
         <Separator className="w-6" />
-        <AppAvatar label={meLabel} src={me?.avatar_url} size="sm" title={meLabel} />
-        {config.oidc ? (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={t("auth.logout")}
-            title={t("auth.logout")}
-            onClick={handleLogout}
+        {profileUrl ? (
+          <a
+            href={profileUrl}
+            aria-label={`${meLabel} - ${t("auth.profile")}`}
+            title={`${meLabel} - ${t("auth.profile")}`}
+            className="rounded-full outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
           >
-            <LogOutIcon />
-          </Button>
-        ) : null}
+            <AppAvatar label={meLabel} src={me?.avatar_url} size="sm" />
+          </a>
+        ) : (
+          <AppAvatar label={meLabel} src={me?.avatar_url} size="sm" title={meLabel} />
+        )}
       </div>
     </nav>
   );

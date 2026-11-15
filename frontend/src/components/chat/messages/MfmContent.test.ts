@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MfmChannelsProvider } from "./MfmChannels";
+import { MfmAccountsProvider } from "./MfmAccounts";
 import { parse } from "mfm-js";
 import { MfmContent, type MfmContentProps } from "./MfmContent";
 
@@ -18,6 +19,26 @@ const render = (content: string, options: Omit<MfmContentProps, "content"> = {})
   );
 
 describe("MfmContent", () => {
+  it("resolves account icons and mention labels only from the AuthZ directory", () => {
+    const html = renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        children: createElement(MfmAccountsProvider, {
+          accounts: [{ username: "alice", display_name: "AuthZ Name", avatar_url: null }],
+          children: createElement(MfmContent, {
+            content:
+              ":@alice: @alice :@unknown: @unknown `:@alice: @alice` <plain>:@alice:</plain>",
+          }),
+        }),
+      }),
+    );
+    expect(html).toContain('aria-label=":@alice:"');
+    expect(html).toContain("AuthZ Name");
+    expect(html).toContain(":@unknown:");
+    expect(html).toContain("@unknown");
+    expect(html).toContain("<code");
+    expect(html).toContain(":@alice: @alice</code>");
+    expect(html.endsWith(":@alice:")).toBe(true);
+  });
   it("renders six heading levels with inline MFM and optional closing markers", () => {
     for (let level = 1; level <= 6; level++) {
       expect(render(`${"#".repeat(level)} Title`)).toBe(
@@ -188,6 +209,22 @@ describe("MfmContent", () => {
     expect(render("\\[x^2\\]")).toContain("katex-display");
     expect(render("```js\nconst x = 1;\n```")).toContain("hljs-keyword");
     expect(render("```unknownlang\n<script>\n```")).toContain("&lt;script&gt;");
+  });
+  it("暗号化メッセージでは、復号した mentions にある @name だけをメンションとして表示する", () => {
+    const html = render("@alice @bob **@channel** @here @carol@example.com", {
+      mentions: { userNames: new Set(["alice"]), channel: true, here: false },
+    });
+    // メンションの表示（bg-brand-muted）は @alice と @channel の 2 つだけ。
+    expect(html.match(/bg-brand-muted/g)).toHaveLength(2);
+    expect(html).toContain("@alice</span>");
+    expect(html).toContain("@channel</span>");
+    expect(html).toContain(" @bob ");
+    expect(html).toContain(" @here ");
+    // 外部のアカウントはメンションにもリンクにもしない。
+    expect(html).not.toContain("<a ");
+    expect(html).toContain("@carol@example.com");
+    // mentions を渡さない（平文のメッセージ）ときは、今までどおり本文の @name をすべて表示する。
+    expect(render("@alice @bob").match(/bg-brand-muted/g)).toHaveLength(2);
   });
   it("renders remote mentions, hashtags and search without automatically fetching external services", () => {
     expect(render("@alice@example.com")).toContain('href="https://example.com/@alice"');

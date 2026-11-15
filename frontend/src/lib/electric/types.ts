@@ -6,6 +6,8 @@ export type TableName =
   | "messages"
   | "message_reactions"
   | "channel_user"
+  | "channel_leave"
+  | "call_invites"
   | "notifications"
   | "attachments";
 
@@ -41,6 +43,13 @@ export type ChannelRow = {
   slack_import_kind: "created" | "existing" | null;
   /** 最後に Slack から取り込んだ日時 */
   slack_imported_at: TimestampString | null;
+  /** 暗号化チャンネル（作成時に指定するか、`POST /api/channels/{id}/encrypt` で切り替える。true から false には戻らない。docs/e2ee.md） */
+  encrypted?: boolean;
+  /**
+   * 暗号化チャンネルのメンバーと端末の世代。Electric は int8 を文字列で配るので、比べる前に BigInt などの
+   * 正準な整数にする。
+   */
+  membership_epoch?: string;
 };
 
 export type MessageRow = {
@@ -62,6 +71,21 @@ export type MessageRow = {
   deleted_at: TimestampString | null;
   /** 返信先のルートメッセージ。`null` はチャンネル直下のメッセージ。 */
   parent_id: string | null;
+  /** この投稿を返信先とするスレッドのアーカイブ日時。 */
+  thread_archive_at?: TimestampString | null;
+  /** 自動アーカイブ期限の計算に使う最終活動時刻。 */
+  thread_activity_at?: TimestampString | null;
+  /** 暗号化チャンネルの Megolm の暗号文（`m.room.encrypted` と同じ形）。平文と削除済みの行は `null`。 */
+  ciphertext?: MegolmCiphertext | null;
+  /** 暗号化したセッションの `membership_epoch`（int8 なので文字列）。 */
+  epoch?: string | null;
+  /** 編集の版（暗号化チャンネルでは編集のたびに 1 増える）。 */
+  revision?: number;
+  /**
+   * `message`（通常）か `emote`。暗号化チャンネルでは、復号したペイロードの `content.kind` と照合する
+   * （docs/e2ee.md の「受信時の検証」）。
+   */
+  message_kind?: string | null;
 };
 
 export type MessageReactionRow = {
@@ -78,13 +102,33 @@ export type ChannelUserRow = {
   joined_at: TimestampString;
 };
 
+/** 自分でチャンネルを退出した日時。本人の行だけが届く。 */
+export type ChannelLeaveRow = {
+  user_id: string;
+  channel_id: string;
+  left_at: TimestampString;
+};
+
+/** 通話の招待（呼び出し）。呼び出し中（`pending`）の行だけが届く。docs/calls.md。 */
+export type CallInviteRow = {
+  id: string;
+  channel_id: string;
+  inviter_id: string;
+  invitee_id: string;
+  status: string;
+  created_at: TimestampString;
+  /** この時刻を過ぎたら呼び出しは終わり。サーバーが `missed` にするまでの数秒は、まだ shape に残る。 */
+  expires_at: TimestampString;
+};
+
 export type NotificationRow = {
   display_data?: NotificationDisplayData;
   id: string;
   user_id: string;
   actor_id: string;
   channel_id: string;
-  message_id: string;
+  /** 不在着信（`missed_call`）にはメッセージがない。 */
+  message_id: string | null;
   notification_type: string;
   is_read: boolean;
   created_at: TimestampString;
@@ -95,6 +139,15 @@ export type DisplayEmoji = {
   url: string;
   width?: number | null;
   height?: number | null;
+};
+
+/** 暗号化チャンネルのメッセージの暗号文（サーバーが形を検証する。docs/e2ee.md の「メッセージ」）。 */
+export type MegolmCiphertext = {
+  algorithm: "m.megolm.v1.aes-sha2";
+  sender_key: string;
+  device_id: string;
+  session_id: string;
+  ciphertext: string;
 };
 
 export type MessageDisplayData = {
@@ -137,5 +190,7 @@ export type TableRowMap = {
   messages: MessageRow;
   message_reactions: MessageReactionRow;
   channel_user: ChannelUserRow;
+  channel_leave: ChannelLeaveRow;
+  call_invites: CallInviteRow;
   attachments: AttachmentRow;
 };

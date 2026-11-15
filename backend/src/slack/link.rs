@@ -53,6 +53,8 @@ const STATE_TTL_SECS: i64 = 600;
 /// - `reactions:read`: `reaction_added` / `reaction_removed` (#293)
 /// - `reactions:write`: Zoo のリアクションを本人として Slack に反映する (#294)
 /// - `chat:write`: Zoo の投稿・編集・削除を本人として Slack に反映する (#294)
+/// - `files:read`: 添付ファイルの取得。Bot が入っていないチャンネルのファイルは、Bot には見えないので、
+///   そのチャンネルを読める連携ユーザーのトークンで取る
 pub const USER_SCOPES: &[&str] = &[
     "users:read",
     "channels:history",
@@ -66,6 +68,7 @@ pub const USER_SCOPES: &[&str] = &[
     "reactions:read",
     "reactions:write",
     "chat:write",
+    "files:read",
 ];
 /// manifest の bot_user に付けるスコープ。
 ///
@@ -331,6 +334,8 @@ async fn store_link(
         let _ = tx.rollback().await;
         return Err(e);
     }
+    // 連携したら、そのワークスペースの対応済みチャンネルのエクスポート以降の差分を、すぐに同期する (#292)
+    super::sync::enqueue_team(&mut tx, &team.id).await?;
     let state = link_state(&mut tx, s, &user.id).await?;
     tx.commit().await?;
     Ok(state)
@@ -527,6 +532,31 @@ async fn link_account(
     reassign(tx, &team.id, slack_user, slack_user_name, user).await
 }
 
+/// `move_content` で付け替える人たちのロックを、ロックの順 (docs/e2ee.md の「membership_epoch と送信の順序」) で
+/// まとめて取る：プレースホルダと本人のメンバー単位のロック (昇順)、プレースホルダの参加チャンネルの行
+/// (`id` の昇順、`FOR NO KEY UPDATE`)。チャンネルの行のロックは、暗号化への切り替え (`FOR UPDATE`) とも直列になる。
+/// 同じトランザクションで何人分も付け替えるときは、最初に全員分を 1 回で取る (1 人ずつ取ると、前の人の
+/// チャンネルの行を持ったまま次の人のメンバー単位のロックを待ち、順が逆になる)。
+pub async fn lock_moves(
+    tx: &mut toasty::Transaction<'_>,
+    pairs: &[(&str, &str)],
+) -> Result<(), AppError> {
+    let people: Vec<&str> = pairs.iter().flat_map(|(from, to)| [*from, *to]).collect();
+    crate::routes::e2ee_channels::lock_members(tx, &people).await?;
+    let froms = serde_json::to_string(&pairs.iter().map(|(from, _)| *from).collect::<Vec<_>>())
+        .map_err(|e| AppError::Internal(e.into()))?;
+    query(
+        tx,
+        "SELECT json_build_object('id',id)::text FROM channels \
+         WHERE id IN (SELECT channel_id FROM channel_user \
+           WHERE user_id IN (SELECT jsonb_array_elements_text($1::jsonb))) \
+         ORDER BY id FOR NO KEY UPDATE",
+        &[&froms],
+    )
+    .await?;
+    Ok(())
+}
+
 /// プレースホルダ `from` の投稿・リアクション・参加チャンネル・添付を `to` へ移す。
 /// 何度呼んでも同じ結果になる (残っていた分だけが移る)。
 pub async fn move_content(
@@ -555,6 +585,22 @@ pub async fn move_content(
     )
     .await?["guest"]
         == true;
+    if !guest {
+        // 参加チャンネルを移すので、暗号化チャンネル (#367 で切り替えたもの) では、人の追加と退出と同じく
+        // membership_epoch を増やす。ロックの順 (docs/e2ee.md の「membership_epoch と送信の順序」) を守るため、
+        // 投稿の付け替え (トリガーがチャンネルの行を読む) より前に、メンバー単位のロック、チャンネルの行の順で取る
+        // (`lock_moves`)。`reconcile_team` のように何人分も続けて移すときは、呼び出し元が全員分を先にまとめて
+        // 取っておく。ここでの取り直しは、同じトランザクションが持つロックなので待たない。
+        lock_moves(tx, &[(from, to)]).await?;
+        exec(
+            tx,
+            "UPDATE channels SET membership_epoch=membership_epoch+1 \
+             WHERE encrypted AND deleted_at IS NULL \
+             AND id IN (SELECT channel_id FROM channel_user WHERE user_id=$1)",
+            &[from],
+        )
+        .await?;
+    }
     let mut statements = vec![
         "UPDATE messages SET user_id=$2 WHERE user_id=$1",
         // 本人が同じ絵文字を付けていれば重複を消してから移す
@@ -671,15 +717,20 @@ async fn rewrite_mentions(
     // 書き換える名前へのメンションを含む投稿だけをロックして読む。`@slack-` だけで絞ると、
     // 未連携の人へのメンションを含む投稿までチーム全体でロックし、長いトランザクションになる
     let targets = keys;
-    // 並行して本文を編集した人の変更を上書きしないよう、読む行をロックしてから書き換える
+    // 並行して本文を編集した人の変更を上書きしないよう、読む行をロックしてから書き換える。
+    // 暗号化に切り替えたチャンネル (#367) の取り込み済みの投稿は、本文を変えない (DB のトリガーも拒否する)。
+    // チャンネルの行を FOR KEY SHARE でロックするので、切り替えの途中なら待ち、切り替わった行は条件を
+    // 読み直して外れる
     let rows = query(
         tx,
         "SELECT json_build_object('id',m.id,'content',m.content,'card',m.card)::text FROM messages m \
+         JOIN channels c ON c.id=m.channel_id \
          WHERE m.channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) \
+         AND NOT c.encrypted \
          AND strpos(m.content,$2)>0 \
          AND EXISTS(SELECT 1 FROM json_array_elements_text($3::json) AS n(name) \
          WHERE strpos(m.content,'@'||n.name)>0) \
-         FOR UPDATE OF m",
+         FOR UPDATE OF m FOR KEY SHARE OF c",
         &[team, needle, &targets],
     )
     .await?;
@@ -883,13 +934,22 @@ pub async fn reconcile_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Res
         &[team],
     )
     .await?;
-    let mut pairs = Vec::with_capacity(linked.len());
-    for row in linked {
-        let slack_user = row["slack_user_id"].as_str().unwrap_or_default();
-        let user = row["user_id"].as_str().unwrap_or_default();
-        let placeholder = super::user_id(team, slack_user);
-        move_content(tx, &placeholder, user).await?;
-        pairs.push((placeholder, user.to_string()));
+    let pairs: Vec<(String, String)> = linked
+        .iter()
+        .map(|row| {
+            let slack_user = row["slack_user_id"].as_str().unwrap_or_default();
+            let user = row["user_id"].as_str().unwrap_or_default();
+            (super::user_id(team, slack_user), user.to_string())
+        })
+        .collect();
+    // 全員分のメンバー単位のロックとチャンネルの行を、付け替えの前にまとめて取る (`lock_moves`)
+    let refs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(from, to)| (from.as_str(), to.as_str()))
+        .collect();
+    lock_moves(tx, &refs).await?;
+    for (placeholder, user) in &pairs {
+        move_content(tx, placeholder, user).await?;
     }
     rewrite_mentions(tx, team, &pairs).await
 }
@@ -963,33 +1023,71 @@ async fn manifest(State(s): State<AppState>, user: AuthUser) -> Result<Json<Valu
         ));
     }
     tx.commit().await?;
-    let redirect = s
-        .config
-        .slack
-        .oauth_redirect_url
-        .clone()
-        .unwrap_or_else(|| "https://<zoo-backend>/api/slack/oauth/callback".into());
     Ok(Json(json!({
         "configured": s.config.slack.oauth_enabled(),
-        "manifest": {
-            "display_information": {
-                "name": "Zoo",
-                "description": "Zoo と Slack を連携します",
-            },
-            "features": {
-                "bot_user": { "display_name": "Zoo", "always_online": false },
-            },
-            "oauth_config": {
-                "redirect_urls": [redirect],
-                "scopes": { "user": USER_SCOPES, "bot": BOT_SCOPES },
-            },
-            "settings": {
-                "org_deploy_enabled": false,
-                "socket_mode_enabled": false,
-                "token_rotation_enabled": false,
-            },
-        },
+        "manifest": manifest_json(
+            s.config.slack.oauth_redirect_url.as_deref(),
+            s.config.slack.signing_secret.is_some(),
+        ),
     })))
+}
+
+/// ユーザーの Events API の購読 (`user_events`)。ユーザートークンで履歴を読む差分同期と同じ権限
+/// (`channels:history`・`groups:history`) で、連携したユーザーが参加しているチャンネルの投稿が届く。
+/// 新しいスコープは要らないので、連携済みのユーザーが連携し直す必要はない。
+/// 編集・削除は `message.channels` / `message.groups` の subtype (`message_changed`・`message_deleted`) で届き、
+/// リアクションの追加・削除は `reactions:read` で届く (どれも、すでに求めているスコープ)。
+/// DM・グループ DM (`message.im`・`message.mpim`) は、取り込み自体が未対応なので購読しない
+pub const USER_EVENTS: &[&str] = &[
+    "message.channels",
+    "message.groups",
+    "reaction_added",
+    "reaction_removed",
+];
+
+/// Events API の受信先 (バックエンドの `/api/slack/events`)。リダイレクト URL と同じ公開 URL を使う
+fn events_request_url(redirect: Option<&str>) -> String {
+    redirect
+        .and_then(|r| reqwest::Url::parse(r).ok())
+        .map(|mut url| {
+            url.set_path("/api/slack/events");
+            url.set_query(None);
+            url.set_fragment(None);
+            url.to_string()
+        })
+        .unwrap_or_else(|| "https://<zoo-backend>/api/slack/events".into())
+}
+
+fn manifest_json(redirect: Option<&str>, events: bool) -> Value {
+    let redirect = redirect
+        .map(str::to_string)
+        .unwrap_or_else(|| "https://<zoo-backend>/api/slack/oauth/callback".into());
+    let mut settings = json!({
+        "org_deploy_enabled": false,
+        "socket_mode_enabled": false,
+        "token_rotation_enabled": false,
+    });
+    // 受信口は `SLACK_SIGNING_SECRET` があるときだけ有効。ないうちは、検証できない request URL を manifest に入れない
+    if events {
+        settings["event_subscriptions"] = json!({
+            "request_url": events_request_url(Some(&redirect)),
+            "user_events": USER_EVENTS,
+        });
+    }
+    json!({
+        "display_information": {
+            "name": "Zoo",
+            "description": "Zoo と Slack を連携します",
+        },
+        "features": {
+            "bot_user": { "display_name": "Zoo", "always_online": false },
+        },
+        "oauth_config": {
+            "redirect_urls": [redirect],
+            "scopes": { "user": USER_SCOPES, "bot": BOT_SCOPES },
+        },
+        "settings": settings,
+    })
 }
 
 #[cfg(test)]
@@ -1101,6 +1199,7 @@ mod tests {
             "reactions:write",
             "chat:write",
             "users:read",
+            "files:read",
         ] {
             assert!(USER_SCOPES.contains(&scope), "missing user scope {scope}");
         }
@@ -1111,5 +1210,34 @@ mod tests {
         // 重複しない (認可 URL の `user_scope` に同じスコープを 2 回書かない)
         let unique: HashSet<_> = USER_SCOPES.iter().collect();
         assert_eq!(unique.len(), USER_SCOPES.len());
+    }
+
+    #[test]
+    fn manifest_subscribes_to_user_events_only_when_the_receiver_is_enabled() {
+        let redirect = "https://zoo.example/api/slack/oauth/callback?x=1";
+        let off = manifest_json(Some(redirect), false);
+        assert!(off["settings"]["event_subscriptions"].is_null());
+        let on = manifest_json(Some(redirect), true);
+        let subs = &on["settings"]["event_subscriptions"];
+        assert_eq!(subs["request_url"], "https://zoo.example/api/slack/events");
+        assert_eq!(
+            subs["user_events"],
+            json!([
+                "message.channels",
+                "message.groups",
+                "reaction_added",
+                "reaction_removed"
+            ])
+        );
+        // 購読に要るスコープは、すでに求めている (再連携は要らない)
+        assert!(
+            USER_SCOPES.contains(&"channels:history") && USER_SCOPES.contains(&"groups:history")
+        );
+        assert!(subs.get("bot_events").is_none());
+        // リダイレクト URL が未設定でも、仮の URL を入れる
+        assert_eq!(
+            manifest_json(None, true)["settings"]["event_subscriptions"]["request_url"],
+            "https://<zoo-backend>/api/slack/events"
+        );
     }
 }

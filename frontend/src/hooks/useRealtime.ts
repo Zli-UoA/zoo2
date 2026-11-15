@@ -1,5 +1,4 @@
 import { useOptimisticDisplay } from "./useOptimisticDisplay";
-import { useFederatedReactions } from "./useFederatedReactions";
 import { eq, isNull, useLiveInfiniteQuery, useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -144,9 +143,9 @@ export function useChannelMembers(channelId: string | null) {
 export function useMessageReactions(channelId: string) {
   const { reactions } = useCollections();
   const native = useLiveQuery((q) => q.from({ reactions: reactions(channelId) }));
-  const remote = useFederatedReactions(channelId);
-  const data = useMemo(() => [...(native.data ?? []), ...remote.rows], [native.data, remote.rows]);
-  return { ...native, data, federatedError: remote.failed };
+  // Display reactions, including federated actors, arrive with messages.display_data.
+  // Keep this collection for optimistic writes and legacy cached messages only.
+  return native;
 }
 
 export interface WorkspaceAdminIds {

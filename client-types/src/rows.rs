@@ -21,6 +21,13 @@ pub struct Channel {
     #[serde(default)]
     pub is_nsfw: bool,
     pub is_dm: bool,
+    /// 暗号化チャンネル（作成時だけ指定でき、変わらない。docs/e2ee.md）。
+    #[serde(default)]
+    pub encrypted: bool,
+    /// 暗号化チャンネルの `membership_epoch`（docs/e2ee.md の「membership_epoch と送信の順序」）。
+    /// Electric は int8 を文字列で配る。平文のチャンネルや古いスキーマでは `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_epoch: Option<u64>,
     pub archive_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
 }
@@ -52,6 +59,25 @@ pub struct Message {
     pub updated_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
     pub parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_reactions: Option<Vec<Reaction>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_attachments: Option<Vec<Attachment>>,
+    #[serde(default)]
+    pub thread_archive_at: Option<DateTime>,
+    /// 暗号化チャンネルのメッセージの Megolm の暗号文（`messages.ciphertext`。docs/e2ee.md の
+    /// 「messages.ciphertext の形式」）。平文のメッセージと、削除した行では `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ciphertext: Option<Value>,
+    /// 暗号化して送ったときの `membership_epoch`。平文のメッセージ（暗号化に切り替える前の行を含む）では `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+    /// 版の番号（編集のたびにサーバーが 1 増やす）。
+    #[serde(default)]
+    pub revision: u64,
+    /// `message` か `emote`（`messages.message_kind`）。古いスキーマでは `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,20 +105,35 @@ pub struct Attachment {
 }
 
 /// 自分あての通知。プロキシが `notification_events` の `source = 'channel'` だけを返すので、
-/// チャンネルとメッセージは必ずある。
+/// チャンネルは必ずある。メッセージは、不在着信 (`missed_call`) だけない。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notification {
     pub id: String,
     pub user_id: String,
     pub actor_id: String,
     pub channel_id: String,
-    pub message_id: String,
+    pub message_id: Option<String>,
     /// `mention`、`reply`、`dm`、`reaction` など。backend の `notifications.rs` を参照。
     pub notification_type: String,
     pub is_read: bool,
     pub created_at: DateTime,
     /// 投稿者名や本文の抜粋など、表示用に backend が詰めた JSON。
     pub display_data: Option<Value>,
+}
+
+/// 通話の招待（呼び出し）。呼び出し中 (`pending`) の行だけが Shape に届く（docs/calls.md）。
+///
+/// 時刻は Electric の `timestamptz`（`2026-11-14 10:00:00.123+00`）のまま持つ。
+/// 読むときは [`crate::notify::parse_timestamptz`] を使う。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallInvite {
+    pub id: String,
+    pub channel_id: String,
+    pub inviter_id: String,
+    pub invitee_id: String,
+    pub status: String,
+    pub created_at: String,
+    pub expires_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +206,9 @@ impl FromRow for Channel {
             is_nsfw: opt_boolean(row, "is_nsfw")?.unwrap_or(false),
             // 古いスキーマには is_dm がないため、無ければ通常のチャンネルとして扱う。
             is_dm: opt_boolean(row, "is_dm")?.unwrap_or(false),
+            // 古いスキーマには encrypted がないため、無ければ平文のチャンネルとして扱う。
+            encrypted: opt_boolean(row, "encrypted")?.unwrap_or(false),
+            membership_epoch: opt_unsigned(row, "membership_epoch")?,
             archive_at: opt_time(row, "archive_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
         })
@@ -205,8 +249,47 @@ impl FromRow for Message {
             updated_at: opt_time(row, "updated_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
             parent_id: opt_text(row, "parent_id"),
+            display_reactions: display_reactions(row)?,
+            display_attachments: display_attachments(row)?,
+            thread_archive_at: opt_time(row, "thread_archive_at")?,
+            ciphertext: opt_json(row, "ciphertext")?,
+            epoch: opt_unsigned(row, "epoch")?,
+            revision: opt_unsigned(row, "revision")?.unwrap_or(0),
+            message_kind: opt_text(row, "message_kind"),
         })
     }
+}
+
+fn display_reactions(row: &Row) -> Result<Option<Vec<Reaction>>> {
+    let display = match row.get("display_data") {
+        Some(Value::String(raw)) => serde_json::from_str::<Value>(raw)?,
+        Some(value) => value.clone(),
+        None => return Ok(None),
+    };
+    let Some(reactions) = display.get("reactions").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    reactions
+        .iter()
+        .map(|value| Reaction::from_row(value.as_object().context("Invalid display reaction")?))
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
+fn display_attachments(row: &Row) -> Result<Option<Vec<Attachment>>> {
+    let display = match row.get("display_data") {
+        Some(Value::String(raw)) => serde_json::from_str::<Value>(raw)?,
+        Some(value) => value.clone(),
+        None => return Ok(None),
+    };
+    let Some(attachments) = display.get("attachments").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    attachments
+        .iter()
+        .map(|value| Attachment::from_row(value.as_object().context("Invalid display attachment")?))
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
 }
 
 impl FromRow for Reaction {
@@ -238,6 +321,20 @@ impl FromRow for Attachment {
     }
 }
 
+impl FromRow for CallInvite {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
+            id: text(row, "id")?,
+            channel_id: text(row, "channel_id")?,
+            inviter_id: text(row, "inviter_id")?,
+            invitee_id: text(row, "invitee_id")?,
+            status: text(row, "status")?,
+            created_at: text(row, "created_at")?,
+            expires_at: text(row, "expires_at")?,
+        })
+    }
+}
+
 impl FromRow for Notification {
     fn from_row(row: &Row) -> Result<Self> {
         Ok(Self {
@@ -245,7 +342,7 @@ impl FromRow for Notification {
             user_id: text(row, "user_id")?,
             actor_id: text(row, "actor_id")?,
             channel_id: text(row, "channel_id")?,
-            message_id: text(row, "message_id")?,
+            message_id: opt_text(row, "message_id"),
             notification_type: text(row, "notification_type")?,
             is_read: opt_boolean(row, "is_read")?.unwrap_or(false),
             created_at: time(row, "created_at")?,
@@ -278,6 +375,13 @@ fn opt_integer(row: &Row, column: &str) -> Result<Option<i64>> {
             .map_err(|e| anyhow!("列 {column} が整数ではありません: {s} ({e})")),
         Some(other) => Err(anyhow!("列 {column} が整数ではありません: {other}")),
     }
+}
+
+/// 0 以上の int8 の列（`membership_epoch`、`epoch`、`revision`）。
+fn opt_unsigned(row: &Row, column: &str) -> Result<Option<u64>> {
+    opt_integer(row, column)?
+        .map(|value| u64::try_from(value).map_err(|_| anyhow!("列 {column} が負の数です: {value}")))
+        .transpose()
 }
 
 fn integer(row: &Row, column: &str) -> Result<i64> {
@@ -345,15 +449,50 @@ mod tests {
         let channel = Channel::from_row(&row(json!({
             "id": "c1", "channel_name": "general", "description": null,
             "is_private": "f", "is_nsfw": "t", "is_dm": "true", "archive_at": "2026-11-01 01:02:03.456",
-            "deleted_at": null
+            "deleted_at": null, "encrypted": "t", "membership_epoch": "3"
         })))
         .unwrap();
+        assert!(channel.encrypted);
+        assert_eq!(channel.membership_epoch, Some(3));
         assert!(!channel.is_private);
         assert!(channel.is_nsfw);
         assert!(channel.is_dm);
         assert_eq!(
             channel.archive_at.unwrap().to_string(),
             "2026-11-01T01:02:03.456"
+        );
+    }
+
+    #[test]
+    fn parses_encrypted_message_columns() {
+        let message = Message::from_row(&row(json!({
+            "id": "m1", "user_id": "u1", "channel_id": "c1", "content": "",
+            "created_at": "2026-11-01 01:02:03", "ciphertext": "{\"algorithm\":\"m.megolm.v1.aes-sha2\"}",
+            "epoch": "4", "revision": "2", "message_kind": "emote"
+        })))
+        .unwrap();
+        assert_eq!(
+            message.ciphertext,
+            Some(json!({ "algorithm": "m.megolm.v1.aes-sha2" }))
+        );
+        assert_eq!(message.epoch, Some(4));
+        assert_eq!(message.revision, 2);
+        assert_eq!(message.message_kind.as_deref(), Some("emote"));
+
+        let plain = Message::from_row(&row(json!({
+            "id": "m2", "user_id": "u1", "channel_id": "c1", "content": "hi",
+            "created_at": "2026-11-01 01:02:03", "ciphertext": null, "epoch": null
+        })))
+        .unwrap();
+        assert_eq!(plain.ciphertext, None);
+        assert_eq!(plain.epoch, None);
+        assert_eq!(plain.revision, 0);
+        assert!(
+            Message::from_row(&row(json!({
+                "id": "m3", "user_id": "u1", "channel_id": "c1",
+                "created_at": "2026-11-01 01:02:03", "revision": "-1"
+            })))
+            .is_err()
         );
     }
 
@@ -365,6 +504,7 @@ mod tests {
         })))
         .unwrap();
         assert_eq!(message.parent_id, None);
+        assert_eq!(message.thread_archive_at, None);
         assert_eq!(message.updated_at, None);
 
         let channel = Channel::from_row(&row(json!({
@@ -373,6 +513,7 @@ mod tests {
         .unwrap();
         assert!(!channel.is_dm);
         assert!(!channel.is_nsfw);
+        assert!(!channel.encrypted);
     }
 
     #[test]

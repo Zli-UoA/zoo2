@@ -1,13 +1,15 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import { DEFAULT_CONFIG } from "../../lib/config";
+import { encryptionSendState, resetSeenEncryptedChannels } from "../../lib/e2ee/encryptionGuard";
 import type { ChannelRow } from "../../lib/electric/types";
 import { LocaleProvider } from "../i18n/LocaleProvider";
 import { ChannelHeader } from "./ChannelHeader";
 
 const channel: ChannelRow = {
-  id: "channel-general",
+  id: "00000000-0000-4000-8000-000000000001",
   channel_name: "general",
   description: null,
   created_user_id: "user-alice",
@@ -21,6 +23,24 @@ const channel: ChannelRow = {
   slack_imported_at: null,
   deleted_at: null,
 };
+
+const encryptApi = vi.hoisted(() => ({ encryptChannel: vi.fn() }));
+vi.mock("../../lib/api/encryptChannel", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/api/encryptChannel")>()),
+  encryptChannel: encryptApi.encryptChannel,
+}));
+vi.mock("../../lib/electric/collections-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/electric/collections-context")>()),
+  useCollections: () => ({
+    config: { ...DEFAULT_CONFIG, txidMode: "awaitTxId" },
+    channels: {
+      utils: {
+        // Shape の反映がいつまでも届かない（待ちが失敗する）場合。
+        awaitTxId: () => Promise.reject(new Error("shape timeout")),
+      },
+    },
+  }),
+}));
 
 vi.mock("../../hooks/useChannelAdmin", () => ({
   describeApiError: (cause: unknown) => String(cause),
@@ -50,7 +70,7 @@ vi.mock("../../hooks/useRealtime", () => ({
     data: [
       {
         id: "message-1",
-        channel_id: "channel-general",
+        channel_id: "00000000-0000-4000-8000-000000000001",
         user_id: "user-bob",
         content: "今日のリリースは 18:00 です。",
         created_at: "2026-01-02 09:00:00.000",
@@ -77,7 +97,7 @@ vi.mock("../layout/shell-context", () => ({
     threadRootId: null,
     openThread: vi.fn(),
     closeThread: vi.fn(),
-    selectedChannelId: "channel-general",
+    selectedChannelId: "00000000-0000-4000-8000-000000000001",
   }),
 }));
 
@@ -157,5 +177,73 @@ describe("ChannelHeader", () => {
       </LocaleProvider>,
     );
     expect(screen.queryByText(/Slack から/)).toBeNull();
+  });
+
+  describe("暗号化への切り替え (#367)", () => {
+    const privateA: ChannelRow = {
+      ...channel,
+      id: "channel-a",
+      channel_name: "a",
+      is_private: true,
+    };
+    const privateB: ChannelRow = {
+      ...channel,
+      id: "channel-b",
+      channel_name: "b",
+      is_private: true,
+    };
+
+    it("確認を開いたまま対象のチャンネルが変わったら、確認を閉じて移動先を切り替えない", async () => {
+      encryptApi.encryptChannel.mockReset();
+      const { rerender } = render(
+        <LocaleProvider>
+          <ChannelHeader channel={privateA} memberCount={3} />
+        </LocaleProvider>,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
+      await userEvent.click(await screen.findByRole("button", { name: "暗号化を有効にする" }));
+      expect(await screen.findByText("このチャンネルを暗号化しますか？")).toBeVisible();
+
+      rerender(
+        <LocaleProvider>
+          <ChannelHeader channel={privateB} memberCount={3} />
+        </LocaleProvider>,
+      );
+      await waitFor(() =>
+        expect(screen.queryByText("このチャンネルを暗号化しますか？")).toBeNull(),
+      );
+      expect(encryptApi.encryptChannel).not.toHaveBeenCalled();
+    });
+
+    it("API が暗号化を返したら、Shape の反映を待てなくても送信側が暗号化として扱う", async () => {
+      resetSeenEncryptedChannels();
+      encryptApi.encryptChannel.mockReset();
+      encryptApi.encryptChannel.mockResolvedValue({
+        data: { ...privateA, encrypted: true, membership_epoch: 1 },
+        txid: "42",
+      });
+      render(
+        <LocaleProvider>
+          <ChannelHeader channel={privateA} memberCount={3} />
+        </LocaleProvider>,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
+      await userEvent.click(await screen.findByRole("button", { name: "暗号化を有効にする" }));
+      await userEvent.click(await screen.findByRole("button", { name: "暗号化する" }));
+      await waitFor(() =>
+        expect(screen.queryByText("このチャンネルを暗号化しますか？")).toBeNull(),
+      );
+
+      expect(encryptApi.encryptChannel).toHaveBeenCalledWith(expect.anything(), "channel-a");
+      // Shape はまだ `encrypted = false` のまま。それでも平文の送信を止める状態になる。
+      expect(
+        encryptionSendState({
+          channelId: "channel-a",
+          encrypted: false,
+          known: "unavailable",
+          hasCiphertext: false,
+        }).downgraded,
+      ).toBe(true);
+    });
   });
 });

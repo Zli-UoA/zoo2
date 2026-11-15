@@ -4,21 +4,25 @@ import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { cn } from "cn";
 import {
-  ArchiveIcon,
   HashIcon,
   HeadphonesIcon,
   LockIcon,
+  LockKeyholeIcon,
   PlusIcon,
   SearchIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
+import { useThreadIndex } from "../../hooks/useThreadIndex";
 import { useUnreadChannels } from "../../hooks/useUnreadChannels";
+import { useChannelLeaveDates } from "../../hooks/useChannelLeaveDates";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
 import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
+import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
+import { nowIso } from "../../lib/time";
 import { SyncStatus } from "../SyncStatus";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
@@ -30,6 +34,7 @@ import { filterJoinedChannels } from "./channelSearch";
 import { CreateChannelDialog } from "./CreateChannelDialog";
 import { CreateDmDialog } from "./CreateDmDialog";
 import { DmSection } from "./DmSection";
+import { ChannelThreadItems } from "./ChannelThreadItems";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
 
@@ -55,6 +60,7 @@ export function ChannelSidebar({
   const [createOpen, setCreateOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [dmOpen, setDmOpen] = useState(false);
+  const threadIndex = useThreadIndex(currentUserId);
 
   // 一覧の各チャンネルについて現在ユーザーの参加状態を出す。`channel_user` の
   // 購読は `getCollections()` が 1 本だけ持つため、ここで直接 live query を張っても
@@ -69,6 +75,15 @@ export function ChannelSidebar({
     }
     return joined;
   }, [membershipsQuery.data, currentUserId]);
+  // メンバー数。同期済みの `channel_user` から数える（「チャンネルを探す」の並び替え用）。
+  const memberCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const membership of membershipsQuery.data ?? []) {
+      counts.set(membership.channel_id, (counts.get(membership.channel_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [membershipsQuery.data]);
+  const leaveDates = useChannelLeaveDates(currentUserId, joinedChannelIds);
   // サイドバーは参加中だけを出すため、参加状態が解決するまでは一覧を確定しない
   // （解決前に空の一覧を一瞬出さない）。
   const sidebarLoading =
@@ -81,6 +96,20 @@ export function ChannelSidebar({
   const sidebarChannels = useMemo(
     () => filterJoinedChannels(regularChannels, joinedChannelIds),
     [regularChannels, joinedChannelIds],
+  );
+  const joinChannel = useCallback(
+    async (channelId: string) => {
+      if (!currentUserId) {
+        return;
+      }
+      // 失敗は呼び出し側（検索ダイアログ）が受けて表示する。
+      const transaction = channelUsers.insert(
+        { user_id: currentUserId, channel_id: channelId, joined_at: nowIso() },
+        { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
+      );
+      await transaction.when("settled");
+    },
+    [channelUsers, currentUserId],
   );
   const dmChannels = useMemo(
     () =>
@@ -154,62 +183,70 @@ export function ChannelSidebar({
                 const isActive = shell.selectedChannelId === channel.id;
                 const hasActiveCall = (call.activeCalls.get(channel.id) ?? 0) > 0;
                 return (
-                  <Link
-                    key={channel.id}
-                    to="/channels/$channelId"
-                    params={{ channelId: channel.id }}
-                    aria-current={isActive ? "page" : undefined}
-                    onClick={() => shell.showChat()}
-                    className={sidebarItemClassName(isActive, isUnread)}
-                  >
-                    {channel.is_private ? (
-                      <LockIcon className="size-4 shrink-0" aria-hidden="true" />
-                    ) : (
-                      <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
-                    )}
-                    <span
-                      className={cn(
-                        "min-w-0 flex-1 truncate",
-                        channel.archive_at ? "text-muted-foreground" : null,
-                      )}
+                  <div key={channel.id}>
+                    <Link
+                      to="/channels/$channelId"
+                      params={{ channelId: channel.id }}
+                      aria-current={isActive ? "page" : undefined}
+                      onClick={() => shell.showChat()}
+                      className={sidebarItemClassName(isActive, isUnread)}
                     >
-                      {channel.channel_name}
-                    </span>
-                    {channel.is_nsfw ? (
-                      <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
-                    ) : null}
-                    {hasActiveCall ? (
-                      <span
-                        role="img"
-                        title={t("call.inCall")}
-                        aria-label={t("call.inCall")}
-                        className="flex items-center text-emerald-500"
-                      >
-                        <HeadphonesIcon className="size-3 animate-pulse" />
-                      </span>
-                    ) : null}
-                    {isUnread ? (
-                      <span
-                        role="img"
-                        aria-label={t("channels.unread")}
-                        title={t("channels.unread")}
-                        className="size-2 shrink-0 rounded-full bg-brand"
+                      {channel.encrypted ? (
+                        <span role="img" aria-label={t("e2ee.badge")} title={t("e2ee.badge")}>
+                          <LockKeyholeIcon className="size-4 shrink-0" aria-hidden="true" />
+                        </span>
+                      ) : channel.is_private ? (
+                        <LockIcon className="size-4 shrink-0" aria-hidden="true" />
+                      ) : (
+                        <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{channel.channel_name}</span>
+                      {channel.is_nsfw ? (
+                        <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
+                      ) : null}
+                      {hasActiveCall ? (
+                        <span
+                          role="img"
+                          title={t("call.inCall")}
+                          aria-label={t("call.inCall")}
+                          className="flex items-center text-emerald-500"
+                        >
+                          <HeadphonesIcon className="size-3 animate-pulse" />
+                        </span>
+                      ) : null}
+                      {isUnread ? (
+                        <span
+                          role="img"
+                          aria-label={t("channels.unread")}
+                          title={t("channels.unread")}
+                          className="size-2 shrink-0 rounded-full bg-brand"
+                        />
+                      ) : null}
+                    </Link>
+                    {!channel.is_dm ? (
+                      <ChannelThreadItems
+                        channel={channel}
+                        threads={threadIndex.threads}
+                        onObserveThread={threadIndex.observeThread}
                       />
                     ) : null}
-                    {channel.archive_at ? (
-                      <span
-                        role="img"
-                        title={t("moderation.archived")}
-                        aria-label={t("moderation.archived")}
-                        className="shrink-0 text-muted-foreground/70"
-                      >
-                        <ArchiveIcon className="size-3" aria-hidden="true" />
-                      </span>
-                    ) : null}
-                  </Link>
+                  </div>
                 );
               })
             )}
+            {threadIndex.isError ? (
+              <p className="p-2 text-xs text-destructive">{t("threads.indexError")}</p>
+            ) : null}
+            {threadIndex.hasMore || threadIndex.isError ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={threadIndex.isLoading}
+                onClick={threadIndex.loadMore}
+              >
+                {t(threadIndex.isError ? "threads.retry" : "threads.more")}
+              </Button>
+            ) : null}
           </div>
         </CollapsibleSection>
         <DmSection
@@ -242,6 +279,9 @@ export function ChannelSidebar({
         onOpenChange={setBrowserOpen}
         channels={regularChannels}
         joinedChannelIds={joinedChannelIds}
+        onJoinChannel={joinChannel}
+        memberCounts={memberCounts}
+        leaveDates={leaveDates}
       />
     </aside>
   );

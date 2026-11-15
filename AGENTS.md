@@ -12,6 +12,13 @@
 - Storybookの追加・整理、またはUI変更に伴うStoryの要否を判断するときは `.agents/skills/storybook-coverage/SKILL.md` に従う。
 - 対象一覧は `frontend/.storybook/coverage.json` に置き、`pnpm --dir frontend check:storybook` で検証する。
 
+# リクエストと接続
+
+- 通信の実装・修正では `docs/request-design.md` に従う。画像などのファイル本体以外は、表示データの取得・同期を少数の共有経路へまとめ、部品ごとの接続や重複取得を増やさない。
+- 同じ機能を持つReact・Android・TUI・デスクトップの各実装を確認し、一方だけの修正で共通化済みとしない。
+- 既存のShape・DTOにあるデータを別APIで取り直さない。取得中の更新は集約し、ポーリングには必要性・頻度・停止条件を明記する。
+- 接続数・リクエスト数、遅い応答、非表示・復帰、アカウント切替を検証する。
+
 # フロントエンドの一貫性と再利用
 
 - フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。
@@ -24,6 +31,11 @@
 - Compose for Android は継続する。`frontend-compose/` の `commonMain`、`androidMain`、`androidApp`、Electric4k、翻訳・フォント・アイコン生成など Android が利用する資源を維持する。
 - 共通 Kotlin・API・認証・同期を変更するときは Android への影響を確認し、必要な修正と Android の検証を同じ PR に含める。Android の開発・検証・署名付き配布を Web 実験と一緒に停止しない。
 - Web 専用コード・テストは削除済み。Android が利用する共有資源を削除しない。詳細は `docs/android.md` を参照する。
+
+# クライアントごとの機能の範囲
+
+- すべての機能は Web 版（React）に実装する。
+- 管理者向けの機能と、必須ではないユーザー向けの機能は、Android 版や iOS 版などには実装しない。
 
 # TUI版の追従
 
@@ -45,9 +57,19 @@
 - `NOT NULL` のカラムを追加するときは `DEFAULT` を付ける。付けられない場合は、NULL許容で追加し、既存行を埋めてから `NOT NULL` にする。
 - `UNIQUE`・外部キー・`CHECK` などの制約を追加するときは、本番の既存データで失敗しないかを確かめる。違反しうるデータがあれば、それを直すマイグレーションを先に置く。
 - スキーマは `infra/db/schema.sql` を編集し、`make migrate-diff name=<名前>` でマイグレーションを生成する。CIは `schema.sql` とマイグレーションが一致するかを検証する。
+- `infra/db/schema.sql` を変えたら、毎回 `infra/db/erd.sh` を実行して `docs/db-erd.md` と `docs/db-erd/` を再生成し、同じPRに含める。CI（`ci-db-erd`）は `infra/db/erd.sh --check` で検査するだけで、自動では直さない。実行には `atlas` と docker が要る。
 - main にある適用済みのマイグレーションファイルは編集・削除しない。直すときは新しいファイルを追加する。
 - main を取り込んで `atlas.sum` が衝突したら、自分のマイグレーションのファイル名のタイムスタンプを main の最新より後に付け直し、`atlas migrate hash --dir file://infra/db/migrations` で `atlas.sum` を作り直す。本番に適用済みのものより古いタイムスタンプのファイルは、Atlas が適用を拒否する。
 - main へはマージキューから入れる。PRをmainの最新に追従させる必要はない。キューがmainと合わせた状態でCIを実行し、通ったものだけをmainに入れる。
+
+# 環境変数・Secret の管理とクラスタの操作
+
+- 本番と preview の環境変数（Deployment の `env`、ConfigMap）と Secret は、すべて Git で管理する。置き場所は `Zli-UoA/zoo2-infra` で、Secret は下の「Secret」のとおり sops で暗号化して置く。
+- クラスタを直接変えない。`kubectl patch`、`kubectl edit`、`kubectl set env`、`kubectl create`、`kubectl apply`、`kubectl scale`、`kubectl delete` などで、設定やリソースを手で変える作業はしない。変更は zoo2-infra の PR にし、Flux で反映する（手で変えても、Flux が Git の値に戻すか、Git とクラスタが食い違う）。
+- 調べるための読み取り（`kubectl get`、`kubectl describe`、`kubectl logs`）はしてよい。Secret の値は画面・ログ・履歴に出さない。
+- 今は手動で作っているもの（ConfigMap `zoo2-oidc`、zoo2-infra の `docs/operations.md`「秘密情報」の表で手動のものなど）に値を足したり変えたりする必要が出たら、手で patch せず、Git に移す PR を出す。
+- 例外は、Git に置けないものだけ：sops の復号鍵（`sops-age`）と、CNPG などが生成するもの（`zoo2-db-app` など）。
+- docs と PR 本文にも、`kubectl patch` などでクラスタを手で変える手順を書かない。必要な設定は、zoo2-infra の PR を示す。
 
 # Secret
 

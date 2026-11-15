@@ -19,62 +19,30 @@ const linked = http.get("*/api/slack/link", () =>
     },
   }),
 );
-// 管理者がまだ ZIP を保存していない
-const noExport = http.get("*/api/slack/imports", () =>
-  HttpResponse.json({ export: null, channels: [], imports: [] }),
+// 作った非公開チャンネルがない
+const noExport = http.get("*/api/slack/private-channels", () =>
+  HttpResponse.json({ linked: true, channels: [] }),
 );
-const exported = {
-  id: "import-1",
-  file_name: "Zli Slack export Jan 1 2024 - Nov 1 2026.zip",
-  created_at: "2026-11-01T09:00:00Z",
-};
-const ownChannel = (overrides: Record<string, unknown>) => ({
-  slack_channel_id: "C1",
+const privateChannel = (overrides: Record<string, unknown>) => ({
+  slack_channel_id: "G1",
   name: "design",
-  is_private: false,
   is_archived: false,
   members: 8,
-  creator: "U1",
-  message_count: 120,
-  suggested_name: "slack-design",
-  name_taken: true,
-  existing_channel: null,
-  same_name_channel: { id: "channel-design", name: "design", is_private: false },
-  targets: [{ id: "channel-design", name: "design", is_private: false }],
+  status: "new",
+  suggested_name: "design",
+  name_taken: false,
   ...overrides,
 });
 const ownChannels = [
-  ownChannel({}),
-  ownChannel({
-    slack_channel_id: "G1",
+  privateChannel({}),
+  privateChannel({
+    slack_channel_id: "G2",
     name: "secret",
-    is_private: true,
     members: 3,
-    message_count: 12,
-    suggested_name: "secret",
-    name_taken: false,
-    same_name_channel: null,
-    targets: [],
+    suggested_name: "slack-secret",
+    name_taken: true,
   }),
 ];
-const run = {
-  id: "run-1",
-  status: "importing",
-  file_name: exported.file_name,
-  file_size: 1,
-  team_id: "T1",
-  analysis: null,
-  total_messages: 132,
-  processed_messages: 44,
-  total_files: 0,
-  processed_files: 0,
-  pending_files: 0,
-  failed_files: 0,
-  error: null,
-  created_at: "2026-11-02T09:00:00Z",
-  finished_at: null,
-  source_id: "import-1",
-};
 const meta = {
   title: "Features/Workspace/SlackLink",
   component: SlackLinkPanel,
@@ -283,115 +251,80 @@ export const OwnImport: Story = {
     msw: {
       handlers: [
         linked,
-        http.get("*/api/slack/imports", () =>
+        http.get("*/api/slack/private-channels", () =>
           HttpResponse.json({
-            export: exported,
-            channels: ownChannels,
-            imports: ownStarted ? [run] : [],
+            linked: true,
+            channels: ownStarted
+              ? [
+                  privateChannel({ status: "running", channel_id: "c1", channel_name: "design" }),
+                  ownChannels[1],
+                ]
+              : ownChannels,
           }),
         ),
-        http.post("*/api/slack/imports", () => {
+        http.post("*/api/slack/private-channels/import", () => {
           ownStarted = true;
-          return HttpResponse.json(run);
+          return HttpResponse.json({
+            imported: [{ slack_channel_id: "G1", channel_id: "c1", channel_name: "design" }],
+          });
         }),
       ],
     },
   },
   play: playForImplementation(async () => {
-    // 自分が作ったチャンネルだけが並び、同じ名前の参加中のチャンネルか、新しいチャンネルを選べる
-    await userEvent.selectOptions(
-      await screen.findByRole("combobox", { name: "#design の取り込み方" }),
-      "existing",
-    );
-    await expect(screen.getByRole("combobox", { name: "#design の取り込み先" })).toHaveValue(
-      "channel-design",
-    );
-    await userEvent.selectOptions(
-      screen.getByRole("combobox", { name: "#secret の取り込み方" }),
-      "create",
-    );
-    await userEvent.click(screen.getByRole("button", { name: "2 チャンネルを取り込む" }));
-    await expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "33");
+    // 自分が作った非公開チャンネルが並び、取り込み先の名前を直して、1 つずつ取り込む
+    const name = await screen.findByRole("textbox", { name: "#secret の取り込み先の名前" });
+    await expect(name).toHaveValue("slack-secret");
+    await userEvent.click(screen.getByRole("button", { name: "#design を取り込む" }));
+    await expect(await screen.findByText(/取り込み中です（#design）/)).toBeVisible();
   }),
 };
 
-let ownPolls = 0;
-export const OwnImportChannelsChanged: Story = {
-  beforeEach: () => {
-    ownPolls = 0;
-  },
+export const OwnImportDone: Story = {
   parameters: {
     msw: {
       handlers: [
         linked,
-        // 取り込み中に管理者が新しい ZIP を保存し、自分が作ったチャンネルが増える
-        http.get("*/api/slack/imports", () =>
+        http.get("*/api/slack/private-channels", () =>
           HttpResponse.json({
-            export: exported,
-            channels: ownPolls++ === 0 ? ownChannels.slice(0, 1) : ownChannels,
-            imports: [run],
+            linked: true,
+            channels: [
+              privateChannel({ status: "done", channel_id: "c1", channel_name: "design" }),
+              privateChannel({ slack_channel_id: "G3", name: "old", status: "hidden" }),
+            ],
           }),
         ),
       ],
     },
   },
   play: playForImplementation(async () => {
-    await expect(
-      await screen.findByRole("combobox", { name: "#secret の取り込み方" }, { timeout: 5_000 }),
-    ).toHaveValue("skip");
+    await expect(await screen.findByText(/取り込み済みです（#design）/)).toBeVisible();
+    await expect(screen.getByText(/名前は表示しません/)).toBeVisible();
   }),
 };
 
 export const OwnImportNoChannels: Story = {
-  parameters: {
-    msw: {
-      handlers: [
-        linked,
-        http.get("*/api/slack/imports", () =>
-          HttpResponse.json({ export: exported, channels: [], imports: [] }),
-        ),
-      ],
-    },
-  },
+  parameters: { msw: { handlers: [linked, noExport] } },
   play: playForImplementation(async () => {
-    await expect(await screen.findByText(/あなたが作ったチャンネルはありません/)).toBeVisible();
+    await expect(
+      await screen.findByText(/あなたが作った非公開チャンネルはありません/),
+    ).toBeVisible();
   }),
 };
 
-/** 以前の取り込み先が、見えないチャンネル (参加していない非公開チャンネル)。名前は出さず、そこ以外に取り込めないことだけを示す */
-export const OwnImportHiddenTarget: Story = {
+/** 以前の版で連携したので、非公開チャンネルを読むスコープがない。連携し直してもらう */
+export const OwnImportNeedsRelink: Story = {
   parameters: {
     msw: {
       handlers: [
         linked,
-        http.get("*/api/slack/imports", () =>
-          HttpResponse.json({
-            export: exported,
-            channels: [
-              ownChannel({
-                slack_channel_id: "G1",
-                name: "secret",
-                is_private: true,
-                existing_channel: null,
-                existing_hidden: true,
-                same_name_channel: null,
-                targets: [],
-              }),
-            ],
-            imports: [],
-          }),
+        http.get("*/api/slack/private-channels", () =>
+          HttpResponse.json({ linked: true, reason: "missing_scope", channels: [] }),
         ),
       ],
     },
   },
   play: playForImplementation(async () => {
-    await expect(
-      await screen.findByText(
-        "以前、参加していないチャンネルに取り込みました。取り込めるのはそのチャンネルだけです。",
-      ),
-    ).toBeVisible();
-    const action = screen.getByRole("combobox", { name: "#secret の取り込み方" });
-    await expect(within(action).getByRole("option", { name: "新しいチャンネル" })).toBeDisabled();
-    await expect(within(action).getByRole("option", { name: "既存のチャンネル" })).toBeDisabled();
+    await expect(await screen.findByText(/非公開チャンネルを読む権限がありません/)).toBeVisible();
   }),
 };

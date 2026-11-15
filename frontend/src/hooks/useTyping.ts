@@ -1,3 +1,4 @@
+import { visiblePoll } from "../lib/visiblePoll";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
@@ -23,7 +24,7 @@ export function useTyping(channelId: string, parentId: string | null, enabled: b
     let active = false;
     let lastSent = 0;
     let stopTimer: ReturnType<typeof setTimeout> | undefined;
-    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+
     // Serialize writes so a delayed start cannot overtake a stop.
     let writes = Promise.resolve();
     const send = (value: boolean) => {
@@ -49,7 +50,9 @@ export function useTyping(channelId: string, parentId: string | null, enabled: b
         stop();
         return;
       }
+      const started = !active;
       active = true;
+      if (started) polling.refresh();
       const now = Date.now();
       if (!lastSent || now - lastSent >= 2000) {
         send(true);
@@ -59,19 +62,18 @@ export function useTyping(channelId: string, parentId: string | null, enabled: b
       stopTimer = setTimeout(stop, 3000);
     };
     const isVisible = () => document.visibilityState !== "hidden";
-    const poll = async () => {
-      if (isVisible()) {
+    const polling = visiblePoll(
+      async (signal) => {
         try {
-          const result = await client.get<TypingUser[]>(path + query, {
-            signal: AbortSignal.timeout(5000),
-          });
-          if (!cancelled && isVisible()) setUsers(result);
+          const result = await client.get<TypingUser[]>(path + query, { signal });
+          if (!cancelled && !signal.aborted && isVisible()) setUsers(result);
+          return result.length > 0 || active;
         } catch {
-          if (!cancelled) setUsers([]);
+          if (!cancelled && isVisible()) setUsers([]);
         }
-      }
-      if (!cancelled) pollTimer = setTimeout(() => void poll(), 1500);
-    };
+      },
+      { interval: 1500, maxInterval: 5000 },
+    );
     const onHidden = () => {
       if (document.visibilityState === "hidden") {
         stop();
@@ -80,12 +82,11 @@ export function useTyping(channelId: string, parentId: string | null, enabled: b
     };
     document.addEventListener("visibilitychange", onHidden);
     window.addEventListener("pagehide", stop);
-    void poll();
     return () => {
       cancelled = true;
       activity.current = null;
       stop();
-      clearTimeout(pollTimer);
+      polling.dispose();
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", stop);
     };

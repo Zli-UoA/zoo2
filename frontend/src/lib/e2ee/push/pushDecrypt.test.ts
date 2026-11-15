@@ -1,0 +1,440 @@
+import { readFileSync } from "node:fs";
+
+import SQLiteESMFactory from "@journeyapps/wa-sqlite/dist/wa-sqlite.mjs";
+import { initSync, type EncryptedMessage, type JsonObject } from "@zoo/crypto-wasm";
+import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
+
+import { cryptoDatabaseName } from "../identity";
+import { CryptoOperations } from "../operations";
+import { MemoryCryptoBackend } from "../store/backend";
+import { CryptoStore } from "../store/cryptoStore";
+import { PUSH_DECRYPT_REQUEST, type PushDecryptRequest } from "./protocol";
+import {
+  decryptFromStore,
+  decryptPush,
+  serializeDecryption,
+  type PushDecryptEnvironment,
+} from "./pushDecrypt";
+import {
+  ALICE,
+  exchange as exchangeKeys,
+  memoryKeys,
+  sqliteFile,
+  sqliteFileWithHotJournal,
+} from "./pushTestKit";
+import { openSnapshotBackend } from "./snapshotBackend";
+
+beforeAll(() => {
+  const wasm = readFileSync(
+    new URL("../../../../../crates/zoo-crypto-wasm/pkg/zoo_crypto_wasm_bg.wasm", import.meta.url),
+  );
+  initSync({ module: wasm });
+});
+
+const BOB = "00000000-0000-4000-8000-00000000000b";
+const BOB_DB = cryptoDatabaseName(`user-${BOB}`);
+const exchange = (body: string) => exchangeKeys(body, BOB);
+
+function loadSqlite(): Promise<unknown> {
+  const wasm = readFileSync(
+    new URL("../../../../node_modules/@journeyapps/wa-sqlite/dist/wa-sqlite.wasm", import.meta.url),
+  );
+  return SQLiteESMFactory({ wasmBinary: wasm });
+}
+
+describe("decryptFromStore", () => {
+  it("暗号ストアの写しと Push の中身だけで本文を復号し、通知の長さに切る", async () => {
+    const long = `秘密🦊${"あ".repeat(300)}`;
+    const { row, bob } = await exchange(long);
+    expect(JSON.stringify(row)).not.toContain("秘密");
+    const body = await decryptFromStore({
+      name: BOB_DB,
+      recipientId: BOB,
+      backend: bob.backend,
+      message: row,
+      keys: bob.keys,
+    });
+    expect(body).toBe(Array.from(long).slice(0, 240).join(""));
+    // 写しには何も書かない（受信用セッションも、照合の記録も保存しない）
+    expect(bob.backend.inboundSessions.size).toBe(1);
+  });
+
+  it("照合できない行、別の宛先、鍵のない端末では復号しない", async () => {
+    const { row, bob } = await exchange("hello");
+    const run = (overrides: Partial<EncryptedMessage>, recipientId = BOB, keys = bob.keys) =>
+      decryptFromStore({
+        name: BOB_DB,
+        recipientId,
+        backend: bob.backend,
+        message: { ...row, ...overrides },
+        keys,
+      });
+    expect(await run({})).toBe("hello");
+    // 行の照合（受信時の検証）に失敗する
+    expect(await run({ message_id: "m2" })).toBeNull();
+    expect(await run({ user_id: BOB })).toBeNull();
+    expect(await run({ message_kind: "emote" })).toBeNull();
+    // 受信用セッションがない
+    expect(
+      await run({ ciphertext: { ...row.ciphertext, session_id: "missing" } as JsonObject }),
+    ).toBeNull();
+    // 暗号ストアが別のユーザーのもの
+    expect(await run({}, ALICE)).toBeNull();
+    // 保存鍵を包む鍵がない（作り直さない）
+    expect(await run({}, BOB, memoryKeys())).toBeNull();
+  });
+
+  it("書き込みの途中で終了した（hot journal が残った）写しは、SQLite が写しの上で戻して読む", async () => {
+    const { row, bob } = await exchange("before crash");
+    const module = await loadSqlite();
+    const { database, journal, committed } = await sqliteFileWithHotJournal(module, bob.backend);
+    expect(journal.byteLength).toBeGreaterThan(0);
+    // 書き込みの途中の変更が、DB のファイルにも出ている
+    expect(Buffer.from(database).equals(Buffer.from(committed))).toBe(false);
+    const snapshot = await openSnapshotBackend(module, { database, journal });
+    try {
+      // コミットしていない書き込み（受信用セッションの削除と meta の書き換え）は見えない
+      expect((await snapshot.read()).meta.user_id).toBe(BOB);
+      expect(
+        await decryptFromStore({
+          name: BOB_DB,
+          recipientId: BOB,
+          backend: snapshot,
+          message: row,
+          keys: bob.keys,
+        }),
+      ).toBe("before crash");
+    } finally {
+      await snapshot.close();
+    }
+  });
+
+  it("OPFS と同じ表の SQLite の写しを、メモリーの VFS で読んで復号する", async () => {
+    const { row, bob } = await exchange("from sqlite");
+    const module = await loadSqlite();
+    const database = await sqliteFile(module, bob.backend);
+    const snapshot = await openSnapshotBackend(module, { database, journal: null });
+    try {
+      expect(
+        await decryptFromStore({
+          name: BOB_DB,
+          recipientId: BOB,
+          backend: snapshot,
+          message: row,
+          keys: bob.keys,
+        }),
+      ).toBe("from sqlite");
+    } finally {
+      await snapshot.close();
+    }
+  });
+});
+
+describe("ログアウトで消し切れなかった暗号ストア", () => {
+  function failingRemoval(backend: MemoryCryptoBackend) {
+    // ファイルの削除だけが失敗する（OPFS のファイルを別の接続が開いていた、など）。
+    backend.destroy = async () => {
+      throw new Error("NoModificationAllowedError");
+    };
+  }
+
+  it("CryptoStore.destroy でファイルが残っても、包む鍵を先に消すので復号しない", async () => {
+    const { row, bob } = await exchange("logged out secret");
+    const { store } = await CryptoStore.open({
+      backend: bob.backend,
+      name: BOB_DB,
+      userId: BOB,
+      keys: bob.keys,
+      reset: async () => bob.backend,
+    });
+    failingRemoval(bob.backend);
+    await expect(store.destroy()).rejects.toThrow("NoModificationAllowedError");
+    // DB は残っている
+    expect(bob.backend.inboundSessions.size).toBe(1);
+    expect(await bob.keys.get(BOB_DB)).toBeUndefined();
+    expect(
+      await decryptFromStore({
+        name: BOB_DB,
+        recipientId: BOB,
+        backend: bob.backend,
+        message: row,
+        keys: bob.keys,
+      }),
+    ).toBeNull();
+  });
+
+  it("消し切れなかった暗号ストアを、次の操作で開き直して新しい端末を作らない", async () => {
+    const { bob } = await exchange("logged out secret");
+    const operations = new CryptoOperations(
+      { open: async () => bob.backend, remove: () => bob.backend.destroy() },
+      bob.keys,
+    );
+    await operations.run({ op: "open", namespace: `user-${BOB}`, userId: BOB });
+    const deviceId = bob.backend.meta.get("device_id");
+    failingRemoval(bob.backend);
+    await expect(operations.run({ op: "destroy", namespace: `user-${BOB}` })).rejects.toThrow(
+      "NoModificationAllowedError",
+    );
+    // 包む鍵はないので、開き直すと新しい端末として作り直してしまう。開き直さずに失敗する。
+    await expect(operations.run({ op: "pendingBackupCount" })).rejects.toThrow(
+      "暗号ストアが開いていません",
+    );
+    expect(bob.backend.meta.get("device_id")).toBe(deviceId);
+  });
+
+  it("開いていない暗号ストアを消す操作（destroy）でも、包む鍵を先に消す", async () => {
+    const { row, bob } = await exchange("logged out secret");
+    failingRemoval(bob.backend);
+    const operations = new CryptoOperations(
+      { open: async () => bob.backend, remove: () => bob.backend.destroy() },
+      bob.keys,
+    );
+    await expect(operations.run({ op: "destroy", namespace: `user-${BOB}` })).rejects.toThrow(
+      "NoModificationAllowedError",
+    );
+    expect(await bob.keys.get(BOB_DB)).toBeUndefined();
+    expect(
+      await decryptFromStore({
+        name: BOB_DB,
+        recipientId: BOB,
+        backend: bob.backend,
+        message: row,
+        keys: bob.keys,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("decryptPush", () => {
+  async function setup() {
+    const { row, bob } = await exchange("push body");
+    const e2ee = { recipient_id: BOB, message: row };
+    const asked: PushDecryptRequest[] = [];
+    const events: string[] = [];
+    const env = (
+      held: Record<string, boolean>,
+      files: string[],
+      currentUser: string | null = BOB,
+    ): PushDecryptEnvironment<string> => ({
+      withLockIfAvailable: async (name, callback) => {
+        events.push(`lock ${name}`);
+        try {
+          return await callback(held[name] ?? true);
+        } finally {
+          events.push(`unlock ${name}`);
+        }
+      },
+      readFiles: async (name) => {
+        events.push(`read ${name}`);
+        return files.includes(name) ? name : null;
+      },
+      openSnapshot: async (name) => {
+        events.push(`open ${name}`);
+        return {
+          read: () => bob.backend.read(),
+          readInboundSession: (key) => bob.backend.readInboundSession(key),
+          close: async () => {},
+        };
+      },
+      askTabs: async (request) => {
+        asked.push(request);
+        return "from tab";
+      },
+      currentUser: async () => currentUser,
+      keys: bob.keys,
+    });
+    return { e2ee, env, asked, events };
+  }
+
+  it("暗号ストアを開いているタブがなければ、ロックの中でファイルだけを読み、返してから復号する", async () => {
+    const { e2ee, env, asked, events } = await setup();
+    expect(await decryptPush(e2ee, env({}, [BOB_DB]))).toBe("push body");
+    // wasm の読み込みと復号（open）は、ロックを返したあと
+    expect(events).toEqual([
+      `lock zoo-crypto:${BOB_DB}`,
+      `read ${BOB_DB}`,
+      `unlock zoo-crypto:${BOB_DB}`,
+      `open ${BOB_DB}`,
+    ]);
+    expect(asked).toEqual([]);
+  });
+
+  it("開いているタブがあれば、そのタブに頼む", async () => {
+    const { e2ee, env, asked, events } = await setup();
+    const result = await decryptPush(e2ee, env({ [`zoo-crypto:${BOB_DB}`]: false }, [BOB_DB]));
+    expect(result).toBe("from tab");
+    expect(asked).toEqual([
+      { type: PUSH_DECRYPT_REQUEST, namespace: `user-${BOB}`, message: e2ee.message },
+    ]);
+    expect(events.some((event) => event.startsWith("read"))).toBe(false);
+  });
+
+  it("OIDC の暗号ストアがなければ、開発用のログインの暗号ストアを探す", async () => {
+    const { e2ee, env, events } = await setup();
+    const dev = cryptoDatabaseName(`dev-${BOB}`);
+    expect(await decryptPush(e2ee, env({}, []))).toBeNull();
+    expect(events.filter((event) => event.startsWith("read"))).toEqual([
+      `read ${BOB_DB}`,
+      `read ${dev}`,
+    ]);
+  });
+
+  it("OIDC の暗号ストアで読めなければ（包む鍵だけが消えて残ったなど）、開発用の暗号ストアも試す", async () => {
+    const { e2ee, env } = await setup();
+    const dev = cryptoDatabaseName(`dev-${BOB}`);
+    const base = env({}, [BOB_DB, dev]);
+    const leftover = new MemoryCryptoBackend();
+    const opened: string[] = [];
+    const result = await decryptPush(e2ee, {
+      ...base,
+      openSnapshot: async (name) => {
+        opened.push(name);
+        if (name === BOB_DB) {
+          return {
+            read: () => leftover.read(),
+            readInboundSession: (key) => leftover.readInboundSession(key),
+            close: async () => {},
+          };
+        }
+        return base.openSnapshot(name);
+      },
+      // 開発用の暗号ストアは、同じ保存鍵を包む鍵の名前ではないので、Bob の鍵を両方の名前で引く
+      keys: {
+        ...memoryKeys(),
+        get: async (name) => (await base.keys!.get(name)) ?? (await base.keys!.get(BOB_DB)),
+      },
+    });
+    expect(opened).toEqual([BOB_DB, dev]);
+    expect(result).toBe("push body");
+  });
+
+  it("宛先が今ログインしているユーザーでなければ、ロックも取らずに復号しない", async () => {
+    const { e2ee, env, asked, events } = await setup();
+    for (const current of [null, ALICE]) {
+      expect(await decryptPush(e2ee, env({}, [BOB_DB], current))).toBeNull();
+    }
+    const failing = { ...env({}, [BOB_DB]), currentUser: () => Promise.reject(new Error("idb")) };
+    expect(await decryptPush(e2ee, failing)).toBeNull();
+    expect(events).toEqual([]);
+    expect(asked).toEqual([]);
+  });
+
+  it("復号やタブの答えを待つあいだにユーザーが替わったら、本文を返さない", async () => {
+    const { e2ee, env } = await setup();
+    // 写しを開く（wasm を準備する）あいだに、別のユーザーでログインし直す
+    let current: string | null = BOB;
+    const base = env({}, [BOB_DB]);
+    const switching: PushDecryptEnvironment<string> = {
+      ...base,
+      currentUser: async () => current,
+      openSnapshot: async (files) => {
+        const snapshot = await base.openSnapshot(files);
+        current = ALICE;
+        return snapshot;
+      },
+    };
+    expect(await decryptPush(e2ee, switching)).toBeNull();
+    // タブに頼んだ答えを待つあいだに、ログアウトした
+    current = BOB;
+    const busy = env({ [`zoo-crypto:${BOB_DB}`]: false }, [BOB_DB]);
+    const loggingOut: PushDecryptEnvironment<string> = {
+      ...busy,
+      currentUser: async () => current,
+      askTabs: async (request) => {
+        const answer = await busy.askTabs(request);
+        current = null;
+        return answer;
+      },
+    };
+    expect(await decryptPush(e2ee, loggingOut)).toBeNull();
+    // 替わらなければ、どちらの経路も本文を返す
+    current = BOB;
+    expect(await decryptPush(e2ee, { ...base, currentUser: async () => current })).toBe(
+      "push body",
+    );
+    expect(await decryptPush(e2ee, { ...busy, currentUser: async () => current })).toBe("from tab");
+  });
+
+  it("形の違う e2ee は、ロックも取らずに復号しない", async () => {
+    const { e2ee, env, events } = await setup();
+    for (const value of [
+      null,
+      { ...e2ee, recipient_id: "bob" },
+      { ...e2ee, message: { ...e2ee.message, epoch: -1 } },
+      { ...e2ee, message: { ...e2ee.message, ciphertext: { session_id: "s" } } },
+    ]) {
+      expect(await decryptPush(value, env({}, [BOB_DB]))).toBeNull();
+    }
+    expect(events).toEqual([]);
+  });
+});
+
+describe("serializeDecryption", () => {
+  it("同時に届いた Push を 1 件ずつ復号する（前の処理がロックを持つあいだに次を始めない）", async () => {
+    let running = 0;
+    let overlapped = false;
+    const order: string[] = [];
+    const decrypt = serializeDecryption(async (e2ee) => {
+      running += 1;
+      if (running > 1) overlapped = true;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push(String(e2ee));
+      running -= 1;
+      return `body:${String(e2ee)}`;
+    }, 1_000);
+    expect(await Promise.all([decrypt("a"), decrypt("b"), decrypt("c")])).toEqual([
+      "body:a",
+      "body:b",
+      "body:c",
+    ]);
+    expect(order).toEqual(["a", "b", "c"]);
+    expect(overlapped).toBe(false);
+  });
+
+  it("上限は前の処理を待つ時間を含み、待つうちに上限を過ぎた処理は復号を始めない", async () => {
+    vi.useFakeTimers();
+    try {
+      const calls: string[] = [];
+      const decrypt = serializeDecryption(async (e2ee) => {
+        calls.push(String(e2ee));
+        const ms = e2ee === "slow" ? 150 : 50;
+        return new Promise<string>((resolve) => setTimeout(() => resolve(String(e2ee)), ms));
+      }, 100);
+      // 1 件目は上限（100 ms）を過ぎて諦めるが、実際には 150 ms まで動く
+      const slow = decrypt("slow");
+      const waiting = decrypt("work");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await slow).toBeNull();
+      expect(await waiting).toBeNull();
+      await vi.advanceTimersByTimeAsync(100);
+      // 2 件目は 1 件目が実際に終わるまで（ロックを返すまで）待ち、その時点で上限を過ぎていたので
+      // 復号を始めない
+      expect(calls).toEqual(["slow"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("止まった処理を待つのは上限までで、後から届いた Push は始められる", async () => {
+    vi.useFakeTimers();
+    try {
+      const decrypt = serializeDecryption(async (e2ee) => {
+        if (e2ee === "stuck") return new Promise<string | null>(() => {});
+        return new Promise<string>((resolve) => setTimeout(() => resolve("work"), 50));
+      }, 100);
+      const stuck = decrypt("stuck");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await stuck).toBeNull();
+      const later = decrypt("work");
+      await vi.advanceTimersByTimeAsync(60);
+      expect(await later).toBe("work");
+      // 失敗は null にする
+      const failing = serializeDecryption(async () => {
+        throw new Error("x");
+      }, 100);
+      expect(await failing("e")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

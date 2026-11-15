@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
+import { coalescedRefresh } from "../lib/coalescedRefresh";
 import { useHomeLive } from "./useHomeLive";
 import { notificationTimestamp } from "../components/chat/notifications/groupNotifications";
 export interface ActivityPubNotification {
@@ -37,83 +38,122 @@ export function useActivityPubNotifications() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
   const request = useRef<AbortController | null>(null);
+  const refreshTask = useRef<Promise<void> | null>(null);
+  const lifetime = useRef<AbortController | null>(null);
   const olderRequest = useRef<AbortController | null>(null);
   const deferred = useRef(false);
   const pendingReads = useRef(new Set<string>());
-  const refresh = useCallback(async () => {
+  const refresh = useCallback((): Promise<void> => {
+    if (lifetime.current?.signal.aborted) return Promise.resolve();
     if (olderRequest.current) {
       deferred.current = true;
-      return;
+      return Promise.resolve();
     }
-    deferred.current = false;
-    request.current?.abort();
+    if (refreshTask.current) {
+      deferred.current = true;
+      return refreshTask.current;
+    }
     const controller = new AbortController();
     request.current = controller;
-    const retained = snapshot.current.items;
-    const tail = retained.at(-1);
-    try {
-      let page: NotificationPage;
-      const items: ActivityPubNotification[] = [];
-      let before: string | null = null;
-      const visited = new Set<string>();
+    const task = (async () => {
       do {
-        page = await client.get<NotificationPage>(
-          `/api/activitypub/notifications${before ? `?before=${encodeURIComponent(before)}` : ""}`,
-          { signal: controller.signal },
-        );
-        items.push(...page.items.filter((item) => !items.some((old) => old.id === item.id)));
-        before = page.next_cursor ?? null;
-        const last = items.at(-1);
-        const reached =
-          !tail ||
-          items.some((item) => item.id === tail.id) ||
-          (!!last &&
-            (notificationTimestamp(last.created_at) < notificationTimestamp(tail.created_at) ||
-              (notificationTimestamp(last.created_at) === notificationTimestamp(tail.created_at) &&
-                last.id <= tail.id)));
-        if (!before || visited.has(before) || (reached && items.length >= retained.length)) break;
-        visited.add(before);
-      } while (before && !controller.signal.aborted);
-      if (!controller.signal.aborted) {
-        const updated = {
-          ...page,
-          items: items.map((item) =>
-            pendingReads.current.has(item.id) ? { ...item, is_read: true } : item,
-          ),
-          unread_count: Math.max(
-            0,
-            page.unread_count -
-              items.filter((item) => !item.is_read && pendingReads.current.has(item.id)).length,
-          ),
-        };
-        snapshot.current = updated;
-        setData(updated);
-        setError(false);
+        deferred.current = false;
+        const retained = snapshot.current.items;
+        const tail = retained.at(-1);
+        try {
+          let page: NotificationPage;
+          const items: ActivityPubNotification[] = [];
+          let before: string | null = null;
+          const visited = new Set<string>();
+          do {
+            page = await client.get<NotificationPage>(
+              `/api/activitypub/notifications${before ? `?before=${encodeURIComponent(before)}` : ""}`,
+              { signal: controller.signal },
+            );
+            items.push(...page.items.filter((item) => !items.some((old) => old.id === item.id)));
+            before = page.next_cursor ?? null;
+            const last = items.at(-1);
+            const reached =
+              !tail ||
+              items.some((item) => item.id === tail.id) ||
+              (!!last &&
+                (notificationTimestamp(last.created_at) < notificationTimestamp(tail.created_at) ||
+                  (notificationTimestamp(last.created_at) ===
+                    notificationTimestamp(tail.created_at) &&
+                    last.id <= tail.id)));
+            if (!before || visited.has(before) || (reached && items.length >= retained.length))
+              break;
+            visited.add(before);
+          } while (before && !controller.signal.aborted);
+          if (!controller.signal.aborted) {
+            const updated = {
+              ...page,
+              items: items.map((item) =>
+                pendingReads.current.has(item.id) ? { ...item, is_read: true } : item,
+              ),
+              unread_count: Math.max(
+                0,
+                page.unread_count -
+                  items.filter((item) => !item.is_read && pendingReads.current.has(item.id)).length,
+              ),
+            };
+            snapshot.current = updated;
+            setData(updated);
+            setError(false);
+          }
+        } catch {
+          if (!controller.signal.aborted) setError(true);
+        } finally {
+          if (!controller.signal.aborted) setLoading(false);
+        }
+      } while (
+        deferred.current &&
+        !controller.signal.aborted &&
+        document.visibilityState !== "hidden"
+      );
+    })().finally(() => {
+      if (request.current === controller) {
+        request.current = null;
+        refreshTask.current = null;
       }
-    } catch {
-      if (!controller.signal.aborted) setError(true);
-    } finally {
-      if (!controller.signal.aborted) setLoading(false);
-    }
+    });
+    refreshTask.current = task;
+    return task;
   }, [client]);
+  const schedule = useRef<() => void>(() => {});
   useEffect(() => {
-    void refresh();
+    lifetime.current = new AbortController();
+    const scheduler = coalescedRefresh(() =>
+      document.visibilityState === "hidden" ? undefined : refresh(),
+    );
+    schedule.current = scheduler.request;
+    scheduler.request();
     return () => {
+      schedule.current = () => {};
+      scheduler.dispose();
+      lifetime.current?.abort();
       request.current?.abort();
       olderRequest.current?.abort();
+      request.current = null;
+      refreshTask.current = null;
+      olderRequest.current = null;
       deferred.current = false;
     };
   }, [refresh]);
-  useHomeLive(() => void refresh());
+  useHomeLive(() => schedule.current());
   const loadMore = async () => {
-    if (!data.next_cursor || olderRequest.current || loading) return;
+    const scope = lifetime.current;
+    if (!scope || scope.signal.aborted) return;
+    // Finish the head refresh before reading its cursor; never cancel it to load older rows.
+    await refreshTask.current;
+    const cursor = snapshot.current.next_cursor;
+    if (scope.signal.aborted || !cursor || olderRequest.current) return;
     setLoadingMore(true);
-    request.current?.abort();
     const controller = new AbortController();
     olderRequest.current = controller;
     try {
       const next = await client.get<NotificationPage>(
-        `/api/activitypub/notifications?before=${encodeURIComponent(data.next_cursor)}`,
+        `/api/activitypub/notifications?before=${encodeURIComponent(cursor)}`,
         { signal: controller.signal },
       );
       if (!controller.signal.aborted) {

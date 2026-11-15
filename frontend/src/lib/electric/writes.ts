@@ -16,6 +16,7 @@ import type {
 import { reactionKey } from "../emoji/kitchen";
 import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
+import { THREADS_CHANGED } from "./threads";
 import type {
   ChannelRow,
   ChannelUserRow,
@@ -23,6 +24,7 @@ import type {
   MessageRow,
   NotificationRow,
 } from "./types";
+import { apiPath } from "../api/path";
 
 export interface WriteDependencies {
   client: ApiClient;
@@ -148,6 +150,10 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
           body.sensitive_attachment_ids = metadata.sensitive_attachment_ids;
       }
       const { txid } = await client.post<MessageRow>("/api/messages", body);
+      if (row.parent_id) {
+        // 保存が確定した返信は、Electric の同期や定期取得を待たず一覧に反映する。
+        window.dispatchEvent(new Event(THREADS_CHANGED));
+      }
       await syncTxid({
         mode: txidMode,
         txid,
@@ -164,7 +170,8 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       const isSoftDelete = "deleted_at" in changes && changes.deleted_at != null;
 
       if (isSoftDelete) {
-        const { txid } = await client.delete<MessageRow>(`/api/messages/${row.id}`);
+        const { txid } = await client.delete<MessageRow>(apiPath`/api/messages/${row.id}`);
+        window.dispatchEvent(new Event(THREADS_CHANGED));
         await syncTxid({
           mode: txidMode,
           txid,
@@ -178,7 +185,8 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       }
 
       const body: UpdateMessageRequest = { content: row.content };
-      const { txid } = await client.patch<MessageRow>(`/api/messages/${row.id}`, body);
+      const { txid } = await client.patch<MessageRow>(apiPath`/api/messages/${row.id}`, body);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await syncTxid({
         mode: txidMode,
         txid,
@@ -194,7 +202,8 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
   async function onDelete({ transaction, collection }: MessageDeleteParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.original;
-      const { txid } = await client.delete<MessageRow>(`/api/messages/${row.id}`);
+      const { txid } = await client.delete<MessageRow>(apiPath`/api/messages/${row.id}`);
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await syncTxid({
         mode: txidMode,
         txid,
@@ -221,6 +230,8 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
         description: row.description,
         is_private: row.is_private,
         ...(row.is_nsfw !== undefined ? { is_nsfw: row.is_nsfw } : {}),
+        // 暗号化はオプトイン。平文のチャンネルでは、今までどおり `encrypted` を送らない。
+        ...(row.encrypted ? { encrypted: true } : {}),
       };
       const { txid } = await client.post<ChannelRow>("/api/channels", body);
       await syncTxid({
@@ -250,7 +261,7 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
         body.is_private = changes.is_private;
       }
 
-      const { txid } = await client.patch<ChannelRow>(`/api/channels/${row.id}`, body);
+      const { txid } = await client.patch<ChannelRow>(apiPath`/api/channels/${row.id}`, body);
       await syncTxid({
         mode: txidMode,
         txid,
@@ -291,14 +302,18 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
       if (action === "add") {
         const body: AddChannelUserRequest = { user_id: row.user_id };
         const { txid } = await client.post<ChannelUserRow>(
-          `/api/channels/${row.channel_id}/users`,
+          apiPath`/api/channels/${row.channel_id}/users`,
           body,
         );
+        if (row.user_id === getCurrentUserId()) window.dispatchEvent(new Event(THREADS_CHANGED));
         await waitForChannelUserSync("insert", row, collection.utils, txid, txidMode);
         continue;
       }
 
-      const { txid } = await client.post<ChannelUserRow>(`/api/channels/${row.channel_id}/join`);
+      const { txid } = await client.post<ChannelUserRow>(
+        apiPath`/api/channels/${row.channel_id}/join`,
+      );
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await waitForChannelUserSync("insert", row, collection.utils, txid, txidMode);
     }
   }
@@ -312,7 +327,10 @@ export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: 
           `/leave only removes the current user's membership; refusing to leave for user ${row.user_id}`,
         );
       }
-      const { txid } = await client.post<ChannelUserRow>(`/api/channels/${row.channel_id}/leave`);
+      const { txid } = await client.post<ChannelUserRow>(
+        apiPath`/api/channels/${row.channel_id}/leave`,
+      );
+      window.dispatchEvent(new Event(THREADS_CHANGED));
       await waitForChannelUserSync("delete", row, collection.utils, txid, txidMode);
     }
   }
@@ -353,7 +371,7 @@ export function createReactionWrites({ client, txidMode, getCurrentUserId }: Wri
       if (!getCurrentUserId() || row.user_id !== getCurrentUserId())
         throw new Error("自分のリアクションだけ追加できます");
       const { data, txid } = await client.post<MessageReactionRow>(
-        `/api/messages/${row.message_id}/reactions`,
+        apiPath`/api/messages/${row.message_id}/reactions`,
         { id: row.id, emoji: row.emoji },
       );
       // A concurrent tab may have added this reaction already. In that case the
@@ -380,7 +398,7 @@ export function createReactionWrites({ client, txidMode, getCurrentUserId }: Wri
       if (!getCurrentUserId() || row.user_id !== getCurrentUserId())
         throw new Error("自分のリアクションだけ解除できます");
       const { txid } = await client.delete<MessageReactionRow>(
-        `/api/messages/${row.message_id}/reactions?${new URLSearchParams({ emoji: row.emoji })}`,
+        `/api/messages/${encodeURIComponent(row.message_id)}/reactions?${new URLSearchParams({ emoji: row.emoji })}`,
       );
       await syncTxid({
         mode: txidMode,
@@ -428,7 +446,7 @@ export function createNotificationWrites({
       mutations.length > 1
         ? await client.post<{ updated_count: number }>("/api/notifications/read-all")
         : await client.patch<NotificationRow>(
-            `/api/notifications/${mutations[0]!.modified.id}/read`,
+            apiPath`/api/notifications/${mutations[0]!.modified.id}/read`,
           );
     const ids = new Set(mutations.map((mutation) => mutation.modified.id));
     await syncTxid({

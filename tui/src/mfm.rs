@@ -10,7 +10,14 @@ use zoo2_client_core::mfm::{self as core_mfm, Tone};
 /// 本文を行ごとのスタイル付きテキストにする。`me` は自分の `user_name` で、自分宛ての
 /// メンションを反転表示する。
 pub fn render(content: &str, me: Option<&str>) -> Vec<Line<'static>> {
-    core_mfm::parse(content, me)
+    render_with_accounts(content, me, &Default::default())
+}
+pub fn render_with_accounts(
+    content: &str,
+    me: Option<&str>,
+    profiles: &zoo2_client_core::store::AccountProfiles,
+) -> Vec<Line<'static>> {
+    core_mfm::parse_with_accounts(content, me, profiles)
         .into_iter()
         .map(|line| {
             Line::from(

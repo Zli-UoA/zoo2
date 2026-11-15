@@ -1,3 +1,5 @@
+import { visiblePoll } from "../../lib/visiblePoll";
+import { APP_SURFACES_CHANGED } from "../../lib/appSurfaceEvents";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,6 +9,7 @@ import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { AppBlocks } from "./AppBlocks";
+import { apiPath } from "../../lib/api/path";
 
 type Surface = {
   id: string;
@@ -27,19 +30,24 @@ function UserSurfaces() {
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [surfaces, setSurfaces] = useState<Surface[]>([]);
   useEffect(() => {
-    const controller = new AbortController();
-    const load = () => {
-      if (!document.hidden)
-        void client
-          .get<Surface[]>("/api/app-surfaces", { signal: controller.signal })
-          .then(setSurfaces)
-          .catch(() => {});
+    let watchUntil = 0;
+    const polling = visiblePoll(
+      async (signal) => {
+        const rows = await client.get<Surface[]>("/api/app-surfaces", { signal });
+        if (!signal.aborted) setSurfaces(rows);
+        return rows.length > 0 || Date.now() < watchUntil;
+      },
+      { interval: 2000, maxInterval: 30000 },
+    );
+    const changed = () => {
+      // App dispatch is asynchronous; keep watching briefly after commands/actions.
+      watchUntil = Date.now() + 15000;
+      polling.refresh();
     };
-    load();
-    const timer = setInterval(load, 2000);
+    window.addEventListener(APP_SURFACES_CHANGED, changed);
     return () => {
-      controller.abort();
-      clearInterval(timer);
+      polling.dispose();
+      window.removeEventListener(APP_SURFACES_CHANGED, changed);
     };
   }, [client]);
   function remove(id: string) {
@@ -47,7 +55,7 @@ function UserSurfaces() {
   }
   async function dismiss(id: string) {
     try {
-      await client.request(`/api/app-surfaces/${id}`, { method: "DELETE" });
+      await client.request(apiPath`/api/app-surfaces/${id}`, { method: "DELETE" });
       remove(id);
     } catch {
       /* Retry on the next interaction. */

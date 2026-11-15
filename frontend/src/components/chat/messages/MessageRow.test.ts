@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { MentionUserNamesContext } from "../../../lib/e2ee/messageDecryption";
 import { MessageRow, MessageBody, type MessageRowProps } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
@@ -131,6 +132,59 @@ describe("MessageRow", () => {
     expect(html).toContain('aria-label="削除"');
     expect(html).not.toContain('aria-label="編集"');
     expect(render(buildItem())).not.toContain('aria-label="削除"');
+  });
+});
+
+describe("暗号化メッセージのメンション", () => {
+  it("本文の @name ではなく、復号した mentions だけでメンションを表示する", () => {
+    const html = renderToStaticMarkup(
+      createElement(MentionUserNamesContext.Provider, {
+        value: new Map([
+          ["u-alice", "alice"],
+          ["u-bob", "bob"],
+          ["u-carol", "carol"],
+        ]),
+        children: createElement(LocaleProvider, {
+          children: createElement(MessageRow, {
+            item: buildItem({
+              content: "",
+              ciphertext: {
+                algorithm: "m.megolm.v1.aes-sha2",
+                sender_key: "sender-key",
+                device_id: "device",
+                session_id: "session",
+                ciphertext: "AwgAEhA",
+              },
+            }),
+            isOwn: false,
+            isEditing: false,
+            editingText: "",
+            onEditingTextChange: noop,
+            onStartEdit: noop,
+            onCancelEdit: noop,
+            onSaveEdit: noop,
+            onRequestDelete: noop,
+            reactions: [],
+            kitchenCatalog: null,
+            canReact: false,
+            onReaction: noop,
+            onPickReaction: noop,
+            decryption: {
+              status: "decrypted",
+              body: "@alice @bob @channel",
+              kind: "message",
+              // carol は本文にないので、どこにも表示しない。bob と @channel は本文にあっても表示しない。
+              mentions: { user_ids: ["u-alice", "u-carol"], channel: false, here: false },
+              sender: "verified",
+            },
+          }),
+        }),
+      }),
+    );
+    expect(html.match(/bg-brand-muted/g)).toHaveLength(1);
+    expect(html).toContain("@alice</span>");
+    expect(html).toContain(" @bob @channel");
+    expect(html).not.toContain("carol");
   });
 });
 

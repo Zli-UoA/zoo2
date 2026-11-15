@@ -2,12 +2,33 @@
   "$comment": "Required visible states, not a percentage of visual correctness. Composed coverage is explained; controller exclusions are counted separately.",
   "stories": [
     {
+      "file": "src/components/layout/DefaultChannelsSettings.stories.tsx",
+      "states": [
+        "Default",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "SaveError",
+        "Saving",
+        "ChannelBecameUnavailable",
+        "ChannelLimit"
+      ]
+    },
+    {
       "file": "src/components/ui/image-preview.stories.tsx",
       "states": ["Loading", "WithoutMetadata", "InvalidHash", "Loaded"]
     },
     {
       "file": "src/components/SyncStatus.stories.tsx",
       "states": ["Proxy", "Direct", "Oidc"]
+    },
+    {
+      "file": "src/components/call/CallInvitePicker.stories.tsx",
+      "states": ["SelectAndInvite", "LimitedSlots", "Full", "Nobody", "Failed", "Sending"]
+    },
+    {
+      "file": "src/components/call/IncomingCallCard.stories.tsx",
+      "states": ["DirectMessage", "ChannelInvite", "LongNames", "Busy", "Ended"]
     },
     {
       "file": "src/components/chat/AppBlocks.stories.tsx",
@@ -27,6 +48,14 @@
     {
       "file": "src/components/chat/AppConsent.stories.tsx",
       "states": ["Default", "Loading", "LoadError", "InvalidRequest", "Mobile"]
+    },
+    {
+      "file": "src/components/chat/AppEncryptedChannelConsent.stories.tsx",
+      "states": ["Default", "Pending", "NotReady", "Unsupported", "Mobile"]
+    },
+    {
+      "file": "src/components/chat/EncryptChannelDialog.stories.tsx",
+      "states": ["Channel", "Dm", "Pending", "Blocked", "Mobile"]
     },
     {
       "file": "src/components/chat/AppsDialog.stories.tsx",
@@ -60,7 +89,8 @@
         "NoDescription",
         "LongDescription",
         "Mobile",
-        "WebhookSettingsOpen"
+        "WebhookSettingsOpen",
+        "Encrypted"
       ]
     },
     {
@@ -84,6 +114,11 @@
         "LoadError",
         "Mobile",
         "UnreadAndArchived",
+        "Threads",
+        "SelectedArchivedThread",
+        "SelectedPostWithoutReplies",
+        "EmptyThreadTitle",
+        "MobileThreads",
         "Sections",
         "MobileSections"
       ]
@@ -94,15 +129,23 @@
     },
     {
       "file": "src/components/chat/CreateChannelDialog.stories.tsx",
-      "states": ["Default", "Filled", "Closed"]
+      "states": ["Default", "Filled", "Closed", "Encrypted"]
     },
     {
       "file": "src/components/chat/CreateDmDialog.stories.tsx",
-      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile", "UserAvatar"]
+      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile", "UserAvatar", "Encrypted"]
     },
     {
       "file": "src/components/chat/DmListItem.stories.tsx",
-      "states": ["Default", "Active", "Unread", "LongName", "UserAvatar", "UserAvatarFallback"]
+      "states": [
+        "Default",
+        "Active",
+        "Unread",
+        "LongName",
+        "UserAvatar",
+        "UserAvatarFallback",
+        "Encrypted"
+      ]
     },
     {
       "file": "src/components/chat/DmSection.stories.tsx",
@@ -215,12 +258,21 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.stories.tsx",
-      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile", "FederatedReactions"]
+      "states": [
+        "Default",
+        "ThreadOpen",
+        "NotJoined",
+        "Mobile",
+        "FederatedReactions",
+        "Encrypted",
+        "EncryptionDowngraded"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
       "states": [
         "Default",
+        "EncryptedBeforeEncryptionRow",
         "OwnMessage",
         "HoverActions",
         "WithReactions",
@@ -239,7 +291,17 @@
         "ActivityPubUnlisted",
         "ActivityPubGrouped",
         "Grouped",
-        "SensitiveAttachments"
+        "SensitiveAttachments",
+        "EncryptedDecrypted",
+        "EncryptedUnverifiedSender",
+        "EncryptedStaleRevision",
+        "EncryptedUnencryptedRow",
+        "EncryptedBackupSender",
+        "EncryptedKeyMissing",
+        "EncryptedLocked",
+        "EncryptedInvalid",
+        "EncryptedWithAttachments",
+        "EncryptedAttachmentDecryptFailed"
       ]
     },
     {
@@ -254,7 +316,8 @@
         "Formatting",
         "CodeAndMathDark",
         "Headings",
-        "SharedShortcodes"
+        "SharedShortcodes",
+        "AuthZAccounts"
       ]
     },
     {
@@ -276,7 +339,20 @@
     },
     {
       "file": "src/components/chat/messages/ThreadPane.stories.tsx",
-      "states": ["Empty", "WithReplies", "Loading", "Error", "Mobile", "Completions", "AppCard"]
+      "states": [
+        "Empty",
+        "WithReplies",
+        "Archived",
+        "ArchivedReadOnly",
+        "ArchivedNotJoined",
+        "MobileArchived",
+        "Loading",
+        "Error",
+        "Mobile",
+        "Completions",
+        "AppCard",
+        "RootLoadError"
+      ]
     },
     {
       "file": "src/components/chat/messages/TypingIndicator.stories.tsx",
@@ -383,6 +459,9 @@
     {
       "file": "src/components/layout/ZooSettings.stories.tsx",
       "states": [
+        "Encryption",
+        "EncryptionMobile",
+        "LegacyDevicesLink",
         "General",
         "Apps",
         "AppsMobile",
@@ -409,6 +488,10 @@
     {
       "file": "src/components/offline/OfflineBanner.stories.tsx",
       "states": ["Online", "Offline", "PersistenceError", "Mobile"]
+    },
+    {
+      "file": "src/components/desktop/DesktopNotificationSelect.stories.tsx",
+      "states": ["On", "TurnOff", "Off", "OlderApp"]
     },
     {
       "file": "src/components/pwa/PwaControls.stories.tsx",
@@ -521,6 +604,7 @@
     {
       "file": "src/components/home/HomeScreen.stories.tsx",
       "states": [
+        "QuotedRenote",
         "ReplyToMediaOnly",
         "WithImages",
         "MobileImages",
@@ -620,9 +704,104 @@
     {
       "file": "src/components/ui/sensitive-media.stories.tsx",
       "states": ["Hidden", "RevealAndHide", "ActivityPub", "WithoutMetadata", "InvalidHash"]
+    },
+    {
+      "file": "src/components/e2ee/UnbackedKeysLogoutDialog.stories.tsx",
+      "states": ["Default", "Pending", "Unknown"]
+    },
+    {
+      "file": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx",
+      "states": ["HealthyChild", "FallbackShown"]
+    },
+    {
+      "file": "src/components/e2ee/EncryptionSettingsView.stories.tsx",
+      "states": [
+        "Loading",
+        "LoadFailed",
+        "NotSetUp",
+        "RecoveryKey",
+        "Saving",
+        "PopupBlocked",
+        "Locked",
+        "LockedRecoveryOnly",
+        "LockedResume",
+        "LockedMismatch",
+        "NeedsReauth",
+        "Unlocked",
+        "ResetChooseDevices",
+        "NewRecoveryKey",
+        "UnlockedRegenerateRecoveryKey",
+        "UnlockedNeedsUnlockWithoutPasskey"
+      ]
+    },
+    {
+      "file": "src/components/e2ee/SasVerificationView.stories.tsx",
+      "states": [
+        "Incoming",
+        "IncomingNeedsUnlock",
+        "Requested",
+        "Exchanging",
+        "Compare",
+        "CompareLongName",
+        "Confirmed",
+        "Saving",
+        "Saved",
+        "NeedsReauth",
+        "MismatchedSas",
+        "TimedOut",
+        "SendFailed"
+      ]
+    },
+    {
+      "file": "src/components/e2ee/DevicesSettingsView.stories.tsx",
+      "states": [
+        "Loading",
+        "LoadFailed",
+        "Ready",
+        "Reverify",
+        "SasVerify",
+        "Rename",
+        "UserSigningKeyRollback",
+        "ReadyLocked",
+        "PendingRevocation",
+        "SelectDevices",
+        "Unlock",
+        "UnlockResume",
+        "WrongRecoveryKey",
+        "FullRecoveryKey",
+        "Confirm",
+        "ConfirmReauthFailed",
+        "Running",
+        "Conflict",
+        "Done",
+        "DeviceLimit"
+      ]
+    },
+    {
+      "file": "src/components/e2ee/EncryptionTabView.stories.tsx",
+      "states": [
+        "Unlocked",
+        "UnlockedMobile",
+        "Locked",
+        "NotReadyStarting",
+        "NotReadyOtherTab",
+        "NotReadyRegistrationFailed",
+        "NotReadyNetwork",
+        "NotReadyUnsupported",
+        "DeviceLimit",
+        "DeviceLimitMobile"
+      ]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
+      "states": ["Default", "Undeliverable", "AddedRecipients"]
     }
   ],
   "modules": [
+    {
+      "file": "src/components/layout/DefaultChannelsSettings.tsx",
+      "story": "src/components/layout/DefaultChannelsSettings.stories.tsx"
+    },
     {
       "file": "src/components/SyncStatus.tsx",
       "story": "src/components/SyncStatus.stories.tsx"
@@ -631,6 +810,12 @@
       "file": "src/components/auth/AuthGate.tsx",
       "reason": "OIDC設定と外部リダイレクトに依存する認証境界。ログイン・期限切れ・再認証は専用IdPのE2Eで確認する。",
       "checks": ["e2e/oidc.spec.ts", "src/components/auth/AuthGate.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/auth/LogoutSetting.tsx",
+      "story": "src/components/layout/ZooSettings.stories.tsx",
+      "composed": true,
+      "reason": "OIDC ログイン中の設定画面（一般タブ）にログアウトとして表示する。未バックアップ鍵の確認は UnbackedKeysLogoutDialog のストーリーで確認する。"
     },
     {
       "file": "src/components/auth/PreviewUserSwitcher.tsx",
@@ -644,6 +829,11 @@
     {
       "file": "src/components/chat/AppConnections.tsx",
       "story": "src/components/chat/AppConnections.stories.tsx"
+    },
+    {
+      "file": "src/components/auth/RouteAccess.tsx",
+      "reason": "ルートの公開・認証境界を切り替える制御層。実際のAuthGateを通る内部リンクのログイン済み・未認証の遷移をブラウザーテストで確認する。",
+      "checks": ["src/components/public/PublicProfile.navigation.browser.test.tsx"]
     },
     {
       "file": "src/components/chat/AppConsent.tsx",
@@ -663,8 +853,16 @@
     },
     {
       "file": "src/components/chat/AppSurfaceHost.tsx",
-      "reason": "イベント受信とポーリングでダイアログを起動する制御層。表面のフォームはBlocks、起動はブラウザ統合テストで確認する。",
+      "reason": "待機時のポーリングを間引き、コマンド・アクション後に即時更新する制御層。private UIの起動はブラウザ統合テスト、直列化・非表示・復帰はvisiblePoll.test.tsで確認する。",
       "checks": ["src/components/chat/AppInteraction.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/chat/AppEncryptedChannelConsent.tsx",
+      "story": "src/components/chat/AppEncryptedChannelConsent.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/EncryptChannelDialog.tsx",
+      "story": "src/components/chat/EncryptChannelDialog.stories.tsx"
     },
     {
       "file": "src/components/chat/AppsDialog.tsx",
@@ -674,6 +872,19 @@
       "file": "src/components/call/CallDeviceSelects.tsx",
       "reason": "通話バーと設定の通話タブで共用するマイク/スピーカー選択。一覧の整形と選択値の保存は call-devices.test.ts で検証する。",
       "checks": ["src/lib/call/call-devices.test.ts"]
+    },
+    {
+      "file": "src/components/call/CallInvitePicker.tsx",
+      "story": "src/components/call/CallInvitePicker.stories.tsx"
+    },
+    {
+      "file": "src/components/call/IncomingCallCard.tsx",
+      "story": "src/components/call/IncomingCallCard.stories.tsx"
+    },
+    {
+      "file": "src/components/call/IncomingCallDialog.tsx",
+      "reason": "着信の表示（IncomingCallCard）と、招待の購読・応答・拒否・着信音・Web Push からの起動を結ぶ制御層。表示と操作は IncomingCallCard のStoryで確認し、招待の絞り込み・期限・API・起動パラメーターは call-invites.test.ts、着信音は call-sounds.test.ts で検証する。",
+      "checks": ["src/lib/call/call-invites.test.ts", "src/lib/call/call-sounds.test.ts"]
     },
     {
       "file": "src/components/call/CallSettingsDevices.tsx",
@@ -692,7 +903,7 @@
     },
     {
       "file": "src/components/chat/CallBar.tsx",
-      "reason": "通話バーのWebRTCシグナリングおよびUI制御層。UI表示状態（idle, connecting, connected, DM表示名, ミュート切替, 発話リング, アバター）はCallBar.browser.test.tsxで検証し、マイク操作とPeerライフサイクルはcall-context.test.tsで検証する。",
+      "reason": "通話バーのWebRTCシグナリングおよびUI制御層。UI表示状態（idle, connecting, connected, DM表示名, ミュート切替, 発話リング, アバター, 招待ボタンと呼び出し中の表示・取り消し）はCallBar.browser.test.tsxで検証し、マイク操作とPeerライフサイクルはcall-context.test.tsで検証する。",
       "checks": [
         "src/components/chat/CallBar.browser.test.tsx",
         "src/lib/call/call-context.test.ts",
@@ -719,6 +930,12 @@
         "src/lib/electric/collections.persistence.test.ts",
         "src/components/chat/ChannelSidebar.browser.test.tsx"
       ]
+    },
+    {
+      "file": "src/components/chat/ChannelThreadItems.tsx",
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "composed": true,
+      "reason": "アクティブなスレッドと閲覧中の一時表示を Threads・SelectedArchivedThread Story で確認する。履歴・検索UIは設けない。"
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",
@@ -778,7 +995,12 @@
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.tsx",
-      "story": "src/components/chat/messages/LinkPreviews.stories.tsx"
+      "story": "src/components/chat/messages/LinkPreviews.stories.tsx",
+      "checks": [
+        "src/components/chat/messages/LinkPreviews.browser.test.tsx",
+        "src/components/home/HomePostContent.browser.test.tsx",
+        "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageCard.tsx",
@@ -794,6 +1016,12 @@
       "story": "src/components/chat/messages/MessageRow.stories.tsx",
       "composed": true,
       "reason": "WithAttachmentsで画像とファイルの実表示・読み込み状態を確認する。"
+    },
+    {
+      "file": "src/components/chat/messages/EncryptedMessageAttachments.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "EncryptedWithAttachmentsで復号した画像とファイルを、EncryptedAttachmentDecryptFailedで復号できない添付を確認する。"
     },
     {
       "file": "src/components/chat/messages/MessageList.tsx",
@@ -825,6 +1053,12 @@
     {
       "file": "src/components/chat/messages/ReactionPicker.tsx",
       "story": "src/components/chat/messages/ReactionPicker.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/ThreadPaneStatus.tsx",
+      "story": "src/components/chat/messages/ThreadPane.stories.tsx",
+      "composed": true,
+      "reason": "RootLoadErrorで親投稿の取得失敗、再試行・閉じる操作を確認する。"
     },
     {
       "file": "src/components/chat/messages/ThreadPane.tsx",
@@ -881,6 +1115,30 @@
     {
       "file": "src/components/layout/ZooSettings.tsx",
       "story": "src/components/layout/ZooSettings.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DesktopNotificationSelect.tsx",
+      "story": "src/components/desktop/DesktopNotificationSelect.stories.tsx"
+    },
+    {
+      "file": "src/components/desktop/DesktopBridge.tsx",
+      "reason": "デスクトップ版（Tauri）の中だけで、通知・フォーカス・通知のクリックを Rust 側と受け渡す表示のない制御層。通常の Web と Storybook では何も描画しない。IPC の判定とトークンの扱いは desktop.test.ts で確認する。",
+      "checks": ["src/lib/desktop.test.ts"]
+    },
+    {
+      "file": "src/components/e2ee/E2eeProvider.tsx",
+      "reason": "暗号ストアのWorkerと端末の登録を動かす制御層で、画面を持たない。保存とWorkerはブラウザテスト、登録とto-deviceの処理は単体テストで確認する。",
+      "checks": [
+        "src/lib/e2ee/cryptoWorker.browser.test.ts",
+        "src/lib/e2ee/store/cryptoStore.test.ts",
+        "src/lib/e2ee/deviceManager.test.ts",
+        "src/components/e2ee/E2eeProvider.browser.test.tsx",
+        "src/components/e2ee/E2eeProvider.notReady.browser.test.tsx"
+      ]
+    },
+    {
+      "file": "src/components/e2ee/UnbackedKeysLogoutDialog.tsx",
+      "story": "src/components/e2ee/UnbackedKeysLogoutDialog.stories.tsx"
     },
     {
       "file": "src/components/offline/OfflineBanner.tsx",
@@ -1065,7 +1323,7 @@
       "file": "src/components/public/PublicProfile.tsx",
       "story": "src/components/public/PublicProfile.stories.tsx",
       "composed": true,
-      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。"
+      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。仮想遷移と戻る・進むはsrc/components/public/PublicProfile.navigation.browser.test.tsxで確認する。"
     },
     {
       "file": "src/components/home/ActivityPubProfileDetails.tsx",
@@ -1076,8 +1334,12 @@
     {
       "file": "src/components/home/HomePostContent.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
+      "checks": [
+        "src/components/home/HomePostContent.browser.test.tsx",
+        "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
+      ],
       "composed": true,
-      "reason": "MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
+      "reason": "HomePostContent.browser.test.tsxで通常URL3件と引用の併存・ローカル引用の内部リンク・表示できないローカル引用のリンク省略・単独実行・取得共有・引用専用カードとSummalyの分離を、no-summaly.browser.test.tsxで未設定時の本文リンク維持を、LinkPreviewStatesで通常URLの成功・取得中・失敗を、QuotedRenoteでコメント付き・コメントなし・表示できない引用と画像・MFMを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
     },
     {
       "file": "src/components/apps/console/AppConsole.tsx",
@@ -1118,6 +1380,61 @@
     {
       "file": "src/components/ui/sensitive-media.tsx",
       "story": "src/components/ui/sensitive-media.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/MfmAccounts.tsx",
+      "story": "src/components/chat/messages/MfmContent.stories.tsx",
+      "composed": true,
+      "reason": "AuthZAccountsで集中基盤のプロフィールによるアイコンとメンションを検証する。"
+    },
+    {
+      "file": "src/components/telemetry/TelemetryErrorBoundary.tsx",
+      "story": "src/components/telemetry/TelemetryErrorBoundary.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/EncryptionSettingsView.tsx",
+      "story": "src/components/e2ee/EncryptionSettingsView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/EncryptionSettings.tsx",
+      "reason": "暗号化タブの状態と解錠、鍵のセクションの状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はEncryptionSettingsViewのストーリーで、手順は単体テストで確認する。",
+      "checks": [
+        "src/lib/e2ee/setupController.test.ts",
+        "src/lib/e2ee/reauth.test.ts",
+        "src/lib/oidc/reauth.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/e2ee/EncryptionTabView.tsx",
+      "story": "src/components/e2ee/EncryptionTabView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/EncryptionTab.tsx",
+      "story": "src/components/layout/ZooSettings.stories.tsx",
+      "composed": true,
+      "reason": "暗号ストアを開いたかで、理由か各セクションかを選び、20 台の上限の画面、セクション間の読み直し（解錠と失効）、古い ?tab=devices のリンクからの移動をつなぐ。並びと理由の表示は EncryptionTabView のストーリーで、タブの開き方は ZooSettings の Encryption と LegacyDevicesLink で、セクション間の読み直しと移る時機は EncryptionTab.browser.test.tsx で確かめる。"
+    },
+    {
+      "file": "src/components/e2ee/DevicesSettingsView.tsx",
+      "story": "src/components/e2ee/DevicesSettingsView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/DevicesSettings.tsx",
+      "reason": "暗号化タブの端末と他のユーザーの検証のセクション（端末一覧、失効、20 台の上限）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
+      "checks": ["src/lib/e2ee/revocationController.test.ts"]
+    },
+    {
+      "file": "src/components/e2ee/SasVerificationView.tsx",
+      "story": "src/components/e2ee/SasVerificationView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/SasVerificationHost.tsx",
+      "reason": "絵文字 SAS の検証のダイアログを、E2eeProvider の SasController（暗号ストアの Worker、to-device、再認証の別ウィンドウ）につなぐ制御層。画面の各状態はSasVerificationViewのストーリーで、検証の手順は単体テストで確認する。",
+      "checks": ["src/lib/e2ee/sasController.test.ts"]
+    },
+    {
+      "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",
+      "story": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx"
     }
   ]
 }

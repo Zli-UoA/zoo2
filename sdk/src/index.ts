@@ -4,7 +4,14 @@ export interface AppEvent { id: string; version: 1; type: string; actor_id: stri
 export interface Delivery { delivery_id: string; ack_token: string; event: AppEvent; attempt: number }
 export interface EventStore { has(id: string): Promise<boolean>; mark(id: string): Promise<void> }
 export interface Options { baseUrl: string; credentials: Credentials; saveCredentials?: (credentials: Credentials) => Promise<void>; fetch?: typeof fetch; eventStore?: EventStore }
-export class ZooError extends Error { readonly status: number; constructor(status: number, message: string) { super(message); this.status=status; } }
+export class ZooError extends Error {
+  readonly status: number;
+  /** The error body returned by Zoo (for example `{error, code, current_epoch}`), if any. */
+  readonly body: unknown;
+  constructor(status: number, message: string, body?: unknown) { super(message); this.status=status; this.body=body; }
+  /** The machine-readable `code` of the error body (for example `E2EE_STALE_EPOCH`), if any. */
+  get code(): string | undefined { const code = (this.body as { code?: unknown } | undefined)?.code; return typeof code === "string" ? code : undefined; }
+}
 export class ZooApp {
   private credentials: Credentials;
   private refreshPromise: Promise<void> | undefined;
@@ -31,7 +38,7 @@ export class ZooApp {
       if (response.status === 401 && attempt < 2) { if (this.credentials.access_token === access) await this.refresh(); continue; }
       if (response.status === 429 && attempt < 2) { await delay(Math.min(60, Number(response.headers.get("retry-after")) || 1) * 1000, signal); continue; }
       const value: unknown = await response.json();
-      if (!response.ok) throw new ZooError(response.status, typeof value === "object" && value && "error" in value ? String(value.error) : "Zoo API request failed");
+      if (!response.ok) throw new ZooError(response.status, typeof value === "object" && value && "error" in value ? String(value.error) : "Zoo API request failed", value);
       if (typeof value === "object" && value && "txid" in value && "data" in value) return value.data as T;
       return value as T;
     }

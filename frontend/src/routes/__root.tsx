@@ -1,23 +1,20 @@
-import {
-  ClientOnly,
-  HeadContent,
-  Scripts,
-  createRootRoute,
-  useRouterState,
-} from "@tanstack/react-router";
+import { useEffect } from "react";
+import { ClientOnly, HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 
-import { AuthGate } from "@/components/auth/AuthGate";
-import { PreviewUserSwitcher } from "@/components/auth/PreviewUserSwitcher";
+import { RouteAccess } from "@/components/auth/RouteAccess";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { themeInitScript } from "@/components/theme/theme";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
+import { resolvePublicConfig } from "../lib/config";
 import { localeInitScript } from "../lib/i18n/locale";
 import { LocaleProvider } from "../components/i18n/LocaleProvider";
+import { installBrowserTelemetry } from "../lib/telemetry/capture";
+import { TelemetryErrorBoundary } from "../components/telemetry/TelemetryErrorBoundary";
 
 import appCss from "../styles.css?url";
 
@@ -53,6 +50,10 @@ export const Route = createRootRoute({
 });
 
 function RootDocument({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    return installBrowserTelemetry(resolvePublicConfig());
+  }, []);
+
   return (
     <html lang="ja" suppressHydrationWarning>
       <head>
@@ -65,7 +66,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           <LocaleProvider>
             <ThemeProvider>
               <TooltipProvider>
-                <RouteAccess>{children}</RouteAccess>
+                <TelemetryErrorBoundary>
+                  <RouteAccess>{children}</RouteAccess>
+                </TelemetryErrorBoundary>
                 <Toaster />
               </TooltipProvider>
             </ThemeProvider>
@@ -85,17 +88,5 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <Scripts />
       </body>
     </html>
-  );
-}
-
-function RouteAccess({ children }: { children: React.ReactNode }) {
-  const path = useRouterState({ select: (state) => state.location.pathname });
-  return /^\/public\/users\/[^/]+\/?$/.test(path) ? (
-    <>{children}</>
-  ) : (
-    <AuthGate>
-      {children}
-      <PreviewUserSwitcher />
-    </AuthGate>
   );
 }

@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownIcon } from "lucide-react";
+import { ArrowDownIcon, LockKeyholeIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -21,6 +21,10 @@ import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
 import { MessageRow } from "./MessageRow";
+import {
+  isPlaintextBeforeEncryption,
+  useEncryptedChannel,
+} from "../../../lib/e2ee/messageDecryption";
 import { parseUtcTimestamp } from "../../../lib/timestamps";
 import { useMessageReadState } from "./useMessageReadState";
 import {
@@ -166,6 +170,7 @@ export function MessageList({
   onRetry,
 }: MessageListProps) {
   const { t } = useTranslation();
+  const encryptedChannel = useEncryptedChannel();
   const {
     firstUnreadId,
     lastRead,
@@ -556,6 +561,24 @@ export function MessageList({
                   className={`absolute left-0 top-0 w-full ${item.message.id === targetMessageId ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand" : ""}`}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
+                  {encryptedChannel &&
+                  !isPlaintextBeforeEncryption(item.message) &&
+                  virtualRow.index > 0 &&
+                  isPlaintextBeforeEncryption(
+                    items[virtualRow.index - 1]?.message ?? item.message,
+                  ) ? (
+                    // 暗号化に切り替える前と後の境目（#367）。上は平文、下は暗号化したメッセージ。
+                    <div
+                      role="separator"
+                      aria-label={t("e2ee.legacy.divider")}
+                      className="flex items-center gap-2 py-2 text-xs font-medium text-muted-foreground"
+                    >
+                      <span className="h-px flex-1 bg-border" />
+                      <LockKeyholeIcon className="size-3" aria-hidden="true" />
+                      <span>{t("e2ee.legacy.divider")}</span>
+                      <span className="h-px w-6 bg-border" />
+                    </div>
+                  ) : null}
                   {item.message.id === firstUnreadId ? (
                     <div
                       role="separator"

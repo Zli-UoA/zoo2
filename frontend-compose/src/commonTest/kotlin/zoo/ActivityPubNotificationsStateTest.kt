@@ -177,4 +177,27 @@ class ActivityPubNotificationsStateTest {
         app.close()
     }
 
+    @Test
+    fun updatesDuringSlowFetchDoNotCancelItAndAreCoalesced() = runTest {
+        val finish = CompletableDeferred<Unit>()
+        var calls = 0
+        var cancelled = false
+        val app = app { request ->
+            if (request.url.encodedPath != "/api/activitypub/notifications") awaitCancellation()
+            calls++
+            if (calls == 1) try { finish.await() } catch (e: CancellationException) { cancelled = true; throw e }
+            respond("""{"items":[{"id":"fresh","is_read":false}],"unread_count":1}""")
+        }
+        val state = ActivityPubNotificationsState(app, subscribe = { {} })
+        state.ensureLoaded(); runCurrent()
+        repeat(20) { state.refresh() }
+        runCurrent()
+        assertEquals(1, calls)
+        assertFalse(cancelled)
+        finish.complete(Unit); runCurrent()
+        assertEquals(2, calls)
+        assertEquals(listOf("fresh"), state.items.map { it.text("id") })
+        state.close(); app.close()
+    }
+
 }

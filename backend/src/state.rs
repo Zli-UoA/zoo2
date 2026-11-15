@@ -122,6 +122,7 @@ pub struct AppState {
     pub jwks_verifier: JwksVerifier,
     pub user_cache: UserResolutionCache,
     pub call_registry: CallRegistry,
+    pub shape_streams: crate::routes::shape_limit::ShapeStreamLimiter,
 }
 
 impl AppState {
@@ -145,6 +146,25 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            shape_streams: Default::default(),
+        }
+    }
+
+    /// HTTP を受けないワーカー用 (`zoo_slack_worker`)。通話のレジストリの LISTEN 接続と掃除のタスクは起動しない
+    /// (データベースの接続を、ワーカーが使わない機能に取られないため)。それ以外は `new` と同じ
+    pub fn new_for_worker(db: toasty::Db, config: Config) -> Self {
+        let http_client = Self::default_http_client();
+        Self {
+            home_live: Default::default(),
+            db,
+            http_client: http_client.clone(),
+            electric_client: Self::default_electric_client(),
+            s3_client: crate::storage::create_s3_client(&config.s3),
+            jwks_verifier: JwksVerifier::new(http_client),
+            user_cache: UserResolutionCache::new(),
+            call_registry: CallRegistry::new(),
+            shape_streams: Default::default(),
+            config,
         }
     }
 
@@ -193,6 +213,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            shape_streams: Default::default(),
         }
     }
 
@@ -221,6 +242,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            shape_streams: Default::default(),
         }
     }
 
@@ -247,6 +269,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            shape_streams: Default::default(),
         }
     }
 }

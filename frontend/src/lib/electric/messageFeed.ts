@@ -92,6 +92,11 @@ export function messageFeedQuery(
         updated_at: messages.updated_at,
         deleted_at: messages.deleted_at,
         parent_id: messages.parent_id,
+        thread_archive_at: messages.thread_archive_at,
+        ciphertext: messages.ciphertext,
+        epoch: messages.epoch,
+        revision: messages.revision,
+        message_kind: messages.message_kind,
         user_name: caseWhen(
           eq(messages.display_data?.author?.id, messages.user_id),
           messages.display_data?.author?.user_name,

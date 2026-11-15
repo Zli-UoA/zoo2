@@ -24,7 +24,7 @@ const meta = {
   component: ZooSettings,
   parameters: {
     a11y: { test: "error" },
-    router: { initialEntries: ["/settings?channel=channel-general"] },
+    router: { initialEntries: ["/settings?channel=00000000-0000-4000-8000-000000000001"] },
     msw: {
       handlers: appHandlers,
     },
@@ -53,11 +53,60 @@ export const General: Story = {
     await expect(screen.getByRole("combobox", { name: "プッシュ通知" })).toBeDisabled();
   }),
 };
+/** OIDC ログイン中は、一般タブにログアウトが出る（左レールにはない）。 */
+export const GeneralWithLogout: Story = {
+  parameters: {
+    collections: {
+      config: {
+        devUserId: null,
+        oidc: {
+          issuer: "https://id.example",
+          clientId: "zoo",
+          redirectUri: null,
+          scope: "openid profile",
+          resource: null,
+          postLogoutRedirectUri: null,
+        },
+      },
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("button", { name: "ログアウト" })).toBeVisible();
+  }),
+};
 export const Apps: Story = {
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("tab", { name: "App・連携" }));
     await userEvent.click(await screen.findByRole("button", { name: /Echo Bot/ }));
     await expect(screen.getByRole("button", { name: "メッセージ" })).toBeVisible();
+  }),
+};
+/**
+ * 暗号化タブ。暗号ストアを開いていない（Worker がない）ときは、その理由を出す。ここでは E2EE の
+ * Provider がないので、既定の「準備をしています」になる。
+ */
+export const Encryption: Story = {
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "暗号化" }));
+    await expect(await screen.findByText("エンドツーエンド暗号化")).toBeVisible();
+    // 端末は暗号化タブのセクション。理由は 2 つのセクションで重ねず、1 回だけ出す。
+    await expect(screen.queryByRole("tab", { name: "端末" })).not.toBeInTheDocument();
+    await expect(screen.getAllByText(/暗号化の準備をしています/)).toHaveLength(1);
+  }),
+};
+export const EncryptionMobile: Story = {
+  ...Encryption,
+  globals: { viewport: { value: "mobile" } },
+};
+/** 「端末」タブだったころのリンク（`?tab=devices`）は、暗号化タブを開く。 */
+export const LegacyDevicesLink: Story = {
+  parameters: { router: { initialEntries: ["/settings?tab=devices"] } },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("tab", { name: "暗号化" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(await screen.findByText("エンドツーエンド暗号化")).toBeVisible();
   }),
 };
 export const AppsMobile: Story = { ...Apps, globals: { viewport: { value: "mobile" } } };
@@ -89,6 +138,7 @@ export const Members: Story = {
   },
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("tab", { name: "メンバー" }));
+    await expect(screen.getByRole("heading", { level: 2, name: "メンバー" })).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getAllByRole("button", { name: "管理者にする" }).length).toBeGreaterThan(0),
     );

@@ -1,12 +1,15 @@
-//! E2EE の端末と鍵の API（#354）。仕様は `docs/e2ee.md` の「API」「DB」「membership_epoch と送信の順序」。
+//! E2EE の端末と鍵の API（#354）と、to-device メッセージ（#355。`to_device`）。仕様は `docs/e2ee.md` の「API」「DB」「membership_epoch と送信の順序」。
 //!
 //! ロックの順は、すべての書き込みで次にそろえる（逆の順で取る経路を作らない）。
 //!
 //! 1. `users` の行（登録と鍵のアップロードは `FOR SHARE`。無効化の `UPDATE` は `FOR NO KEY UPDATE`）
 //! 2. ユーザー単位の advisory lock `(1, hashtext(user_id))`
-//! 3. 端末単位の advisory lock `(2, hashtext(user_id || ':' || device_id))`（複数なら昇順）
-//! 4. `channels` の行（`id` の昇順。`membership_epoch` を増やす #357 で足す）
-//! 5. `e2ee_devices` の行
+//! 3. 端末単位の advisory lock `(2, hashtext(user_id || ':' || device_id))`（複数なら昇順。
+//!    to-device の送信は宛先の端末ごとに取る）
+//! 4. メンバー単位の advisory lock `(3, hashtext(user_id))`（`membership_epoch` の一括の増加と、暗号化
+//!    チャンネルへのメンバーの追加が取る。複数なら昇順。`routes/e2ee_channels.rs` の `lock_members`）
+//! 5. `channels` の行（`id` の昇順。`membership_epoch` を増やす。`routes/e2ee_channels.rs`）
+//! 6. `e2ee_devices` の行
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,6 +25,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use zoo_crypto::{CryptoError, Curve25519PublicKey, Ed25519PublicKey, SIGNED_CURVE25519};
+
+pub mod to_device;
 
 use crate::{
     auth::AuthUser, db::get_current_txid, error::AppError, routes::response::ApiResponse,
@@ -66,6 +71,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/e2ee/keys/upload", post(upload_keys))
         .route("/api/e2ee/keys/query", post(query_keys))
         .route("/api/e2ee/keys/claim", post(claim_keys))
+        .merge(to_device::router())
         .layer(middleware::map_response(
             |mut response: Response| async move {
                 response
@@ -79,7 +85,12 @@ pub fn router() -> Router<AppState> {
 // ---------------------------------------------------------------------------
 // エラー
 
-fn coded(status: StatusCode, code: &'static str, message: &str, extra: Value) -> AppError {
+pub(crate) fn coded(
+    status: StatusCode,
+    code: &'static str,
+    message: &str,
+    extra: Value,
+) -> AppError {
     AppError::Coded {
         status,
         code,
@@ -91,7 +102,7 @@ fn coded(status: StatusCode, code: &'static str, message: &str, extra: Value) ->
     }
 }
 
-fn limit_exceeded(limit: &str) -> AppError {
+pub(crate) fn limit_exceeded(limit: &str) -> AppError {
     limit_exceeded_with(limit, Map::new())
 }
 
@@ -105,7 +116,7 @@ fn limit_exceeded_with(limit: &str, mut extra: Map<String, Value>) -> AppError {
     )
 }
 
-fn bad_signature() -> AppError {
+pub(crate) fn bad_signature() -> AppError {
     coded(
         StatusCode::BAD_REQUEST,
         "E2EE_BAD_SIGNATURE",
@@ -132,11 +143,19 @@ fn key_exists() -> AppError {
     )
 }
 
-fn device_not_found() -> AppError {
-    AppError::NotFound("Device not found".into())
+/// 呼び出した端末（または指定した自分の端末）が見つからない、または削除済み。クライアントは、この
+/// コードの付いた 404 だけを「端末が別の端末から削除された」候補にする（docs/e2ee.md の「端末が
+/// 削除されていたとき」）。コードのない 404（前段のプロキシーなど）では暗号ストアを作り直さない。
+pub(crate) fn device_not_found() -> AppError {
+    coded(
+        StatusCode::NOT_FOUND,
+        "E2EE_DEVICE_NOT_FOUND",
+        "Device not found",
+        Value::Null,
+    )
 }
 
-fn crypto_error(err: CryptoError) -> AppError {
+pub(crate) fn crypto_error(err: CryptoError) -> AppError {
     match err {
         CryptoError::MissingSignature { .. } | CryptoError::Signature(_) => bad_signature(),
         err => AppError::BadRequest(format!("Invalid key: {err}")),
@@ -178,11 +197,11 @@ fn key_generation(key_id: &str) -> Result<u64, AppError> {
         })
 }
 
-fn json_size(value: &Value) -> usize {
+pub(crate) fn json_size(value: &Value) -> usize {
     serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
 }
 
-fn check_key_size(value: &Value) -> Result<(), AppError> {
+pub(crate) fn check_key_size(value: &Value) -> Result<(), AppError> {
     if json_size(value) > MAX_KEY_JSON_BYTES {
         return Err(limit_exceeded("key_size"));
     }
@@ -190,7 +209,7 @@ fn check_key_size(value: &Value) -> Result<(), AppError> {
 }
 
 /// `signatures` に入っている署名の件数（全ユーザー、全鍵 ID の合計）。
-fn signature_count(value: &Value) -> usize {
+pub(crate) fn signature_count(value: &Value) -> usize {
     value
         .get("signatures")
         .and_then(Value::as_object)
@@ -285,7 +304,7 @@ fn check_display_name(name: &str) -> Result<(), AppError> {
 // ---------------------------------------------------------------------------
 // DB の小さな補助
 
-async fn rows(
+pub(crate) async fn rows(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,
     params: &[&str],
@@ -293,7 +312,7 @@ async fn rows(
     crate::apps::query(tx, sql, params).await
 }
 
-async fn first(
+pub(crate) async fn first(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,
     params: &[&str],
@@ -301,7 +320,7 @@ async fn first(
     Ok(rows(tx, sql, params).await?.into_iter().next())
 }
 
-async fn exec(
+pub(crate) async fn exec(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,
     params: &[&str],
@@ -319,7 +338,10 @@ async fn exec(
 /// `AuthUser` の確認はハンドラーとは別のトランザクションなので、そのあとで無効化がコミットされても、
 /// ここで止める。先にこの行を読めば、無効化の `UPDATE` はこのトランザクションのコミットを待ち、
 /// そのあとで（トリガーが）この書き込みの端末も削除する。
-async fn lock_active_user(tx: &mut toasty::Transaction<'_>, user_id: &str) -> Result<(), AppError> {
+pub(crate) async fn lock_active_user(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+) -> Result<(), AppError> {
     let row = first(
         tx,
         "SELECT '{}'::text FROM users WHERE id = $1 AND NOT is_deactivated FOR SHARE",
@@ -331,7 +353,10 @@ async fn lock_active_user(tx: &mut toasty::Transaction<'_>, user_id: &str) -> Re
 }
 
 /// ユーザー単位のロック。端末の登録（台数の確認と登録）と 30 日の回収のバッチを直列にする。
-async fn lock_user(tx: &mut toasty::Transaction<'_>, user_id: &str) -> Result<(), AppError> {
+pub(crate) async fn lock_user(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+) -> Result<(), AppError> {
     first(
         tx,
         "SELECT '{}'::text FROM pg_advisory_xact_lock(1, hashtext($1))",
@@ -342,7 +367,7 @@ async fn lock_user(tx: &mut toasty::Transaction<'_>, user_id: &str) -> Result<()
 }
 
 /// 端末単位のロック。端末の削除、鍵のアップロード、アカウントの無効化（トリガー）、
-/// to-device の送信（#355）で同じキーを使う。
+/// to-device の送信（宛先の端末ごと）で同じキーを使う。
 pub async fn lock_device(
     tx: &mut toasty::Transaction<'_>,
     user_id: &str,
@@ -518,7 +543,7 @@ pub struct RegisterRequest {
 }
 
 /// `POST /api/e2ee/devices`：端末を登録する。
-async fn register_device(
+pub(crate) async fn register_device(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<RegisterRequest>,
@@ -682,7 +707,7 @@ async fn register_device(
 }
 
 /// `GET /api/e2ee/devices`：自分の端末の一覧（削除済みを除く）。
-async fn list_devices(
+pub(crate) async fn list_devices(
     State(state): State<AppState>,
     actor: AuthUser,
 ) -> Result<Json<Vec<Value>>, AppError> {
@@ -733,8 +758,9 @@ async fn rename_device(
 
 /// `DELETE /api/e2ee/devices/{device_id}`：自分の端末を論理削除する。冪等。
 ///
-/// 削除は失効ではない（削除された端末は鍵を持ったまま）。`membership_epoch` を増やす処理は #357 で足す。
-async fn delete_device(
+/// 削除は失効ではない（削除された端末は鍵を持ったまま）。持ち主が参加しているすべての暗号化チャンネルの
+/// `membership_epoch` を同じトランザクションで増やす（削除済みの端末への再試行では増やさない）。
+pub(crate) async fn delete_device(
     State(state): State<AppState>,
     actor: AuthUser,
     Path(device_id): Path<String>,
@@ -760,6 +786,8 @@ async fn delete_device(
         // 削除済みの端末への再試行は 200（epoch も増やさない）。
         return Ok(Json(ApiResponse::new(data, None)));
     }
+    // ロックの順：端末単位のロック、channels の行（id の昇順）、e2ee_devices の行。
+    crate::routes::e2ee_channels::bump_user_epochs(&mut tx, &actor.id).await?;
     // その端末に付いた自己署名だけを消す。device_id は (user_id, device_id) でしか一意でないので、
     // 別のユーザーの同じ device_id への署名は消さない。
     exec(
@@ -778,6 +806,14 @@ async fn delete_device(
     exec(
         &mut tx,
         "DELETE FROM e2ee_fallback_keys WHERE user_id = $1 AND device_id = $2",
+        &[&actor.id, &device_id],
+    )
+    .await?;
+    // 未受信の to-device メッセージも消す。送信は同じ端末単位のロックのあとに deleted_at を読み直すので、
+    // このあとで削除済みの端末に入り直らない。
+    exec(
+        &mut tx,
+        "DELETE FROM e2ee_to_device_messages WHERE recipient_user_id = $1 AND recipient_device_id = $2",
         &[&actor.id, &device_id],
     )
     .await?;
@@ -806,7 +842,7 @@ pub struct UploadRequest {
 }
 
 /// `POST /api/e2ee/keys/upload`：ワンタイム鍵とフォールバック鍵を足す。
-async fn upload_keys(
+pub(crate) async fn upload_keys(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<UploadRequest>,
@@ -872,7 +908,7 @@ pub struct QueryRequest {
 ///
 /// 対象は自分と、暗号化チャンネルを共有しているユーザー。範囲外のユーザーは応答から黙って除く。
 /// 例外として、自分がピンか署名を持つ相手は、マスター鍵だけを返す。
-async fn query_keys(
+pub(crate) async fn query_keys(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<QueryRequest>,
@@ -950,7 +986,7 @@ pub struct ClaimRequest {
 ///
 /// 呼び出したユーザーと宛先の端末の組ごとに、1 日に `MAX_CLAIMS_PER_DAY` 回まで。超えたらエラーにせず、
 /// フォールバック鍵を返す。範囲外の端末は黙って応答から除く。
-async fn claim_keys(
+pub(crate) async fn claim_keys(
     State(state): State<AppState>,
     actor: AuthUser,
     Json(req): Json<ClaimRequest>,
@@ -1136,6 +1172,9 @@ pub async fn worker(state: AppState) {
     loop {
         if let Err(err) = sweep_deleted_devices(&state.db).await {
             tracing::warn!("E2EE device sweep failed: {err}");
+        }
+        if let Err(err) = to_device::sweep_txns(&state.db).await {
+            tracing::warn!("E2EE to-device txn sweep failed: {err}");
         }
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     }

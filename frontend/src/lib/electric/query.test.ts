@@ -32,6 +32,25 @@ describe("shapeQueryParams", () => {
     expect(shapeQueryParams("messages", proxyConfig)).toEqual({});
   });
 
+  it("call invites: the user's own pending invites in direct mode, and nothing in proxy mode", () => {
+    expect(shapeQueryParams("callInvites", directConfig, { userId: "user-1" })).toEqual({
+      where: "(invitee_id = $1 OR inviter_id = $1) AND status = 'pending'",
+      "params[1]": "user-1",
+    });
+    expect(() => shapeQueryParams("callInvites", directConfig)).toThrow();
+    expect(shapeQueryParams("callInvites", proxyConfig, { userId: "user-1" })).toEqual({});
+  });
+
+  it("filters channel leaves by the current user in direct mode and by nothing in proxy mode", () => {
+    expect(shapeQueryParams("channelLeaves", directConfig, { userId: "user-1" })).toEqual({
+      where: "user_id = $1",
+      "params[1]": "user-1",
+    });
+    expect(() => shapeQueryParams("channelLeaves", directConfig)).toThrow();
+    // proxy ではバックエンドが認証ユーザーの行だけに絞る。
+    expect(shapeQueryParams("channelLeaves", proxyConfig, { userId: "user-1" })).toEqual({});
+  });
+
   it("adds no filter for whole-table shapes", () => {
     expect(shapeQueryParams("channels", directConfig, { channelId: "ignored" })).toEqual({});
     expect(shapeQueryParams("users", proxyConfig, { channelId: "ignored" })).toEqual({});

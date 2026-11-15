@@ -16,6 +16,8 @@ import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
 import type {
   AttachmentRow,
   ChannelRow,
+  CallInviteRow,
+  ChannelLeaveRow,
   ChannelUserRow,
   MessageReactionRow,
   MessageRow,
@@ -41,9 +43,13 @@ import {
  */
 export function shapeAuthSource(config: AppConfig): ShapeFetchSource {
   if (config.shapeMode === "proxy") {
-    return { devUserId: config.devUserId };
+    return {
+      devUserId: config.devUserId,
+      apiBaseUrl: config.apiBaseUrl,
+      telemetry: config.telemetryEnabled,
+    };
   }
-  return { auth: false };
+  return { auth: false, telemetry: config.telemetryEnabled };
 }
 
 function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOptions = {}) {
@@ -175,6 +181,38 @@ function channelUsersCollection(
   return collection;
 }
 
+/**
+ * 自分が退出した日時。proxy ではバックエンドが認証ユーザーの行だけに絞る。
+ * 退出日での並び替えにだけ使うため、永続化はしない。
+ */
+function channelLeavesCollection(userId: string, config: AppConfig) {
+  const collection = createCollection(
+    electricCollectionOptions<ChannelLeaveRow>({
+      id: `channel_leave:${userId}`,
+      getKey: (row) => `${row.user_id}:${row.channel_id}`,
+      defaultIndexType: BasicIndex,
+      shapeOptions: shapeOptions("channelLeaves", config, { userId }),
+    }),
+  );
+  collection.createIndex((row) => row.channel_id);
+  return collection;
+}
+
+/**
+ * 自分が呼んだ・呼ばれた、呼び出し中の通話の招待。proxy ではバックエンドが where を固定する。
+ * 短命な行なので、永続化はしない。
+ */
+function callInvitesCollection(userId: string, config: AppConfig) {
+  return createCollection(
+    electricCollectionOptions<CallInviteRow>({
+      id: `call_invites:${userId}`,
+      getKey: (row) => row.id,
+      defaultIndexType: BasicIndex,
+      shapeOptions: shapeOptions("callInvites", config, { userId }),
+    }),
+  );
+}
+
 function messagesCollection(
   channelId: string,
   config: AppConfig,
@@ -273,6 +311,8 @@ export type NotificationsCollection = ReturnType<typeof notificationsCollection>
 export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
+export type ChannelLeavesCollection = ReturnType<typeof channelLeavesCollection>;
+export type CallInvitesCollection = ReturnType<typeof callInvitesCollection>;
 export type MessagesCollection = ReturnType<typeof messagesCollection>;
 export type ReactionsCollection = ReturnType<typeof reactionsCollection>;
 export type AttachmentsCollection = ReturnType<typeof attachmentsCollection>;
@@ -287,6 +327,10 @@ export interface CollectionsBundle {
   channels: ChannelsCollection;
   users: UsersCollection;
   channelUsers: ChannelUsersCollection;
+  /** 自分の退出日。ユーザー単位で生成しキャッシュする。 */
+  channelLeaves: (userId: string) => ChannelLeavesCollection;
+  /** 自分が呼んだ・呼ばれた、呼び出し中の通話の招待。ユーザー単位で生成しキャッシュする。 */
+  callInvites: (userId: string) => CallInvitesCollection;
   /** `channel_id` 単位で生成しキャッシュした messages コレクションを返す。 */
   messages: (channelId: string) => MessagesCollection;
   /** `channel_id` 単位で生成しキャッシュした message_reactions コレクションを返す。 */
@@ -343,6 +387,8 @@ export function getCollections(
   }
 
   const notificationCache = new Map<string, NotificationsCollection>();
+  const channelLeaveCache = new Map<string, ChannelLeavesCollection>();
+  const callInviteCache = new Map<string, CallInvitesCollection>();
   const messageCache = new Map<string, MessagesCollection>();
   const reactionCache = new Map<string, ReactionsCollection>();
   const attachmentCache = new Map<string, AttachmentsCollection>();
@@ -370,6 +416,22 @@ export function getCollections(
     channels: channelsCollection(resolved, dependencies, persistence),
     users: usersCollection(resolved, persistence),
     channelUsers: channelUsersCollection(resolved, dependencies, persistence),
+    channelLeaves: (userId) => {
+      let collection = channelLeaveCache.get(userId);
+      if (!collection) {
+        collection = channelLeavesCollection(userId, resolved);
+        channelLeaveCache.set(userId, collection);
+      }
+      return collection;
+    },
+    callInvites: (userId) => {
+      let collection = callInviteCache.get(userId);
+      if (!collection) {
+        collection = callInvitesCollection(userId, resolved);
+        callInviteCache.set(userId, collection);
+      }
+      return collection;
+    },
     reactions: (channelId) => {
       let collection = reactionCache.get(channelId);
       if (!collection) {

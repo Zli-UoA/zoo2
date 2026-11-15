@@ -131,10 +131,13 @@ fun Chat(
     val loading by table.loading.collectAsState()
     val error by table.error.collectAsState()
     val nativeReactions by app.repo.reactions(id).rows.collectAsState()
-    val (federatedReactions, federatedReactionError) = federatedChannelReactions(app, id)
-    val reactions = remember(nativeReactions, federatedReactions) { nativeReactions + federatedReactions }
+    val reactions = nativeReactions
     val joined = membershipOverride ?: isMember(members, id, app.config.userId)
-    val canPost = joined && !channel.present("archive_at") && app.env.online
+    // 暗号化チャンネルには、Megolm で暗号化して送れるようになるまで投稿、返信、編集を送らない
+    // （docs/e2ee.md、#361）。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。
+    val encrypted = channel.flag("encrypted")
+    val canPost = joined && !channel.present("archive_at") && app.env.online && !encrypted
+    val composerPlaceholder = if (encrypted) app.t("e2ee.sendUnavailable") else null
     LaunchedEffect(id, app.env.visible, app.env.online) {
         if (app.env.online && app.env.visible) {
             try {
@@ -168,12 +171,14 @@ fun Chat(
         all.find { it.text("id") == target }
             ?.let { if (it.present("parent_id")) app.openThread(it.text("parent_id"), wide) }
     }
-    val attachmentRows by app.repo.attachments(id).rows.collectAsState()
+    val attachmentRows = if (all.any { !it.containsKey("display_data") }) {
+        val legacy by app.repo.attachments(id).rows.collectAsState()
+        legacy
+    } else emptyList()
     CompositionLocalProvider(LocalAttachments provides attachmentRows) {
         Row(modifier.fillMaxWidth()) {
             if (wide || app.thread == null)
                 Column(Modifier.weight(1f).fillMaxHeight()) {
-                    if (federatedReactionError) Text(app.t("reactions.fetchError"), Modifier.padding(8.dp).then(webControlModifier("alert")))
                     MessageList(
                         app,
                         channel,
@@ -196,7 +201,7 @@ fun Chat(
                                 muted = true,
                             )
                         !joined -> JoinToPostPrompt(app, channel)
-                        else -> Composer(app, id, null, users, canPost)
+                        else -> Composer(app, id, null, users, canPost, placeholder = composerPlaceholder)
                     }
                 }
             app.thread?.let { parent ->
@@ -240,7 +245,7 @@ fun Chat(
                     },
                     composer =
                         if (joined && !channel.present("archive_at")) {
-                            { Composer(app, id, parent, users, canPost) }
+                            { Composer(app, id, parent, users, canPost, placeholder = composerPlaceholder) }
                         } else null,
                 )
             }
@@ -562,6 +567,26 @@ internal fun MessageList(
     }
 }
 
+/**
+ * メッセージの下に並べる添付の行。
+ *
+ * 暗号化チャンネルの添付（#364）は、サーバーの行が暗号文（`encrypted.bin`）なので表示しない。本当のファイル名と
+ * 鍵は Megolm で暗号化した本文にあり、Android で Megolm を受信できるようになるまでは出さない。
+ */
+internal fun visibleMessageAttachments(
+    channel: Row,
+    message: Row,
+    display: Row?,
+    attachmentRows: List<Row>,
+): List<Row> {
+    val ciphertext = message["ciphertext"]
+    if (channel.flag("encrypted") || (ciphertext != null && ciphertext != JsonNull)) return emptyList()
+    val id = message.text("id")
+    return (display?.array("attachments")?.rows() ?: attachmentRows)
+        .filter { it.text("message_id") == id }
+        .sortedBy { it.text("created_at") }
+}
+
 class MessageCallbacks(
     val startEdit: (() -> Unit)? = null,
     val cancelEdit: (() -> Unit)? = null,
@@ -615,9 +640,8 @@ internal fun Message(
     }
     val joined = remember(display) { display?.let(::joinedEmojis) }
     val attachmentRows = LocalAttachments.current
-    val messageAttachments = remember(display, attachmentRows, id) {
-        (display?.array("attachments")?.rows() ?: attachmentRows)
-            .filter { it.text("message_id") == id }.sortedBy { it.text("created_at") }
+    val messageAttachments = remember(channel, message, display, attachmentRows) {
+        visibleMessageAttachments(channel, message, display, attachmentRows)
     }
     val replyCount = remember(display, all, id) {
         display?.text("reply_count")?.toIntOrNull() ?:
@@ -651,7 +675,10 @@ internal fun Message(
         else app.openThread(id, wide)
     }
     val startEdit = {
-        if (callbacks?.startEdit != null) callbacks.startEdit.invoke() else editing = true
+        // 暗号化チャンネルでは、暗号化して送れるようになるまで編集を始めない（保存も送らない）。
+        if (channel.flag("encrypted")) app.toast = app.t("e2ee.sendUnavailable")
+        else if (callbacks?.startEdit != null) callbacks.startEdit.invoke()
+        else editing = true
     }
     val requestDelete = {
         if (callbacks?.requestDelete != null) callbacks.requestDelete.invoke() else deleting = true
@@ -780,6 +807,8 @@ internal fun Message(
                             var editComposing by remember { mutableStateOf(false) }
                             val saveEdit: () -> Unit = {
                                 if (callbacks?.saveEdit != null) callbacks.saveEdit.invoke()
+                                // 暗号化チャンネルの編集も、暗号化して送れるようになるまで送らない。
+                                else if (channel.flag("encrypted")) editing = false
                                 else
                                     app.run("edit:$id") {
                                         val row =
@@ -1280,8 +1309,8 @@ internal fun Composer(
         delay(250)
         app.platform.invoke("storageWrite", obj("key" to key, "value" to value).toString())
     }
-    LaunchedEffect(typingActive, enabled, app.env.visible, onTyping) {
-        if (onTyping == null && typingActive && enabled && app.env.visible) {
+    LaunchedEffect(typingActive, enabled, app.env.visible, app.env.online, onTyping) {
+        if (onTyping == null && typingActive && enabled && app.env.visible && app.env.online) {
             try {
                 while (isActive) {
                     try {
@@ -1316,8 +1345,10 @@ internal fun Composer(
             }
         }
     }
-    LaunchedEffect(key, app.env.visible, enabled) {
-        while (enabled && app.env.visible && isActive) {
+    LaunchedEffect(key, app.env.visible, app.env.online, enabled, typingActive) {
+        if (!app.env.visible || !enabled) typing = emptyList()
+        var pollDelay = 1500L
+        while (enabled && app.env.visible && app.env.online && isActive) {
             try {
                 typing =
                     app.api
@@ -1326,15 +1357,17 @@ internal fun Composer(
                                 (parent?.let { "?parent_id=$it" } ?: "")
                         )
                         .rows()
-                        .filter { it.text("user_id") != app.config.userId }
+                        .filter { it.text("id") != app.config.userId }
                         .map { row ->
-                            users.find { it.text("id") == row.text("user_id") }?.let(::author)
-                                ?: row.text("user_id")
+                            row.text("display_name").ifEmpty {
+                                users.find { it.text("id") == row.text("id") }?.let(::author) ?: row.text("id")
+                            }
                         }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {}
-            delay(1500)
+            pollDelay = if (typing.isNotEmpty() || typingActive) 1500L else (pollDelay * 2).coerceAtMost(5000L)
+            delay(pollDelay)
         }
     }
     val send = {

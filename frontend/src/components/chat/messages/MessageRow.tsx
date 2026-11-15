@@ -1,5 +1,5 @@
 import { ActivityPubBadge } from "../../home/ActivityPubBadge";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -7,6 +7,8 @@ import { cn } from "cn";
 import {
   BotIcon,
   CopyIcon,
+  LockKeyholeIcon,
+  LockKeyholeOpenIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MoreHorizontalIcon,
@@ -14,13 +16,16 @@ import {
   SmilePlusIcon,
   TrashIcon,
   UsersRoundIcon,
+  ShieldAlertIcon,
 } from "lucide-react";
 import { MfmContent } from "./MfmContent";
+import { decryptedMentionAllowlist, type MentionAllowlist } from "./mentions";
 import { LinkPreviews } from "./LinkPreviews.tsx";
+import { previewUrls } from "./linkPreviews";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
-import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
+import { kitchenLabel, kitchenParts, reactionKey } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
@@ -38,9 +43,19 @@ import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
+import { EncryptedMessageAttachments } from "./EncryptedMessageAttachments";
 import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
 import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
+import {
+  useMentionUserNames,
+  useMessageDecryption,
+  usePlaintextBeforeEncryption,
+  resolveMessageDecryption,
+  type MessageDecryption,
+  type SenderTrust,
+  type UndecryptableReason,
+} from "../../../lib/e2ee/messageDecryption";
 
 export interface MessageRowProps {
   item: MessageItem;
@@ -63,6 +78,11 @@ export interface MessageRowProps {
   /** スレッドペインを開く。返信行では未指定。 */
   onOpenThread?: () => void;
   attachments?: AttachmentRow[];
+  /**
+   * 暗号化チャンネルのメッセージを復号した結果。暗号文のある行で未指定なら、この端末では読めない
+   * ものとして表示する（docs/e2ee.md の「受信時の検証」）。
+   */
+  decryption?: MessageDecryption;
 }
 
 function EditedIndicator({ at }: { at: string }) {
@@ -90,6 +110,30 @@ function EditedIndicator({ at }: { at: string }) {
   );
 }
 
+/**
+ * 暗号化チャンネルの URL カードは、押したときだけ読み込む。カードの取得で、Summaly と画像プロクシの
+ * 運用者に URL が見えるため（docs/e2ee.md の「機能ごとの扱い」）。
+ */
+function ManualLinkPreviews({ content }: { content: string }) {
+  const { t } = useTranslation();
+  // 押したときの本文にだけ許可する。編集で本文（URL）が変わったら、もう一度押すまで取得しない。
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const hasUrls = useMemo(() => previewUrls(content).length > 0, [content]);
+  if (!hasUrls) return null;
+  if (loadedFor === content) return <LinkPreviews content={content} />;
+  return (
+    <Button
+      type="button"
+      variant="link"
+      size="sm"
+      className="h-auto min-h-8 px-0 text-xs text-muted-foreground"
+      onClick={() => setLoadedFor(content)}
+    >
+      {t("e2ee.loadPreviews")}
+    </Button>
+  );
+}
+
 /** 通常投稿は MFM、連携カードは専用の描画を使う。 */
 export function MessageBody({
   content,
@@ -97,12 +141,18 @@ export function MessageBody({
   appBlocks,
   editedAt,
   emojis,
+  previews = "auto",
+  mentions,
 }: {
   emojis?: Record<string, DisplayEmoji>;
   editedAt?: string | null;
   content: string;
   card?: string | null;
   appBlocks?: string | null;
+  /** `manual` は、押したときだけ URL カードを読み込む（暗号化チャンネル）。 */
+  previews?: "auto" | "manual";
+  /** 暗号化メッセージで、メンションとして表示してよい `@name`（{@link MfmContent} の `mentions`）。 */
+  mentions?: MentionAllowlist;
 }) {
   if (hasCardBlocks(appBlocks)) return null;
   const cards = parseMessageCards(data);
@@ -118,11 +168,65 @@ export function MessageBody({
   return (
     <>
       <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
-        <MfmContent content={content} emojis={emojis} />
+        <MfmContent content={content} emojis={emojis} mentions={mentions} />
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
-      <LinkPreviews content={content} />
+      {previews === "manual" ? (
+        <ManualLinkPreviews content={content} />
+      ) : (
+        <LinkPreviews content={content} />
+      )}
     </>
+  );
+}
+
+/** 復号できない暗号化メッセージの代わりに出す行。理由ごとに文言を変える。 */
+export function UndecryptableMessage({ reason }: { reason: UndecryptableReason }) {
+  const { t } = useTranslation();
+  return (
+    <p className="flex items-center gap-1.5 text-sm italic text-muted-foreground">
+      <LockKeyholeIcon className="size-3.5 shrink-0" aria-hidden="true" />
+      <span>{t(`e2ee.undecryptable.${reason}`)}</span>
+    </p>
+  );
+}
+
+/**
+ * 暗号化に切り替える前の平文のメッセージの印（#367）。暗号化されておらず、サーバーが書き換えられることを示す。
+ */
+export function BeforeEncryptionBadge() {
+  const { t } = useTranslation();
+  return (
+    <span
+      className="inline-flex w-fit items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
+      title={t("e2ee.legacy.badgeHelp")}
+    >
+      <LockKeyholeOpenIcon className="size-3" aria-hidden="true" />
+      {t("e2ee.legacy.badge")}
+    </span>
+  );
+}
+
+/** 検証済みでない送信者の印。検証済みなら何も出さない。 */
+export function SenderTrustBadge({ trust }: { trust: SenderTrust }) {
+  const { t } = useTranslation();
+  if (trust === "verified") return null;
+  return (
+    <span className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300">
+      <ShieldAlertIcon className="size-3" aria-hidden="true" />
+      {t(trust === "unverified" ? "e2ee.sender.unverified" : "e2ee.sender.unauthenticated")}
+    </span>
+  );
+}
+
+/** 版の照合の警告（サーバーが古い版や、同じ版で中身の違う行を返した）。 */
+export function RevisionWarningBadge({ warning }: { warning: "stale" | "conflict" }) {
+  const { t } = useTranslation();
+  return (
+    <span className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300">
+      <ShieldAlertIcon className="size-3" aria-hidden="true" />
+      {t(warning === "stale" ? "e2ee.revision.stale" : "e2ee.revision.conflict")}
+    </span>
   );
 }
 
@@ -184,14 +288,36 @@ export function MessageRow({
   replyCount = 0,
   onOpenThread,
   attachments = [],
+  decryption,
 }: MessageRowProps) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
+  const decryptionFromPane = useMessageDecryption(message.id);
+  // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、印を付け、編集させない。
+  const beforeEncryption = usePlaintextBeforeEncryption(message);
+  const canEdit = isOwn && !beforeEncryption;
+  const resolvedDecryption = resolveMessageDecryption(message, decryption ?? decryptionFromPane);
+  // 暗号化チャンネルの行の `content` は空なので、復号した本文を使う。
+  const bodyText =
+    resolvedDecryption?.status === "decrypted" ? resolvedDecryption.body : message.content;
+  // 暗号化メッセージのメンションは、本文の `@name` ではなく、復号した `mentions` だけで表示する。
+  const mentionUserNames = useMentionUserNames();
+  const decryptedMentions =
+    resolvedDecryption?.status === "decrypted" ? resolvedDecryption.mentions : undefined;
+  const mentionAllowlist = useMemo(
+    () =>
+      decryptedMentions
+        ? decryptedMentionAllowlist(decryptedMentions, mentionUserNames)
+        : undefined,
+    [decryptedMentions, mentionUserNames],
+  );
 
   async function copyRawMessage() {
+    // メニューを出さない状態でも、ほかの経路から呼ばれたときに空文字列で上書きしない。
+    if (resolvedDecryption?.status === "undecryptable") return;
     try {
-      await navigator.clipboard.writeText(message.content);
+      await navigator.clipboard.writeText(bodyText);
       toast.success(t("messages.copied"));
     } catch {
       toast.error(t("messages.copyFailed"));
@@ -200,13 +326,21 @@ export function MessageRow({
 
   const [platform] = useState(() => detectComposerPlatform());
   const [menuOpen, setMenuOpen] = useState(false);
-  const [reactionUsersKey, setReactionUsersKey] = useState<string | null>(null);
+  const [reactionUsersDialog, setReactionUsersDialog] = useState<
+    { type: "reaction"; key: string } | { type: "all" } | null
+  >(null);
   const selectedReaction = reactions.find(
-    (reaction) => reactionKey(reaction.emoji) === reactionUsersKey,
+    (reaction) =>
+      reactionUsersDialog?.type === "reaction" &&
+      reactionKey(reaction.emoji) === reactionUsersDialog.key,
   );
   useEffect(() => {
-    if (reactionUsersKey !== null && !selectedReaction) setReactionUsersKey(null);
-  }, [reactionUsersKey, selectedReaction]);
+    if (reactionUsersDialog?.type === "reaction" && !selectedReaction) {
+      setReactionUsersDialog(null);
+    } else if (reactionUsersDialog?.type === "all" && reactions.length === 0) {
+      setReactionUsersDialog(null);
+    }
+  }, [reactionUsersDialog, selectedReaction, reactions.length]);
   function reactionUserLabels(reaction: ReactionGroup): string[] {
     const ids = reaction.userIds ?? [];
     const labels = ids.flatMap((id) => (reaction.userNames?.[id] ? [reaction.userNames[id]] : []));
@@ -380,16 +514,44 @@ export function MessageRow({
             </form>
           ) : (
             <>
-              <MessageBody
-                emojis={message.display_data?.emojis}
-                content={message.content}
-                card={message.card}
-                appBlocks={message.app_blocks}
-                editedAt={message.updated_at}
-              />
-              <MessageAttachments attachments={attachments} />
-              <MessageAppContent message={message} />
-              {message.updated_at && hasCardBlocks(message.app_blocks) ? (
+              {resolvedDecryption?.status === "undecryptable" ? (
+                <UndecryptableMessage reason={resolvedDecryption.reason} />
+              ) : (
+                <>
+                  {resolvedDecryption?.status === "decrypted" ? (
+                    <SenderTrustBadge trust={resolvedDecryption.sender} />
+                  ) : null}
+                  {beforeEncryption ? <BeforeEncryptionBadge /> : null}
+                  {resolvedDecryption?.status === "decrypted" &&
+                  resolvedDecryption.revisionWarning ? (
+                    <RevisionWarningBadge warning={resolvedDecryption.revisionWarning} />
+                  ) : null}
+                  <MessageBody
+                    emojis={message.display_data?.emojis}
+                    content={bodyText}
+                    // 暗号化の行のカードと App の表示は暗号文で確かめられないので、本文の代わりにしない。
+                    card={resolvedDecryption ? null : message.card}
+                    appBlocks={resolvedDecryption ? null : message.app_blocks}
+                    editedAt={message.updated_at}
+                    previews={resolvedDecryption ? "manual" : "auto"}
+                    mentions={mentionAllowlist}
+                  />
+                </>
+              )}
+              {/* 暗号化チャンネルでは、サーバーの添付の行（encrypted.bin）ではなく、復号した本文の
+                  attachments を表示する。復号できないメッセージの添付は表示も取得もしない（#364）。 */}
+              {resolvedDecryption ? (
+                resolvedDecryption.status === "decrypted" ? (
+                  <EncryptedMessageAttachments
+                    attachments={resolvedDecryption.attachments ?? []}
+                    serverAttachments={attachments}
+                  />
+                ) : null
+              ) : (
+                <MessageAttachments attachments={attachments} />
+              )}
+              {resolvedDecryption ? null : <MessageAppContent message={message} />}
+              {!resolvedDecryption && message.updated_at && hasCardBlocks(message.app_blocks) ? (
                 <EditedIndicator at={message.updated_at} />
               ) : null}
             </>
@@ -456,12 +618,17 @@ export function MessageRow({
                       </TooltipProvider>
                       <button
                         type="button"
-                        className="inline-flex size-10 items-center justify-center rounded-full text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring md:sr-only md:focus-visible:not-sr-only md:focus-visible:size-10 md:[@media(hover:none)]:not-sr-only md:[@media(hover:none)]:size-10 md:[@media(any-pointer:coarse)]:not-sr-only md:[@media(any-pointer:coarse)]:size-10"
+                        className="hidden size-10 items-center justify-center rounded-full text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring md:inline-flex md:sr-only md:focus-visible:not-sr-only md:focus-visible:size-10 md:[@media(hover:none)]:not-sr-only md:[@media(hover:none)]:size-10 md:[@media(any-pointer:coarse)]:not-sr-only md:[@media(any-pointer:coarse)]:size-10"
                         aria-label={t("reactions.showUsers", {
                           emoji: kitchenLabel(reaction.emoji),
                         })}
                         title={t("reactions.showUsers", { emoji: kitchenLabel(reaction.emoji) })}
-                        onClick={() => setReactionUsersKey(reactionKey(reaction.emoji))}
+                        onClick={() =>
+                          setReactionUsersDialog({
+                            type: "reaction",
+                            key: reactionKey(reaction.emoji),
+                          })
+                        }
                       >
                         <UsersRoundIcon className="size-4" aria-hidden="true" />
                       </button>
@@ -477,6 +644,15 @@ export function MessageRow({
                   >
                     <SmilePlusIcon />
                   </Button>
+                  <button
+                    type="button"
+                    className="inline-flex size-10 items-center justify-center rounded-full text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring md:hidden"
+                    aria-label={t("reactions.showAllUsers")}
+                    title={t("reactions.showAllUsers")}
+                    onClick={() => setReactionUsersDialog({ type: "all" })}
+                  >
+                    <UsersRoundIcon className="size-4" aria-hidden="true" />
+                  </button>
                 </div>
               ) : null}
             </>
@@ -504,7 +680,7 @@ export function MessageRow({
                 <SmilePlusIcon />
               </Button>
               {threadButton}
-              {isOwn ? (
+              {canEdit ? (
                 <>
                   <Button
                     variant="ghost"
@@ -543,10 +719,13 @@ export function MessageRow({
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => void copyRawMessage()}>
-                  <CopyIcon />
-                  {t("messages.copyRaw")}
-                </DropdownMenuItem>
+                {/* 復号できない暗号化メッセージは本文がないので、空文字列をコピーしないようメニューを出さない。 */}
+                {resolvedDecryption?.status === "undecryptable" ? null : (
+                  <DropdownMenuItem onClick={() => void copyRawMessage()}>
+                    <CopyIcon />
+                    {t("messages.copyRaw")}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem
                   onClick={() =>
                     window.dispatchEvent(
@@ -567,7 +746,7 @@ export function MessageRow({
                     {t("threads.open")}
                   </DropdownMenuItem>
                 ) : null}
-                {isOwn ? (
+                {canEdit ? (
                   <>
                     <DropdownMenuItem onClick={onStartEdit}>
                       <PencilIcon />
@@ -587,24 +766,67 @@ export function MessageRow({
         ) : null}
       </div>
       <Dialog
-        open={reactionUsersKey !== null && !!selectedReaction}
+        open={
+          reactionUsersDialog?.type === "all"
+            ? reactions.length > 0
+            : reactionUsersDialog?.type === "reaction" && !!selectedReaction
+        }
         onOpenChange={(open) => {
-          if (!open) setReactionUsersKey(null);
+          if (!open) setReactionUsersDialog(null);
         }}
       >
         <DialogContent>
           <DialogTitle>
-            {t("reactions.usersTitle", {
-              emoji: selectedReaction ? kitchenLabel(selectedReaction.emoji) : "",
-            })}
+            {reactionUsersDialog?.type === "all"
+              ? t("reactions.allUsersTitle")
+              : t("reactions.usersTitle", {
+                  emoji: selectedReaction ? kitchenLabel(selectedReaction.emoji) : "",
+                })}
           </DialogTitle>
-          <ul className="space-y-2" aria-live="polite">
-            {(selectedReaction ? reactionUserLabels(selectedReaction) : []).map((label, index) => (
-              <li key={index} className="[overflow-wrap:anywhere]">
-                {label}
-              </li>
-            ))}
-          </ul>
+          {reactionUsersDialog?.type === "all" ? (
+            <div className="max-h-[min(60vh,32rem)] space-y-4 overflow-y-auto" aria-live="polite">
+              {reactions.map((reaction) => (
+                <section key={reactionKey(reaction.emoji)}>
+                  <h3
+                    className="mb-2 flex items-center gap-2 text-sm font-semibold"
+                    aria-label={kitchenLabel(reaction.emoji)}
+                  >
+                    <span aria-hidden="true" className="min-w-0 [overflow-wrap:anywhere]">
+                      {reaction.emoji.startsWith(":") || reaction.emoji.startsWith("apub:") ? (
+                        kitchenLabel(reaction.emoji)
+                      ) : (
+                        <ReactionEmoji
+                          emoji={reaction.emoji}
+                          catalog={kitchenCatalog}
+                          emojis={message.display_data?.emojis}
+                        />
+                      )}
+                    </span>
+                    {kitchenParts(reaction.emoji) ? (
+                      <span aria-hidden="true">{kitchenLabel(reaction.emoji)}</span>
+                    ) : null}
+                  </h3>
+                  <ul className="space-y-2">
+                    {reactionUserLabels(reaction).map((label, index) => (
+                      <li key={index} className="[overflow-wrap:anywhere]">
+                        {label}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          ) : (
+            <ul className="space-y-2" aria-live="polite">
+              {(selectedReaction ? reactionUserLabels(selectedReaction) : []).map(
+                (label, index) => (
+                  <li key={index} className="[overflow-wrap:anywhere]">
+                    {label}
+                  </li>
+                ),
+              )}
+            </ul>
+          )}
         </DialogContent>
       </Dialog>
     </>

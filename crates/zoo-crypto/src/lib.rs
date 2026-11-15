@@ -25,7 +25,48 @@
 //! - [`verify_cross_signing_key`]：サーバーから受け取ったクロス署名鍵の検証
 //! - [`TrustStore`]：TOFU の記録（`confirmed_usk` を含む）、自分のユーザー署名鍵の履歴と、
 //!   [`TrustStore::evaluate`] による鍵の配布先の判定（規則 1〜6）
+//!
+//! #351 で足したもの:
+//!
+//! - [`SsssKey`]：SSSS 鍵、確認値、秘密の暗号化（`m.secret_storage.v1.aes-hmac-sha2`）
+//! - [`KeySlot`]：パスキー（PRF）とリカバリーキーの鍵スロット（AES-256-GCM）
+//! - [`SecretStorage`]、[`UnlockedSecretStorage`]：`GET /api/e2ee/secret_storage` の解錠と秘密の取り出し
+//! - [`RecoveryKey`]：リカバリーキーの生成、表示、読み取り（Base58）
+//! - [`BackupDecryptionKey`]、[`BackupEncryptionKey`]：鍵バックアップ（`zoo.megolm_backup.v1.curve25519-aes-sha2`）
+//! - [`verify_backup_version`]、[`BackupUploadState`]：今の版の検証と、アップロード待ちの状態機械
+//! - [`BackupDecryptionKey::upload_proof`]、[`BackupUploadKey`]：アップロードの証明（`X-Zoo-Backup-Proof`）の作成とサーバーでの検証
+//! - [`next_backup_version`]：次に作る版の番号（`auth_data` に入れて署名する）
+//! - [`select_previous_backup_keys`]、[`previous_versions_to_migrate`]：失効のときの古い版の鍵の退避と移行
+//!
+//! #359 で足したもの:
+//!
+//! - [`OlmSession::pickle`]、[`InboundSessionStore::pickle_session`]、[`TrustStore::pickle`] と、
+//!   それぞれの戻し方：暗号ストアに置く保存形式（保存鍵から保存ごとに導いた鍵の AES-256-GCM で、
+//!   持ち主の端末に結び付ける）
+//!
+//! #364 で足したもの:
+//!
+//! - [`encrypt_attachment`]、[`decrypt_attachment`]、[`EncryptedFile`]、[`AttachmentInfo`]：
+//!   暗号化した添付（Matrix の `EncryptedFile` と同じ AES-256-CTR と SHA-256）と、
+//!   [`MessagePayload::attachments`]
+//!
+//! #368 で足したもの:
+//!
+//! - [`SasVerification`]：他のユーザーの絵文字 SAS 検証（`m.key.verification.*` を Olm で送る）と、
+//!   検証できた相手のマスター鍵への署名
+//! - [`DeviceAccount::encrypt_verification`]、[`OlmDecrypted::verify_verification`]：検証のメッセージの
+//!   暗号化と、受信時の検証（手順 1〜3）
+//! - [`TrustStore::confirm_accepted_master_key`]：受け入れ（#362）と SAS のピンを保存できたときに、
+//!   記録の登録待ちを外す
+//!
+//! #360 の TUI で足したもの:
+//!
+//! - [`SetupSession`]：初回設定と解錠のあいだメモリーにだけ置く秘密と、SSSS の保存の本文、続きの計画
+//!   （Web の `setupSession.ts` と同じ役割。TUI と Android が使う）
 
+mod attachment;
+mod backup;
+mod backup_proof;
 mod canonical_json;
 mod cross_signing;
 mod device;
@@ -33,9 +74,29 @@ mod error;
 mod inbound;
 mod megolm;
 mod olm;
+mod recovery_key;
+mod revocation;
+mod secret_storage;
+mod setup;
 mod signing;
+mod store;
 mod trust;
+mod verification;
 
+pub use attachment::{
+    ATTACHMENT_KEY_ALGORITHM, ATTACHMENT_VERSION, AttachmentInfo, AttachmentKey,
+    ENCRYPTED_ATTACHMENT_CONTENT_TYPE, ENCRYPTED_ATTACHMENT_FILE_NAME, EncryptedAttachment,
+    EncryptedFile, MAX_ATTACHMENT_MIMETYPE_CHARS, MAX_ATTACHMENT_NAME_CHARS, MAX_ATTACHMENTS,
+    decrypt_attachment, encrypt_attachment,
+};
+pub use backup::{
+    BACKUP_ALGORITHM, BackedUpSessionData, BackupDecryptionKey, BackupEncryptionKey, BackupRow,
+    BackupUpload, BackupUploadState, BackupVersionInfo, MAX_UPLOAD_SESSIONS,
+    PreviousBackupSelection, SenderClaimedKeys, SessionData, VerifiedBackupVersion, VersionChange,
+    next_backup_version, previous_versions_to_migrate, select_previous_backup_keys,
+    verify_backup_version,
+};
+pub use backup_proof::{BACKUP_PROOF_HEADER, BackupUploadKey};
 pub use canonical_json::to_canonical_json;
 pub use cross_signing::{
     CrossSigningKeyPair, CrossSigningKeys, KeySignature, KeyUsage, SignatureUpload, TOFU_PIN_TYPE,
@@ -48,7 +109,7 @@ pub use device::{
 pub use error::{CryptoError, Rejection};
 pub use inbound::{
     AddOutcome, BackupSession, DecryptedMessage, EncryptedMessage, InboundSessionStore,
-    RevisionStatus, SessionOrigin,
+    RevisionStatus, SessionOrigin, SessionRef,
 };
 pub use megolm::{
     MAX_BODY_CHARS, MAX_SAFE_INTEGER, MESSAGE_TYPE, Mentions, MessageContent, MessagePayload,
@@ -57,10 +118,31 @@ pub use megolm::{
 pub use olm::{
     ListedDevice, OlmDecrypted, OlmSession, ROOM_KEY_TYPE, ReceivedRoomKey, RoomKey, SenderTrust,
 };
+pub use recovery_key::{RECOVERY_KEY_CHARS, RecoveryKey};
+pub use revocation::{
+    PublicCrossSigningKeys, ResignMasterKey, ResignNote, ResignPin, ResignPlan, Revocation,
+    RevocationInput, RevocationScope, RevocationSignatures, RevocationStage, RevocationState,
+};
+pub use secret_storage::{
+    EncryptedSecret, KeySlot, REQUIRED_SECRETS, SECRET_MEGOLM_BACKUP,
+    SECRET_PREVIOUS_MEGOLM_BACKUP, SSSS_ALGORITHM, SecretStorage, SecretStorageKeysRequest,
+    SlotKind, SlotSecret, SsssKey, SsssKeyDescription, UnlockedSecretStorage, new_prf_salt,
+};
+pub use setup::{
+    OwnKeys, OwnSecrets, ResumePlan, ServerKeyState, SetupSession, StartupCheck, plan_reset,
+    plan_resume, startup_check,
+};
 pub use signing::{signable_json, verify_json_signature};
 pub use trust::{
     AcceptedMasterKey, DeviceExclusion, Distribution, KeySnapshot, NewTofuPin,
     ReverificationReason, TrustBasis, TrustRecord, TrustStore, TrustWarning, UserState, UserTrust,
+};
+pub use verification::{
+    SAS_METHOD, SasCancellation, SasPhase, SasVerification, VERIFICATION_ACCEPT_TYPE,
+    VERIFICATION_CANCEL_TYPE, VERIFICATION_DONE_TYPE, VERIFICATION_KEY_TYPE, VERIFICATION_MAC_TYPE,
+    VERIFICATION_MAX_CLOCK_SKEW_MS, VERIFICATION_READY_TYPE, VERIFICATION_REQUEST_TYPE,
+    VERIFICATION_START_TYPE, VERIFICATION_TIMEOUT_MS, VERIFICATION_TYPES, VerificationIdentity,
+    VerificationMessage, VerificationOutgoing, cancel_code, verification_devices,
 };
 pub use vodozemac::olm::IdentityKeys;
 pub use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, PickleError};

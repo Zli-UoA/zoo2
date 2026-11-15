@@ -170,15 +170,15 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
     .click();
   await expect(page.locator("html")).not.toHaveClass(/dark/);
 
-  await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
-
-  // 別ユーザーへ切り替えてログアウト → 再ログインする。
+  // 別ユーザーへ切り替えてログアウト（ログアウトは設定画面の一般タブにある） → 再ログインする。
   await page.request.post(`${mockIdpOrigin}/__mock/user`, {
     data: { sub: "user-b", preferredUsername: "bee", name: "Bee", email: "bee@example.com" },
   });
   await page.getByRole("button", { name: "ログアウト" }).click();
+  // AuthGate may render the logged-out state before the IdP redirect finishes.
+  // Wait for the post-logout redirect itself so this still verifies its state parameter.
+  await expect.poll(() => new URL(page.url()).searchParams.get("state")).toBeTruthy();
   await expect(page.getByRole("heading", { name: "ログアウトしました" })).toBeVisible();
-  expect(new URL(page.url()).searchParams.get("state")).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath("06-logged-out.png") });
 
   await page.getByRole("button", { name: "ログイン", exact: true }).click();

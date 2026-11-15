@@ -10,9 +10,12 @@ Zoo2 のフロントエンド。TanStack Start（React 19）+ Vite+ + Tailwind C
 ## セットアップ
 
 ```bash
+make crypto-wasm   # E2EE の wasm（crates/zoo-crypto-wasm/pkg）を作る。リポジトリルートで実行
 cd frontend
 pnpm install
 ```
+
+`@zoo/crypto-wasm` は `crates/zoo-crypto-wasm` への `link:` 依存です。`pkg/` は Git に入れないので、`pnpm check`、`pnpm test`、`pnpm test:browser` の前に `make crypto-wasm` で作ります（Rust の `wasm32-unknown-unknown` と、`crates/zoo-crypto-wasm/Cargo.toml` の `wasm-bindgen` と同じ版の `wasm-bindgen-cli` を使います。どちらも `nix develop` に入っています）。`crates/zoo-crypto` を変えたら作り直してください。`make frontend-check`、`frontend-test`、`frontend-build` は先に作ります。
 
 ## コマンド
 
@@ -80,7 +83,8 @@ pnpm test:e2e:i18n    # 本番ビルド + Playwright。バックエンド不要
 リアクションの絵文字ピッカーは [frimousse](https://frimousse.liveblocks.io)（headless）で描画し、絵文字データは `public/emojibase-data` から自前配信します。実行時に CDN へはアクセスしません。
 
 - 配信するロケールは `en` / `ja` / `ko` / `zh-hant` の4つです。アプリのロケールとの対応は `src/lib/emoji/locale.ts` の中央マップで解決します（`zh-Hans` と `yue` は繁体字データ、`ko-KR` と `ko-KP` は `ko` データを使い、未対応は `en`）。
-- frimousse は初回に選択ロケールの `data.json` と `messages.json` だけを取得し、localStorage にキャッシュします。2回目以降のオープンではキャッシュを使います。
+- frimousse は初回に選択ロケールの `data.json` と `messages.json` を取得し、localStorage にキャッシュします。2回目以降のオープンではキャッシュを使います。
+- どの言語でも英語・日本語・韓国語・中国語とピンインで検索できるよう、`resolveMultilingualEmojiData`（`src/lib/emoji/resolver.ts`）が `search-index.json`（約 940KB、gzip で約 290KB）も1回取得し、各絵文字の検索用タグに足します。取得に失敗したときは選択ロケールのデータだけで検索します。足したタグは localStorage に保存しません（frimousse が保存するのは `defaultEmojiDataResolver` が取得した元データだけ）。
 - 表示する絵文字は `SUPPORTED_EMOJI_VERSION`（`src/lib/emoji/data.ts`、現在は 16）までに制限します。バックエンドの `emojis` クレートが Unicode 16.0 までしか検証しないためで、どちらかを更新するときは両方の上限を揃えてください。
 - recents は localStorage の `zoo-recent-emoji` に最大16件、新しい順で保存します。
 - データは `emojibase-data`（devDependency）からコピーします。バージョンを更新したら次を実行し、差分をコミットしてください。
@@ -159,7 +163,7 @@ cd frontend && pnpm dev           # http://localhost:5173
 ### 経路とポイント
 
 - 読み取り: `proxy` は `VITE_API_BASE_URL` + `VITE_SHAPE_PROXY_PATH`（既定 `/api/shapes`）を購読します。バックエンドが `table` / `where` を確定し、サーバ側で `ELECTRIC_SECRET` を付けて Electric へ転送します。`messages` / `channel_users` はクエリで `channel_id` を渡します。
-- 認証: REST と Shape の両方で同じ `X-Dev-User`（と `Authorization`）を受け付けます。バックエンドは `DEV_AUTH_ENABLED=true` のときだけこのヘッダを受け付け、それ以外は 403 です。CORS はバックエンドが `CORS_ALLOWED_ORIGINS` の許可オリジンに限定し（`ENVIRONMENT=production` 以外で未設定なら `http://localhost:5173`, `http://127.0.0.1:5173`、本番で未設定なら空）、メソッドとヘッダも既知のものだけを許可しつつ `electric-*` を公開します。`direct` は Electric の CORS が `X-Dev-User` / `Authorization` を許可しないため認証ヘッダを付けません（`collections.ts` の `shapeAuthSource`）。
+- 認証: REST と Shape の両方で同じ `X-Dev-User`（と `Authorization`）を受け付けます。バックエンドは `DEV_AUTH_ENABLED=true` のときだけこのヘッダを受け付け、それ以外は 403 です。CORS はバックエンドが `CORS_ALLOWED_ORIGINS` の許可オリジンに限定し（`ENVIRONMENT=production` 以外で未設定なら `http://localhost:5173`, `http://127.0.0.1:5173`、本番で未設定なら空）、メソッドとヘッダも既知のもの（ヘッダは `Authorization`、`X-Dev-User`、`Content-Type`、`Accept`、E2EE の直前の再認証の `X-Zoo-Reauth`）だけを許可しつつ `electric-*` を公開します。`direct` は Electric の CORS が `X-Dev-User` / `Authorization` を許可しないため認証ヘッダを付けません（`collections.ts` の `shapeAuthSource`）。
 - 認可: バックエンドの channels Shape は `is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = ...)` でメンバーシップに絞ります。未参加の非公開チャンネルは Shape・メッセージのどちらも届きません（存在隠蔽のため 404）。参加/退出で channels 側の行が move-in / move-out します。
 - `channel_users` のサブクエリ経路（`electric#3143`）: Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` で動かしており、`WHERE ... IN (SELECT ... WHERE user_id = $1)` の形がそのまま通ることを実測しました（`params[1]` により move-in / move-out も配信）。`$1` をリテラルへ埋め込む回避策は不要でした。
 - 書き込み: すべて REST（`{ data, txid }`）で行い、`txid` を `awaitTxId` で Electric の配信と突き合わせます。失敗時は楽観状態がロールバックします。
@@ -179,12 +183,21 @@ VITE_OIDC_SCOPE=openid profile
 VITE_OIDC_RESOURCE=https://zli.chat
 ```
 
-- 既定 scope は `openid profile` です。`VITE_OIDC_SCOPE` で上書きできます。AuthZ は `email` と `offline_access` を拒否するため要求しません。`ains` も現時点では要求せず、必要になったら `VITE_OIDC_SCOPE="openid profile ains"` のように追加します。
+- 既定 scope は `openid profile` です。`VITE_OIDC_SCOPE` で上書きできます。追加属性と自動更新が必要な場合は、AuthZのclientで許可したscopeを追加してください。`ains` も現時点では要求せず、必要になったら `VITE_OIDC_SCOPE="openid profile ains"` のように追加します。
 - `VITE_OIDC_RESOURCE` は AuthZ の resource（RFC 8707）です。設定すると authorize と token 要求の両方に `resource` が付き、access token が `typ: at+jwt` の JWT になります。未設定だと AuthZ は opaque token（32 文字）を発行します。本番の resource identifier は `https://zli.chat`、ローカルは AuthZ 側で登録した値を使います。
 - AuthZ 側では resource identifier を `oauthResource` に登録し、zoo2 の client を `oauthClientResource` で紐付けます。AuthZ の管理画面で設定し、AuthZ の `docs/oidc.md` / `docs/deployment.md` も参照してください。
 - バックエンドの `OIDC_AUDIENCE` には `VITE_OIDC_RESOURCE` と同じ resource identifier を設定します（access token の `aud` は resource の配列）。`resource` を設定しないと opaque token のためバックエンドの JWT 検証は通りません。`OIDC_ISSUER` も `VITE_OIDC_ISSUER` と一致させます。
-- AuthZ は `offline_access` 非対応で refresh token を発行しません。access token の期限が切れると再ログインになります。同じタブのリロードでは保存済みセッションを復元します。期限が近づいて再認可が必要になるまでは、authorize への往復を省きます。
+- AuthZは `offline_access` に対応しています。管理者がclientに同scopeを許可し、`VITE_OIDC_SCOPE="openid profile offline_access"` で要求して本人が同意すると、refresh tokenでaccess tokenを更新します。refresh tokenがない場合は期限前に再認可します。同じタブのリロードでは保存済みセッションを復元します。期限が近づいて再認可が必要になるまでは、authorize への往復を省きます。
 - ログアウトは Discovery の `end_session_endpoint` を使う RP-initiated logout です。`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` で戻り先を変更できます（既定 `${origin}/`）。
+
+### 自動更新の有効化
+
+1. AuthZの管理画面で、zoo2に登録したpublic clientに`offline_access`を許可します。redirect URI・resourceの既存設定は維持します。
+2. ローカルは`frontend/.env`、本番は`Zli-UoA/zoo2`のRepository Variable `VITE_OIDC_SCOPE`に、現在のscopeへ`offline_access`を追加した値を設定します。通常の例は`openid profile offline_access`です。`ains`などを利用中なら、そのscopeも残します。
+3. Webを再ビルドして配備します。`VITE_OIDC_*`はビルド時に埋め込むため、コンテナの再起動だけでは反映されません。本番の`Publish images`は同じSHAのイメージがあるとビルドを省略するため、変数の設定後に新しいコミットのSHAでビルドし、そのイメージをGitの配備設定へ反映します。詳細は[zoo2-infraの登録・配備手順](https://github.com/Zli-UoA/zoo2-infra/blob/main/docs/installation.md#authzへのzoo2の登録)を参照してください。
+4. 利用者が再ログインし、`offline_access`の追加同意を行います。更新トークンの発行と、再読み込み後も自動更新が続くことを確認します。
+
+AuthZ側の許可を先に追加し、続いてWebの設定・ビルド・配備、最後に本人の同意という順で進めます。設定例の変更だけで本番のclientや配備済みWebが変わることはありません。
 
 ## テスト・品質（Phase 6）
 
@@ -204,7 +217,7 @@ cd frontend && pnpm test:e2e      # 起動 → 送信 → 反映
 
 ### OIDC ログイン E2E（#50）
 
-ログイン済みのセッションは同じタブの `sessionStorage` に保持し、再読み込み時に復元します。再認可が必要になるまでは、IdP への画面遷移を省きます。更新トークンはメモリだけに保持し、タブ複製でコピーされないよう保存しません。再読み込み後に期限が近づいた場合は再認可します。認証設定の変更・ログアウト・セッション失効時は保存情報を破棄し、再ログインします。タブを閉じると保存情報も消えます。
+ログイン済みのセッションは同じタブの `sessionStorage` に保持し、再読み込み時に復元します。再認可が必要になるまでは、IdP への画面遷移を省きます。更新トークンと更新セッションの識別子も保存し、再読み込み後やアクセストークン期限切れ後も自動更新します。更新は同一オリジンのSharedWorkerへ集約し、複製タブにも最新の更新結果を共有します。Worker終了後はIndexedDBから最新状態を復元します。更新結果が不明な場合は古いトークンを再送せず再認可します。詳しくは[認証ワーカーの設計](../docs/oidc-refresh.md)を参照してください。認証設定の変更・ログアウト・セッション失効時は保存情報を破棄し、再ログインします。タブを閉じるとそのタブのsessionStorageは消えますが、IndexedDBの更新状態は残ります。ログアウト・セッション破棄時に資格情報を消し、24時間以上使われていない行も次回Worker利用時の掃除で終了状態にします。SharedWorker・Web Locks・IndexedDBが利用できない環境では更新トークンを保存しません。
 
 `e2e/oidc.spec.ts` は、外部依存なしのモック IdP（`e2e/mock-idp-server.ts`）と本番同等の認証設定を使い、**未ログイン → authorize → ログイン → Bearer で REST/Shape → チャンネル作成 → メッセージ送信 → Shape 反映**を通しで確認します。自分のメッセージにだけ編集/削除が出ること、ログアウト → 別ユーザーでの再ログイン、参加/退出も含みます。
 
@@ -313,6 +326,8 @@ OS の `prefers-reduced-motion` 設定ではアニメーションを停止しま
 管理者はメンバー一覧から管理者権限を付与・解除できます。`PATCH /api/users/{id}/admin` は管理者だけが実行でき、最後の管理者と開発用の固定管理者の解除を拒否します。権限変更はトランザクション内で直列化します。DMのメッセージ削除権限は投稿者本人のままです。
 
 通常チャンネルの管理者・作成者は、投稿・スレッド返信の操作メニューから削除できます。公開チャンネルは「探す」から未参加のまま閲覧し、送信欄の参加ボタンで参加できます。スレッドの開閉はURLと履歴に反映され、戻る・進むで復元します。
+
+インストールしたPWAでは、起動時の画面まで戻った後の「戻る」を吸収し、その画面に留まります。境界はウィンドウのセッション単位で保持し、通知や認証コールバックによる文書読み込みでは再挿入しません。利用者が選んだ「起動地点に留まる」動作として扱い、繰り返しの操作で通知が重ならないよう、吸収時のトーストや読み上げ通知は出しません。アプリ内の「戻る・進む」と通常タブの履歴操作は維持します。OSによるアプリ終了や履歴を複数件飛び越す操作は抑止の対象外です。
 
 共通のInput・Textareaと検索コントロールには、自動入力を抑える属性を設定しています。ブラウザやパスワード管理拡張の挙動によっては、これらの指定が無視される場合があります。
 

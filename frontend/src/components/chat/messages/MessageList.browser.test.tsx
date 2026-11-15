@@ -8,6 +8,7 @@ import { DEFAULT_CONFIG } from "../../../lib/config";
 import type { LinkPreviewData } from "../../../lib/summaly";
 import { mockServer, startMockServer } from "../../../test/browser-setup";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { MessageDecryptionsProvider } from "../../../lib/e2ee/messageDecryption";
 import { MessageList } from "./MessageList";
 import type { FeedMessage } from "./messageFormat";
 
@@ -236,4 +237,81 @@ it("keeps an initial unread boundary without marking later messages read when th
     focus.mockRestore();
     visibility.mockRestore();
   }
+});
+
+it("marks messages sent before the channel was encrypted and the boundary to encrypted ones (#367)", async () => {
+  const noop = () => {};
+  const ciphertext = {
+    algorithm: "m.megolm.v1.aes-sha2",
+    sender_key: "sender",
+    device_id: "device",
+    session_id: "session",
+    ciphertext: "AA",
+  } as const;
+  const base = {
+    user_id: "other",
+    display_name: "Alice",
+    parent_id: null,
+    created_at: "2026-01-02 00:00:00.000",
+  };
+  const messages: FeedMessage[] = [
+    { ...base, id: "before-1", content: "平文のメッセージ 1" },
+    { ...base, id: "before-2", content: "平文のメッセージ 2" },
+    { ...base, id: "after-1", content: "", ciphertext, epoch: "1" },
+  ];
+  const list = (encrypted: boolean) => (
+    <LocaleProvider>
+      <MessageDecryptionsProvider
+        decryptions={
+          new Map([
+            [
+              "after-1",
+              {
+                status: "decrypted",
+                body: "暗号化したメッセージ",
+                kind: "message",
+                mentions: { user_ids: [], channel: false, here: false },
+                sender: "verified",
+              },
+            ],
+          ])
+        }
+        mentionUserNames={new Map()}
+        encrypted={encrypted}
+      >
+        <div className="flex h-[600px] w-[480px] flex-col">
+          <MessageList
+            messages={messages}
+            isLoading={false}
+            isError={false}
+            currentUserId="me"
+            editingId={null}
+            editingText=""
+            onEditingTextChange={noop}
+            onStartEdit={noop}
+            onCancelEdit={noop}
+            onSaveEdit={noop}
+            onRequestDelete={noop}
+            reactions={new Map()}
+            kitchenCatalog={null}
+            canReact={false}
+            onReaction={noop}
+            onPickReaction={noop}
+            onOpenThread={noop}
+          />
+        </div>
+      </MessageDecryptionsProvider>
+    </LocaleProvider>
+  );
+
+  const { rerender } = render(list(true));
+  expect(await screen.findByText("平文のメッセージ 1")).toBeVisible();
+  expect(screen.getByText("暗号化したメッセージ")).toBeVisible();
+  expect(screen.getAllByText("暗号化前")).toHaveLength(2);
+  expect(screen.getAllByRole("separator", { name: "ここから暗号化されています" })).toHaveLength(1);
+
+  // 平文のチャンネルでは、印も区切りも出さない。
+  rerender(list(false));
+  await waitFor(() => expect(screen.queryByText("暗号化前")).toBeNull());
+  expect(screen.queryByRole("separator", { name: "ここから暗号化されています" })).toBeNull();
 });

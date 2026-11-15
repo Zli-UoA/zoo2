@@ -19,7 +19,8 @@ export function parseOneToOneDmIds(channelName: string): [string, string] | null
   if (isGroupDm(channelName)) {
     return null;
   }
-  const match = /^dm:([^:]+):([^:]+)$/.exec(channelName);
+  // 暗号化 DM は edm: の名前（docs/e2ee.md）。どちらも 1 対 1 の DM として扱う。
+  const match = /^e?dm:([^:]+):([^:]+)$/.exec(channelName);
   if (!match) {
     return null;
   }

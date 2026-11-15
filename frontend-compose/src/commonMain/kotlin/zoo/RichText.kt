@@ -30,7 +30,7 @@ data class Inline(val value: String, val kind: String = "text", val url: String?
 
 private val inlinePattern =
         Regex(
-            "(`[^`\\n]+`|<small>[\\s\\S]*?</small>|<plain>[\\s\\S]*?</plain>|\\*\\*[^*]+\\*\\*|~~[^~]+~~|<b>[\\s\\S]*?</b>|<i>[\\s\\S]*?</i>|\\*[^*\\n]+\\*|\\[[^]\\n]+]\\(https?://[^)\\s]+\\)|https?://[^\\s<>]+|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:)"
+            "(`[^`\\n]+`|<small>[\\s\\S]*?</small>|<plain>[\\s\\S]*?</plain>|\\*\\*[^*]+\\*\\*|~~[^~]+~~|<b>[\\s\\S]*?</b>|<i>[\\s\\S]*?</i>|\\*[^*\\n]+\\*|\\[[^]\\n]+]\\(https?://[^)\\s]+\\)|https?://[^\\s<>]+|:@[A-Za-z0-9._-]+:|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:)"
         )
 
 fun parseInline(source: String): List<Inline> {
@@ -56,6 +56,7 @@ fun parseInline(source: String): List<Inline> {
                         s.substringAfter("](").dropLast(1),
                     )
                 s.startsWith("http") -> Inline(s, "link", s)
+                s.startsWith(":@") -> Inline(s, "accountEmoji")
                 s.startsWith('@') -> Inline(s, "mention")
                 s.startsWith('#') -> Inline(s, "hashtag")
                 s.startsWith(':') -> Inline(s, "emoji")
@@ -267,6 +268,7 @@ private data class CachedParagraph(
     val text: AnnotatedString,
     val mentions: Map<String, String>,
     val emojiParts: Map<String, Row>,
+    val accountParts: Map<String, Row>,
 )
 
 @Composable
@@ -280,6 +282,7 @@ private fun InlineParagraph(
 ) {
     val app = LocalApp.current
     val fonts = LocalFonts.current
+    val authzAccounts = app.accountProfiles.map { JsonObject(it + ("user_name" to JsonPrimitive(it.text("username")))) }
     val channels by app.repo.channels.rows.collectAsState()
     val inheritedStyle = LocalMfmStyle.current
     val mentionForeground = MaterialTheme.colorScheme.onSecondaryContainer
@@ -306,11 +309,12 @@ private fun InlineParagraph(
     val activityPubEmojis = LocalActivityPubEmojis.current
     val remoteEmojis = remember(activityPubEmojis, registeredEmojis) { activityPubEmojis + registeredEmojis }
     val paragraph = remember(
-        app, segments, users, shortcodes, fonts, channels, inheritedStyle,
+        app, segments, users, authzAccounts, shortcodes, fonts, channels, inheritedStyle,
         mentionForeground, mentionBackground, accent, codeBackground, remoteEmojis, editedAt,
     ) {
         val mentions = mutableMapOf<String, String>()
         val emojiParts = mutableMapOf<String, Row>()
+        val accountParts = mutableMapOf<String, Row>()
         val text = buildAnnotatedString {
             fun write(
                 source: String,
@@ -319,6 +323,15 @@ private fun InlineParagraph(
             ) {
                 parseInline(source).forEach { token ->
                     var value = token.value
+                    if (token.kind == "accountEmoji") {
+                        val account = authzAccounts.find { it.text("username") == value.removePrefix(":@").removeSuffix(":") }
+                        if (account != null) {
+                            val id = "account-emoji-${accountParts.size}"
+                            accountParts[id] = account
+                            appendInlineContent(id, value)
+                            return@forEach
+                        }
+                    }
                     if (token.kind == "emoji") {
                         val remote = remoteEmojis.find { it.text("name") == value }
                         if (remote != null && (remote.flag("local") || Regex("^[a-f0-9]{64}$").matches(remote.text("image_id")))) {
@@ -329,7 +342,6 @@ private fun InlineParagraph(
                         }
                         value = (shortcodes[value.trim(':')] as? JsonPrimitive)?.contentOrNull ?: value
                     }
-                    val user = users.find { it.text("user_name") == value.removePrefix("@") }
 
                     val inlineWeight = if (token.kind == "bold") FontWeight.Bold else inheritedWeight
                     val style =
@@ -411,11 +423,12 @@ private fun InlineParagraph(
                 appendInlineContent("edited", " ")
             }
         }
-        CachedParagraph(text, mentions.toMap(), emojiParts.toMap())
+        CachedParagraph(text, mentions.toMap(), emojiParts.toMap(), accountParts.toMap())
     }
     val text = paragraph.text
     val mentions = paragraph.mentions
     val emojiParts = paragraph.emojiParts
+    val accountParts = paragraph.accountParts
     val content =
         embedded.mapValues { (id, source) ->
             val measured = sizes[id]
@@ -448,19 +461,27 @@ private fun InlineParagraph(
                     PlaceholderVerticalAlign.TextCenter,
                 )
             ) {
-                androidx.compose.material3.Text(
-                    fontText(value, fonts, FontWeight.Medium),
+                val account = authzAccounts.find { it.text("username") == value.removePrefix("@") }
+                Row(
                     Modifier.wrapContentSize(unbounded = true)
                         .onSizeChanged { sizes[id] = it }
                         .background(mentionBackground, RoundedCornerShape(4.dp))
                         .padding(horizontal = 2.dp),
-                    color = mentionForeground,
-                    style =
-                        MaterialTheme.typography.bodyMedium
-                            .merge(inheritedStyle)
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (account != null) {
+                        Text("@", color = mentionForeground)
+                        Avatar(account, size = 18.dp)
+                    }
+                    androidx.compose.material3.Text(
+                        fontText(account?.let(::author) ?: value, fonts, FontWeight.Medium),
+                        color = mentionForeground,
+                        style = MaterialTheme.typography.bodyMedium.merge(inheritedStyle)
                             .copy(fontFamily = fonts.latin, lineHeight = TextUnit.Unspecified),
-                    fontWeight = FontWeight.Medium,
-                )
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
             }
         }
     val paragraphLayout = remember { arrayOfNulls<TextLayoutResult>(1) }
@@ -486,6 +507,11 @@ private fun InlineParagraph(
                     emojiParts.mapValues { (_, emoji) ->
                         androidx.compose.foundation.text.InlineTextContent(Placeholder((1.5f * emojiRatio(emoji)).coerceAtMost(8f).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
                             ActivityPubEmoji(emoji, with(density) { 21.sp.toDp() })
+                        }
+                    } +
+                    accountParts.mapValues { (_, account) ->
+                        androidx.compose.foundation.text.InlineTextContent(Placeholder(1.15.em, 1.15.em, PlaceholderVerticalAlign.TextCenter)) {
+                            Avatar(account, modifier = Modifier.semantics { contentDescription = ":@${account.text("user_name")}:" }, size = with(density) { 18.sp.toDp() })
                         }
                     } +
                     mentionContent +
@@ -854,6 +880,13 @@ fun EmojiPicker(
         }
         if (custom) {
         Field(query, app.t("home.searchEmoji"), Modifier.fillMaxWidth()) { query = it }
+        val accountMatches = app.accountProfiles.filter { (it.text("username") + " " + it.text("display_name")).contains(query, ignoreCase = true) }
+        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            accountMatches.forEach { account ->
+                val value = ":@${account.text("username")}:"
+                Box(Modifier.height(36.dp).clickable(role = androidx.compose.ui.semantics.Role.Button) { choose(value) }.semantics { contentDescription = value }) { Avatar(account, size = 28.dp) }
+            }
+        }
         val customMatches = customEmojis.filter { (listOf(it.text("name"), it.text("category")) + it.array("aliases").map { alias -> alias.jsonPrimitive.content }).any { text -> text.contains(query, ignoreCase = true) } }
         if (customMatches.isNotEmpty()) {
             Text(app.t("home.customEmojis"), small = true)
@@ -871,7 +904,7 @@ fun EmojiPicker(
         else if (app.workspaceEmojiError) {
             Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")))
             Button(app.t("home.refresh")) { app.run { app.loadWorkspaceEmojis(true) } }
-        } else if (customMatches.isEmpty()) Text(app.t("home.noEmojis"))
+        } else if (customMatches.isEmpty() && accountMatches.isEmpty()) Text(app.t("home.noEmojis"))
         return@pickerContent
         }
         if (recents.isNotEmpty()) {

@@ -13,6 +13,7 @@ const fixture = vi.hoisted(() => {
     created_at: "2020-01-01 00:00:00.000",
     updated_at: null,
     deleted_at: null as string | null,
+    thread_archive_at: null as string | null,
     user_name: "alice",
     display_name: "Alice",
   };
@@ -21,6 +22,7 @@ const fixture = vi.hoisted(() => {
     /** `useThreadRoot` が返す行 (取得が終わるまでは、空)。 */
     rootRows: [root] as (typeof root)[],
     rootLoading: false,
+    rootError: false,
     /** 通知・リンクの対象 (`?message=`) として返す行。 */
     targetRows: [] as (typeof root)[],
     /** メイン一覧の行と、古いページの有無。 */
@@ -29,6 +31,8 @@ const fixture = vi.hoisted(() => {
     hasOlder: false,
     isLoadingOlder: false,
     loadOlder: vi.fn(),
+    replies: [] as (typeof root)[],
+    insert: vi.fn(),
     empty: [],
     users: [] as { id: string; display_name: string; user_name: string }[],
     reactions: [] as {
@@ -40,10 +44,14 @@ const fixture = vi.hoisted(() => {
     }[],
     closeThread: vi.fn(),
     openThread: vi.fn(),
-    api: { request: vi.fn() },
+    api: { request: vi.fn(), post: vi.fn().mockResolvedValue({}) },
   };
 });
-const collection = { get: () => undefined, values: () => fixture.empty.values() };
+const collection = {
+  insert: fixture.insert,
+  get: () => undefined,
+  values: () => fixture.empty.values(),
+};
 vi.mock("../../../lib/electric/collections-context", () => ({
   useCollections: () => ({
     messages: () => collection,
@@ -80,12 +88,17 @@ vi.mock("../../../hooks/useRealtime", () => ({
 vi.mock("../../../hooks/useAttachments", () => ({
   useMessageAttachments: () => ({ data: fixture.empty }),
   useAttachmentUpload: () => vi.fn(),
+  useEncryptedAttachmentUpload: () => vi.fn(),
 }));
 vi.mock("../../../hooks/useThread", () => ({
   useMessageById: () => ({ data: fixture.targetRows, isLoading: false }),
-  useThreadRoot: () => ({ data: fixture.rootRows, isLoading: fixture.rootLoading }),
+  useThreadRoot: () => ({
+    data: fixture.rootRows,
+    isLoading: fixture.rootLoading,
+    isError: fixture.rootError,
+  }),
   useThreadFeed: () => ({
-    data: fixture.empty,
+    data: fixture.replies,
     isLoading: false,
     isError: false,
     hasOlder: false,
@@ -97,7 +110,12 @@ vi.mock("../../../hooks/useTyping", () => ({
   useTyping: () => ({ users: fixture.empty, onTyping: () => {} }),
 }));
 vi.mock("../../../hooks/useWriteRunner", () => ({
-  useWriteRunner: () => ({ error: null, setError: () => {}, run: vi.fn(), isPending: false }),
+  useWriteRunner: () => ({
+    error: null,
+    setError: () => {},
+    run: async (action: () => unknown) => action(),
+    isPending: false,
+  }),
 }));
 vi.mock("../../../lib/offline/offline-context", () => ({
   useOfflineStatus: () => ({ isOnline: true }),
@@ -117,7 +135,31 @@ vi.mock("./MessageList", () => ({
   }) => <div>{reactions.get("old-root")?.[0]?.userNames?.alice}</div>,
 }));
 vi.mock("./ThreadPane", () => ({
-  ThreadPane: ({ root }: { root: { content: string } }) => <div>{root.content}</div>,
+  ThreadPane: ({
+    root,
+    replies,
+    readOnly,
+    isMember,
+    onSendReply,
+  }: {
+    root: { content: string };
+    replies: { id: string; content: string }[];
+    readOnly?: boolean;
+    isMember?: boolean;
+    onSendReply: (content: string) => Promise<boolean>;
+  }) => (
+    <div>
+      {root.content}
+      {replies.map((reply) => (
+        <p key={reply.id}>{reply.content}</p>
+      ))}
+      {!readOnly ? (
+        <button disabled={!isMember} onClick={() => void onSendReply("Continued reply")}>
+          Reply to thread
+        </button>
+      ) : null}
+    </div>
+  ),
 }));
 vi.mock("./ReactionPicker", () => ({ ReactionPicker: () => null }));
 
@@ -128,10 +170,15 @@ const pane = (targetMessageId?: string) => (
 );
 
 beforeEach(() => {
+  fixture.root.thread_archive_at = null;
+  fixture.replies = [];
+  fixture.insert.mockClear();
+  fixture.api.post.mockClear();
   fixture.root.deleted_at = null;
   fixture.root.parent_id = null;
   fixture.rootRows = [fixture.root];
   fixture.rootLoading = false;
+  fixture.rootError = false;
   fixture.targetRows = [];
   fixture.feed = [];
   fixture.feedLoading = false;
@@ -145,6 +192,39 @@ beforeEach(() => {
 });
 
 describe("links and threads whose rows are older than the loaded range", () => {
+  it("keeps older replies visible after an archived thread is reopened", async () => {
+    fixture.root.thread_archive_at = new Date().toISOString();
+    fixture.replies = [40, 10].map((days) => ({
+      ...fixture.root,
+      id: `reply-${days}`,
+      content: `Reply ${days} days ago`,
+      parent_id: fixture.root.id,
+      created_at: new Date(Date.now() - days * 86400000).toISOString(),
+      thread_archive_at: null,
+    }));
+    const view = () => (
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember />
+      </LocaleProvider>
+    );
+    const { rerender } = render(view());
+    await screen.findByText("Reply 40 days ago");
+    screen.getByRole("button", { name: "Reply to thread" }).click();
+    await waitFor(() =>
+      expect(fixture.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ parent_id: fixture.root.id, content: "Continued reply" }),
+        undefined,
+      ),
+    );
+    expect(fixture.api.post).not.toHaveBeenCalled();
+    // 返信の保存後に Electric から再開状態が届く。
+    fixture.root.thread_archive_at = null;
+    rerender(view());
+    await waitFor(() => {
+      expect(screen.getByText("Reply 40 days ago")).toBeTruthy();
+      expect(screen.getByText("Reply 10 days ago")).toBeTruthy();
+    });
+  });
   it("opens the thread of a linked reply once the reply row is loaded", async () => {
     const reply = { ...fixture.root, id: "old-reply", parent_id: "old-root" };
     const { rerender } = render(pane("old-reply"));
@@ -162,6 +242,7 @@ describe("links and threads whose rows are older than the loaded range", () => {
     expect(fixture.closeThread).not.toHaveBeenCalled();
     // 取得が終わっても、その行がなければ、(存在しないので) 閉じる
     fixture.rootLoading = false;
+    fixture.rootError = false;
     rerender(pane());
     await waitFor(() => expect(fixture.closeThread).toHaveBeenCalled());
   });
@@ -227,4 +308,15 @@ describe("links and threads whose rows are older than the loaded range", () => {
     render(pane());
     expect(await screen.findByText("Alice (@alice)")).toBeTruthy();
   });
+});
+
+it("shows a retryable pane without closing when its root request fails", async () => {
+  fixture.rootRows = [];
+  fixture.rootError = true;
+  render(pane());
+  expect(fixture.closeThread).not.toHaveBeenCalled();
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "再試行" })).toBeTruthy();
+  screen.getByRole("button", { name: "スレッドを閉じる" }).click();
+  expect(fixture.closeThread).toHaveBeenCalledTimes(1);
 });

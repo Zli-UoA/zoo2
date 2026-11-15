@@ -1,3 +1,4 @@
+import { coalescedRefresh } from "../../lib/coalescedRefresh";
 import { ActivityPubProfileDetails } from "./ActivityPubProfileDetails";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
@@ -56,13 +57,22 @@ export function ActivityPubProfile({
       if (!signal?.aborted) setFailed(true);
     }
   }, [client, actorId]);
+  const schedule = useRef<() => void>(() => {});
   useEffect(() => {
     setAccount(null);
     setFailed(false);
-    void load();
-    return () => request.current?.abort();
+    const scheduler = coalescedRefresh(() =>
+      document.visibilityState === "hidden" ? undefined : load(),
+    );
+    schedule.current = scheduler.request;
+    scheduler.request();
+    return () => {
+      schedule.current = () => {};
+      scheduler.dispose();
+      request.current?.abort();
+    };
   }, [load]);
-  useHomeLive(() => void load());
+  useHomeLive(() => schedule.current());
   return (
     <section className="space-y-4 border-b p-4">
       {failed ? (

@@ -27,6 +27,17 @@ use zoo2_client_core::{
 
 pub const APP_NAME: &str = "zoo2-desktop";
 
+#[derive(Debug)]
+pub(crate) struct SessionChanged;
+
+impl std::fmt::Display for SessionChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ログイン状態が変わったためトークンを削除しませんでした")
+    }
+}
+
+impl std::error::Error for SessionChanged {}
+
 /// 期限までの余裕秒数 (`client-core` の `REFRESH_SKEW_SECONDS` と同じ)。
 const REFRESH_SKEW_SECONDS: i64 = 60;
 
@@ -58,7 +69,9 @@ pub struct DesktopTokenManager {
     session_gen: AtomicU64,
     active_session_gen: Arc<AtomicU64>,
     logged_out: AtomicBool,
+    disable_generation: AtomicU64,
     tokens_sync: Mutex<StoredTokens>,
+    pending_disk_snapshot: Mutex<Option<StoredTokens>>,
     refresh_lock: tokio::sync::Mutex<Option<Discovery>>,
 }
 
@@ -78,7 +91,9 @@ impl DesktopTokenManager {
             session_gen: AtomicU64::new(session_gen),
             active_session_gen,
             logged_out: AtomicBool::new(false),
+            disable_generation: AtomicU64::new(0),
             tokens_sync: Mutex::new(tokens),
+            pending_disk_snapshot: Mutex::new(None),
             refresh_lock: tokio::sync::Mutex::new(None),
         }
     }
@@ -94,7 +109,31 @@ impl DesktopTokenManager {
                 == self.session_gen.load(Ordering::SeqCst)
     }
 
-    fn save_if_active_internal(&self) -> Result<bool> {
+    pub fn has_pending_persistence(&self) -> bool {
+        self.pending_disk_snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// Keep an already rotated token available for recovery when the UI session ends.
+    pub fn retain_pending_or_disable(&self) -> bool {
+        let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.logged_out.load(Ordering::SeqCst) && self.has_pending_persistence() {
+            true
+        } else {
+            self.disable_generation.fetch_add(1, Ordering::SeqCst);
+            self.logged_out.store(true, Ordering::SeqCst);
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_pending_for_test(&self, snapshot: StoredTokens) {
+        *self.pending_disk_snapshot.lock().unwrap() = Some(snapshot);
+    }
+
+    fn save_if_active_internal(&self, save: &dyn Fn(&StoredTokens) -> Result<()>) -> Result<bool> {
         if !self.can_write_file() {
             return Ok(false);
         }
@@ -103,14 +142,16 @@ impl DesktopTokenManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        token::save(&self.path, &tokens)?;
+        save(&tokens)?;
         Ok(true)
     }
 
     /// このマネージャが現行セッション世代でありログアウトもされていなければ `token.json` に保存する。
     pub fn save_if_active(&self) -> Result<bool> {
-        let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        self.save_if_active_internal()
+        token::with_locked_save(&self.path, |save| {
+            let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            self.save_if_active_internal(save)
+        })
     }
 
     /// `TOKEN_FILE_LOCK` 下で保存を行い、成功した場合は同じロック内でマネージャを共有スロットへ記録する。
@@ -118,13 +159,15 @@ impl DesktopTokenManager {
         self: &Arc<Self>,
         slot: &std::sync::Mutex<Option<Arc<Self>>>,
     ) -> Result<bool> {
-        let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        if self.save_if_active_internal()? {
-            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(self.clone());
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        token::with_locked_save(&self.path, |save| {
+            let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            if self.save_if_active_internal(save)? {
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(self.clone());
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })
     }
 
     /// 現行セッションとして採用された時点で呼び出し、`token.json` へ書き込む。
@@ -135,25 +178,74 @@ impl DesktopTokenManager {
         Ok(())
     }
 
+    /// 接続確認後は保存し直さず、承認されたセッションがまだディスク上にあるか確認する。
+    pub fn confirm_persisted_session(&self) -> Result<()> {
+        let current = token::load(&self.path, &self.oidc, None)?;
+        let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let expected = self.tokens_sync.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.can_write_file()
+            || !current
+                .as_ref()
+                .is_some_and(|stored| stored.session_id == expected.session_id)
+        {
+            bail!("ログイン状態が変わったため接続を続けられません");
+        }
+        Ok(())
+    }
+
     /// このセッションからの `token.json` への書き込みを停止する。
     pub fn disable_persistence(&self) {
         let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.disable_generation.fetch_add(1, Ordering::SeqCst);
         self.logged_out.store(true, Ordering::SeqCst);
     }
 
     /// ローカルの `token.json` を削除し、成功した場合のみこのマネージャをログアウト済みにする。
     /// 削除に失敗した場合は状態を変えず `Err` を返す。
-    pub fn logout_and_delete(&self) -> Result<Option<String>> {
-        let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        token::delete(&self.path)?;
-        self.logged_out.store(true, Ordering::SeqCst);
-        let refresh_token = self
-            .tokens_sync
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .refresh_token
-            .clone();
-        Ok(refresh_token)
+    pub fn logout_and_delete(&self) -> Result<Vec<String>> {
+        let (snapshot, disable_generation, was_logged_out) = {
+            let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let was_logged_out = self.logged_out.swap(true, Ordering::SeqCst);
+            let disable_generation = self.disable_generation.load(Ordering::SeqCst);
+            let snapshot = self
+                .tokens_sync
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            (snapshot, disable_generation, was_logged_out)
+        };
+        let result = token::delete_if_same_session(&self.path, &self.oidc, &snapshot);
+        match result {
+            Ok((token::DeleteOutcome::Deleted | token::DeleteOutcome::Missing, current)) => {
+                let mut tokens = Vec::new();
+                for refresh in [
+                    snapshot.refresh_token,
+                    current.and_then(|token| token.refresh_token),
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    if !tokens.contains(&refresh) {
+                        tokens.push(refresh);
+                    }
+                }
+                Ok(tokens)
+            }
+            Ok((token::DeleteOutcome::Changed, _)) => {
+                let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                if self.disable_generation.load(Ordering::SeqCst) == disable_generation {
+                    self.logged_out.store(was_logged_out, Ordering::SeqCst);
+                }
+                Err(SessionChanged.into())
+            }
+            Err(error) => {
+                let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                if self.disable_generation.load(Ordering::SeqCst) == disable_generation {
+                    self.logged_out.store(was_logged_out, Ordering::SeqCst);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub async fn access_token(&self) -> Result<String> {
@@ -172,13 +264,15 @@ impl DesktopTokenManager {
             }
             return Err(HttpError::Unauthorized.into());
         }
-        let (current_access, expires_at, refresh_token, api_base_url) = {
+        self.persist_pending().await?;
+        let (current_access, expires_at, refresh_token, api_base_url, session_id) = {
             let tokens = self.tokens_sync.lock().unwrap_or_else(|e| e.into_inner());
             (
                 tokens.access_token.clone(),
                 tokens.expires_at,
                 tokens.refresh_token.clone(),
                 tokens.api_base_url.clone(),
+                tokens.session_id.clone(),
             )
         };
         if expires_at - REFRESH_SKEW_SECONDS > token::now() {
@@ -208,17 +302,65 @@ impl DesktopTokenManager {
             }
         };
         let mut tokens = StoredTokens::new(&self.oidc, &api_base_url, response, token::now());
+        tokens.session_id = session_id;
         tokens.refresh_token = tokens.refresh_token.or(Some(refresh_token));
 
-        let _file_guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        if self.logged_out.load(Ordering::SeqCst) {
-            return Err(HttpError::Unauthorized.into());
+        {
+            let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            if self.logged_out.load(Ordering::SeqCst) {
+                return Err(HttpError::Unauthorized.into());
+            }
+            let mut current = self.tokens_sync.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = self
+                .pending_disk_snapshot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if pending.is_none() {
+                *pending = Some(current.clone());
+            }
+            *current = tokens.clone();
         }
-        *self.tokens_sync.lock().unwrap_or_else(|e| e.into_inner()) = tokens.clone();
-        if self.can_write_file() {
-            token::save(&self.path, &tokens)?;
-        }
+        self.persist_pending().await?;
         Ok(tokens.access_token)
+    }
+
+    async fn persist_pending(&self) -> Result<()> {
+        if self
+            .pending_disk_snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none()
+        {
+            return Ok(());
+        }
+        token::with_locked_save_async(&self.path, |disk, save| {
+            let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            if !self.can_write_file() {
+                return Err(HttpError::Unauthorized.into());
+            }
+            let mut pending = self
+                .pending_disk_snapshot
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let Some(expected) = pending.as_ref() else {
+                return Ok(());
+            };
+            if disk.as_ref() != Some(expected) {
+                *pending = None;
+                self.logged_out.store(true, Ordering::SeqCst);
+                self.tokens_sync.lock().unwrap_or_else(|e| e.into_inner()).access_token.clear();
+                bail!("ログイン状態が変わったためトークンを保存しませんでした。保存できなかった更新トークンは認証サーバーで有効な可能性があります");
+            }
+            let tokens = self
+                .tokens_sync
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            save(&tokens)?;
+            *pending = None;
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -266,6 +408,10 @@ pub enum AuthEvent {
     },
     /// ログインが必要、または接続に失敗した。
     LoginRequired { error: Option<String> },
+    RecoveryRequired {
+        manager: Arc<DesktopTokenManager>,
+        error: String,
+    },
 }
 
 async fn fetch_me(
@@ -326,6 +472,10 @@ impl std::fmt::Debug for AuthEvent {
                 .debug_struct("LoginRequired")
                 .field("error", error)
                 .finish(),
+            Self::RecoveryRequired { error, .. } => f
+                .debug_struct("RecoveryRequired")
+                .field("error", error)
+                .finish(),
         }
     }
 }
@@ -360,10 +510,21 @@ pub async fn connect_initial(
     active_session_gen: Arc<AtomicU64>,
     tx: UnboundedSender<AuthEvent>,
 ) {
+    connect_initial_with_path(http, config, session_gen, active_session_gen, tx, None).await;
+}
+
+async fn connect_initial_with_path(
+    http: reqwest::Client,
+    config: Config,
+    session_gen: u64,
+    active_session_gen: Arc<AtomicU64>,
+    tx: UnboundedSender<AuthEvent>,
+    path_override: Option<PathBuf>,
+) {
     let (credentials, token_manager) = match &config.auth {
         AuthConfig::Dev { user_id } => (Credentials::Dev(user_id.clone()), None),
         AuthConfig::Oidc(oidc) => {
-            let path = match token_file() {
+            let path = match path_override.map(Ok).unwrap_or_else(token_file) {
                 Ok(path) => path,
                 Err(err) => {
                     let _ = tx.send(AuthEvent::LoginRequired {
@@ -372,10 +533,7 @@ pub async fn connect_initial(
                     return;
                 }
             };
-            let loaded = {
-                let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-                token::load(&path, oidc, Some(&config.api_base_url))
-            };
+            let loaded = token::load(&path, oidc, Some(&config.api_base_url));
             match loaded {
                 Ok(Some(tokens)) => {
                     let manager = Arc::new(DesktopTokenManager::new(
@@ -420,8 +578,46 @@ pub async fn connect_initial(
             } else {
                 format!("接続に失敗しました: {err:#}")
             };
+            if let Some(manager) = token_manager.filter(|manager| manager.has_pending_persistence())
+            {
+                let _ = tx.send(AuthEvent::RecoveryRequired {
+                    manager,
+                    error: message,
+                });
+            } else {
+                let _ = tx.send(AuthEvent::LoginRequired {
+                    error: Some(message),
+                });
+            }
+        }
+    }
+}
+
+pub async fn retry_pending_session(
+    http: reqwest::Client,
+    config: Config,
+    manager: Arc<DesktopTokenManager>,
+    tx: UnboundedSender<AuthEvent>,
+) {
+    let credentials = Credentials::Bearer(manager.clone());
+    match fetch_me(&http, &config.api_base_url, &credentials).await {
+        Ok((me, is_admin)) => {
+            let _ = tx.send(AuthEvent::Connected {
+                credentials,
+                token_manager: Some(manager),
+                me,
+                is_admin,
+            });
+        }
+        Err(error) if manager.has_pending_persistence() => {
+            let _ = tx.send(AuthEvent::RecoveryRequired {
+                manager,
+                error: format!("トークンを保存できませんでした: {error:#}"),
+            });
+        }
+        Err(error) => {
             let _ = tx.send(AuthEvent::LoginRequired {
-                error: Some(message),
+                error: Some(format!("接続に失敗しました: {error:#}")),
             });
         }
     }
@@ -537,9 +733,16 @@ pub async fn run_device_login(
             });
         }
         Err(err) => {
-            let _ = tx.send(AuthEvent::LoginRequired {
-                error: Some(format!("{err:#}")),
-            });
+            if manager.has_pending_persistence() {
+                let _ = tx.send(AuthEvent::RecoveryRequired {
+                    manager,
+                    error: format!("{err:#}"),
+                });
+            } else {
+                let _ = tx.send(AuthEvent::LoginRequired {
+                    error: Some(format!("{err:#}")),
+                });
+            }
         }
     }
 }
@@ -734,6 +937,381 @@ mod tests {
         assert!(validate_http_url("not a url").is_none());
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn refresh_persistence_is_retried_on_next_access() {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let server_issuer = issuer.clone();
+        let server = std::thread::spawn(move || {
+            for n in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = [0u8; 8192];
+                let _ = stream.read(&mut bytes).unwrap();
+                let body = if n == 0 {
+                    serde_json::json!({"issuer":server_issuer,"token_endpoint":format!("{server_issuer}/token")})
+                } else {
+                    serde_json::json!({"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600})
+                }.to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("desktop-pending-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer,
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let initial = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: "https://api.example".into(),
+            access_token: "old".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: 0,
+        };
+        token::save(&path, &initial).unwrap();
+        let manager = DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            initial,
+            0,
+            Arc::new(AtomicU64::new(0)),
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let failed = manager.access_token().await;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        server.join().unwrap();
+        assert!(failed.is_err());
+        assert_eq!(manager.access_token().await.unwrap(), "new-access");
+        assert_eq!(
+            token::load(&path, &oidc, Some("https://api.example"))
+                .unwrap()
+                .unwrap()
+                .refresh_token
+                .as_deref(),
+            Some("new-refresh")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_retains_manager_after_refresh_persistence_failure() {
+        use std::io::{Read, Write};
+        use std::os::unix::fs::PermissionsExt;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let server_issuer = issuer.clone();
+        let server = std::thread::spawn(move || {
+            for n in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = [0u8; 8192];
+                let _ = stream.read(&mut bytes).unwrap();
+                let body = if n == 0 { serde_json::json!({"issuer":server_issuer,"token_endpoint":format!("{server_issuer}/token")}) } else { serde_json::json!({"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}) }.to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+            }
+        });
+        let dir =
+            std::env::temp_dir().join(format!("desktop-startup-pending-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer,
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let initial = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: "https://api.example".into(),
+            access_token: "old".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: 0,
+        };
+        token::save(&path, &initial).unwrap();
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        connect_initial_with_path(
+            reqwest::Client::new(),
+            config,
+            0,
+            Arc::new(AtomicU64::new(0)),
+            tx,
+            Some(path.clone()),
+        )
+        .await;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        server.join().unwrap();
+        let event = rx.recv().await.unwrap();
+        let AuthEvent::RecoveryRequired { manager, .. } = event else {
+            panic!("pending manager was dropped: {event:?}")
+        };
+        assert_eq!(manager.access_token().await.unwrap(), "new-access");
+        assert_eq!(
+            token::load(&path, &oidc, Some("https://api.example"))
+                .unwrap()
+                .unwrap()
+                .refresh_token
+                .as_deref(),
+            Some("new-refresh")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pending_refresh_does_not_overwrite_a_new_session() {
+        let dir =
+            std::env::temp_dir().join(format!("desktop-pending-new-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: "https://api.example".into(),
+            access_token: "old".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &old).unwrap();
+        let manager = DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            0,
+            Arc::new(AtomicU64::new(0)),
+        );
+        *manager.pending_disk_snapshot.lock().unwrap() = Some(old.clone());
+        manager.tokens_sync.lock().unwrap().refresh_token = Some("rotated".into());
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        replacement.access_token = "different-user".into();
+        token::save(&path, &replacement).unwrap();
+        assert!(manager.access_token().await.is_err());
+        assert!(!manager.has_pending_persistence());
+        assert!(manager.access_token().await.is_err());
+        assert_eq!(
+            token::load(&path, &oidc, Some("https://api.example")).unwrap(),
+            Some(replacement)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_logout_does_not_reenable_a_disabled_manager() {
+        let dir =
+            std::env::temp_dir().join(format!("desktop-logout-disable-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: "https://api.example".into(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &old).unwrap();
+        let manager = Arc::new(DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            old.clone(),
+            0,
+            Arc::new(AtomicU64::new(0)),
+        ));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let worker_manager = manager.clone();
+        let worker = std::thread::spawn(move || worker_manager.logout_and_delete());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !manager.logged_out.load(Ordering::SeqCst) {
+            assert!(std::time::Instant::now() < deadline, "logout did not start");
+            std::thread::yield_now();
+        }
+        manager.disable_persistence();
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        std::fs::write(&path, serde_json::to_vec(&replacement).unwrap()).unwrap();
+        drop(lock);
+        assert!(worker.join().unwrap().is_err());
+        assert!(manager.logged_out.load(Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn logout_does_not_delete_a_replaced_session() {
+        let dir =
+            std::env::temp_dir().join(format!("desktop-replaced-session-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: "https://api.example".into(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &old).unwrap();
+        let manager = DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            0,
+            Arc::new(AtomicU64::new(0)),
+        );
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        replacement.access_token = "replacement".into();
+        token::save(&path, &replacement).unwrap();
+        assert!(manager.logout_and_delete().is_err());
+        assert_eq!(
+            token::load(&path, &oidc, Some("https://api.example")).unwrap(),
+            Some(replacement)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn logout_waiting_for_file_lock_preserves_new_session() {
+        let dir =
+            std::env::temp_dir().join(format!("desktop-logout-race-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: "https://api.example".into(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &old).unwrap();
+        let manager = Arc::new(DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            0,
+            Arc::new(AtomicU64::new(0)),
+        ));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let worker_manager = manager.clone();
+        let worker = std::thread::spawn(move || worker_manager.logout_and_delete());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !manager.logged_out.load(Ordering::SeqCst) {
+            assert!(std::time::Instant::now() < deadline, "logout did not start");
+            std::thread::yield_now();
+        }
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        replacement.access_token = "new".into();
+        std::fs::write(&path, serde_json::to_vec(&replacement).unwrap()).unwrap();
+        drop(lock);
+        assert!(worker.join().unwrap().is_err());
+        assert_eq!(
+            token::load(&path, &oidc, Some("https://api.example")).unwrap(),
+            Some(replacement)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn logout_accepts_a_rotated_snapshot_of_the_same_session() {
+        let dir =
+            std::env::temp_dir().join(format!("desktop-rotated-session-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: "https://api.example".into(),
+            access_token: "old".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &old).unwrap();
+        let manager = DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            old.clone(),
+            0,
+            Arc::new(AtomicU64::new(0)),
+        );
+        let mut rotated = old;
+        rotated.access_token = "rotated".into();
+        rotated.refresh_token = Some("new-refresh".into());
+        token::save(&path, &rotated).unwrap();
+        assert_eq!(
+            manager.logout_and_delete().unwrap(),
+            vec!["old-refresh", "new-refresh"]
+        );
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[tokio::test]
     async fn desktop_token_manager_isolates_sessions_and_prevents_post_logout_writes() {
         let dir = std::env::temp_dir().join(format!(
@@ -752,6 +1330,7 @@ mod tests {
         };
         let active_gen = Arc::new(AtomicU64::new(1));
         let tokens1 = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
             issuer: oidc.issuer.clone(),
             client_id: oidc.client_id.clone(),
             resource: oidc.resource.clone(),
@@ -776,7 +1355,7 @@ mod tests {
         // ログアウトするとファイルが消え、旧マネージャからの再保存は拒否されるが、
         // ログアウト直後の stop_typing 用に有効期限内のメモリ上 access_token は参照できる
         let rt = tm1.logout_and_delete().unwrap();
-        assert_eq!(rt.as_deref(), Some("refresh-1"));
+        assert_eq!(rt, vec!["refresh-1"]);
         assert!(!path.exists());
         assert!(tm1.enable_persistence_and_save().is_err());
         assert!(!path.exists());
@@ -790,6 +1369,7 @@ mod tests {
             oidc.clone(),
             path.clone(),
             StoredTokens {
+                session_id: uuid::Uuid::new_v4().to_string(),
                 issuer: oidc.issuer.clone(),
                 client_id: oidc.client_id.clone(),
                 resource: oidc.resource.clone(),
@@ -806,6 +1386,7 @@ mod tests {
 
         // 新しいセッション (session_gen == 2) が保存したトークンは旧マネージャに影響されない
         let tokens2 = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
             issuer: oidc.issuer.clone(),
             client_id: oidc.client_id.clone(),
             resource: oidc.resource.clone(),

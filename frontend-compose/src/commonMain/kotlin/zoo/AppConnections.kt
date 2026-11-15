@@ -25,35 +25,25 @@ fun AppConnections(
     var error by remember(appId) { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var revision by remember { mutableStateOf(0) }
-    LaunchedEffect(appId, connections, revision) {
-        if (connections)
-            while (isActive) {
-                try {
-                    connection =
-                        app.api.request("/api/apps/$appId/connection").jsonObject.text("state")
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    error = app.t("apps.loadError")
+    LaunchedEffect(app, appId, connections, assistant, revision) {
+        pollWhileVisible(snapshotFlow { app.env.visible && app.env.online }, interval = 2000, maximum = 30000) {
+            var active = false
+            coroutineScope {
+                if (connections) launch {
+                    try {
+                        connection = app.api.request("/api/apps/$appId/connection").jsonObject.text("state")
+                        active = active || connection in listOf("pending", "connecting", "requested")
+                    } catch (e: CancellationException) { throw e } catch (_: Exception) { error = app.t("apps.loadError") }
                 }
-                delay(2000)
-            }
-    }
-    LaunchedEffect(appId, assistant, revision) {
-        if (assistant)
-            while (isActive) {
-                try {
-                    sessions =
-                        app.api.request("/api/assistant-sessions").rows().filter {
-                            it.text("app_id") == appId
-                        }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    error = app.t("apps.loadError")
+                if (assistant) launch {
+                    try {
+                        sessions = app.api.request("/api/assistant-sessions").rows().filter { it.text("app_id") == appId }
+                        active = active || sessions.any { it.text("state") in listOf("pending", "running", "starting") }
+                    } catch (e: CancellationException) { throw e } catch (_: Exception) { error = app.t("apps.loadError") }
                 }
-                delay(2000)
             }
+            active
+        }
     }
     LaunchedEffect(appId, assistant, channelId) {
         if (assistant && !channelId.isNullOrEmpty())

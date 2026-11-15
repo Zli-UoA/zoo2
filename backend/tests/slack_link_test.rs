@@ -361,7 +361,7 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     // 差分同期 (#292) とブリッジ (#293・#294) で使うスコープも、再連携を 1 回で済ませるため、先にまとめて求める
     assert_eq!(
         query_param(url, "user_scope"),
-        "users:read,channels:history,groups:history,im:history,mpim:history,channels:read,groups:read,im:read,mpim:read,reactions:read,reactions:write,chat:write"
+        "users:read,channels:history,groups:history,im:history,mpim:history,channels:read,groups:read,im:read,mpim:read,reactions:read,reactions:write,chat:write,files:read"
     );
     let state_param = query_param(url, "state");
 
@@ -656,15 +656,6 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(restricted["link"]["slack_user_id"], "U1");
     assert_eq!(restricted["link"]["team_allowed"], false);
-    let (status, _, _) = request(
-        &other_app,
-        "POST",
-        "/api/slack/imports",
-        Some(&alice),
-        Some(json!({"mappings": []})),
-    )
-    .await?;
-    assert_eq!(status, StatusCode::FORBIDDEN);
 
     // 解除するとトークンを無効にして消す。付け替えた投稿は残る。許可していないワークスペースの連携も解除できる
     let (status, unlinked, _) =
@@ -824,7 +815,8 @@ async fn test_slack_link_requires_configuration_and_admin_manifest() -> anyhow::
             "mpim:read",
             "reactions:read",
             "reactions:write",
-            "chat:write"
+            "chat:write",
+            "files:read"
         ])
     );
     assert_eq!(

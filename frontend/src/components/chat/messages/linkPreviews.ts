@@ -2,12 +2,18 @@ import { parse, type MfmNode } from "mfm-js";
 import { messageTextSegments } from "./messageFormat";
 
 /** Match visible MFM links, excluding code, plain text and silent links. */
-export function previewUrls(content: string): string[] {
+export function previewUrls(content: string, excludeUrl?: string): string[] {
   const urls = new Set<string>();
   function add(raw: string) {
     try {
       const url = new URL(raw);
-      if (/^https?:$/.test(url.protocol) && !url.username && !url.password && raw.length <= 4096)
+      if (
+        /^https?:$/.test(url.protocol) &&
+        !url.username &&
+        !url.password &&
+        raw.length <= 4096 &&
+        url.href !== excludeUrl
+      )
         urls.add(url.href);
     } catch {
       /* Incomplete URLs remain text. */

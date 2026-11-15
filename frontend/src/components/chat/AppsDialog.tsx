@@ -1,3 +1,5 @@
+import { visiblePoll } from "../../lib/visiblePoll";
+import { APP_SURFACES_CHANGED, refreshAppSurfaces } from "../../lib/appSurfaceEvents";
 import { Select } from "../ui/select";
 import { Input } from "../ui/input";
 import { useEffect, useMemo, useState } from "react";
@@ -19,6 +21,8 @@ import { AppPermissions } from "./AppSettingsSections";
 import { AppConnections } from "./AppConnections";
 import { AppBlocks } from "./AppBlocks";
 import { AppAvatar } from "./AppIdentity";
+import { AppEncryptedChannelConsent } from "./AppEncryptedChannelConsent";
+import { apiPath } from "../../lib/api/path";
 
 type Manifest = {
   scopes?: string[];
@@ -141,7 +145,10 @@ function UserAppsDialog({
   const [error, setError] = useState("");
   const [commandArguments, setCommandArguments] = useState<Record<string, string>>({});
   const [surfaces, setSurfaces] = useState<Surface[]>([]);
+  const [consent, setConsent] = useState<{ pending: boolean; error: string } | null>(null);
   const people = useUsers().data ?? [];
+  const targetChannel = channels.find((channel) => channel.id === targetChannelId);
+  const encryptedTarget = Boolean(targetChannel?.encrypted);
   const app = apps.find((a) => a.id === selected);
   const canManage = app && (app.owner_id === currentUserId || isAdmin);
   const visibleApps = apps
@@ -193,17 +200,25 @@ function UserAppsDialog({
       setSurfaces([]);
       return;
     }
-    const controller = new AbortController();
-    const load = () =>
-      client
-        .get<Surface[]>(`/api/apps/${selected}/surfaces`, { signal: controller.signal })
-        .then(setSurfaces)
-        .catch(() => {});
-    void load();
-    const timer = window.setInterval(load, 2000);
+    let watchUntil = 0;
+    const polling = visiblePoll(
+      async (signal) => {
+        const rows = await client.get<Surface[]>(apiPath`/api/apps/${selected}/surfaces`, {
+          signal,
+        });
+        if (!signal.aborted) setSurfaces(rows);
+        return rows.length > 0 || Date.now() < watchUntil;
+      },
+      { interval: 2000, maxInterval: 30000 },
+    );
+    const changed = () => {
+      watchUntil = Date.now() + 15000;
+      polling.refresh();
+    };
+    window.addEventListener(APP_SURFACES_CHANGED, changed);
     return () => {
-      controller.abort();
-      window.clearInterval(timer);
+      window.removeEventListener(APP_SURFACES_CHANGED, changed);
+      polling.dispose();
       setSurfaces([]);
     };
   }, [client, selected, app?.status]);
@@ -220,6 +235,28 @@ function UserAppsDialog({
       setBusy(false);
     }
   }
+  /**
+   * Add the App's bot to an encrypted channel after a member's explicit consent (#366). The server
+   * accepts it only with `e2ee_allowed` and only for Apps whose bot has set up an E2EE device.
+   */
+  async function addToEncryptedChannel() {
+    if (!app || !targetChannelId || consent?.pending) return;
+    setConsent({ pending: true, error: "" });
+    try {
+      await client.request(apiPath`/api/apps/${app.id}/channels/${targetChannelId}`, {
+        method: "POST",
+        body: { e2ee_allowed: true },
+      });
+      setConsent(null);
+      setRevision((v) => v + 1);
+    } catch (cause) {
+      const code = (cause as { body?: { code?: unknown } | null }).body?.code;
+      setConsent({
+        pending: false,
+        error: t(code === "E2EE_BOT_NOT_READY" ? "apps.e2ee.notReady" : "apps.actionError"),
+      });
+    }
+  }
   /** Settings, credentials and approval live in the developer console. */
   function openConsole(path: "/apps" | "/apps/$appId") {
     onClose();
@@ -233,7 +270,7 @@ function UserAppsDialog({
   }
   async function invoke(kind: string, command?: string) {
     await run(() =>
-      client.request(`/api/apps/${selected}/invoke`, {
+      client.request(apiPath`/api/apps/${selected}/invoke`, {
         method: "POST",
         body: {
           kind,
@@ -244,6 +281,7 @@ function UserAppsDialog({
         },
       }),
     );
+    refreshAppSurfaces();
   }
   async function dm() {
     if (!app) return;
@@ -460,15 +498,21 @@ function UserAppsDialog({
                       <Button
                         variant="outline"
                         disabled={busy}
+                        title={encryptedTarget ? t("apps.e2ee.encryptedHint") : undefined}
                         onClick={() =>
-                          void run(() =>
-                            client.request(`/api/apps/${app.id}/channels/${targetChannelId}`, {
-                              method: "POST",
-                            }),
-                          )
+                          encryptedTarget
+                            ? setConsent({ pending: false, error: "" })
+                            : void run(() =>
+                                client.request(
+                                  apiPath`/api/apps/${app.id}/channels/${targetChannelId}`,
+                                  {
+                                    method: "POST",
+                                  },
+                                ),
+                              )
                         }
                       >
-                        {t("apps.addChannel")}
+                        {encryptedTarget ? t("apps.e2ee.addEncrypted") : t("apps.addChannel")}
                       </Button>
                     ) : null}
                   </div>
@@ -477,7 +521,9 @@ function UserAppsDialog({
                     disabled={busy}
                     onClick={() =>
                       void run(() =>
-                        client.request(`/api/apps/${app.id}/authorization`, { method: "DELETE" }),
+                        client.request(apiPath`/api/apps/${app.id}/authorization`, {
+                          method: "DELETE",
+                        }),
                       )
                     }
                   >
@@ -569,6 +615,23 @@ function UserAppsDialog({
           )}
         </div>
       </div>
+      {app && targetChannel && consent ? (
+        // Mounted only while open and keyed by App and channel, so the consent checkbox always starts
+        // unchecked: an earlier tick (cancelled, or for another App) never carries over.
+        <AppEncryptedChannelConsent
+          key={`${app.id}:${targetChannel.id}`}
+          open
+          appName={app.name}
+          channelName={targetChannel.channel_name}
+          supported={Boolean(app.manifest.scopes?.includes("e2ee:device"))}
+          pending={consent?.pending}
+          error={consent?.error || undefined}
+          onConfirm={addToEncryptedChannel}
+          onOpenChange={(open) => {
+            if (!open) setConsent(null);
+          }}
+        />
+      ) : null}
     </>
   );
   return embedded ? (

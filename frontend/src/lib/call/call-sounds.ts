@@ -2,7 +2,7 @@
  * 通話の入退室効果音。音声ファイルは使わず Web Audio で短いチャイムを合成する。
  */
 
-export type CallSoundKind = "join" | "leave" | "mute" | "unmute";
+export type CallSoundKind = "join" | "leave" | "mute" | "unmute" | "ring";
 
 export const CALL_SOUNDS_STORAGE_KEY = "zoo-call-sounds";
 const CALL_SOUNDS_CHANGE_EVENT = "zoo-call-sounds-change";
@@ -126,6 +126,8 @@ const SOUNDS: Record<CallSoundKind, { notes: [number, number]; step: number; len
   leave: { notes: [698.46, 440], step: 0.11, length: 0.18 },
   mute: { notes: [523.25, 349.23], step: 0.07, length: 0.12 },
   unmute: { notes: [349.23, 523.25], step: 0.07, length: 0.12 },
+  // 着信音。join より長く、2 音を少し離して鳴らす
+  ring: { notes: [783.99, 659.25], step: 0.24, length: 0.34 },
 };
 
 // 音量 (ゲインのピーク)。Slack のように聞き取りやすい大きさにする
@@ -136,7 +138,11 @@ export function playCallSound(kind: CallSoundKind): void {
   const ctx = getContext();
   if (!ctx) return;
   try {
-    if (ctx.state === "suspended") void ctx.resume().catch(() => {});
+    if (ctx.state === "suspended") {
+      void ctx.resume().catch(() => {});
+      // 着信音は繰り返すので、止まっている間は積まない（再開した瞬間にまとめて鳴り、音が割れる）。
+      if (kind === "ring") return;
+    }
     const start = ctx.currentTime + 0.01;
     const { notes, step, length } = SOUNDS[kind];
     notes.forEach((freq, i) => {
@@ -156,4 +162,17 @@ export function playCallSound(kind: CallSoundKind): void {
   } catch {
     // 効果音の失敗で通話を止めない
   }
+}
+
+/** 着信音を繰り返す間隔（ミリ秒）。 */
+export const RINGTONE_INTERVAL_MS = 2500;
+
+/**
+ * 着信音を鳴らし始め、止める関数を返す。効果音の設定（`isCallSoundsEnabled`）に従う。
+ * ブラウザーの自動再生の制限で、ページを操作する前は鳴らないことがある。
+ */
+export function startRingtone(): () => void {
+  playCallSound("ring");
+  const timer = setInterval(() => playCallSound("ring"), RINGTONE_INTERVAL_MS);
+  return () => clearInterval(timer);
 }

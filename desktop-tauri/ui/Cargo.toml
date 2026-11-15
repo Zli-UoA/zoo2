@@ -1,0 +1,26 @@
+[package]
+name = "zoo2-desktop-tauri-ui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "zoo2 のデスクトップ版 (Tauri) の同梱の画面 (Leptos, CSR)"
+publish = false
+
+# WebView 側。依存は client-types だけにする (通信とトークンは Rust 側が持つ)。
+[dependencies]
+zoo2-client-types = { path = "../../client-types" }
+leptos = { version = "0.8", features = ["csr"] }
+# nixpkgs の wasm-bindgen-cli と同じ版に固定する。trunk が別の版を取りに行かないようにするため。
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console", "KeyboardEvent", "HtmlTextAreaElement", "Document", "Window"] }
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "js"] }
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = "z"
+lto = true

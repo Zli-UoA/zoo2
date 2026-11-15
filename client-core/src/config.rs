@@ -10,6 +10,8 @@ const DEFAULT_OIDC_ISSUER: &str = "https://account.zli.works/api/auth";
 const TUI_DEFAULT_OIDC_CLIENT_ID: &str = "ldwuljsObQHzxCdMwnTsYLTrCwgHaRii";
 /// デスクトップ版向けの既定 client_id (Phase 2 で AuthZ に desktop 用 public client を登録した際にその ID へ置き換える)。
 const DESKTOP_DEFAULT_OIDC_CLIENT_ID: &str = "zoo2-desktop";
+/// Tauri 版 (`desktop-tauri`) 向けの既定 client_id。AuthZ の「Zoo for Desktop」(デバイスコードと refresh_token を許可した public client)。
+const DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID: &str = "MwrfTPwsaaelMmxBdQGjWYuywWrsMHMe";
 /// AuthZ に登録した API の URL で、backend の `OIDC_AUDIENCE` と完全に一致させる。これを要求すると `typ: at+jwt` のアクセストークンが得られる。
 const DEFAULT_OIDC_RESOURCE: &str = "https://zli.chat/api";
 /// backend の初回ログインで UserInfo を呼ぶため `profile` を、トークン更新のため `offline_access` を要求する。
@@ -51,6 +53,8 @@ struct FileConfig {
     oidc_resource: Option<String>,
     oidc_scope: Option<String>,
     check_updates: Option<bool>,
+    /// デスクトップ版 (Tauri) の画面の種類。`Config` には入れず、`desktop_ui_for` で読む。
+    desktop_ui: Option<String>,
 }
 
 impl Config {
@@ -70,10 +74,30 @@ impl Config {
     }
 }
 
+/// デスクトップ版 (Tauri) の画面の種類 (`desktop_ui`、`ZOO_DESKTOP_UI`)。環境変数が優先される。
+/// 値の検査と既定はデスクトップ版が決める。ほかのクライアントの起動に影響させないため、`Config` には入れない。
+pub fn desktop_ui_for(app_name: &str) -> Result<Option<String>> {
+    let file = match config_dir_for(app_name) {
+        Some(dir) => read_file_config(&dir.join("config.toml"))?,
+        None => FileConfig::default(),
+    };
+    Ok(pick_desktop_ui(
+        file.desktop_ui,
+        std::env::var("ZOO_DESKTOP_UI").ok(),
+    ))
+}
+
+fn pick_desktop_ui(file: Option<String>, env: Option<String>) -> Option<String> {
+    env.or(file)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn default_oidc_client_id(app_name: &str) -> &str {
     match app_name {
         "zoo2-tui" => TUI_DEFAULT_OIDC_CLIENT_ID,
         "zoo2-desktop" => DESKTOP_DEFAULT_OIDC_CLIENT_ID,
+        "zoo2-desktop-tauri" => DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID,
         other => other,
     }
 }
@@ -193,6 +217,21 @@ mod tests {
             })
         );
         assert_ne!(TUI_DEFAULT_OIDC_CLIENT_ID, DESKTOP_DEFAULT_OIDC_CLIENT_ID);
+
+        let tauri = resolve_for("zoo2-desktop-tauri", FileConfig::default(), &env(&[])).unwrap();
+        assert_eq!(
+            tauri.auth,
+            AuthConfig::Oidc(OidcConfig {
+                issuer: "https://account.zli.works/api/auth".into(),
+                client_id: DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID.into(),
+                resource: Some("https://zli.chat/api".into()),
+                scope: DEFAULT_SCOPE.into(),
+            })
+        );
+        assert_ne!(
+            TUI_DEFAULT_OIDC_CLIENT_ID,
+            DESKTOP_TAURI_DEFAULT_OIDC_CLIENT_ID
+        );
     }
 
     #[test]
@@ -260,6 +299,23 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn desktop_ui_prefers_env_over_file() {
+        assert_eq!(super::pick_desktop_ui(None, None), None);
+        assert_eq!(
+            super::pick_desktop_ui(Some("leptos".into()), None).as_deref(),
+            Some("leptos")
+        );
+        assert_eq!(
+            super::pick_desktop_ui(Some("leptos".into()), Some(" remote ".into())).as_deref(),
+            Some("remote")
+        );
+        assert_eq!(super::pick_desktop_ui(None, Some("".into())), None);
+        // TUI などは desktop_ui を読まない。設定ファイルにあっても、値が何でも起動を止めない。
+        let file: FileConfig = toml::from_str("desktop_ui = \"web\"").unwrap();
+        assert!(resolve(file, &env(&[("ZOO_DESKTOP_UI", "web")])).is_ok());
     }
 
     #[test]

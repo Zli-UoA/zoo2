@@ -32,3 +32,38 @@ it("cancels pending work on channel change or unmount", () => {
   vi.advanceTimersByTime(5000);
   expect(refresh).toHaveBeenCalledTimes(1);
 });
+it("waits for slow requests and performs one trailing refresh for a burst", async () => {
+  vi.useFakeTimers();
+  let finish!: () => void;
+  const refresh = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const scheduler = coalescedRefresh(refresh);
+  scheduler.request();
+  for (let event = 0; event < 10; event++) {
+    await vi.advanceTimersByTimeAsync(1000);
+    scheduler.request();
+  }
+  expect(refresh).toHaveBeenCalledTimes(1);
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(refresh).toHaveBeenCalledTimes(2);
+  scheduler.request();
+  scheduler.dispose();
+  finish();
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(refresh).toHaveBeenCalledTimes(2);
+});
+it("can refresh again after a rejected request", async () => {
+  vi.useFakeTimers();
+  const refresh = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue(undefined);
+  const scheduler = coalescedRefresh(refresh);
+  scheduler.request();
+  scheduler.request();
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(refresh).toHaveBeenCalledTimes(2);
+  scheduler.dispose();
+});

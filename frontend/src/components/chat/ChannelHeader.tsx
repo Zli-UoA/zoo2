@@ -10,6 +10,7 @@ import {
   HashIcon,
   HeadphonesIcon,
   LockIcon,
+  LockKeyholeIcon,
   LogOutIcon,
   MessagesSquareIcon,
   MoreHorizontalIcon,
@@ -50,6 +51,7 @@ import {
 } from "../ui/dropdown-menu";
 import { normalizeChannelDescription } from "./channelDescription";
 import { RenameChannelDialog } from "./RenameChannelDialog";
+import { EncryptChannelDialog } from "./EncryptChannelDialog";
 import { isGroupDm } from "./dm";
 import { PaneHeader } from "../layout/PaneHeader";
 
@@ -80,6 +82,9 @@ export function ChannelHeader({
   const [webhooksOpen, setWebhooksOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [encryptOpen, setEncryptOpen] = useState(false);
+  // 既存の非公開チャンネルは、管理できる人が暗号化に切り替えられる（#367）。
+  const canEncrypt = canManage && channel.is_private && !channel.encrypted && !isArchived;
 
   const call = useCall();
   const isInThisCall = call.currentChannelId === channel.id;
@@ -115,13 +120,24 @@ export function ChannelHeader({
       >
         <ArrowLeftIcon />
       </Button>
-      <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+      <div className="relative flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
         {isDm ? (
-          isGroup ? (
-            <UsersIcon className="size-4" aria-hidden="true" />
-          ) : (
-            <MessagesSquareIcon className="size-4" aria-hidden="true" />
-          )
+          <>
+            {isGroup ? (
+              <UsersIcon className="size-4" aria-hidden="true" />
+            ) : (
+              <MessagesSquareIcon className="size-4" aria-hidden="true" />
+            )}
+            {channel.encrypted ? (
+              // DM はチャンネル設定を開けないので、暗号化 DM はアイコンに鍵を重ねて見分けられるようにする。
+              <LockKeyholeIcon
+                className="absolute -right-1 -bottom-1 size-3.5 rounded-full bg-background p-0.5 text-foreground ring-1 ring-border"
+                aria-hidden="true"
+              />
+            ) : null}
+          </>
+        ) : channel.encrypted ? (
+          <LockKeyholeIcon className="size-4" aria-hidden="true" />
         ) : channel.is_private ? (
           <LockIcon className="size-4" aria-hidden="true" />
         ) : (
@@ -131,6 +147,11 @@ export function ChannelHeader({
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-sm font-semibold">{displayTitle}</h2>
+          {channel.encrypted ? (
+            // 見た目の印は左のアイコン（DM は鍵を重ねたアイコン）だけにし、印の文字はチャンネル設定に出す。読み上げでは、
+            // 送信の前に暗号化されているかを確かめられるよう、見出しの隣で伝える。
+            <span className="sr-only">{t("e2ee.badge")}</span>
+          ) : null}
           {channel.is_nsfw ? (
             <span className="shrink-0 text-xs text-muted-foreground">NSFW</span>
           ) : null}
@@ -222,6 +243,10 @@ export function ChannelHeader({
         <ChannelWebhooksDialog key={channel.id} channel={channel} onOpenChange={setWebhooksOpen} />
       ) : null}
 
+      {canEncrypt ? (
+        <EncryptChannelDialog channel={channel} open={encryptOpen} onOpenChange={setEncryptOpen} />
+      ) : null}
+
       {renameOpen && canManage && !isArchived ? (
         <RenameChannelDialog key={channel.id} channel={channel} onOpenChange={setRenameOpen} />
       ) : null}
@@ -270,10 +295,20 @@ export function ChannelHeader({
               <DialogTitle>{t("settings.channelTitle")}</DialogTitle>
               <DialogDescription>{displayTitle}</DialogDescription>
             </DialogHeader>
-            {channel.imported_from_slack ? (
-              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                {slackImportBadge(channel, t, i18n.language)}
-              </span>
+            {channel.encrypted || channel.imported_from_slack ? (
+              <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                {channel.encrypted ? (
+                  <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                    <LockKeyholeIcon className="size-3" aria-hidden="true" />
+                    {t("e2ee.badge")}
+                  </span>
+                ) : null}
+                {channel.imported_from_slack ? (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                    {slackImportBadge(channel, t, i18n.language)}
+                  </span>
+                ) : null}
+              </div>
             ) : null}
           </div>
           <div className="divide-y rounded-lg border">
@@ -290,6 +325,23 @@ export function ChannelHeader({
                 {t("messages.edit")}
               </Button>
             </SettingRow>
+            {canEncrypt ? (
+              <SettingRow
+                label={t("e2ee.convert.action")}
+                description={t("e2ee.convert.settingHelp")}
+              >
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSettingsOpen(false);
+                    setEncryptOpen(true);
+                  }}
+                >
+                  <LockKeyholeIcon />
+                  {t("e2ee.convert.start")}
+                </Button>
+              </SettingRow>
+            ) : null}
             <SettingRow label={t("webhooks.title")}>
               <Button
                 variant="outline"
@@ -333,6 +385,7 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
   const { channelUsers } = useCollections();
   const { currentUserId } = useCurrentUser();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [encryptOpen, setEncryptOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -374,6 +427,13 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
           <MoreHorizontalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {!channel.encrypted ? (
+            // 既存の DM も、参加者なら暗号化に切り替えられる（#367）。
+            <DropdownMenuItem className="min-h-11" onClick={() => setEncryptOpen(true)}>
+              <LockKeyholeIcon />
+              {t("e2ee.convert.actionDm")}
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem
             variant="destructive"
             className="min-h-11"
@@ -388,6 +448,10 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {!channel.encrypted ? (
+        <EncryptChannelDialog channel={channel} open={encryptOpen} onOpenChange={setEncryptOpen} />
+      ) : null}
 
       <AlertDialog open={confirmOpen} onOpenChange={handleOpenChange}>
         <AlertDialogContent>

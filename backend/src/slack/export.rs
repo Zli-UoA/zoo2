@@ -94,6 +94,9 @@ pub struct SlackMessage {
     pub user: Option<String>,
     #[serde(default)]
     pub bot_id: Option<String>,
+    /// この投稿をしたアプリの ID。自分のアプリ (`SLACK_APP_ID`) の投稿は、取り込まない (ループ防止)
+    #[serde(default)]
+    pub app_id: Option<String>,
     #[serde(default)]
     pub username: Option<String>,
     #[serde(default)]
@@ -114,6 +117,11 @@ pub struct SlackMessage {
     /// スレッドの親なら、返信の ts の一覧 (エクスポートに含まれる場合)
     #[serde(default)]
     pub replies: Vec<SlackReplyRef>,
+    /// `conversations.history` が返す、スレッドの返信の数と最後の返信の `ts` (差分同期 #292 で返信の取得に使う)
+    #[serde(default)]
+    pub reply_count: Option<i64>,
+    #[serde(default)]
+    pub latest_reply: Option<String>,
     /// 編集・削除の履歴を含むエクスポートで、`message_changed` / `message_deleted` の記録が持つ、元の投稿の全体
     #[serde(default)]
     pub original: Option<serde_json::Value>,
@@ -145,6 +153,10 @@ pub struct SlackReaction {
     pub name: String,
     #[serde(default)]
     pub users: Vec<String>,
+    /// リアクションした人数。`users` は人数が多いと一部しか入らないので、`count` のほうが大きいときは、
+    /// 全員がそろっていない (リアクションの削除を反映するときに、API で確かめ直す)
+    #[serde(default)]
+    pub count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -188,7 +200,7 @@ impl SlackFile {
 }
 
 /// チャンネル参加・トピック変更などのシステムメッセージは取り込まない
-const SKIPPED_SUBTYPES: &[&str] = &[
+pub(super) const SKIPPED_SUBTYPES: &[&str] = &[
     "channel_join",
     "channel_leave",
     "channel_topic",
@@ -436,7 +448,11 @@ impl<R: Read + Seek> ExportArchive<R> {
     pub fn new(reader: R) -> Result<Self, AppError> {
         let zip = ZipArchive::new(reader)
             .map_err(|e| AppError::BadRequest(format!("Not a valid ZIP archive: {e}")))?;
-        let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+        let names: Vec<String> = zip
+            .file_names()
+            .map(|name| name.map(|name| name.into_owned()))
+            .collect::<Result<_, _>>()
+            .map_err(|e| AppError::BadRequest(format!("Invalid ZIP entry name: {e}")))?;
         let channels_entry = names
             .iter()
             .filter(|n| {

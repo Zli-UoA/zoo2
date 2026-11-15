@@ -53,6 +53,22 @@ async fn check(
     let mut tx = db.transaction().await?;
     p.channel(&mut tx, channel, write).await
 }
+/// [`check`] と同じだが、メンバーが許可した Bot の端末には暗号化チャンネルも通す（#366。
+/// 暗号文だけを扱う経路だけが使う。[`Principal::e2ee_channel`]）。
+async fn check_e2ee(
+    state: &AppState,
+    p: &Principal,
+    channel: &str,
+    scope: &str,
+    write: bool,
+) -> Result<(), AppError> {
+    p.require(scope)?;
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    p.e2ee_channel(&mut tx, channel, write).await
+}
+/// メッセージのチャンネルを確かめる。メンバーが許可した Bot の端末には暗号化チャンネルも通す
+/// （作成、編集、削除、リアクションは、暗号化チャンネルでもサーバーが平文を受け取らない。#366）。
 async fn message_check(
     state: &AppState,
     p: &Principal,
@@ -63,14 +79,14 @@ async fn message_check(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let message = crate::models::Message::get_by_id(&mut tx, id).await?;
-    p.channel(&mut tx, &message.channel_id, true).await
+    p.e2ee_channel(&mut tx, &message.channel_id, true).await
 }
 async fn create_message(
     State(state): State<AppState>,
     p: Principal,
     Json(body): Json<m::CreateMessageRequest>,
 ) -> Result<Json<crate::routes::response::ApiResponse<m::MessageResponse>>, AppError> {
-    check(&state, &p, &body.channel_id, "messages:write", true).await?;
+    check_e2ee(&state, &p, &body.channel_id, "messages:write", true).await?;
     if body.metadata.is_some() {
         p.require("metadata:write")?;
     }
@@ -142,6 +158,10 @@ async fn create_channel(
     Json(b): Json<c::CreateChannelRequest>,
 ) -> Result<Json<crate::routes::response::ApiResponse<c::ChannelResponse>>, AppError> {
     p.require("channels:manage")?;
+    if b.encrypted {
+        // 委任トークンを含め、App からは暗号化チャンネルを作れない（設定より先に判定する）。
+        return Err(crate::routes::e2ee_channels::apps_forbidden());
+    }
     c::create_channel(State(s), p.actor(), Json(b)).await
 }
 async fn update_channel(
@@ -174,7 +194,7 @@ async fn leave_channel(
     p: Principal,
     Path(id): Path<String>,
 ) -> Result<Json<crate::routes::response::ApiResponse<c::LeaveChannelResponse>>, AppError> {
-    check(&s, &p, &id, "channels:manage", false).await?;
+    check_e2ee(&s, &p, &id, "channels:manage", false).await?;
     c::leave_channel(State(s), p.actor(), Path(id)).await
 }
 async fn archive_channel(
@@ -199,6 +219,10 @@ async fn dm(
     Json(b): Json<dms::CreateDmRequest>,
 ) -> Result<Json<crate::routes::response::ApiResponse<c::ChannelResponse>>, AppError> {
     p.require("dm:write")?;
+    if b.encrypted {
+        // dms::create_or_get_dm は人間の POST /api/dms と共用で Principal を受け取らないので、ここで拒否する。
+        return Err(crate::routes::e2ee_channels::apps_forbidden());
+    }
     if !p.manifest.dm_enabled {
         return Err(AppError::Forbidden("App DMs are disabled".into()));
     }
@@ -214,45 +238,52 @@ async fn shape(
     let guard_state = s.clone();
     let guard_principal = p.clone();
     let guard_channel = params.get("channel_id").cloned();
-    let response = match name.as_str() {
-        "messages" | "message_reactions" => {
-            let channel = params
-                .get("channel_id")
-                .ok_or_else(|| AppError::BadRequest("channel_id is required".into()))?;
-            check(&s, &p, channel, "messages:read", false).await?;
-            if name == "messages" {
-                params.insert(
-                    "_app_metadata_allowed".into(),
-                    p.scopes.iter().any(|s| s == "metadata:read").to_string(),
-                );
-                shapes::messages_shape(State(s), p.actor(), Query(params)).await
-            } else {
-                shapes::message_reactions_shape(State(s), p.actor(), Query(params)).await
+    // App のストリームは、委任元の利用者本人の枠から引かず、資格情報ごとに数える。
+    let limit_key = format!("app:{}", p.credential_id);
+    let response = crate::routes::shape_limit::SHAPE_LIMIT_KEY
+        .scope(limit_key, async {
+            match name.as_str() {
+                "messages" | "message_reactions" => {
+                    let channel = params
+                        .get("channel_id")
+                        .ok_or_else(|| AppError::BadRequest("channel_id is required".into()))?;
+                    check(&s, &p, channel, "messages:read", false).await?;
+                    if name == "messages" {
+                        params.insert(
+                            "_app_metadata_allowed".into(),
+                            p.scopes.iter().any(|s| s == "metadata:read").to_string(),
+                        );
+                        shapes::messages_shape(State(s), p.actor(), Query(params)).await
+                    } else {
+                        shapes::message_reactions_shape(State(s), p.actor(), Query(params)).await
+                    }
+                }
+                "channels" => {
+                    p.require("channels:read")?;
+                    shapes::app_channels_shape(s, &p, params).await
+                }
+                "users" => {
+                    p.require("users:read")?;
+                    shapes::users_shape(State(s), p.actor(), Query(params)).await
+                }
+                "channel_users" => {
+                    let channel = params
+                        .get("channel_id")
+                        .ok_or_else(|| AppError::BadRequest("channel_id is required".into()))?;
+                    check(&s, &p, channel, "channels:read", false).await?;
+                    shapes::channel_users_shape(State(s), p.actor(), Query(params)).await
+                }
+                _ => Err(AppError::NotFound("Unknown app shape".into())),
             }
-        }
-        "channels" => {
-            p.require("channels:read")?;
-            shapes::app_channels_shape(s, &p, params).await
-        }
-        "users" => {
-            p.require("users:read")?;
-            shapes::users_shape(State(s), p.actor(), Query(params)).await
-        }
-        "channel_users" => {
-            let channel = params
-                .get("channel_id")
-                .ok_or_else(|| AppError::BadRequest("channel_id is required".into()))?;
-            check(&s, &p, channel, "channels:read", false).await?;
-            shapes::channel_users_shape(State(s), p.actor(), Query(params)).await
-        }
-        _ => Err(AppError::NotFound("Unknown app shape".into())),
-    }?;
+        })
+        .await?;
     let (mut parts, body) = response.into_parts();
     parts.headers.insert(
         "cache-control",
         axum::http::HeaderValue::from_static("private, no-store"),
     );
-    let interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    // 資格情報とチャンネルの権限の再確認は、1 本ごとに毎秒ではなく 30 秒おきにする（接続プールを使い切らないため）。
+    let interval = tokio::time::interval(std::time::Duration::from_secs(30));
     let stream = futures_util::stream::unfold(
         (
             body.into_data_stream(),

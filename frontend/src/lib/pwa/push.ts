@@ -1,9 +1,12 @@
 import { createConfiguredApiClient } from "../api/client";
 import type { AppConfig } from "../config";
+import { isDesktopSession } from "../desktop";
 
 export { registerWorker } from "./worker-registration";
 
 export function supportsPush(): boolean {
+  // デスクトップ版（Tauri）では Rust 側が OS の通知を出す。Web Push も使うと二重に出る。
+  if (isDesktopSession()) return false;
   return (
     window.isSecureContext &&
     "serviceWorker" in navigator &&

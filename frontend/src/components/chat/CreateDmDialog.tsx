@@ -2,7 +2,7 @@ import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "@tanstack/react-router";
 import { cn } from "cn";
-import { PlusIcon, SearchIcon, XIcon } from "lucide-react";
+import { LockIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
 import {
   useId,
   useMemo,
@@ -37,6 +37,14 @@ import { ScrollArea } from "../ui/scroll-area";
 import { DM_MAX_MEMBERS, DM_MAX_TARGETS, filterDmCandidates, waitForDmAvailability } from "./dm";
 import { sortUsersByLabel, userLabel } from "./memberCandidates";
 
+/** 暗号化 DM を求めたのに、サーバーが `encrypted: true` でない DM を返した。 */
+class EncryptedDmMismatchError extends Error {
+  constructor() {
+    super("The server returned an unencrypted DM for an encrypted request");
+    this.name = "EncryptedDmMismatchError";
+  }
+}
+
 export function CreateDmDialog({
   open,
   onOpenChange,
@@ -56,6 +64,7 @@ export function CreateDmDialog({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [limitReached, setLimitReached] = useState(false);
+  const [encrypted, setEncrypted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [createdChannelId, setCreatedChannelId] = useState<string | null>(null);
   const [syncPending, setSyncPending] = useState(false);
@@ -86,6 +95,7 @@ export function CreateDmDialog({
     setSelectedIds([]);
     setActiveIndex(0);
     setLimitReached(false);
+    setEncrypted(false);
     setCreatedChannelId(null);
     setSyncPending(false);
     setSubmitting(false);
@@ -178,7 +188,11 @@ export function CreateDmDialog({
     try {
       let channelId = createdChannelId;
       if (!channelId) {
-        const { data } = await createOrGetDm(client, selectedIds);
+        const { data } = await createOrGetDm(client, selectedIds, { encrypted });
+        // 暗号化を選んだのに平文の DM が返ったら開かない（平文で送らないため。docs/e2ee.md）。
+        if (encrypted && data.encrypted !== true) {
+          throw new EncryptedDmMismatchError();
+        }
         channelId = data.id;
         setCreatedChannelId(channelId);
       }
@@ -365,6 +379,26 @@ export function CreateDmDialog({
                 </ul>
               </ScrollArea>
             )}
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="flex min-h-11 items-center gap-2 text-sm">
+              <Input
+                type="checkbox"
+                checked={encrypted}
+                disabled={inputBusy}
+                aria-describedby={`${listId}-encrypted-help`}
+                onChange={(event) => {
+                  setEncrypted(event.target.checked);
+                  setErrorCause(null);
+                }}
+              />
+              <LockIcon className="size-3.5 text-muted-foreground" aria-hidden="true" />
+              {t("e2ee.encryptDm")}
+            </label>
+            <p id={`${listId}-encrypted-help`} className="text-xs text-muted-foreground">
+              {t("e2ee.encryptDmHelp")}
+            </p>
           </div>
 
           {syncPending ? (

@@ -104,100 +104,10 @@ class SlackLinkTest {
     }
 
     @Test
-    fun ownImportStartsAnImportAndShowsServerReasons() = runTest {
-        val run = obj("id" to "run", "status" to "importing", "source_id" to "export")
-        var imports = listOf<JsonElement>()
-        var reject = true
-        val requests = mutableListOf<String>()
-        val state =
-            SlackOwnImportController(backgroundScope) { path, method, _ ->
-                requests += "$method $path"
-                if (method == "POST") {
-                    if (reject)
-                        throw ApiException(
-                            403,
-                            obj("error" to "You can only import Slack channels you created (C2)"),
-                        )
-                    imports = listOf(run)
-                    run
-                } else
-                    obj(
-                        "export" to obj("id" to "export", "file_name" to "export.zip"),
-                        "channels" to JsonArray(listOf(obj("slack_channel_id" to "C1"))),
-                        "imports" to JsonArray(imports),
-                    )
-            }
-        state.load()
-        runCurrent()
-        assertFalse(state.running)
-        val mappings = listOf(obj("slack_channel_id" to "C1", "action" to "create"))
-        state.start(mappings)
-        runCurrent()
-        // 各ユーザーの取り込みでは、403 も「管理者だけ」ではなくサーバーの理由を出す
-        assertEquals(403, state.failure?.status)
-        assertEquals("You can only import Slack channels you created (C2)", state.failure?.message)
-        assertEquals(0, state.started)
-        reject = false
-        state.start(mappings)
-        runCurrent()
-        assertNull(state.failure)
-        assertEquals(1, state.started)
-        assertEquals("run", state.latest?.text("id"))
-        assertTrue(state.running)
-        assertEquals("GET /api/slack/imports", requests.last())
-        state.close()
-    }
-
-    @Test
     fun aLinkToAWorkspaceThatIsNoLongerAllowedCannotImport() {
         assertTrue(slackLinkTeamAllowed(obj("team_id" to "T1")))
         assertTrue(slackLinkTeamAllowed(obj("team_id" to "T1", "team_allowed" to true)))
         assertFalse(slackLinkTeamAllowed(obj("team_id" to "T0", "team_allowed" to false)))
-    }
-
-    @Test
-    fun aHiddenPreviousTargetCountsAsImported() {
-        assertFalse(slackImportImported(obj("slack_channel_id" to "C1", "existing_channel" to null)))
-        assertTrue(
-            slackImportImported(
-                obj("slack_channel_id" to "C1", "existing_channel" to obj("id" to "c", "name" to "general"))
-            )
-        )
-        assertTrue(
-            slackImportImported(
-                obj("slack_channel_id" to "G1", "existing_channel" to null, "existing_hidden" to true)
-            )
-        )
-    }
-
-    @Test
-    fun pollingWaitsForTheSlowReadInsteadOfDiscardingIt() = runTest {
-        val responses = mutableListOf<CompletableDeferred<JsonElement>>()
-        val state =
-            SlackOwnImportController(backgroundScope) { _, _, _ ->
-                CompletableDeferred<JsonElement>().also { responses += it }.await()
-            }
-        state.load()
-        runCurrent()
-        assertTrue(state.loading)
-        // 応答が遅くても、読み込み中は次の読み込みを始めない (前の応答を捨てない)
-        state.poll()
-        runCurrent()
-        assertEquals(1, responses.size)
-        val value =
-            obj(
-                "export" to null,
-                "channels" to JsonArray(emptyList()),
-                "imports" to JsonArray(listOf(obj("id" to "run", "status" to "importing"))),
-            )
-        responses.single().complete(value)
-        runCurrent()
-        assertFalse(state.loading)
-        assertEquals("run", state.latest?.text("id"))
-        state.poll()
-        runCurrent()
-        assertEquals(2, responses.size)
-        state.close()
     }
 
     @Test
@@ -230,9 +140,9 @@ class SlackLinkTest {
 
     @Test
     fun pluralKeysFollowTheCount() {
-        assertEquals("slackLink.importSummary_one", pluralKey("slackLink.importSummary", 1))
-        assertEquals("slackLink.importSummary_other", pluralKey("slackLink.importSummary", 0))
-        assertEquals("slackLink.importSummary_other", pluralKey("slackLink.importSummary", 3))
+        assertEquals("example.count_one", pluralKey("example.count", 1))
+        assertEquals("example.count_other", pluralKey("example.count", 0))
+        assertEquals("example.count_other", pluralKey("example.count", 3))
     }
 
     @Test

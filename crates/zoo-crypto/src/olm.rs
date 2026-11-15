@@ -3,15 +3,19 @@
 //! 形式は docs/e2ee.md の「Olm（to-device メッセージ）」、受け取ったときの検証は
 //! 「受信時の検証」の `zoo.room_key` の手順 1〜4 と同じ。
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use vodozemac::megolm::{InboundGroupSession, SessionConfig as MegolmSessionConfig, SessionKey};
-use vodozemac::olm::{OlmMessage, Session, SessionConfig};
+use vodozemac::olm::{OlmMessage, Session, SessionConfig, SessionPickle};
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, base64_decode, base64_encode};
+use zeroize::Zeroizing;
 
 use crate::device::{
     DeviceAccount, DeviceKeys, MEGOLM_ALGORITHM, OLM_ALGORITHM, verify_device_keys,
 };
 use crate::megolm::check_safe_integer;
+use crate::store::{self, StoreKind};
+use crate::verification::{VERIFICATION_TYPES, VerificationMessage};
 use crate::{CryptoError, Rejection, verify_json_signature};
 
 /// Megolm セッション鍵の配布に使う、Olm で暗号化する平文の `type`。
@@ -35,6 +39,50 @@ impl OlmSession {
     /// 相手の端末の識別鍵（Curve25519）。
     pub fn their_identity_key(&self) -> Curve25519PublicKey {
         self.their_identity_key
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct OlmSessionPickle {
+    their_identity_key: String,
+    session: SessionPickle,
+}
+
+impl OlmSession {
+    /// 暗号ストアに置く文字列にする（#359。形式は `store` モジュールの封筒）。
+    ///
+    /// `account` はこのセッションを持つ自分の端末。別のユーザーや端末の値には差し替えられない。
+    /// 呼ぶたびに出力は変わる。
+    ///
+    /// # Panics
+    ///
+    /// OS やブラウザーの暗号用乱数を取れないとき。
+    pub fn pickle(&self, account: &DeviceAccount, storage_key: &[u8; 32]) -> String {
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(&OlmSessionPickle {
+                their_identity_key: self.their_identity_key.to_base64(),
+                session: self.session.pickle(),
+            })
+            .expect("vodozemac の pickle は必ず JSON にできる"),
+        );
+        store::seal(storage_key, StoreKind::OlmSession, account, &plaintext)
+    }
+
+    /// [`pickle`](Self::pickle) の文字列から戻す。保存鍵が違う、別のユーザーや端末の値、
+    /// 形式が壊れているときは [`CryptoError::InvalidPickle`]。
+    pub fn from_pickle(
+        pickle: &str,
+        account: &DeviceAccount,
+        storage_key: &[u8; 32],
+    ) -> Result<Self, CryptoError> {
+        let plaintext = store::open(pickle, storage_key, StoreKind::OlmSession, account)?;
+        let parsed: OlmSessionPickle = serde_json::from_slice(&plaintext)
+            .map_err(|e| CryptoError::InvalidPickle(format!("Olm セッションを読めません: {e}")))?;
+        Ok(Self {
+            session: Session::from_pickle(parsed.session),
+            their_identity_key: Curve25519PublicKey::from_base64(&parsed.their_identity_key)
+                .map_err(|e| CryptoError::InvalidPickle(format!("識別鍵を読めません: {e}")))?,
+        })
     }
 }
 
@@ -134,6 +182,41 @@ impl DeviceAccount {
         recipient: &DeviceKeys,
         room_key: &RoomKey,
     ) -> Result<Value, CryptoError> {
+        self.encrypt_olm_event(session, recipient, ROOM_KEY_TYPE, room_key.to_json())
+    }
+
+    /// 絵文字 SAS の検証のメッセージ（`m.key.verification.*`。#368）を `recipient` の端末に送る
+    /// to-device メッセージの `content` を作る。形は [`encrypt_room_key`](Self::encrypt_room_key) と同じ。
+    ///
+    /// `event_type` は [`VERIFICATION_TYPES`] のどれかでなければならない。
+    pub fn encrypt_verification(
+        &self,
+        session: &mut OlmSession,
+        recipient: &DeviceKeys,
+        event_type: &str,
+        content: &Value,
+    ) -> Result<Value, CryptoError> {
+        if !VERIFICATION_TYPES.contains(&event_type) {
+            return Err(CryptoError::InvalidPayload(format!(
+                "SAS の検証のメッセージの type ではありません: {event_type:?}"
+            )));
+        }
+        if !content.is_object() {
+            return Err(CryptoError::InvalidPayload(
+                "content が JSON オブジェクトではありません".into(),
+            ));
+        }
+        self.encrypt_olm_event(session, recipient, event_type, content.clone())
+    }
+
+    /// Olm で暗号化する平文（docs/e2ee.md の「Olm（to-device メッセージ）」）を作って暗号化する。
+    fn encrypt_olm_event(
+        &self,
+        session: &mut OlmSession,
+        recipient: &DeviceKeys,
+        event_type: &str,
+        content: Value,
+    ) -> Result<Value, CryptoError> {
         if session.their_identity_key != recipient.curve25519 {
             return Err(CryptoError::Olm(
                 "Olm セッションの相手が宛先の端末ではありません".into(),
@@ -141,8 +224,8 @@ impl DeviceAccount {
         }
         let own = self.identity_keys();
         let plaintext = json!({
-            "type": ROOM_KEY_TYPE,
-            "content": room_key.to_json(),
+            "type": event_type,
+            "content": content,
             "sender": self.user_id(),
             "sender_device": self.device_id(),
             "keys": { "ed25519": own.ed25519.to_base64() },
@@ -319,6 +402,7 @@ pub struct ReceivedRoomKey {
     pub(crate) sender_key: Curve25519PublicKey,
     pub(crate) sender_user_id: String,
     pub(crate) sender_device_id: String,
+    pub(crate) sender_signing_key: Ed25519PublicKey,
     pub(crate) sender_verified: bool,
     pub(crate) session: InboundGroupSession,
 }
@@ -416,6 +500,85 @@ impl OlmDecrypted {
                 "type が {ROOM_KEY_TYPE} ではありません"
             )));
         }
+        let VerifiedSender {
+            sender,
+            sender_device,
+            device_keys,
+            device_json,
+            listed,
+        } = self.verify_sender(account, listed)?;
+
+        // 手順 4：送信端末を検証済みにできるか。Shape にも keys/query にもない端末はしない。
+        let sender_verified = listed
+            && trust.is_some_and(|trust| signed_by_self_signing_key(device_json, sender, trust));
+
+        let content = p
+            .get("content")
+            .ok_or_else(|| CryptoError::InvalidPayload("content がありません".into()))?;
+        let room_key = parse_room_key(content)?;
+        let session_key = SessionKey::from_base64(&room_key.session_key)
+            .map_err(|e| CryptoError::InvalidPayload(format!("session_key が壊れています: {e}")))?;
+        let session = InboundGroupSession::new(&session_key, MegolmSessionConfig::version_1());
+        if session.session_id() != room_key.session_id {
+            return Err(CryptoError::InvalidPayload(
+                "session_key から導いた session_id が宣言と違います".into(),
+            ));
+        }
+        Ok(ReceivedRoomKey {
+            channel_id: room_key.channel_id,
+            epoch: room_key.epoch,
+            sender_key: self.sender_key,
+            sender_user_id: sender.to_owned(),
+            sender_device_id: sender_device.to_owned(),
+            sender_signing_key: device_keys.ed25519,
+            sender_verified,
+            session,
+        })
+    }
+
+    /// 絵文字 SAS の検証のメッセージ（`m.key.verification.*`。#368）を、docs/e2ee.md の
+    /// 「受信時の検証」の手順 1〜3 で確かめる。
+    ///
+    /// `listed` は、平文の `sender` と `sender_device` で探した `keys/query` の応答。検証の相手は
+    /// クロス署名をたどれる端末でなければならないので、`keys/query` にない端末
+    /// （[`ListedDevice::NotListed`]）からのメッセージは [`Rejection::UnknownSenderDevice`] で捨てる。
+    /// 送信端末がクロス署名をたどれるかは、[`SasVerification`](crate::SasVerification) が確かめる。
+    pub fn verify_verification(
+        &self,
+        account: &DeviceAccount,
+        listed: ListedDevice<'_>,
+    ) -> Result<VerificationMessage, CryptoError> {
+        let p = &self.plaintext;
+        let event_type = p
+            .get("type")
+            .and_then(Value::as_str)
+            .filter(|t| VERIFICATION_TYPES.contains(t))
+            .ok_or_else(|| {
+                CryptoError::InvalidPayload("type が SAS の検証のメッセージではありません".into())
+            })?;
+        let sender = self.verify_sender(account, listed)?;
+        if !sender.listed {
+            return Err(CryptoError::Rejected(Rejection::UnknownSenderDevice));
+        }
+        let content = p
+            .get("content")
+            .filter(|c| c.is_object())
+            .ok_or_else(|| CryptoError::InvalidPayload("content がありません".into()))?;
+        Ok(VerificationMessage {
+            sender_user_id: sender.sender.to_owned(),
+            sender_device: sender.device_keys,
+            event_type: event_type.to_owned(),
+            content: content.clone(),
+        })
+    }
+
+    /// 受信時の検証の手順 1〜3（送信端末、送信端末の署名鍵、宛先）。
+    fn verify_sender<'a>(
+        &'a self,
+        account: &DeviceAccount,
+        listed: ListedDevice<'a>,
+    ) -> Result<VerifiedSender<'a>, CryptoError> {
+        let p = &self.plaintext;
         let str_field = |name: &str| {
             p.get(name)
                 .and_then(Value::as_str)
@@ -451,33 +614,23 @@ impl OlmDecrypted {
         {
             return Err(CryptoError::Rejected(Rejection::RecipientMismatch));
         }
-
-        // 手順 4：送信端末を検証済みにできるか。Shape にも keys/query にもない端末はしない。
-        let sender_verified = listed
-            && trust.is_some_and(|trust| signed_by_self_signing_key(device_json, sender, trust));
-
-        let content = p
-            .get("content")
-            .ok_or_else(|| CryptoError::InvalidPayload("content がありません".into()))?;
-        let room_key = parse_room_key(content)?;
-        let session_key = SessionKey::from_base64(&room_key.session_key)
-            .map_err(|e| CryptoError::InvalidPayload(format!("session_key が壊れています: {e}")))?;
-        let session = InboundGroupSession::new(&session_key, MegolmSessionConfig::version_1());
-        if session.session_id() != room_key.session_id {
-            return Err(CryptoError::InvalidPayload(
-                "session_key から導いた session_id が宣言と違います".into(),
-            ));
-        }
-        Ok(ReceivedRoomKey {
-            channel_id: room_key.channel_id,
-            epoch: room_key.epoch,
-            sender_key: self.sender_key,
-            sender_user_id: sender.to_owned(),
-            sender_device_id: sender_device.to_owned(),
-            sender_verified,
-            session,
+        Ok(VerifiedSender {
+            sender,
+            sender_device,
+            device_keys,
+            device_json,
+            listed,
         })
     }
+}
+
+/// 受信時の検証の手順 1〜3 を通った送信端末。
+struct VerifiedSender<'a> {
+    sender: &'a str,
+    sender_device: &'a str,
+    device_keys: DeviceKeys,
+    device_json: &'a Value,
+    listed: bool,
 }
 
 /// 手順 1 の、送信端末の端末鍵の決め方。
@@ -615,6 +768,63 @@ mod tests {
             Err(CryptoError::Rejected(reason)) => reason,
             other => panic!("破棄されるはずが {other:?}"),
         }
+    }
+
+    #[test]
+    fn pickled_olm_sessions_keep_decrypting() {
+        let alice = DeviceAccount::new(ALICE, ALICE_DEVICE).unwrap();
+        let mut bob = DeviceAccount::new(BOB, BOB_DEVICE).unwrap();
+        bob.generate_one_time_keys(1);
+        let one_time_key = bob.one_time_keys().into_values().next().unwrap();
+        let mut outbound = alice
+            .create_outbound_olm_session(&keys(&bob), &one_time_key)
+            .unwrap();
+        let group = vodozemac::megolm::GroupSession::new(MegolmSessionConfig::version_1());
+        let room_key = RoomKey {
+            channel_id: "c".into(),
+            epoch: 1,
+            session_id: group.session_id(),
+            session_key: group.session_key().to_base64(),
+        };
+        let mut sessions = Vec::new();
+        let first = alice
+            .encrypt_room_key(&mut outbound, &keys(&bob), &room_key)
+            .unwrap();
+        bob.decrypt_to_device(&mut sessions, &first).unwrap();
+        assert_eq!(sessions.len(), 1);
+
+        // 保存して戻したセッションで、次のメッセージを復号できる。
+        let storage_key = [9u8; 32];
+        let pickled = sessions[0].pickle(&bob, &storage_key);
+        assert_ne!(pickled, sessions[0].pickle(&bob, &storage_key));
+        let mut restored = vec![OlmSession::from_pickle(&pickled, &bob, &storage_key).unwrap()];
+        assert_eq!(restored[0].session_id(), sessions[0].session_id());
+        assert_eq!(
+            restored[0].their_identity_key(),
+            alice.identity_keys().curve25519
+        );
+        let pickled_outbound = outbound.pickle(&alice, &storage_key);
+        let mut outbound =
+            OlmSession::from_pickle(&pickled_outbound, &alice, &storage_key).unwrap();
+        let second = alice
+            .encrypt_room_key(&mut outbound, &keys(&bob), &room_key)
+            .unwrap();
+        bob.decrypt_to_device(&mut restored, &second).unwrap();
+        assert_eq!(
+            restored.len(),
+            1,
+            "既存のセッションで復号し、新しく作らない"
+        );
+
+        // 別の端末や保存鍵では戻せない。
+        assert!(matches!(
+            OlmSession::from_pickle(&pickled, &alice, &storage_key),
+            Err(CryptoError::InvalidPickle(_))
+        ));
+        assert!(matches!(
+            OlmSession::from_pickle(&pickled, &bob, &[8u8; 32]),
+            Err(CryptoError::InvalidPickle(_))
+        ));
     }
 
     #[test]

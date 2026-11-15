@@ -175,6 +175,10 @@ async fn create(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let target = authorize(&mut tx, &state, &actor, &channel).await?;
+    // 暗号化チャンネルには平文の Webhook を作れない（#358）。
+    if target.encrypted {
+        return Err(crate::routes::e2ee_channels::webhooks_forbidden());
+    }
     if target.archive_at.is_some() {
         return Err(AppError::BadRequest(
             "Cannot create a webhook in an archived channel".into(),

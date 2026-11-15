@@ -95,6 +95,7 @@ export const APP_SCOPES = [
   "metadata:write",
   "assistant:write",
   "functions:execute",
+  "e2ee:device",
 ] as const;
 
 export const CONSOLE_SECTIONS = [

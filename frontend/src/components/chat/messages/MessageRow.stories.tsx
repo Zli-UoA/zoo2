@@ -6,7 +6,13 @@ import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
+import {
+  EncryptedChannelContext,
+  MentionUserNamesContext,
+} from "../../../lib/e2ee/messageDecryption";
 import { storyAttachments } from "../../../../.storybook/attachment-fixtures";
+import { EncryptedAttachmentError } from "../../../lib/e2ee/attachments";
+import { EncryptedAttachmentLoaderContext } from "./EncryptedMessageAttachments";
 import { MessageRow } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
@@ -143,17 +149,21 @@ export const ReactionUsers: Story = {
         userIds: ["long", "user-bob"],
         userNames: { ...reactionUsers, long: `${"A".repeat(80)} (@longname)` },
       },
+      { emoji: "🎉", count: 1, ownId: null, userIds: ["user-alice"], userNames: reactionUsers },
     ],
   },
   play: playForImplementation(async ({ canvasElement }) => {
     await userEvent.click(
       await within(canvasElement).findByRole("button", {
-        name: "👍 にリアクションしたユーザーを表示",
+        name: "リアクションしたユーザーを表示",
       }),
     );
     const dialog = await screen.findByRole("dialog");
-    await waitFor(() => expect(within(dialog).getByText(/@longname/)).toBeVisible());
-    await waitFor(() => expect(within(dialog).getByText(/@bob/)).toBeVisible());
+    const thumbs = within(dialog).getByRole("heading", { name: "👍" }).closest("section")!;
+    const celebration = within(dialog).getByRole("heading", { name: "🎉" }).closest("section")!;
+    await waitFor(() => expect(within(thumbs).getByText(/@longname/)).toBeVisible());
+    await expect(within(thumbs).getByText(/@bob/)).toBeVisible();
+    await expect(within(celebration).getByText(/@alice/)).toBeVisible();
   }),
 };
 
@@ -385,5 +395,305 @@ export const SensitiveAttachments: Story = {
     await waitFor(() => expect(canvas.getByRole("img", { name: "screenshot.png" })).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: "画像を隠す" }));
     await expect(canvas.queryByRole("img", { name: "screenshot.png" })).not.toBeInTheDocument();
+  }),
+};
+
+const encryptedItem: MessageItem = {
+  ...item,
+  message: {
+    ...item.message,
+    id: "message-encrypted",
+    content: "",
+    ciphertext: {
+      algorithm: "m.megolm.v1.aes-sha2",
+      sender_key: "story-sender-key",
+      device_id: "story-device",
+      session_id: "story-session",
+      ciphertext: "AwgAEhA",
+    },
+    epoch: "3",
+    revision: 0,
+  },
+};
+
+export const EncryptedDecrypted: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "暗号化したメッセージです。詳細は https://example.com/docs を参照してください。",
+      kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
+      sender: "verified",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText(/暗号化したメッセージです/)).toBeVisible();
+    await expect(
+      canvas.getByRole("button", { name: "リンクのプレビューを読み込む" }),
+    ).toBeVisible();
+  }),
+};
+
+const storyUserNames = new Map(storyUsers.map((user) => [user.id, user.user_name]));
+
+/**
+ * 暗号化メッセージのメンションは、復号した `mentions` だけで表示する。本文に `@bob` や `@channel` が
+ * あっても、`mentions` になければメンションとして表示しない（docs/e2ee.md の「Megolm の平文」）。
+ */
+export const EncryptedMentions: Story = {
+  decorators: [
+    (Story) => (
+      <MentionUserNamesContext.Provider value={storyUserNames}>
+        <Story />
+      </MentionUserNamesContext.Provider>
+    ),
+  ],
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "@alice さん、確認をお願いします。@bob さんと @channel にも共有します。",
+      kind: "message",
+      mentions: { user_ids: ["user-alice"], channel: false, here: false },
+      sender: "verified",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const body = canvasElement.querySelector(".mfm-body");
+    await expect(body?.querySelectorAll(".bg-brand-muted")).toHaveLength(1);
+    await expect(body?.querySelector(".bg-brand-muted")).toHaveTextContent("@alice");
+    await expect(body).toHaveTextContent("@bob さんと @channel にも共有します。");
+  }),
+};
+
+export const EncryptedUnverifiedSender: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "未検証の端末から届いたメッセージです。",
+      kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
+      sender: "unverified",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText("未検証の送信者")).toBeVisible();
+  }),
+};
+
+export const EncryptedStaleRevision: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "編集したあとの本文です。",
+      kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
+      sender: "verified",
+      revisionWarning: "stale",
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByText("サーバーが古い版を返しました。最新の版を表示しています"),
+    ).toBeVisible();
+  }),
+};
+
+export const EncryptedUnencryptedRow: Story = {
+  args: {
+    // 暗号化チャンネルで暗号文のない行。サーバーが書き換えた本文は出さない。
+    item: {
+      ...encryptedItem,
+      message: { ...encryptedItem.message, ciphertext: null, content: "偽の本文" },
+    },
+    decryption: { status: "undecryptable", reason: "unencrypted" },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByText("このメッセージは暗号化されていないため表示しません。"),
+    ).toBeVisible();
+    await expect(canvas.queryByText("偽の本文")).not.toBeInTheDocument();
+  }),
+};
+
+export const EncryptedBeforeEncryptionRow: Story = {
+  decorators: [
+    (Story) => (
+      <EncryptedChannelContext.Provider value={true}>
+        <Story />
+      </EncryptedChannelContext.Provider>
+    ),
+  ],
+  args: {
+    // 暗号化に切り替える前の平文のメッセージ（#367）。本文を出し、印を付け、編集させない。
+    item: {
+      ...item,
+      message: { ...item.message, id: "message-before-encryption", ciphertext: null, epoch: null },
+    },
+    isOwn: true,
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("暗号化前")).toBeVisible();
+    await expect(canvas.getByText(/今日のリリースは 18:00 です/)).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "編集" })).not.toBeInTheDocument();
+  }),
+};
+
+export const EncryptedBackupSender: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "鍵バックアップから復号したメッセージです。",
+      kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
+      sender: "unauthenticated",
+    },
+  },
+};
+
+export const EncryptedKeyMissing: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: { status: "undecryptable", reason: "keyMissing" },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByText("このメッセージを復号する鍵がまだ届いていません。"),
+    ).toBeVisible();
+    // 本文がないので、空文字列をコピーしないよう「原文をコピー」を出さない。
+    (await within(canvasElement).findByRole("button", { name: "その他の操作" })).focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByRole("menu")).toBeVisible());
+    await expect(screen.queryByRole("menuitem", { name: "原文をコピー" })).not.toBeInTheDocument();
+  }),
+};
+
+export const EncryptedLocked: Story = {
+  args: { item: encryptedItem },
+};
+
+export const EncryptedInvalid: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: { status: "undecryptable", reason: "invalid" },
+  },
+};
+
+// 暗号化した添付（#364）。Storybook では暗号の Worker の代わりに、決まった中身を返す。
+async function storyImage(): Promise<Blob> {
+  const canvas = document.createElement("canvas");
+  canvas.width = 320;
+  canvas.height = 200;
+  const context = canvas.getContext("2d")!;
+  const gradient = context.createLinearGradient(0, 0, 320, 200);
+  gradient.addColorStop(0, "#6366f1");
+  gradient.addColorStop(1, "#22d3ee");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 320, 200);
+  context.fillStyle = "#ffffff";
+  context.font = "bold 28px sans-serif";
+  context.fillText("🔒 decrypted", 70, 110);
+  return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob!), "image/png"));
+}
+
+const storyEncryptedFile = {
+  v: "v2" as const,
+  key: {
+    kty: "oct" as const,
+    key_ops: ["encrypt", "decrypt"],
+    alg: "A256CTR" as const,
+    k: "story-key",
+    ext: true as const,
+  },
+  iv: "story-iv",
+  hashes: { sha256: "story-hash" },
+};
+
+const encryptedAttachments = [
+  {
+    attachment_id: "00000000-0000-4000-8000-0000000000e1",
+    name: "architecture.png",
+    mimetype: "image/png",
+    size: 48_213,
+    width: 320,
+    height: 200,
+    file: storyEncryptedFile,
+  },
+  {
+    attachment_id: "00000000-0000-4000-8000-0000000000e2",
+    name: "議事録.pdf",
+    mimetype: "application/pdf",
+    size: 1_204_224,
+    file: storyEncryptedFile,
+  },
+];
+
+export const EncryptedWithAttachments: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "設計図と議事録を共有します。",
+      kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
+      sender: "verified",
+      attachments: encryptedAttachments,
+    },
+  },
+  decorators: [
+    (Story) => (
+      <EncryptedAttachmentLoaderContext.Provider
+        value={async (info) =>
+          info.mimetype.startsWith("image/")
+            ? storyImage()
+            : new Blob(["%PDF-1.7"], { type: info.mimetype })
+        }
+      >
+        <Story />
+      </EncryptedAttachmentLoaderContext.Provider>
+    ),
+  ],
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("img", { name: "architecture.png" })).toBeVisible();
+    await expect(canvas.getByText("議事録.pdf")).toBeVisible();
+    await expect(canvas.queryByText("encrypted.bin")).not.toBeInTheDocument();
+  }),
+};
+
+export const EncryptedAttachmentDecryptFailed: Story = {
+  args: {
+    item: encryptedItem,
+    decryption: {
+      status: "decrypted",
+      body: "中身を差し替えられた添付です。",
+      kind: "message",
+      mentions: { user_ids: [], channel: false, here: false },
+      sender: "verified",
+      attachments: encryptedAttachments.slice(0, 1),
+    },
+  },
+  decorators: [
+    (Story) => (
+      <EncryptedAttachmentLoaderContext.Provider
+        value={async () => {
+          throw new EncryptedAttachmentError("decrypt");
+        }}
+      >
+        <Story />
+      </EncryptedAttachmentLoaderContext.Provider>
+    ),
+  ],
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByText(/添付を復号できませんでした/),
+    ).toBeVisible();
   }),
 };

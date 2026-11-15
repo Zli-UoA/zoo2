@@ -103,7 +103,7 @@ export function getSlackImport(
   id: string,
   signal?: AbortSignal,
 ): Promise<SlackImport> {
-  return client.get<SlackImport>(`${BASE}/${id}`, { signal });
+  return client.get<SlackImport>(`${BASE}/${encodeURIComponent(id)}`, { signal });
 }
 
 export function startSlackImport(
@@ -111,18 +111,20 @@ export function startSlackImport(
   id: string,
   mappings: SlackChannelMapping[],
 ): Promise<SlackImport> {
-  return client.request<SlackImport>(`${BASE}/${id}/start`, {
+  return client.request<SlackImport>(`${BASE}/${encodeURIComponent(id)}/start`, {
     method: "POST",
     body: { mappings },
   });
 }
 
 export function cancelSlackImport(client: ApiClient, id: string): Promise<SlackImport> {
-  return client.request<SlackImport>(`${BASE}/${id}`, { method: "DELETE" });
+  return client.request<SlackImport>(`${BASE}/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function fetchSlackImportFiles(client: ApiClient, id: string): Promise<SlackImport> {
-  return client.request<SlackImport>(`${BASE}/${id}/fetch-files`, { method: "POST" });
+  return client.request<SlackImport>(`${BASE}/${encodeURIComponent(id)}/fetch-files`, {
+    method: "POST",
+  });
 }
 
 export class SlackExportUploadError extends Error {
@@ -184,7 +186,9 @@ export async function uploadSlackExport(
     (loaded, total) => onProgress(total > 0 ? loaded / total : 0),
     signal,
   );
-  return client.request<SlackImport>(`${BASE}/${created.import.id}/uploaded`, { method: "POST" });
+  return client.request<SlackImport>(`${BASE}/${encodeURIComponent(created.import.id)}/uploaded`, {
+    method: "POST",
+  });
 }
 
 /**
@@ -310,35 +314,4 @@ export function applyBulkArchive(
   return mappings.map((mapping) =>
     mapping.action === "create" ? { ...mapping, archive } : mapping,
   );
-}
-
-/** 連携したユーザーが作った Slack チャンネル。`targets` は取り込み先に選べる既存チャンネル */
-export interface OwnSlackChannel extends SlackChannelSummary {
-  targets: { id: string; name: string; is_private: boolean }[];
-}
-
-/** 連携したユーザーが、保存済みの ZIP から自分のチャンネルを取り込むための情報 */
-export interface OwnSlackImports {
-  /** 取り込みに使う ZIP。管理者がまだ保存していなければ null */
-  export: { id: string; file_name: string; created_at: string } | null;
-  channels: OwnSlackChannel[];
-  /** 自分が始めた取り込み (新しい順) */
-  imports: SlackImport[];
-}
-
-export function getOwnSlackImports(
-  client: ApiClient,
-  signal?: AbortSignal,
-): Promise<OwnSlackImports> {
-  return client.get<OwnSlackImports>("/api/slack/imports", { signal });
-}
-
-export function startOwnSlackImport(
-  client: ApiClient,
-  mappings: SlackChannelMapping[],
-): Promise<SlackImport> {
-  return client.request<SlackImport>("/api/slack/imports", {
-    method: "POST",
-    body: { mappings },
-  });
 }

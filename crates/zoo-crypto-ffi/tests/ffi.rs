@@ -1,0 +1,341 @@
+//! バインディングの API を Rust から通しで確かめる（Kotlin の単体テストと同じ流れ）。
+
+use zoo_crypto_ffi::*;
+
+const ALICE: &str = "00000000-0000-4000-8000-00000000000a";
+const ALICE_DEVICE: &str = "00000000-0000-4000-8000-0000000000a1";
+const BOB: &str = "00000000-0000-4000-8000-00000000000b";
+const BOB_DEVICE: &str = "00000000-0000-4000-8000-0000000000b1";
+const CHANNEL: &str = "00000000-0000-4000-8000-0000000000c1";
+const MESSAGE: &str = "00000000-0000-4000-8000-0000000000d1";
+
+fn message(body: &str) -> OutgoingMessage {
+    OutgoingMessage {
+        message_id: MESSAGE.into(),
+        parent_id: None,
+        revision: 0,
+        content: MessageContent {
+            body: body.into(),
+            format: "mfm".into(),
+            kind: "message".into(),
+        },
+        mentions: Mentions::default(),
+        attachments: Vec::new(),
+    }
+}
+
+fn row(ciphertext: String) -> EncryptedMessage {
+    EncryptedMessage {
+        channel_id: CHANNEL.into(),
+        message_id: MESSAGE.into(),
+        parent_id: None,
+        user_id: ALICE.into(),
+        message_kind: "message".into(),
+        epoch: 1,
+        revision: 0,
+        ciphertext,
+    }
+}
+
+#[test]
+fn pickle_round_trip_and_wrong_key() {
+    let account = DeviceAccount::new(ALICE.into(), ALICE_DEVICE.into()).unwrap();
+    let key = vec![7u8; 32];
+    let pickle = account.pickle(key.clone()).unwrap();
+    let restored =
+        DeviceAccount::from_pickle(pickle.clone(), key, ALICE.into(), ALICE_DEVICE.into()).unwrap();
+    assert_eq!(restored.curve25519_key(), account.curve25519_key());
+    assert_eq!(restored.ed25519_key(), account.ed25519_key());
+
+    let wrong =
+        DeviceAccount::from_pickle(pickle, vec![8u8; 32], ALICE.into(), ALICE_DEVICE.into());
+    assert!(matches!(wrong, Err(ZooCryptoError::Pickle { .. })));
+    assert!(matches!(
+        account.pickle(vec![0u8; 31]),
+        Err(ZooCryptoError::InvalidPayload { .. })
+    ));
+}
+
+#[test]
+fn megolm_own_message_round_trip() {
+    let account = DeviceAccount::new(ALICE.into(), ALICE_DEVICE.into()).unwrap();
+    let outbound = OutboundSession::new(CHANNEL.into(), 1, 0);
+    let inbound = InboundSessionStore::new();
+    assert_eq!(inbound.add_outbound(&account, &outbound), AddOutcome::Added);
+
+    let ciphertext = outbound.encrypt(&account, message("こんにちは")).unwrap();
+    let decrypted = inbound.decrypt(row(ciphertext)).unwrap();
+    assert_eq!(decrypted.payload.content.body, "こんにちは");
+    assert_eq!(decrypted.message_index, 0);
+    assert_eq!(decrypted.origin, SessionOrigin::Olm);
+    assert_eq!(decrypted.revision, RevisionStatus::Latest);
+}
+
+#[test]
+fn encrypted_attachment_round_trip_through_megolm() {
+    let plaintext = b"attachment bytes".to_vec();
+    let encrypted = encrypt_attachment(plaintext.clone());
+    assert_ne!(encrypted.ciphertext, plaintext);
+
+    let account = DeviceAccount::new(ALICE.into(), ALICE_DEVICE.into()).unwrap();
+    let outbound = OutboundSession::new(CHANNEL.into(), 1, 0);
+    let inbound = InboundSessionStore::new();
+    inbound.add_outbound(&account, &outbound);
+    let mut outgoing = message("");
+    outgoing.attachments.push(AttachmentInfo {
+        attachment_id: "00000000-0000-4000-8000-0000000000e1".into(),
+        name: "a.bin".into(),
+        mimetype: "application/octet-stream".into(),
+        size: plaintext.len() as u64,
+        width: None,
+        height: None,
+        sensitive: false,
+        file: encrypted.file.clone(),
+    });
+    let ciphertext = outbound.encrypt(&account, outgoing).unwrap();
+    let decrypted = inbound.decrypt(row(ciphertext)).unwrap();
+    let attachment = &decrypted.payload.attachments[0];
+    assert_eq!(attachment.name, "a.bin");
+    assert_eq!(
+        decrypt_attachment(attachment.file.clone(), encrypted.ciphertext.clone()).unwrap(),
+        plaintext
+    );
+
+    let mut tampered = encrypted.ciphertext;
+    tampered[0] ^= 1;
+    assert!(matches!(
+        decrypt_attachment(attachment.file.clone(), tampered),
+        Err(ZooCryptoError::AttachmentDecryption { .. })
+    ));
+    assert!(matches!(
+        decrypt_attachment("{}".into(), vec![]),
+        Err(ZooCryptoError::InvalidPayload { .. })
+    ));
+}
+
+#[test]
+fn room_key_over_olm_then_megolm() {
+    let alice = DeviceAccount::new(ALICE.into(), ALICE_DEVICE.into()).unwrap();
+    let bob = DeviceAccount::new(BOB.into(), BOB_DEVICE.into()).unwrap();
+    bob.generate_one_time_keys(1);
+    let otks: serde_json::Value = serde_json::from_str(&bob.one_time_keys()).unwrap();
+    let (_, otk) = otks.as_object().unwrap().iter().next().unwrap();
+    bob.mark_keys_as_published();
+
+    let alice_sessions = OlmSessionStore::new();
+    let bob_keys = verify_device_keys(bob.device_keys(), BOB.into(), BOB_DEVICE.into()).unwrap();
+    let session_id = alice
+        .create_outbound_olm_session(&alice_sessions, &bob_keys, otk.to_string())
+        .unwrap();
+
+    let outbound = OutboundSession::new(CHANNEL.into(), 1, 0);
+    let content = alice
+        .encrypt_room_key(&alice_sessions, session_id, &bob_keys, &outbound)
+        .unwrap();
+
+    let bob_sessions = OlmSessionStore::new();
+    let decrypted = bob.decrypt_to_device(&bob_sessions, content).unwrap();
+    assert_eq!(bob_sessions.len(), 1);
+    assert_eq!(decrypted.event_type().as_deref(), Some("zoo.room_key"));
+    let room_key = decrypted
+        .verify_room_key(&bob, Some(alice.device_keys()), None)
+        .unwrap();
+    assert!(!room_key.sender_verified());
+
+    let inbound = InboundSessionStore::new();
+    assert_eq!(inbound.add_room_key(&room_key).unwrap(), AddOutcome::Added);
+    assert!(matches!(
+        inbound.add_room_key(&room_key),
+        Err(ZooCryptoError::AlreadyConsumed { .. })
+    ));
+
+    let ciphertext = outbound.encrypt(&alice, message("hi")).unwrap();
+    let decrypted = inbound.decrypt(row(ciphertext)).unwrap();
+    assert_eq!(decrypted.payload.content.body, "hi");
+    assert!(!decrypted.sender_verified);
+}
+
+#[test]
+fn missing_room_key_carries_session_id() {
+    let account = DeviceAccount::new(ALICE.into(), ALICE_DEVICE.into()).unwrap();
+    let outbound = OutboundSession::new(CHANNEL.into(), 1, 0);
+    let ciphertext = outbound.encrypt(&account, message("x")).unwrap();
+    match InboundSessionStore::new().decrypt(row(ciphertext)) {
+        Err(ZooCryptoError::MissingRoomKey { session_id, .. }) => {
+            assert_eq!(session_id, outbound.session_id())
+        }
+        other => panic!("MissingRoomKey ではありません: {:?}", other.err()),
+    }
+}
+
+#[test]
+fn secret_storage_round_trip_with_recovery_key() {
+    let keys = CrossSigningKeys::generate(ALICE.into()).unwrap();
+    let backup = BackupDecryptionKey::generate();
+    let ssss = SsssKey::generate();
+    let recovery = RecoveryKey::generate();
+    let slot = new_recovery_key_slot(ALICE.into(), &ssss, &recovery).unwrap();
+    let request: serde_json::Value = serde_json::from_str(
+        &ssss
+            .keys_request(None, None, &keys, &backup, vec![], vec![slot])
+            .unwrap(),
+    )
+    .unwrap();
+
+    // サーバーが返す形にする（default_key_id、keys、secrets、slots）。
+    let key_id = request["key_id"].as_str().unwrap();
+    let response = serde_json::json!({
+        "default_key_id": key_id,
+        "keys": { key_id: request["key"] },
+        "secrets": request["secrets"],
+        "secrets_revision": 1,
+        "slots": request["slots"],
+    });
+    let storage = parse_secret_storage(ALICE.into(), response.to_string())
+        .unwrap()
+        .unwrap();
+    let parsed = RecoveryKey::parse(recovery.to_display()).unwrap();
+    let unlocked = storage.unlock_with_recovery_key(&parsed).unwrap();
+    assert_eq!(unlocked.key().key_id(), ssss.key_id());
+    assert_eq!(
+        unlocked
+            .cross_signing_key(KeyUsage::Master)
+            .unwrap()
+            .unwrap()
+            .public_key(),
+        keys.master().public_key()
+    );
+    assert_eq!(
+        unlocked.backup_key().unwrap().unwrap().public_key(),
+        backup.public_key()
+    );
+
+    let wrong = storage.unlock_with_recovery_key(&RecoveryKey::generate());
+    assert!(matches!(wrong, Err(ZooCryptoError::KeySlotUnlock { .. })));
+}
+
+#[test]
+fn trust_store_round_trip() {
+    let keys = CrossSigningKeys::generate(ALICE.into()).unwrap();
+    let store = TrustStore::new(ALICE.into()).unwrap();
+    store.trust_own_master_key(&keys.master()).unwrap();
+    let restored = TrustStore::from_json(store.to_json(), ALICE.into()).unwrap();
+    assert_eq!(restored.own_master_key(), Some(keys.master().public_key()));
+
+    let distribution = restored
+        .evaluate(vec!["{}".into()], ALICE_DEVICE.into(), None)
+        .unwrap();
+    assert!(distribution.devices.is_empty());
+}
+
+/// 暗号ストア（#359）：Olm セッション、受信用セッション、配布先の判定の記録を保存して戻す。
+#[test]
+fn store_pickles_round_trip() {
+    let key = vec![9u8; 32];
+    let alice = DeviceAccount::new(ALICE.into(), ALICE_DEVICE.into()).unwrap();
+    let bob = DeviceAccount::new(BOB.into(), BOB_DEVICE.into()).unwrap();
+    bob.generate_one_time_keys(1);
+    let otks: serde_json::Value = serde_json::from_str(&bob.one_time_keys()).unwrap();
+    let (_, otk) = otks.as_object().unwrap().iter().next().unwrap();
+    bob.mark_keys_as_published();
+
+    let alice_sessions = OlmSessionStore::new();
+    let bob_keys = verify_device_keys(bob.device_keys(), BOB.into(), BOB_DEVICE.into()).unwrap();
+    let session_id = alice
+        .create_outbound_olm_session(&alice_sessions, &bob_keys, otk.to_string())
+        .unwrap();
+    let outbound = OutboundSession::new(CHANNEL.into(), 1, 0);
+    let content = alice
+        .encrypt_room_key(&alice_sessions, session_id, &bob_keys, &outbound)
+        .unwrap();
+
+    // Bob が受け取って、Olm セッションと受信用セッションを保存する。
+    let bob_sessions = OlmSessionStore::new();
+    let decrypted = bob.decrypt_to_device(&bob_sessions, content).unwrap();
+    let stored = bob_sessions
+        .pickle_sessions(&bob, key.clone(), Some(decrypted.sender_key()))
+        .unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].their_identity_key, alice.curve25519_key());
+    assert!(
+        bob_sessions
+            .pickle_sessions(&bob, key.clone(), Some(bob.curve25519_key()))
+            .unwrap()
+            .is_empty()
+    );
+    let room_key = decrypted
+        .verify_room_key(&bob, Some(alice.device_keys()), None)
+        .unwrap();
+    let inbound = InboundSessionStore::new();
+    assert_eq!(inbound.add_room_key(&room_key).unwrap(), AddOutcome::Added);
+    let session_ref = inbound.session_refs().remove(0);
+    let inbound_pickle = inbound
+        .pickle_session(&bob, session_ref.clone(), key.clone())
+        .unwrap()
+        .unwrap();
+    let missing = SessionRef {
+        session_id: "missing".into(),
+        ..session_ref.clone()
+    };
+    assert_eq!(
+        inbound.pickle_session(&bob, missing, key.clone()).unwrap(),
+        None
+    );
+
+    // 端末アカウントを戻してから、ほかの状態を戻す。
+    let bob = DeviceAccount::from_pickle(
+        bob.pickle(key.clone()).unwrap(),
+        key.clone(),
+        BOB.into(),
+        BOB_DEVICE.into(),
+    )
+    .unwrap();
+    let restored_sessions = OlmSessionStore::new();
+    let info = restored_sessions
+        .restore_session(&bob, stored[0].pickle.clone(), key.clone())
+        .unwrap();
+    assert_eq!(info.session_id, stored[0].session_id);
+    // 同じ ID は置き換える。
+    restored_sessions
+        .restore_session(&bob, stored[0].pickle.clone(), key.clone())
+        .unwrap();
+    assert_eq!(restored_sessions.len(), 1);
+    let restored_inbound = InboundSessionStore::new();
+    assert_eq!(
+        restored_inbound
+            .restore_session(&bob, inbound_pickle.clone(), key.clone())
+            .unwrap(),
+        session_ref
+    );
+    let ciphertext = outbound.encrypt(&alice, message("hi")).unwrap();
+    assert_eq!(
+        restored_inbound
+            .decrypt(row(ciphertext))
+            .unwrap()
+            .payload
+            .content
+            .body,
+        "hi"
+    );
+
+    // 保存鍵が違う、別の端末の値は開けない。
+    assert!(matches!(
+        restored_inbound.restore_session(&bob, inbound_pickle.clone(), vec![1u8; 32]),
+        Err(ZooCryptoError::InvalidPickle { .. })
+    ));
+    assert!(matches!(
+        restored_sessions.restore_session(&alice, stored[0].pickle.clone(), key.clone()),
+        Err(ZooCryptoError::InvalidPickle { .. })
+    ));
+
+    // 配布先の判定の記録。
+    let trust = TrustStore::new(BOB.into()).unwrap();
+    let pickle = trust.pickle(&bob, key.clone()).unwrap();
+    assert_ne!(pickle, trust.pickle(&bob, key.clone()).unwrap());
+    let restored = TrustStore::from_pickle(pickle.clone(), &bob, key.clone()).unwrap();
+    assert_eq!(restored.to_json(), trust.to_json());
+    assert!(matches!(
+        TrustStore::from_pickle(pickle, &alice, key),
+        Err(ZooCryptoError::InvalidPickle { .. })
+    ));
+}

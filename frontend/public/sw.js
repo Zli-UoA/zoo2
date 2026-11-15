@@ -31,8 +31,21 @@ const SHELL = [
 ];
 const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
 
+// 暗号化チャンネルの Push の復号（#365。docs/e2ee.md の「Web Push の復号」）。`pnpm build` が
+// src/sw/push.ts から作る /sw-push.js が `self.zooDecryptPush` を置く（dev サーバーでは、何もしない
+// public/sw-push.js を返す）。importScripts は起動時と install のあいだにしか読めず、読めたスクリプト
+// だけが更新の検査の対象になる。そのため失敗を握りつぶさず、install を失敗させて、次の登録や更新の
+// 検査で読み直させる（握りつぶすと、復号できない Service Worker が sw.js の次の変更まで残る）。
+if (typeof importScripts === "function") importScripts("/sw-push.js");
+
+// /android/ は Android アプリの E2EE の再認証のリダイレクト先（#360）。App Links でアプリに渡らなかった
+// ときに nginx の案内のページを出すため、app shell を返さない。
 function isPrivatePath(pathname) {
-  return pathname.startsWith("/api/") || pathname.startsWith("/auth/");
+  return (
+    pathname.startsWith("/api/") ||
+    pathname.startsWith("/auth/") ||
+    pathname.startsWith("/android/")
+  );
 }
 
 function isCacheableAsset(url) {
@@ -523,6 +536,26 @@ self.addEventListener("fetch", (event) => {
   }
 });
 
+const CALL_ACCEPT_CACHE = "zoo-call-accept";
+
+// 通知の「応答」を押した印。画面（`IncomingCallDialog`）が一度だけ読んで消し、あれば応答して通話に入る。
+async function markCall(kind, inviteId) {
+  const cache = await caches.open(CALL_ACCEPT_CACHE);
+  await cache.put(`/__call-${kind}/${inviteId}`, new Response(String(Date.now())));
+}
+
+async function closeCallInvite(tag) {
+  const open = await self.registration.getNotifications({ tag });
+  for (const notification of open) notification.close();
+  if (open.length === 0) {
+    // 通知を出さない push は、ブラウザーが代わりの通知を出すことがある。同じ tag で出してすぐ閉じる。
+    await self.registration.showNotification("Zoo", { tag, silent: true });
+    for (const notification of await self.registration.getNotifications({ tag })) {
+      notification.close();
+    }
+  }
+}
+
 self.addEventListener("push", (event) => {
   let payload = {};
   try {
@@ -538,30 +571,116 @@ self.addEventListener("push", (event) => {
       ? "你有新通知。請開啟 Zoo 查看。"
       : "You have a new notification. Open Zoo to view it.";
   const title = typeof payload.title === "string" ? payload.title : "Zoo";
-  let body = typeof payload.body === "string" ? payload.body : fallback;
-  if (payload.notificationType === "reaction") {
-    body =
-      (language.startsWith("ja")
-        ? "リアクション: "
-        : language.startsWith("zh")
-          ? "回應: "
-          : "Reaction: ") + body;
+  if (payload.notificationType === "call_invite_end" && typeof payload.tag === "string") {
+    // 通話の招待が終わった（応答・拒否・取り消し・不在）。出ている着信の通知を閉じる。
+    event.waitUntil(closeCallInvite(payload.tag));
+    return;
   }
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: "/icons/icon-192.png",
-      badge: "/icons/badge-96.png",
-      tag: typeof payload.tag === "string" ? payload.tag : "zoo-activity",
-      data: { url: typeof payload.url === "string" ? payload.url : "/" },
-    }),
+    (async () => {
+      let body = typeof payload.body === "string" ? payload.body : fallback;
+      // 暗号化チャンネルは、手元の暗号ストアで復号できたら本文に置き換える。
+      if (payload.e2ee && typeof self.zooDecryptPush === "function") {
+        try {
+          const decrypted = await self.zooDecryptPush(payload.e2ee);
+          if (typeof decrypted === "string") body = decrypted;
+        } catch {
+          /* Keep the generic body. */
+        }
+      }
+      if (payload.notificationType === "reaction") {
+        body =
+          (language.startsWith("ja")
+            ? "リアクション: "
+            : language.startsWith("zh")
+              ? "回應: "
+              : "Reaction: ") + body;
+      }
+      const isCallInvite =
+        payload.notificationType === "call_invite" && typeof payload.inviteId === "string";
+      await self.registration.showNotification(title, {
+        body,
+        icon: "/icons/icon-192.png",
+        badge: "/icons/badge-96.png",
+        tag: typeof payload.tag === "string" ? payload.tag : "zoo-activity",
+        data: {
+          url: typeof payload.url === "string" ? payload.url : "/",
+          ...(isCallInvite ? { inviteId: payload.inviteId } : {}),
+        },
+        // 着信は、応答するか拒否するまで出し続ける（期限が来たら call_invite_end で閉じる）。
+        ...(isCallInvite
+          ? {
+              requireInteraction: true,
+              renotify: true,
+              actions: [
+                {
+                  action: "accept",
+                  title: language.startsWith("ja")
+                    ? "応答"
+                    : language.startsWith("zh")
+                      ? "接聽"
+                      : "Accept",
+                },
+                {
+                  action: "decline",
+                  title: language.startsWith("ja")
+                    ? "拒否"
+                    : language.startsWith("zh")
+                      ? "拒絕"
+                      : "Decline",
+                },
+              ],
+            }
+          : {}),
+      });
+    })(),
   );
 });
 
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
+  const inviteId = event.notification.data?.inviteId;
   event.waitUntil(
     (async () => {
+      if (typeof inviteId === "string") {
+        const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+        const appWindows = windows.filter(
+          (client) => new URL(client.url).origin === self.location.origin,
+        );
+        if (event.action === "decline") {
+          // Service Worker は API のトークンを持たないので、画面に拒否を頼む。
+          // 開いているタブがあれば postMessage、なければ印を残して画面を開く（画面が印を読んで拒否する）。
+          for (const client of appWindows) {
+            client.postMessage({ type: "zoo-call-invite", action: "decline", inviteId });
+          }
+          if (appWindows.length === 0) {
+            await markCall("decline", inviteId);
+            const url = new URL(event.notification.data?.url || "/", self.location.origin);
+            if (url.origin === self.location.origin && url.pathname.startsWith("/channels/")) {
+              await self.clients.openWindow(url.href);
+            }
+          }
+          return;
+        }
+        if (event.action === "accept") {
+          // URL だけで応答させないよう、「応答を押した」印をここで残し、画面が一度だけ読んで消す。
+          await markCall("accept", inviteId);
+          for (const client of appWindows) {
+            client.postMessage({ type: "zoo-call-invite", action: "accept", inviteId });
+          }
+        }
+        if (appWindows.length > 0) {
+          // 開いているタブは、移動（再読み込み）せずに前へ出す。通話中のタブを壊さない。
+          for (const client of appWindows) {
+            try {
+              await client.focus();
+              return;
+            } catch {
+              /* Try another app window or open a new one. */
+            }
+          }
+        }
+      }
       let target = "/";
       try {
         const url = new URL(event.notification.data?.url || "/", self.location.origin);

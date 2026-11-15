@@ -2,6 +2,10 @@ import type { Preview } from "@storybook/react-vite";
 import { configure } from "storybook/test";
 
 import "../src/styles.css";
+import {
+  ENCRYPTED_CHANNEL_STORAGE_PREFIX,
+  resetSeenEncryptedChannels,
+} from "../src/lib/e2ee/encryptionGuard";
 import { startStorybookWorker, withCollections, withMsw, withProviders } from "./decorators";
 
 // アプリの Service Worker が MSW の worker を上書きしないよう、Storybook では
@@ -15,6 +19,18 @@ if (typeof window !== "undefined") {
 }
 
 const preview: Preview = {
+  beforeEach: () => {
+    // 暗号化チャンネルのストーリーが覚えた「暗号化と見たチャンネル」を、ほかのストーリーに持ち込まない
+    // （同じチャンネル ID の平文チャンネルが格下げと判定され、送信が止まる）。
+    resetSeenEncryptedChannels();
+    try {
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith(ENCRYPTED_CHANNEL_STORAGE_PREFIX)) localStorage.removeItem(key);
+      }
+    } catch {
+      // localStorage を使えない環境では、覚えてもいない。
+    }
+  },
   beforeAll: async () => {
     // CI runs multiple browser stories concurrently; wait for real DOM updates
     // without failing after Testing Library's default one-second deadline.

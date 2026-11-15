@@ -5,6 +5,10 @@ pub struct OidcConfig {
     pub issuer: String,
     pub audience: String,
     pub jwks_url: Option<String>,
+    /// E2EE の再認証（`X-Zoo-Reauth`）の ID トークンの `aud` として認めるクライアント ID の一覧
+    /// （`OIDC_REAUTH_AUDIENCES`、カンマ区切り。Web、Android、TUI）。空なら再認証はすべて失敗する
+    /// （起動は止めない。docs/e2ee.md の「クロス署名」）。
+    pub reauth_audiences: Vec<String>,
 }
 
 impl fmt::Debug for OidcConfig {
@@ -13,6 +17,7 @@ impl fmt::Debug for OidcConfig {
             .field("issuer", &self.issuer)
             .field("audience", &self.audience)
             .field("jwks_url", &self.jwks_url)
+            .field("reauth_audiences", &self.reauth_audiences)
             .finish()
     }
 }
@@ -112,6 +117,11 @@ pub struct SlackConfig {
     pub api_base_url: String,
     /// ZIP を展開のために一時保存するディレクトリ。読み取り専用のルートでは書き込める場所を指定する
     pub import_tmp_dir: std::path::PathBuf,
+    /// Slack アプリの Signing Secret (#293 Events API の署名の検証)。未設定なら受信口は無効 (404)
+    pub signing_secret: Option<String>,
+    /// この Slack アプリの ID (`A…`)。任意。設定すると、このアプリが投稿したメッセージ (#294 のブリッジの投稿)
+    /// を Slack から取り込まず (ループ防止)、別のアプリ宛てのイベントを無視する
+    pub app_id: Option<String>,
 }
 
 impl Default for SlackConfig {
@@ -128,6 +138,8 @@ impl Default for SlackConfig {
             token_encryption_key: None,
             api_base_url: DEFAULT_SLACK_API_BASE_URL.to_string(),
             import_tmp_dir: std::env::temp_dir(),
+            signing_secret: None,
+            app_id: None,
         }
     }
 }
@@ -155,6 +167,11 @@ impl fmt::Debug for SlackConfig {
             )
             .field("api_base_url", &self.api_base_url)
             .field("import_tmp_dir", &self.import_tmp_dir)
+            .field("app_id", &self.app_id)
+            .field(
+                "signing_secret",
+                &self.signing_secret.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -190,7 +207,19 @@ impl SlackConfig {
             .ok()
     }
 
+    /// Slack の Events API の受信口を使うか。Signing Secret があり、差分同期 (アカウント連携) も有効なとき
+    pub fn events_enabled(&self) -> bool {
+        self.signing_secret.is_some() && self.oauth_enabled()
+    }
+
     fn validate(&self, environment: &str) -> Result<(), String> {
+        // 受信口は、合図で差分同期を起こすだけ。連携の設定がないと同期が動かないので、設定ミスとして止める
+        if self.signing_secret.is_some() && !self.oauth_enabled() {
+            return Err(
+                "SLACK_SIGNING_SECRET requires SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_OAUTH_REDIRECT_URL and a base64 32-byte SLACK_TOKEN_ENCRYPTION_KEY"
+                    .to_string(),
+            );
+        }
         let any = self.client_id.is_some()
             || self.client_secret.is_some()
             || self.oauth_redirect_url.is_some()
@@ -247,6 +276,8 @@ impl SlackConfig {
                 .map(|v| v.trim_end_matches('/').to_string())
                 .unwrap_or_else(|| DEFAULT_SLACK_API_BASE_URL.to_string()),
             import_tmp_dir,
+            signing_secret: optional("SLACK_SIGNING_SECRET").map(|v| v.trim().to_string()),
+            app_id: optional("SLACK_APP_ID").map(|v| v.trim().to_string()),
         }
     }
 }
@@ -265,6 +296,9 @@ pub struct Config {
     pub webrtc_ice_servers_json: String,
     pub s3: S3Config,
     pub slack: SlackConfig,
+    /// `encrypted: true` のチャンネルと DM の作成を受け付けるか（`E2EE_ENCRYPTED_CHANNELS_ENABLED`。既定は false）。
+    /// false のあいだは 403 `E2EE_DISABLED`。#358 の拒否が入ってから true にする（docs/e2ee.md）。
+    pub e2ee_encrypted_channels_enabled: bool,
 }
 
 impl fmt::Debug for Config {
@@ -285,6 +319,10 @@ impl fmt::Debug for Config {
             .field("webrtc_ice_servers_json", &"[REDACTED]")
             .field("s3", &self.s3)
             .field("slack", &self.slack)
+            .field(
+                "e2ee_encrypted_channels_enabled",
+                &self.e2ee_encrypted_channels_enabled,
+            )
             .finish()
     }
 }
@@ -311,7 +349,19 @@ pub(crate) fn parse_oidc_config(
         issuer: issuer.to_string(),
         audience: audience.to_string(),
         jwks_url,
+        reauth_audiences: Vec::new(),
     })
+}
+
+/// `OIDC_REAUTH_AUDIENCES`（カンマ区切り）をパースする。空要素は無視する。
+pub(crate) fn parse_reauth_audiences(value: Option<&str>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// `DATABASE_URL`、なければ `POSTGRES_*` から接続 URL を組み立てる（dispatcher と共有）。
@@ -325,6 +375,14 @@ pub fn database_url_from_env() -> String {
         let port = env::var("POSTGRES_PORT").unwrap_or_else(|_| "5432".to_string());
         let db = env::var("POSTGRES_DB").unwrap_or_else(|_| "zoo".to_string());
         format!("postgresql://{user}:{password}@{host}:{port}/{db}?sslmode=disable")
+    })
+}
+
+/// `true` か `1` だけを有効とみなす（大文字と小文字は区別しない）。未設定や空、それ以外の値は無効。
+pub fn parse_bool_flag(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        let v = v.trim();
+        v.eq_ignore_ascii_case("true") || v == "1"
     })
 }
 
@@ -355,7 +413,17 @@ impl Config {
             env::var("OIDC_AUDIENCE").ok().as_deref(),
             env::var("OIDC_CLIENT_ID").ok().as_deref(),
             env::var("OIDC_JWKS_URL").ok().as_deref(),
-        );
+        )
+        .map(|mut oidc| {
+            oidc.reauth_audiences =
+                parse_reauth_audiences(env::var("OIDC_REAUTH_AUDIENCES").ok().as_deref());
+            if oidc.reauth_audiences.is_empty() {
+                tracing::warn!(
+                    "OIDC_REAUTH_AUDIENCES is not set; E2EE operations that need re-authentication will be rejected"
+                );
+            }
+            oidc
+        });
 
         let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
 
@@ -432,6 +500,9 @@ impl Config {
             webrtc_ice_servers_json,
             s3,
             slack: SlackConfig::from_env(),
+            e2ee_encrypted_channels_enabled: parse_bool_flag(
+                env::var("E2EE_ENCRYPTED_CHANNELS_ENABLED").ok().as_deref(),
+            ),
         }
     }
 
@@ -606,12 +677,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_parse_bool_flag() {
+        assert!(!parse_bool_flag(None));
+        assert!(!parse_bool_flag(Some("")));
+        assert!(!parse_bool_flag(Some("false")));
+        assert!(!parse_bool_flag(Some("yes")));
+        assert!(parse_bool_flag(Some("true")));
+        assert!(parse_bool_flag(Some(" TRUE ")));
+        assert!(parse_bool_flag(Some("1")));
+    }
+
+    #[test]
     fn slack_team_allowed_applies_only_when_set() {
         let mut slack = SlackConfig::default();
         assert!(slack.team_allowed("T1"));
         slack.team_id = Some("T1".into());
         assert!(slack.team_allowed("T1"));
         assert!(!slack.team_allowed("T2"));
+    }
+
+    #[test]
+    fn slack_signing_secret_requires_the_oauth_settings() {
+        let mut slack = SlackConfig::default();
+        assert!(!slack.events_enabled());
+        assert!(slack.validate("production").is_ok());
+        slack.signing_secret = Some("s3cr3t-value".into());
+        assert!(slack.validate("production").is_err());
+        assert!(!slack.events_enabled());
+        slack.client_id = Some("id".into());
+        slack.client_secret = Some("secret".into());
+        slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+        slack.token_encryption_key = Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into());
+        assert!(slack.validate("production").is_ok());
+        assert!(slack.events_enabled());
+        assert!(!format!("{slack:?}").contains("s3cr3t-value"));
     }
 
     fn dummy_s3_config() -> S3Config {
@@ -641,6 +740,7 @@ mod tests {
                 issuer: "https://idp.example.com".to_string(),
                 audience: "zoo-client".to_string(),
                 jwks_url: Some("https://idp.example.com/jwks".to_string()),
+                reauth_audiences: Vec::new(),
             }),
             dev_auth_enabled: false,
             environment: "production".to_string(),
@@ -648,6 +748,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
@@ -676,6 +777,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
 
         // 有効な JSON 配列
@@ -712,6 +814,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -728,10 +831,21 @@ mod tests {
                 issuer: "https://idp.example.com".to_string(),
                 audience: "zoo-client".to_string(),
                 jwks_url: None,
+                reauth_audiences: Vec::new(),
             }),
             ..prod_no_oidc
         };
         assert!(prod_with_oidc.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parse_reauth_audiences_splits_and_trims() {
+        assert!(parse_reauth_audiences(None).is_empty());
+        assert!(parse_reauth_audiences(Some(" , ")).is_empty());
+        assert_eq!(
+            parse_reauth_audiences(Some("web, android ,tui,")),
+            vec!["web", "android", "tui"]
+        );
     }
 
     #[test]
@@ -792,6 +906,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         assert!(config.validate().is_err());
     }
@@ -819,6 +934,7 @@ mod tests {
             webrtc_ice_servers_json: "[]".to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         assert!(config.validate().is_ok());
 
@@ -856,6 +972,7 @@ mod tests {
             webrtc_ice_servers_json: "[]".to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
 
         // 境界値 OK (1 秒、604,800 秒 = 7 日)
@@ -909,6 +1026,7 @@ mod tests {
             webrtc_ice_servers_json: json.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
 
         // 正常系: 有効な STUN / TURN
@@ -1010,6 +1128,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("stun:stun.l.google.com:19302"));
@@ -1043,6 +1162,7 @@ mod tests {
             issuer: "https://idm.example.com".to_string(),
             audience: "zoo_client".to_string(),
             jwks_url: None,
+            reauth_audiences: Vec::new(),
         });
 
         let mut config = Config {
@@ -1058,6 +1178,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
             slack: SlackConfig::default(),
+            e2ee_encrypted_channels_enabled: false,
         };
 
         // None は OK

@@ -258,7 +258,10 @@ const appResponse = (res, data, replicated = true) =>
 const server = createSecureServer(tls, async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Dev-User");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Authorization,Content-Type,X-Dev-User,traceparent,tracestate",
+  );
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader(
     "Access-Control-Expose-Headers",

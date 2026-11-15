@@ -20,6 +20,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.*
 import kotlin.math.ceil
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 
 fun JsonElement.objectOrEmpty() = this as? JsonObject ?: JsonObject(emptyMap())
@@ -758,6 +759,7 @@ fun Apps(
                                                         )
                                                     },
                                                 )
+                                                app.invalidateSurfaces()
                                             }
                                         },
                                     )
@@ -911,15 +913,10 @@ private fun AppCommands(
 @Composable
 private fun AppHome(app: Session, id: String, channelId: String? = app.contextChannelId) {
     var rows by remember(id) { mutableStateOf<List<Row>>(emptyList()) }
-    LaunchedEffect(id, app.env.visible) {
-        while (isActive) {
-            try {
-                rows = app.api.request("/api/apps/$id/surfaces").rows()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {}
-            if (!app.env.visible) break
-            delay(2000)
+    LaunchedEffect(app, id) {
+        pollWhileVisible(snapshotFlow { app.env.visible && app.env.online }, app.surfaceChanges, 2000, 30000) {
+            rows = app.api.request("/api/apps/$id/surfaces").rows()
+            rows.isNotEmpty() || app.watchingSurfaces()
         }
     }
     rows
@@ -1015,6 +1012,7 @@ fun Blocks(
                         )
                     },
                 )
+                app.invalidateSurfaces()
                 if (kind == "submit") done()
             } catch (e: CancellationException) {
                 throw e

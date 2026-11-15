@@ -24,16 +24,16 @@ export function readStoredSession(
       typeof tokens.accessToken === "string" &&
       tokens.accessToken.length > 0 &&
       (tokens.refreshToken === null ||
-        (typeof tokens.refreshToken === "string" && tokens.refreshToken.length > 0)) &&
+        (typeof tokens.refreshToken === "string" &&
+          tokens.refreshToken.length > 0 &&
+          typeof tokens.refreshSessionId === "string" &&
+          tokens.refreshSessionId.length > 0)) &&
       (tokens.idToken === null || typeof tokens.idToken === "string") &&
       typeof tokens.expiresAt === "number" &&
       Number.isFinite(tokens.expiresAt) &&
-      tokens.expiresAt > now
+      (tokens.expiresAt > now || typeof tokens.refreshToken === "string")
     ) {
-      // sessionStorage はタブ複製時にコピーされるため、更新トークンを復元しない。
-      const restored = { ...tokens, refreshToken: null } as OidcTokens;
-      if (tokens.refreshToken !== null) writeStoredSession(storage, binding, restored);
-      return restored;
+      return tokens as OidcTokens;
     }
   } catch {
     // 保存を使えないブラウザーでも、メモリ内の認証は続ける。
@@ -48,19 +48,17 @@ export function writeStoredSession(
   tokens: OidcTokens,
 ): void {
   try {
-    storage.setItem(
-      SESSION_KEY,
-      JSON.stringify({ binding, tokens: { ...tokens, refreshToken: null } }),
-    );
+    storage.setItem(SESSION_KEY, JSON.stringify({ binding, tokens }));
   } catch {
     clearStoredSession(storage);
   }
 }
 
-export function clearStoredSession(storage: AuthStorage): void {
+export function clearStoredSession(storage: AuthStorage): boolean {
   try {
     storage.removeItem(SESSION_KEY);
+    return true;
   } catch {
-    // sessionStorage が無効でもログアウト処理を妨げない。
+    return false;
   }
 }

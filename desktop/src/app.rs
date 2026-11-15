@@ -18,9 +18,10 @@ use zoo2_client_core::{
     config::{AuthConfig, Config},
     electric::{
         self, Change, ShapeEvent, ShapeId,
-        rows::{Attachment, Channel, FromRow, Message},
+        rows::{Attachment, Channel, Message},
     },
     http::{Credentials, HttpError},
+    poll::PollGate,
     store::{ReactionGroup, Store},
     update,
 };
@@ -74,15 +75,6 @@ pub struct CachedAttachmentUrl {
     pub url: String,
     pub fetched_at: Instant,
     pub ttl_secs: u64,
-}
-
-/// OS ネイティブ通知を送信する。
-pub fn notify_desktop(title: &str, body: &str) {
-    let _ = notify_rust::Notification::new()
-        .appname("zoo2")
-        .summary(title)
-        .body(body)
-        .show();
 }
 
 /// 拡張子から簡易 MIME タイプを判定する。
@@ -150,62 +142,6 @@ pub struct FailedDraft {
     pub content: String,
     pub attachments: Vec<PendingAttachment>,
     pub message_id: Option<String>,
-}
-
-const MENTION_PUNCTUATION: &[char] = &['.', ',', '!', '?', ':', ';', '。', '、', '！', '？'];
-
-fn is_mention_boundary_char(prev: char) -> bool {
-    prev.is_whitespace()
-        || matches!(
-            prev,
-            '(' | '[' | '{' | '<' | '（' | '「' | '『' | '"' | '\'' | '。' | '、'
-        )
-}
-
-/// 本文が指定ユーザー宛てメンションまたは `@channel` / `@here` を含むかを判定する。
-/// `backend/src/notifications.rs` の境界判定・末尾句読点トリム規則と整合させ、メールアドレスやURLの誤検知を防ぐ。
-pub fn has_mention_for(content: &str, me_user_name: &str) -> bool {
-    let chars: Vec<char> = content.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if chars[i] == '@' {
-            let is_boundary = i == 0 || is_mention_boundary_char(chars[i - 1]);
-            if is_boundary {
-                let start = i + 1;
-                let mut end = start;
-                while end < len {
-                    let c = chars[end];
-                    if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                        end += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                if end > start {
-                    let token: String = chars[start..end].iter().collect();
-                    let trimmed_token = token.trim_end_matches(MENTION_PUNCTUATION);
-
-                    if trimmed_token.eq_ignore_ascii_case("channel")
-                        || trimmed_token.eq_ignore_ascii_case("here")
-                    {
-                        return true;
-                    }
-                    if !me_user_name.is_empty()
-                        && (token == me_user_name || trimmed_token == me_user_name)
-                    {
-                        return true;
-                    }
-                    i = end;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    false
 }
 
 /// 送信待ちの添付ファイル。
@@ -303,8 +239,11 @@ pub struct ChannelViewCache {
 /// バックグラウンドタスクから `AppState` へ届くイベント。
 #[derive(Debug)]
 pub enum AppEvent {
+    /// DND の取得結果。`Some(until)` は取得成功、`None` は失敗 (前の値を保つ)。
+    Dnd(Option<Option<jiff::civil::DateTime>>),
     Notice(String),
     Unauthorized,
+    AccountProfiles(zoo2_client_core::store::AccountProfiles),
     EmojiCatalog {
         shortcodes: HashMap<String, String>,
         custom: HashSet<String>,
@@ -334,6 +273,8 @@ pub enum AppEvent {
         users: Vec<TypingUser>,
     },
     TypingPollFinished,
+    ReadStatesPollFinished,
+    EmojiPollFinished,
     UpdateAvailable(String),
     AttachmentUploadFinished {
         local_id: String,
@@ -364,10 +305,34 @@ pub enum AppEvent {
 /// Tokio タスク群から GPUI の `Entity<AppState>` へ橋渡しする統合イベント。
 #[derive(Debug)]
 pub enum DesktopEvent {
-    Auth { session_gen: u64, event: AuthEvent },
-    Shape { session_gen: u64, event: ShapeEvent },
-    App { session_gen: u64, event: AppEvent },
-    Tick { session_gen: u64 },
+    Auth {
+        session_gen: u64,
+        event: AuthEvent,
+    },
+    Shape {
+        session_gen: u64,
+        event: ShapeEvent,
+    },
+    App {
+        session_gen: u64,
+        event: AppEvent,
+    },
+    Tick {
+        session_gen: u64,
+    },
+    LogoutFinished {
+        session_gen: u64,
+        result: Result<Vec<String>, (String, bool)>,
+    },
+    AuthPersisted {
+        session_gen: u64,
+        event: AuthEvent,
+        error: Option<String>,
+    },
+    CancelFinished {
+        session_gen: u64,
+        result: Result<Vec<String>, (String, bool)>,
+    },
 }
 
 /// デスクトップ版のアプリケーション状態 (`Entity<AppState>`)。
@@ -383,6 +348,9 @@ pub struct AppState {
     /// ログイン画面のフェーズ (`None` のときはログイン済みでチャット画面を表示)。
     pub login_phase: Option<LoginPhase>,
     pub login_task: Option<JoinHandle<()>>,
+    logout_in_progress: bool,
+    deferred_unauthorized: bool,
+    cancel_in_progress: bool,
     /// 実行中のデバイスログインでトークン保存が完了したマネージャ。
     /// 承認完了後にキャンセルされた場合、このマネージャが保存したトークンのみを削除・失効するために保持する。
     pub pending_device_login_manager:
@@ -390,6 +358,7 @@ pub struct AppState {
 
     pub credentials: Option<Credentials>,
     pub token_manager: Option<Arc<login::DesktopTokenManager>>,
+    recovery_manager: Option<Arc<login::DesktopTokenManager>>,
     pub api: Option<ApiClient>,
     pub me: Option<Me>,
     pub me_is_admin: bool,
@@ -408,10 +377,6 @@ pub struct AppState {
     /// 削除確認を出している対象のメッセージ ID。
     pub confirm_delete_message: Option<String>,
 
-    /// サイドバーのチャンネル絞り込みクエリ。
-    pub search_query: String,
-    /// `AppState` 側から検索欄 (`TextInput`) へ反映すべき文字列。
-    pub pending_search_text: Option<String>,
     /// メッセージ入力欄の現在の文字列。
     pub composer_draft: String,
     /// `(チャンネル ID, 送信先)` ごとの書きかけ下書き。
@@ -434,10 +399,23 @@ pub struct AppState {
     pub channel_creators_by_key: HashMap<String, (String, Option<String>)>,
     /// `Channels` シェイプのキーごとの `(チャンネル ID, posting_policy)`。
     pub channel_posting_policies_by_key: HashMap<String, (String, String)>,
+    /// 一度 `encrypted = true` を見たチャンネル。Channels の再同期で行が消えても暗号化として扱い、
+    /// 表示と送信をしない（ログアウトまで覚える）。
+    pub known_encrypted_channels: HashSet<String>,
     /// 開いているチャンネルの描画用キャッシュ。
     pub channel_cache: ChannelViewCache,
 
     pub unread: HashSet<String>,
+    /// 未読の線を置く位置 (チャンネルごと)。そのチャンネルが未読のときの `last_read_at` で、
+    /// チャンネルを閲覧している間は既読になっても残す (frontend の `useMessageReadState` と同じ)。
+    pub read_boundary: HashMap<String, jiff::civil::DateTime>,
+    /// 直近の ReadStates で知った `last_read_at` (チャンネルごと、未読でないものも含む)。
+    /// チャンネルを開くとき、ポーリングを待たずに未読の線の位置を決めるのに使う。
+    last_read_known: HashMap<String, jiff::civil::DateTime>,
+    /// このセッションで ReadStates の取得を一度終えたか (成否を問わない)。
+    /// 終えるまでは自動既読にしない。先に既読にすると、サーバーが `has_unread: false` を返し、
+    /// 開いた時点の `last_read_at` (未読の線の位置) が分からなくなるため。
+    read_states_loaded: bool,
     pub last_read_marked: HashMap<String, String>,
     pub read_mark_in_flight: HashMap<String, String>,
     pub read_mark_backoff_until: HashMap<String, (String, Instant)>,
@@ -461,6 +439,9 @@ pub struct AppState {
     pub typing_sent: Option<(String, Option<String>, Instant)>,
     pub last_key_typed: Option<Instant>,
     pub typing_poll_in_flight: bool,
+    typing_poll: PollGate,
+    read_poll: PollGate,
+    emoji_poll: PollGate,
 
     pub notice: Option<(String, Instant)>,
     pub sync_errors: HashMap<ShapeId, String>,
@@ -502,6 +483,10 @@ pub struct AppState {
     pub notifications_enabled: bool,
     /// OS 通知送信ハンドラ（テストでの通知検証用やモック用）。
     pub notification_sink: Option<NotificationSink>,
+    /// `GET /api/users/me/profile` の `dnd_until` (UTC)。
+    pub dnd_until: Option<jiff::civil::DateTime>,
+    /// DND を一度でも取りにいったか。取れなかった場合も true にして、通知を止め続けない。
+    pub dnd_checked: bool,
     /// 検索移動時などに指定位置までスクロールするためのメッセージ ID。
     pub pending_scroll_to_message_id: Option<String>,
     /// モーダルや検索バーを閉じた後に composer へフォーカスを復帰させるフラグ。
@@ -574,9 +559,13 @@ impl AppState {
             event_tx,
             login_phase: Some(LoginPhase::Checking),
             login_task: None,
+            logout_in_progress: false,
+            deferred_unauthorized: false,
+            cancel_in_progress: false,
             pending_device_login_manager: Arc::new(std::sync::Mutex::new(None)),
             credentials: None,
             token_manager: None,
+            recovery_manager: None,
             api: None,
             me: None,
             me_is_admin: false,
@@ -589,8 +578,6 @@ impl AppState {
             target: Target::Channel,
             active_reaction_message: None,
             confirm_delete_message: None,
-            search_query: String::new(),
-            pending_search_text: None,
             composer_draft: String::new(),
             saved_drafts: HashMap::new(),
             saved_draft_message_ids: HashMap::new(),
@@ -603,8 +590,12 @@ impl AppState {
             preserved_unauthorized_drafts: None,
             channel_creators_by_key: HashMap::new(),
             channel_posting_policies_by_key: HashMap::new(),
+            known_encrypted_channels: HashSet::new(),
             channel_cache: ChannelViewCache::default(),
             unread: HashSet::new(),
+            read_boundary: HashMap::new(),
+            last_read_known: HashMap::new(),
+            read_states_loaded: false,
             last_read_marked: HashMap::new(),
             read_mark_in_flight: HashMap::new(),
             read_mark_backoff_until: HashMap::new(),
@@ -620,6 +611,9 @@ impl AppState {
             typing_sent: None,
             last_key_typed: None,
             typing_poll_in_flight: false,
+            typing_poll: PollGate::new(Duration::from_millis(1500), Duration::from_secs(5)),
+            read_poll: PollGate::new(READ_STATE_POLL, READ_STATE_POLL),
+            emoji_poll: PollGate::new(Duration::from_secs(60), Duration::from_secs(60)),
             notice: None,
             sync_errors: HashMap::new(),
             update_available: None,
@@ -642,6 +636,8 @@ impl AppState {
             theme_mode: crate::theme::ThemeMode::Dark,
             notifications_enabled: true,
             notification_sink: None,
+            dnd_until: None,
+            dnd_checked: false,
             pending_scroll_to_message_id: None,
             pending_focus_composer: false,
             pending_open_attachments: HashSet::new(),
@@ -714,6 +710,10 @@ impl AppState {
             task.abort();
         }
         let session_gen = self.bump_session_gen();
+        let recovery_manager = self.recovery_manager.clone();
+        if let Some(manager) = &recovery_manager {
+            manager.bind_to_session_gen(session_gen);
+        }
         let active_session_gen = self.active_session_gen.clone();
         self.login_phase = Some(LoginPhase::Checking);
         let http = self.http.clone();
@@ -734,13 +734,34 @@ impl AppState {
                     }
                 }
             });
-            login::connect_initial(http, config, session_gen, active_session_gen, auth_tx).await;
+            if let Some(manager) = recovery_manager {
+                login::retry_pending_session(http, config, manager, auth_tx).await;
+            } else {
+                login::connect_initial(http, config, session_gen, active_session_gen, auth_tx)
+                    .await;
+            }
             let _ = forward.await;
         });
     }
 
     /// OIDC デバイスコード認証を開始する。
     pub fn start_device_login(&mut self) {
+        if self.recovery_manager.is_some() {
+            self.start_initial_auth();
+            return;
+        }
+        if self.cancel_in_progress {
+            return;
+        }
+        if self
+            .pending_device_login_manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
+            self.cancel_device_login();
+            return;
+        }
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
@@ -784,59 +805,164 @@ impl AppState {
     /// 世代番号を進め、このログイン試行が承認後にトークンを保存していた場合のみ削除・失効して次回起動時の誤接続を防ぐ。
     /// 承認前キャンセル時は、以前から存在していた正常なトークンファイルを誤削除しない。
     pub fn cancel_device_login(&mut self) {
+        if self.cancel_in_progress {
+            return;
+        }
+        if self.recovery_manager.is_some() {
+            if let Some(task) = self.login_task.take() {
+                task.abort();
+            }
+            self.bump_session_gen();
+            self.login_phase = Some(LoginPhase::Ready { error: Some("認証情報を保存できていません。保存領域の復旧後に再試行してください。アプリ終了時には更新済み token が失われる可能性があります".into()) });
+            return;
+        }
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
         self.bump_session_gen();
-        if let Some(manager) = self
+        let manager = self
             .pending_device_login_manager
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            let delete_res = manager.logout_and_delete();
-            if let Ok(Some(refresh_token)) = delete_res
-                && let AuthConfig::Oidc(oidc) = self.config.auth.clone()
+            .clone();
+        if let Some(manager) = manager {
+            self.cancel_in_progress = true;
+            self.login_phase = Some(LoginPhase::Checking);
+            let tx = self.event_tx.clone();
+            let session_gen = self.session_gen;
+            let http = self.http.clone();
+            let auth = self.config.auth.clone();
+            if self
+                .spawn_tokio(async move {
+                    let result = tokio::task::spawn_blocking(move || manager.logout_and_delete())
+                        .await
+                        .map_err(|e| (e.to_string(), false))
+                        .and_then(|r| {
+                            r.map_err(|e| (format!("{e:#}"), e.is::<login::SessionChanged>()))
+                        });
+                    if let (Ok(tokens), AuthConfig::Oidc(oidc)) = (&result, auth) {
+                        let tokens = tokens.clone();
+                        tokio::spawn(async move {
+                            for refresh_token in tokens {
+                                login::revoke_refresh_token(
+                                    http.clone(),
+                                    oidc.clone(),
+                                    refresh_token,
+                                )
+                                .await;
+                            }
+                        });
+                    }
+                    let result = result.map(|_| Vec::new());
+                    let _ = tx.send(DesktopEvent::CancelFinished {
+                        session_gen,
+                        result,
+                    });
+                })
+                .is_none()
             {
-                let http = self.http.clone();
-                self.spawn_tokio(async move {
-                    login::revoke_refresh_token(http, oidc, refresh_token).await;
+                self.cancel_in_progress = false;
+                self.login_phase = Some(LoginPhase::Ready {
+                    error: Some("ログイン取消を開始できませんでした".into()),
                 });
             }
+        } else {
+            self.login_phase = Some(LoginPhase::Ready { error: None });
         }
-        self.login_phase = Some(LoginPhase::Ready { error: None });
     }
 
     /// ログアウトしてトークンを削除し、ログイン画面へ戻る。
     /// ローカルトークンの削除をタスク中断より前に確定させるため、削除に失敗した場合はタスクや実行中フラグを壊さずにログイン状態を維持する。
     pub fn logout(&mut self) {
         if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
-            let delete_res = match &self.token_manager {
-                Some(tm) => tm.logout_and_delete(),
-                None => login::delete_local_token_for_logout(&self.config).map(|(_, rt)| rt),
-            };
-            match delete_res {
-                Ok(refresh_token) => {
-                    self.stop_typing();
-                    self.preserved_unauthorized_drafts = None;
-                    self.reset_to_login(None);
-                    if let Some(refresh_token) = refresh_token {
-                        let http = self.http.clone();
-                        self.spawn_tokio(async move {
-                            login::revoke_refresh_token(http, oidc, refresh_token).await;
+            if self.logout_in_progress {
+                return;
+            }
+            let manager = self.token_manager.clone();
+            let tx = self.event_tx.clone();
+            let session_gen = self.session_gen;
+            let http = self.http.clone();
+            self.logout_in_progress = true;
+            if self
+                .spawn_tokio(async move {
+                    let result = tokio::task::spawn_blocking(move || match manager {
+                        Some(tm) => tm.logout_and_delete(),
+                        None => Err(anyhow::anyhow!("現在のログイン状態を確認できません")),
+                    })
+                    .await
+                    .map_err(|e| (e.to_string(), false))
+                    .and_then(|r| {
+                        r.map_err(|e| (format!("{e:#}"), e.is::<login::SessionChanged>()))
+                    });
+                    if let Ok(tokens) = &result {
+                        let tokens = tokens.clone();
+                        tokio::spawn(async move {
+                            for refresh_token in tokens {
+                                login::revoke_refresh_token(
+                                    http.clone(),
+                                    oidc.clone(),
+                                    refresh_token,
+                                )
+                                .await;
+                            }
                         });
                     }
-                }
-                Err(err) => {
-                    self.notify(format!(
-                        "ログアウトに失敗しました（トークン削除エラー）: {err:#}"
-                    ));
-                }
+                    let result = result.map(|_| Vec::new());
+                    let _ = tx.send(DesktopEvent::LogoutFinished {
+                        session_gen,
+                        result,
+                    });
+                })
+                .is_none()
+            {
+                self.logout_in_progress = false;
+                self.notify("ログアウトを開始できませんでした");
             }
         } else {
             self.stop_typing();
             self.preserved_unauthorized_drafts = None;
             self.reset_to_login(None);
+        }
+    }
+
+    fn finish_logout(&mut self, result: Result<Vec<String>, (String, bool)>) {
+        self.logout_in_progress = false;
+        let deferred_unauthorized = std::mem::take(&mut self.deferred_unauthorized);
+        if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
+            match result {
+                Ok(refresh_tokens) => {
+                    self.stop_typing();
+                    self.preserved_unauthorized_drafts = None;
+                    self.reset_to_login(None);
+                    if !refresh_tokens.is_empty() {
+                        let http = self.http.clone();
+                        self.spawn_tokio(async move {
+                            for refresh_token in refresh_tokens {
+                                login::revoke_refresh_token(
+                                    http.clone(),
+                                    oidc.clone(),
+                                    refresh_token,
+                                )
+                                .await;
+                            }
+                        });
+                    }
+                }
+                Err((_, true)) => {
+                    self.stop_typing();
+                    self.preserved_unauthorized_drafts = None;
+                    self.reset_to_login(Some("別のログインを保持してログアウトしました".into()));
+                }
+                Err((err, false)) => {
+                    let message =
+                        format!("ログアウトに失敗しました（トークン削除エラー）: {err:#}");
+                    if deferred_unauthorized {
+                        self.reset_to_login_after_unauthorized(message);
+                    } else {
+                        self.notify(message);
+                    }
+                }
+            }
         }
     }
 
@@ -859,6 +985,9 @@ impl AppState {
             handles.push(handle);
         }
         self.typing_poll_in_flight = false;
+        self.typing_poll = PollGate::new(Duration::from_millis(1500), Duration::from_secs(5));
+        self.read_poll = PollGate::new(READ_STATE_POLL, READ_STATE_POLL);
+        self.emoji_poll = PollGate::new(Duration::from_secs(60), Duration::from_secs(60));
         self.read_mark_in_flight.clear();
         handles
     }
@@ -868,7 +997,7 @@ impl AppState {
     }
 
     /// 現在のセッションに紐づくバックグラウンドタスクを起動し、`background_tasks` に登録する。
-    fn spawn_session_task<F>(&mut self, future: F) -> bool
+    pub(crate) fn spawn_session_task<F>(&mut self, future: F) -> bool
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -1004,6 +1133,8 @@ impl AppState {
         self.credentials = None;
         self.api = None;
         self.me = None;
+        self.dnd_until = None;
+        self.dnd_checked = false;
         self.me_is_admin = false;
         self.session_id = uuid::Uuid::new_v4().to_string();
         self.current_channel = None;
@@ -1012,8 +1143,6 @@ impl AppState {
         self.target = Target::Channel;
         self.active_reaction_message = None;
         self.confirm_delete_message = None;
-        self.search_query.clear();
-        self.pending_search_text = Some(String::new());
         self.composer_draft.clear();
         self.saved_drafts.clear();
         self.saved_draft_message_ids.clear();
@@ -1023,8 +1152,12 @@ impl AppState {
         self.in_flight_submissions.clear();
         self.channel_creators_by_key.clear();
         self.channel_posting_policies_by_key.clear();
+        self.known_encrypted_channels.clear();
         self.channel_cache = ChannelViewCache::default();
         self.unread.clear();
+        self.read_boundary.clear();
+        self.last_read_known.clear();
+        self.read_states_loaded = false;
         self.last_read_marked.clear();
         self.read_mark_in_flight.clear();
         self.read_mark_backoff_until.clear();
@@ -1039,6 +1172,9 @@ impl AppState {
         self.typing_sent = None;
         self.last_key_typed = None;
         self.typing_poll_in_flight = false;
+        self.typing_poll = PollGate::new(Duration::from_millis(1500), Duration::from_secs(5));
+        self.read_poll = PollGate::new(READ_STATE_POLL, READ_STATE_POLL);
+        self.emoji_poll = PollGate::new(Duration::from_secs(60), Duration::from_secs(60));
         self.notice = None;
         self.sync_errors.clear();
         self.pending_attachments.clear();
@@ -1063,13 +1199,43 @@ impl AppState {
         self.login_phase = Some(LoginPhase::Ready { error });
     }
 
+    fn reset_to_login_after_unauthorized(&mut self, error: String) {
+        if self.logout_in_progress {
+            self.deferred_unauthorized = true;
+            return;
+        }
+        let recovery = self
+            .token_manager
+            .take()
+            .filter(|manager| manager.retain_pending_or_disable());
+        let generation = self.bump_session_gen();
+        self.clear_session_state();
+        if let Some(manager) = recovery {
+            manager.bind_to_session_gen(generation);
+            self.recovery_manager = Some(manager);
+            self.login_phase = Some(LoginPhase::Ready {
+                error: Some(
+                    "更新済みの認証情報を保存できていません。保存領域を確認し、再試行してください"
+                        .into(),
+                ),
+            });
+        } else {
+            self.login_phase = Some(LoginPhase::Ready { error: Some(error) });
+        }
+    }
+
     pub fn notify(&mut self, message: impl Into<String>) {
         self.notice = Some((message.into(), Instant::now()));
     }
 
     /// 現在発生している Shape 同期エラーの表示文字列を返す。
     pub fn sync_error(&self) -> Option<String> {
-        for shape in [ShapeId::Channels, ShapeId::Users, ShapeId::ChannelUsers] {
+        for shape in [
+            ShapeId::Channels,
+            ShapeId::Users,
+            ShapeId::ChannelUsers,
+            ShapeId::Notifications,
+        ] {
             if let Some(msg) = self.sync_errors.get(&shape) {
                 return Some(msg.clone());
             }
@@ -1091,6 +1257,103 @@ impl AppState {
     /// イベントを処理し、画面の再描画が必要な状態変化があった場合に `true` を返す。
     pub fn on_desktop_event(&mut self, event: DesktopEvent) -> bool {
         match event {
+            DesktopEvent::CancelFinished {
+                session_gen,
+                result,
+            } => {
+                self.cancel_in_progress = false;
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                match result {
+                    Ok(refresh_tokens) => {
+                        self.pending_device_login_manager
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take();
+                        self.login_phase = Some(LoginPhase::Ready { error: None });
+                        if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
+                            let http = self.http.clone();
+                            self.spawn_tokio(async move {
+                                for refresh_token in refresh_tokens {
+                                    login::revoke_refresh_token(
+                                        http.clone(),
+                                        oidc.clone(),
+                                        refresh_token,
+                                    )
+                                    .await;
+                                }
+                            });
+                        }
+                    }
+                    Err((error, changed)) => {
+                        if changed {
+                            let manager = self
+                                .pending_device_login_manager
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .take();
+                            if let Some(manager) = manager {
+                                manager.disable_persistence();
+                            }
+                        }
+                        self.login_phase = Some(LoginPhase::Ready {
+                            error: Some(format!("ログイン取消に失敗しました: {error}")),
+                        })
+                    }
+                }
+                true
+            }
+            DesktopEvent::AuthPersisted {
+                session_gen,
+                event,
+                error,
+            } => {
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                if let Some(error) = error {
+                    let pending_manager = self
+                        .pending_device_login_manager
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take();
+                    if let Some(manager) = pending_manager {
+                        manager.disable_persistence();
+                    }
+                    if self
+                        .recovery_manager
+                        .as_ref()
+                        .is_some_and(|manager| !manager.has_pending_persistence())
+                    {
+                        self.recovery_manager = None;
+                    }
+                    self.login_phase = Some(LoginPhase::Ready { error: Some(error) });
+                } else if let AuthEvent::Connected {
+                    credentials,
+                    token_manager,
+                    me,
+                    is_admin,
+                } = event
+                {
+                    self.recovery_manager = None;
+                    self.connect_session(credentials, me);
+                    self.me_is_admin = is_admin;
+                    self.token_manager = token_manager;
+                }
+                true
+            }
+            DesktopEvent::LogoutFinished {
+                session_gen,
+                result,
+            } => {
+                self.logout_in_progress = false;
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                self.finish_logout(result);
+                true
+            }
             DesktopEvent::Auth { session_gen, event } => {
                 if session_gen != self.session_gen {
                     return false;
@@ -1130,12 +1393,41 @@ impl AppState {
             } => {
                 if let Some(tm) = &token_manager {
                     tm.bind_to_session_gen(self.session_gen);
-                    if let Err(err) = tm.enable_persistence_and_save() {
+                    let manager = tm.clone();
+                    let tx = self.event_tx.clone();
+                    let session_gen = self.session_gen;
+                    let event = AuthEvent::Connected {
+                        credentials,
+                        token_manager,
+                        me,
+                        is_admin,
+                    };
+                    if self
+                        .spawn_tokio(async move {
+                            let error = match tokio::task::spawn_blocking(move || {
+                                manager.confirm_persisted_session()
+                            })
+                            .await
+                            {
+                                Ok(Ok(())) => None,
+                                Ok(Err(err)) => {
+                                    Some(format!("トークンの保存に失敗しました: {err:#}"))
+                                }
+                                Err(err) => Some(format!("トークンの保存に失敗しました: {err}")),
+                            };
+                            let _ = tx.send(DesktopEvent::AuthPersisted {
+                                session_gen,
+                                event,
+                                error,
+                            });
+                        })
+                        .is_none()
+                    {
                         self.login_phase = Some(LoginPhase::Ready {
-                            error: Some(format!("トークンの保存に失敗しました: {err:#}")),
+                            error: Some("トークン保存を開始できませんでした".into()),
                         });
-                        return;
                     }
+                    return;
                 }
                 self.connect_session(credentials, me);
                 self.me_is_admin = is_admin;
@@ -1151,11 +1443,30 @@ impl AppState {
                 });
             }
             AuthEvent::LoginRequired { error } => {
+                if self
+                    .recovery_manager
+                    .as_ref()
+                    .is_some_and(|manager| !manager.has_pending_persistence())
+                {
+                    self.recovery_manager = None;
+                }
                 self.pending_device_login_manager
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .take();
                 self.login_phase = Some(LoginPhase::Ready { error });
+            }
+            AuthEvent::RecoveryRequired { manager, error } => {
+                self.pending_device_login_manager
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                self.recovery_manager = Some(manager);
+                self.login_phase = Some(LoginPhase::Ready {
+                    error: Some(format!(
+                        "{error}。保存領域を復旧して再試行してください。アプリを終了すると更新済み token が失われる可能性があります"
+                    )),
+                });
             }
         }
     }
@@ -1178,6 +1489,7 @@ impl AppState {
         self.subscribe(ShapeId::Channels);
         self.subscribe(ShapeId::Users);
         self.subscribe(ShapeId::ChannelUsers);
+        self.subscribe(ShapeId::Notifications);
         self.poll_read_states();
         self.start_periodic_tasks();
     }
@@ -1188,55 +1500,16 @@ impl AppState {
         self.subscribe(ShapeId::Channels);
         self.subscribe(ShapeId::Users);
         self.subscribe(ShapeId::ChannelUsers);
+        self.subscribe(ShapeId::Notifications);
         if let Some(ch) = self.current_channel.clone() {
             self.subscribe(ShapeId::Messages(ch.clone()));
-            self.subscribe(ShapeId::Reactions(ch.clone()));
-            self.subscribe(ShapeId::Attachments(ch));
         }
         self.poll_read_states();
     }
 
     fn start_periodic_tasks(&mut self) {
         let session_gen = self.session_gen;
-        if let Some(api) = self.api.clone() {
-            let tx = self.event_tx.clone();
-            self.spawn_session_task(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(60));
-                loop {
-                    interval.tick().await;
-                    if let Ok((shortcodes, custom)) = api.emoji_catalog().await
-                        && tx
-                            .send(DesktopEvent::App {
-                                session_gen,
-                                event: AppEvent::EmojiCatalog { shortcodes, custom },
-                            })
-                            .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-        // 既読状態の定期取得
-        if let Some(api) = self.api.clone() {
-            let tx = self.event_tx.clone();
-            self.spawn_session_task(async move {
-                let mut interval = tokio::time::interval(READ_STATE_POLL);
-                loop {
-                    interval.tick().await;
-                    if let Ok(states) = api.read_states().await
-                        && tx
-                            .send(DesktopEvent::App {
-                                session_gen,
-                                event: AppEvent::ReadStates(states),
-                            })
-                            .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
+        crate::resident::notify::spawn_dnd_refresh(self);
 
         // 1秒ごとの Tick (通知消去・入力中解除・既読送信)
         {
@@ -1384,36 +1657,6 @@ impl AppState {
         }
     }
 
-    /// 受信したメッセージがデスクトップ OS 通知の対象かを判定する。
-    /// - 通知設定が有効であること
-    /// - 現在アクティブ表示中のチャンネルでないこと（フォアグラウンドかつ同じチャンネル）
-    /// - 既にローカル store に存在するメッセージや削除済みメッセージでないこと
-    /// - 自分自身のメッセージでないこと
-    /// - (DM または自分への @メンション) かつ そのチャンネルのメンバーであること（未参加の公開チャンネルでのメンションを除外。ChannelUsers 未同期時は保留＝許可）
-    pub fn should_notify_message(&self, ch: &str, msg: &Message) -> bool {
-        if !self.notifications_enabled {
-            return false;
-        }
-        let is_active_view = self.window_active && self.current_channel.as_deref() == Some(ch);
-        if is_active_view {
-            return false;
-        }
-        if self.store.message(ch, &msg.id).is_some() || msg.deleted_at.is_some() {
-            return false;
-        }
-        let Some(me) = self.me.as_ref() else {
-            return false;
-        };
-        if me.id == msg.user_id {
-            return false;
-        }
-        let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-        let is_member =
-            !self.store.is_synced(&ShapeId::ChannelUsers) || self.store.is_member(ch, &me.id);
-        let has_mention = has_mention_for(&msg.content, &me.user_name);
-        (is_dm || has_mention) && is_member
-    }
-
     pub fn on_shape(&mut self, event: ShapeEvent) {
         match event {
             ShapeEvent::Batch(id, batch) => {
@@ -1426,6 +1669,12 @@ impl AppState {
                         match change {
                             Change::Upsert { key, row } => {
                                 if let Some(ch_id) = row.get("id").and_then(|v| v.as_str()) {
+                                    if row.get("encrypted").is_some_and(|v| {
+                                        v.as_bool() == Some(true)
+                                            || matches!(v.as_str(), Some("t" | "true"))
+                                    }) {
+                                        self.known_encrypted_channels.insert(ch_id.to_string());
+                                    }
                                     let creator = row
                                         .get("created_user_id")
                                         .and_then(|v| v.as_str())
@@ -1450,88 +1699,13 @@ impl AppState {
                         }
                     }
                 }
-                let mut pending_notifications: Vec<Option<(String, String, String, bool)>> =
-                    Vec::new();
-                let mut notified_indices: std::collections::HashMap<String, usize> =
-                    std::collections::HashMap::new();
-                if self.notifications_enabled
-                    && let ShapeId::Messages(ch) = &id
-                    && self.store.is_synced(&id)
-                    && !batch.reset
-                {
-                    for change in &batch.changes {
-                        match change {
-                            electric::Change::Upsert { row, .. } => {
-                                if let Ok(msg) = Message::from_row(row) {
-                                    if msg.deleted_at.is_some() {
-                                        // 同一バッチ内で後から削除されたメッセージの通知候補を取り消す
-                                        if let Some(&idx) = notified_indices.get(&msg.id) {
-                                            pending_notifications[idx] = None;
-                                        }
-                                    } else if let Some(&idx) = notified_indices.get(&msg.id) {
-                                        // 同一バッチ内の同一メッセージ更新を集約し、最新内容に基づいて通知可否を再評価
-                                        if self.should_notify_message(ch, &msg) {
-                                            let is_dm =
-                                                self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                            pending_notifications[idx] =
-                                                Some((ch.clone(), msg.user_id, msg.content, is_dm));
-                                        } else {
-                                            // メンション削除等により通知対象外となった場合は候補を取り消す
-                                            pending_notifications[idx] = None;
-                                        }
-                                    } else if self.should_notify_message(ch, &msg) {
-                                        let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                        let idx = pending_notifications.len();
-                                        pending_notifications.push(Some((
-                                            ch.clone(),
-                                            msg.user_id,
-                                            msg.content,
-                                            is_dm,
-                                        )));
-                                        notified_indices.insert(msg.id, idx);
-                                    }
-                                }
-                            }
-                            electric::Change::Delete { key } => {
-                                // 同一バッチ内で削除されたメッセージの通知候補を取り消す
-                                if let Some(&idx) = notified_indices.get(key) {
-                                    pending_notifications[idx] = None;
-                                }
-                            }
-                        }
-                    }
+                // 判定は適用より前に行う (適用後は、新しく届いた行と既知の行を区別できない)。
+                if id == ShapeId::Notifications {
+                    self.show_notifications(&batch);
                 }
 
                 self.store.apply(&id, batch);
 
-                for (ch, sender_id, content, is_dm) in pending_notifications.into_iter().flatten() {
-                    let sender_name = self.store.display_name(&sender_id);
-                    let channel_name = self
-                        .store
-                        .channel(&ch)
-                        .map(|c| c.channel_name.clone())
-                        .unwrap_or_else(|| "channel".to_string());
-                    let title = if is_dm {
-                        format!("{sender_name} からのDM")
-                    } else {
-                        format!("{sender_name} (#{channel_name})")
-                    };
-                    let body = if content.trim().is_empty() {
-                        "ファイルが送信されました".to_string()
-                    } else if content.chars().count() > 80 {
-                        let truncated: String = content.chars().take(80).collect();
-                        format!("{truncated}...")
-                    } else {
-                        content
-                    };
-                    if let Some(sink) = &self.notification_sink {
-                        sink.lock().unwrap().push((title, body));
-                    } else {
-                        std::thread::spawn(move || {
-                            notify_desktop(&title, &body);
-                        });
-                    }
-                }
                 if self.store.is_synced(&id) {
                     self.sync_errors.remove(&id);
                 }
@@ -1563,6 +1737,8 @@ impl AppState {
                     ShapeId::Messages(ch) => {
                         if self.current_channel.as_deref() == Some(ch.as_str()) {
                             self.channel_cache.messages_dirty = true;
+                            self.channel_cache.reactions_dirty = true;
+                            self.channel_cache.attachments_dirty = true;
                         }
                         if self.store.is_synced(&ShapeId::Messages(ch.clone())) {
                             self.reconcile_channel_targets(ch);
@@ -1601,9 +1777,9 @@ impl AppState {
             ShapeEvent::Failed(id, message) => {
                 if message == HttpError::Unauthorized.to_string() {
                     self.preserve_drafts_for_unauthorized();
-                    self.reset_to_login(Some(
+                    self.reset_to_login_after_unauthorized(
                         "セッションの有効期限が切れました。再度ログインしてください".to_string(),
-                    ));
+                    );
                     return;
                 }
                 if let ShapeId::Messages(ch) | ShapeId::Reactions(ch) | ShapeId::Attachments(ch) =
@@ -1718,6 +1894,8 @@ impl AppState {
     fn evict_channel(&mut self, channel_id: &str) {
         self.unsubscribe_channel(channel_id);
         self.unread.remove(channel_id);
+        self.read_boundary.remove(channel_id);
+        self.last_read_known.remove(channel_id);
         self.last_read_marked.remove(channel_id);
         self.read_mark_in_flight.remove(channel_id);
         self.read_mark_backoff_until.remove(channel_id);
@@ -1732,6 +1910,7 @@ impl AppState {
         if self.current_channel.as_deref() == Some(channel_id) {
             self.stop_typing();
             self.typing.clear();
+            self.typing_poll.wake();
             self.current_channel = None;
             self.channel_cache = ChannelViewCache::default();
             self.selected_message = None;
@@ -1764,6 +1943,7 @@ impl AppState {
             self.pending_composer_text = Some((String::new(), None));
             self.stop_typing();
             self.typing.clear();
+            self.typing_poll.wake();
             self.active_reaction_message = None;
             self.confirm_delete_message = None;
             self.target = Target::Channel;
@@ -1937,6 +2117,17 @@ impl AppState {
 
     pub fn on_app_event(&mut self, event: AppEvent) -> bool {
         match event {
+            AppEvent::Dnd(result) => {
+                if let Some(until) = result {
+                    self.dnd_until = until;
+                }
+                self.dnd_checked = true;
+                false
+            }
+            AppEvent::AccountProfiles(profiles) => {
+                self.store.account_profiles = profiles;
+                true
+            }
             AppEvent::EmojiCatalog { shortcodes, custom } => {
                 zoo2_client_core::mfm::set_emoji_catalog(shortcodes, custom);
                 true
@@ -1947,9 +2138,9 @@ impl AppState {
             }
             AppEvent::Unauthorized => {
                 self.preserve_drafts_for_unauthorized();
-                self.reset_to_login(Some(
+                self.reset_to_login_after_unauthorized(
                     "認証が切れました。再度ログインしてください".to_string(),
-                ));
+                );
                 true
             }
             AppEvent::SubmissionSucceeded {
@@ -2024,6 +2215,8 @@ impl AppState {
                 true
             }
             AppEvent::ReadStates(states) => {
+                self.read_states_loaded = true;
+                self.update_read_boundaries(&states);
                 let next_unread: HashSet<String> = states
                     .into_iter()
                     .filter(|s| s.has_unread)
@@ -2080,8 +2273,24 @@ impl AppState {
                     false
                 }
             }
+            AppEvent::ReadStatesPollFinished => {
+                self.read_poll.finish(Instant::now(), true);
+                // 取得に失敗しても、自動既読をいつまでも止めないように、試した時点で解除する。
+                let first = !self.read_states_loaded;
+                self.read_states_loaded = true;
+                first && self.mark_current_read()
+            }
+            AppEvent::EmojiPollFinished => {
+                self.emoji_poll.finish(Instant::now(), true);
+                false
+            }
             AppEvent::TypingPollFinished => {
                 self.typing_poll_in_flight = false;
+                self.typing_poll.finish(
+                    Instant::now(),
+                    self.typing.values().any(|users| !users.is_empty())
+                        || self.typing_sent.is_some(),
+                );
                 false
             }
             AppEvent::UpdateAvailable(version) => {
@@ -2204,16 +2413,20 @@ impl AppState {
                 true
             }
             AppEvent::RefreshAttachmentUrls => {
-                let visible_attachment_ids: std::collections::HashSet<String> =
-                    if let Some(ref ch) = self.current_channel {
-                        self.store
-                            .channel_attachments(ch)
-                            .into_iter()
-                            .map(|a| a.id.clone())
-                            .collect()
-                    } else {
-                        std::collections::HashSet::new()
-                    };
+                if !self.window_active {
+                    return false;
+                }
+                let cache = &self.channel_cache;
+                let (start, end) = self.visible_timeline_bounds(&cache.root_messages);
+                let visible_messages = cache.root_messages[start..end]
+                    .iter()
+                    .chain(cache.thread_root_message.iter())
+                    .chain(cache.thread_replies.iter());
+                let visible_attachment_ids: std::collections::HashSet<String> = visible_messages
+                    .filter_map(|message| cache.attachments_by_message.get(&message.id))
+                    .flatten()
+                    .map(|attachment| attachment.id.clone())
+                    .collect();
                 let to_refresh: Vec<String> = self
                     .attachment_download_urls
                     .iter()
@@ -2253,10 +2466,60 @@ impl AppState {
             changed = true;
         }
         self.poll_typing();
+        self.poll_read_states();
+        self.poll_emojis();
         changed
     }
 
     /// 開いているチャンネルの最新メッセージを画面に表示済みであれば既読にする。
+    /// 未読の線の位置を、ReadStates の `last_read_at` から決める。
+    /// 開いているチャンネルは、開いている間は位置を固定する (frontend が開いた時点の既読位置を使うのと同じ)。
+    /// 開いていないチャンネルは、未読のものだけ毎回最新の `last_read_at` で上書きし、既読のものは捨てる。
+    fn update_read_boundaries(&mut self, states: &[zoo2_client_core::api::ReadState]) {
+        let current = self.current_channel.clone();
+        for state in states {
+            let known = match state.last_read_at.as_deref() {
+                Some(value) => parse_utc_timestamp(value),
+                // 一度も読んでいなければ、すべてが未読。
+                None => Some(jiff::civil::DateTime::MIN),
+            };
+            let Some(known) = known else {
+                continue;
+            };
+            self.last_read_known.insert(state.channel_id.clone(), known);
+            if current.as_deref() == Some(state.channel_id.as_str()) {
+                if state.has_unread {
+                    self.read_boundary
+                        .entry(state.channel_id.clone())
+                        .or_insert(known);
+                }
+            } else if state.has_unread {
+                self.read_boundary.insert(state.channel_id.clone(), known);
+            } else {
+                self.read_boundary.remove(&state.channel_id);
+            }
+        }
+        self.read_boundary.retain(|channel, _| {
+            current.as_deref() == Some(channel.as_str())
+                || states
+                    .iter()
+                    .any(|s| &s.channel_id == channel && s.has_unread)
+        });
+    }
+
+    /// チャンネルを開いた訪問のあいだ使う未読の線の位置を、知っている `last_read_at` で決める。
+    /// 未読と分かっているときだけ置く。ポーリングのタイミングに左右されない。
+    fn pin_read_boundary_on_open(&mut self, channel_id: &str) {
+        match self.last_read_known.get(channel_id) {
+            Some(known) if self.unread.contains(channel_id) => {
+                self.read_boundary.insert(channel_id.to_string(), *known);
+            }
+            _ => {
+                self.read_boundary.remove(channel_id);
+            }
+        }
+    }
+
     fn sync_unread_with_latest(&mut self) -> bool {
         let Some(channel_id) = self.current_channel.clone() else {
             return false;
@@ -2278,7 +2541,16 @@ impl AppState {
     }
 
     pub fn mark_current_read(&mut self) -> bool {
-        if !self.window_active {
+        if !self.window_active || !self.read_states_loaded {
+            return false;
+        }
+        // 暗号化チャンネルは本文を表示しないので、見ていないメッセージを既読にしない。チャンネルの行が
+        // ない（再同期中で暗号化か分からない）あいだも既読にしない（行が届けば `on_tick` で試し直す）。
+        if self
+            .current_channel
+            .as_deref()
+            .is_some_and(|id| self.is_encrypted_channel(id) || self.store.channel(id).is_none())
+        {
             return false;
         }
         let Some(me) = self.me.as_ref() else {
@@ -2354,23 +2626,69 @@ impl AppState {
     }
 
     pub fn poll_read_states(&mut self) {
+        if !self.window_active {
+            return;
+        }
         let Some(api) = self.api.clone() else {
             return;
         };
         let tx = self.event_tx.clone();
         let session_gen = self.session_gen;
-        self.spawn_session_task(async move {
+        if !self.read_poll.start(Instant::now()) {
+            return;
+        }
+        if !self.spawn_session_task(async move {
             if let Ok(states) = api.read_states().await {
                 let _ = tx.send(DesktopEvent::App {
                     session_gen,
                     event: AppEvent::ReadStates(states),
                 });
             }
-        });
+            let _ = tx.send(DesktopEvent::App {
+                session_gen,
+                event: AppEvent::ReadStatesPollFinished,
+            });
+        }) {
+            self.read_poll.finish(Instant::now(), true);
+        }
+    }
+
+    fn poll_emojis(&mut self) {
+        if !self.window_active {
+            return;
+        }
+        let Some(api) = self.api.clone() else {
+            return;
+        };
+        if !self.emoji_poll.start(Instant::now()) {
+            return;
+        }
+        let tx = self.event_tx.clone();
+        let session_gen = self.session_gen;
+        if !self.spawn_session_task(async move {
+            if let Ok(profiles) = api.account_profiles().await {
+                let _ = tx.send(DesktopEvent::App {
+                    session_gen,
+                    event: AppEvent::AccountProfiles(profiles),
+                });
+            }
+            if let Ok((shortcodes, custom)) = api.emoji_catalog().await {
+                let _ = tx.send(DesktopEvent::App {
+                    session_gen,
+                    event: AppEvent::EmojiCatalog { shortcodes, custom },
+                });
+            }
+            let _ = tx.send(DesktopEvent::App {
+                session_gen,
+                event: AppEvent::EmojiPollFinished,
+            });
+        }) {
+            self.emoji_poll.finish(Instant::now(), true);
+        }
     }
 
     pub fn poll_typing(&mut self) {
-        if self.typing_poll_in_flight {
+        if !self.window_active || self.typing_poll_in_flight {
             return;
         }
         let Some(api) = self.api.clone() else {
@@ -2391,6 +2709,7 @@ impl AppState {
             .is_none_or(|c| c.archive_at.is_some())
         {
             self.typing.clear();
+            self.typing_poll.wake();
             return;
         }
         let mut scopes = vec![None];
@@ -2399,6 +2718,9 @@ impl AppState {
         }
         let tx = self.event_tx.clone();
         let session_gen = self.session_gen;
+        if !self.typing_poll.start(Instant::now()) {
+            return;
+        }
         if self.spawn_session_task(async move {
             for parent_id in scopes {
                 if let Ok(users) = api.typing(&channel_id, parent_id.as_deref()).await {
@@ -2418,6 +2740,8 @@ impl AppState {
             });
         }) {
             self.typing_poll_in_flight = true;
+        } else {
+            self.typing_poll.finish(Instant::now(), true);
         }
     }
 
@@ -2473,6 +2797,9 @@ impl AppState {
             && now.duration_since(*at) < TYPING_SEND_INTERVAL
         {
             return;
+        }
+        if self.typing_sent.is_none() {
+            self.typing_poll.wake();
         }
         self.typing_sent = Some((channel_id.clone(), parent_id.clone(), now));
         self.send_typing(channel_id, parent_id, true);
@@ -2533,25 +2860,6 @@ impl AppState {
         });
     }
 
-    /// 検索クエリで絞り込んだチャンネル一覧。
-    pub fn filtered_channels(&self) -> Vec<&Channel> {
-        let query = self.search_query.trim().to_lowercase();
-        let me_id = self.me.as_ref().map(|m| m.id.as_str()).unwrap_or_default();
-        self.store
-            .channels()
-            .into_iter()
-            .filter(|ch| {
-                if query.is_empty() {
-                    return true;
-                }
-                self.store
-                    .channel_label(ch, me_id)
-                    .to_lowercase()
-                    .contains(&query)
-            })
-            .collect()
-    }
-
     /// 指定チャンネルの作成者ユーザー ID を返す。
     pub fn channel_creator_id(&self, channel_id: &str) -> Option<&str> {
         self.channel_creators_by_key
@@ -2567,11 +2875,46 @@ impl AppState {
             .unwrap_or("members")
     }
 
+    /// 暗号化チャンネルか。デスクトップ版は復号も暗号化もしないので、表示と送信をしない。
+    /// 再同期で行が消えても、一度暗号化と見たチャンネルは暗号化として扱う。
+    pub fn is_encrypted_channel(&self, channel_id: &str) -> bool {
+        self.known_encrypted_channels.contains(channel_id)
+            || self.store.channel(channel_id).is_some_and(|c| c.encrypted)
+    }
+
+    /// 今 HTTP で送ってよいか（新規、返信、編集、添付）。チャンネルの行がない（再同期中で暗号化か
+    /// 分からない）あいだと、暗号化チャンネルには送らない。入力欄と下書きは
+    /// [`can_post_in_channel`](Self::can_post_in_channel) のとおり残す。
+    pub fn can_send_to_channel(&self, channel_id: &str) -> bool {
+        self.store.channel(channel_id).is_some() && !self.is_encrypted_channel(channel_id)
+    }
+
+    /// 今のチャンネルにファイルを添付してよいか（ファイルの中身をアップロードする前に確かめる）。
+    fn can_attach_now(&mut self) -> bool {
+        let Some(channel_id) = self.current_channel.clone() else {
+            return true;
+        };
+        if self.can_send_to_channel(&channel_id) {
+            return true;
+        }
+        self.notify(if self.is_encrypted_channel(&channel_id) {
+            "暗号化チャンネルには、このクライアントからは添付できません"
+        } else {
+            "チャンネルの情報を同期しています。少し待ってから添付してください"
+        });
+        false
+    }
+
     /// 指定チャンネルへ新規メッセージや返信を投稿可能か判定する。
     pub fn can_post_in_channel(&self, channel_id: &str) -> bool {
         let Some(me) = self.me.as_ref() else {
             return false;
         };
+        // デスクトップ版は E2EE の対象外。暗号化チャンネルには平文で送らない（docs/e2ee.md）。
+        // 再同期中の判定より先に見る（行が届いていれば、同期中でも送らない）。
+        if self.is_encrypted_channel(channel_id) {
+            return false;
+        }
         // Channels または ChannelUsers が再同期中（reset 受信〜初期同期完了）の間は、
         // 投稿制限やメンバーシップ欠落と誤判定せず、入力欄の表示と本文入力を維持する。
         if !self.store.is_synced(&ShapeId::Channels)
@@ -2741,6 +3084,13 @@ impl AppState {
 
     /// チャンネルを開き、メッセージとリアクションのシェイプ購読を開始する。
     pub fn open_channel(&mut self, channel_id: String) {
+        self.open_channel_inner(channel_id, true);
+    }
+
+    /// `jump_to_newest` が false のときは、最下部へのスクロールも、最新投稿を表示済みとする記録と既読化もしない。
+    /// 通知から古い投稿へ移るとき、移動先を見る前に既読化しないために使う。
+    fn open_channel_inner(&mut self, channel_id: String, jump_to_newest: bool) {
+        let switching = self.current_channel.as_deref() != Some(channel_id.as_str());
         if let Some(old_ch) = self.current_channel.clone()
             && old_ch != channel_id
         {
@@ -2759,6 +3109,7 @@ impl AppState {
             }
             self.stop_typing();
             self.typing.clear();
+            self.typing_poll.wake();
             self.selected_message = None;
             self.thread = None;
             self.active_reaction_message = None;
@@ -2769,6 +3120,8 @@ impl AppState {
             // 別のチャンネルへ切り替えるときは前のチャンネルの Messages / Reactions 購読とキャッシュを破棄し、
             // バックグラウンドタスクとメモリがチャンネル数に応じて増え続けるのを防ぐ。
             self.unsubscribe_channel(&old_ch);
+            // 出ていくチャンネルの未読の線は、次に開くときに決め直す。
+            self.read_boundary.remove(&old_ch);
             self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
             self.timeline_anchor_first_id = None;
         } else if self.current_channel.is_none() {
@@ -2779,12 +3132,22 @@ impl AppState {
             self.timeline_anchor_first_id = None;
         }
         self.subscribe(ShapeId::Messages(channel_id.clone()));
-        self.subscribe(ShapeId::Reactions(channel_id.clone()));
-        self.subscribe(ShapeId::Attachments(channel_id.clone()));
+
         self.current_channel = Some(channel_id.clone());
+        if switching {
+            self.pin_read_boundary_on_open(&channel_id);
+        }
+        self.timeline_anchor_first_id = None;
+        if !jump_to_newest {
+            self.timeline_at_bottom = false;
+            self.pending_scroll_to_bottom = false;
+            self.newest_shown = None;
+            self.ensure_channel_cache();
+            self.poll_typing();
+            return;
+        }
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = true;
-        self.timeline_anchor_first_id = None;
         self.ensure_channel_cache();
 
         // ウィンドウがアクティブであれば最新メッセージを表示済みとして記録し、既読化を試みる。
@@ -2799,10 +3162,64 @@ impl AppState {
         self.poll_typing();
     }
 
+    /// 通知のクリックなどで、チャンネルを開き、`message_id` の投稿まで移る。
+    /// 投稿がまだ Store に無いとき (取得前) は、チャンネルを開くだけにする。
+    pub fn open_message(&mut self, channel_id: String, message_id: Option<String>) {
+        let target = message_id.and_then(|id| {
+            self.store
+                .message(&channel_id, &id)
+                .filter(|m| m.deleted_at.is_none())
+                .cloned()
+        });
+        let Some(msg) = target else {
+            self.open_channel(channel_id);
+            return;
+        };
+        let message_id = msg.id.clone();
+        self.open_channel_inner(channel_id.clone(), false);
+        if self.current_channel.as_deref() != Some(channel_id.as_str()) {
+            return;
+        }
+        if let Some(parent_id) = msg.parent_id {
+            self.open_thread(parent_id.clone());
+            if let Some(thread) = &mut self.thread {
+                thread.selected = Some(message_id.clone());
+            }
+            self.timeline_at_bottom = false;
+            self.pending_scroll_to_bottom = false;
+            self.pending_thread_scroll_to_bottom = false;
+            self.thread_at_bottom = false;
+            let roots = self.store.root_messages(&channel_id);
+            self.timeline_anchor_first_id = match roots.iter().position(|m| m.id == parent_id) {
+                Some(pos) => roots.get(pos.saturating_sub(10)).map(|m| m.id.clone()),
+                None => Some(parent_id),
+            };
+            self.timeline_render_limit = MAX_TIMELINE_RENDER_LIMIT;
+            self.pending_scroll_to_message_id = Some(message_id);
+            self.ensure_channel_cache();
+            return;
+        }
+        let roots = self.store.root_messages(&channel_id);
+        let Some(pos) = roots.iter().position(|m| m.id == message_id) else {
+            return;
+        };
+        self.timeline_anchor_first_id = roots.get(pos.saturating_sub(10)).map(|m| m.id.clone());
+        self.timeline_at_bottom = false;
+        self.pending_scroll_to_bottom = false;
+        self.timeline_render_limit = MAX_TIMELINE_RENDER_LIMIT;
+        self.pending_scroll_to_message_id = Some(message_id);
+        self.ensure_channel_cache();
+    }
+
     /// ウィンドウのアクティブ状態とタイムラインのスクロール位置を更新し、
     /// アクティブかつ最下部を表示しているときだけ最新メッセージを既読化する。
     pub fn update_timeline_view_state(&mut self, window_active: bool, at_bottom: bool) {
         let was_at_bottom = self.timeline_at_bottom;
+        if window_active && !self.window_active {
+            self.read_poll.wake();
+            self.emoji_poll.wake();
+            self.typing_poll.wake();
+        }
         self.window_active = window_active;
         self.timeline_at_bottom = at_bottom;
         let Some(channel_id) = self.current_channel.clone() else {
@@ -2897,6 +3314,16 @@ impl AppState {
 
     /// スレッドペインを開き、編集中および投稿不可チャンネルでなければ送信先をスレッド返信に切り替える。
     pub fn open_thread(&mut self, root_id: String) {
+        // 暗号化チャンネルは本文を表示しないので、スレッドも開かない（通知から開いた返信を含む）。
+        if self
+            .current_channel
+            .as_deref()
+            .is_some_and(|id| self.is_encrypted_channel(id))
+        {
+            self.thread = None;
+            return;
+        }
+        self.typing_poll.wake();
         self.thread = Some(ThreadState {
             root_id: root_id.clone(),
             selected: None,
@@ -2917,6 +3344,7 @@ impl AppState {
 
     /// スレッドペインを閉じ、送信先がスレッド返信ならチャンネルに戻す。
     pub fn close_thread(&mut self) {
+        self.typing_poll.wake();
         self.thread = None;
         if matches!(self.target, Target::Reply(_)) {
             let current = self.current_channel.clone();
@@ -2975,6 +3403,10 @@ impl AppState {
         let Some(channel_id) = self.current_channel.clone() else {
             return;
         };
+        // デスクトップ版は暗号化して送れないので、暗号化チャンネルでは編集の状態に入らない。
+        if self.is_encrypted_channel(&channel_id) {
+            return;
+        }
         if self
             .store
             .channel(&channel_id)
@@ -3149,6 +3581,7 @@ impl AppState {
             if let Target::Reply(ref root_id) = resolved_target
                 && self.thread.as_ref().map(|t| &t.root_id) != Some(root_id)
             {
+                self.typing_poll.wake();
                 self.thread = Some(ThreadState {
                     root_id: root_id.clone(),
                     selected: None,
@@ -3295,6 +3728,16 @@ impl AppState {
             .is_some_and(|c| c.archive_at.is_some())
         {
             self.notify("アーカイブされたチャンネルには投稿できません");
+            return false;
+        }
+        // 暗号化かどうか分からない（再同期中で行がない）、または暗号化チャンネルなら、編集を含めて
+        // 送らない。下書きは消さずに残す。
+        if !self.can_send_to_channel(&channel_id) {
+            self.notify(if self.is_encrypted_channel(&channel_id) {
+                "暗号化チャンネルには、このクライアントからは送信できません"
+            } else {
+                "チャンネルの情報を同期しています。少し待ってから送ってください"
+            });
             return false;
         }
         if !matches!(self.target, Target::Edit(_)) && !self.can_post_in_channel(&channel_id) {
@@ -3568,6 +4011,9 @@ impl AppState {
 
     /// ローカルファイルパスから添付ファイルを追加する。
     pub fn add_attachment_from_path(&mut self, path: std::path::PathBuf) {
+        if !self.can_attach_now() {
+            return;
+        }
         if matches!(self.target, Target::Edit(_)) {
             self.notify("メッセージの編集中はファイルを添付できません");
             return;
@@ -3734,6 +4180,9 @@ impl AppState {
         content_type: String,
         bytes: Vec<u8>,
     ) {
+        if !self.can_attach_now() {
+            return;
+        }
         if matches!(self.target, Target::Edit(_)) {
             self.notify("メッセージの編集中はファイルを添付できません");
             return;
@@ -4535,6 +4984,15 @@ impl AppState {
     }
 }
 
+/// サーバーの時刻 (`2026-11-01T00:00:00` や `2026-11-01 00:00:00`、`Z` やオフセット付きも可) を UTC の日時にする。
+pub fn parse_utc_timestamp(value: &str) -> Option<jiff::civil::DateTime> {
+    let value = value.trim();
+    if let Ok(ts) = value.parse::<jiff::Timestamp>() {
+        return Some(ts.to_zoned(jiff::tz::TimeZone::UTC).datetime());
+    }
+    value.replacen(' ', "T", 1).parse().ok()
+}
+
 /// `thumbsup` や `:thumbsup:` のショートコード、または絵文字そのものを絵文字に変換する。
 pub fn resolve_emoji(input: &str) -> Option<String> {
     zoo2_client_core::mfm::resolve_emoji(input)
@@ -4556,7 +5014,7 @@ fn is_access_or_not_found_error(message: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use serde_json::{Value, json};
     use zoo2_client_core::{
         config::OidcConfig,
@@ -4579,7 +5037,7 @@ mod tests {
         }
     }
 
-    fn connected_state() -> AppState {
+    pub(crate) fn connected_state() -> AppState {
         let config = Config {
             api_base_url: "http://127.0.0.1:9".into(),
             auth: AuthConfig::Dev {
@@ -4644,6 +5102,8 @@ mod tests {
                 ),
             ]),
         ));
+        // ReadStates の初回の取得は終えたものとする (終えるまでは自動既読にしないため)。
+        state.read_states_loaded = true;
         state
     }
 
@@ -4653,6 +5113,291 @@ mod tests {
         }
     }
     impl<T> Pipe for T {}
+
+    #[tokio::test]
+    async fn does_not_send_while_the_channel_row_is_missing_or_encrypted() {
+        let mut state = connected_state();
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c2",
+                json!({ "id": "c2", "channel_name": "secret", "is_private": "t", "encrypted": "t" }),
+            )]),
+        ));
+        state.open_channel("c1".into());
+        // Channels の再同期で行が消えたあいだは、暗号化か分からないので送らない（下書きは残す）。
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            Batch {
+                reset: true,
+                changes: vec![],
+                up_to_date: false,
+            },
+        ));
+        state.composer_draft = "再同期中の本文".into();
+        assert!(state.can_post_in_channel("c1"));
+        assert!(!state.can_send_to_channel("c1"));
+        assert!(!state.submit_message("再同期中の本文".into()));
+        assert_eq!(state.composer_draft, "再同期中の本文");
+        state.target = Target::Edit("r1".into());
+        assert!(!state.submit_message("編集".into()));
+        state.target = Target::Channel;
+        // 一度暗号化と見たチャンネルは、行が消えても暗号化として扱う。
+        assert!(state.is_encrypted_channel("c2"));
+        assert!(!state.can_send_to_channel("c2"));
+        // 平文のチャンネルの行が戻れば送れる。
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "general", "is_private": "f" }),
+            )]),
+        ));
+        assert!(state.can_send_to_channel("c1"));
+        assert!(state.submit_message("同期後の本文".into()));
+    }
+
+    #[tokio::test]
+    async fn encrypted_channels_are_not_marked_read() {
+        // 同じ状態の平文のチャンネルは既読になる（下の暗号化チャンネルとの比較のため）。
+        let mut plain = connected_state();
+        plain.window_active = true;
+        plain.open_channel("c1".into());
+        plain.unread.insert("c1".into());
+        assert!(plain.mark_current_read());
+        assert!(!plain.unread.contains("c1"));
+        assert!(plain.last_read_marked.contains_key("c1"));
+
+        let mut state = connected_state();
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "general", "is_private": "t", "encrypted": "t" }),
+            )]),
+        ));
+        state.window_active = true;
+        state.open_channel("c1".into());
+        state.unread.insert("c1".into());
+        // 本文を表示しない暗号化チャンネルでは、未読を消さず、既読の API も呼ばない。
+        assert!(!state.mark_current_read());
+        assert!(state.unread.contains("c1"));
+        assert!(!state.last_read_marked.contains_key("c1"));
+    }
+
+    #[tokio::test]
+    async fn waits_for_the_first_read_states_before_marking_read() {
+        let mut state = connected_state();
+        state.read_states_loaded = false;
+        state.window_active = true;
+        // 接続の直後、ReadStates より先にメッセージの同期が終わったチャンネルを開いた。
+        state.open_channel("c1".into());
+        state.unread.insert("c1".into());
+        assert!(!state.mark_current_read());
+        assert!(!state.last_read_marked.contains_key("c1"));
+
+        // 届いた `last_read_at` で未読の線を置いてから既読にする。
+        state.on_app_event(AppEvent::ReadStates(vec![ReadState {
+            channel_id: "c1".into(),
+            has_unread: true,
+            last_read_at: Some("2026-11-01T02:00:00".into()),
+        }]));
+        assert_eq!(
+            state.read_boundary.get("c1"),
+            Some(&"2026-11-01T02:00:00".parse().unwrap())
+        );
+        assert_eq!(
+            state.last_read_marked.get("c1").map(String::as_str),
+            Some("m1")
+        );
+        // 既読にしたあとの `has_unread: false` でも、線は残る。
+        state.on_app_event(AppEvent::ReadStates(vec![ReadState {
+            channel_id: "c1".into(),
+            has_unread: false,
+            last_read_at: Some("2026-11-01T03:00:00".into()),
+        }]));
+        assert_eq!(
+            state.read_boundary.get("c1"),
+            Some(&"2026-11-01T02:00:00".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_first_read_states_poll_does_not_block_marking_read() {
+        let mut state = connected_state();
+        state.read_states_loaded = false;
+        state.window_active = true;
+        state.open_channel("c1".into());
+        state.unread.insert("c1".into());
+        assert!(!state.mark_current_read());
+        state.on_app_event(AppEvent::ReadStatesPollFinished);
+        assert_eq!(
+            state.last_read_marked.get("c1").map(String::as_str),
+            Some("m1")
+        );
+    }
+
+    #[tokio::test]
+    async fn channels_without_a_row_are_not_marked_read() {
+        let mut state = connected_state();
+        state.window_active = true;
+        state.open_channel("c1".into());
+        // 再同期で行がないあいだは、暗号化か分からないので既読にしない。
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            Batch {
+                reset: true,
+                changes: vec![],
+                up_to_date: false,
+            },
+        ));
+        // 開いたときに記録した既読を消し、未読を立てる（既読済みの判定で戻らないようにする）。
+        state.last_read_marked.clear();
+        state.unread.insert("c1".into());
+        assert!(!state.mark_current_read());
+        assert!(state.unread.contains("c1"));
+        assert!(state.last_read_marked.is_empty());
+    }
+
+    #[test]
+    fn encrypted_channels_do_not_open_threads_or_edits() {
+        let mut state = connected_state();
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "general", "is_private": "t", "encrypted": "t" }),
+            )]),
+        ));
+        // 通知から暗号化チャンネルの返信を開いても、スレッドペインを開かない。
+        state.open_message("c1".into(), Some("r1".into()));
+        assert_eq!(state.current_channel.as_deref(), Some("c1"));
+        assert!(state.thread.is_none());
+        state.open_thread("m1".into());
+        assert!(state.thread.is_none());
+        // 自分のメッセージでも、編集の状態に入らない。
+        state.start_edit("r1".into());
+        assert!(!matches!(state.target, Target::Edit(_)));
+    }
+
+    #[test]
+    fn open_message_to_a_reply_scrolls_the_thread_to_the_reply() {
+        let mut state = connected_state();
+        state.open_message("c1".into(), Some("r1".into()));
+        assert_eq!(state.current_channel.as_deref(), Some("c1"));
+        assert_eq!(
+            state.thread.as_ref().map(|t| t.root_id.as_str()),
+            Some("m1")
+        );
+        assert_eq!(
+            state.thread.as_ref().and_then(|t| t.selected.as_deref()),
+            Some("r1")
+        );
+        assert_eq!(state.pending_scroll_to_message_id.as_deref(), Some("r1"));
+        // 返信へ移る間は、タイムラインを最下部として扱わない (古い位置から既読にしない)。
+        assert!(!state.timeline_at_bottom);
+        assert!(!state.pending_thread_scroll_to_bottom);
+    }
+
+    #[test]
+    fn open_message_on_the_active_current_channel_does_not_mark_read() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.window_active = true;
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m_new",
+                json!({ "id": "m_new", "user_id": "u2", "channel_id": "c1",
+                        "content": "新しい投稿", "created_at": "2026-11-01 04:00:00" }),
+            )]),
+        ));
+        // 新着を、まだ見ていない状態にする。
+        state.update_timeline_view_state(true, false);
+        state.last_read_marked.clear();
+        state.read_mark_in_flight.clear();
+        state.unread.insert("c1".into());
+        state.newest_shown = None;
+
+        state.open_message("c1".into(), Some("m1".into()));
+
+        assert!(state.unread.contains("c1"), "既読化されてはいけない");
+        assert!(state.last_read_marked.is_empty());
+        assert!(state.read_mark_in_flight.is_empty());
+        assert_ne!(
+            state.newest_shown.as_ref().map(|(_, id)| id.as_str()),
+            Some("m_new")
+        );
+        assert!(!state.pending_scroll_to_bottom);
+        assert_eq!(state.pending_scroll_to_message_id.as_deref(), Some("m1"));
+
+        // 最下部まで見たら、通常の経路で既読になる。
+        state.update_timeline_view_state(true, true);
+        assert!(!state.unread.contains("c1"));
+    }
+
+    #[test]
+    fn message_batches_refresh_bundled_reactions_without_another_subscription() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        assert!(
+            !state
+                .subscriptions
+                .contains_key(&ShapeId::Reactions("c1".into()))
+        );
+        let mut row = json!({"id":"m1", "user_id":"u2", "channel_id":"c1", "content":"hello", "created_at":"2026-11-01 03:00:00", "display_data":{"reactions":[
+            {"id":"remote", "message_id":"m1", "user_id":"https://remote/user", "emoji":"👍", "created_at":"2026-11-01 03:00:01"}
+        ]}});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row.clone())]),
+        ));
+        state.ensure_channel_cache();
+        assert_eq!(state.channel_cache.reactions_by_message["m1"][0].count, 1);
+        row["display_data"] = json!({"reactions":[]});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row)]),
+        ));
+        state.ensure_channel_cache();
+        assert!(!state.channel_cache.reactions_by_message.contains_key("m1"));
+    }
+
+    #[test]
+    fn bundled_attachments_refresh_without_another_subscription() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        assert!(
+            !state
+                .subscriptions
+                .contains_key(&ShapeId::Attachments("c1".into()))
+        );
+        let mut row = json!({"id":"m1", "user_id":"u2", "channel_id":"c1", "content":"hello", "created_at":"2026-11-01 03:00:00", "display_data":{"attachments":[
+            {"id":"a1", "message_id":"m1", "uploader_id":"u2", "channel_id":"c1", "file_name":"pic.png", "file_size":100, "content_type":"image/png", "storage_key":"key", "created_at":"2026-11-01 03:00:01"}
+        ]}});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row.clone())]),
+        ));
+        state.ensure_channel_cache();
+        assert_eq!(state.channel_cache.attachments_by_message["m1"][0].id, "a1");
+        assert_eq!(
+            state.store.attachment("c1", "a1").unwrap().file_name,
+            "pic.png"
+        );
+        row["display_data"] = json!({"attachments":[]});
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![("m1", row)]),
+        ));
+        state.ensure_channel_cache();
+        assert!(
+            !state
+                .channel_cache
+                .attachments_by_message
+                .contains_key("m1")
+        );
+    }
 
     #[test]
     fn builds_app_state_from_dev_and_oidc_configs() {
@@ -4706,7 +5451,6 @@ mod tests {
         );
 
         state.composer_draft = "残っていた下書き".into();
-        state.search_query = "general".into();
         state.failed_drafts.push(FailedDraft {
             channel_id: "c1".into(),
             target: Target::Channel,
@@ -4731,20 +5475,12 @@ mod tests {
                 .map(|(s, _)| s.as_str()),
             Some("")
         );
-        assert!(state.search_query.is_empty());
-        assert_eq!(state.pending_search_text.as_deref(), Some(""));
         assert!(state.failed_drafts.is_empty());
     }
 
     #[tokio::test]
-    async fn opens_channel_thread_and_filters_sidebar() {
+    async fn opens_channel_and_thread() {
         let mut state = connected_state();
-        assert_eq!(state.filtered_channels().len(), 2);
-        state.search_query = "sec".into();
-        assert_eq!(state.filtered_channels().len(), 1);
-        assert_eq!(state.filtered_channels()[0].id, "c2");
-        state.search_query.clear();
-
         state.open_channel("c1".into());
         assert_eq!(state.current_channel.as_deref(), Some("c1"));
         assert_eq!(state.target, Target::Channel);
@@ -4893,10 +5629,12 @@ mod tests {
             ReadState {
                 channel_id: "c1".into(),
                 has_unread: true,
+                last_read_at: None,
             },
             ReadState {
                 channel_id: "c2".into(),
                 has_unread: true,
+                last_read_at: None,
             },
         ]));
         assert!(state.unread.contains("c1"));
@@ -5375,6 +6113,568 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connected_event_remains_responsive_while_token_lock_is_held() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir =
+            std::env::temp_dir().join(format!("desktop-connected-lock-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        state.on_auth_event(AuthEvent::Connected {
+            credentials: Credentials::Bearer(manager.clone()),
+            token_manager: Some(manager),
+            me: Me {
+                id: "u1".into(),
+                user_name: "u".into(),
+                display_name: "U".into(),
+            },
+            is_admin: false,
+        });
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "connected event blocked UI for {elapsed:?}"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.login_phase.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cancel_changed_session_releases_pending_manager() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("cancel-changed-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager);
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        token::save(&path, &replacement).unwrap();
+        state.cancel_device_login();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.pending_device_login_manager.lock().unwrap().is_none());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn connected_event_does_not_overwrite_another_login() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir =
+            std::env::temp_dir().join(format!("desktop-connected-new-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let old = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &old).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            old.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        let mut replacement = old;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        replacement.access_token = "new".into();
+        token::save(&path, &replacement).unwrap();
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager.clone());
+        state.on_auth_event(AuthEvent::Connected {
+            credentials: Credentials::Bearer(manager.clone()),
+            token_manager: Some(manager),
+            me: Me {
+                id: "u".into(),
+                user_name: "u".into(),
+                display_name: "U".into(),
+            },
+            is_admin: false,
+        });
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(state.pending_device_login_manager.lock().unwrap().is_none());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
+        assert!(matches!(
+            state.login_phase,
+            Some(LoginPhase::Ready { error: Some(_) })
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn unauthorized_preserves_pending_refresh_for_retry() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("desktop-recovery-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url,
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path,
+            tokens.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        manager.set_pending_for_test(tokens);
+        state.token_manager = Some(manager.clone());
+        state.logout_in_progress = true;
+        let generation = state.session_gen;
+        state.on_app_event(AppEvent::Unauthorized);
+        assert_eq!(state.session_gen, generation);
+        assert!(state.recovery_manager.is_none());
+        state.logout_in_progress = false;
+        state.on_app_event(AppEvent::Unauthorized);
+        assert!(Arc::ptr_eq(
+            state.recovery_manager.as_ref().unwrap(),
+            &manager
+        ));
+        assert!(manager.has_pending_persistence());
+        assert_eq!(manager.access_token().await.unwrap(), "access");
+        assert!(!manager.has_pending_persistence());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn failed_logout_replays_unauthorized_event() {
+        let mut state = connected_state();
+        state.config.auth = AuthConfig::Oidc(OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        });
+        state.logout_in_progress = true;
+        state.on_shape(ShapeEvent::Failed(
+            ShapeId::Users,
+            HttpError::Unauthorized.to_string(),
+        ));
+        assert!(state.login_phase.is_none());
+        state.finish_logout(Err(("storage error".into(), false)));
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
+    }
+
+    #[tokio::test]
+    async fn logout_preserves_replacement_session_and_leaves_chat() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!(
+            "desktop-logout-replacement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let original = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "old".into(),
+            refresh_token: Some("old-refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            original.clone(),
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        state.token_manager = Some(manager.clone());
+        state.login_phase = None;
+        let mut replacement = original;
+        replacement.session_id = uuid::Uuid::new_v4().to_string();
+        token::save(&path, &replacement).unwrap();
+        state.logout();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
+        assert!(state.token_manager.is_none());
+        assert!(!manager.save_if_active().unwrap());
+        assert_eq!(
+            token::load(&path, &oidc, Some(&config.api_base_url)).unwrap(),
+            Some(replacement)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn logout_remains_responsive_while_another_process_holds_token_lock() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir = std::env::temp_dir().join(format!("desktop-lock-test-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "zoo2-desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        state.token_manager = Some(Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        )));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        state.logout();
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "logout blocked the UI for {elapsed:?}"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(!path.exists());
+        assert!(matches!(state.login_phase, Some(LoginPhase::Ready { .. })));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_token_even_if_ui_session_changes_before_completion() {
+        use std::io::{Read, Write};
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let server_issuer = issuer.clone();
+        let (request_tx, request_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let mut count = 0;
+            while count < 2 && std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0; 8192];
+                        let _ = stream.read(&mut buf);
+                        let body = if count == 0 {
+                            serde_json::json!({"issuer":server_issuer,"token_endpoint":format!("{server_issuer}/token"),"revocation_endpoint":format!("{server_issuer}/revoke")}).to_string()
+                        } else {
+                            "{}".to_string()
+                        };
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        count += 1;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5))
+                    }
+                    Err(_) => break,
+                }
+            }
+            request_tx.send(count).unwrap();
+        });
+        let dir =
+            std::env::temp_dir().join(format!("desktop-logout-stale-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer,
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: Some("refresh".into()),
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        state.token_manager = Some(Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        )));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        state.logout();
+        state.bump_session_gen();
+        drop(lock);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!state.on_desktop_event(event));
+        let count = tokio::task::spawn_blocking(move || request_rx.recv().unwrap())
+            .await
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            count, 2,
+            "revocation must run even when the UI event is stale"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn cancelling_login_remains_responsive_while_token_lock_is_held() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+        let dir =
+            std::env::temp_dir().join(format!("desktop-cancel-lock-{}", uuid::Uuid::new_v4()));
+        let path = token::token_path(&dir);
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "desktop".into(),
+            resource: None,
+            scope: "openid".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, tx);
+        let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: None,
+            api_base_url: config.api_base_url.clone(),
+            access_token: "access".into(),
+            refresh_token: None,
+            expires_at: token::now() + 300,
+        };
+        token::save(&path, &tokens).unwrap();
+        let manager = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc,
+            path.clone(),
+            tokens,
+            state.session_gen,
+            state.active_session_gen.clone(),
+        ));
+        *state.pending_device_login_manager.lock().unwrap() = Some(manager);
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            drop(lock);
+        });
+        let started = std::time::Instant::now();
+        state.cancel_device_login();
+        let elapsed = started.elapsed();
+        release.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "cancel blocked UI for {elapsed:?}"
+        );
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
     async fn preserves_token_manager_persistence_after_connected_event_and_cleans_up_on_cancel() {
         use zoo2_client_core::auth::token::{self, StoredTokens};
 
@@ -5399,11 +6699,13 @@ mod tests {
             auth: AuthConfig::Oidc(oidc.clone()),
             check_updates: false,
         };
-        let mut state = AppState::from_config(&config);
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        let mut state = AppState::with_channel(config.clone(), None, event_tx);
         assert_eq!(state.session_gen, 0);
 
         let active_gen = state.active_session_gen.clone();
         let tokens = StoredTokens {
+            session_id: uuid::Uuid::new_v4().to_string(),
             issuer: oidc.issuer.clone(),
             client_id: oidc.client_id.clone(),
             resource: oidc.resource.clone(),
@@ -5421,6 +6723,8 @@ mod tests {
             active_gen,
         ));
 
+        assert!(tm.save_if_active().unwrap());
+
         // 接続イベント (Connected) を受け取ると、セッション世代を維持したままトークンが保存され、
         // 接続後もトークンマネージャの save_if_active() による更新保存が可能であること
         state.on_auth_event(AuthEvent::Connected {
@@ -5433,6 +6737,12 @@ mod tests {
             },
             is_admin: false,
         });
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.on_desktop_event(event));
 
         assert!(state.login_phase.is_none());
         assert!(token_path.exists());
@@ -5472,6 +6782,17 @@ mod tests {
         state.cancel_device_login();
         assert_ne!(state.session_gen, old_gen);
         // 今回のログインが保存したトークンが削除される
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let event = event_rx.recv().await.unwrap();
+                if matches!(event, DesktopEvent::CancelFinished { .. }) {
+                    break event;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(state.on_desktop_event(event));
         assert!(!token_path.exists());
         assert_eq!(state.login_phase, Some(LoginPhase::Ready { error: None }));
 
@@ -6219,6 +7540,34 @@ mod tests {
     }
 
     #[test]
+    fn attachment_url_renewal_only_runs_for_visible_messages_in_an_active_window() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.on_shape(ShapeEvent::Batch(ShapeId::Attachments("c1".into()), batch(vec![
+            ("a1", json!({"id":"a1", "message_id":"m1", "uploader_id":"u2", "channel_id":"c1", "file_name":"pic.png", "file_size":100, "content_type":"image/png", "storage_key":"key", "created_at":"2026-11-01 03:00:01"})),
+            ("offscreen", json!({"id":"offscreen", "message_id":"unloaded", "uploader_id":"u2", "channel_id":"c1", "file_name":"old.png", "file_size":100, "content_type":"image/png", "storage_key":"old", "created_at":"2026-11-01 03:00:01"})),
+        ])));
+        state.ensure_channel_cache();
+        for id in ["a1", "offscreen"] {
+            state.attachment_download_urls.insert(
+                id.into(),
+                CachedAttachmentUrl {
+                    url: "https://example.com/image".into(),
+                    fetched_at: Instant::now(),
+                    ttl_secs: 0,
+                },
+            );
+        }
+        state.window_active = false;
+        state.on_app_event(AppEvent::RefreshAttachmentUrls);
+        assert!(state.fetching_attachment_urls.is_empty());
+        state.window_active = true;
+        state.on_app_event(AppEvent::RefreshAttachmentUrls);
+        assert!(state.fetching_attachment_urls.contains("a1"));
+        assert!(!state.fetching_attachment_urls.contains("offscreen"));
+    }
+
+    #[test]
     fn attachment_url_refresh_logic_and_failure_backoff() {
         let mut state = connected_state();
         state.open_channel("c1".into());
@@ -6517,23 +7866,6 @@ mod tests {
         assert_eq!(preserved.1.len(), 2);
         assert_eq!(preserved.1[0].attachments[0].local_id, "local_1");
         assert_eq!(preserved.1[1].attachments[0].local_id, "local_2");
-    }
-
-    #[test]
-    fn validates_mention_notification_tokens() {
-        assert!(has_mention_for("@here", "alice"));
-        assert!(has_mention_for("@HERE", "alice"));
-        assert!(has_mention_for("Hey @channel all", "alice"));
-        assert!(has_mention_for("@alice hello", "alice"));
-        assert!(has_mention_for("Thanks @alice.", "alice"));
-        assert!(has_mention_for("Thanks @alice!", "alice"));
-        assert!(has_mention_for("(@alice)", "alice"));
-
-        // 境界文字のないメールアドレスやURL、単語の一部はメンションと判定されないこと
-        assert!(!has_mention_for("foo@alice.example", "alice"));
-        assert!(!has_mention_for("https://example.com/@here", "alice"));
-        assert!(!has_mention_for("@channel_inside", "alice"));
-        assert!(!has_mention_for("@bob", "alice"));
     }
 
     #[test]
@@ -7818,56 +9150,6 @@ mod tests {
     }
 
     #[test]
-    fn unjoined_public_channel_does_not_trigger_mention_notification() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-
-        // 公開チャンネル c_pub を追加（alice は未参加）
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Channels,
-            batch(vec![(
-                "c_pub",
-                json!({ "id": "c_pub", "channel_name": "public-general", "is_private": "f" }),
-            )]),
-        ));
-
-        let row_val = serde_json::from_value(json!({
-            "id": "m_unjoined",
-            "user_id": "u2",
-            "channel_id": "c_pub",
-            "content": "@alice 未参加チャンネルでのメンション",
-            "created_at": "2026-11-01 04:00:00",
-        }))
-        .unwrap();
-        let msg = Message::from_row(&row_val).unwrap();
-
-        // 未参加の公開チャンネルのため、メンションがあっても通知対象にならないこと
-        assert!(!state.should_notify_message("c_pub", &msg));
-
-        // ChannelUsers が未同期（同期中）の間は、所属確認を保留して通知を許可すること
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::ChannelUsers,
-            Batch {
-                reset: true,
-                changes: vec![],
-                up_to_date: false,
-            },
-        ));
-        assert!(state.should_notify_message("c_pub", &msg));
-
-        // チャンネルに参加した後は、メンション通知の対象になること
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::ChannelUsers,
-            batch(vec![(
-                "cu1",
-                json!({ "channel_id": "c_pub", "user_id": "u1" }),
-            )]),
-        ));
-        assert!(state.should_notify_message("c_pub", &msg));
-    }
-
-    #[test]
     fn unjoined_public_channel_blocks_attachment_upload() {
         let mut state = connected_state();
 
@@ -8302,170 +9584,6 @@ mod tests {
     }
 
     #[test]
-    fn batch_notifications_deduplicated_per_message_id() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-
-        // 同一メッセージ m_dedup に対する insert と update の 2 件を同一バッチで受信
-        let batch_data = batch(vec![
-            (
-                "m_dedup",
-                json!({
-                    "id": "m_dedup",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "最初の内容 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                }),
-            ),
-            (
-                "m_dedup",
-                json!({
-                    "id": "m_dedup",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "更新後の内容 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                    "display_data": "{}",
-                }),
-            ),
-        ]);
-
-        // on_shape を実行してもパニックせず、store に正常に適用されること
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        let stored = state.store.message("c1", "m_dedup").unwrap();
-        assert_eq!(stored.content, "更新後の内容 @alice");
-    }
-
-    #[test]
-    fn batch_notifications_canceled_when_message_deleted_in_same_batch() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        state.notification_sink = Some(sink.clone());
-
-        // 同一メッセージ m_del に対する insert と deleted_at 付き update を同一バッチで受信
-        let batch_data = batch(vec![
-            (
-                "m_del",
-                json!({
-                    "id": "m_del",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "メンション通知 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                }),
-            ),
-            (
-                "m_del",
-                json!({
-                    "id": "m_del",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "メンション通知 @alice",
-                    "created_at": "2026-11-11 00:00:00",
-                    "deleted_at": "2026-11-11 00:01:00",
-                }),
-            ),
-        ]);
-
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        assert!(state.store.message("c1", "m_del").is_none());
-        assert_eq!(
-            sink.lock().unwrap().len(),
-            0,
-            "削除されたメッセージの通知候補は取り消され、通知は送信されないこと"
-        );
-    }
-
-    #[test]
-    fn batch_notifications_canceled_when_mention_removed_in_subsequent_update() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        state.notification_sink = Some(sink.clone());
-
-        // 同一バッチ内で @alice 付き投稿を受信後、メンションを除去した更新を受信
-        let batch_data = batch(vec![
-            (
-                "m_mention_removed",
-                json!({
-                    "id": "m_mention_removed",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "こんにちは @alice さん",
-                    "created_at": "2026-11-11 00:00:00",
-                }),
-            ),
-            (
-                "m_mention_removed",
-                json!({
-                    "id": "m_mention_removed",
-                    "channel_id": "c1",
-                    "user_id": "u2",
-                    "content": "こんにちは 皆さん (メンション削除)",
-                    "created_at": "2026-11-11 00:00:00",
-                    "updated_at": "2026-11-11 00:01:00",
-                }),
-            ),
-        ]);
-
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        let stored = state.store.message("c1", "m_mention_removed").unwrap();
-        assert_eq!(stored.content, "こんにちは 皆さん (メンション削除)");
-        assert_eq!(
-            sink.lock().unwrap().len(),
-            0,
-            "メンション削除されたメッセージの通知候補は取り消され、通知は送信されないこと"
-        );
-    }
-
-    #[test]
-    fn batch_notification_sent_for_valid_mention() {
-        let mut state = connected_state();
-        state.notifications_enabled = true;
-        state.window_active = false;
-        let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        state.notification_sink = Some(sink.clone());
-
-        // 有効なメンション付き新規メッセージを受信
-        let batch_data = batch(vec![(
-            "m_valid",
-            json!({
-                "id": "m_valid",
-                "channel_id": "c1",
-                "user_id": "u2",
-                "content": "こんにちは @alice さん",
-                "created_at": "2026-11-11 00:00:00",
-            }),
-        )]);
-
-        state.on_shape(ShapeEvent::Batch(
-            ShapeId::Messages("c1".into()),
-            batch_data,
-        ));
-        let notifications = sink.lock().unwrap();
-        assert_eq!(
-            notifications.len(),
-            1,
-            "有効なメンション宛て通知が1件送信されること"
-        );
-        assert!(notifications[0].1.contains("こんにちは @alice さん"));
-    }
-
-    #[test]
     fn quick_switcher_keyboard_navigation_sets_pending_scroll() {
         let mut state = connected_state();
         state.open_channel("c1".into());
@@ -8718,5 +9836,116 @@ mod tests {
         assert_eq!(atts_by_msg.get("m1").unwrap()[1].file_name, "file2.pdf");
         assert_eq!(atts_by_msg.get("m2").unwrap().len(), 1);
         assert_eq!(atts_by_msg.get("m2").unwrap()[0].file_name, "file3.jpg");
+    }
+}
+
+#[cfg(test)]
+mod read_boundary_tests {
+    use super::*;
+    use jiff::civil::DateTime;
+    use zoo2_client_core::api::ReadState;
+
+    fn state() -> AppState {
+        AppState::from_config(&Config {
+            api_base_url: "http://localhost:0".to_string(),
+            auth: zoo2_client_core::config::AuthConfig::Dev {
+                user_id: "u".to_string(),
+            },
+            check_updates: false,
+        })
+    }
+
+    fn read_state(channel: &str, has_unread: bool, at: Option<&str>) -> ReadState {
+        ReadState {
+            channel_id: channel.to_string(),
+            has_unread,
+            last_read_at: at.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn parses_server_timestamps() {
+        let expected: DateTime = "2026-11-01T09:00:00".parse().unwrap();
+        assert_eq!(parse_utc_timestamp("2026-11-01T09:00:00"), Some(expected));
+        assert_eq!(parse_utc_timestamp("2026-11-01 09:00:00"), Some(expected));
+        assert_eq!(parse_utc_timestamp("2026-11-01T09:00:00Z"), Some(expected));
+        assert_eq!(
+            parse_utc_timestamp("2026-11-01T18:00:00+09:00"),
+            Some(expected)
+        );
+        assert_eq!(parse_utc_timestamp("あ"), None);
+    }
+
+    #[test]
+    fn keeps_the_boundary_of_the_open_channel_after_it_is_read() {
+        let mut s = state();
+        s.current_channel = Some("c1".into());
+        s.update_read_boundaries(&[
+            read_state("c1", true, Some("2026-11-01T09:00:00")),
+            read_state("c2", true, None),
+        ]);
+        assert_eq!(
+            s.read_boundary.get("c1"),
+            Some(&"2026-11-01T09:00:00".parse().unwrap())
+        );
+        assert_eq!(s.read_boundary.get("c2"), Some(&DateTime::MIN));
+
+        // 既読になっても、開いている c1 の線は残る。閲覧していない c2 は捨てる。
+        s.update_read_boundaries(&[
+            read_state("c1", false, Some("2026-11-01T10:00:00")),
+            read_state("c2", false, Some("2026-11-01T10:00:00")),
+        ]);
+        assert!(s.read_boundary.contains_key("c1"));
+        assert!(!s.read_boundary.contains_key("c2"));
+        // 残っている線は、あとから届いた `last_read_at` で動かさない。
+        assert_eq!(
+            s.read_boundary.get("c1"),
+            Some(&"2026-11-01T09:00:00".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn unopened_channel_boundary_follows_the_latest_last_read_at() {
+        let mut s = state();
+        s.current_channel = Some("c2".into());
+        s.update_read_boundaries(&[read_state("c1", true, Some("2026-11-01T09:00:00"))]);
+        // c1 を別の端末で読み、またすぐ未読になった。古い位置を引きずらない。
+        s.update_read_boundaries(&[read_state("c1", true, Some("2026-11-01T12:00:00"))]);
+        assert_eq!(
+            s.read_boundary.get("c1"),
+            Some(&"2026-11-01T12:00:00".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn switching_channels_clears_the_old_boundary_and_pins_the_new_one() {
+        let mut s = state();
+        s.unread.insert("b".into());
+        s.last_read_known
+            .insert("b".into(), "2026-11-01T09:00:00".parse().unwrap());
+        s.current_channel = Some("a".into());
+        s.read_boundary
+            .insert("a".into(), "2026-11-01T08:00:00".parse().unwrap());
+        s.open_channel_inner("b".into(), true);
+        assert!(!s.read_boundary.contains_key("a"));
+        assert_eq!(
+            s.read_boundary.get("b"),
+            Some(&"2026-11-01T09:00:00".parse().unwrap())
+        );
+        // 読み終えて戻ったら (未読でないので) 線は置かない。
+        s.unread.remove("a");
+        s.open_channel_inner("a".into(), true);
+        assert!(!s.read_boundary.contains_key("b"));
+        assert!(!s.read_boundary.contains_key("a"));
+    }
+
+    #[test]
+    fn leaving_a_read_channel_drops_its_boundary_on_the_next_poll() {
+        let mut s = state();
+        s.current_channel = Some("c1".into());
+        s.update_read_boundaries(&[read_state("c1", true, None)]);
+        s.current_channel = Some("c2".into());
+        s.update_read_boundaries(&[read_state("c1", false, None)]);
+        assert!(s.read_boundary.is_empty());
     }
 }

@@ -2,38 +2,96 @@ import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
-import { HashIcon, SearchIcon, XIcon } from "lucide-react";
+import { ArchiveIcon, ArrowUpDownIcon, CheckIcon, HashIcon, SearchIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type { ChannelRow } from "../../lib/electric/types";
 import { Button } from "../ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "../ui/dropdown-menu";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
-import { filterDiscoverableChannels } from "./channelSearch";
+import {
+  CHANNEL_SORTS,
+  DEFAULT_CHANNEL_SORT,
+  filterDiscoverableChannels,
+  isChannelJoinable,
+  isChannelSort,
+  sortChannels,
+  type ChannelSort,
+} from "./channelSearch";
 
-/** 未参加の公開チャンネルを探す。参加は閲覧後の送信欄で行う。 */
+/**
+ * 未参加の公開チャンネルとアーカイブ済みチャンネルを探す。行を押すとチャンネルを開き、
+ * 「参加」ボタンは開かずにこの画面で参加する（アーカイブ済みは参加不可）。`onJoinChannel` は
+ * 失敗時に reject し、ここでエラーを表示する。
+ */
 export function ChannelBrowserDialog({
   open,
   onOpenChange,
   channels,
   joinedChannelIds,
+  onJoinChannel,
+  memberCounts,
+  leaveDates,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   channels: ChannelRow[];
   joinedChannelIds: ReadonlySet<string>;
+  onJoinChannel?: (channelId: string) => Promise<void>;
+  /** チャンネル ID ごとのメンバー数。メンバー数での並び替えに使う。 */
+  memberCounts?: ReadonlyMap<string, number>;
+  /** チャンネル ID ごとの自分の退出日。退出日での並び替えに使う。 */
+  leaveDates?: ReadonlyMap<string, string>;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [joiningIds, setJoiningIds] = useState<ReadonlySet<string>>(new Set());
+  const [sort, setSort] = useState<ChannelSort>(DEFAULT_CHANNEL_SORT);
+  const [includeArchived, setIncludeArchived] = useState(false);
   const discoverableChannels = useMemo(
-    () => filterDiscoverableChannels(channels, joinedChannelIds, query),
-    [channels, joinedChannelIds, query],
+    () =>
+      sortChannels(
+        filterDiscoverableChannels(channels, joinedChannelIds, query, { includeArchived }),
+        sort,
+        memberCounts,
+        leaveDates,
+      ),
+    [channels, joinedChannelIds, query, includeArchived, sort, memberCounts, leaveDates],
   );
+
+  async function handleJoin(channelId: string) {
+    if (!onJoinChannel || joiningIds.has(channelId)) {
+      return;
+    }
+    setJoinError(null);
+    setJoiningIds((prev) => new Set(prev).add(channelId));
+    try {
+      await onJoinChannel(channelId);
+    } catch (cause) {
+      setJoinError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setJoiningIds((prev) => {
+        const next = new Set(prev);
+        next.delete(channelId);
+        return next;
+      });
+    }
+  }
 
   function handleOpenChange(next: boolean) {
     if (!next) {
       setQuery("");
+      setJoinError(null);
+      setIncludeArchived(false);
     }
     onOpenChange(next);
   }
@@ -46,46 +104,96 @@ export function ChannelBrowserDialog({
           <DialogDescription>{t("channels.browseDescription")}</DialogDescription>
         </DialogHeader>
 
-        <div className="relative min-w-0">
-          <SearchIcon
-            aria-hidden="true"
-            className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-          />
-          <Input
-            type="search"
-            className={cn(
-              inputClassName(),
-              "w-full pr-8 pl-8 [&::-webkit-search-cancel-button]:appearance-none",
-            )}
-            placeholder={t("channels.browseSearch")}
-            aria-label={t("channels.browseSearch")}
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape" && query) {
-                event.preventDefault();
-                event.stopPropagation();
-                setQuery("");
+        <div className="flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <SearchIcon
+              aria-hidden="true"
+              className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+              type="search"
+              className={cn(
+                inputClassName(),
+                "w-full pr-8 pl-8 [&::-webkit-search-cancel-button]:appearance-none",
+              )}
+              placeholder={t("channels.browseSearch")}
+              aria-label={t("channels.browseSearch")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape" && query) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setQuery("");
+                }
+              }}
+              autoComplete="off"
+              spellCheck={false}
+              autoFocus
+            />
+            {query ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="absolute top-1/2 right-1 -translate-y-1/2"
+                aria-label={t("channels.searchClear")}
+                title={t("channels.searchClear")}
+                onClick={() => setQuery("")}
+              >
+                <XIcon />
+              </Button>
+            ) : null}
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={`${t("channels.sortLabel")}: ${t(`channels.sort.${sort}`)}`}
+                  title={`${t("channels.sortLabel")}: ${t(`channels.sort.${sort}`)}`}
+                />
               }
-            }}
-            autoComplete="off"
-            spellCheck={false}
-            autoFocus
-          />
-          {query ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              className="absolute top-1/2 right-1 -translate-y-1/2"
-              aria-label={t("channels.searchClear")}
-              title={t("channels.searchClear")}
-              onClick={() => setQuery("")}
             >
-              <XIcon />
-            </Button>
-          ) : null}
+              <ArrowUpDownIcon aria-hidden="true" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuRadioGroup
+                value={sort}
+                onValueChange={(value) => {
+                  if (isChannelSort(value)) setSort(value);
+                }}
+              >
+                {CHANNEL_SORTS.map((value) => (
+                  <DropdownMenuRadioItem key={value} value={value} closeOnClick>
+                    {t(`channels.sort.${value}`)}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
+
+        <Button
+          type="button"
+          variant={includeArchived ? "secondary" : "outline"}
+          size="sm"
+          className="justify-self-start"
+          aria-pressed={includeArchived}
+          onClick={() => setIncludeArchived((value) => !value)}
+        >
+          {includeArchived ? <CheckIcon aria-hidden="true" /> : <ArchiveIcon aria-hidden="true" />}
+          {t("channels.includeArchived")}
+        </Button>
+
+        {joinError ? (
+          <p role="alert" className="text-xs text-destructive">
+            {t("common.writeError")}
+            <span className="sr-only">: {joinError}</span>
+          </p>
+        ) : null}
 
         <div className="h-80 min-h-0 min-w-0">
           {discoverableChannels.length === 0 ? (
@@ -96,12 +204,15 @@ export function ChannelBrowserDialog({
             <ScrollArea className="h-full">
               <ul className="flex flex-col gap-0.5 pr-2">
                 {discoverableChannels.map((channel) => (
-                  <li key={channel.id}>
+                  <li
+                    key={channel.id}
+                    className="flex min-h-14 items-center gap-1 rounded-lg pr-3 focus-within:ring-2 focus-within:ring-ring hover:bg-muted"
+                  >
                     <Link
                       to="/channels/$channelId"
                       params={{ channelId: channel.id }}
                       onClick={() => handleOpenChange(false)}
-                      className="flex min-h-14 items-center gap-3 rounded-lg px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                      className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-lg py-2 pl-3 outline-none"
                     >
                       <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
                       <div className="min-w-0 flex-1">
@@ -113,14 +224,28 @@ export function ChannelBrowserDialog({
                         ) : null}
                       </div>
                       {channel.archive_at ? (
-                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                          {t("moderation.archived")}
+                        <span
+                          role="img"
+                          title={t("moderation.archived")}
+                          aria-label={t("moderation.archived")}
+                          className="shrink-0 text-muted-foreground/70"
+                        >
+                          <ArchiveIcon className="size-4" aria-hidden="true" />
                         </span>
                       ) : null}
-                      <span className="shrink-0 text-xs font-medium text-brand">
-                        {t("channels.view")}
-                      </span>
                     </Link>
+                    {onJoinChannel && isChannelJoinable(channel) ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={joiningIds.has(channel.id)}
+                        aria-busy={joiningIds.has(channel.id)}
+                        onClick={() => void handleJoin(channel.id)}
+                      >
+                        {joiningIds.has(channel.id) ? t("channels.joining") : t("channels.join")}
+                      </Button>
+                    ) : null}
                   </li>
                 ))}
               </ul>

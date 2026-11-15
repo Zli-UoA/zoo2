@@ -31,6 +31,13 @@ import kotlin.math.floor
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 
+/**
+ * 通話の不在着信（`missed_call`）は Android では表示しない。メッセージがなく、通話の機能は Web 版だけ
+ * （docs/calls.md）なので、通知の種類を知らない一覧が「返信」と誤って表示しないようにする。
+ */
+internal fun androidNotificationRows(rows: List<Row>): List<Row> =
+    rows.filterNot { it.text("notification_type") == "missed_call" }
+
 fun notificationGroups(rows: List<Row>): List<List<Row>> =
     rows
         .sortedWith(

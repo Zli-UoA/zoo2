@@ -466,7 +466,9 @@ export const LiveFollowRequest: Story = {
     liveItems = structuredClone(activityPubNotifications);
     notificationsLive.broadcast("refresh");
     const panel = within(await screen.findByRole("region", { name: "通知" }));
-    await expect(await panel.findByRole("button", { name: "承認" })).toBeVisible();
+    await expect(
+      await panel.findByRole("button", { name: "承認" }, { timeout: 10000 }),
+    ).toBeVisible();
   }),
 };
 

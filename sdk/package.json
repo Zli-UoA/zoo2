@@ -3,7 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": "./src/index.ts",
-  "scripts": { "check": "tsc --noEmit", "test": "node --experimental-strip-types --test src/index.test.ts" },
-  "engines": { "node": ">=22.18" }
+  "exports": {
+    ".": "./src/index.ts",
+    "./e2ee": "./src/e2ee.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test src/index.test.ts",
+    "test:e2ee": "node --experimental-strip-types --test src/e2ee.test.ts ../examples/e2ee-echo-bot/echo.test.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
 }

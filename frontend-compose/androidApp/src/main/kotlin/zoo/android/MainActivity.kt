@@ -32,7 +32,22 @@ import zoo.android.update.AndroidUpdateFrame
 import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
 
+/** 鍵バックアップに送れていない鍵があるときの、ログアウトの確認（#359）。 */
+private class UnbackedKeysPrompt(val count: Int, val answer: CompletableDeferred<Boolean>)
+
 class MainActivity : ComponentActivity() {
+    private var unbackedKeysPrompt by mutableStateOf<UnbackedKeysPrompt?>(null)
+
+    private suspend fun confirmUnbackedKeys(count: Int): Boolean {
+        val answer = CompletableDeferred<Boolean>()
+        unbackedKeysPrompt = UnbackedKeysPrompt(count, answer)
+        return try {
+            answer.await()
+        } finally {
+            unbackedKeysPrompt = null
+        }
+    }
+
     private var fileResult: CompletableDeferred<List<Uri>>? = null
     private val picker =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
@@ -52,10 +67,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 今のログインの E2EE の再認証（#360）。App Links で戻ったリダイレクトを渡す。 */
+    @Volatile
+    private var reauth: AndroidReauth? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // 再認証のリダイレクト（ReauthCallbackActivity から）。待っている再認証の state と合うものだけを受け取る。
+        if (intent.action == ReauthCallbackActivity.ACTION_REAUTH_CALLBACK) {
+            intent.dataString?.let { reauth?.deliver(it) }
+        }
+    }
+
+    /** リカバリーキーをクリップボードに置く。キーボードの候補やプレビューに出ないよう、機微な内容の印を付ける。 */
+    private fun copySecret(value: String) {
+        val clip = android.content.ClipData.newPlainText("Zoo", value)
+        clip.description.extras =
+            android.os.PersistableBundle().apply {
+                putBoolean(
+                    if (android.os.Build.VERSION.SDK_INT >= 33) android.content.ClipDescription.EXTRA_IS_SENSITIVE
+                    else "android.content.extra.IS_SENSITIVE",
+                    true,
+                )
+            }
+        getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
     }
 
     @Composable
@@ -202,14 +243,22 @@ class MainActivity : ComponentActivity() {
                         else -> finish()
                     }
                 }
+                val encryption =
+                    remember(current) {
+                        current.e2eeSettings?.let { host ->
+                            @Composable { app: Session -> zoo.crypto.EncryptionSettings(app, host) }
+                        }
+                    }
                 CompositionLocalProvider(
                     LocalWebPlatform provides platform,
                     LocalApp provides current.session,
+                    LocalEncryptionSettings provides encryption,
                 ) {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
                         Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
                             NativeWindow(current.session) { ZooApp(current.session) }
                         }
+                        unbackedKeysPrompt?.let { UnbackedKeysDialog(platform, it) }
                     }
                 }
             }
@@ -268,7 +317,7 @@ class MainActivity : ComponentActivity() {
             currentCoroutineContext().ensureActive()
             val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             val platform = AndroidPlatform(
-                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles,
+                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles, ::confirmUnbackedKeys,
             )
             platform.systemDark(dark)
             val config = Config(
@@ -276,7 +325,40 @@ class MainActivity : ComponentActivity() {
                 assetsBaseUrl = connection.base,
             )
             val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
-            return RunningSession(session, platform, lifetime, http, auth).also { session.start() }
+            // ログインしたら、E2EE の端末を登録する（#359）。失敗は表示せず、裏で試し直す。
+            val e2eeApi = zoo.crypto.ZooE2eeApi(ZooApi(config, platform, http))
+            val e2ee = zoo.crypto.E2eeDeviceManager(
+                api = e2eeApi,
+                server = connection.base,
+                userId = me.text("id"),
+                displayName = e2eeDisplayName(),
+                files = zoo.crypto.CryptoStoreFiles.android(this, connection.base, me.text("id")),
+                pending = zoo.crypto.PendingDeviceDeletions.android(this),
+                toDevice = { deviceId -> zoo.crypto.toDeviceShape(config, platform, http, deviceId) },
+                scope = lifetime,
+                onError = { failure ->
+                    android.util.Log.w("ZooE2ee", "E2EE の端末の処理に失敗しました: ${failure::class.simpleName}: ${failure.message}")
+                },
+                // 初回設定と解錠（#360）。解錠済みの端末は、起動時の確認と鍵バックアップへの送信も行う。
+                setupApi = e2eeApi,
+            )
+            platform.e2ee = e2ee
+            // 設定の「暗号化」タブ（#360）。再認証は Custom Tabs、パスキーは Credential Manager。
+            val reauthenticator = AndroidReauth(this, http, connection)
+            reauth = reauthenticator
+            val e2eeSettings = e2ee.setup?.let { setup ->
+                zoo.crypto.E2eeSettingsHost(
+                    setup = setup,
+                    rpId = passkeyRpId(connection.issuer),
+                    passkeys = AndroidPasskeys(this),
+                    reauthenticate = reauthenticator::reauthenticate,
+                    copySecret = ::copySecret,
+                )
+            }
+            return RunningSession(session, platform, lifetime, http, auth, e2ee, e2eeSettings).also {
+                session.start()
+                e2ee.start()
+            }
         } catch (failure: Throwable) {
             auth.close()
             http.close()
@@ -436,15 +518,60 @@ private class RunningSession(
     val scope: CoroutineScope,
     private val http: HttpClient,
     val auth: DeviceAuth,
+    private val e2ee: zoo.crypto.E2eeDeviceManager,
+    val e2eeSettings: zoo.crypto.E2eeSettingsHost?,
 ) {
     fun logout() {
         try { auth.forget() } finally { close() }
     }
 
     fun close() {
+        e2ee.stop()
         auth.close()
         session.close()
         scope.cancel()
         http.close()
     }
+}
+
+/**
+ * パスキーの RP ID（docs/e2ee.md の「RP ID の決め方」）。ログインに使う issuer のホスト名（本番は
+ * `account.zli.works`）。HTTPS でなければ `null`（リカバリーキーだけを使う）。
+ */
+private fun passkeyRpId(issuer: String): String? =
+    try {
+        Url(issuer).takeIf { it.protocol == URLProtocol.HTTPS }?.host?.takeIf { it.isNotEmpty() }
+    } catch (_: Exception) {
+        null
+    }
+
+/** 端末名（`display_name`）。本人の端末一覧（#362）にだけ出る。例：`Zoo Android（Pixel 8）`。 */
+private fun e2eeDisplayName(): String =
+    "Zoo Android（${android.os.Build.MODEL.orEmpty().ifBlank { "Android" }.take(100)}）"
+
+/** 鍵バックアップに送れていない鍵があるときの、ログアウトの確認（React の `UnbackedKeysLogoutDialog`）。 */
+@Composable
+private fun UnbackedKeysDialog(platform: AndroidPlatform, prompt: UnbackedKeysPrompt) {
+    val t = { key: String -> platform.translate(key, mapOf("count" to prompt.count.toString())) }
+    AlertDialog(
+        onDismissRequest = { prompt.answer.complete(false) },
+        title = { Text(t("e2ee.logout.unbackedTitle")) },
+        text = {
+            Text(
+                when {
+                    prompt.count < 0 -> t("e2ee.logout.unknownDescription")
+                    prompt.count == 1 -> t("e2ee.logout.unbackedDescription_one")
+                    else -> t("e2ee.logout.unbackedDescription_other")
+                }
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { prompt.answer.complete(true) }) {
+                Text(t("e2ee.logout.confirm"), color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { prompt.answer.complete(false) }) { Text(t("common.cancel")) }
+        },
+    )
 }

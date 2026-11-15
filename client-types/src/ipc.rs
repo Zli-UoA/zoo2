@@ -41,6 +41,11 @@ pub mod command {
     pub const LOGOUT: &str = "zoo_logout";
     /// [`super::FocusState`]。通知を抑えるために、前面かどうかと表示中のチャンネルを知らせる。
     pub const SET_FOCUS: &str = "zoo_set_focus";
+    /// 引数なし。[`super::NotificationSettings`] を返す。アプリが OS の通知を出すかどうか。
+    /// 古い版のアプリにはないので、呼べなかったら設定を出さない (`PROTOCOL_VERSION` は上げない)。
+    pub const NOTIFICATION_SETTINGS: &str = "zoo_notification_settings";
+    /// `{ settings: NotificationSettings }`。OS の通知を出すかどうかを変えて、保存する。
+    pub const SET_NOTIFICATIONS: &str = "zoo_set_notifications";
 
     // (a) Leptos だけ
     /// [`super::OpenChannel`]。そのチャンネルのメッセージの Shape に購読を切り替える。
@@ -48,6 +53,7 @@ pub mod command {
     /// 引数なし。Rust 側が持っている行を `reset` 付きの [`super::event::SHAPE`] で送り直す。
     /// WebView を読み込み直したときに使う。
     pub const RESYNC: &str = "zoo_resync";
+    pub const ACCOUNT_PROFILES: &str = "zoo_account_profiles";
     /// [`super::SendMessage`]。[`super::SendResult`] を返す。
     pub const SEND_MESSAGE: &str = "zoo_send_message";
 
@@ -56,6 +62,10 @@ pub mod command {
     pub const ACCESS_TOKEN: &str = "zoo_access_token";
     /// [`super::ObservedNotifications`]。React が受け取った通知の Shape の変化を渡す。
     pub const NOTIFICATIONS_OBSERVED: &str = "zoo_notifications_observed";
+    /// 引数なし。トーストの「応答」を押した招待の ID を、一度だけ返す（なければ `null`）。
+    /// 外から偽装できない、Rust 側だけが残す印。古い版のアプリにはないので、呼べなかったら何もしない
+    /// (`PROTOCOL_VERSION` は上げない)。
+    pub const TAKE_CALL_ACCEPT: &str = "zoo_take_call_accept";
 }
 
 /// Rust 側から WebView へ送るイベントの名前。
@@ -68,6 +78,9 @@ pub mod event {
     pub const SHAPE_FAILED: &str = "zoo://shape-failed";
     /// [`super::OpenTarget`]。通知やトレイ、ディープリンクから、あるメッセージを開くとき。
     pub const OPEN: &str = "zoo://open";
+    /// 中身なし。着信のトーストの「応答」が押された。`zoo_take_call_accept` で印を取りに来る合図で、
+    /// このイベントだけでは応答しない。
+    pub const CALL_ACCEPT: &str = "zoo://call-accept";
 }
 
 /// どちらの画面で動いているか。
@@ -116,6 +129,18 @@ pub struct DeviceLogin {
     pub verification_uri_complete: Option<String>,
     /// UNIX 秒。これを過ぎたらやり直す。
     pub expires_at: i64,
+}
+
+/// アプリが OS の通知 (投稿の通知) を出すかどうか。既定は出す。更新の知らせは、これに関係なく出す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationSettings {
+    pub enabled: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +316,7 @@ mod tests {
             command::SEND_MESSAGE,
             command::ACCESS_TOKEN,
             command::NOTIFICATIONS_OBSERVED,
+            command::TAKE_CALL_ACCEPT,
         ] {
             assert!(
                 name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
@@ -302,6 +328,7 @@ mod tests {
             event::SHAPE,
             event::SHAPE_FAILED,
             event::OPEN,
+            event::CALL_ACCEPT,
         ] {
             assert!(
                 name.chars()

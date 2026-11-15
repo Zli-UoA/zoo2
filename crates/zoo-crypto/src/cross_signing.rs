@@ -244,6 +244,14 @@ impl CrossSigningKeyPair {
         Ok(pin)
     }
 
+    /// 鍵バックアップの版の `auth_data` に署名する（マスター鍵だけ）。
+    pub(crate) fn sign_auth_data(&self, auth_data: &mut Value) -> Result<(), CryptoError> {
+        self.require(KeyUsage::Master)?;
+        sign_json_with(auth_data, &self.user_id, &self.key_id(), |m| {
+            self.secret.sign(m)
+        })
+    }
+
     fn signature_over(&self, value: &Value) -> Result<String, CryptoError> {
         let message = signable_json(value)?;
         Ok(self.secret.sign(message.as_bytes()).to_base64())

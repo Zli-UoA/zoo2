@@ -1,5 +1,6 @@
 import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
+import { LockIcon } from "lucide-react";
 import { useState, type FormEvent } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -33,6 +34,7 @@ export function CreateChannelDialog({
   const [description, setDescription] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [isNsfw, setIsNsfw] = useState(false);
+  const [encrypted, setEncrypted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // 言語を切り替えても文言が追従するよう、翻訳前の原因を保持する。
   const [errorCause, setErrorCause] = useState<{ cause: unknown } | null>(null);
@@ -46,6 +48,7 @@ export function CreateChannelDialog({
       setDescription("");
       setIsPrivate(false);
       setIsNsfw(false);
+      setEncrypted(false);
       setErrorCause(null);
       setSubmitting(false);
     }
@@ -76,6 +79,8 @@ export function CreateChannelDialog({
         slack_import_kind: null,
         slack_imported_at: null,
         deleted_at: null,
+        // 暗号化できるのは非公開チャンネルだけ（公開にしたら外す）。
+        encrypted: isPrivate && encrypted,
       });
       await transaction.when("settled");
       handleOpenChange(false);
@@ -151,6 +156,22 @@ export function CreateChannelDialog({
             />
             {t("channels.makePrivate")}
           </label>
+          <div className="flex flex-col gap-1">
+            <label className="flex items-center gap-2 text-sm">
+              <Input
+                type="checkbox"
+                checked={isPrivate && encrypted}
+                disabled={submitting || !isPrivate}
+                aria-describedby="create-channel-encrypted-help"
+                onChange={(event) => setEncrypted(event.target.checked)}
+              />
+              <LockIcon className="size-3.5 text-muted-foreground" aria-hidden="true" />
+              {t("e2ee.encryptChannel")}
+            </label>
+            <p id="create-channel-encrypted-help" className="text-xs text-muted-foreground">
+              {isPrivate ? t("e2ee.encryptChannelHelp") : t("e2ee.encryptChannelPrivateOnly")}
+            </p>
+          </div>
           <label className="flex items-center gap-2 text-sm">
             <Input
               type="checkbox"

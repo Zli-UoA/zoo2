@@ -1,6 +1,8 @@
+// @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { createApiClient, type ApiClient } from "../api/client";
+import { THREADS_CHANGED } from "./threads";
 import type { ChannelRow, ChannelUserRow, MessageRow } from "./types";
 import {
   createChannelUserWrites,
@@ -137,6 +139,56 @@ describe("message writes", () => {
       content: "hello",
       attachment_ids: ["a1", "a2"],
     });
+  });
+
+  it("does not refresh threads for root posts or failed replies", async () => {
+    const { client, post } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+    const changed = vi.fn();
+    window.addEventListener(THREADS_CHANGED, changed);
+    try {
+      await writes.onInsert(params(collection, [insertMutation(message)]));
+      expect(changed).not.toHaveBeenCalled();
+      post.mockRejectedValueOnce(new Error("Forbidden"));
+      await expect(
+        writes.onInsert(params(collection, [insertMutation({ ...message, parent_id: "root" })])),
+      ).rejects.toThrow("Forbidden");
+      expect(changed).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(THREADS_CHANGED, changed);
+    }
+  });
+
+  it("refreshes the index after edits and both logical delete paths, but not failed writes", async () => {
+    const { client, patch } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+    const changed = vi.fn();
+    window.addEventListener(THREADS_CHANGED, changed);
+    try {
+      await writes.onUpdate(params(collection, [updateMutation(message, { content: "Renamed" })]));
+      await writes.onUpdate(
+        params(collection, [updateMutation(message, { deleted_at: "2026-11-11" })]),
+      );
+      await writes.onDelete(params(collection, [deleteMutation(message)]));
+      expect(changed).toHaveBeenCalledTimes(3);
+      patch.mockRejectedValueOnce(new Error("Forbidden"));
+      await expect(
+        writes.onUpdate(params(collection, [updateMutation(message, { content: "Rejected" })])),
+      ).rejects.toThrow("Forbidden");
+      expect(changed).toHaveBeenCalledTimes(3);
+    } finally {
+      window.removeEventListener(THREADS_CHANGED, changed);
+    }
   });
 
   it("keeps the sensitive label when sending attachment metadata", async () => {
@@ -340,6 +392,54 @@ describe("channel writes", () => {
 });
 
 describe("channel_user writes", () => {
+  it.each(["join", "add", "leave"])(
+    "refreshes threads after %s before Electric catches up",
+    async (action) => {
+      const { client } = makeClient();
+      const writes = createChannelUserWrites({
+        client,
+        txidMode: "awaitTxId",
+        getCurrentUserId: () => CURRENT_USER,
+      });
+      const { collection, awaitTxId } = makeCollection();
+      const dispatch = vi.spyOn(window, "dispatchEvent");
+      awaitTxId.mockImplementation(async () => {
+        expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: THREADS_CHANGED }));
+        return true;
+      });
+      try {
+        if (action === "leave")
+          await writes.onDelete(params(collection, [deleteMutation(membership)]));
+        else await writes.onInsert(params(collection, [insertMutation(membership, { action })]));
+      } finally {
+        dispatch.mockRestore();
+      }
+    },
+  );
+
+  it("does not refresh threads when joining fails or another member is added", async () => {
+    const { client, post } = makeClient();
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+    const dispatch = vi.spyOn(window, "dispatchEvent");
+    try {
+      post.mockRejectedValueOnce(new Error("unavailable"));
+      await expect(
+        writes.onInsert(params(collection, [insertMutation(membership)])),
+      ).rejects.toThrow("unavailable");
+      await writes.onInsert(
+        params(collection, [insertMutation({ ...membership, user_id: "u2" }, { action: "add" })]),
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally {
+      dispatch.mockRestore();
+    }
+  });
+
   it("POSTs /join by default", async () => {
     const { client, post } = makeClient();
     const writes = createChannelUserWrites({

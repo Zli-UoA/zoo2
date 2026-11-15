@@ -1,3 +1,4 @@
+import { visiblePoll } from "../../lib/visiblePoll";
 import { Input } from "../ui/input";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,6 +8,7 @@ import { useCollections } from "../../lib/electric/collections-context";
 import { useShell } from "../layout/shell-context";
 import { inputClassName } from "../ui/input-styles";
 import { Button } from "../ui/button";
+import { apiPath } from "../../lib/api/path";
 
 type Session = { id: string; app_id: string; title: string; state: string };
 export function AppConnections({
@@ -33,39 +35,41 @@ export function AppConnections({
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     if (!connections && !assistant) return;
-    const controller = new AbortController();
-    const load = () => {
-      if (connections)
-        void client
-          .get<{ state: string }>(`/api/apps/${appId}/connection`, { signal: controller.signal })
-          .then((v) => {
-            if (!controller.signal.aborted) setConnection(v.state);
-          })
-          .catch(() => {
-            if (!controller.signal.aborted) setError(t("apps.loadError"));
-          });
-      if (assistant)
-        void client
-          .get<Session[]>("/api/assistant-sessions", { signal: controller.signal })
-          .then((v) => {
-            if (!controller.signal.aborted) setSessions(v.filter((s) => s.app_id === appId));
-          })
-          .catch(() => {
-            if (!controller.signal.aborted) setError(t("apps.loadError"));
-          });
-    };
-    load();
-    const timer = setInterval(load, 2000);
-    return () => {
-      controller.abort();
-      clearInterval(timer);
-    };
+    const polling = visiblePoll(
+      async (signal) => {
+        let active = false;
+        const results = await Promise.allSettled([
+          connections
+            ? client
+                .get<{ state: string }>(apiPath`/api/apps/${appId}/connection`, { signal })
+                .then((value) => {
+                  if (!signal.aborted) setConnection(value.state);
+                  active ||= ["pending", "connecting", "requested"].includes(value.state);
+                })
+            : undefined,
+          assistant
+            ? client.get<Session[]>("/api/assistant-sessions", { signal }).then((rows) => {
+                const own = rows.filter((session) => session.app_id === appId);
+                if (!signal.aborted) setSessions(own);
+                active ||= own.some((session) =>
+                  ["pending", "running", "starting"].includes(session.state),
+                );
+              })
+            : undefined,
+        ]);
+        if (!signal.aborted && results.some((result) => result.status === "rejected"))
+          setError(t("apps.loadError"));
+        return active;
+      },
+      { interval: 2000, maxInterval: 30000 },
+    );
+    return () => polling.dispose();
   }, [appId, connections, assistant, client, revision, t]);
   useEffect(() => {
     if (!assistant || !selectedChannelId) return;
     const controller = new AbortController();
     void client
-      .request(`/api/apps/${appId}/context`, {
+      .request(apiPath`/api/apps/${appId}/context`, {
         method: "POST",
         body: {
           channel_id: selectedChannelId,
@@ -104,7 +108,9 @@ export function AppConnections({
             variant="outline"
             disabled={busy || connection === null}
             onClick={() =>
-              void run(`/api/apps/${appId}/connection`, { connect: connection === "disconnected" })
+              void run(apiPath`/api/apps/${appId}/connection`, {
+                connect: connection === "disconnected",
+              })
             }
           >
             {t(
@@ -146,7 +152,7 @@ export function AppConnections({
                   onBlur={(e) => {
                     if (e.target.value !== s.title)
                       void run(
-                        `/api/assistant-sessions/${s.id}`,
+                        apiPath`/api/assistant-sessions/${s.id}`,
                         { title: e.target.value },
                         "PATCH",
                       );
@@ -156,7 +162,11 @@ export function AppConnections({
                   variant="ghost"
                   disabled={busy}
                   onClick={() =>
-                    void run(`/api/assistant-sessions/${s.id}`, { state: "stopped" }, "PATCH")
+                    void run(
+                      apiPath`/api/assistant-sessions/${s.id}`,
+                      { state: "stopped" },
+                      "PATCH",
+                    )
                   }
                 >
                   {t("apps.assistant.stop")}

@@ -59,3 +59,18 @@ export const UserAvatarFallback: Story = {
     await expect(canvasElement.querySelector(`img[src="${bobAvatarUrl}?missing"]`)).toBeNull();
   }),
 };
+export const Encrypted: Story = {
+  args: {
+    channel: {
+      ...storyChannels[0],
+      id: "edm-story",
+      channel_name: "edm:alice:bob",
+      is_dm: true,
+      is_private: true,
+      encrypted: true,
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(canvasElement.querySelector('[aria-label="暗号化"]')).not.toBeNull();
+  }),
+};

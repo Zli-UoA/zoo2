@@ -10,10 +10,12 @@ import kotlinx.serialization.json.*
 
 @Composable
 fun workspaceEmojis(app: Session): List<Row> {
-    LaunchedEffect(app) { while (true) {
-        try { app.loadWorkspaceEmojis() } catch (e: CancellationException) { throw e } catch (_: Exception) {}
-        kotlinx.coroutines.delay(60_000)
-    } }
+    LaunchedEffect(app, app.env.visible, app.env.online) {
+        while (app.env.visible && app.env.online) {
+            try { app.loadWorkspaceEmojis() } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+            kotlinx.coroutines.delay(60_000)
+        }
+    }
     return app.workspaceEmojis
 }
 

@@ -1,0 +1,17 @@
+# CI だけで使う。compose の build が、GitHub Actions のキャッシュ（type=gha）から
+# レイヤーを取り込む。書き込みは compose.ci-cache-write.yaml で、main のときだけ足す
+# （PR で書くと、リポジトリのキャッシュ容量の上限を超えて、main のキャッシュも追い出される）。
+# 使うには docker-container ドライバーの buildx と、ACTIONS_RESULTS_URL と ACTIONS_RUNTIME_TOKEN が要る。
+services:
+  backend:
+    build:
+      cache_from:
+        - type=gha,scope=ci-compose-backend
+  frontend:
+    build:
+      cache_from:
+        - type=gha,scope=ci-compose-frontend
+  proxy:
+    build:
+      cache_from:
+        - type=gha,scope=ci-compose-proxy

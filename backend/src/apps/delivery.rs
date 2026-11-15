@@ -156,6 +156,7 @@ async fn run_socket(
     credential: String,
     session: String,
 ) {
+    let _ws_guard = crate::metrics::WsConnectionGuard::enter("app_delivery");
     run_socket_inner(&s, &mut ws, &installation, &credential, &session).await;
     let mut db = s.db.clone();
     if let Ok(mut tx) = db.transaction().await {

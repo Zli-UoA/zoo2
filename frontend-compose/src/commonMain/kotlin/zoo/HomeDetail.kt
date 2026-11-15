@@ -20,29 +20,35 @@ fun ActivityPubProfile(app: Session, actorId: String) {
     var failed by remember(actorId) { mutableStateOf(false) }
     var pending by remember(actorId) { mutableStateOf(false) }
     var request by remember(actorId) { mutableStateOf<Job?>(null) }
+    var deferred by remember(actorId) { mutableStateOf(false) }
     fun load(): Job {
-        request?.cancel()
+        request?.takeIf { it.isActive }?.let { deferred = true; return it }
         return scope
             .launch {
-                try {
-                    account =
-                        app.api.request(
-                            "/api/activitypub/accounts?actor=${actorId.encodeURLParameter()}"
-                        ) as Row
-                    failed = false
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    failed = true
-                }
+                do {
+                    deferred = false
+                    try {
+                        account =
+                            app.api.request(
+                                "/api/activitypub/accounts?actor=${actorId.encodeURLParameter()}"
+                            ) as Row
+                        failed = false
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        failed = true
+                    }
+                } while (deferred && app.env.visible && app.env.online)
             }
             .also { request = it }
     }
+    val updates = remember(app, actorId) { CoalescedRefresh(scope, allowed = { app.env.visible && app.env.online }) { load().join() } }
     DisposableEffect(app, actorId) {
-        load()
-        val unsubscribe = app.homeLive.subscribe { load() }
+        updates.request()
+        val unsubscribe = app.homeLive.subscribe { updates.request() }
         onDispose {
             unsubscribe()
+            updates.close()
             request?.cancel()
         }
     }

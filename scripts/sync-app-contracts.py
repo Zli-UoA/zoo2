@@ -18,7 +18,7 @@ manifest['functions']={'type':'array','maxItems':50,'uniqueItems':True,'items':{
 manifest['user_connections']={'type':'boolean','default':False}
 message=api['components']['schemas']['MessageInput']['properties'];message.update(kind={'type':'string','enum':['message','emote'],'default':'message'},broadcast={'type':'boolean','default':False},metadata={'type':['object','null']})
 # Route handlers remain the source of paths and methods; retain handwritten request schemas.
-for module in ['events','resources']:
+for module in ['events','resources','e2ee']:
  text=(root/f'backend/src/apps/{module}.rs').read_text()
  for match in re.finditer(r'\.route\(\s*"([^"]+)"\s*,',text):
   route=match.group(1);start=match.end();depth=1;end=start

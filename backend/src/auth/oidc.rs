@@ -350,17 +350,30 @@ impl JwksVerifier {
         })?;
 
         // 3. キャッシュからキーを検索 (TTL超過時は再取得、失敗時は stale キャッシュへフォールバック)
+        let (decoding_key, alg) = self.resolve_key(&kid, config).await?;
+
+        // 4. トークンのデコードと検証
+        self.decode_and_validate(token, &decoding_key, alg, config)
+    }
+
+    /// `kid` の検証鍵を返す。キャッシュが古いか鍵がなければ JWKS を取り直し、取り直せなければ
+    /// 古いキャッシュの鍵を使う。
+    async fn resolve_key(
+        &self,
+        kid: &str,
+        config: &OidcConfig,
+    ) -> Result<(DecodingKey, Algorithm), AppError> {
         let (cached, is_expired) = {
             let cache = self.cache.read().await;
             let expired = match cache.last_fetched_at {
                 Some(t) => t.elapsed() >= self.cache_ttl,
                 None => true,
             };
-            (cache.keys.get(&kid).cloned(), expired)
+            (cache.keys.get(kid).cloned(), expired)
         };
 
-        let (decoding_key, alg) = match cached {
-            Some(key_pair) if !is_expired => key_pair,
+        match cached {
+            Some(key_pair) if !is_expired => Ok(key_pair),
             cached_stale => {
                 let need_refresh = {
                     let cache = self.cache.read().await;
@@ -371,38 +384,80 @@ impl JwksVerifier {
                 };
 
                 if need_refresh {
-                    match self.resolve_jwks_url(config).await {
-                        Ok(jwks_url) => {
-                            if let Err(err) = self.refresh_jwks(&jwks_url).await {
-                                tracing::warn!("JWKS refresh failed: {err}");
-                                if let Some(stale) = cached_stale {
-                                    tracing::warn!("Falling back to stale JWKS key for kid: {kid}");
-                                    return self
-                                        .decode_and_validate(token, &stale.0, stale.1, config);
-                                }
-                                return Err(err);
-                            }
+                    let refreshed = match self.resolve_jwks_url(config).await {
+                        Ok(jwks_url) => self.refresh_jwks(&jwks_url).await,
+                        Err(err) => Err(err),
+                    };
+                    if let Err(err) = refreshed {
+                        tracing::warn!("JWKS refresh failed: {err}");
+                        if let Some(stale) = cached_stale {
+                            tracing::warn!("Falling back to stale JWKS key for kid: {kid}");
+                            return Ok(stale);
                         }
-                        Err(err) => {
-                            tracing::warn!("OpenID Discovery failed: {err}");
-                            if let Some(stale) = cached_stale {
-                                tracing::warn!("Falling back to stale JWKS key for kid: {kid}");
-                                return self.decode_and_validate(token, &stale.0, stale.1, config);
-                            }
-                            return Err(err);
-                        }
+                        return Err(err);
                     }
                 }
 
                 let cache = self.cache.read().await;
-                cache.keys.get(&kid).cloned().ok_or_else(|| {
+                cache.keys.get(kid).cloned().ok_or_else(|| {
                     tracing::warn!("Key id (kid) '{kid}' not found in JWKS");
                     AppError::Unauthorized("Invalid token signature".to_string())
-                })?
+                })
             }
-        };
-
-        // 4. トークンのデコードと検証
-        self.decode_and_validate(token, &decoding_key, alg, config)
+        }
     }
+
+    /// ID トークン（E2EE の再認証の `X-Zoo-Reauth`）の署名、`iss`、`aud`、`exp`、`nbf` を検証する。
+    ///
+    /// `aud` は `audiences`（クライアント ID の一覧）のどれかでなければならない。アクセストークン
+    /// （`typ: at+jwt`）は ID トークンとして受け付けない。
+    pub async fn verify_id_token(
+        &self,
+        token: &str,
+        config: &OidcConfig,
+        audiences: &[String],
+    ) -> Result<IdTokenClaims, AppError> {
+        if audiences.is_empty() {
+            return Err(AppError::Unauthorized(
+                "No client ID is allowed for re-authentication".to_string(),
+            ));
+        }
+        let header = decode_header(token)
+            .map_err(|_| AppError::Unauthorized("Invalid token header".to_string()))?;
+        let is_access_token = header.typ.as_deref().is_some_and(|t| {
+            t.eq_ignore_ascii_case("at+jwt") || t.eq_ignore_ascii_case("application/at+jwt")
+        });
+        if is_access_token {
+            return Err(AppError::Unauthorized(
+                "An access token is not an ID token".to_string(),
+            ));
+        }
+        let kid = header
+            .kid
+            .ok_or_else(|| AppError::Unauthorized("Invalid token header".to_string()))?;
+        let (decoding_key, alg) = self.resolve_key(&kid, config).await?;
+        let mut validation = Validation::new(alg);
+        validation.set_issuer(&[&config.issuer]);
+        validation.set_audience(audiences);
+        validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
+        validation.validate_exp = true;
+        validation.validate_nbf = true;
+        decode::<IdTokenClaims>(token, &decoding_key, &validation)
+            .map(|data| data.claims)
+            .map_err(|e| {
+                tracing::warn!("ID token validation failed: {e}");
+                AppError::Unauthorized("Invalid ID token".to_string())
+            })
+    }
+}
+
+/// E2EE の再認証に使う ID トークンのクレーム。
+#[derive(Debug, Clone, Deserialize)]
+pub struct IdTokenClaims {
+    pub sub: String,
+    pub iss: String,
+    /// AuthZ がパスキーなどで直前に認証した時刻（秒の UNIX 時刻。AuthZ#97）。認可コードのグラントで
+    /// 発行した ID トークンにだけ入り、QR ログインのセッションとリフレッシュでは入らない。
+    #[serde(default)]
+    pub authenticated_at: Option<i64>,
 }

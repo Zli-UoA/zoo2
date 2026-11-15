@@ -104,6 +104,7 @@ fn message(message_id: &str, revision: u64, body: &str) -> OutgoingMessage {
             kind: "message".to_owned(),
         },
         mentions: Mentions::default(),
+        attachments: Vec::new(),
     }
 }
 
@@ -549,6 +550,7 @@ fn backup(room_key: &RoomKey, sender: &Device, index: u32) -> BackupSession {
         session_id: room_key.session_id.clone(),
         sender_user_id: sender.account.user_id().to_owned(),
         sender_device_id: sender.account.device_id().to_owned(),
+        sender_signing_key: sender.device_keys().ed25519,
         epoch: room_key.epoch,
         session_key: session.export_at(index).unwrap().to_base64(),
     }

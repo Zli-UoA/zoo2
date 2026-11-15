@@ -20,6 +20,10 @@ export interface ChannelResponse {
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
   deleted_at: TimestampString | null;
+  /** 暗号化チャンネル（docs/e2ee.md） */
+  encrypted?: boolean;
+  /** 暗号化チャンネルのメンバーと端末の世代（API では数値） */
+  membership_epoch?: number;
 }
 
 export interface MessageResponse {
@@ -61,11 +65,15 @@ export interface CreateChannelRequest {
   description?: string | null;
   is_private?: boolean;
   is_nsfw?: boolean;
+  /** 暗号化チャンネルにする（`is_private: true` のときだけ。作成後は変えられない。docs/e2ee.md） */
+  encrypted?: boolean;
 }
 
 export interface CreateDmRequest {
   id?: string;
   target_user_ids: string[];
+  /** 暗号化 DM にする（1 対 1 は `edm:` の名前で get-or-create する。docs/e2ee.md） */
+  encrypted?: boolean;
 }
 
 export interface UpdateChannelRequest {

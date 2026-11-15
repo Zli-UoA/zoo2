@@ -1,6 +1,13 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { setAuthorizedHandler, setUnauthorizedHandler } from "../auth";
+import { OidcClient, type OidcEnvironment } from "../oidc/client";
 import { createShapeFetch } from "./headers";
+
+afterEach(() => {
+  setAuthorizedHandler(null);
+  setUnauthorizedHandler(null);
+});
 
 function captureFetch(status = 200) {
   const calls: RequestInit[] = [];
@@ -90,6 +97,66 @@ describe("createShapeFetch", () => {
     expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores a delayed 401 from before logout and handles a current-session 401", async () => {
+    let finishOldFetch!: (response: Response) => void;
+    let oldFetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      oldFetchStarted = resolve;
+    });
+    const oldResponse = new Promise<Response>((resolve) => {
+      finishOldFetch = resolve;
+    });
+    const notify = vi.fn();
+    setUnauthorizedHandler(notify);
+    const shapeFetch = createShapeFetch({
+      getToken: () => "access-token",
+      fetch: vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(async () => {
+          oldFetchStarted();
+          return await oldResponse;
+        })
+        .mockResolvedValueOnce(new Response(null, { status: 401 })),
+    });
+    const storage = new Map<string, string>();
+    const client = new OidcClient({
+      issuer: "https://id.example",
+      clientId: "zoo",
+      environment: {
+        origin: "https://app.example",
+        href: "https://app.example/",
+        assign: vi.fn(),
+        replaceUrl: vi.fn(),
+        storage: {
+          getItem: (key) => storage.get(key) ?? null,
+          setItem: (key, value) => void storage.set(key, value),
+          removeItem: (key) => void storage.delete(key),
+        },
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              issuer: "https://id.example",
+              authorization_endpoint: "https://id.example/authorize",
+              token_endpoint: "https://id.example/token",
+              end_session_endpoint: "https://id.example/logout",
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          ),
+        now: () => 1,
+      } satisfies OidcEnvironment,
+    });
+
+    const oldRequest = shapeFetch("https://api.example/shape");
+    await started;
+    await client.logout();
+    finishOldFetch(new Response(null, { status: 401 }));
+    await oldRequest;
+    expect(notify).not.toHaveBeenCalled();
+
+    await shapeFetch("https://api.example/shape");
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+
   it("does not notify on other statuses", async () => {
     const onUnauthorized = vi.fn();
     const { fetchImpl } = captureFetch(200);
@@ -115,6 +182,66 @@ describe("createShapeFetch", () => {
 
     await shapeFetch("http://localhost:8000/api/shapes/users");
 
+    expect(onAuthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a delayed success from before logout when notifying authorization", async () => {
+    let releaseOldResponse!: (response: Response) => void;
+    let oldFetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      oldFetchStarted = resolve;
+    });
+    const oldResponse = new Promise<Response>((resolve) => {
+      releaseOldResponse = resolve;
+    });
+    const onAuthorized = vi.fn();
+    const shapeFetch = createShapeFetch({
+      getToken: () => "access-token",
+      onAuthorized,
+      fetch: vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(async () => {
+          oldFetchStarted();
+          return await oldResponse;
+        })
+        .mockResolvedValueOnce(new Response(null, { status: 200 })),
+    });
+    const storage = new Map<string, string>();
+    const client = new OidcClient({
+      issuer: "https://id.example",
+      clientId: "zoo",
+      environment: {
+        origin: "https://app.example",
+        href: "https://app.example/",
+        assign: vi.fn(),
+        replaceUrl: vi.fn(),
+        storage: {
+          getItem: (key) => storage.get(key) ?? null,
+          setItem: (key, value) => void storage.set(key, value),
+          removeItem: (key) => void storage.delete(key),
+        },
+        fetch: async () =>
+          new Response(
+            JSON.stringify({
+              issuer: "https://id.example",
+              authorization_endpoint: "https://id.example/authorize",
+              token_endpoint: "https://id.example/token",
+              end_session_endpoint: "https://id.example/logout",
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          ),
+        now: () => 1,
+      } satisfies OidcEnvironment,
+    });
+
+    const oldRequest = shapeFetch("https://api.example/shape");
+    await started;
+    await client.logout();
+    releaseOldResponse(new Response(null, { status: 200 }));
+    await oldRequest;
+    expect(onAuthorized).not.toHaveBeenCalled();
+
+    await shapeFetch("https://api.example/shape");
     expect(onAuthorized).toHaveBeenCalledTimes(1);
   });
 

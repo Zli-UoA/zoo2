@@ -1,3 +1,4 @@
+import { HomeLiveProvider } from "../src/hooks/useHomeLive";
 import type { Decorator } from "@storybook/react-vite";
 import {
   createMemoryHistory,
@@ -13,6 +14,7 @@ import { createContext, useContext, useMemo, useState, type ReactNode } from "re
 import { LocaleProvider } from "../src/components/i18n/LocaleProvider";
 import { ThemeProvider } from "../src/components/theme/ThemeProvider";
 import { THEME_STORAGE_KEY, type Theme } from "../src/components/theme/theme";
+import { NotificationsProvider } from "../src/hooks/useUnifiedNotifications";
 import { CollectionsProvider } from "../src/lib/electric/collections-context";
 import { LOCALE_STORAGE_KEY, type Locale } from "../src/lib/i18n/locale";
 import { createStoryCollections, storyCollections, type StoryCollectionsInput } from "./fixtures";
@@ -28,7 +30,13 @@ function Collections({
   fixture: StoryCollectionsInput;
 }) {
   const bundle = useMemo(() => createStoryCollections(fixture), [fixture]);
-  return <CollectionsProvider value={bundle}>{children}</CollectionsProvider>;
+  return (
+    <CollectionsProvider value={bundle}>
+      <HomeLiveProvider>
+        <NotificationsProvider>{children}</NotificationsProvider>
+      </HomeLiveProvider>
+    </CollectionsProvider>
+  );
 }
 
 /** 画面系 story に fixture のローカルコレクションを注入する。 */

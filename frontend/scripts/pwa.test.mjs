@@ -533,6 +533,7 @@ test("APIs, auth, cross-origin requests and non-GET requests pass through", asyn
   for (const [url, mode, method] of [
     [`${ORIGIN}/api/users/me`, "navigate", "GET"],
     [`${ORIGIN}/auth/callback`, "navigate", "GET"],
+    [`${ORIGIN}/android/reauth-callback?code=c&state=s`, "navigate", "GET"],
     [`${ORIGIN}/api/shapes/messages`, "cors", "GET"],
     ["https://idp.example/auth", "navigate", "GET"],
     [`${ORIGIN}/assets/app.js`, "cors", "POST"],
@@ -556,6 +557,44 @@ test("static assets are cached on first fetch and served from the cache afterwar
   const second = await fetchThrough(handlers, asset);
   assert.match(await second.text(), /asset-body:/);
   assert.equal(requests, 1);
+});
+
+test("the E2EE wasm is precached with the build and served offline as application/wasm", async () => {
+  // crates/zoo-crypto-wasm の *_bg.wasm は Vite が assets/ に出し、pwa-assets.json に入る（#352）。
+  // ページが読む前に保存しておけば、オフラインでも Worker が wasm を読める。
+  const wasm = "/assets/zoo_crypto_wasm_bg-abc.wasm";
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+  ]);
+  let offline = false;
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (request) => {
+      if (offline) throw new Error("offline");
+      const path = new URL(requestKey(request)).pathname;
+      if (path === "/pwa-assets.json")
+        return Response.json({
+          entry: "/assets/index-new.js",
+          assets: ["/assets/index-new.js", wasm],
+        });
+      if (path === wasm)
+        return basicResponse("wasm-bytes", { headers: { "content-type": "application/wasm" } });
+      if (path.startsWith("/assets/")) return basicResponse("code");
+      return basicResponse('<script src="/assets/index-new.js"></script>new-shell', {
+        headers: { "content-type": "text/html" },
+      });
+    },
+  });
+  await fetchThrough(handlers, navigation(`${ORIGIN}/`, "reload"));
+  assert.ok(cacheContext.storeFor("zoo-shell-v2").has(`${ORIGIN}${wasm}`));
+  offline = true;
+  const response = await fetchThrough(handlers, {
+    url: `${ORIGIN}${wasm}`,
+    method: "GET",
+    mode: "cors",
+  });
+  assert.equal(await response.text(), "wasm-bytes");
+  assert.equal(response.headers.get("content-type"), "application/wasm");
 });
 
 test("notification click focuses an existing app or opens the app root", async () => {
@@ -644,6 +683,71 @@ test("reaction notifications describe the event and malformed payloads retain th
   assert.equal(notifications[0][1].body, "リアクション: Hello");
   assert.equal(notifications[1][0], "Zoo");
   assert.match(notifications[1][1].body, /新しい通知/);
+});
+
+test("encrypted pushes show the body decrypted by /sw-push.js and fall back to the generic body", async () => {
+  const imported = [];
+  const received = [];
+  const outcomes = ["秘密のこんにちは", null, new Error("store failure"), "👍"];
+  const { handlers, notifications, context } = worker({
+    importScripts: (url) => imported.push(url),
+  });
+  assert.deepEqual(imported, ["/sw-push.js"]);
+  // /sw-push.js が置く関数
+  context.self.zooDecryptPush = async (e2ee) => {
+    received.push(e2ee);
+    const outcome = outcomes.shift();
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  };
+  const e2ee = { recipient_id: "r", message: { channel_id: "c" } };
+  const push = (extra = {}) =>
+    dispatch(handlers, "push", {
+      data: {
+        json: () => ({ title: "Alice · #secret", body: "新しいメッセージ", e2ee, ...extra }),
+      },
+    });
+  await push();
+  await push();
+  await push();
+  await push({ notificationType: "reaction" });
+  // e2ee のない Push は復号しない
+  await dispatch(handlers, "push", {
+    data: { json: () => ({ title: "Bob", body: "plain" }) },
+  });
+  assert.equal(received.length, 4);
+  assert.deepEqual(received[0], e2ee);
+  assert.deepEqual(
+    notifications.map(([, options]) => options.body),
+    ["秘密のこんにちは", "新しいメッセージ", "新しいメッセージ", "リアクション: 👍", "plain"],
+  );
+});
+
+test("a push decryption script that cannot be loaded fails the install so it is retried", () => {
+  // importScripts の失敗を握りつぶすと、復号できない Service Worker が残る。
+  assert.throws(
+    () =>
+      worker({
+        importScripts: () => {
+          throw new Error("NetworkError");
+        },
+      }),
+    /NetworkError/,
+  );
+});
+
+test("the dev placeholder for /sw-push.js leaves pushes undecrypted", async () => {
+  const placeholder = readFileSync(new URL("../public/sw-push.js", import.meta.url), "utf8");
+  const placeholderSelf = {};
+  const { handlers, notifications, context } = worker({
+    importScripts: () => runInNewContext(placeholder, { self: placeholderSelf }),
+  });
+  assert.deepEqual(placeholderSelf, { zooDecryptPush: undefined });
+  assert.equal(context.self.zooDecryptPush, undefined);
+  await dispatch(handlers, "push", {
+    data: { json: () => ({ title: "Alice", body: "新しいメッセージ", e2ee: {} }) },
+  });
+  assert.equal(notifications[0][1].body, "新しいメッセージ");
 });
 
 test("notification click navigates an existing app to the target message", async () => {

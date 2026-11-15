@@ -38,6 +38,8 @@ pub enum ShapeId {
     Attachments(String),
     /// 自分あての通知 (`notification_events`)。
     Notifications,
+    /// 自分が呼んだ・呼ばれた、呼び出し中の通話の招待 (`call_invites`)。docs/calls.md。
+    CallInvites,
 }
 
 impl ShapeId {
@@ -52,6 +54,7 @@ impl ShapeId {
             ShapeId::Reactions(id) => ("message_reactions", channel(id)),
             ShapeId::Attachments(id) => ("attachments", channel(id)),
             ShapeId::Notifications => ("notifications", Vec::new()),
+            ShapeId::CallInvites => ("call_invites", Vec::new()),
         }
     }
 }
@@ -142,6 +145,11 @@ mod tests {
             serde_json::to_value(ShapeId::Notifications).unwrap(),
             json!({ "shape": "notifications" })
         );
+        assert_eq!(
+            serde_json::to_value(ShapeId::CallInvites).unwrap(),
+            json!({ "shape": "call_invites" })
+        );
+        assert_eq!(ShapeId::CallInvites.path_and_params().0, "call_invites");
         assert_eq!(
             serde_json::to_value(Change::Delete { key: "k".into() }).unwrap(),
             json!({ "op": "delete", "key": "k" })

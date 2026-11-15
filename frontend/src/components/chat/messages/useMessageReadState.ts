@@ -8,6 +8,7 @@ import { getCollections } from "../../../lib/electric/collections";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { parseUtcTimestamp } from "../../../lib/timestamps";
 import type { FeedMessage } from "./messageFormat";
+import { apiPath } from "../../../lib/api/path";
 
 export function firstUnreadMessage(
   messages: FeedMessage[],
@@ -38,7 +39,7 @@ export function useMessageReadState(
     () => (enabled && config ? createConfiguredApiClient(config) : null),
     [config, enabled],
   );
-  const path = `/api/channels/${channelId}/read-state`;
+  const path = apiPath`/api/channels/${channelId}/read-state`;
   const [lastRead, setLastRead] = useState<number | null>(null);
   const [isError, setIsError] = useState(false);
   const saved = useRef(0);

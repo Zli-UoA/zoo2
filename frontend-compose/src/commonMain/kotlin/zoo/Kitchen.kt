@@ -103,6 +103,12 @@ fun ReactionEmoji(
         remember(value, catalog) {
             mutableStateOf<String?>(catalog?.let { kitchenImage(it, value) })
         }
+    val accountName = Regex("^:@([a-z0-9._-]{1,80}):$").matchEntire(value)?.groupValues?.get(1)
+    if (accountName != null) {
+        val account = app.accountProfiles.find { it.text("username") == accountName }
+        if (account == null) Text(value, modifier) else Avatar(account, modifier, size)
+        return
+    }
     val remote = Regex("^apub:([a-f0-9]{64}):(:[A-Za-z0-9_+-]+:)$").matchEntire(value)
     if (remote != null) {
         ActivityPubEmoji(LocalJoinedEmojis.current?.find { it.text("reaction_key") == value } ?: obj("image_id" to remote.groupValues[1], "name" to remote.groupValues[2]), size, modifier)

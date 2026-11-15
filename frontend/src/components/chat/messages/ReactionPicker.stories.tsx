@@ -130,7 +130,10 @@ export const ManyCustomEmojis: Story = {
     await expect(last.getBoundingClientRect().bottom).toBeLessThanOrEqual(
       viewport.getBoundingClientRect().bottom,
     );
-    await expect(within(dialog).getByRole("textbox", { name: "絵文字を検索" })).toBeVisible();
+    // 開始アニメーション中は親ダイアログのopacityが0でも、入力欄はDOMから取得できる。
+    await waitFor(() =>
+      expect(within(dialog).getByRole("textbox", { name: "絵文字を検索" })).toBeVisible(),
+    );
     await userEvent.click(last);
     await expect(args.onSelect).toHaveBeenCalledWith(":scroll_199:");
   }),

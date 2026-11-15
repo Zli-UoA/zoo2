@@ -1,11 +1,12 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { http, HttpResponse } from "msw";
-import { expect, within } from "storybook/test";
+import { expect, within, waitFor } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MfmChannelsProvider } from "./MfmChannels";
 import { storyChannels } from "../../../../.storybook/fixtures";
 import { MfmContent } from "./MfmContent";
+import { MfmAccountsProvider } from "./MfmAccounts";
 import { customEmojiFixture } from "../../../../.storybook/preference-fixtures";
 const meta = {
   title: "Features/Chat/MessageContent",
@@ -29,6 +30,37 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
+export const AuthZAccounts: Story = {
+  args: {
+    content:
+      "アイコン :@alice: メンション @alice 画像未登録 :@bob: 未登録 :@unknown: @unknown `:@alice: @alice`",
+  },
+  decorators: [
+    (Story) => (
+      <MfmAccountsProvider
+        accounts={[
+          { username: "alice", display_name: "AuthZの表示名", avatar_url: "/icons/icon-192.png" },
+          { username: "bob", display_name: "AuthZの画像未登録ユーザー", avatar_url: null },
+        ]}
+      >
+        <Story />
+      </MfmAccountsProvider>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("img", { name: ":@alice:" })).toBeVisible();
+    await expect(canvas.getByText("AuthZの表示名")).toBeVisible();
+    await waitFor(() =>
+      expect(
+        canvas.getByRole("img", { name: ":@alice:" }).querySelector("img")?.naturalWidth ?? 0,
+      ).toBeGreaterThan(0),
+    );
+    await expect(canvas.getByRole("img", { name: ":@bob:" })).toHaveTextContent("A");
+    await expect(canvasElement.querySelector("code")).toHaveTextContent(":@alice: @alice");
+    await expect(canvasElement).toHaveTextContent(":@unknown:");
+  },
+};
 export const InlineLinks: Story = {
   args: {
     content:

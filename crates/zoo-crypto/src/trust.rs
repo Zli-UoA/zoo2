@@ -5,7 +5,8 @@
 //!
 //! - 自分のマスター鍵（初回設定で作ったとき、または SSSS から取り出した秘密鍵で確かめたときに信頼する）
 //! - 自分のユーザー署名鍵の公開鍵の履歴（一度置き換わった鍵への巻き戻しの検出に使う）
-//! - 相手ごとの記録（TOFU で信頼したマスター鍵と、それを確認したユーザー署名鍵 `confirmed_usk`）
+//! - 相手ごとの記録（TOFU で信頼したマスター鍵と、それを確認したユーザー署名鍵 `confirmed_usk`、
+//!   記録から置き換えた古いマスター鍵の履歴 `replaced_master_keys`）
 
 use std::collections::BTreeMap;
 
@@ -14,12 +15,14 @@ use serde_json::Value;
 use vodozemac::Ed25519PublicKey;
 
 use crate::cross_signing::{SignatureCheck, check_signature};
-use crate::device::validate_uuid;
+use crate::device::{DeviceAccount, validate_uuid};
+use crate::store::{self, StoreKind};
 use crate::{
-    CrossSigningKeyPair, CryptoError, DeviceKeys, KeySignature, KeyUsage, SignatureUpload,
-    TOFU_PIN_TYPE, cross_signing_key_id, verify_cross_signing_key, verify_device_keys,
-    verify_json_signature,
+    CrossSigningKeyPair, CryptoError, DeviceKeys, KeySignature, KeyUsage, SenderTrust,
+    SignatureUpload, TOFU_PIN_TYPE, cross_signing_key_id, verify_cross_signing_key,
+    verify_device_keys, verify_json_signature,
 };
+use zeroize::Zeroizing;
 
 /// 保存形式の版。形式を変えたら上げる。
 const TRUST_STORE_VERSION: u32 = 1;
@@ -37,6 +40,16 @@ pub struct TrustRecord {
     /// [`TrustStore::confirm_tofu_pin`] で外す（スナップショットに同じピンが見えたときも外す）。
     #[serde(default)]
     pub pin_pending: bool,
+    /// この相手について、記録から置き換えた古いマスター鍵（古い順。今の `master_key` は含まない）。
+    ///
+    /// 古いマスター鍵と、自分が昔それに付けた署名やピンを見せられても、記録を巻き戻さないために使う
+    /// （docs/e2ee.md の脅威モデルの「相手のマスター鍵の巻き戻し」）。履歴にある鍵は、規則 3 の署名や
+    /// 共有ピンがあっても信頼せず、[`ReverificationReason::MasterKeyChanged`] にする。履歴から外せるのは、
+    /// 利用者が明示的に受け入れたとき（[`TrustStore::accept_master_key`]）だけ。
+    ///
+    /// 保存形式に後から足した項目なので、ない記録（以前の版で保存したもの）は空として読む。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replaced_master_keys: Vec<String>,
 }
 
 /// 配布先の判定に使う、暗号ストアの記録。
@@ -49,6 +62,10 @@ pub struct TrustStore {
     own_master_key: Option<String>,
     usk_history: Vec<String>,
     records: BTreeMap<String, TrustRecord>,
+    /// 規則 3 で記録を置き換えたが、まだ [`Distribution::signed_master_key_changes`] で返していない相手。
+    /// 受信時の検証（`sender_trust`）が先に置き換えても知らせを失わないよう、記録に残して次の
+    /// [`evaluate`](Self::evaluate) で返す。
+    pending_master_key_changes: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -58,6 +75,9 @@ struct TrustStoreJson {
     own_master_key: Option<String>,
     user_signing_key_history: Vec<String>,
     records: BTreeMap<String, TrustRecord>,
+    /// 後から足した項目なので、ない記録（以前の版で保存したもの）は空として読む。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_master_key_changes: Vec<String>,
 }
 
 /// 配布先のスナップショット（`GET /api/e2ee/channels/{channel_id}/recipients`）か
@@ -121,6 +141,12 @@ pub struct Distribution {
     pub new_pins: Vec<NewTofuPin>,
     /// 利用者に出す警告。
     pub warnings: Vec<TrustWarning>,
+    /// 記録と違う新しいマスター鍵に自分のユーザー署名鍵の署名があったので（規則 3）、記録を置き換えた
+    /// 相手の user_id。自分の別の端末で受け入れた（#362）か SAS で検証した（#368）鍵なので配るが、
+    /// 黙って置き換えないよう、「この相手の鍵が変わり、別の端末で確認済み」と利用者に知らせる。
+    /// 置き換えた古い鍵は [`TrustRecord::replaced_master_keys`] に移り、以後その鍵には戻らない。
+    /// 受信時の検証（`sender_trust`）で置き換えた相手も、次の判定でここに返す（一度だけ）。
+    pub signed_master_key_changes: Vec<String>,
 }
 
 /// TOFU で作ったピン。
@@ -217,9 +243,15 @@ pub enum TrustWarning {
     UserSigningKeyChanged,
 }
 
-/// 利用者が新しいマスター鍵を受け入れたとき（#362）にサーバーに送るもの。
+/// 利用者が新しいマスター鍵を受け入れたとき（#362）と、SAS で検証したとき（#368）にサーバーに送るもの。
+///
+/// ピンと署名を送れたら、[`TrustStore::confirm_accepted_master_key`] で記録の登録待ちを外す。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedMasterKey {
+    /// 相手の user_id。
+    pub target_user_id: String,
+    /// 相手のマスター鍵の公開鍵。
+    pub master_key: String,
     /// `POST /api/e2ee/tofu_pins` に `replace: true` で送るピン。
     pub pin: Value,
     /// `POST /api/e2ee/cross_signing/signatures` に送る、マスター鍵への署名。
@@ -235,6 +267,7 @@ impl TrustStore {
             own_master_key: None,
             usk_history: Vec::new(),
             records: BTreeMap::new(),
+            pending_master_key_changes: Vec::new(),
         })
     }
 
@@ -246,8 +279,34 @@ impl TrustStore {
             own_master_key: self.own_master_key.clone(),
             user_signing_key_history: self.usk_history.clone(),
             records: self.records.clone(),
+            pending_master_key_changes: self.pending_master_key_changes.clone(),
         };
         serde_json::to_string(&json).expect("文字列だけの構造体は必ず JSON にできる")
+    }
+
+    /// [`to_json`](Self::to_json) の JSON を、暗号ストアに置く文字列にする（#359。形式は
+    /// `store` モジュールの封筒）。`account` は今の端末。呼ぶたびに出力は変わる。
+    ///
+    /// # Panics
+    ///
+    /// OS やブラウザーの暗号用乱数を取れないとき。
+    pub fn pickle(&self, account: &DeviceAccount, storage_key: &[u8; 32]) -> String {
+        let json = Zeroizing::new(self.to_json());
+        store::seal(storage_key, StoreKind::TrustStore, account, json.as_bytes())
+    }
+
+    /// [`pickle`](Self::pickle) の文字列から戻す。封筒を開けないときは [`CryptoError::InvalidPickle`]、
+    /// 中の JSON が正しくない、または `account` のユーザーの記録でないときは
+    /// [`CryptoError::InvalidTrustStore`]。
+    pub fn from_pickle(
+        pickle: &str,
+        account: &DeviceAccount,
+        storage_key: &[u8; 32],
+    ) -> Result<Self, CryptoError> {
+        let plaintext = store::open(pickle, storage_key, StoreKind::TrustStore, account)?;
+        let json = std::str::from_utf8(&plaintext)
+            .map_err(|_| CryptoError::InvalidTrustStore("UTF-8 ではありません".into()))?;
+        Self::from_json(json, account.user_id())
     }
 
     /// [`to_json`](Self::to_json) の文字列から戻す。`user_id` は今ログインしているユーザー。
@@ -292,14 +351,24 @@ impl TrustStore {
                     master_key: normalize(&record.master_key)?,
                     confirmed_usk: record.confirmed_usk.as_deref().map(normalize).transpose()?,
                     pin_pending: record.pin_pending,
+                    replaced_master_keys: record
+                        .replaced_master_keys
+                        .iter()
+                        .map(|k| normalize(k))
+                        .collect::<Result<Vec<_>, _>>()?,
                 },
             );
+        }
+        let pending_master_key_changes = parsed.pending_master_key_changes;
+        for target in &pending_master_key_changes {
+            validate_uuid("user_id", target, false)?;
         }
         Ok(Self {
             user_id: parsed.user_id,
             own_master_key,
             usk_history,
             records,
+            pending_master_key_changes,
         })
     }
 
@@ -321,6 +390,42 @@ impl TrustStore {
     /// 相手の記録。
     pub fn record(&self, target_user_id: &str) -> Option<&TrustRecord> {
         self.records.get(target_user_id)
+    }
+
+    /// すべての相手の記録（`user_id` の順）。
+    pub fn records(&self) -> impl Iterator<Item = (&String, &TrustRecord)> {
+        self.records.iter()
+    }
+
+    /// 失効を行った端末が、クロス署名鍵を保存したあとに呼ぶ（#362）。
+    ///
+    /// 新しいマスター鍵（2〜5 のとき）を信頼し、新しいユーザー署名鍵を履歴に足し、署名し直したピンの
+    /// 相手（記録があり `confirmed_usk` もある相手）の `confirmed_usk` を新しい鍵にする。
+    /// 署名し直さなかった相手の記録は変えない（次の判定で再検証が必要になる）。
+    ///
+    /// ピンの登録待ち（`pin_pending`）は外さない。署名し直したピンの保存はこのあとなので、保存に
+    /// 失敗しても配らないようにするため。保存できたら、次の判定でサーバーのピンと照合して外れる。
+    pub fn apply_revocation(
+        &mut self,
+        master: &CrossSigningKeyPair,
+        user_signing: &CrossSigningKeyPair,
+        resigned: &crate::ResignPlan,
+    ) -> Result<(), CryptoError> {
+        self.require_own_key(master, KeyUsage::Master)?;
+        self.require_own_key(user_signing, KeyUsage::UserSigning)?;
+        let usk = user_signing.public_key().to_base64();
+        self.push_usk(usk.clone())?;
+        self.own_master_key = Some(master.public_key().to_base64());
+        for pin in &resigned.pins {
+            if let Some(record) = self
+                .records
+                .get_mut(&pin.target_user_id)
+                .filter(|r| r.confirmed_usk.is_some() && r.master_key == pin.master_key)
+            {
+                record.confirmed_usk = Some(usk.clone());
+            }
+        }
+        Ok(())
     }
 
     /// 自分のマスター鍵を信頼する。初回設定で作ったとき、または SSSS から取り出した秘密鍵を
@@ -345,10 +450,18 @@ impl TrustStore {
         self.push_usk(user_signing.public_key().to_base64())
     }
 
-    /// 利用者が相手の新しいマスター鍵を受け入れた（#362）。記録を今のユーザー署名鍵で
-    /// 確認したものに置き換え、サーバーに送るピンと署名を返す。
+    /// 利用者が相手の新しいマスター鍵を受け入れた（#362）、または SAS で検証した（#368）。記録を
+    /// 今のユーザー署名鍵で確認したものに置き換え、サーバーに送るピンと署名を返す。
+    ///
+    /// 記録は、ピンをサーバーに置けるまで登録待ち（`pin_pending`）にする。置けたら
+    /// [`confirm_accepted_master_key`](Self::confirm_accepted_master_key) で外す。置けないまま判定すると、
+    /// サーバーのピンがなければ TOFU と同じくピンを返し直し、違うマスター鍵のピンがあれば再検証に戻る
+    /// （ピンも署名もサーバーにないのに、記録だけで配らないようにする）。
     ///
     /// `user_signing` は、履歴の最後（今の基準）のユーザー署名鍵でなければならない。
+    ///
+    /// 記録に別のマスター鍵があれば、その鍵を [`TrustRecord::replaced_master_keys`] に移す。受け入れた
+    /// 鍵が履歴にあれば、利用者が明示的に選んだので履歴から外す。
     pub fn accept_master_key(
         &mut self,
         user_signing: &CrossSigningKeyPair,
@@ -363,38 +476,42 @@ impl TrustStore {
         let signature = user_signing.sign_master_key(target_user_id, master_key)?;
         let master = verify_cross_signing_key(master_key, target_user_id, KeyUsage::Master)?;
         let pin = user_signing.sign_tofu_pin(target_user_id, &master)?;
-        self.records.insert(
-            target_user_id.to_owned(),
-            TrustRecord {
-                master_key: master.to_base64(),
-                confirmed_usk: Some(usk),
-                pin_pending: false,
-            },
-        );
-        Ok(AcceptedMasterKey { pin, signature })
+        self.replace_record(target_user_id, master.to_base64(), Some(usk), true);
+        Ok(AcceptedMasterKey {
+            target_user_id: target_user_id.to_owned(),
+            master_key: master.to_base64(),
+            pin,
+            signature,
+        })
     }
 
-    /// TOFU で作ったピンの登録（`POST /api/e2ee/tofu_pins`）が成功したときに、記録の登録待ちを外す。
-    /// そのあと判定し直すと、その相手の端末を配布先に入れる。
-    pub fn confirm_tofu_pin(&mut self, pin: &NewTofuPin) {
+    /// [`accept_master_key`](Self::accept_master_key) のピン（`replace: true`）と署名をサーバーに
+    /// 保存できたときに、記録の登録待ちを外す。記録が別のマスター鍵に変わっていれば何もしない。
+    pub fn confirm_accepted_master_key(&mut self, target_user_id: &str, master_key: &str) {
         if let Some(record) = self
             .records
-            .get_mut(&pin.target_user_id)
-            .filter(|r| r.pin_pending && r.master_key == pin.master_key)
+            .get_mut(target_user_id)
+            .filter(|r| r.pin_pending && r.master_key == master_key)
         {
             record.pin_pending = false;
         }
     }
 
+    /// TOFU で作ったピンの登録（`POST /api/e2ee/tofu_pins`）が成功したときに、記録の登録待ちを外す。
+    /// そのあと判定し直すと、その相手の端末を配布先に入れる。
+    pub fn confirm_tofu_pin(&mut self, pin: &NewTofuPin) {
+        self.confirm_accepted_master_key(&pin.target_user_id, &pin.master_key);
+    }
+
     /// TOFU で作ったピンの登録が 409 `E2EE_PIN_CONFLICT` になったときに、登録待ちの記録を戻す。
     /// そのあと、返ったピンを [`KeySnapshot::tofu_pins`] に入れて判定し直す（共有ピンの採用）。
-    /// 登録待ちでない記録は消さない。
+    /// 登録待ちでない記録は消さない。置き換えたマスター鍵の履歴がある記録（受け入れた鍵の登録待ち）も
+    /// 消さない（履歴を失うと、古い鍵のピンを採用してしまうため）。その場合は、次の判定で返ったピンと
+    /// 履歴を照らして扱う。
     pub fn discard_tofu_pin(&mut self, pin: &NewTofuPin) {
-        if self
-            .records
-            .get(&pin.target_user_id)
-            .is_some_and(|r| r.pin_pending && r.master_key == pin.master_key)
-        {
+        if self.records.get(&pin.target_user_id).is_some_and(|r| {
+            r.pin_pending && r.master_key == pin.master_key && r.replaced_master_keys.is_empty()
+        }) {
             self.records.remove(&pin.target_user_id);
         }
     }
@@ -450,7 +567,70 @@ impl TrustStore {
             };
             out.users.insert(user_id, trust);
         }
+        // 規則 3 で置き換えた相手（受信時の検証で先に置き換えたものを含む）を、一度だけ返す。
+        out.signed_master_key_changes = std::mem::take(&mut self.pending_master_key_changes);
         out
+    }
+
+    /// 受信時の検証の手順 4 に渡す、送信ユーザーの信頼した自己署名鍵（docs/e2ee.md の「受信時の検証」）。
+    ///
+    /// マスター鍵を信頼するかは、配布先の判定と同じ規則で決める（自分は規則 1、他のユーザーは
+    /// 規則 3〜6）。信頼したマスター鍵で署名された自己署名鍵と、`snapshot.signatures` にある
+    /// その自己署名鍵による `sender_device` への署名を返す。次のときは `None`。
+    ///
+    /// - 自分のマスター鍵をまだ信頼していない（未解錠）か、サーバーの自分のマスター鍵が変わった。
+    /// - 送信ユーザーが自分で、サーバーの自己署名鍵が `own_self_signing`（暗号ストアの自分の
+    ///   自己署名鍵。SSSS から取り出した今の鍵）と違う、または `own_self_signing` がない。失効で
+    ///   置き換えた古い自己署名鍵（マスター鍵の署名は残る）をサーバーが返しても、外した端末を
+    ///   検証済みにしないため。
+    /// - 送信ユーザーのマスター鍵を信頼できない（クロス署名鍵がない、再検証待ち、TOFU のピンの登録待ち、
+    ///   初めて見た相手）。初めて見た相手のピンは作らない。作るのは配布先の判定だけ。
+    /// - 自己署名鍵がない、壊れている、マスター鍵で署名されていない。
+    ///
+    /// `snapshot` は送信ユーザーと自分の `keys/query`（他のユーザーを判定するには、自分のマスター鍵と
+    /// ユーザー署名鍵が要る）。規則 3 や共有ピンの採用で記録が変わることがあるので、呼んだあとは保存する。
+    ///
+    /// 規則 3 で記録を別のマスター鍵に置き換えたときの知らせは、ここでは返さず、次の
+    /// [`evaluate`](Self::evaluate) の [`Distribution::signed_master_key_changes`] で返す。
+    pub fn sender_trust(
+        &mut self,
+        snapshot: &KeySnapshot,
+        sender: &str,
+        sender_device: &str,
+        own_self_signing: Option<&Ed25519PublicKey>,
+    ) -> Option<SenderTrust> {
+        let mut scratch = Distribution::default();
+        let own_master = self.check_own_master(snapshot, &mut scratch.warnings)?;
+        let master = if sender == self.user_id {
+            own_master
+        } else {
+            let usk = self.check_own_usk(snapshot, &own_master, &mut scratch);
+            let trust = self.evaluate_other(snapshot, sender, usk, None, &mut scratch);
+            if !matches!(trust.state, UserState::Trusted(_)) {
+                return None;
+            }
+            verify_cross_signing_key(snapshot.master_keys.get(sender)?, sender, KeyUsage::Master)
+                .ok()?
+        };
+        let self_signing = trusted_self_signing_key(snapshot, sender, &master)?;
+        if sender == self.user_id && own_self_signing != Some(&self_signing) {
+            return None;
+        }
+        let key_id = cross_signing_key_id(&self_signing);
+        let signature = snapshot
+            .signatures
+            .iter()
+            .find(|row| {
+                row.signer_user_id == sender
+                    && row.signer_key_id == key_id
+                    && row.target_user_id == sender
+                    && row.target_key_id == sender_device
+            })
+            .map(|row| row.signature.clone());
+        Some(SenderTrust {
+            self_signing_key: self_signing,
+            signature,
+        })
     }
 
     /// 他のユーザー（規則 2〜6）。
@@ -476,6 +656,17 @@ impl TrustStore {
         let usk_b64 = usk.to_base64();
         let me = self.user_id.clone();
 
+        // 置き換えた古いマスター鍵への巻き戻し：署名やピンがあっても信頼しない（規則 3 より先に見る）。
+        if self
+            .records
+            .get(user_id)
+            .is_some_and(|r| r.replaced_master_keys.contains(&master_b64))
+        {
+            return untrusted(UserState::NeedsReverification(
+                ReverificationReason::MasterKeyChanged,
+            ));
+        }
+
         // 規則 3：自分のユーザー署名鍵で署名されている。
         let signed = check_signature(
             master_json,
@@ -486,14 +677,15 @@ impl TrustStore {
             &snapshot.signatures,
         ) == SignatureCheck::Valid;
         if signed {
-            self.records.insert(
-                user_id.to_owned(),
-                TrustRecord {
-                    master_key: master_b64,
-                    confirmed_usk: Some(usk_b64),
-                    pin_pending: false,
-                },
-            );
+            // 記録と違う鍵なら、古い鍵を履歴に移し、置き換えたことを知らせる。
+            if self
+                .records
+                .get(user_id)
+                .is_some_and(|r| r.master_key != master_b64)
+            {
+                push_unique(&mut self.pending_master_key_changes, user_id.to_owned());
+            }
+            self.replace_record(user_id, master_b64, Some(usk_b64), false);
             return self.trusted_devices(
                 snapshot,
                 user_id,
@@ -510,6 +702,8 @@ impl TrustStore {
             .get(user_id)
             .and_then(|pin| verified_pin(pin, &me, user_id, &usk));
 
+        // 共有ピンを採用するときに引き継ぐ、置き換えたマスター鍵の履歴。
+        let mut carried_history = Vec::new();
         // 登録待ちの TOFU の記録。
         if let Some(record) = self.records.get(user_id).filter(|r| r.pin_pending).cloned() {
             match &pin {
@@ -519,10 +713,20 @@ impl TrustStore {
                         r.pin_pending = false;
                     }
                 }
+                // サーバーのピンが、置き換えた古いマスター鍵のもの：巻き戻しなので採用しない。
+                Some(pinned) if record.replaced_master_keys.contains(pinned) => {
+                    return untrusted(UserState::NeedsReverification(
+                        ReverificationReason::MasterKeyChanged,
+                    ));
+                }
                 // 別の端末が違うマスター鍵のピンを先に作っていた（409 と同じ）：記録を戻し、
-                // そのピンを共有ピンとして採用する（下の記録がない場合）。
+                // そのピンを共有ピンとして採用する（下の記録がない場合）。履歴は引き継ぎ、登録待ちだった
+                // 鍵も履歴に足す（同じ相手に違う鍵を見せられたので、黙って戻さない）。
                 Some(_) => {
-                    self.records.remove(user_id);
+                    if let Some(removed) = self.records.remove(user_id) {
+                        carried_history = removed.replaced_master_keys;
+                        push_unique(&mut carried_history, removed.master_key);
+                    }
                 }
                 // まだ登録できていない：同じピンを作り直して返し、配らない。
                 None => {
@@ -561,6 +765,7 @@ impl TrustStore {
                             master_key: pinned,
                             confirmed_usk: matches.then_some(usk_b64),
                             pin_pending: false,
+                            replaced_master_keys: carried_history,
                         },
                     );
                     if !matches {
@@ -591,6 +796,7 @@ impl TrustStore {
                             master_key: master_b64,
                             confirmed_usk: Some(usk_b64),
                             pin_pending: true,
+                            replaced_master_keys: carried_history,
                         },
                     );
                     return untrusted(UserState::PinPending);
@@ -617,14 +823,10 @@ impl TrustStore {
                             ReverificationReason::UserSigningKeyChanged,
                         ));
                     }
-                    self.records.insert(
-                        user_id.to_owned(),
-                        TrustRecord {
-                            master_key: record.master_key,
-                            confirmed_usk: Some(usk_b64),
-                            pin_pending: false,
-                        },
-                    );
+                    if let Some(r) = self.records.get_mut(user_id) {
+                        r.confirmed_usk = Some(usk_b64);
+                        r.pin_pending = false;
+                    }
                 }
                 TrustBasis::Record
             }
@@ -644,18 +846,7 @@ impl TrustStore {
         devices: &mut Vec<DeviceKeys>,
     ) -> UserTrust {
         let mut excluded = BTreeMap::new();
-        let self_signing = snapshot.self_signing_keys.get(user_id).and_then(|json| {
-            let key = verify_cross_signing_key(json, user_id, KeyUsage::SelfSigning).ok()?;
-            (check_signature(
-                json,
-                user_id,
-                &key.to_base64(),
-                user_id,
-                master,
-                &snapshot.signatures,
-            ) == SignatureCheck::Valid)
-                .then_some(key)
-        });
+        let self_signing = trusted_self_signing_key(snapshot, user_id, master);
         for (device_id, json) in snapshot.device_keys.get(user_id).into_iter().flatten() {
             let reason = if skip_device == Some(device_id.as_str()) {
                 Some(DeviceExclusion::CurrentDevice)
@@ -752,6 +943,34 @@ impl TrustStore {
         Some(usk)
     }
 
+    /// 相手の記録を新しいマスター鍵の記録にする。前の記録のマスター鍵が違えば履歴に移し、新しい鍵が
+    /// 履歴にあれば外す（呼び出し側は、履歴にある鍵を利用者の明示の受け入れなしに渡さない）。
+    fn replace_record(
+        &mut self,
+        user_id: &str,
+        master_key: String,
+        confirmed_usk: Option<String>,
+        pin_pending: bool,
+    ) {
+        let mut history = Vec::new();
+        if let Some(old) = self.records.remove(user_id) {
+            history = old.replaced_master_keys;
+            if old.master_key != master_key {
+                push_unique(&mut history, old.master_key);
+            }
+        }
+        history.retain(|k| *k != master_key);
+        self.records.insert(
+            user_id.to_owned(),
+            TrustRecord {
+                master_key,
+                confirmed_usk,
+                pin_pending,
+                replaced_master_keys: history,
+            },
+        );
+    }
+
     fn push_usk(&mut self, key: String) -> Result<(), CryptoError> {
         match self.usk_history.iter().position(|k| *k == key) {
             Some(i) if i + 1 == self.usk_history.len() => Ok(()),
@@ -779,6 +998,31 @@ impl TrustStore {
     }
 }
 
+fn push_unique(list: &mut Vec<String>, key: String) {
+    if !list.contains(&key) {
+        list.push(key);
+    }
+}
+
+/// `user_id` の自己署名鍵のうち、信頼したマスター鍵 `master` で署名されたもの（規則 1、6）。
+fn trusted_self_signing_key(
+    snapshot: &KeySnapshot,
+    user_id: &str,
+    master: &Ed25519PublicKey,
+) -> Option<Ed25519PublicKey> {
+    let json = snapshot.self_signing_keys.get(user_id)?;
+    let key = verify_cross_signing_key(json, user_id, KeyUsage::SelfSigning).ok()?;
+    (check_signature(
+        json,
+        user_id,
+        &key.to_base64(),
+        user_id,
+        master,
+        &snapshot.signatures,
+    ) == SignatureCheck::Valid)
+        .then_some(key)
+}
+
 fn untrusted(state: UserState) -> UserTrust {
     UserTrust {
         state,
@@ -787,7 +1031,12 @@ fn untrusted(state: UserState) -> UserTrust {
 }
 
 /// 今のユーザー署名鍵で署名を検証できるピンなら、そのマスター鍵（正規化した base64）を返す。
-fn verified_pin(pin: &Value, me: &str, target: &str, usk: &Ed25519PublicKey) -> Option<String> {
+pub(crate) fn verified_pin(
+    pin: &Value,
+    me: &str,
+    target: &str,
+    usk: &Ed25519PublicKey,
+) -> Option<String> {
     let field = |name: &str| pin.get(name).and_then(Value::as_str);
     if field("type") != Some(TOFU_PIN_TYPE)
         || field("user_id") != Some(me)

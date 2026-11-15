@@ -102,9 +102,75 @@ pub enum CryptoError {
     #[error("今のユーザー署名鍵ではありません: {0}")]
     StaleUserSigningKey(String),
 
+    /// リカバリーキーの形式が正しくない（Base58 でない、長さ、先頭の 2 バイト、パリティが違う）。
+    #[error("リカバリーキーが正しくありません: {0}")]
+    InvalidRecoveryKey(String),
+
+    /// SSSS の応答、秘密、鍵スロットの形式が正しくない。
+    #[error("Secret Storage の形式が正しくありません: {0}")]
+    InvalidSecretStorage(String),
+
+    /// 解錠に使える鍵スロットがない（その credential ID のスロットやリカバリーキーのスロットがない）。
+    #[error("使える鍵スロットがありません")]
+    NoKeySlot,
+
+    /// 鍵スロットを開けない。PRF 出力やリカバリーキーが違う、スロットが改ざんされた、
+    /// 別のユーザー、別の SSSS 鍵、別のスロットに付け替えられた、のどれか（区別できない）。
+    #[error("鍵スロットを開けません")]
+    KeySlotUnlock,
+
+    /// SSSS 鍵が確認値と合わない。
+    #[error("SSSS 鍵が確認値と一致しません")]
+    SsssKeyMismatch,
+
+    /// SSSS の秘密を復号できない（別の SSSS 鍵で暗号化された、MAC が合わない）。
+    #[error("秘密を復号できません: {0}")]
+    SecretDecryption(String),
+
+    /// 鍵バックアップの版や保存した状態の形式が正しくない。
+    #[error("鍵バックアップの形式が正しくありません: {0}")]
+    InvalidBackup(String),
+
+    /// 版の `auth_data.public_key` が、SSSS のバックアップ鍵と一致しない。
+    #[error("鍵バックアップの版の公開鍵が SSSS のバックアップ鍵と一致しません")]
+    BackupKeyMismatch,
+
+    /// 今の版として、前に見たより小さい番号の版が返った。
+    #[error("鍵バックアップの版が巻き戻りました（見た最大は {max_seen}、返ったのは {received}）")]
+    BackupVersionRollback {
+        /// 今の版として見た番号の最大。
+        max_seen: u64,
+        /// 返った番号。
+        received: u64,
+    },
+
+    /// 鍵バックアップのセッションを復号できない、または行と平文が合わない。
+    #[error("鍵バックアップのセッションを復号できません: {0}")]
+    BackupDecryption(String),
+
+    /// 暗号化した添付を復号できない（暗号文のハッシュが合わない）。
+    #[error("添付を復号できません: {0}")]
+    AttachmentDecryption(String),
+
     /// 受信時の検証に失敗した。呼び出し側は破棄する。
     #[error("受信時の検証に失敗しました: {0}")]
     Rejected(Rejection),
+
+    /// サーバーにあるクロス署名鍵や鍵バックアップの今の版が、SSSS の鍵と違う。
+    /// 失効が途中で止まっているか、SSSS を書き換えられた可能性がある（docs/e2ee.md の
+    /// 「新しい端末での解錠」の【決定】）。サーバーに鍵や版が「ない」だけなら、このエラーにはならない。
+    #[error("サーバーの鍵が SSSS の鍵と一致しません: {0}")]
+    ServerKeyMismatch(String),
+
+    /// SSSS を保存する前に止まった 2〜5 の失効は続けられない（マスター鍵と SSSS 鍵を保存しないため）。
+    /// 最初からやり直す（docs/e2ee.md の「失効の手順」。#362）。
+    #[error("失効を最初からやり直してください")]
+    RevocationRestart,
+
+    /// 絵文字 SAS の検証（#368）を、今の状態では行えない（終わった検証への操作、検証できる
+    /// 端末がない、自分の鍵を確かめていないなど）。
+    #[error("SAS の検証を進められません: {0}")]
+    Verification(String),
 }
 
 /// 受信時の検証で破棄する理由（docs/e2ee.md の「受信時の検証」）。

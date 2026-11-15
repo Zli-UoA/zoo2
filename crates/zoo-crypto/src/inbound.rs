@@ -8,17 +8,21 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use vodozemac::Curve25519PublicKey;
 use vodozemac::megolm::{
-    DecryptionError, ExportedSessionKey, InboundGroupSession, MegolmMessage, SessionConfig,
-    SessionOrdering,
+    DecryptionError, ExportedSessionKey, InboundGroupSession, InboundGroupSessionPickle,
+    MegolmMessage, SessionConfig, SessionOrdering,
 };
+use vodozemac::{Curve25519PublicKey, Ed25519PublicKey};
 
+use crate::backup::BackedUpSessionData;
 use crate::device::{DeviceAccount, MEGOLM_ALGORITHM};
 use crate::megolm::{MessagePayload, OutboundSession};
 use crate::olm::ReceivedRoomKey;
+use crate::store::{self, StoreKind};
 use crate::{CryptoError, Rejection};
+use zeroize::Zeroizing;
 
 /// 受信用セッションをどこから手に入れたか。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +62,8 @@ pub struct BackupSession {
     pub sender_user_id: String,
     /// 送信端末（と書かれている値）。
     pub sender_device_id: String,
+    /// 送信端末の署名鍵（平文の `sender_claimed_keys.ed25519` と書かれている値）。
+    pub sender_signing_key: Ed25519PublicKey,
     /// セッションの epoch。
     pub epoch: u64,
     /// vodozemac の `ExportedSessionKey` の base64。
@@ -72,6 +78,7 @@ impl std::fmt::Debug for BackupSession {
             .field("session_id", &self.session_id)
             .field("sender_user_id", &self.sender_user_id)
             .field("sender_device_id", &self.sender_device_id)
+            .field("sender_signing_key", &self.sender_signing_key)
             .field("epoch", &self.epoch)
             .finish_non_exhaustive()
     }
@@ -133,8 +140,62 @@ struct StoredSession {
     session: InboundGroupSession,
     sender_user_id: String,
     sender_device_id: String,
+    /// 鍵バックアップの `sender_claimed_keys.ed25519` に入れる値。
+    sender_signing_key: Ed25519PublicKey,
     epoch: u64,
     sender_verified: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredSessionPickle {
+    session: InboundGroupSessionPickle,
+    sender_user_id: String,
+    sender_device_id: String,
+    sender_signing_key: String,
+    epoch: u64,
+    sender_verified: bool,
+}
+
+impl From<&StoredSession> for StoredSessionPickle {
+    fn from(stored: &StoredSession) -> Self {
+        Self {
+            session: stored.session.pickle(),
+            sender_user_id: stored.sender_user_id.clone(),
+            sender_device_id: stored.sender_device_id.clone(),
+            sender_signing_key: stored.sender_signing_key.to_base64(),
+            epoch: stored.epoch,
+            sender_verified: stored.sender_verified,
+        }
+    }
+}
+
+impl StoredSessionPickle {
+    fn into_stored(self, session_id: &str) -> Result<StoredSession, CryptoError> {
+        let session = InboundGroupSession::from_pickle(self.session);
+        if session.session_id() != session_id {
+            return Err(CryptoError::InvalidPickle(
+                "受信用セッションの session_id がキーと違います".into(),
+            ));
+        }
+        Ok(StoredSession {
+            session,
+            sender_user_id: self.sender_user_id,
+            sender_device_id: self.sender_device_id,
+            sender_signing_key: Ed25519PublicKey::from_base64(&self.sender_signing_key)
+                .map_err(|e| CryptoError::InvalidPickle(format!("署名鍵を読めません: {e}")))?,
+            epoch: self.epoch,
+            sender_verified: self.sender_verified,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SlotPickle {
+    channel_id: String,
+    sender_key: String,
+    session_id: String,
+    olm: Option<StoredSessionPickle>,
+    backup: Option<StoredSessionPickle>,
 }
 
 #[derive(Default)]
@@ -143,19 +204,33 @@ struct Slot {
     backup: Option<StoredSession>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct SessionKeyId {
-    channel_id: String,
-    sender_key: String,
-    session_id: String,
+/// 受信用セッションのキー `(channel_id, sender_key, session_id)`。
+///
+/// 鍵バックアップの行の区別と、アップロード待ちの記録（[`BackupUploadState`](crate::BackupUploadState)）にも使う。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SessionRef {
+    /// セッションを使うチャンネル。
+    pub channel_id: String,
+    /// 送信端末の識別鍵（パディングなしの base64）。
+    pub sender_key: String,
+    /// Megolm セッション ID。
+    pub session_id: String,
+}
+
+/// 鍵バックアップに上げるために書き出したセッション。
+pub(crate) struct ExportedForBackup {
+    pub(crate) data: BackedUpSessionData,
+    pub(crate) first_message_index: u32,
+    pub(crate) is_verified: bool,
 }
 
 /// Megolm の受信用セッションと、リプレイと版の記録。
 ///
-/// I/O を持たないメモリー上の状態。保存（暗号ストア）は #359 で足す。
+/// I/O を持たないメモリー上の状態。暗号ストアには、キーごとに
+/// [`pickle_session`](Self::pickle_session) で保存する（#359）。
 #[derive(Default)]
 pub struct InboundSessionStore {
-    sessions: HashMap<SessionKeyId, Slot>,
+    sessions: HashMap<SessionRef, Slot>,
     /// `(session_id, message_index)` ごとに、最初に復号した `message_id`。
     first_message_ids: HashMap<(String, u32), String>,
     /// `message_id` ごとに、見た中で最大の `revision` と、その平文の Canonical JSON。
@@ -184,7 +259,7 @@ impl InboundSessionStore {
     /// 捨て、同じなら first known index が小さい方を残す。バックアップ由来のセッションとは
     /// 比べない。
     pub fn add_room_key(&mut self, room_key: ReceivedRoomKey) -> AddOutcome {
-        let key = SessionKeyId {
+        let key = SessionRef {
             channel_id: room_key.channel_id,
             sender_key: room_key.sender_key.to_base64(),
             session_id: room_key.session.session_id(),
@@ -193,6 +268,7 @@ impl InboundSessionStore {
             session: room_key.session,
             sender_user_id: room_key.sender_user_id,
             sender_device_id: room_key.sender_device_id,
+            sender_signing_key: room_key.sender_signing_key,
             epoch: room_key.epoch,
             sender_verified: room_key.sender_verified,
         };
@@ -234,6 +310,7 @@ impl InboundSessionStore {
             sender_key: account.identity_keys().curve25519,
             sender_user_id: account.user_id().to_owned(),
             sender_device_id: account.device_id().to_owned(),
+            sender_signing_key: account.identity_keys().ed25519,
             sender_verified: true,
             session: InboundGroupSession::new(&session_key, SessionConfig::version_1()),
         })
@@ -257,7 +334,7 @@ impl InboundSessionStore {
                 "session_key から導いた session_id が宣言と違います".into(),
             ));
         }
-        let key = SessionKeyId {
+        let key = SessionRef {
             channel_id: backup.channel_id,
             sender_key: backup.sender_key.to_base64(),
             session_id: backup.session_id,
@@ -266,6 +343,7 @@ impl InboundSessionStore {
             session,
             sender_user_id: backup.sender_user_id,
             sender_device_id: backup.sender_device_id,
+            sender_signing_key: backup.sender_signing_key,
             epoch: backup.epoch,
             sender_verified: false,
         };
@@ -290,6 +368,118 @@ impl InboundSessionStore {
         })
     }
 
+    /// 保存しているセッションのキーをすべて返す（順は決まっていない）。
+    ///
+    /// 鍵バックアップの今の版が変わったときに、手元のセッションをすべてアップロード待ちにするのに使う
+    /// （[`BackupUploadState::enqueue_all`](crate::BackupUploadState::enqueue_all)）。
+    pub fn session_refs(&self) -> Vec<SessionRef> {
+        self.sessions.keys().cloned().collect()
+    }
+
+    /// 1 つのキーのセッション（Olm 由来とバックアップ由来）を、暗号ストアに置く文字列にする
+    /// （#359。形式は `store` モジュールの封筒）。キーのセッションがなければ `None`。
+    ///
+    /// リプレイと版の記録（[`decrypt`](Self::decrypt) が使う）は入れない。保存は #361 で足す。
+    ///
+    /// # Panics
+    ///
+    /// OS やブラウザーの暗号用乱数を取れないとき。
+    pub fn pickle_session(
+        &self,
+        key: &SessionRef,
+        account: &DeviceAccount,
+        storage_key: &[u8; 32],
+    ) -> Option<String> {
+        let slot = self.sessions.get(key)?;
+        if slot.olm.is_none() && slot.backup.is_none() {
+            return None;
+        }
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(&SlotPickle {
+                channel_id: key.channel_id.clone(),
+                sender_key: key.sender_key.clone(),
+                session_id: key.session_id.clone(),
+                olm: slot.olm.as_ref().map(StoredSessionPickle::from),
+                backup: slot.backup.as_ref().map(StoredSessionPickle::from),
+            })
+            .expect("vodozemac の pickle と文字列は必ず JSON にできる"),
+        );
+        Some(store::seal(
+            storage_key,
+            StoreKind::InboundSession,
+            account,
+            &plaintext,
+        ))
+    }
+
+    /// [`pickle_session`](Self::pickle_session) の文字列から、そのキーのセッションを戻す。
+    /// 同じキーのセッションがあれば置き換える。戻したキーを返す。
+    ///
+    /// 保存鍵が違う、別のユーザーや端末の値、形式が壊れている、`session_id` がセッションと
+    /// 合わないときは [`CryptoError::InvalidPickle`]。
+    pub fn restore_session(
+        &mut self,
+        pickle: &str,
+        account: &DeviceAccount,
+        storage_key: &[u8; 32],
+    ) -> Result<SessionRef, CryptoError> {
+        let plaintext = store::open(pickle, storage_key, StoreKind::InboundSession, account)?;
+        let parsed: SlotPickle = serde_json::from_slice(&plaintext).map_err(|e| {
+            CryptoError::InvalidPickle(format!("受信用セッションを読めません: {e}"))
+        })?;
+        let key = SessionRef {
+            channel_id: parsed.channel_id,
+            sender_key: parsed.sender_key,
+            session_id: parsed.session_id,
+        };
+        let restore = |stored: Option<StoredSessionPickle>| {
+            stored
+                .map(|stored| stored.into_stored(&key.session_id))
+                .transpose()
+        };
+        let slot = Slot {
+            olm: restore(parsed.olm)?,
+            backup: restore(parsed.backup)?,
+        };
+        if slot.olm.is_none() && slot.backup.is_none() {
+            return Err(CryptoError::InvalidPickle(
+                "受信用セッションが入っていません".into(),
+            ));
+        }
+        self.sessions.insert(key.clone(), slot);
+        Ok(key)
+    }
+
+    /// 鍵バックアップに上げる形に書き出す。Olm 由来があればそれを、なければバックアップ由来を使う。
+    ///
+    /// `is_verified` は Olm 由来で、送信端末が検証済みのときだけ true にする。サーバーが残す行を
+    /// 決めるためだけの値で、取り込む端末は送信者の判定に使わない。
+    pub(crate) fn export_for_backup(&self, key: &SessionRef) -> Option<ExportedForBackup> {
+        let slot = self.sessions.get(key)?;
+        let (stored, is_verified) = match (&slot.olm, &slot.backup) {
+            (Some(olm), _) => (olm, olm.sender_verified),
+            (None, Some(backup)) => (backup, false),
+            (None, None) => return None,
+        };
+        Some(ExportedForBackup {
+            data: BackedUpSessionData {
+                algorithm: MEGOLM_ALGORITHM.to_owned(),
+                channel_id: key.channel_id.clone(),
+                epoch: stored.epoch,
+                session_id: key.session_id.clone(),
+                session_key: stored.session.export_at_first_known_index().to_base64(),
+                sender_key: key.sender_key.clone(),
+                sender_claimed_keys: crate::backup::SenderClaimedKeys {
+                    ed25519: stored.sender_signing_key.to_base64(),
+                },
+                sender_user_id: stored.sender_user_id.clone(),
+                sender_device_id: stored.sender_device_id.clone(),
+            },
+            first_message_index: stored.session.first_known_index(),
+            is_verified,
+        })
+    }
+
     /// `messages` の行を復号し、docs/e2ee.md の「受信時の検証」の表のとおり照合する。
     ///
     /// 照合に失敗したら [`CryptoError::Rejected`] を返し、呼び出し側はメッセージを破棄する。
@@ -297,7 +487,7 @@ impl InboundSessionStore {
     /// 同じメッセージの再取得と再復号は通る。
     pub fn decrypt(&mut self, row: &EncryptedMessage<'_>) -> Result<DecryptedMessage, CryptoError> {
         let ciphertext = ParsedCiphertext::parse(row.ciphertext)?;
-        let key = SessionKeyId {
+        let key = SessionRef {
             channel_id: row.channel_id.to_owned(),
             sender_key: ciphertext.sender_key.to_base64(),
             session_id: ciphertext.session_id.clone(),
@@ -469,6 +659,7 @@ mod tests {
                 kind: "message".into(),
             },
             mentions: Mentions::default(),
+            attachments: Vec::new(),
         }
     }
 
@@ -497,6 +688,7 @@ mod tests {
             sender_key: alice.identity_keys().curve25519,
             sender_user_id: sender_user_id.into(),
             sender_device_id: alice.device_id().into(),
+            sender_signing_key: alice.identity_keys().ed25519,
             sender_verified: false,
             session: InboundGroupSession::new(&session.session_key(), SessionConfig::version_1()),
         }
@@ -513,6 +705,113 @@ mod tests {
             revision: 0,
             ciphertext,
         }
+    }
+
+    #[test]
+    fn pickled_sessions_restore_into_a_new_store() {
+        const BOB: &str = "00000000-0000-0000-0000-00000000000b";
+        const BOB_DEVICE: &str = "2b8a1c2e-5b7d-4e9f-a1b2-c3d4e5f60718";
+        let alice = DeviceAccount::new(ALICE, ALICE_DEVICE).unwrap();
+        let bob = DeviceAccount::new(BOB, BOB_DEVICE).unwrap();
+        let mut session = GroupSession::new(SessionConfig::version_1());
+        let mut store = InboundSessionStore::new();
+        store.add_room_key(room_key(&alice, &session, ALICE));
+        let key = store.session_refs().pop().unwrap();
+        let storage_key = [3u8; 32];
+        let pickled = store.pickle_session(&key, &bob, &storage_key).unwrap();
+        assert!(
+            store
+                .pickle_session(
+                    &SessionRef {
+                        session_id: "other".into(),
+                        ..key.clone()
+                    },
+                    &bob,
+                    &storage_key
+                )
+                .is_none()
+        );
+
+        let mut restored = InboundSessionStore::new();
+        assert_eq!(
+            restored
+                .restore_session(&pickled, &bob, &storage_key)
+                .unwrap(),
+            key
+        );
+        let encrypted = ciphertext(&alice, &mut session, &payload("m1"));
+        let decrypted = restored.decrypt(&row("m1", &encrypted)).unwrap();
+        assert_eq!(decrypted.origin, SessionOrigin::Olm);
+        assert!(!decrypted.sender_verified);
+
+        // 別の端末や保存鍵では戻せない。
+        assert!(matches!(
+            InboundSessionStore::new().restore_session(&pickled, &alice, &storage_key),
+            Err(CryptoError::InvalidPickle(_))
+        ));
+        assert!(matches!(
+            InboundSessionStore::new().restore_session(&pickled, &bob, &[4u8; 32]),
+            Err(CryptoError::InvalidPickle(_))
+        ));
+    }
+
+    /// 暗号化した添付（#364）は Megolm の平文に入り、復号で同じ値に戻る。添付のない平文には
+    /// `attachments` の項目を出さない（#364 より前の平文と同じ形）。
+    #[test]
+    fn attachments_round_trip_through_megolm() {
+        let alice = DeviceAccount::new(ALICE, ALICE_DEVICE).unwrap();
+        let mut session = GroupSession::new(SessionConfig::version_1());
+        let mut store = InboundSessionStore::new();
+        store.add_room_key(room_key(&alice, &session, ALICE));
+
+        let plain = payload("m0");
+        assert!(
+            serde_json::to_value(&plain)
+                .unwrap()
+                .get("attachments")
+                .is_none()
+        );
+
+        let file = crate::encrypt_attachment(b"secret bytes");
+        let mut with_attachment = payload("m1");
+        with_attachment.attachments.push(crate::AttachmentInfo {
+            attachment_id: "0b0d5c5e-6f2a-4c1e-9d7a-2f3b4c5d6e7f".into(),
+            name: "secret.txt".into(),
+            mimetype: "text/plain".into(),
+            size: 12,
+            width: None,
+            height: None,
+            sensitive: false,
+            file: file.file.clone(),
+        });
+        let encrypted = ciphertext(&alice, &mut session, &with_attachment);
+        let decrypted = store.decrypt(&row("m1", &encrypted)).unwrap();
+        assert_eq!(decrypted.payload.attachments, with_attachment.attachments);
+        assert_eq!(
+            crate::decrypt_attachment(&decrypted.payload.attachments[0].file, &file.ciphertext)
+                .unwrap(),
+            b"secret bytes"
+        );
+
+        // 形式の正しくない添付は、平文の形式の誤りとして捨てる。
+        let mut broken = payload("m2");
+        broken.attachments = with_attachment.attachments.clone();
+        broken.attachments[0].file.key.alg = "A128CTR".into();
+        let encrypted = ciphertext(&alice, &mut session, &broken);
+        assert!(matches!(
+            store.decrypt(&row("m2", &encrypted)),
+            Err(CryptoError::InvalidPayload(_))
+        ));
+        let mut duplicated = payload("m3");
+        duplicated.attachments = vec![
+            with_attachment.attachments[0].clone(),
+            with_attachment.attachments[0].clone(),
+        ];
+        let encrypted = ciphertext(&alice, &mut session, &duplicated);
+        assert!(matches!(
+            store.decrypt(&row("m3", &encrypted)),
+            Err(CryptoError::InvalidPayload(_))
+        ));
     }
 
     #[test]

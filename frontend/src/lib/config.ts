@@ -42,6 +42,7 @@ export interface AppConfig {
   shapeProxyPath: string;
   devUserId: string | null;
   oidc: OidcSettings | null;
+  telemetryEnabled: boolean;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -54,6 +55,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   shapeProxyPath: "/api/shapes",
   devUserId: null,
   oidc: null,
+  telemetryEnabled: true,
 };
 
 export interface ConfigEnv {
@@ -73,6 +75,7 @@ export interface ConfigEnv {
   VITE_OIDC_SCOPE?: string;
   VITE_OIDC_RESOURCE?: string;
   VITE_OIDC_POST_LOGOUT_REDIRECT_URI?: string;
+  VITE_TELEMETRY_ENABLED?: string;
 }
 
 function readEnv(): ConfigEnv {
@@ -162,6 +165,14 @@ export function resolveTxidMode(configured: string | undefined): TxidMode {
   );
 }
 
+export function resolveTelemetryEnabled(configured: string | undefined): boolean {
+  if (!configured) {
+    return true;
+  }
+  const normalized = configured.trim().toLowerCase();
+  return !["false", "0", "off", "disabled"].includes(normalized);
+}
+
 /** Anonymous pages only need public endpoints, never development identity or OIDC settings. */
 export function resolvePublicConfig(env: ConfigEnv = readEnv()): AppConfig {
   return {
@@ -171,6 +182,7 @@ export function resolvePublicConfig(env: ConfigEnv = readEnv()): AppConfig {
     summalyUrl: env.VITE_SUMMALY_URL ?? "",
     devUserId: null,
     oidc: null,
+    telemetryEnabled: resolveTelemetryEnabled(env.VITE_TELEMETRY_ENABLED),
   };
 }
 
@@ -195,6 +207,7 @@ export function resolveConfig(
       ? previewUserId()
       : resolveDevUserId(shapeMode, isDev, env.VITE_DEV_USER_ID, oidc !== null),
     oidc,
+    telemetryEnabled: resolveTelemetryEnabled(env.VITE_TELEMETRY_ENABLED),
     ...overrides,
   };
 }
@@ -206,7 +219,10 @@ export function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
 
-function withParams(url: string, params: Record<string, string | number | undefined>): string {
+export function withParams(
+  url: string,
+  params: Record<string, string | number | undefined>,
+): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) {

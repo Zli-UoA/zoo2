@@ -73,4 +73,34 @@ describe("localizeApiError", () => {
     );
     expect(localizeApiError("boom", en)).toBe("The action failed. Try again.");
   });
+  it("explains what blocks encrypting an existing channel (#367)", () => {
+    const blocked = new ApiError(409, "Request failed", {
+      code: "E2EE_CONVERSION_BLOCKED",
+      blockers: ["apps", "webhooks"],
+    });
+    expect(localizeApiError(blocked, ja)).toBe(
+      "App（Bot）がメンバーにいます。先にチャンネルから外してください。 Incoming Webhook があります。先に削除してください。",
+    );
+    expect(
+      localizeApiError(
+        new ApiError(409, "Request failed", { code: "E2EE_CONVERSION_BLOCKED", blockers: [] }),
+        en,
+      ),
+    ).toBe(en("common.errors.conflict"));
+    expect(
+      localizeApiError(new ApiError(409, "Request failed", { code: "E2EE_LEGACY_IMMUTABLE" }), en),
+    ).toBe("Messages sent before encryption can't be edited. You can still delete them.");
+    expect(
+      localizeApiError(
+        new ApiError(400, "Request failed", { code: "E2EE_LIMIT_EXCEEDED", limit: "members" }),
+        ja,
+      ),
+    ).toBe("暗号化チャンネルのメンバーは 200 人までです。");
+    expect(
+      localizeApiError(
+        new ApiError(400, "Request failed", { code: "E2EE_LIMIT_EXCEEDED", limit: "mentions" }),
+        ja,
+      ),
+    ).toBe(ja("common.errors.badRequest"));
+  });
 });

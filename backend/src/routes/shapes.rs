@@ -26,10 +26,21 @@ pub fn router() -> Router<AppState> {
             get(message_reactions_shape),
         )
         .route("/api/shapes/users", get(users_shape))
+        .route("/api/shapes/channel_leaves", get(channel_leaves_shape))
         .route("/api/shapes/channel_users", get(channel_users_shape))
         .route("/api/shapes/notifications", get(notifications_shape))
+        .route("/api/shapes/call_invites", get(call_invites_shape))
         .route("/api/shapes/attachments", get(attachments_shape))
         .route("/api/shapes/e2ee_devices", get(e2ee_devices_shape))
+        .route(
+            "/api/shapes/e2ee_cross_signing_keys",
+            get(e2ee_cross_signing_keys_shape),
+        )
+        .route(
+            "/api/shapes/e2ee_key_signatures",
+            get(e2ee_key_signatures_shape),
+        )
+        .route("/api/shapes/e2ee_to_device", get(e2ee_to_device_shape))
 }
 
 /// クライアントから送信されたクエリパラメータのうち、Electric プロトコルで許可されたものを転送
@@ -71,11 +82,25 @@ pub(crate) fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str,
 ///
 /// [P1] ユーザー本人の通知であることに加え、現在閲覧権限があるチャンネル (公開チャンネル、
 /// または所属しているプライベートチャンネル) の通知のみを配信する。
-/// また、論理削除されたメッセージ (deleted_at IS NOT NULL) およびチャンネルの通知を除外する。
+/// メッセージの削除状態は通知行に同一トランザクションで投影し、全メッセージIDの依存Shapeを避ける。
+/// また、論理削除されたメッセージおよびチャンネルの通知を除外する。
 /// キック・退出やメッセージ・チャンネル削除が行われた場合、ElectricSQL の move-out 機構によりクライアントから即座に通知が除外される。
 pub(crate) fn notifications_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
-        "source = 'channel' AND user_id = $1 AND message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL) AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)))"
+        "source = 'channel' AND user_id = $1 AND message_deleted = false AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)))"
+            .to_string(),
+        vec![("params[1]", user_id)],
+    )
+}
+
+/// 通話の招待の Shape の where 句とパラメータ。
+///
+/// 呼ばれた人と呼んだ人の、呼び出し中 (`pending`) の招待だけ。`e2ee_to_device` と同じく、
+/// クライアントの where は使わずサーバーで固定する。いま閲覧できるチャンネルの招待に限り、
+/// 脱退や削除では Electric の move-out で消える。終わった招待も `status` の変化で shape から外れる。
+pub(crate) fn call_invites_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
+    (
+        "(invitee_id = $1 OR inviter_id = $1) AND status = 'pending' AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)))"
             .to_string(),
         vec![("params[1]", user_id)],
     )
@@ -126,6 +151,13 @@ pub(crate) fn channel_users_shape_where<'a>(
     }
 }
 
+/// Channel Leaves Shape（自分の退出日）の where 句とパラメータの純粋組み立て。
+///
+/// 呼び出したユーザー自身の行だけ。クライアントの where は使わず、他人の退出履歴は配らない。
+pub(crate) fn channel_leaves_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
+    ("user_id = $1".to_string(), vec![("params[1]", user_id)])
+}
+
 /// E2EE の端末の Shape の where 句とパラメータ（docs/e2ee.md の「Electric の Shape」）。
 ///
 /// 自分の端末と、自分と暗号化チャンネル（削除されていないもの）を共有しているユーザーの端末。削除済みの端末は除く。
@@ -139,129 +171,260 @@ pub(crate) fn e2ee_devices_shape_where(user_id: &str) -> (String, Vec<(&'static 
     )
 }
 
+/// E2EE のクロス署名鍵の Shape の where 句（docs/e2ee.md の「Electric の Shape」）。
+///
+/// 自分の鍵すべてと、自分と暗号化チャンネルを共有しているユーザーのマスター鍵と自己署名鍵。
+/// ユーザー署名鍵は本人にだけ配る。
+pub(crate) fn e2ee_cross_signing_keys_shape_where(
+    user_id: &str,
+) -> (String, Vec<(&'static str, &str)>) {
+    (
+        format!(
+            "user_id = $1 OR (usage <> 'user_signing' AND user_id IN ({}))",
+            crate::routes::e2ee::SHARED_USERS_SQL
+        ),
+        vec![("params[1]", user_id)],
+    )
+}
+
+/// E2EE の署名の Shape の where 句。自分が署名したものすべてと、共有しているユーザーの自己署名
+/// （自分の端末への署名）。他人のマスター鍵へのユーザー署名鍵の署名は、署名した本人にだけ配る。
+pub(crate) fn e2ee_key_signatures_shape_where(
+    user_id: &str,
+) -> (String, Vec<(&'static str, &str)>) {
+    (
+        format!(
+            "signer_user_id = $1 OR (signer_user_id = target_user_id AND target_user_id IN ({}))",
+            crate::routes::e2ee::SHARED_USERS_SQL
+        ),
+        vec![("params[1]", user_id)],
+    )
+}
+
+/// E2EE の to-device メッセージの Shape の where 句とパラメータ（docs/e2ee.md の「Electric の Shape」）。
+///
+/// 呼び出したユーザーの、サーバーで確かめた端末宛ての行だけ。クライアントの where は使わない。
+pub(crate) fn e2ee_to_device_shape_where<'a>(
+    user_id: &'a str,
+    device_id: &'a str,
+) -> (String, Vec<(&'static str, &'a str)>) {
+    (
+        "recipient_user_id = $1 AND recipient_device_id = $2".to_string(),
+        vec![("params[1]", user_id), ("params[2]", device_id)],
+    )
+}
+
 /// 他のユーザーにも配る端末の列。`display_name`（環境が分かる）と `last_seen_at`（活動の時刻が分かる）は
 /// 配らず、本人には `GET /api/e2ee/devices` で返す。
 pub(crate) const E2EE_DEVICES_SHAPE_COLUMNS: &str =
     "user_id,device_id,curve25519_key,ed25519_key,device_keys,deleted_at";
 
+/// 通信が流れているストリームのアクセス権を、チャンクの転送前に再確認する最短の間隔。
+const STREAM_CHUNK_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
+/// 通信がないストリームのアクセス権を再確認する間隔。
+const STREAM_IDLE_RECHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 開いているストリームの状態。アクセス権の確認は、1 本ごとに毎秒ではなく、上の間隔でだけ行う。
+struct StreamAccess {
+    upstream: futures_util::stream::BoxStream<'static, Result<axum::body::Bytes, reqwest::Error>>,
+    state: AppState,
+    actor: String,
+    initial_guest: bool,
+    channel: Option<String>,
+    started: tokio::time::Instant,
+    /// 最後にアクセス権を確かめた時刻。まだ確かめていなければ None（最初のチャンクの前に必ず確かめる）。
+    last_checked: Option<tokio::time::Instant>,
+    _sse_guard: crate::metrics::SseConnectionGuard,
+    _permit: crate::routes::shape_limit::ShapeStreamPermit,
+}
+
+impl StreamAccess {
+    async fn still_allowed(&mut self) -> bool {
+        self.last_checked = Some(tokio::time::Instant::now());
+        let mut db = self.state.db.clone();
+        let Ok(mut tx) = db.transaction().await else {
+            return false;
+        };
+        let guest = if self.initial_guest { "true" } else { "false" };
+        let access = crate::apps::one(
+            &mut tx,
+            "SELECT json_build_object('ok',NOT u.is_deactivated AND u.is_guest=$2::boolean AND ($3='' OR EXISTS(SELECT 1 FROM channels c WHERE c.id=$3 AND c.deleted_at IS NULL AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=u.id)))))::text FROM users u WHERE u.id=$1",
+            &[&self.actor, guest, self.channel.as_deref().unwrap_or("")],
+        )
+        .await;
+        matches!(access, Ok(v) if v["ok"] == true)
+    }
+}
+
 /// Electric へのストリーミング Shape プロキシ実行
 async fn proxy_shape(
     state: &AppState,
-    table: &str,
+    table: &'static str,
     where_clause: Option<&str>,
     extra_params: &[(&str, &str)],
     raw_query: &HashMap<String, String>,
     is_user_scoped: bool,
     actor: &str,
 ) -> Result<Response, AppError> {
-    let mut params = filter_electric_params(raw_query);
-    params.push(("table".to_string(), table.to_string()));
-    if table == "messages"
-        && let Some(metadata_allowed) = raw_query.get("_app_metadata_allowed")
-    {
-        // App messages never include the UI projection: its joined profiles and
-        // attachments require scopes beyond messages:read (and metadata:read).
-        let mut columns = "id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".to_owned();
-        if metadata_allowed == "true" {
-            columns.push_str(",metadata");
-        }
-        params.push(("columns".into(), columns));
-    }
+    use tracing::Instrument;
 
-    if let Some(w) = where_clause {
-        params.push(("where".to_string(), w.to_string()));
-    }
-    for (k, v) in extra_params {
-        params.push((k.to_string(), v.to_string()));
-    }
-
-    let url = format!(
-        "{}/v1/shape",
-        state.config.electric_url.trim_end_matches('/')
-    );
-
-    let mut req = state.electric_client.get(&url).query(&params);
-
-    if let Some(ref secret) = state.config.electric_secret {
-        // Electric の API secret は Bearer ではなくクエリで渡す。
-        req = req.query(&[("secret", secret)]);
-    }
-
-    let upstream_resp = req.send().await.map_err(|err| {
-        // URL のクエリに含まれる API secret をログやエラー応答へ出さない。
-        let err = err.without_url();
-        tracing::error!("Failed to connect to Electric server at {url}: {err}");
-        AppError::Internal(anyhow::anyhow!(
-            "Failed to connect to Electric server: {err}"
-        ))
-    })?;
-
-    let status =
-        StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-
-    // 転送ヘッダの抽出
-    // - electric-* ヘッダーはすべて転送 (electric-up-to-date, electric-chunk-last-offset 含む)
-    // - content-encoding, content-length はクライアント解凍とストリーミングのため除外
-    let mut headers = HeaderMap::new();
-
-    for (key, value) in upstream_resp.headers() {
-        let key_str = key.as_str().to_lowercase();
-        let should_forward = key_str.starts_with("electric-")
-            || matches!(key_str.as_str(), "content-type" | "etag" | "cache-control");
-
-        if should_forward
-            && let Ok(name) = HeaderName::from_bytes(key.as_ref())
-            && let Ok(val) = HeaderValue::from_bytes(value.as_bytes())
+    let span = tracing::info_span!("electric_proxy", shape = table);
+    async move {
+        // 1 アカウントが開けるストリームの数を制限する（開いている間、枠を持つ）。
+        let limit_key = crate::routes::shape_limit::SHAPE_LIMIT_KEY
+            .try_with(|key| key.clone())
+            .unwrap_or_else(|_| actor.to_owned());
+        let permit = state.shape_streams.try_acquire(&limit_key).ok_or_else(|| {
+            crate::metrics::record_electric_proxy_request(table, 429);
+            AppError::RateLimited
+        })?;
+        let mut params = filter_electric_params(raw_query);
+        params.push(("table".to_string(), table.to_string()));
+        if table == "messages"
+            && let Some(metadata_allowed) = raw_query.get("_app_metadata_allowed")
         {
-            headers.insert(name, val);
+            // App messages never include the UI projection: its joined profiles and
+            // attachments require scopes beyond messages:read (and metadata:read).
+            let mut columns = "id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".to_owned();
+            if metadata_allowed == "true" {
+                columns.push_str(",metadata");
+            }
+            params.push(("columns".into(), columns));
         }
-    }
 
-    // ユーザー別認可フィルタが適用された Shape の場合、共有キャッシュによる情報漏洩を防止
-    if is_user_scoped {
-        headers.insert(
-            HeaderName::from_static("vary"),
-            HeaderValue::from_static("Authorization, X-Dev-User"),
+        if let Some(w) = where_clause {
+            params.push(("where".to_string(), w.to_string()));
+        }
+        for (k, v) in extra_params {
+            params.push((k.to_string(), v.to_string()));
+        }
+        // 配る列を絞った shape では、クライアントの `subset__where` と `subset__order_by` も、同じ列だけに
+        // 限る（配っていない列の値を、条件で推測させない）。shape 自身の where には影響しない。
+        if let Some((_, columns)) = params.iter().find(|(k, _)| k == "columns") {
+            let columns = columns.clone();
+            params.push(("queryable_columns".to_string(), columns));
+        }
+
+        let url = format!(
+            "{}/v1/shape",
+            state.config.electric_url.trim_end_matches('/')
         );
+
+        let mut req = state.electric_client.get(&url).query(&params);
+
+        if let Some(ref secret) = state.config.electric_secret {
+            // Electric の API secret は Bearer ではなくクエリで渡す。
+            req = req.query(&[("secret", secret)]);
+        }
+
+        let upstream_resp = req.send().await.map_err(|err| {
+            // URL のクエリに含まれる API secret をログやエラー応答へ出さない。
+            let err = err.without_url();
+            tracing::error!("Failed to connect to Electric server at {url}: {err}");
+            crate::metrics::record_electric_proxy_request(table, 500);
+            AppError::Internal(anyhow::anyhow!(
+                "Failed to connect to Electric server: {err}"
+            ))
+        })?;
+
+        let status = StatusCode::from_u16(upstream_resp.status().as_u16())
+            .unwrap_or(StatusCode::BAD_GATEWAY);
+
+        // 転送ヘッダの抽出
+        // - electric-* ヘッダーはすべて転送 (electric-up-to-date, electric-chunk-last-offset 含む)
+        // - content-encoding, content-length はクライアント解凍とストリーミングのため除外
+        let mut headers = HeaderMap::new();
+
+        for (key, value) in upstream_resp.headers() {
+            let key_str = key.as_str().to_lowercase();
+            let should_forward = key_str.starts_with("electric-")
+                || matches!(key_str.as_str(), "content-type" | "etag" | "cache-control");
+
+            if should_forward
+                && let Ok(name) = HeaderName::from_bytes(key.as_ref())
+                && let Ok(val) = HeaderValue::from_bytes(value.as_bytes())
+            {
+                headers.insert(name, val);
+            }
+        }
+
+        // 応答は認可したユーザーごとの内容なので、プロキシや CDN の設定に頼らず、共有キャッシュに載せない。
         headers.insert(
             HeaderName::from_static("cache-control"),
-            HeaderValue::from_static("private, no-cache"),
+            HeaderValue::from_static(if is_user_scoped {
+                "private, no-cache"
+            } else {
+                "private, no-store"
+            }),
         );
-    }
+        // ユーザー別認可フィルタが適用された Shape の場合、共有キャッシュによる情報漏洩を防止
+        if is_user_scoped {
+            headers.insert(
+                HeaderName::from_static("vary"),
+                HeaderValue::from_static("Authorization, X-Dev-User"),
+            );
+        }
 
-    // ストリーミングボディをバッファリングせず透過的に転送
-    use futures_util::StreamExt;
-    let mut db = state.db.clone();
-    let initial_guest = crate::apps::events::guest_in_db(&mut db, actor).await?;
-    let channel = raw_query.get("channel_id").cloned();
-    let stream = upstream_resp.bytes_stream().boxed();
-    let stream = futures_util::stream::unfold(
-        (
-            stream,
-            state.clone(),
-            actor.to_owned(),
-            initial_guest,
-            channel,
-        ),
-        |(mut upstream, state, actor, initial_guest, channel)| async move {
-            loop {
-                let mut db = state.db.clone();
-                let mut tx = db.transaction().await.ok()?;
-                let access=crate::apps::one(&mut tx,"SELECT json_build_object('ok',NOT u.is_deactivated AND u.is_guest=$2::boolean AND ($3='' OR EXISTS(SELECT 1 FROM channels c WHERE c.id=$3 AND c.deleted_at IS NULL AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=u.id)))))::text FROM users u WHERE u.id=$1",&[&actor,if initial_guest{"true"}else{"false"},channel.as_deref().unwrap_or("")]).await.ok()?;
-                if access["ok"] != true {
-                    return None;
-                }
-                drop(tx);
-                tokio::select! {chunk=upstream.next()=>return chunk.map(|chunk|(chunk,(upstream,state,actor,initial_guest,channel))),_=tokio::time::sleep(std::time::Duration::from_secs(1))=>{}}
+        // ストリーミングボディをバッファリングせず透過的に転送
+        use futures_util::StreamExt;
+        let mut db = state.db.clone();
+        let initial_guest = match crate::apps::events::guest_in_db(&mut db, actor).await {
+            Ok(v) => v,
+            Err(e) => {
+                crate::metrics::record_electric_proxy_request(table, 500);
+                return Err(e);
             }
-        },
-    );
-    let body = Body::from_stream(stream);
+        };
+        crate::metrics::record_electric_proxy_request(table, status.as_u16());
 
-    let mut response = (status, body).into_response();
-    *response.headers_mut() = headers;
+        let sse_guard = crate::metrics::SseConnectionGuard::enter(table);
+        let channel = raw_query.get("channel_id").cloned();
+        let stream = upstream_resp.bytes_stream().boxed();
+        let stream = futures_util::stream::unfold(
+            StreamAccess {
+                upstream: stream,
+                state: state.clone(),
+                actor: actor.to_owned(),
+                initial_guest,
+                channel,
+                started: tokio::time::Instant::now(),
+                last_checked: None,
+                _sse_guard: sse_guard,
+                _permit: permit,
+            },
+            |mut st| async move {
+                loop {
+                    let deadline = st.last_checked.unwrap_or(st.started) + STREAM_IDLE_RECHECK;
+                    tokio::select! {
+                        chunk = st.upstream.next() => {
+                            let chunk = chunk?;
+                            // 転送のたびに確かめると負荷が大きいので、直近に確かめていれば省く。
+                            if st.last_checked.is_none_or(|t| t.elapsed() >= STREAM_CHUNK_RECHECK)
+                                && !st.still_allowed().await
+                            {
+                                return None;
+                            }
+                            return Some((chunk, st));
+                        }
+                        _ = tokio::time::sleep_until(deadline) => {
+                            // 通信がなくても、権限を失ったストリームは閉じる。
+                            if !st.still_allowed().await {
+                                return None;
+                            }
+                        }
+                    }
+                }
+            },
+        );
+        let body = Body::from_stream(stream);
 
-    Ok(response)
+        let mut response = (status, body).into_response();
+        *response.headers_mut() = headers;
+
+        Ok(response)
+    }
+    .instrument(span)
+    .await
 }
 
 /// Channels Shape
@@ -507,6 +670,25 @@ pub(crate) async fn channel_users_shape(
     .await
 }
 
+/// Channel Leaves Shape（自分が退出した日時。本人にだけ配る）
+async fn channel_leaves_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (where_clause, extra_params) = channel_leaves_shape_where(auth_user.id.as_str());
+    proxy_shape(
+        &state,
+        "channel_leave",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
 /// Notifications Shape (ユーザー別認可・配信)
 async fn notifications_shape(
     State(state): State<AppState>,
@@ -526,6 +708,33 @@ async fn notifications_shape(
     proxy_shape(
         &state,
         "notification_events",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
+/// 通話の招待の Shape（ユーザー別の認可・配信）
+async fn call_invites_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (mut where_clause, mut extra_params) = call_invites_shape_where(auth_user.id.as_str());
+    extra_params.push((
+        "columns",
+        "id,channel_id,inviter_id,invitee_id,status,created_at,expires_at",
+    ));
+    let mut db = state.db.clone();
+    if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+        where_clause = where_clause.replace("is_private = false OR ", "");
+    }
+    proxy_shape(
+        &state,
+        "call_invites",
         Some(&where_clause),
         &extra_params,
         &raw_query,
@@ -555,7 +764,77 @@ async fn e2ee_devices_shape(
     .await
 }
 
+/// E2EE のクロス署名鍵の Shape（ユーザー別の認可・配信）
+async fn e2ee_cross_signing_keys_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (where_clause, extra_params) = e2ee_cross_signing_keys_shape_where(auth_user.id.as_str());
+    proxy_shape(
+        &state,
+        "e2ee_cross_signing_keys",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
+/// E2EE の署名の Shape（ユーザー別の認可・配信）
+async fn e2ee_key_signatures_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (where_clause, extra_params) = e2ee_key_signatures_shape_where(auth_user.id.as_str());
+    proxy_shape(
+        &state,
+        "e2ee_key_signatures",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
+/// E2EE の to-device メッセージの Shape（宛先の端末ごと）。`device_id` は呼び出したユーザーの、
+/// 削除されていない端末でなければならない（他人の端末は、存在を推測されないよう 404）。
+async fn e2ee_to_device_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let device_id = raw_query.get("device_id").cloned().unwrap_or_default();
+    let own = {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        crate::routes::e2ee::to_device::own_active_device(&mut tx, &auth_user.id, &device_id)
+            .await?
+    };
+    if !own {
+        return Err(crate::routes::e2ee::device_not_found());
+    }
+    let (where_clause, extra_params) =
+        e2ee_to_device_shape_where(auth_user.id.as_str(), device_id.as_str());
+    proxy_shape(
+        &state,
+        "e2ee_to_device_messages",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+        &auth_user.id,
+    )
+    .await
+}
+
 /// App tokens only enumerate channels their acting identity has joined.
+/// 暗号化チャンネルは、委任トークンでも列挙しない（#358）。
 pub(crate) async fn app_channels_shape(
     state: AppState,
     p: &crate::apps::Principal,
@@ -565,7 +844,7 @@ pub(crate) async fn app_channels_shape(
         &state,
         "channels",
         Some(
-            "deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)",
+            "deleted_at IS NULL AND NOT encrypted AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)",
         ),
         &[("params[1]", p.user_id.as_str())],
         &params,
@@ -692,6 +971,27 @@ mod tests {
     }
 
     #[test]
+    fn test_call_invites_shape_where() {
+        let (clause, params) = call_invites_shape_where("user-1");
+        assert!(clause.contains("(invitee_id = $1 OR inviter_id = $1)"));
+        assert!(clause.contains("status = 'pending'"));
+        assert_eq!(params, vec![("params[1]", "user-1")]);
+    }
+
+    #[test]
+    fn test_e2ee_to_device_shape_where() {
+        let (clause, params) = e2ee_to_device_shape_where("user-123", "device-1");
+        assert_eq!(
+            clause,
+            "recipient_user_id = $1 AND recipient_device_id = $2"
+        );
+        assert_eq!(
+            params,
+            vec![("params[1]", "user-123"), ("params[2]", "device-1")]
+        );
+    }
+
+    #[test]
     fn test_channels_shape_where() {
         let user_id = "user-123";
         let (clause, params) = channels_shape_where(user_id);
@@ -708,9 +1008,8 @@ mod tests {
 
         assert!(clause.contains("user_id = $1"));
         assert!(clause.contains("source = 'channel'"));
-        assert!(
-            clause.contains("message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL)")
-        );
+        assert!(!clause.contains("FROM messages"));
+        assert!(clause.contains("message_deleted = false"));
         assert!(clause.contains("deleted_at IS NULL"));
         assert!(clause.contains("is_private = false"));
         assert!(clause.contains("SELECT channel_id FROM channel_user WHERE user_id = $1"));
@@ -740,6 +1039,13 @@ mod tests {
         let (clause, params) = channel_users_shape_where(None, user_id);
         assert!(clause.contains("WHERE is_private = false AND deleted_at IS NULL"));
         assert!(clause.contains("WHERE user_id = $1"));
+        assert_eq!(params, vec![("params[1]", "user-123")]);
+    }
+
+    #[test]
+    fn test_channel_leaves_shape_where() {
+        let (clause, params) = channel_leaves_shape_where("user-123");
+        assert_eq!(clause, "user_id = $1");
         assert_eq!(params, vec![("params[1]", "user-123")]);
     }
 

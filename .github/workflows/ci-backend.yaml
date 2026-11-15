@@ -28,6 +28,8 @@ on:
       - ".github/workflows/ci-backend.yaml"
       - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
+permissions:
+  contents: read
 concurrency:
   group: ci-backend-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -38,8 +40,10 @@ jobs:
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
-  # fmt, clippy, build and unit tests share one job so the Rust cache is
+  # fmt, clippy and unit tests share one job so the Rust cache is
   # restored once across the Rust checks.
+  # The binary itself is built and linked by e2e (integration tests) and deploy-image (release),
+  # so a separate `cargo build` here would only recompile what clippy already checked.
   check:
     needs: runner
     # Rust builds and linking can exceed kubecamp's 2GiB budget and starve the runner.
@@ -49,20 +53,24 @@ jobs:
         working-directory: ./backend
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Read Rust toolchain
         id: rust-toolchain
         working-directory: .
         # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: clippy, rustfmt
       - name: Restore Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: backend
           # Not shared with oidc-e2e (backend-debug): cache keys are immutable, and
           # its build-only save would keep clippy and test artifacts out of this one.
@@ -71,8 +79,6 @@ jobs:
         run: cargo fmt --check
       - name: lint check
         run: cargo clippy
-      - name: Build project
-        run: cargo build
       - name: unit test
         run: cargo test --lib
 
@@ -86,17 +92,30 @@ jobs:
       COMPOSE_PROJECT_NAME: zoo-ci-image-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         id: buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         with:
           driver-opts: default-load=true
 
+      # 保存するのは main だけにする（PR で保存すると、キャッシュの容量の上限を超えて、main のキャッシュも追い出される）。
       - name: Restore Rust cache mounts
-        id: rust-cache
-        uses: actions/cache@v6
+        id: rust-cache-main
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: .buildkit-cache
+          key: ci-rust-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            ci-rust-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-
+      - name: Restore Rust cache mounts
+        id: rust-cache-pr
+        if: github.ref != 'refs/heads/main'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .buildkit-cache
           key: ci-rust-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
@@ -104,10 +123,11 @@ jobs:
             ci-rust-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-
 
       - name: Inject Rust cache mounts
-        uses: reproducible-containers/buildkit-cache-dance@v3
+        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3
         with:
           builder: ${{ steps.buildx.outputs.name }}
-          skip-extraction: ${{ steps.rust-cache.outputs.cache-hit }}
+          # main 以外はキャッシュを保存しないので、ビルド後の取り出し（ホストへのコピー）も省く。
+          skip-extraction: ${{ github.ref != 'refs/heads/main' || steps.rust-cache-main.outputs.cache-hit == 'true' }}
           cache-map: |
             {
               ".buildkit-cache/registry": "/usr/local/cargo/registry",
@@ -115,9 +135,19 @@ jobs:
               ".buildkit-cache/target": "/app/target"
             }
 
+      # docker compose build の type=gha が、Actions のキャッシュサービスに接続するために要る。
+      - name: Expose the Actions cache runtime to docker
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       - name: Build production backend image
         run: |
-          docker compose --project-directory . -f infra/compose.stack.yaml \
+          files=(-f infra/compose.stack.yaml -f infra/compose.ci-cache.yaml)
+          if [ "$GITHUB_REF" = refs/heads/main ]; then files+=(-f infra/compose.ci-cache-write.yaml); fi
+          docker compose --project-directory . "${files[@]}" \
             build --builder "${{ steps.buildx.outputs.name }}" backend
 
       # compose の backend サービスは ENVIRONMENT=production なので、
@@ -203,13 +233,24 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stack.yaml down -v --remove-orphans
 
   e2e:
+    name: e2e (${{ matrix.leg }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # テストバイナリーは 1 つの DB を共有し、プロセス内の Mutex で共有行を守っているので、
+        # バイナリー同士は並列に動かせない。そこで、DB ごと分けた 2 つの job に振り分ける。
+        # slack は leg A に書いたテストだけを、core は残りのすべてを実行する。
+        leg: [slack, core]
     env:
-      COMPOSE_PROJECT_NAME: zoo-ci-backend-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_PROJECT_NAME: zoo-ci-backend-${{ matrix.leg }}-${{ github.run_id }}-${{ github.run_attempt }}
       POSTGRES_PORT: "0"
       ELECTRIC_PORT: "0"
       S3_PORT: "0"
       S3_CONSOLE_PORT: "0"
       ACTIVITYPUB_BASE_URL: https://zoo.example.com
+      # 34 個のテストバイナリーをそれぞれリンクするので、デバッグ情報を行番号だけにしてリンクを軽くする。
+      # panic のバックトレースの行番号は残る。
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     needs: runner
     # e2e は compose のスタック一式を立てるため、ARC の runner では CPU/メモリ不足で通信が切れた。hosted → zli-k8s の large にする。
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
@@ -218,20 +259,24 @@ jobs:
         working-directory: ./backend
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Read Rust toolchain
         id: rust-toolchain
         working-directory: .
         # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
 
       - name: Restore Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: backend
 
       - name: Start PostgreSQL, Electric, and RustFS
@@ -246,7 +291,7 @@ jobs:
           echo "S3_ENDPOINT=http://${rustfs_port}" >> "$GITHUB_ENV"
 
       - name: Setup Atlas
-        uses: ariga/setup-atlas@v0
+        uses: ariga/setup-atlas@28f0b75814c08b1a265b75713c120cfad46433ae # v0
 
       - name: Validate migrations and upgrade path from base branch
         working-directory: .
@@ -313,9 +358,41 @@ jobs:
       - name: e2e test
         env:
           DEV_AUTH_ENABLED: "true"
+          LEG: ${{ matrix.leg }}
         run: |
-          cargo test --test '*'
-          cargo test --lib activitypub:: -- --include-ignored --test-threads=1
+          # leg slack のテスト。ここに書いたもの以外は、すべて leg core で実行する。
+          # 所要時間をそろえるため、最も長い app_event_sources_test（約 83 秒）もここに置く。
+          slack_tests=(
+            app_event_sources_test
+            activitypub_test
+            slack_api_import_test
+            slack_files_test
+            slack_import_test
+            slack_link_test
+            slack_sync_test
+            e2ee_channels_test
+            e2ee_devices_test
+            e2ee_keys_test
+            e2ee_plaintext_features_test
+            e2ee_to_device_test
+          )
+          args=()
+          if [ "$LEG" = slack ]; then
+            for t in "${slack_tests[@]}"; do
+              test -f "tests/$t.rs" || { echo "::error::tests/$t.rs not found"; exit 1; }
+              args+=(--test "$t")
+            done
+          else
+            for f in tests/*.rs; do
+              t=$(basename "$f" .rs)
+              case " ${slack_tests[*]} " in *" $t "*) continue ;; esac
+              args+=(--test "$t")
+            done
+          fi
+          cargo test "${args[@]}"
+          if [ "$LEG" = slack ]; then
+            cargo test --lib activitypub:: -- --include-ignored --test-threads=1
+          fi
 
       - name: Show container logs
         if: failure()
@@ -347,15 +424,19 @@ jobs:
     env:
       EMOJI_TEST_DATABASE_URL: postgres://root:emoji-local-test@127.0.0.1:5432/emoji_projection_test
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Read Rust toolchain
         id: rust-toolchain
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
+          # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: backend
           shared-key: backend-check
       - name: Apply disposable database schema

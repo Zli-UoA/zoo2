@@ -37,12 +37,66 @@ const MAX_ATTEMPTS: i64 = 5;
 const LEASE_LOST: &str = "Slack import lease was lost";
 const LEASE_SQL: &str = "interval '2 minutes'";
 const HEARTBEAT: Duration = Duration::from_secs(30);
+/// 終了の合図で手放したジョブを、別のワーカーが取れるようになるまでの間隔 (終了処理中の古い台が取り直さないため)
+/// 手放すときに、データベースを待つ最長の時間 (超えたら、リースが切れるのを待つ)
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDOFF_DELAY_SQL: &str = "interval '30 seconds'";
 /// カードの説明文の上限 (`MessageCard::encode` と同じ)
 const MAX_CARD_DESCRIPTION: usize = 4000;
 /// 添付 1 件あたりの取得失敗の上限
 const MAX_FILE_ATTEMPTS: i64 = 3;
+/// 429 の `Retry-After` の上限 (秒)
+const MAX_RETRY_AFTER_SECS: u64 = 300;
+/// 行単位の取得 (ジョブに紐づかない添付) のリース。1 件の最悪時間 (120 秒 × 最大 4 リクエスト + 保存) より長くする
+const FILE_LEASE_SQL: &str = "interval '10 minutes'";
+/// 行単位の取得で、取る行がないときに待つ時間
+const FILE_IDLE: Duration = Duration::from_secs(30);
+
+/// 終了の合図 (SIGTERM など)。`true` になったら、新しいジョブを取らず、処理中の段階を捨ててジョブを手放す。
+pub type Stop = tokio::sync::watch::Receiver<bool>;
+
+/// 合図が来るまで待つ。送り手が先に落ちた (合図が来ない) ときは、永久に待つ
+async fn stopped(stop: &mut Stop) {
+    loop {
+        if *stop.borrow() {
+            return;
+        }
+        if stop.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+/// 終了の合図を受けたら、処理中のジョブを手放す。リースが切れるのを待たずに、別のワーカーが再開できる。
+/// `attempts` は、デプロイによる中断で上限に近づかないよう 1 戻す (取得のときに増えた分)。
+/// 古い台が、まだ終了処理中に取り直さないよう、少し先から取れるようにする。
+/// トークンが違う (リースを奪われた) ときは何もしない。手放したら true
+pub async fn release_job(s: &AppState, id: &str, token: &str) -> Result<bool, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = query(
+        &mut tx,
+        &format!(
+            "UPDATE slack_import_jobs SET attempts=GREATEST(attempts-1,0),handoffs=handoffs+1,\
+             lease_until=NULL,lease_token=NULL,available_at=now()+{HANDOFF_DELAY_SQL},updated_at=now() \
+             WHERE id=$1 AND lease_token=$2 \
+             RETURNING json_build_object('id',id)::text"
+        ),
+        &[id, token],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(!rows.is_empty())
+}
 
 pub async fn worker(s: AppState) {
+    // 合図を送らない (止まらない) ワーカー。送り手をここで持ち続ける
+    let (_keep, stop) = tokio::sync::watch::channel(false);
+    worker_until(s, stop).await;
+}
+
+/// `stop` が `true` になるまで動くワーカー。合図を受けたら、処理中のジョブを手放して戻る
+pub async fn worker_until(s: AppState, mut stop: Stop) {
     // 前のプロセスが取り込みの途中で止まると、ZIP が残る（Kubernetes の emptyDir は
     // コンテナの再起動では消えない）。残ったままだと、取り直したジョブの ZIP と合わせて
     // 容量の上限を超えることがあるので、始める前に片付ける。
@@ -53,13 +107,32 @@ pub async fn worker(s: AppState) {
         Ok(removed) => tracing::info!(removed, "Removed leftover Slack import ZIPs"),
         Err(e) => tracing::warn!(error = %e, "Failed to clean up leftover Slack import ZIPs"),
     }
+    // ジョブに紐づかない添付 (差分同期の添付など) の取得。ジョブの処理は長くかかるので、別のタスクで動かす。
+    // Bot トークンか、ユーザートークン (連携) を使えるときだけ動かす。終わるときは、取りかけの行を手放すのを待つ
+    let mut files =
+        file_worker_enabled(&s).then(|| tokio::spawn(orphan_files_worker(s.clone(), stop.clone())));
+    let finish = |files: Option<tokio::task::JoinHandle<()>>| async move {
+        if let Some(files) = files {
+            let _ = tokio::time::timeout(RELEASE_TIMEOUT, files).await;
+        }
+    };
     let mut ticks = tokio::time::interval(Duration::from_secs(2));
     let mut passes = 0u32;
     loop {
-        ticks.tick().await;
+        tokio::select! {
+            _ = ticks.tick() => {}
+            _ = stopped(&mut stop) => return finish(files.take()).await,
+        }
+        // 添付の取得が (panic などで) 終わったら、このワーカーも終わる。呼び出し側が再起動する
+        if files.as_ref().is_some_and(|f| f.is_finished()) {
+            tracing::error!("The Slack file worker stopped unexpectedly");
+            return;
+        }
         passes = passes.wrapping_add(1);
-        if let Err(e) = run_once(&s).await {
-            tracing::warn!(error = %e, "Slack import worker failed");
+        match run_once_until(&s, &mut stop).await {
+            Ok(Step::Stopped) => return finish(files.take()).await,
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "Slack import worker failed"),
         }
         if passes.is_multiple_of(1800)
             && let Err(e) = cleanup(&s).await
@@ -81,25 +154,85 @@ struct Job {
     token: String,
 }
 
+/// `run_once_until` の結果
+pub enum Step {
+    /// 実行できるジョブがなかった
+    Idle,
+    /// ジョブを 1 段階進めた (失敗して、やり直しを待つ場合も含む)
+    Ran,
+    /// 終了の合図を受けて、ジョブを手放した (手放すジョブがなくても、合図を受けたときは、これを返す)
+    Stopped,
+}
+
 /// 実行できるジョブを 1 件取り、1 段階進める。ジョブがあれば true。
 pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
+    let (_keep, mut stop) = tokio::sync::watch::channel(false);
+    Ok(matches!(run_once_until(s, &mut stop).await?, Step::Ran))
+}
+
+/// `run_once` と同じだが、`stop` が `true` になったら、段階を捨ててジョブを手放す。
+/// 段階は、トランザクションごとに完結し、冪等なので、途中で捨ててよい (書き込み中のトランザクションは、
+/// 捨てるとロールバックされる)。ZIP の取得・展開のような、止められない処理も、ここで待たずに捨てる。
+pub async fn run_once_until(s: &AppState, stop: &mut Stop) -> Result<Step, AppError> {
+    if *stop.borrow() {
+        return Ok(Step::Stopped);
+    }
     let Some(job) = claim(s).await? else {
-        return Ok(false);
+        return Ok(Step::Idle);
     };
     let lease = Lease::start(s.clone(), job.id.clone(), job.token.clone());
-    tracing::info!(import_id = %job.id, status = %job.status, attempt = job.attempts, "Slack import step started");
-    let result = match job.status.as_str() {
-        "analyzing" => analyze(s, &job, &lease).await,
-        "importing" => import(s, &job, &lease).await,
-        "fetching_files" => fetch_files(s, &job, &lease).await,
-        _ => Ok(()),
+    let step_name = job.status.clone();
+    let span = tracing::info_span!(
+        "slack_import_step",
+        import_id = %job.id,
+        step = %step_name,
+        attempt = job.attempts
+    );
+    let started = std::time::Instant::now();
+    span.in_scope(|| {
+        tracing::info!(import_id = %job.id, status = %step_name, attempt = job.attempts, "Slack import step started");
+    });
+
+    use tracing::Instrument;
+    let step = async {
+        match step_name.as_str() {
+            "analyzing" => analyze(s, &job, &lease).await,
+            "importing" => import(s, &job, &lease).await,
+            "fetching_files" => fetch_files(s, &job, &lease).await,
+            _ => Ok(()),
+        }
+    }
+    .instrument(span.clone());
+    let result = tokio::select! {
+        result = step => result,
+        _ = stopped(stop) => {
+            // 段階の future はここで捨てられる (トランザクションはロールバックされる)
+            drop(lease);
+            match tokio::time::timeout(RELEASE_TIMEOUT, release_job(s, &job.id, &job.token)).await {
+                Ok(Ok(true)) => span.in_scope(|| tracing::info!(import_id = %job.id, "Released the Slack import job for shutdown")),
+                Ok(Ok(false)) => span.in_scope(|| tracing::warn!(import_id = %job.id, "Slack import lease was already lost at shutdown")),
+                Ok(Err(e)) => span.in_scope(|| tracing::warn!(import_id = %job.id, error = %e, "Failed to release the Slack import job; the lease will expire")),
+                Err(_) => span.in_scope(|| tracing::warn!(import_id = %job.id, "Timed out releasing the Slack import job; the lease will expire")),
+            }
+            crate::metrics::record_slack_import_step(&step_name, "stopped", started.elapsed().as_secs_f64());
+            return Ok(Step::Stopped);
+        }
     };
     drop(lease);
     if let Err(e) = result {
-        tracing::warn!(import_id = %job.id, error = %e, "Slack import step failed");
+        span.in_scope(
+            || tracing::warn!(import_id = %job.id, error = %e, "Slack import step failed"),
+        );
+        crate::metrics::record_slack_import_step(
+            &step_name,
+            "err",
+            started.elapsed().as_secs_f64(),
+        );
         fail(s, &job, &e).await?;
+    } else {
+        crate::metrics::record_slack_import_step(&step_name, "ok", started.elapsed().as_secs_f64());
     }
-    Ok(true)
+    Ok(Step::Ran)
 }
 
 async fn claim(s: &AppState) -> Result<Option<Job>, AppError> {
@@ -203,7 +336,7 @@ async fn extend_lease(s: &AppState, id: &str, token: &str) -> Result<bool, AppEr
     Ok(!rows.is_empty())
 }
 
-async fn exec(
+pub(super) async fn exec(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,
     params: &[&str],
@@ -217,7 +350,7 @@ async fn exec(
 }
 
 /// 取り込みで生じる行をアプリへ大量配送しないよう、このトランザクションのイベントを止める
-async fn suppress_app_events(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
+pub(super) async fn suppress_app_events(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
     one(
         tx,
         "SELECT json_build_object('ok',set_config('zoo.suppress_app_events','on',true))::text",
@@ -505,29 +638,31 @@ async fn analyze(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError>
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-struct ZooUser {
-    id: String,
-    user_name: String,
+pub(super) struct ZooUser {
+    pub(super) id: String,
+    pub(super) user_name: String,
 }
 
-struct Context {
-    team: String,
-    users: HashMap<String, ZooUser>,
-    profiles: HashMap<String, SlackUser>,
-    channel_names: HashMap<String, String>,
-    files: FilePolicy,
+pub(super) struct Context {
+    pub(super) team: String,
+    pub(super) users: HashMap<String, ZooUser>,
+    pub(super) profiles: HashMap<String, SlackUser>,
+    pub(super) channel_names: HashMap<String, String>,
+    pub(super) files: FilePolicy,
+    /// この Slack アプリの ID (`SLACK_APP_ID`)。このアプリが投稿したメッセージは取り込まない
+    pub(super) app_id: Option<String>,
 }
 
 /// 添付ファイルを取得して添付にできるかを、取り込みの時点で判定する (`fetch_one` と同じ条件)
-struct FilePolicy {
+pub(super) struct FilePolicy {
     /// 添付を取得するトークンがあるか
-    token: bool,
-    max_size: u64,
-    base_url: String,
+    pub(super) token: bool,
+    pub(super) max_size: u64,
+    pub(super) base_url: String,
 }
 
 impl FilePolicy {
-    fn new(s: &AppState) -> Self {
+    pub(super) fn new(s: &AppState) -> Self {
         Self {
             token: s.config.slack.import_bot_token.is_some(),
             max_size: s.config.s3.max_file_size,
@@ -537,7 +672,7 @@ impl FilePolicy {
 
     /// 添付として取得するファイルか。取り込めないファイル (外部サービスの共有など)、トークンがなくて保留する
     /// ファイル、サイズ・形式・URL で取得をスキップするファイルは偽
-    fn will_fetch(&self, file: &super::export::SlackFile) -> bool {
+    pub(super) fn will_fetch(&self, file: &super::export::SlackFile) -> bool {
         let mimetype = file
             .mimetype
             .as_deref()
@@ -565,7 +700,7 @@ impl Resolver for Context {
 
 impl Context {
     /// Slack ユーザー (または bot) に対応する zoo ユーザーを返す。なければプレースホルダを作る。
-    async fn user(
+    pub(super) async fn user(
         &mut self,
         tx: &mut toasty::Transaction<'_>,
         slack_id: &str,
@@ -682,6 +817,33 @@ async fn ensure_user(
     })
 }
 
+/// 前の試行の再開位置 (チャンネルごとに、取り込んだ最後の日付ファイル名) と、処理済みの件数。
+/// 記録がなければ、最初からなので、件数も 0
+async fn load_progress(
+    db: &mut toasty::Db,
+    id: &str,
+) -> Result<(HashMap<String, String>, u64), AppError> {
+    let mut tx = db.transaction().await?;
+    let row = one(
+        &mut tx,
+        "SELECT json_build_object('progress',import_progress,'processed',processed_messages)::text \
+         FROM slack_import_jobs WHERE id=$1",
+        &[id],
+    )
+    .await?;
+    tx.commit().await?;
+    let progress: HashMap<String, String> = row["progress"]
+        .as_str()
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default();
+    let processed = if progress.is_empty() {
+        0
+    } else {
+        row["processed"].as_u64().unwrap_or(0)
+    };
+    Ok((progress, processed))
+}
+
 async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> {
     let team = job
         .team_id
@@ -714,6 +876,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             .collect(),
         channel_names: HashMap::new(),
         files: FilePolicy::new(s),
+        app_id: s.config.slack.app_id.clone(),
     };
     let mut db = s.db.clone();
     let admin = {
@@ -727,6 +890,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         tx.commit().await?;
         admin
     };
+    // 取り込みを始められるのは管理者だけ。ユーザーが自分で取り込む方式 (ZIP) をやめたので、管理者でない人が
+    // 作ったジョブ (廃止前に作られて残っているもの、管理者でなくなった人のもの) は、権限の確認なしでは実行せず失敗にする
+    if !admin {
+        return Err(AppError::BadRequest(
+            "Only workspace admins can import from Slack".into(),
+        ));
+    }
 
     // プレースホルダは、選んだチャンネルのメンバー・投稿者・リアクション・メンションに出る人だけを作る
     // (users.json の全員を作ると、大きいワークスペースで users の同期量が増えるため)
@@ -777,18 +947,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             // 開始後に別のジョブが同じチャンネルを取り込んだ場合も、取り込み先はずらさない
             super::import::ensure_same_target(&mut tx, &team, mapping)
                 .await
-                .map_err(|e| {
-                    if admin {
-                        AppError::BadRequest(e.to_string())
-                    } else {
-                        // 管理者以外の取り込みは、ジョブの失敗理由が本人に見える。参加していない非公開チャンネルの
-                        // 名前が入らないよう、以前の取り込み先の名前を出さない
-                        AppError::BadRequest(format!(
-                            "Slack channel {} was already imported into another channel; import it into the same channel or skip it",
-                            mapping.slack_channel_id
-                        ))
-                    }
-                })?;
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
             // 以前の取り込みで作ったチャンネルや既存のチャンネルに入れるなら、開始後に外されていないか確かめる
             let reused = match &mapping.action {
                 MappingAction::Skip => continue,
@@ -806,7 +965,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 }
             };
             if let Some(channel_id) = &reused {
-                ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
+                ensure_plaintext_allowed(&mut tx, channel_id).await?;
             } else if matches!(mapping.action, MappingAction::Create { .. })
                 && crate::apps::events::guest(&mut tx, &job.created_by).await?
             {
@@ -882,14 +1041,17 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         tx.commit().await?;
     }
 
-    let mut processed = 0u64;
+    // 前の試行が、日付ファイルまで取り込んで止まったなら、その続きから始める。日付ファイルは、取り込みの
+    // トランザクションごとに、この記録と同時にコミットするので、記録にある分は、取り込み済み。
+    // 記録がない (古いジョブや最初の試行) ときは、処理済みの件数も数え直す
+    let (mut progress, mut processed) = load_progress(&mut db, &job.id).await?;
     for (channel, channel_id, _) in &targets {
         lease.check()?;
         {
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
             // メンバーを足す直前にも、実行者がまだ取り込み先にメンバーを足せるか確かめる
-            ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
+            ensure_plaintext_allowed(&mut tx, channel_id).await?;
             for member in &channel.members {
                 let user = ctx.user(&mut tx, member, None).await?;
                 // 連携したゲストは、管理者が決めたチャンネルにだけ参加する (取り込みでは足さない)。
@@ -907,17 +1069,27 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             tx.commit().await?;
         }
 
+        let done = progress.get(&channel.id).cloned();
         for entry in archive.day_files(channel) {
+            // 日付ファイルは、名前の昇順に処理する。取り込み済みの分は飛ばす
+            if done.as_deref().is_some_and(|done| entry.as_str() <= done) {
+                continue;
+            }
             lease.check()?;
-            let (returned, messages) = blocking(move || {
-                let mut archive = archive;
-                let messages = archive.messages(&entry)?;
-                Ok((archive, messages))
+            let (returned, messages) = blocking({
+                let entry = entry.clone();
+                move || {
+                    let mut archive = archive;
+                    let messages = archive.messages(&entry)?;
+                    Ok((archive, messages))
+                }
             })
             .await?;
             archive = returned;
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
+            // 取り込みの途中で取り込み先が暗号化に切り替わったら (#367)、ここで止める (ジョブは失敗になる)
+            ensure_plaintext_allowed(&mut tx, channel_id).await?;
             // 編集・削除の履歴を含むエクスポートの記録 (`message_changed` / `message_deleted`) は、投稿として取り込まない。
             // 以前の取り込みで、これらを投稿として入れてしまった分 (編集した日時の重複した投稿、編集してから削除した
             // 投稿の本文) と、削除された元の投稿 (記録はエクスポートに残らない) は、ここで論理削除する。
@@ -938,28 +1110,35 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 .collect();
             let mut last_ts = None;
             for message in messages.iter().filter(|m| m.is_importable()) {
-                insert_message(&mut tx, &mut ctx, &channel.id, channel_id, job, message).await?;
+                insert_message(&mut tx, &mut ctx, &channel.id, channel_id, &job.id, message)
+                    .await?;
                 last_ts = Some(message.ts.as_str());
                 processed += 1;
             }
-            let mut stale: Vec<String> = Vec::new();
+            // 削除する行は、決定的な ID の行のうち、作成日時が Slack の投稿時刻と同じ行だけ (`id_taken_by_other` と同じ判定)
+            let mut stale: Vec<serde_json::Value> = Vec::new();
             for event in messages.iter().filter(|m| m.is_history_event()) {
                 // `ts` が元の投稿の `ts` と同じ形式の記録は、本物の投稿の ID と同じになるので消さない
                 if crate::slack::is_valid_ts(&event.ts)
                     && !real_ts.contains(event.ts.as_str())
                     && event.original_message_ts() != Some(event.ts.as_str())
                 {
-                    stale.push(super::message_id(&team, &channel.id, &event.ts));
+                    stale.push(serde_json::json!({"id": super::message_id(&team, &channel.id, &event.ts), "ts": event.ts}));
                 }
             }
-            for original in &deleted_originals {
-                stale.push(super::message_id(&team, &channel.id, original));
+            for original in deleted_originals
+                .iter()
+                .filter(|ts| crate::slack::is_valid_ts(ts))
+            {
+                stale.push(serde_json::json!({"id": super::message_id(&team, &channel.id, original), "ts": original}));
             }
             if !stale.is_empty() {
                 exec(
                     &mut tx,
-                    "UPDATE messages SET deleted_at=CURRENT_TIMESTAMP \
-                     WHERE channel_id=$2 AND deleted_at IS NULL AND id IN (SELECT jsonb_array_elements_text($1::jsonb))",
+                    "UPDATE messages m SET deleted_at=CURRENT_TIMESTAMP \
+                     FROM jsonb_to_recordset($1::jsonb) AS s(id text,ts text) \
+                     WHERE m.id=s.id AND m.channel_id=$2 AND m.deleted_at IS NULL \
+                     AND m.created_at=(to_timestamp(s.ts::numeric) AT TIME ZONE 'UTC')::timestamp(3)",
                     &[&serde_json::json!(stale).to_string(), channel_id],
                 )
                 .await?;
@@ -973,10 +1152,18 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 )
                 .await?;
             }
+            // 取り込んだ日付ファイルの記録は、投稿と同じトランザクションでコミットする (再開位置)
+            progress.insert(channel.id.clone(), entry);
             exec(
                 &mut tx,
-                "UPDATE slack_import_jobs SET processed_messages=$3::bigint,updated_at=now() WHERE id=$1 AND lease_token=$2",
-                &[&job.id, &job.token, &processed.to_string()],
+                "UPDATE slack_import_jobs SET processed_messages=$3::bigint,import_progress=$4,updated_at=now() \
+                 WHERE id=$1 AND lease_token=$2",
+                &[
+                    &job.id,
+                    &job.token,
+                    &processed.to_string(),
+                    &serde_json::to_string(&progress).map_err(|e| AppError::Internal(e.into()))?,
+                ],
             )
             .await?;
             tx.commit().await?;
@@ -1029,7 +1216,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         "completed"
     };
     // Slack でアーカイブ済みのチャンネルと、管理者がアーカイブを指定したチャンネルは、作った取り込み先も最後に
-    // まとめてアーカイブする。途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
+    // まとめてアーカイブする。途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_plaintext_allowed`) で止まるため。
     for (_channel, channel_id, archive) in &targets {
         if *archive {
             exec(
@@ -1060,34 +1247,20 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     Ok(())
 }
 
-/// セルフサービスの取り込み (実行者が管理者でないジョブ) では、開始時と同じく取り込み先に参加していて
-/// メンバーを足せることを実行時にも求める。開始後にチャンネルから外された人が、取り込みで戻らないようにする。
-async fn ensure_can_import(
+/// 開始のあとに暗号化チャンネルになった場合 (#367) も、ジョブの実行時に書き込みを止める (#358)。
+/// チャンネルの行を `FOR KEY SHARE` で読むので、暗号化への切り替え (行を `FOR UPDATE` でロックする) と直列になり、
+/// 同じトランザクションのあとの書き込みが、切り替えのあとに平文を入れることはない
+pub(super) async fn ensure_plaintext_allowed(
     tx: &mut toasty::Transaction<'_>,
-    job: &Job,
-    admin: bool,
     channel_id: &str,
-    channel: &SlackChannel,
 ) -> Result<(), AppError> {
-    if admin
-        || super::self_import::can_import_into(
-            tx,
-            channel_id,
-            &job.created_by,
-            false,
-            channel.is_private,
-        )
-        .await?
-    {
-        return Ok(());
+    if crate::routes::e2ee_channels::lock_encryption(tx, channel_id).await? {
+        return Err(crate::routes::e2ee_channels::plaintext_forbidden());
     }
-    Err(AppError::BadRequest(format!(
-        "You can no longer import Slack channel {} into this channel",
-        channel.id
-    )))
+    Ok(())
 }
 
-async fn create_channel(
+pub(super) async fn create_channel(
     tx: &mut toasty::Transaction<'_>,
     team: &str,
     channel: &SlackChannel,
@@ -1191,32 +1364,53 @@ async fn create_channel(
     ))
 }
 
-async fn insert_message(
+/// 投稿のリアクションを入れる (すでにあるものは変えない)。投稿が zoo になければ何もしない
+pub(super) async fn insert_reactions(
     tx: &mut toasty::Transaction<'_>,
     ctx: &mut Context,
-    slack_channel: &str,
-    channel_id: &str,
-    job: &Job,
+    id: &str,
     message: &SlackMessage,
 ) -> Result<(), AppError> {
-    let author = message.author().unwrap_or_default();
-    let fallback = message
-        .username
-        .as_deref()
-        .or(message.bot_profile.as_ref().map(|b| b.name.as_str()))
-        .filter(|n| !n.is_empty());
-    let user = ctx.user(tx, author, fallback).await?;
-    let id = super::message_id(&ctx.team, slack_channel, &message.ts);
-    let parent = message
-        .parent_ts()
-        .map(|ts| super::message_id(&ctx.team, slack_channel, ts))
-        .unwrap_or_default();
-    let edited = message
-        .edited
-        .as_ref()
-        .map(|e| e.ts.as_str())
-        .filter(|ts| super::is_valid_ts(ts))
-        .unwrap_or("");
+    for reaction in &message.reactions {
+        let Some(emoji) = reaction_emoji(&reaction.name) else {
+            continue;
+        };
+        for slack_user in &reaction.users {
+            let reactor = ctx.user(tx, slack_user, None).await?;
+            exec(
+                tx,
+                "INSERT INTO message_reactions(id,message_id,user_id,emoji,created_at) \
+                 SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+                 WHERE EXISTS(SELECT 1 FROM messages WHERE id=$2) ON CONFLICT DO NOTHING",
+                &[
+                    &super::reaction_id(id, &reactor.id, &emoji),
+                    id,
+                    &reactor.id,
+                    &emoji,
+                    &message.ts,
+                ],
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// 投稿の表示用の内容。取り込み (`insert_message`) と、編集の反映 (`sync` のヒント) で共有する
+pub(super) struct Rendered {
+    pub(super) content: String,
+    /// エンコード済みのカード (なければ空)
+    pub(super) card: String,
+    /// 本文が、取得しない添付のファイル名で補ったものか
+    pub(super) filled: bool,
+}
+
+/// 投稿の本文とカードを作る。メンションされた人のプレースホルダも作る
+pub(super) async fn render_message(
+    tx: &mut toasty::Transaction<'_>,
+    ctx: &mut Context,
+    message: &SlackMessage,
+) -> Result<Rendered, AppError> {
     // メンションされた人のプレースホルダを先に作り、本文の <@U…> を解決できるようにする
     for mentioned in super::convert::mentioned_users(&message.text) {
         ctx.user(tx, &mentioned, None).await?;
@@ -1256,17 +1450,129 @@ async fn insert_message(
         );
         filled = !content.trim().is_empty();
     }
+    Ok(Rendered {
+        content,
+        card,
+        filled,
+    })
+}
+
+/// Slack の `ts` に結び付いた Zoo のメッセージ (`slack_message_map`)。(メッセージ ID, 出どころ `zoo` / `slack`)
+pub(super) async fn mapped(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    slack_channel: &str,
+    ts: &str,
+) -> Result<Option<(String, String)>, AppError> {
+    let rows = query(
+        tx,
+        "SELECT json_build_object('id',message_id,'origin',origin)::text FROM slack_message_map \
+         WHERE team_id=$1 AND slack_channel_id=$2 AND ts=$3",
+        &[team, slack_channel, ts],
+    )
+    .await?;
+    Ok(rows.first().and_then(|r| {
+        Some((
+            r["id"].as_str()?.to_string(),
+            r["origin"].as_str()?.to_string(),
+        ))
+    }))
+}
+
+/// 決定的な ID の行が、取り込みで作った行ではないか。取り込みで作った行は、取り込み先のチャンネルにあり、
+/// 作成日時が Slack の投稿時刻と同じ (API で作る投稿の作成日時はサーバーが決めるので、これと一致させられない)。
+pub(super) async fn id_taken_by_other(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+    channel_id: &str,
+    ts: &str,
+) -> Result<bool, AppError> {
+    Ok(!query(
+        tx,
+        "SELECT json_build_object('id',id)::text FROM messages WHERE id=$1 \
+         AND (channel_id<>$2 OR created_at<>(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
+        &[id, channel_id, ts],
+    )
+    .await?
+    .is_empty())
+}
+
+pub(super) async fn insert_message(
+    tx: &mut toasty::Transaction<'_>,
+    ctx: &mut Context,
+    slack_channel: &str,
+    channel_id: &str,
+    job_id: &str,
+    message: &SlackMessage,
+) -> Result<(), AppError> {
+    // ループ防止: このアプリが投稿したメッセージ (#294 のブリッジが Zoo から Slack へ出したもの) は、取り込まない
+    if ctx.app_id.is_some() && message.app_id == ctx.app_id {
+        return Ok(());
+    }
+    // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は、Slack から取り込まない
+    let own = mapped(tx, &ctx.team, slack_channel, &message.ts).await?;
+    if own.as_ref().is_some_and(|(_, origin)| origin == "zoo") {
+        return Ok(());
+    }
+    let author = message.author().unwrap_or_default();
+    let fallback = message
+        .username
+        .as_deref()
+        .or(message.bot_profile.as_ref().map(|b| b.name.as_str()))
+        .filter(|n| !n.is_empty());
+    let user = ctx.user(tx, author, fallback).await?;
+    let derived = own.is_none();
+    let id = own
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| super::message_id(&ctx.team, slack_channel, &message.ts));
+    // 決定的な ID の行がすでにあるのに、別のチャンネルの行か、Slack の投稿時刻と違う時刻の行なら、取り込みで作った行
+    // ではない (同じ ID を先に使われた)。その行には、投稿もリアクションも添付も結び付けず、この投稿を飛ばす
+    if derived && id_taken_by_other(tx, &id, channel_id, &message.ts).await? {
+        tracing::warn!(
+            message_id = %id,
+            slack_channel,
+            ts = %message.ts,
+            "A Slack message was not imported because its ID is already used by another message"
+        );
+        return Ok(());
+    }
+    // スレッドの親が Zoo で作った投稿 (`slack_message_map`) なら、その Zoo のメッセージが親になる。
+    // 決定的な ID の親は、Slack の投稿時刻の行だけを親にする (`parent_ts`)
+    let mut parent_ts = "";
+    let parent = match message.parent_ts() {
+        Some(ts) => match mapped(tx, &ctx.team, slack_channel, ts).await? {
+            Some((id, _)) => id,
+            None => {
+                parent_ts = ts;
+                super::message_id(&ctx.team, slack_channel, ts)
+            }
+        },
+        None => String::new(),
+    };
+    let edited = message
+        .edited
+        .as_ref()
+        .map(|e| e.ts.as_str())
+        .filter(|ts| super::is_valid_ts(ts))
+        .unwrap_or("");
+    let Rendered {
+        content,
+        card,
+        filled,
+    } = render_message(tx, ctx, message).await?;
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(
         tx,
         "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,card) \
          VALUES($1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
-         (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL),\
+         (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL \
+          AND ($9='' OR m.created_at=(to_timestamp($9::numeric) AT TIME ZONE 'UTC')::timestamp(3))),\
          NULLIF($8,'')) \
          ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
          WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
          AND messages.channel_id=EXCLUDED.channel_id \
+         AND ($10='' OR messages.created_at=EXCLUDED.created_at) \
          AND NOT EXISTS(SELECT 1 FROM messages r WHERE r.parent_id=messages.id)",
         &[
             &id,
@@ -1277,22 +1583,49 @@ async fn insert_message(
             edited,
             &parent,
             &card,
+            parent_ts,
+            // 決定的な ID の行は、作成日時が同じ行だけを更新する (Zoo の投稿との対応 `slack_message_map` がある行は除く)
+            if derived { "1" } else { "" },
         ],
     )
     .await?;
+    // 確認と INSERT の間に、別の行が同じ ID で確定していた場合も、その行には何も結び付けない
+    if derived && id_taken_by_other(tx, &id, channel_id, &message.ts).await? {
+        tracing::warn!(
+            message_id = %id,
+            slack_channel,
+            ts = %message.ts,
+            "A Slack message was not imported because its ID is already used by another message"
+        );
+        return Ok(());
+    }
+    // 差分同期・イベントで取り込んだ投稿は、`slack_message_map` に `slack` で残す (直近 24 時間の再確認が、
+    // Slack から消えた投稿を見つけるのに使う。ZIP の取り込みは、件数が多いので残さない。古い行は掃除が消す)
+    // スレッドの返信 (`thread_ts` が自分の `ts` と違う) は残さない。履歴 (`conversations.history`) は返信を返さないので、
+    // 再確認が「消えた」と誤って判定する。親を Zoo で結び付けられたか (`parent_id`) とは別に、Slack での種類で決める
+    if job_id.is_empty() && message.parent_ts().is_none() {
+        exec(
+            tx,
+            "INSERT INTO slack_message_map(team_id,slack_channel_id,ts,message_id,origin) \
+             SELECT $1,$2,$3,$4,'slack' WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) ON CONFLICT DO NOTHING",
+            &[&ctx.team, slack_channel, &message.ts, &id],
+        )
+        .await?;
+    }
 
     // 親だけを後から取り込んだときも、先に入っていた返信をスレッドに戻す
     if parent.is_empty() && !message.replies.is_empty() {
-        let replies: Vec<String> = message
+        let replies: Vec<serde_json::Value> = message
             .replies
             .iter()
             .filter(|r| r.ts != message.ts && super::is_valid_ts(&r.ts))
-            .map(|r| super::message_id(&ctx.team, slack_channel, &r.ts))
+            .map(|r| serde_json::json!({"id": super::message_id(&ctx.team, slack_channel, &r.ts), "ts": r.ts}))
             .collect();
         exec(
             tx,
-            "UPDATE messages m SET parent_id=$1 FROM (SELECT jsonb_array_elements_text($3::jsonb) AS id) r \
+            "UPDATE messages m SET parent_id=$1 FROM jsonb_to_recordset($3::jsonb) AS r(id text,ts text) \
              WHERE m.id=r.id AND m.channel_id=$2 AND m.parent_id IS NULL AND m.id<>$1 \
+             AND m.created_at=(to_timestamp(r.ts::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
              AND EXISTS(SELECT 1 FROM messages p WHERE p.id=$1 AND p.parent_id IS NULL) \
              AND NOT EXISTS(SELECT 1 FROM messages c WHERE c.parent_id=m.id)",
             &[&id, channel_id, &serde_json::to_string(&replies).unwrap_or_default()],
@@ -1300,28 +1633,7 @@ async fn insert_message(
         .await?;
     }
 
-    for reaction in &message.reactions {
-        let Some(emoji) = reaction_emoji(&reaction.name) else {
-            continue;
-        };
-        for slack_user in &reaction.users {
-            let reactor = ctx.user(tx, slack_user, None).await?;
-            exec(
-                tx,
-                "INSERT INTO message_reactions(id,message_id,user_id,emoji,created_at) \
-                 SELECT $1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
-                 WHERE EXISTS(SELECT 1 FROM messages WHERE id=$2) ON CONFLICT DO NOTHING",
-                &[
-                    &super::reaction_id(&id, &reactor.id, &emoji),
-                    &id,
-                    &reactor.id,
-                    &emoji,
-                    &message.ts,
-                ],
-            )
-            .await?;
-        }
-    }
+    insert_reactions(tx, ctx, &id, message).await?;
 
     for file in message.files.iter().filter(|f| f.is_importable()) {
         let url = file.url_private_download.as_deref().unwrap_or_default();
@@ -1344,14 +1656,14 @@ async fn insert_message(
             tx,
             "INSERT INTO slack_files(team_id,slack_file_id,job_id,message_id,channel_id,uploader_id,\
              name,mimetype,size,url_private_download,in_content) \
-             SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::bigint,$10,$11::boolean WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) \
-             ON CONFLICT (team_id,slack_file_id,message_id) DO UPDATE SET job_id=EXCLUDED.job_id,\
-             status='pending',attempts=0,error=NULL,updated_at=now() \
-             WHERE slack_files.status IN ('pending','failed')",
+             SELECT $1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,$9::bigint,$10,$11::boolean WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) \
+             ON CONFLICT (team_id,slack_file_id,message_id) DO UPDATE SET job_id=COALESCE(EXCLUDED.job_id,slack_files.job_id),\
+             status='pending',attempts=0,error=NULL,lease_until=NULL,lease_token=NULL,updated_at=now() \
+             WHERE slack_files.status IN ('pending','failed') AND $3<>''",
             &[
                 &ctx.team,
                 &file.id,
-                &job.id,
+                job_id,
                 &id,
                 channel_id,
                 &user.id,
@@ -1387,21 +1699,99 @@ struct PendingFile {
     size: i64,
     url: Option<String>,
     attempts: i64,
+    /// 行単位の取得で、取ったときの `job_id` (ジョブの取得では使わない)
+    #[serde(default)]
+    job_id: Option<String>,
+    /// 行単位の取得で、リースの持ち主 (ジョブの取得では使わない)
+    #[serde(default)]
+    lease_token: String,
 }
 
 enum FileOutcome {
     Done(String),
     Skipped(String),
+    /// Slack が 429 を返した。試行回数に数えず、この秒数だけ待って取り直す (行単位の取得だけが扱う)
+    RetryLater(u64),
+    /// どのトークンでも、Slack がログイン画面を返した (権限がない)。取り直しても変わらない
+    Denied,
+}
+
+/// 添付の取得に使うクライアント。リダイレクトは `get_following_redirects` が 1 回ずつ確かめるので、自動では追従しない
+fn file_client() -> Result<reqwest::Client, AppError> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| AppError::Internal(e.into()))
+}
+
+/// 取得の結果 (`done` / `skipped`) に合わせて、投稿の本文のファイル名を更新する。ジョブの取得と、行単位の取得で共通。
+/// 呼び出し側が、`slack_files` の状態を更新したあとの同じトランザクションで呼ぶ
+async fn record_file_result(
+    tx: &mut toasty::Transaction<'_>,
+    file: &PendingFile,
+    status: &str,
+) -> Result<(), AppError> {
+    // 暗号化に切り替えたチャンネル (#367) の取り込み済みの投稿は、本文を変えない (DB のトリガーも、切り替える前の
+    // 平文の行に新しい本文を入れることを拒否する)。
+    // 本文のファイル名は、取り込み時に補った行だけを `slack_files.in_content` で覚えて更新する。
+    // 投稿者が書いた本文 (ファイル名と同じ文字列でも) には触れない。取り込み本体と同じく、過去ログの更新を
+    // App へ配信しない
+    if status == "skipped" {
+        // 実際のサイズが上限を超えたなど、取得してからスキップした添付は、本文が空 (または補った名前だけ)
+        // の投稿に限り、その名前を本文に足す。添付だけの投稿が空にならないようにする
+        suppress_app_events(tx).await?;
+        let added = query(
+            tx,
+            "UPDATE messages m SET content=CASE WHEN m.content='' THEN f.name ELSE m.content||E'\\n'||f.name END,\
+             updated_at=m.updated_at FROM slack_files f \
+             WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND NOT f.in_content AND m.id=$2 \
+             AND NOT EXISTS(SELECT 1 FROM channels c WHERE c.id=m.channel_id AND c.encrypted) \
+             AND (m.content='' OR EXISTS(SELECT 1 FROM slack_files o WHERE o.team_id=$1 AND o.message_id=$2 AND o.in_content)) \
+             RETURNING json_build_object('ok',true)::text",
+            &[&file.team_id, &file.message_id, &file.slack_file_id],
+        )
+        .await?;
+        if !added.is_empty() {
+            exec(
+                tx,
+                "UPDATE slack_files SET in_content=true WHERE team_id=$1 AND slack_file_id=$3 AND message_id=$2",
+                &[&file.team_id, &file.message_id, &file.slack_file_id],
+            )
+            .await?;
+        }
+    }
+    if status == "done" {
+        // 取り込み時に補ったファイル名 (トークンなし・サイズ・URL など) は、後から取得できたら添付と
+        // 二重に出ないよう本文から外す。同名の添付が複数あっても、外すのは 1 行だけにする
+        // (取得できなかった側の名前を本文に残す)
+        suppress_app_events(tx).await?;
+        exec(
+            tx,
+            "UPDATE messages m SET content=COALESCE((SELECT array_to_string(array_agg(t.l ORDER BY t.n),E'\\n') \
+             FROM unnest(string_to_array(m.content,E'\\n')) WITH ORDINALITY AS t(l,n) \
+             WHERE t.n<>COALESCE((SELECT min(u.n) FROM unnest(string_to_array(m.content,E'\\n')) WITH ORDINALITY AS u(l,n) \
+             WHERE u.l=f.name),0)),''),\
+             updated_at=m.updated_at FROM slack_files f \
+             WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND f.in_content AND m.id=$2 \
+             AND NOT EXISTS(SELECT 1 FROM channels c WHERE c.id=m.channel_id AND c.encrypted)",
+            &[&file.team_id, &file.message_id, &file.slack_file_id],
+        )
+        .await?;
+        exec(
+            tx,
+            "UPDATE slack_files SET in_content=false WHERE team_id=$1 AND slack_file_id=$3 AND message_id=$2",
+            &[&file.team_id, &file.message_id, &file.slack_file_id],
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> {
     let mut db = s.db.clone();
     if let Some(token) = s.config.slack.import_bot_token.as_deref() {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let client = file_client()?;
         loop {
             lease.check()?;
             let mut tx = db.transaction().await?;
@@ -1410,7 +1800,8 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 "SELECT json_build_object('team_id',team_id,'slack_file_id',slack_file_id,\
                  'message_id',message_id,'channel_id',channel_id,'uploader_id',uploader_id,'name',name,\
                  'mimetype',mimetype,'size',size,'url',url_private_download,'attempts',attempts)::text \
-                 FROM slack_files WHERE job_id=$1 AND status='pending' ORDER BY created_at,slack_file_id,message_id LIMIT 20",
+                 FROM slack_files WHERE job_id=$1 AND status='pending' \
+                 AND (lease_until IS NULL OR lease_until<now()) ORDER BY created_at,slack_file_id,message_id LIMIT 20",
                 &[&job.id],
             )
             .await?;
@@ -1420,13 +1811,61 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
             }
             for value in batch {
                 lease.check()?;
-                let file: PendingFile =
+                let mut file: PendingFile =
                     serde_json::from_value(value).map_err(|e| AppError::Internal(e.into()))?;
-                let outcome = fetch_one(s, &client, token, &file).await;
+                // 行単位の取得と同じリースを取ってから取得する。行単位の取得が取っている行は、取らない
+                // (同じファイルを並行して取得して、結果を取り違えないため。取れなかった行は、次の選び直しから外れる)
+                let lease_token = uuid::Uuid::new_v4().to_string();
                 let mut tx = db.transaction().await?;
+                let claimed = query(
+                    &mut tx,
+                    &format!(
+                        "UPDATE slack_files SET lease_token=$4,lease_until=now()+{FILE_LEASE_SQL} \
+                         WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$3 AND job_id=$5 AND status='pending' \
+                         AND (lease_until IS NULL OR lease_until<now()) \
+                         RETURNING json_build_object('ok',true)::text"
+                    ),
+                    &[
+                        &file.team_id,
+                        &file.slack_file_id,
+                        &file.message_id,
+                        &lease_token,
+                        &job.id,
+                    ],
+                )
+                .await?;
+                tx.commit().await?;
+                if claimed.is_empty() {
+                    continue;
+                }
+                file.lease_token = lease_token;
+                let outcome = fetch_one(s, &client, &[token.to_string()], &file).await;
+                let mut tx = db.transaction().await?;
+                // 投稿の編集 (messages → slack_files の順) と同じ順にロックして、行き違いのデッドロックを避ける
+                query(
+                    &mut tx,
+                    "SELECT json_build_object('ok',true)::text FROM messages WHERE id=$1 FOR UPDATE",
+                    &[&file.message_id],
+                )
+                .await?;
+                // 429 を待って取り直すのは行単位の取得だけ。ジョブの取得は、これまでどおり失敗として数える
+                let outcome = match outcome {
+                    Ok(FileOutcome::RetryLater(_)) => Err(AppError::BadGateway(
+                        "Slack file download returned 429 Too Many Requests".into(),
+                    )),
+                    // 従来と同じ文言にする (再取得の SQL が、この文言で行を選ぶ)
+                    Ok(FileOutcome::Denied) => Err(AppError::BadGateway(
+                        "Slack file download failed: redirected to a URL that is not allowed"
+                            .into(),
+                    )),
+                    other => other,
+                };
                 let (status, attachment, error) = match outcome {
                     Ok(FileOutcome::Done(attachment)) => ("done", attachment, String::new()),
                     Ok(FileOutcome::Skipped(reason)) => ("skipped", String::new(), reason),
+                    Ok(FileOutcome::RetryLater(_) | FileOutcome::Denied) => {
+                        unreachable!("mapped to an error above")
+                    }
                     Err(e) if file.attempts + 1 >= MAX_FILE_ATTEMPTS => {
                         ("failed", String::new(), e.to_string())
                     }
@@ -1437,8 +1876,10 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 let updated = query(
                     &mut tx,
                     "UPDATE slack_files SET status=$3,attachment_id=NULLIF($4,''),error=NULLIF($5,''),\
+                     lease_token=NULL,lease_until=NULL,\
                      attempts=attempts+CASE WHEN $3 IN ('pending','failed') THEN 1 ELSE 0 END,updated_at=now() \
                      WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$6 AND job_id=$7 AND status='pending' \
+                     AND lease_token=$8 \
                      RETURNING json_build_object('ok',true)::text",
                     &[
                         &file.team_id,
@@ -1448,6 +1889,7 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                         &error,
                         &file.message_id,
                         &job.id,
+                        &file.lease_token,
                     ],
                 )
                 .await?;
@@ -1455,55 +1897,7 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     tx.commit().await?;
                     continue;
                 }
-                // 本文のファイル名は、取り込み時に補った行だけを `slack_files.in_content` で覚えて更新する。
-                // 投稿者が書いた本文 (ファイル名と同じ文字列でも) には触れない。取り込み本体と同じく、過去ログの更新を
-                // App へ配信しない
-                if status == "skipped" {
-                    // 実際のサイズが上限を超えたなど、取得してからスキップした添付は、本文が空 (または補った名前だけ)
-                    // の投稿に限り、その名前を本文に足す。添付だけの投稿が空にならないようにする
-                    suppress_app_events(&mut tx).await?;
-                    let added = query(
-                        &mut tx,
-                        "UPDATE messages m SET content=CASE WHEN m.content='' THEN f.name ELSE m.content||E'\\n'||f.name END,\
-                         updated_at=m.updated_at FROM slack_files f \
-                         WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND NOT f.in_content AND m.id=$2 \
-                         AND (m.content='' OR EXISTS(SELECT 1 FROM slack_files o WHERE o.team_id=$1 AND o.message_id=$2 AND o.in_content)) \
-                         RETURNING json_build_object('ok',true)::text",
-                        &[&file.team_id, &file.message_id, &file.slack_file_id],
-                    )
-                    .await?;
-                    if !added.is_empty() {
-                        exec(
-                            &mut tx,
-                            "UPDATE slack_files SET in_content=true WHERE team_id=$1 AND slack_file_id=$3 AND message_id=$2",
-                            &[&file.team_id, &file.message_id, &file.slack_file_id],
-                        )
-                        .await?;
-                    }
-                }
-                if status == "done" {
-                    // 取り込み時に補ったファイル名 (トークンなし・サイズ・URL など) は、後から取得できたら添付と
-                    // 二重に出ないよう本文から外す。同名の添付が複数あっても、外すのは 1 行だけにする
-                    // (取得できなかった側の名前を本文に残す)
-                    suppress_app_events(&mut tx).await?;
-                    exec(
-                        &mut tx,
-                        "UPDATE messages m SET content=COALESCE((SELECT array_to_string(array_agg(t.l ORDER BY t.n),E'\\n') \
-                         FROM unnest(string_to_array(m.content,E'\\n')) WITH ORDINALITY AS t(l,n) \
-                         WHERE t.n<>COALESCE((SELECT min(u.n) FROM unnest(string_to_array(m.content,E'\\n')) WITH ORDINALITY AS u(l,n) \
-                         WHERE u.l=f.name),0)),''),\
-                         updated_at=m.updated_at FROM slack_files f \
-                         WHERE f.team_id=$1 AND f.slack_file_id=$3 AND f.message_id=$2 AND f.in_content AND m.id=$2",
-                        &[&file.team_id, &file.message_id, &file.slack_file_id],
-                    )
-                    .await?;
-                    exec(
-                        &mut tx,
-                        "UPDATE slack_files SET in_content=false WHERE team_id=$1 AND slack_file_id=$3 AND message_id=$2",
-                        &[&file.team_id, &file.message_id, &file.slack_file_id],
-                    )
-                    .await?;
-                }
+                record_file_result(&mut tx, &file, status).await?;
                 exec(
                     &mut tx,
                     // 全件を数え直さず、処理済みになった分だけ進める
@@ -1525,7 +1919,9 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
     let mut tx = db.transaction().await?;
     exec(
         &mut tx,
+        // 行単位の取得が先に取った行 (書き込みを飛ばした行) があっても合うよう、完了時に数え直す
         "UPDATE slack_import_jobs SET status='completed',finished_at=now(),attempts=0,error=NULL,\
+         processed_files=(SELECT count(*) FROM slack_files WHERE job_id=$1 AND status<>'pending'),\
          lease_until=NULL,lease_token=NULL,updated_at=now() WHERE id=$1 AND lease_token=$2",
         &[&job.id, &job.token],
     )
@@ -1534,15 +1930,478 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// 添付ファイルの行単位の取得 (ジョブに紐づかない添付)
+// ---------------------------------------------------------------------------
+//
+// 差分同期で取り込んだ投稿の添付 (`job_id` なし) や、取り消された・失敗した・トークンなしで完了したジョブの
+// 添付は、ジョブの取得 (`fetch_files`) では取得されない。`slack_files` の行ごとにリースを取って、1 件ずつ取得する。
+// 取得そのもの (`fetch_one`) と結果の書き込み (`record_file_result`) は、ジョブの取得と同じ。
+// 進行中のジョブ (`analyzing`/`importing`/`fetching_files`) や、まだ始まっていないジョブの行は、ジョブの取得に任せる。
+
+/// 行単位の取得を動かすか。Bot トークンがあるか、連携したユーザーのトークンを復号できる (OAuth と暗号化キー) とき
+fn file_worker_enabled(s: &AppState) -> bool {
+    s.config.slack.import_bot_token.is_some() || user_tokens_enabled(s)
+}
+
+fn user_tokens_enabled(s: &AppState) -> bool {
+    s.config.slack.oauth_enabled() && s.config.slack.encryption_key().is_some()
+}
+
+/// 候補のユーザーがいないとき (まだ再連携が進んでいない)、行を戻して次に試すまで待つ秒数
+const NO_USER_TOKEN_WAIT_SECS: u64 = 3 * 3600;
+const DENIED_NOTE: &str = "Slack file is not visible to any linked user or the bot";
+const NO_USER_TOKEN_NOTE: &str = "no linked user with files:read yet";
+
+/// 1 行の取得に使うトークン (ユーザー → Bot の順)。値は復号したもので、ログやエラーに出さない
+struct FileTokens {
+    tokens: Vec<String>,
+    /// `tokens` のうち、先頭から数えたユーザーのトークンの数 (残りは Bot)
+    users: usize,
+    /// ユーザーのトークンを使える行か。連携が増えれば取れる見込みがあるのは、この行だけ
+    eligible: bool,
+    /// 同じワークスペースに、`files:read` を持つ連携が 1 人でもいるか (使える行だけ調べる)。
+    /// いなければ、再連携が進むまで待つ。いるのに、この行のトークンがない (メンバーが連携していない) なら、待たない
+    workspace_has_links: bool,
+    /// 復号できなかった連携があった (キーの不一致など)。ユーザーのトークンを試せていないので、権限なしとは確定しない
+    decrypt_failed: bool,
+}
+
+/// 行の URL が、この行のファイルのものか。ユーザーのトークンは、このパスにだけ付けて送る。
+/// ZIP の URL は管理者が上げたものなので、別のワークスペース・別のファイルの URL にユーザーの権限を使わない
+fn is_own_file_url(url: &str, team: &str, file_id: &str) -> bool {
+    reqwest::Url::parse(url)
+        .map(|u| {
+            u.path()
+                .starts_with(&format!("/files-pri/{team}-{file_id}/"))
+        })
+        .unwrap_or(false)
+}
+
+/// 行の取得に使うトークンを集める。ユーザーのトークンは、差分同期の行 (`job_id` なし) だけに使う。
+/// ZIP の取り込みの行は、ファイル ID と URL を ZIP の提供者が決めるので、ユーザーの権限で取らせない (Bot だけ)。
+/// ユーザーは、同じワークスペースの連携のうち、`files:read` を持つ人。
+/// 非公開チャンネルは、そのメンバーだけ。前回その Slack チャンネルを読めた人、メンバー、新しい連携の順。
+/// 人数では切らない (先頭の人が見えなくても、残りの人で取れるように)。
+async fn file_tokens(s: &AppState, file: &PendingFile) -> Result<FileTokens, AppError> {
+    let mut tokens = Vec::new();
+    let own_url = file.job_id.is_none()
+        && file.url.as_deref().is_some_and(|u| {
+            allowed_file_url(u, &s.config.slack.files_base_url)
+                && is_own_file_url(u, &file.team_id, &file.slack_file_id)
+        });
+    let key = s
+        .config
+        .slack
+        .oauth_enabled()
+        .then(|| s.config.slack.encryption_key())
+        .flatten();
+    let eligible = own_url && s.config.slack.team_allowed(&file.team_id) && key.is_some();
+    // 連携の有無は、候補より先に調べる (あとで連携が増えても、待つ側に倒れるだけで、権限なしと確定しない)
+    let mut workspace_has_links = false;
+    if eligible {
+        let mut db = s.db.clone();
+        let mut tx = db.transaction().await?;
+        workspace_has_links = !query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM slack_user_links l WHERE l.team_id=$1 \
+             AND 'files:read'=ANY(string_to_array(replace(l.scopes,' ',''),',')) LIMIT 1",
+            &[&file.team_id],
+        )
+        .await?
+        .is_empty();
+        tx.commit().await?;
+    }
+    let mut decrypt_failed = false;
+    if eligible && let Some(key) = key {
+        let mut db = s.db.clone();
+        let mut tx = db.transaction().await?;
+        let rows = query(
+            &mut tx,
+            "SELECT json_build_object('user_id',l.user_id,'token',l.access_token_enc)::text \
+             FROM slack_user_links l JOIN channels ch ON ch.id=$2 \
+             WHERE l.team_id=$1 AND 'files:read'=ANY(string_to_array(replace(l.scopes,' ',''),',')) \
+             AND (NOT ch.is_private OR EXISTS(SELECT 1 FROM channel_user cu \
+                  WHERE cu.channel_id=ch.id AND cu.user_id=l.user_id)) \
+             ORDER BY EXISTS(SELECT 1 FROM slack_channels sc \
+                  JOIN slack_channel_syncs sy ON sy.team_id=sc.team_id AND sy.slack_channel_id=sc.slack_channel_id \
+                  WHERE sc.team_id=$1 AND sc.channel_id=$2 AND sy.token_user_id=l.user_id) DESC,\
+             EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=ch.id AND cu.user_id=l.user_id) DESC,\
+             l.updated_at DESC,l.user_id",
+            &[&file.team_id, &file.channel_id],
+        )
+        .await?;
+        tx.commit().await?;
+        for row in rows {
+            let (Some(user), Some(enc)) = (row["user_id"].as_str(), row["token"].as_str()) else {
+                continue;
+            };
+            match super::crypto::decrypt(&key, enc) {
+                Ok(token) => tokens.push(token),
+                Err(_) => {
+                    decrypt_failed = true;
+                    tracing::warn!(user_id = %user, "Failed to decrypt a Slack token");
+                }
+            }
+        }
+    }
+    let users = tokens.len();
+    if let Some(bot) = s.config.slack.import_bot_token.as_deref() {
+        tokens.push(bot.to_string());
+    }
+    Ok(FileTokens {
+        tokens,
+        users,
+        eligible,
+        workspace_has_links,
+        decrypt_failed,
+    })
+}
+
+/// 行単位の取得のワーカー。取得に使えるトークンがなければ何もせず戻る (呼び出し側で、使えるときだけ起動する)。
+/// `stop` が `true` になったら、取りかけの行を手放して戻る
+pub async fn orphan_files_worker(s: AppState, mut stop: Stop) {
+    if !file_worker_enabled(&s) {
+        return;
+    }
+    let client = match file_client() {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to build the Slack file client");
+            return;
+        }
+    };
+    loop {
+        let wait = match orphan_files_step(&s, &client, &mut stop, "").await {
+            // 次の行をすぐ取る。Slack に続けて要求しすぎないよう、少しだけ間を置く
+            Ok(FileStep::Done) => Duration::from_millis(200),
+            Ok(FileStep::Idle) => FILE_IDLE,
+            Ok(FileStep::Wait(secs)) => Duration::from_secs(secs),
+            Ok(FileStep::Stopped) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "Slack file worker failed");
+                Duration::from_secs(10)
+            }
+        };
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = stopped(&mut stop) => return,
+        }
+    }
+}
+
+/// 行単位の取得を 1 件だけ進める (テスト用)。`team` が空でなければ、そのワークスペースの行だけを取る。
+/// 取る行がなかったら `false`
+pub async fn orphan_files_once(s: &AppState, team: &str) -> Result<bool, AppError> {
+    if !file_worker_enabled(s) {
+        return Ok(false);
+    }
+    let client = file_client()?;
+    // 合図を送らない (止まらない) 取得。送り手をここで持ち続ける
+    let (_keep, mut stop) = tokio::sync::watch::channel(false);
+    Ok(!matches!(
+        orphan_files_step(s, &client, &mut stop, team).await?,
+        FileStep::Idle
+    ))
+}
+
+pub enum FileStep {
+    /// 1 件を処理した
+    Done,
+    /// 取る行がなかった
+    Idle,
+    /// Slack が 429 を返した。この秒数だけ待つ
+    Wait(u64),
+    /// 終了の合図を受けて、取りかけの行を手放した
+    Stopped,
+}
+
+/// 取得を繰り返し失敗した (リースが切れても結果を書けなかった) 行を `failed` にする。
+/// 取り直すたびに試行回数が増えるので、落ちる行を永久に取り直さない
+async fn fail_exhausted_files(s: &AppState, team: &str) -> Result<(), AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    let condition = "status='pending' AND lease_token IS NOT NULL AND lease_until<now() AND attempts>=$2::integer \
+                     AND ($1='' OR team_id=$1)";
+    let limit = MAX_FILE_ATTEMPTS.to_string();
+    // 終わったジョブの行は、ジョブの `processed_files` も数え直す。結果を書くときと同じく、ジョブの行を先にロックする
+    let jobs: Vec<String> = query(
+        &mut tx,
+        &format!(
+            "SELECT json_build_object('job',job_id)::text FROM slack_files WHERE job_id IS NOT NULL AND {condition} \
+             GROUP BY job_id ORDER BY job_id"
+        ),
+        &[team, &limit],
+    )
+    .await?
+    .into_iter()
+    .filter_map(|row| row["job"].as_str().map(str::to_string))
+    .collect();
+    for job in &jobs {
+        query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM slack_import_jobs WHERE id=$1 FOR UPDATE",
+            &[job],
+        )
+        .await?;
+    }
+    exec(
+        &mut tx,
+        &format!(
+            "UPDATE slack_files SET status='failed',error='Fetching the file stopped repeatedly and was given up',\
+             lease_token=NULL,lease_until=NULL,updated_at=now() WHERE {condition}"
+        ),
+        &[team, &limit],
+    )
+    .await?;
+    for job in &jobs {
+        exec(
+            &mut tx,
+            "UPDATE slack_import_jobs SET processed_files=(SELECT count(*) FROM slack_files WHERE job_id=$1 AND status<>'pending') \
+             WHERE id=$1",
+            &[job],
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn claim_file(
+    s: &AppState,
+    team: &str,
+    token: &str,
+    bot: bool,
+) -> Result<Option<PendingFile>, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    // Bot トークンがなければ、差分同期の行 (`job_id` なし) だけを取る。ジョブの行は、ユーザーのトークンでは取らない
+    // (Bot を設定するまで、未取得のまま残す)。
+    // 削除済みと暗号化 (平文の添付を置けない) チャンネルの行は取らない。リースが切れた行と、失敗後の待ちが終わった行を取る。
+    // ジョブの行はロックしない (ハートビートと競合しないよう、`FOR UPDATE OF f`)
+    let rows = query(
+        &mut tx,
+        &format!(
+            "WITH c AS (SELECT f.team_id,f.slack_file_id,f.message_id FROM slack_files f \
+             JOIN channels ch ON ch.id=f.channel_id \
+             WHERE f.status='pending' AND ($1='' OR f.team_id=$1) AND f.attempts<$3::integer \
+             AND (f.lease_until IS NULL OR f.lease_until<now()) \
+             AND ch.deleted_at IS NULL AND NOT COALESCE(ch.encrypted,false) \
+             AND ($4::boolean OR f.job_id IS NULL) \
+             AND (f.job_id IS NULL OR EXISTS(SELECT 1 FROM slack_import_jobs j WHERE j.id=f.job_id \
+                  AND j.status IN ('completed','failed','cancelled'))) \
+             ORDER BY f.created_at,f.slack_file_id,f.message_id LIMIT 1 FOR UPDATE OF f SKIP LOCKED) \
+             UPDATE slack_files f SET lease_token=$2,lease_until=now()+{FILE_LEASE_SQL},attempts=f.attempts+1,updated_at=now() \
+             FROM c WHERE f.team_id=c.team_id AND f.slack_file_id=c.slack_file_id AND f.message_id=c.message_id \
+             RETURNING json_build_object('team_id',f.team_id,'slack_file_id',f.slack_file_id,\
+             'message_id',f.message_id,'channel_id',f.channel_id,'uploader_id',f.uploader_id,'name',f.name,\
+             'mimetype',f.mimetype,'size',f.size,'url',f.url_private_download,'attempts',f.attempts,\
+             'job_id',f.job_id,'lease_token',f.lease_token)::text"
+        ),
+        &[
+            team,
+            token,
+            &MAX_FILE_ATTEMPTS.to_string(),
+            if bot { "true" } else { "false" },
+        ],
+    )
+    .await?;
+    tx.commit().await?;
+    rows.into_iter()
+        .next()
+        .map(|value| serde_json::from_value(value).map_err(|e| AppError::Internal(e.into())))
+        .transpose()
+}
+
+/// 取った行を手放す。停止・429・結果を書けなかったときに、リースの持ち主だけが戻す。
+/// `retry` は取得を試行に数えない (取るときに増やした分を戻す)。`secs` だけ待ってから、次に取れるようにする
+async fn release_file(
+    s: &AppState,
+    file: &PendingFile,
+    retry: bool,
+    secs: u64,
+    note: &str,
+) -> Result<(), AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    exec(
+        &mut tx,
+        "UPDATE slack_files SET lease_token=NULL,\
+         lease_until=CASE WHEN $5::bigint=0 THEN NULL ELSE now()+make_interval(secs=>$5::bigint) END,\
+         attempts=GREATEST(attempts-CASE WHEN $4::boolean THEN 1 ELSE 0 END,0),\
+         error=COALESCE(NULLIF($7,''),error),updated_at=now() \
+         WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$3 AND lease_token=$6 AND status='pending'",
+        &[
+            &file.team_id,
+            &file.slack_file_id,
+            &file.message_id,
+            if retry { "true" } else { "false" },
+            &secs.to_string(),
+            &file.lease_token,
+            note,
+        ],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn orphan_files_step(
+    s: &AppState,
+    client: &reqwest::Client,
+    stop: &mut Stop,
+    team: &str,
+) -> Result<FileStep, AppError> {
+    if *stop.borrow() {
+        return Ok(FileStep::Stopped);
+    }
+    fail_exhausted_files(s, team).await?;
+    let lease_token = uuid::Uuid::new_v4().to_string();
+    let Some(file) = claim_file(
+        s,
+        team,
+        &lease_token,
+        s.config.slack.import_bot_token.is_some(),
+    )
+    .await?
+    else {
+        return Ok(FileStep::Idle);
+    };
+    let tokens = file_tokens(s, &file).await?;
+    // 取得の途中で合図を受けたら、取得を捨てて行を手放す (添付は決定的 ID で作るので、取り直しても重複しない)
+    let outcome = tokio::select! {
+        outcome = fetch_one(s, client, &tokens.tokens, &file) => outcome,
+        _ = stopped(stop) => {
+            release_file(s, &file, true, 0, "").await?;
+            return Ok(FileStep::Stopped);
+        }
+    };
+    let (status, attachment, error) = match outcome {
+        Ok(FileOutcome::RetryLater(secs)) => {
+            release_file(s, &file, true, secs, "").await?;
+            tracing::info!(secs, "Slack file download rate limited");
+            return Ok(FileStep::Wait(secs));
+        }
+        Ok(FileOutcome::Done(attachment)) => ("done", attachment, String::new()),
+        Ok(FileOutcome::Skipped(reason)) => ("skipped", String::new(), reason),
+        // どのトークンにも見えなかった。ユーザーのトークンを使える行で、ワークスペースに `files:read` を持つ連携がまだ
+        // 1 人もいないなら (再連携が進むまで)、試行に数えず待つ。連携がある (ユーザーも試した、またはこのチャンネルの
+        // メンバーが連携していない)、またはユーザーのトークンを使えない行は、取り直しても変わらないので、
+        // すぐ `failed` にする
+        Ok(FileOutcome::Denied) if tokens.eligible && !tokens.workspace_has_links => {
+            release_file(s, &file, true, NO_USER_TOKEN_WAIT_SECS, NO_USER_TOKEN_NOTE).await?;
+            return Ok(FileStep::Done);
+        }
+        // 復号できない連携があると、ユーザーのトークンを試せていない。権限なしとは確定せず、通常の取り直しにする
+        Ok(FileOutcome::Denied) if tokens.decrypt_failed && file.attempts < MAX_FILE_ATTEMPTS => (
+            "pending",
+            String::new(),
+            "a linked user's Slack token could not be decrypted".to_string(),
+        ),
+        Ok(FileOutcome::Denied) => ("failed", String::new(), DENIED_NOTE.to_string()),
+        // 取るときに試行回数を増やしてあるので、`attempts` は今回を含む
+        Err(e) if file.attempts >= MAX_FILE_ATTEMPTS => ("failed", String::new(), e.to_string()),
+        Err(e) => ("pending", String::new(), e.to_string()),
+    };
+    // 結果の書き込みで失敗しても、試行に数えず、行を手放して取り直す
+    match write_file_result(s, &file, status, &attachment, &error).await {
+        Ok(()) => {
+            if status == "failed" {
+                tracing::warn!(
+                    slack_file_id = %file.slack_file_id,
+                    channel = %file.channel_id,
+                    error = %error,
+                    "Giving up on a Slack file"
+                );
+            }
+            Ok(FileStep::Done)
+        }
+        Err(e) => {
+            if let Err(release) = release_file(s, &file, true, 0, "").await {
+                tracing::warn!(error = %release, "Failed to release a Slack file");
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn write_file_result(
+    s: &AppState,
+    file: &PendingFile,
+    status: &str,
+    attachment: &str,
+    error: &str,
+) -> Result<(), AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    // `insert_message` と同じ順 (messages → slack_files) にロックして、同期との行き違いのデッドロックを避ける
+    query(
+        &mut tx,
+        "SELECT json_build_object('ok',true)::text FROM messages WHERE id=$1 FOR UPDATE",
+        &[&file.message_id],
+    )
+    .await?;
+    // 終わったジョブの行は、結果を書くときに、ジョブの `processed_files` も数え直す。同時に書く行の結果を
+    // 取りこぼさないよう、ジョブの行を先にロックする (messages → ジョブ → slack_files の順)
+    if let Some(job_id) = file.job_id.as_deref() {
+        query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM slack_import_jobs WHERE id=$1 FOR UPDATE",
+            &[job_id],
+        )
+        .await?;
+    }
+    // 取得中に再取り込みが行を別のジョブへ移していたら (リースも消える)、古い結果は書かない。
+    // 失敗して再試行するときは、リースの期限を「次に試す時刻」にして、短い間に使い切らないようにする
+    let updated = query(
+        &mut tx,
+        "UPDATE slack_files SET status=$4,attachment_id=NULLIF($5,''),error=NULLIF($6,''),lease_token=NULL,\
+         lease_until=CASE WHEN $4='pending' THEN now()+make_interval(mins=>(attempts*10)::integer) END,\
+         updated_at=now() \
+         WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$3 AND lease_token=$7 AND status='pending' \
+         AND job_id IS NOT DISTINCT FROM NULLIF($8,'') \
+         RETURNING json_build_object('ok',true)::text",
+        &[
+            &file.team_id,
+            &file.slack_file_id,
+            &file.message_id,
+            status,
+            attachment,
+            error,
+            &file.lease_token,
+            file.job_id.as_deref().unwrap_or(""),
+        ],
+    )
+    .await?;
+    if !updated.is_empty() {
+        record_file_result(&mut tx, file, status).await?;
+        if let Some(job_id) = file.job_id.as_deref() {
+            exec(
+                &mut tx,
+                "UPDATE slack_import_jobs SET processed_files=(SELECT count(*) FROM slack_files WHERE job_id=$1 AND status<>'pending') \
+                 WHERE id=$1",
+                &[job_id],
+            )
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 /// 取得を許可した URL (`SLACK_FILES_BASE_URL` の下) へのリダイレクトだけを、最大 3 回まで追従して取得する。
 /// `Authorization` (Bot トークン) は、最初の URL と同じオリジン (scheme・ホスト・ポート) にだけ付ける。
 /// クライアントは自動の追従をしない (`Policy::none`) ので、ここで 1 回ずつ確かめる
+///
+/// Slack のドメイン (`*.slack.com`、許可した URL のホストを除く) へのリダイレクトは、ログイン画面に飛ばされた
+/// (このトークンには、ファイルが見えない) ことのサインなので、`None` を返す。ほかの許可外 URL は、エラーにする。
+/// 許可は広げない (`Authorization` は許可した URL にだけ送る)
 async fn get_following_redirects(
     client: &reqwest::Client,
     url: &str,
     token: &str,
     base: &str,
-) -> Result<reqwest::Response, AppError> {
+) -> Result<Option<reqwest::Response>, AppError> {
     let failed =
         |detail: String| AppError::BadGateway(format!("Slack file download failed: {detail}"));
     let origin = reqwest::Url::parse(url).map_err(|e| failed(e.to_string()))?;
@@ -1554,7 +2413,7 @@ async fn get_following_redirects(
         }
         let response = request.send().await.map_err(|e| failed(e.to_string()))?;
         if !response.status().is_redirection() {
-            return Ok(response);
+            return Ok(Some(response));
         }
         let location = response
             .headers()
@@ -1563,11 +2422,26 @@ async fn get_following_redirects(
             .ok_or_else(|| failed("a redirect without a location".into()))?;
         let next = current.join(location).map_err(|e| failed(e.to_string()))?;
         if !allowed_file_url(next.as_str(), base) {
+            if is_login_redirect(&next, base) {
+                return Ok(None);
+            }
+            // リダイレクト先の URL は、元の URL を含むことがあるので、エラーには入れない
             return Err(failed("redirected to a URL that is not allowed".into()));
         }
         current = next;
     }
     Err(failed("too many redirects".into()))
+}
+
+fn is_login_redirect(next: &reqwest::Url, base: &str) -> bool {
+    let base_host = reqwest::Url::parse(base)
+        .ok()
+        .and_then(|b| b.host_str().map(str::to_ascii_lowercase));
+    next.scheme() == "https"
+        && next.host_str().is_some_and(|h| {
+            let h = h.to_ascii_lowercase();
+            h.ends_with(".slack.com") && Some(&h) != base_host.as_ref()
+        })
 }
 
 /// 本文を `max` バイトまで読む。累計が上限を超えたら、残りを読まずに `None` を返す
@@ -1608,10 +2482,35 @@ fn allowed_file_url(url: &str, base: &str) -> bool {
         && url.path().starts_with(&prefix)
 }
 
+/// 取得中の行のリースを延ばす (リースの持ち主だけ)
+async fn renew_file_lease(s: &AppState, file: &PendingFile) -> Result<(), AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    exec(
+        &mut tx,
+        &format!(
+            "UPDATE slack_files SET lease_until=now()+{FILE_LEASE_SQL} \
+             WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$3 AND lease_token=$4 AND status='pending'"
+        ),
+        &[
+            &file.team_id,
+            &file.slack_file_id,
+            &file.message_id,
+            &file.lease_token,
+        ],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// `tokens` を前から順に試して、最初に取れたものを使う。トークンごとに、ログイン画面 (権限なし) は次へ進み、
+/// 一時的な失敗 (5xx・通信) も次へ進む (全部だめなら、その失敗を返す)。429 は、残りを試さずに待つ。
+/// 全部が権限なしなら `Denied`。ユーザーのトークンは、呼び出し側が、その行のファイルの URL のときだけ渡す
 async fn fetch_one(
     s: &AppState,
     client: &reqwest::Client,
-    token: &str,
+    tokens: &[String],
     file: &PendingFile,
 ) -> Result<FileOutcome, AppError> {
     let Some(url) = file
@@ -1628,26 +2527,73 @@ async fn fetch_one(
     if crate::routes::attachments::validate_upload_mime(&file.mimetype).is_err() {
         return Ok(FileOutcome::Skipped("Unsupported content type".into()));
     }
+    // 取り込みのあとに暗号化へ切り替えたチャンネル (#367) には、平文の添付を置かない (行単位の取得は、
+    // 取る行を選ぶときにも外している)。取得の途中で切り替わったら、添付の INSERT を DB のトリガーが拒否し、
+    // 次の試行でここに来る
+    {
+        let mut db = s.db.clone();
+        let mut tx = db.transaction().await?;
+        let encrypted =
+            crate::routes::e2ee_channels::is_encrypted_channel(&mut tx, &file.channel_id).await?;
+        tx.commit().await?;
+        if encrypted {
+            return Ok(FileOutcome::Skipped("Encrypted channel".into()));
+        }
+    }
 
-    let response =
-        get_following_redirects(client, url, token, &s.config.slack.files_base_url).await?;
-    if !response.status().is_success() {
-        return Err(AppError::BadGateway(format!(
-            "Slack file download returned {}",
-            response.status()
-        )));
+    let mut transient = None;
+    let mut found = None;
+    for (i, token) in tokens.iter().enumerate() {
+        // トークンを順に試すと、リース (10 分) を超えうるので、次のトークンの前に延ばす
+        if i > 0 {
+            renew_file_lease(s, file).await?;
+        }
+        let response =
+            match get_following_redirects(client, url, token, &s.config.slack.files_base_url).await
+            {
+                Ok(Some(response)) => response,
+                Ok(None) => continue,
+                Err(e) => {
+                    transient = Some(e);
+                    continue;
+                }
+            };
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let secs = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(60)
+                .clamp(1, MAX_RETRY_AFTER_SECS);
+            return Ok(FileOutcome::RetryLater(secs));
+        }
+        if !response.status().is_success() {
+            transient = Some(AppError::BadGateway(format!(
+                "Slack file download returned {}",
+                response.status()
+            )));
+            continue;
+        }
+        // トークンの権限が足りないと、Slack はログイン画面の HTML を返す
+        let is_html = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.starts_with("text/html") && !file.mimetype.starts_with("text/html"));
+        if is_html {
+            continue;
+        }
+        found = Some(response);
+        break;
     }
-    // トークンの権限が足りないと Slack はログイン画面の HTML を返す
-    let is_html = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.starts_with("text/html") && !file.mimetype.starts_with("text/html"));
-    if is_html {
-        return Err(AppError::BadGateway(
-            "Slack returned a login page; check the token's files:read scope".into(),
-        ));
-    }
+    let Some(response) = found else {
+        // 一時的な失敗が 1 つでもあれば、取り直す。全部が権限なしのときだけ、確定させる
+        return match transient {
+            Some(e) => Err(e),
+            None => Ok(FileOutcome::Denied),
+        };
+    };
     if response.content_length().is_some_and(|len| len > max) {
         return Ok(FileOutcome::Skipped(format!("File exceeds {max} bytes")));
     }
@@ -1679,10 +2625,41 @@ async fn fetch_one(
 
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    // 取得の途中で取り込み先が暗号化に切り替わっていたら (#367)、平文の添付の行を作らず、置いたオブジェクトも消す。
+    // チャンネルの行を FOR KEY SHARE で読むので、この確認から INSERT までが切り替えと直列になる。
+    // 保存先のキーは同じファイルなら同じなので、前の取得が切り替えの前に行を作っていたら (取り直し)、その添付の
+    // 実体を消さず、その行を結果にする (切り替える前の添付は残す)
+    if crate::routes::e2ee_channels::lock_encryption(&mut tx, &file.channel_id).await? {
+        let registered = !query(
+            &mut tx,
+            "SELECT json_build_object('ok',true)::text FROM attachments WHERE id=$1",
+            &[&attachment],
+        )
+        .await?
+        .is_empty();
+        tx.rollback().await?;
+        if registered {
+            return Ok(FileOutcome::Done(attachment));
+        }
+        if let Err(e) = s
+            .s3_client
+            .delete_object()
+            .bucket(&s.config.s3.bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            tracing::warn!(
+                key,
+                "Failed to remove a Slack file stored for an encrypted channel: {e}"
+            );
+        }
+        return Ok(FileOutcome::Skipped("Encrypted channel".into()));
+    }
     exec(
         &mut tx,
         "INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at,is_sensitive) \
-         SELECT $1,m.id,$3,$4,$5,$6::bigint,$7,$8,m.created_at,(SELECT is_nsfw FROM channels WHERE id=$4) FROM messages m WHERE m.id=$2 \
+         SELECT $1,m.id,COALESCE((SELECT sf.uploader_id FROM slack_files sf WHERE sf.team_id=$9 AND sf.slack_file_id=$10 AND sf.message_id=$2),$3),$4,$5,$6::bigint,$7,$8,m.created_at,(SELECT is_nsfw FROM channels WHERE id=$4) FROM messages m WHERE m.id=$2 \
          ON CONFLICT (id) DO NOTHING",
         &[
             &attachment,
@@ -1693,6 +2670,8 @@ async fn fetch_one(
             &size.to_string(),
             &file.mimetype,
             &key,
+            &file.team_id,
+            &file.slack_file_id,
         ],
     )
     .await?;

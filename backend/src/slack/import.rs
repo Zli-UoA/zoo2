@@ -164,6 +164,15 @@ pub(crate) async fn load_job(
     tx: &mut toasty::Transaction<'_>,
     id: &str,
 ) -> Result<Value, AppError> {
+    load_job_for(tx, id, "").await
+}
+
+/// `viewer` は画面に出す人。同じ名前のチャンネルのうち、メンバーでない非公開チャンネルは ID を返さない。
+pub(crate) async fn load_job_for(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+    viewer: &str,
+) -> Result<Value, AppError> {
     let job = query(
         tx,
         &format!("SELECT {JOB_JSON} FROM slack_import_jobs j WHERE j.id=$1"),
@@ -173,16 +182,20 @@ pub(crate) async fn load_job(
     .into_iter()
     .next()
     .ok_or_else(|| AppError::NotFound("Slack import not found".into()))?;
-    annotate(tx, job).await
+    annotate(tx, job, viewer).await
 }
 
 /// 取り込みに使えるエクスポートなら、チャンネルの一覧に今の Zoo 側の状態を足す
-async fn annotate(tx: &mut toasty::Transaction<'_>, mut job: Value) -> Result<Value, AppError> {
+async fn annotate(
+    tx: &mut toasty::Transaction<'_>,
+    mut job: Value,
+    viewer: &str,
+) -> Result<Value, AppError> {
     if job["status"] != "ready" || !job["source_id"].is_null() {
         return Ok(job);
     }
     let team = job["team_id"].as_str().unwrap_or_default().to_string();
-    let channels = annotate_channels(tx, &team, &job["analysis"]["channels"]).await?;
+    let channels = annotate_channels(tx, &team, viewer, &job["analysis"]["channels"]).await?;
     job["analysis"]["channels"] = Value::Array(channels);
     Ok(job)
 }
@@ -216,6 +229,7 @@ fn hashed_name(name: &str) -> String {
 pub(crate) async fn annotate_channels(
     tx: &mut toasty::Transaction<'_>,
     team: &str,
+    viewer: &str,
     channels: &Value,
 ) -> Result<Vec<Value>, AppError> {
     if !channels.is_array() {
@@ -231,10 +245,12 @@ pub(crate) async fn annotate_channels(
          'deleted_channel',(SELECT c.channel_name FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
           WHERE s.team_id=$1 AND s.slack_channel_id=e.c->>'slack_channel_id' AND c.deleted_at IS NOT NULL),\
          'same_name_channel',(SELECT jsonb_build_object('id',c.id,'name',c.channel_name,'is_private',c.is_private) \
-          FROM channels c WHERE c.channel_name=e.c->>'name' AND c.deleted_at IS NULL AND NOT c.is_dm),\
+          FROM channels c WHERE c.channel_name=e.c->>'name' AND c.deleted_at IS NULL AND NOT c.is_dm \
+          AND NOT c.encrypted \
+          AND (NOT c.is_private OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=$3))),\
          'name_taken',EXISTS(SELECT 1 FROM channels c WHERE c.channel_name=e.c->>'name')))::text \
          FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY e(c,n) ORDER BY e.n",
-        &[team, &channels.to_string()],
+        &[team, &channels.to_string(), viewer],
     )
     .await?;
     // `slack-` を付けた候補も、すでに使われていれば、ハッシュを付けた名前にする (画面の初期値のまま開始して 409 にならないように)
@@ -303,7 +319,7 @@ async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, 
     .await?;
     let mut jobs = Vec::with_capacity(rows.len());
     for job in rows {
-        jobs.push(annotate(&mut tx, job).await?);
+        jobs.push(annotate(&mut tx, job, &user.id).await?);
     }
     tx.commit().await?;
     Ok(Json(json!({ "imports": jobs })))
@@ -317,7 +333,7 @@ async fn show(
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     require_admin(&mut tx, &s, &user).await?;
-    let job = load_job(&mut tx, &id).await?;
+    let job = load_job_for(&mut tx, &id, &user.id).await?;
     tx.commit().await?;
     Ok(Json(job))
 }
@@ -537,10 +553,13 @@ pub(crate) async fn validate_mappings(
                 let private = slack_private || *is_private == Some(true);
                 let reused = query(
                     tx,
-                    "SELECT json_build_object('is_private',is_private)::text FROM channels WHERE id=$1",
+                    "SELECT json_build_object('is_private',is_private,'encrypted',encrypted)::text FROM channels WHERE id=$1",
                     &[&own],
                 )
                 .await?;
+                if reused.first().is_some_and(|c| c["encrypted"] == true) {
+                    return Err(crate::routes::e2ee_channels::plaintext_forbidden());
+                }
                 if private && reused.first().is_some_and(|c| c["is_private"] != true) {
                     return Err(AppError::BadRequest(format!(
                         "Slack channel {} was imported into a public channel; it cannot be imported as private",
@@ -551,7 +570,7 @@ pub(crate) async fn validate_mappings(
             MappingAction::Existing { channel_id } => {
                 let found = query(
                     tx,
-                    "SELECT json_build_object('is_private',is_private)::text FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
+                    "SELECT json_build_object('is_private',is_private,'encrypted',encrypted)::text FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
                     &[channel_id],
                 )
                 .await?;
@@ -560,6 +579,10 @@ pub(crate) async fn validate_mappings(
                         "Channel {channel_id} does not exist"
                     )));
                 };
+                // 取り込みは平文の content を messages に入れるので、暗号化チャンネルには取り込めない (#358)
+                if found["encrypted"] == true {
+                    return Err(crate::routes::e2ee_channels::plaintext_forbidden());
+                }
                 if slack_private && found["is_private"] != true {
                     return Err(AppError::BadRequest(format!(
                         "Private Slack channel {} must be imported into a private channel",
@@ -637,7 +660,7 @@ async fn fetch_files(
     // トークンの権限を直した後などに備え、失敗した添付も試行回数を戻して再取得する。サイズの上限や取得を許可する
     // URL の設定を直した後に備え、それらが理由でスキップした添付も戻す (形式の非対応など、設定で変わらないものは戻さない)
     toasty::sql::statement(
-        "UPDATE slack_files SET status='pending',attempts=0,error=NULL,updated_at=now() WHERE job_id=$1 AND (status='failed' \
+        "UPDATE slack_files SET status='pending',attempts=0,error=NULL,lease_until=NULL,lease_token=NULL,updated_at=now() WHERE job_id=$1 AND (status='failed' \
          OR (status='skipped' AND (error LIKE 'File exceeds%' OR error='Unsupported file URL')))",
     )
     .bind(id.as_str())
