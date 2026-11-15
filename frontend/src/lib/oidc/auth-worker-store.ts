@@ -27,6 +27,25 @@ async function withStore<T>(
 }
 
 export const authWorkerStore: AuthWorkerStore = {
+  staleSessionIds: (cutoff) => {
+    const ids: string[] = [];
+    return withStore("readonly", (store) => {
+      const cursor = store.openCursor();
+      cursor.onsuccess = () => {
+        const row = cursor.result;
+        if (!row) return;
+        const value = row.value as AuthWorkerSession;
+        if (
+          value.state === "ready" &&
+          (value.lastUsedAt ?? 0) <= cutoff &&
+          typeof row.key === "string"
+        )
+          ids.push(row.key);
+        row.continue();
+      };
+      return cursor;
+    }).then(() => ids);
+  },
   get: (id) =>
     withStore("readonly", (store) => store.get(id) as IDBRequest<AuthWorkerSession | undefined>),
   put: async (id, session) => {
