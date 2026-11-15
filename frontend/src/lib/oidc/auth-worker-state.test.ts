@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vite-plus/test";
 import {
   AuthWorkerState,
+  AUTH_WORKER_IDLE_MS,
   type AuthWorkerSession,
   type AuthWorkerEnvironment,
 } from "./auth-worker-state";
@@ -23,6 +24,10 @@ function harness() {
   );
   const environment: AuthWorkerEnvironment = {
     store: {
+      staleSessionIds: async (cutoff) =>
+        [...records]
+          .filter(([, row]) => row.state === "ready" && (row.lastUsedAt ?? 0) <= cutoff)
+          .map(([id]) => id),
       get: async (id) => records.get(id),
       put: async (id, record) => {
         records.set(id, record);
@@ -153,10 +158,52 @@ it("rejects an invalid ID token before exposing a shared cached result", async (
 
 it("serializes an update and logout without retaining reusable credentials", async () => {
   const h = harness();
-  await Promise.all([
+  await Promise.allSettled([
     h.state.run(h.request),
     h.state.run({ kind: "logout", sessionId: h.request.sessionId }),
   ]);
   expect(h.records.get(h.request.sessionId)?.state).toBe("ended");
   expect(h.records.get(h.request.sessionId)?.body).toBeUndefined();
+});
+
+it("defaults omitted expires_in to 300 seconds", async () => {
+  const h = harness();
+  h.fetch.mockResolvedValueOnce(
+    new Response(JSON.stringify({ access_token: "access", refresh_token: "next" })),
+  );
+  const result = await h.state.run(h.request);
+  expect(result?.expires_in).toBe(300);
+  expect(result?.expiresAt).toBe(1_300_000);
+});
+
+it.each([0, -1, null, "300"])("rejects invalid expires_in: %s", async (expires_in) => {
+  const h = harness();
+  h.fetch.mockResolvedValueOnce(
+    new Response(JSON.stringify({ access_token: "access", expires_in })),
+  );
+  await expect(h.state.run(h.request)).rejects.toThrow("invalid_token_response");
+});
+
+it("clears idle credentials on the next worker start, keeping a tombstone", async () => {
+  const h = harness();
+  await h.state.run(h.request);
+  h.advance(AUTH_WORKER_IDLE_MS + 1);
+  await expect(new AuthWorkerState(h.environment).run(h.request)).rejects.toThrow("session_ended");
+  expect(h.records.get(h.request.sessionId)?.body).toBeUndefined();
+  expect(h.fetch).toHaveBeenCalledTimes(1);
+});
+
+it("does not erase a session refreshed while cleanup was waiting for its lock", async () => {
+  const h = harness();
+  await h.state.run(h.request);
+  h.advance(AUTH_WORKER_IDLE_MS + 1);
+  const stale = h.environment.store.staleSessionIds.bind(h.environment.store);
+  h.environment.store.staleSessionIds = async (cutoff) => {
+    const ids = await stale(cutoff);
+    h.records.get(h.request.sessionId)!.lastUsedAt = h.environment.now();
+    return ids;
+  };
+  await new AuthWorkerState(h.environment).run(h.request);
+  expect(h.records.get(h.request.sessionId)?.state).toBe("ready");
+  expect(h.fetch).toHaveBeenCalledTimes(2);
 });
