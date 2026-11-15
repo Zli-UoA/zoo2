@@ -5,6 +5,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -40,10 +41,22 @@ internal fun MobileNavigation(
                         if (destination == MobileDestination.Notifications && unread > 0)
                             Badge { androidx.compose.material3.Text(if (unread > 99) "99+" else unread.toString()) }
                     }) {
-                        Icon(destination.icon, modifier = Modifier.size(24.dp))
+                        Icon(
+                            destination.icon,
+                            modifier = Modifier.size(24.dp),
+                            color = if (selected == destination) MaterialTheme.colorScheme.onSecondaryContainer
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 },
-                label = { Text(title, small = true, size = 12.sp, maxLines = 1) },
+                label = {
+                    Text(
+                        title, small = true, size = 12.sp, maxLines = 1,
+                        weight = if (selected == destination) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (selected == destination) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
                 colors = NavigationBarItemDefaults.colors(
                     indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
                     selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,

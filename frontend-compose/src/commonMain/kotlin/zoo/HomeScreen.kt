@@ -160,7 +160,14 @@ fun HomeScreen(
                                         Tab(
                                             selected = feed.timeline == value,
                                             onClick = { if (feed.timeline != value) feed.select(value) },
-                                            text = { Text(app.t("home.timelineLabels.$value"), maxLines = 1) },
+                                            text = {
+                                                Text(
+                                                    app.t("home.timelineLabels.$value"), maxLines = 1,
+                                                    weight = if (feed.timeline == value) FontWeight.SemiBold else FontWeight.Normal,
+                                                    color = if (feed.timeline == value) androidx.compose.material3.MaterialTheme.colorScheme.onSurface
+                                                        else androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            },
                                         )
                                     }
                                 }
