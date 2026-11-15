@@ -55,3 +55,36 @@ it("can still log out when SharedWorker is unavailable", async () => {
     Object.defineProperty(globalThis, "SharedWorker", descriptor);
   }
 });
+
+it("sweeps idle credentials from IndexedDB while retaining the end marker", async () => {
+  const { authWorkerStore } = await import("./auth-worker-store");
+  const { AUTH_WORKER_IDLE_MS } = await import("./auth-worker-state");
+  const staleId = crypto.randomUUID();
+  await authWorkerStore.put(staleId, {
+    state: "ready",
+    binding: "old",
+    lastUsedAt: Date.now() - AUTH_WORKER_IDLE_MS - 1,
+    body: { access_token: "old-access", refresh_token: "old-refresh", expires_in: 300 },
+    expiresAt: 1,
+  });
+  const worker = new SharedWorker(new URL("./auth.shared-worker.ts", import.meta.url), {
+    type: "module",
+    name: crypto.randomUUID(),
+  });
+  try {
+    await callAuthWorker(worker.port, {
+      kind: "refresh",
+      sessionId: crypto.randomUUID(),
+      issuer: "https://id.example",
+      clientId: "zoo",
+      resource: null,
+      refreshToken: "initial",
+      tokenEndpoint: `data:application/json,${encodeURIComponent(JSON.stringify({ access_token: "new", refresh_token: "rotated", expires_in: 300 }))}`,
+    });
+    const saved = await authWorkerStore.get(staleId);
+    expect(saved?.state).toBe("ended");
+    expect(saved?.body).toBeUndefined();
+  } finally {
+    worker.port.close();
+  }
+});
