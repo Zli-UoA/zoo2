@@ -1244,6 +1244,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reply_normalized_to_the_root_moves_the_open_thread() {
+        let mut app = app();
+        app.current = Some("c1".into());
+        app.focus = Focus::Thread;
+        app.thread = Some(crate::ui::app::ThreadView {
+            root_id: "child".into(),
+            selected: Some("x".into()),
+            scroll: 3,
+            inner_scroll: 1,
+        });
+        app.target = Target::Reply("child".into());
+        app.on_app_event(AppEvent::ThreadRedirected {
+            from: "other".into(),
+            to: "root".into(),
+        });
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "child");
+        app.on_app_event(AppEvent::ThreadRedirected {
+            from: "child".into(),
+            to: "root".into(),
+        });
+        let thread = app.thread.as_ref().unwrap();
+        assert_eq!(thread.root_id, "root");
+        assert_eq!(thread.selected, None);
+        assert_eq!(app.target, Target::Reply("root".into()));
+    }
+
+    #[tokio::test]
     async fn unlisted_selected_archive_is_not_searchable_in_the_tree() {
         let mut app = app();
         app.on_shape(ShapeEvent::Batch(ShapeId::Messages("c1".into()), batch(vec![("m1",json!({"id":"m1","user_id":"u2","channel_id":"c1","content":"Old conversation","created_at":"2026-11-01 03:00:00","thread_archive_at":"2026-11-10 00:00:00"}))])));

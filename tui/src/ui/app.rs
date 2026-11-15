@@ -73,6 +73,11 @@ pub enum AppEvent {
     ThreadsChanged {
         reopened: Option<String>,
     },
+    /// 移行中、未移行の子スレッドへの返信がサーバーで最上位へ正規化された。
+    ThreadRedirected {
+        from: String,
+        to: String,
+    },
     ThreadLeft(String),
     ReadStatesPollFinished,
     EmojiPollFinished,
@@ -725,6 +730,17 @@ impl App {
                 self.archived_threads.retain(|thread| thread.id != id);
                 self.threads_requested_at = [Some(Instant::now()); 2];
                 self.refresh_threads();
+            }
+            AppEvent::ThreadRedirected { from, to } => {
+                if let Some(thread) = self.thread.as_mut().filter(|t| t.root_id == from) {
+                    thread.root_id = to.clone();
+                    thread.selected = None;
+                    thread.scroll = 0;
+                    thread.inner_scroll = 0;
+                }
+                if self.target == Target::Reply(from) {
+                    self.target = Target::Reply(to);
+                }
             }
             AppEvent::ThreadsChanged { reopened } => {
                 if let Some(id) = reopened {
@@ -2191,12 +2207,16 @@ impl App {
         }
         tokio::spawn(async move {
             let id = uuid::Uuid::new_v4().to_string();
+            let mut resolved_parent: Option<String> = None;
             let result = match &target {
                 Target::Channel => api.send_message(&id, &channel_id, &content, None).await,
-                Target::Reply(root_id) => {
-                    api.send_message(&id, &channel_id, &content, Some(root_id))
-                        .await
-                }
+                Target::Reply(root_id) => api
+                    .send_reply(&id, &channel_id, &content, root_id)
+                    .await
+                    .map(|(txid, parent)| {
+                        resolved_parent = parent.filter(|parent| parent != root_id);
+                        txid
+                    }),
                 Target::Edit(message_id) => api.edit_message(message_id, &content).await,
             };
             if let Err(err) = result {
@@ -2209,7 +2229,17 @@ impl App {
                 });
             } else {
                 let reopened = match target {
-                    Target::Reply(root_id) => Some(root_id),
+                    Target::Reply(root_id) => {
+                        if let Some(parent) = resolved_parent {
+                            let _ = tx.send(AppEvent::ThreadRedirected {
+                                from: root_id,
+                                to: parent.clone(),
+                            });
+                            Some(parent)
+                        } else {
+                            Some(root_id)
+                        }
+                    }
                     _ => None,
                 };
                 let _ = tx.send(AppEvent::ThreadsChanged { reopened });

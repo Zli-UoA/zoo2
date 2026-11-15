@@ -478,6 +478,36 @@ impl ApiClient {
             .await
     }
 
+    /// 返信を送り、サーバーが確定した親 ID も返す。移行中は子スレッドへの返信が
+    /// 最上位の親へ正規化されるため、呼び出し側は表示先をこの親へ移す。
+    pub async fn send_reply(
+        &self,
+        id: &str,
+        channel_id: &str,
+        content: &str,
+        parent_id: &str,
+    ) -> Result<(Option<String>, Option<String>)> {
+        let body = serde_json::to_value(NewMessage {
+            id,
+            channel_id,
+            content,
+            parent_id: Some(parent_id),
+            attachment_ids: None,
+        })?;
+        let envelope: Envelope = self
+            .send(Method::POST, "/api/messages", Some(body))
+            .await?
+            .json()
+            .await?;
+        let resolved = envelope
+            .data
+            .as_ref()
+            .and_then(|data| data.get("parent_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        Ok((envelope.txid, resolved))
+    }
+
     /// 添付ファイル ID を含むメッセージ送信。
     pub async fn send_message_with_attachments(
         &self,
@@ -825,6 +855,26 @@ mod tests {
         assert!(standard.is_empty());
         assert!(custom.contains("smile"));
         assert!(custom.contains("custom_alias"));
+    }
+
+    #[tokio::test]
+    async fn send_reply_returns_the_parent_the_server_resolved() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/messages"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    json!({ "data": { "id": "x", "parent_id": "root" }, "txid": "7" }),
+                ),
+            )
+            .mount(&server)
+            .await;
+        let (txid, parent) = client(&server)
+            .send_reply("x", "c1", "hi", "child")
+            .await
+            .unwrap();
+        assert_eq!(txid.as_deref(), Some("7"));
+        assert_eq!(parent.as_deref(), Some("root"));
     }
 
     #[tokio::test]
