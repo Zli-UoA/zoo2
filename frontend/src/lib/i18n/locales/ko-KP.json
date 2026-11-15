@@ -273,7 +273,12 @@
     "archiveForChannel": "{{channel}}의 보관된 스레드",
     "untitled": "제목 없는 타래",
     "targetTooOld": "이 통보문은 너무 오래되여 여기서 불러올수 없습니다",
-    "unreadTooOld": "이보다 오래된 읽지 않은 통보문은 불러오지 않았습니다"
+    "unreadTooOld": "이보다 오래된 읽지 않은 통보문은 불러오지 않았습니다",
+    "join": "스레드 참가",
+    "leave": "스레드 나가기",
+    "reopen": "다시 열기",
+    "reopenOnSend": "답장을 보내면 스레드를 다시 열고 참가합니다.",
+    "membershipError": "스레드 참가 상태를 변경하지 못했습니다."
   },
   "reactions": {
     "showUsers": "{{emoji}}에 반응한 사용자 표시",
@@ -703,6 +708,9 @@
     "showLess": "접기"
   },
   "home": {
+    "back": "뒤로",
+    "deleted": "게시물을 삭제했습니다",
+    "newPosts": "새 게시물 보기 ({{count}}개)",
     "quotedPost": "인용한 게시물",
     "quoteUnavailable": "인용한 게시물을 표시할 수 없습니다",
     "openQuotedPost": "인용한 게시물 열기",

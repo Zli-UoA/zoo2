@@ -88,7 +88,7 @@ class UpdateWorker(context: Context, parameters: WorkerParameters) :
                 return@withLock Result.failure()
             }
             if (!manual && !prefs.enabled) return@withLock Result.success()
-            if (!shizukuReady()) {
+            if (!awaitShizukuReady()) {
                 prefs.status = "Shizuku を起動し、Zoo に使用を許可してください"
                 return@withLock Result.failure()
             }

@@ -25,6 +25,71 @@ Android ターゲットは `zoo.android=true` で明示的に有効にします�
 `frontend/src/lib/i18n/locales` からビルド時に APK の assets へ取り込みます。
 CI Android はビルド・テスト・lint を実行し、debug APK を artifact に保存します。
 
+## 安定性と端末での確認
+
+### 画面と操作
+
+幅768dp未満では、Home・チャンネル・通知・Bubble Chat・設定をラベル付きの下部ナビゲーションに配置します。
+キーボード表示中、スレッドとメンバーの専用画面ではナビゲーションを隠し、入力・返信の領域を確保します。
+768dp以上では既存の左ナビゲーションを使い、1024dp以上ではメンバー・スレッドの並列表示を維持します。
+通知数は既存の共有状態から取り、ナビゲーション用の追加取得は行いません。
+
+Androidの本文は16sp/24spを基準とし、共通ボタン・入力欄・選択欄・メニューは48dp以上、
+チャンネル・DMの一覧行は56dp以上の高さを確保します。ヘッダーとボタンは文字倍率に合わせて高さを広げられます。
+設定の説明と操作は配置幅480dp未満で上下に並べます。入力・IME変換・下書き保存は既存の共通処理を使います。
+Homeの本文の下書きはセッション内で保持し、別画面との往復で失わないようにします。他のアカウントとは共有しません。
+設定にログアウト操作を置き、Androidで利用できないPWA通知設定は表示しません。最上位での戻る操作ではタスクを背景へ移します。
+参加済みの通常チャンネルではオフライン中も本文の下書きを入力でき、送信・添付の追加は通信復帰まで無効にします。
+未参加・アーカイブ済み・暗号化チャンネルの投稿制約は維持します。
+
+Homeのタイムライン選択には横スクロール可能なタブ、更新にはMaterialのPullToRefreshBoxを使います。
+手動更新だけ進行状態を表示し、取得失敗時には既存の投稿を残します。共有の更新集約処理は維持します。
+読み込み中・空・取得失敗には共通表示を使い、取得失敗には再試行操作を用意します。
+オフライン通知は本文に重ねず、画面内で領域を確保します。
+共通部品のラベル・選択・役割・状態通知をAndroidのアクセシビリティツリーにも渡します。
+
+`testDebugUnitTest` はRobolectricのCompose UIテストも実行します。
+320dpと600dpのナビゲーション、明暗テーマ、文字倍率180%での日本語入力、タッチ領域と無効状態、
+エラーからの再試行を検査します。キャプチャは `frontend-compose/build/reports/ui/` に保存し、
+CIの `zoo-android-test-reports` artifactにテストレポートと一緒に収録します。
+キャプチャは確認用で、自動の画像差分判定や実機のTalkBack検証ではありません。
+
+### 画像・保存・接続
+
+画像プレビューは受信中に20 MiBの上限を確認し、Content-Lengthがない応答にも適用します。
+デコード前に縦横それぞれ2048px以内になるよう縮小し、EXIFの回転・反転を維持します。
+アバター・リンクプレビュー画像・サイトアイコンも `Session.imageBitmap` から端末の共通デコーダーを通します。
+これはプレビューの制限で、添付ファイルのアップロード上限（50 MiB）は変更しません。
+大きすぎる画像は既存の画像取得失敗表示になります。
+
+同期キャッシュはアカウントごとに原子的に置き換え、読み書きとログアウト時の削除を直列化します。
+ログアウト後に届く古いセッションの書き込みではキャッシュを作り直しません。
+Androidの戻る履歴には各画面の状態と位置を保存し、メンバー画面から戻る際に前の画面の状態を復元します。
+同じパスへの連続移動では戻る手順を増やしません。
+
+ネットワークは既定の接続にINTERNETがある場合に通信可能な候補として扱います。
+学内・社内回線など、Androidの外部接続確認だけが遮断される環境でも使えるよう、VALIDATEDは必須にしません。
+VALIDATEDの変化だけではオンライン/オフラインを切り替えず、再取得も起動しません。
+Zooへの到達や認証の失敗は、既存のHTTP・同期処理のエラーとして表示します。到達確認用の追加通信は行いません。
+可視状態はセッション開始時とActivityのライフサイクルから渡し、破棄済みの購読からの遅延通知を無視します。
+既存の共有Shape・HomeのWebSocket・ポーリング経路を使い、新しい接続やタイマーは追加しません。
+
+Homeの送信はSessionのスコープで実行し、画面を離れても応答を待ちます。
+送信中のアップロード済み添付は画面の破棄で削除せず、成功後に本文の下書きと端末側の参照を片付けます。
+送信失敗時は本文を残し、画面を既に離れている場合は未使用の添付を破棄します。
+
+PRの単体テストに加えて、配布前に次を端末で確認します。
+
+- API 26と35で、ログイン・キャンセル・復元・ログアウトを行う。
+- ホーム→チャンネル→メンバー→戻る、同じ画面の再選択、ワイド画面への回転で履歴を確認する。
+- Wi-Fi切断・キャプティブポータル・通信復帰、バックグラウンドと復帰時の表示と取得回数を確認する。
+- 大きな縦長・横長画像、EXIFの回転画像、壊れた画像、20 MiBを超える応答でアプリが操作可能なことを確認する。
+- 書き込み中のプロセス終了と再起動、ログアウト直後の再ログインでキャッシュが混ざらないことを確認する。
+- 小さい画面・大きい文字・明暗テーマ・TalkBackでログイン入力とエラー通知を確認する。
+
+起動時間・スクロールのフレーム時間・メモリ使用量の性能保証には、実機での計測が別途必要です。
+単体テストの成功だけで、これらの性能や端末上の表示品質を保証したとは扱いません。
+
 ## ログイン
 
 起動画面で Zoo サーバーの HTTPS origin URL、OIDC issuer、Android 用 public client ID、
@@ -165,6 +230,47 @@ Secrets がない場合、main の配布ジョブは失敗し、署名の異な�
 `:androidApp:assembleRelease` を実行します。
 
 Shizuku を使用するインストールは、実際に Shizuku が稼働する Android 端末での検証が必要です。
+
+### Shizuku の接続と実装の根拠
+
+Shizuku の Binder はプロセス起動後に Provider へ届きます。WorkManager から起動したときも、
+未到着を即座に権限不足と判断せず、受信リスナーで最大5秒待ちます。待機終了・キャンセル時には
+リスナーを解除し、到着後に使用許可を確認します。UserService の接続は最大20秒で打ち切り、
+接続できなかった場合は更新画面へエラーを保存します。Worker 自体のキャンセルはそのまま伝えます。
+
+調査した資料と実装例:
+
+- [Shizuku API の公式ガイド](https://github.com/RikkaApps/Shizuku-API/blob/master/README.md):
+  Binder の生存期間・使用許可、ADB と root の違い、UserService、destroy の AIDL transaction ID。
+  ADB はアプリ専用ファイルを直接読めないため、APK のパスではなく FD を渡します。
+- [ShizukuProvider](https://github.com/RikkaApps/Shizuku-API/blob/master/provider/src/main/java/rikka/shizuku/ShizukuProvider.java):
+  起動時の Binder 配信は Provider への呼び出しで行われ、Provider の onCreate 完了は受信完了を意味しません。
+- [Obtainium の ShizukuInstaller](https://github.com/ImranR98/Obtainium/blob/35c3e7fea4f341a716eca4bb3fc625319ce965ab/lib/installers/shizuku_installer.dart):
+  一時的な Binder 未到着を再確認し、権限拒否や古いサービスと分けて扱います。
+- [Droid-ify の ShizukuInstaller](https://github.com/Droid-ify/client/blob/ff1453ed957f3b2382abce9a7eb9a9db8def3a3a/app/src/main/kotlin/com/looker/droidify/installer/installers/shizuku/ShizukuInstaller.kt):
+  install-create / install-write / install-commit と標準入力を使います。
+  ただし、この実装の newProcess は公式で非推奨のため、Zoo では UserService を維持します。
+- [vvb2060/PackageInstaller の BinderWrapper](https://github.com/vvb2060/PackageInstaller/blob/a43b37a22493969be2c8161f3e0551bd462b0d30/app/src/main/java/io/github/vvb2060/packageinstaller/core/BinderWrapper.java):
+  PackageInstaller と各 Session の Binder を Shizuku 経由へ置き換える方式です。
+- [Android 15 の PackageManagerShellCommand](https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/services/core/java/com/android/server/pm/PackageManagerShellCommand.java):
+  pm install -S BYTES - は内部でセッション作成・標準入力からの書き込み・commit を実行します。
+  現在のコマンドもセッション方式であり、API 方式への置き換えだけで解決すると断定はできません。
+
+この修正は Binder 未到着の競合と接続タイムアウトの表示を対象にしています。
+端末固有のインストール失敗は、更新画面のエラー全文、Android / Shizuku の版、
+ADB 起動か root 起動かを確認して切り分けます。実機での更新成功は別途確認が必要です。
+Android 固有の接続処理のみの変更で、Web・TUI の更新経路や通信には影響しません。
+
+「Shizuku のインストーラーから結果を取得できませんでした」は、AIDL の戻り値が null または
+空文字だったことを示します。サービスは正常終了時にも pm の失敗時にも空でない文字列を返すため、
+この表示だけで pm の失敗や権限不足と判断できません。接続先の Binder descriptor を検証し、
+`ZooUpdater` / `ZooUpdaterService` タグに接続・処理開始・終了を記録します。
+再現直後に `adb logcat -d -s ZooUpdater ZooUpdaterService ShizukuServiceStarter AndroidRuntime`
+で取得すると、サービス起動前の失敗と、起動後の処理・応答の問題を分けて確認できます。
+
+Android 15 / Shizuku 13.6 / ADB では、メーカーのフレームワークによって UserService の
+makeApplication が失敗する[報告](https://github.com/RikkaApps/Shizuku/issues/2048)もあります。
+ただし、これは起動失敗の報告であり、接続後に空の結果を受けた今回の症状と同一原因とは未確認です。
 
 ## 自動ログインの検証
 

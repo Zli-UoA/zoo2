@@ -8,7 +8,11 @@ import java.io.ByteArrayInputStream
 
 /** Match browser EXIF handling on every supported Android version, including API 26. */
 internal fun decodeOrientedBitmap(bytes: ByteArray): Bitmap {
-    val bitmap = requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size)) { "Invalid image" }
+    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+    options.inSampleSize = imageSampleSize(options.outWidth, options.outHeight)
+    options.inJustDecodeBounds = false
+    val bitmap = requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)) { "Invalid image" }
     val orientation = runCatching {
         ExifInterface(ByteArrayInputStream(bytes))
             .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
@@ -36,4 +40,12 @@ internal fun decodeOrientedBitmap(bytes: ByteArray): Bitmap {
     val oriented = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
     if (oriented !== bitmap) bitmap.recycle()
     return oriented
+}
+
+/** Bound decoded previews to 2048 pixels per edge before allocating a bitmap (at most 16 MiB). */
+internal fun imageSampleSize(width: Int, height: Int): Int {
+    require(width > 0 && height > 0) { "Invalid image dimensions" }
+    var sample = 1
+    while ((maxOf(width, height).toLong() + sample - 1) / sample > 2048) sample *= 2
+    return sample
 }

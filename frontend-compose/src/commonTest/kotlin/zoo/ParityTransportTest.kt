@@ -173,6 +173,32 @@ class ParityTransportTest {
     }
 
     @Test
+    fun replyNormalizedToTheThreadRootMovesTheOpenThread() = runTest {
+        val http =
+            HttpClient(
+                MockEngine { request ->
+                    if (request.method == HttpMethod.Get) awaitCancellation()
+                    respond("""{"data":{"id":"x","parent_id":"root"},"txid":null}""")
+                }
+            )
+        val repo =
+            Repository(
+                Config("https://zoo.test", "/shapes", "alice", false, txidMode = "none"),
+                Browser(),
+                http,
+                backgroundScope,
+            )
+        val app = Session(repo, backgroundScope, Environment())
+        app.thread = "other"
+        assertTrue(app.send("c", "hello", "child"))
+        assertEquals("other", app.thread)
+        app.thread = "child"
+        assertTrue(app.send("c", "hello", "child"))
+        assertEquals("root", app.thread)
+        app.close()
+    }
+
+    @Test
     fun attachmentUrlsAreCachedUntilExpiryAndRecoverFromRefreshFailures() = runTest {
         val platform = Browser()
         var calls = 0

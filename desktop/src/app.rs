@@ -251,6 +251,8 @@ pub enum AppEvent {
     SubmissionSucceeded {
         submission_id: u64,
         sent_attachment_ids: Vec<String>,
+        /// 移行中、子スレッドへの返信がサーバーで最上位へ正規化された (from, to)。
+        redirected: Option<(String, String)>,
     },
     RestoreDraft {
         submission_id: u64,
@@ -2146,9 +2148,17 @@ impl AppState {
             AppEvent::SubmissionSucceeded {
                 submission_id,
                 sent_attachment_ids,
+                redirected,
             } => {
                 self.in_flight_submissions
                     .retain(|(id, _)| *id != submission_id);
+                if let Some((from, to)) = redirected {
+                    if let Some(thread) = self.thread.as_mut().filter(|t| t.root_id == from) {
+                        thread.root_id = to.clone();
+                        thread.selected = None;
+                    }
+                    self.retarget_reply(&from, &to);
+                }
                 if !sent_attachment_ids.is_empty() {
                     self.pending_attachments.retain(|a| match &a.attachment_id {
                         Some(att_id) => !sent_attachment_ids.contains(att_id),
@@ -3038,6 +3048,60 @@ impl AppState {
         (start, total)
     }
 
+    /// 返信先が正規化された親へ付け替わったとき、入力欄・未送信の添付・退避した下書きも
+    /// 同じ送信先へ移し、送信中に追加した添付が入力欄から外れないようにする。
+    fn retarget_reply(&mut self, from: &str, to: &str) {
+        let (from, to) = (
+            Target::Reply(from.to_string()),
+            Target::Reply(to.to_string()),
+        );
+        if self.target == from {
+            self.target = to.clone();
+        }
+        for attachment in &mut self.pending_attachments {
+            if attachment.target == from {
+                attachment.target = to.clone();
+            }
+        }
+        let keys: Vec<_> = self
+            .saved_drafts
+            .keys()
+            .chain(self.saved_draft_message_ids.keys())
+            .filter(|(_, target)| *target == from)
+            .cloned()
+            .collect();
+        for key in keys {
+            let moved = (key.0.clone(), to.clone());
+            let draft = self.saved_drafts.remove(&key);
+            let id = self.saved_draft_message_ids.remove(&key);
+            match (draft, self.saved_drafts.get_mut(&moved)) {
+                // 移動先にも下書きがあるときは両方の文面を残す。文面が変わるので再送用のIDは使わない。
+                (Some(draft), Some(existing)) => {
+                    if !draft.trim().is_empty() {
+                        if !existing.trim().is_empty() {
+                            existing.push('\n');
+                        }
+                        existing.push_str(&draft);
+                    }
+                    self.saved_draft_message_ids.remove(&moved);
+                }
+                (Some(draft), None) => {
+                    self.saved_drafts.insert(moved.clone(), draft);
+                    if let Some(id) = id {
+                        self.saved_draft_message_ids.insert(moved, id);
+                    }
+                }
+                (None, _) => {
+                    if let Some(id) = id
+                        && !self.saved_draft_message_ids.contains_key(&moved)
+                    {
+                        self.saved_draft_message_ids.insert(moved, id);
+                    }
+                }
+            }
+        }
+    }
+
     /// 現在の `(チャンネル ID, 送信先)` の下書きを退避し、新しい送信先の下書きを入力欄へ反映する。
     fn switch_composer_context(&mut self, next_channel: Option<&str>, next_target: Target) {
         if let Some(ch) = self.current_channel.clone()
@@ -3323,6 +3387,17 @@ impl AppState {
             self.thread = None;
             return;
         }
+        let root_id = self
+            .current_channel
+            .as_deref()
+            .and_then(|channel| self.store.message(channel, &root_id))
+            .filter(|message| {
+                self.current_channel
+                    .as_deref()
+                    .is_none_or(|channel| self.store.replies(channel, &message.id).is_empty())
+            })
+            .and_then(|message| message.parent_id.clone())
+            .unwrap_or(root_id);
         self.typing_poll.wake();
         self.thread = Some(ThreadState {
             root_id: root_id.clone(),
@@ -3816,18 +3891,12 @@ impl AppState {
             let id = message_id;
             let send_future = async {
                 match &target {
-                    Target::Channel => {
-                        api.send_message_with_attachments(
-                            &id,
-                            &channel_id,
-                            &content,
-                            None,
-                            attachment_ids_opt,
-                        )
+                    Target::Channel => api
+                        .send_message_resolved(&id, &channel_id, &content, None, attachment_ids_opt)
                         .await
-                    }
-                    Target::Reply(root_id) => {
-                        api.send_message_with_attachments(
+                        .map(|_| None),
+                    Target::Reply(root_id) => api
+                        .send_message_resolved(
                             &id,
                             &channel_id,
                             &content,
@@ -3835,8 +3904,14 @@ impl AppState {
                             attachment_ids_opt,
                         )
                         .await
+                        .map(|(_, parent)| {
+                            parent
+                                .filter(|parent| parent != root_id)
+                                .map(|parent| (root_id.clone(), parent))
+                        }),
+                    Target::Edit(message_id) => {
+                        api.edit_message(message_id, &content).await.map(|_| None)
                     }
-                    Target::Edit(message_id) => api.edit_message(message_id, &content).await,
                 }
             };
             let (result, is_timeout) =
@@ -3848,12 +3923,13 @@ impl AppState {
                     ),
                 };
             match result {
-                Ok(_) => {
+                Ok(redirected) => {
                     let _ = tx.send(DesktopEvent::App {
                         session_gen,
                         event: AppEvent::SubmissionSucceeded {
                             submission_id,
                             sent_attachment_ids,
+                            redirected,
                         },
                     });
                 }
@@ -7279,11 +7355,90 @@ pub(crate) mod tests {
         state.on_app_event(AppEvent::SubmissionSucceeded {
             submission_id: 1,
             sent_attachment_ids: vec!["att_sent".into()],
+            redirected: None,
         });
 
         // att_sent は削除され、後から追加された att_next は保持される
         assert_eq!(state.pending_attachments.len(), 1);
         assert_eq!(state.pending_attachments[0].local_id, "loc_2");
+    }
+
+    #[test]
+    fn reply_normalized_to_the_root_moves_the_open_thread() {
+        let mut state = connected_state();
+        state.thread = Some(ThreadState {
+            root_id: "child".into(),
+            selected: Some("x".into()),
+        });
+        state.target = Target::Reply("child".into());
+        state.on_app_event(AppEvent::SubmissionSucceeded {
+            submission_id: 9,
+            sent_attachment_ids: Vec::new(),
+            redirected: Some(("other".into(), "root".into())),
+        });
+        assert_eq!(state.thread.as_ref().unwrap().root_id, "child");
+        state.on_app_event(AppEvent::SubmissionSucceeded {
+            submission_id: 9,
+            sent_attachment_ids: Vec::new(),
+            redirected: Some(("child".into(), "root".into())),
+        });
+        assert_eq!(state.thread.as_ref().unwrap().root_id, "root");
+        assert_eq!(state.thread.as_ref().unwrap().selected, None);
+        assert_eq!(state.target, Target::Reply("root".into()));
+    }
+
+    #[test]
+    fn redirected_reply_keeps_attachments_and_saved_drafts_on_the_new_target() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.target = Target::Reply("child".into());
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "late".into(),
+            channel_id: "c1".into(),
+            target: Target::Reply("child".into()),
+            session_gen: state.session_gen,
+            file_name: "late.png".into(),
+            content_type: "image/png".into(),
+            file_size: 1,
+            attachment_id: Some("att-late".into()),
+            is_uploading: false,
+            error: None,
+        });
+        state
+            .saved_drafts
+            .insert(("c1".into(), Target::Reply("child".into())), "keep".into());
+        state
+            .saved_draft_message_ids
+            .insert(("c1".into(), Target::Reply("child".into())), "id1".into());
+        state.retarget_reply("child", "root");
+        assert_eq!(state.target, Target::Reply("root".into()));
+        assert_eq!(state.current_channel_attachments().len(), 1);
+        let to = ("c1".to_string(), Target::Reply("root".into()));
+        assert_eq!(
+            state.saved_drafts.get(&to).map(String::as_str),
+            Some("keep")
+        );
+        assert_eq!(
+            state.saved_draft_message_ids.get(&to).map(String::as_str),
+            Some("id1")
+        );
+        assert!(state.saved_drafts.len() == 1 && state.saved_draft_message_ids.len() == 1);
+
+        // 移動先にも下書きがあるときは、移動元の文面を捨てずに連結する。
+        state
+            .saved_drafts
+            .insert(("c1".into(), Target::Reply("child2".into())), "from".into());
+        state.saved_draft_message_ids.insert(
+            ("c1".into(), Target::Reply("child2".into())),
+            "id-from".into(),
+        );
+        state.retarget_reply("child2", "root");
+        assert_eq!(
+            state.saved_drafts.get(&to).map(String::as_str),
+            Some("keep\nfrom")
+        );
+        assert!(!state.saved_draft_message_ids.contains_key(&to));
+        assert_eq!(state.saved_drafts.len(), 1);
     }
 
     #[test]
@@ -7681,6 +7836,7 @@ pub(crate) mod tests {
         state.on_app_event(AppEvent::SubmissionSucceeded {
             submission_id: resend_submission_id,
             sent_attachment_ids: Vec::new(),
+            redirected: None,
         });
         assert!(state.in_flight_submissions.is_empty());
         assert!(state.composer_draft.is_empty());

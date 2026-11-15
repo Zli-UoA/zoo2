@@ -51,6 +51,7 @@ function context(patch: Partial<E2eeContextValue>): E2eeContextValue {
     cancelLogout: () => {},
     requestKeyBackup: () => {},
     requestKeyBackupImport: () => {},
+    requestSenderReverify: () => {},
     clearForLogout: async () => {},
     sas: null,
     ...patch,

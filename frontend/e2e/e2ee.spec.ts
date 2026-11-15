@@ -15,7 +15,8 @@ import {
  *
  *   1. 初回設定（1 台目。パスキーのスロットとリカバリーキー）
  *   2. 解錠（2 台目。リカバリーキー）
- *   3. 暗号化 DM の送受信（4 台すべてで復号できる）
+ *   3. 暗号化 DM の送受信（4 台すべてで復号できる）。タブを開き直しても、自分の別の端末のメッセージが
+ *      「未検証の送信者」にならない（受け取ったときに確かめられなかった鍵も、あとで判定し直す）
  *   4. 絵文字 SAS 検証（#368。Alice の 1 台目と Bob の 1 台目）
  *   5. 失効（Alice の 1 台目が、パスキーで SSSS を開け直して 2 台目を失効する）
  *   6. 退出（Bob が DM を退出したあとのメッセージは、Bob の端末に鍵を配らない）
@@ -416,6 +417,38 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     // 以降の SAS、失効、退出は 2 人 × 2 端末で確かめるので、3 台目は閉じる（登録した端末は残る）。
     await b3.context.close();
 
+    // 開き直し。送る側（Alice の 1 台目）を開き直すと、送信用の Megolm セッションを作り直して配る。
+    // 受ける側（2 台目）は、その鍵を受け取るときに送信端末を確かめられなかった（古い版の画面、解錠の
+    // 途中など）。ここでは keys/query から署名を抜いて、その状態を作る。開き直したあとは、判定し直して
+    // 「未検証の送信者」が消える（docs/e2ee.md の「受信時の検証」）。
+    const keysQuery = "**/api/e2ee/keys/query";
+    await a2.context.route(keysQuery, async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as Record<string, unknown>;
+      await route.fulfill({ response, json: { ...body, signatures: [] } });
+    });
+    await a1.page.reload();
+    await hideDevtools(a1.page);
+    await expectDecrypted(a1, fromBob);
+    const afterReload = secret("afterreload");
+    await send(a1, afterReload);
+    await expectDecrypted(a2, afterReload);
+    await expect(a2.page.getByText("未検証の送信者", { exact: true })).toHaveCount(1);
+    await a2.page.screenshot({ path: testInfo.outputPath("alice-2-03-unverified.png") });
+    await a2.context.unroute(keysQuery);
+    // 受ける側を開き直す（画面を離れて、もう一度開く）。
+    await a2.page.goto("about:blank");
+    await openChannel(a2, dmId);
+    await expectDecrypted(a2, afterReload);
+    await expectDecrypted(a2, fromAlice);
+    await expect(a2.page.getByText("未検証の送信者", { exact: true })).toHaveCount(0);
+    // もう一度開き直しても、検証済みのまま（判定し直した結果を保存した）。
+    await a2.page.reload();
+    await hideDevtools(a2.page);
+    await expectDecrypted(a2, afterReload);
+    await expect(a2.page.getByText("未検証の送信者", { exact: true })).toHaveCount(0);
+    await a2.page.screenshot({ path: testInfo.outputPath("alice-2-03-reopened.png") });
+
     // 4. 絵文字 SAS 検証（Alice の 1 台目 → Bob）。Bob の端末すべてに要求が届き、1 台目で受け入れる。
     await openSettings(a1, "devices");
     const bobRow = a1.page.getByRole("listitem").filter({ hasText: bob.name });
@@ -547,8 +580,8 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
       const [userId, epoch, sessionId] = row.split("|");
       return { userId: userId!, epoch: Number(epoch), sessionId: sessionId! };
     });
-    expect(rows).toHaveLength(5);
-    const [, , , beforeLeave, last] = rows;
+    expect(rows).toHaveLength(6);
+    const [beforeLeave, last] = rows.slice(-2);
     expect(beforeLeave!.userId).toBe(aliceId);
     expect(last!.userId).toBe(aliceId);
     expect(last!.epoch).toBeGreaterThan(beforeLeave!.epoch);
@@ -585,7 +618,14 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     // ダンプが空でなく、平文で保存する値（DM の ID、ユーザー名）は見つかることを先に確かめる。
     expect(dump).toContain(dmId);
     expect(dump).toContain(alice.preferredUsername);
-    for (const text of [fromAlice, fromBob, afterRevocation, replyAfterRevocation, afterLeave]) {
+    for (const text of [
+      fromAlice,
+      fromBob,
+      afterReload,
+      afterRevocation,
+      replyAfterRevocation,
+      afterLeave,
+    ]) {
       expect(dump, `DB に平文 ${text} が残っている`).not.toContain(text);
     }
   } catch (error) {

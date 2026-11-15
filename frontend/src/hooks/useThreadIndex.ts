@@ -164,7 +164,19 @@ function createIndex(
         }
       }
     };
-    const invalidate = () => {
+    const invalidate = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ id: string; membership: string; userId?: string; config?: object }>
+      ).detail;
+      if (detail?.userId && (detail.userId !== userId || detail.config !== config)) return;
+      if (detail && detail.membership !== "joined") {
+        observed.delete(detail.id);
+        setResult((current) =>
+          current
+            ? { ...current, items: current.items.filter((item) => item.id !== detail.id) }
+            : current,
+        );
+      }
       // 更新前に始まった取得結果で、更新後の一覧を上書きしない。
       fetchedAt = 0;
       generation += 1;
@@ -213,6 +225,13 @@ function createIndex(
   return {
     observeThread: (thread: ThreadSummary) => {
       if (archived || (channelId && thread.channel_id !== channelId)) return;
+      // Viewing a thread must not turn it into a subscribed index entry.
+      if (
+        !thread.thread_archive_at &&
+        thread.reply_count > 0 &&
+        !result?.items.some((item) => item.id === thread.id)
+      )
+        return;
       const previous = observed.get(thread.id)?.thread;
       if (previous && JSON.stringify(previous) === JSON.stringify(thread)) return;
       observed.set(thread.id, { thread, sequence: nextThreadIndexSequence() });

@@ -16,7 +16,7 @@ import type {
 import { reactionKey } from "../emoji/kitchen";
 import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
-import { THREADS_CHANGED } from "./threads";
+import { THREADS_CHANGED, THREAD_REPLY_REDIRECTED, type ThreadReplyRedirect } from "./threads";
 import type {
   ChannelRow,
   ChannelUserRow,
@@ -149,7 +149,15 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
         if (metadata.sensitive_attachment_ids?.length)
           body.sensitive_attachment_ids = metadata.sensitive_attachment_ids;
       }
-      const { txid } = await client.post<MessageRow>("/api/messages", body);
+      const { data, txid } = await client.post<MessageRow>("/api/messages", body);
+      if (row.parent_id && data?.parent_id && data.parent_id !== row.parent_id) {
+        // 未移行の子スレッドからの返信は最上位へ正規化される。表示先も追従させる。
+        window.dispatchEvent(
+          new CustomEvent<ThreadReplyRedirect>(THREAD_REPLY_REDIRECTED, {
+            detail: { from: row.parent_id, to: data.parent_id },
+          }),
+        );
+      }
       if (row.parent_id) {
         // 保存が確定した返信は、Electric の同期や定期取得を待たず一覧に反映する。
         window.dispatchEvent(new Event(THREADS_CHANGED));
