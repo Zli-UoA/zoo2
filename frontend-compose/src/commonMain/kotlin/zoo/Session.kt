@@ -242,6 +242,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 .get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
                 .body()
 
+    /** Static images use the same platform decoder as attachments and animated media. */
+    suspend fun imageBitmap(url: String): androidx.compose.ui.graphics.ImageBitmap =
+        platform.imageFrames(image(url)).first()
+
     fun update(next: Environment) {
         val old = env
         env = next

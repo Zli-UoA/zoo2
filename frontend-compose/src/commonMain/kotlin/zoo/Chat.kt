@@ -26,7 +26,6 @@ import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.json.*
-import org.jetbrains.compose.resources.decodeToImageBitmap
 
 @Composable
 fun Avatar(
@@ -96,7 +95,7 @@ fun RemoteImage(
                     url.startsWith("http://") ||
                     (url.startsWith("/") && !url.startsWith("//"))
             ) {
-                bitmap = app.image(url).decodeToImageBitmap()
+                bitmap = app.imageBitmap(url)
                 onLoaded?.invoke()
             }
         } catch (e: CancellationException) {

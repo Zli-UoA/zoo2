@@ -17,8 +17,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 
 /** One draft survives closing the composer and switching between a post and a reply. */
@@ -70,6 +69,25 @@ class HomeComposerState(internal val settingsKey: String? = null) {
         opened = true
         focusOnOpen?.invoke()
     }
+
+    internal fun submit(scope: CoroutineScope, images: AttachmentDrafts, post: suspend () -> Unit) {
+        if (sending || !scope.isActive) return
+        val release = images.retainForSubmission()
+        sending = true
+        failed = false
+        scope.launch {
+            try {
+                post()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                failed = true
+            }
+        }.invokeOnCompletion {
+            release()
+            sending = false
+        }
+    }
 }
 
 @Composable fun rememberHomeComposerState(): HomeComposerState {
@@ -108,7 +126,6 @@ fun HomeComposer(
     onPost: suspend (Row) -> Unit,
 ) {
     val desktop = LocalViewportWidth.current >= 768f
-    val scope = rememberCoroutineScope()
     val channels by app.repo.channels.rows.collectAsState()
     val memberships by app.repo.members.rows.collectAsState()
     val joined =
@@ -144,7 +161,7 @@ fun HomeComposer(
             "data" to app.platform.invoke("fileRead", file.text("id")),
         )))
     }
-    images.onDiscard = { uploaded -> scope.launch { try { app.api.request("/api/home/images/${uploaded.text("id")}", "DELETE") } catch (e: CancellationException) { throw e } catch (_: Exception) {} }; Unit }
+    images.onDiscard = { uploaded -> app.scope.launch { try { app.api.request("/api/home/images/${uploaded.text("id")}", "DELETE") } catch (e: CancellationException) { throw e } catch (_: Exception) {} }; Unit }
     images.acceptedTypes = imageTypes
     images.maximumBytes = 8L * 1024 * 1024
     images.enabled = state.opened && !state.sending
@@ -287,8 +304,6 @@ fun HomeComposer(
                         accessibleLabel = app.t(if (state.sending) "home.sending" else "home.post"),
                     ) {
                         if (!state.sending && canSend) {
-                            state.sending = true
-                            state.failed = false
                             val payload = buildJsonObject {
                                 put("content", state.content)
                                 if (images.items.isNotEmpty()) put("image_ids", JsonArray(images.items.map { JsonPrimitive(it.uploaded!!.text("id")) }))
@@ -302,25 +317,18 @@ fun HomeComposer(
                                 )
                                 state.replyTarget?.let { put("in_reply_to", it.text("id")) }
                             }
-                            scope.launch {
-                                try {
-                                    latestPost(payload)
-                                    writeHomePreference(app, state.settingsKey, obj("visibility" to state.visibility, "apub" to federated, "channel_id" to selectedChannel.takeIf { it.isNotBlank() }).toString())
-                                    state.federationPreference = federated
-                                    state.channelId = selectedChannel
-                                    state.replyTarget = null
-                                    images.release(images.items.toList())
-                                    images.items.clear()
-                                    images.error = null
-                                    state.content = ""
-                                    state.opened = false
-                                } catch (cancelled: CancellationException) {
-                                    throw cancelled
-                                } catch (_: Exception) {
-                                    state.failed = true
-                                } finally {
-                                    state.sending = false
-                                }
+                            val post = latestPost
+                            state.submit(app.scope, images) {
+                                post(payload)
+                                writeHomePreference(app, state.settingsKey, obj("visibility" to state.visibility, "apub" to federated, "channel_id" to selectedChannel.takeIf { it.isNotBlank() }).toString())
+                                state.federationPreference = federated
+                                state.channelId = selectedChannel
+                                state.replyTarget = null
+                                images.release(images.items.toList())
+                                images.items.clear()
+                                images.error = null
+                                state.content = ""
+                                state.opened = false
                             }
                         }
                     }
