@@ -1,5 +1,5 @@
-import { requestAuthWorker } from "./auth-worker-client";
-import type { AuthWorkerRequest, AuthTokenResponse } from "./auth-worker-protocol";
+import { requestAuthWorker, supportsAuthWorker } from "./auth-worker-client";
+import type { AuthWorkerRequest, AuthWorkerResult } from "./auth-worker-protocol";
 import { decodeJwtPayload, audienceIncludes, issuerMatches } from "./jwt";
 import {
   notifyAuthSessionEnded,
@@ -96,8 +96,9 @@ export interface OidcEnvironment {
   fetch: OidcFetch;
   now(): number;
   isOnline?(): boolean;
+  supportsRefresh?(): boolean;
   /** ブラウザーでは更新を共有ワーカーへ委譲する。テスト環境は直接交換も可能。 */
-  authWorker?(request: AuthWorkerRequest): Promise<AuthTokenResponse | null>;
+  authWorker?(request: AuthWorkerRequest): Promise<AuthWorkerResult | null>;
 }
 
 export interface OidcClientOptions {
@@ -130,6 +131,7 @@ export function createBrowserEnvironment(): OidcEnvironment {
     now: () => Date.now(),
     isOnline: () => navigator.onLine,
     authWorker: requestAuthWorker,
+    supportsRefresh: supportsAuthWorker,
   };
 }
 
@@ -227,6 +229,10 @@ export class OidcClient {
       this.sessionBinding,
       this.environment.now(),
     );
+    if (this.tokens?.refreshToken && this.environment.supportsRefresh?.() === false) {
+      this.tokens = { ...this.tokens, refreshToken: null, refreshSessionId: undefined };
+      writeStoredSession(this.environment.storage, this.sessionBinding, this.tokens);
+    }
   }
 
   get redirectUri(): string {
@@ -628,7 +634,8 @@ export class OidcClient {
       return null;
     }
     try {
-      return (await this.refreshTokens()).accessToken;
+      const refreshed = await this.refreshTokens();
+      return refreshed.expiresAt > this.environment.now() ? refreshed.accessToken : null;
     } catch {
       if (this.generation === generation && this.tokens === tokens) {
         this.resetSession();
@@ -640,6 +647,15 @@ export class OidcClient {
   }
 
   resetSession(): void {
+    const refreshSessionId = this.tokens?.refreshSessionId;
+    if (refreshSessionId && this.environment.authWorker) {
+      // ローカル状態の破棄は同期で行い、保存先の資格情報も終了する。
+      void this.environment
+        .authWorker({ kind: "logout", sessionId: refreshSessionId })
+        .catch(() => {
+          // 保存先が一時的に使えなければ、次回Worker利用時の未使用行の掃除へ委ねる。
+        });
+    }
     this.loginPreparation = null;
     this.discardPendingLogoutOperation();
     this.generation += 1;
@@ -697,11 +713,18 @@ export class OidcClient {
     if (!responseBody) throw new OidcError("invalid_token_response", "更新結果がありません");
     // refresh 応答に id_token が無い IdP でも、logout の id_token_hint 用に
     // 前回の値を引き継ぐ。
-    const tokens = this.parseTokens(responseBody, null, {
-      refreshToken,
-      refreshSessionId: current?.refreshSessionId,
-      idToken: current?.idToken ?? null,
-    });
+    const tokens = this.parseTokens(
+      responseBody,
+      null,
+      {
+        refreshToken,
+        refreshSessionId: current?.refreshSessionId,
+        idToken: current?.idToken ?? null,
+      },
+      this.environment.authWorker
+        ? Number((responseBody as AuthWorkerResult).expiresAt)
+        : undefined,
+    );
     if (this.generation !== generation) {
       // 更新中にログアウト等でセッションが破棄された。新しいトークンは捨てる。
       throw new OidcError("session_reset", "セッションが破棄されました");
@@ -761,6 +784,7 @@ export class OidcClient {
         workerCleared = false;
       }
     }
+    if (this.generation !== generation || this.pendingLogoutOperation !== logoutOperation) return;
     if (
       !workerCleared ||
       !storedSessionCleared ||
@@ -839,7 +863,11 @@ export class OidcClient {
     body: TokenResponse,
     expectedNonce: string | null,
     previous: { refreshToken: string | null; refreshSessionId?: string; idToken: string | null },
+    absoluteExpiresAt?: number,
   ): OidcTokens {
+    if (absoluteExpiresAt !== undefined && !Number.isFinite(absoluteExpiresAt)) {
+      throw new OidcError("invalid_token_response", "有効期限が不正です");
+    }
     const accessToken = body.access_token;
     if (typeof accessToken !== "string" || accessToken.length === 0) {
       throw new OidcError("invalid_token_response", "access_token がありません");
@@ -857,13 +885,17 @@ export class OidcClient {
         ? body.expires_in
         : 300;
     const refreshToken =
-      typeof body.refresh_token === "string" ? body.refresh_token : previous.refreshToken;
+      this.environment.supportsRefresh?.() === false
+        ? null
+        : typeof body.refresh_token === "string"
+          ? body.refresh_token
+          : previous.refreshToken;
     return {
       accessToken,
       refreshToken,
       ...(refreshToken ? { refreshSessionId: previous.refreshSessionId ?? createState() } : {}),
       idToken: idToken ?? previous.idToken,
-      expiresAt: this.environment.now() + expiresIn * 1000,
+      expiresAt: absoluteExpiresAt ?? this.environment.now() + expiresIn * 1000,
     };
   }
 
