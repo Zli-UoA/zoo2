@@ -16,6 +16,7 @@ export function DefaultChannelsSettings() {
   const [error, setError] = useState(false);
   const [pending, setPending] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [refreshed, setRefreshed] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     setError(false);
@@ -40,6 +41,7 @@ export function DefaultChannelsSettings() {
       description={t("defaultChannels.description")}
     >
       <p className="text-xs text-muted-foreground">{t("defaultChannels.limit")}</p>
+      {refreshed && settings ? <p role="alert">{t("defaultChannels.refreshed")}</p> : null}
       {error ? <p role="alert">{t("common.writeError")}</p> : null}
       {!settings ? (
         error ? (
@@ -55,6 +57,7 @@ export function DefaultChannelsSettings() {
           onSubmit={async (event) => {
             event.preventDefault();
             if (pending) return;
+            setRefreshed(false);
             if (selected.length > 100) {
               setError(true);
               return;
@@ -77,6 +80,8 @@ export function DefaultChannelsSettings() {
                 "code" in cause.body &&
                 cause.body.code === "default_channel_unavailable"
               ) {
+                setSettings(null);
+                setRefreshed(true);
                 setRevision((value) => value + 1);
               } else {
                 setError(true);

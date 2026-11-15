@@ -143,6 +143,7 @@ export const ChannelBecameUnavailable: Story = {
     await waitFor(() =>
       expect(screen.queryByRole("checkbox", { name: "#general" })).not.toBeInTheDocument(),
     );
+    await expect(await screen.findByRole("alert")).toHaveTextContent("一覧を更新しました");
     await userEvent.click(await screen.findByRole("checkbox", { name: "#help" }));
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
     await expect(await screen.findByRole("status")).toHaveTextContent("保存しました。");
