@@ -103,7 +103,7 @@ jobs:
         run: cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
       - name: Build, test and lint Android
         working-directory: frontend-compose
-        run: ./gradlew --no-daemon -Pzoo.android=true :androidApp:assembleDebug :androidApp:testDebugUnitTest :androidApp:lintDebug testDebugUnitTest
+        run: ./gradlew --no-daemon -Pzoo.android=true testDebugUnitTest :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:lintDebug
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zoo-android-debug
