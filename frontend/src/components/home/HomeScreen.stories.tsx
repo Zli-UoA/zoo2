@@ -2133,6 +2133,22 @@ export const QuotedRenote: Story = {
   parameters: {
     msw: {
       handlers: [
+        http.get("*/summaly-endpoint", () =>
+          HttpResponse.text("https://storybook.example/summaly"),
+        ),
+        http.get("*/media-proxy-endpoint", () =>
+          HttpResponse.text("https://storybook.example/media"),
+        ),
+        http.get("https://storybook.example/summaly", ({ request }) => {
+          const url = new URL(request.url).searchParams.get("url")!;
+          return HttpResponse.json({
+            title: url.endsWith("quoted-original")
+              ? "コメント付き引用の元投稿"
+              : "コメントなし引用の元投稿",
+            description: "引用先URLを解決したプレビュー本文",
+            sitename: "Misskey",
+          });
+        }),
         http.get("*/api/home", () =>
           HttpResponse.json([
             {
@@ -2152,6 +2168,12 @@ export const QuotedRenote: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("引用へのコメント")).toBeVisible();
+    await expect(
+      await canvas.findByRole("link", { name: /コメント付き引用の元投稿/ }),
+    ).toBeVisible();
+    await expect(
+      await canvas.findByRole("link", { name: /コメントなし引用の元投稿/ }),
+    ).toBeVisible();
     for (const url of [
       "https://misskey.example/notes/quoted-original",
       "https://misskey.example/notes/quoted-without-comment",

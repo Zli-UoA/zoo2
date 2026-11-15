@@ -1,6 +1,7 @@
 import { SensitiveMedia } from "../ui/sensitive-media";
 import { ImagePreview } from "../ui/image-preview";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
+import { LinkPreviews } from "../chat/messages/LinkPreviews";
 import { MessageAttachments } from "../chat/messages/MessageAttachments";
 import type { AttachmentMetadata } from "../../lib/attachments";
 import { useOptionalCollections } from "../../lib/electric/collections-context";
@@ -35,6 +36,7 @@ export function HomePostContent({
   return (
     <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
       {content.trim() ? <ActivityPubContent text={content} emojis={emojis} /> : null}
+      <LinkPreviews content={content} />
       <MessageAttachments attachments={attachments} />
       {media.length && !attachments.length ? (
         <div className="mt-2 grid grid-cols-2 gap-2">

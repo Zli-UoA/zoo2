@@ -2,6 +2,7 @@ import "../../../styles.css";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { ApiError } from "../../../lib/api/client";
+import { HomePostContent } from "../../home/HomePostContent";
 import { LinkPreviews } from "./LinkPreviews.tsx";
 import { DEFAULT_CONFIG } from "../../../lib/config";
 import { http, HttpResponse } from "msw";
@@ -10,7 +11,8 @@ import { mockServer } from "../../../test/browser-setup";
 const previewConfig = { ...DEFAULT_CONFIG, summalyUrl: "https://summaly.example/url" };
 const api = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("../../../lib/summaly", () => ({ createSummalyClient: () => api }));
-vi.mock("../../../lib/electric/collections-context", () => ({
+vi.mock("../../../lib/electric/collections-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/electric/collections-context")>()),
   useOptionalCollections: () => ({
     config: previewConfig,
   }),
@@ -170,4 +172,51 @@ it("does not retry permanent API failures", async () => {
   expect(api.get).toHaveBeenCalledTimes(1);
   expect(screen.getByRole("link")).toBeInTheDocument();
   expect(screen.getByRole("link").getBoundingClientRect().height).toBe(128);
+});
+
+it("resolves quoted renotes in Home and shares a pending lookup with chat", async () => {
+  const url = "https://misskey.example/notes/home-quoted-original";
+  let finish!: (data: unknown) => void;
+  api.get.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const view = render(
+    <>
+      <HomePostContent content={`**引用へのコメント**\n\n<${url}>`} />
+      <HomePostContent content={`<${url}>`} />
+      <LinkPreviews content={url} />
+    </>,
+  );
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1));
+  expect(api.get).toHaveBeenCalledWith(url, expect.any(Object));
+  expect(screen.getByText("引用へのコメント")).toBeInTheDocument();
+  // Removing one consumer must not cancel the other cards' shared request.
+  view.rerender(
+    <>
+      <HomePostContent content={`<${url}>`} />
+    </>,
+  );
+  expect(api.get.mock.calls[0][1].signal.aborted).toBe(false);
+  finish({ title: "引用元の投稿", description: "引用元の本文", image: null });
+  const card = await screen.findByRole("link", { name: /引用元の投稿/ });
+  expect(card).toHaveAttribute("href", url);
+  expect(screen.getByText("引用元の本文")).toBeInTheDocument();
+  for (const width of [280, 960]) {
+    view.container.style.width = `${width}px`;
+    expect(card.getBoundingClientRect().width).toBeLessThanOrEqual(width);
+    expect(card.scrollWidth).toBeLessThanOrEqual(card.clientWidth);
+  }
+  expect(api.get).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the quote link when its Home preview cannot be resolved", async () => {
+  const url = "https://misskey.example/notes/home-missing-quote";
+  api.get.mockRejectedValue(new ApiError(404, "missing"));
+  render(<HomePostContent content={`<${url}>`} />);
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1));
+  expect(screen.getAllByRole("link").every((link) => link.getAttribute("href") === url)).toBe(true);
+  expect(screen.getByRole("link", { name: url.replace("https://", "") })).toBeInTheDocument();
 });
