@@ -153,8 +153,6 @@ export const CleanupSuggested: Story = {
   },
   play: playForImplementation(async ({ args, canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("使っていない端末があります")).toBeInTheDocument();
-    await expect(canvas.getByText(/印の付いた 2 台は/)).toBeInTheDocument();
     await expect(canvas.getByText("30 日以上使っていない")).toBeInTheDocument();
     await expect(canvas.getByText("解錠しないまま 7 日以上使っていない")).toBeInTheDocument();
     // 削除は、これまでどおり確認してから行う。

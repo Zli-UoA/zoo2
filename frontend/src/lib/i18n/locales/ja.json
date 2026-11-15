@@ -1305,10 +1305,7 @@
       "limitDelete": "選んだ端末を削除する",
       "limitDeleted": "削除しました。まもなくこの端末を登録し直します。",
       "stale": "{{days}} 日以上使っていない",
-      "notUnlockedStale": "解錠しないまま {{days}} 日以上使っていない",
-      "cleanupTitle": "使っていない端末があります",
-      "cleanupDescription_one": "印の付いた {{count}} 台は、{{days}} 日以上使っていないか、解錠しないまま {{unlockDays}} 日以上使っていません。もう使っていない端末なら削除してください。自動では削除しません。なくした端末や見覚えのない端末は、「失効を始める」から削除してください。",
-      "cleanupDescription_other": "印の付いた {{count}} 台は、{{days}} 日以上使っていないか、解錠しないまま {{unlockDays}} 日以上使っていません。もう使っていない端末なら削除してください。自動では削除しません。なくした端末や見覚えのない端末は、「失効を始める」から削除してください。"
+      "notUnlockedStale": "解錠しないまま {{days}} 日以上使っていない"
     },
     "deviceName": {
       "withOs": "{{browser}}（{{os}}）",

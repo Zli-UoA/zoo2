@@ -378,9 +378,6 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
   const cleanup = new Map(
     state.devices.map((device) => [device.deviceId, cleanupReasons(device, { now, anySigned })]),
   );
-  const candidates = state.devices.filter(
-    (device) => (cleanup.get(device.deviceId)?.length ?? 0) > 0,
-  ).length;
   return (
     <SettingsSection title={t("e2ee.devices.title")} description={t("e2ee.devices.description")}>
       <ErrorMessage code={state.error} />
@@ -388,25 +385,6 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
         <Button variant="outline" size="sm" disabled={busy} onClick={handlers.onRetry}>
           {t("e2ee.retry")}
         </Button>
-      ) : null}
-      {candidates > 0 ? (
-        // 使っていない端末の整理を勧める（自動では消さない。消すかは利用者が下の一覧で決める）。
-        <div
-          role="status"
-          className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300"
-        >
-          <p className="flex items-center gap-2 font-medium">
-            <ClockIcon aria-hidden="true" className="size-4 shrink-0" />
-            {t("e2ee.devices.cleanupTitle")}
-          </p>
-          <p className="text-xs">
-            {t("e2ee.devices.cleanupDescription", {
-              count: candidates,
-              days: STALE_DEVICE_DAYS,
-              unlockDays: NOT_UNLOCKED_UNUSED_DAYS,
-            })}
-          </p>
-        </div>
       ) : null}
       <ul className="divide-y rounded-md border">
         {state.devices.map((device) => (

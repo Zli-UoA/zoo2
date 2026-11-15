@@ -1305,10 +1305,7 @@
       "limitDelete": "删除所选设备",
       "limitDeleted": "已删除。稍后将重新注册此设备。",
       "stale": "{{days}} 天以上未使用",
-      "notUnlockedStale": "未解锁，{{days}} 天以上未使用",
-      "cleanupTitle": "有设备似乎已不再使用",
-      "cleanupDescription_one": "标记的 {{count}} 台设备已 {{days}} 天以上未使用，或在未解锁的状态下 {{unlockDays}} 天以上未使用。如果不再使用，请将其删除。设备不会被自动删除。丢失或陌生的设备，请从“开始吊销”中删除。",
-      "cleanupDescription_other": "标记的 {{count}} 台设备已 {{days}} 天以上未使用，或在未解锁的状态下 {{unlockDays}} 天以上未使用。如果不再使用，请将其删除。设备不会被自动删除。丢失或陌生的设备，请从“开始吊销”中删除。"
+      "notUnlockedStale": "未解锁，{{days}} 天以上未使用"
     },
     "deviceName": {
       "withOs": "{{browser}}（{{os}}）",
