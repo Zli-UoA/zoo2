@@ -363,6 +363,7 @@ pub fn reformat_stored(content: &str) -> Option<String> {
         let code = if c == '`' { raw_code_len(rest) } else { None };
         let atom = match c {
             '[' => markdown_link_len(rest),
+            '@' | '#' => mention_len(rest),
             'h' if !prev.is_some_and(|p| p.is_ascii_alphanumeric()) => bare_url_len(rest),
             _ => None,
         };
@@ -394,6 +395,17 @@ fn raw_code_len(s: &str) -> Option<usize> {
     let rest = &s[1..];
     let end = rest.find(['`', '\n'])?;
     (end > 0 && rest.as_bytes()[end] == b'`').then_some(1 + end + 1)
+}
+
+/// `@name` / `#name` の長さ (バイト)。名前は、英数字 (日本語を含む) と `_` `-` `.` が続く間。末尾の `.` は含めない。
+/// 名前の中の `_` を、書式の記号として扱わないための範囲 (`convert_token` が作るメンション・チャンネル名と同じ扱い)
+fn mention_len(s: &str) -> Option<usize> {
+    let name = &s[1..];
+    let end = name
+        .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | '.')))
+        .unwrap_or(name.len());
+    let len = name[..end].trim_end_matches('.').len();
+    (len > 0).then_some(1 + len)
 }
 
 /// `[label](https://…)` の長さ (バイト)。ラベルの中の閉じたコード (`` `a` ``) は許し、URL の中の括弧は
@@ -770,6 +782,21 @@ mod tests {
             Some("`[a` **b** `](https://example.com)`")
         );
         assert_eq!(r("see https://a.test/x`*y*`").as_deref(), None,);
+        // メンションとチャンネル名の中の `_` は、書式の記号にしない
+        assert_eq!(r("#開発_連絡 と #開発_雑談"), None);
+        assert_eq!(
+            r("_詳細は #dev_連絡 を参照_").as_deref(),
+            Some("<i>詳細は #dev_連絡 を参照</i>")
+        );
+        assert_eq!(
+            r("@_taro さん、_確認_").as_deref(),
+            Some("@_taro さん、<i>確認</i>")
+        );
+        assert_eq!(r("_see @taro_x and #dev_y_").as_deref(), None);
+        assert_eq!(
+            r("*@taro_x* と _確認_").as_deref(),
+            Some("**@taro_x** と <i>確認</i>")
+        );
         // 括弧で囲んだ URL の閉じ括弧は、URL に含めない
         assert_eq!(
             r("(_https://a.test/x_)").as_deref(),
