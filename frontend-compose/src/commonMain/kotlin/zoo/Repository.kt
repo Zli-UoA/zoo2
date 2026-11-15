@@ -88,6 +88,9 @@ class SyncedTable(
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
     private val serverRows = MutableStateFlow<List<Row>>(emptyList())
     val replicatedRows: StateFlow<List<Row>> = serverRows.asStateFlow()
+    private val successfulSnapshot = MutableStateFlow<List<Row>?>(null)
+    /** Only committed network snapshots; cache loads, resets and failures never publish here. */
+    val synchronizedRows: StateFlow<List<Row>?> = successfulSnapshot.asStateFlow()
     private val optimistic = MutableStateFlow<Map<String, Row?>>(emptyMap())
     val optimisticChanges = optimistic.asStateFlow()
     val rows =
@@ -183,6 +186,8 @@ class SyncedTable(
             }
             fun acceptSnapshot(rows: List<Row>) {
                 serverRows.value = rows
+                error.value = null
+                successfulSnapshot.value = rows.toList()
                 loading.value = false
                 snapshots.trySend(rows.toList())
             }
@@ -323,6 +328,10 @@ class Repository(
     val members = SyncedTable("channel_users", config, platform, http, scope, synchronize = synchronize)
     val notifications = SyncedTable("notifications", config, platform, http, scope, synchronize = synchronize)
     private val dynamic = mutableMapOf<Pair<String, String>, SyncedTable>()
+
+    /** Read an existing subscription without starting a channel stream for an OS notification. */
+    fun cachedMessages(channelId: String): List<Row> =
+        dynamic["messages" to channelId]?.replicatedRows?.value.orEmpty()
 
     fun table(name: String, channelId: String = ""): SyncedTable =
         when (name) {

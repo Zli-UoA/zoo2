@@ -8,7 +8,6 @@ import android.os.Build
 import android.net.Uri
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.combine
 import zoo.*
 
 /** Notifications use the live authenticated session; credentials are never put in intents. */
@@ -37,9 +36,8 @@ internal class AndroidNotifications(private val activity: Activity, private val 
             ).apply { enableVibration(true) })
         }
         observer = app.scope.launch {
-            combine(app.repo.notifications.rows, app.repo.notifications.loading) { rows, loading -> rows to loading }
-                .collectLatest { (rows, loading) ->
-                if (loading) return@collectLatest
+            app.repo.notifications.synchronizedRows.collectLatest { rows ->
+                if (rows == null) return@collectLatest
                 val unread = rows.filterNot { it.flag("is_read") }.associateBy { it.text("id") }
                 shown.keys.toList().filter { it !in unread }.forEach(::dismiss)
                 unread.forEach { (id, row) -> if (id in shown) shown[id] = row }
@@ -69,8 +67,11 @@ internal class AndroidNotifications(private val activity: Activity, private val 
     private fun canReply(row: Row): Boolean {
         val channel = app.repo.channels.rows.value.find { it.text("id") == row.text("channel_id") }
         return channel != null && !channel.flag("encrypted") && !channel.present("archive_at") &&
-            row.text("message_id").isNotEmpty()
+            replyParent(row) != null
     }
+
+    private fun replyParent(row: Row): String? =
+        notificationReplyParent(row, app.repo.cachedMessages(row.text("channel_id")))
 
     private fun post(row: Row, error: String? = null) {
         if (!allowed()) return
@@ -135,10 +136,12 @@ internal class AndroidNotifications(private val activity: Activity, private val 
                         ?.takeIf { it.isNotEmpty() } ?: return
                     if (id !in replied) {
                         try {
+                            // Do not guess a root when the channel subscription has been released.
+                            val parent = replyParent(row) ?: run { post(row, app.t("common.writeError")); return }
                             app.api.request("/api/messages", "POST", obj(
                                 "id" to replyIds.getOrPut(id) { app.platform.uuid() },
                                 "channel_id" to row.text("channel_id"),
-                                "parent_id" to row.text("message_id"),
+                                "parent_id" to parent,
                                 "content" to text,
                             ))
                             replied += id
