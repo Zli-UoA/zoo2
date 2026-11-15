@@ -48,7 +48,11 @@ export class AuthWorkerState {
   constructor(private readonly environment: AuthWorkerEnvironment) {}
 
   async run(request: AuthWorkerRequest): Promise<AuthWorkerResult | null> {
-    if (request.kind === "refresh") await this.cleanup();
+    if (request.kind === "refresh") {
+      await this.cleanup().catch(() => {
+        // 他セッションの掃除が失敗しても、要求元の更新は通常どおり試す。
+      });
+    }
     return this.environment.exclusive(request.sessionId, async () => {
       const { store } = this.environment;
       const saved = await store.get(request.sessionId);
@@ -102,12 +106,12 @@ export class AuthWorkerState {
           }
         });
       }
-      this.nextCleanupAt = this.environment.now() + CLEANUP_INTERVAL_MS;
     };
     this.cleanupPromise = clean();
     try {
       await this.cleanupPromise;
     } finally {
+      this.nextCleanupAt = this.environment.now() + CLEANUP_INTERVAL_MS;
       this.cleanupPromise = null;
     }
   }
