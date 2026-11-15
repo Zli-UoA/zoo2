@@ -273,6 +273,7 @@
       "states": [
         "Default",
         "EncryptedBeforeEncryptionRow",
+        "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",
         "HoverActions",
         "WithReactions",
@@ -342,6 +343,8 @@
       "states": [
         "Empty",
         "WithReplies",
+        "EncryptedRepliesAfterEncryption",
+        "EncryptedRootAfterEncryption",
         "Archived",
         "ArchivedReadOnly",
         "ArchivedNotJoined",

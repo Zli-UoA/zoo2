@@ -1,12 +1,13 @@
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { StoryShell } from "../../../../.storybook/shell";
-import type { Meta, StoryObj } from "@storybook/react-vite";
+import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 
 import { MfmChannelsProvider } from "./MfmChannels";
 import { storyChannels, storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
 import { storyCommands, storyDeploymentCard } from "../../../../.storybook/app-fixtures";
+import { MessageDecryptionsProvider } from "../../../lib/e2ee/messageDecryption";
 import { ThreadPane } from "./ThreadPane";
 import { ThreadPaneStatus } from "./ThreadPaneStatus";
 import type { FeedMessage } from "./messageFormat";
@@ -311,5 +312,39 @@ export const LegacyNestedReply: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: /2.*返信/ }));
     await expect(args.onOpenThread).toHaveBeenCalledWith("reply-1");
+  }),
+};
+
+// 暗号化チャンネルで、チャンネルのうち最初の暗号化したメッセージより後の平文の行（正しいサーバーは作れない）に、
+// スレッドのペインでも警告を付ける（#367）。それより前の行（切り替える前のメッセージ）には付けない。
+const encryptedSince =
+  (since: string): Decorator =>
+  (Story) => (
+    <MessageDecryptionsProvider
+      decryptions={new Map()}
+      mentionUserNames={new Map()}
+      encrypted
+      encryptedSince={since}
+    >
+      <Story />
+    </MessageDecryptionsProvider>
+  );
+
+export const EncryptedRepliesAfterEncryption: Story = {
+  decorators: [encryptedSince("2026-01-02 09:05:30.000")],
+  args: { replies },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // 親（09:05）は切り替える前なので印を付けず、後の返信 3 件だけに警告を付ける。
+    await expect(await canvas.findAllByText("暗号化されていません")).toHaveLength(3);
+  }),
+};
+
+export const EncryptedRootAfterEncryption: Story = {
+  decorators: [encryptedSince("2026-01-02 09:00:00.000")],
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // 親も、最初の暗号化したメッセージより後なら警告を付ける。
+    await expect(await canvas.findAllByText("暗号化されていません")).toHaveLength(1);
   }),
 };
