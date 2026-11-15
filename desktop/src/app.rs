@@ -3323,6 +3323,12 @@ impl AppState {
             self.thread = None;
             return;
         }
+        let root_id = self
+            .current_channel
+            .as_deref()
+            .and_then(|channel| self.store.message(channel, &root_id))
+            .and_then(|message| message.parent_id.clone())
+            .unwrap_or(root_id);
         self.typing_poll.wake();
         self.thread = Some(ThreadState {
             root_id: root_id.clone(),

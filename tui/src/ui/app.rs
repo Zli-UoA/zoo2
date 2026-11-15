@@ -62,6 +62,7 @@ pub enum AppEvent {
     ThreadsChanged {
         reopened: Option<String>,
     },
+    ThreadLeft(String),
     ReadStatesPollFinished,
     EmojiPollFinished,
     TypingPollFinished,
@@ -563,6 +564,12 @@ impl App {
                     "スレッド一覧を取得できませんでした: {message}。一覧の再試行を選んでください"
                 ));
             }
+            AppEvent::ThreadLeft(id) => {
+                self.active_threads.retain(|thread| thread.id != id);
+                self.archived_threads.retain(|thread| thread.id != id);
+                self.threads_requested_at = [Some(Instant::now()); 2];
+                self.refresh_threads();
+            }
             AppEvent::ThreadsChanged { reopened } => {
                 if let Some(id) = reopened {
                     self.locally_reopened_threads.insert(
@@ -777,34 +784,14 @@ impl App {
 
     /// 再開成功・購読で確認した再開を、一覧の再取得を待たず反映する。
     fn ensure_active_thread(&mut self, id: &str) {
-        let archived = self
-            .archived_threads
-            .iter()
-            .position(|thread| thread.id == id)
-            .map(|index| self.archived_threads.remove(index));
+        // Reopening alone is not joining. Only the participant-filtered API
+        // may add a persistent entry; the viewed Open thread has its own row.
         if let Some(thread) = self
             .active_threads
             .iter_mut()
             .find(|thread| thread.id == id)
         {
             thread.thread_archive_at = None;
-            return;
-        }
-        let cached = archived.or_else(|| {
-            self.store.channels().into_iter().find_map(|channel| {
-                let root = self.store.message(&channel.id, id)?;
-                Some(ThreadSummary {
-                    id: root.id.clone(),
-                    channel_id: root.channel_id.clone(),
-                    content: root.content.chars().take(160).collect(),
-                    thread_archive_at: None,
-                    reply_count: self.store.replies(&channel.id, id).len() as u64,
-                })
-            })
-        });
-        if let Some(mut thread) = cached {
-            thread.thread_archive_at = None;
-            self.active_threads.insert(0, thread);
         }
     }
 
@@ -874,12 +861,7 @@ impl App {
             for thread in self.threads().filter(|thread| {
                 joined
                     && thread.channel_id == channel.id
-                    && (!self.thread_is_archived(&channel.id, &thread.id)
-                        || (self.current.as_deref() == Some(channel.id.as_str())
-                            && self
-                                .thread
-                                .as_ref()
-                                .is_some_and(|selected| selected.root_id == thread.id)))
+                    && !self.thread_is_archived(&channel.id, &thread.id)
             }) {
                 items.push(SidebarItem::Thread {
                     channel_id: channel.id.clone(),
@@ -895,8 +877,8 @@ impl App {
                 };
                 if !items.contains(&selected)
                     && self.store.message(&channel.id, &thread.root_id).is_some()
-                    && (self.thread_is_archived(&channel.id, &thread.root_id)
-                        || !self.store.replies(&channel.id, &thread.root_id).is_empty())
+                    && !self.thread_is_archived(&channel.id, &thread.root_id)
+                    && !self.store.replies(&channel.id, &thread.root_id).is_empty()
                 {
                     items.push(selected);
                 }
@@ -1381,13 +1363,7 @@ impl App {
                 return;
             }
             Focus::Messages => self.selected.clone(),
-            Focus::Thread => self.thread.as_ref().and_then(|thread| {
-                thread
-                    .selected
-                    .as_ref()
-                    .filter(|id| **id != thread.root_id)
-                    .cloned()
-            }),
+            Focus::Thread => None,
         };
         if let Some(root_id) = root_id {
             self.typing_poll.wake();
@@ -1603,6 +1579,29 @@ impl App {
 
     /// サイドバーでは選択中のチャンネル、それ以外では開いているチャンネルを対象にする。
     fn join_or_leave(&mut self, join: bool) {
+        let thread_id = match self.focus {
+            Focus::Thread => self.thread.as_ref().map(|thread| thread.root_id.clone()),
+            Focus::Sidebar => match self.sidebar_items().get(self.sidebar_index) {
+                Some(SidebarItem::Thread { id, .. }) => Some(id.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(id) = thread_id {
+            let api = self.api.clone();
+            let tx = self.app_tx.clone();
+            self.spawn_api("スレッドの参加・退出", async move {
+                if join {
+                    api.join_thread(&id).await?;
+                    let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
+                } else {
+                    api.leave_thread(&id).await?;
+                    let _ = tx.send(AppEvent::ThreadLeft(id));
+                }
+                Ok(())
+            });
+            return;
+        }
         let channel_id = match self.focus {
             Focus::Sidebar => self
                 .sidebar_items()
@@ -1941,9 +1940,9 @@ mod tests {
             .unwrap();
         assert!(matches!(&event, AppEvent::ThreadsChanged { reopened: Some(id) } if id == "root"));
         app.on_app_event(event);
-        assert!(app.active_threads[0].thread_archive_at.is_none());
+        assert!(app.active_threads.is_empty());
         app.close_thread();
-        assert!(app.sidebar_items().contains(&SidebarItem::Thread {
+        assert!(!app.sidebar_items().contains(&SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "root".into(),
         }));
@@ -1953,7 +1952,7 @@ mod tests {
             .unwrap();
         assert!(matches!(&event, AppEvent::ThreadsFailed { .. }));
         app.on_app_event(event);
-        assert!(app.active_threads[0].thread_archive_at.is_none());
+        assert!(app.active_threads.is_empty());
         assert!(
             app.notice
                 .as_ref()

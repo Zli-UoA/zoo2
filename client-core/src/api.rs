@@ -363,6 +363,26 @@ impl ApiClient {
         self.get(&path).await
     }
 
+    /// Thread membership does not grant channel access. Joining is available
+    /// without having sent a message; leaving persists across reopen operations.
+    pub async fn join_thread(&self, id: &str) -> Result<Option<String>> {
+        self.write(
+            Method::POST,
+            &format!("/api/threads/{}/join", segment(id)),
+            None,
+        )
+        .await
+    }
+
+    pub async fn leave_thread(&self, id: &str) -> Result<Option<String>> {
+        self.write(
+            Method::POST,
+            &format!("/api/threads/{}/leave", segment(id)),
+            None,
+        )
+        .await
+    }
+
     pub async fn unarchive_thread(&self, id: &str) -> Result<Option<String>> {
         let path = format!("/api/threads/{}/unarchive", segment(id));
         self.write(Method::POST, &path, None).await

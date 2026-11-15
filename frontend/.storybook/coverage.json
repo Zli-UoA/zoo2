@@ -338,7 +338,13 @@
         "Mobile",
         "Completions",
         "AppCard",
-        "RootLoadError"
+        "RootLoadError",
+        "NotParticipating",
+        "Participating",
+        "LeftThread",
+        "MembershipPending",
+        "MembershipFailed",
+        "ReopenArchived"
       ]
     },
     {

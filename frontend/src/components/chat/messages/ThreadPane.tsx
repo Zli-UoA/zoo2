@@ -33,7 +33,13 @@ export interface ThreadPaneProps {
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
   replies: FeedMessage[];
-  onOpenThread?: (messageId: string) => void;
+  membership?: "none" | "joined" | "left";
+  membershipPending?: boolean;
+  membershipError?: boolean;
+  onMembershipRetry?: () => void;
+  onJoinThread?: () => void;
+  onLeaveThread?: () => void;
+  onReopenThread?: () => void;
   isLoading: boolean;
   isError: boolean;
   currentUserId: string | null;
@@ -91,7 +97,13 @@ export function ThreadPane({
   onTyping,
   root,
   replies,
-  onOpenThread,
+  membership,
+  membershipPending = false,
+  membershipError = false,
+  onMembershipRetry,
+  onJoinThread,
+  onLeaveThread,
+  onReopenThread,
   isLoading,
   isError,
   currentUserId,
@@ -218,6 +230,47 @@ export function ThreadPane({
         </Button>
       </PaneHeader>
 
+      {!readOnly && isMember ? (
+        <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
+          {isArchived && onReopenThread ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={membershipPending || isOffline}
+              onClick={onReopenThread}
+            >
+              {t("threads.reopen")}
+            </Button>
+          ) : null}
+          {membership === "joined" && onLeaveThread ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={membershipPending || isOffline}
+              onClick={onLeaveThread}
+            >
+              {t("threads.leave")}
+            </Button>
+          ) : !isArchived && onJoinThread ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={membership === undefined || membershipPending || isOffline}
+              onClick={onJoinThread}
+            >
+              {t("threads.join")}
+            </Button>
+          ) : null}
+          {membershipError ? (
+            <p role="alert" className="text-xs text-destructive">
+              {t("threads.membershipError")}{" "}
+              <Button variant="ghost" size="sm" onClick={onMembershipRetry}>
+                {t("offline.retry")}
+              </Button>
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <div className="max-h-60 shrink-0 overflow-y-auto border-b bg-muted/30 px-2 py-2">
         <MessageRow
           item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
@@ -308,7 +361,6 @@ export function ThreadPane({
                   onSaveEdit={onSaveEdit}
                   onRequestDelete={() => onRequestDelete(item.message.id)}
                   replyCount={item.message.display_data?.reply_count ?? 0}
-                  onOpenThread={onOpenThread ? () => onOpenThread(item.message.id) : undefined}
                   reactions={
                     item.message.display_data
                       ? (groupReactions(item.message.display_data.reactions, currentUserId).get(
@@ -334,6 +386,9 @@ export function ThreadPane({
 
       {!readOnly ? (
         <>
+          {isArchived ? (
+            <p className="px-3 py-2 text-xs text-muted-foreground">{t("threads.reopenOnSend")}</p>
+          ) : null}
           <TypingIndicator users={typingUsers} />
           <Composer
             commands={commands}

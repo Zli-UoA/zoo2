@@ -1,3 +1,4 @@
+import { useThreadMembership } from "../../../hooks/useThreadMembership";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
@@ -283,10 +284,30 @@ export function MessagePane({
     threadRootId,
     !readOnly && isMember && !!currentUserId && !!threadRootId,
   );
+  const [legacyThreadTarget, setLegacyThreadTarget] = useState<{ root: string; target: string }>();
+  const threadMembership = useThreadMembership(currentUserId, threadRootId);
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRootRow = threadRootQuery.data?.[0] ?? null;
   const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
   const threadIsArchived = !!threadRoot?.thread_archive_at;
+  // Legacy links to nested threads resolve to the canonical root. Message IDs
+  // themselves remain stable, so navigation can still highlight the old target.
+  useEffect(() => {
+    const canonical = threadMembership.data?.id;
+    if (canonical && canonical !== threadRootId) {
+      setLegacyThreadTarget({ root: canonical, target: threadRootId! });
+      openThread(canonical);
+    }
+  }, [threadMembership.data?.id, threadRootId, openThread]);
+  useEffect(() => {
+    if (
+      legacyThreadTarget &&
+      threadRootId !== legacyThreadTarget.root &&
+      threadRootId !== legacyThreadTarget.target
+    ) {
+      setLegacyThreadTarget(undefined);
+    }
+  }, [threadRootId, legacyThreadTarget]);
   const decryptionRows = useMemo(
     () =>
       treatAsEncrypted
@@ -433,7 +454,10 @@ export function MessagePane({
   );
 
   // 通知・リンクの対象 (`?message=`)。メイン一覧の範囲とは関係なく、その行だけを取る。
-  const targetQuery = useMessageById(channelId, targetMessageId ?? null);
+  const resolvedTargetId =
+    targetMessageId ??
+    (legacyThreadTarget?.root === threadRootId ? legacyThreadTarget.target : undefined);
+  const targetQuery = useMessageById(channelId, resolvedTargetId ?? null);
   const target = targetQuery.data?.[0];
 
   // 対象が返信なら、そのスレッドを開く。
@@ -962,7 +986,7 @@ export function MessagePane({
           <ThreadPane
             commands={commandSuggestions.commands}
             onRequestCommands={commandSuggestions.load}
-            targetMessageId={targetMessageId}
+            targetMessageId={resolvedTargetId}
             mentionUsers={mentionUsers}
             mentionMemberIds={mentionMemberIds}
             key={threadRoot.id}
@@ -974,7 +998,13 @@ export function MessagePane({
             onTyping={threadTyping.onTyping}
             root={threadRoot}
             replies={threadReplies}
-            onOpenThread={openThread}
+            membership={threadMembership.data?.membership}
+            membershipPending={threadMembership.pending}
+            membershipError={threadMembership.error}
+            onMembershipRetry={() => void threadMembership.retry?.()}
+            onJoinThread={() => void threadMembership.change?.("join")}
+            onLeaveThread={() => void threadMembership.change?.("leave")}
+            onReopenThread={() => void threadMembership.change?.("unarchive")}
             isLoading={threadQuery.isLoading}
             isError={threadQuery.isError}
             currentUserId={readOnly || threadIsArchived ? null : currentUserId}

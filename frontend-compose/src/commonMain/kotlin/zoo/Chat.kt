@@ -550,6 +550,7 @@ internal fun MessageList(
                             initialEditingText = editingText.takeIf { editingId == row.text("id") },
                             canReact = canReact,
                             callbacks = callbacks?.invoke(row),
+                            canOpenThread = parent == null,
                             groupEnd =
                                 messages.getOrNull(index + 1)?.let { !groupedWith(row, it) } ?: true,
                         )

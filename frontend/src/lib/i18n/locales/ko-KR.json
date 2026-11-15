@@ -273,7 +273,12 @@
     "archiveForChannel": "{{channel}}의 보관된 스레드",
     "untitled": "제목 없는 스레드",
     "targetTooOld": "이 메시지는 너무 오래되어 여기서 불러올 수 없습니다",
-    "unreadTooOld": "이보다 오래된 읽지 않은 메시지는 불러오지 않았습니다"
+    "unreadTooOld": "이보다 오래된 읽지 않은 메시지는 불러오지 않았습니다",
+    "join": "스레드 참여",
+    "leave": "스레드 나가기",
+    "reopen": "다시 열기",
+    "reopenOnSend": "답장을 보내면 스레드를 다시 열고 참여합니다.",
+    "membershipError": "스레드 참여 상태를 변경하지 못했습니다."
   },
   "reactions": {
     "showUsers": "{{emoji}} 반응을 남긴 사용자 보기",

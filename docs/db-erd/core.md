@@ -210,6 +210,7 @@ erDiagram
       text reply_actor
       text reply_user_id FK
       jsonb media
+      text reply_target_id
     }
     home_posts }o--o| channels : home_posts_channel_id_fkey
     home_posts }o--o| users : home_posts_reply_user_id_fkey
@@ -249,6 +250,7 @@ erDiagram
       jsonb ciphertext
       bigint epoch
       integer revision
+      text reply_target_id
     }
     messages }o--o| apps : messages_app_origin_id_fkey
     messages }o--o| channels : messages_channel_id_fkey
@@ -323,6 +325,24 @@ erDiagram
       integer height
       text image_id
       timestamptz updated_at
+    }
+    thread_migration_completed {
+      text thread_id PK,FK
+      timestamptz completed_at
+    }
+    thread_migration_completed |o--o| messages : thread_migration_completed_thread_id_fkey
+    thread_participants {
+      text thread_id PK,FK
+      text user_id PK,FK
+      timestamp(3) joined_at
+      timestamp(3) left_at
+      timestamp(3) updated_at
+    }
+    thread_participants }o--o| messages : thread_participants_thread_id_fkey
+    thread_participants }o--o| users : thread_participants_user_id_fkey
+    thread_rollout {
+      boolean id PK
+      text phase
     }
     typing_presence {
       text channel_id PK,FK

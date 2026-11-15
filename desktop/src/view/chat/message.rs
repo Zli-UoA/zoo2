@@ -641,9 +641,8 @@ impl WorkspaceView {
                 &t,
                 move |window, cx| open(&(), window, cx),
             ));
-            {
-                // 返信ボタン。スレッドを開いて入力欄を返信先にする。
-                // frontend の `ThreadPane` も行に `onOpenThread` を渡すので、スレッドの行にも出す。
+            if pane_prefix != "thread" {
+                // A thread has one level; only the channel timeline offers this action.
                 let view = cx.entity().clone();
                 // スレッドの返信の行では、返信の ID ではなく親 (スレッドのルート) を開く。
                 let root = message.parent_id.clone().unwrap_or_else(|| msg_id.clone());
