@@ -3072,11 +3072,32 @@ impl AppState {
             .collect();
         for key in keys {
             let moved = (key.0.clone(), to.clone());
-            if let Some(draft) = self.saved_drafts.remove(&key) {
-                self.saved_drafts.entry(moved.clone()).or_insert(draft);
-            }
-            if let Some(id) = self.saved_draft_message_ids.remove(&key) {
-                self.saved_draft_message_ids.entry(moved).or_insert(id);
+            let draft = self.saved_drafts.remove(&key);
+            let id = self.saved_draft_message_ids.remove(&key);
+            match (draft, self.saved_drafts.get_mut(&moved)) {
+                // 移動先にも下書きがあるときは両方の文面を残す。文面が変わるので再送用のIDは使わない。
+                (Some(draft), Some(existing)) => {
+                    if !draft.trim().is_empty() {
+                        if !existing.trim().is_empty() {
+                            existing.push('\n');
+                        }
+                        existing.push_str(&draft);
+                    }
+                    self.saved_draft_message_ids.remove(&moved);
+                }
+                (Some(draft), None) => {
+                    self.saved_drafts.insert(moved.clone(), draft);
+                    if let Some(id) = id {
+                        self.saved_draft_message_ids.insert(moved, id);
+                    }
+                }
+                (None, _) => {
+                    if let Some(id) = id
+                        && !self.saved_draft_message_ids.contains_key(&moved)
+                    {
+                        self.saved_draft_message_ids.insert(moved, id);
+                    }
+                }
             }
         }
     }
@@ -7402,6 +7423,22 @@ pub(crate) mod tests {
             Some("id1")
         );
         assert!(state.saved_drafts.len() == 1 && state.saved_draft_message_ids.len() == 1);
+
+        // 移動先にも下書きがあるときは、移動元の文面を捨てずに連結する。
+        state
+            .saved_drafts
+            .insert(("c1".into(), Target::Reply("child2".into())), "from".into());
+        state.saved_draft_message_ids.insert(
+            ("c1".into(), Target::Reply("child2".into())),
+            "id-from".into(),
+        );
+        state.retarget_reply("child2", "root");
+        assert_eq!(
+            state.saved_drafts.get(&to).map(String::as_str),
+            Some("keep\nfrom")
+        );
+        assert!(!state.saved_draft_message_ids.contains_key(&to));
+        assert_eq!(state.saved_drafts.len(), 1);
     }
 
     #[test]
