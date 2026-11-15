@@ -230,7 +230,7 @@ export class OidcClient {
       this.environment.now(),
     );
     if (this.tokens?.refreshToken && this.environment.supportsRefresh?.() === false) {
-      this.tokens = { ...this.tokens, refreshToken: null, refreshSessionId: undefined };
+      this.tokens = { ...this.tokens, refreshToken: null };
       writeStoredSession(this.environment.storage, this.sessionBinding, this.tokens);
     }
   }
@@ -784,7 +784,21 @@ export class OidcClient {
         workerCleared = false;
       }
     }
-    if (this.generation !== generation || this.pendingLogoutOperation !== logoutOperation) return;
+    if (this.generation !== generation || this.pendingLogoutOperation !== logoutOperation) {
+      // reset/loginが先に進んでも、終了に失敗した旧セッションの資格情報は再度消す。
+      // 新しい認証状態には旧世代の復旧通知を送らない。
+      if (!workerCleared && logoutOperation.refreshSessionId && this.environment.authWorker) {
+        await this.environment
+          .authWorker({
+            kind: "logout",
+            sessionId: logoutOperation.refreshSessionId,
+          })
+          .catch(() => {
+            // 再試行も失敗した行は、次回Worker利用時の未使用行の掃除へ委ねる。
+          });
+      }
+      return;
+    }
     if (
       !workerCleared ||
       !storedSessionCleared ||
