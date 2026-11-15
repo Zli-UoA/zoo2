@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ActivityPubProfileDetails, type ProfileDetails } from "../home/ActivityPubProfileDetails";
@@ -63,12 +64,11 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
   const account = data?.account;
   const name = account?.display_name || account?.user_name || "";
   const address = account ? `@${account.user_name}@${new URL(account.actor_id).host}` : "";
-  const path = `/public/users/${encodeURIComponent(userId)}`;
   return (
     <main className="h-dvh overflow-y-auto bg-muted text-foreground">
       <div className="mx-auto max-w-2xl space-y-6 px-4 py-6 sm:py-12">
-        <a
-          href="/"
+        <Link
+          to="/"
           aria-label="Zoo"
           className="inline-flex items-center gap-2.5 text-[2.5rem] font-extrabold leading-none tracking-[-.06em] text-foreground"
         >
@@ -76,7 +76,7 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
           <span>
             Zoo<span className="text-primary">.</span>
           </span>
-        </a>
+        </Link>
         {account ? (
           <>
             <title>{name} · Zoo</title>
@@ -113,9 +113,13 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
                   {t("publicProfile.approvalRequired")}
                 </p>
               </section>
-              <a href={`/home/users/${encodeURIComponent(userId)}`} className={buttonVariants()}>
+              <Link
+                to="/home/users/$actorId"
+                params={{ actorId: userId }}
+                className={buttonVariants()}
+              >
                 {t("publicProfile.openInZoo")}
-              </a>
+              </Link>
             </section>
             <section aria-labelledby="posts-heading" className="space-y-4">
               <h2 id="posts-heading" className="font-semibold">
@@ -143,17 +147,24 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
               ) : null}
               <nav aria-label={t("publicProfile.pagination")} className="flex flex-wrap gap-3">
                 {before ? (
-                  <a className={buttonVariants({ variant: "outline" })} href={path}>
+                  <Link
+                    className={buttonVariants({ variant: "outline" })}
+                    to="/public/users/$userId"
+                    params={{ userId }}
+                    search={{}}
+                  >
                     {t("publicProfile.latest")}
-                  </a>
+                  </Link>
                 ) : null}
                 {data.next_cursor ? (
-                  <a
+                  <Link
                     className={buttonVariants({ variant: "outline" })}
-                    href={`${path}?before=${encodeURIComponent(data.next_cursor)}`}
+                    to="/public/users/$userId"
+                    params={{ userId }}
+                    search={{ before: data.next_cursor }}
                   >
                     {t("publicProfile.older")}
-                  </a>
+                  </Link>
                 ) : null}
               </nav>
             </section>
