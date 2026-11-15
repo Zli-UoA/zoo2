@@ -24,6 +24,12 @@ pub fn mrkdwn_to_mfm(text: &str, resolver: &impl Resolver) -> String {
     truncate_content(convert(text, resolver, false))
 }
 
+/// 書式の変換を入れる前の [`mrkdwn_to_mfm`] の結果 (`<...>` の変換と `&amp;` などの戻しだけ)。
+/// 変換を入れる前に取り込んだ本文と照らして、書式の違いだけで投稿を書き換えないために使う。
+pub fn mrkdwn_to_mfm_legacy(text: &str, resolver: &impl Resolver) -> String {
+    truncate_content(convert_with(text, resolver, false, false))
+}
+
 /// mrkdwn を、MFM として描画しない場所 (カードの説明など) 向けの文字列に変換する。
 /// [`mrkdwn_to_mfm`] と同じだが、`<https://a|label>` は `label (https://a)` にする。切り詰めない。
 pub fn mrkdwn_to_text(text: &str, resolver: &impl Resolver) -> String {
@@ -64,6 +70,11 @@ fn scan(
 }
 
 fn convert(text: &str, resolver: &impl Resolver, plain: bool) -> String {
+    convert_with(text, resolver, plain, !plain)
+}
+
+/// `marks` が `false` なら、書式を変換せず、本文をそのまま出す (`plain` でない旧来の変換)
+fn convert_with(text: &str, resolver: &impl Resolver, plain: bool, marks: bool) -> String {
     // カードの説明は書式を変換しないので、文字ごとに展開せず、そのままつなげる
     if plain {
         let out = std::cell::RefCell::new(String::with_capacity(text.len()));
@@ -126,7 +137,11 @@ fn convert(text: &str, resolver: &impl Resolver, plain: bool) -> String {
     );
     let toks = toks.into_inner();
     let mut out = String::with_capacity(toks.len() + 16);
-    format(&toks, 0, &mut out);
+    if marks {
+        format(&toks, 0, &mut out);
+    } else {
+        push_verbatim(&toks, &mut out);
+    }
     out
 }
 
@@ -600,6 +615,17 @@ mod tests {
         let started = std::time::Instant::now();
         assert_eq!(mfm(&text).chars().count(), 40_000);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn legacy_conversion_keeps_markers_and_converts_links() {
+        assert_eq!(
+            mrkdwn_to_mfm_legacy("*a* ~b~ _c_ &amp; <https://a.test|x>", &Map),
+            mrkdwn_to_mfm("*a* ~b~ _c_ &amp; <https://a.test|x>", &Map)
+                .replace("**a**", "*a*")
+                .replace("~~b~~", "~b~")
+                .replace("<i>c</i>", "_c_")
+        );
     }
 
     #[test]

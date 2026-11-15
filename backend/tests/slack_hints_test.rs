@@ -440,6 +440,56 @@ async fn test_hints_apply_an_edit_only_when_it_is_a_real_newer_edit() -> anyhow:
     Ok(())
 }
 
+/// 書式の変換を入れる前に取り込んだ bot の投稿は、書式の違いだけでは書き換えない (「編集済み」にしない)。
+/// 本文が実際に変わったときは、これまでどおり書き換える
+#[tokio::test]
+async fn test_hints_do_not_rewrite_a_bot_post_for_a_formatting_only_difference()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = imported(true).await?;
+    let ts = f.ts_new.clone();
+    let id = backend::slack::message_id(&f.team, "C1", &ts);
+    // 変換を入れる前の保存済みの本文 (記号がそのまま)
+    sql(
+        &f.state,
+        "UPDATE messages SET content='*重要*' WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&id],
+    )
+    .await?;
+    let before = message_row(&f, &ts).await;
+
+    // 本文が同じ (`message_changed` はリンクの展開などで届く)。新しい変換では `**重要**` になるが、書き換えない
+    mock_fetch(
+        &f,
+        &ts,
+        json!([{"type":"message","subtype":"bot_message","bot_id":"B1","ts":&ts,"user":"UA","text":"*重要*"}]),
+    )
+    .await;
+    deliver(&f, &changed_event(&f.team, "C1", &ts)).await?;
+    let same = message_row(&f, &ts).await;
+    assert_eq!(same["content"], "*重要*");
+    assert_eq!(same["revision"], before["revision"]);
+    assert_eq!(same["updated"], before["updated"]);
+
+    // 本文が実際に変わったときは、新しい変換で書き換える
+    f.slack.reset().await;
+    mount_basics(&f).await;
+    mock_fetch(
+        &f,
+        &ts,
+        json!([{"type":"message","subtype":"bot_message","bot_id":"B1","ts":&ts,"user":"UA","text":"*重要* です"}]),
+    )
+    .await;
+    deliver(&f, &changed_event(&f.team, "C1", &ts)).await?;
+    let changed = message_row(&f, &ts).await;
+    assert_eq!(changed["content"], "**重要** です");
+    assert_eq!(
+        changed["revision"].as_i64().unwrap(),
+        before["revision"].as_i64().unwrap() + 1
+    );
+    Ok(())
+}
+
 /// `reset` で消えたモックのうち、同期に要るものを入れ直す
 async fn mount_basics(f: &Fixture) {
     Mock::given(method("GET"))
