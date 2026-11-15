@@ -487,12 +487,25 @@ impl ApiClient {
         content: &str,
         parent_id: &str,
     ) -> Result<(Option<String>, Option<String>)> {
+        self.send_message_resolved(id, channel_id, content, Some(parent_id), None)
+            .await
+    }
+
+    /// 添付付きでも使える送信。`txid` と、サーバーが確定した親 ID を返す。
+    pub async fn send_message_resolved(
+        &self,
+        id: &str,
+        channel_id: &str,
+        content: &str,
+        parent_id: Option<&str>,
+        attachment_ids: Option<Vec<String>>,
+    ) -> Result<(Option<String>, Option<String>)> {
         let body = serde_json::to_value(NewMessage {
             id,
             channel_id,
             content,
-            parent_id: Some(parent_id),
-            attachment_ids: None,
+            parent_id,
+            attachment_ids,
         })?;
         let envelope: Envelope = self
             .send(Method::POST, "/api/messages", Some(body))

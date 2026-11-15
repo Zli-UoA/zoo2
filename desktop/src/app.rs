@@ -251,6 +251,8 @@ pub enum AppEvent {
     SubmissionSucceeded {
         submission_id: u64,
         sent_attachment_ids: Vec<String>,
+        /// 移行中、子スレッドへの返信がサーバーで最上位へ正規化された (from, to)。
+        redirected: Option<(String, String)>,
     },
     RestoreDraft {
         submission_id: u64,
@@ -2146,9 +2148,19 @@ impl AppState {
             AppEvent::SubmissionSucceeded {
                 submission_id,
                 sent_attachment_ids,
+                redirected,
             } => {
                 self.in_flight_submissions
                     .retain(|(id, _)| *id != submission_id);
+                if let Some((from, to)) = redirected {
+                    if let Some(thread) = self.thread.as_mut().filter(|t| t.root_id == from) {
+                        thread.root_id = to.clone();
+                        thread.selected = None;
+                    }
+                    if self.target == Target::Reply(from) {
+                        self.target = Target::Reply(to);
+                    }
+                }
                 if !sent_attachment_ids.is_empty() {
                     self.pending_attachments.retain(|a| match &a.attachment_id {
                         Some(att_id) => !sent_attachment_ids.contains(att_id),
@@ -3827,18 +3839,12 @@ impl AppState {
             let id = message_id;
             let send_future = async {
                 match &target {
-                    Target::Channel => {
-                        api.send_message_with_attachments(
-                            &id,
-                            &channel_id,
-                            &content,
-                            None,
-                            attachment_ids_opt,
-                        )
+                    Target::Channel => api
+                        .send_message_resolved(&id, &channel_id, &content, None, attachment_ids_opt)
                         .await
-                    }
-                    Target::Reply(root_id) => {
-                        api.send_message_with_attachments(
+                        .map(|_| None),
+                    Target::Reply(root_id) => api
+                        .send_message_resolved(
                             &id,
                             &channel_id,
                             &content,
@@ -3846,8 +3852,14 @@ impl AppState {
                             attachment_ids_opt,
                         )
                         .await
+                        .map(|(_, parent)| {
+                            parent
+                                .filter(|parent| parent != root_id)
+                                .map(|parent| (root_id.clone(), parent))
+                        }),
+                    Target::Edit(message_id) => {
+                        api.edit_message(message_id, &content).await.map(|_| None)
                     }
-                    Target::Edit(message_id) => api.edit_message(message_id, &content).await,
                 }
             };
             let (result, is_timeout) =
@@ -3859,12 +3871,13 @@ impl AppState {
                     ),
                 };
             match result {
-                Ok(_) => {
+                Ok(redirected) => {
                     let _ = tx.send(DesktopEvent::App {
                         session_gen,
                         event: AppEvent::SubmissionSucceeded {
                             submission_id,
                             sent_attachment_ids,
+                            redirected,
                         },
                     });
                 }
@@ -7290,11 +7303,36 @@ pub(crate) mod tests {
         state.on_app_event(AppEvent::SubmissionSucceeded {
             submission_id: 1,
             sent_attachment_ids: vec!["att_sent".into()],
+            redirected: None,
         });
 
         // att_sent は削除され、後から追加された att_next は保持される
         assert_eq!(state.pending_attachments.len(), 1);
         assert_eq!(state.pending_attachments[0].local_id, "loc_2");
+    }
+
+    #[test]
+    fn reply_normalized_to_the_root_moves_the_open_thread() {
+        let mut state = connected_state();
+        state.thread = Some(ThreadState {
+            root_id: "child".into(),
+            selected: Some("x".into()),
+        });
+        state.target = Target::Reply("child".into());
+        state.on_app_event(AppEvent::SubmissionSucceeded {
+            submission_id: 9,
+            sent_attachment_ids: Vec::new(),
+            redirected: Some(("other".into(), "root".into())),
+        });
+        assert_eq!(state.thread.as_ref().unwrap().root_id, "child");
+        state.on_app_event(AppEvent::SubmissionSucceeded {
+            submission_id: 9,
+            sent_attachment_ids: Vec::new(),
+            redirected: Some(("child".into(), "root".into())),
+        });
+        assert_eq!(state.thread.as_ref().unwrap().root_id, "root");
+        assert_eq!(state.thread.as_ref().unwrap().selected, None);
+        assert_eq!(state.target, Target::Reply("root".into()));
     }
 
     #[test]
@@ -7692,6 +7730,7 @@ pub(crate) mod tests {
         state.on_app_event(AppEvent::SubmissionSucceeded {
             submission_id: resend_submission_id,
             sent_attachment_ids: Vec::new(),
+            redirected: None,
         });
         assert!(state.in_flight_submissions.is_empty());
         assert!(state.composer_draft.is_empty());
