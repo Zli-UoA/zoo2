@@ -14,6 +14,34 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [26, 28], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class ImageDecodingTest {
+    @Test
+    fun largePreviewsAreSampledBeforeDecoding() {
+        assertEquals(1, imageSampleSize(2048, 2048))
+        assertEquals(2, imageSampleSize(2049, 100))
+        assertEquals(4, imageSampleSize(8000, 6000))
+        assertEquals(4, imageSampleSize(100, 8192))
+        assertEquals(1 shl 20, imageSampleSize(Int.MAX_VALUE, 1))
+        assertFailsWith<IllegalArgumentException> { imageSampleSize(-1, 100) }
+        assertFailsWith<IllegalArgumentException> { imageSampleSize(100, 0) }
+    }
+
+    @Test
+    fun oversizedBitmapIsActuallyDecodedAtThePreviewSize() {
+        val original = Bitmap.createBitmap(4096, 32, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        assertTrue(original.compress(Bitmap.CompressFormat.PNG, 100, stream))
+        original.recycle()
+        val decoded = decodeOrientedBitmap(stream.toByteArray())
+        assertEquals(2048, decoded.width)
+        assertEquals(16, decoded.height)
+        decoded.recycle()
+    }
+
+    @Test
+    fun invalidBytesFailWithoutAllocatingAnImage() {
+        assertFailsWith<IllegalArgumentException> { decodeOrientedBitmap(byteArrayOf(1, 2, 3)) }
+    }
+
     private fun jpeg(orientation: Int): ByteArray {
         val bitmap = Bitmap.createBitmap(40, 20, Bitmap.Config.ARGB_8888)
         for (y in 0 until 20) for (x in 0 until 40) {
