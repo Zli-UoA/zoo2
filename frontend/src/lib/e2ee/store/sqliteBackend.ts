@@ -6,6 +6,7 @@ import type {
   CryptoBackend,
   CryptoStoreSnapshot,
   CryptoStoreWrite,
+  DeviceReplacement,
   InboundSessionKey,
 } from "./backend";
 import { CRYPTO_SCHEMA, CRYPTO_SCHEMA_VERSION } from "./schema";
@@ -204,6 +205,48 @@ export async function openSqliteCryptoBackend(databaseName: string): Promise<Cry
     resetBackedUp: () =>
       enqueue(async () => {
         await query("UPDATE inbound_sessions SET backed_up = 0");
+      }),
+
+    readAllInboundSessions: () =>
+      enqueue(async () => {
+        const rows = await query("SELECT key, pickle, backed_up FROM inbound_sessions");
+        return rows.map((row) => ({
+          key: String(row.key),
+          pickle: String(row.pickle),
+          backedUp: Number(row.backed_up) === 1,
+        }));
+      }),
+
+    replaceDevice: (replacement: DeviceReplacement) =>
+      enqueue(async () => {
+        await sqlite3.exec(db, "BEGIN IMMEDIATE");
+        try {
+          await query("DELETE FROM meta");
+          for (const [key, value] of Object.entries(replacement.meta)) {
+            await query("INSERT INTO meta (key, value) VALUES (?, ?)", [key, value]);
+          }
+          await query(
+            "INSERT INTO account (id, pickle) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET pickle = excluded.pickle",
+            [replacement.account],
+          );
+          await query(
+            "INSERT INTO trust_store (id, pickle) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET pickle = excluded.pickle",
+            [replacement.trustStore],
+          );
+          await query("DELETE FROM olm_sessions");
+          await query("DELETE FROM processed_to_device");
+          // 封をし直した受信用セッションに置き換える（送ったかどうかは変えない）。開けなかった行は消す。
+          for (const { key, pickle } of replacement.inboundSessions) {
+            await query("UPDATE inbound_sessions SET pickle = ? WHERE key = ?", [pickle, key]);
+          }
+          for (const key of replacement.droppedInboundSessions) {
+            await query("DELETE FROM inbound_sessions WHERE key = ?", [key]);
+          }
+          await sqlite3.exec(db, "COMMIT");
+        } catch (error) {
+          await sqlite3.exec(db, "ROLLBACK").catch(() => undefined);
+          throw error;
+        }
       }),
 
     close,

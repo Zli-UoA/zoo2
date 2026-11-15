@@ -16,7 +16,7 @@ pub const REAUTH_HEADER: &str = "X-Zoo-Reauth";
 
 impl ApiClient {
     /// E2EE の要求を送る。エラーは [`ApiError`]。
-    async fn send_e2ee(
+    pub(super) async fn send_e2ee(
         &self,
         method: Method,
         path: &str,

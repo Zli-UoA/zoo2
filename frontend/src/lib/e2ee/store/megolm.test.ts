@@ -39,19 +39,22 @@ function memoryKeys(): WrappingKeyStore {
   };
 }
 
-async function openStore(userId: string) {
-  const backend = new MemoryCryptoBackend();
+async function openStore(
+  userId: string,
+  backend = new MemoryCryptoBackend(),
+  keys: WrappingKeyStore = memoryKeys(),
+) {
   const { store } = await CryptoStore.open({
     backend,
     name: `zoo-crypto-${userId}.sqlite`,
     userId,
-    keys: memoryKeys(),
+    keys,
     reset: async () => {
       await backend.destroy();
       return backend;
     },
   });
-  return { store, backend };
+  return { store, backend, keys };
 }
 
 /** 受信側の端末の、検証済みの端末鍵と、払い出すワンタイム鍵。 */
@@ -478,6 +481,61 @@ describe("受信時の検証の手順 4（送信端末を検証済みにする�
     });
     await alice.store.close();
     await bob.store.close();
+  });
+
+  it("端末が消されて作り直しても、信頼の記録と受信用セッションを引き継ぐ", async () => {
+    const { aliceId, bobId, alice, bob, pins } = await tofuTrusted();
+    const query = keysQueryWith(
+      BOB,
+      { [ALICE]: aliceId, [BOB]: bobId },
+      [alice.store],
+      [aliceId.signDevice(alice.store)],
+      pins,
+    );
+    // Alice から Bob に鍵を配り、メッセージを 1 通暗号化しておく（送信待ちの受信用セッションが 1 つ）。
+    const device = recipient(bob.store);
+    alice.store.megolm.setDistribution(CHANNEL, 1, [device.device()]);
+    await alice.store.megolm.start(CHANNEL);
+    const { messages } = await alice.store.megolm.share(CHANNEL, device.claimed);
+    expect((await deliver(alice.store, bob.store, messages, "1", query)).roomKeys).toBe(1);
+    const encrypted = alice.store.megolm.encrypt(CHANNEL, outgoing("m1", "hello"));
+    const trust = bob.store.trustStore.toJson();
+    expect(await bob.store.pendingBackupCount()).toBe(1);
+    expect(await bob.store.hasOwnKeys()).toBe(true);
+    const oldDevice = bob.store.deviceId;
+    await bob.backend.write({
+      meta: {
+        "recipients:x": "[]",
+        "encrypted_channel:x": "1",
+        "outbound_olm:x": "sealed",
+        backup_upload: '{"x":1}',
+      },
+    });
+
+    const result = await bob.store.replaceDevice();
+    await bob.store.close();
+    expect(result).toMatchObject({ carried: 1, dropped: 0 });
+    expect(result.deviceId).not.toBe(oldDevice);
+    const reopened = (await openStore(BOB, bob.backend, bob.keys)).store;
+    expect(reopened.deviceId).toBe(result.deviceId);
+    expect(reopened.isRegistered).toBe(false);
+    // 信頼の記録はそのまま（新しい端末で封をし直して読める）。
+    expect(reopened.trustStore.toJson()).toBe(trust);
+    // 受信用セッションも、鍵バックアップの送信待ちのまま残る。
+    expect(await reopened.pendingBackupCount()).toBe(1);
+    // 解錠した自分の鍵、Olm セッション、処理済みの to-device は捨てる。
+    expect(await reopened.hasOwnKeys()).toBe(false);
+    expect(bob.backend.olmSessions.size).toBe(0);
+    expect(bob.backend.processedToDevice.size).toBe(0);
+    expect(bob.backend.meta.get("outbound_olm:x")).toBeUndefined();
+    expect(bob.backend.meta.get("recipients:x")).toBe("[]");
+    expect(bob.backend.meta.get("encrypted_channel:x")).toBe("1");
+    expect(bob.backend.meta.get("backup_upload")).toBe('{"x":1}');
+    // 前のメッセージは、引き継いだセッションで復号できる。
+    const [received] = await reopened.megolm.decrypt([row(alice.store, "m1", encrypted)]);
+    expect(received).toMatchObject({ status: "decrypted" });
+    await alice.store.close();
+    await reopened.close();
   });
 
   it("初めて見た相手は、ピンを作らず未検証のままにする", async () => {

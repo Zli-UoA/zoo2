@@ -25,7 +25,8 @@ import {
   type InboundSessionKey,
 } from "./backend";
 import { BACKUP_IMPORT_MAX_PAGES, BACKUP_IMPORT_PAGE_SIZE } from "../backupImportLimits";
-import { MegolmChannels } from "./megolm";
+import { masterPublicKey } from "../masterKey";
+import { ENCRYPTED_CHANNEL_META_PREFIX, MegolmChannels, RECIPIENTS_META_PREFIX } from "./megolm";
 import { SasVerifications } from "./verification";
 import {
   StorageKeyUnavailableError,
@@ -64,6 +65,13 @@ const META_BACKUP_UPLOAD = "backup_upload";
  * 途中で止まったら、同じ版なら続きから取り込み、版が変わったら始めから取り込む。
  */
 const META_BACKUP_IMPORT = "backup_import";
+
+/**
+ * 端末を作り直すとき（{@link CryptoStore.replaceDevice}）に引き継ぐ `meta`。ほか（`own_keys`、
+ * `secrets_revision`、`revocation`、`backup_import`、`outbound_olm:*` など）は捨てる。前置きで
+ * 引き継ぐもの（`recipients:*`、`encrypted_channel:*`）は `replaceDevice` で見る。
+ */
+const CARRIED_META = new Set([WRAPPED_STORAGE_KEY_META, META_USER_ID, META_BACKUP_UPLOAD]);
 
 interface BackupImportProgress {
   /** 取り込んでいる（取り込んだ）版。 */
@@ -967,7 +975,11 @@ export class CryptoStore {
     await this.saveTrustStore();
   }
 
-  async acceptMasterKey(targetUserId: string, masterKey: JsonObject) {
+  async acceptMasterKey(targetUserId: string, masterKey: JsonObject, expectedMasterKey: string) {
+    // 利用者に指紋を見せた鍵にだけ署名する（再検証の確認。docs/e2ee.md の「他のユーザーの再検証」）。
+    if (masterPublicKey(masterKey) !== expectedMasterKey) {
+      throw new Error("確認した鍵と、署名するマスター鍵が違います");
+    }
     const own = await this.ownKeys();
     if (!own) throw new Error("解錠していません");
     const userSigning = own.keys.userSigning;
@@ -1027,6 +1039,74 @@ export class CryptoStore {
     } finally {
       keys.free();
       secrets.free();
+    }
+  }
+
+  /**
+   * 端末が別の端末から削除されていた（docs/e2ee.md の「端末が削除されていたとき」。呼び出し側が
+   * `GET /api/e2ee/devices` で確かめてから呼ぶ）。暗号ストアを消さずに、端末アカウントだけを作り直す。
+   *
+   * サーバーの応答だけで信頼の記録と送っていないセッションを失わないよう、ユーザーに属する記録は
+   * 新しい端末アカウントで封をし直して引き継ぐ（封の AAD に `device_id` が入るため）。
+   *
+   * - 引き継ぐ：`TrustStore`、受信用セッション（鍵バックアップに送ったかどうかも）、鍵バックアップの
+   *   アップロードの状態（見た版の最大）、配布先とチャンネルの記録（`recipients:*`、`encrypted_channel:*`）
+   * - 捨てる：Olm セッション（送信用を含む）、処理済みの to-device、解錠した自分の鍵と
+   *   `secrets_revision`（利用者は解錠し直す）、終わっていない失効、鍵バックアップからの取り込みの進み具合
+   * - 開けない受信用セッションは捨てる。
+   *
+   * 1 つのトランザクションで書く。呼んだあとは、この store を閉じて開き直す。
+   */
+  async replaceDevice(): Promise<{ deviceId: string; carried: number; dropped: number }> {
+    const { meta } = await this.backend.read();
+    const rows = await this.backend.readAllInboundSessions();
+    const account = new DeviceAccount(this.userId, crypto.randomUUID());
+    try {
+      account.generateOneTimeKeys(account.maxNumberOfOneTimeKeys);
+      account.generateFallbackKey();
+      const inboundSessions: { key: string; pickle: string }[] = [];
+      const droppedInboundSessions: string[] = [];
+      for (const row of rows) {
+        // 1 行ずつ開き直す（すべてをメモリーに載せない）。
+        const sessions = new InboundSessionStore();
+        try {
+          const ref = sessions.restoreSession(row.pickle, this.account, this.storageKey);
+          const pickle = sessions.pickleSession(ref, account, this.storageKey);
+          if (pickle) inboundSessions.push({ key: row.key, pickle });
+          else droppedInboundSessions.push(row.key);
+        } catch {
+          droppedInboundSessions.push(row.key);
+        } finally {
+          sessions.free();
+        }
+      }
+      const carriedMeta: Record<string, string> = {};
+      for (const [key, value] of Object.entries(meta)) {
+        if (
+          CARRIED_META.has(key) ||
+          key.startsWith(RECIPIENTS_META_PREFIX) ||
+          key.startsWith(ENCRYPTED_CHANNEL_META_PREFIX)
+        ) {
+          carriedMeta[key] = value;
+        }
+      }
+      carriedMeta[META_USER_ID] = this.userId;
+      carriedMeta[META_DEVICE_ID] = account.deviceId;
+      carriedMeta[META_REGISTERED] = "0";
+      await this.backend.replaceDevice({
+        meta: carriedMeta,
+        account: account.pickle(this.storageKey),
+        trustStore: this.trust.pickle(account, this.storageKey),
+        inboundSessions,
+        droppedInboundSessions,
+      });
+      return {
+        deviceId: account.deviceId,
+        carried: inboundSessions.length,
+        dropped: droppedInboundSessions.length,
+      };
+    } finally {
+      account.free();
     }
   }
 

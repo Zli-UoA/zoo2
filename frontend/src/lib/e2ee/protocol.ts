@@ -12,6 +12,7 @@ import type {
   RevocationStage,
   RevocationSummary,
   StartupCheck,
+  TrustRecord,
   VerificationMessage,
   VerificationOutgoing,
 } from "@zoo/crypto-wasm";
@@ -129,7 +130,17 @@ export type CryptoOperation =
   | { op: "trustRecordedUsers" }
   | { op: "trustEvaluate"; keysQuery: JsonObject; userIds: string[] }
   | { op: "trustPinResult"; pin: NewTofuPin; registered: boolean }
-  | { op: "acceptMasterKey"; targetUserId: string; masterKey: JsonObject }
+  | {
+      op: "acceptMasterKey";
+      targetUserId: string;
+      masterKey: JsonObject;
+      /** 確認の画面で見せた公開鍵。`masterKey` がこの鍵でなければ署名しない。 */
+      expectedMasterKey: string;
+    }
+  /** 相手の記録（前に信頼したマスター鍵）。再検証の確認の画面に出す。 */
+  | { op: "trustRecord"; targetUserId: string }
+  /** 解錠して信頼した自分のマスター鍵の公開鍵（相手が再検証で指紋を比べるために出す）。 */
+  | { op: "ownMasterKey" }
   | { op: "confirmAcceptedMasterKey"; targetUserId: string; masterKey: string }
   // 他のユーザーの絵文字 SAS 検証（#368）。検証は Worker のメモリーにだけ置く。
   | { op: "sasRequest"; targetUserId: string; keysQuery: JsonObject; now: number }
@@ -159,6 +170,20 @@ export type CryptoOperation =
       /** 暗号ストアを消す。開いていなくても、`namespace` のファイルと保存鍵を消す。 */
       op: "destroy";
       namespace: string;
+    }
+  | {
+      /**
+       * 端末が別の端末から削除されていた（確かめたあと）。暗号ストアを消さずに、端末アカウントだけを
+       * 作り直して開き直す（`CryptoStore.replaceDevice`）。開いている `namespace` の暗号ストアに当てる。
+       */
+      op: "replaceDevice";
+      namespace: string;
+      userId: string;
+      /**
+       * 消されたと確かめた端末。開いている暗号ストアがすでに別の端末なら（前の作り直しを保存したあと、
+       * 開き直しだけが失敗した）、作り直さずにその端末を返す。
+       */
+      deviceId: string;
     }
   // 暗号化した添付（#364）。暗号ストアを使わない。
   | { op: "encryptAttachment"; plaintext: Uint8Array }
@@ -195,6 +220,7 @@ export interface CryptoResults {
   pendingBackupCount: number;
   close: null;
   destroy: null;
+  replaceDevice: OpenedCryptoStore;
   setupBegin: { recoveryKey: string; keyId: string };
   setupAddPasskeySlot: null;
   setupSecretStorageRequest: JsonObject;
@@ -236,6 +262,8 @@ export interface CryptoResults {
   trustEvaluate: TrustEvaluation;
   trustPinResult: null;
   acceptMasterKey: AcceptedMasterKey;
+  trustRecord: TrustRecord | null;
+  ownMasterKey: string | null;
   confirmAcceptedMasterKey: null;
   sasRequest: SasUpdate;
   sasReceive: SasUpdate | null;

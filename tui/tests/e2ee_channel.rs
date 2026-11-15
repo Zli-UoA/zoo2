@@ -65,6 +65,8 @@ struct State {
     /// 鍵バックアップの今の版と、上がっている行。
     backup_version: Option<Value>,
     backup_rows: Vec<Value>,
+    /// ユーザー署名鍵による、他のユーザーのマスター鍵への署名（`e2ee_key_signatures` の行）。
+    user_signatures: Vec<Value>,
     /// 上がってきた行の数（取り込んだセッションを上げ直していないかを見る）。
     backup_posted: usize,
     /// 読まれたページの `after`。
@@ -91,8 +93,8 @@ fn coded(status: u16, code: &str, extra: Value) -> ResponseTemplate {
 }
 
 impl State {
-    /// `keys/query` の応答（全ユーザー）。
-    fn query(&self) -> Value {
+    /// `keys/query` の応答（全ユーザー。ユーザー署名鍵とピンは `caller` のもの）。
+    fn query(&self, caller: &str) -> Value {
         let mut device_keys = serde_json::Map::new();
         let mut master_keys = serde_json::Map::new();
         let mut self_signing_keys = serde_json::Map::new();
@@ -103,11 +105,20 @@ impl State {
             self_signing_keys.insert(user_id.clone(), keys.upload["self_signing_key"].clone());
             signatures.extend(keys.signatures.iter().cloned());
         }
+        signatures.extend(self.user_signatures.iter().cloned());
+        let tofu_pins: serde_json::Map<String, Value> = self
+            .pins
+            .iter()
+            .filter(|((owner, _), _)| owner == caller)
+            .map(|((_, target), pin)| (target.clone(), pin.clone()))
+            .collect();
         json!({
             "device_keys": device_keys,
             "master_keys": master_keys,
             "self_signing_keys": self_signing_keys,
+            "user_signing_keys": { caller: self.users[caller].upload["user_signing_key"] },
             "signatures": signatures,
+            "tofu_pins": tofu_pins,
         })
     }
 
@@ -125,6 +136,7 @@ impl State {
             self_signing_keys.insert(user_id.clone(), keys.upload["self_signing_key"].clone());
             signatures.extend(keys.signatures.iter().cloned());
         }
+        signatures.extend(self.user_signatures.iter().cloned());
         let tofu_pins: serde_json::Map<String, Value> = self
             .pins
             .iter()
@@ -321,7 +333,7 @@ impl Member {
         let (rows, query) = {
             let mut state = backend.0.lock().unwrap();
             let queue = state.queues.remove(&self.device_id).unwrap_or_default();
-            let query = state.query();
+            let query = state.query(self.secrets.cross_signing.master.user_id());
             let rows: Vec<ToDeviceRow> = queue
                 .into_iter()
                 .map(|(sender, content)| ToDeviceRow {
@@ -1118,6 +1130,88 @@ async fn messages_from_users_trusted_by_tofu_are_verified() {
     assert_eq!(
         sender_of(&bob.decrypt(&backend, &after.message_id).await),
         SenderTrust::Verified
+    );
+}
+
+#[tokio::test]
+async fn users_signed_with_my_user_signing_key_are_verified() {
+    let (_server, backend, alice, bob) = setup().await;
+    // Alice は Bob のマスター鍵に、自分のユーザー署名鍵で署名している（再検証や SAS のあと。規則 3）。
+    // Alice の暗号ストアには、Bob の記録もピンもまだない。
+    {
+        let mut state = backend.0.lock().unwrap();
+        let bob_master = state.users[BOB].upload["master_key"].clone();
+        let signature = alice
+            .secrets
+            .cross_signing
+            .user_signing
+            .sign_master_key(BOB, &bob_master)
+            .unwrap();
+        state.user_signatures.push(json!({
+            "signer_user_id": ALICE,
+            "signer_key_id": signature.signer_key_id,
+            "target_user_id": BOB,
+            "target_key_id": signature.target_key_id,
+            "signature": signature.signature,
+        }));
+    }
+    assert!(alice.store.lock().await.trust_store().record(BOB).is_none());
+    let sent = message("署名した相手から");
+    send::send_encrypted_message(&bob.ctx(), &sent, &mut None)
+        .await
+        .unwrap();
+    assert_eq!(alice.receive(&backend).await, 1);
+    assert_eq!(
+        sender_of(&alice.decrypt(&backend, &sent.message_id).await),
+        SenderTrust::Verified
+    );
+    // 判定で記録が変わったら保存する。
+    assert!(alice.store.lock().await.trust_store().record(BOB).is_some());
+}
+
+#[tokio::test]
+async fn pins_placed_by_my_other_device_are_adopted() {
+    let (server, backend, alice, bob) = setup().await;
+    // 自分の別の端末が先に送り、Bob のピンを置いた。この端末には Bob の記録がない。
+    let laptop = other_device(&server, &backend, &alice);
+    send::send_encrypted_message(&laptop.ctx(), &message("別の端末から"), &mut None)
+        .await
+        .unwrap();
+    assert!(alice.store.lock().await.trust_store().record(BOB).is_none());
+    let sent = message("Bob から");
+    send::send_encrypted_message(&bob.ctx(), &sent, &mut None)
+        .await
+        .unwrap();
+    // 別の端末の送信用セッションと、Bob のセッションの 2 つが届く。
+    assert_eq!(alice.receive(&backend).await, 2);
+    assert_eq!(
+        sender_of(&alice.decrypt(&backend, &sent.message_id).await),
+        SenderTrust::Verified
+    );
+}
+
+#[tokio::test]
+async fn my_devices_are_unverified_after_my_master_key_changed_on_the_server() {
+    let (server, backend, alice, _bob) = setup().await;
+    let laptop = other_device(&server, &backend, &alice);
+    let sent = message("別の端末から");
+    send::send_encrypted_message(&laptop.ctx(), &sent, &mut None)
+        .await
+        .unwrap();
+    // サーバーの自分のマスター鍵が、解錠したときの鍵から変わった（失効の途中か、差し替え）。
+    let replaced = CrossSigningKeys::generate(ALICE).unwrap().upload_json();
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .users
+        .get_mut(ALICE)
+        .unwrap()
+        .upload = replaced;
+    assert_eq!(alice.receive(&backend).await, 1);
+    assert_eq!(
+        sender_of(&alice.decrypt(&backend, &sent.message_id).await),
+        SenderTrust::Unverified
     );
 }
 

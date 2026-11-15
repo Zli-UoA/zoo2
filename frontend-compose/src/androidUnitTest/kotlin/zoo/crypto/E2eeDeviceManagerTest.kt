@@ -171,22 +171,111 @@ class E2eeDeviceManagerTest {
     }
 
     @Test
-    fun reregistersWhenDeviceWasDeletedElsewhere() = managerTest {
+    fun replacesOnlyDeviceWhenDeletedElsewhere() = managerTest {
         val manager = manager()
         manager.start()
         advanceUntilIdle()
         val first = manager.currentDeviceId!!
-        // 別の端末から消された：ack と鍵のアップロードが 404 になる。
+        // 鍵バックアップに送っていない受信用セッションを 1 つ持つ。
+        rows.value = listOf(roomKeyFromAlice(api.registered.single(), "10"))
+        advanceUntilIdle()
+        // 別の端末から消された：ack と鍵のアップロードが 404 `E2EE_DEVICE_NOT_FOUND` になり、一覧にもない。
         api.gone += first
         rows.value = listOf(ToDeviceRow("11", ALICE, "m.room.encrypted", JsonObject(emptyMap())))
         advanceUntilIdle()
-        advanceTimeBy(6.seconds)
-        runCurrent()
-        advanceUntilIdle()
         val second = manager.currentDeviceId!!
         assertNotEquals(first, second)
+        assertEquals(1, api.listCalls)
         assertEquals(2, api.registered.size)
+        assertEquals(second, api.registeredIds.last())
+        assertEquals(listOf(first, second), subscribed.distinct())
         assertEquals(listOf("11"), api.acks.last())
+        // 暗号ストアは消さず、古い端末の削除 API も呼ばない。受信用セッションは残る。
+        assertTrue(api.deleted.isEmpty())
+        assertTrue(pending.all().isEmpty())
+        assertEquals(1, manager.prepareLogout())
+    }
+
+    @Test
+    fun replacesDeviceWhenRegistrationSaysDeletedDeviceId() = managerTest {
+        // 登録の 409 `E2EE_DEVICE_EXISTS`（削除済みの device_id）。一覧にもない。
+        api.registerFailures += conflict("E2EE_DEVICE_EXISTS")
+        val manager = manager()
+        manager.start()
+        advanceUntilIdle()
+        assertEquals(1, api.listCalls)
+        assertEquals(2, api.attemptedIds.size)
+        assertNotEquals(api.attemptedIds[0], api.attemptedIds[1])
+        assertEquals(listOf(manager.currentDeviceId!!), api.registeredIds)
+    }
+
+    @Test
+    fun notFoundOrConflictWithoutCodeIsOrdinaryFailure() = managerTest {
+        // `code` のない 409：作り直さず、同じ端末で登録を試し直す。
+        api.registerFailures += ApiException(409)
+        val manager = manager()
+        manager.start()
+        advanceUntilIdle()
+        val first = manager.currentDeviceId!!
+        assertEquals(listOf(first, first), api.attemptedIds)
+        assertEquals(listOf(first), api.registeredIds)
+
+        // `code` のない 404：作り直さず、一覧も見ない。
+        api.goneCode = null
+        api.gone += first
+        rows.value = listOf(ToDeviceRow("11", ALICE, "m.room.encrypted", JsonObject(emptyMap())))
+        runCurrent()
+        advanceTimeBy(6.seconds)
+        runCurrent()
+        assertEquals(first, manager.currentDeviceId)
+        assertEquals(1, api.registered.size)
+        assertEquals(0, api.listCalls)
+        assertTrue(files.directory.exists())
+        assertEquals(first, CryptoStore.storedDeviceId(files, BOB))
+    }
+
+    @Test
+    fun keepsDeviceWhenListStillHasIt() = managerTest {
+        val manager = manager()
+        manager.start()
+        advanceUntilIdle()
+        val first = manager.currentDeviceId!!
+        // 404 `E2EE_DEVICE_NOT_FOUND` でも、一覧に今の端末があれば消されていない（ふつうの失敗）。
+        api.gone += first
+        api.listedGone = true
+        rows.value = listOf(ToDeviceRow("11", ALICE, "m.room.encrypted", JsonObject(emptyMap())))
+        runCurrent()
+        advanceTimeBy(6.seconds)
+        runCurrent()
+        assertEquals(first, manager.currentDeviceId)
+        assertEquals(1, api.registered.size)
+        assertTrue(api.listCalls >= 2)
+        assertEquals(first, CryptoStore.storedDeviceId(files, BOB))
+    }
+
+    @Test
+    fun keepsDeviceWhenListFailsAndChecksAgainLater() = managerTest {
+        val manager = manager()
+        manager.start()
+        advanceUntilIdle()
+        val first = manager.currentDeviceId!!
+        // 一覧を取れなければ、作り直さずに試し直す。
+        api.gone += first
+        api.listFailure = IOException("offline")
+        rows.value = listOf(ToDeviceRow("11", ALICE, "m.room.encrypted", JsonObject(emptyMap())))
+        runCurrent()
+        advanceTimeBy(6.seconds)
+        runCurrent()
+        assertEquals(first, manager.currentDeviceId)
+        assertEquals(1, api.registered.size)
+        assertTrue(api.listCalls >= 2)
+
+        // 一覧を取れるようになったら、次の試し直しで確かめて作り直す。
+        api.listFailure = null
+        advanceTimeBy(11.seconds)
+        runCurrent()
+        assertNotEquals(first, manager.currentDeviceId)
+        assertEquals(2, api.registered.size)
     }
 
     @Test
@@ -337,8 +426,22 @@ class E2eeDeviceManagerTest {
         return ToDeviceRow(id, ALICE, "m.room.encrypted", Json.parseToJsonElement(content))
     }
 
+    private fun conflict(code: String) = ApiException(409, buildJsonObject { put("code", code) })
+
     private class FakeApi : E2eeApi {
         val registered = mutableListOf<JsonObject>()
+        /** 登録した端末。 */
+        val registeredIds get() = registered.map { bodyDeviceId(it) }
+        /** 登録を試した端末（失敗したものも）。 */
+        val attemptedIds = mutableListOf<String>()
+        /** 登録の要求を、順にこの失敗にする。 */
+        val registerFailures = ArrayDeque<Exception>()
+        /** [gone] の端末の 404 に付ける `code`。 */
+        var goneCode: String? = "E2EE_DEVICE_NOT_FOUND"
+        /** 真なら、[gone] の端末も `GET /api/e2ee/devices` の一覧に入れる。 */
+        var listedGone = false
+        var listFailure: Exception? = null
+        var listCalls = 0
         /** 端末と、送ったワンタイム鍵の数。 */
         val uploads = mutableListOf<Pair<String, Int>>()
         val acks = mutableListOf<List<String>>()
@@ -361,6 +464,8 @@ class E2eeDeviceManagerTest {
 
         override suspend fun registerDevice(body: JsonObject): JsonObject {
             registerAttempts++
+            attemptedIds += bodyDeviceId(body)
+            registerFailures.removeFirstOrNull()?.let { throw it }
             if (registerTimeouts > 0) {
                 registerTimeouts--
                 withRequestTimeout(1.seconds) { awaitCancellation() }
@@ -371,8 +476,10 @@ class E2eeDeviceManagerTest {
             return counts()
         }
 
+        private fun notFound() = ApiException(404, goneCode?.let { code -> buildJsonObject { put("code", code) } })
+
         override suspend fun uploadKeys(deviceId: String, oneTimeKeys: JsonObject, fallbackKeys: JsonObject): JsonObject {
-            if (deviceId in gone) throw ApiException(404)
+            if (deviceId in gone) throw notFound()
             uploads += deviceId to oneTimeKeys.size
             serverKeys += oneTimeKeys.size
             return counts()
@@ -381,7 +488,7 @@ class E2eeDeviceManagerTest {
         override suspend fun queryKeys(userIds: List<String>) = KeysQuery(deviceKeys)
 
         override suspend fun ackToDevice(deviceId: String, ids: List<String>) {
-            if (deviceId in gone) throw ApiException(404)
+            if (deviceId in gone) throw notFound()
             acks += ids
             // 使われたワンタイム鍵の分だけ、サーバーの数が減る。
             serverKeys -= 1
@@ -391,6 +498,16 @@ class E2eeDeviceManagerTest {
             deleteFailure?.let { throw it }
             if (deviceId in missing) throw ApiException(404)
             deleted += deviceId
+        }
+
+        override suspend fun listDeviceIds(): List<String> {
+            listCalls++
+            listFailure?.let { throw it }
+            return registeredIds.distinct().filter { listedGone || it !in gone }
+        }
+
+        companion object {
+            fun bodyDeviceId(body: JsonObject) = body["device_keys"]!!.jsonObject["device_id"]!!.jsonPrimitive.content
         }
     }
 

@@ -5,9 +5,11 @@ import java.nio.file.Files
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import zoo.crypto.ffi.DeviceAccount
@@ -178,6 +180,97 @@ class CryptoStoreTest {
         assertEquals(0, second.newOlmSessions)
         assertEquals(2, reopened.pendingBackupCount())
         reopened.close()
+        alice.close()
+        aliceSessions.close()
+    }
+
+    @Test
+    fun replaceDeviceKeepsUserRecordsAndDropsDeviceState() {
+        val alice = DeviceAccount(ALICE, ALICE_DEVICE)
+        val aliceSessions = OlmSessionStore()
+        val store = open()!!.store
+        val request = store.registrationRequest()
+        store.markRegistered()
+        val bobKeys = verifyDeviceKeys(request["device_keys"].toString(), BOB, store.deviceId)
+        val oneTimeKey = request["one_time_keys"]!!.jsonObject.values.first()
+        val sessionId = alice.createOutboundOlmSession(aliceSessions, bobKeys, oneTimeKey.toString())
+        val deviceKeys = buildJsonObject {
+            put(ALICE, buildJsonObject { put(ALICE_DEVICE, Json.parseToJsonElement(alice.deviceKeys())) })
+        }
+        // 3 つの受信用セッションを受け取る（ack はまだ送らない）。
+        val rows =
+            listOf("10", "11", "12").map { id ->
+                ToDeviceRow(
+                    id, ALICE, "m.room.encrypted",
+                    Json.parseToJsonElement(
+                        alice.encryptRoomKey(aliceSessions, sessionId, bobKeys, OutboundSession(CHANNEL, 1uL, 0uL))
+                    ),
+                )
+            }
+        assertEquals(3, store.processToDevice(rows, deviceKeys).roomKeys)
+        // 解錠する（自分の鍵を保存し、自分のマスター鍵とユーザー署名鍵を記録に入れる）。
+        val start = zoo.crypto.ffi.beginSetup(BOB)
+        store.saveOwnKeys(start.session, 7L)
+        start.session.close()
+        assertTrue(store.hasOwnKeys)
+        assertNotNull(store.trustStore.ownMasterKey())
+        val trust = store.trustStore.toJson()
+        val oldDeviceId = store.deviceId
+        store.close()
+
+        // 1 つは鍵バックアップに送ったことにし、1 つは壊す（開けないセッションは捨てる）。
+        val stateFile = File(files.directory, "state.json")
+        val state = Json.parseToJsonElement(stateFile.readText()).jsonObject
+        val sessions = state["inbound_sessions"]!!.jsonObject
+        val (backedUp, broken) = sessions.keys.sorted().let { it[0] to it[1] }
+        val edited =
+            JsonObject(
+                sessions.mapValues { (key, value) ->
+                    when (key) {
+                        backedUp -> JsonObject(value.jsonObject + ("backed_up" to JsonPrimitive(true)))
+                        broken -> JsonObject(value.jsonObject + ("pickle" to JsonPrimitive("broken")))
+                        else -> value
+                    }
+                }
+            )
+        stateFile.writeText(JsonObject(state + ("inbound_sessions" to edited)).toString())
+
+        val reopened = open()!!.store
+        val replaced = reopened.replaceDevice()
+        // 古いストアは閉じ、ディレクトリーの印は新しいストアに引き継ぐ。
+        assertFailsWith<IllegalStateException> { reopened.acknowledged(listOf("10")) }
+        assertFailsWith<CryptoStoreBusyException> { open() }
+        val newDeviceId = replaced.use { next ->
+            assertNotEquals(oldDeviceId, next.deviceId)
+            assertFalse(next.isRegistered)
+            val registration = next.registrationRequest()
+            assertEquals(next.deviceId, registration["device_keys"]!!.jsonObject["device_id"]!!.jsonPrimitive.content)
+            assertEquals(50, registration["one_time_keys"]!!.jsonObject.size)
+            assertEquals(1, registration["fallback_keys"]!!.jsonObject.size)
+            // 自分の鍵（解錠）は捨て、記録と受信用セッション（送信待ちの印も）は残す。
+            assertFalse(next.hasOwnKeys)
+            assertNull(next.secretsRevision)
+            assertEquals(trust, next.trustStore.toJson())
+            assertEquals(2, next.inboundSessionCount)
+            assertEquals(1, next.pendingBackupCount())
+            next.deviceId
+        }
+        val saved = Json.parseToJsonElement(stateFile.readText()).jsonObject
+        assertEquals(newDeviceId, saved["device_id"]!!.jsonPrimitive.content)
+        assertTrue(saved["olm_sessions"]!!.jsonArray.isEmpty())
+        assertTrue(saved["processed_to_device"]!!.jsonArray.isEmpty())
+        assertEquals(JsonNull, saved["own_keys"])
+
+        // 新しい端末で封をし直したので、開き直せて、もう一度作り直しても受信用セッションを開ける。
+        open()!!.store.use { again ->
+            assertEquals(newDeviceId, again.deviceId)
+            assertEquals(trust, again.trustStore.toJson())
+            again.replaceDevice().use { third ->
+                assertEquals(2, third.inboundSessionCount)
+                assertEquals(1, third.pendingBackupCount())
+                assertEquals(trust, third.trustStore.toJson())
+            }
+        }
         alice.close()
         aliceSessions.close()
     }

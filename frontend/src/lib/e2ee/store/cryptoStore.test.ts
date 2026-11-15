@@ -10,7 +10,7 @@ import {
 import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { CryptoOperations } from "../operations";
-import { MemoryCryptoBackend, type CryptoStoreWrite } from "./backend";
+import { MemoryCryptoBackend, type CryptoStoreWrite, type DeviceReplacement } from "./backend";
 import { CryptoStore, type KeysQueryResponse } from "./cryptoStore";
 import type { WrappingKeyStore } from "./storageKey";
 
@@ -161,6 +161,52 @@ describe("CryptoStore", () => {
     backend.down = false;
     expect(await operations.run({ op: "pendingBackupCount" })).toBe(0);
     await operations.run({ op: "markRegistered" });
+  });
+
+  it("端末を作り直したあとの開き直しに失敗しても、試し直しで作り直した端末から続ける", async () => {
+    class FlakyBackend extends MemoryCryptoBackend {
+      down = false;
+      override async read() {
+        if (this.down) throw new Error("storage down");
+        return super.read();
+      }
+      override async replaceDevice(replacement: DeviceReplacement): Promise<void> {
+        await super.replaceDevice(replacement);
+        // 作り直しは保存できたが、そのあとの開き直しで読めない。
+        this.down = true;
+      }
+    }
+    const backend = new FlakyBackend();
+    const operations = new CryptoOperations(
+      { open: async () => backend, remove: async () => backend.destroy() },
+      memoryKeys(),
+    );
+    const namespace = `user-${BOB}`;
+    await operations.run({ op: "open", namespace, userId: BOB });
+    await operations.run({ op: "markRegistered" });
+    const first = { deviceId: backend.meta.get("device_id")! };
+    const request = {
+      op: "replaceDevice" as const,
+      namespace,
+      userId: BOB,
+      deviceId: first.deviceId,
+    };
+    await expect(operations.run(request)).rejects.toThrow("storage down");
+    const replacedDeviceId = backend.meta.get("device_id");
+    expect(replacedDeviceId).not.toBe(first.deviceId);
+    const account = backend.account;
+
+    // ストレージが戻ったら、同じ要求（消された前の端末）でも、保存済みの新しい端末を開いて返す。
+    // 新しい端末をもう一度作り直さない。
+    backend.down = false;
+    const retried = await operations.run(request);
+    expect(retried).toMatchObject({ deviceId: replacedDeviceId, registered: false });
+    expect(backend.account).toBe(account);
+    // 開き直したストアで、そのまま登録に進める。
+    const registration = (await operations.run({ op: "registrationRequest" })) as {
+      device_keys: JsonObject;
+    };
+    expect(registration.device_keys).toMatchObject({ device_id: replacedDeviceId });
   });
 
   it("開き直しに失敗したあとで消したストアは、次の操作で開き直さない", async () => {

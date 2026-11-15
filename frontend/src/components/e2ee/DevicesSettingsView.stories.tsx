@@ -4,6 +4,7 @@ import { expect, fn, screen, userEvent, within } from "storybook/test";
 import {
   E2EE_RECOVERY_KEY as RECOVERY_KEY,
   LOST_DEVICE_ID as LOST,
+  REVERIFY_NEW_MASTER_KEY,
   deviceRows as devices,
   devicesHandlers as handlers,
   devicesReady as ready,
@@ -64,16 +65,42 @@ export const Ready: Story = {
   }),
 };
 
-/** 鍵が変わった相手を、再検証する（確認のダイアログを経る）。 */
+/**
+ * 鍵が変わった相手を、再検証する。確認のダイアログに、新しい鍵の指紋と、前に信頼した鍵から変わった
+ * ことを出し、絵文字での検証を勧める。受け入れると、見せた鍵にだけ署名する。
+ */
 export const Reverify: Story = {
   args: { state: ready, handlers: handlers() },
   play: playForImplementation(async ({ args, canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "再検証する" }));
-    await userEvent.click(await screen.findByRole("button", { name: "再検証する" }));
-    await expect(args.handlers.onReverify).toHaveBeenCalledWith(
+    await expect(args.handlers.onPrepareReverify).toHaveBeenCalledWith(
       "00000000-0000-4000-8000-0000000000b1",
     );
+    const dialog = await screen.findByRole("alertdialog");
+    await expect(within(dialog).getByText("nE7w")).toBeInTheDocument();
+    await expect(within(dialog).getByText("BnQ")).toBeInTheDocument();
+    await expect(within(dialog).getByRole("alert")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "この鍵を信頼する" }));
+    await expect(args.handlers.onReverify).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-0000000000b1",
+      REVERIFY_NEW_MASTER_KEY,
+    );
+  }),
+};
+
+/** 再検証の確認から、絵文字での検証に切り替える。 */
+export const ReverifyWithSas: Story = {
+  args: { state: ready, handlers: handlers() },
+  play: playForImplementation(async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "再検証する" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "絵文字で検証" }));
+    await expect(args.handlers.onSasVerify).toHaveBeenCalledWith(
+      "00000000-0000-4000-8000-0000000000b1",
+    );
+    await expect(args.handlers.onReverify).not.toHaveBeenCalled();
   }),
 };
 
