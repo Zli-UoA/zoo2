@@ -20,6 +20,7 @@ pub mod notifications;
 pub mod push;
 pub mod read_states;
 pub mod response;
+pub mod shape_limit;
 pub mod shapes;
 pub mod telemetry;
 pub mod threads;
