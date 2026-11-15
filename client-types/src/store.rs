@@ -170,6 +170,11 @@ impl Store {
         self.channels.get(self.channel_keys.get(channel_id)?)
     }
 
+    /// 同期したユーザー（順は決まっていない）。
+    pub fn users(&self) -> impl Iterator<Item = &User> {
+        self.users.values()
+    }
+
     pub fn user(&self, user_id: &str) -> Option<&User> {
         self.users.get(self.user_keys.get(user_id)?)
     }

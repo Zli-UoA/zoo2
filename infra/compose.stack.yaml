@@ -65,6 +65,9 @@ services:
       CSP_AVATAR_SRC: ${CSP_AVATAR_SRC:-https://avater.zliusercontent.com}
       MEDIA_PROXY_URL: ${MEDIA_PROXY_URL:-}
       SUMMALY_URL: ${SUMMALY_URL:-}
+      # Android の App Links（E2EE の再認証。docs/e2ee.md、#360）。指紋が空なら assetlinks.json は 404。
+      ANDROID_APP_PACKAGE: ${ANDROID_APP_PACKAGE:-}
+      ANDROID_APP_CERT_SHA256: ${ANDROID_APP_CERT_SHA256:-}
     networks:
       - frontend
 

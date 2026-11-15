@@ -783,7 +783,7 @@ async fn update_workspace(
     let mut tx = db.transaction().await?;
     a.admin(&mut tx, &s).await?;
     let body = json!({"name":b.name,"preferences":b.preferences,"fields":b.profile_fields});
-    let v=one(&mut tx,"UPDATE workspace_settings SET name=COALESCE($1::jsonb->>'name',name),preferences=CASE WHEN $1::jsonb->'preferences'<>'null'::jsonb THEN ($1::jsonb->'preferences')::text ELSE preferences END,profile_fields=CASE WHEN $1::jsonb->'fields'<>'null'::jsonb THEN ($1::jsonb->'fields')::text ELSE profile_fields END WHERE id='workspace' RETURNING json_build_object('name',name,'preferences',preferences::jsonb,'profile_fields',profile_fields::jsonb)::text",&[&body.to_string()]).await?;
+    let v=one(&mut tx,"UPDATE workspace_settings SET name=COALESCE($1::jsonb->>'name',name),preferences=CASE WHEN $1::jsonb->'preferences'<>'null'::jsonb THEN (($1::jsonb->'preferences') || jsonb_build_object('default_channel_ids',COALESCE(preferences::jsonb->'default_channel_ids','[]'::jsonb)))::text ELSE preferences END,profile_fields=CASE WHEN $1::jsonb->'fields'<>'null'::jsonb THEN ($1::jsonb->'fields')::text ELSE profile_fields END WHERE id='workspace' RETURNING json_build_object('name',name,'preferences',preferences::jsonb,'profile_fields',profile_fields::jsonb)::text",&[&body.to_string()]).await?;
     tx.commit().await?;
     Ok(Json(v))
 }

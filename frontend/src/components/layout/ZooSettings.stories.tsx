@@ -138,6 +138,7 @@ export const Members: Story = {
   },
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("tab", { name: "メンバー" }));
+    await expect(screen.getByRole("heading", { level: 2, name: "メンバー" })).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getAllByRole("button", { name: "管理者にする" }).length).toBeGreaterThan(0),
     );

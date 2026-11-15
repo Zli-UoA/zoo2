@@ -24,6 +24,10 @@ pub struct Channel {
     /// 暗号化チャンネル（作成時だけ指定でき、変わらない。docs/e2ee.md）。
     #[serde(default)]
     pub encrypted: bool,
+    /// 暗号化チャンネルの `membership_epoch`（docs/e2ee.md の「membership_epoch と送信の順序」）。
+    /// Electric は int8 を文字列で配る。平文のチャンネルや古いスキーマでは `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_epoch: Option<u64>,
     pub archive_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
 }
@@ -61,6 +65,19 @@ pub struct Message {
     pub display_attachments: Option<Vec<Attachment>>,
     #[serde(default)]
     pub thread_archive_at: Option<DateTime>,
+    /// 暗号化チャンネルのメッセージの Megolm の暗号文（`messages.ciphertext`。docs/e2ee.md の
+    /// 「messages.ciphertext の形式」）。平文のメッセージと、削除した行では `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ciphertext: Option<Value>,
+    /// 暗号化して送ったときの `membership_epoch`。平文のメッセージ（暗号化に切り替える前の行を含む）では `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u64>,
+    /// 版の番号（編集のたびにサーバーが 1 増やす）。
+    #[serde(default)]
+    pub revision: u64,
+    /// `message` か `emote`（`messages.message_kind`）。古いスキーマでは `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,6 +208,7 @@ impl FromRow for Channel {
             is_dm: opt_boolean(row, "is_dm")?.unwrap_or(false),
             // 古いスキーマには encrypted がないため、無ければ平文のチャンネルとして扱う。
             encrypted: opt_boolean(row, "encrypted")?.unwrap_or(false),
+            membership_epoch: opt_unsigned(row, "membership_epoch")?,
             archive_at: opt_time(row, "archive_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
         })
@@ -234,6 +252,10 @@ impl FromRow for Message {
             display_reactions: display_reactions(row)?,
             display_attachments: display_attachments(row)?,
             thread_archive_at: opt_time(row, "thread_archive_at")?,
+            ciphertext: opt_json(row, "ciphertext")?,
+            epoch: opt_unsigned(row, "epoch")?,
+            revision: opt_unsigned(row, "revision")?.unwrap_or(0),
+            message_kind: opt_text(row, "message_kind"),
         })
     }
 }
@@ -355,6 +377,13 @@ fn opt_integer(row: &Row, column: &str) -> Result<Option<i64>> {
     }
 }
 
+/// 0 以上の int8 の列（`membership_epoch`、`epoch`、`revision`）。
+fn opt_unsigned(row: &Row, column: &str) -> Result<Option<u64>> {
+    opt_integer(row, column)?
+        .map(|value| u64::try_from(value).map_err(|_| anyhow!("列 {column} が負の数です: {value}")))
+        .transpose()
+}
+
 fn integer(row: &Row, column: &str) -> Result<i64> {
     opt_integer(row, column)?.ok_or_else(|| anyhow!("列 {column} がありません"))
 }
@@ -424,12 +453,46 @@ mod tests {
         })))
         .unwrap();
         assert!(channel.encrypted);
+        assert_eq!(channel.membership_epoch, Some(3));
         assert!(!channel.is_private);
         assert!(channel.is_nsfw);
         assert!(channel.is_dm);
         assert_eq!(
             channel.archive_at.unwrap().to_string(),
             "2026-11-01T01:02:03.456"
+        );
+    }
+
+    #[test]
+    fn parses_encrypted_message_columns() {
+        let message = Message::from_row(&row(json!({
+            "id": "m1", "user_id": "u1", "channel_id": "c1", "content": "",
+            "created_at": "2026-11-01 01:02:03", "ciphertext": "{\"algorithm\":\"m.megolm.v1.aes-sha2\"}",
+            "epoch": "4", "revision": "2", "message_kind": "emote"
+        })))
+        .unwrap();
+        assert_eq!(
+            message.ciphertext,
+            Some(json!({ "algorithm": "m.megolm.v1.aes-sha2" }))
+        );
+        assert_eq!(message.epoch, Some(4));
+        assert_eq!(message.revision, 2);
+        assert_eq!(message.message_kind.as_deref(), Some("emote"));
+
+        let plain = Message::from_row(&row(json!({
+            "id": "m2", "user_id": "u1", "channel_id": "c1", "content": "hi",
+            "created_at": "2026-11-01 01:02:03", "ciphertext": null, "epoch": null
+        })))
+        .unwrap();
+        assert_eq!(plain.ciphertext, None);
+        assert_eq!(plain.epoch, None);
+        assert_eq!(plain.revision, 0);
+        assert!(
+            Message::from_row(&row(json!({
+                "id": "m3", "user_id": "u1", "channel_id": "c1",
+                "created_at": "2026-11-01 01:02:03", "revision": "-1"
+            })))
+            .is_err()
         );
     }
 

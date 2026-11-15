@@ -567,7 +567,7 @@ async fn backs_up_room_keys_only_after_unlocking_and_checks_the_version() {
         let mut state = backend.0.lock().unwrap();
         let rogue_master = CrossSigningKeys::generate(BOB).unwrap().master;
         let rogue = BackupDecryptionKey::generate()
-            .create_version_request(&rogue_master, Some("1"))
+            .create_version_request(&rogue_master, Some("1"), 2)
             .unwrap();
         state.versions.push(json!({
             "version": "2",
@@ -582,11 +582,11 @@ async fn backs_up_room_keys_only_after_unlocking_and_checks_the_version() {
     ));
     assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 2);
 
-    // 版を巻き戻されても（前に見た 2 より古い 1 を今の版として返されても）送らない。
+    // 前の版の auth_data を大きい番号の版として見せられても（版の番号は署名に入っているので）送らない。
+    // 前に見た版より古い版への巻き戻しの検出は、zoo-crypto のテスト（tests/rollback.rs）で確かめる。
     backend.0.lock().unwrap().versions.pop();
     {
         let mut state = backend.0.lock().unwrap();
-        // 見た版の最大を 2 にするため、自分の鍵の正しい版 2 を一度見せる。
         let version = state.versions[0].clone();
         state.versions.push(json!({
             "version": "2",
@@ -597,13 +597,14 @@ async fn backs_up_room_keys_only_after_unlocking_and_checks_the_version() {
     }
     assert!(matches!(
         setup::upload_key_backup(&api, &store).await.unwrap(),
-        BackupUploadResult::Done { .. }
+        BackupUploadResult::Rejected(_)
     ));
+    assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 2);
+    // 本物の今の版（版 1）に戻れば送る。
     backend.0.lock().unwrap().versions.pop();
-    receive_room_key(&store).await;
     assert!(matches!(
         setup::upload_key_backup(&api, &store).await.unwrap(),
-        BackupUploadResult::Rejected(_)
+        BackupUploadResult::Done { .. }
     ));
 }
 
@@ -720,13 +721,18 @@ async fn a_conflict_while_running_stops_backups_until_unlocked_again() {
         .unwrap();
 
     // 稼働中に今の版が変わってから鍵を受け取っても、新しい版を検証して、手元のセッションを送り直す。
+    // 版の番号は auth_data の署名に入るので、版 2 の auth_data に署名し直す。
     {
         let mut state = backend.0.lock().unwrap();
+        let secrets = session.secrets();
         let version = state.versions[0].clone();
         state.versions.push(json!({
             "version": "2",
             "algorithm": version["algorithm"],
-            "auth_data": version["auth_data"],
+            "auth_data": secrets
+                .backup_key
+                .auth_data(&secrets.cross_signing.master, 2)
+                .unwrap(),
             "deleted": false,
         }));
     }

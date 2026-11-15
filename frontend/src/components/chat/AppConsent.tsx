@@ -1,10 +1,11 @@
+import { Link } from "@tanstack/react-router";
 import { Input } from "../ui/input";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useUsers } from "../../hooks/useRealtime";
-import { Button } from "../ui/button";
+import { Button, buttonVariants } from "../ui/button";
 import { AppAvatar } from "./AppIdentity";
 
 export function AppConsent() {
@@ -25,6 +26,8 @@ export function AppConsent() {
   const [selected, setSelected] = useState(requested);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const authorization = useRef<AbortController | null>(null);
+  useEffect(() => () => authorization.current?.abort(), []);
   useEffect(() => {
     const controller = new AbortController();
     if (!id) {
@@ -48,10 +51,13 @@ export function AppConsent() {
     requested.every((scope) => app.manifest.scopes?.includes(scope));
   async function consent() {
     if (!valid || busy) return;
+    const controller = new AbortController();
+    authorization.current = controller;
     setBusy(true);
     try {
       const result = await client.request<{ redirect_uri: string }>("/api/apps/oauth/authorize", {
         method: "POST",
+        signal: controller.signal,
         body: {
           app_id: id,
           redirect_uri: params.get("redirect_uri"),
@@ -60,8 +66,9 @@ export function AppConsent() {
           scopes: selected,
         },
       });
-      window.location.assign(result.redirect_uri);
+      if (!controller.signal.aborted) window.location.assign(result.redirect_uri);
     } catch {
+      if (controller.signal.aborted) return;
       setError(t("apps.actionError"));
       setBusy(false);
     }
@@ -114,9 +121,13 @@ export function AppConsent() {
         <Button disabled={!valid || busy} onClick={() => void consent()}>
           {t("apps.allow")}
         </Button>
-        <Button variant="outline" onClick={() => window.location.assign("/")}>
+        <Link
+          to="/"
+          onClick={() => authorization.current?.abort()}
+          className={buttonVariants({ variant: "outline" })}
+        >
           {t("apps.cancel")}
-        </Button>
+        </Link>
       </div>
     </div>
   );
