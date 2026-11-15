@@ -73,6 +73,12 @@ pub enum AppEvent {
     ThreadsChanged {
         reopened: Option<String>,
     },
+    /// 移行中、未移行の子スレッドへの返信がサーバーで最上位へ正規化された。
+    ThreadRedirected {
+        from: String,
+        to: String,
+    },
+    ThreadLeft(String),
     ReadStatesPollFinished,
     EmojiPollFinished,
     TypingPollFinished,
@@ -719,6 +725,23 @@ impl App {
                     "スレッド一覧を取得できませんでした: {message}。一覧の再試行を選んでください"
                 ));
             }
+            AppEvent::ThreadLeft(id) => {
+                self.active_threads.retain(|thread| thread.id != id);
+                self.archived_threads.retain(|thread| thread.id != id);
+                self.threads_requested_at = [Some(Instant::now()); 2];
+                self.refresh_threads();
+            }
+            AppEvent::ThreadRedirected { from, to } => {
+                if let Some(thread) = self.thread.as_mut().filter(|t| t.root_id == from) {
+                    thread.root_id = to.clone();
+                    thread.selected = None;
+                    thread.scroll = 0;
+                    thread.inner_scroll = 0;
+                }
+                if self.target == Target::Reply(from) {
+                    self.target = Target::Reply(to);
+                }
+            }
             AppEvent::ThreadsChanged { reopened } => {
                 if let Some(id) = reopened {
                     self.locally_reopened_threads.insert(
@@ -948,34 +971,14 @@ impl App {
 
     /// 再開成功・購読で確認した再開を、一覧の再取得を待たず反映する。
     fn ensure_active_thread(&mut self, id: &str) {
-        let archived = self
-            .archived_threads
-            .iter()
-            .position(|thread| thread.id == id)
-            .map(|index| self.archived_threads.remove(index));
+        // Reopening alone is not joining. Only the participant-filtered API
+        // may add a persistent entry; the viewed Open thread has its own row.
         if let Some(thread) = self
             .active_threads
             .iter_mut()
             .find(|thread| thread.id == id)
         {
             thread.thread_archive_at = None;
-            return;
-        }
-        let cached = archived.or_else(|| {
-            self.store.channels().into_iter().find_map(|channel| {
-                let root = self.store.message(&channel.id, id)?;
-                Some(ThreadSummary {
-                    id: root.id.clone(),
-                    channel_id: root.channel_id.clone(),
-                    content: root.content.chars().take(160).collect(),
-                    thread_archive_at: None,
-                    reply_count: self.store.replies(&channel.id, id).len() as u64,
-                })
-            })
-        });
-        if let Some(mut thread) = cached {
-            thread.thread_archive_at = None;
-            self.active_threads.insert(0, thread);
         }
     }
 
@@ -1061,12 +1064,7 @@ impl App {
             for thread in self.threads().filter(|thread| {
                 joined
                     && thread.channel_id == channel.id
-                    && (!self.thread_is_archived(&channel.id, &thread.id)
-                        || (self.current.as_deref() == Some(channel.id.as_str())
-                            && self
-                                .thread
-                                .as_ref()
-                                .is_some_and(|selected| selected.root_id == thread.id)))
+                    && !self.thread_is_archived(&channel.id, &thread.id)
             }) {
                 items.push(SidebarItem::Thread {
                     channel_id: channel.id.clone(),
@@ -1082,8 +1080,8 @@ impl App {
                 };
                 if !items.contains(&selected)
                     && self.store.message(&channel.id, &thread.root_id).is_some()
-                    && (self.thread_is_archived(&channel.id, &thread.root_id)
-                        || !self.store.replies(&channel.id, &thread.root_id).is_empty())
+                    && !self.thread_is_archived(&channel.id, &thread.root_id)
+                    && !self.store.replies(&channel.id, &thread.root_id).is_empty()
                 {
                     items.push(selected);
                 }
@@ -1698,7 +1696,11 @@ impl App {
                 thread
                     .selected
                     .as_ref()
-                    .filter(|id| **id != thread.root_id)
+                    .filter(|id| {
+                        self.current
+                            .as_deref()
+                            .is_some_and(|channel| !self.store.replies(channel, id).is_empty())
+                    })
                     .cloned()
             }),
         };
@@ -1948,6 +1950,29 @@ impl App {
 
     /// サイドバーでは選択中のチャンネル、それ以外では開いているチャンネルを対象にする。
     fn join_or_leave(&mut self, join: bool) {
+        let thread_id = match self.focus {
+            Focus::Thread => self.thread.as_ref().map(|thread| thread.root_id.clone()),
+            Focus::Sidebar => match self.sidebar_items().get(self.sidebar_index) {
+                Some(SidebarItem::Thread { id, .. }) => Some(id.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(id) = thread_id {
+            let api = self.api.clone();
+            let tx = self.app_tx.clone();
+            self.spawn_api("スレッドの参加・退出", async move {
+                if join {
+                    api.join_thread(&id).await?;
+                    let _ = tx.send(AppEvent::ThreadsChanged { reopened: None });
+                } else {
+                    api.leave_thread(&id).await?;
+                    let _ = tx.send(AppEvent::ThreadLeft(id));
+                }
+                Ok(())
+            });
+            return;
+        }
         let channel_id = match self.focus {
             Focus::Sidebar => self
                 .sidebar_items()
@@ -2182,12 +2207,16 @@ impl App {
         }
         tokio::spawn(async move {
             let id = uuid::Uuid::new_v4().to_string();
+            let mut resolved_parent: Option<String> = None;
             let result = match &target {
                 Target::Channel => api.send_message(&id, &channel_id, &content, None).await,
-                Target::Reply(root_id) => {
-                    api.send_message(&id, &channel_id, &content, Some(root_id))
-                        .await
-                }
+                Target::Reply(root_id) => api
+                    .send_reply(&id, &channel_id, &content, root_id)
+                    .await
+                    .map(|(txid, parent)| {
+                        resolved_parent = parent.filter(|parent| parent != root_id);
+                        txid
+                    }),
                 Target::Edit(message_id) => api.edit_message(message_id, &content).await,
             };
             if let Err(err) = result {
@@ -2200,7 +2229,17 @@ impl App {
                 });
             } else {
                 let reopened = match target {
-                    Target::Reply(root_id) => Some(root_id),
+                    Target::Reply(root_id) => {
+                        if let Some(parent) = resolved_parent {
+                            let _ = tx.send(AppEvent::ThreadRedirected {
+                                from: root_id,
+                                to: parent.clone(),
+                            });
+                            Some(parent)
+                        } else {
+                            Some(root_id)
+                        }
+                    }
                     _ => None,
                 };
                 let _ = tx.send(AppEvent::ThreadsChanged { reopened });
@@ -2604,9 +2643,9 @@ mod tests {
             .unwrap();
         assert!(matches!(&event, AppEvent::ThreadsChanged { reopened: Some(id) } if id == "root"));
         app.on_app_event(event);
-        assert!(app.active_threads[0].thread_archive_at.is_none());
+        assert!(app.active_threads.is_empty());
         app.close_thread();
-        assert!(app.sidebar_items().contains(&SidebarItem::Thread {
+        assert!(!app.sidebar_items().contains(&SidebarItem::Thread {
             channel_id: "c1".into(),
             id: "root".into(),
         }));
@@ -2616,7 +2655,7 @@ mod tests {
             .unwrap();
         assert!(matches!(&event, AppEvent::ThreadsFailed { .. }));
         app.on_app_event(event);
-        assert!(app.active_threads[0].thread_archive_at.is_none());
+        assert!(app.active_threads.is_empty());
         assert!(
             app.notice
                 .as_ref()

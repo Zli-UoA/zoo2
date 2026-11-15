@@ -273,7 +273,12 @@
     "archiveForChannel": "{{channel}}嘅已封存討論串",
     "untitled": "未命名子討論",
     "targetTooOld": "呢則訊息太舊，喺度載入唔到",
-    "unreadTooOld": "更早嘅未讀訊息未載入"
+    "unreadTooOld": "更早嘅未讀訊息未載入",
+    "join": "加入討論串",
+    "leave": "退出討論串",
+    "reopen": "重新開啟",
+    "reopenOnSend": "傳送回覆會重新開啟並加入呢個討論串。",
+    "membershipError": "無法更新討論串參與狀態。"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應嘅用戶",

@@ -354,6 +354,9 @@ async fn channel_posts_share_reactions_replies_and_visible_conversation() -> any
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let mut db = init_db(&config.database_url).await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
     let app = create_router(AppState::new(db.clone(), config));
     let user = uuid::Uuid::new_v4().to_string();
     toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
@@ -449,7 +452,8 @@ async fn channel_posts_share_reactions_replies_and_visible_conversation() -> any
         .map(|p| p["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec![root, child, grandchild]);
-    assert_eq!(thread[2]["tree_depth"], 2);
+    assert_eq!(thread[2]["tree_depth"], 1);
+    assert_eq!(thread[2]["parent_id"], root);
     let (_, post) = request(
         &app,
         "GET",
@@ -765,6 +769,10 @@ async fn reply_link_migration_repairs_legacy_placement_and_missing_descendants()
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(connection);
     let tx = client.transaction().await?;
+    // Test the historical migration with its original writer semantics.
+    // This transaction rolls the rollout phase back with the fixture.
+    tx.batch_execute("UPDATE thread_rollout SET phase='collecting'")
+        .await?;
     let owner = uuid::Uuid::new_v4().to_string();
     let channel = uuid::Uuid::new_v4().to_string();
     let ids: Vec<_> = (0..4).map(|_| uuid::Uuid::new_v4().to_string()).collect();

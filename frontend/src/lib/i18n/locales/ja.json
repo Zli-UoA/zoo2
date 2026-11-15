@@ -273,7 +273,12 @@
     "archiveForChannel": "{{channel}}のアーカイブ済みスレッド",
     "untitled": "無題のスレッド",
     "targetTooOld": "このメッセージは古すぎて、ここまで読み込めませんでした",
-    "unreadTooOld": "これより古い未読は読み込まれていません"
+    "unreadTooOld": "これより古い未読は読み込まれていません",
+    "join": "参加する",
+    "leave": "退出する",
+    "reopen": "再Open",
+    "reopenOnSend": "送信すると再Openして参加します。",
+    "membershipError": "スレッドの参加状態を更新できませんでした。"
   },
   "reactions": {
     "showUsers": "{{emoji}} にリアクションしたユーザーを表示",

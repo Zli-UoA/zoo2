@@ -281,21 +281,21 @@ it("invalidates archived history changed while its last consumer was closed", as
   expect(index.threads).toEqual([]);
 });
 
-it("keeps an observed reopen through a failed refresh and isolates it by account", async () => {
+it("does not subscribe a viewed thread after a failed refresh or account switch", async () => {
   fixture.api.get.mockRejectedValue(new Error("offline"));
   await act(async () => root.render(createElement(Test, { userId: "alice" })));
   const active = { ...thread, thread_archive_at: null };
   await act(async () => index.observeThread(active));
   await act(async () => window.dispatchEvent(new Event(THREADS_CHANGED)));
   expect(index.isError).toBe(true);
-  expect(index.threads).toEqual([active]);
+  expect(index.threads).toEqual([]);
   await act(async () => root.render(createElement(Test, { userId: "bob" })));
   expect(index.threads).toEqual([]);
   await act(async () => root.render(createElement(Test, { userId: "alice" })));
-  expect(index.threads).toEqual([active]);
+  expect(index.threads).toEqual([]);
 });
 
-it("preserves a root observed after a request began and accepts a newer refresh", async () => {
+it("does not add a viewed nonparticipant root while a request is pending", async () => {
   let resolve!: (value: ThreadPage) => void;
   fixture.api.get.mockImplementationOnce(
     () =>
@@ -307,13 +307,13 @@ it("preserves a root observed after a request began and accepts a newer refresh"
   const active = { ...thread, thread_archive_at: null };
   await act(async () => index.observeThread(active));
   await act(async () => resolve(page([])));
-  expect(index.threads).toEqual([active]);
+  expect(index.threads).toEqual([]);
   fixture.api.get.mockResolvedValue(page([]));
   await act(async () => window.dispatchEvent(new Event("focus")));
   expect(index.threads).toEqual([]);
 });
 
-it("preserves server order when viewing an existing thread and prepends a reopened row", async () => {
+it("preserves server order and does not insert a merely viewed thread", async () => {
   const newest = { ...thread, id: "newest", thread_archive_at: null };
   const older = { ...newest, id: "older" };
   fixture.api.get.mockResolvedValue(page([newest, older]));
@@ -323,7 +323,7 @@ it("preserves server order when viewing an existing thread and prepends a reopen
   await act(async () => index.observeThread({ ...older }));
   expect(index.threads.map((row) => row.id)).toEqual(["newest", "older"]);
   await act(async () => index.observeThread({ ...newest, id: "reopened" }));
-  expect(index.threads.map((row) => row.id)).toEqual(["reopened", "newest", "older"]);
+  expect(index.threads.map((row) => row.id)).toEqual(["newest", "older"]);
 });
 
 it("keeps a newly observed reopen ahead of rows returned by an older request", async () => {
@@ -339,7 +339,7 @@ it("keeps a newly observed reopen ahead of rows returned by an older request", a
   const reopened = { ...older, id: "reopened" };
   await act(async () => index.observeThread(reopened));
   await act(async () => resolve(page([older])));
-  expect(index.threads.map((row) => row.id)).toEqual(["reopened", "older"]);
+  expect(index.threads.map((row) => row.id)).toEqual(["older"]);
 });
 
 it("does not restore a zero-reply observation from an older response", async () => {

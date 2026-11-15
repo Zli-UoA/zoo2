@@ -360,6 +360,7 @@ async fn idempotent_existing_message_in_snapshot(
 
     let opt_rows = toasty::sql::query(
         "SELECT json_build_object(
+            'reply_target_id', reply_target_id,
             'kind', COALESCE(message_kind, 'message'),
             'broadcast', COALESCE(broadcast, false),
             'metadata', CASE WHEN metadata IS NOT NULL AND metadata <> '' THEN metadata::jsonb ELSE NULL END
@@ -370,10 +371,13 @@ async fn idempotent_existing_message_in_snapshot(
     .await?;
 
     let mut options_match = false;
+    let mut parent_matches = existing_msg.parent_id.as_deref() == parent_id;
     if let Some(toasty::stmt::Value::Record(r)) = opt_rows.into_iter().next()
         && let Some(toasty::stmt::Value::String(s)) = r.fields.into_iter().next()
         && let Ok(saved_opts) = serde_json::from_str::<serde_json::Value>(&s)
     {
+        parent_matches |=
+            parent_id.is_some() && saved_opts["reply_target_id"].as_str() == parent_id;
         let saved_kind = saved_opts["kind"].as_str().unwrap_or("message");
         let saved_broadcast = saved_opts["broadcast"].as_bool().unwrap_or(false);
         let saved_metadata = saved_opts.get("metadata").filter(|v| !v.is_null()).cloned();
@@ -386,7 +390,7 @@ async fn idempotent_existing_message_in_snapshot(
     if existing_msg.user_id == auth_user_id
         && existing_msg.channel_id == channel_id
         && existing_msg.content == content
-        && existing_msg.parent_id.as_deref() == parent_id
+        && parent_matches
         && existing_msg.deleted_at.is_none()
         && req_att_ids == existing_att_ids
         && options_match
@@ -809,6 +813,20 @@ pub(crate) async fn create_message_impl(
             )));
         }
 
+        let roots = crate::apps::query(&mut tx,
+            "SELECT json_build_object('id',r.id,'deleted',r.deleted_at IS NOT NULL)::text FROM messages r WHERE r.id=thread_root($1) AND (SELECT phase FROM thread_rollout WHERE id)<>'collecting'",
+            &[parent_id]).await?;
+        if let Some(root) = roots.first() {
+            if root["deleted"].as_bool() == Some(true) {
+                return Err(AppError::NotFound("Thread root has been deleted".into()));
+            }
+            if sender.is_some() && root["id"].as_str() != Some(parent_id.as_str()) {
+                return Err(AppError::BadRequest(
+                    "Encrypted replies must target the thread root; encrypt again with that parent_id".into(),
+                ));
+            }
+        }
+
         parent_author_id = Some(parent.user_id);
     }
 
@@ -859,7 +877,8 @@ pub(crate) async fn create_message_impl(
     };
 
     let message = match create_result {
-        Ok(msg) => msg,
+        // Toasty can return supplied fields without re-reading BEFORE-trigger changes.
+        Ok(_) => Message::get_by_id(&mut tx, id.as_str()).await?,
         Err(err) if supplied_id.is_some() && AppError::is_unique_violation(&err, None) => {
             let _ = tx.rollback().await;
             let mut retry_db = state.db.clone();

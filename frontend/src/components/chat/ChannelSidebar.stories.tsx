@@ -224,8 +224,10 @@ export const SelectedArchivedThread: Story = {
     },
   },
   play: playForImplementation(async () => {
-    const link = await screen.findByRole("link", { name: /リリースノートの下書き/ });
-    await expect(link).toHaveAttribute("aria-current", "page");
+    await expect(await screen.findByRole("link", { name: "general" })).toBeVisible();
+    await expect(
+      screen.queryByRole("link", { name: /リリースノートの下書き/ }),
+    ).not.toBeInTheDocument();
     await expect(
       screen.queryByRole("button", { name: /アーカイブ済みスレッド/ }),
     ).not.toBeInTheDocument();
