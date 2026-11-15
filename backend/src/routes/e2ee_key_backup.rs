@@ -79,6 +79,44 @@ fn version_not_found() -> AppError {
     AppError::NotFound("Backup version not found".into())
 }
 
+/// `auth_data` に署名した版の番号（`auth_data.version`）。方式と番号を入れていない古い形式なら `None`。
+///
+/// クライアントは、方式と、サーバーが振る版の番号を `auth_data` に入れて署名する（docs/e2ee.md の
+/// 「鍵バックアップ」）。古い版の `auth_data` を別の番号の版として見せる巻き戻しを、クライアントが
+/// 見分けられるようにするため。古い形式は、最初の版（版 1）だけ受け付ける。
+fn signed_version(auth_data: &Value) -> Result<Option<String>, AppError> {
+    match (auth_data.get("algorithm"), auth_data.get("version")) {
+        (None, None) => Ok(None),
+        (Some(Value::String(algorithm)), Some(Value::String(version)))
+            if algorithm == BACKUP_ALGORITHM =>
+        {
+            Ok(Some(version.clone()))
+        }
+        _ => Err(AppError::BadRequest(
+            "auth_data.algorithm and auth_data.version must name this backup algorithm and version"
+                .into(),
+        )),
+    }
+}
+
+/// 版 `version` を作る、または更新する `auth_data` の、署名した番号を確かめる。番号が違えば 409
+/// `E2EE_WRONG_BACKUP_VERSION`（別の端末が先に版を作ったなど。クライアントは版を読み直す）、
+/// 版 2 以降に古い形式を使えば 400。
+fn check_signed_version(
+    auth_data: &Value,
+    version: i64,
+    current: Option<i64>,
+) -> Result<(), AppError> {
+    match signed_version(auth_data)? {
+        Some(signed) if signed == version.to_string() => Ok(()),
+        Some(_) => Err(wrong_version(current)),
+        None if version == 1 => Ok(()),
+        None => Err(AppError::BadRequest(
+            "auth_data.algorithm and auth_data.version are required after the first version".into(),
+        )),
+    }
+}
+
 /// 版の番号（10 進の文字列）を読む。
 fn parse_version(version: &str) -> Result<i64, AppError> {
     version
@@ -165,6 +203,7 @@ async fn create_version(
     {
         let version = now_version.unwrap_or_default();
         if now["auth_data"] != req.auth_data {
+            check_signed_version(&req.auth_data, version, now_version)?;
             verify_auth_data(&mut tx, &actor.id, &req.auth_data).await?;
             exec(
                 &mut tx,
@@ -218,6 +257,8 @@ async fn create_version(
         ));
     }
     let max = history["max"].as_i64();
+    let version = max.unwrap_or(0) + 1;
+    check_signed_version(&req.auth_data, version, now_version)?;
     if max.is_some() {
         // 最初の版でなければ（消した版を含めて過去に版があれば）、直前の再認証が要る。
         reauth.require()?;
@@ -225,7 +266,6 @@ async fn create_version(
         // 暗号化チャンネルの membership_epoch を増やす。
         crate::routes::e2ee_channels::bump_user_epochs(&mut tx, &actor.id).await?;
     }
-    let version = max.unwrap_or(0) + 1;
     exec(
         &mut tx,
         "INSERT INTO e2ee_key_backup_versions (user_id, version, algorithm, auth_data)

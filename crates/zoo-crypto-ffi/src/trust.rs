@@ -16,6 +16,8 @@ pub struct TrustRecord {
     pub master_key: String,
     pub confirmed_usk: Option<String>,
     pub pin_pending: bool,
+    /// 記録から置き換えた古いマスター鍵（古い順）。
+    pub replaced_master_keys: Vec<String>,
 }
 
 /// TOFU で作ったピン（[`core::NewTofuPin`]）。`pin` は署名付きの `zoo.tofu_pin` の JSON。
@@ -115,6 +117,9 @@ pub struct Distribution {
     /// 登録待ちのピン。
     pub new_pins: Vec<NewTofuPin>,
     pub warnings: Vec<TrustWarning>,
+    /// 規則 3 で、記録と違う新しいマスター鍵に自分のユーザー署名鍵の署名があったので記録を置き換えた
+    /// 相手（自分の別の端末で受け入れた鍵）。「鍵が変わり、別の端末で確認済み」と知らせる。
+    pub signed_master_key_changes: Vec<String>,
 }
 
 /// 利用者が新しいマスター鍵を受け入れたときに送るもの（[`core::AcceptedMasterKey`]）。
@@ -203,6 +208,7 @@ impl TrustStore {
                 master_key: r.master_key.clone(),
                 confirmed_usk: r.confirmed_usk.clone(),
                 pin_pending: r.pin_pending,
+                replaced_master_keys: r.replaced_master_keys.clone(),
             })
     }
 
@@ -302,6 +308,7 @@ impl From<core::Distribution> for Distribution {
                 .collect(),
             new_pins: d.new_pins.into_iter().map(Into::into).collect(),
             warnings: d.warnings.into_iter().map(Into::into).collect(),
+            signed_master_key_changes: d.signed_master_key_changes,
         }
     }
 }
