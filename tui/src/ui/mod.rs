@@ -1,4 +1,5 @@
 mod app;
+mod e2ee_chat;
 pub mod encryption;
 mod timeline;
 mod view;

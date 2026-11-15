@@ -11,14 +11,23 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tui_textarea::TextArea;
 use zoo2_client_core::poll::PollGate;
 
+use super::e2ee_chat::{
+    self, ChannelEncryption, CreateForm, CreateKind, Decryptions, RowKey, Shown,
+};
 use crate::{
-    api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
+    api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser, stale_revision},
+    e2ee::{
+        send::{self, ChannelSender, SendContext},
+        store::{Decryption, EncryptedRow, RecipientSummary},
+    },
     electric::{self, Batch, ShapeEvent, ShapeId},
     http::Credentials,
     store::Store,
 };
 
 const NOTICE_TTL: Duration = Duration::from_secs(6);
+/// 暗号化したメッセージを、本文の代わりに出すところ（スレッドの一覧など）。
+const ENCRYPTED_PLACEHOLDER: &str = "🔒 暗号化されたメッセージ";
 /// `on_tick` の間隔。`ui::run` の interval と合わせる。
 pub const TICK: Duration = Duration::from_millis(500);
 /// 入力中の通知は2秒に1回まで送り、3秒止まったら取り消す。
@@ -41,6 +50,8 @@ pub enum AppEvent {
         channel_id: String,
         target: Target,
         content: String,
+        /// 暗号化したメッセージの編集を始めたときの版（#361）。下書きと一緒に戻す。
+        edit_base: Option<u64>,
     },
     ReadStates(Vec<ReadState>),
     Threads {
@@ -74,6 +85,38 @@ pub enum AppEvent {
     },
     /// 暗号化の画面の裏の処理の結果（#360）。
     Encryption(super::encryption::EncryptionEvent),
+    /// 暗号化したメッセージの復号の結果（メッセージ ID、行の版、結果）と、そのときの暗号ストアの
+    /// 受信用セッションの数え（#361）。
+    Decrypted {
+        channel_id: String,
+        results: Vec<(String, RowKey, Decryption)>,
+        generation: Option<u64>,
+    },
+    /// 暗号化チャンネルの配布先を判定し直した（#361）。
+    Recipients {
+        channel_id: String,
+        summary: RecipientSummary,
+    },
+    /// 暗号ストアに記録した、暗号化チャンネルの ID と、保存できずに記録し直すもの（#361）。
+    KnownEncryptedChannels {
+        known: Vec<String>,
+        failed: Vec<String>,
+    },
+    /// 暗号化したメッセージの編集が 409 `E2EE_STALE_REVISION` になった（#361）。今の版の本文が
+    /// 送ろうとした本文と同じなら、応答をなくしただけなので成功として扱う。
+    EditConflict {
+        channel_id: String,
+        message_id: String,
+        current_revision: u64,
+        content: String,
+        edit_base: Option<u64>,
+    },
+    /// チャンネルか DM を作った（#361）。開く。`encrypted` は応答の値。
+    Created {
+        channel_id: String,
+        requested_encryption: bool,
+        encrypted: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +152,12 @@ pub enum Mode {
     Help,
     /// 暗号化の画面（初回設定と解錠。#360）。
     Encryption,
+    /// チャンネルか DM を作る（#361）。
+    Create(CreateForm),
+    /// 暗号化チャンネルの配布先の詳細（#361）。`scroll` 行目から出す。
+    Recipients {
+        scroll: usize,
+    },
 }
 
 /// 入力欄の送り先。
@@ -125,6 +174,8 @@ pub struct FailedDraft {
     pub channel_id: String,
     pub target: Target,
     pub content: String,
+    /// 暗号化したメッセージの編集を始めたときの版（#361）。戻したときの競合の確かめに使う。
+    pub edit_base: Option<u64>,
 }
 
 pub struct ThreadView {
@@ -200,6 +251,26 @@ pub struct App {
     typing_poll: PollGate,
     /// 暗号化の画面と、その裏の処理。
     pub encryption: super::encryption::Encryption,
+    /// 暗号化したメッセージの復号の結果（#361）。
+    pub decryptions: Decryptions,
+    /// 暗号化チャンネルごとの、最後に判定した配布先（送信画面に出す。#361）。
+    pub recipients: HashMap<String, RecipientSummary>,
+    /// 暗号化チャンネルへの送信の直列化と、知っている epoch（#361）。
+    channel_sender: ChannelSender,
+    /// 入力欄の暗号化したメッセージの編集を始めたときの版（メッセージ ID と版。#361）。下書きを
+    /// 戻すときは、下書きと一緒に保存した版に戻す。
+    edit_base: Option<(String, u64)>,
+    /// `state.json` の暗号化チャンネルの記録を読めなかった（暗号ストアから読むまで平文で送らない）。
+    known_encrypted_unreadable: bool,
+    /// 暗号ストアの置き場所（暗号化チャンネルの記録を、その場で書く）。
+    crypto_root: Option<std::path::PathBuf>,
+    /// 暗号ストアに記録していない、`encrypted = true` を見たチャンネル（#361）。
+    unrecorded_encrypted: HashSet<String>,
+    /// 暗号ストアの記録を読んだか。
+    known_encrypted_loaded: bool,
+    /// 記録を読んだ暗号ストア（開き直したら読み直す）。
+    known_encrypted_store: Option<usize>,
+    known_encrypted_in_flight: bool,
 }
 
 impl App {
@@ -264,6 +335,16 @@ impl App {
             read_poll: PollGate::new(Duration::from_secs(10), Duration::from_secs(10)),
             emoji_poll: PollGate::new(Duration::from_secs(60), Duration::from_secs(60)),
             typing_poll: PollGate::new(Duration::from_millis(1500), Duration::from_secs(5)),
+            decryptions: Decryptions::default(),
+            recipients: HashMap::new(),
+            channel_sender: ChannelSender::default(),
+            edit_base: None,
+            known_encrypted_unreadable: false,
+            crypto_root: None,
+            unrecorded_encrypted: HashSet::new(),
+            known_encrypted_loaded: false,
+            known_encrypted_store: None,
+            known_encrypted_in_flight: false,
         };
         for id in [ShapeId::Channels, ShapeId::Users, ShapeId::ChannelUsers] {
             app.subscribe(id);
@@ -383,10 +464,16 @@ impl App {
                 self.store.apply(&id, batch);
                 if is_channels {
                     for channel in self.store.channels() {
-                        if channel.encrypted {
-                            self.known_encrypted_channels.insert(channel.id.clone());
+                        if channel.encrypted
+                            && self.known_encrypted_channels.insert(channel.id.clone())
+                        {
+                            self.record_encrypted(&channel.id);
+                            self.unrecorded_encrypted.insert(channel.id.clone());
                         }
                     }
+                }
+                if matches!(id, ShapeId::Messages(_)) {
+                    self.decryptions.dirty = true;
                 }
             }
             ShapeEvent::Failed(id, err) => {
@@ -469,6 +556,75 @@ impl App {
                 self.store.account_profiles = profiles;
             }
             AppEvent::Encryption(event) => self.encryption.on_event(event),
+            AppEvent::Decrypted {
+                channel_id,
+                results,
+                generation,
+            } => {
+                self.decryptions.in_flight = false;
+                if let Some(generation) = generation {
+                    self.decryptions.generations.insert(channel_id, generation);
+                }
+                for (message_id, row, decryption) in results {
+                    self.decryptions.apply(&message_id, row, decryption);
+                }
+            }
+            AppEvent::Recipients {
+                channel_id,
+                summary,
+            } => {
+                self.recipients.insert(channel_id, summary);
+            }
+            AppEvent::KnownEncryptedChannels { known, failed } => {
+                self.known_encrypted_in_flight = false;
+                self.known_encrypted_loaded = true;
+                self.known_encrypted_channels.extend(known);
+                self.unrecorded_encrypted.extend(failed);
+            }
+            AppEvent::EditConflict {
+                channel_id,
+                message_id,
+                current_revision,
+                content,
+                edit_base,
+            } => {
+                let applied = self
+                    .store
+                    .message(&channel_id, &message_id)
+                    .and_then(|message| self.decryptions.editable(message))
+                    .is_some_and(|(shown, revision)| {
+                        revision == current_revision && shown.body == content
+                    });
+                if !applied {
+                    self.notify(
+                        "このメッセージはほかの場所で編集されました。読み込み直してから編集してください",
+                    );
+                    self.on_app_event(AppEvent::RestoreDraft {
+                        channel_id,
+                        target: Target::Edit(message_id),
+                        content,
+                        edit_base,
+                    });
+                }
+            }
+            AppEvent::Created {
+                channel_id,
+                requested_encryption,
+                encrypted,
+            } => {
+                if encrypted {
+                    if self.known_encrypted_channels.insert(channel_id.clone()) {
+                        self.record_encrypted(&channel_id);
+                        self.unrecorded_encrypted.insert(channel_id.clone());
+                    }
+                } else if requested_encryption {
+                    // 暗号化を求めたのに平文のチャンネルが返った。このプロセスのあいだは送らない。
+                    self.known_encrypted_channels.insert(channel_id.clone());
+                    self.notify(e2ee_chat::DOWNGRADED);
+                }
+                self.focus = Focus::Messages;
+                self.open_channel(channel_id);
+            }
             AppEvent::Threads {
                 requested_at,
                 threads,
@@ -587,17 +743,20 @@ impl App {
                 channel_id,
                 target,
                 content,
+                edit_base,
             } => {
                 // 入力欄に書きかけの本文があるか別のチャンネルにいるときは、上書きせずに取っておく。
                 if self.current.as_deref() == Some(channel_id.as_str()) && self.composer.is_empty()
                 {
                     self.composer = composer_with(&content);
+                    self.set_edit_base(&target, edit_base);
                     self.target = target;
                 } else {
                     self.failed_drafts.push(FailedDraft {
                         channel_id,
                         target,
                         content,
+                        edit_base,
                     });
                     self.notify(format!(
                         "送れなかった本文を保存しました ({}件)。R で入力欄に戻せます",
@@ -640,11 +799,23 @@ impl App {
 
     /// 端末の管理のタスクと OIDC の設定を、暗号化の画面につなぐ（#360）。
     pub fn attach_encryption(&mut self, context: super::encryption::E2eeContext) {
+        // 暗号ストアを開く前から、記録した暗号化チャンネルを暗号化として扱う（開くまでの平文の送信を止める）。
+        // 記録を読めなかったときは、暗号ストアから読めるまで平文で送らない（記録がないものとして送ると、
+        // 暗号化チャンネルの格下げを見逃すため）。
+        self.crypto_root = context.crypto_root.clone();
+        if let Some(root) = &context.crypto_root {
+            match crate::e2ee::store::read_encrypted_channels(root, &self.me.id) {
+                Ok(ids) => self.known_encrypted_channels.extend(ids),
+                Err(_) => self.known_encrypted_unreadable = true,
+            }
+        }
         self.encryption.attach(context);
     }
 
     pub fn on_tick(&mut self) {
         self.encryption.on_tick(self.mode == Mode::Encryption);
+        self.sync_known_encrypted();
+        self.request_decryptions();
         if self.terminal_active {
             for archived in [false, true] {
                 let scope = usize::from(archived);
@@ -835,6 +1006,22 @@ impl App {
 
     /// 一覧外の一時表示にも、描画と検索で同じ本文を使う。
     pub fn thread_content(&self, channel_id: &str, id: &str) -> Option<&str> {
+        // 暗号化したスレッドの親は、復号できた本文を出す（一覧の本文はサーバーにないので空）。
+        if let Some(root) = self.store.message(channel_id, id)
+            && root.ciphertext.is_some()
+        {
+            return Some(match self.decryptions.shown(root, true) {
+                Shown::Decrypted { message, .. } => message.body.as_str(),
+                _ => ENCRYPTED_PLACEHOLDER,
+            });
+        }
+        if self.known_encrypted_channels.contains(channel_id)
+            && self
+                .threads()
+                .any(|thread| thread.id == id && thread.content.is_empty())
+        {
+            return Some(ENCRYPTED_PLACEHOLDER);
+        }
         self.threads()
             .find(|thread| thread.id == id && thread.channel_id == channel_id)
             .map(|thread| thread.content.as_str())
@@ -1121,6 +1308,23 @@ impl App {
                     self.mode = Mode::Normal;
                 }
             }
+            Mode::Create(form) => self.on_create_key(key, form),
+            Mode::Recipients { scroll } => {
+                let last = super::view::recipient_details(self)
+                    .map_or(0, |lines| lines.len().saturating_sub(1));
+                self.mode = match key.code {
+                    KeyCode::Char('j') | KeyCode::Down => Mode::Recipients {
+                        scroll: (scroll + 1).min(last),
+                    },
+                    KeyCode::Char('k') | KeyCode::Up => Mode::Recipients {
+                        scroll: scroll.saturating_sub(1),
+                    },
+                    KeyCode::Char('g') | KeyCode::Home => Mode::Recipients { scroll: 0 },
+                    KeyCode::Char('G') | KeyCode::End => Mode::Recipients { scroll: last },
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('V') => Mode::Normal,
+                    _ => Mode::Recipients { scroll },
+                };
+            }
         }
     }
 
@@ -1166,7 +1370,112 @@ impl App {
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
             KeyCode::Char('R') => self.restore_failed_draft(),
             KeyCode::Char('u') => self.reopen_thread(),
+            KeyCode::Char('c') => self.mode = Mode::Create(CreateForm::channel()),
+            KeyCode::Char('m') => self.mode = Mode::Create(CreateForm::dm()),
+            KeyCode::Char('V') => {
+                if self
+                    .current
+                    .as_ref()
+                    .is_some_and(|id| self.recipients.contains_key(id))
+                {
+                    self.mode = Mode::Recipients { scroll: 0 };
+                } else {
+                    self.notify("まだ配布先を判定していません。暗号化チャンネルに送ると判定します");
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// チャンネルか DM の作成の入力欄（#361）。Tab で公開範囲（暗号化するか）を切り替える。
+    fn on_create_key(&mut self, key: KeyEvent, mut form: CreateForm) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                return;
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                self.create(form);
+                return;
+            }
+            KeyCode::Tab | KeyCode::BackTab => form.toggle(),
+            KeyCode::Backspace => {
+                form.input.pop();
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                form.input.push(c)
+            }
+            _ => {}
+        }
+        self.mode = Mode::Create(form);
+    }
+
+    /// チャンネルか DM を作り、作れたら開く。暗号化を求めたのに、サーバーが暗号化されていない
+    /// チャンネルを返したら、平文では送らない（docs/e2ee.md の「暗号化チャンネル」）。
+    fn create(&mut self, form: CreateForm) {
+        let encrypted = form.encrypted();
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        match form.kind {
+            CreateKind::Channel => {
+                let name = form.input.trim().to_owned();
+                if name.is_empty() {
+                    self.notify("チャンネル名を入れてください");
+                    return;
+                }
+                let private = form.visibility != e2ee_chat::Visibility::Public;
+                tokio::spawn(async move {
+                    let result = if encrypted {
+                        api.create_encrypted_channel(&name, None).await
+                    } else {
+                        api.create_channel(None, &name, None, private).await
+                    };
+                    let _ = tx.send(match result {
+                        Ok((channel, _)) => AppEvent::Created {
+                            channel_id: channel.id,
+                            requested_encryption: encrypted,
+                            encrypted: channel.encrypted,
+                        },
+                        Err(err) => AppEvent::Notice(e2ee_chat::create_error(&err)),
+                    });
+                });
+            }
+            CreateKind::Dm => {
+                let mut ids = Vec::new();
+                for name in form.input.split_whitespace() {
+                    let name = name.trim_start_matches('@');
+                    let found = self
+                        .store
+                        .users()
+                        .find(|user| user.user_name == name)
+                        .map(|user| user.id.clone());
+                    match found {
+                        Some(id) if id == self.me.id => {}
+                        Some(id) => ids.push(id),
+                        None => {
+                            self.notify(format!("ユーザーが見つかりません: @{name}"));
+                            return;
+                        }
+                    }
+                }
+                ids.sort();
+                ids.dedup();
+                if ids.is_empty() {
+                    self.notify("相手のユーザー名を入れてください");
+                    return;
+                }
+                tokio::spawn(async move {
+                    let _ = tx.send(match api.create_dm(&ids, encrypted).await {
+                        Ok((channel, _)) => AppEvent::Created {
+                            channel_id: channel.id,
+                            requested_encryption: encrypted,
+                            encrypted: channel.encrypted,
+                        },
+                        Err(err) => AppEvent::Notice(e2ee_chat::create_error(&err)),
+                    });
+                });
+            }
         }
     }
 
@@ -1196,6 +1505,10 @@ impl App {
     fn on_paste(&mut self, text: &str) {
         if self.mode == Mode::Encryption {
             self.encryption.on_paste(text);
+            return;
+        }
+        if let Mode::Create(form) = &mut self.mode {
+            form.input.extend(text.chars().filter(|c| !c.is_control()));
             return;
         }
         if self.mode != Mode::Insert {
@@ -1544,8 +1857,17 @@ impl App {
             self.focus = Focus::Messages;
         }
         self.composer = composer_with(&draft.content);
+        self.set_edit_base(&draft.target, draft.edit_base);
         self.target = draft.target;
         self.mode = Mode::Insert;
+    }
+
+    /// 戻した下書きの、編集を始めたときの版を入力欄に戻す（ほかの下書きの版で確かめないため）。
+    fn set_edit_base(&mut self, target: &Target, edit_base: Option<u64>) {
+        self.edit_base = match (target, edit_base) {
+            (Target::Edit(message_id), Some(revision)) => Some((message_id.clone(), revision)),
+            _ => None,
+        };
     }
 
     /// フォーカス中のペインで選択しているメッセージ。
@@ -1573,12 +1895,35 @@ impl App {
             self.notify("自分のメッセージだけを編集できます");
             return;
         }
+        // 暗号化チャンネルでは、復号できた最新の版の本文を編集する（#361）。暗号化前の平文の
+        // メッセージは編集できない（サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する。#367）。
+        let encrypted = self.channel_encryption(&channel_id).treat_as_encrypted();
+        let body = match self.decryptions.shown(message, encrypted) {
+            Shown::Plain => message.content.clone(),
+            Shown::BeforeEncryption => {
+                self.notify("暗号化前のメッセージは編集できません");
+                return;
+            }
+            Shown::Decrypted { warning: None, .. } => match self.decryptions.editable(message) {
+                Some((decrypted, revision)) => {
+                    // 編集を始めた版を覚え、送るときに版が進んでいたら送らない（別の端末の編集を、
+                    // 古い版から作った本文で上書きしないため）。
+                    self.edit_base = Some((message_id.clone(), revision));
+                    decrypted.body.clone()
+                }
+                None => return,
+            },
+            Shown::Decrypted { .. } | Shown::Undecryptable(_) => {
+                self.notify("復号できていないメッセージは編集できません");
+                return;
+            }
+        };
         // 編集は入力欄を本文で置き換えるので、書きかけの下書きがあれば始めない。
         if !matches!(self.target, Target::Edit(_)) && !self.composer.is_empty() {
             self.notify("書きかけの下書きがあります。送信するか消してから編集してください");
             return;
         }
-        self.composer = composer_with(&message.content);
+        self.composer = composer_with(&body);
         self.target = Target::Edit(message_id);
         self.mode = Mode::Insert;
     }
@@ -1634,21 +1979,163 @@ impl App {
         }
     }
 
-    /// 暗号化チャンネルか。TUI はまだ Megolm で暗号化して送れないので、平文を送らないために使う。
-    fn is_encrypted_channel(&self, channel_id: &str) -> bool {
-        self.known_encrypted_channels.contains(channel_id)
-            || self.store.channel(channel_id).is_some_and(|c| c.encrypted)
+    /// チャンネルの暗号化の扱い（docs/e2ee.md の「暗号化の格下げを防ぐ」）。一度 `encrypted = true` を
+    /// 見た（暗号ストアに記録した）、名前が `edm:`、暗号文のある行がある、のどれかで `encrypted = false`
+    /// なら格下げとして送信を止める。
+    pub fn channel_encryption(&self, channel_id: &str) -> ChannelEncryption {
+        let has_ciphertext = self
+            .store
+            .visible_messages(channel_id)
+            .any(|message| message.ciphertext.is_some());
+        ChannelEncryption::of(
+            self.store.channel(channel_id),
+            self.known_encrypted_channels.contains(channel_id),
+            has_ciphertext,
+        )
+    }
+
+    /// `encrypted = true` を見たチャンネルを、暗号ストアを待たずにその場で記録する（暗号ストアに記録する
+    /// 前に終了しても、起動し直したあとに格下げを見つけられるように）。書けなくても、暗号ストアへの記録は
+    /// 続ける。
+    fn record_encrypted(&self, channel_id: &str) {
+        if let Some(root) = &self.crypto_root {
+            let _ = crate::e2ee::store::record_encrypted_channels(
+                root,
+                &self.me.id,
+                &[channel_id.to_owned()],
+            );
+        }
+    }
+
+    /// `encrypted = true` を見たチャンネルを暗号ストアに記録し、記録済みのものを読む（開き直したあとも
+    /// 格下げを見つけられるように）。暗号ストアが開いていなければ、次の機会にする。
+    fn sync_known_encrypted(&mut self) {
+        if self.known_encrypted_in_flight {
+            return;
+        }
+        let Some((_, store)) = self.encryption.store() else {
+            return;
+        };
+        // 暗号ストアを開き直した（作り直した）ら、読み直して、今見えている暗号化チャンネルを記録し直す。
+        let identity = std::sync::Arc::as_ptr(&store) as usize;
+        if self.known_encrypted_store != Some(identity) {
+            self.known_encrypted_store = Some(identity);
+            self.known_encrypted_loaded = false;
+            let visible: Vec<String> = self
+                .store
+                .channels()
+                .into_iter()
+                .filter(|channel| channel.encrypted)
+                .map(|channel| channel.id.clone())
+                .collect();
+            self.unrecorded_encrypted.extend(visible);
+        }
+        if self.known_encrypted_loaded && self.unrecorded_encrypted.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = self.unrecorded_encrypted.drain().collect();
+        self.known_encrypted_in_flight = true;
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            let mut store = store.lock().await;
+            // 保存できなかったものは、次の機会に記録し直す（記録がないまま起動し直すと、格下げを見つけられない）。
+            let failed = ids
+                .into_iter()
+                .filter(|id| store.remember_encrypted_channel(id).is_err())
+                .collect();
+            let known = store.known_encrypted_channels().cloned().collect();
+            drop(store);
+            let _ = tx.send(AppEvent::KnownEncryptedChannels { known, failed });
+        });
+    }
+
+    /// 開いているチャンネルの暗号化したメッセージを、暗号ストアで復号する（#361）。行が届いたときと、
+    /// 鍵を待っているメッセージがあって受信用セッションが増えたときに、1 つずつ行う。
+    fn request_decryptions(&mut self) {
+        if self.decryptions.in_flight {
+            return;
+        }
+        let Some(channel_id) = self.current.clone() else {
+            return;
+        };
+        let Some((_, store)) = self.encryption.store() else {
+            return;
+        };
+        // 受信用セッションが増えたら（Olm で鍵が届いた、鍵バックアップから取り込んだ）、鍵待ちの行と、
+        // 鍵バックアップ由来で復号した行を復号し直す。増えたかはチャンネルごとの数えで決める（別の
+        // チャンネルを開いているあいだに鍵が届いても、戻ったときに復号し直す）。
+        let generation = store
+            .try_lock()
+            .ok()
+            .map(|store| store.inbound_generation());
+        let retry = generation.is_some_and(|generation| {
+            self.decryptions.generations.get(&channel_id) != Some(&generation)
+        });
+        if !self.decryptions.dirty && !retry {
+            return;
+        }
+        // 復号するときは、鍵待ちの行も必ず含める。タスクはロックを取ったあとの数えを記録するので、
+        // 鍵待ちの行を試さずに数えだけを進めると、鍵が届いていても復号し直さなくなるため（ロックを取れずに
+        // 数えが増えたかを確かめられなかったときも同じ）。鍵待ちの行の復号は手元だけで済む。
+        let rows: Vec<(RowKey, EncryptedRow)> = self
+            .store
+            .visible_messages(&channel_id)
+            .filter(|message| self.decryptions.needs(message, true))
+            .filter_map(|message| {
+                let row = EncryptedRow {
+                    channel_id: message.channel_id.clone(),
+                    message_id: message.id.clone(),
+                    parent_id: message.parent_id.clone(),
+                    user_id: message.user_id.clone(),
+                    message_kind: message
+                        .message_kind
+                        .clone()
+                        .unwrap_or_else(|| "message".into()),
+                    epoch: message.epoch,
+                    revision: message.revision,
+                    ciphertext: message.ciphertext.clone()?,
+                };
+                Some((RowKey::of(message), row))
+            })
+            .collect();
+        self.decryptions.dirty = false;
+        if rows.is_empty() {
+            // 復号し直す行がなければ、数えだけを記録する（tick ごとに確かめ直さないため）。
+            if let Some(generation) = generation {
+                self.decryptions.generations.insert(channel_id, generation);
+            }
+            return;
+        }
+        self.decryptions.in_flight = true;
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            let mut store = store.lock().await;
+            let generation = store.inbound_generation();
+            let results = rows
+                .into_iter()
+                .map(|(key, row)| {
+                    let decryption = store.decrypt_message(&row);
+                    (row.message_id, key, decryption)
+                })
+                .collect();
+            drop(store);
+            let _ = tx.send(AppEvent::Decrypted {
+                channel_id,
+                results,
+                generation: Some(generation),
+            });
+        });
     }
 
     fn submit(&mut self) {
-        // 暗号化チャンネルには、暗号化の送信を入れるまで投稿、返信、編集を送らない（docs/e2ee.md、#361）。
-        // サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため、ここで止める。下書きは残す。
-        if self
+        let encryption = self
             .current
             .as_deref()
-            .is_some_and(|id| self.is_encrypted_channel(id))
-        {
-            self.notify("暗号化チャンネルには、このバージョンの TUI からはまだ送信できません");
+            .map(|id| self.channel_encryption(id))
+            .unwrap_or(ChannelEncryption::Plain);
+        // サーバーが暗号化チャンネルを平文と返しても、平文では送らない（下書きは残す）。
+        if encryption == ChannelEncryption::Downgraded {
+            self.notify(e2ee_chat::DOWNGRADED);
             return;
         }
         // Channels の再同期でチャンネルの行がないあいだは、暗号化か分からないので送らない（下書きは残す）。
@@ -1658,6 +2145,17 @@ impl App {
             .is_some_and(|id| self.store.channel(id).is_none())
         {
             self.notify("チャンネルの情報を同期しています。少し待ってから送ってください");
+            return;
+        }
+        if encryption == ChannelEncryption::Encrypted {
+            self.submit_encrypted();
+            return;
+        }
+        // 暗号化チャンネルの記録を読めなかったあいだは、暗号ストアから読めるまで平文で送らない。
+        if self.known_encrypted_unreadable && !self.known_encrypted_loaded {
+            self.notify(
+                "暗号化チャンネルの記録を読めないため、確かめられるまで送信を止めています。少し待ってから送ってください",
+            );
             return;
         }
         if let Target::Edit(message_id) = self.target.clone()
@@ -1698,6 +2196,7 @@ impl App {
                     channel_id,
                     target,
                     content,
+                    edit_base: None,
                 });
             } else {
                 let reopened = match target {
@@ -1705,6 +2204,170 @@ impl App {
                     _ => None,
                 };
                 let _ = tx.send(AppEvent::ThreadsChanged { reopened });
+            }
+        });
+    }
+
+    /// 暗号化チャンネルに送る（docs/e2ee.md の「membership_epoch と送信の順序」。#361）。本文は送る直前に
+    /// 暗号化し、平文はサーバーに送らない。送れなければ、平文の下書きとして入力欄に戻す。
+    fn submit_encrypted(&mut self) {
+        if let Target::Edit(message_id) = self.target.clone()
+            && !self.can_change_message(&message_id)
+        {
+            return;
+        }
+        let content = self.composer.lines().join("\n");
+        if content.trim().is_empty() {
+            return;
+        }
+        let Some(channel_id) = self.current.clone() else {
+            return;
+        };
+        // 編集は、始めたときの版を基準にする。そのあとに版が進んでいたら（別の端末で編集された）、
+        // 下書きを残したまま知らせ、送らない。
+        if let Target::Edit(message_id) = &self.target {
+            let current = self
+                .store
+                .message(&channel_id, message_id)
+                .and_then(|message| self.decryptions.editable(message))
+                .map(|(_, revision)| revision);
+            let base = self
+                .edit_base
+                .as_ref()
+                .filter(|(id, _)| id == message_id)
+                .map(|(_, revision)| *revision);
+            match (base, current) {
+                (Some(base), Some(current)) if base == current => {}
+                (None, _) => {
+                    self.notify("編集を始めた版が分かりません。e で編集し直してください");
+                    return;
+                }
+                (Some(_), None) => {
+                    self.notify("復号できていないメッセージは編集できません");
+                    return;
+                }
+                (Some(_), Some(_)) => {
+                    self.notify(
+                        "このメッセージはほかの場所で編集されました。読み込み直してから編集してください",
+                    );
+                    return;
+                }
+            }
+        }
+        let Some((_, store)) = self.encryption.store() else {
+            self.notify(
+                "この端末では、まだ暗号化の準備ができていません。少し待ってから送ってください",
+            );
+            return;
+        };
+        let shape_epoch = self
+            .store
+            .channel(&channel_id)
+            .and_then(|channel| channel.membership_epoch);
+        let mentions = crate::mentions::encrypted_mentions(
+            &content,
+            self.store
+                .channel_members(&channel_id)
+                .into_iter()
+                .map(|user| (user.id.as_str(), user.user_name.as_str())),
+        );
+        let target = self.target.clone();
+        let edit_base = match &target {
+            Target::Edit(_) => self.edit_base.as_ref().map(|(_, revision)| *revision),
+            _ => None,
+        };
+        // 編集は、復号できた最新の版を基準にする（行が先に進んでいれば 409 になる）。
+        let edit = match &target {
+            Target::Edit(message_id) => {
+                let Some(message) = self.store.message(&channel_id, message_id) else {
+                    return;
+                };
+                let Some((decrypted, row_revision)) = self.decryptions.editable(message) else {
+                    self.notify("復号できていないメッセージは編集できません");
+                    return;
+                };
+                Some(send::Edit {
+                    channel_id: channel_id.clone(),
+                    shape_epoch,
+                    message_id: message_id.clone(),
+                    parent_id: message.parent_id.clone(),
+                    revision: row_revision + 1,
+                    body: content.clone(),
+                    kind: decrypted.kind.clone(),
+                    mentions: mentions.clone(),
+                    attachments: decrypted.attachments.clone(),
+                })
+            }
+            _ => None,
+        };
+        let ctx = SendContext {
+            api: self.api.clone(),
+            store,
+            sender: self.channel_sender.clone(),
+        };
+        let tx = self.app_tx.clone();
+        self.composer = new_composer();
+        self.stop_typing();
+        if matches!(target, Target::Edit(_)) {
+            self.target = Target::Channel;
+            self.mode = Mode::Normal;
+        }
+        tokio::spawn(async move {
+            let mut recipients = None;
+            let result = match &edit {
+                Some(edit) => send::edit_encrypted_message(&ctx, edit, &mut recipients).await,
+                None => {
+                    let message = send::NewMessage {
+                        channel_id: channel_id.clone(),
+                        shape_epoch,
+                        message_id: uuid::Uuid::new_v4().to_string(),
+                        parent_id: match &target {
+                            Target::Reply(root_id) => Some(root_id.clone()),
+                            _ => None,
+                        },
+                        body: content.clone(),
+                        mentions,
+                    };
+                    send::send_encrypted_message(&ctx, &message, &mut recipients).await
+                }
+            };
+            // 暗号ストアを手放してから知らせる（端末の管理のタスクが開き直せるように）。
+            drop(ctx);
+            if let Some(summary) = recipients {
+                let _ = tx.send(AppEvent::Recipients {
+                    channel_id: channel_id.clone(),
+                    summary,
+                });
+            }
+            match result {
+                Ok(()) => {
+                    let reopened = match target {
+                        Target::Reply(root_id) => Some(root_id),
+                        _ => None,
+                    };
+                    let _ = tx.send(AppEvent::ThreadsChanged { reopened });
+                }
+                Err(err) => {
+                    if let (Some(current_revision), Target::Edit(message_id)) =
+                        (stale_revision(&err), &target)
+                    {
+                        let _ = tx.send(AppEvent::EditConflict {
+                            channel_id,
+                            message_id: message_id.clone(),
+                            current_revision,
+                            content,
+                            edit_base,
+                        });
+                        return;
+                    }
+                    let _ = tx.send(AppEvent::Notice(format!("送信に失敗しました: {err}")));
+                    let _ = tx.send(AppEvent::RestoreDraft {
+                        channel_id,
+                        target,
+                        content,
+                        edit_base,
+                    });
+                }
             }
         });
     }
@@ -2150,6 +2813,144 @@ mod tests {
                 .unwrap()
                 .iter()
                 .all(|request| request.method == "GET")
+        );
+    }
+
+    /// 鍵待ちの行があるときに、端末の管理のタスクが暗号ストアのロックを持ったまま鍵を取り込み、
+    /// そのあいだに別の行が届いても、鍵待ちの行を復号し直す（数えだけを進めない）。
+    #[tokio::test]
+    async fn rows_waiting_for_keys_are_retried_even_when_the_lock_was_busy() {
+        use crate::e2ee::store::{CryptoStore, ToDeviceRow, UndecryptableReason};
+        const ME: &str = "00000000-0000-4000-8000-0000000000b0";
+        const SENDER: &str = "00000000-0000-4000-8000-0000000000a0";
+        const CHANNEL: &str = "00000000-0000-4000-8000-0000000000c0";
+        let dir = tempfile::tempdir().unwrap();
+        let mut opened = CryptoStore::open(dir.path(), ME).unwrap().store;
+        opened.mark_registered().unwrap();
+        let store = std::sync::Arc::new(tokio::sync::Mutex::new(opened));
+        let server = wiremock::MockServer::start().await;
+        let (mut app, mut rx) = api_test_app(&server.uri());
+        let (_stores_tx, stores) =
+            tokio::sync::watch::channel(Some((ME.to_owned(), store.clone())));
+        app.attach_encryption(super::super::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+        });
+        app.current = Some(CHANNEL.into());
+
+        // 送信者の端末のセッション。鍵（インデックス 0 から）は、あとで届ける。
+        let sender =
+            zoo_crypto::DeviceAccount::new(SENDER, &uuid::Uuid::new_v4().to_string()).unwrap();
+        let mut outbound = zoo_crypto::OutboundSession::new(CHANNEL, 1, 0);
+        let room_key = outbound.room_key();
+        let mut encrypted_row = |id: &str| {
+            let ciphertext = outbound
+                .encrypt(
+                    &sender,
+                    &zoo_crypto::OutgoingMessage {
+                        message_id: id.into(),
+                        parent_id: None,
+                        revision: 0,
+                        content: zoo_crypto::MessageContent {
+                            body: format!("本文 {id}"),
+                            format: "mfm".into(),
+                            kind: "message".into(),
+                        },
+                        mentions: Default::default(),
+                        attachments: Vec::new(),
+                    },
+                )
+                .unwrap();
+            serde_json::json!({ "id": id, "user_id": SENDER, "channel_id": CHANNEL, "content": "",
+                                "created_at": "2026-11-01 04:00:00", "epoch": "1", "revision": "0",
+                                "ciphertext": ciphertext.to_string() })
+        };
+        let x = encrypted_row("x");
+        let y = encrypted_row("y");
+        fn feed(app: &mut App, id: &str, row: serde_json::Value) {
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages(CHANNEL.into()),
+                Batch {
+                    changes: vec![electric::Change::Upsert {
+                        key: id.into(),
+                        row: row.as_object().unwrap().clone(),
+                    }],
+                    up_to_date: true,
+                    ..Default::default()
+                },
+            ));
+        }
+        async fn decrypted(app: &mut App, rx: &mut mpsc::UnboundedReceiver<AppEvent>) {
+            loop {
+                match rx.recv().await.expect("イベントが届く") {
+                    event @ AppEvent::Decrypted { .. } => {
+                        app.on_app_event(event);
+                        return;
+                    }
+                    other => app.on_app_event(other),
+                }
+            }
+        }
+        fn shown(app: &App, id: &str) -> Result<String, UndecryptableReason> {
+            let message = app.store.message(CHANNEL, id).unwrap();
+            match app.decryptions.shown(message, true) {
+                Shown::Decrypted { message, .. } => Ok(message.body.clone()),
+                Shown::Undecryptable(reason) => Err(reason),
+                _ => panic!("暗号化したメッセージとして出す"),
+            }
+        }
+
+        feed(&mut app, "x", x);
+        app.request_decryptions();
+        decrypted(&mut app, &mut rx).await;
+        assert_eq!(shown(&app, "x"), Err(UndecryptableReason::KeyMissing));
+
+        // 端末の管理のタスクがロックを持ったまま鍵を取り込む。そのあいだに行 Y が届き、復号を頼む
+        // （ロックを取れないので、鍵待ちの行を復号し直すかは確かめられない）。
+        let mut guard = store.lock().await;
+        feed(&mut app, "y", y);
+        app.request_decryptions();
+        let request = guard.registration_request();
+        let recipient =
+            zoo_crypto::verify_device_keys(&request["device_keys"], ME, guard.device_id()).unwrap();
+        let fallback = guard
+            .prepare_key_upload(50, false)
+            .unwrap()
+            .unwrap()
+            .fallback_keys;
+        let key = fallback
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let mut olm = sender
+            .create_outbound_olm_session(&recipient, &key)
+            .unwrap();
+        let content = sender
+            .encrypt_room_key(&mut olm, &recipient, &room_key)
+            .unwrap();
+        let row = ToDeviceRow {
+            id: "1".into(),
+            sender_user_id: SENDER.into(),
+            r#type: "m.room.encrypted".into(),
+            content,
+        };
+        let device_keys =
+            serde_json::json!({ SENDER: { sender.device_id(): sender.device_keys() } });
+        let result = guard
+            .process_to_device(std::slice::from_ref(&row), &device_keys)
+            .unwrap();
+        assert_eq!(result.room_keys, 1);
+        drop(guard);
+        decrypted(&mut app, &mut rx).await;
+        assert_eq!(shown(&app, "y").as_deref(), Ok("本文 y"));
+        assert_eq!(
+            shown(&app, "x").as_deref(),
+            Ok("本文 x"),
+            "鍵が届いたので、鍵待ちの行も復号し直す"
         );
     }
 

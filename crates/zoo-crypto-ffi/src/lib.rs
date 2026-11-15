@@ -18,6 +18,7 @@ mod device;
 mod error;
 mod megolm;
 mod secret_storage;
+mod setup;
 mod trust;
 
 pub use backup::*;
@@ -26,6 +27,7 @@ pub use device::*;
 pub use error::ZooCryptoError;
 pub use megolm::*;
 pub use secret_storage::*;
+pub use setup::*;
 pub use trust::*;
 
 uniffi::setup_scaffolding!();

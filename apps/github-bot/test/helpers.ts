@@ -25,9 +25,12 @@ export class ZooDouble implements Zoo {
     const id = input.id ?? randomUUID();
     this.posts.push({ ...input, id });
     const existing = this.messages.get(id);
+    // 実際のバックエンドは、別のチャンネルにある ID を存在しないチャンネルと同じ 404 で隠す
+    if (existing && existing.channel_id !== input.channel_id)
+      throw new ZooError(404, "Channel not found");
     if (
       existing &&
-      (existing.channel_id !== input.channel_id ||
+      (
         existing.content !== input.content ||
         existing.parent_id !== input.parent_id)
     )

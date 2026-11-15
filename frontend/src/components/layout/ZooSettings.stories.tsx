@@ -89,7 +89,24 @@ export const Encryption: Story = {
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("tab", { name: "暗号化" }));
     await expect(await screen.findByText("エンドツーエンド暗号化")).toBeVisible();
-    await expect(screen.getByText(/暗号化の準備をしています/)).toBeVisible();
+    // 端末は暗号化タブのセクション。理由は 2 つのセクションで重ねず、1 回だけ出す。
+    await expect(screen.queryByRole("tab", { name: "端末" })).not.toBeInTheDocument();
+    await expect(screen.getAllByText(/暗号化の準備をしています/)).toHaveLength(1);
+  }),
+};
+export const EncryptionMobile: Story = {
+  ...Encryption,
+  globals: { viewport: { value: "mobile" } },
+};
+/** 「端末」タブだったころのリンク（`?tab=devices`）は、暗号化タブを開く。 */
+export const LegacyDevicesLink: Story = {
+  parameters: { router: { initialEntries: ["/settings?tab=devices"] } },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("tab", { name: "暗号化" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(await screen.findByText("エンドツーエンド暗号化")).toBeVisible();
   }),
 };
 export const AppsMobile: Story = { ...Apps, globals: { viewport: { value: "mobile" } } };

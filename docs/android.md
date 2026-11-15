@@ -82,8 +82,22 @@ IdP 全体のブラウザーセッションや他端末の認証は失効させ�
 
 ログアウトでは、鍵バックアップに送れていない鍵があれば件数を示して確かめ、暗号ストアを消してから
 サーバーの端末を削除します。オフラインなどで削除できなかった端末は、同じユーザーの次のログインで消し直します。
-初回設定と解錠、暗号化チャンネルの送受信、端末一覧、Push の復号は、まだ Android にはありません
-（#360〜#362、#510）。詳細は [E2EE の「暗号ストア」](e2ee.md#暗号ストア)を参照してください。
+設定の「暗号化」タブで、初回設定と、パスキーかリカバリーキーでの解錠を行います（[#360](https://github.com/Zli-UoA/zoo2/issues/360)）。
+初回設定では、リカバリーキーを控えたあと、保存の直前に Custom Tabs でログインし直します（再認証）。
+ログインが終わると `https://zli.chat/android/reauth-callback` の App Links でアプリに戻り、同じ画面のまま保存します。
+App Links の検証には、zli.chat の nginx が配る `/.well-known/assetlinks.json` が要ります。
+frontend のコンテナの `ANDROID_APP_CERT_SHA256` に、配布する APK の署名証明書の SHA-256 の指紋を入れてください
+（zoo2-infra。debug APK は署名が違うので、App Links で戻りません）。
+AuthZ の Android のクライアントには、認可コードのグラントと、このリダイレクト URI の登録が要ります。
+backend は再認証の ID トークンの `aud` を `OIDC_REAUTH_AUDIENCES`（カンマ区切り）で確かめます。この値は zoo2-infra の
+production の `backend.yaml` の `env` にあるので、今の値を残したまま Android の client ID を足す PR を zoo2-infra に出してください
+（[E2EE の「有効化と運用」](e2ee.md#有効化と運用)）。足すまでは、保存が 403 になります。
+リダイレクト先のホストはビルド時の `-Pzoo.android.reauthHost=<ホスト>`（既定は `zli.chat`）で、manifest の App Links と
+認可リクエストの両方に使います。接続先のサーバーが違っても、このホストに戻ります。
+パスキーは Credential Manager の PRF で使いますが、AuthZ の `assetlinks.json`（AuthZ#96）が要り、実機ではまだ確かめていません。
+使えないときは、リカバリーキーで解錠してください。解錠した端末だけが、受け取った鍵を鍵バックアップに送ります。
+暗号化チャンネルの送受信、端末一覧と失効、Push の復号は、まだ Android にはありません（#361、#362、#510）。
+詳細は [E2EE の「初回設定と解錠の実装」](e2ee.md#compose-android)と[「暗号ストア」](e2ee.md#暗号ストア)を参照してください。
 
 ## Android との接続
 

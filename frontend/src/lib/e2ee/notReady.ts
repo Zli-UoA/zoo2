@@ -2,7 +2,7 @@ import { ApiError } from "../api/client";
 import type { E2eeDeviceStatus } from "./deviceManager";
 
 /**
- * このタブで暗号ストアを開けていない理由。設定の「暗号化」「端末」タブに出す。
+ * このタブで暗号ストアを開けていない理由。設定の「暗号化」タブの上に出す。
  *
  * - `unsupported`：暗号ストアを置けないブラウザー（OPFS、Worker、Web Locks がない）。
  * - `signedOut`：ログインしているユーザーがいない（ユーザーの取得が終わり、失敗もしていない）。
@@ -10,7 +10,7 @@ import type { E2eeDeviceStatus } from "./deviceManager";
  * - `offline`：オフライン。端末の登録と鍵の補充ができない。
  * - `otherTab`：ほかのタブが暗号ストアを開いている（Web Locks を持っている）。そのタブを閉じると引き継ぐ。
  * - `starting`：暗号ストアを開き、端末を登録しているところ。
- * - `deviceLimit`：端末が 20 台の上限で、登録を拒否された。「端末」タブで削除してもらう。
+ * - `deviceLimit`：端末が 20 台の上限で、登録を拒否された。同じタブの端末の一覧で削除してもらう。
  * - `failed`：開くか登録に失敗し、間隔をあけて試し直している。`source` で原因の場所を分ける。
  */
 export type E2eeNotReadyReason =

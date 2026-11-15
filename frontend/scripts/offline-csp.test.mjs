@@ -23,9 +23,10 @@ const registrationSource = stripTypeScriptTypes(
   await readFile(new URL("../src/lib/pwa/worker-registration.ts", import.meta.url), "utf8"),
 );
 const nginx = await readFile(new URL("../../infra/frontend-nginx.conf", import.meta.url), "utf8");
-const policies = [...nginx.matchAll(/add_header Content-Security-Policy "([^"]+)" always;/g)].map(
-  (match) => match[1].replace(/\$\{CSP_[A-Z0-9_]+\}/g, ""),
-);
+// Android の再認証の案内のページ（/android/reauth-callback。script を持たない）の CSP は SPA と別なので数えない。
+const policies = [...nginx.matchAll(/add_header Content-Security-Policy "([^"]+)" always;/g)]
+  .map((match) => match[1].replace(/\$\{CSP_[A-Z0-9_]+\}/g, ""))
+  .filter((policy) => !policy.startsWith("default-src 'none'"));
 assert.equal(policies.length, 2);
 for (const policy of policies)
   assert.equal(policies[0], policy, "Document and Worker policies must agree");

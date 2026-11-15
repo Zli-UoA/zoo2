@@ -145,6 +145,28 @@ export async function getCurrentBackupVersion(client: ApiClient): Promise<JsonOb
   }
 }
 
+/**
+ * `GET /api/e2ee/key_backup/keys` の 1 ページ（1000 件まで）。`after` は前のページの `next`。
+ * 版が消えていれば（404）`null`。
+ */
+export async function getBackupKeysPage(
+  client: ApiClient,
+  version: string,
+  after: string | null,
+): Promise<{ sessions: JsonObject[]; next: string | null } | null> {
+  const query = new URLSearchParams({ version });
+  if (after) query.set("after", after);
+  try {
+    const page = await client.get<{ sessions?: JsonObject[]; next?: string | null }>(
+      `/api/e2ee/key_backup/keys?${query.toString()}`,
+    );
+    return { sessions: page.sessions ?? [], next: page.next ?? null };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
 /** `POST /api/e2ee/key_backup/keys`。 */
 export async function uploadBackupKeys(
   client: ApiClient,

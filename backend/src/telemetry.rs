@@ -371,6 +371,9 @@ pub(crate) fn sanitize_route(matched_path: Option<&str>, _raw_path: &str) -> Str
             "/api/app-responses/[redacted]".to_string()
         }
         Some(path) if path.starts_with("/api/webhooks/") => "/api/webhooks/[redacted]".to_string(),
+        Some(path) if path.starts_with("/api/public-files/") => {
+            "/api/public-files/[redacted]".to_string()
+        }
         Some(path) => path.to_string(),
         None => "unmatched".to_string(),
     }
@@ -723,6 +726,13 @@ mod tests {
         assert_eq!(
             sanitize_route(Some("/api/webhooks/{token}"), "/api/webhooks/secret-token"),
             "/api/webhooks/[redacted]"
+        );
+        assert_eq!(
+            sanitize_route(
+                Some("/api/public-files/{token}"),
+                "/api/public-files/zoo_file_secret"
+            ),
+            "/api/public-files/[redacted]"
         );
         assert_eq!(
             sanitize_route(None, "/api/webhooks/secret-token"),
