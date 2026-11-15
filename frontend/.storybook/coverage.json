@@ -941,7 +941,7 @@
       "file": "src/components/chat/ChannelThreadItems.tsx",
       "story": "src/components/chat/ChannelSidebar.stories.tsx",
       "composed": true,
-      "reason": "アクティブなスレッドと閲覧中の一時表示を Threads・SelectedArchivedThread Story で確認する。履歴・検索UIは設けない。"
+      "reason": "アクティブなスレッドと、閲覧中でもアーカイブ済みはツリーに出ないことを Threads・SelectedArchivedThread Story で確認する。履歴・検索UIは設けない。"
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",
