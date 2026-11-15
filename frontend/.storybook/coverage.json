@@ -755,6 +755,13 @@
         "Incoming",
         "IncomingNeedsUnlock",
         "Requested",
+        "RequestedEmoji",
+        "ChooseMethod",
+        "CameraDenied",
+        "QrScanned",
+        "QrConfirm",
+        "QrNeedsLogin",
+        "QrKeyMismatch",
         "Exchanging",
         "Compare",
         "CompareLongName",
@@ -1444,8 +1451,21 @@
       "story": "src/components/e2ee/SasVerificationView.stories.tsx"
     },
     {
+      "file": "src/components/e2ee/QrCodeImage.tsx",
+      "story": "src/components/e2ee/SasVerificationView.stories.tsx",
+      "composed": true,
+      "reason": "検証のダイアログの中でだけ使う QR の描画。Requested と ChooseMethod のストーリーで確かめ、読み取れるバイト列になることは QrCodeScanner.browser.test.tsx で確かめる。"
+    },
+    {
+      "file": "src/components/e2ee/QrCodeScanner.tsx",
+      "story": "src/components/e2ee/SasVerificationView.stories.tsx",
+      "composed": true,
+      "reason": "検証のダイアログの中でだけ使うカメラでの読み取り。カメラの映像とカメラを使えないときの表示は ChooseMethod と CameraDenied のストーリーで、映像から QR を読み取る処理（BarcodeDetector と JS のデコーダー）は実ブラウザーのテストで確かめる。",
+      "checks": ["src/components/e2ee/QrCodeScanner.browser.test.tsx"]
+    },
+    {
       "file": "src/components/e2ee/SasVerificationHost.tsx",
-      "reason": "絵文字 SAS の検証のダイアログを、E2eeProvider の SasController（暗号ストアの Worker、to-device、再認証の別ウィンドウ）につなぐ制御層。画面の各状態はSasVerificationViewのストーリーで、検証の手順は単体テストで確認する。",
+      "reason": "絵文字 SAS と QR コードによる検証のダイアログを、E2eeProvider の SasController（暗号ストアの Worker、to-device、再認証の別ウィンドウ）につなぐ制御層。画面の各状態はSasVerificationViewのストーリーで、検証の手順は単体テストで確認する。",
       "checks": ["src/lib/e2ee/sasController.test.ts"]
     },
     {

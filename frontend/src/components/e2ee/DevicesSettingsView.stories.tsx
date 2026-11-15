@@ -89,14 +89,14 @@ export const Reverify: Story = {
   }),
 };
 
-/** 再検証の確認から、絵文字での検証に切り替える。 */
+/** 再検証の確認から、QR か絵文字での検証に切り替える。 */
 export const ReverifyWithSas: Story = {
   args: { state: ready, handlers: handlers() },
   play: playForImplementation(async ({ args, canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "再検証する" }));
     const dialog = await screen.findByRole("alertdialog");
-    await userEvent.click(within(dialog).getByRole("button", { name: "絵文字で検証" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "検証する" }));
     await expect(args.handlers.onSasVerify).toHaveBeenCalledWith(
       "00000000-0000-4000-8000-0000000000b1",
     );
@@ -104,13 +104,13 @@ export const ReverifyWithSas: Story = {
   }),
 };
 
-/** 検証済みでない相手を、絵文字 SAS で検証する（#368。画面はシェルのダイアログに出る）。 */
+/** 検証済みでない相手を、QR か絵文字 SAS で検証する（#368。画面はシェルのダイアログに出る）。 */
 export const SasVerify: Story = {
   args: { state: ready, handlers: handlers() },
   play: playForImplementation(async ({ args, canvasElement }) => {
     const canvas = within(canvasElement);
     // 鍵が変わった相手と、最初に見た鍵を信頼している相手に出す。検証済みの相手には出さない。
-    const buttons = canvas.getAllByRole("button", { name: "絵文字で検証" });
+    const buttons = canvas.getAllByRole("button", { name: "検証する" });
     await expect(buttons).toHaveLength(2);
     await userEvent.click(buttons[1]);
     await expect(args.handlers.onSasVerify).toHaveBeenCalledWith(

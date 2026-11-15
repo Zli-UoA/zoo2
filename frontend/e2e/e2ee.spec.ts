@@ -450,10 +450,17 @@ test("2 人 × 2 端末で初回設定・解錠・暗号化 DM・SAS・失効・
     await a2.page.screenshot({ path: testInfo.outputPath("alice-2-03-reopened.png") });
 
     // 4. 絵文字 SAS 検証（Alice の 1 台目 → Bob）。Bob の端末すべてに要求が届き、1 台目で受け入れる。
+    // 「検証する」を押すと QR を先に出す。その下の「絵文字で検証する」を選ぶと、Bob が受け入れたときに
+    // 絵文字の検証を始める（QR の読み取りは QrCodeScanner.browser.test.tsx と sasController.test.ts）。
     await openSettings(a1, "devices");
     const bobRow = a1.page.getByRole("listitem").filter({ hasText: bob.name });
     await expect(bobRow).toBeVisible({ timeout: 60_000 });
-    await bobRow.getByRole("button", { name: "絵文字で検証" }).click();
+    await bobRow.getByRole("button", { name: "検証する" }).click();
+    await expect(a1.page.getByRole("img", { name: "検証の QR コード" })).toBeVisible({
+      timeout: 60_000,
+    });
+    await a1.page.screenshot({ path: testInfo.outputPath("alice-1-04-qr.png") });
+    await a1.page.getByRole("button", { name: "絵文字で検証する" }).click();
     await expect(b1.page.getByText(`${alice.name} さんが検証を求めています`)).toBeVisible({
       timeout: 60_000,
     });

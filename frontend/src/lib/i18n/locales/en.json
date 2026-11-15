@@ -1392,7 +1392,7 @@
       "previousFingerprint": "Previously trusted key fingerprint",
       "keyChanged": "This key differs from the one you trusted before. Make sure they really replaced their keys.",
       "keyUnchanged": "This is the same key you trusted before.",
-      "sasRecommended": "If you can, use “Verify with emoji” instead. It checks that you both see the same key without reading out the fingerprint.",
+      "sasRecommended": "If you can, use “Verify” instead to check with a QR code or emoji. It checks that you both see the same key without reading out the fingerprint.",
       "confirmEffect": "Trusting signs this key with your user-signing key, and all your devices will trust it.",
       "confirmTrust": "Trust this key",
       "ownFingerprint": "Your key fingerprint",
@@ -1467,9 +1467,9 @@
       }
     },
     "sas": {
-      "start": "Verify with emoji",
+      "start": "Verify",
       "incomingTitle": "{{name}} wants to verify with you",
-      "incomingDescription": "You'll both check that the same emoji appear on your screens to confirm each other's keys. Accept only when you can compare screens outside this channel, such as in person or on a call.",
+      "incomingDescription": "You'll confirm each other's keys by scanning a QR code or by checking that the same emoji appear on both screens. Accept only when you can compare screens outside this channel, such as in person or on a call.",
       "accept": "Accept",
       "decline": "Decline",
       "requestedTitle": "Waiting for {{name}} to accept",
@@ -1569,6 +1569,35 @@
         "61": "Headphones",
         "62": "Folder",
         "63": "Pin"
+      }
+    },
+    "qr": {
+      "title": "Verify {{name}}",
+      "codeLabel": "Verification QR code",
+      "showHint": "Ask {{name}} to scan this QR code with their device. If a camera isn't available or you're apart, verify with emoji instead.",
+      "waitingForAccept": "Once {{name}} accepts the request, they can scan this QR code with their device.",
+      "scan": "Scan their QR code",
+      "showOwn": "Show my QR code",
+      "useEmoji": "Verify with emoji",
+      "scanHint": "Point the camera at the QR code on the other person's screen.",
+      "otherCode": "This QR code isn't for this verification. Point the camera at the QR code currently on the other person's screen.",
+      "scannedTitle": "Waiting for {{name}} to confirm",
+      "waitingForConfirm": "Waiting for the other person to confirm the scan on their screen…",
+      "confirmTitle": "Did {{name}} scan the QR code?",
+      "confirmDescription": "Choose “Scanned” only if {{name}} scanned this QR code with their device in front of you. You'll sign in again to confirm it's you, then their key will be saved as verified.",
+      "confirmYes": "Scanned",
+      "confirmNo": "Not scanned",
+      "verifiedTitle": "Confirmed {{name}}'s key with the QR code",
+      "needsLogin": "Sign in again to confirm it's you and save the key as verified.",
+      "login": "Sign in and save",
+      "keyMismatch": "The key in the QR code didn't match the key from the server, so the verification was stopped. A key may have been replaced.",
+      "camera": {
+        "label": "Camera view",
+        "starting": "Starting the camera…",
+        "unsupported": "The camera can't be used in this browser. Ask the other person to scan this device's QR code, or verify with emoji.",
+        "denied": "Camera access wasn't allowed. Allow it in your browser settings, or verify with emoji.",
+        "noCamera": "No camera was found. Ask the other person to scan this device's QR code, or verify with emoji.",
+        "failed": "The camera couldn't be started. Verify with emoji instead."
       }
     },
     "android": {

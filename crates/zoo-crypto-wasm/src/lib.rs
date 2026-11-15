@@ -164,9 +164,15 @@ export interface VerificationOutgoing {
 export type SasPhase =
   | "requested"
   | "incoming"
+  /** 双方が受け入れた。QR を出し、QR を読み取るか絵文字で検証するかを選ぶ。 */
+  | "choose_method"
   | "exchanging"
   | "compare"
   | "confirmed"
+  /** 相手の QR を読み取った。相手の確認を待っている。 */
+  | "qr_scanned"
+  /** 相手がこの端末の QR を読み取った。相手の端末で読み取ったかを利用者に聞く。 */
+  | "qr_confirm"
   | "done"
   | "cancelled";
 export interface SasView {
@@ -180,6 +186,14 @@ export interface SasView {
   emoji: number[] | null;
   cancel: { code: string; by_us: boolean } | null;
   verified_master_key: string | null;
+  /** `start` を送るか受けて決まった方式。 */
+  method: "sas" | "qr" | null;
+  /** 相手に読み取ってもらう QR のバイト列（Matrix の形）。出さない段階では `null`。 */
+  qr_code: number[] | null;
+  /** 相手の QR を読み取れる段階か。 */
+  can_scan_qr_code: boolean;
+  /** 絵文字の検証を選べる段階か。 */
+  can_start_sas: boolean;
 }
 export interface SasRequest { verification: SasVerification; outgoing: VerificationOutgoing[] }
 export type UserState =

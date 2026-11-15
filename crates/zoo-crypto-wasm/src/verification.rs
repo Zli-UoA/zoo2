@@ -1,4 +1,4 @@
-//! 他のユーザーの絵文字 SAS 検証（#368）。
+//! 他のユーザーの絵文字 SAS 検証（#368）と、QR コードによる検証。
 //!
 //! 検証のメッセージ（[`VerificationMessageJson`]）と送るメッセージ（[`VerificationOutgoingJson`]）は、
 //! Worker と画面のあいだを行き来するので、クラスではなく JSON にする。
@@ -225,6 +225,9 @@ impl SasVerification {
         let phase = match v.phase() {
             core::SasPhase::Requested => "requested",
             core::SasPhase::Incoming => "incoming",
+            core::SasPhase::ChooseMethod => "choose_method",
+            core::SasPhase::QrScanned => "qr_scanned",
+            core::SasPhase::QrConfirm => "qr_confirm",
             core::SasPhase::Exchanging => "exchanging",
             core::SasPhase::Compare => "compare",
             core::SasPhase::Confirmed => "confirmed",
@@ -241,6 +244,13 @@ impl SasVerification {
             "emoji": v.emoji_indices(),
             "cancel": v.cancellation().map(|c| json!({"code": c.code, "by_us": c.by_us})),
             "verified_master_key": v.verified_master_key().map(|k| k.to_base64()),
+            "method": v.method().map(|m| match m {
+                core::VerificationMethod::Sas => "sas",
+                core::VerificationMethod::QrCode => "qr",
+            }),
+            "qr_code": v.qr_code(),
+            "can_scan_qr_code": v.can_scan_qr_code(),
+            "can_start_sas": v.can_start_sas(),
         }))
     }
 
@@ -254,6 +264,25 @@ impl SasVerification {
     #[wasm_bindgen(unchecked_return_type = "VerificationOutgoing[]")]
     pub fn confirm(&mut self) -> Result<JsValue, JsValue> {
         outgoing_js(self.inner.confirm().js()?)
+    }
+
+    /// 絵文字で検証することを選んだ（SAS の `start` を送る）。
+    #[wasm_bindgen(js_name = startSas, unchecked_return_type = "VerificationOutgoing[]")]
+    pub fn start_sas(&mut self) -> Result<JsValue, JsValue> {
+        outgoing_js(self.inner.start_sas().js()?)
+    }
+
+    /// 相手の QR を読み取った（`bytes` は QR のバイト列）。形が正しくない、別の検証の QR は投げる
+    /// （取りやめない。読み直す）。鍵が違えば取りやめる（`view().phase` が `cancelled`）。
+    #[wasm_bindgen(js_name = scanQrCode, unchecked_return_type = "VerificationOutgoing[]")]
+    pub fn scan_qr_code(&mut self, bytes: &[u8]) -> Result<JsValue, JsValue> {
+        outgoing_js(self.inner.scan_qr_code(bytes).js()?)
+    }
+
+    /// 相手がこの端末の QR を読み取ったことを、利用者が確かめた（`done` を送る）。
+    #[wasm_bindgen(js_name = confirmQrScanned, unchecked_return_type = "VerificationOutgoing[]")]
+    pub fn confirm_qr_scanned(&mut self) -> Result<JsValue, JsValue> {
+        outgoing_js(self.inner.confirm_qr_scanned().js()?)
     }
 
     /// 絵文字が一致しないと答えた。

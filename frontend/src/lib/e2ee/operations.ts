@@ -292,6 +292,12 @@ export class CryptoOperations {
         return this.opened().verification.confirm(request.txnId);
       case "sasMismatch":
         return this.opened().verification.mismatch(request.txnId);
+      case "sasStartSas":
+        return this.opened().verification.startSas(request.txnId);
+      case "sasScanQr":
+        return this.opened().verification.scanQr(request.txnId, request.bytes);
+      case "sasConfirmQr":
+        return this.opened().verification.confirmQr(request.txnId);
       case "sasCancel":
         return this.opened().verification.cancel(request.txnId);
       case "sasExpire":
