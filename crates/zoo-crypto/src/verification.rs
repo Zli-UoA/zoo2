@@ -761,11 +761,11 @@ impl SasVerification {
                 "相手の端末が決まっていません".into(),
             ));
         };
+        self.method = Some(VerificationMethod::QrCode);
         if data.their_master_key != peer.master_key || data.our_master_key != self.own.master_key {
             return Ok(self.cancel_with(cancel_code::KEY_MISMATCH));
         }
         self.we_started = true;
-        self.method = Some(VerificationMethod::QrCode);
         self.state = State::QrScanned;
         Ok(vec![self.to_peer(
             VERIFICATION_START_TYPE,
