@@ -344,12 +344,19 @@ pub fn reformat_stored(content: &str) -> Option<String> {
     let mut rest = content;
     let mut prev: Option<char> = None;
     while let Some(c) = rest.chars().next() {
+        // コードの範囲は、中身を URL やリンクとして切り出さずに、そのまま文字として積む
+        // (閉じの `` ` `` を URL に取り込まないように。`format` がコードとして扱う)
+        let code = if c == '`' { raw_code_len(rest) } else { None };
         let atom = match c {
             '[' => markdown_link_len(rest),
             'h' if !prev.is_some_and(|p| p.is_ascii_alphanumeric()) => bare_url_len(rest),
             _ => None,
         };
-        if let Some(len) = atom {
+        if let Some(len) = code {
+            toks.extend(rest[..len].chars().map(Tok::Ch));
+            prev = rest[..len].chars().next_back();
+            rest = &rest[len..];
+        } else if let Some(len) = atom {
             toks.push(Tok::Atom(rest[..len].to_string()));
             prev = rest[..len].chars().next_back();
             rest = &rest[len..];
@@ -364,29 +371,63 @@ pub fn reformat_stored(content: &str) -> Option<String> {
     (out != content && out.chars().count() <= MAX_MESSAGE_CONTENT_LENGTH).then_some(out)
 }
 
+/// 先頭が `` ` `` のとき、閉じているコードの長さ (バイト)。`code_end` と同じ規則 (``` は次の ``` まで、
+/// 1 つの `` ` `` は同じ行の次の `` ` `` まで。空は除く)
+fn raw_code_len(s: &str) -> Option<usize> {
+    if let Some(rest) = s.strip_prefix("```") {
+        return rest.find("```").map(|i| 3 + i + 3);
+    }
+    let rest = &s[1..];
+    let end = rest.find(['`', '\n'])?;
+    (end > 0 && rest.as_bytes()[end] == b'`').then_some(1 + end + 1)
+}
+
 /// `[label](https://…)` の長さ (バイト)
 fn markdown_link_len(s: &str) -> Option<usize> {
     let close = s.find(']')?;
-    if s[1..close].contains(['\n', '[']) || !s[close..].starts_with("](") {
+    if s[1..close].contains(['\n', '[', '`']) || !s[close..].starts_with("](") {
         return None;
     }
     let url = &s[close + 2..];
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return None;
     }
-    let end = url.find(|c: char| c == ')' || c.is_whitespace())?;
+    let end = url.find(|c: char| c == ')' || c == '`' || c.is_whitespace())?;
     url[end..].starts_with(')').then_some(close + 2 + end + 1)
 }
 
-/// 素の URL の長さ (バイト)。末尾の記号 (`*` `_` `~` や句読点) は、URL に含めない
+/// 素の URL の長さ (バイト)。末尾の記号 (`*` `_` `~` や句読点) と、対応する開きのない閉じ括弧は、URL に含めない
 fn bare_url_len(s: &str) -> Option<usize> {
     let scheme = ["https://", "http://"]
         .iter()
         .find(|p| s.starts_with(**p))?;
     let end = s
-        .find(|c: char| c.is_whitespace() || c == '<' || c == '>')
+        .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '`'))
         .unwrap_or(s.len());
-    let url = s[..end].trim_end_matches(['*', '_', '~', '.', ',', '!', '?', ';', ':', '\'', '"']);
+    let mut url = &s[..end];
+    loop {
+        let trimmed =
+            url.trim_end_matches(['*', '_', '~', '.', ',', '!', '?', ';', ':', '\'', '"']);
+        let trimmed = match trimmed.chars().next_back() {
+            Some(last @ (')' | ']' | '}')) => {
+                let open = match last {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
+                };
+                if trimmed.matches(last).count() > trimmed.matches(open).count() {
+                    &trimmed[..trimmed.len() - 1]
+                } else {
+                    trimmed
+                }
+            }
+            _ => trimmed,
+        };
+        if trimmed.len() == url.len() {
+            break;
+        }
+        url = trimmed;
+    }
     (url.len() > scheme.len()).then_some(url.len())
 }
 
@@ -665,6 +706,39 @@ mod tests {
         assert_eq!(r("<b>x</b>").as_deref(), Some("<\u{200b}b>x<\u{200b}/b>"));
         assert_eq!(r("2*3*4"), None);
         assert_eq!(r("plain text"), None);
+    }
+
+    #[test]
+    fn reformat_keeps_code_and_url_boundaries() {
+        let r = |s: &str| reformat_stored(s);
+        // コードの中は変えない (末尾が URL でも、後ろの別のコードがあっても)
+        assert_eq!(r("`*bold* https://example.com`"), None);
+        assert_eq!(r("`https://example.com` and `*literal*`"), None);
+        assert_eq!(r("```\n*bold* https://example.com```"), None);
+        assert_eq!(
+            r("`[a](https://example.com` *b*)").as_deref(),
+            Some("`[a](https://example.com` **b**)")
+        );
+        assert_eq!(
+            r("`[a` *b* `](https://example.com)`").as_deref(),
+            Some("`[a` **b** `](https://example.com)`")
+        );
+        assert_eq!(r("see https://a.test/x`*y*`").as_deref(), None,);
+        // 括弧で囲んだ URL の閉じ括弧は、URL に含めない
+        assert_eq!(
+            r("(_https://a.test/x_)").as_deref(),
+            Some("(<i>https://a.test/x</i>)")
+        );
+        assert_eq!(
+            r("(*https://a.test/x*)").as_deref(),
+            Some("(**https://a.test/x**)")
+        );
+        assert_eq!(
+            r("(_https://a.test/x_) and _y_").as_deref(),
+            Some("(<i>https://a.test/x</i>) and <i>y</i>")
+        );
+        // 対応する括弧を持つ URL は、そのまま
+        assert_eq!(r("see https://en.wikipedia.org/wiki/Foo_(bar)"), None);
     }
 
     #[test]
