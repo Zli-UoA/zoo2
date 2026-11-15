@@ -69,6 +69,7 @@ impl WorkspaceView {
         let thread_typing = state.typing_text(&Some(root_id.to_string()));
         let root_message = state.channel_cache.thread_root_message.clone();
         let replies = state.channel_cache.thread_replies.clone();
+        let reply_counts = state.store.reply_counts(&channel_id);
 
         // 親投稿。`max-h-60 shrink-0 overflow-y-auto border-b bg-muted/30 px-2 py-2`
         let root_block = root_message.as_ref().map(|root| {
@@ -138,7 +139,7 @@ impl WorkspaceView {
                     is_archived,
                     reactions: &reactions_by_msg,
                     attachments: &attachments_by_msg,
-                    reply_counts: None,
+                    reply_counts: Some(&reply_counts),
                     pane_prefix: "thread",
                     scroll_target: pending_scroll_id,
                     solo: false,

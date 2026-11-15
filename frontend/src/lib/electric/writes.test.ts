@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { createApiClient, type ApiClient } from "../api/client";
-import { THREADS_CHANGED } from "./threads";
+import { THREADS_CHANGED, THREAD_REPLY_REDIRECTED } from "./threads";
 import type { ChannelRow, ChannelUserRow, MessageRow } from "./types";
 import {
   createChannelUserWrites,
@@ -161,6 +161,36 @@ describe("message writes", () => {
       expect(changed).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener(THREADS_CHANGED, changed);
+    }
+  });
+
+  it("announces when the server normalized a reply to the thread root", async () => {
+    const { client, post } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+    const redirected = vi.fn();
+    window.addEventListener(THREAD_REPLY_REDIRECTED, redirected);
+    try {
+      post.mockResolvedValueOnce({ data: { parent_id: "root" }, txid: TXID });
+      await writes.onInsert(
+        params(collection, [insertMutation({ ...message, parent_id: "child" })]),
+      );
+      expect(redirected).toHaveBeenCalledTimes(1);
+      expect((redirected.mock.calls[0][0] as CustomEvent).detail).toEqual({
+        from: "child",
+        to: "root",
+      });
+      post.mockResolvedValueOnce({ data: { parent_id: "root" }, txid: TXID });
+      await writes.onInsert(
+        params(collection, [insertMutation({ ...message, parent_id: "root" })]),
+      );
+      expect(redirected).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener(THREAD_REPLY_REDIRECTED, redirected);
     }
   });
 

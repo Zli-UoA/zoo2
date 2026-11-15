@@ -9,6 +9,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.jsonObject
 
 @Composable
 internal fun ThreadSurface(
@@ -55,6 +61,7 @@ internal fun ThreadSurface(
             }
             if (!compact) IconButton("x", app.t("threads.close"), size = 28.dp, click = close)
         }
+        ThreadActions(app, canParticipate = composer != null, replyCount = count)
         HorizontalDivider()
         Box(
             Modifier.fillMaxWidth()
@@ -68,5 +75,51 @@ internal fun ThreadSurface(
         HorizontalDivider()
         Column(Modifier.weight(1f), content = replies)
         composer?.invoke()
+    }
+}
+
+
+/** Only the open pane fetches personal membership; no per-message requests. */
+@Composable
+private fun ThreadActions(app: Session, canParticipate: Boolean, replyCount: Int) {
+    val id = app.thread ?: return
+    var detail by remember(app, id) { mutableStateOf<Row?>(null) }
+    var failed by remember(app, id) { mutableStateOf(false) }
+    val mutex = remember(app, id) { Mutex() }
+    val pending = "thread:$id" in app.pending
+    LaunchedEffect(app, id, app.env.visible, app.env.online, replyCount) {
+        if (!app.env.visible || !app.env.online) return@LaunchedEffect
+        while (isActive) {
+            try {
+                mutex.withLock {
+                    val result = app.api.request("/api/threads/$id").jsonObject["data"]!!.jsonObject
+                    detail = result
+                    failed = false
+                    if (app.thread == id && result.text("id") != id) app.thread = result.text("id")
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { failed = true }
+            delay(60_000)
+        }
+    }
+    fun change(action: String) {
+        app.run("thread:$id") {
+            mutex.withLock {
+                detail = app.api.request("/api/threads/$id/$action", "POST", obj()).jsonObject["data"]!!.jsonObject
+                failed = false
+            }
+        }
+    }
+    if (canParticipate) Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+        val archived = detail?.present("thread_archive_at") == true
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (archived) Button(app.t("threads.reopen"), !pending && app.env.online, size = "sm") { change("unarchive") }
+            if (detail?.text("membership") == "joined")
+                Button(app.t("threads.leave"), !pending && app.env.online, variant = "ghost", size = "sm") { change("leave") }
+            else if (!archived)
+                Button(app.t("threads.join"), detail != null && !pending && app.env.online, size = "sm") { change("join") }
+        }
+        if (archived) Text(app.t("threads.reopenOnSend"), small = true, muted = true)
+        if (failed) Text(app.t("threads.membershipError"), small = true, color = MaterialTheme.colorScheme.error)
     }
 }

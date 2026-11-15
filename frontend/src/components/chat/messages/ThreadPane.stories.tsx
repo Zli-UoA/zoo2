@@ -245,3 +245,71 @@ export const RootLoadError: Story = {
     await expect(args.onClose).toHaveBeenCalledTimes(1);
   }),
 };
+
+export const NotParticipating: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies, membership: "none", onJoinThread: fn() },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "参加する" }));
+    await expect(args.onJoinThread).toHaveBeenCalledOnce();
+    await expect(canvas.queryByRole("button", { name: "スレッドを開く" })).not.toBeInTheDocument();
+  }),
+};
+export const Participating: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { replies, membership: "joined", onLeaveThread: fn() },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    await userEvent.click(within(canvasElement).getByRole("button", { name: "退出する" }));
+    await expect(args.onLeaveThread).toHaveBeenCalledOnce();
+  }),
+};
+export const LeftThread: Story = {
+  ...NotParticipating,
+  args: { ...NotParticipating.args, membership: "left" },
+};
+export const MembershipPending: Story = {
+  ...NotParticipating,
+  args: { ...NotParticipating.args, membershipPending: true },
+  play: undefined,
+};
+export const MembershipFailed: Story = {
+  ...NotParticipating,
+  args: { ...NotParticipating.args, membershipError: true, onMembershipRetry: fn() },
+  play: undefined,
+};
+export const ReopenArchived: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies,
+    isArchived: true,
+    membership: "joined",
+    onReopenThread: fn(),
+    onLeaveThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "再Open" }));
+    await expect(args.onReopenThread).toHaveBeenCalledOnce();
+    await expect(canvas.getByText("送信すると再Openして参加します。")).toBeVisible();
+  }),
+};
+
+export const LegacyNestedReply: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies: [
+      {
+        ...replies[0]!,
+        display_data: { emojis: {}, attachments: [], reactions: [], reply_count: 2 },
+      },
+      replies[1]!,
+    ],
+    onOpenThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: /2.*返信/ }));
+    await expect(args.onOpenThread).toHaveBeenCalledWith("reply-1");
+  }),
+};

@@ -273,7 +273,12 @@
     "archiveForChannel": "{{channel}}的已封存討論串",
     "untitled": "未命名子討論",
     "targetTooOld": "這則訊息太久遠，無法在此載入",
-    "unreadTooOld": "更早的未讀訊息未載入"
+    "unreadTooOld": "更早的未讀訊息未載入",
+    "join": "加入討論串",
+    "leave": "退出討論串",
+    "reopen": "重新開啟",
+    "reopenOnSend": "傳送回覆將重新開啟並加入此討論串。",
+    "membershipError": "無法更新討論串參與狀態。"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回應的使用者",

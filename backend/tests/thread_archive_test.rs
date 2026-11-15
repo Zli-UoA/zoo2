@@ -1,4 +1,6 @@
 //! Requires the migrated PostgreSQL test database.
+#[path = "support/thread_db.rs"]
+mod thread_db;
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -55,9 +57,12 @@ async fn request(
 async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
     let mut db = init_db(&config.database_url).await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
     let app = create_router(AppState::new(db.clone(), config));
     let user = uuid::Uuid::new_v4().to_string();
     let channel = uuid::Uuid::new_v4().to_string();
@@ -115,18 +120,17 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
         Value::Null,
     )
     .await?;
-    for id in [root_id, child_id] {
-        let entry = threads["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["id"] == id)
-            .unwrap();
-        assert!(
-            entry["thread_archive_at"].is_string(),
-            "nested threads must also archive"
-        );
-    }
+    assert!(threads["items"].as_array().unwrap().is_empty());
+    let detail = request(
+        &app,
+        "GET",
+        &user,
+        &format!("/api/threads/{child_id}"),
+        Value::Null,
+    )
+    .await?;
+    assert_eq!(detail["data"]["id"], root_id);
+    assert!(detail["data"]["thread_archive_at"].is_string());
     let reopened = request(
         &app,
         "POST",
@@ -150,7 +154,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     );
 
     toasty::sql::statement("UPDATE messages SET thread_activity_at=(now() AT TIME ZONE 'UTC')-interval '23 hours' WHERE id=$1")
-        .bind(child_id).exec(&mut db).await?;
+        .bind(root_id).exec(&mut db).await?;
     archive_idle_threads(&db).await?;
     // A thread idle for less than one day stays active even if its replies are old.
     let threads = request(&app, "GET", &user, "/api/threads", Value::Null).await?;
@@ -159,7 +163,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
             .as_array()
             .unwrap()
             .iter()
-            .find(|entry| entry["id"] == child_id)
+            .find(|entry| entry["id"] == root_id)
             .unwrap()["thread_archive_at"]
             .is_null()
     );
@@ -226,15 +230,16 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
         Value::Null,
     )
     .await?;
-    assert!(
-        threads["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|entry| entry["id"] == root_id)
-            .unwrap()["thread_archive_at"]
-            .is_string()
-    );
+    assert!(threads["items"].as_array().unwrap().is_empty());
+    let detail = request(
+        &app,
+        "GET",
+        &user,
+        &format!("/api/threads/{root_id}"),
+        Value::Null,
+    )
+    .await?;
+    assert!(detail["data"]["thread_archive_at"].is_string());
 
     // The same endpoint must not disclose private threads to nonmembers.
     toasty::sql::statement("UPDATE channels SET is_private=true WHERE id=$1")
@@ -318,6 +323,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     )
     .await?;
     assert!(reopened["data"]["thread_archive_at"].is_null());
+    fixture.cleanup().await?;
     Ok(())
 }
 
@@ -325,9 +331,12 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
 async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
     let mut db = init_db(&config.database_url).await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
     let app = create_router(AppState::new(db.clone(), config));
     let user = uuid::Uuid::new_v4().to_string();
     let channel = uuid::Uuid::new_v4().to_string();
@@ -389,6 +398,7 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
             .collect();
         assert_eq!(order, roots, "imported: {imported}");
     }
+    fixture.cleanup().await?;
     Ok(())
 }
 
@@ -396,9 +406,12 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
 async fn thread_index_limits_membership_history_and_page_size() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
     let mut db = init_db(&config.database_url).await?;
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
     let app = create_router(AppState::new(db.clone(), config));
     let user = uuid::Uuid::new_v4().to_string();
     request(
@@ -470,7 +483,7 @@ async fn thread_index_limits_membership_history_and_page_size() -> anyhow::Resul
         Value::Null,
     )
     .await?;
-    assert_eq!(archive["items"].as_array().unwrap().len(), 1);
+    assert!(archive["items"].as_array().unwrap().is_empty());
     let small = request(&app, "GET", &user, "/api/threads?limit=2", Value::Null).await?;
     assert_eq!(small["items"].as_array().unwrap().len(), 2);
     let capped = request(&app, "GET", &user, "/api/threads?limit=1000", Value::Null).await?;
@@ -487,6 +500,7 @@ async fn thread_index_limits_membership_history_and_page_size() -> anyhow::Resul
         .0,
         StatusCode::BAD_REQUEST
     );
+    fixture.cleanup().await?;
     Ok(())
 }
 
