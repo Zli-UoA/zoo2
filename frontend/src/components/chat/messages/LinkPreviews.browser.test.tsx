@@ -21,6 +21,7 @@ afterEach(() => {
   api.get.mockReset();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 it("renders metadata and loads the thumbnail directly from the runtime proxy endpoint", async () => {
@@ -219,4 +220,92 @@ it("keeps the quote link when its Home preview cannot be resolved", async () => 
   await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1));
   expect(screen.getAllByRole("link").every((link) => link.getAttribute("href") === url)).toBe(true);
   expect(screen.getByRole("link", { name: url.replace("https://", "") })).toBeInTheDocument();
+});
+
+it("defers Home requests until nearby, shares active views and cancels offscreen or hidden work", async () => {
+  const callbacks: ((entries: { isIntersecting: boolean }[]) => void)[] = [];
+  const disconnect = vi.fn();
+  vi.stubGlobal(
+    "IntersectionObserver",
+    class {
+      constructor(
+        callback: (entries: { isIntersecting: boolean }[]) => void,
+        options: IntersectionObserverInit,
+      ) {
+        expect(options.rootMargin).toBe("200px 0px");
+        callbacks.push(callback);
+      }
+      observe() {}
+      disconnect = disconnect;
+    },
+  );
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const pending: { signal: AbortSignal; finish: (data: unknown) => void }[] = [];
+  api.get.mockImplementation(
+    (_url: string, { signal }: { signal: AbortSignal }) =>
+      new Promise((resolve, reject) => {
+        pending.push({ signal, finish: resolve });
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      }),
+  );
+  const url = "https://example.com/deferred-home-preview";
+  const view = render(
+    <>
+      <HomePostContent content={url} />
+      <HomePostContent content={url} />
+    </>,
+  );
+  await waitFor(() => expect(callbacks).toHaveLength(2));
+  expect(api.get).not.toHaveBeenCalled();
+  expect(screen.getAllByRole("link")).toHaveLength(2);
+  await act(async () => callbacks[0]([{ isIntersecting: true }]));
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(1));
+  expect(screen.getAllByRole("link")).toHaveLength(2);
+  await act(async () => callbacks[1]([{ isIntersecting: true }]));
+  expect(api.get).toHaveBeenCalledTimes(1);
+  await act(async () => callbacks[0]([{ isIntersecting: false }]));
+  expect(pending[0].signal.aborted).toBe(false);
+  await act(async () => callbacks[1]([{ isIntersecting: false }]));
+  expect(pending[0].signal.aborted).toBe(true);
+  await act(async () => callbacks[0]([{ isIntersecting: true }]));
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2));
+  visibility.mockReturnValue("hidden");
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  expect(pending[1].signal.aborted).toBe(true);
+  visibility.mockReturnValue("visible");
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  await waitFor(() => expect(api.get).toHaveBeenCalledTimes(3));
+  await act(async () =>
+    pending[2].finish({ title: "取得できたHomeカード", description: "説明", image: null }),
+  );
+  await screen.findByRole("link", { name: /取得できたHomeカード/ });
+  await act(async () => callbacks[1]([{ isIntersecting: true }]));
+  await waitFor(() =>
+    expect(screen.getAllByRole("link", { name: /取得できたHomeカード/ })).toHaveLength(2),
+  );
+  expect(api.get).toHaveBeenCalledTimes(3);
+  await act(async () => {
+    callbacks[0]([{ isIntersecting: false }]);
+    callbacks[1]([{ isIntersecting: false }]);
+  });
+  expect(screen.getAllByRole("link", { name: /取得できたHomeカード/ })).toHaveLength(2);
+  view.unmount();
+  expect(disconnect).toHaveBeenCalledTimes(2);
+});
+
+it("starts Home preview requests when a real scroll container reveals the post", async () => {
+  api.get.mockResolvedValue({ title: "スクロール後のカード", description: "説明", image: null });
+  const view = render(
+    <div style={{ height: 160, overflowY: "auto" }}>
+      <div style={{ height: 1200 }} />
+      <HomePostContent content="https://example.com/real-scroll-preview" />
+    </div>,
+  );
+  await act(async () => {});
+  expect(api.get).not.toHaveBeenCalled();
+  const scroller = view.container.firstElementChild!;
+  scroller.scrollTop = scroller.scrollHeight;
+  fireEvent.scroll(scroller);
+  await screen.findByRole("link", { name: /スクロール後のカード/ });
+  expect(api.get).toHaveBeenCalledTimes(1);
 });

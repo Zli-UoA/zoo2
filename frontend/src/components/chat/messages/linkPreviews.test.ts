@@ -22,6 +22,17 @@ describe("link previews", () => {
     expect(previewUrls(`**引用へのコメント**\n\n<${url}>`)).toEqual([url]);
     expect(previewUrls(`<${url}>`)).toEqual([url]);
   });
+  it("excludes a dedicated quote before limiting ordinary previews without changing chat's limit", () => {
+    const quote = "https://misskey.example/notes/quoted-original";
+    const links = [
+      "https://example.com/one",
+      "https://example.com/two",
+      "https://example.com/three",
+    ];
+    const content = `<${quote}> ${links.join(" ")}`;
+    expect(previewUrls(content, quote)).toEqual(links);
+    expect(previewUrls(content)).toEqual([quote, ...links.slice(0, 2)]);
+  });
   it("sends images only to the configured proxy without smaller thumbnail presets", () => {
     const image = "https://images.example/a.png?x=1&y=2";
     const proxy = new URL(proxyImageUrl("https://media.example/", image)!);

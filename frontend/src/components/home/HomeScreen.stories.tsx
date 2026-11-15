@@ -2191,3 +2191,61 @@ export const QuotedRenote: Story = {
     await expect(canvas.queryByText("misskey.example/notes/quoted-original")).toBeNull();
   }),
 };
+
+export const LinkPreviewStates: Story = {
+  parameters: {
+    collections: {
+      ...storyCollections,
+      config: { summalyUrl: "https://storybook.example/summaly" },
+    },
+    msw: {
+      handlers: [
+        http.get("*/summaly-endpoint", () =>
+          HttpResponse.text("https://storybook.example/summaly"),
+        ),
+        http.get("*/media-proxy-endpoint", () => HttpResponse.text("")),
+        http.get("https://storybook.example/summaly", async ({ request }) => {
+          const url = new URL(request.url).searchParams.get("url")!;
+          if (url.endsWith("unavailable")) return new HttpResponse(null, { status: 404 });
+          if (url.endsWith("pending")) await delay("infinite");
+          return HttpResponse.json({
+            title: "通常URLのカード",
+            description: "取得できたリンクだけカードを表示します。",
+            sitename: "Example",
+          });
+        }),
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...misskeyPost,
+              id: "preview-success",
+              content: "https://example.com/home-story-success",
+            },
+            {
+              ...misskeyPost,
+              id: "preview-unavailable",
+              content: "https://example.com/home-story-unavailable",
+            },
+            {
+              ...misskeyPost,
+              id: "preview-pending",
+              content: "https://example.com/home-story-pending",
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("link", { name: /通常URLのカード/ })).toBeVisible();
+    for (const path of ["unavailable", "pending"]) {
+      const url = `https://example.com/home-story-${path}`;
+      await expect(canvas.getByRole("link", { name: url.replace("https://", "") })).toHaveAttribute(
+        "href",
+        url,
+      );
+      await expect(canvas.queryByRole("link", { name: `${url} example.com` })).toBeNull();
+    }
+  }),
+};

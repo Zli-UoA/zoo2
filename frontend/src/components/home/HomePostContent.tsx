@@ -113,7 +113,9 @@ export function HomePostContent({
   return (
     <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
       {body.trim() ? <ActivityPubContent text={body} emojis={emojis} /> : null}
-      {previewLinks ? <LinkPreviews content={body} excludeUrl={quote?.uri} /> : null}
+      {previewLinks ? (
+        <LinkPreviews content={body} excludeUrl={quote?.uri} defer showFallback={false} />
+      ) : null}
       {quote ? <QuoteCard quote={quote} /> : null}
       <MessageAttachments attachments={attachments} />
       {media.length && !attachments.length ? (

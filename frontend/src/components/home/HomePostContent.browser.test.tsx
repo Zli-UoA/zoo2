@@ -68,22 +68,23 @@ it("preserves Home links without a Provider when Summaly fails", async () => {
   const link = screen.getByRole("link", { name: url.replace("https://", "") });
   await waitFor(() => expect(lookups).toBe(1));
   expect(link).toHaveAttribute("href", url);
-  // The card falls back to the URL while the original body link stays usable.
-  expect(await screen.findByRole("link", { name: `${url} example.com` })).toHaveAttribute(
-    "href",
-    url,
-  );
+  expect(screen.getAllByRole("link")).toHaveLength(1);
+  expect(screen.queryByRole("link", { name: `${url} example.com` })).toBeNull();
 });
 
 it("renders native quote cards without fetching quoted URLs through Summaly", async () => {
   const uri = "https://misskey.example/notes/native-quote";
   const normal = "https://example.com/article-in-comment";
+  const more = ["https://example.com/comment-link-two", "https://example.com/comment-link-three"];
   const lookups: string[] = [];
   mockServer.use(
     http.get("https://home-summaly.example/url", ({ request }) => {
       lookups.push(new URL(request.url).searchParams.get("url")!);
       return HttpResponse.json({
-        title: "通常リンクのプレビュー",
+        title:
+          new URL(request.url).searchParams.get("url") === normal
+            ? "通常リンクのプレビュー"
+            : "ほかの通常リンク",
         description: "通常URLにはSummalyを使う",
       });
     }),
@@ -99,7 +100,7 @@ it("renders native quote cards without fetching quoted URLs through Summaly", as
   const view = render(
     <LocaleProvider>
       <HomePostContent
-        content={`コメント ${normal} [引用先](${uri})\n\n<${uri}>`}
+        content={`コメント ${normal} ${more.join(" ")} [引用先](${uri})\n\n<${uri}>`}
         quote={{ uri, post }}
       />
       <HomePostContent content={`<${uri}>`} quote={{ uri, post }} />
@@ -121,7 +122,8 @@ it("renders native quote cards without fetching quoted URLs through Summaly", as
   );
   expect(screen.getByRole("link", { name: "引用先" })).toHaveAttribute("href", uri);
   expect(screen.queryByText("misskey.example/notes/native-quote")).toBeNull();
-  expect(lookups).toEqual([normal]);
+  await waitFor(() => expect(lookups).toHaveLength(3));
+  expect([...lookups].sort()).toEqual([normal, ...more].sort());
   for (const width of [280, 960]) {
     view.container.style.width = `${width}px`;
     for (const card of screen.getAllByRole("group", { name: "引用元の投稿" })) {

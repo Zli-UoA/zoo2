@@ -976,7 +976,8 @@
       "story": "src/components/chat/messages/LinkPreviews.stories.tsx",
       "checks": [
         "src/components/chat/messages/LinkPreviews.browser.test.tsx",
-        "src/components/home/HomePostContent.browser.test.tsx"
+        "src/components/home/HomePostContent.browser.test.tsx",
+        "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
       ]
     },
     {
@@ -1311,9 +1312,12 @@
     {
       "file": "src/components/home/HomePostContent.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
-      "checks": ["src/components/home/HomePostContent.browser.test.tsx"],
+      "checks": [
+        "src/components/home/HomePostContent.browser.test.tsx",
+        "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
+      ],
       "composed": true,
-      "reason": "HomePostContent.browser.test.tsxでProviderなしの通常URL展開・取得共有・引用専用カードとSummalyの分離を、QuotedRenoteでコメント付き・コメントなし・表示できない引用と画像・MFMを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
+      "reason": "HomePostContent.browser.test.tsxで通常URL3件と引用の併存・取得共有・引用専用カードとSummalyの分離を、no-summaly.browser.test.tsxで未設定時の本文リンク維持を、LinkPreviewStatesで通常URLの成功・取得中・失敗を、QuotedRenoteでコメント付き・コメントなし・表示できない引用と画像・MFMを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
     },
     {
       "file": "src/components/apps/console/AppConsole.tsx",
