@@ -64,7 +64,7 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
         ranges: Vec::new(),
     };
     let mut last_date = None;
-    // 暗号化チャンネルで、読み込んだうちの暗号化したメッセージ（暗号文か `epoch` のある行）を見たか（#367）。
+    // 暗号化チャンネルで、読み込んだうちの暗号化したメッセージを見たか（#367）。
     // 最初のものの前に「ここから暗号化されています」の区切りを出し、それより後ろの、切り替える前の形の行
     // （正しいサーバーは作れない）には警告を付ける。切り替える前のメッセージには印を付けない。
     let mut seen_encrypted = false;
@@ -78,12 +78,10 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
             last_date = date;
         }
 
-        let before_encryption = ctx.encrypted
-            && matches!(
-                ctx.decryptions.shown(message, ctx.encrypted),
-                Shown::BeforeEncryption
-            );
-        if ctx.encrypted && !before_encryption && !seen_encrypted {
+        // 暗号化したメッセージは、暗号文か `epoch` のある行（削除しても `epoch` は残る）。削除済みの行も
+        // `shown` は `Plain` を返すので、`Shown` ではなく列で見分ける（削除した切り替え前の行を境目にしない）。
+        let encrypted_row = message.ciphertext.is_some() || message.epoch.is_some();
+        if ctx.encrypted && encrypted_row && !seen_encrypted {
             seen_encrypted = true;
             if index > 0 {
                 timeline
@@ -91,7 +89,7 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
                     .push(separator("🔒 ここから暗号化されています", width));
             }
         }
-        let unencrypted_after_encrypted = before_encryption && seen_encrypted;
+        let unencrypted_after_encrypted = ctx.encrypted && !encrypted_row && seen_encrypted;
 
         let start = timeline.lines.len();
         let selected = ctx.selected == Some(message.id.as_str());
@@ -385,5 +383,76 @@ mod tests {
         assert!(timeline.lines[8].to_string().contains("返信 3 件"));
         assert!(timeline.lines[5].to_string().starts_with("▌ "));
         assert!(timeline.lines[1].to_string().starts_with("  "));
+    }
+
+    #[test]
+    fn deleted_rows_before_encryption_do_not_start_the_encrypted_part() {
+        // 平文 A、削除した切り替え前の平文 B、平文 C、epoch だけの行 D（削除した暗号化メッセージ）、
+        // 平文 E（D より後ろなので警告する）。B を境目にすると C に警告が付いてしまう。
+        let row = |id: &str, at: &str, extra: serde_json::Value| -> Message {
+            let mut value = json!({ "id": id, "user_id": "u1", "channel_id": "c1",
+                                    "content": format!("本文 {id}"), "created_at": at });
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(value).unwrap()
+        };
+        let rows = [
+            row("a", "2026-11-01 00:00:00", json!({})),
+            row(
+                "b",
+                "2026-11-01 00:01:00",
+                json!({ "deleted_at": "2026-11-02 00:00:00" }),
+            ),
+            row("c", "2026-11-01 00:02:00", json!({})),
+            row(
+                "d",
+                "2026-11-01 00:03:00",
+                json!({ "epoch": 1, "deleted_at": "2026-11-02 00:00:00" }),
+            ),
+            row("e", "2026-11-01 00:04:00", json!({})),
+        ];
+        let messages: Vec<&Message> = rows.iter().collect();
+        let store = Store::default();
+        let decryptions = Decryptions::default();
+        let ctx = Context {
+            store: &store,
+            me_name: "alice",
+            me_id: "u1",
+            decryptions: &decryptions,
+            encrypted: true,
+            selected: None,
+            reply_counts: None,
+            reactions: &HashMap::new(),
+        };
+        let text: Vec<String> = build(&messages, &ctx, 80)
+            .lines
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        let line_of = |needle: &str| text.iter().position(|line| line.contains(needle));
+        let divider = line_of("ここから暗号化されています").expect("区切りがある");
+        assert_eq!(
+            text.iter()
+                .filter(|line| line.contains("ここから暗号化されています"))
+                .count(),
+            1,
+            "{text:#?}"
+        );
+        assert!(divider > line_of("本文 c").unwrap(), "{text:#?}");
+        assert_eq!(
+            text.iter()
+                .filter(|line| line.contains("[暗号化されていません]"))
+                .count(),
+            1,
+            "{text:#?}"
+        );
+        let warned = line_of("[暗号化されていません]").unwrap();
+        assert_eq!(
+            text[warned + 1].trim_start_matches(['▌', ' ']),
+            "本文 e",
+            "{text:#?}"
+        );
     }
 }
