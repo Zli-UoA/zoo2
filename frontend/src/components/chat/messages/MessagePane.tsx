@@ -156,9 +156,6 @@ export function MessagePane({
   // 新しい方から `MESSAGE_PAGE_SIZE` 件だけを同期し、上端付近で `loadOlder()` が古い方へ 1 ページずつ広げる。
   const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
-  // 暗号化チャンネルで、読み込んだうちで最初の暗号化したメッセージの作成日時（#367）。スレッドのペインで、
-  // それより後の平文の行（正しいサーバーは作れない）に警告を付けるのに使う。
-  const encryptedSince = useMemo(() => firstEncryptedAt(feed), [feed]);
   const reactionsQuery = useMessageReactions(channelId);
   const channelUpload = useAttachmentUpload(channelId);
   const e2ee = useE2ee();
@@ -299,6 +296,13 @@ export function MessagePane({
   const threadRootQuery = useThreadRoot(channelId, threadRootId);
   const threadRootRow = threadRootQuery.data?.[0] ?? null;
   const threadRoot = threadRootRow && !threadRootRow.deleted_at ? threadRootRow : null;
+  // 暗号化チャンネルで、読み込んだうちで最初の暗号化したメッセージの作成日時（#367）。スレッドのペインで、
+  // それより後の平文の行（正しいサーバーは作れない）に警告を付けるのに使う。チャンネルのルートに暗号化した
+  // 行がなくても、開いているスレッドの暗号化した返信より後の平文に気付けるよう、スレッドの行も含める。
+  const encryptedSince = useMemo(
+    () => firstEncryptedAt([...feed, ...(threadRoot ? [threadRoot] : []), ...threadReplies]),
+    [feed, threadRoot, threadReplies],
+  );
   const threadIsArchived = !!threadRoot?.thread_archive_at;
   // Legacy links to nested threads resolve to the canonical root. Message IDs
   // themselves remain stable, so navigation can still highlight the old target.
