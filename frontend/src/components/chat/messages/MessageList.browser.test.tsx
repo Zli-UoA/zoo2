@@ -1,6 +1,6 @@
 import "../../../styles.css";
 import { useLayoutEffect } from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { http, HttpResponse } from "msw";
 
@@ -239,7 +239,7 @@ it("keeps an initial unread boundary without marking later messages read when th
   }
 });
 
-it("marks messages sent before the channel was encrypted and the boundary to encrypted ones (#367)", async () => {
+it("shows the boundary to encrypted messages and warns only about plaintext rows after them (#367)", async () => {
   const noop = () => {};
   const ciphertext = {
     algorithm: "m.megolm.v1.aes-sha2",
@@ -258,6 +258,8 @@ it("marks messages sent before the channel was encrypted and the boundary to enc
     { ...base, id: "before-1", content: "平文のメッセージ 1" },
     { ...base, id: "before-2", content: "平文のメッセージ 2" },
     { ...base, id: "after-1", content: "", ciphertext, epoch: "1" },
+    // 暗号化したメッセージより後ろの、暗号文も epoch もない行（正しいサーバーは作れない）。
+    { ...base, id: "injected", content: "紛れ込んだ平文" },
   ];
   const list = (encrypted: boolean) => (
     <LocaleProvider>
@@ -307,11 +309,19 @@ it("marks messages sent before the channel was encrypted and the boundary to enc
   const { rerender } = render(list(true));
   expect(await screen.findByText("平文のメッセージ 1")).toBeVisible();
   expect(screen.getByText("暗号化したメッセージ")).toBeVisible();
-  expect(screen.getAllByText("暗号化前")).toHaveLength(2);
+  expect(screen.getByText("紛れ込んだ平文")).toBeVisible();
+  // 切り替える前のメッセージには印を付けず、後ろに紛れ込んだ行だけに警告を付ける。
+  expect(screen.getAllByText("暗号化されていません")).toHaveLength(1);
+  expect(
+    within(
+      screen.getByText("紛れ込んだ平文").closest('[role="listitem"]') as HTMLElement,
+    ).getByText("暗号化されていません"),
+  ).toBeVisible();
+  // 区切りは、最初の暗号化したメッセージの前に 1 つだけ出す。
   expect(screen.getAllByRole("separator", { name: "ここから暗号化されています" })).toHaveLength(1);
 
   // 平文のチャンネルでは、印も区切りも出さない。
   rerender(list(false));
-  await waitFor(() => expect(screen.queryByText("暗号化前")).toBeNull());
+  await waitFor(() => expect(screen.queryByText("暗号化されていません")).toBeNull());
   expect(screen.queryByRole("separator", { name: "ここから暗号化されています" })).toBeNull();
 });

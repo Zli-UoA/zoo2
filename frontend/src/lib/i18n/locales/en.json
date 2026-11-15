@@ -1428,8 +1428,8 @@
       "blocked": "This file type is blocked for safety"
     },
     "legacy": {
-      "badge": "Before encryption",
-      "badgeHelp": "This message was sent before the channel was encrypted. It is not encrypted, so the server can read or change it.",
+      "unencryptedBadge": "Not encrypted",
+      "unencryptedBadgeHelp": "This unencrypted message appears after encrypted messages. A trustworthy server cannot create such a message in an encrypted channel, so the server may have added or changed it.",
       "divider": "Messages below are encrypted",
       "editCancelled": "This channel is now encrypted, so editing a message sent before encryption was cancelled.",
       "editForbidden": "Messages sent before encryption can't be edited. You can still delete them."
@@ -1444,7 +1444,7 @@
       "description": "After you turn on encryption:",
       "points": {
         "future": "New messages and attachments can be read only by members' verified devices.",
-        "earlier": "Earlier messages stay unencrypted on the server. They are marked “Before encryption” and can no longer be edited (you can still delete them).",
+        "earlier": "Earlier messages stay unencrypted on the server and can no longer be edited (you can still delete them).",
         "published": "Posts already shared to Home or ActivityPub are not withdrawn.",
         "integrations": "Slack imports and sync stop. Remove apps (bots) and incoming webhooks first.",
         "irreversible": "Encryption can't be turned off later."

@@ -273,6 +273,7 @@
       "states": [
         "Default",
         "EncryptedBeforeEncryptionRow",
+        "EncryptedUnencryptedAfterEncryptedRow",
         "OwnMessage",
         "HoverActions",
         "WithReactions",

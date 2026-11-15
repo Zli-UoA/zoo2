@@ -64,7 +64,11 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
         ranges: Vec::new(),
     };
     let mut last_date = None;
-    for message in messages {
+    // 暗号化チャンネルで、読み込んだうちの暗号化したメッセージ（暗号文か `epoch` のある行）を見たか（#367）。
+    // 最初のものの前に「ここから暗号化されています」の区切りを出し、それより後ろの、切り替える前の形の行
+    // （正しいサーバーは作れない）には警告を付ける。切り替える前のメッセージには印を付けない。
+    let mut seen_encrypted = false;
+    for (index, message) in messages.iter().enumerate() {
         let created = local(message.created_at);
         let date = created.as_ref().map(|zoned| zoned.date());
         if date.is_some() && date != last_date {
@@ -74,9 +78,24 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
             last_date = date;
         }
 
+        let before_encryption = ctx.encrypted
+            && matches!(
+                ctx.decryptions.shown(message, ctx.encrypted),
+                Shown::BeforeEncryption
+            );
+        if ctx.encrypted && !before_encryption && !seen_encrypted {
+            seen_encrypted = true;
+            if index > 0 {
+                timeline
+                    .lines
+                    .push(separator("🔒 ここから暗号化されています", width));
+            }
+        }
+        let unencrypted_after_encrypted = before_encryption && seen_encrypted;
+
         let start = timeline.lines.len();
         let selected = ctx.selected == Some(message.id.as_str());
-        for line in message_lines(message, created.as_ref(), ctx) {
+        for line in message_lines(message, created.as_ref(), ctx, unencrypted_after_encrypted) {
             for wrapped in wrap(line, width - INDENT) {
                 timeline.lines.push(gutter(wrapped, selected));
             }
@@ -88,7 +107,12 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
     timeline
 }
 
-fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> Vec<Line<'static>> {
+fn message_lines(
+    message: &Message,
+    created: Option<&Zoned>,
+    ctx: &Context,
+    unencrypted_after_encrypted: bool,
+) -> Vec<Line<'static>> {
     let time = created
         .map(|zoned| zoned.strftime("%H:%M").to_string())
         .unwrap_or_default();
@@ -119,8 +143,10 @@ fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> V
                 }
             }
         }
-        Shown::BeforeEncryption => header.push(Span::styled(" [暗号化前]", DIM)),
-        Shown::Plain | Shown::Undecryptable(_) => {}
+        Shown::BeforeEncryption if unencrypted_after_encrypted => {
+            header.push(Span::styled(" [暗号化されていません]", WARN))
+        }
+        Shown::Plain | Shown::BeforeEncryption | Shown::Undecryptable(_) => {}
     }
 
     let mut lines = vec![Line::from(header)];

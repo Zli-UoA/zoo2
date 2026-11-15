@@ -2574,6 +2574,12 @@ mod tests {
                 row["content"] = json!("切り替える前の本文");
                 (id, row)
             },
+            {
+                // 暗号化したメッセージより後ろの、切り替える前の形の行（正しいサーバーは作れない）。
+                let (id, mut row) = encrypted_row("e6", "2026-11-01 04:04:00", false, None);
+                row["content"] = json!("紛れ込んだ平文");
+                (id, row)
+            },
         ];
         app.on_shape(ShapeEvent::Batch(
             ShapeId::Messages("c3".into()),
@@ -2632,7 +2638,29 @@ mod tests {
             "{screen}"
         );
         assert!(screen.contains("切り替える前の本文"), "{screen}");
-        assert!(screen.contains("[暗号化前]"), "{screen}");
+        // 切り替える前のメッセージには印を付けず、区切りを 1 つ出し、後ろに紛れ込んだ行だけに警告を付ける。
+        assert!(!screen.contains("[暗号化前]"), "{screen}");
+        assert_eq!(
+            screen.matches("ここから暗号化されています").count(),
+            1,
+            "{screen}"
+        );
+        assert_eq!(
+            screen.matches("[暗号化されていません]").count(),
+            1,
+            "{screen}"
+        );
+        let warned = screen
+            .lines()
+            .position(|line| line.contains("[暗号化されていません]"))
+            .expect("警告の行がある");
+        assert!(
+            screen
+                .lines()
+                .nth(warned + 1)
+                .is_some_and(|line| line.contains("紛れ込んだ平文")),
+            "{screen}"
+        );
         // 解錠していない端末には、送る前に解錠を案内する。
         assert!(screen.contains("暗号化を解錠してください"), "{screen}");
 

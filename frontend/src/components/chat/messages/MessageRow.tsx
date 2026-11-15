@@ -83,6 +83,11 @@ export interface MessageRowProps {
    * ものとして表示する（docs/e2ee.md の「受信時の検証」）。
    */
   decryption?: MessageDecryption;
+  /**
+   * 暗号化チャンネルで、暗号化したメッセージより後ろにある、暗号文のない行か（#367）。`MessageList` が
+   * 並びから決める。`true` なら警告の印を付ける。
+   */
+  unencryptedAfterEncrypted?: boolean;
 }
 
 function EditedIndicator({ at }: { at: string }) {
@@ -192,17 +197,20 @@ export function UndecryptableMessage({ reason }: { reason: UndecryptableReason }
 }
 
 /**
- * 暗号化に切り替える前の平文のメッセージの印（#367）。暗号化されておらず、サーバーが書き換えられることを示す。
+ * 暗号化チャンネルで、暗号化したメッセージより後ろにある、暗号文のない行の警告（#367）。
+ *
+ * 切り替える前の平文のメッセージ（区切りより上）には付けない。正しいサーバーは、切り替えたあとに暗号文の
+ * ない行を作れないので、暗号化したメッセージより後ろにあれば、サーバーが足したか書き換えたものとして示す。
  */
-export function BeforeEncryptionBadge() {
+export function UnencryptedMessageBadge() {
   const { t } = useTranslation();
   return (
     <span
-      className="inline-flex w-fit items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground"
-      title={t("e2ee.legacy.badgeHelp")}
+      className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300"
+      title={t("e2ee.legacy.unencryptedBadgeHelp")}
     >
       <LockKeyholeOpenIcon className="size-3" aria-hidden="true" />
-      {t("e2ee.legacy.badge")}
+      {t("e2ee.legacy.unencryptedBadge")}
     </span>
   );
 }
@@ -289,12 +297,13 @@ export function MessageRow({
   onOpenThread,
   attachments = [],
   decryption,
+  unencryptedAfterEncrypted = false,
 }: MessageRowProps) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
   const decryptionFromPane = useMessageDecryption(message.id);
-  // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、印を付け、編集させない。
+  // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、編集させない。
   const beforeEncryption = usePlaintextBeforeEncryption(message);
   const canEdit = isOwn && !beforeEncryption;
   const resolvedDecryption = resolveMessageDecryption(message, decryption ?? decryptionFromPane);
@@ -521,7 +530,9 @@ export function MessageRow({
                   {resolvedDecryption?.status === "decrypted" ? (
                     <SenderTrustBadge trust={resolvedDecryption.sender} />
                   ) : null}
-                  {beforeEncryption ? <BeforeEncryptionBadge /> : null}
+                  {beforeEncryption && unencryptedAfterEncrypted ? (
+                    <UnencryptedMessageBadge />
+                  ) : null}
                   {resolvedDecryption?.status === "decrypted" &&
                   resolvedDecryption.revisionWarning ? (
                     <RevisionWarningBadge warning={resolvedDecryption.revisionWarning} />

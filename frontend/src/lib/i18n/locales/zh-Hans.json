@@ -1428,8 +1428,8 @@
       "blocked": "出于安全考虑，无法打开此类文件"
     },
     "legacy": {
-      "badge": "加密前",
-      "badgeHelp": "这条消息是在频道加密之前发送的。它没有加密，服务器可以读取或修改其内容。",
+      "unencryptedBadge": "未加密",
+      "unencryptedBadgeHelp": "这条未加密的消息位于加密消息之后。在加密频道中，正常的服务器无法创建这样的消息，因此可能是服务器添加或修改了它。",
       "divider": "以下消息已加密",
       "editCancelled": "此频道已加密，已取消编辑加密前的消息。",
       "editForbidden": "加密前发送的消息无法编辑，但可以删除。"
@@ -1444,7 +1444,7 @@
       "description": "开启加密后：",
       "points": {
         "future": "之后的消息和附件只有成员已验证的设备可以读取。",
-        "earlier": "之前的消息不会加密，会原样保留在服务器上。它们会标记为“加密前”，并且无法再编辑（仍可删除）。",
+        "earlier": "之前的消息不会加密，会原样保留在服务器上，并且无法再编辑（仍可删除）。",
         "published": "已发布到 Home 或 ActivityPub 的帖子不会撤回。",
         "integrations": "Slack 导入和同步将停止。请先移除应用（机器人）和 Incoming Webhook。",
         "irreversible": "加密之后无法关闭。"
