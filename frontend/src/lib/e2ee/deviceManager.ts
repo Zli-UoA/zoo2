@@ -240,10 +240,13 @@ export class E2eeDeviceManager {
     for (const entry of entries) {
       markDeviceDeletionPending(entry);
       const saved = findPendingDeviceDeletion(entry) !== null;
-      let done = false;
-      if (deleteNow) done = await deleteOrKeep(this.options.client, entry, this.countedNotFound);
-      else this.replacedDevices.push(entry);
+      const done = deleteNow
+        ? await deleteOrKeep(this.options.client, entry, this.countedNotFound)
+        : false;
       if (saved || done) handed.push(entry.deviceId);
+      // ログアウト（`destroy`）では、暗号ストアと一緒に外の記録も消す。削除待ちにも残せず消せても
+      // いない前の端末は、ここで覚えて、ログアウトでもう一度消す。
+      if (!done) this.replacedDevices.push(entry);
     }
     if (handed.length === 0) return;
     await this.options.worker

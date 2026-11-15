@@ -595,15 +595,26 @@ describe("E2eeDeviceManager", () => {
           replacedDevices: [{ deviceId: OLD, registered: true }],
         },
       });
+      let online = false;
+      const deletes: string[] = [];
       const { client } = fakeClient({
         [`DELETE /api/e2ee/devices/${OLD}`]: () => {
-          throw new ApiError(503, "unavailable", null);
+          deletes.push(OLD);
+          if (!online) throw new ApiError(503, "unavailable", null);
+          return null;
+        },
+        [`DELETE /api/e2ee/devices/${DEVICE}`]: () => {
+          deletes.push(DEVICE);
+          return null;
         },
       });
       const instance = manager(worker, client);
       await instance.start();
       expect(calls.some((call) => call.op === "forgetReplacedDevices")).toBe(false);
-      await instance.stop();
+      // ログアウトでは記録も消えるので、同じ manager で前の端末をもう一度消す。
+      online = true;
+      await instance.destroy();
+      expect(deletes).toEqual([OLD, DEVICE, OLD]);
     });
 
     it("別のユーザーの暗号ストアや今の端末は、前の端末として消さない", async () => {
