@@ -100,14 +100,26 @@ fn convert(text: &str, resolver: &impl Resolver, plain: bool) -> String {
             true
         },
         |a| {
+            let remaining = budget.get();
+            if remaining == 0 {
+                return false;
+            }
+            // 残りの文字数を超える分は、積まずに切る (長い 1 つのラベルでも、上限を超えて保持しない。
+            // 上限は変換後の本文の上限の 2 倍なので、切った分は、最終的に切り詰められる範囲の外)
             let n = a.chars().count();
+            let a = if n > remaining {
+                a.chars().take(remaining).collect()
+            } else {
+                a
+            };
+            let n = n.min(remaining);
             let mut toks = toks.borrow_mut();
             // 空の文字列になる参照 (`<!x>`) は、書式の区切りとして 1 個だけ残し、連続する分は積まない
             // (トークンが際限なく増えないように。変換後の文字数は増えないので、予算も使わない)
             if n == 0 && matches!(toks.last(), Some(Tok::Atom(s)) if s.is_empty()) {
                 return true;
             }
-            budget.set(budget.get().saturating_sub(n));
+            budget.set(remaining - n);
             toks.push(Tok::Atom(a));
             budget.get() > 0
         },
@@ -791,6 +803,10 @@ mod tests {
             mfm(&format!("{}*END*", "<>".repeat(MAX_FORMAT_CHARS * 2))),
             "**END**"
         );
+        // 1 つの長い参照 (ラベル) も、展開の上限を超えて保持しない
+        let label = format!("<!subteam^S1|{}>", "a".repeat(MAX_FORMAT_CHARS * 2));
+        assert!(convert(&label, &Map, false).chars().count() <= MAX_FORMAT_CHARS);
+        assert_eq!(mfm(&label).chars().count(), MAX_MESSAGE_CONTENT_LENGTH);
         let links = "<@U1>".repeat(MAX_MESSAGE_CONTENT_LENGTH);
         assert_eq!(mfm(&links).chars().count(), MAX_MESSAGE_CONTENT_LENGTH);
     }
