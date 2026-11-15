@@ -100,9 +100,16 @@ Then run `atlas migrate status --dir file://infra/db/migrations --url
 | Clean current history | 92 canonical files succeeded | no old expiry revision; canonical expiry hash `v5Tc4BW9V0O+1pRUfvvt97xYWVgoHkuy0iN1mPEL56s=` | OK, current `20261128000006`, 92 executed, 0 pending |
 
 These results show the old revision remains intact where it was applied, and
-the corrective `20261128000002` migration converges both legacy histories.
-Do not delete or edit rows in `atlas_schema_revisions`; let Atlas apply the
-new canonical migration. No manual revision-table rewrite is needed.
+the corrective `20261128000002` migration converges both legacy histories from
+`main` (or the pre-`20261123000001` branch). Do not delete or edit rows in
+`atlas_schema_revisions` on those databases; let Atlas apply the new canonical
+migration without manual revision-table rewrites.
+
+Note: disposable dev/test databases that previously applied the pre-rebase
+`split/notes-api` drafts (`20261127000000`–`20261127000005` before they were
+renumbered to `20261128000001`–`20261128000006`) share `20261127000000` /
+`20261127000001` version numbers with later `main` migrations and must be
+recreated rather than upgraded in place.
 
 Compare each final application schema with the checked-in schema.sql. Give
 each comparison its own empty dev database: Atlas imports the SQL file into
@@ -130,8 +137,9 @@ atlas schema diff \
 
 On PostgreSQL 16.15 with Atlas v1.3.9-1824371-canary, all three commands
 reported "Schemas are synced, no changes to be made." Migration status was
-OK for all three final databases; the two legacy histories had 90 executed
-files after convergence and the clean current history had 89. No application
+OK for all three final databases; after the rebased migration numbering, the two
+legacy histories had 93 executed files after convergence and the clean current
+history had 92. No application
 schema differences remained. `pg_get_indexdef` returned
 `(channel_id, deleted_at, id)` for all three databases.
 
