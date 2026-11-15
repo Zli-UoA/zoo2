@@ -1,3 +1,4 @@
+import { subscribeAuthSessionEnded } from "../auth";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -9,7 +10,7 @@ import {
   type OidcFetch,
 } from "./client";
 import { AuthWorkerState, type AuthWorkerSession } from "./auth-worker-state";
-import type { AuthWorkerRequest, AuthTokenResponse } from "./auth-worker-protocol";
+import type { AuthWorkerRequest, AuthWorkerResult } from "./auth-worker-protocol";
 import { isLoggedOut, savePending, takePending, type AuthStorage } from "./pending";
 import { base64UrlEncode, createChallenge } from "./pkce";
 
@@ -80,9 +81,10 @@ interface Harness {
 
 interface HarnessOptions {
   storage?: AuthStorage;
-  authWorker?: (request: AuthWorkerRequest) => Promise<AuthTokenResponse | null>;
+  authWorker?: (request: AuthWorkerRequest) => Promise<AuthWorkerResult | null>;
   now?: number;
   online?: boolean;
+  supportsRefresh?: () => boolean;
   discovery?: Record<string, unknown>;
   discoveryWait?: Promise<void>;
   /** token エンドポイントの応答。`URLSearchParams` と現在の nonce を受け取る。 */
@@ -128,6 +130,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
 
   const env: OidcEnvironment = {
     authWorker: options.authWorker,
+    supportsRefresh: options.supportsRefresh,
     origin: "https://app.example",
     get href() {
       return href;
@@ -245,6 +248,10 @@ describe("OidcClient session restoration", () => {
     );
     const worker = new AuthWorkerState({
       store: {
+        staleSessionIds: async (cutoff) =>
+          [...records]
+            .filter(([, row]) => row.state === "ready" && (row.lastUsedAt ?? 0) <= cutoff)
+            .map(([id]) => id),
         get: async (id) => records.get(id),
         put: async (id, record) => {
           records.set(id, record);
@@ -312,6 +319,117 @@ describe("OidcClient session restoration", () => {
     expect(calls[0]).toEqual(calls[1]);
     expect(calls[0].kind).toBe("logout");
     expect(harness.assigned).toHaveLength(1);
+  });
+
+  it("does not extend worker expiry when delivery resumes after a frozen page", async () => {
+    let calls = 0;
+    const h = createHarness({
+      authWorker: async (request) => {
+        if (request.kind === "logout") return null;
+        calls += 1;
+        if (calls === 1) h.advance(400_000);
+        return {
+          access_token: `access-${calls}`,
+          refresh_token: "next",
+          expires_in: 300,
+          expiresAt: calls === 1 ? 1_350_000 : 1_800_000,
+        };
+      },
+      token: (_body, nonce) => ({
+        access_token: "initial",
+        refresh_token: "refresh",
+        id_token: idToken({ nonce }),
+        expires_in: 90,
+      }),
+    });
+    await completeLogin(h);
+    h.advance(40_000);
+    await expect(h.client.getAccessToken()).resolves.toBeNull();
+    expect(JSON.parse(h.storage.getItem("zoo.oidc.session")!).tokens.expiresAt).toBe(1_350_000);
+    await expect(h.client.getAccessToken()).resolves.toBe("access-2");
+  });
+
+  it("does not persist refresh credentials when worker APIs are unavailable", async () => {
+    const h = createHarness({
+      supportsRefresh: () => false,
+      token: (_body, nonce) => ({
+        access_token: "access",
+        refresh_token: "unused",
+        id_token: idToken({ nonce }),
+        expires_in: 300,
+      }),
+    });
+    await completeLogin(h);
+    expect(JSON.parse(h.storage.getItem("zoo.oidc.session")!).tokens.refreshToken).toBeNull();
+    expect(
+      JSON.parse(h.storage.getItem("zoo.oidc.session")!).tokens.refreshSessionId,
+    ).toBeUndefined();
+  });
+
+  it("drops legacy restored refresh credentials when worker support disappears", async () => {
+    const original = createHarness({
+      token: (_body, nonce) => ({
+        access_token: "access",
+        refresh_token: "refresh",
+        id_token: idToken({ nonce }),
+        expires_in: 300,
+      }),
+    });
+    await completeLogin(original);
+    const restored = createHarness({ storage: original.storage, supportsRefresh: () => false });
+    expect(restored.client.hasSession).toBe(true);
+    expect(
+      JSON.parse(original.storage.getItem("zoo.oidc.session")!).tokens.refreshToken,
+    ).toBeNull();
+  });
+
+  it("ends the worker session when API recovery resets authentication", async () => {
+    const authWorker = vi.fn(async () => null);
+    const h = createHarness({
+      authWorker,
+      token: (_body, nonce) => ({
+        access_token: "access",
+        refresh_token: "refresh",
+        id_token: idToken({ nonce }),
+        expires_in: 300,
+      }),
+    });
+    await completeLogin(h);
+    const id = JSON.parse(h.storage.getItem("zoo.oidc.session")!).tokens.refreshSessionId;
+    h.client.resetSession();
+    expect(authWorker).toHaveBeenCalledWith({ kind: "logout", sessionId: id });
+    expect(h.client.hasSession).toBe(false);
+  });
+
+  it("does not notify logoutBlocked when an old worker failure follows a new login", async () => {
+    let rejectLogout!: (error: Error) => void;
+    const waiting = new Promise<null>((_resolve, reject) => {
+      rejectLogout = reject;
+    });
+    const h = createHarness({
+      authWorker: async () => waiting,
+      token: (_body, nonce) => ({
+        access_token: "access",
+        refresh_token: "refresh",
+        id_token: idToken({ nonce }),
+        expires_in: 300,
+      }),
+    });
+    await completeLogin(h);
+    const events: string[] = [];
+    const unsubscribe = subscribeAuthSessionEnded((event) => {
+      events.push(event);
+    });
+    try {
+      const logout = h.client.logout();
+      await completeLogin(h);
+      rejectLogout(new Error("old storage failure"));
+      await logout;
+      expect(h.client.hasSession).toBe(true);
+      expect(events).not.toContain("logoutBlocked");
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("does not restore tokens for different resource settings", async () => {
