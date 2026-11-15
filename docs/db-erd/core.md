@@ -102,6 +102,10 @@ erDiagram
     }
     channel_notes }o--o| channels : channel_notes_channel_id_fkey
     channel_notes }o--o| users : channel_notes_created_user_id_fkey
+    channel_notes_cleanup_cursor {
+      boolean id PK
+      text last_channel_id
+    }
     channel_pins {
       text channel_id PK,FK
       text item_type PK

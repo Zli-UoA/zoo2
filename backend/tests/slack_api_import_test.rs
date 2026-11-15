@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{header, method, path, query_param},
+    matchers::{body_string_contains, header, method, path, query_param},
 };
 
 use backend::{
@@ -367,5 +367,325 @@ async fn test_user_imports_own_private_channel_through_the_api() -> anyhow::Resu
     )
     .await?;
     assert_eq!(status, StatusCode::CONFLICT);
+    Ok(())
+}
+
+#[tokio::test]
+async fn api_import_rechecks_guest_kind_after_waiting_for_user_lock() -> anyhow::Result<()> {
+    let key = [9u8; 32];
+    let team = format!("TLOCK{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config.clone());
+    let app = create_router(state.clone());
+    let alice = create_user(&app, "api_import_guest_race").await?;
+    link(
+        &state,
+        &key,
+        &alice,
+        &team,
+        "UA",
+        "xoxp-race",
+        PRIVATE_SCOPES,
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked) VALUES($1,'UA',$2,true) RETURNING json_build_object('ok',true)::text",
+        &[&team, &alice],
+    )
+    .await?;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .and(query_param("channel", "GLOCKRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id":"GLOCKRACE", "name":"race", "creator":"UA", "created":1704067200,
+                "is_private":true, "purpose":{"value":""}},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.members"))
+        .and(query_param("channel", "GLOCKRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "members":["UA"], "response_metadata":{"next_cursor":""},
+        })))
+        .mount(&slack)
+        .await;
+
+    // The ordinary guest reads in both API-import phases see the committed human
+    // version. Once the import reaches its membership lock, the transition owns
+    // the row and must be observed after it commits.
+    let (mut transition_connection, transition_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(transition_driver);
+    let transition_pid: i32 = transition_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let transition = transition_connection.transaction().await?;
+    transition
+        .execute(
+            "UPDATE users SET guest_kind = 'multi' WHERE id = $1",
+            &[&alice],
+        )
+        .await?;
+
+    let import_app = app.clone();
+    let import_user = alice.clone();
+    let mut import = Some(tokio::spawn(async move {
+        request(
+            &import_app,
+            "POST",
+            "/api/slack/private-channels/import",
+            &import_user,
+            Some(json!({"slack_channel_id":"GLOCKRACE", "name":"race"})),
+        )
+        .await
+    }));
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if import.as_ref().unwrap().is_finished() {
+                let result = import.take().unwrap().await;
+                panic!("Slack API import finished before waiting for the guest-kind lock: {result:?}");
+            }
+            let waiting: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FOR NO KEY UPDATE%' AND $1 = ANY(pg_blocking_pids(pid)))",
+                    &[&transition_pid],
+                )
+                .await?
+                .get(0);
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok::<(), tokio_postgres::Error>(())
+    })
+    .await??;
+
+    transition.commit().await?;
+    let (status, body) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), import.take().unwrap())
+            .await???;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let imported = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM slack_channels WHERE team_id=$1 AND slack_channel_id='GLOCKRACE'",
+        &[&team],
+    )
+    .await?;
+    assert_eq!(
+        imported[0]["n"], 0,
+        "guest must not create an imported channel"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn api_import_racing_slack_link_adds_the_linked_user_to_the_channel() -> anyhow::Result<()> {
+    let key = [10u8; 32];
+    let team = format!("TLINK{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let slack = MockServer::start().await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.clone());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key = Some(base64::engine::general_purpose::STANDARD.encode(key));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config.clone());
+    let app = create_router(state.clone());
+    let alice = create_user(&app, "api_link_race_alice").await?;
+    let bob = create_user(&app, "api_link_race_bob").await?;
+    link(
+        &state,
+        &key,
+        &alice,
+        &team,
+        "UA",
+        "xoxp-alice",
+        PRIVATE_SCOPES,
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked) VALUES($1,'UA',$2,true) RETURNING json_build_object('ok',true)::text",
+        &[&team, &alice],
+    )
+    .await?;
+    let placeholder = backend::slack::user_id(&team, "UB");
+    sql(
+        &state,
+        "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'Slack placeholder','deactivated') RETURNING json_build_object('ok',true)::text",
+        &[&placeholder, &format!("api_link_race_{}", uuid::Uuid::new_v4().simple())],
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked) VALUES($1,'UB',$2,false) RETURNING json_build_object('ok',true)::text",
+        &[&team, &placeholder],
+    )
+    .await?;
+
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .and(query_param("channel", "GLINKRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id":"GLINKRACE", "name":"link-race", "creator":"UA", "created":1704067200,
+                "is_private":true, "purpose":{"value":""}},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.members"))
+        .and(query_param("channel", "GLINKRACE"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "members":["UA", "UB"], "response_metadata":{"next_cursor":""},
+        })))
+        .mount(&slack)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/oauth.v2.access"))
+        .and(header("authorization", "Basic Y2lkOnNlYw=="))
+        .and(body_string_contains("code=code-bob"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok":true,
+            "authed_user":{"id":"UB", "scope":"users:read", "access_token":"xoxp-bob", "token_type":"user"},
+            "team":{"id":team, "name":"Zli"},
+        })))
+        .mount(&slack)
+        .await;
+
+    let (status, started) = request(&app, "POST", "/api/slack/oauth/start", &bob, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let authorize_url = reqwest::Url::parse(started["authorize_url"].as_str().unwrap())?;
+    let oauth_state = authorize_url
+        .query_pairs()
+        .find(|(name, _)| name == "state")
+        .map(|(_, value)| value.into_owned())
+        .unwrap();
+    let channel_name = format!("link_race_{}", uuid::Uuid::new_v4().simple());
+
+    // Queue link first on the placeholder row. Without a shared Slack-link lock, the API
+    // resolves the old placeholder behind this link and can insert that stale ID after
+    // reassign has already moved the placeholder's existing memberships.
+    let (mut blocker_connection, blocker_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let blocker = blocker_connection.transaction().await?;
+    blocker
+        .query_one(
+            "SELECT id FROM users WHERE id=$1 FOR UPDATE",
+            &[&placeholder],
+        )
+        .await?;
+
+    let link_app = app.clone();
+    let link_user = bob.clone();
+    let link_task = tokio::spawn(async move {
+        request(
+            &link_app,
+            "POST",
+            "/api/slack/oauth/complete",
+            &link_user,
+            Some(json!({"code":"code-bob", "state":oauth_state})),
+        )
+        .await
+    });
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    let link_pid = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let row = observer
+                .query_opt(
+                    "SELECT pid FROM pg_stat_activity WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%FOR NO KEY UPDATE%' LIMIT 1",
+                    &[&blocker_pid],
+                )
+                .await?;
+            if let Some(row) = row {
+                break Ok::<i32, anyhow::Error>(row.get(0));
+            }
+            if link_task.is_finished() {
+                anyhow::bail!("Slack link finished before waiting on the placeholder row");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await??;
+
+    let import_app = app.clone();
+    let import_user = alice.clone();
+    let import_task = tokio::spawn(async move {
+        request(
+            &import_app,
+            "POST",
+            "/api/slack/private-channels/import",
+            &import_user,
+            Some(json!({"slack_channel_id":"GLINKRACE", "name":channel_name})),
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if link_task.is_finished() || import_task.is_finished() {
+                anyhow::bail!("an API operation finished before the placeholder lock was released");
+            }
+            let import_waiting: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid<>$3 AND wait_event_type='Lock' AND ($1=ANY(pg_blocking_pids(pid)) OR $2=ANY(pg_blocking_pids(pid))))",
+                    &[&blocker_pid, &link_pid, &link_pid],
+                )
+                .await?
+                .get(0);
+            if import_waiting {
+                break Ok::<(), anyhow::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await??;
+
+    blocker.commit().await?;
+    let (link_status, link_body) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), link_task).await???;
+    assert_eq!(link_status, StatusCode::OK, "{link_body}");
+    let (import_status, imported) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), import_task).await???;
+    assert_eq!(import_status, StatusCode::OK, "{imported}");
+    let channel = imported["channel_id"].as_str().unwrap();
+    let memberships = sql(
+        &state,
+        "SELECT json_build_object('user_id',user_id)::text FROM channel_user WHERE channel_id=$1 AND user_id IN ($2,$3) ORDER BY user_id",
+        &[channel, &bob, &placeholder],
+    )
+    .await?;
+    assert_eq!(
+        memberships.len(),
+        1,
+        "the channel must have one of the linked identities"
+    );
+    assert_eq!(memberships[0]["user_id"], bob);
     Ok(())
 }

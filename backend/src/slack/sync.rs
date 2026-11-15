@@ -32,7 +32,7 @@ use serde_json::Value;
 use super::{
     crypto,
     export::{SlackMessage, SlackUser},
-    worker::{Context, FilePolicy, insert_message, suppress_app_events},
+    worker::{Context, FilePolicy, insert_message, resolve_message_users, suppress_app_events},
 };
 use crate::{apps::query, error::AppError, state::AppState};
 
@@ -242,6 +242,12 @@ impl From<AppError> for SyncError {
 
 /// キューから 1 チャンネルを取り、進められるところまで進める。取ったら true
 pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
+    run_once_for_team(s, "").await
+}
+
+/// Process one queued channel, optionally limited to a single workspace.
+/// An empty team preserves the worker's normal global queue behavior.
+pub async fn run_once_for_team(s: &AppState, team: &str) -> Result<bool, AppError> {
     let Some(key) = s
         .config
         .slack
@@ -251,7 +257,7 @@ pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
     else {
         return Ok(false);
     };
-    let Some(task) = claim(s).await? else {
+    let Some(task) = claim(s, team).await? else {
         return Ok(false);
     };
     let result = sync_channel(s, &key, &task).await;
@@ -286,7 +292,7 @@ pub async fn run_once(s: &AppState) -> Result<bool, AppError> {
 /// 後ろに回ってしまう。合図の同期は、チャンネルごとに最短 30 秒の間隔 (`WAKE_MIN_INTERVAL`) と、デバウンスがあるので、先に取っても、
 /// ほかのチャンネルを飢えさせない。実行中の続き (`running`) は、先にしない (ページの多いチャンネルが、続けて取られて、
 /// 期限の来たほかのチャンネルを止めないため。続きは、これまでどおり期限の順)。
-async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
+async fn claim(s: &AppState, team: &str) -> Result<Option<Task>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let token = uuid::Uuid::new_v4().to_string();
@@ -298,7 +304,8 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
             "WITH c AS (SELECT t.team_id,t.slack_channel_id FROM slack_channel_syncs t \
              JOIN slack_channels sc ON sc.team_id=t.team_id AND sc.slack_channel_id=t.slack_channel_id \
              JOIN channels ch ON ch.id=sc.channel_id \
-             WHERE NOT COALESCE(ch.encrypted,false) \
+             WHERE ($2='' OR t.team_id=$2) \
+             AND NOT COALESCE(ch.encrypted,false) \
              AND (t.available_at<=now() OR (NOT t.running \
                AND (t.not_before IS NULL OR t.not_before<=now()) \
                AND (t.last_synced_at IS NULL OR t.last_synced_at<=now()-{WAKE_MIN_INTERVAL}) \
@@ -325,7 +332,7 @@ async fn claim(s: &AppState) -> Result<Option<Task>, AppError> {
              'run_light',t.run_light,\
              'recheck_due',(t.rechecked_at IS NULL OR t.rechecked_at<now()-interval '30 minutes'))::text"
         ),
-        &[&token],
+        &[&token, team],
     )
     .await?;
     let task: Option<Task> = rows
@@ -714,6 +721,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
         team: task.team_id.clone(),
         users: HashMap::new(),
         profiles: HashMap::new(),
+        fallback_names: HashMap::new(),
         channel_names: HashMap::new(),
         files: FilePolicy::new(s),
         app_id: s.config.slack.app_id.clone(),
@@ -878,7 +886,16 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                     }
                 }
             }
-            store(&mut slack, &mut ctx, task, &progress, &messages, &mut db).await?;
+            store(
+                &mut slack,
+                &mut ctx,
+                task,
+                slack_private,
+                &progress,
+                &messages,
+                &mut db,
+            )
+            .await?;
         } else {
             let Some(thread) = progress.pending.first().cloned() else {
                 return finish(s, task, &progress).await;
@@ -898,7 +915,16 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
                 Err(SyncError::Failed(e)) if e.ends_with("thread_not_found") => {
                     progress.pending.remove(0);
                     progress.cursor = None;
-                    store(&mut slack, &mut ctx, task, &progress, &[], &mut db).await?;
+                    store(
+                        &mut slack,
+                        &mut ctx,
+                        task,
+                        slack_private,
+                        &progress,
+                        &[],
+                        &mut db,
+                    )
+                    .await?;
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -913,7 +939,16 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             if !more {
                 progress.pending.remove(0);
             }
-            store(&mut slack, &mut ctx, task, &progress, &messages, &mut db).await?;
+            store(
+                &mut slack,
+                &mut ctx,
+                task,
+                slack_private,
+                &progress,
+                &messages,
+                &mut db,
+            )
+            .await?;
         }
     }
     if progress.phase == "threads" && progress.pending.is_empty() {
@@ -927,6 +962,7 @@ async fn store(
     slack: &mut Slack,
     ctx: &mut Context,
     task: &Task,
+    slack_private: bool,
     progress: &Progress,
     messages: &[SlackMessage],
     db: &mut toasty::Db,
@@ -938,6 +974,24 @@ async fn store(
     importable.sort_by_key(|m| ts_key(&m.ts));
     let mut tx = db.transaction().await.map_err(AppError::from)?;
     suppress_app_events(&mut tx).await?;
+    // ZIP remapping takes this same Slack-channel lock before changing slack_channels.
+    // Take it before resolving users, then pin the mapping row before any channel row so
+    // the order stays advisory -> users -> mapping -> channel through message commit.
+    super::worker::lock_zip_target_advisory(&mut tx, &task.team_id, &task.slack_channel_id).await?;
+    let message_refs: Vec<&SlackMessage> = importable.to_vec();
+    resolve_message_users(&mut tx, ctx, &task.slack_channel_id, &message_refs).await?;
+    let mapping = query(
+        &mut tx,
+        "SELECT json_build_object('valid',channel_id=$3)::text FROM slack_channels \
+         WHERE team_id=$1 AND slack_channel_id=$2 FOR SHARE",
+        &[&task.team_id, &task.slack_channel_id, &task.channel_id],
+    )
+    .await?;
+    if mapping.first().is_none_or(|row| row["valid"] != true) {
+        return Err(
+            AppError::BadRequest("Slack sync target changed or no longer exists".into()).into(),
+        );
+    }
     let pending = serde_json::to_string(&progress.pending).unwrap_or_else(|_| "[]".into());
     let saved = query(
         &mut tx,
@@ -968,6 +1022,27 @@ async fn store(
     }
     // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を入れずに止める。次に取ったときに休ませる
     super::worker::ensure_plaintext_allowed(&mut tx, &task.channel_id).await?;
+    // Recheck channel deletion and privacy after taking the channel lock. The
+    // mapping row is already pinned above through this transaction's commit.
+    let target = query(
+        &mut tx,
+        "SELECT json_build_object('valid',c.deleted_at IS NULL AND (NOT $4::boolean OR c.is_private))::text \
+         FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
+         WHERE s.team_id=$1 AND s.slack_channel_id=$2 AND s.channel_id=$3 FOR SHARE OF c",
+        &[
+            &task.team_id,
+            &task.slack_channel_id,
+            &task.channel_id,
+            if slack_private { "true" } else { "false" },
+        ],
+    )
+    .await?;
+    if target.first().is_none_or(|row| row["valid"] != true) {
+        return Err(AppError::BadRequest(
+            "Slack sync target changed or no longer protects private channel content".into(),
+        )
+        .into());
+    }
     // 同じ区間をほかのトランザクションが同時に取り込んでも、決定的 ID で重複しない
     for message in importable {
         insert_message(
@@ -1139,6 +1214,435 @@ async fn finish(s: &AppState, task: &Task, progress: &Progress) -> Result<Step, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[ignore = "requires an explicitly configured disposable SLACK_IMPORT_TEST_DATABASE_URL"]
+    #[tokio::test]
+    async fn api_sync_serializes_with_channel_encryption() -> anyhow::Result<()> {
+        dotenvy::dotenv().ok();
+        dotenvy::from_filename("../.env").ok();
+        let database_url = std::env::var("SLACK_IMPORT_TEST_DATABASE_URL")?;
+        let (guard, driver) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(driver);
+        let database: String = guard
+            .query_one("SELECT current_database()", &[])
+            .await?
+            .get(0);
+        anyhow::ensure!(database.contains("test"), "refusing non-test database");
+        let db = crate::db::init_db(&database_url).await?;
+        let team = format!("TSYNC{}", uuid::Uuid::new_v4().simple());
+        let slack_channel = format!("CSYNC{}", uuid::Uuid::new_v4().simple());
+        let slack_user = format!("USYNC{}", uuid::Uuid::new_v4().simple());
+        let user_id = uuid::Uuid::new_v4().to_string();
+        let channel_id = uuid::Uuid::new_v4().to_string();
+        let username = format!("sync_{}", uuid::Uuid::new_v4().simple());
+        let result: anyhow::Result<()> = async {
+        {
+            let mut setup_db = db.clone();
+            let mut tx = setup_db.transaction().await?;
+            for (sql, params) in [
+                (
+                    "INSERT INTO users(id,user_name,display_name) VALUES($1,$2,'Before sync')",
+                    vec![user_id.as_str(), username.as_str()],
+                ),
+                (
+                    "INSERT INTO channels(id,channel_name,created_user_id,is_private,is_dm) VALUES($1,$2,$3,true,false)",
+                    vec![channel_id.as_str(), username.as_str(), user_id.as_str()],
+                ),
+                (
+                    "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name,real_name) VALUES($1,$2,$3,false,$2,'')",
+                    vec![team.as_str(), slack_user.as_str(), user_id.as_str()],
+                ),
+                (
+                    "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,$2,$3,'0')",
+                    vec![team.as_str(), slack_channel.as_str(), channel_id.as_str()],
+                ),
+                (
+                    "INSERT INTO slack_channel_syncs(team_id,slack_channel_id,lease_token) VALUES($1,$2,$3)",
+                    vec![team.as_str(), slack_channel.as_str(), "sync-test-lease"],
+                ),
+            ] {
+                let mut statement = toasty::sql::statement(sql);
+                for value in params {
+                    statement = statement.bind(value);
+                }
+                statement.exec(&mut tx).await?;
+            }
+            tx.commit().await?;
+        }
+
+        // Reproduce the former profile-refresh/link inversion directly in
+        // PostgreSQL so the regression records its 40P01 trigger condition.
+        let (sync_connection, sync_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(sync_driver);
+        let sync_pid: i32 = sync_connection
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await?
+            .get(0);
+        let (sync_user_locked_tx, sync_user_locked_rx) = tokio::sync::oneshot::channel();
+        let (sync_try_slack_tx, sync_try_slack_rx) = tokio::sync::oneshot::channel();
+        let sync_team = team.clone();
+        let sync_slack_user = slack_user.clone();
+        let sync_user = user_id.clone();
+        let baseline_profile = tokio::spawn(async move {
+            let mut connection = sync_connection;
+            let tx = connection.transaction().await?;
+            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'").await?;
+            tx.query_one("SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE", &[&sync_user])
+                .await?;
+            let _ = sync_user_locked_tx.send(());
+            sync_try_slack_rx
+                .await
+                .map_err(|_| anyhow::anyhow!("profile update signal dropped"))?;
+            let result = tx
+                .execute(
+                    "UPDATE slack_users SET name='sync-profile' WHERE team_id=$1 AND slack_user_id=$2",
+                    &[&sync_team, &sync_slack_user],
+                )
+                .await;
+            if result.is_ok() {
+                tx.commit().await?;
+            }
+            result.map(|_| ()).map_err(anyhow::Error::from)
+        });
+        sync_user_locked_rx.await?;
+
+        let (link_connection, link_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(link_driver);
+        let link_pid: i32 = link_connection
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await?
+            .get(0);
+        let (link_row_locked_tx, link_row_locked_rx) = tokio::sync::oneshot::channel();
+        let (link_try_user_tx, link_try_user_rx) = tokio::sync::oneshot::channel();
+        let link_team = team.clone();
+        let link_slack_user = slack_user.clone();
+        let link_user = user_id.clone();
+        let baseline_link = tokio::spawn(async move {
+            let mut connection = link_connection;
+            let tx = connection.transaction().await?;
+            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'")
+                .await?;
+            tx.query_one(
+                "SELECT pg_advisory_xact_lock(hashtextextended('slack-link',0))",
+                &[],
+            )
+            .await?;
+            tx.query_one(
+                "SELECT team_id FROM slack_users WHERE team_id=$1 AND slack_user_id=$2 FOR UPDATE",
+                &[&link_team, &link_slack_user],
+            )
+            .await?;
+            let _ = link_row_locked_tx.send(());
+            link_try_user_rx
+                .await
+                .map_err(|_| anyhow::anyhow!("link update signal dropped"))?;
+            let result = tx
+                .execute("UPDATE users SET display_name='Linked' WHERE id=$1", &[&link_user])
+                .await;
+            if result.is_ok() {
+                tx.commit().await?;
+            }
+            result.map(|_| ()).map_err(anyhow::Error::from)
+        });
+        link_row_locked_rx.await?;
+        let _ = sync_try_slack_tx.send(());
+        let (observer, observer_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(observer_driver);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let waiting: bool = observer
+                    .query_one(
+                        "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                        &[&sync_pid, &link_pid],
+                    )
+                    .await?
+                    .get(0);
+                if waiting {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<(), tokio_postgres::Error>(())
+        })
+        .await??;
+        let _ = link_try_user_tx.send(());
+        let (profile_result, link_result) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(baseline_profile, baseline_link)
+        })
+        .await?;
+        let profile_result = profile_result?;
+        let link_result = link_result?;
+        anyhow::ensure!(
+            [&profile_result, &link_result].iter().any(|result| result
+                .as_ref()
+                .err()
+                .and_then(|error| error.downcast_ref::<tokio_postgres::Error>())
+                .and_then(tokio_postgres::Error::code)
+                .is_some_and(|code| code.code() == "40P01")),
+            "the former users->slack_users / slack_users->users order should reach PostgreSQL 40P01: {profile_result:?}, {link_result:?}"
+        );
+
+        // Show the real wait cycle from the former order: API sync held the
+        // channel KEY SHARE lock before updating the profile, while conversion
+        // held the user row and requested FOR UPDATE on the same channel.
+        let (sync_connection, sync_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(sync_driver);
+        let baseline_channel = channel_id.clone();
+        let baseline_sync_user = user_id.clone();
+        let (sync_locked_tx, sync_locked_rx) = tokio::sync::oneshot::channel();
+        let (convert_user_locked_tx, convert_user_locked_rx) = tokio::sync::oneshot::channel();
+        let baseline_sync = tokio::spawn(async move {
+            let mut connection = sync_connection;
+            let tx = connection.transaction().await?;
+            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'")
+                .await?;
+            tx.query_one(
+                "SELECT id FROM channels WHERE id=$1 FOR KEY SHARE",
+                &[&baseline_channel],
+            )
+            .await?;
+            let _ = sync_locked_tx.send(());
+            convert_user_locked_rx
+                .await
+                .map_err(|_| anyhow::anyhow!("conversion user-lock signal dropped"))?;
+            let result = tx
+                .execute(
+                    "UPDATE users SET display_name='Old sync order' WHERE id=$1",
+                    &[&baseline_sync_user],
+                )
+                .await;
+            if result.is_ok() {
+                tx.commit().await?;
+            }
+            result.map(|_| ()).map_err(anyhow::Error::from)
+        });
+        sync_locked_rx.await?;
+        let (convert_connection, convert_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(convert_driver);
+        let baseline_convert_user = user_id.clone();
+        let baseline_convert_channel = channel_id.clone();
+        let convert = tokio::spawn(async move {
+            let mut connection = convert_connection;
+            let tx = connection.transaction().await?;
+            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'")
+                .await?;
+            tx.query_one(
+                "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+                &[&baseline_convert_user],
+            )
+            .await?;
+            let _ = convert_user_locked_tx.send(());
+            let result = tx
+                .query_one(
+                    "SELECT id FROM channels WHERE id=$1 FOR UPDATE",
+                    &[&baseline_convert_channel],
+                )
+                .await;
+            if result.is_ok() {
+                tx.commit().await?;
+            }
+            result.map(|_| ()).map_err(anyhow::Error::from)
+        });
+        let old_order_results = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(baseline_sync, convert)
+        })
+        .await?;
+        let errors = [old_order_results.0?.err(), old_order_results.1?.err()];
+        anyhow::ensure!(
+            errors
+                .iter()
+                .flatten()
+                .any(|error| {
+                    let chain = format!("{error:#}");
+                    chain.contains("40P01") || chain.contains("deadlock detected")
+                }),
+            "the former sync channel->user order should reach PostgreSQL 40P01: {errors:?}"
+        );
+
+        // The real store path resolves and locks message users first. Conversion
+        // can then lock the channel and commit encryption; sync must recheck and
+        // reject the plaintext write after it obtains the user row.
+        let (convert_connection, convert_driver) =
+            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(convert_driver);
+        let convert_user = user_id.clone();
+        let convert_channel = channel_id.clone();
+        let (user_locked_tx, user_locked_rx) = tokio::sync::oneshot::channel();
+        let (finish_convert_tx, finish_convert_rx) = tokio::sync::oneshot::channel();
+        let convert = tokio::spawn(async move {
+            let mut connection = convert_connection;
+            let tx = connection.transaction().await?;
+            tx.batch_execute("SET LOCAL deadlock_timeout='100ms'")
+                .await?;
+            tx.query_one(
+                "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+                &[&convert_user],
+            )
+            .await?;
+            let _ = user_locked_tx.send(());
+            finish_convert_rx
+                .await
+                .map_err(|_| anyhow::anyhow!("conversion release dropped"))?;
+            tx.query_one(
+                "SELECT id FROM channels WHERE id=$1 FOR UPDATE",
+                &[&convert_channel],
+            )
+            .await?;
+            tx.execute(
+                "UPDATE channels SET encrypted=true WHERE id=$1",
+                &[&convert_channel],
+            )
+            .await?;
+            tx.commit().await?;
+            Ok::<(), anyhow::Error>(())
+        });
+        user_locked_rx.await?;
+        let message: SlackMessage = serde_json::from_value(serde_json::json!({
+            "ts":"1710000000.000001", "user":slack_user, "text":"sync plaintext"
+        }))?;
+        let mut ctx = Context {
+            team: team.clone(),
+            users: HashMap::new(),
+            profiles: HashMap::from([(
+                slack_user.clone(),
+                serde_json::from_value(serde_json::json!({
+                    "id":slack_user, "name":"sync-user", "real_name":"Sync User",
+                    "profile":{"display_name":"Updated by sync"}
+                }))?,
+            )]),
+            fallback_names: HashMap::new(),
+            channel_names: HashMap::new(),
+            files: FilePolicy {
+                token: false,
+                max_size: 0,
+                base_url: String::new(),
+            },
+            app_id: None,
+        };
+        let mut slack = Slack {
+            client: reqwest::Client::new(),
+            base: "http://127.0.0.1:9".into(),
+            key: [0; 32],
+            tokens: vec![(user_id.clone(), "unused".into())],
+            index: 0,
+        };
+        let task = Task {
+            team_id: team.clone(),
+            slack_channel_id: slack_channel.clone(),
+            channel_id: channel_id.clone(),
+            private: true,
+            deleted: false,
+            encrypted: false,
+            last_ts: Some("0".into()),
+            synced: false,
+            token: "sync-test-lease".into(),
+            attempts: 0,
+            running: true,
+            phase: "history".into(),
+            run_oldest: Some("0".into()),
+            run_max_ts: None,
+            page_cursor: None,
+            pending_threads: "[]".into(),
+            known_threads: "[]".into(),
+            token_user_id: Some(user_id.clone()),
+            swept_recent: false,
+            run_light: false,
+            recheck_due: false,
+        };
+        let progress = Progress {
+            phase: "history".into(),
+            oldest: "0".into(),
+            max_ts: Some(message.ts.clone()),
+            cursor: None,
+            pending: Vec::new(),
+            known: Vec::new(),
+            swept_now: false,
+            light: false,
+        };
+        let (store_tx, store_rx) = tokio::sync::oneshot::channel();
+        let store_db = db.clone();
+        let store_task = task;
+        let store_progress = progress;
+        let (store_started_tx, store_started_rx) = tokio::sync::oneshot::channel();
+        let store = tokio::spawn(async move {
+            let mut store_db = store_db;
+            let _ = store_started_tx.send(());
+            let result = store(
+                &mut slack,
+                &mut ctx,
+                &store_task,
+                true,
+                &store_progress,
+                &[message],
+                &mut store_db,
+            )
+            .await;
+            let _ = store_tx.send(result.is_err());
+            Ok::<(), anyhow::Error>(())
+        });
+        store_started_rx.await?;
+        tokio::task::yield_now().await;
+        let _ = finish_convert_tx.send(());
+        anyhow::ensure!(
+            tokio::time::timeout(Duration::from_secs(5), store_rx).await??,
+            "sync should reject the channel after encryption"
+        );
+        tokio::time::timeout(Duration::from_secs(5), convert).await???;
+        tokio::time::timeout(Duration::from_secs(5), store).await???;
+
+        let mut verify_db = db.clone();
+        let mut verify = verify_db.transaction().await?;
+        let rows = query(&mut verify, "SELECT json_build_object('encrypted',c.encrypted,'messages',(SELECT count(*) FROM messages WHERE channel_id=c.id))::text FROM channels c WHERE id=$1", &[&channel_id]).await?;
+        verify.commit().await?;
+        anyhow::ensure!(
+            rows.len() == 1 && rows[0]["encrypted"] == true && rows[0]["messages"] == 0,
+            "sync inserted plaintext after encryption: {rows:?}"
+        );
+
+        Ok(())
+        }
+        .await;
+        let cleanup_result: anyhow::Result<()> = async {
+            let mut cleanup_db = db.clone();
+            let mut cleanup = cleanup_db.transaction().await?;
+            crate::slack::worker::exec(
+                &mut cleanup,
+                "DELETE FROM messages WHERE channel_id=$1",
+                &[&channel_id],
+            )
+            .await?;
+            crate::slack::worker::exec(
+                &mut cleanup,
+                "DELETE FROM slack_channels WHERE team_id=$1",
+                &[&team],
+            )
+            .await?;
+            crate::slack::worker::exec(
+                &mut cleanup,
+                "DELETE FROM slack_users WHERE team_id=$1",
+                &[&team],
+            )
+            .await?;
+            crate::slack::worker::exec(
+                &mut cleanup,
+                "DELETE FROM channels WHERE id=$1",
+                &[&channel_id],
+            )
+            .await?;
+            crate::slack::worker::exec(&mut cleanup, "DELETE FROM users WHERE id=$1", &[&user_id])
+                .await?;
+            cleanup.commit().await?;
+            Ok(())
+        }
+        .await;
+        cleanup_result?;
+        result
+    }
 
     #[test]
     fn compares_timestamps_numerically() {

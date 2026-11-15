@@ -531,7 +531,6 @@ async fn only_current_members_can_add_to_encrypted_channels() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-
     // 退出した作成者（channel_user の行がない）も足せない。
     env.exec(
         "DELETE FROM channel_user WHERE channel_id = $1 AND user_id = $2",
@@ -1218,6 +1217,66 @@ async fn member_additions_wait_for_a_device_deletion_bump() {
 }
 
 #[tokio::test]
+async fn encrypted_dm_and_channel_add_do_not_deadlock_on_member_user_row() -> anyhow::Result<()> {
+    let env = env().await;
+    let alice = env.user().await;
+    let bob = env.user().await;
+    env.exec(
+        "UPDATE users SET guest_kind = 'single' WHERE id = $1",
+        &[&bob],
+    )
+    .await?;
+    let target = env.encrypted_channel(&alice, &[]).await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let config = Config::from_env();
+
+    let (mut connection, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    let blocker = connection.transaction().await?;
+    // Hold off the DM's channel INSERT after it has taken the per-user E2EE
+    // the member advisory lock. The channel add must wait for the user row
+    // before it can acquire the advisory lock, preserving users -> advisory.
+    blocker
+        .batch_execute("LOCK TABLE channels IN SHARE MODE")
+        .await?;
+
+    let dm = {
+        let app = env.app.clone();
+        let actor = alice.clone();
+        let target_user = bob.clone();
+        tokio::spawn(async move {
+            request(
+                &app,
+                "POST",
+                "/api/dms",
+                &actor,
+                json!({"target_user_ids":[target_user],"encrypted":true}),
+            )
+            .await
+        })
+    };
+    wait_for_lock(&env, "INSERT INTO").await;
+
+    let add = {
+        let app = env.app.clone();
+        let actor = alice.clone();
+        let path = format!("/api/channels/{target}/users");
+        let body = json!({"user_id": bob});
+        tokio::spawn(async move { request(&app, "POST", &path, &actor, body).await })
+    };
+    wait_for_lock(&env, "WHERE id = $1 FOR NO KEY UPDATE").await;
+    blocker.commit().await?;
+
+    let (dm_status, dm_body) = dm.await?;
+    let (add_status, add_body) = add.await?;
+    assert_eq!(dm_status, StatusCode::OK, "{dm_body}");
+    assert_eq!(add_status, StatusCode::OK, "{add_body}");
+    Ok::<(), anyhow::Error>(())
+}
+
+#[tokio::test]
 async fn member_additions_do_not_block_posts_to_the_channel() {
     let env = env().await;
     let alice = env.user().await;
@@ -1312,10 +1371,265 @@ async fn guest_additions_lock_the_user_row_before_the_member_lock() {
         let body = json!({"user_id": guest});
         tokio::spawn(async move { request(&app, "POST", &path, &alice, body).await })
     };
-    wait_for_lock(&env, "guest_kind = 'single' FOR UPDATE").await;
+    wait_for_lock(&env, "WHERE id = $1 FOR NO KEY UPDATE").await;
     assert!(!add.is_finished());
     tx.rollback().await.unwrap();
 
     let (status, body) = add.await.unwrap();
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn direct_join_rechecks_guest_status_after_waiting_for_user_lock() -> anyhow::Result<()> {
+    let env = env().await;
+    let owner = env.user().await;
+    let guest = env.user().await;
+    let channel = Uuid::new_v4().to_string();
+    let (status, body) = env
+        .call(
+            "POST",
+            "/api/channels",
+            &owner,
+            json!({"id":channel,"channel_name":format!("public-{}", Uuid::new_v4().simple()),"is_private":false}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = env
+        .call(
+            "POST",
+            &format!("/api/channels/{channel}/notes"),
+            &owner,
+            json!({"title":"private to members","content":"note body"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Leave guest_kind's update uncommitted so the join's first ordinary read
+    // can see the old non-guest value. The join must take the users row lock
+    // before checking guest status and reject after this update commits.
+    let mut blocker_db = env.db.clone();
+    let mut blocker = blocker_db.transaction().await?;
+    toasty::sql::statement("UPDATE users SET guest_kind = 'multi' WHERE id = $1")
+        .bind(guest.as_str())
+        .exec(&mut blocker)
+        .await?;
+
+    let join = {
+        let app = env.app.clone();
+        let path = format!("/api/channels/{channel}/join");
+        let actor = guest.clone();
+        tokio::spawn(async move { request(&app, "POST", &path, &actor, Value::Null).await })
+    };
+    wait_for_lock(&env, "users WHERE id = $1 FOR NO KEY UPDATE").await;
+    assert!(
+        !join.is_finished(),
+        "join must wait for the guest transition"
+    );
+    blocker.commit().await?;
+
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), join).await??;
+    let notes_status = env
+        .call(
+            "GET",
+            &format!("/api/channels/{channel}/notes"),
+            &guest,
+            Value::Null,
+        )
+        .await
+        .0;
+    let is_member = env
+        .query(
+            "SELECT json_build_object('exists', EXISTS (SELECT 1 FROM channel_user WHERE channel_id = $1 AND user_id = $2))::text",
+            &[&channel, &guest],
+        )
+        .await[0]
+            ["exists"]
+            .as_bool()
+            .unwrap_or(true);
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a join racing a multi-guest transition must be rejected; response={body}, note read status={notes_status}, membership={is_member}"
+    );
+    assert_eq!(
+        notes_status,
+        StatusCode::NOT_FOUND,
+        "a guest whose join raced with the transition must not read public-channel notes"
+    );
+    assert!(!is_member, "the rejected guest must not become a member");
+
+    // E2EE channels are private and direct join remains forbidden through the
+    // same handler; invited membership is still handled by the add-member path.
+    let encrypted = env.encrypted_channel(&owner, &[]).await;
+    let (status, body) = env
+        .call(
+            "POST",
+            &format!("/api/channels/{encrypted}/join"),
+            &guest,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        !env.query(
+            "SELECT json_build_object('exists', EXISTS (SELECT 1 FROM channel_user WHERE channel_id = $1 AND user_id = $2))::text",
+            &[&encrypted, &guest],
+        )
+        .await[0]["exists"]
+            .as_bool()
+            .unwrap_or(true),
+        "a guest cannot directly join an E2EE channel"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn encrypted_dm_pins_guest_status_before_waiting_for_member_lock() -> anyhow::Result<()> {
+    let env = env().await;
+    let config = Config::from_env();
+    let alice = env.user().await;
+    let bob = env.user().await;
+    let mut blocker_db = env.db.clone();
+    let mut blocker = blocker_db.transaction().await?;
+    toasty::sql::statement("SELECT pg_advisory_xact_lock(3, hashtext($1))")
+        .bind(bob.as_str())
+        .exec(&mut blocker)
+        .await?;
+
+    let dm = {
+        let app = env.app.clone();
+        let actor = alice.clone();
+        let target = bob.clone();
+        tokio::spawn(async move {
+            request(
+                &app,
+                "POST",
+                "/api/dms",
+                &actor,
+                json!({"target_user_ids":[target],"encrypted":true}),
+            )
+            .await
+        })
+    };
+    wait_for_lock(&env, "pg_advisory_xact_lock(3").await;
+
+    let (update_connection, update_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(update_driver);
+    let update_bob = bob.clone();
+    let update = tokio::spawn(async move {
+        update_connection
+            .execute(
+                "UPDATE users SET guest_kind = 'single' WHERE id = $1",
+                &[&update_bob],
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let guest_transition_waited = !update.is_finished();
+
+    blocker.commit().await?;
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), dm).await??;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    update.await??;
+    assert!(
+        guest_transition_waited,
+        "encrypted DM must hold the target users row before waiting on the member advisory lock"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn membership_insert_racing_single_guest_transition_preserves_single_channel_limit()
+-> anyhow::Result<()> {
+    let env = env().await;
+    let guest = env.user().await;
+    let owner = env.user().await;
+    let first_channel = Uuid::new_v4().to_string();
+    let second_channel = Uuid::new_v4().to_string();
+
+    for (id, name) in [(&first_channel, "first"), (&second_channel, "second")] {
+        env.exec(
+            "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $2, $3, false)",
+            &[id, &format!("guest_race_{name}_{}", Uuid::new_v4().simple()), &owner],
+        )
+        .await?;
+    }
+    env.exec(
+        "INSERT INTO channel_user (user_id, channel_id, joined_at) VALUES ($1, $2, now())",
+        &[&guest, &first_channel],
+    )
+    .await?;
+
+    // Hold the second membership uncommitted while another transaction changes the user to
+    // `single`. The status trigger cannot see this row; the insert trigger must serialize both.
+    let mut membership_db = env.db.clone();
+    let mut membership_tx = membership_db.transaction().await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user (user_id, channel_id, joined_at) VALUES ($1, $2, now())",
+    )
+    .bind(guest.as_str())
+    .bind(second_channel.as_str())
+    .exec(&mut membership_tx)
+    .await?;
+
+    let mut status_db = env.db.clone();
+    let transitioning_guest = guest.clone();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let transition = tokio::spawn(async move {
+        let _ = started_tx.send(());
+        let mut tx = status_db.transaction().await?;
+        toasty::sql::statement("UPDATE users SET guest_kind = 'single' WHERE id = $1")
+            .bind(transitioning_guest.as_str())
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await
+    });
+    started_rx.await?;
+    let config = Config::from_env();
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    let transition_was_waiting = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if transition.is_finished() {
+                return Ok::<_, tokio_postgres::Error>(false);
+            }
+            let row = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE 'UPDATE users SET guest_kind%')",
+                    &[],
+                )
+                .await?;
+            if row.get::<_, bool>(0) {
+                return Ok(true);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    membership_tx.commit().await?;
+    let transition_result = tokio::time::timeout(Duration::from_secs(5), transition).await??;
+
+    let state = env
+        .query(
+            "SELECT json_build_object('guest_kind', u.guest_kind, 'memberships', count(cu.channel_id) FILTER (WHERE NOT c.is_dm AND c.deleted_at IS NULL))::text FROM users u LEFT JOIN channel_user cu ON cu.user_id = u.id LEFT JOIN channels c ON c.id = cu.channel_id WHERE u.id = $1 GROUP BY u.id",
+            &[&guest],
+        )
+        .await;
+    let guest_kind = state[0]["guest_kind"].as_str().unwrap();
+    let membership_count = state[0]["memberships"].as_i64().unwrap();
+    assert!(
+        transition_was_waiting,
+        "guest_kind transition must wait for the in-flight membership insert"
+    );
+    assert!(
+        transition_result.is_err(),
+        "single guest transition must reject the second non-DM membership"
+    );
+    assert!(
+        guest_kind != "single" || membership_count <= 1,
+        "guest_kind={guest_kind}, non-DM memberships={membership_count}; a single-channel guest cannot have two"
+    );
+    Ok(())
 }

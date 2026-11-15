@@ -174,7 +174,53 @@ POSTGRES_PASSWORD=staging-test-password \
 
 - **初期状態の DB**: `atlas_schema_revisions` が無い空の DB に対しては、初回の `migrate` 起動で全マイグレーションが順番に適用されます。
 - **Atlas を介さず手動作成された既存 DB（baseline）**: もし `atlas_schema_revisions` が無いまま手動でテーブルだけ作成されている場合は、そのままでは初回マイグレーションが既存テーブルと衝突して停止します。一度だけ `--baseline <適用済みバージョン>`（例: `20261015110156`）を付けて `atlas migrate apply` を実行するか、ステージングで不要なデータであればボリュームを初期化してから再起動してください。
-- **失敗時の確認・復旧**: マイグレーションが途中で失敗すると、後続の `electric` / `backend` は起動せず（fail-closed）、該当バージョンが dirty 状態になることがあります。その場合は `docker compose --project-directory . -f infra/compose.stack.yaml run --rm migrate migrate status --config file:///db/atlas.hcl --env local` で状態を確認し、原因解消後に再実行してください。
+- **失敗時の確認・復旧**: マイグレーションが失敗すると、後続の `electric` / `backend` は起動しません（fail-closed）。まず次のコマンドで Atlas の適用状態と PostgreSQL のエラーを確認します。`migrate` は `restart: "no"` なので、原因解消後はサービスを作り直して明示的に再実行します。
+
+  ```bash
+  docker compose --project-directory . -f infra/compose.stack.yaml \
+    run --rm migrate migrate status --config file:///db/atlas.hcl --env local
+  docker compose --project-directory . -f infra/compose.stack.yaml \
+    logs --no-color migrate
+  ```
+
+  `20261128000002_channel_notes_expiry_index.sql` の `CREATE INDEX CONCURRENTLY` が失敗した場合、PostgreSQL が `idx_channel_notes_expired` を `indisvalid = false` の無効なインデックスとして残すことがあります。この migration は `-- atlas:txmode none` で文ごとに進むため、Atlas の再実行は失敗した `CREATE INDEX` から始まり、先行する `DROP INDEX` は実行されません。次のすべてを確認してから、無効な対象インデックスだけを削除してください。
+
+  1. `migrate status` とログで停止箇所が `20261128000002` の `CREATE INDEX CONCURRENTLY` であることを確認する。別の Atlas apply が動作中なら先に止まるのを待つ。
+  2. 対象DBで次の照会を行い、`public.idx_channel_notes_expired` が存在し、`indisvalid` が `false` であることを確認する。ステージング Compose ではDBコンテナ内の `psql` を開きます。`indisvalid = true`、別スキーマ、別名、または対象 migration 以外の失敗なら削除しない。
+
+     ```bash
+     docker compose --project-directory . -f infra/compose.stack.yaml \
+       exec postgres psql -U "${POSTGRES_USER:-zoo}" -d "${POSTGRES_DB:-zoo}" -v ON_ERROR_STOP=1
+     ```
+
+     ```sql
+     SELECT ns.nspname AS schema_name, idx.relname AS index_name,
+            tbl.relname AS table_name, pi.indisvalid, pi.indisready
+     FROM pg_index AS pi
+     JOIN pg_class AS idx ON idx.oid = pi.indexrelid
+     JOIN pg_namespace AS ns ON ns.oid = idx.relnamespace
+     JOIN pg_class AS tbl ON tbl.oid = pi.indrelid
+     WHERE ns.nspname = 'public'
+       AND idx.relname = 'idx_channel_notes_expired';
+     ```
+
+  3. `indisvalid = false` かつ `table_name = 'channel_notes'` の行を確認した場合に限り、migration が止まっていて他の apply がない状態で、同じDBに対して次を実行する。`CONCURRENTLY` はトランザクション外で実行する必要がある。
+
+     ```sql
+     DROP INDEX CONCURRENTLY public.idx_channel_notes_expired;
+     ```
+
+  4. 再度照会して対象が存在しないことを確認し、migration コンテナを作り直して Atlas を再実行する。適用が完了したら通常の Compose 起動を行う。
+
+     ```bash
+     docker compose --project-directory . -f infra/compose.stack.yaml \
+       up -d --force-recreate --wait migrate
+     docker compose --project-directory . -f infra/compose.stack.yaml up -d --wait
+     ```
+
+  `55P03` は `NOWAIT` のテーブルロックが取れなかった一時競合（`lock_not_available`）です。`20261128000003_e2ee_channel_notes.sql` はファイル単位のトランザクションなので失敗時にロックと migration 内の変更はロールバックされます。writer がトランザクションを終えたことを確認し、上記の Compose 再実行で再適用してください。自動再試行は設定していません。
+
+  `55000` は `object_not_in_prerequisite_state` で、同 migration の preflight が暗号化済みチャンネル内の有効または24時間以内に復元可能な平文ノートを検出した場合のデータ状態エラーです。`55P03` と異なり、待機や単純な再実行では解消しません。API の `E2EE_CONVERSION_BLOCKED` と同じ条件を確認し、データを保持したまま、ノートの解決後に Atlas を再実行してください。これらのエラーに対して migration 履歴の手動編集やDBボリューム初期化は行わないでください。
 
 フロントは TanStack Start の SPA モードでビルドした静的ファイル（`dist/client`）を `nginxinc/nginx-unprivileged:1.30.6-alpine` で配信します。コンテナ内は非 root ユーザーで `3000` 番ポートを待ち受けます。設定は `infra/frontend-nginx.conf` です。未知のパスは `/index.html` にフォールバックしますが、`/assets/` 配下の存在しないファイルは 404 を返します（デプロイ後に古いタブが削除済みの chunk を読み込んだとき、HTML を返さないため）。`/assets/` のハッシュ付きファイルは `immutable` で長期キャッシュし、`index.html` は `no-cache` で毎回再検証させます。あわせて `X-Content-Type-Options: nosniff`・`Referrer-Policy: strict-origin-when-cross-origin`・`X-Frame-Options: DENY` と `Content-Security-Policy` を付与します。CSP は `infra/frontend-nginx.conf` をテンプレートとして起動時に envsubst し、ビルド成果物の `index.html` に含まれるインライン script の SHA-256（`infra/csp-hashes.mjs` がビルド時に生成）を `script-src` に、`connect-src` には同一オリジンと `CSP_CONNECT_SRC` を設定します（詳細は下記「CSP」）。フロント・プロキシ・マイグレーションのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE`・`MIGRATE_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
 

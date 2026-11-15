@@ -766,6 +766,509 @@ async fn test_slack_link_does_not_add_guests_to_channels() -> anyhow::Result<()>
 }
 
 #[tokio::test]
+async fn slack_reassignment_rechecks_guest_kind_after_waiting_for_user_lock() -> anyhow::Result<()>
+{
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+    let user = create_user(&app, "link_guest_race").await?;
+    let owner = create_user(&app, "link_guest_race_owner").await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    let channel_name = format!("guest_race_{}", uuid::Uuid::new_v4().simple());
+    let team = format!("TR{}", uuid::Uuid::new_v4().simple());
+    let slack_user = "UG-RACE";
+    let placeholder = backend::slack::user_id(&team, slack_user);
+    let test_result: anyhow::Result<()> = async {
+    let (status, _, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        Some(&owner),
+        Some(json!({"id": channel, "channel_name": channel_name, "is_private": false})),
+    )
+    .await?;
+    anyhow::ensure!(status == StatusCode::OK, "failed to create race channel");
+    exec(
+        &state,
+        "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'Slack placeholder','deactivated')",
+        &[&placeholder, &format!("slack_race_{}", uuid::Uuid::new_v4().simple())],
+    )
+    .await?;
+    exec(
+        &state,
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP)",
+        &[&placeholder, &channel],
+    )
+    .await?;
+
+    let (mut transition_connection, transition_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(transition_driver);
+    let transition_pid: i32 = transition_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let transition = transition_connection.transaction().await?;
+    transition
+        .execute(
+            "UPDATE users SET guest_kind = 'single' WHERE id = $1",
+            &[&user],
+        )
+        .await?;
+
+    let reassign_db = state.db.clone();
+    let reassign_user = user.clone();
+    let reassign_team = team.clone();
+    let reassign = tokio::spawn(async move {
+        let mut db = reassign_db;
+        let mut tx = db.transaction().await?;
+        backend::slack::link::reassign(&mut tx, &reassign_team, "UG-RACE", "Guest", &reassign_user)
+            .await?;
+        tx.commit().await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid)))",
+                    &[&transition_pid],
+                )
+                .await?
+                .get(0);
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok::<(), tokio_postgres::Error>(())
+    })
+    .await??;
+
+    transition.commit().await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), reassign).await???;
+    let memberships = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM channel_user WHERE user_id=$1 AND channel_id=$2",
+        &[&user, &channel],
+    )
+    .await?;
+    anyhow::ensure!(memberships[0]["n"] == 0, "guest must not inherit memberships");
+    Ok(())
+    }
+    .await;
+    exec(&state, "DELETE FROM slack_users WHERE team_id=$1", &[&team]).await?;
+    exec(
+        &state,
+        "DELETE FROM channel_user WHERE channel_id=$1",
+        &[&channel],
+    )
+    .await?;
+    exec(&state, "DELETE FROM channels WHERE id=$1", &[&channel]).await?;
+    exec(
+        &state,
+        "DELETE FROM users WHERE id IN ($1,$2,$3)",
+        &[&user, &owner, &placeholder],
+    )
+    .await?;
+    test_result
+}
+
+#[tokio::test]
+#[ignore = "requires an explicitly configured disposable SLACK_LINK_TEST_DATABASE_URL"]
+async fn reconcile_team_and_sorted_import_membership_locks_do_not_deadlock() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let database_url = std::env::var("SLACK_LINK_TEST_DATABASE_URL")?;
+    let (guard, guard_driver) =
+        tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(guard_driver);
+    let database: String = guard
+        .query_one("SELECT current_database()", &[])
+        .await?
+        .get(0);
+    anyhow::ensure!(
+        database.contains("test"),
+        "refusing non-test database `{database}`"
+    );
+
+    let mut config = Config::from_env();
+    config.database_url = database_url;
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let app = create_router(state.clone());
+    let user_a = create_user(&app, "reconcile_lock_a").await?;
+    let user_b = create_user(&app, "reconcile_lock_b").await?;
+    let (low, high) = if user_a < user_b {
+        (user_a, user_b)
+    } else {
+        (user_b, user_a)
+    };
+    let owner = create_user(&app, "reconcile_lock_channel_owner").await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    let (status, _, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        Some(&owner),
+        Some(json!({"id": channel, "channel_name": format!("reconcile_lock_{}", uuid::Uuid::new_v4().simple()), "is_private": false})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let team = format!("TLOCK{}", uuid::Uuid::new_v4().simple());
+    let slack_users = ["A-FIRST", "B-SECOND"];
+    let placeholders = slack_users.map(|slack_user| backend::slack::user_id(&team, slack_user));
+    for (index, slack_user) in slack_users.iter().enumerate() {
+        exec(
+            &state,
+            "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'Slack placeholder','deactivated')",
+            &[&placeholders[index], &format!("reconcile_ph_{}_{}", index, uuid::Uuid::new_v4().simple())],
+        )
+        .await?;
+        exec(
+            &state,
+            "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name) VALUES($1,$2,$3,true,'member')",
+            &[&team, slack_user, if index == 0 { &low } else { &high }],
+        )
+        .await?;
+        exec(
+            &state,
+            "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP)",
+            &[&placeholders[index], &channel],
+        )
+        .await?;
+    }
+    // Arrange the actual unordered query's first row to target the larger ID,
+    // which is the inversion that deadlocks against the importer's sorted locks.
+    let linked_order = sql(
+        &state,
+        "SELECT json_build_object('slack_user_id',slack_user_id)::text FROM slack_users WHERE team_id=$1 AND linked",
+        &[&team],
+    )
+    .await?;
+    anyhow::ensure!(linked_order.len() == 2, "expected two linked Slack users");
+    let first_slack = linked_order[0]["slack_user_id"].as_str().unwrap();
+    let second_slack = linked_order[1]["slack_user_id"].as_str().unwrap();
+    exec(
+        &state,
+        "UPDATE slack_users SET user_id=$3 WHERE team_id=$1 AND slack_user_id=$2",
+        &[&team, first_slack, &high],
+    )
+    .await?;
+    exec(
+        &state,
+        "UPDATE slack_users SET user_id=$3 WHERE team_id=$1 AND slack_user_id=$2",
+        &[&team, second_slack, &low],
+    )
+    .await?;
+    let first_placeholder = backend::slack::user_id(&team, first_slack);
+
+    // Reproduce the old lock order on PostgreSQL: reconcile owns the higher
+    // user and waits on its membership row; import owns the lower user and waits
+    // on reconcile; the membership deleter then waits on import. PostgreSQL must
+    // detect this actual wait cycle and return 40P01.
+    let (import_connection, import_driver) =
+        tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(import_driver);
+    let import_pid: i32 = import_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let (low_locked_tx, low_locked_rx) = tokio::sync::oneshot::channel();
+    let (try_high_tx, try_high_rx) = tokio::sync::oneshot::channel();
+    let import_low = low.clone();
+    let import_high = high.clone();
+    let baseline_import = tokio::spawn(async move {
+        let mut connection = import_connection;
+        let tx = connection.transaction().await?;
+        tx.query_one(
+            "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+            &[&import_low],
+        )
+        .await?;
+        let _ = low_locked_tx.send(());
+        let _ = try_high_rx.await;
+        tx.query_one(
+            "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+            &[&import_high],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<(), tokio_postgres::Error>(())
+    });
+    low_locked_rx.await?;
+
+    let (gate_connection, gate_driver) =
+        tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(gate_driver);
+    let gate_pid: i32 = gate_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let gate_channel = channel.clone();
+    let gate_placeholder = first_placeholder.clone();
+    let gate_low = low.clone();
+    let baseline_gate = tokio::spawn(async move {
+        let mut connection = gate_connection;
+        let tx = connection.transaction().await?;
+        tx.query_one(
+            "SELECT user_id FROM channel_user WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
+            &[&gate_placeholder, &gate_channel],
+        )
+        .await?;
+        tx.query_one(
+            "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+            &[&gate_low],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<(), tokio_postgres::Error>(())
+    });
+    let (baseline_observer, baseline_observer_driver) =
+        tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(baseline_observer_driver);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let gate_waiting: bool = baseline_observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                    &[&gate_pid, &import_pid],
+                )
+                .await?
+                .get(0);
+            if gate_waiting {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<(), tokio_postgres::Error>(())
+    })
+    .await??;
+
+    let (reconcile_connection, reconcile_driver) =
+        tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(reconcile_driver);
+    let reconcile_pid: i32 = reconcile_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let baseline_high = high.clone();
+    let baseline_placeholder = first_placeholder.clone();
+    let baseline_channel = channel.clone();
+    let baseline_reconcile = tokio::spawn(async move {
+        let mut connection = reconcile_connection;
+        let tx = connection.transaction().await?;
+        tx.query_one(
+            "SELECT id FROM users WHERE id=$1 FOR NO KEY UPDATE",
+            &[&baseline_high],
+        )
+        .await?;
+        tx.execute(
+            "DELETE FROM channel_user WHERE user_id=$1 AND channel_id=$2",
+            &[&baseline_placeholder, &baseline_channel],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<(), tokio_postgres::Error>(())
+    });
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let reconcile_waiting: bool = baseline_observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                    &[&reconcile_pid, &gate_pid],
+                )
+                .await?
+                .get(0);
+            if reconcile_waiting {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<(), tokio_postgres::Error>(())
+    })
+    .await??;
+    let _ = try_high_tx.send(());
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let import_waiting: bool = baseline_observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock' AND $2=ANY(pg_blocking_pids(pid)))",
+                    &[&import_pid, &reconcile_pid],
+                )
+                .await?
+                .get(0);
+            if import_waiting {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<(), tokio_postgres::Error>(())
+    })
+    .await??;
+    let baseline_results = [
+        tokio::time::timeout(Duration::from_secs(10), baseline_gate).await??,
+        tokio::time::timeout(Duration::from_secs(10), baseline_reconcile).await??,
+        tokio::time::timeout(Duration::from_secs(10), baseline_import).await??,
+    ];
+    anyhow::ensure!(
+        baseline_results.iter().any(|result| result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.code().is_some_and(|code| code.code() == "40P01"))),
+        "expected PostgreSQL to report deadlock_detected (40P01) for the old lock order"
+    );
+    exec(
+        &state,
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING",
+        &[&first_placeholder, &channel],
+    )
+    .await?;
+
+    let (mut blocker_connection, blocker_driver) =
+        tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let blocker = blocker_connection.transaction().await?;
+    blocker
+        .query_one(
+            "SELECT user_id FROM channel_user WHERE user_id=$1 AND channel_id=$2 FOR UPDATE",
+            &[&first_placeholder, &channel],
+        )
+        .await?;
+
+    let reconcile_db = state.db.clone();
+    let reconcile_team = team.clone();
+    let reconcile = tokio::spawn(async move {
+        let mut db = reconcile_db;
+        let mut tx = db.transaction().await?;
+        let pid: i32 = query(
+            &mut tx,
+            "SELECT json_build_object('pid',pg_backend_pid())::text",
+            &[],
+        )
+        .await?[0]["pid"]
+            .as_i64()
+            .unwrap() as i32;
+        backend::slack::link::reconcile_team(&mut tx, &reconcile_team).await?;
+        tx.commit().await?;
+        Ok::<i32, anyhow::Error>(pid)
+    });
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&state.config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))",
+                    &[&blocker_pid],
+                )
+                .await?
+                .get(0);
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Ok::<(), tokio_postgres::Error>(())
+    })
+    .await??;
+
+    // Match the API import: acquire every involved users row in ID order.
+    let import_db = state.db.clone();
+    let import_low = low.clone();
+    let import_high = high.clone();
+    let import = tokio::spawn(async move {
+        let mut db = import_db;
+        let mut tx = db.transaction().await?;
+        let _pid: i32 = query(
+            &mut tx,
+            "SELECT json_build_object('pid',pg_backend_pid())::text",
+            &[],
+        )
+        .await?[0]["pid"]
+            .as_i64()
+            .unwrap() as i32;
+        backend::routes::e2ee_channels::lock_membership_users(
+            &mut tx,
+            &[&import_low, &import_high],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<(), anyhow::Error>(())
+    });
+    let reconcile_pid = tokio::time::timeout(Duration::from_secs(10), async {
+      loop {
+        if reconcile.is_finished() {
+            anyhow::bail!(
+                "reconcile_team finished before the competing import acquired its first lock"
+            );
+        }
+        if import.is_finished() {
+            anyhow::bail!("import finished before waiting on reconcile");
+        }
+        let blocked: Vec<i32> = observer
+            .query(
+                "SELECT pid FROM pg_stat_activity WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid))",
+                &[&blocker_pid],
+            )
+            .await?
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        if !blocked.is_empty() {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            // The import now waits on the user row held by reconcile; detect the cycle's second edge.
+            let waiting_on_reconcile: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%FOR NO KEY UPDATE%')",
+                    &[&blocked[0]],
+                )
+                .await?
+                .get(0);
+            if waiting_on_reconcile {
+                break Ok::<i32, anyhow::Error>(blocked[0]);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+      }
+    }).await??;
+    let _ = reconcile_pid;
+    blocker.commit().await?;
+    let reconciled = tokio::time::timeout(Duration::from_secs(10), reconcile).await???;
+    tokio::time::timeout(Duration::from_secs(10), import).await???;
+    assert!(reconciled > 0);
+    exec(&state, "DELETE FROM slack_users WHERE team_id=$1", &[&team]).await?;
+    exec(
+        &state,
+        "DELETE FROM channel_user WHERE channel_id=$1",
+        &[&channel],
+    )
+    .await?;
+    exec(&state, "DELETE FROM channels WHERE id=$1", &[&channel]).await?;
+    exec(
+        &state,
+        "DELETE FROM users WHERE id IN ($1,$2,$3,$4,$5)",
+        &[&low, &high, &owner, &placeholders[0], &placeholders[1]],
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_slack_link_requires_configuration_and_admin_manifest() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();

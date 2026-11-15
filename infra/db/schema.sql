@@ -209,6 +209,12 @@ CREATE TABLE channel_webhooks (
 );
 CREATE INDEX idx_channel_webhooks_channel_id ON channel_webhooks (channel_id);
 
+CREATE TABLE channel_notes_cleanup_cursor (
+  id boolean PRIMARY KEY DEFAULT true CHECK (id),
+  last_channel_id text
+);
+INSERT INTO channel_notes_cleanup_cursor (id, last_channel_id) VALUES (true, NULL);
+
 CREATE TABLE channel_notes (
   id text NOT NULL PRIMARY KEY,
   channel_id text NOT NULL REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
@@ -224,7 +230,7 @@ CREATE TABLE channel_notes (
 CREATE INDEX idx_channel_notes_channel_updated ON channel_notes (channel_id, updated_at DESC, id);
 CREATE INDEX idx_channel_notes_channel_position ON channel_notes (channel_id, position) WHERE deleted_at IS NULL;
 CREATE INDEX idx_channel_notes_deleted_at ON channel_notes (channel_id, deleted_at) WHERE deleted_at IS NOT NULL;
-CREATE INDEX idx_channel_notes_expired ON channel_notes (deleted_at, id) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_channel_notes_expired ON channel_notes (channel_id, deleted_at, id) WHERE deleted_at IS NOT NULL;
 -- Structured integration cards are separate from user-controlled message content.
 ALTER TABLE messages ADD COLUMN card text;
 ALTER TABLE users ADD COLUMN is_bot boolean NOT NULL DEFAULT false;
@@ -986,10 +992,14 @@ END $$;
 CREATE TRIGGER app_guest_rules BEFORE INSERT OR UPDATE OF guest_kind ON users FOR EACH ROW EXECUTE FUNCTION app_guest_rules();
 CREATE FUNCTION app_guest_membership_rules() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id AND guest_kind='single') THEN PERFORM 1 FROM users WHERE id=NEW.user_id FOR UPDATE;END IF;
+ -- Always serialize membership inserts with guest_kind updates. A conditional lock misses a
+ -- concurrent transition from a non-single kind while the new membership is still uncommitted.
+ PERFORM 1 FROM users WHERE id=NEW.user_id FOR NO KEY UPDATE;
  IF EXISTS(SELECT 1 FROM users WHERE id=NEW.user_id AND guest_kind='single')
  AND EXISTS(SELECT 1 FROM channels WHERE id=NEW.channel_id AND NOT is_dm)
- AND EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.user_id=NEW.user_id AND cu.channel_id<>NEW.channel_id AND NOT c.is_dm AND c.deleted_at IS NULL) THEN RAISE EXCEPTION USING ERRCODE='23514',MESSAGE='Single-channel guests can join only one channel';END IF;
+ AND EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.user_id=NEW.user_id AND cu.channel_id<>NEW.channel_id AND NOT c.is_dm AND c.deleted_at IS NULL) THEN
+   RAISE EXCEPTION USING ERRCODE='23514',MESSAGE='Single-channel guests can join only one channel';
+ END IF;
  RETURN NEW;
 END $$;
 CREATE TRIGGER app_guest_membership_rules BEFORE INSERT ON channel_user FOR EACH ROW EXECUTE FUNCTION app_guest_membership_rules();
@@ -1807,12 +1817,14 @@ CREATE TABLE slack_users (
   linked boolean NOT NULL DEFAULT false,
   name text NOT NULL DEFAULT '',
   real_name text NOT NULL DEFAULT '',
+  profile_source text NOT NULL DEFAULT 'unknown',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (team_id, slack_user_id),
   CONSTRAINT slack_users_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
-    ON UPDATE CASCADE ON DELETE CASCADE
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT slack_users_profile_source_check CHECK (profile_source IN ('unknown', 'fallback', 'profile'))
 );
 
 CREATE INDEX idx_slack_users_user_id ON slack_users (user_id);
@@ -3035,8 +3047,7 @@ ALTER TABLE messages ADD COLUMN revision integer NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
   CHECK (ciphertext IS NULL OR (content = '' AND epoch IS NOT NULL));
 
--- encrypted は作成時だけ指定できる（両方向の変更を拒否する）。暗号化チャンネルを公開にする変更は
--- CHECK channels_encrypted_private が拒否する。
+-- encrypted は作成時だけ指定できる。後続の main migration が変換 API 用の保護関数に置き換える。
 CREATE FUNCTION e2ee_protect_channel_encryption() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   RAISE EXCEPTION 'channels.encrypted cannot be changed' USING ERRCODE = '23514';
@@ -3044,6 +3055,37 @@ END $$;
 CREATE TRIGGER channels_encrypted_immutable BEFORE UPDATE ON channels
   FOR EACH ROW WHEN (OLD.encrypted IS DISTINCT FROM NEW.encrypted)
   EXECUTE FUNCTION e2ee_protect_channel_encryption();
+
+-- 暗号化への切替後も復元可能な平文ノートを隠さない。チャンネル行の更新ロックを取得してから確認するため、
+-- ノートAPIのチャンネルロックと切替が直列になる。
+CREATE FUNCTION e2ee_reject_channel_encryption_with_notes() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT OLD.encrypted AND NEW.encrypted AND EXISTS (
+    SELECT 1 FROM channel_notes
+    WHERE channel_id = NEW.id
+      AND (deleted_at IS NULL OR deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours')
+  ) THEN
+    RAISE EXCEPTION 'remove active and restorable channel notes before encrypting the channel' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER channels_encrypted_reject_notes BEFORE UPDATE OF encrypted ON channels
+  FOR EACH ROW WHEN (OLD.encrypted IS DISTINCT FROM NEW.encrypted AND NEW.encrypted)
+  EXECUTE FUNCTION e2ee_reject_channel_encryption_with_notes();
+
+-- DBへ直接書く経路も含め、暗号化チャンネルに平文ノートを作らせない。暗号化列のUPDATEが取る
+-- NO KEY UPDATEとも競合するFOR SHAREを使う。ノートAPIも先に同じチャンネルをFOR SHAREする。
+CREATE FUNCTION e2ee_reject_plaintext_channel_notes() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE enc boolean;
+BEGIN
+  SELECT encrypted INTO enc FROM channels WHERE id = NEW.channel_id FOR SHARE;
+  IF COALESCE(enc, false) THEN
+    RAISE EXCEPTION 'channel notes are unavailable in encrypted channels' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER channel_notes_e2ee_reject_plaintext BEFORE INSERT OR UPDATE ON channel_notes
+  FOR EACH ROW EXECUTE FUNCTION e2ee_reject_plaintext_channel_notes();
 
 -- 論理削除した行（DELETE /api/messages/{id} と履歴の消去）の暗号文は残さない。
 CREATE FUNCTION e2ee_clear_deleted_ciphertext() RETURNS trigger LANGUAGE plpgsql AS $$

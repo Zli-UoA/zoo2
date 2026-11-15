@@ -38,6 +38,11 @@ async fn try_create_or_get_1on1_dm(
     if encrypted {
         // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、チャンネルの行より前に取る。
         e2ee_channels::lock_members(&mut tx, &[auth_user_id, target_id]).await?;
+    } else {
+        // 平文 DM の再開で channel_user を追加する場合、DB トリガーが users をロックする。
+        // E2EE 切替は users → channels の順にロックするため、先に両ユーザーを ID 順で
+        // ロックし、channel KEY SHARE を取った後で users を待つ逆順を作らない。
+        e2ee_channels::lock_membership_users(&mut tx, &[auth_user_id, target_id]).await?;
     }
 
     let existing = Channel::filter(
@@ -65,7 +70,8 @@ async fn try_create_or_get_1on1_dm(
         let mut added_any = false;
         let now = crate::models::now_utc_millis();
 
-        // 1対1 DM の両者について membership を確認し、退出済みのユーザーをすべて復帰させる
+        // 先に退出済みメンバーを特定する。users は上でロック済み。
+        let mut missing_members = Vec::with_capacity(2);
         for uid in [auth_user_id, target_id] {
             let membership = ChannelUser::filter(
                 ChannelUser::fields()
@@ -78,27 +84,32 @@ async fn try_create_or_get_1on1_dm(
             .await?;
 
             if membership.is_none() {
-                let res = toasty::create!(ChannelUser {
-                    user_id: uid,
-                    channel_id: existing_channel.id.as_str(),
-                    joined_at: now,
-                })
-                .exec(&mut tx)
-                .await;
-
-                if let Err(err) = res {
-                    let _ = tx.rollback().await;
-                    // channel_user_pkey 衝突の場合は並行追加による競合なのでリトライ
-                    if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
-                        tracing::warn!(
-                            "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
-                        );
-                        return Ok(None);
-                    }
-                    return Err(AppError::from(err));
-                }
-                added_any = true;
+                missing_members.push(uid);
             }
+        }
+
+        // 1対1 DM の両者について、退出済みなら復帰させる。
+        for uid in missing_members {
+            let res = toasty::create!(ChannelUser {
+                user_id: uid,
+                channel_id: existing_channel.id.as_str(),
+                joined_at: now,
+            })
+            .exec(&mut tx)
+            .await;
+
+            if let Err(err) = res {
+                let _ = tx.rollback().await;
+                // channel_user_pkey 衝突の場合は並行追加による競合なのでリトライ
+                if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
+                    tracing::warn!(
+                        "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
+                    );
+                    return Ok(None);
+                }
+                return Err(AppError::from(err));
+            }
+            added_any = true;
         }
 
         // 退出していたメンバーが戻ったときだけ増やす。
@@ -315,11 +326,13 @@ pub(crate) async fn create_or_get_dm(
 
     // グループ DM の新規作成
     let mut tx = db.transaction().await?;
+    let mut members: Vec<&str> = payload.target_user_ids.iter().map(String::as_str).collect();
+    members.push(auth_user.id.as_str());
     if payload.encrypted {
         // メンバー単位のロック（端末の削除などでの一括の epoch の増加と直列にする）を、チャンネルの行より前に取る。
-        let mut members: Vec<&str> = payload.target_user_ids.iter().map(String::as_str).collect();
-        members.push(auth_user.id.as_str());
         e2ee_channels::lock_members(&mut tx, &members).await?;
+    } else {
+        e2ee_channels::lock_membership_users(&mut tx, &members).await?;
     }
     let channel_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let group_uuid = Uuid::new_v4().to_string();

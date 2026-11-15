@@ -264,6 +264,546 @@ async fn test_direct_message_leave_and_reopen() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn reopening_plain_dm_waits_for_users_before_locking_channel() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let actor = uuid::Uuid::new_v4().to_string();
+    let target = uuid::Uuid::new_v4().to_string();
+    create_test_user(&app, &actor, "lock_order_actor").await?;
+    create_test_user(&app, &target, "lock_order_target").await?;
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/api/dms")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(
+            json!({"target_user_ids": [&target]}).to_string(),
+        ))?;
+    let response = app.clone().oneshot(create).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let channel_id = serde_json::from_slice::<Value>(&body)?["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Single-channel guests can reopen a DM only when they share a channel.
+    // Keep this API precondition true so this test reaches the DB lock-order path.
+    let shared_channel = uuid::Uuid::new_v4().to_string();
+    let create_shared = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(
+            json!({
+                "id": shared_channel,
+                "channel_name": format!("dm_lock_shared_{}", uuid::Uuid::new_v4().simple()),
+                "is_private": false
+            })
+            .to_string(),
+        ))?;
+    assert_eq!(
+        app.clone().oneshot(create_shared).await?.status(),
+        StatusCode::OK
+    );
+    let add_target = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{shared_channel}/users"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(json!({"user_id": target}).to_string()))?;
+    assert_eq!(
+        app.clone().oneshot(add_target).await?.status(),
+        StatusCode::OK
+    );
+
+    for user in [&actor, &target] {
+        let mut user_db = db.clone();
+        toasty::sql::statement("UPDATE users SET guest_kind = 'single' WHERE id = $1")
+            .bind(user.as_str())
+            .exec(&mut user_db)
+            .await?;
+        let leave = Request::builder()
+            .method("POST")
+            .uri(format!("/api/channels/{channel_id}/leave"))
+            .header("X-Dev-User", user)
+            .body(Body::empty())?;
+        assert_eq!(app.clone().oneshot(leave).await?.status(), StatusCode::OK);
+    }
+
+    let (mut blocker_connection, blocker_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let blocker = blocker_connection.transaction().await?;
+    blocker
+        .query_one(
+            "SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE",
+            &[&target],
+        )
+        .await?;
+
+    let reopen_app = app.clone();
+    let reopen_actor = actor.clone();
+    let reopen_target = target.clone();
+    let mut reopen = tokio::spawn(async move {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/dms")
+            .header("content-type", "application/json")
+            .header("X-Dev-User", reopen_actor)
+            .body(Body::from(
+                json!({"target_user_ids": [reopen_target]}).to_string(),
+            ))
+            .unwrap();
+        reopen_app.oneshot(request).await.unwrap()
+    });
+
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    let waiting_for_user = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let waiting = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid)))",
+                    &[&blocker_pid],
+                )
+                .await?
+                .get::<_, bool>(0);
+            if waiting {
+                break Ok::<(), anyhow::Error>(());
+            }
+            if reopen.is_finished() {
+                break Err(anyhow::anyhow!("DM reactivation completed without waiting for the blocked users row"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if matches!(&waiting_for_user, Err(_) | Ok(Err(_))) {
+        reopen.abort();
+        blocker.rollback().await?;
+        anyhow::bail!(
+            "DM reactivation did not wait for the blocked users row: {waiting_for_user:?}"
+        );
+    }
+    waiting_for_user??;
+
+    // The real route must be waiting for users without retaining channels KEY SHARE.
+    // A concurrent FOR UPDATE NOWAIT succeeds only when the lock order is correct.
+    if let Err(err) = observer
+        .query_one(
+            "SELECT id FROM channels WHERE id = $1 FOR UPDATE NOWAIT",
+            &[&channel_id],
+        )
+        .await
+    {
+        reopen.abort();
+        blocker.rollback().await?;
+        anyhow::bail!("DM reactivation retained a channel lock while waiting for users: {err}");
+    }
+    blocker.commit().await?;
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), &mut reopen).await??;
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reopening_plain_dm_does_not_deadlock_with_concurrent_e2ee_conversion() -> anyhow::Result<()>
+{
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.e2ee_encrypted_channels_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let actor = uuid::Uuid::new_v4().to_string();
+    let target = uuid::Uuid::new_v4().to_string();
+    create_test_user(&app, &actor, "reopen_convert_actor").await?;
+    create_test_user(&app, &target, "reopen_convert_target").await?;
+
+    // Single-channel guests may reopen this DM because they share this channel.
+    let shared_channel = uuid::Uuid::new_v4().to_string();
+    let create_shared = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(
+            json!({
+                "id": shared_channel,
+                "channel_name": format!("reopen_convert_shared_{}", uuid::Uuid::new_v4().simple()),
+                "is_private": false
+            })
+            .to_string(),
+        ))?;
+    assert_eq!(
+        app.clone().oneshot(create_shared).await?.status(),
+        StatusCode::OK
+    );
+    let add_target = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{shared_channel}/users"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(json!({"user_id": target}).to_string()))?;
+    assert_eq!(
+        app.clone().oneshot(add_target).await?.status(),
+        StatusCode::OK
+    );
+
+    let create_dm = Request::builder()
+        .method("POST")
+        .uri("/api/dms")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(
+            json!({"target_user_ids": [&target]}).to_string(),
+        ))?;
+    let response = app.clone().oneshot(create_dm).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let channel_id = serde_json::from_slice::<Value>(&body)?["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    for user in [&actor, &target] {
+        let mut user_db = db.clone();
+        toasty::sql::statement("UPDATE users SET guest_kind = 'single' WHERE id = $1")
+            .bind(user.as_str())
+            .exec(&mut user_db)
+            .await?;
+    }
+
+    let (mut blocker_connection, blocker_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let blocker = blocker_connection.transaction().await?;
+    blocker
+        .query_one("SELECT pg_advisory_xact_lock(3, hashtext($1))", &[&actor])
+        .await?;
+
+    // Conversion reads both current members and locks their users before it
+    // waits for the member advisory lock. The actor then leaves while conversion
+    // is paused, making that membership snapshot stale.
+    let convert_app = app.clone();
+    let convert_target = target.clone();
+    let convert_path = format!("/api/channels/{channel_id}/encrypt");
+    let mut convert = tokio::spawn(async move {
+        let request = Request::builder()
+            .method("POST")
+            .uri(convert_path)
+            .header("X-Dev-User", convert_target)
+            .body(Body::empty())
+            .unwrap();
+        convert_app.oneshot(request).await.unwrap()
+    });
+
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    let conversion_pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let pid: Option<i32> = observer.query_one(
+                "SELECT (SELECT pid FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%pg_advisory_xact_lock(3%' AND $1 = ANY(pg_blocking_pids(pid)) LIMIT 1)",
+                &[&blocker_pid],
+            ).await?.get(0);
+            if let Some(pid) = pid { break Ok::<i32, anyhow::Error>(pid); }
+            if convert.is_finished() {
+                break Err(anyhow::anyhow!("conversion did not wait for the held member advisory lock"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await??;
+
+    let leave = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{channel_id}/leave"))
+        .header("X-Dev-User", &actor)
+        .body(Body::empty())?;
+    assert_eq!(app.clone().oneshot(leave).await?.status(), StatusCode::OK);
+
+    let reopen_app = app.clone();
+    let reopen_actor = actor.clone();
+    let reopen_target = target.clone();
+    let mut reopen = tokio::spawn(async move {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/dms")
+            .header("content-type", "application/json")
+            .header("X-Dev-User", reopen_actor)
+            .body(Body::from(
+                json!({"target_user_ids": [reopen_target]}).to_string(),
+            ))
+            .unwrap();
+        reopen_app.oneshot(request).await.unwrap()
+    });
+
+    // Confirm the API is actually contending with conversion before releasing
+    // the advisory lock; old ordering makes the wait-for cycle reproducible.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = observer.query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid)))",
+                &[&conversion_pid],
+            ).await?.get(0);
+            if waiting { break Ok::<(), anyhow::Error>(()); }
+            if reopen.is_finished() {
+                break Err(anyhow::anyhow!("DM reactivation did not contend with conversion-held user locks"));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await??;
+
+    blocker.commit().await?;
+    let results = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        tokio::join!(&mut convert, &mut reopen)
+    })
+    .await;
+    if results.is_err() {
+        convert.abort();
+        reopen.abort();
+        anyhow::bail!("DM reactivation and E2EE conversion did not finish");
+    }
+    let (convert_result, reopen_result) = results?;
+    let convert_response = convert_result?;
+    let reopen_response = reopen_result?;
+    assert_eq!(convert_response.status(), StatusCode::OK);
+    assert_eq!(reopen_response.status(), StatusCode::OK);
+    let body = to_bytes(reopen_response.into_body(), usize::MAX).await?;
+    let reopened = serde_json::from_slice::<Value>(&body)?;
+    let reopened_id = reopened["data"]["id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("DM response lacks channel ID"))?;
+    let original_encrypted: bool = observer
+        .query_one(
+            "SELECT encrypted FROM channels WHERE id = $1",
+            &[&channel_id],
+        )
+        .await?
+        .get(0);
+    assert!(original_encrypted);
+    let row = observer
+        .query_one(
+            "SELECT c.encrypted, (SELECT count(*) FROM channel_user cu WHERE cu.channel_id = c.id AND cu.user_id IN ($2, $3)) FROM channels c WHERE c.id = $1 AND c.deleted_at IS NULL",
+            &[&reopened_id, &actor, &target],
+        )
+        .await?;
+    let reopened_encrypted: bool = row.get(0);
+    let members: i64 = row.get(1);
+    assert_eq!(members, 2, "both users must belong to the returned DM");
+    assert_eq!(reopened_encrypted, reopened_id == channel_id);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reopening_encrypted_dm_serializes_with_encrypted_note_rejection() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.e2ee_encrypted_channels_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config.clone()));
+    let actor = uuid::Uuid::new_v4().to_string();
+    let target = uuid::Uuid::new_v4().to_string();
+    create_test_user(&app, &actor, "reopen_encrypted_actor").await?;
+    create_test_user(&app, &target, "reopen_encrypted_target").await?;
+
+    let shared_channel = uuid::Uuid::new_v4().to_string();
+    let create_channel = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(
+            json!({
+                "id": shared_channel,
+                "channel_name": format!("reopen_encrypted_notes_{}", uuid::Uuid::new_v4().simple()),
+                "is_private": false
+            })
+            .to_string(),
+        ))?;
+    assert_eq!(
+        app.clone().oneshot(create_channel).await?.status(),
+        StatusCode::OK
+    );
+    let add_target = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{shared_channel}/users"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(json!({"user_id": target}).to_string()))?;
+    assert_eq!(
+        app.clone().oneshot(add_target).await?.status(),
+        StatusCode::OK
+    );
+
+    let dm_payload = json!({"target_user_ids": [&target], "encrypted": true});
+    let create = Request::builder()
+        .method("POST")
+        .uri("/api/dms")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &actor)
+        .body(Body::from(dm_payload.to_string()))?;
+    let response = app.clone().oneshot(create).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let channel_id = serde_json::from_slice::<Value>(&body)?["data"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    for user in [&actor, &target] {
+        let mut guest_db = db.clone();
+        toasty::sql::statement("UPDATE users SET guest_kind = 'single' WHERE id = $1")
+            .bind(user.as_str())
+            .exec(&mut guest_db)
+            .await?;
+        let leave = Request::builder()
+            .method("POST")
+            .uri(format!("/api/channels/{channel_id}/leave"))
+            .header("X-Dev-User", user)
+            .body(Body::empty())?;
+        assert_eq!(app.clone().oneshot(leave).await?.status(), StatusCode::OK);
+    }
+
+    let (mut blocker_connection, blocker_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(blocker_driver);
+    let blocker_pid: i32 = blocker_connection
+        .query_one("SELECT pg_backend_pid()", &[])
+        .await?
+        .get(0);
+    let blocker = blocker_connection.transaction().await?;
+    blocker
+        .query_one(
+            "SELECT id FROM channels WHERE id = $1 FOR UPDATE",
+            &[&channel_id],
+        )
+        .await?;
+
+    let note_app = app.clone();
+    let note_path = format!("/api/channels/{channel_id}/notes");
+    let note_actor = target.clone();
+    let note = tokio::spawn(async move {
+        let request = Request::builder()
+            .method("POST")
+            .uri(note_path)
+            .header("content-type", "application/json")
+            .header("X-Dev-User", note_actor)
+            .body(Body::from(
+                json!({"title":"encrypted","content":"body"}).to_string(),
+            ))
+            .unwrap();
+        note_app.clone().oneshot(request).await.unwrap()
+    });
+    let (observer, observer_driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(observer_driver);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = observer
+                .query_one(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%channels%' AND query LIKE '%FOR SHARE%' AND $1 = ANY(pg_blocking_pids(pid)))",
+                    &[&blocker_pid],
+                )
+                .await?
+                .get(0);
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("encrypted note request did not wait for the channel lock"))??;
+
+    let reopen_app = app.clone();
+    let reopen_actor = actor.clone();
+    let reopen_payload = dm_payload.clone();
+    let mut reopen = tokio::spawn(async move {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/dms")
+            .header("content-type", "application/json")
+            .header("X-Dev-User", reopen_actor)
+            .body(Body::from(reopen_payload.to_string()))
+            .unwrap();
+        reopen_app.clone().oneshot(request).await.unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let waiters = observer
+                .query(
+                    "SELECT query FROM pg_stat_activity WHERE wait_event_type = 'Lock'",
+                    &[],
+                )
+                .await?
+                .into_iter()
+                .map(|row| row.get::<_, String>(0))
+                .collect::<Vec<_>>();
+            if waiters
+                .iter()
+                .any(|query| query.contains("users") && query.contains("NO KEY UPDATE"))
+            {
+                break;
+            }
+            if reopen.is_finished() {
+                let response = (&mut reopen).await?;
+                let status = response.status();
+                let body = to_bytes(response.into_body(), usize::MAX).await?;
+                anyhow::bail!("DM reactivation ended early with status {status} and body {} while note authorization held locks: {waiters:?}", String::from_utf8_lossy(&body));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("DM reactivation did not wait for the users row held by note authorization"))??;
+
+    blocker.commit().await?;
+    let (reopen_response, note_response) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(reopen, note)
+        })
+        .await?;
+    assert_eq!(reopen_response?.status(), StatusCode::OK);
+    assert_eq!(note_response?.status(), StatusCode::NOT_FOUND);
+    let note_request = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{channel_id}/notes"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &target)
+        .body(Body::from(
+            json!({"title":"encrypted","content":"body"}).to_string(),
+        ))?;
+    assert_eq!(
+        app.clone().oneshot(note_request).await?.status(),
+        StatusCode::BAD_REQUEST,
+        "encrypted notes are rejected after acquiring users then channels locks"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_group_dm_flow() -> anyhow::Result<()> {
     let (app, _) = setup_app().await?;
 

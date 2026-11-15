@@ -574,6 +574,12 @@ pub async fn move_content(
         &[],
     )
     .await?;
+    // Keep the guest-kind decision stable through the membership migration below.
+    // Membership inserts and guest_kind transitions use this same users-row lock.
+    // Reconcile and link can race with ZIP import / E2EE conversion. Those paths
+    // take every users row in ID order, so lock both sides in that same order
+    // before membership locks or channel rows are acquired below.
+    crate::routes::e2ee_channels::lock_membership_users(tx, &[from, to]).await?;
     // ゲストの参加チャンネルは管理者が決めるため、プレースホルダの参加チャンネルは移さない
     // (single のゲストは 2 つ目のチャンネルに入れず、連携全体が失敗するのも避ける)。
     // is_guest は無効化済み (deactivated) でも立つため、ゲストの種別で判定する
@@ -856,7 +862,7 @@ fn replace_mentions(content: &str, names: &MentionNames) -> Option<String> {
 /// 選べば、別のワークスペースも同じ Zoo チャンネルに取り込めるので、ワークスペースごとではなく全体で
 /// 1 つのロックにする (付け替えは連携時と取り込みの最後にしか走らないので、待ちは問題にならない)。
 /// 行ロックを取る前に呼ぶ。
-async fn lock_links(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
+pub(super) async fn lock_links(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
     one(
         tx,
         "SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended('slack-link',0)) IS NULL)::text",
@@ -947,6 +953,13 @@ pub async fn reconcile_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Res
         .iter()
         .map(|(from, to)| (from.as_str(), to.as_str()))
         .collect();
+    // Membership triggers lock users rows, so acquire the entire sorted set before
+    // lock_moves takes member advisory locks and channel rows.
+    let user_ids: Vec<&str> = pairs
+        .iter()
+        .flat_map(|(from, to)| [from.as_str(), to.as_str()])
+        .collect();
+    crate::routes::e2ee_channels::lock_membership_users(tx, &user_ids).await?;
     lock_moves(tx, &refs).await?;
     for (placeholder, user) in &pairs {
         move_content(tx, placeholder, user).await?;

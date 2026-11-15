@@ -148,6 +148,10 @@ pub(crate) async fn create_channel(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
+    // Channel membership triggers and guest_kind transitions both lock this row.
+    // Take it before checking guest status so a concurrent transition cannot land
+    // between authorization and channel creation.
+    e2ee_channels::lock_membership_users(&mut tx, &[auth_user.id.as_str()]).await?;
     if crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         return Err(AppError::Forbidden(
             "Guests cannot create or join channels without an invitation".into(),
@@ -522,6 +526,10 @@ pub(crate) async fn join_channel(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
+    // Serialize the guest check with guest_kind changes and membership inserts.
+    // If we checked first, a concurrent guest transition could commit while this
+    // transaction waits for the same user lock immediately before inserting.
+    e2ee_channels::lock_membership_users(&mut tx, &[auth_user.id.as_str()]).await?;
     if crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         return Err(AppError::Forbidden(
             "Guests cannot create or join channels without an invitation".into(),
@@ -601,6 +609,7 @@ pub(crate) async fn join_channel(
             e2ee_channels::lock_members(&mut tx, &[auth_user.id.as_str()]).await?;
             e2ee_channels::check_member_limit(&mut tx, &id, 1).await?;
         } else {
+            e2ee_channels::lock_membership_users(&mut tx, &[auth_user.id.as_str()]).await?;
             // ロックなしで平文と読んだあとに暗号化へ切り替わっていたら（#367）、epoch を増やさずに足さない。
             e2ee_channels::ensure_still_plaintext(&mut tx, &id).await?;
         }
@@ -654,6 +663,9 @@ async fn add_channel_user(
     .await?
     .first()
     .is_some_and(|row| row["encrypted"] == true);
+    // The insert trigger locks users before channel foreign-key checks. Lock
+    // here too so this API keeps the same users → channels order.
+    e2ee_channels::lock_membership_users(&mut tx, &[payload.user_id.as_str()]).await?;
     if encrypted {
         e2ee_channels::lock_members(&mut tx, &[payload.user_id.as_str()]).await?;
     }

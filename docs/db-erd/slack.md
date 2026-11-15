@@ -142,6 +142,7 @@ erDiagram
       boolean linked
       text name
       text real_name
+      text profile_source
       timestamptz created_at
       timestamptz updated_at
     }
