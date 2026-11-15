@@ -130,7 +130,7 @@ export class CryptoOperations {
       case "reverifyCandidateUsers":
         return this.opened().reverifyCandidateUsers();
       case "reverifySenders":
-        return this.opened().reverifySenders(request.userIds, request.keysQuery);
+        return this.opened().reverifySenders(request.request, request.keysQuery);
       case "pendingBackupCount":
         return this.opened().pendingBackupCount();
       case "setupBegin":

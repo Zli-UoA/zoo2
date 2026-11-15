@@ -377,13 +377,14 @@ export class E2eeDeviceManager {
   async reverifySenders(): Promise<number> {
     if (this.stopped || this.suspended) return 0;
     const { worker, client } = this.options;
-    const senders = await worker.request({ op: "reverifyCandidateUsers" });
+    const request = await worker.request({ op: "reverifyCandidateUsers" });
+    const senders = request.userIds;
     if (senders.length === 0) return 0;
     // 他のユーザーのマスター鍵を信頼できるかを確かめるため、自分も問い合わせる（to-device と同じ）。
     const users = [...new Set([...senders, this.options.userId])].sort();
     const keysQuery = await queryKeys(client, users, this.processAbort.signal);
     if (this.stopped || this.suspended) return 0;
-    return worker.request({ op: "reverifySenders", userIds: senders, keysQuery });
+    return worker.request({ op: "reverifySenders", request, keysQuery });
   }
 
   /** 終わっていない失効があるか（#362）。 */

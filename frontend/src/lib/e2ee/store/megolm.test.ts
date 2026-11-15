@@ -345,6 +345,12 @@ describe("MegolmChannels", () => {
   });
 });
 
+/** 今の信頼の世代で、`userIds` の候補を判定し直す（問い合わせを始めてからの信頼の変化はない）。 */
+async function reverifyAs(store: CryptoStore, userIds: string[], query: KeysQueryResponse) {
+  const { generation } = await store.reverifyCandidateUsers();
+  return store.reverifySenders({ userIds, generation }, query);
+}
+
 /** ユーザーのクロス署名鍵（`OwnSecrets`）と、`keys/query` に載せる公開鍵。 */
 function identity(userId: string) {
   const secrets = OwnSecrets.generate(userId);
@@ -467,21 +473,21 @@ describe("受信時の検証の手順 4（送信端末を検証済みにする�
     expect(await current.megolm.decrypt([message])).toMatchObject([{ sender: "unverified" }]);
 
     // 解錠していなければ判定できない。問い合わせる送信ユーザーを返さず、候補は残す。
-    expect(await current.reverifyCandidateUsers()).toEqual([]);
-    expect(await current.reverifySenders([BOB], query)).toBe(0);
+    expect((await current.reverifyCandidateUsers()).userIds).toEqual([]);
+    expect(await reverifyAs(current, [BOB], query)).toBe(0);
 
     // 解錠したあとは、同じ端末鍵が自己署名鍵で署名されているので、検証済みに上げる。
     await current.saveOwnKeys(me.secrets, 1);
-    expect(await current.reverifyCandidateUsers()).toEqual([BOB]);
-    expect(await current.reverifySenders([BOB], query)).toBe(1);
-    expect(await current.reverifyCandidateUsers()).toEqual([]);
+    expect((await current.reverifyCandidateUsers()).userIds).toEqual([BOB]);
+    expect(await reverifyAs(current, [BOB], query)).toBe(1);
+    expect((await current.reverifyCandidateUsers()).userIds).toEqual([]);
     expect(await current.megolm.decrypt([message])).toMatchObject([{ sender: "verified" }]);
 
     // 開き直しても検証済みのまま（保存した）。
     await current.close();
     const reopened = await openCurrent();
     expect(await reopened.megolm.decrypt([message])).toMatchObject([{ sender: "verified" }]);
-    expect(await reopened.reverifyCandidateUsers()).toEqual([]);
+    expect((await reopened.reverifyCandidateUsers()).userIds).toEqual([]);
     await reopened.close();
     await other.store.close();
   });
@@ -495,23 +501,23 @@ describe("受信時の検証の手順 4（送信端末を検証済みにする�
     const unsigned = keysQueryWith(BOB, { [BOB]: me }, [other.store], []);
     const received = await sendAndDecrypt(other.store, current.store, unsigned);
     expect(received).toMatchObject({ sender: "unverified" });
-    expect(await current.store.reverifyCandidateUsers()).toEqual([BOB]);
-    expect(await current.store.reverifySenders([BOB], unsigned)).toBe(0);
+    expect((await current.store.reverifyCandidateUsers()).userIds).toEqual([BOB]);
+    expect(await reverifyAs(current.store, [BOB], unsigned)).toBe(0);
     // もう一度表示して復号しても、すぐには問い合わせない。
     const encrypted = other.store.megolm.encrypt(CHANNEL, outgoing("m2", "again"));
     await current.store.megolm.decrypt([row(other.store, "m2", encrypted)]);
-    expect(await current.store.reverifyCandidateUsers()).toEqual([]);
+    expect((await current.store.reverifyCandidateUsers()).userIds).toEqual([]);
 
     // 信頼が変わったら（ここでは TOFU のピンの確定を想定）、待ち時間を消して候補に戻す。
     current.store.forgetReverifyAttempts();
-    expect(await current.store.reverifyCandidateUsers()).toEqual([BOB]);
-    expect(await current.store.reverifySenders([BOB], unsigned)).toBe(0);
+    expect((await current.store.reverifyCandidateUsers()).userIds).toEqual([BOB]);
+    expect(await reverifyAs(current.store, [BOB], unsigned)).toBe(0);
 
     // 送信端末に署名したあとで解錠し直すと、失敗した候補も待たずに判定し直し、上げる。
     const signed = keysQueryWith(BOB, { [BOB]: me }, [other.store], [me.signDevice(other.store)]);
     await current.store.saveOwnKeys(me.secrets, 1);
-    expect(await current.store.reverifyCandidateUsers()).toEqual([BOB]);
-    expect(await current.store.reverifySenders([BOB], signed)).toBe(1);
+    expect((await current.store.reverifyCandidateUsers()).userIds).toEqual([BOB]);
+    expect(await reverifyAs(current.store, [BOB], signed)).toBe(1);
     expect(await current.store.megolm.decrypt([row(other.store, "m2", encrypted)])).toMatchObject([
       { sender: "verified" },
     ]);
@@ -528,7 +534,7 @@ describe("受信時の検証の手順 4（送信端末を検証済みにする�
     const unsigned = keysQueryWith(BOB, { [BOB]: me }, [other.store], []);
     await sendAndDecrypt(other.store, current.store, unsigned);
     const users = await current.store.reverifyCandidateUsers();
-    expect(users).toEqual([BOB]);
+    expect(users.userIds).toEqual([BOB]);
     // keys/query を待つあいだに、Alice のメッセージが「未検証の送信者」になった。
     expect(
       await sendAndDecrypt(
@@ -540,9 +546,27 @@ describe("受信時の検証の手順 4（送信端末を検証済みにする�
     ).toMatchObject({ sender: "unverified" });
     expect(await current.store.reverifySenders(users, unsigned)).toBe(0);
     // Alice の候補は試したことにしないので、次の問い合わせに入る。
-    expect(await current.store.reverifyCandidateUsers()).toEqual([ALICE]);
+    expect((await current.store.reverifyCandidateUsers()).userIds).toEqual([ALICE]);
     await other.store.close();
     await alice.store.close();
+    await current.store.close();
+  });
+
+  it("問い合わせを待つあいだに信頼が変わったら、古い結果では試した時刻を付けない", async () => {
+    const me = identity(BOB);
+    const other = await openStore(BOB);
+    const current = await openStore(BOB);
+    await current.store.saveOwnKeys(me.secrets, 1);
+    const unsigned = keysQueryWith(BOB, { [BOB]: me }, [other.store], []);
+    await sendAndDecrypt(other.store, current.store, unsigned);
+    const request = await current.store.reverifyCandidateUsers();
+    expect(request.userIds).toEqual([BOB]);
+    // 署名のない keys/query の応答を待つあいだに、解錠し直した（または相手を信頼した）。
+    current.store.forgetReverifyAttempts();
+    expect(await current.store.reverifySenders(request, unsigned)).toBe(0);
+    // 古い結果で試した時刻を付けないので、今の情報ですぐに問い合わせ直せる。
+    expect((await current.store.reverifyCandidateUsers()).userIds).toEqual([BOB]);
+    await other.store.close();
     await current.store.close();
   });
 
