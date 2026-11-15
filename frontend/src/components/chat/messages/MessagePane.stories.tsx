@@ -126,6 +126,11 @@ export const Encrypted: Story = {
     );
     await expect(composer).toBeDisabled();
     await expect(screen.queryByRole("button", { name: "ファイルを添付" })).not.toBeInTheDocument();
+    // 配布先の表示が空でも、読み上げの live region は置いておく（後から配れない相手が出ても読み上げる）。
+    const recipientsRegion = screen.getByTestId("encryption-recipients-status");
+    await expect(recipientsRegion).toHaveAttribute("role", "status");
+    await expect(recipientsRegion).toHaveAttribute("aria-live", "polite");
+    await expect(recipientsRegion).toBeEmptyDOMElement();
   }),
 };
 
