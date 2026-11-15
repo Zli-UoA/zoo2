@@ -30,11 +30,11 @@ fn parse(line: &str) -> anyhow::Result<Change> {
     })
 }
 
-fn print(change: &Change) {
+fn print(change: &Change) -> std::io::Result<()> {
     let line = serde_json::json!({"id": change.id, "old": change.old, "new": change.new});
     let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{line}");
-    let _ = out.flush();
+    writeln!(out, "{line}")?;
+    out.flush()
 }
 
 #[tokio::main]
@@ -95,15 +95,13 @@ async fn main() -> anyhow::Result<()> {
             channel,
         },
         |change| {
-            if apply {
-                print(change);
-            }
+            if apply { print(change) } else { Ok(()) }
         },
     )
     .await?;
     if !apply {
         for change in &report.samples {
-            print(change);
+            print(change)?;
         }
     }
     eprintln!(

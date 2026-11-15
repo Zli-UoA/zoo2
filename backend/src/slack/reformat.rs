@@ -73,10 +73,11 @@ SELECT json_build_object('id',msgs.id,'content',msgs.content)::text \
 FROM msgs WHERE msgs.id IN (SELECT id FROM stable UNION SELECT id FROM mapped) ORDER BY msgs.id";
 
 /// 取り込んだ投稿の本文に書式の変換を当てる。書き換える行ごとに `on_change` を呼ぶ (書き込む前に呼ぶ)。
+/// `on_change` が失敗したら、そのバッチはコミットせずに、エラーを返して止める (元の本文の控えを残せないため)。
 pub async fn run(
     db: &toasty::Db,
     options: &Options,
-    mut on_change: impl FnMut(&Change),
+    mut on_change: impl FnMut(&Change) -> std::io::Result<()>,
 ) -> Result<Report, AppError> {
     let mut report = Report::default();
     let channels = {
@@ -137,7 +138,10 @@ pub async fn run(
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
             for change in batch {
-                on_change(change);
+                // 元の本文を書き出せないまま更新すると、元に戻せなくなる。失敗したら、このバッチをコミットせずに止める
+                on_change(change).map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("could not write the backup: {e}"))
+                })?;
                 let updated = query(
                     &mut tx,
                     "UPDATE messages SET content=$2 \

@@ -232,10 +232,21 @@ async fn test_reformat_converts_only_imported_messages() -> anyhow::Result<()> {
         assert_eq!(&content(&state, id).await, old);
     }
 
+    // 元の本文を書き出せないときは、更新せずに止める (元に戻せなくなるため)
+    let failed = reformat::run(&state.db, &only_this_channel(true), |_| {
+        Err(std::io::Error::other("disk full"))
+    })
+    .await;
+    assert!(failed.is_err());
+    for (id, old) in before.iter().zip(&snapshot) {
+        assert_eq!(&content(&state, id).await, old, "{id} must not change");
+    }
+
     // 書き込む
     let mut backup: Vec<Change> = Vec::new();
     let done_run = reformat::run(&state.db, &only_this_channel(true), |c| {
-        backup.push(c.clone())
+        backup.push(c.clone());
+        Ok(())
     })
     .await?;
     assert_eq!(
