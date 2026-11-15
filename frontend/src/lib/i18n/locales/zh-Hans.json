@@ -708,6 +708,9 @@
     "showLess": "收起"
   },
   "home": {
+    "back": "返回",
+    "deleted": "帖子已删除",
+    "newPosts": "查看新帖子（{{count}}）",
     "quotedPost": "引用的帖子",
     "quoteUnavailable": "无法显示引用的帖子",
     "openQuotedPost": "打开引用的帖子",

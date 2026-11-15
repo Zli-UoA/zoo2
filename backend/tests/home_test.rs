@@ -2056,3 +2056,100 @@ async fn individual_image_labels_are_preserved_and_nsfw_channels_override_them()
     assert_eq!(status, StatusCode::BAD_REQUEST);
     Ok(())
 }
+
+#[tokio::test]
+async fn viewport_refresh_preserves_audience_and_omits_deleted_entries() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let viewer = uuid::Uuid::new_v4().to_string();
+    for id in [&owner, &viewer] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let public = uuid::Uuid::new_v4().to_string();
+    let private = uuid::Uuid::new_v4().to_string();
+    let deleted = uuid::Uuid::new_v4().to_string();
+    for (id, visibility, removed) in [
+        (&public, "public", false),
+        (&private, "followers", false),
+        (&deleted, "public", true),
+    ] {
+        toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,visibility,deleted_at) VALUES($1,$2,'viewport',$3,CASE WHEN $4::boolean THEN now() ELSE NULL END)")
+            .bind(id.as_str()).bind(owner.as_str()).bind(visibility).bind(removed.to_string()).exec(&mut db).await?;
+    }
+    let body = json!({"timeline":"social","entries":[public, private, deleted, "missing"]});
+    let (status, rows) = request(
+        &app,
+        "POST",
+        Some(&viewer),
+        "/api/home/entries",
+        Some(body.clone()),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["entry_id"], public);
+    let (_, own) = request(&app, "POST", Some(&owner), "/api/home/entries", Some(body)).await?;
+    assert_eq!(own.as_array().unwrap().len(), 2);
+    assert!(
+        own.as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == private)
+    );
+    let mut secured_config = Config::from_env();
+    secured_config.dev_auth_enabled = false;
+    let secured_app = create_router(AppState::new(db.clone(), secured_config));
+    assert_eq!(
+        request(
+            &secured_app,
+            "POST",
+            None,
+            "/api/home/entries",
+            Some(json!({"entries":[public]}))
+        )
+        .await?
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&viewer),
+            "/api/home/entries",
+            Some(json!({"entries":[]}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&viewer),
+            "/api/home/entries",
+            Some(json!({"entries":vec!["x";101]}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    for id in [&owner, &viewer] {
+        toasty::sql::statement("DELETE FROM home_posts WHERE user_id=$1")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+        toasty::sql::statement("DELETE FROM users WHERE id=$1")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    Ok(())
+}

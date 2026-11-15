@@ -1,5 +1,49 @@
 import { describe, expect, it } from "vite-plus/test";
-import { reachedTimelineTail, timelinePosition } from "./homeTimeline";
+import {
+  countNewTimelineEntries,
+  mergeTimelineWindow,
+  reachedTimelineTail,
+  timelinePosition,
+} from "./homeTimeline";
+describe("bounded timeline refresh", () => {
+  const rows = Array.from({ length: 1200 }, (_, i) => ({ id: `post-${i}`, content: `body ${i}` }));
+  it("preserves unloaded-from-DOM history and updates/removes checked rows", () => {
+    const edited = { ...rows[750], content: "edited" };
+    const next = mergeTimelineWindow(
+      rows,
+      rows.slice(0, 50),
+      [rows[750].id, rows[751].id],
+      [edited],
+      false,
+    );
+    expect(next).toHaveLength(1199);
+    expect(next[750]).toEqual(edited);
+    expect(next.some((row) => row.id === rows[751].id)).toBe(false);
+    expect(next.at(-1)).toBe(rows.at(-1));
+    expect(next[0]).toBe(rows[0]);
+  });
+  it("prepends new entries, removes deleted head entries and deduplicates the overlap", () => {
+    const head = [{ id: "new", content: "new" }, ...rows.slice(1, 50)];
+    const next = mergeTimelineWindow(rows, head, [], [], false);
+    expect(next).toEqual([...head, ...rows.slice(50)]);
+    expect(new Set(next.map((row) => row.id)).size).toBe(next.length);
+  });
+  it("keeps the reading window when a disconnected head has no overlap", () => {
+    const head = [{ id: "new", content: "new" }];
+    expect(mergeTimelineWindow(rows, head, [], [], false)).toEqual(rows);
+    // Explicitly returning to the top replaces the disconnected window, avoiding a gap.
+    expect(mergeTimelineWindow(rows, head, [], [], true)).toEqual(head);
+  });
+  it("keeps repost entries separate from the original post", () => {
+    const current = [
+      { id: "p", entry_id: "p" },
+      { id: "p", entry_id: "repost:r" },
+    ];
+    expect(mergeTimelineWindow(current, current.slice(0, 1), ["repost:r"], [], false)).toEqual([
+      current[0],
+    ]);
+  });
+});
 describe("retaining the loaded timeline tail", () => {
   it("does not stop at a newer microsecond in the same millisecond", () => {
     const tail = timelinePosition({ id: "z-tail", sort_key: "1767225600000001" });
@@ -36,4 +80,15 @@ describe("retaining the loaded timeline tail", () => {
       ),
     ).toBe(true);
   });
+});
+
+it("does not count the same disconnected head repeatedly as new arrivals", () => {
+  const old = [{ id: "old" }],
+    head = [{ id: "new-2" }, { id: "new-1" }];
+  expect(countNewTimelineEntries(head, old)).toBe(2);
+  expect(countNewTimelineEntries(head, head)).toBe(0);
+  expect(countNewTimelineEntries([{ id: "new-3" }, ...head], head)).toBe(1);
+  expect(
+    countNewTimelineEntries([{ id: "p", entry_id: "repost:r" }, { id: "p" }], [{ id: "p" }]),
+  ).toBe(1);
 });

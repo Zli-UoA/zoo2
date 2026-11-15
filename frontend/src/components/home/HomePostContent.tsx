@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 import { SensitiveMedia } from "../ui/sensitive-media";
 import { ImagePreview } from "../ui/image-preview";
 import { imageAspectRatio, type ImageMetadata } from "../../lib/imageMetadata";
@@ -116,7 +116,7 @@ function QuoteCard({ quote }: { quote: HomeQuote }) {
 }
 
 /** The same MFM, emoji and link rendering in Home and public profiles. */
-export function HomePostContent({
+export const HomePostContent = memo(function HomePostContent({
   content,
   emojis,
   media = [],
@@ -184,4 +184,4 @@ export function HomePostContent({
       ) : null}
     </div>
   );
-}
+});

@@ -10,12 +10,15 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::get,
+    routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 #[derive(Default, Deserialize)]
 struct Page {
+    /// Entry IDs for refreshing a bounded viewport, including repost entries.
+    #[serde(skip)]
+    entries: Option<Vec<String>>,
     before: Option<String>,
     timeline: Option<String>,
     limit: Option<usize>,
@@ -23,6 +26,29 @@ struct Page {
     author: Option<String>,
     #[serde(default)]
     thread: bool,
+}
+#[derive(Deserialize)]
+struct EntryWindow {
+    entries: Vec<String>,
+    timeline: Option<String>,
+    author: Option<String>,
+}
+async fn refresh_entries(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(window): Json<EntryWindow>,
+) -> Result<Json<Vec<Value>>, AppError> {
+    list(
+        State(state),
+        user,
+        Query(Page {
+            entries: Some(window.entries),
+            timeline: window.timeline,
+            author: window.author,
+            ..Page::default()
+        }),
+    )
+    .await
 }
 #[derive(Deserialize)]
 struct NewPost {
@@ -54,6 +80,7 @@ struct Settings {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/home", get(list).post(create))
+        .route("/api/home/entries", post(refresh_entries))
         .merge(super::home_images::router())
         .route("/api/home/live", get(super::home_live::upgrade))
         .route("/api/home/settings", get(settings).put(update_settings))
@@ -326,6 +353,10 @@ async fn list(
     if !matches!(timeline, "home" | "local" | "social") {
         return Err(AppError::BadRequest("Unknown timeline".into()));
     }
+    let entries = page.entries;
+    if let Some(ref ids) = entries {
+        validate_entries(ids)?;
+    }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let guest = crate::apps::events::guest(&mut tx, &user.id).await?;
@@ -380,7 +411,7 @@ async fn list(
       )
     ), picked AS (
       SELECT f.extra,f.id,f.entry_id,f.sort_at,CASE WHEN $8::boolean AND (SELECT phase FROM thread_rollout WHERE id)='collecting' THEN COALESCE((SELECT -depth FROM ancestors WHERE id=f.id),1) ELSE 0 END AS tree_order,CASE WHEN $8::boolean THEN (SELECT path FROM descendants WHERE id=f.id) END AS tree_path
-      FROM entries f WHERE ($6='' OR f.id=$6 OR $8::boolean AND (f.id IN (SELECT id FROM ancestors) OR f.id IN (SELECT id FROM descendants))) AND ($7='' OR f.user_id=$7) AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2))
+      FROM entries f WHERE (jsonb_array_length($9::jsonb)=0 OR f.entry_id IN (SELECT jsonb_array_elements_text($9::jsonb))) AND ($6='' OR f.id=$6 OR $8::boolean AND (f.id IN (SELECT id FROM ancestors) OR f.id IN (SELECT id FROM descendants))) AND ($7='' OR f.user_id=$7) AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2))
       ORDER BY CASE WHEN $8::boolean AND f.id=$6 THEN 0 WHEN $8::boolean AND f.id IN (SELECT id FROM ancestors) THEN 1 ELSE 2 END,tree_order,tree_path,f.sort_at DESC,f.entry_id DESC LIMIT $5::integer
     ), page AS MATERIALIZED (
       SELECT row_to_json(b)::jsonb || CASE WHEN b.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(b.content)) e),'[]'::jsonb)) END || f.extra AS post,f.id,f.entry_id,f.sort_at,f.tree_order,f.tree_path
@@ -403,7 +434,7 @@ async fn list(
       'reposts',(SELECT count(*) FROM apub_reposts r WHERE r.post_id=f.id AND (r.visibility IN ('public','local') OR r.user_id=$1 OR EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1))),
       'reposted',EXISTS(SELECT 1 FROM apub_reposts WHERE post_id=f.id AND user_id=$1)
     ))::text FROM page f ORDER BY f.tree_order,f.tree_path,f.sort_at DESC,f.entry_id DESC"#,
-    &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or(""),if page.thread{"true"}else{"false"}]).await?;
+    &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&if entries.is_some() { 100 } else { page.limit.unwrap_or(50).clamp(1,500) }.to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or(""),if page.thread{"true"}else{"false"},&json!(entries.unwrap_or_default()).to_string()]).await?;
 
     activitypub::quotes::decorate(&mut tx, &mut rows).await?;
     super::home_images::decorate(&mut tx, &mut rows).await?;
@@ -416,6 +447,17 @@ async fn list(
     activitypub::remember_display_emojis(&mut tx, &rows).await?;
     tx.commit().await?;
     Ok(Json(rows))
+}
+fn validate_entries(entries: &[String]) -> Result<(), AppError> {
+    if entries.is_empty()
+        || entries.len() > 100
+        || entries
+            .iter()
+            .any(|id| id.is_empty() || id.len() > 2048 || id.contains('\0'))
+    {
+        return Err(AppError::BadRequest("Invalid timeline entries".into()));
+    }
+    Ok(())
 }
 async fn detail(
     State(state): State<AppState>,
@@ -504,6 +546,20 @@ async fn update_settings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn viewport_entries_are_bounded_and_typed() {
+        assert!(validate_entries(&["p".into(), "repost:r".into()]).is_ok());
+        for invalid in [
+            vec![],
+            vec![String::new()],
+            vec!["\0".into()],
+            vec!["x".repeat(2049)],
+            vec!["p".into(); 101],
+        ] {
+            assert!(validate_entries(&invalid).is_err());
+        }
+        assert!(serde_json::from_value::<EntryWindow>(json!({"entries":[1]})).is_err());
+    }
     #[test]
     fn content_limits() {
         assert!(validate_content(" \n").is_err());

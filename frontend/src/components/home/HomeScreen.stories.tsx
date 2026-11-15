@@ -1,6 +1,14 @@
 import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import { useState } from "react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { Button } from "../ui/button";
 import { DEFAULT_CONFIG } from "../../lib/config";
 import { DEFAULT_CURRENT_USER_ID, storyCollections } from "../../../.storybook/fixtures";
@@ -214,7 +222,13 @@ export const OlderPosts: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "過去の投稿を読む" }));
+    await canvas.findByRole("button", { name: "過去の投稿を読む" });
+    const root = canvasElement.querySelector<HTMLElement>("[data-home-scroll]")!;
+    root.scrollTop = root.scrollHeight - root.clientHeight - 500;
+    await fireEvent.scroll(root);
+    await canvas.findByText("過去の投稿を読み込みました");
+    root.scrollTop = root.scrollHeight;
+    await fireEvent.scroll(root);
     await expect(await canvas.findByText("過去の投稿を読み込みました")).toBeVisible();
     await expect(
       canvas.queryByRole("button", { name: "過去の投稿を読む" }),
@@ -724,22 +738,22 @@ export const Realtime: Story = {
     await expect(await canvas.findByText(/Homeから最初の公開投稿です。/)).toBeVisible();
     await waitFor(() => expect(liveAuthenticated).toBe(true));
     livePosts = [{ ...posts[0], id: "live-post", content: "別端末から届いた新しい投稿" }, ...posts];
-    live.broadcast("refresh");
-    await expect(await canvas.findByText("別端末から届いた新しい投稿")).toBeVisible();
+    // Reconnect with the changed feed, then verify a subsequent live edit.
+    for (const client of live.clients) client.close(1000);
+    await expect(
+      await canvas.findByText("別端末から届いた新しい投稿", {}, { timeout: 10000 }),
+    ).toBeVisible();
     livePosts = [
       { ...posts[0], id: "live-post", content: "編集がリアルタイムで反映されます" },
       posts[1],
     ];
     live.broadcast("refresh");
-    await expect(await canvas.findByText("編集がリアルタイムで反映されます")).toBeVisible();
+    await expect(
+      await canvas.findByText("編集がリアルタイムで反映されます", {}, { timeout: 10000 }),
+    ).toBeVisible();
     await waitFor(() =>
       expect(canvas.queryByText(/Homeから最初の公開投稿です。/)).not.toBeInTheDocument(),
     );
-    livePosts = [{ ...posts[0], id: "reconnected", content: "再接続後の最新投稿" }];
-    for (const client of live.clients) client.close(1000);
-    await expect(
-      await canvas.findByText("再接続後の最新投稿", {}, { timeout: 5000 }),
-    ).toBeVisible();
   }),
 };
 
@@ -934,9 +948,11 @@ export const ActionBar: Story = {
       within(group)
         .getAllByRole("button")
         .map((button) => button.getAttribute("aria-label")),
-    ).toEqual(["返信 0", "リポスト 0", "リアクション 0", "投稿の操作"]);
+    ).toEqual(["返信 0", "リポスト 0", "リアクション 0"]);
     await expect(group.querySelector("time")).toBeNull();
-    await userEvent.click(within(group).getByRole("button", { name: "投稿の操作" }));
+    await userEvent.click(
+      within(group.closest("article")!).getByRole("button", { name: "投稿の操作" }),
+    );
     await waitFor(() => expect(screen.getByRole("menuitem", { name: "投稿を編集" })).toBeVisible());
   }),
 };
@@ -1197,11 +1213,14 @@ export const LiveWhileLoadingOlder: Story = {
             });
             return HttpResponse.json([oldLivePost]);
           }
-          if (Number(url.searchParams.get("limit")) > 50) {
-            retainedReloads++;
-            return HttpResponse.json([...firstPage, oldLivePost]);
-          }
           return HttpResponse.json(firstPage);
+        }),
+        http.post("*/api/home/entries", async ({ request }) => {
+          retainedReloads++;
+          const { entries } = (await request.json()) as { entries: string[] };
+          return HttpResponse.json(
+            [...firstPage, oldLivePost].filter((post) => entries.includes(post.id)),
+          );
         }),
         http.get("*/api/activitypub/status", () => {
           olderControlLoads++;
@@ -1223,8 +1242,14 @@ export const LiveWhileLoadingOlder: Story = {
     olderLive.broadcast("refresh");
     await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2), { timeout: 10000 });
     releaseOlderPage?.();
+    const root = canvasElement.querySelector<HTMLElement>("[data-home-scroll]")!;
+    await waitFor(() =>
+      expect(canvas.queryByRole("button", { name: "読み込み中…" })).not.toBeInTheDocument(),
+    );
+    root.scrollTop = root.scrollHeight;
+    await fireEvent.scroll(root);
     await expect(await canvas.findByText(oldLivePost.content)).toBeInTheDocument();
-    await waitFor(() => expect(retainedReloads).toBeGreaterThan(0));
+    await waitFor(() => expect(retainedReloads).toBeGreaterThan(0), { timeout: 10000 });
     await expect(canvas.getByText(oldLivePost.content)).toBeInTheDocument();
   }),
 };
@@ -2258,5 +2283,189 @@ export const LinkPreviewStates: Story = {
       );
       await expect(canvas.queryByRole("link", { name: `${url} example.com` })).toBeNull();
     }
+  }),
+};
+
+const infinitePosts = Array.from({ length: 180 }, (_, index) => ({
+  ...posts[0],
+  id: `infinite-${index}`,
+  content: `連続する投稿 ${index}${index % 3 === 0 ? "\n高さの違う本文です。".repeat(4) : ""}`,
+}));
+let infinitePages: string[] = [];
+export const InfiniteScrolling: Story = {
+  beforeEach: () => {
+    infinitePages = [];
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", ({ request }) => {
+          const before = new URL(request.url).searchParams.get("before");
+          if (before) infinitePages.push(before);
+          const offset = before ? infinitePosts.findIndex((post) => post.id === before) + 1 : 0;
+          return HttpResponse.json(infinitePosts.slice(offset, offset + 50));
+        }),
+        http.post("*/api/home/entries", async ({ request }) => {
+          const { entries } = (await request.json()) as { entries: string[] };
+          return HttpResponse.json(infinitePosts.filter((post) => entries.includes(post.id)));
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/^連続する投稿 0/);
+    const root = canvasElement.querySelector<HTMLElement>("[data-home-scroll]")!;
+    await expect(root.querySelectorAll("[data-home-post]").length).toBeLessThan(30);
+    for (const count of [1, 2, 3]) {
+      root.scrollTop = root.scrollHeight - root.clientHeight - 700;
+      await fireEvent.scroll(root);
+      await waitFor(() => expect(infinitePages).toHaveLength(count));
+      await waitFor(() =>
+        expect(canvas.queryByRole("button", { name: "読み込み中…" })).not.toBeInTheDocument(),
+      );
+    }
+    root.scrollTop = root.scrollHeight;
+    await fireEvent.scroll(root);
+    await expect(await canvas.findByText(/^連続する投稿 179/)).toBeVisible();
+    await expect(root.querySelectorAll("[data-home-post]").length).toBeLessThan(30);
+    await expect(new Set(infinitePages).size).toBe(3);
+    await expect(
+      canvas.queryByRole("button", { name: "過去の投稿を読む" }),
+    ).not.toBeInTheDocument();
+  }),
+};
+export const InfiniteScrollingMobile: Story = {
+  ...InfiniteScrolling,
+  globals: { viewport: { value: "mobile" } },
+};
+
+function NavigableHome() {
+  const [router] = useState(() => {
+    const root = createRootRoute({ component: Outlet });
+    const home = createRoute({ getParentRoute: () => root, path: "/home", component: HomeScreen });
+    const post = createRoute({
+      getParentRoute: () => root,
+      path: "/home/posts/$postId",
+      component: () => {
+        const { postId } = post.useParams();
+        return <HomeScreen postId={postId} key={postId} />;
+      },
+    });
+    return createRouter({
+      routeTree: root.addChildren([home, post]),
+      history: createMemoryHistory({ initialEntries: ["/home"] }),
+    });
+  });
+  return <RouterProvider router={router} />;
+}
+const detailRemainingPost = { ...posts[1], content: "削除後も残るタイムラインの投稿" };
+let detailDeleted = false;
+export const DeleteFromDetail: Story = {
+  beforeEach: () => {
+    detailDeleted = false;
+  },
+  render: () => <NavigableHome />,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json(
+            detailDeleted ? [detailRemainingPost] : [posts[0], detailRemainingPost],
+          ),
+        ),
+        http.get("*/api/home/home-post/thread", () => HttpResponse.json([posts[0]])),
+        http.delete("*/api/home/home-post", () => {
+          detailDeleted = true;
+          return new HttpResponse(null, { status: 204 });
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByText(/Homeから最初の公開投稿です/));
+    await canvas.findByRole("button", { name: "戻る" });
+    await userEvent.click(await canvas.findByRole("button", { name: "投稿の操作" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "投稿を削除" }));
+    await userEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "投稿を削除" }),
+    );
+    await waitFor(() =>
+      expect(canvas.queryByRole("button", { name: "戻る" })).not.toBeInTheDocument(),
+    );
+    await expect(canvas.queryByText(/Homeから最初の公開投稿です/)).not.toBeInTheDocument();
+    await expect(await canvas.findByText(detailRemainingPost.content)).toBeVisible();
+  }),
+};
+export const DeleteFailure: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () => HttpResponse.json([posts[0]])),
+        http.delete("*/api/home/home-post", () => new HttpResponse(null, { status: 500 })),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      within((await canvas.findByText(/Homeから最初の公開投稿です/)).closest("article")!).getByRole(
+        "button",
+        { name: "投稿の操作" },
+      ),
+    );
+    await userEvent.click(await screen.findByRole("menuitem", { name: "投稿を削除" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "投稿を削除" }));
+    await expect(await within(dialog).findByRole("alert")).toBeVisible();
+    await expect(canvas.getByText(/Homeから最初の公開投稿です/)).toBeVisible();
+  }),
+};
+
+let readingPosts = infinitePosts;
+const readingLive = ws.link("*/api/home/live");
+export const NewPostsWhileReading: Story = {
+  beforeEach: () => {
+    readingPosts = infinitePosts;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", ({ request }) => {
+          const before = new URL(request.url).searchParams.get("before");
+          const offset = before ? readingPosts.findIndex((post) => post.id === before) + 1 : 0;
+          return HttpResponse.json(readingPosts.slice(offset, offset + 50));
+        }),
+        http.post("*/api/home/entries", async ({ request }) => {
+          const { entries } = (await request.json()) as { entries: string[] };
+          return HttpResponse.json(readingPosts.filter((post) => entries.includes(post.id)));
+        }),
+        readingLive.addEventListener("connection", ({ client }) => {
+          client.addEventListener("message", () => client.send("refresh"));
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await canvas.findByText(/^連続する投稿 0/);
+    const root = canvasElement.querySelector<HTMLElement>("[data-home-scroll]")!;
+    root.scrollTop = 2000;
+    await fireEvent.scroll(root);
+    await waitFor(() => expect(root.scrollTop).toBeGreaterThan(1000));
+    readingPosts = [
+      { ...infinitePosts[0], id: "reading-new", content: "閲覧中に届いた新着投稿" },
+      ...infinitePosts,
+    ];
+    readingLive.broadcast("refresh");
+    const latest = await canvas.findByRole(
+      "button",
+      { name: "新しい投稿を見る（1件）" },
+      { timeout: 10000 },
+    );
+    await expect(root.scrollTop).toBeGreaterThan(1000);
+    await userEvent.click(latest);
+    await expect(await canvas.findByText("閲覧中に届いた新着投稿")).toBeVisible();
   }),
 };
