@@ -273,7 +273,12 @@
     "archiveForChannel": "Archived threads in {{channel}}",
     "untitled": "Untitled thread",
     "targetTooOld": "This message is too old to load here",
-    "unreadTooOld": "Older unread messages are not loaded"
+    "unreadTooOld": "Older unread messages are not loaded",
+    "join": "Join thread",
+    "leave": "Leave thread",
+    "reopen": "Reopen",
+    "reopenOnSend": "Sending a reply will reopen this thread and join it.",
+    "membershipError": "Could not update thread participation."
   },
   "reactions": {
     "showUsers": "Show users who reacted with {{emoji}}",

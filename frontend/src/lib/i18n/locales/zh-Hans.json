@@ -273,7 +273,12 @@
     "archiveForChannel": "{{channel}}的已归档讨论串",
     "untitled": "未命名子线程",
     "targetTooOld": "这条消息太久远，无法在此加载",
-    "unreadTooOld": "更早的未读消息未加载"
+    "unreadTooOld": "更早的未读消息未加载",
+    "join": "加入讨论串",
+    "leave": "退出讨论串",
+    "reopen": "重新打开",
+    "reopenOnSend": "发送回复将重新打开并加入此讨论串。",
+    "membershipError": "无法更新讨论串参与状态。"
   },
   "reactions": {
     "showUsers": "查看用 {{emoji}} 回应的用户",
