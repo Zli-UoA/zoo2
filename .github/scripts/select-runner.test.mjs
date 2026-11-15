@@ -155,6 +155,9 @@ test('every workload uses the right output and protects fork PRs', () => {
         if (docker) {
           assert.ok(block.includes(`docker-runs-on || '"${H}"'`), `${file}/${id}: Docker fallback must be hosted`);
         }
+        if (large) {
+          assert.ok(block.includes(`large-runs-on || '"zli-k8s"'`), `${file}/${id}: large-job fallback must be ARC`);
+        }
       }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
       if (line && !hosted) {

@@ -353,7 +353,7 @@ jobs:
     needs: [runner, crypto-wasm]
     # Native type analysis needs headroom beyond kubecamp's 2GiB limit,
     # including the runner processes. Use the shared large-job selector.
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     defaults:
       run:
         working-directory: ./frontend
