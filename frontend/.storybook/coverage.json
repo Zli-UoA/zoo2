@@ -351,7 +351,13 @@
         "Mobile",
         "Completions",
         "AppCard",
-        "RootLoadError"
+        "RootLoadError",
+        "NotParticipating",
+        "Participating",
+        "LeftThread",
+        "MembershipPending",
+        "MembershipFailed",
+        "ReopenArchived"
       ]
     },
     {
@@ -618,7 +624,13 @@
         "Submit",
         "SendError",
         "OlderPosts",
+        "OlderPageError",
+        "InfiniteScrolling",
+        "InfiniteScrollingMobile",
         "DeletePost",
+        "DeleteFromDetail",
+        "DeleteFailure",
+        "NewPostsWhileReading",
         "Federated",
         "CrossPost",
         "FollowersOnly",
@@ -936,7 +948,7 @@
       "file": "src/components/chat/ChannelThreadItems.tsx",
       "story": "src/components/chat/ChannelSidebar.stories.tsx",
       "composed": true,
-      "reason": "アクティブなスレッドと閲覧中の一時表示を Threads・SelectedArchivedThread Story で確認する。履歴・検索UIは設けない。"
+      "reason": "アクティブなスレッドと、閲覧中でもアーカイブ済みはツリーに出ないことを Threads・SelectedArchivedThread Story で確認する。履歴・検索UIは設けない。"
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",
@@ -1063,6 +1075,7 @@
     },
     {
       "file": "src/components/chat/messages/ThreadPane.tsx",
+      "reason": "LegacyNestedReplyで移行前の子スレッドへの導線を確認する。",
       "story": "src/components/chat/messages/ThreadPane.stories.tsx"
     },
     {

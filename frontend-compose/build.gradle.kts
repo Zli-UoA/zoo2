@@ -38,7 +38,11 @@ kotlin {
             }
         }
         // 単体テストは JVM で動くので、ホストの libjnidispatch を持つ jar も入れる。
-        if (androidEnabled) named("androidUnitTest") { dependencies { implementation("net.java.dev.jna:jna:$jnaVersion") } }
+        if (androidEnabled) named("androidUnitTest") { dependencies {
+            implementation("net.java.dev.jna:jna:$jnaVersion")
+            implementation("androidx.compose.ui:ui-test-junit4:1.9.0")
+            implementation("org.robolectric:robolectric:4.16.1")
+        } }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation("io.ktor:ktor-client-mock:3.1.3")
@@ -128,7 +132,12 @@ if (androidEnabled) extensions.configure<com.android.build.gradle.LibraryExtensi
     namespace = "works.zli.zoo.shared"
     compileSdk = 35
     defaultConfig { minSdk = 26 }
+    testOptions.unitTests.isIncludeAndroidResources = true
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+}
+
+if (androidEnabled) dependencies {
+    add("debugImplementation", "androidx.compose.ui:ui-test-manifest:1.9.0")
 }
 
 // zoo-crypto の UniFFI バインディング（crates/zoo-crypto-ffi、#353）。
@@ -201,5 +210,6 @@ if (androidEnabled) {
         dependsOn(buildCryptoHost)
         inputs.file(hostLibrary)
         systemProperty("jna.library.path", hostLibraryDir.absolutePath)
+        systemProperty("zoo.uiScreenshotDir", layout.buildDirectory.dir("reports/ui").get().asFile.absolutePath)
     }
 }

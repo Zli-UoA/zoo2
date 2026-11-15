@@ -260,7 +260,13 @@ class SyncedTable(
                 // The materializer may receive the same batch after the txid subscriber.
                 yield()
             } else if (config.txidMode == "awaitMatch") {
-                val expected = row ?: (result as? JsonObject)?.get("data") as? JsonObject
+                val saved = (result as? JsonObject)?.get("data") as? JsonObject
+                // The server may normalize parent_id (thread migration), so match the saved value.
+                val savedParent = saved?.get("parent_id") as? JsonPrimitive
+                val expected =
+                    if (row != null && savedParent != null)
+                        JsonObject(row + ("parent_id" to savedParent))
+                    else row ?: saved
                 val matchKey = key ?: expected?.let(::rowKey)
                 if (matchKey != null)
                     withTimeout(15_000) {

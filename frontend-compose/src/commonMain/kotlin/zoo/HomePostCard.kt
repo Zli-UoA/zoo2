@@ -176,7 +176,7 @@ fun HomePostCard(
                         ActivityPubContent(
                             post.text("content"),
                             post.homeRows("emojis"),
-                            textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+                            textStyle = MaterialTheme.typography.bodyMedium,
                         )
                     }
                 }
@@ -190,7 +190,7 @@ fun HomePostCard(
                         post.homeRows("reactions").forEach { item ->
                             val label = "${item.text("reaction")} ${item.text("count")}"
                             Row(
-                                Modifier.then(
+                                Modifier.sizeIn(minWidth = if (LocalTouchUi.current) 48.dp else 0.dp, minHeight = if (LocalTouchUi.current) 48.dp else 0.dp).then(
                                         webControlModifier(
                                             "button",
                                             enabled = !pending && (item["can_react"] != kotlinx.serialization.json.JsonPrimitive(false) || item.flag("selected")),

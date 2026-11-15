@@ -15,7 +15,6 @@ import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
-import org.jetbrains.compose.resources.decodeToImageBitmap
 
 fun publicUrl(raw: String): Url? =
     try {
@@ -230,7 +229,7 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
         imageComplete = image == null
         if (image != null)
             try {
-                bitmap = app.image(image).decodeToImageBitmap()
+                bitmap = app.imageBitmap(image)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {} finally {
@@ -241,7 +240,7 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
         iconBitmap = null
         if (icon != null)
             try {
-                iconBitmap = app.image(icon).decodeToImageBitmap()
+                iconBitmap = app.imageBitmap(icon)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {}

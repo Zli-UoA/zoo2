@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
+    internal val homeComposerState by lazy {
+        HomeComposerState(homePreferenceKey(this, "zoo-home-post-settings:v1:"))
+    }
+
     val api
         get() = repo.api
 
@@ -238,6 +242,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 .get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
                 .body()
 
+    /** Static images use the same platform decoder as attachments and animated media. */
+    suspend fun imageBitmap(url: String): androidx.compose.ui.graphics.ImageBitmap =
+        platform.imageFrames(image(url)).first()
+
     fun update(next: Environment) {
         val old = env
         env = next
@@ -377,7 +385,12 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (sensitiveAttachmentIds.isNotEmpty()) put("sensitive_attachment_ids", JsonArray(sensitiveAttachmentIds.map(::JsonPrimitive)))
         }
         return try {
-            repo.messages(channel).write(api, "/api/messages", "POST", body, row)
+            val result = repo.messages(channel).write(api, "/api/messages", "POST", body, row)
+            // 移行中、未移行の子スレッドへの返信はサーバーで最上位の親へ正規化される。
+            // 開いているスレッドを確定した親へ移し、送った返信が画面から外れないようにする。
+            val resolved = ((result as? JsonObject)?.get("data") as? JsonObject)
+                ?.get("parent_id")?.jsonPrimitive?.contentOrNull
+            if (parent != null && resolved != null && resolved != parent && thread == parent) thread = resolved
             true
         } catch (e: CancellationException) {
             throw e
