@@ -114,8 +114,8 @@ export function isEncryptedMessage(message: Pick<MessageRow, "ciphertext">): boo
  * 暗号化チャンネルの、暗号化に切り替える前の平文のメッセージか（#367。docs/e2ee.md の「既存のチャンネルの暗号化」）。
  *
  * 暗号文も `epoch` もない行。暗号化チャンネルとして送った行は、削除しても `epoch` が残る。平文なので本文を
- * そのまま出すが、「暗号化前」の印を付け、編集させない（サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する）。
- * 平文の行はサーバーが書き換えられるので、暗号化したメッセージと同じようには信用しない（印で区別する）。
+ * そのまま出し、編集させない（サーバーも 409 `E2EE_LEGACY_IMMUTABLE` で拒否する）。区切りより上の行には印を
+ * 付けない。暗号化したメッセージより後ろにある行だけ、`MessageList` が警告を付ける（正しいサーバーは作れない）。
  */
 export function isPlaintextBeforeEncryption(
   message: Pick<MessageRow, "ciphertext" | "epoch">,
