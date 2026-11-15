@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
+    internal val homeComposerState by lazy {
+        HomeComposerState(homePreferenceKey(this, "zoo-home-post-settings:v1:"))
+    }
+
     val api
         get() = repo.api
 
@@ -237,6 +241,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             ?: assetClient
                 .get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
                 .body()
+
+    /** Static images use the same platform decoder as attachments and animated media. */
+    suspend fun imageBitmap(url: String): androidx.compose.ui.graphics.ImageBitmap =
+        platform.imageFrames(image(url)).first()
 
     fun update(next: Environment) {
         val old = env
