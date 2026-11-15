@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -10,6 +10,7 @@ export function DefaultChannelsSettings() {
   const { t } = useTranslation();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  const selectionToRestore = useRef<{ client: typeof client; ids: string[] } | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [revision, setRevision] = useState(0);
@@ -26,9 +27,10 @@ export function DefaultChannelsSettings() {
       .then((value) => {
         if (controller.signal.aborted) return;
         setSettings(value);
-        setSelected(
-          value.channel_ids.filter((id) => value.channels.some((channel) => channel.id === id)),
-        );
+        const previous = selectionToRestore.current;
+        const ids = previous?.client === client ? previous.ids : value.channel_ids;
+        selectionToRestore.current = null;
+        setSelected(ids.filter((id) => value.channels.some((channel) => channel.id === id)));
       })
       .catch(() => {
         if (!controller.signal.aborted) setError(true);
@@ -80,6 +82,7 @@ export function DefaultChannelsSettings() {
                 "code" in cause.body &&
                 cause.body.code === "default_channel_unavailable"
               ) {
+                selectionToRestore.current = { client, ids: selected };
                 setSettings(null);
                 setRefreshed(true);
                 setRevision((value) => value + 1);

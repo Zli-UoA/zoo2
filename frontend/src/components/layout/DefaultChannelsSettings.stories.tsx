@@ -122,6 +122,7 @@ export const ChannelBecameUnavailable: Story = {
         ),
         http.patch("*/api/workspace/default-channels", async ({ request }) => {
           if (stale) {
+            await expect(await request.json()).toEqual({ channel_ids: ["general", "help"] });
             stale = false;
             return HttpResponse.json(
               {
@@ -139,12 +140,13 @@ export const ChannelBecameUnavailable: Story = {
   },
   play: async () => {
     await expect(await screen.findByRole("checkbox", { name: "#general" })).toBeChecked();
+    await userEvent.click(screen.getByRole("checkbox", { name: "#help" }));
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() =>
       expect(screen.queryByRole("checkbox", { name: "#general" })).not.toBeInTheDocument(),
     );
     await expect(await screen.findByRole("alert")).toHaveTextContent("一覧を更新しました");
-    await userEvent.click(await screen.findByRole("checkbox", { name: "#help" }));
+    await expect(await screen.findByRole("checkbox", { name: "#help" })).toBeChecked();
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
     await expect(await screen.findByRole("status")).toHaveTextContent("保存しました。");
   },
