@@ -285,7 +285,7 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
             json!([
                 {"ts":"1704070000.000100","user":"U1","text":"hello <@U2> see <#C2|random>","thread_ts":"1704070000.000100",
                  "reactions":[{"name":"+1","users":["U2","U9"]}]},
-                {"ts":"1704070100.000200","user":"U2","text":"reply &amp; more","thread_ts":"1704070000.000100"},
+                {"ts":"1704070100.000200","user":"U2","text":"reply &amp; *more* ~old~ 2*3*4","thread_ts":"1704070000.000100"},
                 {"ts":"1704070200.000300","user":"U1","subtype":"channel_join","text":"<@U1> has joined"},
                 {"ts":"1704070300.000400","user":"U1","text":"",
                  "files":[{"id":"F1","name":"notes.txt","mimetype":"text/plain","size":10,"url_private_download":format!("{}/files/F1/notes.txt", files.uri())}]},
@@ -433,7 +433,8 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
         format!("hello @{bob} see #{existing_name}")
     );
     assert_eq!(messages[1]["parent_id"], root["id"]);
-    assert_eq!(messages[1]["content"], "reply & more");
+    // Slack の書式は MFM になり、書式でない記号 (`2*3*4`) はそのまま残る
+    assert_eq!(messages[1]["content"], "reply & **more** ~~old~~ 2*3*4");
     assert_eq!(messages[3]["bot"], true);
     assert_eq!(messages[3]["content"], "deployed");
 

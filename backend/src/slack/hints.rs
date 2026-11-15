@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::{
-    convert::reaction_emoji,
+    convert::{mrkdwn_to_mfm_legacy, reaction_emoji},
     export::{SlackMessage, SlackReaction},
     sync::{Slack, SyncError, lookup_profiles, parse_messages},
     worker::{
@@ -514,7 +514,11 @@ pub(super) async fn edit(
         return Ok(());
     }
     let rendered = render_message(tx, ctx, message).await?;
-    let same = stored["content"].as_str() == Some(rendered.content.as_str())
+    // 書式の変換を入れる前に取り込んだ本文は、記号が変換されないまま保存されている。`edited` のない投稿 (bot) は、
+    // 本文の違いが書式の変換だけなら書き換えない (内容は同じなのに、「編集済み」の印が付くため)
+    let formatting_only = edited.is_none()
+        && stored["content"].as_str() == Some(mrkdwn_to_mfm_legacy(&message.text, &*ctx).as_str());
+    let same = (stored["content"].as_str() == Some(rendered.content.as_str()) || formatting_only)
         && stored["card"].as_str().unwrap_or_default() == rendered.card;
     if same {
         return Ok(());
