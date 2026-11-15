@@ -501,6 +501,8 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         me_id: &app.me.id,
         decryptions: &app.decryptions,
         encrypted,
+        // チャンネルの一覧は、並びの中で最初の暗号化したメッセージを見て決める。
+        encrypted_since: None,
         selected: app.selected.as_deref(),
         reply_counts: Some(&counts),
         reactions: &reactions,
@@ -557,6 +559,18 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
     let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
+    // スレッドは親と返信だけを描くので、チャンネルのうち最初の暗号化したメッセージの日時を渡し、それより後の
+    // 平文の親や返信にも警告を付ける（#367。Web の `encryptedSince` と同じ）。
+    let encrypted_since = encrypted
+        .then(|| {
+            app.store
+                .root_messages(&channel_id)
+                .into_iter()
+                .filter(|message| message.ciphertext.is_some() || message.epoch.is_some())
+                .map(|message| message.created_at)
+                .min()
+        })
+        .flatten();
     let mut reply_counts = app.store.reply_counts(&channel_id);
     reply_counts.remove(&thread.root_id);
     let ctx = Context {
@@ -565,6 +579,7 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
         me_id: &app.me.id,
         decryptions: &app.decryptions,
         encrypted,
+        encrypted_since,
         selected: thread.selected.as_deref(),
         reply_counts: Some(&reply_counts),
         reactions: &reactions,

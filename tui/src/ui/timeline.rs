@@ -50,6 +50,9 @@ pub struct Context<'a> {
     pub decryptions: &'a Decryptions,
     /// 暗号化チャンネルとして表示するか（格下げの検出を含む）。
     pub encrypted: bool,
+    /// 暗号化チャンネルで、チャンネルのうち最初の暗号化したメッセージ（暗号文か `epoch` のある行）の作成日時
+    /// （#367）。スレッドのように一部の行だけを描くとき、これより後の平文の行にも警告を付けるのに使う。
+    pub encrypted_since: Option<DateTime>,
     pub selected: Option<&'a str>,
     /// タイムラインでは返信数を出し、スレッドでは出さない。
     pub reply_counts: Option<&'a HashMap<String, usize>>,
@@ -89,7 +92,12 @@ pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
                     .push(separator("🔒 ここから暗号化されています", width));
             }
         }
-        let unencrypted_after_encrypted = ctx.encrypted && !encrypted_row && seen_encrypted;
+        let unencrypted_after_encrypted = ctx.encrypted
+            && !encrypted_row
+            && (seen_encrypted
+                || ctx
+                    .encrypted_since
+                    .is_some_and(|since| message.created_at > since));
 
         let start = timeline.lines.len();
         let selected = ctx.selected == Some(message.id.as_str());
@@ -234,7 +242,8 @@ fn gutter(line: Line<'static>, selected: bool) -> Line<'static> {
 
 fn separator(label: &str, width: usize) -> Line<'static> {
     let label = format!(" {label} ");
-    let side = width.saturating_sub(label.len()) / 2;
+    // 表示幅で数える（バイト数で数えると、日本語や絵文字のラベルで区切りが短くなる）。
+    let side = width.saturating_sub(UnicodeWidthStr::width(label.as_str())) / 2;
     Line::from(Span::styled(
         format!("{}{label}{}", "─".repeat(side), "─".repeat(side)),
         DIM,
@@ -371,6 +380,7 @@ mod tests {
             me_id: "u1",
             decryptions: &decryptions,
             encrypted: false,
+            encrypted_since: None,
             selected: Some("m2"),
             reply_counts: Some(&counts),
             reactions: &HashMap::new(),
@@ -422,6 +432,7 @@ mod tests {
             me_id: "u1",
             decryptions: &decryptions,
             encrypted: true,
+            encrypted_since: None,
             selected: None,
             reply_counts: None,
             reactions: &HashMap::new(),
@@ -454,5 +465,63 @@ mod tests {
             "本文 e",
             "{text:#?}"
         );
+    }
+
+    #[test]
+    fn plaintext_after_the_channel_became_encrypted_is_warned_in_threads() {
+        // スレッドは親と返信だけを描くので、チャンネルのうち最初の暗号化したメッセージの日時で決める。
+        let row = |id: &str, at: &str| -> Message {
+            serde_json::from_value(json!({ "id": id, "user_id": "u1", "channel_id": "c1",
+                                           "content": format!("本文 {id}"), "created_at": at }))
+            .unwrap()
+        };
+        let rows = [
+            row("root", "2026-11-01 00:00:00"),
+            row("old", "2026-11-01 00:01:00"),
+            row("new", "2026-11-01 00:03:00"),
+        ];
+        let messages: Vec<&Message> = rows.iter().collect();
+        let store = Store::default();
+        let decryptions = Decryptions::default();
+        let render = |since: &str| -> Vec<String> {
+            let ctx = Context {
+                store: &store,
+                me_name: "alice",
+                me_id: "u1",
+                decryptions: &decryptions,
+                encrypted: true,
+                encrypted_since: Some(since.parse().unwrap()),
+                selected: None,
+                reply_counts: None,
+                reactions: &HashMap::new(),
+            };
+            build(&messages, &ctx, 80)
+                .lines
+                .iter()
+                .map(|line| line.to_string())
+                .collect()
+        };
+        let warned = |text: &[String]| -> Vec<String> {
+            text.iter()
+                .enumerate()
+                .filter(|(_, line)| line.contains("[暗号化されていません]"))
+                .map(|(index, _)| text[index + 1].trim_start_matches(['▌', ' ']).to_owned())
+                .collect()
+        };
+        // 返信の途中で暗号化に切り替わった：後の返信だけに警告を付ける。
+        assert_eq!(warned(&render("2026-11-01T00:02:00")), ["本文 new"]);
+        // 親より前に切り替わっていた：親にも警告を付ける。
+        assert_eq!(
+            warned(&render("2026-10-31T00:00:00")),
+            ["本文 root", "本文 old", "本文 new"]
+        );
+    }
+
+    #[test]
+    fn separators_are_sized_by_display_width() {
+        let width = |label: &str| UnicodeWidthStr::width(separator(label, 80).to_string().as_str());
+        assert_eq!(width("2026-11-01"), 80);
+        // 日本語と絵文字のラベルも、日付の区切りと同じ幅になる（奇数の余りで 1 桁短くなるのは同じ）。
+        assert!((79..=80).contains(&width("🔒 ここから暗号化されています")));
     }
 }

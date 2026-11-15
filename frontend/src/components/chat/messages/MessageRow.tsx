@@ -51,6 +51,7 @@ import {
   useMentionUserNames,
   useMessageDecryption,
   usePlaintextBeforeEncryption,
+  useUnencryptedAfterEncrypted,
   resolveMessageDecryption,
   type MessageDecryption,
   type SenderTrust,
@@ -85,7 +86,8 @@ export interface MessageRowProps {
   decryption?: MessageDecryption;
   /**
    * 暗号化チャンネルで、暗号化したメッセージより後ろにある、暗号文のない行か（#367）。`MessageList` が
-   * 並びから決める。`true` なら警告の印を付ける。
+   * 並びから決める。`true` なら警告の印を付ける。渡さなければ、`MessagePane` が渡す最初の暗号化した
+   * メッセージの作成日時と比べて決める（スレッドのペイン）。
    */
   unencryptedAfterEncrypted?: boolean;
 }
@@ -297,7 +299,7 @@ export function MessageRow({
   onOpenThread,
   attachments = [],
   decryption,
-  unencryptedAfterEncrypted = false,
+  unencryptedAfterEncrypted,
 }: MessageRowProps) {
   const { t } = useTranslation();
   const { locale } = useLocale();
@@ -306,6 +308,9 @@ export function MessageRow({
   // 暗号化に切り替える前の平文のメッセージ（#367）。本文はそのまま出し、編集させない。
   const beforeEncryption = usePlaintextBeforeEncryption(message);
   const canEdit = isOwn && !beforeEncryption;
+  // チャンネルの一覧は並びから決めて渡す。スレッドのペインなど、渡さない場所では作成日時で決める。
+  const afterEncryptedFromTime = useUnencryptedAfterEncrypted(message);
+  const warnUnencrypted = beforeEncryption && (unencryptedAfterEncrypted ?? afterEncryptedFromTime);
   const resolvedDecryption = resolveMessageDecryption(message, decryption ?? decryptionFromPane);
   // 暗号化チャンネルの行の `content` は空なので、復号した本文を使う。
   const bodyText =
@@ -530,9 +535,7 @@ export function MessageRow({
                   {resolvedDecryption?.status === "decrypted" ? (
                     <SenderTrustBadge trust={resolvedDecryption.sender} />
                   ) : null}
-                  {beforeEncryption && unencryptedAfterEncrypted ? (
-                    <UnencryptedMessageBadge />
-                  ) : null}
+                  {warnUnencrypted ? <UnencryptedMessageBadge /> : null}
                   {resolvedDecryption?.status === "decrypted" &&
                   resolvedDecryption.revisionWarning ? (
                     <RevisionWarningBadge warning={resolvedDecryption.revisionWarning} />

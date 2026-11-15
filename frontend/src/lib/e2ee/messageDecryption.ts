@@ -2,6 +2,7 @@ import type { AttachmentInfo } from "@zoo/crypto-wasm";
 import { createContext, createElement, useContext, type ReactNode } from "react";
 
 import type { MessageRow } from "../electric/types";
+import { parseUtcTimestamp } from "../timestamps";
 
 /**
  * 暗号化チャンネルのメッセージを復号できなかった理由（docs/e2ee.md の「受信時の検証」）。
@@ -182,26 +183,66 @@ export function usePlaintextBeforeEncryption(
   return useEncryptedChannel() && isPlaintextBeforeEncryption(message);
 }
 
+/**
+ * 読み込んだうちで最初の暗号化したメッセージ（`ciphertext` か `epoch` のある行）の作成日時（#367）。なければ `null`。
+ * チャンネルの一覧と別に描くスレッドのペインで、暗号化したメッセージより後ろの平文の行を見分けるのに使う。
+ */
+export function firstEncryptedAt(
+  messages: readonly Pick<MessageRow, "ciphertext" | "epoch" | "created_at">[],
+): string | null {
+  let first: { at: number; value: string } | null = null;
+  for (const message of messages) {
+    if (isPlaintextBeforeEncryption(message)) continue;
+    const at = parseUtcTimestamp(message.created_at).getTime();
+    if (first === null || at < first.at) first = { at, value: message.created_at };
+  }
+  return first?.value ?? null;
+}
+
+/** 表示中のチャンネルの `firstEncryptedAt`。`MessagePane` が渡す。 */
+export const EncryptedSinceContext = createContext<string | null>(null);
+
+/**
+ * 暗号化チャンネルで、`message` が、最初の暗号化したメッセージより後に作られた、暗号文も `epoch` もない行か（#367）。
+ * 正しいサーバーは作れないので、警告の印を付ける。チャンネルの一覧（`MessageList`）は並びから決めて渡すので、
+ * これはスレッドのペインなど、並びを持たない場所で使う。
+ */
+export function useUnencryptedAfterEncrypted(
+  message: Pick<MessageRow, "ciphertext" | "epoch" | "created_at">,
+): boolean {
+  const encrypted = useEncryptedChannel();
+  const since = useContext(EncryptedSinceContext);
+  if (!encrypted || since === null || !isPlaintextBeforeEncryption(message)) return false;
+  return parseUtcTimestamp(message.created_at).getTime() > parseUtcTimestamp(since).getTime();
+}
+
 /** 表示中のチャンネルの復号の結果と、メンションの突き合わせに使うユーザー名の表を渡す。 */
 export function MessageDecryptionsProvider({
   decryptions,
   mentionUserNames,
   encrypted = false,
+  encryptedSince = null,
   children,
 }: {
   decryptions: ReadonlyMap<string, MessageDecryption>;
   mentionUserNames: ReadonlyMap<string, string>;
   /** 暗号化チャンネルとして扱うか。 */
   encrypted?: boolean;
+  /** 読み込んだうちで最初の暗号化したメッセージの作成日時（`firstEncryptedAt`）。 */
+  encryptedSince?: string | null;
   children?: ReactNode;
 }) {
   return createElement(
     EncryptedChannelContext.Provider,
     { value: encrypted },
     createElement(
-      MessageDecryptionsContext.Provider,
-      { value: decryptions },
-      createElement(MentionUserNamesContext.Provider, { value: mentionUserNames }, children),
+      EncryptedSinceContext.Provider,
+      { value: encryptedSince },
+      createElement(
+        MessageDecryptionsContext.Provider,
+        { value: decryptions },
+        createElement(MentionUserNamesContext.Provider, { value: mentionUserNames }, children),
+      ),
     ),
   );
 }
