@@ -198,7 +198,8 @@ export function ZooSettings() {
           <Tabs.Panel value="apps" className="min-h-0">
             <AppsPanel channelId={search.channel} onClose={() => {}} />
           </Tabs.Panel>
-          <Tabs.Panel value="members" className="min-h-0">
+          <Tabs.Panel value="members" className="min-h-0 space-y-4">
+            <h2 className="sr-only">{t("members.title")}</h2>
             {isAdmin ? <DefaultChannelsSettings /> : null}
             <WorkspaceMembers />
           </Tabs.Panel>

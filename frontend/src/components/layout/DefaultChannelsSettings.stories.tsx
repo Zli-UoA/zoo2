@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
-import { expect, screen, userEvent } from "storybook/test";
+import { expect, screen, userEvent, waitFor } from "storybook/test";
 import { DefaultChannelsSettings } from "./DefaultChannelsSettings";
 
 const initial = {
@@ -85,5 +85,63 @@ export const SaveError: Story = {
     await screen.findByRole("checkbox", { name: "#general" });
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
     await expect(await screen.findByRole("alert")).toBeVisible();
+  },
+};
+
+export const Saving: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        load,
+        http.patch("*/api/workspace/default-channels", async () => {
+          await delay("infinite");
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await screen.findByRole("checkbox", { name: "#general" });
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    await expect(screen.getByRole("checkbox", { name: "#general" })).toBeDisabled();
+    await expect(screen.getByRole("checkbox", { name: "#help" })).toBeDisabled();
+  },
+};
+let stale = true;
+export const ChannelBecameUnavailable: Story = {
+  beforeEach: () => {
+    stale = true;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/workspace/default-channels", () =>
+          HttpResponse.json(
+            stale ? initial : { channel_ids: ["general"], channels: [initial.channels[1]] },
+          ),
+        ),
+        http.patch("*/api/workspace/default-channels", async ({ request }) => {
+          if (stale) {
+            stale = false;
+            return HttpResponse.json(
+              { error: "Default channels must be active public channels" },
+              { status: 400 },
+            );
+          }
+          await expect(await request.json()).toEqual({ channel_ids: ["help"] });
+          return HttpResponse.json({ channel_ids: ["help"], channels: [initial.channels[1]] });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByRole("checkbox", { name: "#general" })).toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("checkbox", { name: "#general" })).not.toBeInTheDocument(),
+    );
+    await userEvent.click(await screen.findByRole("checkbox", { name: "#help" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await expect(await screen.findByRole("status")).toHaveTextContent("保存しました。");
   },
 };

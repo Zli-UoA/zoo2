@@ -3,7 +3,15 @@
   "stories": [
     {
       "file": "src/components/layout/DefaultChannelsSettings.stories.tsx",
-      "states": ["Default", "Empty", "Loading", "LoadError", "SaveError"]
+      "states": [
+        "Default",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "SaveError",
+        "Saving",
+        "ChannelBecameUnavailable"
+      ]
     },
     {
       "file": "src/components/ui/image-preview.stories.tsx",

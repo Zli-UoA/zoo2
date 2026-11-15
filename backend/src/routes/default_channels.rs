@@ -73,7 +73,9 @@ async fn update(
 
 /// Run in the account creation transaction, never on subsequent logins.
 pub(crate) async fn join(tx: &mut toasty::Transaction<'_>, user_id: &str) -> Result<(), AppError> {
-    toasty::sql::statement("INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT $1,c.id,CURRENT_TIMESTAMP FROM channels c JOIN workspace_settings s ON s.id='workspace' WHERE c.id IN (SELECT jsonb_array_elements_text(COALESCE(s.preferences::jsonb->'default_channel_ids','[]'::jsonb))) AND NOT c.is_private AND NOT c.is_dm AND c.archive_at IS NULL AND c.deleted_at IS NULL ON CONFLICT DO NOTHING")
+    // Lock eligible channels in ID order. FOR SHARE serializes privacy/archive changes and
+    // encryption conversion; PostgreSQL rechecks eligibility after waiting on an updated row.
+    toasty::sql::statement("INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT $1,c.id,CURRENT_TIMESTAMP FROM channels c JOIN workspace_settings s ON s.id='workspace' WHERE c.id IN (SELECT jsonb_array_elements_text(COALESCE(s.preferences::jsonb->'default_channel_ids','[]'::jsonb))) AND NOT c.is_private AND NOT c.is_dm AND NOT c.encrypted AND c.archive_at IS NULL AND c.deleted_at IS NULL ORDER BY c.id FOR SHARE OF c ON CONFLICT DO NOTHING")
         .bind(user_id).exec(tx).await?;
     Ok(())
 }
@@ -138,5 +140,69 @@ mod tests {
         assert!(query(&mut tx, "SELECT json_build_object('id',channel_id)::text FROM channel_user WHERE user_id=$1", &[&other]).await?.is_empty());
         tx.rollback().await?;
         Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "requires migrated PostgreSQL"]
+    async fn enrollment_rechecks_channels_after_waiting_for_conversion() -> anyhow::Result<()> {
+        let config = crate::config::Config::from_env();
+        let mut db = crate::db::init_db(&config.database_url).await?;
+        let schema = format!("defaults_test_{}", uuid::Uuid::new_v4().simple());
+        toasty::sql::statement(format!("CREATE SCHEMA {schema}"))
+            .exec(&mut db)
+            .await?;
+        let result: anyhow::Result<()> = async {
+            let mut setup = db.transaction().await?;
+            toasty::sql::statement(format!("SET LOCAL search_path TO {schema}"))
+                .exec(&mut setup).await?;
+            for sql in [
+                "CREATE TABLE channels(id text PRIMARY KEY,is_private boolean,is_dm boolean,encrypted boolean,archive_at timestamp,deleted_at timestamp)",
+                "CREATE TABLE workspace_settings(id text,preferences text)",
+                "CREATE TABLE channel_user(user_id text,channel_id text,joined_at timestamp,PRIMARY KEY(user_id,channel_id))",
+                "INSERT INTO channels VALUES('channel',false,false,false,NULL,NULL)",
+                "INSERT INTO workspace_settings VALUES('workspace','{\"default_channel_ids\":[\"channel\"]}')",
+            ] {
+                toasty::sql::statement(sql).exec(&mut setup).await?;
+            }
+            setup.commit().await?;
+            let mut conversion_db = db.clone();
+            let mut conversion = conversion_db.transaction().await?;
+            toasty::sql::statement(format!("SET LOCAL search_path TO {schema}"))
+                .exec(&mut conversion).await?;
+            toasty::sql::statement("UPDATE channels SET is_private=true,encrypted=true WHERE id='channel'")
+                .exec(&mut conversion).await?;
+            let mut enrollment_db = db.clone();
+            let enrollment_schema = schema.clone();
+            let (send_pid, receive_pid) = tokio::sync::oneshot::channel();
+            let enrollment = tokio::spawn(async move {
+                let mut tx = enrollment_db.transaction().await?;
+                toasty::sql::statement(format!("SET LOCAL search_path TO {enrollment_schema}"))
+                    .exec(&mut tx).await?;
+                let pid = one(&mut tx, "SELECT json_build_object('pid',pg_backend_pid())::text", &[]).await?;
+                let _ = send_pid.send(pid["pid"].to_string());
+                join(&mut tx, "new-user").await?;
+                let members = query(&mut tx, "SELECT json_build_object('id',channel_id)::text FROM channel_user", &[]).await?;
+                tx.commit().await?;
+                Ok::<_, AppError>(members)
+            });
+            let pid = receive_pid.await?;
+            // Observe the actual row-lock wait rather than assuming task scheduling or sleeping.
+            let wait_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    let mut observer = db.transaction().await?;
+                    let state = one(&mut observer, "SELECT json_build_object('waiting',EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1::int AND wait_event_type='Lock'))::text", &[&pid]).await?;
+                    if state["waiting"] == true { return Ok::<_, AppError>(()); }
+                    tokio::task::yield_now().await;
+                }
+            }).await;
+            conversion.commit().await?;
+            let members = tokio::time::timeout(std::time::Duration::from_secs(5), enrollment).await???;
+            wait_result??;
+            anyhow::ensure!(members.is_empty(), "A channel converted while enrollment waited must be skipped");
+            Ok(())
+        }.await;
+        toasty::sql::statement(format!("DROP SCHEMA {schema} CASCADE"))
+            .exec(&mut db)
+            .await?;
+        result
     }
 }

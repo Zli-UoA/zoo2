@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { createConfiguredApiClient } from "../../lib/api/client";
+import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { Button } from "../ui/button";
 import { SettingsSection } from "../ui/control-panel";
@@ -63,8 +63,12 @@ export function DefaultChannelsSettings() {
                 body: { channel_ids: selected },
               });
               setSaved(true);
-            } catch {
-              setError(true);
+            } catch (cause) {
+              if (cause instanceof ApiError && cause.status === 400) {
+                setRevision((value) => value + 1);
+              } else {
+                setError(true);
+              }
             } finally {
               setPending(false);
             }
