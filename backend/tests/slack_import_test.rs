@@ -985,6 +985,7 @@ async fn test_slack_zip_preserves_message_username_for_pre_resolved_mentions_and
     // committed by the import, including the message author U-OTHER, after asserting.
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    exec(&mut tx, "SET LOCAL zoo.suppress_app_events = 'on'", &[]).await?;
     exec(
         &mut tx,
         "DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
@@ -994,6 +995,12 @@ async fn test_slack_zip_preserves_message_username_for_pre_resolved_mentions_and
     exec(
         &mut tx,
         "DELETE FROM channel_user WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
+        &[&channel_name],
+    )
+    .await?;
+    exec(
+        &mut tx,
+        "DELETE FROM app_deliveries WHERE channel_id IN (SELECT id FROM channels WHERE channel_name=$1)",
         &[&channel_name],
     )
     .await?;
@@ -1551,6 +1558,11 @@ async fn run_private_zip_visibility_race(
         (
             "delete channel memberships",
             "DELETE FROM channel_user WHERE channel_id IN ($1,$2)",
+            vec![target.clone(), remapped_target.clone()],
+        ),
+        (
+            "delete app deliveries",
+            "DELETE FROM app_deliveries WHERE channel_id IN ($1,$2)",
             vec![target.clone(), remapped_target.clone()],
         ),
         (

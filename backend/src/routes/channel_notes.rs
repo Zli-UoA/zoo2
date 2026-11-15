@@ -402,7 +402,7 @@ async fn list(
     )
     .exec(&mut tx)
     .await?;
-    result.sort_by_key(|note| note.position);
+    result.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
     let result = result.into_iter().map(NoteResponse::from).collect();
     Ok(Json(ApiResponse::new(result, None::<String>)))
 }
@@ -552,7 +552,7 @@ async fn reorder(
     )
     .exec(&mut tx)
     .await?;
-    active.sort_by_key(|note| note.position);
+    active.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
     let active_order: Vec<_> = active.iter().map(|note| note.id.clone()).collect();
     if active_order != input.expected_note_ids {
         return Err(AppError::Conflict(
@@ -602,28 +602,29 @@ async fn restore(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     authorize(&mut tx, &actor.id, &channel_id, true).await?;
-    let deleted = ChannelNote::filter(
-        ChannelNote::fields()
-            .id()
-            .eq(note_id.as_str())
-            .and(ChannelNote::fields().channel_id().eq(channel_id.as_str())),
+    let rows = toasty::sql::query(
+        "UPDATE channel_notes          SET deleted_at = NULL, version = version + 1, updated_at = statement_timestamp() AT TIME ZONE 'UTC'          WHERE id = $2 AND channel_id = $1 AND deleted_at IS NOT NULL            AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours'          RETURNING position",
     )
-    .first()
+    .bind(channel_id.as_str())
+    .bind(note_id.as_str())
     .exec(&mut tx)
     .await?;
-    let Some(deleted) = deleted.filter(|note| note.deleted_at.is_some()) else {
+    let Some(toasty::stmt::Value::Record(record)) = rows.first() else {
         return Err(AppError::NotFound("Restorable note not found".into()));
     };
-    toasty::sql::query("UPDATE channel_notes SET position = position + 1 WHERE channel_id = $1 AND deleted_at IS NULL AND position >= $2")
-        .bind(channel_id.as_str())
-        .bind(deleted.position)
-        .exec(&mut tx)
-        .await?;
-    let rows = toasty::sql::query("UPDATE channel_notes SET deleted_at = NULL, version = version + 1, updated_at = statement_timestamp() AT TIME ZONE 'UTC' WHERE id = $2 AND channel_id = $1 AND deleted_at >= (statement_timestamp() AT TIME ZONE 'UTC') - interval '24 hours' RETURNING id")
-        .bind(channel_id.as_str()).bind(note_id.as_str()).exec(&mut tx).await?;
-    if rows.is_empty() {
-        return Err(AppError::NotFound("Restorable note not found".into()));
-    }
+    let Some(toasty::stmt::Value::I32(restored_position)) = record.fields.first() else {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "Unexpected restored channel note position"
+        )));
+    };
+    toasty::sql::query(
+        "UPDATE channel_notes SET position = position + 1          WHERE channel_id = $1 AND deleted_at IS NULL AND position >= $2 AND id <> $3",
+    )
+    .bind(channel_id.as_str())
+    .bind(*restored_position)
+    .bind(note_id.as_str())
+    .exec(&mut tx)
+    .await?;
     let note = find(&mut tx, &channel_id, &note_id).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
@@ -689,7 +690,7 @@ async fn update(
     authorize(&mut tx, &actor.id, &channel_id, true).await?;
     let rows = toasty::sql::query(
         "UPDATE channel_notes SET title = $1, content = $2, version = version + 1, updated_at = statement_timestamp() AT TIME ZONE 'UTC' \
-         WHERE id = $3 AND channel_id = $4 AND version = $5 RETURNING id",
+         WHERE id = $3 AND channel_id = $4 AND version = $5 AND deleted_at IS NULL RETURNING id",
     )
     .bind(input.title.trim())
     .bind(input.content.as_str())

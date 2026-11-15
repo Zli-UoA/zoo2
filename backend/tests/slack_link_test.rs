@@ -864,20 +864,36 @@ async fn slack_reassignment_rechecks_guest_kind_after_waiting_for_user_lock() ->
     Ok(())
     }
     .await;
-    exec(&state, "DELETE FROM slack_users WHERE team_id=$1", &[&team]).await?;
-    exec(
-        &state,
-        "DELETE FROM channel_user WHERE channel_id=$1",
-        &[&channel],
-    )
-    .await?;
-    exec(&state, "DELETE FROM channels WHERE id=$1", &[&channel]).await?;
-    exec(
-        &state,
-        "DELETE FROM users WHERE id IN ($1,$2,$3)",
-        &[&user, &owner, &placeholder],
-    )
-    .await?;
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("SET LOCAL zoo.suppress_app_events = 'on'")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM slack_users WHERE team_id=$1")
+            .bind(team.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM app_deliveries WHERE channel_id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM channels WHERE id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM users WHERE id IN ($1,$2,$3)")
+            .bind(user.as_str())
+            .bind(owner.as_str())
+            .bind(placeholder.as_str())
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await?;
+    }
     test_result
 }
 
@@ -1251,20 +1267,38 @@ async fn reconcile_team_and_sorted_import_membership_locks_do_not_deadlock() -> 
     let reconciled = tokio::time::timeout(Duration::from_secs(10), reconcile).await???;
     tokio::time::timeout(Duration::from_secs(10), import).await???;
     assert!(reconciled > 0);
-    exec(&state, "DELETE FROM slack_users WHERE team_id=$1", &[&team]).await?;
-    exec(
-        &state,
-        "DELETE FROM channel_user WHERE channel_id=$1",
-        &[&channel],
-    )
-    .await?;
-    exec(&state, "DELETE FROM channels WHERE id=$1", &[&channel]).await?;
-    exec(
-        &state,
-        "DELETE FROM users WHERE id IN ($1,$2,$3,$4,$5)",
-        &[&low, &high, &owner, &placeholders[0], &placeholders[1]],
-    )
-    .await?;
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("SET LOCAL zoo.suppress_app_events = 'on'")
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM slack_users WHERE team_id=$1")
+            .bind(team.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM app_deliveries WHERE channel_id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM channels WHERE id=$1")
+            .bind(channel.as_str())
+            .exec(&mut tx)
+            .await?;
+        toasty::sql::statement("DELETE FROM users WHERE id IN ($1,$2,$3,$4,$5)")
+            .bind(low.as_str())
+            .bind(high.as_str())
+            .bind(owner.as_str())
+            .bind(placeholders[0].as_str())
+            .bind(placeholders[1].as_str())
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await?;
+    }
     Ok(())
 }
 

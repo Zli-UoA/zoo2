@@ -1602,15 +1602,26 @@ async fn expired_note_cleanup_skips_a_locked_channel_without_blocking_other_chan
         remaining, 0,
         "all eligible and previously skipped notes are purged"
     );
-    blocker_connection
+    let cleanup = blocker_connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id IN ($1, $2, $3)",
+            &[&free_channel_a, &free_channel_b, &busy_channel],
+        )
+        .await?;
+    cleanup
         .execute(
             "DELETE FROM channels WHERE id IN ($1, $2, $3)",
             &[&free_channel_a, &free_channel_b, &busy_channel],
         )
         .await?;
-    blocker_connection
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
+    cleanup.commit().await?;
     Ok(())
 }
 
@@ -1620,7 +1631,7 @@ async fn expired_note_cleanup_reuses_unused_batch_capacity() -> anyhow::Result<(
     let mut config = Config::from_env();
     config.database_url = std::env::var("NOTES_CLEANUP_TEST_DATABASE_URL")?;
     let db = init_db(&config.database_url).await?;
-    let (connection, driver) =
+    let (mut connection, driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(driver);
     let database: String = connection
@@ -1660,12 +1671,23 @@ async fn expired_note_cleanup_reuses_unused_batch_capacity() -> anyhow::Result<(
         small_remaining, 0,
         "each channel must receive a fair initial share"
     );
-    connection
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = ANY($1)",
+            &[&channels],
+        )
+        .await?;
+    cleanup
         .execute("DELETE FROM channels WHERE id = ANY($1)", &[&channels])
         .await?;
-    connection
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
+    cleanup.commit().await?;
     Ok(())
 }
 
@@ -1731,12 +1753,23 @@ async fn expired_note_cleanup_scans_past_one_hundred_busy_channels() -> anyhow::
     assert_eq!(remaining, 0, "the later unlocked channel must be purged");
 
     blocker.commit().await?;
-    connection
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = ANY($1)",
+            &[&channels],
+        )
+        .await?;
+    cleanup
         .execute("DELETE FROM channels WHERE id = ANY($1)", &[&channels])
         .await?;
-    connection
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
+    cleanup.commit().await?;
     Ok(())
 }
 
@@ -1746,7 +1779,7 @@ async fn expired_note_cleanup_rotates_across_a_persistent_backlog() -> anyhow::R
     config.dev_auth_enabled = true;
     let db = init_db(&config.database_url).await?;
     let owner = Uuid::new_v4().to_string();
-    let (connection, driver) =
+    let (mut connection, driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(driver);
     connection
@@ -1854,12 +1887,23 @@ async fn expired_note_cleanup_rotates_across_a_persistent_backlog() -> anyhow::R
         .get(0);
     assert_eq!(remaining_notes, 0, "all 220+ candidates must drain");
 
-    connection
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = ANY($1)",
+            &[&channels],
+        )
+        .await?;
+    cleanup
         .execute("DELETE FROM channels WHERE id = ANY($1)", &[&channels])
         .await?;
-    connection
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
+    cleanup.commit().await?;
     Ok(())
 }
 
@@ -1906,7 +1950,7 @@ async fn deleted_note_timestamp_format_ignores_postgres_datestyle() -> anyhow::R
     assert_eq!(status, StatusCode::OK, "{note}");
     let note_id = note["data"]["id"].as_str().unwrap();
 
-    let (connection, driver) =
+    let (mut connection, driver) =
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     tokio::spawn(driver);
     let legacy_timestamp: String = connection
@@ -1980,18 +2024,29 @@ async fn deleted_note_timestamp_format_ignores_postgres_datestyle() -> anyhow::R
     assert_eq!(deleted_note["created_at"], "2026-11-15T12:34:56.123");
     assert_eq!(deleted_note["updated_at"], "2026-11-15T12:34:57.123");
 
-    connection
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
         .execute(
             "DELETE FROM channel_user WHERE channel_id = $1",
             &[&channel],
         )
         .await?;
-    connection
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
         .execute("DELETE FROM channels WHERE id = $1", &[&channel])
         .await?;
-    connection
+    cleanup
         .execute("DELETE FROM users WHERE id = $1", &[&owner])
         .await?;
+    cleanup.commit().await?;
     Ok(())
 }
 
@@ -3323,5 +3378,325 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
             .0,
         StatusCode::NOT_FOUND
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn channel_note_update_ignores_soft_deleted_note_with_post_delete_version()
+-> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_deleted_patch_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+
+    let collection = format!("/api/channels/{channel}/notes");
+    let (status, note) = request(
+        &app,
+        "POST",
+        &collection,
+        &owner,
+        json!({"title":"Original","content":"Before delete"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{note}");
+    let note_id = note["data"]["id"].as_str().unwrap();
+    let item = format!("{collection}/{note_id}");
+
+    assert_eq!(
+        request(&app, "DELETE", &item, &owner, json!({"version":1}))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &app,
+            "PATCH",
+            &item,
+            &owner,
+            json!({"title":"Mutated","content":"While deleted","version":2})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    let (status, restored) = request(
+        &app,
+        "POST",
+        &format!("{item}/restore"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{restored}");
+    assert_eq!(restored["data"]["title"], "Original");
+    assert_eq!(restored["data"]["content"], "Before delete");
+    assert_eq!(restored["data"]["version"], 3);
+
+    let (mut connection, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM channel_user WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute("DELETE FROM channels WHERE id = $1", &[&channel])
+        .await?;
+    cleanup
+        .execute("DELETE FROM users WHERE id = $1", &[&owner])
+        .await?;
+    cleanup.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn channel_note_restore_expired_does_not_shift_active_positions() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_expired_pos_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+
+    let collection = format!("/api/channels/{channel}/notes");
+    let (status, first) = request(
+        &app,
+        "POST",
+        &collection,
+        &owner,
+        json!({"title":"First","content":"1"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let first_id = first["data"]["id"].as_str().unwrap();
+
+    let (status, second) = request(
+        &app,
+        "POST",
+        &collection,
+        &owner,
+        json!({"title":"Second","content":"2"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    let second_id = second["data"]["id"].as_str().unwrap();
+
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            &format!("{collection}/{first_id}"),
+            &owner,
+            json!({"version":1})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    let (mut connection, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    connection
+        .execute(
+            "UPDATE channel_notes SET deleted_at = (statement_timestamp() AT TIME ZONE 'UTC') - interval '25 hours' WHERE id = $1",
+            &[&first_id],
+        )
+        .await?;
+
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!("{collection}/{first_id}/restore"),
+            &owner,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    let second_pos: i32 = connection
+        .query_one(
+            "SELECT position FROM channel_notes WHERE id = $1",
+            &[&second_id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(second_pos, 1);
+
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM channel_user WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute("DELETE FROM channels WHERE id = $1", &[&channel])
+        .await?;
+    cleanup
+        .execute("DELETE FROM users WHERE id = $1", &[&owner])
+        .await?;
+    cleanup.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn channel_note_duplicate_positions_tie_break_deterministically() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    create_user(&app, &owner).await;
+    let channel = Uuid::new_v4().to_string();
+    let created = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &owner,
+        json!({
+            "id": channel,
+            "channel_name": format!("notes_dup_pos_{}", Uuid::new_v4().simple()),
+            "is_private": true
+        }),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+
+    let mut id_a = Uuid::new_v4().to_string();
+    let mut id_b = Uuid::new_v4().to_string();
+    if id_a > id_b {
+        std::mem::swap(&mut id_a, &mut id_b);
+    }
+    let (mut connection, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    // Insert the higher ID first at position 0, then the lower ID at the same
+    // position so heap scan order differs from (position, id) order.
+    for (id, title) in [(&id_b, "High ID"), (&id_a, "Low ID")] {
+        connection
+            .execute(
+                "INSERT INTO channel_notes (id, channel_id, title, content, position, version, created_user_id, created_at, updated_at)
+                 VALUES ($1, $2, $3, 'body', 0, 1, $4, statement_timestamp() AT TIME ZONE 'UTC', statement_timestamp() AT TIME ZONE 'UTC')",
+                &[id, &channel, &title, &owner],
+            )
+            .await?;
+    }
+
+    let collection = format!("/api/channels/{channel}/notes");
+    let (status, listed) = request(&app, "GET", &collection, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let listed_ids: Vec<&str> = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(listed_ids, vec![id_a.as_str(), id_b.as_str()]);
+
+    assert_eq!(
+        request(
+            &app,
+            "PATCH",
+            &format!("{collection}/order"),
+            &owner,
+            json!({"expected_note_ids":[id_b, id_a],"note_ids":[id_b, id_a]})
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        request(
+            &app,
+            "PATCH",
+            &format!("{collection}/order"),
+            &owner,
+            json!({"expected_note_ids":[id_a, id_b],"note_ids":[id_b, id_a]})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    let cleanup = connection.transaction().await?;
+    cleanup
+        .execute("SET LOCAL zoo.suppress_app_events = 'on'", &[])
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM channel_user WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute(
+            "DELETE FROM app_deliveries WHERE channel_id = $1",
+            &[&channel],
+        )
+        .await?;
+    cleanup
+        .execute("DELETE FROM channels WHERE id = $1", &[&channel])
+        .await?;
+    cleanup
+        .execute("DELETE FROM users WHERE id = $1", &[&owner])
+        .await?;
+    cleanup.commit().await?;
     Ok(())
 }
