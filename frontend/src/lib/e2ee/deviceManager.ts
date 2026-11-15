@@ -371,7 +371,8 @@ export class E2eeDeviceManager {
 
   /**
    * 復号で「未検証の送信者」になったセッションを、送信ユーザーと自分の `keys/query` で判定し直す
-   * （docs/e2ee.md の「受信時の検証」）。検証済みに上げた数を返す。候補がなければ問い合わせない。
+   * （docs/e2ee.md の「受信時の検証」）。検証済みに上げた数を返す。今判定する候補がない、または
+   * 未解錠のときは問い合わせない。判定するのは、問い合わせたユーザーの候補だけ。
    */
   async reverifySenders(): Promise<number> {
     if (this.stopped || this.suspended) return 0;
@@ -382,7 +383,7 @@ export class E2eeDeviceManager {
     const users = [...new Set([...senders, this.options.userId])].sort();
     const keysQuery = await queryKeys(client, users, this.processAbort.signal);
     if (this.stopped || this.suspended) return 0;
-    return worker.request({ op: "reverifySenders", keysQuery });
+    return worker.request({ op: "reverifySenders", userIds: senders, keysQuery });
   }
 
   /** 終わっていない失効があるか（#362）。 */

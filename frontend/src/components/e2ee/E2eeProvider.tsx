@@ -12,7 +12,11 @@ import type { VerificationMessage } from "@zoo/crypto-wasm";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import type { AppConfig } from "../../lib/config";
 import { getCurrentUserStore } from "../../lib/currentUser";
-import { startCryptoWorker, type CryptoWorker } from "../../lib/e2ee/cryptoWorker";
+import {
+  notifyTrustChanges,
+  startCryptoWorker,
+  type CryptoWorker,
+} from "../../lib/e2ee/cryptoWorker";
 import { E2eeDeviceManager, loginNotFoundCounter } from "../../lib/e2ee/deviceManager";
 import { SasController } from "../../lib/e2ee/sasController";
 import { deviceDisplayName } from "../../lib/e2ee/displayName";
@@ -188,7 +192,8 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
   requestKeyBackupImportRef.current = requestKeyBackupImport;
 
   // 「未検証の送信者」のセッションの判定し直し。暗号ストアを開いたタブで 1 つずつ行い、行っている間に
-  // 頼まれたら、終わったあとにもう一度行う（候補がなければ Worker が空を返し、問い合わせない）。
+  // 頼まれたら、終わったあとにもう一度行う（候補がない、または未解錠なら Worker が空を返し、問い合わせ
+  // ない）。復号で未検証が出たときと、解錠・相手の受け入れ・失効で信頼が変わったとき（`trustChanged`）に頼む。
   const reverifyQueue = useRef({ running: false, again: false });
   const requestSenderReverify = useCallback(() => {
     const active = leader.current;
@@ -208,9 +213,13 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         } while (queue.again && leader.current === active);
       } finally {
         queue.running = false;
+        // 行っている間にリーダーが替わって頼まれた分は、今のリーダーで行い直す。
+        if (queue.again && leader.current) requestSenderReverifyRef.current();
       }
     })();
   }, []);
+  const requestSenderReverifyRef = useRef(requestSenderReverify);
+  requestSenderReverifyRef.current = requestSenderReverify;
 
   // 絵文字 SAS の検証（#368）。検証のメッセージは、コントローラーを作る前に届いたら溜めておく。
   const [sas, setSas] = useState<SasController | null>(null);
@@ -295,7 +304,9 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
           setLockState("held");
           let worker: CryptoWorker;
           try {
-            worker = startCryptoWorker();
+            worker = notifyTrustChanges(startCryptoWorker(), () =>
+              requestSenderReverifyRef.current(),
+            );
           } catch (error) {
             workerFailed = true;
             // ここでの TypeError は通信ではなく、Worker を作れなかったこと（CSP の Trusted Types など）。

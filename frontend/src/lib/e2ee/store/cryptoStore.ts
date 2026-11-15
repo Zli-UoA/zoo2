@@ -219,11 +219,15 @@ export class CryptoStore {
   private megolmChannels: MegolmChannels | null = null;
   private sasVerifications: SasVerifications | null = null;
   /**
-   * 復号で「未検証の送信者」になった Olm 由来のセッション（判定し直す候補）。メモリーにだけ置き、
-   * 開き直したら、表示して復号したときにまた入る。
+   * 復号で「未検証の送信者」になった Olm 由来のセッション（判定し直す候補）。検証済みに上げるか、
+   * 未検証でなくなるまで残す（判定に失敗しても、解錠や相手の検証のあとに判定し直すため）。メモリーに
+   * だけ置き、開き直したら、表示して復号したときにまた入る。
    */
   private readonly reverifyCandidates = new Map<InboundSessionKey, SessionRef>();
-  /** 候補を最後に判定し直した時刻（{@link REVERIFY_RETRY_MS}）。 */
+  /**
+   * 候補を最後に判定し直した時刻（{@link REVERIFY_RETRY_MS}）。解錠、相手の受け入れ、失効の
+   * あとは消して、すべての候補を待たずに判定し直す。
+   */
   private readonly reverifyAttempts = new Map<InboundSessionKey, number>();
 
   private constructor(
@@ -609,22 +613,32 @@ export class CryptoStore {
   }
 
   private noteUnverified(ref: SessionRef): void {
-    const key = inboundSessionKey(ref);
+    this.reverifyCandidates.set(inboundSessionKey(ref), ref);
+  }
+
+  /** 候補を今判定し直してよいか（前に試してから {@link REVERIFY_RETRY_MS} が過ぎた）。 */
+  private reverifyDue(key: InboundSessionKey, now: number): boolean {
     const attempted = this.reverifyAttempts.get(key);
-    if (attempted !== undefined && Date.now() - attempted < REVERIFY_RETRY_MS) return;
-    this.reverifyCandidates.set(key, ref);
+    return attempted === undefined || now - attempted >= REVERIFY_RETRY_MS;
   }
 
   /**
-   * 判定し直す候補（{@link reverifySenders}）の送信ユーザー。`keys/query` で問い合わせる（自分も
-   * 足す）。候補がなければ空。
+   * 今判定し直す候補（{@link reverifySenders}）の送信ユーザー。`keys/query` で問い合わせる（自分も
+   * 足す）。未解錠のときは、どの送信者も判定できないので空を返し、候補は解錠のあとまで残す
+   * （問い合わせて結果を捨てないため）。未検証でなくなった候補は、ここで外す。
    */
-  reverifyCandidateUsers(): string[] {
+  async reverifyCandidateUsers(): Promise<string[]> {
+    if (this.reverifyCandidates.size === 0 || !(await this.hasOwnKeys())) return [];
+    const now = Date.now();
     const users = new Set<string>();
     for (const [key, ref] of this.reverifyCandidates) {
       const sender = this.inbound.unverifiedOlmSender(ref);
-      if (sender) users.add(sender.user_id);
-      else this.reverifyCandidates.delete(key);
+      if (!sender) {
+        this.reverifyCandidates.delete(key);
+        this.reverifyAttempts.delete(key);
+      } else if (this.reverifyDue(key, now)) {
+        users.add(sender.user_id);
+      }
     }
     return [...users].sort();
   }
@@ -635,27 +649,39 @@ export class CryptoStore {
    * やり直し）。to-device を受け取ったときと同じ {@link TrustStore.senderTrust} で信頼した自己署名鍵を
    * 求め、受け取ったときと同じ端末鍵がその鍵で署名されていれば、検証済みに上げて保存する。
    *
+   * 判定するのは、`userIds`（{@link reverifyCandidateUsers} が返し、`keysQuery` で問い合わせた
+   * ユーザー）の候補だけ。問い合わせを待つあいだに増えた別のユーザーの候補は、試したことにしない。
+   * 上げられなかった候補は残し、{@link REVERIFY_RETRY_MS} あけるか、解錠や相手の検証のあとに
+   * 判定し直す。
+   *
    * 古いクライアントで受け取った、解錠の前に受け取った、相手をあとで検証したなどで「未検証の送信者」
    * のまま残ったセッションを直す。上げた数を返す（1 以上なら、表示を復号し直す）。
    */
-  async reverifySenders(keysQuery: KeysQueryResponse): Promise<number> {
+  async reverifySenders(userIds: string[], keysQuery: KeysQueryResponse): Promise<number> {
     if (this.reverifyCandidates.size === 0) return 0;
     const ownSelfSigningKey = await this.ownSelfSigningKey();
     // 未解錠では、自分のマスター鍵を信頼できず、どの送信者も判定できない。候補は解錠のあとまで残す。
     if (ownSelfSigningKey === null) return 0;
+    const queried = new Set(userIds);
     const senders = new SenderTrustCache(this.trust, keysQuery, ownSelfSigningKey);
     const upgraded: { key: InboundSessionKey; pickle: string }[] = [];
     try {
       const now = Date.now();
       for (const [key, ref] of this.reverifyCandidates) {
-        this.reverifyCandidates.delete(key);
-        this.reverifyAttempts.set(key, now);
         const sender = this.inbound.unverifiedOlmSender(ref);
-        if (!sender) continue;
+        if (!sender) {
+          this.reverifyCandidates.delete(key);
+          this.reverifyAttempts.delete(key);
+          continue;
+        }
+        if (!queried.has(sender.user_id) || !this.reverifyDue(key, now)) continue;
+        this.reverifyAttempts.set(key, now);
         const listed = keysQuery.device_keys[sender.user_id]?.[sender.device_id];
         if (!listed) continue;
         const trust = senders.get(sender.user_id, sender.device_id);
         if (!trust || !this.inbound.reverifyOlmSession(ref, listed, trust)) continue;
+        this.reverifyCandidates.delete(key);
+        this.reverifyAttempts.delete(key);
         const pickle = this.inbound.pickleSession(ref, this.account, this.storageKey);
         if (pickle) upgraded.push({ key, pickle });
       }
@@ -1114,6 +1140,8 @@ export class CryptoStore {
         },
         trustStore: this.trust.pickle(this.account, this.storageKey),
       });
+      // 自分の鍵が変わったので、判定できなかったセッションを待たずに判定し直す。
+      this.reverifyAttempts.clear();
     } finally {
       keys.free();
       secrets.free();

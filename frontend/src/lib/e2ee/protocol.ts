@@ -79,7 +79,7 @@ export type CryptoOperation =
   | { op: "acknowledged"; ids: string[] }
   // 「未検証の送信者」のセッションの判定し直し（docs/e2ee.md の「受信時の検証」）。
   | { op: "reverifyCandidateUsers" }
-  | { op: "reverifySenders"; keysQuery: KeysQueryResponse }
+  | { op: "reverifySenders"; userIds: string[]; keysQuery: KeysQueryResponse }
   | { op: "pendingBackupCount" }
   | { op: "close" }
   // 初回設定と解錠（#360）。秘密は Worker のメモリーにだけ置き、要求の本文だけを返す。

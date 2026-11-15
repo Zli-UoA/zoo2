@@ -74,3 +74,24 @@ export function startCryptoWorker(): CryptoWorker {
     },
   };
 }
+
+/**
+ * 自分の鍵か相手の信頼が変わる Worker の操作（解錠と初回設定の保存、相手のマスター鍵の受け入れと SAS、
+ * 失効のクロス署名鍵の保存）。終わったら、判定できなかった「未検証の送信者」を判定し直す。
+ */
+const TRUST_CHANGING_OPS: ReadonlySet<string> = new Set([
+  "finishSetup",
+  "confirmAcceptedMasterKey",
+  "revocationCrossSigningSaved",
+]);
+
+export function notifyTrustChanges(worker: CryptoWorker, trustChanged: () => void): CryptoWorker {
+  return {
+    request: (async (operation) => {
+      const result = await worker.request(operation);
+      if (TRUST_CHANGING_OPS.has(operation.op)) trustChanged();
+      return result;
+    }) as CryptoWorker["request"],
+    terminate: () => worker.terminate(),
+  };
+}

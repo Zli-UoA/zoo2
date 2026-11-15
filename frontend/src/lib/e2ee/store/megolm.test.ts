@@ -465,28 +465,28 @@ describe("受信時の検証の手順 4（送信端末を検証済みにする�
       other.store.megolm.encrypt(CHANNEL, outgoing("m1", "hello")),
     );
     expect(await current.megolm.decrypt([message])).toMatchObject([{ sender: "unverified" }]);
-    expect(current.reverifyCandidateUsers()).toEqual([BOB]);
 
-    // 解錠していなければ判定できない。候補は残す。
-    expect(await current.reverifySenders(query)).toBe(0);
-    expect(current.reverifyCandidateUsers()).toEqual([BOB]);
+    // 解錠していなければ判定できない。問い合わせる送信ユーザーを返さず、候補は残す。
+    expect(await current.reverifyCandidateUsers()).toEqual([]);
+    expect(await current.reverifySenders([BOB], query)).toBe(0);
 
     // 解錠したあとは、同じ端末鍵が自己署名鍵で署名されているので、検証済みに上げる。
     await current.saveOwnKeys(me.secrets, 1);
-    expect(await current.reverifySenders(query)).toBe(1);
-    expect(current.reverifyCandidateUsers()).toEqual([]);
+    expect(await current.reverifyCandidateUsers()).toEqual([BOB]);
+    expect(await current.reverifySenders([BOB], query)).toBe(1);
+    expect(await current.reverifyCandidateUsers()).toEqual([]);
     expect(await current.megolm.decrypt([message])).toMatchObject([{ sender: "verified" }]);
 
     // 開き直しても検証済みのまま（保存した）。
     await current.close();
     const reopened = await openCurrent();
     expect(await reopened.megolm.decrypt([message])).toMatchObject([{ sender: "verified" }]);
-    expect(reopened.reverifyCandidateUsers()).toEqual([]);
+    expect(await reopened.reverifyCandidateUsers()).toEqual([]);
     await reopened.close();
     await other.store.close();
   });
 
-  it("判定し直しても確かめられないセッションは、間隔をあけるまで問い合わせ直さない", async () => {
+  it("判定できなかったセッションは、間隔をあけるまで問い合わせ直さず、解錠し直したあとは待たずに判定し直す", async () => {
     const me = identity(BOB);
     const other = await openStore(BOB);
     const current = await openStore(BOB);
@@ -495,13 +495,49 @@ describe("受信時の検証の手順 4（送信端末を検証済みにする�
     const unsigned = keysQueryWith(BOB, { [BOB]: me }, [other.store], []);
     const received = await sendAndDecrypt(other.store, current.store, unsigned);
     expect(received).toMatchObject({ sender: "unverified" });
-    expect(current.store.reverifyCandidateUsers()).toEqual([BOB]);
-    expect(await current.store.reverifySenders(unsigned)).toBe(0);
-    // もう一度表示して復号しても、すぐには候補に戻さない。
+    expect(await current.store.reverifyCandidateUsers()).toEqual([BOB]);
+    expect(await current.store.reverifySenders([BOB], unsigned)).toBe(0);
+    // もう一度表示して復号しても、すぐには問い合わせない。
     const encrypted = other.store.megolm.encrypt(CHANNEL, outgoing("m2", "again"));
     await current.store.megolm.decrypt([row(other.store, "m2", encrypted)]);
-    expect(current.store.reverifyCandidateUsers()).toEqual([]);
+    expect(await current.store.reverifyCandidateUsers()).toEqual([]);
+
+    // 送信端末に署名したあとで解錠し直すと、失敗した候補も待たずに判定し直し、上げる。
+    const signed = keysQueryWith(BOB, { [BOB]: me }, [other.store], [me.signDevice(other.store)]);
+    await current.store.saveOwnKeys(me.secrets, 1);
+    expect(await current.store.reverifyCandidateUsers()).toEqual([BOB]);
+    expect(await current.store.reverifySenders([BOB], signed)).toBe(1);
+    expect(await current.store.megolm.decrypt([row(other.store, "m2", encrypted)])).toMatchObject([
+      { sender: "verified" },
+    ]);
     await other.store.close();
+    await current.store.close();
+  });
+
+  it("問い合わせたユーザーの候補だけを判定し、問い合わせ中に増えた別のユーザーの候補は残す", async () => {
+    const me = identity(BOB);
+    const other = await openStore(BOB);
+    const alice = await openStore(ALICE);
+    const current = await openStore(BOB);
+    await current.store.saveOwnKeys(me.secrets, 1);
+    const unsigned = keysQueryWith(BOB, { [BOB]: me }, [other.store], []);
+    await sendAndDecrypt(other.store, current.store, unsigned);
+    const users = await current.store.reverifyCandidateUsers();
+    expect(users).toEqual([BOB]);
+    // keys/query を待つあいだに、Alice のメッセージが「未検証の送信者」になった。
+    expect(
+      await sendAndDecrypt(
+        alice.store,
+        current.store,
+        keysQueryOf({ [ALICE]: { [alice.store.deviceId]: alice.store.deviceKeys() } }),
+        "2",
+      ),
+    ).toMatchObject({ sender: "unverified" });
+    expect(await current.store.reverifySenders(users, unsigned)).toBe(0);
+    // Alice の候補は試したことにしないので、次の問い合わせに入る。
+    expect(await current.store.reverifyCandidateUsers()).toEqual([ALICE]);
+    await other.store.close();
+    await alice.store.close();
     await current.store.close();
   });
 
