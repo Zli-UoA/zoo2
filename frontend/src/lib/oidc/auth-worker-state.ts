@@ -1,5 +1,10 @@
 import { audienceIncludes, decodeJwtPayload, issuerMatches } from "./jwt";
-import type { AuthTokenResponse, AuthWorkerRequest, RefreshRequest } from "./auth-worker-protocol";
+import type {
+  AuthTokenResponse,
+  AuthWorkerRequest,
+  AuthWorkerResult,
+  RefreshRequest,
+} from "./auth-worker-protocol";
 
 export interface AuthWorkerSession {
   binding: string;
@@ -7,11 +12,13 @@ export interface AuthWorkerSession {
   state: "ready" | "pending" | "ended";
   body?: AuthTokenResponse;
   expiresAt?: number;
+  lastUsedAt?: number;
 }
 
 export interface AuthWorkerStore {
   get(sessionId: string): Promise<AuthWorkerSession | undefined>;
   put(sessionId: string, session: AuthWorkerSession): Promise<void>;
+  staleSessionIds(cutoff: number): Promise<string[]>;
 }
 
 export class AuthWorkerError extends Error {
@@ -30,11 +37,18 @@ export interface AuthWorkerEnvironment {
   now(): number;
 }
 
+export const AUTH_WORKER_IDLE_MS = 24 * 60 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+
 /** 全タブの更新を1つの所有先へ集約し、最新の結果を共有する。 */
 export class AuthWorkerState {
+  private nextCleanupAt = 0;
+  private cleanupPromise: Promise<void> | null = null;
+
   constructor(private readonly environment: AuthWorkerEnvironment) {}
 
-  run(request: AuthWorkerRequest): Promise<AuthTokenResponse | null> {
+  async run(request: AuthWorkerRequest): Promise<AuthWorkerResult | null> {
+    if (request.kind === "refresh") await this.cleanup();
     return this.environment.exclusive(request.sessionId, async () => {
       const { store } = this.environment;
       const saved = await store.get(request.sessionId);
@@ -48,9 +62,11 @@ export class AuthWorkerState {
         request.clientId,
         request.resource,
       ]);
-      if (saved && saved.binding !== binding) throw new AuthWorkerError("session_mismatch");
       if (saved && saved.state !== "ready") throw new AuthWorkerError("session_ended");
+      if (saved && saved.binding !== binding) throw new AuthWorkerError("session_mismatch");
       if (saved?.body && saved.expiresAt! > this.environment.now() + 60_000) {
+        saved.lastUsedAt = this.environment.now();
+        await store.put(request.sessionId, saved);
         const cached = this.responseWithRemainingLifetime(saved);
         // キャッシュ内のID tokenはすでに期限切れの可能性がある。
         delete cached.id_token;
@@ -65,16 +81,42 @@ export class AuthWorkerState {
         state: "ready",
         body,
         expiresAt: this.environment.now() + body.expires_in * 1000,
+        lastUsedAt: this.environment.now(),
       };
       await store.put(request.sessionId, next);
       return this.responseWithRemainingLifetime(next);
     });
   }
 
-  private responseWithRemainingLifetime(session: AuthWorkerSession): AuthTokenResponse {
+  private async cleanup(): Promise<void> {
+    if (this.cleanupPromise) return this.cleanupPromise;
+    if (this.environment.now() < this.nextCleanupAt) return;
+    const cutoff = this.environment.now() - AUTH_WORKER_IDLE_MS;
+    const clean = async () => {
+      for (const id of await this.environment.store.staleSessionIds(cutoff)) {
+        await this.environment.exclusive(id, async () => {
+          const current = await this.environment.store.get(id);
+          // 他のWorkerが更新した行を消さない。終了記録は古いタブの復活防止に残す。
+          if (current?.state === "ready" && (current.lastUsedAt ?? 0) <= cutoff) {
+            await this.environment.store.put(id, { binding: current.binding, state: "ended" });
+          }
+        });
+      }
+      this.nextCleanupAt = this.environment.now() + CLEANUP_INTERVAL_MS;
+    };
+    this.cleanupPromise = clean();
+    try {
+      await this.cleanupPromise;
+    } finally {
+      this.cleanupPromise = null;
+    }
+  }
+
+  private responseWithRemainingLifetime(session: AuthWorkerSession): AuthWorkerResult {
     return {
       ...session.body!,
       expires_in: Math.max(0, (session.expiresAt! - this.environment.now()) / 1000),
+      expiresAt: session.expiresAt!,
     };
   }
 
@@ -104,9 +146,10 @@ export class AuthWorkerState {
       !body ||
       typeof body.access_token !== "string" ||
       !body.access_token ||
-      typeof body.expires_in !== "number" ||
-      !Number.isFinite(body.expires_in) ||
-      body.expires_in <= 0 ||
+      (body.expires_in !== undefined &&
+        (typeof body.expires_in !== "number" ||
+          !Number.isFinite(body.expires_in) ||
+          body.expires_in <= 0)) ||
       (body.refresh_token !== undefined &&
         (typeof body.refresh_token !== "string" || !body.refresh_token))
     ) {
@@ -125,6 +168,10 @@ export class AuthWorkerState {
         throw new AuthWorkerError("invalid_id_token");
       }
     }
-    return { ...body, refresh_token: body.refresh_token ?? refreshToken } as AuthTokenResponse;
+    return {
+      ...body,
+      expires_in: body.expires_in ?? 300,
+      refresh_token: body.refresh_token ?? refreshToken,
+    } as AuthTokenResponse;
   }
 }
