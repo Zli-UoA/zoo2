@@ -210,7 +210,9 @@ SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（
 
 バックエンドは初回ログイン (JIT プロビジョニング) 時に Discovery の `userinfo_endpoint` をアクセストークン付きで呼び出し、`preferred_username` / `name` からユーザー名と表示名を設定します。UserInfo の取得に失敗した場合は `user` にフォールバックしてログインを継続します。既存ユーザーは、表示名が旧フォールバック値 `user` のままで本人が未編集の場合に限り、再ログイン時に一度だけ UserInfo から補正します。
 
-リロード後はタブ内のセッションを復元し、再認可が必要になるまでは authorize への往復を省きます。期限前にはメモリ内の refresh_token があれば更新します。refresh_token はタブ複製時の再利用を防ぐため保存せず、再読み込み後は期限が近づくと再認可します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。AuthZ は refresh token を発行しないため、access token の期限切れ後は再ログインになります。ログアウトではメモリと `sessionStorage` のトークンを破棄します。Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
+リロード後はsessionStorageからトークンと更新セッションの識別子を復元し、再認可が必要になるまではauthorizeへの往復を省きます。AuthZのclientで`offline_access`を許可し、SPAが同scopeを要求して本人が同意すると、更新トークンで自動更新します。更新はSharedWorkerへ集約し、複製タブにも最新の結果を共有します。最新の更新状態はIndexedDBに保存し、Worker終了後も復元します。対応APIが使えない環境では更新トークンを保存しません。
+
+ログアウト・セッション破棄ではメモリとsessionStorageを消し、Workerの資格情報も終了させます。タブを閉じただけではIndexedDBの状態は残ります。24時間以上使われていない資格情報は次回Worker利用時の掃除で消します。終了記録は古い複製タブからの再利用を防ぐため残します。通信結果が不明な更新は再送せず再認可し、APIの401も認証復旧へ進みます。AuthZ側の更新トークンをrevokeする処理は含みません。KanidmはRP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidmのセッション自体を終えるにはKanidm側でログアウトしてください。保存期間と信頼境界は[認証ワーカーの設計](../docs/oidc-refresh.md)を参照してください。
 
 SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。CSP の `connect-src` には `CSP_CONNECT_SRC` で IdP のオリジンを追加します。
 
