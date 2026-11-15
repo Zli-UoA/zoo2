@@ -360,6 +360,144 @@ fn code(toks: &[Tok], i: usize, out: &mut String) -> usize {
     i + 1
 }
 
+/// 取り込み済みの本文 (Slack の mrkdwn を、書式を変換する前の変換で MFM にしたもの) に、書式の変換を当てる。
+///
+/// 次のときは `None` を返す: 変わらないとき、すでに書式を変換した本文 (`**` `~~` `<i>` U+200B を含む)、
+/// 変換後が `MAX_MESSAGE_CONTENT_LENGTH` を超えるとき。保存済みの本文では、`<...>` から変換したリンクが
+/// `[label](https://…)` や URL の形になっているので、これらは書式の対象にしない。
+pub fn reformat_stored(content: &str) -> Option<String> {
+    if content.contains(ZWSP) || ["**", "~~", "<i>"].iter().any(|m| content.contains(m)) {
+        return None;
+    }
+    let mut toks: Vec<Tok> = Vec::with_capacity(content.len().min(MAX_FORMAT_CHARS));
+    let mut rest = content;
+    let mut prev: Option<char> = None;
+    while let Some(c) = rest.chars().next() {
+        // コードの範囲は、中身を URL やリンクとして切り出さずに、そのまま文字として積む
+        // (閉じの `` ` `` を URL に取り込まないように。`format` がコードとして扱う)
+        let code = if c == '`' { raw_code_len(rest) } else { None };
+        let atom = match c {
+            '[' => markdown_link_len(rest),
+            '@' | '#' => mention_len(rest),
+            'h' if !prev.is_some_and(|p| p.is_ascii_alphanumeric()) => bare_url_len(rest),
+            _ => None,
+        };
+        if let Some(len) = code {
+            toks.extend(rest[..len].chars().map(Tok::Ch));
+            prev = rest[..len].chars().next_back();
+            rest = &rest[len..];
+        } else if let Some(len) = atom {
+            toks.push(Tok::Atom(rest[..len].to_string()));
+            prev = rest[..len].chars().next_back();
+            rest = &rest[len..];
+        } else {
+            toks.push(Tok::Ch(c));
+            prev = Some(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    let mut out = String::with_capacity(content.len() + 16);
+    format(&toks, 0, &mut out);
+    (out != content && out.chars().count() <= MAX_MESSAGE_CONTENT_LENGTH).then_some(out)
+}
+
+/// 先頭が `` ` `` のとき、閉じているコードの長さ (バイト)。`code_end` と同じ規則 (``` は次の ``` まで、
+/// 1 つの `` ` `` は同じ行の次の `` ` `` まで。空は除く)
+fn raw_code_len(s: &str) -> Option<usize> {
+    if let Some(rest) = s.strip_prefix("```") {
+        return rest.find("```").map(|i| 3 + i + 3);
+    }
+    let rest = &s[1..];
+    let end = rest.find(['`', '\n'])?;
+    (end > 0 && rest.as_bytes()[end] == b'`').then_some(1 + end + 1)
+}
+
+/// `@name` / `#name` の長さ (バイト)。名前は、英数字 (日本語を含む) と `_` `-` `.` が続く間。末尾の `.` は含めない。
+/// 名前の中の `_` を、書式の記号として扱わないための範囲 (`convert_token` が作るメンション・チャンネル名と同じ扱い)
+fn mention_len(s: &str) -> Option<usize> {
+    let name = &s[1..];
+    let end = name
+        .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | '.')))
+        .unwrap_or(name.len());
+    let len = name[..end].trim_end_matches('.').len();
+    (len > 0).then_some(1 + len)
+}
+
+/// `[label](https://…)` の長さ (バイト)。ラベルの中の閉じたコード (`` `a` ``) は許し、URL の中の括弧は
+/// 対応を数えて、対応する最後の `)` までを 1 つのリンクにする
+fn markdown_link_len(s: &str) -> Option<usize> {
+    let mut i = 1;
+    let close = loop {
+        match s[i..].chars().next()? {
+            ']' => break i,
+            '\n' | '[' => return None,
+            '`' => {
+                let rest = &s[i + 1..];
+                let end = rest.find(['`', '\n'])?;
+                if rest.as_bytes()[end] != b'`' {
+                    return None;
+                }
+                i += 1 + end + 1;
+            }
+            c => i += c.len_utf8(),
+        }
+    };
+    if !s[close..].starts_with("](") {
+        return None;
+    }
+    let url = &s[close + 2..];
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (k, c) in url.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => return Some(close + 2 + k + 1),
+            ')' => depth -= 1,
+            '`' => return None,
+            c if c.is_whitespace() => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 素の URL の長さ (バイト)。末尾の記号 (`*` `_` `~` や句読点) と、対応する開きのない閉じ括弧は、URL に含めない
+fn bare_url_len(s: &str) -> Option<usize> {
+    let scheme = ["https://", "http://"]
+        .iter()
+        .find(|p| s.starts_with(**p))?;
+    let end = s
+        .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '`'))
+        .unwrap_or(s.len());
+    let mut url = &s[..end];
+    loop {
+        let trimmed =
+            url.trim_end_matches(['*', '_', '~', '.', ',', '!', '?', ';', ':', '\'', '"']);
+        let trimmed = match trimmed.chars().next_back() {
+            Some(last @ (')' | ']' | '}')) => {
+                let open = match last {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
+                };
+                if trimmed.matches(last).count() > trimmed.matches(open).count() {
+                    &trimmed[..trimmed.len() - 1]
+                } else {
+                    trimmed
+                }
+            }
+            _ => trimmed,
+        };
+        if trimmed.len() == url.len() {
+            break;
+        }
+        url = trimmed;
+    }
+    (url.len() > scheme.len()).then_some(url.len())
+}
+
 /// 本文でメンションされている Slack ユーザー ID (`<@U123>` / `<@W123|name>`) を出現順・重複なしで返す
 pub fn mentioned_users(text: &str) -> Vec<String> {
     let mut found: Vec<String> = Vec::new();
@@ -634,6 +772,97 @@ mod tests {
             mrkdwn_to_text("*b* ~s~ _i_ **x**", &Map),
             "*b* ~s~ _i_ **x**"
         );
+    }
+
+    #[test]
+    fn reformats_stored_content_without_touching_links() {
+        let r = |s: &str| reformat_stored(s);
+        assert_eq!(r("これは*太字*です").as_deref(), Some("これは**太字**です"));
+        assert_eq!(
+            r("*see [a_b](https://a.test/_x_/~y~) now*").as_deref(),
+            Some("**see [a_b](https://a.test/_x_/~y~) now**")
+        );
+        assert_eq!(
+            r("_https://a.test/x_y_z_").as_deref(),
+            Some("<i>https://a.test/x_y_z</i>")
+        );
+        assert_eq!(r("see https://a.test/_x_/~y~"), None);
+        assert_eq!(r("<b>x</b>").as_deref(), Some("<\u{200b}b>x<\u{200b}/b>"));
+        assert_eq!(r("2*3*4"), None);
+        assert_eq!(r("plain text"), None);
+    }
+
+    #[test]
+    fn reformat_keeps_code_and_url_boundaries() {
+        let r = |s: &str| reformat_stored(s);
+        // コードの中は変えない (末尾が URL でも、後ろの別のコードがあっても)
+        assert_eq!(r("`*bold* https://example.com`"), None);
+        assert_eq!(r("`https://example.com` and `*literal*`"), None);
+        assert_eq!(r("```\n*bold* https://example.com```"), None);
+        assert_eq!(
+            r("`[a](https://example.com` *b*)").as_deref(),
+            Some("`[a](https://example.com` **b**)")
+        );
+        assert_eq!(
+            r("`[a` *b* `](https://example.com)`").as_deref(),
+            Some("`[a` **b** `](https://example.com)`")
+        );
+        assert_eq!(r("see https://a.test/x`*y*`").as_deref(), None,);
+        // メンションとチャンネル名の中の `_` は、書式の記号にしない
+        assert_eq!(r("#開発_連絡 と #開発_雑談"), None);
+        assert_eq!(
+            r("_詳細は #dev_連絡 を参照_").as_deref(),
+            Some("<i>詳細は #dev_連絡 を参照</i>")
+        );
+        assert_eq!(
+            r("@_taro さん、_確認_").as_deref(),
+            Some("@_taro さん、<i>確認</i>")
+        );
+        assert_eq!(r("_see @taro_x and #dev_y_").as_deref(), None);
+        assert_eq!(
+            r("*@taro_x* と _確認_").as_deref(),
+            Some("**@taro_x** と <i>確認</i>")
+        );
+        // 括弧で囲んだ URL の閉じ括弧は、URL に含めない
+        assert_eq!(
+            r("(_https://a.test/x_)").as_deref(),
+            Some("(<i>https://a.test/x</i>)")
+        );
+        assert_eq!(
+            r("(*https://a.test/x*)").as_deref(),
+            Some("(**https://a.test/x**)")
+        );
+        assert_eq!(
+            r("(_https://a.test/x_) and _y_").as_deref(),
+            Some("(<i>https://a.test/x</i>) and <i>y</i>")
+        );
+        // コードを含むラベルのリンクと、括弧を含む URL のリンクは、そのまま (外側だけ変換する)
+        assert_eq!(r("[`a`](https://a.test/x)"), None);
+        assert_eq!(r("[`a` *b*](https://a.test/x)"), None);
+        assert_eq!(r("[Wiki](https://a.test/(x)_y_)"), None);
+        assert_eq!(
+            r("[Wiki](https://a.test/a_(b)_c) _d_").as_deref(),
+            Some("[Wiki](https://a.test/a_(b)_c) <i>d</i>")
+        );
+        assert_eq!(
+            r("[Wiki](https://a.test/(x)_) and _y_").as_deref(),
+            Some("[Wiki](https://a.test/(x)_) and <i>y</i>")
+        );
+        // 対応する括弧を持つ URL は、そのまま
+        assert_eq!(r("see https://en.wikipedia.org/wiki/Foo_(bar)"), None);
+    }
+
+    #[test]
+    fn reformat_skips_content_that_is_already_converted() {
+        assert_eq!(reformat_stored("**a** *b*"), None);
+        assert_eq!(reformat_stored("~~a~~ ~b~"), None);
+        assert_eq!(reformat_stored("<i>a</i> *b*"), None);
+        assert_eq!(reformat_stored("*\u{200b}*x"), None);
+        // 2 回当てても、結果は変わらない
+        let once = reformat_stored("a *b* ~c~ _d_").unwrap();
+        assert_eq!(reformat_stored(&once), None);
+        let long = format!("*a* {}", "a".repeat(MAX_MESSAGE_CONTENT_LENGTH - 4));
+        assert_eq!(reformat_stored(&long), None);
     }
 
     #[test]
