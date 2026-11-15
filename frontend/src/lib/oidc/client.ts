@@ -1,3 +1,5 @@
+import { requestAuthWorker } from "./auth-worker-client";
+import type { AuthWorkerRequest, AuthTokenResponse } from "./auth-worker-protocol";
 import { decodeJwtPayload, audienceIncludes, issuerMatches } from "./jwt";
 import {
   notifyAuthSessionEnded,
@@ -78,6 +80,8 @@ export interface ReauthRequest {
 export interface OidcTokens {
   accessToken: string;
   refreshToken: string | null;
+  /** タブ複製・再読み込みで共有する更新セッション。 */
+  refreshSessionId?: string;
   idToken: string | null;
   /** epoch ミリ秒。 */
   expiresAt: number;
@@ -92,6 +96,8 @@ export interface OidcEnvironment {
   fetch: OidcFetch;
   now(): number;
   isOnline?(): boolean;
+  /** ブラウザーでは更新を共有ワーカーへ委譲する。テスト環境は直接交換も可能。 */
+  authWorker?(request: AuthWorkerRequest): Promise<AuthTokenResponse | null>;
 }
 
 export interface OidcClientOptions {
@@ -123,6 +129,7 @@ export function createBrowserEnvironment(): OidcEnvironment {
     fetch: (input, init) => fetch(input, init),
     now: () => Date.now(),
     isOnline: () => navigator.onLine,
+    authWorker: requestAuthWorker,
   };
 }
 
@@ -186,7 +193,11 @@ export class OidcClient {
   private discoveryPromise: Promise<OidcEndpoints> | null = null;
   private tokens: OidcTokens | null = null;
   /** One-use, memory-only hint for a logout whose durable cleanup must be retried. */
-  private pendingLogoutOperation: { generation: number; idTokenHint: string | null } | null = null;
+  private pendingLogoutOperation: {
+    generation: number;
+    idTokenHint: string | null;
+    refreshSessionId?: string;
+  } | null = null;
   private refreshPromise: Promise<OidcTokens> | null = null;
   private loginPreparation: object | null = null;
   private callbackRequest: { url: string; promise: Promise<{ returnTo: string }> } | null = null;
@@ -669,13 +680,26 @@ export class OidcClient {
       client_id: this.clientId,
     });
     this.addResource(body);
-    // 更新トークンは単回使用。通信中の再読み込みで古い値を再送しない。
-    clearStoredSession(this.environment.storage);
-    const responseBody = await this.requestToken(body);
+    // ブラウザーではWorkerが更新途中の状態も保持する。直接交換するテスト環境は
+    // 単回使用トークンを再送しないよう、先に保存情報を消す。
+    if (!this.environment.authWorker) clearStoredSession(this.environment.storage);
+    const responseBody = this.environment.authWorker
+      ? await this.environment.authWorker({
+          kind: "refresh",
+          sessionId: current.refreshSessionId!,
+          tokenEndpoint: (await this.discover()).tokenEndpoint,
+          issuer: this.issuer,
+          clientId: this.clientId,
+          resource: this.resource,
+          refreshToken,
+        })
+      : await this.requestToken(body);
+    if (!responseBody) throw new OidcError("invalid_token_response", "更新結果がありません");
     // refresh 応答に id_token が無い IdP でも、logout の id_token_hint 用に
     // 前回の値を引き継ぐ。
     const tokens = this.parseTokens(responseBody, null, {
       refreshToken,
+      refreshSessionId: current?.refreshSessionId,
       idToken: current?.idToken ?? null,
     });
     if (this.generation !== generation) {
@@ -695,11 +719,16 @@ export class OidcClient {
   async logout(): Promise<void> {
     this.loginPreparation = null;
     const currentIdTokenHint = this.tokens?.idToken ?? null;
+    const currentRefreshSessionId = this.tokens?.refreshSessionId;
     const generation = ++this.generation;
     const previousLogoutOperation = this.pendingLogoutOperation;
     const idTokenHint = previousLogoutOperation?.idTokenHint ?? currentIdTokenHint;
     if (previousLogoutOperation) previousLogoutOperation.idTokenHint = null;
-    const logoutOperation = { generation, idTokenHint };
+    const logoutOperation = {
+      generation,
+      idTokenHint,
+      refreshSessionId: previousLogoutOperation?.refreshSessionId ?? currentRefreshSessionId,
+    };
     this.pendingLogoutOperation = logoutOperation;
     this.tokens = null;
     const storedSessionCleared = clearStoredSession(this.environment.storage);
@@ -721,7 +750,24 @@ export class OidcClient {
       // Keep logout in memory even when the persistent flag cannot be written.
     }
     const listenersInvalidated = notifyAuthSessionEnded("logout");
-    if (!storedSessionCleared || !pendingCleared || !logoutMarkerStored || !listenersInvalidated) {
+    let workerCleared = true;
+    if (logoutOperation.refreshSessionId && this.environment.authWorker) {
+      try {
+        await this.environment.authWorker({
+          kind: "logout",
+          sessionId: logoutOperation.refreshSessionId,
+        });
+      } catch {
+        workerCleared = false;
+      }
+    }
+    if (
+      !workerCleared ||
+      !storedSessionCleared ||
+      !pendingCleared ||
+      !logoutMarkerStored ||
+      !listenersInvalidated
+    ) {
       // Navigating would discard the only memory protection while a stale callback
       // or private-note recovery snapshot may still be persisted. Keep the app in
       // its logged-out state and let the user retry cleanup after storage recovers.
@@ -792,7 +838,7 @@ export class OidcClient {
   private parseTokens(
     body: TokenResponse,
     expectedNonce: string | null,
-    previous: { refreshToken: string | null; idToken: string | null },
+    previous: { refreshToken: string | null; refreshSessionId?: string; idToken: string | null },
   ): OidcTokens {
     const accessToken = body.access_token;
     if (typeof accessToken !== "string" || accessToken.length === 0) {
@@ -810,10 +856,12 @@ export class OidcClient {
       typeof body.expires_in === "number" && Number.isFinite(body.expires_in) && body.expires_in > 0
         ? body.expires_in
         : 300;
+    const refreshToken =
+      typeof body.refresh_token === "string" ? body.refresh_token : previous.refreshToken;
     return {
       accessToken,
-      refreshToken:
-        typeof body.refresh_token === "string" ? body.refresh_token : previous.refreshToken,
+      refreshToken,
+      ...(refreshToken ? { refreshSessionId: previous.refreshSessionId ?? createState() } : {}),
       idToken: idToken ?? previous.idToken,
       expiresAt: this.environment.now() + expiresIn * 1000,
     };
