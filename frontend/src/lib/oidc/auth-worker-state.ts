@@ -68,6 +68,11 @@ export class AuthWorkerState {
       ]);
       if (saved && saved.state !== "ready") throw new AuthWorkerError("session_ended");
       if (saved && saved.binding !== binding) throw new AuthWorkerError("session_mismatch");
+      // 要求元の未使用期限は、掃除の成功や実行間隔に依存させない。
+      if (saved && (saved.lastUsedAt ?? 0) <= this.environment.now() - AUTH_WORKER_IDLE_MS) {
+        await store.put(request.sessionId, { binding: saved.binding, state: "ended" });
+        throw new AuthWorkerError("session_ended");
+      }
       if (saved?.body && saved.expiresAt! > this.environment.now() + 60_000) {
         saved.lastUsedAt = this.environment.now();
         await store.put(request.sessionId, saved);
