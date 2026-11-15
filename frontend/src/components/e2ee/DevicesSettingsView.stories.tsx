@@ -120,7 +120,7 @@ export const SasVerify: Story = {
 };
 
 /**
- * 長く使っていない端末と、登録したまま解錠していない端末に印を付け、削除を勧める。自動では消さず、
+ * 長く使っていない端末と、解錠しないまま使っていない端末に印を付け、削除を勧める。自動では消さず、
  * 消すかは利用者が一覧から決める（Safari のタブとホーム画面のアプリは、別の端末になる）。
  */
 export const CleanupSuggested: Story = {
@@ -141,8 +141,8 @@ export const CleanupSuggested: Story = {
         {
           deviceId: "7e8f9a0b-1c2d-4e3f-9a4b-5c6d7e8f9a0b",
           displayName: "Safari（iOS・アプリ）",
-          createdAt: "2026-11-13T21:00:00Z",
-          lastSeenAt: "2026-11-13T21:05:00Z",
+          createdAt: "2026-11-03T21:00:00Z",
+          lastSeenAt: "2026-11-03T21:05:00Z",
           current: false,
           signed: false,
         },

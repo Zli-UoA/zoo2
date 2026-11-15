@@ -41,6 +41,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import {
+  NOT_UNLOCKED_UNUSED_DAYS,
   STALE_DEVICE_DAYS,
   cleanupReasons,
   type CleanupReason,
@@ -398,6 +399,7 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
             {t("e2ee.devices.cleanupDescription", {
               count: candidates,
               days: STALE_DEVICE_DAYS,
+              unlockDays: NOT_UNLOCKED_UNUSED_DAYS,
             })}
           </p>
         </div>

@@ -1,18 +1,6 @@
 import type { TFunction } from "i18next";
 
-/**
- * ホーム画面や Dock に追加したアプリ（PWA）として開いているか。Safari では、タブとアプリで保存先が
- * 分かれて別の端末になるので、端末名で見分けられるようにする。iOS の Safari は `display-mode` を
- * 返さないことがあるので、`navigator.standalone` も見る。
- */
-export function isStandaloneApp(): boolean {
-  try {
-    if (globalThis.matchMedia?.("(display-mode: standalone)").matches) return true;
-  } catch {
-    // matchMedia がなければ、下の判定だけを使う。
-  }
-  return (globalThis.navigator as { standalone?: boolean } | undefined)?.standalone === true;
-}
+import { isStandaloneDisplay } from "../pwa/standalone";
 
 /**
  * 端末名（`display_name`）。本人の端末一覧（#362）にだけ出るので、ブラウザーと OS と、アプリとして
@@ -23,7 +11,8 @@ export function deviceDisplayName(
   t: TFunction,
   {
     userAgent = globalThis.navigator?.userAgent ?? "",
-    standalone = isStandaloneApp(),
+    // Safari では、タブとアプリ（PWA）で保存先が分かれて別の端末になるので、端末名で見分ける。
+    standalone = isStandaloneDisplay(),
   }: { userAgent?: string; standalone?: boolean } = {},
 ): string {
   const browser = /Edg\//.test(userAgent)

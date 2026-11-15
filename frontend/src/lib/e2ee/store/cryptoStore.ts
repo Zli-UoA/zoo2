@@ -251,6 +251,11 @@ export class CryptoStore {
   /** 削除待ちにまだ渡していない前の端末（{@link DeviceRecord.replaced}）。 */
   private replaced: ReplacedDevice[] = [];
   /**
+   * 開いたときに記録を読めたか。読めなかったら、この store では記録を書き換えない（前の端末の ID を
+   * 上書きして失わないため。次に開いたときに読み直す）。
+   */
+  private recordWritable = false;
+  /**
    * 復号で「未検証の送信者」になった Olm 由来のセッション（判定し直す候補）。検証済みに上げるか、
    * 未検証でなくなるまで残す（判定に失敗しても、解錠や相手の検証のあとに判定し直すため）。メモリーに
    * だけ置き、開き直したら、表示して復号したときにまた入る。
@@ -313,7 +318,7 @@ export class CryptoStore {
       throw new Error("暗号ストアが別のユーザーのものです");
     }
     // 同じユーザーの記録だけを使う（別のユーザーの記録は上書きする）。
-    const read = await readDeviceRecord(options.devices, options.name);
+    const { readable, record: read } = await readDeviceRecord(options.devices, options.name);
     const record = read?.userId === options.userId ? read : undefined;
     const replaced: ReplacedDevice[] = [...(record?.replaced ?? [])];
     const addReplaced = (device: ReplacedDevice) => {
@@ -389,6 +394,7 @@ export class CryptoStore {
       }
       store.replaced = replaced.filter((device) => device.deviceId !== deviceId);
       // 記録のない暗号ストア（前の版で作ったもの）は、今の端末を記録するだけ。
+      store.recordWritable = readable;
       await store.recordDevice(read);
       return { store, replacedDevices: [...store.replaced] };
     }
@@ -425,6 +431,7 @@ export class CryptoStore {
     // 新しい端末を暗号ストアに保存したあとで、記録を新しい端末に進め、前の端末を `replaced` に移す
     // （保存に失敗したら、前の端末の記録を残す）。知らせるのは、記録に書いたあと。
     store.replaced = replaced.filter((device) => device.deviceId !== account.deviceId);
+    store.recordWritable = readable;
     await store.recordDevice(read);
     return { store, replacedDevices: [...store.replaced] };
   }
@@ -455,6 +462,7 @@ export class CryptoStore {
       registered: this.registered,
       replaced: this.replaced,
     };
+    if (!this.recordWritable) return;
     if (current && JSON.stringify(current) === JSON.stringify(next)) return;
     await writeDeviceRecord(this.devices, this.name, next);
   }
@@ -1321,12 +1329,14 @@ export class CryptoStore {
       });
       // 前の端末はサーバーで削除済みなので、記録は新しい端末に進める（前の端末を消させない）。
       // 渡していない前の端末は残す。
-      await writeDeviceRecord(this.devices, this.name, {
-        userId: this.userId,
-        deviceId: account.deviceId,
-        registered: false,
-        replaced: this.replaced,
-      });
+      if (this.recordWritable) {
+        await writeDeviceRecord(this.devices, this.name, {
+          userId: this.userId,
+          deviceId: account.deviceId,
+          registered: false,
+          replaced: this.replaced,
+        });
+      }
       return {
         deviceId: account.deviceId,
         carried: inboundSessions.length,

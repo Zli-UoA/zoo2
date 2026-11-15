@@ -43,19 +43,37 @@ describe("cleanupReasons", () => {
     ).toEqual(["stale"]);
   });
 
-  it("登録から 1 日以上たって解錠していない端末を勧める", () => {
+  it("解錠していないまま 7 日以上使っていない端末を勧める", () => {
     expect(
-      cleanupReasons(device({ signed: false, createdAt: "2026-11-13T00:00:00Z" }), {
-        now: NOW,
-        anySigned: true,
-      }),
+      cleanupReasons(
+        device({
+          signed: false,
+          createdAt: "2026-11-01T00:00:00Z",
+          lastSeenAt: "2026-11-08T00:00:00Z",
+        }),
+        { now: NOW, anySigned: true },
+      ),
     ).toEqual(["notUnlocked"]);
-    // 登録したばかり（解錠の途中かもしれない）は勧めない。
+  });
+
+  it("署名がなくても、最近使った端末は勧めない（失効のあと、解錠し直す前の端末など）", () => {
+    // 登録から日がたっていても、1 時間前に使った。
     expect(
-      cleanupReasons(device({ signed: false, createdAt: "2026-11-14T12:00:00Z" }), {
-        now: NOW,
-        anySigned: true,
-      }),
+      cleanupReasons(
+        device({
+          signed: false,
+          createdAt: "2026-10-01T00:00:00Z",
+          lastSeenAt: "2026-11-14T23:00:00Z",
+        }),
+        { now: NOW, anySigned: true },
+      ),
+    ).toEqual([]);
+    // 登録したばかり（解錠の途中かもしれない）も勧めない。
+    expect(
+      cleanupReasons(
+        device({ signed: false, createdAt: "2026-11-14T12:00:00Z", lastSeenAt: null }),
+        { now: NOW, anySigned: true },
+      ),
     ).toEqual([]);
   });
 

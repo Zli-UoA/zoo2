@@ -78,18 +78,19 @@ export const indexedDbDeviceRecords: DeviceRecordStore = {
 };
 
 /**
- * 記録を読む。読めなければ `undefined`（記録は前の端末を消すための補助で、読めなくても暗号ストアは
- * 開く。前の端末は、これまでどおり設定の「端末」から消せる）。
+ * 記録を読む。記録がなければ `record` は `undefined`。読めなかった（IndexedDB の一時的な失敗など）
+ * ときは `readable: false` で、呼び出し側は記録を書き換えない（前の端末の ID を上書きして失わない
+ * ため。次に開いたときに読み直す）。記録は前の端末を消すための補助で、読めなくても暗号ストアは開く。
  */
 export async function readDeviceRecord(
   records: DeviceRecordStore | undefined,
   name: string,
-): Promise<DeviceRecord | undefined> {
-  if (!records) return undefined;
+): Promise<{ readable: boolean; record: DeviceRecord | undefined }> {
+  if (!records) return { readable: false, record: undefined };
   try {
-    return parse(await records.get(name));
+    return { readable: true, record: parse(await records.get(name)) };
   } catch {
-    return undefined;
+    return { readable: false, record: undefined };
   }
 }
 

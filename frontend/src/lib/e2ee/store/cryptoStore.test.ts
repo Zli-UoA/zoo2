@@ -56,12 +56,17 @@ function memoryKeys(): WrappingKeyStore & { keys: Map<string, CryptoKey> } {
 function memoryDevices(): DeviceRecordStore & {
   records: Map<string, DeviceRecord>;
   failPut: boolean;
+  failGet: boolean;
 } {
   const records = new Map<string, DeviceRecord>();
   const store = {
     records,
     failPut: false,
-    get: async (name: string) => records.get(name),
+    failGet: false,
+    get: async (name: string) => {
+      if (store.failGet) throw new Error("idb down");
+      return records.get(name);
+    },
     put: async (name: string, record: DeviceRecord) => {
       if (store.failPut) throw new Error("idb down");
       records.set(name, structuredClone(record));
@@ -302,6 +307,51 @@ describe("CryptoStore", () => {
         record(current, false, [{ deviceId: previous, registered: true }]),
       );
       await third.store.close();
+    });
+
+    it("記録を読めなかったら書き換えず、読めるようになってから前の端末を知らせる", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const previous = first.store.deviceId;
+      await first.store.markRegistered();
+      await first.store.close();
+
+      // ファイルが消えたうえ、IndexedDB の読み取りが一時的に失敗した。
+      devices.failGet = true;
+      const second = await open(backend, keys, BOB, devices);
+      const current = second.store.deviceId;
+      expect(second.replacedDevices).toEqual([]);
+      await second.store.markRegistered();
+      await second.store.close();
+      // 前の端末の記録を上書きしない。
+      expect(devices.records.get(NAME)).toEqual(record(previous, true));
+
+      devices.failGet = false;
+      const third = await open(backend, keys, BOB, devices);
+      expect(third.store.deviceId).toBe(current);
+      expect(third.replacedDevices).toEqual([{ deviceId: previous, registered: true }]);
+      await third.store.close();
+    });
+
+    it("保存鍵を開けず、記録に別の端末もあれば、両方を前の端末として知らせる", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(backend, keys, BOB, devices);
+      const lost = first.store.deviceId;
+      await first.store.close();
+      // 記録には、さらに前の（渡していない）端末が残っている。
+      const older = "2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d";
+      devices.records.set(NAME, record(older, true));
+      keys.keys.clear();
+      const second = await open(backend, keys, BOB, devices);
+      expect(second.replacedDevices).toEqual([
+        { deviceId: lost, registered: false },
+        { deviceId: older, registered: true },
+      ]);
+      await second.store.close();
     });
 
     it("別の端末から削除されて作り直した端末は、記録を進めて、前の端末を知らせない", async () => {
