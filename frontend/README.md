@@ -190,6 +190,15 @@ VITE_OIDC_RESOURCE=https://zli.chat
 - AuthZは `offline_access` に対応しています。管理者がclientに同scopeを許可し、`VITE_OIDC_SCOPE="openid profile offline_access"` で要求して本人が同意すると、refresh tokenでaccess tokenを更新します。refresh tokenがない場合は期限前に再認可します。同じタブのリロードでは保存済みセッションを復元します。期限が近づいて再認可が必要になるまでは、authorize への往復を省きます。
 - ログアウトは Discovery の `end_session_endpoint` を使う RP-initiated logout です。`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` で戻り先を変更できます（既定 `${origin}/`）。
 
+### 自動更新の有効化
+
+1. AuthZの管理画面で、zoo2に登録したpublic clientに`offline_access`を許可します。redirect URI・resourceの既存設定は維持します。
+2. ローカルは`frontend/.env`、本番は`Zli-UoA/zoo2`のRepository Variable `VITE_OIDC_SCOPE`に、現在のscopeへ`offline_access`を追加した値を設定します。通常の例は`openid profile offline_access`です。`ains`などを利用中なら、そのscopeも残します。
+3. Webを再ビルドして配備します。`VITE_OIDC_*`はビルド時に埋め込むため、コンテナの再起動だけでは反映されません。本番の`Publish images`は同じSHAのイメージがあるとビルドを省略するため、変数の設定後に新しいコミットのSHAでビルドし、そのイメージをGitの配備設定へ反映します。詳細は[zoo2-infraの登録・配備手順](https://github.com/Zli-UoA/zoo2-infra/blob/main/docs/installation.md#authzへのzoo2の登録)を参照してください。
+4. 利用者が再ログインし、`offline_access`の追加同意を行います。更新トークンの発行と、再読み込み後も自動更新が続くことを確認します。
+
+AuthZ側の許可を先に追加し、続いてWebの設定・ビルド・配備、最後に本人の同意という順で進めます。設定例の変更だけで本番のclientや配備済みWebが変わることはありません。
+
 ## テスト・品質（Phase 6）
 
 主要なデータ変換と書き込みフローを vitest で担保し、`vp check`（format / lint / typecheck）とテストを CI で回します。
