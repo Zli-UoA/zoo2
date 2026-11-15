@@ -4,11 +4,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.activity.ComponentActivity
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import java.io.File
@@ -18,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlin.math.roundToInt
 import kotlin.test.*
 import org.junit.Rule
 import org.junit.runner.RunWith
@@ -30,7 +32,7 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @OptIn(ExperimentalTestApi::class)
 class TouchUiTest {
-    @get:Rule val ui = createComposeRule()
+    @get:Rule val ui = createAndroidComposeRule<ComponentActivity>()
     private val labels = mapOf(
         "nav.main" to "メインナビゲーション", "home.title" to "Home",
         "channels.title" to "チャンネル", "notifications.title" to "通知",
@@ -55,7 +57,10 @@ class TouchUiTest {
         ui.onNodeWithContentDescription("通知")
             .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).performClick()
         ui.onNodeWithContentDescription("通知").assertIsSelected()
-        ui.onNodeWithText("99+").assertExists()
+        // NavigationBarItem hides decorative icon descendants; expose the full count on the tab.
+        ui.onNodeWithContentDescription("通知").assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "未読通知120件"),
+        )
         screenshot("navigation", "navigation-320-light")
         ui.runOnIdle { width = 600.dp; dark = true }
         ui.onNodeWithContentDescription("チャンネル").performClick().assertIsSelected()
@@ -112,10 +117,25 @@ class TouchUiTest {
     }
 
     private fun screenshot(tag: String, name: String) {
-        val directory = File(System.getProperty("zoo.uiScreenshotDir", "build/reports/ui")).apply { mkdirs() }
-        val bitmap = ui.onNodeWithTag(tag).captureToImage().asAndroidBitmap()
-        File(directory, "$name.png").outputStream().use {
-            check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+        val directory = File(System.getProperty("zoo.uiScreenshotDir") ?: "build/reports/ui").apply { mkdirs() }
+        val bounds = ui.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        // PixelCopy used by captureToImage waits for a compositor frame on Robolectric API 35.
+        // Draw the real content View with the native graphics backend instead.
+        ui.runOnIdle {
+            val content = ui.activity.findViewById<android.view.View>(android.R.id.content)
+            val full = android.graphics.Bitmap.createBitmap(content.width, content.height, android.graphics.Bitmap.Config.ARGB_8888)
+            try {
+                content.draw(android.graphics.Canvas(full))
+                val bitmap = android.graphics.Bitmap.createBitmap(
+                    full, bounds.left.roundToInt(), bounds.top.roundToInt(),
+                    bounds.width.roundToInt(), bounds.height.roundToInt(),
+                )
+                try {
+                    File(directory, "$name.png").outputStream().use {
+                        check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+                    }
+                } finally { if (bitmap !== full) bitmap.recycle() }
+            } finally { full.recycle() }
         }
     }
 
