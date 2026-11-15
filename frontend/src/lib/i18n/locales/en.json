@@ -708,6 +708,9 @@
     "showLess": "Show less"
   },
   "home": {
+    "back": "Back",
+    "deleted": "Post deleted",
+    "newPosts": "View new posts ({{count}})",
     "quotedPost": "Quoted post",
     "quoteUnavailable": "This quoted post is unavailable",
     "openQuotedPost": "Open quoted post",
