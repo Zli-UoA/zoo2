@@ -65,7 +65,10 @@ fun Modifier.nativeNavigation(
                         (!currentEvent.buttons.isPrimaryPressed && !(middle && role == "link"))
                 )
                     return@awaitEachGesture
-                var dragged = down.type == PointerType.Touch && down.isConsumed
+                // A scrolling ancestor consumes the down that stops a fling in Main.
+                // Wait until Final before deciding whether this is a fresh tap.
+                val initialFinal = awaitPointerEvent(PointerEventPass.Final)
+                var dragged = initialFinal.changes.any { it.id == down.id && it.isConsumed }
                 val origin = down.position
                 while (true) {
                     // Main dispatch runs from descendants toward ancestors. A nested link
