@@ -1,4 +1,8 @@
-import { THREADS_CHANGED } from "../../../lib/electric/threads";
+import {
+  THREADS_CHANGED,
+  THREAD_REPLY_REDIRECTED,
+  type ThreadReplyRedirect,
+} from "../../../lib/electric/threads";
 import { useThreadMembership } from "../../../hooks/useThreadMembership";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
@@ -301,6 +305,15 @@ export function MessagePane({
       openThread(canonical);
     }
   }, [threadMembership.data?.id, threadRootId, openThread]);
+  // 移行中の子スレッドへ送った返信は最上位へ正規化される。確定した親へ表示を移す。
+  useEffect(() => {
+    const onRedirect = (event: Event) => {
+      const { from, to } = (event as CustomEvent<ThreadReplyRedirect>).detail;
+      if (from === threadRootId) openThread(to);
+    };
+    window.addEventListener(THREAD_REPLY_REDIRECTED, onRedirect);
+    return () => window.removeEventListener(THREAD_REPLY_REDIRECTED, onRedirect);
+  }, [threadRootId, openThread]);
   useEffect(() => {
     if (
       legacyThreadTarget &&

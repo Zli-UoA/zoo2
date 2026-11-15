@@ -1166,7 +1166,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enter_inside_a_thread_does_not_create_a_nested_thread() {
+    async fn enter_on_a_reply_without_children_does_not_open_a_nested_thread() {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "r1",
+                json!({"id":"r1","user_id":"u1","channel_id":"c1",
+                "content":"Nested root","parent_id":"m1","created_at":"2026-11-01 03:01:00",
+                "thread_archive_at":"2026-11-10 00:00:00"}),
+            )]),
+        ));
+        let row = SidebarItem::Thread {
+            channel_id: "c1".into(),
+            id: "r1".into(),
+        };
+        assert!(!app.sidebar_items().contains(&row));
+        app.current = Some("c1".into());
+        app.focus = Focus::Messages;
+        app.selected = Some("m1".into());
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r1"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "m1");
+        assert!(!app.sidebar_items().contains(&row));
+        let screen = render(&mut app);
+        assert!(screen.contains("Nested root"), "{screen}");
+        assert!(!screen.contains("アーカイブ / u:再開"), "{screen}");
+        assert!(!screen.contains("Nested reply"), "{screen}");
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.sidebar_items().contains(&row));
+        assert!(app.thread_is_archived("c1", "r1"));
+    }
+
+    #[tokio::test]
+    async fn enter_on_a_legacy_reply_with_children_opens_it_read_only_for_migration() {
         let mut app = app();
         app.on_shape(ShapeEvent::Batch(
             ShapeId::Messages("c1".into()),
@@ -1197,11 +1232,12 @@ mod tests {
         press(&mut app, KeyCode::Down);
         assert_eq!(app.thread.as_ref().unwrap().selected.as_deref(), Some("r1"));
         press(&mut app, KeyCode::Enter);
-        assert_eq!(app.thread.as_ref().unwrap().root_id, "m1");
+        assert_eq!(app.thread.as_ref().unwrap().root_id, "r1");
         assert!(!app.sidebar_items().contains(&row));
         let screen = render(&mut app);
         assert!(screen.contains("Nested root"), "{screen}");
-        assert!(!screen.contains("アーカイブ / u:再開"), "{screen}");
+        assert!(screen.contains("Nested reply"), "{screen}");
+        assert!(screen.contains("アーカイブ / u:再開"), "{screen}");
         press(&mut app, KeyCode::Esc);
         assert!(!app.sidebar_items().contains(&row));
         assert!(app.thread_is_archived("c1", "r1"));
