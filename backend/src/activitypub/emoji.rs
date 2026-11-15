@@ -387,12 +387,15 @@ fn quote_url(value: &str) -> Option<reqwest::Url> {
         .then_some(url)
 }
 
-pub(super) fn note_content(note: &Value) -> Result<String, AppError> {
-    // Quote metadata is otherwise lost when HTML is flattened or MFM source is preferred.
-    // Keep only a link: an embedded quote is not proof of the quoted post's author/audience.
-    let quote = ["quoteUrl", "quoteUri", "_misskey_quote"]
+pub(super) fn note_quote_uri(note: &Value) -> Option<reqwest::Url> {
+    ["quoteUrl", "quoteUri", "_misskey_quote", "quote"]
         .into_iter()
-        .find_map(|key| note[key].as_str().and_then(quote_url));
+        .find_map(|key| note[key].as_str().and_then(quote_url))
+}
+
+pub(super) fn note_content(note: &Value) -> Result<String, AppError> {
+    // Keep the URL in the content for clients that do not render quote cards.
+    let quote = note_quote_uri(note);
     let html = match note["content"].as_str() {
         Some(content) => content,
         None if quote.is_some() && note["content"].is_null() => "",

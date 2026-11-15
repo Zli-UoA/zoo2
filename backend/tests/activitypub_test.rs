@@ -3351,3 +3351,106 @@ async fn renotes_accept_cc_followers_and_quote_links_survive_create_update() -> 
     finish_protocol(&mut f).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn quote_cards_are_batched_public_verified_and_follow_updates() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let author = format!("https://quoted.example/users/{}", uuid::Uuid::new_v4());
+    let original = format!("{author}/notes/original");
+    toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'quoted','Quoted author',$1,'cached')").bind(author.as_str()).exec(&mut f.db).await?;
+    toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,origin_verified) VALUES($1,$2,'Original body','public',now(),now(),true)").bind(original.as_str()).bind(author.as_str()).exec(&mut f.db).await?;
+    let id = format!("{}/notes/native-quote", f.remote);
+    let mut note = json!({"id":id,"type":"Note","attributedTo":f.remote,"content":"Comment","quoteUri":original,"to":["https://www.w3.org/ns/activitystreams#Public"],"published":"2026-01-01T00:00:00Z"});
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note.clone())).await?,
+        StatusCode::ACCEPTED
+    );
+    let path = format!(
+        "/api/home/{}",
+        percent_encoding::utf8_percent_encode(&id, percent_encoding::NON_ALPHANUMERIC)
+    );
+    let (status, body) = request(&f.app, "GET", Some(&f.user), &path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["quote"]["uri"], original);
+    assert_eq!(body["quote"]["post"]["content"], "Original body");
+    assert_eq!(body["quote"]["post"]["user_name"], "quoted@quoted.example");
+    // Importing a public quote grants no timeline/recipient access to the original.
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.other), &path, None).await?.0,
+        StatusCode::NOT_FOUND
+    );
+    let original_path = format!(
+        "/api/home/{}",
+        percent_encoding::utf8_percent_encode(&original, percent_encoding::NON_ALPHANUMERIC)
+    );
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.user), &original_path, None)
+            .await?
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    for sql in [
+        "UPDATE apub_remote_posts SET visibility='followers' WHERE id=$1",
+        "UPDATE apub_remote_posts SET visibility='public',deleted_at=now() WHERE id=$1",
+        "UPDATE apub_remote_posts SET deleted_at=NULL,origin_verified=false WHERE id=$1",
+    ] {
+        toasty::sql::statement(sql)
+            .bind(original.as_str())
+            .exec(&mut f.db)
+            .await?;
+        let (_, body) = request(&f.app, "GET", Some(&f.user), &path, None).await?;
+        assert_eq!(body["quote"]["uri"], original);
+        assert!(body["quote"]["post"].is_null());
+    }
+    toasty::sql::statement(
+        "UPDATE apub_remote_posts SET origin_verified=true,content='Edited original' WHERE id=$1",
+    )
+    .bind(original.as_str())
+    .exec(&mut f.db)
+    .await?;
+    toasty::sql::statement("UPDATE apub_actors SET blocked=true WHERE id=$1")
+        .bind(author.as_str())
+        .exec(&mut f.db)
+        .await?;
+    assert!(request(&f.app, "GET", Some(&f.user), &path, None).await?.1["quote"]["post"].is_null());
+    toasty::sql::statement("UPDATE apub_actors SET blocked=false WHERE id=$1")
+        .bind(author.as_str())
+        .exec(&mut f.db)
+        .await?;
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.user), &path, None).await?.1["quote"]["post"]["content"],
+        "Edited original"
+    );
+    // Local public originals use the same card DTO; followers-only originals never do.
+    let local = protocol_post(&f, "public", true).await?;
+    note["quoteUri"] = json!(format!(
+        "https://zoo.example.com/api/activitypub/notes/{local}"
+    ));
+    note["updated"] = json!("2026-01-02T00:00:00Z");
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Update", note.clone())).await?,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.user), &path, None).await?.1["quote"]["post"]["id"],
+        local
+    );
+    toasty::sql::statement("UPDATE home_posts SET visibility='followers' WHERE id=$1")
+        .bind(local.as_str())
+        .exec(&mut f.db)
+        .await?;
+    assert!(request(&f.app, "GET", Some(&f.user), &path, None).await?.1["quote"]["post"].is_null());
+    note.as_object_mut().unwrap().remove("quoteUri");
+    note["updated"] = json!("2026-01-03T00:00:00Z");
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Update", note)).await?,
+        StatusCode::ACCEPTED
+    );
+    let (_, body) = request(&f.app, "GET", Some(&f.user), &path, None).await?;
+    assert!(body["quote"].is_null());
+    assert_eq!(body["content"], "Comment");
+    finish_protocol(&mut f).await?;
+    Ok(())
+}

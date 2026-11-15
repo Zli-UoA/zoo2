@@ -101,11 +101,14 @@ function ActiveLinkPreviews({ urls, config }: { urls: string[]; config: AppConfi
   ));
 }
 
-export function LinkPreviews({ content }: { content: string }) {
+export function LinkPreviews({ content, excludeUrl }: { content: string; excludeUrl?: string }) {
   const collections = useOptionalCollections();
   // The production shell uses the collections singleton without a Provider.
   // Preview requests only need public endpoints, including on public profiles.
   const config = useMemo(() => collections?.config ?? resolvePublicConfig(), [collections?.config]);
-  const urls = useMemo(() => previewUrls(content), [content]);
+  const urls = useMemo(
+    () => previewUrls(content).filter((url) => url !== excludeUrl),
+    [content, excludeUrl],
+  );
   return urls.length ? <ActiveLinkPreviews urls={urls} config={config} /> : null;
 }

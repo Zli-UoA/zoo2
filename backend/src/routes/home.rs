@@ -397,6 +397,7 @@ async fn list(
     ))::text FROM page f ORDER BY f.tree_order,f.tree_path,f.sort_at DESC,f.entry_id DESC"#,
     &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or(""),if page.thread{"true"}else{"false"}]).await?;
 
+    activitypub::quotes::decorate(&mut tx, &mut rows).await?;
     super::home_images::decorate(&mut tx, &mut rows).await?;
     activitypub::channel_reactions::decorate(&mut tx, &mut rows).await?;
     let parents: Vec<Value> = rows

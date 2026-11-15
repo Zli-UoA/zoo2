@@ -703,6 +703,9 @@
     "showLess": "收起"
   },
   "home": {
+    "quotedPost": "引用的帖子",
+    "quoteUnavailable": "无法显示引用的帖子",
+    "openQuotedPost": "打开引用的帖子",
     "image": "图片",
     "imageError": "无法添加图片。请选择最多10张PNG、JPEG、GIF或WebP图片（每张不超过8MiB），然后重试。",
     "title": "首页",

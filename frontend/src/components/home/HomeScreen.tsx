@@ -63,6 +63,7 @@ import {
 import type { AttachmentMetadata } from "../../lib/attachments";
 
 export interface HomePost {
+  quote?: import("./HomePostContent").HomeQuote | null;
   media?: import("./HomePostContent").HomeMedia[];
   id: string;
   user_id: string;
@@ -517,6 +518,7 @@ function HomeScreenContent({
                       {post.parent ? (
                         <HomePostContent
                           content={post.parent.content}
+                          quote={post.parent.quote}
                           emojis={post.parent.emojis}
                           attachments={post.parent.attachments}
                           media={post.parent.media}
@@ -663,6 +665,7 @@ function HomeScreenContent({
                       ) : (
                         <HomePostContent
                           content={post.content}
+                          quote={post.quote}
                           emojis={post.emojis}
                           attachments={post.attachments}
                           media={post.media}

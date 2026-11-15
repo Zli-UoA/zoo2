@@ -44,6 +44,10 @@ pub async fn receive(
         reposts::resolve_announce(&state, &user, &activity).await?;
     }
     receive_verified(&state, &user, &remote, &activity).await?;
+    // Quote resolution is optional: an unavailable original must not reject the comment.
+    if let Err(error) = quotes::resolve(&state, &user, &activity).await {
+        tracing::debug!(%error, "Quoted Note could not be resolved");
+    }
     Ok(StatusCode::ACCEPTED)
 }
 pub(super) async fn verify_and_store_actor(
@@ -227,6 +231,7 @@ pub(super) async fn receive_verified(
                 ));
             }
             let content = emoji::note_content(object)?;
+            let quote_uri = emoji::note_quote_uri(object).map(|url| url.to_string());
             let media = emoji::note_media(object);
             emoji::remember(&mut tx, &media).await?;
             let note_emojis = emoji::tags(&object["tag"]);
@@ -248,9 +253,9 @@ pub(super) async fn receive_verified(
             let origin_verified =
                 note_identity::reconcile(&mut tx, post_id, actor_id, origin_proof.as_ref()).await?;
             if activity["type"] == "Create" || origin_proof.is_some() {
-                toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis,origin_verified,media) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb,$9::boolean,$10::jsonb WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=apub_remote_posts.origin_verified OR EXCLUDED.origin_verified WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).bind(origin_verified.to_string()).bind(json!(media).to_string()).exec(&mut tx).await?;
+                toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis,origin_verified,media,quote_uri) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb,$9::boolean,$10::jsonb,NULLIF($11,'') WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=apub_remote_posts.origin_verified OR EXCLUDED.origin_verified WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).bind(origin_verified.to_string()).bind(json!(media).to_string()).bind(quote_uri.as_deref().unwrap_or("")).exec(&mut tx).await?;
             } else {
-                toasty::sql::statement("UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz,parent_id=NULLIF($6,''),emojis=$7::jsonb,media=$8::jsonb WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).bind(json!(media).to_string()).exec(&mut tx).await?;
+                toasty::sql::statement("UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz,parent_id=NULLIF($6,''),emojis=$7::jsonb,media=$8::jsonb,quote_uri=NULLIF($9,'') WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).bind(json!(media).to_string()).bind(quote_uri.as_deref().unwrap_or("")).exec(&mut tx).await?;
             }
             if activity["type"] == "Create" && !parents.is_empty() && !query(&mut tx,"SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL",&[post_id,actor_id]).await?.is_empty() {
                 interactions::notify(&mut tx, user, actor_id, id, "reply", post_id).await?;

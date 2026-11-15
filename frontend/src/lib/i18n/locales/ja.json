@@ -703,6 +703,9 @@
     "showLess": "折りたたむ"
   },
   "home": {
+    "quotedPost": "引用元の投稿",
+    "quoteUnavailable": "引用元の投稿を表示できません",
+    "openQuotedPost": "引用元を開く",
     "image": "画像",
     "imageError": "画像を追加できませんでした。PNG・JPEG・GIF・WebP（各8MiB以下、最大10枚）を選んで再度お試しください。",
     "title": "Home",

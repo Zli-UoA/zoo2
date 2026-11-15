@@ -513,7 +513,7 @@ fn sensitive_media_is_emitted_on_note_and_document() -> anyhow::Result<()> {
 #[test]
 fn quoted_notes_keep_a_safe_reference_with_html_mfm_and_empty_comments() {
     let quote = "https://peer.example/notes/quoted";
-    for field in ["quoteUrl", "quoteUri", "_misskey_quote"] {
+    for field in ["quoteUrl", "quoteUri", "_misskey_quote", "quote"] {
         for source in [None, Some("**MFM comment**")] {
             let mut note = json!({"content":"<p>HTML comment</p>"});
             note[field] = json!(quote);
@@ -588,7 +588,7 @@ fn quote_urls_are_normalized_before_becoming_visible_links() {
             "https://peer.example/original",
         ),
     ] {
-        for field in ["quoteUrl", "quoteUri", "_misskey_quote"] {
+        for field in ["quoteUrl", "quoteUri", "_misskey_quote", "quote"] {
             let mut note = json!({"content":"Comment"});
             note[field] = json!(raw);
             assert_eq!(

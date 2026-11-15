@@ -2133,32 +2133,42 @@ export const QuotedRenote: Story = {
   parameters: {
     msw: {
       handlers: [
-        http.get("*/summaly-endpoint", () =>
-          HttpResponse.text("https://storybook.example/summaly"),
-        ),
-        http.get("*/media-proxy-endpoint", () =>
-          HttpResponse.text("https://storybook.example/media"),
-        ),
-        http.get("https://storybook.example/summaly", ({ request }) => {
-          const url = new URL(request.url).searchParams.get("url")!;
-          return HttpResponse.json({
-            title: url.endsWith("quoted-original")
-              ? "コメント付き引用の元投稿"
-              : "コメントなし引用の元投稿",
-            description: "引用先URLを解決したプレビュー本文",
-            sitename: "Misskey",
-          });
-        }),
+        homeImageHandler,
         http.get("*/api/home", () =>
           HttpResponse.json([
             {
               ...misskeyPost,
               content: "**引用へのコメント**\n\n<https://misskey.example/notes/quoted-original>",
+              quote: {
+                uri: "https://misskey.example/notes/quoted-original",
+                post: {
+                  ...misskeyPost,
+                  display_name: "Bob",
+                  user_name: "bob@misskey.example",
+                  content: "引用元の投稿です。**MFMの装飾**や :blobcat: も、そのまま表示します。",
+                  media: homeImagePost.media,
+                },
+              },
             },
             {
               ...misskeyPost,
               id: "https://misskey.example/notes/quote-only",
               content: "<https://misskey.example/notes/quoted-without-comment>",
+              quote: {
+                uri: "https://misskey.example/notes/quoted-without-comment",
+                post: {
+                  ...misskeyPost,
+                  display_name: "Carol",
+                  user_name: "carol@misskey.example",
+                  content: "コメントなしの引用でも、引用元を専用カードで表示します。",
+                },
+              },
+            },
+            {
+              ...misskeyPost,
+              id: "https://misskey.example/notes/quote-unavailable",
+              content: "<https://misskey.example/notes/deleted>",
+              quote: { uri: "https://misskey.example/notes/deleted", post: null },
             },
           ]),
         ),
@@ -2168,19 +2178,16 @@ export const QuotedRenote: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("引用へのコメント")).toBeVisible();
-    await expect(
-      await canvas.findByRole("link", { name: /コメント付き引用の元投稿/ }),
-    ).toBeVisible();
-    await expect(
-      await canvas.findByRole("link", { name: /コメントなし引用の元投稿/ }),
-    ).toBeVisible();
-    for (const url of [
-      "https://misskey.example/notes/quoted-original",
-      "https://misskey.example/notes/quoted-without-comment",
-    ]) {
-      const link = await canvas.findByRole("link", { name: url.replace(/^https:\/\//, "") });
-      await expect(link).toHaveAttribute("href", url);
-      await expect(link).toHaveAttribute("rel", "noopener noreferrer");
-    }
+    const cards = await canvas.findAllByRole("group", { name: "引用元の投稿" });
+    await expect(cards).toHaveLength(3);
+    await expect(within(cards[0]!).getByText("Bob")).toBeVisible();
+    await expect(within(cards[0]!).getByText("MFMの装飾")).toBeVisible();
+    await expect(within(cards[1]!).getByText("Carol")).toBeVisible();
+    await expect(within(cards[2]!).getByText("引用元の投稿を表示できません")).toBeVisible();
+    await expect(within(cards[2]!).getByRole("link", { name: "引用元を開く" })).toHaveAttribute(
+      "href",
+      "https://misskey.example/notes/deleted",
+    );
+    await expect(canvas.queryByText("misskey.example/notes/quoted-original")).toBeNull();
   }),
 };
