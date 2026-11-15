@@ -3,6 +3,7 @@ import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import {
   CheckIcon,
+  ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
   FingerprintIcon,
@@ -23,6 +24,8 @@ import type {
   UserState,
 } from "@zoo/crypto-wasm";
 
+import { cn } from "cn";
+
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { SettingsSection } from "../ui/control-panel";
@@ -37,6 +40,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
+import {
+  STALE_DEVICE_DAYS,
+  cleanupReasons,
+  type CleanupReason,
+} from "../../lib/e2ee/deviceCleanup";
 import { formatKeyFingerprint } from "../../lib/e2ee/masterKey";
 import { Spinner } from "../ui/spinner";
 import type { E2eeNotReadyReason } from "../../lib/e2ee/notReady";
@@ -147,6 +155,8 @@ export type DevicesViewState =
       passkeyAvailable: boolean;
       busy: "rename" | "delete" | "revocation" | "verify" | null;
       error: DevicesErrorCode | null;
+      /** 削除を勧める端末を判定する時刻（ミリ秒）。省いたら今（Story で固定する）。 */
+      now?: number;
     };
 
 export interface DevicesSettingsHandlers {
@@ -215,8 +225,17 @@ function Busy({ label }: { label: string }) {
   );
 }
 
-/** 端末の名前と日時。端末名は攻撃者も付けられるので、登録日時と最後に使った日時を並べる。 */
-export function DeviceSummary({ device }: { device: DeviceRowView }) {
+/**
+ * 端末の名前と日時。端末名は攻撃者も付けられるので、登録日時と最後に使った日時を並べる。
+ * `cleanup` は削除を勧める理由（長く使っていない端末に印を付ける。未署名は署名の有無で出す）。
+ */
+export function DeviceSummary({
+  device,
+  cleanup = [],
+}: {
+  device: DeviceRowView;
+  cleanup?: CleanupReason[];
+}) {
   const { t, i18n } = useTranslation();
   const created = formatDate(device.createdAt, i18n.language);
   const used = formatDate(device.lastSeenAt, i18n.language);
@@ -233,6 +252,12 @@ export function DeviceSummary({ device }: { device: DeviceRowView }) {
           <span className="flex items-center gap-1 rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">
             <ShieldAlertIcon aria-hidden="true" className="size-3" />
             {t("e2ee.devices.unsigned")}
+          </span>
+        ) : null}
+        {cleanup.includes("stale") ? (
+          <span className="flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-800 dark:text-amber-300">
+            <ClockIcon aria-hidden="true" className="size-3" />
+            {t("e2ee.devices.stale", { days: STALE_DEVICE_DAYS })}
           </span>
         ) : null}
       </p>
@@ -343,6 +368,14 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [deleting, setDeleting] = useState<DeviceRowView | null>(null);
   const busy = state.busy !== null;
+  const now = state.now ?? Date.now();
+  const anySigned = state.devices.some((device) => device.signed);
+  const cleanup = new Map(
+    state.devices.map((device) => [device.deviceId, cleanupReasons(device, { now, anySigned })]),
+  );
+  const candidates = state.devices.filter(
+    (device) => (cleanup.get(device.deviceId)?.length ?? 0) > 0,
+  ).length;
   return (
     <SettingsSection title={t("e2ee.devices.title")} description={t("e2ee.devices.description")}>
       <ErrorMessage code={state.error} />
@@ -351,9 +384,33 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
           {t("e2ee.retry")}
         </Button>
       ) : null}
+      {candidates > 0 ? (
+        // 使っていない端末の整理を勧める（自動では消さない。消すかは利用者が下の一覧で決める）。
+        <div
+          role="status"
+          className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300"
+        >
+          <p className="flex items-center gap-2 font-medium">
+            <ClockIcon aria-hidden="true" className="size-4 shrink-0" />
+            {t("e2ee.devices.cleanupTitle")}
+          </p>
+          <p className="text-xs">
+            {t("e2ee.devices.cleanupDescription", {
+              count: candidates,
+              days: STALE_DEVICE_DAYS,
+            })}
+          </p>
+        </div>
+      ) : null}
       <ul className="divide-y rounded-md border">
         {state.devices.map((device) => (
-          <li key={device.deviceId} className="flex items-start justify-between gap-3 p-3">
+          <li
+            key={device.deviceId}
+            className={cn(
+              "flex items-start justify-between gap-3 p-3",
+              (cleanup.get(device.deviceId)?.length ?? 0) > 0 && "bg-amber-500/5",
+            )}
+          >
             <div className="flex min-w-0 items-start gap-3">
               <MonitorSmartphoneIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
               {renaming?.id === device.deviceId ? (
@@ -379,7 +436,7 @@ function DeviceList({ state, handlers }: { state: Ready; handlers: DevicesSettin
                   </Button>
                 </form>
               ) : (
-                <DeviceSummary device={device} />
+                <DeviceSummary device={device} cleanup={cleanup.get(device.deviceId)} />
               )}
             </div>
             <div className="flex shrink-0 gap-1">

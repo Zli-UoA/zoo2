@@ -202,7 +202,10 @@ export interface OpenedCryptoStore {
   deviceId: string;
   /** サーバーへの登録が済んでいるか。 */
   registered: boolean;
-  /** 保存鍵を開けずに作り直したとき、前の端末の ID（サーバーから消す）。 */
+  /**
+   * 前の端末の ID（サーバーから消す）。保存鍵を開けずに作り直したときと、暗号ストアの外の記録
+   * （`store/deviceRecord.ts`）にある同じユーザーの端末が今の端末と違うとき（ファイルが消えたなど）。
+   */
   replacedDeviceId: string | null;
   /** 前の端末の登録が済んでいたか（`replacedDeviceId` がないときは `false`）。 */
   replacedRegistered: boolean;

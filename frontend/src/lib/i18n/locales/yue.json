@@ -1295,7 +1295,16 @@
       "limitDescription": "登記唔到呢部裝置。請揀唔再用嘅裝置刪除。刪除唔等於撤銷，如果有唔見咗嘅裝置，請喺呢部裝置登記之後再撤銷。",
       "limitStale": "30 日以上冇用過嘅裝置",
       "limitDelete": "刪除所選裝置",
-      "limitDeleted": "刪咗喇。等陣會重新登記呢部裝置。"
+      "limitDeleted": "刪咗喇。等陣會重新登記呢部裝置。",
+      "stale": "{{days}} 日以上冇用過",
+      "cleanupTitle": "有啲裝置好似已經冇再用",
+      "cleanupDescription_one": "標記咗嘅 {{count}} 部裝置已經 {{days}} 日以上冇用過，或者加入之後仲未解鎖。如果唔再用，請刪除。裝置唔會自動刪除。唔見咗或者唔認識嘅裝置，請喺「開始撤銷」度刪除。",
+      "cleanupDescription_other": "標記咗嘅 {{count}} 部裝置已經 {{days}} 日以上冇用過，或者加入之後仲未解鎖。如果唔再用，請刪除。裝置唔會自動刪除。唔見咗或者唔認識嘅裝置，請喺「開始撤銷」度刪除。"
+    },
+    "deviceName": {
+      "withOs": "{{browser}}（{{os}}）",
+      "app": "{{browser}}（應用程式）",
+      "appWithOs": "{{browser}}（{{os}}·應用程式）"
     },
     "revocation": {
       "pendingTitle": "撤銷未完成",

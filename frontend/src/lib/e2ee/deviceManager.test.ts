@@ -517,6 +517,75 @@ describe("E2eeDeviceManager", () => {
     expect(readPendingDeviceDeletions()).toEqual([]);
   });
 
+  describe("暗号ストアを作り直したときの前の端末", () => {
+    const OLD = "00000000-0000-4000-8000-0000000000d0";
+
+    it("起動で前の端末を消し、消せたら削除待ちに残さない", async () => {
+      const { worker } = fakeWorker({
+        open: {
+          userId: USER,
+          deviceId: DEVICE,
+          registered: false,
+          replacedDeviceId: OLD,
+          replacedRegistered: true,
+        },
+      });
+      const { client, requests } = fakeClient();
+      const instance = manager(worker, client);
+      await instance.start();
+      const deleted = requests.filter((r) => r.method === "DELETE").map((r) => r.path);
+      expect(deleted).toEqual([`/api/e2ee/devices/${OLD}`]);
+      expect(readPendingDeviceDeletions()).toEqual([]);
+      // 前の端末を消してから、新しい端末を登録する。
+      expect(requests.map((r) => `${r.method} ${r.path}`)).toContain("POST /api/e2ee/devices");
+      await instance.stop();
+    });
+
+    it("削除に失敗したら、削除待ちに残して登録を続け、次のログインで消し直す", async () => {
+      const { worker } = fakeWorker({
+        open: {
+          userId: USER,
+          deviceId: DEVICE,
+          registered: false,
+          replacedDeviceId: OLD,
+          replacedRegistered: true,
+        },
+      });
+      let offline = true;
+      const { client, requests } = fakeClient({
+        [`DELETE /api/e2ee/devices/${OLD}`]: () => {
+          if (offline) throw new ApiError(503, "unavailable", null);
+          return null;
+        },
+      });
+      const instance = manager(worker, client);
+      await instance.start();
+      expect(readPendingDeviceDeletions()).toEqual([{ userId: USER, deviceId: OLD }]);
+      expect(requests.map((r) => `${r.method} ${r.path}`)).toContain("POST /api/e2ee/devices");
+      await instance.stop();
+
+      offline = false;
+      await retryPendingDeviceDeletion(client, USER);
+      expect(readPendingDeviceDeletions()).toEqual([]);
+    });
+
+    it("別のユーザーの暗号ストアや今の端末は、前の端末として消さない", async () => {
+      const OTHER_USER = "00000000-0000-4000-8000-00000000000b";
+      for (const open of [
+        { userId: OTHER_USER, deviceId: DEVICE, registered: true, replacedDeviceId: OLD },
+        { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: DEVICE },
+      ]) {
+        const { worker } = fakeWorker({ open: { ...open, replacedRegistered: true } });
+        const { client, requests } = fakeClient();
+        const instance = manager(worker, client);
+        await instance.start();
+        expect(requests.filter((r) => r.method === "DELETE")).toEqual([]);
+        expect(readPendingDeviceDeletions()).toEqual([]);
+        await instance.stop();
+      }
+    });
+  });
+
   it("受信中に端末が消されていたら（ack が 404）、作り直して登録し直す", async () => {
     const { worker, calls } = fakeWorker({
       open: { userId: USER, deviceId: DEVICE, registered: true, replacedDeviceId: null },

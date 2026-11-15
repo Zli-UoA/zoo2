@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
 import type { VerificationMessage } from "@zoo/crypto-wasm";
 
 import { createConfiguredApiClient } from "../../lib/api/client";
@@ -91,6 +92,10 @@ function wait(ms: number, until: Promise<void>): Promise<void> {
  */
 export function E2eeProvider({ config, children }: { config: AppConfig; children: ReactNode }) {
   const { namespace, isOnline } = useOfflineStatus();
+  // 端末名は登録のときの言語で作る（言語を変えても、端末を作り直さない）。
+  const { t } = useTranslation();
+  const tRef = useRef(t);
+  tRef.current = t;
   const userStore = getCurrentUserStore(config);
   const subscribe = useCallback(
     (listener: () => void) => userStore.subscribe(listener),
@@ -200,7 +205,7 @@ export function E2eeProvider({ config, children }: { config: AppConfig; children
         worker,
         userId: managerUserId,
         namespace,
-        displayName: deviceDisplayName(),
+        displayName: deviceDisplayName(tRef.current),
         // 起動の試し直しで manager を作り直しても、削除 API の 404 をこのログインで 1 回だけ数える。
         countedNotFound: loginNotFoundCounter(managerUserId),
         onStatus: (next, error) => {

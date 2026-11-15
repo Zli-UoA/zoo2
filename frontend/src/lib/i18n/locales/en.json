@@ -1295,7 +1295,16 @@
       "limitDescription": "This device cannot be registered. Choose devices you no longer use and delete them. Deleting is not revocation, so if a device was lost, also revoke it after this device is registered.",
       "limitStale": "Not used for 30 days or more",
       "limitDelete": "Delete selected devices",
-      "limitDeleted": "Deleted. This device will register again shortly."
+      "limitDeleted": "Deleted. This device will register again shortly.",
+      "stale": "Not used for {{days}}+ days",
+      "cleanupTitle": "Some devices look unused",
+      "cleanupDescription_one": "The {{count}} marked device has not been used for {{days}} days or more, or has not been unlocked since it was added. If you no longer use it, delete it. Devices are never deleted automatically. Delete lost or unfamiliar devices from “Start revocation”.",
+      "cleanupDescription_other": "The {{count}} marked devices have not been used for {{days}} days or more, or have not been unlocked since they were added. Delete the ones you no longer use. Devices are never deleted automatically. Delete lost or unfamiliar devices from “Start revocation”."
+    },
+    "deviceName": {
+      "withOs": "{{browser}} ({{os}})",
+      "app": "{{browser}} (app)",
+      "appWithOs": "{{browser}} ({{os}}, app)"
     },
     "revocation": {
       "pendingTitle": "A revocation is unfinished",

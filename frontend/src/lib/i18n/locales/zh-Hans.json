@@ -1295,7 +1295,16 @@
       "limitDescription": "无法注册此设备。请选择不再使用的设备并删除。删除不等于吊销，如有丢失的设备，请在此设备注册后再进行吊销。",
       "limitStale": "30 天以上未使用的设备",
       "limitDelete": "删除所选设备",
-      "limitDeleted": "已删除。稍后将重新注册此设备。"
+      "limitDeleted": "已删除。稍后将重新注册此设备。",
+      "stale": "{{days}} 天以上未使用",
+      "cleanupTitle": "有设备似乎已不再使用",
+      "cleanupDescription_one": "标记的 {{count}} 台设备已 {{days}} 天以上未使用，或添加后尚未解锁。如果不再使用，请将其删除。设备不会被自动删除。丢失或陌生的设备，请从“开始吊销”中删除。",
+      "cleanupDescription_other": "标记的 {{count}} 台设备已 {{days}} 天以上未使用，或添加后尚未解锁。如果不再使用，请将其删除。设备不会被自动删除。丢失或陌生的设备，请从“开始吊销”中删除。"
+    },
+    "deviceName": {
+      "withOs": "{{browser}}（{{os}}）",
+      "app": "{{browser}}（应用）",
+      "appWithOs": "{{browser}}（{{os}}·应用）"
     },
     "revocation": {
       "pendingTitle": "吊销尚未完成",

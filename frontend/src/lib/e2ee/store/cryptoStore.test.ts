@@ -12,6 +12,7 @@ import { beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { CryptoOperations } from "../operations";
 import { MemoryCryptoBackend, type CryptoStoreWrite, type DeviceReplacement } from "./backend";
 import { CryptoStore, type KeysQueryResponse } from "./cryptoStore";
+import type { DeviceRecord, DeviceRecordStore } from "./deviceRecord";
 import type { WrappingKeyStore } from "./storageKey";
 
 /** 端末鍵だけの `keys/query` の応答（クロス署名鍵がないので、送信端末は検証済みにならない）。 */
@@ -52,12 +53,38 @@ function memoryKeys(): WrappingKeyStore & { keys: Map<string, CryptoKey> } {
   };
 }
 
-async function open(backend: MemoryCryptoBackend, keys: WrappingKeyStore, userId = BOB) {
+function memoryDevices(): DeviceRecordStore & {
+  records: Map<string, DeviceRecord>;
+  failPut: boolean;
+} {
+  const records = new Map<string, DeviceRecord>();
+  const store = {
+    records,
+    failPut: false,
+    get: async (name: string) => records.get(name),
+    put: async (name: string, record: DeviceRecord) => {
+      if (store.failPut) throw new Error("idb down");
+      records.set(name, { ...record });
+    },
+    delete: async (name: string) => {
+      records.delete(name);
+    },
+  };
+  return store;
+}
+
+async function open(
+  backend: MemoryCryptoBackend,
+  keys: WrappingKeyStore,
+  userId = BOB,
+  devices?: DeviceRecordStore,
+) {
   return CryptoStore.open({
     backend,
     name: NAME,
     userId,
     keys,
+    devices,
     reset: async () => {
       await backend.destroy();
       return backend;
@@ -134,6 +161,133 @@ describe("CryptoStore", () => {
     expect(second.replacedDeviceId).toBe(deviceId);
     expect(second.replacedRegistered).toBe(true);
     await second.store.close();
+  });
+
+  describe("暗号ストアの外の端末の記録", () => {
+    it("暗号ストアのファイルだけが消えたら、記録にある前の端末を知らせる", async () => {
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const deviceId = first.store.deviceId;
+      expect(devices.records.get(NAME)).toEqual({ userId: BOB, deviceId, registered: false });
+      await first.store.markRegistered();
+      expect(devices.records.get(NAME)).toEqual({ userId: BOB, deviceId, registered: true });
+      await first.store.close();
+
+      // OPFS のファイルだけが消えた（包む鍵と記録は IndexedDB に残る）。
+      const second = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      expect(second.store.deviceId).not.toBe(deviceId);
+      expect(second.replacedDeviceId).toBe(deviceId);
+      expect(second.replacedRegistered).toBe(true);
+      // 記録は新しい端末に進む（次に開いても、同じ端末を前の端末として知らせない）。
+      expect(devices.records.get(NAME)).toEqual({
+        userId: BOB,
+        deviceId: second.store.deviceId,
+        registered: false,
+      });
+      await second.store.close();
+    });
+
+    it("前の端末が未登録なら、登録済みでないと知らせる", async () => {
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const deviceId = first.store.deviceId;
+      await first.store.close();
+      const second = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      expect(second.replacedDeviceId).toBe(deviceId);
+      expect(second.replacedRegistered).toBe(false);
+      await second.store.close();
+    });
+
+    it("別のユーザーの記録は、前の端末として知らせず、上書きする", async () => {
+      const devices = memoryDevices();
+      const other = "6f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0b";
+      devices.records.set(NAME, { userId: ALICE, deviceId: other, registered: true });
+      const opened = await open(new MemoryCryptoBackend(), memoryKeys(), BOB, devices);
+      expect(opened.replacedDeviceId).toBeNull();
+      expect(devices.records.get(NAME)).toEqual({
+        userId: BOB,
+        deviceId: opened.store.deviceId,
+        registered: false,
+      });
+      await opened.store.close();
+    });
+
+    it("開き直しでは知らせない。記録のない暗号ストア（前の版）は、今の端末を記録する", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      // 前の版で作った（記録のない）暗号ストア。
+      const first = await open(backend, keys);
+      const deviceId = first.store.deviceId;
+      await first.store.markRegistered();
+      await first.store.close();
+
+      const devices = memoryDevices();
+      const reopened = await open(backend, keys, BOB, devices);
+      expect(reopened.store.deviceId).toBe(deviceId);
+      expect(reopened.replacedDeviceId).toBeNull();
+      expect(devices.records.get(NAME)).toEqual({ userId: BOB, deviceId, registered: true });
+      await reopened.store.close();
+
+      const again = await open(backend, keys, BOB, devices);
+      expect(again.replacedDeviceId).toBeNull();
+      await again.store.close();
+    });
+
+    it("新しい端末の記録を書けなかったら、次に開いたときに前の端末を知らせる", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(new MemoryCryptoBackend(), keys, BOB, devices);
+      const previous = first.store.deviceId;
+      await first.store.markRegistered();
+      await first.store.close();
+
+      devices.failPut = true;
+      const second = await open(backend, keys, BOB, devices);
+      // 記録を書けなくても、暗号ストアは開く。
+      expect(second.replacedDeviceId).toBe(previous);
+      const current = second.store.deviceId;
+      await second.store.close();
+      expect(devices.records.get(NAME)?.deviceId).toBe(previous);
+
+      // 前の端末を削除待ちに残す前にタブを閉じても、次に開いたときにもう一度知らせる。
+      devices.failPut = false;
+      const third = await open(backend, keys, BOB, devices);
+      expect(third.store.deviceId).toBe(current);
+      expect(third.replacedDeviceId).toBe(previous);
+      expect(third.replacedRegistered).toBe(true);
+      expect(devices.records.get(NAME)).toEqual({
+        userId: BOB,
+        deviceId: current,
+        registered: false,
+      });
+      await third.store.close();
+    });
+
+    it("別の端末から削除されて作り直した端末は、記録を進めて、前の端末を知らせない", async () => {
+      const backend = new MemoryCryptoBackend();
+      const keys = memoryKeys();
+      const devices = memoryDevices();
+      const first = await open(backend, keys, BOB, devices);
+      await first.store.markRegistered();
+      const { deviceId } = await first.store.replaceDevice();
+      await first.store.close();
+      expect(devices.records.get(NAME)).toEqual({ userId: BOB, deviceId, registered: false });
+
+      const reopened = await open(backend, keys, BOB, devices);
+      expect(reopened.store.deviceId).toBe(deviceId);
+      expect(reopened.replacedDeviceId).toBeNull();
+      await reopened.store.close();
+    });
+
+    it("暗号ストアを消すと、記録も消す", async () => {
+      const devices = memoryDevices();
+      const opened = await open(new MemoryCryptoBackend(), memoryKeys(), BOB, devices);
+      await opened.store.destroy();
+      expect(devices.records.has(NAME)).toBe(false);
+    });
   });
 
   it("開き直しにも失敗したら、ストレージが戻ったあとの操作で開き直す", async () => {

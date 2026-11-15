@@ -1295,7 +1295,16 @@
       "limitDescription": "이 기기를 등록할 수 없습니다. 쓰지 않는 기기를 골라 삭제하세요. 삭제는 폐기가 아니므로, 잃어버린 기기가 있다면 등록한 뒤에 폐기도 하세요.",
       "limitStale": "30일 이상 쓰지 않은 기기",
       "limitDelete": "선택한 기기 삭제",
-      "limitDeleted": "삭제했습니다. 곧 이 기기를 다시 등록합니다."
+      "limitDeleted": "삭제했습니다. 곧 이 기기를 다시 등록합니다.",
+      "stale": "{{days}}일 이상 사용 안 함",
+      "cleanupTitle": "사용하지 않는 기기가 있습니다",
+      "cleanupDescription_one": "표시된 {{count}}대는 {{days}}일 이상 사용하지 않았거나, 등록한 뒤 잠금 해제하지 않았습니다. 더 이상 쓰지 않는 기기라면 삭제하세요. 자동으로 삭제하지 않습니다. 잃어버린 기기나 모르는 기기는 ‘폐기 시작’에서 삭제하세요.",
+      "cleanupDescription_other": "표시된 {{count}}대는 {{days}}일 이상 사용하지 않았거나, 등록한 뒤 잠금 해제하지 않았습니다. 더 이상 쓰지 않는 기기라면 삭제하세요. 자동으로 삭제하지 않습니다. 잃어버린 기기나 모르는 기기는 ‘폐기 시작’에서 삭제하세요."
+    },
+    "deviceName": {
+      "withOs": "{{browser}} ({{os}})",
+      "app": "{{browser}} (앱)",
+      "appWithOs": "{{browser}} ({{os}}, 앱)"
     },
     "revocation": {
       "pendingTitle": "폐기가 끝나지 않았습니다",

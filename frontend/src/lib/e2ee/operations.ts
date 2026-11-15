@@ -5,6 +5,11 @@ import { RevocationSession, evaluateTrust } from "./revocationSession";
 import { SetupSession } from "./setupSession";
 import type { CryptoBackend } from "./store/backend";
 import { CryptoStore, destroyCryptoStore } from "./store/cryptoStore";
+import {
+  deleteDeviceRecord,
+  indexedDbDeviceRecords,
+  type DeviceRecordStore,
+} from "./store/deviceRecord";
 import { indexedDbWrappingKeys, type WrappingKeyStore } from "./store/storageKey";
 import type { CryptoFailure, CryptoOperation, CryptoResults } from "./protocol";
 
@@ -31,6 +36,8 @@ export class CryptoOperations {
   constructor(
     private readonly backends: CryptoBackendFactory,
     private readonly keys: WrappingKeyStore = indexedDbWrappingKeys,
+    /** 今の端末の記録（`store/deviceRecord.ts`）。 */
+    private readonly devices: DeviceRecordStore = indexedDbDeviceRecords,
   ) {}
 
   private lastOpen: { namespace: string; userId: string } | null = null;
@@ -101,6 +108,7 @@ export class CryptoOperations {
           name,
           userId: request.userId,
           keys: this.keys,
+          devices: this.devices,
           reset: async () => {
             await this.backends.remove(name);
             return this.backends.open(name);
@@ -346,6 +354,7 @@ export class CryptoOperations {
               removeFiles: () => this.backends.remove(name),
               deleteWrappingKey: () => this.keys.delete(name),
             });
+            await deleteDeviceRecord(this.devices, name);
           }
         } finally {
           // 消し切れなくても（ファイルの削除だけが失敗したなど）、このストアはもう使わない。保存鍵を

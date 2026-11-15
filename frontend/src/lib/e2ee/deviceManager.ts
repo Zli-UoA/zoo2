@@ -12,7 +12,8 @@ import {
   updatePendingDeviceDeletion,
   type PendingDeviceDeletion,
 } from "./identity";
-import type { ToDeviceRow } from "./protocol";
+import { requestPersistentStorage } from "./persistentStorage";
+import type { OpenedCryptoStore, ToDeviceRow } from "./protocol";
 import { listDevices } from "./revocationApi";
 import { subscribeToDevice, type ToDeviceSubscription } from "./toDeviceShape";
 
@@ -157,14 +158,15 @@ export class E2eeDeviceManager {
     this.options.onStatus?.("starting");
     try {
       await retryPendingDeviceDeletion(client, userId, this.countedNotFound);
+      // 暗号ストアを消されないよう頼む（結果は待たず、動きも変えない）。
+      void requestPersistentStorage();
       let opened = await worker.request({ op: "open", namespace, userId });
       // 登録が途中で失敗しても、ログアウトで消せるように先に覚える。
       this.rememberOpened(opened);
-      if (opened.replacedDeviceId) {
-        // 保存鍵を失って作り直した。前の端末はもう使えないので消す。
-        await this.deleteDeviceOrRemember(
-          this.entry(opened.replacedDeviceId, !opened.replacedRegistered),
-        );
+      const replaced = this.replacedEntry(opened);
+      if (replaced) {
+        // 暗号ストアを作り直した（保存鍵を失った、ファイルが消えた）。前の端末はもう使えないので消す。
+        await this.deleteDeviceOrRemember(replaced);
       }
       let counts: KeyCounts;
       try {
@@ -217,6 +219,18 @@ export class E2eeDeviceManager {
     return { userId: this.options.userId, deviceId, unconfirmed };
   }
 
+  /**
+   * 開いた暗号ストアが知らせた前の端末（`replacedDeviceId`）の削除待ち。前の端末は、Worker が同じ
+   * ユーザーのものだけを返す。念のため、別のユーザーの暗号ストアや今の端末なら消さない。
+   */
+  private replacedEntry(opened: OpenedCryptoStore): PendingDeviceDeletion | null {
+    const deviceId = opened.replacedDeviceId;
+    if (!deviceId || opened.userId !== this.options.userId || deviceId === opened.deviceId) {
+      return null;
+    }
+    return this.entry(deviceId, !opened.replacedRegistered);
+  }
+
   private subscribe(): void {
     const deviceId = this.deviceId;
     if (!deviceId || this.subscription || this.stopped || this.suspended) return;
@@ -241,10 +255,10 @@ export class E2eeDeviceManager {
     // 削除 API を呼ぶ（冪等で、サーバーになければ 404 になる。ただし登録できたか分からないので、
     // 404 でもすぐには消えたものとしない）。
     this.rememberOpened(opened);
-    if (opened.replacedDeviceId) {
-      // 保存鍵を失って作り直した。前の端末の ID はもう暗号ストアにないので、先に削除待ちに
+    const replaced = this.replacedEntry(opened);
+    if (replaced) {
+      // 暗号ストアを作り直した。前の端末の ID はもう暗号ストアにないので、先に削除待ちに
       // 残し、ログアウトで一緒に消す。
-      const replaced = this.entry(opened.replacedDeviceId, !opened.replacedRegistered);
       markDeviceDeletionPending(replaced);
       this.replacedDevices.push(replaced);
     }
