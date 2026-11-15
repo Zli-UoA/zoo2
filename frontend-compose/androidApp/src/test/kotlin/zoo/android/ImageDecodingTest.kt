@@ -48,7 +48,7 @@ class ImageDecodingTest {
             }
         }
         val app = Session(
-            Repository(Config("https://zoo.test", "/api/shapes", "alice", false), platform,
+            Repository(zoo.Config("https://zoo.test", "/api/shapes", "alice", false), platform,
                 HttpClient(MockEngine { error("Unexpected API request") }), backgroundScope, synchronize = false),
             backgroundScope, Environment(),
         )

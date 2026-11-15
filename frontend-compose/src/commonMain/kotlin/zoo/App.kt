@@ -435,8 +435,13 @@ internal fun Sidebar(
                     Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
+                    if (error) LoadErrorState(
+                        app.t("channels.loadError"),
+                        app.t("offline.retry"),
+                        retry = { app.repo.channels.refresh() },
+                    )
                     when {
-                        loading ->
+                        loading && channels.isEmpty() ->
                             repeat(5) {
                                 Box(
                                     Modifier.fillMaxWidth()
@@ -447,11 +452,7 @@ internal fun Sidebar(
                                         )
                                 )
                             }
-                        error -> LoadErrorState(
-                            app.t("channels.loadError"),
-                            app.t("offline.retry"),
-                            retry = { app.repo.channels.refresh() },
-                        )
+                        error && channels.isEmpty() -> Unit
                         channels.none { !it.flag("is_dm") } ->
                             Column(
                                 Modifier.padding(8.dp),

@@ -42,6 +42,7 @@ internal fun DmItem(
             .clickable {
                 onOpen?.invoke()
                 app.navigate("/channels/${channel.text("id")}")
+                app.pane = "chat"
             }
             .semantics { contentDescription = label }
             .padding(horizontal = 8.dp),
@@ -111,8 +112,11 @@ internal fun DmSidebar(
             Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
+            if (error) LoadErrorState(app.t("dms.loadError"), app.t("dms.reload")) {
+                if (onReload != null) onReload() else app.repo.channels.refresh()
+            }
             when {
-                loading ->
+                loading && channels.isEmpty() ->
                     repeat(3) {
                         Box(
                             Modifier.fillMaxWidth()
@@ -123,13 +127,7 @@ internal fun DmSidebar(
                                 )
                         )
                     }
-                error ->
-                    Text(
-                        app.t("dms.loadError"),
-                        Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        small = true,
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                error && channels.isEmpty() -> Unit
                 usersError ->
                     Column(
                         Modifier.padding(8.dp),
