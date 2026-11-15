@@ -124,10 +124,6 @@ enum Tok {
     Atom(String),
 }
 
-fn push_text(toks: &mut Vec<Tok>, s: &str) {
-    toks.extend(s.chars().map(Tok::Ch));
-}
-
 fn push_verbatim(toks: &[Tok], out: &mut String) {
     for tok in toks {
         match tok {
@@ -169,9 +165,8 @@ fn is_char(tok: Option<&Tok>, expected: char) -> bool {
 /// - コード (`` ` `` と ```` ``` ````) の中は、そのまま出す。
 /// - 書式にならなかった文字のうち、MFM として解釈される並びは、U+200B を挟んで無効にする。
 fn format(toks: &[Tok], depth: usize, out: &mut String) {
-    // 閉じる記号が行末まで見つからなかった記号と、探索を止めた位置。同じ行の後ろの開く記号は探し直さない
-    let mut dead: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
-    // `later[k][m]`: `k` 以降、同じ行に記号 `*` (m=0) / `_` (m=1) があるか
+    // `later[k][m]`: `k` 以降、同じ行に記号 `*` (m=0) / `_` (m=1) があるか。入れ子の内側を切り出しても、
+    // 外側の閉じる記号 (`**` など) を数えられるよう、本文全体の位置で一度だけ求める
     let mut later = vec![[false; 2]; toks.len() + 1];
     for k in (0..toks.len()).rev() {
         later[k] = later[k + 1];
@@ -182,6 +177,13 @@ fn format(toks: &[Tok], depth: usize, out: &mut String) {
             _ => {}
         }
     }
+    format_in(toks, 0, &later, depth, out);
+}
+
+/// `toks` は本文全体の `base` 番目からの一部。`later` は本文全体に対するもの
+fn format_in(toks: &[Tok], base: usize, later: &[[bool; 2]], depth: usize, out: &mut String) {
+    // 閉じる記号が行末まで見つからなかった記号と、探索を止めた位置。同じ行の後ろの開く記号は探し直さない
+    let mut dead: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
     let mut i = 0;
     while i < toks.len() {
         match &toks[i] {
@@ -221,7 +223,7 @@ fn format(toks: &[Tok], depth: usize, out: &mut String) {
                                 _ => ("<i>", "</i>"),
                             };
                             out.push_str(open);
-                            format(&toks[i + 1..j], depth + 1, out);
+                            format_in(&toks[i + 1..j], base + i + 1, later, depth + 1, out);
                             out.push_str(close);
                             i = j + 1;
                             continue;
@@ -237,7 +239,7 @@ fn format(toks: &[Tok], depth: usize, out: &mut String) {
                     && !is_ascii_alnum(i.checked_sub(1).and_then(|p| toks.get(p)))
                     && (is_ascii_alnum(toks.get(i + 1))
                         || matches!(toks.get(i + 1), Some(Tok::Ch(' ' | '\t' | '\u{3000}'))))
-                    && later[i + 1][usize::from(c == '_')];
+                    && later[base + i + 1][usize::from(c == '_')];
                 if mfm_italic_open {
                     out.push(ZWSP);
                 }
@@ -500,6 +502,12 @@ mod tests {
         // 同じ行にもう一度ある `*` は、MFM で斜体にならないよう U+200B を挟む
         assert_eq!(mfm("5 * 3 * 4"), "5 *\u{200b} 3 * 4");
         assert_eq!(mfm("a _ b _ c"), "a _\u{200b} b _ c");
+        // 書式の内側の単独の `*` も、外側の閉じる記号と組んで斜体にならないようにする
+        assert_eq!(mfm("*5 * 3*"), "**5 *\u{200b} 3**");
+        assert_eq!(mfm("*a * b*"), "**a *\u{200b} b**");
+        assert_eq!(mfm("*a * b * c*"), "**a *\u{200b} b *\u{200b} c**");
+        assert_eq!(mfm("_*a * b*_"), "<i>**a *\u{200b} b**</i>");
+        assert_eq!(mfm("*`x` * y*"), "**`x` *\u{200b} y**");
         assert_eq!(mfm("1~2 and 3~4"), "1~2 and 3~4");
         assert_eq!(mfm("* a *"), "*\u{200b} a *");
         assert_eq!(mfm("*unclosed"), "*unclosed");
