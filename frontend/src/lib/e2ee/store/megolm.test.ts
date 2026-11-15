@@ -502,6 +502,11 @@ describe("受信時の検証の手順 4（送信端末を検証済みにする�
     await current.store.megolm.decrypt([row(other.store, "m2", encrypted)]);
     expect(await current.store.reverifyCandidateUsers()).toEqual([]);
 
+    // 信頼が変わったら（ここでは TOFU のピンの確定を想定）、待ち時間を消して候補に戻す。
+    current.store.forgetReverifyAttempts();
+    expect(await current.store.reverifyCandidateUsers()).toEqual([BOB]);
+    expect(await current.store.reverifySenders([BOB], unsigned)).toBe(0);
+
     // 送信端末に署名したあとで解錠し直すと、失敗した候補も待たずに判定し直し、上げる。
     const signed = keysQueryWith(BOB, { [BOB]: me }, [other.store], [me.signDevice(other.store)]);
     await current.store.saveOwnKeys(me.secrets, 1);

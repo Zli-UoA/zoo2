@@ -237,6 +237,8 @@ export class CryptoOperations {
         if (request.registered) this.opened().trustStore.confirmTofuPin(request.pin);
         else this.opened().trustStore.discardTofuPin(request.pin);
         await this.opened().saveTrustStore();
+        // ピンを置けたので、相手の「未検証の送信者」を待たずに判定し直してよい。
+        if (request.registered) this.opened().forgetReverifyAttempts();
         return null;
       case "acceptMasterKey":
         return this.opened().acceptMasterKey(request.targetUserId, request.masterKey);
@@ -274,6 +276,7 @@ export class CryptoOperations {
         return this.opened().megolm.evaluate(request.channelId, request.pages);
       case "megolmSettlePins":
         await this.opened().megolm.settlePins(request.confirmed, request.discarded);
+        if (request.confirmed.length > 0) this.opened().forgetReverifyAttempts();
         return null;
       case "megolmStart":
         return this.opened().megolm.start(request.channelId);

@@ -616,6 +616,14 @@ export class CryptoStore {
     this.reverifyCandidates.set(inboundSessionKey(ref), ref);
   }
 
+  /**
+   * 判定し直しの待ち時間を消す。自分の鍵か相手の信頼が変わったので、判定できなかった候補もすぐに
+   * 判定し直してよい（解錠、相手の受け入れと SAS、失効、TOFU のピンの確定）。
+   */
+  forgetReverifyAttempts(): void {
+    this.reverifyAttempts.clear();
+  }
+
   /** 候補を今判定し直してよいか（前に試してから {@link REVERIFY_RETRY_MS} が過ぎた）。 */
   private reverifyDue(key: InboundSessionKey, now: number): boolean {
     const attempted = this.reverifyAttempts.get(key);

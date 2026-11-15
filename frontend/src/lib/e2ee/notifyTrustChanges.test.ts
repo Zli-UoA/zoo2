@@ -28,6 +28,18 @@ describe("notifyTrustChanges", () => {
     expect(trustChanged).toHaveBeenCalledTimes(3);
   });
 
+  it("TOFU のピンを置けたときだけ知らせる", async () => {
+    const trustChanged = vi.fn();
+    const worker = notifyTrustChanges(fakeWorker().worker, trustChanged);
+    const pin = { user_id: "u", target_user_id: "t", master_key: "k" } as never;
+    await worker.request({ op: "trustPinResult", pin, registered: false });
+    await worker.request({ op: "megolmSettlePins", confirmed: [], discarded: [pin] });
+    expect(trustChanged).not.toHaveBeenCalled();
+    await worker.request({ op: "trustPinResult", pin, registered: true });
+    await worker.request({ op: "megolmSettlePins", confirmed: [pin], discarded: [] });
+    expect(trustChanged).toHaveBeenCalledTimes(2);
+  });
+
   it("ほかの操作と、失敗した操作では知らせない", async () => {
     const trustChanged = vi.fn();
     await notifyTrustChanges(fakeWorker().worker, trustChanged).request({ op: "hasOwnKeys" });
