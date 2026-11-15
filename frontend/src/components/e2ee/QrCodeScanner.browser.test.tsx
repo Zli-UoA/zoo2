@@ -127,3 +127,29 @@ it("閉じたらカメラを止める", async () => {
   view.unmount();
   for (const track of tracks) expect(track.readyState).toBe("ended");
 });
+
+it("accepted で読み取りを終えたら、画面に残っていてもカメラを止める", async () => {
+  const stream = await cameraShowing(QR)({});
+  const onScan = vi.fn(async (_bytes: Uint8Array) => "accepted" as const);
+  renderScanner({ onScan, getUserMedia: async () => stream, createDetector: noDetector });
+  await waitFor(() => expect(onScan).toHaveBeenCalled(), { timeout: 10_000 });
+  await waitFor(() => {
+    for (const track of stream.getTracks()) expect(track.readyState).toBe("ended");
+  });
+});
+
+it("映像を再生できなければ、カメラを止めて起動に失敗したと出す", async () => {
+  const play = vi
+    .spyOn(HTMLMediaElement.prototype, "play")
+    .mockRejectedValue(new DOMException("blocked", "NotAllowedError"));
+  try {
+    const stream = await cameraShowing(QR)({});
+    const onScan = vi.fn(async (_bytes: Uint8Array) => "accepted" as const);
+    renderScanner({ onScan, getUserMedia: async () => stream, createDetector: noDetector });
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    for (const track of stream.getTracks()) expect(track.readyState).toBe("ended");
+    expect(onScan).not.toHaveBeenCalled();
+  } finally {
+    play.mockRestore();
+  }
+});

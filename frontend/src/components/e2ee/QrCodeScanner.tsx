@@ -111,6 +111,11 @@ export function QrCodeScanner({
       return decodeQrImage(image.data, width, height);
     };
 
+    /** カメラを止める。読み取りを終えたとき、起動に失敗したとき、閉じたときに呼ぶ。 */
+    const stopCamera = () => {
+      for (const track of stream?.getTracks() ?? []) track.stop();
+    };
+
     void (async () => {
       try {
         stream = await getUserMedia({
@@ -122,13 +127,23 @@ export function QrCodeScanner({
         return;
       }
       if (stopped) {
-        for (const track of stream.getTracks()) track.stop();
+        stopCamera();
         return;
       }
       const video = videoRef.current;
-      if (!video) return;
+      if (!video) {
+        stopCamera();
+        return;
+      }
       video.srcObject = stream;
-      await video.play().catch(() => undefined);
+      try {
+        await video.play();
+      } catch {
+        // 再生できなければ映像の枠が届かず、読み取れない。起動に失敗したものとして、絵文字を勧める。
+        stopCamera();
+        if (!stopped) setState("failed");
+        return;
+      }
       const detector = await createDetector().catch(() => null);
       if (stopped) return;
       setState("scanning");
@@ -138,7 +153,13 @@ export function QrCodeScanner({
         if (stopped) return;
         if (bytes) {
           const result = await onScanRef.current(bytes).catch(() => "retry" as const);
-          if (stopped || result === "accepted") return;
+          if (stopped) return;
+          if (result === "accepted") {
+            // 読み取りを終えたら、画面に残っていてもカメラを止める（Worker が失敗して段階が
+            // 進まなかったときも、ここで止まる）。
+            stopCamera();
+            return;
+          }
           setRetried(true);
         }
         timer = setTimeout(() => void tick(), SCAN_INTERVAL_MS);
@@ -149,7 +170,7 @@ export function QrCodeScanner({
     return () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);
-      for (const track of stream?.getTracks() ?? []) track.stop();
+      stopCamera();
     };
   }, [initialState, getUserMedia, createDetector]);
 

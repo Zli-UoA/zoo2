@@ -1142,3 +1142,55 @@ fn choosing_sas_before_ready_starts_it_on_ready() {
     single(b.receive(&start, &bob_view), "m.key.verification.accept");
     assert_eq!(b.phase(), SasPhase::Exchanging);
 }
+
+/// 双方が同時に相手の QR を読み取ったら、Matrix の規則どおり `user_id` が大きい側（Bob）の `start` を
+/// 無視し、Alice が Bob の QR を読み取ったものとして進める。双方が検証済みになる。
+#[test]
+fn simultaneous_qr_scans_use_the_smaller_user_id() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    let (a_qr, b_qr) = (a.qr_code().unwrap(), b.qr_code().unwrap());
+    let a_start = single(a.scan_qr_code(&b_qr).unwrap(), VERIFICATION_START_TYPE);
+    let b_start = single(b.scan_qr_code(&a_qr).unwrap(), VERIFICATION_START_TYPE);
+    assert_eq!(a.phase(), SasPhase::QrScanned);
+    assert_eq!(b.phase(), SasPhase::QrScanned);
+    let a_start = only(deliver(&mut alice, 0, &mut bob, &a_start));
+    let b_start = only(deliver(&mut bob, 0, &mut alice, &b_start));
+
+    // ALICE < BOB：Alice は Bob の start を無視し、Bob の done を待つ。
+    assert!(a.receive(&b_start, &alice_view).is_empty());
+    assert_eq!(a.phase(), SasPhase::QrScanned);
+    // Bob は自分の読み取りを捨て、Alice が自分の QR を読み取ったものとして利用者に聞く。
+    assert!(b.receive(&a_start, &bob_view).is_empty());
+    assert_eq!(b.phase(), SasPhase::QrConfirm);
+
+    let done = only(deliver(
+        &mut bob,
+        0,
+        &mut alice,
+        &single(b.confirm_qr_scanned().unwrap(), VERIFICATION_DONE_TYPE),
+    ));
+    let done = only(deliver(
+        &mut alice,
+        0,
+        &mut bob,
+        &single(a.receive(&done, &alice_view), VERIFICATION_DONE_TYPE),
+    ));
+    assert!(b.receive(&done, &bob_view).is_empty());
+    assert_eq!(a.verified_master_key(), Some(bob.keys.master.public_key()));
+    assert_eq!(
+        b.verified_master_key(),
+        Some(alice.keys.master.public_key())
+    );
+
+    // 大きい側が処理する start も、共有の秘密を確かめる。
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    let (a_qr, b_qr) = (a.qr_code().unwrap(), b.qr_code().unwrap());
+    let a_start = single(a.scan_qr_code(&b_qr).unwrap(), VERIFICATION_START_TYPE);
+    b.scan_qr_code(&a_qr).unwrap();
+    let mut a_start = only(deliver(&mut alice, 0, &mut bob, &a_start));
+    a_start.content["secret"] = json!(vodozemac::base64_encode([7u8; 16]));
+    let cancel = single(b.receive(&a_start, &bob_view), VERIFICATION_CANCEL_TYPE);
+    assert_eq!(cancel.content["code"], cancel_code::KEY_MISMATCH);
+}

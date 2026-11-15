@@ -988,6 +988,20 @@ impl SasVerification {
         let method = content.get("method").and_then(Value::as_str);
         match (&self.state, method) {
             (State::Ready, Some(RECIPROCATE_METHOD)) => return self.on_reciprocate(content),
+            // 双方が同時に相手の QR を読み取った。Matrix の検証の枠組みの規則（同じ方式の `start` が
+            // ぶつかったら、`user_id` が大きい側の `start` を無視し、小さい側だけが送ったものとして扱う）
+            // に従う。相手の方が大きければ、相手が自分の `start` を受けて `done` を返すので、無視する。
+            // 自分の方が大きければ、自分の読み取りを捨て、相手が自分の QR を読み取ったものとして扱う。
+            (State::QrScanned, Some(RECIPROCATE_METHOD)) => {
+                if self.their_user_id.as_str() > self.own.user_id.as_str() {
+                    return Vec::new();
+                }
+                // 読み取る前は自分の QR を出していた（相手が QR を読み取れるなら、`qr_code` が返していた）。
+                if !self.their_supports(QR_SCAN_METHOD) {
+                    return self.cancel_with(cancel_code::UNEXPECTED_MESSAGE);
+                }
+                return self.accept_reciprocate(content);
+            }
             (State::Ready, Some(SAS_METHOD)) => {}
             // 双方が同時に SAS の `start` を送った。Matrix と同じく、`user_id` が小さい側の `start` を
             // 使う。相手の方が大きければ、相手が自分の `start` を捨てて `accept` を返すので、無視する。
@@ -1240,6 +1254,12 @@ impl SasVerification {
         if self.qr_code().is_none() {
             return self.cancel_with(cancel_code::UNEXPECTED_MESSAGE);
         }
+        self.accept_reciprocate(content)
+    }
+
+    /// `m.reciprocate.v1` の `start` の共有の秘密と、相手の端末をたどったマスター鍵が、この端末の QR に
+    /// 入れたものと同じかを確かめる。同じなら、利用者に聞く段階（[`State::QrReciprocated`]）に進める。
+    fn accept_reciprocate(&mut self, content: &Value) -> Vec<VerificationOutgoing> {
         let Some(secret) = content
             .get("secret")
             .and_then(Value::as_str)

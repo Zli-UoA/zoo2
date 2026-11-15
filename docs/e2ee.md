@@ -1793,6 +1793,7 @@ A が B に検証を求める場合です。
 - #368 のクライアントとの互換：要求した側は、相手の `ready` に `m.reciprocate.v1` がなければ、今までどおり `ready` を受けてすぐに SAS の `start` を送ります。相手の `request` か `ready` に `m.reciprocate.v1` があるときだけ、`start` を待ちます。
 - 相手も QR に対応しているときは、どちらの端末も `start` を送れます（Matrix と同じ。#368 では要求した側だけが送っていた）。利用者が「絵文字で検証する」を選んだ端末が `m.sas.v1` の `start` を、相手の QR を読み取った端末が `m.reciprocate.v1` の `start` を送ります。
   - 両方の端末が同時に SAS の `start` を送ったら、Matrix と同じく `user_id` が小さい側の `start` を使い、大きい側は自分の `start` を捨てて相手の `start` に `accept` を返します。
+  - 両方の端末が同時に相手の QR を読み取り、`m.reciprocate.v1` の `start` を送り合ったときも、Matrix の検証の枠組みの規則（同じ方式の `start` がぶつかったら、`user_id` が大きい側の `start` を無視し、小さい側だけが送ったものとして扱う）に従います。大きい側は自分の読み取りを捨て、小さい側が自分の QR を読み取ったものとして、共有の秘密を確かめて利用者に聞きます（手順の 3 と 4）。小さい側は大きい側の `done` を待ちます（手順の 5）。
   - `start` を送るか受けたあとは、方式を変えません。違う方式の `start` が届いたら、`m.unexpected_message` で取りやめます。
 - `m.reciprocate.v1` の `start` は、Matrix と同じく `{from_device, method: "m.reciprocate.v1", secret, transaction_id}` です。`secret` は QR の共有の秘密の base64（パディングなし）です。
 
