@@ -59,9 +59,12 @@ async fn update(
     for id in &body.channel_ids {
         let valid = one(&mut tx, "SELECT json_build_object('valid',EXISTS(SELECT 1 FROM channels WHERE id=$1 AND NOT is_private AND NOT is_dm AND archive_at IS NULL AND deleted_at IS NULL))::text", &[id]).await?;
         if valid["valid"] != true {
-            return Err(AppError::BadRequest(
-                "Default channels must be active public channels".into(),
-            ));
+            return Err(AppError::Coded {
+                status: axum::http::StatusCode::BAD_REQUEST,
+                code: "default_channel_unavailable",
+                message: "Default channels must be active public channels".into(),
+                extra: Default::default(),
+            });
         }
     }
     toasty::sql::statement("UPDATE workspace_settings SET preferences=jsonb_set(preferences::jsonb,'{default_channel_ids}',$1::jsonb)::text WHERE id='workspace'")

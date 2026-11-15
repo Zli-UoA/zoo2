@@ -60,22 +60,27 @@ async fn administrator_roles_require_authorization_and_take_effect_immediately()
             StatusCode::FORBIDDEN
         );
     }
-    for channel_ids in [
-        json!(["missing-channel"]),
-        json!(["duplicate", "duplicate"]),
+    for (channel_ids, expected_code) in [
+        (
+            json!(["missing-channel"]),
+            Some("default_channel_unavailable"),
+        ),
+        (json!(["duplicate", "duplicate"]), None),
     ] {
-        assert_eq!(
-            request(
-                &app,
-                "PATCH",
-                "/api/workspace/default-channels",
-                DEFAULT_DEV_USER_ID,
-                json!({"channel_ids":channel_ids})
-            )
-            .await?
-            .0,
-            StatusCode::BAD_REQUEST
-        );
+        let (status, body) = request(
+            &app,
+            "PATCH",
+            "/api/workspace/default-channels",
+            DEFAULT_DEV_USER_ID,
+            json!({"channel_ids":channel_ids}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        if let Some(code) = expected_code {
+            assert_eq!(body["code"], code);
+        } else {
+            assert!(body.get("code").is_none());
+        }
     }
     let alice_role = format!("/api/users/{alice}/admin");
     let bob_role = format!("/api/users/{bob}/admin");

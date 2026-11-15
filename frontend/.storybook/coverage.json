@@ -10,7 +10,8 @@
         "LoadError",
         "SaveError",
         "Saving",
-        "ChannelBecameUnavailable"
+        "ChannelBecameUnavailable",
+        "ChannelLimit"
       ]
     },
     {

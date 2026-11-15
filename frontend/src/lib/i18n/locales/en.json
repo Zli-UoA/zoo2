@@ -1569,6 +1569,7 @@
     }
   },
   "defaultChannels": {
+    "limit": "You can select up to 100 public channels.",
     "title": "Default channels for new accounts",
     "description": "Select public channels to join automatically when an account is created. Existing accounts are unaffected.",
     "empty": "No public channels are available.",

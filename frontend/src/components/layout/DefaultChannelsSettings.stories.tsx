@@ -124,7 +124,10 @@ export const ChannelBecameUnavailable: Story = {
           if (stale) {
             stale = false;
             return HttpResponse.json(
-              { error: "Default channels must be active public channels" },
+              {
+                error: "Default channels must be active public channels",
+                code: "default_channel_unavailable",
+              },
               { status: 400 },
             );
           }
@@ -141,6 +144,41 @@ export const ChannelBecameUnavailable: Story = {
       expect(screen.queryByRole("checkbox", { name: "#general" })).not.toBeInTheDocument(),
     );
     await userEvent.click(await screen.findByRole("checkbox", { name: "#help" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await expect(await screen.findByRole("status")).toHaveTextContent("保存しました。");
+  },
+};
+
+const manyChannels = Array.from({ length: 101 }, (_, index) => ({
+  id: `channel-${index}`,
+  channel_name: `channel-${index}`,
+}));
+export const ChannelLimit: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/workspace/default-channels", () =>
+          HttpResponse.json({
+            channel_ids: manyChannels.map((channel) => channel.id),
+            channels: manyChannels,
+          }),
+        ),
+        http.patch("*/api/workspace/default-channels", async ({ request }) => {
+          const body = (await request.json()) as { channel_ids: string[] };
+          await expect(body.channel_ids).toHaveLength(100);
+          return HttpResponse.json(body);
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await screen.findByRole("checkbox", { name: "#channel-0" });
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await expect(await screen.findByRole("alert")).toBeVisible();
+    await expect(screen.getAllByRole("checkbox", { checked: true })).toHaveLength(101);
+    await expect(screen.getByText("公開チャンネルは100件まで選択できます。")).toBeVisible();
+    await userEvent.click(screen.getByRole("checkbox", { name: "#channel-100" }));
+    await expect(screen.getByRole("checkbox", { name: "#channel-100" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
     await expect(await screen.findByRole("status")).toHaveTextContent("保存しました。");
   },

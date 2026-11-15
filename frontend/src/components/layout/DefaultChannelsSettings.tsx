@@ -39,6 +39,7 @@ export function DefaultChannelsSettings() {
       title={t("defaultChannels.title")}
       description={t("defaultChannels.description")}
     >
+      <p className="text-xs text-muted-foreground">{t("defaultChannels.limit")}</p>
       {error ? <p role="alert">{t("common.writeError")}</p> : null}
       {!settings ? (
         error ? (
@@ -54,6 +55,10 @@ export function DefaultChannelsSettings() {
           onSubmit={async (event) => {
             event.preventDefault();
             if (pending) return;
+            if (selected.length > 100) {
+              setError(true);
+              return;
+            }
             setPending(true);
             setError(false);
             setSaved(false);
@@ -64,7 +69,14 @@ export function DefaultChannelsSettings() {
               });
               setSaved(true);
             } catch (cause) {
-              if (cause instanceof ApiError && cause.status === 400) {
+              if (
+                cause instanceof ApiError &&
+                cause.status === 400 &&
+                typeof cause.body === "object" &&
+                cause.body !== null &&
+                "code" in cause.body &&
+                cause.body.code === "default_channel_unavailable"
+              ) {
                 setRevision((value) => value + 1);
               } else {
                 setError(true);
@@ -83,6 +95,7 @@ export function DefaultChannelsSettings() {
                 <label key={channel.id} className="flex min-w-0 items-center gap-2 text-sm">
                   <input
                     type="checkbox"
+                    disabled={selected.length >= 100 && !selected.includes(channel.id)}
                     checked={selected.includes(channel.id)}
                     onChange={(event) => {
                       setSaved(false);
