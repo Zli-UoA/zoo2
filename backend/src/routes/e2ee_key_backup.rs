@@ -52,6 +52,10 @@ pub const MAX_BACKUP_VERSION_BYTES: i64 = 512 * 1024 * 1024;
 pub const MAX_BACKUP_USER_SESSIONS: i64 = 2 * MAX_BACKUP_VERSION_SESSIONS;
 /// 1 人の、消していないすべての版の `session_data` の大きさの合計の上限（`limit` は `backup_user_size`）。
 pub const MAX_BACKUP_USER_BYTES: i64 = 2 * MAX_BACKUP_VERSION_BYTES;
+/// 移行のアップロード（すべての行が、ほかの消していない版にあるセッションの写し）に当てる、ユーザーの上限の
+/// 倍率。移行は新しい版に書き終えてから古い版を消すので、ユーザーの上限まで埋まっていても移行を終えられるように
+/// する。版の上限は当てない（docs/e2ee.md の鍵バックアップの API）。
+pub const MIGRATION_USER_LIMIT_FACTOR: i64 = 2;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -643,6 +647,7 @@ async fn upload_sessions(
             true
         }
     };
+    let migration = is_migration(&mut tx, &actor.id, version, &best).await?;
     let before = backup_totals(&mut tx, &actor.id, version).await?;
     if !best.is_empty() {
         // 読んでから書くと、並行した同じセッションのアップロードがよい行を上書きしたり、主キーの衝突（500）に
@@ -678,33 +683,42 @@ async fn upload_sessions(
     let after = backup_totals(&mut tx, &actor.id, version).await?;
     // 増やした上限だけを拒否する（上限を下げたあとも、行を減らすか変えないアップロードは通す）。
     // 拒否したら、コミットせずにトランザクションを捨てるので、行も数も戻る。
+    // 移行のアップロードは、版の上限を当てず、ユーザーの上限を MIGRATION_USER_LIMIT_FACTOR 倍まで認める。
+    let (version_factor, user_factor) = if migration {
+        (None, MIGRATION_USER_LIMIT_FACTOR)
+    } else {
+        (Some(1), 1)
+    };
     for (limit, max, before, after) in [
         (
             "backup_version_sessions",
-            MAX_BACKUP_VERSION_SESSIONS,
+            version_factor.map(|f| f * MAX_BACKUP_VERSION_SESSIONS),
             before.version_sessions,
             after.version_sessions,
         ),
         (
             "backup_version_size",
-            MAX_BACKUP_VERSION_BYTES,
+            version_factor.map(|f| f * MAX_BACKUP_VERSION_BYTES),
             before.version_bytes,
             after.version_bytes,
         ),
         (
             "backup_user_sessions",
-            MAX_BACKUP_USER_SESSIONS,
+            Some(user_factor * MAX_BACKUP_USER_SESSIONS),
             before.user_sessions,
             after.user_sessions,
         ),
         (
             "backup_user_size",
-            MAX_BACKUP_USER_BYTES,
+            Some(user_factor * MAX_BACKUP_USER_BYTES),
             before.user_bytes,
             after.user_bytes,
         ),
     ] {
-        if after > max && after > before {
+        if let Some(max) = max
+            && after > max
+            && after > before
+        {
             return Err(limit_exceeded(limit));
         }
     }
@@ -713,6 +727,42 @@ async fn upload_sessions(
         json!({"count": after.version_sessions}),
         None,
     )))
+}
+
+/// 移行のアップロードか：要求のすべてのセッションが、同じユーザーのほかの消していない版にある。
+/// 失効のあとの移行（古い版の取り込みと、新しい版への送り直し）はこの形になる。写しの数は古い版の
+/// セッションの数までなので、トークンだけを持つ者が上限を外して増やせる量も、ユーザーの上限の倍率で抑える。
+async fn is_migration(
+    tx: &mut toasty::Transaction<'_>,
+    user_id: &str,
+    version: &str,
+    best: &BTreeMap<(String, String, String), BackupSession>,
+) -> Result<bool, AppError> {
+    if best.is_empty() {
+        return Ok(false);
+    }
+    let keys: Vec<Value> = best
+        .keys()
+        .map(|(c, k, s)| json!({"channel_id": c, "sender_key": k, "session_id": s}))
+        .collect();
+    let copied = first(
+        tx,
+        "SELECT count(*)::text
+         FROM jsonb_to_recordset($3::jsonb) AS s(channel_id text, sender_key text, session_id text)
+         WHERE EXISTS (
+           SELECT 1 FROM e2ee_key_backup_sessions o
+           WHERE o.user_id = $1
+             AND o.version IN (SELECT v.version FROM e2ee_key_backup_versions v
+                               WHERE v.user_id = $1 AND v.deleted_at IS NULL
+                                 AND v.version <> $2::bigint)
+             AND o.channel_id = s.channel_id AND o.sender_key = s.sender_key
+             AND o.session_id = s.session_id)",
+        &[user_id, version, &Value::Array(keys).to_string()],
+    )
+    .await?
+    .and_then(|v| v.as_u64())
+    .unwrap_or(0);
+    Ok(copied as usize == best.len())
 }
 
 /// 版とユーザーのセッションの数と大きさ（`e2ee_key_backup_versions` の、トリガーが保つ列）。

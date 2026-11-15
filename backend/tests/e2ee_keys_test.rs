@@ -1818,7 +1818,7 @@ async fn backup_totals_are_counted_and_capped_per_version_and_user() {
             &upload("2"),
             &user,
             false,
-            json!({"sessions": [session("c", "k", "s1", false, 0)]}),
+            json!({"sessions": [session("c", "k", "new1", false, 0)]}),
         )
         .await;
     assert_eq!(
@@ -1844,7 +1844,7 @@ async fn backup_totals_are_counted_and_capped_per_version_and_user() {
             &upload("2"),
             &user,
             false,
-            json!({"sessions": [session("c", "k", "s1", false, 0)]}),
+            json!({"sessions": [session("c", "k", "new1", false, 0)]}),
         )
         .await;
     assert_eq!(
@@ -1872,11 +1872,145 @@ async fn backup_totals_are_counted_and_capped_per_version_and_user() {
             &upload("2"),
             &user,
             false,
-            json!({"sessions": [session("c", "k", "s1", false, 0)]}),
+            json!({"sessions": [session("c", "k", "new1", false, 0)]}),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{res}");
     assert_eq!(totals("2").await.0, 2);
+}
+
+#[tokio::test]
+async fn migration_uploads_finish_even_when_the_user_total_is_full() {
+    // レビューの再現：古い版がユーザーの上限まで埋まっていても、失効のあとの移行（古い版にあるセッションの
+    // 写し）は新しい版に書き終えられる。新しいセッションを含む要求は、今までどおり上限で拒否する。
+    let env = env().await;
+    let alice = env.identity().await;
+    let user = alice.user.clone();
+    env.ssss(&user, json!([recovery_slot()])).await;
+    let revision = env.revision(&user).await;
+    let body = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key())});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, false, body)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let path = |version: &str| {
+        format!("/api/e2ee/key_backup/keys?version={version}&secrets_revision={revision}")
+    };
+    let old: Vec<Value> = (0..3)
+        .map(|i| session("c", "k", &format!("old{i}"), false, 0))
+        .collect();
+    let (status, res) = env
+        .post(&path("1"), &user, false, json!({"sessions": old}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key()), "expected_current_version": "1"});
+    let (status, res) = env
+        .post("/api/e2ee/key_backup/versions", &user, true, create)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+
+    // 古い版だけでユーザーの上限に達している（版ごとの上限の内側の古い版が 2 つある状態と同じ合計）。
+    let user_max = backend::routes::e2ee_key_backup::MAX_BACKUP_USER_SESSIONS;
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &user_max.to_string()],
+    )
+    .await;
+    let upload = |sessions: Vec<Value>| {
+        let (env, user, path) = (&env, user.clone(), path("2"));
+        async move {
+            env.post(&path, &user, false, json!({"sessions": sessions}))
+                .await
+        }
+    };
+    // 新しいセッションは拒否する。写しと新しいセッションを混ぜた要求も移行ではない。
+    let (status, res) = upload(vec![session("c", "k", "fresh", false, 0)]).await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_user_sessions")
+        )
+    );
+    let (status, res) = upload(vec![
+        session("c", "k", "old0", false, 0),
+        session("c", "k", "fresh", false, 0),
+    ])
+    .await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_user_sessions")
+        )
+    );
+    // 古い版にあるセッションの写しは通る。
+    let (status, res) = upload(vec![
+        session("c", "k", "old0", false, 0),
+        session("c", "k", "old1", false, 0),
+    ])
+    .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    // 新しい版が版ごとの上限に達していても、写しは通る。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = $2::bigint
+         WHERE user_id = $1 AND version = 2",
+        &[
+            &user,
+            &backend::routes::e2ee_key_backup::MAX_BACKUP_VERSION_SESSIONS.to_string(),
+        ],
+    )
+    .await;
+    let (status, res) = upload(vec![session("c", "k", "old2", false, 0)]).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    // 写しにも、ユーザーの上限の 2 倍は当てる。
+    let factor = backend::routes::e2ee_key_backup::MIGRATION_USER_LIMIT_FACTOR;
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = $2::bigint
+         WHERE user_id = $1 AND version = 1",
+        &[&user, &(factor * user_max).to_string()],
+    )
+    .await;
+    let (status, res) = upload(vec![session("c", "k", "old0", true, 0)]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "同じ数のままの置き換えは通る: {res}"
+    );
+    env.exec(
+        "DELETE FROM e2ee_key_backup_sessions WHERE user_id = $1 AND version = 2 AND session_id = 'old1'",
+        &[&user],
+    )
+    .await;
+    let (status, res) = upload(vec![session("c", "k", "old1", false, 0)]).await;
+    assert_eq!(
+        (status, code(&res), res["limit"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            "E2EE_LIMIT_EXCEEDED",
+            Some("backup_user_sessions")
+        )
+    );
+    // 古い版を消すと、その版にだけあったセッションは写しではなくなる。
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = 3 WHERE user_id = $1 AND version = 1",
+        &[&user],
+    )
+    .await;
+    env.exec(
+        "UPDATE e2ee_key_backup_versions SET session_count = 2 WHERE user_id = $1 AND version = 2",
+        &[&user],
+    )
+    .await;
+    let (status, res) = env
+        .delete("/api/e2ee/key_backup/versions/1", &user, false)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{res}");
+    let (status, res) = upload(vec![session("c", "k", "old1", false, 0)]).await;
+    assert_eq!(status, StatusCode::OK, "{res}");
 }
 
 #[tokio::test]
