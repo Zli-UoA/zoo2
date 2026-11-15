@@ -703,6 +703,9 @@
     "showLess": "접기"
   },
   "home": {
+    "quotedPost": "인용한 게시물",
+    "quoteUnavailable": "인용한 게시물을 표시할 수 없습니다",
+    "openQuotedPost": "인용한 게시물 열기",
     "image": "이미지",
     "imageError": "이미지를 추가하지 못했습니다. PNG·JPEG·GIF·WebP(각 8MiB 이하, 최대 10장)를 선택하여 다시 시도해 주세요.",
     "title": "Home",

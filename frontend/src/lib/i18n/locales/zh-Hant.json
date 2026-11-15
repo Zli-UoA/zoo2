@@ -703,6 +703,9 @@
     "showLess": "收合"
   },
   "home": {
+    "quotedPost": "引用的貼文",
+    "quoteUnavailable": "無法顯示引用的貼文",
+    "openQuotedPost": "開啟引用的貼文",
     "image": "圖片",
     "imageError": "無法新增圖片。請選擇最多10張PNG、JPEG、GIF或WebP圖片（每張不超過8MiB），然後重試。",
     "title": "首頁",

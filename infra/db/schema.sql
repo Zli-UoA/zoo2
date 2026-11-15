@@ -1505,6 +1505,7 @@ CREATE TABLE apub_inbox_receipts (
 );
 CREATE TABLE apub_remote_posts (
   id text PRIMARY KEY,
+  quote_uri text,
   actor_id text NOT NULL REFERENCES apub_actors(id),
   content text NOT NULL,
   visibility text NOT NULL CHECK(visibility IN ('public','unlisted','followers')),

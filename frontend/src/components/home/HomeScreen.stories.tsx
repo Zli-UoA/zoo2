@@ -2133,16 +2133,52 @@ export const QuotedRenote: Story = {
   parameters: {
     msw: {
       handlers: [
+        homeImageHandler,
         http.get("*/api/home", () =>
           HttpResponse.json([
             {
               ...misskeyPost,
               content: "**引用へのコメント**\n\n<https://misskey.example/notes/quoted-original>",
+              quote: {
+                uri: "https://misskey.example/notes/quoted-original",
+                post: {
+                  ...misskeyPost,
+                  display_name: "Bob",
+                  user_name: "bob@misskey.example",
+                  content: "引用元の投稿です。**MFMの装飾**や :blobcat: も、そのまま表示します。",
+                  media: homeImagePost.media,
+                },
+              },
             },
             {
               ...misskeyPost,
               id: "https://misskey.example/notes/quote-only",
               content: "<https://misskey.example/notes/quoted-without-comment>",
+              quote: {
+                uri: "https://misskey.example/notes/quoted-without-comment",
+                post: {
+                  ...misskeyPost,
+                  display_name: "Carol",
+                  user_name: "carol@misskey.example",
+                  content: "コメントなしの引用でも、引用元を専用カードで表示します。",
+                },
+              },
+            },
+            {
+              ...misskeyPost,
+              id: "https://misskey.example/notes/quote-unavailable",
+              content: "<https://misskey.example/notes/deleted>",
+              quote: { uri: "https://misskey.example/notes/deleted", post: null },
+            },
+            {
+              ...misskeyPost,
+              id: "local-quote-unavailable",
+              content: "<https://zoo.example/api/activitypub/notes/deleted>",
+              quote: {
+                uri: "https://zoo.example/api/activitypub/notes/deleted",
+                local: true,
+                post: null,
+              },
             },
           ]),
         ),
@@ -2152,13 +2188,75 @@ export const QuotedRenote: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("引用へのコメント")).toBeVisible();
-    for (const url of [
-      "https://misskey.example/notes/quoted-original",
-      "https://misskey.example/notes/quoted-without-comment",
-    ]) {
-      const link = await canvas.findByRole("link", { name: url.replace(/^https:\/\//, "") });
-      await expect(link).toHaveAttribute("href", url);
-      await expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    const cards = await canvas.findAllByRole("group", { name: "引用元の投稿" });
+    await expect(cards).toHaveLength(4);
+    await expect(within(cards[0]!).getByText("Bob")).toBeVisible();
+    await expect(within(cards[0]!).getByText("MFMの装飾")).toBeVisible();
+    await expect(within(cards[1]!).getByText("Carol")).toBeVisible();
+    await expect(within(cards[2]!).getByText("引用元の投稿を表示できません")).toBeVisible();
+    await expect(within(cards[2]!).getByRole("link", { name: "引用元を開く" })).toHaveAttribute(
+      "href",
+      "https://misskey.example/notes/deleted",
+    );
+    await expect(within(cards[3]!).queryByRole("link")).toBeNull();
+    await expect(canvas.queryByText("misskey.example/notes/quoted-original")).toBeNull();
+  }),
+};
+
+export const LinkPreviewStates: Story = {
+  parameters: {
+    collections: {
+      ...storyCollections,
+      config: { summalyUrl: "https://storybook.example/summaly" },
+    },
+    msw: {
+      handlers: [
+        http.get("*/summaly-endpoint", () =>
+          HttpResponse.text("https://storybook.example/summaly"),
+        ),
+        http.get("*/media-proxy-endpoint", () => HttpResponse.text("")),
+        http.get("https://storybook.example/summaly", async ({ request }) => {
+          const url = new URL(request.url).searchParams.get("url")!;
+          if (url.endsWith("unavailable")) return new HttpResponse(null, { status: 404 });
+          if (url.endsWith("pending")) await delay("infinite");
+          return HttpResponse.json({
+            title: "通常URLのカード",
+            description: "取得できたリンクだけカードを表示します。",
+            sitename: "Example",
+          });
+        }),
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...misskeyPost,
+              id: "preview-success",
+              content: "https://example.com/home-story-success",
+            },
+            {
+              ...misskeyPost,
+              id: "preview-unavailable",
+              content: "https://example.com/home-story-unavailable",
+            },
+            {
+              ...misskeyPost,
+              id: "preview-pending",
+              content: "https://example.com/home-story-pending",
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("link", { name: /通常URLのカード/ })).toBeVisible();
+    for (const path of ["unavailable", "pending"]) {
+      const url = `https://example.com/home-story-${path}`;
+      await expect(canvas.getByRole("link", { name: url.replace("https://", "") })).toHaveAttribute(
+        "href",
+        url,
+      );
+      await expect(canvas.queryByRole("link", { name: `${url} example.com` })).toBeNull();
     }
   }),
 };
