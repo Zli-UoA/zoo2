@@ -2170,6 +2170,16 @@ export const QuotedRenote: Story = {
               content: "<https://misskey.example/notes/deleted>",
               quote: { uri: "https://misskey.example/notes/deleted", post: null },
             },
+            {
+              ...misskeyPost,
+              id: "local-quote-unavailable",
+              content: "<https://zoo.example/api/activitypub/notes/deleted>",
+              quote: {
+                uri: "https://zoo.example/api/activitypub/notes/deleted",
+                local: true,
+                post: null,
+              },
+            },
           ]),
         ),
       ],
@@ -2179,7 +2189,7 @@ export const QuotedRenote: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("引用へのコメント")).toBeVisible();
     const cards = await canvas.findAllByRole("group", { name: "引用元の投稿" });
-    await expect(cards).toHaveLength(3);
+    await expect(cards).toHaveLength(4);
     await expect(within(cards[0]!).getByText("Bob")).toBeVisible();
     await expect(within(cards[0]!).getByText("MFMの装飾")).toBeVisible();
     await expect(within(cards[1]!).getByText("Carol")).toBeVisible();
@@ -2188,6 +2198,7 @@ export const QuotedRenote: Story = {
       "href",
       "https://misskey.example/notes/deleted",
     );
+    await expect(within(cards[3]!).queryByRole("link")).toBeNull();
     await expect(canvas.queryByText("misskey.example/notes/quoted-original")).toBeNull();
   }),
 };

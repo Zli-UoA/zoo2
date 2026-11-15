@@ -182,3 +182,14 @@ it("opens local quote authors and timestamps in Zoo instead of the federation JS
     expect(link).not.toHaveAttribute("target", "_blank");
   }
 });
+
+it("does not link unavailable local quotes to an ActivityPub JSON endpoint", () => {
+  const uri = "https://zoo.example/api/activitypub/notes/deleted";
+  render(
+    <LocaleProvider>
+      <HomePostContent content={`<${uri}>`} quote={{ uri, local: true, post: null }} />
+    </LocaleProvider>,
+  );
+  expect(screen.getByText("引用元の投稿を表示できません")).toBeInTheDocument();
+  expect(screen.queryByRole("link")).toBeNull();
+});

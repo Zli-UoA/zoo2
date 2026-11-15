@@ -23,6 +23,7 @@ export interface HomeMedia extends ImageMetadata {
 
 export interface HomeQuote {
   uri: string;
+  local?: boolean;
   post: {
     id: string;
     remote?: boolean;
@@ -103,9 +104,11 @@ function QuoteCard({ quote }: { quote: HomeQuote }) {
       ) : (
         <>
           <p className="text-muted-foreground">{t("home.quoteUnavailable")}</p>
-          <ExternalLink href={quote.uri} className="mt-1 block break-words text-link">
-            {t("home.openQuotedPost")}
-          </ExternalLink>
+          {!quote.local ? (
+            <ExternalLink href={quote.uri} className="mt-1 block break-words text-link">
+              {t("home.openQuotedPost")}
+            </ExternalLink>
+          ) : null}
         </>
       )}
     </div>

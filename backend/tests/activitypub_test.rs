@@ -3454,3 +3454,100 @@ async fn quote_cards_are_batched_public_verified_and_follow_updates() -> anyhow:
     finish_protocol(&mut f).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn local_unlisted_quotes_open_by_id_without_entering_timelines() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let (status, original) = request(
+        &f.app,
+        "POST",
+        Some(&f.other),
+        "/api/home",
+        Some(json!({"content":"Unlisted original","visibility":"unlisted","apub":true})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let original_id = original["id"].as_str().unwrap();
+    let original_path = format!("/api/home/{original_id}");
+    let quoted_id = format!("{}/notes/unlisted-quote", f.remote);
+    let uri = format!("https://zoo.example.com/api/activitypub/notes/{original_id}");
+    let note = json!({"id":quoted_id,"type":"Note","attributedTo":f.remote,"content":"Comment","quoteUri":uri,"to":["https://www.w3.org/ns/activitystreams#Public"],"published":"2026-01-01T00:00:00Z"});
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note)).await?,
+        StatusCode::ACCEPTED
+    );
+    let quote_path = format!(
+        "/api/home/{}",
+        percent_encoding::utf8_percent_encode(&quoted_id, percent_encoding::NON_ALPHANUMERIC)
+    );
+    let (_, quoted) = request(&f.app, "GET", Some(&f.user), &quote_path, None).await?;
+    assert_eq!(quoted["quote"]["post"]["id"], original_id);
+    assert_eq!(quoted["quote"]["local"], true);
+    let (status, detail) = request(&f.app, "GET", Some(&f.user), &original_path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail["content"], "Unlisted original");
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            Some(&f.user),
+            &format!("{original_path}/thread"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    for timeline in ["home", "local", "social"] {
+        let (_, rows) = request(
+            &f.app,
+            "GET",
+            Some(&f.user),
+            &format!("/api/home?timeline={timeline}"),
+            None,
+        )
+        .await?;
+        assert!(
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["id"] != original_id)
+        );
+    }
+    // ID access does not broaden local-only, followers-only, or deleted objects.
+    for sql in [
+        "UPDATE home_posts SET apub=false WHERE id=$1",
+        "UPDATE home_posts SET apub=true,visibility='followers' WHERE id=$1",
+        "UPDATE home_posts SET visibility='unlisted',deleted_at=now() WHERE id=$1",
+    ] {
+        toasty::sql::statement(sql)
+            .bind(original_id)
+            .exec(&mut f.db)
+            .await?;
+        assert_eq!(
+            request(&f.app, "GET", Some(&f.user), &original_path, None)
+                .await?
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            request(
+                &f.app,
+                "GET",
+                Some(&f.user),
+                &format!("{original_path}/thread"),
+                None
+            )
+            .await?
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        let (_, quoted) = request(&f.app, "GET", Some(&f.user), &quote_path, None).await?;
+        assert!(quoted["quote"]["post"].is_null());
+        assert_eq!(quoted["quote"]["local"], true);
+    }
+    finish_protocol(&mut f).await?;
+    Ok(())
+}

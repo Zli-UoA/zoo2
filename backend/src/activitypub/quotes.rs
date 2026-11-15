@@ -16,21 +16,34 @@ fn spawn_resolution_task(
     }))
 }
 
-pub(super) fn schedule(state: AppState, user: String, activity: Value) {
+pub(super) async fn schedule(
+    state: AppState,
+    user: String,
+    activity: Value,
+) -> Result<(), AppError> {
     match activity["type"].as_str() {
         Some("Create" | "Update") if emoji::note_quote_uri(&activity["object"]).is_some() => {}
         Some("Announce") => {}
-        _ => return,
+        _ => return Ok(()),
     }
-    // Never queue an unbounded number of optional fetches or retain Inbox permits.
+    // Ordinary Announce activities and cached/local originals must not occupy
+    // the scarce network slots. This preparation performs database reads only.
+    let Some(uri) = eligible_target(&state, &user, &activity).await? else {
+        return Ok(());
+    };
     let task = async move {
-        if let Err(error) = resolve(&state, &user, &activity).await {
-            tracing::debug!(%error, "Quoted Note could not be resolved");
+        let result =
+            tokio::time::timeout(Duration::from_secs(20), resolve(&state, &user, &uri)).await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::debug!(%error, "Quoted Note could not be resolved"),
+            Err(_) => tracing::debug!("Quote resolution timed out"),
         }
     };
     if spawn_resolution_task(task).is_none() {
         tracing::debug!("Quote resolution capacity reached; keeping the original link");
     }
+    Ok(())
 }
 
 async fn lock_quote(uri: &str) -> tokio::sync::OwnedMutexGuard<()> {
@@ -49,20 +62,11 @@ async fn lock_quote(uri: &str) -> tokio::sync::OwnedMutexGuard<()> {
     mutex.lock_owned().await
 }
 
-pub(super) async fn resolve(
+async fn eligible_target(
     state: &AppState,
     user: &str,
     activity: &Value,
-) -> Result<(), AppError> {
-    tokio::time::timeout(
-        Duration::from_secs(20),
-        resolve_inner(state, user, activity),
-    )
-    .await
-    .map_err(|_| AppError::BadGateway("Quote resolution timed out".into()))?
-}
-
-async fn resolve_inner(state: &AppState, user: &str, activity: &Value) -> Result<(), AppError> {
+) -> Result<Option<String>, AppError> {
     let announce = activity["type"] == "Announce";
     let id = match activity["type"].as_str() {
         Some("Create" | "Update") => string(&activity["object"], "id")?,
@@ -70,32 +74,42 @@ async fn resolve_inner(state: &AppState, user: &str, activity: &Value) -> Result
             .as_str()
             .or_else(|| activity["object"]["id"].as_str())
             .ok_or_else(|| AppError::BadRequest("Missing Announce object".into()))?,
-        _ => return Ok(()),
+        _ => return Ok(None),
     };
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     // Only a stored post delivered to this recipient may authorize a quote fetch.
     let accepted = query(&mut tx, "SELECT json_build_object('quote_uri',p.quote_uri)::text FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id WHERE p.id=$1 AND p.quote_uri IS NOT NULL AND p.deleted_at IS NULL AND NOT a.blocked AND (($5::boolean AND EXISTS(SELECT 1 FROM apub_reposts r JOIN apub_repost_recipients rr ON rr.activity_id=r.activity_id WHERE r.post_id=p.id AND r.activity_id=$4 AND rr.user_id=$2)) OR (NOT $5::boolean AND p.actor_id=$3 AND EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$2)))", &[id,user,string(activity,"actor")?,string(activity,"id")?,if announce {"true"} else {"false"}]).await?;
     let Some(row) = accepted.first() else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(uri) = emoji::note_quote_uri(&json!({"quoteUri":row["quote_uri"]})) else {
-        return Ok(());
+        return Ok(None);
     };
     if !announce && emoji::note_quote_uri(&activity["object"]).as_ref() != Some(&uri) {
-        return Ok(());
+        return Ok(None);
     }
     let uri = uri.as_str();
     if uri == id || uri.starts_with(&format!("{}/api/activitypub/notes/", base_url()?)) {
-        return Ok(());
+        return Ok(None);
     }
-    drop(tx);
+    if known_original(&mut tx, uri).await? {
+        return Ok(None);
+    }
+    Ok(Some(uri.to_owned()))
+}
+
+async fn known_original(tx: &mut toasty::Transaction<'_>, uri: &str) -> Result<bool, AppError> {
+    Ok(!query(tx, "SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND origin_verified UNION ALL SELECT '{}'::text FROM apub_remote_tombstones WHERE id=$1", &[uri]).await?.is_empty())
+}
+
+async fn resolve(state: &AppState, user: &str, uri: &str) -> Result<(), AppError> {
+    let mut db = state.db.clone();
     // Multiple inbox recipients share the same public original. Do not hold a
     // database connection while waiting for another recipient's fetch.
     let _guard = lock_quote(uri).await;
     let mut tx = db.transaction().await?;
-    let known = query(&mut tx, "SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND origin_verified UNION ALL SELECT '{}'::text FROM apub_remote_tombstones WHERE id=$1", &[uri]).await?;
-    if !known.is_empty() {
+    if known_original(&mut tx, uri).await? {
         return Ok(());
     }
     drop(tx);
@@ -119,7 +133,7 @@ pub(crate) async fn decorate(
     let base = base_url().unwrap_or_default();
     let quotes = query(tx, r#"WITH refs AS (
       SELECT id,quote_uri FROM apub_remote_posts WHERE quote_uri IS NOT NULL AND id IN (SELECT jsonb_array_elements_text($1::jsonb))
-    ) SELECT json_build_object('id',r.id,'uri',r.quote_uri,'post',COALESCE(remote.post,local.post))::text FROM refs r
+    ) SELECT json_build_object('id',r.id,'uri',r.quote_uri,'local',starts_with(r.quote_uri,$2 || '/api/activitypub/notes/'),'post',COALESCE(remote.post,local.post))::text FROM refs r
     LEFT JOIN LATERAL (
       SELECT json_build_object('id',p.id,'content',p.content,'user_name',a.user_name || '@' || split_part(a.id,'/',3),'display_name',a.display_name,'created_at',p.published,'emojis',p.emojis,'actor_emojis',a.emojis,'avatar',a.avatar,'media',p.media,'remote',true,'user_id',p.actor_id) AS post
       FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id

@@ -45,7 +45,9 @@ pub async fn receive(
     }
     receive_verified(&state, &user, &remote, &activity).await?;
     // The comment is committed. Optional fetches run separately from Inbox admission.
-    quotes::schedule(state, user, activity);
+    if let Err(error) = quotes::schedule(state, user, activity).await {
+        tracing::debug!(%error, "Quote preparation failed; keeping the original link");
+    }
     Ok(StatusCode::ACCEPTED)
 }
 pub(super) async fn verify_and_store_actor(
