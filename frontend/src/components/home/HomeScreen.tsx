@@ -317,7 +317,10 @@ function HomeScreenContent({
           );
           if (added) setNewPosts((value) => value + added);
         }
-        if (fetchedHead) lastHead.current = head;
+        if (fetchedHead) {
+          lastHead.current = head;
+          if (atTop) setNewPosts(0);
+        }
         const rows =
           retain && !postId
             ? mergeTimelineWindow(
@@ -610,7 +613,8 @@ function HomeScreenContent({
         ref={scrollRoot}
         data-home-scroll
         onScroll={() => {
-          if ((scrollRoot.current?.scrollTop ?? 0) < 80) setNewPosts(0);
+          if ((scrollRoot.current?.scrollTop ?? 0) < 80 && newPosts > 0)
+            scheduleRefresh.current(true);
         }}
         className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-24"
         onTouchStart={(event) => {

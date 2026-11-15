@@ -503,3 +503,23 @@ it("keeps successful head updates and pagination usable when viewport reconcilia
   approachTail();
   await waitFor(() => expect(prefetchDistances).toHaveLength(2), { timeout: 10000 });
 }, 20000);
+
+it("applies a disjoint new head when scrolling back to the top", async () => {
+  await mount();
+  root.scrollTop = 2500;
+  fireEvent.scroll(root);
+  const incoming = rows.slice(0, 50).map((row, index) => ({
+    ...row,
+    id: `incoming-${index}`,
+    content: `最新の投稿 ${index}`,
+    sort_key: String(1900000000000000 - index * 1000000),
+  }));
+  rows = [...incoming, ...rows];
+  act(() => fixture.live());
+  await screen.findByRole("button", { name: "新しい投稿を見る（50件）" }, { timeout: 10000 });
+  expect(screen.queryByText("最新の投稿 0")).toBeNull();
+  root.scrollTop = 0;
+  fireEvent.scroll(root);
+  await screen.findByText("最新の投稿 0", {}, { timeout: 10000 });
+  expect(screen.queryByRole("button", { name: /新しい投稿を見る/ })).toBeNull();
+}, 20000);
