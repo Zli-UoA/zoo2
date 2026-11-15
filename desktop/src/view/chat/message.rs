@@ -641,11 +641,15 @@ impl WorkspaceView {
                 &t,
                 move |window, cx| open(&(), window, cx),
             ));
-            if pane_prefix != "thread" {
-                // A thread has one level; only the channel timeline offers this action.
+            if pane_prefix != "thread" || reply_count.is_some_and(|count| count > 0) {
+                // Keep existing nested conversations reachable until their batch completes.
                 let view = cx.entity().clone();
                 // スレッドの返信の行では、返信の ID ではなく親 (スレッドのルート) を開く。
-                let root = message.parent_id.clone().unwrap_or_else(|| msg_id.clone());
+                let root = if reply_count.is_some_and(|count| count > 0) {
+                    msg_id.clone()
+                } else {
+                    message.parent_id.clone().unwrap_or_else(|| msg_id.clone())
+                };
                 let (focus, focused) = toolbar_focus("reply", cx);
                 buttons.push(toolbar_button(
                     format!("{pane_prefix}-btn-reply-{msg_id}"),

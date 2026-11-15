@@ -1,10 +1,12 @@
 //! Uses the migrated PostgreSQL test database. No Electric server is needed.
+#[path = "support/thread_db.rs"]
+mod thread_db;
 use axum::{
     Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
+use backend::{db::init_db, routes::create_router, state::AppState};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -45,8 +47,8 @@ async fn ok(
 #[tokio::test]
 async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
     let mut db = init_db(&config.database_url).await?;
     toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
         .exec(&mut db)
@@ -204,5 +206,142 @@ async fn participation_is_not_read_permission_and_leaves_survive_reopen() -> any
             .0,
         StatusCode::NOT_FOUND
     );
+    fixture.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn rollout_http_keeps_legacy_threads_readable_and_isolates_phases() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let fixture = thread_db::ThreadDb::new().await?;
+    let mut db = init_db(&fixture.config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), fixture.config.clone()));
+    let author = uuid::Uuid::new_v4().to_string();
+    let reader = uuid::Uuid::new_v4().to_string();
+    let channel = uuid::Uuid::new_v4().to_string();
+    let child = uuid::Uuid::new_v4().to_string();
+    let nested = uuid::Uuid::new_v4().to_string();
+    for user in [&author, &reader] {
+        ok(
+            &app,
+            user,
+            "POST",
+            "/api/users",
+            json!({"id":user,"user_name":user,"display_name":user}),
+        )
+        .await?;
+    }
+    ok(
+        &app,
+        &author,
+        "POST",
+        "/api/channels",
+        json!({"id":channel,"channel_name":channel,"is_private":false}),
+    )
+    .await?;
+    ok(
+        &app,
+        &reader,
+        "POST",
+        &format!("/api/channels/{channel}/join"),
+        json!({}),
+    )
+    .await?;
+    let root = ok(
+        &app,
+        &author,
+        "POST",
+        "/api/home",
+        json!({"channel_id":channel,"content":"Root"}),
+    )
+    .await?["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (id, parent) in [(&child, Some(&root)), (&nested, Some(&child))] {
+        ok(
+            &app,
+            &author,
+            "POST",
+            "/api/messages",
+            json!({"id":id,"channel_id":channel,"parent_id":parent,"content":"Rollout"}),
+        )
+        .await?;
+    }
+    let path = format!("/api/threads/{child}");
+    for phase in ["collecting", "normalizing"] {
+        toasty::sql::statement("UPDATE thread_rollout SET phase=$1")
+            .bind(phase)
+            .exec(&mut db)
+            .await?;
+        let index = ok(&app, &reader, "GET", "/api/threads", Value::Null).await?;
+        assert!(
+            index["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["id"] == root)
+        );
+        assert_eq!(
+            ok(&app, &reader, "GET", &path, Value::Null).await?["data"]["id"],
+            child
+        );
+        ok(&app, &reader, "POST", &format!("{path}/join"), json!({})).await?;
+        ok(&app, &reader, "POST", &format!("{path}/leave"), json!({})).await?;
+    }
+    toasty::sql::statement("SELECT migrate_thread_batch(1)")
+        .exec(&mut db)
+        .await?;
+    let migrated = ok(&app, &reader, "GET", &path, Value::Null).await?;
+    assert_eq!(migrated["data"]["id"], root);
+    assert_eq!(migrated["data"]["membership"], "left");
+    toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
+        .exec(&mut db)
+        .await?;
+    assert!(
+        ok(&app, &reader, "GET", "/api/threads", Value::Null).await?["items"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    ok(&app, &reader, "POST", &format!("{path}/join"), json!({})).await?;
+    assert_eq!(
+        ok(&app, &reader, "GET", &path, Value::Null).await?["data"]["membership"],
+        "joined"
+    );
+
+    // A target after the first 500 replies must still be in the Home response.
+    toasty::sql::statement("INSERT INTO messages(id,user_id,channel_id,content,parent_id,created_at) SELECT md5($1||n::text),$2,$3,'history',$1,'2020-01-01'::timestamp+n*interval '1 second' FROM generate_series(1,501) n")
+        .bind(root.as_str()).bind(author.as_str()).bind(channel.as_str()).exec(&mut db).await?;
+    let page = ok(
+        &app,
+        &reader,
+        "GET",
+        &format!("/api/home/{nested}/thread"),
+        Value::Null,
+    )
+    .await?;
+    let posts = page.as_array().unwrap();
+    assert_eq!(posts.len(), 500);
+    assert!(posts.iter().any(|v| v["id"] == nested));
+    assert!(posts.iter().any(|v| v["id"] == root));
+
+    // Replying to a surviving child of a deleted root is a clear API 404.
+    toasty::sql::statement("UPDATE messages SET deleted_at=now() WHERE id=$1")
+        .bind(root.as_str())
+        .exec(&mut db)
+        .await?;
+    let (status, _) = call(&app, &author, "POST", "/api/messages", json!({"id":uuid::Uuid::new_v4().to_string(),"channel_id":channel,"parent_id":child,"content":"Reply"})).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(
+        &app,
+        &author,
+        "POST",
+        "/api/home",
+        json!({"in_reply_to":child,"content":"Home reply"}),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    fixture.cleanup().await?;
     Ok(())
 }

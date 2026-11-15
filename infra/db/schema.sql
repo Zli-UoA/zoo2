@@ -1505,6 +1505,7 @@ CREATE TABLE apub_inbox_receipts (
 );
 CREATE TABLE apub_remote_posts (
   id text PRIMARY KEY,
+  quote_uri text,
   actor_id text NOT NULL REFERENCES apub_actors(id),
   content text NOT NULL,
   visibility text NOT NULL CHECK(visibility IN ('public','unlisted','followers')),
@@ -2907,6 +2908,14 @@ CREATE TABLE e2ee_key_backup_versions (
   created_at timestamptz NOT NULL DEFAULT now(),
   -- 消した版も行を残し、番号と公開鍵の再利用の判定に使う。
   deleted_at timestamptz,
+  -- この版のセッションの行の数と、session_data の JSON の大きさ（バイト）の合計。
+  -- e2ee_key_backup_sessions のトリガーが保ち、アップロードの上限の判定に使う（docs/e2ee.md の鍵バックアップの API）。
+  session_count bigint NOT NULL DEFAULT 0,
+  session_bytes bigint NOT NULL DEFAULT 0,
+  -- アップロードの証明（X-Zoo-Backup-Proof）を確かめる、サーバーだけが持つ Curve25519 の秘密鍵
+  -- （パディングなしの base64）。公開鍵だけを版の応答の upload_key で返す。NULL の版（この列より前の版）は、
+  -- 初めて要るときに backend が作る。
+  upload_key text,
   PRIMARY KEY (user_id, version)
 );
 -- 過去の版と同じ公開鍵の拒否（E2EE_KEY_REUSED）に使う。
@@ -2924,10 +2933,46 @@ CREATE TABLE e2ee_key_backup_sessions (
   forwarded_count integer NOT NULL,
   is_verified boolean NOT NULL,
   session_data jsonb NOT NULL,
+  -- アップロードの証明（バックアップ鍵を持つ端末が上げた）付きで書いた行。証明のない要求は、この行を
+  -- 置き換えられない（docs/e2ee.md の鍵バックアップの API の「アップロードの証明」）。
+  proven boolean NOT NULL DEFAULT false,
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, version, channel_id, sender_key, session_id),
   FOREIGN KEY (user_id, version) REFERENCES e2ee_key_backup_versions ON DELETE CASCADE
 );
+
+-- e2ee_key_backup_versions の session_count と session_bytes を、文ごとにまとめて保つ。
+-- アップロードの INSERT ... ON CONFLICT DO UPDATE では、INSERT と UPDATE の両方のトリガーが動く。
+CREATE FUNCTION e2ee_key_backup_session_totals() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    UPDATE e2ee_key_backup_versions v
+    SET session_count = v.session_count + d.n, session_bytes = v.session_bytes + d.bytes
+    FROM (SELECT user_id, version, count(*) AS n, sum(octet_length(session_data::text)) AS bytes
+          FROM new_rows GROUP BY user_id, version) d
+    WHERE v.user_id = d.user_id AND v.version = d.version;
+  ELSIF TG_OP = 'UPDATE' THEN
+    UPDATE e2ee_key_backup_versions v
+    SET session_count = v.session_count + d.n, session_bytes = v.session_bytes + d.bytes
+    FROM (SELECT user_id, version, sum(n) AS n, sum(bytes) AS bytes
+          FROM (SELECT user_id, version, 1 AS n, octet_length(session_data::text) AS bytes FROM new_rows
+                UNION ALL
+                SELECT user_id, version, -1, -octet_length(session_data::text) FROM old_rows) x
+          GROUP BY user_id, version) d
+    WHERE v.user_id = d.user_id AND v.version = d.version AND (d.n <> 0 OR d.bytes <> 0);
+  ELSE
+    UPDATE e2ee_key_backup_versions v
+    SET session_count = v.session_count - d.n, session_bytes = v.session_bytes - d.bytes
+    FROM (SELECT user_id, version, count(*) AS n, sum(octet_length(session_data::text)) AS bytes
+          FROM old_rows GROUP BY user_id, version) d
+    WHERE v.user_id = d.user_id AND v.version = d.version;
+  END IF;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER e2ee_key_backup_sessions_insert_totals AFTER INSERT ON e2ee_key_backup_sessions REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION e2ee_key_backup_session_totals();
+CREATE TRIGGER e2ee_key_backup_sessions_update_totals AFTER UPDATE ON e2ee_key_backup_sessions REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION e2ee_key_backup_session_totals();
+CREATE TRIGGER e2ee_key_backup_sessions_delete_totals AFTER DELETE ON e2ee_key_backup_sessions REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION e2ee_key_backup_session_totals();
 
 -- Keep message visibility on the small inbox, rather than replicating every
 -- undeleted message ID into Electric's notification dependency Shape.
@@ -3453,7 +3498,8 @@ ALTER TABLE home_posts ADD COLUMN reply_target_id text;
 -- Rollout is explicit: deploy readers/writers before normalizing historical data.
 CREATE TABLE thread_rollout (
   id boolean PRIMARY KEY DEFAULT true CHECK(id),
-  phase text NOT NULL DEFAULT 'collecting' CHECK(phase IN ('collecting','normalizing','ready'))
+  phase text NOT NULL DEFAULT 'collecting' CHECK(phase IN ('collecting','normalizing','ready')),
+  migration_after text
 );
 INSERT INTO thread_rollout(id) VALUES(true);
 CREATE TABLE thread_migration_completed (
@@ -3485,7 +3531,12 @@ BEGIN
   IF root_id IS NULL OR root_id=NEW.id OR NOT EXISTS (
     SELECT 1 FROM messages WHERE id=root_id AND channel_id=NEW.channel_id AND (deleted_at IS NULL OR current_setting('zoo.thread_migration',true)='on')
   ) THEN RAISE EXCEPTION 'Invalid thread parent' USING ERRCODE='23514'; END IF;
-  NEW.reply_target_id:=COALESCE(NEW.reply_target_id,NEW.parent_id);
+  -- The encrypted payload authenticates parent_id; never silently rewrite it.
+  IF NEW.ciphertext IS NOT NULL AND (root_id IS DISTINCT FROM NEW.parent_id OR
+      (TG_OP='UPDATE' AND NEW.parent_id IS DISTINCT FROM OLD.parent_id)) THEN
+    RAISE EXCEPTION 'Encrypted thread parent cannot be normalized' USING ERRCODE='23514';
+  END IF;
+  NEW.reply_target_id:=COALESCE(NEW.reply_target_id,CASE WHEN TG_OP='UPDATE' AND current_setting('zoo.thread_migration',true)='on' THEN OLD.parent_id ELSE NEW.parent_id END);
   NEW.parent_id:=root_id;
   -- All membership changes and archival serialize on this root before reply triggers run.
   PERFORM 1 FROM messages WHERE id=root_id FOR NO KEY UPDATE;
@@ -3612,21 +3663,37 @@ $$;
 
 -- One invocation is one short transaction. Never lock all messages to migrate.
 CREATE FUNCTION migrate_thread_batch(batch_size integer DEFAULT 1) RETURNS integer LANGUAGE plpgsql AS $$
-DECLARE root record; changed integer:=0; targets text[]; target text;
+DECLARE root record; changed integer:=0; targets text[]; target text; after_id text; wrapped boolean:=false;
 BEGIN
   IF (SELECT phase FROM thread_rollout WHERE id)<>'normalizing' THEN
     RAISE EXCEPTION 'Start thread normalization after deploying compatible clients and backend';
   END IF;
+  -- Serialize batch cursors, then lock roots in the same order as live writes.
+  SELECT migration_after INTO after_id FROM thread_rollout WHERE id FOR UPDATE;
   PERFORM set_config('zoo.thread_migration','on',true);
-  FOR root IN SELECT m.id FROM messages m
-    WHERE m.parent_id IS NULL AND (m.thread_activity_at IS NOT NULL OR EXISTS(SELECT 1 FROM messages child WHERE child.parent_id=m.id))
-      AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=m.id)
-    ORDER BY m.id LIMIT greatest(1,least(batch_size,100)) FOR NO KEY UPDATE SKIP LOCKED
   LOOP
+    EXIT WHEN changed>=greatest(1,least(batch_size,100));
+    SELECT m.id INTO root FROM messages m
+      WHERE m.id>COALESCE(after_id,'') AND m.parent_id IS NULL
+        AND (m.thread_activity_at IS NOT NULL OR EXISTS(SELECT 1 FROM messages child WHERE child.parent_id=m.id))
+        AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=m.id)
+      ORDER BY m.id LIMIT 1 FOR NO KEY UPDATE;
+    IF NOT FOUND THEN
+      -- A subsequent sweep catches roots created behind the cursor during rollout.
+      UPDATE thread_rollout SET migration_after=NULL WHERE id;
+      IF changed=0 AND after_id IS NOT NULL AND NOT wrapped THEN
+        after_id:=NULL; wrapped:=true; CONTINUE;
+      END IF;
+      EXIT;
+    END IF;
     WITH RECURSIVE descendants AS (
       SELECT id FROM messages WHERE id=root.id
       UNION ALL SELECT child.id FROM messages child JOIN descendants d ON child.parent_id=d.id
     ) SELECT array_agg(id) INTO targets FROM descendants;
+    IF EXISTS(SELECT 1 FROM messages WHERE id=ANY(targets) AND ciphertext IS NOT NULL
+        AND parent_id IS NOT NULL AND parent_id<>root.id) THEN
+      RAISE EXCEPTION 'Encrypted nested replies require a separate migration';
+    END IF;
     -- Preserve every user's explicit root decision; merge nested membership only
     -- when the root has no decision yet. A nested leave takes precedence.
     INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at)
@@ -3646,6 +3713,8 @@ BEGIN
     -- Rebuild only the migrated conversation, not the whole message table.
     FOREACH target IN ARRAY targets LOOP PERFORM refresh_message_display(target); END LOOP;
     INSERT INTO thread_migration_completed(thread_id) VALUES(root.id) ON CONFLICT DO NOTHING;
+    after_id:=root.id;
+    UPDATE thread_rollout SET migration_after=after_id WHERE id;
     changed:=changed+1;
   END LOOP;
   PERFORM set_config('zoo.thread_migration','off',true);

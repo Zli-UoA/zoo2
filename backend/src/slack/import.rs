@@ -164,6 +164,15 @@ pub(crate) async fn load_job(
     tx: &mut toasty::Transaction<'_>,
     id: &str,
 ) -> Result<Value, AppError> {
+    load_job_for(tx, id, "").await
+}
+
+/// `viewer` は画面に出す人。同じ名前のチャンネルのうち、メンバーでない非公開チャンネルは ID を返さない。
+pub(crate) async fn load_job_for(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+    viewer: &str,
+) -> Result<Value, AppError> {
     let job = query(
         tx,
         &format!("SELECT {JOB_JSON} FROM slack_import_jobs j WHERE j.id=$1"),
@@ -173,16 +182,20 @@ pub(crate) async fn load_job(
     .into_iter()
     .next()
     .ok_or_else(|| AppError::NotFound("Slack import not found".into()))?;
-    annotate(tx, job).await
+    annotate(tx, job, viewer).await
 }
 
 /// 取り込みに使えるエクスポートなら、チャンネルの一覧に今の Zoo 側の状態を足す
-async fn annotate(tx: &mut toasty::Transaction<'_>, mut job: Value) -> Result<Value, AppError> {
+async fn annotate(
+    tx: &mut toasty::Transaction<'_>,
+    mut job: Value,
+    viewer: &str,
+) -> Result<Value, AppError> {
     if job["status"] != "ready" || !job["source_id"].is_null() {
         return Ok(job);
     }
     let team = job["team_id"].as_str().unwrap_or_default().to_string();
-    let channels = annotate_channels(tx, &team, &job["analysis"]["channels"]).await?;
+    let channels = annotate_channels(tx, &team, viewer, &job["analysis"]["channels"]).await?;
     job["analysis"]["channels"] = Value::Array(channels);
     Ok(job)
 }
@@ -216,6 +229,7 @@ fn hashed_name(name: &str) -> String {
 pub(crate) async fn annotate_channels(
     tx: &mut toasty::Transaction<'_>,
     team: &str,
+    viewer: &str,
     channels: &Value,
 ) -> Result<Vec<Value>, AppError> {
     if !channels.is_array() {
@@ -231,10 +245,12 @@ pub(crate) async fn annotate_channels(
          'deleted_channel',(SELECT c.channel_name FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
           WHERE s.team_id=$1 AND s.slack_channel_id=e.c->>'slack_channel_id' AND c.deleted_at IS NOT NULL),\
          'same_name_channel',(SELECT jsonb_build_object('id',c.id,'name',c.channel_name,'is_private',c.is_private) \
-          FROM channels c WHERE c.channel_name=e.c->>'name' AND c.deleted_at IS NULL AND NOT c.is_dm),\
+          FROM channels c WHERE c.channel_name=e.c->>'name' AND c.deleted_at IS NULL AND NOT c.is_dm \
+          AND NOT c.encrypted \
+          AND (NOT c.is_private OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=$3))),\
          'name_taken',EXISTS(SELECT 1 FROM channels c WHERE c.channel_name=e.c->>'name')))::text \
          FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY e(c,n) ORDER BY e.n",
-        &[team, &channels.to_string()],
+        &[team, &channels.to_string(), viewer],
     )
     .await?;
     // `slack-` を付けた候補も、すでに使われていれば、ハッシュを付けた名前にする (画面の初期値のまま開始して 409 にならないように)
@@ -303,7 +319,7 @@ async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, 
     .await?;
     let mut jobs = Vec::with_capacity(rows.len());
     for job in rows {
-        jobs.push(annotate(&mut tx, job).await?);
+        jobs.push(annotate(&mut tx, job, &user.id).await?);
     }
     tx.commit().await?;
     Ok(Json(json!({ "imports": jobs })))
@@ -317,7 +333,7 @@ async fn show(
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     require_admin(&mut tx, &s, &user).await?;
-    let job = load_job(&mut tx, &id).await?;
+    let job = load_job_for(&mut tx, &id, &user.id).await?;
     tx.commit().await?;
     Ok(Json(job))
 }

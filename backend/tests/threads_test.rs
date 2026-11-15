@@ -1,3 +1,5 @@
+#[path = "support/thread_db.rs"]
+mod thread_db;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -5,15 +7,15 @@ use axum::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
+use backend::{db::init_db, routes::create_router, state::AppState};
 
 #[tokio::test]
 async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
 
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
     let mut db = init_db(&config.database_url).await?;
     toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
         .exec(&mut db)
@@ -216,5 +218,6 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
     assert!(reply_found.is_some(), "Reply 1 should still exist");
     assert_eq!(reply_found.unwrap()["parent_id"], root_message_id);
 
+    fixture.cleanup().await?;
     Ok(())
 }

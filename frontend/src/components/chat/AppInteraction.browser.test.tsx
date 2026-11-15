@@ -75,7 +75,7 @@ describe("App interaction regressions", () => {
         kind: "ephemeral",
         app_id: "app",
         name: "App",
-        channel_id: "channel-general",
+        channel_id: "00000000-0000-4000-8000-000000000001",
         document: { blocks: [{ type: "text", text: "private reply" }] },
       },
     ]);

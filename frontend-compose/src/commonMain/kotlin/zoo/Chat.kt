@@ -550,7 +550,9 @@ internal fun MessageList(
                             initialEditingText = editingText.takeIf { editingId == row.text("id") },
                             canReact = canReact,
                             callbacks = callbacks?.invoke(row),
-                            canOpenThread = parent == null,
+                            canOpenThread = parent == null ||
+                                (row.nested("display_data").text("reply_count").toIntOrNull() ?: 0) > 0 ||
+                                all.any { it.text("parent_id") == row.text("id") && !it.present("deleted_at") },
                             groupEnd =
                                 messages.getOrNull(index + 1)?.let { !groupedWith(row, it) } ?: true,
                         )

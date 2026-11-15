@@ -31,7 +31,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -50,13 +52,13 @@ jobs:
         id: rust-toolchain
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
       - name: Restore Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -66,7 +68,7 @@ jobs:
       # cargo install は毎回ソースからビルドして数分かかるので、版ごとにバイナリーをキャッシュする。
       - name: Restore cargo tools
         id: cargo-tools
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cargo-tools
           key: cargo-tools-${{ runner.os }}-${{ runner.arch }}-wasm-bindgen-cli-0.2.129-tauri-cli-2.11.4
@@ -77,7 +79,10 @@ jobs:
           trunk_bin="$HOME/.local/trunk/bin"
           mkdir -p "$trunk_bin"
           echo "$trunk_bin" >> "$GITHUB_PATH"
-          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C "$trunk_bin"
+          # チェックサムを確かめてから展開する。
+          curl -fsSL -o "$RUNNER_TEMP/trunk.tar.gz" https://github.com/trunk-rs/trunk/releases/download/v0.21.14/trunk-x86_64-unknown-linux-gnu.tar.gz
+          echo "f2b4680cd239693a646a2795e4633c625328d7b2a044fbe749fa3a2fe9e7036b  $RUNNER_TEMP/trunk.tar.gz" | sha256sum -c -
+          tar -xz -C "$trunk_bin" -f "$RUNNER_TEMP/trunk.tar.gz"
           echo "$HOME/.cargo-tools/bin" >> "$GITHUB_PATH"
           if [ "${{ steps.cargo-tools.outputs.cache-hit }}" != "true" ]; then
             cargo install --locked --root "$HOME/.cargo-tools" wasm-bindgen-cli --version 0.2.129
@@ -104,7 +109,7 @@ jobs:
         working-directory: ./desktop-tauri/src-tauri
         run: cargo tauri build --bundles deb,appimage -- --locked
       - name: Upload bundles
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: zoo2-desktop-tauri-linux
           path: |
@@ -119,18 +124,20 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Read Rust toolchain
         id: rust-toolchain
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: clippy
           targets: wasm32-unknown-unknown,aarch64-apple-darwin,x86_64-apple-darwin
       - name: Restore Cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           # キャッシュの保存は main だけにする。PR ごとに数百 MB ずつ保存すると、容量の上限（10GB）を超えて、main のキャッシュも追い出される。
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -140,7 +147,7 @@ jobs:
       # cargo install は毎回ソースからビルドして数分かかるので、版ごとにバイナリーをキャッシュする。
       - name: Restore cargo tools
         id: cargo-tools
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cargo-tools
           key: cargo-tools-${{ runner.os }}-${{ runner.arch }}-wasm-bindgen-cli-0.2.129-tauri-cli-2.11.4
@@ -181,7 +188,7 @@ jobs:
             /usr/libexec/PlistBuddy -c "Print :$key" zoo2.app/Contents/Info.plist
           done
       - name: Upload bundles
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: zoo2-desktop-tauri-macos
           path: desktop-tauri/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg

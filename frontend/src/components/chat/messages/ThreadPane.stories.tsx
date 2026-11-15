@@ -294,3 +294,22 @@ export const ReopenArchived: Story = {
     await expect(canvas.getByText("送信すると再Openして参加します。")).toBeVisible();
   }),
 };
+
+export const LegacyNestedReply: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    replies: [
+      {
+        ...replies[0]!,
+        display_data: { emojis: {}, attachments: [], reactions: [], reply_count: 2 },
+      },
+      replies[1]!,
+    ],
+    onOpenThread: fn(),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: /2.*返信/ }));
+    await expect(args.onOpenThread).toHaveBeenCalledWith("reply-1");
+  }),
+};

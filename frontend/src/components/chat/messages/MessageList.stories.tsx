@@ -44,7 +44,10 @@ function feedMessage(id: string): FeedMessage {
 }
 
 const channelMessages = storyMessages
-  .filter((message) => message.channel_id === "channel-general" && message.parent_id === null)
+  .filter(
+    (message) =>
+      message.channel_id === "00000000-0000-4000-8000-000000000001" && message.parent_id === null,
+  )
   .map((message) => feedMessage(message.id));
 
 const longMessages: FeedMessage[] = [
@@ -136,7 +139,7 @@ export const Error: Story = {
 
 export const UnreadSeparator: Story = {
   args: {
-    channelId: "channel-general",
+    channelId: "00000000-0000-4000-8000-000000000001",
   },
   parameters: {
     msw: {

@@ -1,4 +1,6 @@
 //! Requires the migrated PostgreSQL test database.
+#[path = "support/thread_db.rs"]
+mod thread_db;
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -55,8 +57,8 @@ async fn request(
 async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
     let mut db = init_db(&config.database_url).await?;
     toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
         .exec(&mut db)
@@ -321,6 +323,7 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
     )
     .await?;
     assert!(reopened["data"]["thread_archive_at"].is_null());
+    fixture.cleanup().await?;
     Ok(())
 }
 
@@ -328,8 +331,8 @@ async fn nested_threads_archive_and_home_replies_reopen_them() -> anyhow::Result
 async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
     let mut db = init_db(&config.database_url).await?;
     toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
         .exec(&mut db)
@@ -395,6 +398,7 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
             .collect();
         assert_eq!(order, roots, "imported: {imported}");
     }
+    fixture.cleanup().await?;
     Ok(())
 }
 
@@ -402,8 +406,8 @@ async fn historical_import_does_not_reorder_existing_threads() -> anyhow::Result
 async fn thread_index_limits_membership_history_and_page_size() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
-    let mut config = Config::from_env();
-    config.dev_auth_enabled = true;
+    let fixture = thread_db::ThreadDb::new().await?;
+    let config = fixture.config.clone();
     let mut db = init_db(&config.database_url).await?;
     toasty::sql::statement("UPDATE thread_rollout SET phase='ready'")
         .exec(&mut db)
@@ -496,6 +500,7 @@ async fn thread_index_limits_membership_history_and_page_size() -> anyhow::Resul
         .0,
         StatusCode::BAD_REQUEST
     );
+    fixture.cleanup().await?;
     Ok(())
 }
 

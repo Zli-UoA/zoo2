@@ -20,11 +20,18 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -41,6 +48,8 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import io.ktor.http.encodeURLParameter
+import io.ktor.http.encodeURLPathPart
 import zoo.ApiException
 import zoo.Config
 import zoo.Platform
@@ -56,15 +65,26 @@ interface E2eeApi {
     /** `POST /api/e2ee/keys/upload`。鍵が空なら、今の数を読むだけになる。 */
     suspend fun uploadKeys(deviceId: String, oneTimeKeys: JsonObject, fallbackKeys: JsonObject): JsonObject
 
-    /** `POST /api/e2ee/keys/query` の `device_keys`。 */
-    suspend fun queryKeys(userIds: List<String>): JsonObject
+    /** `POST /api/e2ee/keys/query` の `device_keys` と `signatures`。 */
+    suspend fun queryKeys(userIds: List<String>): KeysQuery
 
     /** `POST /api/e2ee/to_device/ack`。 */
     suspend fun ackToDevice(deviceId: String, ids: List<String>)
 
     /** `DELETE /api/e2ee/devices/{device_id}`。 */
     suspend fun deleteDevice(deviceId: String)
+
+    /** `GET /api/e2ee/devices`（自分の、削除されていない端末の一覧）の `device_id`。 */
+    suspend fun listDeviceIds(): List<String>
 }
+
+/** `POST /api/e2ee/keys/query` の応答のうち、to-device の処理に使うもの。 */
+class KeysQuery(
+    /** ユーザーごと、端末ごとの端末鍵。 */
+    val deviceKeys: JsonObject,
+    /** `e2ee_key_signatures` の行（自己署名鍵による端末鍵への署名を探す。受信時の検証の手順 4）。 */
+    val signatures: JsonArray = JsonArray(emptyList()),
+)
 
 /** E2EE の API が期限までに答えなかった。通信の失敗と同じく、間隔をあけて試し直す。 */
 class E2eeRequestTimeoutException(cause: Throwable) : java.io.IOException("E2EE の API が時間内に答えませんでした", cause)
@@ -80,10 +100,82 @@ suspend fun <T> withRequestTimeout(timeout: Duration, block: suspend () -> T): T
         throw E2eeRequestTimeoutException(failure)
     }
 
-/** [ZooApi] で呼ぶ [E2eeApi]。E2EE の API には 30 秒の期限を付ける（TUI と同じ）。 */
-class ZooE2eeApi(private val api: ZooApi) : E2eeApi {
-    private suspend fun call(path: String, method: String, body: JsonElement? = null): JsonElement =
-        withRequestTimeout(TIMEOUT) { api.request(path, method, body) }
+/** [ZooApi] で呼ぶ [E2eeApi] と [E2eeSetupApi]。E2EE の API には 30 秒の期限を付ける（TUI と同じ）。 */
+class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi {
+    private suspend fun call(
+        path: String,
+        method: String,
+        body: JsonElement? = null,
+        reauth: String? = null,
+    ): JsonElement =
+        withRequestTimeout(TIMEOUT) {
+            api.request(path, method, body, reauth?.let { mapOf(REAUTH_HEADER to it) }.orEmpty())
+        }
+
+    private fun obj(response: JsonElement): JsonObject = response as? JsonObject ?: JsonObject(emptyMap())
+
+    override suspend fun secretStorage() = obj(call("/api/e2ee/secret_storage", "GET"))
+
+    override suspend fun createSecretStorageKey(body: JsonObject, reauth: String?): Long? =
+        (data(call("/api/e2ee/secret_storage/keys", "POST", body, reauth))["secrets_revision"] as? JsonPrimitive)
+            ?.longOrNull
+
+    override suspend fun addKeySlot(slot: JsonObject, reauth: String?) {
+        // サーバーは `label: null` を受け付けないので、ないときは送らない。
+        val body = if (slot["label"] == JsonNull) JsonObject(slot - "label") else slot
+        call("/api/e2ee/secret_storage/slots", "POST", body, reauth)
+    }
+
+    override suspend fun markKeySlotUsed(slotId: String) {
+        try {
+            call("/api/e2ee/secret_storage/slots/${slotId.encodeURLPathPart()}/used", "POST", JsonObject(emptyMap()))
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (_: Exception) {
+            // 表示用の記録なので、失敗しても解錠は止めない。
+        }
+    }
+
+    override suspend fun queryOwnKeys(userId: String) =
+        obj(call("/api/e2ee/keys/query", "POST", buildJsonObject { put("user_ids", JsonArray(listOf(JsonPrimitive(userId)))) }))
+
+    override suspend fun backupVersions() = obj(call("/api/e2ee/key_backup/versions", "GET"))
+
+    override suspend fun currentBackupVersion(): JsonObject? =
+        try {
+            obj(call("/api/e2ee/key_backup/versions/current", "GET"))
+        } catch (failure: ApiException) {
+            if (failure.status == 404) null else throw failure
+        }
+
+    override suspend fun uploadCrossSigningKeys(body: JsonObject, reauth: String?) {
+        call("/api/e2ee/cross_signing/keys", "POST", body, reauth)
+    }
+
+    override suspend fun uploadSignatures(signatures: JsonArray) {
+        call("/api/e2ee/cross_signing/signatures", "POST", buildJsonObject { put("signatures", signatures) })
+    }
+
+    override suspend fun createBackupVersion(body: JsonObject, reauth: String?) {
+        call("/api/e2ee/key_backup/versions", "POST", body, reauth)
+    }
+
+    override suspend fun backupKeys(version: String, after: String?): JsonObject =
+        obj(
+            call(
+                "/api/e2ee/key_backup/keys?version=${version.encodeURLParameter()}" +
+                    (after?.let { "&after=${it.encodeURLParameter()}" } ?: ""),
+                "GET",
+            )
+        )
+
+    override suspend fun uploadBackupKeys(version: String, secretsRevision: Long, body: JsonObject) {
+        call(
+            "/api/e2ee/key_backup/keys?version=${version.encodeURLParameter()}&secrets_revision=$secretsRevision",
+            "POST",
+            body,
+        )
+    }
 
     /** 書き込みの応答は `{"data": ...}` の封筒に入っている。 */
     private fun data(response: JsonElement): JsonObject =
@@ -104,15 +196,17 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi {
             )
         )
 
-    override suspend fun queryKeys(userIds: List<String>): JsonObject {
+    override suspend fun queryKeys(userIds: List<String>): KeysQuery {
         // サーバーの上限は 100 人。TUI と同じく 50 人ずつにする。
         val merged = mutableMapOf<String, JsonElement>()
+        val signatures = mutableListOf<JsonElement>()
         for (chunk in userIds.chunked(50)) {
             val response =
                 call("/api/e2ee/keys/query", "POST", buildJsonObject { put("user_ids", JsonArray(chunk.map(::JsonPrimitive))) })
             ((response as? JsonObject)?.get("device_keys") as? JsonObject)?.let(merged::putAll)
+            ((response as? JsonObject)?.get("signatures") as? JsonArray)?.let(signatures::addAll)
         }
-        return JsonObject(merged)
+        return KeysQuery(JsonObject(merged), JsonArray(signatures))
     }
 
     override suspend fun ackToDevice(deviceId: String, ids: List<String>) {
@@ -132,8 +226,18 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi {
         call("/api/e2ee/devices/$deviceId", "DELETE")
     }
 
-    private companion object {
-        val TIMEOUT = 30.seconds
+    override suspend fun listDeviceIds(): List<String> {
+        val devices = call("/api/e2ee/devices", "GET") as? JsonArray ?: error("端末の一覧を読めません")
+        return devices.map { device ->
+            ((device as? JsonObject)?.get("device_id") as? JsonPrimitive)?.contentOrNull ?: error("端末の一覧を読めません")
+        }
+    }
+
+    companion object {
+        private val TIMEOUT = 30.seconds
+
+        /** 直前の再認証の ID トークンを入れるヘッダー。 */
+        const val REAUTH_HEADER = "X-Zoo-Reauth"
     }
 }
 
@@ -208,9 +312,13 @@ fun toDeviceRow(row: JsonObject): ToDeviceRow {
  *    （ワンタイム鍵を使われた）ら、3 をもう一度行う。
  *
  * 失敗は表示せず、暗号ストアを閉じてから、間隔をのばしながら（5 秒から 5 分まで）初めからやり直す
- * （開き直すので、保存より先に進んだメモリーの状態を使い続けない）。登録の 409 `E2EE_DEVICE_EXISTS`、
- * 鍵のアップロードや ack の 404 は、端末が別の端末から削除された印なので、暗号ストアを作り直して
- * 新しい端末として登録する。
+ * （開き直すので、保存より先に進んだメモリーの状態を使い続けない）。
+ *
+ * 端末が別の端末から削除されたとき（docs/e2ee.md の「端末が削除されていたとき」）：登録の 409 `E2EE_DEVICE_EXISTS`、
+ * 鍵のアップロードや ack の 404 `E2EE_DEVICE_NOT_FOUND` を候補にし、`GET /api/e2ee/devices` の一覧に今の端末が
+ * ないと確かめられたときだけ、暗号ストアを消さずに端末だけを作り直して（[CryptoStore.replaceDevice]）、新しい
+ * 端末として登録する。`code` のない 404 / 409、一覧に今の端末がある、一覧を取れないときは、ふつうの失敗として
+ * 試し直す。
  */
 class E2eeDeviceManager(
     private val api: E2eeApi,
@@ -228,6 +336,11 @@ class E2eeDeviceManager(
     private val settleTimeout: Duration = 5.seconds,
     /** 失敗の通知（ログに出す）。秘密は入らない。 */
     private val onError: (Throwable) -> Unit = {},
+    /**
+     * 初回設定と解錠の API（#360）。渡すと、端末の登録のあとに起動時の確認（署名し直し）と鍵バックアップへの
+     * 送信を行い、to-device で Megolm セッションの鍵を受け取るたびに鍵バックアップへ送る（解錠済みの端末だけ）。
+     */
+    setupApi: E2eeSetupApi? = null,
 ) {
     private val background = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
     private val control = Mutex()
@@ -236,6 +349,16 @@ class E2eeDeviceManager(
     /** 処理に使っている暗号ストア。処理のコルーチン（[loop]）だけが触り、止まるときに閉じる。 */
     @Volatile
     private var store: CryptoStore? = null
+
+    /** 登録を終えて使える暗号ストア（初回設定と解錠の画面と共有する）。止まるときに `null` に戻す。 */
+    private val ready = MutableStateFlow<CryptoStore?>(null)
+
+    /** 登録を終えた暗号ストアがあるか（画面の表示に使う）。 */
+    val readyStore: StateFlow<CryptoStore?> get() = ready
+
+    /** 初回設定と解錠（#360）。[readyStore] を待って使う。 */
+    val setup: E2eeSetup? =
+        setupApi?.let { api -> E2eeSetup(api, userId, store = { ready.filterNotNull().first() }, io = io) }
 
     /** ログアウトのために開いた暗号ストア。 */
     @Volatile
@@ -292,6 +415,7 @@ class E2eeDeviceManager(
             } catch (failure: Exception) {
                 onError(failure)
             } finally {
+                ready.value = null
                 store?.close()
                 store = null
             }
@@ -322,39 +446,101 @@ class E2eeDeviceManager(
     private suspend fun runOnce(connected: () -> Unit) {
         retryPendingDeletions()
         var store = open()
-        val counts =
+        var replaced = false
+        while (true) {
             try {
-                ensureRegistered(store)
-            } catch (failure: ApiException) {
-                if (!isDeviceGone(failure)) throw failure
-                // 別の端末から消された。暗号ストアを作り直して、新しい端末として登録する。
-                withContext(io) { store.destroy() }
-                this.store = null
-                store = open()
-                ensureRegistered(store)
+                serve(store, connected)
+            } catch (candidate: DeviceGoneCandidate) {
+                ready.value = null
+                // 作り直した端末がすぐにまた候補になったら、間隔をあけて試し直す（同じ回で作り直し続けない）。
+                if (replaced) throw candidate.failure
+                // 誤った応答や一時的な失敗で暗号ストアの記録を失わないよう、一覧で確かめ直す。
+                if (!confirmDeviceGone(candidate.deviceId)) throw candidate.failure
+                replaced = true
+                // 別の端末から消された。暗号ストアは消さずに端末だけを作り直し、新しい端末として登録する。
+                // 作り直したストアは、取り消されても閉じられるよう、その場で覚える。
+                store = withContext(io) { store.replaceDevice().also { this@E2eeDeviceManager.store = it } }
+                currentDeviceId = store.deviceId
             }
-        replenish(store, counts)
-        val deviceId = store.deviceId
-        // ack を送れた行は、Shape から消えるまで処理し直さない（ack より先に次の一覧が届くため）。
-        val acknowledged = mutableSetOf<String>()
-        toDevice(deviceId).collect { rows ->
-            connected()
-            acknowledged.retainAll(rows.mapTo(mutableSetOf()) { it.id })
-            val waiting = rows.filter { it.id !in acknowledged }
-            if (waiting.isNotEmpty()) acknowledged += process(store, deviceId, waiting)
         }
-        error("to-device の Shape が終わりました")
+    }
+
+    /** 登録と補充をして、to-device を処理する。終わらない（失敗で抜ける）。 */
+    private suspend fun serve(store: CryptoStore, connected: () -> Unit) {
+        val counts = ensureRegistered(store)
+        replenish(store, counts)
+        ready.value = store
+        val deviceId = store.deviceId
+        // 起動時の確認と鍵バックアップへの送信は、to-device の処理を待たせないよう別の worker で行う。
+        // coroutineScope は、失敗や取り消しで抜ける前に worker の終了を待つので、worker が使っている暗号ストアを
+        // 先に閉じない（閉じるのは runLoop の finally）。
+        coroutineScope {
+            val backups = Channel<Unit>(Channel.CONFLATED)
+            launch { backupWorker(backups) }
+            // 解錠済みの端末は、署名を確かめて鍵バックアップへ送る。
+            backups.trySend(Unit)
+            // ack を送れた行は、Shape から消えるまで処理し直さない（ack より先に次の一覧が届くため）。
+            val acknowledged = mutableSetOf<String>()
+            toDevice(deviceId).collect { rows ->
+                connected()
+                acknowledged.retainAll(rows.mapTo(mutableSetOf()) { it.id })
+                val waiting = rows.filter { it.id !in acknowledged }
+                if (waiting.isNotEmpty()) {
+                    val result = process(store, deviceId, waiting)
+                    acknowledged += result.processed
+                    // 受け取った Megolm セッションの鍵を、鍵バックアップに送る（解錠済みの端末だけ。E2eeSetup が確かめる）。
+                    if (result.roomKeys > 0) backups.trySend(Unit)
+                }
+            }
+            error("to-device の Shape が終わりました")
+        }
+    }
+
+    /**
+     * 起動時の確認（署名し直し）と鍵バックアップへの送信（#360）。最初の 1 回は起動時の確認を行い、そのあとは
+     * 鍵を受け取るたびに送る。通信の失敗などの例外は、間隔をのばしながら（[firstRetryDelay] から [maxRetryDelay]
+     * まで）試し直す。解錠し直しが要る 409 や、使えない今の版は結果（[BackupUploadResult]）として返るので、
+     * 試し直さず、次の鍵の受信か解錠を待つ。
+     */
+    private suspend fun backupWorker(triggers: ReceiveChannel<Unit>) {
+        val setup = setup ?: return
+        var startupChecked = false
+        for (trigger in triggers) {
+            var backoff = firstRetryDelay
+            while (true) {
+                try {
+                    if (startupChecked) setup.uploadKeyBackup()
+                    else {
+                        setup.runStartupCheck()
+                        startupChecked = true
+                    }
+                    break
+                } catch (failure: CancellationException) {
+                    throw failure
+                } catch (failure: Exception) {
+                    onError(failure)
+                    delay(backoff)
+                    backoff = minOf(backoff * 2, maxRetryDelay)
+                }
+            }
+        }
     }
 
     private suspend fun ensureRegistered(store: CryptoStore): KeyCounts {
         val deviceId = store.deviceId
         // 補充に要る今の数を、空のアップロードで読む。
-        if (store.isRegistered) return KeyCounts(api.uploadKeys(deviceId, EMPTY, EMPTY))
+        if (store.isRegistered) return KeyCounts(uploadKeys(deviceId, EMPTY, EMPTY))
         val body = JsonObject(withContext(io) { store.registrationRequest() } + ("display_name" to JsonPrimitive(displayName)))
         val request = background.async { api.registerDevice(body) }
         request.invokeOnCompletion { cause -> if (cause == null) confirmedRegistrations += deviceId }
         registration = request
-        val response = request.await()
+        val response =
+            try {
+                request.await()
+            } catch (failure: ApiException) {
+                if (isDeletedDeviceId(failure)) throw DeviceGoneCandidate(deviceId, failure)
+                throw failure
+            }
         withContext(io) { store.markRegistered() }
         return KeyCounts(response)
     }
@@ -362,22 +548,51 @@ class E2eeDeviceManager(
     private suspend fun replenish(store: CryptoStore, counts: KeyCounts) {
         val upload =
             withContext(io) { store.prepareKeyUpload(counts.oneTimeKeys, counts.hasUnusedFallbackKey) } ?: return
-        api.uploadKeys(store.deviceId, upload.oneTimeKeys, upload.fallbackKeys)
+        uploadKeys(store.deviceId, upload.oneTimeKeys, upload.fallbackKeys)
         withContext(io) { store.markKeysPublished() }
     }
 
     /** 行を処理して ack を送り、ack を送れた ID を返す。 */
-    private suspend fun process(store: CryptoStore, deviceId: String, rows: List<ToDeviceRow>): List<String> {
+    private suspend fun process(store: CryptoStore, deviceId: String, rows: List<ToDeviceRow>): ToDeviceResult {
         val senders = rows.map { it.senderUserId }.distinct().sorted()
-        val deviceKeys = api.queryKeys(senders)
-        val result = withContext(io) { store.processToDevice(rows, deviceKeys) }
+        val keys = api.queryKeys(senders)
+        val result = withContext(io) { store.processToDevice(rows, keys.deviceKeys, keys.signatures) }
         if (result.processed.isNotEmpty()) {
-            api.ackToDevice(deviceId, result.processed)
+            deviceCall(deviceId) { api.ackToDevice(deviceId, result.processed) }
             withContext(io) { store.acknowledged(result.processed) }
         }
-        if (result.newOlmSessions > 0) replenish(store, KeyCounts(api.uploadKeys(deviceId, EMPTY, EMPTY)))
-        return result.processed
+        if (result.newOlmSessions > 0) replenish(store, KeyCounts(uploadKeys(deviceId, EMPTY, EMPTY)))
+        return result
     }
+
+    private suspend fun uploadKeys(deviceId: String, oneTimeKeys: JsonObject, fallbackKeys: JsonObject): JsonObject =
+        deviceCall(deviceId) { api.uploadKeys(deviceId, oneTimeKeys, fallbackKeys) }
+
+    /** 端末を指す API（鍵のアップロード、ack）を呼ぶ。404 `E2EE_DEVICE_NOT_FOUND` は、消された端末の候補にする。 */
+    private suspend fun <T> deviceCall(deviceId: String, block: suspend () -> T): T =
+        try {
+            block()
+        } catch (failure: ApiException) {
+            if (isDeviceNotFound(failure)) throw DeviceGoneCandidate(deviceId, failure)
+            throw failure
+        }
+
+    /**
+     * 候補になった端末が、本当に消されたかを `GET /api/e2ee/devices` で確かめる。一覧を取れて、そこに端末が
+     * ないときだけ真。一覧を取れなければ偽（ふつうの失敗として試し直し、あとでまた候補から確かめる）。
+     */
+    private suspend fun confirmDeviceGone(deviceId: String): Boolean =
+        try {
+            deviceId !in api.listDeviceIds()
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Exception) {
+            onError(failure)
+            false
+        }
+
+    /** 端末が消された候補（[isDeletedDeviceId]、[isDeviceNotFound]）。`failure` は API の失敗。 */
+    private class DeviceGoneCandidate(val deviceId: String, val failure: ApiException) : Exception(failure)
 
     /**
      * ログアウトの確認の前に呼ぶ。to-device の処理を止め（処理中のものは終わらせる）、暗号ストアを
@@ -484,6 +699,7 @@ class E2eeDeviceManager(
      * 端末を消す。失敗したら削除待ちに残す。404 は、登録できたと分かっている端末なら、消すものが
      * ないので済んだものとする。登録できたか分からない端末（[PendingDeviceDeletion.unconfirmed]）は、
      * あとから届いた登録で端末ができうるので残し、続けて [MAX_NOT_FOUND] 回 404 なら済んだものとする。
+     * 404 以外の失敗では、回数を 0 に戻す（React の `deleteOrKeep`、TUI の `delete_device_or_remember` と同じ）。
      */
     private suspend fun deleteDeviceOrRemember(target: PendingDeviceDeletion) {
         remember(target)
@@ -509,6 +725,8 @@ class E2eeDeviceManager(
                     if (current.notFound + 1 >= MAX_NOT_FOUND) forget(current)
                     else pendingWrite { pending.update(current.copy(notFound = current.notFound + 1)) }
                 }
+            // 404 が続いていない。数え直す（間に失敗をはさんだ 404 は、続けて受けたものとしない）。
+            current.notFound != 0 -> pendingWrite { pending.update(current.copy(notFound = 0)) }
             else -> Unit
         }
     }
@@ -556,10 +774,12 @@ class E2eeDeviceManager(
         /** 登録できたか分からない端末を、404 が続いたら消えたものとする回数（次のログインごとに 1 回）。 */
         const val MAX_NOT_FOUND = 3
 
-        /** 登録の 409 `E2EE_DEVICE_EXISTS`（削除済みの device_id）と、鍵のアップロードや ack の 404。 */
-        fun isDeviceGone(failure: ApiException): Boolean =
-            failure.status == 404 ||
-                (failure.status == 409 &&
-                    (failure.body?.get("code") as? JsonPrimitive)?.contentOrNull == "E2EE_DEVICE_EXISTS")
+        /** 登録の 409 `E2EE_DEVICE_EXISTS`（削除済みの device_id）。`code` のない 409 は含めない。 */
+        fun isDeletedDeviceId(failure: ApiException): Boolean =
+            failure.status == 409 && failure.code() == "E2EE_DEVICE_EXISTS"
+
+        /** 鍵のアップロードや ack の 404 `E2EE_DEVICE_NOT_FOUND`。`code` のない 404 は含めない。 */
+        fun isDeviceNotFound(failure: ApiException): Boolean =
+            failure.status == 404 && failure.code() == "E2EE_DEVICE_NOT_FOUND"
     }
 }

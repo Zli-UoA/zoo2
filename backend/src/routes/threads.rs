@@ -166,9 +166,12 @@ async fn thread_operation(
     // lock before resolving again, so a concurrent leave cannot land on a child
     // whose membership has already been merged.
     if operation != "read" {
-        crate::apps::query(&mut tx,
-            "SELECT '{}'::text FROM messages WHERE id=thread_root($1) AND (SELECT phase FROM thread_rollout WHERE id)<>'collecting' FOR NO KEY UPDATE",
-            &[&id]).await?;
+        crate::apps::query(
+            &mut tx,
+            "SELECT '{}'::text FROM messages WHERE id=thread_root($1) FOR NO KEY UPDATE",
+            &[&id],
+        )
+        .await?;
     }
     let root = crate::apps::one(&mut tx,
         "SELECT json_build_object('id',r.id,'channel_id',r.channel_id)::text FROM messages requested JOIN messages r ON r.id=CASE WHEN (SELECT phase FROM thread_rollout WHERE id)='collecting' OR ((SELECT phase FROM thread_rollout WHERE id)='normalizing' AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=thread_root(requested.id))) THEN requested.id ELSE thread_root(requested.id) END WHERE requested.id=$1 AND requested.deleted_at IS NULL AND r.deleted_at IS NULL",

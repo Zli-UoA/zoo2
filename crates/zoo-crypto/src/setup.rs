@@ -17,7 +17,9 @@ use vodozemac::{Ed25519PublicKey, base64_encode};
 use zeroize::Zeroizing;
 
 use crate::CryptoError;
-use crate::backup::{BackupDecryptionKey, BackupVersionInfo, verify_backup_version};
+use crate::backup::{
+    BackupDecryptionKey, BackupVersionInfo, LegacyAuthData, next_backup_version, verify_version,
+};
 use crate::cross_signing::{
     CrossSigningKeyPair, CrossSigningKeys, KeySignature, KeyUsage, SignatureCheck, SignatureUpload,
     check_signature, verify_cross_signing_key,
@@ -310,11 +312,11 @@ pub fn plan_resume(
     let mut plan = ResumePlan::default();
     match server.current_version() {
         None => {
-            plan.backup_version = Some(
-                secrets
-                    .backup_key
-                    .create_version_request(&keys.master, None)?,
-            );
+            plan.backup_version = Some(secrets.backup_key.create_version_request(
+                &keys.master,
+                None,
+                next_backup_version(&server.backup_versions),
+            )?);
         }
         Some(current) => {
             // 版が 1 つ以上あれば、初回設定は済んでいる。クロス署名鍵がそろっていないのは
@@ -334,11 +336,14 @@ pub fn plan_resume(
                 "algorithm": current.algorithm,
                 "auth_data": current.auth_data,
             });
-            match verify_backup_version(
+            // 古い形式（版の番号を署名していない）の版 2 以降も、ここでは通す。解錠できないと、失効を
+            // やり直して新しい形式の版を作ることもできないため。アップロードは BackupUploadState が止める。
+            match verify_version(
                 &version,
                 &user_id,
                 &keys.master.public_key(),
                 &secrets.backup_key,
+                LegacyAuthData::Any,
             ) {
                 Ok(verified) => plan.current_backup_version = Some(verified.version),
                 Err(CryptoError::BackupKeyMismatch) => {
@@ -410,11 +415,11 @@ pub fn plan_reset(
     Ok(ResumePlan {
         cross_signing: Some(body),
         device_signature: Some(keys.self_signing.sign_device(device_keys)?),
-        backup_version: Some(
-            secrets
-                .backup_key
-                .create_version_request(&keys.master, current.as_deref())?,
-        ),
+        backup_version: Some(secrets.backup_key.create_version_request(
+            &keys.master,
+            current.as_deref(),
+            next_backup_version(&server.backup_versions),
+        )?),
         current_backup_version: None,
     })
 }
@@ -612,6 +617,31 @@ impl SetupSession {
     /// 初回設定で作ったスロット（保存の再試行で、サーバーにないものを足す）。
     pub fn pending_slots(&self) -> &[KeySlot] {
         &self.slots
+    }
+
+    /// 初回設定にパスキー（PRF）のスロットを足す（Web の `setupSession.ts` の `addPasskeySlot` と同じ）。
+    /// 同じパスキー（credential ID）のスロットがあれば置き換える。解錠で取り出した鍵には足さない
+    /// （[`CryptoError::InvalidSecretStorage`]。解錠のあとのスロットの追加は `POST /api/e2ee/secret_storage/slots`）。
+    pub fn add_passkey_slot(
+        &mut self,
+        credential_id: &str,
+        prf_salt: &[u8; 32],
+        prf_output: &[u8; 32],
+        label: Option<String>,
+    ) -> Result<(), CryptoError> {
+        if !self.created {
+            return Err(CryptoError::InvalidSecretStorage(
+                "初回設定を始めていません".into(),
+            ));
+        }
+        let user_id = self.secrets.cross_signing.master.user_id().to_owned();
+        let mut slot =
+            KeySlot::new_passkey(&user_id, &self.ssss, credential_id, prf_salt, prf_output)?;
+        slot.label = label;
+        self.slots
+            .retain(|existing| existing.credential_id.as_deref() != Some(credential_id));
+        self.slots.push(slot);
+        Ok(())
     }
 
     /// 初回設定の `POST /api/e2ee/secret_storage/keys` の本文（`expected_default_key_id: null`）。

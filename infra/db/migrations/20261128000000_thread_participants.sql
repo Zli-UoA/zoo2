@@ -15,7 +15,8 @@ ALTER TABLE home_posts ADD COLUMN reply_target_id text;
 -- Rollout is explicit: deploy readers/writers before normalizing historical data.
 CREATE TABLE thread_rollout (
   id boolean PRIMARY KEY DEFAULT true CHECK(id),
-  phase text NOT NULL DEFAULT 'collecting' CHECK(phase IN ('collecting','normalizing','ready'))
+  phase text NOT NULL DEFAULT 'collecting' CHECK(phase IN ('collecting','normalizing','ready')),
+  migration_after text
 );
 INSERT INTO thread_rollout(id) VALUES(true);
 CREATE TABLE thread_migration_completed (
@@ -47,7 +48,12 @@ BEGIN
   IF root_id IS NULL OR root_id=NEW.id OR NOT EXISTS (
     SELECT 1 FROM messages WHERE id=root_id AND channel_id=NEW.channel_id AND (deleted_at IS NULL OR current_setting('zoo.thread_migration',true)='on')
   ) THEN RAISE EXCEPTION 'Invalid thread parent' USING ERRCODE='23514'; END IF;
-  NEW.reply_target_id:=COALESCE(NEW.reply_target_id,NEW.parent_id);
+  -- The encrypted payload authenticates parent_id; never silently rewrite it.
+  IF NEW.ciphertext IS NOT NULL AND (root_id IS DISTINCT FROM NEW.parent_id OR
+      (TG_OP='UPDATE' AND NEW.parent_id IS DISTINCT FROM OLD.parent_id)) THEN
+    RAISE EXCEPTION 'Encrypted thread parent cannot be normalized' USING ERRCODE='23514';
+  END IF;
+  NEW.reply_target_id:=COALESCE(NEW.reply_target_id,CASE WHEN TG_OP='UPDATE' AND current_setting('zoo.thread_migration',true)='on' THEN OLD.parent_id ELSE NEW.parent_id END);
   NEW.parent_id:=root_id;
   -- All membership changes and archival serialize on this root before reply triggers run.
   PERFORM 1 FROM messages WHERE id=root_id FOR NO KEY UPDATE;
@@ -174,21 +180,37 @@ $$;
 
 -- One invocation is one short transaction. Never lock all messages to migrate.
 CREATE FUNCTION migrate_thread_batch(batch_size integer DEFAULT 1) RETURNS integer LANGUAGE plpgsql AS $$
-DECLARE root record; changed integer:=0; targets text[]; target text;
+DECLARE root record; changed integer:=0; targets text[]; target text; after_id text; wrapped boolean:=false;
 BEGIN
   IF (SELECT phase FROM thread_rollout WHERE id)<>'normalizing' THEN
     RAISE EXCEPTION 'Start thread normalization after deploying compatible clients and backend';
   END IF;
+  -- Serialize batch cursors, then lock roots in the same order as live writes.
+  SELECT migration_after INTO after_id FROM thread_rollout WHERE id FOR UPDATE;
   PERFORM set_config('zoo.thread_migration','on',true);
-  FOR root IN SELECT m.id FROM messages m
-    WHERE m.parent_id IS NULL AND (m.thread_activity_at IS NOT NULL OR EXISTS(SELECT 1 FROM messages child WHERE child.parent_id=m.id))
-      AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=m.id)
-    ORDER BY m.id LIMIT greatest(1,least(batch_size,100)) FOR NO KEY UPDATE SKIP LOCKED
   LOOP
+    EXIT WHEN changed>=greatest(1,least(batch_size,100));
+    SELECT m.id INTO root FROM messages m
+      WHERE m.id>COALESCE(after_id,'') AND m.parent_id IS NULL
+        AND (m.thread_activity_at IS NOT NULL OR EXISTS(SELECT 1 FROM messages child WHERE child.parent_id=m.id))
+        AND NOT EXISTS(SELECT 1 FROM thread_migration_completed done WHERE done.thread_id=m.id)
+      ORDER BY m.id LIMIT 1 FOR NO KEY UPDATE;
+    IF NOT FOUND THEN
+      -- A subsequent sweep catches roots created behind the cursor during rollout.
+      UPDATE thread_rollout SET migration_after=NULL WHERE id;
+      IF changed=0 AND after_id IS NOT NULL AND NOT wrapped THEN
+        after_id:=NULL; wrapped:=true; CONTINUE;
+      END IF;
+      EXIT;
+    END IF;
     WITH RECURSIVE descendants AS (
       SELECT id FROM messages WHERE id=root.id
       UNION ALL SELECT child.id FROM messages child JOIN descendants d ON child.parent_id=d.id
     ) SELECT array_agg(id) INTO targets FROM descendants;
+    IF EXISTS(SELECT 1 FROM messages WHERE id=ANY(targets) AND ciphertext IS NOT NULL
+        AND parent_id IS NOT NULL AND parent_id<>root.id) THEN
+      RAISE EXCEPTION 'Encrypted nested replies require a separate migration';
+    END IF;
     -- Preserve every user's explicit root decision; merge nested membership only
     -- when the root has no decision yet. A nested leave takes precedence.
     INSERT INTO thread_participants(thread_id,user_id,joined_at,left_at)
@@ -208,6 +230,8 @@ BEGIN
     -- Rebuild only the migrated conversation, not the whole message table.
     FOREACH target IN ARRAY targets LOOP PERFORM refresh_message_display(target); END LOOP;
     INSERT INTO thread_migration_completed(thread_id) VALUES(root.id) ON CONFLICT DO NOTHING;
+    after_id:=root.id;
+    UPDATE thread_rollout SET migration_after=after_id WHERE id;
     changed:=changed+1;
   END LOOP;
   PERFORM set_config('zoo.thread_migration','off',true);

@@ -9,6 +9,8 @@ async fn staged_backfill_preserves_leaves_links_and_archive_state() -> anyhow::R
         tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(connection);
     let tx = client.transaction().await?;
+    tx.batch_execute("SELECT pg_advisory_xact_lock(56220261128)")
+        .await?;
     let schema = format!("thread_rollout_{}", uuid::Uuid::new_v4().simple());
     tx.batch_execute(&format!(
         "CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema};"
@@ -157,6 +159,67 @@ async fn staged_backfill_preserves_leaves_links_and_archive_state() -> anyhow::R
         .get::<_, String>(0),
         "deleted-root"
     );
+    tx.rollback().await?;
+    drop(client);
+    driver.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_first_preserves_original_parent_and_encrypted_parents_never_change()
+-> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    let config = Config::from_env();
+    let (mut client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    let driver = tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    tx.batch_execute("SELECT pg_advisory_xact_lock(56220261128)")
+        .await?;
+    let schema = format!("thread_guards_{}", uuid::Uuid::new_v4().simple());
+    tx.batch_execute(&format!(
+        "CREATE SCHEMA {schema}; SET LOCAL search_path TO {schema};"
+    ))
+    .await?;
+    tx.batch_execute(include_str!("../../infra/db/schema.sql"))
+        .await?;
+    tx.batch_execute("INSERT INTO users(id,user_name,display_name) VALUES('a','a','A');
+        INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES('plain','plain','a',false),('encrypted','encrypted','a',true);
+        UPDATE channels SET encrypted=true WHERE id='encrypted';
+        INSERT INTO home_posts(id,user_id,channel_id,content) VALUES('root','a','plain','Root');
+        INSERT INTO home_posts(id,user_id,channel_id,content,parent_id) VALUES('child','a','plain','Child','root');
+        INSERT INTO home_posts(id,user_id,channel_id,content,parent_id) VALUES('nested','a','plain','Nested','child');
+        INSERT INTO messages(id,user_id,channel_id,content,ciphertext,epoch) VALUES('e-root','a','encrypted','','{}',1);
+        INSERT INTO messages(id,user_id,channel_id,content,ciphertext,epoch,parent_id) VALUES('e-child','a','encrypted','','{}',1,'e-root');
+        INSERT INTO messages(id,user_id,channel_id,content,ciphertext,epoch,parent_id) VALUES('e-nested','a','encrypted','','{}',1,'e-child');
+        UPDATE thread_rollout SET phase='normalizing';
+        SELECT migrate_home_thread_batch(100);").await?;
+    let original = tx
+        .query_one(
+            "SELECT parent_id,reply_target_id FROM messages WHERE id='nested'",
+            &[],
+        )
+        .await?;
+    assert_eq!(original.get::<_, String>(0), "root");
+    assert_eq!(original.get::<_, String>(1), "child");
+    for sql in [
+        "SELECT migrate_thread_batch(100)",
+        "INSERT INTO messages(id,user_id,channel_id,content,ciphertext,epoch,parent_id) VALUES('e-new','a','encrypted','','{}',1,'e-child')",
+        "UPDATE messages SET parent_id='e-root' WHERE id='e-nested'",
+    ] {
+        tx.batch_execute("SAVEPOINT guard").await?;
+        let error = tx.batch_execute(sql).await.unwrap_err();
+        assert!(error.as_db_error().unwrap().message().contains("Encrypted"));
+        tx.batch_execute("ROLLBACK TO SAVEPOINT guard").await?;
+    }
+    assert_eq!(
+        tx.query_one("SELECT parent_id FROM messages WHERE id='e-nested'", &[])
+            .await?
+            .get::<_, String>(0),
+        "e-child"
+    );
+    // Ordinary encrypted root replies remain supported.
+    tx.batch_execute("INSERT INTO messages(id,user_id,channel_id,content,ciphertext,epoch,parent_id) VALUES('e-direct','a','encrypted','','{}',1,'e-root')").await?;
     tx.rollback().await?;
     drop(client);
     driver.await??;

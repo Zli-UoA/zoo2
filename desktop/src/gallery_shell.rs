@@ -5,7 +5,8 @@
 //! 本番の画面からは使わない。
 
 use gpui::{
-    App, Application, Bounds, Entity, KeyBinding, WindowBounds, WindowOptions, prelude::*, px, size,
+    App, Application, Bounds, Entity, Focusable, KeyBinding, Window, WindowBounds, WindowOptions,
+    prelude::*, px, size,
 };
 use serde_json::{Value, json};
 use zoo2_client_core::{
@@ -32,6 +33,20 @@ pub enum Scenario {
     Welcome,
     /// チャンネルを開き、右にスレッドペインも開いた状態。
     Thread,
+    /// 入力欄にフォーカスがあり、メンション補完が出た状態。
+    Composer,
+    /// スレッドを開き、返信の入力欄に文字を入れた状態。
+    ThreadReply,
+    /// チャンネル作成ダイアログ。
+    CreateChannel,
+    /// 絵文字ピッカー。
+    Emoji,
+    /// メッセージ削除の確認。
+    Delete,
+    /// ⌘K のチャンネルスイッチャー。
+    Switcher,
+    /// メッセージ検索。
+    Search,
 }
 
 impl Scenario {
@@ -41,6 +56,13 @@ impl Scenario {
             Some("loading") => Some(Self::Loading),
             Some("welcome") => Some(Self::Welcome),
             Some("thread") => Some(Self::Thread),
+            Some("composer") => Some(Self::Composer),
+            Some("thread-reply") => Some(Self::ThreadReply),
+            Some("create-channel") => Some(Self::CreateChannel),
+            Some("emoji") => Some(Self::Emoji),
+            Some("delete") => Some(Self::Delete),
+            Some("switcher") => Some(Self::Switcher),
+            Some("search") => Some(Self::Search),
             Some(_) => None,
         }
     }
@@ -421,16 +443,92 @@ pub fn fixture_state(scenario: Scenario, mode: ThemeMode) -> AppState {
     );
     state.unread.insert("channel-design".to_string());
     state.unread.insert("channel-dm".to_string());
-    if matches!(scenario, Scenario::Workspace | Scenario::Thread) {
+    if !matches!(scenario, Scenario::Loading | Scenario::Welcome) {
         state.current_channel = Some("channel-general".to_string());
     }
-    if scenario == Scenario::Thread {
+    if matches!(scenario, Scenario::Thread | Scenario::ThreadReply) {
         state.thread = Some(crate::app::ThreadState {
             root_id: "message-deploy".to_string(),
             selected: None,
         });
     }
     state
+}
+
+/// 開いた直後の画面を、シナリオの状態にする (ダイアログを開く、入力欄に文字を入れるなど)。
+/// 入力欄の中身とフォーカスはビューが持つので、`AppState` だけでは作れない。
+fn prepare_scenario(
+    scenario: Scenario,
+    view: &Entity<WorkspaceView>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let state = view.read(cx).state.clone();
+    let composer = view.read(cx).composer_input.clone();
+    match scenario {
+        Scenario::Composer => {
+            let text = "レビューをお願いします @a";
+            composer.update(cx, |i, cx| {
+                i.set_text_and_cursor(text.to_string(), text.len(), cx)
+            });
+            // WorkspaceView の observe (補完中の ↑↓ と Tab の横取り) を動かすため通知する。
+            state.update(cx, |s, cx| {
+                s.on_composer_changed(text.to_string());
+                s.update_mention_autocomplete(text, text.len());
+                cx.notify();
+            });
+            window.focus(&composer.focus_handle(cx));
+        }
+        Scenario::ThreadReply => {
+            let text = "ありがとうございます。確認して返信します。";
+            state.update(cx, |s, _| {
+                s.focus_thread_reply("message-deploy".to_string());
+            });
+            composer.update(cx, |i, cx| {
+                i.set_text_and_cursor(text.to_string(), text.len(), cx)
+            });
+            state.update(cx, |s, _| s.on_composer_changed(text.to_string()));
+            window.focus(&composer.focus_handle(cx));
+        }
+        Scenario::CreateChannel => {
+            let name = view.read(cx).create_channel_name_input.clone();
+            let desc = view.read(cx).create_channel_desc_input.clone();
+            state.update(cx, |s, _| {
+                s.open_create_channel_modal();
+                if let Some(m) = &mut s.create_channel_modal {
+                    m.channel_name = "design-review".to_string();
+                    m.description = "デザインレビューの連絡用".to_string();
+                }
+            });
+            name.update(cx, |i, cx| i.set_text("design-review", cx));
+            desc.update(cx, |i, cx| i.set_text("デザインレビューの連絡用", cx));
+            window.focus(&name.focus_handle(cx));
+        }
+        Scenario::Emoji => {
+            state.update(cx, |s, _| {
+                s.open_emoji_picker();
+                s.emoji_picker_selected = 11;
+            });
+        }
+        Scenario::Delete => {
+            state.update(cx, |s, _| s.request_delete("message-own".to_string()));
+        }
+        Scenario::Switcher => {
+            let input = view.read(cx).quick_switcher_input.clone();
+            state.update(cx, |s, _| s.open_quick_switcher());
+            window.focus(&input.focus_handle(cx));
+        }
+        Scenario::Search => {
+            let input = view.read(cx).message_search_input.clone();
+            state.update(cx, |s, _| {
+                s.open_message_search();
+                s.update_message_search_query("リリース".to_string());
+            });
+            input.update(cx, |i, cx| i.set_text("リリース", cx));
+            window.focus(&input.focus_handle(cx));
+        }
+        _ => {}
+    }
 }
 
 /// 確認画面のウィンドウを開く。モードは `tokens::initial_mode()` (`--theme`) に従う。
@@ -462,7 +560,11 @@ pub fn run(scenario: Scenario) {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     ..Default::default()
                 },
-                move |_, cx| cx.new(|cx| WorkspaceView::new(state, cx)),
+                move |window, cx| {
+                    let view = cx.new(|cx| WorkspaceView::new(state, cx));
+                    prepare_scenario(scenario, &view, window, cx);
+                    view
+                },
             );
             if let Err(err) = opened {
                 eprintln!("ウィンドウを開けませんでした: {err:#}");
@@ -482,6 +584,12 @@ mod tests {
         assert_eq!(Scenario::parse(None), Some(Scenario::Workspace));
         assert_eq!(Scenario::parse(Some("loading")), Some(Scenario::Loading));
         assert_eq!(Scenario::parse(Some("welcome")), Some(Scenario::Welcome));
+        assert_eq!(Scenario::parse(Some("composer")), Some(Scenario::Composer));
+        assert_eq!(
+            Scenario::parse(Some("create-channel")),
+            Some(Scenario::CreateChannel)
+        );
+        assert_eq!(Scenario::parse(Some("switcher")), Some(Scenario::Switcher));
         assert_eq!(Scenario::parse(Some("x")), None);
     }
 

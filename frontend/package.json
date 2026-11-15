@@ -21,6 +21,7 @@
     "test:e2e:mfm": "playwright test --config playwright.mfm.config.ts",
     "test:e2e:layout": "playwright test --config playwright.layout.config.ts",
     "test:e2e:oidc": "playwright test --config playwright.oidc.config.ts",
+    "test:e2e:e2ee": "playwright test --config playwright.e2ee.config.ts",
     "test:e2e:i18n": "playwright test --config playwright.i18n.config.ts",
     "test:e2e:csp": "playwright test --config playwright.csp.config.ts",
     "test:e2e:offline": "playwright test --config playwright.offline.config.ts",

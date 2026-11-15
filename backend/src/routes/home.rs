@@ -142,6 +142,14 @@ async fn create(
     }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    if let Some(parent_id) = parent.as_ref().and_then(|p| p["id"].as_str()) {
+        let deleted_root = query(&mut tx,
+            "SELECT '{}'::text FROM home_posts WHERE id=home_thread_root($1) AND deleted_at IS NOT NULL AND (SELECT phase FROM thread_rollout WHERE id)<>'collecting' UNION ALL SELECT '{}'::text FROM messages WHERE id=home_thread_root($1) AND deleted_at IS NOT NULL AND (SELECT phase FROM thread_rollout WHERE id)<>'collecting'",
+            &[parent_id]).await?;
+        if !deleted_root.is_empty() {
+            return Err(AppError::NotFound("Thread root has been deleted".into()));
+        }
+    }
     // A nonmember can still reply to a public channel post in Home. Do not
     // silently join the channel or bypass channel posting permissions.
     if parent.is_some()
@@ -338,7 +346,7 @@ async fn list(
     ), base AS (
       SELECT p.id,p.user_id,u.user_name,CASE WHEN p.apub THEN COALESCE(profile.display_name,u.display_name) ELSE u.display_name END AS display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,COALESCE(m.parent_id,p.parent_id) AS parent_id,NULL::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible,NULL::jsonb AS avatar,u.avatar_url,p.media
       FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id LEFT JOIN messages m ON m.id=p.id
-      WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 OR p.reply_user_id=$1)
+      WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 OR p.reply_user_id=$1 OR (p.id=$6 AND p.apub AND p.visibility='unlisted'))
         AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
         AND (NOT $4::boolean OR p.user_id=$1 OR p.reply_user_id=$1 OR EXISTS(SELECT 1 FROM channel_user WHERE channel_id=p.channel_id AND user_id=$1))
       UNION ALL
@@ -373,7 +381,7 @@ async fn list(
     ), picked AS (
       SELECT f.extra,f.id,f.entry_id,f.sort_at,CASE WHEN $8::boolean AND (SELECT phase FROM thread_rollout WHERE id)='collecting' THEN COALESCE((SELECT -depth FROM ancestors WHERE id=f.id),1) ELSE 0 END AS tree_order,CASE WHEN $8::boolean THEN (SELECT path FROM descendants WHERE id=f.id) END AS tree_path
       FROM entries f WHERE ($6='' OR f.id=$6 OR $8::boolean AND (f.id IN (SELECT id FROM ancestors) OR f.id IN (SELECT id FROM descendants))) AND ($7='' OR f.user_id=$7) AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2))
-      ORDER BY tree_order,tree_path,f.sort_at DESC,f.entry_id DESC LIMIT $5::integer
+      ORDER BY CASE WHEN $8::boolean AND f.id IN (SELECT id FROM ancestors) THEN 0 ELSE 1 END,tree_order,tree_path,f.sort_at DESC,f.entry_id DESC LIMIT $5::integer
     ), page AS MATERIALIZED (
       SELECT row_to_json(b)::jsonb || CASE WHEN b.remote THEN '{}'::jsonb ELSE jsonb_build_object('emojis',COALESCE((SELECT jsonb_agg(jsonb_build_object('name',':'||e.key||':','url',e.value->>'url','image_id',COALESCE(e.value->>'image_id',''),'width',e.value->'width','height',e.value->'height','local',true)) FROM jsonb_each(message_content_emojis(b.content)) e),'[]'::jsonb)) END || f.extra AS post,f.id,f.entry_id,f.sort_at,f.tree_order,f.tree_path
       FROM picked f JOIN base b ON b.id=f.id
@@ -397,6 +405,7 @@ async fn list(
     ))::text FROM page f ORDER BY f.tree_order,f.tree_path,f.sort_at DESC,f.entry_id DESC"#,
     &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or(""),if page.thread{"true"}else{"false"}]).await?;
 
+    activitypub::quotes::decorate(&mut tx, &mut rows).await?;
     super::home_images::decorate(&mut tx, &mut rows).await?;
     activitypub::channel_reactions::decorate(&mut tx, &mut rows).await?;
     let parents: Vec<Value> = rows

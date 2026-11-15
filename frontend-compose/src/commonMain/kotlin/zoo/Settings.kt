@@ -37,11 +37,19 @@ fun searchUrl(engine: String, query: String): String {
     return io.ktor.http.URLBuilder(url).apply { parameters[key] = query }.buildString()
 }
 
+/**
+ * 設定の「暗号化」タブの中身（E2EE の初回設定と解錠。#360）。暗号の処理と Credential Manager・Custom Tabs は
+ * Android 側にあるので、アプリが渡す。渡さなければタブを出さない。
+ */
+val LocalEncryptionSettings = staticCompositionLocalOf<(@Composable (Session) -> Unit)?> { null }
+
 @Composable
 fun ZooSettings(app: Session, users: List<Row>) {
+    val encryption = LocalEncryptionSettings.current
     val tabs =
-        listOf(
+        listOfNotNull(
             "general" to "settings.general",
+            ("encryption" to "e2ee.tab").takeIf { encryption != null },
             "activitypub" to "ActivityPub",
             "emojis" to "home.customEmojis",
             "apps" to "apps.title",
@@ -145,6 +153,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     "members" -> WorkspaceMembers(app, users)
                     "activitypub" -> ActivityPubSettingsTab(app)
                     "slack" -> SlackLinkPanel(app)
+                    "encryption" -> encryption?.invoke(app) ?: GeneralSettings(app)
                     else -> GeneralSettings(app)
                 }
             }

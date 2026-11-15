@@ -5,6 +5,9 @@ export const components = ['frontend', 'backend', 'migrate'];
 // ワークフローの実行番号を patch に入れる。実行番号は実行ごとに増え、同じ実行の再実行では変わらない。
 export const releaseTag = runNumber => `0.0.${runNumber}`;
 
+// リリースタグの形。Flux が追従するタグと同じ形（^0\.0\.[1-9][0-9]*$）だけを許す。
+export const isReleaseTag = tag => /^0\.0\.[1-9][0-9]*$/.test(tag);
+
 // 昇格で付けるタグを、付ける順に返す。各要素は [イメージ, 付けるタグ, 元のタグ]。
 // latest・preview を先に付け替え、リリースタグは最後に付ける。zoo2-infra は migrate のリリースタグだけを見るので、
 // migrate を最後にして、そのタグが見えた時点でほかの2つにも同じタグが付いているようにする。
@@ -15,6 +18,7 @@ export function promotionAliases(selected, sha, release) {
     [image(component), 'latest', sha],
     ...(component === 'frontend' ? [[image(component), 'preview', `preview-${sha}`]] : []),
   ]);
+  if (release && !isReleaseTag(release)) throw new Error(`Unexpected release tag: ${release}`);
   if (release && components.every(component => selected.includes(component))) {
     const ordered = [...selected].sort((a, b) => Number(a === 'migrate') - Number(b === 'migrate'));
     aliases.push(...ordered.map(component => [image(component), release, sha]));

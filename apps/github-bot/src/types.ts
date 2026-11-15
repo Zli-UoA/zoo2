@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { ZooApp, AppEvent } from "../../../sdk/src/index.ts";
 export type Json = Record<string, any>;
 export type Zoo = Pick<
@@ -66,6 +66,11 @@ export class BotError extends Error {
 }
 export function id(key: string): string {
   const h = createHash("sha256").update(key).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+/** Zoo の外から計算できないメッセージ ID。鍵はこの bot だけが持つので、他の人が先に同じ ID を使えない。 */
+export function keyedId(secret: Buffer, key: string): string {
+  const h = createHmac("sha256", secret).update(`github-bot:${key}`).digest("hex");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 export function repoName(value: string): string {

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {changedComponents, promotionAliases} from './image-plan.mjs';
+import {changedComponents, promotionAliases, isReleaseTag} from './image-plan.mjs';
 import {candidates, referencedDigests, ignoreMissing} from './image-cleanup.mjs';
 const sha = n => n.toString(16).padStart(40, '0');
 const version = (id, tags, age = id) => ({id, name: `sha256:${sha(id)}`, created_at: new Date(Date.now() - age * 86400000).toISOString(), metadata: {container: {tags}}});
@@ -69,6 +69,11 @@ test('promotion tags migrate with the release tag last', () => {
   assert.ok(promotionAliases(['frontend', 'backend', 'migrate'], sha(1), '').every(([, tag]) => tag !== '0.0.5'));
   // matrix の順に関係なく migrate を最後にする。
   assert.deepEqual(promotionAliases(['migrate', 'backend', 'frontend'], sha(1), '0.0.5').at(-1), [image('migrate'), '0.0.5', sha(1)]);
+});
+test('release tags must match the form Flux follows', () => {
+  assert.ok(['0.0.1', '0.0.999999'].every(isReleaseTag));
+  assert.ok(['0.0.0', '0.0.01', '0.1.1', '0.0.1-rc', 'latest', ' 0.0.1'].every(t => !isReleaseTag(t)));
+  assert.throws(() => promotionAliases(['frontend', 'backend', 'migrate'], sha(1), '0.0.0'), /Unexpected release tag/);
 });
 test('untagged grace period', () => {
   assert.deepEqual(candidates([version(1, [], 0.5), version(2, [], 2)], new Map()).map(v => v.id), [2]);

@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createSummalyClient,
   type SummalyClient,
   type LinkPreviewData as Preview,
 } from "../../../lib/summaly";
-import type { AppConfig } from "../../../lib/config";
+import { resolvePublicConfig, type AppConfig } from "../../../lib/config";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { previewUrls, proxyImageUrl } from "./linkPreviews";
 import { acquirePreview } from "./linkPreviewRequests";
@@ -15,33 +15,38 @@ function LinkPreview({
   client,
   cacheKey,
   proxy,
+  active,
+  showFallback,
 }: {
   url: string;
   client: SummalyClient | null;
   cacheKey: string;
   proxy: string;
+  active: boolean;
+  showFallback: boolean;
 }) {
   const [result, setResult] = useState<{ url: string; data: Preview | null } | null>(null);
   const [failedImage, setFailedImage] = useState<string | null>(null);
   const [failedIcon, setFailedIcon] = useState<string | null>(null);
   useEffect(() => {
-    if (!client) return;
-    let active = true;
+    if (!client || !active) return;
+    let subscribed = true;
     const work = acquirePreview(client, `${cacheKey}:${url}`, url);
     void work.request.then((data) => {
-      if (active) setResult({ url, data });
+      if (subscribed) setResult({ url, data });
     });
     return () => {
-      active = false;
+      subscribed = false;
       work.release();
     };
-  }, [url, client, cacheKey]);
+  }, [url, client, cacheKey, active]);
   const { title, description, image, siteName, icon } =
     result?.url === url && result.data
       ? result.data
       : { title: url, description: "", image: null, siteName: new URL(url).hostname, icon: null };
   const src = proxyImageUrl(proxy, image);
   const iconSrc = proxyImageUrl(proxy, icon ?? null);
+  if (!showFallback && !(result?.url === url && result.data)) return null;
   return (
     <a
       href={url}
@@ -83,13 +88,22 @@ function LinkPreview({
     </a>
   );
 }
-function ActiveLinkPreviews({ urls, config }: { urls: string[]; config: AppConfig }) {
+interface PreviewProps {
+  urls: string[];
+  config: AppConfig;
+  active?: boolean;
+  showFallback?: boolean;
+}
+
+function ActiveLinkPreviews({ urls, config, active = true, showFallback = true }: PreviewProps) {
   const [sources, setSources] = useState<PreviewEndpoints | null>(null);
   const client = useMemo(
     () => (sources?.summaly ? createSummalyClient(sources.summaly) : null),
     [sources?.summaly],
   );
-  useEffect(() => subscribePreviewEndpoints(config, setSources), [config]);
+  useEffect(() => {
+    if (active) return subscribePreviewEndpoints(config, setSources);
+  }, [config, active]);
   return urls.map((url) => (
     <LinkPreview
       key={url}
@@ -97,14 +111,68 @@ function ActiveLinkPreviews({ urls, config }: { urls: string[]; config: AppConfi
       client={client}
       cacheKey={sources?.summaly ?? ""}
       proxy={sources?.media ?? ""}
+      active={active}
+      showFallback={showFallback}
     />
   ));
 }
 
-export function LinkPreviews({ content }: { content: string }) {
+/** Home and public profiles keep offscreen rows mounted; only nearby rows fetch. */
+function DeferredLinkPreviews(props: PreviewProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [nearby, setNearby] = useState(false);
+  const [visible, setVisible] = useState(
+    () => typeof document !== "undefined" && document.visibilityState !== "hidden",
+  );
+  useEffect(() => {
+    const update = () => setVisible(document.visibilityState !== "hidden");
+    update();
+    document.addEventListener("visibilitychange", update);
+    if (typeof IntersectionObserver === "undefined") {
+      setNearby(true);
+      return () => document.removeEventListener("visibilitychange", update);
+    }
+    // rootMargin must expand the actual scrolling pane, not only the window.
+    let root = ref.current?.parentElement ?? null;
+    while (root && root !== document.body && root !== document.documentElement) {
+      if (/(auto|scroll|overlay)/.test(getComputedStyle(root).overflowY)) break;
+      root = root.parentElement;
+    }
+    if (root === document.body || root === document.documentElement) root = null;
+    const observer = new IntersectionObserver(
+      ([entry]) => setNearby(entry?.isIntersecting ?? false),
+      { root, rootMargin: "200px 0px" },
+    );
+    if (ref.current) observer.observe(ref.current);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, []);
+  return (
+    <div ref={ref} className="min-h-px">
+      <ActiveLinkPreviews {...props} active={nearby && visible} />
+    </div>
+  );
+}
+
+export function LinkPreviews({
+  content,
+  excludeUrl,
+  defer = false,
+  showFallback = true,
+}: {
+  content: string;
+  excludeUrl?: string;
+  defer?: boolean;
+  showFallback?: boolean;
+}) {
   const collections = useOptionalCollections();
-  const urls = useMemo(() => previewUrls(content), [content]);
-  return collections && urls.length ? (
-    <ActiveLinkPreviews urls={urls} config={collections.config} />
-  ) : null;
+  // The production shell uses the collections singleton without a Provider.
+  // Preview requests only need public endpoints, including on public profiles.
+  const config = useMemo(() => collections?.config ?? resolvePublicConfig(), [collections?.config]);
+  const urls = useMemo(() => previewUrls(content, excludeUrl), [content, excludeUrl]);
+  if (!urls.length) return null;
+  const props = { urls, config, showFallback };
+  return defer ? <DeferredLinkPreviews {...props} /> : <ActiveLinkPreviews {...props} />;
 }

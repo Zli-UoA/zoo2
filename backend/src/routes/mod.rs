@@ -3,6 +3,7 @@ pub mod bubble_chat;
 pub mod calls;
 pub mod channel_webhooks;
 pub mod channels;
+pub mod default_channels;
 pub mod dms;
 pub mod e2ee;
 pub mod e2ee_channels;
@@ -20,6 +21,7 @@ pub mod notifications;
 pub mod push;
 pub mod read_states;
 pub mod response;
+pub mod shape_limit;
 pub mod shapes;
 pub mod telemetry;
 pub mod threads;
@@ -58,6 +60,7 @@ pub fn create_router(state: AppState) -> Router {
         ])
         // dev の `X-Dev-User`, Bearer の `Authorization`, JSON 書き込みの `Content-Type`,
         // E2EE の直前の再認証の `X-Zoo-Reauth`（docs/e2ee.md の「クロス署名」）,
+        // 鍵バックアップのアップロードの証明の `X-Zoo-Backup-Proof`（docs/e2ee.md の鍵バックアップの API）,
         // OpenTelemetry のトレースコンテキスト伝播 (`traceparent`, `tracestate`)
         .allow_headers([
             header::AUTHORIZATION,
@@ -65,6 +68,7 @@ pub fn create_router(state: AppState) -> Router {
             header::ACCEPT,
             HeaderName::from_static("x-dev-user"),
             HeaderName::from_static(e2ee_reauth::REAUTH_HEADER),
+            HeaderName::from_static("x-zoo-backup-proof"),
             HeaderName::from_static("traceparent"),
             HeaderName::from_static("tracestate"),
         ])
@@ -79,6 +83,7 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .merge(health::router())
+        .merge(default_channels::router())
         .merge(home::router())
         .merge(crate::activitypub::router())
         .merge(crate::apps::management::router())

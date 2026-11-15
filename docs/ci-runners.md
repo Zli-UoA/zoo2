@@ -46,12 +46,12 @@ kubecampは1ジョブごとの使い捨てPodです。7台の補充は毎分のC
 - Docker不要: Rustのbuild／lint／単体テスト、frontendのcheck／単体検証、イメージ計画、ラベル付与、イメージ清掃、Flux通知、Storybookのbuild／deploy、automerge gate。
 - イメージのpromote／publishはregistryのmanifestを操作するだけです。常設CLIの `docker buildx imagetools` と `docker login` を使い、daemonを起動するsetup-buildxは実行しません。kubecampのDocker daemonがない実Runnerで、公開manifestのinspect成功を確認しました。実際のタグ更新・発行は別途CIで確認します。
 
-Storybookを含む `browser-test` は、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。Dockerは不要ですが、必要なメモリを持つHosted、またはARC（Runner limit 6GiB）を選びます。テスト内容や失敗条件は維持します。
+frontendの `check` は型チェック中に2GiBのRunnerとの通信が途絶えたため、`large-runs-on` を使います。ローカルでも型チェックの子プロセスの最大RSSは約1.5GiBで、Runner自体のメモリも必要です。Storybookを含む `browser-test` も、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。どちらもDockerは不要ですが、必要なメモリを持つHosted、またはARC（Runner limit 6GiB）を選びます。テスト内容や失敗条件は維持します。
 
 ## kubecamp固定と自動選択
 
 軽量処理は `zli-kubecamp-no-docker` に固定し、selectorを待たずに起動する。全7台がbusyならkubecampで順番待ちし、ARCやHostedへは切り替えない。fork PRはHostedを使う。
 
-固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、frontend check/単体テスト、Storybook deploy、automerge gate。Rust build/lint/単体テストは通常の空き状況選択を残す。Android と Storybook build は GitHub-hosted Ubuntu に固定し、selector に依存しない。Docker処理はDocker用、大容量browser-testは大容量用を使う。
+固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、frontend単体テスト、Storybook deploy、automerge gate。backendの `check` とfrontendの `check`・`browser-test` は大容量用を使い、それ以外のRust build/lint/単体テストは通常の空き状況選択を残す。Android と Storybook build は GitHub-hosted Ubuntu に固定し、selector に依存しない。Docker処理はDocker用を使う。
 
 状態確認の実効性: zoo2 #263のselectorログで `HAS_STATUS_TOKEN: true` と実際のRunner件数取得を確認済み。publicリポジトリへのOrg Secret共有が有効であり、Repository Secret一覧だけでは未設定と判断しない。

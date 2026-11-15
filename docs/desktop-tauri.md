@@ -123,7 +123,7 @@ ShapeEvent ─▶ 1 本のループ
 
 ## 未確定・確認が要るもの
 
-- AuthZ が「Zoo for Desktop」に refresh token を発行するか。`frontend/.env.example` には「offline_access は非対応で、refresh token は発行されません」と書かれている。TUI の `TokenManager` は refresh token がなくても動き、期限が切れたらログインし直しになる。検証の最初に TUI で確かめる。
+- AuthZは`offline_access`に対応している。「Zoo for Desktop」で更新トークンを利用するには、登録済みclientに同scopeを許可し、デバイス認可で要求して本人が同意する。Web用の`VITE_OIDC_SCOPE`とは別に、デスクトップは共通クライアントの`ZOO_OIDC_SCOPE`（既定値は`openid profile offline_access`）を使う。発行・rotation・再起動後の復元は実機で確認する。`TokenManager`は更新トークンがない場合も動き、期限が切れたらログインし直しになる。
 - ループバックの redirect（RFC 8252）を AuthZ が受け付けるか。今回はデバイスコードを使うので依存しないが、要確認として残す。
 
 ## 開発

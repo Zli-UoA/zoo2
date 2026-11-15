@@ -90,8 +90,8 @@ for (const [name, input, expected, hostedExpected] of cases) {
   });
 }
 
-const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["apply", "plan", "validate"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"]};
-const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"]};
+const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["apply", "plan", "validate"], "ci-frontend.yaml": ["unit-test"], "automerge-gate.yaml": ["gate"]};
+const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e", "shared-emoji-projection"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "ci-frontend-e2ee-e2e.yaml": ["e2ee-e2e"], "cd-images.yaml": ["build"], "ci-db-erd.yaml": ["check"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
 const hostedJobs = {"ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"], "ci-tui.yaml": ["desktop"],
   "ci-desktop-tauri.yaml": ["check"],
@@ -132,7 +132,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         continue;
       }
       const docker = (dockerJobs[file] || []).includes(id);
-      const large = (file === 'ci-frontend.yaml' && id === 'browser-test') ||
+      const large = (file === 'ci-frontend.yaml' && ['check', 'browser-test'].includes(id)) ||
         (file === 'ci-backend.yaml' && id === 'check');
       const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);
@@ -154,6 +154,9 @@ test('every workload uses the right output and protects fork PRs', () => {
         assert.ok(block.includes(`needs.runner.outputs.${large ? 'large-runs-on' : docker ? 'docker-runs-on' : 'runs-on'}`), `${file}/${id}: wrong pool`);
         if (docker) {
           assert.ok(block.includes(`docker-runs-on || '"${H}"'`), `${file}/${id}: Docker fallback must be hosted`);
+        }
+        if (large) {
+          assert.ok(block.includes(`large-runs-on || '"zli-k8s"'`), `${file}/${id}: large-job fallback must be ARC`);
         }
       }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));

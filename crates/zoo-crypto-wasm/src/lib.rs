@@ -134,7 +134,13 @@ export interface SignatureUpload {
   signer_key_id: string;
   signature: string;
 }
-export interface TrustRecord { master_key: string; confirmed_usk: string | null; pin_pending: boolean }
+export interface TrustRecord {
+  master_key: string;
+  confirmed_usk: string | null;
+  pin_pending: boolean;
+  /** 記録から置き換えた古いマスター鍵（古い順）。空のときは省く。 */
+  replaced_master_keys?: string[];
+}
 export interface NewTofuPin { target_user_id: string; master_key: string; pin: JsonObject }
 export interface AcceptedMasterKey {
   target_user_id: string;
@@ -207,6 +213,12 @@ export interface Distribution {
   users: Record<string, { state: UserState; excluded_devices: Record<string, DeviceExclusion> }>;
   new_pins: NewTofuPin[];
   warnings: TrustWarning[];
+  /**
+   * 規則 3 で、記録と違う新しいマスター鍵に自分のユーザー署名鍵の署名があったので記録を置き換えた
+   * 相手（自分の別の端末で受け入れた鍵）。「鍵が変わり、別の端末で確認済み」と知らせる。
+   * `evaluate` は常に入れる（以前の型で作ったオブジェクトとの互換のため省略可にしている）。
+   */
+  signed_master_key_changes?: string[];
 }
 export interface SsssKeyDescription { algorithm: string; iv: string; mac: string }
 export interface EncryptedSecret { key_id?: string | null; iv: string; ciphertext: string; mac: string }

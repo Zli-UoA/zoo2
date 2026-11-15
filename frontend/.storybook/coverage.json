@@ -2,6 +2,19 @@
   "$comment": "Required visible states, not a percentage of visual correctness. Composed coverage is explained; controller exclusions are counted separately.",
   "stories": [
     {
+      "file": "src/components/layout/DefaultChannelsSettings.stories.tsx",
+      "states": [
+        "Default",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "SaveError",
+        "Saving",
+        "ChannelBecameUnavailable",
+        "ChannelLimit"
+      ]
+    },
+    {
       "file": "src/components/ui/image-preview.stories.tsx",
       "states": ["Loading", "WithoutMetadata", "InvalidHash", "Loaded"]
     },
@@ -452,6 +465,9 @@
     {
       "file": "src/components/layout/ZooSettings.stories.tsx",
       "states": [
+        "Encryption",
+        "EncryptionMobile",
+        "LegacyDevicesLink",
         "General",
         "Apps",
         "AppsMobile",
@@ -707,7 +723,6 @@
       "file": "src/components/e2ee/EncryptionSettingsView.stories.tsx",
       "states": [
         "Loading",
-        "Unavailable",
         "LoadFailed",
         "NotSetUp",
         "RecoveryKey",
@@ -769,11 +784,30 @@
       ]
     },
     {
+      "file": "src/components/e2ee/EncryptionTabView.stories.tsx",
+      "states": [
+        "Unlocked",
+        "UnlockedMobile",
+        "Locked",
+        "NotReadyStarting",
+        "NotReadyOtherTab",
+        "NotReadyRegistrationFailed",
+        "NotReadyNetwork",
+        "NotReadyUnsupported",
+        "DeviceLimit",
+        "DeviceLimitMobile"
+      ]
+    },
+    {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
       "states": ["Default", "Undeliverable", "AddedRecipients"]
     }
   ],
   "modules": [
+    {
+      "file": "src/components/layout/DefaultChannelsSettings.tsx",
+      "story": "src/components/layout/DefaultChannelsSettings.stories.tsx"
+    },
     {
       "file": "src/components/SyncStatus.tsx",
       "story": "src/components/SyncStatus.stories.tsx"
@@ -801,6 +835,11 @@
     {
       "file": "src/components/chat/AppConnections.tsx",
       "story": "src/components/chat/AppConnections.stories.tsx"
+    },
+    {
+      "file": "src/components/auth/RouteAccess.tsx",
+      "reason": "ルートの公開・認証境界を切り替える制御層。実際のAuthGateを通る内部リンクのログイン済み・未認証の遷移をブラウザーテストで確認する。",
+      "checks": ["src/components/public/PublicProfile.navigation.browser.test.tsx"]
     },
     {
       "file": "src/components/chat/AppConsent.tsx",
@@ -962,7 +1001,12 @@
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.tsx",
-      "story": "src/components/chat/messages/LinkPreviews.stories.tsx"
+      "story": "src/components/chat/messages/LinkPreviews.stories.tsx",
+      "checks": [
+        "src/components/chat/messages/LinkPreviews.browser.test.tsx",
+        "src/components/home/HomePostContent.browser.test.tsx",
+        "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageCard.tsx",
@@ -1024,6 +1068,7 @@
     },
     {
       "file": "src/components/chat/messages/ThreadPane.tsx",
+      "reason": "LegacyNestedReplyで移行前の子スレッドへの導線を確認する。",
       "story": "src/components/chat/messages/ThreadPane.stories.tsx"
     },
     {
@@ -1093,7 +1138,9 @@
       "checks": [
         "src/lib/e2ee/cryptoWorker.browser.test.ts",
         "src/lib/e2ee/store/cryptoStore.test.ts",
-        "src/lib/e2ee/deviceManager.test.ts"
+        "src/lib/e2ee/deviceManager.test.ts",
+        "src/components/e2ee/E2eeProvider.browser.test.tsx",
+        "src/components/e2ee/E2eeProvider.notReady.browser.test.tsx"
       ]
     },
     {
@@ -1283,7 +1330,7 @@
       "file": "src/components/public/PublicProfile.tsx",
       "story": "src/components/public/PublicProfile.stories.tsx",
       "composed": true,
-      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。"
+      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。仮想遷移と戻る・進むはsrc/components/public/PublicProfile.navigation.browser.test.tsxで確認する。"
     },
     {
       "file": "src/components/home/ActivityPubProfileDetails.tsx",
@@ -1294,8 +1341,12 @@
     {
       "file": "src/components/home/HomePostContent.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
+      "checks": [
+        "src/components/home/HomePostContent.browser.test.tsx",
+        "src/components/home/HomePostContent.no-summaly.browser.test.tsx"
+      ],
       "composed": true,
-      "reason": "QuotedRenoteでコメント付き・コメントなしの引用先リンクを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
+      "reason": "HomePostContent.browser.test.tsxで通常URL3件と引用の併存・ローカル引用の内部リンク・表示できないローカル引用のリンク省略・単独実行・取得共有・引用専用カードとSummalyの分離を、no-summaly.browser.test.tsxで未設定時の本文リンク維持を、LinkPreviewStatesで通常URLの成功・取得中・失敗を、QuotedRenoteでコメント付き・コメントなし・表示できない引用と画像・MFMを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
     },
     {
       "file": "src/components/apps/console/AppConsole.tsx",
@@ -1353,7 +1404,7 @@
     },
     {
       "file": "src/components/e2ee/EncryptionSettings.tsx",
-      "reason": "暗号化タブの状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はEncryptionSettingsViewのストーリーで、手順は単体テストで確認する。",
+      "reason": "暗号化タブの状態と解錠、鍵のセクションの状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はEncryptionSettingsViewのストーリーで、手順は単体テストで確認する。",
       "checks": [
         "src/lib/e2ee/setupController.test.ts",
         "src/lib/e2ee/reauth.test.ts",
@@ -1361,12 +1412,22 @@
       ]
     },
     {
+      "file": "src/components/e2ee/EncryptionTabView.tsx",
+      "story": "src/components/e2ee/EncryptionTabView.stories.tsx"
+    },
+    {
+      "file": "src/components/e2ee/EncryptionTab.tsx",
+      "story": "src/components/layout/ZooSettings.stories.tsx",
+      "composed": true,
+      "reason": "暗号ストアを開いたかで、理由か各セクションかを選び、20 台の上限の画面、セクション間の読み直し（解錠と失効）、古い ?tab=devices のリンクからの移動をつなぐ。並びと理由の表示は EncryptionTabView のストーリーで、タブの開き方は ZooSettings の Encryption と LegacyDevicesLink で、セクション間の読み直しと移る時機は EncryptionTab.browser.test.tsx で確かめる。"
+    },
+    {
       "file": "src/components/e2ee/DevicesSettingsView.tsx",
       "story": "src/components/e2ee/DevicesSettingsView.stories.tsx"
     },
     {
       "file": "src/components/e2ee/DevicesSettings.tsx",
-      "reason": "端末タブ（端末一覧、失効、他のユーザーの検証）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
+      "reason": "暗号化タブの端末と他のユーザーの検証のセクション（端末一覧、失効、20 台の上限）の状態遷移を、暗号ストアのWorker、API、WebAuthn、再認証の別ウィンドウにつなぐ制御層。画面の各状態はDevicesSettingsViewのストーリーで、失効の手順は単体テストで確認する。",
       "checks": ["src/lib/e2ee/revocationController.test.ts"]
     },
     {

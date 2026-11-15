@@ -9,6 +9,7 @@ import {
   type UnauthorizedHandler,
 } from "../auth";
 import { joinUrl, type AppConfig } from "../config";
+import { assertSafeApiPath } from "./path";
 import { normalizeRouteGroup, reportApiError } from "../telemetry/capture";
 import { runWithHttpSpan } from "../telemetry/tracer";
 
@@ -169,6 +170,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   async function request<T>(path: string, requestOptions: RequestOptions = {}): Promise<T> {
     const authSessionGeneration = getAuthSessionGeneration();
     const authRequestGeneration = getAuthRequestGeneration();
+    assertSafeApiPath(path);
     const hasBody = requestOptions.body !== undefined;
     const method = requestOptions.method ?? "GET";
     const requestRoute = telemetry ? normalizeRouteGroup() : undefined;

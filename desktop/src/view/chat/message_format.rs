@@ -247,6 +247,10 @@ mod tests {
             display_reactions: None,
             display_attachments: None,
             thread_archive_at: None,
+            ciphertext: None,
+            epoch: None,
+            revision: 0,
+            message_kind: None,
         }
     }
 

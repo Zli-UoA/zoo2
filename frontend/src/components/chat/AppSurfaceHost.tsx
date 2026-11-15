@@ -9,6 +9,7 @@ import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { AppBlocks } from "./AppBlocks";
+import { apiPath } from "../../lib/api/path";
 
 type Surface = {
   id: string;
@@ -54,7 +55,7 @@ function UserSurfaces() {
   }
   async function dismiss(id: string) {
     try {
-      await client.request(`/api/app-surfaces/${id}`, { method: "DELETE" });
+      await client.request(apiPath`/api/app-surfaces/${id}`, { method: "DELETE" });
       remove(id);
     } catch {
       /* Retry on the next interaction. */

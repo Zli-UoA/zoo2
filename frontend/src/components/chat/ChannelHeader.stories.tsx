@@ -6,7 +6,9 @@ import { StoryShell } from "../../../.storybook/shell";
 import { storyChannels, storyChannelUsers } from "../../../.storybook/fixtures";
 import { ChannelHeader } from "./ChannelHeader";
 
-const general = storyChannels.find((channel) => channel.id === "channel-general")!;
+const general = storyChannels.find(
+  (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+)!;
 const secret = storyChannels.find((channel) => channel.id === "channel-secret")!;
 const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
 const memberCount = (channelId: string) =>
@@ -185,6 +187,24 @@ export const Encrypted: Story = {
     memberCount: memberCount(secret.id),
   },
   play: playForImplementation(async () => {
-    await expect(await screen.findByText("暗号化")).toBeVisible();
+    // ヘッダーには印を出さず（読み上げ用の文字だけ）、チャンネル設定に「暗号化」の印を出す。
+    await expect(await screen.findByText("暗号化")).toHaveClass("sr-only");
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    const dialog = await screen.findByRole("dialog");
+    // 開くときのアニメーションの途中は、中身がまだ見えないことがあるので、見えるまで待つ。
+    await waitFor(() => expect(within(dialog).getByText("暗号化")).toBeVisible());
+  }),
+};
+
+/** 暗号化 DM。DM はチャンネル設定を開けないので、DM のアイコンに鍵を重ねて見分けられるようにする。 */
+export const EncryptedDm: Story = {
+  args: {
+    channel: { ...secret, is_dm: true, encrypted: true, membership_epoch: "1" },
+    memberCount: memberCount(secret.id),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(canvasElement.querySelector("svg.lucide-lock-keyhole")).not.toBeNull(),
+    );
   }),
 };

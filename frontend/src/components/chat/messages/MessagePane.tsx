@@ -1,3 +1,4 @@
+import { THREADS_CHANGED } from "../../../lib/electric/threads";
 import { useThreadMembership } from "../../../hooks/useThreadMembership";
 import { refreshAppSurfaces } from "../../../lib/appSurfaceEvents";
 import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
@@ -67,6 +68,7 @@ import {
 } from "../../../lib/e2ee/messageDecryption";
 import type { RecipientSummary } from "../../../lib/e2ee/store/megolm";
 import { localizeApiError } from "../../../lib/i18n/apiError";
+import { apiPath } from "../../../lib/api/path";
 
 /** 通知・リンクの対象を含むまで、古い方へ広げるページ数の上限 (1 ページは `MESSAGE_PAGE_SIZE` 件)。 */
 const MAX_REVEAL_PAGES = 200;
@@ -574,7 +576,7 @@ export function MessagePane({
             },
           });
         } else {
-          await appClient.request(`/api/apps/commands/${command[1]}`, {
+          await appClient.request(apiPath`/api/apps/commands/${command[1]}`, {
             method: "POST",
             body: { channel_id: channelId, text: command[2] ?? "" },
           });
@@ -690,6 +692,7 @@ export function MessagePane({
             mentions: encryptedMentions(content, usersQuery.data ?? []),
             attachments: takeEncryptedAttachments(attachmentIds, sensitiveAttachmentIds),
           });
+          window.dispatchEvent(new Event(THREADS_CHANGED));
           forgetEncryptedAttachments(attachmentIds);
           return true;
         } catch (cause) {
@@ -1030,6 +1033,7 @@ export function MessagePane({
             onSaveEdit={handleSaveEdit}
             onRequestDelete={setPendingDeleteId}
             onSendReply={handleSendReply}
+            onOpenThread={openThread}
             composeDisabledReason={
               downgraded
                 ? t("e2ee.downgraded")

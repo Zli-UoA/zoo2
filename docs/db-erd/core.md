@@ -343,6 +343,7 @@ erDiagram
     thread_rollout {
       boolean id PK
       text phase
+      text migration_after
     }
     typing_presence {
       text channel_id PK,FK

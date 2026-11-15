@@ -3327,6 +3327,11 @@ impl AppState {
             .current_channel
             .as_deref()
             .and_then(|channel| self.store.message(channel, &root_id))
+            .filter(|message| {
+                self.current_channel
+                    .as_deref()
+                    .is_none_or(|channel| self.store.replies(channel, &message.id).is_empty())
+            })
             .and_then(|message| message.parent_id.clone())
             .unwrap_or(root_id);
         self.typing_poll.wake();

@@ -813,6 +813,20 @@ pub(crate) async fn create_message_impl(
             )));
         }
 
+        let roots = crate::apps::query(&mut tx,
+            "SELECT json_build_object('id',r.id,'deleted',r.deleted_at IS NOT NULL)::text FROM messages r WHERE r.id=thread_root($1) AND (SELECT phase FROM thread_rollout WHERE id)<>'collecting'",
+            &[parent_id]).await?;
+        if let Some(root) = roots.first() {
+            if root["deleted"].as_bool() == Some(true) {
+                return Err(AppError::NotFound("Thread root has been deleted".into()));
+            }
+            if sender.is_some() && root["id"].as_str() != Some(parent_id.as_str()) {
+                return Err(AppError::BadRequest(
+                    "Encrypted replies must target the thread root; encrypt again with that parent_id".into(),
+                ));
+            }
+        }
+
         parent_author_id = Some(parent.user_id);
     }
 

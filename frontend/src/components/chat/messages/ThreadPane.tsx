@@ -74,6 +74,8 @@ export interface ThreadPaneProps {
   isLoadingOlder?: boolean;
   /** 取得失敗時の再試行。 */
   onRetry?: () => void;
+  /** Read existing nested threads until their staged migration completes. */
+  onOpenThread?: (id: string) => void;
   onClose: () => void;
 }
 
@@ -87,6 +89,7 @@ export interface ThreadPaneProps {
 export function ThreadPane({
   commands,
   onRequestCommands,
+  onOpenThread,
   targetMessageId,
   mentionUsers,
   mentionMemberIds,
@@ -361,6 +364,11 @@ export function ThreadPane({
                   onSaveEdit={onSaveEdit}
                   onRequestDelete={() => onRequestDelete(item.message.id)}
                   replyCount={item.message.display_data?.reply_count ?? 0}
+                  onOpenThread={
+                    (item.message.display_data?.reply_count ?? 0) > 0 && onOpenThread
+                      ? () => onOpenThread(item.message.id)
+                      : undefined
+                  }
                   reactions={
                     item.message.display_data
                       ? (groupReactions(item.message.display_data.reactions, currentUserId).get(
