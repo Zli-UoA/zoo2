@@ -358,7 +358,7 @@ describe("MessageRow", () => {
   it("preserves native context menus on links while using body holds for actions", async () => {
     const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
     const row = container.querySelector("div.group\\/row")!;
-    const link = screen.getByRole("link");
+    const link = screen.getByRole("link", { name: "example.com" });
     expect(fireEvent.contextMenu(row)).toBe(true);
     fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
     expect(fireEvent.contextMenu(row)).toBe(false);
@@ -372,7 +372,7 @@ describe("MessageRow", () => {
   it("suppresses the native menu immediately after the hold timer before React commits", () => {
     const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
     const row = container.querySelector("div.group\\/row")!;
-    const link = screen.getByRole("link");
+    const link = screen.getByRole("link", { name: "example.com" });
     vi.useFakeTimers();
     try {
       fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
@@ -437,7 +437,7 @@ describe("MessageRow", () => {
       buildItem({ content: 'https://example.com/"><script>alert(1)</script>' }),
     );
 
-    const link = screen.getByRole("link");
+    const link = screen.getByRole("link", { name: "example.com/" });
     expect(link.getAttribute("href")).toBe("https://example.com/");
     expect(container.querySelector("script")).toBeNull();
     expect(container.textContent).toContain("<script>alert(1)</script>");

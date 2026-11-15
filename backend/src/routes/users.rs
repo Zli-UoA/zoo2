@@ -335,6 +335,7 @@ async fn create_user(
     .exec(&mut tx)
     .await?;
 
+    super::default_channels::join(&mut tx, &user.id).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 

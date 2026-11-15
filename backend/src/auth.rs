@@ -475,6 +475,7 @@ pub async fn resolve_or_provision_user(
 
         match create_identity_res {
             Ok(_) => {
+                crate::routes::default_channels::join(&mut tx, &created_user.id).await?;
                 tx.commit().await?;
                 sync_profile_picture(db, &created_user.id, claims, user_info.as_ref(), true)
                     .await?;

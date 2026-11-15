@@ -703,6 +703,9 @@
     "showLess": "收起"
   },
   "home": {
+    "quotedPost": "引用嘅帖文",
+    "quoteUnavailable": "無法顯示引用嘅帖文",
+    "openQuotedPost": "開啟引用嘅帖文",
     "image": "圖片",
     "imageError": "加唔到圖片。請揀最多10張PNG、JPEG、GIF或WebP圖片（每張唔超過8MiB），再試一次。",
     "title": "首頁",
@@ -1567,5 +1570,13 @@
       "reauthCancel": "唔登入住",
       "browserUnavailable": "開唔到用嚟登入嘅瀏覽器。請安裝或者啟用瀏覽器，再撳多一次。"
     }
+  },
+  "defaultChannels": {
+    "refreshed": "部分頻道已經用唔到，清單已更新。請確認選擇後再儲存。",
+    "limit": "最多可以揀100個公開頻道。",
+    "title": "新帳戶嘅預設頻道",
+    "description": "揀建立帳戶時自動加入嘅公開頻道。現有帳戶唔受影響。",
+    "empty": "冇可用嘅公開頻道。",
+    "saved": "已儲存。"
   }
 }

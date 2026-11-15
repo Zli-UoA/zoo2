@@ -1,5 +1,5 @@
-import { useCollections } from "../../lib/electric/collections-context";
-import { joinUrl } from "../../lib/config";
+import { useOptionalCollections } from "../../lib/electric/collections-context";
+import { joinUrl, resolvePublicConfig } from "../../lib/config";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { initials } from "../chat/format";
 
@@ -15,7 +15,7 @@ export function ActivityPubAvatar({
   name: string;
   avatarUrl?: string | null;
 }) {
-  const { config } = useCollections();
+  const config = useOptionalCollections()?.config ?? resolvePublicConfig();
   const src = avatarUrl?.startsWith("https://")
     ? avatarUrl
     : avatar && /^[a-f0-9]{64}$/.test(avatar.image_id)

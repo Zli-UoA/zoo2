@@ -3,6 +3,7 @@ pub mod bubble_chat;
 pub mod calls;
 pub mod channel_webhooks;
 pub mod channels;
+pub mod default_channels;
 pub mod dms;
 pub mod e2ee;
 pub mod e2ee_channels;
@@ -82,6 +83,7 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .merge(health::router())
+        .merge(default_channels::router())
         .merge(home::router())
         .merge(crate::activitypub::router())
         .merge(crate::apps::management::router())

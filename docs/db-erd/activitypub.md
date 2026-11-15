@@ -107,6 +107,7 @@ erDiagram
     apub_reactions }o--o| users : apub_reactions_user_id_fkey
     apub_remote_posts {
       text id PK
+      text quote_uri
       text actor_id FK
       text content
       text visibility

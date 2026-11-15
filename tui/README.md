@@ -360,3 +360,5 @@ zoo2 TUI (`tui/` 配下) は [MIT License](LICENSE) で配布します。
 カスタム絵文字のリアクションには `:custom_name:` を入力できる。存在確認とエイリアスの解決はバックエンドが行う。画像の登録・編集は共通絵文字サービスの管理画面で行う。
 
 基盤設定時は `/api/emoji-shortcodes` のgemoji辞書を取得し、本文の表示とリアクション入力に使います。カスタム名・別名を先に解決し、取得失敗時は前回の一覧、成功履歴がなければ同梱辞書を使います。
+
+新規アカウントの自動参加先は、管理者が `zoo2-tui default-channels` で確認し、`zoo2-tui default-channels --set ID1 ID2` で設定できます。ID を省略した `--set` で無効化できます。詳細は [参加チャンネルの設定](../docs/default-channels.md) を参照してください。
