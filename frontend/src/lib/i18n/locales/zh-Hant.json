@@ -1305,6 +1305,7 @@
       "limitDelete": "刪除所選裝置",
       "limitDeleted": "已刪除。稍後將重新登錄此裝置。",
       "stale": "{{days}} 天以上未使用",
+      "notUnlockedStale": "未解鎖，{{days}} 天以上未使用",
       "cleanupTitle": "有裝置似乎已不再使用",
       "cleanupDescription_one": "標記的 {{count}} 台裝置已 {{days}} 天以上未使用，或在未解鎖的狀態下 {{unlockDays}} 天以上未使用。若不再使用，請將其刪除。裝置不會被自動刪除。遺失或陌生的裝置，請從「開始撤銷」刪除。",
       "cleanupDescription_other": "標記的 {{count}} 台裝置已 {{days}} 天以上未使用，或在未解鎖的狀態下 {{unlockDays}} 天以上未使用。若不再使用，請將其刪除。裝置不會被自動刪除。遺失或陌生的裝置，請從「開始撤銷」刪除。"

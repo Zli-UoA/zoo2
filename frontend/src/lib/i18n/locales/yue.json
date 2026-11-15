@@ -1305,6 +1305,7 @@
       "limitDelete": "刪除所選裝置",
       "limitDeleted": "刪咗喇。等陣會重新登記呢部裝置。",
       "stale": "{{days}} 日以上冇用過",
+      "notUnlockedStale": "未解鎖，{{days}} 日以上冇用過",
       "cleanupTitle": "有啲裝置好似已經冇再用",
       "cleanupDescription_one": "標記咗嘅 {{count}} 部裝置已經 {{days}} 日以上冇用過，或者未解鎖之下 {{unlockDays}} 日以上冇用過。如果唔再用，請刪除。裝置唔會自動刪除。唔見咗或者唔認識嘅裝置，請喺「開始撤銷」度刪除。",
       "cleanupDescription_other": "標記咗嘅 {{count}} 部裝置已經 {{days}} 日以上冇用過，或者未解鎖之下 {{unlockDays}} 日以上冇用過。如果唔再用，請刪除。裝置唔會自動刪除。唔見咗或者唔認識嘅裝置，請喺「開始撤銷」度刪除。"

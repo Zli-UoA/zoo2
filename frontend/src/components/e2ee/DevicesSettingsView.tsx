@@ -255,10 +255,14 @@ export function DeviceSummary({
             {t("e2ee.devices.unsigned")}
           </span>
         ) : null}
-        {cleanup.includes("stale") ? (
+        {cleanup.length > 0 ? (
+          // 削除を勧める理由を文字でも出す（背景の色だけで区別しない）。30 日の印があれば、7 日の印は
+          // 重ねない。
           <span className="flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs text-amber-800 dark:text-amber-300">
             <ClockIcon aria-hidden="true" className="size-3" />
-            {t("e2ee.devices.stale", { days: STALE_DEVICE_DAYS })}
+            {cleanup.includes("stale")
+              ? t("e2ee.devices.stale", { days: STALE_DEVICE_DAYS })
+              : t("e2ee.devices.notUnlockedStale", { days: NOT_UNLOCKED_UNUSED_DAYS })}
           </span>
         ) : null}
       </p>

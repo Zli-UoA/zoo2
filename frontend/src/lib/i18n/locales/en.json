@@ -1305,6 +1305,7 @@
       "limitDelete": "Delete selected devices",
       "limitDeleted": "Deleted. This device will register again shortly.",
       "stale": "Not used for {{days}}+ days",
+      "notUnlockedStale": "Not unlocked, unused for {{days}}+ days",
       "cleanupTitle": "Some devices look unused",
       "cleanupDescription_one": "The {{count}} marked device has not been used for {{days}} days or more, or has not been used for {{unlockDays}} days or more without being unlocked. If you no longer use it, delete it. Devices are never deleted automatically. Delete lost or unfamiliar devices from “Start revocation”.",
       "cleanupDescription_other": "The {{count}} marked devices have not been used for {{days}} days or more, or have not been used for {{unlockDays}} days or more without being unlocked. Delete the ones you no longer use. Devices are never deleted automatically. Delete lost or unfamiliar devices from “Start revocation”."
