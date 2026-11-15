@@ -80,12 +80,15 @@ class FakeServer {
   /** `GET /api/e2ee/key_backup/keys` の 1 ページの件数（実際のサーバーは 1000）。 */
   backupPageSize = 1000;
   fail: { path: string; when: "before" | "after" } | null = null;
+  /** この経路（`POST /api/...`）では、再認証の ID トークンを期限切れとして扱う。 */
+  expiredReauth: string | null = null;
   requests: { method: string; path: string; reauth: boolean }[] = [];
 
   client(): ApiClient {
     const handle = async (path: string, options: RequestOptions = {}) => {
       const method = options.method ?? "GET";
-      const reauth = options.headers?.[REAUTH_HEADER] === TOKEN;
+      const reauth =
+        options.headers?.[REAUTH_HEADER] === TOKEN && this.expiredReauth !== `${method} ${path}`;
       this.requests.push({ method, path, reauth });
       const fail = this.fail?.path === `${method} ${path}` ? this.fail : null;
       if (fail?.when === "before") {
@@ -189,10 +192,12 @@ class FakeServer {
         }
         if (body.label === null) this.error(422, "label が null です");
         const slots = this.ssss.slots as Json[];
+        // 同じスロットの再送は何もしない。足すのにも置き換えるのにも再認証が要る（#551）。
+        if (slots.some((slot) => slot.id === body.id)) return {};
+        this.requireReauth(reauth);
         const replaced = slots.filter(
           (slot) => body.kind === "passkey" && slot.credential_id === body.credential_id,
         );
-        if (replaced.length > 0) this.requireReauth(reauth);
         this.ssss.slots = [
           ...slots.filter((slot) => !replaced.includes(slot)),
           { ...body, created_at: "2026-11-13T00:00:00Z", last_used_at: null },
@@ -640,6 +645,25 @@ describe("初回設定と解錠", () => {
     expect((await loadE2eeStatus(secondDeps)).kind).toBe("unlocked");
   });
 
+  it("保存の再試行でスロットを足すときに再認証が切れていたら、再認証のエラーにする", async () => {
+    const server = new FakeServer();
+    const authenticator = virtualAuthenticator();
+    const first = await device("first");
+    const deps = first.deps(server, authenticator);
+    const { keyId } = await beginSetup(deps, null);
+    server.fail = { path: "POST /api/e2ee/cross_signing/keys", when: "before" };
+    await expect(completeSetup(deps, keyId, TOKEN)).rejects.toThrow();
+    await addSetupPasskey(deps, null);
+    // SSSS の保存は 409 で済み、続くスロットの追加で ID トークンの 5 分が切れる。
+    server.expiredReauth = "POST /api/e2ee/secret_storage/slots";
+    await expect(completeSetup(deps, keyId, TOKEN)).rejects.toBeInstanceOf(ReauthRequiredError);
+    // 再認証し直せば、同じ鍵のまま最後まで終わる。
+    server.expiredReauth = null;
+    await completeSetup(deps, keyId, TOKEN);
+    const slots = (server.ssss?.slots ?? []) as Json[];
+    expect(slots.map((slot) => slot.kind)).toEqual(["recovery", "passkey"]);
+  });
+
   it("解錠済みの端末で、開け直した SSSS からラベルなしのパスキーを足せる", async () => {
     const server = new FakeServer();
     const authenticator = virtualAuthenticator();
@@ -898,7 +922,7 @@ describe("初回設定と解錠", () => {
       {
         ...original,
         version: "2",
-        auth_data: otherBackupKey.authData(secrets.crossSigning.master),
+        auth_data: otherBackupKey.authData(secrets.crossSigning.master, 2),
       },
     ];
     expect(await uploadKeyBackup(deps)).toEqual({ kind: "rejected", code: "BackupKeyMismatch" });
@@ -1025,13 +1049,25 @@ describe("初回設定と解錠", () => {
     const server = new FakeServer();
     const first = await device("first");
     const deps = first.deps(server);
-    const { keyId } = await beginSetup(deps, null);
+    const { keyId, recoveryKey } = await beginSetup(deps, null);
     await receiveRoomKey(first);
     await completeSetup(deps, keyId, TOKEN);
     expect(server.backupSessions).toHaveLength(1);
 
-    // 同じ鍵の新しい版に変わった。送信待ちに戻す書き込みが 1 回失敗する。
-    server.versions.push({ ...server.versions[0]!, version: "2" });
+    // 同じ鍵の新しい版に変わった。送信待ちに戻す書き込みが 1 回失敗する。版の番号は auth_data の
+    // 署名に入るので、本物のマスター鍵で版 2 の auth_data に署名し直す。
+    const storage = SecretStorage.fromJson(USER, {
+      ...server.ssss,
+      secrets_revision: server.revision,
+    } as unknown as JsonObject)!;
+    const secrets = OwnSecrets.fromUnlocked(
+      storage.unlockWithRecoveryKey(RecoveryKey.parse(recoveryKey)),
+    );
+    server.versions.push({
+      ...server.versions[0]!,
+      version: "2",
+      auth_data: secrets.backupKey.authData(secrets.crossSigning.master, 2),
+    });
     const reset = first.backend.resetBackedUp.bind(first.backend);
     let failures = 1;
     first.backend.resetBackedUp = async () => {

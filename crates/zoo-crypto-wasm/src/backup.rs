@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
 use zoo_crypto as core;
 
-use crate::convert::{IntoJs, bytes32, ed25519, from_js, set, to_js};
+use crate::convert::{IntoJs, bytes32, ed25519, from_js, safe_u64, set, to_js};
 use crate::cross_signing::CrossSigningKeyPair;
 use crate::megolm::{BackupSession, InboundSessionStore};
 
@@ -45,23 +45,37 @@ impl BackupDecryptionKey {
         self.inner.public_key().to_base64()
     }
 
-    /// 版の `auth_data`（マスター鍵の署名付き）。
+    /// 版 `version` の `auth_data`（方式と版の番号を入れ、マスター鍵で署名したもの）。
     #[wasm_bindgen(js_name = authData, unchecked_return_type = "JsonObject")]
-    pub fn auth_data(&self, master: &CrossSigningKeyPair) -> Result<JsValue, JsValue> {
-        to_js(&self.inner.auth_data(&master.inner).js()?)
+    pub fn auth_data(
+        &self,
+        master: &CrossSigningKeyPair,
+        version: f64,
+    ) -> Result<JsValue, JsValue> {
+        to_js(
+            &self
+                .inner
+                .auth_data(&master.inner, safe_u64(version, "version")?)
+                .js()?,
+        )
     }
 
-    /// `POST /api/e2ee/key_backup/versions` の本文。
+    /// `POST /api/e2ee/key_backup/versions` の本文。`version` は作る版の番号（`nextBackupVersion`）。
     #[wasm_bindgen(js_name = createVersionRequest, unchecked_return_type = "JsonObject")]
     pub fn create_version_request(
         &self,
         master: &CrossSigningKeyPair,
         expected_current_version: Option<String>,
+        version: f64,
     ) -> Result<JsValue, JsValue> {
         to_js(
             &self
                 .inner
-                .create_version_request(&master.inner, expected_current_version.as_deref())
+                .create_version_request(
+                    &master.inner,
+                    expected_current_version.as_deref(),
+                    safe_u64(version, "version")?,
+                )
                 .js()?,
         )
     }
@@ -188,6 +202,15 @@ pub fn verify_backup_version(
         core::verify_backup_version(&version, user_id, &ed25519(master_key)?, &backup_key.inner)
             .js()?;
     to_js(&verified_version(&verified))
+}
+
+/// 次に作る版の番号（`auth_data` に入れて署名する）。`versions` は `GET /api/e2ee/key_backup/versions` の
+/// 応答（消した版を含む）。
+#[wasm_bindgen(js_name = nextBackupVersion)]
+pub fn next_backup_version(
+    #[wasm_bindgen(unchecked_param_type = "JsonObject")] versions_response: JsValue,
+) -> Result<f64, JsValue> {
+    Ok(core::next_backup_version(&versions(&versions_response)?) as f64)
 }
 
 /// 失効のときに `zoo.megolm_backup.previous` に入れる鍵を選ぶ。

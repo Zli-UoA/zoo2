@@ -17,7 +17,9 @@ use vodozemac::{Ed25519PublicKey, base64_encode};
 use zeroize::Zeroizing;
 
 use crate::CryptoError;
-use crate::backup::{BackupDecryptionKey, BackupVersionInfo, verify_backup_version};
+use crate::backup::{
+    BackupDecryptionKey, BackupVersionInfo, LegacyAuthData, next_backup_version, verify_version,
+};
 use crate::cross_signing::{
     CrossSigningKeyPair, CrossSigningKeys, KeySignature, KeyUsage, SignatureCheck, SignatureUpload,
     check_signature, verify_cross_signing_key,
@@ -310,11 +312,11 @@ pub fn plan_resume(
     let mut plan = ResumePlan::default();
     match server.current_version() {
         None => {
-            plan.backup_version = Some(
-                secrets
-                    .backup_key
-                    .create_version_request(&keys.master, None)?,
-            );
+            plan.backup_version = Some(secrets.backup_key.create_version_request(
+                &keys.master,
+                None,
+                next_backup_version(&server.backup_versions),
+            )?);
         }
         Some(current) => {
             // 版が 1 つ以上あれば、初回設定は済んでいる。クロス署名鍵がそろっていないのは
@@ -334,11 +336,14 @@ pub fn plan_resume(
                 "algorithm": current.algorithm,
                 "auth_data": current.auth_data,
             });
-            match verify_backup_version(
+            // 古い形式（版の番号を署名していない）の版 2 以降も、ここでは通す。解錠できないと、失効を
+            // やり直して新しい形式の版を作ることもできないため。アップロードは BackupUploadState が止める。
+            match verify_version(
                 &version,
                 &user_id,
                 &keys.master.public_key(),
                 &secrets.backup_key,
+                LegacyAuthData::Any,
             ) {
                 Ok(verified) => plan.current_backup_version = Some(verified.version),
                 Err(CryptoError::BackupKeyMismatch) => {
@@ -410,11 +415,11 @@ pub fn plan_reset(
     Ok(ResumePlan {
         cross_signing: Some(body),
         device_signature: Some(keys.self_signing.sign_device(device_keys)?),
-        backup_version: Some(
-            secrets
-                .backup_key
-                .create_version_request(&keys.master, current.as_deref())?,
-        ),
+        backup_version: Some(secrets.backup_key.create_version_request(
+            &keys.master,
+            current.as_deref(),
+            next_backup_version(&server.backup_versions),
+        )?),
         current_backup_version: None,
     })
 }
