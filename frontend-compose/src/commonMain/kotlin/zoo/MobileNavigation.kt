@@ -6,6 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /** Shares the shell's routes and unread state; no independent data subscriptions. */
 @Composable
@@ -42,7 +43,7 @@ internal fun MobileNavigation(
                         Icon(destination.icon, modifier = Modifier.size(24.dp))
                     }
                 },
-                label = { Text(title, small = true, maxLines = 1) },
+                label = { Text(title, small = true, size = 12.sp, maxLines = 1) },
                 colors = NavigationBarItemDefaults.colors(
                     indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
                     selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,

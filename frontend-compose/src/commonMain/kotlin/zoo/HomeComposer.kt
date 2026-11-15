@@ -75,8 +75,9 @@ class HomeComposerState(internal val settingsKey: String? = null) {
 @Composable fun rememberHomeComposerState(): HomeComposerState {
     val app = LocalApp.current
     val key = homePreferenceKey(app, "zoo-home-post-settings:v1:")
-    val state = remember(app, key) { HomeComposerState(key) }
+    val state = remember(app, key) { app.homeComposerState }
     LaunchedEffect(state) {
+        if (state.preferencesReady) return@LaunchedEffect
         val saved = parseHomePostSettings(readHomePreference(app, key))
         state.visibility = saved.text("visibility")
         state.federationPreference = saved.flag("apub")

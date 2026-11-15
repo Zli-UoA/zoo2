@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 
 class Session(val repo: Repository, val scope: CoroutineScope, initial: Environment) {
+    internal val homeComposerState by lazy {
+        HomeComposerState(homePreferenceKey(this, "zoo-home-post-settings:v1:"))
+    }
+
     val api
         get() = repo.api
 

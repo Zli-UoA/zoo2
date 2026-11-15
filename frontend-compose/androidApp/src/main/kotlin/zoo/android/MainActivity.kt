@@ -243,7 +243,7 @@ class MainActivity : ComponentActivity() {
                         current.session.escape() -> Unit
                         current.session.thread != null -> current.session.thread = null
                         platform.back() -> Unit
-                        else -> finish()
+                        else -> moveTaskToBack(true)
                     }
                 }
                 val encryption =

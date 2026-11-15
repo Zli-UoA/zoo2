@@ -85,43 +85,7 @@ fun ZooTheme(
             ),
         )
     val emoji = FontFamily(Font(Res.font.NotoColorEmoji))
-    val scheme =
-        if (dark)
-            darkColorScheme(
-                error = Color(0xffff6467),
-                onError = Color.Black,
-                primary = Color(0xffffd600),
-                onPrimary = Color.Black,
-                background = Color.Black,
-                onBackground = Color.White,
-                surface = Color(0xff181818),
-                onSurface = Color.White,
-                surfaceVariant = Color(0xff262626),
-                onSurfaceVariant = Color(0xffbdbdbd),
-                outline = Color(0xff454545),
-                outlineVariant = Color(0xff454545),
-                secondary = Color(0xffd9d9d9),
-                secondaryContainer = Color(0xff303030),
-                onSecondaryContainer = Color(0xffe5e5e5),
-            )
-        else
-            lightColorScheme(
-                error = Color(0xffc2000f),
-                onError = Color.White,
-                primary = Color(0xffffd600),
-                onPrimary = Color.Black,
-                background = Color.White,
-                onBackground = Color.Black,
-                surface = Color.White,
-                onSurface = Color.Black,
-                surfaceVariant = Color(0xfff5f5f5),
-                onSurfaceVariant = Color(0xff666666),
-                outline = Color(0xffe5e5e5),
-                outlineVariant = Color(0xffe5e5e5),
-                secondary = Color(0xff626262),
-                secondaryContainer = Color(0xfffff6cc),
-                onSecondaryContainer = Color.Black,
-            )
+    val scheme = zooColorScheme(dark)
     val mono = FontFamily(Font(Res.font.LiberationMono))
     val math = FontFamily(Font(Res.font.KaTeXMain))
     val mathItalic = FontFamily(Font(Res.font.KaTeXMath))
@@ -168,6 +132,44 @@ fun ZooTheme(
         }
     }
 }
+
+internal fun zooColorScheme(dark: Boolean): ColorScheme =
+    if (dark)
+        darkColorScheme(
+            error = Color(0xffff6467),
+            onError = Color.Black,
+            primary = Color(0xffffd600),
+            onPrimary = Color.Black,
+            background = Color.Black,
+            onBackground = Color.White,
+            surface = Color(0xff181818),
+            onSurface = Color.White,
+            surfaceVariant = Color(0xff262626),
+            onSurfaceVariant = Color(0xffbdbdbd),
+            outline = Color(0xff454545),
+            outlineVariant = Color(0xff454545),
+            secondary = Color(0xffd9d9d9),
+            secondaryContainer = Color(0xff303030),
+            onSecondaryContainer = Color(0xffe5e5e5),
+        )
+    else
+        lightColorScheme(
+            error = Color(0xffc2000f),
+            onError = Color.White,
+            primary = Color(0xffffd600),
+            onPrimary = Color.Black,
+            background = Color.White,
+            onBackground = Color.Black,
+            surface = Color.White,
+            onSurface = Color.Black,
+            surfaceVariant = Color(0xfff5f5f5),
+            onSurfaceVariant = Color(0xff666666),
+            outline = Color(0xffe5e5e5),
+            outlineVariant = Color(0xffe5e5e5),
+            secondary = Color(0xff626262),
+            secondaryContainer = Color(0xfffff6cc),
+            onSecondaryContainer = Color.Black,
+        )
 
 fun fontText(text: String, fonts: Fonts, weight: FontWeight? = null): AnnotatedString =
     buildAnnotatedString {

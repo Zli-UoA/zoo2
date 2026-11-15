@@ -56,7 +56,7 @@ fun ReactionChip(
             Hint(labels.joinToString(", ")) { hintModifier ->
                 Row(
                     hintModifier
-                        .heightIn(min = touchTargetSize(32.dp, LocalTouchUi.current))
+                        .sizeIn(minWidth = if (LocalTouchUi.current) 48.dp else 0.dp, minHeight = touchTargetSize(32.dp, LocalTouchUi.current))
                         .then(webControlModifier("button", enabled = editable, selected = mine))
                         .border(
                             1.dp,
@@ -71,7 +71,7 @@ fun ReactionChip(
                         )
                         .hoverable(interaction)
                         .onFocusChanged { focused = it.hasFocus }
-                        .clickable(role = Role.Button) { if (editable) toggle() }
+                        .clickable(enabled = editable, role = Role.Button, onClick = toggle)
                         .semantics {
                             contentDescription =
                                 app.t(

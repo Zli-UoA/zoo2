@@ -23,6 +23,28 @@ class HomeRefreshStateTest {
     }
 
     @Test
+    fun navigatingBetweenDestinationsRetainsTheDraftOnlyInItsOwningSession() = runTest {
+        fun session(user: String): Session {
+            val http = HttpClient(MockEngine { error("Draft navigation must not fetch data") })
+            return Session(
+                Repository(Config("https://zoo.test", "/api/shapes", user, false), TestPlatform(), http, backgroundScope, synchronize = false),
+                backgroundScope, Environment(),
+            )
+        }
+        val first = session("alice")
+        val second = session("bob")
+        try {
+            val draft = first.homeComposerState
+            draft.content = "書きかけの投稿"
+            first.update(first.env.copy(path = "/settings"))
+            first.update(first.env.copy(path = "/home"))
+            assertSame(draft, first.homeComposerState)
+            assertEquals("書きかけの投稿", first.homeComposerState.content)
+            assertEquals("", second.homeComposerState.content)
+        } finally { first.close(); second.close() }
+    }
+
+    @Test
     fun manualRefreshShowsProgressAndLiveInvalidationWaitsWithoutAddingParallelRequests() = runTest {
         var gate = CompletableDeferred<Unit>()
         var requests = 0

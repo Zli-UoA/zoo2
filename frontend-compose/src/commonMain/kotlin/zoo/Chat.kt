@@ -136,7 +136,7 @@ fun Chat(
     // 暗号化チャンネルには、Megolm で暗号化して送れるようになるまで投稿、返信、編集を送らない
     // （docs/e2ee.md、#361）。サーバーは平文を拒否するが、拒否の前に本文が届いてしまうため。
     val encrypted = channel.flag("encrypted")
-    val canPost = joined && !channel.present("archive_at") && app.env.online && !encrypted
+    val canPost = joined && !channel.present("archive_at") && !encrypted
     val composerPlaceholder = if (encrypted) app.t("e2ee.sendUnavailable") else null
     LaunchedEffect(id, app.env.visible, app.env.online) {
         if (app.env.online && app.env.visible) {
@@ -1243,7 +1243,7 @@ internal fun Composer(
     val memberships by app.repo.members.rows.collectAsState()
     val channels by app.repo.channels.rows.collectAsState()
     var commands by remember(channel) { mutableStateOf<List<Row>>(emptyList()) }
-    val attachments = rememberAttachmentDrafts(app, channel, key, enabled, uploadAttachment)
+    val attachments = rememberAttachmentDrafts(app, channel, key, enabled && app.env.online, uploadAttachment)
     attachments.acceptFiles = allowAttachments
     val density = LocalDensity.current.density
     var sendError by remember(key) { mutableStateOf<String?>(null) }
@@ -1522,7 +1522,7 @@ internal fun Composer(
                 IconButton(
                     "paperclip",
                     app.t("attachments.add"),
-                    enabled && attachments.items.size < MAX_ATTACHMENTS,
+                    enabled && app.env.online && attachments.items.size < MAX_ATTACHMENTS,
                     color = MaterialTheme.colorScheme.onBackground,
                     size = if (app.env.touch) 44.dp else 36.dp,
                 ) {

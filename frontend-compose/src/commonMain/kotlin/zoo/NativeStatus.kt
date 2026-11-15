@@ -132,8 +132,8 @@ fun OfflineBanner(app: Session, state: Row, onRetry: (() -> Unit)? = null) {
             ) {
                 Icon("cloud-off", modifier = Modifier.size(24.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(title, weight = FontWeight.SemiBold)
-                    Text(description, small = true, muted = true)
+                    Text(title, weight = FontWeight.SemiBold, maxLines = 2)
+                    Text(description, small = true, muted = true, maxLines = 2)
                 }
                 IconButton("refresh-cw", app.t("offline.retry")) {
                     if (onRetry != null) onRetry() else app.repo.refresh()
