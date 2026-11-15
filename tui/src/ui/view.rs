@@ -85,8 +85,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 /// 暗号化チャンネルの送信画面の表示（docs/e2ee.md の「鍵の配布先の判定」。React の
-/// `EncryptionRecipientsNotice` と同じ）。入力欄の上に、配布先の数、前回から増えた配布先、鍵を配れない
-/// 相手と理由を出す。格下げを見つけたら、送らないことを出す。平文のチャンネルでは何も出さない。
+/// `EncryptionRecipientsNotice` と同じ）。入力欄の上に、前回から増えた配布先と、鍵を配れない相手と理由を、
+/// あるときだけ出す。配布先の数は、毎回同じで読み流されるので出さない（`V` の詳細の画面で確かめられる）。
+/// 格下げを見つけたら、送らないことを出す。解錠していなければ解錠を案内する。平文のチャンネルでは何も出さない。
 fn encryption_notice(app: &App, width: usize, max_lines: usize) -> Vec<Line<'static>> {
     let wrap = |lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
         lines
@@ -108,28 +109,23 @@ fn encryption_notice(app: &App, width: usize, max_lines: usize) -> Vec<Line<'sta
         ChannelEncryption::Encrypted => {}
     }
     let Some(summary) = app.recipients.get(channel_id) else {
-        let text = match app.encryption.status {
-            Some(E2eeStatus::Unlocked) => {
-                " 🔒 暗号化チャンネルです。送ると、メンバーの検証済みの端末あてに暗号化します"
-            }
-            _ => " 🔒 暗号化チャンネルに送るには、この端末で暗号化を解錠してください (E)",
-        };
-        return wrap(vec![Line::styled(text, DIM)]);
+        // 配布先をまだ判定していない。解錠していなければ、送る前に解錠を案内する。
+        if matches!(app.encryption.status, Some(E2eeStatus::Unlocked)) {
+            return Vec::new();
+        }
+        return wrap(vec![Line::styled(
+            " 🔒 暗号化チャンネルに送るには、この端末で暗号化を解錠してください (E)",
+            DIM,
+        )]);
     };
-    let has_lists = !summary.added_user_ids.is_empty() || !summary.undeliverable.is_empty();
-    let mut summary_line = format!(
-        " 🔒 {} 人の {} 台の端末あてに暗号化しています。",
-        summary.user_count, summary.device_count
-    );
-    if has_lists {
-        summary_line.push_str(" V: 配布先の詳細");
+    if summary.added_user_ids.is_empty() && summary.undeliverable.is_empty() {
+        return Vec::new();
     }
-    let summary_line = Line::styled(summary_line, DIM);
     let name = |id: &str| app.store.display_name(id);
     let added_style = Style::new().add_modifier(Modifier::BOLD);
     let warn = Style::new().fg(Color::Yellow);
-    // 全部を出す形。
-    let mut full = vec![summary_line.clone()];
+    // 全部を出す形。全員は `V` の詳細の画面でも確かめられる。
+    let mut full = vec![Line::styled(" 🔒 V: 配布先の詳細", DIM)];
     if !summary.added_user_ids.is_empty() {
         let names: Vec<String> = summary.added_user_ids.iter().map(|id| name(id)).collect();
         full.push(Line::styled(
@@ -157,7 +153,7 @@ fn encryption_notice(app: &App, width: usize, max_lines: usize) -> Vec<Line<'sta
     }
     // 収まらなければ人数だけを出し、全員は `V` の詳細の画面で確かめてもらう（増えた人と配れない人を、
     // 末尾が切れて見落とさないように、どちらも必ず 1 行は出す）。
-    let mut compact = vec![summary_line];
+    let mut compact = Vec::new();
     if !summary.added_user_ids.is_empty() {
         compact.push(Line::styled(
             format!(
@@ -2653,8 +2649,9 @@ mod tests {
             },
         });
         let screen = render_sized(&mut app, 140, 40);
+        // 配布先の数は出さず、増えた人と配れない人だけを出す。
         assert!(
-            screen.contains("1 人の 2 台の端末あてに暗号化しています"),
+            !screen.contains("台の端末あてに暗号化しています"),
             "{screen}"
         );
         assert!(
@@ -2880,8 +2877,17 @@ mod tests {
                 .collect()
         };
 
-        // 4 人ずつなら、幅 50 でも折り返して全員を出す。
+        // 増えた人も配れない人もいなければ、入力欄の上には何も出さない（配布先の数も出さない）。
         let mut app = encrypted_app("secret-e2ee", true);
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: summary(0, 0),
+        });
+        let screen = squash(render_sized(&mut app, 50, 40));
+        assert!(!screen.contains("配布先"), "{screen}");
+        assert!(!screen.contains("台の端末"), "{screen}");
+
+        // 4 人ずつなら、幅 50 でも折り返して全員を出す。
         app.on_app_event(AppEvent::Recipients {
             channel_id: "c3".into(),
             summary: summary(4, 4),

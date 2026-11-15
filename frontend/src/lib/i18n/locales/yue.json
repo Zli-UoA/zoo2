@@ -1271,7 +1271,6 @@
     "sendStaleEpoch": "成員一直變緊，所以傳唔到訊息。請再傳一次。",
     "editConflict": "呢條訊息喺其他地方改過。請重新載入再改。",
     "recipients": {
-      "summary": "為 {{users}} 個人嘅 {{devices}} 部裝置加密。",
       "added": "上次傳送之後新加嘅收件人：{{names}}"
     },
     "downgraded": "呢個頻道之前係加密嘅，但伺服器而家話冇加密。唔會用明文傳送。",

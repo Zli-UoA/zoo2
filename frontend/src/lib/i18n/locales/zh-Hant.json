@@ -1271,7 +1271,6 @@
     "sendStaleEpoch": "成員持續變動，訊息未能傳送。請再試一次。",
     "editConflict": "此訊息已在其他地方被編輯。請重新載入後再編輯。",
     "recipients": {
-      "summary": "正在為 {{users}} 人的 {{devices}} 台裝置加密。",
       "added": "自上次傳送以來新增的接收者：{{names}}"
     },
     "downgraded": "此頻道曾經加密，但伺服器現在表示未加密。不會以明文傳送訊息。",
