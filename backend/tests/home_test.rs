@@ -2189,13 +2189,18 @@ async fn viewport_refresh_filters_reposts_remote_actors_and_private_channels() -
     let channel = uuid::Uuid::new_v4().to_string();
     let hidden = uuid::Uuid::new_v4().to_string();
     toasty::sql::statement(
-        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,true)",
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,false)",
     )
     .bind(channel.as_str())
     .bind(owner.as_str())
     .exec(&mut db)
     .await?;
     toasty::sql::statement("INSERT INTO home_posts(id,user_id,channel_id,content) VALUES($1,$2,$3,'private channel fixture')").bind(hidden.as_str()).bind(owner.as_str()).bind(channel.as_str()).exec(&mut db).await?;
+    // Home posts can only be created in public channels. Test a later privacy change.
+    toasty::sql::statement("UPDATE channels SET is_private=true WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
     let activity = format!("urn:uuid:{}", uuid::Uuid::new_v4());
     toasty::sql::statement("INSERT INTO apub_reposts(post_id,actor_id,user_id,activity_id,activity_json,visibility) VALUES($1,$2,$3,$4,'{}','local')").bind(public.as_str()).bind(format!("local:{viewer}")).bind(viewer.as_str()).bind(activity.as_str()).exec(&mut db).await?;
     let repost = format!("repost:{activity}");
