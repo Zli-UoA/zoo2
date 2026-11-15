@@ -351,7 +351,9 @@ jobs:
 
   check:
     needs: crypto-wasm
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    # Native type analysis needs headroom beyond kubecamp's 2GiB limit,
+    # including the runner processes. Forks and merge queues already use this host.
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./frontend
