@@ -35,6 +35,7 @@
 //! - [`BackupDecryptionKey`]、[`BackupEncryptionKey`]：鍵バックアップ（`zoo.megolm_backup.v1.curve25519-aes-sha2`）
 //! - [`verify_backup_version`]、[`BackupUploadState`]：今の版の検証と、アップロード待ちの状態機械
 //! - [`BackupDecryptionKey::upload_proof`]、[`BackupUploadKey`]：アップロードの証明（`X-Zoo-Backup-Proof`）の作成とサーバーでの検証
+//! - [`next_backup_version`]：次に作る版の番号（`auth_data` に入れて署名する）
 //! - [`select_previous_backup_keys`]、[`previous_versions_to_migrate`]：失効のときの古い版の鍵の退避と移行
 //!
 //! #359 で足したもの:
@@ -92,7 +93,8 @@ pub use backup::{
     BACKUP_ALGORITHM, BackedUpSessionData, BackupDecryptionKey, BackupEncryptionKey, BackupRow,
     BackupUpload, BackupUploadState, BackupVersionInfo, MAX_UPLOAD_SESSIONS,
     PreviousBackupSelection, SenderClaimedKeys, SessionData, VerifiedBackupVersion, VersionChange,
-    previous_versions_to_migrate, select_previous_backup_keys, verify_backup_version,
+    next_backup_version, previous_versions_to_migrate, select_previous_backup_keys,
+    verify_backup_version,
 };
 pub use backup_proof::{BACKUP_PROOF_HEADER, BackupUploadKey};
 pub use canonical_json::to_canonical_json;

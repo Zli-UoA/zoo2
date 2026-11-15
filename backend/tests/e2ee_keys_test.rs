@@ -219,8 +219,20 @@ impl Identity {
         json!({"target_user_id": target, "master_key": master_key, "signatures": pin["signatures"]})
     }
 
+    /// 方式と版の番号を入れていない古い形式の `auth_data`（最初の版だけ作れる）。
     fn auth_data(&self, public_key: &str) -> Value {
         let mut auth = json!({"public_key": public_key});
+        sign(&mut auth, &self.user, &self.master);
+        auth
+    }
+
+    /// 版 `version` の `auth_data`（方式と版の番号を入れて署名したもの）。
+    fn versioned_auth_data(&self, public_key: &str, version: u64) -> Value {
+        let mut auth = json!({
+            "public_key": public_key,
+            "algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2",
+            "version": version.to_string(),
+        });
         sign(&mut auth, &self.user, &self.master);
         auth
     }
@@ -1386,7 +1398,7 @@ async fn backup_versions_switch_forward_and_reject_old_keys() {
 
     // 2 つ目の版は再認証と expected_current_version が要る。
     let second_key = backup_key();
-    let second = json!({"algorithm": algorithm, "auth_data": alice.auth_data(&second_key), "expected_current_version": "1"});
+    let second = json!({"algorithm": algorithm, "auth_data": alice.versioned_auth_data(&second_key, 2), "expected_current_version": "1"});
     let (status, res) = env.post(versions, &user, false, second.clone()).await;
     assert_eq!(
         (status, code(&res)),
@@ -1503,8 +1515,55 @@ async fn backup_versions_switch_forward_and_reject_old_keys() {
         vec![(json!("1"), json!(true)), (json!("2"), json!(true))]
     );
 
+    // 署名した版の番号が振る番号と違えば 409、版 2 以降に古い形式（番号の署名なし）は 400。
+    let mislabeled = json!({"algorithm": algorithm, "auth_data": alice.versioned_auth_data(&backup_key(), 2), "expected_current_version": null});
+    let (status, res) = env.post(versions, &user, true, mislabeled).await;
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::CONFLICT, "E2EE_WRONG_BACKUP_VERSION")
+    );
+    // 形式の検査で拒んだことを確かめる（署名の検査の 400 `E2EE_BAD_SIGNATURE` と区別する）。
+    let format_error = |res: &Value| {
+        code(res).is_empty()
+            && res["error"]
+                .as_str()
+                .is_some_and(|e| e.starts_with("auth_data.algorithm and auth_data.version"))
+    };
+    let legacy = json!({"algorithm": algorithm, "auth_data": alice.auth_data(&backup_key()), "expected_current_version": null});
+    let (status, res) = env.post(versions, &user, true, legacy).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+    assert!(format_error(&res), "{res}");
+    // 方式を除いて署名し直した（署名は正しいが、版の番号だけがある）auth_data。
+    let mut partial = json!({"public_key": backup_key(), "version": "3"});
+    sign(&mut partial, &alice.user, &alice.master);
+    let (status, res) = env
+        .post(
+            versions,
+            &user,
+            true,
+            json!({"algorithm": algorithm, "auth_data": partial, "expected_current_version": null}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+    assert!(format_error(&res), "{res}");
+    // 署名したあとで方式を除いたものは、署名の検査で拒む。
+    let mut tampered = alice.versioned_auth_data(&backup_key(), 3);
+    tampered.as_object_mut().unwrap().remove("algorithm");
+    let (status, res) = env
+        .post(
+            versions,
+            &user,
+            true,
+            json!({"algorithm": algorithm, "auth_data": tampered, "expected_current_version": null}),
+        )
+        .await;
+    assert_eq!(
+        (status, code(&res)),
+        (StatusCode::BAD_REQUEST, "E2EE_BAD_SIGNATURE")
+    );
+
     // 次の版の番号は消した版を含めた最大 + 1。
-    let third = json!({"algorithm": algorithm, "auth_data": alice.auth_data(&backup_key()), "expected_current_version": null});
+    let third = json!({"algorithm": algorithm, "auth_data": alice.versioned_auth_data(&backup_key(), 3), "expected_current_version": null});
     let (status, res) = env.post(versions, &user, true, third).await;
     assert_eq!(status, StatusCode::OK, "{res}");
     assert_eq!(res["data"]["version"], "3");
@@ -1790,7 +1849,7 @@ async fn backup_totals_are_counted_and_capped_per_version_and_user() {
 
     // ユーザーの上限は、消していないすべての版の合計で数える。版 1 を古い版として残したまま、
     // 版 2 に上げる（失効のあとの移行と同じ形）。
-    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key()), "expected_current_version": "1"});
+    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.versioned_auth_data(&backup_key(), 2), "expected_current_version": "1"});
     let (status, res) = env
         .post("/api/e2ee/key_backup/versions", &user, true, create)
         .await;
@@ -1903,7 +1962,7 @@ async fn migration_uploads_finish_even_when_the_user_total_is_full() {
         .post(&path("1"), &user, false, json!({"sessions": old}))
         .await;
     assert_eq!(status, StatusCode::OK, "{res}");
-    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key()), "expected_current_version": "1"});
+    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.versioned_auth_data(&backup_key(), 2), "expected_current_version": "1"});
     let (status, res) = env
         .post("/api/e2ee/key_backup/versions", &user, true, create)
         .await;
@@ -2287,7 +2346,7 @@ async fn backup_upload_proofs_block_preemption_and_overwrites() {
     // 版ごとに鍵が違うので、前の版の証明は新しい版に使えない。
     let next = zoo_crypto::BackupDecryptionKey::generate();
     let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2",
-                        "auth_data": alice.auth_data(&next.public_key().to_base64()),
+                        "auth_data": alice.versioned_auth_data(&next.public_key().to_base64(), 2),
                         "expected_current_version": "1"});
     let (status, res) = env
         .post("/api/e2ee/key_backup/versions", &user, true, create)
@@ -2395,7 +2454,7 @@ async fn concurrent_uploads_keep_the_best_row_and_respect_version_switches() {
             send(&app, "POST", &path, &user, None, body).await.0
         }));
     }
-    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.auth_data(&backup_key()), "expected_current_version": "1"});
+    let create = json!({"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": alice.versioned_auth_data(&backup_key(), 2), "expected_current_version": "1"});
     let (status, res) = env
         .post("/api/e2ee/key_backup/versions", &user, true, create)
         .await;
@@ -2559,7 +2618,7 @@ async fn key_changes_and_backup_versions_bump_membership_epochs() {
     let (status, res) = env.post(versions, &user, false, first).await;
     assert_eq!(status, StatusCode::OK, "{res}");
     assert_eq!(epoch(&env, &shared).await, 2);
-    let second = json!({"algorithm": algorithm, "auth_data": rotated.auth_data(&backup_key()), "expected_current_version": "1"});
+    let second = json!({"algorithm": algorithm, "auth_data": rotated.versioned_auth_data(&backup_key(), 2), "expected_current_version": "1"});
     let (status, res) = env.post(versions, &user, true, second).await;
     assert_eq!(status, StatusCode::OK, "{res}");
     assert_eq!(epoch(&env, &shared).await, 3);
