@@ -131,6 +131,9 @@ class TouchUiTest {
                     bounds.width.roundToInt(), bounds.height.roundToInt(),
                 )
                 try {
+                    val pixels = IntArray(bitmap.width * bitmap.height)
+                    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                    check(pixels.any { it != pixels.first() }) { "UI capture is blank: $name" }
                     File(directory, "$name.png").outputStream().use {
                         check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
                     }
