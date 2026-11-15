@@ -1,16 +1,9 @@
 import { useEffect } from "react";
-import {
-  ClientOnly,
-  HeadContent,
-  Scripts,
-  createRootRoute,
-  useRouterState,
-} from "@tanstack/react-router";
+import { ClientOnly, HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 
-import { AuthGate } from "@/components/auth/AuthGate";
-import { PreviewUserSwitcher } from "@/components/auth/PreviewUserSwitcher";
+import { RouteAccess } from "@/components/auth/RouteAccess";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { themeInitScript } from "@/components/theme/theme";
 import { Toaster } from "@/components/ui/sonner";
@@ -95,17 +88,5 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <Scripts />
       </body>
     </html>
-  );
-}
-
-function RouteAccess({ children }: { children: React.ReactNode }) {
-  const path = useRouterState({ select: (state) => state.location.pathname });
-  return /^\/public\/users\/[^/]+\/?$/.test(path) ? (
-    <>{children}</>
-  ) : (
-    <AuthGate>
-      {children}
-      <PreviewUserSwitcher />
-    </AuthGate>
   );
 }

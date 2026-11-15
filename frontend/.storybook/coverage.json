@@ -814,6 +814,11 @@
       "story": "src/components/chat/AppConnections.stories.tsx"
     },
     {
+      "file": "src/components/auth/RouteAccess.tsx",
+      "reason": "ルートの公開・認証境界を切り替える制御層。実際のAuthGateを通る内部リンクのログイン済み・未認証の遷移をブラウザーテストで確認する。",
+      "checks": ["src/components/public/PublicProfile.navigation.browser.test.tsx"]
+    },
+    {
       "file": "src/components/chat/AppConsent.tsx",
       "story": "src/components/chat/AppConsent.stories.tsx"
     },
