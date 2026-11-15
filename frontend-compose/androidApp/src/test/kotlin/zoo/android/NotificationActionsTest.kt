@@ -59,6 +59,36 @@ class NotificationActionsTest {
         assertEquals(listOf("reply-1", "reply-1"), f.calls.filter { it.second == "POST" }.map { it.third.text("id") })
     }
 
+    @Test fun uncertainRepliesKeepIdsPerBodyWithoutLosingANewlyEnteredReply() = runTest {
+        val f = Fixture()
+        val saved = mutableMapOf<String, String>()
+        var loseResponse = true
+        f.response = { _, method, body ->
+            if (method == "POST") {
+                val id = body.text("id")
+                val content = body.text("content")
+                val existing = saved[id]
+                // Plain-channel API: matching retries return the saved row; changed bodies conflict.
+                if (existing != null && existing != content) throw ApiException(409)
+                saved.putIfAbsent(id, content)
+                if (loseResponse) awaitCancellation() // Saved by the server, but no response received.
+            }
+        }
+        for (body in listOf("reply A", "reply B", "reply A")) {
+            f.actions.receive("notice", "reply", body, timeoutMillis = 10)
+            assertFalse(f.actions.hasReplied("notice"))
+            assertTrue("notice" in f.shown)
+        }
+        loseResponse = false
+        f.actions.receive("notice", "reply", "reply B")
+        assertEquals(mapOf("reply-1" to "reply A", "reply-2" to "reply B"), saved)
+        assertEquals(listOf("reply-1", "reply-2", "reply-1", "reply-2"),
+            f.calls.filter { it.second == "POST" }.map { it.third.text("id") })
+        assertTrue(f.actions.hasReplied("notice"))
+        assertTrue(f.shown.isEmpty())
+        assertEquals(List(3) { "common.writeError" }, f.errors)
+    }
+
     @Test fun timeoutAfterSendingOnlyOffersReadRetry() = runTest {
         val f = Fixture()
         f.response = { _, method, _ -> if (method == "PATCH") awaitCancellation() }

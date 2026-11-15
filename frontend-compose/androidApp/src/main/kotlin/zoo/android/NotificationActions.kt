@@ -15,7 +15,9 @@ internal class NotificationActions(
 ) {
     private val busy = mutableSetOf<String>()
     private val replied = mutableSetOf<String>()
-    private val replyIds = mutableMapOf<String, String>()
+    // A timeout may hide a committed POST. Retry the same body with its ID, but
+    // a newly entered body is a separate message, including after another timeout.
+    private val replyIds = mutableMapOf<Pair<String, String>, String>()
 
     fun hasReplied(id: String): Boolean = id in replied
 
@@ -49,7 +51,7 @@ internal class NotificationActions(
                     errorKey = "common.writeError"
                     val parent = replyParent(row) ?: run { error(id, errorKey); return }
                     request("/api/messages", "POST", obj(
-                        "id" to replyIds.getOrPut(id, uuid),
+                        "id" to replyIds.getOrPut(id to text, uuid),
                         "channel_id" to row.text("channel_id"),
                         "parent_id" to parent,
                         "content" to text,
