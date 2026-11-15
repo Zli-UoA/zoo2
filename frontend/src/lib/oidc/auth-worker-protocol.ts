@@ -14,6 +14,7 @@ export type AuthTokenResponse = Record<string, unknown> & {
   refresh_token: string;
   expires_in: number;
 };
+export type AuthWorkerResult = AuthTokenResponse & { expiresAt: number };
 export type AuthWorkerResponse =
-  | { ok: true; body: AuthTokenResponse | null }
+  | { ok: true; body: AuthWorkerResult | null }
   | { ok: false; code: string; status?: number };
