@@ -4,7 +4,7 @@ import {
   type SummalyClient,
   type LinkPreviewData as Preview,
 } from "../../../lib/summaly";
-import type { AppConfig } from "../../../lib/config";
+import { resolvePublicConfig, type AppConfig } from "../../../lib/config";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { previewUrls, proxyImageUrl } from "./linkPreviews";
 import { acquirePreview } from "./linkPreviewRequests";
@@ -103,8 +103,9 @@ function ActiveLinkPreviews({ urls, config }: { urls: string[]; config: AppConfi
 
 export function LinkPreviews({ content }: { content: string }) {
   const collections = useOptionalCollections();
+  // The production shell uses the collections singleton without a Provider.
+  // Preview requests only need public endpoints, including on public profiles.
+  const config = useMemo(() => collections?.config ?? resolvePublicConfig(), [collections?.config]);
   const urls = useMemo(() => previewUrls(content), [content]);
-  return collections && urls.length ? (
-    <ActiveLinkPreviews urls={urls} config={collections.config} />
-  ) : null;
+  return urls.length ? <ActiveLinkPreviews urls={urls} config={config} /> : null;
 }

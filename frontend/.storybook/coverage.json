@@ -973,7 +973,11 @@
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.tsx",
-      "story": "src/components/chat/messages/LinkPreviews.stories.tsx"
+      "story": "src/components/chat/messages/LinkPreviews.stories.tsx",
+      "checks": [
+        "src/components/chat/messages/LinkPreviews.browser.test.tsx",
+        "src/components/home/HomePostContent.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageCard.tsx",
@@ -1307,8 +1311,9 @@
     {
       "file": "src/components/home/HomePostContent.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
+      "checks": ["src/components/home/HomePostContent.browser.test.tsx"],
       "composed": true,
-      "reason": "QuotedRenoteでコメント付き・コメントなしの引用先リンクとSummalyで解決した埋め込みプレビューを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
+      "reason": "HomePostContent.browser.test.tsxで本番と同じProviderなしのURL展開・取得共有・失敗時リンク保持を、QuotedRenoteでコメント付き・コメントなしの引用先リンクとSummalyで解決した埋め込みプレビューを、MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
     },
     {
       "file": "src/components/apps/console/AppConsole.tsx",
