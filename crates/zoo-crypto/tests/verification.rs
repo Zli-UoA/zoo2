@@ -7,11 +7,12 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use zoo_crypto::{
-    CrossSigningKeys, CryptoError, DeviceAccount, KeySnapshot, ListedDevice, OlmSession, Rejection,
-    SasPhase, SasVerification, TrustBasis, TrustStore, UserState, VERIFICATION_CANCEL_TYPE,
-    VERIFICATION_DONE_TYPE, VERIFICATION_KEY_TYPE, VERIFICATION_MAC_TYPE, VERIFICATION_READY_TYPE,
-    VERIFICATION_REQUEST_TYPE, VERIFICATION_START_TYPE, VERIFICATION_TIMEOUT_MS,
-    VerificationIdentity, VerificationMessage, VerificationOutgoing, cancel_code,
+    CrossSigningKeys, CryptoError, DeviceAccount, KeySnapshot, ListedDevice, OlmSession,
+    QrCodeData, Rejection, SasPhase, SasVerification, TrustBasis, TrustStore, UserState,
+    VERIFICATION_CANCEL_TYPE, VERIFICATION_DONE_TYPE, VERIFICATION_KEY_TYPE, VERIFICATION_MAC_TYPE,
+    VERIFICATION_READY_TYPE, VERIFICATION_REQUEST_TYPE, VERIFICATION_START_TYPE,
+    VERIFICATION_TIMEOUT_MS, VerificationIdentity, VerificationMessage, VerificationMethod,
+    VerificationOutgoing, cancel_code,
 };
 
 const ALICE: &str = "00000000-0000-0000-0000-00000000000a";
@@ -215,21 +216,23 @@ fn exchange_keys() -> Flow {
         Some(alice.devices[0].account.device_id())
     );
 
-    // 端末 0 が受け入れる。Alice は start を送り、端末 1 には取りやめ（m.accepted）を送る。
+    // 端末 0 が受け入れる。Alice は端末 1 に取りやめ（m.accepted）を送る。Bob も QR に対応しているので、
+    // 双方が方式を選ぶ段階になる。
     let ready = single(b.accept().unwrap(), VERIFICATION_READY_TYPE);
     let ready = only(deliver(&mut bob, 0, &mut alice, &ready));
-    let out = a.receive(&ready, &alice_view);
-    assert_eq!(
-        out.iter().map(|o| o.event_type).collect::<Vec<_>>(),
-        vec![VERIFICATION_START_TYPE, VERIFICATION_CANCEL_TYPE]
-    );
-    assert_eq!(out[1].content["code"], cancel_code::ACCEPTED);
-    let cancel = only(deliver(&mut alice, 0, &mut bob, &out[1]));
+    let cancel = single(a.receive(&ready, &alice_view), VERIFICATION_CANCEL_TYPE);
+    assert_eq!(cancel.content["code"], cancel_code::ACCEPTED);
+    let cancel = only(deliver(&mut alice, 0, &mut bob, &cancel));
     assert!(other.receive(&cancel, &bob_view).is_empty());
     assert_eq!(other.phase(), SasPhase::Cancelled);
     assert!(!other.cancellation().unwrap().by_us);
+    assert_eq!(a.phase(), SasPhase::ChooseMethod);
+    assert_eq!(b.phase(), SasPhase::ChooseMethod);
 
-    let start = only(deliver(&mut alice, 0, &mut bob, &out[0]));
+    // Alice が絵文字を選ぶ。
+    let start = single(a.start_sas().unwrap(), VERIFICATION_START_TYPE);
+    assert_eq!(a.method(), Some(VerificationMethod::Sas));
+    let start = only(deliver(&mut alice, 0, &mut bob, &start));
     let accept = single(b.receive(&start, &bob_view), "m.key.verification.accept");
     let accept = only(deliver(&mut bob, 0, &mut alice, &accept));
     let key = single(a.receive(&accept, &alice_view), VERIFICATION_KEY_TYPE);
@@ -411,7 +414,8 @@ fn substituted_master_key_is_detected_by_mac() {
         &mut alice,
         &single(b.accept().unwrap(), VERIFICATION_READY_TYPE),
     ));
-    let start = single(a.receive(&ready, &alice_view), VERIFICATION_START_TYPE);
+    assert!(a.receive(&ready, &alice_view).is_empty());
+    let start = single(a.start_sas().unwrap(), VERIFICATION_START_TYPE);
     let start = only(deliver(&mut alice, 0, &mut bob, &start));
     let accept = only(deliver(
         &mut bob,
@@ -454,12 +458,8 @@ fn replaced_key_breaks_the_commitment() {
     let request = only(deliver(&mut alice, 0, &mut bob, &request));
     let mut b = SasVerification::from_request(bob.identity(0), &request, &bob_view, NOW).unwrap();
     let ready = only(deliver(&mut bob, 0, &mut alice, &b.accept().unwrap()[0]));
-    let start = only(deliver(
-        &mut alice,
-        0,
-        &mut bob,
-        &a.receive(&ready, &alice_view)[0],
-    ));
+    assert!(a.receive(&ready, &alice_view).is_empty());
+    let start = only(deliver(&mut alice, 0, &mut bob, &a.start_sas().unwrap()[0]));
     let accept = only(deliver(
         &mut bob,
         0,
@@ -705,4 +705,440 @@ fn accepted_master_key_waits_for_the_pin() {
         result.users[BOB].state,
         UserState::Trusted(TrustBasis::Record)
     );
+}
+
+// ---- QR コードによる検証（docs/e2ee.md の「QR コードによる検証」） ----
+
+/// Alice（端末 1 つ）が Bob（端末 1 つ）に検証を求め、Bob が受け入れて、双方が方式を選ぶ段階まで進める。
+/// `alice_view` と `bob_view` は、それぞれから見た `keys/query`。
+fn choose_method(
+    alice: &mut User,
+    bob: &mut User,
+    alice_view: &KeySnapshot,
+    bob_view: &KeySnapshot,
+) -> (SasVerification, SasVerification) {
+    let (mut a, request) =
+        SasVerification::request(alice.identity(0), alice_view, BOB, NOW).unwrap();
+    assert_eq!(
+        request.content["methods"],
+        json!([
+            "m.qr_code.show.v1",
+            "m.qr_code.scan.v1",
+            "m.reciprocate.v1",
+            "m.sas.v1"
+        ])
+    );
+    let request = only(deliver(alice, 0, bob, &request));
+    let mut b = SasVerification::from_request(bob.identity(0), &request, bob_view, NOW).unwrap();
+    // 受け入れる前は、QR を出さない。
+    assert!(b.qr_code().is_none());
+    let ready = only(deliver(bob, 0, alice, &b.accept().unwrap()[0]));
+    assert!(a.receive(&ready, alice_view).is_empty());
+    assert_eq!(a.phase(), SasPhase::ChooseMethod);
+    assert_eq!(b.phase(), SasPhase::ChooseMethod);
+    (a, b)
+}
+
+fn honest_pair() -> (User, User, KeySnapshot, KeySnapshot) {
+    let alice = User::new(ALICE, 1);
+    let bob = User::new(BOB, 1);
+    let alice_view = honest(&alice, &[&alice, &bob]);
+    let bob_view = honest(&bob, &[&alice, &bob]);
+    (alice, bob, alice_view, bob_view)
+}
+
+#[test]
+fn qr_code_has_the_matrix_layout() {
+    let (alice, bob, alice_view, _) = honest_pair();
+    let (a, _) = SasVerification::request(alice.identity(0), &alice_view, BOB, NOW).unwrap();
+    // 要求した側は、相手の受け入れより前から QR を出す。
+    let bytes = a.qr_code().unwrap();
+    assert_eq!(&bytes[..6], b"MATRIX");
+    assert_eq!(bytes[6], 0x02);
+    assert_eq!(bytes[7], 0x00);
+    let txn = a.transaction_id().as_bytes();
+    assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]) as usize, txn.len());
+    assert_eq!(&bytes[10..10 + txn.len()], txn);
+    let data = QrCodeData::from_bytes(&bytes).unwrap();
+    assert_eq!(data.transaction_id, a.transaction_id());
+    assert_eq!(data.their_master_key, alice.keys.master.public_key());
+    assert_eq!(data.our_master_key, bob.keys.master.public_key());
+    assert_eq!(data.secret.len(), 16);
+    // 検証ごとに共有の秘密を作る。
+    let (other, _) = SasVerification::request(alice.identity(0), &alice_view, BOB, NOW).unwrap();
+    assert_ne!(
+        QrCodeData::from_bytes(&other.qr_code().unwrap())
+            .unwrap()
+            .secret,
+        data.secret
+    );
+
+    // 形の正しくないものは受け付けない。
+    let mut self_verifying = bytes.clone();
+    self_verifying[7] = 0x01;
+    assert!(matches!(
+        QrCodeData::from_bytes(&self_verifying),
+        Err(CryptoError::InvalidPayload(_))
+    ));
+    let short_secret = &bytes[..bytes.len() - 9];
+    assert!(QrCodeData::from_bytes(short_secret).is_err());
+    assert!(QrCodeData::from_bytes(&bytes[..bytes.len() - 8]).is_ok());
+    assert!(QrCodeData::from_bytes(b"MATRIX").is_err());
+    let mut other_version = bytes.clone();
+    other_version[6] = 0x01;
+    assert!(QrCodeData::from_bytes(&other_version).is_err());
+}
+
+/// Bob が Alice の QR を読み取り、Alice が「読み取った」と答えると、双方が相手のマスター鍵を検証できる。
+#[test]
+fn qr_two_users_verify_each_other() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    assert!(b.can_scan_qr_code());
+    assert!(b.qr_code().is_some());
+
+    let start = single(
+        b.scan_qr_code(&a.qr_code().unwrap()).unwrap(),
+        VERIFICATION_START_TYPE,
+    );
+    assert_eq!(start.content["method"], "m.reciprocate.v1");
+    assert_eq!(b.phase(), SasPhase::QrScanned);
+    assert_eq!(b.method(), Some(VerificationMethod::QrCode));
+    // 読み取ったあとは、自分の QR も絵文字も出さない。
+    assert!(b.qr_code().is_none());
+    assert!(!b.can_start_sas());
+
+    let start = only(deliver(&mut bob, 0, &mut alice, &start));
+    assert!(a.receive(&start, &alice_view).is_empty());
+    assert_eq!(a.phase(), SasPhase::QrConfirm);
+    assert!(a.qr_code().is_none());
+    // 利用者が答えるまでは検証済みにしない。
+    assert!(a.verified_master_key().is_none());
+
+    let done = single(a.confirm_qr_scanned().unwrap(), VERIFICATION_DONE_TYPE);
+    assert_eq!(a.phase(), SasPhase::Done);
+    assert_eq!(a.verified_master_key(), Some(bob.keys.master.public_key()));
+    // 読み取った側は、表示した側の done を受けるまで検証済みにしない。
+    assert!(b.verified_master_key().is_none());
+    let done = only(deliver(&mut alice, 0, &mut bob, &done));
+    let done = single(b.receive(&done, &bob_view), VERIFICATION_DONE_TYPE);
+    assert_eq!(b.phase(), SasPhase::Done);
+    assert_eq!(
+        b.verified_master_key(),
+        Some(alice.keys.master.public_key())
+    );
+    // 表示した側は、あとから届いた done を無視する。
+    let done = only(deliver(&mut bob, 0, &mut alice, &done));
+    assert!(a.receive(&done, &alice_view).is_empty());
+    assert_eq!(a.phase(), SasPhase::Done);
+
+    // SAS と同じく、相手のマスター鍵に署名し、記録はピンを保存するまで登録待ちにする。
+    let accepted = a
+        .sign_master_key(
+            &mut alice.trust,
+            &alice.keys.user_signing,
+            &bob.keys.master.public_key_json(),
+        )
+        .unwrap();
+    assert_eq!(accepted.target_user_id, BOB);
+    assert!(alice.trust.record(BOB).unwrap().pin_pending);
+    let accepted = b
+        .sign_master_key(
+            &mut bob.trust,
+            &bob.keys.user_signing,
+            &alice.keys.master.public_key_json(),
+        )
+        .unwrap();
+    assert_eq!(accepted.target_user_id, ALICE);
+    assert!(bob.trust.record(ALICE).unwrap().pin_pending);
+}
+
+/// 要求した側が、相手の QR を読み取ることもできる。
+#[test]
+fn requester_can_scan_the_other_qr() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    let start = single(
+        a.scan_qr_code(&b.qr_code().unwrap()).unwrap(),
+        VERIFICATION_START_TYPE,
+    );
+    let start = only(deliver(&mut alice, 0, &mut bob, &start));
+    assert!(b.receive(&start, &bob_view).is_empty());
+    assert_eq!(b.phase(), SasPhase::QrConfirm);
+    let done = only(deliver(
+        &mut bob,
+        0,
+        &mut alice,
+        &b.confirm_qr_scanned().unwrap()[0],
+    ));
+    single(a.receive(&done, &alice_view), VERIFICATION_DONE_TYPE);
+    assert_eq!(a.verified_master_key(), Some(bob.keys.master.public_key()));
+    assert_eq!(
+        b.verified_master_key(),
+        Some(alice.keys.master.public_key())
+    );
+}
+
+/// サーバーが Alice に Bob の偽のマスター鍵を見せると、Alice の QR の 2 つめの鍵が Bob の本物の鍵と
+/// 合わないので、Bob が読み取ったときに取りやめる。どちらも署名しない。
+#[test]
+fn qr_with_forged_key_shown_to_the_displayer_is_rejected() {
+    let mut alice = User::new(ALICE, 1);
+    let mut bob = User::new(BOB, 1);
+    let forged = CrossSigningKeys::generate(BOB).unwrap();
+    let alice_view = keys_query(&alice, &[(&alice, &alice.keys), (&bob, &forged)]);
+    let bob_view = honest(&bob, &[&alice, &bob]);
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+
+    let cancel = single(
+        b.scan_qr_code(&a.qr_code().unwrap()).unwrap(),
+        VERIFICATION_CANCEL_TYPE,
+    );
+    assert_eq!(cancel.content["code"], cancel_code::KEY_MISMATCH);
+    assert_eq!(b.phase(), SasPhase::Cancelled);
+    let cancel = only(deliver(&mut bob, 0, &mut alice, &cancel));
+    assert!(a.receive(&cancel, &alice_view).is_empty());
+    assert_eq!(a.phase(), SasPhase::Cancelled);
+    assert!(a.verified_master_key().is_none());
+    assert!(b.verified_master_key().is_none());
+}
+
+/// サーバーが Bob に Alice の偽のマスター鍵を見せると、QR の 1 つめの鍵（Alice の本物）と合わない。
+#[test]
+fn qr_with_forged_key_shown_to_the_scanner_is_rejected() {
+    let mut alice = User::new(ALICE, 1);
+    let mut bob = User::new(BOB, 1);
+    let forged = CrossSigningKeys::generate(ALICE).unwrap();
+    let alice_view = honest(&alice, &[&alice, &bob]);
+    let bob_view = keys_query(&bob, &[(&alice, &forged), (&bob, &bob.keys)]);
+    let (a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    let cancel = single(
+        b.scan_qr_code(&a.qr_code().unwrap()).unwrap(),
+        VERIFICATION_CANCEL_TYPE,
+    );
+    assert_eq!(cancel.content["code"], cancel_code::KEY_MISMATCH);
+    assert!(b.verified_master_key().is_none());
+
+    // 表示した側の QR の鍵と相手の端末は、ready のときに決まる。そのあとでサーバーが別の鍵を見せても、
+    // start の処理には使わない（署名の直前の keys/query の照合は sign_master_key が行う）。
+    let mut alice = User::new(ALICE, 1);
+    let mut bob = User::new(BOB, 1);
+    let forged_bob = CrossSigningKeys::generate(BOB).unwrap();
+    let honest_alice_view = honest(&alice, &[&alice, &bob]);
+    let bob_view = honest(&bob, &[&alice, &bob]);
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &honest_alice_view, &bob_view);
+    let start = single(
+        b.scan_qr_code(&a.qr_code().unwrap()).unwrap(),
+        VERIFICATION_START_TYPE,
+    );
+    let start = only(deliver(&mut bob, 0, &mut alice, &start));
+    let forged_view = keys_query(&alice, &[(&alice, &alice.keys), (&bob, &forged_bob)]);
+    assert!(a.receive(&start, &forged_view).is_empty());
+    assert_eq!(a.phase(), SasPhase::QrConfirm);
+    a.confirm_qr_scanned().unwrap();
+    assert!(matches!(
+        a.sign_master_key(
+            &mut alice.trust,
+            &alice.keys.user_signing,
+            &forged_bob.master.public_key_json()
+        ),
+        Err(CryptoError::Verification(_))
+    ));
+}
+
+/// `start` の `secret` が QR の共有の秘密と違えば、表示した側が `m.key_mismatch` で取りやめる。
+#[test]
+fn qr_wrong_secret_is_rejected() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    let start = single(
+        b.scan_qr_code(&a.qr_code().unwrap()).unwrap(),
+        VERIFICATION_START_TYPE,
+    );
+    let mut start = only(deliver(&mut bob, 0, &mut alice, &start));
+    start.content["secret"] = json!(vodozemac::base64_encode([7u8; 16]));
+    let cancel = single(a.receive(&start, &alice_view), VERIFICATION_CANCEL_TYPE);
+    assert_eq!(cancel.content["code"], cancel_code::KEY_MISMATCH);
+    assert_eq!(a.phase(), SasPhase::Cancelled);
+    assert!(a.confirm_qr_scanned().is_err());
+    assert!(a.verified_master_key().is_none());
+}
+
+/// 前の検証の QR（撮った画像）は、`transaction_id` が違うので受け付けない。取りやめずに読み直せる。
+#[test]
+fn qr_from_another_transaction_is_not_accepted() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (old, _) = SasVerification::request(alice.identity(0), &alice_view, BOB, NOW).unwrap();
+    let old_qr = old.qr_code().unwrap();
+    let (a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    assert!(matches!(
+        b.scan_qr_code(&old_qr),
+        Err(CryptoError::Verification(_))
+    ));
+    assert_eq!(b.phase(), SasPhase::ChooseMethod);
+    // 形の正しくないものも同じ。
+    assert!(matches!(
+        b.scan_qr_code(b"https://example.com"),
+        Err(CryptoError::InvalidPayload(_))
+    ));
+    assert_eq!(b.phase(), SasPhase::ChooseMethod);
+    // 正しい QR は読み取れる。
+    single(
+        b.scan_qr_code(&a.qr_code().unwrap()).unwrap(),
+        VERIFICATION_START_TYPE,
+    );
+}
+
+/// 期限（要求から 10 分）を過ぎた検証の QR は、どちらの側でも使えない。
+#[test]
+fn qr_verification_expires() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    let qr = a.qr_code().unwrap();
+    let start = single(b.scan_qr_code(&qr).unwrap(), VERIFICATION_START_TYPE);
+    let start = only(deliver(&mut bob, 0, &mut alice, &start));
+    assert!(a.receive(&start, &alice_view).is_empty());
+    assert_eq!(a.phase(), SasPhase::QrConfirm);
+
+    // 利用者が答える前に期限が過ぎた。
+    let cancel = single(
+        a.expire(NOW + VERIFICATION_TIMEOUT_MS),
+        VERIFICATION_CANCEL_TYPE,
+    );
+    assert_eq!(cancel.content["code"], cancel_code::TIMEOUT);
+    assert!(a.confirm_qr_scanned().is_err());
+    assert!(a.verified_master_key().is_none());
+    assert!(a.qr_code().is_none());
+    let cancel = only(deliver(&mut alice, 0, &mut bob, &cancel));
+    assert!(b.receive(&cancel, &bob_view).is_empty());
+    assert_eq!(b.phase(), SasPhase::Cancelled);
+    assert!(b.verified_master_key().is_none());
+
+    // 読み取る前に期限が過ぎた側は、QR を読み取れない。
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    single(
+        b.expire(NOW + VERIFICATION_TIMEOUT_MS),
+        VERIFICATION_CANCEL_TYPE,
+    );
+    assert!(b.scan_qr_code(&a.qr_code().unwrap()).is_err());
+    assert!(b.qr_code().is_none());
+}
+
+/// 表示した側の利用者が「読み取っていない」と答えたら、`m.user` で取りやめる。
+#[test]
+fn displayer_can_deny_the_scan() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    let start = single(
+        b.scan_qr_code(&a.qr_code().unwrap()).unwrap(),
+        VERIFICATION_START_TYPE,
+    );
+    let start = only(deliver(&mut bob, 0, &mut alice, &start));
+    a.receive(&start, &alice_view);
+    let cancel = single(a.cancel(), VERIFICATION_CANCEL_TYPE);
+    assert_eq!(cancel.content["code"], cancel_code::USER);
+    let cancel = only(deliver(&mut alice, 0, &mut bob, &cancel));
+    b.receive(&cancel, &bob_view);
+    assert_eq!(b.phase(), SasPhase::Cancelled);
+    assert!(b.verified_master_key().is_none());
+}
+
+/// 方式を選ぶ段階で、受けた側も絵文字を選べる。両方が同時に選んだら、`user_id` の小さい側の `start` を使う。
+#[test]
+fn simultaneous_sas_starts_use_the_smaller_user_id() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    let a_start = single(a.start_sas().unwrap(), VERIFICATION_START_TYPE);
+    let b_start = single(b.start_sas().unwrap(), VERIFICATION_START_TYPE);
+    let a_start = only(deliver(&mut alice, 0, &mut bob, &a_start));
+    let b_start = only(deliver(&mut bob, 0, &mut alice, &b_start));
+    // ALICE < BOB なので、Alice は Bob の start を無視し、Bob は Alice の start に accept を返す。
+    assert!(a.receive(&b_start, &alice_view).is_empty());
+    let accept = single(b.receive(&a_start, &bob_view), "m.key.verification.accept");
+    let accept = only(deliver(&mut bob, 0, &mut alice, &accept));
+    let key = only(deliver(
+        &mut alice,
+        0,
+        &mut bob,
+        &single(a.receive(&accept, &alice_view), VERIFICATION_KEY_TYPE),
+    ));
+    let key = only(deliver(
+        &mut bob,
+        0,
+        &mut alice,
+        &single(b.receive(&key, &bob_view), VERIFICATION_KEY_TYPE),
+    ));
+    assert!(a.receive(&key, &alice_view).is_empty());
+    assert_eq!(a.phase(), SasPhase::Compare);
+    assert_eq!(b.phase(), SasPhase::Compare);
+    assert_eq!(a.emoji_indices(), b.emoji_indices());
+}
+
+/// 受けた側が絵文字を選んでも、要求した側の QR を読み取っても、SAS の start を受けた側は、QR の
+/// reciprocate を受け付けない（方式は 1 つの検証の中で変えない）。
+#[test]
+fn method_does_not_change_after_start() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, mut b) = choose_method(&mut alice, &mut bob, &alice_view, &bob_view);
+    let qr = a.qr_code().unwrap();
+    let sas_start = single(b.start_sas().unwrap(), VERIFICATION_START_TYPE);
+    // Bob はもう SAS を始めたので、QR を読み取れない。
+    assert!(b.scan_qr_code(&qr).is_err());
+    let sas_start = only(deliver(&mut bob, 0, &mut alice, &sas_start));
+    single(
+        a.receive(&sas_start, &alice_view),
+        "m.key.verification.accept",
+    );
+    assert_eq!(a.method(), Some(VerificationMethod::Sas));
+    assert!(a.qr_code().is_none());
+}
+
+/// #368 のクライアント（QR に対応していない）とも、今までどおり絵文字で検証できる。
+#[test]
+fn peers_without_qr_support_fall_back_to_sas() {
+    // 受けた側が #368 のクライアント：ready に m.sas.v1 しかないので、要求した側はすぐに start を送る。
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, request) =
+        SasVerification::request(alice.identity(0), &alice_view, BOB, NOW).unwrap();
+    let request = only(deliver(&mut alice, 0, &mut bob, &request));
+    let mut b = SasVerification::from_request(bob.identity(0), &request, &bob_view, NOW).unwrap();
+    let mut ready = only(deliver(&mut bob, 0, &mut alice, &b.accept().unwrap()[0]));
+    ready.content["methods"] = json!(["m.sas.v1"]);
+    let start = single(a.receive(&ready, &alice_view), VERIFICATION_START_TYPE);
+    assert_eq!(start.content["method"], "m.sas.v1");
+    assert_eq!(a.phase(), SasPhase::Exchanging);
+    assert!(a.qr_code().is_none());
+
+    // 要求した側が #368 のクライアント：受けた側は QR を出さず、絵文字も選ばず、相手の start を待つ。
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (_, request) = SasVerification::request(alice.identity(0), &alice_view, BOB, NOW).unwrap();
+    let mut request = only(deliver(&mut alice, 0, &mut bob, &request));
+    request.content["methods"] = json!(["m.sas.v1"]);
+    let mut b = SasVerification::from_request(bob.identity(0), &request, &bob_view, NOW).unwrap();
+    b.accept().unwrap();
+    assert_eq!(b.phase(), SasPhase::Exchanging);
+    assert!(b.qr_code().is_none());
+    assert!(!b.can_scan_qr_code());
+    assert!(!b.can_start_sas());
+    assert!(b.start_sas().is_err());
+}
+
+/// 要求した側が、相手の受け入れより前に絵文字を選ぶと、ready を受けてすぐに SAS を始める。
+#[test]
+fn choosing_sas_before_ready_starts_it_on_ready() {
+    let (mut alice, mut bob, alice_view, bob_view) = honest_pair();
+    let (mut a, request) =
+        SasVerification::request(alice.identity(0), &alice_view, BOB, NOW).unwrap();
+    assert!(a.can_start_sas());
+    assert!(a.start_sas().unwrap().is_empty());
+    assert!(a.qr_code().is_none());
+    assert!(!a.can_start_sas());
+    let request = only(deliver(&mut alice, 0, &mut bob, &request));
+    let mut b = SasVerification::from_request(bob.identity(0), &request, &bob_view, NOW).unwrap();
+    let ready = only(deliver(&mut bob, 0, &mut alice, &b.accept().unwrap()[0]));
+    let start = single(a.receive(&ready, &alice_view), VERIFICATION_START_TYPE);
+    let start = only(deliver(&mut alice, 0, &mut bob, &start));
+    single(b.receive(&start, &bob_view), "m.key.verification.accept");
+    assert_eq!(b.phase(), SasPhase::Exchanging);
 }
