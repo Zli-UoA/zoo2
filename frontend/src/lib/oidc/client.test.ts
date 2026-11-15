@@ -383,6 +383,97 @@ describe("OidcClient session restoration", () => {
     ).toBeNull();
   });
 
+  it.each(["logout", "reset"])(
+    "keeps the restored session ID for %s after worker support disappears",
+    async (action) => {
+      const original = createHarness({
+        token: (_body, nonce) => ({
+          access_token: "access",
+          refresh_token: "refresh",
+          id_token: idToken({ nonce }),
+          expires_in: 300,
+        }),
+      });
+      await completeLogin(original);
+      const sessionId = JSON.parse(original.storage.getItem("zoo.oidc.session")!).tokens
+        .refreshSessionId;
+      const rows = new Map<string, AuthWorkerSession>([
+        [
+          sessionId,
+          {
+            binding: "stored",
+            state: "ready",
+            body: { access_token: "access", refresh_token: "refresh", expires_in: 300 },
+          },
+        ],
+      ]);
+      const worker = new AuthWorkerState({
+        store: {
+          get: async (id) => rows.get(id),
+          put: async (id, row) => {
+            rows.set(id, row);
+          },
+          staleSessionIds: async () => [],
+        },
+        exclusive: (_id, work) => work(),
+        fetch: async () => {
+          throw new Error("must not refresh");
+        },
+        now: () => 1_000_000,
+      });
+      const restored = createHarness({
+        storage: original.storage,
+        supportsRefresh: () => false,
+        authWorker: (request) => worker.run(request),
+      });
+      const saved = JSON.parse(original.storage.getItem("zoo.oidc.session")!).tokens;
+      expect(saved.refreshToken).toBeNull();
+      expect(saved.refreshSessionId).toBe(sessionId);
+      if (action === "logout") await restored.client.logout();
+      else restored.client.resetSession();
+      await vi.waitFor(() => expect(rows.get(sessionId)?.state).toBe("ended"));
+      expect(rows.get(sessionId)?.body).toBeUndefined();
+    },
+  );
+
+  it("retries old session cleanup if reset supersedes a failed logout", async () => {
+    let rejectFirst!: (error: Error) => void;
+    const first = new Promise<null>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    const authWorker = vi
+      .fn<(request: AuthWorkerRequest) => Promise<AuthWorkerResult | null>>()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValue(null);
+    const h = createHarness({
+      authWorker,
+      token: (_body, nonce) => ({
+        access_token: "access",
+        refresh_token: "refresh",
+        id_token: idToken({ nonce }),
+        expires_in: 300,
+      }),
+    });
+    await completeLogin(h);
+    const sessionId = JSON.parse(h.storage.getItem("zoo.oidc.session")!).tokens.refreshSessionId;
+    const events: string[] = [];
+    const unsubscribe = subscribeAuthSessionEnded((event) => {
+      events.push(event);
+    });
+    try {
+      const logout = h.client.logout();
+      h.client.resetSession();
+      rejectFirst(new Error("temporary cleanup failure"));
+      await logout;
+      expect(authWorker).toHaveBeenCalledTimes(2);
+      expect(authWorker).toHaveBeenNthCalledWith(2, { kind: "logout", sessionId });
+      expect(h.client.hasSession).toBe(false);
+      expect(events).not.toContain("logoutBlocked");
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("ends the worker session when API recovery resets authentication", async () => {
     const authWorker = vi.fn(async () => null);
     const h = createHarness({
