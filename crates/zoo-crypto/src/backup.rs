@@ -6,7 +6,8 @@
 //!
 //! - [`BackupDecryptionKey`]：バックアップ鍵の秘密鍵（SSSS の `m.megolm_backup.v1`）
 //! - [`BackupEncryptionKey`]：今の版の公開鍵。セッションを暗号化する
-//! - [`verify_backup_version`]：今の版の検証（マスター鍵の署名と、SSSS の鍵との一致）
+//! - [`verify_backup_version`]：今の版の検証（マスター鍵の署名、署名した方式と版の番号、SSSS の鍵との一致）
+//! - [`next_backup_version`]：次に作る版の番号（`auth_data` に入れて署名する）
 //! - [`BackupUploadState`]：アップロード待ちの記録と、今の版の検証の状態機械
 //! - [`select_previous_backup_keys`]、[`previous_versions_to_migrate`]：古い版の秘密鍵の退避と移行
 
@@ -106,24 +107,53 @@ impl BackupDecryptionKey {
         BackupEncryptionKey(self.public)
     }
 
-    /// 版の `auth_data`（`{public_key, signatures}`）を作り、マスター鍵で署名する。
-    pub fn auth_data(&self, master: &CrossSigningKeyPair) -> Result<Value, CryptoError> {
-        let mut auth_data = json!({ "public_key": self.public.to_base64() });
+    /// 版 `version` の `auth_data`（`{public_key, algorithm, version, signatures}`）を作り、マスター鍵で
+    /// 署名する。
+    ///
+    /// 方式と版の番号を署名に入れるので、サーバーは古い版の `auth_data` を別の（大きい）番号の版として
+    /// 見せられない（docs/e2ee.md の脅威モデルの「バックアップ鍵の巻き戻し」）。`version` は、サーバーが
+    /// この版に振る番号（[`next_backup_version`]）でなければならない。違えば、サーバーは 409
+    /// `E2EE_WRONG_BACKUP_VERSION` で拒む。
+    pub fn auth_data(
+        &self,
+        master: &CrossSigningKeyPair,
+        version: u64,
+    ) -> Result<Value, CryptoError> {
+        if version == 0 {
+            return Err(CryptoError::InvalidBackup(
+                "版の番号は 1 から始まります".into(),
+            ));
+        }
+        let mut auth_data = json!({
+            "public_key": self.public.to_base64(),
+            "algorithm": BACKUP_ALGORITHM,
+            "version": version.to_string(),
+        });
         master.sign_auth_data(&mut auth_data)?;
         Ok(auth_data)
     }
 
     /// `POST /api/e2ee/key_backup/versions` の要求の本文を作る。
     ///
-    /// `expected_current_version` は今の版（なければ `None`）。
+    /// `expected_current_version` は今の版（なければ `None`）。`version` は作る版の番号
+    /// （[`next_backup_version`]）。今の版があれば、作る版はその次の番号になる（今の版は、消した版も
+    /// 含めて番号が最も大きい版なので）。違えば [`CryptoError::InvalidBackup`] を返す。
     pub fn create_version_request(
         &self,
         master: &CrossSigningKeyPair,
         expected_current_version: Option<&str>,
+        version: u64,
     ) -> Result<Value, CryptoError> {
+        if let Some(current) = expected_current_version
+            && parse_version_number(current)?.checked_add(1) != Some(version)
+        {
+            return Err(CryptoError::InvalidBackup(format!(
+                "今の版 {current} の次は版 {version} ではありません"
+            )));
+        }
         Ok(json!({
             "algorithm": BACKUP_ALGORITHM,
-            "auth_data": self.auth_data(master)?,
+            "auth_data": self.auth_data(master, version)?,
             "expected_current_version": expected_current_version,
         }))
     }
@@ -450,10 +480,26 @@ pub struct VerifiedBackupVersion {
     pub public_key: Curve25519PublicKey,
 }
 
+/// 次に作る版の番号。`versions` は `GET /api/e2ee/key_backup/versions`（消した版を含むすべての版）。
+///
+/// サーバーは、消した版も含めた番号の最大に 1 を足して振る（版が 1 つもなければ 1）。
+pub fn next_backup_version(versions: &[BackupVersionInfo]) -> u64 {
+    versions
+        .iter()
+        .map(|version| version.number)
+        .max()
+        .map_or(1, |max| max.saturating_add(1))
+}
+
 /// 今の版を検証する（docs/e2ee.md の「鍵バックアップ」の【決定】）。
 ///
-/// - `algorithm` があれば [`BACKUP_ALGORITHM`] でなければならない。
+/// - 版の `algorithm` が [`BACKUP_ALGORITHM`] でなければならない（ない版も拒否する）。
 /// - `auth_data` に、`user_id` のマスター鍵 `master_key` の署名がなければならない。
+/// - 署名した `auth_data.algorithm` と `auth_data.version` が、版の `algorithm` と `version` と一致しなければ
+///   ならない。古い版の `auth_data` を大きい番号の版として見せる巻き戻しを、ここで拒む。
+/// - 方式と番号を署名に入れていない古い形式の `auth_data`（2026-11 のこの変更より前に作った版）は、
+///   版 1 のときだけ受け付ける。版 1 には巻き戻せる前の版がないので、番号を署名していなくても
+///   巻き戻しには使えない（見た番号の最大が 2 以上の端末は、[`BackupUploadState`] が拒む）。
 /// - `auth_data.public_key` が、SSSS の `m.megolm_backup.v1` から導いた公開鍵と一致しなければならない
 ///   （違えば [`CryptoError::BackupKeyMismatch`]。呼び出し側は使わずに警告を出す）。
 ///
@@ -465,12 +511,35 @@ pub fn verify_backup_version(
     master_key: &Ed25519PublicKey,
     backup_key: &BackupDecryptionKey,
 ) -> Result<VerifiedBackupVersion, CryptoError> {
+    verify_version(
+        version,
+        user_id,
+        master_key,
+        backup_key,
+        LegacyAuthData::FirstVersionOnly,
+    )
+}
+
+/// 古い形式（方式と番号を署名していない）`auth_data` の扱い。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LegacyAuthData {
+    /// 版 1 のときだけ受け付ける（アップロードの前の検証）。
+    FirstVersionOnly,
+    /// 番号にかかわらず受け付ける。初回設定が済んでいるか、SSSS とサーバーの鍵がそろっているかの
+    /// 判定（`plan_resume`）にだけ使う。古い形式の版 2 以降を持つ利用者が、解錠できなくならない
+    /// ようにするため（アップロードは [`FirstVersionOnly`](Self::FirstVersionOnly) で止まる）。
+    Any,
+}
+
+pub(crate) fn verify_version(
+    version: &Value,
+    user_id: &str,
+    master_key: &Ed25519PublicKey,
+    backup_key: &BackupDecryptionKey,
+    legacy: LegacyAuthData,
+) -> Result<VerifiedBackupVersion, CryptoError> {
     let info = BackupVersionInfo::from_json(version)?;
-    if info
-        .algorithm
-        .as_deref()
-        .is_some_and(|algorithm| algorithm != BACKUP_ALGORITHM)
-    {
+    if info.algorithm.as_deref() != Some(BACKUP_ALGORITHM) {
         return Err(CryptoError::InvalidBackup(format!(
             "対応していない方式です: {:?}",
             info.algorithm
@@ -482,6 +551,28 @@ pub fn verify_backup_version(
         &cross_signing_key_id(master_key),
         master_key,
     )?;
+    match signed_version(&info.auth_data)? {
+        Some((algorithm, signed)) => {
+            if algorithm != BACKUP_ALGORITHM {
+                return Err(CryptoError::InvalidBackup(format!(
+                    "auth_data の algorithm {algorithm:?} が版の方式と違います"
+                )));
+            }
+            if signed != info.version {
+                return Err(CryptoError::InvalidBackup(format!(
+                    "auth_data の version {signed:?} が版の番号 {:?} と違います",
+                    info.version
+                )));
+            }
+        }
+        None if legacy == LegacyAuthData::FirstVersionOnly && info.number != 1 => {
+            return Err(CryptoError::InvalidBackup(format!(
+                "版 {} の auth_data に版の番号の署名がありません（古い形式は版 1 だけ受け付けます）",
+                info.version
+            )));
+        }
+        None => {}
+    }
     if info.public_key != backup_key.public_key() {
         return Err(CryptoError::BackupKeyMismatch);
     }
@@ -490,6 +581,19 @@ pub fn verify_backup_version(
         number: info.number,
         public_key: info.public_key,
     })
+}
+
+/// `auth_data` に署名した方式と版の番号。どちらもない（古い形式）なら `None`。
+fn signed_version(auth_data: &Value) -> Result<Option<(&str, &str)>, CryptoError> {
+    match (auth_data.get("algorithm"), auth_data.get("version")) {
+        (None, None) => Ok(None),
+        (Some(Value::String(algorithm)), Some(Value::String(version))) => {
+            Ok(Some((algorithm, version)))
+        }
+        _ => Err(CryptoError::InvalidBackup(
+            "auth_data の algorithm と version は、両方とも文字列で入れます".into(),
+        )),
+    }
 }
 
 /// 版の番号を読む。`0` で始まらない 10 進の数（`0` を除く）でなければならない。
@@ -833,6 +937,101 @@ impl BackupUploadState {
                     self.pending.remove(session);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cross_signing::CrossSigningKeys;
+
+    const ALICE: &str = "00000000-0000-0000-0000-00000000000a";
+
+    /// この変更より前の形式（方式と番号を署名していない）の auth_data。
+    fn legacy_auth_data(key: &BackupDecryptionKey, master: &CrossSigningKeyPair) -> Value {
+        let mut auth_data = json!({ "public_key": key.public_key().to_base64() });
+        master.sign_auth_data(&mut auth_data).unwrap();
+        auth_data
+    }
+
+    fn version(number: &str, auth_data: &Value) -> Value {
+        json!({ "version": number, "algorithm": BACKUP_ALGORITHM, "auth_data": auth_data })
+    }
+
+    /// 古い形式は版 1 だけ受け付ける。版 2 以降は、アップロードの前の検証では拒み、初回設定の判定
+    /// （plan_resume）では通す。
+    #[test]
+    fn legacy_auth_data_is_accepted_only_as_the_first_version() {
+        let alice = CrossSigningKeys::generate(ALICE).unwrap();
+        let master = alice.master.public_key();
+        let key = BackupDecryptionKey::generate();
+        let legacy = legacy_auth_data(&key, &alice.master);
+
+        let first = verify_backup_version(&version("1", &legacy), ALICE, &master, &key).unwrap();
+        assert_eq!(first.number, 1);
+        assert!(matches!(
+            verify_backup_version(&version("2", &legacy), ALICE, &master, &key),
+            Err(CryptoError::InvalidBackup(_))
+        ));
+        let resumed = verify_version(
+            &version("2", &legacy),
+            ALICE,
+            &master,
+            &key,
+            LegacyAuthData::Any,
+        )
+        .unwrap();
+        assert_eq!(resumed.number, 2);
+
+        // 古い形式の版 1 を見たあとで、新しい形式の版 2 に進み、古い形式の版 1 には戻らない。
+        let mut state = BackupUploadState::new(ALICE).unwrap();
+        state
+            .accept_current_version(&version("1", &legacy), &master, &key)
+            .unwrap();
+        let new_key = BackupDecryptionKey::generate();
+        let next = new_key.auth_data(&alice.master, 2).unwrap();
+        assert_eq!(
+            state
+                .accept_current_version(&version("2", &next), &master, &new_key)
+                .unwrap(),
+            VersionChange::Changed
+        );
+        assert!(matches!(
+            state.accept_current_version(&version("1", &legacy), &master, &key),
+            Err(CryptoError::BackupVersionRollback { .. })
+        ));
+        // 古い形式を大きい番号として見せても通らない。
+        assert!(matches!(
+            state.accept_current_version(&version("3", &legacy), &master, &key),
+            Err(CryptoError::InvalidBackup(_))
+        ));
+    }
+
+    /// auth_data の方式と番号は、片方だけや文字列でない値を拒む。
+    #[test]
+    fn rejects_partial_signed_version_fields() {
+        let alice = CrossSigningKeys::generate(ALICE).unwrap();
+        let master = alice.master.public_key();
+        let key = BackupDecryptionKey::generate();
+        for fields in [
+            json!({ "algorithm": BACKUP_ALGORITHM }),
+            json!({ "version": "1" }),
+            json!({ "algorithm": BACKUP_ALGORITHM, "version": 1 }),
+            json!({ "algorithm": "m.megolm_backup.v1.curve25519-aes-sha2", "version": "1" }),
+        ] {
+            let mut auth_data = json!({ "public_key": key.public_key().to_base64() });
+            for (name, value) in fields.as_object().unwrap() {
+                auth_data[name] = value.clone();
+            }
+            alice.master.sign_auth_data(&mut auth_data).unwrap();
+            assert!(
+                matches!(
+                    verify_backup_version(&version("1", &auth_data), ALICE, &master, &key),
+                    Err(CryptoError::InvalidBackup(_))
+                ),
+                "{fields}"
+            );
         }
     }
 }

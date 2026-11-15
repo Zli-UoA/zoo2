@@ -495,9 +495,11 @@ impl RenderOnce for Button {
         let mut root = div()
             .id(self.id)
             .group(group)
-            .when_some(self.focus_handle.as_ref(), |d, handle| {
-                d.track_focus(handle)
-            })
+            // 無効なボタンは tab stop にしない (Tab で止まらず、Enter / Space も効かない)。
+            .when_some(
+                self.focus_handle.as_ref().filter(|_| !self.state.disabled),
+                |d, handle| d.track_focus(handle),
+            )
             .flex_none()
             .h(px(sp.height))
             .when_some(sp.width, |d, w| d.w(px(w)))

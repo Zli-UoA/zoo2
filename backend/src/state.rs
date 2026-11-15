@@ -122,6 +122,7 @@ pub struct AppState {
     pub jwks_verifier: JwksVerifier,
     pub user_cache: UserResolutionCache,
     pub call_registry: CallRegistry,
+    pub shape_streams: crate::routes::shape_limit::ShapeStreamLimiter,
 }
 
 impl AppState {
@@ -145,6 +146,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            shape_streams: Default::default(),
         }
     }
 
@@ -161,6 +163,7 @@ impl AppState {
             jwks_verifier: JwksVerifier::new(http_client),
             user_cache: UserResolutionCache::new(),
             call_registry: CallRegistry::new(),
+            shape_streams: Default::default(),
             config,
         }
     }
@@ -210,6 +213,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            shape_streams: Default::default(),
         }
     }
 
@@ -238,6 +242,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            shape_streams: Default::default(),
         }
     }
 
@@ -264,6 +269,7 @@ impl AppState {
             jwks_verifier,
             user_cache,
             call_registry,
+            shape_streams: Default::default(),
         }
     }
 }

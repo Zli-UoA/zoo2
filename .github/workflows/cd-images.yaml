@@ -39,8 +39,10 @@ jobs:
       enabled: ${{ steps.plan.outputs.enabled }}
       release: ${{ steps.plan.outputs.release }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - name: Test image planning and retention
@@ -49,7 +51,7 @@ jobs:
         run: node .github/scripts/select-runner.test.mjs
       - id: plan
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const {default: plan} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
@@ -65,11 +67,12 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           ref: ${{ needs.plan.outputs.sha }}
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -112,7 +115,7 @@ jobs:
       - name: Restore Rust cache mounts
         id: rust-cache-main
         if: (matrix.component == 'backend' && steps.existing.outputs.image == 'false') && github.ref == 'refs/heads/main'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .buildkit-cache
           key: rust-image-${{ runner.os }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
@@ -123,7 +126,7 @@ jobs:
       - name: Restore Rust cache mounts
         id: rust-cache-pr
         if: (matrix.component == 'backend' && steps.existing.outputs.image == 'false') && github.ref != 'refs/heads/main'
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: .buildkit-cache
           key: rust-image-${{ runner.os }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
@@ -133,7 +136,7 @@ jobs:
             rust-image-${{ runner.os }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-
       - name: Inject Rust cache mounts
         if: matrix.component == 'backend' && steps.existing.outputs.image == 'false'
-        uses: reproducible-containers/buildkit-cache-dance@v3
+        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3
         with:
           # main 以外はキャッシュを保存しないので、ビルド後の取り出し（ホストへのコピー）も省く。
           skip-extraction: ${{ github.ref != 'refs/heads/main' || steps.rust-cache-main.outputs.cache-hit == 'true' }}
@@ -148,7 +151,7 @@ jobs:
       - name: Build and publish immutable image
         id: image
         if: steps.existing.outputs.image == 'false'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: infra/Dockerfile-${{ matrix.component }}-deploy
@@ -181,7 +184,7 @@ jobs:
           printf '%s' "$DIGEST" > "$RUNNER_TEMP/digests/$COMPONENT"
       - name: Upload PR image digest
         if: github.event_name == 'pull_request' && steps.image.outcome == 'success'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: digest-${{ matrix.component }}
           path: ${{ runner.temp }}/digests/${{ matrix.component }}
@@ -190,7 +193,7 @@ jobs:
       - name: Build and publish shared preview frontend
         if: steps.existing.outputs.preview == 'false' && matrix.component == 'frontend' && github.event_name != 'pull_request'
         id: preview
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: infra/Dockerfile-frontend-deploy
@@ -216,32 +219,37 @@ jobs:
   # images at the newest release tag it sees on migrate, so the other two must already carry it.
   promote:
     needs: [plan, build]
-    if: github.event_name != 'pull_request'
+    # The release tags Flux follows are written only by runs of main.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           sparse-checkout: .github/scripts
       # Registry-only imagetools uses the bundled CLI; no builder or daemon.
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Promote current main images
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           IMAGE_SHA: ${{ needs.plan.outputs.sha }}
           MATRIX: ${{ needs.plan.outputs.matrix }}
           RELEASE: ${{ needs.plan.outputs.release }}
         with:
           script: |
-            const {promotionAliases} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
+            const {promotionAliases, releaseTag} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
             const {data} = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
             const sha = process.env.IMAGE_SHA;
+            // Take the commit and release tag from the run itself, not from anything a plan step could have rewritten.
+            if (context.ref !== 'refs/heads/main' || sha !== context.sha) throw new Error(`Refusing to promote ${sha} from ${context.ref}`);
+            if (process.env.RELEASE !== releaseTag(context.runNumber)) throw new Error(`Unexpected release tag: ${process.env.RELEASE}`);
             if (data.commit.sha !== sha) {
               core.notice('Newer main exists; keeping immutable tags without promoting aliases');
               return;
@@ -298,47 +306,55 @@ jobs:
     steps:
       - name: Download PR image digests
         if: needs.build.result == 'success'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: digest-*
           path: ${{ runner.temp }}/digests
           merge-multiple: true
       # Registry-only imagetools uses the bundled CLI; no builder or daemon.
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Tag PR images, migrate last
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           PR_NUMBER: ${{ needs.plan.outputs.pr }}
           IMAGE_SHA: ${{ needs.plan.outputs.sha }}
-          TAGS: ${{ needs.plan.outputs.tags }}
           ALIASES: ${{ needs.plan.outputs.aliases }}
         with:
           script: |
             const {existsSync, readFileSync} = await import('node:fs');
+            // The tag is built here from the event's PR number and head SHA, never taken from the plan output.
+            // Only pr-<number>-<SHA> can be written; a release tag cannot come out of a pull request run.
+            const event = context.payload.pull_request;
+            if (!event || process.env.PR_NUMBER !== String(event.number) || process.env.IMAGE_SHA !== event.head.sha) throw new Error('Plan output does not match the pull request event');
+            if (!/^[a-f0-9]{40}$/.test(event.head.sha)) throw new Error(`Unexpected commit SHA: ${event.head.sha}`);
+            const tag = `pr-${event.number}-${event.head.sha}`;
             // A closed or updated PR is no longer deployed; its newer run publishes the current head.
-            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: Number(process.env.PR_NUMBER)});
-            if (pr.state !== 'open' || pr.head.sha !== process.env.IMAGE_SHA) {
+            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: event.number});
+            if (pr.state !== 'open' || pr.head.sha !== event.head.sha) {
               core.notice('PR closed or changed; not tagging');
               return;
             }
-            const tags = JSON.parse(process.env.TAGS);
             const aliases = Object.fromEntries(JSON.parse(process.env.ALIASES).map(({component, source}) => [component, source]));
             for (const component of ['frontend', 'backend', 'migrate']) {
               const image = `ghcr.io/zli-uoa/zoo2-${component}`;
-              const target = `${image}:${tags[component]}`;
+              const target = `${image}:${tag}`;
               // Immutable tags are never rewritten; a rerun keeps what was already published.
               const {exitCode, stderr} = await exec.getExecOutput('docker', ['buildx', 'imagetools', 'inspect', target], {ignoreReturnCode: true, silent: true});
               if (exitCode === 0) { core.notice(`${target} already exists; not tagging`); continue; }
               if (!/not found/i.test(stderr)) throw new Error(`Cannot inspect ${target}: ${stderr.trim()}`);
               const digestFile = `${process.env.RUNNER_TEMP}/digests/${component}`;
               let source;
-              if (component in aliases) source = `${image}:${aliases[component]}`;
-              else if (existsSync(digestFile)) source = `${image}@${readFileSync(digestFile, 'utf8').trim()}`;
-              else throw new Error(`${component} was planned for a build but has no digest or tag`);
-              if (!/@sha256:[a-f0-9]{64}$|:[a-z0-9-]+$/.test(source)) throw new Error(`Unexpected source ${source}`);
+              if (component in aliases) {
+                if (!/^(preview-)?[a-f0-9]{40}$/.test(aliases[component])) throw new Error(`Unexpected alias source ${aliases[component]}`);
+                source = `${image}:${aliases[component]}`;
+              } else if (existsSync(digestFile)) {
+                const digest = readFileSync(digestFile, 'utf8').trim();
+                if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error(`Unexpected digest for ${component}`);
+                source = `${image}@${digest}`;
+              } else throw new Error(`${component} was planned for a build but has no digest or tag`);
               await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', target, source]);
             }

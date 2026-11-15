@@ -1122,9 +1122,23 @@
     },
     "tab": "加密",
     "title": "端對端加密",
-    "description": "加密頻道同私訊入面嘅訊息，淨係可以喺你嘅裝置度睇。金鑰由通行金鑰或者復原金鑰保護。",
+    "description": "加密頻道同私訊入面嘅訊息，淨係可以喺你嘅裝置度睇。",
     "loading": "載入緊加密狀態…",
-    "unavailable": "呢部裝置仲未準備好加密。請等一陣，或者閂咗其他 zoo 分頁再開過呢頁。",
+    "notReady": {
+      "unsupported": "呢個瀏覽器用唔到加密（冇 OPFS、Web Worker 或者 Web Locks）。私人視窗可能用唔到。請用一般視窗或者第二個瀏覽器開。",
+      "signedOut": "確認唔到登入咗嘅用戶。請重新登入。",
+      "userUnavailable": "讀取唔到登入咗嘅用戶資料。請等一陣，或者重新開過呢頁。",
+      "offline": "離線緊，準備唔到加密。連返線之後會自動繼續。",
+      "otherTab": "另一個 zoo 分頁或者視窗用緊呢部裝置嘅加密金鑰。閂咗嗰個分頁，呢個分頁就會接手。",
+      "starting": "準備緊加密（登記緊呢部裝置）…",
+      "deviceLimit": "登記咗嘅裝置已經到咗 20 部嘅上限。請喺下面嘅裝置清單刪除唔再用嘅裝置。",
+      "failedServer": "登記唔到呢部裝置（伺服器回應：{{status}}）。",
+      "failedServerCode": "登記唔到呢部裝置（伺服器回應：{{status}} {{code}}）。",
+      "failedNetwork": "連唔到伺服器，登記唔到呢部裝置。",
+      "failedLocal": "喺呢部裝置開唔到加密金鑰嘅儲存位置。",
+      "failedLocalNamed": "喺呢部裝置開唔到加密金鑰嘅儲存位置（{{name}}）。",
+      "retrying": "等一陣會自動再試。如果都係唔得，請重新開過呢頁。"
+    },
     "retry": "重試",
     "notSetUpTitle": "仲未設定加密",
     "notSetUpDescription": "設定之後就可以用加密頻道同私訊。會產生復原金鑰，請準備好抄低。",
@@ -1201,12 +1215,19 @@
       "renameFailed": "改唔到裝置名稱。請再試一次。",
       "revocationFailed": "撤銷未能夠儲存晒。進度留咗喺呢部裝置。請再撳一次「執行撤銷」。",
       "verifyFailed": "儲存唔到重新驗證。請再試一次。",
+      "reverifyKeyChanged": "你確認完之後，對方嘅金鑰又變咗。乜都冇儲存。請由「重新驗證」再確認一次。",
       "tooManyMembers": "加密頻道最多可以有 200 個成員。",
       "sasFailed": "開始唔到表情符號驗證。請確認對方已經設定咗加密，再試一次。"
     },
     "reunlockToAdd": "重新解鎖嚟加通行金鑰",
     "reunlockToAddDescription": "要加通行金鑰或者重新整復原金鑰，請用通行金鑰或者復原金鑰再解鎖一次。呢部裝置嘅解鎖狀態唔會變。",
     "badge": "已加密",
+    "memberUnreadable": {
+      "notSetUp": "未設定加密",
+      "notSetUpDescription": "未設定加密，所以讀唔到呢個頻道嘅新訊息。",
+      "noDevices": "冇裝置",
+      "noDevicesDescription": "冇可以用嚟加密嘅裝置，所以讀唔到呢個頻道嘅新訊息。"
+    },
     "encryptChannel": "端對端加密",
     "encryptChannelHelp": "只有成員已驗證嘅裝置先睇到訊息。加密之後唔可以取消。",
     "encryptChannelPrivateOnly": "只有私人頻道先可以加密。",
@@ -1252,10 +1273,9 @@
     },
     "downgraded": "呢個頻道之前係加密嘅，但伺服器而家話冇加密。唔會用明文傳送。",
     "checking": "確認緊呢個頻道嘅加密…",
-    "devicesTab": "裝置",
     "devices": {
       "title": "裝置",
-      "description": "持有加密金鑰嘅裝置清單。任何人都可以改裝置名稱，請用加入時間同最後使用時間分辨。",
+      "description": "持有加密金鑰嘅裝置清單。",
       "unnamed": "冇名嘅裝置",
       "current": "呢部裝置",
       "unsigned": "未簽署",
@@ -1356,7 +1376,16 @@
       },
       "reverify": "重新驗證",
       "confirmTitle": "要信任 {{name}} 而家嘅金鑰嗎？",
-      "confirmDescription": "請喺頻道以外（當面或者其他聯絡方法）確認對方真係重新產生咗金鑰先信任。儲存之前要重新登入確認身分。",
+      "confirmDescription": "請喺頻道以外（當面或者其他聯絡方法），將下面嘅指紋同 {{name}} 嘅畫面（設定「加密」入面嘅「你嘅金鑰指紋」）對一對，一樣先信任。儲存之前要重新登入確認身分。",
+      "currentFingerprint": "而家金鑰嘅指紋",
+      "previousFingerprint": "之前信任嘅金鑰指紋",
+      "keyChanged": "同之前信任嘅金鑰唔同。請確認對方真係重新產生咗金鑰。",
+      "keyUnchanged": "同之前信任嘅金鑰一樣。",
+      "sasRecommended": "可以嘅話，請用「用表情符號驗證」。唔使逐個字對指紋，都可以確認你哋睇緊同一條金鑰。",
+      "confirmEffect": "信任之後，會用你嘅使用者簽署金鑰簽署呢條金鑰，你所有裝置都會信任佢。",
+      "confirmTrust": "信任呢條金鑰",
+      "ownFingerprint": "你嘅金鑰指紋",
+      "ownFingerprintHelp": "其他人重新驗證你嗰陣，會對呢個指紋。",
       "warning": {
         "own_identity_unknown": "未確認你嘅主金鑰。解鎖之後就可以確認。",
         "own_master_key_changed": "伺服器上面嘅主金鑰同呢部裝置確認過嘅唔同。重新解鎖之前唔會發金鑰畀任何裝置。",
@@ -1383,7 +1412,7 @@
       "regenerate": "重新產生復原金鑰",
       "create": "產生復原金鑰",
       "newTitle": "新的復原金鑰",
-      "newDescription": "儲存之後，舊嘅復原金鑰會解鎖唔到。刪除或者重建金鑰槽唔等於撤銷；如果舊嘅復原金鑰可能洩漏咗，請喺「裝置」度撤銷。",
+      "newDescription": "儲存之後，舊嘅復原金鑰會解鎖唔到。刪除或者重建金鑰槽唔等於撤銷；如果舊嘅復原金鑰可能洩漏咗，請喺呢個分頁嘅「裝置」度撤銷。",
       "save": "儲存",
       "removeDescription": "以後唔可以再用呢個復原金鑰解鎖。已經攞咗嘅金鑰唔會失效。如果可能洩漏咗，請撤銷。"
     },
@@ -1530,6 +1559,13 @@
         "62": "文件夾",
         "63": "圖釘"
       }
+    },
+    "android": {
+      "saveDescription": "儲存之前要再登入一次。瀏覽器會打開，登入完之後會返嚟呢個畫面。",
+      "continueDescription": "請再登入一次，儲存中斷咗嘅初次設定。瀏覽器會打開。",
+      "reauthWaiting": "等緊你喺瀏覽器再登入…",
+      "reauthCancel": "唔登入住",
+      "browserUnavailable": "開唔到用嚟登入嘅瀏覽器。請安裝或者啟用瀏覽器，再撳多一次。"
     }
   }
 }

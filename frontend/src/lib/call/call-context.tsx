@@ -43,6 +43,7 @@ import {
   type PeerStatsSample,
 } from "./call-diagnostics";
 import { reportWebrtcEvent } from "../telemetry/capture";
+import { apiPath } from "../api/path";
 
 const defaultCallContext: CallContextValue = {
   currentChannelId: null,
@@ -300,7 +301,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          await apiClient.request(`/api/channels/${channelId}/call/signal`, {
+          await apiClient.request(apiPath`/api/channels/${channelId}/call/signal`, {
             method: "POST",
             body: {
               session_id: mySessionId,
@@ -435,7 +436,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       // サーバーへの退出リクエストはメディア停止後に送信（待たされてもマイク停止や通話切替に影響しないよう非同期発火 [P3]）
       if (channelId && sessionId) {
         void apiClient
-          .request(`/api/channels/${channelId}/call/leave`, {
+          .request(apiPath`/api/channels/${channelId}/call/leave`, {
             method: "POST",
             body: { session_id: sessionId },
           })
@@ -452,7 +453,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       const sessionId = sessionIdRef.current;
       if (channelId && sessionId) {
         const payload = JSON.stringify({ session_id: sessionId });
-        const url = joinUrl(config.apiBaseUrl, `/api/channels/${channelId}/call/leave`);
+        const url = joinUrl(config.apiBaseUrl, apiPath`/api/channels/${channelId}/call/leave`);
         const headers = cachedAuthHeadersRef.current
           ? new Headers(cachedAuthHeadersRef.current)
           : new Headers();
@@ -486,7 +487,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           if (!currentChannel || !currentSession) return;
           if (currentChannel !== channelId || currentSession !== sessionId) return;
           const targetMuted = isMutedRef.current;
-          await apiClient.request(`/api/channels/${currentChannel}/call/state`, {
+          await apiClient.request(apiPath`/api/channels/${currentChannel}/call/state`, {
             method: "POST",
             body: { session_id: currentSession, is_muted: targetMuted },
           });
@@ -549,7 +550,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       const sentGen = callGenerationRef.current;
       if (channelId && sessionId) {
         void apiClient
-          .request(`/api/channels/${channelId}/call/heartbeat`, {
+          .request(apiPath`/api/channels/${channelId}/call/heartbeat`, {
             method: "POST",
             body: { session_id: sessionId },
           })
@@ -986,7 +987,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
         const streamUrl = joinUrl(
           config.apiBaseUrl,
-          `/api/channels/${channelId}/call/stream?session_id=${mySessionId}`,
+          apiPath`/api/channels/${channelId}/call/stream?session_id=${mySessionId}`,
         );
         const response = await fetch(streamUrl, {
           headers: authHeaders,

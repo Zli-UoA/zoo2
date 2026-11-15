@@ -33,13 +33,39 @@ export interface CryptoStoreWrite {
   meta?: Record<string, string | null>;
   account?: string;
   olmSessions?: StoredOlmSession[];
-  /** 受信用セッション。新しく足したものや置き換えたものは、鍵バックアップの送信待ちに入れ直す。 */
-  inboundSessions?: { key: InboundSessionKey; pickle: string }[];
+  /**
+   * 受信用セッション。新しく足したものや置き換えたものは、鍵バックアップの送信待ちに入れ直す。
+   * `fromBackup` は、鍵バックアップの今の版から取り込んだだけの変更（同じ版には上げ直さない）。
+   * 新しい行は送信済みにし、すでにある行は送信待ちかどうかを変えない。
+   */
+  inboundSessions?: { key: InboundSessionKey; pickle: string; fromBackup?: boolean }[];
   trustStore?: string;
   /** 処理を終えて、まだ ack を送れていない to-device メッセージの ID。 */
   addProcessedToDevice?: string[];
   /** ack を送れた ID。 */
   removeProcessedToDevice?: string[];
+}
+
+/** 保存している受信用セッション（{@link CryptoBackend.readAllInboundSessions}）。 */
+export interface StoredInboundSession {
+  key: InboundSessionKey;
+  pickle: string;
+  /** 鍵バックアップに送ったか。 */
+  backedUp: boolean;
+}
+
+/**
+ * 端末が別の端末から削除されていたときに、端末だけを作り直す書き込み（{@link CryptoBackend.replaceDevice}）。
+ * 1 つのトランザクションで、`meta` をすべて置き換え、端末アカウントと `TrustStore` を書き、Olm
+ * セッションと処理済みの to-device を消す。受信用セッションは `inboundSessions` の pickle に置き換え
+ * （送ったかどうかは変えない）、`droppedInboundSessions`（開けなかった行）は消す。
+ */
+export interface DeviceReplacement {
+  meta: Record<string, string>;
+  account: string;
+  trustStore: string;
+  inboundSessions: { key: InboundSessionKey; pickle: string }[];
+  droppedInboundSessions: InboundSessionKey[];
 }
 
 export interface CryptoStoreSnapshot {
@@ -66,6 +92,10 @@ export interface CryptoBackend {
   markBackedUp(sessions: { key: InboundSessionKey; pickle: string }[]): Promise<void>;
   /** 鍵バックアップの版が変わったので、すべての受信用セッションを送信待ちに戻す。 */
   resetBackedUp(): Promise<void>;
+  /** すべての受信用セッション（端末を作り直すときに、新しい端末で封をし直すため）。 */
+  readAllInboundSessions(): Promise<StoredInboundSession[]>;
+  /** 端末だけを作り直す（{@link DeviceReplacement}）。 */
+  replaceDevice(replacement: DeviceReplacement): Promise<void>;
   close(): Promise<void>;
   /** 閉じて、保存先を消す。 */
   destroy(): Promise<void>;
@@ -104,8 +134,9 @@ export class MemoryCryptoBackend implements CryptoBackend {
     for (const session of changes.olmSessions ?? []) {
       this.olmSessions.set(session.sessionId, session);
     }
-    for (const { key, pickle } of changes.inboundSessions ?? []) {
-      this.inboundSessions.set(key, { pickle, backedUp: false });
+    for (const { key, pickle, fromBackup } of changes.inboundSessions ?? []) {
+      const backedUp = fromBackup ? (this.inboundSessions.get(key)?.backedUp ?? true) : false;
+      this.inboundSessions.set(key, { pickle, backedUp });
     }
     if (changes.trustStore !== undefined) this.trustStore = changes.trustStore;
     for (const id of changes.addProcessedToDevice ?? []) this.processedToDevice.add(id);
@@ -132,6 +163,27 @@ export class MemoryCryptoBackend implements CryptoBackend {
 
   async resetBackedUp(): Promise<void> {
     for (const session of this.inboundSessions.values()) session.backedUp = false;
+  }
+
+  async readAllInboundSessions(): Promise<StoredInboundSession[]> {
+    return [...this.inboundSessions].map(([key, session]) => ({
+      key,
+      pickle: session.pickle,
+      backedUp: session.backedUp,
+    }));
+  }
+
+  async replaceDevice(replacement: DeviceReplacement): Promise<void> {
+    this.meta = new Map(Object.entries(replacement.meta));
+    this.account = replacement.account;
+    this.trustStore = replacement.trustStore;
+    this.olmSessions.clear();
+    this.processedToDevice.clear();
+    for (const { key, pickle } of replacement.inboundSessions) {
+      const current = this.inboundSessions.get(key);
+      if (current) current.pickle = pickle;
+    }
+    for (const key of replacement.droppedInboundSessions) this.inboundSessions.delete(key);
   }
 
   async close(): Promise<void> {}

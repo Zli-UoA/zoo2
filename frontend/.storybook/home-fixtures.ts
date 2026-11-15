@@ -50,7 +50,7 @@ export const homeImageOnlyPost: HomePost = {
       media_type: "image/png",
     },
   ],
-  channel_id: "channel-general",
+  channel_id: "00000000-0000-4000-8000-000000000001",
   attachments: [
     {
       id: "home-image-attachment",

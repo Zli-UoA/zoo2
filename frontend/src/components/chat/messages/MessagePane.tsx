@@ -66,6 +66,7 @@ import {
 } from "../../../lib/e2ee/messageDecryption";
 import type { RecipientSummary } from "../../../lib/e2ee/store/megolm";
 import { localizeApiError } from "../../../lib/i18n/apiError";
+import { apiPath } from "../../../lib/api/path";
 
 /** 通知・リンクの対象を含むまで、古い方へ広げるページ数の上限 (1 ページは `MESSAGE_PAGE_SIZE` 件)。 */
 const MAX_REVEAL_PAGES = 200;
@@ -550,7 +551,7 @@ export function MessagePane({
             },
           });
         } else {
-          await appClient.request(`/api/apps/commands/${command[1]}`, {
+          await appClient.request(apiPath`/api/apps/commands/${command[1]}`, {
             method: "POST",
             body: { channel_id: channelId, text: command[2] ?? "" },
           });

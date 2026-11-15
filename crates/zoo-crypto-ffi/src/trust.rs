@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use zoo_crypto as core;
 
 use crate::{
-    CrossSigningKeyPair, Result, SignatureUpload, VerifiedDeviceKeys, ZooCryptoError, lock,
-    parse_json,
+    CrossSigningKeyPair, DeviceAccount, Result, SignatureUpload, VerifiedDeviceKeys,
+    ZooCryptoError, bytes32, lock, parse_json,
 };
 
 /// 相手ごとの記録（[`core::TrustRecord`]）。
@@ -16,6 +16,8 @@ pub struct TrustRecord {
     pub master_key: String,
     pub confirmed_usk: Option<String>,
     pub pin_pending: bool,
+    /// 記録から置き換えた古いマスター鍵（古い順）。
+    pub replaced_master_keys: Vec<String>,
 }
 
 /// TOFU で作ったピン（[`core::NewTofuPin`]）。`pin` は署名付きの `zoo.tofu_pin` の JSON。
@@ -115,6 +117,9 @@ pub struct Distribution {
     /// 登録待ちのピン。
     pub new_pins: Vec<NewTofuPin>,
     pub warnings: Vec<TrustWarning>,
+    /// 規則 3 で、記録と違う新しいマスター鍵に自分のユーザー署名鍵の署名があったので記録を置き換えた
+    /// 相手（自分の別の端末で受け入れた鍵）。「鍵が変わり、別の端末で確認済み」と知らせる。
+    pub signed_master_key_changes: Vec<String>,
 }
 
 /// 利用者が新しいマスター鍵を受け入れたときに送るもの（[`core::AcceptedMasterKey`]）。
@@ -128,7 +133,7 @@ pub struct AcceptedMasterKey {
 /// 配布先の判定に使う記録（[`core::TrustStore`]）。
 #[derive(uniffi::Object)]
 pub struct TrustStore {
-    inner: Mutex<core::TrustStore>,
+    pub(crate) inner: Mutex<core::TrustStore>,
 }
 
 #[uniffi::export]
@@ -149,9 +154,39 @@ impl TrustStore {
         }))
     }
 
+    /// [`pickle`](Self::pickle) で保存したものを戻す。`account` は今の端末。封筒を開けないときは
+    /// `InvalidPickle`、中の JSON が正しくない、または `account` のユーザーの記録でないときは
+    /// `InvalidTrustStore`。
+    #[uniffi::constructor]
+    pub fn from_pickle(
+        pickle: String,
+        account: &DeviceAccount,
+        storage_key: Vec<u8>,
+    ) -> Result<Arc<Self>> {
+        let storage_key = zeroize::Zeroizing::new(bytes32("storage_key", &storage_key)?);
+        let account = lock(&account.inner);
+        Ok(Arc::new(Self {
+            inner: Mutex::new(core::TrustStore::from_pickle(
+                &pickle,
+                &account,
+                &storage_key,
+            )?),
+        }))
+    }
+
     /// 保存形式（JSON）。端末アカウントと同じ保存鍵で暗号化して置く。
     pub fn to_json(&self) -> String {
         lock(&self.inner).to_json()
+    }
+
+    /// [`to_json`](Self::to_json) の JSON を、32 バイトの保存鍵で暗号化した、暗号ストアに置く
+    /// 文字列にする（#359）。`account` は今の端末。保存のたびに出力は変わる。
+    ///
+    /// ロックは端末アカウント、このオブジェクトの順に取る。
+    pub fn pickle(&self, account: &DeviceAccount, storage_key: Vec<u8>) -> Result<String> {
+        let storage_key = zeroize::Zeroizing::new(bytes32("storage_key", &storage_key)?);
+        let account = lock(&account.inner);
+        Ok(lock(&self.inner).pickle(&account, &storage_key))
     }
 
     pub fn user_id(&self) -> String {
@@ -173,6 +208,7 @@ impl TrustStore {
                 master_key: r.master_key.clone(),
                 confirmed_usk: r.confirmed_usk.clone(),
                 pin_pending: r.pin_pending,
+                replaced_master_keys: r.replaced_master_keys.clone(),
             })
     }
 
@@ -272,6 +308,7 @@ impl From<core::Distribution> for Distribution {
                 .collect(),
             new_pins: d.new_pins.into_iter().map(Into::into).collect(),
             warnings: d.warnings.into_iter().map(Into::into).collect(),
+            signed_master_key_changes: d.signed_master_key_changes,
         }
     }
 }

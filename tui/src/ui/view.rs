@@ -11,8 +11,12 @@ use ratatui::{
 
 use super::{
     app::{App, Focus, Mode, SidebarItem, Target},
+    e2ee_chat::{self, ChannelEncryption, CreateForm, CreateKind},
+    encryption::Screen,
     timeline::{self, Context},
 };
+use crate::e2ee::reauth;
+use crate::e2ee::setup::{E2eeStatus, LockReason};
 use crate::electric::ShapeId;
 
 const ACCENT: Color = Color::Cyan;
@@ -20,12 +24,28 @@ const DIM: Style = Style::new().fg(Color::DarkGray);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let composer_height = (app.composer.lines().len() as u16).clamp(1, 6) + 2;
-    let [main, composer, status] = Layout::vertical([
+    // 長い表示（増えた配布先、配れない相手）は、タイムラインと同じ折り返し（表示幅で切る）で自分で
+    // 折り返し、その行数を高さにする（画面の半分まで）。`Paragraph` の語ごとの折り返しでは、行数が
+    // 表示幅から計算した数より増えて、末尾が切れることがあるため。収まらなければ人数だけを出し、
+    // 全員は `V` の詳細の画面で確かめる。
+    // 入れられる行数は、画面の半分と、タイムライン（5 行）、入力欄、状態表示を残した残りの少ない方。
+    let room = frame
+        .area()
+        .height
+        .saturating_sub(5 + composer_height + 1)
+        .min(frame.area().height / 2);
+    let notice = encryption_notice(app, usize::from(frame.area().width), usize::from(room));
+    let notice_height = notice.len() as u16;
+    let [main, notice_area, composer, status] = Layout::vertical([
         Constraint::Min(5),
+        Constraint::Length(notice_height),
         Constraint::Length(composer_height),
         Constraint::Length(1),
     ])
     .areas(frame.area());
+    if !notice.is_empty() {
+        frame.render_widget(Paragraph::new(notice), notice_area);
+    }
 
     let sidebar_width = (main.width / 4).clamp(18, 32);
     let [sidebar, rest] =
@@ -54,8 +74,234 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Line::from("y: 削除 / その他: やめる"),
             ],
         ),
+        Mode::Encryption => draw_encryption(frame, app),
+        Mode::Create(form) => draw_create(frame, form),
+        Mode::Recipients { scroll } => {
+            let scroll = *scroll;
+            draw_recipients(frame, app, scroll);
+        }
         _ => {}
     }
+}
+
+/// 暗号化チャンネルの送信画面の表示（docs/e2ee.md の「鍵の配布先の判定」。React の
+/// `EncryptionRecipientsNotice` と同じ）。入力欄の上に、配布先の数、前回から増えた配布先、鍵を配れない
+/// 相手と理由を出す。格下げを見つけたら、送らないことを出す。平文のチャンネルでは何も出さない。
+fn encryption_notice(app: &App, width: usize, max_lines: usize) -> Vec<Line<'static>> {
+    let wrap = |lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
+        lines
+            .into_iter()
+            .flat_map(|line| timeline::wrap(line, width))
+            .collect()
+    };
+    let Some(channel_id) = app.current.as_deref() else {
+        return Vec::new();
+    };
+    match app.channel_encryption(channel_id) {
+        ChannelEncryption::Plain => return Vec::new(),
+        ChannelEncryption::Downgraded => {
+            return wrap(vec![Line::styled(
+                format!(" ⚠ {}", e2ee_chat::DOWNGRADED),
+                Style::new().fg(Color::Red),
+            )]);
+        }
+        ChannelEncryption::Encrypted => {}
+    }
+    let Some(summary) = app.recipients.get(channel_id) else {
+        let text = match app.encryption.status {
+            Some(E2eeStatus::Unlocked) => {
+                " 🔒 暗号化チャンネルです。送ると、メンバーの検証済みの端末あてに暗号化します"
+            }
+            _ => " 🔒 暗号化チャンネルに送るには、この端末で暗号化を解錠してください (E)",
+        };
+        return wrap(vec![Line::styled(text, DIM)]);
+    };
+    let has_lists = !summary.added_user_ids.is_empty() || !summary.undeliverable.is_empty();
+    let mut summary_line = format!(
+        " 🔒 {} 人の {} 台の端末あてに暗号化しています。",
+        summary.user_count, summary.device_count
+    );
+    if has_lists {
+        summary_line.push_str(" V: 配布先の詳細");
+    }
+    let summary_line = Line::styled(summary_line, DIM);
+    let name = |id: &str| app.store.display_name(id);
+    let added_style = Style::new().add_modifier(Modifier::BOLD);
+    let warn = Style::new().fg(Color::Yellow);
+    // 全部を出す形。
+    let mut full = vec![summary_line.clone()];
+    if !summary.added_user_ids.is_empty() {
+        let names: Vec<String> = summary.added_user_ids.iter().map(|id| name(id)).collect();
+        full.push(Line::styled(
+            format!(" 前回の送信から増えた配布先：{}", names.join(", ")),
+            added_style,
+        ));
+    }
+    if !summary.undeliverable.is_empty() {
+        let reasons: Vec<String> = summary
+            .undeliverable
+            .iter()
+            .map(|(id, reason)| reason.describe(&name(id)))
+            .collect();
+        full.push(Line::styled(
+            format!(
+                " 次の人は新しいメッセージを読めません：{}",
+                reasons.join("、")
+            ),
+            warn,
+        ));
+    }
+    let full = wrap(full);
+    if full.len() <= max_lines {
+        return full;
+    }
+    // 収まらなければ人数だけを出し、全員は `V` の詳細の画面で確かめてもらう（増えた人と配れない人を、
+    // 末尾が切れて見落とさないように、どちらも必ず 1 行は出す）。
+    let mut compact = vec![summary_line];
+    if !summary.added_user_ids.is_empty() {
+        compact.push(Line::styled(
+            format!(
+                " 前回の送信から増えた配布先：{} 人（V で一覧）",
+                summary.added_user_ids.len()
+            ),
+            added_style,
+        ));
+    }
+    if !summary.undeliverable.is_empty() {
+        compact.push(Line::styled(
+            format!(
+                " 次の人は新しいメッセージを読めません：{} 人（V で一覧）",
+                summary.undeliverable.len()
+            ),
+            warn,
+        ));
+    }
+    let compact = wrap(compact);
+    if compact.len() <= max_lines {
+        return compact;
+    }
+    // それでも収まらない小さな端末では、両方の人数と詳細の案内を短い 1 行にまとめる（配れない人を先に
+    // 出す。幅 40 でも折り返さない長さにする）。
+    let mut counts = Vec::new();
+    if !summary.undeliverable.is_empty() {
+        counts.push(format!("読めない人 {}", summary.undeliverable.len()));
+    }
+    if !summary.added_user_ids.is_empty() {
+        counts.push(format!("増えた人 {}", summary.added_user_ids.len()));
+    }
+    counts.push("V で詳細".to_owned());
+    let style = if summary.undeliverable.is_empty() {
+        added_style
+    } else {
+        warn
+    };
+    let mut minimal = wrap(vec![Line::styled(
+        format!(" 🔒 {}", counts.join("・")),
+        style,
+    )]);
+    minimal.truncate(max_lines.max(1));
+    minimal
+}
+
+/// 配布先の詳細（`V`）。増えた配布先と、鍵を配れない相手と理由を、1 人 1 行で全員出す。
+pub(super) fn recipient_details(app: &App) -> Option<Vec<Line<'static>>> {
+    let channel_id = app.current.as_deref()?;
+    let summary = app.recipients.get(channel_id)?;
+    let name = |id: &str| app.store.display_name(id);
+    let mut lines = vec![Line::from(format!(
+        "{} 人の {} 台の端末あてに暗号化しています。",
+        summary.user_count, summary.device_count
+    ))];
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        format!(
+            "前回の送信から増えた配布先（{} 人）",
+            summary.added_user_ids.len()
+        ),
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    for id in &summary.added_user_ids {
+        lines.push(Line::from(format!("  {}", name(id))));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        format!(
+            "次の人は新しいメッセージを読めません（{} 人）",
+            summary.undeliverable.len()
+        ),
+        Style::new().fg(Color::Yellow),
+    ));
+    for (id, reason) in &summary.undeliverable {
+        lines.push(Line::from(format!("  {}", reason.describe(&name(id)))));
+    }
+    Some(lines)
+}
+
+/// 配布先の詳細の画面。`scroll` 行目から、画面に入るだけ出す。
+fn draw_recipients(frame: &mut Frame, app: &App, scroll: usize) {
+    let Some(lines) = recipient_details(app) else {
+        return;
+    };
+    let height = usize::from(frame.area().height.saturating_sub(4)).max(1);
+    let total = lines.len();
+    let scroll = scroll.min(total.saturating_sub(1));
+    let mut visible: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(height).collect();
+    visible.push(Line::styled(
+        format!(
+            "j/k: スクロール ({}-{} / {}) / Esc: 閉じる",
+            scroll + 1,
+            (scroll + height).min(total),
+            total
+        ),
+        DIM,
+    ));
+    draw_popup_sized(frame, "配布先の詳細", visible, 72);
+}
+
+/// チャンネルか DM の作成の入力欄（#361）。
+fn draw_create(frame: &mut Frame, form: &CreateForm) {
+    let accent = Style::new().fg(ACCENT);
+    let (title, label) = match form.kind {
+        CreateKind::Channel => ("新しいチャンネル", "名前: "),
+        CreateKind::Dm => ("新しい DM", "相手 (@ユーザー名を空白区切り): "),
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(label, accent),
+        Span::raw(form.input.clone()),
+        Span::styled("▏", accent),
+    ])];
+    lines.push(Line::from(""));
+    match form.kind {
+        CreateKind::Channel => lines.push(Line::from(vec![
+            Span::styled("公開範囲: ", accent),
+            Span::raw(form.visibility.label()),
+        ])),
+        CreateKind::Dm => lines.push(Line::from(vec![
+            Span::styled("暗号化: ", accent),
+            Span::raw(if form.encrypted() {
+                "エンドツーエンドで暗号化する"
+            } else {
+                "しない"
+            }),
+        ])),
+    }
+    if form.encrypted() {
+        let help = match form.kind {
+            CreateKind::Channel => {
+                "メッセージはメンバーの検証済みの端末だけが読めます。暗号化はあとから解除できません。"
+            }
+            CreateKind::Dm => {
+                "メッセージは参加者の検証済みの端末だけが読めます。暗号化はあとから解除できません。"
+            }
+        };
+        lines.push(Line::styled(help, DIM));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "Tab: 切り替え / Enter: 作る / Esc: やめる",
+        DIM,
+    ));
+    draw_popup(frame, title, lines);
 }
 
 fn pane(title: Line<'static>, focused: bool) -> Block<'static> {
@@ -211,6 +457,14 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
             .unwrap_or_default(),
         Style::new().add_modifier(Modifier::BOLD),
     ));
+    match app.channel_encryption(&channel_id) {
+        ChannelEncryption::Encrypted => title.push(Span::styled(" 🔒 暗号化", DIM)),
+        ChannelEncryption::Downgraded => title.push(Span::styled(
+            " ⚠ 暗号化の状態が変わりました",
+            Style::new().fg(Color::Red),
+        )),
+        ChannelEncryption::Plain => {}
+    }
     if let Some(description) = channel
         .and_then(|c| c.description.as_deref())
         .filter(|d| !d.is_empty())
@@ -240,9 +494,13 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let reactions = app
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
+    let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
+        me_id: &app.me.id,
+        decryptions: &app.decryptions,
+        encrypted,
         selected: app.selected.as_deref(),
         reply_counts: Some(&counts),
         reactions: &reactions,
@@ -298,9 +556,13 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     let reactions = app
         .store
         .reaction_groups_by_message(&channel_id, &app.me.id);
+    let encrypted = app.channel_encryption(&channel_id).treat_as_encrypted();
     let ctx = Context {
         store: &app.store,
         me_name: &app.me.user_name,
+        me_id: &app.me.id,
+        decryptions: &app.decryptions,
+        encrypted,
         selected: thread.selected.as_deref(),
         reply_counts: None,
         reactions: &reactions,
@@ -407,6 +669,17 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(Color::Green),
             ));
         }
+        match app.encryption.status {
+            Some(E2eeStatus::NotSetUp) => spans.push(Span::styled(
+                "  暗号化: 未設定 (E)",
+                Style::new().fg(Color::Yellow),
+            )),
+            Some(E2eeStatus::Locked(_)) => spans.push(Span::styled(
+                "  暗号化: 解錠が必要 (E)",
+                Style::new().fg(Color::Yellow),
+            )),
+            _ => {}
+        }
         spans.push(Span::styled("  ?: ヘルプ  q: 終了", DIM));
         Line::from(spans)
     };
@@ -427,7 +700,10 @@ const HELP: &[(&str, &str)] = &[
     ("J / L", "チャンネルに参加 / 退出"),
     ("/", "チャンネル・スレッドを検索"),
     ("u", "選択中のスレッドを再開"),
+    ("c / m", "チャンネル / DM を作る (Tab で暗号化)"),
+    ("V", "暗号化チャンネルの配布先の詳細"),
     ("R", "送れなかった本文を入力欄に戻す"),
+    ("E", "暗号化（初回設定・解錠）"),
     ("q / Ctrl+C", "終了"),
 ];
 
@@ -444,9 +720,232 @@ fn draw_help(frame: &mut Frame) {
     draw_popup(frame, "キー操作", lines);
 }
 
+/// 暗号化の画面（#360）。
+fn draw_encryption(frame: &mut Frame, app: &mut App) {
+    let encryption = &app.encryption;
+    let key = |text: &str| Span::styled(text.to_owned(), Style::new().fg(ACCENT));
+    let warn = |text: String| Line::styled(text, Style::new().fg(Color::Yellow));
+    let error = |text: String| Line::styled(text, Style::new().fg(Color::Red));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    match &encryption.screen {
+        Screen::Loading => lines.push(Line::from("状態を読んでいます…")),
+        Screen::Unavailable(message) => {
+            lines.push(error(message.clone()));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 読み直す / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::NotSetUp => {
+            lines.push(Line::from(
+                "暗号化チャンネルを使うには、最初に鍵を作ります。",
+            ));
+            lines.push(Line::from(
+                "リカバリーキーを表示するので、控えてください。新しい端末の解錠に使います。",
+            ));
+            lines.push(Line::from(
+                "保存の直前に、ブラウザーでログインし直します（再認証）。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 初回設定を始める / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::RecoveryKey(recovery_key) => {
+            lines.push(Line::from(
+                "リカバリーキー（紙やパスワードマネージャーに控えてください）:",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::styled(
+                format!("  {}", recovery_key.as_str()),
+                Style::new().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "このキーをなくし、ほかに解錠できる端末もないと、暗号化したメッセージを読めなくなります。",
+            ));
+            lines.push(Line::from(
+                "この画面を閉じると、このキーは二度と表示しません。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("y"),
+                Span::raw(": 控えたので保存する / "),
+                key("Esc"),
+                Span::raw(": やめる"),
+            ]));
+        }
+        Screen::Reauth { url, port } => {
+            lines.push(Line::from(
+                "ブラウザーでログインし直してください（再認証）。",
+            ));
+            match (url, port) {
+                (Some(url), Some(port)) => {
+                    if !encryption.over_ssh {
+                        lines.push(Line::from(
+                            "ブラウザーが開かないときは、次の URL を開いてください。",
+                        ));
+                    }
+                    lines.push(Line::from(""));
+                    lines.push(Line::styled(url.clone(), Style::new().fg(ACCENT)));
+                    lines.push(Line::from(""));
+                    if encryption.over_ssh {
+                        for line in reauth::ssh_guidance(*port) {
+                            lines.push(warn(line));
+                        }
+                        lines.push(Line::from(""));
+                    }
+                    lines.push(Line::styled(
+                        format!(
+                            "戻り先: http://127.0.0.1:{port}/callback（この端末で待っています）"
+                        ),
+                        DIM,
+                    ));
+                }
+                _ => lines.push(Line::from("準備しています…")),
+            }
+            lines.push(Line::from(vec![
+                key("Esc"),
+                Span::raw(": 再認証をやめる（鍵はそのまま）"),
+            ]));
+        }
+        Screen::Working(message) => lines.push(Line::from(*message)),
+        Screen::Locked {
+            reason,
+            input,
+            error: message,
+        } => {
+            lines.push(Line::from(match reason {
+                LockReason::New => "この端末はまだ解錠していません。",
+                LockReason::Resume => "初回設定が途中です。リカバリーキーで開け直して続けます。",
+                LockReason::Mismatch => "鍵が変わりました。リカバリーキーで解錠し直してください。",
+            }));
+            lines.push(Line::from(
+                "リカバリーキーを入力してください（空白は無視します）。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::raw("> "),
+                Span::raw(input.as_str().to_owned()),
+                Span::styled("▏", Style::new().fg(ACCENT)),
+            ]));
+            if let Some(message) = message {
+                lines.push(Line::from(""));
+                lines.push(error(message.clone()));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 解錠する / "),
+                key("Ctrl+U"),
+                Span::raw(": 消す / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::NeedsReauth => {
+            lines.push(Line::from(
+                "解錠しました。初回設定の続きを保存するには、再認証が必要です。",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 再認証して保存する / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::SaveFailed { message, retry } => {
+            lines.push(error(message.clone()));
+            lines.push(Line::from(""));
+            if *retry {
+                lines.push(Line::from(vec![
+                    key("Enter"),
+                    Span::raw(": 同じ鍵のまま、再認証して保存し直す / "),
+                    key("Esc"),
+                    Span::raw(": 閉じる"),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    key("Enter"),
+                    Span::raw(": 読み直す / "),
+                    key("Esc"),
+                    Span::raw(": 閉じる"),
+                ]));
+            }
+        }
+        Screen::Stopped(message) => {
+            lines.push(error(message.clone()));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(": 読み直す / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+        Screen::Unlocked => {
+            lines.push(Line::from("この端末は解錠済みです。"));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                key("Enter"),
+                Span::raw(" / "),
+                key("Esc"),
+                Span::raw(": 閉じる"),
+            ]));
+        }
+    }
+    // リカバリーキーを全部表示できない（端末が小さい）ときは、キーを出さずに広げるよう求め、保存にも
+    // 進めない（見えていないキーを控えたことにしない）。
+    if matches!(app.encryption.screen, Screen::RecoveryKey(_)) {
+        let width = ENCRYPTION_POPUP_WIDTH.min(frame.area().width);
+        let fits = popup_rows(&lines, width) + 2 <= usize::from(frame.area().height);
+        app.encryption.recovery_key_shown = fits;
+        if !fits {
+            lines = vec![
+                error("端末が小さいため、リカバリーキーを全部表示できません。".into()),
+                Line::from("端末を広げてください（広げるまで保存には進めません）。"),
+                Line::from(vec![key("Esc"), Span::raw(": やめる")]),
+            ];
+        }
+    }
+    draw_popup_sized(frame, "暗号化", lines, ENCRYPTION_POPUP_WIDTH);
+}
+
+const ENCRYPTION_POPUP_WIDTH: u16 = 76;
+
+/// 幅 `width` の枠に入れたときの行数（枠を除く）。単語の区切りで折り返すと 1 行増えうるので、
+/// 折り返す行には 1 行足す。
+fn popup_rows(lines: &[Line<'_>], width: u16) -> usize {
+    let inner = usize::from(width.saturating_sub(2)).max(1);
+    lines
+        .iter()
+        .map(|line| {
+            let width = line.width();
+            if width <= inner {
+                1
+            } else {
+                width.div_ceil(inner) + 1
+            }
+        })
+        .sum()
+}
+
 fn draw_popup(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>) {
-    let width = 56.min(frame.area().width);
-    let height = (lines.len() as u16 + 2).min(frame.area().height);
+    draw_popup_sized(frame, title, lines, 56);
+}
+
+fn draw_popup_sized(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>, width: u16) {
+    let width = width.min(frame.area().width);
+    // 折り返す行（再認証の URL など）も入る高さにする。
+    let rows = popup_rows(&lines, width);
+    let height = (rows as u16).saturating_add(2).min(frame.area().height);
     let area = Rect {
         x: frame.area().width.saturating_sub(width) / 2,
         y: frame.area().height.saturating_sub(height) / 2,
@@ -476,7 +975,7 @@ mod tests {
         api::{ApiClient, Me, ReadState, ThreadSummary, TypingUser},
         electric::{Batch, Change, ShapeEvent},
         http::Credentials,
-        ui::app::AppEvent,
+        ui::{app::AppEvent, encryption::EncryptionEvent},
     };
 
     fn batch(rows: Vec<(&str, Value)>) -> Batch {
@@ -1763,6 +2262,7 @@ mod tests {
             channel_id: channel_id.into(),
             target: Target::Edit("r1".into()),
             content: "直した返信".into(),
+            edit_base: None,
         };
 
         // 別のチャンネルの失敗は入力欄に入れず、保存しておく。
@@ -1791,6 +2291,7 @@ mod tests {
             channel_id: "c1".into(),
             target: Target::Channel,
             content: "先の本文".into(),
+            edit_base: None,
         });
         assert_eq!(app.composer.lines(), ["次の本文"]);
         assert_eq!(app.failed_drafts.len(), 1);
@@ -1844,5 +2345,649 @@ mod tests {
         assert!(render(&mut app).contains("検索: sec"));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.current.as_deref(), Some("c2"));
+    }
+
+    fn render_sized(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut screen = String::new();
+        for y in 0..buffer.area.height {
+            let mut x = 0;
+            while x < buffer.area.width {
+                let symbol = buffer[(x, y)].symbol();
+                screen.push_str(symbol);
+                x += symbol.width().max(1) as u16;
+            }
+            screen.push('\n');
+        }
+        screen
+    }
+
+    fn encryption_event(app: &mut App, event: impl FnOnce(u64) -> EncryptionEvent) {
+        let generation = app.encryption.generation();
+        app.on_app_event(AppEvent::Encryption(event(generation)));
+    }
+
+    #[tokio::test]
+    async fn encryption_screen_walks_through_first_setup() {
+        let mut app = app();
+        app.me.id = "00000000-0000-4000-8000-00000000000b".into();
+        // テストでブラウザーを開かない。
+        app.encryption.over_ssh = true;
+        press(&mut app, KeyCode::Char('E'));
+        assert_eq!(app.mode, Mode::Encryption);
+        // 端末の登録が済むまでは、暗号ストアがない。
+        assert!(render_sized(&mut app, 100, 30).contains("端末を登録しています"));
+
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::NotSetUp),
+        });
+        assert!(render_sized(&mut app, 100, 30).contains("初回設定を始める"));
+        press(&mut app, KeyCode::Enter);
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("リカバリーキー"), "{screen}");
+        let Screen::RecoveryKey(key) = &app.encryption.screen else {
+            panic!("リカバリーキーを表示していない");
+        };
+        assert!(screen.contains(key.as_str()), "{screen}");
+
+        // 再認証の待ち受け。SSH の先では、ポートの転送か、Web か Android での初回設定を案内する。
+        encryption_event(&mut app, |generation| EncryptionEvent::ReauthWaiting {
+            generation,
+            url: "https://account.example/authorize?max_age=0".into(),
+            port: 41234,
+        });
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("ssh -L 41234:127.0.0.1:41234"), "{screen}");
+        assert!(screen.contains("Web か Android"), "{screen}");
+        assert!(screen.contains("max_age=0"), "{screen}");
+
+        // 再認証をやめても、鍵は捨てずに、もう一度再認証できる。
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Encryption);
+        assert!(render_sized(&mut app, 100, 30).contains("同じ鍵のまま"));
+
+        // 保存が 403 になったら、同じ鍵のまま再認証してやり直せる。
+        encryption_event(&mut app, |generation| EncryptionEvent::Failed {
+            generation,
+            failure: crate::ui::encryption::Failure::Reauth("再認証が必要です".into()),
+        });
+        assert!(render_sized(&mut app, 100, 30).contains("再認証して保存し直す"));
+        encryption_event(&mut app, |generation| EncryptionEvent::Saved { generation });
+        assert!(render_sized(&mut app, 100, 30).contains("解錠済み"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn encryption_screen_takes_a_recovery_key_and_shows_the_status() {
+        let mut app = app();
+        app.encryption.over_ssh = true;
+        press(&mut app, KeyCode::Char('E'));
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::Locked(LockReason::Resume)),
+        });
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(screen.contains("初回設定が途中です"), "{screen}");
+        app.on_terminal_event(Event::Paste("EsTc 1234".into()));
+        press(&mut app, KeyCode::Backspace);
+        assert!(render_sized(&mut app, 100, 30).contains("> EsTc 123"));
+        // 打ち間違いは、入力欄を空にして知らせる。
+        encryption_event(&mut app, |generation| EncryptionEvent::Failed {
+            generation,
+            failure: crate::ui::encryption::Failure::WrongKey(
+                "リカバリーキーの形式が違います".into(),
+            ),
+        });
+        assert!(render_sized(&mut app, 100, 30).contains("リカバリーキーの形式が違います"));
+        // 古い世代の結果は捨てる。
+        app.on_app_event(AppEvent::Encryption(EncryptionEvent::Saved {
+            generation: 0,
+        }));
+        assert!(!render_sized(&mut app, 100, 30).contains("解錠済み"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+        // 閉じても、解錠が要ることをステータス行に出す。
+        assert!(render_sized(&mut app, 100, 30).contains("暗号化: 解錠が必要 (E)"));
+    }
+
+    #[tokio::test]
+    async fn a_recovery_key_that_does_not_fit_cannot_be_confirmed() {
+        let mut app = app();
+        app.me.id = "00000000-0000-4000-8000-00000000000b".into();
+        app.encryption.over_ssh = true;
+        press(&mut app, KeyCode::Char('E'));
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::NotSetUp),
+        });
+        press(&mut app, KeyCode::Enter);
+        let Screen::RecoveryKey(key) = &app.encryption.screen else {
+            panic!("リカバリーキーを表示していない");
+        };
+        let key = key.as_str().to_owned();
+        // いったんキー全体を表示してから、表示中に端末を縮める。キーを出さずに広げるよう求め、y では
+        // 保存に進まない（画面は、キー操作の前に必ず描き直す）。
+        assert!(render_sized(&mut app, 100, 30).contains(&key));
+        assert!(app.encryption.recovery_key_shown);
+        let screen = render_sized(&mut app, 100, 8);
+        assert!(screen.contains("端末を広げてください"), "{screen}");
+        assert!(!screen.contains(&key));
+        assert!(!app.encryption.recovery_key_shown);
+        press(&mut app, KeyCode::Char('y'));
+        assert!(matches!(app.encryption.screen, Screen::RecoveryKey(_)));
+        // 広げてキー全体が見えたら、保存に進める。
+        assert!(render_sized(&mut app, 100, 30).contains(&key));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(!matches!(app.encryption.screen, Screen::RecoveryKey(_)));
+    }
+
+    #[tokio::test]
+    async fn a_backup_conflict_while_running_asks_to_unlock_again() {
+        let user = "00000000-0000-4000-8000-00000000000b";
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::e2ee::store::crypto_root(dir.path());
+        let mut store = crate::e2ee::store::CryptoStore::open(&root, user)
+            .unwrap()
+            .store;
+        let (session, _) = zoo_crypto::SetupSession::begin(user).unwrap();
+        store.save_own_keys(session.secrets(), Some(1)).unwrap();
+        let store = std::sync::Arc::new(tokio::sync::Mutex::new(store));
+        let (tx, stores) = tokio::sync::watch::channel(Some((user.to_owned(), store.clone())));
+        let mut app = app();
+        app.me.id = user.into();
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: None,
+        });
+        press(&mut app, KeyCode::Char('E'));
+        encryption_event(&mut app, |generation| EncryptionEvent::Status {
+            generation,
+            result: Ok(E2eeStatus::Unlocked),
+        });
+        app.on_tick();
+        assert!(render_sized(&mut app, 100, 30).contains("解錠済み"));
+        // 端末の管理のタスクが、鍵バックアップの送信で 409 E2EE_SSSS_CONFLICT を受けた。
+        store.lock().await.forget_secrets_revision().unwrap();
+        app.on_tick();
+        let screen = render_sized(&mut app, 100, 30);
+        assert!(
+            screen.contains("リカバリーキーで解錠し直してください"),
+            "{screen}"
+        );
+        assert!(screen.contains("暗号化: 解錠が必要 (E)"), "{screen}");
+        drop(tx);
+    }
+
+    /// 暗号化チャンネル `c3`（メンバーは自分と Bob）と、その行を入れる。
+    fn encrypted_app(name: &str, encrypted: bool) -> App {
+        let mut app = app();
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c3",
+                json!({ "id": "c3", "channel_name": name, "is_private": "t",
+                        "encrypted": if encrypted { "t" } else { "f" }, "membership_epoch": "1" }),
+            )]),
+        ));
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![
+                ("m31", json!({ "user_id": "u1", "channel_id": "c3" })),
+                ("m32", json!({ "user_id": "u2", "channel_id": "c3" })),
+            ]),
+        ));
+        app.focus = Focus::Messages;
+        app.open_channel("c3".into());
+        app
+    }
+
+    fn encrypted_row(id: &str, at: &str, ciphertext: bool, epoch: Option<u64>) -> (String, Value) {
+        let mut row = json!({ "id": id, "user_id": "u2", "channel_id": "c3", "content": "",
+                              "created_at": at, "revision": "0" });
+        if ciphertext {
+            row["ciphertext"] = json!(
+                r#"{"algorithm":"m.megolm.v1.aes-sha2","sender_key":"k","device_id":"d","session_id":"s","ciphertext":"x"}"#
+            );
+        }
+        if let Some(epoch) = epoch {
+            row["epoch"] = json!(epoch.to_string());
+        }
+        (id.to_owned(), row)
+    }
+
+    #[tokio::test]
+    async fn shows_decrypted_and_undecryptable_messages_in_encrypted_channels() {
+        use crate::e2ee::store::{Decrypted, Decryption, SenderTrust, UndecryptableReason};
+        let mut app = encrypted_app("secret-e2ee", true);
+        let rows = [
+            encrypted_row("e1", "2026-11-01 04:00:00", true, Some(1)),
+            encrypted_row("e2", "2026-11-01 04:01:00", true, Some(1)),
+            encrypted_row("e3", "2026-11-01 04:02:00", true, Some(1)),
+            encrypted_row("e4", "2026-11-01 04:03:00", false, Some(1)),
+            {
+                let (id, mut row) = encrypted_row("e5", "2026-11-01 03:59:00", false, None);
+                row["content"] = json!("切り替える前の本文");
+                (id, row)
+            },
+        ];
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c3".into()),
+            batch(
+                rows.iter()
+                    .map(|(id, row)| (id.as_str(), row.clone()))
+                    .collect(),
+            ),
+        ));
+        let key = |id: &str| {
+            crate::ui::e2ee_chat::RowKey::of(app.store.message("c3", id).expect("行がある"))
+        };
+        let results = vec![
+            (
+                "e1".into(),
+                key("e1"),
+                Decryption::Decrypted(Decrypted {
+                    body: "復号した本文".into(),
+                    kind: "message".into(),
+                    mentions: Default::default(),
+                    sender: SenderTrust::Unverified,
+                    revision: zoo_crypto::RevisionStatus::Latest,
+                    attachments: vec![zoo_crypto::AttachmentInfo {
+                        attachment_id: uuid::Uuid::new_v4().to_string(),
+                        name: "plan.pdf".into(),
+                        mimetype: "application/pdf".into(),
+                        size: 3,
+                        width: None,
+                        height: None,
+                        sensitive: false,
+                        file: zoo_crypto::encrypt_attachment(b"pdf").file,
+                    }],
+                }),
+            ),
+            (
+                "e2".into(),
+                key("e2"),
+                Decryption::Undecryptable(UndecryptableReason::KeyMissing),
+            ),
+        ];
+        app.on_app_event(AppEvent::Decrypted {
+            channel_id: "c3".into(),
+            results,
+            generation: Some(1),
+        });
+        let screen = render_sized(&mut app, 140, 40);
+        assert!(screen.contains("🔒 暗号化"), "{screen}");
+        assert!(screen.contains("復号した本文"), "{screen}");
+        assert!(screen.contains("[未検証の送信者]"), "{screen}");
+        assert!(screen.contains("plan.pdf"), "{screen}");
+        assert!(screen.contains("鍵がまだ届いていません"), "{screen}");
+        // まだ結果のない行は、本文（空）を出さずに待つ。
+        assert!(screen.contains("準備ができると"), "{screen}");
+        assert!(
+            screen.contains("暗号化されていないため表示しません"),
+            "{screen}"
+        );
+        assert!(screen.contains("切り替える前の本文"), "{screen}");
+        assert!(screen.contains("[暗号化前]"), "{screen}");
+        // 解錠していない端末には、送る前に解錠を案内する。
+        assert!(screen.contains("暗号化を解錠してください"), "{screen}");
+
+        // 配布先を判定したら、入力欄の上に数と、増えた人、配れない人を出す。
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: crate::e2ee::store::RecipientSummary {
+                epoch: 1,
+                user_count: 1,
+                device_count: 2,
+                user_ids: vec!["u1".into(), "u2".into()],
+                added_user_ids: vec!["u2".into()],
+                undeliverable: vec![(
+                    "u2".into(),
+                    crate::e2ee::store::UndeliverableReason::NotSetUp,
+                )],
+                new_pins: Vec::new(),
+            },
+        });
+        let screen = render_sized(&mut app, 140, 40);
+        assert!(
+            screen.contains("1 人の 2 台の端末あてに暗号化しています"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("前回の送信から増えた配布先：Bob"),
+            "{screen}"
+        );
+        // 狭い端末でも、配れない相手の理由を折り返して末尾まで出す。
+        let narrow: String = render_sized(&mut app, 50, 40)
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '│')
+            .collect();
+        assert!(
+            narrow.contains("Bobさんは暗号化を設定していません"),
+            "{narrow}"
+        );
+        assert!(
+            screen.contains("Bob さんは暗号化を設定していません"),
+            "{screen}"
+        );
+
+        // 暗号化前のメッセージと、復号できていないメッセージは編集できない（自分のメッセージにして試す）。
+        let mut mine = rows[4].1.clone();
+        mine["user_id"] = json!("u1");
+        let mut missing = rows[1].1.clone();
+        missing["user_id"] = json!("u1");
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c3".into()),
+            batch(vec![("e5", mine), ("e2", missing)]),
+        ));
+        app.selected = Some("e5".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(render_sized(&mut app, 140, 40).contains("暗号化前のメッセージは編集できません"));
+        app.selected = Some("e2".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(
+            render_sized(&mut app, 140, 40).contains("復号できていないメッセージは編集できません")
+        );
+    }
+
+    #[tokio::test]
+    async fn edits_are_not_sent_when_another_device_edited_after_starting() {
+        use crate::e2ee::store::{Decrypted, Decryption, SenderTrust};
+        let mut app = encrypted_app("secret-e2ee", true);
+        let feed = |app: &mut App, revision: u64, body: &str| {
+            let (id, mut row) = encrypted_row("e1", "2026-11-01 04:00:00", true, Some(1));
+            row["user_id"] = json!("u1");
+            row["revision"] = json!(revision.to_string());
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages("c3".into()),
+                batch(vec![(id.as_str(), row)]),
+            ));
+            let key =
+                crate::ui::e2ee_chat::RowKey::of(app.store.message("c3", "e1").expect("行がある"));
+            app.on_app_event(AppEvent::Decrypted {
+                channel_id: "c3".into(),
+                results: vec![(
+                    "e1".into(),
+                    key,
+                    Decryption::Decrypted(Decrypted {
+                        body: body.into(),
+                        kind: "message".into(),
+                        mentions: Default::default(),
+                        sender: SenderTrust::Verified,
+                        revision: zoo_crypto::RevisionStatus::Latest,
+                        attachments: Vec::new(),
+                    }),
+                )],
+                generation: Some(1),
+            });
+        };
+        feed(&mut app, 0, "元の本文");
+        app.selected = Some("e1".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.composer.lines(), ["元の本文"]);
+        app.composer.insert_str("（直した）");
+        // 編集しているあいだに、別の端末の編集（版 1）が届いた。
+        feed(&mut app, 1, "別の端末で直した本文");
+        press(&mut app, KeyCode::Enter);
+        // 版 1 を基準に送り直さず、下書きを残して知らせる。
+        assert_eq!(app.composer.lines(), ["元の本文（直した）"]);
+        assert_eq!(app.target, Target::Edit("e1".into()));
+        assert!(
+            render_sized(&mut app, 140, 40).contains("ほかの場所で編集されました"),
+            "競合を知らせる"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_restored_edit_draft_keeps_the_revision_it_started_from() {
+        use crate::e2ee::store::{Decrypted, Decryption, SenderTrust};
+        let mut app = encrypted_app("secret-e2ee", true);
+        let feed = |app: &mut App, revision: u64, body: &str| {
+            let (id, mut row) = encrypted_row("e1", "2026-11-01 04:00:00", true, Some(1));
+            row["user_id"] = json!("u1");
+            row["revision"] = json!(revision.to_string());
+            app.on_shape(ShapeEvent::Batch(
+                ShapeId::Messages("c3".into()),
+                batch(vec![(id.as_str(), row)]),
+            ));
+            let key =
+                crate::ui::e2ee_chat::RowKey::of(app.store.message("c3", "e1").expect("行がある"));
+            app.on_app_event(AppEvent::Decrypted {
+                channel_id: "c3".into(),
+                results: vec![(
+                    "e1".into(),
+                    key,
+                    Decryption::Decrypted(Decrypted {
+                        body: body.into(),
+                        kind: "message".into(),
+                        mentions: Default::default(),
+                        sender: SenderTrust::Verified,
+                        revision: zoo_crypto::RevisionStatus::Latest,
+                        attachments: Vec::new(),
+                    }),
+                )],
+                generation: Some(1),
+            });
+        };
+        feed(&mut app, 0, "元の本文");
+        // 版 0 から始めた編集が送れずに、失敗した下書きとして残った。
+        app.composer.insert_str("書きかけ");
+        app.on_app_event(AppEvent::RestoreDraft {
+            channel_id: "c3".into(),
+            target: Target::Edit("e1".into()),
+            content: "版 0 から直した本文".into(),
+            edit_base: Some(0),
+        });
+        assert_eq!(app.failed_drafts.len(), 1);
+        app.composer = tui_textarea::TextArea::default();
+        // 別の端末の版 1 が届き、版 1 から編集を始めてからやめる。
+        feed(&mut app, 1, "別の端末で直した本文");
+        app.selected = Some("e1".into());
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Insert);
+        press(&mut app, KeyCode::Esc);
+        app.composer = tui_textarea::TextArea::default();
+        app.target = Target::Channel;
+        // 版 0 の下書きを戻して送ると、版 1 を上書きせずに知らせる。
+        press(&mut app, KeyCode::Char('R'));
+        assert_eq!(app.composer.lines(), ["版 0 から直した本文"]);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["版 0 から直した本文"]);
+        assert!(
+            render_sized(&mut app, 140, 40).contains("ほかの場所で編集されました"),
+            "競合を知らせる"
+        );
+    }
+
+    #[tokio::test]
+    async fn encrypted_channels_are_recorded_right_away() {
+        let mut app = app();
+        let me = "00000000-0000-4000-8000-0000000000b0";
+        app.me.id = me.into();
+        let dir = tempfile::tempdir().unwrap();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: Some(dir.path().to_owned()),
+        });
+        // 暗号ストアがまだ開いていなくても、`encrypted = true` を見たらその場で記録する。
+        app.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c3",
+                json!({ "id": "c3", "channel_name": "secret-e2ee", "is_private": "t", "encrypted": "t" }),
+            )]),
+        ));
+        assert_eq!(
+            crate::e2ee::store::read_encrypted_channels(dir.path(), me).unwrap(),
+            vec!["c3".to_owned()]
+        );
+    }
+
+    #[tokio::test]
+    async fn plaintext_is_held_back_while_the_records_are_unreadable() {
+        let mut app = app();
+        let me = "00000000-0000-4000-8000-0000000000b0";
+        app.me.id = me.into();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(me)).unwrap();
+        std::fs::write(dir.path().join(me).join("state.json"), b"{broken").unwrap();
+        let (_tx, stores) = tokio::sync::watch::channel(None);
+        app.attach_encryption(crate::ui::encryption::E2eeContext {
+            oidc: None,
+            stores,
+            crypto_root: Some(dir.path().to_owned()),
+        });
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('i'));
+        app.composer.insert_str("平文");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["平文"]);
+        assert!(render_sized(&mut app, 140, 30).contains("記録を読めないため"));
+    }
+
+    #[tokio::test]
+    async fn long_recipient_lists_fall_back_to_counts_and_a_details_screen() {
+        use crate::e2ee::store::{RecipientSummary, UndeliverableReason};
+        let summary = |added: usize, undeliverable: usize| RecipientSummary {
+            epoch: 1,
+            user_count: 2,
+            device_count: 3,
+            user_ids: Vec::new(),
+            added_user_ids: (0..added).map(|i| format!("added-user-{i:05}")).collect(),
+            undeliverable: (0..undeliverable)
+                .map(|i| {
+                    (
+                        format!("missing-user-{i:03}"),
+                        UndeliverableReason::NotSetUp,
+                    )
+                })
+                .collect(),
+            new_pins: Vec::new(),
+        };
+        let squash = |screen: String| -> String {
+            screen
+                .chars()
+                .filter(|c| !c.is_whitespace() && *c != '│')
+                .collect()
+        };
+
+        // 4 人ずつなら、幅 50 でも折り返して全員を出す。
+        let mut app = encrypted_app("secret-e2ee", true);
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: summary(4, 4),
+        });
+        let screen = squash(render_sized(&mut app, 50, 40));
+        assert!(screen.contains("added-user-00003"), "{screen}");
+        assert!(
+            screen.contains("missing-user-003さんは暗号化を設定していません"),
+            "{screen}"
+        );
+
+        // 収まらなければ人数だけを出し、増えた人と配れない人の両方を必ず出す。
+        app.on_app_event(AppEvent::Recipients {
+            channel_id: "c3".into(),
+            summary: summary(30, 5),
+        });
+        let screen = squash(render_sized(&mut app, 50, 20));
+        assert!(
+            screen.contains("前回の送信から増えた配布先：30人（Vで一覧）"),
+            "{screen}"
+        );
+        assert!(
+            screen.contains("次の人は新しいメッセージを読めません：5人（Vで一覧）"),
+            "{screen}"
+        );
+
+        // とても小さな端末でも、両方の人数と詳細の案内を出す。
+        for height in [8, 12] {
+            let screen = squash(render_sized(&mut app, 40, height));
+            assert!(
+                screen.contains("読めない人5・増えた人30・Vで詳細"),
+                "{height}: {screen}"
+            );
+        }
+
+        // `V` の詳細の画面では、スクロールして全員を確かめられる。
+        app.focus = Focus::Messages;
+        press(&mut app, KeyCode::Char('V'));
+        assert!(matches!(app.mode, Mode::Recipients { .. }));
+        let screen = squash(render_sized(&mut app, 50, 20));
+        assert!(screen.contains("配布先の詳細"), "{screen}");
+        assert!(screen.contains("added-user-00000"), "{screen}");
+        assert!(!screen.contains("missing-user-004"), "{screen}");
+        press(&mut app, KeyCode::Char('G'));
+        let screen = squash(render_sized(&mut app, 50, 20));
+        assert!(
+            screen.contains("missing-user-004さんは暗号化を設定していません"),
+            "{screen}"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn downgraded_channels_warn_and_keep_the_draft() {
+        let mut app = encrypted_app("edm:u1:u2", false);
+        let screen = render_sized(&mut app, 140, 30);
+        assert!(screen.contains("暗号化の状態が変わりました"), "{screen}");
+        assert!(screen.contains("平文では送信しません"), "{screen}");
+        press(&mut app, KeyCode::Char('i'));
+        app.composer.insert_str("送らない本文");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.composer.lines(), ["送らない本文"]);
+    }
+
+    #[tokio::test]
+    async fn creates_encrypted_channels_and_dms_from_the_dialog() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('c'));
+        for ch in "proj".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        let screen = render_sized(&mut app, 120, 30);
+        assert!(screen.contains("新しいチャンネル"), "{screen}");
+        assert!(screen.contains("名前: proj"), "{screen}");
+        assert!(
+            screen.contains("非公開・エンドツーエンドで暗号化する"),
+            "{screen}"
+        );
+        assert!(screen.contains("あとから解除できません"), "{screen}");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+
+        // DM は、知らないユーザー名なら作らない。
+        press(&mut app, KeyCode::Char('m'));
+        for ch in "@nobody".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Tab);
+        assert!(render_sized(&mut app, 120, 30).contains("エンドツーエンドで暗号化する"));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(render_sized(&mut app, 120, 30).contains("ユーザーが見つかりません: @nobody"));
+
+        // 暗号化を求めたのに平文のチャンネルが返ったら、送らない。
+        app.on_app_event(AppEvent::Created {
+            channel_id: "c2".into(),
+            requested_encryption: true,
+            encrypted: false,
+        });
+        assert_eq!(app.current.as_deref(), Some("c2"));
+        assert_eq!(
+            app.channel_encryption("c2"),
+            crate::ui::e2ee_chat::ChannelEncryption::Downgraded
+        );
     }
 }

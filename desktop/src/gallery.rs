@@ -222,7 +222,7 @@ pub fn run(args: &[String]) {
             Some(scenario) => crate::gallery_shell::run(scenario),
             None => {
                 eprintln!(
-                    "gallery shell の引数は workspace、loading、welcome、thread のどれかです"
+                    "gallery shell の引数は workspace、loading、welcome、thread、composer、thread-reply、create-channel、emoji、delete、switcher、search のどれかです"
                 );
                 std::process::exit(2);
             }

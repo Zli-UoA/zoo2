@@ -41,12 +41,12 @@ jobs:
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Atlas
-        uses: ariga/setup-atlas@v0
+        uses: ariga/setup-atlas@28f0b75814c08b1a265b75713c120cfad46433ae # v0
         with:
           # 生成物を文字単位で比べるので、開発シェル (flake.nix の nixpkgs の atlas) と版をそろえる。
           version: v1.3.0

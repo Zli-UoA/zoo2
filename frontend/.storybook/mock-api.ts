@@ -143,7 +143,8 @@ export const storybookApiHandlers = [
     }),
   ),
   http.get(/\/api\/channels\/[^/]+\/read-state$/, ({ request }) => {
-    const channelId = new URL(request.url).pathname.split("/")[3] ?? "channel-general";
+    const channelId =
+      new URL(request.url).pathname.split("/")[3] ?? "00000000-0000-4000-8000-000000000001";
     return HttpResponse.json({
       channel_id: channelId,
       last_read_at: lastReadAt,
@@ -151,7 +152,8 @@ export const storybookApiHandlers = [
     });
   }),
   http.post(/\/api\/channels\/[^/]+\/read-state$/, ({ request }) => {
-    const channelId = new URL(request.url).pathname.split("/")[3] ?? "channel-general";
+    const channelId =
+      new URL(request.url).pathname.split("/")[3] ?? "00000000-0000-4000-8000-000000000001";
     return HttpResponse.json({
       channel_id: channelId,
       last_read_at: lastReadAt,

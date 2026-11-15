@@ -127,6 +127,7 @@ mod tests {
         Discovery {
             issuer: "https://issuer".into(),
             token_endpoint: format!("{}/token", server.uri()),
+            authorization_endpoint: None,
             device_authorization_endpoint: Some(format!("{}/device/code", server.uri())),
             revocation_endpoint: None,
         }

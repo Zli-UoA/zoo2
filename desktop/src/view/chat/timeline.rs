@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, rc::Rc};
 
-use gpui::{AnyElement, Context, Div, ParentElement, Styled, div, prelude::*, px};
+use gpui::{AnyElement, Context, Div, ParentElement, Styled, Window, div, prelude::*, px};
 use zoo2_client_core::electric::ShapeId;
 
 use crate::i18n::I18n;
@@ -22,6 +22,7 @@ impl WorkspaceView {
         &self,
         pending_scroll_id: Option<&str>,
         channels: Rc<HashMap<String, String>>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> (Div, Option<usize>, bool) {
         if self.state.read(cx).current_channel.is_none() {
@@ -40,7 +41,6 @@ impl WorkspaceView {
             can_join,
             can_leave,
             failed_draft_count,
-            confirm_delete_id,
             synced,
             timeline_at_bottom,
             all_root_messages,
@@ -89,7 +89,6 @@ impl WorkspaceView {
             let can_join = channel.is_some_and(|c| state.can_join_channel(c));
             let can_leave = channel.is_some_and(|c| state.can_leave_channel(c));
             let failed_draft_count = state.failed_drafts.len();
-            let confirm_delete_id = state.confirm_delete_message.clone();
             let synced = state
                 .store
                 .is_synced(&ShapeId::Messages(channel_id.clone()));
@@ -116,7 +115,6 @@ impl WorkspaceView {
                 can_join,
                 can_leave,
                 failed_draft_count,
-                confirm_delete_id,
                 synced,
                 timeline_at_bottom,
                 all_root_messages,
@@ -201,7 +199,6 @@ impl WorkspaceView {
         timeline_items.push(div().h(px(12.0)).flex_none().into_any_element());
 
         let ch_id_for_join = channel_id.clone();
-        let theme = self.state.read(cx).theme();
 
         // 読み込み中は `MessageSkeleton`、空は `MessageState`。
         let placeholder_kind = timeline_placeholder(visible_roots.is_empty(), synced);
@@ -280,11 +277,7 @@ impl WorkspaceView {
             })
             // 検索バー
             .when(is_searching, |d| {
-                d.child(self.render_message_search_bar(cx))
-            })
-            // 削除確認バー
-            .when(confirm_delete_id.is_some(), |d| {
-                d.child(self.render_delete_confirm_bar(theme, cx))
+                d.child(self.render_message_search_bar(window, cx))
             })
             // タイムライン本体
             .child(
@@ -327,7 +320,7 @@ impl WorkspaceView {
                     ),
             )
             // 下部入力欄
-            .child(self.render_composer_view(cx));
+            .child(self.render_composer_view(window, cx));
 
         (
             timeline_view,

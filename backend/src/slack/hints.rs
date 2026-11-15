@@ -351,15 +351,16 @@ async fn apply(
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
     // `slack_message_map` に行があれば、その Zoo のメッセージを使う。Zoo で作った投稿 (`zoo`) は Zoo が正なので、
     // Slack での編集・削除は反映しない。Slack からのリアクションと返信は、その投稿に付ける
-    let (id, zoo_origin) = match mapped(&mut tx, team, slack_channel, ts).await? {
-        Some((id, origin)) => (id, origin == "zoo"),
-        None => (super::message_id(team, slack_channel, ts), false),
+    let (id, zoo_origin, zoo_mapped) = match mapped(&mut tx, team, slack_channel, ts).await? {
+        Some((id, origin)) => (id, origin == "zoo", true),
+        None => (super::message_id(team, slack_channel, ts), false, false),
     };
     let existing = query(
         &mut tx,
         "SELECT json_build_object('deleted',deleted_at IS NOT NULL,'content',content,'card',COALESCE(card,''))::text \
-         FROM messages WHERE id=$1 AND channel_id=$2",
-        &[&id, zoo_channel],
+         FROM messages WHERE id=$1 AND channel_id=$2 \
+         AND ($3='' OR created_at=(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3))",
+        &[&id, zoo_channel, if zoo_mapped || !super::is_valid_ts(ts) { "" } else { ts }],
     )
     .await?
     .into_iter()

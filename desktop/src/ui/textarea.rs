@@ -1,8 +1,6 @@
 //! `textarea.tsx`。見た目だけの枠。高さは内容に合わせて伸び、最小は `min-h-16` (64px)。
 
-use gpui::{
-    AnyElement, App, FocusHandle, SharedString, StyleRefinement, Window, div, prelude::*, px,
-};
+use gpui::{AnyElement, App, SharedString, StyleRefinement, Window, div, prelude::*, px};
 
 use super::{Palette, TextSpec, alpha, palette, ring};
 use crate::fonts;
@@ -46,12 +44,6 @@ pub fn colors(p: &Palette, focused: bool, disabled: bool, invalid: bool) -> Text
     }
 }
 
-/// 実フォーカス時 (`.focus(...)`) に重ねる枠と輪。`colors()` の focused 版をそのまま使うので、
-/// invalid は focus より優先される。
-pub fn focus_style(p: &Palette, disabled: bool, invalid: bool) -> TextareaColors {
-    colors(p, true, disabled, invalid)
-}
-
 #[derive(IntoElement)]
 pub struct Textarea {
     value: Option<SharedString>,
@@ -59,7 +51,6 @@ pub struct Textarea {
     focused: bool,
     disabled: bool,
     invalid: bool,
-    focus_handle: Option<FocusHandle>,
     children: Vec<AnyElement>,
     style: StyleRefinement,
 }
@@ -72,7 +63,6 @@ impl Textarea {
             focused: false,
             disabled: false,
             invalid: false,
-            focus_handle: None,
             children: Vec::new(),
             style: StyleRefinement::default(),
         }
@@ -88,6 +78,7 @@ impl Textarea {
         self
     }
 
+    /// 枠の色と輪を出す。中の入力欄にフォーカスがあるかは、呼び出し側が render で調べて渡す。
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
         self
@@ -101,11 +92,6 @@ impl Textarea {
     /// `aria-invalid`。
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
-        self
-    }
-
-    pub fn focus_handle(mut self, handle: &FocusHandle) -> Self {
-        self.focus_handle = Some(handle.clone());
         self
     }
 }
@@ -152,16 +138,6 @@ impl RenderOnce for Textarea {
             .when_some(c.ring, |d, (color, w)| d.shadow(vec![ring(color, w)]))
             .children(shown)
             .children(self.children);
-        if let Some(handle) = self.focus_handle.as_ref() {
-            let focus = focus_style(&p, self.disabled, self.invalid);
-            area = area.track_focus(handle).focus(move |s| {
-                let s = s.border_color(focus.border);
-                match focus.ring {
-                    Some((color, w)) => s.shadow(vec![ring(color, w)]),
-                    None => s,
-                }
-            });
-        }
         area.style().refine(&self.style);
         area
     }
@@ -190,19 +166,6 @@ mod tests {
         assert!((c.bg.a - 0.3).abs() < 1e-6);
         let d = colors(&p, false, true, false);
         assert!((d.bg.a - 0.8).abs() < 1e-6);
-    }
-
-    #[test]
-    fn real_focus_style_keeps_invalid() {
-        let p = Palette::new(ThemeMode::Light);
-        let f = focus_style(&p, false, true);
-        assert_eq!(f.border, p.t.destructive);
-        assert_eq!(
-            f.ring.map(|r| r.0),
-            colors(&p, false, false, true).ring.map(|r| r.0)
-        );
-        let plain = focus_style(&p, false, false);
-        assert_eq!(plain.border, p.t.ring);
     }
 
     #[test]

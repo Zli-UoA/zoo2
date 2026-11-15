@@ -36,7 +36,7 @@ vi.mock("../../hooks/usePresence", () => ({
 }));
 vi.mock("../../hooks/useRealtime", () => ({
   useActiveChannels: () => ({
-    data: [{ id: "general", channel_name: "general", is_dm: false }],
+    data: [{ id: "123e4567-e89b-12d3-a456-426614174000", channel_name: "general", is_dm: false }],
     isLoading: false,
     isError: false,
   }),
@@ -92,7 +92,10 @@ function setup(entries: string[]) {
     getParentRoute: () => root,
     path: "/",
     component: () => (
-      <Link to="/channels/$channelId" params={{ channelId: "general" }}>
+      <Link
+        to="/channels/$channelId"
+        params={{ channelId: "123e4567-e89b-12d3-a456-426614174000" }}
+      >
         General
       </Link>
     ),
@@ -140,7 +143,7 @@ describe("shell navigation", () => {
     await screen.findByText("thread:root");
     router.history.back();
     await waitFor(() => expect(screen.queryByText("thread:root")).toBeNull());
-    expect(screen.getByText("channel:general")).toBeVisible();
+    expect(screen.getByText("channel:123e4567-e89b-12d3-a456-426614174000")).toBeVisible();
     router.history.forward();
     await screen.findByText("thread:root");
     await userEvent.click(screen.getByRole("button", { name: "Close thread" }));
@@ -151,17 +154,17 @@ describe("shell navigation", () => {
   });
 
   it("closes a deep-linked thread without leaving its channel", async () => {
-    const router = setup(["/", "/channels/general?thread=root"]);
+    const router = setup(["/", "/channels/123e4567-e89b-12d3-a456-426614174000?thread=root"]);
     await userEvent.click(await screen.findByRole("button", { name: "Open thread" }));
     await userEvent.click(await screen.findByRole("button", { name: "Close thread" }));
     await waitFor(() => expect(screen.queryByText("thread:root")).toBeNull());
-    expect(router.state.location.pathname).toBe("/channels/general");
+    expect(router.state.location.pathname).toBe("/channels/123e4567-e89b-12d3-a456-426614174000");
     await userEvent.click(screen.getByRole("button", { name: "Back" }));
     await screen.findByRole("link", { name: "General" });
   });
   it("restores a thread with Forward after the members panel was opened", async () => {
     await page.viewport(1440, 900);
-    const router = setup(["/", "/channels/general"]);
+    const router = setup(["/", "/channels/123e4567-e89b-12d3-a456-426614174000"]);
     await userEvent.click(await screen.findByRole("button", { name: "Open thread" }));
     await screen.findByText("thread:root");
     router.history.back();
@@ -186,11 +189,11 @@ it.each([390, 1440])(
   "keeps Bubble Chat standalone across history navigation at %ipx",
   async (width) => {
     await page.viewport(width, 900);
-    const router = setup(["/channels/general", "/bubble"]);
+    const router = setup(["/channels/123e4567-e89b-12d3-a456-426614174000", "/bubble"]);
     await expect.element(page.getByRole("heading", { name: "Bubble room" })).toBeVisible();
     expect(screen.getByText("Channel navigation")).not.toBeVisible();
     router.history.back();
-    await screen.findByText("channel:general");
+    await screen.findByText("channel:123e4567-e89b-12d3-a456-426614174000");
     if (width >= 768) expect(screen.getByText("Channel navigation")).toBeVisible();
     else expect(screen.getByText("Channel navigation")).not.toBeVisible();
     router.history.forward();
@@ -203,7 +206,7 @@ it.each([390, 900])(
   "returns from the members screen to the same thread and draft at %ipx",
   async (width) => {
     await page.viewport(width, 900);
-    const router = setup(["/channels/general"]);
+    const router = setup(["/channels/123e4567-e89b-12d3-a456-426614174000"]);
     await userEvent.type(await screen.findByLabelText("Draft"), "Keep this draft");
     await userEvent.click(screen.getByRole("button", { name: "Open thread" }));
     await screen.findByText("thread:root");
@@ -230,10 +233,10 @@ it.each([390, 900])(
 );
 it("closes a directly opened members screen without leaving its channel or thread", async () => {
   await page.viewport(390, 844);
-  const router = setup(["/channels/general?thread=root&members=true"]);
+  const router = setup(["/channels/123e4567-e89b-12d3-a456-426614174000?thread=root&members=true"]);
   await userEvent.click(await screen.findByRole("button", { name: "Back to channel" }));
   await waitFor(() => expect(screen.queryByRole("region", { name: "Members screen" })).toBeNull());
-  expect(router.state.location.pathname).toBe("/channels/general");
+  expect(router.state.location.pathname).toBe("/channels/123e4567-e89b-12d3-a456-426614174000");
   expect(router.state.location.search).toMatchObject({ thread: "root" });
   expect(router.state.location.search).not.toHaveProperty("members", true);
   expect(router.history.canGoBack()).toBe(false);

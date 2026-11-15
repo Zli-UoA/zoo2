@@ -35,7 +35,7 @@ jobs:
       large-runs-on: ${{ steps.select.outputs.large-runs-on }}
     steps:
       # No checkout: the status token never reaches repository code.
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         id: select
         env:
           HAS_STATUS_TOKEN: ${{ secrets.runner-status-token != '' }}

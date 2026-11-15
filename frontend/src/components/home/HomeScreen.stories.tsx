@@ -263,7 +263,7 @@ export const Federated: Story = {
               ...posts[0],
               apub: true,
               visibility: "public",
-              channel_id: "channel-general",
+              channel_id: "00000000-0000-4000-8000-000000000001",
               channel_name: "general",
             },
             {
@@ -307,7 +307,7 @@ export const CrossPost: Story = {
                     content: "同じ投稿を連合とチャンネルに",
                     apub: true,
                     visibility: "public",
-                    channel_id: "channel-general",
+                    channel_id: "00000000-0000-4000-8000-000000000001",
                     channel_name: "general",
                   },
                 ]
@@ -321,7 +321,9 @@ export const CrossPost: Story = {
             channel_id: string;
           };
           crossPosted =
-            body.apub && body.visibility === "public" && body.channel_id === "channel-general";
+            body.apub &&
+            body.visibility === "public" &&
+            body.channel_id === "00000000-0000-4000-8000-000000000001";
           return crossPosted
             ? HttpResponse.json({ id: "cross-post" }, { status: 201 })
             : new HttpResponse(null, { status: 400 });
@@ -340,7 +342,7 @@ export const CrossPost: Story = {
     await userEvent.click(within(menu).getByRole("menuitemradio", { name: "パブリック" }));
     await userEvent.selectOptions(
       form.getByRole("combobox", { name: "同期先チャンネル" }),
-      "channel-general",
+      "00000000-0000-4000-8000-000000000001",
     );
     await userEvent.type(
       form.getByRole("textbox", { name: "近況を投稿" }),
@@ -359,7 +361,7 @@ export const FollowersOnly: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     const channel = form.getByRole("combobox", { name: "同期先チャンネル" });
-    await userEvent.selectOptions(channel, "channel-general");
+    await userEvent.selectOptions(channel, "00000000-0000-4000-8000-000000000001");
     await userEvent.click(form.getByRole("button", { name: /^公開範囲:/ }));
     const menu = await screen.findByRole("menu");
     await waitFor(() =>
@@ -1140,7 +1142,7 @@ export const EmojiFallback: Story = {
               ...misskeyPost,
               emojis: [e],
               actor_emojis: [e],
-              channel_id: "channel-general",
+              channel_id: "00000000-0000-4000-8000-000000000001",
               reactions: [
                 { reaction: e.name, emoji: e, count: 2, selected: false, can_react: false },
               ],
@@ -1402,7 +1404,7 @@ export const RememberPostSettings: Story = {
     await userEvent.click(await screen.findByRole("menuitemradio", { name: "連合なし" }));
     await userEvent.selectOptions(
       form.getByRole("combobox", { name: "同期先チャンネル" }),
-      "channel-general",
+      "00000000-0000-4000-8000-000000000001",
     );
     await userEvent.type(
       form.getByRole("textbox", { name: "近況を投稿" }),
@@ -1410,7 +1412,11 @@ export const RememberPostSettings: Story = {
     );
     await userEvent.click(form.getByRole("button", { name: "投稿" }));
     await expectComposerClosed();
-    const expected = { visibility: "public", apub: false, channel_id: "channel-general" };
+    const expected = {
+      visibility: "public",
+      apub: false,
+      channel_id: "00000000-0000-4000-8000-000000000001",
+    };
     await expect(rememberedPost).toMatchObject(expected);
     await expect(JSON.parse(localStorage.getItem(postSettingsKey)!)).toEqual(expected);
     await userEvent.click(canvas.getByRole("button", { name: "画面を再表示" }));
@@ -1418,7 +1424,7 @@ export const RememberPostSettings: Story = {
     await expect(reopened.getByRole("button", { name: "公開範囲: パブリック" })).toBeVisible();
     await expect(reopened.getByRole("button", { name: "連合なし" })).toBeVisible();
     await expect(reopened.getByRole("combobox", { name: "同期先チャンネル" })).toHaveValue(
-      "channel-general",
+      "00000000-0000-4000-8000-000000000001",
     );
     await expect(reopened.getByRole("textbox", { name: "近況を投稿" })).toHaveValue("");
   }),
@@ -1443,7 +1449,11 @@ export const RememberedReplyConstraints: Story = {
   beforeEach: () =>
     localStorage.setItem(
       postSettingsKey,
-      JSON.stringify({ visibility: "public", apub: true, channel_id: "channel-general" }),
+      JSON.stringify({
+        visibility: "public",
+        apub: true,
+        channel_id: "00000000-0000-4000-8000-000000000001",
+      }),
     ),
   parameters: {
     msw: {
@@ -1502,7 +1512,11 @@ export const RememberedAccountIsolation: Story = {
   beforeEach: () => {
     localStorage.setItem(
       postSettingsKey,
-      JSON.stringify({ visibility: "public", apub: false, channel_id: "channel-general" }),
+      JSON.stringify({
+        visibility: "public",
+        apub: false,
+        channel_id: "00000000-0000-4000-8000-000000000001",
+      }),
     );
     localStorage.setItem(timelineSettingsKey, "local");
   },
@@ -1782,7 +1796,11 @@ export const ChannelReplyAudience: Story = {
     channelReplySent = false;
     localStorage.setItem(
       postSettingsKey,
-      JSON.stringify({ visibility: "followers", apub: false, channel_id: "channel-general" }),
+      JSON.stringify({
+        visibility: "followers",
+        apub: false,
+        channel_id: "00000000-0000-4000-8000-000000000001",
+      }),
     );
   },
   parameters: {
@@ -1790,7 +1808,12 @@ export const ChannelReplyAudience: Story = {
       handlers: [
         http.get("*/api/home", () =>
           HttpResponse.json([
-            { ...posts[0], channel_id: "channel-general", visibility: "unlisted", apub: false },
+            {
+              ...posts[0],
+              channel_id: "00000000-0000-4000-8000-000000000001",
+              visibility: "unlisted",
+              apub: false,
+            },
           ]),
         ),
         http.post("*/api/home", async ({ request }) => {

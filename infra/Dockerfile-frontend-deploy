@@ -78,6 +78,9 @@ ENV CSP_APP_IMAGE_SRC=""
 ENV CSP_AVATAR_SRC="https://avater.zliusercontent.com"
 ENV MEDIA_PROXY_URL=""
 ENV SUMMALY_URL=""
+# Android の App Links（E2EE の再認証。docs/e2ee.md、#360）。指紋が空なら assetlinks.json は 404。
+ENV ANDROID_APP_PACKAGE="works.zli.zoo"
+ENV ANDROID_APP_CERT_SHA256=""
 ENTRYPOINT ["/usr/local/bin/frontend-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
 EXPOSE 3000

@@ -34,6 +34,8 @@
 //! - [`RecoveryKey`]：リカバリーキーの生成、表示、読み取り（Base58）
 //! - [`BackupDecryptionKey`]、[`BackupEncryptionKey`]：鍵バックアップ（`zoo.megolm_backup.v1.curve25519-aes-sha2`）
 //! - [`verify_backup_version`]、[`BackupUploadState`]：今の版の検証と、アップロード待ちの状態機械
+//! - [`BackupDecryptionKey::upload_proof`]、[`BackupUploadKey`]：アップロードの証明（`X-Zoo-Backup-Proof`）の作成とサーバーでの検証
+//! - [`next_backup_version`]：次に作る版の番号（`auth_data` に入れて署名する）
 //! - [`select_previous_backup_keys`]、[`previous_versions_to_migrate`]：失効のときの古い版の鍵の退避と移行
 //!
 //! #359 で足したもの:
@@ -56,9 +58,15 @@
 //!   暗号化と、受信時の検証（手順 1〜3）
 //! - [`TrustStore::confirm_accepted_master_key`]：受け入れ（#362）と SAS のピンを保存できたときに、
 //!   記録の登録待ちを外す
+//!
+//! #360 の TUI で足したもの:
+//!
+//! - [`SetupSession`]：初回設定と解錠のあいだメモリーにだけ置く秘密と、SSSS の保存の本文、続きの計画
+//!   （Web の `setupSession.ts` と同じ役割。TUI と Android が使う）
 
 mod attachment;
 mod backup;
+mod backup_proof;
 mod canonical_json;
 mod cross_signing;
 mod device;
@@ -85,8 +93,10 @@ pub use backup::{
     BACKUP_ALGORITHM, BackedUpSessionData, BackupDecryptionKey, BackupEncryptionKey, BackupRow,
     BackupUpload, BackupUploadState, BackupVersionInfo, MAX_UPLOAD_SESSIONS,
     PreviousBackupSelection, SenderClaimedKeys, SessionData, VerifiedBackupVersion, VersionChange,
-    previous_versions_to_migrate, select_previous_backup_keys, verify_backup_version,
+    next_backup_version, previous_versions_to_migrate, select_previous_backup_keys,
+    verify_backup_version,
 };
+pub use backup_proof::{BACKUP_PROOF_HEADER, BackupUploadKey};
 pub use canonical_json::to_canonical_json;
 pub use cross_signing::{
     CrossSigningKeyPair, CrossSigningKeys, KeySignature, KeyUsage, SignatureUpload, TOFU_PIN_TYPE,
@@ -119,8 +129,8 @@ pub use secret_storage::{
     SlotKind, SlotSecret, SsssKey, SsssKeyDescription, UnlockedSecretStorage, new_prf_salt,
 };
 pub use setup::{
-    OwnKeys, OwnSecrets, ResumePlan, ServerKeyState, StartupCheck, plan_reset, plan_resume,
-    startup_check,
+    OwnKeys, OwnSecrets, ResumePlan, ServerKeyState, SetupSession, StartupCheck, plan_reset,
+    plan_resume, startup_check,
 };
 pub use signing::{signable_json, verify_json_signature};
 pub use trust::{

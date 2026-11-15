@@ -9,7 +9,7 @@ import { LocaleProvider } from "../i18n/LocaleProvider";
 import { ChannelHeader } from "./ChannelHeader";
 
 const channel: ChannelRow = {
-  id: "channel-general",
+  id: "00000000-0000-4000-8000-000000000001",
   channel_name: "general",
   description: null,
   created_user_id: "user-alice",
@@ -70,7 +70,7 @@ vi.mock("../../hooks/useRealtime", () => ({
     data: [
       {
         id: "message-1",
-        channel_id: "channel-general",
+        channel_id: "00000000-0000-4000-8000-000000000001",
         user_id: "user-bob",
         content: "今日のリリースは 18:00 です。",
         created_at: "2026-01-02 09:00:00.000",
@@ -97,7 +97,7 @@ vi.mock("../layout/shell-context", () => ({
     threadRootId: null,
     openThread: vi.fn(),
     closeThread: vi.fn(),
-    selectedChannelId: "channel-general",
+    selectedChannelId: "00000000-0000-4000-8000-000000000001",
   }),
 }));
 

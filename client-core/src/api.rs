@@ -8,6 +8,12 @@ use serde_json::{Value, json};
 
 use crate::http::{Credentials, TokenPersistenceReport, error_for_status};
 
+mod e2ee;
+pub use e2ee::{
+    DeviceTarget, KEYS_CLAIM_BATCH, REAUTH_HEADER, TO_DEVICE_BATCH, json_u64, stale_epoch,
+    stale_revision,
+};
+
 #[derive(Clone)]
 pub struct ApiClient {
     http: reqwest::Client,
@@ -77,6 +83,9 @@ pub struct CreatedChannel {
     pub channel_name: String,
     pub description: Option<String>,
     pub is_private: bool,
+    /// 暗号化チャンネルか（docs/e2ee.md の「暗号化チャンネル」）。暗号化を求めたのに `false` なら送信しない。
+    #[serde(default)]
+    pub encrypted: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -260,9 +269,13 @@ impl ApiClient {
     const E2EE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// E2EE の要求を送り、応答の封筒 `{data, txid}` の `data` を返す。
+    ///
+    /// エラーは [`crate::http::ApiError`] にする（401 を除く）。端末が消された候補は、409
+    /// `E2EE_DEVICE_EXISTS` と 404 `E2EE_DEVICE_NOT_FOUND` のようにコードで見分けるため
+    /// （docs/e2ee.md の「端末が削除されていたとき」）。
     async fn write_data(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
         let envelope: Envelope = self
-            .send_with_timeout(method, path, body, Some(Self::E2EE_TIMEOUT))
+            .send_e2ee(method, path, body, None)
             .await?
             .json()
             .await?;
@@ -296,8 +309,22 @@ impl ApiClient {
     }
 
     /// `POST /api/e2ee/keys/query`（封筒なしの JSON）。一度に 50 人までにする。
+    ///
+    /// 応答の `device_keys`、`master_keys`、`self_signing_keys`、`user_signing_keys`、`tofu_pins` は
+    /// ユーザーごとにまとめ、`signatures` はつなげる（送信端末の検証に使う。docs/e2ee.md の「受信時の検証」）。
     pub async fn e2ee_query_keys(&self, user_ids: &[String]) -> Result<Value> {
-        let mut device_keys = serde_json::Map::new();
+        const BY_USER: [&str; 5] = [
+            "device_keys",
+            "master_keys",
+            "self_signing_keys",
+            "user_signing_keys",
+            "tofu_pins",
+        ];
+        let mut merged: serde_json::Map<String, Value> = BY_USER
+            .iter()
+            .map(|field| (field.to_string(), Value::Object(Default::default())))
+            .collect();
+        let mut signatures = Vec::new();
         for chunk in user_ids.chunks(50) {
             let response: Value = self
                 .send_with_timeout(
@@ -309,11 +336,19 @@ impl ApiClient {
                 .await?
                 .json()
                 .await?;
-            if let Some(Value::Object(users)) = response.get("device_keys") {
-                device_keys.extend(users.clone());
+            for field in BY_USER {
+                if let (Some(Value::Object(users)), Some(Value::Object(into))) =
+                    (response.get(field), merged.get_mut(field))
+                {
+                    into.extend(users.clone());
+                }
+            }
+            if let Some(Value::Array(rows)) = response.get("signatures") {
+                signatures.extend(rows.iter().cloned());
             }
         }
-        Ok(serde_json::json!({ "device_keys": device_keys }))
+        merged.insert("signatures".into(), Value::Array(signatures));
+        Ok(Value::Object(merged))
     }
 
     /// `POST /api/e2ee/to_device/ack`。一度に 1000 件までにする。
@@ -327,6 +362,29 @@ impl ApiClient {
             .await?;
         }
         Ok(())
+    }
+
+    /// `GET /api/e2ee/devices`：自分の、削除されていない端末の `device_id`（封筒なしの配列）。
+    /// 配列でない、または `device_id` のない要素があれば、一覧を取れなかったものとしてエラーにする。
+    pub async fn e2ee_device_ids(&self) -> Result<Vec<String>> {
+        let value: Value = self
+            .send_e2ee(Method::GET, "/api/e2ee/devices", None, None)
+            .await?
+            .json()
+            .await?;
+        let devices = value
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("端末の一覧が配列ではありません"))?;
+        devices
+            .iter()
+            .map(|device| {
+                device
+                    .get("device_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow::anyhow!("端末の一覧に device_id のない要素があります"))
+            })
+            .collect()
     }
 
     /// `DELETE /api/e2ee/devices/{device_id}`。削除済みでも成功する（冪等）。
@@ -478,6 +536,67 @@ impl ApiClient {
             .data
             .ok_or_else(|| anyhow::anyhow!("作成されたチャンネルのデータがありません"))?;
         Ok((channel, envelope.txid))
+    }
+
+    /// 暗号化チャンネルを作る（`POST /api/channels` の `encrypted: true`。非公開のときだけ作れる）。
+    /// エラーは [`crate::http::ApiError`]（403 `E2EE_DISABLED` などを `code` で分けるため）。
+    pub async fn create_encrypted_channel(
+        &self,
+        channel_name: &str,
+        description: Option<&str>,
+    ) -> Result<(CreatedChannel, Option<String>)> {
+        let body = json!({
+            "channel_name": channel_name,
+            "description": description,
+            "is_private": true,
+            "encrypted": true,
+        });
+        let envelope: Envelope<CreatedChannel> = self
+            .send_coded(Method::POST, "/api/channels", Some(body))
+            .await?
+            .json()
+            .await?;
+        let channel = envelope
+            .data
+            .ok_or_else(|| anyhow::anyhow!("作成されたチャンネルのデータがありません"))?;
+        Ok((channel, envelope.txid))
+    }
+
+    /// DM を作るか、あれば返す（`POST /api/dms`）。`encrypted` なら暗号化 DM（1 対 1 は `edm:` の名前で、
+    /// 平文の DM とは別の行になる）。エラーは [`crate::http::ApiError`]。
+    pub async fn create_dm(
+        &self,
+        target_user_ids: &[String],
+        encrypted: bool,
+    ) -> Result<(CreatedChannel, Option<String>)> {
+        let body = json!({ "target_user_ids": target_user_ids, "encrypted": encrypted });
+        let envelope: Envelope<CreatedChannel> = self
+            .send_coded(Method::POST, "/api/dms", Some(body))
+            .await?
+            .json()
+            .await?;
+        let channel = envelope
+            .data
+            .ok_or_else(|| anyhow::anyhow!("DM のデータがありません"))?;
+        Ok((channel, envelope.txid))
+    }
+
+    /// [`Self::send`] と同じだが、エラーを [`crate::http::ApiError`] にする。
+    async fn send_coded(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<reqwest::Response> {
+        let mut request = self
+            .http
+            .request(method, format!("{}{path}", self.base_url))
+            .header(reqwest::header::ACCEPT, "application/json");
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let request = self.credentials.apply(request).await?;
+        crate::http::error_for_status_coded(request.send().await?).await
     }
 
     pub async fn edit_message(&self, id: &str, content: &str) -> Result<Option<String>> {
@@ -844,6 +963,68 @@ mod tests {
             err.downcast_ref::<HttpError>(),
             Some(HttpError::Unauthorized)
         ));
+    }
+
+    #[tokio::test]
+    async fn device_errors_keep_the_code_and_lists_own_devices() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/devices"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(
+                json!({ "error": "The device ID is already used", "code": "E2EE_DEVICE_EXISTS" }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/keys/upload"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(
+                json!({ "error": "Device not found", "code": "E2EE_DEVICE_NOT_FOUND" }),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/e2ee/to_device/ack"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/e2ee/devices"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!([{ "device_id": "d1" }, { "device_id": "d2" }])),
+            )
+            .mount(&server)
+            .await;
+
+        let api = client(&server);
+        let err = api.e2ee_register_device(json!({})).await.unwrap_err();
+        assert!(crate::http::ApiError::has_code(&err, "E2EE_DEVICE_EXISTS"));
+        assert_eq!(
+            crate::http::ApiError::status_of(&err),
+            Some(reqwest::StatusCode::CONFLICT)
+        );
+        let err = api
+            .e2ee_upload_keys("d1", json!({}), json!({}))
+            .await
+            .unwrap_err();
+        assert!(crate::http::ApiError::has_code(
+            &err,
+            "E2EE_DEVICE_NOT_FOUND"
+        ));
+        // コードのない 404 は、状態だけを読める。
+        let err = api
+            .e2ee_ack_to_device("d1", &["1".into()])
+            .await
+            .unwrap_err();
+        assert!(!crate::http::ApiError::has_code(
+            &err,
+            "E2EE_DEVICE_NOT_FOUND"
+        ));
+        assert_eq!(
+            crate::http::ApiError::status_of(&err),
+            Some(reqwest::StatusCode::NOT_FOUND)
+        );
+        assert_eq!(api.e2ee_device_ids().await.unwrap(), vec!["d1", "d2"]);
     }
 
     #[tokio::test]

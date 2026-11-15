@@ -4,7 +4,9 @@ import { expect, fn, within } from "storybook/test";
 import { storyChannels, storyCollections, storyChannelUsers } from "../../../.storybook/fixtures";
 import { MembersPanel } from "./MembersPanel";
 
-const general = storyChannels.find((channel) => channel.id === "channel-general")!;
+const general = storyChannels.find(
+  (channel) => channel.id === "00000000-0000-4000-8000-000000000001",
+)!;
 const meta = {
   title: "Pages/ChannelMembers",
   component: MembersPanel,

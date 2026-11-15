@@ -6,8 +6,8 @@
 use serde_json::{Value, json};
 use zoo_crypto::{
     BACKUP_ALGORITHM, BackupDecryptionKey, CrossSigningKeys, CryptoError, DeviceAccount, KeySlot,
-    OwnKeys, OwnSecrets, RecoveryKey, SecretStorage, ServerKeyState, SignatureUpload, SsssKey,
-    StartupCheck, plan_reset, plan_resume, startup_check,
+    OwnKeys, OwnSecrets, RecoveryKey, SecretStorage, ServerKeyState, SetupSession, SignatureUpload,
+    SsssKey, StartupCheck, plan_reset, plan_resume, startup_check,
 };
 
 const ALICE: &str = "00000000-0000-0000-0000-00000000000a";
@@ -390,4 +390,104 @@ fn reset_replaces_keys_and_version() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// `POST /api/e2ee/secret_storage/keys` の本文を、`GET /api/e2ee/secret_storage` の応答の形にする。
+fn storage_response(request: &Value, secrets_revision: u64) -> Value {
+    let key_id = request["key_id"].clone();
+    let mut secrets = request["secrets"].clone();
+    for secret in secrets.as_object_mut().unwrap().values_mut() {
+        secret["key_id"] = key_id.clone();
+    }
+    json!({
+        "default_key_id": key_id,
+        "keys": { key_id.as_str().unwrap(): request["key"] },
+        "secrets": secrets,
+        "secrets_revision": secrets_revision,
+        "slots": request["slots"],
+    })
+}
+
+#[test]
+fn setup_session_unlocks_the_saved_storage_with_the_shown_recovery_key() {
+    let (created, recovery_key) = SetupSession::begin(ALICE).unwrap();
+    assert!(created.is_created());
+    assert_eq!(created.pending_slots().len(), 1);
+    let request = created.secret_storage_request().unwrap();
+    assert_eq!(request["expected_default_key_id"], Value::Null);
+    assert_eq!(request["key_id"], created.key_id());
+    let response = storage_response(&request, 1);
+
+    // 初回設定を保存したあとで止めて再起動し、控えたリカバリーキーで開け直す。
+    let unlocked = SetupSession::unlock_with_recovery_key(ALICE, &response, &recovery_key)
+        .unwrap()
+        .unwrap();
+    assert!(!unlocked.is_created());
+    assert_eq!(unlocked.key_id(), created.key_id());
+    assert_eq!(unlocked.secrets_revision(), Some(1));
+    assert_eq!(
+        unlocked.secrets().cross_signing.master.public_key(),
+        created.secrets().cross_signing.master.public_key()
+    );
+    assert!(unlocked.secret_storage_request().is_err());
+
+    // 続きは、初回設定のときと同じ鍵で送る。
+    let device = device_keys(DEVICE);
+    let mut server = Server::default();
+    let first = created.plan(&server.state(), &device).unwrap();
+    let plan = unlocked.plan(&server.state(), &device).unwrap();
+    assert_eq!(plan.cross_signing, first.cross_signing);
+    run(&mut server, unlocked.secrets(), &device);
+    assert!(unlocked.plan(&server.state(), &device).unwrap().is_empty());
+}
+
+#[test]
+fn setup_session_tells_typos_from_wrong_keys() {
+    let (created, _) = SetupSession::begin(ALICE).unwrap();
+    let response = storage_response(&created.secret_storage_request().unwrap(), 1);
+    assert!(matches!(
+        SetupSession::unlock_with_recovery_key(ALICE, &response, "abcd"),
+        Err(CryptoError::InvalidRecoveryKey(_))
+    ));
+    let other = RecoveryKey::generate().to_display();
+    assert!(matches!(
+        SetupSession::unlock_with_recovery_key(ALICE, &response, &other),
+        Err(CryptoError::KeySlotUnlock)
+    ));
+    let empty = json!({"default_key_id": null, "keys": {}, "secrets": {}, "secrets_revision": null, "slots": []});
+    assert!(
+        SetupSession::unlock_with_recovery_key(ALICE, &empty, &other)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn setup_session_adds_passkey_slots_and_unlocks_with_them() {
+    let (mut created, _) = SetupSession::begin(ALICE).unwrap();
+    let salt = [3u8; 32];
+    created
+        .add_passkey_slot("Y3JlZA", &salt, &[4u8; 32], None)
+        .unwrap();
+    // 同じパスキーを選び直したら、前のスロットを置き換える。
+    created
+        .add_passkey_slot("Y3JlZA", &salt, &[5u8; 32], Some("Pixel".into()))
+        .unwrap();
+    assert_eq!(created.pending_slots().len(), 2);
+    let response = storage_response(&created.secret_storage_request().unwrap(), 1);
+    let storage = SecretStorage::from_json(ALICE, &response).unwrap().unwrap();
+    let unlocked = storage.unlock_with_passkey("Y3JlZA", &[5u8; 32]).unwrap();
+    let session = SetupSession::from_unlocked(&unlocked).unwrap();
+    assert_eq!(session.key_id(), created.key_id());
+    assert!(matches!(
+        storage.unlock_with_passkey("Y3JlZA", &[4u8; 32]),
+        Err(CryptoError::KeySlotUnlock)
+    ));
+
+    // 解錠で取り出した鍵には足さない。
+    let mut session = session;
+    assert!(matches!(
+        session.add_passkey_slot("b3RoZXI", &salt, &[6u8; 32], None),
+        Err(CryptoError::InvalidSecretStorage(_))
+    ));
 }
