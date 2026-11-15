@@ -32,7 +32,8 @@ import {
   reverifyUser,
 } from "./revocationController";
 import { masterPublicKey } from "./masterKey";
-import { REAUTH_HEADER } from "./secretStorageApi";
+import { TEST_UPLOAD_KEY, expectedUploadProof } from "./backupProofTestKit";
+import { BACKUP_PROOF_HEADER, REAUTH_HEADER } from "./secretStorageApi";
 import {
   ReauthRequiredError,
   beginSetup,
@@ -76,19 +77,36 @@ class FakeServer {
   fail: string | null = null;
   /** 指定した要求をサーバーに反映したあと、応答を返す前に `run` を待つ（割り込みを作るため）。 */
   after: { route: string; run: () => Promise<void> } | null = null;
-  requests: { method: string; path: string; reauth: boolean }[] = [];
+  requests: { method: string; path: string; reauth: boolean; proof?: string }[] = [];
+
+  /**
+   * 鍵バックアップのアップロードの証明（`X-Zoo-Backup-Proof`）を、実際のサーバーと同じく確かめる。
+   * ヘッダーがなければ `null`（証明のない行として受け付ける）。
+   */
+  private async checkProof(method: string, url: URL, proof: string | undefined) {
+    if (proof === undefined || method !== "POST" || url.pathname !== "/api/e2ee/key_backup/keys") {
+      return null;
+    }
+    const version = url.searchParams.get("version") ?? "";
+    const target = this.versions.find((v) => v.version === version);
+    if (!target) return false;
+    const publicKey = (target.auth_data as Json).public_key as string;
+    return proof === (await expectedUploadProof(publicKey, USER, version));
+  }
 
   client(): ApiClient {
     const handle = async (path: string, options: RequestOptions = {}) => {
       const method = options.method ?? "GET";
       const reauth = options.headers?.[REAUTH_HEADER] === TOKEN;
-      this.requests.push({ method, path, reauth });
+      const proof = options.headers?.[BACKUP_PROOF_HEADER];
+      this.requests.push({ method, path, reauth, proof });
       const url = new URL(path, "http://zoo.test");
       if (this.fail === `${method} ${url.pathname}`) {
         this.fail = null;
         throw new TypeError("network error");
       }
-      const result = this.respond(method, url, options.body as Json, reauth);
+      const proofValid = await this.checkProof(method, url, proof);
+      const result = this.respond(method, url, options.body as Json, reauth, proofValid);
       if (this.after?.route === `${method} ${url.pathname}`) {
         const { run } = this.after;
         this.after = null;
@@ -139,7 +157,13 @@ class FakeServer {
     return current && !current.deleted ? current : null;
   }
 
-  private respond(method: string, url: URL, body: Json, reauth: boolean): unknown {
+  private respond(
+    method: string,
+    url: URL,
+    body: Json,
+    reauth: boolean,
+    proofValid: boolean | null = null,
+  ): unknown {
     const path = url.pathname;
     const route = `${method} ${path
       .replace(/\/[0-9a-f-]{36}(\/used)?$/, "/:id$1")
@@ -215,7 +239,14 @@ class FakeServer {
         };
       }
       case "GET /api/e2ee/key_backup/versions":
-        return { versions: this.versions };
+        // 一覧には `upload_key` を入れない（実際のサーバーと同じ）。
+        return { versions: this.versions.map(({ upload_key: _key, ...version }) => version) };
+      case "GET /api/e2ee/key_backup/versions/:v": {
+        const version = this.versions.find((v) => v.version === path.split("/").at(-1));
+        if (!version || version.deleted) this.error(404, "NOT_FOUND");
+        const { deleted: _deleted, ...rest } = version;
+        return rest;
+      }
       case "GET /api/e2ee/key_backup/versions/current": {
         const current = this.currentVersion();
         if (!current) this.error(404, "NOT_FOUND");
@@ -243,6 +274,7 @@ class FakeServer {
         if (Number(url.searchParams.get("secrets_revision")) !== this.revision) {
           this.error(409, "E2EE_SSSS_CONFLICT");
         }
+        if (proofValid === false) this.error(403, "E2EE_BACKUP_PROOF_INVALID");
         const rows = this.sessions.get(version as string) ?? [];
         rows.push(...(body.sessions as Json[]));
         this.sessions.set(version as string, rows);
@@ -298,6 +330,7 @@ class FakeServer {
           algorithm: body.algorithm,
           auth_data: authData,
           deleted: false,
+          upload_key: TEST_UPLOAD_KEY,
         });
         return { version };
       }
@@ -467,6 +500,18 @@ describe("失効の手順", () => {
     expect(keyOf(server.selfSigning)).not.toBe(oldSelfSigning);
     expect(liveVersions(server)).toEqual(["2"]);
     expect(server.sessions.get("2")).toHaveLength(3);
+    // 移行の行は、新しいバックアップ鍵で作った、新しい版への証明を付けて送った。
+    const migrationPosts = server.requests.filter(
+      (r) => r.method === "POST" && r.path.startsWith("/api/e2ee/key_backup/keys?version=2&"),
+    );
+    expect(migrationPosts.length).toBeGreaterThan(0);
+    const newVersion = server.versions.find((v) => v.version === "2")!;
+    const expectedProof = await expectedUploadProof(
+      (newVersion.auth_data as Json).public_key as string,
+      USER,
+      "2",
+    );
+    expect(migrationPosts.map((r) => r.proof)).toEqual(migrationPosts.map(() => expectedProof));
     // 古い版の鍵は SSSS に退避した。
     expect(ssssPreviousKeys(server, recoveryKey)).toContain(oldBackup);
     expect(await revocationStatus(deps)).toBeNull();

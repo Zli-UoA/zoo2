@@ -110,13 +110,18 @@ export type BackupUploadRequest =
       secretsRevision: number;
       body: JsonObject;
       count: number;
+      /**
+       * アップロードの証明（`X-Zoo-Backup-Proof` の値。docs/e2ee.md の「アップロードの証明」）。
+       * 今の版に `upload_key` がない（証明を足す前のサーバー）なら `null` で、ヘッダーを送らない。
+       */
+      proof: string | null;
     }
   /** 送るものがない（未解錠、今の版がない、送信待ちがない）。 */
   | { kind: "none" }
   /**
    * 今の版を使えない（`code` は zoo-crypto の誤り。マスター鍵の署名がない `Signature` や
    * `MissingSignature`、公開鍵が SSSS と違う `BackupKeyMismatch`、版の巻き戻り
-   * `BackupVersionRollback` など）。送らない。
+   * `BackupVersionRollback`、`upload_key` が鍵の形でないなど）。送らない。
    */
   | { kind: "rejected"; code: string };
 
@@ -826,6 +831,9 @@ export class CryptoStore {
 
     const sessions = await this.backend.pendingBackupSessions(limit);
     if (sessions.length === 0) return { kind: "none" };
+    // `currentVersion` は受け入れた今の版なので null ではない。
+    const proof = await this.backupUploadProof(currentVersion as JsonObject, accepted.version);
+    if (typeof proof === "object" && proof !== null) return proof;
     for (const session of sessions) {
       const ref = JSON.parse(session.key) as [string, string, string];
       const sessionRef = { channel_id: ref[0], sender_key: ref[1], session_id: ref[2] };
@@ -847,7 +855,33 @@ export class CryptoStore {
       secretsRevision: upload.secretsRevision,
       body: upload.body,
       count: sent.size,
+      proof,
     };
+  }
+
+  /**
+   * 受け入れた今の版 `version` へのアップロードの証明を、SSSS のバックアップ鍵で作る（docs/e2ee.md の
+   * 「アップロードの証明」）。版に `upload_key` がなければ `null`（ヘッダーを送らない）。`upload_key` が
+   * 鍵の形でなければ `rejected`。
+   */
+  private async backupUploadProof(
+    currentVersion: JsonObject,
+    version: string,
+  ): Promise<string | null | { kind: "rejected"; code: string }> {
+    const uploadKey = currentVersion.upload_key;
+    if (typeof uploadKey !== "string") return null;
+    const own = await this.ownKeys();
+    if (!own) return null;
+    const backupKey = own.keys.backupKey;
+    try {
+      return backupKey.uploadProof(uploadKey, this.userId, version);
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      return { kind: "rejected", code: typeof code === "string" ? code : "Unknown" };
+    } finally {
+      backupKey.free();
+      own.keys.free();
+    }
   }
 
   /**

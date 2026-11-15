@@ -123,6 +123,7 @@ export type CryptoOperation =
   | { op: "revocationBackupCreated"; revocationId: string; version: string }
   | { op: "revocationVersionsToMigrate"; revocationId: string; versions: JsonObject }
   | { op: "revocationReencrypt"; revocationId: string; version: string; rows: JsonObject[] }
+  | { op: "revocationUploadProof"; revocationId: string; uploadKey: string; version: string }
   | {
       op: "revocationVerify";
       revocationId: string;
@@ -262,6 +263,7 @@ export interface CryptoResults {
   revocationVersionsToMigrate: string[];
   revocationDropStaleMasterKeys: string[];
   revocationReencrypt: { rows: JsonObject[]; dropped: number };
+  revocationUploadProof: string;
   revocationVerify: null;
   revocationAbandon: null;
   trustRecordedUsers: string[];

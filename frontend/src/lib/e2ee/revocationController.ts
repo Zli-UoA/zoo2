@@ -17,6 +17,7 @@ import {
   type OwnDevice,
   currentBackupVersion,
   deleteBackupVersion,
+  getBackupVersion,
   listAllPins,
   listBackupSessions,
   listDevices,
@@ -459,6 +460,9 @@ async function runRevocation(
       revocationId,
       versions,
     });
+    // 移行の行も、新しい版の `upload_key` への証明を付けて送る（docs/e2ee.md の「アップロードの証明」）。
+    // 証明はトークンだけを持つ者の先取りを防ぐもので、行を送るたびに同じ値を使う。
+    let proof: string | null | undefined;
     for (const version of migrate) {
       const rows = await listBackupSessions(deps.client, version);
       // 別の端末が先に移行を終えて消した。
@@ -470,8 +474,27 @@ async function runRevocation(
         version,
         rows,
       });
+      if (proof === undefined) {
+        const uploadKey = (await getBackupVersion(deps.client, newVersion))?.upload_key;
+        proof =
+          typeof uploadKey === "string"
+            ? await worker.request({
+                op: "revocationUploadProof",
+                revocationId,
+                uploadKey,
+                version: newVersion,
+              })
+            : null;
+      }
+      const uploadProof = proof;
       await guarded(() =>
-        uploadBackupSessions(deps.client, newVersion, secretsRevision as number, result.rows),
+        uploadBackupSessions(
+          deps.client,
+          newVersion,
+          secretsRevision as number,
+          result.rows,
+          uploadProof,
+        ),
       );
       // 今の版ではないので、再認証は要らない。
       await deleteBackupVersion(deps.client, version, null);

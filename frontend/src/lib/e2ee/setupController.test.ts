@@ -18,7 +18,8 @@ import type { CryptoWorker } from "./cryptoWorker";
 import { CryptoOperations } from "./operations";
 import type { CredentialGetter } from "./passkey";
 import type { CryptoOperation, KeysQueryResponse } from "./protocol";
-import { REAUTH_HEADER } from "./secretStorageApi";
+import { OTHER_UPLOAD_KEY, TEST_UPLOAD_KEY, expectedUploadProof } from "./backupProofTestKit";
+import { BACKUP_PROOF_HEADER, REAUTH_HEADER } from "./secretStorageApi";
 import {
   ReauthRequiredError,
   ServerKeyMismatchError,
@@ -82,14 +83,31 @@ class FakeServer {
   fail: { path: string; when: "before" | "after" } | null = null;
   /** この経路（`POST /api/...`）では、再認証の ID トークンを期限切れとして扱う。 */
   expiredReauth: string | null = null;
-  requests: { method: string; path: string; reauth: boolean }[] = [];
+  requests: { method: string; path: string; reauth: boolean; proof?: string }[] = [];
+
+  /**
+   * 鍵バックアップのアップロードの証明（`X-Zoo-Backup-Proof`）を、実際のサーバーと同じく確かめる。
+   * ヘッダーがなければ `null`（証明のない行として受け付ける）。
+   */
+  private async checkProof(method: string, path: string, proof: string | undefined) {
+    if (proof === undefined || method !== "POST" || !path.startsWith("/api/e2ee/key_backup/keys")) {
+      return null;
+    }
+    const version = new URLSearchParams(path.split("?")[1]).get("version") ?? "";
+    const target = this.versions.find((v) => v.version === version);
+    if (!target) return false;
+    const publicKey = (target.auth_data as Json).public_key as string;
+    return proof === (await expectedUploadProof(publicKey, USER, version));
+  }
 
   client(): ApiClient {
     const handle = async (path: string, options: RequestOptions = {}) => {
       const method = options.method ?? "GET";
       const reauth =
         options.headers?.[REAUTH_HEADER] === TOKEN && this.expiredReauth !== `${method} ${path}`;
-      this.requests.push({ method, path, reauth });
+      const proof = options.headers?.[BACKUP_PROOF_HEADER];
+      this.requests.push({ method, path, reauth, proof });
+      const proofValid = await this.checkProof(method, path, proof);
       const fail = this.fail?.path === `${method} ${path}` ? this.fail : null;
       if (fail?.when === "before") {
         this.fail = null;
@@ -100,7 +118,7 @@ class FakeServer {
         this.beforeKeysQuery = null;
         await hook();
       }
-      const result = this.respond(method, path, options.body as Json, reauth);
+      const result = this.respond(method, path, options.body as Json, reauth, proofValid);
       if (fail?.when === "after") {
         this.fail = null;
         throw new TypeError("network error");
@@ -142,7 +160,13 @@ class FakeServer {
     if (!reauth) this.error(403, "E2EE_REAUTH_REQUIRED");
   }
 
-  private respond(method: string, fullPath: string, body: Json, reauth: boolean): unknown {
+  private respond(
+    method: string,
+    fullPath: string,
+    body: Json,
+    reauth: boolean,
+    proofValid: boolean | null = null,
+  ): unknown {
     const [path, search] = fullPath.split("?");
     const params = new URLSearchParams(search);
     const route = `${method} ${path!.replace(/\/[0-9a-f-]{36}(\/used)?$/, "/:id$1")}`;
@@ -216,7 +240,8 @@ class FakeServer {
         };
       }
       case "GET /api/e2ee/key_backup/versions":
-        return { versions: this.versions };
+        // 一覧には `upload_key` を入れない（実際のサーバーと同じ）。
+        return { versions: this.versions.map(({ upload_key: _key, ...version }) => version) };
       case "GET /api/e2ee/key_backup/versions/current": {
         const current = this.versions.at(-1);
         if (!current || current.deleted) this.error(404, "NOT_FOUND");
@@ -242,6 +267,7 @@ class FakeServer {
         if (params.get("secrets_revision") !== String(this.revision)) {
           this.error(409, "E2EE_SSSS_CONFLICT");
         }
+        if (proofValid === false) this.error(403, "E2EE_BACKUP_PROOF_INVALID");
         this.backupSessions.push(...(body.sessions as Json[]));
         return { count: this.backupSessions.length };
       }
@@ -285,6 +311,7 @@ class FakeServer {
           algorithm: body.algorithm,
           auth_data: authData,
           deleted: false,
+          upload_key: TEST_UPLOAD_KEY,
         });
         return { version };
       }
@@ -945,6 +972,78 @@ describe("初回設定と解錠", () => {
     server.revision += 1;
     expect(await uploadKeyBackup(deps)).toEqual({ kind: "conflict", code: "E2EE_SSSS_CONFLICT" });
     expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
+  });
+
+  it("鍵バックアップへの送信に、今の版の upload_key への証明を付ける", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    await receiveRoomKey(first);
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 1 });
+
+    const version = server.versions.at(-1)!;
+    const expected = await expectedUploadProof(
+      (version.auth_data as Json).public_key as string,
+      USER,
+      version.version as string,
+    );
+    const posts = server.requests.filter(
+      (r) => r.method === "POST" && r.path.startsWith("/api/e2ee/key_backup/keys"),
+    );
+    expect(posts.map((r) => r.proof)).toEqual([expected]);
+    expect(server.backupSessions).toHaveLength(1);
+  });
+
+  it("証明が今の版と合わなければ（403）、送るのをやめて送信待ちに残す", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    await receiveRoomKey(first);
+    const sessions = server.backupSessions.length;
+    // サーバーが確かめる鍵と違う upload_key を返す。
+    server.versions.at(-1)!.upload_key = OTHER_UPLOAD_KEY;
+    expect(await uploadKeyBackup(deps)).toEqual({
+      kind: "conflict",
+      code: "E2EE_BACKUP_PROOF_INVALID",
+    });
+    expect(server.backupSessions).toHaveLength(sessions);
+    expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
+
+    // 今の版を取り直して、合う証明を作れたら送る。
+    server.versions.at(-1)!.upload_key = TEST_UPLOAD_KEY;
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 1 });
+  });
+
+  it("今の版の upload_key が鍵の形でなければ、送らない", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    await receiveRoomKey(first);
+    server.versions.at(-1)!.upload_key = "not-a-key";
+    server.requests = [];
+    expect((await uploadKeyBackup(deps)).kind).toBe("rejected");
+    expect(server.requests.some((r) => r.method === "POST")).toBe(false);
+    expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
+  });
+
+  it("今の版に upload_key がなければ（証明を足す前のサーバー）、証明を付けずに送る", async () => {
+    const server = new FakeServer();
+    const first = await device("first");
+    const deps = first.deps(server);
+    const { keyId } = await beginSetup(deps, null);
+    await completeSetup(deps, keyId, TOKEN);
+    await receiveRoomKey(first);
+    delete server.versions.at(-1)!.upload_key;
+    server.requests = [];
+    expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 1 });
+    const post = server.requests.find((r) => r.method === "POST");
+    expect(post?.proof).toBeUndefined();
   });
 
   it("送信が重なっても、応答を受けた要求のセッションだけを送信済みにする", async () => {
