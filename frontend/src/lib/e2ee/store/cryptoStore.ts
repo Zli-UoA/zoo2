@@ -34,6 +34,7 @@ import {
   writeDeviceRecord,
   type DeviceRecord,
   type DeviceRecordStore,
+  type ReplacedDevice,
 } from "./deviceRecord";
 import {
   StorageKeyUnavailableError,
@@ -184,16 +185,15 @@ const VERIFICATION_TYPE_PREFIX = "m.key.verification.";
 export interface OpenedStore {
   store: CryptoStore;
   /**
-   * 前の端末の ID（サーバーから消す）。保存鍵を開けずに暗号ストアを作り直したとき、または、暗号
+   * 前の端末（サーバーから消す）。保存鍵を開けずに暗号ストアを作り直したとき、または、暗号
    * ストアの外の記録（{@link DeviceRecord}）にある同じユーザーの端末が、今の端末と違うとき
    * （暗号ストアのファイルだけが消えて、新しい端末を作ったときなど）。
+   *
+   * 呼び出し側が削除待ちに残す（または消す）まで記録に残り、開くたびに知らせる。渡せたら
+   * {@link CryptoStore.forgetReplacedDevices} で外す。`registered` が偽なら、削除 API の 404 でも
+   * すぐには消えたものとしない（登録の応答をなくしただけかもしれない）。
    */
-  replacedDeviceId: string | null;
-  /**
-   * 前の端末の登録が済んでいたか。済んでいなければ、削除 API の 404 でもすぐには消えたものと
-   * しない（登録の応答をなくしただけかもしれない）。
-   */
-  replacedRegistered: boolean;
+  replacedDevices: ReplacedDevice[];
 }
 
 interface OpenOptions {
@@ -232,6 +232,8 @@ export class CryptoStore {
   private broken = false;
   private megolmChannels: MegolmChannels | null = null;
   private sasVerifications: SasVerifications | null = null;
+  /** 削除待ちにまだ渡していない前の端末（{@link DeviceRecord.replaced}）。 */
+  private replaced: ReplacedDevice[] = [];
 
   private constructor(
     private readonly backend: CryptoBackend,
@@ -253,7 +255,9 @@ export class CryptoStore {
    * `reset` は、保存鍵を開けないときに保存先を消して作り直す関数（新しい空の保存先を返す）。
    *
    * 今の端末を暗号ストアの外にも記録し（`devices`）、記録にある同じユーザーの端末が今の端末と違えば、
-   * 前の端末として `replacedDeviceId` で知らせる。別のユーザーの記録は使わずに上書きする。
+   * 前の端末として `replacedDevices` で知らせる。前の端末は、記録を新しい端末に進めるときに
+   * 記録の `replaced` に移し、呼び出し側が削除待ちに渡すまで残す（渡す前にタブを閉じても失わない）。
+   * 別のユーザーの記録は使わずに上書きする。今の端末は知らせない。
    */
   static async open(options: OpenOptions): Promise<OpenedStore> {
     const current = { backend: options.backend };
@@ -273,11 +277,16 @@ export class CryptoStore {
     let backend = current.backend;
     const keys = options.keys ?? indexedDbWrappingKeys;
     let snapshot = await backend.read();
-    let replacedDeviceId: string | null = null;
-    let replacedRegistered = false;
     if (snapshot.meta[META_USER_ID] && snapshot.meta[META_USER_ID] !== options.userId) {
       throw new Error("暗号ストアが別のユーザーのものです");
     }
+    // 同じユーザーの記録だけを使う（別のユーザーの記録は上書きする）。
+    const read = await readDeviceRecord(options.devices, options.name);
+    const record = read?.userId === options.userId ? read : undefined;
+    const replaced: ReplacedDevice[] = [...(record?.replaced ?? [])];
+    const addReplaced = (device: ReplacedDevice) => {
+      if (!replaced.some((entry) => entry.deviceId === device.deviceId)) replaced.push(device);
+    };
     let storageKey: Uint8Array;
     try {
       storageKey = await loadStorageKey({
@@ -289,8 +298,8 @@ export class CryptoStore {
     } catch (error) {
       if (!(error instanceof StorageKeyUnavailableError)) throw error;
       // 保存鍵がなければ、どの値も読めない。作り直して、新しい端末として登録し直す。
-      replacedDeviceId = snapshot.meta[META_DEVICE_ID] ?? null;
-      replacedRegistered = snapshot.meta[META_REGISTERED] === "1";
+      const lost = snapshot.meta[META_DEVICE_ID];
+      if (lost) addReplaced({ deviceId: lost, registered: snapshot.meta[META_REGISTERED] === "1" });
       // 開いたままのファイルは消せないので、先に閉じる。
       await backend.close().catch(() => undefined);
       backend = await options.reset();
@@ -303,6 +312,10 @@ export class CryptoStore {
         keys,
       });
     }
+
+    // 記録の端末は、暗号ストアがその前に持っていた端末（ファイルだけが消えた、または新しい端末を
+    // 作ったあとで記録を書けなかった）。今の端末でなければ前の端末にする（下で今の端末を除く）。
+    if (record) addReplaced({ deviceId: record.deviceId, registered: record.registered });
 
     const deviceId = snapshot.meta[META_DEVICE_ID];
     if (snapshot.account && deviceId) {
@@ -342,29 +355,10 @@ export class CryptoStore {
         store.free();
         throw error;
       }
-      // 新しい端末を作ったあとで記録を書けなかった（または前の版で記録がなかった）。記録の端末が
-      // 今の端末と違えば、前の端末として消させる。
-      const record = await readDeviceRecord(options.devices, options.name);
-      const previous = previousDevice(record, options.userId, deviceId);
-      if (previous) {
-        replacedDeviceId = previous.deviceId;
-        replacedRegistered = previous.registered;
-      }
-      await store.recordDevice(record);
-      return { store, replacedDeviceId, replacedRegistered };
-    }
-
-    if (replacedDeviceId === null) {
-      // 暗号ストアのファイルだけが消えた（包む鍵は残っていて、前の端末の ID は記録にだけある）。
-      const previous = previousDevice(
-        await readDeviceRecord(options.devices, options.name),
-        options.userId,
-        null,
-      );
-      if (previous) {
-        replacedDeviceId = previous.deviceId;
-        replacedRegistered = previous.registered;
-      }
+      store.replaced = replaced.filter((device) => device.deviceId !== deviceId);
+      // 記録のない暗号ストア（前の版で作ったもの）は、今の端末を記録するだけ。
+      await store.recordDevice(read);
+      return { store, replacedDevices: [...store.replaced] };
     }
 
     const account = new DeviceAccount(options.userId, crypto.randomUUID());
@@ -396,26 +390,40 @@ export class CryptoStore {
       store.free();
       throw error;
     }
-    // 新しい端末を暗号ストアに保存したあとで、記録を新しい端末に進める（保存に失敗したら、前の端末の
-    // 記録を残す）。
-    await store.recordDevice(undefined);
-    return { store, replacedDeviceId, replacedRegistered };
+    // 新しい端末を暗号ストアに保存したあとで、記録を新しい端末に進め、前の端末を `replaced` に移す
+    // （保存に失敗したら、前の端末の記録を残す）。知らせるのは、記録に書いたあと。
+    store.replaced = replaced.filter((device) => device.deviceId !== account.deviceId);
+    await store.recordDevice(read);
+    return { store, replacedDevices: [...store.replaced] };
   }
 
-  /** 暗号ストアの外の記録を今の端末に合わせる（`current` は読んだ記録。同じなら書かない）。 */
+  /** 削除待ちにまだ渡していない前の端末。 */
+  get replacedDevices(): ReplacedDevice[] {
+    return [...this.replaced];
+  }
+
+  /**
+   * 呼び出し側が削除待ちに残せた（または消せた）前の端末を、記録の `replaced` から外す。外せなくても
+   * 投げない（次に開いたときにもう一度知らせ、削除 API は冪等）。
+   */
+  async forgetReplacedDevices(deviceIds: string[]): Promise<void> {
+    const before = this.replaced.length;
+    this.replaced = this.replaced.filter((device) => !deviceIds.includes(device.deviceId));
+    if (this.replaced.length !== before) await this.recordDevice(undefined);
+  }
+
+  /**
+   * 暗号ストアの外の記録を今の端末と、渡していない前の端末に合わせる（`current` は読んだ記録。
+   * 同じなら書かない）。
+   */
   private async recordDevice(current: DeviceRecord | undefined): Promise<void> {
     const next: DeviceRecord = {
       userId: this.userId,
       deviceId: this.deviceId,
       registered: this.registered,
+      replaced: this.replaced,
     };
-    if (
-      current?.userId === next.userId &&
-      current.deviceId === next.deviceId &&
-      current.registered === next.registered
-    ) {
-      return;
-    }
+    if (current && JSON.stringify(current) === JSON.stringify(next)) return;
     await writeDeviceRecord(this.devices, this.name, next);
   }
 
@@ -1164,10 +1172,12 @@ export class CryptoStore {
         droppedInboundSessions,
       });
       // 前の端末はサーバーで削除済みなので、記録は新しい端末に進める（前の端末を消させない）。
+      // 渡していない前の端末は残す。
       await writeDeviceRecord(this.devices, this.name, {
         userId: this.userId,
         deviceId: account.deviceId,
         registered: false,
+        replaced: this.replaced,
       });
       return {
         deviceId: account.deviceId,
@@ -1218,19 +1228,6 @@ export class CryptoStore {
     this.backupState?.free();
     this.backupState = null;
   }
-}
-
-/**
- * 記録にある前の端末。同じユーザーの、今の端末（`currentDeviceId`）と違う端末だけ。別のユーザーの
- * 記録や今の端末は返さない（消さない）。
- */
-function previousDevice(
-  record: DeviceRecord | undefined,
-  userId: string,
-  currentDeviceId: string | null,
-): DeviceRecord | null {
-  if (!record || record.userId !== userId || record.deviceId === currentDeviceId) return null;
-  return record;
 }
 
 /**

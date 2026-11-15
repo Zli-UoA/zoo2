@@ -17,6 +17,19 @@ export interface DeviceRecord {
   deviceId: string;
   /** サーバーへの登録が済んだか（済んでいなければ、削除 API の 404 をすぐには済んだものとしない）。 */
   registered: boolean;
+  /**
+   * 前の端末のうち、まだ削除待ち（localStorage）に渡していないもの。新しい端末に記録を進めるときに
+   * ここへ移し、呼び出し側が削除待ちに残せた（または消せた）ら外す（`forgetReplacedDevices`）。
+   * 渡す前にタブを閉じても、次に開いたときにもう一度知らせる。
+   */
+  replaced: ReplacedDevice[];
+}
+
+/** 前の端末（サーバーから消す）。 */
+export interface ReplacedDevice {
+  deviceId: string;
+  /** 登録が済んでいたか。 */
+  registered: boolean;
 }
 
 /** 端末の記録の置き場所。テストではメモリーにする。 */
@@ -30,9 +43,21 @@ const KEY_PREFIX = "device:";
 
 function parse(value: unknown): DeviceRecord | undefined {
   if (typeof value !== "object" || value === null) return undefined;
-  const { userId, deviceId, registered } = value as Partial<DeviceRecord>;
+  const { userId, deviceId, registered, replaced } = value as Partial<DeviceRecord>;
   if (typeof userId !== "string" || typeof deviceId !== "string") return undefined;
-  return { userId, deviceId, registered: registered === true };
+  return {
+    userId,
+    deviceId,
+    registered: registered === true,
+    replaced: (Array.isArray(replaced) ? replaced : []).flatMap((entry: unknown) => {
+      const device = (
+        typeof entry === "object" && entry !== null ? entry : {}
+      ) as Partial<ReplacedDevice>;
+      return typeof device.deviceId === "string"
+        ? [{ deviceId: device.deviceId, registered: device.registered === true }]
+        : [];
+    }),
+  };
 }
 
 /** IndexedDB `zoo-crypto-keys` の置き場所（包む鍵と同じ object store に、キーを分けて置く）。 */
@@ -40,7 +65,12 @@ export const indexedDbDeviceRecords: DeviceRecordStore = {
   get: async (name) =>
     parse(await withStore("readonly", (store) => store.get(`${KEY_PREFIX}${name}`))),
   put: async (name, record) => {
-    await withStore("readwrite", (store) => store.put({ ...record }, `${KEY_PREFIX}${name}`));
+    await withStore("readwrite", (store) =>
+      store.put(
+        { ...record, replaced: record.replaced.map((device) => ({ ...device })) },
+        `${KEY_PREFIX}${name}`,
+      ),
+    );
   },
   delete: async (name) => {
     await withStore("readwrite", (store) => store.delete(`${KEY_PREFIX}${name}`));
