@@ -207,3 +207,39 @@ it("does not erase a session refreshed while cleanup was waiting for its lock", 
   expect(h.records.get(h.request.sessionId)?.state).toBe("ready");
   expect(h.fetch).toHaveBeenCalledTimes(2);
 });
+
+it.each(["scan", "write"])(
+  "keeps refreshing when unrelated cleanup fails during %s, then retries after backoff",
+  async (failure) => {
+    const h = harness();
+    const old: AuthWorkerSession = {
+      state: "ready",
+      binding: "old",
+      lastUsedAt: -AUTH_WORKER_IDLE_MS,
+      body: { access_token: "old", refresh_token: "old", expires_in: 300 },
+    };
+    h.records.set("old-session", old);
+    const scan = h.environment.store.staleSessionIds.bind(h.environment.store);
+    const write = h.environment.store.put.bind(h.environment.store);
+    let blocked = true;
+    const scanner = vi.fn(async (cutoff: number) => {
+      if (blocked && failure === "scan") throw new Error("scan unavailable");
+      return scan(cutoff);
+    });
+    h.environment.store.staleSessionIds = scanner;
+    h.environment.store.put = async (id, row) => {
+      if (blocked && failure === "write" && id === "old-session")
+        throw new Error("old row unavailable");
+      await write(id, row);
+    };
+    await expect(h.state.run(h.request)).resolves.toMatchObject({ access_token: "access-1" });
+    await expect(h.state.run(h.request)).resolves.toMatchObject({ access_token: "access-1" });
+    expect(scanner).toHaveBeenCalledTimes(1);
+    expect(h.records.get("old-session")?.state).toBe("ready");
+    blocked = false;
+    h.advance(60 * 60 * 1000);
+    await expect(h.state.run(h.request)).resolves.toMatchObject({ access_token: "access-2" });
+    expect(scanner).toHaveBeenCalledTimes(2);
+    expect(h.records.get("old-session")?.state).toBe("ended");
+  },
+);
