@@ -360,7 +360,7 @@ async fn invoke(
                 "options" => {
                     let action = b.action_id.as_deref().unwrap_or_default();
                     let Some(crate::components::Component::ExternalSelect(select)) =
-                        doc.find(action)
+                        doc.find(action).filter(|c| !c.is_disabled())
                     else {
                         return Err(AppError::BadRequest("Unknown external select".into()));
                     };
@@ -604,10 +604,9 @@ fn check_submission(doc: &crate::components::Document, values: &Value) -> Result
                 s.required.unwrap_or(false)
             }
             C::ExternalSelect(s) => s.required.unwrap_or(false),
-            C::RadioGroup(g) | C::CheckboxGroup(g) => {
-                g.required.unwrap_or(true)
-                    && !matches!(c, C::CheckboxGroup(g) if g.min_values == Some(0))
-            }
+            C::RadioGroup(g) => g.required.unwrap_or(true),
+            // required を明示していればそれに従う。なければ、min_values が 0 のときは任意
+            C::CheckboxGroup(g) => g.required.unwrap_or(g.min_values != Some(0)),
             C::DatePicker(p) | C::TimePicker(p) | C::DateTimePicker(p) => {
                 p.required.unwrap_or(false)
             }

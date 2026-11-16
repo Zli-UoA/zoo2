@@ -129,7 +129,7 @@ export function messageBlocks(notice: Notice, s: Json, payload: Json, reply = fa
     for (const commit of (payload.commits ?? []).slice(-8))
       field(
         String(commit.id).slice(0, 7),
-        text(commit.message, 100),
+        text(String(commit.message ?? "").split("\n")[0], 100),
         false,
         `https://github.com/${repo}/commit/${encodeURIComponent(commit.id)}`,
       );

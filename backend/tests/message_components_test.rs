@@ -414,6 +414,20 @@ async fn backfill_moves_legacy_cards_and_blocks_and_can_be_restored() -> anyhow:
     .bind(f.id.as_str())
     .exec(&mut tx)
     .await?;
+    // 移行前の展開（app_link_unfurls.card と、messages.app_unfurls の一覧）
+    toasty::sql::statement(
+        "INSERT INTO app_link_unfurls(message_id,installation_id,url,card) VALUES($1,$2,'https://example.com/x','{\"title\":\"X\"}')",
+    )
+    .bind(mid.as_str())
+    .bind(f.installation.as_str())
+    .exec(&mut tx)
+    .await?;
+    toasty::sql::statement(
+        "UPDATE messages SET app_unfurls='[{\"app_id\":\"a\",\"name\":\"A\",\"url\":\"https://example.com/x\",\"card\":{\"title\":\"X\"}}]' WHERE id=$1",
+    )
+    .bind(mid.as_str())
+    .exec(&mut tx)
+    .await?;
     tx.commit().await?;
     let mut lines = Vec::new();
     let report = backend::components::backfill::run(&f.state.db, true, |c| {
@@ -462,10 +476,27 @@ async fn backfill_moves_legacy_cards_and_blocks_and_can_be_restored() -> anyhow:
         .iter()
         .map(|l| backend::components::backfill::from_line(l).unwrap())
         .collect();
-    assert_eq!(all.iter().filter(|c| c.id == mid).count(), 1);
+    assert_eq!(
+        all.iter()
+            .filter(|c| c.table == "messages" && c.id == mid)
+            .count(),
+        1
+    );
+    // app_link_unfurls と展開の一覧も、記録したキーで戻せる
+    assert!(
+        all.iter()
+            .any(|c| c.table == "app_link_unfurls" && c.id.contains(mid.as_str()))
+    );
     // 共有の DB にある、ほかのテストの旧データの変換も含めて、すべて戻す
-    backend::components::backfill::restore(&f.state.db, &all).await?;
+    let restored = backend::components::backfill::restore(&f.state.db, &all).await?;
+    assert_eq!(restored, all.len(), "every recorded change is restored");
     assert!(read(&mut db).await["c"].is_null());
+    let mut tx = db.transaction().await?;
+    let unfurl = apps::one(&mut tx, "SELECT json_build_object('c',u.components,'list',m.app_unfurls::jsonb)::text FROM app_link_unfurls u JOIN messages m ON m.id=u.message_id WHERE u.message_id=$1", &[mid.as_str()]).await?;
+    drop(tx);
+    assert!(unfurl["c"].is_null());
+    // 展開の一覧は、JSON の文字列ではなく元の配列に戻る
+    assert!(unfurl["list"].is_array(), "{unfurl}");
     Ok(())
 }
 

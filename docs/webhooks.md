@@ -225,6 +225,8 @@ zoo の本文は MFM（[MFM 対応表](mfm.md)）です。Slack の mrkdwn と D
 | `plan`、`task_card` | 作業の一覧と状態 |
 | `file` | ファイル名だけ（Slack 内のファイルは取得しません） |
 
+select の選択肢は先頭 25 件を出します（Slack は 100 件まで送れますが、部品の select は 25 件までです。Webhook の select は押せない状態で出すので、選べないことは変わりません）。
+
 要素：`button`（`primary`・`danger` の色、`url` があればリンクボタン、`confirm`）、`static_select`・`external_select`・`users_select`・`conversations_select`・`channels_select`（それぞれ `multi_` も）、`overflow`、`datepicker`・`timepicker`・`datetimepicker`、`checkboxes`・`radio_buttons`、`plain_text_input`・`number_input`・`email_text_input`・`url_text_input`・`rich_text_input`、`file_input`、`image`、`workflow_button` に対応します。
 
 ### Slack attachments（旧形式）

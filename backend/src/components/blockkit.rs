@@ -186,6 +186,27 @@ impl<'a, R: Resolver> Converter<'a, R> {
     /// 要素（ボタン、select、入力など）を部品にする。
     pub fn element(&mut self, v: &Value) -> Res<Component> {
         let ty = s(v, "type");
+        // 部品の select は選択肢を 25 件まで持てる。Slack は 100 件まで許すので、超える分は変換すると欠ける。
+        // App API では 400 にし、Webhook と Slack の取り込み（どのみち押せない状態で出す）では先頭 25 件を出して記録する
+        let options = arr(v, "options").len()
+            + arr(v, "option_groups")
+                .iter()
+                .map(|g| arr(g, "options").len())
+                .sum::<usize>();
+        if options > limits::MAX_OPTIONS {
+            match self.mode {
+                Mode::Strict => {
+                    return Err(format!(
+                        "{ty} {:?} has {options} options; components allow at most {}",
+                        s(v, "action_id"),
+                        limits::MAX_OPTIONS
+                    ));
+                }
+                Mode::Lenient => {
+                    tracing::info!(ty, options, "Slack select options beyond 25 were not shown")
+                }
+            }
+        }
         let multi = ty.starts_with("multi_");
         let max = if multi {
             Some(u8_of(v, "max_selected_items").unwrap_or(25))
