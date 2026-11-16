@@ -186,28 +186,45 @@ function fieldValue(f: Json): string {
   return f.url ? `[${value}](${f.url})` : value;
 }
 
-/** カード（見出しの文字と、container 1 つ）を部品の文書にする。本文は通知用の代わりの文字として残す。 */
+/** 部品の文字の合計の上限（Zoo の検証は 4,000 文字。見出しやマークアップの分の余裕を残す）。 */
+export const TEXT_BUDGET = 3800;
+
+const length = (s: string) => [...s].length;
+const clip = (s: string, n: number) => ([...s].length <= n ? s : [...s].slice(0, Math.max(0, n - 1)).join("") + "…");
+
+/** カード（見出しの文字と、container 1 つ）を部品の文書にする。本文は通知用の代わりの文字として残す。
+ * 文字の合計が上限に収まるよう、説明・項目・タイトルの順に切り詰める。 */
 export function cardComponents(heading: string | undefined, card: Json): Component[] {
+  const author = card.author ? `<small>${plain(String(card.author))}</small>` : "";
+  const footerParts = [card.source, card.context].filter(Boolean).map((v) => plain(String(v)));
+  const footer = footerParts.length ? `<small>${footerParts.join(" · ")}</small>` : "";
+  const head = heading ? plain(heading) : "";
+  const titleOf = (title: string) => {
+    const t = card.url ? `**[${plain(title)}](${card.url})**` : `**${plain(title)}**`;
+    return card.badge ? `${t} \`${String(card.badge).replaceAll("`", "'")}\`` : t;
+  };
+  let title = String(card.title ?? "");
+  let description = String(card.description ?? "");
+  let lines: string[] = (card.fields ?? []).map((f: Json) => `**${plain(f.title)}**: ${fieldValue(f)}`);
+  const total = () =>
+    length(head) + length(author) + length(titleOf(title)) + length(plain(description)) + length(lines.join("\n")) + length(footer);
+  // 説明 → 項目（後ろから） → タイトルの順に削る
+  if (total() > TEXT_BUDGET) description = clip(description, Math.max(0, length(description) - (total() - TEXT_BUDGET)));
+  while (total() > TEXT_BUDGET && lines.length) lines = lines.slice(0, -1);
+  if (total() > TEXT_BUDGET) title = clip(title, Math.max(20, length(title) - (total() - TEXT_BUDGET)));
   const parts: Component[] = [];
   // リンクの展開では、投稿者と状態（closed・merged など）も出す
-  if (card.author) parts.push({ type: 10, id: PART.author, content: `<small>${plain(String(card.author))}</small>` });
-  const title = card.url ? `**[${plain(card.title)}](${card.url})**` : `**${plain(card.title)}**`;
-  parts.push({ type: 10, id: PART.title, content: card.badge ? `${title} \`${String(card.badge).replaceAll("`", "'")}\`` : title });
-  if (card.description) parts.push({ type: 10, id: PART.description, content: plain(card.description) });
-  if (card.fields?.length)
-    parts.push({
-      type: 10,
-      id: PART.fields,
-      content: card.fields.map((f: Json) => `**${plain(f.title)}**: ${fieldValue(f)}`).join("\n"),
-    });
-  const footer = [card.source, card.context].filter(Boolean).map((v) => plain(String(v)));
-  if (footer.length) {
+  if (author) parts.push({ type: 10, id: PART.author, content: author });
+  parts.push({ type: 10, id: PART.title, content: titleOf(title) });
+  if (description) parts.push({ type: 10, id: PART.description, content: plain(description) });
+  if (lines.length) parts.push({ type: 10, id: PART.fields, content: lines.join("\n") });
+  if (footer) {
     parts.push({ type: 14, divider: false, spacing: 1 });
-    parts.push({ type: 10, id: PART.footer, content: `<small>${footer.join(" · ")}</small>` });
+    parts.push({ type: 10, id: PART.footer, content: footer });
   }
   const box: Component = { type: 17, components: parts };
   if (card.color) box.accent_color = Number.parseInt(String(card.color).replace(/^#/, ""), 16);
-  return heading ? [{ type: 10, id: PART.heading, content: plain(heading) }, box] : [box];
+  return heading ? [{ type: 10, id: PART.heading, content: head }, box] : [box];
 }
 
 /** {@link messageBlocks} の結果（見出しとカード）を、メッセージの部品にする。 */
