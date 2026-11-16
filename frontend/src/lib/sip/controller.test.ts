@@ -148,3 +148,43 @@ describe("SIP controller", () => {
     s.controller.disconnect();
   });
 });
+
+it("keeps an incoming call that arrives during outgoing authorization", async () => {
+  const s = setup();
+  await s.controller.connect("home");
+  let finish!: (value: { data: PhoneConnection; txid: null }) => void;
+  s.post.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const dial = s.controller.dial("101");
+  s.events().incoming();
+  expect(s.controller.snapshot()).toMatchObject({ status: "incoming", busy: true });
+  finish({ data: credentials, txid: null });
+  await dial;
+  expect(s.driver.call).not.toHaveBeenCalled();
+  expect(s.controller.snapshot()).toMatchObject({ status: "incoming", busy: false, error: false });
+  s.controller.disconnect();
+});
+it("does not answer a call that ended during authorization", async () => {
+  const s = setup();
+  await s.controller.connect("home");
+  s.events().incoming();
+  let finish!: (value: { data: PhoneConnection; txid: null }) => void;
+  s.post.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const answer = s.controller.answer();
+  s.events().ended();
+  expect(s.controller.snapshot().busy).toBe(true);
+  finish({ data: credentials, txid: null });
+  await answer;
+  expect(s.driver.answer).not.toHaveBeenCalled();
+  expect(s.controller.snapshot()).toMatchObject({ status: "ready", busy: false, error: false });
+  s.controller.disconnect();
+});

@@ -97,19 +97,19 @@ export class SipController {
       const current = () => generation === this.generation;
       const driver = await this.factory(data, {
         ready: () => {
-          if (current()) {
+          if (current() && this.state.status === "connecting") {
             this.clearTimeout();
             this.set({ status: "ready", busy: false, error: false });
           }
         },
         incoming: () => {
-          if (current()) this.set({ status: "incoming", peer: "", muted: false, busy: false });
+          if (current()) this.set({ status: "incoming", peer: "", muted: false });
         },
         answered: () => {
-          if (current()) this.set({ status: "active", busy: false });
+          if (current()) this.set({ status: "active" });
         },
         ended: () => {
-          if (current()) this.set({ status: "ready", peer: "", muted: false, busy: false });
+          if (current()) this.set({ status: "ready", peer: "", muted: false });
         },
         disconnected: () => {
           if (current()) {
@@ -176,7 +176,7 @@ export class SipController {
     }
     await this.action(async (driver) => {
       await this.authorize();
-      if (driver !== this.driver) return;
+      if (driver !== this.driver || this.state.status !== "ready") return;
       this.set({ status: "dialing", peer: number.trim(), muted: false });
       try {
         await driver.call(target);
@@ -190,7 +190,7 @@ export class SipController {
     this.action(async (driver) => {
       if (this.state.status !== "incoming") return;
       await this.authorize();
-      if (driver === this.driver) await driver.answer();
+      if (driver === this.driver && this.state.status === "incoming") await driver.answer();
     });
   hangup = () => this.action((driver) => driver.hangup());
   dtmf = (tone: string) =>
