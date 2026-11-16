@@ -1,6 +1,7 @@
 package zoo
 
 import androidx.compose.foundation.*
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,8 +15,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
@@ -204,21 +204,6 @@ private fun InlineParagraph(
     editedAt: String? = null,
     maxLines: Int = Int.MAX_VALUE,
 ) {
-    BoxWithConstraints {
-        InlineParagraphContent(segments, users, shortcodes, depth, editedAt, maxLines, maxWidth)
-    }
-}
-
-@Composable
-private fun InlineParagraphContent(
-    segments: List<Pair<String, Boolean>>,
-    users: List<Row>,
-    shortcodes: Row,
-    depth: Int,
-    editedAt: String?,
-    maxLines: Int,
-    availableWidth: Dp,
-) {
     val app = LocalApp.current
     val fonts = LocalFonts.current
     val authzAccounts = app.accountProfiles.map { JsonObject(it + ("user_name" to JsonPrimitive(it.text("username")))) }
@@ -230,9 +215,6 @@ private fun InlineParagraphContent(
     val accent = LocalLinkColor.current
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val sizes = remember(segments, availableWidth, density.density, density.fontScale) {
-        mutableStateMapOf<String, androidx.compose.ui.unit.IntSize>()
-    }
     val joined = LocalJoinedEmojis.current
     val workspace = if (joined == null) workspaceEmojis(app) else emptyList()
     val registeredEmojis = remember(joined, workspace) {
@@ -379,142 +361,138 @@ private fun InlineParagraphContent(
     val mentions = paragraph.mentions
     val emojiParts = paragraph.emojiParts
     val accountParts = paragraph.accountParts
-    val content =
-        paragraph.embeddedParts.mapValues { (id, embedded) ->
-            val source = embedded.source
-            val measured = sizes[id]
-            val maximum = with(density) { availableWidth.toSp() }
-            val estimate = measured?.let { with(density) { it.width.toSp() } }
-                ?: (source.length * 7).coerceIn(16, 600).sp
-            val width = if (maximum.isSp && maximum.value.isFinite())
-                minOf(estimate.value, maximum.value).coerceAtLeast(1f).sp else estimate
-            val height = measured?.let { with(density) { it.height.toSp() } } ?: 20.sp
-            val ruby = source.startsWith("$[") && mfmFunction(source.drop(2).dropLast(1)).name == "ruby"
-            androidx.compose.foundation.text.InlineTextContent(
-                Placeholder(width, height,
-                    if (ruby) PlaceholderVerticalAlign.TextBottom else PlaceholderVerticalAlign.TextCenter)
+    val embeddedContent = paragraph.embeddedParts.mapValues { (_, embedded) ->
+        val source = embedded.source
+        val ruby = source.startsWith("$[") && mfmFunction(source.drop(2).dropLast(1)).name == "ruby"
+        MfmInlineBody(if (ruby) PlaceholderVerticalAlign.TextBottom else PlaceholderVerticalAlign.TextCenter) {
+            CompositionLocalProvider(
+                LocalMfmStyle provides inheritedStyle.merge(embedded.style),
+                LocalMfmInline provides true,
+                LocalMfmInLink provides embedded.inLink,
             ) {
-                MeasuredInlineContent(availableWidth, { if (sizes[id] != it) sizes[id] = it }) {
-                    CompositionLocalProvider(
-                        LocalMfmStyle provides inheritedStyle.merge(embedded.style),
-                        LocalMfmInline provides true,
-                        LocalMfmInLink provides embedded.inLink,
-                    ) {
-                        if (source.startsWith("$["))
-                            MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
-                        else MathInline(source.drop(2).dropLast(2))
-                    }
-                }
+                if (source.startsWith("$[")) MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
+                else MathInline(source.drop(2).dropLast(2))
             }
         }
-    val mentionContent =
-        mentions.mapValues { (id, value) ->
-            val measured = sizes[id]
-            androidx.compose.foundation.text.InlineTextContent(
-                Placeholder(
-                    measured?.let { with(density) { it.width.toSp() } }
-                        ?: (value.length * 7 + 4).sp,
-                    measured?.let { with(density) { it.height.toSp() } } ?: 20.sp,
-                    PlaceholderVerticalAlign.TextCenter,
+    }
+    val mentionContent = mentions.mapValues { (_, value) ->
+        MfmInlineBody(PlaceholderVerticalAlign.TextCenter) {
+            val account = authzAccounts.find { it.text("username") == value.removePrefix("@") }
+            Row(
+                Modifier.background(mentionBackground, RoundedCornerShape(4.dp))
+                    .padding(horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                if (account != null) {
+                    Text("@", color = mentionForeground)
+                    Avatar(account, size = with(density) { inheritedStyle.fontSize.toDp() })
+                }
+                androidx.compose.material3.Text(
+                    fontText(account?.let(::author) ?: value, fonts, FontWeight.Medium),
+                    color = mentionForeground,
+                    style = inheritedStyle.copy(fontFamily = fonts.latin, lineHeight = TextUnit.Unspecified),
+                    fontWeight = FontWeight.Medium,
                 )
-            ) {
-                val account = authzAccounts.find { it.text("username") == value.removePrefix("@") }
-                Row(
-                    Modifier.wrapContentSize(unbounded = true)
-                        .onSizeChanged { sizes[id] = it }
-                        .background(mentionBackground, RoundedCornerShape(4.dp))
-                        .padding(horizontal = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                ) {
-                    if (account != null) {
-                        Text("@", color = mentionForeground)
-                        Avatar(account, size = 18.dp)
-                    }
-                    androidx.compose.material3.Text(
-                        fontText(account?.let(::author) ?: value, fonts, FontWeight.Medium),
-                        color = mentionForeground,
-                        style = MaterialTheme.typography.bodyMedium.merge(inheritedStyle)
-                            .copy(fontFamily = fonts.latin, lineHeight = TextUnit.Unspecified),
-                        fontWeight = FontWeight.Medium,
-                    )
-                }
             }
         }
+    }
+    val fixedContent = emojiParts.mapValues { (_, emoji) ->
+        androidx.compose.foundation.text.InlineTextContent(
+            Placeholder((1.5f * emojiRatio(emoji)).coerceAtMost(8f).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)
+        ) {
+            ActivityPubEmoji(emoji, with(density) { (inheritedStyle.fontSize.value * 1.5f).sp.toDp() })
+        }
+    } + accountParts.mapValues { (_, account) ->
+        androidx.compose.foundation.text.InlineTextContent(
+            Placeholder(1.15.em, 1.15.em, PlaceholderVerticalAlign.TextCenter)
+        ) {
+            Avatar(account,
+                modifier = Modifier.semantics { contentDescription = ":@${account.text("user_name")}:" },
+                size = with(density) { (inheritedStyle.fontSize.value * 1.15f).sp.toDp() })
+        }
+    } + if (editedAt != null) mapOf(
+        "edited" to androidx.compose.foundation.text.InlineTextContent(
+            Placeholder(12.sp, 12.sp, PlaceholderVerticalAlign.TextCenter)
+        ) {
+            Hint("${app.t("messages.edited")} · ${app.platform.fullTimestamp(editedAt)}") { hintModifier ->
+                Icon("pencil", app.t("messages.edited"), hintModifier.size(12.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    ) else emptyMap()
     val paragraphLayout = remember { arrayOfNulls<TextLayoutResult>(1) }
     val currentText by rememberUpdatedState(text)
-    InlineLinks(text) { displayText, linkLayout ->
-        androidx.compose.material3.Text(
-            displayText,
-            modifier =
-                Modifier.preventMessageHold { position ->
+    MeasuredMfmParagraph(text, embeddedContent + mentionContent, fixedContent) { inlineContent, reportLayout ->
+        InlineLinks(text) { displayText, linkLayout ->
+            androidx.compose.material3.Text(
+                displayText,
+                modifier = Modifier.preventMessageHold { position ->
                     paragraphLayout[0]?.let {
                         val offset = it.getOffsetForPosition(position)
                         currentText.getLinkAnnotations(offset, offset).isNotEmpty()
                     } ?: false
                 },
-            onTextLayout = {
-                paragraphLayout[0] = it
-                linkLayout(it)
-            },
-            maxLines = maxLines,
-            overflow = TextOverflow.Ellipsis,
-            inlineContent =
-                content +
-                    emojiParts.mapValues { (_, emoji) ->
-                        androidx.compose.foundation.text.InlineTextContent(Placeholder((1.5f * emojiRatio(emoji)).coerceAtMost(8f).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
-                            ActivityPubEmoji(emoji, with(density) { (inheritedStyle.fontSize.value * 1.5f).sp.toDp() })
-                        }
-                    } +
-                    accountParts.mapValues { (_, account) ->
-                        androidx.compose.foundation.text.InlineTextContent(Placeholder(1.15.em, 1.15.em, PlaceholderVerticalAlign.TextCenter)) {
-                            Avatar(account, modifier = Modifier.semantics { contentDescription = ":@${account.text("user_name")}:" }, size = with(density) { (inheritedStyle.fontSize.value * 1.15f).sp.toDp() })
-                        }
-                    } +
-                    mentionContent +
-                    if (editedAt != null)
-                        mapOf(
-                            "edited" to
-                                androidx.compose.foundation.text.InlineTextContent(
-                                    Placeholder(12.sp, 12.sp, PlaceholderVerticalAlign.TextCenter)
-                                ) {
-                                    Hint(
-                                        "${app.t("messages.edited")} · ${app.platform.fullTimestamp(editedAt)}"
-                                    ) { hintModifier ->
-                                        Icon(
-                                            "pencil",
-                                            app.t("messages.edited"),
-                                            hintModifier.size(12.dp),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                }
-                        )
-                    else emptyMap(),
-            style = MaterialTheme.typography.bodyMedium.merge(inheritedStyle),
-            color =
-                inheritedStyle.color.takeIf { it != androidx.compose.ui.graphics.Color.Unspecified }
+                onTextLayout = {
+                    paragraphLayout[0] = it
+                    reportLayout(it)
+                    linkLayout(it)
+                },
+                maxLines = maxLines,
+                overflow = TextOverflow.Ellipsis,
+                inlineContent = inlineContent,
+                style = inheritedStyle,
+                color = inheritedStyle.color.takeIf { it != Color.Unspecified }
                     ?: MaterialTheme.colorScheme.onBackground,
-        )
+            )
+        }
     }
 }
 
-/** Measure the body independently from its provisional text placeholder. */
+private class MfmInlineBody(
+    val alignment: PlaceholderVerticalAlign,
+    val children: @Composable () -> Unit,
+)
+
+/** Measure each body once, then lay out the paragraph with its final placeholder dimensions. */
 @Composable
-private fun MeasuredInlineContent(
-    maximumWidth: Dp,
-    measured: (IntSize) -> Unit,
-    content: @Composable () -> Unit,
+private fun MeasuredMfmParagraph(
+    text: AnnotatedString,
+    bodies: Map<String, MfmInlineBody>,
+    fixed: Map<String, androidx.compose.foundation.text.InlineTextContent>,
+    content: @Composable (Map<String, androidx.compose.foundation.text.InlineTextContent>, (TextLayoutResult) -> Unit) -> Unit,
 ) {
-    val maximum = with(androidx.compose.ui.platform.LocalDensity.current) {
-        if (maximumWidth.value.isFinite()) maximumWidth.roundToPx().coerceAtLeast(1)
-        else androidx.compose.ui.unit.Constraints.Infinity
-    }
-    Layout(content = { Box { content() } }) { children, constraints ->
-        val child = children.single().measure(androidx.compose.ui.unit.Constraints(maxWidth = maximum))
-        measured(IntSize(child.width, child.height))
-        layout(constraints.constrainWidth(child.width), constraints.constrainHeight(child.height)) {
-            child.placeRelative(0, 0)
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val textLayout = remember(text) { arrayOfNulls<TextLayoutResult>(1) }
+    SubcomposeLayout { constraints ->
+        val measured = bodies.mapValues { (id, body) ->
+            subcompose("body-$id") { Box { body.children() } }.single()
+                .measure(Constraints(maxWidth = constraints.maxWidth))
+        }
+        val placeholders = measured.mapValues { (id, child) ->
+            androidx.compose.foundation.text.InlineTextContent(
+                Placeholder(
+                    with(density) { child.width.coerceAtLeast(1).toSp() },
+                    with(density) { child.height.coerceAtLeast(1).toSp() },
+                    bodies.getValue(id).alignment,
+                )
+            ) {}
+        } + fixed
+        val paragraph = subcompose("paragraph") {
+            content(placeholders) { textLayout[0] = it }
+        }.single().measure(constraints)
+        val ids = text.getStringAnnotations(0, text.length)
+            .filter { it.item in placeholders }.map { it.item }
+        val positions = textLayout[0]?.placeholderRects.orEmpty()
+        layout(paragraph.width, paragraph.height) {
+            paragraph.place(0, 0)
+            ids.forEachIndexed { index, id ->
+                val bounds = positions.getOrNull(index)
+                val body = measured[id]
+                // A truncated placeholder has no rectangle and must not draw or receive taps.
+                if (bounds != null && body != null)
+                    body.place(bounds.left.roundToInt(), bounds.top.roundToInt())
+            }
         }
     }
 }
