@@ -46,6 +46,7 @@ import {
   ReplyIcon,
   Repeat2Icon,
   SmilePlusIcon,
+  ExternalLinkIcon,
 } from "lucide-react";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -191,8 +192,9 @@ function HomeScreenContent({
   }, [client]);
   const scheduleControls = useRef<() => void>(() => {});
   useEffect(() => {
-    const scheduler = coalescedRefresh(() =>
-      document.visibilityState === "hidden" ? undefined : loadControls(),
+    const scheduler = coalescedRefresh(
+      () => (document.visibilityState === "hidden" ? undefined : loadControls()),
+      60_000,
     );
     scheduleControls.current = scheduler.request;
     scheduler.request();
@@ -469,9 +471,11 @@ function HomeScreenContent({
     getItemKey: (index) => timelineEntryId(posts[index]),
     overscan: 6,
     scrollMargin: listOffset,
-    // Preserve the reading anchor across prepends/deletions, except at the top
-    // where incoming posts should be shown immediately. No follow-on-append.
+    // Keep the reading key across prepends/deletions, but never pin resize
+    // measurements to the bottom as newly appended rows replace estimates.
     anchorTo: (scrollRoot.current?.scrollTop ?? 0) > 80 ? "end" : "start",
+    followOnAppend: false,
+    scrollEndThreshold: Number.NEGATIVE_INFINITY,
     useAnimationFrameWithResizeObserver: true,
   });
   const virtualizerRef = useRef(virtualizer);
@@ -624,7 +628,7 @@ function HomeScreenContent({
           if ((scrollRoot.current?.scrollTop ?? 0) < 80 && newPosts > 0)
             scheduleRefresh.current(true);
         }}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-24"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain pb-24 [overflow-anchor:none]"
         onTouchStart={(event) => {
           touchStart.current =
             event.touches.length === 1 && (scrollRoot.current?.scrollTop ?? 0) <= 0
@@ -680,11 +684,7 @@ function HomeScreenContent({
                 </Button>
               ))}
             </div>
-          ) : (
-            <Link to="/home" className="inline-block p-3 text-sm text-link">
-              {t("home.title")}
-            </Link>
-          )}
+          ) : null}
           {pull > 0 || pulling ? (
             <div
               role="status"
@@ -905,6 +905,19 @@ function HomeScreenContent({
                                   </DropdownMenuItem>
                                 </>
                               ) : null}
+                              {post.remote && post.url?.startsWith("https://") ? (
+                                <DropdownMenuItem
+                                  render={
+                                    <ExternalLink
+                                      href={post.url}
+                                      className="text-popover-foreground"
+                                    />
+                                  }
+                                >
+                                  <ExternalLinkIcon />
+                                  {t("home.original")}
+                                </DropdownMenuItem>
+                              ) : null}
                               <DropdownMenuItem
                                 onClick={() => {
                                   if (!navigator.clipboard) {
@@ -1069,11 +1082,6 @@ function HomeScreenContent({
                           <p role="alert" className="text-xs text-destructive">
                             {t("home.controlsError")}
                           </p>
-                        ) : null}
-                        {post.remote && post.url?.startsWith("https://") ? (
-                          <ExternalLink className="text-xs" href={post.url}>
-                            {t("home.original")}
-                          </ExternalLink>
                         ) : null}
                       </div>
                     </article>

@@ -1,6 +1,7 @@
 **
 !infra/
 !infra/db/
+!infra/db/migrate.sh
 !infra/db/atlas.hcl
 !infra/db/schema.sql
 !infra/db/migrations/

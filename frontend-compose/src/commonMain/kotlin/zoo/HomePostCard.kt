@@ -262,6 +262,8 @@ fun HomePostCard(
                                 )
                                 add(MenuAction("trash-2", app.t("home.delete"), !pending, remove))
                             }
+                            if (post.flag("remote") && publicUrl(post.text("url")) != null)
+                                add(MenuAction("external-link", app.t("home.original")) { app.platform.action("open:${post.text("url")}") })
                             add(
                                 MenuAction("copy", app.t("home.copyContent")) {
                                     app.run {
@@ -275,13 +277,7 @@ fun HomePostCard(
                 }
                 if (error)
                     Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")))
-                if (post.flag("remote") && publicUrl(post.text("url")) != null)
-                    NativeLink(
-                        post.text("url"),
-                        attributes = mapOf("target" to "_blank", "rel" to "noopener noreferrer"),
-                    ) {
-                        Text(app.t("home.original"), size = 12.sp, color = LocalLinkColor.current)
-                    }
+
             }
         }
     }

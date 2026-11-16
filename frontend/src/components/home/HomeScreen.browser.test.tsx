@@ -212,6 +212,12 @@ it("refreshes only the head and viewport, applies edits/deletions, and preserves
       ),
     ).toBe(true),
   );
+  // The virtual rows render before their animation-frame ResizeObserver
+  // measurements. Capture the reading position after those measurements.
+  await act(async () => {
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
+  });
   let visible: HTMLElement[] = [];
   await waitFor(() => {
     const viewport = root.getBoundingClientRect();
@@ -240,11 +246,15 @@ it("refreshes only the head and viewport, applies edits/deletions, and preserves
   });
   await screen.findByText("表示中の編集", {}, { timeout: 10000 });
   await waitFor(() => expect(root.querySelector(`[data-home-post="${deletedId}"]`)).toBeNull());
-  expect(
-    Math.abs(
-      root.querySelector(`[data-home-post="${anchorId}"]`)!.getBoundingClientRect().top - top,
-    ),
-  ).toBeLessThan(5);
+  // Text updates alone do not mean the virtualizer has applied its measured
+  // scroll correction. Keep the same tolerance, waiting for that correction.
+  await waitFor(() =>
+    expect(
+      Math.abs(
+        root.querySelector(`[data-home-post="${anchorId}"]`)!.getBoundingClientRect().top - top,
+      ),
+    ).toBeLessThan(5),
+  );
   expect(prefetchDistances).toHaveLength(pagesBefore);
   const checks = requests.filter((url) => url.searchParams.has("entries"));
   expect(checks.length).toBeGreaterThan(0);
@@ -530,3 +540,36 @@ it("applies a disjoint new head when scrolling back to the top", async () => {
   await screen.findByText("最新の投稿 0", {}, { timeout: 10000 });
   expect(screen.queryByRole("button", { name: /新しい投稿を見る/ })).toBeNull();
 }, 20000);
+
+it.each([390, 1440])(
+  "keeps the viewport at the old tail after appending at width %s",
+  async (width) => {
+    await page.viewport(width, 900);
+    await mount();
+    root.scrollTop = root.scrollHeight;
+    fireEvent.scroll(root);
+    await waitFor(() => expect(prefetchDistances).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "読み込み中…" })).toBeNull());
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+    expect(prefetchDistances).toHaveLength(1);
+    expect(root.scrollHeight - root.scrollTop - root.clientHeight).toBeGreaterThan(1000);
+    expect(root.querySelector('[data-home-post="p-49"]')).not.toBeNull();
+  },
+);
+
+it("shows the original link only inside the post menu", async () => {
+  rows[0] = { ...rows[0], remote: true, url: "https://remote.test/notes/first" };
+  await mount();
+  expect(screen.queryByRole("link", { name: "元の投稿" })).toBeNull();
+  fireEvent.click(
+    within(root.querySelector('[data-home-post="p-0"]')!).getByRole("button", {
+      name: "投稿の操作",
+    }),
+  );
+  const original = await screen.findByRole("menuitem", { name: /元の投稿/ });
+  expect(original.getAttribute("href")).toBe("https://remote.test/notes/first");
+  expect(original.getAttribute("target")).toBe("_blank");
+  expect(original.getAttribute("rel")).toContain("noopener");
+});

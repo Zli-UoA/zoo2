@@ -176,6 +176,7 @@ export function NotificationsScreen() {
             {entries.map((entry) =>
               entry.source === "activitypub" ? (
                 <ActivityPubNotificationCard
+                  onVisibilityChange={apub.setVisible}
                   key={entry.key}
                   item={entry.item}
                   onRead={readVisible}

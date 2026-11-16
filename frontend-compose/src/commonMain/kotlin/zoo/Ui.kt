@@ -278,6 +278,8 @@ fun Text(
     lineHeight: TextUnit = TextUnit.Unspecified,
     textAlign: TextAlign? = null,
     letterSpacing: TextUnit = TextUnit.Unspecified,
+    overflow: TextOverflow = TextOverflow.Ellipsis,
+    softWrap: Boolean = true,
     onTextLayout: (androidx.compose.ui.text.TextLayoutResult) -> Unit = {},
 ) {
     val fonts = LocalFonts.current
@@ -296,7 +298,8 @@ fun Text(
                 .let { it.copy(lineHeight = browserLineHeight(it.lineHeight)) },
         fontWeight = weight,
         maxLines = maxLines,
-        overflow = TextOverflow.Ellipsis,
+        overflow = overflow,
+        softWrap = softWrap,
         fontSize = size,
         lineHeight = browserLineHeight(lineHeight),
         textAlign = textAlign,

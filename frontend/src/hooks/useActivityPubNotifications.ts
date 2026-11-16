@@ -43,6 +43,9 @@ export function useActivityPubNotifications() {
   const olderRequest = useRef<AbortController | null>(null);
   const deferred = useRef(false);
   const pendingReads = useRef(new Set<string>());
+  const visibleIds = useRef(new Set<string>());
+  const gap = useRef<{ anchors: Set<string>; resume: string | null | undefined } | null>(null);
+  const readRevision = useRef(0);
   const refresh = useCallback((): Promise<void> => {
     if (lifetime.current?.signal.aborted) return Promise.resolve();
     if (olderRequest.current) {
@@ -58,44 +61,76 @@ export function useActivityPubNotifications() {
     const task = (async () => {
       do {
         deferred.current = false;
-        const retained = snapshot.current.items;
-        const tail = retained.at(-1);
+        const readsAtStart = readRevision.current;
         try {
-          let page: NotificationPage;
-          const items: ActivityPubNotification[] = [];
-          let before: string | null = null;
-          const visited = new Set<string>();
-          do {
-            page = await client.get<NotificationPage>(
-              `/api/activitypub/notifications${before ? `?before=${encodeURIComponent(before)}` : ""}`,
-              { signal: controller.signal },
+          const page = await client.get<NotificationPage>("/api/activitypub/notifications", {
+            signal: controller.signal,
+          });
+          const headIds = new Set(page.items.map((item) => item.id));
+          const checkedIds = [...visibleIds.current].filter((id) => !headIds.has(id)).slice(0, 100);
+          let checked: ActivityPubNotification[] = [];
+          if (checkedIds.length) {
+            const viewport = await client.request<NotificationPage>(
+              "/api/activitypub/notifications/entries",
+              {
+                method: "POST",
+                body: { entries: checkedIds },
+                signal: controller.signal,
+              },
             );
-            items.push(...page.items.filter((item) => !items.some((old) => old.id === item.id)));
-            before = page.next_cursor ?? null;
-            const last = items.at(-1);
-            const reached =
-              !tail ||
-              items.some((item) => item.id === tail.id) ||
-              (!!last &&
-                (notificationTimestamp(last.created_at) < notificationTimestamp(tail.created_at) ||
-                  (notificationTimestamp(last.created_at) ===
-                    notificationTimestamp(tail.created_at) &&
-                    last.id <= tail.id)));
-            if (!before || visited.has(before) || (reached && items.length >= retained.length))
-              break;
-            visited.add(before);
-          } while (before && !controller.signal.aborted);
+            checked = viewport.items;
+          }
+          if (controller.signal.aborted) return;
+          const updates = new Map([...page.items, ...checked].map((item) => [item.id, item]));
+          const retained = snapshot.current.items;
+          const latest = new Map(retained.map((item) => [item.id, item]));
+          const authoritative = new Set(checkedIds);
+          const items = [
+            ...page.items,
+            ...(page.next_cursor ? retained.filter((item) => !headIds.has(item.id)) : []),
+          ]
+            .filter((item) => !authoritative.has(item.id) || updates.has(item.id))
+            .map((item) => {
+              const updated = updates.get(item.id) ?? item;
+              return latest.get(item.id)?.is_read ? { ...updated, is_read: true } : updated;
+            })
+            .sort(
+              (a, b) =>
+                notificationTimestamp(b.created_at) - notificationTimestamp(a.created_at) ||
+                (a.id > b.id ? -1 : a.id < b.id ? 1 : 0),
+            );
+          let cursor = page.next_cursor;
+          if (page.next_cursor && retained.length) {
+            if (retained.some((item) => headIds.has(item.id))) {
+              if (
+                gap.current ||
+                snapshot.current.next_cursor == null ||
+                retained.some((item) => !headIds.has(item.id))
+              )
+                cursor = snapshot.current.next_cursor;
+            } else {
+              gap.current ??= {
+                anchors: new Set(retained.map((item) => item.id)),
+                resume: snapshot.current.next_cursor,
+              };
+            }
+          } else gap.current = null;
           if (!controller.signal.aborted) {
             const updated = {
               ...page,
+              next_cursor: cursor,
               items: items.map((item) =>
                 pendingReads.current.has(item.id) ? { ...item, is_read: true } : item,
               ),
-              unread_count: Math.max(
-                0,
-                page.unread_count -
-                  items.filter((item) => !item.is_read && pendingReads.current.has(item.id)).length,
-              ),
+              unread_count:
+                readsAtStart !== readRevision.current
+                  ? snapshot.current.unread_count
+                  : Math.max(
+                      0,
+                      page.unread_count -
+                        items.filter((item) => !item.is_read && pendingReads.current.has(item.id))
+                          .length,
+                    ),
             };
             snapshot.current = updated;
             setData(updated);
@@ -138,6 +173,7 @@ export function useActivityPubNotifications() {
       refreshTask.current = null;
       olderRequest.current = null;
       deferred.current = false;
+      gap.current = null;
     };
   }, [refresh]);
   useHomeLive(() => schedule.current());
@@ -160,11 +196,22 @@ export function useActivityPubNotifications() {
         const current = snapshot.current;
         const updated = {
           ...next,
+          // Pagination owns older rows; head refresh owns the global counter.
+          unread_count: current.unread_count,
+          next_cursor: next.next_cursor,
           items: [
             ...current.items,
             ...next.items.filter((item) => !current.items.some((old) => old.id === item.id)),
-          ],
+          ].sort(
+            (a, b) =>
+              notificationTimestamp(b.created_at) - notificationTimestamp(a.created_at) ||
+              (a.id > b.id ? -1 : a.id < b.id ? 1 : 0),
+          ),
         };
+        if (gap.current && next.items.some((item) => gap.current?.anchors.has(item.id))) {
+          updated.next_cursor = gap.current.resume;
+          gap.current = null;
+        } else if (!next.next_cursor) gap.current = null;
         snapshot.current = updated;
         setData(updated);
         setError(false);
@@ -188,6 +235,7 @@ export function useActivityPubNotifications() {
       if (ids !== undefined && !selected.length) return;
       for (const id of selected) pendingReads.current.add(id);
       const previous = snapshot.current;
+      readRevision.current++;
       const changed = previous.items
         .filter((item) => !item.is_read && selected.includes(item.id))
         .map((item) => item.id);
@@ -206,6 +254,7 @@ export function useActivityPubNotifications() {
           body: ids === undefined ? {} : { ids: selected },
         });
       } catch (error) {
+        readRevision.current++;
         selected.forEach((id) => pendingReads.current.delete(id));
         const current = snapshot.current;
         const restored = {
@@ -230,5 +279,12 @@ export function useActivityPubNotifications() {
     await client.request(path, { method: "POST", body });
     await refresh();
   };
-  return { ...data, error, loading, loadingMore, loadMore, refresh, act, markRead };
+  const setVisible = useCallback((id: string, visible: boolean) => {
+    const wasVisible = visibleIds.current.has(id);
+    if (visible) visibleIds.current.add(id);
+    else visibleIds.current.delete(id);
+    if (visible && !wasVisible && snapshot.current.items.findIndex((item) => item.id === id) >= 100)
+      schedule.current();
+  }, []);
+  return { ...data, error, loading, loadingMore, loadMore, refresh, act, markRead, setVisible };
 }

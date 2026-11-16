@@ -66,16 +66,13 @@ pub(super) async fn read(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let mut posts = query(&mut tx, "SELECT json_build_object('id',id,'content',content,'created_at',created_at,'channel_id',channel_id,'media',media)::text FROM home_posts p WHERE user_id=$1 AND apub AND visibility='public' AND deleted_at IS NULL AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)) AND ($2='' OR (created_at,id)<(SELECT created_at,id FROM home_posts p WHERE id=$2 AND user_id=$1 AND apub AND visibility='public' AND deleted_at IS NULL AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)))) ORDER BY created_at DESC,id DESC LIMIT 21", &[&id, page.before.as_deref().unwrap_or("")]).await?;
-    crate::routes::home_images::decorate(&mut tx, &mut posts).await?;
     let next_cursor = if posts.len() > 20 {
         Some(string(&posts[19], "id")?.to_owned())
     } else {
         None
     };
     posts.truncate(20);
-    for post in &mut posts {
-        *post = super::with_workspace_emojis(&mut tx, post).await?;
-    }
+    super::decorate_workspace_posts(&mut tx, &mut posts).await?;
     Ok(Json(
         json!({"account":account,"posts":posts,"next_cursor":next_cursor}),
     ))

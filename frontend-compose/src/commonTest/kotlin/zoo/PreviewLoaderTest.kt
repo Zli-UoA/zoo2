@@ -66,4 +66,43 @@ class PreviewLoaderTest {
             assertEquals(4, requests)
         } finally { app.close(); http.close() }
     }
+    @Test fun staleMetadataStaysVisibleDuringSharedRefreshAndAfterFailure() = runTest {
+        val clock = kotlin.time.TestTimeSource()
+        var requests = 0
+        var gate: CompletableDeferred<Unit>? = null
+        var fail = false
+        val platform = PublicPlatform {
+            requests++
+            gate?.await()
+            if (fail) error("offline")
+            obj("body" to obj("title" to if (requests == 1) "Cached" else "Updated").toString()).toString()
+        }
+        val http = HttpClient(MockEngine { error("Unexpected API request") })
+        val app = Session(Repository(Config("https://zoo.test", "/shapes", "alice", false), platform, http, backgroundScope, synchronize = false), backgroundScope, Environment())
+        val loader = PreviewLoader(app, clock)
+        val service = "https://summaly.test/url"
+        val url = "https://target.test/stale"
+        try {
+            assertEquals("Cached", loader.load(service, url)?.title)
+            clock += kotlin.time.Duration.parse("6m")
+            gate = CompletableDeferred()
+            val first = async { loader.load(service, url) }
+            val second = async { loader.load(service, url) }
+            runCurrent()
+            assertEquals(2, requests)
+            assertEquals("Cached", loader.cached(service, url)?.title)
+            first.cancelAndJoin()
+            gate!!.complete(Unit)
+            assertEquals("Updated", second.await()?.title)
+            assertEquals("Updated", loader.cached(service, url)?.title)
+            clock += kotlin.time.Duration.parse("6m")
+            fail = true; gate = null
+            assertEquals("Updated", loader.load(service, url)?.title)
+            assertEquals(5, requests)
+            assertEquals("Updated", loader.cached(service, url)?.title)
+            assertEquals("Updated", loader.load(service, url)?.title)
+            assertEquals(5, requests, "Failed refreshes must not retry on every remount")
+        } finally { app.close(); http.close() }
+    }
+
 }
