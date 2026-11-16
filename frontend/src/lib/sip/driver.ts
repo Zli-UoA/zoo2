@@ -234,19 +234,20 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
         return start();
       },
       hangup: async () => {
+        const mine = generation;
         if (closed || (!media && !incoming)) return;
         const decline = !media && incoming !== null;
         if (media && !descriptionSent) {
           // Wait for the queued description before sending its hangup.
           await description?.promise.catch(() => {});
-          if (closed) return;
+          if (closed || mine !== generation) return;
         }
         ending = deferred();
         const done = ending;
         media?.close();
         let timeout!: ReturnType<typeof setTimeout>;
         try {
-          await send({ action: decline ? "decline" : "hangup" });
+          await send({ action: decline ? "decline" : "hangup" }, mine);
           await Promise.race([
             done.promise,
             new Promise<never>((_, reject) => {
@@ -254,7 +255,7 @@ export function createPhoneDriverFactory(api: ApiClient, config: AppConfig): Sip
             }),
           ]);
         } catch (error) {
-          fail();
+          if (mine === generation) fail();
           throw error;
         } finally {
           clearTimeout(timeout);

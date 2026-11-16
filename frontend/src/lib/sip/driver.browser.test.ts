@@ -204,6 +204,8 @@ it("ignores a candidate failure from the previous call", async () => {
 it("disconnects the session when hangup is rejected", async () => {
   const f = await fixture();
   await f.driver.call("101");
+  f.connected();
+  await vi.waitFor(() => expect(f.events.answered).toHaveBeenCalledOnce());
   const original = f.post.getMockImplementation()!;
   f.post.mockImplementation((path, body) =>
     (body as { action: string }).action === "hangup"
@@ -213,4 +215,33 @@ it("disconnects the session when hangup is rejected", async () => {
   await expect(f.driver.hangup()).rejects.toThrow("rejected hangup");
   expect(f.events.disconnected).toHaveBeenCalledOnce();
   await expect(f.driver.call("102")).rejects.toThrow("Phone call unavailable");
+});
+
+it("ignores a rejected hangup after the old call already ended", async () => {
+  const f = await fixture();
+  await f.driver.call("101");
+  f.connected();
+  await vi.waitFor(() => expect(f.events.answered).toHaveBeenCalledOnce());
+  let reject!: (error: Error) => void;
+  const pending = new Promise<never>((_, no) => {
+    reject = no;
+  });
+  const original = f.post.getMockImplementation()!;
+  f.post.mockImplementation((path, body) =>
+    (body as { action: string }).action === "hangup" ? pending : original(path, body),
+  );
+  const hangup = f.driver.hangup();
+  const failure = expect(hangup).rejects.toThrow("old hangup failed");
+  await vi.waitFor(() =>
+    expect(
+      f.post.mock.calls.some(([, body]) => (body as { action: string }).action === "hangup"),
+    ).toBe(true),
+  );
+  f.send("ended");
+  await vi.waitFor(() => expect(f.events.ended).toHaveBeenCalledOnce());
+  const next = f.driver.call("102");
+  reject(new Error("old hangup failed"));
+  await failure;
+  await next;
+  expect(f.events.disconnected).not.toHaveBeenCalled();
 });
