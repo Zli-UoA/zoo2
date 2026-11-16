@@ -4108,3 +4108,6 @@ CREATE TABLE phone_sessions (
 );
 CREATE INDEX phone_sessions_user_expiry ON phone_sessions(user_id, expires_at);
 CREATE INDEX phone_sessions_line_idx ON phone_sessions(line_id);
+-- PBX realtime and line quotas must not scan other users' directory entries.
+CREATE INDEX sip_phones_line_extension_idx ON sip_phones(line_id, extension);
+CREATE INDEX sip_lines_created_by_idx ON sip_lines(created_by);

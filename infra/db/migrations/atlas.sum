@@ -1,4 +1,4 @@
-h1:P89vDXqnG0Ta7m4scBlig2qqk3/sXtkt+J1IjZ+9OGw=
+h1:Ihp3Ed6Hdm7esAGz8uwg/S91d9xwW1uALBwk/79tGWs=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -93,3 +93,4 @@ h1:P89vDXqnG0Ta7m4scBlig2qqk3/sXtkt+J1IjZ+9OGw=
 20261128030000_read_state_worker_seek.sql h1:DM6Lm+a/6xyXvCWEnJGmDCi0Ep9ikyrfaobzfU7RtMM=
 20261128030001_sip_personal_shared.sql h1:QBxZlmLKbNSCTOibvbiRoY+FSX7TZwWon8f4WYY+kC0=
 20261128030002_phone_gateway_sessions.sql h1:MxFox5TacJLyMUXwt5Df6w070qjTR0aKm1h3Sq0q/Ws=
+20261128030003_phone_directory_lookup_indexes.sql h1:sfSadvVHUrmUlBQ/uSNmhMJ5KlqEFXxqmYCDx1Ha+e8=
