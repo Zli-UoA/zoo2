@@ -6,7 +6,9 @@
 
 use leptos::{prelude::*, task::spawn_local};
 use zoo2_client_types::{
-    components::{Component, Document, SelectOption, button_style, validate::is_https_url},
+    components::{
+        Component, Confirm, Document, SelectOption, button_style, validate::is_https_url,
+    },
     ipc::{InvokeAppAction, command},
     rows::Message,
 };
@@ -75,25 +77,74 @@ fn web_only() -> AnyView {
     small("この操作は Web 版で行えます".into())
 }
 
+/// 押すとアプリへ送るボタン。confirm があれば、まずその場に確認（はい・いいえ）を出し、はいで送る。
+fn action_button(
+    class: &'static str,
+    label: String,
+    off: bool,
+    confirm: Option<Confirm>,
+    target: Target,
+    custom_id: String,
+    value: serde_json::Value,
+) -> AnyView {
+    let pending = RwSignal::new(false);
+    let has_confirm = confirm.is_some();
+    let (t2, c2, v2) = (target.clone(), custom_id.clone(), value.clone());
+    view! {
+        <span class="confirmable">
+            <button class=class disabled=off on:click=move |_| {
+                if has_confirm { pending.set(true) } else { send(&target, custom_id.clone(), value.clone()) }
+            }>
+                {label}
+            </button>
+            {move || {
+                let confirm = confirm.clone()?;
+                pending.get().then(|| {
+                    let (t3, c3, v3) = (t2.clone(), c2.clone(), v2.clone());
+                    let class = if confirm.style.as_deref() == Some("danger") { "button danger" } else { "button primary" };
+                    view! {
+                        <span class="confirm">
+                            <span class="b">{confirm.title.clone()}</span>
+                            <span class="small">{confirm.text.clone()}</span>
+                            <button class=class on:click=move |_| { pending.set(false); send(&t3, c3.clone(), v3.clone()) }>
+                                {confirm.confirm.clone()}
+                            </button>
+                            <button class="button" on:click=move |_| pending.set(false)>{confirm.deny.clone()}</button>
+                        </span>
+                    }
+                })
+            }}
+        </span>
+    }
+    .into_any()
+}
+
 fn choices(
     target: &Target,
     custom_id: String,
     options: Vec<SelectOption>,
     disabled: bool,
     array: bool,
+    confirm: Option<Confirm>,
 ) -> AnyView {
     let off = disabled || target.app_id.is_none();
     options
         .into_iter()
         .map(|o| {
-            let target = target.clone();
-            let custom_id = custom_id.clone();
-            let value = if array { serde_json::json!([o.value]) } else { serde_json::json!(o.value) };
-            view! {
-                <button class="choice" disabled=off on:click=move |_| send(&target, custom_id.clone(), value.clone())>
-                    {o.label}
-                </button>
-            }
+            let value = if array {
+                serde_json::json!([o.value])
+            } else {
+                serde_json::json!(o.value)
+            };
+            action_button(
+                "choice",
+                o.label,
+                off,
+                confirm.clone(),
+                target.clone(),
+                custom_id.clone(),
+                value,
+            )
         })
         .collect_view()
         .into_any()
@@ -152,18 +203,11 @@ fn node(c: Component, target: &Target) -> AnyView {
                 _ => "button",
             };
             let off = b.disabled || target.app_id.is_none() || b.custom_id.is_none();
-            let target = target.clone();
-            let custom_id = b.custom_id.unwrap_or_default();
             let value = serde_json::json!(b.value.unwrap_or_default());
-            view! {
-                <button class=class disabled=off on:click=move |_| send(&target, custom_id.clone(), value.clone())>
-                    {label}
-                </button>
-            }
-            .into_any()
+            action_button(class, label, off, b.confirm, target.clone(), b.custom_id.unwrap_or_default(), value)
         }
-        Component::StringSelect(s) => choices(target, s.custom_id, s.options, s.disabled, true),
-        Component::Overflow(g) | Component::RadioGroup(g) => choices(target, g.custom_id, g.options, g.disabled, false),
+        Component::StringSelect(s) => choices(target, s.custom_id, s.options, s.disabled, true, s.confirm),
+        Component::Overflow(g) | Component::RadioGroup(g) => choices(target, g.custom_id, g.options, g.disabled, false, g.confirm),
         Component::Label(l) => {
             let inner = node(*l.component, target);
             view! { <div class="label"><div class="b">{l.label}</div>{l.description.map(small)}{inner}</div> }.into_any()

@@ -5846,7 +5846,7 @@ dependencies = [
 
 [[package]]
 name = "zoo2-desktop-tauri"
-version = "0.2.6"
+version = "0.2.8"
 dependencies = [
  "anyhow",
  "jiff",

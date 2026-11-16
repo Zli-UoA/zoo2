@@ -211,6 +211,11 @@ fun initialComponentValues(doc: ComponentDocument): Map<String, JsonElement> {
         c.cList("components").forEach(::walk)
         walk(c.cObj("accessory"))
         walk(c.cObj("component"))
+        c.cList("actions").forEach(::walk)
+        c.cList("cards").forEach(::walk)
+        (c["rows"] as? JsonArray)?.forEach { row ->
+            (row as? JsonArray)?.forEach { item -> walk((item as? JsonObject)?.cObj("component")) }
+        }
     }
     doc.components.forEach(::walk)
     return out
@@ -372,11 +377,16 @@ private fun ComponentNode(scope: ComponentScope, c: JsonObject) {
                 }
                 c.cObj("accessory")?.let { a ->
                     if (componentType(a) == CT.THUMBNAIL)
-                        ComponentImage(scope, a.cObj("media")?.cStr("url").orEmpty(), a.cStr("description"), Modifier.size(64.dp))
+                        Spoiler(a.cFlag("spoiler")) {
+                            ComponentImage(scope, a.cObj("media")?.cStr("url").orEmpty(), a.cStr("description"), Modifier.size(64.dp))
+                        }
                     else Interactive(scope, a)
                 }
             }
-        CT.THUMBNAIL -> ComponentImage(scope, c.cObj("media")?.cStr("url").orEmpty(), c.cStr("description"), Modifier.size(64.dp))
+        CT.THUMBNAIL ->
+            Spoiler(c.cFlag("spoiler")) {
+                ComponentImage(scope, c.cObj("media")?.cStr("url").orEmpty(), c.cStr("description"), Modifier.size(64.dp))
+            }
         CT.MEDIA_GALLERY ->
             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 c.cList("items").take(10).forEach { item ->
@@ -548,7 +558,8 @@ private fun ComponentCard(scope: ComponentScope, c: JsonObject) {
 private fun ComponentTable(scope: ComponentScope, c: JsonObject) {
     val rows = (c["rows"] as? JsonArray)?.mapNotNull { row -> (row as? JsonArray)?.mapNotNull { it as? JsonObject } }.orEmpty()
     val header = c.cFlag("header")
-    val pageSize = c.cInt("page_size") ?: rows.size.coerceAtLeast(1)
+    // page_size が 0 でも割り算で落ちないよう、1 以上にする
+    val pageSize = (c.cInt("page_size") ?: rows.size).coerceAtLeast(1)
     var page by remember { mutableStateOf(0) }
     val body = if (header) rows.drop(1) else rows
     val pages = ((body.size + pageSize - 1) / pageSize).coerceAtLeast(1)
@@ -594,16 +605,20 @@ private fun Interactive(scope: ComponentScope, c: JsonObject, labelled: Boolean 
         if (!deferred) run { scope.invoke("action", id, value) }
     }
     confirming?.let { action ->
-        Confirm(
+        LabeledConfirmationPanel(
             confirm?.cStr("title").orEmpty(),
             confirm?.cStr("text").orEmpty(),
             confirm?.cStr("confirm").orEmpty(),
             busy = false,
+            error = null,
+            cancelLabel = confirm?.cStr("deny")?.ifEmpty { null },
+            confirmVariant = if (confirm?.cStr("style") == "danger") "destructive" else "default",
             cancel = { confirming = null },
-        ) {
-            confirming = null
-            action()
-        }
+            confirm = {
+                confirming = null
+                action()
+            },
+        )
     }
     val options = c.cList("options")
     when (type) {
@@ -733,14 +748,39 @@ private fun CheckList(scope: ComponentScope, id: String, options: List<JsonObjec
 private fun EntitySelect(scope: ComponentScope, c: JsonObject, enabled: Boolean, change: (JsonElement) -> Unit) {
     val app = scope.app
     val type = componentType(c)
-    val channels = type == CT.CHANNEL_SELECT || type == CT.ROLE_SELECT
+    // zoo にはロールがないので、role select は選べない状態で出す。mentionable select はユーザーだけを候補にする
+    if (type == CT.ROLE_SELECT) {
+        Small(app.t("apps.components.unsupported"))
+        return
+    }
     val choices: List<Pair<String, String>> =
-        if (channels) app.repo.channels.rows.value.filter { it.text("deleted_at").isEmpty() }.map { it.text("id") to "#${it.text("channel_name")}" }
+        if (type == CT.CHANNEL_SELECT) app.repo.channels.rows.value.filter { it.text("deleted_at").isEmpty() }.map { it.text("id") to "#${it.text("channel_name")}" }
         else app.repo.users.rows.value.map { it.text("id") to "@${it.text("user_name")}" }
-    val current = (scope.values[c.cStr("custom_id")] as? JsonArray)?.firstOrNull()?.let { (it as? JsonPrimitive)?.content }
+    val chosen = (scope.values[c.cStr("custom_id")] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.content }.orEmpty()
+    if ((c.cInt("max_values") ?: 1) > 1) {
+        // 複数選ぶときは、選んだものを並べ、選択欄から足す
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            chosen.forEach { id ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(choices.firstOrNull { it.first == id }?.second ?: id, Modifier.weight(1f))
+                    Button("×", enabled, size = "sm") { change(JsonArray((chosen - id).map(::JsonPrimitive))) }
+                }
+            }
+            if (chosen.size < (c.cInt("max_values") ?: 1))
+                SelectField(
+                    c.cStr("placeholder").ifEmpty { app.t("apps.components.choose") },
+                    "",
+                    choices.filter { it.first !in chosen }.take(500).map { it.second },
+                    enabled,
+                ) { label ->
+                    choices.firstOrNull { it.second == label }?.let { change(JsonArray((chosen + it.first).map(::JsonPrimitive))) }
+                }
+        }
+        return
+    }
     SelectField(
         c.cStr("placeholder").ifEmpty { app.t("apps.components.choose") },
-        choices.firstOrNull { it.first == current }?.second.orEmpty(),
+        choices.firstOrNull { it.first == chosen.firstOrNull() }?.second.orEmpty(),
         choices.take(500).map { it.second },
         enabled,
     ) { label ->

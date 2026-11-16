@@ -85,6 +85,12 @@ function initialValues(doc: ComponentDocument): Record<string, Value> {
     c.components?.forEach(walk);
     walk(c.accessory);
     walk(c.component);
+    c.actions?.forEach(walk);
+    c.cards?.forEach(walk);
+    if (c.type === T.Grid)
+      (c.rows as { component: Component }[][] | undefined)?.forEach((row) =>
+        row.forEach((item) => walk(item.component)),
+      );
   };
   doc.components.forEach(walk);
   return out;
@@ -772,6 +778,8 @@ function useConfirm(confirm?: Confirm) {
       title={confirm.title}
       description={confirm.text}
       confirmLabel={confirm.confirm}
+      cancelLabel={confirm.deny}
+      confirmVariant={confirm.style === "danger" ? "destructive" : "default"}
       onConfirm={() => {
         pending?.();
         setPending(null);
@@ -792,10 +800,27 @@ const BUTTON_VARIANT: Record<number, "default" | "secondary" | "outline" | "dest
 };
 
 /** ボタン・select・入力欄・ピッカー。`labelled` は Label の中（送信でまとめて送る）。 */
-function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean }): ReactNode {
+function Interactive(props: { c: Component; labelled?: boolean }): ReactNode {
+  const confirm = useConfirm(props.c.confirm);
+  return (
+    <>
+      <InteractiveControl {...props} confirm={confirm.run} />
+    </>
+  );
+}
+
+function InteractiveControl({
+  c,
+  labelled = false,
+  confirm: runConfirmed,
+}: {
+  c: Component;
+  labelled?: boolean;
+  confirm: (action: () => void) => void;
+}): ReactNode {
   const { t } = useTranslation();
   const ctx = useCtx();
-  const confirm = useConfirm(c.confirm);
+  const confirm = { run: runConfirmed };
   const id = c.custom_id ?? "";
   const disabled = !!c.disabled || ctx.busy || !ctx.appId;
   // モーダル・ホームの入力欄は送信でまとめて送る。メッセージの select などは選んだときに送る
@@ -833,7 +858,6 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
           >
             {label}
           </Button>
-          {confirm.dialog}
         </>
       );
     }
@@ -858,7 +882,6 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
                 <OptionText o={o} />
               </label>
             ))}
-            {confirm.dialog}
           </fieldset>
         );
       return (
@@ -895,7 +918,6 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
               </option>
             ))}
           </Select>
-          {confirm.dialog}
         </>
       );
     }
@@ -978,7 +1000,6 @@ function Interactive({ c, labelled = false }: { c: Component; labelled?: boolean
           >
             {t("apps.submit")}
           </Button>
-          {confirm.dialog}
         </span>
       );
     }
@@ -1061,10 +1082,15 @@ function EntitySelect({
   const users = useLiveQuery((q) => q.from({ users: collections.users }))?.data ?? [];
   const channels = useLiveQuery((q) => q.from({ channels: collections.channels }))?.data ?? [];
   const many = (c.max_values ?? 1) > 1;
+  // zoo にはロールがないので、role select は選べない状態で出す。mentionable select はユーザーだけを候補にする
+  if (c.type === T.RoleSelect)
+    return (
+      <span className="text-xs text-muted-foreground">{t("apps.components.unsupported")}</span>
+    );
   const options: { id: string; label: string }[] = [];
-  if (c.type !== T.ChannelSelect && c.type !== T.RoleSelect)
+  if (c.type !== T.ChannelSelect)
     options.push(...users.map((u) => ({ id: u.id, label: `@${u.user_name}` })));
-  if (c.type === T.ChannelSelect || c.type === T.RoleSelect)
+  if (c.type === T.ChannelSelect)
     options.push(
       ...channels
         .filter((ch) => !ch.deleted_at)
@@ -1152,6 +1178,10 @@ function ExternalSelect({
         disabled={disabled}
         placeholder={c.placeholder ?? t("apps.components.search")}
         onChange={(e) => setQuery(e.target.value)}
+        // 検索欄の Enter でモーダルのフォームを送らない
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.nativeEvent.isComposing) e.preventDefault();
+        }}
       />
       <Select
         aria-label={c.placeholder ?? t("apps.components.choose")}

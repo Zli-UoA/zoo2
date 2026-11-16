@@ -77,3 +77,4 @@ time { color: var(--muted); font-size: 12px; }
 .components .card { border: 1px solid var(--border, #ddd); border-radius: 6px; padding: 6px 8px; width: 240px; }
 .components .carousel { display: flex; gap: 8px; overflow-x: auto; }
 .components .grid-row { display: flex; gap: 12px; }
+.components .confirm { display: inline-flex; gap: 6px; align-items: center; margin-left: 6px; flex-wrap: wrap; }

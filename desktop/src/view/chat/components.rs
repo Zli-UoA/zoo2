@@ -25,6 +25,8 @@ pub struct Target<'a> {
     pub colors: &'a MfmColors,
     pub accounts: &'a zoo2_client_core::store::AccountProfiles,
     pub me: Option<&'a str>,
+    /// 確認を表示中の操作のキー（WorkspaceView::component_confirm）
+    pub confirming: Option<&'a str>,
 }
 
 pub fn render_components(
@@ -228,19 +230,21 @@ fn node(
                 b.custom_id.clone(),
                 serde_json::json!(b.value.clone().unwrap_or_default()),
             );
+            if let (Some(confirm), Some(key)) = (&b.confirm, target.confirming)
+                && key == id
+            {
+                return confirm_bar(&id, confirm, action, cx);
+            }
+            let has_confirm = b.confirm.is_some();
+            let key = id.clone();
             Button::new(SharedString::from(id))
                 .variant(variant)
                 .size(ButtonSize::Sm)
                 .label(label)
                 .disabled(b.disabled || action.is_none())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some((app, message, custom, value)) = action.clone() {
-                        this.state.update(cx, |s, cx| {
-                            s.invoke_component(&app, &message, &custom, value);
-                            cx.notify();
-                        });
-                    }
-                }))
+                .on_click(
+                    cx.listener(move |this, _, _, cx| press(this, &key, has_confirm, &action, cx)),
+                )
                 .into_any_element()
         }
         Component::StringSelect(s) => choices(
@@ -251,6 +255,7 @@ fn node(
             s.disabled,
             s.placeholder.as_deref(),
             true,
+            s.confirm.as_ref(),
             cx,
         ),
         Component::Overflow(g) | Component::RadioGroup(g) => choices(
@@ -261,6 +266,7 @@ fn node(
             g.disabled,
             None,
             false,
+            g.confirm.as_ref(),
             cx,
         ),
         Component::Label(l) => v_flex()
@@ -382,6 +388,72 @@ fn node(
 
 type Action = Option<(String, String, String, serde_json::Value)>;
 
+/// 押したときの処理。confirm があれば、まず確認を出し（キーを覚える）、確認の「はい」で送る。
+fn send(this: &mut WorkspaceView, action: &Action, cx: &mut Context<WorkspaceView>) {
+    if let Some((app, message, custom, value)) = action.clone() {
+        this.component_confirm = None;
+        this.state.update(cx, |s, cx| {
+            s.invoke_component(&app, &message, &custom, value);
+            cx.notify();
+        });
+    }
+}
+
+/// confirm の確認の行（タイトル・本文・はい・いいえ）。
+fn confirm_bar(
+    id: &str,
+    confirm: &zoo2_client_core::components::Confirm,
+    action: Action,
+    cx: &mut Context<WorkspaceView>,
+) -> AnyElement {
+    v_flex()
+        .gap_1()
+        .child(div().font(fonts::sans(600.0)).child(confirm.title.clone()))
+        .child(small(confirm.text.clone(), cx))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Button::new(SharedString::from(format!("{id}-yes")))
+                        .variant(if confirm.style.as_deref() == Some("danger") {
+                            ButtonVariant::Destructive
+                        } else {
+                            ButtonVariant::Default
+                        })
+                        .size(ButtonSize::Sm)
+                        .label(confirm.confirm.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| send(this, &action, cx))),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{id}-no")))
+                        .variant(ButtonVariant::Ghost)
+                        .size(ButtonSize::Sm)
+                        .label(confirm.deny.clone())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.component_confirm = None;
+                            cx.notify();
+                        })),
+                ),
+        )
+        .into_any_element()
+}
+
+/// 操作を押したとき。confirm があれば確認を出し、なければすぐ送る。
+fn press(
+    this: &mut WorkspaceView,
+    key: &str,
+    confirm: bool,
+    action: &Action,
+    cx: &mut Context<WorkspaceView>,
+) {
+    if confirm {
+        this.component_confirm = Some(key.to_string());
+        cx.notify();
+    } else {
+        send(this, action, cx);
+    }
+}
+
 fn action(target: &Target, custom_id: Option<String>, value: serde_json::Value) -> Action {
     Some((
         target.app_id?.to_string(),
@@ -401,8 +473,29 @@ fn choices(
     disabled: bool,
     placeholder: Option<&str>,
     array: bool,
+    confirm: Option<&zoo2_client_core::components::Confirm>,
     cx: &mut Context<WorkspaceView>,
 ) -> AnyElement {
+    // 確認を表示中の選択肢があれば、その確認だけを出す
+    for (i, o) in options.iter().enumerate() {
+        let key = format!("{id}-o{i}");
+        if let (Some(c), Some(k)) = (confirm, target.confirming)
+            && k == key
+        {
+            let value = if array {
+                serde_json::json!([o.value])
+            } else {
+                serde_json::json!(o.value)
+            };
+            return confirm_bar(
+                &key,
+                c,
+                action(target, Some(custom_id.to_string()), value),
+                cx,
+            );
+        }
+    }
+    let has_confirm = confirm.is_some();
     let buttons = options
         .iter()
         .enumerate()
@@ -413,7 +506,8 @@ fn choices(
                 serde_json::json!(o.value)
             };
             let act = action(target, Some(custom_id.to_string()), value);
-            Button::new(SharedString::from(format!("{id}-o{i}")))
+            let key = format!("{id}-o{i}");
+            Button::new(SharedString::from(key.clone()))
                 .variant(if o.default {
                     ButtonVariant::Secondary
                 } else {
@@ -422,14 +516,9 @@ fn choices(
                 .size(ButtonSize::Xs)
                 .label(o.label.clone())
                 .disabled(disabled || act.is_none())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some((app, message, custom, value)) = act.clone() {
-                        this.state.update(cx, |s, cx| {
-                            s.invoke_component(&app, &message, &custom, value);
-                            cx.notify();
-                        });
-                    }
-                }))
+                .on_click(
+                    cx.listener(move |this, _, _, cx| press(this, &key, has_confirm, &act, cx)),
+                )
         })
         .collect::<Vec<_>>();
     v_flex()

@@ -314,6 +314,7 @@ impl WorkspaceView {
                     colors,
                     accounts: &accounts,
                     me: Some(me_user_name),
+                    confirming: self.component_confirm.as_deref(),
                 },
                 &i18n,
                 cx,
