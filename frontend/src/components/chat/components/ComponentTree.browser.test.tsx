@@ -130,4 +130,32 @@ describe("ComponentTree", () => {
     expect(call).toContain('"kind":"submit"');
     expect(call).toContain('"name":"zoo"');
   });
+  it("still sends selects outside the Labels of an app message when chosen", async () => {
+    api.request.mockClear();
+    const message = parseComponents({
+      components: [
+        {
+          type: 1,
+          components: [{ type: 21, custom_id: "vote", options: [{ label: "Yes", value: "y" }] }],
+        },
+        { type: 18, label: "Name", component: { type: 4, custom_id: "name", style: 1 } },
+      ],
+    })!;
+    render(
+      <LocaleProvider>
+        <ComponentTree document={message} appId="app" messageId="m1" channelId="c1" />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("radio", { name: "Yes" }));
+    await waitFor(() => expect(api.request).toHaveBeenCalledTimes(1));
+    const action = JSON.stringify(api.request.mock.calls[0]);
+    expect(action).toContain('"kind":"action"');
+    expect(action).toContain('"action_id":"vote"');
+    // Label の外の radio は送信の必須にならない
+    await userEvent.type(screen.getByRole("textbox", { name: "Name" }), "zoo");
+    api.request.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "送信" }));
+    await waitFor(() => expect(api.request).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(api.request.mock.calls[0])).toContain('"kind":"submit"');
+  });
 });

@@ -158,11 +158,11 @@ export function ComponentTree({
       setError(t("apps.actionError"));
     }
   }
-  // Label の入力欄はまとめて送る。メッセージに Label があれば、モーダルと同じく送信ボタンを付ける
+  // Label の入力欄はまとめて送る。メッセージに Label があれば、モーダルと同じく送信ボタンを付ける。
+  // Label の外の select などは、メッセージでは今までどおり選んだときに送る（`ctx.submit` はモーダル・ホームだけ）
   const form = !!target.submit || (!!target.appId && hasLabel(doc.components));
   const ctx: Ctx = {
     ...target,
-    submit: form,
     busy,
     values,
     set: (id, value) => setValues((v) => ({ ...v, [id]: value })),
@@ -892,7 +892,8 @@ function InteractiveControl({
                   type="radio"
                   name={id}
                   checked={value === o.value}
-                  required={c.required !== false}
+                  // 必須はまとめて送るときだけ（メッセージの Label の外は、選んだときに送る）
+                  required={deferred && c.required !== false}
                   onChange={() => choose(o.value)}
                 />
                 <OptionText o={o} />
@@ -1011,7 +1012,7 @@ function InteractiveControl({
                 ))
           }
           value={shown}
-          required={c.required === true}
+          required={deferred && c.required === true}
           disabled={!!c.disabled || !ctx.appId}
           onChange={(e) => ctx.set(id, toValue(e.target.value))}
         />

@@ -287,7 +287,8 @@ fun ComponentTree(
             }
         }
     }
-    // Label の入力欄はまとめて送る。メッセージに Label があれば、モーダルと同じく送信ボタンを付ける
+    // Label の入力欄はまとめて送る。メッセージに Label があれば、モーダルと同じく送信ボタンを付ける。
+    // Label の外の select などは、メッセージでは今までどおり選んだときに送る（scope.submit はモーダル・ホームだけ）
     val form = submit || (appId != null && hasLabel(JsonArray(doc.components)))
     val scope =
         ComponentScope(
@@ -296,7 +297,7 @@ fun ComponentTree(
             surface,
             message,
             channel,
-            form,
+            submit,
             attachments,
             sources.second,
             values,
