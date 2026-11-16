@@ -25,34 +25,39 @@ CREATE DATABASE notes_schema_dev2;
 CREATE DATABASE notes_schema_dev3;
 ```
 
-Build temporary migration directories from `infra/db/migrations/*.sql`. For
-example, this shell loop keeps the legacy history through the old expiry
-revision for case 1 (use cutoff `20261126010000` for case 2):
+Build temporary migration directories from `infra/db/migrations/*.sql`. This
+shell function keeps the legacy history through the requested cutoff and uses
+a separate directory for each case:
 
 ```sh
-legacy_dir=/tmp/zoo2-notes-legacy
-mkdir -p "$legacy_dir"
-cp infra/db/migrations/*.sql "$legacy_dir/"
-cp infra/db/legacy-migrations/20261123000001_channel_notes_expiry_index.sql "$legacy_dir/"
-for path in "$legacy_dir"/2026*.sql; do
-  version=${path##*/}
-  version=${version%%_*}
-  if [ "$version" -gt "20261123000001" ]; then
-    rm "$path"
-  fi
-done
-rm -f "$legacy_dir/atlas.sum"
-atlas migrate hash --dir "file://$legacy_dir"
+build_legacy() {
+  legacy_dir="$1"
+  cutoff="$2"
+  rm -rf "$legacy_dir"
+  mkdir -p "$legacy_dir"
+  cp infra/db/migrations/*.sql "$legacy_dir/"
+  cp infra/db/legacy-migrations/20261123000001_channel_notes_expiry_index.sql "$legacy_dir/"
+  for path in "$legacy_dir"/2026*.sql; do
+    version=${path##*/}
+    version=${version%%_*}
+    if [ "$version" -gt "$cutoff" ]; then
+      rm "$path"
+    fi
+  done
+  rm -f "$legacy_dir/atlas.sum"
+  atlas migrate hash --dir "file://$legacy_dir"
+}
+
+build_legacy /tmp/zoo2-notes-legacy-case1 20261123000001
+build_legacy /tmp/zoo2-notes-legacy-case2 20261126010000
 ```
 
-For case 2, replace the comparison version in the loop with
-`20261126010000`. Use fresh scratch directories for each cutoff. Apply the
-legacy history to the matching URL, then apply the canonical history:
+Apply the legacy history to the matching URL, then apply the canonical history:
 
 ```sh
-atlas migrate apply --dir "file://$legacy_dir" --url "$NOTES_CASE1_URL"
+atlas migrate apply --dir file:///tmp/zoo2-notes-legacy-case1 --url "$NOTES_CASE1_URL"
 atlas migrate apply --dir file://infra/db/migrations --url "$NOTES_CASE1_URL"
-atlas migrate apply --dir "file://$legacy_dir" --url "$NOTES_CASE2_URL"
+atlas migrate apply --dir file:///tmp/zoo2-notes-legacy-case2 --url "$NOTES_CASE2_URL"
 atlas migrate apply --dir file://infra/db/migrations --url "$NOTES_CASE2_URL"
 atlas migrate apply --dir file://infra/db/migrations --url "$NOTES_CASE3_URL"
 ```
