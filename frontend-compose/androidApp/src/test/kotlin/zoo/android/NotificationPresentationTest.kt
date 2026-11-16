@@ -30,7 +30,7 @@ class NotificationPresentationTest {
     )
 
     @Test fun messageStylePreservesSenderTimestampBodyAndDmIdentity() {
-        val context = RuntimeEnvironment.getApplication<android.app.Application>()
+        val context = RuntimeEnvironment.getApplication()
         // MessagingStyle infers group conversations from titles for target SDK < 28.
         context.applicationInfo.targetSdkVersion = 35
         for (dm in listOf(false, true)) {
