@@ -157,11 +157,28 @@ fn message_lines(
 
     let mut lines = vec![Line::from(header)];
     match shown {
-        Shown::Plain | Shown::BeforeEncryption => lines.extend(mfm::render_with_accounts(
-            &message.content,
-            Some(ctx.me_name),
-            &ctx.store.account_profiles,
-        )),
+        Shown::Plain | Shown::BeforeEncryption => {
+            // メッセージ部品は文字にして出す。本文を隠すフラグがあれば、本文は部品の代わりの文字なので
+            // 部品の文字だけを出し、なければ本文の後ろに足す（ボタンなどの操作は Web 版で行う）。
+            let doc = message.components_document();
+            let text = match &doc {
+                Some(d) if d.hides_content() => d.fallback_text(MAX_COMPONENT_TEXT),
+                Some(d) => {
+                    let parts = d.fallback_text(MAX_COMPONENT_TEXT);
+                    if parts.is_empty() {
+                        message.content.clone()
+                    } else {
+                        format!("{}\n{parts}", message.content)
+                    }
+                }
+                None => message.content.clone(),
+            };
+            lines.extend(mfm::render_with_accounts(
+                &text,
+                Some(ctx.me_name),
+                &ctx.store.account_profiles,
+            ))
+        }
         Shown::Decrypted {
             message: d,
             warning,
@@ -308,6 +325,9 @@ pub fn scroll_to(
     };
     (scroll, 0)
 }
+
+/// 部品から作る文字の上限（本文の上限と同じ）。
+const MAX_COMPONENT_TEXT: usize = 40_000;
 
 #[cfg(test)]
 mod tests {

@@ -56,6 +56,9 @@ pub mod command {
     pub const ACCOUNT_PROFILES: &str = "zoo_account_profiles";
     /// [`super::SendMessage`]。[`super::SendResult`] を返す。
     pub const SEND_MESSAGE: &str = "zoo_send_message";
+    /// [`super::InvokeAppAction`]。メッセージ部品のボタン・選択肢を押したことをアプリへ送る。
+    /// 古い版のアプリにはないので、呼べなかったら知らせる (`PROTOCOL_VERSION` は上げない)。
+    pub const INVOKE_APP_ACTION: &str = "zoo_invoke_app_action";
 
     // (b) React だけ
     /// 引数なし。[`super::AccessToken`] を返す。期限が近ければ Rust 側で更新してから返す。
@@ -163,6 +166,17 @@ pub struct SendMessage {
     pub channel_id: String,
     pub content: String,
     pub parent_id: Option<String>,
+}
+
+/// メッセージ部品の操作 ([`command::INVOKE_APP_ACTION`])。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InvokeAppAction {
+    pub app_id: String,
+    pub channel_id: String,
+    pub message_id: String,
+    pub custom_id: String,
+    /// ボタンの `value`、選んだ値 (select は配列)
+    pub value: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

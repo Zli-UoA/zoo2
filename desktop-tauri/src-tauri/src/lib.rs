@@ -71,6 +71,7 @@ pub fn run() {
             commands::zoo_resync,
             commands::zoo_account_profiles,
             commands::zoo_send_message,
+            commands::zoo_invoke_app_action,
             commands::zoo_access_token,
             commands::zoo_notifications_observed,
             commands::zoo_take_call_accept,

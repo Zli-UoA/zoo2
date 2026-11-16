@@ -8,8 +8,9 @@ use std::sync::Arc;
 use tauri::{State, Webview};
 use zoo2_client_types::{
     ipc::{
-        AccessToken, DeviceLogin, ErrorCode, FocusState, IpcError, NotificationSettings,
-        ObservedNotifications, OpenChannel, SendMessage, SendResult, SessionInfo, UiMode,
+        AccessToken, DeviceLogin, ErrorCode, FocusState, InvokeAppAction, IpcError,
+        NotificationSettings, ObservedNotifications, OpenChannel, SendMessage, SendResult,
+        SessionInfo, UiMode,
     },
     shape::ShapeId,
 };
@@ -135,6 +136,27 @@ pub async fn zoo_send_message(
         .await
         .map_err(to_ipc)?;
     Ok(SendResult { txid })
+}
+
+#[tauri::command]
+pub async fn zoo_invoke_app_action(
+    webview: Webview,
+    core: Core_<'_>,
+    action: InvokeAppAction,
+) -> Result<(), IpcError> {
+    require(&webview, &core, BUNDLED)?;
+    leptos_only(&core)?;
+    let api = core.api().await?;
+    api.invoke_app_action(
+        &action.app_id,
+        &action.channel_id,
+        &action.message_id,
+        &action.custom_id,
+        action.value,
+    )
+    .await
+    .map_err(to_ipc)?;
+    Ok(())
 }
 
 #[tauri::command]
