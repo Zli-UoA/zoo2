@@ -120,3 +120,6 @@ fun mfmUnixSeconds(source: String): Long? {
     if (!Regex("-?\\d+").matches(raw)) return null
     return raw.toLongOrNull()?.takeIf { it in -8_640_000_000_000L..8_640_000_000_000L }
 }
+
+fun mfmFont(args: Map<String, String>): String? =
+    listOf("serif", "monospace", "cursive", "fantasy", "emoji", "math").firstOrNull { it in args }

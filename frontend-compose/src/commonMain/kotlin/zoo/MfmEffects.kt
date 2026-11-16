@@ -212,18 +212,18 @@ fun MfmEffect(source: String, users: List<Row>, depth: Int) {
                         Text("✧", Modifier.align(Alignment.BottomEnd), color = Color(0xffffbb00))
                     }
                 "font" -> {
-                    val family =
-                        when {
-                            args.containsKey("monospace") -> LocalFonts.current.mono
-                            args.containsKey("math") -> LocalFonts.current.math
-                            args.containsKey("serif") -> FontFamily.Serif
-                            args.containsKey("cursive") || args.containsKey("fantasy") ->
-                                FontFamily.Cursive
-                            args.containsKey("emoji") -> LocalFonts.current.emoji
-                            else -> LocalFonts.current.cjk
-                        }
+                    val fonts = LocalFonts.current
+                    val family = when (mfmFont(args)) {
+                        "serif" -> FontFamily.Serif
+                        "monospace" -> fonts.mono
+                        "cursive", "fantasy" -> FontFamily.Cursive
+                        "emoji" -> fonts.emoji
+                        "math" -> fonts.math
+                        else -> null
+                    }
                     CompositionLocalProvider(
-                        LocalFonts provides LocalFonts.current.copy(latin = family, cjk = family)
+                        LocalFonts provides if (family == null) fonts
+                            else fonts.copy(latin = family, cjk = family)
                     ) {
                         RichText(text, users, depth)
                     }

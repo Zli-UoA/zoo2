@@ -441,7 +441,11 @@ private fun InlineParagraph(
                 maxLines = maxLines,
                 overflow = TextOverflow.Ellipsis,
                 inlineContent = inlineContent,
-                style = inheritedStyle,
+                // Android's fixed line height otherwise overrides tall replacement spans.
+                style = inheritedStyle.copy(
+                    lineHeightStyle = (inheritedStyle.lineHeightStyle ?: LineHeightStyle.Default)
+                        .copy(mode = LineHeightStyle.Mode.Minimum),
+                ),
                 color = inheritedStyle.color.takeIf { it != Color.Unspecified }
                     ?: MaterialTheme.colorScheme.onBackground,
             )

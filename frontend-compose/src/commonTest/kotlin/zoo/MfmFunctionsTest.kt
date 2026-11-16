@@ -117,4 +117,13 @@ class MfmFunctionsTest {
         for (value in listOf("+1", "1.5", "NaN", "1e3", "8640000000001", "9223372036854775807"))
             assertNull(mfmUnixSeconds(value), value)
     }
+
+    @Test
+    fun fontWithoutARecognizedFlagInheritsItsParent() {
+        assertNull(mfmFont(emptyMap()))
+        assertNull(mfmFont(mapOf("unknown" to "true")))
+        for (font in listOf("serif", "monospace", "cursive", "fantasy", "emoji", "math"))
+            assertEquals(font, mfmFont(mapOf(font to "true")))
+        assertEquals("serif", mfmFont(mapOf("monospace" to "true", "serif" to "true")))
+    }
 }
