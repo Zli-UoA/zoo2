@@ -1077,6 +1077,37 @@ async fn wait_for_lock(env: &Env, pattern: &str) {
     panic!("no statement waited on a lock: {pattern}");
 }
 
+async fn wait_for_dm_lock_blocked_by(env: &Env, blocker_pid: i32, member_id: &str) -> i32 {
+    let blocker = blocker_pid.to_string();
+    for _ in 0..100 {
+        let waiting = env
+            .query(
+                "SELECT json_build_object('pid', a.pid)::text
+                 FROM pg_stat_activity a
+                 WHERE a.wait_event_type = 'Lock'
+                   AND a.query LIKE '%INSERT INTO%'
+                   AND a.query NOT LIKE '%pg_stat_activity%'
+                   AND $1::int = ANY(pg_blocking_pids(a.pid))
+                   AND EXISTS (
+                       SELECT 1 FROM pg_locks l
+                       WHERE l.pid = a.pid
+                         AND l.locktype = 'advisory'
+                         AND l.classid = 3
+                         AND l.objid = hashtext($2)::oid
+                         AND l.granted
+                   )
+                 LIMIT 1",
+                &[&blocker, member_id],
+            )
+            .await;
+        if let Some(pid) = waiting.first().and_then(|row| row["pid"].as_i64()) {
+            return pid as i32;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("DM session for member {member_id} did not wait on blocker {blocker_pid}");
+}
+
 async fn wait_for_lock_blocked_by(env: &Env, blocker_pid: i32, pattern: &str) -> i32 {
     let blocker = blocker_pid.to_string();
     for _ in 0..100 {
@@ -1306,7 +1337,7 @@ async fn encrypted_dm_and_channel_add_do_not_deadlock_on_member_user_row() -> an
             .await
         })
     };
-    let dm_pid = wait_for_lock_blocked_by(&env, blocker_pid, "INSERT INTO").await;
+    let dm_pid = wait_for_dm_lock_blocked_by(&env, blocker_pid, &bob).await;
 
     let add = {
         let app = env.app.clone();
