@@ -315,6 +315,20 @@ erDiagram
     notifications }o--o| channels : notifications_channel_id_fkey
     notifications }o--o| messages : notifications_message_id_fkey
     notifications }o--o| users : notifications_user_id_fkey
+    phone_sessions {
+      text id PK
+      text user_id FK
+      text line_id FK
+      timestamptz line_revision
+      text peer_id
+      bigint gateway_session_id
+      bigint gateway_handle_id
+      text lease_owner
+      timestamptz expires_at
+      timestamptz created_at
+    }
+    phone_sessions }o--o| sip_lines : phone_sessions_line_id_fkey
+    phone_sessions }o--o| users : phone_sessions_user_id_fkey
     push_subscriptions {
       text id PK
       text user_id FK
@@ -351,6 +365,33 @@ erDiagram
       text image_id
       timestamptz updated_at
     }
+    sip_line_members {
+      text line_id PK,FK
+      text user_id PK,FK
+    }
+    sip_line_members }o--o| sip_lines : sip_line_members_line_id_fkey
+    sip_line_members }o--o| users : sip_line_members_user_id_fkey
+    sip_lines {
+      text id PK
+      text name
+      text owner_user_id FK
+      text websocket_path
+      text sip_domain
+      text username
+      text password_ciphertext
+      text phone_number
+      text created_by FK
+      timestamptz updated_at
+    }
+    sip_lines }o--o| users : sip_lines_created_by_fkey
+    sip_lines }o--o| users : sip_lines_owner_user_id_fkey
+    sip_phones {
+      text id PK
+      text line_id FK
+      text name
+      text extension
+    }
+    sip_phones }o--o| sip_lines : sip_phones_line_id_fkey
     thread_migration_completed {
       text thread_id PK,FK
       timestamptz completed_at

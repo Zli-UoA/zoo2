@@ -850,6 +850,29 @@
         "JPEG2000PDF",
         "EmbeddedEmail"
       ]
+    },
+    {
+      "file": "src/components/sip/SipPanelView.stories.tsx",
+      "states": [
+        "PersonalAndShared",
+        "Empty",
+        "Disabled",
+        "Loading",
+        "LoadError",
+        "SharedMember",
+        "Incoming",
+        "Active",
+        "Failed",
+        "ChannelBusy",
+        "EditKeepsPassword",
+        "SaveError",
+        "Mobile",
+        "RegisterSharedLine",
+        "Saving",
+        "DeleteConfirmation",
+        "RemoveUnavailableMember",
+        "NarrowPhoneForm"
+      ]
     }
   ],
   "modules": [
@@ -1539,6 +1562,29 @@
         "src/components/ui/media-preview.browser.test.tsx",
         "src/components/ui/pdf-preview-timeout.browser.test.tsx"
       ]
+    },
+    {
+      "file": "src/components/sip/SipPanelView.tsx",
+      "story": "src/components/sip/SipPanelView.stories.tsx"
+    },
+    {
+      "file": "src/components/sip/SipControls.tsx",
+      "story": "src/components/sip/SipPanelView.stories.tsx",
+      "composed": true,
+      "reason": "通話操作はIncoming・Activeで実コンポーネントを描画し確認する。"
+    },
+    {
+      "file": "src/components/sip/SipPanel.tsx",
+      "reason": "シェル共通Providerと回線一覧・常設通話操作を接続する制御層。画面状態はSipPanelViewのStory、共有接続と認証終了はブラウザー統合テストで確認する。",
+      "checks": [
+        "src/components/sip/SipProvider.browser.test.tsx",
+        "src/lib/sip/controller.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/sip/SipProvider.tsx",
+      "reason": "アカウント単位の一覧取得・認証終了・チャンネル通話との排他を所有する制御層。ブラウザー統合テストで通信数と破棄を確認する。",
+      "checks": ["src/components/sip/SipProvider.browser.test.tsx"]
     }
   ]
 }

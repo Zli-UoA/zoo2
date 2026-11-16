@@ -1,5 +1,7 @@
 package zoo
 
+import zoo.phone.LocalPhoneController
+import zoo.phone.PhoneSettings
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -46,9 +48,11 @@ val LocalEncryptionSettings = staticCompositionLocalOf<(@Composable (Session) ->
 @Composable
 fun ZooSettings(app: Session, users: List<Row>) {
     val encryption = LocalEncryptionSettings.current
+    val phone = LocalPhoneController.current
     val tabs =
         listOfNotNull(
             "general" to "settings.general",
+            ("sip" to "sip.title").takeIf { phone != null },
             ("encryption" to "e2ee.tab").takeIf { encryption != null },
             "activitypub" to "ActivityPub",
             "emojis" to "home.customEmojis",
@@ -149,6 +153,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     }
                 }
                 when (tab) {
+                    "sip" -> phone?.let { PhoneSettings(app, it, users) }
                     "emojis" -> CustomEmojiSettings(app)
                     "apps" -> Apps(app, embedded = true)
                     "members" -> WorkspaceMembers(app, users)

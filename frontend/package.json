@@ -34,7 +34,8 @@
     "build-storybook": "storybook build",
     "test:storybook": "vp test --project storybook",
     "check:storybook": "node scripts/storybook-audit.mjs",
-    "generate:icons": "node scripts/generate-brand-icons.mjs"
+    "generate:icons": "node scripts/generate-brand-icons.mjs",
+    "build:android-phone": "vp build --config vite.android-phone.config.ts && node scripts/android-phone-smoke.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
