@@ -1628,5 +1628,38 @@
     "mentions": "提及和回复",
     "messages": "私信",
     "reactions": "回应"
+  },
+  "onboarding": {
+    "replay": "打开入门导览",
+    "next": "下一步",
+    "back": "上一步",
+    "skip": "跳过",
+    "finish": "开始使用 Zoo",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "欢迎来到 Zoo",
+      "description": "通过六个简短步骤了解基本用法。可以跳过，之后随时通过导航中的指南针按钮重新打开。"
+    },
+    "channels": {
+      "title": "寻找频道",
+      "description": "从导航中打开频道并选择会话。浏览公开频道并加入感兴趣的讨论。小屏幕上可返回频道列表切换会话。"
+    },
+    "messages": {
+      "title": "参与会话",
+      "description": "选择频道，在消息框中发帖。在线程中回复可集中相关讨论，也可以为消息添加表情回应。"
+    },
+    "notifications": {
+      "title": "查看通知",
+      "description": "从导航中打开通知，查看提及和回复。选择通知即可返回对应会话。"
+    },
+    "settings": {
+      "title": "设置适合自己的 Zoo",
+      "description": "通过齿轮按钮打开设置，调整偏好。指南针按钮可随时重新打开本导览。"
+    },
+    "slack": {
+      "title": "连接 Slack",
+      "description": "在设置的「Slack 关联」中连接 Slack 账号，可将已导入的历史发帖关联到你的 Zoo 账号，也可以导入你创建的私密频道。工作区需要先启用 Slack 连接。"
+    },
+    "openSlack": "设置 Slack 连接"
   }
 }

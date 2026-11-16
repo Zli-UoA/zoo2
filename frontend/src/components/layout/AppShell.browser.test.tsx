@@ -129,6 +129,7 @@ function setup(entries: string[]) {
 
 describe("shell navigation", () => {
   beforeEach(async () => {
+    localStorage.setItem("zoo:onboarding:v1:user-1", "done");
     await page.viewport(1440, 900);
   });
   it("restores channel and thread views with Back and Forward", async () => {

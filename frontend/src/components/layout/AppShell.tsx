@@ -1,3 +1,5 @@
+import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { OnboardingProvider } from "./OnboardingTour";
 import "./navigation";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
@@ -37,7 +39,7 @@ import { useVisualViewport } from "./useVisualViewport";
  * メンバーの既定は閉じ。このコンポーネントは Electric のコレクションを触るため、
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
  */
-export function AppShell({ children }: { children: ReactNode }) {
+function AppShellContent({ children }: { children: ReactNode }) {
   const accounts = useAuthZAccounts();
   usePresence();
   const viewportRef = useVisualViewport();
@@ -295,5 +297,21 @@ export function AppShell({ children }: { children: ReactNode }) {
         </ShellContext.Provider>
       </PwaProvider>
     </SearchPreferencesProvider>
+  );
+}
+
+export function AppShell({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const { currentUserId } = useCurrentUser();
+  return (
+    <OnboardingProvider
+      key={currentUserId ?? "anonymous"}
+      userId={currentUserId}
+      onOpenSlack={() => {
+        void router.navigate({ to: "/settings", search: { tab: "slack" } });
+      }}
+    >
+      <AppShellContent>{children}</AppShellContent>
+    </OnboardingProvider>
   );
 }

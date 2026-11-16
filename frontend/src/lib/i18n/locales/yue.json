@@ -1628,5 +1628,38 @@
     "mentions": "提及同回覆",
     "messages": "私訊",
     "reactions": "回應"
+  },
+  "onboarding": {
+    "replay": "開啟入門導覽",
+    "next": "下一步",
+    "back": "上一步",
+    "skip": "跳過",
+    "finish": "開始用 Zoo",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "歡迎嚟到 Zoo",
+      "description": "用六個簡短步驟了解基本用法。你可以跳過，之後隨時撳導覽列嘅指南針掣重新開啟。"
+    },
+    "channels": {
+      "title": "搵頻道",
+      "description": "喺導覽列開啟頻道，再揀對話。你可以瀏覽同加入公開頻道。細螢幕上可以返頻道列表切換對話。"
+    },
+    "messages": {
+      "title": "參與對話",
+      "description": "揀頻道，再喺訊息欄發文。喺討論串回覆可以集中相關話題，亦可以加表情回應。"
+    },
+    "notifications": {
+      "title": "睇通知",
+      "description": "喺導覽列開啟通知，睇提及同回覆。揀通知就可以返到相關對話。"
+    },
+    "settings": {
+      "title": "調整個人設定",
+      "description": "撳齒輪掣開啟設定，調整偏好。撳指南針掣就可以隨時重睇導覽。"
+    },
+    "slack": {
+      "title": "連結 Slack",
+      "description": "喺設定嘅 Slack 連結頁面連結 Slack 帳戶，就可以將已匯入嘅舊貼文連到你嘅 Zoo 帳戶，亦可以匯入你建立嘅私人頻道。工作區要先啟用 Slack 連結。"
+    },
+    "openSlack": "設定 Slack 連結"
   }
 }

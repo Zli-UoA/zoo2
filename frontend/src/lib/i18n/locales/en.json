@@ -1628,5 +1628,38 @@
     "mentions": "Mentions and replies",
     "messages": "Direct messages",
     "reactions": "Reactions"
+  },
+  "onboarding": {
+    "replay": "Quick tour",
+    "next": "Next",
+    "back": "Back",
+    "skip": "Skip tour",
+    "finish": "Start using Zoo",
+    "progress": "{{current}} / {{total}}",
+    "welcome": {
+      "title": "Welcome to Zoo",
+      "description": "Discover the basics in six short steps. You can skip this tour and open it again with the compass button in the navigation."
+    },
+    "channels": {
+      "title": "Find a channel",
+      "description": "Open Channels from the navigation, then choose a conversation. Browse channels to find and join public conversations. On a small screen, return to the channel list to switch conversations."
+    },
+    "messages": {
+      "title": "Join the conversation",
+      "description": "Choose a channel and write in the message box. Reply in a thread to keep related messages together, or add a reaction to a post."
+    },
+    "notifications": {
+      "title": "Keep up with notifications",
+      "description": "Open Notifications in the navigation to check mentions and replies. Select a notification to return to the conversation."
+    },
+    "settings": {
+      "title": "Make Zoo your own",
+      "description": "Open Settings with the gear button to adjust your preferences. The compass button opens this tour whenever you need it."
+    },
+    "slack": {
+      "title": "Connect Slack",
+      "description": "In Settings → Slack, link your Slack account to associate your imported past posts with your Zoo account. You can also import private channels you created. Slack integration must be enabled for your workspace."
+    },
+    "openSlack": "Set up Slack"
   }
 }
