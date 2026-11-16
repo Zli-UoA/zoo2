@@ -66,6 +66,8 @@ class ImageDecodingTest {
 
     @Test
     fun largePreviewsAreSampledBeforeDecoding() {
+        assertEquals(8, imageSampleSize(2048, 2048, maxEdge = 256))
+        assertEquals(16, imageSampleSize(2049, 100, maxEdge = 256))
         assertEquals(1, imageSampleSize(2048, 2048))
         assertEquals(2, imageSampleSize(2049, 100))
         assertEquals(4, imageSampleSize(8000, 6000))
