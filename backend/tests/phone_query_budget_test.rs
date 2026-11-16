@@ -31,6 +31,32 @@ async fn client(url: &str) -> anyhow::Result<tokio_postgres::Client> {
     tokio::spawn(async move { connection.await.unwrap() });
     Ok(client)
 }
+// Capture actual RI/CASCADE plans; the parent EXPLAIN omits their buffers.
+async fn plan_client(
+    url: &str,
+) -> anyhow::Result<(tokio_postgres::Client, Arc<Mutex<Vec<Value>>>)> {
+    let (client, mut connection) = tokio_postgres::connect(url, NoTls).await?;
+    let plans = Arc::new(Mutex::new(Vec::new()));
+    let output = plans.clone();
+    tokio::spawn(async move {
+        while let Some(message) = std::future::poll_fn(|cx| connection.poll_message(cx)).await {
+            if let tokio_postgres::AsyncMessage::Notice(notice) = message.unwrap() {
+                if let Some(at) = notice.message().find('{') {
+                    if let Ok(plan) = serde_json::from_str::<Value>(&notice.message()[at..]) {
+                        if plan["Query Text"]
+                            .as_str()
+                            .is_some_and(|sql| sql.contains("FROM ONLY"))
+                        {
+                            output.lock().unwrap().push(plan);
+                        }
+                    }
+                }
+            }
+        }
+    });
+    client.batch_execute("LOAD 'auto_explain'; SET auto_explain.log_min_duration=0; SET auto_explain.log_analyze=on; SET auto_explain.log_timing=off; SET auto_explain.log_buffers=on; SET auto_explain.log_nested_statements=on; SET auto_explain.log_format=json; SET auto_explain.log_level=notice;").await?;
+    Ok((client, plans))
+}
 #[tokio::test]
 #[ignore = "requires an empty migrated disposable database and PHONE_SCALE_ROWS"]
 async fn phone_queries_have_bounded_work() -> anyhow::Result<()> {
@@ -266,18 +292,25 @@ async fn phone_queries_have_bounded_work() -> anyhow::Result<()> {
                 let (url, name, sql, metrics) =
                     (url.clone(), name.clone(), sql.clone(), metrics.clone());
                 tasks.push(tokio::spawn(async move {
-                    let db=client(&url).await.unwrap();
+                    let (db,nested_plans)=plan_client(&url).await.unwrap();
                     for sample in 0..30 {
+                    let at=sql.find("EXPLAIN ").unwrap();
+                    let preparation=std::time::Instant::now();
+                    db.batch_execute(&format!("BEGIN; {}",&sql[..at])).await.unwrap();
+                    let preparation_ms=preparation.elapsed().as_secs_f64()*1000.;
+                    nested_plans.lock().unwrap().clear();
                     let start=std::time::Instant::now();
-                    // Each plan includes the complete write, FK checks and locks, but changes roll back.
-                    let rows=db.simple_query(&format!("BEGIN; {sql} ROLLBACK; DEALLOCATE ALL;")).await.unwrap();
+                    let rows=db.simple_query(&format!("{} ROLLBACK; DEALLOCATE ALL;",&sql[at..])).await.unwrap();
+                    let nested=std::mem::take(&mut *nested_plans.lock().unwrap());
                     let raw=rows.iter().find_map(|row|match row {SimpleQueryMessage::Row(row)=>row.get(0).filter(|s|s.starts_with('[')),_=>None}).unwrap();
                     let value:Value=serde_json::from_str(raw).unwrap();let plan=&value[0];
                     if let Some(visible) = name.strip_prefix("admin-").and_then(|s|s.parse::<u64>().ok()) { assert_eq!(plan["Plan"]["Actual Rows"].as_u64(),Some(visible+2),"shared lines must never disappear"); }
                     let mut relations=std::collections::BTreeMap::new();scan(&plan["Plan"],&mut relations);
+                    for child in &nested { scan(&child["Plan"],&mut relations); }
+                    if name=="cascade-403" { assert!(nested.iter().any(|p|p["Query Text"].as_str().unwrap_or("").contains("phone_sessions")),"CASCADE plan missing"); }
                     for (relation,work) in &relations {let visible = name.strip_prefix("admin-").and_then(|s|s.parse::<f64>().ok()).unwrap_or(0.);
-                    let bound=if visible > 0. { if relation=="sip_lines" {3.*(visible+2.)} else if relation=="sip_line_members" {visible+4.} else if relation=="sip_phones" {100.+visible+2.} else {8.} } else if relation=="sip_phones" {100.} else if relation=="phone_sessions" {12.} else if name=="creator-limit" && relation=="sip_lines" {50.} else if name.starts_with("directory-") && relation=="sip_line_members" {100.} else {8.};assert!(*work<=bound,"{name} {relation}: {work}>{bound}: {plan}");}
-                    metrics.lock().unwrap().push(json!({"name":name,"concurrency":concurrency,"plan":if sample==0 {plan.clone()} else {Value::Null},"relations":relations,"blocks":plan["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)+plan["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0),"planning_ms":plan["Planning Time"],"execution_ms":plan["Execution Time"],"roundtrip_ms":start.elapsed().as_secs_f64()*1000.}));
+                    let bound=if visible > 0. { if relation=="sip_lines" {3.*(visible+2.)} else if relation=="sip_line_members" {visible+4.} else if relation=="sip_phones" {100.+visible+2.} else {8.} } else if relation=="sip_phones" {100.} else if name=="cascade-403" && relation=="phone_sessions" {403.} else if relation=="phone_sessions" {12.} else if name=="creator-limit" && relation=="sip_lines" {50.} else if (name.starts_with("directory-") || name=="cascade-403") && relation=="sip_line_members" {100.} else {8.};assert!(*work<=bound,"{name} {relation}: {work}>{bound}: {plan}");}
+                    metrics.lock().unwrap().push(json!({"name":name,"concurrency":concurrency,"plan":if sample==0 {plan.clone()} else {Value::Null},"relations":relations,"nested_plans":if sample==0 {json!(nested)} else {Value::Null},"preparation_ms":preparation_ms,"blocks":plan["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)+plan["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0)+nested.iter().map(|p|p["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)+p["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0)).sum::<u64>(),"planning_ms":plan["Planning Time"],"execution_ms":plan["Execution Time"],"roundtrip_ms":start.elapsed().as_secs_f64()*1000.}));
                     }
                 }));
             }
