@@ -48,6 +48,8 @@ DMと電話で音声取得・RTCPeerConnection・SDP/ICE処理・SSE受信を共
 | `POST /api/phone/sessions/{id}/command` | 発信・応答・ICE・DTMF・拒否・終了・切断 |
 | `POST /api/internal/pbx/{table}/{single,multi,require}` | PBX専用Bearerで保護した読み取り専用Realtime。一般クライアントでは利用不可 |
 
+管理PBXは `zoo-dial-contacts` 静的Gosubを含む電話イメージrevision `-3` 以降を使う。Realtime APIは短いendpoint IDと制限秒数だけを返し、静的dialplanから呼ぶ専用 `ZooDialContacts` が最大64KiBのバッファでcontactを展開し、Dialへ直接渡す。Realtimeの512バイトと通常dialplanの8192バイトの両制限を避ける。64KiBを超える場合は一部だけへ架電せず、通話全体を失敗させる。
+
 PBX内部APIはUUIDの完全一致を起点に検索し、全endpoint列挙や書き込みを許可しない。パスワードを復号するのはauth参照だけ。Asteriskローカルのbridgeが認証ヘッダーを付け、秘密値をURLへ埋め込まない。既存外部PBXを使う場合は `SIP_PBX_CONFIG_SECRET` を設定せず、回線の認証IDでJanusが登録する。
 
 物理電話機・拠点には回線パスワードを手動設定するため、機器の廃止・所有者変更時には回線パスワードも変更し、PBXの既存contactを失効させる。アプリメンバー解除で機器に入力したパスワードまで回収することはできない。

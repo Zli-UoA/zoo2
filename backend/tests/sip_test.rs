@@ -300,6 +300,21 @@ async fn sip_personal_and_shared_authorization_and_encryption() -> anyhow::Resul
     )
     .await?;
     assert!(dial.contains(&format!("phone-{phone_id}")), "{dial}");
+    assert!(dial.contains("app=Gosub"), "{dial}");
+    assert!(!dial.contains("PJSIP_DIAL_CONTACTS"));
+    let (_, incoming) = pbx(
+        &app,
+        "dummy-config",
+        "extensions",
+        &format!("context=zoo-home-{personal}&exten=s&priority=1"),
+    )
+    .await?;
+    assert!(
+        incoming.contains("app=Gosub") && incoming.contains(&format!("line-{personal}")),
+        "{incoming}"
+    );
+    assert!(incoming.len() < 256 && !incoming.contains("PJSIP_DIAL_CONTACTS"));
+
     let (_, unknown) = pbx(
         &app,
         "dummy-config",

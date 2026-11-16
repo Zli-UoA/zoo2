@@ -56,6 +56,14 @@ fn encoded(row: &[(&str, String)]) -> String {
     // res_config_curl uses ast_uri_http, which does not decode + as a space.
     url.query().unwrap_or("").replace('+', "%20")
 }
+// Realtime expands appdata into a 512-byte buffer. Expand contact lists only
+// in the image's ZooDialContacts application, outside both dialplan buffers.
+fn contact_dialplan(endpoint: &str, seconds: u8) -> (&'static str, String) {
+    (
+        "Gosub",
+        format!("zoo-dial-contacts,s,1({endpoint},{seconds})"),
+    )
+}
 fn endpoint_id(id: &str) -> Option<(&str, &str)> {
     let (kind, id) = id.split_once('-')?;
     if !matches!(kind, "line" | "home" | "phone" | "auth") || uuid::Uuid::parse_str(id).is_err() {
@@ -106,28 +114,33 @@ async fn lookup(
         let exten = fields.get("exten").map(String::as_str).unwrap_or("");
         let priority = fields.get("priority").map(String::as_str).unwrap_or("1");
         let data = if home && exten == "s" {
-            Some(format!("${{PJSIP_DIAL_CONTACTS(line-{id})}},60"))
+            Some(contact_dialplan(&format!("line-{id}"), 60))
         } else if !home {
             let phone=one(&mut tx,"SELECT json_build_object('id',id)::text FROM sip_phones WHERE line_id=$1 AND extension=$2 LIMIT 1", &[id,exten]).await?;
             phone["id"]
                 .as_str()
-                .map(|id| format!("${{PJSIP_DIAL_CONTACTS(phone-{id})}},30"))
+                .map(|id| contact_dialplan(&format!("phone-{id}"), 30))
                 .or_else(|| {
                     let digits = exten.strip_prefix('+').unwrap_or(exten);
                     (!digits.is_empty()
                         && digits.len() <= 32
                         && digits.bytes().all(|b| b.is_ascii_digit()))
-                    .then(|| format!("PJSIP/${{FILTER(0-9+,${{EXTEN}})}}@home-{id},60"))
+                    .then(|| {
+                        (
+                            "Dial",
+                            format!("PJSIP/${{FILTER(0-9+,${{EXTEN}})}}@home-{id},60"),
+                        )
+                    })
                 })
         } else {
             None
         };
         match (priority, data) {
-            ("1", Some(data)) => encoded(&[
+            ("1", Some((app, data))) => encoded(&[
                 ("context", context.into()),
                 ("exten", exten.into()),
                 ("priority", "1".into()),
-                ("app", "Dial".into()),
+                ("app", app.into()),
                 ("appdata", data),
             ]),
             ("2", Some(_)) => encoded(&[
