@@ -818,9 +818,43 @@
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx",
       "states": ["Default", "Undeliverable", "AddedRecipients"]
+    },
+    {
+      "file": "src/components/ui/media-preview.stories.tsx",
+      "states": [
+        "Loading",
+        "Image",
+        "PDF",
+        "Video",
+        "Audio",
+        "Failed",
+        "Narrow",
+        "Email",
+        "Outlook",
+        "Word",
+        "Spreadsheet",
+        "Slides",
+        "OpenDocument",
+        "Archive",
+        "Text"
+      ]
     }
   ],
   "modules": [
+    {
+      "file": "src/components/ui/document-preview.tsx",
+      "story": "src/components/ui/media-preview.stories.tsx",
+      "composed": true,
+      "reason": "Email、Outlook、Word、Spreadsheet、Slides、OpenDocument、Archive、Textで実際のWorkerと取得・解析・表示を確認する。",
+      "checks": ["src/components/ui/document-preview.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/ui/pdf-preview.tsx",
+      "story": "src/components/ui/media-preview.stories.tsx",
+      "composed": true,
+      "reason": "PDFとMediaPreviewのブラウザーテストでキャンバス描画とページ送りを確認する。",
+      "checks": ["src/components/ui/media-preview.browser.test.tsx"]
+    },
     {
       "file": "src/components/layout/DefaultChannelsSettings.tsx",
       "story": "src/components/layout/DefaultChannelsSettings.stories.tsx"
@@ -1474,6 +1508,11 @@
     {
       "file": "src/components/chat/messages/EncryptionRecipientsNotice.tsx",
       "story": "src/components/chat/messages/EncryptionRecipientsNotice.stories.tsx"
+    },
+    {
+      "file": "src/components/ui/media-preview.tsx",
+      "story": "src/components/ui/media-preview.stories.tsx",
+      "checks": ["src/components/ui/media-preview.browser.test.tsx"]
     }
   ]
 }

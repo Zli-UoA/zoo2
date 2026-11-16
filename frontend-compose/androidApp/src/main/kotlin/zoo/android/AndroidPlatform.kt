@@ -252,6 +252,33 @@ internal class AndroidPlatform(
                 open(payload)
                 "{}"
             }
+            "previewSave" -> {
+                val data = json.parseToJsonElement(payload).jsonObject
+                require(data.text("base64").length <= 24 * 1024 * 1024)
+                val bytes = android.util.Base64.decode(data.text("base64"), android.util.Base64.DEFAULT)
+                require(bytes.size <= 16 * 1024 * 1024)
+                val target = withContext(Dispatchers.IO) {
+                    val directory = java.io.File(activity.cacheDir, "preview-files").apply { mkdirs() }
+                    // Share only user-selected files, retaining at most 64 MiB in the private cache.
+                    val existing = directory.listFiles().orEmpty().sortedBy { it.lastModified() }.toMutableList()
+                    var total = existing.sumOf { it.length() }
+                    while (existing.isNotEmpty() && (total + bytes.size > 64 * 1024 * 1024 || existing.first().lastModified() < System.currentTimeMillis() - 86_400_000)) {
+                        val old = existing.removeAt(0); total -= old.length(); old.delete()
+                    }
+                    val safeName = data.text("name").substringAfterLast('/').substringAfterLast('\\').replace(Regex("[\\p{Cntrl}]"), "_").take(120).ifEmpty { "attachment" }
+                    java.io.File(directory, "${UUID.randomUUID()}-$safeName").apply { writeBytes(bytes) }
+                }
+                withContext(Dispatchers.Main) {
+                    val uri = androidx.core.content.FileProvider.getUriForFile(activity, "${activity.packageName}.preview-files", target)
+                    val share = Intent(Intent.ACTION_SEND).apply {
+                        type = data.text("type").ifEmpty { "application/octet-stream" }
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    activity.startActivity(Intent.createChooser(share, data.text("name")))
+                }
+                "{}"
+            }
             "attachmentDownload" -> {
                 open(json.parseToJsonElement(payload).jsonObject.text("url"))
                 "{}"

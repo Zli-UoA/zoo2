@@ -505,6 +505,9 @@ jobs:
       - name: browser test
         run: pnpm test:browser
 
+      - name: APK media viewer bundle smoke test
+        run: pnpm test:media-preview-bundle
+
       - name: vrt
         run: pnpm test:vrt
 

@@ -248,7 +248,21 @@
     "markSensitive": "将图片标记为敏感内容",
     "showSensitive": "显示图片",
     "hideSensitive": "隐藏图片",
-    "sensitiveShort": "敏感图片"
+    "sensitiveShort": "敏感图片",
+    "documentSummary": "正文与单元格的简化预览，格式和布局可能与原文件不同。",
+    "previewLimit": "预览超出大小、文件数量或处理时间限制，请下载文件查看。",
+    "emptyPreview": "无内容",
+    "containedFiles": "包含的文件",
+    "previousPage": "上一页",
+    "nextPage": "下一页",
+    "pdfPage": "PDF 第{{page}}页",
+    "mail": {
+      "subject": "主题",
+      "from": "发件人",
+      "to": "收件人",
+      "cc": "抄送",
+      "date": "日期"
+    }
   },
   "threads": {
     "title": "子线程",

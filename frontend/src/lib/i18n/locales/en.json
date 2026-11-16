@@ -248,7 +248,21 @@
     "markSensitive": "Mark images as sensitive",
     "showSensitive": "Show image",
     "hideSensitive": "Hide image",
-    "sensitiveShort": "Sensitive"
+    "sensitiveShort": "Sensitive",
+    "documentSummary": "Simplified text and cell preview. Formatting and layout may differ from the original.",
+    "previewLimit": "This preview exceeds the size, file count or processing time limit. Download the file to view it.",
+    "emptyPreview": "No content",
+    "containedFiles": "Contained files",
+    "previousPage": "Previous page",
+    "nextPage": "Next page",
+    "pdfPage": "PDF page {{page}}",
+    "mail": {
+      "subject": "Subject",
+      "from": "From",
+      "to": "To",
+      "cc": "Cc",
+      "date": "Date"
+    }
   },
   "threads": {
     "title": "Thread",

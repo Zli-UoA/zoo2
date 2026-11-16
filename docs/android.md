@@ -324,3 +324,10 @@ Home・投稿詳細・返信元・公開プロフィールは `HomePostContent` 
 
 追加した回帰テストは `HomePostContentTest`、`PreviewLoaderTest`、`ReviewRegressionUiTest` です。
 この環境ではGradle配布物の取得に失敗し、Androidテスト・lint・APKビルドと実機表示は未確認です。
+
+## 添付ファイルのプレビュー
+
+通常の添付とAPub投稿から、PDF・動画・音声・メール・Office文書・ZIP内のファイルをアプリ内で閲覧できます。
+Webと同じ部品をAPKへ同梱します。Androidのビルド前に `pnpm --dir frontend install --frozen-lockfile` を実行してください。
+対応形式、読み込み上限、同梱の手順は [media-previews.md](media-previews.md) を参照してください。
+配布前にはAPI 26・35でPDFのページ送り、動画・音声の操作、EML・MSG、メール内添付の保存、閉じる・画面回転・アカウント切替時の取得終了を確認してください。

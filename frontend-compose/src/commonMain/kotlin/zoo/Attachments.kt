@@ -46,6 +46,16 @@ private val attachmentExtensions =
         "jpeg" to "image/jpeg",
         "webp" to "image/webp",
         "gif" to "image/gif",
+        "avif" to "image/avif",
+        "eml" to "message/rfc822",
+        "msg" to "application/vnd.ms-outlook",
+        "odt" to "application/vnd.oasis.opendocument.text",
+        "ods" to "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" to "application/vnd.oasis.opendocument.presentation",
+        "yaml" to "text/yaml",
+        "yml" to "text/yaml",
+        "ics" to "text/calendar",
+        "vcf" to "text/vcard",
         "pdf" to "application/pdf",
         "txt" to "text/plain",
         "md" to "text/markdown",
@@ -537,26 +547,10 @@ fun MessageAttachments(app: Session, values: List<Row>) {
             }
         val files = values - images.toSet()
         val availableWidth = maxWidth
-        val square = (minOf(availableWidth, 384.dp) - 8.dp) / 2
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (images.isNotEmpty())
-                FlowRow(
-                    maxItemsInEachRow = 2,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    images.forEach {
-                        AttachmentItem(
-                            app,
-                            it,
-                            if (images.size > 1) Modifier.size(square)
-                            else Modifier.width(minOf(256.dp, availableWidth))
-                                .height(constrainedImageHeight(minOf(256.dp, availableWidth), it, 384.dp, 80.dp)),
-                            true,
-                            images.size > 1,
-                        )
-                    }
-                }
+            images.forEach {
+                AttachmentItem(app, it, Modifier.fillMaxWidth().height(constrainedImageHeight(availableWidth, it, 384.dp, 80.dp)), true)
+            }
             files.forEach { AttachmentItem(app, it, Modifier.fillMaxWidth(), false) }
         }
     }
@@ -568,11 +562,10 @@ private fun AttachmentItem(
     file: Row,
     modifier: Modifier,
     image: Boolean,
-    multiple: Boolean = false,
 ) {
     val id = file.text("id")
     var revealed by remember(id, file.flag("is_sensitive")) { mutableStateOf(false) }
-    if (image && file.flag("is_sensitive") && !revealed) {
+    if (hasMediaPreview(file.text("content_type"), file.text("file_name")) && file.flag("is_sensitive") && !revealed) {
         SensitiveImagePlaceholder(app, file, modifier) { revealed = true }
         return
     }
@@ -657,6 +650,8 @@ private fun AttachmentItem(
                     )
             }
             if (failed || remoteFailure) Button(app.t("attachments.retry")) { attempt++ }
+            if (url != null && !remoteFailure && hasMediaPreview(file.text("content_type"), file.text("file_name")))
+                IconButton("eye", app.t("attachments.preview", "name" to file.text("file_name"))) { preview = true }
             if (url != null && !remoteFailure)
                 IconButton(
                     "download",
@@ -670,54 +665,21 @@ private fun AttachmentItem(
 @Composable
 private fun AttachmentPreview(app: Session, file: Row, close: () -> Unit) {
     val id = file.text("id")
+    var url by remember(id) { mutableStateOf<String?>(null) }
     var attempt by remember(id) { mutableStateOf(0) }
-    var bitmap by remember(id) { mutableStateOf<ImageBitmap?>(null) }
     var failed by remember(id) { mutableStateOf(false) }
     LaunchedEffect(id, attempt) {
-        bitmap = null
         failed = false
-        try {
-            var url = app.attachmentLinks.get(id, attempt > 0)
-            try {
-                app.platform.imageFrames(app.image(url)).collect { bitmap = it }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                url = app.attachmentLinks.get(id, true)
-                app.platform.imageFrames(app.image(url)).collect { bitmap = it }
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            failed = true
-        }
+        try { url = app.attachmentLinks.get(id, attempt > 0) }
+        catch (error: CancellationException) { throw error }
+        catch (_: Exception) { failed = true }
     }
     Panel(file.text("file_name"), close, 1280.dp) {
         if (failed) {
-            Text(
-                app.t("attachments.loadError"),
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive },
-            )
+            Text(app.t("attachments.loadError"))
             Button(app.t("attachments.retry")) { attempt++ }
-        } else if (bitmap == null) Text(app.t("attachments.loading"))
-        else
-            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f, fill = false)) {
-                Image(
-                    bitmap!!,
-                    file.text("file_name"),
-                    Modifier.fillMaxWidth().heightIn(max = maxHeight),
-                    contentScale = ContentScale.Fit,
-                )
-            }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(file.text("file_name"), Modifier.weight(1f), small = true)
-            Button(
-                app.t("attachments.downloadShort"),
-                accessibleLabel = app.t("attachments.download", "name" to file.text("file_name")),
-            ) {
-                app.attachmentLinks.download(file)
-            }
-        }
+        } else if (url == null) Text(app.t("attachments.loading"))
+        else MediaPreviewSurface(app, url!!, file.text("file_name"), file.text("content_type"), Modifier.fillMaxWidth().weight(1f))
+        Button(app.t("attachments.downloadShort")) { app.attachmentLinks.download(file) }
     }
 }

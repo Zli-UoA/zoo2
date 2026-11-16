@@ -248,7 +248,21 @@
     "markSensitive": "화상을 민감한 내용으로 표시",
     "showSensitive": "화상 표시",
     "hideSensitive": "화상 숨기기",
-    "sensitiveShort": "민감한 화상"
+    "sensitiveShort": "민감한 화상",
+    "documentSummary": "본문과 셀의 간단한 미리보기입니다. 서식과 배치는 원본과 다를 수 있습니다.",
+    "previewLimit": "미리보기의 크기, 파일 수 또는 처리 시간 제한을 초과했습니다. 파일을 내려받아 확인하십시오.",
+    "emptyPreview": "내용 없음",
+    "containedFiles": "포함된 파일",
+    "previousPage": "이전 페지",
+    "nextPage": "다음 페지",
+    "pdfPage": "PDF {{page}}페지",
+    "mail": {
+      "subject": "제목",
+      "from": "보낸 사람",
+      "to": "받는 사람",
+      "cc": "참조",
+      "date": "날자"
+    }
   },
   "threads": {
     "title": "타래",
