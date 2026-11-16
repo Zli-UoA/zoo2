@@ -789,6 +789,10 @@ impl Core {
     }
 
     pub async fn logout(&self) -> Result<(), IpcError> {
+        // 待っている再認証は、ログアウトしたら要らない (ループバックの待ち受けも閉じる)。
+        if let Some(reauth) = self.reauth.lock().expect("reauth の lock").take() {
+            reauth.abort();
+        }
         let mut inner = self.inner.lock().await;
         let ending = self.prepare_end_session(&mut inner).map_err(to_ipc)?;
         self.set_state(&mut inner, SessionState::LoggedOut);
