@@ -2,6 +2,10 @@
   "$comment": "Required visible states, not a percentage of visual correctness. Composed coverage is explained; controller exclusions are counted separately.",
   "stories": [
     {
+      "file": "src/components/layout/OnboardingTour.stories.tsx",
+      "states": ["FirstVisit", "CompleteAndReplay", "Skip", "Mobile", "SlackSetup"]
+    },
+    {
       "file": "src/components/layout/DefaultChannelsSettings.stories.tsx",
       "states": [
         "Default",
@@ -821,6 +825,10 @@
     }
   ],
   "modules": [
+    {
+      "file": "src/components/layout/OnboardingTour.tsx",
+      "story": "src/components/layout/OnboardingTour.stories.tsx"
+    },
     {
       "file": "src/components/layout/DefaultChannelsSettings.tsx",
       "story": "src/components/layout/DefaultChannelsSettings.stories.tsx"
