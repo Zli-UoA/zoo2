@@ -747,6 +747,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             task.team_id.as_str(),
             task.slack_channel_id.as_str(),
             task.channel_id.as_str(),
+            slack_private,
             task.token.as_str(),
             &mut db,
         )
@@ -761,6 +762,7 @@ async fn sync_channel(s: &AppState, key: &[u8; 32], task: &Task) -> Result<Step,
             task.team_id.as_str(),
             task.slack_channel_id.as_str(),
             task.channel_id.as_str(),
+            slack_private,
             task.token.as_str(),
             &mut db,
         )
@@ -968,6 +970,30 @@ pub(super) async fn ensure_target_unchanged(
     Ok(())
 }
 
+/// 取り込み先のチャンネルが、削除されておらず、非公開の Slack チャンネルの内容を保護しているか
+/// (非公開の Slack チャンネルは、非公開の zoo チャンネルにしか入れない) を `FOR SHARE` で固定して確かめる。
+/// 対応表 (`slack_channels`) は、先に `ensure_target_unchanged` で固定しておく。
+pub(super) async fn ensure_private_target(
+    tx: &mut toasty::Transaction<'_>,
+    zoo_channel: &str,
+    slack_private: bool,
+) -> Result<(), SyncError> {
+    let target = query(
+        tx,
+        "SELECT json_build_object('valid',deleted_at IS NULL AND (NOT $2::boolean OR is_private))::text \
+         FROM channels WHERE id=$1 FOR SHARE",
+        &[zoo_channel, if slack_private { "true" } else { "false" }],
+    )
+    .await?;
+    if target.first().is_none_or(|row| row["valid"] != true) {
+        return Err(AppError::BadRequest(
+            "Slack sync target changed or no longer protects private channel content".into(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// 1 ページ分の投稿と途中経過を、同じトランザクションで保存する
 async fn store(
     slack: &mut Slack,
@@ -1031,25 +1057,7 @@ async fn store(
     super::worker::ensure_plaintext_allowed(&mut tx, &task.channel_id).await?;
     // Recheck channel deletion and privacy after taking the channel lock. The
     // mapping row is already pinned above through this transaction's commit.
-    let target = query(
-        &mut tx,
-        "SELECT json_build_object('valid',c.deleted_at IS NULL AND (NOT $4::boolean OR c.is_private))::text \
-         FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
-         WHERE s.team_id=$1 AND s.slack_channel_id=$2 AND s.channel_id=$3 FOR SHARE OF c",
-        &[
-            &task.team_id,
-            &task.slack_channel_id,
-            &task.channel_id,
-            if slack_private { "true" } else { "false" },
-        ],
-    )
-    .await?;
-    if target.first().is_none_or(|row| row["valid"] != true) {
-        return Err(AppError::BadRequest(
-            "Slack sync target changed or no longer protects private channel content".into(),
-        )
-        .into());
-    }
+    ensure_private_target(&mut tx, &task.channel_id, slack_private).await?;
     // 同じ区間をほかのトランザクションが同時に取り込んでも、決定的 ID で重複しない
     for message in importable {
         insert_message(

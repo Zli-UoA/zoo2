@@ -111,13 +111,25 @@ if [[ "$migration_status" -eq 0 ]] || ! rg -q '55P03' "$tmp_dir/migration.out"; 
   exit 1
 fi
 
-if psql "$NOTES_TEST_DATABASE_URL" -X -Atq -v ON_ERROR_STOP=1 -c \
-  "SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname IN ('channels_encrypted_reject_notes', 'channel_notes_e2ee_reject_plaintext'))" | rg -q '^t$'; then
+trigger_rows="$(psql "$NOTES_TEST_DATABASE_URL" -X -Atq -v ON_ERROR_STOP=1 -c \
+  "SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname IN ('channels_encrypted_reject_notes', 'channel_notes_e2ee_reject_plaintext'))" \
+  2>"$tmp_dir/trigger.err")" || {
+  cat "$tmp_dir/trigger.err" >&2
+  echo "failed to inspect triggers after the failed migration" >&2
+  exit 1
+}
+if [[ "$trigger_rows" == t ]]; then
   echo "failed migration left a partial trigger behind" >&2
   exit 1
 fi
-if psql "$NOTES_TEST_DATABASE_URL" -X -Atq -v ON_ERROR_STOP=1 -c \
-  "SELECT EXISTS (SELECT 1 FROM atlas_schema_revisions.atlas_schema_revisions WHERE version = '$target_version')" | rg -q '^t$'; then
+version_rows="$(psql "$NOTES_TEST_DATABASE_URL" -X -Atq -v ON_ERROR_STOP=1 -c \
+  "SELECT EXISTS (SELECT 1 FROM atlas_schema_revisions.atlas_schema_revisions WHERE version = '$target_version')" \
+  2>"$tmp_dir/version.err")" || {
+  cat "$tmp_dir/version.err" >&2
+  echo "failed to inspect the recorded migration version" >&2
+  exit 1
+}
+if [[ "$version_rows" == t ]]; then
   echo "failed migration was recorded as applied" >&2
   exit 1
 fi

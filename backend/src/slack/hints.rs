@@ -61,6 +61,7 @@ pub(super) async fn process(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
+    slack_private: bool,
     lease_token: &str,
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
@@ -112,6 +113,7 @@ pub(super) async fn process(
             team,
             slack_channel,
             zoo_channel,
+            slack_private,
             lease_token,
             ts,
             &group,
@@ -249,6 +251,7 @@ async fn apply(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
+    slack_private: bool,
     lease_token: &str,
     ts: &str,
     group: &[&Row],
@@ -371,6 +374,8 @@ async fn apply(
     }
     // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
+    // 同期の途中で取り込み先が公開に変わったら、非公開の Slack チャンネルの内容を書かない
+    super::sync::ensure_private_target(&mut tx, zoo_channel, slack_private).await?;
     let MessageState {
         id,
         zoo_origin,
@@ -904,6 +909,7 @@ mod tests {
             &team,
             "C1",
             &channel,
+            true,
             &lease_token,
             &mut db,
         )

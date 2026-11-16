@@ -53,6 +53,7 @@ pub(super) async fn run(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
+    slack_private: bool,
     lease_token: &str,
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
@@ -65,6 +66,7 @@ pub(super) async fn run(
         team,
         slack_channel,
         zoo_channel,
+        slack_private,
         lease_token,
         db,
     )
@@ -115,6 +117,7 @@ async fn run_inner(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
+    slack_private: bool,
     lease_token: &str,
     db: &mut toasty::Db,
 ) -> Result<(), SyncError> {
@@ -168,6 +171,7 @@ async fn run_inner(
             team,
             slack_channel,
             zoo_channel,
+            slack_private,
             lease_token,
             chunk,
             db,
@@ -330,6 +334,7 @@ async fn apply_chunk(
     team: &str,
     slack_channel: &str,
     zoo_channel: &str,
+    slack_private: bool,
     lease_token: &str,
     chunk: &[SlackMessage],
     db: &mut toasty::Db,
@@ -355,6 +360,8 @@ async fn apply_chunk(
     }
     // 同期の途中で取り込み先が暗号化に切り替わったら (#367)、平文を書かない。次の同期は、暗号化チャンネルを取らない
     super::worker::ensure_plaintext_allowed(&mut tx, zoo_channel).await?;
+    // 同期の途中で取り込み先が公開に変わったら、非公開の Slack チャンネルの内容を書かない
+    super::sync::ensure_private_target(&mut tx, zoo_channel, slack_private).await?;
     let state = load_chunk_state(&mut tx, team, slack_channel, zoo_channel, chunk).await?;
     let required_users = collect_chunk_users(chunk, &state);
     if let Some(missing) = required_users

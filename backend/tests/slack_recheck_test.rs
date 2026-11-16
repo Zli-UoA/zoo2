@@ -816,7 +816,9 @@ async fn test_recheck_with_mentioned_unlinked_user_waits_for_users_before_lockin
     backend::routes::e2ee_channels::lock_membership_users(&mut conv_tx, &[ub_id.as_str()]).await?;
 
     let sync_state = f.state.clone();
-    let sync_task = tokio::spawn(async move { sync::run_once(&sync_state).await });
+    let sync_team = f.team.clone();
+    let sync_task =
+        tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
 
     let mut blocked = false;
     for _ in 0..200 {
@@ -926,7 +928,9 @@ async fn test_recheck_apply_chunk_and_final_delete_reject_remapped_slack_channel
             .await?;
 
         let sync_state = f.state.clone();
-        let sync_task = tokio::spawn(async move { sync::run_once(&sync_state).await });
+        let sync_team = f.team.clone();
+        let sync_task =
+            tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
 
         let mut blocked = false;
         for _ in 0..200 {
@@ -1044,7 +1048,9 @@ async fn test_recheck_apply_chunk_and_final_delete_reject_remapped_slack_channel
             .await?;
 
         let sync_state = f.state.clone();
-        let sync_task = tokio::spawn(async move { sync::run_once(&sync_state).await });
+        let sync_team = f.team.clone();
+        let sync_task =
+            tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
 
         let mut blocked = false;
         for _ in 0..200 {
@@ -1101,5 +1107,136 @@ async fn test_recheck_apply_chunk_and_final_delete_reject_remapped_slack_channel
         assert!((3.0..=6.0).contains(&minutes), "{minutes}");
     }
 
+    Ok(())
+}
+
+/// 非公開の Slack チャンネルの Zoo の取り込み先が、再確認の書き込み前に公開へ変わったら、
+/// recheck の反映を拒否する (claim の時点では非公開だったので、同期そのものは始まる)
+#[tokio::test]
+async fn test_recheck_rejects_a_private_slack_channel_whose_zoo_target_became_public()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    let f = fixture(Some(SECRET), None).await?;
+    let ts = f.ts_new.clone();
+    let msg_id = backend::slack::message_id(&f.team, "C1", &ts);
+    sql(
+        &f.state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at) \
+         SELECT $1,user_id,$2,'before',(to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
+         (to_timestamp($3::numeric) AT TIME ZONE 'UTC')::timestamp(3) \
+         FROM slack_user_links WHERE team_id=$4 \
+         RETURNING json_build_object('ok',true)::text",
+        &[&msg_id, &f.channel, &ts, &f.team],
+    )
+    .await?;
+
+    // claim の時点では Zoo の取り込み先は非公開。conversations.info も非公開を返す
+    sql(
+        &f.state,
+        "UPDATE channels SET is_private=true WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.channel],
+    )
+    .await?;
+    f.slack.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/conversations.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "channel": {"id": "C1", "is_private": true},
+        })))
+        .mount(&f.slack)
+        .await;
+    let edited_ts = format!("{}.000000", now_secs() + 10);
+    Mock::given(method("GET"))
+        .and(path("/conversations.history"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "messages": [{
+                "type": "message",
+                "ts": &ts,
+                "user": "UA",
+                "text": "rechecked after the zoo channel became public",
+                "edited": {"user": "UA", "ts": &edited_ts}
+            }],
+            "has_more": false
+        })))
+        .with_priority(1)
+        .mount(&f.slack)
+        .await;
+
+    sql(
+        &f.state,
+        "UPDATE slack_channel_syncs SET available_at=now(),rechecked_at=now()-interval '1 hour',not_before=NULL,lease_token=NULL,lease_until=NULL,running=false \
+         WHERE team_id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&f.team],
+    )
+    .await?;
+
+    // recheck::apply_chunk の Slack-channel advisory lock を先に取り、書き込みの直前で止める
+    let mut remap_db = f.state.db.clone();
+    let mut remap_tx = remap_db.transaction().await?;
+    let pid = query(
+        &mut remap_tx,
+        "SELECT json_build_object('pid',pg_backend_pid())::text",
+        &[],
+    )
+    .await?[0]["pid"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    toasty::sql::statement("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("slack-channel:{}:C1", f.team))
+        .exec(&mut remap_tx)
+        .await?;
+
+    let sync_state = f.state.clone();
+    let sync_team = f.team.clone();
+    let sync_task =
+        tokio::spawn(async move { sync::run_once_for_team(&sync_state, &sync_team).await });
+
+    let mut blocked = false;
+    for _ in 0..200 {
+        let rows = sql(
+            &f.state,
+            "SELECT json_build_object('blocked',EXISTS(\
+             SELECT 1 FROM pg_stat_activity \
+             WHERE wait_event_type='Lock' AND $1::integer = ANY(pg_blocking_pids(pid))\
+             ))::text",
+            &[&pid],
+        )
+        .await?;
+        if rows[0]["blocked"] == true {
+            blocked = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        blocked,
+        "recheck::apply_chunk did not wait on the Slack-channel advisory lock"
+    );
+
+    // 書き込みの前に、Zoo の取り込み先を公開へ変える
+    toasty::sql::statement("UPDATE channels SET is_private=false WHERE id=$1")
+        .bind(f.channel.as_str())
+        .exec(&mut remap_tx)
+        .await?;
+    remap_tx.commit().await?;
+
+    let ran = tokio::time::timeout(std::time::Duration::from_secs(5), sync_task).await???;
+    assert!(ran);
+    assert_eq!(row(&f, &msg_id).await["content"], "before");
+    let sync_rows = sql(
+        &f.state,
+        "SELECT json_build_object('last_error',last_error)::text FROM slack_channel_syncs WHERE team_id=$1 AND slack_channel_id='C1'",
+        &[&f.team],
+    )
+    .await?;
+    assert!(
+        sync_rows[0]["last_error"].as_str().is_some_and(|e| e
+            .contains("Slack sync target changed or no longer protects private channel content")),
+        "expected private target error, got {:?}",
+        sync_rows
+    );
     Ok(())
 }
