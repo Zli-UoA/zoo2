@@ -102,11 +102,13 @@ make migrate
 make migrate-status
 ```
 
-migrationファイルの整合性を検証するには次を実行します。
+migrationファイルの構成と`atlas.sum`の整合性を検証するには次を実行します。
 
 ```bash
 make migrate-validate
 ```
+
+`make migrate-validate`はチェックサム等の整合性のみを検証し、SQLの再生検証は行いません。SQLの再生と`infra/db/schema.sql`との一致はCI、ローカルでは`make migrate-diff`のdev DB再生で確認できます。
 
 スキーマを変更するときは`infra/db/schema.sql`を編集し、名前を指定してmigrationを生成します。
 

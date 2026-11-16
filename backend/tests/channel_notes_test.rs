@@ -1142,7 +1142,7 @@ fn e2ee_notes_migration_locks_writers_before_preflight_and_trigger_installation(
         .find("LOCK TABLE channel_notes IN SHARE ROW EXCLUSIVE MODE NOWAIT;")
         .expect("migration must acquire the note lock without waiting");
     let preflight = E2EE_NOTES_MIGRATION
-        .find("DO $$")
+        .find("USING ERRCODE = '55000';")
         .expect("migration must retain its data preflight");
     let trigger = E2EE_NOTES_MIGRATION
         .find("CREATE TRIGGER channel_notes_e2ee_reject_plaintext")
@@ -1322,15 +1322,8 @@ async fn e2ee_migration_preflight_reports_sqlstate_55000_and_preserves_legacy_no
     )
     .await?;
 
-    let start = E2EE_NOTES_MIGRATION
-        .find("DO $$")
-        .expect("preflight block is present");
-    let end = E2EE_NOTES_MIGRATION[start..]
-        .find("END $$;")
-        .map(|offset| start + offset + "END $$;".len())
-        .expect("preflight block is closed");
     let error = tx
-        .batch_execute(&E2EE_NOTES_MIGRATION[start..end])
+        .batch_execute(E2EE_NOTES_MIGRATION)
         .await
         .expect_err("preflight must refuse to strand an encrypted plaintext note");
     assert_eq!(error.code().map(|code| code.code()), Some("55000"));

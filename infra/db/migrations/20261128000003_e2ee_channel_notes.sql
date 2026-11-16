@@ -12,12 +12,14 @@
 -- through its FK, so waiting for the second lock while retaining the first can
 -- deadlock. Fail fast instead; Atlas leaves this file unapplied, rolls the
 -- transaction back, and a later deployment can retry after writers drain.
--- The preflight and guards remain atomic in the same migration transaction.
-LOCK TABLE channels IN SHARE ROW EXCLUSIVE MODE NOWAIT;
-LOCK TABLE channel_notes IN SHARE ROW EXCLUSIVE MODE NOWAIT;
-
-DO $$
+-- Execute locks, preflight, and trigger installation inside one DO block so
+-- both txmode=file deployments and autocommit dev-DB replays run them in a
+-- single transaction block (LOCK TABLE rejects autocommit with SQLSTATE 25P01).
+DO $migration$
 BEGIN
+  LOCK TABLE channels IN SHARE ROW EXCLUSIVE MODE NOWAIT;
+  LOCK TABLE channel_notes IN SHARE ROW EXCLUSIVE MODE NOWAIT;
+
   IF EXISTS (
     SELECT 1 FROM channel_notes n
     JOIN channels c ON c.id = n.channel_id
@@ -27,11 +29,10 @@ BEGIN
     RAISE EXCEPTION 'cannot install E2EE channel note protection while encrypted channels contain active or restorable notes'
       USING ERRCODE = '55000';
   END IF;
-END $$;
 
--- Keep the branch's encryption-immutable function and, after main is merged,
--- its conversion function. A notes-only trigger preserves both sets of checks.
-CREATE FUNCTION e2ee_reject_channel_encryption_with_notes() RETURNS trigger LANGUAGE plpgsql AS $$
+  -- Keep the branch's encryption-immutable function and, after main is merged,
+  -- its conversion function. A notes-only trigger preserves both sets of checks.
+  CREATE FUNCTION e2ee_reject_channel_encryption_with_notes() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
   IF NOT OLD.encrypted AND NEW.encrypted AND EXISTS (
     SELECT 1 FROM channel_notes
@@ -41,12 +42,12 @@ BEGIN
     RAISE EXCEPTION 'remove active and restorable channel notes before encrypting the channel' USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
-END $$;
-CREATE TRIGGER channels_encrypted_reject_notes BEFORE UPDATE OF encrypted ON channels
-  FOR EACH ROW WHEN (OLD.encrypted IS DISTINCT FROM NEW.encrypted AND NEW.encrypted)
-  EXECUTE FUNCTION e2ee_reject_channel_encryption_with_notes();
+END $fn$;
+  CREATE TRIGGER channels_encrypted_reject_notes BEFORE UPDATE OF encrypted ON channels
+    FOR EACH ROW WHEN (OLD.encrypted IS DISTINCT FROM NEW.encrypted AND NEW.encrypted)
+    EXECUTE FUNCTION e2ee_reject_channel_encryption_with_notes();
 
-CREATE FUNCTION e2ee_reject_plaintext_channel_notes() RETURNS trigger LANGUAGE plpgsql AS $$
+  CREATE FUNCTION e2ee_reject_plaintext_channel_notes() RETURNS trigger LANGUAGE plpgsql AS $fn$
 DECLARE enc boolean;
 BEGIN
   SELECT encrypted INTO enc FROM channels WHERE id = NEW.channel_id FOR SHARE;
@@ -54,6 +55,7 @@ BEGIN
     RAISE EXCEPTION 'channel notes are unavailable in encrypted channels' USING ERRCODE = '23514';
   END IF;
   RETURN NEW;
-END $$;
-CREATE TRIGGER channel_notes_e2ee_reject_plaintext BEFORE INSERT OR UPDATE ON channel_notes
-  FOR EACH ROW EXECUTE FUNCTION e2ee_reject_plaintext_channel_notes();
+END $fn$;
+  CREATE TRIGGER channel_notes_e2ee_reject_plaintext BEFORE INSERT OR UPDATE ON channel_notes
+    FOR EACH ROW EXECUTE FUNCTION e2ee_reject_plaintext_channel_notes();
+END $migration$;
