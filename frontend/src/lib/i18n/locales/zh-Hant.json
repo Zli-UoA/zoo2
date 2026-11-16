@@ -1753,5 +1753,15 @@
       "active": "通話中"
     },
     "unavailableMember": "無法使用的成員"
+  },
+  "androidPhone": {
+    "description": "透過裝置的通話功能使用個人或共用SIP線路及私訊語音通話。",
+    "nativeCalls": "裝置通話整合",
+    "nativeHelp": "啟用來電後會顯示持續通知並保持連線。可透過裝置的通話控制接聽、掛斷和切換音訊輸出。需要麥克風權限。",
+    "receiveDm": "接收私訊來電",
+    "callError": "無法準備或操作通話，請檢查麥克風權限、裝置通話支援、網路和線路設定。",
+    "speaker": "揚聲器",
+    "waiting": "正在等候來電",
+    "dmCall": "通話"
   }
 }
