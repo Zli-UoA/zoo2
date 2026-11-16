@@ -84,6 +84,7 @@ class KeysQuery(
     val deviceKeys: JsonObject,
     /** `e2ee_key_signatures` の行（自己署名鍵による端末鍵への署名を探す。受信時の検証の手順 4）。 */
     val signatures: JsonArray = JsonArray(emptyList()),
+    val raw: JsonObject? = null,
 )
 
 /** E2EE の API が期限までに答えなかった。通信の失敗と同じく、間隔をあけて試し直す。 */
@@ -200,13 +201,21 @@ class ZooE2eeApi(private val api: ZooApi) : E2eeApi, E2eeSetupApi {
         // サーバーの上限は 100 人。TUI と同じく 50 人ずつにする。
         val merged = mutableMapOf<String, JsonElement>()
         val signatures = mutableListOf<JsonElement>()
+        val snapshot = mutableMapOf<String, JsonElement>()
         for (chunk in userIds.chunked(50)) {
             val response =
                 call("/api/e2ee/keys/query", "POST", buildJsonObject { put("user_ids", JsonArray(chunk.map(::JsonPrimitive))) })
+            for (field in listOf("master_keys", "self_signing_keys", "user_signing_keys", "tofu_pins")) {
+                val previous = snapshot[field] as? JsonObject ?: JsonObject(emptyMap())
+                snapshot[field] = JsonObject(previous + ((response as? JsonObject)?.get(field) as? JsonObject).orEmpty())
+            }
             ((response as? JsonObject)?.get("device_keys") as? JsonObject)?.let(merged::putAll)
             ((response as? JsonObject)?.get("signatures") as? JsonArray)?.let(signatures::addAll)
         }
-        return KeysQuery(JsonObject(merged), JsonArray(signatures))
+        snapshot["device_keys"] = JsonObject(merged)
+        snapshot["signatures"] = JsonArray(signatures)
+        snapshot["user_ids"] = JsonArray(userIds.distinct().map(::JsonPrimitive))
+        return KeysQuery(JsonObject(merged), JsonArray(signatures), JsonObject(snapshot))
     }
 
     override suspend fun ackToDevice(deviceId: String, ids: List<String>) {
@@ -489,7 +498,9 @@ class E2eeDeviceManager(
                     val result = process(store, deviceId, waiting)
                     acknowledged += result.processed
                     // 受け取った Megolm セッションの鍵を、鍵バックアップに送る（解錠済みの端末だけ。E2eeSetup が確かめる）。
-                    if (result.roomKeys > 0) backups.trySend(Unit)
+                    if (result.roomKeys > 0) {
+                        backups.trySend(Unit)
+                    }
                 }
             }
             error("to-device の Shape が終わりました")
@@ -554,9 +565,9 @@ class E2eeDeviceManager(
 
     /** 行を処理して ack を送り、ack を送れた ID を返す。 */
     private suspend fun process(store: CryptoStore, deviceId: String, rows: List<ToDeviceRow>): ToDeviceResult {
-        val senders = rows.map { it.senderUserId }.distinct().sorted()
+        val senders = (rows.map { it.senderUserId } + userId).distinct().sorted()
         val keys = api.queryKeys(senders)
-        val result = withContext(io) { store.processToDevice(rows, keys.deviceKeys, keys.signatures) }
+        val result = withContext(io) { store.processToDevice(rows, keys.deviceKeys, keys.signatures, keys.raw) }
         if (result.processed.isNotEmpty()) {
             deviceCall(deviceId) { api.ackToDevice(deviceId, result.processed) }
             withContext(io) { store.acknowledged(result.processed) }

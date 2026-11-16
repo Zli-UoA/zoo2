@@ -412,6 +412,7 @@ class MainActivity : ComponentActivity() {
                 setupApi = e2eeApi,
             )
             platform.e2ee = e2ee
+            platform.messageEncryption = zoo.crypto.AndroidMessageEncryption(e2ee, session.api, lifetime)
             // 設定の「暗号化」タブ（#360）。再認証は Custom Tabs、パスキーは Credential Manager。
             val reauthenticator = AndroidReauth(this, http, connection)
             reauth = reauthenticator
