@@ -940,15 +940,17 @@ export class CryptoStore {
 
   /**
    * 受け入れた今の版 `version` へのアップロードの証明を、SSSS のバックアップ鍵で作る（docs/e2ee.md の
-   * 「アップロードの証明」）。版に `upload_key` がなければ `null`（ヘッダーを送らない）。`upload_key` が
-   * 鍵の形でなければ `rejected`。
+   * 「アップロードの証明」）。版に `upload_key` のフィールドがなければ `null`（ヘッダーを送らない）。
+   * フィールドがあって鍵の形でなければ（文字列でない `null`、数値、オブジェクトも）`rejected`。証明を
+   * 黙って省いて、未証明の行を送信済みにしないため。
    */
   private async backupUploadProof(
     currentVersion: JsonObject,
     version: string,
   ): Promise<string | null | { kind: "rejected"; code: string }> {
+    if (!("upload_key" in currentVersion)) return null;
     const uploadKey = currentVersion.upload_key;
-    if (typeof uploadKey !== "string") return null;
+    if (typeof uploadKey !== "string") return { kind: "rejected", code: "BackupUploadKeyInvalid" };
     const own = await this.ownKeys();
     if (!own) return null;
     const backupKey = own.keys.backupKey;

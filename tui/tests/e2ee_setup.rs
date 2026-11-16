@@ -692,13 +692,19 @@ async fn backups_carry_the_upload_proof_and_stop_when_the_server_rejects_it() {
     assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 1);
     assert_eq!(store.lock().await.pending_backup_count(), 1);
 
-    // upload_key が鍵の形でなければ、送らない。
-    backend.0.lock().unwrap().versions[0]["upload_key"] = json!("not-a-key");
-    assert!(matches!(
-        setup::upload_key_backup(&api, &store).await.unwrap(),
-        BackupUploadResult::Rejected(_)
-    ));
-    assert_eq!(store.lock().await.pending_backup_count(), 1);
+    // upload_key が鍵の形でなければ（文字列でない値も）、証明を省かずに送らない。
+    for invalid in [json!("not-a-key"), Value::Null, json!(42), json!({})] {
+        backend.0.lock().unwrap().versions[0]["upload_key"] = invalid.clone();
+        assert!(
+            matches!(
+                setup::upload_key_backup(&api, &store).await.unwrap(),
+                BackupUploadResult::Rejected(_)
+            ),
+            "{invalid}"
+        );
+        assert_eq!(backend.0.lock().unwrap().uploaded_sessions, 1);
+        assert_eq!(store.lock().await.pending_backup_count(), 1);
+    }
 
     // 正しい upload_key に戻れば、送信待ちのセッションを証明付きで送る。
     backend.0.lock().unwrap().versions[0]["upload_key"] = advertised;

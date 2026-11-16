@@ -1127,15 +1127,22 @@ impl CryptoStore {
         if keys.is_empty() {
             return Ok(BackupUploadRequest::None);
         }
-        let upload_key = current_version
-            .and_then(|current| current.get("upload_key"))
-            .and_then(Value::as_str);
-        let proof = match upload_key {
+        // フィールドがない版（証明を足す前のサーバー）だけ、証明を付けずに送る。フィールドがあって
+        // 文字列でなければ（`null`、数値、オブジェクトも）送らない。証明を黙って省いて、未証明の行を
+        // 送信済みにしないため。
+        let proof = match current_version.and_then(|current| current.get("upload_key")) {
             None => None,
-            Some(upload_key) => match self.backup_upload_proof(upload_key, &version)? {
-                Ok(proof) => Some(proof),
-                Err(message) => return Ok(BackupUploadRequest::Rejected(message)),
-            },
+            Some(Value::String(upload_key)) => {
+                match self.backup_upload_proof(upload_key, &version)? {
+                    Ok(proof) => Some(proof),
+                    Err(message) => return Ok(BackupUploadRequest::Rejected(message)),
+                }
+            }
+            Some(_) => {
+                return Ok(BackupUploadRequest::Rejected(
+                    "upload_key が鍵の形ではありません".to_owned(),
+                ));
+            }
         };
         let mut refs = Vec::with_capacity(keys.len());
         for key in &keys {

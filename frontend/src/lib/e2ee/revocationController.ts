@@ -475,7 +475,13 @@ async function runRevocation(
         rows,
       });
       if (proof === undefined) {
-        const uploadKey = (await getBackupVersion(deps.client, newVersion))?.upload_key;
+        const target = await getBackupVersion(deps.client, newVersion);
+        // フィールドがない版（証明を足す前のサーバー）だけ、証明を付けずに送る。フィールドがあって
+        // 文字列でなければ、送らず古い版も消さずに止める（未証明の行を移したことにしないため）。
+        if (target && "upload_key" in target && typeof target.upload_key !== "string") {
+          throw new Error(`版 ${newVersion} の upload_key が鍵の形ではありません`);
+        }
+        const uploadKey = target?.upload_key;
         proof =
           typeof uploadKey === "string"
             ? await worker.request({

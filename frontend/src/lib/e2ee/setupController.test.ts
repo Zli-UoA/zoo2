@@ -1018,18 +1018,20 @@ describe("初回設定と解錠", () => {
     expect(await uploadKeyBackup(deps)).toEqual({ kind: "done", uploaded: 1 });
   });
 
-  it("今の版の upload_key が鍵の形でなければ、送らない", async () => {
+  it("今の版の upload_key が鍵の形でなければ（文字列でない値も）、証明を省かずに送らない", async () => {
     const server = new FakeServer();
     const first = await device("first");
     const deps = first.deps(server);
     const { keyId } = await beginSetup(deps, null);
     await completeSetup(deps, keyId, TOKEN);
     await receiveRoomKey(first);
-    server.versions.at(-1)!.upload_key = "not-a-key";
-    server.requests = [];
-    expect((await uploadKeyBackup(deps)).kind).toBe("rejected");
-    expect(server.requests.some((r) => r.method === "POST")).toBe(false);
-    expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
+    for (const invalid of ["not-a-key", null, 42, {}]) {
+      server.versions.at(-1)!.upload_key = invalid;
+      server.requests = [];
+      expect((await uploadKeyBackup(deps)).kind, JSON.stringify(invalid)).toBe("rejected");
+      expect(server.requests.some((r) => r.method === "POST")).toBe(false);
+      expect(await first.worker.request({ op: "pendingBackupCount" })).toBe(1);
+    }
   });
 
   it("今の版に upload_key がなければ（証明を足す前のサーバー）、証明を付けずに送る", async () => {

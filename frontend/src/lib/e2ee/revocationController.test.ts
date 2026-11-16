@@ -527,6 +527,30 @@ describe("失効の手順", () => {
     }
   });
 
+  it("移行先の版の upload_key が文字列でなければ、送らず古い版も消さずに止める", async () => {
+    const { server, deps, recoveryKey } = await setUp();
+    await openSecretStorage(deps, { kind: "recovery", recoveryKey });
+    await beginRevocation(deps, "device_only", []);
+    server.after = {
+      route: "POST /api/e2ee/key_backup/versions",
+      run: async () => {
+        server.versions.at(-1)!.upload_key = 42;
+      },
+    };
+    await expect(continueRevocation(deps, TOKEN)).rejects.toThrow("upload_key");
+    expect(liveVersions(server)).toEqual(["1", "2"]);
+    expect(server.sessions.get("2") ?? []).toHaveLength(0);
+    expect(
+      server.requests.some((r) => r.path.startsWith("/api/e2ee/key_backup/keys?version=2&")),
+    ).toBe(false);
+
+    // 鍵の形に戻れば、続きから証明付きで移す。
+    server.versions.at(-1)!.upload_key = TEST_UPLOAD_KEY;
+    await continueRevocation(deps, TOKEN);
+    expect(liveVersions(server)).toEqual(["2"]);
+    expect(server.sessions.get("2")).toHaveLength(3);
+  });
+
   it("保存の途中でページを閉じても、SSSS を開け直して続けられる", async () => {
     const { server, first, deps, recoveryKey } = await setUp();
     await openSecretStorage(deps, { kind: "recovery", recoveryKey });
