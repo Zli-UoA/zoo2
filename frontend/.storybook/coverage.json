@@ -3,13 +3,7 @@
   "stories": [
     {
       "file": "src/components/layout/OnboardingTour.stories.tsx",
-      "states": [
-        "FirstVisit",
-        "CompleteAndReplay",
-        "Skip",
-        "Mobile",
-        "SlackSetup"
-      ]
+      "states": ["FirstVisit", "CompleteAndReplay", "Skip", "Mobile", "SlackSetup"]
     },
     {
       "file": "src/components/layout/DefaultChannelsSettings.stories.tsx",
@@ -240,13 +234,7 @@
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.stories.tsx",
-      "states": [
-        "CachedOnReturn",
-        "Landscape",
-        "Portrait",
-        "TextOnly",
-        "Mobile"
-      ]
+      "states": ["CachedOnReturn", "Landscape", "Portrait", "TextOnly", "Mobile"]
     },
     {
       "file": "src/components/chat/messages/MessageCard.stories.tsx",
@@ -520,10 +508,7 @@
     },
     {
       "file": "src/components/pwa/AppUpdateNotice.stories.tsx",
-      "states": [
-        "Available",
-        "Mobile"
-      ]
+      "states": ["Available", "Mobile"]
     },
     {
       "file": "src/components/pwa/PwaControls.stories.tsx",
@@ -1376,10 +1361,7 @@
     {
       "file": "src/components/home/HomeScreen.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
-      "checks": [
-        "src/components/home/HomeScreen.browser.test.tsx",
-        "src/lib/homeTimeline.test.ts"
-      ],
+      "checks": ["src/components/home/HomeScreen.browser.test.tsx", "src/lib/homeTimeline.test.ts"],
       "reason": "タブ切替時の先頭復帰・追加ページ後の閲覧位置・連続先読みの抑止を390px・1440pxで確認する。Federatedで元の投稿リンクを三点メニューから開く操作を確認する。HomeScreen.browser.test.tsxで、個別投稿への遷移時に既知の本文を即表示し、遅延したスレッド応答で本文・返信を更新することと取得回数を検証する。"
     },
     {
@@ -1560,9 +1542,7 @@
       "story": "src/components/ui/media-preview.stories.tsx",
       "composed": true,
       "reason": "Email、Outlook、Word、Spreadsheet、Slides、OpenDocument、Archive、Textで実際のWorkerと取得・解析・表示を確認する。",
-      "checks": [
-        "src/components/ui/document-preview.browser.test.tsx"
-      ]
+      "checks": ["src/components/ui/document-preview.browser.test.tsx"]
     },
     {
       "file": "src/components/ui/pdf-preview.tsx",
